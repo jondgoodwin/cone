@@ -50,15 +50,15 @@ as that group's own subject requires.
 | Tier | Group | Owns |
 | --- | --- | --- |
 | 0 | `lexical` | Literals, identifiers, comments, operators as tokens, statement termination |
-| 0 | `core` | Operators and expressions, blocks and statements, functions and function overload, `if`, `while`/`break`/`continue`, number types and enum, void, tuples, local and global vars |
+| 0 | `core` | Operators and expressions, blocks and statements, functions and function overload, `if`, `while`/`break`/`continue`, number types, void, tuples, local and global vars |
 | 1 | `struct` | Structs, method definition, operator methods, initializers and finalizers, delegated inheritance |
-| 1 | `union` | Unions, `Option`, `Result`, pattern matching |
+| 1 | `enum` | Enums in both size varieties, `Option`, `Result`, pattern matching |
 | 1 | `array` | Arrays |
 | 1 | `closure` | Closures |
 | 1 | `ref` | Borrowed references, static permissions, lifetime annotations, function references |
 | 1 | `move` | Move types and semantics |
 | 2 | `region` | Owning references, region strategies, lock permissions, weak references |
-| 2 | `trait` | Traits, trait-based variants, virtual references, closure references |
+| 2 | `trait` | Traits, virtual references and the dispatch through them, closure references |
 | 2 | `collection` | Collection types, array references and slices |
 | 2 | `each` | `each` and iteration |
 | 2 | `typemgmt` | Conversion and coercion, typedef and extend |

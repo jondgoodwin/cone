@@ -299,18 +299,18 @@ int itypeIsConcrete(INode *type) {
 
 static INode *itypeNoSizeField(INode *dcltype, uint32_t depth);
 
-// Is this a closed trait -- a union -- with a variant that is not laid out yet?
+// Is this an enum with a variant that is not laid out yet?
 //
-// A closed trait's size is the largest of its variants, and generation is what
-// computes that. Its own TypeChecked mark says only that its own fields are
-// settled, which for a union is the tag: the variants are type checked separately,
-// each pulling this trait in as its base trait and finishing it before its own
-// fields are walked. So the mark cannot be read as 'has a size' here, and one
-// variant still in flight is exactly the case where the trait has none -- which
-// is what a variant holding its own union by value asks for.
+// An enum's size is the largest of its variants, and generation is what computes
+// that. Its own TypeChecked mark says only that its own fields are settled, which
+// begins with the tag: the variants are type checked separately, each pulling the
+// enum in as its base and finishing it before its own fields are walked. So the
+// mark cannot be read as 'has a size' here, and one variant still in flight is
+// exactly the case where the enum has none -- which is what a variant holding its
+// own enum by value asks for.
 static int itypeVariantPending(INode *dcltype) {
     // TraitType and a derived list are both required: a *variant* carries the
-    // closed flags too, inherited from its trait, and has no derived list at all.
+    // closed flags too, inherited from its enum, and has no derived list at all.
     if (dcltype->tag != StructTag || !(dcltype->flags & TraitType)
         || !(dcltype->flags & (HasTagField | SameSize))
         || ((StructNode*)dcltype)->derived == NULL)
@@ -344,8 +344,8 @@ char *itypeName(INode *type) {
 // This type's own reason for having no size, ignoring anything it caught from a
 // field, or NULL when it has a size or is unsized only by infection.
 //
-// Order matters: a trait that is not @samesize and a struct infected by an
-// unsized field both carry OpaqueType, so each is asked before the plain
+// Order matters: a trait or an '@unsized' enum, and a struct infected by an
+// unsized field, all carry OpaqueType, so each is asked before the plain
 // declared-opaque reading that would otherwise absorb it.
 static char *itypeNoSizeOwnCause(INode *dcltype, uint32_t depth) {
     // Still being laid out. Its own fields are what this walk is in the middle
@@ -354,9 +354,9 @@ static char *itypeNoSizeOwnCause(INode *dcltype, uint32_t depth) {
     if ((dcltype->flags & TypeChecking) && !(dcltype->flags & TypeChecked))
         return "is still being laid out, so it would have to contain itself. Break the cycle by holding it through a reference";
 
-    // A union is laid out only once every variant is, whatever its own mark says
+    // An enum is laid out only once every variant is, whatever its own mark says
     if (itypeVariantPending(dcltype))
-        return "is a union with a variant still being laid out, so it would have to contain itself. Break the cycle by holding it through a reference";
+        return "is an enum with a variant still being laid out, so it would have to contain itself. Break the cycle by holding it through a reference";
 
     if (!(dcltype->flags & OpaqueType))
         return NULL;
@@ -366,9 +366,12 @@ static char *itypeNoSizeOwnCause(INode *dcltype, uint32_t depth) {
         return "is not a value at all. Use a reference to a function instead";
 
     if (dcltype->tag == StructTag) {
-        // A trait whose implementations differ in size has no one size
+        // A type whose implementations differ in size has no one size: a trait,
+        // whose implementers are open-ended, or an enum that declined the padding
         if ((dcltype->flags & TraitType) && !(dcltype->flags & SameSize))
-            return "is a trait whose implementations may differ in size. Use a virtual reference, '&<Trait>'";
+            return (dcltype->flags & EnumType)
+                ? "is an '@unsized' enum, so its variants differ in size. Reach it through a reference"
+                : "is a trait whose implementations may differ in size. Use a virtual reference, '&<Trait>'";
 
         // Opacity is infectious. Where a field carried it, this type is not the
         // cause and the caller keeps walking.

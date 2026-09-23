@@ -97,6 +97,80 @@ LLVMValueRef genlGetIntrinsicFn(GenState *gen, char *fnname, NameUseNode *fnuse)
 }
 
 // Generate a function call, including special intrinsics (Internal version)
+// Where the discriminant sits in the enum this comparison method belongs to.
+// Taken from the method's own first parameter rather than assumed to be zero,
+// because an enum may place its discriminant itself, for alignment, by writing
+// '_ tag' for it.
+static unsigned genlTagFieldIndex(FnDclNode *fndcl) {
+    INode *selftype = itypeGetTypeDcl(((IExpNode*)nodesGet(((FnSigNode*)fndcl->vtype)->parms, 0))->vtype);
+    if (selftype->tag == StructTag) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&((StructNode*)selftype)->fields, cnt, nodesp)) {
+            if ((*nodesp)->flags & IsTagField)
+                return ((FieldDclNode*)*nodesp)->index;
+        }
+    }
+    errorUnreachable((INode*)fndcl, "an enum comparison whose type carries no discriminant");
+    return 0;
+}
+
+// May the tag be used directly as an index into the vtable list?
+//
+// It may when every variant's tag value is its position in 'derived', which is
+// the order 'structMakeVtable' prewired the list in. Auto-numbering gives exactly
+// that; a pinned tag value is what takes it away.
+static int genlTagsIndexVtables(StructNode *trait) {
+    if (trait->derived == NULL)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    uint32_t pos = 0;
+    for (nodesFor(trait->derived, cnt, nodesp)) {
+        if (((StructNode*)*nodesp)->tagnbr != pos++)
+            return 0;
+    }
+    return 1;
+}
+
+// Select the vtable a sparse tag names, by comparison rather than by index.
+//
+// Built as a chain of selects, innermost first, so the last variant is the
+// fall-through: the tag came out of a value of this enum, so it is one of these,
+// and no default arm is reachable. No basic blocks, so nothing here depends on
+// where the coercion sits.
+static LLVMValueRef genlVtableForTag(GenState *gen, Vtable *vtable, StructNode *trait,
+                                     LLVMValueRef tagval, FieldDclNode *tagnode) {
+    LLVMTypeRef tagtype = genlType(gen, tagnode->vtype);
+    LLVMValueRef chosen = NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(trait->derived, cnt, nodesp)) {
+        StructNode *variant = (StructNode*)*nodesp;
+        LLVMValueRef variantvtable = NULL;
+        INode **implp;
+        uint32_t implcnt;
+        for (nodesFor(vtable->impl, implcnt, implp)) {
+            if (((VtableImpl*)*implp)->structdcl == (INode*)variant) {
+                variantvtable = ((VtableImpl*)*implp)->llvmvtablep;
+                break;
+            }
+        }
+        // structMakeVtable prewires every variant, so a miss is a broken
+        // invariant rather than a program the compiler should diagnose
+        if (variantvtable == NULL)
+            errorExit(ExitGen, "No vtable implementation registered for an enum variant");
+        if (chosen == NULL) {
+            chosen = variantvtable;   // the fall-through, filled in first
+            continue;
+        }
+        LLVMValueRef iseq = LLVMBuildICmp(gen->builder, LLVMIntEQ, tagval,
+            LLVMConstInt(tagtype, variant->tagnbr, 0), "istag");
+        chosen = LLVMBuildSelect(gen->builder, iseq, variantvtable, chosen, "vtablefortag");
+    }
+    return chosen;
+}
+
 LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint32_t fnargcnt, LLVMValueRef *fnargs) {
 
     // Handle call when we have a derefed pointer to a function
@@ -299,6 +373,21 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
                 fncallret = wantEq
                     ? LLVMBuildAnd(gen->builder, ptrcmp, lencmp, "sliceeq")
                     : LLVMBuildOr(gen->builder, ptrcmp, lencmp, "slicene");
+                break;
+            }
+
+            // An enum compares for equivalence by its discriminant. Reached only
+            // for the payload-free form, where every variant is empty, so the
+            // value is the tag and whatever padding the layout added and the tag
+            // is the whole of what equality has to ask.
+            case TagEqIntrinsic:
+            case TagNeIntrinsic:
+            {
+                int wantEq = ((IntrinsicNode *)fndcl->value)->intrinsicFn == TagEqIntrinsic;
+                unsigned tagidx = genlTagFieldIndex(fndcl);
+                LLVMValueRef ltag = LLVMBuildExtractValue(gen->builder, fnargs[0], tagidx, "ltag");
+                LLVMValueRef rtag = LLVMBuildExtractValue(gen->builder, fnargs[1], tagidx, "rtag");
+                fncallret = LLVMBuildICmp(gen->builder, wantEq ? LLVMIntEQ : LLVMIntNE, ltag, rtag, "tagcmp");
                 break;
             }
             }
@@ -548,20 +637,32 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
                 errorExit(ExitGen, "No vtable implementation registered for this struct");
         }
         else {
-            // Use tag field to lookup correct vtable
+            // Which variant the reference points at is in the tag, and the tag is
+            // what selects the vtable.
+            //
+            // The list 'structMakeVtable' prewired is in 'derived' order, so where
+            // the tag values are that order the tag indexes it directly, which is
+            // one load. A pinned tag value breaks that -- 'Red = 0xFF0000' would
+            // index four million entries past the end -- so the sparse case
+            // compares instead, one select per variant, which costs code at the
+            // coercion rather than a table proportional to the largest value.
             INode **nodesp;
             uint32_t cnt;
             for (nodelistFor(&strnode->fields, cnt, nodesp)) {
-                if ((*nodesp)->flags & IsTagField) {
-                    FieldDclNode *tagnode = (FieldDclNode*)*nodesp;
-                    LLVMValueRef val = LLVMBuildStructGEP(gen->builder, genexp, tagnode->index, "tagref");
-                    val = LLVMBuildLoad(gen->builder, val, "tag");
+                if (!((*nodesp)->flags & IsTagField))
+                    continue;
+                FieldDclNode *tagnode = (FieldDclNode*)*nodesp;
+                LLVMValueRef val = LLVMBuildStructGEP(gen->builder, genexp, tagnode->index, "tagref");
+                val = LLVMBuildLoad(gen->builder, val, "tag");
+                if (genlTagsIndexVtables(strnode)) {
                     LLVMValueRef indexes[2];
                     indexes[0] = LLVMConstInt(genlUsize(gen), 0, 0);
                     indexes[1] = val;
                     vtablep = LLVMBuildGEP(gen->builder, vtable->llvmvtables, indexes, 2, "");
                     vtablep = LLVMBuildLoad(gen->builder, vtablep, "");
                 }
+                else
+                    vtablep = genlVtableForTag(gen, vtable, strnode, val, tagnode);
             }
             if (vtablep == NULL)
                 errorExit(ExitGen, "Virtual reference source trait has no tag field");

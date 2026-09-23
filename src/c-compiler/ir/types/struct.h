@@ -44,6 +44,12 @@ typedef struct StructNode {
     uint32_t tagnbr;        // If a tagged struct, this is the number in the tag field
 } StructNode;
 
+// A variant whose tag value has not been settled yet. The parser writes it before
+// looking for a value the author pinned, so that keeping a pinned value and
+// assigning the next number in sequence are one test rather than a flag: a type
+// has no spare flag bit, and nothing after parse needs to know which a value was.
+#define TagUnassigned 0xFFFFFFFFu
+
 typedef struct FieldDclNode FieldDclNode;
 
 StructNode *newStructNode(Name *namesym);

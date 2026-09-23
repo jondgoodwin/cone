@@ -261,17 +261,28 @@ enum NodeTags {
 #define ZeroSizeType       0x0008  // Type has no size in memory (void, empty struct)
 
 // OpaqueType says a value of this type may not be held, and three unrelated
-// facts set it: the type was declared @opaque, it is a trait that is not
-// @samesize, or a field of it is unsized. Only the first means there is no
+// facts set it: the type was declared @opaque, it is a trait or an '@unsized'
+// enum, or a field of it is unsized. Only the first means there is no
 // layout to generate -- a trait's own fields are known and are a prefix of every
 // implementer's, and a struct with an unsized field is refused by type check
 // (ErrorNoSize) long before generation. So generation asks this, not OpaqueType.
 #define DeclaredOpaque     0x0100  // Type was declared @opaque: it has no fields
 
 #define TraitType          0x0010  // Is a trait (vs. struct)
-#define SameSize           0x0020  // An enumtrait, where all implementations are padded to same size
+#define SameSize           0x0020  // Every variant is padded out to the size of the largest
 #define HasTagField        0x0040  // A trait/struct has an enumerated field identifying the variant type
 #define NullablePtr        0x0080  // trait/struct has nullable pointer, generating optimized data
+
+// An 'enum': the closed family. Its variants are declared inside it, the
+// compiler owns its layout -- the tag at position 0, the common fields spliced
+// into every variant, and the padding SameSize asks for -- and its variant set
+// is its identity. 'trait' is the open abstraction and carries none of that.
+// Read wherever a diagnostic must name the construct the author wrote, and to
+// decide what a body may declare. Carried by the enum, not by its variants.
+//
+// 0x0800 rather than a lower bit: 0x0200 and 0x0400 are spoken for across every
+// block, and 0x1000 upward are the progress marks a type carries.
+#define EnumType           0x0800  // Is an enum: a closed set of variants
 
 // Type check progress, carried by every declaration. These are type check's
 // marks and no other phase's: inodeTypeCheck sets and tests them, and neither

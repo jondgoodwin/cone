@@ -19,7 +19,7 @@ the claim that these are ruling positions rather than the present arrangement.**
 
 **One struct serves many roles, and the tag separates them late.** `FnCallNode`
 carries nine unrelated syntaxes; `RefNode` seven tags across two groups;
-`StructNode` is struct, trait and union; `BreakRetNode` is four statements;
+`StructNode` is struct, trait and enum; `BreakRetNode` is four statements;
 `BlockNode` is a block and a loop; `CastNode` is five conversion forms;
 `NameUseNode` is every appearance of any name. ▸ **Forbids** minting a node per
 syntax, and **settles** that a new syntax usually costs a tag or a flag rather
@@ -140,7 +140,9 @@ Cone source.
 different node families — `0x0020` is `IsMixin` on a `FieldDcl` and `SameSize`
 among the type flags. Check every declaration family before claiming a bit. **A
 collision has no diagnostic**: `0x0040` overlapping `HasTagField` stops type
-checking every tagged union and reports nothing.
+checking every enum and reports nothing. **`FlagPub` at `0x0200` is what the type
+flags have to skip**, since a type is a declaration and may be `pub`; `EnumType`
+took `0x0800` for that reason, and `0x1000` upward are a type's progress marks.
 
 **A node built after parsing takes the lexer's *current* position**, which is
 end of file. `newNode` reads `lex->tokp`, so an injected node points at nothing
@@ -295,7 +297,7 @@ phase notes for mechanism rather than restating it:
 | Node source | Note | Why it earns one |
 | --- | --- | --- |
 | `ir/exp/fncall.c` | [fncall](fncall.md) | one shape serves eight syntaxes; the largest function in the compiler decides which |
-| `ir/types/struct.c` | [struct](struct.md) | struct, trait and union are one node; layout, inheritance, vtables and drops |
+| `ir/types/struct.c` | [struct](struct.md) | struct, trait and enum are one node; layout, inheritance, vtables and drops |
 | `ir/types/reference.c`, `arrayref.c`, `ir/exp/borrow.c`, `allocate.c` | [references](references.md) | seven tags on one struct, across two node groups |
 | `ir/stmt/vardcl.c`, `fielddcl.c`, `const.c`, `aliasdcl.c` | [vardcl](vardcl.md) | three declaration nodes that differ mostly in what they lack, and the alias, which lacks everything but a name and a target |
 | `ir/stmt/module.c`, `import.c`, `program.c` | [module](module.md) | the module, package and compilation-unit model has no other home; what is generated is gated on a flag set at parse |

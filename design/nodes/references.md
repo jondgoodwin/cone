@@ -113,9 +113,11 @@ forms produce `ArrayBorrowTag`/`ArrayAllocTag`.
 **A virtual reference may not be borrowed or allocated** — `ErrorBadTerm`,
 "Coerce from a regular ref." There is nothing to construct *from*: the fat
 pointer's second word is a vtable, selected either by scanning the trait's
-implementations for the concrete source struct or by indexing the vtable list
-with a runtime tag. Both need a source *reference type*; neither is available
-from a bare lval.
+implementations for the concrete source struct or, from a reference to an enum, by
+the runtime tag — which indexes the vtable list where the tag values are the
+variants' positions in it, and compares against each variant's value where they are
+not (see [Generation](../phases/generation.md), "Vtables"). Both need a source
+*reference type*; neither is available from a bare lval.
 
 Because the retag happens here, the four constructor tags have **no arms in
 `inodeNameRes`** — they cannot exist before this point.

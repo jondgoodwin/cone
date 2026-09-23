@@ -120,7 +120,7 @@ If you want a short answer to "what does a clean compile buy me":
 
 - **Types are sound in the ordinary sense** — a value of a declared type has
   that type's representation, coercions are explicit or checked, and the tag on
-  a union variant is real.
+  an enum variant is real.
 - **Ordinary array and slice indexing is bounds-checked**, and allocation
   failure traps rather than returning null.
 - **A variable is not read before it holds something**, and not read after its

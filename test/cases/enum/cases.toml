@@ -1,0 +1,150 @@
+# enum - the closed family, Option, Result, pattern matching. Tier 1.
+#
+# Key reference: design/diagnostics/test-suite.md, "cases.toml keys".
+# The group directory supplies the feature tag, so tags carry pipeline phases.
+#
+# An enum is a closed set of variants whose layout the compiler owns: a
+# discriminant, the common fields spliced into every variant, and -- unless the
+# declaration writes '@unsized' -- padding to one size. So this group's subject is
+# declaring one in both of its forms, constructing a variant, reading the fields
+# the variants share, comparing for equivalence, and recovering the variant by
+# matching. A requirement on the enum, a virtual reference and the dispatch
+# through it are trait's, and appear here only as far as having something to match
+# on requires.
+#
+# The two forms are one construct and are covered in one success program, because
+# what makes them one is exactly what needs asserting: a bare name is an empty
+# struct variant, so the plain set of named symbols is the payload-carrying form
+# with the payloads left out. Splitting them would test the same parser and the
+# same layout twice and still not say that they are one thing.
+#
+# The reject scenarios are split by pipeline stage, because analysis halts between
+# stages and a later stage's expectation would never be reached. Within each stage
+# they are split again by sub-family:
+#
+# - The parse ones: enum-parse-decl is about the declaration's head -- what may
+#   modify it, and that it declares variants at all -- while enum-parse-blocks is
+#   about its body, and enum-parse-patterns about a pattern binding's shape.
+#   enum-parse-decl is separate because each of its diagnostics is at the top
+#   level, where recovery from one reaches the next declaration.
+# - The type-check ones: by whether the match, the pattern's target type, the
+#   enum/variant type relationship, the discriminant, or what '@unsized' gives up
+#   is what rejects the code.
+#
+# enum-typecheck-unsized carries four uses of ErrorNoSize side by side rather than
+# one per file, per "One diagnostic's whole story": the cause and the remedy are
+# the same at every site, so what a reader checks is that each site says so.
+#
+# Left out, with reasons:
+#
+# - Extending an enum with more variants. The keyword is settled and the
+#   mechanism is not built; enum-parse-blocks pins what a variant may not restate,
+#   which is the part of the relationship that exists.
+#
+# - Comparing two values of an enum whose variants carry fields. That would have
+#   to compare the fields, and Cone has no structural comparison for a struct of
+#   any kind, so there is nothing to establish beyond the refusal --
+#   enum-typecheck-match holds it.
+
+support = []
+
+# -------- success --------
+
+[scenario.enum-success]
+category = "run"
+description = "Enum declaration in both forms, variant construction, common members, equivalence, and every form of match"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+# The discriminant's width follows the largest tag VALUE rather than the variant
+# count, which runtime cannot see: three variants laid out in one byte and four
+# laid out in four print the same lines. So it is asserted here, in the types
+# generation wrote. PhoneType numbers ascending from zero and fits a byte; Colors
+# pins 0xFF0000 and needs four, which is also the width it declared. Packet
+# declined the padding, so its variants keep their own sizes where Shape's are all
+# padded to the largest.
+[[scenario.enum-success.check]]
+name = "tag-width-follows-the-largest-value"
+target = "preir"
+contains = ["%PhoneType = type { i8 }", "%Colors = type { i32 }"]
+
+[[scenario.enum-success.check]]
+name = "unsized-enum-variants-are-not-padded"
+target = "preir"
+contains = ["%Ping = type { i8, i32 }", "%Payload = type { i8, i32, i64, i64, i64 }"]
+
+# Which vtable a tag names is looked up two ways, and the run cannot see which:
+# both reach the right implementation, which is the point. Signals pins 0x10 and
+# 0x2000, so the tag is not an index into a two-entry list and the selection has to
+# compare -- asserted as the 'select' it emits, against the constant 8192, before
+# the optimizer folds the dispatch away.
+[[scenario.enum-success.check]]
+name = "sparse-tags-select-a-vtable-by-comparison"
+target = "preir"
+contains = ["icmp eq i32 %tag, 8192", "%vtablefortag = select i1"]
+
+[scenario.enum-nullable-ptr]
+category = "run"
+description = "The untagged nullable-pointer layout, the Option[&T] shape, and every use of it"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# The layout is the subject, and runtime cannot see it: a tagged enum of the
+# same shape would print exactly the same lines. So the representation is
+# asserted here, in the signatures 'read' and 'readOption' were generated with,
+# before the optimizer folds both into 'main'. A reference to the enum is a
+# reference to a bare pointer, which is the whole optimization, and none of the
+# enum's or its variants' struct types is emitted at all -- neither a tag nor
+# a wrapper exists.
+[[scenario.enum-nullable-ptr.check]]
+name = "nullable-ptr-has-no-tag-and-no-struct"
+target = "preir"
+contains = ["@read(i32**", "@readOption(i32**"]
+excludes = ["%Maybe", "%Just", "%Nothing", "%Some", "%Option"]
+
+# -------- parse stage --------
+
+[scenario.enum-parse-decl]
+category = "reject"
+description = "An enum declaration's head: 'enum trait', '@unsized' where nothing pads, an empty enum, and variants inside a trait"
+tags = ["parse"]
+
+[scenario.enum-parse-blocks]
+category = "reject"
+description = "Declarations an enum body and arms a match body will not accept"
+tags = ["parse"]
+diagnostics = 4
+
+[scenario.enum-parse-patterns]
+category = "reject"
+description = "Pattern bindings missing a permission, a name, a type, or a value to match"
+tags = ["parse"]
+diagnostics = 6
+
+# -------- type check stage --------
+
+[scenario.enum-typecheck-match]
+category = "reject"
+description = "Matches that are not exhaustive, not ordered, or not of one type, and an enum comparison with no candidate and none to have"
+tags = ["typecheck"]
+diagnostics = 7
+
+[scenario.enum-typecheck-narrow]
+category = "reject"
+description = "Patterns narrowing to a type the matched value could never be, already narrow, or in another region"
+tags = ["typecheck"]
+diagnostics = 7
+
+[scenario.enum-typecheck-variant]
+category = "reject"
+description = "Narrowing an enum to a variant by assignment, extending a closed enum, and a variant holding its own enum by value"
+tags = ["typecheck"]
+diagnostics = 6
+
+[scenario.enum-typecheck-tag]
+category = "reject"
+description = "A tag value too large for the enum's integer type, an integer type that cannot hold a tag, and the one field that may carry the discriminant"
+tags = ["typecheck"]
+
+[scenario.enum-typecheck-unsized]
+category = "reject"
+description = "Holding a value of an '@unsized' enum, which has no one size"
+tags = ["typecheck"]

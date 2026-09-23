@@ -1,0 +1,260 @@
+<html>
+  <head>
+	  <title>enum types - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">enum types</div>
+		</div>
+
+    <div class="text">
+	<p style="margin-left: 40px;"><i>Note: All of this capability is implemented except:
+		extending an enum with more variants, comparing two values of an enum whose variants
+		carry fields, and reaching a variant by a name qualified with its enum's. The examples
+		that will not compile today are marked where they appear.</i></p>
+
+	<p>An <span class="pre">enum</span> declares a <b>closed set of variants</b>: a value of the
+		enum is exactly one of them, and the whole set is written inside the declaration, so
+		nothing elsewhere can add to it. That closedness is what buys an
+		<a href="refmatch.html">exhaustive match</a>.</p>
+
+	<p>The variants may carry values of their own, or carry nothing at all. Both are the same
+		construct:</p>
+<pre>
+enum PhoneType {
+	Home, Work, Mobile;
+}
+
+enum Point {
+	pub struct XyPoint {
+		pub x f32;
+		pub y f32;
+	}
+	pub struct AngPoint {
+		pub dist f32;
+		pub angle f32;
+	}
+}
+</pre>
+	<p><b>A bare name is an empty struct variant.</b> That one sentence is what makes a plain set
+		of named symbols and a set of variant structs the same thing, and it is why there is no
+		second construct to learn: <span class="pre">Home</span> above declares exactly what
+		<span class="pre">struct Home;</span> would.</p>
+
+	<p>Two properties hold of every enum:</p>
+	<ul>
+		<li>An enum is <b>discriminated</b>: there is a hidden "tag" field at the beginning of the
+			value, holding a number the compiler assigns to each variant, which is what tells at
+			runtime which variant a value is.</li>
+		<li>Every variant <b>occupies the same size of memory</b> &mdash; the size of the largest,
+			plus the tag &mdash; so smaller variants are padded to fit. A value of the enum can
+			therefore be held in a variable, copied, passed by value, and replaced in place by a
+			different variant. Write <a href="#unsized"><span class="pre">@unsized</span></a> to
+			decline the padding.</li>
+	</ul>
+
+	<p>Where you want a set of variants that <i>other modules</i> can add to, an enum is the wrong
+		construct: use a <a href="reftrait.html">trait</a> and structs that
+		<span class="pre">extends</span> it. That versatility costs something, and the cost is worth
+		knowing: an open trait has no tag, so a value of it carries a pointer to type metadata and a
+		match has to check the possibilities one at a time. <b>A closed set is not only exhaustive,
+		it is faster</b>, because a tag is an index.</p>
+
+	<h3>Declaration</h3>
+	<p>The simplest form is a name and its variants. A variant written as a
+		<span class="pre">struct</span> carries fields of its own; one written as a bare name carries
+		none. It is permissible for a struct variant to be empty of fields too, as the presence of
+		the tag ensures the overall value is not empty.</p>
+	<p>An enum may also declare <b>members in common</b>: fields every variant has, and methods
+		every variant answers. Neither is something Rust's enums offer, and both are what let a
+		caller do useful work with a value whose variant it has not yet recovered.</p>
+<pre>
+enum Event {
+	pub time datetime;                             // a field every variant has
+
+	pub fn stamp(self &amp;) datetime {time;}          // a method with a body: a default
+	pub fn describe(self &amp;) String;                // a method without one: a requirement
+
+	pub struct ButtonEvent {
+		pub button u8;
+		pub pushed Bool;
+	}
+	pub struct KeyEvent {
+		pub key Unicode;
+	}
+	pub struct QuitEvent;
+}
+</pre>
+	<p>All three variants above begin with the <span class="pre">time</span> field, ahead of any
+		fields they declare themselves. A method with a body is a <b>default</b>, which each variant
+		gets unless it declares that name itself; a method without one is a <b>requirement</b>, which
+		every variant must implement, and calling it through a reference to the enum dispatches on
+		the variant &mdash; see <a href="#dispatch">Method dispatch</a> below.</p>
+
+	<p><b>A common member may be written anywhere in the body.</b> What makes a member common is its
+		kind, not its position: a <span class="pre">struct</span> is a variant, and anything else is
+		common. The layout still puts common fields first in every variant.</p>
+
+	<h3>Tag values</h3>
+	<p>Each variant's tag value is assigned for you, ascending from zero in declaration order. You
+		may write a value instead, which is what lines an enum up with the constants of a library
+		written in another language. Numbering resumes from the last value written, so only the
+		variants that need a particular value have to say so.</p>
+	<p>An enum may also name the integer type its tag values are laid out in. That fixes the tag's
+		width, so a value too large for it is an error rather than a silent widening away from the
+		layout you asked for. Without it the tag is as wide as the largest value needs &mdash; note
+		that this follows the largest <i>value</i>, not the number of variants.</p>
+<pre>
+enum Colors u32 {
+	Red   = 0xFF0000,
+	Green = 0x00FF00,
+	Blue  = 0x0000FF;
+}
+</pre>
+	<p>The tag field cannot be accessed, referenced or mutated: which variant a value holds is
+		reached by <a href="refmatch.html">pattern matching</a>, and compared with
+		<span class="pre">==</span>.</p>
+	<p>For alignment reasons it may be desirable to place the tag somewhere other than first. To do
+		this, write an anonymous field of type <span class="pre">tag</span> where it should go.
+		<span class="pre">tag</span> means this only where a field's type is written, so it is not a
+		reserved word and a field may still be named <span class="pre">tag</span>.</p>
+<pre>
+enum Aligned {
+	pub wide i64;
+	_ tag;
+
+	pub struct Small {pub n i32;}
+	pub struct Large {pub a i64; pub b i64;}
+}
+</pre>
+
+	<h3>Initialization</h3>
+	<p>A value is built using a constructor for one of the variants:</p>
+<pre>
+mut event = QuitEvent[timestamp];
+oddval = KeyEvent[timestamp, 's'];
+imm phone = Work[];
+</pre>
+	<p>Notice that the constructor supplies a value for every common field, and never for the tag:
+		that one is settled by which variant was named.</p>
+	<p>The variants are part of the module's namespace rather than the enum's, so they are named
+		without qualifying them.</p>
+	<p style="margin-left: 40px;"><i>Note: a variant will move into its enum's namespace, reached as
+		<span class="pre">Event.KeyEvent</span> and folded into a module deliberately with
+		<span class="pre">use</span>, so that two enums each declaring a <span class="pre">Quit</span>
+		do not crowd a namespace neither of them was asked to share. That waits on the
+		<span class="pre">use</span> that folds names into a module.</i></p>
+
+	<h3>Copying</h3>
+	<p>A value may be passed around, by copy, just like any other value. This is possible because
+		every variant is the same size &mdash; the size of the largest, plus the tag.</p>
+	<p>Because they are all one size, allocated memory holding one variant can be given a value of a
+		different variant instead, and a pool allocator can hand out and reclaim variants of one
+		enum interchangeably.</p>
+
+	<h3>Value Access</h3>
+	<p>A common field is readable from a value whose variant is not yet known, because every variant
+		holds it at the same offset. To reach a variant's own fields, use
+		<a href="refmatch.html">pattern matching</a> to establish which variant the value holds.
+		Once it has been narrowed it is used like any other struct value.</p>
+
+	<h3 id="dispatch">Method dispatch</h3>
+	<p>Sometimes every variant should answer the same method with its own implementation. Declare the
+		method on the enum without a body, and let each variant implement it:</p>
+<pre>
+enum Number {
+	pub fn double(self &amp;mut Self);
+
+	pub struct Real {
+		pub n f32;
+		pub fn double(self &amp;mut Self) {
+			n *= 2;
+		}
+	}
+
+	pub struct Complex {
+		pub r f32;
+		pub i f32;
+		pub fn double(self &amp;mut Self) {
+			r *= 2;
+			i *= 2;
+		}
+	}
+}
+</pre>
+	<p>Calling <span class="pre">number.double()</span> on a reference to a Number invokes the
+		implementation belonging to whichever variant the reference points at. The tag says which
+		variant it is, that selects the variant's vtable, and the vtable holds the method.</p>
+
+	<h3>Comparing</h3>
+	<p>A value may be compared for equivalence, and not for order: which variant a value holds is
+		what a comparison can answer, and declaration order is not a magnitude.</p>
+	<p>Where every variant is empty, the value <i>is</i> the tag, so the comparison is exactly a tag
+		comparison:</p>
+<pre>
+if phone == Mobile[] { ... }
+</pre>
+	<p style="margin-left: 40px;"><i>Note: where a variant carries fields, comparing two values would
+		have to compare those fields as well, and Cone has no comparison of a struct's contents for
+		any kind of type yet. Comparing such an enum is an error today that names
+		<span class="pre">match</span> as the way to recover the variant.</i></p>
+
+	<h3 id="unsized">Declining the padding</h3>
+	<p>Padding every variant to the largest costs memory, and whether to pay it for the convenience
+		of a value is a choice only you can make. Write <span class="pre">@unsized</span> to decline
+		it:</p>
+<pre>
+enum @unsized Shape {
+	pub kind i32;
+
+	pub struct Dot;
+	pub struct Polygon {pub points [64; Point];}
+}
+</pre>
+	<p>Each variant then occupies only what it needs, and the enum has no single size. So no value of
+		it may be held &mdash; not in a variable, not in a parameter, not in a field &mdash; and it is
+		reached only by reference:</p>
+<pre>
+imm shape &amp;Shape = &amp;someDot;
+</pre>
+	<p>Notice how a reference to a variant coerced automatically into a reference to the enum.
+		Everything else is unchanged: the tag is still in the value, a common field is still readable
+		through the reference, matching still recovers the variant, and dispatch still works. What is
+		given up is the value semantics &mdash; holding one in a variable, copying it, passing it by
+		value, and swapping a variant in place.</p>
+	<p>Most types that want this are graphs and trees, and those are usually better served by an open
+		<a href="reftrait.html">trait</a> and structs that extend it: once a type is reached by
+		reference anyway, there is little left for a closed set to buy. So
+		<span class="pre">@unsized</span> is for the case that is genuinely closed, wants exhaustive
+		matching, and has variants whose sizes differ enough to matter.</p>
+
+	<h3>Extending an enum</h3>
+	<p style="margin-left: 40px;"><i>Note: none of this section is implemented.</i></p>
+	<p>An enum may be declared as an extension of another, adding variants to the ones the base
+		declared:</p>
+<pre>
+enum RichColors extends Colors {
+	Cyan, Magenta;
+}
+</pre>
+	<p><b>No substitutability runs between a base enum and its extension, in either direction.</b>
+		They are two distinct types. So a match on the base is still exhaustive over the base's own
+		variants, which is the property the whole construct rests on, and the two enums may be laid
+		out differently.</p>
+	<p>This is worth saying outright because the intuition points the other way. Everywhere else in
+		Cone a subtype is an abstraction and a value of the concrete type stands in for it; here,
+		adding variants would make a <i>supertype</i> &mdash; every value of the base is a valid value
+		of the extension, and no value of the extension is a valid value of the base. Cone does not
+		take that direction, and the two types stay unrelated.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="refoption.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

@@ -91,7 +91,7 @@ older one keeps what it published.
 ## When one code carries several causes
 
 `ErrorNoSize` is the worked example, and the reasoning generalizes. A type can
-fail to have a size five ways — `@opaque`, a trait that is not `SameSize`, a
+fail to have a size five ways — `@opaque`, a trait or an `@unsized` enum, a
 function signature, a struct with an unsized field, and a type still being laid
 out. All five report `ErrorNoSize`, and the cause is named in the message.
 

@@ -203,8 +203,8 @@ parameter is a static macro of the type: bound in the namespace, expanded by
 nothing today, and `x.name` on it is `ErrorNoMbr`, as a static function would
 be. A macro declared on a trait is a member of the trait alone: a trait's
 expansion into an implementing type or variant (`structInheritTrait`) folds
-only `FnDcl` defaults, so a union's macro is found on the union's own namespace,
-which is what lets a `match` on its receiver see the union rather than one
+only `FnDcl` defaults, so an enum's macro is found on the enum's own namespace,
+which is what lets a `match` on its receiver see the enum rather than one
 variant.
 
 ## Flow

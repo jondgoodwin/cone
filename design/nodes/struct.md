@@ -1,17 +1,25 @@
-`StructNode` is one node for **struct, trait and union**, distinguished by two
+`StructNode` is one node for **struct, trait and enum**, distinguished by three
 flag bits. It is also the compiler's most consequential node: field layout,
-method sets, trait inheritance, tagged unions, vtables and drop functions all
-live here.
+method sets, trait inheritance, the closed variant family, vtables and drop
+functions all live here.
+
+**The three kinds in one sentence each.** A **struct** is a record of fields. A
+**trait** is an open abstraction: its implementers are declared beside it, name it
+with `extends`, and may live in another module, so nothing can number them. An
+**enum** is the closed family: its variants are declared inside it, so the
+compiler owns their layout — a discriminant, the enum's own fields spliced into
+every variant, and, unless the declaration writes `@unsized`, padding to one size.
 
 **At a glance.** `parseStruct` does a great deal — tag synthesis, mixin
-placeholders, nested variants, generic parameter copying. Name resolution
-builds the dictionary whole: it inserts `Self`, mixes in the trait the type
-extends and any it names with `mixin` — the trait's fields spliced in, its
-default methods cloned — and only then resolves the method bodies, so an
-inherited member may be named bare. Type check indexes fields, computes
-infectious flags, sets `TypeChecked` **before** methods, verifies the traits'
-method requirements, then synthesizes a drop function. Generation lowers to a
-named LLVM struct, or to padded variants, or to nothing at all.
+placeholders, variants in both of their spellings, tag numbering, generic
+parameter copying. Name resolution builds the dictionary whole: it inserts `Self`,
+gives an enum its equality, mixes in the trait the type extends and any it names
+with `mixin` — the trait's fields spliced in, its default methods cloned — and
+only then resolves the method bodies, so an inherited member may be named bare.
+Type check indexes fields, computes infectious flags, settles the discriminant's
+width, sets `TypeChecked` **before** methods, verifies the traits' method
+requirements, then synthesizes a drop function. Generation lowers to a named LLVM
+struct, or to padded variants, or to nothing at all.
 
 *Provenance: read from source.*
 
@@ -87,35 +95,44 @@ neither slots nor requirements and cost the trait nothing.
 `conesite/public/coneref/refvirtref.html`, "Type Restrictions", is the rule.
 | `namespace` | every named member: fields, methods, macros, overload sets, `Self`, and what a fold admits — a **copy** of a folded field (a `FieldDclNode` with a `hop`) and an **alias** (`AliasDclNode`) for a folded method, overload set or macro method. The copies and aliases live here only; `fields` and `nodelist` never hold one |
 | `dropfn` | NULL until the last step of type check |
-| `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". The owner is a module, or the trait for a variant declared inside one. Read for one thing besides naming: rejecting a variant declared outside its closed trait's module, through `dclInfoGetModule` |
+| `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". The owner is a module, or the enum for a variant declared inside one. Read for one thing besides naming: rejecting a variant declared outside its enum's module, through `dclInfoGetModule` |
 | `basetrait` | the `extends` **type expression** — a `NameUseNode`, or an `FnCallNode` for a generic base. **Not a `StructNode*`.** Two helpers unwrap it and they answer different questions: `structBaseTraitDcl` takes **one hop**, to the declaration of the trait this type extends, while `structGetBaseTrait` recurses to the **bottom-most** one. Picking the wrong one is how the infection loop hangs |
-| `derived` | for a **closed** trait, its variants in declaration order. The index *is* the `tagnbr` |
+| `derived` | for an **enum**, its variants in declaration order. The index is the `tagnbr` only where nothing pinned one, which is what generation asks before using the tag to index the vtable list |
 | `traits` | every trait whose members were mixed in — the base trait first, then each `mixin` in field order — or NULL. Written where the members are spliced in (`structInheritTrait`) and read once, by type check's requirement check, which is the only thing that still needs to know which trait a member came from |
 | `fields` | all fields in layout order. A declared field may carry a fold clause (`FieldDclNode.fold`); a folded copy is never here |
 | `vtable` | NULL until `structMakeVtable` |
-| `tagnbr` | discriminant value, assigned at parse |
+| `tagnbr` | discriminant value, assigned at parse: the value the author pinned, or the next in sequence. `TagUnassigned` is the sentinel between reading a variant's name and settling its value, which is why no flag bit records whether one was written — a type has none to spare, and nothing after parse needs to know |
 | `llvmtype` | generation memoizes here; non-NULL means "already generated" |
 
 **What tells the three apart:**
 
-| | `TraitType` | `SameSize` | `HasTagField` |
-| --- | --- | --- | --- |
-| `struct` | — | — | — |
-| `trait` | yes | — | set once it contains nested variants |
-| `union` | yes | yes | yes, once it has variants |
-| a *variant* | — | inherited | inherited |
+| | `TraitType` | `EnumType` | `SameSize` | `HasTagField` |
+| --- | --- | --- | --- | --- |
+| `struct` | — | — | — | — |
+| `trait` | yes | — | — | — |
+| `enum` | yes | yes | yes, unless `@unsized` | yes, once it has variants |
+| a *variant* | — | — | inherited | inherited |
+
+**A trait carries neither closed flag, and refuses to.** A `struct` written inside
+a trait's body is `ErrorOpenTrait`: an open set of implementers cannot be numbered,
+so there is no discriminant to give them, and a closed set is what `enum` is.
+
+**`EnumType` is the enum's, never a variant's.** It says what the author wrote, so
+a diagnostic can name the construct and a body can be told what it may declare.
+The two closed flags travel down to the variants because they are facts about
+layout; this one does not, because it is a fact about the declaration.
 
 A variant is a plain struct with a `basetrait`, a `tagnbr`, and no `derived`.
-**A `struct X extends Trait` is in no `derived` list** — `derived` means "closed
-variants", never "implementers".
+**A `struct X extends Trait` is in no `derived` list** — `derived` means "an enum's
+variants", never "a trait's implementers".
 
 The infectious flags — `MoveType`, `ThreadBound`, `OpaqueType`, `ZeroSizeType` —
 are computed from the fields during type check. `NullablePtr` is set only during
 generation.
 
 ⚠ **`OpaqueType` means "no value of this may be held", and three unrelated facts
-set it**: the type was declared `@opaque`, it is a trait that is not `@samesize`,
-or one of its fields is unsized. **Only the first means there is no layout.** A
+set it**: the type was declared `@opaque`, it is a trait or an `@unsized` enum, or
+one of its fields is unsized. **Only the first means there is no layout.** A
 trait's own fields are known and indexed, and a struct with an unsized field is
 refused by type check (`ErrorNoSize`, `struct-typecheck-nosize`) long before
 anything asks for its layout. `DeclaredOpaque` marks the first case at parse, and
@@ -126,7 +143,19 @@ LLVM struct, which is why a reference to a trait could not be lowered.
 
 `parseStruct` arrives with much already done:
 
-- `@move` and `opaque` attributes consumed into flags.
+- `@move`, `@opaque` and `@unsized` attributes consumed into flags. `@unsized`
+  *clears* `SameSize`, which the caller set: padding is the default and the
+  attribute declines it. On anything but an enum it is `ErrorBadUnsized`, since
+  nothing else has variants to pad.
+- `enum trait` is `ErrorEnumAbstract`. **The absence is deliberate**: an enum's
+  identity is its variant set, so anything a caller could hold behind an
+  abstraction of one either is that set, and so is the enum, or is open, and so is
+  a trait. `enum-parse-decl` pins it so nobody adds one for symmetry with whatever
+  modifier a trait grows.
+- An enum may name the **integer type its tag values are laid out in**, read with
+  `parseTypeName` and attached to the discriminant's own type node. It is the
+  type's, not the field's, which is why it is carried on `EnumNode` rather than
+  settled here.
 - An **unnamed type is still built**, under `anonName`, so the body is still
   parsed rather than dumped onto the module's statement stream.
 - Each method joins the type through `iNsTypeAddFn`, which records the type as
@@ -138,25 +167,46 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   with an alias per listed name positioned at the item; **nothing enters the
   namespace at parse**, since whether a name is a field or a method is not
   known until the field's type is. `use` on anything that is not a struct's
-  field — a variable, a parameter, a static, a mixin, a trait's or union's
+  field — a variable, a parameter, a static, a mixin, a trait's or an enum's
   field — is `ErrorBadFold` there, so the diagnostic is the fold's own.
-- A **nested `struct` inside a trait** sets `HasTagField` on the enclosing trait,
-  synthesizes the variant's `basetrait`, assigns `tagnbr` from `derived->used`,
-  and registers the variant at module scope — bound in the module, but owned
-  by the trait, so its symbols are spelled after it. For a generic trait it copies the
-  trait's generic parameters into the variant and builds `basetrait` as
-  `Trait[P1,P2,…]`.
-- **A tag field is synthesized at position 0 only for a closed type** —
-  `flags & HasTagField`, a union or a trait whose variants are declared inside
-  it — and every variant inherits it through mixin expansion. An open trait's
-  variants may be extended by another module, so no value could be unique and
-  there is nothing to synthesize; `%Box = { i32, i32 }` for a struct extending a
-  trait declaring one `i32`, and composing several open traits costs nothing,
-  because there is no discriminant for a second one to duplicate. **The
-  discriminant is marked `IsTagField` here** — the synthesized field, or a base
-  trait's first enum-typed field where one is written — because a variant copies
-  the trait's fields as soon as it is name resolved, before the trait is type
-  checked; type check validates the mark and refuses any other enum-typed field.
+- **A variant has two spellings and they build the same node.** A `struct` written
+  inside an enum is one; so is a **bare name**, which declares an empty struct
+  variant and is what lets one construct serve a plain set of named symbols as
+  well as a set carrying payloads. Both set `HasTagField` on the enum, take the
+  enum's generic parameters, get a synthesized `basetrait`, and are registered at
+  module scope — bound in the module, but owned by the enum, so their symbols are
+  spelled after it.
+  - **What tells a bare-name variant from a common field is the token after the
+    name**: `,`, `;` or `=` makes it a variant, and anything else is a type, so it
+    is a field. The field node is therefore built while the lexer is still on the
+    name, before the choice is made, so that a diagnostic about either points at
+    the name rather than at what follows it.
+  - **A variant restating what the enum decides is `ErrorVariantDcl`** — its own
+    `extends`, or its own generic parameters. One code for both, because a reader
+    would not branch on which and the remedy is the same: delete it.
+- **Tag numbering runs across the whole body**, ascending from zero, and a written
+  value resets it, so numbering continues from there. Two variants holding one
+  value is `ErrorDupTag`, reported on the second. **A variant may not `extends` a
+  concrete base and may not assert conformance to an unrelated trait; both
+  absences are deliberate** — a variant's relationship to its enum is membership,
+  the enum owns its layout, and a second base would contribute fields the enum did
+  not put there.
+- **A tag field is synthesized at position 0 of an enum** that has variants and did
+  not place its own, and every variant inherits it through mixin expansion. A
+  trait's implementers may be extended by another module, so no value could be
+  unique and there is nothing to synthesize; `%Box = { i32, i32 }` for a struct
+  extending a trait declaring one `i32`, and composing several open traits costs
+  nothing, because there is no discriminant for a second one to duplicate. **The
+  discriminant is marked `IsTagField` here** — the synthesized field, or the enum's
+  first `tag`-typed field where one is written — because a variant copies the enum's
+  fields as soon as it is name resolved, before the enum is type checked; type check
+  validates the mark and refuses a second one.
+- **`tag` is recognized only where a field's type is written**, so it is not a
+  reserved word and `pub tag i32` still declares a field named `tag`. Written on
+  anything but an enum it is refused here, which is what keeps the type-check rule
+  below to one question: does this enum carry more than one.
+- **An enum with no variants is `ErrorNoVariants`.** Its identity is its variant
+  set, so an empty one names nothing a value of it could be.
 
 ## Name resolution
 
@@ -167,6 +217,12 @@ inherited member bare, exactly as it names the type's own.
 1. Return at once if the type is already resolved or under way — it may have
    been reached by demand before the module's walk got to it — and mark it
    `NameResolving`.
+1a. **An enum gets its `==` and `!=`** (`structEnumAddEquality`). Entered in the
+   namespace and *not* in `nodelist`, because this is the enum's own comparison and
+   not a requirement on its variants: a vtable slot, a conformance requirement and a
+   default cloned into every variant are all read off `nodelist`. Added here rather
+   than at type check because name resolution finishes for every module before type
+   check begins, so nothing can look the name up too early.
 2. Push the hook table.
 3. Resolve generic parameters **inside** the push — resolving one hooks it, so
    doing it beforehand would bind it in the enclosing scope and the matching pop
@@ -228,9 +284,10 @@ reach in that module; see [module](module.md).
 `structTypeCheck` is the longest ordered sequence in the compiler:
 
 1. **A template returns immediately** — only clones are checked.
-2. Type check `basetrait`; require a trait; require the closed-ness to match;
+2. Type check `basetrait`; require a trait; require the closed-ness to match —
+   which is what refuses a type outside an enum joining its variant set;
    propagate `SameSize`/`HasTagField` down from the bottom-most base, and
-   require a closed trait's derived types to share its module. A base trait
+   require a closed type's derived types to share its module. A base trait
    name resolution did not mix in — it is in `traits` when it did — is an
    instance of a generic that exists only now, so **insert a mixin placeholder
    for it at index 0** as name resolution would have.
@@ -249,8 +306,19 @@ reach in that module; see [module](module.md).
    index over again, the origin demanded first.
 5. **Walk forwards**: assign `FieldDclNode.index` over the final order, OR the
    field types' infectious flags together, and validate the tag field: the one
-   marked at parse is the discriminant, and any other enum-typed field is
-   refused.
+   marked at parse is the discriminant, and a second `tag`-typed field is refused.
+   **Asked only of the enum**, never of a variant, whose fields are clones of its
+   enum's — asking again would report the enum's mistake once more per variant, at
+   the same position and in the same words, which no scenario could tell apart.
+5a. **Settle the discriminant's width** (`structSetTagWidth`). It follows the
+   largest tag **value**, not the variant count, since a pinned value is what lines
+   an enum up with another language's constants and `Red = 0xFF0000` needs four
+   bytes however few variants there are. An enum that named its integer type has
+   the width fixed there instead — that being the point of naming it — so a value
+   too large for it is `ErrorTagWidth` rather than a silent widening away from the
+   layout the author asked for. The discriminant's type node is **shared, not
+   cloned** (`clone.c`), so every variant's copy of the tag field reads the width
+   set once here.
 6. `final` forces `MoveType`; `clone` clears it. Then propagate up the base
    chain, one `structBaseTraitDcl` hop per iteration.
 7. **`TypeChecked` is set here, before the methods.** The placement is
@@ -357,8 +425,9 @@ thunk: the compiler knows the type and shifts the receiver at compile time.
 - **Fast path**: if the target is `SameSize`, walk the source's base chain
   looking for it — found means `CastSubtype`, since the supertype's fields are a
   prefix.
-- **Under `Coercion`, that is the only path.** A by-value struct coercion works
-  only through a same-size base trait.
+- **Under `Coercion`, that is the only path.** A by-value coercion works only
+  through a same-size base, which is why an `@unsized` enum has no by-value form
+  at all: the free recast rests on every variant already being the enum's size.
 - **Structurally**, otherwise: every method of the target must have a
   signature-matching counterpart — a folded method counts, through its alias.
   Then `Monomorph` compares fields **by name, order irrelevant**, while
@@ -391,21 +460,35 @@ name it was written with, so a typedef of an owning reference stands there as a
 
 ## Generation
 
-Three shapes, chosen in `genlSetupTaggedTrait`:
+Three shapes, the first two chosen in `genlSetupTaggedTrait`:
 
-- **Nullable pointer** — a `SameSize` trait with exactly two variants, one of
+- **Nullable pointer** — a `SameSize` enum with exactly two variants, one of
   one field and one of two whose second is pointer-like. **No struct is emitted
   at all**; the value *is* the pointer and null is the empty variant.
 - **Same size** — every variant re-emitted with `[N x i8]` trailing padding to
-  the largest; the base trait's body is a copy of the largest variant's fields.
+  the largest; the enum's body is a copy of the largest variant's fields.
   Measured: `%Circle = { i8, i32, i32, [4 x i8] }` beside
   `%Rect = { i8, i32, i32, i32 }` and `%Shape = { i8, i32, i32, i32 }`.
-- **Tagged** — an ordinary field flagged `IsTagField`, widened to 2/3/4 bytes by
-  variant count.
+- **Unpadded** — each variant emitted at its own size, the tag still first.
+  Measured, for an `@unsized` enum of an empty variant and one holding three
+  `i64`s: `%Ping = { i8, i32 }` beside `%Payload = { i8, i32, i64, i64, i64 }`.
+
+**The discriminant's width is not generation's.** Type check settles it, because it
+follows the largest tag value rather than the variant count and generation cannot
+see a pinned value in `derived->used`.
+
+**The tag selects a variant's vtable two ways, and which one is a property of the
+tag values.** `structMakeVtable` prewires the vtable list in `derived` order, so
+where every variant's tag value *is* its position the tag indexes the list
+directly, which is one load (`genlTagsIndexVtables`). A pinned value breaks that —
+`Red = 0xFF0000` would index four million entries past the end — so the sparse case
+compares instead, one `select` per variant with the last as the fall-through
+(`genlVtableForTag`). That costs code at the coercion rather than a table
+proportional to the largest value, and it needs no basic blocks, so nothing depends
+on where the coercion sits.
 
 **Generation consumes without validating**: `FieldDclNode.index` for every GEP
-and `extractvalue`, `vtblidx` for vtable slots, and `derived` order as tag
-order — `genlallocref` hard-codes `derived[1]` as `Option`'s `Some`.
+and `extractvalue`, and `vtblidx` for vtable slots.
 
 ## Hazards
 
@@ -415,10 +498,10 @@ order — `genlallocref` hard-codes `derived[1]` as `Option`'s `Some`.
 - **A method of a type never gets that type's drop calls** — `structSetDropFn`
   runs after the method loop, so `dropfn` is still NULL while method bodies are
   checked and flow-analyzed.
-- **Mixing in two closed types brings two tag fields**, and no duplicate-name
-  error fires because `namespaceAdd` silently ignores `_`, so what reports it is
-  type check's "only once in a base trait". Open traits carry no tag, so a chain
-  of `extends` and any number of open `mixin`s meet nothing here.
+- **Mixing in two enums brings two tag fields**, and no duplicate-name error fires
+  because `namespaceAdd` silently ignores `_`, so what reports it is type check's
+  one-discriminant rule. Traits carry no tag, so a chain of `extends` and any number
+  of `mixin`s meet nothing here.
 - **A member inherited from an instance of a generic trait, or folded from a
   field whose type is a generic's parameter, cannot be named bare.** The
   instance exists only when type check instantiates it, so its members join
@@ -436,16 +519,21 @@ order — `genlallocref` hard-codes `derived[1]` as `Option`'s `Some`.
   resolved by demand.** A name the trait fails to declare that happens to spell
   one of them binds to it silently, where it would otherwise be `ErrorUnkName`.
   Only a program already in error can meet it.
-- **A trait's `TypeChecked` does not mean it has a size.** A union's size is
-  computed at generation from `derived`. `itypeVariantPending` exists for
-  exactly this.
+- **An enum's `TypeChecked` does not mean it has a size.** Its size is computed at
+  generation from `derived`. `itypeVariantPending` exists for exactly this.
 - **`structAddField` drops a duplicate-named field from `fields`** while the
   parser has already assigned indices, so positional literals shift.
+- **An enum's equality is declared even where it cannot be given.** Where a variant
+  carries fields, comparing two values would have to compare those fields, and Cone
+  has no structural comparison for a struct of any kind. The method is entered
+  anyway, carrying `NoEqIntrinsic`, and `fnCallLowerMethod` refuses the call with
+  `ErrorEnumEquality` — so the author is told why instead of reading the absence of
+  `==` as an oversight. Nothing generates that intrinsic.
 
 ## What lives elsewhere
 
 - Layout, size, and why `TypeChecked` sits where it does: [Type Check Phase](../phases/type-check.md), "Struct and trait"
-- Unions at LLVM level, and vtables: [Generation](../phases/generation.md)
+- Enums at LLVM level, and vtables: [Generation](../phases/generation.md)
 - Field declarations, and what their permissions govern: [vardcl](vardcl.md)
 - Virtual references and how a vtable is selected: [references](references.md)
 - Instantiating a generic struct: [generic](generic.md)

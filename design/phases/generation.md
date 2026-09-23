@@ -9,7 +9,7 @@ indirection off is the characteristic bug in this phase, and it does not
 produce a type error — it produces a value where an address was wanted.
 
 *Provenance: read from source; the type lowerings, the allocation header and all
-three union shapes were measured against emitted LLVM IR. Claims about
+three enum shapes were measured against emitted LLVM IR. Claims about
 unreachable paths are reading only, and say so. See [Measuring](../diagnostics/measuring.md).*
 
 ## 1. Principles — [derived]
@@ -173,29 +173,48 @@ Verified: `&[]i32` emits `{ i32*, i64 }`, with `extractvalue ..., 1` yielding a
 lowering case and would assert), `QuesTag`, `BorrowRegTag`, move semantics,
 thread-binding.
 
-### Unions
+### Enums
 
-Three shapes, chosen in `genlSetupTaggedTrait`:
+Three shapes, the first two chosen in `genlSetupTaggedTrait`:
 
 - **Nullable pointer.** Exactly two variants under `SameSize`, one with one
   field and one with two whose second is a pointer-like: **no struct is emitted
   at all**, and the value *is* the pointer. A null pointer is the empty variant.
 - **Same size.** Each variant is re-emitted as a named struct with `[N x i8]`
-  trailing padding to the largest variant's store size; the base trait's body is
+  trailing padding to the largest variant's store size; the enum's body is
   a copy of the largest variant's fields. Reading a `%Shape` as a `%Circle` is
   safe only because they are the same size.
-- **Tagged.** The discriminant is an ordinary field flagged `IsTagField` whose
-  type is an enum, widened to 2/3/4 bytes by variant count.
+- **Unpadded**, for an `@unsized` enum: each variant keeps its own size, the
+  discriminant still first. Measured, for an empty variant beside one holding
+  three `i64`s: `%Ping = { i8, i32 }` and
+  `%Payload = { i8, i32, i64, i64, i64 }`.
+
+The discriminant is an ordinary field flagged `IsTagField` whose type is an
+`EnumNode`, lowered to `i8`, `i16`, `i32` or `i64` by its `bytes`.
+
+⚠ **Its width is not decided here.** It follows the largest tag **value**, not the
+variant count, and a value the author pinned is invisible in `derived->used` — so
+type check settles it, where the pinned values and any declared integer type are
+both known. Generation reads `bytes` and does not adjust it.
 
 ### Vtables
 
 A named `"<Trait>:Vtable"` struct whose fields are, per slot, either a function
 pointer **whose self parameter is erased to `i8*`** (to avoid LLVM type-check
 errors on self) or an `i32` **byte offset** for a virtual field. One `internal
-constant` per implementing struct, plus one internal list per trait, an array
-indexed by tag number for the trait-to-virtref coercion. `nameVtable`,
-`nameVtableImpl` and `nameVtableList` spell the three from the trait and
-implementing type nodes.
+constant` per implementing struct, plus one internal list per trait, prewired in
+`derived` order for the enum-to-virtref coercion. `nameVtable`, `nameVtableImpl`
+and `nameVtableList` spell the three from the trait and implementing type nodes.
+
+**Which vtable a tag names is found two ways, and the tag values decide.** Where
+every variant's tag value is its position in `derived`, the tag indexes the list
+directly — one GEP and one load. A pinned value breaks that, since the list has one
+entry per variant and `Red = 0xFF0000` would index far past the end, so the sparse
+case is a chain of `select`s comparing the tag against each variant's value with the
+last as the fall-through. The tag came out of a value of the enum, so no default arm
+is reachable; and because it is selects rather than branches, nothing about it
+depends on where the coercion sits. `genlTagsIndexVtables` is the test,
+`genlVtableForTag` the chain.
 
 **A slot a folded method fills holds a thunk** (`genlVtableThunk`). Through the
 fat pointer the concrete type is erased, so the shift from the object to the
@@ -406,7 +425,7 @@ variables.
 | | `genlComdatSupport` | what the target's object format does with COMDATs |
 | | `genlOut` | set triple and layout, emit object and asm |
 | `genllvm/genltype.c` | `genlType`, `_genlType` | the memoizing entry and the per-tag lowering switch |
-| | `genlSetupTaggedTrait`, `genlSameSizeTrait` | the three union shapes |
+| | `genlSetupTaggedTrait`, `genlSameSizeTrait` | the three enum shapes |
 | | `genlVtable`, `genlVtableImpl` | vtable type, per-struct constants, the virtref fat pointer |
 | | `genlVtableThunk` | the function filling a slot a folded method satisfies: shift the receiver along the recorded field path, tail-call the method |
 | `genllvm/genlstmt.c` | `genlBlock` | block creation, phi state, terminator suppression |

@@ -220,8 +220,8 @@ There is deliberately no recursion check. An unfinished struct has no size, a
 finished one does, and the diagnostic belongs to the field that needed one, which
 is also the better error: it names what to change.
 
-**A union has a size only when every variant does.** Its own mark says only that
-its tag is settled, so a variant holding its own union by value asks a question
+**An enum has a size only when every variant does.** Its own mark says only that
+its tag is settled, so a variant holding its own enum by value asks a question
 the mark would wrongly answer yes to. See 10.2.
 
 **An array's size is its length times its element's**, so an array of a type with
@@ -333,9 +333,10 @@ Steps marked **→** are where a demand can leave and re-enter.
 1. If it is a generic template, stop. Only instances are analyzed.
 2. **→** Analyze the base trait.
 3. Propagate the base trait's closed-type flags (`SameSize`, `HasTagField`). A
-   derived type of a closed trait must be declared in the same module. If name
-   resolution did not mix the base trait in — it was an instance of a generic,
-   which exists only now — insert a mixin placeholder for it at position 0.
+   variant must be declared in the same module as its enum, and a type outside an
+   enum may not join its variant set. If name resolution did not mix the base trait
+   in — it was an instance of a generic, which exists only now — insert a mixin
+   placeholder for it at position 0.
 4. **→** Analyze every trait name resolution mixed in, then walk fields
    **backwards**: expand any placeholder still standing — splicing in the
    trait's fields and inheriting its methods, as name resolution does — and
@@ -359,26 +360,33 @@ use its own type by value. The members themselves — which fields and which
 default methods a type inherits — were settled by name resolution, which builds
 the dictionary whole before any body is resolved; see [struct](../nodes/struct.md).
 
-### 10.2 Closed traits, unions and variants
+### 10.2 Enums and variants
 
-A union is not a node kind. It is a trait carrying `HasTagField` or `SameSize`,
-whose variants are structs written inside its body.
+An enum is not a node kind. It is a `StructNode` carrying `EnumType`, with
+`HasTagField` and — unless it declined the padding — `SameSize`, whose variants are
+written inside its body.
 
-- **The variant list is complete at parse time.** `parsetype.c` adds each nested
-  struct to the trait's `derived` list and assigns its tag number as it parses.
-- **Analysis never computes a union's size.** `genlSameSizeTrait` sizes each
+- **The variant list is complete at parse time.** `parsetype.c` adds each variant
+  to the enum's `derived` list and settles its tag number as it parses, whether the
+  author wrote the value or it was assigned in sequence.
+- **Analysis never computes an enum's size.** `genlSameSizeTrait` sizes each
   variant and pads to the largest at *generation* time.
+- **Analysis does settle the discriminant's width**, because that follows the
+  largest tag value rather than the variant count and generation cannot see a
+  pinned value. `structSetTagWidth` is where, in step 5 of the struct sequence,
+  after the variants' numbers are known and the enum's declared integer type is
+  checked. A value too large for a declared type is `ErrorTagWidth`.
 
-The rule that a derived type lives in the same module as its closed trait keeps
-both true.
+The rule that a derived type lives in the same module as its enum keeps the first
+two true.
 
-**A closed trait's `TypeChecked` mark does not mean it has a size.** It means its
-*own* fields are laid out, which for a union is the tag. Each variant is reached
-separately and pulls the trait in as its base trait, finishing it before walking
-its own fields — so the trait is marked long before the variants that determine
-its size are done. Anything asking a union for a size has to ask whether every
+**An enum's `TypeChecked` mark does not mean it has a size.** It means its
+*own* fields are laid out, which begins with the tag. Each variant is reached
+separately and pulls the enum in as its base, finishing it before walking
+its own fields — so the enum is marked long before the variants that determine
+its size are done. Anything asking an enum for a size has to ask whether every
 variant is laid out as well; `itypeVariantPending` is that question, and section
-6 is where it is asked. Without it a variant could hold its own union by value,
+6 is where it is asked. Without it a variant could hold its own enum by value,
 which compiled clean and generated a layout with the field dropped.
 
 ### 10.3 Function and method
@@ -460,7 +468,7 @@ Kept so that reopening one is a decision rather than a rediscovery.
 - **Node `flags` bits are not one namespace.** Check every declaration family
   before claiming a bit, not just the type block. A collision has no
   diagnostic: `0x0040` overlapping `HasTagField` stops type checking every
-  tagged union and reports nothing.
+  enum and reports nothing.
 - **An ordinary `assert` is a no-op** in the release build: it compiles to
   nothing under `/DNDEBUG`. A site that means *unreachable* calls
   `errorUnreachable`, which reports `ErrorUnreachable` and exits. Do not write a
@@ -482,7 +490,7 @@ Kept so that reopening one is a decision rather than a rediscovery.
 | | `inodeTypeCheckAny` | the same with no expected type |
 | `ir/itype.c` | `itypeTypeCheck` | check a node expected to be a type |
 | | `itypeNoSizeCause`, `itypeNoSizeExplain` | the five causes of section 6, and the hop-by-hop trace |
-| | `itypeVariantPending` | whether every variant of a union is laid out — section 10.2 |
+| | `itypeVariantPending` | whether every variant of an enum is laid out — section 10.2 |
 | `ir/iexp.c` | `iexpTypeCheckAny` | check a node expected to be an expression |
 | `ir/types/struct.c` | `structTypeCheck` | the nine steps of section 10.1; sets `TypeChecked` at the layout point; `structCheckTraitReqs` is step 9 |
 | `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the eight steps of section 10.3, including both error-delta gates |

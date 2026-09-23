@@ -1,14 +1,14 @@
 // Trait-based variants: a base type declares a method with no body, each
 // derived type implements it, and a virtual reference to the base dispatches to
-// whichever one it happens to point at. A union is the closed form of that -- a
-// trait whose implementers are declared inside it and are all one size -- and an
-// open trait with 'extends' implementers is the same mechanism without the
-// closure. Both are here so the two are exercised against one another.
+// whichever one it happens to point at. An enum is the closed form of that --
+// its variants are declared inside it and padded to one size -- and an open
+// trait with 'extends' implementers is the same mechanism without the closure.
+// Both are here so the two are exercised against one another.
 //
 // The second half is the inverse operation: recovering the concrete type from a
 // virtual reference by matching on it. That is a vtable-pointer comparison
-// rather than the tag comparison a plain '&Union' match uses, which is why it
-// is here and not in the union group.
+// rather than the tag comparison a plain '&Enum' match uses, which is why it
+// is here and not in the enum group.
 //
 // Narrowing does not need 'extends'. refvirtref.html's own example conforms
 // structurally and matches back to the concrete type, so both are here: the
@@ -25,11 +25,11 @@ fn show(label &[]u8, n i64) {
   printStr("\n");
 }
 
-// -------- the closed form: a union's abstract method --------
+// -------- the closed form: an enum's abstract method --------
 
 // 'incr' has no body, so it is a requirement rather than a default: every
 // variant must declare its own. 'fld' is the field every variant shares.
-union Extense {
+enum Extense {
   pub fld i32;
 
   pub fn incr(self &mut);
@@ -52,12 +52,12 @@ union Extense {
   }
 }
 
-fn unionVariants() {
+fn enumVariants() {
   mut one = Variant1[10, 100];
   mut two = Variant2[20, 3, 4];
 
-  // A virtual reference to the union, which is not the same type as '&Extense':
-  // it carries the variant's vtable rather than relying on the union's tag.
+  // A virtual reference to the enum, which is not the same type as '&Extense':
+  // it carries the variant's vtable rather than relying on the enum's tag.
   mut vref &<mut Extense = &mut one;
   vref.incr();
   show("abstract-method-dispatched-to-variant1", one.nbr);
@@ -69,11 +69,11 @@ fn unionVariants() {
   show("abstract-method-dispatched-to-variant2", two.x);
   show("abstract-method-touched-both-fields", two.y);
 
-  // The union's own field is reachable through the virtual reference, and
+  // The enum's own field is reachable through the virtual reference, and
   // writable through it
   vref.fld = 26;
-  show("union-field-written-through-vref", two.fld);
-  show("union-field-read-through-vref", vref.fld);
+  show("enum-field-written-through-vref", two.fld);
+  show("enum-field-read-through-vref", vref.fld);
 }
 
 // A function taking the virtual reference, so dispatch happens where the
@@ -83,7 +83,7 @@ fn incrTwice(vr &<mut Extense) {
   vr.incr();
 }
 
-fn unionThroughParameter() {
+fn enumThroughParameter() {
   mut one = Variant1[1, 5];
   mut two = Variant2[2, 6, 7];
   incrTwice(&mut one);
@@ -98,14 +98,14 @@ fn unionThroughParameter() {
 // compiler inserts the coercion to a virtual reference that a caller would
 // otherwise have to write out, so one call site reaches two implementations.
 //
-// Neither a requirement on the union nor a default cloned into the variants is a
+// Neither a requirement on the enum nor a default cloned into the variants is a
 // function anything can call. Until the coercion was inserted, the call named one
 // of those declarations, which has no symbol, and generation dereferenced a null.
 fn sizeOf(e &Extense) i32 {
   e.measure();
 }
 
-fn unionThroughPlainRef() {
+fn enumThroughPlainRef() {
   imm one Extense = Variant1[1, 5];
   imm two Extense = Variant2[2, 6, 7];
   show("plain-ref-dispatch-variant1", sizeOf(&one));
@@ -222,23 +222,23 @@ fn narrowingTrait() {
   show("narrow-match-is-true", isCircle(&circle));
 }
 
-// The same narrowing on a union's virtual reference
-fn narrowingUnion() {
+// The same narrowing on an enum's virtual reference
+fn narrowingEnum() {
   mut one = Variant1[10, 33];
   mut two = Variant2[20, 4, 5];
   mut vref &<Extense = &one;
   if imm v1 &Variant1 = vref {
-    show("narrow-union-vref-to-variant1", v1.nbr);
+    show("narrow-enum-vref-to-variant1", v1.nbr);
   }
   vref = &two;
   match vref {
-    case imm v1 &Variant1 {show("narrow-union-vref-wrong-arm", v1.nbr);}
-    case imm v2 &Variant2 {show("narrow-union-vref-to-variant2", v2.x + v2.y);}
+    case imm v1 &Variant1 {show("narrow-enum-vref-wrong-arm", v1.nbr);}
+    case imm v2 &Variant2 {show("narrow-enum-vref-to-variant2", v2.x + v2.y);}
   }
 }
 
 // The same narrowing with the arm types spelled through a typedef. A virtual
-// reference to a union is the one virtual reference an exhaustiveness check
+// reference to an enum is the one virtual reference an exhaustiveness check
 // runs on -- the variants are closed and tagged -- so this is where an alias in
 // a pattern reaches the narrowing through '&<'. The alias used to be read as
 // the reference rather than as what it points at, no arm matched a variant, and
@@ -263,15 +263,15 @@ fn narrowedSumThroughAliasedVref(v ExtenseVirt) i32 {
   }
 }
 
-fn narrowingUnionThroughAlias() {
+fn narrowingEnumThroughAlias() {
   mut one = Variant1[10, 33];
   mut two = Variant2[20, 4, 5];
   imm v1ref &<Extense = &one;
   imm v2ref &<Extense = &two;
-  show("narrow-union-vref-alias-variant1", narrowedSum(v1ref));
-  show("narrow-union-vref-alias-variant2", narrowedSum(v2ref));
-  show("narrow-union-aliased-vref-variant1", narrowedSumThroughAliasedVref(v1ref));
-  show("narrow-union-aliased-vref-variant2", narrowedSumThroughAliasedVref(v2ref));
+  show("narrow-enum-vref-alias-variant1", narrowedSum(v1ref));
+  show("narrow-enum-vref-alias-variant2", narrowedSum(v2ref));
+  show("narrow-enum-aliased-vref-variant1", narrowedSumThroughAliasedVref(v1ref));
+  show("narrow-enum-aliased-vref-variant2", narrowedSumThroughAliasedVref(v2ref));
 }
 
 // -------- interaction with the constructs below this tier --------
@@ -293,14 +293,14 @@ fn interactions() {
 }
 
 fn main() i32 {
-  unionVariants();
-  unionThroughParameter();
-  unionThroughPlainRef();
+  enumVariants();
+  enumThroughParameter();
+  enumThroughPlainRef();
   openTrait();
   structuralConformer();
   narrowingTrait();
-  narrowingUnion();
-  narrowingUnionThroughAlias();
+  narrowingEnum();
+  narrowingEnumThroughAlias();
   interactions();
   0i32;
 }

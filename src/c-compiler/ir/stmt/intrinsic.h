@@ -40,6 +40,17 @@ enum IntrinsicFn {
     SGtIntrinsic,
     SGeIntrinsic,
 
+    // An enum's equivalence, which reads the discriminant. Distinct from
+    // EqIntrinsic because both arrive on a struct-shaped LLVM value, where a
+    // slice's equality compares two words and an enum's compares one field.
+    TagEqIntrinsic,
+    TagNeIntrinsic,
+
+    // An enum whose variants carry fields declares its comparison and refuses
+    // the call, so the author is told why rather than left to read the absence
+    // of '==' as an oversight. Never generated: type check stops the call.
+    NoEqIntrinsic,
+
     // Bitwise
     NotIntrinsic,
     AndIntrinsic,
