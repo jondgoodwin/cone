@@ -219,7 +219,10 @@ the most common way to be off by an indirection here.
   declaration is demanded.** Anything inserted into `nameUseTypeCheck` has to
   decide which side of that it belongs on.
 - **A cloned use needs `cloneDclFix`**, or it points at the template's
-  declaration instead of the instance's.
+  declaration instead of the instance's. That includes a generic type's own
+  bare name inside its braces, which is the instance being defined: the clone
+  maps the template to its reserved instance ([generic](generic.md), "A generic
+  type's own name is in the map too").
 
 ## What lives elsewhere
 

@@ -34,7 +34,11 @@ StructNode *newStructNode(Name *namesym) {
 
 // Clone struct
 INode *cloneStructNode(CloneState *cstate, StructNode *node) {
-    StructNode *newnode = memAllocBlk(sizeof(StructNode));
+    // An instance of a generic type exists before it is cloned: genericMemoize
+    // reserves it, so that a use of the generic's own name anywhere inside can
+    // be mapped to it (cloneDclFix) as the clone reaches that use.
+    StructNode *newnode = cstate->structshell ? (StructNode*)cstate->structshell : memAllocBlk(sizeof(StructNode));
+    cstate->structshell = NULL;
     memcpy(newnode, node, sizeof(StructNode));
     newnode->genericinfo = NULL;
     newnode->lifecycle = NULL;

@@ -181,6 +181,34 @@ extension's braces naming a **generic base's** member is in no map: the base's
 instance is made only when the extension's instance is type checked, after the
 clone, so type check re-points that use instead ([nameuse](nameuse.md), step 0b).
 
+**A generic type's own name is in the map too, to the instance being defined.**
+Inside a generic type's braces its bare name means the instance: `Box` inside
+`struct Box[T]` is `Box[T]`, and inside `enum Mb[T]` — its own methods and each
+variant's body — `Mb` is `Mb[T]` and a variant's bare `No` or `Mb.No` is
+`Mb.No[T]`. Name resolution bound each such use to the template; the instance
+does not exist yet. So `genericMemoize` **reserves** the instance before cloning
+it (`genericReserve`: an unfilled `StructNode`, mapped from the template), and
+`cloneStructNode` fills the reserved node (`CloneState.structshell`) rather than
+allocating its own — every bare use the clone copies is re-pointed at it by
+`cloneDclFix`, as the clone reaches it. A tagged trait reserves the base's
+instance and every variant's before cloning any, since a body may name a sibling
+declared after it. Nothing is instantiated to name the instance, so a bare name
+never misses the memo and never expands again. **A use given type arguments is
+the exception**: `Box[i32]` inside `Box[T]` names another instance, and `Box[T]`
+names this one through the memo, so `cloneFnCallNode` puts the template back as
+the head of any call whose arguments are types (`fnCallHasTypeArgs`). A value
+list — `Box[v]`, `Mb.No[]` — builds this instance and stays mapped. Only a generic
+*type* is reserved: a generic function named bare in its own body is a call whose
+type arguments are inferred, as it is anywhere else.
+
+Not yet built: a generic enum's variant that an **extension** copies
+(`structEnumCopyVariant`). The copy is cloned from the base's variant template
+at the extension's name resolution, where the base has no instance to map to, so
+its bare `Mb` or `No` still names the base's template, and the extension's
+instance refuses it (`ErrorArgCount`, below). By the ruling it should name the
+base's instance at the arguments the extension passes, as a non-generic copy's
+bare sibling names the base's variant.
+
 ## Type check
 
 **Templates return early.** `fnDclTypeCheck` and `structTypeCheck` both begin
@@ -213,9 +241,10 @@ field, a return type, a referent, a typedef's target, a cast's target. The use i
 then bound to `errorType`, so a typedef's uses and a parameter's arguments do not
 report it again. `genericMemoize` asks the same of each type argument, so
 `id[Box]` is refused once, at the argument, rather than at every use the instance
-makes of its parameter. The clone maps a generic's members to the instance's,
-not the generic itself, so inside its own methods a bare `Box` is refused as it
-is outside; `Self` names the instance.
+makes of its parameter. Inside its own braces a generic's bare name arrives here
+already re-pointed at the instance being defined (Clone, above), which carries no
+`genericinfo` and is not refused; a different generic named bare there still
+names its template, and is.
 
 A **tagged trait** fans out: the base trait is cloned, then every entry of its
 `derived` list, each registering into its own `memonodes`. **The base and every
@@ -325,6 +354,14 @@ are [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols".
   templates, which are never type checked, and never into instances, because
   `memonodes` is not in its switch.
 - **`MacroDclNode.memonodes` is dead.**
+- **A generic type's own bare name is told from its instantiation by its
+  arguments alone.** While an instance is cloned the template is mapped to the
+  instance, and `cloneFnCallNode` undoes that only for a call whose arguments
+  `fnCallHasTypeArgs` recognizes as types. A type argument it did not recognize
+  would leave `Box[...]` headed by the instance, which is no generic, and read
+  as a literal of this instance.
+- **`CloneState.structshell` is taken by the next struct cloned**, whichever it
+  is. It is set only for a generic type's own clone, whose root is that struct.
 
 ## What lives elsewhere
 

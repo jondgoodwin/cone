@@ -31,6 +31,9 @@ FnCallNode *newFnCallLower(INode *oldnode, INode *obj, int nnodes);
 // Clone fncall
 INode *cloneFnCallNode(CloneState *cstate, FnCallNode *node);
 
+// Does this call give type arguments rather than values?
+int fnCallHasTypeArgs(FnCallNode *node);
+
 void fnCallPrint(FnCallNode *node);
 
 // Name resolution on 'fncall'

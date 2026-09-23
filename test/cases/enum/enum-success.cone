@@ -1223,6 +1223,13 @@ enum Tote[T] {
         case imm h Hollow {h.count + 40;}
       }
     }
+    // The enum's bare name is this instance, so the parameter's type is bare too
+    pub fn codeAllBare(self &, t Tote) i32 {
+      match t {
+        case is Stuffed {7;}
+        case imm h Tote.Hollow {h.count + 70;}
+      }
+    }
   }
 
   struct Hollow {
@@ -1232,6 +1239,46 @@ enum Tote[T] {
         case is &Hollow[T] {d;}
       }
     }
+  }
+}
+
+// Inside a generic enum's braces -- its own methods and statics, and every
+// variant's body -- the enum's bare name is the instance being defined, and so is
+// a variant's: in Grove[i64], 'Grove' is Grove[i64], and 'Idle' and 'Grove.Idle'
+// are Grove.Idle[i64]. So a variant names its enum and builds a sibling with no
+// type arguments, where Slot above writes them out. Each bare name reaches the
+// instance being cloned, never a second instantiation: 'Idle' in Fruiting's body
+// names the LATER sibling, which is instantiated with the enum rather than again.
+// The static 'sow' builds a variant bare and is reached from the enum's own
+// check, as Crop's below is with its arguments written, and Idle's 'weigh'
+// matches a parameter typed bare, exhaustively, with its variants bare.
+enum Grove[T] {
+  pub rows i64;
+  pub fn sow(r i64) Grove {Idle[r];}
+
+  struct Fruiting {
+    pub grain T;
+    pub fn reap(self &) Grove {Grove.Idle[rows + 1];}
+    pub fn keep(self &) Fruiting {Fruiting[rows * 2, grain];}
+  }
+
+  struct Idle {
+    pub fn plant(self &, y T) Grove {Fruiting[rows + 5, y];}
+    pub fn resow(self &) Grove {Grove.sow(rows * 10);}
+    pub fn weigh(self &, g Grove) i64 {
+      match g {
+        case imm f Fruiting {f.grain + rows;}
+        case is Grove.Idle {rows * 100;}
+      }
+    }
+  }
+}
+
+// Outside the braces the enum is named with its type arguments, as always
+fn groveCode(g Grove[i64]) i64 {
+  match g {
+    case imm f Fruiting {f.grain * 100 + f.rows;}
+    case imm i Idle {i.rows;}
   }
 }
 
@@ -1352,11 +1399,22 @@ fn variantBodies() {
   show("generic-variant-exhaustive-match-last", i64[(&tote).code(hollow)]);
   show("generic-variant-exhaustive-bare-first", i64[(&tote).codeBare(stuffed)]);
   show("generic-variant-exhaustive-bare-last", i64[(&tote).codeBare(hollow)]);
+  show("generic-variant-exhaustive-bare-type-first", i64[(&tote).codeAllBare(stuffed)]);
+  show("generic-variant-exhaustive-bare-type-last", i64[(&tote).codeAllBare(hollow)]);
   imm totehollow = Tote.Hollow[i64][0];
   show("generic-variant-exhaustive-ref-first", (&totehollow).itemOr(&stuffed, 99));
   show("generic-variant-exhaustive-ref-last", (&totehollow).itemOr(&hollow, 99));
   show("generic-enum-method-exhaustive-first", i64[(&tote).which(stuffed)]);
   show("generic-enum-method-exhaustive-last", i64[(&totehollow).which(hollow)]);
+  imm fruiting = Grove.Fruiting[i64][3, 7];
+  show("generic-variant-bare-builds-later-sibling", groveCode((&fruiting).reap()));
+  imm kept Grove.Fruiting[i64] = (&fruiting).keep();
+  show("generic-variant-bare-is-its-own-instance", groveCode(kept));
+  imm idle = Grove.Idle[i64][2];
+  show("generic-variant-bare-builds-earlier-sibling", groveCode((&idle).plant(4)));
+  show("generic-enum-static-bare-builds-variant", groveCode((&idle).resow()));
+  show("generic-variant-bare-type-exhaustive-first", (&idle).weigh(fruiting));
+  show("generic-variant-bare-type-exhaustive-last", (&idle).weigh(idle));
   imm plot = Crop.Fallow[i64][2];
   show("generic-static-builds-variant-exhaustive-first", (&plot).weigh(Crop.Ripe[i64][5, 40]));
   show("generic-static-builds-variant-exhaustive-last", (&plot).weigh((&plot).resow()));
