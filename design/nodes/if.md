@@ -37,8 +37,9 @@ the signal generation uses to skip building a phi.
 **A bound pattern match is de-sugared into a wrapping block**: `if imm c &Circle
 = value {…}` becomes a block declaring an anonymous variable for the value, an
 `is` condition over a shared name use, and a variable bound to a cast inserted
-at index 0 of the arm. **`parseIf` returns the wrapping block, not the
-`IfNode`.**
+at index 0 of the arm. The condition and the cast share the pattern's type node,
+and the variable takes its type from the cast ([cast](cast.md)). **`parseIf`
+returns the wrapping block, not the `IfNode`.**
 
 `parseMatch` lowers the whole construct into a block plus one `IfNode`:
 `case is T` → an `is` node, `case == v` → an `==` call, `case imm x T` → a bound
@@ -85,7 +86,10 @@ second
 form is what a clone of the match presents — a generic instance's or a macro
 expansion's — since cloning copies the shared node once per arm. If they all
 are, and one of the variant tests is the **last** condition, it **overwrites that
-condition with `elseCond`**.
+condition with `elseCond`**. An arm after the one being checked may name its
+variant bare and not be bound to it yet (`castPatternPending`), so it counts as
+no match; the check runs again as each arm is checked, and the last one sees
+every pattern bound.
 
 Because `ifTypeCheck` calls this *before* testing for `elseCond`, the rewrite
 takes effect for the very condition being processed: `hasElse` becomes true and

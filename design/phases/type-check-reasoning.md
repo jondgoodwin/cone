@@ -257,6 +257,17 @@ identical — two regions are represented differently in memory, so no recast
 exists between them, not even into a borrow. Region and permission downcast
 covariantly while the structure is contravariant.
 
+**Before any of that, a pattern's bare name is bound against the matched value**
+(`castPatternBind`): a variant of the value's enum, reached through a reference,
+wins over the name's lexical meaning, and an instance's variant list supplies a
+generic variant's type arguments. A name neither answers is `ErrorUnkName`; one
+written with type arguments that only the matched enum has is `ErrorPatArgs`; one
+that names a value is `ErrorNotType`. Each is reported by the `is` test alone —
+the conversion a bound pattern also desugars to binds the same way and stays
+quiet — and binds the name to `errorType`, which silences the variable the
+pattern declares. The rule is [Names and Namespaces](names-and-namespaces.md),
+"A variant bare in a pattern".
+
 ## 9. Borrows: where type check stops
 
 `borrowTypeCheck` establishes the reference *type* and nothing about its

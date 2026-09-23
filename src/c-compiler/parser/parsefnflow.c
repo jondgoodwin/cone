@@ -100,10 +100,16 @@ void parseBoundMatch(ParseState *parse, IfNode *ifnode, NameUseNode *expnamenode
     CastNode *isnode = newIsNode((INode*)expnamenode, unknownType);
     CastNode *castnode = newConvCastNode((INode*)expnamenode, unknownType);
 
-    // Parse the variable-bind into a vardcl,
-    // then preserve its desired type into both the 'is' and 'cast' nodes
+    // Parse the variable-bind into a vardcl, then move its desired type into both
+    // the 'is' and 'cast' nodes. The pattern's bare root name is looked up in the
+    // matched value's enum at type check (castPatternBind), so the variable takes
+    // its type from the conversion, once that is bound, rather than holding a
+    // third copy of a node a clone would leave unbound.
     VarDclNode *varnode = parseBindVarDcl(parse);
+    castPatternMark(varnode->vtype);
     isnode->typ = castnode->typ = castnode->vtype = varnode->vtype;
+    castnode->flags |= FlagMatchBind;
+    varnode->vtype = unknownType;
     varnode->value = (INode *)castnode;
     nodesAdd(&ifnode->condblk, (INode*)isnode);
 
@@ -215,6 +221,7 @@ INode *parseMatch(ParseState *parse) {
                 CastNode *isnode = newIsNode((INode *)expnamenode, unknownType);
                 lexNextToken();
                 isnode->typ = parseType(parse);
+                castPatternMark(isnode->typ);
                 nodesAdd(&ifnode->condblk, (INode *)isnode);
                 nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
             } else if (lexIsToken(EqToken)) {

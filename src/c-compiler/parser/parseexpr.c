@@ -619,6 +619,7 @@ INode *parseCmp(ParseState *parse) {
             CastNode *node = newIsNode(lhnode, unknownType);
             lexNextToken();
             node->typ = parseType(parse);
+            castPatternMark(node->typ);
             return (INode*)node;
         }
         else

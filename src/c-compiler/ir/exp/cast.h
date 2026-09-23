@@ -15,7 +15,12 @@ typedef struct CastNode {
     INode *typ;
 } CastNode;
 
+struct NameUseNode;
+
 #define FlagConvert 0x8000  // Cast should convert instead of re-cast (default)
+// The conversion a bound pattern desugars to shares its type node with the 'is'
+// test before it (parseBoundMatch), and that test name resolves the node for both.
+#define FlagMatchBind 0x0001  // Cast: binds a matched value; its type node is the 'is' test's
 
 // Create node for recasting to a new type without conversion
 CastNode *newRecastNode(INode *exp, INode *type);
@@ -28,6 +33,19 @@ INode *cloneCastNode(CloneState *cstate, CastNode *node);
 
 // Create a new cast node
 CastNode *newIsNode(INode *exp, INode *type);
+
+// The name at the root of a pattern's type: 'Circle' in 'Circle', '&Circle',
+// 'Some[i32]' or '&Some[i32]', or NULL for any other shape, a path among them.
+// 'hasargs' (may be NULL) is set when the name was written with type arguments.
+struct NameUseNode *castPatternName(INode *typ, int *hasargs);
+
+// Mark a pattern's bare root name, for the parser: it is looked up in the
+// matched value's enum before it is looked up lexically (FlagPattern)
+void castPatternMark(INode *typ);
+
+// Is this pattern's root name still waiting for castPatternBind? Its type
+// cannot be asked of it until it is bound.
+int castPatternPending(INode *typ);
 
 void castPrint(CastNode *node);
 

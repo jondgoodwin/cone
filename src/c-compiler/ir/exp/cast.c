@@ -46,6 +46,122 @@ CastNode *newIsNode(INode *exp, INode *type) {
     return node;
 }
 
+// The name at the root of a pattern's type. A reference pattern narrows a
+// reference, and the name is its referent's. A generic variant written with its
+// type arguments is a call until type check instantiates it, and the name is the
+// callee. A path, 'Shape.Circle', is a member access until name resolution
+// collapses it into a qualified name, and is taken as written: it has no root.
+NameUseNode *castPatternName(INode *typ, int *hasargs) {
+    if (hasargs)
+        *hasargs = 0;
+    while (typ != NULL) {
+        if (typ->tag == RefTag || typ->tag == VirtRefTag)
+            typ = ((RefNode*)typ)->vtexp;
+        else if (typ->tag == FnCallTag && (typ->flags & FlagIndex) && ((FnCallNode*)typ)->methfld == NULL) {
+            if (hasargs)
+                *hasargs = 1;
+            typ = ((FnCallNode*)typ)->objfn;
+        }
+        else
+            break;
+    }
+    if (typ == NULL || !isNameUseNode(typ) || (typ->flags & FlagQualified))
+        return NULL;
+    return (NameUseNode*)typ;
+}
+
+// Mark a pattern's bare root name, so that name resolution leaves it for
+// castPatternBind to look up in the matched value's enum
+void castPatternMark(INode *typ) {
+    NameUseNode *name = castPatternName(typ, NULL);
+    if (name)
+        name->flags |= FlagPattern;
+}
+
+// Is this pattern's root name still waiting to be bound against the matched value?
+int castPatternPending(INode *typ) {
+    NameUseNode *name = castPatternName(typ, NULL);
+    return name != NULL && (name->flags & FlagPattern);
+}
+
+// The enum of the value a pattern is matched against, reached through a
+// reference, or NULL when that value is not of an enum. A variant is not one:
+// the value is already narrowed, and its variants are nobody's.
+static StructNode *castMatchedEnum(INode *exp) {
+    if (!isExpNode(exp))
+        return NULL;
+    INode *type = iexpGetTypeDcl(exp);
+    if (type->tag == RefTag || type->tag == VirtRefTag)
+        type = itypeGetTypeDcl(((RefNode*)type)->vtexp);
+    if (type->tag != StructTag || !(type->flags & EnumType))
+        return NULL;
+    return (StructNode*)type;
+}
+
+// The variant of this name among an enum's variants, or NULL. 'derived' is the
+// list, not the enum's namespace: an instance of a generic enum lists its own
+// instantiated variants there (genericMemoize), and an extension lists its
+// base's variants beside its own.
+static INode *castEnumVariant(StructNode *enumdcl, Name *name) {
+    if (enumdcl == NULL || enumdcl->derived == NULL)
+        return NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(enumdcl->derived, cnt, nodesp)) {
+        if (((StructNode*)*nodesp)->namesym == name)
+            return *nodesp;
+    }
+    return NULL;
+}
+
+// Bind a pattern's bare root name against the value being matched. A variant of
+// that value's enum is what the name means, whatever it means lexically, so
+// 'Red' on a 'Lamp' is the Lamp's 'Red' while a 'use' of another enum with a 'Red'
+// is in force. Only a name the enum has no variant of keeps its lexical meaning.
+// Because the enum's list is consulted, the matched value also supplies a
+// generic variant's type arguments: on an 'Option[i32]', 'Some' is 'Some[i32]'.
+// A name written with arguments is taken lexically, since the list holds
+// instances and the arguments would be applied to one.
+//
+// The 'is' test and the conversion that binds a matched value share one type
+// node, so whichever is checked first binds it for both. A clone -- a generic
+// instance's body, a default method's copy -- copies the node once per holder,
+// and then each binds its own, to the same answer. Only the 'is' test reports:
+// the conversion is checked after it and would only say it again.
+//
+// Returns 0 when the pattern names nothing to narrow to, reported, and there is
+// no type to check.
+static int castPatternBind(CastNode *node, int report) {
+    int hasargs;
+    NameUseNode *name = castPatternName(node->typ, &hasargs);
+    if (name == NULL)
+        return 1;
+    if (name->flags & FlagPattern) {
+        name->flags &= 0xFFFF - FlagPattern;
+        StructNode *enumdcl = castMatchedEnum(node->exp);
+        INode *variant = castEnumVariant(enumdcl, name->namesym);
+        if (variant && !hasargs)
+            name->dclnode = variant;
+        else if (name->dclnode == NULL) {
+            if (report && variant)
+                errorMsgNode((INode*)name, ErrorPatArgs,
+                    "%s is a variant of the enum being matched, and that value supplies its type arguments. Drop the arguments, or name the variant through its enum, as %s.%s.",
+                    &name->namesym->namestr, &enumdcl->namesym->namestr, &name->namesym->namestr);
+            else if (report)
+                errorMsgNode((INode*)name, ErrorUnkName, "The name %s does not refer to a declared name",
+                    &name->namesym->namestr);
+            name->dclnode = errorType;
+        }
+        else if (isExpNode(name)) {
+            if (report)
+                errorMsgNode((INode*)name, ErrorNotType,
+                    "%s is not a type, so a pattern cannot narrow to it.", &name->namesym->namestr);
+            name->dclnode = errorType;
+        }
+    }
+    return name->dclnode != errorType;
+}
+
 // Serialize cast
 void castPrint(CastNode *node) {
     inodeFprint(node->tag==CastTag? "(cast, " : "(is, ");
@@ -58,7 +174,12 @@ void castPrint(CastNode *node) {
 // Name resolution of cast node
 void castNameRes(NameResState *pstate, CastNode *node) {
     inodeNameRes(pstate, &node->exp);
-    inodeNameRes(pstate, &node->typ);
+    // A pattern's conversion holds the type node of the 'is' test before it,
+    // which that test resolved. A second resolution is not idempotent: a reference
+    // whose referent names no type has been turned into a borrow, which has no
+    // name resolution of its own.
+    if (!(node->flags & FlagMatchBind))
+        inodeNameRes(pstate, &node->typ);
 }
 
 #define ptrsize 10000
@@ -103,6 +224,13 @@ int castConvertsToBool(INode *fromtype) {
 void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
     if (iexpTypeCheckAny(pstate, &node->exp) == 0)
         return;
+    // A bound pattern's conversion binds its pattern as the 'is' test before it
+    // did. If that names nothing, the test has said so, and the variable this
+    // conversion initializes takes the error type from it and says nothing more.
+    if ((node->flags & FlagMatchBind) && !castPatternBind(node, 0)) {
+        node->vtype = errorType;
+        return;
+    }
     if (itypeTypeCheck(pstate, &node->typ) == 0)
         return;
 
@@ -175,6 +303,8 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
 void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
     node->vtype = (INode*)boolType;
     iexpTypeCheckAny(pstate, &node->exp);
+    if (!castPatternBind(node, 1))
+        return;
     itypeTypeCheck(pstate, &node->typ);
     if (!isExpNode(node->exp)) {
         errorMsgNode(node->exp, ErrorInvType, "'is' requires a typed expression to the left");
