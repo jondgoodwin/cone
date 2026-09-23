@@ -147,7 +147,6 @@ enum NodeTags {
     AbsenceTag,     // unique, unclonable node for absence of info
 
     // Unnamed type node
-    TypedefTag,     // A type name alias (structural)
     FnSigTag,       // Also method, closure, behavior, co-routine, thread, ...
     ArrayTag,       // Also dynamic arrays? SOA?
     RefTag,         // Reference (could become borrowtag/alloctag)
@@ -204,6 +203,13 @@ enum NodeTags {
 
 #define FlagGenMod    0x0001        // Module: Generate code for the module, if true
 #define FlagModDcl    0x0002        // Module: a 'mod' declaration named it, rather than its filename
+
+// An alias whose target is a type expression -- what 'typedef' declares -- as
+// against one a fold made, whose target is a member name the fold itself binds.
+// It is the one alias with something of its own to name resolve and type check.
+// 0x0002 because an alias already reads 0x0001 as FlagMethFld and 0x0200 as
+// FlagPub; nothing reads 0x0002 on one.
+#define FlagTypeAlias 0x0002        // AliasDcl: target is a type expression, not a folded member name
 
 #define IsTagField    0x0010        // FieldNode: This field is the trait's discriminant tag
 #define IsMixin       0x0020        // FieldNode: Is a trait mixin, vs. an instantiated field

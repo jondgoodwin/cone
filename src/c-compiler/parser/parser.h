@@ -25,6 +25,7 @@ enum ParseFlags {
     ParseMaySig  = 0x2000,        // The variable may be signature only
     ParseMayImpl = 0x1000,        // The variable may implement a code block
     ParseEmbedded = 0x0800,       // Is embedded in expression (no semi)
+    ParseMayFold = 0x0400,        // The variable may carry a fold clause: a module's global
 };
 
 // parsemod.c
@@ -68,12 +69,12 @@ INode *parsePerm();
 INode *parseDclPerm(PermNode *defperm);
 VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags);
 // Parse a field's fold clause, with the lexer on its 'use'
-FoldClause *parseFoldClause(ParseState *parse);
+FoldClause *parseFoldClause(ParseState *parse, int maypub);
 ConstDclNode *parseConstDcl(ParseState *parse);
 INode *parseFnSig(ParseState *parse);
 INode *parseStruct(ParseState *parse, uint16_t flags);
 INode *parseType(ParseState *parse);
-TypedefNode *parseTypedef(ParseState *parse);
+AliasDclNode *parseTypedef(ParseState *parse);
 
 // parsehelper.c for statement/block start/end processing
 // Skip to next statement for error recovery

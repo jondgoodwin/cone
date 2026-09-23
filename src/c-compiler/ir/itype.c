@@ -20,8 +20,10 @@ INode *itypeGetTypeDcl(INode *type) {
     while (1) {
         if (isNameUseNode(type) && isTypeNode(type))
             type = nameUseGetDcl((NameUseNode *)type);
-        else if (type->tag == TypedefTag)
-            type = ((TypedefNode *)type)->typeval;
+        // A type alias stands for a type expression, and a name use bound to one
+        // already answers for its target, so this is the alias reached directly
+        else if (type->tag == AliasDclTag)
+            type = ((AliasDclNode *)type)->target;
         else
             return type;
     }

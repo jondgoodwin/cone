@@ -34,6 +34,7 @@ FoldClause *newFoldClause() {
     fold->excludes = NULL;
     fold->star = 0;
     fold->expanded = 0;
+    fold->ispub = 0;
     return fold;
 }
 

@@ -115,6 +115,15 @@ Two entry points, because a type name and a value name want different things.
 0. **A use bound to an alias is re-pointed at what the alias stands for**, so
    everything below reads a declaration's type and tag. An alias its fold
    failed to bind was reported there; the use takes `errorType`.
+0a. **A use bound to an alias a *global's* fold made becomes `global.name`.**
+   The alias records the global its target is reached through, so the lowering
+   is `aliasDclThroughAccess` and has no receiver to find: a global is one
+   instance at an address known at compile time. Unlike the bare-field lowering
+   below, it fires whether or not the use was qualified — `mymod.speed` names the
+   module's binding, and the binding is still reached through the global. A
+   folded name being *called* never arrives here, because `fnCallTypeCheck`
+   rewrites the call before it reads its callee, so what reaches this step is a
+   member read.
 1. **An overload name is refused here.** It names a set, not a value; only a
    call may use it, and `fnCallTypeCheck` rewrites the use to the concrete
    declaration before this is reached. `ErrorOverloadUse`.

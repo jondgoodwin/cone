@@ -58,7 +58,8 @@ changing it.
 | `src/c-compiler/ir/nametbl.c` | Owns the global intern table and the push/hook/pop mechanism used to expose the nearest lexical or namespace binding through `Name.node`. |
 | `src/c-compiler/ir/namespace.c` | Implements the hash table owned by each module or namespaced type: initialize, find, set, add, duplicate detection, and growth. |
 | `src/c-compiler/ir/name.c` | Defines well-known interned names and spells every declared symbol — `nameSymbol`, `nameVtable`, `nameVtableImpl`, `nameVtableThunk` — from a declaration's owner chain and facts. See "Symbols". |
-| `src/c-compiler/ir/stmt/aliasdcl.c` | The alias: a binding that stands for another declaration under a spelling of its own, with a visibility of its own. Made for the members a field's `use` clause folds in; `aliasDclResolve` follows a chain to the declaration. |
+| `src/c-compiler/ir/stmt/aliasdcl.c` | The alias: a binding that stands for another declaration under a spelling of its own, with a visibility of its own. Made for the members a `use` clause folds in, and for a `typedef`; `aliasDclResolve` follows a chain to the declaration, `aliasDclCheckCycle` refuses one that comes back to itself, and `aliasDclThroughAccess` builds the member access a global's folded name is reached by. |
+| `src/c-compiler/ir/stmt/fold.c` | The parts of a `use` clause every fold site shares: the source declaration behind a type expression, the star clause's items, `but`. It also owns the module's fold, `foldGlobalExpand`, which is the whole of a global's. |
 | `src/c-compiler/ir/dclinfo.c` | The declaration facts a symbol is derived from: sets them where a declaration joins its namespace (`dclInfoJoin`), walks to the enclosing module, prints them in the IR dump. |
 | `src/c-compiler/ir/inode.c` | Dispatches the name-resolution pass by IR node tag. Start here when a new node kind must participate in name resolution. |
 | `src/c-compiler/ir/clone.c` | Rebinds generic/macro parameters during cloning and repairs resolved declaration references in cloned `NameUse` nodes. |
@@ -84,7 +85,6 @@ changing it.
 | `src/c-compiler/ir/stmt/vardcl.c` | Resolves an initializer before binding its local variable, enforces same-scope uniqueness, and permits nested shadowing through scope hooks. |
 | `src/c-compiler/ir/stmt/fielddcl.c` | Resolves field permission, type, and default-value names; namespace insertion is handled by the enclosing type. |
 | `src/c-compiler/ir/stmt/const.c` | Resolves constant types and values; module insertion is handled by `module.c`. |
-| `src/c-compiler/ir/types/typedef.c` | Resolves a typedef target and hooks the alias name for subsequent lookup. |
 
 ### Type members, methods, generics, and macros
 
@@ -142,6 +142,7 @@ Current compiler behavior:
 - A source file names its module with a `mod` declaration written as its first statement: `mod geometry;`. The declared name is the module's identity — what an importer binds it under, what a path through it is written with, and what its symbols are spelled after. A file that declares none is named after its file instead, which is transitional and lasts until the folder walk replaces filename naming.
 - **A module's own name is an entry in its own namespace**, so a module-level name that a local or a type member hides is reached as `modname.x`. That is the only way past a nearer binding into a module, because a path begins with the name of the namespace it walks.
 - `import` loads or reuses another module — keyed on the file, so a file is read once whatever its module turns out to be called — and binds it under the name the module declares for itself.
+- A module's **global may carry a `use` clause**, folding members of its type in as names of the module: `config Config use *`. See "Folding through a global" below. No other variable may — a local, a parameter and a type's static are `ErrorBadFold` where the clause is written, because none of them is part of a namespace for a name to fold into.
 - A nested `mod name { ... }` block is admitted by the grammar and unbuilt: it needs a namespace of its own, a hook pushed and popped around its parse, and paths reaching through it. So is `mod trait`, a module's abstraction.
 - Source folders affect file lookup; they do not themselves create namespaces.
 
@@ -188,7 +189,7 @@ Current compiler behavior:
 - `name` begins in the active lexical/module context.
 - `module.name` begins wherever `module` is in scope, which is the ordinary bare-name rule and nothing else. A local, a parameter or a type member of that spelling therefore hides the module, and there is no way to reach past it.
 - There is no root anchor and no parent access. **The enclosing module is named by its own name**, which its `mod` declaration gives it and which is an entry in its own namespace, so `mymod.x` reaches a module-level `x` that a local or a type member hides. A module that reaches an *upper* module does so by importing and naming it.
-- A path may have any number of hops, each of which must resolve to a module or a struct-like type. A hop through anything else — an alias, a number type, a generic instance, a generic parameter — is `ErrorUnkName` at type check.
+- A path may have any number of hops, each of which must resolve to a module or a struct-like type. **An alias resolves to whatever is at the end of its chain**, so a `typedef` of a struct is a hop like the struct itself. A hop through anything else — a number type, a generic instance, a generic parameter — is `ErrorUnkName` at type check.
 - A resolved `NameUseNode` points directly to a heterogeneous declaration node. It keeps its one tag; whether it is a type, a value, a macro or a generic parameter is asked of that node (`nameUseGroup`, `nameUseNames`), never stamped on the use. The one thing stamped on it is `FlagQualified`, which says the name was reached through a namespace rather than written bare.
 
 A path is parsed as a chain of member accesses and collapsed during name resolution, hop by hop, by `fnCallNameResPath` — [fncall](../nodes/fncall.md), "The path collapse", has the mechanism and the reason it cannot wait for type check.
@@ -222,6 +223,8 @@ The compiler enforces this on the routes that can reach a private name: `fnCallN
 An overload name's visibility is its candidates': the first candidate declares it, and every later candidate must agree (`ErrorPrivOverload`, either way round). A compiler-defined intrinsic candidate counts as `pub` for the name and is exempt from agreeing, which is how the core types keep a private `_neg` behind a pub `-`. One consequence is deliberate and worth knowing: **visibility is checked on the binding the caller's name reaches**, not on the candidate overload selection then picks, which is why a pub overload name may not hold a private concrete candidate — through the pub name the private one would be reachable.
 
 Visibility should belong to the original definition or declaration, while access is evaluated from the use site. A folded or renamed NameDef must not make a private definition public merely by changing its local spelling, and it does not: the alias an enrichment makes carries its target's visibility, which is what lets a private member of the base come across and stay out of the enrichment's clients' reach. Whether an alias may deliberately *narrow* visibility is still open, and nothing built asks it.
+
+**The other half of that is the binding having a visibility of its own to widen with.** A fold into a *module* is private to the module that made it unless the clause says `use pub`, whatever the member's visibility in its type — one keyword, one meaning, on a binding as on a declaration. It never widens past the origin: only a public member folds at all. `fnCallNameResPath` is the route that reads it, since `inodeIsPrivate` answers from the alias's own `FlagPub`; a `pub` fold is reachable as `mod.name` and a plain one is not.
 
 ## Include, import, and name folding
 
@@ -271,6 +274,7 @@ A concrete type may be named as another's base, with `extends`, and everything i
 | a **type** body — `extends Meter` | the **whole**, which is already the right type | the base's declaration, under an alias; the base's fields as copies of its own |
 | a **type** body — `use Trig` | a **sibling of the whole**, which this type's values substitute for | the sibling's declaration, under an alias; nothing else |
 | a **field** — `engine Engine use *` | the **part**, reached through the field | a copy carrying a hop, or an alias whose call shifts its receiver |
+| a **module's global** — `config Config use *` | the **one instance**, at a fixed address | an alias carrying the global, field and method alike |
 
 **The two middle rows are the finding.** The two hard things a type adds to the module case are dispatch and per-instance state, and neither of them has either to solve. An enrichment may not change the fields, so its values and its base's have one representation and a base method already takes exactly the right receiver. A sibling declared that same base, so its method's receiver is a type this type's values substitute for, and the recast at the call is the whole adjustment — no copy, no hop, no thunk. So the machinery recurs where it is easy and the hard part stays in the field row, where the receiver has to be found and shifted.
 
@@ -284,17 +288,48 @@ A concrete type may be named as another's base, with `extends`, and everything i
 
 **Static folding aliases and keeps the original owner; dynamic folding replicates into each instance.** One-instance members — a static variable, a static function, a macro without `self` — are a new name for one thing, so two types folding one static share one storage location and one symbol. A field, and a method with a receiver, land in each instance, and nothing reaches back to whoever declared it. Which is why an `extends` base's fields are *absorbed* as the enriching type's own while a sibling's statics stay their owner's. **No type reads another type's fields, ever**: a method with a receiver reads the fields of the type it was written against, inside the one instance being operated on.
 
-**A static therefore folds on a TYPE and never through a FIELD.** There is no such thing as a static field: a static is a one-instance thing and a field is the per-instance route, so a static has no business arriving through a value. A type's statics are had by writing a type-level clause — `extends`, or a sibling `use` — and `structFoldItem` reports `ErrorBadFold` for one named in a field's clause.
+**A static therefore folds on a TYPE and never through a FIELD.** There is no such thing as a static field: a static is a one-instance thing and a field is the per-instance route, so a static has no business arriving through a value. A type's statics are had by writing a type-level clause — `extends`, or a sibling `use` — and `structFoldItem` reports `ErrorBadFold` for one named in a field's clause. **A global is the value route at module scale, so the same refusal applies to it**, with the same reason and the same code (`foldGlobalItem`): the way to have a type's static is to name it through the type.
+
+### Folding through a global
+
+A module's global may carry the same `use` clause a field does, and it folds members of the global's type in as names of the module: `config Config use *` makes `Config`'s members names here, reached through `config`. The clause is the field's exactly — `*`, a list, `as`, `but`, and a block form for a long list — with one addition the other sites have no answer for, `use pub`.
+
+**It is the one-instance analogue of a field, and that is what makes it the cheap one.** A field's fold has to find the receiver at the call and shift it (`structFoldReceiver`), copy each folded field so the access path can be rebuilt, and emit a thunk where a folded method fills a vtable slot. A global has exactly one instance at an address known at compile time, so there is nothing to find: every entry is an **alias** carrying the global it is reached through, field and method alike, and a use of the name is **lowered to `global.name`** — `nameUseTypeCheck` for a member read, `fnCallTypeCheck` for a call, before it reads the callee. From that point the node is the path the author could have written by hand, so overload selection, the macro-method probe, borrowing, the receiver adjustments and generation see nothing new and learn nothing about folding. A chain works for the same reason: where the global's own type folded a field in, the member access resolves through that type's aliases and its receiver shift runs from the global.
+
+**What it buys that folding a module cannot is composing a module from a STRUCT** — a module presenting a singleton's interface as its own names, which no module-to-module fold expresses.
+
+**Expanded before the module's other nodes are resolved** (`modNameRes`), because a module's names do not depend on the order they were written in: a function declared above the global still names what the global folded. A folded name is entered in the module's namespace and hooked, so the collision domain is the module's one domain and `ErrorDupName` is reported at the fold.
+
+What a clause may fold from and what it may admit:
+
+- The source is a **struct**. A global whose type is anything else, and one whose type is a trait or an enum, is `ErrorUseGlobal` at the clause — an abstraction has no members of its own for a value to reach.
+- **Visibility is transitive**: only what the global's type shows folds, so a private member named in a list is `ErrorNotPublic` and a wildcard passes it over.
+- A **static** does not fold, for the reason above; nor do `final` and `clone`, which belong to the type's own values' lifecycle.
+- A name the type has not got, listed or named after `but`, is `ErrorNoMbr`.
+
+**`use pub` is the binding's own visibility, and this is the site that asks for it.** A fold is private to the module that made it unless the clause says `pub`; the member is public in its type either way, and what `pub` decides is whether the *module* shows the name it gave it. A `pub` fold is reached from outside through the global, so the global must be public too — `ErrorNotPublic` otherwise, naming the global. At the other sites `pub` inside a clause is `ErrorBadPub`: a folded member of a field's type is as visible as the field it is reached through, and a sibling fold declares no name of its own.
+
+⚠ **A `pub` fold is reachable as `mod.name` and is not carried by a wildcard import**, because `importNameRes` walks the source module's *declarations* and a fold's bindings live in its namespace alone. That is the same gap a wildcard-imported name already has, and it is the module-fold work's to close, with the transit rule. **And which module may see a fold at all still depends on load order**: the fold runs when the folding module's turn comes, so a module loaded earlier — the root among them — finds nothing. Both are pinned: `module-nameres-fold-visibility` against `module-nameres-transit`.
 
 ## Aliases
 
-Current `typedef` creates a module-scoped structural alias for a type. Type resolution follows the alias to its underlying type.
+`AliasDclNode` (`ir/stmt/aliasdcl.c`) is the general binding: a local spelling and a target, with the `FlagPub` bit as its own visibility and everything else the target's. Chains resolve through `aliasDclResolve`; a use bound to one answers as its target (`nameUseGroup`), and every site that reads a namespace binding resolves it first. A chain of aliases is ordinary: a type that enriches one which folded a sibling in binds an alias to that alias.
 
-`AliasDclNode` (`ir/stmt/aliasdcl.c`) is the general binding: a local spelling and a target, a name use bound to the declaration it stands for, with the `FlagPub` bit as its own visibility and everything else the target's. Chains resolve through `aliasDclResolve`; a use bound to one answers as its target (`nameUseGroup`), and every site that reads a namespace binding resolves it first. Today it is made for a folded method, overload set or macro method of a field's type, for every member but the fields of an `extends` base, and for every member a sibling `use` admits — a static among them, which is the one case where an alias stands for something reached through the type rather than through a value, and where the `FlagMethFld` bit is therefore left off. A chain of aliases is ordinary: a type that enriches one which folded a sibling in binds an alias to that alias.
+It is made for:
+
+- a folded method, overload set or macro method of a field's type; every member but the fields of an `extends` base; and every member a sibling `use` admits — a static among them, which is the one case where an alias stands for something reached through the type rather than through a value, and where the `FlagMethFld` bit is therefore left off. The target is a member name use bound to the declaration.
+- **every name a global's `use` clause folds in**, field and method alike, with `through` naming the global. `FlagPub` is the clause's own, from `use pub`, rather than the target's.
+- **a `typedef`**, whose target is a type expression rather than a member name — the one alias with something of its own to name resolve and type check, which `FlagTypeAlias` says. A typedef therefore has no node kind of its own: it is the binding record, proved to generalise by carrying the construct that motivated the word "alias" in the first place. Its `pub` is the bit on the binding, as `pub` on any declaration is.
+
+**What making `typedef` an alias changed, visibly: an alias may now qualify what it names.** `Sample.make` walks `Reading`'s namespace where `typedef Sample Reading`, because a path's base is asked of the declaration at the end of the chain and an alias answers for its target. It used to be refused, since the collapse found a node that was neither a module nor a type and gave up.
+
+**A chain that comes back to itself names no type**, and every reader walks a chain to its end, so `aliasDclCheckCycle` reports `ErrorCircular` and cuts it before anything follows one: two pointers at two speeds meet only inside a cycle, and the target then becomes `unknown` so the name still answers as a type. One diagnostic per ring, at whichever name the walk reached first.
 
 The aspirational model generalizes aliases: a new NameDef may denote anything nameable. Alias chains should preserve each local binding for diagnostics and visibility while semantic operations can reach the final IR value. A type-valued alias remains structural; creating a distinct nominal type should use a separate construct.
 
 Import folding/renaming is a namespace alias operation with an explicit source definition, and is the alias above with a qualified name use as its target. Other aliases may bind expressions or declarations directly. The exact syntax and compile-time restrictions for general aliases remain open.
+
+`typedef` is the alias, so "current `typedef` creates a module-scoped structural alias" is now literally what the IR holds rather than a description of a separate node. What remains of the aspiration is the range of things a target may be, not the record.
 
 ## Generics and macros
 
@@ -767,10 +802,11 @@ would see little but `main`.
 	- A generic function may not declare an overload name; the parser reports that combination.
 	- Extending a type's overload sets from an extension, generic candidates, and merging matching `extern` declarations with implementations remain deferred.
 - Compile unit handling of duplicate, consistent type `extern` vs. value-specified names.
-- Selective import folding and `as` renaming are documented but unimplemented. The binding node they need exists (`AliasDclNode`, built for the type fold); import does not use it yet.
+- Selective import folding and `as` renaming are documented but unimplemented **for `import`**. The binding node they need exists, and a global's `use` clause is the second site to use it whole — selection, `as`, `but`, a block form and `pub` — so what `import` is missing is the wiring, not the grammar or the record.
+- **A fold's bindings do not transit a wildcard import.** `importNameRes` walks the source module's declarations, and what a fold makes lives in its namespace alone, so a `pub` fold is reached as `mod.name` and not folded on by an importer. It goes with the transit rule when `import` moves onto the alias.
 - Nested named modules are documented and unbuilt. The declaration syntax is settled — a `mod name { ... }` block where the singular `mod name;` header stands — and the block is refused where it is written; what it needs is a namespace of its own, hook push and pop around its parse, and qualified paths through it.
-- General aliases beyond `typedef` and the folded-member alias are not implemented.
+- General aliases beyond `typedef` and the folded-member alias are not implemented: nothing yet names an expression or a declaration directly, and there is no spelling for one outside a fold clause and `typedef`.
 - Generic, macro and metaprogram namespace behavior is partly implemented, incomplete, or aspirational. Delegated inheritance and concrete enrichment are both built; see "Folding into a type" above.
 - Packages organize importable libraries but are not yet defined as a distinct namespace layer.
-- A path may only pass through a module or a struct-like type. One whose base is an alias, a number type, a generic instance or a generic parameter is refused at type check, because none of those names a namespace at the point the collapse runs. Finishing those at type check, where they do, is the natural other half of the collapse and is not built.
+- A path may only pass through a module or a struct-like type, or an alias of one. One whose base is a number type, a generic instance or a generic parameter is refused at type check, because none of those names a namespace at the point the collapse runs. Finishing those at type check, where they do, is the natural other half of the collapse and is not built.
 - A module's name still comes from its filename when its file declares no `mod`. The folder walk is what replaces filename naming altogether.

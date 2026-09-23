@@ -8,6 +8,11 @@
 #define vardcl_h
 
 // Variable declaration node (global, local, parm)
+//
+// 'fold' serves name folding and is empty everywhere but on a module's global.
+// A global is the one-instance analogue of a field, so its 'use' clause admits
+// names of its type as names of the module -- reached through the global, whose
+// address is fixed at compile time (design/nodes/module.md, "Name folding").
 typedef struct VarDclNode {
     IExpNodeHdr;             // 'vtype': type of this name's value
     Name *namesym;
@@ -15,6 +20,7 @@ typedef struct VarDclNode {
     LLVMValueRef llvmvar;      // LLVM's handle for a declared variable (for generation)
     DclInfo dclinfo;           // Owner and the facts that decide the linker symbol (globals; name.c spells it)
     INode *perm;               // Permission type (often mut or imm)
+    struct FoldClause *fold;   // A global's fold clause, or NULL
     uint16_t scope;            // 0=global
     uint16_t index;            // index within this scope (e.g., parameter number)
     uint16_t flowflags;        // Data flow pass permanent flags

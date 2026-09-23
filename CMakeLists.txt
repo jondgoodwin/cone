@@ -76,6 +76,7 @@ add_executable(conec
 	src/c-compiler/ir/stmt/continue.c
 	src/c-compiler/ir/stmt/fielddcl.c
 	src/c-compiler/ir/stmt/fndcl.c
+	src/c-compiler/ir/stmt/fold.c
 	src/c-compiler/ir/stmt/import.c
 	src/c-compiler/ir/stmt/intrinsic.c
 	src/c-compiler/ir/stmt/module.c
@@ -113,7 +114,6 @@ add_executable(conec
 	src/c-compiler/ir/types/region.c
 	src/c-compiler/ir/types/struct.c
 	src/c-compiler/ir/types/ttuple.c
-	src/c-compiler/ir/types/typedef.c
 	src/c-compiler/ir/types/void.c
 
 	src/c-compiler/ir/meta/macro.c

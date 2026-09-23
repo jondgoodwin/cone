@@ -111,9 +111,9 @@ the struct:
 
 | Directory | Holds |
 | --- | --- |
-| `ir/stmt/` | declarations and statements — module, fn, var, field, const, import, return, break, continue, swap |
+| `ir/stmt/` | declarations and statements — module, fn, var, field, const, alias, name folding, import, return, break, continue, swap |
 | `ir/exp/` | expressions — nameuse, literals, fncall, block, if, logic, assign, borrow, allocate, cast, deref, sizeof, tuples, array and type literals |
-| `ir/types/` | types — number, struct, array, reference, arrayref, pointer, fnsig, enum, permission, region, lifetime, typedef, tuple, void |
+| `ir/types/` | types — number, struct, array, reference, arrayref, pointer, fnsig, enum, permission, region, lifetime, tuple, void |
 | `ir/meta/` | generics and macros |
 | `ir/` | shared machinery — dispatch, namespaces, name and type tables, cloning, flow, `--checktree` |
 | `corelib/` | **the built-in types themselves** — `corelib.c` declares the permissions and, as Cone source in `corelibSource`, the `so` and `rc` regions, `Option` and `Result`; `corenumber.c` builds the number types in C and hangs every operator method and intrinsic off them |
@@ -300,7 +300,7 @@ phase notes for mechanism rather than restating it:
 | `ir/types/struct.c` | [struct](struct.md) | struct, trait and enum are one node; layout, inheritance, vtables and drops |
 | `ir/types/reference.c`, `arrayref.c`, `ir/exp/borrow.c`, `allocate.c` | [references](references.md) | seven tags on one struct, across two node groups |
 | `ir/stmt/vardcl.c`, `fielddcl.c`, `const.c`, `aliasdcl.c` | [vardcl](vardcl.md) | three declaration nodes that differ mostly in what they lack, and the alias, which lacks everything but a name and a target |
-| `ir/stmt/module.c`, `import.c`, `program.c` | [module](module.md) | the module, package and compilation-unit model has no other home; what is generated is gated on a flag set at parse |
+| `ir/stmt/module.c`, `import.c`, `fold.c`, `program.c` | [module](module.md) | the module, package and compilation-unit model has no other home; what is generated is gated on a flag set at parse; `fold.c` holds what every `use` clause shares and the whole of a global's |
 | `ir/exp/nameuse.c` | [nameuse](nameuse.md) | one tag, bound at name resolution and asked for what it names; two lowerings and the move diagnostics |
 | `ir/exp/assign.c` | [assign](assign.md) | mutability and ownership are enforced in flow, not type check |
 | `ir/exp/cast.c` | [cast](cast.md) | three syntaxes plus two injected forms; generation re-checks what type check could not |

@@ -39,7 +39,8 @@ support = ["moduleinc.cone", "modulesub.cone", "moduleeof.cone",
            "moduleprov.cone", "moduleprov2.cone", "modulenoname.cone",
            "modulesyms.cone", "modulecyc.cone", "modulex_y.cone", "modulex.cone",
            "moduletransit.cone", "modulelate.cone", "moduleearly.cone",
-           "modulemacro.cone", "moduledeclared.cone"]
+           "modulemacro.cone", "moduledeclared.cone",
+           "modulefold.cone", "modulefoldlate.cone"]
 
 # -------- success --------
 
@@ -70,6 +71,21 @@ contains = [
   "define internal twice comdat nodeduplicate",
 ]
 excludes = ["onemod."]
+
+# A global's fold binds names and declares nothing. The global is one symbol and
+# each method is one, spelled exactly as they would be with no fold written, and
+# no symbol is spelled after a folded name -- not the wildcard's, not the renamed
+# ones. What makes that possible is the receiver: a global is one instance at a
+# fixed address, so a folded name needs no copy, no offset and no thunk.
+[[scenario.module-success.check]]
+name = "a-global-fold-declares-no-symbol-of-its-own"
+target = "symbols"
+contains = [
+  "global internal settings comdat nodeduplicate",
+  "global internal backup comdat nodeduplicate",
+  "define internal Settings.cells comdat nodeduplicate",
+]
+excludes = ["rows", "cols", "backupRows", "backupCells"]
 
 [scenario.module-declared]
 category = "compile"
@@ -451,6 +467,24 @@ category = "reject"
 description = "Private names a wildcard import does not fold: a function, an overload name and its candidate"
 tags = ["nameres"]
 diagnostics = 3
+
+# A global's fold is expanded while the module is name resolved, so what a clause
+# may admit and what it may fold from are this stage's.
+[scenario.module-nameres-fold-global]
+category = "reject"
+description = "What a global's 'use' clause may not admit, and what it may not fold from"
+tags = ["nameres"]
+diagnostics = 8
+
+# A fold makes a binding, and a binding carries its own visibility: 'use pub'
+# widens what the folding module shows, a plain 'use' does not, and the members
+# behind both are public in the type either way. Its one annotation lives in the
+# support module that writes the reach, because that is where it is reported.
+[scenario.module-nameres-fold-visibility]
+category = "reject"
+description = "A folded name reached from another module: public only if the clause said 'pub'"
+tags = ["nameres"]
+diagnostics = 1
 
 # The refused two-thirds of the load-order trio (see module-transit above).
 [scenario.module-nameres-transit]

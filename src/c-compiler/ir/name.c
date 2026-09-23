@@ -247,13 +247,13 @@ static Nodes *nameOwnTypeArgs(INode *node) {
     return typeargs;
 }
 
-// The declaration a type expression names, through any name use or typedef
+// The declaration a type expression names, through any name use or type alias
 static INode *nameTypeDcl(INode *type) {
     while (1) {
         if (isNameUseNode(type) && isTypeNode(type))
             type = nameUseGetDcl((NameUseNode *)type);
-        else if (type->tag == TypedefTag)
-            type = ((TypedefNode *)type)->typeval;
+        else if (type->tag == AliasDclTag)
+            type = ((AliasDclNode *)type)->target;
         else
             return type;
     }
@@ -336,7 +336,7 @@ char *nameType(char *bufp, INode *vtype) {
     if (isNameUseNode(vtype) && isTypeNode(vtype))
         return nameType(bufp, nameTypeDcl(vtype));
     switch (vtype->tag) {
-    case TypedefTag:
+    case AliasDclTag:
         return nameType(bufp, nameTypeDcl(vtype));
 
     case UintNbrTag:

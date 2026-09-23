@@ -10,21 +10,25 @@
 // A fold clause -- 'use a, b as c' or 'use * but d' -- saying which names of a
 // source type become names of the type it is written in, under what spelling.
 //
-// It is written at two sites, and the source differs. On a FIELD the source is
-// the field's type, and the clause follows the type: 'engine Engine use *'.
-// In a TYPE BODY the clause is the whole statement and names its source itself,
-// a SIBLING enrichment of the same base: 'use Trig but atan'. There the whole
-// member set is the default, because that is what naming a sibling asks for, so
-// a clause with no list is a star clause.
+// It is written at three sites, and the source differs. On a FIELD the source
+// is the field's type, and the clause follows the type: 'engine Engine use *'.
+// On a module's GLOBAL it is the same shape and the same source rule, and what
+// it folds into is the module: 'config Config use *'. In a TYPE BODY the clause
+// is the whole statement and names its source itself, a SIBLING enrichment of
+// the same base: 'use Trig but atan'. There the whole member set is the default,
+// because that is what naming a sibling asks for, so a clause with no list is a
+// star clause.
 //
-// Expanded by structFoldExpand for a field and structUseSiblingExpand for a
-// sibling, each of which is what binds an item's target.
+// Expanded by structFoldExpand for a field, foldGlobalExpand for a global and
+// structUseSiblingExpand for a sibling, each of which is what binds an item's
+// target.
 typedef struct FoldClause {
     INode *at;          // A node positioned at the clause's 'use': where its diagnostics land, and where a star-made alias is placed
     Nodes *items;       // An AliasDclNode per admitted name: the local spelling, targeting the spelling in the source type
     Nodes *excludes;    // A member name use per name after 'but' (NULL when none)
     uint16_t star;      // Every public member not excluded; the items are made at expansion
     uint16_t expanded;  // Expansion has run on this node (a clone starts over)
+    uint16_t ispub;     // 'use pub': the bindings it makes are visible outside the namespace folding them
 } FoldClause;
 
 // Field declaration node. Two of its slots serve name folding, and each is

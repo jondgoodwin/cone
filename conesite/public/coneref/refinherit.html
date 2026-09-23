@@ -30,6 +30,10 @@
 		<a href="#enrich">Enriching a concrete type</a>. And in the <b>type's body</b>, with
 		<span class="pre">use</span>, it folds in a <i>sibling</i>: somebody else's enrichment of that
 		same base — see <a href="#siblings">Composing several enrichments of one base</a>.</p>
+	<p>There is a fourth place, and it is not inside a type at all: a <b>module's global variable</b>
+		may carry the same clause, folding its type's members in as names of the module &mdash; see
+		<a href="#globals">Folding through a global</a>. A module has exactly one instance, so that is
+		the field's fold with the receiver settled in advance.</p>
 
 	<h2>Selective Inheritance</h2>
 	<p>Imagine we have this <span class="pre">Engine</span> type:</p>
@@ -371,6 +375,61 @@ struct Rich extends Meter {
 	<p>A <span class="pre">use</span> inside a type is always this — composition, on the producer's
 		side, saying what this type is built out of. It is never an import: ordinary name lookup
 		inside a type's methods comes from the enclosing module, as it always did.</p>
+
+	<h2 id="globals">Folding through a global</h2>
+	<p>A module is a namespace too, and a global variable is to a module what a field is to a type:
+		the one difference is that there is exactly one of it. So a global carries the same clause,
+		and it folds its type's members in as names of the module:</p>
+<pre>
+struct Config {
+  pub width  i64;
+  pub height i64;
+
+  pub fn area(self) i64 { width * height; }
+}
+
+mut config Config = Config[80i64, 24i64] use *;
+
+fn banner() i64 {
+  area();          // config.area()
+}
+</pre>
+	<p><span class="pre">width</span>, <span class="pre">height</span> and
+		<span class="pre">area</span> are now names of this module, reached through
+		<span class="pre">config</span>. Every form the field's clause takes is here:
+		<span class="pre">use width, area as size</span> lists and renames,
+		<span class="pre">use * but height</span> leaves one out, and a long list may be written as
+		a block, <span class="pre">use { width, height, area as size }</span>. What folds and what
+		does not is the field's rule, unchanged: only public members, no static, no
+		<span class="pre">final</span> or <span class="pre">clone</span>, and the source must be a
+		struct rather than a trait or an enum.</p>
+	<p>What this buys that folding one module into another cannot is <b>composing a module out of a
+		struct</b>: the module presents a singleton's interface as its own names, and a caller writing
+		<span class="pre">area()</span> need not know there is a <span class="pre">Config</span> behind
+		it. It costs nothing at run time either. A folded name is a name for one thing at one address,
+		known when the program is compiled, so there is no receiver to find and nothing extra is
+		generated — the call is the one you would have written by hand.</p>
+
+	<h3>What the module shows of it</h3>
+	<p>A fold is private to the module that made it, whatever the member's visibility in its own type.
+		That is the same rule a folded name has everywhere: the name is this module's, so this module
+		says who may see it. Writing <span class="pre">pub</span> inside the clause opts in:</p>
+<pre>
+pub mut config Config = Config[80i64, 24i64] use pub width, area as size;
+</pre>
+	<p>Now another module may write <span class="pre">display.width</span> and
+		<span class="pre">display.size()</span>. The global itself must be
+		<span class="pre">pub</span> for that, since it is what the folded name is reached through.
+		Folding never widens visibility past the origin either: a member that is private in
+		<span class="pre">Config</span> does not fold at all, with or without
+		<span class="pre">pub</span>.</p>
+	<p><i>A global's is the only <span class="pre">use</span> clause the compiler builds today.
+		<span class="pre">use</span> on an <span class="pre">import</span>, and standing on its own
+		against an imported module, are described in
+		<a href="refmodule.html">Modules</a> and are not built yet; until they are, an import folds
+		with <span class="pre">.*</span> and cannot select, rename or re-export. A module's folded
+		name is also reachable only from a module compiled after it, which is a known defect of
+		import ordering rather than a rule.</i></p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refmove.html"><img alt="_" src="next.png" /></a>
