@@ -12,6 +12,16 @@ struct @move Handle {
   pub id i32;
 }
 
+// A move type because its field is one, and an enrichment of it: one
+// representation under two names
+struct Wrapper {
+  pub h Handle;
+}
+
+struct RichWrapper extends Wrapper {
+  pub fn id(self &) i32 { h.id; }
+}
+
 fn take(h Handle) i32 {
   h.id;
 }
@@ -38,6 +48,17 @@ fn main() i32 {
   imm f = e;
   imm g = f;
   take(f);              //~ ErrorMove:8 "moved out"
+
+  // Handing a value across to its enrichment's name moves it, and so does
+  // handing one back to the base's. The two share one representation, so the
+  // value crosses in a recast, and the recast once hid the source from flow:
+  // it stayed usable and the value was finalized under both names.
+  imm i = Wrapper[Handle[5]];
+  imm j RichWrapper = i;
+  imm useI = i.h.id;    //~ ErrorMove:14 "moved out"
+  imm k = RichWrapper[Handle[6]];
+  imm l Wrapper = k;
+  imm useK = k.h.id;    //~ ErrorMove:14 "moved out"
 
   // The other state flow analysis rejects a use in: declared, never given a
   // value. Distinct from deactivation, and reported with the same code.

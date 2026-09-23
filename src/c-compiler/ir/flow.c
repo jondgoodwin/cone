@@ -31,6 +31,13 @@ void flowHandleMove(INode *node) {
         flowHandleMove(((StarNode*)node)->vtexp);
         break;
 
+    // A recast is its operand under another type name -- an enrichment and its
+    // base, which share one representation -- so moving it moves the operand
+    case CastTag:
+        if (!(node->flags & FlagConvert))
+            flowHandleMove(((CastNode*)node)->exp);
+        break;
+
     // A tuple literal has no storage of its own: its sources are its elements,
     // and only a move-typed element is moved out of, the rest are copied
     case VTupleTag:
@@ -131,6 +138,9 @@ int flowIsLvalRead(INode *node) {
     case ArrIndexTag:
     case FldAccessTag:
         return 1;
+    // A recast reads its operand, and holds only what the operand holds
+    case CastTag:
+        return !(node->flags & FlagConvert) && flowIsLvalRead(((CastNode*)node)->exp);
     default:
         return 0;
     }
@@ -317,6 +327,9 @@ static int flowIsScopeResult(INode *retexp, VarDclNode *varnode) {
         }
         return 0;
     }
+    // A recast hands back its operand: a local returned as its enrichment or base
+    if (retexp->tag == CastTag && !(retexp->flags & FlagConvert))
+        return flowIsScopeResult(((CastNode *)retexp)->exp, varnode);
     return isNameUseNode(retexp) && isExpNode(retexp) && ((NameUseNode *)retexp)->dclnode == (INode *)varnode;
 }
 
