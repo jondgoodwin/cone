@@ -16,8 +16,12 @@ void dclInfoJoin(INode *node, INode *owner) {
 
     uint16_t facts = 0;
     // The parser's flag, read once: this is where the bit inodeIsPrivate reads
-    // is written. A module declares no visibility yet, so none is recorded for it.
-    if (node->tag != ModuleTag && !(node->flags & FlagPub))
+    // is written. A module carries a visibility only where it has a parent to be
+    // visible outside of -- a submodule, which its parent's subfolder drew. A
+    // module that is a file of its own, and one an 'import' reached, has no
+    // parent and so no visibility; a submodule's own 'pub mod' declaration is
+    // what clears the bit this sets.
+    if ((node->tag != ModuleTag || owner != NULL) && !(node->flags & FlagPub))
         facts |= DclPrivate;
     // 'extern' and 'extern system' are fn/var flags; the same bits mean other things on a type
     if (node->tag == FnDclTag || node->tag == VarDclTag) {

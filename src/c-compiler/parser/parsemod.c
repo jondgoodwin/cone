@@ -38,19 +38,37 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart);
 ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name *filesym);
 
 // ---------------------------------------------------------------------------
-// The file registry and the folder sweep
+// The file registry and the folder tree
 //
 // A module's source files are the files of a folder. The compiler is given one
 // file and finds the rest itself: the folder's other '.cone' files join the
-// module, and so do the files of every subfolder, at any depth. No file set is
-// ever hand-listed, and moving a file between folders is a semantic move.
+// module, and so do the files of every organisational subfolder, at any depth.
+// No file set is ever hand-listed, and moving a file between folders is a
+// semantic move.
 //
 // What makes a folder a module folder is the designated file it holds, named for
 // the folder -- 'matrix/matrix.cone'. That convention is the whole of the
 // trigger: the file the compiler is given sweeps its folder exactly when it is
-// that folder's designated file, which is the same probe a subfolder gets. A
+// that folder's designated file, and the same probe decides every subfolder. A
 // file that is not its folder's designated file is a module of its own, exactly
 // today's program, and its neighbours are none of its business.
+//
+// So the folder tree carries the MODULE TREE: a subfolder holding its own
+// designated file is a SUBMODULE of the enclosing module, with its own namespace,
+// its own files and its own subfolders, and any other subfolder is
+// ORGANISATIONAL, grouping the enclosing module's files without minting a
+// namespace for them. A module folder must be a direct child of its parent
+// module's folder, so the module tree's shape mirrors the folder tree's, and a
+// designated file deeper than that is refused rather than drawing a module the
+// shape could not hold.
+//
+// A submodule is a module in every respect; what makes it a child is that its
+// parent OWNS it -- which puts the parent's name in front of its declarations'
+// symbols -- and that it is private to its parent unless its declaration says
+// 'pub'. A parent reaches into it by path, 'sub.name', the ordinary path rule
+// through a namespace. Reaching SIDEWAYS is what a module cannot do yet: a
+// submodule's namespace holds its own names and its own children, not its
+// sisters, which is the import work's to give it.
 //
 // Locating a file, registering it to a module and parsing it into that module
 // are three separate steps, because what must happen exactly once is the
@@ -86,9 +104,22 @@ Name *parseDesignatedFolder(char *path) {
     return nametblFind(foldername, strlen(foldername));
 }
 
-// Collect the paths of every '.cone' file beneath a folder: the folder's own
-// files first, then each subfolder's, at any depth
-void parseCollectFolder(FileNames *files, char *folder, char *designated) {
+// Collect a module's files from its folder tree, and the designated file of every
+// subfolder that draws a submodule: the folder's own files first, then each
+// organisational subfolder's, at any depth.
+//
+// Every subfolder gets the same probe the file the compiler was given got. One
+// that holds its own designated file draws a module, so the sweep stops there and
+// leaves that folder's files to it; any other is organisational and its files are
+// this module's.
+//
+// 'organisational' says this folder is one of those, and it is what makes the
+// direct-child rule a rule rather than a convention: a designated file beneath an
+// organisational folder would be a module whose parent module's folder is not its
+// folder's parent, which the module tree has no shape for. It is refused, and the
+// folder holding it stays organisational -- its files, that one among them, belong
+// to the enclosing module, so the compile goes on with a coherent file set
+void parseCollectFolder(FileNames *files, FileNames *submodules, char *folder, char *designated, int organisational) {
     FileNames cones, folders;
     if (!fileFolderScan(folder, &cones, &folders))
         return;    // a folder that cannot be read contributes no files
@@ -98,26 +129,31 @@ void parseCollectFolder(FileNames *files, char *folder, char *designated) {
             fileNamesAdd(files, path);
     }
     for (uint32_t i = 0; i < folders.count; ++i) {
-        // A subfolder holding its own designated file is a SUBMODULE, and this
-        // is the one branch the walk does not take yet: it would probe here for
-        // '<sub>/<sub>.cone' and recurse into it as a module of its own instead
-        // of absorbing the subfolder's files. Until that is built every
-        // subfolder is organisational, so its files, at any depth, belong to the
-        // enclosing module -- which is what lets a forty-file module group its
-        // files by topic without minting namespaces for them
         char *subfolder = parsePathJoin(parsePathJoin(folder, folders.names[i]), "/");
-        parseCollectFolder(files, subfolder, designated);
+        char *subdesignated = fileDesignatedFile(subfolder, folders.names[i]);
+        if (subdesignated != NULL && !organisational) {
+            fileNamesAdd(submodules, subdesignated);
+            continue;
+        }
+        if (subdesignated != NULL)
+            errorMsg(ErrorModFolder,
+                "Source file %s is named for its folder and so draws a module, but a module folder must be a direct child of its parent module's folder. It sits beneath organisational folder %s, whose files are the enclosing module's.",
+                subdesignated, folder);
+        parseCollectFolder(files, submodules, subfolder, designated, 1);
     }
 }
 
 // Every file of the module a designated file draws: the designated file first,
-// then the rest of its folder's tree. A file that is nobody's designated file is
-// a module of one file
-void parseModuleFiles(FileNames *files, char *path, int designated) {
+// then the rest of its folder's tree, minus whatever its submodules hold.
+// 'submodules' comes back with the designated file of each subfolder that draws
+// one. A file that is nobody's designated file is a module of one file, and
+// sweeps nothing
+void parseModuleFiles(FileNames *files, FileNames *submodules, char *path, int designated) {
     fileNamesInit(files);
+    fileNamesInit(submodules);
     fileNamesAdd(files, path);
     if (designated)
-        parseCollectFolder(files, memAllocStr(path, fileFolder(path)), path);
+        parseCollectFolder(files, submodules, memAllocStr(path, fileFolder(path)), path, 0);
 }
 
 // Register a module's files, so that each is read once and belongs to this
@@ -250,6 +286,16 @@ ImportNode *parseImport(ParseState *parse) {
         return NULL;
     }
 
+    // Nor is a submodule imported. A subfolder holding its own designated file is
+    // already a module of this one, bound under the name its folder gives it, so
+    // naming it here asks for a second binding of a name this module already has
+    if (newmod->dclinfo.owner == (INode*)parse->mod) {
+        errorMsgLexAfter(ErrorModFile,
+            "Module %s is a submodule of this one: the folder that holds it is what brings it in, so it is named without being imported.",
+            &newmod->namesym->namestr);
+        return NULL;
+    }
+
     // Add imported module to namespace of existing module, under the name the
     // module declares for itself. That is the filename-derived one until the
     // file carries a 'mod' declaration: the declaration wins, and the file is
@@ -365,7 +411,21 @@ void parseSkipDclBody() {
 // one has nothing left to declare, and a file the folder swept in -- or an
 // included one, whose declarations join the including module -- carries none at
 // all.
-void parseModuleDcl(ModuleNode *mod, int atmodstart) {
+//
+// 'pub' is what opens a SUBMODULE to its parent's neighbours: a submodule is
+// private to its parent unless its own declaration says otherwise, which is the
+// rule every declaration follows, reaching the declaration that draws a module.
+// Its own declaration is the only place it can be written, since the parent
+// declares nothing about a subfolder -- the folder is the declaration. A module
+// with no parent has nothing to be visible outside of.
+void parseModuleDcl(ModuleNode *mod, int atmodstart, uint16_t pubflag) {
+    // A submodule is the module its parent owns, and the only one 'pub' can speak
+    // for. The root, a module that is a file of its own and an imported module are
+    // each inside nothing
+    int issubmodule = mod->dclinfo.owner != NULL;
+    if (pubflag && !issubmodule)
+        errorMsgLex(ErrorBadPub,
+            "'pub' on a module declaration says the module is visible outside its parent module, and this module has no parent.");
     lexNextToken();
 
     // 'mod trait' is a module's abstraction: the spelling is settled by 'trait'
@@ -404,6 +464,13 @@ void parseModuleDcl(ModuleNode *mod, int atmodstart) {
                 "A 'mod' declaration must be its module's designated file's first statement, and a module declares itself once. A file the folder swept in declares nothing.");
         else {
             mod->flags |= FlagModDcl;
+            // What 'pub' does, where there is a parent for it to speak to: the
+            // submodule joins its parent's namespace as a public name, which its
+            // parent's neighbours may then name a path through
+            if (pubflag && issubmodule) {
+                mod->flags |= FlagPub;
+                mod->dclinfo.facts &= ~DclPrivate;
+            }
             if (mod->foldersym != NULL) {
                 // The folder names the module and has bound that name already
                 if (modname != mod->foldersym)
@@ -478,14 +545,12 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             break;
         }
 
-        // 'mod' names the module this file belongs to. 'pub' would say that the
-        // module is visible outside a parent it does not have yet, and a module
-        // has no instances for a 'static' to be shared across
+        // 'mod' names the module this file belongs to. 'pub' says a SUBMODULE is
+        // visible outside its parent, and is refused where the module has no
+        // parent; a module has no instances for a 'static' to be shared across
         case ModToken:
-            if (pubflag)
-                errorMsgLex(ErrorBadPub, "'pub' may not precede a module declaration");
             parseBadStatic(staticflag);
-            parseModuleDcl(mod, atstart);
+            parseModuleDcl(mod, atstart, pubflag);
             break;
 
         // 'actor' is a kind the grammar admits and the compiler does not build.
@@ -596,6 +661,98 @@ void parseModuleFilesParse(ParseState *parse, ModuleNode *mod, FileNames *files)
     }
 }
 
+void parseSubmodule(ParseState *parse, ModuleNode *parent, char *path);
+
+// Add the auto-import of the core library, which every module but corelib itself
+// carries, ahead of whatever the module's own files import
+void parseAddCorelibImport(ParseState *parse, ModuleNode *mod) {
+    ModuleNode *corelib = pgmFindFile(parse->pgm, corelibName);
+    if (corelib == NULL || corelib == mod)
+        return;
+    ImportNode *importnode = newImportNode();
+    importnode->foldall = 1;
+    importnode->module = corelib;
+    modAddNode(mod, NULL, (INode*)importnode);
+}
+
+// Draw the submodules this module's subfolders designate, then parse its own
+// files. The module's hook is current, so every name added joins this module's
+// namespace.
+//
+// The submodules come FIRST, and both reasons are about what a name means before
+// a file is read. A subfolder's module is a name of this namespace that no
+// statement in any of these files declares, so binding it ahead of them makes a
+// collision with a declaration report against the declaration, which has a
+// position in a source that a folder does not. And it registers the submodule's
+// files, so a file of this module that names one of them reaches the module that
+// holds it rather than reading it a second time
+void parseModuleTree(ParseState *parse, ModuleNode *mod, FileNames *files, FileNames *submodules) {
+    for (uint32_t i = 0; i < submodules->count; ++i)
+        parseSubmodule(parse, mod, submodules->names[i]);
+    parseModuleFilesParse(parse, mod, files);
+}
+
+// Draw the submodule a subfolder's designated file names: a module of its own,
+// holding that folder's files and whatever its own subfolders draw, bound in its
+// parent's namespace under the name the folder gives it.
+//
+// Two things make it a child rather than a neighbour. Its parent OWNS it, which is
+// what puts the parent's name in front of every symbol it declares, and it is
+// private to its parent unless its declaration says 'pub'. Everything else about
+// it is what any module has, which is why this is one branch of the sweep rather
+// than a second kind of module.
+//
+// The parent's hook is current when this is called, which is what the binding
+// needs: the name joins the parent's namespace and is unhooked when the parent's
+// parse ends. The submodule's own parse swaps the hook over, so a submodule
+// neither sees nor collides with its parent's names
+void parseSubmodule(ParseState *parse, ModuleNode *parent, char *path) {
+    Name *pathsym = nametblFind(path, strlen(path));
+    ModuleNode *held = pgmFindFile(parse->pgm, pathsym);
+    if (held) {
+        // A subfolder is swept by exactly one module folder, and the parent
+        // registers its own files before drawing any submodule, so the only way
+        // here is a file named twice by a path spelled two ways
+        errorMsg(ErrorModFile,
+            "Source file %s already belongs to module %s, and a file belongs to one module.",
+            path, &held->namesym->namestr);
+        return;
+    }
+
+    ModuleNode *mod = pgmAddMod(parse->pgm, FlagGenMod);
+    char *basename = fileName(path);
+    mod->filesym = nametblFind(basename, strlen(basename));
+    // The folder names the module, as it does for any module a designated file
+    // draws -- and here the folder is a subfolder of the parent's
+    mod->foldersym = parseDesignatedFolder(path);
+    mod->namesym = mod->foldersym ? mod->foldersym : mod->filesym;
+    // The parent owns it: a submodule's declarations are spelled after the
+    // parent's name, and dclInfoJoin makes it private to the parent until a 'pub'
+    // on its declaration says otherwise
+    dclInfoJoin((INode*)mod, (INode*)parent);
+    mod->dclinfo.facts |= DclNamesChain;
+    // Bound in the parent, which is how the parent reaches it: 'sub.name' is the
+    // ordinary path rule through a namespace, and a duplicate of the name is the
+    // ordinary namespace rule
+    modAddNamedNode(parent, mod->namesym, (INode*)mod);
+
+    // Its files, all registered before any is parsed, for the reason the enclosing
+    // module's are
+    FileNames files, submodules;
+    parseModuleFiles(&files, &submodules, path, 1);
+    parseRegisterModuleFiles(parse, mod, &files);
+    parseAddCorelibImport(parse, mod);
+
+    ModuleNode *svmod = parse->mod;
+    parse->mod = mod;
+    modHook(svmod, mod);
+    if (mod->foldersym)
+        modAddNamedNode(mod, mod->namesym, (INode*)mod);
+    parseModuleTree(parse, mod, &files, &submodules);
+    modHook(mod, svmod);
+    parse->mod = svmod;
+}
+
 // Load the module a name reaches, unless a module holds its file already, then
 // fully parse it. Three steps: locate the file, register it and every other file
 // its folder sweeps in, and parse each of them into the module.
@@ -640,22 +797,17 @@ ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name 
 
     // The module's files, all registered before any of them is parsed, so that
     // which files the module holds does not depend on what the parse of one of
-    // them imports
-    FileNames files;
-    parseModuleFiles(&files, path, mod->foldersym != NULL);
+    // them imports, and the designated file of every subfolder that draws a
+    // submodule of it
+    FileNames files, submodules;
+    parseModuleFiles(&files, &submodules, path, mod->foldersym != NULL);
     if (builtin)
         pgmSetFile(parse->pgm, pathsym, mod);
     else
         parseRegisterModuleFiles(parse, mod, &files);
 
     // Before parsing, all modules (except corelib) get an auto-import of core lib
-    ModuleNode *corelib = pgmFindFile(parse->pgm, corelibName);
-    if (corelib && corelib != mod) {
-        ImportNode *importnode = newImportNode();
-        importnode->foldall = 1;
-        importnode->module = corelib;
-        modAddNode(mod, NULL, (INode*)importnode);
-    }
+    parseAddCorelibImport(parse, mod);
 
     // Parse the module's source, then pop lexer and name hook
     modHook(svmod, mod);
@@ -672,7 +824,7 @@ ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name 
         lexPop();
     }
     else
-        parseModuleFilesParse(parse, mod, &files);
+        parseModuleTree(parse, mod, &files, &submodules);
     modHook(mod, svmod);
 
     // Restore focus to original module we were working on
@@ -714,8 +866,8 @@ ProgramNode *parsePgm(ConeOptions *opt) {
         errorExit(ExitNF, "Cannot find or read source file %s", opt->srcpath);
     mod->foldersym = parseDesignatedFolder(path);
     mod->namesym = mod->foldersym ? mod->foldersym : mod->filesym;
-    FileNames files;
-    parseModuleFiles(&files, path, mod->foldersym != NULL);
+    FileNames files, submodules;
+    parseModuleFiles(&files, &submodules, path, mod->foldersym != NULL);
     parseRegisterModuleFiles(&parse, mod, &files);
 
     // Inject and parse core library module, auto-imported into main source
@@ -733,7 +885,7 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     // A stray '}' at global scope ends a file's statement loop. Without the
     // end-of-file check inside, the rest of that file would be silently
     // discarded, exactly as an include would be
-    parseModuleFilesParse(&parse, mod, &files);
+    parseModuleTree(&parse, mod, &files, &submodules);
     modHook(mod, NULL);
     return pgm;
 }

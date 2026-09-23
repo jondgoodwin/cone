@@ -15,7 +15,9 @@
 # The files inside one are not registered: the sweep is what finds them, and
 # listing them would restate the thing under test.
 #
-# Only module-success and module-folder-sweep run. Everything about 'import'
+# Only module-success, module-folder-sweep and module-submodule run. Each of them
+# is one module or one tree of them compiled into one object, which is what a
+# program is. Everything about 'import'
 # compiles and stops there:
 # a program spanning modules cannot be linked yet, and design/diagnostics/test-suite.md
 # section 4 forbids adding a synthetic 'main' to promote a scenario's category.
@@ -142,6 +144,62 @@ contains = [
   "declare modfolder.partsOf",
 ]
 excludes = ["parts.", "helper.", "scale."]
+
+# -------- the module tree --------
+#
+# A subfolder holding its own designated file is a SUBMODULE, so the folder tree
+# carries the module tree. module-submodule runs one, two levels deep, and pins
+# what the tree spells at the linker; module-submodule-reject holds what the tree
+# refuses at parse, and module-submodule-nameres what a path through it may not
+# reach.
+#
+# All three are folder scenarios and could not be anything else: a submodule comes
+# from a folder, so the layout IS the case.
+
+[scenario.module-submodule]
+category = "run"
+description = "A module tree two levels deep: a submodule of the root and a submodule of that, reached by path, beside the organisational folders that draw nothing"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+# A submodule is owned by its parent, so its declarations are spelled after the
+# parent's name and a submodule of a submodule after both. The root contributes
+# nothing, as it does for any program, so what a submodule's symbol carries is the
+# tree below the root and no more.
+#
+# Neither an organisational folder nor a file is a namespace, at any level: what
+# detail/helpers.cone declares is spelled after geometry alone, exactly as a file
+# swept into the root is spelled bare.
+[[scenario.module-submodule.check]]
+name = "a-submodules-declarations-are-spelled-after-its-parents"
+target = "symbols"
+contains = [
+  "define internal perimeter comdat nodeduplicate",
+  "define internal geometry.area comdat nodeduplicate",
+  "define internal geometry.perimeterOf comdat nodeduplicate",
+  "define internal geometry.marginOf comdat nodeduplicate",
+  "define internal geometry.scaling.twice comdat nodeduplicate",
+  "global internal geometry.unit comdat nodeduplicate",
+]
+excludes = ["module-submodule.", "detail.", "helpers.", "shapes.", "geometry.detail"]
+
+[scenario.module-submodule-reject]
+category = "reject"
+description = "What the module tree refuses: a designated file too deep to draw a module, and an import naming the module's own submodule"
+tags = ["parse"]
+diagnostics = 3
+
+# The refusal of a module folder that is not a direct child of its parent
+# module's folder has no line of its own: which folder draws a module is a fact
+# about the filesystem, not a position in a source.
+[[scenario.module-submodule-reject.unlocated]]
+code = "ErrorModFolder"
+message = "direct child of its parent module's folder"
+
+[scenario.module-submodule-nameres]
+category = "reject"
+description = "What a path through the tree may not reach: a submodule's private declaration, an unmarked submodule from outside its parent, and a sister"
+tags = ["nameres"]
+diagnostics = 3
 
 [scenario.module-declared]
 category = "compile"
@@ -471,9 +529,9 @@ diagnostics = 2
 # 'mod' that are admitted and unbuilt.
 [scenario.module-parse-mod]
 category = "reject"
-description = "A 'mod' declaration that is misplaced or has no name, and the nested block and abstraction shapes that are unbuilt"
+description = "A 'mod' declaration that is misplaced, has no name or is 'pub' with no parent module, and the nested block and abstraction shapes that are unbuilt"
 tags = ["parse"]
-diagnostics = 4
+diagnostics = 6
 
 # What the sweep refuses. It is a folder scenario because several of its
 # diagnostics are reported against a file the scenario's own source never names:

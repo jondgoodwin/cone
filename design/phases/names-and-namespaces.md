@@ -144,9 +144,11 @@ Current compiler behavior:
 - `import` loads or reuses another module — keyed on the file's path, so a file is read once and belongs to one module whatever that module turns out to be called — and binds it under the module's own name. An import naming a file of the importing module's own folder is `ErrorModFile`: the folder brought it in already.
 - A module's **global may carry a `use` clause**, folding members of its type in as names of the module: `config Config use *`. See "Folding through a global" below. No other variable may — a local, a parameter and a type's static are `ErrorBadFold` where the clause is written, because none of them is part of a namespace for a name to fold into.
 - A nested `mod name { ... }` block is admitted by the grammar and unbuilt: it needs a namespace of its own, a hook pushed and popped around its parse, and paths reaching through it. So is `mod trait`, a module's abstraction.
-- A folder creates a namespace when it holds its designated file, and its subfolders do not: a subfolder groups a module's files without making a namespace of them, so its declarations are the enclosing module's and collide with them.
+- A folder creates a namespace exactly when it holds its designated file, and that holds at every level: a subfolder that holds one draws a **submodule**, with a namespace of its own; a subfolder that holds none groups a module's files without making a namespace of them, so its declarations are the enclosing module's and collide with them.
+- **A submodule is a name of its parent's namespace**, bound at load under the folder's name, so it is reached as `sub.name` by the ordinary path rule and nothing about that path knows a folder put the name there. It is **private to its parent unless its own declaration writes `pub`**, which is what a path from anywhere else is checked against. Its declarations are spelled after its parent's name, and a submodule of a submodule after both.
+- 🛑 **A module reaches downward and not sideways.** A module's namespace holds what it declares, what a fold brought in and its own children; a sister's name is bound nowhere in it, so naming one is `ErrorUnkName` rather than a visibility refusal, and a parent that wants two children to share hands the work down. Reaching a sister is what makes a module the registry its children resolve against, and that is not built.
 
-Documented intent allows named modules nested within modules and libraries packaged for import. Nesting and package-level namespace rules remain to be built.
+Documented intent allows libraries packaged for import, and named modules nested within a source *file*. Package-level namespace rules and the nested `mod` block remain to be built; the module tree a folder tree carries is built.
 ## Uniqueness, overloading and `extern`s
 
 The default rule is: **one spelling, one NameDef, at each namespace level**. This applies across declaration categories. A type and a variable, or a macro and a module, may not coexist under the same spelling in one namespace. With the exception of `extern`s and overloading, declaring duplicate names in the same namespace results in a compiler error.
@@ -188,7 +190,8 @@ Current compiler behavior:
 
 - `name` begins in the active lexical/module context.
 - `module.name` begins wherever `module` is in scope, which is the ordinary bare-name rule and nothing else. A local, a parameter or a type member of that spelling therefore hides the module, and there is no way to reach past it.
-- There is no root anchor and no parent access. **The enclosing module is named by its own name**, which its `mod` declaration gives it and which is an entry in its own namespace, so `mymod.x` reaches a module-level `x` that a local or a type member hides. A module that reaches an *upper* module does so by importing and naming it.
+- There is no root anchor and no parent access. **The enclosing module is named by its own name**, which its folder or its `mod` declaration gives it and which is an entry in its own namespace, so `mymod.x` reaches a module-level `x` that a local or a type member hides. A module that reaches an *upper* module does so by importing and naming it.
+- **A parent reaches a submodule by path, `sub.x`**, and needs nothing new to do it: `sub` is a name of the parent's own namespace, which its subfolder put there, and what follows is the same namespace hop any path takes. The hop's privacy check already asks whether the qualifying module is the asking one, so a submodule's private name is `ErrorNotPublic` from its parent, and a submodule that is not `pub` is `ErrorNotPublic` from anywhere but its parent.
 - A path may have any number of hops, each of which must resolve to a module or a struct-like type. **An alias resolves to whatever is at the end of its chain**, so a `typedef` of a struct is a hop like the struct itself. A hop through anything else — a number type, a generic instance, a generic parameter — is `ErrorUnkName` at type check.
 - A resolved `NameUseNode` points directly to a heterogeneous declaration node. It keeps its one tag; whether it is a type, a value, a macro or a generic parameter is asked of that node (`nameUseGroup`, `nameUseNames`), never stamped on the use. The one thing stamped on it is `FlagQualified`, which says the name was reached through a namespace rather than written bare.
 
@@ -412,7 +415,10 @@ Rules for Cone-consumed names; C FFI names have their own (S5).
 - **S2.** The owner chain is the enclosing modules, outermost first, then the
   enclosing types, then — for a function's `static` alone — the function that
   declares it, since that is the one declaration a function owns a symbol for;
-  a module never sits inside a type. **There is no package name.** The compiler knows only module names declared in source; the version
+  a module never sits inside a type. **A submodule is an enclosing module like
+  any other**, so a declaration of `geometry/scaling/` is spelled
+  `geometry.scaling.twice` and the folder tree it came from is nowhere in it:
+  what a symbol carries is modules, and an organisational folder is not one. **There is no package name.** The compiler knows only module names declared in source; the version
   slot is v0's disambiguator, `s<base62>_` before the top module's identifier,
   and nothing fills it.
 - **S3.** A source file with no `mod` declaration contributes no module name,
@@ -810,4 +816,4 @@ would see little but `main`.
 - Packages organize importable libraries but are not yet defined as a distinct namespace layer.
 - A path may only pass through a module or a struct-like type, or an alias of one. One whose base is a number type, a generic instance or a generic parameter is refused at type check, because none of those names a namespace at the point the collapse runs. Finishing those at type check, where they do, is the natural other half of the collapse and is not built.
 - A module that is one file is still named after that file, and a `mod` declaration in it still renames it. A folder is what replaces filename naming, and a module that has no folder of its own has nothing else to be named after.
-- **Submodules are unbuilt.** A subfolder holding its own designated file draws no module: its files join the enclosing one like any other subfolder's, so the module tree the folder tree carries is one level deep.
+- **A module has no way to reach a sister.** The module tree a folder tree carries is built, and a module reaches its own children and nothing else: a name from another subtree resolves nowhere. A module is meant to be the registry its children resolve a sister through, and that registry is unbuilt, so today a parent hands a sister's work down or the two are one module.

@@ -41,7 +41,8 @@ here goes stale without anyone noticing.
   its authoring guide.
 - `test/cases/<group>/`: one directory per coverage group, each with a
   `cases.toml` listing its scenarios. A scenario is one `.cone` file, or a folder
-  named for it holding the files of one module.
+  named for it holding the files of one module — and, where the case is about the
+  module tree, the subfolders that draw submodules of it.
 - `test/codes.toml`: the pinned `ErrorCode` name-to-number table the runner
   checks `error.h` against before any case runs.
 
@@ -164,9 +165,11 @@ link it against `conestd` and the C runtime from a VS environment:
 link prog.obj build\x64-release\conestd.lib /OUT:prog.exe /SUBSYSTEM:CONSOLE msvcrt.lib legacy_stdio_definitions.lib
 ```
 
-A program that spans modules cannot be linked yet, so runtime checks live in a
-single module — one source file, or the files of one folder, which the compiler
-sweeps into one module. `design/nodes/module.md` explains why.
+A program that spans an `import` cannot be linked yet, because an imported
+module's bodies are declared and never generated. So runtime checks live in what
+one compile defines: one source file, the files of one folder, or that folder and
+the submodules its subfolders draw, whose bodies are generated like the rest of
+the program's. `design/nodes/module.md` explains why.
 
 ## Change discipline
 

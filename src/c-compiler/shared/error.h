@@ -210,6 +210,9 @@ enum ErrorCode {
     ErrorDupFile = 1110,        // Two files of one module sharing a basename, which leaves neither nameable
     ErrorModFile = 1111,        // A file brought into a module that another module already holds, or that this one already swept in
 
+    // Folder modules: a subfolder holding its own designated file is a submodule
+    ErrorModFolder = 1112,      // A designated file beneath an organisational folder, which is no module: a module folder is a direct child of its parent module's folder
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
