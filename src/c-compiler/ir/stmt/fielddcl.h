@@ -28,7 +28,7 @@ typedef struct FoldClause {
     Nodes *excludes;    // A member name use per name after 'but' (NULL when none)
     uint16_t star;      // Every public member not excluded; the items are made at expansion
     uint16_t expanded;  // Expansion has run on this node (a clone starts over)
-    uint16_t ispub;     // 'use pub': the bindings it makes are visible outside the namespace folding them
+    uint16_t ispub;     // 'pub use': the bindings it makes are visible outside the namespace folding them
 } FoldClause;
 
 // Field declaration node. Two of its slots serve name folding, and each is

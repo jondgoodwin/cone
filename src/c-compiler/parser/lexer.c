@@ -943,3 +943,21 @@ void lexNextToken() {
     lexNextTokenx();
     timerBegin(ParseTimer);
 }
+
+// Is the token after the current one the keyword 'word'? A look at the source
+// text and nothing more: no token is lexed, so nothing is reported twice and the
+// lexer stays where it was. Only white space may come between; a comment there
+// hides the keyword. The grammar needs this in one place -- a 'pub' after a
+// declaration, which is a fold clause's 'pub use' or else the start of the next
+// statement after a missing ';' -- and one keyword is all it ever looks for.
+int lexNextIsWord(char *word) {
+    char *srcp = lex->srcp;
+    while (*srcp == ' ' || *srcp == '\t' || *srcp == '\r' || *srcp == '\n')
+        srcp++;
+    size_t len = strlen(word);
+    if (strncmp(srcp, word, len) != 0)
+        return 0;
+    // The word must end where the keyword does, not run on into a longer name
+    char after = srcp[len];
+    return !(isalnum((unsigned char)after) || after == '_' || (after & 0x80));
+}

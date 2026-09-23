@@ -44,7 +44,7 @@ void foldStarItems(Namespace *ns, Name *srcname, FoldClause *fold, int admit);
 // when name resolution asks
 void foldGlobalExpand(NameResState *pstate, ModuleNode *mod, VarDclNode *global);
 
-// A module's 'use' of an enum: 'use Colors;', 'use pub Colors Red, Green as
+// A module's 'use' of an enum: 'use Colors;', 'pub use Colors Red, Green as
 // Verde;'. It folds the enum's variants in as names of the module, and nothing
 // else of the enum. It is a statement of the module rather than a clause on a
 // declaration, so it is a node of its own, held on the module's 'enumuses' list
@@ -53,7 +53,7 @@ void foldGlobalExpand(NameResState *pstate, ModuleNode *mod, VarDclNode *global)
 typedef struct EnumUseNode {
     INodeHdr;
     INode *source;      // The enum, as written: a name or a path, resolved when the fold is expanded
-    FoldClause *fold;   // Which variants, under which spellings; 'ispub' from 'use pub'
+    FoldClause *fold;   // Which variants, under which spellings; 'ispub' from 'pub use'
 } EnumUseNode;
 
 EnumUseNode *newEnumUseNode();

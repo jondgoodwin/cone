@@ -18,7 +18,7 @@
 //
 // Two spellings of 'pub', and they cannot disagree: 'pub import' makes every
 // binding the import makes public, the module's name and each fold alike, and
-// 'use pub' makes only the folds public. So 'ispub' is the module binding's bit,
+// 'pub use' makes only the folds public. So 'ispub' is the module binding's bit,
 // and the clause's 'ispub' is set by either spelling.
 typedef struct {
     INodeHdr;

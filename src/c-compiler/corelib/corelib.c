@@ -72,8 +72,8 @@ char *corelibSource =
 // None, Ok and Error bare names of core. They are 'pub', and every module's
 // automatic import of core folds its public names, which carries them on into
 // every program
-"use pub Option;\n"
-"use pub Result;\n"
+"pub use Option;\n"
+"pub use Result;\n"
 
 "pub extern fn malloc(size usize) *u8;\n"
 

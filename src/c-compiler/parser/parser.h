@@ -74,10 +74,17 @@ INode *parsePerm();
 // Parse the permission a declaration carries, defaulting to 'defperm'
 INode *parseDclPerm(PermNode *defperm);
 VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags);
-// Parse a field's fold clause, with the lexer on its 'use'
+// What a fold clause's site does with a 'pub': gives the clause a visibility of
+// its own (a module's global, an import), refuses it (a field), or reads it and
+// drops it with a clause the site has refused whole already
+enum FoldPub { FoldNoPub, FoldMayPub, FoldRecover };
+// Is the lexer on a fold clause: its 'use', or the 'pub' written before it?
+int parseIsFoldClause();
+// Parse a fold clause, with the lexer on its 'use' or on the 'pub' before it
 FoldClause *parseFoldClause(ParseState *parse, int maypub);
-// Parse a module's 'use' of an enum, with the lexer on the 'use'
-EnumUseNode *parseUseEnum(ParseState *parse);
+// Parse a module's 'use' of an enum, with the lexer on the 'use'. 'pubflag' is
+// the 'pub' written before it.
+EnumUseNode *parseUseEnum(ParseState *parse, uint16_t pubflag);
 ConstDclNode *parseConstDcl(ParseState *parse);
 INode *parseFnSig(ParseState *parse);
 INode *parseStruct(ParseState *parse, uint16_t flags);
