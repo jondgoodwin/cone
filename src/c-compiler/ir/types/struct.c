@@ -129,13 +129,23 @@ void structPrint(StructNode *node) {
     inodeFprint("}");
 }
 
-// Splice a trait's members into this type in place of the placeholder field at
-// 'fldpos' that stands for it: the trait's fields replace the placeholder as
-// clones, in the trait's order, and each method the trait gives a body to is
-// cloned into this type's method list unless the type declares the name itself.
-// A required method the type does declare is left for type check to compare
-// against the requirement, since that needs the signatures' types. The trait is
-// recorded so type check can find every requirement it imposes.
+// Does this base contribute its fields to the type standing on it?
+//
+// An enum does: it owns its variants' layout, so a variant's fields begin with
+// clones of the enum's -- the discriminant among them -- and the variant declares
+// none of them. A trait does not: what a trait's fields state is a requirement
+// the type satisfies by declaring them itself, which is what 'is-a' verifies.
+static int structBaseGivesFields(StructNode *base) {
+    return (base->flags & EnumType) != 0;
+}
+
+// Expand the placeholder field at 'fldpos' that stands for a base or a mixin:
+// the base's fields replace it as clones where it contributes any, and otherwise
+// it is removed, since a trait adds nothing to the layout. Each method the trait
+// gives a body to is cloned into this type's method list unless the type declares
+// the name itself. A required method the type does declare is left for type check
+// to compare against the requirement, since that needs the signatures' types. The
+// trait is recorded so type check can find every requirement it imposes.
 //
 // Called from name resolution for a trait that is a declaration when the type
 // is resolved, and from type check for an instance of a generic trait, which is
@@ -145,14 +155,18 @@ static void structInheritTrait(StructNode *node, uint32_t fldpos, StructNode *tr
     INode **nodesp;
     uint32_t cnt;
 
-    // Replace the placeholder with all the trait's fields
-    nodelistMakeSpace(&node->fields, fldpos, trait->fields.used - 1);
-    INode **insertp = &nodelistGet(&node->fields, fldpos);
-    for (nodelistFor(&trait->fields, cnt, nodesp)) {
-        FieldDclNode *newfld = (FieldDclNode*)cloneNode(cstate, *nodesp);
-        *insertp++ = (INode *)newfld;
-        if (namespaceAdd(&node->namespace, newfld->namesym, (INode*)newfld)) {
-            errorMsgNode((INode*)newfld, ErrorDupName, "Trait may not mix in a duplicate field name");
+    if (!structBaseGivesFields(trait))
+        nodelistMakeSpace(&node->fields, fldpos, -1);
+    else {
+        // Replace the placeholder with all the enum's fields
+        nodelistMakeSpace(&node->fields, fldpos, trait->fields.used - 1);
+        INode **insertp = &nodelistGet(&node->fields, fldpos);
+        for (nodelistFor(&trait->fields, cnt, nodesp)) {
+            FieldDclNode *newfld = (FieldDclNode*)cloneNode(cstate, *nodesp);
+            *insertp++ = (INode *)newfld;
+            if (namespaceAdd(&node->namespace, newfld->namesym, (INode*)newfld)) {
+                errorMsgNode((INode*)newfld, ErrorDupName, "Enum may not splice in a duplicate field name");
+            }
         }
     }
 
@@ -180,10 +194,12 @@ static void structInheritTrait(StructNode *node, uint32_t fldpos, StructNode *tr
     nodesAdd(&node->traits, (INode*)trait);
 }
 
-// The trait declaration a base-trait or mixin type expression names, or NULL
-// when it names something else: a generic instantiation, which is a call node
-// until type check instantiates it; a type that is not a trait, which type
-// check reports; or a name that did not resolve.
+// The trait declaration a base or mixin type expression names, or NULL when it
+// names something else: a generic instantiation, which is a call node until type
+// check instantiates it; a type that is not a trait, which type check reports; or
+// a name that did not resolve. The base of an 'is-a' must be an abstraction, and
+// this is the test in force at name resolution -- an enum answers it too, since a
+// variant's membership rides the same field.
 static StructNode *structNameResTrait(INode *typeexp) {
     if (typeexp->tag == FnCallTag || !isTypeNode(typeexp))
         return NULL;
@@ -194,8 +210,8 @@ static StructNode *structNameResTrait(INode *typeexp) {
 }
 
 // Resolve a type's declaration now, ahead of the walk, because another type's
-// resolution needs its members: what a type extends or mixes in must have its
-// own members in place before they are copied. Returns 0 when the type is
+// resolution needs its members: what a type is-a or mixes in must have its
+// own members in place before they are read. Returns 0 when the type is
 // already being resolved, which means the two depend on each other.
 //
 // Demand is confined to type declarations reached from type declarations, so
@@ -587,10 +603,11 @@ static void structHookInherited(StructNode *node, uint32_t fldpos, uint32_t fldc
 // Name resolution of a struct type
 //
 // The dictionary is built whole here, before any method body is resolved: the
-// members declared in the type, and every field and default method of the trait
-// it extends or mixes in. A method body may then name an inherited member bare,
-// exactly as it names the type's own. That needs each such trait resolved
-// first, so the trait is demanded (structNameResDemand); the members copied in
+// members declared in the type, every default method of each abstraction it
+// is-a or mixes in, and, for a variant, its enum's fields. A method body may then
+// name an inherited member bare, exactly as it names the type's own. That needs
+// each such base resolved first, so it is demanded (structNameResDemand); the
+// members copied in
 // arrive bound and are not walked again, since name resolution cannot be
 // repeated on a node.
 //
@@ -665,7 +682,7 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     INode **nodesp;
     uint32_t cnt;
 
-    // Reached once: by demand from a type that extends or mixes it in, or by
+    // Reached once: by demand from a type that is-a or mixes it in, or by
     // the module's walk, whichever comes first
     if (node->flags & (NameResolved | NameResolving))
         return;
@@ -689,12 +706,14 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     namespaceAdd(&node->namespace, selfTypeName, (INode*)node);
     nametblHookNode(selfTypeName, (INode*)node);
 
-    // Resolve the base trait before any other name in the type is hooked, and
-    // when it is a trait declaration this type may extend, stand a placeholder
-    // field for it at position 0, as an explicit 'mixin' stands for its trait.
-    // The walk below replaces each placeholder with the trait's members.
-    // Anything else about the base -- an instance of a generic, a base that is
-    // not a trait, a closed trait extended from outside -- is type check's.
+    // Resolve the base before any other name in the type is hooked, and when it is
+    // a declaration this type may stand on, stand a placeholder field for it at
+    // position 0, as an explicit 'mixin' stands for its trait. The walk below
+    // replaces each placeholder with what the base contributes -- an enum's fields
+    // for a variant, and for a trait nothing but its default methods, so there the
+    // placeholder is simply removed. Anything else about the base -- an instance of
+    // a generic, a base that is not a trait, an enum named from outside -- is type
+    // check's.
     if (node->basetrait) {
         inodeNameRes(pstate, &node->basetrait);
         StructNode *trait = structNameResTrait(node->basetrait);
@@ -763,7 +782,7 @@ void structNameRes(NameResState *pstate, StructNode *node) {
         clonePushState(&cstate, (INode*)node, (INode*)node, 0, NULL, NULL);
         structInheritTrait(node, fldpos, trait, &cstate);
         clonePopState();
-        structHookInherited(node, fldpos, trait->fields.used, methpos);
+        structHookInherited(node, fldpos, structBaseGivesFields(trait) ? trait->fields.used : 0, methpos);
     }
 
     // Every field now has its place, and a copy a fold makes below takes the
@@ -791,7 +810,7 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     node->flags = (node->flags & ~NameResolving) | NameResolved;
 }
 
-// Unwrap one inheritance hop: the declaration of the trait this type extends.
+// Unwrap one hop: the declaration of the base this type names.
 // 'basetrait' is written as a name use, or as a generic instantiation call.
 // Not the same as structGetBaseTrait below, which recurses to the bottom-most.
 StructNode *structBaseTraitDcl(StructNode *node) {
@@ -865,6 +884,97 @@ static void structCheckTraitReqs(StructNode *node) {
                     "Type declares %s, but none of what it declares has the signature %s requires",
                     &traitmeth->namesym->namestr, &trait->namesym->namestr);
         }
+    }
+}
+
+// Does this trait require any field of the type that declares 'is-a' against it?
+// A placeholder standing for another abstraction is not a field and stands for
+// none, since a trait contributes nothing to a layout.
+static int structTraitRequiresFields(StructNode *trait) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&trait->fields, cnt, nodesp)) {
+        if (!((*nodesp)->flags & IsMixin))
+            return 1;
+    }
+    return 0;
+}
+
+// Verify that this type declares the fields the abstractions it is-a require, and
+// that no more than one of them requires any.
+//
+// A trait contributes no fields. What its fields state is a requirement, which the
+// type satisfies by declaring those fields itself -- the same names, the same
+// types, in the trait's order, beginning at position 0. That positional prefix is
+// what makes a plain reference to the trait a view of the type's own storage
+// (structMatches under Regref) and a same-size coercion to it a pure recast, so it
+// is a layout requirement and not merely a naming one.
+//
+// The requirement is the base's OWN field list, which is all a hop has to compare:
+// a trait that is-a another trait complied with it here in the same way, so its
+// list already carries whatever it was required to declare, and the prefix holds
+// at every hop by induction. That is also what lets a trait's default method name
+// the fields it needs -- they are the trait's own members.
+//
+// This is where a field requirement differs from a method requirement, and the
+// reason is that a field has no bodiless form: a method may be declared without an
+// implementation and so be passed on unimplemented, while declaring a field is
+// itself the compliance. So a trait is held to it exactly as a struct is.
+//
+// Only the FIRST abstraction named may require fields, since only one of them can
+// hold position zero. That is what dissolves any contest between two traits' field
+// orders: a field two of them want is declared once, and the rest require none.
+//
+// An enum is exempt, in the other direction: it owns its variants' layout and
+// splices its fields in, so a variant declares none of them.
+static void structCheckIsaFields(StructNode *node) {
+    StructNode *base = structBaseTraitDcl(node);
+    if (base != NULL && (base->tag != StructTag || !(base->flags & TraitType)))
+        base = NULL;
+
+    // Every abstraction past the first must require no fields at all
+    if (node->traits) {
+        INode **traitp;
+        uint32_t traitcnt;
+        for (nodesFor(node->traits, traitcnt, traitp)) {
+            StructNode *trait = (StructNode*)*traitp;
+            if (trait == base || structBaseGivesFields(trait))
+                continue;
+            if (structTraitRequiresFields(trait))
+                errorMsgNode((INode*)node, ErrorIsaMulti,
+                    "%s requires fields, and only the first abstraction named may: its fields would have to hold position zero too",
+                    &trait->namesym->namestr);
+        }
+    }
+
+    if (base == NULL || structBaseGivesFields(base))
+        return;
+
+    INode **reqp;
+    uint32_t reqcnt;
+    uint32_t pos = 0;
+    for (nodelistFor(&base->fields, reqcnt, reqp)) {
+        if ((*reqp)->flags & IsMixin)
+            continue;
+        FieldDclNode *req = (FieldDclNode*)*reqp;
+        if (pos >= node->fields.used) {
+            errorMsgNode((INode*)node, ErrorIsaFields,
+                "%s requires a field %s at position %d, which this type does not declare",
+                &base->namesym->namestr, &req->namesym->namestr, (int)pos);
+            return;
+        }
+        FieldDclNode *fld = (FieldDclNode*)nodelistGet(&node->fields, pos);
+        if (fld->namesym != req->namesym) {
+            errorMsgNode((INode*)fld, ErrorIsaFields,
+                "%s requires the field %s at position %d. A trait's fields are declared here, in its order, at position 0",
+                &base->namesym->namestr, &req->namesym->namestr, (int)pos);
+            return;
+        }
+        if (!itypeIsSame(fld->vtype, req->vtype))
+            errorMsgNode((INode*)fld, ErrorIsaFields,
+                "Field %s is not the type %s requires of it",
+                &fld->namesym->namestr, &base->namesym->namestr);
+        ++pos;
     }
 }
 
@@ -1033,7 +1143,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         }
         StructNode *basetrait = (StructNode*)itypeGetTypeDcl(node->basetrait);
         if (basetrait->tag != StructTag || !(basetrait->flags & TraitType)) {
-            errorMsgNode(node->basetrait, ErrorInvType, "Base trait must be a trait");
+            errorMsgNode(node->basetrait, ErrorInvType, "An 'is-a' names an abstraction, and this is not one");
         }
         else if ((node->flags & HasTagField) != (basetrait->flags & HasTagField)) {
             // An enum's variants are all declared inside it, so nothing outside
@@ -1085,7 +1195,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         }
         StructNode *trait = (StructNode*)itypeGetTypeDcl(field->vtype);
         if (trait->tag != StructTag || !(trait->flags & TraitType)) {
-            errorMsgNode(field->vtype, ErrorInvType, "mixin must be a trait");
+            errorMsgNode(field->vtype, ErrorInvType, "Only an abstraction may be named here, and this is not a trait");
             continue;
         }
         CloneState cstate;
@@ -1140,6 +1250,10 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         }
     }
     structSetTagWidth(node);
+
+    // The layout is settled, which is what an 'is-a' asserts about: the fields the
+    // abstractions require are declared here, in order, at position 0
+    structCheckIsaFields(node);
 
     // Use inference rules to decide if struct is ThreadBound or a MoveType
     // based on whether its fields are, and whether it supports the .final or .clone method
@@ -1461,7 +1575,7 @@ INode *structFindSuper(INode *type1, INode *type2) {
         && structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ1->basetrait)) == structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ2->basetrait))
         && (typ1->flags & SameSize))
         return typ1->basetrait;
-    // ... or one of them is already the base trait the other extends. An
+    // ... or one of them is already the other's base. An
     // inferred type in common meets this the moment a third value arrives: two
     // variants widen the type to their trait, and the third is then being
     // compared against the trait rather than against a sibling. The trait is
@@ -1483,7 +1597,7 @@ INode *structRefFindSuper(INode *type1, INode *type2) {
     if (typ1->basetrait && typ2->basetrait
         && structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ1->basetrait)) == structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ2->basetrait)))
         return typ1->basetrait;
-    // ... or one is already the base trait the other extends; see structFindSuper.
+    // ... or one is already the other's base; see structFindSuper.
     // Size is not a requirement here, because a reference has its own.
     if (typ2->basetrait && structGetBaseTrait(typ2) == typ1)
         return type1;

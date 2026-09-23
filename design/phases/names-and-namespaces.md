@@ -91,7 +91,7 @@ changing it.
 | C file | Name/namespace capability |
 | --- | --- |
 | `src/c-compiler/ir/instype.c` | Provides shared namespaced-type operations, binding of each concrete function/method name and of its separate overload node, field/method lookup, and all-candidate method selection. |
-| `src/c-compiler/ir/types/struct.c` | Owns struct/trait member namespaces; inserts fields, `Self`, and the fields and default methods of every trait the type extends or mixes in, the trait resolved on demand first; hooks members and generic parameters during resolution; and performs the inherited-member collision checks. |
+| `src/c-compiler/ir/types/struct.c` | Owns struct/trait member namespaces; inserts fields, `Self`, the default methods of every abstraction the type is-a or mixes in and, for a variant, its enum's fields, the base resolved on demand first; hooks members and generic parameters during resolution; and performs the inherited-member collision checks. |
 | `src/c-compiler/ir/exp/fncall.c` | Resolves fields and overloaded methods from type namespaces, lowers member access/calls, inserts implicit `self`, and finds `init` for type calls. **All of this is `fnCallTypeCheck`'s**, not name resolution's — `fnCallNameRes` walks `objfn` and the arguments and deliberately leaves `methfld` alone, since selecting a member needs the receiver's type. |
 | `src/c-compiler/ir/meta/macro.c` | Establishes macro parameter scope and resolves names in macro bodies before expansion. |
 | `src/c-compiler/ir/meta/genvardcl.c` | Binds generic variables into the active resolution scope. |
@@ -204,7 +204,7 @@ While resolving a type body, the compiler places the type's members in the looku
 
 Implicit `self` is therefore lowering performed after ordinary name resolution has selected an unqualified type member; it does not take precedence over lexical bindings.
 
-An inherited field or default method is a type member for this purpose. It joins the type's dictionary while the type is name resolved, before any of its method bodies is, so its bare name is selected and lowered exactly as a member declared in the type is. The one exception is a member of an instance of a generic trait, which joins only when the instance is type checked and so must be reached as `self.name`.
+An inherited default method, and an enum's field spliced into a variant, are type members for this purpose. Each joins the type's dictionary while the type is name resolved, before any of its method bodies is, so its bare name is selected and lowered exactly as a member declared in the type is. The one exception is a default cloned from an instance of a generic trait, which joins only when the instance is type checked and so must be reached as `self.name`. A field a trait requires is not an inherited member at all: the type declared it, so it is the type's own.
 
 ## Visibility
 

@@ -261,7 +261,7 @@ static FieldDclNode *parseFieldDclBody(ParseState *parse, FieldDclNode *fldnode)
 
 
 // Join a variant to the enum that declares it: the closed-type flags, the
-// 'extends' back to the enum, the tag number, and the module binding.
+// base link back to the enum, the tag number, and the module binding.
 //
 // The enum owns the layout, so the variant states none of it. Its tag number is
 // assigned ascending from zero across the body unless the author pins one, after
@@ -272,13 +272,13 @@ static void parseAddVariant(ParseState *parse, StructNode *strnode, StructNode *
     if (substruct->tagnbr == TagUnassigned)
         substruct->tagnbr = *nexttag;
 
-    // The enum already says what a variant extends and what its type parameters
-    // are, so a variant restating either is refused rather than silently ignored.
+    // The enum already says which enum a variant belongs to and what its type
+    // parameters are, so a variant restating either is refused rather than ignored.
     // Reported on the variant, whose node carries the position of its name in
     // both of its spellings, rather than at whatever token the body ended on.
     if (substruct->basetrait)
         errorMsgNode((INode*)substruct, ErrorVariantDcl,
-            "%s already extends the enum it is written inside; remove the 'extends'.",
+            "%s is a member of the enum it is written inside; remove the 'is-a'.",
             &substruct->namesym->namestr);
     if (substruct->genericinfo)
         errorMsgNode((INode*)substruct, ErrorVariantDcl,
@@ -431,10 +431,47 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     if (isenum && lexIsToken(IdentToken))
         underlying = parseTypeName(parse);
 
-    // Obtain base trait, if specified
-    if (lexIsToken(ExtendsToken)) {
+    // 'is-a' asserts, in the type's own declaration, that it complies with one or
+    // more abstractions. It is the only subtype relationship in Cone that is
+    // asserted rather than noticed, and the only way to comply with an
+    // abstraction that has nothing in it to notice.
+    //
+    // The first trait is the base: the only one that may require fields, which is
+    // what makes its requirement a positional prefix at position 0. Each further
+    // trait is held as a mixin-style placeholder, exactly as 'mixin' is, and must
+    // require no fields at all.
+    if (lexIsToken(IsaToken)) {
         lexNextToken();
         strnode->basetrait = parseTypeName(parse);  // Type could be a qualified name or generic
+        while (lexIsToken(CommaToken)) {
+            lexNextToken();
+            FieldDclNode *isafld = newFieldDclNode(anonName, (INode*)immPerm);
+            isafld->flags |= IsMixin | FlagMethFld;
+            isafld->vtype = parseTypeName(parse);
+            structAddField(strnode, isafld);
+        }
+        // 'is-a' takes no siblings to fold from: it names abstractions, and an
+        // abstraction has no value to reach a folded name through. Delegation is
+        // what a field's own 'use' clause is for.
+        if (lexIsToken(UseToken)) {
+            errorMsgLex(ErrorBadFold, "'is-a' names abstractions and folds nothing. To delegate, declare a field of the type and write 'use' on it.");
+            parseFoldClause(parse);
+        }
+    }
+    else if (lexIsToken(ExtendsToken)) {
+        // An enum extending an enum adds variants to the ones its base declared.
+        // That relationship is spelled 'extends' and is not implemented
+        // (coneref/refenum.html); the keyword is read here so the clause parses
+        // as it always has rather than being diagnosed as the nominal assertion
+        // it is not.
+        lexNextToken();
+        if (isenum)
+            strnode->basetrait = parseTypeName(parse);
+        else {
+            errorMsgLex(ErrorExtends, "A %s asserts conformance to an abstraction with 'is-a'. 'extends' is reserved for enriching a concrete type, which is not implemented.",
+                (strflags & TraitType) ? "trait" : "struct");
+            parseTypeName(parse);
+        }
     }
 
     // If block has been provided, process field or method definitions
@@ -577,7 +614,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 //
                 // Only an enum: a trait is the open abstraction, and its
                 // implementers are ordinary structs declared beside it that name
-                // it with 'extends'. A closed set of variants is an enum, which
+                // it with 'is-a'. A closed set of variants is an enum, which
                 // is where the tag and the exhaustive match live.
                 if (isenum) {
                     strnode->flags |= HasTagField;
@@ -588,7 +625,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                     parseAddVariant(parse, strnode, substruct, &nexttag);
                 }
                 else if (strnode->flags & TraitType) {
-                    errorMsgLex(ErrorOpenTrait, "A trait is open: its implementers are declared beside it and name it with 'extends'. A closed set of variants is an 'enum'.");
+                    errorMsgLex(ErrorOpenTrait, "A trait is open: its implementers are declared beside it and name it with 'is-a'. A closed set of variants is an 'enum'.");
                     parseStruct(parse, 0);
                 }
                 else {

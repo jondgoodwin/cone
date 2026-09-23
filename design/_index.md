@@ -177,9 +177,9 @@ generativity, extensibility.
 ▸ **The recommendation is six, and the argument is that the three cannot classify
 two of Cone's most distinctive mechanisms.** Name-folding is a *namespace*
 operation, and delegated inheritance is name-folding applied to types — under the
-three it has nowhere to sit. `extends` and `mixin` being one mechanism, a
-synthetic field at position 0, is a *composition* fact and files under none of
-them. **The layers already agree at six on both sides** — block, function, type,
+three it has nowhere to sit. A trait's fields being a requirement the implementer
+declares at position 0, rather than state it inherits, is a *composition* fact and
+files under none of them. **The layers already agree at six on both sides** — block, function, type,
 thread/concurrency, module/package, program/service — **so only the strategies
 were compressed, and the note is a 3×5 rendering of a 6×6 matrix.**
 

@@ -28,16 +28,16 @@ typedef struct {
 } Vtable;
 
 // Field-containing types (e.g., struct, trait, etc.)
-// - fields holds all owned and trait-inherited fields
+// - fields holds all owned fields, plus an enum's spliced into a variant
 // - nodelist holds owned methods and static functions and variables
 // - namespace is the dictionary of all owned and inherited named nodes
 typedef struct StructNode {
     INsTypeNodeHdr;
     Name *namesym;
     DclInfo dclinfo;        // Owner and the facts that decide the linker symbol
-    INode *basetrait;       // Which trait has fields embedded at start of this trait/struct
+    INode *basetrait;       // The abstraction this type is-a, or the enum a variant belongs to
     Nodes *derived;         // If a closed, base trait, this lists all structs derived from it
-    Nodes *traits;          // Every trait whose members were mixed in, base trait first (NULL if none)
+    Nodes *traits;          // Every trait whose members were mixed in (NULL if none)
     NodeList fields;        // Ordered list of all fields
     Vtable *vtable;         // Pointer to vtable info (may be NULL)
     GenericInfo *genericinfo;     // Link to generic parms, etc (or NULL if not generic)
@@ -75,7 +75,7 @@ int structNameResDemand(NameResState *pstate, StructNode *type);
 // name the type declares itself.
 void structFoldReceiver(StructNode *type, Name *name, INode **objp, INode *lexnode);
 
-// Unwrap one inheritance hop: the declaration of the trait this type extends
+// Unwrap one hop: the declaration of the base this type names
 StructNode *structBaseTraitDcl(StructNode *node);
 
 // Get bottom-most base trait for some trait/struct, or NULL if there is not one

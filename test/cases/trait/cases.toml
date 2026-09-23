@@ -8,11 +8,11 @@
 # fields, a type satisfies them, and a virtual reference dispatches to whichever
 # implementation it points at. The two success programs divide at the seam
 # between dispatch and its inverse. trait-success establishes what a virtual
-# call reaches -- structural conformance, nominal conformance with 'extends',
-# inherited defaults, field requirements -- and carries the LLVM IR checks,
-# because which declaration a vtable slot points at is exactly what a run cannot
-# observe. trait-variants establishes recovering the concrete type again, for an
-# enum's closed set of variants, for an open trait's 'extends' implementers and
+# call reaches -- structural conformance, nominal conformance with 'is-a',
+# inherited defaults, field requirements, marker traits -- and carries the LLVM IR
+# checks, because which declaration a vtable slot points at is exactly what a run
+# cannot observe. trait-variants establishes recovering the concrete type again,
+# for an enum's closed set of variants, for an open trait's 'is-a' implementers and
 # for a type that conforms structurally without naming the trait at all, which is
 # the operation the enum group deliberately left here.
 #
@@ -22,11 +22,15 @@
 # - trait-nameres is alone at its stage. '&<' applied to a value rather than a
 #   type is diagnosed during name resolution, which returns before type
 #   checking, so nothing else in its file would be reached.
-# - trait-typecheck-conform is about a type's relationship to its base trait,
-#   which is checked when the struct is checked. That is the same pass as
+# - trait-typecheck-conform is about a type's relationship to the abstractions it
+#   asserts, method requirements and field requirements alike, all of which are
+#   checked when the struct is checked. That is the same pass as
 #   function bodies but not the same pass as function signatures, and a
 #   signature error suppresses the whole pass (module.c:181), so that file
 #   declares no function outside a struct.
+# - trait-parse-extends is a stage earlier: 'extends' no longer spells nominal
+#   conformance and is refused at the clause, which is parse's, so nothing in
+#   that file is name resolved and it holds nothing else.
 # - trait-typecheck-vref and trait-typecheck-dispatch answer different
 #   questions -- what a virtual reference may be built from, versus what may be
 #   done through one that is well formed. Together they would be twenty-two
@@ -68,7 +72,7 @@ support = ["traitmeter.cone", "traitscale.cone"]
 
 [scenario.trait-success]
 category = "run"
-description = "Trait requirements satisfied structurally and with 'extends', and dispatched through a virtual reference"
+description = "Trait requirements satisfied structurally and with 'is-a', and dispatched through a virtual reference"
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 
 # Every implementer of a trait supplies a vtable, read as the type 'as' the
@@ -170,20 +174,24 @@ contains = [
   'internal constant [2 x %"Scaler:Vtable"*] [',
 ]
 
-# Composing traits costs no storage. An open trait carries no discriminant, so a
-# chain of them contributes only the fields actually declared -- Sensor's 'id',
-# and nothing at all for Logger -- and two field-less traits mixed into one
-# struct leave it the width of its own field. A run cannot see this: every
-# printed number would be the same whatever sat in front of it, and what each
-# trait used to add was a constant zero byte nothing ever read.
+# A trait contributes nothing to the layout of a type that is-a it. Every field a
+# type holds is one it declared: Sensor's 'id' appears in Logger and in each
+# implementer because each one declares it to comply, not because anything was
+# spliced in, and 'Probe' is its own two fields and nothing more. Marker traits
+# cost nothing at all, whether named after the first in an 'is-a' list (Ledger) or
+# mixed in (Tally). A run cannot see any of this: every printed number would be
+# the same whatever sat in front of it, and what a trait used to add was a
+# constant zero byte nothing ever read.
 [[scenario.trait-success.check]]
 name = "composing-traits-adds-no-hidden-field"
 target = "preir"
 contains = [
   "%Sensor = type { i32 }",
+  "%Logger = type { i32 }",
   "%Probe = type { i32, i32 }",
   "%Relay = type { i32, i32 }",
   "%Tally = type { i32 }",
+  "%Ledger = type { i32 }",
 ]
 
 [scenario.trait-inherited-defaults]
@@ -242,14 +250,14 @@ excludes = [
   "define internal i32 @baseLevel(%Beta* %0)",
 ]
 
-# A trait in an imported module, extended by a type in the root. The root is
+# A trait in an imported module, named by a type in the root. The root is
 # resolved first, so the trait is resolved by demand from the type, in its own
 # module's scope, with what that module folds in visible to the trait's default
 # method. What is asserted is that the compile succeeds at all, and what the
 # root declares for the names the inherited default reached.
 [scenario.trait-import-inherit]
 category = "compile"
-description = "A type extending a trait from an imported module, whose inherited default names what that module folded in"
+description = "A type declaring is-a against a trait from an imported module, whose inherited default names what that module folded in"
 tags = ["parse", "nameres", "typecheck", "genllvm"]
 
 # The inherited default is the root type's own clone, and the function it
@@ -298,6 +306,20 @@ target = "llvmir"
 contains = ['constant %"Shape:Vtable" { i32 (i8*)* bitcast (i32 (%Tri*)* @']
 excludes = ['constant %"Shape:Vtable" { i32 (i8*)* null']
 
+# -------- parse stage --------
+
+# 'extends' no longer spells nominal conformance, and it is not yet the concrete
+# enrichment it is reserved for, so it is refused at the clause where it is
+# written. That is the parser's, which is why this is its own file: a parse
+# diagnostic stops the compile before name resolution, so nothing else here
+# would be reached. Both kinds that can write one are here, because the
+# diagnostic names the kind it was written on.
+[scenario.trait-parse-extends]
+category = "reject"
+description = "'extends' written where a nominal assertion is meant, on a struct and on a trait"
+tags = ["parse"]
+diagnostics = 2
+
 # -------- name resolution stage --------
 
 [scenario.trait-nameres]
@@ -314,22 +336,28 @@ description = "A trait's static function, named through an implementer or a vari
 tags = ["nameres"]
 diagnostics = 2
 
-# A type's inherited members are bound while the type is name resolved, so a
-# duplicate between a trait's field and the type's own, and two types that each
-# extend the other, are this stage's. The cycle used to hang the compiler.
+# A type's abstractions are reached while the type is name resolved, so two types
+# that each stand on the other are this stage's. The cycle used to hang the
+# compiler. The duplicate-field half of this file is gone with the splice: a trait
+# contributes no fields, so declaring the name is compliance rather than a clash,
+# and the splice that can still produce one is the enum's -- enum-nameres-splice.
 [scenario.trait-nameres-inherit]
 category = "reject"
-description = "A trait's field duplicating the type's own, and types that each extend or mix in the other"
+description = "Types that each name the other as a base, or mix in themselves"
 tags = ["nameres"]
-diagnostics = 3
+diagnostics = 2
 
 # -------- type check stage --------
 
+# Both halves of what an 'is-a' asserts: the methods the abstraction requires, and
+# the fields it requires the type to declare in its order at position 0. The field
+# half points at the field that breaks the prefix rather than at the struct, which
+# is the member a reader would go to; everything else is reported on the struct.
 [scenario.trait-typecheck-conform]
 category = "reject"
-description = "Types whose declarations do not satisfy the trait they extend or mix in"
+description = "Types whose declarations do not satisfy the abstraction they assert or mix in"
 tags = ["typecheck"]
-diagnostics = 4
+diagnostics = 9
 
 [scenario.trait-typecheck-vref]
 category = "reject"
