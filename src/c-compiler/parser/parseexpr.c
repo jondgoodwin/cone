@@ -602,19 +602,23 @@ INode *parseOr(ParseState *parse) {
     }
 }
 
-// Parse comparison operator
-INode *parseCmp(ParseState *parse) {
-    INode *lhnode = parseOr(parse);
-    char *cmpop;
-
+// The method a comparison token names, or NULL when the current token is not one
+char *parseCmpOp() {
     switch (lex->toktype) {
-    case EqToken:  cmpop = "=="; break;
-    case NeToken:  cmpop = "!="; break;
-    case LtToken:  cmpop = "<"; break;
-    case LeToken:  cmpop = "<="; break;
-    case GtToken:  cmpop = ">"; break;
-    case GeToken:  cmpop = ">="; break;
-    default:
+    case EqToken:  return "==";
+    case NeToken:  return "!=";
+    case LtToken:  return "<";
+    case LeToken:  return "<=";
+    case GtToken:  return ">";
+    case GeToken:  return ">=";
+    default:       return NULL;
+    }
+}
+
+// Parse comparison operator, following a left operand already parsed
+static INode *parseCmpFrom(ParseState *parse, INode *lhnode) {
+    char *cmpop = parseCmpOp();
+    if (cmpop == NULL) {
         if (lexIsToken(IsToken)) {
             CastNode *node = newIsNode(lhnode, unknownType);
             lexNextToken();
@@ -632,6 +636,11 @@ INode *parseCmp(ParseState *parse) {
     return (INode*)node;
 }
 
+// Parse comparison operator
+INode *parseCmp(ParseState *parse) {
+    return parseCmpFrom(parse, parseOr(parse));
+}
+
 // Parse 'not' logical operator
 INode *parseNotLogic(ParseState *parse) {
     if (lexIsToken(NotToken)) {
@@ -643,9 +652,8 @@ INode *parseNotLogic(ParseState *parse) {
     return parseCmp(parse);
 }
 
-// Parse 'and' logical operator
-INode *parseAndLogic(ParseState *parse) {
-    INode *lhnode = parseNotLogic(parse);
+// Parse 'and' logical operator, following a left operand already parsed
+static INode *parseAndLogicFrom(ParseState *parse, INode *lhnode) {
     while (lexIsToken(AndToken)) {
         LogicNode *node = newLogicNode(AndLogicTag);
         lexNextToken();
@@ -656,9 +664,13 @@ INode *parseAndLogic(ParseState *parse) {
     return lhnode;
 }
 
-// Parse 'or' logical operator
-INode *parseOrExpr(ParseState *parse) {
-    INode *lhnode = parseAndLogic(parse);
+// Parse 'and' logical operator
+INode *parseAndLogic(ParseState *parse) {
+    return parseAndLogicFrom(parse, parseNotLogic(parse));
+}
+
+// Parse 'or' logical operator, following a left operand already parsed
+static INode *parseOrExprFrom(ParseState *parse, INode *lhnode) {
     while (lexIsToken(OrToken)) {
         LogicNode *node = newLogicNode(OrLogicTag);
         lexNextToken();
@@ -669,9 +681,22 @@ INode *parseOrExpr(ParseState *parse) {
     return lhnode;
 }
 
+// Parse 'or' logical operator
+INode *parseOrExpr(ParseState *parse) {
+    return parseOrExprFrom(parse, parseAndLogic(parse));
+}
+
 // This parses any kind of expression, including blocks, assignment or tuple
 INode *parseSimpleExpr(ParseState *parse) {
     return parseOrExpr(parse);
+}
+
+// Finish parsing a simple expression whose first operand -- everything that
+// binds tighter than a comparison, which parseOr parses -- is already in hand.
+// A match's case reads that much before it can tell a range pattern, whose
+// '..' or '...' follows it, from a condition.
+INode *parseSimpleExprFrom(ParseState *parse, INode *lhnode) {
+    return parseOrExprFrom(parse, parseAndLogicFrom(parse, parseCmpFrom(parse, lhnode)));
 }
 
 // Parse a comma-separated expression tuple

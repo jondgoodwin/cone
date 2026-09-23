@@ -111,7 +111,6 @@ void parseBoundMatch(ParseState *parse, IfNode *ifnode, NameUseNode *expnamenode
     castnode->flags |= FlagMatchBind;
     varnode->vtype = unknownType;
     varnode->value = (INode *)castnode;
-    nodesAdd(&ifnode->condblk, (INode*)isnode);
 
     // If value expression is needed, obtain it also
     if (valnode != NULL) {
@@ -121,7 +120,30 @@ void parseBoundMatch(ParseState *parse, IfNode *ifnode, NameUseNode *expnamenode
             errorMsgLex(ErrorInvType, "Expected '=' followed by value to match against");
         }
         valnode->value = parseSimpleExpr(parse);
+        nodesAdd(&ifnode->condblk, (INode*)isnode);
     }
+    // A match's case may end in an 'if' guard, which may name the variable. The
+    // variable is declared in the arm, which the guard is not in, so the guard is
+    // a block that binds it again, to the same conversion of the same value:
+    //   'case imm x T if g {...}'  ->  'is T and {imm x = [T]v; g}' then '{imm x = [T]v; ...}'
+    // Being an 'and', the condition is not an 'is', so exhaustiveness does not
+    // count the arm, which is right: the guard may fail.
+    else if (lexIsToken(IfToken)) {
+        lexNextToken();
+        CastNode *guardcast = newConvCastNode((INode*)expnamenode, castnode->typ);
+        guardcast->vtype = castnode->typ;
+        guardcast->flags |= FlagMatchBind;
+        VarDclNode *guardvar = newVarDclFull(varnode->namesym, VarDclTag, unknownType, varnode->perm, (INode*)guardcast);
+        BlockNode *guardblk = newBlockNode();
+        nodesAdd(&guardblk->stmts, (INode*)guardvar);
+        nodesAdd(&guardblk->stmts, parseSimpleExpr(parse));
+        LogicNode *guarded = newLogicNode(AndLogicTag);
+        guarded->lexp = (INode*)isnode;
+        guarded->rexp = (INode*)guardblk;
+        nodesAdd(&ifnode->condblk, (INode*)guarded);
+    }
+    else
+        nodesAdd(&ifnode->condblk, (INode*)isnode);
 
     // Create and-then block, with vardcl injected at start
     BlockNode *blknode = (BlockNode*)parseExprBlock(parse, 0);
@@ -192,6 +214,55 @@ INode *parseIf(ParseState *parse) {
     return retnode;
 }
 
+// Finish a range pattern, whose lower bound is parsed and whose '..' or '...'
+// is the current token. It tests the matched value against both bounds:
+// 'a .. b' is 'v >= a and v < b', and 'a ... b' is 'v >= a and v <= b'.
+static INode *parseMatchRange(ParseState *parse, INode *matchee, INode *lower) {
+    // All three nodes take the operator's position, so a matched value that
+    // cannot be ordered is reported at the '..'
+    FnCallNode *gecall = newFnCallOp(matchee, ">=", 2);
+    FnCallNode *upcall = newFnCallOp(matchee, lexIsToken(EllipsisToken) ? "<=" : "<", 2);
+    LogicNode *range = newLogicNode(AndLogicTag);
+    lexNextToken();
+    nodesAdd(&gecall->args, lower);
+    nodesAdd(&upcall->args, parseOr(parse));
+    range->lexp = (INode *)gecall;
+    range->rexp = (INode *)upcall;
+    return (INode *)range;
+}
+
+// Parse one pattern of a case, returning the condition that tests the matched
+// value against it:
+// - 'is T' narrows to a type, and its bare root name is looked up in the matched
+//   value's enum (castPatternMark)
+// - a comparison operator and a value, '==v', '<v', '!=v' and the rest, compares
+//   the matched value, the operator's left operand, with the value
+// - 'a .. b' or 'a ... b' is a range (parseMatchRange)
+// A value on its own is not a pattern: whether it means '==' is not decided,
+// and today a case that begins with one is a condition, not a comparison.
+static INode *parseMatchPattern(ParseState *parse, INode *matchee) {
+    if (lexIsToken(IsToken)) {
+        CastNode *isnode = newIsNode(matchee, unknownType);
+        lexNextToken();
+        isnode->typ = parseType(parse);
+        castPatternMark(isnode->typ);
+        return (INode *)isnode;
+    }
+    char *cmpop = parseCmpOp();
+    if (cmpop != NULL) {
+        FnCallNode *callnode = newFnCallOp(matchee, cmpop, 2);
+        lexNextToken();
+        nodesAdd(&callnode->args, parseOr(parse));
+        return (INode *)callnode;
+    }
+    INode *value = parseOr(parse);
+    if (lexIsToken(DotDotToken) || lexIsToken(EllipsisToken))
+        return parseMatchRange(parse, matchee, value);
+    errorMsgNode(value, ErrorPatBare,
+        "A value alone is not a pattern. Write '==' before it to compare the matched value with it.");
+    return value;
+}
+
 // Parse match expression, which is sugar translated to an 'if' block
 INode *parseMatch(ParseState *parse) {
     // 'match' is de-sugared into a block:
@@ -216,24 +287,47 @@ INode *parseMatch(ParseState *parse) {
             // Handle bound variable pattern
             if (lexIsToken(PermToken)) {
                 parseBoundMatch(parse, ifnode, expnamenode, NULL);
+                continue;
             }
-            else if (lexIsToken(IsToken)) {
-                CastNode *isnode = newIsNode((INode *)expnamenode, unknownType);
-                lexNextToken();
-                isnode->typ = parseType(parse);
-                castPatternMark(isnode->typ);
-                nodesAdd(&ifnode->condblk, (INode *)isnode);
-                nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
-            } else if (lexIsToken(EqToken)) {
-                FnCallNode *callnode = newFnCallOp((INode *)expnamenode, "==", 2);
-                lexNextToken();
-                nodesAdd(&callnode->args, parseSimpleExpr(parse));
-                nodesAdd(&ifnode->condblk, (INode *)callnode);
-                nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
-            } else {
-                nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
-                nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
+
+            // Anything else is one or more patterns joined by 'or', or a
+            // condition, then an optional 'if' guard. A case that begins with
+            // neither 'is' nor a comparison operator is a range pattern when
+            // '..' or '...' follows its first operand, and otherwise a
+            // condition, whose own 'or' the condition has already taken.
+            INode *cond;
+            int patterns = 1;
+            if (lexIsToken(IsToken) || parseCmpOp() != NULL)
+                cond = parseMatchPattern(parse, (INode *)expnamenode);
+            else if (lexIsToken(NotToken)) {
+                cond = parseSimpleExpr(parse);
+                patterns = 0;
             }
+            else {
+                INode *first = parseOr(parse);
+                if (lexIsToken(DotDotToken) || lexIsToken(EllipsisToken))
+                    cond = parseMatchRange(parse, (INode *)expnamenode, first);
+                else {
+                    cond = parseSimpleExprFrom(parse, first);
+                    patterns = 0;
+                }
+            }
+            while (patterns && lexIsToken(OrToken)) {
+                LogicNode *ornode = newLogicNode(OrLogicTag);
+                lexNextToken();
+                ornode->lexp = cond;
+                ornode->rexp = parseMatchPattern(parse, (INode *)expnamenode);
+                cond = (INode *)ornode;
+            }
+            if (lexIsToken(IfToken)) {
+                LogicNode *guarded = newLogicNode(AndLogicTag);
+                lexNextToken();
+                guarded->lexp = cond;
+                guarded->rexp = parseSimpleExpr(parse);
+                cond = (INode *)guarded;
+            }
+            nodesAdd(&ifnode->condblk, cond);
+            nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
         } else if (lexIsToken(ElseToken)) {
             lexNextToken();
             nodesAdd(&ifnode->condblk, elseCond); // else distinguished by a elseCond condition

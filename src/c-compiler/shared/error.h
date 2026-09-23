@@ -226,6 +226,9 @@ enum ErrorCode {
     // One import of a module per module: an identical repeat is ignored
     ErrorDupImport = 1116,      // A second import of one module that differs from the first: in what its 'use' clause folds, or in its 'pub'
 
+    // A match's patterns: 'is', comparison and range patterns joined by 'or'
+    ErrorPatBare = 1117,        // A value alone where a match expects a pattern, after an 'or': whether a bare value means '==' is not decided
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

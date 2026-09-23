@@ -76,6 +76,8 @@ enum TokenTypes {
     RParenToken,       // ')'
     CommaToken,        // ','
     DotToken,          // '.'
+    DotDotToken,       // '..' range, excluding its end
+    EllipsisToken,     // '...' range, including its end
     QuesDotToken,      // '?.'
     PlusToken,         // '+'
     PlusArrayRefToken, // '+[]'
