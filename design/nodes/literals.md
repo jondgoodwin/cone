@@ -175,6 +175,27 @@ pointer or the payload alone, with the tag discarded.
 **A string literal emits a fresh global on every occurrence** — there is no
 interning, and constant merging is not in the pass list.
 
+**A string literal's global ends in a NUL its type does not count**, for C
+compatibility: `"hello"` is a `[5; u8]` and its global a `[6 x i8]`. The
+`StringLitTag` case of `genlAddr` recasts the global's address to a pointer to
+the literal's own array type, so a load, a copy and a slice's count all see the
+text's bytes only; the terminator is reachable only through a pointer handed to
+code that reads to it.
+
+**So does a global variable initialized from a string literal.** It is not a
+copy: its storage is the initialized data, so like the literal it gets the
+terminating zero after the text, uncounted — `imm g = "hello"` and
+`mut g [5; u8] = "hello"` are each a `[5; u8]` stored in a `[6 x i8]`, and a
+`static` in a function body the same. `genlGloVarName` creates the longer
+global and keeps in `llvmvar` its address recast to a pointer to the
+variable's type, which is all any use sees; `genlGloVarGlobal` recovers the
+global itself for its initializer, COMDAT, constness and linkage. Every Cone
+store to a `mut` one is a store of the whole `[N; u8]` or an index the bounds
+check holds below `N`, so the NUL is never overwritten — only a raw pointer,
+which reads or writes past `N` at its own risk, reaches it. A global array
+initialized from anything but a string literal, and a local copy of either,
+is its type exactly and has no terminator.
+
 ## Hazards
 
 - **Only an integer literal is context-typed.** Every other literal is still

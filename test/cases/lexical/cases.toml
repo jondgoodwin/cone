@@ -11,6 +11,32 @@ category = "run"
 description = "Integer, float, character, string and boolean literal tokens"
 tags = ["parse", "typecheck", "genllvm", "runtime"]
 
+# A string literal's constant ends in a NUL the literal's type does not count:
+# "c-string" is eight bytes and a [8; u8], and its global is nine. The run
+# shows the count and what C reads; this shows the byte itself, which a run
+# cannot, because a missing terminator reads on into whatever the linker put
+# next and prints the text alone whenever that happens to be a zero.
+[[scenario.lexical-literals.check]]
+name = "string-literal-constant-ends-in-nul"
+target = "llvmir"
+contains = [
+  "internal constant [9 x i8] c\"c-string\\00\"",
+  "internal constant [3 x i8] c\"\\C3\\A9\\00\"",
+]
+
+# So does a module-level variable initialized from one, immutable or mutable,
+# inferred or typed, while its type stays the text's: "c-global" is a [8; u8]
+# stored in nine bytes. A global array from anything else is its type exactly.
+[[scenario.lexical-literals.check]]
+name = "string-literal-global-ends-in-nul"
+target = "llvmir"
+contains = [
+  "@cglobal = internal constant [9 x i8] c\"c-global\\00\"",
+  "@cmutable = internal global [6 x i8] c\"c-mut\\00\"",
+  "@ctyped = internal constant [8 x i8] c\"c-typed\\00\"",
+  "@cbytes = internal constant [3 x i8] c\"\\01\\02\\03\"",
+]
+
 [scenario.lexical-tokens]
 category = "compile"
 description = "Identifier spellings, comment forms, and the greedy operator rule"
@@ -35,6 +61,14 @@ category = "reject"
 description = "Words held for unimplemented features, refused as identifiers"
 tags = ["parse"]
 diagnostics = 14
+
+# The count is exact because the point is that nothing follows: each spelling is
+# one diagnostic, and the parse around it carries on as though it were absent.
+[scenario.lexical-reject-unbuilt]
+category = "reject"
+description = "'?.', a '#' word and a '@' word naming no attribute, one diagnostic each"
+tags = ["parse"]
+diagnostics = 5
 
 # The dual of lexical-tokens' identifier facts: where that file shows two
 # spellings that are two names, this one shows two that are one.

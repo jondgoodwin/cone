@@ -199,7 +199,8 @@ Fields and constants have no flow participation at all.
   A static instead goes through `genlGloVarName` and `genlGloVar` the first
   time its declaration is reached, and the statement itself emits nothing:
   every use loads or stores `llvmvar` as it would an alloca, and `llvmvar` is
-  the global. A type's static never comes this way: it is in the type's
+  the global (or, from a string literal, its address recast — see
+  [literals](literals.md)). A type's static never comes this way: it is in the type's
   `nodelist`, which `genlGlobalSyms` and `genlGlobalImpl` walk as they do for
   a method, so it is named and initialized with the module's globals.
 - **`genlParmVar`** — alloca **and store** `LLVMGetParam(fn, index)`, for every
@@ -208,7 +209,8 @@ Fields and constants have no flow participation at all.
   it to the entry block for mem2reg to undo.
 - **`genlGloVarName`** then **`genlGloVar`** — `LLVMAddGlobal` under the symbol
   `nameSymbol` spells, marked constant for `imm`, with `genlLinkage` making it
-  internal when this object defines it; then a null, string, or
+  internal when this object defines it (one byte longer, for a NUL, when the
+  initializer is a string literal); then a null, string, or
   constant-expression initializer.
 - **`index` does two unrelated jobs**: `LLVMGetParam` for a parameter, and the
   struct GEP / `extractvalue` position for a field.

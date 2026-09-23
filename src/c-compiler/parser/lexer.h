@@ -60,8 +60,6 @@ enum TokenTypes {
     FloatLitToken,  // Float literal
     StringLitToken, // String literal
     IdentToken,     // Identifier
-    MetaIdentToken, // Metaprogramming identifier (#if)
-    AttrIdentToken, // Attribute identifier (@samesize)
     LifetimeToken,  // Lifetime variable ('a)
     PermToken,      // Permission identifier
 
@@ -78,7 +76,6 @@ enum TokenTypes {
     DotToken,          // '.'
     DotDotToken,       // '..' range, excluding its end
     EllipsisToken,     // '...' range, including its end
-    QuesDotToken,      // '?.'
     PlusToken,         // '+'
     PlusArrayRefToken, // '+[]'
     PlusVirtRefToken,  // '+<'
@@ -145,7 +142,6 @@ enum TokenTypes {
     UseToken,      // 'use'
     ButToken,      // 'but'
     EnumToken,     // 'enum'
-    RegionToken,   // 'region'
     RetToken,      // 'return'
     WithToken,     // 'with'
     IfToken,       // 'if'
