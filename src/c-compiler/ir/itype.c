@@ -301,7 +301,7 @@ int itypeIsConcrete(INode *type) {
 
 static INode *itypeNoSizeField(INode *dcltype, uint32_t depth);
 
-// Is this an enum with a variant that is not laid out yet?
+// Is this an enum with a variant still being laid out?
 //
 // An enum's size is the largest of its variants, and generation is what computes
 // that. Its own TypeChecked mark says only that its own fields are settled, which
@@ -310,6 +310,12 @@ static INode *itypeNoSizeField(INode *dcltype, uint32_t depth);
 // mark cannot be read as 'has a size' here, and one variant still in flight is
 // exactly the case where the enum has none -- which is what a variant holding its
 // own enum by value asks for.
+//
+// In flight, not merely unfinished. A variant not yet begun is one the module
+// walk has not reached: a parameter written above the enum, or in a parent of
+// the enum's module, asks before any variant is. Nothing of that variant is on
+// the demand stack, so it cannot close a cycle with the asker, and if it does
+// hold the enum, its own field asks again once it is in flight, and is refused.
 static int itypeVariantPending(INode *dcltype) {
     // TraitType and a derived list are both required: a *variant* carries the
     // closed flags too, inherited from its enum, and has no derived list at all.
@@ -320,7 +326,7 @@ static int itypeVariantPending(INode *dcltype) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(((StructNode*)dcltype)->derived, cnt, nodesp)) {
-        if (!((*nodesp)->flags & TypeChecked))
+        if (((*nodesp)->flags & TypeChecking) && !((*nodesp)->flags & TypeChecked))
             return 1;
     }
     return 0;

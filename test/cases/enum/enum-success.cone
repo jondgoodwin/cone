@@ -933,6 +933,41 @@ enum Held {
 }
 use Held;
 
+// -------- held by value above its declaration --------
+
+// Where an enum is written does not decide whether it can be held. A field, a
+// parameter and a local all hold Crate by value here, above its declaration, so
+// each asks for its size before the module walk has reached any of its variants.
+// A variant not yet reached is not one being laid out -- nothing of it is on the
+// demand stack, so it closes no cycle -- and this was once refused as though it
+// were one. The variants are laid out when the walk reaches them, and generation
+// sizes the enum from them, as it does for every enum.
+struct Shipment {
+  pub load Crate;
+  pub count i64;
+}
+
+fn crateWeight(c Crate) i64 {
+  mut held Crate = c;
+  match held {
+    case imm b Bulky {b.kg;}
+    case imm s Slim {1i64;}
+  }
+}
+
+enum Crate {
+  struct Bulky {
+    pub kg i64;
+  }
+  Slim;
+}
+
+fn heldAboveDeclaration() {
+  show("enum-param-above-declaration", crateWeight(Bulky[40]));
+  mut s = Shipment[Slim[], 3];
+  show("enum-field-above-declaration", crateWeight(s.load) + s.count);
+}
+
 // An enum may reach itself through a reference, which is how a tree is written.
 // The enum's size is the largest of its variants, so a variant holding it by
 // value would be infinite -- enum-typecheck-variant holds that -- but a
@@ -973,5 +1008,6 @@ fn main() i32 {
   namingVariants();
   foldingSome();
   interactions();
+  heldAboveDeclaration();
   0i32;
 }
