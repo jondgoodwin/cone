@@ -47,6 +47,14 @@ INode *cloneArrayNode(CloneState *cstate, ArrayNode *node) {
     ArrayNode *newnode = memAllocBlk(sizeof(ArrayNode));
     memcpy(newnode, node, sizeof(ArrayNode));
     newnode->elems = cloneNodes(cstate, node->elems);
+    // arrayNameRes decided array type or array literal by asking whether the
+    // element is a type, and in a template '[2; T]' asked that of a generic
+    // parameter, which is not one -- so the template holds a literal. Cloning
+    // stands in for name resolution on an instance, so decide again now that
+    // the element is the type argument (see cloneRefNode).
+    if (newnode->tag == ArrayLitTag && newnode->elems->used > 0
+        && !isTypeNode(nodesGet(node->elems, 0)) && isTypeNode(nodesGet(newnode->elems, 0)))
+        newnode->tag = ArrayTag;
     return (INode *)newnode;
 }
 

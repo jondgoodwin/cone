@@ -36,6 +36,12 @@ void allocateQuesNameRes(NameResState *pstate, FnCallNode **nodep) {
         allocnode->vtype = (INode*)quesNode; // in TypeCheck, this will be updated
         *((INode**)nodep) = argnode;
     }
+    else if (inodeIsProvisionalType(argnode)) {
+        // In a generic's template '?T' asks of a generic parameter, which is
+        // not a type until substituted. Leave it the Option[T] type: the
+        // instance's clone substitutes the argument, and the clone of a '&T'
+        // or '(T, T)' argument decides that one again.
+    }
     else {
         errorMsgNode((INode*)quesNode, ErrorInvType, "'?' is not valid here.");
     }

@@ -130,6 +130,20 @@ Two consequences that define the phase boundary:
   done at clone time — **cloning substitutes for name resolution, using a name
   table whose hook stack is long gone.**
 
+That includes the type-or-value votes name resolution takes by asking
+`isTypeNode` of an operand. A use of a type parameter is not a type, so in the
+template `&T` and `*T` resolve as a borrow and a dereference; `cloneRefNode`
+and `cloneStarNode` take the vote again on the substituted operand, as
+`cloneTupleNode` and `cloneArrayNode` do for `(T, T)` and `[2; T]`, which the
+template holds as a value tuple and an array literal. A vote whose losing side
+is an error cannot wait for the clone, so there the operand abstains:
+`inodeIsProvisionalType` recognizes a use of a generic parameter, or a form
+whose own vote was cast on one, and `ttupleNameRes` lets it vote with neither
+side (so `(T, i64)` is a type tuple, not a mix) while `allocateQuesNameRes`
+leaves `?T` the `Option[T]` type instead of refusing it. A macro's parameter is
+the same declaration, so a macro given a value still clones a value: every
+re-decision flips only an operand that was not a type and now is.
+
 ### How a cloned name gets re-pointed — two independent mechanisms
 
 **Type parameters, through the global name table.** `clonePushState` hooks each
@@ -170,7 +184,11 @@ a `newErrorNode` rather than nothing, so the caller substitutes it and keeps
 checking — `fnCallTypeCheck` has the matching `inodeIsError` guard.
 
 A **tagged trait** fans out: the base trait is instantiated, then every entry of
-its `derived` list, each registering into its own `memonodes`.
+its `derived` list, each registering into its own `memonodes`. The instance's
+`derived` is filled in as each variant is made, after the instance itself was type
+checked with an empty one, so the discriminant's width (`structSetTagWidth`) is
+settled here once the list is whole — on the first instance of the generic only,
+since the discriminant node and the tag values are shared by every instance.
 
 **Depth is the only cycle detector.** No mark can catch runaway expansion,
 because every expansion is a fresh node — nothing ever returns to the same node.

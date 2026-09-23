@@ -747,6 +747,42 @@ int inodeIsMeta(INode *node) {
     return inodeGroup(node) == MetaGroup;
 }
 
+// In a generic's template a use of a type parameter is not a type -- it is a
+// meta node, the same declaration a macro's parameter is, and those may be
+// given values -- so name resolution's type-or-value votes, which ask
+// isTypeNode of an operand, cast a provisional answer on it that the
+// instance's clone takes again. Is this such an operand: a use of a generic
+// parameter, or a form whose own vote was cast on one? A vote whose losing
+// side is an error ('?', a tuple mixing types and values) asks this before
+// refusing, so as not to refuse what substitution may yet make a type.
+int inodeIsProvisionalType(INode *node) {
+    switch (node->tag) {
+    case NameUseTag:
+        return nameUseNames(node, GenVarDclTag);
+    case BorrowTag:
+    case AllocateTag:
+    case ArrayBorrowTag:
+    case ArrayAllocTag:
+        return inodeIsProvisionalType(((RefNode*)node)->vtexp);
+    case DerefTag:
+        return inodeIsProvisionalType(((StarNode*)node)->vtexp);
+    case ArrayLitTag: {
+        Nodes *elems = ((ArrayNode*)node)->elems;
+        return elems->used > 0 && inodeIsProvisionalType(nodesGet(elems, 0));
+    }
+    case VTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode*)node)->elems, cnt, nodesp))
+            if (!isTypeNode(*nodesp) && !inodeIsProvisionalType(*nodesp))
+                return 0;
+        return 1;
+    }
+    default:
+        return 0;
+    }
+}
+
 // Does this node declare a named item? A name use is not one, whatever it names.
 int inodeIsNamed(INode *node) {
     return nodeTagFacts[node->tag].named;
