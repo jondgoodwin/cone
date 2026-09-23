@@ -120,6 +120,22 @@ type that may be extended has its representation in its contract. That is a
 documentation obligation and it is discharged in
 [refinherit](../../conesite/public/coneref/refinherit.html).
 
+**The enum is the privacy boundary for its variants** — Jon, 23 Sep 2026. A
+closed enum is one type written in one place, so code anywhere inside its braces
+— the enum's methods (and each variant's clone of them), its statics, every
+variant's methods — reaches every variant's private members, and the enum's,
+through any value; an extension of it is inside the same boundary. ▸ **Settles**
+that `pub` on a variant's member means "part of the enum's interface", where
+before it was the only way for the enum's own code to read it. It is the privacy
+half of the names rule (everything an enum declares is bare inside its braces).
+▸ **Forbids** nothing new, and widens nothing else: a struct's private members are
+still reached only through `self`, and a function the module owns is outside
+every enum, including one written or instantiated inside the braces. The
+mechanism is `structEnumSeesPrivate`, asked by `fnCallLowerMethod` and the type
+literal's private-field check; the site is the owner of `pstate->fn`, because
+`pstate->typenode` is inherited by a generic function's instance from wherever it
+was first called.
+
 **Composition is compile-time flattening; polymorphism moves out to traits.**
 The author's term is **delegated inheritance**: a field's `use` clause folds
 members of the field's type in as names of this type, reached through the
@@ -983,6 +999,16 @@ name the same enum.
 
 ▸ **What the refusals buy is the exhaustive match.** A base-typed value can only hold
 one of the base's own variants, so a match naming those is exhaustive with no `else`.
+
+**Privacy runs up the chain, not across it.** An extension is inside its base's
+privacy boundary (Principles), so `structEnumSeesPrivate` walks from the enum that
+owns the code being checked down `structEnumBaseDcl` looking for the enum the
+receiver's type belongs to. A copy's clone of a base variant's method is owned by
+the copy, whose enum is the extension, so it reaches what the extension's own code
+reaches — the base's variants' privates included. The walk never goes the other way,
+so the base does not reach an added variant's privates, and two extensions of one
+base do not reach each other's: the sibling rule an enrichment keeps (Name folding)
+holds here too. enum-privacy and enum-typecheck-privacy pin both directions.
 
 **What an extension may not do**, all `ErrorEnumExtends` unless named otherwise:
 declare a member of its own — a field, method, static, macro or mixin — since a
