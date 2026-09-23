@@ -235,6 +235,9 @@ enum ErrorCode {
     // Attributes, which are keywords: '@move', '@opaque', '@unsized'
     ErrorUnkAttr = 1119,        // A '@' word that names no attribute
 
+    // Moves: what a move-typed value may be moved out of
+    ErrorMoveOut = 1120,        // A move-typed value moved out through a borrowed reference, which does not own it
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

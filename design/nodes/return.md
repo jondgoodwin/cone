@@ -103,6 +103,12 @@ type `fnCallFinalizeArgs` built for that call are read in their place.
 [Flow Analysis](../phases/flow.md) owns the borrow-lifetime rule this site,
 `assignlvalrtype` and `fnCallFlowStoredBorrow` implement.
 
+A returned move value is moved to the caller, so after walking the result
+`blockFlow` hands it to `flowResultMove`, which refuses one whose source the
+function does not own — a global, or a place reached through a borrowed
+reference — without deactivating anything. [Flow Analysis](../phases/flow.md),
+"Only an owner may be moved out of", owns that rule.
+
 ## Generation
 
 `genlReturn` compares `block` against the function's own body block: equal means

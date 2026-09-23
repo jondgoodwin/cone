@@ -45,7 +45,8 @@ most consequential thing this note settles.
 | --- | --- | --- |
 | use of an uninitialized variable | **yes** | `nameuseFlow`, but on a whole-function summary — "initialized on one branch" reads as initialized everywhere. An assignment's target is read only for the parts of it that are values — its index and its dereference — never for the base of a partial write |
 | use after move | **yes** | `nameuseFlow`, same summary caveat |
-| move out of a global | **yes** | `flowHandleMove` |
+| move out of a global | **yes** | `flowHandleMove`, and `flowResultMove` for a returned value |
+| move out through a borrowed reference, any permission | **yes** | `flowHandleMove`, and `flowResultMove` for a returned value |
 | write through a read-only reference | **yes** | `assignlvalrtype`, `swapFlow` — `MayWrite` only |
 | write through an `imm` *field* | **yes** | `iexpGetLvalInfo`, taking the minimum of the field's permission and its container's |
 | read through a reference lacking `MayRead` | **yes** | `flowLoadThroughRef`, from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` — a pointer carries no permission and is not asked |

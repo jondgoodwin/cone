@@ -38,6 +38,7 @@ struct RichHandle extends Handle {
 // A copy type, for contrast
 struct Plain {
   pub id i32;
+  pub fn doubled(self) i32 { id * 2; }
 }
 
 // A finalizer makes a type a move type by inference, but a clone method says
@@ -123,6 +124,27 @@ fn exchanges() {
   imm old = c := Handle[60];
   show("left-assign-value", old.id);
   show("left-assign-lval", c.id);
+
+  // A move value may not be moved out through a borrowed reference, but these
+  // two leave the borrowed place holding a value, so they work through one
+  mut w2 = Wrapper[Handle[70], 71];
+  imm out = swapThrough(&mut w2, Handle[72]);
+  show("swap-through-borrow-out", out.id);
+  show("swap-through-borrow-in", w2.h.id);
+  mut d = Handle[73];
+  imm prior = replaceThrough(&mut d, Handle[74]);
+  show("left-assign-through-borrow-value", prior.id);
+  show("left-assign-through-borrow-lval", d.id);
+}
+
+fn swapThrough(r &mut Wrapper, spare Handle) Handle {
+  mut s = spare;
+  r.h <=> s;
+  s;
+}
+
+fn replaceThrough(r &mut Handle, h Handle) Handle {
+  *r := h;
 }
 
 // -------- types that stay copyable --------
@@ -140,6 +162,22 @@ fn copies() {
   imm d = c;
   show("clone-cancels-move", c.id);
   show("clone-destination", d.id);
+
+  // A copy value reads out through a borrowed reference, whole or as a
+  // by-value 'self', and the place borrowed from keeps its own copy
+  imm pt = Plain[90];
+  imm out = readThrough(&pt);
+  show("copy-out-of-borrow", out.id);
+  show("copy-borrowed-source-kept", pt.id);
+  show("copy-self-through-borrow", doubledThrough(&pt));
+}
+
+fn readThrough(r &Plain) Plain {
+  *r;
+}
+
+fn doubledThrough(r &Plain) i32 {
+  r.doubled();
 }
 
 fn main() i32 {
