@@ -89,8 +89,8 @@ void inodePrintNode(INode *node) {
         fieldDclPrint((FieldDclNode *)node); break;
     case ImportTag:
         importPrint((ImportNode *)node); break;
-    case EnumUseTag:
-        enumUsePrint((EnumUseNode *)node); break;
+    case ModUseTag:
+        modUsePrint((ModUseNode *)node); break;
     case BlockTag:
         blockPrint((BlockNode *)node); break;
     case IfTag:
@@ -653,7 +653,7 @@ static NodeTagFacts nodeTagFacts[NodeTagCount] = {
     [ContinueTag] = {StmtGroup, 0, 0},
     [SwapTag] = {StmtGroup, 0, 0},
     [ImportTag] = {StmtGroup, 0, 0},
-    [EnumUseTag] = {StmtGroup, 0, 0},
+    [ModUseTag] = {StmtGroup, 0, 0},
 
     // A name use is in no group of its own: it answers for what it names
     [NameUseTag] = {StmtGroup, 0, 0},

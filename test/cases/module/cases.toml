@@ -388,6 +388,49 @@ description = "What a fold of an enum's variants does not put in reach: a privat
 tags = ["nameres"]
 diagnostics = 3
 
+# -------- a module's 'use' of its own submodule --------
+#
+# A standalone 'use' names any namespace a module reaches WITHOUT an import
+# [Jon 23 Sep]: an enum, as above, or a submodule -- by its name, or by a path
+# through submodules -- whose public names it folds exactly as an import's clause
+# folds a module's. A submodule is brought in by its folder and never imported,
+# so this is the one way a parent folds its child's names. An imported module is
+# not folded this way: its import's own clause does that, one spelling per
+# situation, and 'use' on it is ErrorUseImported.
+#
+# module-use-submodule runs every spelling of the clause -- the whole of it, 'but',
+# a block with 'as', a path one level deeper, 'pub use' re-exporting a
+# submodule's names to the parent by path and to a sister by import -- beside an
+# enum's 'use', and pins that a fold declares nothing. module-use-submodule-nameres
+# holds what it refuses: a private name listed, a second 'use' of one submodule,
+# a 'but' naming nothing, a 'use' of an imported module by its name and by a path
+# through it, a 'use' of the module itself, and a private fold read from outside.
+
+[scenario.module-use-submodule]
+category = "run"
+description = "A parent folding its own submodules' names with a standalone 'use': whole, 'but', a block with 'as', a path one level deeper, and 'pub use' seen by path and by a sister's import, beside an enum's 'use'"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+# A fold binds names and declares nothing. Every call lowers to the submodule's
+# own symbol, spelled after the submodule, and nothing is spelled after the local
+# spelling 'as' gave a name, nor after the module that re-exported one.
+[[scenario.module-use-submodule.check]]
+name = "a-submodule-fold-declares-no-symbol-of-its-own"
+target = "symbols"
+contains = [
+  "define internal scaling.twice comdat nodeduplicate",
+  "define internal measure.inches comdat nodeduplicate",
+  "define internal geometry.deep.depth comdat nodeduplicate",
+  "define internal facade.inner.innerValue comdat nodeduplicate",
+]
+excludes = ["toInches", "facade.innerValue", "reader.innerValue", "module-use-submodule."]
+
+[scenario.module-use-submodule-nameres]
+category = "reject"
+description = "What a standalone 'use' of a module refuses: a private name listed, a second 'use' of one submodule, a 'but' naming nothing, an imported module by name and by path, the module itself, and a private fold read by path and by import"
+tags = ["nameres"]
+diagnostics = 9
+
 # -------- 'extends': one module reusing another --------
 #
 # 'mod solids extends shapes' makes every declaration of shapes, and every name

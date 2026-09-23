@@ -45,23 +45,32 @@ void foldStarItems(Namespace *ns, Name *srcname, FoldClause *fold, int admit);
 // when name resolution asks
 void foldGlobalExpand(NameResState *pstate, ModuleNode *mod, VarDclNode *global);
 
-// A module's 'use' of an enum: 'use Colors;', 'pub use Colors Red, Green as
-// Verde;'. It folds the enum's variants in as names of the module, and nothing
-// else of the enum. It is a statement of the module rather than a clause on a
-// declaration, so it is a node of its own, held on the module's 'enumuses' list
-// beside its imports and never in its walks: it is neither a field nor a
-// declaration, and what it declares is bindings, made in the fold pass.
-typedef struct EnumUseNode {
+// A module's standalone 'use': 'use Colors;', 'pub use Colors Red, Green as
+// Verde;', 'use scaling twice, half;'. It names a namespace the module reaches
+// WITHOUT an import [Jon 23 Sep] -- an enum, whose variants it folds in and
+// nothing else of the enum, or a submodule of this module, reached by its name or
+// by a path through submodules, whose public names it folds in exactly as an
+// import's clause folds a module's. An imported module is folded by its import's
+// own clause and not here: one spelling per situation.
+//
+// It is a statement of the module rather than a clause on a declaration, so it
+// is a node of its own, held on the module's 'moduses' list beside its imports
+// and never in its walks: it is neither a field nor a declaration, and what it
+// declares is bindings, made in the fold pass.
+typedef struct ModUseNode {
     INodeHdr;
-    INode *source;      // The enum, as written: a name or a path, resolved when the fold is expanded
-    FoldClause *fold;   // Which variants, under which spellings; 'ispub' from 'pub use'
-} EnumUseNode;
+    INode *source;      // The enum or submodule, as written: a name or a path, resolved when the fold is expanded
+    FoldClause *fold;   // Which names, under which spellings; 'ispub' from 'pub use'
+    struct ImportNode *modfold; // Where the source is a submodule: the import-shaped fold over it, sharing 'fold'; else NULL
+} ModUseNode;
 
-EnumUseNode *newEnumUseNode();
-void enumUsePrint(EnumUseNode *node);
+ModUseNode *newModUseNode();
+void modUsePrint(ModUseNode *node);
 
-// Expand a module's 'use' of an enum into the module's namespace, hooking each
-// variant it folds in. Run by modFoldNames, after the imports and the globals
-void foldEnumUseExpand(NameResState *pstate, ModuleNode *mod, EnumUseNode *use);
+// Expand a module's standalone 'use' into the module's namespace, hooking each
+// name it folds in. Run by modFoldNames in every pass, after the imports and the
+// globals: an enum's is made once, and a submodule's is run pass by pass as an
+// import's clause is
+void foldModUseExpand(NameResState *pstate, ModuleNode *mod, ModUseNode *use);
 
 #endif

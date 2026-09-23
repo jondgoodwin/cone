@@ -28,6 +28,11 @@
 // imports bind to their modules, which are the base's dependencies rather than
 // its contents [Jon 23 Sep]. 'isextends' is what tells it apart.
 //
+// A module's standalone 'use' of a submodule is carried by one as well, held on
+// its ModUseNode and never on 'imports': it binds no name of its own either --
+// the submodule is a name of this module already -- and its clause is the
+// statement's, folded exactly as an import's is. 'isuse' tells it apart.
+//
 // An import inside a module tree may name ANY public name its parent holds, not
 // only a module [Jon 23 Sep]: 'import Point;' in a submodule binds the parent's
 // public Point the way 'import log;' binds a sister. A submodule is parsed before
@@ -44,6 +49,7 @@ typedef struct ImportNode {
     struct AliasDclNode *binding; // An import of a name of the parent: the alias it binds, bound in the fold passes; else NULL
     uint16_t ispub;     // 'pub import': the module's own binding is public here
     uint16_t isextends; // The fold a module's 'extends' makes, rather than an import statement
+    uint16_t isuse;     // The fold a module's standalone 'use' of a submodule makes, rather than an import statement
     uint16_t isnamedfile; // A bare name reached as a FILE, since the registry held no module of that name at parse
 } ImportNode;
 

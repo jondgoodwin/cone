@@ -19,7 +19,7 @@ ModuleNode *newModuleNode() {
     mod->filesym = NULL;
     mod->foldersym = NULL;
     mod->imports = newNodes(8);
-    mod->enumuses = newNodes(4);
+    mod->moduses = newNodes(4);
     mod->nodes = newNodes(64);
     namespaceInit(&mod->namespace, 64);
     dclInfoInit(&mod->dclinfo);
@@ -61,11 +61,11 @@ void modAddNode(ModuleNode *mod, Name *name, INode *node) {
         nodesAdd(&mod->imports, node);
         return;
     }
-    // A 'use' of an enum is neither a declaration nor a field: it declares
+    // A standalone 'use' is neither a declaration nor a field: it declares
     // bindings, and those are made in the fold pass, so it is held beside the
     // imports and never joins the walks
-    if (node->tag == EnumUseTag) {
-        nodesAdd(&mod->enumuses, node);
+    if (node->tag == ModUseTag) {
+        nodesAdd(&mod->moduses, node);
         return;
     }
 
@@ -505,8 +505,12 @@ static int modFoldPlace(ModuleNode *mod, INode *unit, INode *made) {
             return place;
         ++place;
     }
-    for (nodesFor(mod->enumuses, cnt, nodesp)) {
-        if (modFoldIs(*nodesp, ((EnumUseNode*)*nodesp)->fold, unit, made))
+    for (nodesFor(mod->moduses, cnt, nodesp)) {
+        ModUseNode *use = (ModUseNode*)*nodesp;
+        // A submodule's fold reports as its import-shaped fold, which shares the
+        // statement's clause
+        if (modFoldIs(*nodesp, use->fold, unit, made)
+            || (unit != NULL && unit == (INode*)use->modfold))
             return place;
         ++place;
     }
@@ -523,7 +527,7 @@ INode *modFoldCollisionAt(ModuleNode *mod, INode *unit, INode *alias, INode *pri
 }
 
 // Run one module's folds for the current pass: what it extends first, then its
-// imports, its globals' 'use' clauses and its enum 'use's, each in the order
+// imports, its globals' 'use' clauses and its standalone 'use's, each in the order
 // written. Each fold it reads from is run first, and a module reached again while
 // its folds are running -- a cycle -- is read as far as it has got, and read
 // again in the next pass.
@@ -591,12 +595,12 @@ void modFoldNames(NameResState *pstate, ModuleNode *mod) {
         foldGlobalExpand(pstate, mod, global);
     }
 
-    // A 'use' of an enum folds its variants in as names of this module. Last,
-    // so the enum may be named through anything the imports and the globals
-    // folded in, and before any body resolves, so a variant's bare name is in
-    // place wherever it is used
-    for (nodesFor(mod->enumuses, cnt, nodesp))
-        foldEnumUseExpand(pstate, mod, (EnumUseNode*)*nodesp);
+    // A standalone 'use' folds an enum's variants or a submodule's public names
+    // in as names of this module. Last, so the enum may be named through
+    // anything the imports and the globals folded in, and before any body
+    // resolves, so a folded bare name is in place wherever it is used
+    for (nodesFor(mod->moduses, cnt, nodesp))
+        foldModUseExpand(pstate, mod, (ModUseNode*)*nodesp);
 
     modHook(mod, NULL);
     pstate->mod = owningmod;

@@ -214,19 +214,19 @@ enum ErrorCode {
     ErrorModFolder = 1112,      // A designated file beneath an organisational folder, which is no module: a module folder is a direct child of its parent module's folder
 
     // Import within the tree: a module reaches its neighbours through the registry its parent is
-    ErrorModReach = 1113,       // An 'import' walking a path to a file inside a module tree, or a module naming its own parent: a module in a tree is reached by name, never by a path that happened to arrive at it
+    ErrorModReach = 1113,       // An 'import' walking a path to a file inside a module tree, or a module naming its own parent: a module in a tree is reached by name, never by a path that happened to arrive at it. Also a standalone 'use' naming a module that is not a submodule of this one: itself, an ancestor, or one beside it
 
     // 'include', retired: a module's files are its folder's files
     ErrorInclude = 1126,        // An 'include' statement: a file joins a module by being in its folder, so nothing brings one in
 
-    // A module's 'use': folding an enum's variants in as names of the module
-    ErrorUseEnum = 1114,        // A module's 'use' naming what is not an enum declaration: another kind of name, a typedef, or an instance of a generic enum
+    // A module's standalone 'use': folding an enum's variants, or a submodule's names, in as names of the module
+    ErrorUseEnum = 1114,        // A module's standalone 'use' naming neither an enum declaration nor a module: another kind of name, a typedef, or an instance of a generic enum
 
     // A pattern's bare variant, looked up in the matched value's enum
     ErrorPatArgs = 1115,        // A pattern's variant found only in the matched value's enum, written with type arguments that value supplies
 
     // One import of a module per module: a second is refused, identical or not [Jon 23 Sep]
-    ErrorDupImport = 1116,      // A second import of one module: the same import again, or one that differs in what its 'use' clause folds or in its 'pub'
+    ErrorDupImport = 1116,      // A second import of one module: the same import again, or one that differs in what its 'use' clause folds or in its 'pub'; likewise a second standalone 'use' of one submodule
 
     // A match's patterns: 'is', comparison and range patterns joined by 'or'
     ErrorPatBare = 1117,        // A value alone where a match expects a pattern, after an 'or': whether a bare value means '==' is not decided
@@ -247,6 +247,9 @@ enum ErrorCode {
     ErrorRefNoCompare = 1123,   // '==', '!=' or an ordering on references whose referent has no such operator, or on a slice or virtual reference, whose referents have no comparison built
     ErrorRefCompareMixed = 1124, // A comparison with a reference on one side and a value on the other: both are read through, or neither
     ErrorSameNotRef = 1125,     // '===' or '!==' on a value that is neither a reference nor a pointer, which has no place to be the same as
+
+    // A module's standalone 'use' folds a namespace reached without an import; an imported module is folded by its import's clause
+    ErrorUseImported = 1127,    // A standalone 'use' naming a module this module reaches through an import, whose names its import's own 'use' clause folds
 
     // Warnings
     WarnCode = 3000,
