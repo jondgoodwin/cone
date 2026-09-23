@@ -33,11 +33,17 @@ void importPrint(ImportNode *node) {
 // the statement says 'pub', exactly as a fold is. Naming the module is then
 // reached as a path base like any other binding, because every reader of a
 // namespace resolves an alias before acting on what it found.
+//
+// The binding is positioned at the import statement. It is built once the whole
+// statement has been parsed and the module loaded, so the lexer has moved on to
+// whatever follows, and a duplicate of the name would otherwise be reported there.
 void importBindModule(ModuleNode *mod, ImportNode *node, uint16_t pubflag) {
     ModuleNode *newmod = node->module;
     NameUseNode *target = newNameUseNode(newmod->namesym);
+    inodeLexCopy((INode*)target, (INode*)node);
     target->dclnode = (INode*)newmod;
     AliasDclNode *alias = newNameAliasDclNode(newmod->namesym, (INode*)target);
+    inodeLexCopy((INode*)alias, (INode*)node);
     alias->flags |= pubflag;
     modAddNamedNode(mod, newmod->namesym, (INode*)alias);
 }

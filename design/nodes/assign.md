@@ -83,6 +83,21 @@ into `parseAnyExpr` for the right-hand side, so assignment is
 
 Then `vtype` becomes the rval's type.
 
+**More values than lvals is accepted, and the extras are still evaluated.** The
+lvals take the leading values; `x = a, b, c` stores `a`. That is the behaviour
+parallel assignment was written with in 2018 (`<=` on the counts, "treat as
+simple assignment with one lval on left"), and generation still extracts
+element 0. Fewer values than lvals is `ErrorBadTerm`. The manual shows only
+matched counts and says nothing either way about extras. Because the
+assignment's value is the whole rval tuple, `assignExtraRvalsCheck` type checks
+each value no lval receives and gives the tuple a type listing every value.
+When the counts match, `assignParaCheck` keeps giving the tuple the lval's type,
+as before. The 2019 move to the new type inference dropped the up-front check of
+the whole rval, and until 23 September 2026 nothing checked an extra: an
+ill-typed one crashed the compiler, and so did any single lval given several
+values, because the value tuple had no type. `core-success` and `core-typecheck`
+pin both forms.
+
 **Type check does not check mutability.** It coerces and it types. Everything
 about whether the write is *allowed* is flow's.
 
