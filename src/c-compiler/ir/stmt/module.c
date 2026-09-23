@@ -479,8 +479,9 @@ static int modFoldIs(INode *fold, FoldClause *clause, INode *unit, INode *made) 
 }
 
 // The place of a fold in the order modFoldNames runs a module's folds, found as
-// 'unit' itself or as the fold whose items hold 'made'; -1 for none, which is
-// what a binding no fold made gets: a declaration, or an import's own name
+// 'unit' itself or as the fold whose items hold 'made', or as the import that
+// bound a name of the parent; -1 for none, which is what a binding no fold made
+// gets: a declaration, or an import's own name for its module
 static int modFoldPlace(ModuleNode *mod, INode *unit, INode *made) {
     int place = 0;
     INode **nodesp;
@@ -491,7 +492,9 @@ static int modFoldPlace(ModuleNode *mod, INode *unit, INode *made) {
         ++place;
     }
     for (nodesFor(mod->imports, cnt, nodesp)) {
-        if (modFoldIs(*nodesp, ((ImportNode*)*nodesp)->fold, unit, made))
+        ImportNode *import = (ImportNode*)*nodesp;
+        if (modFoldIs(*nodesp, import->fold, unit, made)
+            || (made != NULL && made == (INode*)import->binding))
             return place;
         ++place;
     }
@@ -551,6 +554,15 @@ void modFoldNames(NameResState *pstate, ModuleNode *mod) {
 
     for (nodesFor(mod->imports, cnt, nodesp)) {
         ImportNode *import = (ImportNode*)*nodesp;
+        // An import of a name of the parent reads the parent's namespace, so
+        // the parent's folds come first. Where the name binds a module, the
+        // import folds from it as from any module, below
+        if (import->binding) {
+            modFoldNames(pstate, (ModuleNode*)mod->dclinfo.owner);
+            importBindName(mod, import);
+        }
+        else if (import->isnamedfile)
+            importBindName(mod, import);
         if (import->module)
             modFoldNames(pstate, import->module);
         // The recursion above swapped the hook and this module's is current again

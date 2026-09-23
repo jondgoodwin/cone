@@ -16,8 +16,10 @@ ImportNode *newImportNode() {
     newNode(node, ImportNode, ImportTag);
     node->module = NULL;
     node->fold = NULL;
+    node->binding = NULL;
     node->ispub = 0;
     node->isextends = 0;
+    node->isnamedfile = 0;
     return node;
 }
 
@@ -45,7 +47,8 @@ static void importPrintNames(Nodes *names, int listed) {
 // Serialize a import node
 void importPrint(ImportNode *node) {
     inodeFprint(node->ispub ? "pub import %s" : "import %s",
-        node->module? &node->module->namesym->namestr : "stdio");
+        node->binding ? &node->binding->namesym->namestr
+        : node->module ? &node->module->namesym->namestr : "stdio");
     FoldClause *fold = node->fold;
     if (fold == NULL)
         return;
@@ -151,6 +154,23 @@ void importBindModule(ModuleNode *mod, ImportNode *node) {
     modAddNamedNode(mod, newmod->namesym, (INode*)alias);
 }
 
+// Point an import's alias at the binding it stands for, 'found' in its source.
+// A source binding reached through a global is reached through that same global
+// here, and the member is spelled as its type names it rather than as the
+// source's fold renamed it -- which is what the lowering reads
+static void importAliasTarget(AliasDclNode *alias, INode *found) {
+    NameUseNode *target = (NameUseNode*)alias->target;
+    INode *through = aliasDclThrough(found);
+    if (through) {
+        NameUseNode *srctarget = (NameUseNode*)((AliasDclNode*)found)->target;
+        target->namesym = srctarget->namesym;
+        target->dclnode = srctarget->dclnode;
+        alias->through = through;
+    }
+    else
+        target->dclnode = found;
+}
+
 // Fold one name this import admits into the importing module's namespace.
 //
 // The binding is an alias whose target is the SOURCE'S OWN BINDING rather than
@@ -203,18 +223,7 @@ static void importFoldItem(ModuleNode *mod, ImportNode *import, AliasDclNode *al
                 &srcname->namestr, &src->namesym->namestr);
         return;
     }
-    // A source binding reached through a global is reached through that same
-    // global here, and the member is spelled as its type names it rather than as
-    // the source's fold renamed it -- which is what the lowering reads
-    INode *through = aliasDclThrough(found);
-    if (through) {
-        NameUseNode *srctarget = (NameUseNode*)((AliasDclNode*)found)->target;
-        target->namesym = srctarget->namesym;
-        target->dclnode = srctarget->dclnode;
-        alias->through = through;
-    }
-    else
-        target->dclnode = found;
+    importAliasTarget(alias, found);
     // A fold is private to the module that made it unless the import says 'pub',
     // before the statement or in its clause. That is the transit rule, and it is
     // nothing but the visibility rule: what a third module sees through this one
@@ -325,6 +334,101 @@ static void importFoldStar(ModuleNode *mod, ImportNode *import) {
     }
 }
 
+// A reach from a submodule to its parent that a single file-by-bare-name import
+// could hide: the parent answering the same name with something else. The
+// registry is asked first, but a submodule is parsed before its parent's own
+// files, so a name the parent declares or imports cannot be answered at parse
+// and a file found by that name is taken there. Were the registry complete then,
+// it would have answered instead -- so the two meaning different things is
+// refused rather than decided by when each was parsed
+static void importCheckNamedFile(ModuleNode *mod, ImportNode *node) {
+    ModuleNode *parent = (ModuleNode*)mod->dclinfo.owner;
+    if (parent == NULL || node->module == NULL)
+        return;
+    Name *name = node->module->namesym;
+    INode *found = namespaceFind(&parent->namespace, name);
+    if (found == NULL || aliasDclResolve(found) == (INode*)node->module)
+        return;
+    errorMsgNode((INode*)node, ErrorDupName,
+        "%s is a module file here, and a name of %s, the module that holds this one, as well. An import asks the parent first, so the two cannot both be what it means: rename one.",
+        &name->namestr, &parent->namesym->namestr);
+}
+
+// Bind the name an import of a name of the parent takes (import.h).
+//
+// The REGISTRY a submodule's imports are answered in is its parent's namespace,
+// and it holds more than modules [Jon 23 Sep]: what the parent declares, what
+// its own imports bound and what its folds brought in. 'import Point;' binds
+// the parent's public Point here exactly as 'import log;' binds a sister -- an
+// alias, under the import's own visibility, whose target is the parent's own
+// binding so the origin is kept. A private name of the parent is refused, as a
+// private submodule is refused outside its parent: 'pub' is what a parent shares
+// downward as well as outward.
+//
+// Like the name an import binds to its module, the binding states a DEPENDENCY
+// (FlagImportName): a module extending this one does not take it. It is WRITTEN,
+// so a second binding of the name that this module also wrote is refused.
+//
+// The parent's namespace is complete once its folds have run, which modFoldNames
+// sees to first. A name not there yet, or there privately, waits for a later
+// pass, since a fold round a cycle may still bring it or make it public.
+void importBindName(ModuleNode *mod, ImportNode *node) {
+    if (node->isnamedfile) {
+        if (modFoldReporting())
+            importCheckNamedFile(mod, node);
+        return;
+    }
+    AliasDclNode *alias = node->binding;
+    if (alias == NULL || ((NameUseNode*)alias->target)->dclnode != NULL)
+        return;     // Bound, or refused, in an earlier pass
+    ModuleNode *parent = (ModuleNode*)mod->dclinfo.owner;
+    Name *name = alias->namesym;
+    INode *found = namespaceFind(&parent->namespace, name);
+    if (found == NULL) {
+        if (!modFoldReporting())
+            modFoldWait();
+        else
+            errorMsgNode((INode*)node, ErrorUnkName,
+                "%s is neither a name of %s, the module that holds this one, nor a module file. A submodule imports a sister or a public name of its parent.",
+                &name->namestr, &parent->namesym->namestr);
+        return;
+    }
+    if (inodeIsPrivate(found)) {
+        if (!modFoldReporting())
+            modFoldWait();
+        else
+            errorMsgNode((INode*)node, ErrorNotPublic,
+                "%s is private to %s, the module that holds this one. A submodule imports what its parent makes public.",
+                &name->namestr, &parent->namesym->namestr);
+        return;
+    }
+    importAliasTarget(alias, found);
+    INode *prior = modFoldBind(mod, alias);
+    if (prior != NULL) {
+        // Two written bindings of one name. A declaration of this module is met
+        // at the import, which is what brought the second meaning in; anything
+        // else where a single pass would have met it second
+        if (prior->tag != AliasDclTag)
+            errorMsgNode((INode*)node, ErrorDupName,
+                "%s is already a name of this module, which declares it. The import would bind %s's %s under the same name, and a name of a module is unique.",
+                &name->namestr, &parent->namesym->namestr, &name->namestr);
+        else
+            modFoldDupReport(modFoldCollisionAt(mod, (INode*)node, (INode*)alias, prior), alias, prior);
+        return;
+    }
+    // A module the parent binds -- one it imported and re-exported -- is imported
+    // here as any module is, so its 'use' clause folds from it. Anything else has
+    // no names of its own for a clause to fold: a type's members are reached
+    // through it, as they are wherever the type is named
+    INode *dcl = aliasDclResolve(found);
+    if (dcl && dcl->tag == ModuleTag)
+        node->module = (ModuleNode*)dcl;
+    else if (node->fold)
+        errorMsgNode(node->fold->at, ErrorBadFold,
+            "%s is not a module, so it has no names for a 'use' clause to fold. Import it, and reach what it holds through it.",
+            &name->namestr);
+}
+
 // Fold the names this import admits into the importing module's namespace.
 //
 // The source's NAMESPACE is what is read, not its declaration list, so a name the
@@ -366,6 +470,8 @@ void importNameRes(NameResState *pstate, ImportNode *node) {
 
 // Type check the import node
 void importTypeCheck(TypeCheckState *pstate, ImportNode *node) {
-    // Type check the module we are importing
-    inodeTypeCheckAny(pstate, (INode**)&node->module);
+    // Type check the module we are importing. An import of a name of the parent
+    // that is not a module has none: what it names is checked in its own module
+    if (node->module)
+        inodeTypeCheckAny(pstate, (INode**)&node->module);
 }

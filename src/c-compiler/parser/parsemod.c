@@ -294,6 +294,32 @@ static ImportNode *parseImportPrior(ModuleNode *mod, ModuleNode *imported) {
     return NULL;
 }
 
+// Hold an import of a name of the parent, to be bound in the fold passes: an
+// alias under the name, not yet pointing at anything (importBindName). Two
+// imports of one name are refused here, as two imports of one module are
+static ImportNode *parseImportName(ParseState *parse, ImportNode *importnode, Name *name) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(parse->mod->imports, cnt, nodesp)) {
+        ImportNode *prior = (ImportNode*)*nodesp;
+        if (prior->binding == NULL || prior->binding->namesym != name)
+            continue;
+        errorMsgNode((INode*)importnode, ErrorDupImport,
+            "%s is imported already, at %s:%u. A module imports a name once: leave out the second.",
+            &name->namestr, prior->lexer->url, prior->linenbr);
+        return NULL;
+    }
+    NameUseNode *target = newNameUseNode(name);
+    inodeLexCopy((INode*)target, (INode*)importnode);
+    AliasDclNode *alias = newNameAliasDclNode(name, (INode*)target);
+    inodeLexCopy((INode*)alias, (INode*)importnode);
+    alias->flags |= FlagImportName;
+    if (importnode->ispub)
+        alias->flags |= FlagPub;
+    importnode->binding = alias;
+    return importnode;
+}
+
 // Parse import statement. 'pubflag' re-exports what the import binds: the
 // module's name here, and every name it folds in.
 //
@@ -358,6 +384,19 @@ ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
             &newmod->namesym->namestr);
         return NULL;
     }
+
+    // THE REGISTRY HOLDS MORE THAN MODULES [Jon 23 Sep]. A submodule's bare name
+    // may be any public name of its parent -- a type, a function, a global -- and
+    // is bound as an alias rather than loaded. The submodule is parsed before its
+    // parent's own files, so only its sisters are there to be found yet: a name
+    // no file answers either is held, and bound in the fold passes once the
+    // parent's namespace is complete (importBindName)
+    int builtin = filesym == corelibName || strcmp(filename, "stdio") == 0;
+    if (newmod == NULL && isname && !builtin && parse->mod->dclinfo.owner != NULL
+        && fileFindSrc(lex ? lex->url : NULL, filename) == NULL)
+        return parseImportName(parse, importnode, filesym);
+    if (newmod == NULL && isname && !builtin && parse->mod->dclinfo.owner != NULL)
+        importnode->isnamedfile = 1;
 
     if (newmod == NULL) {
         // Nothing of that name in the registry, so the name is a FILE PATH: what
