@@ -984,6 +984,22 @@ void fnCallOpAssgn(FnCallNode **nodep) {
     *((INode**)nodep) = (INode*)blk;
 }
 
+// A type that declares '==' and no '!=' has its '!=' derived, as 'not (a == b)'
+// (coneref/refmethop.html, "Comparison Operator Methods"). Asked of a struct
+// receiver's own type. A type that declares its own '!=' keeps it, an enum's
+// intrinsic pair is declared together, a number declares both, and a type
+// declaring neither is left to be reported missing its '!='. A reference, a
+// pointer and a slice declare their own '!=', which is selected before any
+// referent is asked.
+static int fnCallNeFromEq(FnCallNode *node, INode *objtype) {
+    if (!(node->flags & FlagOperator) || node->methfld == NULL || !isNameUseNode(node->methfld)
+        || ((NameUseNode*)node->methfld)->namesym != neName)
+        return 0;
+    return objtype->tag == StructTag
+        && iNsTypeFindFnField((INsTypeNode*)objtype, neName) == NULL
+        && iNsTypeFindFnField((INsTypeNode*)objtype, eqName) != NULL;
+}
+
 // Perform type check on function/method call node
 // This should only be run once on a node, as it mutably lowers the node to another form:
 // - If a generic/macro, it instantiates, then type checks instantiated nodes
@@ -1204,6 +1220,17 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         }
     }
 
+    // A derived '!=': this node becomes the '==' application, lowered below like
+    // any other, and a 'not' takes its place in the tree
+    LogicNode *derivedne = NULL;
+    if (fnCallNeFromEq(node, objtype)) {
+        ((NameUseNode*)node->methfld)->namesym = eqName;
+        derivedne = newLogicNode(NotLogicTag);
+        inodeLexCopy((INode*)derivedne, (INode*)node);
+        derivedne->lexp = (INode*)node;
+        *((INode**)nodep) = (INode*)derivedne;
+    }
+
     // Dispatch for correct handling based on the type of the object
     switch (objtype->tag) {
     // Pure function call
@@ -1327,6 +1354,16 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     default:
         errorMsgNode((INode*)node->objfn, ErrorNoMeth, "This type does not support calls or field access.");
         node->vtype = errorType;
+    }
+
+    // 'not' takes a Bool, which a '==' returning anything else reaches through
+    // isTrue. A '==' that selected nothing has been reported, and the 'not' carries
+    // that on rather than earning a second diagnostic.
+    if (derivedne) {
+        if (node->vtype == unknownType || node->vtype == errorType)
+            derivedne->vtype = errorType;
+        else if (!iexpCoerce(&derivedne->lexp, (INode*)boolType))
+            errorMsgNode((INode*)node, ErrorInvType, "Conditional expression must be coercible to boolean value.");
     }
 }
 
