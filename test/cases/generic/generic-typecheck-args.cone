@@ -1,6 +1,6 @@
 // Type argument lists written out, and the two things wrong with one that the
-// instantiation path refuses; and, last, a path through a generic type that
-// writes none where one is required.
+// instantiation path refuses; and, last, a generic type that writes none where
+// one is required: on a path to its member, and where a type is wanted.
 //
 // Separate from generic-typecheck-infer because the mechanism is the opposite
 // one: there the type arguments are absent and have to be derived from the value
@@ -70,4 +70,43 @@ fn memberOfTheGenericItself() {
   imm r = Stocked.restock();       //~ ErrorArgCount:19 "Stocked is generic, so restock belongs to each of its instances"
   imm s = Stocked.refill(2i64);    //~ ErrorArgCount:19 "Stocked is generic, so refill belongs to each of its instances"
   imm t = Stocked.held;            //~ ErrorArgCount:19 "Stocked is generic, so held belongs to each of its instances"
+}
+
+// No type argument list at all, on a generic type written where a type is
+// wanted. The generic is a template, and only its instances are types, so each
+// of these names no type. Every one reached code generation as a type it has
+// no case for, and crashed the compiler. A generic enum is refused as a generic
+// struct is, and a generic written bare as another generic's type argument is
+// refused once, at the argument, rather than at every use the instance makes
+// of its parameter.
+enum Maybe[T] {
+  Just(T);
+  Nothing;
+}
+
+fn fnId[T](x T) T {
+  x;
+}
+
+fn bareParameter(b Box) {}         //~ ErrorArgCount:20 "is generic, so it is not a type"
+fn bareReference(b &Box) {}        //~ ErrorArgCount:21 "is generic, so it is not a type"
+fn bareEnum(m Maybe) {}            //~ ErrorArgCount:15 "is generic, so it is not a type"
+fn bareReturn() Box {}             //~ ErrorArgCount:17 "is generic, so it is not a type"
+
+struct Holds {
+  b Box;                           //~ ErrorArgCount:5 "is generic, so it is not a type"
+}
+
+typedef Boxed Box;                 //~ ErrorArgCount:15 "is generic, so it is not a type"
+fn throughTypedef(b Boxed) {}
+
+fn bareLocalAndCast() {
+  imm b Box;                       //~ ErrorArgCount:9 "is generic, so it is not a type"
+  imm p *Box;                      //~ ErrorArgCount:10 "is generic, so it is not a type"
+  imm t (Box, i64);                //~ ErrorArgCount:10 "is generic, so it is not a type"
+  imm c = 3 as Box;                //~ ErrorArgCount:16 "is generic, so it is not a type"
+}
+
+fn bareTypeArgument() {
+  imm r = fnId[Box](1i64);         //~ ErrorArgCount:16 "is generic, so it is not a type"
 }

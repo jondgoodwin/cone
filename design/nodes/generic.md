@@ -202,6 +202,18 @@ up: **the memo key is the stored call's argument list, compared pairwise with
 a `newErrorNode` rather than nothing, so the caller substitutes it and keeps
 checking — `fnCallTypeCheck` has the matching `inodeIsError` guard.
 
+**A generic named bare where a type is wanted names no type.** Only an instance
+is a type, so `Box` for a `struct Box[T]` — a generic enum or trait likewise, or a
+folded name for one — is refused with `ErrorArgCount` by `itypeRefuseBareGeneric`,
+which `itypeTypeCheck` asks of every type it checks: a parameter, a local, a
+field, a return type, a referent, a typedef's target, a cast's target. The use is
+then bound to `errorType`, so a typedef's uses and a parameter's arguments do not
+report it again. `genericMemoize` asks the same of each type argument, so
+`id[Box]` is refused once, at the argument, rather than at every use the instance
+makes of its parameter. The clone maps a generic's members to the instance's,
+not the generic itself, so inside its own methods a bare `Box` is refused as it
+is outside; `Self` names the instance.
+
 A **tagged trait** fans out: the base trait is instantiated, then every entry of
 its `derived` list, each registering into its own `memonodes`. **Every variant is
 cloned and registered before any is type checked**, because a variant's body may

@@ -177,6 +177,10 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
             errorMsgNode((INode*)*nodesp, ErrorNotType, "Expected a type for a generic parameter");
             badargs = 1;
         }
+        // Refused here rather than wherever the instance uses its parameter,
+        // which would report it once per use
+        else if (itypeRefuseBareGeneric(*nodesp))
+            badargs = 1;
     }
     if (badargs)
         return newErrorNode((INode*)srcgencall);

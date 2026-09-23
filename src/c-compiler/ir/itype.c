@@ -54,6 +54,31 @@ INode *iTypeFindFnField(INode *type, Name *name) {
     }
 }
 
+// Refuse a name that names a generic type bare -- 'Box' for a 'struct Box[T]' --
+// and return 1 if it is one. A generic is a template, not a type: only its
+// instances are types, so a name that stops at the generic names no type at all.
+// A folded name answers for what it folds; a typedef does not, because its own
+// target is checked, and refused, where the typedef is.
+int itypeRefuseBareGeneric(INode *type) {
+    if (!isNameUseNode(type))
+        return 0;
+    INode *dcl = ((NameUseNode*)type)->dclnode;
+    while (dcl && dcl->tag == AliasDclTag && !(dcl->flags & FlagTypeAlias)) {
+        INode *target = ((AliasDclNode*)dcl)->target;
+        dcl = (target && isNameUseNode(target)) ? ((NameUseNode*)target)->dclnode : target;
+    }
+    if (dcl == NULL || dcl->tag != StructTag || ((StructNode*)dcl)->genericinfo == NULL)
+        return 0;
+    Name *generic = ((StructNode*)dcl)->namesym;
+    errorMsgNode(type, ErrorArgCount,
+        "%s is generic, so it is not a type: each of its instances is, written with its type arguments as %s[...].",
+        &generic->namestr, &generic->namestr);
+    // Bound to the error type from here on, so that nothing reached through this
+    // name -- a typedef's uses, a parameter's arguments -- reports it again
+    ((NameUseNode*)type)->dclnode = errorType;
+    return 1;
+}
+
 // Type check node, expecting it to be a type. Give error and return 0, if not.
 int itypeTypeCheck(TypeCheckState *pstate, INode **node) {
     inodeTypeCheckAny(pstate, node);
@@ -61,6 +86,8 @@ int itypeTypeCheck(TypeCheckState *pstate, INode **node) {
         errorMsgNode(*node, ErrorNotTyped, "Expected a type.");
         return 0;
     }
+    if (itypeRefuseBareGeneric(*node))
+        return 0;
     return 1;
 }
 

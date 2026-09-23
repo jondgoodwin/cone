@@ -58,6 +58,10 @@ INode *itypeGetDerefTypeDcl(INode *node);
 // Look for named field/method in type
 INode *iTypeFindFnField(INode *type, Name *name);
 
+// Refuse a generic type named without its type arguments where a type is
+// wanted, and return 1 if this is one
+int itypeRefuseBareGeneric(INode *type);
+
 // Type check node, expecting it to be a type. Give error and return 0, if not.
 int itypeTypeCheck(TypeCheckState *pstate, INode **node);
 
