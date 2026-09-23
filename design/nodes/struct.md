@@ -186,7 +186,7 @@ vtable. A **private** generic method and a generic **static** function are
 neither slots nor requirements and cost the trait nothing.
 `trait-typecheck-vref` pins all three, and
 `conesite/public/coneref/refvirtref.html`, "Type Restrictions", is the rule.
-| `namespace` | every named member: fields, methods, macros, overload sets, `Self`, and what a fold admits — a **copy** of a folded field (a `FieldDclNode` with a `hop`) and an **alias** (`AliasDclNode`) for a folded method, overload set or macro method, for every member but the fields of an `extends` base, and for every member a sibling `use` admits. The copies and aliases live here only; `fields` and `nodelist` never hold one |
+| `namespace` | every named member: fields, methods, macros, overload sets, `Self`, **an enum's variants** — each a `StructNode`, bound at parse, and never a member of the enum's values: a lookup through a value passes one over (`fnCallLowerMethod`) — and what a fold admits — a **copy** of a folded field (a `FieldDclNode` with a `hop`) and an **alias** (`AliasDclNode`) for a folded method, overload set or macro method, for every member but the fields of an `extends` base, and for every member a sibling `use` admits. The copies and aliases live here only; `fields` and `nodelist` never hold one |
 | `dropfn` | NULL until the last step of type check |
 | `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". The owner is a module, or the enum for a variant declared inside one. Read for one thing besides naming: rejecting a variant declared outside its enum's module, through `dclInfoGetModule` |
 | `basetrait` | the **type expression** of the first abstraction an `is` names, or of the enum a variant belongs to — a `NameUseNode`, or an `FnCallNode` for a generic base. **Not a `StructNode*`.** Two helpers unwrap it and they answer different questions: `structBaseTraitDcl` takes **one hop**, to the declaration this type stands on, while `structGetBaseTrait` recurses to the **bottom-most** one. Picking the wrong one is how the infection loop hangs |
@@ -319,9 +319,16 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   inside an enum is one; so is a **bare name**, which declares an empty struct
   variant and is what lets one construct serve a plain set of named symbols as
   well as a set carrying payloads. Both set `HasTagField` on the enum, take the
-  enum's generic parameters, get a synthesized `basetrait`, and are registered at
-  module scope — bound in the module, but owned by the enum, so their symbols are
-  spelled after it.
+  enum's generic parameters, get a synthesized `basetrait`, and are put on the
+  module's node list, so the module's walks resolve, check and generate them. **A
+  variant's NAME is bound in the enum's namespace**, not the module's: it is
+  reached as `Colors.Red`, two enums may each have a `Quit`, and it is bare in a
+  module only where a module's `use` of the enum folds it in
+  ([module](module.md)). It is owned by the enum, so its symbols are spelled after
+  it.
+  - **A variant shares the enum's one namespace with its fields and methods**, so
+    a variant of the same spelling as either is `ErrorDupName`, reported on
+    whichever is written second.
   - **What tells a bare-name variant from a common field is the token after the
     name**: `,`, `;` or `=` makes it a variant, and anything else is a type, so it
     is a field. The field node is therefore built while the lexer is still on the
@@ -413,7 +420,8 @@ inherited member bare, exactly as it names the type's own.
 6. Insert `Self` into the namespace, aliasing the struct to itself — done
    ahead of step 4, in fact, since a field's type may name it. This is what
    `parseFnSig`'s `Self` inference for a method parameter depends on.
-7. Hook the whole namespace.
+7. Hook the whole namespace. An enum's holds its variants, so the enum's own
+   method bodies name them bare with no `use`.
 8. **Walk the fields backwards** — so that splicing does not move a field not
    yet reached — resolving each ordinary field and **expanding each placeholder
    whose base is resolved** (`structInheritTrait`, under a clone state whose

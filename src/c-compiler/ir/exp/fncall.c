@@ -570,6 +570,11 @@ int fnCallLowerMethod(FnCallNode *callnode) {
     // method's, which its expansion has already replaced with the use site's
     // receiver (FlagSelfRecv).
     INode *foundnode = iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym);
+    // A type in the namespace -- an enum's variant, or 'Self' -- is a name of the
+    // type and never a member of its values, so it is reported missing below and
+    // has no visibility to refuse here
+    if (foundnode && foundnode->tag == StructTag)
+        foundnode = NULL;
     int isprivate = foundnode && inodeIsPrivate(foundnode);
     if (isprivate && !(callnode->flags & FlagSelfRecv)
         && !(isNameUseNode(obj) && isExpNode(obj)

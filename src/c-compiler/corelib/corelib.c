@@ -68,6 +68,13 @@ char *corelibSource =
   "struct Error {pub value E;}\n"
 "}\n"
 
+// A variant is a name of its enum, so these two statements are what make Some,
+// None, Ok and Error bare names of core. They are 'pub', and every module's
+// automatic import of core folds its public names, which carries them on into
+// every program
+"use pub Option;\n"
+"use pub Result;\n"
+
 "pub extern fn malloc(size usize) *u8;\n"
 
 "pub struct @move so {\n"

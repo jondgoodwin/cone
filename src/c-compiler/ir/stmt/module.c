@@ -18,6 +18,7 @@ ModuleNode *newModuleNode() {
     mod->filesym = NULL;
     mod->foldersym = NULL;
     mod->imports = newNodes(8);
+    mod->enumuses = newNodes(4);
     mod->nodes = newNodes(64);
     namespaceInit(&mod->namespace, 64);
     dclInfoInit(&mod->dclinfo);
@@ -54,6 +55,13 @@ void modAddNode(ModuleNode *mod, Name *name, INode *node) {
     // before we do name resolution on module's nodes
     if (node->tag == ImportTag) {
         nodesAdd(&mod->imports, node);
+        return;
+    }
+    // A 'use' of an enum is neither a declaration nor a field: it declares
+    // bindings, and those are made in the fold pass, so it is held beside the
+    // imports and never joins the walks
+    if (node->tag == EnumUseTag) {
+        nodesAdd(&mod->enumuses, node);
         return;
     }
 
@@ -175,6 +183,13 @@ void modFoldNames(NameResState *pstate, ModuleNode *mod) {
         inodeNameRes(pstate, nodesp);
         foldGlobalExpand(pstate, mod, (VarDclNode*)*nodesp);
     }
+
+    // A 'use' of an enum folds its variants in as names of this module. Last,
+    // so the enum may be named through anything the imports and the globals
+    // folded in, and before any body resolves, so a variant's bare name is in
+    // place wherever it is used
+    for (nodesFor(mod->enumuses, cnt, nodesp))
+        foldEnumUseExpand(pstate, mod, (EnumUseNode*)*nodesp);
 
     modHook(mod, NULL);
     pstate->mod = owningmod;

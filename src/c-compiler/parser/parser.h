@@ -70,6 +70,8 @@ INode *parseDclPerm(PermNode *defperm);
 VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags);
 // Parse a field's fold clause, with the lexer on its 'use'
 FoldClause *parseFoldClause(ParseState *parse, int maypub);
+// Parse a module's 'use' of an enum, with the lexer on the 'use'
+EnumUseNode *parseUseEnum(ParseState *parse);
 ConstDclNode *parseConstDcl(ParseState *parse);
 INode *parseFnSig(ParseState *parse);
 INode *parseStruct(ParseState *parse, uint16_t flags);
