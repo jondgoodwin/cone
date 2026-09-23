@@ -425,7 +425,7 @@ def parse_annotations(source: Path, codes: dict[str, int]) -> list[Annotation]:
     return found
 
 
-MODULE_RE = re.compile(r"^\s*(?:import|include)\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
+MODULE_RE = re.compile(r"^\s*import\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
 
 
 def named_source(group_dir: Path, name: str) -> Path | None:
@@ -478,7 +478,7 @@ def support_closure(sources: list[Path], group_dir: Path, support: set[str]) -> 
 
     R2.12 registers a support module per group; this says which scenarios each
     one belongs to, which is what lets an annotation live in a support module.
-    A diagnostic reported inside an imported or included file has that file's
+    A diagnostic reported inside an imported file has that file's
     path, and an annotation only matches a diagnostic reported against its own
     file, so without this a diagnostic in a support module could be produced
     but never expected -- which is the hole that left ErrorNoEof uncoverable.
@@ -596,7 +596,7 @@ class Scenario:
     # diagnostic reported at the EOF token on the line after it.
     last_line: int = 0
     # Every file this scenario's annotations may live in: its own source, then
-    # the support modules it imports or includes. Bless writes back to each.
+    # the support modules it imports. Bless writes back to each.
     annot_sources: tuple[Path, ...] = ()
     argv: tuple[str, ...] = ()   # 'driver' only: the whole invocation
     xfail: bool = False

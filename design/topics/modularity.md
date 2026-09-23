@@ -186,14 +186,17 @@ declaration. **That is the one place in the language where two independent
 libraries disagreeing is resolvable by the party who needs both** — which is what
 made reuse across package boundaries a language problem in the first place.
 
-**`import` composes; `include` does not.** `import` binds another module's name —
+**`import` composes; the folder gathers.** `import` binds another module's name —
 a sister found in the registry the enclosing module is, or a module loaded from a
 path — and a `use` clause folds its public names into the importer, selected,
 renamed or excluded as a global's clause does; `.*` is `use *`. Every binding it
 makes carries a visibility of its own, so what a third module sees through this
-one is what this one wrote `pub import` or `pub use` for. `include` injects a file's global
-statements into the *current* module, producing no module and no namespace — so
-an included file's private names are private to the including module.
+one is what this one wrote `pub import` or `pub use` for. A module's own files
+are its folder's, and nothing in any file brings another in — so a tool handed
+one file knows its module from the path alone, and a file's private names are
+private to the module whose folder holds it. `include`, which injected a file's
+global statements into the current module, is retired and reported
+(`ErrorInclude`).
 
 | Boundary | Guaranteed | Enforced by |
 | --- | --- | --- |
@@ -246,7 +249,6 @@ discipline — unstructured concurrency being "similar to GOTO."
 
 ## Hazards
 
-- **`include` and `import` look alike and are not.**
 - **A mixin brings fields in at a position**, so adding one shifts every later
   field index, and positional type literals move with it.
 - **Two mixins of closed types each bring a discriminant field**, reported as a

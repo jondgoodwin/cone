@@ -486,8 +486,8 @@ elsewhere, whichever walk arrived at it.
 
 ### 10.5 Module and program
 
-1. **→** Analyze imports first. Includes are not modules and are not visited
-   separately.
+1. **→** Analyze imports first. A module's swept files are not modules and are
+   not visited separately.
 2. Iterate the declarations and analyze each. Demand pulls forward whatever a
    forward reference needs; one already analyzed returns at once. After an enum
    that extends another, analyze its copies of the base's variants, which are no

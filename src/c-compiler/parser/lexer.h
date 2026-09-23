@@ -120,7 +120,7 @@ enum TokenTypes {
     DecrToken,         // '--'
 
     // Keywords
-    IncludeToken,  // 'include'
+    IncludeToken,  // 'include', retired: kept a keyword so the parser can report the statement
     ImportToken,   // 'import'
     ExternToken,   // 'extern'
     PubToken,      // 'pub'

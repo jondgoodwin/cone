@@ -63,7 +63,7 @@ as that group's own subject requires.
 | 2 | `each` | `each` and iteration |
 | 2 | `typemgmt` | Conversion and coercion, typedef and extend |
 | 2 | `generic` | Generics, macros |
-| 2 | `module` | Modules, namespaces, `include`/`import`/`extern` |
+| 2 | `module` | Modules, namespaces, `import`/`extern` |
 | 2 | `exception` | Exception handling |
 | 2 | `concurrency`, `safety`, `meta` | Concurrency; trust and raw pointers; metaprogramming |
 
@@ -336,9 +336,9 @@ fn main() {
 **An annotation may live in a support module.** A diagnostic carries the path of
 the file the offending node came from, and an annotation matches only a
 diagnostic reported against its own file — so a diagnostic the compiler reports
-inside an imported or included file is annotated *there*, not in the scenario
-that pulls it in. The runner works out which support modules a scenario reaches,
-following `import` and `include` transitively, and reads their annotations as
+inside an imported file is annotated *there*, not in the scenario that pulls it
+in. The runner works out which support modules a scenario reaches, following
+`import` transitively, and reads their annotations as
 part of that scenario's expectations. Bless rewrites them in place like any
 other, and a failure names the file so it is clear where the expectation lives.
 
