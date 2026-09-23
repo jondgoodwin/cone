@@ -212,8 +212,9 @@ static void importFoldItem(ModuleNode *mod, ImportNode *import, AliasDclNode *al
     alias->flags &= 0xffff - (FlagPub | FlagMethFld);
     if (import->isextends ? !inodeIsPrivate(found) : fold->ispub)
         alias->flags |= FlagPub;
-    // The same declaration reached a second time, by any route, is the binding
-    // the name has already, and is no collision (modFoldBind)
+    // The same declaration reached a second time by a route the module did not
+    // write -- a wildcard, an 'extends' -- is the binding the name has already;
+    // written twice, it is refused (modFoldBind)
     INode *prior = modFoldBind(mod, alias);
     if (prior && import->isextends) {
         // A module that extends another ADDS to it, as a type that extends one
@@ -233,9 +234,7 @@ static void importFoldItem(ModuleNode *mod, ImportNode *import, AliasDclNode *al
         return;
     }
     if (prior)
-        errorMsgNode((INode*)alias, ErrorDupName,
-            "%s is already a name of this module. A folded name must be unique: rename it with 'as', or leave it out with 'but'.",
-            &alias->namesym->namestr);
+        modFoldDupReport(alias, prior);
 }
 
 // Fold the names this import admits into the importing module's namespace.

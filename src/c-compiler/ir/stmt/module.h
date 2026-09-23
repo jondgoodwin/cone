@@ -60,10 +60,15 @@ void modNameMissing(ModuleNode *reader, ModuleNode *mod, Name *name, INode *at, 
 
 // Bind a name a fold brings into a module's namespace, and hook it. NULL once
 // bound, or where the name is bound already to the same declaration by the same
-// route -- the binding is then public if either route is; otherwise the binding
-// that holds the name, for the caller to report as a collision
+// route and one of the two was not written by the module (a star clause made it)
+// -- the binding is then public if either route is; otherwise the binding that
+// holds the name, for the caller to report as a collision
 struct AliasDclNode;
 INode *modFoldBind(ModuleNode *mod, struct AliasDclNode *alias);
+
+// Report the binding modFoldBind returned as a collision: a name written twice
+// for the same thing, or a name meaning two things
+void modFoldDupReport(struct AliasDclNode *alias, INode *prior);
 
 // Resolve what a module's 'extends' names, refusing what cannot be reused. Run
 // for every module ahead of any fold, since what a module extends is folded first

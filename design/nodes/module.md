@@ -100,12 +100,14 @@ what `pub import m use …` says, and is accepted as the same import.
 module among the module's `imports`, whatever file of the module wrote it, and
 asks `importSame`: the same `ispub` on each binding, and the same clause — star or
 not, the same `but` names, or the same listed names under the same spellings, in
-any order. An identical repeat is dropped without binding anything; one that
-differs is `ErrorDupImport`, reported at the second and naming the file and line
-of the first. This is the parse-time face of the rule the folds follow — the
-same declaration bound twice under one name is one binding — and it has to be
-decided here because the import binds the module's own name at parse, before
-any fold runs.
+any order. Either way the second import is `ErrorDupImport`, reported at the
+second and naming the file and line of the first; `importSame` decides only what
+the message says, the same import again or two that disagree. An identical
+repeat was once dropped without a word; it is two ways of bringing in the same
+thing, "a cleanliness issue", and is refused [Jon 23 Sep]. This is the
+parse-time face of the rule the folds follow — a name the module writes twice is
+an error — and it has to be decided here because the import binds the module's
+own name at parse, before any fold runs.
 
 **`EnumUseNode`** (`ir/stmt/fold.h`) is a module's `use Colors;`: `source`, the
 enum as written — a name or a path, resolved only when the fold is expanded — and
@@ -501,10 +503,12 @@ module, so a declaration of the module named `x` is `ErrorExtendsOverride`, and
 one named `c` is not. The binding an import makes carries `FlagImportName`, which
 `foldStarItems` leaves out under `FoldAdmitBase`; where a fold of the base also
 brought the same module in under that name (the base imports `c` and folds `c` in
-through a module re-exporting it), `modFoldBind` clears the flag, since the name
-is then a fold of the base too. The automatic core import binds no module name —
-it is a `use *` fold alone — so the base's core fold still arrives beside the
-module's own: the same declarations, so one binding each (below).
+by a wildcard of a module re-exporting it), `modFoldBind` clears the flag, since
+the name is then a fold of the base too. Listing the name in that clause instead
+writes it twice, and is `ErrorDupName` in the base [Jon 23 Sep]. The automatic
+core import binds no module name — it is a `use *` fold alone — so the base's
+core fold still arrives beside the module's own: the same declarations, which
+neither module wrote, so one binding each (below).
 **What it may name** — a module already in
 reach, looked up in this module's namespace and then in the registry its parent
 is, never loaded; not the module itself, one it contains, its parent, a trait or
@@ -569,22 +573,40 @@ the source module's own name is passed over by a star clause and is `ErrorBadFol
 where a list names it, because the import bound it already. (A module's `extends`
 is the one fold that takes private names too, above.)
 
-**Two bindings of the same declaration under one name are one binding**
+**A name the module writes twice is an error; one it never wrote merges**
 [Jon 23 Sep]. Every fold into a module's namespace — an import's clause, star or
 listed, an `extends`, a global's clause, an enum's `use` — binds through
 `modFoldBind`, which, where the name is taken, compares what the two bindings stand
 for: the declaration at the end of each chain of fold aliases (a `typedef` counts
 as a declaration and stops the chain, since its target is resolved only after the
-folds), and the global each is reached through. The same declaration by the same
-route is the binding the name has already, and nothing is added; **where one route
-is public and the other private, the binding is public**, so a re-export is not
-lost to whichever route happened to fold first. A declaration of the module keeps
-its own visibility, since nothing folds a private name of it back as a public one.
+folds), and the global each is reached through. Then it asks whether each binding
+was **written** by the module's own source. Everything is, except what a star
+clause made — a wildcard `use *`, an `extends`, the implicit core import — which
+`foldStarItems` marks `FlagUnlisted`. An enum's `use Colors;` is written even
+though it lists no variant, since it names the enum.
+- **Both written, same declaration**: `ErrorDupName` — the same name listed twice
+  in a clause, two identical `use Colors;` (once per variant), a module both
+  imported and listed (`import meter; import relay use meter;`), a listed name
+  that is the module's own declaration handed back, a global's clause listing a
+  member twice. "If you've got two different ways of bringing in the same thing,
+  that should be an error… it's a cleanliness issue." The message says it is the
+  same thing twice (`modFoldDupReport`).
+- **At least one unwritten, same declaration**: the binding the name has already,
+  and nothing is added. A listed name meeting a wildcard's arrival of the same
+  declaration is one binding, since that name was not written twice. Where the
+  new one was written, the binding counts as written from then on, so a third
+  that writes the name again is refused whichever order the three folded in.
+  **Where one route is public and the other private, the binding is public**, so
+  a re-export is not lost to whichever route happened to fold first. A
+  declaration of the module keeps its own visibility, since nothing folds a
+  private name of it back as a public one.
+
 That is what lets a diamond compile — `d` wildcard-importing `a` and `b`, which
-each re-export `c`'s `x` — and a module wildcard-importing a module that extends
-it, which hands the module's own declarations back; neither the outcome nor the
+each re-export `c`'s `x` — a module wildcard-importing a module that extends it,
+which hands the module's own declarations back, and the core fold an extending
+module takes from its base meeting its own; neither the outcome nor the
 visibility depends on fold order. **Different declarations under one name collide
-as ever**: `ErrorDupName`, reported at the listed item or, for a star clause, at
+everywhere**: `ErrorDupName`, reported at the listed item or, for a star clause, at
 its `use` (or `ErrorExtendsOverride` for `extends`, above), and so does one member
 folded through two different globals, since each is reached through its own. An
 overload name folds as one
@@ -771,16 +793,20 @@ children of one folder two names.
   exception: it does not extend to anything the imported package could have
   emitted itself.
 - **A module imports a given package at most once.** A second import of the same
-  package with an identical fold spec is silently ignored; a differing one is an
-  error. Identity is the resolved package plus the normalized fold spec — the
-  wildcard flag and the set of source-name/local-name pairs, order-insensitive.
+  package is an error, whether its fold spec is identical or differs: two ways of
+  bringing in the same thing is a cleanliness issue [Jon 23 Sep]. (An identical
+  one was once silently ignored.) Identity is the resolved package plus the
+  normalized fold spec — the wildcard flag and the set of source-name/local-name
+  pairs, order-insensitive — and decides only whether the error says "the same
+  way" or "differently".
 - **Folding accumulates into the one module namespace.** There is no file-level
   scope: any file may write imports, all of them fold into the module, and the
   namespace's existing uniqueness rule reports a collision. One consequence is
   deliberate — a spelling cannot be aliased two ways within one module, because
-  within one namespace it is one thing. The same declaration reaching one
-  spelling by two routes is not two ways: it is one binding, public if either
-  route is [Jon 23 Sep].
+  within one namespace it is one thing. A name the module writes twice is an
+  error even for the same declaration; the same declaration reaching one
+  spelling by a route the module never wrote — a wildcard, an `extends`, the
+  core import — is one binding, public if either route is [Jon 23 Sep].
 - **`use` states what to fold**, as a clause of `import` for a package and
   standing alone for a namespace already in scope:
 
@@ -891,14 +917,18 @@ module's `use` *statement* names an enum. See "Folding through a global" and
 "Include, import, and name folding" in
 [Names and Namespaces](../phases/names-and-namespaces.md).
 
-**A module imports another once.** An identical repeat is ignored; one that
-differs in its clause or its `pub` is `ErrorDupImport`, naming both.
+**A module imports another once.** A second import is `ErrorDupImport`, naming
+both: an identical repeat [Jon 23 Sep] as much as one that differs in its clause
+or its `pub`.
 
-**One declaration reached by two routes is one binding** [Jon 23 Sep]. Every fold
-into a module's namespace binds through `modFoldBind`: the same declaration by the
-same route under a name already taken is that binding, public if either route is,
-and different declarations collide as before. The diamond compiles
-(`module-fold-diamond`), whatever order the folds ran in.
+**A name written twice is an error; one never written merges** [Jon 23 Sep].
+Every fold into a module's namespace binds through `modFoldBind`. The same
+declaration under a name already taken is `ErrorDupName` where the module's own
+source wrote both bindings — listed twice, `use Colors;` twice, imported and
+listed, listed back onto its own declaration (`module-fold-written-nameres`) —
+and is that binding, public if either route is, where a wildcard, an `extends` or
+the core import made either one. Different declarations collide everywhere. The
+diamond compiles (`module-fold-diamond`), whatever order the folds ran in.
 
 **A module may extend another**, `mod solids extends shapes;`, reusing the base's
 declarations and folds, but not its imports [Jon 23 Sep] — an alias, so the declaration, its symbol and its state stay the

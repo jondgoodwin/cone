@@ -121,43 +121,87 @@ static INode *modBindingDcl(INode *node) {
     return node;
 }
 
+// Is this binding one of the same declaration, by the same route, as 'alias'?
+static int modFoldSameDcl(INode *prior, AliasDclNode *alias) {
+    INode *dcl = modBindingDcl((INode*)alias);
+    return dcl != NULL && dcl == modBindingDcl(prior) && aliasDclThrough(prior) == alias->through;
+}
+
+// Did the module's own source write this binding under its name? Everything but
+// what a star clause made: a declaration, a typedef, the name an import binds to
+// its module, a listed item of a clause, and an enum's 'use'
+static int modBindingWritten(INode *node) {
+    return !(node->tag == AliasDclTag && (node->flags & FlagUnlisted));
+}
+
 // Bind a name a fold brings into a module's namespace -- an import's clause, a
 // module's 'extends', a global's clause, an enum's 'use' -- and hook it. NULL
 // once it is bound; otherwise the binding already holding the name, which the
-// caller reports as a collision.
+// caller reports as a collision (modFoldDupReport).
 //
-// Two bindings of the SAME declaration under the same name are not a collision:
-// the second is the binding the name has already [Jon 23 Sep]. That is what lets
-// a name reach a module by two routes -- two imports that each re-export it, the
-// diamond, or a module's own declaration handed back by a module that extends
-// it -- and what keeps the order the folds ran in from deciding whether a
-// program compiles. 'The same' is the same declaration reached the same way: a
-// member folded through two different globals is two things, and collides.
+// A name the module's own source WRITES twice is an error, whatever the two
+// stand for: the same name listed twice in a clause, two identical 'use
+// Colors;', a name both imported and listed, a listed name that is the module's
+// own declaration. Two ways of bringing in the same thing is a cleanliness
+// issue [Jon 23 Sep]. (Two imports of one module are refused at parse, where the
+// module's name is bound: parseImport.)
+//
+// A name the module never wrote -- one a wildcard 'use *', an 'extends' or the
+// implicit core import brought -- is one binding with another of the SAME
+// declaration under that name: the second is the binding the name has already
+// [Jon 23 Sep]. That is what lets a name reach a module by two routes nobody
+// spelled -- the diamond, two wildcard imports that each re-export it, a
+// module's own declaration handed back by a module that extends it, or the core
+// fold an extending module takes from its base meeting its own -- and it keeps
+// the order the folds ran in from deciding whether a program compiles. One side
+// unwritten is enough: a listed name meeting a wildcard's arrival of the same
+// declaration was not written twice. 'The same' is the same declaration reached
+// the same way: a member folded through two different globals is two things, and
+// collides, as two different declarations do everywhere.
 //
 // Where one route is public and the other private, the binding is public, so a
 // re-export is not lost to whichever route happened to be folded first. A
 // declaration of the module keeps its own visibility: nothing folds a private
-// name of it back as a public one.
+// name of it back as a public one. Where either route was written, the binding
+// counts as written, so a third that writes the name again is refused whichever
+// order the three were folded in.
 //
 // The same holds for the kind of binding. An import's binding of its module's
 // name is a dependency, which a module extending this one does not take; where a
-// fold has brought the same module in under that name too, the binding is also a
-// fold, and it does travel (FlagImportName).
+// wildcard has brought the same module in under that name too, the binding is
+// also a fold, and it does travel (FlagImportName).
 INode *modFoldBind(ModuleNode *mod, AliasDclNode *alias) {
     INode *prior = namespaceAdd(&mod->namespace, alias->namesym, (INode*)alias);
     if (prior == NULL) {
         nametblHookNode(alias->namesym, (INode*)alias);
         return NULL;
     }
-    INode *dcl = modBindingDcl((INode*)alias);
-    if (dcl == NULL || dcl != modBindingDcl(prior) || aliasDclThrough(prior) != alias->through)
+    if (!modFoldSameDcl(prior, alias))
+        return prior;
+    if (modBindingWritten(prior) && modBindingWritten((INode*)alias))
         return prior;
     if (prior->tag == AliasDclTag) {
         if (alias->flags & FlagPub)
             prior->flags |= FlagPub;
+        if (modBindingWritten((INode*)alias))
+            prior->flags &= 0xffff - FlagUnlisted;
         prior->flags &= 0xffff - FlagImportName;
     }
     return NULL;
+}
+
+// Report the binding modFoldBind found holding a fold's name. Where both stand
+// for the same declaration, the module wrote one thing twice; otherwise the name
+// means two things
+void modFoldDupReport(AliasDclNode *alias, INode *prior) {
+    if (modFoldSameDcl(prior, alias))
+        errorMsgNode((INode*)alias, ErrorDupName,
+            "%s is already a name of this module, for the same thing. A module brings a name in one way: leave out the second.",
+            &alias->namesym->namestr);
+    else
+        errorMsgNode((INode*)alias, ErrorDupName,
+            "%s is already a name of this module. A folded name must be unique: rename it with 'as', or leave it out with 'but'.",
+            &alias->namesym->namestr);
 }
 
 // Serialize a module node

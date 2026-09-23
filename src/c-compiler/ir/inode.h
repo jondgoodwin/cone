@@ -218,6 +218,15 @@ enum NodeTags {
 // FlagSystem on a fn or variable and a type flag on a type, and an alias is
 // neither; nothing reads 0x0004 on one.
 #define FlagImportName 0x0004       // AliasDcl: an import's binding of its module's name, which 'extends' does not carry
+// A binding a star clause made -- a wildcard 'use *', a module's 'extends', the
+// implicit core import -- and so a name the module never wrote. Where two
+// bindings of one declaration meet under one name, they are one binding only if
+// one of them is this: a name the module's own source writes twice is an error
+// [Jon 23 Sep] (modFoldBind). An enum's 'use' does not set it: 'use Colors;'
+// names the enum, so what it binds is written. 0x0008 because it is FlagInline
+// on a fn and a type flag on a type, and an alias is neither; nothing reads
+// 0x0008 on one.
+#define FlagUnlisted  0x0008        // AliasDcl: made by a star clause, not written as this name by the module
 
 #define IsTagField    0x0010        // FieldNode: This field is the trait's discriminant tag
 #define IsMixin       0x0020        // FieldNode: Is a trait mixin, vs. an instantiated field
