@@ -120,7 +120,9 @@ names and the demanding type's generic parameters, and the target's module
 namespace is hooked over them — a namespace that already holds everything that
 module folded in, since every module's folds run before any module's body. The
 demand asks for `modFoldNames` on that module first, which does something only
-where the fold pass itself is what reached the type. What a
+where the fold pass itself is what reached the type — and where that module's
+folds are running, round a cycle, the type is resolved against what it holds so
+far, once ([module](../nodes/module.md), Hazards). What a
 demanded type copies in arrives bound and is not walked again. The steps are in
 [struct](../nodes/struct.md), "Name resolution".
 
@@ -255,11 +257,10 @@ type check reports),
 in a fold), `ErrorDupName` (duplicate local, duplicate lifetime label,
 colliding folded import, a trait's field arriving under a name the type
 declares, a folded name already taken), `ErrorCircular` (two types that each
-extend or mix in the other, a type folding from a field of a type not yet
-complete, or — at either `ErrorUnkName` site, or an import clause's item — a
-re-export missing because it was read round a cycle of imports, which
-`modNameMissing` tells apart from a name that is simply not there; the same code
-type check gives a declaration defined in terms of itself), `ErrorNoMbr` (a fold naming a member the field's type lacks),
+extend or mix in the other, or a type folding from a field of a type not yet
+complete; the same code type check gives a declaration defined in terms of
+itself). A re-export read round a cycle of imports is not an error: the fold
+passes run until it arrives (`modFoldAll`). `ErrorNoMbr` (a fold naming a member the field's type lacks),
 `ErrorBadFold` (a fold admitting what cannot fold: a static, a macro without
 `self`, the value's own `final` or `clone`, or a source that is not a struct),
 `ErrorRetNotLast`, `ErrorNoLoop`, `ErrorBadElems`, `ErrorBadTerm` and
@@ -283,7 +284,11 @@ next pass a null to trip over.
   resolved it, and `&x` with `x` a value has been retagged a borrow by then.
   A path the test collapsed is the one thing it must pick up: the collapse
   replaced the test's slot, not the node, so the conversion takes the hop's
-  member (`castNameRes`).
+  member (`castNameRes`). **It is also why the fold passes repeat folds and never
+  resolution**: a pass round a cycle of imports reads namespaces again and
+  retries a listed item, but a global's fold and an enum's `use`, which resolve
+  nodes, wait until what they name is bound (`modFoldAwaits`, a lookup that
+  resolves nothing) and then run once (`FoldClause.expanded`).
 - **A demanded trait is resolved with the demanding type's generic parameters
   still hooked.** A name the trait fails to declare that spells one of them
   binds to it silently instead of failing. Nothing correct can meet it; a
@@ -318,14 +323,16 @@ next pass a null to trip over.
 | `ir/namespace.c` | `namespaceFind`, `namespaceSet` | the hash table a module or type owns |
 | `ir/exp/nameuse.c` | `nameUseNameRes` | the whole resolution decision: early-out, qualified walk, privacy; it binds `dclnode` and changes nothing else |
 | `ir/exp/nameuse.c` | `nameUseGroup` | what a resolved name answers to `isExpNode`, `isTypeNode` and `isMetaNode`, asked of its declaration |
-| `ir/stmt/program.c` | `pgmNameRes` | three walks of the module list: what every module's `extends` names, every module's folds, then every module's body |
+| `ir/stmt/program.c` | `pgmNameRes` | three steps over the module list: what every module's `extends` names, every module's folds (`modFoldAll`), then every module's body |
 | `ir/stmt/module.c` | `modExtendsResolve`, `modExtendsCheckCycle` | what a module's `extends` names, looked up in its own namespace and then its parent's, and refused where it is not a concrete module it may reuse or where a chain of them comes back round |
-| `ir/stmt/module.c` | `modFoldNames` | a module's folded names put in place dependency-first — what it extends, its imports, then its globals' `use` clauses, then its `use` statements of enums — before any module's body resolves, so load order decides nothing |
+| `ir/stmt/module.c` | `modFoldAll` | the fold pass over every module, repeated until one binds nothing new where a pass met a cycle of imports or left a fold waiting, so a re-export travels round a cycle; then the pass that reports what could not be folded (`modFoldReporting`) |
+| `ir/stmt/module.c` | `modFoldNames` | one module's folds for the current pass, dependency-first — what it extends, its imports, then its globals' `use` clauses, then its `use` statements of enums — before any module's body resolves, so load order decides nothing. A global's fold and an enum's `use` whose source is not bound yet wait (`modFoldAwaits`) and are made once |
+| `ir/stmt/module.c` | `modFoldCollisionAt` | where a fold's collision is reported: at the fold a single pass would have met it at, whichever pass met it |
 | `ir/stmt/fold.c` | `foldEnumUseExpand` | a module's `use` of an enum: the enum it names resolved, and each variant it admits bound as an alias in the module's namespace, private unless `pub use` |
 | `ir/stmt/module.c` | `modNameRes`, `modHook` | type aliases walked before the other nodes; module hook push/pop; the module's `NameResolving`/`NameResolved` marks |
-| `ir/stmt/import.c` | `importNameRes`, `importBindModule` | the module's own binding and each folded name, as aliases carrying the import's visibility; the source's *namespace* is what is read, and a private binding of it does not fold — except to a module that extends it, which takes every declaration and fold with the base's own visibility, but not the base's own import bindings (`FlagImportName`, left out by `foldStarItems`) |
+| `ir/stmt/import.c` | `importNameRes`, `importBindModule` | the module's own binding and each folded name, as aliases carrying the import's visibility; the source's *namespace* is what is read, and a private binding of it does not fold — except to a module that extends it, which takes every declaration and fold with the base's own visibility, but not the base's own import bindings (`FlagImportName`, left out by `importStarAdmits`). Run in every fold pass: a star clause reads its module afresh (`importFoldStar`, which marks what it makes `FlagUnlisted`), and a listed item not yet made tries again, waiting rather than reporting until the pass that reports |
 | `ir/stmt/module.c` | `modFoldBind` | every fold's binding into a module's namespace — an import's, an `extends`, a global's clause, an enum's `use` — where the same declaration by the same route, one of the two brought by a star clause (`FlagUnlisted`), is the binding the name has already, public if either route is, a fold if either route is one (it clears `FlagImportName`); the same declaration written twice, and a different declaration, collide [Jon 23 Sep] |
-| `ir/stmt/module.c` | `modFoldDupReport` | the collision `modFoldBind` returns, as `ErrorDupName`: the same thing written twice, or one name meaning two things |
+| `ir/stmt/module.c` | `modFoldDupReport` | the collision `modFoldBind` returns, as `ErrorDupName` at where `modFoldCollisionAt` places it: the same thing written twice, or one name meaning two things |
 | `ir/exp/block.c` | `blockNameRes`, `blockContinueStep` | scope push/pop, lifetime labels, jump placement, the one re-entry |
 | `ir/stmt/vardcl.c` | `varDclNameRes` | value before name; duplicate check; local hooking and `scope` stamping |
 | `ir/stmt/fndcl.c` | `fnDclNameRes` | generic parms, signature, body with parms hooked at scope 1 |

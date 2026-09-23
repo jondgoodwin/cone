@@ -28,7 +28,8 @@ typedef struct ModuleNode {
     Nodes *nodes;            // All parsed nodes owned by the module
     Namespace namespace;     // The module's named nodes, owned or "used"
     DclInfo dclinfo;         // Owner and the facts that decide the linker symbols it prefixes
-    uint16_t foldstate;      // How far modFoldNames has got: 0 not begun, 1 running, 2 done
+    uint16_t foldpass;       // The fold pass (modFoldAll) that last reached this module; 0 for none yet
+    uint16_t folding;        // Its folds are running in that pass: a module reaching it now closes a cycle
     INode *extendsname;      // 'mod A extends B': B as written, a NameUseNode; NULL where the module extends nothing
     struct ImportNode *extends; // The fold 'extends' makes of B's names, once B resolves (modExtendsResolve); else NULL
 } ModuleNode;
@@ -44,19 +45,42 @@ void modAddFn(ModuleNode *mod, FnDclNode *fnnode);
 
 void modHook(ModuleNode *oldmod, ModuleNode *newmod);
 
-// Put every name this module holds by FOLDING into its namespace: what its
-// imports admit, what its globals' 'use' clauses do, and the variants its
-// 'use' statements fold in from enums. Ahead of any module's
-// name resolution, and dependency-first, so that what a name reaches through a
-// qualifier does not depend on the order the files were loaded in
+// Put every name each of the program's modules holds by FOLDING into its
+// namespace: what its 'extends' and its imports admit, what its globals' 'use'
+// clauses do, and the variants its 'use' statements fold in from enums. Ahead of
+// any module's name resolution, and dependency-first, so that what a name
+// reaches through a qualifier does not depend on the order the files were
+// loaded in. Where a pass meets a cycle of imports, the folds run again until a
+// pass binds nothing new, so a re-export travels round the cycle too; what is
+// still missing then is reported, once.
+void modFoldAll(NameResState *pstate, Nodes *modules);
+
+// Run one module's folds for the current pass, if they have not run in it
+// already. Reached from modFoldAll, and by demand from a global's fold that
+// needs a struct of another module resolved (structNameResDemand)
 void modFoldNames(NameResState *pstate, ModuleNode *mod);
 
-// Report that 'name' is missing from 'mod', looked up from 'reader', with the
-// diagnostic given -- unless the cause is a re-export lost round a cycle of
-// imports, which modFoldNames does not carry round and which this reports as
-// ErrorCircular instead, naming the cycle. The diagnostic given is reported as
-// it is wherever the cause is anything else.
-void modNameMissing(ModuleNode *reader, ModuleNode *mod, Name *name, INode *at, int code, const char *msg, ...);
+// Is this the pass that reports? Until it, a fold that cannot be made yet --
+// a name not there, or not public -- waits (modFoldWait), since a later pass may
+// bring it; in it, the fold reports what it could not make
+int modFoldReporting();
+
+// Record that a fold could not be made in this pass and waits for a later one
+void modFoldWait();
+
+// Would this source -- a name, a path, a reference to either -- name nothing
+// yet, because the lookup at some step finds no binding? A global's fold or an
+// enum's 'use' naming its source through a re-export still to arrive waits for
+// it rather than resolving the name and reporting it missing
+int modFoldAwaits(INode *source);
+
+// Where to report a name a fold brings in that this module already binds to
+// something else: at the new binding, unless what holds the name was made by a
+// fold of this module that runs AFTER 'unit' ('extends' first, then the imports,
+// the globals and the enum 'use's, each in the order written). A pass round a
+// cycle can bind a later fold's name before an earlier fold's arrives, and the
+// collision is then reported where a single pass would have met it
+INode *modFoldCollisionAt(ModuleNode *mod, INode *unit, INode *alias, INode *prior);
 
 // Bind a name a fold brings into a module's namespace, and hook it. NULL once
 // bound, or where the name is bound already to the same declaration by the same
@@ -66,9 +90,14 @@ void modNameMissing(ModuleNode *reader, ModuleNode *mod, Name *name, INode *at, 
 struct AliasDclNode;
 INode *modFoldBind(ModuleNode *mod, struct AliasDclNode *alias);
 
-// Report the binding modFoldBind returned as a collision: a name written twice
-// for the same thing, or a name meaning two things
-void modFoldDupReport(struct AliasDclNode *alias, INode *prior);
+// Do two bindings stand for the same thing -- the same declaration, reached
+// through the same global, if any -- so that one binding is the other?
+int modFoldSameBinding(INode *a, INode *b);
+
+// Report the binding modFoldBind returned as a collision, at 'at'
+// (modFoldCollisionAt): a name written twice for the same thing, or a name
+// meaning two things
+void modFoldDupReport(INode *at, struct AliasDclNode *alias, INode *prior);
 
 // Resolve what a module's 'extends' names, refusing what cannot be reused. Run
 // for every module ahead of any fold, since what a module extends is folded first

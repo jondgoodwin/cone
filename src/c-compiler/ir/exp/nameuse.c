@@ -157,9 +157,7 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
         // which only type check knows: castPatternBind binds it or reports it
         if (name->flags & FlagPattern)
             return;
-        // A bare name a clause of this module would have folded in may be a
-        // re-export lost round a cycle of imports, and the report says so where it is
-        modNameMissing(pstate->mod, pstate->mod, name->namesym, (INode*)name, ErrorUnkName,
+        errorMsgNode((INode*)name, ErrorUnkName,
             "The name %s does not refer to a declared name", &name->namesym->namestr);
         return;
     }
