@@ -124,7 +124,13 @@ void parseFnOrVar(ParseState *parse, uint16_t flags) {
 
     // A global variable declaration, if it begins with a permission
     else if lexIsToken(PermToken) {
-        VarDclNode *node = parseVarDcl(parse, immPerm, (flags&FlagExtern) ? ParseMaySig : ParseMayImpl | ParseMaySig);
+        // A module's global may carry a fold clause: it is the one-instance
+        // analogue of a field, so 'config Config use *' admits Config's members
+        // as names of this module, reached through 'config'. An 'extern' global
+        // is supplied from elsewhere and has no clause to write, since there is
+        // no declaration here for the fold to read.
+        VarDclNode *node = parseVarDcl(parse, immPerm,
+            (flags&FlagExtern) ? ParseMaySig : ParseMayImpl | ParseMaySig | ParseMayFold);
         node->flags |= flags;
         node->flowtempflags |= VarInitialized;   // Globals always hold a valid value
         parseEndOfStatement();
@@ -277,8 +283,13 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             }
             break;
 
+        // 'typedef' declares an alias: the same binding record a fold makes,
+        // with a type expression as its target. 'pub' is its own bit on that
+        // binding, as it is on any declaration.
         case TypedefToken: {
-            TypedefNode *newnode = parseTypedef(parse);
+            AliasDclNode *newnode = parseTypedef(parse);
+            if (newnode == NULL)
+                break;
             newnode->flags |= pubflag;
             modAddNode(mod, newnode->namesym, (INode*)newnode);
             break;

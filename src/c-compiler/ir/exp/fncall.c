@@ -890,6 +890,21 @@ void fnCallOpAssgn(FnCallNode **nodep) {
 void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
 
+    // A callee a global's 'use' clause folded into this module is reached through
+    // that global, so the call is rewritten to 'global.name(...)' before anything
+    // below reads the callee. Ahead of every other test here deliberately: from
+    // this point the node is an ordinary member call, so the macro-method probe,
+    // overload selection, the receiver adjustments and generation all see the
+    // path the author could have written, and none of them learns about folding.
+    if (isNameUseNode(node->objfn) && node->methfld == NULL) {
+        AliasDclNode *alias = (AliasDclNode*)((NameUseNode*)node->objfn)->dclnode;
+        if (alias && alias->tag == AliasDclTag && alias->through) {
+            FnCallNode *access = aliasDclThroughAccess(alias, node->objfn);
+            node->objfn = access->objfn;
+            node->methfld = access->methfld;
+        }
+    }
+
     // If we have a true macro, go handle it elsewhere
     // Note: Macros don't want us to type check arguments until after substitution
     //

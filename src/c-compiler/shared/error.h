@@ -202,6 +202,9 @@ enum ErrorCode {
     // 'mod': the declaration that names a file's module
     ErrorModDcl = 1107,         // A 'mod' declaration that is not its file's first statement, or a second one in one file
 
+    // A module's 'use' on a global: folding a singleton's members in as its own names
+    ErrorUseGlobal = 1108,      // A global whose type cannot be a fold's source: not a struct, or an abstraction
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

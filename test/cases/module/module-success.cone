@@ -61,6 +61,70 @@ fn pastLocal() i64 {
   counted * 1000i64 + onemod.counted;
 }
 
+// Declared above the global whose fold gives it 'cols', because a module's names
+// do not depend on the order they were written in: every fold is expanded before
+// any of the module's bodies is name resolved
+fn foldedFromAbove() i64 {
+  cols;
+}
+
+// A global folds its type's members in as names of this module. A global is the
+// one-instance analogue of a field, so the clause reads exactly as a field's --
+// '*', a list, 'as', 'but' -- and what it reaches a member through is one address
+// known at compile time rather than an offset from a receiver found at the call.
+struct Border {
+  pub margin i64;
+
+  pub fn doubledMargin(self) i64 {
+    margin * 2i64;
+  }
+}
+
+struct Settings {
+  pub rows i64;
+  pub cols i64;
+
+  // A field with a fold clause of its own, so that a fold chains: 'margin' is
+  // Border's, held by Settings through 'edge', and held here through 'settings'
+  pub edge Border use *;
+
+  pub fn cells(self) i64 {
+    rows * cols;
+  }
+
+  // An overload name and its two candidates, all folded: the overload name is a
+  // binding like any other, and a call through the folded spelling selects among
+  // its candidates exactly as one written through the global does
+  pub fn growRows overload grow(self, n i64) i64 {
+    rows + n;
+  }
+
+  pub fn growCols overload grow(self, n f32) i64 {
+    cols + i64[n];
+  }
+
+  // Private to Settings, so a wildcard fold passes it over and nothing here can
+  // name it: module-nameres-fold-global holds that refusal
+  fn hidden(self) i64 {
+    rows;
+  }
+
+  // A static is reached through the type and not through a value, so it does not
+  // fold through a global any more than it folds through a field
+  pub fn doubled(n i64) i64 {
+    n * 2i64;
+  }
+}
+
+mut settings Settings = Settings[2i64, 3i64, Border[8i64]] use *;
+
+// A second global, folded selectively, renamed, and written in the block form a
+// long list would want
+mut backup Settings = Settings[5i64, 7i64, Border[1i64]] use {
+  rows as backupRows,
+  cells as backupCells,
+};
+
 fn main() i32 {
   // An included declaration is this module's own: no qualifier needed, and no
   // separate module to link against
@@ -79,5 +143,30 @@ fn main() i32 {
   show("module-global", counted);
   show("module-global-past-local", pastLocal());
   show("module-fn", twice(3i64));
+
+  // A folded field and a folded method are this module's own names, reached with
+  // no receiver written
+  show("global-fold-field", rows);
+  show("global-fold-method", cells());
+  show("global-fold-from-above", foldedFromAbove());
+  // The folded field is the global's field, so writing it writes the global and
+  // the method reads what was written
+  rows = rows + 3i64;
+  show("global-fold-field-assigned", settings.rows);
+  show("global-fold-method-sees-it", cells());
+  // A folded name is an entry in the module's own namespace, so the module's name
+  // reaches it as it reaches any other
+  show("global-fold-qualified", onemod.cols);
+  // The second global's fold: renamed, and written in the block form
+  show("global-fold-renamed-field", backupRows);
+  show("global-fold-renamed-method", backupCells());
+  // A fold chains: 'margin' is Border's, Settings holds it through the field
+  // 'edge', and this module holds it through the global -- so the receiver is
+  // shifted one hop from the global's fixed address
+  show("global-fold-chained-field", margin);
+  show("global-fold-chained-method", doubledMargin());
+  // A folded overload name selects among its candidates by the argument
+  show("global-fold-overload-i64", grow(10i64));
+  show("global-fold-overload-f32", grow(1.5));
   0i32;
 }

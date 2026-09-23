@@ -174,7 +174,8 @@ void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
     NameUseNode *name = *namep;
     // A use bound to an alias is a use of what the alias stands for, from here
     // on: everything below reads the declaration's type and tag
-    if (name->dclnode->tag == AliasDclTag) {
+    AliasDclNode *alias = name->dclnode->tag == AliasDclTag ? (AliasDclNode*)name->dclnode : NULL;
+    if (alias) {
         INode *dcl = aliasDclResolve(name->dclnode);
         if (dcl == NULL) {
             // The fold that made the alias failed to bind it, and said so
@@ -182,6 +183,19 @@ void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
             return;
         }
         name->dclnode = dcl;
+    }
+
+    // A name a global's 'use' clause folded into this module is reached through
+    // that global, so the use is lowered to 'global.name' -- the path the author
+    // could have written, which is why nothing after this is new. Both a field
+    // and a method arrive here; a method being CALLED is lowered by
+    // fnCallTypeCheck instead, before it reads the callee, so what is left here
+    // is a member read. Qualification makes no difference: 'mymod.speed' names
+    // the module's binding, and the binding is still reached through the global.
+    if (alias && alias->through) {
+        *((FnCallNode**)namep) = aliasDclThroughAccess(alias, (INode*)name);
+        inodeTypeCheckAny(pstate, (INode**)namep);
+        return;
     }
     // An overload name has no value of its own: it names a set of concrete
     // declarations. Only a call may use it, and the call type check selects and

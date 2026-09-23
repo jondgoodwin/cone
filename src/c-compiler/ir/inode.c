@@ -134,8 +134,6 @@ void inodePrintNode(INode *node) {
         typeLitPrint((FnCallNode *)node); break;
     case StringLitTag:
         slitPrint((SLitNode *)node); break;
-    case TypedefTag:
-        typedefPrint((TypedefNode *)node); break;
     case FnSigTag:
         fnSigPrint((FnSigNode *)node); break;
     case RefTag: case VirtRefTag:
@@ -229,10 +227,11 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         constDclNameRes(pstate, (ConstDclNode *)*node); break;
     case FieldDclTag:
         fieldDclNameRes(pstate, (FieldDclNode *)*node); break;
-    // An alias's target is a member name, bound where the fold that made the
-    // alias is expanded, exactly as a call's member slot is left alone here
+    // A folded name's target is a member name, bound where the fold that made
+    // the alias is expanded, exactly as a call's member slot is left alone here.
+    // A type alias's target is a type expression, which is resolved.
     case AliasDclTag:
-        break;
+        aliasDclNameRes(pstate, (AliasDclNode *)*node); break;
     case TypeLitTag:
         typeLitNameRes(pstate, (FnCallNode *)*node); break;
     case ImportTag:
@@ -269,8 +268,6 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     case StringLitTag:
         litNameRes(pstate, (IExpNode *)*node); break;
 
-    case TypedefTag:
-        typedefNameRes(pstate, (TypedefNode *)*node); break;
     case FnSigTag:
         fnSigNameRes(pstate, (FnSigNode *)*node); break;
     case RefTag:
@@ -386,10 +383,11 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         constDclTypeCheck(pstate, (ConstDclNode *)*node); break;
     case FieldDclTag:
         fieldDclTypeCheck(pstate, (FieldDclNode *)*node); break;
-    // An alias has nothing of its own to check; what it stands for is checked
-    // as itself, by whatever reaches it through the alias
+    // A folded name has nothing of its own to check; what it stands for is
+    // checked as itself, by whatever reaches it through the alias. A type alias
+    // owns the type expression it stands for, so that is checked here.
     case AliasDclTag:
-        break;
+        aliasDclTypeCheck(pstate, (AliasDclNode *)*node); break;
     case ImportTag:
         importTypeCheck(pstate, (ImportNode *)*node); break;
     case ArrayLitTag:
@@ -444,8 +442,6 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case FLitTag:
         litTypeCheck(pstate, node, expectType); break;
 
-    case TypedefTag:
-        typedefTypeCheck(pstate, (TypedefNode *)*node); break;
     case FnSigTag:
         fnSigTypeCheck(pstate, (FnSigNode *)*node); break;
     case RefTag:
@@ -525,8 +521,6 @@ Name *inodeGetName(INode *node) {
         return ((AliasDclNode*)node)->namesym;
     case MacroDclTag:
         return ((MacroDclNode*)node)->namesym;
-    case TypedefTag:
-        return ((TypedefNode*)node)->namesym;
     case GenVarDclTag:
         return ((GenVarDclNode *)node)->namesym;
 
@@ -699,7 +693,6 @@ static NodeTagFacts nodeTagFacts[NodeTagCount] = {
     [NamedValTag] = {ExpGroup, 0, 0},
     [AbsenceTag] = {ExpGroup, 0, 0},
 
-    [TypedefTag] = {TypeGroup, 0, 0},
     [FnSigTag] = {TypeGroup, 0, 0},
     [ArrayTag] = {TypeGroup, 0, 0},
     [RefTag] = {TypeGroup, 0, 0},

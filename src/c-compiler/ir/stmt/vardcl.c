@@ -21,6 +21,7 @@ VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *perm) {
     name->scope = 0;
     name->index = 0;
     name->llvmvar = NULL;
+    name->fold = NULL;
     dclInfoInit(&name->dclinfo);
     name->flowflags = 0;
     name->flowtempflags = 0;
@@ -38,6 +39,7 @@ VarDclNode *newVarDclFull(Name *namesym, uint16_t tag, INode *type, INode *perm,
     name->scope = 0;
     name->index = 0;
     name->llvmvar = NULL;
+    name->fold = NULL;
     dclInfoInit(&name->dclinfo);
     name->flowflags = 0;
     name->flowtempflags = 0;

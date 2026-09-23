@@ -289,11 +289,23 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   with an alias per listed name positioned at the item; **nothing enters the
   namespace at parse**, since whether a name is a field or a method is not
   known until the field's type is. `use` on anything that is not a struct's
-  field or a struct's body — a variable, a parameter, a static, a mixin, an `is`
-  clause, a trait's or an enum's field or body — is `ErrorBadFold` there, so the
-  diagnostic is the fold's own. **`is` names abstractions and folds nothing**: an
-  abstraction has no value for a folded name to be reached through, and
-  delegation is what a field's own clause is for.
+  field, a struct's body or **a module's global** — a local, a parameter, a
+  static, a mixin, an `is` clause, a trait's or an enum's field or body — is
+  `ErrorBadFold` there, so the diagnostic is the fold's own. **A module's global
+  does fold**, because a module is the namespace a name would fold into and a
+  global is its one-instance analogue of a field
+  ([Names and Namespaces](../phases/names-and-namespaces.md), "Folding through a
+  global"); `parseVarDcl` admits the clause only where `ParseMayFold` says so,
+  which is the module-level declaration alone. **`is` names abstractions and
+  folds nothing**: an abstraction has no value for a folded name to be reached
+  through, and delegation is what a field's own clause is for.
+- **`use pub` is refused at every type-level site**, `ErrorBadPub`: a folded
+  member of a field's type is as visible as the field it is reached through, and
+  a sibling fold declares no name of its own. Only a module's global has a
+  visibility of its own to declare.
+- **A long list may be written as a block**, `use { a, b as c }`, at any site. The
+  braces hold the list and nothing else, so a block is never a star clause and
+  `but` has no place in one.
 - **A `use` standing as a statement in a struct's body folds a SIBLING in**
   (`parseUseSibling`): the type it names, then what it admits of it. Held in a
   field-like node on `siblings`, as `mixin` and a further `is` are held in one, so
@@ -541,6 +553,14 @@ A field's `use` clause (`FoldClause`, on the `FieldDclNode`) admits names of
 the field's type as names of this type. The language is in
 [refinherit](../../conesite/public/coneref/refinherit.html); this is the
 mechanism, in `structFoldExpand` and what reads its results.
+
+**What every fold site shares lives in `ir/stmt/fold.c`**, lifted there when a
+module's global became the clause's second kind of source: the declaration behind
+a type expression (`foldSourceDcl`), a star clause's items and its `but`
+(`foldStarItems`, `foldExcluded`), and which members a star admits
+(`foldAdmitsOwn`). What stays here is what the *site* decides — the copy with its
+hop, the receiver shift, the eligibility rules — because that is where the sites
+differ.
 
 **Two kinds of entry, by what a fold has to do with them.** A folded *field*
 becomes a **copy** in this type's namespace: a `FieldDclNode` carrying the

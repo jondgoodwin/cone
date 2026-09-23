@@ -540,8 +540,8 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
         return array;
     }
 
-    case TypedefTag:
-        return genlType(gen, ((TypedefNode *)typ)->typeval);
+    case AliasDclTag:
+        return genlType(gen, ((AliasDclNode *)typ)->target);
 
     default:
         errorUnreachable(typ, "a type code generation has no case for");

@@ -147,7 +147,39 @@ void modNameRes(NameResState *pstate, ModuleNode *mod) {
         inodeNameRes(pstate, nodesp);
     }
     mod->flags |= NameResolving;
+
+    // A global's 'use' clause folds names of its type into this namespace, and
+    // that happens before the module's other nodes are resolved so that a folded
+    // name is in place wherever it is used -- including in a function declared
+    // above the global that folded it, since a module's names do not depend on
+    // the order they were written in. Each such global is resolved here and left
+    // out of the walk below.
     for (nodesFor(mod->nodes, cnt, nodesp)) {
+        if ((*nodesp)->tag != VarDclTag || ((VarDclNode*)*nodesp)->fold == NULL)
+            continue;
+        inodeNameRes(pstate, nodesp);
+        foldGlobalExpand(pstate, mod, (VarDclNode*)*nodesp);
+    }
+
+    // A type alias names a type expression, and a use of the alias asks what is
+    // at the end of that chain. Resolved ahead of the walk for the same reason a
+    // fold is: a forward reference to a typedef is ordinary, so the target has to
+    // be bound before anything asks whether the name is a type at all.
+    for (nodesFor(mod->nodes, cnt, nodesp)) {
+        if ((*nodesp)->tag == AliasDclTag && ((*nodesp)->flags & FlagTypeAlias))
+            inodeNameRes(pstate, nodesp);
+    }
+    for (nodesFor(mod->nodes, cnt, nodesp)) {
+        if ((*nodesp)->tag == AliasDclTag && ((*nodesp)->flags & FlagTypeAlias))
+            aliasDclCheckCycle((AliasDclNode*)*nodesp);
+    }
+
+    for (nodesFor(mod->nodes, cnt, nodesp)) {
+        // Resolved by one of the passes above
+        if ((*nodesp)->tag == VarDclTag && ((VarDclNode*)*nodesp)->fold != NULL)
+            continue;
+        if ((*nodesp)->tag == AliasDclTag && ((*nodesp)->flags & FlagTypeAlias))
+            continue;
         inodeNameRes(pstate, nodesp);
     }
     mod->flags = (mod->flags & ~NameResolving) | NameResolved;

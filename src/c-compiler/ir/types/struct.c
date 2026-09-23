@@ -282,37 +282,6 @@ int structNameResDemand(NameResState *pstate, StructNode *type) {
 // name a folded member bare, and in type check for an instance of a generic,
 // whose field types exist only then.
 
-// The declaration of the field's type, through a reference or pointer if the
-// field holds one, or NULL when it is not a declaration yet: an instance of a
-// generic still to be instantiated, or a name that did not resolve.
-static INode *structFoldSourceDcl(FieldDclNode *field) {
-    INode *vtype = field->vtype;
-    if (vtype->tag == FnCallTag || !isTypeNode(vtype))
-        return NULL;
-    INode *dcl = itypeGetTypeDcl(vtype);
-    if (dcl->tag == RefTag || dcl->tag == VirtRefTag)
-        vtype = ((RefNode*)dcl)->vtexp;
-    else if (dcl->tag == PtrTag)
-        vtype = ((StarNode*)dcl)->vtexp;
-    else
-        return dcl;
-    if (vtype->tag == FnCallTag || !isTypeNode(vtype))
-        return NULL;
-    return itypeGetTypeDcl(vtype);
-}
-
-// Is this name one a clause's 'but' leaves out?
-static int structFoldExcluded(FoldClause *fold, Name *name) {
-    if (fold->excludes == NULL)
-        return 0;
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodesFor(fold->excludes, cnt, nodesp))
-        if (((NameUseNode*)*nodesp)->namesym == name)
-            return 1;
-    return 0;
-}
-
 // The alias a clause of 'type' admits under 'name', and the field carrying
 // that clause, or NULL when no clause of the type admits it. Unique when it
 // exists, since a folded name may collide with nothing.
@@ -415,43 +384,12 @@ static void structFoldItem(StructNode *node, FieldDclNode *field, StructNode *sr
         nametblHookNode(alias->namesym, entry);
 }
 
-// Make the items of a 'use *' clause: an alias for every public member of the
-// source type not left out by 'but' -- fields and methods, its own folded
-// copies and aliases included, so a fold chains through the types. Not a
-// static, a macro without self, Self, or the value's own finalizer or clone.
-static void structFoldStar(StructNode *node, FieldDclNode *field, StructNode *src) {
-    FoldClause *fold = field->fold;
-    INode **nodesp;
-    uint32_t cnt;
-    if (fold->excludes) {
-        for (nodesFor(fold->excludes, cnt, nodesp)) {
-            Name *name = ((NameUseNode*)*nodesp)->namesym;
-            if (namespaceFind(&src->namespace, name) == NULL)
-                errorMsgNode(*nodesp, ErrorNoMbr, "%s has no member named %s to leave out.",
-                    &src->namesym->namestr, &name->namestr);
-        }
-    }
-    namespaceFor(&src->namespace) {
-        NameNode *nn = &src->namespace.namenodes[__i];
-        if (nn->name == NULL || nn->name == selfTypeName || nn->name == anonName
-            || nn->name == finalName || nn->name == cloneName)
-            continue;
-        if (inodeIsPrivate(nn->node) || !inodeIsMember(nn->node) || structFoldExcluded(fold, nn->name))
-            continue;
-        NameUseNode *target = newMemberUseNode(nn->name);
-        inodeLexCopy((INode*)target, fold->at);
-        AliasDclNode *alias = newAliasDclNode(nn->name, (INode*)target);
-        inodeLexCopy((INode*)alias, fold->at);
-        nodesAdd(&fold->items, (INode*)alias);
-    }
-}
-
 // Expand a field's fold clause into this type's namespace, hooking each entry
 // when name resolution asks. Nothing happens while the field's type is not yet
 // a declaration; the clause is then expanded when the instance is type checked.
 static void structFoldExpand(StructNode *node, FieldDclNode *field, int hook) {
     FoldClause *fold = field->fold;
-    INode *srcdcl = structFoldSourceDcl(field);
+    INode *srcdcl = foldSourceDcl(field->vtype);
     if (srcdcl == NULL)
         return;
     fold->expanded = 1;
@@ -484,8 +422,12 @@ static void structFoldExpand(StructNode *node, FieldDclNode *field, int hook) {
             &src->namesym->namestr, &src->namesym->namestr, &node->namesym->namestr);
         return;
     }
+    // Every public member not left out by 'but' -- fields and methods, the
+    // source's own folded copies and aliases included, so a fold chains through
+    // the types. Not a static, a macro without self, Self, or the value's own
+    // finalizer or clone.
     if (fold->star)
-        structFoldStar(node, field, src);
+        foldStarItems(&src->namespace, src->namesym, fold, FoldAdmitMembers);
     INode **itemp;
     uint32_t cnt;
     for (nodesFor(fold->items, cnt, itemp))
@@ -505,7 +447,7 @@ static void structFoldRefreshCopy(TypeCheckState *pstate, StructNode *type, Alia
     FieldDclNode *copy = (FieldDclNode*)target->dclnode;
     if (copy == NULL || copy->tag != FieldDclTag || copy->hop == NULL)
         return;
-    INode *srcdcl = structFoldSourceDcl(field);
+    INode *srcdcl = foldSourceDcl(field->vtype);
     if (srcdcl == NULL || srcdcl->tag != StructTag)
         return;
     StructNode *src = (StructNode*)srcdcl;
@@ -556,7 +498,7 @@ static void structFoldReceiverWalk(StructNode *type, Name *name, INode **objp, I
     if (item == NULL)
         return;
     *objp = fnCallFieldAccess(*objp, field, lexnode);
-    INode *srcdcl = structFoldSourceDcl(field);
+    INode *srcdcl = foldSourceDcl(field->vtype);
     if (srcdcl == NULL || srcdcl->tag != StructTag)
         return;
     Name *srcname = ((NameUseNode*)item->target)->namesym;
@@ -593,7 +535,7 @@ static Nodes *structFoldPath(StructNode *type, Name *name, Nodes *path) {
     if (path == NULL)
         path = newNodes(2);
     nodesAdd(&path, (INode*)field);
-    INode *srcdcl = structFoldSourceDcl(field);
+    INode *srcdcl = foldSourceDcl(field->vtype);
     if (srcdcl == NULL || srcdcl->tag != StructTag)
         return path;
     Name *srcname = ((NameUseNode*)item->target)->namesym;
@@ -935,18 +877,6 @@ static StructNode *structUseSiblingDcl(FieldDclNode *use) {
     return dcl != NULL && dcl->tag == StructTag ? (StructNode*)dcl : NULL;
 }
 
-// Does this member of a sibling fold from it?
-//
-// Only what the sibling declares itself. A FIELD is the representation both types
-// take from the base, so it is already a field here, and no type reads another
-// type's fields. An ALIAS is what the sibling took from that same base, or
-// delegated through a field of its own -- the first is here already by the same
-// route, and the second is reached by naming the type it came from. What is left
-// is the sibling's own contribution, which is the whole reason to name it.
-static int structUseSiblingOwns(INode *member) {
-    return member->tag != FieldDclTag && member->tag != AliasDclTag;
-}
-
 // May this type fold 'sib' in? The shared base is the whole licence: a sibling
 // declared the same base, so its methods' receiver is a type this type's values
 // substitute for (structExtendsEquiv), and nothing has to be cloned or retyped.
@@ -998,34 +928,6 @@ static int structUseSiblingEligible(StructNode *node, StructNode *sib, INode *at
     }
 }
 
-// Make the items of a sibling fold that names no member: an alias for every
-// public member the sibling declares itself, less what 'but' leaves out
-static void structUseSiblingStar(StructNode *sib, FoldClause *fold) {
-    INode **nodesp;
-    uint32_t cnt;
-    if (fold->excludes) {
-        for (nodesFor(fold->excludes, cnt, nodesp)) {
-            Name *name = ((NameUseNode*)*nodesp)->namesym;
-            if (namespaceFind(&sib->namespace, name) == NULL)
-                errorMsgNode(*nodesp, ErrorNoMbr, "%s has no member named %s to leave out.",
-                    &sib->namesym->namestr, &name->namestr);
-        }
-    }
-    namespaceFor(&sib->namespace) {
-        NameNode *nn = &sib->namespace.namenodes[__i];
-        if (nn->name == NULL || nn->name == selfTypeName || nn->name == anonName
-            || nn->name == finalName || nn->name == cloneName)
-            continue;
-        if (inodeIsPrivate(nn->node) || !structUseSiblingOwns(nn->node) || structFoldExcluded(fold, nn->name))
-            continue;
-        NameUseNode *target = newMemberUseNode(nn->name);
-        inodeLexCopy((INode*)target, fold->at);
-        AliasDclNode *alias = newAliasDclNode(nn->name, (INode*)target);
-        inodeLexCopy((INode*)alias, fold->at);
-        nodesAdd(&fold->items, (INode*)alias);
-    }
-}
-
 // Expand one item of a sibling fold: bind its target in the sibling and enter it
 // in this type's namespace as an alias.
 //
@@ -1057,7 +959,7 @@ static void structUseSiblingItem(StructNode *node, StructNode *sib, AliasDclNode
             &srcname->namestr, &sib->namesym->namestr);
         return;
     }
-    if (!structUseSiblingOwns(found)) {
+    if (!foldAdmitsOwn(found)) {
         errorMsgNode((INode*)alias, ErrorBadFold,
             "%s comes to %s from the base they share, and %s reaches it by that same route. A sibling fold admits what the sibling adds.",
             &srcname->namestr, &sib->namesym->namestr, &node->namesym->namestr);
@@ -1095,8 +997,10 @@ static void structUseSiblingExpand(StructNode *node, FieldDclNode *use, int hook
     }
     if (!structUseSiblingEligible(node, sib, fold->at))
         return;
+    // An alias for every public member the sibling declares itself, less what
+    // 'but' leaves out
     if (fold->star)
-        structUseSiblingStar(sib, fold);
+        foldStarItems(&sib->namespace, sib->namesym, fold, FoldAdmitOwn);
     INode **itemp;
     uint32_t cnt;
     for (nodesFor(fold->items, cnt, itemp))
@@ -1379,7 +1283,7 @@ void structNameRes(NameResState *pstate, StructNode *node) {
         }
         else if (field->fold) {
             inodeNameRes(pstate, &field->vtype);
-            INode *srcdcl = structFoldSourceDcl(field);
+            INode *srcdcl = foldSourceDcl(field->vtype);
             if (srcdcl && srcdcl->tag == StructTag)
                 structNameResDemand(pstate, (StructNode*)srcdcl);
         }

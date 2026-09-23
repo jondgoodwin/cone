@@ -56,7 +56,6 @@ typedef struct DclInfo DclInfo;          // dclinfo.h
 #include "typetbl.h"
 #include "../shared/memory.h"
 
-#include "types/typedef.h"
 #include "types/ttuple.h"
 #include "types/permission.h"
 #include "types/enum.h"
@@ -84,6 +83,7 @@ typedef struct DclInfo DclInfo;          // dclinfo.h
 #include "stmt/swap.h"
 #include "stmt/const.h"
 #include "stmt/vardcl.h"
+#include "stmt/fold.h"
 
 #include "exp/borrow.h"
 #include "exp/allocate.h"

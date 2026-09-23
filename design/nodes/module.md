@@ -48,9 +48,11 @@ this is the only name a module has. The binding is not in `nodes`, so nothing
 prints, generates or folds the module into itself.
 
 **`nodes` and `namespace` are not the same set, and the difference is exactly
-where import folding lives.** A folded name is added to `namespace` and never to
+where folding lives.** A folded name is added to `namespace` and never to
 `nodes`, so the receiving module can resolve it but does not own, print or
-generate it.
+generate it. That holds for both folds a module has — a wildcard import's, and a
+global's `use` clause — and it is why neither transits an import: `importNameRes`
+walks `nodes`.
 
 `ModuleNode` extends `IExpNodeHdr` and so carries a `vtype` slot, but
 `ModuleTag` is a named node in `StmtGroup`: `isExpNode` is false,
@@ -168,9 +170,27 @@ no record that it happened.
 
 ## Name resolution
 
-`modNameRes` hooks the module's namespace, resolves `imports` first, then
-`nodes`, then unhooks. Imports go first because a name folded in must be
-bindable before any declaration that uses it is resolved.
+`modNameRes` hooks the module's namespace, then runs four passes over it and
+unhooks: `imports`, then every global carrying a `use` clause, then every type
+alias, then everything else. **The first three go first for one reason** — a name
+folded in, and a name a `typedef` binds, must be in place before any declaration
+that uses it is resolved, and a module's names do not depend on the order they
+were written in. Each pass leaves its own nodes out of the last one, so nothing
+is resolved twice.
+
+**A global's `use` clause is a module's second fold**, and the whole of it is
+`foldGlobalExpand` (`ir/stmt/fold.c`): the global's type supplies the members,
+every entry is an `AliasDclNode` carrying the global as its `through`, and a use
+of the name is lowered to `global.name`. The rules, the diagnostics and why it is
+cheaper than a field's fold are in
+[Names and Namespaces](../phases/names-and-namespaces.md), "Folding through a
+global", which owns them.
+
+**A type alias's target is resolved in a pass of its own, and then checked for a
+cycle.** A forward reference to a `typedef` is ordinary, so the target has to be
+bound before anything asks whether the name is a type at all; `aliasDclCheckCycle`
+then reports a chain that comes back to itself and cuts it, so no later walk
+loops.
 
 `importNameRes` does nothing unless `foldall` is set. When it is, it walks the
 source module's `nodes`, skips anything unnamed or private, and calls
@@ -397,9 +417,10 @@ what its definitions say it is.
 - **A folded or imported name is private to the module that folded it**,
   whatever its visibility at the origin. `import B use c as d` binds both `B` and
   `d` in A, and neither is reachable as `A.B` or `A.d`. `pub` opts in:
-  `import pub B use pub c as d` `[planned]`. A module's public surface is
-  therefore what it declares and deliberately re-exports, never what it happens
-  to depend on.
+  `import pub B use pub c as d` `[planned]` — **built for a global's clause,
+  `config Config use pub *`, and not yet for an import's.** A module's public
+  surface is therefore what it declares and deliberately re-exports, never what
+  it happens to depend on.
 - **Folding never widens visibility beyond the origin** — only a pub name can
   be folded at all, so no chain of re-exports can escalate.
 - **`pub` has one meaning, on a declaration and on a binding alike: this entry
@@ -434,22 +455,35 @@ namespace, where folding a member is delegated inheritance.
 **Almost none of it.** A module is a source file today, and a file declares one
 module: `mod name;` as its first statement names the module the file was loaded
 as, and that name is in reach inside the module. There is no nesting — a
-`mod name { ... }` block is `ErrorUnbuiltKind` — no package, no manifest, no
-interface artifact, and no `use`; `mod trait` holds the spelling of a module's
-abstraction against the day there is something behind it; `import` takes a file
-path rather than a package name, folds only with `.*`, and cannot rename or
-exclude. A file that declares no module is still named after its file, and the
-folder walk is what ends that. Sections and COMDATs are not emitted per function.
-What does work is the multi-module *generation* path, exercised by `stdio` on
-every compile that prints, and folding into a single module namespace, which is
-what the accumulation rule above asks for.
+`mod name { ... }` block is `ErrorUnbuiltKind` — no package, no manifest and no
+interface artifact; `mod trait` holds the spelling of a module's abstraction
+against the day there is something behind it; `import` takes a file path rather
+than a package name, folds only with `.*`, and cannot rename or exclude. A file
+that declares no module is still named after its file, and the folder walk is
+what ends that. Sections and COMDATs are not emitted per function. What does work
+is the multi-module *generation* path, exercised by `stdio` on every compile that
+prints, and folding into a single module namespace, which is what the
+accumulation rule above asks for.
 
-**A binding has no visibility bit, and whether a fold transits is decided by
-load order.** A declaration has one — `DclPrivate`, written from the absence of
-`pub` when it joins its namespace, and what every visibility check reads
-through `inodeIsPrivate`. There is nowhere to record a folded binding's own
-visibility, because `importNameRes` inserts the imported declaration node
-itself into the receiving namespace.
+**`use` exists at one of its sites.** A module's **global** carries the clause
+whole — `*`, a list, `as`, `but`, a block form, and `use pub` — so the grammar
+and the binding record are built and proved; what is missing is `use` as a clause
+of `import` and standing alone against an imported module, which is the wiring
+rather than the design. See "Folding through a global" in
+[Names and Namespaces](../phases/names-and-namespaces.md).
+
+**A binding has a visibility bit where a fold made it, and none where an import
+did.** A declaration has one — `DclPrivate`, written from the absence of `pub`
+when it joins its namespace, and what every visibility check reads through
+`inodeIsPrivate`. A global's fold makes an `AliasDclNode`, which carries its own
+`FlagPub` from `use pub`, so a fold is private to the module that made it unless
+the clause says otherwise, and `fnCallNameResPath` enforces that from outside.
+**An import still has nowhere to record one**, because `importNameRes` inserts
+the imported declaration node itself into the receiving namespace.
+
+**Whether a fold transits is still decided by load order**, and a fold's bindings
+are not carried by a wildcard import at all, since `importNameRes` walks `nodes`
+and a fold writes to `namespace`.
 
 Measured: `modNameRes` folds a module's imports at the start of *that module's*
 resolution and `pgmNameRes` walks modules in load order, so a fold is invisible

@@ -87,12 +87,18 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
             errorMsgLex(ErrorNoInit, "Must specify default/initial value.");
     }
 
-    // Only a field folds. Refused here, on a global, a local, a parameter and a
-    // type's static alike, so that the diagnostic is the fold's own rather than
-    // a missing semicolon; the clause is read and dropped to recover.
+    // A field folds, and so does a module's global: a global is the one-instance
+    // analogue of a field, so its clause admits names of its type as names of the
+    // module, reached through the global. Refused on a local, a parameter and a
+    // type's static, so that the diagnostic is the fold's own rather than a
+    // missing semicolon; the clause is read and dropped to recover.
     if (lexIsToken(UseToken)) {
-        errorMsgLex(ErrorBadFold, "Only a struct's field may fold names in with 'use'.");
-        parseFoldClause(parse);
+        if (flags & ParseMayFold)
+            varnode->fold = parseFoldClause(parse, 1);
+        else {
+            errorMsgLex(ErrorBadFold, "Only a struct's field or a module's global may fold names in with 'use'.");
+            parseFoldClause(parse, 0);
+        }
     }
 
     return varnode;
@@ -179,8 +185,18 @@ static INode* parseTagType(ParseState *parse) {
 // A star clause arrives with 'star' already set for the type-body form, whose
 // default is the whole member set: naming a sibling is what asks for it, so the
 // star has nothing left to say and may not be written.
+//
+// A long list may be written as a block instead, which is nothing but a way of
+// spreading the same items over lines: the braces hold the list and nothing
+// else, so a block is never a star clause and 'but' has no place in one.
 static void parseFoldItems(ParseState *parse, FoldClause *fold, int maystar) {
-    if (maystar && lexIsToken(StarToken)) {
+    int block = 0;
+    if (lexIsToken(LCurlyToken)) {
+        block = 1;
+        lexNextToken();
+        fold->star = 0;
+    }
+    else if (maystar && lexIsToken(StarToken)) {
         fold->star = 1;
         lexNextToken();
     }
@@ -203,6 +219,9 @@ static void parseFoldItems(ParseState *parse, FoldClause *fold, int maystar) {
         return;
     }
     while (1) {
+        // A block may hold a trailing comma, and an empty one admits nothing
+        if (block && lexIsToken(RCurlyToken))
+            break;
         if (!lexIsToken(IdentToken)) {
             errorMsgLex(ErrorNoIdent, "Expected the name of a member to fold in");
             break;
@@ -224,6 +243,8 @@ static void parseFoldItems(ParseState *parse, FoldClause *fold, int maystar) {
             break;
         lexNextToken();
     }
+    if (block)
+        parseCloseTok(RCurlyToken);
     // 'but' leaves a name out of everything; a list admits only what it names
     if (lexIsToken(ButToken)) {
         errorMsgLex(ErrorBadFold, "'but' leaves a name out of a fold of every member. A listed fold admits only the names it lists.");
@@ -233,12 +254,25 @@ static void parseFoldItems(ParseState *parse, FoldClause *fold, int maystar) {
     }
 }
 
-// Parse a field's fold clause, with the lexer on its 'use'. The field's type is
-// the source, so the clause is nothing but what it admits, and '*' is how it
-// says every member.
-FoldClause *parseFoldClause(ParseState *parse) {
+// Parse a field's or a global's fold clause, with the lexer on its 'use'. The
+// declaration's type is the source, so the clause is nothing but what it admits,
+// and '*' is how it says every member.
+//
+// 'use pub' says the bindings it makes are visible outside the namespace folding
+// them, which only a module's global has an answer for: a folded member of a
+// field's type is as public as the field it is reached through, so 'pub' there
+// would be claiming something the fold does not decide.
+FoldClause *parseFoldClause(ParseState *parse, int maypub) {
     FoldClause *fold = newFoldClause();
     lexNextToken();
+    if (lexIsToken(PubToken)) {
+        if (maypub)
+            fold->ispub = 1;
+        else
+            errorMsgLex(ErrorBadPub,
+                "A folded member is as visible as what it is reached through, so this fold has no visibility of its own to declare.");
+        lexNextToken();
+    }
     parseFoldItems(parse, fold, 1);
     return fold;
 }
@@ -254,6 +288,13 @@ static FieldDclNode *parseUseSibling(ParseState *parse) {
     use->fold = fold;
     lexNextToken();
     inodeLexCopy((INode*)use, fold->at);
+    // A sibling fold declares no name of its own and every folded name carries
+    // its target's visibility, so there is nothing here for 'pub' to say
+    if (lexIsToken(PubToken)) {
+        errorMsgLex(ErrorBadPub,
+            "A sibling fold declares no name of its own, and each folded name carries its target's visibility.");
+        lexNextToken();
+    }
     use->vtype = parseTypeName(parse);
     // Naming the sibling is what asks for its members, so every one of them is
     // the default and there is no second spelling for it
@@ -291,7 +332,7 @@ static FieldDclNode *parseFieldDclBody(ParseState *parse, FieldDclNode *fldnode)
 
     // A fold clause takes its names from the field's type, so the type is written
     if (lexIsToken(UseToken)) {
-        fldnode->fold = parseFoldClause(parse);
+        fldnode->fold = parseFoldClause(parse, 0);
         if (fldnode->vtype == unknownType)
             errorMsgNode(fldnode->fold->at, ErrorBadFold, "A field that folds names in must write its type, which is where the names come from.");
     }
@@ -560,7 +601,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
             // what a field's own 'use' clause is for.
             if (lexIsToken(UseToken)) {
                 errorMsgLex(ErrorBadFold, "'is' names abstractions and folds nothing. To delegate, declare a field of the type and write 'use' on it.");
-                parseFoldClause(parse);
+                parseFoldClause(parse, 0);
             }
             continue;
         }
@@ -687,7 +728,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 // nothing left for a fold to admit
                 if (lexIsToken(UseToken)) {
                     errorMsgLex(ErrorBadFold, "A mixin brings in every member of the trait; it does not fold.");
-                    parseFoldClause(parse);
+                    parseFoldClause(parse, 0);
                 }
                 structAddField(strnode, field);
                 parseEndOfStatement();
@@ -925,17 +966,22 @@ INode *parseFnSig(ParseState *parse) {
     return (INode*)fnsig;
 }
 
-// Parse a typedef statement
-TypedefNode *parseTypedef(ParseState *parse) {
+// Parse a typedef statement.
+//
+// A typedef is an alias: a name in the module's namespace standing for what
+// another expression names, with a local spelling and a visibility of its own.
+// It is the same binding record a fold makes, with a type expression as the
+// target instead of a member name -- which is what it is here to prove.
+AliasDclNode *parseTypedef(ParseState *parse) {
     lexNextToken();
     // Process struct type name, if provided
     if (!lexIsToken(IdentToken)) {
         errorMsgLex(ErrorNoIdent, "Expected a name for the type");
         return NULL;
     }
-    TypedefNode *newnode = newTypedefNode(lex->val.ident);
+    AliasDclNode *newnode = newTypeAliasDclNode(lex->val.ident, NULL);
     lexNextToken();
-    newnode->typeval = parseType(parse);
+    newnode->target = parseType(parse);
     parseEndOfStatement();
     return newnode;
 }

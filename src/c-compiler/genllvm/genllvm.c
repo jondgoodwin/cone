@@ -360,6 +360,9 @@ void genlGlobalSyms(GenState *gen, INode *node) {
     case FnOverloadDclTag:
     // A macro expands where it is used and leaves no symbol behind
     case MacroDclTag:
+    // An alias is a binding and not a declaration, so it emits nothing: what it
+    // stands for is named where that is declared
+    case AliasDclTag:
         break;
     }
 }
@@ -428,6 +431,9 @@ void genlGlobalImpl(GenState *gen, INode *node) {
     case ConstDclTag:
     // An overload name has no implementation of its own to generate
     case FnOverloadDclTag:
+    // Nor has an alias: it is a binding, and what it stands for is generated
+    // wherever that is declared
+    case AliasDclTag:
         break;
 
     default:
