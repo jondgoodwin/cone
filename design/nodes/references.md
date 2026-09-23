@@ -170,7 +170,9 @@ one-element slice.
 
 Default the permission to `uni`; check the value (an array allocation routes
 through `arrayLitTypeCheckDimExp`, the only path to a **runtime** element
-count); refuse an abstract or zero-size type; build the result type; then
+count; any other initial value, a string literal or an array variable, must be
+typed a fixed-size array, and `genlallocref` takes the count from that type's
+dimension rather than from the node); refuse an abstract or zero-size type; build the result type; then
 `inodeTypeCheckAny` on it — **that line is load-bearing**, because it is what
 routes to `refTypeCheck` and therefore what populates `typeinfo`, which
 `genlallocref` dereferences unconditionally. Finally validate the region's

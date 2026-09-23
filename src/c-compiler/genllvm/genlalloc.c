@@ -187,11 +187,14 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     LLVMValueRef nbrelems = NULL;
     if (reftype->tag == ArrayRefTag) {
         // For array-refs: sizeval += (nbrelems-1) * elemsz
-        ArrayNode *initvalue = (ArrayNode*)allocatenode->vtexp;
-        if (initvalue->dimens->used > 0)
-            nbrelems = genlExpr(gen, nodesGet(initvalue->dimens, 0));
+        // Only a fill literal's count is known at run time. Any other initial
+        // value -- a listed array literal, a string literal, a variable holding
+        // an array -- is typed a fixed-size array, whose dimension is the count.
+        INode *initvalue = allocatenode->vtexp;
+        if (initvalue->tag == ArrayLitTag && ((ArrayNode*)initvalue)->dimens->used > 0)
+            nbrelems = genlExpr(gen, nodesGet(((ArrayNode*)initvalue)->dimens, 0));
         else
-            nbrelems = LLVMConstInt(genlType(gen, (INode*)usizeType), initvalue->elems->used, 0);
+            nbrelems = LLVMConstInt(genlType(gen, (INode*)usizeType), arrayDim1(iexpGetTypeDcl(initvalue)), 0);
         LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 0);
         LLVMValueRef nbrelemsdec = LLVMBuildSub(gen->builder, nbrelems, constone, "");
         LLVMValueRef elemsz = LLVMConstInt(genlType(gen, (INode*)usizeType), LLVMABISizeOfType(gen->datalayout, valuetypllvm), 0);
