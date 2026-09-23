@@ -1728,6 +1728,21 @@ static void structCheckTraitReqs(StructNode *node) {
             }
             // A trait method is one named requirement. The type satisfies it with
             // a directly named method or the one overload candidate of that signature.
+            //
+            // The requirement's signature is a use too (Rule 1). This type may have
+            // been demanded from inside the trait's own check -- a trait method
+            // declared above this one names this type in its signature -- so the
+            // trait has not reached this method yet, and its unchecked signature
+            // matched nothing. It is analyzed here under the trait's walk state
+            // (Rule 8). One under way already has its signature (Rule 3).
+            if (!(traitmeth->flags & (TypeChecked | TypeChecking))) {
+                TypeCheckState tstate;
+                tstate.typenode = (INode*)trait;
+                tstate.fn = NULL;
+                tstate.scope = 0;
+                inodeTypeCheckAny(&tstate, nodesp);
+                traitmeth = (FnDclNode*)*nodesp;
+            }
             if (iNsTypeFindVrefMethod(binding, traitmeth) == NULL)
                 errorMsgNode((INode*)node, ErrorInvType,
                     "Type declares %s, but none of what it declares has the signature %s requires",

@@ -1395,6 +1395,40 @@ fn heldAboveDeclaration() {
   show("enum-field-above-declaration", crateWeight(s.load) + s.count);
 }
 
+// -------- a static naming a variant above an enum method --------
+
+// A static function whose signature names a variant demands that variant while
+// the enum is still checking its own members in order. The variant checks its
+// clone of each enum method and then compares it with the enum's own -- which the
+// enum has not reached yet when it is written below the static. That comparison
+// analyzes the enum's method first, so the order the two are written in does not
+// decide whether a variant conforms. It once did: Meter's Over was refused as not
+// having the 'probe' its enum requires, while Needle, the other order, compiled.
+enum Meter {
+  pub id i32;
+  struct Under {pub lo i32;}
+  struct Over {pub hi i32;}
+  fn highOf(g &Over) i32 {g.hi;}
+  pub fn probe(self &, other &Meter) i32 {id * 10 + other.id;}
+}
+
+enum Needle {
+  pub id i32;
+  struct Left {pub lo i32;}
+  struct Right {pub hi i32;}
+  pub fn probe(self &, other &Needle) i32 {id * 10 + other.id;}
+  fn rightOf(g &Right) i32 {g.hi;}
+}
+
+fn staticAboveMethod() {
+  imm under = Meter.Under[2, 5];
+  imm over = Meter.Over[3, 7];
+  show("enum-static-above-method", Meter.highOf(&over) * 100 + (&over).probe(&under));
+  imm left = Needle.Left[4, 6];
+  imm right = Needle.Right[1, 8];
+  show("enum-method-above-static", Needle.rightOf(&right) * 100 + (&right).probe(&left));
+}
+
 // An enum may reach itself through a reference, which is how a tree is written.
 // The enum's size is the largest of its variants, so a variant holding it by
 // value would be infinite -- enum-typecheck-variant holds that -- but a
@@ -1439,5 +1473,6 @@ fn main() i32 {
   variantBodies();
   interactions();
   heldAboveDeclaration();
+  staticAboveMethod();
   0i32;
 }
