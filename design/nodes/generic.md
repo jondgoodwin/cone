@@ -243,30 +243,26 @@ already re-pointed at the instance being defined (Clone, above), which carries n
 `genericinfo` and is not refused; a different generic named bare there still
 names its template, and is.
 
-A **tagged trait** fans out: the base trait is instantiated, then every entry of
-its `derived` list, each registering into its own `memonodes`. **The base and
-every variant are cloned and registered before any is type checked**, because a
-variant's body may name a later sibling at the same arguments: registered only as
-each was checked, that sibling was a miss, and a miss on any variant instantiates
-the whole enum again, so it expanded until `ErrorInstDepth`. The enum's own
-methods and statics are the same case: the base was once type checked before any
-variant was cloned, so a static building a variant, `Fallow[T][r]`, expanded
-endlessly too. **The instance's `derived` is
-filled with every cloned variant before any is type checked**, so what a
-variant's body asks of the whole set sees all of it: a match there on a value of
-the enum is exhaustive over every variant (`ifExhaustCheck`), a bare pattern name
-finds its sibling (`castPatternBind`), and a variant holding its own enum by value
-is refused as one still being laid out (`itypeVariantPending`). The instance
-itself was type checked before, with an empty list, so the discriminant's width
-(`structSetTagWidth`) is settled here once the list is whole — on the first
-instance of the generic only, since the discriminant node and the tag values are
-shared by every instance. That empty list is a gap: a variant the base's own type
-check reaches — through a static that builds it — is type checked then, before
-the list is filled, and an exhaustive match in its body is refused
-(`ErrorNoElse`). Filling the list before the base is checked settles the width
-inside the base's check for every instance, so a declared type's overflow is
-reported again for each (measured: three times for `enum-typecheck-tag`'s two
-instances of `GenNarrow`), and that has to be solved first.
+A **tagged trait** fans out: the base trait is cloned, then every entry of its
+`derived` list, each registering into its own `memonodes`. **The base and every
+variant are cloned and registered before any is type checked**, because a
+variant's body may name a later sibling at the same arguments, and so may the
+enum's own static function, which is checked with the enum: registered only as
+each was checked, that sibling was a miss, and a miss on any variant
+instantiates the whole enum again, so it expanded until `ErrorInstDepth`. **The
+instance's `derived` is filled with every cloned variant before the enum or any
+variant is type checked**, so what a variant's body asks of the whole set sees
+all of it, whether the variant is reached in turn or first from the enum's own
+check: a match there on a value of the enum is exhaustive over every variant
+(`ifExhaustCheck`), a bare pattern name finds its sibling (`castPatternBind`),
+and a variant holding its own enum by value is refused as one still being laid
+out (`itypeVariantPending`). The instance is checked through
+`structTypeCheckEnumInstance`, which leaves the discriminant's width
+(`structSetTagWidth`) out of that check; `genericMemoize` settles it once the
+instance and its variants are checked — on the first instance of the generic
+only, since the discriminant node and the tag values are shared by every
+instance, and measuring each would report a declared type's overflow once per
+instance.
 
 **Depth is the only cycle detector.** No mark can catch runaway expansion,
 because every expansion is a fresh node — nothing ever returns to the same node.

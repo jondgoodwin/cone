@@ -577,11 +577,12 @@ another. See [module](module.md).
    extension may not widen it: the node is the base's, and widening it would relay
    out the base's own values for the sake of a set the base knows nothing about. A
    value that does not fit is `ErrorTagWidth` at the extension, the same question a
-   declared integer type asks. **An instance of a generic enum has no variants yet
-   at this step** — `genericMemoize` fills its `derived` only after the enum and
-   each variant are instantiated — so the step finds nothing to measure there, and
-   `genericMemoize` asks it again once the list is whole: once per generic, since
-   the template and every instance share the node and the tag values.
+   declared integer type asks. **An instance of a generic enum skips this step** —
+   `genericMemoize` checks it through `structTypeCheckEnumInstance`, with its
+   `derived` already listing every variant — and `genericMemoize` settles the width
+   once the instance and its variants are checked: once per generic, since the
+   template and every instance share the node and the tag values, and measuring
+   each instance would report a declared type's overflow once per instance.
 5b. **Verify the field requirements** (`structCheckIsaFields`), the layout having
    just settled, which is what an `is` asserts about. The base's own fields must
    be declared here, under the same names and types, in the base's order,
@@ -777,6 +778,14 @@ own methods no longer are, so there the copy is taken from what the base set asi
 (`lifecycle`; see Hazards). Measured in `struct-extends-lifecycle`, and across a
 module boundary in `struct-extends-import`. Neither folds from a **sibling**: a
 type folding one has its own copy from the base they share.
+
+The base's **`@move` and `@opaque` flags are carried** (`MoveType`, `OpaqueType`,
+`DeclaredOpaque`, OR'd onto this type as the members are taken). What the base's
+fields and `final` make of it is inferred again from the copies at layout, but an
+attribute exists only as the flag parse set on the base, and the carry is what
+makes an enrichment of an `@move` type move and one of an `@opaque` type refuse a
+value. Measured in `move-flow-infection` and `move-success` for `@move`, and
+`struct-typecheck-nosize` for `@opaque`.
 
 **Every other member becomes an alias** — methods, overload sets, macro methods
 and statics alike, private ones included, under the base's own visibility. A

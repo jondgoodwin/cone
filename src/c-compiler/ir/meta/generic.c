@@ -245,10 +245,11 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
     }
     else {
         // For tag-based trait/struct, instantiate the base trait and all its variants.
-        // The enum and every variant are cloned and remembered before any is type
-        // checked: a variant's body may name a later sibling at these same
-        // arguments, and a sibling not yet remembered would be a miss that
-        // instantiates the whole enum again, endlessly.
+        // The base trait and every variant are cloned and remembered before any of
+        // them is type checked: a variant's body may name a later sibling at these
+        // same arguments, and so may the enum's own static function, checked with
+        // the enum. A variant not yet remembered would be a miss that instantiates
+        // the whole enum again, endlessly.
         //
         // Every instance is reserved before any is cloned, and the generic enum
         // and each generic variant mapped to its own: inside the enum's braces --
@@ -277,14 +278,15 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
         for (nodesFor(basetrait->derived, cnt, nodesp))
             nodesAdd(&variants, genericClone(pstate, srcgencall, *nodesp, ((StructNode*)*nodesp)->genericinfo, *shellp++));
         cloneDclPop(dclpos);
-
-        inodeTypeCheckAny(pstate, &instrait);
         // The instance's 'derived' lists its own variants, and lists all of them
-        // before any is type checked: a variant's method body may match a value
-        // of the enum, and its match is exhaustive only against the whole set.
+        // before the enum or any variant is type checked: a variant's method body
+        // may match a value of the enum, and its match is exhaustive only against
+        // the whole set -- including a variant reached first from the enum's own
+        // check, as a static function building it reaches it.
         Nodes **instraitderived = &((StructNode*)instrait)->derived;
         for (nodesFor(variants, cnt, nodesp))
             nodesAdd(instraitderived, *nodesp);
+        structTypeCheckEnumInstance(pstate, (StructNode*)instrait);
         INode **instp = &nodesGet(variants, 0);
         for (nodesFor(basetrait->derived, cnt, nodesp)) {
             inodeTypeCheckAny(pstate, instp);
@@ -293,12 +295,11 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
             ++instp;
         }
 
-        // The discriminant's width follows the largest tag value, and the instance
-        // was type checked above before it had any variants to measure it by. It
-        // is settled once per generic: the discriminant node is shared by the
-        // template and every instance, and their tag values are the template's,
-        // so a later instance could only report a declared integer type's
-        // overflow a second time.
+        // The discriminant's width follows the largest tag value, and the instance's
+        // own type check left it here (structTypeCheckEnumInstance). It is settled
+        // once per generic: the discriminant node is shared by the template and
+        // every instance, and their tag values are the template's, so a later
+        // instance could only report a declared integer type's overflow again.
         if (firstinstance)
             structSetTagWidth((StructNode*)instrait);
     }
