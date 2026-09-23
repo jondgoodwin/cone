@@ -262,7 +262,15 @@ or element handed back matches the variable it is taken from
 (`flowIsScopeResultOwner`, the walk through fields, elements and owning
 dereferences that `flowMoveSource` takes), because moving a part out gives up
 the whole variable; releasing it would finalize the part again in the caller,
-and what else it held is not released. A copied part matches nothing. The match is on the
+and what else it held is not released. A copied part matches nothing. A block
+or an `if` used as a move value matches what it hands back — its final
+expression, each `break` that leaves it, each branch — so a field handed back
+through one is exempt the same way. A local handed back on only some branches
+is exempt on all of them, and leaks on the others, as a conditional move does.
+The exemption is the result's own and is not deactivation, because each
+`return` builds its own list and `VarMoved` is not path-sensitive:
+`if c {return b.inner;}` exempts `b` on that way out only, and `b` is still
+usable and finalized on the path that goes on. The match is on the
 declaration the result's name resolves to, not on the name: a `return` asks over the whole function's
 stack, where an inner block's `a` and an outer `a` both sit, and only the one
 handed back is exempt. What survives both is an `so` or `rc`

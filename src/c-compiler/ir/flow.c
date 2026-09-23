@@ -428,6 +428,46 @@ static int flowIsScopeResult(INode *retexp, VarDclNode *varnode) {
     // leaves the variable owning everything it held.
     if ((retexp->tag == FldAccessTag || retexp->tag == ArrIndexTag) && iexpIsMove(retexp))
         return flowIsScopeResultOwner(((FnCallNode *)retexp)->objfn, varnode);
+    // A block or an 'if' used as a move value hands back what its final
+    // expression, its breaks or its branches do, so what it hands back is matched
+    // as if handed back directly. A local handed back on only some of those
+    // paths is exempt on all of them: it leaks on the others rather than being
+    // finalized twice on these, as a conditional move does.
+    if (iexpIsMove(retexp)) {
+        switch (retexp->tag) {
+        case BlockTag:
+        {
+            BlockNode *blk = (BlockNode *)retexp;
+            INode **nodesp;
+            uint32_t cnt;
+            INode *last = blk->stmts->used > 0 ? nodesLast(blk->stmts) : NULL;
+            if (last != NULL && last->tag == BlockRetTag
+                && flowIsScopeResult(((BreakRetNode *)last)->exp, varnode))
+                return 1;
+            if (blk->breaks) {
+                for (nodesFor(blk->breaks, cnt, nodesp)) {
+                    if ((*nodesp)->tag == BreakTag
+                        && flowIsScopeResult(((BreakRetNode *)*nodesp)->exp, varnode))
+                        return 1;
+                }
+            }
+            return 0;
+        }
+        case IfTag:
+        {
+            INode **nodesp;
+            uint32_t cnt;
+            for (nodesFor(((IfNode *)retexp)->condblk, cnt, nodesp)) {
+                nodesp++; cnt--;
+                if (flowIsScopeResult(*nodesp, varnode))
+                    return 1;
+            }
+            return 0;
+        }
+        default:
+            break;
+        }
+    }
     return isNameUseNode(retexp) && isExpNode(retexp) && ((NameUseNode *)retexp)->dclnode == (INode *)varnode;
 }
 
