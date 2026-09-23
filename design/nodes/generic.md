@@ -167,7 +167,11 @@ a `newErrorNode` rather than nothing, so the caller substitutes it and keeps
 checking — `fnCallTypeCheck` has the matching `inodeIsError` guard.
 
 A **tagged trait** fans out: the base trait is instantiated, then every entry of
-its `derived` list, each registering into its own `memonodes`.
+its `derived` list, each registering into its own `memonodes`. The instance's
+`derived` is filled in as each variant is made, after the instance itself was type
+checked with an empty one, so the discriminant's width (`structSetTagWidth`) is
+settled here once the list is whole — on the first instance of the generic only,
+since the discriminant node and the tag values are shared by every instance.
 
 **Depth is the only cycle detector.** No mark can catch runaway expansion,
 because every expansion is a fresh node — nothing ever returns to the same node.

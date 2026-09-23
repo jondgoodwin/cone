@@ -116,6 +116,10 @@ StructNode *structGetBaseTrait(StructNode *node);
 // Type check a struct type
 void structTypeCheck(TypeCheckState *pstate, StructNode *name);
 
+// Settle an enum's discriminant width from its variants' tag values, refusing a
+// value too large for the integer type it declared
+void structSetTagWidth(StructNode *node);
+
 // Populate the vtable for this struct
 void structMakeVtable(StructNode *node);
 
