@@ -577,11 +577,12 @@ another. See [module](module.md).
    extension may not widen it: the node is the base's, and widening it would relay
    out the base's own values for the sake of a set the base knows nothing about. A
    value that does not fit is `ErrorTagWidth` at the extension, the same question a
-   declared integer type asks. **An instance of a generic enum has no variants yet
-   at this step** — `genericMemoize` fills its `derived` only after the enum and
-   each variant are instantiated — so the step finds nothing to measure there, and
-   `genericMemoize` asks it again once the list is whole: once per generic, since
-   the template and every instance share the node and the tag values.
+   declared integer type asks. **An instance of a generic enum skips this step** —
+   `genericMemoize` checks it through `structTypeCheckEnumInstance`, with its
+   `derived` already listing every variant — and `genericMemoize` settles the width
+   once the instance and its variants are checked: once per generic, since the
+   template and every instance share the node and the tag values, and measuring
+   each instance would report a declared type's overflow once per instance.
 5b. **Verify the field requirements** (`structCheckIsaFields`), the layout having
    just settled, which is what an `is` asserts about. The base's own fields must
    be declared here, under the same names and types, in the base's order,
