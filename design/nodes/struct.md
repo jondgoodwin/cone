@@ -5,7 +5,7 @@ functions all live here.
 
 **The three kinds in one sentence each.** A **struct** is a record of fields. A
 **trait** is an open abstraction: its implementers are declared beside it, name it
-with `is-a`, and may live in another module, so nothing can number them. An
+with `is`, and may live in another module, so nothing can number them. An
 **enum** is the closed family: its variants are declared inside it, so the
 compiler owns their layout — a discriminant, the enum's own fields spliced into
 every variant, and, unless the declaration writes `@unsized`, padding to one size.
@@ -38,13 +38,13 @@ padded variants, or to nothing at all.
 ## Principles — [derived]
 
 **A subtype relationship is asserted, not noticed, and it is asserted with
-`is-a`.** A concrete type says in its own declaration that it complies with one or
+`is`.** A concrete type says in its own declaration that it complies with one or
 more abstractions, and the compiler verifies the compliance there. ▸ **That is the
 only way to comply with an abstraction that has nothing in it to notice** — a
 marker trait is empty, so no structural match could distinguish a type that
 carries it from one that does not, and only a declaration can say. ▸ And it forces
 conformance at the moment of declaring rather than later at a use.
-**Structural conformance stays**, and the two coexist on purpose: what `is-a` adds
+**Structural conformance stays**, and the two coexist on purpose: what `is` adds
 is the assertion and the check, not the capability.
 
 **A trait contributes no fields.** What a trait's fields state is a *requirement*,
@@ -68,7 +68,7 @@ the base's own field list alone.
 **The one field splice left is the enum's.** An enum owns its variants' layout, so
 its fields — the discriminant among them — are cloned into every variant, which
 declares none of them. ▸ **Forbids** giving a variant a base of its own: its
-relationship to its enum is membership, not `is-a`.
+relationship to its enum is membership, not is-a conformance.
 
 **Composition is compile-time flattening; polymorphism moves out to traits.**
 The author's term is **delegated inheritance**: a field's `use` clause folds
@@ -136,9 +136,9 @@ neither slots nor requirements and cost the trait nothing.
 | `namespace` | every named member: fields, methods, macros, overload sets, `Self`, and what a fold admits — a **copy** of a folded field (a `FieldDclNode` with a `hop`) and an **alias** (`AliasDclNode`) for a folded method, overload set or macro method. The copies and aliases live here only; `fields` and `nodelist` never hold one |
 | `dropfn` | NULL until the last step of type check |
 | `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". The owner is a module, or the enum for a variant declared inside one. Read for one thing besides naming: rejecting a variant declared outside its enum's module, through `dclInfoGetModule` |
-| `basetrait` | the **type expression** of the first abstraction an `is-a` names, or of the enum a variant belongs to — a `NameUseNode`, or an `FnCallNode` for a generic base. **Not a `StructNode*`.** Two helpers unwrap it and they answer different questions: `structBaseTraitDcl` takes **one hop**, to the declaration this type stands on, while `structGetBaseTrait` recurses to the **bottom-most** one. Picking the wrong one is how the infection loop hangs |
+| `basetrait` | the **type expression** of the first abstraction an `is` names, or of the enum a variant belongs to — a `NameUseNode`, or an `FnCallNode` for a generic base. **Not a `StructNode*`.** Two helpers unwrap it and they answer different questions: `structBaseTraitDcl` takes **one hop**, to the declaration this type stands on, while `structGetBaseTrait` recurses to the **bottom-most** one. Picking the wrong one is how the infection loop hangs |
 | `derived` | for an **enum**, its variants in declaration order. The index is the `tagnbr` only where nothing pinned one, which is what generation asks before using the tag to index the vtable list |
-| `traits` | every abstraction whose members were taken — the base, each further name in the `is-a` list, and each `mixin` — or NULL. Written where the members are taken (`structInheritTrait`) and read by type check's two requirement checks, the only things that still need to know which trait a requirement came from. **Which entry is the base is asked of `basetrait`, not of this list's order**, since the field walk that fills it runs backwards |
+| `traits` | every abstraction whose members were taken — the base, each further name in the `is` list, and each `mixin` — or NULL. Written where the members are taken (`structInheritTrait`) and read by type check's two requirement checks, the only things that still need to know which trait a requirement came from. **Which entry is the base is asked of `basetrait`, not of this list's order**, since the field walk that fills it runs backwards |
 | `fields` | all fields in layout order. A declared field may carry a fold clause (`FieldDclNode.fold`); a folded copy is never here |
 | `vtable` | NULL until `structMakeVtable` |
 | `tagnbr` | discriminant value, assigned at parse: the value the author pinned, or the next in sequence. `TagUnassigned` is the sentinel between reading a variant's name and settling its value, which is why no flag bit records whether one was written — a type has none to spare, and nothing after parse needs to know |
@@ -163,7 +163,7 @@ The two closed flags travel down to the variants because they are facts about
 layout; this one does not, because it is a fact about the declaration.
 
 A variant is a plain struct with a `basetrait`, a `tagnbr`, and no `derived`.
-**A `struct X is-a Trait` is in no `derived` list** — `derived` means "an enum's
+**A `struct X is Trait` is in no `derived` list** — `derived` means "an enum's
 variants", never "a trait's implementers".
 
 The infectious flags — `MoveType`, `ThreadBound`, `OpaqueType`, `ZeroSizeType` —
@@ -206,7 +206,7 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   parsed rather than dumped onto the module's statement stream.
 - Each method joins the type through `iNsTypeAddFn`, which records the type as
   its owner; that is what spells its symbol `Type_meth` at generation.
-- **`is-a` takes a comma-separated list.** The first name becomes `basetrait`;
+- **`is` takes a comma-separated list.** The first name becomes `basetrait`;
   each further one becomes the same `FieldDclNode` placeholder a `mixin` does, so
   nothing new carries them. Only the first may require fields, and the rest are
   therefore field-less, which is why a placeholder for one costs no layout.
@@ -214,7 +214,7 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   standing for a trait, which name resolution removes once it has taken the
   trait's default methods** — or type check does, when the trait is an instance of
   a generic. It is replaced by fields rather than removed only for an enum.
-- **`extends` is refused on a struct or a trait** (`ErrorExtends`), naming `is-a`
+- **`extends` is refused on a struct or a trait** (`ErrorExtends`), naming `is`
   as what to write. The word is held for enriching a concrete type with methods,
   which is not built. An **enum** keeps it, for an enum that adds variants to
   another's — also not built, and parsed here unchanged so that nothing about it
@@ -223,9 +223,9 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   with an alias per listed name positioned at the item; **nothing enters the
   namespace at parse**, since whether a name is a field or a method is not
   known until the field's type is. `use` on anything that is not a struct's
-  field — a variable, a parameter, a static, a mixin, an `is-a` clause, a trait's
+  field — a variable, a parameter, a static, a mixin, an `is` clause, a trait's
   or an enum's field — is `ErrorBadFold` there, so the diagnostic is the fold's
-  own. **`is-a` names abstractions and folds nothing**: an abstraction has no
+  own. **`is` names abstractions and folds nothing**: an abstraction has no
   value for a folded name to be reached through, and delegation is what a field's
   own clause is for.
 - **A variant has two spellings and they build the same node.** A `struct` written
@@ -241,7 +241,7 @@ LLVM struct, which is why a reference to a trait could not be lowered.
     name, before the choice is made, so that a diagnostic about either points at
     the name rather than at what follows it.
   - **A variant restating what the enum decides is `ErrorVariantDcl`** — its own
-    `is-a`, or its own generic parameters. One code for both, because a reader
+    `is`, or its own generic parameters. One code for both, because a reader
     would not branch on which and the remedy is the same: delete it.
 - **Tag numbering runs across the whole body**, ascending from zero, and a written
   value resets it, so numbering continues from there. Two variants holding one
@@ -292,13 +292,13 @@ inherited member bare, exactly as it names the type's own.
    type's own name is among them. When it names a declaration this type may stand
    on (a trait, and closed only if this type is), **insert a mixin placeholder for
    it at position 0**, exactly as `mixin` does — which is how the base, the rest
-   of an `is-a` list and `mixin` become one mechanism.
+   of an `is` list and `mixin` become one mechanism.
 5. **Demand each trait a placeholder names, and the type of each field that
    carries a fold clause** (`structNameResDemand`): resolve it now, in its own
    module's scope if it lives elsewhere, so that its own members are complete
    before they are read. Still before this type's names are hooked, so the
    trait's bodies bind in the trait's scope and not in this type's. A trait
-   already under way is a cycle — `A is-a B is-a A`, or a trait mixing
+   already under way is a cycle — `A is B is A`, or a trait mixing
    itself in — and is `ErrorCircular` where it is named; the compiler used to
    loop here without end. A fold from a type still under way is refused at
    step 9 instead.
@@ -383,7 +383,7 @@ reach in that module; see [module](module.md).
    cloned** (`clone.c`), so every variant's copy of the tag field reads the width
    set once here.
 5b. **Verify the field requirements** (`structCheckIsaFields`), the layout having
-   just settled, which is what an `is-a` asserts about. The base's own fields must
+   just settled, which is what an `is` asserts about. The base's own fields must
    be declared here, under the same names and types, in the base's order,
    beginning at position 0 — `ErrorIsaFields`, reported at the field that breaks
    the prefix, or at the type when the requirement runs off the end of its field
@@ -507,7 +507,7 @@ thunk: the compiler knows the type and shifts the receiver at compile time.
   depth subtyping only where no conversion is needed.
 - **The prefix `Regref` needs is the declaring type's own fields.** A trait
   contributes none, so what makes the comparison succeed is that the type declared
-  them — which `is-a` verified at the declaration, and which a structural
+  them — which `is` verified at the declaration, and which a structural
   conformer happens to satisfy. That is the whole difference this comparison sees
   between the two, and it sees none: a nominal declaration is checked earlier, not
   matched differently.
@@ -577,7 +577,7 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   checked and flow-analyzed.
 - **Mixing in two enums brings two tag fields**, and no duplicate-name error fires
   because `namespaceAdd` silently ignores `_`, so what reports it is type check's
-  one-discriminant rule. Traits carry no tag, so a chain of `is-a` and any number
+  one-discriminant rule. Traits carry no tag, so a chain of `is` bases and any number
   of `mixin`s meet nothing here.
 - **A default method cloned from an instance of a generic trait, or a member
   folded from a field whose type is a generic's parameter, cannot be named bare.**

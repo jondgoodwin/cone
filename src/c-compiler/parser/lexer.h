@@ -138,7 +138,6 @@ enum TokenTypes {
     MoveToken,     // '@move'
     OpaqueToken,   // '@opaque'
     UnsizedToken,  // '@unsized'
-    IsaToken,      // 'is-a'
     ExtendsToken,  // 'extends'
     MixinToken,    // 'mixin'
     UseToken,      // 'use'

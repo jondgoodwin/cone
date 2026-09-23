@@ -134,7 +134,7 @@ void structPrint(StructNode *node) {
 // An enum does: it owns its variants' layout, so a variant's fields begin with
 // clones of the enum's -- the discriminant among them -- and the variant declares
 // none of them. A trait does not: what a trait's fields state is a requirement
-// the type satisfies by declaring them itself, which is what 'is-a' verifies.
+// the type satisfies by declaring them itself, which is what 'is' verifies.
 static int structBaseGivesFields(StructNode *base) {
     return (base->flags & EnumType) != 0;
 }
@@ -197,7 +197,7 @@ static void structInheritTrait(StructNode *node, uint32_t fldpos, StructNode *tr
 // The trait declaration a base or mixin type expression names, or NULL when it
 // names something else: a generic instantiation, which is a call node until type
 // check instantiates it; a type that is not a trait, which type check reports; or
-// a name that did not resolve. The base of an 'is-a' must be an abstraction, and
+// a name that did not resolve. The base of an 'is' must be an abstraction, and
 // this is the test in force at name resolution -- an enum answers it too, since a
 // variant's membership rides the same field.
 static StructNode *structNameResTrait(INode *typeexp) {
@@ -887,7 +887,7 @@ static void structCheckTraitReqs(StructNode *node) {
     }
 }
 
-// Does this trait require any field of the type that declares 'is-a' against it?
+// Does this trait require any field of the type that declares 'is' against it?
 // A placeholder standing for another abstraction is not a field and stands for
 // none, since a trait contributes nothing to a layout.
 static int structTraitRequiresFields(StructNode *trait) {
@@ -1143,7 +1143,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         }
         StructNode *basetrait = (StructNode*)itypeGetTypeDcl(node->basetrait);
         if (basetrait->tag != StructTag || !(basetrait->flags & TraitType)) {
-            errorMsgNode(node->basetrait, ErrorInvType, "An 'is-a' names an abstraction, and this is not one");
+            errorMsgNode(node->basetrait, ErrorInvType, "An 'is' names an abstraction, and this is not one");
         }
         else if ((node->flags & HasTagField) != (basetrait->flags & HasTagField)) {
             // An enum's variants are all declared inside it, so nothing outside
@@ -1251,7 +1251,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     }
     structSetTagWidth(node);
 
-    // The layout is settled, which is what an 'is-a' asserts about: the fields the
+    // The layout is settled, which is what an 'is' asserts about: the fields the
     // abstractions require are declared here, in order, at position 0
     structCheckIsaFields(node);
 

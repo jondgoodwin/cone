@@ -45,6 +45,14 @@ prefix one. `is` is **a keyword**, not an operator symbol, and `parseCmp`
 handles it at comparison precedence. `parsefnflow.c` also builds `IsTag` nodes
 when desugaring `match` arms and bound patterns.
 
+**The same word declares nominal conformance**, in `parseStruct`: `struct Gauge is
+Meter` asserts of a type what `p is Mobile` asks of a value. The two cannot be
+confused. Here `is` is **infix** — `parseCmp` only looks for it once a left
+operand has been parsed — so it can never begin an expression, and the only
+other leading position is immediately after `case`. A type declaration's header
+parses no expression at all, so the `is` that opens a base list is reached from
+nowhere an expression could be. See [struct](struct.md).
+
 ## Name resolution
 
 `castNameRes` walks `exp` and `typ`. Nothing else.
