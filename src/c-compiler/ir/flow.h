@@ -63,6 +63,9 @@ typedef struct {
 // Handle when moving or copying a value to a new destination
 void flowHandleMoveOrCopy(INode **nodep);
 
+// Refuse a move-typed result a scope hands back when its source does not own it
+void flowResultMove(INode *node);
+
 // Does this expression still hold its value after it is read?
 int flowIsLvalRead(INode *node);
 
