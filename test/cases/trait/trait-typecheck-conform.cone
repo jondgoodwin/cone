@@ -1,11 +1,13 @@
-// What composing a trait demands of the type that names it, where the demand is
-// about types: a base that is not a trait, a method requirement the type meets
-// with nothing or with the wrong signature, and a second discriminant arriving
-// from a second closed trait. Every diagnostic is reported against the struct
-// declaration itself rather than the member that is wrong, so each needs its own
-// struct. A trait's field arriving under a name the type already declares is
-// caught earlier, while the type is name resolved, and is in
-// trait-nameres-inherit.
+// What a nominal assertion demands of the type that makes it, where the demand is
+// about types: a base that is not an abstraction, a method requirement the type
+// meets with nothing or with the wrong signature, the fields a trait requires not
+// declared where it requires them, a second trait requiring fields at all, and a
+// second discriminant arriving from a second enum.
+//
+// Most diagnostics are reported against the struct declaration itself rather than
+// the member that is wrong, so each of those needs its own struct. A field
+// requirement is the exception and points at the field that breaks the prefix,
+// which is the member a reader would go to.
 //
 // These are checked when the struct type is checked, which is the same pass
 // that checks function bodies -- but not the same pass that checks function
@@ -27,15 +29,16 @@ struct Plain {
   n i32;
 }
 
-// A base must be a trait. A struct has fields to mix in and methods to inherit,
-// but naming one is still rejected.
-struct FromStruct extends Plain {  //~ ErrorInvType:27 "Base trait must be a trait"
+// A base must be an abstraction. A struct has fields and methods of its own, but
+// naming one is still rejected: a subtype relationship in Cone runs from a
+// concrete type to an abstraction, never between two concrete types.
+struct FromStruct is-a Plain {  //~ ErrorInvType:24 "An 'is-a' names an abstraction"
   m i32;
 }
 
 // Nothing is declared for a requirement that has no default, so there is
 // nothing to inherit either
-struct Silent extends Worker {  //~ ErrorInvType:8 "Type must implement work method"
+struct Silent is-a Worker {  //~ ErrorInvType:8 "Type must implement work method"
   q i32;
 }
 
@@ -43,14 +46,71 @@ struct Silent extends Worker {  //~ ErrorInvType:8 "Type must implement work met
 // an extra argument. A trait requirement is one signature, so a same-named
 // declaration of a different signature does not satisfy it -- and does not let
 // the default be quietly used instead.
-struct Mismatched extends Measured {  //~ ErrorInvType:8 "none of what it declares has the signature"
+struct Mismatched is-a Measured {  //~ ErrorInvType:8 "none of what it declares has the signature"
   r i32;
 
   fn sizeScaled overload size(self &, scale i32) i32 {r * scale;}
 }
 
+// -------- the fields a trait requires --------
+
+// A trait contributes no fields. What its fields state is a requirement the type
+// satisfies by declaring them itself, with the same names and types, in the
+// trait's order, beginning at position 0. That positional prefix is what makes a
+// plain reference to the trait a view of the type's own storage, so it is a
+// layout requirement and not merely a naming one.
+trait Pair {
+  pub a i32;
+  pub b i32;
+}
+
+// The first is declared and the second is not, so the requirement runs off the
+// end of the field list. Reported on the struct, since there is no field at the
+// position to point at.
+struct Short is-a Pair {   //~ ErrorIsaFields:8 "requires a field b at position 1"
+  pub a i32;
+}
+
+// Both are declared, in the wrong order. Names and types alone would accept this;
+// the order is what a reference to the trait reads through.
+struct Swapped is-a Pair {
+  pub b i32;               //~ ErrorIsaFields:7 "requires the field a at position 0"
+  pub a i32;
+}
+
+// Declared first, but not at position 0: the type's own field is in front of the
+// prefix the trait requires.
+struct Behind is-a Pair {
+  pub own i32;             //~ ErrorIsaFields:7 "requires the field a at position 0"
+  pub a i32;
+  pub b i32;
+}
+
+// The right names in the right places, one of them the wrong type. Reported at the
+// field, and the walk carries on to the next requirement rather than stopping.
+struct Retyped is-a Pair {
+  pub a i16;               //~ ErrorIsaFields:7 "is not the type Pair requires of it"
+  pub b i32;
+}
+
+// Only the FIRST abstraction named may require fields, because only one of them
+// can hold position zero. That is what dissolves any contest between two traits'
+// field orders: a field two of them want is declared once, and the rest require
+// none. Reported on the struct, naming the abstraction that asked for too much.
+trait Heavy {
+  pub weight i32;
+}
+
+struct Loaded is-a Pair, Heavy {   //~ ErrorIsaMulti:8 "only the first abstraction named may"
+  pub a i32;
+  pub b i32;
+  pub weight i32;
+}
+
+// -------- two closed families in one layout --------
+
 // A discriminant belongs to one closed family. An open trait carries none, so a
-// type may extend a chain of them and mix in as many as it likes; an enum
+// type may name a chain of them and mix in as many as it likes; an enum
 // carries one, and mixing in two brings two into the same layout with no variant
 // number that could mean anything in either family.
 enum Left {

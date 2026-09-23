@@ -298,8 +298,8 @@ enum NodeTags {
 
 // Name resolution progress, carried by a module and by a struct or trait only:
 // the two declarations name resolution reaches by demand rather than in walk
-// order. A type's members must be complete -- its trait's fields and defaults in
-// place -- before a type that extends or mixes it in copies them, so that type
+// order. A type's members must be complete -- its own fields and its base's
+// defaults in place -- before a type that is-a or mixes it in reads them, so that type
 // is resolved when it is first needed, and a module ahead of the modules that
 // import it. Set and tested by modNameRes and structNameRes, and read nowhere
 // else. 0x1000 and 0x2000 are free of every block above.

@@ -26,8 +26,9 @@ adopted here and the change has not yet been passed on by him.**
 ▸ **Why six rather than three.** The three cannot classify two of Cone's most
 distinctive mechanisms. **Name-folding is a *namespace* operation**, and
 delegated inheritance is name-folding applied to types, built as such — under
-the three it has nowhere to sit. **`extends` and `mixin` being one mechanism, a synthetic field at
-position 0, is a *composition* fact** and files under none of the three. The
+the three it has nowhere to sit. **A trait's fields being a requirement the
+implementer declares at position 0, rather than state it inherits, is a
+*composition* fact** and files under none of the three. The
 three were a coarsening that dropped exactly the categories Cone innovates in.
 
 Each strategy builds on the ones before it:
@@ -61,7 +62,7 @@ large**, which is why the interesting decisions are at the bottom of this table.
 | --- | --- | --- | --- | --- | --- | --- |
 | **control block** | statements in sequence, blocks nested | locals | single entry, single exit; locals released at exit | n/a by design — promote it to a function | n/a | n/a |
 | **function** | the block it holds, and the calls in it | parameters and locals | body invisible; the signature is the interface | function references | generics | overload sets ⚠ *unconfirmed reading* |
-| **type** | fields; `extends` and `mixin` flattened at compile time | members | members are private unless `pub` | traits and virtual references | generics; trait defaults cloned into implementers | ⚠ **unknown** — whether a type can gain methods outside its own declaration is not established |
+| **type** | fields; an enum's spliced into its variants at compile time | members | members are private unless `pub` | traits and virtual references, asserted with `is-a` or noticed structurally | generics; trait defaults cloned into implementers | ⚠ **unknown** — whether a type can gain methods outside its own declaration is not established |
 | **thread** | **absent** | **absent** | **absent** | **absent** | **absent** | **absent** |
 | **module** | **[planned]** — the folder walk makes a module span files; today a module *is* one file | yes — this is what a module is today | names are private unless `pub` | **absent** — module traits are planned | **absent** — generic modules are planned | **absent** |
 | **program / library** | linking; `extern` and the C ABI | ⚠ **absent — the linker has one flat symbol space**, and nothing in a generated name carries the package | partial — a program's definitions are internal to its object, but what a package exports is undecided | **absent** | **absent** | **absent** |
@@ -123,10 +124,12 @@ and the default is the smallest interface rather than the largest. There is no
 export list; the declarations are the list.
 
 **Composition is compile-time flattening, and it is the same operation at two
-layers.** `extends` and `mixin` are one mechanism — a synthetic mixin field at
-position 0 — so a trait's fields become a prefix of the implementer's layout and
-its default methods are cloned in. That prefix property is what makes a by-value
-coercion to a same-size base trait a pure recast.
+layers.** A trait's fields are a requirement rather than state it hands over: the
+implementer declares them itself, in the trait's order, at position 0, and takes
+the trait's default methods as clones. That prefix — which `is-a` verifies at the
+declaration — is what makes a by-value coercion to a same-size base a pure recast.
+The one place fields are still spliced is an enum into its variants, whose layout
+the compiler owns.
 
 The author's term for it is **delegated inheritance**, and the insight driving
 the symmetry goal is that it is *the same name-folding* a module `using` does:

@@ -451,7 +451,7 @@ Kept so that reopening one is a decision rather than a rediscovery.
 | Question | Answer |
 | --- | --- |
 | Does the name-resolution gate change? | No. One eager pass, global gate. |
-| Is name binding tracked as its own state? | For a module and a type only, by name resolution's own two marks, so that a type may be resolved ahead of the walk when another type extends it. Nothing else asks, and type check never reads them. |
+| Is name binding tracked as its own state? | For a module and a type only, by name resolution's own two marks, so that a type may be resolved ahead of the walk when another type names it as a base. Nothing else asks, and type check never reads them. |
 | What state does demand need? | None beyond the two marks, read rather than refused. |
 | Does anything need "complete" beyond "laid out"? | No consumer exists. A `SizeKnown` field on `ITypeNodeHdr` would separate "laid out" from "methods checked", but `TypeChecked` at the layout point already says the first and nothing asks for the second. Do not add one. |
 | Should a size question have five codes? | No. One code, cause in the message. |

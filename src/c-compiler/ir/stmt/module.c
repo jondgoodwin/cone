@@ -128,7 +128,7 @@ void modHook(ModuleNode *oldmod, ModuleNode *newmod) {
 
 // Name resolution of the module node. Modules are resolved in the order they
 // were loaded, the root first. A type in a module not yet reached may be
-// resolved earlier, by demand from a type that extends it (structNameResDemand);
+// resolved earlier, by demand from a type that is-a it (structNameResDemand);
 // that runs within this module's scope, and the marks say whether its folded
 // names are in its namespace yet or must be hooked for the occasion.
 void modNameRes(NameResState *pstate, ModuleNode *mod) {

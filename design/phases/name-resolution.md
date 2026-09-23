@@ -1,7 +1,7 @@
 Name resolution binds every name to its declaration and settles which
 parser-ambiguous nodes are types and which are values. It is one eager pass over
 the whole program, in source order, with one departure: a type reached by
-another type that extends or mixes it in is resolved when it is first needed.
+another type that is-a or mixes it in is resolved when it is first needed.
 
 This note is the **mechanism**: how the walk works, what it mutates, where it
 stops. [Names and Namespaces](../phases/names-and-namespaces.md) is the **rules** — what a
@@ -94,7 +94,7 @@ on a module or a struct. The collapse that walks them is `fnCallNameResPath` —
 | Kind | Owns a `Namespace` hash table? | Populated |
 | --- | --- | --- |
 | Module | yes, `ModuleNode.namespace` | at **parse** time by `modAddNamedNode`; extended by `importNameRes` folding |
-| Namespaced type | yes, `INsTypeNode.namespace` | at **parse** time; `structNameRes` adds `Self` and the fields and default methods of every trait the type extends or mixes in |
+| Namespaced type | yes, `INsTypeNode.namespace` | at **parse** time; `structNameRes` adds `Self`, the default methods of every abstraction the type is-a or mixes in, and, for a variant, its enum's fields |
 | Lexical block / parameter list | **no** | not a namespace at all — locals are hooked one at a time |
 
 That a module's and a type's names exist before the pass runs is what lets the
@@ -189,12 +189,13 @@ is the contract; there is never a second name resolution pass.
 - `return`/`break`/`continue` appear only as a block's last statement, modulo
   the `FlagLoopStep` allowance for `each`'s synthesized step.
 - Every local `VarDclNode` carries its `scope`.
-- Every `StructNode` namespace contains `Self`, the fields and default
-  methods of every trait it extends or mixes in, and the copies and aliases
+- Every `StructNode` namespace contains `Self`, the default methods of every
+  abstraction it is-a or mixes in, an enum's fields where this is a variant, and
+  the copies and aliases
   every fold clause admits, wherever the trait or the field's type was a
-  declaration when the type was resolved — the members of an instance of a
-  generic trait, and the names folded from a field of a generic's parameter
-  type, join at type check.
+  declaration when the type was resolved — what an instance of a
+  generic trait contributes, and the names folded from a field of a generic's
+  parameter type, join at type check.
 - Every `StructNode` and `ModuleNode` carries `NameResolved`, the phase's own
   mark; `NameResolving` is never left set.
 - Wildcard import folding is done, so module namespaces are complete.

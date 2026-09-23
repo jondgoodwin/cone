@@ -4,19 +4,23 @@
 // Two ways of satisfying a trait are exercised side by side, because they take
 // different paths through the compiler. A type may conform structurally, by
 // simply declaring what the trait requires and never naming it; or nominally,
-// with 'extends', which mixes the trait's fields into the type and inherits any
-// method the trait gave a body to. Both give '&<Trait', the fat pointer that
-// carries a vtable, and both can give '&Trait', the plain reference that reads
-// the trait's own fields out of the implementer's layout -- 'extends' by
-// construction, and a structural conformer when its own fields happen to begin
-// with the trait's, which is all a plain reference needs.
+// with 'is-a', which asserts the relationship in the type's own declaration and
+// inherits any method the trait gave a body to. A trait contributes no fields
+// either way: it states what the type must declare for itself, in the trait's
+// order, at position 0. So the difference is not what the layout is -- both
+// declare the same fields -- but where the conformance is established. 'is-a'
+// verifies it at the declaration; structural conformance is noticed later, at the
+// coercion. Both give '&<Trait', the fat pointer that carries a vtable, and both
+// give '&Trait', the plain reference that reads the trait's own fields out of the
+// implementer's layout, which works for either as soon as the implementer's
+// fields begin with the trait's.
 //
 // Everything is printed, because a virtual call that compiles is not a virtual
 // call that reached the right implementation.
 //
 // Narrowing a virtual reference back to a concrete type is in trait-narrow
-// rather than here: it only works for a type that 'extends', and this file's
-// point is that structural conformance is enough for dispatch.
+// rather than here: it only works for a type that declares 'is-a', and this
+// file's point is that structural conformance is enough for dispatch.
 
 import stdio.*;
 
@@ -176,7 +180,7 @@ fn parameterized() {
   show("ref-parm-requirement-other-impl", viaRefOf(&churn));
 }
 
-// -------- nominal conformance with 'extends' --------
+// -------- nominal conformance with 'is-a' --------
 
 // A trait may require fields as well as methods, and may give a method a body,
 // which becomes the default for any type that does not declare its own.
@@ -193,10 +197,11 @@ trait Meter {
   fn scale() i32 {7;}
 }
 
-// Gauge takes the default 'reading' and must supply 'step'. 'level' is mixed
-// in by 'extends' rather than declared here, so the constructor's first
-// positional value fills it.
-struct Gauge extends Meter {
+// Gauge takes the default 'reading' and must supply 'step'. 'level' is declared
+// here, first, because that is what Meter requires of any type asserting is-a
+// against it; the constructor's first positional value fills it.
+struct Gauge is-a Meter {
+  pub level i32;
   pub span i32;
 
   fn step(self &mut) {self.level = self.level + 1;}
@@ -207,9 +212,11 @@ struct Gauge extends Meter {
   pub fn viaBareInherited(self &) i32 {level + reading();}
 }
 
-// A trait with enough fields that mixing them in outgrows the field list the
-// implementer started with. The list grows where the trait's fields are
-// spliced in, which is the one place it grows by more than one at a time.
+// A long field requirement, checked position by position: every one of the
+// trait's fields has to be declared here, under its own name and type, in the
+// trait's order, before the implementer's own field. Eight of them is enough that
+// a check comparing only the first, or comparing by name and not by position,
+// would pass something this rejects.
 trait Bulk {
   pub b1 i32;
   pub b2 i32;
@@ -221,21 +228,31 @@ trait Bulk {
   pub b8 i32;
 }
 
-struct Crate extends Bulk {
+struct Crate is-a Bulk {
+  pub b1 i32;
+  pub b2 i32;
+  pub b3 i32;
+  pub b4 i32;
+  pub b5 i32;
+  pub b6 i32;
+  pub b7 i32;
+  pub b8 i32;
   pub own i32;
 
   pub fn total(self &) i32 {b1 + b2 + b3 + b4 + b5 + b6 + b7 + b8 + own;}
 }
 
 // Dial declares its own 'reading', which replaces the default in its vtable.
-struct Dial extends Meter {
+struct Dial is-a Meter {
+  pub level i32;
+
   fn reading(self &) i32 {self.level * 100;}
   fn step(self &mut) {self.level = self.level + 10;}
 }
 
 // A plain reference to a base trait. This is not a virtual reference: it points
-// at the mixed-in prefix of the concrete value, so it reads the trait's fields
-// directly. Meter is an open trait and so carries no tag, which is why a method
+// at the prefix of the concrete value the trait's fields required, so it reads
+// them directly. Meter is an open trait and so carries no tag, which is why a method
 // call through this reference is refused rather than dispatched --
 // trait-typecheck-dispatch pins that, and trait-variants pins the closed case,
 // where the tag does select the variant's method.
@@ -310,38 +327,44 @@ fn nominal() {
 
 // -------- composing more than one trait --------
 
-// 'extends' and 'mixin' are one mechanism, and neither is limited to one hop or
-// one trait: a trait may extend a trait, and a struct may mix in several. Both
-// shapes were refused until 21 Sept 2026, because every trait was given a
-// discriminant tag field and a type ended up with more than one of them.
-// reftraitvar.html says an open trait has no tag, so there is nothing for a
-// second trait to duplicate.
+// Nominal conformance is limited neither to one hop nor to one trait: a trait may
+// itself be-a trait, a struct may name several after the first, and it may mix in
+// as many as it likes. A chain and two mixins in one struct were both refused
+// until 21 Sept 2026, because every trait was given a discriminant tag field and a
+// type ended up with more than one of them. reftraitvar.html says an open trait has
+// no tag, so there is nothing for a second trait to duplicate.
 
-// The bottom of a two-hop chain. It declares a field, so the layout the hops
-// build has something in it to find.
+// The bottom of a two-hop chain. It declares a field, so the layout each hop
+// requires has something in it to find.
 trait Sensor {
   pub id i32;
 
   pub fn reading(self &) i32;
 }
 
-// The middle hop. It adds a requirement of its own and a default, so what
-// reaches an implementer comes from two different traits.
-trait Logger extends Sensor {
+// The middle hop. It complies with Sensor's field requirement the way any type
+// does, by declaring the field, which is also what lets its own default method
+// name it; and it adds a requirement of its own and a default, so what reaches an
+// implementer comes from two different traits.
+trait Logger is-a Sensor {
+  pub id i32;
+
   pub fn logged(self &) i32 {id * 3;}
   pub fn tag(self &) i32;
 }
 
 // Probe takes Logger's default; Relay replaces it. Both must supply the
-// requirement Sensor declared two hops down.
-struct Probe extends Logger {
+// requirement Sensor declared two hops down, and declare the field.
+struct Probe is-a Logger {
+  pub id i32;
   pub depth i32;
 
   fn reading(self &) i32 {depth;}
   fn tag(self &) i32 {1;}
 }
 
-struct Relay extends Logger {
+struct Relay is-a Logger {
+  pub id i32;
   pub gain i32;
 
   fn reading(self &) i32 {gain * 2;}
@@ -364,6 +387,13 @@ fn loggedBy(l &<Logger) i32 {
 // hops, not just the last one.
 fn sensorId(s &Sensor) i32 {
   s.id;
+}
+
+// A plain reference to the middle hop reads the same field. Logger declares 'id'
+// to comply with Sensor, which is what makes Logger's own layout a prefix of every
+// implementer's in turn -- cases.toml pins it as '%Logger = type { i32 }'.
+fn loggerId(l &Logger) i32 {
+  l.id;
 }
 
 // Narrowing back to the concrete type from the bottom of the chain, which is
@@ -396,6 +426,27 @@ struct Tally {
   pub fn count(self &) i32 {n + 1;}
 }
 
+// A marker trait: no fields and no methods. Nothing structural can ever notice
+// one, because there is nothing in it to notice -- every type would match it and
+// so the match would say nothing. Only a declaration can say a type carries it,
+// which is the case nominal conformance exists for and the one it alone serves.
+trait Sealed {}
+trait Audited {}
+
+// More than one abstraction named, after the first. Only the first may require
+// fields; markers require none, so Ledger's layout is its own -- cases.toml pins
+// that as '%Ledger = type { i32 }'. The order of the list is the order the traits
+// are named in, and nothing but the first touches the layout.
+struct Ledger is-a Named, Sealed, Audited {
+  pub total i32;
+
+  pub fn label(self &) i32 {total * 2;}
+}
+
+fn labelOf(n &<Named) i32 {
+  n.label();
+}
+
 fn composed() {
   imm probe = Probe[7, 4];
   imm relay = Relay[8, 5];
@@ -406,12 +457,17 @@ fn composed() {
   show("two-hop-vref-to-middle-trait-override", loggedBy(&relay));
   show("two-hop-plain-ref-reads-inherited-field", sensorId(&probe));
   show("two-hop-plain-ref-other-type", sensorId(&relay));
+  show("two-hop-plain-ref-to-middle-trait", loggerId(&probe));
   show("two-hop-narrow-first-arm", whichSensor(&probe));
   show("two-hop-narrow-second-arm", whichSensor(&relay));
 
   imm tally = Tally[9];
   show("two-mixins-first-trait", (&tally).label());
   show("two-mixins-second-trait", (&tally).count());
+
+  imm ledger = Ledger[11];
+  show("marker-traits-after-the-first", labelOf(&ledger));
+  show("marker-traits-cost-no-storage", ledger.total);
 }
 
 // -------- a virtual reference as data --------

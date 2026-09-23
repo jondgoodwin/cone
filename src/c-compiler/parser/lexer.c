@@ -509,6 +509,13 @@ void lexScanNumber(char *srcp) {
     lex->srcp = srcp;
 }
 
+// Does this byte continue an identifier that has already begun?
+static int lexIsIdentCont(char *srcp) {
+    char ch = *srcp;
+    return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
+        || ch == '_' || utf8IsLetter(srcp);
+}
+
 /** Tokenize an identifier or reserved token */
 void lexScanIdent(char *srcp) {
     char *srcbeg = srcp;    // Pointer to the start of the token
@@ -560,6 +567,17 @@ void lexScanIdent(char *srcp) {
                         lex->val.ident->node = NULL;
                         lex->toktype = IdentToken;
                         return;
+                    }
+                    // 'is-a' is the language's one hyphenated keyword. A hyphen
+                    // does not continue an identifier, so the scan above stops
+                    // at 'is' and the rest of the word is taken here, only when
+                    // exactly '-a' follows and the word ends there. Nothing else
+                    // can be meant: a type expression never begins with '-', so
+                    // 'is' followed by a negation does not arise.
+                    if (lex->toktype == IsToken && *srcp == '-' && *(srcp+1) == 'a'
+                        && !lexIsIdentCont(srcp+2)) {
+                        srcp += 2;
+                        lex->toktype = IsaToken;
                     }
                 }
                 else if (identNode && identNode->tag == PermTag)
