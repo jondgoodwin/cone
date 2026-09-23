@@ -315,6 +315,36 @@ void nametblHookNamespace(Namespace *ns) {
     }
 }
 
+// Hide, in the current hooktable, every name the hooktables beneath it hooked:
+// each is given back the node it had before the first of them hooked it, so
+// that none of what those tables hold is in reach until this table is popped.
+// Each name is hooked once, however many tables beneath hooked it, because
+// nametblHookPop restores a table's entries in the order they were made. The
+// first walk saves each name's current node, marking it so a name met again is
+// not saved twice; the second writes back the oldest saved node, which, since
+// both walk newest first, is the last one written.
+void nametblHookHideBelow() {
+    static char hidden;
+    INode *mark = (INode*)&hidden;
+    int pos;
+    uint32_t cnt;
+    for (pos = gHookTablePos - 1; pos >= 0; --pos) {
+        HookTable *table = &gHookTables[pos];
+        for (cnt = table->size; cnt--; ) {
+            HookTableEntry *entry = &table->hooktbl[cnt];
+            if (entry->name->node != mark)
+                nametblHookNode(entry->name, mark);
+        }
+    }
+    for (pos = gHookTablePos - 1; pos >= 0; --pos) {
+        HookTable *table = &gHookTables[pos];
+        for (cnt = table->size; cnt--; ) {
+            HookTableEntry *entry = &table->hooktbl[cnt];
+            entry->name->node = entry->node;
+        }
+    }
+}
+
 // Unhook all names in current hooktable, then revert to the prior hooktable
 void nametblHookPop() {
     HookTable *tablemeta = &gHookTables[gHookTablePos];

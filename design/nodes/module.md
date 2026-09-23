@@ -485,6 +485,16 @@ each import it folds the source module's own names first, recursively — so a m
 anything folds from it, which is what makes a re-export transit. Where the
 imports form no cycle, one pass over the module list is the whole of it.
 
+**A module's folds resolve in that module's names alone**, whichever module's
+pass reached them. Dependency-first means one module's folds often run from
+inside another's — a parent's `use` of its child, an import of a sister — and
+`modHook` hooks the inner module's namespace *in place of* what is hooked, not
+over it ([Name Resolution](../phases/name-resolution.md), "Hooking"), so a
+`use Dir;`, a global's fold type and its value, and a type demanded from another
+module see nothing of the module that got there first. That is "nothing arrives
+unasked" holding inside the fold pass as it does in a body; `module-fold-scope-nameres`
+pins it from a child and from a sister.
+
 **Round a cycle of imports, the folds run again until they settle** [Jon 23
 Sep]. Where A and B import each other, one of them reads the other while the
 other's folds are running (`folding`), and a name the other re-exports is not

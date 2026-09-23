@@ -38,7 +38,7 @@ body into an unrelated declaration would leave that function's locals still
 plugged in, so a matching name in the declaration jumped to would bind to one
 of them. A type reached from a type has only module names and the demanding
 type's generic parameters plugged in, and the target's own scope is hooked over
-them. Demand from anywhere else would mean saving and restoring the whole hook
+them, or in place of them where it is another module's. Demand from anywhere else would mean saving and restoring the whole hook
 stack at every jump. The mechanism is [Name Resolution](name-resolution.md)
 section 3.
 

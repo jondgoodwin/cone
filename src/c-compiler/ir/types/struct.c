@@ -292,7 +292,8 @@ static StructNode *structNameResTrait(INode *typeexp) {
 // Demand is confined to type declarations reached from type declarations, so
 // what is hooked at the jump is known: module names, and the demanding type's
 // generic parameters. A type declared in another module resolves in that
-// module's own scope, with its namespace hooked over the current one -- and that
+// module's own scope, with its namespace hooked in place of the current one
+// (modHook), so nothing of the demanding module is in reach -- and that
 // namespace already holds everything the module folded in, because every
 // module's folds run before any module's own resolution does.
 int structNameResDemand(NameResState *pstate, StructNode *type) {
@@ -926,7 +927,7 @@ uint32_t structEnumCopyCount(StructNode *node) {
 //
 // The need may arise in the middle of a function body, so the enum is resolved
 // with nothing of the body in force: no block scope, no enclosing type, and its
-// own module's names hooked over whatever the body declared. Returns 0 when the
+// own module's names hooked in place of whatever the body declared. Returns 0 when the
 // enum is already being resolved, which means the two depend on each other.
 int structEnumDemandSet(NameResState *pstate, StructNode *node) {
     if (!(node->flags & EnumType) || node->extendsbase == NULL || (node->flags & NameResolved))

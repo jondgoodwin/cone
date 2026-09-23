@@ -251,11 +251,26 @@ void modPrint(ModuleNode *mod) {
 }
 
 // Unhook old module's names, hook new module's names
-// (works equally well from parent to child or child to parent
+// (works equally well from parent to child or child to parent).
+//
+// The new module's names REPLACE whatever is hooked, rather than layering over
+// it: a module's namespace holds what it declares, what its own folds and
+// imports brought in, and its children, and nothing reaches it from the scope
+// it was entered from. That matters wherever a module is entered while another's
+// names are hooked -- a fold pass run dependency-first from inside another
+// module's (modFoldNames), a type resolved by demand from another module's
+// (structNameResDemand) -- where layering would let the outer module's names
+// answer a lookup the inner module's own namespace cannot. So a module takes two
+// hooktables: one hiding everything hooked beneath it, and one over that holding
+// the module's own names, which is the one a fold's binding joins (modFoldBind).
 void modHook(ModuleNode *oldmod, ModuleNode *newmod) {
-    if (oldmod)
+    if (oldmod) {
         nametblHookPop();
+        nametblHookPop();
+    }
     if (newmod) {
+        nametblHookPush();
+        nametblHookHideBelow();
         nametblHookPush();
         nametblHookNamespace(&newmod->namespace);
     }

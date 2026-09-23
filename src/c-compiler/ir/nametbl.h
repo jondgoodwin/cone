@@ -46,6 +46,8 @@ void nametblHookGrow();
 void nametblHookNode(Name *name, INode *node);
 // Hook all of a namespace's names and nodes in the current hooktable
 void nametblHookNamespace(Namespace *ns);
+// Hide, in the current hooktable, every name the hooktables beneath it hooked
+void nametblHookHideBelow();
 void nametblHookPop();
 
 #endif

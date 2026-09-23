@@ -28,7 +28,8 @@ with the author is the claim that these rule rather than describe.**
    a node out of walk order, since the slot's contents are only correct inside
    the right scope. The one departure is a type declaration reached from
    another type declaration (section 3), where what is plugged in at the jump
-   is known and the target's scope is hooked over it.
+   is known and the target's scope is hooked over it, or in place of it where
+   the target is another module's.
 3. **It binds and retags in place; it does not rewrite.** A name use is bound —
    `dclnode` is set and the node keeps its tag, since what it is can be asked of
    the declaration — and the parser-ambiguous shapes are retagged. Either way the
@@ -55,12 +56,13 @@ with the author is the claim that these rule rather than describe.**
 | `nametblHookPush` | push a `HookTable` — a LIFO stack of `{Name*, previous INode*}` |
 | `nametblHookNode` | save `name->node`, then overwrite it |
 | `nametblHookNamespace` | hook every occupied slot of a `Namespace` |
-| `nametblHookPop` | restore every saved pair in reverse, drop the table |
+| `nametblHookHideBelow` | hook every name the tables beneath hooked back to what it had before any of them, once per name |
+| `nametblHookPop` | restore every saved pair in the order saved, drop the table |
 
 Push and pop sites: `modFoldNames` and `modNameRes` (via `modHook`, the whole module namespace),
 `structNameRes` (generic parms, then the whole type namespace, then each
 inherited member as it lands), `structNameResDemand` (another module's
-namespace, via `modHook`, over whatever is current), `fnDclNameRes`
+namespace, via `modHook`), `fnDclNameRes`
 (generic parms, then value parms), `macroNameRes` (parms), `blockNameRes`
 (locals, accumulated one at a time as they are reached), and
 `clonePushState`/`clonePopState` — **which run during type check**, for generic
@@ -82,6 +84,19 @@ has to account for all five, not just the lookup.
 block locals → outer block locals → function value parms → generic parms →
 type members including `Self` → module names, own and folded → the permanently
 bound corelib names.
+
+**A module's names replace what is hooked; they do not layer over it.** `modHook`
+pushes two tables: one that hides every name the tables beneath it hooked
+(`nametblHookHideBelow`), and over it the module's namespace, which is the table
+a fold's binding joins (`modFoldBind`). So wherever a module is entered while
+something else is hooked — a module's folds run dependency-first from inside
+another's (`modFoldNames`), a type resolved by demand from another module
+(`structNameResDemand`), an extending enum demanded from a function body
+(`structEnumDemandSet`) — only that module's own names and the permanently bound
+ones are in reach. Layering would let the outer scope's names answer whatever
+the inner module's namespace does not hold: a sister's `use Dir;` would find the
+`Dir` of the sister whose import reached it, and a child's its parent's.
+`module-fold-scope-nameres` pins each.
 
 **A path starts in the hook table like anything else.** `a.b.name` looks `a` up
 as the bare name it is, so a local of that spelling shadows a module of it.
@@ -116,8 +131,9 @@ it, in its own module's scope when it lives elsewhere.
 Two marks on the type make that safe, `NameResolving` and `NameResolved`, and a
 trait found still under way is a cycle, `ErrorCircular`. The demand is confined
 to a type reached from a type, so what is hooked at the jump is always module
-names and the demanding type's generic parameters, and the target's module
-namespace is hooked over them — a namespace that already holds everything that
+names and the demanding type's generic parameters. Where the target lives in
+another module, that module's namespace is hooked in place of them (`modHook`,
+section 2) — a namespace that already holds everything that
 module folded in, since every module's folds run before any module's body. The
 demand asks for `modFoldNames` on that module first, which does something only
 where the fold pass itself is what reached the type — and where that module's
@@ -131,7 +147,7 @@ variants while it is resolved, cloning each one resolved as a generic template i
 cloned, so the copies exist only from then on. A module's `use RichColors;` in the
 fold pass and a path `RichColors.Red` in a function body both need them, so both
 demand the enum (`structEnumDemandSet`). From a body, that demand clears the body's
-block scope and hooks the enum's own module namespace over the body's locals, so the
+block scope and hooks the enum's own module namespace in place of the body's locals, so the
 enum resolves as if the walk had reached it. The copies are no module's nodes and
 are never walked. A generic base is written with its arguments, and its copies are
 its variant templates with the arguments substituted for its parameters, made here
