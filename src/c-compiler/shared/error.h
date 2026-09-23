@@ -185,7 +185,7 @@ enum ErrorCode {
 
     // 'trait' as a modifier on the kind
     ErrorDupTrait = 1099,       // 'trait' written twice: by itself it already means 'struct trait'
-    ErrorUnbuiltKind = 1100,    // A kind of declaration the grammar admits and the compiler does not build: 'actor', a nested 'mod', 'mod trait'
+    ErrorUnbuiltKind = 1100,    // A kind of declaration the grammar admits and the compiler does not build: 'actor', 'mod trait'. Also the retired in-file 'mod name { }' block, recognised only to refuse it
 
     // 'extends': enriching a concrete type with methods
     ErrorExtendsBase = 1101,    // What an 'extends' names cannot serve as a concrete base

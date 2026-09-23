@@ -564,10 +564,11 @@ void parseSkipDclBody() {
 // there and still the base's declaration, while the base's imports stay its own
 // dependencies (modExtendsResolve, modFoldNames). One base, named by one name.
 //
-// Two shapes the grammar admits are refused because nothing is behind them: a
-// nested 'mod name { ... }' block, which needs a namespace of its own and paths
-// through it, and 'mod trait', a module's abstraction. Reporting each where it
-// is written is what settles its spelling without accepting it.
+// 'mod trait', a module's abstraction, is admitted and refused because nothing
+// is behind it yet: reporting it where it is written is what settles its
+// spelling without accepting it. A 'mod name { ... }' block is recognised only
+// to refuse it, since it does not exist: a module is never declared inside a
+// file, and a nested module is a subfolder with its own designated file.
 //
 // 'atmodstart' is whether this is the first statement of the module's designated
 // file. The declaration claims the module, so nothing may precede it, a second
@@ -650,11 +651,11 @@ void parseModuleDcl(ModuleNode *mod, int atmodstart, uint16_t pubflag) {
             errorMsgLex(ErrorNoName, "Expected the name of the module this one extends");
     }
 
-    // A nested module. Its namespace, the hook push and pop its parse needs, and
-    // the paths reaching through it are all unbuilt
+    // An in-file module block. Nesting is by folders only, so there is no such
+    // construct; its body is skipped so that nothing in it is reported again
     if (lexIsToken(LCurlyToken) || lexIsToken(ColonToken)) {
         errorMsgLex(ErrorUnbuiltKind,
-            "A nested 'mod' block is not built yet. 'mod name;' names the module of the whole file.");
+            "A module cannot be declared inside a file: a nested module is a subfolder with its own designated file.");
         parseSkipDclBody();
         return;
     }

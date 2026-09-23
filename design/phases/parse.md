@@ -122,8 +122,10 @@ the global dispatch. `mod` builds a declaration — it declares the module a
 folder's files belong to, [module](../nodes/module.md), "The `mod` declaration".
 `actor`
 does not, and its arm reports `ErrorUnbuiltKind` where the declaration is written
-and names the abstraction's spelling, `actor trait`; the two shapes of `mod` that
-are unbuilt, a nested block and `mod trait`, report the same code the same way.
+and names the abstraction's spelling, `actor trait`; `mod trait`, the shape of
+`mod` that is unbuilt, reports the same code the same way. An in-file
+`mod name { ... }` block is refused under that code too, though it is no unbuilt
+shape: it does not exist, since a nested module is a subfolder.
 Admitting a shape is what settles its spelling now instead of leaving it to be
 designed when the semantics land, and reporting it is what keeps a declaration
 from being accepted with nothing under it. The cost is the standing one in the
@@ -358,7 +360,7 @@ never be analyzed.
 | --- | --- |
 | a spelling the lexer refuses | a reserved word, `?.`, or a `@` or `#` word that names nothing is reported in the lexer and handed on as what it stands for or not at all (section 2), so the parser never sees it |
 | `parseSkipToNextStmt` | the main resync; consumes through the next `;`, or stops short of a `}` or EOF for the enclosing block to handle |
-| an unbuilt form's body | `parseSkipDclBody` skips a following `{ … }` whole, counting depth, so nothing inside is read as a global statement and reported again, and resyncs at the next `;` where there is no block. `actor`, a nested `mod` block and `mod trait` all use it, so each is reported once, where it is written |
+| an unbuilt form's body | `parseSkipDclBody` skips a following `{ … }` whole, counting depth, so nothing inside is read as a global statement and reported again, and resyncs at the next `;` where there is no block. `actor`, `mod trait` and the refused in-file `mod name { … }` block all use it, so each is reported once, where it is written |
 | the retired `include` | `parseRetiredInclude` reports `ErrorInclude` at the word, then reads what the statement took — names or quoted paths, comma-separated — and its `;`, so a statement naming one file, a path or a list is one diagnostic and a `pub` before it adds none. A missing `;` ends the statement at its last name rather than swallowing the next declaration; only where no name follows does it resync with `parseSkipToNextStmt` |
 | `parseCloseTok` | reports `ErrorNoRParen`, scans for the closer, gives up at `;`, `}`, EOF |
 | `parseBlockStart` | on `:`, reports `ErrorColonBlock` and reads what follows as the block; on anything else that is not `{`, reports `ErrorNoLCurly` and scans forward for one |
@@ -394,7 +396,7 @@ numbers.
 | | `lexNewLine`, `lexBlockComment` | line counting for diagnostics, inside comments included |
 | `parser/parsemod.c` | `parsePgm` | **entry point** — tables, program, main module, corelib, main file |
 | | `parseGlobalStmts` | the global statement dispatch loop; `trait` by itself enters `parseStruct` with `TraitType` already set, and `actor` is the unbuilt kind refused here. It is told whether it is reading the start of a module's own source, which is what decides where a `mod` declaration may stand |
-| | `parseModuleDcl` | `mod name;`, the declaration a module's designated file makes: the placement rule, the check against the folder's name, the rename a one-file module still gets, the module's own name bound into its namespace, what `pub` does for a submodule and why it is refused on any other module, the `extends` it records for name resolution to resolve, and the refusal of the nested block and `mod trait` |
+| | `parseModuleDcl` | `mod name;`, the declaration a module's designated file makes: the placement rule, the check against the folder's name, the rename a one-file module still gets, the module's own name bound into its namespace, what `pub` does for a submodule and why it is refused on any other module, the `extends` it records for name resolution to resolve, and the refusal of the in-file block, which does not exist, and of `mod trait` |
 | | `parseSkipDclBody` | skip an unbuilt form's `{ … }` whole, or resync at the next `;` |
 | | `parseLoadAndParseModuleFile` | per-module unit: locate, register by path, naming, the folder sweep, corelib import, `modHook`, and a parse per file |
 | | `parseDesignatedFolder`, `parseCollectFolder`, `parseModuleFiles` | the folder sweep: whether the file is its folder's designated file, which files the folder brings in, which subfolders draw submodules, and the designated file too deep to draw one |

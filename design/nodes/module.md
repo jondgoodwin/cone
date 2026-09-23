@@ -380,11 +380,12 @@ nothing at all `ErrorNoName` — and each refusal passes over what it refused, s
 the declaration still names the module. What `extends` does is in "Name
 resolution" below.
 
-**Two shapes are admitted and unbuilt, each reported where it is written and its
-body skipped whole** (`ErrorUnbuiltKind`): a nested `mod name { ... }` block,
-which needs a namespace of its own, hook push and pop around its parse, and paths
-reaching through it; and `mod trait`, a module's abstraction, whose spelling is
-settled by `trait` being a modifier on the kind.
+**`mod trait`, a module's abstraction, is admitted and unbuilt**, reported where
+it is written and its body skipped whole (`ErrorUnbuiltKind`); its spelling is
+settled by `trait` being a modifier on the kind. **A `mod name { ... }` block does
+not exist**: a module is never declared inside a file, and nesting is by folders
+only, a nested module being a subfolder with its own designated file. The parser
+recognises the block only to say so, under the same code, and skips its body.
 
 **A `mod` declaration in the root file names the module and does not change a
 single symbol.** The root still has no `DclNamesChain`, so its declarations stay
@@ -1012,8 +1013,8 @@ which an import between two loaded modules cannot do. **And UP**: it imports any
 public name of its parent the same way, a type, a function or a global bound as
 an alias [Jon 23 Sep]. The registry is the
 immediate parent's namespace and no ancestor's, which is the scoped reading,
-adopted provisionally. There is no nesting within a *file* — a `mod name { ... }`
-block is `ErrorUnbuiltKind` — no package, no manifest and no interface artifact;
+adopted provisionally. There is no nesting within a *file*, and none is planned —
+a `mod name { ... }` block is refused, `ErrorUnbuiltKind` — no package, no manifest and no interface artifact;
 `mod trait` holds the spelling of a module's abstraction against the day there is
 something behind it; `import` takes a file path where the registry has no answer, and
 folds with a `use` clause — selecting, renaming and excluding as a global's
