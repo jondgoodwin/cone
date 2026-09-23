@@ -191,7 +191,10 @@ a sister found in the registry the enclosing module is, or a module loaded from 
 path — and a `use` clause folds its public names into the importer, selected,
 renamed or excluded as a global's clause does; `.*` is `use *`. Every binding it
 makes carries a visibility of its own, so what a third module sees through this
-one is what this one wrote `pub import` or `pub use` for. A module's own files
+one is what this one wrote `pub import` or `pub use` for. A submodule is never
+imported, so its parent folds its names with a standalone `use` naming it, which
+takes the same clause; a standalone `use` never names an imported module, whose
+own import folds it [Jon 23 Sep]. A module's own files
 are its folder's, and nothing in any file brings another in — so a tool handed
 one file knows its module from the path alone, and a file's private names are
 private to the module whose folder holds it. `include`, which injected a file's

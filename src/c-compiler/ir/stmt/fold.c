@@ -218,25 +218,39 @@ void foldGlobalExpand(NameResState *pstate, ModuleNode *mod, VarDclNode *global)
         foldGlobalItem(mod, global, src, (AliasDclNode*)*itemp);
 }
 
-// ---- A module's 'use' of an enum -------------------------------------------
+// ---- A module's standalone 'use' -------------------------------------------
 //
-// An enum's variants are names of the ENUM, so 'Colors.Red' is the spelling
-// everywhere, the declaring module included. 'use Colors;' is how a module asks
-// for them bare: each variant it admits becomes an alias in the module's
-// namespace, reached with no receiver -- the binding an import's fold makes --
+// 'use' standing as a statement names a namespace this module reaches WITHOUT
+// an import, and folds its names in as names of the module [Jon 23 Sep]. Two
+// kinds of namespace are reached that way:
+//
+// - An ENUM. Its variants are names of the enum, so 'Colors.Red' is the
+//   spelling everywhere, the declaring module included, and 'use Colors;' is how
+//   a module asks for them bare: each variant it admits becomes an alias in the
+//   module's namespace, reached with no receiver -- the binding an import's fold
+//   makes.
+// - A SUBMODULE of this module, by its name or by a path through submodules:
+//   'use scaling;', 'use geometry.scaling;'. Its public names fold exactly as an
+//   import's clause folds a module's -- the same items, the same visibility rule,
+//   the same passes -- because it IS that fold: an ImportNode marked 'isuse' over
+//   the submodule, sharing the statement's clause (foldModUseModule).
+//
+// A module brought in by an import is not folded here: its import carries a
+// clause of its own for that, and one situation has one spelling. Either fold is
 // private to the module unless the statement says 'pub use'.
 
-// Create a module's 'use' of an enum, positioned at its 'use'
-EnumUseNode *newEnumUseNode() {
-    EnumUseNode *node;
-    newNode(node, EnumUseNode, EnumUseTag);
+// Create a module's standalone 'use', positioned at its 'use'
+ModUseNode *newModUseNode() {
+    ModUseNode *node;
+    newNode(node, ModUseNode, ModUseTag);
     node->source = NULL;
     node->fold = newFoldClause();
+    node->modfold = NULL;
     return node;
 }
 
-// Serialize a module's 'use' of an enum
-void enumUsePrint(EnumUseNode *node) {
+// Serialize a module's standalone 'use'
+void modUsePrint(ModUseNode *node) {
     inodeFprint(node->fold->ispub ? "pub use " : "use ");
     inodePrintNode(node->source);
 }
@@ -248,7 +262,7 @@ static int foldIsVariant(StructNode *src, INode *member) {
 }
 
 // Enter one variant in the module's namespace, under its alias's spelling
-static void foldEnumUseBind(ModuleNode *mod, EnumUseNode *use, AliasDclNode *alias, INode *variant) {
+static void foldEnumUseBind(ModuleNode *mod, ModUseNode *use, AliasDclNode *alias, INode *variant) {
     FoldClause *fold = use->fold;
     ((NameUseNode*)alias->target)->dclnode = variant;
     // Reached with no receiver, and as visible as the statement says: a fold is
@@ -286,10 +300,116 @@ static INode *foldEnumUseVariant(StructNode *src, INode *at, Name *name, char *w
     return found;
 }
 
-// Expand a module's 'use' of an enum: resolve the enum it names, then bind each
-// variant it admits in the module's namespace.
-void foldEnumUseExpand(NameResState *pstate, ModuleNode *mod, EnumUseNode *use) {
+// Collect the names a source is written with, before name resolution collapses
+// a path into its last name. A path's names are the same nodes afterwards, each
+// bound to what its step found, so this is what can still say which binding
+// every step went through
+static void foldModUseNames(INode *source, Nodes **names) {
+    while (source && source->tag == FnCallTag) {
+        FnCallNode *path = (FnCallNode*)source;
+        if (path->methfld == NULL || !isNameUseNode(path->methfld) || path->args != NULL)
+            return;
+        nodesAdd(names, path->methfld);
+        source = path->objfn;
+    }
+    if (source && isNameUseNode(source))
+        nodesAdd(names, source);
+}
+
+// The step of a written source that an import reached -- the last such step,
+// where there are several -- or NULL. A
+// submodule is bound in its parent as the module itself; the name an import binds
+// to its module is an alias, and so is every name a fold brought in, so a step
+// bound to an alias is a step through an import
+static NameUseNode *foldModUseImported(Nodes *names) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(names, cnt, nodesp)) {
+        INode *binding = ((NameUseNode*)*nodesp)->dclnode;
+        if (binding && binding->tag == AliasDclTag && !(binding->flags & FlagTypeAlias))
+            return (NameUseNode*)*nodesp;
+    }
+    return NULL;
+}
+
+// Is 'inner' a submodule of 'mod', at any depth?
+static int foldModWithin(ModuleNode *inner, ModuleNode *mod) {
+    for (ModuleNode *up = (ModuleNode*)inner->dclinfo.owner; up; up = (ModuleNode*)up->dclinfo.owner) {
+        if (up == mod)
+            return 1;
+    }
+    return 0;
+}
+
+// Expand a standalone 'use' whose source is a module: refuse what is not reached
+// without an import, then fold its public names in as an import's clause would.
+//
+// Only a submodule of this module is reached that way. A module an import
+// reached -- named by the import's binding, or by a path through it -- is folded
+// by the import's own clause, and the diagnostic says so (ErrorUseImported). Any
+// other module is out of reach: this module itself, a module containing it, or
+// one beside it, which only the fold passes' layered name table could have let
+// the name reach (ErrorModReach).
+//
+// A submodule is folded once per module, as a module is imported once: a second
+// 'use' of it is refused, naming the first.
+static void foldModUseModule(NameResState *pstate, ModuleNode *mod, ModUseNode *use, Nodes *names, ModuleNode *src) {
+    if (!foldModWithin(src, mod)) {
+        NameUseNode *via = foldModUseImported(names);
+        if (via != NULL && via == (NameUseNode*)use->source)
+            errorMsgNode(use->source, ErrorUseImported,
+                "%s is imported into this module, and an imported module's names are folded by its import's own clause: write 'import %s use ...'. A standalone 'use' folds what this module reaches without an import: an enum, or a submodule of its own.",
+                &via->namesym->namestr, &via->namesym->namestr);
+        else if (via != NULL)
+            errorMsgNode(use->source, ErrorUseImported,
+                "%s is reached through %s, which is imported into this module. A standalone 'use' folds what this module reaches without an import: an enum, or a submodule of its own.",
+                &src->namesym->namestr, &via->namesym->namestr);
+        else if (src == mod)
+            errorMsgNode(use->source, ErrorModReach,
+                "%s is this module. A standalone 'use' folds the names of a submodule of this one, and a module's own names are its already.",
+                &src->namesym->namestr);
+        else
+            errorMsgNode(use->source, ErrorModReach,
+                "Module %s is not a submodule of this one. A standalone 'use' folds the names of a module this one contains; a module elsewhere in the tree is reached by an import.",
+                &src->namesym->namestr);
+        return;
+    }
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(mod->moduses, cnt, nodesp)) {
+        ModUseNode *prior = (ModUseNode*)*nodesp;
+        if (prior == use)
+            break;
+        if (prior->modfold && prior->modfold->module == src) {
+            errorMsgNode((INode*)use, ErrorDupImport,
+                "Module %s is folded already, at %s:%u. A module folds a submodule's names once: write what both say in one 'use'.",
+                &src->namesym->namestr, prior->lexer->url, prior->linenbr);
+            return;
+        }
+    }
+    ImportNode *modfold = newImportNode();
+    inodeLexCopy((INode*)modfold, (INode*)use);
+    modfold->module = src;
+    modfold->isuse = 1;
+    modfold->fold = use->fold;
+    use->modfold = modfold;
+    // Dependency-first, as for an import: what the submodule re-exports is in its
+    // namespace once its own folds have run
+    modFoldNames(pstate, src);
+    importNameRes(pstate, modfold);
+}
+
+// Expand a module's standalone 'use': resolve the enum or submodule it names,
+// then bind each name it admits in the module's namespace.
+void foldModUseExpand(NameResState *pstate, ModuleNode *mod, ModUseNode *use) {
     FoldClause *fold = use->fold;
+    // A submodule's fold runs in every pass, as an import's clause does: a star
+    // clause reads the submodule afresh, and a listed name not yet there waits
+    if (use->modfold) {
+        modFoldNames(pstate, use->modfold->module);
+        importNameRes(pstate, use->modfold);
+        return;
+    }
     if (fold->expanded)
         return;
     // An enum named through a binding not there yet -- a re-export still to
@@ -300,7 +420,10 @@ void foldEnumUseExpand(NameResState *pstate, ModuleNode *mod, EnumUseNode *use) 
     }
     fold->expanded = 1;
 
-    // The enum is named as a type is, and a path is collapsed like any other
+    // The enum or submodule is named as a type is, and a path is collapsed like
+    // any other. Its steps are kept, for a module reached through an import
+    Nodes *names = newNodes(4);
+    foldModUseNames(use->source, &names);
     inodeNameRes(pstate, &use->source);
     // A path whose member did not resolve was reported where it is written, and
     // is left uncollapsed: it is not a name of the wrong kind
@@ -331,9 +454,13 @@ void foldEnumUseExpand(NameResState *pstate, ModuleNode *mod, EnumUseNode *use) 
         return;
     }
     INode *dcl = nameUseGetDcl(srcname);
+    if (dcl != NULL && dcl->tag == ModuleTag) {
+        foldModUseModule(pstate, mod, use, names, (ModuleNode*)dcl);
+        return;
+    }
     if (dcl == NULL || dcl->tag != StructTag || !(dcl->flags & EnumType)) {
         errorMsgNode(use->source, ErrorUseEnum,
-            "%s is not an enum. A module's 'use' folds an enum's variants in as names of the module, and nothing else has variants to fold.",
+            "%s is not an enum or a module. A module's standalone 'use' folds in an enum's variants or a submodule's public names, and nothing else has names to fold.",
             &srcname->namesym->namestr);
         return;
     }

@@ -344,21 +344,22 @@ static FieldDclNode *parseUseSibling(ParseState *parse) {
     return use;
 }
 
-// Parse a module's 'use' statement, with the lexer on the 'use': the enum whose
-// variants it folds in as names of the module, then which of them. What follows
-// the enum is a type body's 'use' exactly -- every variant by default, a list
-// with 'as', a block, or every variant 'but' some.
+// Parse a module's standalone 'use' statement, with the lexer on the 'use': the
+// enum or submodule whose names it folds in as names of the module, then which
+// of them. What follows the source is a type body's 'use' exactly -- every name
+// by default, a list with 'as', a block, or every name 'but' some.
 //
 // 'pub use' makes the bindings public names of this module, so a module that
 // imports this one with '.*' receives them too. It is how core makes Some, None,
 // Ok and Error bare in every program. The 'pub' is read with the statement's
 // other leading words, before the 'use', and arrives as 'pubflag'.
 //
-// The enum is a type expression, a path included, and nothing about what it
+// The source is a type expression, a path included, and nothing about what it
 // names is known until name resolution; so the statement is held as written and
-// expanded in the module's fold pass (foldEnumUseExpand).
-EnumUseNode *parseUseEnum(ParseState *parse, uint16_t pubflag) {
-    EnumUseNode *use = newEnumUseNode();
+// expanded in the module's fold pass (foldModUseExpand), which is where an enum
+// and a submodule part ways.
+ModUseNode *parseModUse(ParseState *parse, uint16_t pubflag) {
+    ModUseNode *use = newModUseNode();
     FoldClause *fold = use->fold;
     fold->ispub = pubflag ? 1 : 0;
     lexNextToken();
@@ -371,7 +372,7 @@ EnumUseNode *parseUseEnum(ParseState *parse, uint16_t pubflag) {
     }
     use->source = parseTypeName(parse);
     parseUseAdmits(parse, fold,
-        "A module's 'use' brings in every variant of the enum it names already; '*' says nothing more.");
+        "A module's 'use' brings in every variant of the enum, or every public name of the submodule, it names already; '*' says nothing more.");
     return use;
 }
 

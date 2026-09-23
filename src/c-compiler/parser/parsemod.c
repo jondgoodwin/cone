@@ -728,13 +728,13 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             parseRetiredInclude();
             break;
 
-        // 'use' folds an enum's variants in as names of this module. The
-        // bindings it makes are the fold's, so their visibility is the fold's
-        // to say, and it says it the way every declaration and every fold clause
-        // does: 'pub' first, as 'pub use'.
+        // 'use' folds an enum's variants, or a submodule's public names, in as
+        // names of this module. The bindings it makes are the fold's, so their
+        // visibility is the fold's to say, and it says it the way every
+        // declaration and every fold clause does: 'pub' first, as 'pub use'.
         case UseToken: {
             parseBadStatic(staticflag);
-            EnumUseNode *use = parseUseEnum(parse, pubflag);
+            ModUseNode *use = parseModUse(parse, pubflag);
             modAddNode(mod, NULL, (INode*)use);
             break;
         }

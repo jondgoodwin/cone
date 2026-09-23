@@ -99,7 +99,7 @@ enum NodeTags {
     ContinueTag,    // Continue node
     SwapTag,        // Swap operator
     ImportTag,      // import command
-    EnumUseTag,     // A module's 'use' of an enum, folding its variants in as module names
+    ModUseTag,      // A module's standalone 'use': an enum's variants or a submodule's names folded in as module names
 
     // Parser-ambiguous nodes. A name use is an expression, a type or a meta
     // node according to the declaration name resolution binds it to, and is

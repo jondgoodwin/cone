@@ -24,7 +24,7 @@ typedef struct ModuleNode {
     Name *filesym;           // The name derived from the module's filename
     Name *foldersym;         // The module's folder, when its designated file drew it; else NULL
     Nodes *imports;          // All import nodes
-    Nodes *enumuses;         // Every 'use' of an enum written at module scope, expanded by modFoldNames
+    Nodes *moduses;          // Every standalone 'use' written at module scope, of an enum or a submodule, expanded by modFoldNames
     Nodes *nodes;            // All parsed nodes owned by the module
     Namespace namespace;     // The module's named nodes, owned or "used"
     DclInfo dclinfo;         // Owner and the facts that decide the linker symbols it prefixes
@@ -69,15 +69,15 @@ int modFoldReporting();
 void modFoldWait();
 
 // Would this source -- a name, a path, a reference to either -- name nothing
-// yet, because the lookup at some step finds no binding? A global's fold or an
-// enum's 'use' naming its source through a re-export still to arrive waits for
+// yet, because the lookup at some step finds no binding? A global's fold or a
+// standalone 'use' naming its source through a re-export still to arrive waits for
 // it rather than resolving the name and reporting it missing
 int modFoldAwaits(INode *source);
 
 // Where to report a name a fold brings in that this module already binds to
 // something else: at the new binding, unless what holds the name was made by a
 // fold of this module that runs AFTER 'unit' ('extends' first, then the imports,
-// the globals and the enum 'use's, each in the order written). A pass round a
+// the globals and the standalone 'use's, each in the order written). A pass round a
 // cycle can bind a later fold's name before an earlier fold's arrives, and the
 // collision is then reported where a single pass would have met it
 INode *modFoldCollisionAt(ModuleNode *mod, INode *unit, INode *alias, INode *prior);

@@ -1,0 +1,32 @@
+// What a standalone 'use' of a submodule refuses, and what it does not put in
+// reach.
+//
+// Name-resolution stage: the fold is expanded in the module's fold pass, and a
+// body, a path and an import read what it left.
+//
+// The folder holds:
+//   lib/lib.cone             two public names and a private one
+//   store/store.cone         one public name
+//   facade/facade.cone       folds its own submodule without 'pub'
+//   facade/inner/inner.cone  the submodule facade folds
+//   reader/reader.cone       a 'use' of what an import reached, and of itself
+//   viewer/viewer.cone       an import of what facade folded privately
+
+// Only public names fold: a private one named selectively is refused as an
+// import's clause refuses it, and the rest of the list still folds
+use lib hid, one;           //~ ErrorNotPublic:9 "hid is private to lib, so it does not fold"
+
+// A submodule is folded once, as a module is imported once
+use lib;                    //~ ErrorDupImport:1 "Module lib is folded already"
+
+// 'but' names what the submodule has
+use store but nada;         //~ ErrorNoMbr:15 "store has no member named nada to leave out"
+
+fn reach() i64 {
+  // Listed, so bare here
+  one();
+  // Not listed by the first 'use', and the second folded nothing
+  two();                    //~ ErrorUnkName:3 "The name two does not refer to a declared name"
+  // facade's fold of inner is facade's own, and a path from outside refuses it
+  facade.innerValue();      //~ ErrorNotPublic:10 "private to its module"
+}

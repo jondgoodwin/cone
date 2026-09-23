@@ -19,6 +19,7 @@ ImportNode *newImportNode() {
     node->binding = NULL;
     node->ispub = 0;
     node->isextends = 0;
+    node->isuse = 0;
     node->isnamedfile = 0;
     return node;
 }
@@ -205,9 +206,14 @@ static void importFoldItem(ModuleNode *mod, ImportNode *import, AliasDclNode *al
     // at once, and the item is made
     if (found == (INode*)src) {
         target->dclnode = found;
-        errorMsgNode((INode*)alias, ErrorBadFold,
-            "%s is the module being imported, and the import binds that name already.",
-            &srcname->namestr);
+        if (import->isuse)
+            errorMsgNode((INode*)alias, ErrorBadFold,
+                "%s is the module being folded, and it is a name of this module already.",
+                &srcname->namestr);
+        else
+            errorMsgNode((INode*)alias, ErrorBadFold,
+                "%s is the module being imported, and the import binds that name already.",
+                &srcname->namestr);
         return;
     }
     // Only what the source module shows folds. A binding's own visibility is what
