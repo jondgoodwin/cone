@@ -840,6 +840,12 @@ static void structEnrichFromBase(StructNode *node, StructNode *base, int hook) {
 
     structEnrichLifecycle(node, base, hook);
 
+    // What the base's '@move' and '@opaque' say is said of the one representation,
+    // so a value moves, or may not be held, under either name. What its fields and
+    // its 'final' imply is inferred again from the copies above; the attributes
+    // are only on the base's flags.
+    node->flags |= base->flags & (MoveType | OpaqueType | DeclaredOpaque);
+
     node->extendsdcl = (INode*)base;
 }
 
