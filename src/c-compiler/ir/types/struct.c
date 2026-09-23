@@ -1329,6 +1329,28 @@ static StructNode *structEnclosingEnum(StructNode *node) {
     return (StructNode*)owner;
 }
 
+// Hook the names of the enum a variant is written inside, beneath the variant's
+// own: its variants, its statics, its fields and whatever else it declares --
+// except the methods a value of it answers. The variant has those as its own
+// clones, hooked in the nearer scope as they are spliced in. A generic enum's are
+// cloned in only when an instance is type checked, and the enum's own method is not
+// one the variant's self can call, so a bare call to one is left unresolved there,
+// as it always was. A field needs no such care: a bare field is read through self
+// by name, so the enum's own field serves.
+static void structHookEnclosingEnum(StructNode *enumnode) {
+    Namespace *ns = &enumnode->namespace;
+    namespaceFor(ns) {
+        NameNode *nn = &ns->namenodes[__i];
+        if (nn->name == NULL)
+            continue;
+        INode *dcl = nn->node;
+        if ((dcl->flags & FlagMethFld)
+            && (dcl->tag == FnDclTag || dcl->tag == FnOverloadDclTag || dcl->tag == MacroDclTag))
+            continue;
+        nametblHookNode(nn->name, dcl);
+    }
+}
+
 void structNameRes(NameResState *pstate, StructNode *node) {
     INode **nodesp;
     uint32_t cnt;
@@ -1363,7 +1385,7 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     if (enclosing) {
         structNameResDemand(pstate, enclosing);
         nametblHookPush();
-        nametblHookNamespace(&enclosing->namespace);
+        structHookEnclosingEnum(enclosing);
     }
 
     nametblHookPush();
