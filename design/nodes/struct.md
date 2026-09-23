@@ -400,9 +400,13 @@ inherited member bare, exactly as it names the type's own.
    the whole set — its base's included — carries fields.
 2. Push the hook table. **A variant pushes one more first, beneath it, and hooks its
    enum's namespace there** (`structEnclosingEnum`, from the variant's owner;
-   `structHookEnclosingEnum`), all of it but the methods a value answers, which the
-   variant has as its own clones — a generic enum's only once an instance is type
-   checked, so those are not bare in a generic variant's bodies:
+   `structHookEnclosingEnum`), all of it but — for an enum that is not generic — the
+   methods a value answers, which the variant has as its own clones, hooked nearer.
+   A generic enum's clones join only once an instance is type checked, so its
+   methods and method overload names are hooked from the enum: the use binds to the
+   enum's, the instance's clone maps it to the enum instance's (`genericMemoize`),
+   and type check lowers a bare method call to `self.name`, found by name in the
+   variant, whose own clone it is. The reason for all of it:
    anything written inside an enum's braces sees every name the enum declares bare,
    and a variant's body is written there, but a variant is a module node resolved on
    its own, so the enum's hooking at step 7 never reaches it. Beneath, so every name

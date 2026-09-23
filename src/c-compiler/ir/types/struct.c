@@ -1560,12 +1560,14 @@ static StructNode *structEnclosingEnum(StructNode *node) {
 
 // Hook the names of the enum a variant is written inside, beneath the variant's
 // own: its variants, its statics, its fields and whatever else it declares --
-// except the methods a value of it answers. The variant has those as its own
-// clones, hooked in the nearer scope as they are spliced in. A generic enum's are
-// cloned in only when an instance is type checked, and the enum's own method is not
-// one the variant's self can call, so a bare call to one is left unresolved there,
-// as it always was. A field needs no such care: a bare field is read through self
-// by name, so the enum's own field serves.
+// except, for an enum that is not generic, the methods a value of it answers. The
+// variant has those as its own clones, hooked in the nearer scope as they are
+// spliced in. A generic enum's are cloned in only when an instance is type
+// checked, so its methods and method overload names are hooked here: a bare use
+// binds to the enum's, the instance's clone re-points it at the enum instance's
+// (genericMemoize), and type check lowers a bare method call to 'self.name', found
+// by name in the variant, whose own clone it is. A field needs no such care
+// either way: a bare field is read through self by name, so the enum's own serves.
 //
 // An extension's bases' names follow in the same frame, each only where the
 // extension has no name of its own for it, so a variant the extension adds sees
@@ -1578,7 +1580,8 @@ static void structHookEnclosingEnum(StructNode *enumnode) {
             continue;
         INode *dcl = nn->node;
         if ((dcl->flags & FlagMethFld)
-            && (dcl->tag == FnDclTag || dcl->tag == FnOverloadDclTag || dcl->tag == MacroDclTag))
+            && (((dcl->tag == FnDclTag || dcl->tag == FnOverloadDclTag) && !enumnode->genericinfo)
+                || dcl->tag == MacroDclTag))
             continue;
         nametblHookNode(nn->name, dcl);
     }

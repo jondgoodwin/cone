@@ -1233,7 +1233,9 @@ fn wideTierCode(w WideTier) i32 {
 // the variant after its own methods, so they are not yet type checked when its
 // own are; the call analyzes the one it names before comparing signatures, as a
 // call to a later method of any type does. A generic enum's variant has its
-// clones only once instantiated, so there 'self.twice()' is the spelling.
+// clones only once instantiated, and a bare call is still its own clone's: the
+// name binds to the enum's method, the instance points it at the enum instance's,
+// and type check calls it through 'self' by name. So is an overload name's.
 enum Gauge {
   pub level i32;
   pub fn twice(self &) i32 {level * 2;}
@@ -1247,9 +1249,13 @@ enum Gauge {
 enum Bin[T] {
   pub level T;
   pub fn twice(self &) T {level * 2;}
+  pub fn plus1 overload plus(self &, x T) T {level + x;}
+  pub fn plus2 overload plus(self &, x T, y T) T {level + x + y;}
 
   struct Box {
     pub fn viaSelf(self &) T {self.twice() + 1;}
+    pub fn viaBare(self &) T {twice() + 2;}
+    pub fn viaOverload(self &) T {plus(10) * 100 + plus(1, 2);}
   }
 }
 
@@ -1259,6 +1265,8 @@ fn variantBodies() {
   show("variant-calls-enum-method-bare", (&dial).viaBare());
   imm box = Bin.Box[i64][7];
   show("generic-variant-calls-enum-method-through-self", (&box).viaSelf());
+  show("generic-variant-calls-enum-method-bare", (&box).viaBare());
+  show("generic-variant-calls-enum-overload-bare", (&box).viaOverload());
   imm stop = Traffic.Stop[];
   show("variant-builds-sibling-bare", trafficCode((&stop).next()));
   show("variant-calls-enum-static-bare", (&stop).pause());
