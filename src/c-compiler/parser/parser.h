@@ -29,7 +29,6 @@ enum ParseFlags {
 
 // parsemod.c
 ProgramNode *parsePgm(ConeOptions *opt);
-ModuleNode *parseModuleBlk(ParseState *parse, ModuleNode *mod);
 // Consume a 'pub' that precedes a declaration, returning FlagPub, or 0
 uint16_t parsePub();
 // Consume a 'static' that precedes a declaration, returning FlagStatic, or 0

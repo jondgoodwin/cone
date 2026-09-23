@@ -10,8 +10,10 @@ before touching any of the three nodes.
 
 **At a glance.** `parsePgm` builds the root module and injects `corelib` into
 it. `parseLoadAndParseModuleFile` loads every other module exactly once, keyed
-by a name taken from its filename. Name resolution folds imports before it
-resolves anything else the module declares. Type check walks imports first, then
+by a name taken from its filename. A `mod` declaration in a file's first
+statement then names the module, and that declared name is its identity from
+there on. Name resolution folds imports before it resolves anything else the
+module declares. Type check walks imports first, then
 every declaration in source order. Generation declares symbols for every module
 and emits bodies only for those flagged `FlagGenMod`.
 
@@ -31,12 +33,19 @@ own `imports`.
 
 | Field | Meaning |
 | --- | --- |
-| `namesym` | the module's name, derived from the *filename* — the source file's basename for the root, the imported file's for every other. What `pgmFindMod` matches on |
+| `namesym` | the module's name: what its `mod` declaration names it, and `filesym` until one does. What an importer binds it under, what a path through it is written with, and what its declarations' symbols are spelled after |
+| `filesym` | the name derived from the module's *filename* — the source file's basename for the root, the imported file's for every other. **The load key**: what `pgmFindModFile` matches on, so a file is read once whatever its module is called |
 | `dclinfo` | the declaration facts — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". `owner` is NULL for every file module. **The root is the module without `DclNamesChain`**: it has a name and contributes it to no symbol |
 | `imports` | `ImportNode`s only, held apart from `nodes` so folding can run before anything else resolves |
 | `nodes` | every declaration the module owns, in source order. This is what printing and generation iterate |
-| `namespace` | every name *visible* in the module: what it declares, plus what an import folded in |
-| `flags` | `FlagGenMod`, and nothing else |
+| `namespace` | every name *visible* in the module: what it declares, what an import folded in, and — when a `mod` declaration named it — the module's own name |
+| `flags` | `FlagGenMod`, and `FlagModDcl` for a module a `mod` declaration named |
+
+**A module's own name is in its own namespace, and that is what makes a hidden
+module-level name reachable.** `mymod.x` reaches an `x` that a local or a type
+member hides, because a path begins with the name of the namespace it walks and
+this is the only name a module has. The binding is not in `nodes`, so nothing
+prints, generates or folds the module into itself.
 
 **`nodes` and `namespace` are not the same set, and the difference is exactly
 where import folding lives.** A folded name is added to `namespace` and never to
@@ -56,28 +65,58 @@ selective name list, no rename, and no exclusion.
 | Function | Note |
 | --- | --- |
 | `newProgramNode` | one per compile |
-| `pgmAddMod` | appends a module and takes its flags. The caller sets `namesym` afterwards |
-| `pgmFindMod` | linear search by interned name. **This is what makes a module load once** however many modules import it |
-| `newModuleNode` | `namesym` NULL, `dclinfo` cleared, empty `imports`, `nodes` and `namespace` |
+| `pgmAddMod` | appends a module and takes its flags. The caller sets `filesym` and `namesym` afterwards |
+| `pgmFindModFile` | linear search by `filesym`. **This is what makes a module load once** however many modules import it. The key is the filename and never the declared name, because what must happen once is reading the file |
+| `newModuleNode` | `namesym` and `filesym` NULL, `dclinfo` cleared, empty `imports`, `nodes` and `namespace` |
 | `newImportNode` | `module` NULL, `foldall` 0 |
 
 ## Parse
 
 `parsePgm` establishes the program in an order that matters:
 
-1. The root `ModuleNode` is added first and flagged `FlagGenMod`. It is named
-   after the source file's basename, so that an import cycle back to it finds
-   it in `pgmFindMod`; it is not given `DclNamesChain`, so it prefixes nothing.
+1. The root `ModuleNode` is added first and flagged `FlagGenMod`. Its `filesym`
+   is the source file's basename, so that an import cycle back to it finds it in
+   `pgmFindModFile`; it is not given `DclNamesChain`, so it prefixes nothing.
 2. `corelib` is parsed, from the `corelibSource` string in `corelib.c`.
 3. An `ImportNode` with `foldall` set is added to the root for `corelib`.
 4. The root's own source is parsed.
 
 `parseLoadAndParseModuleFile` is the single path by which any module is loaded.
-It reuses an already-parsed module by name, names the new one and marks it
-`DclNamesChain`, decides `FlagGenMod`, injects the source, adds an auto-import
-of `corelib` with `foldall`, and swaps the name-table hook with `modHook`.
-Every declaration the module's parse adds through `modAddNode` records the
-module as its owner.
+It reuses an already-parsed module by `filesym`, sets the new one's `filesym` and
+`namesym` from the filename and marks it `DclNamesChain`, decides `FlagGenMod`,
+injects the source, adds an auto-import of `corelib` with `foldall`, and swaps
+the name-table hook with `modHook`. Every declaration the module's parse adds
+through `modAddNode` records the module as its owner.
+
+### The `mod` declaration
+
+`parseModuleDcl` parses `mod name;` and is where a module stops being identified
+by its file. It renames the module the file was loaded as, sets `FlagModDcl`, and
+binds the name into the module's own namespace with `modAddNamedNode` — so the
+name is duplicate-checked against the module's declarations like any other, and
+is in reach inside the module for the rest of the parse.
+
+**The declaration must be the file's first statement, and a file declares one
+module** (`ErrorModDcl` otherwise). The header claims the whole file, so nothing
+may precede it; and an *included* file declares no module at all, because its
+declarations join the including one — `parseGlobalStmts` is told which of the two
+it is reading.
+
+**Two shapes are admitted and unbuilt, each reported where it is written and its
+body skipped whole** (`ErrorUnbuiltKind`): a nested `mod name { ... }` block,
+which needs a namespace of its own, hook push and pop around its parse, and paths
+reaching through it; and `mod trait`, a module's abstraction, whose spelling is
+settled by `trait` being a modifier on the kind.
+
+**A `mod` declaration in the root file names the module and does not change a
+single symbol.** The root still has no `DclNamesChain`, so its declarations stay
+bare and `main` stays linkable. Naming the module is what makes its hidden names
+reachable; what spells a symbol is the owner chain, and that is a separate
+question — see "Consequences that follow whichever way those go" below.
+
+⚠ **Filename naming is transitional.** A file that declares no module keeps the
+name its filename gave it, which is what lets today's programs go on working
+unchanged. The folder walk replaces filename naming altogether.
 
 **Two modules are built in, and neither is a file.** `corelib` is the
 `corelibSource` string in `corelib.c`; `stdio` is the `stdiolib` string at the
@@ -115,10 +154,13 @@ definitions those declarations name. How a symbol is spelled from its
 declaration, and the linkage it gets, is
 [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols".
 
-`parseImport` derives the module name from the filename through `fileName`,
-accepts a period only when `*` follows it — anything else after it is
-`ErrorBadTerm`, since selective import is unbuilt — and binds the loaded module
-into the importing module's namespace with `modAddNamedNode`.
+`parseImport` derives the *file's* name through `fileName`, accepts a period only
+when `*` follows it — anything else after it is `ErrorBadTerm`, since selective
+import is unbuilt — and binds the loaded module into the importing module's
+namespace with `modAddNamedNode`, under the loaded module's `namesym`. So a module
+that declares a name other than its filename's is bound and pathed through by the
+name it declares: the declaration is the identity, and the file is only where the
+module was found.
 
 `parseInclude` injects the named file's tokens and parses its global statements
 into the *current* module. It builds no node, creates no namespace, and leaves
@@ -151,7 +193,7 @@ the module owns, in source order. As everywhere in this phase, **order decides
 when a declaration is checked, not whether** — a name reached from elsewhere
 pulls its declaration forward. See [Type Check Phase](../phases/type-check.md).
 
-**Nothing detects an import cycle.** Reuse by name in `pgmFindMod` stops the
+**Nothing detects an import cycle.** Reuse by file in `pgmFindModFile` stops the
 parser recursing forever, but no phase asserts that module dependencies form a
 DAG.
 
@@ -237,6 +279,12 @@ because they remove work rather than adding it:
   it are free to nest.
 - **A module may span several source files.** Each source file belongs to
   exactly one module.
+- **A module's name is its own, and reaches its own hidden names.** There is no
+  root anchor and no parent access: a module reaches an upper module by importing
+  and naming it, and a name of its own that a local or a type member hides by
+  qualifying it with the module's name. **A program's root may carry a `mod`
+  header for exactly that reason** — to have a name — and naming the root changes
+  no symbol.
 - **Namespace machinery is meant to be common to modules and types** — nesting,
   generics, interfaces and name folding, so that the layers look alike rather
   than each inventing its own.
@@ -383,16 +431,18 @@ namespace, where folding a member is delegated inheritance.
 
 ### What is implemented
 
-**Almost none of it.** A module is a source file today. There is no `mod`
-declaration — `mod` is a keyword and a `mod` at the top level is
-`ErrorUnbuiltKind`, which holds the word and settles the `mod trait` spelling of
-a module's abstraction against the day there is something behind either — no
-nesting, no package, no manifest, no interface artifact, and no
-`use`; `import` takes a file path rather than a package name, folds only with
-`.*`, and cannot rename or exclude. Sections and COMDATs are not emitted per
-function. What does work is the multi-module *generation* path, exercised by
-`stdio` on every compile that prints, and folding into a single module namespace,
-which is what the accumulation rule above asks for.
+**Almost none of it.** A module is a source file today, and a file declares one
+module: `mod name;` as its first statement names the module the file was loaded
+as, and that name is in reach inside the module. There is no nesting — a
+`mod name { ... }` block is `ErrorUnbuiltKind` — no package, no manifest, no
+interface artifact, and no `use`; `mod trait` holds the spelling of a module's
+abstraction against the day there is something behind it; `import` takes a file
+path rather than a package name, folds only with `.*`, and cannot rename or
+exclude. A file that declares no module is still named after its file, and the
+folder walk is what ends that. Sections and COMDATs are not emitted per function.
+What does work is the multi-module *generation* path, exercised by `stdio` on
+every compile that prints, and folding into a single module namespace, which is
+what the accumulation rule above asks for.
 
 **A binding has no visibility bit, and whether a fold transits is decided by
 load order.** A declaration has one — `DclPrivate`, written from the absence of
@@ -604,17 +654,23 @@ annotation on a reference names is a type.
 
 - **`include` and `import` look alike and are not.** One injects declarations
   into the current module and leaves no trace; the other builds a namespace.
-- **The root's name is its file's basename, and `pgmFindMod` matches every
-  module by name.** A root file whose basename equals a built-in module or any
-  imported module's basename collides there. Measured: `corelib.cone` has
-  `parsePgm`'s corelib load find the root itself, so the root is folded into
+- **A module's load key is its file's basename, and `pgmFindModFile` matches every
+  module by it.** A root file whose basename equals a built-in module's or any
+  imported module's collides there, and a `mod` declaration does not help, because
+  the collision happens before the declaration is read. Measured: `corelib.cone`
+  has `parsePgm`'s corelib load find the root itself, so the root is folded into
   its own namespace and every declaration is reported as a duplicate — and
   corelib is never parsed; `stdio.cone` importing `stdio` gets the root back,
-  with the same duplicates and no `print`. What would settle it is a root
-  identity no import can spell, or a diagnostic when the root's name matches a
-  module it loads.
+  with the same duplicates and no `print`. What would settle it is a load key no
+  import can spell.
+- **A module collision is reported at the wrong place.** A `ModuleNode` is built
+  while the lexer sits on the token after the `import` that loaded it, so
+  `ErrorDupName` against a module — a file declaring `mod x` that imports a module
+  also called `x`, say — points at the next declaration and at the injected
+  pseudo-file rather than at either module. The condition is diagnosed; the
+  position is not useful.
 - **A cycle among non-root modules is fine.** Name resolution runs after all
-  parsing, so the half-parsed module `pgmFindMod` returns is complete before
+  parsing, so the half-parsed module `pgmFindModFile` returns is complete before
   anything reads it. Nothing detects a cycle, and nothing needs to.
 - **`FlagGenMod` is decided by a `strcmp` on the filename.** A user module named
   `stdio` would have its bodies generated.
@@ -624,7 +680,6 @@ annotation on a reference names is a type.
 - **`corelib` and `stdio` are C string literals.** A syntax error in either is
   reported against an injected pseudo-file, and editing either means rebuilding
   the compiler.
-- **`parseModuleBlk` is declared in `parser.h` and defined nowhere.**
 - **A use of a module's name answers `isTypeNode` true** — `nameUseGroup`'s
   fallthrough for every declaration that is not a value, a macro or a generic
   parameter, not because a module is a type.

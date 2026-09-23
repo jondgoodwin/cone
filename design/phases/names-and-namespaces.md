@@ -109,7 +109,7 @@ Function parameters, generic parameters, blocks, and nested blocks establish lex
 
 The compiler currently implements lexical lookup by temporarily hooking declarations onto the globally interned `Name` while traversing the scope's IR. It restores the previous binding when leaving the scope. This is a lookup optimization, not a reason for lexical bindings to differ semantically from namespace NameDefs.
 
-Unqualified lookup selects the nearest active binding. Function parameters may therefore shadow names from the containing type or module, and a local in an inner block may shadow a parameter or outer local. A second declaration of the spelling within the same lexical scope is an error. A hidden member of a *type* is still reachable, through `self` or through the type's own name; a hidden member of the enclosing *module* is not reachable at all, because a path begins with the name of the namespace it walks and a module has no name of its own until it carries a `mod` header.
+Unqualified lookup selects the nearest active binding. Function parameters may therefore shadow names from the containing type or module, and a local in an inner block may shadow a parameter or outer local. A second declaration of the spelling within the same lexical scope is an error. A hidden member of a *type* is still reachable, through `self` or through the type's own name; a hidden member of the enclosing *module* is reachable through the module's own name, which its `mod` declaration gives it. A path begins with the name of the namespace it walks, so naming the module is what makes the hidden name reachable, and a file that declares no module has no spelling for one.
 
 ### Types
 
@@ -139,11 +139,13 @@ Current compiler behavior:
 - The main source and every imported source are represented by `ModuleNode`.
 - A parsed function always adds its concrete `FnDclNode` to the module's owned nodes and binds its unique name. When it declares an overload name, the module finds or creates that name's `FnOverloadDclNode`, appends the concrete node, and adds a newly created overload node to the module's owned nodes as well, so it is printed and can be folded in by a wildcard import.
 - `include` parses another file directly into the current module, so included declarations share the same namespace and collision domain.
-- `import` loads or reuses another module and binds that module's filename-derived name in the importing module.
-- The parser does not currently provide syntax for declaring arbitrary named nested modules, although the IR and documentation anticipate modules containing modules.
+- A source file names its module with a `mod` declaration written as its first statement: `mod geometry;`. The declared name is the module's identity — what an importer binds it under, what a path through it is written with, and what its symbols are spelled after. A file that declares none is named after its file instead, which is transitional and lasts until the folder walk replaces filename naming.
+- **A module's own name is an entry in its own namespace**, so a module-level name that a local or a type member hides is reached as `modname.x`. That is the only way past a nearer binding into a module, because a path begins with the name of the namespace it walks.
+- `import` loads or reuses another module — keyed on the file, so a file is read once whatever its module turns out to be called — and binds it under the name the module declares for itself.
+- A nested `mod name { ... }` block is admitted by the grammar and unbuilt: it needs a namespace of its own, a hook pushed and popped around its parse, and paths reaching through it. So is `mod trait`, a module's abstraction.
 - Source folders affect file lookup; they do not themselves create namespaces.
 
-Documented intent allows named modules nested within modules and libraries packaged for import. The declaration syntax and package-level namespace rules remain underspecified.
+Documented intent allows named modules nested within modules and libraries packaged for import. Nesting and package-level namespace rules remain to be built.
 ## Uniqueness, overloading and `extern`s
 
 The default rule is: **one spelling, one NameDef, at each namespace level**. This applies across declaration categories. A type and a variable, or a macro and a module, may not coexist under the same spelling in one namespace. With the exception of `extern`s and overloading, declaring duplicate names in the same namespace results in a compiler error.
@@ -185,7 +187,7 @@ Current compiler behavior:
 
 - `name` begins in the active lexical/module context.
 - `module.name` begins wherever `module` is in scope, which is the ordinary bare-name rule and nothing else. A local, a parameter or a type member of that spelling therefore hides the module, and there is no way to reach past it.
-- There is no root anchor and no way to name the enclosing module: a module has no name of its own until it carries a `mod` header, and a path starts with the name of the namespace it walks.
+- There is no root anchor and no parent access. **The enclosing module is named by its own name**, which its `mod` declaration gives it and which is an entry in its own namespace, so `mymod.x` reaches a module-level `x` that a local or a type member hides. A module that reaches an *upper* module does so by importing and naming it.
 - A path may have any number of hops, each of which must resolve to a module or a struct-like type. A hop through anything else — an alias, a number type, a generic instance, a generic parameter — is `ErrorUnkName` at type check.
 - A resolved `NameUseNode` points directly to a heterogeneous declaration node. It keeps its one tag; whether it is a type, a value, a macro or a generic parameter is asked of that node (`nameUseGroup`, `nameUseNames`), never stamped on the use. The one thing stamped on it is `FlagQualified`, which says the name was reached through a namespace rather than written bare.
 
@@ -225,7 +227,9 @@ Visibility should belong to the original definition or declaration, while access
 
 `include` contributes declarations to the current module. It does not introduce a namespace.
 
-Plain `import math` binds the imported module as `math`; public members are intended to be accessed as `math.name`.
+Plain `import math` binds the imported module under the name it declares for itself; public members are intended to be accessed as `math.name`.
+
+**Where an `import` may be written is decided and not enforced.** An `import` follows a `mod`, and only directly after one, wherever a `mod` appears — so a file that declares no module has nowhere to spell an import and cannot create a dependency, and a module's whole inbound dependency list sits at its own declaration. It is a grammar in which the illegal thing cannot be written, not a rule with a diagnostic behind it. Today's grammar allows an `import` as any global statement, and a file that declares no module imports freely; the rule bites only once the folder walk makes `mod` the way a module's designated file is recognized, so it is stated here and left unenforced until then. **There is no placement rule for `use`**: `use` is a clause on a declaration, so it lives wherever that declaration lives, and each site already says where that is.
 
 Documented folding supports:
 
@@ -764,9 +768,9 @@ would see little but `main`.
 	- Extending a type's overload sets from an extension, generic candidates, and merging matching `extern` declarations with implementations remain deferred.
 - Compile unit handling of duplicate, consistent type `extern` vs. value-specified names.
 - Selective import folding and `as` renaming are documented but unimplemented. The binding node they need exists (`AliasDclNode`, built for the type fold); import does not use it yet.
-- Nested named modules are documented but lack clear declaration syntax and parser support.
+- Nested named modules are documented and unbuilt. The declaration syntax is settled — a `mod name { ... }` block where the singular `mod name;` header stands — and the block is refused where it is written; what it needs is a namespace of its own, hook push and pop around its parse, and qualified paths through it.
 - General aliases beyond `typedef` and the folded-member alias are not implemented.
 - Generic, macro and metaprogram namespace behavior is partly implemented, incomplete, or aspirational. Delegated inheritance and concrete enrichment are both built; see "Folding into a type" above.
 - Packages organize importable libraries but are not yet defined as a distinct namespace layer.
 - A path may only pass through a module or a struct-like type. One whose base is an alias, a number type, a generic instance or a generic parameter is refused at type check, because none of those names a namespace at the point the collapse runs. Finishing those at type check, where they do, is the natural other half of the collapse and is not built.
-- There is no way to name the module a declaration is in, so a module-level name hidden by a local or by a type member cannot be reached. The `mod` header, which would give the module a name, is not built.
+- A module's name still comes from its filename when its file declares no `mod`. The folder walk is what replaces filename naming altogether.

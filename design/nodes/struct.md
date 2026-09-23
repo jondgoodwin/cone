@@ -18,8 +18,10 @@ needs: a struct composes a struct or a struct-trait, and an actor will compose a
 actor or an actor-trait. So no trait declaration carries anything to say which
 family it is for, and nothing is inferred from what it declares. `mod trait` and
 `actor trait` are admitted by the grammar so that the spelling of those
-abstractions is settled; neither kind exists, so both report `ErrorUnbuiltKind`
-where they are written. `enum trait` is refused, and that absence is the one below.
+abstractions is settled; neither abstraction exists, so both report
+`ErrorUnbuiltKind` where they are written — `mod` itself is a built declaration,
+which [module](module.md) owns. `enum trait` is refused, and that absence is the
+one below.
 
 **At a glance.** `parseStruct` does a great deal — tag synthesis, mixin
 placeholders, variants in both of their spellings, tag numbering, generic

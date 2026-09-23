@@ -91,14 +91,16 @@ by it.
 
 **A word held for an unimplemented feature is reserved; a word that names an
 unbuilt *kind of declaration* is a token.** `mod` and `actor` are the two kinds
-that will have abstractions and do not exist yet, so they are ordinary keywords
-with an arm of their own in the global dispatch, which reports
-`ErrorUnbuiltKind` where the declaration is written and names the abstraction's
-spelling — `mod trait`, `actor trait`. Admitting the shape is what settles that
-spelling now instead of leaving it to be designed when the kinds land, and the
-arm is what keeps the declaration from being accepted with no semantics under
-it. The cost is the standing one in the hazards: holding a word takes it away
-from every program.
+that carry abstractions, so both are ordinary keywords with an arm of their own in
+the global dispatch. `mod` builds a declaration — it names the module a source
+file belongs to, [module](../nodes/module.md), "The `mod` declaration". `actor`
+does not, and its arm reports `ErrorUnbuiltKind` where the declaration is written
+and names the abstraction's spelling, `actor trait`; the two shapes of `mod` that
+are unbuilt, a nested block and `mod trait`, report the same code the same way.
+Admitting a shape is what settles its spelling now instead of leaving it to be
+designed when the semantics land, and reporting it is what keeps a declaration
+from being accepted with nothing under it. The cost is the standing one in the
+hazards: holding a word takes it away from every program.
 
 ### Blocks and statement ends
 
@@ -226,7 +228,9 @@ populated, `ErrorDupName` and `ErrorOverloadClash` have already been reported,
 overload sets have their `FnOverloadDclNode`, and every declaration records the
 module as its owner. The stated reason is that permissions and allocators do not
 support forward references, so their names must be in the table as they are
-read.
+read. **A `mod` declaration respects that**: it binds the module's own name the
+same way, at the point it is read, which is why it has to be the file's first
+statement.
 
 This is why `nameUseNameRes` is a single assignment from `namesym->node` —
 see [Name Resolution](name-resolution.md).
@@ -279,7 +283,7 @@ never be analyzed.
 | Mechanism | Behavior |
 | --- | --- |
 | `parseSkipToNextStmt` | the main resync; consumes through the next `;`, or stops short of a `}` or EOF for the enclosing block to handle |
-| an unbuilt kind's body | `mod` and `actor` skip a following `{ … }` whole, counting depth, so nothing inside is read as a global statement and reported again. The declaration is reported once, where it is written |
+| an unbuilt form's body | `parseSkipDclBody` skips a following `{ … }` whole, counting depth, so nothing inside is read as a global statement and reported again, and resyncs at the next `;` where there is no block. `actor`, a nested `mod` block and `mod trait` all use it, so each is reported once, where it is written |
 | `parseCloseTok` | reports `ErrorNoRParen`, scans for the closer, gives up at `;`, `}`, EOF |
 | `parseBlockStart` | on `:`, reports `ErrorColonBlock` and reads what follows as the block; on anything else that is not `{`, reports `ErrorNoLCurly` and scans forward for one |
 | `parseTerm` default | reports `ErrorBadTerm`, consumes one token to avoid an infinite loop, returns `NULL` |
@@ -313,8 +317,10 @@ numbers.
 | | `lexScanNumber`, `lexScanString`, `lexScanChar`, `lexScanEscape` | literals; UTF-8 re-encoding of escapes; lifetime-vs-char disambiguation |
 | | `lexNewLine`, `lexBlockComment` | line counting for diagnostics, inside comments included |
 | `parser/parsemod.c` | `parsePgm` | **entry point** — tables, program, main module, corelib, main file |
-| | `parseGlobalStmts` | the global statement dispatch loop; `trait` by itself enters `parseStruct` with `TraitType` already set, and `mod` and `actor` are the unbuilt kinds refused here |
-| | `parseLoadAndParseModuleFile` | per-module unit: de-dup, naming, injection, corelib import, `modHook` |
+| | `parseGlobalStmts` | the global statement dispatch loop; `trait` by itself enters `parseStruct` with `TraitType` already set, and `actor` is the unbuilt kind refused here. It is told whether it is reading the start of a module's own source, which is what decides where a `mod` declaration may stand |
+| | `parseModuleDcl` | `mod name;`, the declaration that names a file's module: the placement rule, the rename, the module's own name bound into its namespace, and the refusal of the nested block and `mod trait` |
+| | `parseSkipDclBody` | skip an unbuilt form's `{ … }` whole, or resync at the next `;` |
+| | `parseLoadAndParseModuleFile` | per-module unit: de-dup by filename, naming, injection, corelib import, `modHook` |
 | | `parseImport`, `parseInclude` | the two source-composition forms |
 | `parser/parsehelper.c` | `parseBlockStart`, `parseBlockEnd` | `{` and `}`, with recovery |
 | | `parseEndOfStatement`, `parseSkipToNextStmt`, `parseCloseTok` | the required `;`, and the two resyncs |
