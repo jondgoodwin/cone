@@ -175,6 +175,15 @@ pointer or the payload alone, with the tag discarded.
 **A string literal emits a fresh global on every occurrence** — there is no
 interning, and constant merging is not in the pass list.
 
+**A string literal's global ends in a NUL its type does not count**, for C
+compatibility: `"hello"` is a `[5; u8]` and its global a `[6 x i8]`. The
+`StringLitTag` case of `genlAddr` recasts the global's address to a pointer to
+the literal's own array type, so a load, a copy and a slice's count all see the
+text's bytes only; the terminator is reachable only through a pointer handed to
+code that reads to it. A global variable initialized from a string literal
+takes the literal's type and so has no terminator — it is a copy, not the
+literal.
+
 ## Hazards
 
 - **Only an integer literal is context-typed.** Every other literal is still
