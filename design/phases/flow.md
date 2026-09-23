@@ -179,8 +179,17 @@ it refuses the same sources but deactivates nothing, because a local handed
 back is exempted from the scope's release by `flowScopeDealias` instead. A
 block or an `if` used as a value has no source of its own either, so the walk
 goes on into what it hands back — a block's final expression and the value of
-each `break` that leaves it, each branch of an `if` — checking those values
-without deactivating anything.
+each `break` that leaves it (not a loop's final expression, which loops back),
+each branch of an `if` — checking every one of those values. Through
+`flowHandleMove` it deactivates the variables that *every* one of them moves
+out of: `imm y = {a;}`, `if c {a;} else {a;}` and a loop whose only exits all
+`break b.inner` leave their source moved exactly as `imm y = a` does, so it is
+finalized once, by the new holder. A variable moved out of by only some of
+them is a conditional move and is not deactivated, because `VarMoved` is per
+function: `if c {a;} else {Inner[0];}` bound to a variable still finalizes `a`
+twice on the path that moves it (and once, correctly, on the other). An
+expression statement never reaches `flowHandleMove`, so a block whose value is
+thrown away moves nothing.
 
 **A recast is its operand.** Type check hands a value between an enrichment and
 its base, in either direction, wrapped in a `CastTag` with no `FlagConvert`: the
@@ -375,6 +384,12 @@ the built-in permissions are zero-sized. See [Generation](generation.md),
   the move handed over. That is the loop-carried move the table above lists as
   unenforced, in the one place it double-frees rather than leaks; it is the
   same in both regions.
+- **A variable moved out by only some of the values a block, an `if` or a loop
+  hands back is not deactivated at all**, so where that value goes to a new
+  holder the variable is finalized twice on the path that moved it:
+  `imm y = if c {a;} else {Inner[0];}` finalizes `a` in `y` and again at `a`'s
+  scope exit when `c` is true. Deactivating it would instead leak it on the
+  other path. Either way it needs the drop flag a conditional move needs.
 - **A variable initialized on only one path is released on every path**, because
   `VarInitialized` is the same kind of summary: once an assignment anywhere
   before the scope exit has set it, the exit releases the variable whether or
@@ -400,7 +415,7 @@ the built-in permissions are zero-sized. See [Generation](generation.md),
 | `ir/flow.c` | `flowLoadValue` | the walk's spine — tag dispatch for a value being read |
 | | `flowLoadThroughRef` | `MayRead` on the reference a value is read through; called from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` |
 | | `flowHandleMoveOrCopy` | move vs. alias, for a value going to a new holder |
-| | `flowHandleMove` | deactivate the source — each move-typed element's, for a tuple literal; refuse a move out of a global or out through a borrowed reference |
+| | `flowHandleMove` | deactivate the source — each move-typed element's, for a tuple literal; for a block or an `if`, what every value it hands back moves out of; refuse a move out of a global or out through a borrowed reference |
 | | `flowResultMove` | the same refusals for a returned value, deactivating nothing |
 | | `flowIsLvalRead` | the temporary-vs-lvalue test that makes counting correct |
 | | `flowInjectRefCountAmt` | wrap a counted reference, or a tuple carrying one, in a `RefCountNode` |

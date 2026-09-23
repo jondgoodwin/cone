@@ -19,16 +19,62 @@ static int flowIsBorrowedRef(INode *exp) {
         && itypeGetTypeDcl(reftype->region) == borrowRef;
 }
 
+// Add a variable to a list of the variables a move leaves without their value
+static void flowAddMoved(Nodes **moved, INode *vardcl) {
+    INode **nodesp;
+    uint32_t cnt;
+    if (*moved == NULL)
+        *moved = newNodes(4);
+    for (nodesFor(*moved, cnt, nodesp)) {
+        if (*nodesp == vardcl)
+            return;
+    }
+    nodesAdd(moved, vardcl);
+}
+
+static void flowMoveSource(INode *node, Nodes **moved);
+
+// Walk one of the values a block or an 'if' may hand back, narrowing 'common'
+// to the variables that every value walked so far moves out of ('first' says
+// none has been walked yet). With 'moved' NULL the walk only checks.
+static void flowMoveExit(INode *exp, Nodes **moved, Nodes **common, int *first) {
+    Nodes *these = NULL;
+    if (iexpIsMove(exp))
+        flowMoveSource(exp, moved ? &these : NULL);
+    if (moved == NULL)
+        return;
+    if (*first) {
+        *first = 0;
+        *common = these;
+        return;
+    }
+    Nodes *kept = NULL;
+    if (*common != NULL && these != NULL) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(*common, cnt, nodesp)) {
+            INode **thesep;
+            uint32_t thesecnt;
+            for (nodesFor(these, thesecnt, thesep)) {
+                if (*thesep == *nodesp)
+                    flowAddMoved(&kept, *nodesp);
+            }
+        }
+    }
+    *common = kept;
+}
+
 // Walk inwards from a moved value to its source: refuse a move out of a place
-// that does not own the value, and, when 'deactivate' is set, mark the source
-// variable moved. A value reached through a borrowed reference still belongs to
-// what was borrowed, so moving it out would leave two owners of one value.
-static void flowMoveSource(INode *node, int deactivate) {
-    // For a variable, mark its value as moved
+// that does not own the value, and, when 'moved' is given, add to it each
+// source variable the move leaves without its value. A value reached through a
+// borrowed reference still belongs to what was borrowed, so moving it out would
+// leave two owners of one value.
+static void flowMoveSource(INode *node, Nodes **moved) {
+    // For a variable, its value is what moves
     if (isNameUseNode(node) && isExpNode(node)) {
         VarDclNode *vardclnode = (VarDclNode *)((NameUseNode*)node)->dclnode;
-        if (deactivate)
-            vardclnode->flowtempflags |= VarMoved;
+        if (moved)
+            flowAddMoved(moved, (INode *)vardclnode);
         if (vardclnode->scope == 0) {
             errorMsgNode(node, ErrorInvType, "May not move a value out of a global variable.");
         }
@@ -46,7 +92,7 @@ static void flowMoveSource(INode *node, int deactivate) {
             errorMsgNode(node, ErrorMoveOut, "May not move a value out through a borrowed reference, which does not own it.");
             return;
         }
-        flowMoveSource(objfn, deactivate);
+        flowMoveSource(objfn, moved);
         break;
     }
     case DerefTag:
@@ -56,7 +102,7 @@ static void flowMoveSource(INode *node, int deactivate) {
             errorMsgNode(node, ErrorMoveOut, "May not move a value out through a borrowed reference, which does not own it.");
             return;
         }
-        flowMoveSource(ref, deactivate);
+        flowMoveSource(ref, moved);
         break;
     }
 
@@ -64,7 +110,7 @@ static void flowMoveSource(INode *node, int deactivate) {
     // base, which share one representation -- so moving it moves the operand
     case CastTag:
         if (!(node->flags & FlagConvert))
-            flowMoveSource(((CastNode*)node)->exp, deactivate);
+            flowMoveSource(((CastNode*)node)->exp, moved);
         break;
 
     // A tuple literal has no storage of its own: its sources are its elements,
@@ -75,39 +121,60 @@ static void flowMoveSource(INode *node, int deactivate) {
         uint32_t cnt;
         for (nodesFor(((TupleNode*)node)->elems, cnt, nodesp)) {
             if (iexpIsMove(*nodesp))
-                flowMoveSource(*nodesp, deactivate);
+                flowMoveSource(*nodesp, moved);
         }
         break;
     }
 
     // A block's value is what it hands back: its final expression and the value
     // of each break that leaves it. A 'return' leaves the function, not the block,
-    // and blockFlow checks it there. Where each value came from is checked, but
-    // no source is deactivated: that stays as it was before this walk reached in.
+    // and blockFlow checks it there. A loop's final expression is not one of
+    // them: it loops back. Where each value came from is checked, and a variable
+    // is moved out of only when every value the block can hand back moves it.
+    // One moved on only some of them is a conditional move, which is left as it
+    // was: moved-ness is kept per function, not per path, so marking it would
+    // leak it on the paths that leave it in place.
     case BlockTag:
     {
         BlockNode *blk = (BlockNode *)node;
+        Nodes *common = NULL;
+        int first = 1;
         INode **nodesp;
         uint32_t cnt;
         INode *last = blk->stmts->used > 0 ? nodesLast(blk->stmts) : NULL;
-        if (last != NULL && last->tag == BlockRetTag)
-            flowResultMove(((BreakRetNode *)last)->exp);
+        if (last != NULL && last->tag == BlockRetTag) {
+            if (blk->flags & FlagLoop)
+                flowResultMove(((BreakRetNode *)last)->exp);
+            else
+                flowMoveExit(((BreakRetNode *)last)->exp, moved, &common, &first);
+        }
         if (blk->breaks) {
             for (nodesFor(blk->breaks, cnt, nodesp)) {
                 if ((*nodesp)->tag == BreakTag)
-                    flowResultMove(((BreakRetNode *)*nodesp)->exp);
+                    flowMoveExit(((BreakRetNode *)*nodesp)->exp, moved, &common, &first);
             }
+        }
+        if (moved && common) {
+            for (nodesFor(common, cnt, nodesp))
+                flowAddMoved(moved, *nodesp);
         }
         break;
     }
-    // An 'if' is the value of whichever branch block runs
+    // An 'if' is the value of whichever branch block runs, so it moves out of
+    // what every branch moves out of, as a block does
     case IfTag:
     {
+        Nodes *common = NULL;
+        int first = 1;
         INode **nodesp;
         uint32_t cnt;
         for (nodesFor(((IfNode *)node)->condblk, cnt, nodesp)) {
             nodesp++; cnt--;
-            flowMoveSource(*nodesp, 0);
+            flowMoveExit(*nodesp, moved, &common, &first);
+        }
+        if (moved && common) {
+            for (nodesFor(common, cnt, nodesp))
+                flowAddMoved(moved, *nodesp);
         }
         break;
     }
@@ -120,7 +187,14 @@ static void flowMoveSource(INode *node, int deactivate) {
 
 // Deactivate source of a moved value (or say move is illegal)
 void flowHandleMove(INode *node) {
-    flowMoveSource(node, 1);
+    Nodes *moved = NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    flowMoveSource(node, &moved);
+    if (moved) {
+        for (nodesFor(moved, cnt, nodesp))
+            ((VarDclNode *)*nodesp)->flowtempflags |= VarMoved;
+    }
 }
 
 // Refuse a move-typed value a scope hands back -- a return's or a block's
@@ -129,7 +203,7 @@ void flowHandleMove(INode *node) {
 // flowScopeDealias instead.
 void flowResultMove(INode *node) {
     if (iexpIsMove(node))
-        flowMoveSource(node, 0);
+        flowMoveSource(node, NULL);
 }
 
 // Is this type a counted (rc) reference? An owning slice (ArrayRefTag) is

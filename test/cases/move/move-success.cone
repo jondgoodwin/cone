@@ -260,10 +260,70 @@ fn handedBack() {
   blockLocalFieldOut();
 }
 
+// -------- a value bound from a block, an if or a loop --------
+
+// A block, an 'if' or a loop used as a value gives what it hands back to the
+// variable bound to it, or to the call it is passed to, so its source is moved
+// out just as binding the source directly moves it, and is finalized once, by
+// its new holder. Each of these was finalized twice: there, and again at the
+// source's scope exit. Each function shows what it received before its scope
+// ends, so the one finalize that follows the line is its whole release.
+fn boundFromBlock() {
+  imm a = Noisy[120];
+  imm y = {a;};
+  show("bound-from-block", y.id);
+}
+
+fn boundFieldFromBlock() {
+  imm b = NoisyBox[Noisy[121], 1];
+  imm y = {b.inner;};
+  show("bound-field-from-block", y.id);
+}
+
+fn boundFromIf(pick Bool) {
+  imm a = Noisy[122];
+  imm y = if pick {a;} else {a;};
+  show("bound-from-if", y.id);
+}
+
+fn boundFieldFromIf(pick Bool) {
+  imm b = NoisyBox[Noisy[123], 1];
+  imm y = if pick {b.inner;} else {b.inner;};
+  show("bound-field-from-if", y.id);
+}
+
+fn boundFieldFromLoop() {
+  imm b = NoisyBox[Noisy[124], 1];
+  imm y = while {
+    if true {break b.inner;};
+  };
+  show("bound-field-from-loop", y.id);
+}
+
+fn takeNoisy(n Noisy) {
+}
+
+// Passed to a call, the value is finalized as the callee ends, before the line
+fn passedFromBlock() {
+  imm a = Noisy[125];
+  takeNoisy({a;});
+  show("passed-from-block", 125);
+}
+
+fn boundFrom() {
+  boundFromBlock();
+  boundFieldFromBlock();
+  boundFromIf(false);
+  boundFieldFromIf(true);
+  boundFieldFromLoop();
+  passedFromBlock();
+}
+
 fn main() i32 {
   moves();
   exchanges();
   copies();
   handedBack();
+  boundFrom();
   0i32;
 }
