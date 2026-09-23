@@ -592,7 +592,7 @@
             if (code !== null) {
                 session.setValue(code);
             } else {
-                session.setValue("// Hello, World!\n\nimport stdio.*;\n\nfn main() {\n  print <- \"Hello world!\";\n}\n");
+                session.setValue("// Hello, World!\n\nimport stdio use *;\n\nfn main() {\n  print <- \"Hello world!\";\n}\n");
             }
         }
 

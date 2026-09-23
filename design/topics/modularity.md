@@ -189,7 +189,8 @@ made reuse across package boundaries a language problem in the first place.
 **`import` composes; the folder gathers.** `import` binds another module's name —
 a sister found in the registry the enclosing module is, or a module loaded from a
 path — and a `use` clause folds its public names into the importer, selected,
-renamed or excluded as a global's clause does; `.*` is `use *`. Every binding it
+renamed or excluded as a global's clause does, and is the one spelling of an
+import's fold [Jon 23 Sep]. Every binding it
 makes carries a visibility of its own, so what a third module sees through this
 one is what this one wrote `pub import` or `pub use` for. A submodule is never
 imported, so its parent folds its names with a standalone `use` naming it, which

@@ -316,10 +316,11 @@ static ImportNode *parseImportName(ParseState *parse, ImportNode *importnode, Na
 // module's name here, and every name it folds in.
 //
 // What follows the module is a 'use' clause, the one a global carries: '*', a
-// list with 'as', a block, '* but', and 'pub use'. '.*' is 'use *' spelled the
-// older way. The two 'pub's cannot disagree because they do not overlap: 'pub
-// import' reaches every binding, and 'pub use' only the folds, so both together
-// ('pub import m pub use ...') say what 'pub import' says alone.
+// list with 'as', a block, '* but', and 'pub use'. The clause is the one
+// spelling of a fold: '.*' and '.name' are refused, naming it. The two 'pub's
+// cannot disagree because they do not overlap: 'pub import' reaches every
+// binding, and 'pub use' only the folds, so both together ('pub import m pub
+// use ...') say what 'pub import' says alone.
 ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
     // Create import node
     ImportNode *importnode = newImportNode();
@@ -332,29 +333,28 @@ ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
     char *filename = parseFilename();
     char *modstr = fileName(filename);
 
-    // Process name folding instructions
+    // Process name folding instructions. A '.' after the module is refused
+    // whatever follows it, and what it meant is passed over, so the statement
+    // still ends where it was written
     if (lexIsToken(DotToken)) {
         lexNextToken();
         if (lexIsToken(StarToken)) {
-            importnode->fold = newFoldClause();
-            importnode->fold->star = 1;
+            errorMsgLex(ErrorBadTerm, "An import does not fold with '.*': a wildcard import is written with a 'use' clause, as in 'import mod use *'.");
             lexNextToken();
+            // Read as the 'use *' it means, unless a clause follows to say otherwise
+            if (!parseIsFoldClause()) {
+                importnode->fold = newFoldClause();
+                importnode->fold->star = 1;
+            }
         }
         else {
-            errorMsgLex(ErrorBadTerm, "Expected '*' after '.': a selective import is written with a 'use' clause, as in 'import mod use a, b as c'.");
-            // The name meant is passed over, so the statement still ends where it was written
+            errorMsgLex(ErrorBadTerm, "An import does not name a member with '.': a selective import is written with a 'use' clause, as in 'import mod use a, b as c'.");
             if (lexIsToken(IdentToken))
                 lexNextToken();
         }
     }
-    if (parseIsFoldClause()) {
-        if (importnode->fold) {
-            errorMsgLex(ErrorBadFold, "'.*' already folds every public name of the module. Write the 'use' clause instead of it, not beside it.");
-            parseFoldClause(parse, FoldMayPub);
-        }
-        else
-            importnode->fold = parseFoldClause(parse, FoldMayPub);
-    }
+    if (parseIsFoldClause())
+        importnode->fold = parseFoldClause(parse, FoldMayPub);
     if (importnode->fold && pubflag)
         importnode->fold->ispub = 1;
     parseEndOfStatement();

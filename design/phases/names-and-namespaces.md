@@ -69,7 +69,7 @@ changing it.
 | C file | Name/namespace capability |
 | --- | --- |
 | `src/c-compiler/parser/parseexpr.c` | Parses a name as one identifier, and everything after a period as a member access — a path and a member of a value are the same production here. |
-| `src/c-compiler/parser/parsemod.c` | Parses module-level declarations, the `mod` declaration and its `extends`, `include`, and `import` with its `use` clause or `.*`; refuses a second import of one module, identical or differing; answers an import's name against the registry its parent is before the filesystem, and in a submodule holds a bare name neither answers as an import of a name of the parent, bound in the fold passes; loads/reuses modules by canonical path, draws the module tree, names each module, and establishes module hooks. |
+| `src/c-compiler/parser/parsemod.c` | Parses module-level declarations, the `mod` declaration and its `extends`, `include`, and `import` with its `use` clause, refusing `.*` and `.name` after the module; refuses a second import of one module, identical or differing; answers an import's name against the registry its parent is before the filesystem, and in a submodule holds a bare name neither answers as an import of a name of the parent, bound in the fold passes; loads/reuses modules by canonical path, draws the module tree, names each module, and establishes module hooks. |
 | `src/c-compiler/parser/parsetype.c` | Parses struct/trait/enum members and inserts fields, methods and an enum's variants into the type namespace; parses a module's standalone `use`, of an enum or a submodule (`parseModUse`), and the fold clause a field, a global and an import carry (`parseFoldClause`). |
 | `src/c-compiler/ir/stmt/program.c` | Owns the program's module list and the file registry, and runs name resolution in three walks: what every module's `extends` names, then every module's folds, then every module's body. |
 | `src/c-compiler/ir/stmt/module.c` | Owns module namespaces, inserts global declarations with duplicate checks, switches active module hooks, resolves and checks what a module's `extends` names (`modExtendsResolve`, `modExtendsCheckCycle`), puts a module's folded names in place dependency-first (`modFoldNames`) — what it extends, its imports', its globals' and its `use` statements' — and walks module declarations. |
@@ -267,7 +267,9 @@ Plain `import math` binds the imported module under the name it declares for its
 - `import math3d use * but Matrix;` — every public name but some.
 - `import math3d use { Point3 as Point, Vector3 };` — a block, for a long list.
 - `import math3d pub use *;` — the folds re-exported: public names of this module, carried on by a wildcard import of it, while `math3d` itself stays private here.
-- `import math3d.*;` — `use *` spelled the older way. Writing `.*` beside a clause is `ErrorBadFold`.
+- `import math3d use *;` — every public name.
+
+The clause is the one spelling of a fold [Jon 23 Sep]. `import math3d.*;` and `import math3d.Point3;` are `ErrorBadTerm`, each message naming the clause to write.
 
 Any category of name folds, subject to the importing namespace's single collision domain. What the clause may name and admit:
 

@@ -350,7 +350,7 @@ static FieldDclNode *parseUseSibling(ParseState *parse) {
 // by default, a list with 'as', a block, or every name 'but' some.
 //
 // 'pub use' makes the bindings public names of this module, so a module that
-// imports this one with '.*' receives them too. It is how core makes Some, None,
+// imports this one with 'use *' receives them too. It is how core makes Some, None,
 // Ok and Error bare in every program. The 'pub' is read with the statement's
 // other leading words, before the 'use', and arrives as 'pubflag'.
 //

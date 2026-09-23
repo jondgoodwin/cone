@@ -45,7 +45,7 @@
 typedef struct ImportNode {
     INodeHdr;
     ModuleNode *module;
-    FoldClause *fold;   // The names its 'use' clause folds in ('.*' is 'use *'), or NULL for none
+    FoldClause *fold;   // The names its 'use' clause folds in, or NULL for none
     struct AliasDclNode *binding; // An import of a name of the parent: the alias it binds, bound in the fold passes; else NULL
     uint16_t ispub;     // 'pub import': the module's own binding is public here
     uint16_t isextends; // The fold a module's 'extends' makes, rather than an import statement

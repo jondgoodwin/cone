@@ -90,8 +90,8 @@ the source declared that name or folded it in.
 `FoldClause` of its `use` clause, or NULL where the import folds nothing, and
 `ispub`, the visibility of the module's own binding. The clause is a global's
 exactly, parsed by `parseFoldClause`: `*`, `* but`, a list with `as`, a block, and
-`pub use`; `.*` after the module is `use *` spelled the older way, and writing it
-beside a clause is `ErrorBadFold`. **Two `pub`s, and they do not overlap:**
+`pub use`. The clause is the one spelling of a fold [Jon 23 Sep]: a period after
+the module is refused (below). **Two `pub`s, and they do not overlap:**
 `pub` before the statement sets the node's `ispub` and the clause's, so it makes
 every binding the import creates public — the module's own name and each fold —
 where `pub use` sets only the clause's. `pub import m pub use …` therefore says
@@ -412,7 +412,7 @@ module is denied it.
 That asymmetry is the whole of the separate-compilation gap, and both sides of
 it are visible in emitted IR:
 
-- `import stdio.*` emits `stdio.print` **and definitions** for
+- `import stdio use *` emits `stdio.print` **and definitions** for
   `stdio.IOStream.appendStr` and its siblings, all internal. The multi-module
   generation path works, and is exercised on every compile that prints.
 - Importing an ordinary module emits **only `declare`s** —
@@ -434,10 +434,11 @@ definitions those declarations name. How a symbol is spelled from its
 declaration, and the linkage it gets, is
 [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols".
 
-`parseImport` accepts a period only when `*` follows it — anything else after it
-is `ErrorBadTerm`, whose message names the `use` clause, since a selective import
-is spelled with one — and then answers the name **in two places, the registry
-first**:
+`parseImport` refuses a period after the module, `ErrorBadTerm` whose message
+names the `use` clause: `.*` is a wildcard import, spelled `use *`, and `.name` a
+selective one, spelled with a list. `.*` is read as the `use *` it means, or
+passed over where a clause follows it, so one error is all it costs. It then
+answers the name **in two places, the registry first**:
 
 - **The registry.** Where the written name is a bare identifier and the importing
   module has a parent, `parseImportRegistry` looks the name up in the parent's
@@ -1028,7 +1029,7 @@ a `mod name { ... }` block is refused, `ErrorUnbuiltKind` — no package, no man
 `mod trait` holds the spelling of a module's abstraction against the day there is
 something behind it; `import` takes a file path where the registry has no answer, and
 folds with a `use` clause — selecting, renaming and excluding as a global's
-clause does — or with `.*`, which is `use *`. A module that is one file is
+clause does. A module that is one file is
 still named after that file, and its declaration still renames it. Sections and
 COMDATs are not emitted per function. What does work is the multi-module
 *generation* path, exercised by `stdio` on every compile that prints, and folding
