@@ -232,6 +232,11 @@ enum ErrorCode {
     // A path through an abstraction: 'Trait.name', 'Enum.name'
     ErrorAbstractMeth = 1118,   // A trait's or enum's method named through it, which owns no code for it: each implementer or variant owns a copy
 
+    // Comparing references: '==' and ordering read through to the values, '===' asks whether they are the same place
+    ErrorRefNoCompare = 1119,   // '==', '!=' or an ordering on references whose referent has no such operator, or on a slice or virtual reference, whose referents have no comparison built
+    ErrorRefCompareMixed = 1120, // A comparison with a reference on one side and a value on the other: both are read through, or neither
+    ErrorSameNotRef = 1121,     // '===' or '!==' on a value that is neither a reference nor a pointer, which has no place to be the same as
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

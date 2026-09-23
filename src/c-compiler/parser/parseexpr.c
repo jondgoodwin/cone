@@ -607,6 +607,8 @@ char *parseCmpOp() {
     switch (lex->toktype) {
     case EqToken:  return "==";
     case NeToken:  return "!=";
+    case SameToken:    return "===";
+    case NotSameToken: return "!==";
     case LtToken:  return "<";
     case LeToken:  return "<=";
     case GtToken:  return ">";

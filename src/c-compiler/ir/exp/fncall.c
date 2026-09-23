@@ -730,10 +730,9 @@ int fnCallLowerMethod(FnCallNode *callnode) {
     // has to be written, because the alternative is two lines that look alike doing
     // different things: a pointer declares its own '+', so 'p + 2' offsets it, while
     // it declares no '*', so 'p * 2' would quietly become '(*p) * 2'. It is an error
-    // again, as it was in C. Only a pointer narrows. A reference's comparisons are
-    // its own identity operators, which refType declares and fnCallLowerPtrMethod
-    // selects before ever arriving here, and its arithmetic reaching the value's is
-    // by design.
+    // again, as it was in C. Only a pointer narrows. A reference's arithmetic
+    // reaching the value's is by design, and so is its comparison, which
+    // fnCallLowerRefCompare reads through on both sides before arriving here.
     int opOnPointer = (callnode->flags & FlagOperator) && iexpGetTypeDcl(obj)->tag == PtrTag;
     if (selected == NULL && status == OverloadNone && !opOnPointer && derefInject(&callnode->objfn)) {
         selected = iNsTypeFindMethod(foundnode, &callnode->objfn, callnode->args, &status);
@@ -838,6 +837,107 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
         callnode->vtype = t_type;  // Generic substitution for T
     }
     return 1;
+}
+
+// The operator an operator application names, or NULL for any other call
+static Name *fnCallOperatorName(FnCallNode *node) {
+    if (!(node->flags & FlagOperator) || node->methfld == NULL || !isNameUseNode(node->methfld))
+        return NULL;
+    return ((NameUseNode*)node->methfld)->namesym;
+}
+
+// Is this one of the comparisons a reference reads through to its referent for:
+// '==', '!=' and the four orderings?
+static int fnCallIsValueCompare(Name *op) {
+    return op == eqName || op == neName || op == ltName || op == leName || op == gtName || op == geName;
+}
+
+// Does a value of this type have a place that '===' can ask about?
+static int fnCallHasPlace(INode *type) {
+    return type->tag == RefTag || type->tag == VirtRefTag || type->tag == ArrayRefTag || type->tag == PtrTag;
+}
+
+// Refuse a comparison through a reference whose referent offers none
+static void fnCallRefNoCompare(FnCallNode *node, Name *op, char *why) {
+    errorMsgNode((INode*)node, ErrorRefNoCompare,
+        (op == eqName || op == neName)
+            ? "`%s` on references compares the values they refer to, and %s. Use `===` to ask whether two references point to the same place."
+            : "`%s` on references compares the values they refer to, and %s. References have no order of their own.",
+        &op->namestr, why);
+    node->vtype = errorType;
+}
+
+// Read through one operand of a comparison, positioned on the comparison
+static void fnCallDerefOperand(INode **operandp, FnCallNode *node) {
+    derefInject(operandp);
+    inodeLexCopy(*operandp, (INode*)node);
+}
+
+// '==', '!=' or an ordering written on a reference compares what it refers to.
+// A reference reads as its value everywhere else -- 'r.x', 'r.method()' -- so a
+// comparison does too; '===' is what asks whether two references are the same
+// place, and refType declares only that. A raw pointer is the exception, whose
+// operators are on the pointer (the retry in fnCallLowerMethod says why).
+//
+// Both operands must be references. A reference compared with a value is refused
+// rather than read through on one side only, so 'r == v' never says something
+// '*r == v' does not.
+//
+// A referent type that declares the operator for references ('self &', 'other &T')
+// takes the operands as they are. Otherwise both are dereferenced and the value's
+// operator selected, exactly as for '*a == *b'. A reference to a pointer or to
+// another reference reads through to that, which then compares as it would by value.
+static void fnCallLowerRefCompare(FnCallNode *node) {
+    Name *op = ((NameUseNode*)node->methfld)->namesym;
+    RefNode *reftype = (RefNode*)iexpGetTypeDcl(node->objfn);
+    INode **argp = &nodesGet(node->args, 0);
+    if (iexpGetTypeDcl(*argp)->tag != RefTag) {
+        errorMsgNode((INode*)node, ErrorRefCompareMixed,
+            "`%s` on a reference compares the value it refers to, so the other side must be a reference too. Dereference the reference (`*r`) to compare it with a value.",
+            &op->namestr);
+        node->vtype = errorType;
+        return;
+    }
+
+    INode *referent = itypeGetTypeDcl(reftype->vtexp);
+    if (referent->tag == PtrTag || referent->tag == RefTag) {
+        fnCallDerefOperand(&node->objfn, node);
+        fnCallDerefOperand(argp, node);
+        if (referent->tag == RefTag)
+            fnCallLowerRefCompare(node);
+        else
+            fnCallLowerPtrMethod(node, ptrType);
+        return;
+    }
+    if (!isMethodType(referent)) {
+        fnCallRefNoCompare(node, op, "the type they refer to has no comparison");
+        return;
+    }
+    // A trait's method is dispatched on the variant, and neither dispatch nor a
+    // load of a trait's value is what a comparison can build here. An enum is
+    // flagged a trait too, but is a value of one size with its own '=='.
+    if ((referent->flags & TraitType) && !(referent->flags & EnumType)) {
+        fnCallRefNoCompare(node, op, "comparing what a reference to a trait refers to is not built");
+        return;
+    }
+    INode *found = iNsTypeFindFnField((INsTypeNode*)referent, op);
+    if (found && found->tag == AliasDclTag)
+        found = aliasDclResolve(found);
+    if (!found || !(found->tag == FnDclTag || found->tag == FnOverloadDclTag) || !(found->flags & FlagMethFld)) {
+        fnCallRefNoCompare(node, op, "the type they refer to declares no such operator");
+        return;
+    }
+
+    // A candidate declared for references matches the operands as written; only
+    // when none does are both read through. Selection itself, and any ambiguity,
+    // is fnCallLowerMethod's.
+    fnCallDemandCandidates(found);
+    enum OverloadMatch status;
+    if (iNsTypeFindMethod(found, &node->objfn, node->args, &status) == NULL && status == OverloadNone) {
+        fnCallDerefOperand(&node->objfn, node);
+        fnCallDerefOperand(argp, node);
+    }
+    fnCallLowerMethod(node);
 }
 
 // The receiver is a plain reference to a trait (or union) and the name it calls
@@ -1204,6 +1304,19 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         }
     }
 
+    // '===' and '!==' ask whether two references are the same place, which a value
+    // that is neither a reference nor a pointer does not have. Refused here, ahead
+    // of the dispatch, because a type's own namespace is not asked: identity is not
+    // an operator a type declares.
+    Name *opname = fnCallOperatorName(node);
+    if ((opname == sameName || opname == notSameName) && !fnCallHasPlace(objtype)) {
+        errorMsgNode((INode*)node, ErrorSameNotRef,
+            "`%s` asks whether two references point to the same place, and this is not a reference or a pointer. Use `%s` to compare values.",
+            &opname->namestr, opname == sameName ? "==" : "!=");
+        node->vtype = errorType;
+        return;
+    }
+
     // Dispatch for correct handling based on the type of the object
     switch (objtype->tag) {
     // Pure function call
@@ -1245,6 +1358,8 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     case ArrayRefTag:
         if (node->flags & FlagIndex)
             fnCallArrIndex(node);
+        else if (fnCallIsValueCompare(opname))
+            fnCallRefNoCompare(node, opname, "comparing two slices element by element is not built");
         else if (node->methfld && fnCallLowerPtrMethod(node, arrayRefType))
             ;
         else
@@ -1274,7 +1389,9 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                 Name *methname = node->flags & FlagIndex ? (node->flags & FlagBorrow ? refIndexName : indexName) : parensName;
                 node->methfld = (INode*)newMemberUseNode(methname);
             }
-            if (fnCallLowerPtrMethod(node, refType) == 0) {
+            if (fnCallIsValueCompare(opname))
+                fnCallLowerRefCompare(node);
+            else if (fnCallLowerPtrMethod(node, refType) == 0) {
                 // Lower to a field access or function call, dereferencing the receiver
                 // where that is what the selected method wants. fnCallLowerMethod cannot
                 // answer 0 here, having already been told the deref type supports methods.
@@ -1293,7 +1410,9 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
     // Virtual reference
     case VirtRefTag: {
-        if (node->methfld) {
+        if (fnCallIsValueCompare(opname))
+            fnCallRefNoCompare(node, opname, "comparing what two virtual references refer to is not built");
+        else if (node->methfld) {
             if (fnCallLowerPtrMethod(node, refType) == 0) {
                 node->flags |= FlagVDisp;
                 fnCallLowerMethod(node);

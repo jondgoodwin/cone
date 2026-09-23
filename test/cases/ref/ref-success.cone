@@ -11,7 +11,9 @@
 // them appear here. Struct owns structs; Pair and Nest exist only because
 // borrowing part of a value needs a value with parts, and two fields is the
 // fewest that can also give a defined address ordering. Nest adds one level so
-// a borrow can be shown reaching through a chain of fields.
+// a borrow can be shown reaching through a chain of fields. Coin, Card and Suit
+// exist only because comparing two references reads through to the values'
+// own '==', and each declares it a different way.
 
 import stdio.*;
 
@@ -23,6 +25,29 @@ struct Pair {
 struct Nest {
   pub pair Pair;
 }
+
+// '==' declared on the value, which a comparison of references reaches by
+// reading through both sides
+struct Coin {
+  pub cents i32;
+  pub fn `==`(self, other Coin) Bool {
+    cents == other.cents;
+  }
+}
+
+// '==' declared on references, which a comparison of references takes as it is
+struct Card {
+  pub rank i32;
+  pub fn `==`(self &, other &Card) Bool {
+    rank == other.rank;
+  }
+}
+
+// An enum's '==' is its tag, declared by the compiler
+enum Suit {
+  Hearts, Spades;
+}
+use Suit;
 
 fn show(label &[]u8, n i64) {
   printStr(label);
@@ -199,11 +224,13 @@ fn permissions() {
   show("opaq-perm-borrows", ignoresValue(&opaq source));
 
   // ... and it may still be held, copied, compared and passed on, which is
-  // everything a reference that reads nothing is for
+  // everything a reference that reads nothing is for. Compared for identity:
+  // '===' asks where the references point and reads nothing there, where '=='
+  // would read the values and is refused (ref-flow).
   imm hidden = &opaq source;
   imm alsoHidden = hidden;
   mut compared = 0;
-  if hidden == alsoHidden { compared = ignoresValue(alsoHidden); }
+  if hidden === alsoHidden { compared = ignoresValue(alsoHidden); }
   show("opaq-perm-held-and-compared", compared);
 
   // A 'mut' reference coerces to the 'ro' a reading function asks for, which
@@ -321,8 +348,8 @@ fn compares() {
   imm alias = &a;
   imm second = &b;
 
-  // References compare by the address they carry, so two borrows of one
-  // variable are equal and a borrow of another is not
+  // '==' on references compares the values they refer to, as every other use
+  // of a reference reads through it. 'a' holds 1 and 'b' holds 2.
   mut n = 0;
   if first == alias { n = n + 1; }
   if first != second { n = n + 2; }
@@ -330,12 +357,13 @@ fn compares() {
   if first != alias { n = n + 8; }
   show("ref-equality-bits", n);
 
-  // The block above cannot tell address comparison from value comparison: 'a'
+  // The block above cannot tell value comparison from address comparison: 'a'
   // and 'b' hold different numbers, so both readings answer the same. This one
   // separates them. 'twinA' and 'twinB' are distinct variables holding the SAME
-  // number, so identity says the two references are unequal while a '==' that
-  // read through to the values would say they are equal. The equal values are
-  // the whole assertion -- make them differ and the case stops discriminating.
+  // number, so '==' reading through says the references are equal while
+  // identity would say they are not: 2 here, 1 by address. The equal values
+  // are the whole assertion -- make them differ and the case stops
+  // discriminating.
   mut twinA = 5;
   mut twinB = 5;
   imm twin1 = &twinA;
@@ -343,11 +371,20 @@ fn compares() {
   mut d = 0;
   if twin1 != twin2 { d = d + 1; }
   if twin1 == twin2 { d = d + 2; }
-  show("ref-equality-is-identity-not-value", d);
+  show("ref-equality-is-value-not-identity", d);
 
-  // Ordering compares the same addresses. Two locals have no defined order
-  // relative to each other, but two fields of one struct do, so the ordered
-  // pair is borrowed from within a single value.
+  // '===' asks the other question: do the two references point to the same
+  // place? The same twins, whose equal values it ignores, and two borrows of
+  // one variable, which it answers yes for.
+  mut s = 0;
+  if first === alias { s = s + 1; }
+  if twin1 !== twin2 { s = s + 2; }
+  if twin1 === twin2 { s = s + 4; }
+  if first !== alias { s = s + 8; }
+  show("ref-identity-bits", s);
+
+  // Ordering reads through too. Two fields of one struct, so that their
+  // addresses have a defined order to disagree with.
   mut p = Pair[1, 2];
   imm low = &(p.x);
   imm high = &(p.y);
@@ -360,8 +397,8 @@ fn compares() {
 
   // And the same separation for ordering. 'rev.x' sits at the lower address but
   // holds the LARGER number, so address order and value order disagree on every
-  // one of the four: by address this is the same 7 as above, by value it would
-  // be 8. Restoring an ascending pair would quietly cost the distinction.
+  // one of the four: by value this is 8, by address it would be the same 7 as
+  // above. Restoring an ascending pair would quietly cost the distinction.
   mut rev = Pair[9, 4];
   imm revlow = &(rev.x);
   imm revhigh = &(rev.y);
@@ -370,7 +407,47 @@ fn compares() {
   if revhigh > revlow { r = r + 2; }
   if revlow <= revhigh { r = r + 4; }
   if revlow >= revhigh { r = r + 8; }
-  show("ref-ordering-is-identity-not-value", r);
+  show("ref-ordering-is-value-not-address", r);
+
+  // A struct's own '==', declared on the value: both references are read
+  // through. Two distinct coins of equal worth are equal, which identity would
+  // deny; Coin declares no '!=', so the unequal pair is tested with 'not'.
+  imm dime1 = Coin[10];
+  imm dime2 = Coin[10];
+  imm quarter = Coin[25];
+  mut c = 0;
+  if &dime1 == &dime2 { c = c + 1; }
+  if not &dime1 == &quarter { c = c + 2; }
+  show("ref-struct-value-equality-bits", c);
+
+  // ... and declared on references, which takes the operands as they are
+  imm seven1 = Card[7];
+  imm seven2 = Card[7];
+  imm eight = Card[8];
+  mut k = 0;
+  if &seven1 == &seven2 { k = k + 1; }
+  if not &seven1 == &eight { k = k + 2; }
+  show("ref-struct-ref-equality-bits", k);
+
+  // An enum's '==' is its tag, and it declares '!=' as well
+  imm hearts1 Suit = Hearts[];
+  imm hearts2 Suit = Hearts[];
+  imm spades Suit = Spades[];
+  mut e = 0;
+  if &hearts1 == &hearts2 { e = e + 1; }
+  if &hearts1 != &spades { e = e + 2; }
+  if &hearts1 == &spades { e = e + 4; }
+  show("ref-enum-equality-bits", e);
+
+  // A reference to a reference reads through both levels to the twins' equal
+  // numbers, while '===' asks about the outer references, which point at two
+  // different variables
+  imm outer1 = &twin1;
+  imm outer2 = &twin2;
+  mut o = 0;
+  if outer1 == outer2 { o = o + 1; }
+  if outer1 === outer2 { o = o + 2; }
+  show("ref-to-ref-equality-bits", o);
 }
 
 fn main() i32 {

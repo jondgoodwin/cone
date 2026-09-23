@@ -154,9 +154,14 @@ INsTypeNode *newPtrTypeMethods() {
     Name *parm2 = nametblFind("b", 1);
     nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidptr, newPermUseNode(immPerm), NULL));
 
-    // Comparison operators
+    // Comparison operators. A pointer's are on the pointer, never on what it
+    // points to, so its '==' already asks whether two pointers are the same
+    // place, and '===' -- the question a reference has to spell differently --
+    // is a synonym for it here.
     iNsTypeAddFn((INsTypeNode*)ptrtypenode, newFnDclNode(eqName, FlagMethFld | FlagPub,(INode *)cmpsig, (INode *)newIntrinsicNode(EqIntrinsic)));
     iNsTypeAddFn((INsTypeNode*)ptrtypenode, newFnDclNode(neName, FlagMethFld | FlagPub,(INode *)cmpsig, (INode *)newIntrinsicNode(NeIntrinsic)));
+    iNsTypeAddFn((INsTypeNode*)ptrtypenode, newFnDclNode(sameName, FlagMethFld | FlagPub,(INode *)cmpsig, (INode *)newIntrinsicNode(EqIntrinsic)));
+    iNsTypeAddFn((INsTypeNode*)ptrtypenode, newFnDclNode(notSameName, FlagMethFld | FlagPub,(INode *)cmpsig, (INode *)newIntrinsicNode(NeIntrinsic)));
     iNsTypeAddFn((INsTypeNode*)ptrtypenode, newFnDclNode(ltName, FlagMethFld | FlagPub,(INode *)cmpsig, (INode *)newIntrinsicNode(LtIntrinsic)));
     iNsTypeAddFn((INsTypeNode*)ptrtypenode, newFnDclNode(leName, FlagMethFld | FlagPub,(INode *)cmpsig, (INode *)newIntrinsicNode(LeIntrinsic)));
     iNsTypeAddFn((INsTypeNode*)ptrtypenode, newFnDclNode(gtName, FlagMethFld | FlagPub,(INode *)cmpsig, (INode *)newIntrinsicNode(GtIntrinsic)));
@@ -232,13 +237,11 @@ INsTypeNode *newRefTypeMethods() {
     nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidref, newPermUseNode(immPerm), NULL));
     nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidref, newPermUseNode(immPerm), NULL));
 
-    // Comparison operators
-    iNsTypeAddFn((INsTypeNode*)reftypenode, newFnDclNode(eqName, FlagMethFld | FlagPub,(INode *)cmpsig, (INode *)newIntrinsicNode(EqIntrinsic)));
-    iNsTypeAddFn((INsTypeNode*)reftypenode, newFnDclNode(neName, FlagMethFld | FlagPub,(INode *)cmpsig, (INode *)newIntrinsicNode(NeIntrinsic)));
-    iNsTypeAddFn((INsTypeNode*)reftypenode, newFnDclNode(ltName, FlagMethFld | FlagPub,(INode *)cmpsig, (INode *)newIntrinsicNode(LtIntrinsic)));
-    iNsTypeAddFn((INsTypeNode*)reftypenode, newFnDclNode(leName, FlagMethFld | FlagPub,(INode *)cmpsig, (INode *)newIntrinsicNode(LeIntrinsic)));
-    iNsTypeAddFn((INsTypeNode*)reftypenode, newFnDclNode(gtName, FlagMethFld | FlagPub,(INode *)cmpsig, (INode *)newIntrinsicNode(GtIntrinsic)));
-    iNsTypeAddFn((INsTypeNode*)reftypenode, newFnDclNode(geName, FlagMethFld | FlagPub,(INode *)cmpsig, (INode *)newIntrinsicNode(GeIntrinsic)));
+    // Identity: do two references point to the same place? A reference's '=='
+    // and ordering read through it to the value's, as every other use of a
+    // reference does, so identity is the only comparison a reference owns.
+    iNsTypeAddFn((INsTypeNode*)reftypenode, newFnDclNode(sameName, FlagMethFld | FlagPub,(INode *)cmpsig, (INode *)newIntrinsicNode(EqIntrinsic)));
+    iNsTypeAddFn((INsTypeNode*)reftypenode, newFnDclNode(notSameName, FlagMethFld | FlagPub,(INode *)cmpsig, (INode *)newIntrinsicNode(NeIntrinsic)));
 
     return reftypenode;
 }
@@ -270,9 +273,10 @@ INsTypeNode *newArrayRefTypeMethods() {
     nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidref, newPermUseNode(immPerm), NULL));
     nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidref, newPermUseNode(immPerm), NULL));
 
-    // Comparison operators
-    iNsTypeAddFn((INsTypeNode*)reftypenode, newFnDclNode(eqName, FlagMethFld | FlagPub,(INode *)cmpsig, (INode *)newIntrinsicNode(EqIntrinsic)));
-    iNsTypeAddFn((INsTypeNode*)reftypenode, newFnDclNode(neName, FlagMethFld | FlagPub,(INode *)cmpsig, (INode *)newIntrinsicNode(NeIntrinsic)));
+    // Identity: the same data address and the same length. A slice's '==' would
+    // compare its elements, which is not built, and is refused by type check.
+    iNsTypeAddFn((INsTypeNode*)reftypenode, newFnDclNode(sameName, FlagMethFld | FlagPub,(INode *)cmpsig, (INode *)newIntrinsicNode(EqIntrinsic)));
+    iNsTypeAddFn((INsTypeNode*)reftypenode, newFnDclNode(notSameName, FlagMethFld | FlagPub,(INode *)cmpsig, (INode *)newIntrinsicNode(NeIntrinsic)));
 
     return reftypenode;
 }

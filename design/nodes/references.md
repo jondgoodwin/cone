@@ -233,8 +233,11 @@ reference — `derefFlow`, `fnCallArrIndexFlow`, and `fnCallFldAccessFlow` for a
 virtual reference, which has no dereference injected — and `ErrorNoRead`
 refuses the read; `opaq` is the permission that fails it. `assignlvalrtype` and
 `swapFlow` ask `iexpGetLvalInfo` for `MayWrite` on the write side. Holding,
-copying, comparing and passing a reference never read through it, so an `opaq`
-reference does all of those.
+copying, comparing for identity (`===`) and passing a reference never read
+through it, so an `opaq` reference does all of those. `==` and the orderings
+do read through — type check injects a dereference on both operands
+([fncall](fncall.md), "A comparison on a reference") — so on an `opaq`
+reference they are `ErrorNoRead`.
 
 **The `scope` a borrow recorded is enforced at three consumers, none of them
 the borrow site**: `assignlvalrtype` when a borrow is stored into a

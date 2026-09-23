@@ -155,6 +155,10 @@ tightest, in `parseexpr.c`:
   into `parseAnyExpr` for the right-hand side, as do `:=`, `<=>` and every
   op-assign form.
 
+`parseCmpOp` is the comparison level's one list of operators — `==`, `!=`,
+`===`, `!==` and the four orderings — and a `match` pattern reads the same list
+(section 6). The lexer takes `===` and `!==` whole ahead of `==` and `!=`.
+
 Two entry points: `parseAnyExpr` (= `parseAssign`) is the full expression;
 `parseSimpleExpr` (= `parseOrExpr`) excludes comma and assignment and is what
 arguments, conditions and array elements use.
