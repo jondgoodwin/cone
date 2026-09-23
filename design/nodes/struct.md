@@ -380,7 +380,20 @@ inherited member bare, exactly as it names the type's own.
    check begins, so nothing can look the name up too early. **An extension's waits
    for step 4c**, because which comparison it gets depends on whether any variant in
    the whole set — its base's included — carries fields.
-2. Push the hook table.
+2. Push the hook table. **A variant pushes one more first, beneath it, and hooks its
+   enum's namespace there** (`structEnclosingEnum`, from the variant's owner;
+   `structHookEnclosingEnum`), all of it but the methods a value answers, which the
+   variant has as its own clones — a generic enum's only once an instance is type
+   checked, so those are not bare in a generic variant's bodies:
+   anything written inside an enum's braces sees every name the enum declares bare,
+   and a variant's body is written there, but a variant is a module node resolved on
+   its own, so the enum's hooking at step 7 never reaches it. Beneath, so every name
+   the variant hooks itself — `Self`, its generic parameters, its fields and
+   methods, what it inherits — wins a clash with one of the enum's. The enum is
+   demanded before it is hooked, because an extension's namespace holds its copies
+   only once it is resolved (step 4c). Both frames are popped at the end. An
+   extension's copy of a base's variant never reaches here: it is cloned resolved,
+   so its bodies keep what they bound in the base's scope.
 3. Resolve generic parameters **inside** the push — resolving one hooks it, so
    doing it beforehand would bind it in the enclosing scope and the matching pop
    would never remove it.
@@ -422,7 +435,8 @@ inherited member bare, exactly as it names the type's own.
    ahead of step 4, in fact, since a field's type may name it. This is what
    `parseFnSig`'s `Self` inference for a method parameter depends on.
 7. Hook the whole namespace. An enum's holds its variants, so the enum's own
-   method bodies name them bare with no `use`.
+   method bodies name them bare with no `use`; a variant's bodies have the same
+   names from the frame step 2 hooked beneath its own.
 8. **Walk the fields backwards** — so that splicing does not move a field not
    yet reached — resolving each ordinary field and **expanding each placeholder
    whose base is resolved** (`structInheritTrait`, under a clone state whose

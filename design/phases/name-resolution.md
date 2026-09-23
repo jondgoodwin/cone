@@ -323,7 +323,7 @@ next pass a null to trip over.
 | `ir/exp/block.c` | `blockNameRes`, `blockContinueStep` | scope push/pop, lifetime labels, jump placement, the one re-entry |
 | `ir/stmt/vardcl.c` | `varDclNameRes` | value before name; duplicate check; local hooking and `scope` stamping |
 | `ir/stmt/fndcl.c` | `fnDclNameRes` | generic parms, signature, body with parms hooked at scope 1 |
-| `ir/types/struct.c` | `structNameRes` | `Self` → base trait → traits and fold sources demanded → namespace hooked → fields, each trait's members spliced in and hooked → fields indexed → each fold clause expanded and hooked → the type's own methods |
+| `ir/types/struct.c` | `structNameRes` | for a variant, its enum demanded and its namespace hooked beneath the variant's → `Self` → base trait → traits and fold sources demanded → namespace hooked → fields, each trait's members spliced in and hooked → fields indexed → each fold clause expanded and hooked → the type's own methods |
 | | `structNameResDemand`, `structInheritTrait` | resolve a trait or a fold's source type ahead of the walk, in its own module's scope; copy a trait's members into the type |
 | | `structEnumWrittenBase`, `structEnumSeedVariants`, `structEnumCopyVariant`, `structEnumDemandSet` | check what an enum's `extends` names, a generic base with its arguments; copy the base's resolved variants into the extension, substituting a generic base's parameters; resolve an extension from a fold or a path that needs its copies |
 | | `structFoldExpand` | expand a field's `use` clause: a copy per folded field, an alias per folded method, entered and hooked — [struct](../nodes/struct.md), "Name folding" |
