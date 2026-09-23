@@ -175,8 +175,9 @@ static void importFoldItem(ModuleNode *mod, ImportNode *import, AliasDclNode *al
         return;
     }
     // Only what the source module shows folds. A binding's own visibility is what
-    // is read, so a name the source itself folded in privately does not travel
-    if (inodeIsPrivate(found)) {
+    // is read, so a name the source itself folded in privately does not travel.
+    // A module extending the source is inside its boundary and takes every name
+    if (inodeIsPrivate(found) && !import->isextends) {
         errorMsgNode((INode*)alias, ErrorNotPublic, "%s is private to %s, so it does not fold.",
             &srcname->namestr, &src->namesym->namestr);
         return;
@@ -198,23 +199,15 @@ static void importFoldItem(ModuleNode *mod, ImportNode *import, AliasDclNode *al
     // nothing but the visibility rule: what a third module sees through this one
     // is what this one re-exported. A listed item was parsed as a member alias,
     // so neither of the bits it starts with is this binding's: it is reached
-    // with no receiver, and its visibility is the import's
+    // with no receiver, and its visibility is the import's. What a module's
+    // 'extends' folds is as visible here as it is in the base: public names stay
+    // public, as part of this module's surface, and private ones stay private
     alias->flags &= 0xffff - (FlagPub | FlagMethFld);
-    if (fold->ispub)
+    if (import->isextends ? !inodeIsPrivate(found) : fold->ispub)
         alias->flags |= FlagPub;
-    // A star clause passes over this module's OWN declaration come back to it
-    // under its own name: the source only holds it because it reused this
-    // module's names -- a module that extends this one, most often -- and it is
-    // bound here already, as itself. Whether the source had taken it yet depends
-    // on which of the two was folded first, so refusing it would let the load
-    // order decide whether a program compiles
-    if (fold->star) {
-        INode *mine = namespaceFind(&mod->namespace, alias->namesym);
-        INode *dcl = aliasDclResolve(found);
-        if (mine != NULL && dcl != NULL && mine == dcl && dclInfoGetModule(dcl) == mod)
-            return;
-    }
-    INode *prior = namespaceAdd(&mod->namespace, alias->namesym, (INode*)alias);
+    // The same declaration reached a second time, by any route, is the binding
+    // the name has already, and is no collision (modFoldBind)
+    INode *prior = modFoldBind(mod, alias);
     if (prior && import->isextends) {
         // A module that extends another ADDS to it, as a type that extends one
         // does: a name of the base redeclared here would make one name of this
@@ -232,13 +225,10 @@ static void importFoldItem(ModuleNode *mod, ImportNode *import, AliasDclNode *al
                 &alias->namesym->namestr, &src->namesym->namestr);
         return;
     }
-    if (prior) {
+    if (prior)
         errorMsgNode((INode*)alias, ErrorDupName,
             "%s is already a name of this module. A folded name must be unique: rename it with 'as', or leave it out with 'but'.",
             &alias->namesym->namestr);
-        return;
-    }
-    nametblHookNode(alias->namesym, (INode*)alias);
 }
 
 // Fold the names this import admits into the importing module's namespace.
@@ -255,7 +245,8 @@ void importNameRes(NameResState *pstate, ImportNode *node) {
         return;
     node->fold->expanded = 1;
     if (node->fold->star)
-        foldStarItems(&src->namespace, src->namesym, node->fold, FoldAdmitNames);
+        foldStarItems(&src->namespace, src->namesym, node->fold,
+            node->isextends ? FoldAdmitBase : FoldAdmitNames);
     INode **itemp;
     uint32_t cnt;
     for (nodesFor(node->fold->items, cnt, itemp))

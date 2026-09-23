@@ -58,7 +58,7 @@ static int foldStarAdmits(INode *member, int admit) {
     // A module's names, of whatever kind. A module has one instance at a fixed
     // address, so nothing of it is reached through a value and the member/static
     // distinction that decides the other two has nothing here to decide
-    if (admit == FoldAdmitNames)
+    if (admit == FoldAdmitNames || admit == FoldAdmitBase)
         return 1;
     // Every member reached through a value. A static is reached through the type,
     // so it is not one, and a star clause passes it over rather than refusing it
@@ -68,7 +68,9 @@ static int foldStarAdmits(INode *member, int admit) {
 // Make the items of a star clause: an alias for every name of 'ns' that 'admit'
 // takes and 'but' does not leave out. Not Self, not an unnamed node, and never
 // the source's own finalizer or clone, which belong to its values' lifecycle.
+// Not a private name either, except to a module extending the source.
 void foldStarItems(Namespace *ns, Name *srcname, FoldClause *fold, int admit) {
+    int modnames = admit == FoldAdmitNames || admit == FoldAdmitBase;
     INode **nodesp;
     uint32_t cnt;
     if (fold->excludes) {
@@ -84,18 +86,19 @@ void foldStarItems(Namespace *ns, Name *srcname, FoldClause *fold, int admit) {
         if (nn->name == NULL || nn->name == selfTypeName || nn->name == anonName
             || nn->name == finalName || nn->name == cloneName)
             continue;
-        if (inodeIsPrivate(nn->node) || !foldStarAdmits(nn->node, admit) || foldExcluded(fold, nn->name))
+        if ((inodeIsPrivate(nn->node) && admit != FoldAdmitBase)
+            || !foldStarAdmits(nn->node, admit) || foldExcluded(fold, nn->name))
             continue;
         // A module publishes its own name into its own namespace, and an import
         // binds that name already. Nothing else has a name of its own inside it
-        if (admit == FoldAdmitNames && nn->name == srcname)
+        if (modnames && nn->name == srcname)
             continue;
         NameUseNode *target = newMemberUseNode(nn->name);
         inodeLexCopy((INode*)target, fold->at);
         // A module's name is reached with no receiver at all, and its binding's
         // visibility is the import's rather than the target's, so it is the bare
         // alias rather than the member one every other site makes
-        AliasDclNode *alias = admit == FoldAdmitNames
+        AliasDclNode *alias = modnames
             ? newNameAliasDclNode(nn->name, (INode*)target)
             : newAliasDclNode(nn->name, (INode*)target);
         inodeLexCopy((INode*)alias, fold->at);
@@ -163,14 +166,13 @@ static void foldGlobalItem(ModuleNode *mod, VarDclNode *global, StructNode *src,
     // MODULE shows the name it gave it.
     if (!global->fold->ispub)
         alias->flags &= 0xffff - FlagPub;
-    INode *prior = namespaceAdd(&mod->namespace, alias->namesym, (INode*)alias);
-    if (prior) {
+    // The same member through the same global, reached a second time, is the
+    // binding the name has already (modFoldBind); through another global it is
+    // another thing, and collides
+    if (modFoldBind(mod, alias))
         errorMsgNode((INode*)alias, ErrorDupName,
             "%s is already a name of this module. A folded name must be unique: rename it with 'as', or leave it out with 'but'.",
             &alias->namesym->namestr);
-        return;
-    }
-    nametblHookNode(alias->namesym, (INode*)alias);
 }
 
 // Expand a global's fold clause into its module's namespace. Run before the
@@ -263,14 +265,12 @@ static void foldEnumUseBind(ModuleNode *mod, FoldClause *fold, AliasDclNode *ali
     alias->flags &= 0xffff - (FlagPub | FlagMethFld);
     if (fold->ispub)
         alias->flags |= FlagPub;
-    INode *prior = namespaceAdd(&mod->namespace, alias->namesym, (INode*)alias);
-    if (prior) {
+    // The same variant reached a second time, by any route, is the binding the
+    // name has already (modFoldBind)
+    if (modFoldBind(mod, alias))
         errorMsgNode((INode*)alias, ErrorDupName,
             "%s is already a name of this module. A folded name must be unique: rename it with 'as', or leave it out with 'but'.",
             &alias->namesym->namestr);
-        return;
-    }
-    nametblHookNode(alias->namesym, (INode*)alias);
 }
 
 // Check a variant a clause names -- one it lists, or one its 'but' leaves out --

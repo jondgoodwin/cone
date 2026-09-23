@@ -525,8 +525,8 @@ void parseSkipDclBody() {
 // as 'name.x'.
 //
 // 'mod name extends base;' makes this module one that reuses another: every name
-// the base makes public becomes a public name of this one, still the base's
-// declaration (modExtendsResolve, modFoldNames). One base, named by one name.
+// of the base becomes a name of this one, as visible here as there and still the
+// base's declaration (modExtendsResolve, modFoldNames). One base, named by one name.
 //
 // Two shapes the grammar admits are refused because nothing is behind them: a
 // nested 'mod name { ... }' block, which needs a namespace of its own and paths

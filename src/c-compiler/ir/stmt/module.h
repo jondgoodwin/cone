@@ -30,7 +30,7 @@ typedef struct ModuleNode {
     DclInfo dclinfo;         // Owner and the facts that decide the linker symbols it prefixes
     uint16_t foldstate;      // How far modFoldNames has got: 0 not begun, 1 running, 2 done
     INode *extendsname;      // 'mod A extends B': B as written, a NameUseNode; NULL where the module extends nothing
-    struct ImportNode *extends; // The fold 'extends' makes of B's public names, once B resolves (modExtendsResolve); else NULL
+    struct ImportNode *extends; // The fold 'extends' makes of B's names, once B resolves (modExtendsResolve); else NULL
 } ModuleNode;
 
 ModuleNode *newModuleNode();
@@ -57,6 +57,13 @@ void modFoldNames(NameResState *pstate, ModuleNode *mod);
 // ErrorCircular instead, naming the cycle. The diagnostic given is reported as
 // it is wherever the cause is anything else.
 void modNameMissing(ModuleNode *reader, ModuleNode *mod, Name *name, INode *at, int code, const char *msg, ...);
+
+// Bind a name a fold brings into a module's namespace, and hook it. NULL once
+// bound, or where the name is bound already to the same declaration by the same
+// route -- the binding is then public if either route is; otherwise the binding
+// that holds the name, for the caller to report as a collision
+struct AliasDclNode;
+INode *modFoldBind(ModuleNode *mod, struct AliasDclNode *alias);
 
 // Resolve what a module's 'extends' names, refusing what cannot be reused. Run
 // for every module ahead of any fold, since what a module extends is folded first

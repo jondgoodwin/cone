@@ -327,21 +327,23 @@ diagnostics = 3
 
 # -------- 'extends': one module reusing another --------
 #
-# 'mod solids extends shapes' makes every name shapes makes public a PUBLIC name
-# of solids, as an alias: the declaration, its symbol and its state stay shapes'.
-# For a module, extending and inheriting are one thing, because a module's state
-# is static and one instance of it is all there is.
+# 'mod solids extends shapes' makes every name of shapes a name of solids, as an
+# alias: the declaration, its symbol and its state stay shapes'. Each is as
+# visible in solids as in shapes, so solids' code reads shapes' private names
+# and solids' importers see shapes' public ones [Jon 23 Sep]. For a module,
+# extending and inheriting are one thing, because a module's state is static and
+# one instance of it is all there is.
 #
-# module-extends runs one, in a tree -- a chain of two, reached from inside, by
-# path from the parent, and through two importers -- and pins that the aliases
-# declare nothing. module-extends-import extends a module an import reached by
+# module-extends runs one, in a tree -- a chain of two, reached from inside,
+# private names included, by path from the parent, and through two importers --
+# and pins that the aliases declare nothing. module-extends-import extends a module an import reached by
 # its file, which compiles and cannot link. module-extends-nameres holds what
 # 'extends' refuses once names are bound, module-extends-parse what it refuses as
 # it is written.
 
 [scenario.module-extends]
 category = "run"
-description = "A module extending a sister that extends another: the base's function, type and global reached through the extending module from inside, by path, and through an importer's path and wildcard"
+description = "A module extending a sister that extends another: the base's function, type and global reached through the extending module from inside, by path, and through an importer's path and wildcard, and both bases' private names reached from inside"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 
 # 'extends' binds and declares nothing. Every name reached through solids lowers
@@ -357,15 +359,17 @@ contains = [
   "define internal solids.volume comdat nodeduplicate",
 ]
 excludes = ["solids.area", "solids.unit", "solids.count", "solids.Point", "shapes.unit",
-            "summary.area", "report.area"]
+            "summary.area", "report.area", "solids.secret", "solids.hidden", "solids.deep",
+            "shapes.deep"]
 
 # A module that imports, 'use *', a module extending it is handed its own names
-# back, and a star clause passes them over. Both orders, because without that
-# the order the two modules' folds ran in decided whether the program compiled:
-# the importer folded first saw its own names come home as duplicates.
+# back, and each is the binding the name has already: the same declaration
+# reached a second time is no collision. Both orders, because the order the two
+# modules' folds ran in once decided whether the program compiled: the importer
+# folded first saw its own names come home as duplicates.
 [scenario.module-extends-back]
 category = "run"
-description = "A module importing with 'use *' a module that extends it, in both fold orders: its own names come back and are passed over"
+description = "A module importing with 'use *' a module that extends it, in both fold orders: its own names come back as the bindings they already are"
 tags = ["nameres", "typecheck", "genllvm", "runtime"]
 
 [scenario.module-extends-import]
@@ -383,15 +387,39 @@ excludes = ["app."]
 
 [scenario.module-extends-nameres]
 category = "reject"
-description = "What 'extends' refuses once names are bound: a redeclared name, a private name from inside and through an importer, a trait, a function, itself, a cycle, its own submodule, its parent, and a module out of reach"
+description = "What 'extends' refuses once names are bound: a redeclared public or private name, the base's private name reached through an importer by path, a listed clause and a wildcard, a trait, a function, itself, a cycle, its own submodule, its parent, and a module out of reach"
 tags = ["nameres"]
-diagnostics = 10
+diagnostics = 12
 
 [scenario.module-extends-parse]
 category = "reject"
 description = "What a module's 'extends' refuses as it is parsed: two modules, a path, and no name"
 tags = ["parse"]
 diagnostics = 3
+
+# -------- one declaration reached by two routes --------
+#
+# Two bindings of the SAME declaration under one name are not a collision: the
+# second is the binding the name has already [Jon 23 Sep]. It holds for every
+# fold into a module's namespace -- an import's clause, star or listed, an
+# 'extends', a global's clause, an enum's 'use' -- and where one route is public
+# and the other private, the binding is public, whichever was folded first.
+# module-extends-back is the same rule met through 'extends'.
+#
+# module-fold-diamond runs the diamond, and the public route winning in both
+# orders. module-fold-diamond-nameres holds what still collides: two different
+# declarations under one name, and one member folded through two globals.
+
+[scenario.module-fold-diamond]
+category = "run"
+description = "One declaration reaching a module through two re-exporting imports, and a private and a public route to one name in both orders"
+tags = ["nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.module-fold-diamond-nameres]
+category = "reject"
+description = "What still collides: two different declarations under one name through a diamond's two sides, and one member folded through two globals"
+tags = ["nameres"]
+diagnostics = 2
 
 [scenario.module-declared]
 category = "compile"

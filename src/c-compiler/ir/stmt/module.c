@@ -109,6 +109,49 @@ void modAddFn(ModuleNode *mod, FnDclNode *fnnode) {
     fnOverloadDclAdd((FnOverloadDclNode*)binding, fnnode);
 }
 
+// What a binding of a module's namespace stands for: the declaration at the end
+// of a chain of fold aliases, or the binding itself where it is a declaration.
+// A typedef is a declaration of its own, and the chain stops there: its target
+// is resolved with the module's other nodes, after every fold has run
+static INode *modBindingDcl(INode *node) {
+    while (node && node->tag == AliasDclTag && !(node->flags & FlagTypeAlias)) {
+        INode *target = ((AliasDclNode*)node)->target;
+        node = (target && isNameUseNode(target)) ? ((NameUseNode*)target)->dclnode : NULL;
+    }
+    return node;
+}
+
+// Bind a name a fold brings into a module's namespace -- an import's clause, a
+// module's 'extends', a global's clause, an enum's 'use' -- and hook it. NULL
+// once it is bound; otherwise the binding already holding the name, which the
+// caller reports as a collision.
+//
+// Two bindings of the SAME declaration under the same name are not a collision:
+// the second is the binding the name has already [Jon 23 Sep]. That is what lets
+// a name reach a module by two routes -- two imports that each re-export it, the
+// diamond, or a module's own declaration handed back by a module that extends
+// it -- and what keeps the order the folds ran in from deciding whether a
+// program compiles. 'The same' is the same declaration reached the same way: a
+// member folded through two different globals is two things, and collides.
+//
+// Where one route is public and the other private, the binding is public, so a
+// re-export is not lost to whichever route happened to be folded first. A
+// declaration of the module keeps its own visibility: nothing folds a private
+// name of it back as a public one.
+INode *modFoldBind(ModuleNode *mod, AliasDclNode *alias) {
+    INode *prior = namespaceAdd(&mod->namespace, alias->namesym, (INode*)alias);
+    if (prior == NULL) {
+        nametblHookNode(alias->namesym, (INode*)alias);
+        return NULL;
+    }
+    INode *dcl = modBindingDcl((INode*)alias);
+    if (dcl == NULL || dcl != modBindingDcl(prior) || aliasDclThrough(prior) != alias->through)
+        return prior;
+    if ((alias->flags & FlagPub) && prior->tag == AliasDclTag)
+        prior->flags |= FlagPub;
+    return NULL;
+}
+
 // Serialize a module node
 void modPrint(ModuleNode *mod) {
     INode **nodesp;
@@ -145,35 +188,24 @@ void modHook(ModuleNode *oldmod, ModuleNode *newmod) {
 
 // ---- 'mod A extends B': one module reusing another -------------------------
 //
-// A module that extends another takes in everything the other makes public, and
-// adds its own declarations beside it. For a module, extending and inheriting are
-// one thing: static folding ALIASES and keeps the original owner, and a module's
+// A module that extends another takes in every name the other has, and adds its
+// own declarations beside them. For a module, extending and inheriting are one
+// thing: static folding ALIASES and keeps the original owner, and a module's
 // state is all static -- one instance, at a fixed address -- so there is no
-// second copy to make, and each name B shows becomes an alias in A's namespace
+// second copy to make, and each name of B becomes an alias in A's namespace
 // whose declaration, symbol and state stay B's.
 //
-// Those aliases are PUBLIC, because what a module extends is part of its own
-// surface: A's importers see B's public names through A. B's private names do
-// not come across -- the conservative reading, since nothing has settled whether
-// an extending module is inside its base's boundary as an enriching type is --
-// and a name A declares that B already has is refused, as it is for a type.
+// EVERY name of B comes across, and each alias carries B's visibility: A is
+// inside B's boundary, as an enriching type is inside its base's, so A's code
+// reads B's private names too [Jon 23 Sep]. What A shows is what B shows: a name
+// public in B is public in A, because what a module extends is part of its own
+// surface, and a name private to B is private in A, so A's importers see B's
+// public surface and nothing more. A name A declares that B already has, public
+// or private, is refused, as it is for a type.
 //
 // The fold is an ImportNode marked 'isextends' and held on the module rather
 // than on its imports, so modFoldNames runs it dependency-first like any import
-// and a chain of 'extends' transits: what B took from C is a public name of B.
-
-// The module this one extends whose PRIVATE binding holds 'name', or NULL. Down
-// the chain, since what B took from C is a name of B's. modExtendsCheckCycle has
-// cut every cycle of 'extends' before any name is looked up, so the walk ends
-static ModuleNode *modExtendsPrivate(ModuleNode *mod, Name *name) {
-    for (ModuleNode *base = mod; base->extends != NULL; ) {
-        base = base->extends->module;
-        INode *found = namespaceFind(&base->namespace, name);
-        if (found && found != (INode*)base && inodeIsPrivate(found))
-            return base;
-    }
-    return NULL;
-}
+// and a chain of 'extends' transits: what B took from C is a name of B.
 
 // Resolve what this module's 'extends' names, and refuse what cannot be reused.
 //
@@ -242,8 +274,9 @@ void modExtendsResolve(ModuleNode *mod) {
     fold->isextends = 1;
     fold->fold = newFoldClause();
     inodeLexCopy(fold->fold->at, (INode*)name);
+    // Every name of the base, each as visible here as it is there: the clause
+    // carries no 'pub' of its own (importFoldItem)
     fold->fold->star = 1;
-    fold->fold->ispub = 1;
     mod->extends = fold;
 }
 
@@ -452,17 +485,6 @@ void modNameMissing(ModuleNode *reader, ModuleNode *mod, Name *name, INode *at, 
     va_start(args, msg);
     vsnprintf(text, sizeof(text), msg, args);
     va_end(args);
-
-    // A name private to a module this one extends is not missing by accident:
-    // 'extends' brings in what the base makes public and nothing more, so the
-    // report names the base and says so rather than calling the name undeclared
-    ModuleNode *base = mod ? modExtendsPrivate(mod, name) : NULL;
-    if (base) {
-        errorMsgNode(at, ErrorNotPublic,
-            "%s is private to %s, which %s extends. 'extends' brings in only the names %s makes public.",
-            &name->namestr, &base->namesym->namestr, &mod->namesym->namestr, &base->namesym->namestr);
-        return;
-    }
 
     if (reader == NULL || mod == NULL || !modMayLoseToCycle(reader, mod)) {
         errorMsgNode(at, code, "%s", text);
