@@ -103,6 +103,14 @@ outer hop looks at it.
 `modulesyms.Gadget.make` is judged against `modulesyms`, one hop back, which is
 the module that owns the type.
 
+**So is a method of an abstraction.** Through a trait or an enum, a member that
+is a method — or an overload name with a method among its candidates — is
+reported `ErrorAbstractMeth`: the implementers and variants own the only
+generated copies ([struct](struct.md), `nodelist`), so the path would name code
+that does not exist. A static function through the same path is the
+abstraction's own and passes, and the same name through a struct, a variant or
+an implementer names that type's copy. `trait-nameres-method-path` pins it.
+
 ⚠ **This cannot wait for type check.** Name resolution itself asks `isTypeNode`
 of an operand: `&mut mymod.Gadget` and `(mymod.A, mymod.B)` are settled by
 `refNameRes` and `ttupleNameRes`, which run after this and need a resolved type

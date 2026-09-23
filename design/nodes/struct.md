@@ -176,6 +176,14 @@ declares one. It is reached as `Trait.name`, and an implementer or variant
 cannot name it at all: `trait-nameres-static` pins both spellings,
 `trait-success` the call, and `enum-success` a generic enum's.
 
+The converse holds for a **method**: the implementers' and variants' clones are
+the only copies generated, so the trait's or enum's own is reachable by no
+path. `Trait.name` or `Enum.name` naming one — called with a receiver, borrowed,
+or through an overload name with a method among its candidates — is refused by
+the path collapse with `ErrorAbstractMeth` ([fncall](fncall.md), "The path
+collapse"); without that the call loads a null. `trait-nameres-method-path`
+pins it.
+
 ⚠ **A generic method costs a trait its virtual reference, and `structMakeVtable`
 is where that is said.** A vtable slot holds one machine signature and a generic
 method has one per instantiation, so no slot can be filled from it. The slot is

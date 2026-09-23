@@ -91,6 +91,22 @@ void fnCallPrint(FnCallNode *node) {
     }
 }
 
+// Whether a declaration is a method, or an overload name one of whose
+// candidates is
+static int fnCallNamesMethod(INode *dcl) {
+    if (dcl->tag == FnDclTag)
+        return (dcl->flags & FlagMethFld) != 0;
+    if (dcl->tag != FnOverloadDclTag)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(((FnOverloadDclNode*)dcl)->overloads, cnt, nodesp)) {
+        if ((*nodesp)->flags & FlagMethFld)
+            return 1;
+    }
+    return 0;
+}
+
 // A '.' whose left side names a namespace is a path through it, not an access
 // to a value: 'math3d.Point3', 'Tally.make(1)', 'Tally.made'. The parser cannot
 // tell the two apart, so the decision is made here, as soon as the base name is
@@ -178,6 +194,17 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
         errorMsgNode((INode*)member, ErrorNotPublic,
             "%s is private to its module and may not be named from outside it.",
             &member->namesym->namestr);
+
+    // A method of a trait or an enum is a template: each implementer or variant
+    // owns a clone of it, and the abstraction's own copy is never generated
+    // (genlGlobalSyms), so a path naming it called or borrowed a null. A static
+    // function is the abstraction's own and is reached exactly this way. An
+    // overload name is refused when a call through it could select a method.
+    if (basedcl->tag == StructTag && (basedcl->flags & TraitType)
+        && fnCallNamesMethod(member->dclnode))
+        errorMsgNode((INode*)member, ErrorAbstractMeth,
+            "%s names a method of %s, which has no code of its own for it: each implementer or variant has its own copy. Call it on a value, or name it through a type that has it.",
+            &member->namesym->namestr, &inodeGetName(basedcl)->namestr);
 
     if (node->args == NULL) {
         *((INode**)nodep) = (INode*)member;

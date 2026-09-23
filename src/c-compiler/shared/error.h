@@ -229,6 +229,9 @@ enum ErrorCode {
     // A match's patterns: 'is', comparison and range patterns joined by 'or'
     ErrorPatBare = 1117,        // A value alone where a match expects a pattern, after an 'or': whether a bare value means '==' is not decided
 
+    // A path through an abstraction: 'Trait.name', 'Enum.name'
+    ErrorAbstractMeth = 1118,   // A trait's or enum's method named through it, which owns no code for it: each implementer or variant owns a copy
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
