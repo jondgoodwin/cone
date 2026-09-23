@@ -526,7 +526,11 @@ another. See [module](module.md).
    extension may not widen it: the node is the base's, and widening it would relay
    out the base's own values for the sake of a set the base knows nothing about. A
    value that does not fit is `ErrorTagWidth` at the extension, the same question a
-   declared integer type asks.
+   declared integer type asks. **An instance of a generic enum has no variants yet
+   at this step** — `genericMemoize` fills its `derived` only after the enum and
+   each variant are instantiated — so the step finds nothing to measure there, and
+   `genericMemoize` asks it again once the list is whole: once per generic, since
+   the template and every instance share the node and the tag values.
 5b. **Verify the field requirements** (`structCheckIsaFields`), the layout having
    just settled, which is what an `is` asserts about. The base's own fields must
    be declared here, under the same names and types, in the base's order,
@@ -916,9 +920,12 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
   it: the extension's copies are other declarations, and with a third variant the
   extension is tagged.
 - **Same size** — every variant re-emitted with `[N x i8]` trailing padding to
-  the largest; the enum's body is a copy of the largest variant's fields.
+  the largest, rounded up to the strictest variant alignment; the enum's body is
+  its own fields (tag and common fields) and then bytes to that size, never a
+  copy of one variant's layout, whose padding a first-class load or store would
+  drop along with any other variant's field that sits in it.
   Measured: `%Circle = { i8, i32, i32, [4 x i8] }` beside
-  `%Rect = { i8, i32, i32, i32 }` and `%Shape = { i8, i32, i32, i32 }`.
+  `%Rect = { i8, i32, i32, i32 }` and `%Shape = { i8, i32, [8 x i8] }`.
 - **Unpadded** — each variant emitted at its own size, the tag still first.
   Measured, for an `@unsized` enum of an empty variant and one holding three
   `i64`s: `%Ping = { i8, i32 }` beside `%Payload = { i8, i32, i64, i64, i64 }`.

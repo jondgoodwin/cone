@@ -312,10 +312,12 @@ void genlSameSizeTrait(GenState *gen, StructNode *base) {
             strnode->llvmtype = LLVMStructCreateNamed(gen->context, &strnode->namesym->namestr);
     }
 
-    // Use throwaway types to determine the sizes of all concrete variants
-    // Remember the largest size
-    StructNode *maxStruct = NULL;
+    // Use throwaway types to determine the sizes of all concrete variants.
+    // Remember the largest size, and the most strictly aligned field type of any
+    // variant, which the enum's own type must be aligned to.
     unsigned long long maxsize = 0;
+    unsigned int maxalign = 1;
+    LLVMTypeRef maxaligntype = NULL;
     unsigned long long *sizes = (unsigned long long *)memAllocBlk(base->derived->used * sizeof(unsigned long long));
     unsigned long long *sizesp = sizes;
     for (nodesFor(base->derived, cnt, nodesp)) {
@@ -324,11 +326,24 @@ void genlSameSizeTrait(GenState *gen, StructNode *base) {
         genlStructFields(gen, structype, strnode, 0);
         unsigned long long size = LLVMStoreSizeOfType(gen->datalayout, structype);
         *sizesp++ = size;
-        if (size > maxsize) {
+        if (size > maxsize)
             maxsize = size;
-            maxStruct = strnode;
+        unsigned int fldcnt = LLVMCountStructElementTypes(structype);
+        unsigned int fld;
+        for (fld = 0; fld < fldcnt; ++fld) {
+            LLVMTypeRef fldtype = LLVMStructGetTypeAtIndex(structype, fld);
+            unsigned int align = LLVMABIAlignmentOfType(gen->datalayout, fldtype);
+            if (align > maxalign) {
+                maxalign = align;
+                maxaligntype = fldtype;
+            }
         }
     }
+    // Every variant is padded to one size, which must be a multiple of the most
+    // strictly aligned variant's alignment. Otherwise a variant padded to the
+    // largest's size is rounded up past it by its own alignment, and the variants
+    // are not the same size after all.
+    maxsize = (maxsize + maxalign - 1) / maxalign * maxalign;
 
     // Now add fields + padding for all variants, so all end up the same max size
     sizesp = sizes;
@@ -342,9 +357,34 @@ void genlSameSizeTrait(GenState *gen, StructNode *base) {
             genlStructFields(gen, strnode->llvmtype, strnode, (unsigned int)(maxsize - size));
     }
 
-    // basetrait also needs fields
-    if (maxStruct)
-        genlStructFields(gen, base->llvmtype, maxStruct, 0);
+    // The enum's own type: its own fields (the discriminant and any common fields,
+    // which begin every variant at the same offsets), then bytes out to the padded
+    // size, then a zero-length array carrying the strictest variant alignment.
+    //
+    // The enum is loaded, stored and passed as a first-class LLVM value, and LLVM
+    // does not preserve a first-class aggregate's padding bytes. So its type may
+    // have no padding where any variant has a field: copying a variant's fields
+    // would leave another variant's field in a hole of that layout and lose it
+    // (a Bool at byte 1 beside a variant whose i32 starts at byte 4). Bytes have
+    // no holes, and they reinterpret nothing, where another variant's scalar
+    // types would.
+    uint32_t ownfields = base->fields.used;
+    LLVMTypeRef *basetypes = (LLVMTypeRef *)memAllocBlk((ownfields + 2) * sizeof(LLVMTypeRef));
+    uint32_t basecnt = 0;
+    for (nodelistFor(&base->fields, cnt, nodesp))
+        basetypes[basecnt++] = genlType(gen, ((FieldDclNode *)*nodesp)->vtype);
+    unsigned long long ownend = 0;
+    if (basecnt > 0) {
+        LLVMTypeRef owntype = LLVMStructTypeInContext(gen->context, basetypes, basecnt, 0);
+        ownend = LLVMOffsetOfElement(gen->datalayout, owntype, basecnt - 1)
+            + LLVMStoreSizeOfType(gen->datalayout, basetypes[basecnt - 1]);
+    }
+    if (maxsize > ownend)
+        basetypes[basecnt++] = LLVMArrayType(LLVMInt8TypeInContext(gen->context), (unsigned int)(maxsize - ownend));
+    LLVMTypeRef sofar = LLVMStructTypeInContext(gen->context, basetypes, basecnt, 0);
+    if (maxaligntype && LLVMABIAlignmentOfType(gen->datalayout, sofar) < maxalign)
+        basetypes[basecnt++] = LLVMArrayType(maxaligntype, 0);
+    LLVMStructSetBody(base->llvmtype, basetypes, basecnt, 0);
 }
 
 // Generate a struct with no fields (useful for void, etc.)

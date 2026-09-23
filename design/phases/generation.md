@@ -187,11 +187,22 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
   `Option`-shaped base keeps the layout whatever extends it, and the extension, with
   a third variant for which there is no pointer to be, is tagged.
 - **Same size.** Each variant is re-emitted as a named struct with `[N x i8]`
-  trailing padding to the largest variant's store size; the enum's body is
-  a copy of the largest variant's fields. Reading a `%Shape` as a `%Circle` is
-  safe only because they are the same size. Every variant is in exactly one enum's
-  list, so an extension's copies are padded to the extension's largest and the
-  base's own variants to the base's.
+  trailing padding to one size: the largest variant's store size, rounded up to
+  the strictest alignment of any variant's field, or a byte-aligned largest
+  variant would leave a stricter one padded past it. Reading a `%Shape` as a
+  `%Circle` is safe only because they are the same size.
+  - **The enum's own body is its own fields, then bytes** out to that size, then
+    a zero-length array of the most strictly aligned field type where the bytes
+    alone would under-align it: `%Shape = { i8, i32, [8 x i8] }`,
+    `%Message = { i8, i32, [8 x i8], [0 x i64] }`. **It is never a copy of one
+    variant's layout**, because an enum value is loaded, stored and passed as a
+    first-class aggregate, and LLVM does not carry an aggregate's padding bytes:
+    a smaller variant's field in a hole of the largest's layout — a `Bool` at
+    byte 1 beside an `i32` at byte 4 — was lost in the copy. The enum's own
+    fields are the discriminant and any common fields, which begin every variant
+    at the same offsets, so a common field or the tag is still read by index.
+  - **Every variant is in exactly one enum's list**, so an extension's copies are
+    padded to the extension's size and the base's own variants to the base's.
 - **Unpadded**, for an `@unsized` enum: each variant keeps its own size, the
   discriminant still first. Measured, for an empty variant beside one holding
   three `i64`s: `%Ping = { i8, i32 }` and

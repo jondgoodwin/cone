@@ -77,6 +77,23 @@ name = "unsized-enum-variants-are-not-padded"
 target = "preir"
 contains = ["%Ping = type { i8, i32 }", "%Payload = type { i8, i32, i64, i64, i64 }"]
 
+# An enum value is loaded, stored and passed as a first-class LLVM value, which
+# does not carry its type's padding bytes. So the enum's own type is its own
+# fields and then bytes, never a copy of one variant's layout: Flag's Bool and u8
+# sit at bytes 1 and 2, where Count has padding before its i32. And the size
+# every variant is padded to is rounded up to the strictest variant alignment:
+# Tally, the largest at ten bytes, is byte-aligned and Count is not, so all three
+# are twelve. The run prints the fields back; this pins the layout that keeps them.
+[[scenario.enum-success.check]]
+name = "an-enum-type-has-no-padding-a-variant-uses"
+target = "preir"
+contains = [
+  "%Cell = type { i8, [11 x i8], [0 x i32] }",
+  "%Flag = type { i8, i1, i8, [9 x i8] }",
+  "%Count = type { i8, i32, [4 x i8] }",
+  "%Tally = type { i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, [2 x i8] }",
+]
+
 # Which vtable a tag names is looked up two ways, and the run cannot see which:
 # both reach the right implementation, which is the point. Signals pins 0x10 and
 # 0x2000, so the tag is not an index into a two-entry list and the selection has to
@@ -116,19 +133,23 @@ tags = ["nameres", "typecheck", "genllvm", "runtime"]
 # is still a bare pointer, taken as 'i32**' by reference, while MaybeMore is a
 # tagged struct. Shape is still padded to its own largest, Rect, while Solid is the
 # size of the Cube it adds. Framed is padded although the Message it extends
-# declined the padding. The copies' own struct names are not asserted: LLVM
-# numbers a second struct of one name, and which is first follows generation order.
+# declined the padding. An enum's own type is its discriminant and common fields,
+# then bytes out to its padded size, then a zero-length array for the strictest
+# alignment among its variants: Shape is 16 bytes, Solid 32, Framed 24, and
+# MaybeMore 16, pointer-aligned. The copies' own struct names are not asserted:
+# LLVM numbers a second struct of one name, and which is first follows generation
+# order.
 [[scenario.enum-extends.check]]
 name = "each-enum-lays-out-its-own-set"
 target = "preir"
 contains = [
   "@readMaybe(i32**",
   "@readMaybeMore(%MaybeMore*",
-  "%MaybeMore = type { i8, i32* }",
-  "%Shape = type { i8, i32, i32, i32 }",
-  "%Solid = type { i8, i32, i64, i64, i64 }",
+  "%MaybeMore = type { i8, [15 x i8], [0 x i32*] }",
+  "%Shape = type { i8, i32, [8 x i8] }",
+  "%Solid = type { i8, i32, [24 x i8], [0 x i64] }",
   "%Cube = type { i8, i32, i64, i64, i64 }",
-  "%Framed = type { i8, i32, i64, i64 }",
+  "%Framed = type { i8, i32, [16 x i8], [0 x i64] }",
 ]
 excludes = ["%Maybe = type"]
 
@@ -241,7 +262,7 @@ diagnostics = 7
 
 [scenario.enum-typecheck-tag]
 category = "reject"
-description = "A tag value too large for the enum's integer type, an integer type that cannot hold a tag, and the one field that may carry the discriminant"
+description = "A tag value too large for the enum's integer type, a generic enum's included, an integer type that cannot hold a tag, and the one field that may carry the discriminant"
 tags = ["typecheck"]
 
 [scenario.enum-typecheck-unsized]
