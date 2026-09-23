@@ -25,6 +25,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->derived = NULL;
     snode->traits = NULL;
     snode->siblings = NULL;
+    snode->lifecycle = NULL;
     snode->vtable = NULL;
     snode->genericinfo = NULL;
     snode->tagnbr = 0;
@@ -36,6 +37,7 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     StructNode *newnode = memAllocBlk(sizeof(StructNode));
     memcpy(newnode, node, sizeof(StructNode));
     newnode->genericinfo = NULL;
+    newnode->lifecycle = NULL;
     newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
 
     // Within the copy, 'Self' is the copy. A method's self parameter is declared
@@ -602,15 +604,18 @@ static Nodes *structFoldPath(StructNode *type, Name *name, Nodes *path) {
 // below). The language is in
 // conesite/public/coneref/refinherit.html, "Enriching a concrete type".
 //
-// What it costs the compiler is a NAME FOLD and nothing else. One representation
-// means a base method already takes exactly the right receiver, so there is no
-// clone to make, no signature to retype and no receiver to shift: the base's
-// members become names of this type, and the methods among them are reached as
-// the base's own. That is the degenerate, one-instance case of the fold a
-// field's 'use' clause does -- there the receiver is the part and has to be
+// What it costs the compiler is a NAME FOLD, bar the value's lifecycle. One
+// representation means a base method already takes exactly the right receiver,
+// so there is no clone to make, no signature to retype and no receiver to shift:
+// the base's members become names of this type, and the methods among them are
+// reached as the base's own. That is the degenerate, one-instance case of the fold
+// a field's 'use' clause does -- there the receiver is the part and has to be
 // found, here the receiver is the whole and already is one.
 //
-// Two things are not aliases. The base's FIELDS are copied, because a field node
+// Three things are not aliases. The base's 'final' and 'clone' are CLONED, with
+// 'Self' retyped to this type, because they are the value's own lifecycle rather
+// than something a call reaches: this type's drop is built from its own 'final'
+// (structEnrichLifecycle). The base's FIELDS are copied, because a field node
 // carries its index and its own check state and each type lays its own out; the
 // copies are this type's declared fields in every respect, so they satisfy an
 // 'is' field requirement, fill a vtable slot and are constructed positionally
@@ -637,12 +642,8 @@ static Nodes *structFoldPath(StructNode *type, Name *name, Nodes *path) {
 // variant's fields are its enum's, so it has no representation of its own to stand
 // on.
 //
-// A base declaring 'final' or 'clone' is refused, and this is a restriction
-// rather than a rule: those two are the value's own lifecycle, so they are not
-// aliased, and a generated drop function calls the 'final' of the type it
-// belongs to. Enriching such a base would leave the base's finalizer unrun for
-// every value typed as the enrichment, silently. Carrying a lifecycle across
-// wants a clone with the receiver retyped, which nothing here needs otherwise.
+// A base declaring 'final' or 'clone' may be enriched: the enrichment gets copies
+// of its own of those two (structEnrichLifecycle).
 static int structExtendsEligible(StructNode *node, INode *basedcl, INode *at) {
     if (basedcl->tag != StructTag) {
         errorMsgNode(at, ErrorExtendsBase, "An 'extends' enriches a concrete struct type, and this is not one.");
@@ -667,15 +668,102 @@ static int structExtendsEligible(StructNode *node, INode *basedcl, INode *at) {
             &base->namesym->namestr);
         return 0;
     }
-    Name *lifecycle = namespaceFind(&base->namespace, finalName) ? finalName
-        : namespaceFind(&base->namespace, cloneName) ? cloneName : NULL;
-    if (lifecycle) {
-        errorMsgNode(at, ErrorExtendsBase,
-            "%s declares %s, which belongs to its own values' lifecycle and does not carry across to an enrichment.",
-            &base->namesym->namestr, &lifecycle->namestr);
-        return 0;
-    }
     return 1;
+}
+
+// Is this one of the two methods that belong to a value's own lifecycle? Either
+// its own name or the overload name it is a candidate of.
+static int structIsLifecycleMeth(INode *meth) {
+    if (meth->tag != FnDclTag)
+        return 0;
+    FnDclNode *fn = (FnDclNode*)meth;
+    return fn->namesym == finalName || fn->namesym == cloneName
+        || fn->overloadsym == finalName || fn->overloadsym == cloneName;
+}
+
+// Give an enrichment its own copies of the base's 'final' and 'clone', with the
+// receiver retyped to the enrichment: 'Self' in the copy means this type, exactly
+// as it does in a trait's default cloned into an implementer (structInheritTrait).
+//
+// These two are cloned where every other member is aliased, because they are the
+// value's own. structSetDropFn reads 'final' off this type's namespace expecting a
+// method whose receiver is this type, and the drop function it generates is this
+// type's, called for every value typed as it. An alias there would be read as a
+// malformed 'final', and leaving them out would leave the base's finalizer unrun
+// for every value typed as the enrichment. So a value finalizes the same way under
+// either name, and a 'clone' written against 'Self' produces the enrichment.
+//
+// What is copied has to be unlowered, because the copy is type checked as this
+// type's own method, and a body lowered twice is not the body written: a bare
+// method call already given its receiver is given it again. When name resolution
+// takes the base's members the base is resolved and not yet type checked, so its
+// own methods are copied. When type check takes them -- this type or the base is
+// an instance of a generic -- the base has been type checked, and what is copied
+// is what it set aside as its layout settled (structKeepLifecycle). Either way the
+// body is bound in the base's scope. 'hook' as for structEnrichFromBase.
+static void structEnrichLifecycle(StructNode *node, StructNode *base, int hook) {
+    INode **nodesp;
+    uint32_t cnt;
+    if (base->flags & TypeChecked) {
+        if (base->lifecycle == NULL)
+            return;     // Nothing was set aside, so the base has neither
+        nodesp = (INode**)(base->lifecycle + 1);
+        cnt = base->lifecycle->used;
+    }
+    else {
+        nodesp = base->nodelist.nodes;
+        cnt = base->nodelist.used;
+    }
+    // What this type declared itself, before any copy joins it
+    INode *ownfinal = namespaceFind(&node->namespace, finalName);
+    INode *owncl = namespaceFind(&node->namespace, cloneName);
+    for (; cnt; cnt--, nodesp++) {
+        if (!structIsLifecycleMeth(*nodesp))
+            continue;
+        // No override, here as for every other name the base has
+        Name *name = ((FnDclNode*)*nodesp)->namesym;
+        INode *prior = namespaceFind(&node->namespace, name);
+        Name *overloadsym = ((FnDclNode*)*nodesp)->overloadsym;
+        if (prior == NULL && overloadsym) {
+            name = overloadsym;
+            prior = overloadsym == finalName ? ownfinal : owncl;
+        }
+        if (prior) {
+            errorMsgNode(prior, ErrorExtendsOverride,
+                "%s is already a name of %s, and an enrichment adds to its base rather than overriding it: one value would otherwise mean two things, depending on which name reached it.",
+                &name->namestr, &node->namesym->namestr);
+            continue;
+        }
+        CloneState cstate;
+        clonePushState(&cstate, (INode*)node, (INode*)node, 0, NULL, NULL);
+        FnDclNode *copy = (FnDclNode*)cloneNode(&cstate, *nodesp);
+        clonePopState();
+        iNsTypeAddFn((INsTypeNode*)node, copy);
+        if (hook) {
+            nametblHookNode(copy->namesym, namespaceFind(&node->namespace, copy->namesym));
+            if (copy->overloadsym)
+                nametblHookNode(copy->overloadsym, namespaceFind(&node->namespace, copy->overloadsym));
+        }
+    }
+}
+
+// Set aside unlowered copies of this type's 'final' and 'clone', for an enrichment
+// taken after its methods are type checked (structEnrichLifecycle). Called as the
+// layout settles, when every copy this type took from its own base is among its
+// methods and none of them is lowered yet. 'Self' in them still means this type.
+static void structKeepLifecycle(StructNode *node) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&node->nodelist, cnt, nodesp)) {
+        if (!structIsLifecycleMeth(*nodesp))
+            continue;
+        if (node->lifecycle == NULL)
+            node->lifecycle = newNodes(2);
+        CloneState cstate;
+        clonePushState(&cstate, (INode*)node, NULL, 0, NULL, NULL);
+        nodesAdd(&node->lifecycle, cloneNode(&cstate, *nodesp));
+        clonePopState();
+    }
 }
 
 // Take everything the base has: its fields as this type's own, and every other
@@ -725,6 +813,9 @@ static void structEnrichFromBase(StructNode *node, StructNode *base, int hook) {
         FieldDclNode *foldfld;
         if (nn->node->tag == FieldDclTag || structFoldItemOf(base, nn->name, &foldfld))
             continue;
+        // The value's own lifecycle is cloned below rather than aliased
+        if (nn->name == finalName || nn->name == cloneName || structIsLifecycleMeth(nn->node))
+            continue;
         NameUseNode *target = newMemberUseNode(nn->name);
         inodeLexCopy((INode*)target, node->extendsbase);
         target->dclnode = nn->node;
@@ -746,6 +837,8 @@ static void structEnrichFromBase(StructNode *node, StructNode *base, int hook) {
         if (hook)
             nametblHookNode(nn->name, (INode*)alias);
     }
+
+    structEnrichLifecycle(node, base, hook);
 
     node->extendsdcl = (INode*)base;
 }
@@ -2225,6 +2318,12 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     // The placement is load-bearing, not an optimization. A method may use its
     // own type by value ('fn twin(self) Self'), so the size has to be available
     // before step below runs. See design/phases/type-check.md, "Struct and trait".
+    //
+    // A type that may be enriched sets its lifecycle aside first, unlowered, for an
+    // enrichment taken after this: an enrichment reads TypeChecked to know that
+    // the methods themselves are no longer fit to copy.
+    if (!(node->flags & (TraitType | HasTagField)))
+        structKeepLifecycle(node);
     node->flags |= TypeChecked;
 
     // Type check all methods, etc.

@@ -304,7 +304,7 @@ A concrete type may be named as another's base, with `extends`, and everything i
 | --- | --- | --- |
 | a **module** body — `import mod use *` | nothing; a module has one instance | an alias targeting the source's own binding, under the clause's spelling, with the import's visibility |
 | a **module** body — `use Colors` | nothing; a variant is a type, reached through no value | an alias targeting the variant, with the statement's visibility |
-| a **type** body — `extends Meter` | the **whole**, which is already the right type | the base's declaration, under an alias; the base's fields as copies of its own |
+| a **type** body — `extends Meter` | the **whole**, which is already the right type | the base's declaration, under an alias; the base's fields as copies of its own, and its `final` and `clone` as clones of its own with `Self` retyped |
 | a **type** body — `use Trig` | a **sibling of the whole**, which this type's values substitute for | the sibling's declaration, under an alias; nothing else |
 | a **field** — `engine Engine use *` | the **part**, reached through the field | a copy carrying a hop, or an alias whose call shifts its receiver |
 | a **module's global** — `config Config use *` | the **one instance**, at a fixed address | an alias carrying the global, field and method alike |
@@ -368,7 +368,7 @@ What it may fold from and what it admits:
 
 It is made for:
 
-- a folded method, overload set or macro method of a field's type; every member but the fields of an `extends` base; and every member a sibling `use` admits — a static among them, which is the one case where an alias stands for something reached through the type rather than through a value, and where the `FlagMethFld` bit is therefore left off. The target is a member name use bound to the declaration.
+- a folded method, overload set or macro method of a field's type; every member of an `extends` base but its fields, its `final` and its `clone`; and every member a sibling `use` admits — a static among them, which is the one case where an alias stands for something reached through the type rather than through a value, and where the `FlagMethFld` bit is therefore left off. The target is a member name use bound to the declaration.
 - **every name a global's `use` clause folds in**, field and method alike, with `through` naming the global. `FlagPub` is the clause's own, from `pub use`, rather than the target's.
 - **every variant a module's `use` of an enum folds in**, the target a name use bound to the variant. Neither flag the member aliases carry: `FlagPub` is the statement's own, from `pub use`, and there is no receiver.
 - **every binding an `import` makes** — the imported module's own name, and each name its `use` clause admits, under the clause's spelling. The target is the source module's own binding rather than the declaration at the end of the chain, so the origin is kept; `through` is copied from the source's binding where that one is reached through a global, so a re-exported global fold lowers the same way from any module. `FlagPub` is the import's: on the module's own binding from `pub import`, on a fold from `pub import` or `pub use`.
