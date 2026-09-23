@@ -252,7 +252,19 @@ LLVMTypeRef genlStructFields(GenState *gen, LLVMTypeRef structype, StructNode *s
 // rather than the variant count, which is not 'derived->used' once a tag value may
 // be pinned, so type check settles it where the pinned values and any declared
 // integer type are both known -- structSetTagWidth.
+//
+// The nullable-pointer layout is declined where an enum in this family is extended.
+// It replaces the whole value with a bare pointer and gives every variant that as
+// its type, which only works while the two variants are the entire set: an
+// extension holds those same variant declarations plus another, and there is no
+// pointer for the third to be. Asked of the discriminant, which the base, its
+// variants and every extension share, so the answer is the same whichever of them
+// generation reaches first -- and the order it reaches them in is not fixed.
 void genlSetupTaggedTrait(GenState *gen, StructNode *base) {
+    EnumNode *tagnode = structEnumTagNode(base);
+    if (tagnode && tagnode->extended)
+        return;
+
     // Set optimization flag if we have a nullable pointer variant types
     if (base->flags & SameSize && base->derived->used == 2) {
         // Look for 2 variants, one with one field (enum) and one with two
@@ -291,8 +303,14 @@ void genlSetupTaggedTrait(GenState *gen, StructNode *base) {
 }
 
 // Generate samesize trait and all its concrete types, padding as needed
+//
+// A variant an extension shares with its base is ONE declaration with one layout,
+// and both enums list it. So whichever of them generation reaches first lays it
+// out, and the other leaves what it finds alone. The padding is the same either
+// way: an extension may add no variant larger than its base's largest, refused
+// below, so the largest in both lists is the base's.
 void genlSameSizeTrait(GenState *gen, StructNode *base) {
-    
+
     // Generate just "opaque" struct def for all concrete names (trait has already been done)
     // This way any recursive types in fields will be able to latch on to these typerefs, if needed
     // Later we will attach fields to the opaque struct defs
@@ -300,7 +318,8 @@ void genlSameSizeTrait(GenState *gen, StructNode *base) {
     uint32_t cnt;
     for (nodesFor(base->derived, cnt, nodesp)) {
         StructNode *strnode = (StructNode *)*nodesp;
-        strnode->llvmtype = LLVMStructCreateNamed(gen->context, &strnode->namesym->namestr);
+        if (strnode->llvmtype == NULL)
+            strnode->llvmtype = LLVMStructCreateNamed(gen->context, &strnode->namesym->namestr);
     }
 
     // Use throwaway types to determine the sizes of all concrete variants
@@ -321,13 +340,47 @@ void genlSameSizeTrait(GenState *gen, StructNode *base) {
         }
     }
 
-    // Now add fields + padding for all variants, so all end up the same max size
+    // An extension adds no variant larger than its base's largest.
+    //
+    // The base's padding is what the variants they share are laid out with, and a
+    // wider addition would have to widen them -- leaving which width a shared
+    // variant had to depend on which of the two enums generation reached first.
+    // Checked here because this is where a size exists at all: nothing before
+    // generation has a data layout to ask, which is why genlRecast checks a recast's
+    // size here too (genlexpr.c). '@unsized' pads nothing and so has nothing to
+    // reconcile, which is what the diagnostic points at.
+    StructNode *enumbase = structEnumBaseDcl(base);
+    uint32_t shared = (enumbase && enumbase->derived) ? enumbase->derived->used : 0;
+    if (shared > 0 && shared < base->derived->used) {
+        unsigned long long basemax = 0;
+        uint32_t pos;
+        for (pos = 0; pos < shared; ++pos)
+            if (sizes[pos] > basemax)
+                basemax = sizes[pos];
+        for (pos = shared; pos < base->derived->used; ++pos) {
+            if (sizes[pos] <= basemax)
+                continue;
+            StructNode *added = (StructNode*)nodesGet(base->derived, pos);
+            errorMsgNode((INode*)added, ErrorEnumExtendsSize,
+                "%s needs %llu bytes and %s pads every variant to %llu, which the variants %s shares with it are laid out with. An extension may not add a wider one: declare both enums '@unsized', which pads nothing, or make %s smaller.",
+                &added->namesym->namestr, sizes[pos], &enumbase->namesym->namestr, basemax,
+                &base->namesym->namestr, &added->namesym->namestr);
+        }
+    }
+
+    // Now add fields + padding for all variants, so all end up the same max size.
+    // A variant the other enum of an extension already laid out keeps that layout.
     sizesp = sizes;
     for (nodesFor(base->derived, cnt, nodesp)) {
         StructNode *strnode = (StructNode *)*nodesp;
-        genlStructFields(gen, strnode->llvmtype, strnode, (unsigned int)(maxsize - *sizesp++));
+        unsigned long long size = *sizesp++;
+        // Only a struct has a body to attach. A variant the nullable-pointer
+        // layout gave a bare pointer to never reaches here, because genlType
+        // answers before calling this, and an extended enum declines that layout.
+        if (LLVMGetTypeKind(strnode->llvmtype) == LLVMStructTypeKind && LLVMIsOpaqueStruct(strnode->llvmtype))
+            genlStructFields(gen, strnode->llvmtype, strnode, (unsigned int)(maxsize - size));
     }
-    
+
     // basetrait also needs fields
     if (maxStruct)
         genlStructFields(gen, base->llvmtype, maxStruct, 0);

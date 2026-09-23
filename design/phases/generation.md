@@ -180,10 +180,22 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
 - **Nullable pointer.** Exactly two variants under `SameSize`, one with one
   field and one with two whose second is a pointer-like: **no struct is emitted
   at all**, and the value *is* the pointer. A null pointer is the empty variant.
+  **Declined where an enum in the family is extended**: the layout works only while
+  those two variants are the whole set, and an extension holds the same two variant
+  declarations plus another, for which there is no pointer to be. Asked of the
+  discriminant, which the base, its variants and every extension share, so the answer
+  does not depend on which of them generation reaches first.
 - **Same size.** Each variant is re-emitted as a named struct with `[N x i8]`
   trailing padding to the largest variant's store size; the enum's body is
   a copy of the largest variant's fields. Reading a `%Shape` as a `%Circle` is
   safe only because they are the same size.
+  - **A variant an enum and an extension of it share is laid out once.** Both list
+    it, so whichever is generated first creates its named struct and fills it, and
+    the other leaves it alone; the memoized `llvmtype` is one slot per variant, and
+    one variant has one layout. **This is the one place the size restriction on an
+    extension is checked** — an added variant larger than the base's largest is
+    `ErrorEnumExtendsSize` — because the padding is only the same from either side
+    while that holds, and a size exists nowhere earlier than here.
 - **Unpadded**, for an `@unsized` enum: each variant keeps its own size, the
   discriminant still first. Measured, for an empty variant beside one holding
   three `i64`s: `%Ping = { i8, i32 }` and

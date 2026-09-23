@@ -77,7 +77,11 @@ flow later injects wraps the already-coerced node.
 Given an `is` condition on a **closed** variant set — an enum with no base of
 its own, carrying `HasTagField` or `SameSize` — it checks whether every entry of
 `derived` is matched by some arm testing **the same scrutinee**: the same node,
-or two name uses of one declaration (`ifSameScrutinee`). The second
+or two name uses of one declaration (`ifSameScrutinee`). An enum that *extends*
+another is such a set and its `derived` holds the base's variants ahead of its own,
+so a match on it must account for both; a match on the base still accounts for the
+base's alone, which is what forbidding the substitution between the two buys. The
+second
 form is what a clone of the match presents — a generic instance's or a macro
 expansion's — since cloning copies the shared node once per arm. If they all
 are, and one of the variant tests is the **last** condition, it **overwrites that

@@ -368,14 +368,30 @@ written inside its body.
 
 - **The variant list is complete at parse time.** `parsetype.c` adds each variant
   to the enum's `derived` list and settles its tag number as it parses, whether the
-  author wrote the value or it was assigned in sequence.
+  author wrote the value or it was assigned in sequence. **An enum that extends
+  another is the exception**: name resolution puts the base's variants at the front of
+  its list and numbers its own from there, since the values the base's variants hold
+  are not known until the base is resolved.
+- **A base enum and an extension of it never substitute for each other**, in either
+  direction, and type check is what enforces it: two `EnumType` declarations are
+  refused in `structMatches` ahead of its structural test and in
+  `structVirtRefMatches` ahead of its mapping. Both would otherwise say yes, because
+  an extension's fields are clones of its base's and its members are the base's. What
+  the refusal buys is the exhaustive match: a base-typed value can then only hold one
+  of the base's own variants. What does run between them is **membership** — a variant
+  is a value of the enum it was declared inside and of every enum extending that one
+  (`structEnumIncludes`). [struct](../nodes/struct.md), "An enum extending an enum".
 - **Analysis never computes an enum's size.** `genlSameSizeTrait` sizes each
-  variant and pads to the largest at *generation* time.
+  variant and pads to the largest at *generation* time. That is also why the one
+  restriction on an extension that is about size — no added variant larger than the
+  base's largest — is refused there and not here.
 - **Analysis does settle the discriminant's width**, because that follows the
   largest tag value rather than the variant count and generation cannot see a
   pinned value. `structSetTagWidth` is where, in step 5 of the struct sequence,
   after the variants' numbers are known and the enum's declared integer type is
-  checked. A value too large for a declared type is `ErrorTagWidth`.
+  checked. A value too large for a declared type is `ErrorTagWidth`, and so is one
+  too large for the width an extension's base already settled: they share the node
+  the width is written on.
 
 The rule that a derived type lives in the same module as its enum keeps the first
 two true.

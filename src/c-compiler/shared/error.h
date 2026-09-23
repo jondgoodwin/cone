@@ -195,6 +195,10 @@ enum ErrorCode {
     // A type body's 'use': folding a sibling enrichment's methods in
     ErrorUseSibling = 1104,     // A type-body 'use' naming what is not a sibling of this type, or a member that does not fold from one
 
+    // 'extends': an enum adding variants to another enum's variant set
+    ErrorEnumExtends = 1105,    // What an enum's 'extends' names cannot be its base, or what such an enum's body may not declare beside variants
+    ErrorEnumExtendsSize = 1106,// An added variant larger than the base's largest, which the shared layout has no room for
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
