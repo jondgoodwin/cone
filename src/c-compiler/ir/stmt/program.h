@@ -23,9 +23,6 @@ void pgmPrint(ProgramNode *pgm);
 // a file is read exactly once and belongs to exactly one module however many
 // importers name it; neither the module's declared name nor its filename is the
 // key, because what must happen once is the reading of the file.
-//
-// A built-in module is a string inside the compiler rather than a file, and is
-// registered under the pseudo-file name its diagnostics are reported against
 ModuleNode *pgmFindFile(ProgramNode *pgm, Name *pathsym);
 
 // Record that a file belongs to a module

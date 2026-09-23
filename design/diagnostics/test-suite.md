@@ -285,11 +285,19 @@ through.
 
 **Name a scenario for what breaks when it fails.**
 
-Runtime programs print one `name = value` line per fact established.
+Runtime programs print one `name = value` line per fact established, through
+`import stdio`. `stdio`, like `core`, is a package: a folder module in the
+repository's `packages/` folder, which a `conec` built by CMake finds by default,
+with no option and no setup. The runner passes nothing to find it. A run that
+needs another package of the same name adds a `--path` folder in its `options`,
+which is searched ahead of `packages/` (`module-package-path`); the
+`CONE_PACKAGES` environment variable, which replaces `packages/` itself, is not
+something a scenario can set.
 
 A runnable program cannot span **modules** until separate compilation lands, so
 every `run` scenario is one module — which is one file, or the files of one
-folder.
+folder. A package the search path finds is the exception: it is compiled into
+the program's object, so `stdio` links.
 
 ## 4. Assert
 

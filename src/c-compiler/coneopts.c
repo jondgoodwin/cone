@@ -115,8 +115,10 @@ static void usage()
         "  --define, -D    Define the specified build flag.\n"
         "    =name\n"
         "  --strip, -s     Strip debug info.\n"
-        "  --path, -p      Add an additional search path.\n"
-        "    =path         Used to find packages and libraries.\n"
+        "  --path, -p      Add folders to the package search path.\n"
+        "    =path;path    Searched in order, before the packages folder.\n"
+        "                  The packages folder, which holds core and stdio,\n"
+        "                  is CONE_PACKAGES, or else the one built in.\n"
         "  --output, -o    Write output to this directory.\n"
         "    =path         Defaults to the current directory.\n"
         "  --library, -l   Generate a C-API compatible static library.\n"
@@ -168,38 +170,59 @@ static void usage()
     );
 }
 
-// Handle creation of package_search_paths array of strings
-void coneOptPath(char *path, ConeOptions *opt) {
-    // Create package_search_paths based on count of semi-colon separated paths
-    int nbrPaths = 0;
-    if (*path) {
-        ++nbrPaths;
-        char *pathp = path;
-        while (*pathp) {
-            if (*pathp++ == ';')
-                ++nbrPaths;
-        }
-    }
-    opt->package_search_paths = (char **)memAllocBlk((nbrPaths + 1) * sizeof(char*));
+// The packages folder when neither the environment nor the build names one. The
+// CMake build compiles in the repository's own 'packages' folder, so the test
+// runner and a direct run of conec find core and stdio with no setup; a build
+// that defines nothing looks in 'packages' under the current directory
+#ifndef CONE_PACKAGES_DIR
+#define CONE_PACKAGES_DIR "packages/"
+#endif
 
-    // Split paths by semi-colon, populating package_search_paths
-    char **nextPath = opt->package_search_paths;
+// Append semicolon-separated folders to package_search_paths, each given its
+// trailing slash. An empty segment names no folder and is skipped
+void coneOptPath(char *path, ConeOptions *opt) {
+    int nbrOld = 0;
+    if (opt->package_search_paths)
+        while (opt->package_search_paths[nbrOld])
+            ++nbrOld;
+    int nbrNew = 1;
+    for (char *pathp = path; *pathp; ++pathp) {
+        if (*pathp == ';')
+            ++nbrNew;
+    }
+    char **paths = (char **)memAllocBlk((nbrOld + nbrNew + 1) * sizeof(char*));
+    char **nextPath = paths;
+    for (int i = 0; i < nbrOld; ++i)
+        *nextPath++ = opt->package_search_paths[i];
+
+    // Split paths by semi-colon
     char *pathp = path;
     while (*pathp) {
         char *startp = pathp;
         while (*pathp && *pathp != ';')
             ++pathp;
         size_t foldersz = pathp - startp;
+        if (*pathp == ';')
+            ++pathp;
+        if (foldersz == 0)
+            continue;
         char *folder = (char*)memAllocBlk(foldersz + 2);
         memmove(folder, startp, foldersz);
         folder[foldersz] = 0;
-        if (folder[foldersz - 1] != '/')
+        if (folder[foldersz - 1] != '/' && folder[foldersz - 1] != '\\')
             strcat(folder, "/");
         *nextPath++ = folder;
-        if (*pathp == ';')
-            ++pathp;
     }
     *nextPath = NULL;
+    opt->package_search_paths = paths;
+}
+
+// The package search path ends at the packages folder, where core and stdio are:
+// the one CONE_PACKAGES names, or the one the build compiled in. A '--path'
+// folder comes before it, so a package there is found first
+static void coneOptPackages(ConeOptions *opt) {
+    char *packages = getenv("CONE_PACKAGES");
+    coneOptPath(packages && *packages ? packages : CONE_PACKAGES_DIR, opt);
 }
 
 int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
@@ -310,5 +333,6 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
             usage();
         return -1;
     }
+    coneOptPackages(opt);
     return 1;
 }

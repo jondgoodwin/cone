@@ -61,7 +61,6 @@ Name *gtName;
 Name *parensName;
 Name *indexName;
 Name *refIndexName;
-Name *corelibName;
 Name *optionName;
 Name *rcName;
 Name *soName;

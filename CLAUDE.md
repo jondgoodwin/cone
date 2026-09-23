@@ -18,7 +18,15 @@ here goes stale without anyone noticing.
   - `stmt/`: declaration and statement nodes.
   - `types/`: type representation and type rules.
   - `meta/`: generics and macros.
-- `src/c-compiler/corelib/`: compiler-defined core language types and methods.
+- `src/c-compiler/corelib/`: compiler-defined core language types and methods,
+  the ones built in C.
+- `packages/`: the Cone packages the compiler finds by default, one folder module
+  each: `core/core.cone` (the prelude every module imports: `Option`, `Result`,
+  the `so` and `rc` regions) and `stdio/stdio.cone`. A CMake-built `conec`
+  compiles this folder's path in, so the test runner and a direct run find both
+  with no setup; `CONE_PACKAGES` names another packages folder, and `--path`
+  adds folders searched before it. `design/nodes/module.md`, "The packages
+  folder", is the rule.
 - `src/c-compiler/genllvm/`: LLVM type, statement, expression, and allocation
   generation.
 - `src/c-compiler/shared/`: diagnostics, memory, file, option, timer, and UTF-8
@@ -144,7 +152,8 @@ source, and `--build` builds first (it finds the Visual Studio environment
 itself); outside the runner, build before believing any failure.
 
 Useful `conec` options: `--ir` writes an IR/AST dump, `--llvmir` writes LLVM IR
-before and after optimization, and `--wasm` targets WebAssembly. The output
+before and after optimization, `--wasm` targets WebAssembly, and `--path=<dir>`
+adds a package folder searched before `packages/`. The output
 directory must already exist, and each run writes several files, so use a
 git-ignored directory such as `build/`.
 
@@ -166,10 +175,12 @@ link prog.obj build\x64-release\conestd.lib /OUT:prog.exe /SUBSYSTEM:CONSOLE msv
 ```
 
 A program that spans an `import` cannot be linked yet, because an imported
-module's bodies are declared and never generated. So runtime checks live in what
-one compile defines: one source file, the files of one folder, or that folder and
-the submodules its subfolders draw, whose bodies are generated like the rest of
-the program's. `design/nodes/module.md` explains why.
+module's bodies are declared and never generated — except a package found on the
+package search path, such as `stdio`, which is compiled into the importing
+object. So runtime checks live in what one compile defines: one source file, the
+files of one folder, or that folder and the submodules its subfolders draw, whose
+bodies are generated like the rest of the program's, plus the packages it
+imports. `design/nodes/module.md` explains why.
 
 ## Change discipline
 

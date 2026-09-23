@@ -11,6 +11,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// The package search path: every '--path' folder in order, then the packages
+// folder. Each carries its trailing slash, and the list ends at a NULL
 extern char **fileSearchPaths;
 
 // Load a file into an allocated string, return pointer or NULL if not found
@@ -34,6 +36,12 @@ char *fileSrcUrl(char *cururl, char *srcfn, int newfolder);
 // has to be in hand before anything can ask whether this file is already held.
 // What comes back is canonical, so two spellings of one file are one key
 char *fileFindSrc(char *cururl, char *srcfn);
+
+// fileFindSrc's two halves apart: relative to cururl alone, and on the package
+// search path alone. A caller that must know which of the two found a file --
+// a module found on the search path is compiled into the object -- asks each
+char *fileFindLocal(char *cururl, char *srcfn);
+char *fileFindPackage(char *srcfn);
 
 // The one spelling of a path: separators as '/', a '.' segment dropped and a
 // '..' segment cancelled against the segment in front of it

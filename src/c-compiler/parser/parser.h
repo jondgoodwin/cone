@@ -16,6 +16,7 @@ typedef struct ParseState {
     ModuleNode *mod;        // Current module
     INsTypeNode *typenode;  // Current type
     int inrettype;          // Non-zero while parseFnSig reads a return type, where a '{' opens the declared function's body
+    ModuleNode *core;       // The core package, once loaded: every module loaded after it imports it
 } ParseState;
 
 // When parsing a variable definition, what syntax is allowed?

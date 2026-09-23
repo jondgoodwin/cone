@@ -220,20 +220,32 @@ char *fileCanonicalPath(char *path) {
     return out;
 }
 
-// Find the source file srcfn names, relative to cururl and then on each search
-// path, and hand back the one spelling of what it found
-char *fileFindSrc(char *cururl, char *srcfn) {
+// Find the source file srcfn names relative to cururl alone, and hand back the
+// one spelling of what it found
+char *fileFindLocal(char *cururl, char *srcfn) {
     char *fn = fileFindSrcWithFolder(cururl, srcfn);
-    if (fn)
-        return fileCanonicalPath(fn);
+    return fn ? fileCanonicalPath(fn) : NULL;
+}
+
+// Find the source file srcfn names on the package search path alone: each
+// folder in order, the packages folder last (coneopts.c)
+char *fileFindPackage(char *srcfn) {
     char **searchPaths = fileSearchPaths;
     if (searchPaths == NULL)
         return NULL;
     while (*searchPaths) {
-        if (fn = fileFindSrcWithFolder(*searchPaths++, srcfn))
+        char *fn = fileFindSrcWithFolder(*searchPaths++, srcfn);
+        if (fn)
             return fileCanonicalPath(fn);
     }
     return NULL;
+}
+
+// Find the source file srcfn names, relative to cururl and then on each search
+// path, and hand back the one spelling of what it found
+char *fileFindSrc(char *cururl, char *srcfn) {
+    char *fn = fileFindLocal(cururl, srcfn);
+    return fn ? fn : fileFindPackage(srcfn);
 }
 
 // The name of the current directory, or NULL where there is none to read. A file

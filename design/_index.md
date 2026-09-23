@@ -225,7 +225,8 @@ Most real work crosses phases. Start here instead.
 | find out what the compiler is actually doing | [Measuring](diagnostics/measuring.md) — probes, `--ir`, `--llvmir`, `--checktree` |
 | add or change a diagnostic | [Error Codes](diagnostics/error-codes.md) |
 | add or update test coverage | [Test Suite](diagnostics/test-suite.md) |
-| find a built-in type, operator method, or intrinsic | `corelib/` — see the family map in [IR Nodes](nodes/_index.md) |
+| find a built-in type, operator method, or intrinsic | `corelib/` — see the family map in [IR Nodes](nodes/_index.md); `Option`, `Result`, `so` and `rc` are Cone source in `packages/core/core.cone` |
+| find `core` or `stdio`, or change where packages are found | `packages/` at the repository's root — [Module](nodes/module.md), "The packages folder" |
 
 ## By language feature
 

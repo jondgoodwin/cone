@@ -82,8 +82,8 @@ imm shared = +rc Person["Tako"]     // counted: freed at zero
 | Region | Is | Strategy |
 | --- | --- | --- |
 | `borrowRef` | a sentinel node, not a struct — the default for `&` | none; a borrow owns nothing |
-| `so` | `struct @move so` in `corelibSource`, no fields | single owner frees |
-| `rc` | `struct rc { cnt usize }` in `corelibSource` | reference counting |
+| `so` | `struct @move so` in the core package, `packages/core/core.cone`, no fields | single owner frees |
+| `rc` | `struct rc { cnt usize }` in the core package | reference counting |
 | user-defined | any struct with `_alloc(usize) *u8` and an optional `init()` | whatever it implements |
 
 **`so` and `rc` are Cone source, not built into the compiler.**

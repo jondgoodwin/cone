@@ -57,36 +57,8 @@ void stdPermInit() {
     opaqPerm = newPermNodeStr("opaq", MayAlias | RaceSafe | IsLockless);
 }
 
-char *corelibSource =
-"pub enum Option[T] {\n"
-  "struct None {}\n"
-  "struct Some {pub value T;}\n"
-"}\n"
-
-"pub enum Result[T,E] {\n"
-  "struct Ok {pub value T;}\n"
-  "struct Error {pub value E;}\n"
-"}\n"
-
-// A variant is a name of its enum, so these two statements are what make Some,
-// None, Ok and Error bare names of core. They are 'pub', and every module's
-// automatic import of core folds its public names, which carries them on into
-// every program
-"pub use Option;\n"
-"pub use Result;\n"
-
-"pub extern fn malloc(size usize) *u8;\n"
-
-"pub struct @move so {\n"
-"  fn alloc(size usize) *u8 inline {malloc(size);}\n"
-"}\n"
-
-"pub struct rc {\n"
-"  cnt usize;\n"
-"  fn alloc(size usize) *u8 inline {malloc(size);}\n"
-"  fn init() rc inline {rc[1usize];}\n"
-"}\n"
-;
+// What core declares in Cone -- Option, Result, and the 'so' and 'rc' regions --
+// is the core package's source, packages/core/core.cone, not this file's.
 
 // Set up the standard library, whose names are always shared by all modules
 void stdlibInit(int ptrsize) {
