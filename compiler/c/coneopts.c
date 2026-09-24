@@ -9,6 +9,7 @@
 #include "coneopts.h"
 #include "shared/options.h"
 #include "shared/memory.h"
+#include "shared/fileio.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -118,7 +119,8 @@ static void usage()
         "  --path, -p      Add folders to the package search path.\n"
         "    =path;path    Searched in order, before the packages folder.\n"
         "                  The packages folder, which holds core and stdio,\n"
-        "                  is CONE_PACKAGES, or else the one built in.\n"
+        "                  is CONE_PACKAGES, else the nearest one at or\n"
+        "                  above conec's own folder, else the one built in.\n"
         "  --output, -o    Write output to this directory.\n"
         "    =path         Defaults to the current directory.\n"
         "  --library, -l   Generate a C-API compatible static library.\n"
@@ -170,10 +172,9 @@ static void usage()
     );
 }
 
-// The packages folder when neither the environment nor the build names one. The
-// CMake build compiles in the repository's own 'packages' folder, so the test
-// runner and a direct run of conec find core and stdio with no setup; a build
-// that defines nothing looks in 'packages' under the current directory
+// The packages folder when neither the environment nor the executable's place
+// names one. The CMake build compiles in the repository's own 'packages' folder;
+// a build that defines nothing looks in 'packages' under the current directory
 #ifndef CONE_PACKAGES_DIR
 #define CONE_PACKAGES_DIR "packages/"
 #endif
@@ -217,12 +218,49 @@ void coneOptPath(char *path, ConeOptions *opt) {
     opt->package_search_paths = paths;
 }
 
+// The packages folder that travels with conec: the nearest 'packages' folder
+// holding core (packages/core/core.cone) in the executable's own folder or any
+// folder above it. That one rule finds the repository's folder from a build
+// tree (build/x64-release/conec.exe) and an installed one from either
+// <prefix>/conec.exe or <prefix>/bin/conec.exe. Requiring core, not just the
+// name, keeps an unrelated 'packages' folder on the way up from being taken
+static char *coneOptExePackages() {
+    char *folder = fileExeFolder();
+    if (folder == NULL)
+        return NULL;
+    size_t len = strlen(folder);
+    char *candidate = (char*)memAllocBlk(len + sizeof("packages/core/"));
+    while (1) {
+        memcpy(candidate, folder, len);
+        strcpy(candidate + len, "packages/core/");
+        if (fileDesignatedFile(candidate, "core")) {
+            candidate[len + sizeof("packages/") - 1] = '\0';
+            return candidate;
+        }
+        // Up one folder: drop the last segment and keep its trailing slash
+        if (len < 2)
+            return NULL;
+        size_t up = len - 1;
+        while (up > 0 && folder[up - 1] != '/')
+            --up;
+        if (up == 0 || up == len)
+            return NULL;
+        len = up;
+    }
+}
+
 // The package search path ends at the packages folder, where core and stdio are:
-// the one CONE_PACKAGES names, or the one the build compiled in. A '--path'
-// folder comes before it, so a package there is found first
+// the one CONE_PACKAGES names, else the one found beside the executable, else
+// the one the build compiled in. A '--path' folder comes before it, so a package
+// there is found first
 static void coneOptPackages(ConeOptions *opt) {
     char *packages = getenv("CONE_PACKAGES");
-    coneOptPath(packages && *packages ? packages : CONE_PACKAGES_DIR, opt);
+    if (packages && *packages) {
+        coneOptPath(packages, opt);
+        return;
+    }
+    char *beside = coneOptExePackages();
+    coneOptPath(beside ? beside : CONE_PACKAGES_DIR, opt);
 }
 
 int coneOptSet(ConeOptions *opt, int *argc, char **argv) {

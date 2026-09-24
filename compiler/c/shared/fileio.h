@@ -54,6 +54,10 @@ size_t fileFolder(char *fn);
 // The name of the current directory, or NULL where there is none to read
 char *fileCurFolderName();
 
+// The folder holding the running executable, with separators as '/' and a
+// trailing slash, or NULL where the platform cannot say
+char *fileExeFolder();
+
 // The path of the designated file a folder holds -- the '.cone' file named for
 // the folder -- or NULL where it holds none. 'folder' carries its trailing slash
 // and 'name' is the folder's own name. This is the probe that asks whether a

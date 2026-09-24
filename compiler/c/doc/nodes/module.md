@@ -480,12 +480,26 @@ located, registered, swept and parsed on the path every imported module takes.
 **The packages folder is found by default.** It ends the **package search
 path**, `package_search_paths` in `coneopts.c`, which `lexInit` hands to
 `fileio.c` as `fileSearchPaths`: every `--path` folder in the order given, then
-the packages folder. That folder is the one the `CONE_PACKAGES` environment
-variable names, or else `CONE_PACKAGES_DIR`, which the CMake build compiles in as
-`${CMAKE_SOURCE_DIR}/packages/` — so the test runner and a direct run of a
-`conec` built from this repository find `core` and `stdio` with no setup, from
-any directory. A build that defines nothing looks in `packages/` under the current
-directory. `--path` adds to the search path and replaces nothing, so a package in
+the packages folder. That folder is chosen in three steps, first found wins:
+
+1. the one the `CONE_PACKAGES` environment variable names;
+2. **the one that travels with `conec`**: the nearest `packages/` holding
+   `core/core.cone`, looked for in the executable's own folder and then each
+   folder above it (`coneOptExePackages`, with the executable's folder asked of
+   the operating system by `fileExeFolder`, never read from `argv[0]`). One rule
+   serves the build tree, where `build/x64-release/conec.exe` finds the
+   repository's `packages/` two folders up, and an installed layout, where
+   `<prefix>/bin/conec.exe` or `<prefix>/conec.exe` finds `<prefix>/packages/`.
+   Requiring `core` rather than the bare name keeps an unrelated `packages`
+   folder on the way up from being taken;
+3. `CONE_PACKAGES_DIR`, the fallback compiled in: the CMake build gives it
+   `${CMAKE_SOURCE_DIR}/packages/`, and a build that defines nothing looks in
+   `packages/` under the current directory.
+
+So the test runner and a direct run of a `conec` built from this repository find
+`core` and `stdio` with no setup, from any directory, and a `conec` copied out
+with a `packages/` folder beside or above it takes that folder with it.
+`--path` adds to the search path and replaces nothing, so a package in
 a `--path` folder is found ahead of the packages folder's of the same name;
 `CONE_PACKAGES` replaces the packages folder itself.
 
@@ -1477,9 +1491,14 @@ annotation on a reference names is a type.
   in a `--path` folder is generated or only declared according to which import
   reached it first.
 - **The packages folder a CMake build compiles in is an absolute path into the
-  source tree.** A `conec` moved away from that tree, or the tree moved away from
-  it, finds no `core` and stops, unless `CONE_PACKAGES` or `--path` names a
-  folder that holds one.
+  source tree, and it is only the fallback.** A `conec` moved away from that
+  tree with no `packages/` holding `core` at or above its new folder, while the
+  tree has also moved, finds no `core` and stops, unless `CONE_PACKAGES` or
+  `--path` names a folder that holds one.
+- **The walk up from the executable has no stopping point but the root.** A
+  `conec` installed with no `packages/` of its own, under a folder that happens to
+  hold `packages/core/core.cone` further up, takes that one ahead of the
+  compiled-in fallback.
 - **A module's public names are folded whether or not anything uses them.** A
   wildcard import walks the source's whole namespace, so a name the importer
   never mentions still takes a binding and still collides with a declaration of

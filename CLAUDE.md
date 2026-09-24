@@ -30,10 +30,11 @@ Visual Studio projects stay at the root.
   the ones built in C.
 - `packages/`: the Cone packages the compiler finds by default, one folder module
   each: `core/core.cone` (the prelude every module imports: `Option`, `Result`,
-  the `so` and `rc` regions) and `stdio/stdio.cone`. A CMake-built `conec`
-  compiles this folder's path in, so the test runner and a direct run find both
-  with no setup; `CONE_PACKAGES` names another packages folder, and `--path`
-  adds folders searched before it. `compiler/c/doc/nodes/module.md`, "The packages
+  the `so` and `rc` regions) and `stdio/stdio.cone`. `conec` finds this folder
+  by walking up from its own executable (and a CMake build also compiles its
+  path in as the fallback), so the test runner and a direct run find both with
+  no setup; `CONE_PACKAGES` names another packages folder, and `--path` adds
+  folders searched before it. `compiler/c/doc/nodes/module.md`, "The packages
   folder", is the rule.
 - `compiler/c/genllvm/`: LLVM type, statement, expression, and allocation
   generation.

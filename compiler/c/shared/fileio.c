@@ -16,11 +16,16 @@
 #ifdef _WIN32
 #include <io.h>
 #include <direct.h>
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #define fileGetCwd _getcwd
 #else
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 #define fileGetCwd getcwd
 #endif
 
@@ -264,6 +269,39 @@ char *fileCurFolderName() {
     while (name != buf && name[-1] != '/' && name[-1] != '\\')
         --name;
     return *name ? memAllocStr(name, strlen(name)) : NULL;
+}
+
+// The folder holding the running executable, canonical and ending in '/', or
+// NULL where the platform will not say. Asked of the operating system rather
+// than read from argv[0], which names whatever the shell was given
+char *fileExeFolder() {
+    char buf[4096];
+    size_t len = 0;
+#ifdef _WIN32
+    DWORD got = GetModuleFileNameA(NULL, buf, sizeof(buf));
+    if (got == 0 || got >= sizeof(buf))
+        return NULL;
+    len = got;
+#elif defined(__APPLE__)
+    uint32_t size = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &size) != 0)
+        return NULL;
+    len = strlen(buf);
+#elif defined(__linux__)
+    ssize_t got = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (got <= 0)
+        return NULL;
+    len = (size_t)got;
+#else
+    return NULL;
+#endif
+    buf[len] = '\0';
+    char *path = fileCanonicalPath(buf);
+    size_t folder = fileFolder(path);
+    if (folder == 0)
+        return NULL;
+    path[folder] = '\0';
+    return path;
 }
 
 // The path of the designated file a folder holds, or NULL where it holds none.
