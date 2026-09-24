@@ -913,7 +913,7 @@ which is where the `symbols` check target reads them.
 | `fn main` | `define i32 @main() comdat {` — the one definition `genlLinkage` leaves external, by its bare name | external · `nodeduplicate` |
 | root global: `mut`, `imm`, private | `@pubGlobal = internal global i64 5, comdat` · `@constGlobal = internal constant i64 7, comdat` · `@_privGlobal = internal global i64 6, comdat` | internal · `nodeduplicate` |
 | struct method, static fn, private method | `@_CNvNt2Pt3get` · `@_CNvNt2Pt4make` · `define internal i32 @_CNvNt2Pt4__hid(%Pt* %0) comdat {` — `Pt.get`, `Pt.make`, `Pt._hid` | internal · `nodeduplicate` |
-| imported module's `fn` | `declare i64 @_CNvC3sub5subFn(i64)` — `sub.subFn`; a private top-level `fn` or global leaves no symbol | external · none |
+| imported module's `fn` | `declare i64 @_CNvC3sub5subFn(i64)` — `sub.subFn`; a private top-level `fn` or global leaves no symbol unless a public inline body reaches it, and is then declared the same way | external · none |
 | imported module's global | `@_CNvC3sub9subGlobal = external global i64`; `imm` is `external constant` | external · none |
 | method on a struct in an imported module | `declare i32 @_CNvNtC3sub5SubPt3get(%SubPt*)`; the private method **is** declared, `declare i32 @_CNvNtC3sub5SubPt4__hid(%SubPt*)`, because the privacy filter in `genlProgram` tests only the module's top-level node | external · none |
 | the same file as root and as import | `define internal i64 @scaleInt(i64 %0) comdat {` as root; `declare i64 @_CNvC9modulesub8scaleInt(i64)` when imported — one declaration, two symbols, depending on which compilation the module was the root of | |

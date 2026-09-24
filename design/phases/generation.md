@@ -53,6 +53,9 @@ here, before parsing.
 
 1. **Symbols** — `genlGlobalSyms` for every module, generating or not, skipping
    private nodes of non-generating modules. Declares every global and function.
+   A skipped private node is declared on first use when a public inline body,
+   generated in its caller, names it: `genlFnSym` and `genlVarSym` in
+   `genlexpr.c` ask for the symbol rather than assume it.
 2. **Implementations** — `genlGlobalImpl`, only for modules flagged
    `FlagGenMod`.
 

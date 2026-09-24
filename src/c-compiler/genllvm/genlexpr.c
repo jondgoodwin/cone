@@ -25,6 +25,22 @@
 
 LLVMValueRef genlAddr(GenState *gen, INode *lval);
 
+// A global's symbol, asked for rather than assumed. genlProgram declares no
+// private name of a module this compile does not generate, yet a public inline
+// body of that module is generated in each caller, and what it names -- a
+// private function, method or global -- is reached from here. Asking declares
+// it on first use; a symbol already declared is untouched.
+static LLVMValueRef genlFnSym(GenState *gen, FnDclNode *fndcl) {
+    if (fndcl->llvmvar == NULL)
+        genlGloFnName(gen, fndcl);
+    return fndcl->llvmvar;
+}
+static LLVMValueRef genlVarSym(GenState *gen, VarDclNode *var) {
+    if (var->llvmvar == NULL && var->scope == 0)
+        genlGloVarName(gen, var);
+    return var->llvmvar;
+}
+
 // Generate an if statement
 LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
     LLVMBasicBlockRef endif;
@@ -232,7 +248,7 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
     LLVMValueRef fncallret = NULL;
     switch (fndcl->value? fndcl->value->tag : BlockTag) {
     case BlockTag: {
-        fncallret = LLVMBuildCall(gen->builder, fndcl->llvmvar, fnargs, fnargcnt, "");
+        fncallret = LLVMBuildCall(gen->builder, genlFnSym(gen, fndcl), fnargs, fnargcnt, "");
         if (fndcl->flags & FlagSystem) {
             LLVMSetInstructionCallConv(fncallret, LLVMX86StdcallCallConv);
         }
@@ -939,8 +955,8 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
     if (isNameUseNode(lval) && isExpNode(lval)) {
         INode *dclnode = ((NameUseNode *)lval)->dclnode;
         if (dclnode->tag == FnDclTag)
-            return ((FnDclNode*)dclnode)->llvmvar;
-        return ((VarDclNode*)dclnode)->llvmvar;
+            return genlFnSym(gen, (FnDclNode*)dclnode);
+        return genlVarSym(gen, (VarDclNode*)dclnode);
     }
     switch (lval->tag) {
     case DerefTag:
@@ -1083,7 +1099,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     if (isNameUseNode(termnode) && isExpNode(termnode)) {
         VarDclNode *vardcl = (VarDclNode*)((NameUseNode *)termnode)->dclnode;
         if (vardcl->tag == VarDclTag)
-            return LLVMBuildLoad(gen->builder, vardcl->llvmvar, &vardcl->namesym->namestr);
+            return LLVMBuildLoad(gen->builder, genlVarSym(gen, vardcl), &vardcl->namesym->namestr);
         else if (vardcl->tag == ConstDclTag) {
             ConstDclNode *constdcl = (ConstDclNode*)vardcl;
             return genlExpr(gen, constdcl->value);

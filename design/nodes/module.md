@@ -526,7 +526,8 @@ it are visible in emitted IR:
   because its bodies are never reached.
   Measured, that is the module's *public* surface whether or not the importer
   calls it: a public function nothing references is still declared, and a private
-  one is not declared at all. So what an import contributes today is already the
+  one is declared only when a public inline body the importer generates reaches
+  it. So what an import contributes today is already the
   shape of a `.h` file, derived from the imported source rather than from a
   reduced artifact.
 - Compiling that same module as the root emits
@@ -887,7 +888,9 @@ Flow analysis has no module concept; it runs per function body.
 `genlProgram` is two strict passes over `pgm->modules`:
 
 1. **Symbols.** Every module, generating or not. A declaration is skipped only
-   when it is private *and* its module is not generating.
+   when it is private *and* its module is not generating. A public inline body
+   is generated in each caller, so a private function, method or global it names
+   is declared there on first use instead (`genlFnSym`, `genlVarSym`).
 2. **Implementations.** Only modules flagged `FlagGenMod`.
 
 **The root is flagged `FlagGenMod`, and so is a module found on the package
