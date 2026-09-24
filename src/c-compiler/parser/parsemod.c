@@ -1140,7 +1140,9 @@ void parseSubmoduleDraw(ParseState *parse, ModuleNode *parent, char *path, Lexer
         return;
     }
 
-    ModuleNode *mod = pgmAddMod(parse->pgm, FlagGenMod);
+    // Generated exactly when its parent is: a submodule of a module this object
+    // only declares is declared with it
+    ModuleNode *mod = pgmAddMod(parse->pgm, parent->flags & FlagGenMod);
     // Positioned before it is bound, since the binding is where a collision
     // with its parent's own name is found
     Lexer *file = parseModulePosition(mod, path, block);

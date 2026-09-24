@@ -509,8 +509,10 @@ compiled into this object.** That is the truth of today's single-object
 compiler: a package is Cone source and nothing else supplies its definitions, so
 `parseLoadAndParseModuleFile` gives `FlagGenMod` to a module `fileFindPackage`
 found, `core` included, and withholds it from one `fileFindLocal` found beside its
-importer. With the root and every submodule also generating, the one kind of
-module denied it is an import reached relative to its importer.
+importer. The root generates too, and a submodule generates exactly when its
+parent does (`parseSubmoduleDraw` copies the parent's flag), so the one kind of
+module denied it is an import reached relative to its importer, together with
+every submodule of it (`module-import-submodule`).
 
 That asymmetry is the whole of the separate-compilation gap, and both sides of
 it are visible in emitted IR:
@@ -888,10 +890,12 @@ Flow analysis has no module concept; it runs per function body.
    when it is private *and* its module is not generating.
 2. **Implementations.** Only modules flagged `FlagGenMod`.
 
-**A submodule is flagged `FlagGenMod`, and so is a module found on the package
-search path; a module an import found beside its importer is not.** A
-submodule is part of the program the compiler was pointed at — its
-bodies belong in this object exactly as a swept file's do — and a package is
+**The root is flagged `FlagGenMod`, and so is a module found on the package
+search path; a module an import found beside its importer is not, and a
+submodule is flagged exactly as its parent is.** A submodule of the root is
+part of the program the compiler was pointed at — its bodies belong in this
+object exactly as a swept file's do — and a submodule of an import is part of
+that import, declared or generated with it. A package is
 compiled in until separate compilation lands ("The packages folder" above),
 where a module found beside its importer is taken as supplied from elsewhere and
 only declared. ▸ **So a program spanning a module TREE, or importing a package,
@@ -1466,7 +1470,7 @@ annotation on a reference names is a type.
   anything reads it. Nothing refuses a cycle; `modFoldNames` notices one only to
   run the fold passes again ("Name resolution" above).
 - **`FlagGenMod` is decided by where the import that loaded a module found its
-  file**, and the first to load it decides. A file both beside one importer and
+  file**, and the first to load it decides; its submodules follow it. A file both beside one importer and
   in a `--path` folder is generated or only declared according to which import
   reached it first.
 - **The packages folder a CMake build compiles in is an absolute path into the
