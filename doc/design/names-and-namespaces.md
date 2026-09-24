@@ -505,7 +505,7 @@ Every node that declares a symbol carries a `DclInfo` by value — `FnDclNode`,
 `VarDclNode` (a global), `StructNode` and `ModuleNode` — and `inodeGetDclInfo`
 is the one switch that knows which kinds those are. It holds the **owner**, a
 pointer to the enclosing module or type node — the chain is walked, never
-stored as a string — and five bits:
+stored as a string — and six bits:
 
 | Bit | Meaning | Written from |
 | --- | --- | --- |
@@ -514,6 +514,7 @@ stored as a string — and five bits:
 | `DclCName` | C-style name: no owner prefix, never mangled | `extern` [differs: the regime is meant to be declared on a module, and is inferred per declaration from `extern` until it is] |
 | `DclSystemCC` | system calling convention | `extern system` |
 | `DclNamesChain` | module only: contributes its name to the owner chain | set on every loaded module, and on the root only where a build description says `output: library` |
+| `DclExpandReached` | a function, global or type named by a body an importer expands — an `inline`, generic or macro body, a trait's default, a generic type's method | name resolution, where the body names it (`nameUseMarkExpandReached`); read only by a library compile, which exports it (L5) |
 
 **Owner is set where a declaration joins a namespace**: `modAddNode` for a
 module's declarations and `iNsTypeAddFn` for a type's methods. That placement
@@ -541,7 +542,7 @@ visibility; linkage is the compiler's to derive.
 | --- | --- |
 | owner chain | linkage: internal or external |
 | declared name | mergeable or unique |
-| visibility bit | nothing, today: a program compile sets no export-table visibility, and what a package exports is undecided |
+| visibility bit | whether a library compile exports it (L1); no export-table visibility is set in any compile |
 | supply: defined in this compile, or externally supplied | |
 | naming regime: C-style or Cone-style | |
 | calling convention, for C-style names | |
@@ -815,8 +816,8 @@ suite asserts `Holder[i64].tally` rather than bytes. Not a C demangler in
 has settled, with no second consumer to justify it.
 
 **Open.** Back-references, and with them the first use of the version digit.
-The package linkage table under "Linkage" is the rule and not the code, and
-L5's generic-helper half and L6 are open there.
+In the package linkage table under "Linkage", the mergeable rows — a generic's
+instance and a vtable — are the rule and not yet the code.
 
 ### Linkage
 
@@ -851,23 +852,26 @@ object define the symbol? A definition — a declaration whose module is flagged
 list — is `internal`, except `main` and a C-style name, which stay external. A
 declaration is external. No visibility is ever set: a private name is spelled
 and linked exactly as a public one, since privacy is a fact about the
-namespace, not the object file. A package compile does not exist yet; its
-cases below are the rule, not the code.
+namespace, not the object file.
 
-In a package compile:
+In a package compile — a build description saying `output: library` — the
+rows marked built are what `genlIsExported` does; the others are still the
+rule and not the code:
 
-| Declaration | Linkage |
-| --- | --- |
-| public `fn foo` | external, unique |
-| private `fn _x`, reached only from inside the package | internal |
-| public global | external, unique |
-| private global, unreached from outside | internal |
-| method on a public type | external, unique |
-| method on a private type | internal |
-| an instance of a generic the package itself instantiated | external, mergeable |
-| a vtable | external, mergeable |
-| a trait default cloned into a type this package declares | external, unique — one package emits it |
-| a trait's vtable list | internal (L4) |
+| Declaration | Linkage | |
+| --- | --- | --- |
+| public `fn foo` | external, unique | built |
+| private `fn _x`, reached only from inside the package | internal | built |
+| private `fn _x` or global that an `inline`, generic or macro body or a trait default names (L5) | external, unique | built |
+| public global | external, unique | built |
+| private global, unreached from outside | internal | built |
+| method on a public type | external, unique — a public method; a private one is external only when the type holds an expanded body, which reaches it through a receiver name resolution cannot see | built |
+| method on a private type | internal — unless an expanded body names the type, which then counts as a public type | built |
+| an instance of a generic the package itself instantiated | external, mergeable | not built: internal |
+| a vtable | external, mergeable | not built: internal |
+| a trait default cloned into a type this package declares | external, unique — one package emits it | built, as the implementing type's method |
+| a trait's vtable list | internal (L4) | built |
+| any definition of `core`, or of a package the search path compiled in | internal: this package does not export it | built |
 
 The prior art that settled the derivation: C++ `static` is linkage, not access,
 and a header-scoped `static` reached from an inline function is an ODR
@@ -891,20 +895,23 @@ package, so "outside" means outside the object.
   exempt, as it is never a symbol, which is how the core types hide `_neg`
   behind `-`. The refused candidate is left out of the set; the set stands.
 
-**Open:**
-
-- **L5, the other half.** A private helper called from a public generic or
-  `inline` body, whose instance the importer emits, is not ruled: the importer
-  may emit its own internal copy of the helper, but a private *global* reached
-  that way has one owner and cannot be duplicated, so it is either forbidden
-  from such bodies or accepted as external and hidden.
-- **L6.** The compiler must be told whether it is producing an importable
-  package; a `mod util` inside a program looks identical to a package's module,
-  and `--library` today changes only the relocation mode. A build
-  description's `output: library` is how it is told; today that names the
-  root and changes no linkage. Under S3 a program's
-  prefix-less symbols are internal, which is what makes prefix-less sound: a
-  program's `@log` cannot satisfy a package's reference to libm's `log`.
+- **L5, private but reachable through an expanded body: external.** Neither
+  forbidding such a name nor copying it per importer: a private helper,
+  global or type named by a body the importer expands —
+  `inline`, generic, macro, a trait's default — is exported once by its
+  package and linked against; the importer declares it (`genlFnSym`,
+  `genlVarSym`). What counts as reached is what name resolution sees the body
+  name (`DclExpandReached`), which over-approximates in one way: a *private*
+  `inline` body counts too, whether or not anything outside can reach it. No
+  visibility is set, so it is external and not hidden.
+- **L6, telling the compiler.** A build description's `output: library` tells
+  the compiler it is producing an importable package: it names the root and
+  sets `opt->library`, which makes the object position-independent and
+  switches generation to the package rule above. `--library` on the command
+  line sets the same flag, and is what an `output` line overrides. Under S3 a
+  program's prefix-less symbols are internal, which is what makes prefix-less
+  sound: a program's `@log` cannot satisfy a package's reference to libm's
+  `log`.
 
 ### As built
 

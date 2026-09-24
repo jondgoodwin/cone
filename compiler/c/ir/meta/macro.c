@@ -77,6 +77,10 @@ void macroNameRes(NameResState *pstate, MacroDclNode *gennode) {
     // nameUseNameRes refuses a bare one while this is set
     INode *svmacromethod = pstate->macromethod;
     pstate->macromethod = (gennode->flags & FlagMethFld) ? (INode*)gennode : NULL;
+    // A macro's body is expanded wherever it is used, an importer included, so
+    // what it names is marked for a library compile to export (nameUseNameRes)
+    INode *svexpander = pstate->expander;
+    pstate->expander = (INode*)gennode;
 
     // Hook gennode's parameters into global name table
     // so that when we walk the gennode's logic, parameter names are resolved.
@@ -91,6 +95,7 @@ void macroNameRes(NameResState *pstate, MacroDclNode *gennode) {
 
     nametblHookPop();
     pstate->macromethod = svmacromethod;
+    pstate->expander = svexpander;
     pstate->scope = oldscope;
 }
 

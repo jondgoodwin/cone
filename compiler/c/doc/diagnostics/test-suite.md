@@ -304,10 +304,16 @@ which is searched ahead of `packages/` (`module-package-path`); the
 `CONE_PACKAGES` environment variable, which replaces `packages/` itself, is not
 something a scenario can set.
 
-A runnable program cannot span **modules** until separate compilation lands, so
-every `run` scenario is one module — which is one file, or the files of one
-folder. A package the search path finds is the exception: it is compiled into
-the program's object, so `stdio` links.
+A runnable program spans **modules** only where they are compiled into its one
+object — the files of one folder, a module tree, a package the search path
+finds (so `stdio` links) — or where it is **linked with a package compiled on
+its own**. That is what a scenario's `link` key is for: each build description
+or source it names, relative to the scenario's folder, is compiled first with
+the scenario's options, to an object of its own in the same output folder, and
+linked in beside the program's object. A diagnostic or a failing compile there
+fails the scenario. It belongs to a folder `run` scenario only, and a linked
+source may not share the scenario's own basename, since its object would take
+the same name (`module-build-link`).
 
 ## 4. Assert
 
@@ -464,7 +470,9 @@ Each line is, in order, separated by single spaces:
    so nothing for `external` linkage or `default` visibility: `internal`,
    `dllimport x86_stdcallcc`; a program compile sets no visibility and asks
    nothing to merge, so `hidden` and `linkonce` are what an `excludes` guards
-   against;
+   against. A library's export is external and so prints no word —
+   `define q.addOne comdat nodeduplicate` — which is what tells it apart from
+   the `define internal` a program gives the same definition;
 3. the **demangled name**: the symbol read back through the scheme in
    `doc/design/names-and-namespaces.md`, "Symbols" — `sub.SubPt.get`,
    `Holder[i64].tally`, `pick[&so mut i32]`, `Vec.+`, a vtable as
@@ -514,6 +522,10 @@ tags        = ["typecheck", "genllvm", "runtime"]
 diagnostics = 0              # total count; required for 'recover'
 exit        = 0              # only where it is not the category's default
 xfail       = false          # omit unless true
+
+[scenario.module-build-link]
+category    = "run"
+link        = ["q/q.conebuild"]  # compiled alone first, and linked in (section 3)
 
 [scenario.driver-bad-option]
 category    = "driver"       # a driver scenario has no .cone file
@@ -608,4 +620,6 @@ accident — and update this list when you do.
 - **No AST-dump assertions.** `--ir` output has no stability contract.
 - **No WebAssembly tier** until there is a runtime to run against.
 - **No performance or memory regression tests.**
-- **No multi-module runtime scenarios** until separate compilation lands.
+- **Multi-object runtime scenarios only through `link`**, which compiles each
+  package alone and links its object in (section 3). Nothing else of separate
+  compilation is exercised: there is no Congo run in the suite.

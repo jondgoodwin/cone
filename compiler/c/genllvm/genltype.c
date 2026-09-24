@@ -40,7 +40,7 @@ static LLVMValueRef genlVtableThunk(GenState *gen, Vtable *vtable, VtableImpl *i
     FnDclNode *slot = (FnDclNode*)nodesGet(vtable->methfld, pos);
     LLVMValueRef fn = LLVMAddFunction(gen->module, nameVtableThunk(symbol, impl->structdcl, vtable->trait, slot->namesym),
         LLVMGetElementType(slottype));
-    genlLinkage(fn, NULL, 1);
+    genlLinkage(fn, NULL, GenlDefined);
     genlComdat(gen, fn);
 
     // Its own builder: a vtable is built while some other function may be
@@ -133,7 +133,7 @@ void genlVtableImpl(GenState *gen, Vtable *vtable, VtableImpl *impl, LLVMTypeRef
     LLVMSetGlobalConstant(impl->llvmvtablep, 1);
     // Defined here: a program compile is the only user of its vtables. A package
     // compile will make this 'linkonce any', as every object using the trait builds one.
-    genlLinkage(impl->llvmvtablep, NULL, 1);
+    genlLinkage(impl->llvmvtablep, NULL, GenlDefined);
     genlComdat(gen, impl->llvmvtablep);
     LLVMSetInitializer(impl->llvmvtablep, implRef);
 }
@@ -211,7 +211,7 @@ void genlVtable(GenState *gen, Vtable *vtable) {
     LLVMSetGlobalConstant(vtable->llvmvtables, 1);
     // The list holds the implementers this compile saw, so it is one per
     // compilation unit and internal in a package compile too
-    genlLinkage(vtable->llvmvtables, NULL, 1);
+    genlLinkage(vtable->llvmvtables, NULL, GenlDefined);
     genlComdat(gen, vtable->llvmvtables);
     LLVMSetInitializer(vtable->llvmvtables, vtablelist);
 }

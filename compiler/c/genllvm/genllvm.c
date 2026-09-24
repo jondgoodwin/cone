@@ -212,6 +212,71 @@ static int genlIsDefinedHere(INode *dclnode) {
     return dclnode->tag != FnDclTag || ((FnDclNode*)dclnode)->value != NULL;
 }
 
+// Whether a type's own braces hold a body an importer expands: an inline or
+// generic method, a macro method, or -- in a trait or a generic type -- every
+// method (fnDclIsExpanded). A private method is reached only from its own
+// type's methods, and through a receiver, which name resolution cannot see
+// (it binds the member at type check), so such a type exports all of them.
+static int genlTypeHoldsExpanded(INode *type) {
+    if (type->tag != StructTag)
+        return 0;
+    StructNode *strnode = (StructNode*)type;
+    if (strnode->genericinfo || (type->flags & TraitType))
+        return 1;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&strnode->nodelist, cnt, nodesp)) {
+        INode *node = *nodesp;
+        if (node->tag == MacroDclTag
+            || (node->tag == FnDclTag && ((node->flags & FlagInline) || ((FnDclNode*)node)->genericinfo)))
+            return 1;
+    }
+    return 0;
+}
+
+// Whether a library compile exports a definition, so that an importer's
+// object links against it (names-and-namespaces.md, "Linkage", L1 and L5).
+// Only the package's own modules export: the root and its submodules, never
+// core or a package compiled in beside them. Of those, a definition is
+// exported when it is:
+// - named by a body an importer expands (DclExpandReached): an inline,
+//   generic or macro body, a trait default, a generic type's method --
+//   private or not; or
+// - a public function or global of a module; or
+// - a function of a type an importer can reach -- a public type, or one an
+//   expanded body names -- when the function is public, or the type holds an
+//   expanded body that can reach its private ones through a receiver.
+// Everything else is internal: a private definition nothing expanded names, and
+// every function of a private type no expanded body names. An instance of a
+// generic is not exported here either: every importer makes its own.
+static int genlIsExported(GenState *gen, INode *dclnode) {
+    if (gen->libroot == NULL || itypeInstanceTypeArgs(dclnode) != NULL)
+        return 0;
+    ModuleNode *mod = dclInfoGetModule(dclnode);
+    while (mod && mod->dclinfo.owner)
+        mod = dclInfoGetModule(mod->dclinfo.owner);
+    if (mod != gen->libroot)
+        return 0;
+    DclInfo *dclinfo = inodeGetDclInfo(dclnode);
+    if (dclinfo->facts & DclExpandReached)
+        return 1;
+    INode *owner = dclinfo->owner;
+    if (owner == NULL || owner->tag == ModuleTag)
+        return !(dclinfo->facts & DclPrivate);
+    DclInfo *typeinfo = inodeGetDclInfo(owner);
+    if (typeinfo == NULL
+        || ((typeinfo->facts & DclPrivate) && !(typeinfo->facts & DclExpandReached)))
+        return 0;
+    return !(dclinfo->facts & DclPrivate) || genlTypeHoldsExpanded(owner);
+}
+
+// What this object file does with a declared node's symbol
+static GenlDefinition genlDefinition(GenState *gen, INode *dclnode) {
+    if (!genlIsDefinedHere(dclnode))
+        return GenlDeclared;
+    return genlIsExported(gen, dclnode) ? GenlExported : GenlDefined;
+}
+
 // Set a just-created global's linkage, storage class and calling convention
 // together, from the declaring node's facts. The one place that decides them,
 // so the COMDAT kind genlComdat later reads off the linkage cannot disagree
@@ -224,11 +289,15 @@ static int genlIsDefinedHere(INode *dclnode) {
 // system-convention one is imported with its calling convention. Visibility is
 // never set: a private name is a fact about the namespace, not the object file.
 //
-// 'dclnode' is NULL for a vtable, which no node declares. 'defined' says this
-// object defines the symbol. A package compile will make an instance of a
-// generic and a vtable 'linkonce any' here, since every object that uses one
-// produces it; a program compile is the only consumer of its own, so internal.
-void genlLinkage(LLVMValueRef global, INode *dclnode, int defined) {
+// The library rule adds one case: a definition the library exports to its
+// importers (genlIsExported) keeps the external linkage LLVM gave it, and so
+// also survives optimisation when nothing in the library itself uses it.
+//
+// 'dclnode' is NULL for a vtable, which no node declares. 'defined' says what
+// this object does with the symbol. A package compile will make an instance of a generic and a
+// vtable 'linkonce any' here, since every object that uses one produces it; for
+// now each object is the only consumer of its own, so internal.
+void genlLinkage(LLVMValueRef global, INode *dclnode, GenlDefinition defined) {
     if (dclnode) {
         DclInfo *dclinfo = inodeGetDclInfo(dclnode);
         if (dclnode->tag == FnDclTag && (dclinfo->facts & DclSystemCC)) {
@@ -238,7 +307,7 @@ void genlLinkage(LLVMValueRef global, INode *dclnode, int defined) {
         if (dclinfo->facts & DclCName)
             return;
     }
-    if (!defined)
+    if (defined != GenlDefined)
         return;
     size_t namelen;
     const char *name = LLVMGetValueName2(global, &namelen);
@@ -270,7 +339,7 @@ void genlGloVarName(GenState *gen, VarDclNode *glovar) {
     if (permIsSame(glovar->perm, (INode*) immPerm))
         LLVMSetGlobalConstant(global, 1);
 
-    genlLinkage(global, (INode*)glovar, genlIsDefinedHere((INode*)glovar));
+    genlLinkage(global, (INode*)glovar, genlDefinition(gen, (INode*)glovar));
 }
 
 // Generate LLVMValueRef for a global function
@@ -297,10 +366,14 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
         char symbol[2048];
         nameSymbol(symbol, (INode*)glofn);
         glofn->llvmvar = LLVMAddFunction(gen->module, symbol, fntype);
-        genlLinkage(glofn->llvmvar, (INode*)glofn, genlIsDefinedHere((INode*)glofn));
+        GenlDefinition defined = genlDefinition(gen, (INode*)glofn);
+        genlLinkage(glofn->llvmvar, (INode*)glofn, defined);
 
-        // Add metadata on implemented functions (debug mode only)
-        if (!gen->opt->release && glofn->value) {
+        // Add metadata on implemented functions (debug mode only). Implemented
+        // HERE: an imported module's function has a body in the IR and is only a
+        // declaration in this object, and LLVM's verifier rejects a declaration
+        // carrying a subprogram
+        if (!gen->opt->release && defined != GenlDeclared) {
             char *fnname = glofn->namesym? &glofn->namesym->namestr : "";
             LLVMMetadataRef fntype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder,
                 gen->difile, NULL, 0, 0);
@@ -515,6 +588,10 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
             gen->difile, "Cone compiler", 13, 0, "", 0, 0, "", 0, LLVMDWARFEmissionFull, 0, 0, 0, "", 0, "", 0);
     }
 
+    // A library exports what its root and submodules define (genlIsExported).
+    // The root is the program's first module, added before core (parsePgm).
+    gen->libroot = gen->opt->library ? (ModuleNode*)nodesGet(pgm->modules, 0) : NULL;
+
     // First, generate global symbols for all modules, so that forward references succeed
     INode **nodesp;
     uint32_t cnt;
@@ -684,6 +761,7 @@ static int genlComdatSupport(char *triple) {
 
 void genSetup(GenState *gen, ConeOptions *opt) {
     gen->opt = opt;
+    gen->libroot = NULL;
 
     LLVMTargetMachineRef machine = genlCreateMachine(opt);
     if (!machine)

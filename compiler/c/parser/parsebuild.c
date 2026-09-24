@@ -228,7 +228,9 @@ BuildDesc *parseBuildDesc(ConeOptions *opt) {
     buildFolder = memAllocStr(opt->srcpath, fileFolder(opt->srcpath));
     BuildDesc *desc = (BuildDesc*)memAllocBlk(sizeof(BuildDesc));
     desc->root = NULL;
-    desc->library = 0;
+    // '--library' is the default an 'output' line overrides, as 'build'
+    // overrides '--release' and '--debug'
+    desc->library = opt->library;
     int seenbuild = 0, seenoutput = 0;
 
     lexInjectPath(opt->srcpath);
@@ -264,5 +266,10 @@ BuildDesc *parseBuildDesc(ConeOptions *opt) {
     if (desc->root == NULL)
         errorMsgLex(ErrorBuildDesc, "The build description names no package module: 'name: { \"file.cone\" }'.");
     lexPop();
+    // A library is compiled as one: position-independent, since it may be
+    // linked into a position-independent executable or a shared library, and
+    // exporting its public definitions (genlIsExported). Generation's setup,
+    // which reads the first, runs after this
+    opt->library = desc->library;
     return desc;
 }

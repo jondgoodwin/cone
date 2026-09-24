@@ -31,7 +31,13 @@ enum DclFacts {
     DclExternal   = 0x0002,   // Externally supplied: this compile emits no definition
     DclCName      = 0x0004,   // C-style name: no owner prefix, never mangled
     DclSystemCC   = 0x0008,   // System calling convention (stdcall and dllimport today)
-    DclNamesChain = 0x0010    // Module only: contributes its name to the owner chain
+    DclNamesChain = 0x0010,   // Module only: contributes its name to the owner chain
+    DclExpandReached = 0x0020 // Named by a body an importer expands in its own object: an
+                              // inline, generic or macro body, a trait default, a
+                              // generic type's method. Written by name resolution
+                              // (nameUseNameRes); a library compile exports such a
+                              // definition, and a type's reachable functions
+                              // (genlIsExported)
 };
 
 #define dclInfoInit(dclinfo) ((dclinfo)->owner = NULL, (dclinfo)->facts = 0)

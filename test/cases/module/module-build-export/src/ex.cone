@@ -1,0 +1,163 @@
+// Package ex's root: one definition of each kind that a library compile either
+// exports or keeps internal. cases.toml pins each one.
+//
+// Exported: every public definition, and every private one that a body an
+// importer expands in its own object names -- an inline, generic or macro body,
+// a trait's default -- since the importer then refers
+// to it by symbol. Internal: every other private definition, the functions of a
+// private type no such body names, and an instance of a generic, which each
+// importer makes for itself.
+
+mod ex;
+
+// -------- public: exported --------
+
+pub fn pubFn() i64 {
+  privCalled();
+}
+
+pub mut pubGlobal i64 = 1i64;
+
+// -------- private, named by no expanded body: internal --------
+
+// Called only from a body the library compiles itself
+fn privCalled() i64 {
+  2i64;
+}
+
+fn privUnreached() i64 {
+  3i64;
+}
+
+mut privGlobalUnreached i64 = 4i64;
+
+// -------- private, named by an expanded body: exported --------
+
+fn privByInline() i64 {
+  5i64;
+}
+
+mut privGlobalByInline i64 = 6i64;
+
+pub fn viaInline() i64 inline {
+  privByInline() + privGlobalByInline;
+}
+
+fn privByGeneric() i64 {
+  7i64;
+}
+
+pub fn viaGeneric[T](x T) T {
+  privByGeneric();
+  x;
+}
+
+fn privByMacro() i64 {
+  8i64;
+}
+
+pub macro viaMacro {
+  privByMacro();
+}
+
+fn privByTrait() i64 {
+  9i64;
+}
+
+pub trait Shape {
+  fn sides(self &) i64;
+  fn doubled(self &) i64 {
+    privByTrait() + sides() * 2i64;
+  }
+}
+
+// Named through a path -- the module's own name, a type's name -- as well as
+// bare: a private type's private static function is exported this way too
+fn privByPath() i64 {
+  14i64;
+}
+
+struct PathType {
+  pub n i64;
+
+  fn make() i64 {
+    15i64;
+  }
+}
+
+pub fn viaPath() i64 inline {
+  ex.privByPath() + PathType.make();
+}
+
+// A private inline body counts too: whether an importer can reach it is not
+// asked, so what it names is exported
+fn privByPrivInline() i64 {
+  10i64;
+}
+
+fn privInline() i64 inline {
+  privByPrivInline();
+}
+
+pub fn usesPrivInline() i64 {
+  privInline();
+}
+
+// -------- a generic's instance: internal --------
+
+pub fn usesGeneric() i64 {
+  viaGeneric[i64](11i64);
+}
+
+// -------- functions of types --------
+
+// A public method is exported, and a private one stays internal when the type
+// holds no body an importer expands
+pub struct Plain {
+  pub n i64;
+
+  pub fn shown(self) i64 {
+    n;
+  }
+
+  fn hidden(self) i64 {
+    n + 1i64;
+  }
+}
+
+// Here a public inline method reaches a private one through its receiver,
+// which name resolution does not see, so every method of the type is exported
+pub struct WithInline {
+  pub n i64;
+
+  pub fn get(self) i64 inline {
+    self.secret();
+  }
+
+  fn secret(self) i64 {
+    n;
+  }
+}
+
+// A private type no expanded body names: even its public method stays internal
+struct Hidden {
+  pub n i64;
+
+  pub fn get(self) i64 {
+    n;
+  }
+}
+
+// A private type an expanded body names: its public method is exported, since
+// the importer's copy of that body calls it
+struct Reached {
+  pub n i64;
+
+  pub fn get(self) i64 {
+    n;
+  }
+}
+
+pub fn viaReached() i64 inline {
+  Reached[12i64].get();
+}

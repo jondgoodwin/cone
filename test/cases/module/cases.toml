@@ -1272,19 +1272,28 @@ tags = ["parse", "genllvm"]
 
 # 'output: library' names the root, so every declaration of the package is
 # spelled after it as an importer of 'q' spells it: the root's own functions, a
-# global and a type's method, and the child module's function after both. Only
-# the spelling moves here; the linkage is still a program's.
+# global and a type's method, and the child module's function after both. Each
+# is public, so each is exported: external, which is what lets an importer's
+# object link against it (module-build-export pins the whole linkage rule).
 [[scenario.module-build-lib.check]]
 name = "a-described-library-root-prefixes-its-symbols"
 target = "symbols"
 contains = [
-  "define internal q.addOne comdat nodeduplicate",
-  "define internal q.deep comdat nodeduplicate",
-  "global internal q.counter comdat nodeduplicate",
-  "define internal q.Acc.put comdat nodeduplicate",
-  "define internal q.inner.triple comdat nodeduplicate",
+  "define q.addOne comdat nodeduplicate",
+  "define q.deep comdat nodeduplicate",
+  "global q.counter comdat nodeduplicate",
+  "define q.Acc.put comdat nodeduplicate",
+  "define q.inner.triple comdat nodeduplicate",
 ]
-excludes = ["define internal addOne", "define internal inner.triple"]
+excludes = ["define internal", "global internal", "define addOne", "define inner.triple"]
+
+# Built 'release', and nothing in the library calls viaDep or reads counter. An
+# internal definition would be deleted by the optimiser; an exported one is
+# still there in what reaches the object file.
+[[scenario.module-build-lib.check]]
+name = "exports-survive-optimisation"
+target = "llvmir"
+contains = ["define i64 @_CNvC1q6viaDep(", "@_CNvC1q7counter = global i64 0"]
 
 # The same symbols, mangled: what an importer of q declares.
 [[scenario.module-build-lib.check]]
@@ -1343,6 +1352,95 @@ excludes = ["stdio.printStr"]
 name = "build-debug-emits-debug-info"
 target = "preir"
 contains = ["!dbg"]
+
+[scenario.module-build-export]
+category = "compile"
+description = "A library compile's linkage: public definitions and the private ones an expanded body names are exported, every other private one and a generic's instance stay internal"
+tags = ["nameres", "genllvm"]
+
+# Exported, so external: each public function, global and type function, the
+# child module's included, and each private function or global named by a body
+# an importer expands -- inline, generic, macro, a trait's default, and a
+# private inline's too -- whether bare or through a path.
+[[scenario.module-build-export.check]]
+name = "public-and-expand-reached-definitions-are-exported"
+target = "symbols"
+contains = [
+  "define ex.pubFn comdat",
+  "global ex.pubGlobal comdat",
+  "define ex.privByInline comdat",
+  "global ex.privGlobalByInline comdat",
+  "define ex.privByGeneric comdat",
+  "define ex.privByMacro comdat",
+  "define ex.privByTrait comdat",
+  "define ex.privByPath comdat",
+  "define ex.PathType.make comdat",
+  "define ex.privByPrivInline comdat",
+  "define ex.usesGeneric comdat",
+  "define ex.Plain.shown comdat",
+  "define ex.inner.innerPub comdat",
+]
+
+# A type's function is exported when an importer can reach the type -- it is
+# public, or an expanded body names it, as viaReached names the private Reached
+# -- and the function is public, or the type holds an expanded body, which can
+# reach a private one through its receiver: WithInline.get reaches secret.
+[[scenario.module-build-export.check]]
+name = "a-reachable-types-functions-are-exported"
+target = "symbols"
+contains = ["define ex.Reached.get comdat", "define ex.WithInline.secret comdat"]
+
+# Internal: a private definition no expanded body names, whether the library
+# calls it or not, the child module's too; a private method of a type holding
+# no expanded body; every function of a private type nothing expanded names,
+# public or not; and the instance of a generic the library makes for its own
+# use, which an importer makes for itself.
+[[scenario.module-build-export.check]]
+name = "other-private-definitions-and-instances-stay-internal"
+target = "symbols"
+contains = [
+  "define internal ex.privCalled comdat",
+  "define internal ex.privUnreached comdat",
+  "global internal ex.privGlobalUnreached comdat",
+  "define internal ex.Plain.hidden comdat",
+  "define internal ex.Hidden.get comdat",
+  "define internal ex.inner.innerPriv comdat",
+  "define internal ex.viaGeneric[i64] comdat",
+]
+
+# An inline function is expanded where it is called and has no symbol.
+[[scenario.module-build-export.check]]
+name = "an-inline-function-has-no-symbol"
+target = "symbols"
+excludes = ["ex.viaInline", "ex.privInline", "ex.WithInline.get", "ex.viaReached", "ex.viaPath"]
+
+# Package q compiled on its own, the program compiled against q's hand-written
+# include file, and the two objects linked: the scenario's 'link' compiles
+# q/q.conebuild first, into an object of its own, and links it in. Every value
+# the program prints comes from q's object: the include's non-inline bodies all
+# give 0 and are never generated, so a right answer can only be q's. The
+# bodies the program does generate, the expanded inlines, reach q's private
+# function, global and type, whose symbols q exports for them.
+[scenario.module-build-link]
+category = "run"
+description = "A package compiled alone and a program compiled against its hand-written include file, linked and run"
+tags = ["genllvm", "runtime"]
+link = ["q/q.conebuild"]
+
+# The program only declares what q defines, the private names its expanded
+# inline bodies reach among them, under the names q exports them by.
+[[scenario.module-build-link.check]]
+name = "the-program-declares-what-q-defines"
+target = "symbols"
+contains = [
+  "declare q.addOne",
+  "declare q.secret",
+  "declare q.Acc.plus",
+  "declare q.Box.twice",
+  "external global q.hits",
+  "external global q.shared",
+]
+excludes = ["q.addOne comdat", "q.secret comdat", "q.Box.twice comdat", "q.answer", "q.bump", "q.boxed"]
 
 [scenario.module-build-reject]
 category = "reject"

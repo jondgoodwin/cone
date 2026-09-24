@@ -320,10 +320,13 @@ parameter does not have.
 ## Generation
 
 `genlGlobalSyms` and `genlGlobalImpl` each have two generic branches, both
-walking `memonodes` with the pair stride. In a program compile `genlLinkage`
-makes an instance internal like every other definition; the C++ template
-answer — `linkonce`, so several translation units may emit one and the linker
-keeps one — is the package compile's, which does not exist yet.
+walking `memonodes` with the pair stride. `genlLinkage` makes an instance
+internal like every other definition, in a library compile too
+(`genlIsExported` never exports one); the C++ template answer — `linkonce`, so
+several translation units may emit one and the linker keeps one — is still to
+come. What a library compile does export is each private function, global or
+type a generic's body names (`DclExpandReached`), since the importer's instance
+calls it.
 
 **The symbol keys off being an instance**, which `nameSymbol` reads off the
 node: the function's own `instnode` carries type arguments

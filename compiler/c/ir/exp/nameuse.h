@@ -56,6 +56,9 @@ void nameUsePrint(NameUseNode *name);
 // Handle name resolution for name use references: bind dclnode to the
 // declaration the name refers to, in this module or another
 void nameUseNameRes(NameResState *pstate, NameUseNode **namep);
+// Inside a body an importer expands (NameResState.expander), mark what a bound
+// name use names DclExpandReached, for a library compile to export
+void nameUseMarkExpandReached(NameResState *pstate, NameUseNode *name);
 
 // Point a bare use of a generic base's member, made inside an extension's braces,
 // at the member of the base instance the checked function's extension stands on
