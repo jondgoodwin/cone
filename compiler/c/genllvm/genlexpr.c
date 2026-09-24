@@ -255,6 +255,14 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
         break;
     }
     case IntrinsicTag: {
+        // The program's stitched init and final take no argument: each is a
+        // call to the function this object builds for it
+        int16_t stitched = ((IntrinsicNode *)fndcl->value)->intrinsicFn;
+        if (stitched == InitAllIntrinsic || stitched == FinalAllIntrinsic) {
+            fncallret = LLVMBuildCall(gen->builder, genlStitchFn(gen, stitched), NULL, 0, "");
+            break;
+        }
+
         // Logic to generate depends on type of first argument
         LLVMTypeRef selftyp = LLVMTypeOf(fnargs[0]);
         LLVMTypeKind selftypkind = LLVMGetTypeKind(selftyp);

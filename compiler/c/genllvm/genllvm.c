@@ -167,6 +167,18 @@ static LLVMValueRef genlGloVarGlobal(VarDclNode *glovar) {
     return genlGloVarHasNul(glovar) ? LLVMGetOperand(glovar->llvmvar, 0) : glovar->llvmvar;
 }
 
+// Whether an immutable global's storage may be a constant, which LLVM may
+// place in read-only memory and whose loads it may assume never change. Only
+// what the object file initializes itself: a global without an initial value
+// is assigned by its module's 'init', at run time, and an 'extern' one's value
+// is another object's. Nor one whose type finalizes: the module's 'drop' hands
+// it to that 'final' as '&uni', which may write it.
+static int genlGloVarIsConstant(VarDclNode *glovar) {
+    return permIsSame(glovar->perm, (INode*)immPerm) && glovar->value != NULL
+        && !(glovar->dclinfo.facts & DclExternal)
+        && itypeGetDropFnDcl(glovar->vtype) == NULL;
+}
+
 // Generate global variable
 void genlGloVar(GenState *gen, VarDclNode *varnode) {
     LLVMValueRef global = genlGloVarGlobal(varnode);
@@ -193,7 +205,7 @@ void genlGloVar(GenState *gen, VarDclNode *varnode) {
 
     // Mark initialized, immutable global variable as constant,
     // so it goes into a faster memory page that we know we will never be mutated
-    if (itypeGetTypeDcl(varnode->perm) == (INode*)immPerm)
+    if (genlGloVarIsConstant(varnode))
         LLVMSetGlobalConstant(global, 1);
 }
 
@@ -262,6 +274,8 @@ static int genlTypeHoldsExpanded(INode *type) {
 // - named by a body an importer expands (DclExpandReached): an inline,
 //   generic or macro body, a trait default, a generic type's method --
 //   private or not; or
+// - a module's 'init', its 'final' or the 'drop' it is given (DclLifecycle),
+//   public or not, since the program's stitched init and final call them; or
 // - a public function or global of a module; or
 // - a function of a type an importer can reach -- a public type, or one an
 //   expanded body names -- when the function is public, or the type holds an
@@ -279,7 +293,7 @@ static int genlIsExported(GenState *gen, INode *dclnode) {
     if (mod != gen->libroot)
         return 0;
     DclInfo *dclinfo = inodeGetDclInfo(dclnode);
-    if (dclinfo->facts & DclExpandReached)
+    if (dclinfo->facts & (DclExpandReached | DclLifecycle))
         return 1;
     INode *owner = dclinfo->owner;
     if (owner == NULL || owner->tag == ModuleTag)
@@ -392,7 +406,7 @@ void genlGloVarName(GenState *gen, VarDclNode *glovar) {
 
     // Mark immutable global variables as 'constant', so they can appear in immutable blocks
     // This improves performance
-    if (permIsSame(glovar->perm, (INode*) immPerm))
+    if (genlGloVarIsConstant(glovar))
         LLVMSetGlobalConstant(global, 1);
 
     genlLinkage(global, (INode*)glovar, genlDefinition(gen, (INode*)glovar));
@@ -688,6 +702,50 @@ static void genlImportedInstances(GenState *gen, INode *node) {
     }
 }
 
+// The program's stitched init and final [Jon 23 Sep]. Each module declares only
+// its own portion, and this object's view of the program is stitched into two
+// functions: one calling every module's 'init' in the module order, each module
+// after everything it depends on and the root last, and one calling every
+// module's finalizer in exactly the reverse, the root first. A module with
+// neither gets no call. The order is pgm->initorder (pgmModuleOrder), and a
+// module this object does not generate -- another package, reached through its
+// include file -- is called by its symbol, which its own object exports
+// (genlIsExported). The functions are this object's own, internal, and made
+// only when a call asks for one: 'initAll()' and 'finalAll()' today, the entry
+// glue once it is built.
+LLVMValueRef genlStitchFn(GenState *gen, int16_t intrinsic) {
+    int which = intrinsic == InitAllIntrinsic ? 0 : 1;
+    if (gen->stitch[which] == NULL) {
+        LLVMTypeRef fntype = LLVMFunctionType(LLVMVoidTypeInContext(gen->context), NULL, 0, 0);
+        gen->stitch[which] = LLVMAddFunction(gen->module, which == 0 ? "cone.initAll" : "cone.finalAll", fntype);
+        genlLinkage(gen->stitch[which], NULL, GenlDefined);
+    }
+    return gen->stitch[which];
+}
+
+static void genlStitch(GenState *gen, int which) {
+    LLVMValueRef fn = gen->stitch[which];
+    if (fn == NULL)
+        return;
+    genlComdat(gen, fn);
+    LLVMBuilderRef builder = LLVMCreateBuilderInContext(gen->context);
+    LLVMPositionBuilderAtEnd(builder, LLVMAppendBasicBlockInContext(gen->context, fn, "entry"));
+    Nodes *order = gen->pgm->initorder;
+    uint32_t count = order->used;
+    uint32_t pos;
+    for (pos = 0; pos < count; ++pos) {
+        ModuleNode *mod = (ModuleNode*)nodesGet(order, which == 0 ? pos : count - 1 - pos);
+        FnDclNode *lifefn = which == 0 ? mod->initfn : mod->finalfn;
+        if (lifefn == NULL)
+            continue;
+        if (lifefn->llvmvar == NULL)
+            genlGloFnName(gen, lifefn);
+        LLVMBuildCall(builder, lifefn->llvmvar, NULL, 0, "");
+    }
+    LLVMBuildRetVoid(builder);
+    LLVMDisposeBuilder(builder);
+}
+
 // Generate the program
 void genlProgram(GenState *gen, ProgramNode *pgm) {
 
@@ -704,6 +762,8 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
     // A library exports what its root and submodules define (genlIsExported).
     // The root is the program's first module, added before core (parsePgm).
     gen->libroot = gen->opt->library ? (ModuleNode*)nodesGet(pgm->modules, 0) : NULL;
+    gen->pgm = pgm;
+    gen->stitch[0] = gen->stitch[1] = NULL;
 
     // First, generate global symbols for all modules, so that forward references succeed
     INode **nodesp;
@@ -737,6 +797,11 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
                 genlImportedInstances(gen, *inodesp);
         }
     }
+
+    // Last, the stitched init and final a call asked for, once every module's
+    // lifecycle functions have their symbols
+    genlStitch(gen, 0);
+    genlStitch(gen, 1);
 
     if (!gen->opt->release)
         LLVMDIBuilderFinalize(gen->dibuilder);

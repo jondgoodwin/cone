@@ -35,9 +35,14 @@
 		a library built so is named in its symbols and links with a program
 		compiled against its include file, which is written by hand.
 		A module may <a href="#modtrait">conform to a module trait</a>, taking
-		the trait's defaults it does not declare. Module initializers, the
+		the trait's defaults it does not declare. A module may declare its own
+		<a href="#dyninit">initializer and finalizer</a>, and every global
+		without an initial value must be assigned by its initializer; a program
+		runs every module's by calling <span class="pre">initAll()</span> and
+		<span class="pre">finalAll()</span>. The purity rules of
+		<span class="pre">initpure</span> are not checked. The
 		framework traits a program plugs into, and the entry they would supply,
-		are not implemented.</i></p>
+		which would call those two itself, are not implemented.</i></p>
 
 	<p>Many things are given names: variables, functions, types, fields, methods, etc.
 		The collection of all names defined for a scope is called a namespace.
@@ -281,7 +286,8 @@ not depend on a module that contains it: move what they share into a sister
 both import.
 </pre>
 	<p>So every program's modules have an order, each after everything it
-		depends on. That is the order their initializers will run in.</p>
+		depends on. That is the order their <a href="#dyninit">initializers</a>
+		run in, and their finalizers run in the reverse.</p>
 
 	<h3 id="extends">A module extending a module</h3>
 	<p>A module can be built out of another one: it takes in everything the other
@@ -662,7 +668,9 @@ pub extern fn Init(flags u32) i32;      // SDL_Init
 			the program makes use of multiple threads.</li>
 		<li>Variables <i>must</i> be explicitly initialized with a valid value.
 			In many cases, the initial value is a statically-computable
-			constant value whose exact size is also known to the compiler.</li>
+			constant value whose exact size is also known to the compiler.
+			Otherwise the variable is declared with its type and no value,
+			and <a href="#dyninit">the module's initializer</a> assigns it.</li>
 	</ul>
 
 	<p>A global variable may also <b>fold its type's members in as names of the module</b>, with the
@@ -706,12 +714,17 @@ pub use Suit;                // and names other modules may reach through this o
 		and then initialize that variable inside
 		the module's initializer, a function called <span class="pre">init</span>.</p>
 <pre>
-imm handler;
+imm handler Handler;
 
 fn @initpure init() {
-  handler = Handler();
+  handler = Handler[80];
 }
 </pre>
+	<p>The variable is declared with its type, since there is no value to infer it from.
+		Inside <span class="pre">init</span>, such a variable starts out holding nothing, exactly
+		as a local declared without a value does: <span class="pre">init</span> may assign it once,
+		even when it is <span class="pre">imm</span>, and may not read it before it does. Every other
+		function sees it holding the value <span class="pre">init</span> gave it.</p>
 	<p>The initializer is declared with <span class="pre">initpure</span>,
 		a less constrained version of
 		<a href="reffunc.html#pure"><span class="pre">pure</span></a>.
@@ -729,9 +742,52 @@ fn @initpure init() {
 		<li>Runs the initializers for any dependent modules
 			before running the initializer for the module.</li>
 	</ul>
-	<p>A finalizer might be automatically be created, where needed,
-		to finalize any dynamically-initialized global variables.
-		This is run when the program is shutting down.</p>
+	<p><i>The first and last are implemented. The second is not: a function marked
+		<span class="pre">@initpure</span> is accepted, and nothing yet checks what it calls,
+		since <span class="pre">pure</span> functions are not implemented.</i></p>
+
+	<p>The initializer is written <span class="pre">fn @initpure init()</span>, taking no
+		parameters and returning nothing. A module may also declare a <b>finalizer</b>, a function
+		called <span class="pre">final</span>, written <span class="pre">fn final()</span>, to release
+		its own state when the program is shutting down:</p>
+<pre>
+fn final() {
+  log.flush();
+}
+</pre>
+	<p>Each module declares only its own initializer and finalizer, for its own state; it cannot
+		set up another module's. A module may declare either, both or neither. At module scope the
+		names <span class="pre">init</span> and <span class="pre">final</span> mean these two, and
+		naming anything else by them is an error.</p>
+	<p>Where a module's global variables hold values whose type has a
+		<a href="refinitdrop.html">finalizer</a>, the compiler gives the module a finalizer that
+		runs the module's own <span class="pre">final</span>, if it declares one, and then finalizes
+		each such global, in the order they are declared: the way a type's
+		<span class="pre">final</span> runs before its fields are finalized. Such a module may not
+		declare a function named <span class="pre">drop</span>, which is the name the compiler gives
+		it.</p>
+
+	<h3 id="initall">Running every module's initializer and finalizer</h3>
+	<p>The compiler stitches every module's initializer together, in the order the modules
+		<a href="#dag">depend on each other</a>: each module's runs after the initializers of every
+		module it depends on, and the program's own module's runs last. Every module's finalizer runs
+		in exactly the reverse order, the program's own first. A module with neither is left out.</p>
+	<p>A program runs the two by calling <span class="pre">initAll()</span> and
+		<span class="pre">finalAll()</span>, names every module can use:</p>
+<pre>
+fn main() i32 {
+  initAll();
+  run();
+  finalAll();
+  0;
+}
+</pre>
+	<p><i>These two calls stand in for the entry a program's framework will supply, which will
+		run them round the program's <span class="pre">main</span> itself; until it exists, nothing
+		calls them but the program. A library compiled on its own keeps its initializer and
+		finalizer for the program that imports it, whose include file for the library declares
+		them, with <span class="pre">extern</span>, and declares the globals its finalizer
+		finalizes.</i></p>
 
 	<h2 id="typens">Types as Namespaces</h2>
 	<p>Declarations for struct and enum types are also namespaces.

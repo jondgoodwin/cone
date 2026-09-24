@@ -60,6 +60,22 @@ void stdPermInit() {
 // What core declares in Cone -- Option, Result, and the 'so' and 'rc' regions --
 // is the core package's source, packages/core/src/core.cone, not this file's.
 
+FnDclNode *initAllFn;
+FnDclNode *finalAllFn;
+
+// A compiler-provided function of no parameters returning nothing, bound as a
+// name every module reaches unless it declares the name itself. It has no
+// symbol: a call to it is generated as a call to what the intrinsic stands for
+static FnDclNode *newStitchFn(char *name, int16_t intrinsic) {
+    Name *namesym = nametblFind(name, strlen(name));
+    FnSigNode *sig = newFnSigNode();
+    sig->rettype = (INode*)newVoidNode();
+    FnDclNode *fn = newFnDclNode(namesym, FlagPub, (INode*)sig, (INode*)newIntrinsicNode(intrinsic));
+    fn->flags |= TypeChecked;
+    namesym->node = (INode*)fn;
+    return fn;
+}
+
 // Set up the standard library, whose names are always shared by all modules
 void stdlibInit(int ptrsize) {
 
@@ -81,4 +97,9 @@ void stdlibInit(int ptrsize) {
     staticLifetimeNode = newLifetimeDclNode(nametblFind("'static", 7), 0);
     stdPermInit();
     stdNbrInit(ptrsize);
+
+    // The program's stitched init and final [Jon 23 Sep], callable until the
+    // entry glue calls them itself
+    initAllFn = newStitchFn("initAll", InitAllIntrinsic);
+    finalAllFn = newStitchFn("finalAll", FinalAllIntrinsic);
 }

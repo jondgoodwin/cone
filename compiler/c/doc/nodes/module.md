@@ -46,8 +46,10 @@ resolution, type check and generation exactly once. The tree is not in the list:
 it is a child's `dclinfo.owner` pointing at its parent, and the parent's
 `namespace` holding the child's name. It also carries `Nodes *initorder`: every
 module again, **in dependency order**, each after every module it depends on —
-the order module `init`s will run in — made by `pgmModuleOrder` at name
-resolution ("The module order", below).
+the order the program's stitched init runs module `init`s in, and its stitched
+final runs finalizers in the reverse of — made by `pgmModuleOrder` at name
+resolution ("The module order", below) and read by `genlStitch` ("Init and
+final", below).
 
 **The registry is what makes a file read once and owned once.** Its key is the
 **canonical** path rather than a name, because what must happen exactly once is
@@ -81,6 +83,8 @@ like any other, registered under their canonical paths in the packages folder
 | `traitname` | `mod A is T`: T as written, a `NameUseNode` bound to the module trait once `modTraitConform` finds it; NULL where the module conforms to none |
 | `trait` | the `ModTraitNode` `traitname` names, once resolved: what `modTraitCheck` compares the module against in type check |
 | `ntaken` | how many of `nodes`, at its end, are copies of the trait's defaults the module took (`modTraitConform`). They arrive resolved, so `modNameRes` walks the nodes before them only |
+| `initfn` | the module's own `init`, once `modLifecycle` has found it well formed; NULL where it declares none. What the stitched init calls |
+| `finalfn` | what finalizes the module: the `drop` `modLifecycle` gives it where a global needs finalizing, else its own `final`; NULL where it has neither. What the stitched final calls |
 
 **`ModTraitNode`** (`ir/stmt/modtrait.h`) is a module trait, `mod trait Shell
 { ... }`: `namesym`, `dclinfo` — owned by the module whose file declares it,
@@ -630,8 +634,10 @@ answers such a name as one. It is asked where a bare generic is
 ([generic.md](generic.md), "A generic named bare where a type is wanted").
 
 **What is not built** [Jon 23 Sep]: host traits (a shell's, a web server's), the
-entry glue — a trait default the host calls as `main`, running `init` and
-`final` — traits that require types, and generic modules. Conformance declared by
+entry glue — a trait default the host calls as `main`, running the program's
+stitched init and final round the program's own `main` ("Init and final":
+`initAll()` and `finalAll()` are what it would call) — traits that require
+types, and generic modules. Conformance declared by
 structure alone does not exist and is not planned.
 
 ### The packages folder
@@ -1027,8 +1033,8 @@ to have an explicit dag order."*]. `pgmModuleOrder` (`ir/stmt/program.c`) walks
 every module's dependencies depth first, once `modExtendsResolve` has bound
 what each `extends` names — the one edge not known at parse — and places each
 module after everything it depends on, in `pgm->initorder`. **That order is the
-order module `init`s will run in** [Jon 23 Sep]; nothing reads it yet. A module
-depends on:
+order module `init`s run in** [Jon 23 Sep], and finalizers run in its exact
+reverse (`genlStitch`, "Init and final"). A module depends on:
 
 | Edge | From the IR |
 | --- | --- |
@@ -1260,7 +1266,9 @@ that enum's copies of its base's variants, which the module does not own
 ([struct](struct.md), "An enum extending an enum"). As everywhere in this phase,
 **order decides when a declaration is checked, not whether** — a name reached
 from elsewhere pulls its declaration forward. See
-[Type Check Phase](../phases/type-check.md).
+[Type Check Phase](../phases/type-check.md). **Last, once every global's type is
+settled, `modLifecycle`** finds and checks the module's `init` and `final`, and
+gives it the `drop` that finalizes its globals ("Init and final", below).
 
 **No program reaching type check has an import loop**: name resolution refused
 it ("The module order"), and a name-resolution error ends the compile before
@@ -1269,7 +1277,9 @@ forever round one before that.
 
 ## Flow and generation
 
-Flow analysis has no module concept; it runs per function body.
+Flow analysis has no module concept; it runs per function body. The one
+exception is a module's `init`, whose pass starts with the module's globals
+without a value holding nothing ("Init and final").
 
 `genlProgram` is two strict passes over `pgm->modules`:
 
@@ -1308,6 +1318,108 @@ private names, and a public overload name cannot break that assumption: a
 private candidate may not join one (`ErrorPrivOverload`), so an
 `FnOverloadDclNode` generates nothing of its own, and each candidate is
 generated as the module's or type's node it also is.
+
+## Init and final
+
+**Each module declares only its own portion, and the compiler stitches them
+together** [Jon 23 Sep: *"every mod can only tell you about its own state"*]. A
+module's `init` sets up its own globals and its `final` releases its own state;
+neither knows about any other module's. The program runs every module's `init`,
+dependencies first and the root last, before its own work, and every module's
+finalizer in exactly the reverse, the root first, after it.
+
+```
+imm handler Handler;
+
+fn @initpure init() {
+    handler = Handler[1];
+}
+
+fn final() {
+    ...
+}
+```
+
+**The declarations** (`modLifecycle`, at the end of `modTypeCheck`) are the
+module's own function `init`, written `fn @initpure init()` as the manual writes
+it, and its own function `final`, written `fn final()` by analogy with a type's
+`final`: no parameters, returning nothing, not generic, not `inline` and with no
+overload name, since the stitched functions call each with nothing to pass and
+nothing to receive. Anything else under either name at module scope is
+`ErrorModLifecycle`, with the cause in the message — a function of another
+shape, `init` without `@initpure`, a global named `final`. A name a fold
+brought is another module's `init` and is not this module's. Either may be
+`extern` (an include file's), and either may be private: the stitched functions
+reach them however they are declared. A module may declare either, both or
+neither. Each well-formed one is marked `DclLifecycle`.
+
+**`@initpure`** is an attribute after `fn`, before or after `@c`: a function a
+module's `init` may call, as `init` itself is. The parser records it
+(`DclInitPure`, kept by `dclInfoJoin`) and **nothing checks it**: the rule that
+such a function call only `pure` or `initpure` functions needs `pure`, which is
+not built.
+
+**Every global without an initial value must be assigned by its module's
+`init`** (refmodule.html). The check is `init`'s own data flow pass
+(`fnDclTypeCheck` asks `modInitOf`): `modInitFlowBegin` clears `VarInitialized`
+on each global the module declares without a value — an `extern` one excepted,
+its value being another object's — so inside `init` such a global is exactly an
+uninitialized local. Its first assignment is allowed, an `imm` one's included,
+and carries `FlagFirstAssign`, so nothing is released from the zeroed storage; a
+second assignment of an `imm` one is `ErrorNoMut`; and a read before any
+assignment is flow's own `ErrorMove`, "has not been initialized", which is the
+manual's rule that `init` read no uninitialized global of its module, for `init`
+itself. `modInitFlowEnd` then reports each global still unassigned as
+`ErrorGlobalUninit` and puts back every global's flags, so to every other
+function each global holds a value, as the parser recorded. **Assigned anywhere
+in the body counts** — flow's `VarInitialized` is a whole-function summary —
+which is what the manual says: assigned "at some point" in `init`. A field
+assignment does not assign the global. A global without a value in a module that
+declares no `init` is `ErrorGlobalUninit` too, reported by `modLifecycle`;
+where the module's `init` is malformed, only that is reported. Assigning such a
+global in any other function does not count, and an `imm` one may not be
+assigned there at all.
+
+**The module's finalizer** mirrors a type's ([struct](struct.md), step 8).
+Where any global the module declares has a type with a drop function,
+`modGiveDrop` gives the module a `drop` — owned by it, so its symbol is spelled
+after it (`middle.drop`, `_CNvC6middle4drop`), appended to its `nodes` after name
+resolution, built pre-lowered and never type checked or flow analyzed — calling
+the module's own `final`, if it has one, and then each such global's drop
+function over `&uni` the global, **in declaration order**, as a type drops its
+fields. Its finalizer (`finalfn`) is that `drop`, else its own `final`. A
+C-named global is C's storage and is not finalized. A global's drop runs whether
+the global was given a literal or assigned by `init`, since either way it holds
+a value by then. A module that needs a `drop` and declares one of its own is
+`ErrorModLifecycle`: both would be one symbol. Only drop functions count: a
+global that is an owning reference is not freed, as a struct field that is one
+is not.
+
+**The stitched pair** (`genlStitch`, `genllvm/genllvm.c`) is two functions of the
+object being generated: `cone.initAll`, calling `initfn` of each module in
+`pgm->initorder` that has one, and `cone.finalAll`, calling `finalfn` of each in
+the reverse. A module with neither gets no call. Each is internal, made only
+when a call asks for it (`genlStitchFn`), and built last, after every module's
+bodies. **A program calls them through two compiler-provided functions,
+`initAll()` and `finalAll()`** (`corelib.c`, `InitAllIntrinsic` and
+`FinalAllIntrinsic`): bound as names every module reaches, as it reaches `i64`,
+and hidden by a declaration of the same name. They stand in for the entry glue
+until it is built; nothing calls them implicitly, and how an executable's C
+`main` is chosen is unchanged. Nothing stops them being called twice.
+
+**Across separately compiled packages**, a package's `init`, `final` and `drop`
+keep the package's Cone names (`lib.init`, `lib.drop`), and a library compile
+exports each whatever its visibility (`DclLifecycle` in `genlIsExported`). The
+program's compile sees the package through its include file, which declares
+them: `extern fn @initpure init();` where the package has an `init`,
+`extern fn final();` where it has a `final`, and each global the package's
+finalizer drops. The program then derives the package's finalizer from the
+include file exactly as the package's compile derives it from its source — a
+`drop` where a declared global finalizes, else `final` — and its stitched pair
+calls the declared symbols (`module-init-link`). An include file that declares
+less than its package has leaks rather than misbehaves: an `init` it omits is not
+run, and where it omits the global a `drop` finalizes, the program calls
+`final` alone; one that declares more fails to link.
 
 ## Principles — the model, as decided
 
@@ -1615,7 +1727,8 @@ because every module of a tree is compiled into one object that import *links* �
 which an import of a module found beside its importer cannot do. **Never UP**: an import of a
 name of its parent is a loop through containment, refused [Jon 23 Sep]. **Imports
 form a DAG**: the modules are put in dependency order, a loop refused naming the
-modules round it, and the order kept for module `init` ("The module order"). The registry is the
+modules round it, and the order is the one the program's stitched init runs each
+module's `init` in, its stitched final the finalizers in reverse ("Init and final"). The registry is the
 immediate parent's namespace and no ancestor's, which is the scoped reading,
 adopted provisionally. There is no nesting within a *file*, and none is planned —
 a `mod name { ... }` block is refused, `ErrorUnbuiltKind` — no package as a unit
@@ -1857,15 +1970,17 @@ annotation on a reference names is a type.
   ⚠ **This paragraph previously read "the artifact is therefore serialized IR."**
   That was stated here and contradicted in the packages backlog item, with
   nothing saying which won.
-- **Module `init` and `final` are specified and absent.** `refmodule.html`
-  describes an `init` function marked `initpure`, a constraint that it read no
-  uninitialized global of its own module and call only `pure` or `initpure`
-  functions, compiler verification that every uninitialized global is assigned
-  there, and dependency-ordered initialization across modules. `initpure`
-  appears nowhere in the source; the dependency order itself is built
-  (`pgm->initorder`, "The module order"), and waits for the `init` that will
-  run in it. Region modules with global state — arenas,
-  pools, collectors — cannot work without it.
+- **Module `init` and `final` are built; purity and the entry are not** ("Init
+  and final"). What `refmodule.html` specifies and nothing checks is the
+  `initpure` rule that such a function call only `pure` or `initpure` functions,
+  and that one other than `init` read no uninitialized global of its module:
+  `pure` itself is unbuilt. Nothing runs the stitched init and final but a call
+  to `initAll()` and `finalAll()`, until the entry glue does. ⚠ **A package
+  that only another package imports is outside the program's stitched pair**:
+  the program's compile sees a package only through an include file the program
+  itself imports, and an include file may not import
+  (`ErrorBuildImport`), so the program never sees a package's own
+  dependencies, and their `init`s do not run.
 - **Dependency fan-out is unmeasured.** Section GC decides what reaches the
   binary; it does not decide what must resolve at link time. Archive member
   extraction precedes it, so calling one function from a package pulls its whole
@@ -1884,7 +1999,16 @@ annotation on a reference names is a type.
   `modNameRes` walks only the nodes before them, since the copies arrived
   resolved in the trait's scope and a second walk would bind their names again
   in the module's. Anything appended to `nodes` between `modTraitConform` and
-  `modNameRes` would be taken for a copy and left unresolved.
+  `modNameRes` would be taken for a copy and left unresolved. The module's
+  `drop` is appended after name resolution, where nothing reads the count.
+- **A `pub` `init` or `final` is folded like any public name**, so an importer's
+  `use *` of a module whose `init` is public collides with the importer's own
+  `init` (`ErrorDupName`). Written private, as the scenarios write them, neither
+  leaves its module.
+- **An `init`'s globals are cleared only round its own flow pass.** A function
+  `init` calls reads the module's globals as holding values, whatever `init` has
+  assigned by then: that is the unbuilt `initpure` rule, and reading one early
+  that way reads zeroed storage.
 - **Where a module's defaults are taken decides who sees them.** A copy made at
   the end of the module's fold pass is read by every module folding from it;
   one the fallback in `pgmNameRes` makes, after the fold passes, is not — no

@@ -111,6 +111,7 @@ void keywordInit() {
     keyAdd("@opaque", OpaqueToken);
     keyAdd("@unsized", UnsizedToken);
     keyAdd("@c", CAttrToken);
+    keyAdd("@initpure", InitPureToken);
     keyAdd("extends", ExtendsToken);
     keyAdd("mixin", MixinToken);
     keyAdd("use", UseToken);

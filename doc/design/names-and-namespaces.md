@@ -368,7 +368,7 @@ What a clause may fold from and what it may admit:
 
 #### Imports form a DAG
 
-**Modules need an explicit DAG order, at every scale** [Jon 23 Sep: *"Why would we ever want circular imports. Modules need to have an explicit dag order."*]: sister modules inside a package as well as packages. A module depends on each module it imports, on the module holding a name it imports, on the module it extends, and **on each of its own submodules**: a program is a hierarchical decomposition, so a part cannot lean on the whole it is part of, and a child importing a name of its parent is a loop of two. What they share moves into a sister both import. Once what `extends` names is known, one walk puts the modules in dependency order (`pgmModuleOrder`), and each loop is `ErrorImportLoop`, reported at the edge that closes it and naming the modules round it — `Import loop between modules: q -> q.inner -> q ...`, each step said. **The order is the one module `init`s will run in**, and it is kept on the program for that. Congo refuses the same loops first, from its header scan, between packages and between the modules of a package, with a message of the same shape; the compiler's check is the backstop for a direct `conec` run. `module-import-cycle`, `module-import-parent`, `module-extends-back` and `module-cycle` pin the refusal. ⚠ A module's `is` naming a trait its parent declares reaches up without an import, and is counted as no edge: the ruled edges are imports, `extends` and containment.
+**Modules need an explicit DAG order, at every scale** [Jon 23 Sep: *"Why would we ever want circular imports. Modules need to have an explicit dag order."*]: sister modules inside a package as well as packages. A module depends on each module it imports, on the module holding a name it imports, on the module it extends, and **on each of its own submodules**: a program is a hierarchical decomposition, so a part cannot lean on the whole it is part of, and a child importing a name of its parent is a loop of two. What they share moves into a sister both import. Once what `extends` names is known, one walk puts the modules in dependency order (`pgmModuleOrder`), and each loop is `ErrorImportLoop`, reported at the edge that closes it and naming the modules round it — `Import loop between modules: q -> q.inner -> q ...`, each step said. **The order is the one module `init`s run in**, and finalizers in its reverse: the program's stitched init and final read it (`genlStitch`, [module](../../compiler/c/doc/nodes/module.md), "Init and final"). Congo refuses the same loops first, from its header scan, between packages and between the modules of a package, with a message of the same shape; the compiler's check is the backstop for a direct `conec` run. `module-import-cycle`, `module-import-parent`, `module-extends-back` and `module-cycle` pin the refusal. ⚠ A module's `is` naming a trait its parent declares reaches up without an import, and is counted as no edge: the ruled edges are imports, `extends` and containment.
 
 #### The fold passes
 
@@ -529,7 +529,7 @@ Every node that declares a symbol carries a `DclInfo` by value — `FnDclNode`,
 `VarDclNode` (a global), `StructNode` and `ModuleNode` — and `inodeGetDclInfo`
 is the one switch that knows which kinds those are. It holds the **owner**, a
 pointer to the enclosing module or type node — the chain is walked, never
-stored as a string — six bits, and `cname`, the string a `@c("...")` stated:
+stored as a string — eight bits, and `cname`, the string a `@c("...")` stated:
 on a module the prefix its C names carry, on a function its whole symbol.
 
 | Bit | Meaning | Written from |
@@ -540,6 +540,8 @@ on a module the prefix its C names carry, on a function its whole symbol.
 | `DclSystemCC` | system calling convention | `@c(system)`, on the function or on its module |
 | `DclNamesChain` | module only: contributes its name to the owner chain | set on every loaded module, and on the root only where a build description says `output: library` |
 | `DclExpandReached` | a function, global or type named by a body an importer expands — an `inline`, generic or macro body, a trait's default, a generic type's method | name resolution, where the body names it (`nameUseMarkExpandReached`); read only by a library compile, which exports it (L5) |
+| `DclInitPure` | function only: `@initpure`, one a module's `init` may call; recorded, not yet checked | the parser, from `fn @initpure`; kept when the declaration joins its owner |
+| `DclLifecycle` | function only: a module's `init`, its `final`, or the `drop` it is given — what the program's stitched init and final call | type check (`modLifecycle`); read only by a library compile, which exports it whatever its visibility |
 
 **Owner is set where a declaration joins a namespace**: `modAddNode` for a
 module's declarations and `iNsTypeAddFn` for a type's methods. That placement
@@ -907,6 +909,7 @@ rows are what `genlIsExported` and `genlDefinition` do:
 | --- | --- | --- |
 | public `fn foo` | external, unique | built |
 | private `fn _x`, reached only from inside the package | internal | built |
+| a module's `init` or `final`, or the `drop` it is given, public or not: the program's stitched init and final call it | external, unique | built |
 | private `fn _x` or global that an `inline`, generic or macro body or a trait default names (L5) | external, unique | built |
 | public global | external, unique | built |
 | private global, unreached from outside | internal | built |

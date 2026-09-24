@@ -37,6 +37,8 @@ typedef struct ModuleNode {
     INode *traitname;        // 'mod A is T': T as written, a NameUseNode bound to the module trait once modTraitConform finds it; else NULL
     struct ModTraitNode *trait; // The module trait 'is' names, once resolved; else NULL
     uint32_t ntaken;         // How many of 'nodes', at its end, are copies of the trait's defaults, made resolved (modTraitConform)
+    struct FnDclNode *initfn; // The module's own 'init', once modLifecycle has checked it; else NULL
+    struct FnDclNode *finalfn; // What finalizes the module: the 'drop' modLifecycle gives it where a global needs dropping, else its own 'final'; else NULL
 } ModuleNode;
 
 ModuleNode *newModuleNode();
@@ -112,5 +114,18 @@ void modExtendsResolve(ModuleNode *mod);
 
 void modNameRes(NameResState *pstate, ModuleNode *mod);
 void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod);
+
+// The module whose own 'init' this function is -- a function the module owns,
+// not a method, named 'init' -- or NULL. Asked by fnDclTypeCheck around the
+// function's data flow pass, which is where 'init''s globals are checked
+ModuleNode *modInitOf(FnDclNode *fnnode);
+
+// Around the data flow pass of a module's 'init': each global the module declares
+// without an initial value starts the pass unassigned, so 'init' may assign it
+// once -- an 'imm' one included -- and may not read it before it does. After the
+// pass, each one it never saw assigned is ErrorGlobalUninit, and every global
+// holds a value again for every other function. 'saved' carries their flags
+uint16_t *modInitFlowBegin(ModuleNode *mod);
+void modInitFlowEnd(ModuleNode *mod, uint16_t *saved);
 
 #endif

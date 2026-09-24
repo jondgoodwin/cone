@@ -32,6 +32,8 @@ ModuleNode *newModuleNode() {
     mod->traitname = NULL;
     mod->trait = NULL;
     mod->ntaken = 0;
+    mod->initfn = NULL;
+    mod->finalfn = NULL;
     return mod;
 }
 
@@ -746,6 +748,8 @@ void modNameRes(NameResState *pstate, ModuleNode *mod) {
     pstate->mod = owningmod;
 }
 
+static void modLifecycle(ModuleNode *mod);
+
 // Type check the module node
 void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
     INode **nodesp;
@@ -778,4 +782,193 @@ void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
         if ((*nodesp)->tag == StructTag)
             structEnumCheckCopies(pstate, (StructNode*)*nodesp);
     }
+
+    // Last, once every global's type is settled: the module's 'init' and 'final',
+    // and the 'drop' that finalizes its globals
+    modLifecycle(mod);
+}
+
+// A global the module declares without an initial value, which its 'init' must
+// assign. An 'extern' global is defined elsewhere, initial value and all
+static int modGlobalUninit(INode *node) {
+    return node->tag == VarDclTag && ((VarDclNode*)node)->value == NULL
+        && !(((VarDclNode*)node)->dclinfo.facts & DclExternal);
+}
+
+ModuleNode *modInitOf(FnDclNode *fnnode) {
+    if (fnnode->namesym != initName || (fnnode->flags & FlagMethFld))
+        return NULL;
+    INode *owner = fnnode->dclinfo.owner;
+    return owner != NULL && owner->tag == ModuleTag ? (ModuleNode*)owner : NULL;
+}
+
+uint16_t *modInitFlowBegin(ModuleNode *mod) {
+    uint16_t *saved = (uint16_t*)memAllocBlk(sizeof(uint16_t) * (mod->nodes->used + 1));
+    INode **nodesp;
+    uint32_t cnt;
+    uint32_t pos = 0;
+    for (nodesFor(mod->nodes, cnt, nodesp)) {
+        if (modGlobalUninit(*nodesp)) {
+            VarDclNode *var = (VarDclNode*)*nodesp;
+            saved[pos] = var->flowtempflags;
+            var->flowtempflags &= 0xFFFF - (VarInitialized | VarMoved);
+        }
+        ++pos;
+    }
+    return saved;
+}
+
+void modInitFlowEnd(ModuleNode *mod, uint16_t *saved) {
+    INode **nodesp;
+    uint32_t cnt;
+    uint32_t pos = 0;
+    for (nodesFor(mod->nodes, cnt, nodesp)) {
+        if (modGlobalUninit(*nodesp)) {
+            VarDclNode *var = (VarDclNode*)*nodesp;
+            if (!(var->flowtempflags & VarInitialized))
+                errorMsgNode((INode*)var, ErrorGlobalUninit,
+                    "Global %s has no initial value, and its module's init never assigns it one.",
+                    &var->namesym->namestr);
+            var->flowtempflags = saved[pos];
+        }
+        ++pos;
+    }
+}
+
+// Find the module's own declaration of 'init' or 'final', and check that it is
+// declared as the one the program's stitched init or final calls:
+// 'fn @initpure init()' or 'fn final()', a function of no parameters returning
+// nothing, with a symbol of its own. NULL where the module declares none -- a
+// name its folds brought is another module's -- or where it is malformed,
+// which is reported.
+static FnDclNode *modLifecycleFn(ModuleNode *mod, Name *name) {
+    INode *dcl = namespaceFind(&mod->namespace, name);
+    if (dcl == NULL || dcl->tag == AliasDclTag || dcl->tag == ModuleTag)
+        return NULL;
+    char *form = name == initName ? "fn @initpure init()" : "fn final()";
+    if (dcl->tag != FnDclTag) {
+        DclInfo *dclinfo = inodeGetDclInfo(dcl);
+        if (dclinfo != NULL && dclinfo->owner != (INode*)mod)
+            return NULL;
+        errorMsgNode(dcl, ErrorModLifecycle,
+            "A module's %s is its function '%s', which the program runs; it may not name anything else.",
+            &name->namestr, form);
+        return NULL;
+    }
+    FnDclNode *fn = (FnDclNode*)dcl;
+    if (fn->dclinfo.owner != (INode*)mod)
+        return NULL;
+    FnSigNode *sig = (FnSigNode*)fn->vtype;
+    char *why = NULL;
+    if (fn->genericinfo)
+        why = "is generic";
+    else if (fn->overloadsym)
+        why = "declares an overload name";
+    else if (fn->flags & FlagInline)
+        why = "is inline, which leaves no function for the program's stitched init and final to call";
+    else if (sig->parms->used != 0)
+        why = "takes parameters";
+    else if (itypeGetTypeDcl(sig->rettype)->tag != VoidTag)
+        why = "returns a value";
+    else if (name == initName && !(fn->dclinfo.facts & DclInitPure))
+        why = "is not marked '@initpure'";
+    if (why) {
+        errorMsgNode((INode*)fn, ErrorModLifecycle, "A module's %s is declared '%s', and this one %s.",
+            &name->namestr, form, why);
+        return NULL;
+    }
+    fn->dclinfo.facts |= DclLifecycle;
+    return fn;
+}
+
+// Give the module a 'drop' where any global it declares needs finalizing: a
+// function owned by the module, so its symbol is spelled after it ('q.drop'),
+// that calls the module's own 'final' and then each such global's drop function,
+// in the order the globals are declared -- a type's 'drop' is its 'final' and
+// then its fields', and a module's globals are its fields. Built pre-lowered, as
+// a type's is, and never type checked or flow analyzed. A C-named global is C's
+// storage and not finalized. Where no global needs it, the module's finalizer is
+// its own 'final', or it has none.
+static FnDclNode *modGiveDrop(ModuleNode *mod, FnDclNode *final) {
+    BlockNode *block = NULL;
+    FnDclNode *dropfn = NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(mod->nodes, cnt, nodesp)) {
+        if ((*nodesp)->tag != VarDclTag)
+            continue;
+        VarDclNode *var = (VarDclNode*)*nodesp;
+        if (var->dclinfo.facts & DclCName)
+            continue;
+        INode *vardrop = itypeGetDropFnDcl(var->vtype);
+        if (vardrop == NULL)
+            continue;
+
+        if (block == NULL) {
+            // The name is the module's finalizer's symbol: a 'drop' the module
+            // declares itself would be spelled the same
+            INode *prior = namespaceFind(&mod->namespace, dropName);
+            if (prior != NULL && prior->tag != AliasDclTag && prior->tag != ModuleTag) {
+                errorMsgNode(prior, ErrorModLifecycle,
+                    "A module whose globals need finalizing is given a finalizer named drop, so the module may not declare a drop of its own.");
+                return NULL;
+            }
+            FnSigNode *fnsig = newFnSigNode();
+            fnsig->rettype = (INode*)newVoidNode();
+            block = newBlockNode();
+            dropfn = newFnDclNode(dropName, 0, (INode*)fnsig, (INode*)block);
+            inodeLexCopy((INode*)dropfn, (INode*)mod);
+            dclInfoJoin((INode*)dropfn, (INode*)mod);
+            dropfn->dclinfo.facts |= DclLifecycle;
+            dropfn->flags |= TypeChecked;
+            if (final) {
+                FnCallNode *finalcall = newFnCallLower((INode*)var, (INode*)final, 1);
+                nodesAdd(&block->stmts, (INode*)finalcall);
+            }
+        }
+
+        FnCallNode *dropcall = newFnCallLower((INode*)var, vardrop, 1);
+        INode *varuse = newNameUseFromDclNode((INode*)var, (INode*)var);
+        nodesAdd(&dropcall->args, newBorrowMutRef(varuse, var->vtype, (INode*)uniPerm));
+        nodesAdd(&block->stmts, (INode*)dropcall);
+    }
+    if (block == NULL)
+        return final;
+
+    BreakRetNode *retnode = newReturnNode();
+    retnode->exp = (INode*)newNilLitNode();
+    retnode->block = block;
+    nodesAdd(&block->stmts, (INode*)retnode);
+    // Among the module's nodes, so it is named and generated wherever the
+    // module is; the module trait's copies were counted from the end of 'nodes'
+    // before name resolution, and nothing reads that count after it
+    nodesAdd(&mod->nodes, (INode*)dropfn);
+    return dropfn;
+}
+
+// A module's lifecycle [Jon 23 Sep]: each module declares only its own portion
+// -- an 'init' for its own globals, a 'final' for its own state -- and the
+// program stitches every module's together (genlStitch). Here: find and check
+// the two, report each global without an initial value where there is no 'init'
+// to assign it (an 'init' checks its own, modInitFlowEnd), and give the module
+// the 'drop' that finalizes its globals after its 'final'.
+static void modLifecycle(ModuleNode *mod) {
+    mod->initfn = modLifecycleFn(mod, initName);
+    FnDclNode *final = modLifecycleFn(mod, finalName);
+
+    // An 'init' the module declares checks its globals itself, well formed or
+    // not: one that is malformed has been reported, and that is the one error
+    INode *initdcl = namespaceFind(&mod->namespace, initName);
+    if (initdcl == NULL || initdcl->tag == AliasDclTag || initdcl->tag == ModuleTag) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(mod->nodes, cnt, nodesp)) {
+            if (modGlobalUninit(*nodesp))
+                errorMsgNode(*nodesp, ErrorGlobalUninit,
+                    "Global %s has no initial value, and its module declares no init to assign it one: write 'fn @initpure init()', or give it a value.",
+                    &((VarDclNode*)*nodesp)->namesym->namestr);
+        }
+    }
+
+    mod->finalfn = modGiveDrop(mod, final);
 }

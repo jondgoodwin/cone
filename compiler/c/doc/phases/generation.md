@@ -65,6 +65,22 @@ here, before parsing.
    generic's body may make one), and the symbol pass skipped it, so it is named
    here.
 
+Then, **the program's stitched init and final** (`genlStitch`), where a call to
+`initAll()` or `finalAll()` asked for one (`genlStitchFn`, from the intrinsic's
+case in `genlFnCallInternal`): `cone.initAll` calls each module's `initfn` in
+`pgm->initorder`, and `cone.finalAll` each module's `finalfn` in the reverse,
+declaring the symbol of one this object does not define. They are built last
+because they call what the passes above named. Both are internal; the entry glue
+that will call them is unbuilt. [module](../nodes/module.md), "Init and final".
+
+**An `imm` global is an LLVM constant only where this object gives it its value
+and nothing writes it** (`genlGloVarIsConstant`): it has an initial value, is
+not `extern`, and its type has no drop function. A global without a value is
+assigned by its module's `init` at run time, an `extern` one's value is another
+object's and may be assigned by that package's `init`, and a finalizing one is
+handed to its `final` as `&uni` by its module's `drop`. A constant's loads may
+be assumed never to change, and its storage may be read-only.
+
 Both recurse into a type's method list, into a generic's
 `genericinfo->memonodes`, and into an enum extension's copies of its base's
 variants, the front of its `derived` list (`structEnumCopyCount`): neither
@@ -142,6 +158,9 @@ Namespaces](../../../../doc/design/names-and-namespaces.md), "Linkage", state:
 - a declaration name resolution marked `DclExpandReached` — named by an
   `inline`, generic or macro body, a trait's default or a generic type's method,
   bare or through a path ([Name Resolution](name-resolution.md), "Contract");
+- a module's `init`, its `final` and the `drop` it is given (`DclLifecycle`),
+  public or not: the program's stitched init and final call them from its own
+  object;
 - a public function or global of a module;
 - a function of a type an importer can reach — a public type, or one an
   expanded body names — where the function is public, or the type holds an
@@ -179,8 +198,9 @@ attached where the body is generated.
 individually discardable, and keeps alive everything it names. A vtable did
 exactly that: a struct coerced to `&<Trait` kept every one of its trait methods
 in the image whether or not anything ever dispatched. The call sites are
-`genlFn`, `genlGloVar`, `genlVtableImpl`, `genlVtable`, and the `StringLitTag`
-case in `genlAddr`. **A new kind of generated global needs a sixth.**
+`genlFn`, `genlGloVar`, `genlVtableImpl`, `genlVtable`, `genlStitch`, and the
+`StringLitTag` case in `genlAddr`. **A new kind of generated global needs a
+seventh.**
 
 **Not every object format has COMDATs, so `genSetup` asks the triple** and stores
 the answer in `gen->comdats`. Mach-O has no COMDAT concept and needs none — its
@@ -520,11 +540,13 @@ variables.
 | `conec.c` | `main` | calls `genSetup` **before** parsing, for target pointer size |
 | `genllvm/genllvm.c` | `genSetup`, `genClose` | target machine, data layout, context, `%void` |
 | | `genpgm` | generate, verify, dump, optimize, emit |
-| | `genlProgram` | the two-pass symbols-then-implementations walk |
+| | `genlProgram` | the two-pass symbols-then-implementations walk, then the stitched pair |
+| | `genlStitchFn`, `genlStitch` | the program's stitched init and final: declared on the first call to `initAll()` or `finalAll()`, built last, every module's `init` in the module order and every finalizer in the reverse |
 | | `genlGlobalSyms`, `genlGlobalImpl` | declare a node's symbol; emit its body |
 | | `genlImportedInstances` | emit the bodies of the instances this compile made of a module it does not generate |
 | | `genlFn`, `genlParmVar`, `genlAlloca` | function body, parameter allocas, entry-block alloca placement |
 | | `genlGloFnName`, `genlGloVarName` | declare a function or global under the symbol `nameSymbol` spells |
+| | `genlGloVarIsConstant` | whether an `imm` global is an LLVM constant: an initial value, not `extern`, no drop function |
 | | `genlLinkage`, `genlDefinition`, `genlIsDefinedHere`, `genlVtableDefinition` | linkage, storage class and calling convention, together, from the declaration facts and what this object does with the symbol: declares it, defines it, defines and exports it, or defines it shared |
 | | `genlIsInstance` | whether a declaration is a generic's instance or a member of one |
 | | `genlIsExported`, `genlTypeHoldsExpanded` | whether a library compile exports a definition to its importers |

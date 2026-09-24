@@ -131,7 +131,7 @@ The live state is on the declarations, in `VarDclNode.flowtempflags`:
 
 | Flag | Set by | Cleared by |
 | --- | --- | --- |
-| `VarInitialized` | `varDclFlow`, `assignlvalrtype`; pre-set at parse for globals, fields and parameters | never |
+| `VarInitialized` | `varDclFlow`, `assignlvalrtype`; pre-set at parse for globals, fields and parameters | only round a module's `init`: `modInitFlowBegin` clears it on each global of the module without a value, and `modInitFlowEnd` puts every such global's flags back |
 | `VarMoved` | `flowHandleMove` | `assignlvalrtype` on reassignment |
 
 Because these live on the declaration and are never saved or restored, **they
@@ -412,6 +412,7 @@ the built-in permissions are zero-sized. See [Generation](generation.md),
 | File | Function | Purpose |
 | --- | --- | --- |
 | `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the only entry point; the per-function error-delta gate |
+| `ir/stmt/module.c` | `modInitOf`, `modInitFlowBegin`, `modInitFlowEnd` | round a module's `init` only: its module's globals without a value start the pass uninitialized, as locals, so `init` assigns each once and reads none first; one never assigned is `ErrorGlobalUninit`. [module](../nodes/module.md), "Init and final" |
 | `ir/flow.c` | `flowLoadValue` | the walk's spine — tag dispatch for a value being read |
 | | `flowLoadThroughRef` | `MayRead` on the reference a value is read through; called from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` |
 | | `flowHandleMoveOrCopy` | move vs. alias, for a value going to a new holder |

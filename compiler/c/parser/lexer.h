@@ -140,6 +140,7 @@ enum TokenTypes {
     OpaqueToken,   // '@opaque'
     UnsizedToken,  // '@unsized'
     CAttrToken,    // '@c': C naming, on a 'mod' line or a 'fn'
+    InitPureToken, // '@initpure': after 'fn', a function a module's 'init' may call, 'init' among them
     ExtendsToken,  // 'extends'
     MixinToken,    // 'mixin'
     UseToken,      // 'use'
