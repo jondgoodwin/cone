@@ -1,0 +1,75 @@
+// Two declarations claiming one global name.
+//
+// Parse-stage: the module hooks every global name as it is parsed, so these are
+// reported before any analysis runs. Two candidates of one overload set that
+// accept the same arguments is a type-check condition instead, and lives in
+// core_typecheck_overload.
+//
+// Each duplicate is reported twice: once at the second declaration and once at
+// the first, which is earlier in the file than the diagnostic that names it.
+
+mod core_parse_names;
+
+// Imports come right after the 'mod' line. This one's name is the macro's
+// further down (see "one namespace" below)
+import stdio;           //~ ErrorDupName:1 "This is the conflicting definition for that name" follow-on
+
+// Every function needs its own name; overloading is opt-in through a separate
+// overload name, not through reusing a concrete one
+fn once(n i32) i32 {   //~ ErrorDupName:1 "This is the conflicting definition for that name" follow-on
+  n;
+}
+
+fn once(n f32) f32 {   //~ ErrorDupName:1 "Global name is already defined"
+  n;
+}
+
+// A variable and a function are still two declarations of one name
+mut shared = 1;         //~ ErrorDupName:5 "This is the conflicting definition for that name" follow-on
+
+fn shared() i32 {      //~ ErrorDupName:1 "Global name is already defined"
+  2;
+}
+
+// An overload name must be unused or already be an overload name
+fn label(n i32) i32 {
+  n;
+}
+
+fn labelFloat overload label(n f32) f32 {  //~ ErrorOverloadClash:1 "is already declared as something that is not an overload name"
+  n;
+}
+
+// -------- one namespace across every kind of declaration --------
+
+// A module's names are one uniqueness domain whatever they declare
+// (doc/design/names-and-namespaces.md, "Principles"): an imported module
+// and a macro, a type and a function, a macro and a function, an alias and a
+// variable, a constant and a function each collide exactly as two functions
+// do. 'import' binds the module's name at parse time like any declaration,
+// and its "conflicting definition" note is positioned at the import statement,
+// which is in the file's header.
+
+macro stdio[a] { a; }   //~ ErrorDupName:7 "Global name is already defined"
+
+struct Thing {         //~ ErrorDupName:8 "This is the conflicting definition for that name" follow-on
+  n i32;
+}
+
+fn Thing() i32 {       //~ ErrorDupName:1 "Global name is already defined"
+  1;
+}
+
+macro twice[a] { a + a; }   //~ ErrorDupName:7 "This is the conflicting definition for that name" follow-on
+
+fn twice(n i32) i32 {      //~ ErrorDupName:1 "Global name is already defined"
+  n;
+}
+
+typedef Count i64;          //~ ErrorDupName:9 "This is the conflicting definition for that name" follow-on
+mut Count = 3;              //~ ErrorDupName:5 "Global name is already defined"
+
+const LIMIT = 4;           //~ ErrorDupName:7 "This is the conflicting definition for that name" follow-on
+fn LIMIT() i32 {           //~ ErrorDupName:1 "Global name is already defined"
+  5;
+}

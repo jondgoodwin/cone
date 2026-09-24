@@ -1,0 +1,74 @@
+// Declarations an enum body will not accept, and arms a match body will not
+// accept.
+//
+// Parse stage only. An enum owns its variants' layout and their relationship to
+// it, so a variant restates none of it: not the enum it belongs to, not the type
+// parameters it takes, and not a tag value another variant already holds. Each
+// diagnostic is reported on the variant, which is where the fix goes, and a
+// variant's node carries the position of its name in both of its spellings.
+//
+// The match arm comes last on purpose: the parser abandons the whole match at
+// the first thing that is neither 'case' nor 'else', so any arm written after
+// it would be re-parsed as an ordinary statement and report again.
+
+mod enum_parse_blocks;
+
+trait Base {
+  n i32;
+}
+
+// A variant is already a member of the enum it is written inside, so it has no
+// abstraction of its own to assert
+enum WithIsa {
+  struct BadIsa is Base {           //~ ErrorVariantDcl:10 "remove the 'is'"
+    a i32;
+  }
+}
+
+// A variant takes its enum's type parameters and may not declare its own
+enum WithGenericParms {
+  struct BadParms[T] {               //~ ErrorVariantDcl:10 "may not declare its own"
+    b T;
+  }
+}
+
+// Two variants holding one tag value are indistinguishable at a match, so the
+// second is refused where it is written
+enum Clashing {
+  First = 3,
+  Second = 3;        //~ ErrorDupTag:3 "already taken by variant First"
+}
+
+// A variant is a name of its enum, in the one namespace the enum's fields and
+// methods are names of too, so it may not share a spelling with either. Whichever
+// is written second is refused, in either order.
+enum SharesAField {
+  pub level i32;
+  level, other;      //~ ErrorDupName "a variant shares its enum's namespace"
+}
+
+enum SharesAMethod {
+  measure, weigh;
+  fn measure(self &) i32 {1;}   //~ ErrorDupName "every function/method needs its own name"
+}
+
+enum Shape {
+  kind i32;
+
+  struct Circle {
+    radius i32;
+  }
+
+  struct Rect {
+    w i32;
+    h i32;
+  }
+}
+use Shape;
+
+fn stray(s &Shape) i32 {
+  match s {
+    case is &Circle {1;}
+    imm x = 1;        //~ ErrorBadTerm:5 "should be either case or else"
+  }
+}

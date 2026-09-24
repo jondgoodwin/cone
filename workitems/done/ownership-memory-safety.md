@@ -51,7 +51,7 @@ Found while fixing the above:
 
 The suite went from 111 scenarios / 98 passed / 14 xfail to **118 / 110 / 9**, and
 the `region` group now carries no expected failures at all. The fill amount is
-asserted rather than merely emitted: `region-fill-count` reads the counter
+asserted rather than merely emitted: `region_fill_count` reads the counter
 adjustment out of the generated IR, `add i64 %5, 12` from an lvalue fill and
 `add i64 %5, 11` from a temporary, which is the n / n-1 rule stated in numbers.
 
@@ -61,7 +61,7 @@ never null there, rather than `->dimens->used > 0` as the same function does six
 lines earlier. So `+[]rc-mut [11i32, 22i32, 33i32]` compiled, ran, and filled the
 array with three copies of `11`. It belongs to array allocation rather than to
 ownership and is recorded here only because this is where it was found;
-`collection-success` now allocates a slice as well as borrowing one, which is the
+`collection_success` now allocates a slice as well as borrowing one, which is the
 case that fails without the fix.
 
 ## The question this work item asks
@@ -219,7 +219,7 @@ both scenarios written afterwards to record newly found defects — one of which
 was fixed within the hour, by the scenario telling us it had been.
 
 If the redesign changes the spelling of regions, the remaining scenarios will need
-rewriting rather than deleting. `region-success` is the one to protect: 37
+rewriting rather than deleting. `region_success` is the one to protect: 37
 established facts about what allocation, reference counting and release actually
 do today, which is the closest thing there is to a specification of current
 behavior for the redesign to diff against. It passed unchanged under every

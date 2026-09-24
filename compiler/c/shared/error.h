@@ -282,6 +282,10 @@ enum ErrorCode {
     ErrorGenModBody = 1143,     // A generic module holding what an instance is not yet built for: a submodule, a generic function or type, a trait or an enum, a module trait
     ErrorGenModRoot = 1144,     // An executable's root module declared generic: nothing can instantiate the program
 
+    // A file's header: its 'mod' line, then its imports
+    ErrorNoModDcl = 1145,       // A module's first file -- designated, one-file, lone, or first listed in a build description -- not opening with its 'mod' line
+    ErrorImportLate = 1146,     // An 'import' after a declaration: imports come right after the 'mod' line, ahead of everything else
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

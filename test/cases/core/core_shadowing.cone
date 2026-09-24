@@ -1,0 +1,110 @@
+// Which declaration a spelling binds to when more than one is in scope.
+//
+// Unqualified lookup takes the nearest binding, in the order the scopes were
+// entered: block locals, then parameters, then the enclosing type's members,
+// then the module's names (compiler/c/doc/phases/name-resolution.md, section 2). Each
+// case here declares two things under one spelling and prints which one the
+// bare name reached; where the language offers a way past the nearer one, that
+// is printed too. The hidden declaration always holds a value the hiding one
+// never does, so a lookup reaching the wrong one would show.
+//
+// A struct appears only because two cases need a type namespace between the
+// parameters and the module; struct owns everything else about it. An inner
+// block over an outer block is in core_success ("inner-block-local"); the
+// plain local-over-global is repeated here as the base case the others are
+// read against.
+//
+// Reaching past the nearest binding needs a name for the namespace the hidden
+// declaration is in, which is the module's own: 'core_shadowing', restated by
+// the file's 'mod' line. viaModuleFn is the case that needs it; the module
+// group owns 'mod'.
+
+mod core_shadowing;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+mut depth = 100;
+imm width = 200;
+
+// A parameter shadows a global of its spelling for the whole body
+fn parameterOverGlobal(depth i32) i32 {
+  depth + 1;
+}
+
+// A local shadows a global from its declaration on. Before it, the spelling
+// still means the global; and a declaration's value is resolved before its
+// name is bound, so a local may take its value from the global it is about to
+// hide.
+fn localOverGlobal() i32 {
+  imm before = width;
+  imm width = width + 1;
+  before * 1000 + width;
+}
+
+// A local in the body shadows a parameter, since the body's block is a scope
+// inside the parameter list's. The initializer still sees the parameter.
+fn localOverParameter(n i32) i32 {
+  imm n = n * 2;
+  n;
+}
+
+// A function of the module and a method of a type under one spelling
+fn weigh(n i32) i32 {
+  n * 100;
+}
+
+struct Widget {
+  pub w i32;
+  pub kind i32;
+
+  fn weigh(self) i32 {
+    w;
+  }
+
+  // Inside a method the type's members sit between the parameters and the
+  // module, so the bare name is the method, lowered to 'self.weigh()' ...
+  pub fn viaMethod(self) i32 {
+    weigh();
+  }
+
+  // ... and the module's function is reached past it by qualifying it with the
+  // module's own name, which the 'mod' line at the top of this file restates.
+  // A path starts with the name of the namespace it walks, so this is the only
+  // spelling there is: the module is a namespace like any other once it has a
+  // name.
+  pub fn viaModuleFn(self) i32 {
+    core_shadowing.weigh(3);
+  }
+
+  // A parameter shadows a field of its spelling, and 'self.' reaches the field
+  pub fn parameterOverField(self, kind i32) i32 {
+    kind * 10 + self.kind;
+  }
+
+  // So does a local
+  pub fn localOverField(self) i32 {
+    imm w = 7;
+    w * 10 + self.w;
+  }
+}
+
+fn main() i32 {
+  show("parameter-over-global", parameterOverGlobal(5));
+  show("local-over-global", localOverGlobal());
+  show("local-over-parameter", localOverParameter(4));
+  imm widget = Widget[3, 2];
+  show("method-over-module-fn", widget.viaMethod());
+  show("module-fn-past-method", widget.viaModuleFn());
+  show("parameter-over-field", widget.parameterOverField(9));
+  show("local-over-field", widget.localOverField());
+  // Nothing above wrote the globals it shadowed
+  show("shadowed-globals-untouched", depth + width);
+  0i32;
+}

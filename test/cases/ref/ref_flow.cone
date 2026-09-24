@@ -1,0 +1,89 @@
+// What a reference is allowed to read and write, and how long it is allowed to
+// live.
+//
+// These are data-flow diagnostics, and data flow runs on a function only when
+// that function's own type check raised nothing (fnDclTypeCheck compares the
+// error count against the one it entered with). So the whole file is one
+// function: once one diagnostic here fires, no later one in the same function
+// can. That is also why the flow family gets its own file rather than joining
+// ref_typecheck_perm, whose subject is otherwise the same.
+//
+// The lifetime rule here is the one between two variables; ref_flow_return
+// and ref_flow_call assert it at a return and at a call. Lifetime annotations
+// ('a on a signature) are not implemented, so nothing in this group asserts
+// them.
+
+mod ref_flow;
+
+fn writesAndLifetimes(readOnly &i32) {
+  mut target = 1;
+  mut other = 2;
+
+  // A reference borrowed without 'mut' may be read through but not written
+  imm reading = &target;
+  *reading = 5;           //~ ErrorNoMut:3 "You do not have permission to modify lval"
+
+  // ... and that holds for one arriving as a parameter, where the borrow is
+  // out of sight
+  *readOnly = 6;          //~ ErrorNoMut:3 "You do not have permission to modify lval"
+
+  // The variable's own permission is a separate question: this one is 'imm',
+  // so it may not be re-pointed even though what it points at is writable
+  imm fixed = &mut target;
+  fixed = &mut other;     //~ ErrorNoMut:3 "You do not have permission to modify lval"
+
+  // A borrow of an inner-block variable may not be stored where it would
+  // outlive what it points at. This is the case the staging file flagged with
+  // "Uncomment for lifetime error", and the compiler does diagnose it.
+  mut escaping = &target;
+  {
+    mut shortLived = 3;
+    escaping = &shortLived;  //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
+  }
+}
+
+// Writing through a reference reads the reference. That is the half of an
+// assignment's left side that is a value rather than a target, and it was not
+// read at all: '*p = 5' on an uninitialized reference compiled clean and
+// emitted the store, while 'imm x = *p' on the same variable was caught. Swap
+// read both of its sides all along, so the two disagreed about one expression.
+fn writesThroughUninitialized() {
+  mut p &mut i32;
+  *p = 5;                 //~ ErrorMove:4 "has not been initialized"
+}
+
+// Reading through a reference is governed by the reference's permission just
+// as writing is, and 'opaq' grants neither. Every spelling of a read through
+// one is refused, and the diagnostic points at the reference rather than at the
+// '*', '.' or '[', because the reference is what lacks the permission. Holding,
+// copying, comparing for identity ('===') and passing an '&opaq' stay allowed --
+// that is what it is for -- and ref_success does all four.
+struct Point {
+  pub x i32;
+  pub y i32;
+}
+
+fn readsThroughOpaq() {
+  imm value = 1;
+  imm point = Point[1, 2];
+  imm array = [1, 2, 3];
+
+  // A dereference
+  imm hidden = &opaq value;
+  imm v = *hidden;               //~ ErrorNoRead:12 "does not allow reading"
+
+  // A field, reached through the dereference injected for a plain reference
+  imm hiddenPoint = &opaq point;
+  imm x = hiddenPoint.x;         //~ ErrorNoRead:11 "does not allow reading"
+
+  // An element of a fixed-size array, which is indexed through the reference
+  // with no dereference injected
+  imm hiddenArray = &opaq array;
+  imm e = hiddenArray[0];        //~ ErrorNoRead:11 "does not allow reading"
+
+  // '==' on references compares the values they refer to, so it reads through
+  // both, and each is refused
+  imm alsoHidden = hidden;
+  imm same = hidden == alsoHidden;  //~ ErrorNoRead:14 "does not allow reading"
+                                    //~^ ErrorNoRead:24 "does not allow reading"
+}

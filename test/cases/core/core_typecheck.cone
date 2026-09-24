@@ -1,0 +1,68 @@
+// Types and arities that do not agree.
+//
+// Type-check stage only: this file parses and resolves cleanly, so every
+// diagnostic below is reached. Overload selection failures are in
+// core_typecheck_overload.
+
+mod core_typecheck;
+
+fn twice(n i32) i32 {
+  n * 2;
+}
+
+fn tooFewArgs() i32 {
+  twice();              //~ ErrorFewArgs:8 "requires more arguments than specified"
+}
+
+fn tooManyArgs() i32 {
+  twice(1, 2);          //~ ErrorManyArgs:8 "Too many arguments specified"
+}
+
+fn wrongInitType() f32 {
+  imm a i32 = 1.5;      //~ ErrorInvType:15 "Initialization value's type does not match variable's declared type"
+  1.0;
+}
+
+// A value that is not a function has no '()', and the failed call then has no
+// type for the function to return
+fn notAFunction() i32 {  //~ ErrorInvType:19 "This is the declared function's return type" follow-on
+  mut n = 1;
+  n(2);                 //~ ErrorNoMbr:4 "Method or field `()` not found"
+                       //~^ ErrorInvType:4 "Return expression type does not match return type" follow-on
+}
+
+fn noTypeAtAll() i32 {
+  mut undecided;        //~ ErrorNoType:7 "Declared name must specify a type or value"
+  1;
+}
+
+// A static's initializer is the storage's initial value, written once before
+// anything runs, so it is a literal exactly as a global's is
+fn staticFromACall() i32 {
+  static mut n = twice(2);  //~ ErrorNotLit:14 "may only be initialized with a literal value"
+  n;
+}
+
+// An inline function's body is copied into every caller, so a static in it
+// would be one copy per call site rather than one shared copy
+fn inlinedStatic() i32 inline {
+  static mut n = 0;         //~ ErrorBadStatic:14 "one copy per call site"
+  n;
+}
+
+// More values than lvals is accepted: the lvals take the leading values and
+// the rest are still evaluated. So a value no lval receives is type checked
+// all the same. Nothing checked one at all, and an ill-typed extra crashed the
+// compiler -- in parallel assignment and with a single lval alike.
+fn extraValueToOne() i32 {
+  mut x i32 = 0;
+  x = 1, 2 + true;          //~ ErrorNoCandidate:12 "No method declared by `+`"
+  x;
+}
+
+fn extraValueParallel() i32 {
+  mut a i32 = 0;
+  mut b i32 = 0;
+  a, b = 1, 2, 3 + true;    //~ ErrorNoCandidate:18 "No method declared by `+`"
+  a + b;
+}

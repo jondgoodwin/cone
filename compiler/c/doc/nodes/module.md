@@ -183,7 +183,7 @@ node's own clause (`foldModUseModule`).
    root holds does not depend on what a parse of one of them imports. An import
    back to any of them then finds the root in the registry, rather than reading
    the file as a second module, and the loop it closes is refused naming the
-   root (`module-cycle`).
+   root (`module_cycle`).
 3. `core` is loaded (`parseLoadCore`): `core/src/core.cone`, found on the package
    search path and nowhere else, so no file beside a program stands in for it.
    It is loaded exactly as an imported module is, and is the one module loaded
@@ -243,12 +243,14 @@ rather than reading it a second time.
 **A module is positioned at its designated file's first line** — line 1,
 column 1 of `matrix/matrix.cone`, or of a module's one file —
 from the moment it is made, and `parseModulePosition` is what does it, on all
-three paths. **Ruled by the author, 23 September 2026:** a module named only by
-its folder has no line in any source that declares it, and the file that makes
-the folder a module is the nearest thing it has to a declaration, so that is
-where its half of a diagnostic — `ErrorDupName` against its name — is
-reported. A `mod` declaration is nearer,
-and moves the position to itself. **The file is read when the module is made**,
+three paths. **Ruled by the author, 23 September 2026:** until its `mod` line is
+parsed, a module named by its folder has no line in any source that declares
+it, and the file that makes the folder a module is the nearest thing it has to
+a declaration, so that is where its half of a diagnostic — `ErrorDupName`
+against its name — is reported. Its `mod` declaration is nearer, and moves the
+position to itself when it is parsed; a collision found before that, at the
+draw, and one with a module whose file is refused for having no `mod` line,
+stay at the first line (`module_submodule_reject`). **The file is read when the module is made**,
 before any file of the tree is parsed, because the module's name is bound then
 and a collision is reported as the second binding is made: a submodule named like
 its parent meets the parent's own name at the draw. `lexLoadPath` reads it into a
@@ -312,7 +314,7 @@ with no `mod` joins the folder's module, as every file did before. So **growing 
 one-file module into a folder** — moving `lexer.cone` to `lexer/lexer.cone` —
 **changes nothing for anyone who names it**: the same name, the same paths, the
 same symbols, and the same place in the order submodules are drawn, which is by
-name whichever shape each has. `module-onefile` and `module-onefile-grown` are
+name whichever shape each has. `module_onefile` and `module_onefile_grown` are
 that pair, and their symbols are the same.
 
 The probe is `lexOpensWithMod`, **a look at the file's text rather than a
@@ -407,7 +409,7 @@ way: the child imports what holds it, a package by its own name. The import is
 still bound in the fold passes ("What an import reaches"), so the child's body
 resolves and the loop is the one thing reported;
 a private name of the parent is `ErrorNotPublic` beside it, and the rest of what
-binding reports is reported too (`module-import-parent-nameres`).
+binding reports is reported too (`module_import_parent_nameres`).
 
 **Nothing arrives unasked.** A module's namespace holds what it declares, what a
 fold brought in, its own children and what its imports bound. A sister nobody
@@ -472,6 +474,30 @@ once** (`ErrorModDcl` otherwise). It claims the module, so nothing may precede i
 file. A file the folder swept in declares nothing: one that opened with a
 declaration would have been a one-file module instead, so a `mod` in a swept
 file is always a late one.
+
+### A file's header
+
+**Every module's first file opens with its `mod` line** [Jon 24 Sep]: the
+designated file of a folder module, a one-file module's file, a lone file, and
+the first file a build description lists for a module or an import line
+names. A first statement that is anything else — `mod trait` included, which
+declares a trait and names no module — is `ErrorNoModDcl`, reported at the
+statement, and a first file with no statement at all at its end; the message
+gives the line to write. The statement is still parsed as written, and the
+module is still the one its folder, file or description names, so nothing else
+follows from the refusal. The line restates a name the filesystem already
+gives; what it buys is that the name is where a reader of the file looks first,
+and that the file says which module it opens. The other files of a folder
+module carry none, since one would make the file a one-file module.
+
+**A file's imports come right after its `mod` line**, or first in a file that
+has none, ahead of every other declaration [Jon 24 Sep]. `parseGlobalStmts`
+notes the first statement that is neither the `mod` line nor an `import` (a
+retired `include` is neither refused nor counted), and an `import` after it,
+`pub` or with a `use` clause alike, is `ErrorImportLate`. The import is still
+made. So a file's header is comments, the `mod` line and the imports, which is
+exactly what Congo reads of it (`tools/congo/README.md`); an import below the
+header is one Congo never sees.
 
 **`pub` on the declaration opens a submodule to its parent's neighbours**, and is
 `ErrorBadPub` on any other module: the root, a lone file and one an `import`
@@ -608,7 +634,7 @@ the module's own.
 **A copy is the module's own declaration**: spelled after the module
 (`plain.run`), private unless the trait wrote `pub`, and generated wherever the
 module is. **A default global is storage of each module that took it**, so two
-modules conforming to one trait count separately (`module-trait`). **The trait's
+modules conforming to one trait count separately (`module_trait`). **The trait's
 own members are generated nowhere** (`genlGlobalImpl` passes a `ModTraitTag`
 over): a requirement has no body, and a default's body is the template.
 
@@ -692,7 +718,7 @@ made once, on the generic, and every instance shares them.
 time type check meets `stack[i64]` — `genericSubstitute` asks `genericMemoize`,
 whose memo is the generic's `memonodes`. **Identical arguments anywhere are one
 instance**, compared by `itypeIsSame`, so `stack[i64]` in two modules is one
-module with one set of globals (`module-generic`). The instance is named as
+module with one set of globals (`module_generic`). The instance is named as
 the generic is, owned where it is, marked with the call that made it
 (`instnode`, which `generic` points back from), and flagged `FlagGenMod`. Its
 declarations are cloned the way a generic type's members are
@@ -760,7 +786,7 @@ instance module is an instance — so its functions *and its globals* are
 objects make merge into one, with one set of globals. The generic's own
 package defines nothing of it; its include file carries the generic module's
 full source, which is what an importer compiles the instance from
-(`module-generic-link`).
+(`module_generic_link`).
 
 ### The packages folder
 
@@ -812,9 +838,9 @@ a `--path` folder is found ahead of the packages folder's of the same name;
 
 **An import's name is answered in the registry first, then beside the importing
 file, then on the search path** — so `import stdio` inside a submodule whose
-parent holds a sister named `stdio` reaches the sister (`module-package-sister`),
+parent holds a sister named `stdio` reaches the sister (`module_package_sister`),
 and a `--path` folder's `stdio` wins over the packages folder's
-(`module-package-path`).
+(`module_package_path`).
 
 **What is still special about `core` is that it is the prelude.** `parsePgm`
 loads it before any module of the program (`parseLoadCore`), from the search path
@@ -833,7 +859,7 @@ found, `core` included, and withholds it from one `fileFindLocal` found beside i
 importer. The root generates too, and a submodule generates exactly when its
 parent does (`parseSubmoduleDraw` copies the parent's flag), so the one kind of
 module denied it is an import reached relative to its importer, together with
-every submodule of it (`module-import-submodule`).
+every submodule of it (`module_import_submodule`).
 
 That asymmetry is the whole of the separate-compilation gap, and both sides of
 it are visible in emitted IR:
@@ -962,8 +988,8 @@ expands names: an `inline`, generic or macro body, or a trait's default, whose
 copy in the importer calls the private symbol it reached (the importer's side
 of that is `genlFnSym` and `genlVarSym`). Everything else is internal as in a
 program. So a package compiled alone links with a program compiled against its
-include file: `module-build-link` builds both, links them and runs the program,
-and `module-build-export` pins each case of the rule.
+include file: `module_build_link` builds both, links them and runs the program,
+and `module_build_export` pins each case of the rule.
 
 **A generic's instances are shared, in every described build.** A description
 also sets `opt->described`, for a program as for a library, and each object then
@@ -973,7 +999,7 @@ does not generate notwithstanding (`genlImportedInstances`) — as `linkonce_odr
 with a COMDAT of kind `any`, so identical instances in several objects merge
 at link. The members of a generic type's instance are shared with it, and so
 is every vtable, which each object coercing a type to a trait builds and whose
-address pattern matching compares. `module-build-link` exercises an instance
+address pattern matching compares. `module_build_link` exercises an instance
 both objects define, one only the program does, and a virtual reference built
 in the program and tested in the package.
 
@@ -981,8 +1007,8 @@ in the program and tested in the package.
 and global the package's object defines is written there `extern` and without a
 body — the private ones an `inline` body reaches too — and, the include file's
 module being Cone-named like the package's, each is spelled with the package's
-Cone name, the one the object exports (`module-build-link`,
-`module-extern-cone-names`). `extern` says only "defined elsewhere"; the naming
+Cone name, the one the object exports (`module_build_link`,
+`module_extern_cone_names`). `extern` says only "defined elsewhere"; the naming
 is the module's. What an importer must have the body of — an `inline` or
 generic function, a macro, a trait's methods, a generic type's — is written
 whole, and `extern` on it is `ErrorBadExtern`.
@@ -1066,7 +1092,7 @@ inside another's — a parent's `use` of its child, an import of a sister — an
 over it ([Name Resolution](../phases/name-resolution.md), "Hooking"), so a
 `use Dir;`, a global's fold type and its value, and a type demanded from another
 module see nothing of the module that got there first. That is "nothing arrives
-unasked" holding inside the fold pass as it does in a body; `module-fold-scope-nameres`
+unasked" holding inside the fold pass as it does in a body; `module_fold_scope_nameres`
 pins it from a child and from a sister.
 
 **Where a fold waits, the folds run again until they settle.** Dependency-first
@@ -1074,7 +1100,7 @@ orders modules, not the folds within one: a module's folds run in a fixed order
 (below), so a global whose type only a later standalone `use` of the same module
 brings WAITS in the first pass, and is folded in the next — and a sister that
 wildcard-imported the module in the first pass takes the global's re-export only
-then (`module-use-submodule`). Every module's own *declarations* are bound at
+then (`module_use_submodule`). Every module's own *declarations* are bound at
 parse, so what is late is a fold and never a declaration. So `modFoldAll`
 repeats the pass over the module list until one binds nothing new — a fixpoint,
 the way Rust resolves glob imports. What makes that cheap is `modFoldBind`: two
@@ -1090,7 +1116,7 @@ made progress: a program whose folds all find what they name takes one pass.
 not cut (unless it is `extends` alone), so round it one module reads another
 mid-fold, and the passes carry each re-export round it as they carry a late
 fold; nothing the loop cut short is then reported missing beside it
-(`module-import-cycle`, `module-extends-back`).
+(`module_import_cycle`, `module_extends_back`).
 
 **Until the passes settle, nothing a later pass might bring is reported
 missing.** A fold that cannot be made yet WAITS (`modFoldWait`): a listed item
@@ -1204,7 +1230,7 @@ and tuples to each named type's module), and each instance made while its own
 body was checked, which is one it uses. Instances that follow the same module
 keep the order they were made in. So an instance runs its `init` before every
 module that follows those and uses it — **except a module that supplied one of
-its type arguments**, which the instance follows: in `module-generic`,
+its type arguments**, which the instance follows: in `module_generic`,
 `tally[user.Tag]` runs its `init` after `user`'s. A module that uses an instance
 places no edge of its own: its place was fixed at name resolution. Instances
 that use one another round a loop are placed last, in the order made.
@@ -1444,7 +1470,7 @@ where a module found beside its importer is taken as supplied from elsewhere and
 only declared. ▸ **So a program spanning a module TREE, or importing a package,
 links and runs today, and one spanning any other import does not**, which is
 what lets a folder scenario reaching two levels of submodule be a `run` scenario,
-and `module-package-path` too.
+and `module_package_path` too.
 
 `ImportTag` is an explicit no-op in `genlGlobalImpl`. A module not flagged
 `FlagGenMod` still has one kind of body generated here: the instances this
@@ -1559,7 +1585,7 @@ them: `extern fn @initpure init();` where the package has an `init`,
 finalizer drops. The program then derives the package's finalizer from the
 include file exactly as the package's compile derives it from its source — a
 `drop` where a declared global finalizes, else `final` — and its stitched pair
-calls the declared symbols (`module-init-link`). An include file that declares
+calls the declared symbols (`module_init_link`). An include file that declares
 less than its package has leaks rather than misbehaves: an `init` it omits is not
 run, and where it omits the global a `drop` finalizes, the program calls
 `final` alone; one that declares more fails to link.
@@ -1568,7 +1594,7 @@ run, and where it omits the global a `drop` finalizes, the program calls
 its place in the order ("The module order"). Across separately compiled
 packages each object's copy of an instance's `init` is the one merged function,
 and the program's stitched init calls it once, where the program names that
-instance itself (`module-generic-link`). ⚠ **An instance only a package uses is
+instance itself (`module_generic_link`). ⚠ **An instance only a package uses is
 invisible to the program**: the package's include file says nothing of it, so
 the program's stitched pair makes no call to its `init` or finalizer, and a
 global it would assign keeps the zero it was stored with — measured at the IR,
@@ -1640,8 +1666,8 @@ because they remove work rather than adding it:
 - **A module's name is its own, and reaches its own hidden names.** There is no
   root anchor and no parent access: a module reaches an upper module by importing
   and naming it, and a name of its own that a local or a type member hides by
-  qualifying it with the module's name. **A program's root may carry a `mod`
-  header for exactly that reason** — to have a name — and naming the root changes
+  qualifying it with the module's name. **A program's root carries a `mod` line,
+  as every module's first file does** [Jon 24 Sep], and naming the root changes
   no symbol.
 - **Namespace machinery is meant to be common to modules and types** — nesting,
   generics, interfaces and name folding, so that the layers look alike rather
@@ -1685,6 +1711,13 @@ the module tree:
   or as a direct child folder. So the module tree's *shape* mirrors the folder
   tree's. A designated file or a one-file module found beneath an organizational
   folder is an error, not a deeper submodule.
+- **Every file the compiler builds as a module opens with its `mod` line** [Jon
+  24 Sep] — a lone file, a module's root, a folder module's designated file, a
+  one-file submodule — and **every file's imports come right after it**, ahead
+  of everything else the file declares. The other files of a folder module, and
+  the files of its organisational subfolders, carry no `mod` line: the folder
+  names the module they join. So a file's header is comments, the `mod` line,
+  the imports, which is all Congo reads.
 - **A module's name is its folder's name, or its one file's**, and a name written
   in its `mod` declaration is checked against that rather than replacing it. The
   boundary is declared in code — a folder is a module because it holds a
@@ -1868,7 +1901,9 @@ namespace, where folding a member is delegated inheritance.
 **Little of it.** **A module spans a folder's files**, found by the walk from the
 designated file the compiler is given, and named for the folder; `mod name;` as
 that file's first statement declares the module and is checked against the
-folder's name. **The module tree is real**: a subfolder holding its own designated
+folder's name. **Every module's first file opens with its `mod` line, and every
+file's imports come right after it**, each refused otherwise ("A file's header"
+above). **The module tree is real**: a subfolder holding its own designated
 file is a submodule, private to its parent unless it writes `pub`, spelled after
 its parent in every symbol, and reached from its parent by path — while a
 subfolder that holds none is organisational at any depth, and a designated file
@@ -1930,10 +1965,10 @@ or its `pub`. So is a second import of one name of the parent.
 Every fold into a module's namespace binds through `modFoldBind`. The same
 declaration under a name already taken is `ErrorDupName` where the module's own
 source wrote both bindings — listed twice, `use Colors;` twice, imported and
-listed (`module-fold-written-nameres`) —
+listed (`module_fold_written_nameres`) —
 and is that binding, public if either route is, where a wildcard, an `extends` or
 the core import made either one. Different declarations collide everywhere. The
-diamond compiles (`module-fold-diamond`), whatever order the folds ran in.
+diamond compiles (`module_fold_diamond`), whatever order the folds ran in.
 
 **A module may extend another**, `mod solids extends shapes;`, reusing the base's
 declarations and folds, but not its imports [Jon 23 Sep] — an alias, so the declaration, its symbol and its state stay the
@@ -1986,7 +2021,7 @@ module's**. A module is C-named by `@c` after `mod` — `mod @c("SDL_") sdl;` �
 and its functions and globals then bind to C symbols, the prefix and the name
 as written; a function's own `@c("sym")` is its whole symbol, the override for a
 name outside the prefix; `@c(system)` is the system calling convention
-(`module-c-names`, `module-c-system`). A C binding module writes both words, and
+(`module_c_names`, `module_c_system`). A C binding module writes both words, and
 exporting a Cone body to C writes only `pub fn @c(...)`. Symbol spelling is
 [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), S5.
 

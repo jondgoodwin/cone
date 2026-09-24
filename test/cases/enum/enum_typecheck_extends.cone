@@ -1,0 +1,153 @@
+// A base enum and an extension of it are TWO DISTINCT TYPES, and no substitution
+// runs between them in either direction -- not between the two enums, and not
+// between a variant of one and the other enum.
+//
+// The extension holds copies of its base's variants: RichColors.Red is a variant
+// of RichColors and Colors.Red a variant of Colors, and each is a value of its own
+// enum alone. That has to be enforced rather than merely documented, because the
+// discriminant is one shared node and the common fields are clones, so a
+// structural test would say yes in both directions -- to the two enums, and to a
+// variant of either standing for the other enum. Every line below is that test
+// being refused.
+//
+// It is worth saying why the language refuses it rather than allowing the one
+// direction that is sound. Adding variants to a set makes a SUPERTYPE: every value
+// of the base could be a value of the extension, and no value of the extension is a
+// value of the base. That is the reverse of the direction every subtype
+// relationship in Cone runs, and Cone does not take it here -- which is what keeps
+// a match on the base exhaustive over the base's own variants, since a base-typed
+// value can then only ever hold one of them.
+//
+// Type-check stage: this file parses and resolves cleanly. What an extension may
+// declare is enum_parse_extends, and what it may extend is enum_nameres_extends.
+
+mod enum_typecheck_extends;
+
+enum Colors {
+  Red, Green, Blue;
+}
+
+enum RichColors extends Colors {
+  Cyan, Magenta;
+}
+
+fn takesBase(c Colors) i32 {1;}
+fn takesExtension(c RichColors) i32 {2;}
+fn takesBaseRef(c &Colors) i32 {3;}
+fn takesExtensionRef(c &RichColors) i32 {4;}
+fn takesBaseVirtRef(c &<Colors) i32 {5;}
+
+// Neither enum's values are the other's, by value ...
+fn byValue() {
+  imm rich RichColors = RichColors.Cyan[];
+  imm plain Colors = Colors.Red[];
+  imm a Colors = rich;          //~ ErrorInvType:18 "does not match variable's declared type"
+  imm b RichColors = plain;     //~ ErrorInvType:22 "does not match variable's declared type"
+  imm c = takesBase(rich);      //~ ErrorInvType:21 "does not match declared parameter"
+  imm d = takesExtension(plain);  //~ ErrorInvType:26 "does not match declared parameter"
+}
+
+// ... nor through a reference, which is where a structural prefix would otherwise
+// make one a view of the other
+fn byReference() {
+  imm rich RichColors = RichColors.Magenta[];
+  imm plain Colors = Colors.Blue[];
+  imm a &Colors = &rich;        //~ ErrorInvType:19 "does not match variable's declared type"
+  imm b &RichColors = &plain;   //~ ErrorInvType:23 "does not match variable's declared type"
+  imm c = takesBaseRef(&rich);  //~ ErrorInvType:24 "does not match declared parameter"
+  imm d = takesExtensionRef(&plain);  //~ ErrorInvType:29 "does not match declared parameter"
+}
+
+// ... nor through a virtual reference, which is a view of a value too
+fn byVirtualReference() {
+  imm rich RichColors = RichColors.Cyan[];
+  imm e = takesBaseVirtRef(&rich);  //~ ErrorInvType:28 "does not match declared parameter"
+}
+
+// A variant is a value of its own enum only. The base's Red is a Colors and not a
+// RichColors; the extension's copy is a RichColors and not a Colors. Both ways, by
+// value and by reference.
+fn membership() {
+  imm a RichColors = Colors.Red[];      //~ ErrorInvType:32 "does not match variable's declared type"
+  imm b Colors = RichColors.Red[];      //~ ErrorInvType:32 "does not match variable's declared type"
+  imm base = Colors.Green[];
+  imm copy = RichColors.Green[];
+  imm c &RichColors = &base;            //~ ErrorInvType:23 "does not match variable's declared type"
+  imm d &Colors = &copy;                //~ ErrorInvType:19 "does not match variable's declared type"
+}
+
+// The same holds where nothing is padded, which is where a structural test on a
+// reference is otherwise the only question asked: neither a copy nor an added
+// variant of the extension is a Packet
+enum @unsized Packet {
+  pub id i32;
+
+  struct Ping {}
+  struct Payload { pub a i64; }
+}
+
+enum @unsized MorePackets extends Packet {
+  struct Wide { pub a i64; pub b i64; }
+}
+
+fn readId(p &Packet) i32 {
+  p.id;
+}
+
+fn unsizedMembership() {
+  imm ping = MorePackets.Ping[1];
+  imm wide = MorePackets.Wide[2, 3i64, 4i64];
+  imm a = readId(&ping);                //~ ErrorInvType:18 "does not match declared parameter"
+  imm b = readId(&wide);                //~ ErrorInvType:18 "does not match declared parameter"
+}
+
+// A generic base and its extension are two types instance by instance: neither
+// Pending[i32]'s values nor its copies are an Option[i32], and no Option[i32] is
+// a Pending[i32]. The same for an extension of an instance, whose copies were
+// instantiated while it was resolved.
+enum Pending[T] extends Option[T] {
+  Waiting;
+}
+
+enum IntOrWait extends Option[i32] {
+  Waiting;
+}
+
+fn genericMembership() {
+  imm a Pending[i32] = Some[5];             //~ ErrorInvType:28 "does not match variable's declared type"
+  imm b Option[i32] = Pending.Some[5];      //~ ErrorInvType:35 "does not match variable's declared type"
+  imm c IntOrWait = Some[5];                //~ ErrorInvType:25 "does not match variable's declared type"
+  imm d Option[i32] = IntOrWait.None[];     //~ ErrorInvType:37 "does not match variable's declared type"
+  imm pending Pending[i32] = Pending.Waiting[i32][];
+  imm e Option[i32] = pending;              //~ ErrorInvType:23 "does not match variable's declared type"
+}
+
+// A tag value an added variant pins must fit the discriminant the base lays its
+// variants out in, because the discriminant's type is one node the two enums
+// share. Widening it here would relay out the base's own values behind it, for
+// the sake of a set the base knows nothing about.
+enum Narrow {
+  One, Two;
+}
+
+enum TooWide extends Narrow {   //~ ErrorTagWidth:6 "does not fit the 1-byte discriminant"
+  Far = 400;
+}
+
+// A method an extension declares is cloned into the extension's copies of its
+// base's variants and never into the variants they were copied from: the base's
+// own variants, and the base itself, do not answer it.
+enum Voice {
+  Bass, Tenor;
+}
+
+enum Choir extends Voice {
+  pub fn range(self &) i32 {1;}
+  Soprano;
+}
+
+fn baseDoesNotAnswer(v &Voice) {
+  imm tenor = Voice.Tenor[];
+  imm a = (&tenor).range();     //~ ErrorNoMbr:19 "`range` not found"
+  imm b = v.range();            //~ ErrorNoMbr:12 "`range` not found"
+}

@@ -108,7 +108,7 @@ guidance for test scenarios. This note is the work: what to build, and what
   `parsefnflow.c:240` and `:253`, and the `ErrorGenErr` family in `genllvm.c`),
   total diagnostic count for `recover`, and any non-default exit status.
 - **R2.11** Scenario files are prefixed with their group name
-  (`core-success.cone`). Output filenames derive from the source basename, so
+  (`core_success.cone`). Output filenames derive from the source basename, so
   unprefixed names collide when scenarios from two groups are compiled by hand
   into one scratch directory — which is exactly when the runner's per-run
   directories (R1.4) are not in play.
@@ -338,7 +338,7 @@ section for the phase that made it.
    relocation, and it is the step that establishes whether non-replication holds
    up in practice.
 
-   Extract the core-owned content into `core-success.cone`, converting to braces
+   Extract the core-owned content into `core_success.cone`, converting to braces
    (R6.6). Leave the remainder in place as a staging file that later groups draw
    from as they are built. Decomposition is complete when the staging file is
    empty, which makes the progress visible rather than a matter of judgment.
@@ -391,16 +391,16 @@ change. Three points the syntax left open are now specified in the design note:
 - **Carets count lines**, and an annotation-only line is a line, so successive
   annotations for one code line each take one more caret (`//~^`, `//~^^`). The
   alternative reading — every `//~^` in a run pointing at the nearest code line —
-  would have been ambiguous in `core-parse-decls`, which needs three diagnostics
+  would have been ambiguous in `core_parse_decls`, which needs three diagnostics
   on one line.
 - **The quoted substring is load-bearing, not decorative,** wherever two
-  diagnostics share a code, a line and a column. `lexical-reject-tokens` has
+  diagnostics share a code, a line and a column. `lexical_reject_tokens` has
   exactly that: a bad hex digit reports both the escape and the unfinished
   literal at one position.
 - **A diagnostic positioned at end-of-file has no line to carry it.** Several are
   reported at the token that should have followed, so the fix is to keep a
   further declaration in the file rather than to reach for a file-level
-  expectation; `core-parse-decls` does this for `ErrorNoInit`.
+  expectation; `core_parse_decls` does this for `ErrorNoInit`.
 
 ### Repository change made
 
@@ -441,16 +441,16 @@ else, so an `xfail` would assert nothing.
   type may or may not be core.
 - **Static functions declared inside a type** — `Maker::make(...)` in the
   preserved `globals.cone` — are functions rather than methods, and overloading
-  them follows the same rules `core-overload` establishes. They are left for
+  them follows the same rules `core_overload` establishes. They are left for
   `struct` only because they cannot be declared without one, under the "use no
   construct you are not testing" rule. This is the *only* part of function
-  overload `core` does not cover: `core-overload` is entirely module-level
+  overload `core` does not cover: `core_overload` is entirely module-level
   global functions, exercising selection by argument type, by argument count, a
   defaulted parameter on one candidate, direct calls to each concrete name, and
   a private candidate selected through a public overload name.
 
 One boundary call made rather than surfaced: `ErrorGenericOverload` is in
-`core-parse-overload`, with a generic parameter list as scaffolding, because the
+`core_parse_overload`, with a generic parameter list as scaffolding, because the
 diagnostic is an overload-declaration rule and would be surprising to find in
 `generic`.
 
@@ -462,8 +462,8 @@ diagnostic is an overload-declaration rule and would be surprising to find in
   *(Since done — the staging file is at `test/staging/test.cone` and
   `submod.cone` is superseded by the `module` group. See "The staging file is in
   `test/staging/`" below.)*
-- `test/cases/core/core-typecheck.cone` carries eight diagnostics and
-  `lexical-reject-tokens` seven, both past the three-to-six guidance. Both are
+- `test/cases/core/core_typecheck.cone` carries eight diagnostics and
+  `lexical_reject_tokens` seven, both past the three-to-six guidance. Both are
   five or six primaries plus follow-ons, and neither shows recovery
   interference, so they were left whole.
 
@@ -498,7 +498,7 @@ Two behaviors the requirements imply but do not spell out:
   killed at 8 MB as well as at 20 seconds, and the failure says which.
 - **A `llvmir` check reads the post-optimization dump.** `--llvmir` writes both
   `<srcname>.preir` and `<srcname>.ir`; the latter is what reaches the object
-  file, so that is what a symbol assertion is about. `core-overload`'s three
+  file, so that is what a symbol assertion is about. `core_overload`'s three
   checks pass against either.
 
 ### Deferred, and why
@@ -606,8 +606,8 @@ ground: a category assertion nothing exercises is not an assertion.
 ### `recover` is implemented and unexercised
 
 Nothing in `core`'s reach demonstrates recovery beyond what the existing `reject`
-scenarios already show. `core-parse-stmts` carries five parse diagnostics and
-`core-typecheck` eight, each accumulated and each annotated; a `recover` scenario
+scenarios already show. `core_parse_stmts` carries five parse diagnostics and
+`core_typecheck` eight, each accumulated and each annotated; a `recover` scenario
 over the same ground would assert strictly less. Recovery interference is real —
 the parser resynchronizes by skipping forward, and a file with several broken
 declarations yields one diagnostic rather than several, because parse errors stop
@@ -632,7 +632,7 @@ Of the three warnings in `error.h`, only `WarnLoop` is `core`'s to provoke.
 `WarnLoop` is reported at the loop's *block*, not at the `while`, so the column
 is the `{`. A labeled `break` counts for the loop it names and not for the one it
 sits in, so a nested loop whose only exit is `break 'outer` warns while the outer
-one does not. `core-warn-loops` pins both.
+one does not. `core_warn_loops` pins both.
 
 ### Where coverage stands
 
@@ -686,9 +686,9 @@ not guessed at" requires. Pairing the two sides in the order they happen to arri
 would work today and is exactly the guess that rules out: nothing says an author
 writes carets in emission order.
 
-`lexical-reject-tokens` is the case this exists for — two diagnostics sharing a
+`lexical_reject_tokens` is the case this exists for — two diagnostics sharing a
 code, a line and a column, separated only by their substrings — and
-`core-parse-decls` is the other, with three diagnostics on one line reached by
+`core_parse_decls` is the other, with three diagnostics on one line reached by
 `//~`, `//~^` and `//~^^`. Both bless correctly, and both refuse correctly once
 their substrings stop distinguishing anything.
 
@@ -729,7 +729,7 @@ had pinned the whole message, and where the author had pinned a fragment they
 come back as the whole message, which is correct rather than identical — the
 suite runs green afterwards either way, and blessing a second time changes
 nothing, so the result is a fixed point. Blessing every substring in
-`lexical-reject-tokens` into garbage is refused, and that file is left exactly as
+`lexical_reject_tokens` into garbage is refused, and that file is left exactly as
 it was perturbed, which is the direct evidence that a refusal writes nothing in
 the scenario rather than most of it.
 
@@ -828,7 +828,7 @@ evidence — this is where each was found and how — and those items carry the 
 **Region coercion is backwards, and it is a soundness hole.** `refMatches` calls
 `regionMatches(from->region, to->region)` — the arguments are swapped against the
 parameter names. One direction rejects a valid coercion, which
-`region-borrow-coerce` pins as an `xfail`. The other **silently accepts a
+`region_borrow_coerce` pins as an `xfail`. The other **silently accepts a
 borrowed reference where an owning one is wanted**, handing a stack address to a
 parameter typed `+rc-mut`; it compiles, it runs, and there is no diagnostic to
 assert against. The suite cannot hold the dangerous half.
@@ -873,7 +873,7 @@ function's closing brace, because `parseEach` builds those nodes with the lexer'
 position at the time the block finished. A name-fold clash between two wildcard
 imports names the wrong file entirely. And `ErrorFewArgs` is emitted with the
 message "Too many arguments provided for generic function" — code and message
-disagree, and `generic-typecheck-infer` asserts it as-is so that fixing either
+disagree, and `generic_typecheck_infer` asserts it as-is so that fixing either
 forces the choice.
 
 ### Documented features that do not exist

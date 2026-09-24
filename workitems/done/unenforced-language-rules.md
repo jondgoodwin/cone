@@ -32,7 +32,7 @@ something; there is no way to write "and it should have rejected this too" excep
 as an `xfail`, which requires the construct to fail somehow already. Where a rule
 is simply unenforced, the corpus records it by *establishing the opposite* — the
 `safety` group compiles pointer arithmetic with no trust block anywhere, which is
-the only honest way to pin the absence of a rule. `ref-flow-return` uses the same
+the only honest way to pin the absence of a rule. `ref_flow_return` uses the same
 device for the one lifetime case that is still not reached.
 
 ## ~~`imm` is not enforced at all~~ — closed: it was, and the gate that hid it is gone
@@ -57,7 +57,7 @@ for every function after it.
 `fnDclTypeCheck` now records the error count on entry and runs `blockFlow`
 whenever the function's own signature and body added nothing to it. A function
 that type checked is analyzed regardless of what failed elsewhere.
-`core-flow-gate` pins this, and is the one scenario in the corpus that
+`core_flow_gate` pins this, and is the one scenario in the corpus that
 deliberately mixes a type-check failure with flow diagnostics.
 
 **The entry's own example was inaccurate and is worth recording as such.** It
@@ -110,7 +110,7 @@ there was a check to write and no decision to make, and the crash made it urgent
 `importNameRes` no longer folds private names, and `nameUseNameRes` rejects
 `mod::_privateName` with `ErrorNotPublic`. A private *candidate* reached through a
 public overload name is deliberately untouched — the program never names it — and
-`test/cases/module/module-imports` still pins that. `module-nameres` pins the
+`test/cases/module/module_imports` still pins that. `module_nameres` pins the
 rejection.
 
 This entry is the reason to check the reference manual before assuming a rule
@@ -129,13 +129,13 @@ to make — the third time on this page that the manual already held the answer.
 - **Slices skipped the check entirely.** `assign.c` gated it on both sides being
   `RefTag`, so an `ArrayRefTag` fell through and a slice could outlive the array
   it borrowed. A slice borrows exactly as a reference does and carries the same
-  scope, so both tags now reach the check. `collection-flow-escape` was the
+  scope, so both tags now reach the check. `collection_flow_escape` was the
   `xfail` that pinned this, and is now a passing `reject`.
 - **Returning a borrowed reference to a local was not diagnosed.**
   `fn escapes() &i32 { mut a = 3; &a }` compiled clean. `returnFlow` in
   `ir/stmt/return.c` now reports `ErrorEscape` for a returned borrow whose scope
   is a local's, walking a returned value tuple element by element.
-  `ref-flow-return` pins it.
+  `ref_flow_return` pins it.
 - **Freezing the source of a borrow** is documented and unimplemented; the source
   variable stays fully usable. Untouched, and still open — it is a rule about
   what the *borrowed-from* variable may do while the borrow is alive, which is
@@ -147,7 +147,7 @@ built carried whatever the allocator last left there. Both lifetime checks read
 that field. It is now initialized to 0 — global lifetime — at construction.
 
 **What the return check does not reach**, established rather than claimed in
-`ref-flow-return`: a borrow laundered through a variable. Scope lives on the type
+`ref_flow_return`: a borrow laundered through a variable. Scope lives on the type
 node the borrow expression produced, and an assignment does not carry it onto the
 variable's declared type, so `mut r &i32; r = &local; r` returns clean.
 
@@ -222,7 +222,7 @@ distinguishable. Both now raise the code that names them:
 - **`ErrorBadAlloc` 1036.** `region.c` reported all six `_alloc` and `init` shape
   complaints as `ErrorInvType`. They are now 1036. "Not a valid region" stays
   `ErrorInvType`, because a non-struct region is a type error rather than an
-  allocation one. `region-typecheck-region` and `region-typecheck-init` assert it.
+  allocation one. `region_typecheck_region` and `region_typecheck_init` assert it.
 
 **`WarnCopy` 3003 is the one left, and it is deliberately kept.** It names an
 unsafe copy of a `CopyMethod` or `CopyMove` typed value; neither name exists
@@ -270,8 +270,8 @@ The lexer maps each reserved word to `ReservedToken`, reports `ErrorReserved`
 where it was written, then releases the name so the rest of the compile treats it
 as the ordinary identifier the author meant. That reports each word once, at its
 first appearance, and leaves the file otherwise diagnosed as it would have been.
-`lexical-reject-reserved` pins all fifteen.
+`lexical_reject_reserved` pins all fifteen.
 
 The corpus sweep the entry expected to be expensive was one rename: `local` in
-`region-typecheck-coerce`. It would only have grown with every scenario and
+`region_typecheck_coerce`. It would only have grown with every scenario and
 example written, which is why this was the item with a deadline.

@@ -109,7 +109,7 @@ reported `ErrorAbstractMeth`: the implementers and variants own the only
 generated copies ([struct](struct.md), `nodelist`), so the path would name code
 that does not exist. A static function through the same path is the
 abstraction's own and passes, and the same name through a struct, a variant or
-an implementer names that type's copy. `trait-nameres-method-path` pins it.
+an implementer names that type's copy. `trait_nameres_method_path` pins it.
 
 ⚠ **This cannot wait for type check.** Name resolution itself asks `isTypeNode`
 of an operand: `&mut mymod.Gadget` and `(mymod.A, mymod.B)` are settled by

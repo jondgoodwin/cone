@@ -1,0 +1,566 @@
+// 'each' over a numeric range: the four range operators, the optional 'by'
+// step, the scope and mutability of the loop variable, and how 'break' behaves
+// inside one.
+//
+// Everything is printed, because 'each' is not generated directly. The parser
+// rewrites it into a variable declaration plus a 'while' whose condition is the
+// range comparison and whose body ends with the increment, so a loop that
+// compiles is not a loop that visits the values meant. The sums below are
+// order-independent, so each one is paired with an iteration count where the
+// count is what distinguishes the operator.
+//
+// Iteration over a collection is the one 'each' subject absent on purpose;
+// cases.toml gives the reason.
+
+mod each_success;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn showU(label &[]u8, n u64) {
+  printStr(label);
+  printStr(" = ");
+  printUInt(n);
+  printStr("\n");
+}
+
+fn showF(label &[]u8, n f64) {
+  printStr(label);
+  printStr(" = ");
+  printFloat(n);
+  printStr("\n");
+}
+
+// -------- the four range operators --------
+
+// '<' stops before the bound and '<=' stops on it, so the two differ by one
+// visit and not merely by one added value.
+fn ascending() {
+  mut sum = 0;
+  mut count = 0;
+  each i in 0 < 5 {
+    sum += i;
+    count += 1;
+  }
+  show("lt-sum", sum);
+  show("lt-count", count);
+
+  mut sum2 = 0;
+  mut count2 = 0;
+  each i in 0 <= 5 {
+    sum2 += i;
+    count2 += 1;
+  }
+  show("le-sum", sum2);
+  show("le-count", count2);
+}
+
+// '>' and '>=' count down instead, so the first value is the left operand and
+// the loop variable is decremented rather than incremented.
+fn descending() {
+  mut first = -1;
+  mut last = -1;
+  mut count = 0;
+  each i in 6 > 1 {
+    if count == 0 {
+      first = i;
+    }
+    last = i;
+    count += 1;
+  }
+  show("gt-first", first);
+  show("gt-last", last);
+  show("gt-count", count);
+
+  mut last2 = -1;
+  each i in 6 >= 1 {
+    last2 = i;
+  }
+  show("ge-last", last2);
+}
+
+// A range that is already past its bound runs its body no times at all, in
+// either direction: the comparison is tested before the first visit.
+fn empty() {
+  mut count = 0;
+  each i in 0 < 0 {
+    count += 1;
+  }
+  each i in 0 > 0 {
+    count += 1;
+  }
+  show("empty-count", count);
+}
+
+// -------- 'by' --------
+
+// Without 'by' the loop variable moves by one; with it, by the step. A
+// descending range still adds the step rather than subtracting it, so counting
+// down by more than one needs a negative step.
+fn stepped() {
+  mut sum = 0;
+  mut count = 0;
+  each i in 0 <= 10 by 2 {
+    sum += i;
+    count += 1;
+  }
+  show("by-asc-sum", sum);
+  show("by-asc-count", count);
+
+  mut sum2 = 0;
+  each i in 10 >= 0 by -2 {
+    sum2 += i;
+  }
+  show("by-desc-sum", sum2);
+}
+
+// -------- the element type --------
+
+// The loop variable takes the type of the range's operands, so an unsigned
+// range yields an unsigned variable and a float range a float one. The step
+// must be of that type too: an f64 range steps by an f64.
+fn unsignedRange() u64 {
+  mut result = 1u;
+  each nbrx in 1u < 10u by 2 {
+    result += nbrx;
+  }
+  result;
+}
+
+fn floatRange() f64 {
+  mut sum = 0.;
+  each x in 0. <= 1. by 0.5 {
+    sum += x;
+  }
+  sum;
+}
+
+// A range's bounds may be arbitrary expressions rather than literals, which is
+// what makes 'each' usable over a function's parameters.
+fn total(low i32, high i32) i32 {
+  mut sum = 0;
+  each i in low <= high {
+    sum += i;
+  }
+  sum;
+}
+
+fn typed() {
+  showU("unsigned-result", unsignedRange());
+  showF("float-sum", floatRange());
+  show("param-bounds", total(1, 10));
+  show("param-bounds-empty", total(4, 3));
+}
+
+// -------- when the bounds and the step are evaluated --------
+
+mut boundCalls = 0;
+fn upper() i32 {
+  boundCalls += 1;
+  5;
+}
+
+mut stepCalls = 0;
+fn stride() i32 {
+  stepCalls += 1;
+  1;
+}
+
+// The upper bound is the loop's condition rather than a value captured once, so
+// it is re-evaluated on every test -- five visits, six evaluations, the last of
+// which is the one that ends the loop. The step sits at the end of the body, so
+// it is evaluated once per visit instead.
+fn reevaluated() {
+  mut count = 0;
+  each i in 0 < upper() {
+    count += 1;
+  }
+  show("bound-visits", count);
+  show("bound-evals", boundCalls);
+
+  mut count2 = 0;
+  each i in 0 < 4 by stride() {
+    count2 += 1;
+  }
+  show("step-visits", count2);
+  show("step-evals", stepCalls);
+}
+
+// -------- the loop variable --------
+
+// The loop variable belongs to a scope of its own around the loop, so a
+// variable of the same name outside it is neither read nor written: 'outer'
+// still holds 99 after a loop that counted it from 0 to 3.
+fn scoping() {
+  mut outer = 99;
+  each outer in 0 < 3 {
+  }
+  show("shadowed-local", outer);
+}
+
+// It is mutable, and writing to it steers the loop: setting it to 8 on the
+// visit where it is 2 skips 3 through 7, so the loop makes four visits rather
+// than ten.
+fn writable() {
+  mut count = 0;
+  each i in 0 < 10 {
+    count += 1;
+    if i == 2 {
+      i = 8;
+    }
+  }
+  show("writable-visits", count);
+}
+
+// -------- interaction with the rest of control flow --------
+
+// 'break' leaves an 'each' the way it leaves a 'while', and a labeled 'break'
+// leaves the loop it names, so the label on an 'each' reaches out of a nested
+// one.
+fn breaking() {
+  mut sum = 0;
+  each i in 0 < 100 {
+    if i == 5 {
+      break;
+    }
+    sum += i;
+  }
+  show("break-sum", sum);
+
+  mut visits = 0;
+  'outer: each i in 1 <= 3 {
+    each j in 1 <= 3 {
+      if j == 2 {
+        break 'outer;
+      }
+      visits += 1;
+    }
+  }
+  show("labeled-break-visits", visits);
+
+  // A 'break' as the whole body is legal, and leaves after one visit. The step
+  // the parser appends sits behind it, so the 'break' the reader wrote last is
+  // still the last one they wrote.
+  mut once = 0;
+  each i in 0 < 5 {
+    once += 1;
+    break;
+  }
+  show("break-only-body-visits", once);
+}
+
+// 'continue' is the case the rewrite has to carry the step through. The step
+// that advances the loop variable is the body's last statement, so a 'continue'
+// jumping to the loop's guard would arrive with the variable unchanged and the
+// loop would never end. Every count below is therefore two claims at once: the
+// right values were visited, and the loop terminated at all.
+fn continuing() {
+  mut sum = 0;
+  mut visits = 0;
+  each i in 0 < 10 {
+    if i == 3 {
+      continue;
+    }
+    sum += i;
+    visits += 1;
+  }
+  show("continue-sum", sum);
+  show("continue-visits", visits);
+
+  // With 'by', the step to carry is the '+=' rather than the '++', so a skipped
+  // visit must still advance by the step and not by one
+  mut stepped = 0;
+  each i in 0 <= 10 by 2 {
+    if i == 4 {
+      continue;
+    }
+    stepped += i;
+  }
+  show("continue-by-sum", stepped);
+
+  // Counting down, where the step decrements
+  mut down = 0;
+  each i in 5 > 0 {
+    if i == 3 {
+      continue;
+    }
+    down += i;
+  }
+  show("continue-descending-sum", down);
+}
+
+// A labeled 'continue' abandons every inner loop and steps the loop it names, so
+// the outer variable advances while the inner one starts over on the next visit.
+// The outer body after the inner loop is skipped, which is what 'tails' counts.
+fn labeledContinuing() {
+  mut pairs = 0;
+  mut tails = 0;
+  'outer: each i in 0 < 4 {
+    each j in 0 < 4 {
+      if j == 2 {
+        continue 'outer;
+      }
+      pairs += 1;
+    }
+    tails += 1;
+  }
+  show("labeled-continue-pairs", pairs);
+  show("labeled-continue-tails", tails);
+}
+
+// A bare 'continue' inside an 'each' nested in a 'while' targets the 'each', so
+// the 'while' is left to its own condition and the inner loop still ends.
+fn continueInsideNestedEach() {
+  mut n = 0;
+  mut visits = 0;
+  while n < 2 {
+    each i in 0 < 4 {
+      if i == 1 {
+        continue;
+      }
+      visits += 1;
+    }
+    n += 1;
+  }
+  show("continue-in-nested-each", visits);
+}
+
+// A 'continue' as the whole body is legal. The step the parser appends is not a
+// statement the reader wrote, so it does not make the 'continue' not-last, and
+// the loop still runs to its bound rather than spinning on one value.
+fn continueOnlyBody() {
+  each i in 0 < 3 {
+    continue;
+  }
+  show("after-continue-only-body", 1);
+}
+
+// Loops nest in either combination, and an 'each' nested inside another gets a
+// fresh loop variable per outer visit rather than resuming where it stopped.
+fn nesting() {
+  mut sum = 0;
+  each i in 1 <= 3 {
+    each j in 1 <= 3 {
+      sum += i * j;
+    }
+  }
+  show("nested-sum", sum);
+
+  mut n = 0;
+  mut rounds = 0;
+  while n < 3 {
+    each i in 0 < 2 {
+      rounds += 1;
+    }
+    n += 1;
+  }
+  show("each-in-while", rounds);
+}
+
+// An empty body is accepted, unlike an empty 'while' body, and the program goes
+// on afterwards.
+fn emptyBody() {
+  each i in 0 < 3 {
+  }
+  show("after-empty-body", 1);
+}
+
+// -------- a bound at the type's extreme --------
+
+// An inclusive range's last value is its bound, and nothing stops the bound
+// being the largest value its type holds. The rewrite steps the loop variable
+// after every visit, so a step past that bound would wrap around to the
+// smallest value, satisfy the comparison again, and never end -- the optimizer
+// folds a comparison against the type's maximum to true and emits a loop with
+// no exit. The step of an inclusive range is therefore guarded by an equality
+// test against the bound. Every count below is two claims at once: the right
+// number of values were visited, and the loop ended at all. u8 keeps the runs
+// short; the i32 case is the one that was measured.
+fn atTheExtreme() {
+  mut count = 0;
+  each x in 250u8 <= 255u8 {
+    count += 1;
+  }
+  show("le-u8-max-count", count);
+
+  mut count2 = 0;
+  each x in 5u8 >= 0u8 {
+    count2 += 1;
+  }
+  show("ge-u8-min-count", count2);
+
+  mut count3 = 0;
+  each x in 2147483640 <= 2147483647 {
+    count3 += 1;
+  }
+  show("le-i32-max-count", count3);
+}
+
+// The guard is an equality test and not a strict comparison, so a bound the
+// steps never land on is still passed rather than stopped short of: 0., 1. and
+// 2. are visited and 3. is not, the same three visits the comparison alone made.
+fn floatBoundNotLandedOn() {
+  mut count = 0;
+  each x in 0. <= 2.5 {
+    count += 1;
+  }
+  show("le-float-passed-count", count);
+}
+
+// A 'by' step need not land on the bound, so the equality test above cannot end
+// a stepped range: 250, 252 and 254 are visited and the step after 254 is 256,
+// which a u8 cannot hold. What ends the loop instead is the wrap itself, seen
+// after the step from inside the loop -- the variable moved against the range's
+// direction. The exclusive operators need that as much as the inclusive ones do,
+// and a range counting down toward its type's minimum as much as one counting
+// up. Every count below is two claims at once: the right number of values were
+// visited, and the loop ended at all.
+fn steppedAtTheExtreme() {
+  mut count = 0;
+  each x in 250u8 <= 255u8 by 2 {
+    count += 1;
+  }
+  show("by-le-u8-max-count", count);
+
+  mut count2 = 0;
+  each x in 246u8 < 255u8 by 5 {
+    count2 += 1;
+  }
+  show("by-lt-u8-max-count", count2);
+
+  mut count3 = 0;
+  each x in 5u8 >= 0u8 by -2 {
+    count3 += 1;
+  }
+  show("by-ge-u8-min-count", count3);
+
+  mut count4 = 0;
+  each x in 9u8 > 0u8 by -5 {
+    count4 += 1;
+  }
+  show("by-gt-u8-min-count", count4);
+
+  // A step of one lands on the bound and still wraps on the step past it, and a
+  // step larger than the whole range visits the first value and no other.
+  mut count5 = 0;
+  each x in 250u8 <= 255u8 by 1 {
+    count5 += 1;
+  }
+  show("by-one-u8-max-count", count5);
+
+  mut count6 = 0;
+  each x in 250u8 <= 255u8 by 100 {
+    count6 += 1;
+  }
+  show("by-big-u8-max-count", count6);
+
+  // i32 at both of its extremes.
+  mut count7 = 0;
+  each x in 2147483640 <= 2147483647 by 4 {
+    count7 += 1;
+  }
+  show("by-le-i32-max-count", count7);
+
+  mut count8 = 0;
+  each x in -2147483640 >= -2147483648 by -4 {
+    count8 += 1;
+  }
+  show("by-ge-i32-min-count", count8);
+
+  // A signed range wider than half its type, where the distance from the
+  // variable to the bound is not itself an i32. Nothing may be computed from
+  // that distance, so the loop's end cannot be predicted from it: this one ends
+  // by reaching its bound and not by wrapping, and must visit all 17 values.
+  mut count9 = 0;
+  each x in -2000000000 <= 2000000000 by 250000000 {
+    count9 += 1;
+  }
+  show("by-wide-i32-count", count9);
+}
+
+// 'continue' carries a copy of the whole step, the guard included, so a
+// 'continue' on the visit at the bound ends the loop rather than wrapping.
+fn continueAtTheBound() {
+  mut count = 0;
+  each x in 253u8 <= 255u8 {
+    count += 1;
+    continue;
+  }
+  show("continue-at-max-count", count);
+
+  // A labelled 'continue' from an inner loop carries the outer step, and the
+  // copied guard must leave the outer loop rather than the inner one it was
+  // copied into: bound to the wrong loop, it would let the outer body's tail
+  // run once more.
+  mut tails = 0;
+  'outer: each i in 254u8 <= 255u8 {
+    each j in 0 < 2 {
+      continue 'outer;
+    }
+    tails += 1;
+  }
+  show("labeled-continue-at-max-tails", tails);
+
+  // The copy of a stepped range's step carries its guard and the phantom
+  // variable holding the value before the step, which the copy must read as its
+  // own rather than the original's.
+  mut count2 = 0;
+  each x in 250u8 <= 255u8 by 2 {
+    count2 += 1;
+    continue;
+  }
+  show("continue-by-at-max-count", count2);
+
+  mut tails2 = 0;
+  'outer2: each i in 252u8 <= 255u8 by 2 {
+    each j in 0 < 2 {
+      continue 'outer2;
+    }
+    tails2 += 1;
+  }
+  show("labeled-continue-by-at-max-tails", tails2);
+}
+
+// An inclusive 'each' may be a function's last statement, stepped or not --
+// where the step is a block, the block is what the function ends with.
+fn lastInFunction() {
+  each x in 0u8 <= 255u8 {
+  }
+}
+
+fn lastInFunctionStepped() {
+  each x in 0u8 <= 255u8 by 5 {
+  }
+}
+
+fn main() i32 {
+  ascending();
+  descending();
+  empty();
+  stepped();
+  typed();
+  reevaluated();
+  scoping();
+  writable();
+  breaking();
+  continuing();
+  labeledContinuing();
+  continueInsideNestedEach();
+  continueOnlyBody();
+  nesting();
+  emptyBody();
+  atTheExtreme();
+  steppedAtTheExtreme();
+  floatBoundNotLandedOn();
+  continueAtTheBound();
+  lastInFunction();
+  lastInFunctionStepped();
+  show("after-last-in-function", 1);
+  0i32;
+}

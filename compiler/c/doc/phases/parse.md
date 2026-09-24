@@ -80,7 +80,7 @@ byte is refused as a token (`ErrorBadTok`) rather than absorbed into a name, and
 the scan resumes at the byte after it rather than at the length its lead byte
 claimed. `utf8ByteSkip` never advances past the character in front of it, which
 is what keeps a malformed byte from consuming the source that follows.
-`lexical-reject-tokens` holds both shapes.
+`lexical_reject_tokens` holds both shapes.
 
 **An integer literal is 64 bits wide at most.** `lexScanNumber` accumulates
 into a `uint64_t` and refuses a digit that would carry past it
@@ -88,7 +88,7 @@ into a `uint64_t` and refuses a digit that would carry past it
 have been consumed, so the token still ends where it should and the parser
 carries on with it. The digits of a float are exempt: they are read again by
 `lexToFloat`, so a mantissa wider than 64 bits is a value, not an overflow.
-`lexical-reject-overflow` holds the boundary in both bases.
+`lexical_reject_overflow` holds the boundary in both bases.
 
 **Names are interned at scan time, and `Name.node` is the binding slot.**
 `nametblFind` returns one immovable `Name*` per unique string. That same
@@ -114,7 +114,7 @@ default and `@unsized` declines it. A `#` word is held for metaprogramming:
 was followed by is not reported again. `?.` is held for None propagation:
 `ErrorReserved`, and it is read as `.`. `lexScanIdent` returns 0 for a dropped
 word and `lexNextToken` scans on from where it stopped.
-`lexical-reject-unbuilt` holds all three.
+`lexical_reject_unbuilt` holds all three.
 
 **A word held for an unimplemented feature is reserved; a word that names an
 unbuilt *kind of declaration* is a token.** `mod` and `actor` are the two kinds
@@ -416,7 +416,7 @@ numbers.
 | `parser/parsemod.c` | `parseInit`, `parsePgm`, `parseLoadCore` | **entry point** — `parseInit` sets up the name table and the lexer, ahead of generation's setup since a build description is read with them; `parsePgm` the type tables, program, main module (a source file's, or the one a build description names), the `core` package from the search path, main file |
 | `parser/parsebuild.c` | `parseIsBuildDesc`, `parseBuildDesc`, `parseBuildFindImport` | the build description: told apart by its `.conebuild` extension, read by the lexer into a tree of `BuildModule`s — settings, each module's files, child modules and import lines, each malformed line `ErrorBuildDesc` — and the import line a described module writes for a name |
 | `parser/parsemod.c` | `parseBuildModuleTree`, `parseBuildSubmoduleDraw`, `parseBuildFiles`, `parseLoadBuildImport` | a described build's module tree: each module named and filled as the description says, nothing swept, and the file an import line names loaded as a declared module under the import's name. `ParseState.build` is the current module's entry, which `parseModuleDcl` checks the `mod` line against (`ErrorBuildModName`) and `parseImport` answers names from (`ErrorBuildImport`) |
-| | `parseGlobalStmts` | the global statement dispatch loop; `trait` by itself enters `parseStruct` with `TraitType` already set, `mod trait` enters `parseModTrait`, and `actor` is the unbuilt kind refused here. It is told whether it is reading the start of a module's first file or of another of its files, which is what decides where a `mod` declaration may stand and which ones a build description checks |
+| | `parseGlobalStmts` | the global statement dispatch loop; `trait` by itself enters `parseStruct` with `TraitType` already set, `mod trait` enters `parseModTrait`, and `actor` is the unbuilt kind refused here. It is told whether it is reading the start of a module's first file or of another of its files, which is what decides where a `mod` declaration may stand, which ones a build description checks, and which file must open with one (`ErrorNoModDcl`). It also refuses an `import` after the file's first other declaration (`ErrorImportLate`): the header is the `mod` line, then the imports |
 | | `parseModuleDcl` | `mod name;`, the declaration a module's designated file or one file makes: the placement rule, the check against the folder's name, the one-file submodule's file's or the build description's, the rename a lone file still gets, the module's own name bound into its namespace, what `pub` does for a submodule and why it is refused on any other module, the `@c` after `mod` that makes the module C-named (its `DclCName`, `DclSystemCC` and prefix, given only where the declaration is accepted), the `extends` and the `is` it records for name resolution to resolve, in the order `extends`, `is`, `use` (`ErrorModIs`, `ErrorBadFold` otherwise), and the refusal of the in-file block, which does not exist |
 | | `parseModTrait` | `mod trait Name { ... }`, a module trait: a function or a global per member, a requirement without a body or initialiser and a default with one; anything else, a generic fn and an overload name `ErrorModTraitBody`, skipped whole (`parseModTraitSkipMember`); no body makes a marker |
 | | `parseCAttr` | `@c`, `@c("str")`, `@c(system)`, `@c("str", system)` after `mod` or `fn`, written onto a `DclInfo`: the string is a module's prefix or a function's whole symbol. A malformed one is `ErrorCAttr` and dropped whole |

@@ -1,0 +1,96 @@
+// What a pattern is allowed to narrow to: a variant of the enum being matched,
+// and nothing else.
+//
+// Type-check stage only: this file parses and resolves cleanly, so every
+// diagnostic below is reached. Both patterns below name a type that exists and
+// resolves, so neither is a name-resolution failure -- the type is simply not
+// one the matched value could ever be.
+
+mod enum_typecheck_narrow;
+
+enum Shape {
+  kind i32;
+
+  struct Circle {
+    pub radius i32;
+  }
+
+  struct Rect {
+    pub w i32;
+    h i32;
+  }
+}
+use Shape;
+
+enum Other {
+  struct Alpha {
+    pub a i32;
+  }
+
+  struct Beta {
+    b i32;
+  }
+}
+use Other;
+
+// A variant of a different enum is still a variant, and still unreachable from
+// this one
+fn foreignVariant(s &Shape) i32 {
+  match s {
+    case imm a &Alpha {a.a;}   //~ ErrorInvType:10 "Types are not compatible for this downcast specialization"
+    else {0;}
+  }
+}
+
+// A value that is not an enum has no variant to narrow to at all. The failed
+// narrowing leaves a cast the compiler then cannot build.
+fn matchNonEnum(n i32) i32 {
+  match n {
+    case imm c &Circle {c.radius;}   //~ ErrorInvType:10 "Types are not compatible for this downcast specialization"
+                                    //~^ ErrorInvType:16 "Unsupported built-in type conversion" follow-on
+    else {0;}
+  }
+}
+
+// A pattern may not narrow across regions. The value is borrowed, so its variant
+// is borrowed too; asking for an owning reference would hand the match arm
+// storage that nothing gave it ownership of, and the two regions are laid out
+// differently besides -- an 'rc' allocation carries a count the borrow has no
+// room for. There is no recast between regions, so the regions must be the same.
+fn foreignRegion(s &Shape) i32 {
+  match s {
+    case imm c +rc-mut Circle {c.radius;}   //~ ErrorInvType "won't downcast safely"
+    else {0;}
+  }
+}
+
+// A value that is already a variant has nothing left to narrow. Naming the
+// cause matters here because the usual way in is not a downcast anyone wrote: a
+// method with a body declared on an enum is a default, cloned into every variant
+// with 'Self' repointed, so inside the copy 'self' is one variant and 'match self'
+// asks to narrow it. The two forms below are the same mistake reached the two
+// ways, and each says which.
+fn matchAVariant(c &Circle) i32 {
+  match c {
+    case imm r &Rect {r.w;}   //~ ErrorInvType:10 "Circle is one variant of Shape, so it is already narrowed"
+    else {0;}
+  }
+}
+
+enum Gauge {
+  reading i32;
+
+  pub struct Low { pub lo i32; }
+  struct High { hi i32; }
+
+  // A default, so it is copied into Low and into High
+  fn pick(self &) i32 {
+    match self {
+      // Reported twice, once per copy: the default is cloned into Low and into
+      // High, and each copy narrows a 'self' that is already its own variant
+      case imm l &Low {l.lo;}   //~ ErrorInvType:12 "Low is one variant of Gauge"
+                               //~^ ErrorInvType:12 "High is one variant of Gauge"
+      else {0;}
+    }
+  }
+}

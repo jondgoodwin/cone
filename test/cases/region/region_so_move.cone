@@ -1,0 +1,62 @@
+// Moving a 'so' reference from one variable to another transfers ownership: the
+// allocation is freed once, by the new owner, at the end of the scope.
+//
+// Single-owner semantics are what the region is for, and moving the owner is the
+// ordinary way to pass one along. Flow analysis deactivates the source, which
+// region_flow asserts; flowScopeDealias then leaves a deactivated variable off
+// the scope's dealias list, so only the surviving owner releases.
+//
+// An owner handed between an enrichment's reference type and its base's is moved
+// the same way. The two share one representation, so the reference crosses in a
+// recast, and flow once looked for the source and for the scope's result only
+// through a name, field, index or dereference. The recast hid the source, so it
+// stayed active and the allocation was freed under both names.
+
+mod region_so_move;
+
+import stdio use *;
+
+struct Plain {
+  pub n i32;
+}
+
+struct RichPlain extends Plain {
+  pub fn doubled(self &) i32 { n * 2; }
+}
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn moves() {
+  imm sole = +so 21;
+  imm owner = sole;
+  show("so-moved-to-new-owner", i64[*owner]);
+}
+
+fn movesToEnrichment() {
+  imm sole = +so Plain[22];
+  imm owner +so RichPlain = sole;
+  show("so-moved-to-enrichment", i64[owner.doubled()]);
+}
+
+// The local is the function's result, handed back under the base's name
+fn richAsPlain() +so Plain {
+  imm rich = +so RichPlain[23];
+  rich;
+}
+
+fn returnsAsBase() {
+  imm owner = richAsPlain();
+  show("so-returned-as-base", i64[owner.n]);
+}
+
+fn main() i32 {
+  moves();
+  movesToEnrichment();
+  returnsAsBase();
+  0i32;
+}

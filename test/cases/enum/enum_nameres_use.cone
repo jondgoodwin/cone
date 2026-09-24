@@ -1,0 +1,86 @@
+// What a module's 'use' of an enum refuses.
+//
+// A variant is a name of its enum, reached as 'Colors.Red' wherever the enum can
+// be named; 'use Colors;' is how a module asks for the variants bare. The fold is
+// expanded in the module's fold pass, once the enum it names is known, so this is
+// the name-resolution stage. enum_parse_use holds how the statement is written.
+
+mod enum_nameres_use;
+
+enum Colors {
+  pub level i32;
+  Red, Green, Blue;
+}
+
+struct Point {
+  x i32;
+}
+
+trait Shaped {
+  fn sides(self &) i32;
+}
+
+fn helper() {}
+
+// Only an enum has variants, and a variant is all this statement folds: a
+// struct's members, a trait's and a function have none to give
+use Point;                //~ ErrorUseEnum:5 "Point is not an enum"
+use Shaped;               //~ ErrorUseEnum:5 "Shaped is not an enum"
+use helper;               //~ ErrorUseEnum:5 "helper is not an enum"
+
+// A variant is a type, and not the enum it belongs to
+use Colors.Red;           //~ ErrorUseEnum:12 "Red is not an enum"
+
+// A generic enum's variants are the enum's, whatever it is instantiated with, so
+// the statement names the enum alone
+use Option[i32];          //~ ErrorUseEnum:11 "naming the enum alone"
+
+// A typedef's target is resolved after every fold, so the enum is named by its
+// own name
+typedef Hue Colors;
+use Hue;                  //~ ErrorUseEnum:5 "Hue is a typedef"
+
+use Missing;              //~ ErrorUnkName:5 "does not refer to a declared name"
+
+// A field or a method of the enum is reached through a value of it, so it is not
+// a name a module could hold. A listed name the enum has not got at all, and one
+// 'but' leaves out that it has not got, are each reported where they are written.
+use Colors level, Mauve;  //~ ErrorBadFold:12 "not one of its variants"
+                          //~^ ErrorNoMbr:19 "has no variant named Mauve to fold in"
+use Colors but Mauve;     //~ ErrorNoMbr:16 "has no variant named Mauve to leave out"
+
+// 'pub use' makes the variants public names of this module, which may not widen
+// them past the enum they belong to. Reported at the 'use', where the fold is
+enum Weekday {
+  Mon, Tue;
+}
+pub use Weekday;          //~ ErrorNotPublic:5 "Weekday is private"
+
+// Two enums may each have a 'Quit', and a module may fold one of them. Folding
+// both puts two meanings on one name of the module, which is refused at the
+// second fold; 'as' or 'but' is how to have both.
+enum Keys {
+  Quit, Enter;
+}
+enum Window {
+  Quit, Resize;
+}
+use Keys but Enter;
+use Window;               //~ ErrorDupName:1 "Quit is already a name of this module"
+
+// A folded name collides with a declaration of the module the same way
+enum Moves {
+  Stay, Leave;
+}
+fn Leave() {}
+use Moves;                //~ ErrorDupName:1 "Leave is already a name of this module"
+
+// With no 'use', a variant is not a name of the module, however it is spelled
+// where the enum is declared
+enum Tone {
+  Light, Dark;
+}
+
+fn noFold() {
+  imm t Tone = Light[];   //~ ErrorUnkName:16 "The name Light does not refer to a declared name"
+}

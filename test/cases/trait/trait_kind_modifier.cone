@@ -1,0 +1,116 @@
+// 'trait' is a modifier on the kind, and written by itself it means
+// 'struct trait'.
+//
+// What is established is that the two spellings are one declaration. A
+// 'struct trait' carries everything a 'trait' carries -- a field requirement, a
+// method requirement, a default body, and nothing at all in the marker case --
+// and the two interoperate in one chain, a short-spelled trait declaring 'is'
+// against a long-spelled one and an implementer reached through either.
+//
+// The family a trait serves comes from the kind keyword rather than from
+// anything the declaration carries, which is what makes the short spelling mean
+// the struct family, what makes 'mod trait' mean the module's, and what will make
+// 'actor trait' mean the actor's.
+// Nothing is inferred and no declaration says which family it is for; there is
+// therefore nothing here to assert about the family beyond that the short and the
+// long spelling land in the same one, which every line below depends on.
+//
+// A run rather than a compile, because a declaration that parses is not one that
+// dispatches: which implementation each vtable slot holds is what the printed
+// numbers say and what compiling clean cannot.
+//
+// The refusals belong to trait_parse_kind_modifier, and 'enum trait' to
+// enum_parse_decl.
+
+mod trait_kind_modifier;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// The long spelling, carrying all three of the things a trait declaration can:
+// a field requirement, a method requirement with no body, and a default body.
+struct trait Meter {
+  pub level i32;
+
+  pub fn reading(self &) i32 {level * 2;}
+  pub fn step(self &mut);
+}
+
+// The short spelling, declaring 'is' against the long one, so a chain crosses
+// the two spellings. It complies with Meter's field requirement the way any type
+// does, by declaring the field, which is also what lets its own default name it.
+trait Tagged is Meter {
+  pub level i32;
+
+  pub fn tag(self &) i32 {level + 1;}
+}
+
+// A marker written the long way: empty, so nothing structural could ever notice
+// it and only a declaration can say a type carries it.
+struct trait Sealed {}
+
+// Gauge names the long spelling directly and takes its default 'reading'.
+struct Gauge is Meter, Sealed {
+  pub level i32;
+  pub span i32;
+
+  fn step(self &mut) {self.level = self.level + 1;}
+}
+
+// Dial reaches the long spelling through the short one, replaces the default it
+// requires and takes the short hop's own default.
+struct Dial is Tagged {
+  pub level i32;
+
+  fn reading(self &) i32 {self.level * 100;}
+  fn step(self &mut) {self.level = self.level + 10;}
+}
+
+// A virtual reference to the long-spelled trait, which dispatches
+fn readingOf(m &<Meter) i32 {
+  m.reading();
+}
+
+// A plain reference to it, which reads the field the requirement put at the
+// front of every implementer's layout
+fn baseLevel(m &Meter) i32 {
+  m.level;
+}
+
+// A virtual reference to the short-spelled hop of the same chain
+fn taggedBy(t &<Tagged) i32 {
+  t.tag();
+}
+
+fn stepOnce(m &<mut Meter) {
+  m.step();
+}
+
+fn main() i32 {
+  mut g = Gauge[3, 7];
+  mut d = Dial[5];
+
+  show("long-spelling-default-method", readingOf(&g));
+  show("long-spelling-overridden-method", readingOf(&d));
+  show("long-spelling-plain-ref-field", baseLevel(&g));
+  show("long-spelling-plain-ref-other-type", baseLevel(&d));
+  show("short-spelling-is-a-long-one", taggedBy(&d));
+
+  // A requirement with no body is satisfied by each implementer and reached
+  // through the same vtable, so the two types step by different amounts
+  stepOnce(&mut g);
+  stepOnce(&mut d);
+  show("long-spelling-requirement-first-impl", g.level);
+  show("long-spelling-requirement-other-impl", d.level);
+
+  // The implementer's own field sits behind the one the trait required
+  show("own-field-after-required-field", g.span);
+
+  0i32;
+}

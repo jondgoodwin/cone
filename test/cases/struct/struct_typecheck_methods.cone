@@ -1,0 +1,235 @@
+// Calls a struct's type cannot answer.
+//
+// Type-check stage. A method call, a field access, a call through '()' and an
+// index through '[]' are all one lookup in the type's namespace, so all four
+// fail the same way and are worth keeping together: an operator is a method
+// under a backquoted name, and nothing about the call site says so. Privacy is
+// decided at the same lookup, against the spelling the caller wrote, so it is
+// here too. Wrong constructors are in struct_typecheck_construct.
+//
+// Every diagnostic here names the member that was not found or not allowed, so
+// the annotations are told apart by their quoted text rather than by position.
+//
+// A field access to a name the type does not declare is left out: it reports
+// the same code with the same message as the method call below, from the same
+// lookup, so it would assert nothing the first case does not.
+
+mod struct_typecheck_methods;
+
+struct Point {
+  pub x i32;
+  secret i32 = 0;
+
+  fn fee(self) i32 {
+    1;
+  }
+
+  fn isTrue(self) Bool {
+    true;
+  }
+
+  pub fn borrowed(self &) i32 {
+    x;
+  }
+
+  pub fn addValue overload add(self) i32 {
+    x;
+  }
+
+  pub fn addOther overload add(self, other Point) i32 {
+    x + other.x;
+  }
+
+  pub fn `<-`(self &mut, n i32) {
+    x = x + n;
+  }
+}
+
+fn missingMethod() {
+  imm p = Point[1];
+  p.nosuch();           //~ ErrorNoMbr:4 "Method or field `nosuch` not found"
+  return;
+}
+
+// A struct only answers '()' if it declares that operator method
+fn noCallOperator() {
+  imm p = Point[1];
+  p();                  //~ ErrorNoMbr:4 "Method or field `()` not found"
+  return;
+}
+
+// ... and only answers indexing if it declares '[]'
+fn noIndexOperator() {
+  imm p = Point[1];
+  p[0usize];            //~ ErrorNoMbr:4 "Method or field `[]` not found"
+  return;
+}
+
+// An overload name that names candidates, none of which accepts these
+// arguments. This is the method form of the failure; core covers the function
+// form, and the two are reported from different places.
+fn noCandidate() {
+  imm p = Point[1];
+  p.add(2i32, 3i32, 4i32);   //~ ErrorNoCandidate:4 "No method declared by `add` accepts the call's arguments"
+  return;
+}
+
+// A call adjusts its receiver in one direction only. A receiver held through a
+// reference is dereferenced to reach a value receiver, but nothing borrows a
+// reference out of a value, so a '&' receiver stays out of a value's reach.
+fn refReceiverOnValue() {
+  imm p = Point[1];
+  p.borrowed();         //~ ErrorNoCandidate:4 "No method declared by `borrowed` accepts the call's arguments"
+  return;
+}
+
+// '!=' is derived from '==' only where the type declares '=='. Point declares
+// neither, so '!=' is missing under its own name.
+fn noInequality() {
+  imm p = Point[1];
+  imm b = p != Point[2];   //~ ErrorNoMbr:13 "Method or field `!=` not found"
+  return;
+}
+
+// A derived '!=' is the '==' application, so it is refused where '==' is and in
+// the same words: here the '==' wants references, which a value does not reach.
+// The 'if' it is tested in adds nothing to the refusal.
+struct ByRef {
+  pub x i32;
+  pub fn `==`(self &, other &ByRef) Bool {
+    x == other.x;
+  }
+}
+
+fn derivedInequalityRefused() {
+  imm a = ByRef[1];
+  imm b = ByRef[2];
+  if a != b { return; }    //~ ErrorNoCandidate:8 "No method declared by `==` accepts the call's arguments"
+  return;
+}
+
+// An operator that needs a mutable receiver takes a receiver that is already a
+// reference as it is, so a '&' reference is refused the way a named call
+// refuses it: no candidate accepts it. That the binding holding the reference
+// is immutable is not what is wrong -- it would be just as immutable holding
+// a '&mut', which is accepted.
+fn appendThroughImmRef() {
+  mut p = Point[1];
+  imm r = &p;
+  r <- 2;               //~ ErrorNoCandidate:5 "No method declared by `<-` accepts the call's arguments"
+  return;
+}
+
+// A private method and a private field are both out of reach from outside the
+// type, and the concrete spelling is what the check is made against
+fn privateMethod() {
+  imm p = Point[1];
+  p.fee();             //~ ErrorNotPublic:4 "May not access the private method/field `fee`."
+  return;
+}
+
+fn privateField() {
+  imm p = Point[1];
+  imm s = p.secret;    //~ ErrorNotPublic:12 "May not access the private method/field `secret`."
+  return;
+}
+
+// An enrichment is inside its base's encapsulation boundary and its own clients
+// are not, so what comes across keeps the base's visibility. Enriched's own
+// method reads Point's private field, which struct_extends runs; a caller of
+// Enriched reaches neither the field nor the private method. That asymmetry is
+// what makes an enrichment different from being handed the base's members.
+struct Enriched extends Point {
+  pub fn viaOwnMethod(self) i32 {
+    secret;
+  }
+}
+
+fn privateOfTheBaseThroughAnEnrichment() {
+  imm e Enriched = Point[1];
+  imm s = e.secret;    //~ ErrorNotPublic:12 "May not access the private method/field `secret`."
+  e.fee();             //~ ErrorNotPublic:4 "May not access the private method/field `fee`."
+  return;
+}
+
+// A private 'isTrue' is refused like any other private method, whether the
+// call is written out or injected by a coercion to Bool. The injected call is
+// positioned on the operand it wraps, so each of these reports on the value
+// being tested rather than at the end of the file.
+fn privateIsTrueExplicit() {
+  imm p = Point[1];
+  imm b = p.isTrue();   //~ ErrorNotPublic:12 "May not access the private method/field `isTrue`."
+  return;
+}
+
+fn privateIsTrueInIf() {
+  imm p = Point[1];
+  if p { return; }      //~ ErrorNotPublic:6 "May not access the private method/field `isTrue`."
+  return;
+}
+
+fn privateIsTrueInWhile() {
+  imm p = Point[1];
+  mut n = 0;
+  while p { n = 1; }    //~ ErrorNotPublic:9 "May not access the private method/field `isTrue`."
+  return;
+}
+
+fn privateIsTrueInAnd() {
+  imm p = Point[1];
+  imm b = p and true;   //~ ErrorNotPublic:11 "May not access the private method/field `isTrue`."
+  return;
+}
+
+fn privateIsTrueInOr() {
+  imm q = Point[2];
+  imm b = false or q;   //~ ErrorNotPublic:20 "May not access the private method/field `isTrue`."
+  return;
+}
+
+fn privateIsTrueInNot() {
+  imm p = Point[1];
+  imm b = not p;        //~ ErrorNotPublic:15 "May not access the private method/field `isTrue`."
+  return;
+}
+
+fn takesBool(b Bool) {
+  return;
+}
+
+fn privateIsTrueAsArgument() {
+  imm p = Point[1];
+  takesBool(p);         //~ ErrorNotPublic:13 "May not access the private method/field `isTrue`."
+  return;
+}
+
+fn privateIsTrueAsInitializer() {
+  imm p = Point[1];
+  imm b Bool = p;       //~ ErrorNotPublic:16 "May not access the private method/field `isTrue`."
+  return;
+}
+
+// The lookup found a field rather than a method, so the argument list has
+// nothing to be passed to. This has its own code because it is not an arity
+// complaint: no count of arguments would make it right.
+fn argumentsToAField() {
+  imm p = Point[1];
+  imm n = p.x(3);       //~ ErrorFldArgs "May not provide arguments for a field access"
+  return;
+}
+
+// A static is the type's, not any value's: it is reached as Type.name, and
+// a value has no member by that name
+struct Counted {
+  pub static mut made = 0;
+  pub fn madeSoFar(self) {
+    imm n = self.made;  //~ ErrorNoMbr:17 "Method or field `made` not found"
+    return;
+  }
+}
+
+fn staticThroughAValue() {
+  imm c = Counted[];
+  imm n = c.made;       //~ ErrorNoMbr:12 "Method or field `made` not found"
+  return;
+}

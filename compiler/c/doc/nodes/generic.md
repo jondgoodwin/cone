@@ -355,7 +355,7 @@ build description is the program's only object, and there an instance is
 internal like every other definition. `genlIsExported` never exports one. What a
 library compile does export is each private function, global or type a
 generic's body names (`DclExpandReached`), since the importer's instance calls
-it. `module-build-link` links a package and a program that both instantiate a
+it. `module_build_link` links a package and a program that both instantiate a
 generic function and a generic type at `i64`, and the program alone at `f64`.
 
 **The symbol keys off being an instance**, which `nameSymbol` reads off the

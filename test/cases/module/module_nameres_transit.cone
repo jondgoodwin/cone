@@ -1,0 +1,45 @@
+// A name folded into a module that did NOT re-export it, reached through that
+// module's qualifier -- and refused.
+//
+// Name-resolution stage only: this file parses cleanly, and name resolution
+// returns before type checking, so a type-check expectation here would never
+// run.
+//
+// modulehide.cone has 'import modulesub use *', so 'plain' and the overload name
+// 'scale' are names of modulehide -- names it holds by FOLDING, and a fold is
+// private to the module that made it unless the import says 'pub'. Both are
+// public in modulesub, so what refuses the reach is the binding modulehide made
+// rather than the declaration it stands for. modulehide's own declaration,
+// 'hidOwn', resolves from the same position.
+//
+// THIS IS THE TRANSIT RULE, AND IT IS NOTHING BUT THE VISIBILITY RULE: what a
+// third module sees through this one is what this one re-exported.
+// moduletransit.cone is the same file with the 'pub' written, and module_transit
+// reaches the same names through it from three places in the load order.
+//
+// WHAT IT NO LONGER DEPENDS ON IS LOAD ORDER. These two lines used to be refused
+// from here for a different reason -- the name was not there yet -- and to
+// resolve from a module loaded after the folding one, because a module's folds
+// ran at the start of its own name resolution and modules were resolved in the
+// order they were loaded. Every module's folds are now in place before any
+// module's body is resolved. module_nameres_transit_late reaches these names
+// from the far side of the load order and is refused in the same words.
+//
+// The imported modules are modulehide.cone and, through it, modulesub.cone.
+
+mod module_nameres_transit;
+
+import modulehide;
+
+fn foldedConcreteName() i64 {
+  modulehide.plain(1i64);       //~ ErrorNotPublic:14 "private to its module"
+}
+
+fn foldedOverloadName() i64 {
+  modulehide.scale(2i64);       //~ ErrorNotPublic:14 "private to its module"
+}
+
+// The module's own name is there whatever its folds did
+fn ownName() i64 {
+  modulehide.hidOwn(3i64);
+}

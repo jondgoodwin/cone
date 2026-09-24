@@ -1,0 +1,53 @@
+// What the fold passes round a REFUSED loop of imports do NOT make, and how each
+// is reported beside the loop.
+//
+// Name-resolution stage. Imports form a DAG [Jon 23 Sep], so each loop below is
+// refused (ErrorImportLoop) at the import that closes it. The loop is left
+// whole, and the folds still run pass after pass until a pass binds nothing new
+// (module_import_cycle), so what the loop alone cut short is not reported as
+// well. Until then nothing that might yet arrive is reported missing, so a name
+// that never arrives is reported once, by the pass after the last, with the
+// message it always had -- judged against the module once it is complete. A
+// collision is final as soon as it is met, and it too is reported once, where a
+// single pass would have met it.
+//
+// The subfolders are drawn in sorted order and their folds start in that order:
+//   gamma/gamma.cone         shared, more, extra; in no cycle
+//   hush/hush.cone           hidden; in no cycle
+//   alpha/alpha.cone         imports beta, then re-exports gamma's shared
+//   beta/beta.cone           a listed clause of alpha naming a name alpha never has
+//   kappa/kappa.cone         imports lambda and nu, then re-exports more and extra
+//                            and folds hush's hidden privately
+//   lambda/lambda.cone       'pub use * but' of kappa: a late name and a name
+//                            kappa never has
+//   nu/nu.cone               a listed clause of kappa naming its private hidden
+//   delta/delta.cone         a shared of its own, a different declaration
+//   echo/echo.cone           imports fox and foxtail, then re-exports delta's shared
+//   fox/fox.cone             echo's wildcard, then gamma's shared: the collision
+//   foxtail/foxtail.cone     gamma's shared, then echo's wildcard: the collision
+//   quiet/quiet.cone         imports gamma and re-exports nothing, in no cycle
+//   solo/solo.cone           folds from quiet a name quiet has not got
+//   solitary/solitary.cone   a wildcard 'pub use' of quiet, and a bare use of that name
+//   omega/omega.cone         lists gamma's shared through psi, late, and from gamma: written twice
+//   psi/psi.cone             imports omega back and re-exports all it shows
+//   rho/rho.cone             the same through sigma's wildcard: never written twice, so one binding
+//   sigma/sigma.cone         imports rho back and re-exports all it shows
+
+mod module_import_cycle_nameres;
+
+fn reach() i64 {
+  // Every fold has settled before any body resolves, so a path from outside
+  // the cycle reaches what alpha re-exported ...
+  alpha.shared();
+
+  // ... and what lambda's wildcard carried on, once kappa had it
+  lambda.more();
+
+  // lambda's 'but' left extra out, though kappa did not have it the first time
+  // lambda read it
+  lambda.extra();           //~ ErrorUnkName:10 "The name extra does not refer to a declared name"
+
+  // The control: quiet never re-exported shared, and no cycle is involved
+  solitary.shared();        //~ ErrorUnkName:12 "The name shared does not refer to a declared name"
+  0i64;
+}

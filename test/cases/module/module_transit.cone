@@ -1,0 +1,44 @@
+// A re-exported fold reached through its module's qualifier from three places in
+// the load order: from a module loaded before the folding one, from a module
+// loaded after it, and from the root, which loads first of all. One answer three
+// times.
+//
+// The companion of module_nameres_transit.cone, which reaches the same names
+// through modulehide -- the same file with the re-export left off -- and is
+// refused everywhere. Between them they say that what decides the reach is the
+// binding the fold made, and nothing else.
+//
+// WHAT USED TO BE PINNED HERE, AND IS FIXED: these three positions gave three
+// answers. A module's folds ran at the start of that module's own name
+// resolution and modules were resolved in the order they were loaded, so the
+// root found nothing, a module loaded earlier found nothing, and one loaded
+// later found the names. Every module's folds now run before any module's body
+// is resolved, dependency-first, so the position in the order decides nothing.
+//
+// 'import moduleearly' is what makes moduleearly early: it is added to the
+// program when its parse begins, ahead of its own import of moduletransit.
+// modulelate is imported after moduletransit and is therefore late.
+//
+// It compiles rather than runs for the reason every 'import' scenario does: the
+// imported modules' bodies are not generated here. cases.toml pins what this
+// file declares for the names the three reaches lowered to.
+//
+// The imported modules are moduleearly.cone, moduletransit.cone, modulelate.cone
+// and, through moduletransit, modulesub.cone.
+
+mod module_transit;
+
+import moduleearly;
+import moduletransit;
+import modulelate;
+
+fn viaEitherSide() i64 {
+  moduleearly.viaEarly(1i64) + modulelate.viaMid(2i64);
+}
+
+// The root's own reach, which is the half that could not be written before: the
+// root is resolved first, so a name one of its imports had folded was not there
+// yet whatever its visibility
+fn viaRoot() i64 {
+  moduletransit.plain(3i64) + moduletransit.scale(4i64) + moduletransit.midOwn(5i64);
+}

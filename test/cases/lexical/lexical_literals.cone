@@ -1,0 +1,216 @@
+// Literal tokens: what the lexer builds from digits, quotes and suffixes.
+//
+// Every fact is printed, because a literal's whole content is its value and its
+// type, and neither is observable from a clean compile. The show helpers are
+// scaffolding: one per printable width, calling stdio's concrete print
+// functions rather than the '<-' overload set, which core owns.
+
+mod lexical_literals;
+
+import stdio use *;
+
+fn showInt(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn showUInt(label &[]u8, n u64) {
+  printStr(label);
+  printStr(" = ");
+  printUInt(n);
+  printStr("\n");
+}
+
+fn showFloat(label &[]u8, n f64) {
+  printStr(label);
+  printStr(" = ");
+  printFloat(n);
+  printStr("\n");
+}
+
+fn showText(label &[]u8, text &[]u8) {
+  printStr(label);
+  printStr(" = ");
+  printStr(text);
+  printStr("\n");
+}
+
+fn integers() {
+  // Decimal, and the default type when no suffix is given
+  showInt("int-dec", 42);
+  // Hexadecimal, in both letter cases, with both digit cases
+  showInt("int-hex-lower-x", 0x2a);
+  showInt("int-hex-upper-X", 0X2A);
+  showInt("int-hex-mixed", 0xaB);
+  // 'e' and 'E' are hex digits, not a decimal exponent, wherever they fall
+  showInt("int-hex-E-last", 0x1E);
+  showInt("int-hex-E-first", 0xE0);
+  showInt("int-hex-e-only", 0xe);
+  showInt("int-hex-all-letters", 0xABCDEF);
+  // Underscores are separators and contribute nothing to the value
+  showInt("int-underscores", 1_000_000);
+  showInt("int-underscores-hex", 0xFF_FF);
+  // A leading '-' is not part of the token, but still negates what follows
+  showInt("int-negative", -42);
+  showInt("int-negative-hex", -0x2a);
+  // Every signed suffix
+  showInt("int-i8", 127i8);
+  showInt("int-i8-min", -128i8);
+  showInt("int-i16", 32767i16);
+  showInt("int-i32", 42i32);
+  showInt("int-i64", 4294967296i64);
+  showInt("int-isize", 42isize);
+  // Every unsigned suffix, including the bare 'u' spelling of u32
+  showUInt("int-u8", 255u8);
+  showUInt("int-u16", 65535u16);
+  showUInt("int-u32", 42u32);
+  showUInt("int-u-bare", 42u);
+  showUInt("int-u64", 4294967296u64);
+  // The widest value a literal can carry, in both bases
+  showUInt("int-u64-max", 18446744073709551615u64);
+  showUInt("int-u64-max-hex", 0xFFFFFFFFFFFFFFFFu64);
+  showUInt("int-usize", 42usize);
+}
+
+fn floats() {
+  // A decimal point is what makes this a float rather than an integer
+  showFloat("float-point", 2.5);
+  // A trailing decimal point is still a decimal point
+  showFloat("float-trailing-point", 3.);
+  // An exponent makes a float even with no decimal point
+  showFloat("float-exponent", 25e2);
+  showFloat("float-exponent-upper", 25E2);
+  showFloat("float-exponent-signed", 25e-2);
+  showFloat("float-exponent-plus", 25e+2);
+  // A hex float's exponent is 'p' or 'P', a power of two; 'e' stays a digit
+  showFloat("float-hex-p", 0x1.8p1);
+  showFloat("float-hex-P-signed", 0xAP-1);
+  showFloat("float-hex-e-digit", 0x1.Ep2);
+  // A suffix makes a float even with neither point nor exponent
+  showFloat("float-f", 7f);
+  showFloat("float-f32", 7f32);
+  showFloat("float-d", 7d);
+  showFloat("float-f64", 7f64);
+  // Underscores are separators here too
+  showFloat("float-underscores", 1_0.5);
+  showFloat("float-negative", -2.5);
+  // A hex float's exponent is 'p', and it counts powers of two: 0x1.8 is 1.5,
+  // so 0x1.8p1 is 3, 0x1p-2 is a quarter and 0xAp+1 is ten doubled
+  showFloat("float-hex-exponent", 0x1.8p1);
+  showFloat("float-hex-exponent-signed", 0x1p-2);
+  showFloat("float-hex-exponent-plus", 0xAp+1);
+}
+
+fn chars() {
+  // A character literal is an unsigned integer literal holding one code point:
+  // u8 when the value fits in a byte, u32 otherwise
+  showUInt("char-plain", 'A');
+  showUInt("char-digit", '0');
+  showUInt("char-space", ' ');
+  // Every escape sequence the lexer recognizes
+  showUInt("char-alarm", '\a');
+  showUInt("char-backspace", '\b');
+  showUInt("char-formfeed", '\f');
+  showUInt("char-newline", '\n');
+  showUInt("char-return", '\r');
+  showUInt("char-tab", '\t');
+  showUInt("char-vtab", '\v');
+  showUInt("char-single-quote", '\'');
+  showUInt("char-double-quote", '\"');
+  showUInt("char-backslash", '\\');
+  showUInt("char-escaped-space", '\ ');
+  // Numeric escapes, in all three widths
+  showUInt("char-hex-escape", '\x41');
+  showUInt("char-u-escape", '\u00E9');
+  showUInt("char-U-escape", '\U0001F600');
+  // A trailing 'u' widens the literal to u32 without changing its value
+  showUInt("char-u-suffixed", 'a'u);
+}
+
+fn strings() {
+  showText("str-plain", "abcdef");
+  // Escape sequences inside a string literal
+  showText("str-tabbed", "a\tb");
+  showText("str-quoted", "a\"b");
+  showText("str-backslash", "a\\b");
+  showText("str-hex-escape", "\x41\x42");
+  // A unicode escape is re-encoded as UTF-8 in the literal's bytes
+  showText("str-u-escape", "\u00e9");
+  // A UTF-8 source character passes through unchanged
+  showText("str-utf8-source", "π is pi");
+
+  // A string literal's length is its bytes after escapes, and excludes the
+  // NUL placed after them: "hello" is a [5; u8], which a copy keeps
+  imm hello [5; u8] = "hello";
+  imm copied = &[]hello;
+  showUInt("str-len-typed-copy", copied.len);
+  imm sliced &[]u8 = "hello";
+  showUInt("str-len-slice", sliced.len);
+  showUInt("str-len-escaped", (&[]"a\tb").len);
+  showUInt("str-len-utf8", (&[]"é").len);
+  // The NUL is there for C: a pointer to a literal's bytes, handed to a
+  // function that reads up to the terminator, gets the text and stops
+  imm cstr *u8 = &[]"c-string";
+  printStr("str-c-terminated = ");
+  printCStr(cstr);
+  printStr("|\n");
+  globals();
+}
+
+// A module-level variable initialized from a string literal is not a copy:
+// its storage is the initialized data, so like the literal it ends in a NUL
+// its type does not count. A global array from anything else has no NUL.
+imm cglobal = "c-global";
+mut cmutable = "c-mut";
+imm ctyped [7; u8] = "c-typed";
+imm cbytes [3; u8] = [1u8, 2u8, 3u8];
+
+fn globals() {
+  showUInt("str-global-len", (&[]cglobal).len);
+  imm gptr *u8 = &[]cglobal;
+  printStr("str-global-c-terminated = ");
+  printCStr(gptr);
+  printStr("|\n");
+  showUInt("str-global-typed-len", (&[]ctyped).len);
+  printStr("str-global-typed-c-terminated = ");
+  printCStr(&[]ctyped);
+  printStr("|\n");
+  showUInt("str-global-bytes-len", (&[]cbytes).len);
+  // Every Cone store to a mutable one stops at the text: the NUL survives
+  // a whole assignment and a write to the last byte
+  cmutable = "C-MUT";
+  cmutable[4] = '!';
+  showUInt("str-global-mut-len", (&[]cmutable).len);
+  printStr("str-global-mut-c-terminated = ");
+  printCStr(&[]cmutable);
+  printStr("|\n");
+  // A local copy of one takes its type, and so has no NUL
+  imm copied = cglobal;
+  showUInt("str-global-copy-len", (&[]copied).len);
+}
+
+fn bools() {
+  // 'true' and 'false' are keyword terms, not identifiers
+  mut t = true;
+  mut f = false;
+  if t {
+    showInt("bool-true-taken", 1);
+  }
+  if f {
+    showInt("bool-false-taken", 1);
+  }
+  else {
+    showInt("bool-false-else", 0);
+  }
+}
+
+fn main() i32 {
+  integers();
+  floats();
+  chars();
+  strings();
+  bools();
+  0i32;
+}

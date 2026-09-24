@@ -1,0 +1,201 @@
+// Folding a sibling enrichment in: a type body's 'use'.
+//
+// Two packages each enrich one base with methods of their own. A third type,
+// which enriches that same base, folds both sets in and adds more on top -- one
+// declaration, in its own namespace, without touching either source. What makes
+// it sound is the shared base: a sibling declared it too, so a sibling's method
+// already takes a receiver this type's values substitute for, and nothing is
+// cloned, retyped or shifted.
+//
+// A run rather than a compile, because nothing here can be seen by compiling:
+// which declaration a folded call reached, what fields it read through a
+// receiver it never mentions, and whether a renamed or excluded name resolved to
+// the right thing are all runtime facts. The two things a run cannot see -- that
+// no method was copied per folding type, and that every one of these types has
+// the base's layout -- are checks in cases.toml.
+//
+// The field form, which reaches a PART through a receiver it has to shift, is
+// struct_fold's; the base fold that licenses this one is struct_extends's. What
+// a sibling fold may not name is split by stage: the clause's grammar and where
+// it may be written are struct_parse_fold, and what it may admit is
+// struct_nameres_use_sibling.
+
+mod struct_use_sibling;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// -------- the base every sibling shares --------
+//
+// 'scale' is private. Every type below enriches Meter, so every one of them is
+// inside its boundary and reads it -- which is what makes a sibling's method
+// valid here without anything being rewritten.
+
+struct Meter {
+  pub mut cm i32;
+  scale i32;
+
+  pub fn scaled(self) i32 {
+    cm * scale;
+  }
+  pub fn make() Meter {
+    Meter[6, 5];
+  }
+}
+
+// -------- one library's enrichment: the trigonometric set --------
+
+struct Trig extends Meter {
+  // Reads the shared representation, private field included
+  pub fn sine(self) i32 {
+    cm * scale;
+  }
+  // A reference receiver, and a '&mut' one: the fold does not change what a
+  // receiver has to be, so the recast happens at the call and nothing else moves
+  pub fn cosine(self &) i32 {
+    cm + 1;
+  }
+  pub fn wind(self &mut) {
+    cm = cm + 10;
+  }
+  // A name the other library also declares, which is what 'as' is for
+  pub fn span(self) i32 {
+    cm * 2;
+  }
+  // A static aliases and keeps its owner, so it still hands back a Meter
+  pub fn origin() Meter {
+    Meter.make();
+  }
+  // Left out with 'but' below
+  pub fn tangent(self) i32 {
+    cm * 3;
+  }
+  // Private to Trig: a sibling is inside the BASE's boundary, not inside this
+  // type's, so its own private members stay its own
+  fn secret(self) i32 {
+    cm * 100;
+  }
+}
+
+// -------- another library's enrichment: logarithms --------
+
+struct LogExp extends Meter {
+  pub fn logOf(self) i32 {
+    cm + scale;
+  }
+  pub fn span(self) i32 {
+    cm * 4;
+  }
+  // An overload set folds as one name: selection runs over the candidates the
+  // set holds, which the alias resolves to
+  pub fn expInt overload exponent(n i32) i32 {
+    n * n;
+  }
+  pub fn expTwice overload exponent(n i32, m i32) i32 {
+    n * m;
+  }
+}
+
+// -------- the composed type --------
+//
+// It enriches the same base, folds both siblings in, and adds its own methods
+// that name the folded ones bare -- which they can, because a fold is expanded
+// into the dictionary before any method body is resolved.
+
+struct Rich extends Meter {
+  use Trig but tangent, span;
+  use LogExp logOf, span as wide, exponent;
+
+  pub fn both(self) i32 {
+    sine() + logOf();
+  }
+  pub fn viaSelf(self) i32 {
+    self.wide();
+  }
+}
+
+// -------- a sibling fold down a chain --------
+//
+// Fancy enriches Rich, so it takes Rich's names -- the ones Rich folded from its
+// siblings among them, through an alias to an alias.
+
+struct Fancy extends Rich {
+  pub fn sum(self) i32 {
+    sine() + wide();
+  }
+}
+
+// -------- and a second composition of the same two libraries --------
+//
+// A different selection, under different spellings, in a type of its own: one
+// declaration each, neither touching the other and neither touching a library.
+
+struct Slim extends Meter {
+  use Trig cosine as near, tangent;
+}
+
+// -------- substitution still holds --------
+
+fn wantsMeter(m Meter) i32 {
+  m.scaled();
+}
+
+fn wantsTrig(t Trig) i32 {
+  t.sine();
+}
+
+fn main() i32 {
+  imm r Rich = Meter.make();
+
+  // A folded method of each sibling, by value
+  show("folded-from-one-sibling", r.sine());
+  show("folded-from-the-other", r.logOf());
+
+  // Through a '&' receiver and a '&mut' one
+  show("folded-through-a-ref", (&r).cosine());
+  mut w Rich = Meter.make();
+  (&mut w).wind();
+  show("folded-through-a-mut-ref", w.cm);
+
+  // Renamed with 'as', so the two libraries' clashing name is one declaration's
+  // problem and it is solved here
+  show("renamed-with-as", r.wide());
+
+  // A folded overload set: the candidates are reached through the one alias
+  show("folded-overload-one-arg", Rich.exponent(5));
+  show("folded-overload-two-args", Rich.exponent(5, 6));
+
+  // A folded static keeps its owner and its signature: it still hands back the
+  // base type, and that value binds to any type sharing the base
+  imm made Rich = Trig.origin();
+  show("value-from-a-folded-static", made.both());
+
+  // The composed type's own methods name the folded ones bare, and through self
+  show("own-method-over-folded", r.both());
+  show("folded-name-through-self", r.viaSelf());
+
+  // The base's own members are still there, by their own route
+  show("base-method-not-disturbed", r.scaled());
+  show("base-field-not-disturbed", r.cm);
+
+  // Down a chain: what Rich folded is Fancy's too
+  imm f Fancy = Meter.make();
+  show("chain-reaches-a-folded-name", f.sum());
+
+  // A second composition, selecting differently
+  imm s Slim = Meter.make();
+  show("second-composition-renamed", (&s).near());
+  show("second-composition-admits-what-the-first-left-out", s.tangent());
+
+  // Substitution is untouched by the fold: every one of these declared the same
+  // base, so values cross between all of them
+  show("composed-as-base", wantsMeter(r));
+  show("composed-as-sibling", wantsTrig(r));
+  0;
+}

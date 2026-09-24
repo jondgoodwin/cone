@@ -1,0 +1,485 @@
+// Borrowed references: what '&' produces, what permission it may carry, how
+// long it may live, and what a reference to a function can do.
+//
+// Everything is printed, because a reference that compiles is not a reference
+// that points where it should. The pairs that matter are a write through the
+// reference followed by a read of the original variable, and a read through
+// the reference after the original was written.
+//
+// Owning references ('+rc', '+so'), array references and slices ('&[]'), and
+// virtual references ('&<') belong to region, collection and trait; none of
+// them appear here. Struct owns structs; Pair and Nest exist only because
+// borrowing part of a value needs a value with parts, and two fields is the
+// fewest that can also give a defined address ordering. Nest adds one level so
+// a borrow can be shown reaching through a chain of fields. Coin, Card and Suit
+// exist only because comparing two references reads through to the values'
+// own '==', and each declares it a different way.
+
+mod ref_success;
+
+import stdio use *;
+
+struct Pair {
+  pub x i32;
+  pub y i32;
+}
+
+struct Nest {
+  pub pair Pair;
+}
+
+// '==' declared on the value, which a comparison of references reaches by
+// reading through both sides
+struct Coin {
+  pub cents i32;
+  pub fn `==`(self, other Coin) Bool {
+    cents == other.cents;
+  }
+}
+
+// '==' declared on references, which a comparison of references takes as it is
+struct Card {
+  pub rank i32;
+  pub fn `==`(self &, other &Card) Bool {
+    rank == other.rank;
+  }
+}
+
+// An enum's '==' is its tag, declared by the compiler
+enum Suit {
+  Hearts, Spades;
+}
+use Suit;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn showF(label &[]u8, n f64) {
+  printStr(label);
+  printStr(" = ");
+  printFloat(n);
+  printStr("\n");
+}
+
+// -------- borrowing and dereference --------
+
+fn borrows() {
+  // '&mut' borrows a reference that may write; '*' reads and writes through it
+  mut a = 3;
+  imm rw = &mut a;
+  show("read-through-mut", *rw);
+  *rw = 7;
+  show("write-through-mut", a);
+
+  // A reference type may also be stated on the variable rather than inferred
+  imm stated &mut i32 = &mut a;
+  *stated = 8;
+  show("stated-ref-type", a);
+
+  // Dereference is an expression like any other, so it composes
+  imm other = &a;
+  show("deref-in-expression", *rw + *other);
+}
+
+// A reference is borrowed from a variable, and a parameter is a variable
+fn borrowParm(n i32) i32 {
+  imm r = &n;
+  *r;
+}
+
+fn borrowsFromParm() {
+  show("borrow-from-parm", borrowParm(21));
+}
+
+// -------- borrowing from a reference --------
+
+fn chained() {
+  mut a = 5;
+  imm r = &mut a;
+
+  // '&*r' borrows a new reference from the one r holds
+  imm reborrowed = &*r;
+  show("borrow-from-deref", *reborrowed);
+
+  // A reference is itself a value, so a reference may point at one
+  imm rr = &r;
+  show("ref-to-ref", **rr);
+}
+
+// -------- operators needing an lval, through a reference --------
+
+// An operator-assignment on a number falls back to the base operator, because
+// no number type declares '+='. Through a reference the fallback reaches the
+// referent: 'r += 5' is '*r = *r + 5'. The binding holding the reference is
+// immutable throughout; it is the reference's own 'mut' that permits the write.
+fn opAssignsThroughRef() {
+  mut n = 20;
+  imm r = &mut n;
+  r += 5;
+  show("plus-eq-through-ref", n);
+  r -= 3;
+  show("minus-eq-through-ref", n);
+  r *= 2;
+  show("mult-eq-through-ref", n);
+  r /= 4;
+  show("div-eq-through-ref", n);
+
+  // '++' and '--' need an lval too, and take the reference the same way
+  r++;
+  show("postfix-incr-through-ref", n);
+  --r;
+  show("prefix-decr-through-ref", n);
+
+  // Every remaining op-assign spelling derives the same way. What each one
+  // computes belongs to core; asserted here is only that each reaches the
+  // derivation through the reference, so they run as one chain: 0x3C % 7 is 4,
+  // and & | ^ << >> carry that to 101.
+  mut bits = 0x3C;
+  imm br = &mut bits;
+  br %= 7;
+  br &= 0x0F;
+  br |= 0x30;
+  br ^= 0xFF;
+  br <<= 1;
+  br >>= 2;
+  show("bitwise-op-eq-chain-through-ref", bits);
+
+  // The same holds of a float, whose '/' is not the integer one
+  mut f = 10.0;
+  imm fr = &mut f;
+  fr += 5.0;
+  showF("float-plus-eq-through-ref", f);
+  fr /= 4.0;
+  showF("float-div-eq-through-ref", f);
+}
+
+// -------- borrowing part of a value --------
+
+fn parts() {
+  mut p = Pair[1, 2];
+
+  // A borrow applies to the whole suffixed term, so '&mut p.x' references the
+  // field. Parentheses change nothing, and both forms are here because the bare
+  // one used to borrow p and then take the field of that borrow -- typed as the
+  // field while codegen answered with its address.
+  imm fx = &mut (p.x);
+  *fx = 10;
+  show("write-through-field-ref", p.x);
+
+  mut q = Pair[1, 2];
+  imm qx = &mut q.x;
+  *qx = 11;
+  show("write-through-bare-field-ref", q.x);
+
+  // The second field, so the reference is not merely the struct's own address
+  imm qy = &mut q.y;
+  *qy = 12;
+  show("write-through-bare-second-field-ref", q.y);
+  show("bare-field-ref-left-first-field", q.x);
+
+  // Field of a field, so the borrow reaches through the whole chain
+  mut n = Nest[Pair[3, 4]];
+  imm inner = &mut n.pair.y;
+  *inner = 13;
+  show("write-through-nested-field-ref", n.pair.y);
+  show("nested-field-ref-left-sibling", n.pair.x);
+
+  // A field is read and written through a reference to the whole struct, which
+  // dereferences the reference on the way
+  imm pr = &mut p;
+  show("read-field-through-ref", pr.y);
+  pr.y = 20;
+  show("write-field-through-ref", p.y);
+}
+
+// -------- permissions --------
+
+imm frozen = 30;
+mut movable = 40;
+
+fn onlyReads(n &i32) i32 { *n; }
+fn alsoWrites(n &mut i32) { *n = *n + 1; }
+fn ignoresValue(n &opaq i32) i32 { 99; }
+
+fn permissions() {
+  mut source = 3;
+  imm readonly = 4;
+
+  // 'ro' is the default, and may be written out
+  imm implied = &source;
+  imm explicit = &ro source;
+  show("default-perm-reads", *implied);
+  show("ro-perm-reads", *explicit);
+
+  // 'imm' may be borrowed from an immutable variable, 'mut' from a mutable one
+  imm immref = &imm readonly;
+  imm mutref = &mut source;
+  show("imm-perm-reads", *immref);
+  *mutref = 6;
+  show("mut-perm-writes", source);
+
+  // 'opaq' may be borrowed from anything, and promises to look at nothing
+  show("opaq-perm-borrows", ignoresValue(&opaq source));
+
+  // ... and it may still be held, copied, compared and passed on, which is
+  // everything a reference that reads nothing is for. Compared for identity:
+  // '===' asks where the references point and reads nothing there, where '=='
+  // would read the values and is refused (ref_flow).
+  imm hidden = &opaq source;
+  imm alsoHidden = hidden;
+  mut compared = 0;
+  if hidden === alsoHidden { compared = ignoresValue(alsoHidden); }
+  show("opaq-perm-held-and-compared", compared);
+
+  // A 'mut' reference coerces to the 'ro' a reading function asks for, which
+  // is what lets one function serve every permission
+  show("mut-coerces-to-ro", onlyReads(&mut source));
+  show("imm-coerces-to-ro", onlyReads(&imm readonly));
+
+  // A 'mut' reference passes unchanged to a parameter that will write
+  alsoWrites(&mut source);
+  show("mut-passed-to-writer", source);
+}
+
+fn globalPermissions() {
+  // A global is borrowed exactly like a local, with the same permission rule
+  imm gro = &frozen;
+  imm gmut = &mut movable;
+  *gmut = 41;
+  show("global-imm-borrow", *gro);
+  show("global-mut-borrow", movable);
+}
+
+// The variable's permission and the reference's permission are separate: this
+// variable may be re-pointed, and what it points at may not be written
+fn variableVersusReference() {
+  mut a = 1;
+  mut b = 2;
+  mut which = &a;
+  show("mut-var-first-target", *which);
+  which = &b;
+  show("mut-var-second-target", *which);
+
+  // ... and the reverse: the variable may not be re-pointed, the value may
+  imm fixed = &mut a;
+  *fixed = 100;
+  show("imm-var-mut-referent", a);
+}
+
+// -------- lifetime --------
+
+// A reference borrowed from a global has a global lifetime, so a function may
+// return one
+fn refToGlobal() &i32 {
+  &frozen;
+}
+
+// A reference may also travel through a function and come back out
+fn passThrough(r &mut i32) &mut i32 {
+  r;
+}
+
+fn lifetimes() {
+  mut a = 1;
+  mut outer = &a;
+
+  // A reference borrowed in an inner block may be stored in a variable of that
+  // same block, because the variable dies no later than what it points at
+  {
+    mut inner = 2;
+    imm sameBlock = &mut inner;
+    *sameBlock = 3;
+    show("inner-borrow-inner-store", inner);
+  }
+
+  // A reference to a global carries no lifetime constraint, so it may be
+  // stored in a variable that outlives every block
+  {
+    outer = &frozen;
+  }
+  show("global-borrow-outlives-block", *outer);
+
+  show("ref-returned-from-fn", *refToGlobal());
+  imm back = passThrough(&mut a);
+  *back = 9;
+  show("ref-through-fn-and-back", a);
+}
+
+// -------- function references --------
+
+fn twice(n u32) u32 { n * 2u; }
+fn thrice(n u32) u32 { n * 3u; }
+
+// A parameter's reference type spells out the signature it accepts. It is the
+// last parameter because the return type of the signature would otherwise
+// swallow the comma.
+fn applyTo(n u32, f &fn(n u32) u32) u32 {
+  f(n);
+}
+
+fn fnrefs() {
+  // '&' on a function name borrows a reference that can be called
+  imm fr = &twice;
+  show("call-through-fnref", i64[fr(4u)]);
+
+  // The reference is a value: it passes to a function expecting that signature
+  show("fnref-as-argument", i64[applyTo(5u, &thrice)]);
+
+  // ... and a mutable variable holding one selects the function at runtime
+  mut chosen = &twice;
+  show("fnref-var-first", i64[chosen(6u)]);
+  chosen = &thrice;
+  show("fnref-var-second", i64[chosen(6u)]);
+
+  // A function with no name is written where the reference is taken
+  imm square = &fn(n u32) u32 {n * n;};
+  show("anonymous-fnref", i64[square(7u)]);
+  show("anonymous-fnref-as-argument", i64[applyTo(8u, &fn(n u32) u32 {n + 1u;})]);
+}
+
+// -------- comparison --------
+
+fn compares() {
+  mut a = 1;
+  mut b = 2;
+  imm first = &a;
+  imm alias = &a;
+  imm second = &b;
+
+  // '==' on references compares the values they refer to, as every other use
+  // of a reference reads through it. 'a' holds 1 and 'b' holds 2.
+  mut n = 0;
+  if first == alias { n = n + 1; }
+  if first != second { n = n + 2; }
+  if first == second { n = n + 4; }
+  if first != alias { n = n + 8; }
+  show("ref-equality-bits", n);
+
+  // The block above cannot tell value comparison from address comparison: 'a'
+  // and 'b' hold different numbers, so both readings answer the same. This one
+  // separates them. 'twinA' and 'twinB' are distinct variables holding the SAME
+  // number, so '==' reading through says the references are equal while
+  // identity would say they are not: 2 here, 1 by address. The equal values
+  // are the whole assertion -- make them differ and the case stops
+  // discriminating.
+  mut twinA = 5;
+  mut twinB = 5;
+  imm twin1 = &twinA;
+  imm twin2 = &twinB;
+  mut d = 0;
+  if twin1 != twin2 { d = d + 1; }
+  if twin1 == twin2 { d = d + 2; }
+  show("ref-equality-is-value-not-identity", d);
+
+  // '===' asks the other question: do the two references point to the same
+  // place? The same twins, whose equal values it ignores, and two borrows of
+  // one variable, which it answers yes for.
+  mut s = 0;
+  if first === alias { s = s + 1; }
+  if twin1 !== twin2 { s = s + 2; }
+  if twin1 === twin2 { s = s + 4; }
+  if first !== alias { s = s + 8; }
+  show("ref-identity-bits", s);
+
+  // Ordering reads through too. Two fields of one struct, so that their
+  // addresses have a defined order to disagree with.
+  mut p = Pair[1, 2];
+  imm low = &(p.x);
+  imm high = &(p.y);
+  mut m = 0;
+  if low < high { m = m + 1; }
+  if high > low { m = m + 2; }
+  if low <= high { m = m + 4; }
+  if low >= high { m = m + 8; }
+  show("ref-ordering-bits", m);
+
+  // And the same separation for ordering. 'rev.x' sits at the lower address but
+  // holds the LARGER number, so address order and value order disagree on every
+  // one of the four: by value this is 8, by address it would be the same 7 as
+  // above. Restoring an ascending pair would quietly cost the distinction.
+  mut rev = Pair[9, 4];
+  imm revlow = &(rev.x);
+  imm revhigh = &(rev.y);
+  mut r = 0;
+  if revlow < revhigh { r = r + 1; }
+  if revhigh > revlow { r = r + 2; }
+  if revlow <= revhigh { r = r + 4; }
+  if revlow >= revhigh { r = r + 8; }
+  show("ref-ordering-is-value-not-address", r);
+
+  // A struct's own '==', declared on the value: both references are read
+  // through. Two distinct coins of equal worth are equal, which identity would
+  // deny. Coin declares no '!=', so its '!=' is derived as 'not (a == b)', and
+  // through references too: the equal pair is not unequal (4 stays clear) while
+  // '!==' still says they are two places (8 is set). 11 in all; a '!=' that
+  // compared addresses would set 4 as well.
+  imm dime1 = Coin[10];
+  imm dime2 = Coin[10];
+  imm quarter = Coin[25];
+  mut c = 0;
+  if &dime1 == &dime2 { c = c + 1; }
+  if &dime1 != &quarter { c = c + 2; }
+  if &dime1 != &dime2 { c = c + 4; }
+  if &dime1 !== &dime2 { c = c + 8; }
+  show("ref-struct-value-equality-bits", c);
+
+  // ... and declared on references, which takes the operands as they are,
+  // with '!=' derived from it the same way
+  imm seven1 = Card[7];
+  imm seven2 = Card[7];
+  imm eight = Card[8];
+  mut k = 0;
+  if &seven1 == &seven2 { k = k + 1; }
+  if &seven1 != &eight { k = k + 2; }
+  if &seven1 != &seven2 { k = k + 4; }
+  show("ref-struct-ref-equality-bits", k);
+
+  // An enum's '==' is its tag, and it declares '!=' as well
+  imm hearts1 Suit = Hearts[];
+  imm hearts2 Suit = Hearts[];
+  imm spades Suit = Spades[];
+  mut e = 0;
+  if &hearts1 == &hearts2 { e = e + 1; }
+  if &hearts1 != &spades { e = e + 2; }
+  if &hearts1 == &spades { e = e + 4; }
+  show("ref-enum-equality-bits", e);
+
+  // A reference to a reference reads through both levels to the twins' equal
+  // numbers, while '===' asks about the outer references, which point at two
+  // different variables
+  imm outer1 = &twin1;
+  imm outer2 = &twin2;
+  mut o = 0;
+  if outer1 == outer2 { o = o + 1; }
+  if outer1 === outer2 { o = o + 2; }
+  show("ref-to-ref-equality-bits", o);
+
+  // A derived '!=' reads through both levels as well: the two dimes are equal,
+  // so they are not unequal, and the dime and the quarter are
+  imm dimeRef1 = &dime1;
+  imm dimeRef2 = &dime2;
+  imm quarterRef = &quarter;
+  mut dn = 0;
+  if &dimeRef1 != &dimeRef2 { dn = dn + 1; }
+  if &dimeRef1 != &quarterRef { dn = dn + 2; }
+  show("ref-to-ref-derived-ne-bits", dn);
+}
+
+fn main() i32 {
+  borrows();
+  borrowsFromParm();
+  chained();
+  opAssignsThroughRef();
+  parts();
+  permissions();
+  globalPermissions();
+  variableVersusReference();
+  lifetimes();
+  fnrefs();
+  compares();
+  0i32;
+}

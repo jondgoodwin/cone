@@ -1,0 +1,36 @@
+// Integer literals the lexer refuses: digits that do not fit in 64 bits.
+//
+// An integer literal accumulates into a 64-bit value and no Cone type is wider,
+// so a literal past that width has nowhere to land. The lexer refuses it once,
+// at the literal, after consuming every digit so the token still ends where it
+// should. The base, the underscores and the suffix do not change the rule. A
+// float is exempt: its digits are read again as a float, so a mantissa past 64
+// bits is a value, not an overflow.
+//
+// This is a parse-stage file, so nothing later than the parser runs. The clean
+// lines pin only that the lexer accepts the boundary; lexical_literals,
+// core_success and typemgmt_success run the boundary values through to output.
+
+mod lexical_reject_overflow;
+
+fn main() {
+  // Exactly 64 bits, in both bases, with and without a suffix
+  mut top u64 = 18446744073709551615;
+  mut topHex u64 = 0xFFFFFFFFFFFFFFFF;
+  mut topSuffix u64 = 18446744073709551615u64;
+  // One more is refused, in both bases
+  mut over u64 = 18446744073709551616;               //~ ErrorLitOverflow:18
+  mut overHex u64 = 0x10000000000000000;             //~ ErrorLitOverflow:21
+  // Sixty-five bits of ones, which would otherwise fold to the boundary value
+  mut overOnes u64 = 0x1FFFFFFFFFFFFFFFF;            //~ ErrorLitOverflow:22
+  // Far past the width, which would otherwise wrap to 200376420520689663
+  mut far u64 = 99999999999999999999999;             //~ ErrorLitOverflow:17
+  // Underscores and a suffix are no part of the rule, and each literal is reported once
+  mut spaced u64 = 18_446_744_073_709_551_616;       //~ ErrorLitOverflow:20
+  mut suffixed u64 = 18446744073709551616u64;        //~ ErrorLitOverflow:22
+  mut suffixedI i64 = 99999999999999999999999i64;    //~ ErrorLitOverflow:23
+  // A float's digits are not an integer's
+  mut wide f64 = 99999999999999999999999.0;
+  mut wideExp f64 = 1e30;
+  mut wideSuffix f64 = 99999999999999999999999d;
+}

@@ -1,0 +1,67 @@
+// The discriminant: the integer type an enum lays its tag values out in, and the
+// one field that may carry it.
+//
+// Type-check stage only. The width follows the largest tag VALUE rather than the
+// variant count, so a pinned value is what can overflow a declared type; an enum
+// that declared no type simply widens, which enum_success pins from the other
+// side: Wide's 0x100 lays its tag out in two bytes, and Pinned's 256 is told
+// apart from its first variant's 0 in a generic enum.
+
+mod enum_typecheck_tag;
+
+// A declared integer type fixes the width, which is the point of declaring it, so
+// a value too large for it is refused rather than silently widening the tag away
+// from the layout the author asked for. Reported where the type is written,
+// because that is the half of the disagreement a reader has to choose between.
+enum TooNarrow u8 {       //~ ErrorTagWidth:16 "does not fit in this enum's 1-byte integer type"
+  NarrowSmall = 1,
+  NarrowHuge = 0x10000;
+}
+
+// A generic enum is refused the same way, once an instance exists to be checked,
+// and once however many instances there are: the tag values and the declared type
+// are the template's, shared by every instance.
+enum GenNarrow[T] u8 {    //~ ErrorTagWidth:19 "does not fit in this enum's 1-byte integer type"
+  struct GenNarrowSmall {pub v T;}
+  struct GenNarrowHuge = 0x10000 {}
+}
+use GenNarrow;
+
+fn genNarrowTwice() {
+  imm a GenNarrow[i32] = GenNarrowHuge[i32][];
+  imm b GenNarrow[f32] = GenNarrowHuge[f32][];
+}
+
+// The tag is an integer, so a type that is not one cannot lay it out
+enum NotAnInteger f32 {   //~ ErrorInvType:19 "lays its tag values out in an integer type"
+  FloatOne, FloatTwo;
+}
+
+// An integer whose width the tag cannot be emitted at. 'Bool' is an unsigned
+// integer of one bit, so it satisfies the integer rule and fails the width one,
+// which is why the two are separate checks rather than one.
+enum OddWidth Bool {      //~ ErrorInvType:15 "must be 8, 16, 32 or 64 bits wide"
+  OddOne, OddTwo;
+}
+
+// An enum carries one discriminant, so a second 'tag'-typed field has no variant
+// number that could mean anything. Asked of the enum and not of its variants,
+// whose fields are copies of it: enum_parse_decl holds the other half, that only
+// an enum's body accepts a discriminant at all.
+enum TwoTags {
+  _ tag;
+  pub n i32;
+  _ tag;                  //~ ErrorInvType:3 "A closed type carries one discriminant"
+
+  struct TwoTagsOne { pub a i32; }
+  struct TwoTagsTwo { pub b i32; }
+}
+
+// The discriminant is the compiler's, not a member anyone names, so the field
+// that places it is anonymous
+enum NamedTag {
+  pub which tag;          //~ ErrorInvType:7 "The discriminant is anonymous: write '_ tag'"
+
+  struct NamedAlpha { pub a i32; }
+  struct NamedBeta { pub b i32; }
+}

@@ -93,10 +93,13 @@ the framework that calls it — and Congo does not read it.
 ## Imports, the registries, and the machine config
 
 Congo reads the **header** of every source file: its leading comments, its
-`mod` line, its `import` lines, and nothing after them. So a package's imports
-must come right after its `mod` line (or at the top of a file with none); an
-`import` further down is not seen by Congo, and the compiler reports it as an
-import the build description gives no line for.
+`mod` line, its `import` lines, and nothing after them. That is the language's
+rule too: every file a module is built from opens with its `mod` line (a file
+of a folder module other than its designated file has none), and its imports
+come right after it (or at the top of a file with none), ahead of everything
+else. An `import` further down is not seen by Congo; the compiler refuses it
+(`ErrorImportLate`), and reports it too as an import the build description
+gives no line for.
 
 An import names a module. Congo answers each one this way:
 

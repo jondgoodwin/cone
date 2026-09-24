@@ -1,0 +1,53 @@
+// Two types that inherit the same trait default.
+//
+// A trait's default method is cloned into every type that is-a the trait
+// without declaring its own, and the clone belongs to that type. cases.toml pins
+// two things about each clone: the symbol it is named by, and the type of the
+// receiver it takes. A run could not tell the two clones apart -- both would
+// compute the same thing -- so it compiles, and the calls are there only so the
+// optimizer keeps both.
+//
+// The receiver is what the two implementers must not share. Alpha and Beta are
+// deliberately different sizes, so a clone answering with the other's receiver
+// type would have it read a Beta's 'span' off the end of an Alpha.
+
+mod trait_inherited_defaults;
+
+trait Meter {
+  pub level i32;
+
+  pub fn reading(self &) i32 {level * 2;}
+  fn step(self &mut);
+}
+
+struct Alpha is Meter {
+  pub level i32;
+
+  fn step(self &mut) {self.level = self.level + 1;}
+}
+
+struct Beta is Meter {
+  pub level i32;
+  pub span i32;
+
+  fn step(self &mut) {self.level = self.level + 2;}
+}
+
+fn readingOf(m &<Meter) i32 {
+  m.reading();
+}
+
+// A plain reference to the trait, which reftraitvar.html says is how a
+// trait-based value is referred to, and reaches the fields the trait itself
+// declares. It is one function taking both implementers, so the type it is
+// compiled with has to be the trait's own layout and not either of theirs: the
+// trait's fields are a prefix of both, and nothing else is common to them.
+fn baseLevel(m &Meter) i32 {
+  m.level;
+}
+
+fn both() i32 {
+  mut a = Alpha[3];
+  mut b = Beta[5, 7];
+  readingOf(&a) + readingOf(&b) + baseLevel(&a) + baseLevel(&b);
+}

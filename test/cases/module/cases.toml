@@ -5,9 +5,10 @@
 #
 # This is the first group with support modules: a .cone file here that is
 # neither a listed scenario nor a listed support module is an error (R2.12), so
-# every file a scenario imports is named below. Support files carry
-# a 'module' prefix that an identifier can hold, because a module's name is also
-# its qualifier and 'module-importsub' is not spellable as one.
+# every file a scenario imports is named below. Support files carry a bare
+# 'module' prefix, 'modulesub', which keeps them apart from the scenarios'
+# 'module_' names; either is an identifier, as a module's name must be, since
+# it is also its qualifier.
 #
 # It is also the first group with folder scenarios and a folder support module.
 # A name here reaches either '<name>.cone' or '<name>/<name>.cone', which is the
@@ -15,10 +16,10 @@
 # The files inside one are not registered: the sweep is what finds them, and
 # listing them would restate the thing under test.
 #
-# Only module-success, module-package-path and folder scenarios run. Each of them
+# Only module_success, module_package_path and folder scenarios run. Each of them
 # is one module or one tree of them compiled into one object, which is what a
-# program is -- module-package-path's package included, since a module found on
-# the package search path is compiled in. (module-build-exe is a folder scenario
+# program is -- module_package_path's package included, since a module found on
+# the package search path is compiled in. (module_build_exe is a folder scenario
 # too, and runs because the one module it imports declares only C functions,
 # which conestd supplies.) Everything else about 'import'
 # compiles and stops there:
@@ -28,7 +29,7 @@
 # symbol was emitted at all -- is asserted as named symbols checks instead.
 #
 # The failure scenarios are split by pipeline stage, because analysis halts
-# between stages. module-import-missing is split off again inside the parse
+# between stages. module_import_missing is split off again inside the parse
 # stage because its failure aborts rather than accumulates.
 
 support = ["modulesub.cone",
@@ -39,11 +40,12 @@ support = ["modulesub.cone",
            "modulemacro.cone", "moduledeclared.cone",
            "modulefold.cone", "modulefoldlate.cone", "modfolder",
            "moduleextbase.cone", "modulepkgs", "modtree",
-           "moduleinline.cone", "moduleextern.cone"]
+           "moduleinline.cone", "moduleextern.cone",
+           "modulenomod.cone", "modulecomments.cone"]
 
 # -------- success --------
 
-[scenario.module-success]
+[scenario.module_success]
 category = "run"
 description = "'extern' and namespace qualification inside one module"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
@@ -52,7 +54,7 @@ tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 # refactor can show nothing moved: the C name exactly as written, no prefix, a
 # 'declare' that leads no COMDAT. Both forms of the declaration -- in a block
 # and on its own -- come out the same.
-[[scenario.module-success.check]]
+[[scenario.module_success.check]]
 name = "extern-declares-the-bare-c-name"
 target = "llvmir"
 contains = ["declare i32 @abs(i32)", "declare i64 @labs(i64)"]
@@ -62,7 +64,7 @@ excludes = ["$abs", "$labs", "@abs(i32) comdat", "@labs(i64) comdat"]
 # makes 'onemod.counted' reach the global a local hides; it does not put the
 # module in the owner chain a symbol is spelled from, so the root's declarations
 # stay bare and 'main' stays linkable. Nothing is spelled after 'onemod'.
-[[scenario.module-success.check]]
+[[scenario.module_success.check]]
 name = "a-root-mod-header-does-not-prefix-the-root-symbols"
 target = "symbols"
 contains = [
@@ -76,7 +78,7 @@ excludes = ["onemod."]
 # no symbol is spelled after a folded name -- not the wildcard's, not the renamed
 # ones. What makes that possible is the receiver: a global is one instance at a
 # fixed address, so a folded name needs no copy, no offset and no thunk.
-[[scenario.module-success.check]]
+[[scenario.module_success.check]]
 name = "a-global-fold-declares-no-symbol-of-its-own"
 target = "symbols"
 contains = [
@@ -88,9 +90,9 @@ excludes = ["rows", "cols", "backupRows", "backupCells"]
 
 # -------- the folder sweep --------
 #
-# A module is the files of a folder. module-folder-sweep is the folder scenario
+# A module is the files of a folder. module_folder_sweep is the folder scenario
 # compiled as the program's root, and it runs, because a folder module is one
-# module however many files it spans; module-folder-import reaches one through
+# module however many files it spans; module_folder_import reaches one through
 # 'import'. Between them they pin what the sweep brings in, what names it, and
 # that the files of an organisational subfolder are the enclosing module's.
 #
@@ -98,7 +100,7 @@ excludes = ["rows", "cols", "backupRows", "backupCells"]
 # file sweeps nothing -- is the whole rest of the corpus: every group directory
 # holds a dozen unrelated programs side by side, and each compiles alone.
 
-[scenario.module-folder-sweep]
+[scenario.module_folder_sweep]
 category = "run"
 description = "A module spanning its folder's files: a sibling and two depths of subfolder, compiled from the designated file alone"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
@@ -106,7 +108,7 @@ tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 # A folder module is one module, so its declarations are the root's and are
 # spelled bare -- whichever of its files each was written in. Nothing is spelled
 # after the folder, after a subfolder, or after a file.
-[[scenario.module-folder-sweep.check]]
+[[scenario.module_folder_sweep.check]]
 name = "a-folder-modules-files-declare-into-one-module"
 target = "symbols"
 contains = [
@@ -115,9 +117,9 @@ contains = [
   "define internal deepestOf comdat nodeduplicate",
   "global internal siblingTotal comdat nodeduplicate",
 ]
-excludes = ["module-folder-sweep.", "deep.", "sibling.", "nested."]
+excludes = ["module_folder_sweep.", "deep.", "sibling.", "nested."]
 
-[scenario.module-folder-import]
+[scenario.module_folder_import]
 category = "compile"
 description = "An import reaching a folder's module, whose sibling and subfolder files are its own"
 tags = ["parse", "nameres", "typecheck", "genllvm"]
@@ -125,7 +127,7 @@ tags = ["parse", "nameres", "typecheck", "genllvm"]
 # Every file the folder swept in declares into the one module, so every one of
 # them is spelled after the FOLDER's name. Neither the subfolder nor a file
 # appears in a symbol: neither is a namespace.
-[[scenario.module-folder-import.check]]
+[[scenario.module_folder_import.check]]
 name = "swept-files-declare-under-the-folders-module"
 target = "symbols"
 contains = [
@@ -135,7 +137,7 @@ contains = [
 ]
 excludes = ["parts.", "helper.", "scale."]
 
-[scenario.module-import-submodule]
+[scenario.module_import_submodule]
 category = "compile"
 description = "An import reaching a module with a tree beneath it: a folder submodule, a one-file submodule, and a one-file submodule of the folder one, all declared with it"
 tags = ["parse", "nameres", "typecheck", "genllvm"]
@@ -144,7 +146,7 @@ tags = ["parse", "nameres", "typecheck", "genllvm"]
 # its importer, so it is only declared, and so is every module of its tree, at
 # any depth: each function reached is a 'declare', spelled after its tree, and
 # none is defined here.
-[[scenario.module-import-submodule.check]]
+[[scenario.module_import_submodule.check]]
 name = "an-imported-modules-submodules-are-declared-with-it"
 target = "symbols"
 contains = [
@@ -158,15 +160,15 @@ excludes = ["define internal modtree."]
 # -------- the module tree --------
 #
 # A subfolder holding its own designated file is a SUBMODULE, so the folder tree
-# carries the module tree. module-submodule runs one, two levels deep, and pins
-# what the tree spells at the linker; module-submodule-reject holds what the tree
-# refuses at parse, and module-submodule-nameres what a path through it may not
+# carries the module tree. module_submodule runs one, two levels deep, and pins
+# what the tree spells at the linker; module_submodule_reject holds what the tree
+# refuses at parse, and module_submodule_nameres what a path through it may not
 # reach.
 #
 # All three are folder scenarios and could not be anything else: a submodule comes
 # from a folder, so the layout IS the case.
 
-[scenario.module-submodule]
+[scenario.module_submodule]
 category = "run"
 description = "A module tree two levels deep: a submodule of the root and a submodule of that, reached by path, beside the organisational folders that draw nothing"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
@@ -179,7 +181,7 @@ tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 # Neither an organisational folder nor a file is a namespace, at any level: what
 # detail/helpers.cone declares is spelled after geometry alone, exactly as a file
 # swept into the root is spelled bare.
-[[scenario.module-submodule.check]]
+[[scenario.module_submodule.check]]
 name = "a-submodules-declarations-are-spelled-after-its-parents"
 target = "symbols"
 contains = [
@@ -190,29 +192,31 @@ contains = [
   "define internal geometry.scaling.twice comdat nodeduplicate",
   "global internal geometry.unit comdat nodeduplicate",
 ]
-excludes = ["module-submodule.", "detail.", "helpers.", "shapes.", "geometry.detail"]
+excludes = ["module_submodule.", "detail.", "helpers.", "shapes.", "geometry.detail"]
 
-[scenario.module-submodule-reject]
+[scenario.module_submodule_reject]
 category = "reject"
-description = "What the module tree refuses: a designated file too deep to draw a module, an import naming the module's own submodule, and a submodule's name shared with a declaration or with its parent, with a module that declares nothing reported at its designated file's first line"
+description = "What the module tree refuses: a designated file too deep to draw a module, an import naming the module's own submodule, a submodule's designated file with no 'mod' line, and a submodule's name shared with a declaration or with its parent, with a name bound before a module's 'mod' line is parsed reported at its designated file's first line"
 tags = ["parse"]
-diagnostics = 9
+diagnostics = 10
 
-# A module named only by its folder has no 'mod' line, so its half of a
-# duplicate name is reported at line 1, column 1 of its designated file -- the
-# file that makes the folder a module. The root, bare/ and the subfolder named
-# like the root each declare nothing, and each carries that half as an
-# annotation on its first line; sub/ declares itself, and is reported at the
-# declaration.
+# A module named by its folder is positioned at line 1, column 1 of its
+# designated file -- the file that makes the folder a module -- until its 'mod'
+# line is parsed, which moves it to the line. So a duplicate found before then
+# is reported at the first line: the root against the subfolder named like it,
+# found when that subfolder is drawn, and bare/, whose file has no 'mod' line
+# and is refused for it. Each carries that half as an annotation on its first
+# line; sub/ is reported at its 'mod' line, since its collision is found when
+# the root's file is parsed, after sub/'s.
 
 # The refusal of a module folder that is not a direct child of its parent
 # module's folder has no line of its own: which folder draws a module is a fact
 # about the filesystem, not a position in a source.
-[[scenario.module-submodule-reject.unlocated]]
+[[scenario.module_submodule_reject.unlocated]]
 code = "ErrorModFolder"
 message = "direct child of its parent module's folder"
 
-[scenario.module-submodule-nameres]
+[scenario.module_submodule_nameres]
 category = "reject"
 description = "What a path through the tree may not reach: a submodule's private declaration, an unmarked submodule from outside its parent, and a sister nobody imported"
 tags = ["nameres"]
@@ -222,13 +226,13 @@ diagnostics = 3
 #
 # A file of a module's folder whose first statement is a 'mod' declaration is a
 # submodule of its own, in every respect the submodule a subfolder draws [Jon 23
-# Sep]. module-onefile runs one tree of them; module-onefile-grown is the same
+# Sep]. module_onefile runs one tree of them; module_onefile_grown is the same
 # tree with two of them grown into folders, and its symbols check lists exactly
-# the symbols module-onefile's does, which is what pins that growing a module
-# changes nothing for anyone who names it. module-onefile-reject holds what the
-# sweep refuses at parse, and module-onefile-nameres what a path may not reach.
+# the symbols module_onefile's does, which is what pins that growing a module
+# changes nothing for anyone who names it. module_onefile_reject holds what the
+# sweep refuses at parse, and module_onefile_nameres what a path may not reach.
 
-[scenario.module-onefile]
+[scenario.module_onefile]
 category = "run"
 description = "One-file submodules beside a swept file and a folder submodule: private and 'pub', reached by path, folded by 'use', imported by a sister, and importing a sister of their own"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
@@ -237,7 +241,7 @@ tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 # the parent's name, exactly as a folder submodule's are. A file with no 'mod'
 # is the root's own and spelled bare. No file is a namespace beyond the module it
 # is, so nothing is spelled after a file's name that is not also its module's.
-[[scenario.module-onefile.check]]
+[[scenario.module_onefile.check]]
 name = "a-one-file-modules-declarations-are-spelled-after-its-parents"
 target = "symbols"
 contains = [
@@ -248,16 +252,16 @@ contains = [
   "define internal parser.parse comdat nodeduplicate",
   "define internal parser.ast.depth comdat nodeduplicate",
 ]
-excludes = ["module-onefile.", "helper."]
+excludes = ["module_onefile.", "helper."]
 
-[scenario.module-onefile-grown]
+[scenario.module_onefile_grown]
 category = "run"
-description = "module-onefile with two of its one-file modules grown into folders, and the same output and symbols"
+description = "module_onefile with two of its one-file modules grown into folders, and the same output and symbols"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 
-# The same list as module-onefile's check, entry for entry: the folder shape of a
+# The same list as module_onefile's check, entry for entry: the folder shape of a
 # module spells what its one-file shape spelled.
-[[scenario.module-onefile-grown.check]]
+[[scenario.module_onefile_grown.check]]
 name = "a-grown-modules-declarations-are-spelled-as-its-one-files-were"
 target = "symbols"
 contains = [
@@ -268,9 +272,9 @@ contains = [
   "define internal parser.parse comdat nodeduplicate",
   "define internal parser.ast.depth comdat nodeduplicate",
 ]
-excludes = ["module-onefile-grown.", "helper."]
+excludes = ["module_onefile_grown.", "helper."]
 
-[scenario.module-onefile-reject]
+[scenario.module_onefile_reject]
 category = "reject"
 description = "What a one-file module refuses: a name that is not its file's, a second declaration, a module folder of the same name beside it, a place in an organisational folder, and an import of it by its parent"
 tags = ["parse"]
@@ -279,15 +283,15 @@ diagnostics = 5
 # Which files a module holds is a fact about the filesystem, so the refusal of a
 # file beside a same-named module folder, and of a one-file module in an
 # organisational folder, have no line of their own.
-[[scenario.module-onefile-reject.unlocated]]
+[[scenario.module_onefile_reject.unlocated]]
 code = "ErrorModFileFolder"
 message = "declares module 'clash', and so does module folder"
 
-[[scenario.module-onefile-reject.unlocated]]
+[[scenario.module_onefile_reject.unlocated]]
 code = "ErrorModFolder"
 message = "must sit directly in its parent module's folder"
 
-[scenario.module-onefile-nameres]
+[scenario.module_onefile_nameres]
 category = "reject"
 description = "What a path may not reach through a one-file module: its private declaration, and an unmarked one-file module from outside its parent"
 tags = ["nameres"]
@@ -296,15 +300,15 @@ diagnostics = 2
 # -------- import within the tree --------
 #
 # A module reaches a sister by importing her NAME, resolved against the registry
-# its parent is rather than against the filesystem. module-import-sister runs
+# its parent is rather than against the filesystem. module_import_sister runs
 # one, so an import across the tree links exactly as a call down into it does;
-# module-import-reject holds what a written path may not reach, and
-# module-import-nameres what an import does not put in reach.
+# module_import_reject holds what a written path may not reach, and
+# module_import_nameres what an import does not put in reach.
 #
 # All three are folder scenarios and could not be anything else: a sister comes
 # from a folder, so the layout IS the case.
 
-[scenario.module-import-sister]
+[scenario.module_import_sister]
 category = "run"
 description = "A submodule importing its sisters by name: one reached through her, one wildcard-folded, and one re-exported for the parent to walk through"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
@@ -313,7 +317,7 @@ tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 # object, so a sister's function is DEFINED here, spelled after her, exactly as a
 # submodule's is -- which is what an import between two loaded modules could not
 # do, since an imported module's bodies are not generated.
-[[scenario.module-import-sister.check]]
+[[scenario.module_import_sister.check]]
 name = "a-sister-s-declarations-are-defined-and-spelled-after-her"
 target = "symbols"
 contains = [
@@ -326,18 +330,18 @@ excludes = ["declare wheels.turn", "declare rims.size"]
 # An import binds names and declares nothing, and neither does a fold. Nothing is
 # spelled after the module that imported or folded a name: not the module binding
 # engine re-exported, not the name engine folded from rims.
-[[scenario.module-import-sister.check]]
+[[scenario.module_import_sister.check]]
 name = "an-import-declares-no-symbol-of-its-own"
 target = "symbols"
-excludes = ["engine.wheels", "engine.size", "engine.rims", "module-import-sister."]
+excludes = ["engine.wheels", "engine.size", "engine.rims", "module_import_sister."]
 
-[scenario.module-import-reject]
+[scenario.module_import_reject]
 category = "reject"
 description = "What a written path may not reach: a sister's file, a parent, and a parent's sister"
 tags = ["parse"]
 diagnostics = 3
 
-[scenario.module-import-nameres]
+[scenario.module_import_nameres]
 category = "reject"
 description = "What an import does not put in reach: a sister's private name, a name she has not got, and a sister of an ancestor"
 tags = ["nameres"]
@@ -352,13 +356,13 @@ diagnostics = 3
 # separate compilation lands, a module found on the search path is compiled into
 # the object that imports it, which is why those scenarios link.
 #
-# module-package-sister is the registry winning over the packages folder: a
+# module_package_sister is the registry winning over the packages folder: a
 # sister named stdio is what her sister's 'import stdio' reaches.
-# module-package-path is a '--path' folder winning over it: its run adds
+# module_package_path is a '--path' folder winning over it: its run adds
 # modulepkgs, a support folder holding a stdio of its own, and the import reaches
 # that one while core is still found in the packages folder.
 
-[scenario.module-package-sister]
+[scenario.module_package_sister]
 category = "run"
 description = "A submodule's 'import stdio' reaching her sister named stdio, not the stdio package"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
@@ -366,7 +370,7 @@ tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 # The sister is what the import bound, so her function is defined and spelled
 # after her. The package was never read: nothing of its IOStream or its print
 # global is declared.
-[[scenario.module-package-sister.check]]
+[[scenario.module_package_sister.check]]
 name = "the-registry-answers-before-the-packages-folder"
 target = "symbols"
 contains = [
@@ -375,18 +379,18 @@ contains = [
 ]
 excludes = ["IOStream", "stdio.print"]
 
-[scenario.module-package-path]
+[scenario.module_package_path]
 category = "run"
 description = "A '--path' folder searched before the packages folder: its stdio is the one 'import stdio' reaches"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 
-[[scenario.module-package-path.run]]
+[[scenario.module_package_path.run]]
 name = "search-path"
 options = ["--path=test/cases/module/modulepkgs"]
 
 # The '--path' package is found on the search path, so its body is generated
 # here, spelled after the package; the packages folder's stdio is not read.
-[[scenario.module-package-path.check]]
+[[scenario.module_package_path.check]]
 name = "a-path-folder-answers-before-the-packages-folder"
 target = "symbols"
 contains = ["define internal stdio.show comdat nodeduplicate"]
@@ -402,38 +406,38 @@ excludes = ["IOStream", "stdio.print"]
 # into a sister they all import. The import is still bound, in the fold passes,
 # so the child's body resolves and the loop is what is reported.
 #
-# module-import-parent is the refusal: a struct, a function and a global, one
+# module_import_parent is the refusal: a struct, a function and a global, one
 # re-exported, a written import beside a wildcard's arrival of the same
 # declaration, and two levels down a type and a module the level above binds by
-# its imports, each a name of that parent. module-import-parent-nameres holds what binding refuses beside the loop,
-# module-import-parent-parse the name imported twice, and
-# module-import-parent-file a file reached by a name the parent answers too.
+# its imports, each a name of that parent. module_import_parent_nameres holds what binding refuses beside the loop,
+# module_import_parent_parse the name imported twice, and
+# module_import_parent_file a file reached by a name the parent answers too.
 
-[scenario.module-import-parent]
+[scenario.module_import_parent]
 category = "reject"
 description = "A submodule importing its parent's public struct, function and global, and a grandchild importing a type and a module its parent binds by an import, each a loop through containment"
 tags = ["nameres"]
 diagnostics = 6
 
-[scenario.module-import-parent-nameres]
+[scenario.module_import_parent_nameres]
 category = "reject"
 description = "What an import of a parent's name refuses beside the loop it closes: a private name, a name the parent has not got, a name the submodule declares, a 'use' clause on a struct, and a name written twice"
 tags = ["nameres"]
 diagnostics = 11
 
-[scenario.module-import-parent-parse]
+[scenario.module_import_parent_parse]
 category = "reject"
 description = "A name of the parent imported twice"
 tags = ["parse"]
 diagnostics = 1
 
-[scenario.module-import-parent-file]
+[scenario.module_import_parent_file]
 category = "reject"
 description = "A submodule's bare name reached as a file that the parent's registry answers with something else"
 tags = ["nameres"]
 diagnostics = 1
 
-[[scenario.module-import-parent-file.run]]
+[[scenario.module_import_parent_file.run]]
 name = "search-path"
 options = ["--path=test/cases/module"]
 
@@ -445,14 +449,14 @@ options = ["--path=test/cases/module"]
 # unless the import says 'pub': 'pub import' reaches every binding the import
 # makes, the module's own name included, and 'pub use' only the folds.
 #
-# module-import-use runs the clause in a tree of four sisters, with a re-export
-# reached through a third module; module-import-use-nameres holds what a clause
-# does not put in reach and what it refuses to fold; module-import-use-parse
+# module_import_use runs the clause in a tree of four sisters, with a re-export
+# reached through a third module; module_import_use_nameres holds what a clause
+# does not put in reach and what it refuses to fold; module_import_use_parse
 # holds what is refused as it is parsed, and the rule for two imports of one
 # module: a second is ErrorDupImport, a differing one and an identical repeat
 # alike [Jon 23 Sep].
 
-[scenario.module-import-use]
+[scenario.module_import_use]
 category = "run"
 description = "An import's 'use' clause: a list with 'as', '* but', a block, 'pub use' re-exported through a wildcard import, and 'pub import'"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
@@ -460,7 +464,7 @@ tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 # A fold binds and declares nothing, whatever its spelling. No symbol is spelled
 # after the module that folded a name, nor after the local spelling 'as' gave it;
 # every call lowers to the declaring module's own symbol.
-[[scenario.module-import-use.check]]
+[[scenario.module_import_use.check]]
 name = "an-import-clause-declares-no-symbol-of-its-own"
 target = "symbols"
 contains = [
@@ -470,27 +474,27 @@ contains = [
 ]
 excludes = ["draw.area", "draw.edge", "gallery.ft", "gallery.units", "gallery.metres", "draw.metres", "edge comdat", "ft comdat"]
 
-[scenario.module-import-use-nameres]
+[scenario.module_import_use_nameres]
 category = "reject"
 description = "What an import's 'use' clause does not put in reach, and each name it refuses to fold or to leave out: absent, private, colliding, the module itself"
 tags = ["nameres"]
 diagnostics = 10
 
-[scenario.module-import-use-parse]
+[scenario.module_import_use_parse]
 category = "reject"
 description = "Two imports of one module, identical or differing, and the clause spellings refused as they are parsed"
 tags = ["parse"]
 diagnostics = 12
 
 # A module's default fold: the 'use' on its own 'mod' line names what a bare
-# import of it folds [Jon 23 Sep]. module-mod-default runs it in a tree of eight
+# import of it folds [Jon 23 Sep]. module_mod_default runs it in a tree of eight
 # sisters -- one type, two names, 'extends' beside it, an importer's own clause
 # replacing it, and 'pub import' carrying it one module further;
-# module-mod-default-nameres holds what the default may not name, and what a
-# replaced default leaves out of reach; module-mod-default-parse the spellings
+# module_mod_default_nameres holds what the default may not name, and what a
+# replaced default leaves out of reach; module_mod_default_parse the spellings
 # refused on the 'mod' line.
 
-[scenario.module-mod-default]
+[scenario.module_mod_default]
 category = "run"
 description = "A module's default fold: one type, two names, with 'extends', replaced by an importer's own clause, and re-exported by 'pub import' to a wildcard importer"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
@@ -498,7 +502,7 @@ tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 # A default fold binds names and declares nothing, as every fold does. Each call
 # lowers to the declaring module's own symbol, and nothing is spelled after the
 # importer that folded a name, nor after the module that re-exported one.
-[[scenario.module-mod-default.check]]
+[[scenario.module_mod_default.check]]
 name = "a-default-fold-declares-no-symbol-of-its-own"
 target = "symbols"
 contains = [
@@ -509,13 +513,13 @@ contains = [
 ]
 excludes = ["calc.BigInt", "calc.metres", "calc.area", "calc.volume", "relay.BigInt", "gallery.BigInt", "solids.area"]
 
-[scenario.module-mod-default-nameres]
+[scenario.module_mod_default_nameres]
 category = "reject"
 description = "What a module's default fold may not name -- a missing name, a private one, a 'but' of a missing one -- a default meeting a declaration, and a default an importer's clause replaced"
 tags = ["nameres"]
 diagnostics = 5
 
-[scenario.module-mod-default-parse]
+[scenario.module_mod_default_parse]
 category = "reject"
 description = "The default-fold spellings refused on a 'mod' line: 'as', 'pub use', 'use pub', and the clause before 'extends'"
 tags = ["parse"]
@@ -532,32 +536,32 @@ diagnostics = 4
 # the modules round it (pgmModuleOrder). The order is the one module 'init's
 # will run in.
 #
-# module-cycle is a loop back to the root file, which the import finds rather
-# than reading the file again. module-import-cycle is the loops the fold passes
+# module_cycle is a loop back to the root file, which the import finds rather
+# than reading the file again. module_import_cycle is the loops the fold passes
 # used to carry re-exports round -- two sisters, three round one ring, one an
 # 'extends' closes -- and pins that the loop is the one thing reported: the
 # loop is left whole, and the passes still carry each name round it.
-# module-import-cycle-nameres is what the passes do not make even so: a name
+# module_import_cycle_nameres is what the passes do not make even so: a name
 # missing for good, a 'but' and a listed name judged against the module once
 # complete, two different declarations a loop brings under one name, and one
 # declaration a loop makes the module write twice [Jon 23 Sep], each reported
 # once, where a single pass would have met them -- beside the same shape through
-# a wildcard, which is one binding. module-import-parent is a child importing
-# its parent's names, which is a loop through containment; module-extends-back
-# and module-extends-nameres hold the loops an 'extends' makes.
-[scenario.module-cycle]
+# a wildcard, which is one binding. module_import_parent is a child importing
+# its parent's names, which is a loop through containment; module_extends_back
+# and module_extends_nameres hold the loops an 'extends' makes.
+[scenario.module_cycle]
 category = "reject"
 description = "An import loop back to the root file: the import finds the root rather than re-parsing it, and the loop is refused naming the root"
 tags = ["parse", "nameres"]
 diagnostics = 1
 
-[scenario.module-import-cycle]
+[scenario.module_import_cycle]
 category = "reject"
 description = "Loops of imports refused at the edge that closes each -- two sisters, three round a ring, one an 'extends' closes -- with every re-export still carried round them, so nothing else is reported"
 tags = ["nameres"]
 diagnostics = 7
 
-[scenario.module-import-cycle-nameres]
+[scenario.module_import_cycle_nameres]
 category = "reject"
 description = "What the fold passes round a refused loop do not make: a name missing for good, a 'but' of a late name, a listed name that is private, two different declarations under one name, and one declaration listed twice with one listing arriving late, each reported once beside the loop"
 tags = ["nameres"]
@@ -574,12 +578,12 @@ diagnostics = 17
 # re-export needs a second module to be seen from, and a tree is the one shape
 # that has two modules and still links.
 
-[scenario.module-use-enum]
+[scenario.module_use_enum]
 category = "run"
 description = "An enum's variants folded 'pub use' and reached from a sister through a wildcard import and from the parent by a path, and a fold whose enum is named by a path"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 
-[scenario.module-use-enum-nameres]
+[scenario.module_use_enum_nameres]
 category = "reject"
 description = "What a fold of an enum's variants does not put in reach: a private fold by a path or through a wildcard import, and a fold colliding with a name an import brought"
 tags = ["nameres"]
@@ -595,15 +599,15 @@ diagnostics = 3
 # not folded this way: its import's own clause does that, one spelling per
 # situation, and 'use' on it is ErrorUseImported.
 #
-# module-use-submodule runs every spelling of the clause -- the whole of it, 'but',
+# module_use_submodule runs every spelling of the clause -- the whole of it, 'but',
 # a block with 'as', a path one level deeper, 'pub use' re-exporting a
 # submodule's names to the parent by path and to a sister by import -- beside an
-# enum's 'use', and pins that a fold declares nothing. module-use-submodule-nameres
+# enum's 'use', and pins that a fold declares nothing. module_use_submodule_nameres
 # holds what it refuses: a private name listed, a second 'use' of one submodule,
 # a 'but' naming nothing or a private name, a 'use' of an imported module by its name and by a path
 # through it, a 'use' of the module itself, and a private fold read from outside.
 
-[scenario.module-use-submodule]
+[scenario.module_use_submodule]
 category = "run"
 description = "A parent folding its own submodules' names with a standalone 'use': whole, 'but', a block with 'as', a path one level deeper, and 'pub use' seen by path and by a sister's import, beside an enum's 'use'; a global whose type that 'use' brings, folded in the second fold pass and taken by a sister's wildcard"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
@@ -611,7 +615,7 @@ tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 # A fold binds names and declares nothing. Every call lowers to the submodule's
 # own symbol, spelled after the submodule, and nothing is spelled after the local
 # spelling 'as' gave a name, nor after the module that re-exported one.
-[[scenario.module-use-submodule.check]]
+[[scenario.module_use_submodule.check]]
 name = "a-submodule-fold-declares-no-symbol-of-its-own"
 target = "symbols"
 contains = [
@@ -620,9 +624,9 @@ contains = [
   "define internal geometry.deep.depth comdat nodeduplicate",
   "define internal facade.inner.innerValue comdat nodeduplicate",
 ]
-excludes = ["toInches", "facade.innerValue", "reader.innerValue", "module-use-submodule."]
+excludes = ["toInches", "facade.innerValue", "reader.innerValue", "module_use_submodule."]
 
-[scenario.module-use-submodule-nameres]
+[scenario.module_use_submodule_nameres]
 category = "reject"
 description = "What a standalone 'use' of a module refuses: a private name listed, a second 'use' of one submodule, a 'but' naming nothing or a private name, an imported module by name and by path, the module itself, and a private fold read by path and by import"
 tags = ["nameres"]
@@ -635,11 +639,11 @@ diagnostics = 10
 # from. The fold passes run dependency-first, so one module's folds run from
 # inside another's -- a parent's 'use' of its child, an import of a sister -- and
 # a type is resolved by demand from inside another module's resolution. Each is
-# resolved in its own module's names. module-fold-scope-nameres names, from a
+# resolved in its own module's names. module_fold_scope_nameres names, from a
 # child and from a sister, what only the module whose pass reached them declares:
 # an enum's 'use', a global's fold, and a trait's field resolved by demand.
 
-[scenario.module-fold-scope-nameres]
+[scenario.module_fold_scope_nameres]
 category = "reject"
 description = "A fold run from inside another module's fold pass, and a type resolved by demand from another module, do not see that module's names: an enum's 'use', a global's fold type and value, and a trait's field, from a child the parent folds and a sister another sister imports"
 tags = ["nameres"]
@@ -657,15 +661,15 @@ diagnostics = 7
 # a module, extending and inheriting are one thing, because a module's state is
 # static and one instance of it is all there is.
 #
-# module-extends runs one, in a tree -- a chain of two, reached from inside,
+# module_extends runs one, in a tree -- a chain of two, reached from inside,
 # private names and a private fold included, by path from the parent, and
 # through two importers, with the extending module importing for itself a module
-# the base imports -- and pins that the aliases declare nothing. module-extends-import extends a module an import reached by
-# its file, which compiles and cannot link. module-extends-nameres holds what
-# 'extends' refuses once names are bound, module-extends-parse what it refuses as
+# the base imports -- and pins that the aliases declare nothing. module_extends_import extends a module an import reached by
+# its file, which compiles and cannot link. module_extends_nameres holds what
+# 'extends' refuses once names are bound, module_extends_parse what it refuses as
 # it is written.
 
-[scenario.module-extends]
+[scenario.module_extends]
 category = "run"
 description = "A module extending a sister that extends another: the base's function, type and global reached through the extending module from inside, by path, and through an importer's path and wildcard, both bases' private names and the base's private fold reached from inside, and a module the base imports named after the extending module imports it too"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
@@ -673,7 +677,7 @@ tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 # 'extends' binds and declares nothing. Every name reached through solids lowers
 # to the declaring module's own symbol, and nothing is spelled after solids but
 # what solids declares itself.
-[[scenario.module-extends.check]]
+[[scenario.module_extends.check]]
 name = "extends-declares-no-symbol-of-its-own"
 target = "symbols"
 contains = [
@@ -693,21 +697,21 @@ excludes = ["solids.area", "solids.unit", "solids.count", "solids.Point", "shape
 # loop, and so where it is reported, follows the order the program holds the
 # two in; and in neither is anything else reported, since the loop is left
 # whole and the fold passes carry the names round it.
-[scenario.module-extends-back]
+[scenario.module_extends_back]
 category = "reject"
 description = "A module importing a module that extends it, in both orders: the loop refused at the edge that closes it, an 'extends' or an import, and nothing else reported"
 tags = ["nameres"]
 diagnostics = 2
 
-# A MODULE TRAIT and the modules conforming to it. module-trait runs every way a
+# A MODULE TRAIT and the modules conforming to it. module_trait runs every way a
 # default is taken or not: taken whole, overridden by a function and by a global,
 # a default global as per-module storage, a default's body reaching a private
 # helper of the trait's module, a module extending a conforming one and conforming
 # too, with every 'mod' line clause in the ruled order, and a default fold of a
-# taken default. module-trait-parse pins what the declaration and the 'is' clause
-# refuse as written, module-trait-nameres what conformance refuses once names are
-# bound, and module-trait-typecheck what differs in shape once they have types.
-[scenario.module-trait]
+# taken default. module_trait_parse pins what the declaration and the 'is' clause
+# refuse as written, module_trait_nameres what conformance refuses once names are
+# bound, and module_trait_typecheck what differs in shape once they have types.
+[scenario.module_trait]
 category = "run"
 description = "A module trait's defaults taken, overridden by a function and a global, per-module default global storage, a default reaching the trait module's private helper, 'mod layered extends plain is Runner use run', and a default fold of a taken default"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
@@ -716,7 +720,7 @@ tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 # after that module: plain's and custom's copies are each their own symbol. The
 # trait's members are generated nowhere, and layered and caller, which reach
 # plain's copies through 'extends' and a fold, declare none.
-[[scenario.module-trait.check]]
+[[scenario.module_trait.check]]
 name = "a-taken-default-is-the-conforming-modules-own"
 target = "symbols"
 contains = [
@@ -733,19 +737,19 @@ excludes = ["hosts.run", "hosts.tick", "hosts.offset", "hosts.calls", "hosts.lab
             "hosts.step", "hosts.scale", "Runner", "layered.run", "layered.tick",
             "layered.calls", "layered.offset", "caller.run"]
 
-[scenario.module-trait-parse]
+[scenario.module_trait_parse]
 category = "reject"
 description = "What a module trait's body refuses -- a type, an import, a generic fn, an overload name, a name twice -- a trait with no name, and the 'is' clause by a path, as a list, before 'extends', after 'use', and naming nothing"
 tags = ["parse"]
 diagnostics = 11
 
-[scenario.module-trait-nameres]
+[scenario.module_trait_nameres]
 category = "reject"
 description = "What conformance refuses once names are bound: requirements declared nowhere, 'is' naming a struct's trait, a module, a function or nothing, a path through a module trait, and 'extends' naming one"
 tags = ["nameres"]
 diagnostics = 8
 
-[scenario.module-trait-typecheck]
+[scenario.module_trait_typecheck]
 category = "reject"
 description = "What a conforming module declares under a member's name without the member's shape: another signature, a global for a function and the reverse, another type for a required and an overriding global, and another permission"
 tags = ["typecheck"]
@@ -754,12 +758,12 @@ diagnostics = 6
 # A MODULE'S 'init' AND 'final' [Jon 23 Sep]: each module declares its own, and
 # the program's stitched init and final run them all -- every 'init' in the
 # module order, dependencies first and the root last, and every finalizer in
-# exactly the reverse. module-init runs a chain of modules, printing from each;
-# module-init-link runs a package compiled on its own, whose 'init' and
+# exactly the reverse. module_init runs a chain of modules, printing from each;
+# module_init_link runs a package compiled on its own, whose 'init' and
 # finalizer the program's stitched pair reach through its include file;
-# module-init-reject pins what a module's 'init' refuses about its globals, and
+# module_init_reject pins what a module's 'init' refuses about its globals, and
 # what 'init' and 'final' must be.
-[scenario.module-init]
+[scenario.module_init]
 category = "run"
 description = "Every module's 'init' in the module order and every finalizer in the reverse, through 'initAll()' and 'finalAll()': an 'imm' global assigned by 'init', one module's 'init' reading another's global, a module with only 'final', and a module's 'drop' finalizing its globals after its 'final'"
 tags = ["typecheck", "genllvm", "runtime"]
@@ -767,7 +771,7 @@ tags = ["typecheck", "genllvm", "runtime"]
 # The stitched pair is the program's own. A module's finalizer is the 'drop' it
 # is given where a global needs finalizing -- base's, with no 'final' of base's
 # own, and middle's -- and its own 'final' otherwise: top has no 'drop'.
-[[scenario.module-init.check]]
+[[scenario.module_init.check]]
 name = "the-stitched-pair-and-each-modules-finalizer"
 target = "symbols"
 contains = [
@@ -781,7 +785,7 @@ contains = [
 ]
 excludes = ["top.drop", "top.init", "base.final", "constant internal base.mark"]
 
-[scenario.module-init-link]
+[scenario.module_init_link]
 category = "run"
 description = "A package compiled on its own, whose 'init' and finalizer the program's stitched init and final call through its include file, linked and run"
 tags = ["genllvm", "runtime"]
@@ -789,7 +793,7 @@ link = ["package/lib.conebuild"]
 
 # lib's 'init', 'final' and 'drop' are private, and a library compile exports
 # them: the program's stitched init and final call them from another object.
-[[scenario.module-init-link.check]]
+[[scenario.module_init_link.check]]
 name = "the-library-exports-its-lifecycle"
 target = "symbols"
 object = "lib"
@@ -803,7 +807,7 @@ contains = [
 # does from lib's source -- a 'drop', since a global it declares finalizes --
 # and declares what its stitched pair calls. lib's 'final' is called only from
 # lib's 'drop', so the program never names it.
-[[scenario.module-init-link.check]]
+[[scenario.module_init_link.check]]
 name = "the-program-calls-lib-init-and-drop"
 target = "symbols"
 contains = [
@@ -814,22 +818,22 @@ contains = [
 ]
 excludes = ["declare lib.final", "define lib.init", "define lib.drop"]
 
-[scenario.module-init-reject]
+[scenario.module_init_reject]
 category = "reject"
 description = "A global without a value that 'init' does not assign, reads one before assigning it, or assigns an 'imm' one twice; one assigned elsewhere; a module with no 'init'; and an 'init' or 'final' not declared as the program calls it"
 tags = ["typecheck"]
 diagnostics = 11
 
-# GENERIC MODULES, treated as generic types are [Jon 23 Sep]. module-generic
+# GENERIC MODULES, treated as generic types are [Jon 23 Sep]. module_generic
 # runs two instances of one generic module with separate globals, one instance
 # named from two modules, and each instance's 'init' and 'final' in the module
-# order; module-generic-link compiles the generic in a package of its own and
+# order; module_generic_link compiles the generic in a package of its own and
 # the same instance in two objects, merged at link. The rejects: what 'mod
 # stack[T]' refuses on its line (-parse), a generic module named without type
 # arguments or holding what an instance is not built for (-nameres), bad type
 # arguments and an instance's missing or private member (-typecheck), and a
 # program whose root is generic (-root).
-[scenario.module-generic]
+[scenario.module_generic]
 category = "run"
 description = "Two instances of a generic module with their own globals, a T among them; one instance named from the root and a sister; a type of the module holding a T through a type alias of T; its own name in its body, bare and with its type argument; a module trait's default taken by each instance; each instance's 'init' after its generic and after the module its type argument comes from, and 'final' in the reverse"
 tags = ["nameres", "typecheck", "genllvm", "runtime"]
@@ -837,7 +841,7 @@ tags = ["nameres", "typecheck", "genllvm", "runtime"]
 # An instance's symbols carry its type arguments on the module, as a generic
 # type instance's do: 'stack[i64].push' is '_CNvIC5stackxE4push'. A lone
 # compile's instances are internal, as every definition of a program is
-[[scenario.module-generic.check]]
+[[scenario.module_generic.check]]
 name = "an-instance-is-spelled-with-its-type-arguments"
 target = "symbols"
 contains = [
@@ -857,7 +861,7 @@ excludes = ["stack.push", "stack.count", "tally.see"]
 # defined in q's object and in the program's, shared, and the linker keeps one
 # copy, so q's code and the program's add to one total. A package's include
 # file shows its root module alone, which is why the generic here is a root.
-[scenario.module-generic-link]
+[scenario.module_generic_link]
 category = "run"
 description = "A generic module in a package of its own, instantiated at i64 in a package compiled alone and in the program, whose copies of the instance -- functions and globals -- merge at link; and an instance the program alone uses"
 tags = ["genllvm", "runtime"]
@@ -865,7 +869,7 @@ link = ["g/g.conebuild", "q/q.conebuild"]
 
 # q's object defines g[i64] -- its functions, its 'init' and its globals --
 # shared, as the program's object does
-[[scenario.module-generic-link.check]]
+[[scenario.module_generic_link.check]]
 name = "q-defines-the-instance-it-uses-shared"
 target = "symbols"
 object = "q"
@@ -879,7 +883,7 @@ excludes = ["g[f64]"]
 
 # The program defines each instance it uses from the body g's include file
 # carries, and declares what q's object defines
-[[scenario.module-generic-link.check]]
+[[scenario.module_generic_link.check]]
 name = "the-program-defines-each-instance-it-uses-shared"
 target = "symbols"
 contains = [
@@ -891,31 +895,31 @@ contains = [
 ]
 
 # g's own object has nothing to define: no instance of it is named there
-[[scenario.module-generic-link.check]]
+[[scenario.module_generic_link.check]]
 name = "the-generic-package-defines-nothing"
 target = "symbols"
 object = "g"
 excludes = ["g[", "g.add", "g.total"]
 
-[scenario.module-generic-parse]
+[scenario.module_generic_parse]
 category = "reject"
 description = "A generic module's 'mod' line with an empty parameter list, and one C-named"
 tags = ["parse"]
 diagnostics = 2
 
-[scenario.module-generic-nameres]
+[scenario.module_generic_nameres]
 category = "reject"
 description = "A generic module named without type arguments -- a path through it, a standalone 'use', an import's 'use' clause, 'extends', its own default fold -- and one holding a generic function, a trait or a submodule"
 tags = ["nameres"]
 diagnostics = 8
 
-[scenario.module-generic-typecheck]
+[scenario.module_generic_typecheck]
 category = "reject"
 description = "An instance of a generic module named with a value for a type argument, the wrong number of arguments, a member it lacks, a private function and a private global from outside it, and an argument its function does not take"
 tags = ["typecheck"]
 diagnostics = 6
 
-[scenario.module-generic-root]
+[scenario.module_generic_root]
 category = "reject"
 description = "A program whose root module is declared generic"
 tags = ["nameres"]
@@ -923,32 +927,32 @@ diagnostics = 1
 
 # A module or a module trait named where a type must be. Each used to reach
 # generation unrefused and crash the compiler there.
-[scenario.module-not-a-type-typecheck]
+[scenario.module_not_a_type_typecheck]
 category = "reject"
 description = "A module's and a module trait's name as a field's, a parameter's, a referent's, a return, a local's, a cast's and a generic argument's type"
 tags = ["typecheck"]
 diagnostics = 8
 
-[scenario.module-extends-import]
+[scenario.module_extends_import]
 category = "compile"
 description = "A module extending a module it imports by its file, reaching the base's function and global bare"
 tags = ["parse", "nameres", "typecheck", "genllvm"]
 
 # The base's names are the base's declarations, declared for the linker as any
 # imported module's are; nothing is spelled after the extending module
-[[scenario.module-extends-import.check]]
+[[scenario.module_extends_import.check]]
 name = "an-extended-imported-module-is-declared-not-copied"
 target = "symbols"
 contains = ["declare moduleextbase.twice", "external global moduleextbase.total"]
-excludes = ["app."]
+excludes = ["module_extends_import."]
 
-[scenario.module-extends-nameres]
+[scenario.module_extends_nameres]
 category = "reject"
 description = "What 'extends' refuses once names are bound: a redeclared public, private or folded name, a module the base imports named without importing it, the base's private name reached through an importer by path, a listed clause and a wildcard, a trait, a function, itself, a loop of two 'extends', its own submodule, its parent, and a module out of reach"
 tags = ["nameres"]
 diagnostics = 14
 
-[scenario.module-extends-parse]
+[scenario.module_extends_parse]
 category = "reject"
 description = "What a module's 'extends' refuses as it is parsed: two modules, a path, and no name"
 tags = ["parse"]
@@ -968,42 +972,42 @@ diagnostics = 3
 # [Jon 23 Sep]. One side unwritten is enough, so a listed name meeting a
 # wildcard's arrival of the same declaration is one binding too. Where one route
 # is public and the other private, the binding is public, whichever was folded
-# first. module-extends-back is the same rule met through 'extends'.
+# first. module_extends_back is the same rule met through 'extends'.
 #
-# module-fold-diamond runs the diamond, a listed name beside a wildcard in both
+# module_fold_diamond runs the diamond, a listed name beside a wildcard in both
 # orders, a written enum 'use' beside the core import's variants, and the public
-# route winning in both orders. module-fold-written-nameres holds what is
-# written twice; module-fold-diamond-nameres holds what collides however it was
+# route winning in both orders. module_fold_written_nameres holds what is
+# written twice; module_fold_diamond_nameres holds what collides however it was
 # reached: two different declarations under one name, and one member folded
 # through two globals.
 
-[scenario.module-fold-diamond]
+[scenario.module_fold_diamond]
 category = "run"
 description = "One declaration reaching a module through two re-exporting wildcard imports, a listed name beside a wildcard in both orders, 'use Option;' beside the core import's variants, and a private and a public route to one name in both orders"
 tags = ["nameres", "typecheck", "genllvm", "runtime"]
 
-[scenario.module-fold-written-nameres]
+[scenario.module_fold_written_nameres]
 category = "reject"
 description = "A name the module writes twice for the same declaration: listed twice in a clause, listed through two imports, listed again after a wildcard and a listing, two identical enum 'use's, a module both imported and listed, and a global's clause listing a member twice"
 tags = ["nameres"]
 diagnostics = 7
 
-[scenario.module-fold-diamond-nameres]
+[scenario.module_fold_diamond_nameres]
 category = "reject"
 description = "What still collides: two different declarations under one name through a diamond's two sides, and one member folded through two globals"
 tags = ["nameres"]
 diagnostics = 2
 
-[scenario.module-declared]
+[scenario.module_declared]
 category = "compile"
-description = "A module named by its 'mod' declaration rather than by its filename, beside one still named by its file"
+description = "A module named by its 'mod' declaration rather than by its filename, beside one whose 'mod' line restates its file's name"
 tags = ["parse", "nameres", "typecheck", "genllvm"]
 
 # The declared name is the module's identity at every point it is used: the
 # importer binds it, a path is written with it, and the owner chain a symbol is
 # spelled from carries it. The filename it replaced is nowhere -- not as a symbol
 # prefix, and not as a name this file could have qualified with.
-[[scenario.module-declared.check]]
+[[scenario.module_declared.check]]
 name = "a-declared-module-name-replaces-its-filename"
 target = "symbols"
 contains = [
@@ -1013,25 +1017,24 @@ contains = [
 ]
 excludes = ["moduledeclared"]
 
-# The transitional half: a module that declares none keeps the name its filename
-# gave it, so both kinds of neighbour are reached the same way. This goes when the
-# folder walk replaces filename naming altogether.
-[[scenario.module-declared.check]]
-name = "a-module-with-no-declaration-keeps-its-filename"
+# The other half: a 'mod' line restating the filename names the module after
+# it, so both kinds of neighbour are reached the same way.
+[[scenario.module_declared.check]]
+name = "a-mod-line-restating-the-filename-keeps-it"
 target = "symbols"
 contains = ["declare modulesub.plain"]
 
-[scenario.module-imports]
+[scenario.module_imports]
 category = "compile"
 description = "A wildcard import folding an overload name, and what the importer declares for it"
 tags = ["parse", "nameres", "typecheck", "genllvm"]
 
 # Every candidate of the folded overload name is declared in the importer, and
 # every one is public: a private candidate may not join a public name
-# (core-parse-overload-private), so the fold never reaches a declaration the
+# (core_parse_overload_private), so the fold never reaches a declaration the
 # importer may not see. A declaration is external, as an LLVM declaration can
 # be nothing else.
-[[scenario.module-imports.check]]
+[[scenario.module_imports.check]]
 name = "imported-candidates-declared"
 target = "symbols"
 contains = [
@@ -1046,15 +1049,15 @@ contains = [
 # a private function nothing public reaches leaves no symbol either. A
 # declaration's line ends at its name, so the newline is what stops
 # 'modulesub.scale' from matching 'modulesub.scaleInt'.
-[[scenario.module-imports.check]]
+[[scenario.module_imports.check]]
 name = "no-symbol-for-imported-overload-name"
 target = "symbols"
 excludes = ["modulesub.scale\n", "modulesub.hidden", "hiddenOne", "hiddenScaleFloat"]
 
-# The other half of the COMDAT rule core-overload states: only a definition may
+# The other half of the COMDAT rule core_overload states: only a definition may
 # lead one. An imported module's functions have bodies in the IR, but this
 # object file merely declares them, so they get none.
-[[scenario.module-imports.check]]
+[[scenario.module_imports.check]]
 name = "imported-declarations-carry-no-comdat"
 target = "symbols"
 excludes = [
@@ -1063,7 +1066,7 @@ excludes = [
   "modulesub.plain comdat",
 ]
 
-[scenario.module-imports-macro]
+[scenario.module_imports_macro]
 category = "compile"
 description = "A wildcard import of a module declaring a macro and an anonymous function, each of which once broke the importer"
 tags = ["parse", "nameres", "typecheck", "genllvm"]
@@ -1074,7 +1077,7 @@ tags = ["parse", "nameres", "typecheck", "genllvm"]
 # The folded function is declared in the importer like any imported function.
 # The macro is expanded into its use and leaves no symbol, so nothing is
 # declared under its name.
-[[scenario.module-imports-macro.check]]
+[[scenario.module_imports_macro.check]]
 name = "folded-function-declared-and-macro-leaves-no-symbol"
 target = "symbols"
 contains = ["declare modulemacro.bump"]
@@ -1085,7 +1088,7 @@ excludes = ["modulemacro.four"]
 # for once segfaulted here. It is declared like any other imported function; the
 # anonymous function it contains belongs to the module that defines it, so no
 # 'anon' is declared in the importer.
-[[scenario.module-imports-macro.check]]
+[[scenario.module_imports_macro.check]]
 name = "importing-an-anonymous-function-declares-only-its-owner"
 target = "symbols"
 contains = ["declare modulemacro.useAnon"]
@@ -1095,12 +1098,12 @@ excludes = ["declare anon"]
 # carried the macro across and the use expanded it. Pre-optimization IR,
 # because the optimizer removes the uncalled internal function; the argument
 # list alone, because a check may not spell a symbol's encoded bytes.
-[[scenario.module-imports-macro.check]]
+[[scenario.module_imports_macro.check]]
 name = "folded-macro-expands-into-its-use"
 target = "preir"
 contains = ["(i64 4)"]
 
-[scenario.module-qualified]
+[scenario.module_qualified]
 category = "compile"
 description = "An import without a 'use' clause, whose members are reached by qualifying them"
 tags = ["parse", "nameres", "typecheck", "genllvm"]
@@ -1112,7 +1115,7 @@ tags = ["parse", "nameres", "typecheck", "genllvm"]
 # qualified type name lowers to the type itself: the LLVM type is named after
 # the struct alone, and the root fn that takes one is declared over it. A
 # qualifier is a way of finding a declaration, never part of what it lowers to.
-[[scenario.module-qualified.check]]
+[[scenario.module_qualified.check]]
 name = "qualified-global-lowers-to-the-declaration"
 target = "symbols"
 contains = [
@@ -1120,19 +1123,19 @@ contains = [
   "external constant modulesyms.fixed",
 ]
 
-[[scenario.module-qualified.check]]
+[[scenario.module_qualified.check]]
 name = "qualified-type-name-is-the-type"
 target = "preir"
 contains = ["%Gadget = type", "@gadgetOf(%Gadget"]
 excludes = ["modulesyms_Gadget", '"modulesyms.Gadget"']
 
-[[scenario.module-qualified.check]]
+[[scenario.module_qualified.check]]
 name = "qualified-call-lowers-to-namespaced-symbol"
 target = "symbols"
 contains = ["declare modulesub.plain", "declare modulesub.scaleInt"]
 excludes = ["modulesub.scale\n"]
 
-[scenario.module-qualified-nested]
+[scenario.module_qualified_nested]
 category = "compile"
 description = "A two-hop path, 'mod.Type.name', reaching a type's static function"
 tags = ["parse", "nameres", "typecheck", "genllvm"]
@@ -1140,7 +1143,7 @@ tags = ["parse", "nameres", "typecheck", "genllvm"]
 # The call resolves through module then type to the static function, which the
 # importer declares under both. This is the collapse feeding itself: the inner
 # hop has to leave a resolved type name for the outer hop to find.
-[[scenario.module-qualified-nested.check]]
+[[scenario.module_qualified_nested.check]]
 name = "two-qualifier-call-lowers-to-the-static-function"
 target = "symbols"
 contains = ["declare modulesyms.Gadget.make"]
@@ -1157,10 +1160,10 @@ contains = ["declare modulesyms.Gadget.make"]
 # What the trio used to pin was a load-order defect: one name, three answers,
 # decided by whether the asking module was loaded before or after the folding
 # one. Every module's folds now run ahead of any module's body, dependency
-# first, so module-transit reaches the re-exported name from all three positions
-# and module-nameres-transit and -late are refused from either side.
+# first, so module_transit reaches the re-exported name from all three positions
+# and module_nameres_transit and -late are refused from either side.
 
-[scenario.module-transit]
+[scenario.module_transit]
 category = "compile"
 description = "A re-exported fold reached through its module's qualifier from before it, after it, and from the root, which loads first"
 tags = ["parse", "nameres", "typecheck", "genllvm"]
@@ -1168,7 +1171,7 @@ tags = ["parse", "nameres", "typecheck", "genllvm"]
 # Every reach lowers to the symbol of the module that DECLARES the name: a fold
 # binds, it declares nothing, so nothing is spelled after moduletransit for a
 # name it folded, and nothing after the modules that reached it through her.
-[[scenario.module-transit.check]]
+[[scenario.module_transit.check]]
 name = "transit-name-declares-under-its-declaring-module"
 target = "symbols"
 contains = [
@@ -1187,7 +1190,7 @@ excludes = ["moduletransit.plain", "moduletransit.scale\n", "modulelate.plain", 
 # imported private declaration, extern declarations inside an imported module,
 # and two modules whose names would once have joined into one symbol.
 
-[scenario.module-extern-system]
+[scenario.module_extern_system]
 category = "compile"
 description = "An 'extern' fn with '@c(system)' and the imported, stdcall symbol it lowers to"
 tags = ["parse", "genllvm"]
@@ -1195,13 +1198,13 @@ tags = ["parse", "genllvm"]
 # '@c(system)' gives the C name and the x86 stdcall convention; on an 'extern'
 # declaration the DLL import storage class comes with it. The declaration takes
 # no prefix and no COMDAT.
-[[scenario.module-extern-system.check]]
+[[scenario.module_extern_system.check]]
 name = "extern-system-declares-a-dllimport-stdcall-symbol"
 target = "llvmir"
 contains = ["declare dllimport x86_stdcallcc i32 @GetTickCount()"]
 excludes = ["$GetTickCount", "@GetTickCount() comdat"]
 
-[scenario.module-symbols]
+[scenario.module_symbols]
 category = "compile"
 description = "What an importer emits for an imported global, private declarations, extern and struct methods"
 tags = ["parse", "nameres", "typecheck", "genllvm"]
@@ -1209,7 +1212,7 @@ tags = ["parse", "nameres", "typecheck", "genllvm"]
 # An imported global is an 'external' declaration spelled after its module,
 # with no initializer and no COMDAT; an imported 'imm' global is an 'external
 # constant'. A definition's line would carry its COMDAT.
-[[scenario.module-symbols.check]]
+[[scenario.module_symbols.check]]
 name = "imported-global-is-an-external-declaration"
 target = "symbols"
 contains = [
@@ -1223,7 +1226,7 @@ excludes = [
 
 # An imported module's private top-level function and global leave no symbol
 # at all in the importer, while its public function is declared.
-[[scenario.module-symbols.check]]
+[[scenario.module_symbols.check]]
 name = "imported-private-top-level-names-are-absent"
 target = "symbols"
 contains = ["declare modulesyms.pubFn"]
@@ -1232,7 +1235,7 @@ excludes = ["privFn", "privGlobal"]
 # A struct's methods are declared after the module and then the type, and the
 # private method *is* declared, spelled and linked like the public ones,
 # although a private top-level function of the same module is not.
-[[scenario.module-symbols.check]]
+[[scenario.module_symbols.check]]
 name = "imported-private-method-is-declared"
 target = "symbols"
 contains = [
@@ -1247,7 +1250,7 @@ excludes = [
 
 # The struct's LLVM type is named after the type alone: an LLVM type name is
 # not an object-file symbol, so it takes no module path.
-[[scenario.module-symbols.check]]
+[[scenario.module_symbols.check]]
 name = "imported-struct-type-carries-no-module-path"
 target = "llvmir"
 contains = ["%Gadget = type"]
@@ -1255,13 +1258,13 @@ excludes = ["%modulesyms_Gadget", '%"modulesyms.Gadget"']
 
 # A C function declared inside an imported module, with 'extern' and '@c', is
 # the bare C name, with no module path: '@c' names it, not 'extern'.
-[[scenario.module-symbols.check]]
+[[scenario.module_symbols.check]]
 name = "c-named-extern-inside-an-imported-module-takes-no-prefix"
 target = "symbols"
 contains = ["declare labs"]
 excludes = ["modulesyms.labs"]
 
-[scenario.module-extern-cone-names]
+[scenario.module_extern_cone_names]
 category = "compile"
 description = "Body-less 'extern' functions, methods, an operator and globals in a Cone-named module take its Cone names"
 tags = ["parse", "nameres", "typecheck", "genllvm"]
@@ -1274,7 +1277,7 @@ tags = ["parse", "nameres", "typecheck", "genllvm"]
 # None is a definition here, so none leads a COMDAT. An 'extern' 'imm' global
 # is not a constant here: its value is the defining object's, which its
 # module's 'init' may assign at run time.
-[[scenario.module-extern-cone-names.check]]
+[[scenario.module_extern_cone_names.check]]
 name = "extern-declarations-take-the-module-cone-name"
 target = "symbols"
 contains = [
@@ -1289,7 +1292,7 @@ contains = [
 ]
 excludes = ["define moduleextern", "define internal moduleextern", "declare twice", "declare hidden", "global count"]
 
-[scenario.module-c-names]
+[scenario.module_c_names]
 category = "run"
 description = "'@c' on a 'mod' line (a prefix) and on a fn (the whole symbol): C functions bound, Cone bodies exported under C names, 'main' under another Cone name"
 tags = ["parse", "genllvm", "runtime"]
@@ -1297,7 +1300,7 @@ tags = ["parse", "genllvm", "runtime"]
 # The C-named module's names are its prefix and the name as written; a fn's own
 # '@c("...")' is the whole symbol and takes no prefix. Nothing is spelled after
 # the module or the type.
-[[scenario.module-c-names.check]]
+[[scenario.module_c_names.check]]
 name = "a-c-named-module-spells-prefix-and-name-and-the-fn-override-whole"
 target = "symbols"
 contains = ["declare printStr\n", "declare printInt\n", "declare labs\n"]
@@ -1307,7 +1310,7 @@ excludes = ["cio.", "printabs", "declare abs"]
 # internal like any program definition [Jon 23 Sep]. That holds for the
 # functions and the global of the C-named module, and for a Cone-named
 # module's '@c' functions. 'main' is external under any Cone name.
-[[scenario.module-c-names.check]]
+[[scenario.module_c_names.check]]
 name = "pub-and-c-export-a-body-and-a-private-one-stays-internal"
 target = "symbols"
 contains = [
@@ -1321,7 +1324,7 @@ contains = [
 ]
 excludes = ["start", " square ", " cube "]
 
-[scenario.module-c-system]
+[scenario.module_c_system]
 category = "compile"
 description = "'@c(system)' on a 'mod' line: the system convention for the functions it names, and a DLL import only for the extern one"
 tags = ["parse", "genllvm"]
@@ -1329,7 +1332,7 @@ tags = ["parse", "genllvm"]
 # Both functions take the x86 stdcall convention from the module; only the
 # 'extern' one is imported from a DLL. The body is exported under its own
 # '@c' name.
-[[scenario.module-c-system.check]]
+[[scenario.module_c_system.check]]
 name = "a-system-module-gives-its-functions-the-convention"
 target = "symbols"
 contains = [
@@ -1339,22 +1342,22 @@ contains = [
 excludes = ["win.", "dllimport x86_stdcallcc ConeTicks"]
 
 # The calls are made with the convention too, not only the declarations
-[[scenario.module-c-system.check]]
+[[scenario.module_c_system.check]]
 name = "calls-to-a-system-function-use-the-convention"
 target = "preir"
 contains = ["call x86_stdcallcc i32 @ConeTicks()", "call x86_stdcallcc i32 @GetTickCount()"]
 
-[scenario.module-c-reject]
+[scenario.module_c_reject]
 category = "reject"
 description = "'@c' that says nothing, is malformed, or names what has no symbol"
 tags = ["parse"]
 
-[scenario.module-extern-reject]
+[scenario.module_extern_reject]
 category = "reject"
 description = "'extern' on a declaration whose body its user needs, or on what is not a function or a global"
 tags = ["parse"]
 
-[scenario.module-inline-private]
+[scenario.module_inline_private]
 category = "compile"
 description = "An imported module's public inline bodies reaching its private function, global and type"
 tags = ["genllvm"]
@@ -1363,8 +1366,8 @@ tags = ["genllvm"]
 # declared in the importer on first use -- the function called plainly, through
 # a generic inline and by address, the global loaded and borrowed, the private
 # type's method -- each as external as any imported declaration. A private name
-# no public body reaches is still absent, as module-symbols pins.
-[[scenario.module-inline-private.check]]
+# no public body reaches is still absent, as module_symbols pins.
+[[scenario.module_inline_private.check]]
 name = "private-names-an-inline-body-reaches-are-declared"
 target = "symbols"
 contains = [
@@ -1378,7 +1381,7 @@ excludes = [
   "moduleinline.count comdat",
 ]
 
-[scenario.module-collision]
+[scenario.module_collision]
 category = "compile"
 description = "'z' in module 'modulex_y' and 'y_z' in module 'modulex', which a separator-joined symbol would have confused"
 tags = ["parse", "nameres", "genllvm"]
@@ -1387,7 +1390,7 @@ tags = ["parse", "nameres", "genllvm"]
 # declaring 'z' and a module named 'modulex' declaring 'y_z' spell two symbols
 # rather than one. Were they to join into one, LLVM would rename the second
 # '.1' and one of the two calls would reference a symbol nothing defines.
-[[scenario.module-collision.check]]
+[[scenario.module_collision.check]]
 name = "distinct-modules-spell-distinct-symbols"
 target = "symbols"
 contains = [
@@ -1398,18 +1401,18 @@ excludes = [".1"]
 
 # -------- parse stage --------
 
-[scenario.module-parse]
+[scenario.module_parse]
 category = "reject"
 description = "'extern' declaration syntax the parser cannot accept"
 tags = ["parse"]
 diagnostics = 2
 
-# Separate from module-parse because the subject is the 'mod' declaration rather
+# Separate from module_parse because the subject is the 'mod' declaration rather
 # than 'extern', and because it needs an accepted header first: what follows is
 # then refused for its own reason instead of for following a bad declaration. A
 # 'mod trait' among them is accepted and is no late 'mod': it declares a module
-# trait, which the module-trait scenarios own.
-[scenario.module-parse-mod]
+# trait, which the module_trait scenarios own.
+[scenario.module_parse_mod]
 category = "reject"
 description = "A 'mod' declaration that is misplaced, has no name or is 'pub' with no parent module, a module trait declared late that is no late 'mod', and the in-file block that does not exist"
 tags = ["parse"]
@@ -1417,15 +1420,48 @@ diagnostics = 5
 
 # A module's name meeting another name of the module, which is the ordinary
 # duplicate rule. What it pins is where each half is reported: at the import
-# statement, at the 'mod' declaration, and -- for an imported module named only
-# by its folder -- at line 1, column 1 of its designated file, none of which is
-# where the lexer stood when the binding was made. The submodule half of the same
-# question is in module-submodule-reject.
-[scenario.module-parse-dupname]
+# statement and at the 'mod' declaration -- for an imported module named by its
+# folder too, whose 'mod' line is where the folder's name is reported once the
+# file is parsed -- neither of which is where the lexer stood when the binding
+# was made. The submodule half of the same question, and a module with no 'mod'
+# line to be reported at, are in module_submodule_reject.
+[scenario.module_parse_dupname]
 category = "reject"
-description = "A module's name meeting another binding of it: an import against a declaration either way round, reported at the import and at the declaration, and a folder module's own name against its own declaration, reported at its designated file's first line"
+description = "A module's name meeting another binding of it: an import against a declaration either way round, reported at the import and at the declaration, and a folder module's own name against its own declaration, reported at its 'mod' line"
 tags = ["parse"]
 diagnostics = 6
+
+# -------- a file's header: the 'mod' line, then the imports --------
+#
+# Every file the compiler builds as a module opens with its 'mod' line, and every
+# file's imports come right after it, ahead of anything else it declares [Jon 24
+# Sep]. module_header is the accepted shape, a folder so that a file of the
+# module that is not its designated file carries no 'mod' line; the rest are
+# what is refused. A submodule's designated file with no 'mod' line is in
+# module_submodule_reject.
+
+[scenario.module_header]
+category = "run"
+description = "A file's header accepted: comments between the 'mod' line and the imports, and a file of a folder module that is not its designated file with no 'mod' line"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.module_parse_header]
+category = "reject"
+description = "An import after a declaration: after a function, a type or a standalone 'use', plain, with a 'use' clause, and 'pub'"
+tags = ["parse"]
+diagnostics = 3
+
+[scenario.module_header_reject]
+category = "reject"
+description = "An import after a declaration in a file of a folder module that is not its designated file, and so has no 'mod' line"
+tags = ["parse"]
+diagnostics = 1
+
+[scenario.module_parse_nomod]
+category = "reject"
+description = "A module's first file with no 'mod' line: a lone root file, an imported one opening with a module trait, which is no 'mod' line, and an imported one holding only comments, reported at its end"
+tags = ["parse"]
+diagnostics = 3
 
 # What the sweep refuses. It is a folder scenario because several of its
 # diagnostics are reported against a file the scenario's own source never names:
@@ -1433,21 +1469,21 @@ diagnostics = 6
 # live. Two of the six have no line of their own -- which files a module holds is
 # a fact about the filesystem rather than a position in a source -- so they are
 # declared below.
-[scenario.module-folder-reject]
+[scenario.module_folder_reject]
 category = "reject"
 description = "What the folder sweep refuses: a misnaming declaration, a swept file declaring a module, importing one's own file, two files of one name and two subfolders declaring one name"
 tags = ["parse"]
 diagnostics = 6
 
-[[scenario.module-folder-reject.unlocated]]
+[[scenario.module_folder_reject.unlocated]]
 code = "ErrorDupFile"
 message = "holds two files named same"
 
-# A stray block end in a file the folder swept in, beside module-parse-strayend,
+# A stray block end in a file the folder swept in, beside module_parse_strayend,
 # which is the same condition in the file the compiler was given. A folder
 # scenario may annotate any of its files, so it is a 'reject' with the annotation
 # where the diagnostic lands.
-[scenario.module-folder-strayend]
+[scenario.module_folder_strayend]
 category = "reject"
 description = "A stray block end at global scope in a file the folder swept in"
 tags = ["parse"]
@@ -1457,13 +1493,13 @@ diagnostics = 1
 # writing the statement -- a name, a 'pub' one naming a path, a list, and the
 # samples' form with no ';' -- is one diagnostic at the word, and the statement
 # is skipped whole without swallowing the declaration after it.
-[scenario.module-parse-include]
+[scenario.module_parse_include]
 category = "reject"
 description = "The retired 'include' statement, reported once however it is written"
 tags = ["parse"]
 diagnostics = 4
 
-[scenario.module-import-missing]
+[scenario.module_import_missing]
 category = "reject"
 description = "An import naming a source file that is not there"
 tags = ["parse"]
@@ -1473,15 +1509,15 @@ exit = 2
 # Split off because its diagnostics land in the imported file. What it pins is that a malformed global declaration there is
 # reported and stops the compile, rather than being reported and then crashing
 # the compiler while its symbol is named.
-[scenario.module-parse-noname]
+[scenario.module_parse_noname]
 category = "recover"
 description = "A global declaration with no name, in an imported module"
 tags = ["parse"]
 diagnostics = 3
 
-# The condition module-folder-strayend pins in a swept sibling, here in the file
+# The condition module_folder_strayend pins in a swept sibling, here in the file
 # the compiler was given.
-[scenario.module-parse-strayend]
+[scenario.module_parse_strayend]
 category = "reject"
 description = "A stray block end at global scope in the main source file"
 tags = ["parse"]
@@ -1489,7 +1525,7 @@ diagnostics = 1
 
 # -------- name resolution stage --------
 
-[scenario.module-nameres]
+[scenario.module_nameres]
 category = "reject"
 description = "Paths through a module and a type that resolve to nothing, or to something private"
 tags = ["nameres"]
@@ -1499,7 +1535,7 @@ diagnostics = 5
 # a fold that ran and a fold that never happened are two different reasons for
 # one code, and the classification refactor and the transit rule both touch
 # what a fold carries across.
-[scenario.module-nameres-fold]
+[scenario.module_nameres_fold]
 category = "reject"
 description = "Private names a wildcard import does not fold: a function, an overload name and its candidate"
 tags = ["nameres"]
@@ -1507,7 +1543,7 @@ diagnostics = 3
 
 # A global's fold is expanded while the module is name resolved, so what a clause
 # may admit and what it may fold from are this stage's.
-[scenario.module-nameres-fold-global]
+[scenario.module_nameres_fold_global]
 category = "reject"
 description = "What a global's 'use' clause may not admit, and what it may not fold from"
 tags = ["nameres"]
@@ -1517,15 +1553,15 @@ diagnostics = 9
 # widens what the folding module shows, a plain 'use' does not, and the members
 # behind both are public in the type either way. Its one annotation lives in the
 # support module that writes the reach, because that is where it is reported.
-[scenario.module-nameres-fold-visibility]
+[scenario.module_nameres_fold_visibility]
 category = "reject"
 description = "A folded name reached from another module: public only if the clause said 'pub'"
 tags = ["nameres"]
 diagnostics = 1
 
-# The refused half of the transit trio (see module-transit above): the same fold
+# The refused half of the transit trio (see module_transit above): the same fold
 # with the re-export left off.
-[scenario.module-nameres-transit]
+[scenario.module_nameres_transit]
 category = "reject"
 description = "A folded name its module did not re-export, reached through that module's qualifier and refused"
 tags = ["nameres"]
@@ -1533,7 +1569,7 @@ diagnostics = 2
 
 # Its one diagnostic is reported against modulehidelate.cone, so the annotation
 # lives there and this file has none.
-[scenario.module-nameres-transit-late]
+[scenario.module_nameres_transit_late]
 category = "reject"
 description = "The same refusal from a module loaded after the folding one, so it is the binding's visibility rather than the order"
 tags = ["nameres"]
@@ -1544,17 +1580,17 @@ diagnostics = 1
 # Which file a diagnostic names, when more than one module was parsed. Its one
 # annotation lives in the support module the error is in, because that is where
 # the compiler reports it.
-[scenario.module-typecheck-provenance]
+[scenario.module_typecheck_provenance]
 category = "reject"
 description = "A diagnostic in an imported module names that module's file, not the last one parsed"
 tags = ["typecheck"]
 diagnostics = 1
 
-# The other half of module-nameres: a period whose left side is a value, which
+# The other half of module_nameres: a period whose left side is a value, which
 # is a member access and fails against the receiver's type rather than as a
 # lookup. Separate because name resolution halts the pipeline, so the two
 # stages' failures cannot share a file.
-[scenario.module-typecheck-notnamespace]
+[scenario.module_typecheck_notnamespace]
 category = "reject"
 description = "A period whose left side names neither a module nor a type"
 tags = ["nameres", "typecheck"]
@@ -1567,7 +1603,7 @@ diagnostics = 3
 # itself: nothing is swept. Its annotations live in the description and in every
 # .cone file of the folder.
 
-[scenario.module-build-lib]
+[scenario.module_build_lib]
 category = "compile"
 description = "A package compiled on its own from a build description: a library root named for the package, a child module, an import line"
 tags = ["parse", "genllvm"]
@@ -1576,8 +1612,8 @@ tags = ["parse", "genllvm"]
 # spelled after it as an importer of 'q' spells it: the root's own functions, a
 # global and a type's method, and the child module's function after both. Each
 # is public, so each is exported: external, which is what lets an importer's
-# object link against it (module-build-export pins the whole linkage rule).
-[[scenario.module-build-lib.check]]
+# object link against it (module_build_export pins the whole linkage rule).
+[[scenario.module_build_lib.check]]
 name = "a-described-library-root-prefixes-its-symbols"
 target = "symbols"
 contains = [
@@ -1592,38 +1628,38 @@ excludes = ["define internal", "global internal", "define addOne", "define inner
 # Built 'release', and nothing in the library calls viaDep or reads counter. An
 # internal definition would be deleted by the optimiser; an exported one is
 # still there in what reaches the object file.
-[[scenario.module-build-lib.check]]
+[[scenario.module_build_lib.check]]
 name = "exports-survive-optimisation"
 target = "llvmir"
 contains = ["define i64 @_CNvC1q6viaDep(", "@_CNvC1q7counter = global i64 0"]
 
 # The same symbols, mangled: what an importer of q declares.
-[[scenario.module-build-lib.check]]
+[[scenario.module_build_lib.check]]
 name = "the-library-root-mangles-as-a-top-module"
 target = "preir"
 contains = ["@_CNvC1q6addOne(i64", "@_CNvNtC1q5inner6triple(i64", "@_CNvNtC1q3Acc3put("]
 
 # The file an import line names is found where the line says, is named by the
 # import, and is only declared: it stands for another package's include file.
-[[scenario.module-build-lib.check]]
+[[scenario.module_build_lib.check]]
 name = "an-import-line-file-is-declared-under-the-import-name"
 target = "symbols"
 contains = ["declare dep.twice"]
 excludes = ["dep.twice comdat"]
 
 # A file beside the description that it does not list is not compiled.
-[[scenario.module-build-lib.check]]
+[[scenario.module_build_lib.check]]
 name = "an-unlisted-file-is-not-compiled"
 target = "symbols"
 excludes = ["unlistedFn"]
 
 # 'build: release' decides the optimisation options: no debug information.
-[[scenario.module-build-lib.check]]
+[[scenario.module_build_lib.check]]
 name = "build-release-emits-no-debug-info"
 target = "preir"
 excludes = ["!dbg"]
 
-[scenario.module-build-exe]
+[scenario.module_build_exe]
 category = "run"
 description = "A program built from a build description and run: an unnamed root whose main links, a child module, and stdio reached through import lines"
 tags = ["parse", "genllvm", "runtime"]
@@ -1631,7 +1667,7 @@ tags = ["parse", "genllvm", "runtime"]
 # 'output: executable' leaves the root out of every symbol, so 'main' is the
 # entry point the linker looks for and the root's functions are bare; the child
 # module is spelled after itself alone, as a folder program's submodule is.
-[[scenario.module-build-exe.check]]
+[[scenario.module_build_exe.check]]
 name = "a-described-executable-root-stays-bare"
 target = "symbols"
 contains = [
@@ -1643,19 +1679,19 @@ excludes = ["prog."]
 
 # Both of the package's import lines name one file, which is one module, read
 # once and declared once, its 'extern' functions under their C names.
-[[scenario.module-build-exe.check]]
+[[scenario.module_build_exe.check]]
 name = "two-import-lines-naming-one-file-are-one-module"
 target = "symbols"
 contains = ["declare printStr", "declare printInt"]
 excludes = ["stdio.printStr"]
 
 # 'build: debug' decides the optimisation options: debug information.
-[[scenario.module-build-exe.check]]
+[[scenario.module_build_exe.check]]
 name = "build-debug-emits-debug-info"
 target = "preir"
 contains = ["!dbg"]
 
-[scenario.module-build-export]
+[scenario.module_build_export]
 category = "compile"
 description = "A library compile's linkage: public definitions and the private ones an expanded body names are exported, every other private one stays internal, and a generic's instance is shared"
 tags = ["nameres", "genllvm"]
@@ -1664,7 +1700,7 @@ tags = ["nameres", "genllvm"]
 # child module's included, and each private function or global named by a body
 # an importer expands -- inline, generic, macro, a trait's default, and a
 # private inline's too -- whether bare or through a path.
-[[scenario.module-build-export.check]]
+[[scenario.module_build_export.check]]
 name = "public-and-expand-reached-definitions-are-exported"
 target = "symbols"
 contains = [
@@ -1687,7 +1723,7 @@ contains = [
 # public, or an expanded body names it, as viaReached names the private Reached
 # -- and the function is public, or the type holds an expanded body, which can
 # reach a private one through its receiver: WithInline.get reaches secret.
-[[scenario.module-build-export.check]]
+[[scenario.module_build_export.check]]
 name = "a-reachable-types-functions-are-exported"
 target = "symbols"
 contains = ["define ex.Reached.get comdat", "define ex.WithInline.secret comdat"]
@@ -1696,7 +1732,7 @@ contains = ["define ex.Reached.get comdat", "define ex.WithInline.secret comdat"
 # calls it or not, the child module's too; a private method of a type holding
 # no expanded body; and every function of a private type nothing expanded
 # names, public or not.
-[[scenario.module-build-export.check]]
+[[scenario.module_build_export.check]]
 name = "other-private-definitions-stay-internal"
 target = "symbols"
 contains = [
@@ -1710,14 +1746,14 @@ contains = [
 
 # Neither exported nor internal: the instance of a generic the library makes for
 # its own use is shared. An importer using the same instance defines it too,
-# and the linker keeps one copy (module-build-link links the two).
-[[scenario.module-build-export.check]]
+# and the linker keeps one copy (module_build_link links the two).
+[[scenario.module_build_export.check]]
 name = "an-instance-is-shared"
 target = "symbols"
 contains = ["define linkonce_odr ex.viaGeneric[i64] comdat any"]
 
 # An inline function is expanded where it is called and has no symbol.
-[[scenario.module-build-export.check]]
+[[scenario.module_build_export.check]]
 name = "an-inline-function-has-no-symbol"
 target = "symbols"
 excludes = ["ex.viaInline", "ex.privInline", "ex.WithInline.get", "ex.viaReached", "ex.viaPath"]
@@ -1729,7 +1765,7 @@ excludes = ["ex.viaInline", "ex.privInline", "ex.WithInline.get", "ex.viaReached
 # give 0 and are never generated, so a right answer can only be q's. The
 # bodies the program does generate, the expanded inlines, reach q's private
 # function, global and type, whose symbols q exports for them.
-[scenario.module-build-link]
+[scenario.module_build_link]
 category = "run"
 description = "A package compiled alone and a program compiled against its hand-written include file, linked and run: generic instances and vtables both objects define merge at link"
 tags = ["genllvm", "runtime"]
@@ -1737,7 +1773,7 @@ link = ["q/q.conebuild"]
 
 # The program only declares what q defines, the private names its expanded
 # inline bodies reach among them, under the names q exports them by.
-[[scenario.module-build-link.check]]
+[[scenario.module_build_link.check]]
 name = "the-program-declares-what-q-defines"
 target = "symbols"
 contains = [
@@ -1757,7 +1793,7 @@ excludes = ["q.addOne comdat", "q.secret comdat", "q.Box.twice comdat", "q.answe
 # and the linker keeps one copy, and the f64 instances only the program has --
 # as are 'kept' and the private generic 'same' its body instantiates. The
 # private function a method of Pair names is q's export, declared here.
-[[scenario.module-build-link.check]]
+[[scenario.module_build_link.check]]
 name = "the-program-defines-each-instance-it-uses-shared"
 target = "symbols"
 contains = [
@@ -1780,7 +1816,7 @@ excludes = ["declare q.larger", "declare q.Pair", "internal q.larger", "internal
 # both is a duplicate-symbol error. q defines no f64 instance: nothing in q
 # makes one. Its other definitions keep their library linkage: the private
 # 'unit', named by Pair's methods, exported.
-[[scenario.module-build-link.check]]
+[[scenario.module_build_link.check]]
 name = "the-library-shares-its-own-instances"
 target = "symbols"
 object = "q"
@@ -1801,7 +1837,7 @@ excludes = ["[f64]", "internal q.larger", "internal q.Pair", "define q.larger", 
 # internal, the program's reference would not match q's copy ('isSquare' 0).
 # The list of a trait's vtables holds the implementers one object saw, so it
 # stays each object's own.
-[[scenario.module-build-link.check]]
+[[scenario.module_build_link.check]]
 name = "the-program-shares-its-vtables"
 target = "symbols"
 contains = [
@@ -1809,7 +1845,7 @@ contains = [
   "constant internal q.Shape (vtable list) comdat nodeduplicate",
 ]
 
-[[scenario.module-build-link.check]]
+[[scenario.module_build_link.check]]
 name = "the-library-shares-its-vtables"
 target = "symbols"
 object = "q"
@@ -1818,19 +1854,19 @@ contains = [
   "constant internal q.Shape (vtable list) comdat nodeduplicate",
 ]
 
-[scenario.module-build-reject]
+[scenario.module_build_reject]
 category = "reject"
 description = "A build description that cannot be read: a bad setting value, an unknown setting, an import line missing its ':', a child module named twice, a module listing no file, a setting after the module"
 tags = ["parse"]
 diagnostics = 6
 
-[scenario.module-build-modname-parse]
+[scenario.module_build_modname_parse]
 category = "reject"
 description = "Each file's 'mod' line checked against the build description: a later file, a child's first file and an import line's file naming another module, and a second declaration of the right name"
 tags = ["parse"]
 diagnostics = 4
 
-[scenario.module-build-import-parse]
+[scenario.module_build_import_parse]
 category = "reject"
 description = "An import a described module writes that the build description provides nothing for, by name and by path"
 tags = ["parse"]

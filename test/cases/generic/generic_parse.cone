@@ -1,0 +1,109 @@
+// What the parser has to say about a type parameter list and a macro
+// declaration: the list has to close, it has to declare something, no
+// parameter may carry a constraint or a type, and the macro has to be named.
+//
+// parseGenericParms is shared by 'fn', 'struct' and 'macro', so one unclosed
+// list is written on a macro and one on a function, to establish that the same
+// rule reaches both. It reports at the token that should have been the closing
+// bracket, which is the block's opening brace here.
+//
+// The missing macro name comes last on purpose. Recovery from it leaves the
+// macro's body behind as a global-area statement and the parser then reaches
+// the end of the file, so anything written after it would not be parsed at all.
+
+mod generic_parse;
+
+macro badMacroParms[a, b {   //~ ErrorBadTok:26 "square bracket"
+  a;
+}
+
+fn badFnParms[T(x T) T {     //~ ErrorBadTok:16 "square bracket"
+  x;
+}
+
+// An empty list declares a generic with nothing to substitute, so no call could
+// ever instantiate it and the declaration would generate nothing at all. It is
+// the same shared parseGenericParms that reports it.
+fn emptyFnParms[]() {        //~ ErrorNoGenParms:18 "at least one parameter"
+}
+
+macro emptyMacroParms[] {    //~ ErrorNoGenParms:25 "at least one parameter"
+  1i32;
+}
+
+// Two names side by side is how a constraint on a type parameter and a type on
+// a macro parameter are both spelled, and the reference manual shows the first
+// of them. Neither is implemented. Reading the two names as two parameters is
+// what the parser used to do, which turned a declaration written in the
+// documented form into an arity or an inference complaint about its calls, at
+// the call rather than at the declaration. It is refused here instead, at the
+// second name, once per parameter, and the declaration keeps parsing.
+//
+// The same list is shared by all three declaration forms, so the supertype
+// constraint is written on a function and on a struct.
+fn constrainedFn[T Comparable](a T, b T) T {   //~ ErrorGenParmConstr:20 "constraint or a type"
+  a;
+}
+
+struct ConstrainedType[T Comparable] {         //~ ErrorGenParmConstr:26 "constraint or a type"
+  x T;
+}
+
+// Several supertypes combined with '+' are one constraint, not several errors:
+// recovery runs to the ',' or ']' that should have ended the parameter, so
+// whatever the constraint was written as is skipped whole.
+fn multiConstrainedFn[T Comparable + Float](a T) T {   //~ ErrorGenParmConstr:25 "constraint or a type"
+  a;
+}
+
+// Two bare names are the same shape and the same refusal: this is the spelling
+// that compiled clean while reading as two parameters, which is how the misparse
+// was found.
+fn twoParmNames[T U](x T) T {  //~ ErrorGenParmConstr:19 "constraint or a type"
+  x;
+}
+
+// A macro parameter given a type reaches the same rule through the third caller.
+macro typedMacroParm[a i32] {  //~ ErrorGenParmConstr:24 "constraint or a type"
+  a;
+}
+
+// Once per parameter: recovery resumes at the comma, so the second parameter's
+// constraint is reported too rather than swallowed with the first. The list is
+// written across two lines because two diagnostics sharing a line, a code and a
+// quoted substring are what bless cannot place (test-suite.md, R4.4).
+fn eachParmReported[T Comparable,   //~ ErrorGenParmConstr:23 "constraint or a type"
+                    U Float](a T, b U) T {   //~ ErrorGenParmConstr:23 "constraint or a type"
+  a;
+}
+
+// A macro declared in a type shares the type's one namespace with its fields
+// and methods, whichever of them was declared first. Reported by the parser,
+// which is what builds that namespace.
+struct Clash {
+  size i64;
+
+  fn area(self &) i64 {
+    self.size;
+  }
+
+  macro size[self] {         //~ ErrorDupName:9 "shares its type's namespace"
+    self.size;
+  }
+
+  macro area[self] {         //~ ErrorDupName:9 "shares its type's namespace"
+    self.size;
+  }
+
+  macro twice[self] {
+    self.size + self.size;
+  }
+
+  fn twice(self &) i64 {     //~ ErrorDupName:3 "needs its own name"
+    self.size;
+  }
+}
+
+macro {                      //~ ErrorBadTok:7 "Expected a macro name"
+  1i32                       //~^ ErrorBadGloStmt:7 follow-on
+}

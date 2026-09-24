@@ -1,0 +1,331 @@
+// What move semantics permit: a move value flowing from variable to variable,
+// into and out of a call, and back into a deactivated variable; the swap and
+// left-assignment operators that exist so a move value can be taken out of a
+// field without invalidating its container; the two ways a type escapes
+// move semantics and stays copyable; and a move value handed back to a caller
+// through a block, an 'if' or a loop, which a finalizer shows is finalized once,
+// by the caller.
+//
+// A success program can only show that a move is allowed, which a copy would be
+// too. What distinguishes the two is the source becoming unusable, and that is
+// an error, so it lives in the reject scenarios. The one distinguishing fact
+// this file can establish is the negative: for a copy type, the source is still
+// there afterwards.
+//
+// Structs appear because a move type has to be some type and 'struct @move' is
+// the only attribute that makes one directly; 'struct' owns their depth.
+
+mod move_success;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// The @move attribute is the direct way to declare a type non-copyable
+struct @move Handle {
+  pub id i32;
+}
+
+// An enrichment is the same representation under a second name, so it moves
+// exactly as its base does, and a value moves across between the two names
+struct RichHandle extends Handle {
+  pub fn twice(self &) i32 {
+    id + id;
+  }
+}
+
+// A copy type, for contrast
+struct Plain {
+  pub id i32;
+  pub fn doubled(self) i32 { id * 2; }
+}
+
+// A finalizer makes a type a move type by inference, but a clone method says
+// copies can be made after all and cancels that
+struct Cloneable {
+  pub id i32;
+  fn final(self &uni Cloneable) { }
+  fn clone(self &uni Cloneable) { }
+}
+
+fn takeHandle(h Handle) i32 {
+  h.id;
+}
+
+fn makeHandle(n i32) Handle {
+  Handle[n];
+}
+
+// -------- moving a value around --------
+
+fn moves() {
+  // Variable to variable
+  imm a = Handle[1];
+  imm b = a;
+  show("moved-to-new-var", b.id);
+
+  // A move value may be returned from a function and passed into one
+  show("moved-through-calls", takeHandle(makeHandle(2)));
+
+  // A deactivated variable becomes usable again when given a new value
+  mut c = makeHandle(3);
+  show("moved-into-call", takeHandle(c));
+  c = makeHandle(4);
+  show("reactivated-by-assign", c.id);
+
+  // A move value nested in a struct moves with the whole struct
+  imm outer = Wrapper[Handle[5], 6];
+  imm moved = outer;
+  show("moved-with-container", moved.h.id);
+
+  // ... and so does an array of them
+  mut arr [2; Handle] = [Handle[7], Handle[8]];
+  imm arr2 = arr;
+  show("moved-array-elem", arr2[1].id);
+
+  // Across an enrichment of a @move type: base to enrichment, enrichment to
+  // enrichment, back to the base, and the enrichment into a call wanting the base
+  imm r RichHandle = Handle[9];
+  imm r2 = r;
+  show("moved-into-enrichment", (&r2).twice());
+  imm back Handle = r2;
+  show("moved-back-to-base", back.id);
+  imm r3 RichHandle = makeHandle(11);
+  show("enrichment-moved-into-call", takeHandle(r3));
+}
+
+struct Wrapper {
+  pub h Handle;
+  pub n i32;
+}
+
+// -------- swap and left-assignment --------
+
+fn exchanges() {
+  // Swap leaves both sides holding a value, so neither source is deactivated
+  mut a = Handle[10];
+  mut b = Handle[20];
+  a <=> b;
+  show("swap-left", a.id);
+  show("swap-right", b.id);
+
+  // Swapping a field with a local is how a move value comes out of a struct
+  // without invalidating the struct
+  mut w = Wrapper[Handle[30], 31];
+  mut spare = Handle[40];
+  w.h <=> spare;
+  show("swap-field-out", spare.id);
+  show("swap-field-in", w.h.id);
+  show("swap-keeps-container", w.n);
+
+  // Left-assignment yields what the lval held before, rather than the new value
+  mut c = Handle[50];
+  imm old = c := Handle[60];
+  show("left-assign-value", old.id);
+  show("left-assign-lval", c.id);
+
+  // A move value may not be moved out through a borrowed reference, but these
+  // two leave the borrowed place holding a value, so they work through one
+  mut w2 = Wrapper[Handle[70], 71];
+  imm out = swapThrough(&mut w2, Handle[72]);
+  show("swap-through-borrow-out", out.id);
+  show("swap-through-borrow-in", w2.h.id);
+  mut d = Handle[73];
+  imm prior = replaceThrough(&mut d, Handle[74]);
+  show("left-assign-through-borrow-value", prior.id);
+  show("left-assign-through-borrow-lval", d.id);
+}
+
+fn swapThrough(r &mut Wrapper, spare Handle) Handle {
+  mut s = spare;
+  r.h <=> s;
+  s;
+}
+
+fn replaceThrough(r &mut Handle, h Handle) Handle {
+  *r := h;
+}
+
+// -------- types that stay copyable --------
+
+fn copies() {
+  // A plain struct copies: the source is still usable afterwards
+  imm p = Plain[70];
+  imm q = p;
+  show("copy-source-still-usable", p.id);
+  show("copy-destination", q.id);
+
+  // A finalizer would make this a move type, but its clone method cancels that,
+  // so the source survives here too
+  imm c = Cloneable[80];
+  imm d = c;
+  show("clone-cancels-move", c.id);
+  show("clone-destination", d.id);
+
+  // A copy value reads out through a borrowed reference, whole or as a
+  // by-value 'self', and the place borrowed from keeps its own copy
+  imm pt = Plain[90];
+  imm out = readThrough(&pt);
+  show("copy-out-of-borrow", out.id);
+  show("copy-borrowed-source-kept", pt.id);
+  show("copy-self-through-borrow", doubledThrough(&pt));
+}
+
+fn readThrough(r &Plain) Plain {
+  *r;
+}
+
+fn doubledThrough(r &Plain) i32 {
+  r.doubled();
+}
+
+// -------- a field handed back through a block, an if or a loop --------
+
+// A finalizer makes a type a move type, and says out loud when a value is
+// finalized, so a value finalized twice prints twice. Each call below is
+// followed by a line naming what it handed back: a finalize inside the callee
+// would print before that line, and each value received is finalized once, at
+// the end of handedBack, in reverse order of declaration.
+//
+// A struct's field handed back directly is struct_final_once's. A block, an
+// 'if' or a loop used as the value handed back hands back what it yields, so a
+// field it yields -- or a whole local -- leaves the scope the same way, and the
+// struct holding it is not finalized here. Both were finalized twice.
+struct Noisy {
+  pub id i32;
+  fn final(self &uni) { show("finalized", id); }
+}
+
+struct NoisyBox {
+  pub inner Noisy;
+  pub n i32;
+}
+
+fn fieldOutOfBlock() Noisy {
+  imm b = NoisyBox[Noisy[104], 1];
+  {b.inner;};
+}
+
+fn fieldOutOfIf(pick Bool) Noisy {
+  imm b = NoisyBox[Noisy[105], 1];
+  if pick {b.inner;} else {Noisy[106];};
+}
+
+fn fieldOutOfLoop() Noisy {
+  imm b = NoisyBox[Noisy[107], 1];
+  while {
+    if true {break b.inner;};
+  };
+}
+
+fn localOutOfIf(pick Bool) Noisy {
+  imm a = Noisy[110];
+  if pick {a;} else {Noisy[106];};
+}
+
+// Each return exempts the struct only on its own way out, so a struct whose
+// field one path returns early is still there on the other
+fn fieldReturnedEarly(id i32, early Bool) Noisy {
+  imm b = NoisyBox[Noisy[id], 1];
+  if early {return b.inner;};
+  show("struct-kept-after-early-return", b.n);
+  b.inner;
+}
+
+// A block's own local hands its field back as the block's value the same way
+fn blockLocalFieldOut() {
+  imm kept = {
+    imm b = NoisyBox[Noisy[111], 1];
+    b.inner;
+  };
+  show("block-local-field-kept", kept.id);
+}
+
+fn handedBack() {
+  imm d = fieldOutOfBlock();
+  show("field-out-of-block", d.id);
+  imm e = fieldOutOfIf(true);
+  show("field-out-of-if", e.id);
+  imm f = fieldOutOfLoop();
+  show("field-out-of-loop", f.id);
+  imm l = localOutOfIf(true);
+  show("local-out-of-if", l.id);
+  imm g = fieldReturnedEarly(108, true);
+  show("field-returned-early", g.id);
+  imm h = fieldReturnedEarly(109, false);
+  show("field-returned-late", h.id);
+  blockLocalFieldOut();
+}
+
+// -------- a value bound from a block, an if or a loop --------
+
+// A block, an 'if' or a loop used as a value gives what it hands back to the
+// variable bound to it, or to the call it is passed to, so its source is moved
+// out just as binding the source directly moves it, and is finalized once, by
+// its new holder. Each of these was finalized twice: there, and again at the
+// source's scope exit. Each function shows what it received before its scope
+// ends, so the one finalize that follows the line is its whole release.
+fn boundFromBlock() {
+  imm a = Noisy[120];
+  imm y = {a;};
+  show("bound-from-block", y.id);
+}
+
+fn boundFieldFromBlock() {
+  imm b = NoisyBox[Noisy[121], 1];
+  imm y = {b.inner;};
+  show("bound-field-from-block", y.id);
+}
+
+fn boundFromIf(pick Bool) {
+  imm a = Noisy[122];
+  imm y = if pick {a;} else {a;};
+  show("bound-from-if", y.id);
+}
+
+fn boundFieldFromIf(pick Bool) {
+  imm b = NoisyBox[Noisy[123], 1];
+  imm y = if pick {b.inner;} else {b.inner;};
+  show("bound-field-from-if", y.id);
+}
+
+fn boundFieldFromLoop() {
+  imm b = NoisyBox[Noisy[124], 1];
+  imm y = while {
+    if true {break b.inner;};
+  };
+  show("bound-field-from-loop", y.id);
+}
+
+fn takeNoisy(n Noisy) {
+}
+
+// Passed to a call, the value is finalized as the callee ends, before the line
+fn passedFromBlock() {
+  imm a = Noisy[125];
+  takeNoisy({a;});
+  show("passed-from-block", 125);
+}
+
+fn boundFrom() {
+  boundFromBlock();
+  boundFieldFromBlock();
+  boundFromIf(false);
+  boundFieldFromIf(true);
+  boundFieldFromLoop();
+  passedFromBlock();
+}
+
+fn main() i32 {
+  moves();
+  exchanges();
+  copies();
+  handedBack();
+  boundFrom();
+  0i32;
+}

@@ -1,0 +1,34 @@
+// A type's abstractions are bound while the type is name resolved -- each one's
+// default methods join the type's dictionary before any of its method bodies is
+// resolved -- so what can go wrong in reaching them is reported at this stage:
+// two types that each stand on the other, so neither can be completed first.
+//
+// A trait's field arriving under a name the type already declares is no longer
+// one of them. A trait contributes no fields: what its fields state is a
+// requirement the type satisfies by declaring them itself, so declaring the name
+// is what compliance is. The splice survives only between an enum and its
+// variants, where enum_nameres_splice pins the duplicate.
+//
+// Name-resolution stage only: name resolution returns before type checking, so
+// nothing about signatures or layout belongs here. Those are in
+// trait_typecheck_conform.
+
+mod trait_nameres_inherit;
+
+// Two traits that each name the other. The first declared is resolved first
+// and demands the second, which demands the first back and finds it still under
+// way, so the second is refused where it names the first. The compiler used to
+// loop here without end.
+trait Loop is Back {
+  a i32;
+}
+
+trait Back is Loop {  //~ ErrorCircular:15 "each depends on the other"
+  b i32;
+}
+
+// The shortest cycle, through a mixin: a trait mixing itself in
+trait Ring {
+  mixin Ring;  //~ ErrorCircular:9 "each depends on the other"
+  r i32;
+}

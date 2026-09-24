@@ -1,0 +1,43 @@
+// An allocation nested inside another allocation: the value a '+region-perm'
+// expression allocates may itself hold one, and both survive into the value the
+// outer allocation returns.
+//
+// Both are printed rather than merely compiled, because the module verifying is
+// the weaker half of what is worth asserting here. genlallocref emits its
+// allocator's null check as a branch to a panic block and an init block and ends
+// with a phi over the two, and it generates the initial value in between. An
+// inner allocation emits branches of its own while that is happening, so the
+// block reaching the phi is no longer the block the outer allocation was
+// positioned in, and each incoming edge has to be read back from the builder
+// rather than remembered from before the value was generated.
+//
+// The outer allocation is never released: its count is raised on the way into
+// the variable and lowered once on the way out, so it never reaches zero. That
+// is region_uninit_owning's and region_owning_field's subject, not this one's.
+
+mod region_nested_alloc;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct Held {
+  pub r +rc-mut i32;
+  pub n i32;
+}
+
+fn f() {
+  imm h = +rc-mut Held[r: +rc-mut 40, n: 41];
+  show("nested-inner-allocation", i64[*h.r]);
+  show("outer-field-beside-it", i64[h.n]);
+}
+
+fn main() i32 {
+  f();
+  0i32;
+}

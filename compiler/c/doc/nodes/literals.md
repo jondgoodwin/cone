@@ -74,7 +74,7 @@ and a literal reaches it the way every other number does — through the `isTrue
 coercion in [Type Check Reasoning](../phases/type-check-reasoning.md),
 "Coercion", which makes any non-zero value true. `litAdoptNumberType` returns 0
 for it, so both of its callers fall through to that coercion and every position
-agrees. `typemgmt-success` pins all of them — initializer, assignment, argument,
+agrees. `typemgmt_success` pins all of them — initializer, assignment, argument,
 return value, struct-literal field, `if`, `not`, `and` and `or` — each with a
 value whose low bit is 0, because `1` and `-1` read the same either way.
 `true` and `false` are built carrying `Bool`, never `FlagUnkType`, so the rule
@@ -85,7 +85,7 @@ alternative, converting from the `i32` default, materializes the constant at 32
 bits first and widens what is left, which silently drops every bit above the low
 32 — `i64`'s maximum stored as `-1`, `u64`'s as `4294967295`, `i64`'s minimum as
 `0`, and `5000000000` as `705032704` on its way to an `i64` parameter or an
-`f64`. `typemgmt-success` pins the cases that tell the two apart, in every
+`f64`. `typemgmt_success` pins the cases that tell the two apart, in every
 position a literal meets a type: initializer, assignment, argument, return value
 and struct field, for `i64`, `u64`, `f32` and `f64`.
 

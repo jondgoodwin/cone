@@ -1,0 +1,131 @@
+// Type argument lists written out, and the two things wrong with one that the
+// instantiation path refuses; and, last, a generic type that writes none where
+// one is required: on a path to its member, and where a type is wanted.
+//
+// Separate from generic_typecheck_infer because the mechanism is the opposite
+// one: there the type arguments are absent and have to be derived from the value
+// arguments, here they are present and are checked against the declaration
+// before anything is cloned. The two files share no diagnostic.
+//
+// Both shapes are written against a generic function and again against a generic
+// type, because the two reach genericMemoize by different callers and only the
+// pair establishes that the check is in the shared path.
+//
+// Each of these used to report its diagnostic and then kill the compiler: the
+// failed instantiation returned nothing, and its caller type-checked the nothing.
+// It now leaves a node marked as already-reported, which is why each use below
+// contributes exactly one diagnostic rather than a first one and then a
+// cascade about a callee that cannot be called.
+
+mod generic_typecheck_args;
+
+fn max[T](x T, y T) T {
+  if x > y {x;} else {y;}
+}
+
+fn pickSecond[T, U](a T, b U) U {
+  b;
+}
+
+struct Box[T] {
+  v T;
+}
+
+struct Pair[T, U] {
+  a T;
+  b U;
+}
+
+fn tooManyTypeArguments() {
+  imm r = max[i64, f64](1i64, 2i64);   //~ ErrorArgCount:14 "Incorrect number of arguments vs. parameters expected"
+}
+
+fn tooFewTypeArguments() {
+  imm r = pickSecond[i64](1i64, 2i64); //~ ErrorArgCount:21 "Incorrect number of arguments vs. parameters expected"
+}
+
+fn typeArgumentIsNotAType() {
+  imm r = pickSecond[i64, 3](1i64, 2i64);  //~ ErrorNotType:27 "Expected a type for a generic parameter"
+}
+
+fn tooManyTypeArgumentsOnAType() {
+  imm p = Box[i64, f64][v: 1i64];      //~ ErrorArgCount:14 "Incorrect number of arguments vs. parameters expected"
+}
+
+fn typeArgumentIsNotATypeOnAType() {
+  imm p = Pair[i64, 3][a: 1i64, b: 2i64];  //~ ErrorNotType:21 "Expected a type for a generic parameter"
+}
+
+// No type argument list at all, on a path through a generic type to one of its
+// members. The generic has no members of its own, only each instance has its
+// copy, so the path must name an instance -- which is not built as a path yet.
+// Each of these reached generation as a call to, or a read of, a member that is
+// never generated, and crashed the compiler.
+struct Stocked[T] {
+  v T;
+  pub fn restock() i64 {30i64;}
+  pub fn restockBy overload refill(n i64) i64 {n;}
+  pub static mut held = 0i64;
+}
+
+fn memberOfTheGenericItself() {
+  imm r = Stocked.restock();       //~ ErrorArgCount:19 "Stocked is generic, so restock belongs to each of its instances"
+  imm s = Stocked.refill(2i64);    //~ ErrorArgCount:19 "Stocked is generic, so refill belongs to each of its instances"
+  imm t = Stocked.held;            //~ ErrorArgCount:19 "Stocked is generic, so held belongs to each of its instances"
+}
+
+// No type argument list at all, on a generic type written where a type is
+// wanted. The generic is a template, and only its instances are types, so each
+// of these names no type. Every one reached code generation as a type it has
+// no case for, and crashed the compiler. A generic enum is refused as a generic
+// struct is, and a generic written bare as another generic's type argument is
+// refused once, at the argument, rather than at every use the instance makes
+// of its parameter.
+enum Maybe[T] {
+  Just(T);
+  Nothing;
+}
+
+fn fnId[T](x T) T {
+  x;
+}
+
+fn bareParameter(b Box) {}         //~ ErrorArgCount:20 "is generic, so it is not a type"
+fn bareReference(b &Box) {}        //~ ErrorArgCount:21 "is generic, so it is not a type"
+fn bareEnum(m Maybe) {}            //~ ErrorArgCount:15 "is generic, so it is not a type"
+fn bareReturn() Box {}             //~ ErrorArgCount:17 "is generic, so it is not a type"
+
+struct Holds {
+  b Box;                           //~ ErrorArgCount:5 "is generic, so it is not a type"
+}
+
+typedef Boxed Box;                 //~ ErrorArgCount:15 "is generic, so it is not a type"
+fn throughTypedef(b Boxed) {}
+
+fn bareLocalAndCast() {
+  imm b Box;                       //~ ErrorArgCount:9 "is generic, so it is not a type"
+  imm p *Box;                      //~ ErrorArgCount:10 "is generic, so it is not a type"
+  imm t (Box, i64);                //~ ErrorArgCount:10 "is generic, so it is not a type"
+  imm c = 3 as Box;                //~ ErrorArgCount:16 "is generic, so it is not a type"
+}
+
+fn bareTypeArgument() {
+  imm r = fnId[Box](1i64);         //~ ErrorArgCount:16 "is generic, so it is not a type"
+}
+
+// Inside a generic type's own braces its bare name is the instance being
+// defined, so Wrapper's own 'Wrapper' is Wrapper[T] and is not refused. Only
+// its own: another generic named bare inside is no type there either, and a
+// path through one still reaches no instance's member. Each is reported against
+// the instance that type checks it, so Wrapper is instantiated once.
+struct Wrapper[T] {
+  pub w T;
+  pub fn own(self &) Wrapper {Wrapper[w];}
+  pub fn otherBare(self &, b Box) {}        //~ ErrorArgCount:30 "is generic, so it is not a type"
+  pub fn otherEnumBare(self &, m Maybe) {}  //~ ErrorArgCount:34 "is generic, so it is not a type"
+  pub fn otherPath(self &) i64 {Stocked.restock();}  //~ ErrorArgCount:41 "Stocked is generic, so restock belongs to each of its instances"
+}
+
+fn instantiatesWrapper() {
+  imm w = Wrapper[i64][1i64];
+}

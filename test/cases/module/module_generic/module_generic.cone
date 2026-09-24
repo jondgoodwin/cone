@@ -1,0 +1,83 @@
+// GENERIC MODULES, treated as generic types are [Jon 23 Sep]: written with
+// type parameters on the 'mod' line, instantiated as 'stack[i64]' where they
+// are used, and memoized, so the same arguments anywhere are one instance.
+//
+// This is the designated file of the scenario's folder, so it is the root
+// module, and each file beside it that opens with 'mod' is a one-file submodule:
+//   seq.cone    hands out numbers in turn, so each 'init' can say when it ran,
+//               and declares module trait Counter
+//   stack.cone  'mod stack[T] is Counter': globals of its own, one of them a T,
+//               an 'init' and a 'final', a private function, a type alias of T,
+//               a type holding a T, its own name used inside its body bare and
+//               with its type argument, and Counter's default taken
+//   tally.cone  'mod tally[T]': a second generic module
+//   user.cone   a sister using stack[i64], the root's instance, and tally at a
+//               type it declares itself
+//
+// Each instance is a module of its own. stack[i64] and stack[f64] count and
+// sum separately; stack[i64] is the one instance whether the root or user
+// names it, so user's two pushes land in the root's count. Each instance runs
+// its own 'init' and 'final', in the module order: after its generic, which
+// follows what the generic imports, and after the modules its type arguments
+// come from. So stack[i64] and stack[f64] run right after stack, in the order
+// they were made, and tally[user.Tag] runs after user, which declares Tag --
+// after user's own 'init'. The finalizers run in exactly the reverse.
+
+mod module_generic;
+
+import stdio use *;
+
+imm order i64;
+
+fn @initpure init() {
+  order = seq.take();
+  printStr("init root, order ");
+  printInt(order);
+  printStr("\n");
+}
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn showF(label &[]u8, n f64) {
+  printStr(label);
+  printStr(" = ");
+  printFloat(n);
+  printStr("\n");
+}
+
+fn main() i32 {
+  initAll();
+  show("push i64", stack[i64].push(3i64));
+  user.pushTwice(4i64);
+  showF("push f64", stack[f64].push(1.5d));
+  showF("push f64", stack[f64].push(2.25d));
+  user.seeTag();
+  user.seeTag();
+
+  // Each instance's own globals
+  show("stack[i64].count", stack[i64].count);
+  show("stack[i64].pushes", stack[i64].pushes());
+  show("stack[i64].pushesAgain", stack[i64].pushesAgain());
+  show("stack[i64].twice", stack[i64].twice());
+  show("stack[f64].twice", stack[f64].twice());
+  show("stack[i64].top", stack[i64].top);
+  show("stack[i64].sum", stack[i64].sum);
+  show("stack[f64].count", stack[f64].count);
+  showF("stack[f64].top", stack[f64].top);
+  showF("stack[f64].sum", stack[f64].sum);
+  show("tally[user.Tag].seen", tally[user.Tag].seen);
+
+  // When each 'init' ran
+  show("stack[i64].order", stack[i64].order);
+  show("stack[f64].order", stack[f64].order);
+  show("user.order", user.order);
+  show("tally[user.Tag].order", tally[user.Tag].order);
+  show("order", order);
+  finalAll();
+  0i32;
+}

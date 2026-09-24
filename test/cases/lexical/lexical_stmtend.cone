@@ -1,0 +1,99 @@
+// Where one statement ends: at its ';', and nowhere else.
+//
+// The lexer keeps no record of lines or indentation, so a statement runs on
+// across lines until its ';' arrives, whatever the follow-on line starts with.
+// The operators that read as either prefix or infix -- '-', '*', '&', '|' --
+// are the cases that mattered when a line end could end a statement, so each
+// is shown continuing a statement it would once have started. The ';' before
+// a closing '}' is required like any other, and a block used as a value still
+// yields its last statement's value with the ';' written.
+
+mod lexical_stmtend;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn semicolons() {
+  // Several statements on one line, each ended by its own ';'
+  mut a = 1; mut b = 2; a = a + b;
+  show("semicolon-separated", a);
+
+  // An empty statement is just a ';'
+  ;
+  show("empty-statement", 1);
+}
+
+fn continuation() {
+  mut a = 10;
+  mut b = 6;
+
+  // The follow-on line is not indented, and '-' is still subtraction: the
+  // statement has not ended, because nothing but ';' ends one
+  mut joined = a
+- b;
+  show("unindented-continues", joined);
+
+  // The same for '*', '&' and '|', which also read as prefix operators
+  mut product = a
+* b;
+  show("unindented-multiplies", product);
+  mut masked = a
+& b;
+  show("unindented-ands", masked);
+  mut merged = a
+| b;
+  show("unindented-ors", merged);
+
+  // Nor does indenting the follow-on line mean anything
+  mut indented = a
+    - b;
+  show("indented-continues", indented);
+}
+
+fn parens() {
+  mut a = 10;
+  mut b = 6;
+
+  // A statement spans lines inside parentheses, brackets and call arguments
+  // exactly as it does outside them
+  mut sum = (a
++ b
+  );
+  show("open-paren-continues", sum);
+
+  show(
+"call-spans-lines",
+    a + b);
+
+  mut elems = [a
+- b, a
++ b];
+  show("bracket-continues", elems[0] + elems[1]);
+}
+
+fn blockValues() {
+  // A block used as a value yields its last statement's value, with the ';'
+  // written after that statement as after every other
+  imm v = {
+    mut t = 3;
+    t * 2;
+  };
+  show("block-value", v);
+
+  imm w = if v > 5 {1;} else {0;};
+  show("if-value", w);
+}
+
+fn main() i32 {
+  semicolons();
+  continuation();
+  parens();
+  blockValues();
+  0i32;
+}

@@ -1,0 +1,121 @@
+// How long a virtual reference lives.
+//
+// doc/reference/refvirtref.html says a virtual reference is a borrowed reference that
+// carries a vtable alongside the value pointer, so the lifetime rules of
+// doc/reference/refborref.html are its rules too: it may not be stored where it
+// outlives what it points at, nor returned past it.
+//
+// It is built by coercion rather than by a borrow expression -- '&<Shape c' is
+// refused in name resolution (trait_nameres), and the only way to one is to
+// coerce a plain '&Circle' into it. That coercion is where the lifetime used to
+// be dropped: the type coerced to is a declared node shared by everything
+// written with it, carrying the global scope, and the cast was typed with it
+// directly. So every one of the stores and returns below compiled clean while
+// the same shape on a plain '&Circle' was refused. Widening a reference to a
+// base trait's own reference type, '&Circle' into '&Shape', is the same
+// coercion and was dropped the same way, so it is here beside it.
+//
+// Every diagnostic here is a flow diagnostic. Flow keeps going after one of its
+// own within a function, so the stores share functions; each returning case has
+// a function of its own, because a function has one return.
+
+mod trait_flow_vref_lifetime;
+
+trait Shape {
+  pub fn area(self &) i32;
+}
+
+struct Circle is Shape {
+  pub r i32;
+  fn area(self &) i32 {self.r;}
+}
+
+imm global = Circle[5];
+
+fn sameVref(s &<Shape) &<Shape { s; }
+fn holdVref(dst &mut &<Shape, src &<Shape) { *dst = src; }
+
+// -------- stored past the block the value lives in --------
+
+fn stores() {
+  mut v &<Shape = &global;
+  mut w &Shape = &global;
+  {
+    imm c = Circle[3];
+
+    // The coercion into a virtual reference keeps what it was borrowed from
+    v = &c;                 //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
+
+    // Widening to the base trait's own reference type is the same coercion
+    w = &c;                 //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
+
+    // A call handed a virtual-reference borrow returns one no longer-lived than
+    // the narrowest borrow it was given, exactly as ref_flow_call establishes
+    // for a plain reference
+    v = sameVref(&c);       //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
+
+    // The third consumer of a borrow's scope: a '&mut &<Shape' argument is a
+    // place the callee may store the other argument, and 'held' outlives it
+    holdVref(&mut v, &c);   //~ ErrorCallEscape:13 "Call could store a borrowed reference"
+
+    // What is allowed beside them, which is what makes these a lifetime rule
+    // rather than a refusal of the coercion itself: a virtual reference to a
+    // global, and one stored in a binding of this very block
+    v = &global;
+    w = &global;
+    imm inner &<Shape = &c;
+    inner.area();
+  }
+}
+
+// -------- returned past the value it points at --------
+
+fn returnsLocalVref() &<Shape {
+  imm c = Circle[3];
+  &c;                       //~ ErrorEscape:3 "Returned borrowed reference outlives the local value"
+}
+
+fn returnsLocalTrait() &Shape {
+  imm c = Circle[3];
+  &c;                       //~ ErrorEscape:3 "Returned borrowed reference outlives the local value"
+}
+
+fn returnsCallOnLocal() &<Shape {
+  imm c = Circle[3];
+  sameVref(&c);             //~ ErrorEscape:11 "Returned borrowed reference outlives the local value"
+}
+
+// A global outlives the call, so a virtual reference to one is returnable
+fn returnsGlobalVref() &<Shape {
+  &global;
+}
+
+// So does a parameter's, which is scope 1 -- the returned reference is the
+// caller's own borrow coming back
+fn returnsParmVref(c &Circle) &<Shape {
+  &*c;
+}
+
+fn returnsParmPassedThrough(s &<Shape) &<Shape {
+  sameVref(s);
+}
+
+// -------- what is deliberately not checked --------
+
+// A lifetime does not survive a variable (compiler/c/doc/phases/flow.md, hazard 3): a
+// declared type carries no scope, so a borrow laundered through a binding is
+// forgotten. Narrowing a virtual reference back to its concrete type binds such
+// a variable, and is forgotten for the same reason a plain '&Circle' held in
+// one is -- ref_flow_return asserts that absence. Both compile clean here.
+fn narrowingIsNotTracked() i32 {
+  mut out &Circle = &global;
+  {
+    imm c = Circle[3];
+    imm v &<Shape = &c;
+    match v {
+      case imm n &Circle {out = n;}
+      else {}
+    }
+  }
+  out.r;
+}

@@ -68,7 +68,7 @@ every function that follows it. Warnings never gate.
 injected nodes. That is safe only because generation does not run when
 `errors != 0`.
 
-> `test/cases/core/core-flow-gate.cone` is the scenario that pins this. The
+> `test/cases/core/core_flow_gate.cone` is the scenario that pins this. The
 > delta is easy to misread as a global `errors == 0` check — trust the scenario
 > over any comment that says so.
 
@@ -96,7 +96,7 @@ Put these first, because every one of them is load-bearing.
    `lifeMatches` exists and is called from nowhere.
 3. **Lifetime tracking does not survive a variable.**
    `mut r &i32; r = &local; return r` compiles clean: assignment does not carry
-   the borrow's scope onto the variable's declared type. `ref-flow-return.cone`
+   the borrow's scope onto the variable's declared type. `ref_flow_return.cone`
    asserts this absence deliberately.
 4. **Flow is path-insensitive and does not iterate.** No CFG, no lattice, no
    join, no fixed point. `ifFlow` walks both arms against one shared mutable
@@ -436,8 +436,8 @@ the built-in permissions are zero-sized. See [Generation](generation.md),
 | `genllvm/genlalloc.c` | `genlRcCounter`, `genlDealiasNodes` | what consumes everything flow injected |
 
 Test sources that pin behavior precisely: `test/cases/move/move-flow-*.cone`,
-`test/cases/region/region-flow*.cone`, `test/cases/ref/ref-flow.cone`,
-`test/cases/ref/ref-flow-return.cone`, `test/cases/core/core-flow-gate.cone`.
+`test/cases/region/region_flow*.cone`, `test/cases/ref/ref_flow.cone`,
+`test/cases/ref/ref_flow_return.cone`, `test/cases/core/core_flow_gate.cone`.
 
 ## 10. What lives elsewhere
 

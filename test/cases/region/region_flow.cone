@@ -1,0 +1,102 @@
+// An owning reference is a move type when it cannot be aliased, and its
+// permission governs writes through it exactly as a borrowed reference's does.
+//
+// 'move' establishes the five ways a type acquires move semantics and leaves
+// this one here: ir/types/reference.c:45 infects a reference type when its
+// permission lacks MayAlias or its region is itself a move type. A borrow can
+// reach neither -- '&uni' is rejected outright -- so an owning region is the
+// only way to build a reference that moves, which makes this the group's.
+//
+// Every diagnostic is in one function on purpose. Data-flow analysis runs per
+// function and only when that function's own type check raised nothing:
+// fnDclTypeCheck compares the error count against the one it entered with, so
+// a function that raises one reports no further flow diagnostics of its own,
+// while a later function still gets its own flow pass.
+
+mod region_flow;
+
+typedef SoPair (+so i32, +so i32);
+
+struct Plain {
+  pub n i32;
+}
+
+// An enrichment: Plain's representation under a second name
+struct RichPlain extends Plain {
+  pub fn doubled(self &) i32 { n * 2; }
+}
+
+fn soPair() +so i32, +so i32 {
+  imm a = +so 1i32;
+  imm b = +so 2i32;
+  a, b;
+}
+
+fn soPairAlias() SoPair {
+  imm a = +so 1i32;
+  imm b = +so 2i32;
+  a, b;
+}
+
+fn moving() {
+  // 'so' is declared 'struct @move' in core, so every reference into it is a
+  // move type however aliasable its permission: the second read of the source
+  // finds nothing there
+  imm sole = +so 1;
+  imm moved = sole;
+  imm again = sole;             //~ ErrorMove "has been moved out"
+
+  // The other path to the same place: an allocation with no stated permission is
+  // 'uni', which lacks MayAlias, so an 'rc' reference moves too even though the
+  // region counts references
+  imm unique = +rc 2;
+  imm taken = unique;
+  imm twice = unique;           //~ ErrorMove "has been moved out"
+
+  // An owner handed to an enrichment's reference type moves too: the reference
+  // crosses in a recast, which once hid the source, leaving two owners
+  imm based = +so Plain[6];
+  imm enriched +so RichPlain = based;
+  imm stale = based;            //~ ErrorMove "has been moved out"
+
+  // For contrast, the aliasable permission on the same region copies, and the
+  // source is still there. Two reads of it raise nothing.
+  imm shared = +rc-mut 3;
+  imm copy1 = shared;
+  imm copy2 = shared;
+
+  // The permission belongs to the reference, so a 'ro' allocation may not be
+  // written through any more than a 'ro' borrow may
+  imm readonly = +rc-ro 4;
+  *readonly = 5;                //~ ErrorNoMut "permission to modify lval"
+
+  // A slice type written out in source moves exactly as the inferred one does.
+  // These are two spellings of one type, and only the spelling the allocation
+  // builds used to acquire the move semantics: written out, the same type was
+  // copyable, so two variables were left owning one allocation with nothing
+  // said about it.
+  imm slice +[]so i32 = +[]so [3; 1i32];
+  imm grabbed = slice;
+  imm reused = slice;           //~ ErrorMove "has been moved out"
+
+  // A tuple carrying an owning reference is a move type too, so destructuring
+  // it hands every element to a new owner and leaves nothing to destructure a
+  // second time. Written as a typedef of the tuple it moves the same way: a
+  // typedef is transparent, and the two assignment paths that read the tuple's
+  // element list resolve it to find one.
+  imm pair = soPair();
+  imm first +so i32;
+  imm second +so i32;
+  first, second = pair;
+  imm third +so i32;
+  imm fourth +so i32;
+  third, fourth = pair;         //~ ErrorMove "has been moved out"
+
+  imm aliased = soPairAlias();
+  imm fifth +so i32;
+  imm sixth +so i32;
+  fifth, sixth = aliased;
+  imm seventh +so i32;
+  imm eighth +so i32;
+  seventh, eighth = aliased;    //~ ErrorMove "has been moved out"
+}

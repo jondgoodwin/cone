@@ -1,0 +1,33 @@
+// Assigning to an 'rc' reference variable that was declared without an initial
+// value stores into it without releasing what the uninitialized storage happened
+// to contain.
+//
+// genlStore decrements an lval's previous reference count before storing the new
+// value, which is right for a variable that already holds a reference and wrong
+// for one that has never held anything. Flow analysis marks the first assignment
+// to a variable it knows is uninitialized, and genlStore skips the release there.
+//
+// The same mark gates the free an 'so' reassignment emits; region_so_reassign
+// covers that region, and the moved-out variable the mark also stands for.
+
+mod region_uninit_owning;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn f() {
+  mut later +rc-mut i32;
+  later = +rc-mut 9;
+  show("assigned-after-declaring", i64[*later]);
+}
+
+fn main() i32 {
+  f();
+  0i32;
+}

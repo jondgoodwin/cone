@@ -1,0 +1,717 @@
+// A finalizer runs once, at the end of the value's life, and never over storage
+// that holds no value.
+//
+// flowScopeDealias built a drop call for every variable in scope whose type has
+// a drop fn, whether or not the variable had ever been given a value and whether
+// or not its value had been moved out. A struct with 'final' that was only
+// declared had its finalizer run over whatever its slot happened to hold, and
+// one whose value was moved to another variable was finalized twice: once as
+// the source, once as the destination. The owning-reference arm of the same
+// loop already skipped both; the drop-fn arm now does too.
+//
+// Each finalizer counts in a global, because nothing it does is visible any
+// other way. 'mut' and 'imm' are both here because delayed initialization is
+// allowed for either. A '@move' struct is here because move-ness is inferred
+// from 'final' and declared by the attribute, and either could reach a different
+// path. A struct holding a finalized field is here because its drop fn is the
+// generated one, not the finalizer itself.
+//
+// A value crossing between an enrichment and its base is moved too, in either
+// direction. The two share one representation, so type check hands the value
+// over wrapped in a recast (a CastNode with no FlagConvert) rather than
+// converting it. Flow looked for the source variable, and for the scope's
+// result, only through a name, field, index or dereference, so the recast hid
+// the variable and it was never deactivated. The value was finalized twice,
+// once under each name, and the source stayed usable after the move.
+//
+// A field moved out as the value a function hands back leaves the variable
+// that held it, exactly as a field moved into a local does. The scope's result
+// was exempted from release only when it named a variable whole, so a variable
+// whose field was handed back was finalized with that field still in it, and
+// the caller finalized the field again. Whatever else the variable held is not
+// finalized: moving a field out gives up the whole variable.
+//
+// A method whose 'self' is taken by value owns the value it was called on, as a
+// function owns a by-value parameter, and finalizes it as it returns unless it
+// hands it on. Nothing finalized inside a type's own methods, because the
+// type's drop fn was settled only after they had been checked and flow
+// analyzed: a by-value 'self' leaked, and so did a local of the type's own
+// type. Every such method below is on a type with a finalizer, its own or a
+// field's, and on a generic's instance and an enum's variant, whose methods are
+// checked by the same step.
+//
+// An enum's common field is spliced into each variant, so the variant's own drop
+// fn finalizes it, once, beside the variant's own fields and finalizer. An enum
+// whose common field finalized did not compile: the enum generated a drop fn of
+// its own, which as a method of the enum became a requirement on every variant,
+// and no variant's drop, taking its own self, met it. A generic enum's instance
+// cloned it into each variant instead, and the compiler stopped on its
+// pre-lowered body. A trait requiring a finalizing field was refused the same
+// way on every implementer. A trait or an enum now generates no drop fn.
+//
+// Nor is an enum's own 'final' its drop fn: it is never generated for the enum,
+// only cloned into each variant, so the drop call built for a value typed as the
+// enum reached no function and the compiler crashed -- as a local, a parameter,
+// a field, and on a generic enum's instance. A value typed as the enum itself is
+// not finalized, whether or not the enum declares a 'final': that needs a drop
+// dispatching on the tag, which is not built. Typed as a variant, it is.
+
+mod struct_final_once;
+
+import stdio use *;
+
+mut finalized = 0;
+
+struct Fin {
+  pub id i32;
+
+  fn final(self &uni) {
+    finalized = finalized + 1;
+  }
+}
+
+struct @move Handle {
+  pub id i32;
+
+  fn final(self &uni) {
+    finalized = finalized + 10;
+  }
+}
+
+// No finalizer of its own: its drop fn is generated to finalize 'held'
+struct Outer {
+  pub held Fin;
+  pub tag i32;
+}
+
+// An enrichment of Outer: its values and Outer's are one representation, each
+// finalizing its 'held' through the drop fn generated for it
+struct RichOuter extends Outer {
+  pub fn heldId(self &) i32 { held.id; }
+}
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn neverAssignedMut() {
+  mut f Fin;
+}
+
+fn neverAssignedImm() {
+  imm f Fin;
+}
+
+fn assignedLater() {
+  mut f Fin;
+  f = Fin[1];
+}
+
+fn initialized() {
+  imm f = Fin[2];
+}
+
+// 'g' owns the value at scope exit; 'f' no longer does
+fn movedOut() {
+  imm f = Fin[3];
+  imm g = f;
+}
+
+fn moveNeverAssigned() {
+  mut h Handle;
+}
+
+fn moveInitialized() {
+  imm h = Handle[4];
+}
+
+fn nestedNeverAssigned() {
+  mut o Outer;
+}
+
+fn nestedInitialized() {
+  imm o = Outer[Fin[5], 6];
+}
+
+// 'r' owns the value at scope exit; 'o' no longer does
+fn movedIntoEnrichment() {
+  imm o = Outer[Fin[7], 8];
+  imm r RichOuter = o;
+}
+
+fn movedIntoBase() {
+  imm r = RichOuter[Fin[9], 10];
+  imm o Outer = r;
+}
+
+fn takeOuter(o Outer) {
+}
+
+fn takeRich(r RichOuter) {
+}
+
+// The parameter owns the value, and the callee finalizes it
+fn passedAsBase() {
+  imm r = RichOuter[Fin[11], 12];
+  takeOuter(r);
+}
+
+fn passedAsEnrichment() {
+  imm o = Outer[Fin[13], 14];
+  takeRich(o);
+}
+
+// The local is the function's result, so the caller's variable owns it
+fn richAsOuter() Outer {
+  imm r = RichOuter[Fin[15], 16];
+  r;
+}
+
+fn outerAsRich() RichOuter {
+  imm o = Outer[Fin[17], 18];
+  o;
+}
+
+fn returnedAsBase() {
+  imm o = richAsOuter();
+}
+
+fn returnedAsEnrichment() {
+  imm r = outerAsRich();
+}
+
+// Assigned into a variable declared without a value, so the destination held
+// nothing before and exactly one value is finalized
+fn assignedIntoEnrichment() {
+  imm o = Outer[Fin[19], 20];
+  mut r RichOuter;
+  r = o;
+}
+
+// A field handed back moves out of the variable holding it, which the scope
+// then leaves alone; the caller's variable finalizes the field
+fn heldOfParam(o Outer) Fin {
+  o.held;
+}
+
+fn heldOfLocal() Fin {
+  imm o = Outer[Fin[21], 22];
+  o.held;
+}
+
+fn heldReturned(o Outer) Fin {
+  return o.held;
+}
+
+struct Nest {
+  pub outer Outer;
+}
+
+fn heldOfNested(n Nest) Fin {
+  n.outer.held;
+}
+
+fn heldInTuple(o Outer) (Fin, i32) {
+  (o.held, 1);
+}
+
+// A copied field leaves the variable owning its value, so it is finalized here
+fn tagOfParam(o Outer) i32 {
+  o.tag;
+}
+
+fn fieldOfParamHandedBack() {
+  imm f = heldOfParam(Outer[Fin[23], 24]);
+}
+
+fn fieldOfLocalHandedBack() {
+  imm f = heldOfLocal();
+}
+
+fn fieldReturned() {
+  imm f = heldReturned(Outer[Fin[25], 26]);
+}
+
+fn nestedFieldHandedBack() {
+  imm f = heldOfNested(Nest[Outer[Fin[27], 28]]);
+}
+
+fn fieldHandedBackInTuple() {
+  mut f Fin;
+  mut t i32;
+  f, t = heldInTuple(Outer[Fin[29], 30]);
+}
+
+fn copiedFieldHandedBack() {
+  tagOfParam(Outer[Fin[31], 32]);
+}
+
+// A finalizer of its own, and methods taking 'self' by value
+struct Owned {
+  pub id i32;
+
+  fn final(self &uni) {
+    finalized = finalized + 1;
+  }
+
+  pub fn idOf(self) i32 {
+    id;
+  }
+
+  // Handed on, so the caller's variable finalizes it
+  pub fn passOn(self) Owned {
+    self;
+  }
+
+  // A local of the type's own type, finalized as the method returns
+  pub fn madeInside() i32 {
+    imm o = Owned[33];
+    o.id;
+  }
+}
+
+// No finalizer of its own: its generated drop fn finalizes 'held'
+struct Keeper {
+  pub held Fin;
+  pub tag i32;
+
+  pub fn tagOf(self) i32 {
+    tag;
+  }
+
+  pub fn passOn(self) Keeper {
+    self;
+  }
+
+  // Moves the field out of 'self', which then finalizes nothing
+  pub fn giveHeld(self) Fin {
+    held;
+  }
+
+  // Moves the field into a local, which finalizes it
+  pub fn heldId(self) i32 {
+    imm h = self.held;
+    h.id;
+  }
+}
+
+struct Wrap[T] {
+  pub v T;
+  pub n i32;
+
+  pub fn nOf(self) i32 {
+    n;
+  }
+
+  pub fn unwrap(self) T {
+    v;
+  }
+}
+
+enum Slot {
+  struct Filled {
+    pub f Fin;
+    pub k i32;
+
+    pub fn kOf(self) i32 {
+      k;
+    }
+  }
+
+  struct Vacant {}
+}
+
+// Its common field finalizes, and so does each variant through it
+enum Held {
+  pub f Fin;
+
+  struct Full {
+    pub n i32;
+
+    pub fn nOf(self) i32 {
+      n;
+    }
+  }
+
+  struct Bare {}
+
+  // A finalizer and a finalizing field of its own, beside the common field
+  struct Both {
+    pub g Fin;
+
+    fn final(self &uni) {
+      finalized = finalized + 100;
+    }
+  }
+}
+
+// The enum's own finalizer is a default each variant inherits
+enum HeldFinal {
+  pub f Fin;
+
+  fn final(self &uni) {
+    finalized = finalized + 100;
+  }
+
+  struct Only {
+    pub n i32;
+  }
+}
+
+enum HeldGeneric[T] {
+  pub f Fin;
+
+  struct Some {
+    pub x T;
+  }
+
+  struct None {}
+}
+
+// Its own finalizer, and no finalizing field
+enum OwnFinal {
+  pub id i32;
+
+  fn final(self &uni) {
+    finalized = finalized + 100;
+  }
+
+  struct Some {
+    pub n i32;
+  }
+
+  struct None {}
+}
+
+enum OwnFinalGeneric[T] {
+  pub id i32;
+
+  fn final(self &uni) {
+    finalized = finalized + 100;
+  }
+
+  struct Some {
+    pub x T;
+  }
+
+  struct None {}
+}
+
+struct Pocket {
+  pub o OwnFinal;
+  pub k i32;
+}
+
+// The field is a requirement, which the implementer meets by declaring it
+trait HasFin {
+  pub f Fin;
+}
+
+struct Carrier is HasFin {
+  pub f Fin;
+  pub z i32;
+}
+
+fn methodSelfOwnFinal() {
+  imm o = Owned[34];
+  o.idOf();
+}
+
+fn methodSelfPassedOn() {
+  imm o = Owned[35];
+  imm p = o.passOn();
+}
+
+fn methodOwnTypeLocal() {
+  Owned.madeInside();
+}
+
+fn methodSelfFieldFinal() {
+  imm k = Keeper[Fin[36], 37];
+  k.tagOf();
+}
+
+fn methodSelfFieldPassedOn() {
+  imm k = Keeper[Fin[38], 39];
+  imm p = k.passOn();
+}
+
+fn methodSelfFieldHandedBack() {
+  imm k = Keeper[Fin[40], 41];
+  imm f = k.giveHeld();
+}
+
+fn methodSelfFieldToLocal() {
+  imm k = Keeper[Fin[42], 43];
+  k.heldId();
+}
+
+fn genericMethodSelf() {
+  imm w = Wrap[Fin][Fin[44], 45];
+  w.nOf();
+}
+
+fn genericMethodSelfFieldHandedBack() {
+  imm w = Wrap[Fin][Fin[46], 47];
+  imm f = w.unwrap();
+}
+
+fn variantMethodSelf() {
+  imm s = Slot.Filled[Fin[48], 49];
+  s.kOf();
+}
+
+fn commonFieldVariant() {
+  imm h = Held.Full[Fin[50], 51];
+}
+
+fn commonFieldEmptyVariant() {
+  imm h = Held.Bare[Fin[52]];
+}
+
+fn commonFieldVariantOwnFinal() {
+  imm h = Held.Both[Fin[53], Fin[54]];
+}
+
+fn commonFieldVariantMethodSelf() {
+  imm h = Held.Full[Fin[55], 56];
+  h.nOf();
+}
+
+// 'k' owns the value at scope exit; 'h' no longer does
+fn commonFieldVariantMoved() {
+  imm h = Held.Full[Fin[57], 58];
+  imm k = h;
+}
+
+fn commonFieldEnumFinal() {
+  imm h = HeldFinal.Only[Fin[59], 60];
+}
+
+fn commonFieldGenericVariant() {
+  imm h = HeldGeneric.Some[i32][Fin[61], 62];
+}
+
+fn traitFieldImplementer() {
+  imm c = Carrier[Fin[63], 64];
+}
+
+// Typed as the variant, the enum's finalizer runs through the variant's clone
+fn enumFinalAsVariant() {
+  imm o = OwnFinal.Some[65, 66];
+}
+
+// Typed as the enum, nothing is finalized, as for an enum with no finalizer
+fn enumFinalAsEnum() {
+  imm o OwnFinal = OwnFinal.Some[67, 68];
+}
+
+fn takeOwnFinal(o OwnFinal) {
+}
+
+fn enumFinalAsParam() {
+  takeOwnFinal(OwnFinal.Some[69, 70]);
+}
+
+fn enumFinalAsField() {
+  imm p = Pocket[OwnFinal.Some[71, 72], 73];
+}
+
+fn enumFinalGenericAsEnum() {
+  imm o OwnFinalGeneric[i32] = OwnFinalGeneric.Some[i32][74, 75];
+}
+
+fn commonFieldAsEnum() {
+  imm h Held = Held.Full[Fin[76], 77];
+}
+
+fn main() i32 {
+  finalized = 0;
+  neverAssignedMut();
+  show("mut-never-assigned", finalized);
+
+  finalized = 0;
+  neverAssignedImm();
+  show("imm-never-assigned", finalized);
+
+  finalized = 0;
+  assignedLater();
+  show("assigned-later", finalized);
+
+  finalized = 0;
+  initialized();
+  show("initialized", finalized);
+
+  finalized = 0;
+  movedOut();
+  show("moved-out", finalized);
+
+  finalized = 0;
+  moveNeverAssigned();
+  show("move-never-assigned", finalized);
+
+  finalized = 0;
+  moveInitialized();
+  show("move-initialized", finalized);
+
+  finalized = 0;
+  nestedNeverAssigned();
+  show("nested-never-assigned", finalized);
+
+  finalized = 0;
+  nestedInitialized();
+  show("nested-initialized", finalized);
+
+  finalized = 0;
+  movedIntoEnrichment();
+  show("moved-into-enrichment", finalized);
+
+  finalized = 0;
+  movedIntoBase();
+  show("moved-into-base", finalized);
+
+  finalized = 0;
+  passedAsBase();
+  show("passed-as-base", finalized);
+
+  finalized = 0;
+  passedAsEnrichment();
+  show("passed-as-enrichment", finalized);
+
+  finalized = 0;
+  returnedAsBase();
+  show("returned-as-base", finalized);
+
+  finalized = 0;
+  returnedAsEnrichment();
+  show("returned-as-enrichment", finalized);
+
+  finalized = 0;
+  assignedIntoEnrichment();
+  show("assigned-into-enrichment", finalized);
+
+  finalized = 0;
+  fieldOfParamHandedBack();
+  show("field-of-param-handed-back", finalized);
+
+  finalized = 0;
+  fieldOfLocalHandedBack();
+  show("field-of-local-handed-back", finalized);
+
+  finalized = 0;
+  fieldReturned();
+  show("field-returned", finalized);
+
+  finalized = 0;
+  nestedFieldHandedBack();
+  show("nested-field-handed-back", finalized);
+
+  finalized = 0;
+  fieldHandedBackInTuple();
+  show("field-handed-back-in-tuple", finalized);
+
+  finalized = 0;
+  copiedFieldHandedBack();
+  show("copied-field-handed-back", finalized);
+
+  finalized = 0;
+  methodSelfOwnFinal();
+  show("method-self-own-final", finalized);
+
+  finalized = 0;
+  methodSelfPassedOn();
+  show("method-self-passed-on", finalized);
+
+  finalized = 0;
+  methodOwnTypeLocal();
+  show("method-own-type-local", finalized);
+
+  finalized = 0;
+  methodSelfFieldFinal();
+  show("method-self-field-final", finalized);
+
+  finalized = 0;
+  methodSelfFieldPassedOn();
+  show("method-self-field-passed-on", finalized);
+
+  finalized = 0;
+  methodSelfFieldHandedBack();
+  show("method-self-field-handed-back", finalized);
+
+  finalized = 0;
+  methodSelfFieldToLocal();
+  show("method-self-field-to-local", finalized);
+
+  finalized = 0;
+  genericMethodSelf();
+  show("generic-method-self", finalized);
+
+  finalized = 0;
+  genericMethodSelfFieldHandedBack();
+  show("generic-method-self-field-handed-back", finalized);
+
+  finalized = 0;
+  variantMethodSelf();
+  show("variant-method-self", finalized);
+
+  finalized = 0;
+  commonFieldVariant();
+  show("common-field-variant", finalized);
+
+  finalized = 0;
+  commonFieldEmptyVariant();
+  show("common-field-empty-variant", finalized);
+
+  finalized = 0;
+  commonFieldVariantOwnFinal();
+  show("common-field-variant-own-final", finalized);
+
+  finalized = 0;
+  commonFieldVariantMethodSelf();
+  show("common-field-variant-method-self", finalized);
+
+  finalized = 0;
+  commonFieldVariantMoved();
+  show("common-field-variant-moved", finalized);
+
+  finalized = 0;
+  commonFieldEnumFinal();
+  show("common-field-enum-final", finalized);
+
+  finalized = 0;
+  commonFieldGenericVariant();
+  show("common-field-generic-variant", finalized);
+
+  finalized = 0;
+  traitFieldImplementer();
+  show("trait-field-implementer", finalized);
+
+  finalized = 0;
+  enumFinalAsVariant();
+  show("enum-final-as-variant", finalized);
+
+  finalized = 0;
+  enumFinalAsEnum();
+  show("enum-final-as-enum", finalized);
+
+  finalized = 0;
+  enumFinalAsParam();
+  show("enum-final-as-param", finalized);
+
+  finalized = 0;
+  enumFinalAsField();
+  show("enum-final-as-field", finalized);
+
+  finalized = 0;
+  enumFinalGenericAsEnum();
+  show("enum-final-generic-as-enum", finalized);
+
+  finalized = 0;
+  commonFieldAsEnum();
+  show("common-field-as-enum", finalized);
+
+  0i32;
+}

@@ -1,0 +1,53 @@
+// The kinds the grammar admits a 'trait' modifier on, and what each one it does
+// not build does when it is written anyway.
+//
+// 'trait' modifies a kind: 'struct trait X' is the abstraction of a struct, and
+// 'trait X' by itself means exactly that. So the modifier is not a kind of its
+// own and cannot stack -- writing it twice says nothing the one spelling did not.
+//
+// 'mod' and 'actor' are the other two kinds that carry abstractions, spelled
+// 'mod trait' and 'actor trait'. The module's is built, and the module group owns
+// it with the rest of 'mod'. The actor's is not, and the grammar admits the
+// spelling so that it is settled now rather than designed when the semantics
+// arrive. Holding the word is what makes that promise: a program written today
+// pays one rename, where a program that bound it would pay a rewrite.
+//
+// 'actor' by itself is unbuilt too, so both its forms are here.
+//
+// Parse stage, which is why this is its own file: a parse diagnostic stops the
+// compile before name resolution, so nothing here is resolved and nothing else
+// could be asserted alongside. Each declaration is at the top level, where
+// recovery from one reaches the next -- an unbuilt kind's body is skipped whole
+// rather than read on as global statements.
+//
+// 'enum trait' is not here. An enum is refused the modifier for a reason of its
+// own -- its variant set is its identity, so no abstraction corresponds to one --
+// and enum_parse_decl owns that whole story.
+
+mod trait_parse_kind_modifier;
+
+// The modifier does not stack, whether the kind was left implicit or written.
+trait trait Doubled {        //~ ErrorDupTrait:7 "already means 'struct trait'"
+  pub fn reading(self &) i32;
+}
+
+struct trait trait Tripled { //~ ErrorDupTrait:14 "already means 'struct trait'"
+  pub fn reading(self &) i32;
+}
+
+// 'actor': an actor is struct-like in its state and in how its methods are
+// spelled, so the abstraction of one is the same idea in that family.
+actor trait Behaviour {      //~ ErrorUnbuiltKind:1 "abstraction is spelled 'actor trait'"
+  pub fn handle(self &) i32;
+}
+
+actor Worker {               //~ ErrorUnbuiltKind:1 "'actor' names a kind"
+  pub queued i32;
+}
+
+// A declaration after the last unbuilt kind, so that skipping its body is shown
+// to land back on the global statement stream rather than swallowing the rest of
+// the file.
+struct Tail {
+  pub n i32;
+}

@@ -1,0 +1,321 @@
+// A struct as data: declaring fields, building values, reading and changing
+// them, and what happens when a struct value is copied around.
+//
+// Everything a struct value holds is printed, because a constructor that
+// compiles is not a constructor that put the values in the right fields --
+// positional and named forms have to agree, and a defaulted field has to come
+// out with its default rather than whatever was next in the list.
+//
+// Methods, operator methods and finalizers are in struct_methods; opaque types
+// cannot be instantiated and so are in struct_opaque. This file declares no
+// method at all, so a failure here is about field layout and nothing else.
+
+mod struct_success;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn showF(label &[]u8, n f64) {
+  printStr(label);
+  printStr(" = ");
+  printFloat(n);
+  printStr("\n");
+}
+
+// -------- declaration --------
+
+// A field states its type; a trailing field may also state a default value
+struct Point {
+  pub x i32;
+  pub y i32;
+  pub z i32 = 7;
+}
+
+// A field may declare its own permission ahead of its name
+struct Holder {
+  pub mut count i32;
+}
+
+// A struct with no fields at all is legal and its values may be passed around
+struct Empty {
+}
+
+// A field's type may be another struct, so struct values nest
+struct Segment {
+  pub head Point;
+  pub tail Point;
+}
+
+// A global's initializer may be a struct literal whose fields are struct
+// literals: generation builds the whole value as one constant, level by level,
+// and a nested literal's defaulted field is filled in there as in a function
+imm route = Segment[Point[21, 22, 23], Point[24, 25]];
+
+// -------- construction --------
+
+fn construction() {
+  // Positional: values are matched to fields in declaration order
+  imm a = Point[1, 2, 3];
+  show("positional-x", a.x);
+  show("positional-y", a.y);
+  show("positional-z", a.z);
+
+  // Named: order is free, and the compiler puts each value in its own field
+  imm b = Point[y: 20, x: 10, z: 30];
+  show("named-x", b.x);
+  show("named-y", b.y);
+  show("named-z", b.z);
+
+  // A field with a default may be left out of either form
+  imm c = Point[4, 5];
+  show("default-omitted", c.z);
+  imm d = Point[x: 6, y: 7];
+  show("default-omitted-named", d.z);
+
+  // A field's declared permission is part of the field, not of the constructor
+  mut h = Holder[count: 3];
+  show("perm-field", h.count);
+
+  // A zero-size value still constructs and still copies
+  imm e = Empty[];
+  imm e2 = e;
+
+  // A struct-typed field is built with its own constructor
+  imm s = Segment[Point[1, 2, 3], Point[4, 5, 6]];
+  show("nested-head-x", s.head.x);
+  show("nested-tail-z", s.tail.z);
+
+  // The same nesting as a global, built once rather than on each call
+  show("global-nested-head-y", route.head.y);
+  show("global-nested-tail-x", route.tail.x);
+  show("global-nested-tail-default", route.tail.z);
+}
+
+// -------- field access --------
+
+fn access() {
+  mut p = Point[1, 2, 3];
+
+  // A field is read and written through '.'
+  p.x = 40;
+  p.y = p.x + 2;
+  show("assigned-field", p.x);
+  show("field-from-field", p.y);
+
+  // A nested field is reached one '.' at a time
+  mut s = Segment[Point[1, 2, 3], Point[4, 5, 6]];
+  s.tail.y = s.head.y + 100;
+  show("nested-assign", s.tail.y);
+
+  // A reference to a struct reaches the fields without being dereferenced
+  imm rp = &mut p;
+  rp.x = 60;
+  show("field-through-ref", p.x);
+
+  // A field may be borrowed on its own. The '&' binds to the name before the
+  // '.', so the parentheses are what make this a reference to the field
+  // rather than a field of a reference.
+  imm r = &(p.z);
+  show("field-borrow", *r);
+
+  // A struct may be declared without a value and assigned one later. It is the
+  // whole value that flow analysis tracks: filling the fields in one at a time
+  // instead leaves the variable uninitialized as far as it is concerned.
+  mut late Point;
+  late = Point[11, 12, 13];
+  show("late-init", late.x + late.y + late.z);
+
+  // 'with' makes a value the subject of the block, so '.name' reaches its
+  // fields without repeating the value's name
+  mut w = Point[0, 0, 0];
+  with &mut w {
+    .x = 3;
+    .y = .x * 2;
+    .z = .x + .y;
+  }
+  show("with-x", w.x);
+  show("with-y", w.y);
+  show("with-z", w.z);
+}
+
+// -------- copying --------
+
+// A struct parameter receives a copy, so changing it cannot reach the caller
+fn shift(mut p Point) Point {
+  p.x = p.x + 1000;
+  p;
+}
+
+fn copying() {
+  mut original = Point[1, 2, 3];
+
+  // Assignment copies every field
+  mut duplicate = original;
+  duplicate.x = 99;
+  show("copy-source-unchanged", original.x);
+  show("copy-target-changed", duplicate.x);
+
+  // So does passing to and returning from a function
+  imm shifted = shift(original);
+  show("arg-source-unchanged", original.x);
+  show("returned-copy", shifted.x);
+
+  // A whole struct value may be assigned over another one
+  original = Point[7, 8, 9];
+  show("whole-assign-x", original.x);
+  show("whole-assign-z", original.z);
+}
+
+// -------- fields of other types --------
+
+// A field's type may be any type, and f32 fields prove the compiler is not
+// quietly treating every field as a machine word
+struct Circle {
+  pub radius f32;
+  pub filled Bool;
+}
+
+fn othertypes() {
+  imm c = Circle[2.5, true];
+  showF("float-field", f64[c.radius]);
+  if c.filled {
+    show("bool-field", 1);
+  }
+}
+
+// -------- interaction with control flow --------
+
+// A struct value is an ordinary value, so it flows through branches and loops
+fn pick(n i32) Point {
+  if n > 0 {
+    return Point[1, 1, 1];
+  }
+  Point[2, 2, 2];
+}
+
+fn controlflow() {
+  show("returned-from-branch", pick(1).x);
+  show("returned-from-fallthrough", pick(0).x);
+
+  // A struct chosen by an 'if' expression
+  imm chosen = if pick(1).x == 1 {Point[5, 6, 7];} else {Point[0, 0, 0];};
+  show("if-expression-struct", chosen.y);
+
+  // A struct accumulated across loop iterations
+  mut acc = Point[0, 0, 0];
+  mut i = 1;
+  while i <= 4 {
+    acc.x = acc.x + i;
+    acc.y = acc.y + acc.x;
+    i++;
+  }
+  show("loop-accumulated-x", acc.x);
+  show("loop-accumulated-y", acc.y);
+}
+
+// -------- structs that reach themselves --------
+
+// A struct may hold itself, or another struct that holds it, through a
+// reference. All three forms were refused until analysis learned to answer a
+// type still being laid out rather than refuse it, so Cone could not express a
+// linked list or a tree at all.
+//
+// What separates them from the infinite forms is not recursion but size, and it
+// belongs to the type being asked. A reference answers its own size -- a pointer
+// is a pointer whatever it points at -- so a cycle through one always
+// terminates. struct_typecheck_nosize holds the by-value forms that are still
+// refused.
+//
+// Declared and reached by reference rather than built and traversed: a list
+// needs a nullable reference, and the enum machinery for that belongs to the
+// enum group. The named check in cases.toml is what asserts these reach code
+// generation as genuinely self-referential types, which runtime cannot see.
+
+// The list node the whole rule exists for. 'next' is a reference, so laying out
+// Node never asks Node for its size.
+struct Node {
+  pub v i64;
+  pub next &Node;
+}
+
+fn nodeNext(n &Node) i64 {
+  n.next.v;
+}
+
+// One by value, one by reference: Owner holds Held by value, so Held must be
+// sized -- and it is, because its own field is a reference. The cycle breaks on
+// the second hop rather than the first.
+// Owner holds Held by value, so Held must be sized -- and it is, because its
+// own field is a reference. The cycle is broken on the second hop rather than
+// the first, which is the case that says the rule is about each field's own
+// type and not about whether a cycle exists anywhere.
+struct Owner {
+  pub v i64;
+  pub held Held;
+}
+
+struct Held {
+  pub back &Owner;
+}
+
+fn ownerBack(o &Owner) i64 {
+  o.held.back.v;
+}
+
+// Neither asks the other.
+struct Left {
+  pub v i64;
+  pub r &Right;
+}
+
+struct Right {
+  pub l &Left;
+}
+
+fn leftRound(l &Left) i64 {
+  l.r.l.v;
+}
+
+// -------- statics in a type --------
+
+// A static in a type is one copy shared by every value of the type. It is not
+// a field: no value carries it, and it is reached as Type.name from outside
+// and by its bare name from the type's own functions and methods.
+struct Tally {
+  pub n i32;
+  pub static mut made = 0;
+
+  pub fn make(n i32) Tally {
+    made = made + 1;
+    Tally[n];
+  }
+
+  pub fn madeSoFar(self) i32 {
+    made;
+  }
+}
+
+fn typeStatics() {
+  imm a = Tally.make(1);
+  imm b = Tally.make(2);
+  show("type-static-shared-by-two-values", a.madeSoFar() + b.madeSoFar());
+  show("type-static-through-the-type", Tally.made);
+  Tally.made = 10;
+  show("type-static-assigned-through-the-type", b.madeSoFar());
+}
+
+fn main() i32 {
+  construction();
+  access();
+  copying();
+  othertypes();
+  controlflow();
+  typeStatics();
+  0i32;
+}

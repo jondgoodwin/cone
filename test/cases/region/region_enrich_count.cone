@@ -1,0 +1,28 @@
+// An alias of an 'rc' reference taken under an enrichment's name is one more
+// holder, counted as an alias under the same name is.
+//
+// An enrichment and its base share one representation, so the reference crosses
+// between the two names in a recast (a CastNode with no FlagConvert). Flow asks
+// flowIsLvalRead whether the value it hands over still has a holder behind it,
+// and that looked only through a name, field, index or dereference: the recast
+// read as a temporary, the alias added no holder, and both names released one at
+// scope exit -- a count taken to zero while 'plain' still pointed at it.
+//
+// A run cannot show this: the read after the early free reads what the freed
+// block still holds, and the second release decrements freed memory without
+// freeing it again. The check is on the count itself.
+
+mod region_enrich_count;
+
+struct Plain {
+  pub n i32;
+}
+
+struct RichPlain extends Plain {
+  pub fn doubled(self &) i32 { n * 2; }
+}
+
+fn aliasAcross() {
+  imm plain = +rc-mut Plain[54];
+  imm rich +rc-mut RichPlain = plain;
+}

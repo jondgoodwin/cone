@@ -1,0 +1,116 @@
+// What a 'break' or a 'continue' finalizes: the drop-fn local in every scope the
+// jump leaves, once, and nothing in a scope it does not leave.
+//
+// flowScopeDealias positions the drop call it injects on the scope's result
+// expression. A 'continue' hands back no value, so there was no node to take a
+// position from and the compiler dereferenced NULL: a 'continue' anywhere in a
+// loop holding a local whose type has a 'final' method crashed conec during flow
+// analysis, bare or labelled, in a 'while' and in an 'each'. A 'break' escaped
+// because its missing value is a nil literal the parser positions, not a NULL.
+// The jump itself is what positions the call now.
+//
+// region_jump_release is the same subject for owning references, where only the
+// emitted IR can count the releases. A drop fn prints, so here a run counts them,
+// and the .out file is the whole assertion: each tag appears exactly as often as
+// its scope is left, and the finalizations a jump triggers run innermost first.
+
+mod region_jump_drop;
+
+import stdio use *;
+
+struct Fin {
+  pub tag i32;
+
+  fn final(self &uni) {
+    printStr("final ");
+    printInt(i64[self.tag]);
+    printStr("\n");
+  }
+}
+
+// A local declared inside the loop body is finalized on the iteration that
+// continues exactly as on the one that reaches the end of the block. A local
+// declared outside the loop is below the block the jump names, so it is
+// finalized once, where its own scope ends.
+fn whileContinue() {
+  imm outer = Fin[1i32];
+  mut i = 0i32;
+  while i < 3i32 {
+    imm f = Fin[10i32 + i];
+    i += 1i32;
+    if i == 2i32 {
+      continue;
+    }
+    printStr("while body\n");
+  }
+  printStr("after while\n");
+}
+
+// The same two decisions for a 'break'.
+fn whileBreak() {
+  imm outer = Fin[2i32];
+  mut i = 0i32;
+  while i < 3i32 {
+    imm f = Fin[20i32 + i];
+    i += 1i32;
+    if i == 2i32 {
+      break;
+    }
+    printStr("break body\n");
+  }
+  printStr("after break\n");
+}
+
+// A labelled jump leaves every scope between where it stands and the loop it
+// names, so both loops' locals are finalized, innermost first.
+fn labelledContinue() {
+  mut i = 0i32;
+  'outer: while i < 2i32 {
+    imm o = Fin[30i32 + i];
+    i += 1i32;
+    while true {
+      imm n = Fin[42i32];
+      if true {
+        continue 'outer;
+      }
+      printStr("unreached\n");
+    }
+  }
+}
+
+fn labelledBreak() {
+  imm keep = Fin[50i32];
+  'outer: while true {
+    imm o = Fin[51i32];
+    while true {
+      imm n = Fin[52i32];
+      if true {
+        break 'outer;
+      }
+      printStr("unreached\n");
+    }
+  }
+  printStr("after labelled break\n");
+}
+
+// 'each' is rewritten into a 'while' whose body ends with the step the parser
+// added, so a 'continue' the reader wrote last is not the block's last node.
+// That is the one place a jump reaches flow analysis in a non-final position.
+fn eachContinue() {
+  each i in 0 < 3 {
+    imm f = Fin[60i32 + i32[i]];
+    if i == 1 {
+      continue;
+    }
+    printStr("each body\n");
+  }
+}
+
+fn main() i32 {
+  whileContinue();
+  whileBreak();
+  labelledContinue();
+  labelledBreak();
+  eachContinue();
+  0i32;
+}

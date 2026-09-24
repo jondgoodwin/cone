@@ -1,0 +1,45 @@
+// A static function of a trait or an enum is not inherited.
+//
+// It takes no 'self', so there is nothing about it to specialize per
+// implementer and nothing that dispatches it. It belongs to the type that
+// declares it and is reached only as 'Trait.name', which trait_success calls.
+//
+// Both spellings below were accepted by name resolution until 17 Sept 2026 and
+// are still refused here for the same reason they always were -- the name is
+// not in the implementer's namespace. What changed is what the trait's own copy
+// does: a clone used to be made in every implementer, generating a symbol no
+// name could reach, while the trait's own got none at all and calling it loaded
+// a null. Now the trait keeps the one copy and no clone is made.
+//
+// Its own file rather than a share of trait_nameres, which is about borrowing a
+// virtual reference instead of coercing one.
+
+mod trait_nameres_static;
+
+trait Meter {
+  level i32;
+  fn scale() i32 {7;}
+}
+
+struct Gauge is Meter {
+  level i32;
+  span i32;
+}
+
+enum Bag {
+  n i32;
+  fn tally() i32 {3;}
+
+  struct One {
+    a i32;
+  }
+}
+use Bag;
+
+fn throughImplementer() i32 {
+  Gauge.scale();    //~ ErrorUnkName:9 "The name scale does not refer to a declared name"
+}
+
+fn throughVariant() i32 {
+  One.tally();      //~ ErrorUnkName:7 "The name tally does not refer to a declared name"
+}

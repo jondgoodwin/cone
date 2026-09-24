@@ -1,0 +1,63 @@
+// LOOPS OF IMPORTS ARE REFUSED, each at the edge that closes it, and nothing
+// else is reported.
+//
+// Imports form a DAG at every scale, sister modules as well as packages [Jon 23
+// Sep]. The modules are put in dependency order before any name folds, and each
+// loop is ErrorImportLoop, naming the modules round it, at the import or the
+// 'extends' that closes it: two sisters importing each other, three round one
+// ring, and a loop an 'extends' closes.
+//
+// The loops are not cut, and the fold passes still carry each re-export round
+// them, pass after pass until one binds nothing new (modFoldAll). That is what
+// this scenario pins beside the refusals: every name a body below reaches
+// through a loop is bound, so the loop is the one thing reported and nothing it
+// left half-folded is reported missing as well. Each case is one a single fold
+// pass would have lost.
+//
+// The subfolders are drawn in sorted order and their folds start in that order,
+// which is what decides who reads whom mid-fold, and which import closes each loop:
+//   gamma/gamma.cone       the names re-exported: shared, more, Tone, Config; in
+//                          no loop
+//   alpha/alpha.cone       imports beta and bravo, THEN re-exports gamma's shared,
+//                          Tone and Config
+//   beta/beta.cone         imports alpha and folds from it by a listed clause, and
+//                          folds Tone's variants through the path alpha.Tone
+//   bravo/bravo.cone       a wildcard of alpha, and a global's fold and an enum's
+//                          'use' naming bare what the wildcard has not brought yet
+//   delta/delta.cone       the other order: delta folds first and reads epsilon
+//   epsilon/epsilon.cone   imports delta, then re-exports gamma's shared
+//   kappa/kappa.cone       imports lambda and relay, THEN re-exports gamma's more
+//   lambda/lambda.cone     a wildcard 'pub use' of kappa: kappa -> lambda -> kappa
+//   onward/onward.cone     a wildcard of lambda, one wildcard further on, in no loop
+//   relay/relay.cone       folds more privately from gamma, and publicly from kappa
+//                          round the loop kappa -> relay -> kappa
+//   plinth/plinth.cone     imports tower with 'use *', THEN re-exports gamma's more
+//   tower/tower.cone       extends plinth: a loop an 'extends' edge closes
+//   tri1/tri1.cone         three modules round one loop, each carrying on the
+//   tri2/tri2.cone           next one's names with 'pub use *': tri1 -> tri2 ->
+//   tri3/tri3.cone           tri3 -> tri1, and tri1 re-exports gamma's shared too
+//
+// module_import_cycle_nameres holds what a loop still leaves missing, and a
+// collision a loop brings.
+
+mod module_import_cycle;
+
+fn reach() i64 {
+  // A listed clause, one name under a local spelling, and Tone's variants
+  // folded through a path naming alpha's re-export
+  beta.b() + beta.tone()
+  // bravo's global and its 'use' of Tone waited for alpha's Config and Tone
+  + bravo.b()
+  // The other order: delta folds first, so it reads epsilon complete
+  + delta.d()
+  // lambda's wildcard read kappa mid-fold, carried on by its 'pub use *',
+  // reached by a path, and one wildcard further on
+  + lambda.f() + lambda.more() + onward.g()
+  // relay folded more privately from gamma, and publicly from kappa round the
+  // loop: one binding, public
+  + relay.more()
+  // tower extends plinth, which imports tower
+  + tower.more() + plinth.viaTower()
+  // Three modules round one loop
+  + tri3.two() + tri3.shared() + tri2.one();
+}

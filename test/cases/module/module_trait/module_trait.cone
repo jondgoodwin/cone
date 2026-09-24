@@ -1,0 +1,60 @@
+// A MODULE TRAIT: 'mod trait Runner { ... }' declares the functions and globals a
+// module conforming to it has, and 'mod plain is Runner;' says plain conforms,
+// which is checked where it is written. A member written with a body or an
+// initialiser is a default, which a conforming module takes a copy of unless it
+// declares its own; one written without is a requirement it must declare.
+//
+// This is the root, and each subfolder draws a sister:
+//   hosts/hosts.cone       the trait: two requirements and five defaults
+//   plain/plain.cone       declares the requirements and takes every default
+//   custom/custom.cone     overrides a default function and a default global
+//   layered/layered.cone   'mod layered extends plain is Runner use run;'
+//   caller/caller.cone     a bare import of layered, folding 'run'
+//
+// Each value is worked from the source in the comment above its line.
+
+mod module_trait;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn main() i32 {
+  // plain's copy of run: step(5) * scale + offset = (5 + 1) * 2 + 100
+  show("default-fn", plain.run(5i64));
+  // plain's copy of offset, its initialiser from the trait
+  show("default-global", plain.offset);
+  // plain's copy of label calls hosts' private unit(), which returns 1
+  show("default-helper", plain.label());
+
+  // custom's copy of run reads custom's own step, scale and offset:
+  // (4 * 10) * 3 + 7
+  show("override-reached", custom.run(4i64));
+  // custom's own label and offset, not the trait's
+  show("override-fn", custom.label());
+  show("override-global", custom.offset);
+
+  // Each module that took 'calls' has its own: plain counts 1 then 2, custom 1
+  show("state-plain-1", plain.tick());
+  show("state-plain-2", plain.tick());
+  show("state-custom", custom.tick());
+
+  // layered's tick is plain's, through 'extends', so plain's count goes on to 3
+  show("extends-shares", layered.tick());
+  // plain's run twice: 12 + 100 = 112, and 112 + 112
+  show("extends-own", layered.twice(5i64));
+
+  // caller's bare import of layered folds run: (1 + 1) * 2 + 100
+  show("default-fold", caller.go(1i64));
+
+  // A taken global is written like any global of the module, and the copy of
+  // run reads it, through layered too: (5 + 1) * 2 + 50
+  plain.offset = 50i64;
+  show("global-written", layered.run(5i64));
+  0i32;
+}

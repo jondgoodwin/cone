@@ -1,0 +1,53 @@
+// What a 'mod' declaration refuses: a misplaced or unnamed one, and the in-file
+// block that does not exist.
+//
+// 'mod name;' names the module a source file belongs to, and it claims the whole
+// file: it is the file's first statement, and a file declares one module. A 'mod'
+// anywhere else is ErrorModDcl, whether it is a second one or merely late.
+//
+// A 'mod name { ... }' block is no construct at all: a module is never declared
+// inside a file, and a nested module is a file of its own or a subfolder with its
+// own designated file.
+// The parser recognises the block only to say so, and skips its body. 'mod trait'
+// is a different declaration -- a module trait, a declaration of this module like
+// any other -- so it may be written anywhere in the file and is no late 'mod'.
+// The module_trait scenarios own everything else about it.
+//
+// Parse stage, which is why this is its own file: a parse diagnostic stops the
+// compile before name resolution, so nothing here resolves and nothing else could
+// be asserted alongside. Each declaration is at the top level, where recovery from
+// one reaches the next -- a refused form's body is skipped whole rather than read
+// on as global statements.
+//
+// The accepted header is first, so that everything after it is refused for its own
+// reason and not for following a bad one.
+
+mod module_parse_mod;
+
+mod inner {                  //~ ErrorUnbuiltKind "A module cannot be declared inside a file: a nested module is a file of its own, or a subfolder with its own designated file"
+  fn helper() i64 {
+    1i64;
+  }
+}
+
+mod trait Served;
+
+mod again;                   //~ ErrorModDcl "first statement"
+
+// 'pub' on a module declaration says the module is visible outside its PARENT,
+// and only a submodule has one: a subfolder holding its own designated file is
+// private to the module whose folder holds it unless its own declaration says
+// otherwise. A module that is a file of its own is inside nothing, so there is
+// nothing for 'pub' to open it to. The placement is refused as well, because the
+// two are separate facts about the same declaration: this file's module is named
+// already, and would be whether or not 'pub' were written
+pub mod outer;               //~ ErrorBadPub "has no parent"
+                             //~^ ErrorModDcl "first statement"
+
+mod;                         //~ ErrorNoName
+
+// A declaration after the last refusal, so that recovery is shown to land back on
+// the global statement stream rather than swallowing the rest of the file.
+fn tail() i64 {
+  2i64;
+}

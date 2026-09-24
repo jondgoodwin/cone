@@ -1,0 +1,65 @@
+// The two cast operators rejecting what they cannot do: 'as', which keeps the
+// bits and so needs both types to be the same size, and 'into', which needs a
+// conversion between the two types to exist at all.
+//
+// Type-check stage only: this file parses and resolves cleanly, so every
+// diagnostic below is reached. The constructor form of conversion reports
+// through a different node and is in typemgmt_typecheck_convert.
+//
+// A tuple supplies a non-number source type without declaring one, which is
+// what 'struct' would otherwise be dragged in for.
+
+mod typemgmt_typecheck_cast;
+
+// 'as' reinterprets a bit pattern, so a wider target would have to invent bits
+fn reinterpretToWider() {
+  mut n i32 = 1;
+  imm wide = n as u64;    //~ ErrorInvType:14 "May only reinterpret value to the same sized primitive type"
+}
+
+fn convertFromNonNumber() {
+  mut pair (i32, i32) = 1, 2;
+  imm n = pair into i32;  //~ ErrorInvType:21 "Unsupported built-in type conversion"
+}
+
+// Coercion to Bool is defined for the number, reference and pointer types, and
+// is reported separately from the other unsupported conversions
+fn convertNonNumberToBool() {
+  mut pair (i32, i32) = 1, 2;
+  imm b = pair into Bool; //~ ErrorInvType:11 "Only numbers and ref/ptr may convert to Bool"
+}
+
+// A slice is two words, so "convert it to an integer" has no single answer: the
+// length and the data address are both candidates, and each is already spelled
+// on its own. The length is 's.len', which collection_success runs. The address
+// is a pointer, and turning a pointer into an integer is 'p as usize' -- which
+// is nowhere in this corpus because it emits 'bitcast i32* to i64' and fails
+// module verification, recorded separately in the compiler defect backlog. So
+// nothing here makes a working reading unreachable: 'into' used to type check
+// this and then emit 'trunc { i32*, i64 } to i64', which --verify rejects.
+fn sliceToInteger(s &[]i32) {
+  imm n = s into usize;   //~ ErrorInvType:18 "Unsupported built-in type conversion"
+}
+
+// 'as' refuses the same thing for its own reason: a slice is two words wide and
+// usize is one, so there is no bit pattern to keep
+fn sliceReinterpreted(s &[]i32) {
+  imm n = s as usize;     //~ ErrorInvType:11 "May only reinterpret value to the same sized primitive type"
+}
+
+// A raw pointer does not convert to a reference. A reference carries a region,
+// a permission and a lifetime, and the pointer supplies none of them, so there
+// is no value to construct. This used to be accepted by a fall-through in the
+// conversion table and then reach code generation, which has no arm for it: the
+// assert that said so is compiled out of a Release build, and the compile died
+// on a null LLVM value with no diagnostic and no exit code.
+//
+// 'as' is the spelling that keeps the bits, and it is accepted -- safety owns
+// what that costs. The pointer here is only the source type this rejection
+// needs; safety_pointers owns pointers themselves.
+mut cell i32 = 0;
+
+fn pointerToReference() {
+  imm p *i32 = &cell;
+  imm r = p into &i32;    //~ ErrorInvType:18 "Unsupported built-in type conversion"
+}

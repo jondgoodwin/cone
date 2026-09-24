@@ -1,0 +1,124 @@
+// Where a fold clause may not be written, and the shapes it may not take.
+//
+// Parse stage: each of these is refused as it is read, and the clause is read
+// through so that the declaration carrying it recovers. A clause trails a
+// struct's FIELD or stands as a statement in a struct's BODY, where it folds a
+// sibling in; every other declaration that could carry one is here once, so that
+// the diagnostic is the fold's own rather than a missing semicolon.
+//
+// What a body clause may name, once the type's base is known, is
+// struct_nameres_use_sibling.
+
+mod struct_parse_fold;
+
+struct Engine {
+  pub fuel i32;
+  pub fn thrust(self &mut, amt i32) i32 {fuel = fuel - amt; fuel;}
+}
+
+// A local and a parameter are reached by their own names; there is no namespace
+// they are a part of for a name to fold into. A module's GLOBAL is the one
+// variable that does fold, because the module is exactly that namespace, and it
+// is covered where it belongs: module_success and module_nameres_fold_global.
+fn inFunction() {
+  imm e Engine = Engine[2] use fuel;      //~ ErrorBadFold:28 "may fold names in with 'use'"
+  return;
+}
+
+fn parameter(e Engine use fuel) i32 {     //~ ErrorBadFold:23 "may fold names in with 'use'"
+  1;
+}
+
+trait Meter {
+  pub level i32;
+}
+
+// A mixin brings every member of the trait in already
+struct Gauge {
+  mixin Meter use level;                  //~ ErrorBadFold:15 "does not fold"
+  pub x i32;
+}
+
+// A type's static is a variable, reached through the type
+struct Counted {
+  static made Engine = Engine[3] use fuel;   //~ ErrorBadFold:34 "may fold names in with 'use'"
+  pub y i32;
+}
+
+// Only a struct folds: a trait and an enum are abstractions over implementers
+trait Powered {
+  pub engine Engine use fuel;             //~ ErrorBadFold:21 "Only a struct folds"
+}
+
+enum Shape {
+  pub engine Engine use fuel;             //~ ErrorBadFold:21 "Only a struct folds"
+  struct Rect {
+    pub w i32;
+  }
+}
+
+// 'but' leaves a name out of 'use *'; a list admits only what it names
+struct Listed {
+  pub engine Engine use fuel but thrust;  //~ ErrorBadFold:30 "'but' leaves a name out"
+}
+
+// A fold takes its names from the field's type, so the type is written
+struct Untyped {
+  pub engine use fuel;                    //~ ErrorBadFold:14 "must write its type"
+}
+
+// 'pub use' says the bindings a clause makes are visible outside the namespace
+// folding them. A folded member of a field's type is as visible as the field it
+// is reached through, so the clause decides nothing about it, in either order of
+// the two words. A module's global is where 'pub use' has an answer, because
+// there the fold is what a module shows of a singleton --
+// module_nameres_fold_visibility.
+struct Exposing {
+  pub engine Engine pub use fuel;         //~ ErrorBadPub:21 "no visibility of its own"
+}
+
+struct ExposingAfter {
+  pub engine Engine use pub fuel;         //~ ErrorBadPub:25 "no visibility of its own"
+}
+
+// 'pub' comes first, before the keyword of what it makes public, so a global's
+// public fold is 'pub use'. The clause's own spelling before that ruling is
+// refused, naming the one to write.
+mut exposed Engine = Engine[4] use pub fuel;  //~ ErrorBadPub:36 "write 'pub use', not 'use pub'"
+
+// -------- a body clause: 'use' as a statement of its own --------
+
+// It names the type it folds, so every member of it is what the clause asks for
+// already and there is no second spelling for that
+struct Starred extends Engine {
+  use Engine *;                           //~ ErrorBadFold "'*' says nothing more"
+}
+
+// It declares no name of its own -- each folded name carries its target's
+// visibility -- so there is nothing for 'pub' to expose, written before the
+// 'use' or after it
+struct Exposed extends Engine {
+  pub use Engine;                         //~ ErrorBadPub "declares no name of its own"
+}
+
+struct ExposedAfter extends Engine {
+  use pub Engine;                         //~ ErrorBadPub "declares no name of its own"
+}
+
+// Only a struct enriches a concrete base, so only a struct has one to share
+trait Abstracted {
+  use Engine;                             //~ ErrorBadFold "no concrete base to share"
+}
+
+enum Closed {
+  use Engine;                             //~ ErrorBadFold "variant set is its identity"
+  struct Only {
+    pub z i32;
+  }
+}
+
+// 'but' leaves a name out of a fold of every member; a list admits only what it
+// names, here as on a field
+struct BodyListed extends Engine {
+  use Engine thrust but fuel;             //~ ErrorBadFold "'but' leaves a name out"
+}

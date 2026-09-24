@@ -1,0 +1,40 @@
+// What a write or a read through a virtual reference is checked against.
+//
+// The permission is the reference's own, not the binding's -- trait_success
+// writes a trait field through a '&<mut' held in an 'imm' binding. These are
+// the accesses that must not start passing with it: the reference itself grants
+// no write, or no read at all, however mutable the binding holding it is.
+
+mod trait_flow_vref;
+
+trait Meter {
+  pub level i32;
+}
+
+struct Gauge is Meter {
+  pub level i32;
+  pub span i32;
+}
+
+// The binding is 'mut', which is what it used to be allowed for. The reference
+// is '&<', which is what it is refused for.
+fn writeThroughImmVref() i32 {
+  mut g = Gauge[3, 7];
+  mut m &<Meter = &g;
+  m.level = 40;      //~ ErrorNoMut
+  g.level;
+}
+
+// Same for a parameter, where no borrow is visible at the write site
+fn writeThroughImmVrefParm(mut m &<Meter) {
+  m.level = 40;      //~ ErrorNoMut
+}
+
+// A read is checked against the same permission. No dereference is injected
+// for a virtual reference, so the field access itself is where the reference
+// is read through, and '&<opaq' grants no read
+fn readThroughOpaqVref() i32 {
+  imm g = Gauge[3, 7];
+  imm m &<opaq Meter = &opaq g;
+  m.level;           //~ ErrorNoRead:3 "does not allow reading"
+}

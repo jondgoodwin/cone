@@ -1,0 +1,80 @@
+// The form an enum declaration itself takes: what it may be modified by, and
+// that it declares variants at all.
+//
+// Parse stage only, and separate from enum_parse_blocks because these are about
+// the declaration's head rather than its body. Each is at the top level, so
+// nothing recovers into the next.
+//
+// The whole of the 'enum trait' story is here. There is no abstraction that
+// corresponds to an enum -- its variant set is its identity, so anything a caller
+// could hold behind one either is that set, and so is the enum, or is open, and so
+// is a trait. The refusal is deliberate, and it is pinned so that nobody adds an
+// abstract enum for symmetry with the other kinds: 'trait' is a modifier the
+// kind keyword takes, 'struct' takes it and 'mod' and 'actor' are admitted to,
+// and enum is the one kind left out of it.
+
+mod enum_parse_decl;
+
+enum trait Abstract {     //~ ErrorEnumAbstract:6 "An enum is concrete"
+  AbstractOne, AbstractTwo;
+}
+
+// A variant is refused the modifier for the same reason and under the same code:
+// it is one concrete member of the set its enum's identity is, so there is no
+// more an abstraction of a variant than there is of the enum.
+enum VariantAbstract {
+  struct trait AbstractInner {  //~ ErrorEnumAbstract:10 "A variant is one concrete member"
+    pub a i32;
+  }
+  struct AbstractOther { pub b i32; }
+}
+
+// '@unsized' declines an enum's padding. A struct has no variants to pad, so
+// there is nothing for it to decline.
+struct @unsized Plain {   //~ ErrorBadUnsized:8 "Only an enum pads its variants"
+  n i32;
+}
+
+// Nor has a trait: its implementers are open-ended, so no value of it is held
+// anyway and there is no padding to begin with.
+trait @unsized Open {     //~ ErrorBadUnsized:7 "Only an enum pads its variants"
+  fn measure(self &) i32;
+}
+
+// An enum's identity is its variant set, so an empty one names nothing a value
+// of it could be and nothing a match could account for. Reported at the token
+// after the body, which is the next declaration.
+enum Empty {
+  n i32;
+}
+
+enum Filled {             //~ ErrorNoVariants:1 "An enum declares its variants"
+  FilledOne, FilledTwo;
+}
+
+// Only an enum carries a discriminant: the tag says which variant a value holds,
+// and a struct, a trait and a variant each have nothing for one to tell apart.
+// The type-check half -- that an enum carries only one -- is in
+// enum_typecheck_tag.
+struct WithTag {
+  _ tag;                  //~ ErrorInvType:3 "Only an enum carries a discriminant"
+  pub n i32;
+}
+
+enum VariantWithTag {
+  struct Inner {
+    _ tag;                //~ ErrorInvType:5 "Only an enum carries a discriminant"
+    pub a i32;
+  }
+  struct Other { pub b i32; }
+}
+
+// A trait is the open abstraction: its implementers are declared beside it and
+// name it with 'is'. Variants written inside one are a closed set, which is
+// what an enum is for. Last in the file, because recovery from it re-parses the
+// nested struct's body.
+trait Closed {
+  struct Inside {         //~ ErrorOpenTrait:3 "A closed set of variants is an 'enum'"
+    a i32;
+  }
+}
