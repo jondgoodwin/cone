@@ -12,7 +12,7 @@ package's folders and reads each source file's header -- its leading comments,
 its 'mod' line and its 'import' lines, and nothing after them. It resolves every
 import that names another package through the package-folder registries, orders
 the packages so that each is built after what it imports (refusing an import
-loop between packages), writes each package's BUILD DESCRIPTION into
+loop between packages, or between the modules of one), writes each package's BUILD DESCRIPTION into
 build/<mode>/, compiles each package on its own with conec, and links the
 objects with conestd into build/<mode>/<name>.exe. The folder rules live here,
 in one place: conec never searches for a file of a Congo build.
@@ -160,6 +160,7 @@ class Import:
 class Header:
     mod: str | None       # the name on the 'mod' line, or None where there is none
     imports: list[Import]
+    extends: Import | None = None   # 'mod a extends b': b, where the line says so
 
 
 class HeaderTokens:
@@ -256,8 +257,9 @@ def scan_header(path: Path) -> Header:
     lines, and then Congo stops reading.
 
     The 'mod' line is 'mod name', optionally 'pub' before and '@c' or '@c(...)'
-    after the keyword, then whatever clauses follow (extends, is, use), which are
-    passed over. 'mod trait' declares a module trait and is not a 'mod' line. An
+    after the keyword, then whatever clauses follow: 'extends' is read, since it
+    is a dependency like an import, and 'is' and 'use' are passed over. 'mod
+    trait' declares a module trait and is not a 'mod' line. An
     'import' is 'import name' or 'import "path"', optionally with 'pub', and
     whatever 'use' clause follows."""
     try:
@@ -266,6 +268,7 @@ def scan_header(path: Path) -> Header:
         raise CongoError(f"cannot read {path}: {exc}") from None
     toks = HeaderTokens(text)
     mod = None
+    extends = None
     k = 1 if toks.is_name("pub") else 0
     if toks.is_name("mod", k) and not toks.is_name("trait", k + 1):
         for _ in range(k + 1):
@@ -279,6 +282,12 @@ def scan_header(path: Path) -> Header:
         kind, value, _ = toks.peek()
         if kind == "name":
             mod = value
+            toks.next()
+            if toks.is_name("extends"):
+                toks.next()
+                kind, value, line = toks.peek()
+                if kind == "name":
+                    extends = Import(value, value, path, line)
         toks.skip_statement()
     imports: list[Import] = []
     while True:
@@ -293,7 +302,7 @@ def scan_header(path: Path) -> Header:
         elif kind == "string":
             imports.append(Import(None, f'"{value}"', path, line))
         toks.skip_statement()
-    return Header(mod, imports)
+    return Header(mod, imports, extends)
 
 
 # ---------------------------------------------------------------------------
@@ -306,8 +315,11 @@ class Module:
     files: list[Path] = field(default_factory=list)
     children: list["Module"] = field(default_factory=list)
     imports: list[Import] = field(default_factory=list)
+    extends: Import | None = None     # from the 'mod' line of its first file
 
     def add_imports(self, header: Header) -> None:
+        if header.extends is not None and self.extends is None:
+            self.extends = header.extends
         for imp in header.imports:
             if not any(imp.written == seen.written for seen in self.imports):
                 self.imports.append(imp)
@@ -512,7 +524,69 @@ def resolve_imports(pkg: Package, tree: Module, registry: Registry) -> Unit:
                                  f" (include files are written by hand for now)")
             deps.setdefault(found.name, found)
             mine[imp.name] = found.include_file
+    check_module_loops(pkg, tree, registry)
     return Unit(pkg, tree, deps, lines)
+
+
+def check_module_loops(pkg: Package, tree: Module, registry: Registry) -> None:
+    """Imports are a DAG between the modules of a package too [Jon 23 Sep]. A
+    module depends on each sister it imports or extends, on its parent where it
+    imports a name of the parent, and on each of its own submodules: so a child
+    that imports a name of its parent closes a loop of two. A loop is refused,
+    naming it, as the compiler would refuse it (ErrorImportLoop); the compiler's
+    own check is the backstop for a direct conec run."""
+    parents: dict[int, Module | None] = {id(m): p for m, p in tree.walk()}
+
+    def qualified(module: Module) -> str:
+        parent = parents[id(module)]
+        return f"{qualified(parent)}.{module.name}" if parent else module.name
+
+    def edges(module: Module):
+        """(kind, module depended on, the Import that wrote it or None)."""
+        parent = parents[id(module)]
+        sisters = {m.name: m for m in parent.children} if parent else {}
+        if module.extends is not None and module.extends.name in sisters:
+            yield "extends", sisters[module.extends.name], module.extends
+        for imp in module.imports:
+            if imp.name is None or imp.name == PRELUDE:
+                continue
+            if imp.name in sisters:
+                yield "imports", sisters[imp.name], imp
+            elif registry.find(imp.name) is None and parent is not None:
+                yield "imports-name", parent, imp
+        for child in module.children:
+            yield "contains", child, None
+
+    state: dict[int, str] = {}
+    path: list[tuple[Module, str, Module, Import | None]] = []
+
+    def step_text(frm: Module, kind: str, to: Module, imp: Import | None) -> str:
+        if kind == "contains":
+            return f"{qualified(frm)} contains {qualified(to)}"
+        verb = {"imports": "imports", "extends": "extends"}.get(kind, f"imports {imp.name} of")
+        return f"{qualified(frm)} {verb} {qualified(to)} at {imp.where()}"
+
+    def visit(module: Module) -> None:
+        state[id(module)] = "visiting"
+        for kind, to, imp in edges(module):
+            path.append((module, kind, to, imp))
+            if state.get(id(to)) == "visiting":
+                at = next(i for i, (m, *_) in enumerate(path) if m is to)
+                loop = path[at:]
+                chain = " -> ".join([qualified(m) for m, *_ in loop] + [qualified(to)])
+                steps = "; ".join(step_text(*s) for s in loop)
+                hint = (" A module may not depend on a module that contains it: move what"
+                        " they share into a sister both import."
+                        if any(k == "contains" for _, k, _, _ in loop) else "")
+                raise CongoError(f"import loop between modules of package {pkg.name}:"
+                                 f" {chain}. Imports between modules must not loop"
+                                 f" ({steps}).{hint}")
+            if state.get(id(to)) is None:
+                visit(to)
+            path.pop()
+        state[id(module)] = "done"
+
+    visit(tree)
 
 
 def first_import(unit: Unit, name: str) -> Import:
@@ -546,7 +620,7 @@ def build_order(top: Package, registry: Registry) -> list[Unit]:
                     f"{u.pkg.name} imports {nxt} at {first_import(u, nxt).where()}"
                     for u, nxt in zip(loop, [u.pkg.name for u in loop[1:]] + [name]))
                 raise CongoError(f"import loop between packages: {chain}. Imports between"
-                                 f" packages must not loop ({steps})")
+                                 f" packages must not loop ({steps}).")
             if state.get(name) is None:
                 visit(dep)
         stack.pop()

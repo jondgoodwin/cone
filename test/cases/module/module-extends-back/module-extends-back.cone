@@ -1,32 +1,21 @@
-// A module importing, with 'use *', a module that EXTENDS it.
+// A module importing, with 'use *', a module that EXTENDS it: a loop, one edge
+// an import and the other an 'extends'. Imports form a DAG [Jon 23 Sep], and
+// 'extends' is a dependency like an import, so each pair is refused
+// (ErrorImportLoop) at the edge that closes it.
 //
-// The extending module's public names include an alias for every public name of
-// the module it extends, so a wildcard import of it carries those names back
-// home. They are the importer's own declarations under their own names, and a
-// star clause passes them over rather than calling each one a duplicate.
-//
-// It is here twice, in both orders, because the order is the point: which of the
-// two modules has its folds run first decides whether the extending module holds
-// the aliases yet when the importer reads it. The program compiles, and means the
-// same, either way.
+// It is here twice, in both orders, because which edge closes the loop is what
+// decides where it is reported: the walk that orders the modules starts from the
+// one the program holds first. Importer first, the extender's 'extends' closes
+// it; extender first, the importer's import does. Either way it is one
+// diagnostic, and the loop is not cut: the fold passes still carry each module's
+// names round it, so nothing the loop left half-folded is reported missing.
 //
 // The folder holds:
-//   base/base.cone     imports rich with 'use *'; folded before rich
+//   base/base.cone     imports rich with 'use *'; held before rich
 //   rich/rich.cone     extends base
-//   alpha/alpha.cone   extends omega; folded before omega
+//   alpha/alpha.cone   extends omega; held before omega
 //   omega/omega.cone   imports alpha with 'use *'
 
-import stdio use *;
-
-fn show(label &[]u8, n i64) {
-  printStr(label);
-  printStr(" = ");
-  printInt(n);
-  printStr("\n");
-}
-
-fn main() i32 {
-  show("importer-first", base.useRich());
-  show("extender-first", omega.useAlpha());
-  0i32;
+fn reach() i64 {
+  base.useRich() + omega.useAlpha();
 }

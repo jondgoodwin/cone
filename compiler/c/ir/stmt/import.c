@@ -183,8 +183,8 @@ static void importAliasTarget(AliasDclNode *alias, INode *found) {
 // from any module.
 //
 // An item that cannot be made yet -- its name not in the source, or not public
-// there -- WAITS for a later fold pass, since a source read round a cycle of
-// imports may hold it then, and is reported only by the pass that reports
+// there -- WAITS for a later fold pass, since a source whose own folds waited
+// may hold it then, and is reported only by the pass that reports
 // (modFoldAll). Once its target is bound the item is made, collision or not,
 // and no later pass makes it again.
 static void importFoldItem(ModuleNode *mod, ImportNode *import, AliasDclNode *alias) {
@@ -226,7 +226,7 @@ static void importFoldItem(ModuleNode *mod, ImportNode *import, AliasDclNode *al
     // is read, so a name the source itself folded in privately does not travel.
     // A module extending the source is inside its boundary and takes its
     // private names too. A binding may yet be made public by a second route
-    // round a cycle (modFoldBind), so a private one waits too
+    // in a later pass (modFoldBind), so a private one waits too
     if (inodeIsPrivate(found) && !import->isextends) {
         if (!modFoldReporting())
             modFoldWait();
@@ -320,8 +320,8 @@ static int importStarHas(ModuleNode *mod, ImportNode *import, Name *name, INode 
 }
 
 // Fold in every name a star clause admits, as far as its module holds them in
-// this pass. Every pass reads the module afresh, since one read round a cycle of
-// imports holds more in a later pass; an item is made only for a name there is
+// this pass. Every pass reads the module afresh, since one whose own folds
+// waited holds more in a later pass; an item is made only for a name there is
 // something to do with (importStarHas), and kept on the clause.
 static void importFoldStar(ModuleNode *mod, ImportNode *import) {
     FoldClause *fold = import->fold;
@@ -383,7 +383,10 @@ static void importCheckNamedFile(ModuleNode *mod, ImportNode *node) {
 //
 // The parent's namespace is complete once its folds have run, which modFoldNames
 // sees to first. A name not there yet, or there privately, waits for a later
-// pass, since a fold round a cycle may still bring it or make it public.
+// pass, since a later pass may still bring it or make it public. (Every import
+// of a name of the parent closes a loop through containment, refused before
+// the folds run (pgmModuleOrder); it is still bound, so the child's own body
+// resolves and the loop is the one thing reported.)
 void importBindName(ModuleNode *mod, ImportNode *node) {
     if (node->isnamedfile) {
         if (modFoldReporting())
@@ -516,7 +519,7 @@ void importNameRes(NameResState *pstate, ImportNode *node) {
                 // Seen from outside the module, a private name is as absent as a
                 // missing one: the star never admits it (importStarAdmits), so
                 // leaving it out says nothing. Read in the reporting pass, once
-                // no route round a cycle can still make it public
+                // no later pass can still make it public
                 else if (inodeIsPrivate(found) && !node->isextends)
                     errorMsgNode(*itemp, ErrorNotPublic, "%s is private to %s, so '*' never folds it; there is nothing to leave out.",
                         &name->namestr, &src->namesym->namestr);

@@ -101,8 +101,9 @@ import the build description gives no line for.
 An import names a module. Congo answers each one this way:
 
 1. `core` is the prelude, which every module has without importing it.
-2. In a submodule, the name of a sister module, or of anything else its parent
-   declares, is answered inside the package; Congo leaves it to the compiler.
+2. In a submodule, the name of a sister module is answered inside the package;
+   Congo leaves it to the compiler. Any other name no registry answers is taken
+   as a name of the parent, which is a loop (below).
 3. Otherwise it is **another package**, looked up by name in the registries.
    An import of the root module that no registry answers is an error naming the
    folders searched. An import by quoted path is an error: a Congo build imports
@@ -132,8 +133,24 @@ each is built after everything it imports, and refuses a loop, naming it:
 
 ```
 congo: error: import loop between packages: ping -> pong -> ping. Imports between
-packages must not loop (ping imports pong at ...\ping.cone:3; pong imports ping at ...)
+packages must not loop (ping imports pong at ...\ping.cone:3; pong imports ping at ...).
 ```
+
+**Nor between the modules of a package** [Jon 23 Sep]. From the same header
+scan, a module depends on each sister it imports or extends (`mod a extends b`
+is read from the `mod` line), on its parent where it imports a name no registry
+answers — a name of the parent — and on each of its own submodules. So a child
+importing a name of its parent is a loop of two:
+
+```
+congo: error: import loop between modules of package tree: tree -> tree.parser -> tree.
+Imports between modules must not loop (tree contains tree.parser; tree.parser imports
+shared of tree at src\parser\parser.cone:3). A module may not depend on a module that
+contains it: move what they share into a sister both import.
+```
+
+The compiler refuses the same loops with the same shape of message
+(`ErrorImportLoop`), which is what a direct `conec` run meets.
 
 ## Include files
 
@@ -204,8 +221,8 @@ python tools/congo/test_congo.py
 builds real programs in a temporary folder with the repository's `conec` (build
 it first, `python test/run.py --build`): `congo new` then `congo run`, a
 package with submodules printing through `stdio`, a lone file, a library from a
-registry folder that itself imports `stdio`, the loop refusal, and the
-manifest's checks. The test suite (`test/run.py`) does not run Congo.
+registry folder that itself imports `stdio`, the loop refusals between packages
+and between modules, and the manifest's checks. The test suite (`test/run.py`) does not run Congo.
 
 ## Not built yet
 

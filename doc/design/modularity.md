@@ -205,12 +205,23 @@ private to the module whose folder holds it. `include`, which injected a file's
 global statements into the current module, is retired and reported
 (`ErrorInclude`).
 
+**Dependencies form a DAG, at every scale** [Jon 23 Sep]: modules inside a
+package as well as packages. A module depends on what it imports, on what it
+extends, and on each of its own submodules, so a part never leans on the whole
+it is part of and a child never imports a name of its parent; what they share
+moves into a sister both import. That is the hierarchical decomposition the
+layer exists for, and it is what gives modules an order to initialise in:
+dependencies first, the order the compiler keeps for `init`. Congo refuses a
+loop from the header scan, and the compiler again for a direct run
+(`ErrorImportLoop`).
+
 | Boundary | Guaranteed | Enforced by |
 | --- | --- | --- |
 | module, name not `pub` | not reachable by qualified name from outside | `nameUseNameRes` |
 | module, name not `pub` | not folded by a wildcard import | `importNameRes` |
 | module, a fold not re-exported | not reachable from outside, and not folded on | `importFoldItem`, `fnCallNameResPath` |
 | module tree | a sister is reached by name, never by a path that walked to her file | `parseImport` |
+| modules and packages | no loop of dependencies — imports, `extends`, containment | `pgmModuleOrder`; Congo's `build_order` and `check_module_loops` |
 | type, member not `pub` | not reachable except through `self` — or, for an enum and its variants, from code inside the enum's braces or an extension's | `fnCallLowerMethod`, `structEnumSeesPrivate` |
 | type, field not `pub` | not settable from outside in a type literal — an enum's braces, and an extension's, being inside | `typeLitStructReorder`, `structEnumSeesPrivate` |
 | any namespace | no duplicate name, whatever the kind | `namespaceAdd`, `modAddNamedNode` |

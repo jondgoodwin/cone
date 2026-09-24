@@ -241,7 +241,7 @@ enum ErrorCode {
     ErrorMoveOut = 1120,        // A move-typed value moved out through a borrowed reference, which does not own it
 
     // 'mod A extends B': a module reusing another module's public names
-    ErrorModExtends = 1122,     // What a module's 'extends' names cannot be reused: not a module, a trait (conforming to a module trait is not built), the module itself or one it contains, a path, or a cycle of extends
+    ErrorModExtends = 1122,     // What a module's 'extends' names cannot be reused: not a module, a trait (conforming to a module trait is not built), the module itself or one it contains, or a path (a loop of 'extends' is ErrorImportLoop)
 
     // Comparing references: '==' and ordering read through to the values, '===' asks whether they are the same place
     ErrorRefNoCompare = 1123,   // '==', '!=' or an ordering on references whose referent has no such operator, or on a slice or virtual reference, whose referents have no comparison built
@@ -269,6 +269,9 @@ enum ErrorCode {
     ErrorModTraitBody = 1136,   // A module trait's body holding something other than a function or a global: a type, an import, a 'use', a macro, a generic fn, an overload name
     ErrorModTraitMissing = 1137, // A module conforming to a module trait declares nothing under a member's name, and the trait gives that member no default
     ErrorModTraitMismatch = 1138, // What a conforming module declares under a member's name is not the member's kind, signature, type or permission
+
+    // The module order: imports form a DAG at every scale
+    ErrorImportLoop = 1139,     // Modules that depend on each other round a loop -- by importing a module or a name of it, by 'extends', or by containing it
 
     // Warnings
     WarnCode = 3000,

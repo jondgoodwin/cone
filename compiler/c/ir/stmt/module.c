@@ -25,6 +25,7 @@ ModuleNode *newModuleNode() {
     dclInfoInit(&mod->dclinfo);
     mod->foldpass = 0;
     mod->folding = 0;
+    mod->dagmark = 0;
     mod->extendsname = NULL;
     mod->extends = NULL;
     mod->deffold = NULL;
@@ -385,24 +386,6 @@ void modExtendsResolve(ModuleNode *mod) {
     mod->extends = fold;
 }
 
-// Refuse a module whose chain of 'extends' comes back to it: each would be
-// adding to the other, and neither has a surface to start from
-void modExtendsCheckCycle(ModuleNode *mod, uint32_t nmods) {
-    if (mod->extends == NULL)
-        return;
-    ModuleNode *base = mod->extends->module;
-    for (uint32_t i = 0; i < nmods && base != NULL; ++i) {
-        if (base == mod) {
-            errorMsgNode(mod->extendsname, ErrorModExtends,
-                "Module %s extends a module that extends it in turn. A chain of 'extends' may not come back to where it started.",
-                &mod->namesym->namestr);
-            mod->extends = NULL;
-            return;
-        }
-        base = base->extends ? base->extends->module : NULL;
-    }
-}
-
 // ---- The fold passes -------------------------------------------------------
 //
 // Every name a module holds by FOLDING is put in its namespace before ANY
@@ -417,18 +400,22 @@ void modExtendsCheckCycle(ModuleNode *mod, uint32_t nmods) {
 // a name that module re-exports is there only once its own folds have run. So
 // modFoldNames is DEPENDENCY-FIRST -- what a module extends and what it imports
 // are folded before it reads them -- and that is what makes transit work: what
-// one module re-exported is what the next one finds. Where the imports form no
-// cycle, one pass is the whole of it.
+// one module re-exported is what the next one finds. Imports form a DAG, a loop
+// being refused before the folds run (pgmModuleOrder), so dependency-first can
+// always be had.
 //
-// A cycle of imports is legal, and there dependency-first cannot be had: where A
-// and B import each other, one of them reads the other while the other's folds
-// are still running, and a name the other re-exports is not there yet. So the
-// passes are REPEATED until one binds nothing new -- a fixpoint, the way Rust
-// resolves glob imports -- and a re-export travels round a cycle as it travels
-// anywhere else. What makes that cheap is modFoldBind: two bindings of the same
-// declaration under one name are one binding, so a pass re-binding what an
-// earlier pass bound changes nothing, and "nothing new" is the whole test. A
-// namespace only grows, and a binding only becomes more visible, so it ends.
+// One pass is not always the whole of it, though. Within one module the folds
+// run in a fixed order -- 'extends', the imports, the globals, the standalone
+// 'use's -- so a global whose type a later 'use' of a submodule brings WAITS, and
+// is folded in the next pass; a sister that took the module's names in the first
+// pass takes the global's re-export in the second. So the passes are REPEATED
+// until one binds nothing new -- a fixpoint, the way Rust resolves glob imports.
+// What makes that cheap is modFoldBind: two bindings of the same declaration
+// under one name are one binding, so a pass re-binding what an earlier pass bound
+// changes nothing, and "nothing new" is the whole test. A namespace only grows,
+// and a binding only becomes more visible, so it ends. The same passes are what
+// keep a refused loop to one diagnostic: the names still travel round it, so
+// nothing the loop cut short is reported missing as well.
 //
 // Until then, nothing a later pass might bring is reported missing. A listed
 // name the source has not got, or has only privately, and a global's fold or an
@@ -597,9 +584,9 @@ static void modDefaultFoldCheck(ModuleNode *mod) {
 
 // Run one module's folds for the current pass: what it extends first, then its
 // imports, its globals' 'use' clauses and its standalone 'use's, each in the order
-// written. Each fold it reads from is run first, and a module reached again while
-// its folds are running -- a cycle -- is read as far as it has got, and read
-// again in the next pass.
+// written. Each fold it reads from is run first. A module reached again while its
+// folds are running closes a loop, which pgmModuleOrder has refused already: it is
+// read as far as it has got, and read again in the next pass.
 void modFoldNames(NameResState *pstate, ModuleNode *mod) {
     if (mod->foldpass == foldpass) {
         if (mod->folding)
@@ -689,8 +676,8 @@ void modFoldNames(NameResState *pstate, ModuleNode *mod) {
 
 // Fold every module's names into its namespace, pass after pass until one binds
 // nothing new, then report what could not be folded (module.h). Another pass is
-// needed only where one read a module mid-fold or left a fold waiting; a program
-// whose imports form no cycle, and whose folds all find what they name, takes one
+// needed only where one left a fold waiting, or read a module mid-fold round a
+// loop already refused; a program whose folds all find what they name takes one
 // pass and the report.
 void modFoldAll(NameResState *pstate, Nodes *modules) {
     INode **nodesp;

@@ -395,39 +395,31 @@ excludes = ["IOStream", "stdio.print"]
 # -------- import of a parent's name --------
 #
 # 'import' takes ANY name the registry holds, not only a module [Jon 23 Sep]:
-# inside a submodule, 'import Point;' binds the parent's public Point -- a type,
-# a function, a global -- exactly as 'import log;' binds a sister. A private
-# name of the parent is refused (ErrorNotPublic), so 'pub' shares downward as
-# well as outward. A submodule is parsed before its parent's own files, so such
-# a name is bound in the fold passes rather than at parse.
+# inside a submodule, 'import Point;' names the parent's public Point -- a type,
+# a function, a global -- as 'import log;' names a sister. But a parent depends
+# on each of its children, so the import closes a loop of two and is refused
+# (ErrorImportLoop) [Jon 23 Sep]: what a parent and its children share moves
+# into a sister they all import. The import is still bound, in the fold passes,
+# so the child's body resolves and the loop is what is reported.
 #
-# module-import-parent runs a struct, a function and a global, a written import
-# beside a wildcard's arrival of the same declaration, and two levels down a
-# module and a type the level above re-exported, the module folded from with its
-# 'use' clause. module-import-parent-nameres holds what binding refuses,
+# module-import-parent is the refusal: a struct, a function and a global, one
+# re-exported, a written import beside a wildcard's arrival of the same
+# declaration, and two levels down a type and a module the level above binds by
+# its imports, each a name of that parent. module-import-parent-nameres holds what binding refuses beside the loop,
 # module-import-parent-parse the name imported twice, and
 # module-import-parent-file a file reached by a name the parent answers too.
 
 [scenario.module-import-parent]
-category = "run"
-description = "A submodule importing its parent's public struct, function and global, a wildcard meeting a written import, and a re-exported module and type two levels down"
-tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
-
-# An import of a parent's name binds and declares nothing. Each declaration is
-# the parent's alone, spelled bare because the parent is the root: one global,
-# one function, and nothing spelled after a module that imported them.
-[[scenario.module-import-parent.check]]
-name = "an-import-of-a-parent-name-declares-no-symbol"
-target = "symbols"
-contains = ["define internal area comdat nodeduplicate"]
-excludes = ["scaling.area", "scaling.count", "scaling.Point", "solids.Point",
-            "inner.Point", "inner.twice", "solids.twice"]
+category = "reject"
+description = "A submodule importing its parent's public struct, function and global, and a grandchild importing a type and a module its parent binds by an import, each a loop through containment"
+tags = ["nameres"]
+diagnostics = 6
 
 [scenario.module-import-parent-nameres]
 category = "reject"
-description = "What an import of a parent's name refuses: a private name, a name the parent has not got, a name the submodule declares, a 'use' clause on a struct, and a name written twice"
+description = "What an import of a parent's name refuses beside the loop it closes: a private name, a name the parent has not got, a name the submodule declares, a 'use' clause on a struct, and a name written twice"
 tags = ["nameres"]
-diagnostics = 5
+diagnostics = 11
 
 [scenario.module-import-parent-parse]
 category = "reject"
@@ -529,29 +521,47 @@ description = "The default-fold spellings refused on a 'mod' line: 'as', 'pub us
 tags = ["parse"]
 diagnostics = 4
 
-# A re-export travels round a cycle of imports. Of two modules that import each
-# other, one reads the other while the other's folds are still running, and a
-# name the other re-exports is not there yet; the folds run again until a pass
-# binds nothing new, and it arrives (modFoldAll). module-import-cycle is each case
-# a single pass lost -- a listed clause, a path an enum's 'use' names, a wildcard
-# and one wildcard further on, a private and a public route, a cycle an
-# 'extends' closes, three modules round one cycle -- and one cycle in the order
-# that loses nothing. module-import-cycle-nameres is what the passes do not make:
-# a name missing for good, a 'but' and a listed name judged against the module
-# once complete, two different declarations a cycle brings under one name, and
-# one declaration a cycle makes the module write twice [Jon 23 Sep], each
-# reported once, where a single pass would have met them -- beside the same
-# shape through a wildcard, which is one binding.
+# -------- the module order: imports form a DAG --------
+#
+# "Modules need to have an explicit dag order" [Jon 23 Sep], at every scale:
+# sister modules as well as packages. A module depends on each module it
+# imports, on the module holding a name it imports, on the module it extends,
+# and on each of its own submodules, so a child depending on its parent is a
+# loop of two. The modules are put in dependency order once what 'extends' names
+# is known, and each loop is ErrorImportLoop at the edge that closes it, naming
+# the modules round it (pgmModuleOrder). The order is the one module 'init's
+# will run in.
+#
+# module-cycle is a loop back to the root file, which the import finds rather
+# than reading the file again. module-import-cycle is the loops the fold passes
+# used to carry re-exports round -- two sisters, three round one ring, one an
+# 'extends' closes -- and pins that the loop is the one thing reported: the
+# loop is left whole, and the passes still carry each name round it.
+# module-import-cycle-nameres is what the passes do not make even so: a name
+# missing for good, a 'but' and a listed name judged against the module once
+# complete, two different declarations a loop brings under one name, and one
+# declaration a loop makes the module write twice [Jon 23 Sep], each reported
+# once, where a single pass would have met them -- beside the same shape through
+# a wildcard, which is one binding. module-import-parent is a child importing
+# its parent's names, which is a loop through containment; module-extends-back
+# and module-extends-nameres hold the loops an 'extends' makes.
+[scenario.module-cycle]
+category = "reject"
+description = "An import loop back to the root file: the import finds the root rather than re-parsing it, and the loop is refused naming the root"
+tags = ["parse", "nameres"]
+diagnostics = 1
+
 [scenario.module-import-cycle]
-category = "run"
-description = "Re-exports that travel round cycles of imports: a listed clause, an enum's 'use' through a path, a wildcard and one further on, a public route winning, a cycle closed by 'extends', three modules round one cycle, and the order that loses nothing"
-tags = ["nameres", "typecheck", "genllvm", "runtime"]
+category = "reject"
+description = "Loops of imports refused at the edge that closes each -- two sisters, three round a ring, one an 'extends' closes -- with every re-export still carried round them, so nothing else is reported"
+tags = ["nameres"]
+diagnostics = 7
 
 [scenario.module-import-cycle-nameres]
 category = "reject"
-description = "What the fold passes round a cycle do not make: a name missing for good, a 'but' of a late name, a listed name that is private, two different declarations under one name, and one declaration listed twice with one listing arriving late, each reported once"
+description = "What the fold passes round a refused loop do not make: a name missing for good, a 'but' of a late name, a listed name that is private, two different declarations under one name, and one declaration listed twice with one listing arriving late, each reported once beside the loop"
 tags = ["nameres"]
-diagnostics = 10
+diagnostics = 17
 
 # -------- a module's 'use' of an enum --------
 #
@@ -595,7 +605,7 @@ diagnostics = 3
 
 [scenario.module-use-submodule]
 category = "run"
-description = "A parent folding its own submodules' names with a standalone 'use': whole, 'but', a block with 'as', a path one level deeper, and 'pub use' seen by path and by a sister's import, beside an enum's 'use'"
+description = "A parent folding its own submodules' names with a standalone 'use': whole, 'but', a block with 'as', a path one level deeper, and 'pub use' seen by path and by a sister's import, beside an enum's 'use'; a global whose type that 'use' brings, folded in the second fold pass and taken by a sister's wildcard"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 
 # A fold binds names and declares nothing. Every call lowers to the submodule's
@@ -677,15 +687,17 @@ excludes = ["solids.area", "solids.unit", "solids.count", "solids.Point", "shape
             "summary.area", "report.area", "solids.secret", "solids.hidden", "solids.deep",
             "shapes.deep", "solids.tripled", "shapes.tripled"]
 
-# A module that imports, 'use *', a module extending it is handed its own names
-# back, and each is the binding the name has already: the same declaration
-# reached a second time is no collision. Both orders, because the order the two
-# modules' folds ran in once decided whether the program compiled: the importer
-# folded first saw its own names come home as duplicates.
+# A module that imports a module extending it depends on it, and is depended
+# on by it: a loop, one edge an import and the other an 'extends', refused
+# (ErrorImportLoop) [Jon 23 Sep]. Both orders, because which edge closes the
+# loop, and so where it is reported, follows the order the program holds the
+# two in; and in neither is anything else reported, since the loop is left
+# whole and the fold passes carry the names round it.
 [scenario.module-extends-back]
-category = "run"
-description = "A module importing with 'use *' a module that extends it, in both fold orders: its own names come back as the bindings they already are"
-tags = ["nameres", "typecheck", "genllvm", "runtime"]
+category = "reject"
+description = "A module importing a module that extends it, in both orders: the loop refused at the edge that closes it, an 'extends' or an import, and nothing else reported"
+tags = ["nameres"]
+diagnostics = 2
 
 # A MODULE TRAIT and the modules conforming to it. module-trait runs every way a
 # default is taken or not: taken whole, overridden by a function and by a global,
@@ -762,7 +774,7 @@ excludes = ["app."]
 
 [scenario.module-extends-nameres]
 category = "reject"
-description = "What 'extends' refuses once names are bound: a redeclared public, private or folded name, a module the base imports named without importing it, the base's private name reached through an importer by path, a listed clause and a wildcard, a trait, a function, itself, a cycle, its own submodule, its parent, and a module out of reach"
+description = "What 'extends' refuses once names are bound: a redeclared public, private or folded name, a module the base imports named without importing it, the base's private name reached through an importer by path, a listed clause and a wildcard, a trait, a function, itself, a loop of two 'extends', its own submodule, its parent, and a module out of reach"
 tags = ["nameres"]
 diagnostics = 14
 
@@ -802,9 +814,9 @@ tags = ["nameres", "typecheck", "genllvm", "runtime"]
 
 [scenario.module-fold-written-nameres]
 category = "reject"
-description = "A name the module writes twice for the same declaration: listed twice in a clause, listed through two imports, listed again after a wildcard and a listing, two identical enum 'use's, a module both imported and listed, its own declaration listed back, and a global's clause listing a member twice"
+description = "A name the module writes twice for the same declaration: listed twice in a clause, listed through two imports, listed again after a wildcard and a listing, two identical enum 'use's, a module both imported and listed, and a global's clause listing a member twice"
 tags = ["nameres"]
-diagnostics = 8
+diagnostics = 7
 
 [scenario.module-fold-diamond-nameres]
 category = "reject"
@@ -1003,8 +1015,7 @@ excludes = ["moduletransit.plain", "moduletransit.scale\n", "modulelate.plain", 
 # The scenarios below assert the symbol an importer emits for kinds no other
 # check names: a C function with the system convention, an imported global, an
 # imported private declaration, extern declarations inside an imported module,
-# an import cycle, and two modules whose names would once have joined into one
-# symbol.
+# and two modules whose names would once have joined into one symbol.
 
 [scenario.module-extern-system]
 category = "compile"
@@ -1193,38 +1204,6 @@ excludes = [
   "unreached",
   "moduleinline.helper comdat",
   "moduleinline.count comdat",
-]
-
-[scenario.module-cycle]
-category = "compile"
-description = "An import cycle back to the root file, which finds the root instead of re-parsing it"
-tags = ["parse", "nameres", "genllvm"]
-
-# The root's own declarations are defined under their bare names, as in any
-# root file, and the sub module's after its module ...
-[[scenario.module-cycle.check]]
-name = "root-defines-its-own-symbols-unprefixed"
-target = "symbols"
-contains = [
-  "global internal counter comdat nodeduplicate",
-  "define internal rootFn comdat nodeduplicate",
-  "define internal caller comdat nodeduplicate",
-  "declare modulecyc.subFn",
-]
-
-# ... and each of them exactly once. The root module is named after its file,
-# so the import back to it finds the module already parsed rather than reading
-# the file again as a second module named 'module-cycle': nothing is declared
-# under that module, and no definition is repeated (LLVM would print a second
-# 'rootFn' as 'rootFn.1').
-[[scenario.module-cycle.check]]
-name = "cycle-finds-the-root-and-declares-nothing-twice"
-target = "symbols"
-excludes = [
-  "module-cycle",
-  "rootFn.1",
-  "caller.1",
-  "counter.1",
 ]
 
 [scenario.module-collision]

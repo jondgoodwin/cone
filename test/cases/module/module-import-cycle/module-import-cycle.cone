@@ -1,17 +1,23 @@
-// A RE-EXPORT TRAVELS ROUND A CYCLE OF IMPORTS.
+// LOOPS OF IMPORTS ARE REFUSED, each at the edge that closes it, and nothing
+// else is reported.
 //
-// Every module's folds run before any body is resolved, dependency-first: what a
-// module imports is folded before the module reads it, so what it re-exported is
-// there. A cycle of imports is legal, and there dependency-first cannot be had:
-// of two modules that import each other, the one whose folds start first is
-// still mid-fold when the other reads it, so what it re-exports is not there yet.
-// The folds are therefore run again, pass after pass, until one binds nothing
-// new, and the name arrives. Each case here is one that a single pass lost.
+// Imports form a DAG at every scale, sister modules as well as packages [Jon 23
+// Sep]. The modules are put in dependency order before any name folds, and each
+// loop is ErrorImportLoop, naming the modules round it, at the import or the
+// 'extends' that closes it: two sisters importing each other, three round one
+// ring, and a loop an 'extends' closes.
+//
+// The loops are not cut, and the fold passes still carry each re-export round
+// them, pass after pass until one binds nothing new (modFoldAll). That is what
+// this scenario pins beside the refusals: every name a body below reaches
+// through a loop is bound, so the loop is the one thing reported and nothing it
+// left half-folded is reported missing as well. Each case is one a single fold
+// pass would have lost.
 //
 // The subfolders are drawn in sorted order and their folds start in that order,
-// which is what decides who reads whom mid-fold:
+// which is what decides who reads whom mid-fold, and which import closes each loop:
 //   gamma/gamma.cone       the names re-exported: shared, more, Tone, Config; in
-//                          no cycle
+//                          no loop
 //   alpha/alpha.cone       imports beta and bravo, THEN re-exports gamma's shared,
 //                          Tone and Config
 //   beta/beta.cone         imports alpha and folds from it by a listed clause, and
@@ -22,59 +28,34 @@
 //   epsilon/epsilon.cone   imports delta, then re-exports gamma's shared
 //   kappa/kappa.cone       imports lambda and relay, THEN re-exports gamma's more
 //   lambda/lambda.cone     a wildcard 'pub use' of kappa: kappa -> lambda -> kappa
-//   onward/onward.cone     a wildcard of lambda, one wildcard further on, in no cycle
+//   onward/onward.cone     a wildcard of lambda, one wildcard further on, in no loop
 //   relay/relay.cone       folds more privately from gamma, and publicly from kappa
-//                          round the cycle kappa -> relay -> kappa
+//                          round the loop kappa -> relay -> kappa
 //   plinth/plinth.cone     imports tower with 'use *', THEN re-exports gamma's more
-//   tower/tower.cone       extends plinth: a cycle an 'extends' edge closes
-//   tri1/tri1.cone         three modules round one cycle, each carrying on the
+//   tower/tower.cone       extends plinth: a loop an 'extends' edge closes
+//   tri1/tri1.cone         three modules round one loop, each carrying on the
 //   tri2/tri2.cone           next one's names with 'pub use *': tri1 -> tri2 ->
 //   tri3/tri3.cone           tri3 -> tri1, and tri1 re-exports gamma's shared too
 //
-// module-import-cycle-nameres holds what a cycle still leaves missing, and a
-// collision a cycle brings.
+// module-import-cycle-nameres holds what a loop still leaves missing, and a
+// collision a loop brings.
 
-import stdio use *;
-
-fn show(label &[]u8, n i64) {
-  printStr(label);
-  printStr(" = ");
-  printInt(n);
-  printStr("\n");
-}
-
-fn main() i32 {
-  // beta read alpha mid-fold, and its listed clause names what alpha re-exports,
-  // one of them under a local spelling: own 3 + common 1
-  show("listed-clause", beta.b());
-  // beta folds Tone's variants through a path naming alpha's re-export: High
-  show("enum-use-through-a-path", beta.tone());
-  // bravo's global and its 'use' of Tone waited for alpha's Config and Tone:
-  // speed 5 + twice 10 + High 20
-  show("global-and-enum-use-wait", bravo.b());
-  // The other order: delta folds first, so it reads epsilon complete. five 5 +
-  // common 1, the same as it would be the other way round
-  show("reader-first", delta.d());
-
-  // lambda's wildcard read kappa mid-fold: k 4 + more 2, bare in lambda ...
-  show("wildcard", lambda.f());
-  // ... carried on by its 'pub use *', reached by a path ...
-  show("wildcard-by-path", lambda.more());
-  // ... and one wildcard further on, from a module in no cycle: more 2 * 100 + k 4
-  show("one-wildcard-further", onward.g());
+fn reach() i64 {
+  // A listed clause, one name under a local spelling, and Tone's variants
+  // folded through a path naming alpha's re-export
+  beta.b() + beta.tone()
+  // bravo's global and its 'use' of Tone waited for alpha's Config and Tone
+  + bravo.b()
+  // The other order: delta folds first, so it reads epsilon complete
+  + delta.d()
+  // lambda's wildcard read kappa mid-fold, carried on by its 'pub use *',
+  // reached by a path, and one wildcard further on
+  + lambda.f() + lambda.more() + onward.g()
   // relay folded more privately from gamma, and publicly from kappa round the
-  // cycle. The same declaration by two routes is one binding, public if either
-  // route is, whichever arrived first
-  show("public-route-wins", relay.more());
-
-  // tower extends plinth, which imports tower: tower read plinth mid-fold, and
-  // still takes the more plinth re-exports: more 2 through tower's path, and
-  // height 20 + base 7 from inside plinth, which reads tower's name back
-  show("extends-closed-cycle", tower.more());
-  show("extends-closed-cycle-body", plinth.viaTower());
-
-  // Three modules round one cycle: tri3 has two from tri2 by way of tri1, and
-  // the shared tri1 re-exports; tri2 has one by way of tri3. 200 + 10 + 1
-  show("three-module-cycle", tri3.two() * 100i64 + tri3.shared() * 10i64 + tri2.one());
-  0i32;
+  // loop: one binding, public
+  + relay.more()
+  // tower extends plinth, which imports tower
+  + tower.more() + plinth.viaTower()
+  // Three modules round one loop
+  + tri3.two() + tri3.shared() + tri2.one();
 }

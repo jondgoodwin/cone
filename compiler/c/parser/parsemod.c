@@ -1647,9 +1647,9 @@ ProgramNode *parsePgm(ConeOptions *opt, BuildDesc *desc) {
     parse.build = NULL;
 
     // Create module node and set up for parsing main source file.
-    // The root's file is registered like any other, so an import cycle back to
+    // The root's file is registered like any other, so an import loop back to
     // it finds the module already parsed instead of reading the file again as a
-    // second module. It sets no DclNamesChain: the root contributes no prefix, so
+    // second module, and the loop is refused naming the root (pgmModuleOrder). It sets no DclNamesChain: the root contributes no prefix, so
     // its declarations are spelled bare -- and naming the root module changes
     // what it is called, never how the program's symbols are spelled. The one
     // exception is a LIBRARY a build description names: a package built on its

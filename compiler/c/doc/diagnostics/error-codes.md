@@ -153,6 +153,18 @@ module trait `ErrorAbstractMeth` and `extends` naming one `ErrorModExtends`, eac
 the code the same mistake wears elsewhere, and `use` written before `is` is
 `ErrorBadFold`, as it is before `extends`.
 
+`ErrorImportLoop` is one code for every loop in the module order, whatever its
+edges: two sisters importing each other, a ring of three, a child importing a
+name of its parent (a loop through containment), a module importing one that
+extends it, and a chain of `extends` alone. The remedy is always the same —
+break the loop, usually by moving what the modules share into a sister they
+all import — and the message names the modules round the loop and each step,
+which is what tells the cases apart. A chain of `extends` alone is a loop like
+the others, so it wears this code, and `ErrorModExtends` keeps what an
+`extends` may not name. Its message has the
+shape Congo's has for the same loop, so a direct `conec` run and a Congo build
+say one thing.
+
 That is a narrow licence, and the tell that it has been stretched is the
 scenarios: **when a scenario needs a message substring to tell two uses of one
 code apart, the substring is doing the code's job.** Wrong arity, a non-type

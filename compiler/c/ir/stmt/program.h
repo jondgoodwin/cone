@@ -14,6 +14,7 @@ typedef struct {
     INodeHdr;
     Nodes *modules;
     Namespace files;    // The file registry: every source file read, by its path
+    Nodes *initorder;   // Every module, each after every module it depends on (pgmModuleOrder): the order 'init' runs in
 } ProgramNode;
 
 ProgramNode *newProgramNode();
@@ -30,6 +31,17 @@ void pgmSetFile(ProgramNode *pgm, Name *pathsym, ModuleNode *mod);
 
 // Add a new module to the program
 ModuleNode *pgmAddMod(ProgramNode *pgm, int16_t flags);
+
+// Put the program's modules in DEPENDENCY ORDER, refusing a loop [Jon 23 Sep].
+// Imports form a DAG at every scale, sister modules as well as packages. A module
+// depends on each module it imports, on the module holding a name it imports
+// ('import Point;' in a submodule depends on its parent), on the module it
+// extends, and on each of its own submodules (containment): so a child that
+// depends on its parent closes a two-module loop. One walk, once what 'extends'
+// names is known; each loop is ErrorImportLoop, naming the modules round it, and
+// the result is pgm->initorder, dependencies first -- the order module 'init's
+// will run in
+void pgmModuleOrder(ProgramNode *pgm);
 
 void pgmNameRes(NameResState *pstate, ProgramNode *mod);
 

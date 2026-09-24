@@ -35,7 +35,10 @@
 //
 // An import inside a module tree may name ANY public name its parent holds, not
 // only a module [Jon 23 Sep]: 'import Point;' in a submodule binds the parent's
-// public Point the way 'import log;' binds a sister. A submodule is parsed before
+// public Point the way 'import log;' binds a sister. It depends on the parent,
+// which contains it, so it closes a loop and is refused (ErrorImportLoop,
+// pgmModuleOrder) [Jon 23 Sep]; it is still bound, so that the loop is the one
+// thing reported. A submodule is parsed before
 // its parent's own files, so what the parent declares is not there to be found
 // at parse; the name is held as 'binding', an alias not yet bound, and bound in
 // the fold passes once the parent's namespace is complete (importBindName).
