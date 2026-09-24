@@ -637,4 +637,7 @@ accident — and update this list when you do.
 - **No performance or memory regression tests.**
 - **Multi-object runtime scenarios only through `link`**, which compiles each
   package alone and links its object in (section 3). Nothing else of separate
-  compilation is exercised: there is no Congo run in the suite.
+  compilation is exercised: there is no Congo run in the suite. Congo is
+  checked by its own script, `tools/congo/test_congo.py`, which builds and runs
+  programs against the packages folder's `core` and `stdio`, each compiled
+  alone.

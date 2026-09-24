@@ -233,9 +233,10 @@ it exports what they need — its public definitions, and each private one an
 `inline`, generic or macro body reaches — so a program compiled against a
 hand-written include file for it links and runs (`module-build-link`); the
 include file declares what the package defines with `extern` and no body, and
-each declaration takes the package's Cone name. What is still missing is a
-generic's instance made in the importer (it is declared and defined nowhere),
-and Congo driving it.
+each declaration takes the package's Cone name. Congo drives it: `congo run`
+compiles each package a program imports on its own, from a build description it
+writes, and links the objects (`tools/congo/README.md`). What is still missing
+is generating the include file; it is written by hand.
 
 The generation machinery, though, is not the missing part. An imported module's
 bodies are emitted whenever it is flagged for generation, and **every module found
@@ -254,15 +255,16 @@ rather than the ability to link at all. The author anticipated it — "it is not
 trivial effort to add the compiler the ability to ingest, preserve, and re-ingest
 public interface information from source files."
 
-**Packages are a search path, not a unit.** The search path — every `--path`
-folder, then the packages folder, where `core` and `stdio` are folder modules —
-finds files, and `--safe=package` appears in the option help, but there is no
-package in the language — no manifest, no versioning, and nothing that makes a
-set of source files one compiled, distributable thing. What the compiler does
-take is a **build description**: Congo's list of one package's modules and files
-and where each import is, which the compiler checks against each file's `mod`
-line and never searches beyond ([module](../../compiler/c/doc/nodes/module.md),
-"A described build").
+**To the compiler, packages are a search path, not a unit.** The search path —
+every `--path` folder, then the packages folder, where `core` and `stdio` are —
+finds files, and `--safe=package` appears in the option help, but the compiler
+knows no package: it reads no manifest and no version. The package as a unit is
+Congo's: a folder with a `congo.toml` (name, `MAJOR.MINOR.PATCH` version, and
+executable or library) and its source under `src/`, compiled on its own and
+imported through its include file. What the compiler takes from Congo is a
+**build description**: one package's modules and files and where each import
+is, which the compiler checks against each file's `mod` line and never searches
+beyond ([module](../../compiler/c/doc/nodes/module.md), "A described build").
 
 **There is no thread layer.** Which of async/await, gothreads or actors Cone
 adopts is an open question the author treats as unsettled across the field; the

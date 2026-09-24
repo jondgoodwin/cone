@@ -116,14 +116,14 @@ the struct:
 | `ir/types/` | types — number, struct, array, reference, arrayref, pointer, fnsig, enum, permission, region, lifetime, tuple, void |
 | `ir/meta/` | generics and macros |
 | `ir/` | shared machinery — dispatch, namespaces, name and type tables, cloning, flow, `--checktree` |
-| `corelib/` | **the built-in types themselves** — `corelib.c` declares the permissions; `corenumber.c` builds the number types in C and hangs every operator method and intrinsic off them. The `so` and `rc` regions, `Option` and `Result` are Cone source in the core package, `packages/core/core.cone`, outside `src/` |
+| `corelib/` | **the built-in types themselves** — `corelib.c` declares the permissions; `corenumber.c` builds the number types in C and hangs every operator method and intrinsic off them. The `so` and `rc` regions, `Option` and `Result` are Cone source in the core package, `packages/core/src/core.cone`, outside the compiler |
 | `shared/` | diagnostics (`error.h` is the `ErrorCode` list), memory arena, file, options, timer, UTF-8 |
 
 `corelib/` is the one most often looked for in the wrong place. A built-in
 method such as integer `+` is **not** written in Cone text: `corenumber.c` calls
 `iNsTypeAddFn` with a `newIntrinsicNode`. Only the region and option types are
 Cone source, and they are not in `corelib/` at all but in the core package,
-`packages/core/core.cone`.
+`packages/core/src/core.cone`.
 
 ## 2. The header every node carries
 

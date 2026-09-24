@@ -96,7 +96,7 @@ make that a compile error instead of a convention — the same reasoning that pu
 **`corelib/` is the line between compiler-defined and Cone-defined.** The number
 types are built in C, with every operator method hung off them as an intrinsic.
 The regions `so` and `rc`, plus `Option` and `Result`, are **Cone source**: the
-core package, `packages/core/core.cone` at the repository's root, which the
+core package, `packages/core/src/core.cone` at the repository's root, which the
 compiler reads from the package search path before any program file and
 imports into every module ([Module](../nodes/module.md), "The packages
 folder"). That split is not arbitrary: a type needs C when the

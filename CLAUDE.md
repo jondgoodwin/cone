@@ -28,14 +28,17 @@ Visual Studio projects stay at the root.
   - `meta/`: generics and macros.
 - `compiler/c/corelib/`: compiler-defined core language types and methods,
   the ones built in C.
-- `packages/`: the Cone packages the compiler finds by default, one folder module
-  each: `core/core.cone` (the prelude every module imports: `Option`, `Result`,
-  the `so` and `rc` regions) and `stdio/stdio.cone`. `conec` finds this folder
-  by walking up from its own executable (and a CMake build also compiles its
-  path in as the fallback), so the test runner and a direct run find both with
-  no setup; `CONE_PACKAGES` names another packages folder, and `--path` adds
-  folders searched before it. `compiler/c/doc/nodes/module.md`, "The packages
-  folder", is the rule.
+- `packages/`: the Cone packages, each laid out as Congo's packages are: a
+  `congo.toml`, its source in `src/<name>.cone`, and its hand-written include
+  file `<name>.cone` at the package root. `core` is the prelude every module
+  imports (`Option`, `Result`, the `so` and `rc` regions); `stdio` prints.
+  The folder is both Congo's first registry and the compiler's packages
+  folder: `conec` finds it by walking up from its own executable (and a CMake
+  build also compiles its path in as the fallback), so the test runner and a
+  direct run find both with no setup, and a compile that finds a package there
+  builds its `src/<name>.cone` into its own object; `CONE_PACKAGES` names
+  another packages folder, and `--path` adds folders searched before it.
+  `compiler/c/doc/nodes/module.md`, "The packages folder", is the rule.
 - `compiler/c/genllvm/`: LLVM type, statement, expression, and allocation
   generation.
 - `compiler/c/shared/`: diagnostics, memory, file, option, timer, and UTF-8
@@ -54,9 +57,13 @@ Visual Studio projects stay at the root.
 - `conesite/`: the rest of the static content for
   [cone.jondgoodwin.com](https://cone.jondgoodwin.com) — the author's articles,
   the playground and examples — and its deployment wrapper.
-- `tools/congo/`: Congo, the build tool. What is here today is the 2022 Python
-  prototype brought in from the `conehome` repository with its history; it
-  still expects that repository's `CONEHOME` layout.
+- `tools/congo/`: Congo, the build tool (`congo new`, `build`, `run`, `clean`;
+  Python 3.11+, standard library only). It reads a package's `congo.toml`, scans
+  each source file's header for its `mod` line and imports, resolves the
+  imports through the package-folder registries (`packages/` first), writes one
+  build description per package, compiles each package on its own with `conec`,
+  and links with `conestd`. `tools/congo/README.md` is its guide and design;
+  `python tools/congo/test_congo.py` checks it against a built `conec`.
 - `samples/`: sample Cone programs (OpenGL and WebGL), from `conehome`. They
   predate the current language and no longer compile (the first error in each
   is the retired `include`); the test suite does not build them.
@@ -179,7 +186,9 @@ git-ignored directory such as `build/`.
 
 For a compiler change:
 
-1. Build `conec` and run `python test/run.py`.
+1. Build `conec` and run `python test/run.py`. A change to `tools/congo/`, to
+   `packages/`, or to how `conec` reads a build description or finds a package
+   also runs `python tools/congo/test_congo.py`.
 2. Add coverage for the change: a scenario in the owning group under
    `test/cases/`, following `compiler/c/doc/diagnostics/test-suite.md`. A fix for a
    crash or a miscompile lands with the case that fails without it, and a new
@@ -194,12 +203,16 @@ link it against `conestd` and the C runtime from a VS environment:
 link prog.obj build\x64-release\conestd.lib /OUT:prog.exe /SUBSYSTEM:CONSOLE msvcrt.lib legacy_stdio_definitions.lib
 ```
 
+Or let Congo do it: `congo run prog.cone` (`tools/congo/`) compiles a lone file
+and every package it imports, each on its own, and links and runs the program.
+
 A program that spans an `import` links only in two cases, because an imported
 module's bodies are declared and never generated: a package found on the
 package search path, such as `stdio`, is compiled into the importing object; and
 a package compiled on its own from a build description saying
 `output: library` exports what its importers need, so its object links beside
-theirs (a scenario's `link` key does that in the suite). Otherwise runtime
+theirs (a scenario's `link` key does that in the suite, and Congo does it for
+every package it builds). Otherwise runtime
 checks live in what one compile defines: one source file, the files of one
 folder, or that folder and the submodules its subfolders draw, whose bodies are
 generated like the rest of the program's, plus the packages it imports.

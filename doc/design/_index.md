@@ -228,7 +228,7 @@ Most real work crosses phases. Start here instead.
 | find out what the compiler is actually doing | [Measuring](../../compiler/c/doc/diagnostics/measuring.md) — probes, `--ir`, `--llvmir`, `--checktree` |
 | add or change a diagnostic | [Error Codes](../../compiler/c/doc/diagnostics/error-codes.md) |
 | add or update test coverage | [Test Suite](../../compiler/c/doc/diagnostics/test-suite.md) |
-| find a built-in type, operator method, or intrinsic | `corelib/` — see the family map in [IR Nodes](../../compiler/c/doc/nodes/_index.md); `Option`, `Result`, `so` and `rc` are Cone source in `packages/core/core.cone` |
+| find a built-in type, operator method, or intrinsic | `corelib/` — see the family map in [IR Nodes](../../compiler/c/doc/nodes/_index.md); `Option`, `Result`, `so` and `rc` are Cone source in `packages/core/src/core.cone` |
 | find `core` or `stdio`, or change where packages are found | `packages/` at the repository's root — [Module](../../compiler/c/doc/nodes/module.md), "The packages folder" |
 
 ## By language feature
@@ -259,10 +259,11 @@ design behind it.
 built** — see "The language reference" below. Three categories above have no
 design note at all, and the concurrency one has no implementation either.
 
-⚠ **Congo — the build tool — has no design note.** It is not `conec`; it lives
-at `tools/congo/`, and a tool's design and user docs sit with the tool, in
-`tools/congo/doc/`, which does not exist yet. **Recorded here so the gap is
-visible rather than merely unfilled.**
+**Congo — the build tool — is documented with the tool**, not here: it is not
+`conec`, and a tool's design and user docs sit with the tool.
+`tools/congo/README.md` covers its commands, the manifest, the registries, the
+package layout, include files and what a build does; the compiler's side of the
+contract is [module](../../compiler/c/doc/nodes/module.md), "A described build".
 
 ## Nodes
 

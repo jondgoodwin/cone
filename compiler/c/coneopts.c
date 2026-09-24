@@ -222,21 +222,24 @@ void coneOptPath(char *path, ConeOptions *opt) {
 }
 
 // The packages folder that travels with conec: the nearest 'packages' folder
-// holding core (packages/core/core.cone) in the executable's own folder or any
-// folder above it. That one rule finds the repository's folder from a build
-// tree (build/x64-release/conec.exe) and an installed one from either
-// <prefix>/conec.exe or <prefix>/bin/conec.exe. Requiring core, not just the
-// name, keeps an unrelated 'packages' folder on the way up from being taken
+// holding core (packages/core/src/core.cone, or packages/core/core.cone) in the
+// executable's own folder or any folder above it. That one rule finds the
+// repository's folder from a build tree (build/x64-release/conec.exe) and an
+// installed one from either <prefix>/conec.exe or <prefix>/bin/conec.exe.
+// Requiring core, not just the name, keeps an unrelated 'packages' folder on
+// the way up from being taken
 static char *coneOptExePackages() {
     char *folder = fileExeFolder();
     if (folder == NULL)
         return NULL;
     size_t len = strlen(folder);
-    char *candidate = (char*)memAllocBlk(len + sizeof("packages/core/"));
+    char *candidate = (char*)memAllocBlk(len + sizeof("packages/core/src/"));
     while (1) {
         memcpy(candidate, folder, len);
+        strcpy(candidate + len, "packages/core/src/");
+        int found = fileDesignatedFile(candidate, "core") != NULL;
         strcpy(candidate + len, "packages/core/");
-        if (fileDesignatedFile(candidate, "core")) {
+        if (found || fileDesignatedFile(candidate, "core")) {
             candidate[len + sizeof("packages/") - 1] = '\0';
             return candidate;
         }

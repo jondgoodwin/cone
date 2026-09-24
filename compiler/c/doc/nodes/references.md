@@ -179,7 +179,7 @@ routes to `refTypeCheck` and therefore what populates `typeinfo`, which
 `_alloc(usize) *u8` and the permission's `init`.
 
 A region is any struct with a suitable `_alloc`; `so` and `rc` are ordinary Cone
-declarations in the core package, `packages/core/core.cone`, not compiler
+declarations in the core package, `packages/core/src/core.cone`, not compiler
 built-ins.
 
 ### Matching
