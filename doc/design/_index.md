@@ -25,23 +25,26 @@ trade-off, and every note here has to hold that claim up.
 
 **Attention is the scale both aims are priced in.** A safety, modularity or
 performance mechanism that costs more attention than it saves is a bad trade
-whatever it guarantees. [Expressiveness and Attention](topics/expressiveness-and-attention.md)
+whatever it guarantees. [Expressiveness and Attention](expressiveness-and-attention.md)
 carries that argument.
 
 ## Two kinds of note
 
 ```
-design/
-  topics/       one concern followed across the whole compiler — safety, modularity, memory
-  phases/       one note per compiler phase, plus the naming rules they implement
-  nodes/        what is true of every IR node, and per-node notes
-  compiler/     conec as a piece of software — how it is built, and how it stays fast
-  diagnostics/  how to find out what the compiler does, and how to say it is wrong
+doc/design/            the topic notes, one concern followed across the whole compiler —
+                       safety, modularity, memory — plus the naming rules
+compiler/c/doc/
+  phases/              one note per compiler phase
+  nodes/               what is true of every IR node, and per-node notes
+  compiler/            conec as a piece of software — how it is built, and how it stays fast
+  diagnostics/         how to find out what the compiler does, and how to say it is wrong
 ```
 
 **A topic note follows one concern across every phase and node it touches.** A
 **structure note** — phases, nodes, compiler, diagnostics — describes how this
-compiler is built.
+compiler is built. The two kinds live apart for that reason: the topic notes sit
+with the language, and the structure notes sit inside the compiler they describe
+and are retired with it.
 
 **Both open with the principles they own**, then the design those principles
 rule over, then what of it is built. The three are separated by section, never
@@ -59,11 +62,11 @@ real, and both rule over decisions downstream of them.
 **A note states the principles it owns and references the ones it inherits.**
 Writing out an inherited principle is how two notes come to disagree about it —
 which has already happened, with the package model stated in full in both
-[Modularity](topics/modularity.md) and [module](nodes/module.md).
+[Modularity](modularity.md) and [module](../../compiler/c/doc/nodes/module.md).
 
 **The owner is the note whose subject the principle is.** Symbol naming is a
-rule about names, so [Names and Namespaces](phases/names-and-namespaces.md)
-owns it and [Generation](phases/generation.md) carries only the lowering.
+rule about names, so [Names and Namespaces](names-and-namespaces.md)
+owns it and [Generation](../../compiler/c/doc/phases/generation.md) carries only the lowering.
 Attention as the scarce resource is about expressiveness, so that note owns it
 and the rest point at it.
 
@@ -84,7 +87,7 @@ inline where one differs. The marker goes when the author has reviewed it.
 principles are recoverable, because a position that rules on something has left
 evidence in the shape of the code. **The hazard is promoting an implementation
 accident to a principle** — asserting intent behind something that merely fell
-out of how it was built. [assign](nodes/assign.md) carries a worked example of
+out of how it was built. [assign](../../compiler/c/doc/nodes/assign.md) carries a worked example of
 both kinds in one section.
 
 **A principle in a topic note names the structure note that implements it.** A
@@ -103,8 +106,8 @@ deepened the understanding. So a divergence may mean the code has drifted, or ma
 mean the articulation moved ahead of it deliberately. Resolve it; do not assume
 which side is wrong.
 
-The author's writing is the source for the aims: `conesite/public/*.html`
-outside `coneref/`, and the posts under `c:/src/progling/content/post/`.
+The author's writing is the source for the aims: `conesite/public/*.html`,
+and the posts under `c:/src/progling/content/post/`.
 Where a note states an aim, it credits the post that argues for it — those carry
 the general case, and the note carries what it means for Cone.
 
@@ -118,14 +121,14 @@ parse  ->  name resolution  ->  type check  ->  generation
 
 | Phase | Note | Owns |
 | --- | --- | --- |
-| 1 | [Parse](phases/parse.md) | lexer, parser, desugaring, module loading, parse-time namespaces |
-| 2 | [Name Resolution](phases/name-resolution.md) | binding names, deciding types from values, hooking and scopes |
-| 3 | [Type Check](phases/type-check.md) | *when* a declaration is checked — demand, marks, re-entry, size, circularity |
-| 3 | [Type Check Reasoning](phases/type-check-reasoning.md) | *what* the checks decide — coercion, overloads, casts, borrows, tuples |
-| 4 | [Flow Analysis](phases/flow.md) | moves, alias counting, drops, permissions, escape. Runs per function, inside phase 3 |
-| 5 | [Generation](phases/generation.md) | LLVM type lowering, allocation layout, pointer levels, output |
+| 1 | [Parse](../../compiler/c/doc/phases/parse.md) | lexer, parser, desugaring, module loading, parse-time namespaces |
+| 2 | [Name Resolution](../../compiler/c/doc/phases/name-resolution.md) | binding names, deciding types from values, hooking and scopes |
+| 3 | [Type Check](../../compiler/c/doc/phases/type-check.md) | *when* a declaration is checked — demand, marks, re-entry, size, circularity |
+| 3 | [Type Check Reasoning](../../compiler/c/doc/phases/type-check-reasoning.md) | *what* the checks decide — coercion, overloads, casts, borrows, tuples |
+| 4 | [Flow Analysis](../../compiler/c/doc/phases/flow.md) | moves, alias counting, drops, permissions, escape. Runs per function, inside phase 3 |
+| 5 | [Generation](../../compiler/c/doc/phases/generation.md) | LLVM type lowering, allocation layout, pointer levels, output |
 
-[Names and Namespaces](phases/names-and-namespaces.md) sits with them: it is the
+[Names and Namespaces](names-and-namespaces.md) sits with them: it is the
 *rules* — what a name means, visibility, imports, aliases, overloading — as
 against how name resolution implements them. It is not a phase, and the rules it
 states are enforced from parse and type check as well; it lives here because it
@@ -150,11 +153,11 @@ summary here was thin; the note was not.**
 
 | Note | Serves | The position | The distance |
 | --- | --- | --- | --- |
-| [References and Regions](topics/references-and-regions.md) | **both** | Memory strategy chosen per object, with safety preserved across all of them | mechanism built, two regions ship; the strategies that motivate it — arena, pool, tracing GC — are not written |
-| [Performance](topics/performance.md) | performance | Give knowledgeable programmers the levers for proven high-performance strategies | most levers unbuilt; what exists is the machinery making them cheap to add and free to skip |
-| [Modularity](topics/modularity.md) | agility | Every layer — block, function, type, thread, module, program — surfacing the same six strategies | composition, namespace and encapsulation broadly present; substitution, generativity and extensibility thin out above the type layer; no thread layer; the program layer has no namespace at all |
-| [Safety](topics/safety.md) | agility | Memory and type safety without a garbage collector, at no runtime cost | a scorecard: what is checked, what is not, and the four shapes the gaps take |
-| [Expressiveness and Attention](topics/expressiveness-and-attention.md) | **the scale, not an aim** | Programming as Lego assembly — small, uniform, opaque interfaces. Attention is the scarce resource both aims are priced in | the mechanisms meant to deliver it are the unbuilt ones: no thread layer so no actors, no module substitution, borrowing narrowed only by convention |
+| [References and Regions](references-and-regions.md) | **both** | Memory strategy chosen per object, with safety preserved across all of them | mechanism built, two regions ship; the strategies that motivate it — arena, pool, tracing GC — are not written |
+| [Performance](performance.md) | performance | Give knowledgeable programmers the levers for proven high-performance strategies | most levers unbuilt; what exists is the machinery making them cheap to add and free to skip |
+| [Modularity](modularity.md) | agility | Every layer — block, function, type, thread, module, program — surfacing the same six strategies | composition, namespace and encapsulation broadly present; substitution, generativity and extensibility thin out above the type layer; no thread layer; the program layer has no namespace at all |
+| [Safety](safety.md) | agility | Memory and type safety without a garbage collector, at no runtime cost | a scorecard: what is checked, what is not, and the four shapes the gaps take |
+| [Expressiveness and Attention](expressiveness-and-attention.md) | **the scale, not an aim** | Programming as Lego assembly — small, uniform, opaque interfaces. Attention is the scarce resource both aims are priced in | the mechanisms meant to deliver it are the unbuilt ones: no thread layer so no actors, no module substitution, borrowing narrowed only by convention |
 
 **References and regions is where the two axes meet**, which is why it is the
 most distinctive thing in the language: one construct — a region-decorated,
@@ -169,7 +172,7 @@ is now argued in Expressiveness and Attention; whether what remains is a design
 principle with content or a positioning claim is still worth deciding.
 
 ⚠ **Open, with a recommendation: three strategies, or six?**
-[Modularity](topics/modularity.md) enumerates three — complexity isolation,
+[Modularity](modularity.md) enumerates three — complexity isolation,
 interface-based substitution, multi-use generation. The author's concept vault
 enumerates **six** — composition, namespace, encapsulation, substitution,
 generativity, extensibility.
@@ -197,8 +200,8 @@ each strategy costs, not as the taxonomy.**
 
 | Note | Contents |
 | --- | --- |
-| [Architecture](compiler/architecture.md) | One node family per source pair, the uniform per-phase function set, centralized dispatch, the one-way dependency, and where the boundaries are drawn |
-| [Performance](compiler/performance.md) | The arena, interning, memoization, and what is deliberately not optimized |
+| [Architecture](../../compiler/c/doc/compiler/architecture.md) | One node family per source pair, the uniform per-phase function set, centralized dispatch, the one-way dependency, and where the boundaries are drawn |
+| [Performance](../../compiler/c/doc/compiler/performance.md) | The arena, interning, memoization, and what is deliberately not optimized |
 
 ## By task
 
@@ -206,49 +209,49 @@ Most real work crosses phases. Start here instead.
 
 | I want to… | Go to |
 | --- | --- |
-| add or change an operator | [Parse](phases/parse.md), "Adding an operator" — six edits spanning parse, `corelib/` and generation |
-| add a new IR node tag | [IR Nodes](nodes/_index.md), "Adding a node tag" — every dispatch arm, and which of them report a missing one |
-| change what syntax means | [Parse](phases/parse.md), "What the parser leaves undecided", then [Name Resolution](phases/name-resolution.md), "What it retags" |
-| work out why a name will not resolve | [Name Resolution](phases/name-resolution.md), "Hooking" onward; the rules are in [Names and Namespaces](phases/names-and-namespaces.md) |
-| work out why a value is or is not accepted | [Type Check Reasoning](phases/type-check-reasoning.md), "The verdict vocabulary" and "Coercion" |
-| change a call, a method, or overloading | [Type Check Reasoning](phases/type-check-reasoning.md), "Calls, methods and overloads" |
-| fix a double release, a leak, or a bad move | [Flow Analysis](phases/flow.md), "Moves and counting" onward, then [Generation](phases/generation.md), "The allocation header" |
-| change ownership, borrowing, or lifetimes | [References and Regions](topics/references-and-regions.md) for the model, then [Flow Analysis](phases/flow.md) for what enforces it |
-| know whether a safety property actually holds | [Safety](topics/safety.md) — the scorecard, and why a clean compile proves less than it looks like |
-| know what something costs at runtime | [Performance](topics/performance.md) |
-| add a file, a node family, or a phase | [Architecture](compiler/architecture.md) |
-| understand how a program is composed from pieces | [Modularity](topics/modularity.md) |
-| change modules, imports, or what a compile emits for each of them | [module](nodes/module.md) — the model, and what it has not decided |
-| work out why the compiler is slow | [Compiler Performance](compiler/performance.md) |
-| emit different LLVM, or fix a miscompile | [Generation](phases/generation.md), "Pointer levels", before writing any cast, GEP, load or store |
-| understand a node end to end | [IR Nodes](nodes/_index.md), "Per-node notes", and `nodes/` |
-| find out what the compiler is actually doing | [Measuring](diagnostics/measuring.md) — probes, `--ir`, `--llvmir`, `--checktree` |
-| add or change a diagnostic | [Error Codes](diagnostics/error-codes.md) |
-| add or update test coverage | [Test Suite](diagnostics/test-suite.md) |
-| find a built-in type, operator method, or intrinsic | `corelib/` — see the family map in [IR Nodes](nodes/_index.md); `Option`, `Result`, `so` and `rc` are Cone source in `packages/core/core.cone` |
-| find `core` or `stdio`, or change where packages are found | `packages/` at the repository's root — [Module](nodes/module.md), "The packages folder" |
+| add or change an operator | [Parse](../../compiler/c/doc/phases/parse.md), "Adding an operator" — six edits spanning parse, `corelib/` and generation |
+| add a new IR node tag | [IR Nodes](../../compiler/c/doc/nodes/_index.md), "Adding a node tag" — every dispatch arm, and which of them report a missing one |
+| change what syntax means | [Parse](../../compiler/c/doc/phases/parse.md), "What the parser leaves undecided", then [Name Resolution](../../compiler/c/doc/phases/name-resolution.md), "What it retags" |
+| work out why a name will not resolve | [Name Resolution](../../compiler/c/doc/phases/name-resolution.md), "Hooking" onward; the rules are in [Names and Namespaces](names-and-namespaces.md) |
+| work out why a value is or is not accepted | [Type Check Reasoning](../../compiler/c/doc/phases/type-check-reasoning.md), "The verdict vocabulary" and "Coercion" |
+| change a call, a method, or overloading | [Type Check Reasoning](../../compiler/c/doc/phases/type-check-reasoning.md), "Calls, methods and overloads" |
+| fix a double release, a leak, or a bad move | [Flow Analysis](../../compiler/c/doc/phases/flow.md), "Moves and counting" onward, then [Generation](../../compiler/c/doc/phases/generation.md), "The allocation header" |
+| change ownership, borrowing, or lifetimes | [References and Regions](references-and-regions.md) for the model, then [Flow Analysis](../../compiler/c/doc/phases/flow.md) for what enforces it |
+| know whether a safety property actually holds | [Safety](safety.md) — the scorecard, and why a clean compile proves less than it looks like |
+| know what something costs at runtime | [Performance](performance.md) |
+| add a file, a node family, or a phase | [Architecture](../../compiler/c/doc/compiler/architecture.md) |
+| understand how a program is composed from pieces | [Modularity](modularity.md) |
+| change modules, imports, or what a compile emits for each of them | [module](../../compiler/c/doc/nodes/module.md) — the model, and what it has not decided |
+| work out why the compiler is slow | [Compiler Performance](../../compiler/c/doc/compiler/performance.md) |
+| emit different LLVM, or fix a miscompile | [Generation](../../compiler/c/doc/phases/generation.md), "Pointer levels", before writing any cast, GEP, load or store |
+| understand a node end to end | [IR Nodes](../../compiler/c/doc/nodes/_index.md), "Per-node notes", and `nodes/` |
+| find out what the compiler is actually doing | [Measuring](../../compiler/c/doc/diagnostics/measuring.md) — probes, `--ir`, `--llvmir`, `--checktree` |
+| add or change a diagnostic | [Error Codes](../../compiler/c/doc/diagnostics/error-codes.md) |
+| add or update test coverage | [Test Suite](../../compiler/c/doc/diagnostics/test-suite.md) |
+| find a built-in type, operator method, or intrinsic | `corelib/` — see the family map in [IR Nodes](../../compiler/c/doc/nodes/_index.md); `Option`, `Result`, `so` and `rc` are Cone source in `packages/core/core.cone` |
+| find `core` or `stdio`, or change where packages are found | `packages/` at the repository's root — [Module](../../compiler/c/doc/nodes/module.md), "The packages folder" |
 
 ## By language feature
 
 The other two tables route by *compiler* structure. This one routes by the
 language itself — start here when you know what the feature is called to a
 programmer but not which phase or node owns it. The reference pages under
-`conesite/public/coneref/` are the user-facing description; the notes are the
+`doc/reference/` are the user-facing description; the notes are the
 design behind it.
 
 | Category | Reference pages | Design note |
 | --- | --- | --- |
-| **Lexical and basic form** | `reftoken` · `refterm` · `refbasics` · `ebnf` | [Parse](phases/parse.md) |
-| **Expressions and control flow** | `refexpr` · `refif` · `refwhile` · `refeach` · `refblock` · `refmatch` · `refflow` | [block](nodes/block.md) · [if](nodes/if.md) · [return](nodes/return.md) |
-| **Functions** | `reffunc` · `refmethod` · `refmethop` · `refclosure` · `reffnref` · `refcloref` | [fncall](nodes/fncall.md) |
-| **Core types** | `reftypes` · `refnumber` · `refstruct` · `refenum` · `reftuple` · `refarray` · `reftypealias` · `refvoid` | [struct](nodes/struct.md) · [literals](nodes/literals.md) |
-| **Traits and polymorphism** | `reftrait` · `reftraitvar` · `refinherit` · `refvirtref` · `refgeneric` | [struct](nodes/struct.md) · [generic](nodes/generic.md) |
-| **References, permissions, regions** | `refrefs` · `refptr` · `refborref` · `refperm` · `refpermlock` · `refweakref` · `refarrayref` · `refallocref` · `refalloccust` · `refregionglo` · `refmove` · `reflifefn` | [references](nodes/references.md) · [References and Regions](topics/references-and-regions.md) · [Flow Analysis](phases/flow.md) |
-| **Lifetime and construction** | `refinitdrop` · `reftypemanage` | [Flow Analysis](phases/flow.md) · [vardcl](nodes/vardcl.md) |
-| **Modules and packages** | `refmodule` · `refinclude` | [module](nodes/module.md) |
-| **Safety and trust** | `refsafety` · `reftypesafe` · `reftrust` | [Safety](topics/safety.md) |
+| **Lexical and basic form** | `reftoken` · `refterm` · `refbasics` · `ebnf` | [Parse](../../compiler/c/doc/phases/parse.md) |
+| **Expressions and control flow** | `refexpr` · `refif` · `refwhile` · `refeach` · `refblock` · `refmatch` · `refflow` | [block](../../compiler/c/doc/nodes/block.md) · [if](../../compiler/c/doc/nodes/if.md) · [return](../../compiler/c/doc/nodes/return.md) |
+| **Functions** | `reffunc` · `refmethod` · `refmethop` · `refclosure` · `reffnref` · `refcloref` | [fncall](../../compiler/c/doc/nodes/fncall.md) |
+| **Core types** | `reftypes` · `refnumber` · `refstruct` · `refenum` · `reftuple` · `refarray` · `reftypealias` · `refvoid` | [struct](../../compiler/c/doc/nodes/struct.md) · [literals](../../compiler/c/doc/nodes/literals.md) |
+| **Traits and polymorphism** | `reftrait` · `reftraitvar` · `refinherit` · `refvirtref` · `refgeneric` | [struct](../../compiler/c/doc/nodes/struct.md) · [generic](../../compiler/c/doc/nodes/generic.md) |
+| **References, permissions, regions** | `refrefs` · `refptr` · `refborref` · `refperm` · `refpermlock` · `refweakref` · `refarrayref` · `refallocref` · `refalloccust` · `refregionglo` · `refmove` · `reflifefn` | [references](../../compiler/c/doc/nodes/references.md) · [References and Regions](references-and-regions.md) · [Flow Analysis](../../compiler/c/doc/phases/flow.md) |
+| **Lifetime and construction** | `refinitdrop` · `reftypemanage` | [Flow Analysis](../../compiler/c/doc/phases/flow.md) · [vardcl](../../compiler/c/doc/nodes/vardcl.md) |
+| **Modules and packages** | `refmodule` · `refinclude` | [module](../../compiler/c/doc/nodes/module.md) |
+| **Safety and trust** | `refsafety` · `reftypesafe` · `reftrust` | [Safety](safety.md) |
 | **Error handling** | `refexcept` · `refoption` · `refresult` | ⚠ **no note** |
-| **Metaprogramming** | `refmacro` · `refmeta` | [generic](nodes/generic.md) |
+| **Metaprogramming** | `refmacro` · `refmeta` | [generic](../../compiler/c/doc/nodes/generic.md) |
 | **Concurrency** | `refconc` · `refconccomm` · `refconcio` · `refcorout` | ⚠ **no note; no thread layer exists** |
 | **Collections** | `reftypecoll` | ⚠ **no note** |
 
@@ -264,33 +267,33 @@ unfilled.**
 
 ## Nodes
 
-[IR Nodes](nodes/_index.md) covers what is true of every node — tag groups,
+[IR Nodes](../../compiler/c/doc/nodes/_index.md) covers what is true of every node — tag groups,
 header fields, the three sentinels, `--checktree`, the arms a new tag needs —
 and carries the manifest for the per-node notes beside it.
 
 | Node | Note |
 | --- | --- |
-| `FnCallNode` — calls, methods, operators, field access, indexing | [fncall](nodes/fncall.md) |
-| `StructNode` — struct, trait and enum | [struct](nodes/struct.md) |
-| `RefNode` — references, borrows, allocations, slices, virtual refs | [references](nodes/references.md) |
-| `VarDclNode`, `FieldDclNode`, `ConstDclNode` | [vardcl](nodes/vardcl.md) |
-| `ModuleNode`, `ImportNode`, `ProgramNode` — and the module/package/compilation-unit model | [module](nodes/module.md) |
-| `NameUseNode` — every appearance of a name | [nameuse](nodes/nameuse.md) |
-| `AssignNode` | [assign](nodes/assign.md) |
-| `CastNode` — `as`, `into`, `is`, and injected coercions | [cast](nodes/cast.md) |
-| `BreakRetNode` — `return`, `break`, `continue`, `blockret` | [return](nodes/return.md) |
-| `BlockNode` — blocks and loops | [block](nodes/block.md) |
-| `IfNode` — `if`, `elif`, `else`, and `match` | [if](nodes/if.md) |
-| literals — `nil`, numbers, strings, arrays, type literals | [literals](nodes/literals.md) |
-| `GenericInfo`, `GenVarDclNode`, `MacroDclNode`, cloning | [generic](nodes/generic.md) |
+| `FnCallNode` — calls, methods, operators, field access, indexing | [fncall](../../compiler/c/doc/nodes/fncall.md) |
+| `StructNode` — struct, trait and enum | [struct](../../compiler/c/doc/nodes/struct.md) |
+| `RefNode` — references, borrows, allocations, slices, virtual refs | [references](../../compiler/c/doc/nodes/references.md) |
+| `VarDclNode`, `FieldDclNode`, `ConstDclNode` | [vardcl](../../compiler/c/doc/nodes/vardcl.md) |
+| `ModuleNode`, `ImportNode`, `ProgramNode` — and the module/package/compilation-unit model | [module](../../compiler/c/doc/nodes/module.md) |
+| `NameUseNode` — every appearance of a name | [nameuse](../../compiler/c/doc/nodes/nameuse.md) |
+| `AssignNode` | [assign](../../compiler/c/doc/nodes/assign.md) |
+| `CastNode` — `as`, `into`, `is`, and injected coercions | [cast](../../compiler/c/doc/nodes/cast.md) |
+| `BreakRetNode` — `return`, `break`, `continue`, `blockret` | [return](../../compiler/c/doc/nodes/return.md) |
+| `BlockNode` — blocks and loops | [block](../../compiler/c/doc/nodes/block.md) |
+| `IfNode` — `if`, `elif`, `else`, and `match` | [if](../../compiler/c/doc/nodes/if.md) |
+| literals — `nil`, numbers, strings, arrays, type literals | [literals](../../compiler/c/doc/nodes/literals.md) |
+| `GenericInfo`, `GenVarDclNode`, `MacroDclNode`, cloning | [generic](../../compiler/c/doc/nodes/generic.md) |
 
 ## Diagnostics
 
 | Note | Contents |
 | --- | --- |
-| [Measuring](diagnostics/measuring.md) | How to find out what the compiler actually does, and how to read what it produced |
-| [Error Codes](diagnostics/error-codes.md) | Ranges, reporting, adding a code, when one code carries several causes, cascade suppression |
-| [Test Suite](diagnostics/test-suite.md) | Adding or updating coverage: the groups, choosing a scenario, what to assert |
+| [Measuring](../../compiler/c/doc/diagnostics/measuring.md) | How to find out what the compiler actually does, and how to read what it produced |
+| [Error Codes](../../compiler/c/doc/diagnostics/error-codes.md) | Ranges, reporting, adding a code, when one code carries several causes, cascade suppression |
+| [Test Suite](../../compiler/c/doc/diagnostics/test-suite.md) | Adding or updating coverage: the groups, choosing a scenario, what to assert |
 
 ## Conventions
 
@@ -368,7 +371,7 @@ it or not writing it.
 
 ## The language reference
 
-`conesite/public/coneref/` shows the language's **intended** shape, not only what
+`doc/reference/` shows the language's **intended** shape, not only what
 is built. With no users yet, the breadth is what a reader needs to see.
 
 Each page opens with an italic status note naming the exceptions — the form 31 of
@@ -398,9 +401,9 @@ sections and neither substitutes for the other.
 worthless; any two notes in this folder are "related".
 
 ```
-The symbol scheme — consumed by `phases/generation.md` (lowering), by
+The symbol scheme — consumed by `compiler/c/doc/phases/generation.md` (lowering), by
 `nameSymbol`, `nameType` and `genlLinkage`, and by
-`coneref/refmodule.html` (name qualification).
+`doc/reference/refmodule.html` (name qualification).
 ```
 
 **Name an area, never a precise location.** Same reason a code pointer names a
@@ -415,8 +418,8 @@ is marked `[planned]` too, so drift between two notes is unrecoverable rather th
 merely wrong.
 
 **The owner of a fact is the note whose SUBJECT it is**, never a note that
-consumes it. Symbol naming is a naming rule, so `phases/names-and-namespaces.md`
-owns it and `phases/generation.md` and `nodes/module.md` refer to it. Where no
+consumes it. Symbol naming is a naming rule, so `doc/design/names-and-namespaces.md`
+owns it and `compiler/c/doc/phases/generation.md` and `compiler/c/doc/nodes/module.md` refer to it. Where no
 existing note has a fact as its
 subject, that is the signal the topic needs a note of its own — which makes a
 topic-owned note a rare and earned thing rather than a default.
