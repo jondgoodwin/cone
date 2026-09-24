@@ -1,0 +1,109 @@
+// Multi-line string literals, by doc/reference/reftoken.html, "Multi-line
+// String Literals": the opening quote ends its line, and that end of line is
+// not content; the closing quote begins a later line and may be indented; that
+// much indentation is stripped from each content line; and each content line
+// gains a new-line character unless its end of line follows a backslash.
+//
+// Every literal is printed a byte at a time between bars, with a new-line, a
+// tab and a carriage return spelled as their escapes, so what the lexer built
+// is visible whole, including what a line end left behind.
+//
+// This file's line ends are LF. lexical_mlstring_crlf holds the same rules
+// written with CRLF line ends, and prints the same thing.
+//
+// Not pinned: a content line indented less than the closing quote, which
+// includes a blank line inside an indented literal. The manual says what is
+// stripped from a line indented as far as the closing quote, and nothing about
+// a line indented less.
+
+mod lexical_mlstring;
+
+import stdio use *;
+
+fn show(label &[]u8, text &[]u8) {
+  printStr(label);
+  printStr(" = |");
+  mut i = 0u64;
+  while i < text.len {
+    imm c = text[i];
+    if c == '\n' {
+      printStr("\\n");
+    }
+    elif c == '\t' {
+      printStr("\\t");
+    }
+    elif c == '\r' {
+      printStr("\\r");
+    }
+    else {
+      printChar(u64[c]);
+    }
+    i = i + 1;
+  }
+  printStr("|, len ");
+  printUInt(u64[text.len]);
+  printStr("\n");
+}
+
+// A literal at module level, its closing quote at the start of the line: no
+// indentation is stripped, so the content keeps all of its own
+imm unindented = "
+first
+  second
+";
+
+fn main() i32 {
+  // Each content line ends in a new-line, the last one's included
+  imm lines = "
+   x
+   y
+   ";
+  show("lines", lines);
+
+  // The manual's example, equivalent to "a\nb": the backslash before the end of
+  // the last content line means no new-line is appended to it
+  imm manual = "
+   a
+   b\
+   ";
+  show("manual-example", manual);
+
+  // A backslash joins a line to the next, whose indentation is still stripped
+  imm joined = "
+    one \
+    two
+    ";
+  show("backslash-joins", joined);
+
+  // Indentation beyond the closing quote's is content
+  imm deeper = "
+    first
+      second
+    ";
+  show("deeper-indent", deeper);
+
+  show("unindented", unindented);
+
+	// Tabs: the closing quote is indented two tabs, so two tabs are stripped;
+	// a third tab, and one inside the line, are content
+	imm tabbed = "
+		one
+			two	three
+		";
+	show("tabs", tabbed);
+
+  // Escape sequences mean what they mean in any string literal. An escaped
+  // backslash at a line's end is a backslash, and does not join the lines
+  imm escaped = "
+    say \"hi\"\tend\x21
+    dir\\
+    ";
+  show("escapes", escaped);
+
+  // No content lines at all: the empty string
+  imm empty = "
+    ";
+  show("empty", empty);
+
+  0;
+}

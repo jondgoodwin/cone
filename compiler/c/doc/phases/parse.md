@@ -28,7 +28,10 @@ claim that these rule rather than describe.**
    indentation, line ends and columns carry no meaning to the grammar. ▸
    **Forbids** any syntax that reads where a line begins or ends, and
    **settles** that the token stream is separable from parse state — the lexer
-   never needs to be told what the parser is doing.
+   never needs to be told what the parser is doing. The one place line ends and
+   indentation mean something is *inside* one token, a multi-line string
+   literal (section 2), which reads them to build the literal's content and
+   never to decide where a token or a statement ends.
 3. **The parser desugars.** `match`, `each`, `while`, `with`, bound patterns and
    several prefix forms are lowered here into blocks and `if` chains. ▸
    **Settles** that later phases never see those forms, so a new sugar costs no
@@ -89,6 +92,22 @@ have been consumed, so the token still ends where it should and the parser
 carries on with it. The digits of a float are exempt: they are read again by
 `lexToFloat`, so a mantissa wider than 64 bits is a value, not an overflow.
 `lexical_reject_overflow` holds the boundary in both bases.
+
+**A string literal whose opening quote ends its line is a multi-line string
+literal**, read by the rules of `doc/reference/reftoken.html`, "Multi-line String
+Literals". `lexScanString` finds the closing quote first, stepping over each
+escape sequence whole, and takes its indentation — the spaces and tabs before it
+on its line, counted as characters — as what to strip from the start of every
+content line. The end of line after the opening quote is dropped; every other
+one, LF or CRLF, becomes one `\n` in the content, unless a backslash precedes it,
+which joins the line to the next. Tabs are content. A closing quote with
+anything but spaces or tabs before it on its line is `ErrorBadTok`, reported at
+the opening quote. A content line indented less than the closing quote loses
+only the indentation it has — the manual does not say what such a line means,
+and this is not a ruling. `lexical_mlstring` and `lexical_mlstring_crlf` hold
+the rules; `lexical_reject_mlstring` the refusal. A literal that spans lines
+without its opening quote ending one is read as before: its line ends and the
+white space after each are dropped.
 
 **Names are interned at scan time, and `Name.node` is the binding slot.**
 `nametblFind` returns one immovable `Name*` per unique string. That same

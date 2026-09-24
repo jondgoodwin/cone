@@ -327,18 +327,72 @@ void lexScanChar(char *srcp) {
     lex->srcp = srcp;
 }
 
+// Is this the end of a line: a new-line, or a carriage return and new-line?
+// Returns the number of characters the end of line takes, or 0.
+static int lexEolLen(char *srcp) {
+    if (*srcp == '\n')
+        return 1;
+    if (*srcp == '\r' && *(srcp + 1) == '\n')
+        return 2;
+    return 0;
+}
+
+// Skip past the end of line at srcp, counting it, then strip up to 'indent'
+// characters of space or tab indentation from the line that follows.
+static char *lexStringNewLine(char *srcp, uint32_t indent) {
+    srcp += lexEolLen(srcp);
+    ++lex->linenbr;
+    lex->linep = srcp;
+    while (indent-- && (*srcp == ' ' || *srcp == '\t'))
+        ++srcp;
+    return srcp;
+}
+
+// A string literal whose opening quote ends its line is a multi-line string
+// literal (doc/reference/reftoken.html, "Multi-line String Literals"). The
+// end of line after the opening quote is not content. The closing quote must
+// begin a later line, after any spaces or tabs, and that many characters of
+// indentation are stripped from each content line. Each content line's end of
+// line becomes one new-line character, whether written LF or CRLF, unless a
+// backslash precedes it, which joins the line to the next.
 void lexScanString(char *srcp) {
     uint64_t uchar;
     lex->tokp = srcp++;
+    int multiline = lexEolLen(srcp) != 0;
+    uint32_t indent = 0;
 
     // Conservatively count the size of the string
     uint32_t srclen = 0;
-    while (*srcp && *srcp != '"') {
-        srclen++;
-        srcp++;
-        if (*srcp == '\\' && *(srcp + 1) == '"') {
+    if (multiline) {
+        // Find the closing quote, stepping over each escape sequence whole.
+        // No escape sequence or end of line yields more bytes than it takes.
+        char *endp = srcp;
+        while (*endp && *endp != '"') {
+            if (*endp == '\\' && *(endp + 1))
+                ++endp;
+            ++endp;
+        }
+        srclen = (uint32_t)(endp - srcp);
+
+        // The closing quote's indentation, which must be all its line holds before it
+        if (*endp == '"') {
+            char *linebeg = endp;
+            while (*(linebeg - 1) == ' ' || *(linebeg - 1) == '\t')
+                --linebeg;
+            if (*(linebeg - 1) == '\n')
+                indent = (uint32_t)(endp - linebeg);
+            else
+                errorMsgLex(ErrorBadTok, "A multi-line string literal's closing quote must begin its line");
+        }
+    }
+    else {
+        while (*srcp && *srcp != '"') {
             srclen++;
-            srcp += 2;
+            srcp++;
+            if (*srcp == '\\' && *(srcp + 1) == '"') {
+                srclen++;
+                srcp += 2;
+            }
         }
     }
 
@@ -347,7 +401,28 @@ void lexScanString(char *srcp) {
     srclen = 0;
     lex->val.strlit = newp;
     srcp = lex->tokp+1;
+    if (multiline)
+        srcp = lexStringNewLine(srcp, indent);  // the opening quote's end of line is not content
     while (*srcp != '"' && *srcp) {
+        if (multiline) {
+            // A line's end is a new-line in the content; a backslash before it joins the lines
+            if (lexEolLen(srcp)) {
+                *newp++ = '\n';
+                srclen++;
+                srcp = lexStringNewLine(srcp, indent);
+                continue;
+            }
+            if (*srcp == '\\' && lexEolLen(srcp + 1)) {
+                srcp = lexStringNewLine(srcp + 1, indent);
+                continue;
+            }
+            if (*srcp == '\t') {
+                *newp++ = *srcp++;
+                srclen++;
+                continue;
+            }
+        }
+
         // discard all control chars, including spaces after new-line
         if ((unsigned char)*srcp < ' ') {
             if (*srcp++ == '\n') {
