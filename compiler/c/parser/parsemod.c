@@ -1618,7 +1618,7 @@ ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name 
 static ModuleNode *parseLoadCore(ParseState *parse) {
     char *path = fileFindPackage("core");
     if (path == NULL)
-        errorExit(ExitNF, "Cannot find the core package, core/core.cone, on the package search path. The packages folder is named by CONE_PACKAGES, else found at or above conec's own folder, else built into the compiler, and '--path' adds folders ahead of it.");
+        errorExit(ExitNF, "Cannot find the core package, core/src/core.cone or core/core.cone, on the package search path. The packages folder is named by CONE_PACKAGES, else found at or above conec's own folder, else built into the compiler, and '--path' adds folders ahead of it.");
     return parseLoadModulePath(parse, path, nametblFind("core", 4), FlagGenMod, NULL);
 }
 

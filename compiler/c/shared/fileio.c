@@ -232,14 +232,41 @@ char *fileFindLocal(char *cururl, char *srcfn) {
     return fn ? fileCanonicalPath(fn) : NULL;
 }
 
+// The root file of a package laid out for Congo, 'name/src/name.cone' under a
+// search folder, or NULL. Only a bare name is a package's
+static char *fileFindPackageSrc(char *folder, char *srcfn) {
+    if (fileExtPos(srcfn) || strchr(srcfn, '/') || strchr(srcfn, '\\'))
+        return NULL;
+    size_t namelen = strlen(srcfn);
+    char *fn = memAllocStr(folder, strlen(folder) + 2 * namelen + sizeof("/src/.cone"));
+    strcat(fn, srcfn);
+    strcat(fn, "/src/");
+    strcat(fn, srcfn);
+    strcat(fn, ".cone");
+    return fileReadable(fn) ? fn : NULL;
+}
+
 // Find the source file srcfn names on the package search path alone: each
-// folder in order, the packages folder last (coneopts.c)
+// folder in order, the packages folder last (coneopts.c). In each folder,
+// 'name.cone', then a package laid out for Congo, 'name/src/name.cone', then
+// the designated file 'name/name.cone'. The package's source comes before its
+// designated-file spelling because a package laid out for Congo keeps its
+// hand-written include file there: a compile that finds a package here builds
+// the package's source into its own object, so it wants the source
 char *fileFindPackage(char *srcfn) {
     char **searchPaths = fileSearchPaths;
     if (searchPaths == NULL)
         return NULL;
     while (*searchPaths) {
-        char *fn = fileFindSrcWithFolder(*searchPaths++, srcfn);
+        char *folder = *searchPaths++;
+        char *fn = fileSrcUrl(folder, srcfn, 0);
+        if (!fileReadable(fn))
+            fn = fileFindPackageSrc(folder, srcfn);
+        if (fn == NULL) {
+            fn = fileSrcUrl(folder, srcfn, 1);
+            if (!fileReadable(fn))
+                fn = NULL;
+        }
         if (fn)
             return fileCanonicalPath(fn);
     }
