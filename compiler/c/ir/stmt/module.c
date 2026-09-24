@@ -61,6 +61,16 @@ static char *modBuiltinKind(INode *node) {
 // - We remember all public names for later resolution of qualified names
 void modAddNamedNode(ModuleNode *mod, Name *name, INode *node) {
 
+    // A word held for a feature not built yet, which a folder or a file named
+    // a module after, since no name token reads as one. Reported and released
+    // as lexScanIdent reports and releases one it reads, so the rest of the
+    // compile, the 'mod' line restating it included, takes it as the name meant
+    if (name->node && name->node->tag == KeywordTag && name->node->flags == ReservedToken) {
+        errorMsgNode(node, ErrorReserved,
+            "'%s' is reserved for a language feature that is not implemented yet. Rename it.", &name->namestr);
+        name->node = NULL;
+    }
+
     // Hook into global name table (and add to namednodes), if not already there
     if (!name->node) {
         nametblHookNode(name, (INode*)node);

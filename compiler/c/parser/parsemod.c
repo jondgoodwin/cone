@@ -934,8 +934,19 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
     parseCAttr(&cattr, 1);
 
     Name *modname = NULL;
+    INode *ownword = mod->namesym ? mod->namesym->node : NULL;
     if (lexIsToken(IdentToken)) {
         modname = lex->val.ident;
+        lexNextToken();
+    }
+    // The module's own name, where its folder or file named it after a keyword
+    // or a permission. That was refused where the name was bound
+    // (modAddNamedNode), and such a word never reads as a name, so the line
+    // that restates it is taken as naming the module, not reported again
+    else if (ownword && lex->val.ident == mod->namesym
+        && ((ownword->tag == KeywordTag && lex->toktype == ownword->flags)
+            || (ownword->tag == PermTag && lexIsToken(PermToken)))) {
+        modname = mod->namesym;
         lexNextToken();
     }
     else

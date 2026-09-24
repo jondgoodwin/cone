@@ -76,7 +76,14 @@ compile. `keyAdd` does the same for keywords, with a `KeywordTag` sentinel.
 name one of them holds is a duplicate at parse (`modAddNamedNode`), reported once
 at the declaration or the module's `mod` line and naming what the name already
 is, since the built-in has no place in any source to point at, and a keyword's
-sentinel no position at all (`module_builtin_name_parse`). ⚠ **Whether that
+sentinel no position at all (`module_builtin_name_parse`). A module's name
+comes from its folder or file, not a name token, so it can be a keyword or a
+permission, which no name token can be; the `mod` line restating that name is
+then taken as naming the module (`parseModuleDcl`) rather than reported as
+having none, with follow-ons. A reserved word is the exception to the
+duplicate: `modAddNamedNode` reports it as `ErrorReserved`, as `lexScanIdent`
+does one it reads, and releases it the same way, so the name is bound and
+neither the parent's namespace nor the `mod` line reports it again. ⚠ **Whether that
 refusal is right** is open: these names are looked up after a module's own,
 which would let a module's name hide one, and nothing written says a module may
 not. For `initAll` and `finalAll`, [module](../nodes/module.md) says a
