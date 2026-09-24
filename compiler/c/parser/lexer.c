@@ -225,8 +225,10 @@ char *lexNewLine(char *srcp) {
 
 // ******  TOKEN-SPECIFIC LEXING **********
 
-/** Return value of hex digit, or -1 if not correct */
+/** Read the 'cnt' hex digits of a \x, \u or \U escape at srcp, just after its letter */
 char *lexHexDigits(int cnt, char *srcp, uint64_t *val) {
+    char *escp = srcp - 2;  // The escape's backslash
+    int want = cnt;
     *val = 0;
     while (cnt--) {
         *val <<= 4;
@@ -237,7 +239,17 @@ char *lexHexDigits(int cnt, char *srcp, uint64_t *val) {
         else if (*srcp>='a' && *srcp<='f')
             *val += *srcp++ - ('a' - 10);
         else {
-            errorMsgLex(ErrorBadTok, "Invalid hexadecimal character '%.*s'", utf8ByteSkip(srcp), srcp);
+            // A character that could have been meant as a digit is named. What
+            // ends the escape short -- the source's end, the line's, a space, a
+            // quote, any other control character -- is not: it would print as
+            // nothing, as a raw control byte or as a bare quote. The escape so
+            // far is named instead, which is backslash, letter and digits only
+            unsigned char c = (unsigned char)*srcp;
+            if (c > ' ' && c != 0x7f && c != '\'' && c != '"')
+                errorMsgLex(ErrorBadTok, "Invalid hexadecimal character '%.*s'", utf8ByteSkip(srcp), srcp);
+            else
+                errorMsgLex(ErrorBadTok, "Escape sequence '%.*s' is too short: '\\%c' takes %d hexadecimal digits",
+                    (int)(srcp - escp), escp, escp[1], want);
             return srcp;
         }
     }

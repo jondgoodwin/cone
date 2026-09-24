@@ -156,6 +156,18 @@ different case, the end of the source, on which the reader stays. The manual
 names no octal escapes, so the digits after `\0` are content: `"\012"` is a 0
 byte then `1` and `2`. `lexical_escape_null` holds both kinds of literal.
 
+**A hex escape cut short says so.** `\x`, `\u` and `\U` take exactly 2, 4 and
+8 hexadecimal digits (`lexHexDigits`). Where a character that is not a digit
+comes first, what is reported depends on the character. One that could have
+been meant as a digit is named: "Invalid hexadecimal character 'Z'". One that
+ends the escape short — the source's end, a line's end, a space, a quote, any
+other control character — is not, since it would print as nothing, as a raw
+control byte or as a bare quote; the message names the escape so far instead,
+"Escape sequence '\u12' is too short: '\u' takes 4 hexadecimal digits". Both are
+`ErrorBadTok` at the literal's opening quote. `lexical_reject_short_escape` holds a closing quote, a space, a tab and a
+line's end after one; `lexical_reject_short_escape_end` the source's end, ended
+by a null character as the unclosed character literal's file is.
+
 **Names are interned at scan time, and `Name.node` is the binding slot.**
 `nametblFind` returns one immovable `Name*` per unique string. That same
 `node` field is what makes classification O(1) in the scanner: `keywordInit`
