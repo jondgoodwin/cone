@@ -171,6 +171,8 @@ Documented intent allows libraries packaged for import. Package-level namespace 
 
 The default rule is: **one spelling, one NameDef, at each namespace level**. This applies across declaration categories. A type and a variable, or a macro and a module, may not coexist under the same spelling in one namespace. With the exception of `extern`s and overloading, declaring duplicate names in the same namespace results in a compiler error.
 
+A name of core is a name of every module, since the automatic import of core is a wildcard, so a module that declares `Option`, is named `Option` or imports a sister of that name has two things under one name, and is refused. The core import is written nowhere, so the collision is reported at what the module wrote, saying that core has the name. ⚠ **The built-in number types, `Bool`, the permissions and `initAll`/`finalAll` are not in any module's namespace** — they are bound for the whole compile and looked up after a module's own names ([Name Resolution](../../compiler/c/doc/phases/name-resolution.md)) — yet a global name one of them holds is refused too, reported at the declaration and naming the built-in. Nothing written settles whether it should be: the reference's identifiers rule lets a program define any identifier but a keyword, and the lookup order would let a module's name hide a built-in.
+
 #### `extern` handling of duplicate names
 
 It is common practice for a package's interface to declare the same variables and functions as the package's source defines. The interface specifies them as `extern`s without values or function bodies; the source drops `extern` and supplies the implementation.

@@ -40,6 +40,21 @@ ModuleNode *newModuleNode() {
     return mod;
 }
 
+// What a name the compiler binds before any source is read stands for, in the
+// words a diagnostic names it with, or NULL for a declaration a source wrote.
+// These are the names stdlibInit binds and never hooks: no source declares a
+// number type or a permission
+static char *modBuiltinKind(INode *node) {
+    switch (node->tag) {
+    case PermTag: return "a built-in permission";
+    case IntNbrTag: case UintNbrTag: case FloatNbrTag: return "a built-in type";
+    default:
+        if (node == (INode*)initAllFn || node == (INode*)finalAllFn)
+            return "a built-in function";
+        return NULL;
+    }
+}
+
 // Add a newly parsed named node to the module:
 // - We hook all names in global name table at parse time to check for name dupes and
 //     because permissions and allocators do not support forward references
@@ -50,7 +65,20 @@ void modAddNamedNode(ModuleNode *mod, Name *name, INode *node) {
     if (!name->node) {
         nametblHookNode(name, (INode*)node);
         namespaceSet(&mod->namespace, name, node);
+        return;
     }
+    // A built-in has no place in any source to point at, so the one diagnostic
+    // is the declaration's, and names what the name already is. A keyword's
+    // node is a bare sentinel with no position at all (keyAdd); a folder or a
+    // file names a module without a name token, which is how one gets here
+    char *builtin = modBuiltinKind(name->node);
+    if (name->node->tag == KeywordTag)
+        errorMsgNode((INode *)node, ErrorDupName,
+            "%s is a keyword, and a keyword cannot be a name. Choose another.", &name->namestr);
+    else if (builtin)
+        errorMsgNode((INode *)node, ErrorDupName,
+            "%s is already the name of %s. A global name must be unique, so choose another.",
+            &name->namestr, builtin);
     else {
         errorMsgNode((INode *)node, ErrorDupName, "Global name is already defined. Duplicates not allowed.");
         errorMsgNode((INode*)name->node, ErrorDupName, "This is the conflicting definition for that name.");

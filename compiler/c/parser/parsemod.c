@@ -1400,6 +1400,7 @@ void parseAddCorelibImport(ParseState *parse, ModuleNode *mod) {
     importnode->fold = newFoldClause();
     importnode->fold->star = 1;
     importnode->module = corelib;
+    importnode->iscore = 1;
     modAddNode(mod, NULL, (INode*)importnode);
 }
 
@@ -1745,6 +1746,7 @@ ProgramNode *parsePgm(ConeOptions *opt, BuildDesc *desc) {
     importnode->fold = newFoldClause();
     importnode->fold->star = 1;
     importnode->module = corelib;
+    importnode->iscore = 1;
     modAddNode(mod, NULL, (INode*)importnode);
 
     // Now actually parse the main module's files

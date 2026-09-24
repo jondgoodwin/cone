@@ -22,6 +22,7 @@ ImportNode *newImportNode() {
     node->isuse = 0;
     node->isnamedfile = 0;
     node->isdefault = 0;
+    node->iscore = 0;
     return node;
 }
 
@@ -273,6 +274,12 @@ static void importFoldItem(ModuleNode *mod, ImportNode *import, AliasDclNode *al
         errorMsgNode(prior, ErrorDupName,
             "%s is already a name of this module, and %s, which it extends, has that name too. A name of a module is unique.",
             &alias->namesym->namestr, &src->namesym->namestr);
+    // The core import is written nowhere, so its fold has no place in a source
+    // to be reported at: the other binding is what the source can change
+    else if (import->iscore && at == (INode*)alias)
+        errorMsgNode(prior, ErrorDupName,
+            "%s is already a name of this module, and core, which every module imports, has that name too. A name of a module is unique.",
+            &alias->namesym->namestr);
     else
         modFoldDupReport(at, alias, prior);
 }

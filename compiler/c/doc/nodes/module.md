@@ -1140,7 +1140,11 @@ later fold's name before an earlier fold's arrives, so the collision is
 reported at the fold that comes second in the order a module's folds run —
 `extends`, then the imports, the globals and the enum `use`s, each in the order
 written — not at whichever arrived second (`modFoldCollisionAt`). Which pass met
-it does not change what is reported.
+it does not change what is reported. **The one exception is the core import**,
+which is written nowhere (`ImportNode.iscore`): where the collision would be
+reported at its fold, which has no place in any source, it is reported at the
+other binding instead — the declaration, the module's `mod` line, the import —
+saying that core has the name (`module_builtin_name_nameres`).
 
 **That order is what stops the file load order deciding what a name means.** A
 module's folds used to run at the start of its own name resolution, and modules
@@ -1575,6 +1579,10 @@ bodies. **A program calls them through two compiler-provided functions,
 and hidden by a declaration of the same name. They stand in for the entry glue
 until it is built; nothing calls them implicitly, and how an executable's C
 `main` is chosen is unchanged. Nothing stops them being called twice.
+⚠ **Measured 24 Sep: only a local hides them.** A module-level declaration named
+`initAll` is refused as a duplicate at parse (`modAddNamedNode`), as one named
+`i64` is; which of the two this paragraph and that refusal should be is open
+([Name Resolution](../phases/name-resolution.md), "Some bindings are never hooked").
 
 **Across separately compiled packages**, a package's `init`, `final` and `drop`
 keep the package's Cone names (`lib.init`, `lib.drop`), and a library compile

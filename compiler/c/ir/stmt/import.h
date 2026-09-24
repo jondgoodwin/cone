@@ -62,6 +62,7 @@ typedef struct ImportNode {
     uint16_t isuse;     // The fold a module's standalone 'use' of a submodule makes, rather than an import statement
     uint16_t isnamedfile; // A bare name reached as a FILE, since the registry held no module of that name at parse
     uint16_t isdefault; // 'fold' is a copy of the module's default fold, the import having written no clause
+    uint16_t iscore;    // The automatic import of core, which no source writes, and so has no position
 } ImportNode;
 
 // Create a new Import node
