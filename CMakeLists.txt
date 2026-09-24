@@ -10,7 +10,7 @@ include_directories(${LLVM_INCLUDE_DIRS})
 add_definitions(${LLVM_DEFINITIONS})
 
 include_directories(
-    "${CMAKE_SOURCE_DIR}/src/c-compiler/"
+    "${CMAKE_SOURCE_DIR}/compiler/c/"
 )
 
 set(LLVM_LINK_COMPONENTS
@@ -45,96 +45,96 @@ llvm_map_components_to_libnames(llvm_libs support core irreader ${LLVM_LINK_COMP
 
 
 add_executable(conec 
-	src/c-compiler/conec.c
-	src/c-compiler/coneopts.c
+	compiler/c/conec.c
+	compiler/c/coneopts.c
 
-	src/c-compiler/shared/error.c
-	src/c-compiler/shared/fileio.c
-	src/c-compiler/shared/memory.c
-	src/c-compiler/shared/options.c
-	src/c-compiler/shared/timer.c
-	src/c-compiler/shared/utf8.c
+	compiler/c/shared/error.c
+	compiler/c/shared/fileio.c
+	compiler/c/shared/memory.c
+	compiler/c/shared/options.c
+	compiler/c/shared/timer.c
+	compiler/c/shared/utf8.c
 
-	src/c-compiler/ir/checktree.c
-	src/c-compiler/ir/clone.c
-	src/c-compiler/ir/dclinfo.c
-	src/c-compiler/ir/flow.c
-	src/c-compiler/ir/iexp.c
-	src/c-compiler/ir/inode.c
-	src/c-compiler/ir/instype.c
-	src/c-compiler/ir/itype.c
-	src/c-compiler/ir/name.c
-	src/c-compiler/ir/namespace.c
-	src/c-compiler/ir/nametbl.c
-	src/c-compiler/ir/nodelist.c
-	src/c-compiler/ir/nodes.c
-	src/c-compiler/ir/typetbl.c
+	compiler/c/ir/checktree.c
+	compiler/c/ir/clone.c
+	compiler/c/ir/dclinfo.c
+	compiler/c/ir/flow.c
+	compiler/c/ir/iexp.c
+	compiler/c/ir/inode.c
+	compiler/c/ir/instype.c
+	compiler/c/ir/itype.c
+	compiler/c/ir/name.c
+	compiler/c/ir/namespace.c
+	compiler/c/ir/nametbl.c
+	compiler/c/ir/nodelist.c
+	compiler/c/ir/nodes.c
+	compiler/c/ir/typetbl.c
 
-	src/c-compiler/ir/stmt/aliasdcl.c
-	src/c-compiler/ir/stmt/break.c
-	src/c-compiler/ir/stmt/const.c
-	src/c-compiler/ir/stmt/continue.c
-	src/c-compiler/ir/stmt/fielddcl.c
-	src/c-compiler/ir/stmt/fndcl.c
-	src/c-compiler/ir/stmt/fold.c
-	src/c-compiler/ir/stmt/import.c
-	src/c-compiler/ir/stmt/intrinsic.c
-	src/c-compiler/ir/stmt/module.c
-	src/c-compiler/ir/stmt/program.c
-	src/c-compiler/ir/stmt/return.c
-	src/c-compiler/ir/stmt/swap.c
-	src/c-compiler/ir/stmt/vardcl.c
+	compiler/c/ir/stmt/aliasdcl.c
+	compiler/c/ir/stmt/break.c
+	compiler/c/ir/stmt/const.c
+	compiler/c/ir/stmt/continue.c
+	compiler/c/ir/stmt/fielddcl.c
+	compiler/c/ir/stmt/fndcl.c
+	compiler/c/ir/stmt/fold.c
+	compiler/c/ir/stmt/import.c
+	compiler/c/ir/stmt/intrinsic.c
+	compiler/c/ir/stmt/module.c
+	compiler/c/ir/stmt/program.c
+	compiler/c/ir/stmt/return.c
+	compiler/c/ir/stmt/swap.c
+	compiler/c/ir/stmt/vardcl.c
 
-	src/c-compiler/ir/exp/allocate.c
-	src/c-compiler/ir/exp/arraylit.c
-	src/c-compiler/ir/exp/assign.c
-	src/c-compiler/ir/exp/block.c
-	src/c-compiler/ir/exp/borrow.c
-	src/c-compiler/ir/exp/cast.c
-	src/c-compiler/ir/exp/deref.c
-	src/c-compiler/ir/exp/fncall.c
-	src/c-compiler/ir/exp/if.c
-	src/c-compiler/ir/exp/literal.c
-	src/c-compiler/ir/exp/logic.c
-	src/c-compiler/ir/exp/namedval.c
-	src/c-compiler/ir/exp/nameuse.c
-	src/c-compiler/ir/exp/sizeof.c
-	src/c-compiler/ir/exp/typelit.c
-	src/c-compiler/ir/exp/vtuple.c
+	compiler/c/ir/exp/allocate.c
+	compiler/c/ir/exp/arraylit.c
+	compiler/c/ir/exp/assign.c
+	compiler/c/ir/exp/block.c
+	compiler/c/ir/exp/borrow.c
+	compiler/c/ir/exp/cast.c
+	compiler/c/ir/exp/deref.c
+	compiler/c/ir/exp/fncall.c
+	compiler/c/ir/exp/if.c
+	compiler/c/ir/exp/literal.c
+	compiler/c/ir/exp/logic.c
+	compiler/c/ir/exp/namedval.c
+	compiler/c/ir/exp/nameuse.c
+	compiler/c/ir/exp/sizeof.c
+	compiler/c/ir/exp/typelit.c
+	compiler/c/ir/exp/vtuple.c
 
-	src/c-compiler/ir/types/array.c
-	src/c-compiler/ir/types/arrayref.c
-	src/c-compiler/ir/types/enum.c
-	src/c-compiler/ir/types/fnsig.c
-	src/c-compiler/ir/types/lifetime.c
-	src/c-compiler/ir/types/number.c
-	src/c-compiler/ir/types/permission.c
-	src/c-compiler/ir/types/pointer.c
-	src/c-compiler/ir/types/reference.c
-	src/c-compiler/ir/types/region.c
-	src/c-compiler/ir/types/struct.c
-	src/c-compiler/ir/types/ttuple.c
-	src/c-compiler/ir/types/void.c
+	compiler/c/ir/types/array.c
+	compiler/c/ir/types/arrayref.c
+	compiler/c/ir/types/enum.c
+	compiler/c/ir/types/fnsig.c
+	compiler/c/ir/types/lifetime.c
+	compiler/c/ir/types/number.c
+	compiler/c/ir/types/permission.c
+	compiler/c/ir/types/pointer.c
+	compiler/c/ir/types/reference.c
+	compiler/c/ir/types/region.c
+	compiler/c/ir/types/struct.c
+	compiler/c/ir/types/ttuple.c
+	compiler/c/ir/types/void.c
 
-	src/c-compiler/ir/meta/macro.c
-	src/c-compiler/ir/meta/genvardcl.c
-	src/c-compiler/ir/meta/generic.c
+	compiler/c/ir/meta/macro.c
+	compiler/c/ir/meta/genvardcl.c
+	compiler/c/ir/meta/generic.c
 
-	src/c-compiler/corelib/corelib.c
-	src/c-compiler/corelib/corenumber.c
+	compiler/c/corelib/corelib.c
+	compiler/c/corelib/corenumber.c
 
-	src/c-compiler/parser/lexer.c
-	src/c-compiler/parser/parsemod.c
-	src/c-compiler/parser/parsefnflow.c
-	src/c-compiler/parser/parseexpr.c
-	src/c-compiler/parser/parsetype.c
-	src/c-compiler/parser/parsehelper.c
+	compiler/c/parser/lexer.c
+	compiler/c/parser/parsemod.c
+	compiler/c/parser/parsefnflow.c
+	compiler/c/parser/parseexpr.c
+	compiler/c/parser/parsetype.c
+	compiler/c/parser/parsehelper.c
 
-	src/c-compiler/genllvm/genllvm.c
-	src/c-compiler/genllvm/genlstmt.c
-	src/c-compiler/genllvm/genlexpr.c
-	src/c-compiler/genllvm/genlalloc.c
-	src/c-compiler/genllvm/genltype.c
+	compiler/c/genllvm/genllvm.c
+	compiler/c/genllvm/genlstmt.c
+	compiler/c/genllvm/genlexpr.c
+	compiler/c/genllvm/genlalloc.c
+	compiler/c/genllvm/genltype.c
 )
 
 target_link_libraries(conec ${llvm_libs})
@@ -145,5 +145,5 @@ target_link_libraries(conec ${llvm_libs})
 target_compile_definitions(conec PRIVATE CONE_PACKAGES_DIR="${CMAKE_SOURCE_DIR}/packages/")
 
 add_library(conestd
-	src/conestd/stdio.c
+	packages/conestd/stdio.c
 )

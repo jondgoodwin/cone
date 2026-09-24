@@ -1258,7 +1258,7 @@ static ModuleNode *parseLoadModulePath(ParseState *parse, char *path, Name *file
 // OBJECT: a package is Cone source and nothing else supplies its definitions, so
 // a program that imports one links. A module found beside its importer is
 // declared and not generated, which is the separate-compilation gap
-// (design/nodes/module.md)
+// (compiler/c/doc/nodes/module.md)
 ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name *filesym) {
     uint16_t genflag = 0;
     char *path = fileFindLocal(lex ? lex->url : NULL, filename);

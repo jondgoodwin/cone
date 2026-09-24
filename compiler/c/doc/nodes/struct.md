@@ -119,7 +119,7 @@ a package may coexist in one binary; the residue is that renaming or retyping a
 private field at the same size is invisible to everyone but an extender, so a
 type that may be extended has its representation in its contract. That is a
 documentation obligation and it is discharged in
-[refinherit](../../conesite/public/coneref/refinherit.html).
+[refinherit](../../../../doc/reference/refinherit.html).
 
 **The enum is the privacy boundary for its variants** — Jon, 23 Sep 2026. A
 closed enum is one type written in one place, so code anywhere inside its braces
@@ -141,7 +141,7 @@ was first called.
 The author's term is **delegated inheritance**: a field's `use` clause folds
 members of the field's type in as names of this type, reached through the
 field, with no forwarding method generated. It is *the same name-folding* a
-module fold does — see [Modularity](../topics/modularity.md), which owns that
+module fold does — see [Modularity](../../../../doc/design/modularity.md), which owns that
 symmetry as an aim. ▸ **Forbids** "pure composition plus extra magic", which is
 how the note describes conventional inheritance.
 
@@ -154,7 +154,7 @@ a field, or an alias whose *use* has a receiver to shift, because only a type
 fold reaches its target through a value. ▸ **Settles** that the module work
 reuses the alias node unchanged and never calls the receiver rewrite, and
 **forbids** each layer inventing its own namespace rules. [Names and
-Namespaces](../phases/names-and-namespaces.md) owns the rules themselves.
+Namespaces](../../../../doc/design/names-and-namespaces.md) owns the rules themselves.
 
 **A fold grants names, and nothing else.** A folded method counts toward
 structural conformance with a trait, because conformance is a question about
@@ -210,10 +210,10 @@ the trait, once per trait, when the first virtual reference to it asks for a
 vtable. A **private** generic method and a generic **static** function are
 neither slots nor requirements and cost the trait nothing.
 `trait-typecheck-vref` pins all three, and
-`conesite/public/coneref/refvirtref.html`, "Type Restrictions", is the rule.
+`doc/reference/refvirtref.html`, "Type Restrictions", is the rule.
 | `namespace` | every named member: fields, methods, macros, overload sets, `Self`, **an enum's variants** — each a `StructNode`, bound at parse, and never a member of the enum's values: a lookup through a value passes one over (`fnCallLowerMethod`) — and what a fold admits — a **copy** of a folded field (a `FieldDclNode` with a `hop`) and an **alias** (`AliasDclNode`) for a folded method, overload set or macro method, for every member of an `extends` base but its fields, `final` and `clone` (those two are copied into `nodelist`, as a trait's defaults are), and for every member a sibling `use` admits. The copies and aliases live here only; `fields` and `nodelist` never hold one |
 | `dropfn` | NULL until type check settles the layout, and set before the methods are checked |
-| `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". The owner is a module, or the enum for a variant declared inside one — for an extension's copy of a base variant, the extension, so the copy's methods are spelled after it. Read for one thing besides naming: rejecting a variant declared outside its enum's module, through `dclInfoGetModule` |
+| `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols". The owner is a module, or the enum for a variant declared inside one — for an extension's copy of a base variant, the extension, so the copy's methods are spelled after it. Read for one thing besides naming: rejecting a variant declared outside its enum's module, through `dclInfoGetModule` |
 | `basetrait` | the **type expression** of the first abstraction an `is` names, or of the enum a variant belongs to — a `NameUseNode`, or an `FnCallNode` for a generic base. **Not a `StructNode*`.** Two helpers unwrap it and they answer different questions: `structBaseTraitDcl` takes **one hop**, to the declaration this type stands on, while `structGetBaseTrait` recurses to the **bottom-most** one. Picking the wrong one is how the infection loop hangs |
 | `extendsbase` | the **type expression** whatever base an `extends` names, on the same terms: the concrete type this enriches, or, **on an enum, the enum whose variants join this one's set**. **A separate slot from `basetrait` on purpose**: they are different assertions, a type may write both, and every walk that reads `basetrait` is asking about an abstraction — which is also why an enum's base is here and not there, since no substitution runs between the two enums. `structEnumBaseDcl` unwraps this one for an enum. A generic enum is named here with its arguments (`Option[T]`), an `FnCallNode` until type check replaces it with the instance |
 | `extendsdcl` | an **enriched** base's declaration, written once its members have been taken and NULL until then — so it says both *which* type this enriches and *that* the enrichment has happened, which is what tells name resolution's expansion from type check's. `structExtendsRoot` walks it to the bottom of the chain, and `structExtendsEquiv` compares two roots: that comparison is the whole substitution rule. **Always NULL for an enum**, deliberately: an enum extension licenses no substitution, so it writes nothing the rule reads |
@@ -326,7 +326,7 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   `ErrorBadFold` there, so the diagnostic is the fold's own. **A module's global
   does fold**, because a module is the namespace a name would fold into and a
   global is its one-instance analogue of a field
-  ([Names and Namespaces](../phases/names-and-namespaces.md), "Folding through a
+  ([Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Folding through a
   global"); `parseVarDcl` admits the clause only where `ParseMayFold` says so,
   which is the module-level declaration alone. **`is` names abstractions and
   folds nothing**: an abstraction has no value for a folded name to be reached
@@ -661,7 +661,7 @@ another. See [module](module.md).
 
 A field's `use` clause (`FoldClause`, on the `FieldDclNode`) admits names of
 the field's type as names of this type. The language is in
-[refinherit](../../conesite/public/coneref/refinherit.html); this is the
+[refinherit](../../../../doc/reference/refinherit.html); this is the
 mechanism, in `structFoldExpand` and what reads its results.
 
 **What every fold site shares lives in `ir/stmt/fold.c`**, lifted there when a
@@ -780,7 +780,7 @@ the diagnostics are commented out.
 
 `extends` names a concrete base whose members become this type's, and whose
 values and this type's substitute for each other freely. The language is in
-[refinherit](../../conesite/public/coneref/refinherit.html); this is the
+[refinherit](../../../../doc/reference/refinherit.html); this is the
 mechanism, in `structEnrichFromBase` and `structExtendsEquiv`.
 
 **It is a name fold, bar the value's lifecycle, and that is the whole finding.**
@@ -891,7 +891,7 @@ A `use` in a struct's body folds in a **sibling**: another type that declared
 this type's base. So one base plus two libraries that each enriched it become one
 type, declared once, in the namespace of whoever needs it and without either
 library being touched. The language is in
-[refinherit](../../conesite/public/coneref/refinherit.html); this is the
+[refinherit](../../../../doc/reference/refinherit.html); this is the
 mechanism, in `structUseSiblings` and what it calls.
 
 **The shared base is the whole licence, and it is the substitution rule above
@@ -938,7 +938,7 @@ type is (`struct-use-sibling`, `a-folded-method-is-not-cloned-per-folding-type`)
 ## An enum extending an enum
 
 `extends` on an enum names the enum whose variants this one copies into its set. The
-language is in [refenum](../../conesite/public/coneref/refenum.html), "Extending an
+language is in [refenum](../../../../doc/reference/refenum.html), "Extending an
 enum"; this is the mechanism, in `structEnumSeedVariants`, `structEnumCopyVariant`
 and what reaches the copies.
 

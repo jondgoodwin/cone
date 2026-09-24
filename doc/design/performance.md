@@ -49,7 +49,7 @@ uniform boxing and type erasure, and it accepts code size as the price.
 ▸ **Each principle names where it is cashed in:** the first two in
 [References and Regions](references-and-regions.md) and the region choice at each
 allocation; the third in the cost table below and in
-[Generation](../phases/generation.md); the fourth in `%void = type {}` and the
+[Generation](../../compiler/c/doc/phases/generation.md); the fourth in `%void = type {}` and the
 interning of reference types by machine representation; the fifth in
 monomorphization and the fat pointer.
 
@@ -232,5 +232,5 @@ Stated so nobody assumes otherwise:
 - Strategy choice, and what a region is for: [References and Regions](references-and-regions.md)
 - Why permissions and regions can be erased: [References and Regions](references-and-regions.md)
 - Which safety properties actually hold: [Safety](safety.md)
-- The exact lowerings and the allocation header: [Generation](../phases/generation.md)
-- How fast `conec` itself runs: [Compiler Performance](../compiler/performance.md)
+- The exact lowerings and the allocation header: [Generation](../../compiler/c/doc/phases/generation.md)
+- How fast `conec` itself runs: [Compiler Performance](../../compiler/c/doc/compiler/performance.md)

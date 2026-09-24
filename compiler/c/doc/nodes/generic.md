@@ -23,7 +23,7 @@ phase's handling of a generic declaration is its handling of the ordinary one.
 threaded through later phases, because an instance is an ordinary declaration
 with concrete types by the time anything looks at it. **This is what makes
 monomorphization cheap for the compiler**, and it is where
-[Performance](../topics/performance.md)'s "generics are monomorphized" bet is
+[Performance](../../../../doc/design/performance.md)'s "generics are monomorphized" bet is
 paid for.
 
 **Instances are type checked, never the template** [differs: the author intends
@@ -337,7 +337,7 @@ and a generic *type*'s instance carries its arguments as an owner, which is why
 `fn tally(self) i64` does not collide across instances. `nameType` spells
 every argument, structural ones included — tuple, array, signature, void, the
 three reference kinds, pointer — so no instance spells to nothing. The rules
-are [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols".
+are [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols".
 
 ## Hazards
 
@@ -367,5 +367,5 @@ are [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols".
 
 - Instantiation scheduling, depth bounding, and why the marks cannot police it: [Type Check Phase](../phases/type-check.md), "Generics and macros"
 - Hooking, and what a pushed table scopes: [Name Resolution](../phases/name-resolution.md), "Hooking"
-- Symbol spelling: [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols"; its lowering, linkage and COMDATs: [Generation](../phases/generation.md)
+- Symbol spelling: [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols"; its lowering, linkage and COMDATs: [Generation](../phases/generation.md)
 - Cloning a struct, and the `Self` rebinding: [struct](struct.md)

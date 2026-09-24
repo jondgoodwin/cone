@@ -1,7 +1,7 @@
 How the compiler's own source is organized, and the rules for adding to it.
 
 This is about the compiler as a piece of software — as against
-[the phases](../_index.md), which are about what it does to a program. Read it
+[the phases](../../../../doc/design/_index.md), which are about what it does to a program. Read it
 before adding a node, a phase, or a file.
 
 *Provenance: read from source.*
@@ -128,6 +128,6 @@ never reads.
 ## What lives elsewhere
 
 - Every dispatcher a new tag must be added to: [IR Nodes](../nodes/_index.md)
-- What each phase does: [the phase notes](../_index.md)
+- What each phase does: [the phase notes](../../../../doc/design/_index.md)
 - Interning, memoization and the arena: [Compiler Performance](performance.md)
 - Contributor conventions — style, comments, commit discipline: `CLAUDE.md`

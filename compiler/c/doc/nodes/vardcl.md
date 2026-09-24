@@ -25,7 +25,7 @@ copies the initializer, and marks it initialized. Generation allocas.
 | `vtblidx` | none | vtable slot | none |
 | `fold` | none | the field's `use` clause, or NULL — [struct](struct.md), "Name folding" | none |
 | `hop` | none | on a **folded copy**, the field of the same type it is reached through; NULL on a declared field | none |
-| `dclinfo` | owner and the facts the linker symbol is spelled from, globals only — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols" | none | none |
+| `dclinfo` | owner and the facts the linker symbol is spelled from, globals only — [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols" | none | none |
 | `llvmvar` | alloca or global | none | **none** |
 | `flowtempflags` | `VarInitialized`, `VarMoved` | none | none |
 | `flowflags` | **dead** — zeroed twice, never read | none | none |
@@ -250,4 +250,4 @@ Fields and constants have no flow participation at all.
 - Move-or-copy and the flow stack: [Flow Analysis](../phases/flow.md)
 - Where mutability is actually enforced: [assign](assign.md)
 - Field layout, mixins, and the vtable: [struct](struct.md)
-- How a global's symbol is spelled and linked: [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols"; why cross-module linking is broken: [Generation](../phases/generation.md)
+- How a global's symbol is spelled and linked: [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols"; why cross-module linking is broken: [Generation](../phases/generation.md)

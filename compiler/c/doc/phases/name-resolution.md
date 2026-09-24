@@ -4,7 +4,7 @@ the whole program, in source order, with one departure: a type reached by
 another type that is-a or mixes it in is resolved when it is first needed.
 
 This note is the **mechanism**: how the walk works, what it mutates, where it
-stops. [Names and Namespaces](../phases/names-and-namespaces.md) is the **rules** — what a
+stops. [Names and Namespaces](../../../../doc/design/names-and-namespaces.md) is the **rules** — what a
 name means, visibility, imports, aliases, overloading. Change a rule there;
 change how the walk implements it here.
 
@@ -367,7 +367,7 @@ next pass a null to trip over.
 
 | Question | Note |
 | --- | --- |
-| What a name *means* — visibility, imports, aliases, overloading | [Names and Namespaces](../phases/names-and-namespaces.md) |
+| What a name *means* — visibility, imports, aliases, overloading | [Names and Namespaces](../../../../doc/design/names-and-namespaces.md) |
 | What the parser already bound before this pass ran | [Parse](parse.md) section 5 |
 | What type check may assume from here | [Type Check Phase](type-check.md) section 1 |
 | Member and overload selection | [Type Check Reasoning](type-check-reasoning.md) section 7 |

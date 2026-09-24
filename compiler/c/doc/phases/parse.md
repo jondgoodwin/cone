@@ -70,7 +70,7 @@ every node still pointing at it. A block can also exist before it is current:
 its designated file's first line as its position before that file is parsed,
 and the folder sweep can read a file's first statement to decide which module
 it is, and `lexPush` makes the same block current later — see
-`nodes/module.md`, "Parse".
+`compiler/c/doc/nodes/module.md`, "Parse".
 
 **An identifier may be spelled in any letters UTF-8 can carry**, which is
 `utf8IsLetter`: ASCII letters, or the start of a well-formed multi-byte
@@ -467,5 +467,5 @@ None recorded.
 | Question | Note |
 | --- | --- |
 | What binds the names the parser left unbound | [Name Resolution](name-resolution.md) |
-| Lookup, visibility, imports, aliases | [Names and Namespaces](../phases/names-and-namespaces.md) |
+| Lookup, visibility, imports, aliases | [Names and Namespaces](../../../../doc/design/names-and-namespaces.md) |
 | Node header, tags, sentinels, injection hazards | [IR Nodes](../nodes/_index.md) |

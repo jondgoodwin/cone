@@ -18,7 +18,7 @@ expectations claim. Python 3.11+, no third-party dependencies.
 The runner's whole vocabulary is the command line, the exit code, stderr,
 stdout, and the files a run produced (R2.7). It knows nothing about compiler
 internals beyond the diagnostic text format and the ``ErrorCode`` enum it reads
-out of ``src/c-compiler/shared/error.h`` -- and, for ``--since``, the checked-in
+out of ``compiler/c/shared/error.h`` -- and, for ``--since``, the checked-in
 claims in ``test/tags.toml`` about which phases a source path can reach.
 
 Every requirement in ``workitems/done/add-test-suite.md`` is implemented, with
@@ -26,7 +26,7 @@ one caveat recorded there: the POSIX branches have never run. Any scenario askin
 for something that is not implemented is a hard configuration error rather than
 something quietly ignored.
 
-``design/diagnostics/test-suite.md`` is the authoring guide -- which group to touch, what to
+``compiler/c/doc/diagnostics/test-suite.md`` is the authoring guide -- which group to touch, what to
 assert, and how expectations are written.
 """
 
@@ -50,10 +50,12 @@ REPO = Path(__file__).resolve().parent.parent
 CASES = REPO / "test" / "cases"
 CODES_TOML = REPO / "test" / "codes.toml"
 TAGS_TOML = REPO / "test" / "tags.toml"
-ERROR_H = REPO / "src" / "c-compiler" / "shared" / "error.h"
+ERROR_H = REPO / "compiler" / "c" / "shared" / "error.h"
+# The C sources the build compiles: the compiler, and the conestd runtime.
+C_SOURCE_DIRS = (Path("compiler") / "c", Path("packages") / "conestd")
 IS_WINDOWS = os.name == "nt"
 
-# Tier per group, from the group table in design/diagnostics/test-suite.md section 1.
+# Tier per group, from the group table in compiler/c/doc/diagnostics/test-suite.md section 1.
 # Results are reported tier 0 first, because tier 1 and 2 groups assume the
 # foundation works and a foundation break would otherwise be buried under the
 # downstream failures it caused (R2.8).
@@ -85,7 +87,7 @@ TIERS = {
     "meta": 2,
 }
 
-# src/c-compiler/shared/error.h. Matched exactly, never as "nonzero" (R1.2).
+# compiler/c/shared/error.h. Matched exactly, never as "nonzero" (R1.2).
 EXIT_NAMES = {
     0: "ExitSuccess",
     1: "ExitError",
@@ -183,7 +185,7 @@ CODES_HEADER = """\
 #
 # Regenerate with:  python test/run.py --bless-codes
 # and review the diff. The runner compares this table against
-# src/c-compiler/shared/error.h before any case runs, and fails naming exactly
+# compiler/c/shared/error.h before any case runs, and fails naming exactly
 # which codes moved.
 #
 # These numbers are a published interface. Scenarios name codes symbolically
@@ -622,7 +624,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
     if group not in TIERS:
         raise SuiteError(
             f"{group_dir}: group {group!r} has no tier.\n"
-            f"  Groups come from the table in design/diagnostics/test-suite.md section 1;"
+            f"  Groups come from the table in compiler/c/doc/diagnostics/test-suite.md section 1;"
             f" add it there and in TIERS in {Path(__file__).name}."
         )
     toml_path = group_dir / "cases.toml"
@@ -934,7 +936,7 @@ def load_tag_map(path: Path) -> list[Rule]:
         if unknown:
             raise SuiteError(
                 f"{where}: {', '.join(unknown)} is not a group. Groups come from"
-                f" the table in design/diagnostics/test-suite.md section 1")
+                f" the table in compiler/c/doc/diagnostics/test-suite.md section 1")
 
         entry = table.get("path")
         patterns = [entry] if isinstance(entry, str) else list(entry or [])
@@ -1261,7 +1263,7 @@ def default_conec() -> Path:
 
 def newest_source(root: Path) -> tuple[float, Path | None]:
     newest, newest_path = 0.0, None
-    for path in (root / "src").rglob("*"):
+    for path in (p for d in C_SOURCE_DIRS for p in (root / d).rglob("*")):
         if path.suffix in (".c", ".h") and path.is_file():
             stamp = path.stat().st_mtime
             if stamp > newest:
@@ -1574,7 +1576,7 @@ def object_extension(options: tuple[str, ...]) -> str:
 # ---------------------------------------------------------------------------
 #
 # conec spells every Cone-to-Cone symbol as '_C' and a path (ir/name.c is the
-# encoder; design/phases/names-and-namespaces.md "Symbols" is the standard). A
+# encoder; doc/design/names-and-namespaces.md "Symbols" is the standard). A
 # 'symbols' check reads the pre-optimization .preir and asserts against one line
 # per global symbol, each carrying the symbol's demangled reading rather than its
 # bytes, so a check says 'Pt.get' where the IR says '_CNvNt2Pt3get'.
@@ -2167,7 +2169,7 @@ class Runner:
 
     def check_warning(self, result: Result, scenario: Scenario,
                       diagnostics: list[Diagnostic]) -> None:
-        """The warn row of the category table in design/diagnostics/test-suite.md section 4:
+        """The warn row of the category table in compiler/c/doc/diagnostics/test-suite.md section 4:
         exit 0 (check_exit), the annotated warnings present, no unannotated ones,
         and no errors.
 
@@ -3013,7 +3015,7 @@ def unraised_codes(codes: dict[str, int]) -> set[str]:
     to see (R6.7).
     """
     sources = []
-    for path in (REPO / "src").rglob("*.c"):
+    for path in (p for d in C_SOURCE_DIRS for p in (REPO / d).rglob("*.c")):
         sources.append(path.read_text(encoding="utf-8", errors="replace"))
     blob = "\n".join(sources)
     return {name for name in codes if not re.search(rf"\b{re.escape(name)}\b", blob)}

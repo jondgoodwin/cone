@@ -51,7 +51,7 @@ void doAnalysis(ConeOptions *opt, ProgramNode **pgm) {
     // carrying on, so declarations are analyzed in dependency order and each is
     // analyzed once, however many places reach it. A module iterates its
     // declarations to be sure every one is reached; it does not decide the
-    // order. See design/phases/type-check.md.
+    // order. See compiler/c/doc/phases/type-check.md.
     //
     // Along the way:
     // - Macros and generic instantiations are substituted, and the instance is

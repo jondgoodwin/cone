@@ -28,7 +28,7 @@ a description of the present arrangement.**
    emitted in any sequence.
 3. **Permissions and regions are erased.** They shape the allocation header and
    nothing else; move-ness, thread-binding and lifetimes are erased entirely. ▸
-   **This is [Performance](../topics/performance.md)'s central bet cashed in
+   **This is [Performance](../../../../doc/design/performance.md)'s central bet cashed in
    here**, and it **forbids** any safety distinction needing a runtime
    representation.
 4. **Generation decides nothing about memory.** Every release, count adjustment
@@ -70,7 +70,7 @@ nothing.
 ### Symbols, linkage and COMDATs
 
 **The rules are not here.** What a symbol is spelled, what linkage it gets and
-why are [Names and Namespaces](names-and-namespaces.md), "Symbols"; this phase
+why are [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols"; this phase
 lowers them, in two functions and a derivation:
 
 - **`nameSymbol`** (`ir/name.c`, IR layer, no LLVM in it) spells the symbol of
@@ -108,7 +108,7 @@ its linkage:
 | a declaration — an imported module's function, an `extern` | external, since an LLVM `declare` can be nothing else | nothing: **only a definition may lead a COMDAT**, and `LLVMVerifyModule` rejects one that does not |
 
 A package compile, which does not exist yet, will add the row L2 of [Names and
-Namespaces](names-and-namespaces.md) describes: an instance of a generic and a
+Namespaces](../../../../doc/design/names-and-namespaces.md) describes: an instance of a generic and a
 vtable as `linkonce` with a COMDAT of `any`, since every object that uses one
 produces it. The vtable list stays internal there too — it holds the
 implementers this compile saw, so no two objects could agree on one.
@@ -424,7 +424,7 @@ switch here, with release as the default. Debug info covers only files and
 subprograms, and the file name is hardcoded.
 
 **Cross-module linking is broken.** A symbol is spelled from its owner chain,
-and the root module contributes no name to it — [Names and Namespaces](names-and-namespaces.md),
+and the root module contributes no name to it — [Names and Namespaces](../../../../doc/design/names-and-namespaces.md),
 "Symbols". So compiling `modulesub.cone` directly makes it the root and emits
 `@scaleInt`, bare; compiling a `main.cone` that imports it makes it an imported
 module and emits `@_CNvC9modulesub8scaleInt`, `modulesub.scaleInt`. The two
@@ -475,13 +475,13 @@ variables.
 | `genllvm/genlalloc.c` | `genlRefTypeSetup`, `genlallocref` | the `{region, perm, value}` header and its emission |
 | | `genlRcCounter`, `genlDealiasOwn`, `genlReleaseOwning`, `genlDealiasNodes` | count adjustment, free, releasing what a variable (or a tuple's rc elements) holds, and replaying flow's lists |
 | `ir/types/reference.h` | `enum ManagedRefFields` | `RegionField`, `PermField`, `ValueField` |
-| `ir/name.c` | `nameSymbol`, `nameType`, `nameVtable`, `nameVtableImpl`, `nameVtableList` | spelling a symbol from a node's owner chain and facts, and a type argument within it — the rules are in [Names and Namespaces](names-and-namespaces.md), "Symbols" |
+| `ir/name.c` | `nameSymbol`, `nameType`, `nameVtable`, `nameVtableImpl`, `nameVtableList` | spelling a symbol from a node's owner chain and facts, and a type argument within it — the rules are in [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols" |
 | `ir/dclinfo.c` | `dclInfoJoin` | writes the declaration facts where a declaration joins its namespace |
 
 ## 10. What lives elsewhere
 
 | Question | Note |
 | --- | --- |
-| What a region and a permission mean before they are erased | [References and Regions](../topics/references-and-regions.md) |
+| What a region and a permission mean before they are erased | [References and Regions](../../../../doc/design/references-and-regions.md) |
 | What injected the reference-count nodes and dealias lists | [Flow Analysis](flow.md) |
 | What guarantees every node has a `vtype` | [IR Nodes](../nodes/_index.md), "--checktree" |

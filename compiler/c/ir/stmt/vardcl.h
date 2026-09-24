@@ -12,7 +12,7 @@
 // 'fold' serves name folding and is empty everywhere but on a module's global.
 // A global is the one-instance analogue of a field, so its 'use' clause admits
 // names of its type as names of the module -- reached through the global, whose
-// address is fixed at compile time (design/nodes/module.md, "Name folding").
+// address is fixed at compile time (compiler/c/doc/nodes/module.md, "Name folding").
 typedef struct VarDclNode {
     IExpNodeHdr;             // 'vtype': type of this name's value
     Name *namesym;

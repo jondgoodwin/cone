@@ -29,9 +29,9 @@ memory safety; permissions ensure data race safety.* Mechanically that is
 **three independent axes on one reference type**: a region, a permission, and a
 value type. This note is what each means, which
 combinations are legal, and what each infects.
-[references](../nodes/references.md) is the node that carries it,
-[Flow Analysis](../phases/flow.md) is what enforces the parts that are enforced,
-and [Generation](../phases/generation.md) is what it lowers to.
+[references](../../compiler/c/doc/nodes/references.md) is the node that carries it,
+[Flow Analysis](../../compiler/c/doc/phases/flow.md) is what enforces the parts that are enforced,
+and [Generation](../../compiler/c/doc/phases/generation.md) is what it lowers to.
 
 The reference manual gives this subject nine chapters. Read this first if you
 want the shape before the detail.
@@ -151,7 +151,7 @@ Two consequences worth knowing:
   permission wherever one is crossed and downgrading on a field's. So a `mut`
   field is not writable through an `imm` value or a `&` reference, and an `imm`
   field is not writable through a `&mut` one. That is the write half of what
-  `coneref/refstruct.html` calls *viewpoint adaptation*, and it is the half that
+  `doc/reference/refstruct.html` calls *viewpoint adaptation*, and it is the half that
   exists; adaptation over the sharing bits is unimplemented because those bits
   are read nowhere.
 
@@ -260,7 +260,7 @@ fact most likely to mislead when reading generated IR.
 
 An owning reference points at the payload of a `{region, perm, value}` header,
 so the allocation base is *behind* the pointer. See
-[Generation](../phases/generation.md), "The allocation header".
+[Generation](../../compiler/c/doc/phases/generation.md), "The allocation header".
 
 ## Where each rule is enforced
 
@@ -299,7 +299,7 @@ gap:
 
 ## What lives elsewhere
 
-- The node that carries all this: [references](../nodes/references.md)
-- Moves, counting and release: [Flow Analysis](../phases/flow.md)
-- Layout, fat pointers and the allocation header: [Generation](../phases/generation.md)
+- The node that carries all this: [references](../../compiler/c/doc/nodes/references.md)
+- Moves, counting and release: [Flow Analysis](../../compiler/c/doc/phases/flow.md)
+- Layout, fat pointers and the allocation header: [Generation](../../compiler/c/doc/phases/generation.md)
 - What is promised versus what is checked: [Safety](safety.md)

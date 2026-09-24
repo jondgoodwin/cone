@@ -11,7 +11,7 @@
 // The type of an enum's discriminant: an unsigned integer wide enough to hold
 // every variant's tag number, carrying no arithmetic of its own.
 //
-// It is not the enum. An enum is a StructNode -- see nodes/struct.md -- and this
+// It is not the enum. An enum is a StructNode -- see compiler/c/doc/nodes/struct.md -- and this
 // is the type of the one field the compiler synthesizes at position 0 of it. An
 // author may place that field explicitly, for alignment, by writing '_ tag'.
 //

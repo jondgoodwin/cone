@@ -265,7 +265,7 @@ written with type arguments that only the matched enum has is `ErrorPatArgs`; on
 that names a value is `ErrorNotType`. Each is reported by the `is` test alone —
 the conversion a bound pattern also desugars to binds the same way and stays
 quiet — and binds the name to `errorType`, which silences the variable the
-pattern declares. The rule is [Names and Namespaces](names-and-namespaces.md),
+pattern declares. The rule is [Names and Namespaces](../../../../doc/design/names-and-namespaces.md),
 "A variant bare in a pattern".
 
 ## 9. Borrows: where type check stops

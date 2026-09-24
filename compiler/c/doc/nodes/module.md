@@ -61,7 +61,7 @@ like any other, registered under their canonical paths in the packages folder
 | `namesym` | the module's name: its **folder's**, where a designated file drew the module out of a folder, and `filesym` otherwise. What an importer binds it under, what a path through it is written with, and what its declarations' symbols are spelled after |
 | `filesym` | the name derived from the module's *filename* — the source file's basename for the root, the imported file's or the one-file module's for every other. It names a module that is one file, and nothing else reads it. **For a one-file submodule it is a filesystem fact as a folder is**, and a `mod` declaration's name is checked against it; for a lone file a declaration may rename it |
 | `foldersym` | the module's folder, when that folder's designated file drew it; NULL for a module that is one file. It is what a folder module's `mod` declaration is checked against, and what says a folder was swept |
-| `dclinfo` | the declaration facts — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". `owner` is **the parent module for a submodule**, whether a subfolder or a one-file module drew it, and NULL for the root, for a lone file and for a module an `import` reached. **The root is the module without `DclNamesChain`**: it has a name and contributes it to no symbol. `DclPrivate` is set on a submodule that does not write `pub`, and on no other module, because a module with no parent has nothing to be visible outside of |
+| `dclinfo` | the declaration facts — [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols". `owner` is **the parent module for a submodule**, whether a subfolder or a one-file module drew it, and NULL for the root, for a lone file and for a module an `import` reached. **The root is the module without `DclNamesChain`**: it has a name and contributes it to no symbol. `DclPrivate` is set on a submodule that does not write `pub`, and on no other module, because a module with no parent has nothing to be visible outside of |
 | `imports` | `ImportNode`s only, held apart from `nodes` so folding can run before anything else resolves |
 | `moduses` | `ModUseNode`s only — every standalone `use` written at module scope, of an enum or of a submodule — held apart from `nodes` for the same reason, and because the statement is neither a declaration nor a field: what it declares is bindings, made in the fold pass |
 | `nodes` | every declaration the module owns, in source order, **an enum's variants among them**: a variant is walked, checked and generated as the module's, though its name is bound in its enum. This is what printing and generation iterate |
@@ -539,7 +539,7 @@ of**, and the two spellings never resolve against each other. That, and not the
 declarations, is why an import cannot be linked against: nothing can emit the
 definitions those declarations name. How a symbol is spelled from its
 declaration, and the linkage it gets, is
-[Names and Namespaces](../phases/names-and-namespaces.md), "Symbols".
+[Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols".
 
 ### What an import reaches
 
@@ -732,7 +732,7 @@ neither module wrote, so one binding each (below).
 reach, looked up in this module's namespace and then in the registry its parent
 is, never loaded; not the module itself, one it contains, its parent, a trait or
 anything else that is not a module — and why, are in
-[Names and Namespaces](../phases/names-and-namespaces.md), "A module extending a
+[Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "A module extending a
 module", which owns the rules.
 
 **A global's `use` clause is a module's third fold**, and the whole of it is
@@ -740,7 +740,7 @@ module", which owns the rules.
 every entry is an `AliasDclNode` carrying the global as its `through`, and a use
 of the name is lowered to `global.name`. The rules, the diagnostics and why it is
 cheaper than a field's fold are in
-[Names and Namespaces](../phases/names-and-namespaces.md), "Folding through a
+[Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Folding through a
 global", which owns them.
 
 **A standalone `use` is a module's fourth fold**, and the whole of it is
@@ -757,7 +757,7 @@ any other module that is not a submodule, the module itself included, is
 `ErrorModReach`; a second `use` of one submodule is `ErrorDupImport`; anything
 that is neither an enum nor a module is `ErrorUseEnum`, an instance of a generic
 enum included. The rules are in
-[Names and Namespaces](../phases/names-and-namespaces.md), "Folding an enum's
+[Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Folding an enum's
 variants into a module" and "Folding a submodule's names into a module".
 
 **A type alias's target is resolved in a pass of its own, and then checked for a
@@ -935,7 +935,7 @@ statement of Cone's module design.
 The argument is in the author's *When Modules Are Not Just Namespaces*
 (`c:/src/progling/content/post/cone-modules.md`) and *Modules vs Types*
 (`modules-vs-types.md`); what modularity is for — the six strategies and which
-layers surface them — is in [Modularity](../topics/modularity.md), which
+layers surface them — is in [Modularity](../../../../doc/design/modularity.md), which
 **defers the whole of Cone's specific module design to this note**.
 
 ### The package is the unit
@@ -1237,7 +1237,7 @@ for.
 from another module the way a singleton's members are folded from its type. A
 module's `use` *statement* names an enum. See "Folding through a global" and
 "Import and name folding" in
-[Names and Namespaces](../phases/names-and-namespaces.md).
+[Names and Namespaces](../../../../doc/design/names-and-namespaces.md).
 
 **A module may name its default fold** on its `mod` line, `mod bigint use BigInt;`
 [Jon 23 Sep]: a bare `import bigint;` folds `BigInt` beside binding `bigint`, an
@@ -1413,7 +1413,7 @@ annotation on a reference names is a type.
   correlates to one top-level module, whose name is what makes a public name
   distinguishable once the linker flattens every namespace into one. The rules,
   and what of the spelling is still open, are
-  [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols".
+  [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols".
 - **The interface artifact must carry bodies, not signatures.** Generics
   monomorphize at the use site, macros expand at the use site, and `inline` is
   macro-shaped, so an importer needs the body of each. It exposes private
@@ -1450,7 +1450,7 @@ annotation on a reference names is a type.
   exists, not an assertion.
 - **Module substitution and generativity are aims without a design.** Both
   drafts that would carry them are outlines.
-  [Modularity](../topics/modularity.md) states the aim and measures the
+  [Modularity](../../../../doc/design/modularity.md) states the aim and measures the
   distance.
 
 ## Hazards
@@ -1509,12 +1509,12 @@ annotation on a reference names is a type.
 ## What lives elsewhere
 
 - The name rules a module implements — lookup, qualification, visibility,
-  folding, aliases, overloading: [Names and Namespaces](../phases/names-and-namespaces.md)
-- What modularity is for, and how far Cone is from it: [Modularity](../topics/modularity.md)
+  folding, aliases, overloading: [Names and Namespaces](../../../../doc/design/names-and-namespaces.md)
+- What modularity is for, and how far Cone is from it: [Modularity](../../../../doc/design/modularity.md)
 - Module loading as a parse-time activity, and the name-table hook:
   [Parse](../phases/parse.md)
 - How a declaration's symbol is spelled and what linkage it gets:
-  [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols"
+  [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols"
 - The lowering of those rules, linkage, COMDATs, and the allocation header:
   [Generation](../phases/generation.md)
 - Mixins, trait inheritance, and types as namespaces: [struct](struct.md)

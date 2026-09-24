@@ -307,7 +307,7 @@ paths call libc `free`.
 
 ## What lives elsewhere
 
-- The model these tags implement — the three axes, and what each permits: [References and Regions](../topics/references-and-regions.md)
+- The model these tags implement — the three axes, and what each permits: [References and Regions](../../../../doc/design/references-and-regions.md)
 - Moves, counting, and what the count counts: [Flow Analysis](../phases/flow.md)
 - The allocation header and pointer levels: [Generation](../phases/generation.md)
 - What a borrow's type check establishes, in context: [Type Check Reasoning](../phases/type-check-reasoning.md)

@@ -36,7 +36,7 @@ double release is a flow bug however it surfaces, and
 **Where a rule is unenforced, a scenario establishes the opposite.** A violation
 that compiles clean is pinned deliberately. ▸ **So a scenario that starts failing
 may be one a fix correctly invalidated** — the same convention
-[Safety](../topics/safety.md) uses, and for the same reason.
+[Safety](../../../../doc/design/safety.md) uses, and for the same reason.
 
 ## 1. It is a fifth phase that is not a fifth pass
 
@@ -442,8 +442,8 @@ Test sources that pin behavior precisely: `test/cases/move/move-flow-*.cone`,
 
 | Question | Note |
 | --- | --- |
-| What the three reference axes mean, and what each permits | [References and Regions](../topics/references-and-regions.md) |
-| Which safety properties actually hold today | [Safety](../topics/safety.md) |
+| What the three reference axes mean, and what each permits | [References and Regions](../../../../doc/design/references-and-regions.md) |
+| Which safety properties actually hold today | [Safety](../../../../doc/design/safety.md) |
 | When a function is type checked at all | [Type Check Phase](type-check.md) |
 | What a borrow's type records, and where | [Type Check Reasoning](type-check-reasoning.md), "Borrows: where type check stops" |
 | How the allocation header is laid out | [Generation](generation.md), "The allocation header" |

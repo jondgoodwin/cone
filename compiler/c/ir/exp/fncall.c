@@ -293,7 +293,7 @@ static int fnCallIsAppendTuple(FnCallNode *node) {
 // and every element applied against that borrow, and the borrow needs the
 // receiver's type. Name resolution did this and had no type to give, so it
 // passed unknownType and left the injected borrow untyped for everything after
-// it. See design/phases/type-check.md, "Order of resolution".
+// it. See compiler/c/doc/phases/type-check.md, "Order of resolution".
 static void fnCallLowerAppendTuple(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
 
@@ -438,7 +438,7 @@ static int fnCallIsBorrowType(INode *type) {
 // The narrowest lifetime among a call's borrowed-reference arguments, as the
 // highest scope number: 0 when no argument is a borrow. Without annotations
 // every borrowed reference in a signature shares one lifetime, and the only
-// lifetime the arguments have in common is the shortest (coneref/reflifefn.html).
+// lifetime the arguments have in common is the shortest (doc/reference/reflifefn.html).
 static uint16_t fnCallNarrowestBorrowScope(FnCallNode *node) {
     uint16_t narrowest = 0;
     INode **argsp;
@@ -976,7 +976,7 @@ static void fnCallLowerRefCompare(TypeCheckState *pstate, FnCallNode *node) {
 // is what left the call naming a declaration with no symbol, and generation
 // dereferenced that null.
 //
-// The route is the one coneref/reftraitvar.html describes -- the tag says which
+// The route is the one doc/reference/reftraitvar.html describes -- the tag says which
 // variant, that selects the vtable, and the vtable holds the method -- and it is
 // already built as the coercion from '&Trait' to '&<Trait'. So this coerces and
 // then dispatches virtually, which is what a caller otherwise has to write by
@@ -1111,7 +1111,7 @@ void fnCallOpAssgn(TypeCheckState *pstate, FnCallNode **nodep) {
 }
 
 // A type that declares '==' and no '!=' has its '!=' derived, as 'not (a == b)'
-// (coneref/refmethop.html, "Comparison Operator Methods"). Asked of a struct
+// (doc/reference/refmethop.html, "Comparison Operator Methods"). Asked of a struct
 // receiver's own type, or of the struct a reference refers to, through any
 // number of references, since '!=' on references compares the values
 // (fnCallLowerRefCompare). A type that declares its own '!=' keeps it, an
@@ -1529,7 +1529,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
 // A '&mut &T' argument is a place the callee may store any other borrowed
 // reference it was handed, and without annotations it is free to: every
-// borrowed reference in the signature shares one lifetime (coneref/reflifefn.html,
+// borrowed reference in the signature shares one lifetime (doc/reference/reflifefn.html,
 // "Mutable borrowed reference parameters"). So what that argument points at may
 // not outlive the narrowest borrow passed alongside it -- the same comparison
 // assignlvalrtype makes for the store the callee might write.

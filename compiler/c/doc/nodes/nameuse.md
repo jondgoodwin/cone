@@ -227,7 +227,7 @@ the most common way to be off by an indirection here.
 ## What lives elsewhere
 
 - Hooking, lookup order, and what the pass does retag: [Name Resolution](../phases/name-resolution.md)
-- What a name *means* — visibility, imports, overloading: [Names and Namespaces](../phases/names-and-namespaces.md)
+- What a name *means* — visibility, imports, overloading: [Names and Namespaces](../../../../doc/design/names-and-namespaces.md)
 - Demand, circularity, and the two marks: [Type Check Phase](../phases/type-check.md)
 - Why an overload name has no value: [IR Nodes](_index.md), "FnOverloadDcl"
 - The disjoint case, a bare *method* name being called: [fncall](fncall.md)

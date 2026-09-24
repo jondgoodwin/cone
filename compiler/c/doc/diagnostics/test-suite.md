@@ -23,7 +23,7 @@ test, whatever their messages say.
 **Where a rule is unenforced, a scenario establishes the opposite** — a
 violation that compiles clean, pinned deliberately. ▸ **Settles** how to read a
 scenario that starts failing: it may be one a fix correctly invalidated, not a
-regression. [Safety](../topics/safety.md) and [Flow Analysis](../phases/flow.md)
+regression. [Safety](../../../../doc/design/safety.md) and [Flow Analysis](../phases/flow.md)
 both depend on this convention.
 
 **While working, `--since` narrows it.** It reads the changed paths from git, maps
@@ -456,7 +456,7 @@ Each line is, in order, separated by single spaces:
    nothing to merge, so `hidden` and `linkonce` are what an `excludes` guards
    against;
 3. the **demangled name**: the symbol read back through the scheme in
-   `design/phases/names-and-namespaces.md`, "Symbols" — `sub.SubPt.get`,
+   `doc/design/names-and-namespaces.md`, "Symbols" — `sub.SubPt.get`,
    `Holder[i64].tally`, `pick[&so mut i32]`, `Vec.+`, a vtable as
    `Gauge as Meter (vtable)`, a vtable list as `Meter (vtable list)`, a name
    Cone source could only write in backticks in its backticks. A symbol the

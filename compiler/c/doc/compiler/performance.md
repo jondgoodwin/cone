@@ -2,7 +2,7 @@ How the compiler stays fast, and which of its design choices exist for that
 reason.
 
 This is about `conec`'s own speed. What a *Cone program* costs at runtime is
-[the language's cost model](../topics/performance.md).
+[the language's cost model](../../../../doc/design/performance.md).
 
 *Provenance: read from source. The timer instrumentation is the way to measure
 any claim here.*
@@ -129,7 +129,7 @@ For anything finer, instrument and compile the corpus:
 
 ## What lives elsewhere
 
-- What a Cone construct costs at runtime: [Performance](../topics/performance.md)
+- What a Cone construct costs at runtime: [Performance](../../../../doc/design/performance.md)
 - How the source is organized: [Architecture](architecture.md)
 - The constructor discipline the arena demands: [IR Nodes](../nodes/_index.md)
 - Demand-driven scheduling and the marks: [Type Check](../phases/type-check.md)

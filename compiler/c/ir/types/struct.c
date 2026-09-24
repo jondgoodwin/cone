@@ -607,7 +607,7 @@ static Nodes *structFoldPath(StructNode *type, Name *name, Nodes *path) {
 // fields. So it has the base's representation exactly, and values of the two
 // substitute for each other in both directions at no cost (structExtendsEquiv,
 // below). The language is in
-// conesite/public/coneref/refinherit.html, "Enriching a concrete type".
+// doc/reference/refinherit.html, "Enriching a concrete type".
 //
 // What it costs the compiler is a NAME FOLD, bar the value's lifecycle. One
 // representation means a base method already takes exactly the right receiver,
@@ -869,8 +869,8 @@ StructNode *structExtendsRoot(StructNode *node) {
 // each in one set, each with a layout of its own. The two enums are TWO DISTINCT
 // TYPES that do not substitute for each other in either direction, and a variant
 // is a value of the one enum whose set holds it. The language is in
-// conesite/public/coneref/refenum.html, "Extending an enum"; the mechanism is in
-// design/nodes/struct.md, "An enum extending an enum".
+// doc/reference/refenum.html, "Extending an enum"; the mechanism is in
+// compiler/c/doc/nodes/struct.md, "An enum extending an enum".
 //
 // A copy is made the way a generic instance is: the base's variant is resolved
 // first, then cloned, so every name inside it stays bound to what it named in the
@@ -2626,7 +2626,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     //
     // The placement is load-bearing, not an optimization. A method may use its
     // own type by value ('fn twin(self) Self'), so the size has to be available
-    // before step below runs. See design/phases/type-check.md, "Struct and trait".
+    // before step below runs. See compiler/c/doc/phases/type-check.md, "Struct and trait".
     //
     // A type that may be enriched sets its lifecycle aside first, unlowered, for an
     // enrichment taken after this: an enrichment reads TypeChecked to know that
@@ -2860,7 +2860,7 @@ TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint cons
     // Refused here rather than left to the structural test below, which would say
     // yes: an extension's fields are clones of its base's and its members are the
     // base's, so the two are structurally identical in both directions. See
-    // design/nodes/struct.md, "An enum extending an enum".
+    // compiler/c/doc/nodes/struct.md, "An enum extending an enum".
     if (fromdcl->tag == StructTag && (to->flags & EnumType) && (fromdcl->flags & EnumType))
         return NoMatch;
 

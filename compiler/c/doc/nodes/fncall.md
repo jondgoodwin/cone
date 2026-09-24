@@ -242,7 +242,7 @@ and `fnCallLowerTraitMethod` is what routes it there. Neither of the trait's own
 declarations is callable — an abstract method has no body, and one with a body is
 a default that was cloned into each variant — so selecting either left the call
 naming a declaration with no symbol, which generation dereferenced as a null.
-The route is the one [reftraitvar](../../conesite/public/coneref/reftraitvar.html)
+The route is the one [reftraitvar](../../../../doc/reference/reftraitvar.html)
 describes: the tag says which variant, that selects its vtable, and the vtable
 holds the method. It is built by coercing the receiver to `&<Trait`, which
 already exists and already does the tag lookup, and then dispatching as any

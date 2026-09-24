@@ -311,7 +311,7 @@ INode *parseAmper(ParseState *parse) {
 
     // A borrow applies to the whole suffixed term, at the same precedence every
     // other prefix operator has: '&x.a' references the field and '&x[4]' the
-    // fifth element, which is what coneref/refborref.html documents.
+    // fifth element, which is what doc/reference/refborref.html documents.
     //
     // This used to consume only the prefixed term and then re-apply the suffixes
     // to the borrow, so '&x.a' was '(&x).a' and reached codegen typed as the

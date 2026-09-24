@@ -157,6 +157,6 @@ does not cross threads unsafely, or that memory is released.
 ## What lives elsewhere
 
 - The three axes and what each permits: [References and Regions](references-and-regions.md)
-- What flow actually does and does not analyze: [Flow Analysis](../phases/flow.md)
-- Bounds checks, traps and pointer levels: [Generation](../phases/generation.md)
-- Re-measuring any row: [Measuring](../diagnostics/measuring.md)
+- What flow actually does and does not analyze: [Flow Analysis](../../compiler/c/doc/phases/flow.md)
+- Bounds checks, traps and pointer levels: [Generation](../../compiler/c/doc/phases/generation.md)
+- Re-measuring any row: [Measuring](../../compiler/c/doc/diagnostics/measuring.md)

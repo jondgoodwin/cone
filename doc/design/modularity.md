@@ -103,7 +103,7 @@ types.
 **What Cone's modules actually are is not this note's subject.** The package as
 unit of distribution and compilation, the module as a nesting namespace within
 it, the folder sweep, `import` and `use`, what distinguishes a module from a type
-— all of that is Cone's specific answer at this layer, and [module](../nodes/module.md)
+— all of that is Cone's specific answer at this layer, and [module](../../compiler/c/doc/nodes/module.md)
 owns it. This note is modularity as a discipline: what the strategies are, which
 layers surface them, and where Cone stands against that.
 
@@ -146,7 +146,7 @@ polymorphism out to traits.
 
 **The type side is built, and the claim held where it was tested.** A field's
 `use` clause folds members of its type in as names of the struct, with `as`,
-`but` and one collision rule ([struct](../nodes/struct.md), "Name folding").
+`but` and one collision rule ([struct](../../compiler/c/doc/nodes/struct.md), "Name folding").
 At the namespace the two folds are one operation: insertion, collision,
 aliasing, and the alias node that binds a folded method is the binding record
 the module fold needs. They differ in what the binding holds and in resolution
@@ -157,7 +157,7 @@ Same namespace, same rule, same node; different resolution.
 **There are three reuse mechanisms on the type side, and the later two are where
 the symmetry claim comes cheapest.** A field's clause delegates to a *part*;
 `extends` over a concrete base enriches the *whole*, adding methods and no fields
-([struct](../nodes/struct.md), "Enrichment"). Because it may not change the
+([struct](../../compiler/c/doc/nodes/struct.md), "Enrichment"). Because it may not change the
 fields, the enriching type and its base have one representation and their values
 substitute for each other in both directions at no cost — so a base method
 already takes exactly the right receiver, and folding one is the same degenerate,
@@ -175,7 +175,7 @@ package may coexist in a binary.
 
 **The third is what the other two were for, and it is the expression problem
 answered.** A `use` in a type's body folds in a *sibling* — another type that
-declared this type's base ([struct](../nodes/struct.md), "Sibling folding"). So a
+declared this type's base ([struct](../../compiler/c/doc/nodes/struct.md), "Sibling folding"). So a
 base type plus one package's trigonometry plus another's logarithms become one
 type, declared once, in the namespace of whoever needs it, with no package
 modified and nobody's permission asked. It costs nothing beyond `extends`: the
@@ -268,7 +268,7 @@ discipline — unstructured concurrency being "similar to GOTO."
 
 ## What lives elsewhere
 
-- Lookup, qualification, hooking and overloading: [Names and Namespaces](../phases/names-and-namespaces.md)
-- Mixin expansion and trait inheritance, step by step: [struct](../nodes/struct.md)
-- Instantiation and monomorphization: [generic](../nodes/generic.md)
-- The symbol-naming rule in full: [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols"; its lowering: [Generation](../phases/generation.md)
+- Lookup, qualification, hooking and overloading: [Names and Namespaces](names-and-namespaces.md)
+- Mixin expansion and trait inheritance, step by step: [struct](../../compiler/c/doc/nodes/struct.md)
+- Instantiation and monomorphization: [generic](../../compiler/c/doc/nodes/generic.md)
+- The symbol-naming rule in full: [Names and Namespaces](names-and-namespaces.md), "Symbols"; its lowering: [Generation](../../compiler/c/doc/phases/generation.md)

@@ -130,7 +130,7 @@ this note.
   interface aim across layers) and by any decision about generic or trait-bound
   surface area.
 - **Narrow borrowing** — consumed by [References and Regions](references-and-regions.md),
-  and by the permissions and regions material in `phases/type-check.md` and
+  and by the permissions and regions material in `compiler/c/doc/phases/type-check.md` and
   `ir/flow.c`.
 - **Actors carrying the aliasing load** — consumed by [Performance](performance.md)
   (the latency argument against refcounting and tracing) and by whatever design

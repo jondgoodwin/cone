@@ -208,7 +208,7 @@ int assignlvalrtype(INode *lval, INode *rtype) {
 
     // Handle lifetime enforcement for borrowed references
     // A slice (ArrayRefTag) borrows exactly as a single reference does, and so
-    // does a virtual reference (VirtRefTag), which coneref/refvirtref.html
+    // does a virtual reference (VirtRefTag), which doc/reference/refvirtref.html
     // describes as a borrowed reference carrying a vtable; all three tags carry
     // the same scope and are subject to the same rule.
     RefNode* rvaltype = (RefNode *)rtype;
