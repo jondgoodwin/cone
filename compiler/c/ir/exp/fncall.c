@@ -77,7 +77,8 @@ INode *cloneFnCallNode(CloneState *cstate, FnCallNode *node) {
     if (isNameUseNode(node->objfn) && isNameUseNode(newnode->objfn)) {
         INode *generic = ((NameUseNode*)node->objfn)->dclnode;
         if (generic && generic != ((NameUseNode*)newnode->objfn)->dclnode
-            && generic->tag == StructTag && ((StructNode*)generic)->genericinfo
+            && ((generic->tag == StructTag && ((StructNode*)generic)->genericinfo)
+                || (generic->tag == ModuleTag && ((ModuleNode*)generic)->genericinfo))
             && fnCallHasTypeArgs(newnode))
             ((NameUseNode*)newnode->objfn)->dclnode = generic;
     }
@@ -167,6 +168,20 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
     if (basedcl == NULL)
         return 0;
     Namespace *namespace;
+    // A generic module has no members of its own to reach: each instance has
+    // its copy, the only one compiled, so a path through it names the instance,
+    // 'stack[i64].push' -- which is collapsed at type check, once it exists
+    // (fnCallModuleInstancePath). Inside its own body its bare name means the
+    // instance being defined, as a generic type's does, and the clone points
+    // the member at the instance's
+    if (basedcl->tag == ModuleTag && ((ModuleNode*)basedcl)->genericinfo
+        && (ModuleNode*)basedcl != pstate->mod) {
+        errorMsgNode(node->objfn, ErrorGenModBare,
+            "%s is a generic module: its members belong to each instance, named with type arguments as %s[...].%s.",
+            &inodeGetName(basedcl)->namestr, &inodeGetName(basedcl)->namestr,
+            &((NameUseNode*)node->methfld)->namesym->namestr);
+        return 0;
+    }
     if (basedcl->tag == ModuleTag)
         namespace = &((ModuleNode*)basedcl)->namespace;
     else if (basedcl->tag == StructTag)
@@ -1148,6 +1163,43 @@ static int fnCallNeFromEq(FnCallNode *node, INode *objtype) {
         && iNsTypeFindFnField((INsTypeNode*)objtype, eqName) != NULL;
 }
 
+// A path through an instance of a generic module -- 'stack[i64].push(x)',
+// 'stack[i64].count' -- collapsed as fnCallNameResPath collapses a path through
+// any module, but here: the instance does not exist until type check makes it
+// (genericMemoize), so name resolution left the member unbound. The member is
+// looked up in the instance's namespace, a private one refused from outside the
+// module, and the hop disappears: with no arguments the node becomes the bound
+// name, and with arguments the callee. Returns 1 when the node was replaced
+// outright (and checked), so the caller stops.
+static int fnCallModuleInstancePath(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    ModuleNode *mod = (ModuleNode*)nameUseGetDcl((NameUseNode*)node->objfn);
+    NameUseNode *member = (NameUseNode*)node->methfld;
+    member->dclnode = namespaceFind(&mod->namespace, member->namesym);
+    if (member->dclnode == NULL) {
+        errorMsgNode((INode*)member, ErrorUnkName,
+            "The name %s does not refer to a declared name of module %s",
+            &member->namesym->namestr, &mod->namesym->namestr);
+        node->vtype = errorType;
+        *((INode**)nodep) = (INode*)newErrorNode((INode*)node);
+        return 1;
+    }
+    member->flags |= FlagQualified;
+    ModuleNode *asker = pstate->fn ? dclInfoGetModule((INode*)pstate->fn) : NULL;
+    if (asker != mod && inodeIsPrivate(member->dclnode))
+        errorMsgNode((INode*)member, ErrorNotPublic,
+            "%s is private to its module and may not be named from outside it.",
+            &member->namesym->namestr);
+    if (node->args == NULL) {
+        *((INode**)nodep) = (INode*)member;
+        inodeTypeCheckAny(pstate, (INode**)nodep);
+        return 1;
+    }
+    node->objfn = (INode*)member;
+    node->methfld = NULL;
+    return 0;
+}
+
 // Perform type check on function/method call node
 // This should only be run once on a node, as it mutably lowers the node to another form:
 // - If a generic/macro, it instantiates, then type checks instantiated nodes
@@ -1220,7 +1272,15 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             node->vtype = errorType;
             return;
         }
-        if (isExpNode(node->objfn)) {
+        // 'stack[i64].push(x)': a path through an instance of a generic module,
+        // which exists only now that the instantiation above made it
+        if (nameUseNames(node->objfn, ModuleTag)) {
+            if (fnCallModuleInstancePath(pstate, nodep))
+                return;
+            objfnChecked = 0;
+            calleeIsOverload = nameUseNames(node->objfn, FnOverloadDclTag);
+        }
+        else if (isExpNode(node->objfn)) {
             INode *rcvtype = iexpGetDerefTypeDcl(node->objfn);
             if (isMethodType(rcvtype)) {
                 Name *membersym = ((NameUseNode*)node->methfld)->namesym;

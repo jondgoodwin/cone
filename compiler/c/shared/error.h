@@ -260,7 +260,7 @@ enum ErrorCode {
     ErrorBuildImport = 1131,    // An 'import' in a described module that the build description provides nothing for: the compiler never searches for one
 
     // 'extern' says a declaration is defined elsewhere; '@c' says its symbol takes C naming
-    ErrorCAttr = 1132,          // '@c' written wrongly or where nothing has a symbol for it to name: a bad argument, a type, an anonymous, generic or inline fn, a trait's method, the retired 'extern system'
+    ErrorCAttr = 1132,          // '@c' written wrongly or where nothing has a symbol for it to name: a bad argument, a type, an anonymous, generic or inline fn, a trait's method, a generic module, the retired 'extern system'
     ErrorCNameTwice = 1133,     // A bare '@c' (or '@c(system)' where the module is already system) on a fn whose module already gives it that C naming
     ErrorBadExtern = 1134,      // 'extern' on a declaration an importer needs the body of -- inline, generic, a trait's or a generic type's method -- or on something not a fn or a global
 
@@ -276,6 +276,11 @@ enum ErrorCode {
     // A module's 'init' and 'final'
     ErrorGlobalUninit = 1140,   // A global declared without an initial value that its module's 'init' never assigns, or whose module has no 'init'
     ErrorModLifecycle = 1141,   // A module's 'init' or 'final' not declared as 'fn @initpure init()' or 'fn final()', or a module's own 'drop' where it needs its finalizer given that name
+
+    // A generic module, 'mod stack[T];'
+    ErrorGenModBare = 1142,     // A generic module named without type arguments where only an instance has members: a path through it, an import's 'use' clause or default fold of it, 'extends' or a standalone 'use' naming it
+    ErrorGenModBody = 1143,     // A generic module holding what an instance is not yet built for: a submodule, a generic function or type, a trait or an enum, a module trait
+    ErrorGenModRoot = 1144,     // An executable's root module declared generic: nothing can instantiate the program
 
     // Warnings
     WarnCode = 3000,

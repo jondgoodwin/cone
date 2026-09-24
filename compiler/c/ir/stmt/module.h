@@ -39,6 +39,9 @@ typedef struct ModuleNode {
     uint32_t ntaken;         // How many of 'nodes', at its end, are copies of the trait's defaults, made resolved (modTraitConform)
     struct FnDclNode *initfn; // The module's own 'init', once modLifecycle has checked it; else NULL
     struct FnDclNode *finalfn; // What finalizes the module: the 'drop' modLifecycle gives it where a global needs dropping, else its own 'final'; else NULL
+    GenericInfo *genericinfo; // 'mod stack[T]': a generic module, its type parameters and its instances; else NULL
+    struct ModuleNode *generic; // An instance of a generic module: the generic it was cloned from; else NULL
+    Nodes *instdeps;         // An instance: the modules it follows in the init order besides its generic (pgmInstanceOrder); else NULL
 } ModuleNode;
 
 ModuleNode *newModuleNode();
@@ -111,6 +114,16 @@ void modFoldDupReport(INode *at, struct AliasDclNode *alias, INode *prior);
 // Resolve what a module's 'extends' names, refusing what cannot be reused. Run
 // for every module ahead of any fold, since what a module extends is folded first
 void modExtendsResolve(ModuleNode *mod);
+
+// Make, register and type check the instance of generic module 'generic' for
+// the type arguments 'srcgencall' gives: a module of its own, cloned from the
+// generic with each parameter substituted, owned where the generic is and
+// spelled with the arguments ('stack[i64].push'). genericMemoize asks for it on
+// a memo miss, so identical arguments anywhere are one instance
+ModuleNode *modInstantiate(TypeCheckState *pstate, struct FnCallNode *srcgencall, ModuleNode *generic);
+
+// Every instance of a generic module made so far, in the order made, or NULL
+Nodes *modInstanceList();
 
 void modNameRes(NameResState *pstate, ModuleNode *mod);
 void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod);

@@ -493,6 +493,18 @@ static void importDefaultFold(ImportNode *node) {
 // afresh: it reports each listed item still waiting, and each 'but' naming what
 // the module does not have or does not show.
 void importNameRes(NameResState *pstate, ImportNode *node) {
+    // A generic module's names belong to each of its instances, so there is
+    // nothing of the generic's own to fold: the import binds its name, and an
+    // instance is reached as 'stack[i64].push'. Its 'extends' and a standalone
+    // 'use' of it are refused where each is resolved
+    if (node->module != NULL && node->module->genericinfo && !node->isextends && !node->isuse) {
+        if (node->fold != NULL)
+            errorMsgNode(node->fold->at, ErrorGenModBare,
+                "%s is a generic module, whose names belong to each instance: nothing of it can be folded. Name an instance's member as %s[...].name.",
+                &node->module->namesym->namestr, &node->module->namesym->namestr);
+        node->fold = NULL;
+        return;
+    }
     if (node->fold == NULL && node->module != NULL && node->module->deffold != NULL
         && !node->isextends && !node->isuse)
         importDefaultFold(node);

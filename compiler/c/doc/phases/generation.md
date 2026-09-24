@@ -152,8 +152,10 @@ Namespaces](../../../../doc/design/names-and-namespaces.md), "Linkage", state:
   chain of owners reaches it — never `core` or a package the search path
   compiled in beside them;
 - never an instance of a generic, nor a method or static of a generic type's
-  instance (`genlIsInstance`, which asks the owners too: a member of a type's
-  instance carries no instantiating node of its own, only its type does) —
+  instance, nor a function or global of a generic module's instance
+  (`genlIsInstance`, which asks the owners too, up to the module: a member of a
+  type's instance carries no instantiating node of its own, only its type does,
+  and an instance module answers for everything it holds) —
   those are shared instead, below;
 - a declaration name resolution marked `DclExpandReached` — named by an
   `inline`, generic or macro body, a trait's default or a generic type's method,
@@ -548,7 +550,7 @@ variables.
 | | `genlGloFnName`, `genlGloVarName` | declare a function or global under the symbol `nameSymbol` spells |
 | | `genlGloVarIsConstant` | whether an `imm` global is an LLVM constant: an initial value, not `extern`, no drop function |
 | | `genlLinkage`, `genlDefinition`, `genlIsDefinedHere`, `genlVtableDefinition` | linkage, storage class and calling convention, together, from the declaration facts and what this object does with the symbol: declares it, defines it, defines and exports it, or defines it shared |
-| | `genlIsInstance` | whether a declaration is a generic's instance or a member of one |
+| | `genlIsInstance` | whether a declaration is a generic's instance or a member of one — every function and global of a generic module's instance among them |
 | | `genlIsExported`, `genlTypeHoldsExpanded` | whether a library compile exports a definition to its importers |
 | | `genlComdat`, `genlNameAnonFn` | the per-definition COMDAT that lets the linker drop a symbol, its kind read off the linkage; the private name an anonymous `fn` needs to have one |
 | | `genlComdatSupport` | what the target's object format does with COMDATs |

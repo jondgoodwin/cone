@@ -820,6 +820,107 @@ description = "A global without a value that 'init' does not assign, reads one b
 tags = ["typecheck"]
 diagnostics = 11
 
+# GENERIC MODULES, treated as generic types are [Jon 23 Sep]. module-generic
+# runs two instances of one generic module with separate globals, one instance
+# named from two modules, and each instance's 'init' and 'final' in the module
+# order; module-generic-link compiles the generic in a package of its own and
+# the same instance in two objects, merged at link. The rejects: what 'mod
+# stack[T]' refuses on its line (-parse), a generic module named without type
+# arguments or holding what an instance is not built for (-nameres), bad type
+# arguments and an instance's missing or private member (-typecheck), and a
+# program whose root is generic (-root).
+[scenario.module-generic]
+category = "run"
+description = "Two instances of a generic module with their own globals, a T among them; one instance named from the root and a sister; a type of the module holding a T through a type alias of T; its own name in its body, bare and with its type argument; a module trait's default taken by each instance; each instance's 'init' after its generic and after the module its type argument comes from, and 'final' in the reverse"
+tags = ["nameres", "typecheck", "genllvm", "runtime"]
+
+# An instance's symbols carry its type arguments on the module, as a generic
+# type instance's do: 'stack[i64].push' is '_CNvIC5stackxE4push'. A lone
+# compile's instances are internal, as every definition of a program is
+[[scenario.module-generic.check]]
+name = "an-instance-is-spelled-with-its-type-arguments"
+target = "symbols"
+contains = [
+  "define internal stack[i64].push comdat nodeduplicate",
+  "define internal stack[f64].push comdat nodeduplicate",
+  "define internal stack[i64].Entry.doubled comdat nodeduplicate",
+  "define internal stack[i64].init comdat nodeduplicate",
+  "define internal stack[f64].twice comdat nodeduplicate",
+  "define internal tally[user.Tag].see comdat nodeduplicate",
+  "global internal stack[i64].count comdat nodeduplicate",
+  "global internal stack[f64].count comdat nodeduplicate",
+]
+excludes = ["stack.push", "stack.count", "tally.see"]
+
+# A generic module as a package's root, compiled on its own (g), used by a
+# package compiled on its own (q) and by the program, and linked: g[i64] is
+# defined in q's object and in the program's, shared, and the linker keeps one
+# copy, so q's code and the program's add to one total. A package's include
+# file shows its root module alone, which is why the generic here is a root.
+[scenario.module-generic-link]
+category = "run"
+description = "A generic module in a package of its own, instantiated at i64 in a package compiled alone and in the program, whose copies of the instance -- functions and globals -- merge at link; and an instance the program alone uses"
+tags = ["genllvm", "runtime"]
+link = ["g/g.conebuild", "q/q.conebuild"]
+
+# q's object defines g[i64] -- its functions, its 'init' and its globals --
+# shared, as the program's object does
+[[scenario.module-generic-link.check]]
+name = "q-defines-the-instance-it-uses-shared"
+target = "symbols"
+object = "q"
+contains = [
+  "define linkonce_odr g[i64].add comdat any",
+  "define linkonce_odr g[i64].init comdat any",
+  "global linkonce_odr g[i64].total comdat any",
+  "define q.addTwice comdat nodeduplicate",
+]
+excludes = ["g[f64]"]
+
+# The program defines each instance it uses from the body g's include file
+# carries, and declares what q's object defines
+[[scenario.module-generic-link.check]]
+name = "the-program-defines-each-instance-it-uses-shared"
+target = "symbols"
+contains = [
+  "define linkonce_odr g[i64].add comdat any",
+  "define linkonce_odr g[f64].add comdat any",
+  "global linkonce_odr g[i64].total comdat any",
+  "global linkonce_odr g[f64].total comdat any",
+  "declare q.addTwice",
+]
+
+# g's own object has nothing to define: no instance of it is named there
+[[scenario.module-generic-link.check]]
+name = "the-generic-package-defines-nothing"
+target = "symbols"
+object = "g"
+excludes = ["g[", "g.add", "g.total"]
+
+[scenario.module-generic-parse]
+category = "reject"
+description = "A generic module's 'mod' line with an empty parameter list, and one C-named"
+tags = ["parse"]
+diagnostics = 2
+
+[scenario.module-generic-nameres]
+category = "reject"
+description = "A generic module named without type arguments -- a path through it, a standalone 'use', an import's 'use' clause, 'extends', its own default fold -- and one holding a generic function, a trait or a submodule"
+tags = ["nameres"]
+diagnostics = 8
+
+[scenario.module-generic-typecheck]
+category = "reject"
+description = "An instance of a generic module named with a value for a type argument, the wrong number of arguments, a member it lacks, a private function and a private global from outside it, and an argument its function does not take"
+tags = ["typecheck"]
+diagnostics = 6
+
+[scenario.module-generic-root]
+category = "reject"
+description = "A program whose root module is declared generic"
+tags = ["nameres"]
+diagnostics = 1
+
 # A module or a module trait named where a type must be. Each used to reach
 # generation unrefused and crash the compiler there.
 [scenario.module-not-a-type-typecheck]

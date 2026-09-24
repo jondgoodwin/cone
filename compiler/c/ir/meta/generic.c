@@ -160,6 +160,11 @@ static INode *genericClone(TypeCheckState *pstate, FnCallNode *srcgencall, INode
 // Instantiate the generic based on parms and return
 INode *genericInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nodetoclone,
         GenericInfo *genericinfo, Name *name) {
+    // A generic module's instance is a module of its own, cloned declaration by
+    // declaration, registered and checked by the module (modInstantiate)
+    if (nodetoclone->tag == ModuleTag)
+        return (INode*)modInstantiate(pstate, srcgencall, (ModuleNode*)nodetoclone);
+
     // A generic function's own name is not mapped: written bare in its body, it
     // is a call whose type arguments are inferred, as it is anywhere else
     uint32_t dclpos = cloneDclPush();
@@ -316,6 +321,8 @@ GenericInfo *genericGetInfo(INode *node) {
         return ((FnDclNode *)node)->genericinfo;
     case StructTag:
         return ((StructNode *)node)->genericinfo;
+    case ModuleTag:
+        return ((ModuleNode *)node)->genericinfo;
     default:
         return NULL;
     }
@@ -351,7 +358,9 @@ int genericSubstitute(TypeCheckState *pstate, FnCallNode **srcgencallp) {
     // Since the arguments are types, no inference is needed
     // Replace gennnone with instantiated generic, substituting parameters
     // Then type check the substituted, instantiated srcgencallp
-    if (usesTypeArgs) {
+    // A generic module is never inferred: nothing is passed to it to infer from,
+    // so what it is given is checked as type arguments, and refused if it is not
+    if (usesTypeArgs || nodetoclone->tag == ModuleTag) {
         *((INode**)srcgencallp) = genericMemoize(pstate, srcgencall, nodetoclone, genericinfo, name);
         inodeTypeCheckAny(pstate, (INode **)srcgencallp);
         return 1;
@@ -385,8 +394,8 @@ int genericSubstitute(TypeCheckState *pstate, FnCallNode **srcgencallp) {
             return 1;
         break;
     default:
-        // genericGetInfo answers for a function and a struct and nothing else,
-        // and it was asked about this very node
+        // genericGetInfo answers for a function, a struct and a module, it was
+        // asked about this very node, and a module took the explicit path above
         errorUnreachable((INode*)srcgencall, "a generic that is neither a function nor a struct");
         return 1;
     }

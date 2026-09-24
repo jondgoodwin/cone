@@ -910,6 +910,7 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
     // nearer one, so it gives the node this position, and a duplicate of the
     // module's name is then reported against the declaration
     INode dclat;
+    memset(&dclat, 0, sizeof(dclat));
     dclat.lexer = lex;
     dclat.srcp = lex->tokp;
     dclat.linep = lex->linep;
@@ -939,6 +940,15 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
     }
     else
         errorMsgLex(ErrorNoName, "Expected a name for the module this file declares");
+
+    // 'mod stack[T];' declares a GENERIC module, written as a generic type is:
+    // its type parameters in square brackets after its name [Jon 23 Sep]. Nothing
+    // of it is compiled until an instance, 'stack[i64]', is named (modInstantiate)
+    GenericInfo *genericinfo = NULL;
+    if (lexIsToken(LBracketToken)) {
+        genericinfo = newGenericInfo();
+        genericinfo->parms = parseGenericParms(parse);
+    }
 
     // 'extends' names the one module this one reuses, by the name it is reached
     // by: a sister, or a module this module imports. What it names is resolved
@@ -1052,6 +1062,16 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
             mod->deffold = deffold;
             mod->dclinfo.facts |= cattr.facts & DclStated;
             mod->dclinfo.cname = cattr.cname;
+            // A C name has no room for an instance's type arguments, so each
+            // instance's globals would be one symbol: a generic module keeps Cone
+            // names, as a generic function in a C-named module does
+            if (genericinfo && (cattr.facts & DclCName)) {
+                errorMsgNode((INode*)&dclat, ErrorCAttr,
+                    "A generic module cannot be C-named: each instance's functions and globals need a name of their own, which only a Cone name can carry.");
+                mod->dclinfo.facts &= ~DclStated;
+                mod->dclinfo.cname = NULL;
+            }
+            mod->genericinfo = genericinfo;
             // What 'pub' does, where there is a parent for it to speak to: the
             // submodule joins its parent's namespace as a public name, which its
             // parent's neighbours may then name a path through

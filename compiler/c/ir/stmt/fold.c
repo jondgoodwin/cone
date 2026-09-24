@@ -380,6 +380,14 @@ static void foldModUseModule(NameResState *pstate, ModuleNode *mod, ModUseNode *
                 &src->namesym->namestr);
         return;
     }
+    // A generic submodule's names belong to each instance: there is nothing of
+    // the generic's own to fold
+    if (src->genericinfo) {
+        errorMsgNode(use->source, ErrorGenModBare,
+            "%s is a generic module, whose names belong to each instance: nothing of it can be folded. Name an instance's member as %s[...].name.",
+            &src->namesym->namestr, &src->namesym->namestr);
+        return;
+    }
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(mod->moduses, cnt, nodesp)) {

@@ -233,6 +233,35 @@ void pgmModuleOrder(ProgramNode *pgm) {
     }
 }
 
+// Refuse the three places a generic module cannot stand. An executable's root
+// has nothing to instantiate it. A submodule of a generic module would be
+// instantiated with it, as a generic type's methods are, and that is not built:
+// an instance is cloned from its generic's own declarations alone. And a 'mod'
+// line's default fold names what an import folds, where a generic's names
+// belong to each instance and fold from none.
+static void pgmGenericModulesCheck(ProgramNode *pgm) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(pgm->modules, cnt, nodesp)) {
+        ModuleNode *mod = (ModuleNode*)*nodesp;
+        ModuleNode *owner = (ModuleNode*)mod->dclinfo.owner;
+        if (owner != NULL && owner->tag == ModuleTag && owner->genericinfo)
+            errorMsgNode((INode*)mod, ErrorGenModBody,
+                "Generic module %s may not hold submodule %s: an instance of a generic module is not built with submodules yet.",
+                &owner->namesym->namestr, &mod->namesym->namestr);
+        if (mod->genericinfo == NULL)
+            continue;
+        if (*nodesp == nodesGet(pgm->modules, 0) && !(mod->dclinfo.facts & DclNamesChain))
+            errorMsgNode((INode*)mod, ErrorGenModRoot,
+                "The program's root module %s is declared generic, and nothing can instantiate a program. A generic module is a submodule, an imported module or a library's root.",
+                &mod->namesym->namestr);
+        if (mod->deffold)
+            errorMsgNode(mod->deffold->at, ErrorGenModBare,
+                "%s is a generic module, whose names belong to each instance: a bare import of it can fold nothing, so its 'mod' line names no default fold.",
+                &mod->namesym->namestr);
+    }
+}
+
 // Name resolution of the program node.
 //
 // Every module's FOLDED names are put in place first, dependency-first, and only
@@ -257,6 +286,7 @@ void pgmModuleOrder(ProgramNode *pgm) {
 void pgmNameRes(NameResState *pstate, ProgramNode *pgm) {
     INode **nodesp;
     uint32_t cnt;
+    pgmGenericModulesCheck(pgm);
     for (nodesFor(pgm->modules, cnt, nodesp))
         modExtendsResolve((ModuleNode*)*nodesp);
     pgmModuleOrder(pgm);
@@ -268,11 +298,93 @@ void pgmNameRes(NameResState *pstate, ProgramNode *pgm) {
     }
 }
 
-// Type check the program node
+// Where a module sits in the init order, or -1 where it has no place yet
+static int32_t pgmOrderIndex(ProgramNode *pgm, INode *mod) {
+    INode **nodesp;
+    uint32_t cnt;
+    int32_t pos = 0;
+    for (nodesFor(pgm->initorder, cnt, nodesp)) {
+        if (*nodesp == mod)
+            return pos;
+        ++pos;
+    }
+    return -1;
+}
+
+// Give each instance of a generic module its place in the init order, which
+// was made at name resolution, before any instance existed (pgmModuleOrder). An
+// instance goes straight after the last of what it depends on: its generic,
+// which the walk placed after everything the generic imports, the modules its
+// type arguments come from, and each instance its own body uses (modInstantiate
+// records the last two on 'instdeps'). So it runs its 'init' after theirs, and
+// before every module that follows them and uses it -- except a module that
+// supplied one of its type arguments, which it follows.
+//
+// Instances are placed in the order they were made, each once what it depends
+// on has a place. Instances that use one another round a loop -- two generic
+// modules each instantiating the other at the same arguments -- are placed last,
+// in the order made; imports of generic modules are a DAG like any, so that
+// loop is the instances' alone.
+static void pgmInstanceOrder(ProgramNode *pgm, Nodes *instances) {
+    Nodes *pending = newNodes(instances->used);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(instances, cnt, nodesp))
+        nodesAdd(&pending, *nodesp);
+    while (pending->used > 0) {
+        Nodes *waiting = newNodes(pending->used);
+        for (nodesFor(pending, cnt, nodesp)) {
+            ModuleNode *inst = (ModuleNode*)*nodesp;
+            int32_t after = pgmOrderIndex(pgm, (INode*)inst->generic);
+            INode **depp;
+            uint32_t depcnt;
+            for (nodesFor(inst->instdeps, depcnt, depp)) {
+                int32_t at = pgmOrderIndex(pgm, *depp);
+                if (at < 0) {
+                    after = -2;
+                    break;
+                }
+                if (at > after)
+                    after = at;
+            }
+            if (after == -2) {
+                nodesAdd(&waiting, (INode*)inst);
+                continue;
+            }
+            // After any instance already placed there, so instances that follow
+            // the same module keep the order they were made in
+            while ((uint32_t)(after + 1) < pgm->initorder->used
+                && ((ModuleNode*)nodesGet(pgm->initorder, after + 1))->generic != NULL)
+                ++after;
+            nodesInsert(&pgm->initorder, (INode*)inst, after + 1);
+            inst->dagmark = 2;
+        }
+        int progress = waiting->used < pending->used;
+        pending = waiting;
+        if (!progress) {
+            for (nodesFor(pending, cnt, nodesp))
+                nodesAdd(&pgm->initorder, *nodesp);
+            break;
+        }
+    }
+}
+
+// Type check the program node.
+//
+// Each instance of a generic module is made, and type checked, where a body
+// first names it, while this walk is under way; once it is done, every instance
+// joins the program's modules -- so it is generated like any module, in every
+// object that uses it -- and takes its place in the init order.
 void pgmTypeCheck(TypeCheckState *pstate, ProgramNode *pgm) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(pgm->modules, cnt, nodesp)) {
         inodeTypeCheckAny(pstate, nodesp);
     }
+    Nodes *instances = modInstanceList();
+    if (instances == NULL)
+        return;
+    for (nodesFor(instances, cnt, nodesp))
+        nodesAdd(&pgm->modules, *nodesp);
+    pgmInstanceOrder(pgm, instances);
 }

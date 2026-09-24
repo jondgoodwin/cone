@@ -1,7 +1,9 @@
 Generics and macros have **no node of their own**. A generic is an ordinary
-`FnDclNode` or `StructNode` carrying a `GenericInfo` side block; carrying one is
-the entire definition. Instantiation is `cloneNode`, and cloning is what stands
-in for name resolution on an instance.
+`FnDclNode`, `StructNode` or `ModuleNode` carrying a `GenericInfo` side block;
+carrying one is the entire definition. Instantiation is `cloneNode`, and cloning
+is what stands in for name resolution on an instance. A generic module is
+instantiated by the same memo and the same clone, one declaration at a time
+([module](module.md), "Generic modules").
 
 **At a glance.** The parser attaches `GenericInfo` after the name. Name
 resolution resolves the **template once, in place**, with parameters hooked.
@@ -150,10 +152,12 @@ re-decision flips only an operand that was not a type and now is.
 
 **Type parameters, through the global name table.** `clonePushState` hooks each
 parameter's `Name` directly to the **argument node**. `cloneNode`, meeting a
-use that names a generic parameter (`nameUseNames` with `GenVarDclTag`), then
-reads `namesym->node` and clones it. So substitution is
-by *name*, through a global, at clone time — and the argument is **deep-copied
-at every use site**.
+use bound to a generic parameter itself, then reads `namesym->node` and clones
+it. So substitution is by *name*, through a global, at clone time — and the
+argument is **deep-copied at every use site**. The use must be bound to the
+parameter, not to a type alias of it: `typedef Item T` in a generic module,
+used as `Item`, is a use of the alias, whose own copy substitutes `T`, and
+the name `Item` is hooked to nothing.
 
 **Local declarations, through `cloneDclMap`** — a LIFO stack of
 `{original, clone}` pairs, searched backwards, **falling back to the original
@@ -201,7 +205,11 @@ names this one through the memo, so `cloneFnCallNode` puts the template back as
 the head of any call whose arguments are types (`fnCallHasTypeArgs`). A value
 list — `Box[v]`, `Mb.No[]` — builds this instance and stays mapped. Only a generic
 *type* is reserved: a generic function named bare in its own body is a call whose
-type arguments are inferred, as it is anywhere else.
+type arguments are inferred, as it is anywhere else. A generic *module* maps its
+own name to the instance too (`modInstantiate`), without a reservation — the
+instance module exists before its declarations are cloned — and
+`cloneFnCallNode` puts the generic back the same way, so `stack[T].count` inside
+`stack[T]` reaches this instance through the memo and `stack[f64]` another.
 
 Not yet built: a generic enum's variant that an **extension** copies
 (`structEnumCopyVariant`). The copy is cloned from the base's variant template
@@ -223,7 +231,10 @@ false diagnostic. The cost is silent acceptance — see Hazards.
 
 1. Bail unless the callee carries `GenericInfo`.
 2. If **any** argument is a type node, take the explicit path: `genericMemoize`,
-   then check the replacement, return handled.
+   then check the replacement, return handled. A generic module always takes
+   it, since it has no arguments to infer from: what it is given that is not a
+   type is `genericMemoize`'s `ErrorNotType`. A miss there asks
+   `modInstantiate` for the instance, which clones, registers and checks it.
 3. Otherwise **infer**: build a call node of NULL slots, walk the arguments
    against the template's parameter list, and where a parameter's type names a
    generic parameter, capture the argument's type by `Name`. A slot filled twice
@@ -329,11 +340,15 @@ generate — an imported package's, whose include file carries the generic's
 full body, since a generic cannot be `extern` — `genlImportedInstances` walks
 the same branches and generates only the instances, private generics'
 included: **every object that uses an instance defines it**, because the
-generic's own package cannot know which instances its importers make.
+generic's own package cannot know which instances its importers make. A generic
+module's instances are not walked there: each is a module of the program by
+generation, flagged to generate, and `genlProgram` passes the generic over.
 
 **Linkage is the C++ template answer, in a described build.** An instance, and
 every member of a generic type's instance (`genlIsInstance` — the members carry
-no `instnode` of their own, so their owners are asked), is `linkonce_odr` with
+no `instnode` of their own, so their owners are asked, up to the module, and an
+instance of a generic module answers for every declaration it holds, globals
+included), is `linkonce_odr` with
 a COMDAT of kind `any` (`GenlShared`): the package's own instances and each
 importer's are identical, and the linker keeps one copy. A compile with no
 build description is the program's only object, and there an instance is
@@ -387,3 +402,6 @@ are [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Sym
 - Hooking, and what a pushed table scopes: [Name Resolution](../phases/name-resolution.md), "Hooking"
 - Symbol spelling: [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols"; its lowering, linkage and COMDATs: [Generation](../phases/generation.md)
 - Cloning a struct, and the `Self` rebinding: [struct](struct.md)
+- A generic module — what it may hold, how a path through an instance is
+  collapsed, and where an instance runs its `init`: [module](module.md),
+  "Generic modules"

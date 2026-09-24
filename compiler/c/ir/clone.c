@@ -21,7 +21,14 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     // along with the instance's methods -- cloneMacroDclNode hooks each of the
     // macro's own parameters to its copy, and a use of one is copied as a use of
     // that copy rather than substituted.
-    if (nameUseNames(nodep, GenVarDclTag)) {
+    //
+    // The use must name the parameter itself. A use of a type alias whose
+    // target is a parameter -- 'typedef Item T' in a generic module, used as
+    // 'Item' -- is a use of the alias, whose own copy substitutes the
+    // parameter; its name is hooked to nothing, and reading it as the
+    // parameter cloned nothing at all
+    if (isNameUseNode(nodep) && ((NameUseNode*)nodep)->dclnode
+        && ((NameUseNode*)nodep)->dclnode->tag == GenVarDclTag) {
         INode *hooked = ((NameUseNode*)nodep)->namesym->node;
         if (!(hooked && hooked->tag == GenVarDclTag))
             return cloneNode(cstate, hooked);

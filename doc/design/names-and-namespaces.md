@@ -470,7 +470,7 @@ A program plugs into a framework — a shell, a web server, a UI host — and th
 
 **The copies are taken as the module's folds complete**, before anything folding from it reads it, so a module extending a conforming module takes its copies as the base's declarations — one storage, not a second — and an importer's `use *` folds them like any public name.
 
-**Not built** [Jon 23 Sep]: the host traits themselves; the entry glue, a trait's default that the host calls as the program's entry and that runs `init` and `final` round the program's own; traits requiring types; generic modules. A module whose declarations happen to match a trait without saying so does not conform, and that is not planned.
+**Not built** [Jon 23 Sep]: the host traits themselves; the entry glue, a trait's default that the host calls as the program's entry and that runs `init` and `final` round the program's own; traits requiring types. A module whose declarations happen to match a trait without saying so does not conform, and that is not planned. A generic module conforms on its `mod` line like any module, and each instance has its own copies of the defaults, checked against the trait.
 
 `module-trait` runs a trait's defaults taken whole, overridden by a function and by a global, a default global as each module's own storage, a default reaching a private helper of the trait's module, a module extending a conforming module and conforming too, with every `mod` line clause, and a default fold of a taken default; `module-trait-parse`, `module-trait-nameres` and `module-trait-typecheck` pin the refusals.
 
@@ -499,6 +499,14 @@ Import folding is the alias above, and renaming on import is that alias with the
 ## Generics and macros
 
 Generic and macro syntax exists in the current compiler, but the website documentation labels much of this area incomplete or future-facing. Their namespace structure is defined above; specialization, expansion hygiene, and code-generation ownership remain separate implementation concerns.
+
+### A generic module
+
+**A generic module is named as a generic type is** [Jon 23 Sep]: its name is a declaration of its parent's namespace like any module's, and it has no members of its own to reach — each **instance** has them. `mod stack[T];` declares it; `stack[i64]` names the instance at `i64`, made where it is first named and the same instance wherever the same arguments are written, so `stack[i64]` in two modules is one namespace with one set of globals. A member is reached by a path through the instance, `stack[i64].push(3i64)`, bound at type check, where the instance exists; a private member is `ErrorNotPublic` from outside the module, as through any module. An import of a generic module binds its name, and an instance is written through that name.
+
+What names the generic without arguments where a member is wanted is `ErrorGenModBare`: a path, `stack.push`; a standalone `use stack;`; an import's `use` clause; `extends stack`; and a default fold on its own `mod` line — the generic has nothing of its own to reach or fold. **Inside its own body its bare name is the instance being defined**, as `Box` is inside `struct Box[T]`, so `stack.count` there is the instance's own global, and `stack[T]` the same instance.
+
+Its type parameters are names of the generic's own scope, hooked over its declarations while it is resolved, and a type alias of one — `typedef Item T` — names the argument in each instance. [module](../../compiler/c/doc/nodes/module.md), "Generic modules", has the mechanism and what a generic module may not yet hold.
 
 ## Symbols
 
@@ -600,9 +608,11 @@ Rules for Cone-consumed names; C FFI names have their own (S5).
   build description names, which is spelled as the top module it is to its
   importers.
 - **S4.** Each owner in the chain is spelled the way its own path would be.
-  The only owner carrying more than its identifier is a generic type instance,
-  whose component carries its type arguments, so `fn tally(self) i64` is told
-  apart across `Holder[i64]` and `Holder[f64]`.
+  The only owners carrying more than their identifier are instances — of a
+  generic type, and of a generic module — whose component carries the type
+  arguments, so `fn tally(self) i64` is told apart across `Holder[i64]` and
+  `Holder[f64]`, and a generic module's global `count` across `stack[i64]` and
+  `stack[f64]`.
 - **S5. C FFI names.** Naming belongs to the module, and `extern` has no say in
   it: `extern` means only "defined elsewhere", so an `extern` declaration in a
   Cone-named module is spelled with the module's Cone path like any other —
@@ -760,6 +770,8 @@ demangler in `test/run.py`:
 | root generic `fn pick[T](a T, b T)` at `i64` | `_CINv4pickxE` | `pick[i64]` — the type *argument*, once |
 | `fn pickSecond[T,U]` at `i64`, `f64` | `_CINv10pickSecondxdE` | `pickSecond[i64,f64]` |
 | `Holder[i64].tally` | `_CNvINt6HolderxE5tally` | `Holder[i64].tally` — the instance is the owner |
+| `push` of generic module `mod stack[T]`, a submodule of the root, at `i64`; its global `count` | `_CNvIC5stackxE4push`, `_CNvIC5stackxE5count` | `stack[i64].push`, `stack[i64].count` — the module instance is the owner, and its members' components are bare |
+| a method of `struct Entry` in `stack[i64]`; `tally[T]`'s `see` at a type of module `user` | `_CNvNtIC5stackxE5Entry7doubled`, `_CNvIC5tallyNtC4user3TagE3see` | `stack[i64].Entry.doubled`, `tally[user.Tag].see` |
 | `Meter`'s default `reading` inherited by `Gauge` | `_CNvNt5Gauge7reading` | `Gauge.reading` — spelled as an override written there |
 | the `drop` the compiler synthesizes for `Bundle` | `_CNvNt6Bundle4drop` | `Bundle.drop` |
 | `Vec.-`, `Vec.+=`, `List.&[]` | `_CNvNt3Vecomi`, `_CNvNt3VecopL`, `_CNvNt4Listorx` | `Vec.-`, `Vec.+=`, `List.&[]` |
@@ -897,7 +909,8 @@ build description is how a package is compiled on its own. There the mergeable
 symbols of L2 are defined by every object that uses them, as `linkonce_odr`
 with a COMDAT of kind `any`, so the linker keeps one copy: an instance of a
 generic — the package's own, and each importer's from the body its include file
-carries — every member of a generic type's instance, and a vtable. A program
+carries — every member of a generic type's instance, every function and global
+of a generic module's instance, and a vtable. A program
 compiled from a description gives them this linkage too, since the instances
 it makes of an imported generic are the same symbols the package and other
 importers define.
@@ -915,7 +928,7 @@ rows are what `genlIsExported` and `genlDefinition` do:
 | private global, unreached from outside | internal | built |
 | method on a public type | external, unique — a public method; a private one is external only when the type holds an expanded body, which reaches it through a receiver name resolution cannot see | built |
 | method on a private type | internal — unless an expanded body names the type, which then counts as a public type | built |
-| an instance of a generic the package itself instantiated, and every method or static of a generic type's instance | external, mergeable: `linkonce_odr`, `comdat any` | built |
+| an instance of a generic the package itself instantiated, every method or static of a generic type's instance, and every function and global of a generic module's instance | external, mergeable: `linkonce_odr`, `comdat any` — for a module's instance that is its globals too, so every object's copy is one storage | built |
 | a vtable | external, mergeable: `linkonce_odr`, `comdat any` — its address is what pattern matching compares, so one copy must survive | built |
 | a trait default cloned into a type this package declares | external, unique — one package emits it | built, as the implementing type's method |
 | a trait's vtable list | internal (L4) | built |
