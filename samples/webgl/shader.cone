@@ -1,0 +1,92 @@
+extern
+	fn glMakeShader(vssrc *u8, vssrclen usize, fssrc *u8, fssrclen usize) u32
+	fn glGetAttrib(pgm u32, name *u8, namelen usize) u32
+
+// Vertex shader
+imm vsSrc = \
+"attribute vec3 aVertexPosition;
+attribute vec4 aVertexColor;
+
+uniform mat4 uMVMatrix;
+uniform mat4 uPMatrix;
+
+varying vec4 vColor;
+
+void main(void) {
+	gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.0);
+	vColor = aVertexColor;
+}"
+
+// Fragment shader
+imm fsSrc = \
+"precision mediump float;
+
+varying vec4 vColor;
+
+void main(void) {
+	gl_FragColor = vColor;
+}"
+
+struct ColoredPointShader
+	pgm u32 = 0u
+	posAttr u32 = 0u
+	colorAttr u32 = 0u
+	pmatUnif u32 = 0u
+	mvmatUnif u32 = 0u
+
+	fn init(self &mut)
+		pgm = glMakeShader(&vsSrc, (&vsSrc).len, &fsSrc, (&fsSrc).len)
+		imm vpos = &"aVertexPosition"
+		posAttr = glGetAttrib(pgm, vpos, vpos.len)
+		imm vcol = &"aVertexColor"
+		colorAttr = glGetAttrib(pgm, vcol, vcol.len)
+		imm uPMat = &"uPMatrix"
+		pmatUnif = glGetUniformLocation(pgm, uPMat, uPMat.len)
+		imm uMVMat = &"uMVMatrix"
+		mvmatUnif = glGetUniformLocation(pgm, uMVMat, uMVMat.len)
+
+	fn bind(self, pMatrix &Mat4, mvMatrix &Mat4, posBuffer &VertexBuffer, colorBuffer &VertexBuffer)
+		glUniformMatrix4fv(pmatUnif, pMatrix)
+		glUniformMatrix4fv(mvmatUnif, mvMatrix)
+
+		posBuffer.bind(posAttr)
+		colorBuffer.bind(colorAttr)
+	
+	fn final(self &)
+		glDeleteProgram(pgm)
+		
+/*
+fn getAttrib(pgm u32, name &[]u8) u32
+	imm namepos *u8 = name
+	imm namesz usize = name
+	imm attrib = glGetAttribLocation(pgm, namepos, namesz)
+	glEnableVertexAttribArray(attrib)
+	attrib
+
+fn makeShader(vssrc &[]u8, fssrc &[]u8) u32
+	imm shaderProgram = glCreateProgram()
+	imm vshader = compileShader(glVERTEX_SHADER, vssrc)
+	glAttachShader(shaderProgram, vshader)
+	imm fshader = compileShader(glFRAGMENT_SHADER, fssrc)
+	glAttachShader(shaderProgram, fshader)
+	glLinkProgram(shaderProgram)
+
+	if !glGetProgramParameter(shaderProgram, glLINK_STATUS)
+		alert("Could not initialize shaders")
+		return 0
+
+	glDeleteShader(vshader)
+	glDeleteShader(fshader)
+	glUseProgram(shaderProgram)
+	shaderProgram
+
+fn compileShader(type u32, src &[]u8) u32
+	imm shader = glCreateShader(type)
+	glShaderSource(shader, src)
+	glCompileShader(shader)
+	if glGetShaderParameter(shader, glCOMPILE_STATUS)
+		alert(glGetShaderInfoLog(shader))
+		return 0
+	shader
+
+*/		

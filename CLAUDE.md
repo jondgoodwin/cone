@@ -7,45 +7,63 @@ contains its C compiler (`conec`) and a small standard-library component
 (`conestd`). The compiler targets LLVM and currently depends on LLVM 13.
 
 This file is a map and a set of working rules. What the compiler does, and why,
-lives in `design/`; do not describe compiler behaviour here, because a sentence
-here goes stale without anyone noticing.
+lives in the design notes (`doc/design/` for the language, `compiler/c/doc/` for
+this compiler's internals); do not describe compiler behaviour here, because a
+sentence here goes stale without anyone noticing.
 
 ## Repository layout
 
-- `src/c-compiler/parser/`: lexer and parser; converts Cone source into IR.
-- `src/c-compiler/ir/`: shared IR plus semantic analysis.
+The top level sorts by kind: `compiler/` (implementations of the language),
+`packages/` (libraries and the runtime), `tools/` (one folder per tool),
+`test/` (the language test suite, which outlives any one compiler), `doc/`
+(documents about the language itself), and `samples/`. `CMakeLists.txt` and the
+Visual Studio projects stay at the root.
+
+- `compiler/c/`: the C compiler, `conec`.
+- `compiler/c/parser/`: lexer and parser; converts Cone source into IR.
+- `compiler/c/ir/`: shared IR plus semantic analysis.
   - `exp/`: expression nodes and lowering.
   - `stmt/`: declaration and statement nodes.
   - `types/`: type representation and type rules.
   - `meta/`: generics and macros.
-- `src/c-compiler/corelib/`: compiler-defined core language types and methods,
+- `compiler/c/corelib/`: compiler-defined core language types and methods,
   the ones built in C.
 - `packages/`: the Cone packages the compiler finds by default, one folder module
   each: `core/core.cone` (the prelude every module imports: `Option`, `Result`,
-  the `so` and `rc` regions) and `stdio/stdio.cone`. A CMake-built `conec`
-  compiles this folder's path in, so the test runner and a direct run find both
-  with no setup; `CONE_PACKAGES` names another packages folder, and `--path`
-  adds folders searched before it. `design/nodes/module.md`, "The packages
+  the `so` and `rc` regions) and `stdio/stdio.cone`. `conec` finds this folder
+  by walking up from its own executable (and a CMake build also compiles its
+  path in as the fallback), so the test runner and a direct run find both with
+  no setup; `CONE_PACKAGES` names another packages folder, and `--path` adds
+  folders searched before it. `compiler/c/doc/nodes/module.md`, "The packages
   folder", is the rule.
-- `src/c-compiler/genllvm/`: LLVM type, statement, expression, and allocation
+- `compiler/c/genllvm/`: LLVM type, statement, expression, and allocation
   generation.
-- `src/c-compiler/shared/`: diagnostics, memory, file, option, timer, and UTF-8
+- `compiler/c/shared/`: diagnostics, memory, file, option, timer, and UTF-8
   utilities.
-- `src/conestd/`: the C implementation of the standard-library component.
-- `conesite/`: source and static content for
-  [cone.jondgoodwin.com](https://cone.jondgoodwin.com), including the
-  playground, examples, and language documentation. The reference
-  documentation manifest is `conesite/public/coneref/index.html`.
-- `design/`: design notes, grouped as `topics/` (what Cone is aiming at and
-  how far the compiler is — the notes that would survive a rewrite), `phases/`
-  (one per compiler phase, plus the naming rules), `nodes/` (what is true of
-  every IR node, plus per-node notes), `compiler/` (how `conec` itself is built
-  and stays fast), and `diagnostics/` (measuring, error codes, test suite).
-  `design/_index.md` is the entry point.
+- `compiler/c/doc/`: the C compiler's internals notes, which retire with it:
+  `phases/` (one per compiler phase), `nodes/` (what is true of every IR node,
+  plus per-node notes), `compiler/` (how `conec` itself is built and stays
+  fast), and `diagnostics/` (measuring, error codes, test suite).
+- `packages/conestd/`: the C implementation of the standard-library component.
+- `doc/design/`: the language design notes — what Cone is aiming at and how far
+  the compiler is, the notes that would survive a rewrite — plus the naming
+  rules (`names-and-namespaces.md`). `doc/design/_index.md` is the entry point
+  for every design note, both kinds.
+- `doc/reference/`: the language reference manual's source. Its manifest is
+  `doc/reference/index.html`.
+- `conesite/`: the rest of the static content for
+  [cone.jondgoodwin.com](https://cone.jondgoodwin.com) — the author's articles,
+  the playground and examples — and its deployment wrapper.
+- `tools/congo/`: Congo, the build tool. What is here today is the 2022 Python
+  prototype brought in from the `conehome` repository with its history; it
+  still expects that repository's `CONEHOME` layout.
+- `samples/`: sample Cone programs (OpenGL and WebGL), from `conehome`. They
+  predate the current language and no longer compile (the first error in each
+  is the retired `include`); the test suite does not build them.
 - `workitems/`: the plan and backlog are kept by the project owner outside this
   repository; `workitems/_index.md` says so. `workitems/done/` holds completed
   items.
-- `test/run.py`: the test suite runner. `design/diagnostics/test-suite.md` is
+- `test/run.py`: the test suite runner. `compiler/c/doc/diagnostics/test-suite.md` is
   its authoring guide.
 - `test/cases/<group>/`: one directory per coverage group, each with a
   `cases.toml` listing its scenarios. A scenario is one `.cone` file, or a folder
@@ -57,15 +75,15 @@ here goes stale without anyone noticing.
 ## Where to look
 
 - Treat source code as the truth for current compiler behaviour.
-- `src/c-compiler/conec.c` defines the pipeline: parse, name resolution, type
-  check and lowering, flow analysis, LLVM generation. `design/_index.md` maps
+- `compiler/c/conec.c` defines the pipeline: parse, name resolution, type
+  check and lowering, flow analysis, LLVM generation. `doc/design/_index.md` maps
   each phase to its note. Each phase note carries its principles, what the
   phase deliberately does *not* do, its hazards, and a file-and-function map
   into the code. Read the one that owns the problem before changing it;
-  `design/nodes/_index.md` covers what is true of every IR node regardless of
+  `compiler/c/doc/nodes/_index.md` covers what is true of every IR node regardless of
   phase. Design notes may describe planned behaviour and say so.
-- `conesite/public/coneref/index.html` is the language reference page index.
-  Consult it and the surrounding `conesite/` files when changing published
+- `doc/reference/index.html` is the language reference page index.
+  Consult it and the `conesite/` files when changing published
   language documentation or playground behaviour. Its chapter list is also the
   spine of the test suite's group organization: adding a chapter implies asking
   whether a coverage group is needed, and a feature with no chapter has nowhere
@@ -142,7 +160,7 @@ python test/run.py
 It compiles every scenario under `test/cases/`, asserts what each one's category
 and inline `//~` annotations claim, links and runs the `run` scenarios, and
 reports tier 0 first. `--list` prints what would run; a group, scenario, check
-name or `tag:<phase>` narrows it. `design/diagnostics/test-suite.md` is the
+name or `tag:<phase>` narrows it. `compiler/c/doc/diagnostics/test-suite.md` is the
 authoring guide: which group to touch, what to assert, and how expectations are
 written.
 
@@ -161,7 +179,7 @@ For a compiler change:
 
 1. Build `conec` and run `python test/run.py`.
 2. Add coverage for the change: a scenario in the owning group under
-   `test/cases/`, following `design/diagnostics/test-suite.md`. A fix for a
+   `test/cases/`, following `compiler/c/doc/diagnostics/test-suite.md`. A fix for a
    crash or a miscompile lands with the case that fails without it, and a new
    `ErrorCode` lands with the scenario that provokes it.
 3. Inspect the generated IR when the change affects lowering or symbols.
@@ -180,20 +198,20 @@ package search path, such as `stdio`, which is compiled into the importing
 object. So runtime checks live in what one compile defines: one source file, the
 files of one folder, or that folder and the submodules its subfolders draw, whose
 bodies are generated like the rest of the program's, plus the packages it
-imports. `design/nodes/module.md` explains why.
+imports. `compiler/c/doc/nodes/module.md` explains why.
 
 ## Change discipline
 
 - **A code change is not finished until its notes are.** Every PR that changes
   compiler behavior lands with the matching updates in the same commit:
   - a test scenario under `test/cases/` in the owning group,
-  - the `design/` note for each phase whose mechanism, invariant, or contract
+  - the design note for each phase whose mechanism, invariant, or contract
     moved — the phase notes and any per-node note the change touches,
   - the **implementation-status annotations** on every design note the change
     touches — a `[planned]` that is now built is deleted, and a `[differs]` whose
-    divergence is closed goes with it. `design/_index.md`, "Implementation
+    divergence is closed goes with it. `doc/design/_index.md`, "Implementation
     status", carries the scheme,
-  - the **reference page** under `conesite/public/coneref/` for any feature whose
+  - the **reference page** under `doc/reference/` for any feature whose
     built status changed, including the italic status note at the top of that
     page and any marking on its examples,
   - and, when you have access to the owner's plan, the work item that owns the
@@ -216,7 +234,7 @@ imports. `design/nodes/module.md` explains why.
   leave behind "was measured, then fixed", "this note used to list", "now
   reports", or a hazard entry rewritten to say the hazard is gone. Git holds the
   history, and a reader asking how the compiler behaves is not asking for it.
-  `design/_index.md`, "Conventions", is the full rule.
+  `doc/design/_index.md`, "Conventions", is the full rule.
 - Keep `CMakeLists.txt`, `Cone.vcxproj`, and `Conestd.vcxproj` synchronized when
   adding, removing, or renaming C source files or changing shared toolchain
   requirements.

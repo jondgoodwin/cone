@@ -19,9 +19,10 @@ The current status and next steps are documented in [PLAN.md][plan].
  - [Cone Language Reference][coneref] documentation
  - [Programming Linguistics blog](http://pling.jondgoodwin.com)
  
-The [Cone home repository](https://github.com/jondgoodwin/conehome)
-offers a rudimentary build environment for Cone programs,
-including the Congo build tool and additional example Cone programs.
+This repository also holds the Congo build tool (`tools/congo/`) and
+example Cone programs (`samples/`), both brought in with their history from
+the former [Cone home repository](https://github.com/jondgoodwin/conehome).
+The language reference's source is in `doc/reference/`.
 
 ## Language Features
 

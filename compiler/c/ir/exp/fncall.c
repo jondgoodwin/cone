@@ -1,0 +1,1582 @@
+/** Handling for function/method calls
+ * @file
+ *
+ * This source file is part of the Cone Programming Language C compiler
+ * See Copyright Notice in conec.h
+*/
+
+#include "../ir.h"
+
+#include <assert.h>
+#include <string.h>
+
+// Create a function call node
+FnCallNode *newFnCallNode(INode *fn, int nnodes) {
+    FnCallNode *node;
+    newNode(node, FnCallNode, FnCallTag);
+    node->vtype = unknownType;  // Will be overridden by return type
+    node->objfn = fn;
+    node->methfld = NULL;
+    node->args = nnodes == 0? NULL : newNodes(nnodes);
+    return node;
+}
+
+// Create new fncall node, prefilling method, self, and creating room for nnodes args
+// These three are the only way an operator application is built, so each marks the
+// node FlagOperator: a member access by name builds the same shape and must stay
+// distinguishable from it.
+FnCallNode *newFnCallOpname(INode *obj, Name *opname, int nnodes) {
+    FnCallNode *node = newFnCallNode(obj, nnodes);
+    node->flags |= FlagOperator;
+    node->methfld = (INode*)newMemberUseNode(opname);
+    return node;
+}
+
+FnCallNode *newFnCallOp(INode *obj, char *op, int nnodes) {
+    FnCallNode *node = newFnCallNode(obj, nnodes);
+    node->flags |= FlagOperator;
+    node->methfld = (INode*)newMemberUseNode(nametblFind(op, strlen(op)));
+    return node;
+}
+
+FnCallNode *newFnCallOpnameLower(INode *oldnode, INode *obj, Name *opname, int nnodes) {
+    FnCallNode *node = newFnCallNode(obj, nnodes);
+    node->flags |= FlagOperator;
+    inodeLexCopy((INode*)node, oldnode);
+    node->methfld = (INode*)newMemberUseNode(opname);
+    inodeLexCopy((INode*)node->methfld, oldnode);
+    return node;
+}
+
+FnCallNode *newFnCallLower(INode *oldnode, INode *obj, int nnodes) {
+    FnCallNode *node = newFnCallNode(obj, nnodes);
+    inodeLexCopy((INode*)node, oldnode);
+    return node;
+}
+
+// Clone fncall
+INode *cloneFnCallNode(CloneState *cstate, FnCallNode *node) {
+    FnCallNode *newnode;
+    newnode = memAllocBlk(sizeof(FnCallNode));
+    memcpy(newnode, node, sizeof(FnCallNode));
+    // Read before the receiver is cloned, since cloning is what substitutes the
+    // use site's expression for 'self'
+    if (cstate->selfparm && nameUseNames(node->objfn, GenVarDclTag)
+        && ((NameUseNode*)node->objfn)->dclnode == cstate->selfparm)
+        newnode->flags |= FlagSelfRecv;
+    newnode->objfn = cloneNode(cstate, node->objfn);
+    if (node->args)
+        newnode->args = cloneNodes(cstate, node->args);
+    newnode->methfld = cloneNode(cstate, node->methfld);
+
+    // Inside a generic type's braces its bare name is the instance being cloned,
+    // and the clone maps the generic to it (genericReserve). Given type arguments
+    // it is the generic again: 'Box[i32]' inside 'Box[T]' is another instance,
+    // and 'Box[T]' is this one, both reached through the memo. A bare use with a
+    // value list -- 'Mb.No[]', 'Box[v]' -- stays mapped: it builds this instance.
+    if (isNameUseNode(node->objfn) && isNameUseNode(newnode->objfn)) {
+        INode *generic = ((NameUseNode*)node->objfn)->dclnode;
+        if (generic && generic != ((NameUseNode*)newnode->objfn)->dclnode
+            && generic->tag == StructTag && ((StructNode*)generic)->genericinfo
+            && fnCallHasTypeArgs(newnode))
+            ((NameUseNode*)newnode->objfn)->dclnode = generic;
+    }
+    return (INode *)newnode;
+}
+
+// Does this call give type arguments -- 'Box[i32]', 'Mb.No[T]' -- rather than
+// values? A generic's type argument list is recognized as genericSubstitute
+// recognizes it, by any argument that is a type, or a type parameter not yet
+// substituted.
+int fnCallHasTypeArgs(FnCallNode *node) {
+    if (node->args == NULL)
+        return 0;
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(node->args, cnt, argsp)) {
+        if (*argsp && (isTypeNode(*argsp) || nameUseNames(*argsp, GenVarDclTag)))
+            return 1;
+    }
+    return 0;
+}
+
+// Serialize function call node
+void fnCallPrint(FnCallNode *node) {
+    INode **nodesp;
+    uint32_t cnt;
+    inodePrintNode(node->objfn);
+    if (node->methfld) {
+        inodeFprint(".");
+        inodePrintNode((INode*)node->methfld);
+    }
+    if (node->args) {
+        inodeFprint(node->tag==ArrIndexTag? "[" : "(");
+        for (nodesFor(node->args, cnt, nodesp)) {
+            inodePrintNode(*nodesp);
+            if (cnt > 1)
+                inodeFprint(", ");
+        }
+        inodeFprint(node->tag == ArrIndexTag ? "]" : ")");
+    }
+}
+
+// Whether a declaration is a method, or an overload name one of whose
+// candidates is
+static int fnCallNamesMethod(INode *dcl) {
+    if (dcl->tag == FnDclTag)
+        return (dcl->flags & FlagMethFld) != 0;
+    if (dcl->tag != FnOverloadDclTag)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(((FnOverloadDclNode*)dcl)->overloads, cnt, nodesp)) {
+        if ((*nodesp)->flags & FlagMethFld)
+            return 1;
+    }
+    return 0;
+}
+
+// A '.' whose left side names a namespace is a path through it, not an access
+// to a value: 'math3d.Point3', 'Tally.make(1)', 'Tally.made'. The parser cannot
+// tell the two apart, so the decision is made here, as soon as the base name is
+// bound, and what it binds to is the whole of the test -- a module or a type is
+// a namespace, anything else is a receiver.
+//
+// The member is looked up in that namespace and the hop disappears: with no
+// arguments the node becomes the bound name, and with arguments it becomes a
+// plain call of it. Either way the shape handed on is the one an unqualified
+// name of the same declaration would have produced, so nothing downstream
+// learns that a path was written -- except FlagQualified, which the two
+// implicit-'self' lowerings ask.
+//
+// It has to happen here rather than in type check, because name resolution
+// itself asks isTypeNode of an operand: '&mut mymod.Gadget' and
+// '(mymod.A, mymod.B)' are settled by refNameRes and ttupleNameRes, which run
+// after this and need a resolved type name to look at.
+//
+// Returns 1 when the node was replaced outright, so the caller stops.
+static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+
+    // An operator, a tuple index, or a call with no member name is never a path
+    if (node->methfld == NULL || !isNameUseNode(node->methfld) || (node->flags & FlagOperator))
+        return 0;
+    if (!isNameUseNode(node->objfn))
+        return 0;
+    INode *basedcl = nameUseGetDcl((NameUseNode*)node->objfn);
+    if (basedcl == NULL)
+        return 0;
+    Namespace *namespace;
+    if (basedcl->tag == ModuleTag)
+        namespace = &((ModuleNode*)basedcl)->namespace;
+    else if (basedcl->tag == StructTag)
+        namespace = &((StructNode*)basedcl)->namespace;
+    else
+        return 0;  // a value: this '.' is a member access, and type check binds it
+
+    NameUseNode *member = (NameUseNode*)node->methfld;
+    member->dclnode = namespaceFind(namespace, member->namesym);
+    // An enum that extends another holds its copies of the base's variants only
+    // once it is resolved, which may not have happened yet. Asked only for a name
+    // not found: a variant the enum declares is bound at parse, and demanding
+    // the enum for it would close a cycle through a base variant that names it.
+    int complete = 1;
+    if (member->dclnode == NULL && basedcl->tag == StructTag) {
+        complete = structEnumDemandSet(pstate, (StructNode*)basedcl);
+        member->dclnode = namespaceFind(namespace, member->namesym);
+    }
+    if (member->dclnode == NULL && !complete) {
+        errorMsgNode((INode*)member, ErrorCircular,
+            "%s is not complete until this is resolved, so its variants cannot be named here: each depends on the other.",
+            &inodeGetName(basedcl)->namestr);
+        return 0;
+    }
+    if (member->dclnode == NULL) {
+        errorMsgNode((INode*)member, ErrorUnkName,
+            "The name %s does not refer to a declared name", &member->namesym->namestr);
+        return 0;
+    }
+    member->flags |= FlagQualified;
+
+    // A private name belongs to the module that declares it, and naming a path
+    // through that module reaches past it. Refusing it here is what
+    // refmodule.html says, and is also the only answer generation can honour:
+    // it emits no symbol for a private declaration of a module whose bodies
+    // this compile does not generate, so the call site would otherwise be left
+    // with nothing to call. A private candidate selected through a *public*
+    // overload name is untouched by this, because the program never names it.
+    //
+    // A type's own namespace is measured by the module that owns the type, so
+    // 'modulesyms.Gadget.make' is judged against modulesyms, one hop back.
+    //
+    // The declaration stays attached after the diagnostic: it is the one the
+    // program asked for, and leaving the use unresolved would only hand the
+    // next pass a null to trip over.
+    ModuleNode *qualmod = dclInfoGetModule(basedcl);
+    if (qualmod && qualmod != pstate->mod && inodeIsPrivate(member->dclnode))
+        errorMsgNode((INode*)member, ErrorNotPublic,
+            "%s is private to its module and may not be named from outside it.",
+            &member->namesym->namestr);
+
+    // A method of a trait or an enum is a template: each implementer or variant
+    // owns a clone of it, and the abstraction's own copy is never generated
+    // (genlGlobalSyms), so a path naming it called or borrowed a null. A static
+    // function is the abstraction's own and is reached exactly this way. An
+    // overload name is refused when a call through it could select a method.
+    if (basedcl->tag == StructTag && (basedcl->flags & TraitType)
+        && fnCallNamesMethod(member->dclnode))
+        errorMsgNode((INode*)member, ErrorAbstractMeth,
+            "%s names a method of %s, which has no code of its own for it: each implementer or variant has its own copy. Call it on a value, or name it through a type that has it.",
+            &member->namesym->namestr, &inodeGetName(basedcl)->namestr);
+
+    if (node->args == NULL) {
+        *((INode**)nodep) = (INode*)member;
+        return 1;
+    }
+    node->objfn = (INode*)member;
+    node->methfld = NULL;
+    return 0;
+}
+
+// Name resolution on 'fncall'
+// - If node is indexing on a type, retag node as a typelit
+// Note: this never name resolves .methfld, which is handled in type checking --
+// except for a member that turns out to be a namespace hop, which is this
+// pass's to bind (fnCallNameResPath)
+void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    INode **argsp;
+    uint32_t cnt;
+
+    // Name resolve objfn so we know what it is to vary subsequent processing
+    inodeNameRes(pstate, &node->objfn);
+
+    // A '.' through a module or a type is a path, and collapses here
+    if (fnCallNameResPath(pstate, nodep))
+        return;
+    node = *nodep;
+
+    // Name resolve arguments/statements
+    if (node->args) {
+        for (nodesFor(node->args, cnt, argsp))
+            inodeNameRes(pstate, argsp);
+    }
+
+}
+
+// Is an lval operator's receiver already a reference? Then it is passed as it
+// is, the way a named method call takes a reference receiver, rather than
+// borrowed again into a reference to a reference.
+static int fnCallIsRefReceiver(INode *objtype) {
+    return objtype->tag == RefTag || objtype->tag == VirtRefTag || objtype->tag == ArrayRefTag;
+}
+
+// The type an operator-assign looks its operator up on: the receiver's own
+// type, or, when the receiver is a reference, the type it refers to. NULL when
+// neither declares methods, and the operator-assign lowering does not own the call.
+static INode *fnCallOpAssgnMethodType(INode *objtype) {
+    if (objtype->tag == RefTag)
+        objtype = itypeGetTypeDcl(((RefNode *)objtype)->vtexp);
+    return isMethodType(objtype) ? objtype : NULL;
+}
+
+// Is this '<-' applied to a value tuple, which lowers to one application per
+// element rather than one call taking a tuple?
+static int fnCallIsAppendTuple(FnCallNode *node) {
+    return node->methfld && ((NameUseNode *)node->methfld)->namesym == lessDashName
+        && node->args && node->args->used > 0 && nodesGet(node->args, 0)->tag == VTupleTag;
+}
+
+// Lower "<-" (append) on a vtuple to a block that appends each tuple element separately
+//
+// This is lowering, so it belongs to type check: the receiver is borrowed once
+// and every element applied against that borrow, and the borrow needs the
+// receiver's type. Name resolution did this and had no type to give, so it
+// passed unknownType and left the injected borrow untyped for everything after
+// it. See compiler/c/doc/phases/type-check.md, "Order of resolution".
+static void fnCallLowerAppendTuple(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+
+    // The receiver is analyzed first, because its type is what the borrow needs
+    inodeTypeCheckAny(pstate, &node->objfn);
+
+    // Create block and start it with a variable that mutably borrows address of append receiver.
+    // A receiver that is already a reference is held as it is, so its permission,
+    // not the binding's, is what each application is checked against.
+    INode *lval = node->objfn;
+    BlockNode *blk = newBlockNode();
+    inodeLexCopy((INode*)blk, (INode*)node);
+    INode *lvaltype = iexpGetTypeDcl(node->objfn);
+    if (!fnCallIsRefReceiver(lvaltype))
+        borrowMutRef(&lval, lvaltype, (INode*)mutPerm);
+    INode *lvalvar = newNameUseAndDcl(&blk->stmts, lval, pstate->scope + 1);
+
+    // Use dereferenced name as receiver for sequence of appends
+    StarNode *starlval = newStarNode(DerefTag);
+    starlval->vtexp = lvalvar;
+
+    // Now create sequence of appends, one for each element of tuple
+    INode **nodesp;
+    uint32_t cnt;
+    TupleNode *tuple = (TupleNode *)nodesGet(node->args, 0);
+    for (nodesFor(tuple->elems, cnt, nodesp)) {
+        if (cnt == tuple->elems->used) {
+            node->objfn = (INode*)starlval;
+            nodesGet(node->args, 0) = *nodesp;
+        }
+        else {
+            node = newFnCallOpnameLower((INode*)*nodep, (INode*)starlval, lessDashName, 2);
+            node->flags |= FlagOpAssgn | FlagLvalOp;
+            nodesAdd(&node->args, *nodesp);
+        }
+        nodesAdd(&blk->stmts, (INode*)node);
+    }
+    *nodep = (FnCallNode*)blk;  // Replace fncall with constructed block (casting badly to satisfy type check)
+    inodeTypeCheckAny(pstate, (INode**)nodep);
+}
+
+// We have an object that is an array, arrayref, ptr, or reference to an array
+// We won't arrive here if a method or field was specified
+// We can indexing into array or borrow reference to the indexed element
+void fnCallArrIndex(FnCallNode *node) {
+    if (!(node->flags & FlagIndex)) {
+        errorMsgNode((INode *)node, ErrorBadIndex, "Indexing not supported on a value of this type.");
+        return;
+    }
+
+    // Correct number of indices?
+    INode *objtype = iexpGetTypeDcl(node->objfn);
+    uint32_t nexpected = objtype->tag == ArrayTag ? ((ArrayNode*)objtype)->dimens->used : 1;
+    uint32_t nargs = node->args? node->args->used : 0;
+    if (nargs != nexpected) {
+        errorMsgNode((INode *)node, ErrorBadIndex, "Incorrect number of indexing arguments");
+        return;
+    }
+    // Ensure all indices are integers
+    INode **indexp;
+    uint32_t cnt;
+    for (nodesFor(node->args, cnt, indexp)) {
+        INode *indextype = iexpGetTypeDcl(*indexp);
+        if (objtype->tag == PtrTag) {
+            // Pointer supports signed or unsigned integer index
+            int match = NoMatch;
+            if (indextype->tag == UintNbrTag)
+                match = iexpCoerce(indexp, (INode*)usizeType);
+            else if (indextype->tag == IntNbrTag)
+                match = iexpCoerce(indexp, (INode*)isizeType);
+            if (!match)
+                errorMsgNode((INode *)node, ErrorBadIndex, "Pointer index must be an integer");
+        }
+        else {
+            // All other array types only support unsigned (positive) integer indexing
+            int match = NoMatch;
+            if (indextype->tag == UintNbrTag || (*indexp)->tag == ULitTag)
+                match = iexpCoerce(indexp, (INode*)usizeType);
+            if (!match)
+                errorMsgNode((INode *)node, ErrorBadIndex, "Array index must be an unsigned integer");
+        }
+    }
+
+    // Capture the element type returned
+    switch (objtype->tag) {
+    case ArrayTag:
+        node->vtype = arrayElemType(objtype);
+        break;
+    case RefTag: {
+        // Resolve the pointee, exactly as fnCallTypeCheck did when it decided
+        // this call was an index at all. Reading the tag off the unresolved
+        // node instead made '&Alias' -- a reference to a typedef of an array --
+        // match neither arm, so a valid index was left with no element type and
+        // reported as a return-type mismatch two lines later.
+        INode *vtype = itypeGetTypeDcl(((RefNode *)objtype)->vtexp);
+        if (vtype->tag == ArrayTag)
+            node->vtype = arrayElemType(vtype);
+        else if (vtype->tag == ArrayDerefTag)
+            node->vtype = ((RefNode*)vtype)->vtexp;
+        else {
+            // fnCallTypeCheck resolved the same pointee to decide this call was
+            // an index, and reaches here only for an array or a slice
+            errorUnreachable((INode*)node, "an index through a reference to something that is not an array or slice");
+            return;
+        }
+        break;
+    }
+    case ArrayRefTag:
+        node->vtype = ((RefNode*)objtype)->vtexp;
+        break;
+    case PtrTag:
+        node->vtype = ((StarNode*)objtype)->vtexp;
+        break;
+    default:
+        // fnCallTypeCheck calls this from its array, slice, reference and
+        // pointer arms only, switching on this same receiver type
+        errorUnreachable((INode*)node, "an index on a receiver type fnCallTypeCheck does not index");
+        return;
+    }
+
+    // If we are borrowing a reference to indexed element, fix up type
+    if (node->flags & FlagBorrow) {
+        assert(objtype->tag == RefTag || objtype->tag == ArrayRefTag);
+        RefNode *refnode = newRefNodeFull(RefTag, (INode*)node, borrowRef, ((RefNode*)objtype)->perm, node->vtype);
+        // An element of what a borrow points at lives exactly as long as the borrow
+        // does, so it inherits its lifetime. borrowTypeCheck sets the scope on the
+        // receiver it built; newRefNode defaults to 0, which means global, so
+        // leaving it would let '&mut a[1]' on a local be returned from a function
+        // while '&mut (p.x)' on the same local is refused.
+        refnode->scope = ((RefNode*)objtype)->scope;
+        node->vtype = (INode*)refnode;
+    }
+    node->tag = ArrIndexTag;
+}
+
+// Is this the type of a borrowed reference, whose scope is a lifetime?
+static int fnCallIsBorrowType(INode *type) {
+    return (type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag)
+        && ((RefNode*)type)->region == borrowRef;
+}
+
+// The narrowest lifetime among a call's borrowed-reference arguments, as the
+// highest scope number: 0 when no argument is a borrow. Without annotations
+// every borrowed reference in a signature shares one lifetime, and the only
+// lifetime the arguments have in common is the shortest (doc/reference/reflifefn.html).
+static uint16_t fnCallNarrowestBorrowScope(FnCallNode *node) {
+    uint16_t narrowest = 0;
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(node->args, cnt, argsp)) {
+        INode *argtype = iexpGetTypeDcl(*argsp);
+        if (fnCallIsBorrowType(argtype) && ((RefNode*)argtype)->scope > narrowest)
+            narrowest = ((RefNode*)argtype)->scope;
+    }
+    return narrowest;
+}
+
+// A copy of a returned borrowed reference's type belonging to this call site,
+// carrying the lifetime this call gives it. The declared return type is one
+// node shared by every call, so the scope cannot be written there.
+static INode *fnCallScopedBorrow(FnCallNode *node, INode *rettype, uint16_t scope) {
+    RefNode *retref = (RefNode*)rettype;
+    RefNode *callref = newRefNodeFull(rettype->tag, (INode*)node, borrowRef, retref->perm, retref->vtexp);
+    callref->scope = scope;
+    return (INode*)callref;
+}
+
+// Several returned values need the same per-call-site treatment element by
+// element, because a multi-value assignment checks each returned borrow against
+// the lifetime of its own lval. Elements that are not borrows are shared with
+// the declaration's tuple, which nothing writes a scope onto.
+static void fnCallScopeRetTuple(FnCallNode *node, TupleNode *rettuple, uint16_t scope) {
+    INode **elemp;
+    uint32_t cnt;
+    int anyborrow = 0;
+    for (nodesFor(rettuple->elems, cnt, elemp))
+        anyborrow |= fnCallIsBorrowType(itypeGetTypeDcl(*elemp));
+    if (!anyborrow)
+        return;
+    TupleNode *calltuple = newTupleNode(rettuple->elems->used);
+    calltuple->tag = TTupleTag;
+    copyNodeLex((INode*)calltuple, (INode*)node);
+    for (nodesFor(rettuple->elems, cnt, elemp)) {
+        INode *elemtype = itypeGetTypeDcl(*elemp);
+        nodesAdd(&calltuple->elems, fnCallIsBorrowType(elemtype)
+            ? fnCallScopedBorrow(node, elemtype, scope) : *elemp);
+    }
+    node->vtype = (INode*)calltuple;
+}
+
+// At this point, we have a properly-lowered function call. objfn could be:
+// - nameuse to a function dcl
+// - an indirect ref/ptr to a function
+// - a de-reffed ref/ptr to a function
+// From the function's signature, we want to pick up the return type
+// and ensure that all arguments are specified and coerced to the right types
+void fnCallFinalizeArgs(FnCallNode *node) {
+    FnSigNode *fnsig = (FnSigNode*)iexpGetDerefTypeDcl(node->objfn);
+    assert(fnsig->tag == FnSigTag);
+
+    // Establish the return type of the function call (or error if not what was expected)
+    if (node->vtype != unknownType && !itypeIsSame(fnsig->rettype, node->vtype)) {
+        errorMsgNode((INode*)node, ErrorNoMeth, "Type of call's returned value does not match what is expected");
+    }
+    node->vtype = fnsig->rettype;
+
+    // Ensure we have enough arguments, based on how many expected
+    int argsunder = fnsig->parms->used - node->args->used;
+    if (argsunder < 0) {
+        errorMsgNode((INode*)node, ErrorManyArgs, "Too many arguments specified vs. function declaration");
+        return;
+    }
+
+    // Coerce provided arguments to expected types
+    INode **argsp;
+    uint32_t cnt;
+    INode **parmp = &nodesGet(fnsig->parms, 0);
+    for (nodesFor(node->args, cnt, argsp)) {
+        // Make sure the type matches (and coerce as needed)
+        // (but not for vref as self)
+        if (!iexpCoerce(argsp, ((IExpNode*)*parmp)->vtype)
+            && !(cnt == node->args->used && (node->flags & FlagVDisp)))
+            errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
+        parmp++;
+    }
+
+    // If we have too few arguments, use default values, if provided
+    if (argsunder > 0) {
+        if (((VarDclNode*)*parmp)->value == NULL)
+            errorMsgNode((INode*)node, ErrorFewArgs, "Function call requires more arguments than specified");
+        else {
+            while (argsunder--) {
+                nodesAdd(&node->args, ((VarDclNode*)*parmp)->value);
+                parmp++;
+            }
+        }
+    }
+
+    // A returned borrowed reference lives as long as the narrowest borrow the
+    // call was handed. The declared return type is one node shared by every
+    // call site, so the scope goes on a type node of the call's own, exactly as
+    // fnCallArrIndex builds one for an element borrow; the lifetime checks in
+    // assignlvalrtype and returnFlowEscape then read it from there. A call
+    // returning several values gets a tuple of its own on the same terms.
+    // With no borrowed argument the declaration's own global scope stands.
+    uint16_t narrowest = fnCallNarrowestBorrowScope(node);
+    INode *rettype = itypeGetTypeDcl(fnsig->rettype);
+    if (narrowest == 0)
+        return;
+    if (fnCallIsBorrowType(rettype))
+        node->vtype = fnCallScopedBorrow(node, rettype, narrowest);
+    else if (rettype->tag == TTupleTag)
+        fnCallScopeRetTuple(node, (TupleNode*)rettype, narrowest);
+}
+
+// objfn is a function or a pointer to one. Make sure it is called correctly.
+void fnCallFnSigTypeCheck(TypeCheckState *pstate, FnCallNode *node) {
+    if ((node->flags & FlagIndex) || node->methfld != NULL) {
+        errorMsgNode((INode*)node->objfn, ErrorNoMeth, "A function may not be called using indexing or a method.");
+        return;
+    }
+    fnCallFinalizeArgs(node);
+}
+
+Name *fnCallOpEqMethod(Name *opeqname) {
+    if (opeqname == plusEqName) return plusName;
+    if (opeqname == minusEqName) return minusName;
+    if (opeqname == multEqName) return multName;
+    if (opeqname == divEqName) return divName;
+    if (opeqname == remEqName) return remName;
+    if (opeqname == orEqName) return orName;
+    if (opeqname == andEqName) return andName;
+    if (opeqname == xorEqName) return xorName;
+    if (opeqname == shlEqName) return shlName;
+    if (opeqname == shrEqName) return shrName;
+    return NULL;
+}
+
+// Lower integer field index for tuple
+int fnCallLowerIntField(FnCallNode *callnode) {
+    if (callnode->methfld == NULL || callnode->methfld->tag != ULitTag || callnode->args != NULL)
+        return 0;
+    TupleNode* ttuple = (TupleNode*)((IExpNode*)callnode->objfn)->vtype;
+    uint64_t index = ((ULitNode*)callnode->methfld)->uintlit;
+    if (index >= (uint64_t)ttuple->elems->used)
+        return 0;
+    callnode->vtype = nodesGet(ttuple->elems, index);
+    callnode->tag = FldAccessTag;
+    return 1;
+}
+
+// Report why the name the caller used selected no single candidate.
+// 'kind' names what the name declares, for a call ("function") or a method call ("method").
+static void fnCallNoCandidate(INode *callnode, enum OverloadMatch status, Name *namesym, char *kind) {
+    if (status == OverloadAmbiguous)
+        errorMsgNode(callnode, ErrorAmbigCandidate,
+            "More than one %s declared by `%s` accepts these arguments. Call a concrete name or convert the arguments.",
+            kind, &namesym->namestr);
+    else
+        errorMsgNode(callnode, ErrorNoCandidate,
+            "No %s declared by `%s` accepts the call's arguments.", kind, &namesym->namestr);
+}
+
+// Find the one field or method that accepts the call's receiver and arguments,
+// then lower the node to a function call (objfn+args) or field access (objfn+methfld).
+// A receiver held through a reference or pointer is dereferenced where the selected
+// method declared 'self' by value; nothing is borrowed on the receiver's behalf, and
+// an operator written on a pointer does not reach through at all.
+// The access reaching field 'fld' on 'obj', positioned on 'lexnode'. For a
+// declared field that is one field access; for a folded copy it is an access
+// per hop, root first, and then one for the copy itself -- the nesting the
+// hand-written path 'obj.hop.field' produces, so that borrowing, permissions
+// and generation see the true target. The copy carries the index, type and
+// permission of the field it stands for, so the access naming it is generated
+// as an access to that field.
+INode *fnCallFieldAccess(INode *obj, FieldDclNode *fld, INode *lexnode) {
+    if (fld->hop)
+        obj = fnCallFieldAccess(obj, fld->hop, lexnode);
+    derefInject(&obj);  // reach through a reference or pointer, as any field access does
+    FnCallNode *access = newFnCallLower(lexnode, obj, 0);
+    access->methfld = newNameUseFromDclNode((INode*)fld, lexnode);
+    access->vtype = fld->vtype;
+    access->tag = FldAccessTag;
+    return (INode*)access;
+}
+
+// Rule 1: reaching a name analyzes its declaration, and a member name reaches
+// every candidate it declares. Selection compares each candidate's signature
+// with the receiver and arguments, so the signature has to be type checked
+// first. A method of the type whose own method is making the call may not be
+// yet: the type checks its methods in order, so one declared later -- or spliced
+// in after the type's own, as an enum's methods are into each variant -- is
+// still waiting, and its unchecked signature accepted nothing. A bare call has
+// always had this through its name use; 'self.name()' now has it too.
+//
+// The walk state is the candidate's own type's (Rule 8): the caller may be a
+// method of some other type, and fnDclTypeCheck compares a method's self with
+// the type it is checked under. A candidate already analyzed, or under way and
+// so with its signature checked, is left alone, and so is a method of a number
+// type: corenumber builds those typed, with intrinsic bodies, and nothing ever
+// type checks them.
+static void fnCallDemandCandidates(INode *binding) {
+    INode **candp;
+    uint32_t cnt;
+    if (binding->tag == FnDclTag) {
+        candp = &binding;
+        cnt = 1;
+    }
+    else if (binding->tag == FnOverloadDclTag) {
+        Nodes *overloads = ((FnOverloadDclNode*)binding)->overloads;
+        candp = &nodesGet(overloads, 0);
+        cnt = overloads->used;
+    }
+    else
+        return;
+    while (cnt--) {
+        INode *cand = *candp++;
+        INode *owner = inodeGetOwner(cand);
+        if ((cand->flags & (TypeChecked | TypeChecking)) || owner == NULL || owner->tag != StructTag)
+            continue;
+        TypeCheckState tstate;
+        tstate.typenode = owner;
+        tstate.fn = NULL;
+        tstate.scope = 0;
+        inodeTypeCheckAny(&tstate, &cand);
+    }
+}
+
+// Returns 1 when lowered, 0 when the receiver's type supports no methods at all
+// (so the caller may try another way), and -1 when a diagnostic was reported.
+int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
+    INode *obj = callnode->objfn;
+    assert(isNameUseNode(callnode->methfld));
+    NameUseNode *methfld = (NameUseNode*)callnode->methfld;
+    Name *methsym = methfld->namesym;
+
+    INode *objdereftype = iexpGetDerefTypeDcl(obj);
+    if (!isMethodType(objdereftype)) {
+        return 0;
+    }
+
+    // Visibility is that of the binding the caller's name reaches: a method's
+    // DclPrivate bit, or the 'pub' flag of a field or an overload name. A public
+    // overload name may therefore select a private concrete candidate. A name
+    // that binds nothing has no visibility to refuse, and is reported missing.
+    // A private member is reached through 'self': the method's own, or a macro
+    // method's, which its expansion has already replaced with the use site's
+    // receiver (FlagSelfRecv). Inside an enum's braces it is reached through any
+    // value of the enum or its variants, because the enum is their privacy
+    // boundary (structEnumSeesPrivate).
+    INode *foundnode = iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym);
+    // A type in the namespace -- an enum's variant, or 'Self' -- is a name of the
+    // type and never a member of its values, so it is reported missing below and
+    // has no visibility to refuse here
+    if (foundnode && foundnode->tag == StructTag)
+        foundnode = NULL;
+    int isprivate = foundnode && inodeIsPrivate(foundnode);
+    if (isprivate && !(callnode->flags & FlagSelfRecv)
+        && !(isNameUseNode(obj) && isExpNode(obj)
+             && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)
+        && !structEnumSeesPrivate(pstate, objdereftype)) {
+        errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/field `%s`.", &methsym->namestr);
+    }
+    // A method the type holds by folding is bound to an alias; the visibility
+    // just checked was the alias's own, and everything from here on is the
+    // method's. A folded field is a copy in the namespace directly.
+    int folded = foundnode && foundnode->tag == AliasDclTag;
+    if (folded)
+        foundnode = aliasDclResolve(foundnode);
+    if (!foundnode
+        || !(foundnode->tag == FnDclTag || foundnode->tag == FnOverloadDclTag || foundnode->tag == FieldDclTag)
+        || !(foundnode->flags & FlagMethFld)) {
+        errorMsgNode((INode*)callnode, ErrorNoMbr, "Method or field `%s` not found.", &methsym->namestr);
+        return -1;
+    }
+
+    // Handle when methfld refers to a field
+    if (foundnode->tag == FieldDclTag) {
+        if (callnode->args != NULL)
+            errorMsgNode((INode*)callnode, ErrorFldArgs, "May not provide arguments for a field access");
+
+        // A folded copy is reached through the field it was folded through:
+        // the receiver becomes the access to that field, and this node the
+        // access to the copy on it, as if the path had been written out
+        FieldDclNode *fld = (FieldDclNode*)foundnode;
+        if (fld->hop)
+            callnode->objfn = fnCallFieldAccess(callnode->objfn, fld->hop, (INode*)callnode);
+        derefInject(&callnode->objfn);  // automatically deref any reference/ptr, if needed
+        methfld->dclnode = foundnode;
+        callnode->vtype = methfld->vtype = ((IExpNode*)foundnode)->vtype;
+        callnode->tag = FldAccessTag;
+        return 1;
+    }
+
+    // A folded method runs with the field it was folded through as its self:
+    // the receiver becomes the access to that field before any candidate is
+    // tried, and selection, borrowing and the permission checks then see the
+    // receiver the method was declared for
+    if (folded) {
+        structFoldReceiver((StructNode*)objdereftype, methsym, &callnode->objfn, (INode*)callnode);
+        obj = callnode->objfn;
+    }
+
+    // Test every candidate the name declares, without altering the call
+    fnCallDemandCandidates(foundnode);
+    enum OverloadMatch status;
+    FnDclNode *selected = iNsTypeFindMethod(foundnode, &callnode->objfn, callnode->args, &status);
+
+    // A receiver held through a reference or a pointer still satisfies a method that
+    // declared 'self' by value, so dereference it and select again. That is a load and
+    // a copy -- the same adjustment a field access already makes -- and nothing more:
+    // no reference is manufactured, so a method wanting 'self &' or 'self &mut' stays
+    // out of the reach of a value or a pointer. The retry runs only when no candidate
+    // matched at all, so an ambiguity among the candidates the receiver already fits is
+    // reported as such, and a set holding both a value and a reference candidate still
+    // selects the reference one for a reference receiver.
+    //
+    // An operator written on a pointer is the one thing the retry does not reach.
+    // An operation on a pointer is an operation on the pointer, and the dereference
+    // has to be written, because the alternative is two lines that look alike doing
+    // different things: a pointer declares its own '+', so 'p + 2' offsets it, while
+    // it declares no '*', so 'p * 2' would quietly become '(*p) * 2'. It is an error
+    // again, as it was in C. Only a pointer narrows. A reference's arithmetic
+    // reaching the value's is by design, and so is its comparison, which
+    // fnCallLowerRefCompare reads through on both sides before arriving here.
+    int opOnPointer = (callnode->flags & FlagOperator) && iexpGetTypeDcl(obj)->tag == PtrTag;
+    if (selected == NULL && status == OverloadNone && !opOnPointer && derefInject(&callnode->objfn)) {
+        selected = iNsTypeFindMethod(foundnode, &callnode->objfn, callnode->args, &status);
+        if (selected == NULL)
+            callnode->objfn = obj;  // a failed retry leaves the call as it was found
+    }
+
+    if (selected == NULL) {
+        fnCallNoCandidate((INode*)callnode, status, methsym, "method");
+        return -1;
+    }
+
+    // An enum's equality reads its discriminant, which is the whole of the value
+    // only where every variant is empty. Where a variant carries fields, those
+    // fields would have to be compared too, and Cone has no structural comparison
+    // for a struct of any kind. The comparison is declared and refused here, so
+    // that the author is told why rather than reading the absence of '==' as an
+    // oversight.
+    if (selected->value && selected->value->tag == IntrinsicTag
+        && ((IntrinsicNode*)selected->value)->intrinsicFn == NoEqIntrinsic) {
+        errorMsgNode((INode*)callnode, ErrorEnumEquality,
+            "An enum whose variants carry fields has no `%s`: that would have to compare the fields too. Use 'match' to recover the variant.",
+            &methsym->namestr);
+        callnode->vtype = errorType;
+        return 1;
+    }
+
+    // For a method call, make sure object is specified as first argument
+    if (callnode->args == NULL) {
+        callnode->args = newNodes(1);
+    }
+    nodesInsert(&callnode->args, callnode->objfn, 0);
+
+    // Re-purpose method's name use node into objfn, so name refers to selected method
+    NameUseNode *methodrefnode = (NameUseNode*)callnode->methfld;
+    methodrefnode->namesym = selected->namesym;
+    methodrefnode->dclnode = (INode*)selected;
+    methodrefnode->vtype = selected->vtype;
+
+    callnode->objfn = (INode*)methodrefnode;
+    callnode->methfld = NULL;
+    callnode->vtype = ((FnSigNode*)selected->vtype)->rettype;
+
+    // Handle copying of value arguments and default arguments
+    fnCallFinalizeArgs(callnode);
+    return 1;
+}
+
+// We have a reference or pointer, and a method to find (comparison or arithmetic)
+// If found, lower the node to a function call (objfn+args)
+// Otherwise try again against the type it points to
+int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
+    INode *obj = callnode->objfn;
+    INode *objtype = iexpGetTypeDcl(obj);
+    assert(isNameUseNode(callnode->methfld));
+    NameUseNode *methfld = (NameUseNode*)callnode->methfld;
+    Name *methsym = methfld->namesym;
+
+    INode *foundnode = iNsTypeFindFnField(methtype, methsym);
+    if (!foundnode)
+        return 0;
+
+    // For a method call, make sure object is specified as first argument
+    if (callnode->args == NULL) {
+        callnode->args = newNodes(1);
+    }
+    nodesInsert(&callnode->args, callnode->objfn, 0);
+
+    enum OverloadMatch status;
+    FnDclNode *selected = iNsTypeFindPtrMethod(foundnode, callnode->args, &status);
+    if (selected == NULL) {
+        fnCallNoCandidate((INode*)callnode, status, methsym, "method");
+        callnode->vtype = ((IExpNode*)obj)->vtype; // make up a vtype
+        return 1;
+    }
+
+    // Re-purpose method's name use node into objfn, so name refers to selected method
+    INode **selfp = &nodesGet(callnode->args, 0);
+    INode *selftype = iexpGetTypeDcl(*selfp);
+    NameUseNode *methodrefnode = (NameUseNode*)callnode->methfld;
+    methodrefnode->namesym = selected->namesym;
+    methodrefnode->dclnode = (INode*)selected;
+    methodrefnode->vtype = selected->vtype;
+    callnode->objfn = (INode*)methodrefnode;
+    callnode->methfld = NULL;
+
+    // Now that exactly one candidate is selected, coerce the argument once.
+    // These compiler-declared signatures are generic over the pointer/reference's
+    // value type, so only a concretely typed parameter takes part in coercion.
+    Nodes *parms = ((FnSigNode *)selected->vtype)->parms;
+    if (parms->used > 1) {
+        INode *parm1type = iexpGetTypeDcl(nodesGet(parms, 1));
+        if (parm1type->tag != PtrTag && parm1type->tag != RefTag && parm1type->tag != ArrayRefTag
+            && !iexpCoerce(&nodesGet(callnode->args, 1), parm1type))
+            errorMsgNode(nodesGet(callnode->args, 1), ErrorInvType,
+                "Expression's type does not match declared parameter");
+    }
+
+    callnode->vtype = ((FnSigNode*)selected->vtype)->rettype;
+    if (callnode->vtype->tag == PtrTag) {
+        INode *t_type = selftype->tag == RefTag? ((RefNode *)selftype)->vtexp : selftype;
+        callnode->vtype = t_type;  // Generic substitution for T
+    }
+    return 1;
+}
+
+// The operator an operator application names, or NULL for any other call
+static Name *fnCallOperatorName(FnCallNode *node) {
+    if (!(node->flags & FlagOperator) || node->methfld == NULL || !isNameUseNode(node->methfld))
+        return NULL;
+    return ((NameUseNode*)node->methfld)->namesym;
+}
+
+// Is this one of the comparisons a reference reads through to its referent for:
+// '==', '!=' and the four orderings?
+static int fnCallIsValueCompare(Name *op) {
+    return op == eqName || op == neName || op == ltName || op == leName || op == gtName || op == geName;
+}
+
+// Does a value of this type have a place that '===' can ask about?
+static int fnCallHasPlace(INode *type) {
+    return type->tag == RefTag || type->tag == VirtRefTag || type->tag == ArrayRefTag || type->tag == PtrTag;
+}
+
+// Refuse a comparison through a reference whose referent offers none
+static void fnCallRefNoCompare(FnCallNode *node, Name *op, char *why) {
+    errorMsgNode((INode*)node, ErrorRefNoCompare,
+        (op == eqName || op == neName)
+            ? "`%s` on references compares the values they refer to, and %s. Use `===` to ask whether two references point to the same place."
+            : "`%s` on references compares the values they refer to, and %s. References have no order of their own.",
+        &op->namestr, why);
+    node->vtype = errorType;
+}
+
+// Read through one operand of a comparison, positioned on the comparison
+static void fnCallDerefOperand(INode **operandp, FnCallNode *node) {
+    derefInject(operandp);
+    inodeLexCopy(*operandp, (INode*)node);
+}
+
+// '==', '!=' or an ordering written on a reference compares what it refers to.
+// A reference reads as its value everywhere else -- 'r.x', 'r.method()' -- so a
+// comparison does too; '===' is what asks whether two references are the same
+// place, and refType declares only that. A raw pointer is the exception, whose
+// operators are on the pointer (the retry in fnCallLowerMethod says why).
+//
+// Both operands must be references. A reference compared with a value is refused
+// rather than read through on one side only, so 'r == v' never says something
+// '*r == v' does not.
+//
+// A referent type that declares the operator for references ('self &', 'other &T')
+// takes the operands as they are. Otherwise both are dereferenced and the value's
+// operator selected, exactly as for '*a == *b'. A reference to a pointer or to
+// another reference reads through to that, which then compares as it would by value.
+static void fnCallLowerRefCompare(TypeCheckState *pstate, FnCallNode *node) {
+    Name *op = ((NameUseNode*)node->methfld)->namesym;
+    RefNode *reftype = (RefNode*)iexpGetTypeDcl(node->objfn);
+    INode **argp = &nodesGet(node->args, 0);
+    if (iexpGetTypeDcl(*argp)->tag != RefTag) {
+        errorMsgNode((INode*)node, ErrorRefCompareMixed,
+            "`%s` on a reference compares the value it refers to, so the other side must be a reference too. Dereference the reference (`*r`) to compare it with a value.",
+            &op->namestr);
+        node->vtype = errorType;
+        return;
+    }
+
+    INode *referent = itypeGetTypeDcl(reftype->vtexp);
+    if (referent->tag == PtrTag || referent->tag == RefTag) {
+        fnCallDerefOperand(&node->objfn, node);
+        fnCallDerefOperand(argp, node);
+        if (referent->tag == RefTag)
+            fnCallLowerRefCompare(pstate, node);
+        else
+            fnCallLowerPtrMethod(node, ptrType);
+        return;
+    }
+    if (!isMethodType(referent)) {
+        fnCallRefNoCompare(node, op, "the type they refer to has no comparison");
+        return;
+    }
+    // A trait's method is dispatched on the variant, and neither dispatch nor a
+    // load of a trait's value is what a comparison can build here. An enum is
+    // flagged a trait too, but is a value of one size with its own '=='.
+    if ((referent->flags & TraitType) && !(referent->flags & EnumType)) {
+        fnCallRefNoCompare(node, op, "comparing what a reference to a trait refers to is not built");
+        return;
+    }
+    INode *found = iNsTypeFindFnField((INsTypeNode*)referent, op);
+    if (found && found->tag == AliasDclTag)
+        found = aliasDclResolve(found);
+    if (!found || !(found->tag == FnDclTag || found->tag == FnOverloadDclTag) || !(found->flags & FlagMethFld)) {
+        fnCallRefNoCompare(node, op, "the type they refer to declares no such operator");
+        return;
+    }
+
+    // A candidate declared for references matches the operands as written; only
+    // when none does are both read through. Selection itself, and any ambiguity,
+    // is fnCallLowerMethod's.
+    fnCallDemandCandidates(found);
+    enum OverloadMatch status;
+    if (iNsTypeFindMethod(found, &node->objfn, node->args, &status) == NULL && status == OverloadNone) {
+        fnCallDerefOperand(&node->objfn, node);
+        fnCallDerefOperand(argp, node);
+    }
+    fnCallLowerMethod(pstate, node);
+}
+
+// The receiver is a plain reference to a trait (or union) and the name it calls
+// is a method rather than a field. Return 0 when this is not that case.
+//
+// Such a call dispatches on which variant the reference points at, which the
+// trait's own declaration cannot answer: an abstract method has no body, and a
+// method with a body is a default that was cloned into each variant, so neither
+// the requirement nor the original is a function anything can call. Reaching one
+// is what left the call naming a declaration with no symbol, and generation
+// dereferenced that null.
+//
+// The route is the one doc/reference/reftraitvar.html describes -- the tag says which
+// variant, that selects the vtable, and the vtable holds the method -- and it is
+// already built as the coercion from '&Trait' to '&<Trait'. So this coerces and
+// then dispatches virtually, which is what a caller otherwise has to write by
+// hand. An open trait has no tag and refvirtMatches refuses the coercion, which
+// is the same page's rule; that refusal is reported here rather than left to a
+// crash.
+int fnCallLowerTraitMethod(TypeCheckState *pstate, FnCallNode *callnode, INode *objdereftype) {
+    if (objdereftype->tag != StructTag || !(objdereftype->flags & TraitType))
+        return 0;
+    if (callnode->methfld == NULL || !isNameUseNode(callnode->methfld))
+        return 0;
+
+    // A field is reached through the trait's own layout and needs no dispatch,
+    // which is what fnCallLowerMethod already does with it
+    Name *methsym = ((NameUseNode*)callnode->methfld)->namesym;
+    INode *foundnode = iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym);
+    if (foundnode == NULL || foundnode->tag == FieldDclTag)
+        return 0;
+
+    RefNode *objtype = (RefNode*)iexpGetTypeDcl(callnode->objfn);
+    if (objtype->tag != RefTag)
+        return 0;
+
+    // Build '&<perm Trait' and let coercion decide whether it is reachable
+    RefNode *vreftype = newRefNodeFull(VirtRefTag, (INode*)callnode, (INode*)borrowRef,
+                                       objtype->perm, objtype->vtexp);
+    INode *vreftypep = (INode*)vreftype;
+    if (itypeTypeCheck(pstate, &vreftypep) == 0)
+        return 1;   // already reported
+
+    if (!iexpCoerce(&callnode->objfn, vreftypep)) {
+        errorMsgNode((INode*)callnode, ErrorNoMeth,
+            "`%s` is dispatched on the variant, which a reference to an open trait cannot determine. Use a virtual reference (&<).",
+            &methsym->namestr);
+        callnode->vtype = errorType;
+        return 1;
+    }
+
+    callnode->flags |= FlagVDisp;
+    fnCallLowerMethod(pstate, callnode);
+    return 1;
+}
+
+// objfn names an overload set. Select the one candidate that accepts the call's
+// arguments, rewrite the call to that concrete function, then finalize its arguments.
+void fnCallLowerOverloadFn(FnCallNode *node) {
+    NameUseNode *fnuse = (NameUseNode*)node->objfn;
+    // Through the alias where a fold is what bound the name here. The visibility
+    // already checked was the alias's own, and the overload set is its target's
+    FnOverloadDclNode *overloadnode = (FnOverloadDclNode*)nameUseGetDcl(fnuse);
+
+    if ((node->flags & FlagIndex) || node->methfld != NULL) {
+        errorMsgNode((INode*)node->objfn, ErrorNoMeth, "A function may not be called using indexing or a method.");
+        return;
+    }
+
+    // A generic type's own overload name, reached from outside it, names
+    // candidates that only its instances have
+    if (nameUseTemplateMember(fnuse, nodesGet(overloadnode->overloads, 0))) {
+        node->vtype = errorType;
+        return;
+    }
+
+    // Test every candidate the overload name declares, without altering the call
+    enum OverloadMatch status;
+    FnDclNode *selected = iNsTypeFindMethod((INode*)overloadnode, NULL, node->args, &status);
+    if (selected == NULL) {
+        fnCallNoCandidate((INode*)node, status, overloadnode->namesym, "function");
+        return;
+    }
+
+    // Rewrite the callee to the selected concrete declaration, so nothing downstream
+    // ever sees the overload node, then insert coercions and defaults exactly once
+    fnuse->namesym = selected->namesym;
+    fnuse->dclnode = (INode*)selected;
+    fnuse->vtype = selected->vtype;
+    fnCallFinalizeArgs(node);
+}
+
+// Lower opassign method for method-based types
+void fnCallOpAssgn(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *callnode = *nodep;
+    INode *objtype = iexpGetTypeDcl(callnode->objfn);
+    assert(isNameUseNode(callnode->methfld));
+    NameUseNode *methfld = (NameUseNode*)callnode->methfld;
+    Name *methsym = methfld->namesym;
+
+    // Change first argument to &mut obj, unless the receiver already is a
+    // reference, which is taken as it is. Either way the rest of this works on
+    // a reference to the method-declaring type: the operator is looked up on
+    // that type, and the rewrite below dereferences the reference to reach it.
+    if (objtype->tag == RefTag)
+        objtype = itypeGetTypeDcl(((RefNode *)objtype)->vtexp);
+    else
+        borrowMutRef(&callnode->objfn, objtype, newPermUseNode(mutPerm));
+
+    // Lower to op-assign, if method supported by type
+    if (iNsTypeFindFnField((INsTypeNode*)objtype, methsym)) {
+        fnCallLowerMethod(pstate, callnode);
+        return;
+    }
+
+    // Let's try rewriting to: {imm tmp = lval; *tmp = *tmp + expr}
+    VarDclNode *tmpvar = newVarDclFull(tempName, VarDclTag, ((IExpNode*)callnode->objfn)->vtype, (INode*)immPerm, callnode->objfn);
+    inodeLexCopy((INode*)tmpvar, (INode*)callnode);
+    NameUseNode *tmpname = newNameUseNode(tempName);
+    tmpname->vtype = tmpvar->vtype;
+    tmpname->dclnode = (INode *)tmpvar;
+    inodeLexCopy((INode*)tmpname, (INode*)callnode);
+    INode *derefvar = (INode *)tmpname;
+    derefInject(&derefvar);
+    inodeLexCopy(derefvar, (INode*)callnode);
+    callnode->objfn = derefvar;
+    methfld->namesym = fnCallOpEqMethod(methsym);
+    if (fnCallLowerMethod(pstate, callnode) == 0) {
+        errorMsgNode((INode*)callnode, ErrorNoMeth,
+            "No method/field named %s found that matches the call's arguments.",
+            &methsym->namestr);
+        return;
+    }
+    INode *dereflval = (INode *)tmpname;
+    derefInject(&dereflval);
+    inodeLexCopy(dereflval, (INode*)callnode);
+    AssignNode *tmpassgn = newAssignNode(NormalAssign, dereflval, (INode*)callnode);
+    inodeLexCopy((INode*)tmpassgn, (INode*)callnode);
+    BlockNode *blk = newBlockNode();
+    inodeLexCopy((INode*)blk, (INode*)callnode);
+    blk->vtype = callnode->vtype;
+    nodesAdd(&blk->stmts, (INode*)tmpvar);
+    nodesAdd(&blk->stmts, (INode*)tmpassgn);
+    *((INode**)nodep) = (INode*)blk;
+}
+
+// A type that declares '==' and no '!=' has its '!=' derived, as 'not (a == b)'
+// (doc/reference/refmethop.html, "Comparison Operator Methods"). Asked of a struct
+// receiver's own type, or of the struct a reference refers to, through any
+// number of references, since '!=' on references compares the values
+// (fnCallLowerRefCompare). A type that declares its own '!=' keeps it, an
+// enum's intrinsic pair is declared together, a number declares both, and a
+// type declaring neither is left to be reported missing its '!='. A pointer
+// declares its own '!=', which is on the pointer and never asks the referent;
+// a slice and a virtual reference refuse '!=' on what they refer to, and
+// '!==', identity, is never derived.
+static int fnCallNeFromEq(FnCallNode *node, INode *objtype) {
+    if (!(node->flags & FlagOperator) || node->methfld == NULL || !isNameUseNode(node->methfld)
+        || ((NameUseNode*)node->methfld)->namesym != neName)
+        return 0;
+    // A reference against a value is refused under the '!=' that was written,
+    // not under a derived '=='
+    if (objtype->tag == RefTag && node->args && node->args->used > 0
+        && iexpGetTypeDcl(nodesGet(node->args, 0))->tag != RefTag)
+        return 0;
+    while (objtype->tag == RefTag)
+        objtype = itypeGetTypeDcl(((RefNode*)objtype)->vtexp);
+    return objtype->tag == StructTag
+        && iNsTypeFindFnField((INsTypeNode*)objtype, neName) == NULL
+        && iNsTypeFindFnField((INsTypeNode*)objtype, eqName) != NULL;
+}
+
+// Perform type check on function/method call node
+// This should only be run once on a node, as it mutably lowers the node to another form:
+// - If a generic/macro, it instantiates, then type checks instantiated nodes
+// - If a type literal, it dispatches it to typelit for handlings
+// - If a field access, it turns it into a FldAccess node
+// - If an array index, it turns it into an ArrIndex node
+// - A method call is resolved by lookup and lowered to a function call
+// - A function call coerces and injects arguments as needed
+void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+
+    // A callee a global's 'use' clause folded into this module is reached through
+    // that global, so the call is rewritten to 'global.name(...)' before anything
+    // below reads the callee. Ahead of every other test here deliberately: from
+    // this point the node is an ordinary member call, so the macro-method probe,
+    // overload selection, the receiver adjustments and generation all see the
+    // path the author could have written, and none of them learns about folding.
+    if (isNameUseNode(node->objfn) && node->methfld == NULL) {
+        AliasDclNode *alias = (AliasDclNode*)((NameUseNode*)node->objfn)->dclnode;
+        if (alias && alias->tag == AliasDclTag && alias->through) {
+            FnCallNode *access = aliasDclThroughAccess(alias, node->objfn);
+            node->objfn = access->objfn;
+            node->methfld = access->methfld;
+        }
+    }
+
+    // If we have a true macro, go handle it elsewhere
+    // Note: Macros don't want us to type check arguments until after substitution
+    //
+    // Only when the macro name is what is being called. An operator or method
+    // application builds the same node shape as a call -- 'TWO + 1' is
+    // objfn 'TWO', methfld '+', one argument -- so methfld is what tells the two
+    // apart. With it set, the name is the receiver a value is expected of, and
+    // it expands below like the name in any other value position; the operator
+    // is then applied to what it expanded to.
+    if (nameUseNames(node->objfn, MacroDclTag) && node->methfld == NULL) {
+        macroCallTypeCheck(pstate, nodep);
+        return;
+    }
+
+    // '<-' on a value tuple becomes a block of applications, one per element.
+    // Ahead of the arguments below, because the tuple is taken apart rather than
+    // checked as an argument in its own right.
+    if (fnCallIsAppendTuple(node)) {
+        fnCallLowerAppendTuple(pstate, nodep);
+        return;
+    }
+
+    // An overload name has no value of its own, so it is only legal here, naming what
+    // is called. Skipping the ordinary name-use check leaves that check free to reject
+    // the overload name everywhere else.
+    int calleeIsOverload = nameUseNames(node->objfn, FnOverloadDclTag);
+    // Not checked as a name, so a generic base's overload name, bare inside an
+    // extension's braces, is pointed at its instance's set here
+    if (calleeIsOverload)
+        nameUseBaseInstanceMember(pstate, (NameUseNode*)node->objfn);
+
+    // A member named on a receiver may be a macro method, and a macro's
+    // arguments stay unchecked until they have been substituted -- so the
+    // receiver alone is checked first, its type asked what the name binds, and
+    // only then are the arguments checked. An operator is never a macro, and
+    // keeps the order the arguments always had. A member slot holding a tuple
+    // index rather than a name is not a member access by name.
+    int objfnChecked = 0;
+    if (node->methfld && isNameUseNode(node->methfld)
+        && !(node->flags & FlagOperator) && !calleeIsOverload) {
+        inodeTypeCheckAny(pstate, &node->objfn);
+        objfnChecked = 1;
+        if (inodeIsError(node->objfn)) {
+            node->vtype = errorType;
+            return;
+        }
+        if (isExpNode(node->objfn)) {
+            INode *rcvtype = iexpGetDerefTypeDcl(node->objfn);
+            if (isMethodType(rcvtype)) {
+                Name *membersym = ((NameUseNode*)node->methfld)->namesym;
+                INode *found = iNsTypeFindFnField((INsTypeNode*)rcvtype, membersym);
+                int folded = found && found->tag == AliasDclTag;
+                if (folded)
+                    found = aliasDclResolve(found);
+                if (found && found->tag == MacroDclTag && (found->flags & FlagMethFld)) {
+                    // A folded macro method expands with the field it was
+                    // folded through as its self, as a folded method runs with it
+                    if (folded)
+                        structFoldReceiver((StructNode*)rcvtype, membersym, &node->objfn, (INode*)node);
+                    macroMethodTypeCheck(pstate, nodep, (MacroDclNode*)found);
+                    return;
+                }
+            }
+        }
+    }
+
+    // Type check arguments (methfld is handled later)
+    INode **argsp;
+    uint32_t cnt;
+    if (node->args) {
+        for (nodesFor(node->args, cnt, argsp)) {
+            inodeTypeCheckAny(pstate, argsp);
+        }
+    }
+
+    // Perform generic substitution (if requested) and quit if that finishes processing
+    if (genericSubstitute(pstate, nodep))
+        return;
+
+    if (!calleeIsOverload && !objfnChecked)
+        inodeTypeCheckAny(pstate, &node->objfn);
+
+    // A callee already reported as bad -- a generic that could not be
+    // instantiated, say -- leaves nothing to call. The call inherits the mark
+    // rather than earning a second diagnostic saying its callee is not callable.
+    if (inodeIsError(node->objfn)) {
+        node->vtype = errorType;
+        return;
+    }
+
+    // All arguments must now be expressions
+    int badarg = 0;
+    if (node->args) {
+        for (nodesFor(node->args, cnt, argsp))
+            if (!isExpNode(*argsp)) {
+                errorMsgNode(*argsp, ErrorNotTyped, "Expected a typed expression.");
+                badarg = 1;
+            }
+    }
+    if (badarg) {
+        node->vtype = errorType;
+        return;
+    }
+
+    // If objfn is a type, handle it as a constructor or initializer
+    if (isTypeNode(node->objfn)) {
+        // Handle type constructor, e.g.:  Point[1., 2.]
+        if (node->flags & FlagIndex) {
+            node->tag = TypeLitTag;
+            node->vtype = node->objfn;
+            typeLitTypeCheck(pstate, *nodep);
+            return;
+        }
+        // A member named on a type is a path through that type's namespace, and
+        // name resolution collapses every path whose base it can see: a module,
+        // a struct or a trait. One that arrives here is one it could not -- an
+        // alias, a number type, a generic instance, a generic parameter.
+        // Diagnosed rather than left to read as a bad call.
+        if (node->methfld != NULL) {
+            errorMsgNode(node->objfn, ErrorUnkName,
+                "A path may pass through a module, a struct or a trait; reaching a member through anything else is not built.");
+            node->vtype = errorType;
+            return;
+        }
+        // Only a type that was named can be asked for its 'init'
+        if (!isNameUseNode(node->objfn)) {
+            errorMsgNode(node->objfn, ErrorBadTerm, "May not do a function call on a type");
+            node->vtype = errorType;
+            return;
+        }
+
+        // Initializer:  Change nameuse to refer to type's 'init' function
+        NameUseNode *nameuse = (NameUseNode *)node->objfn;
+        nameuse->namesym = initMethodName;
+        Namespace *namespace = &((StructNode*)nameuse->dclnode)->namespace;
+        nameuse->dclnode = namespaceFind(namespace, nameuse->namesym);
+        if (nameuse->dclnode == NULL || nameuse->dclnode->tag != FnDclTag) {
+            errorMsgNode(node->objfn, ErrorBadTerm, "Does not refer to a valid type initializer");
+            node->vtype = errorType;
+            return;
+        }
+        nameuse->vtype = ((FnDclNode*)nameuse->dclnode)->vtype;
+    }
+    
+    if (!isExpNode(node->objfn)) {
+        errorMsgNode(node->objfn, ErrorNotTyped, "Expected a typed expression.");
+        node->vtype = errorType;
+        return;
+    }
+
+    // If objfn is the name of a method/field, rewrite to: self.method
+    if (isNameUseNode(node->objfn) && isExpNode(node->objfn)
+        && ((NameUseNode*)node->objfn)->dclnode->flags & FlagMethFld
+        && !(node->objfn->flags & FlagQualified)) {
+        // Build a resolved 'self' node
+        NameUseNode *selfnode = newNameUseNode(selfName);
+        selfnode->dclnode = nodesGet(((FnSigNode*)pstate->fn->vtype)->parms, 0);
+        selfnode->vtype = ((VarDclNode*)selfnode->dclnode)->vtype;
+        // Reuse existing fncallnode if we can
+        if (node->methfld == NULL) {
+            node->methfld = node->objfn;
+            node->objfn = (INode*)selfnode;
+        }
+        else {
+            // Re-purpose objfn as self.method
+            FnCallNode *fncall = newFnCallNode((INode *)selfnode, 0);
+            fncall->methfld = node->objfn;
+            copyNodeLex(fncall, node->objfn); // Copy lexer info into injected node in case it has errors
+            node->objfn = (INode*)fncall;
+            inodeTypeCheckAny(pstate, &node->objfn);
+        }
+    }
+
+    // A call whose callee names an overload set selects its one viable candidate
+    if (nameUseNames(node->objfn, FnOverloadDclTag)) {
+        fnCallLowerOverloadFn(node);
+        return;
+    }
+
+    // Handle when method operator requires an lval
+    // This is true for ++, --, <- and operator-equals (+=)
+    INode *objtype = iexpGetTypeDcl(node->objfn);
+    if (node->flags & FlagLvalOp) {
+        // Lower opassign for method-based types with extra logic. A reference
+        // to such a type takes the same path, so a type that declares no '+='
+        // reaches the rewrite to '+' through a reference as it does by value.
+        if ((node->flags & FlagOpAssgn) && fnCallOpAssgnMethodType(objtype)) {
+            fnCallOpAssgn(pstate, nodep);
+            return;
+        }
+
+        // Turn objfn into &mut objfn, unless it already is a reference
+        if (!fnCallIsRefReceiver(objtype)) {
+            borrowMutRef(&node->objfn, objtype, newPermUseNode(mutPerm));
+            objtype = iexpGetTypeDcl(node->objfn);
+        }
+    }
+
+    // '===' and '!==' ask whether two references are the same place, which a value
+    // that is neither a reference nor a pointer does not have. Refused here, ahead
+    // of the dispatch, because a type's own namespace is not asked: identity is not
+    // an operator a type declares.
+    Name *opname = fnCallOperatorName(node);
+    if ((opname == sameName || opname == notSameName) && !fnCallHasPlace(objtype)) {
+        errorMsgNode((INode*)node, ErrorSameNotRef,
+            "`%s` asks whether two references point to the same place, and this is not a reference or a pointer. Use `%s` to compare values.",
+            &opname->namestr, opname == sameName ? "==" : "!=");
+        node->vtype = errorType;
+        return;
+    }
+
+    // A derived '!=': this node becomes the '==' application, lowered below like
+    // any other, and a 'not' takes its place in the tree
+    LogicNode *derivedne = NULL;
+    if (fnCallNeFromEq(node, objtype)) {
+        ((NameUseNode*)node->methfld)->namesym = eqName;
+        opname = eqName;
+        derivedne = newLogicNode(NotLogicTag);
+        inodeLexCopy((INode*)derivedne, (INode*)node);
+        derivedne->lexp = (INode*)node;
+        *((INode**)nodep) = (INode*)derivedne;
+    }
+
+    // Dispatch for correct handling based on the type of the object
+    switch (objtype->tag) {
+    // Pure function call
+    case FnSigTag:
+        fnCallFnSigTypeCheck(pstate, node); break;
+
+    // Types expecting method call or field access
+    case StructTag:
+    case IntNbrTag:
+    case UintNbrTag:
+    case FloatNbrTag:
+        // Fill in empty methfld with '()', '[]' or '&[]' based on parser flags
+        if (node->methfld == NULL)
+            node->methfld = (INode*)newMemberUseNode(
+                node->flags & FlagIndex ? (node->flags & FlagBorrow ? refIndexName : indexName) : parensName);
+        // Lower to a field access or function call
+        if (fnCallLowerMethod(pstate, node) == 0) {
+            errorMsgNode((INode*)node, ErrorNoMeth,
+                "No method/field named %s found that matches the call's arguments.",
+                &((NameUseNode*)node->methfld)->namesym->namestr);
+        }
+        break;
+
+    // Tuple type
+    case TTupleTag:
+        if (fnCallLowerIntField(node) == 0)
+            errorMsgNode((INode*)node, ErrorNoMeth, "Invalid expression on a tuple");
+        break;
+
+    // Array type
+    case ArrayTag:
+        if (node->flags & FlagIndex)
+            fnCallArrIndex(node);  // indexing or borrowed ref to index
+        else
+            errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on an array.");
+        break;
+
+    // Array reference
+    case ArrayRefTag:
+        if (node->flags & FlagIndex)
+            fnCallArrIndex(node);
+        else if (fnCallIsValueCompare(opname))
+            fnCallRefNoCompare(node, opname, "comparing two slices element by element is not built");
+        else if (node->methfld && fnCallLowerPtrMethod(node, arrayRefType))
+            ;
+        else
+            errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on an array ref.");
+        break;
+
+    // Regular reference
+    case RefTag: {
+        INode *objdereftype = itypeGetTypeDcl(((RefNode *)objtype)->vtexp);
+
+        // Handle calling a function-by-ref (only callable using parens)
+        if (objdereftype->tag == FnSigTag && !node->methfld) {
+            if ((node->flags & FlagIndex))
+                errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on a function reference.");
+            else
+                fnCallFnSigTypeCheck(pstate, node);
+        }
+
+        // Handle indexing an array
+        else if ((node->flags & FlagIndex) && (objdereftype->tag == ArrayTag || objdereftype->tag == ArrayDerefTag))
+            fnCallArrIndex(node);
+
+        // Handle method call to some other type
+        else {
+            // Fill in empty methfld with '()', '[]' or '&[]' based on parser flags
+            if (node->methfld == NULL) {
+                Name *methname = node->flags & FlagIndex ? (node->flags & FlagBorrow ? refIndexName : indexName) : parensName;
+                node->methfld = (INode*)newMemberUseNode(methname);
+            }
+            if (fnCallIsValueCompare(opname))
+                fnCallLowerRefCompare(pstate, node);
+            else if (fnCallLowerPtrMethod(node, refType) == 0) {
+                // Lower to a field access or function call, dereferencing the receiver
+                // where that is what the selected method wants. fnCallLowerMethod cannot
+                // answer 0 here, having already been told the deref type supports methods.
+                if (isMethodType(objdereftype)) {
+                    if (fnCallLowerTraitMethod(pstate, node, objdereftype) == 0)
+                        fnCallLowerMethod(pstate, node);
+                }
+                else if (objdereftype->tag == PtrTag)
+                    fnCallLowerPtrMethod(node, ptrType);
+                else
+                    errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on a reference.");
+            }
+        }
+        break;
+    }
+
+    // Virtual reference
+    case VirtRefTag: {
+        if (fnCallIsValueCompare(opname))
+            fnCallRefNoCompare(node, opname, "comparing what two virtual references refer to is not built");
+        else if (node->methfld) {
+            if (fnCallLowerPtrMethod(node, refType) == 0) {
+                node->flags |= FlagVDisp;
+                fnCallLowerMethod(pstate, node);
+            }
+        }
+        else
+            errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on a virtual reference.");
+        break;
+    }
+
+    // Pointer type
+    case PtrTag: {
+        INode *objdereftype = ((StarNode *)objtype)->vtexp;
+        if (node->flags & FlagIndex)
+            fnCallArrIndex(node);
+        else if (node->methfld) {
+            // A pointer's own operators first, then the value type's fields and named
+            // methods, reaching a value receiver by dereferencing the pointer. An
+            // operator the pointer does not declare stops here rather than reaching
+            // the value's; fnCallLowerMethod is what refuses it.
+            if (fnCallLowerPtrMethod(node, ptrType) == 0 && fnCallLowerMethod(pstate, node) == 0)
+                errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on a pointer.");
+        }
+        else if (objdereftype->tag == FnSigTag)
+            fnCallFnSigTypeCheck(pstate, node);
+        else
+            errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on a pointer.");
+        break;
+    }
+
+    default:
+        errorMsgNode((INode*)node->objfn, ErrorNoMeth, "This type does not support calls or field access.");
+        node->vtype = errorType;
+    }
+
+    // 'not' takes a Bool, which a '==' returning anything else reaches through
+    // isTrue. A '==' that selected nothing has been reported, and the 'not' carries
+    // that on rather than earning a second diagnostic.
+    if (derivedne) {
+        if (node->vtype == unknownType || node->vtype == errorType)
+            derivedne->vtype = errorType;
+        else if (!iexpCoerce(&derivedne->lexp, (INode*)boolType))
+            errorMsgNode((INode*)node, ErrorInvType, "Conditional expression must be coercible to boolean value.");
+    }
+}
+
+// A '&mut &T' argument is a place the callee may store any other borrowed
+// reference it was handed, and without annotations it is free to: every
+// borrowed reference in the signature shares one lifetime (doc/reference/reflifefn.html,
+// "Mutable borrowed reference parameters"). So what that argument points at may
+// not outlive the narrowest borrow passed alongside it -- the same comparison
+// assignlvalrtype makes for the store the callee might write.
+static void fnCallFlowStoredBorrow(FnCallNode *node) {
+    uint16_t narrowest = fnCallNarrowestBorrowScope(node);
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(node->args, cnt, argsp)) {
+        INode *argtype = iexpGetTypeDcl(*argsp);
+        if (argtype->tag != RefTag || ((RefNode*)argtype)->region != borrowRef
+            || !(permGetFlags(((RefNode*)argtype)->perm) & MayWrite))
+            continue;
+        if (!fnCallIsBorrowType(itypeGetTypeDcl(((RefNode*)argtype)->vtexp)))
+            continue;
+        if (((RefNode*)argtype)->scope < narrowest) {
+            errorMsgNode((INode*)node, ErrorCallEscape,
+                "Call could store a borrowed reference where it would outlive the value it points to");
+            return;
+        }
+    }
+}
+
+// Do data flow analysis for fncall node (only real function calls)
+void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
+    // Handle function call aliasing
+    FnCallNode *node = *nodep;
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(node->args, cnt, argsp)) {
+        flowLoadValue(fstate, argsp);
+        flowHandleMoveOrCopy(argsp);  // Argument values are moved or copied
+    }
+    fnCallFlowStoredBorrow(node);
+}
+
+// Perform data flow analysis on array index node
+// A reference to a fixed-size array and a slice are indexed without a
+// dereference being injected, so the element is read through the reference here
+void fnCallArrIndexFlow(FlowState *fstate, FnCallNode **node) {
+    flowLoadThroughRef(fstate, &(*node)->objfn);
+    flowLoadValue(fstate, &nodesGet((*node)->args, 0));
+}
+
+// Perform data flow analysis on field access node
+// A plain reference had a dereference injected, which derefFlow reads through;
+// a virtual reference did not, so the field is read through it here
+void fnCallFldAccessFlow(FlowState *fstate, FnCallNode **node) {
+    flowLoadThroughRef(fstate, &(*node)->objfn);
+}
+
