@@ -106,7 +106,7 @@ by it.
 **Every token the lexer returns has a reader.** A spelling no feature reads is
 reported in the lexer and never reaches the parser, because a token nothing
 consumes is a cascade of parse errors behind it. Three are refused this way, each
-with one diagnostic. An attribute is a keyword (`@move`, `@opaque`, `@unsized`, `@c`),
+with one diagnostic. An attribute is a keyword (`@move`, `@opaque`, `@unsized`, `@c`, `@initpure`),
 so any other `@` word is `ErrorUnkAttr` and is dropped, the declaration read
 without it; `@samesize` gets its own wording, since an enum is same-size by
 default and `@unsized` declines it. A `#` word is held for metaprogramming:
@@ -444,7 +444,7 @@ numbers.
 | | `parseVarDcl`, `parseFieldDclBody`, `parseConstDcl`, `parsePerm` | the declaration forms; a field's or a global's trailing `use` clause goes to `parseFoldClause`, and one on a local, a parameter or a static is `ErrorBadFold`. A field's node is built while the lexer is still on its name, both so a diagnostic points there and so an enum's body can decide between a field and a bare-name variant afterwards |
 | | `parseFoldClause` | `use *` with an optional `but` list, or a list of names each with an optional `as`; builds the clause on the field and an alias per listed name, bound by name resolution |
 | | `parseUseSibling`, `parseModUse`, `parseUseAdmits` | a `use` standing as a statement: in a type body it folds a sibling in, and at module scope (`parseGlobalStmts`) it folds an enum's variants or a submodule's names in, held on a `ModUseNode` — which of the two is known only once the source resolves. Both name their source and then share what follows it — every member by default, `*` refused as saying nothing more, a list with `as`, a block, or `but` |
-| `parser/parsefnflow.c` | `parseFn` | function/method declaration, with its `@c` after `fn`, refused where there is no one symbol for it to name — an anonymous, generic or `inline` fn, a trait's or a generic type's method (`ErrorCAttr`) — **despite the file name, this is where declarations and control flow are parsed, not data flow analysis** |
+| `parser/parsefnflow.c` | `parseFn` | function/method declaration, with its `@initpure` after `fn`, before or after `@c`, recorded as `DclInitPure` and not checked, and its `@c`, refused where there is no one symbol for it to name — an anonymous, generic or `inline` fn, a trait's or a generic type's method (`ErrorCAttr`) — **despite the file name, this is where declarations and control flow are parsed, not data flow analysis** |
 | | `parseGenericParms`, `parseMacro` | the type parameter list, shared by `fn`, `struct` and `macro`: comma-separated names only, with a constraint or a parameter type refused as `ErrorGenParmConstr` |
 | | `parseExprBlock` | the statement-block loop — the parser's second dispatch table |
 | | `parseIf`, `parseMatch`, `parseBoundMatch` | `if`/`elif`/`else` and the `match`-to-`if` desugaring; every pattern's root name is marked (`castPatternMark`) to be looked up in the matched value's enum at type check, as `parseCmp` marks an `is` test's |

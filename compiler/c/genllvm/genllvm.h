@@ -42,6 +42,8 @@ typedef struct GenState {
 
     ConeOptions *opt;
     ModuleNode *libroot;    // The package's root module in a library compile, else NULL
+    ProgramNode *pgm;       // The program being generated, whose module order genlStitch reads
+    LLVMValueRef stitch[2]; // The stitched init and final, once a call asks for one (genlStitchFn); else NULL
     int comdats;            // enum ComdatSupport, from the target's object format
     INode *fnblock;
     GenBlockState *blockstack;
@@ -86,6 +88,10 @@ GenlDefinition genlVtableDefinition(GenState *gen);
 void genlGloVarName(GenState *gen, VarDclNode *glovar);
 void genlGloVar(GenState *gen, VarDclNode *varnode);
 void genlGloFnName(GenState *gen, FnDclNode *glofn);
+// The program's stitched init or final (InitAllIntrinsic or FinalAllIntrinsic),
+// declared on the first call that asks for it; its body is built once every
+// module is generated (genlStitch)
+LLVMValueRef genlStitchFn(GenState *gen, int16_t intrinsic);
 
 // genlstmt.c
 LLVMBasicBlockRef genlInsertBlock(GenState *gen, char *name);

@@ -165,6 +165,20 @@ the others, so it wears this code, and `ErrorModExtends` keeps what an
 shape Congo's has for the same loop, so a direct `conec` run and a Congo build
 say one thing.
 
+A module's `init` and `final` take two codes, split where the remedy is.
+`ErrorModLifecycle` is a declaration under either name that is not the one the
+program's stitched init and final call — `fn @initpure init()` or
+`fn final()`: one taking parameters, returning a value, generic, `inline` or
+declaring an overload name, an `init` without `@initpure`, anything but a
+function under either name at module scope — and a module that needs the `drop`
+it is given while declaring a `drop` of its own; the remedy is on that
+declaration, and the message names the cause. `ErrorGlobalUninit` is a global
+declared without a value that no `init` of its module assigns — its module
+declares none, or its `init` never does; the remedy is to assign it there, or to
+give it a value. What `init` does wrong with such a global wears the code the
+same mistake wears for a local: a read before it is assigned is `ErrorMove`, a
+second assignment of an `imm` one `ErrorNoMut`.
+
 That is a narrow licence, and the tell that it has been stretched is the
 scenarios: **when a scenario needs a message substring to tell two uses of one
 code apart, the substring is doing the code's job.** Wrong arity, a non-type

@@ -45,6 +45,12 @@ extern INsTypeNode *ptrType;
 extern INsTypeNode *refType;
 extern INsTypeNode *arrayRefType;
 
+// The two functions a program calls to run its stitched init and final
+// (genlStitch): 'initAll()' and 'finalAll()', names every module reaches as it
+// reaches 'i64', and which a declaration of its own hides
+extern FnDclNode *initAllFn;
+extern FnDclNode *finalAllFn;
+
 void stdlibInit(int ptrsize);
 void keywordInit();
 void stdNbrInit(int ptrsize);

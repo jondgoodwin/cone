@@ -751,6 +751,75 @@ description = "What a conforming module declares under a member's name without t
 tags = ["typecheck"]
 diagnostics = 6
 
+# A MODULE'S 'init' AND 'final' [Jon 23 Sep]: each module declares its own, and
+# the program's stitched init and final run them all -- every 'init' in the
+# module order, dependencies first and the root last, and every finalizer in
+# exactly the reverse. module-init runs a chain of modules, printing from each;
+# module-init-link runs a package compiled on its own, whose 'init' and
+# finalizer the program's stitched pair reach through its include file;
+# module-init-reject pins what a module's 'init' refuses about its globals, and
+# what 'init' and 'final' must be.
+[scenario.module-init]
+category = "run"
+description = "Every module's 'init' in the module order and every finalizer in the reverse, through 'initAll()' and 'finalAll()': an 'imm' global assigned by 'init', one module's 'init' reading another's global, a module with only 'final', and a module's 'drop' finalizing its globals after its 'final'"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# The stitched pair is the program's own. A module's finalizer is the 'drop' it
+# is given where a global needs finalizing -- base's, with no 'final' of base's
+# own, and middle's -- and its own 'final' otherwise: top has no 'drop'.
+[[scenario.module-init.check]]
+name = "the-stitched-pair-and-each-modules-finalizer"
+target = "symbols"
+contains = [
+  "define internal cone.initAll comdat nodeduplicate",
+  "define internal cone.finalAll comdat nodeduplicate",
+  "define internal base.init comdat nodeduplicate",
+  "define internal base.drop comdat nodeduplicate",
+  "define internal middle.drop comdat nodeduplicate",
+  "define internal top.final comdat nodeduplicate",
+  "global internal base.mark comdat nodeduplicate",
+]
+excludes = ["top.drop", "top.init", "base.final", "constant internal base.mark"]
+
+[scenario.module-init-link]
+category = "run"
+description = "A package compiled on its own, whose 'init' and finalizer the program's stitched init and final call through its include file, linked and run"
+tags = ["genllvm", "runtime"]
+link = ["package/lib.conebuild"]
+
+# lib's 'init', 'final' and 'drop' are private, and a library compile exports
+# them: the program's stitched init and final call them from another object.
+[[scenario.module-init-link.check]]
+name = "the-library-exports-its-lifecycle"
+target = "symbols"
+object = "lib"
+contains = [
+  "define lib.init comdat nodeduplicate",
+  "define lib.final comdat nodeduplicate",
+  "define lib.drop comdat nodeduplicate",
+]
+
+# The program derives lib's finalizer from the include file as lib's compile
+# does from lib's source -- a 'drop', since a global it declares finalizes --
+# and declares what its stitched pair calls. lib's 'final' is called only from
+# lib's 'drop', so the program never names it.
+[[scenario.module-init-link.check]]
+name = "the-program-calls-lib-init-and-drop"
+target = "symbols"
+contains = [
+  "declare lib.init",
+  "declare lib.drop",
+  "define internal cone.initAll comdat nodeduplicate",
+  "define internal cone.finalAll comdat nodeduplicate",
+]
+excludes = ["declare lib.final", "define lib.init", "define lib.drop"]
+
+[scenario.module-init-reject]
+category = "reject"
+description = "A global without a value that 'init' does not assign, reads one before assigning it, or assigns an 'imm' one twice; one assigned elsewhere; a module with no 'init'; and an 'init' or 'final' not declared as the program calls it"
+tags = ["typecheck"]
+diagnostics = 11
+
 # A module or a module trait named where a type must be. Each used to reach
 # generation unrefused and crash the compiler there.
 [scenario.module-not-a-type-typecheck]
@@ -1101,7 +1170,9 @@ tags = ["parse", "nameres", "typecheck", "genllvm"]
 # the module (and the type), exactly as a package compiled on its own defines
 # it, so an include file reaches the package's object. The private ones are
 # declared too, since the public inline body the importer expands names them.
-# None is a definition here, so none leads a COMDAT.
+# None is a definition here, so none leads a COMDAT. An 'extern' 'imm' global
+# is not a constant here: its value is the defining object's, which its
+# module's 'init' may assign at run time.
 [[scenario.module-extern-cone-names.check]]
 name = "extern-declarations-take-the-module-cone-name"
 target = "symbols"
@@ -1109,7 +1180,7 @@ contains = [
   "declare moduleextern.twice\n",
   "declare moduleextern.hidden\n",
   "external global moduleextern.count\n",
-  "external constant moduleextern.limit\n",
+  "external global moduleextern.limit\n",
   "declare moduleextern.Vec2.+\n",
   "declare moduleextern.Vec2.len\n",
   "declare moduleextern.Vec2.size\n",

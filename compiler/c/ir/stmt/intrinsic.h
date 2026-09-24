@@ -66,7 +66,13 @@ enum IntrinsicFn {
     // Intrinsic functions
     SqrtIntrinsic,
     SinIntrinsic,
-    CosIntrinsic
+    CosIntrinsic,
+
+    // The program's stitched lifecycle (genlStitch): every module's 'init' in
+    // dependency order, and every module's finalizer in exactly the reverse.
+    // Functions of no parameters, not methods, so no first argument decides them
+    InitAllIntrinsic,
+    FinalAllIntrinsic
 };
 
 // An internal operation (e.g., add). 

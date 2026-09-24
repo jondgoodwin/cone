@@ -650,6 +650,8 @@ another. See [module](module.md).
    takes its own `self`), and a generic enum's instance cloned it into each
    variant, which the pre-lowered body cannot survive. An enum's common fields
    are spliced into each variant, so the variant's own `drop` finalizes them.
+   A module is given its `drop` the same way, its globals standing for the
+   fields ([module](module.md), "Init and final").
 9. Type check every method — those in `nodelist` before step 8, so not the
    generated `drop`.
 10. **Verify the traits' method requirements** (`structCheckTraitReqs`), now

@@ -211,7 +211,10 @@ extends, and on each of its own submodules, so a part never leans on the whole
 it is part of and a child never imports a name of its parent; what they share
 moves into a sister both import. That is the hierarchical decomposition the
 layer exists for, and it is what gives modules an order to initialise in:
-dependencies first, the order the compiler keeps for `init`. Congo refuses a
+dependencies first. Each module declares only its own `init` and `final`, and
+the compiler stitches every module's together — every `init` in that order, the
+root last, and every finalizer in the reverse — so no module sets up another's
+state. Congo refuses a
 loop from the header scan, and the compiler again for a direct run
 (`ErrorImportLoop`).
 

@@ -274,7 +274,13 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     FlowState fstate;
     fstate.fnsig = (FnSigNode *)fnnode->vtype;
     fstate.scope = 1;
+    // A module's 'init' starts with its module's uninitialized globals holding
+    // nothing, as a local does, and must leave each one assigned
+    ModuleNode *initmod = modInitOf(fnnode);
+    uint16_t *saved = initmod ? modInitFlowBegin(initmod) : NULL;
     blockFlow(&fstate, (BlockNode **)&fnnode->value);
+    if (initmod)
+        modInitFlowEnd(initmod, saved);
 }
 
 // Verify no two candidates of an overload set accept the same parameter signature.

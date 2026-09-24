@@ -273,6 +273,10 @@ enum ErrorCode {
     // The module order: imports form a DAG at every scale
     ErrorImportLoop = 1139,     // Modules that depend on each other round a loop -- by importing a module or a name of it, by 'extends', or by containing it
 
+    // A module's 'init' and 'final'
+    ErrorGlobalUninit = 1140,   // A global declared without an initial value that its module's 'init' never assigns, or whose module has no 'init'
+    ErrorModLifecycle = 1141,   // A module's 'init' or 'final' not declared as 'fn @initpure init()' or 'fn final()', or a module's own 'drop' where it needs its finalizer given that name
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

@@ -692,8 +692,22 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
     lexNextToken();
 
     // '@c' after the keyword: this function's symbol is a C name, its own name
-    // or the string written, and 'system' its calling convention [Jon 23 Sep]
+    // or the string written, and 'system' its calling convention [Jon 23 Sep].
+    // '@initpure' there too, before or after it: a function a module's 'init'
+    // may call, as 'init' itself is declared (refmodule.html, "Dynamic
+    // initialization"). Recorded, not yet checked
+    int initpure = 0;
+    if (lexIsToken(InitPureToken)) {
+        initpure = 1;
+        lexNextToken();
+    }
     int hasc = parseCAttr(&fnnode->dclinfo, 0);
+    if (!initpure && lexIsToken(InitPureToken)) {
+        initpure = 1;
+        lexNextToken();
+    }
+    if (initpure)
+        fnnode->dclinfo.facts |= DclInitPure;
 
     // Process function name, if provided
     if (lexIsToken(IdentToken)) {
