@@ -32,7 +32,7 @@ original's `TypeChecked` mark, so `refTypeCheck` never revisits it to normalize.
 Sharing the record made the memoized LLVM type answer for the original's pointee:
 whichever implementer generated first named it for all of them, so a trait
 default's clones took one another's receiver and `fn f(m &Trait)` took an
-implementer's type. `trait-inherited-defaults` pins both.
+implementer's type. `trait_inherited_defaults` pins both.
 
 **There is no lifetime field.** `LifetimeNode` exists in `ir/types/lifetime.c`
 and `lifeMatches` is called from nowhere; only `'static` is ever built. Lifetime

@@ -192,15 +192,15 @@ generic trait or enum `genlGenericInstanceSyms`). Miss the last and
 body for a function that was never declared and the compiler crashes; miss any
 of the first three and every implementer stops conforming the moment a trait
 declares one. It is reached as `Trait.name`, and an implementer or variant
-cannot name it at all: `trait-nameres-static` pins both spellings,
-`trait-success` the call, and `enum-success` a generic enum's.
+cannot name it at all: `trait_nameres_static` pins both spellings,
+`trait_success` the call, and `enum_success` a generic enum's.
 
 The converse holds for a **method**: the implementers' and variants' clones are
 the only copies generated, so the trait's or enum's own is reachable by no
 path. `Trait.name` or `Enum.name` naming one — called with a receiver, borrowed,
 or through an overload name with a method among its candidates — is refused by
 the path collapse with `ErrorAbstractMeth` ([fncall](fncall.md), "The path
-collapse"); without that the call loads a null. `trait-nameres-method-path`
+collapse"); without that the call loads a null. `trait_nameres_method_path`
 pins it.
 
 ⚠ **A generic method costs a trait its virtual reference, and `structMakeVtable`
@@ -211,7 +211,7 @@ to `&<Trait` refused; `ErrorGenericVtable` names the method at its declaration i
 the trait, once per trait, when the first virtual reference to it asks for a
 vtable. A **private** generic method and a generic **static** function are
 neither slots nor requirements and cost the trait nothing.
-`trait-typecheck-vref` pins all three, and
+`trait_typecheck_vref` pins all three, and
 `doc/reference/refvirtref.html`, "Type Restrictions", is the rule.
 | `namespace` | every named member: fields, methods, macros, overload sets, `Self`, **an enum's variants** — each a `StructNode`, bound at parse, and never a member of the enum's values: a lookup through a value passes one over (`fnCallLowerMethod`) — and what a fold admits — a **copy** of a folded field (a `FieldDclNode` with a `hop`) and an **alias** (`AliasDclNode`) for a folded method, overload set or macro method, for every member of an `extends` base but its fields, `final` and `clone` (those two are copied into `nodelist`, as a trait's defaults are), and for every member a sibling `use` admits. The copies and aliases live here only; `fields` and `nodelist` never hold one |
 | `dropfn` | NULL until type check settles the layout, and set before the methods are checked |
@@ -258,7 +258,7 @@ generation.
 set it**: the type was declared `@opaque`, it is a trait or an `@unsized` enum, or
 one of its fields is unsized. **Only the first means there is no layout.** A
 trait's own fields are known and indexed, and a struct with an unsized field is
-refused by type check (`ErrorNoSize`, `struct-typecheck-nosize`) long before
+refused by type check (`ErrorNoSize`, `struct_typecheck_nosize`) long before
 anything asks for its layout. `DeclaredOpaque` marks the first case at parse, and
 it is what generation asks; reading `OpaqueType` there left every trait an opaque
 LLVM struct, which is why a reference to a trait could not be lowered.
@@ -280,7 +280,7 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   anything a caller could hold behind an abstraction of one either is that set,
   and so is the enum, or is open, and so is a trait — and a variant is one
   concrete member of such a set, which has no abstraction for the same reason.
-  `enum-parse-decl` pins both, so nobody adds an abstract enum for symmetry with
+  `enum_parse_decl` pins both, so nobody adds an abstract enum for symmetry with
   the kinds that do take the modifier.
 - An enum may name the **integer type its tag values are laid out in**, read with
   `parseTypeName` and attached to the discriminant's own type node. It is the
@@ -796,7 +796,7 @@ Beside the field fold above, the two are the same operation reached from opposit
 ends: a field's clause reaches the *part*, so it needs a hop and a receiver
 rewrite, and an enrichment *is* the whole, so it needs neither. Measured: a base
 method is one symbol however many types reach it, where an inherited trait default
-is a copy per implementer (`struct-extends`, `a-base-method-is-not-cloned-per-enrichment`).
+is a copy per implementer (`struct_extends`, `a-base-method-is-not-cloned-per-enrichment`).
 
 **Three things are not aliases.** The base's **fields are copied**, because a field
 node carries its index and its own check state and each type lays its own out;
@@ -825,8 +825,8 @@ base's, since an enrichment adds none. The body is bound in the base's scope, so
 private method of the base called bare from it runs on the enrichment's receiver,
 which substitutes. What is copied must be unlowered, and in type check the base's
 own methods no longer are, so there the copy is taken from what the base set aside
-(`lifecycle`; see Hazards). Measured in `struct-extends-lifecycle`, and across a
-module boundary in `struct-extends-import`. Neither folds from a **sibling**: a
+(`lifecycle`; see Hazards). Measured in `struct_extends_lifecycle`, and across a
+module boundary in `struct_extends_import`. Neither folds from a **sibling**: a
 type folding one has its own copy from the base they share.
 
 The base's **`@move` and `@opaque` flags are carried** (`MoveType`, `OpaqueType`,
@@ -834,8 +834,8 @@ The base's **`@move` and `@opaque` flags are carried** (`MoveType`, `OpaqueType`
 fields and `final` make of it is inferred again from the copies at layout, but an
 attribute exists only as the flag parse set on the base, and the carry is what
 makes an enrichment of an `@move` type move and one of an `@opaque` type refuse a
-value. Measured in `move-flow-infection` and `move-success` for `@move`, and
-`struct-typecheck-nosize` for `@opaque`.
+value. Measured in `move_flow_infection` and `move_success` for `@move`, and
+`struct_typecheck_nosize` for `@opaque`.
 
 **Every other member becomes an alias** — methods, overload sets, macro methods
 and statics alike, private ones included, under the base's own visibility. A
@@ -939,7 +939,7 @@ whichever of a mutually folding pair was reached by demand.
 **Nothing in generation changes.** There is no thunk and no vtable case of its
 own: an alias resolves to the sibling's declaration, and the call is a direct call
 to it with the receiver recast, exactly as a call on a value of the sibling's own
-type is (`struct-use-sibling`, `a-folded-method-is-not-cloned-per-folding-type`).
+type is (`struct_use_sibling`, `a-folded-method-is-not-cloned-per-folding-type`).
 
 ## An enum extending an enum
 
@@ -1137,7 +1137,7 @@ its method's clone in a copy is owned by the copy, and its static function by th
 extension. The walk never goes the other way,
 so the base does not reach an added variant's privates, and two extensions of one
 base do not reach each other's: the sibling rule an enrichment keeps (Name folding)
-holds here too. enum-privacy and enum-typecheck-privacy pin both directions.
+holds here too. enum_privacy and enum_typecheck_privacy pin both directions.
 
 **What an extension may not do**, all `ErrorEnumExtends` unless named otherwise:
 declare a requirement, since a copy has no body to meet it in; declare a common
@@ -1159,7 +1159,7 @@ and they are what the outer one copies, so every copy keeps the tag value it was
 declared with and the whole chain shares the bottom enum's discriminant. A method
 the middle declares comes along the same way: its copies and the variants it adds
 have it by the time the outer enum copies them. It is claimed language
-(refenum.html, "Extending an extension"), plain and generic, and enum-extends pins
+(refenum.html, "Extending an extension"), plain and generic, and enum_extends pins
 it. The outer enum sees every level's names bare: the chain is walked for them.
 
 ## Flow
@@ -1237,8 +1237,8 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   named bare where either side is a generic.** Both are taken in type check
   there, after every body has been resolved, so `self.name` is how such a member
   is reached inside the folding type's own methods. Where both are plain
-  declarations there is no such limit, and `struct-extends` and
-  `struct-use-sibling` name everything bare.
+  declarations there is no such limit, and `struct_extends` and
+  `struct_use_sibling` name everything bare.
 - **A default method cloned from an instance of a generic trait, or a member
   folded from a field whose type is a generic's parameter, cannot be named bare.**
   The instance exists only when type check instantiates it, so what it contributes
@@ -1255,7 +1255,7 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   type check does, because its base was checked first, which is why a type sets
   its `final` and `clone` aside unlowered in `lifecycle` as its layout settles
   (`structKeepLifecycle`) and an enrichment taken after that copies those
-  (`structEnrichLifecycle`). `struct-extends-lifecycle` pins both generic
+  (`structEnrichLifecycle`). `struct_extends_lifecycle` pins both generic
   shapes with a finalizer that calls a method bare.
 - **A finalizer an enrichment adds runs only while the value is typed as the
   enrichment.** Where the base declares no `final`, the enrichment may declare one,

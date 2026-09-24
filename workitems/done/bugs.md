@@ -175,9 +175,9 @@ emitted `load` then `store` through it. `swapFlow` read both of its sides all
 along, so assignment and swap disagreed about one expression.
 
 `assignFlowLvalReads` now reads an index and a dereference's operand, and
-recurses through a field access. `array-flow-index` and `ref-flow` cover both
+recurses through a field access. `array_flow_index` and `ref_flow` cover both
 halves. **The base of a partial write is deliberately still not read** —
 whether `a[i] = 5` reads `a` is a question about read-modify-write against
 flow's whole-variable tracking, and [[use-escape-analysis-and-de-aliasing|Use, escape analysis and de-aliasing]]
-carries it. `array-flow-index` pins that boundary as a non-diagnostic, so it is
+carries it. `array_flow_index` pins that boundary as a non-diagnostic, so it is
 asserted rather than assumed.

@@ -107,7 +107,7 @@ satisfies the rule's intent.
 `ErrorGenErr` is **coverable**, and the reason recorded here for its not being so
 was wrong twice over. It said the only construct raising it is a nested
 allocation, which kills the compiler afterwards; nested allocation is fixed and
-`region-nested-alloc` is a passing `run` scenario. But `ErrorGenErr` is not a
+`region_nested_alloc` is a passing `run` scenario. But `ErrorGenErr` is not a
 construct's diagnostic at all — every site that raises it is an LLVM
 infrastructure failure: an unusable target triple, a module that fails
 verification, an output file that cannot be written. The first of those is

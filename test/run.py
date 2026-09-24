@@ -6,7 +6,7 @@ expectations claim. Python 3.11+, no third-party dependencies.
 
     python test/run.py                  run everything (R1.7)
     python test/run.py core             run one group
-    python test/run.py core-overload    run one scenario
+    python test/run.py core_overload    run one scenario
     python test/run.py --since          run what a diff implies (R2.5)
     python test/run.py --list --since   print that selection, run nothing
     python test/run.py --list           print what would run, run nothing (R2.6)
@@ -378,7 +378,7 @@ def parse_annotations(source: Path, codes: dict[str, int]) -> list[Annotation]:
     """Read ``//~ Code[:col] ["substring"] [follow-on]`` out of a scenario (R2.9).
 
     Carets count lines, and an annotation-only line is a line, so successive
-    annotations for one code line each take one more caret. ``core-parse-decls``
+    annotations for one code line each take one more caret. ``core_parse_decls``
     depends on this: three diagnostics on one line, reached with ``//~``,
     ``//~^`` and ``//~^^``.
     """
@@ -528,7 +528,7 @@ def match_diagnostics(
 
     A pair needs the same code and the same ``line:column`` (R3.4). Where an
     annotation carries a quoted substring, it is required rather than
-    decorative: ``lexical-reject-tokens`` has two diagnostics sharing a code, a
+    decorative: ``lexical_reject_tokens`` has two diagnostics sharing a code, a
     line and a column, and the substring is the only thing that separates them.
     Annotations carrying one are therefore matched first, so they claim their
     own diagnostic before a substring-less annotation can absorb it.
@@ -537,7 +537,7 @@ def match_diagnostics(
     token lands on the last line when the file has no trailing newline, and on
     the line after it when it does — so which line it is depends on a byte no
     editor shows you. An annotation on the final line matches either.
-    ``core-parse-unclosed`` is the case: `ErrorNoRCurly` is only ever reported at
+    ``core_parse_unclosed`` is the case: `ErrorNoRCurly` is only ever reported at
     EOF, and without this the scenario would silently break the first time
     anything appended a newline to it.
 
@@ -665,8 +665,8 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
     for name, table in tables.items():
         where = f"{toml_path}: [scenario.{name}]"
         _require_keys(where, table, SCENARIO_KEYS)
-        if not name.startswith(group + "-"):
-            raise SuiteError(f"{where}: scenario name must start with {group!r}- (R2.11)")
+        if not name.startswith(group + "_"):
+            raise SuiteError(f"{where}: scenario name must start with {group!r}_ (R2.11)")
         category = table.get("category")
         if category not in CATEGORIES:
             raise SuiteError(f"{where}: category must be one of {', '.join(CATEGORIES)}")
@@ -2556,7 +2556,7 @@ def place_annotations(expected: list[Annotation], produced: list[Diagnostic],
     also be part of the key. Bless pairs on code and line alone, and where one
     line carries two annotations for one code it falls back on the quoted
     substring, which is then the only discriminator left --
-    ``lexical-reject-tokens`` is the case that needs it, with two diagnostics
+    ``lexical_reject_tokens`` is the case that needs it, with two diagnostics
     sharing a code, a line *and* a column.
 
     Returns the pairs, the annotations nothing produced, the diagnostics no

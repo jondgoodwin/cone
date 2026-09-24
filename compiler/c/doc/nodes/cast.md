@@ -163,7 +163,7 @@ method with a body on an enum is a *default*, cloned into every variant with
 to narrow a type that is already as narrow as it gets. The message names the
 variant and its enum, and says to declare the method without a body and implement
 it per variant — the shape that dispatches. It is reported once per copy, so an
-enum of two variants gives two. `enum-typecheck-narrow` holds both this and the
+enum of two variants gives two. `enum_typecheck_narrow` holds both this and the
 same mistake written directly on a variant.
 
 ## Flow

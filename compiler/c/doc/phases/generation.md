@@ -513,7 +513,7 @@ The two object files never resolve against each other. A library built from a
 build description settles both halves: its root is named, so `modulesub` built
 that way emits `@_CNvC9modulesub8scaleInt` itself ([module](../nodes/module.md),
 "A described build"), and it exports that definition (`genlIsExported`), so an
-importer's `declare` resolves against it at link. `module-build-link` compiles
+importer's `declare` resolves against it at link. `module_build_link` compiles
 a package alone, compiles a program against a hand-written include file for it,
 links the two objects and runs the program. A generic's instances and the
 vtables both objects build are defined in each, `linkonce_odr`, and merge at

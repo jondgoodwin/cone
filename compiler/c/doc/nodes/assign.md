@@ -95,7 +95,7 @@ When the counts match, `assignParaCheck` keeps giving the tuple the lval's type,
 as before. The 2019 move to the new type inference dropped the up-front check of
 the whole rval, and until 23 September 2026 nothing checked an extra: an
 ill-typed one crashed the compiler, and so did any single lval given several
-values, because the value tuple had no type. `core-success` and `core-typecheck`
+values, because the value tuple had no type. `core_success` and `core_typecheck`
 pin both forms.
 
 **Type check does not check mutability.** It coerces and it types. Everything

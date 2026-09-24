@@ -245,7 +245,7 @@ never resolve. A library compiled from a build description is the way off that:
 its root is named, so its symbols are spelled as its importers spell them, and
 it exports what they need — its public definitions, and each private one an
 `inline`, generic or macro body reaches — so a program compiled against a
-hand-written include file for it links and runs (`module-build-link`); the
+hand-written include file for it links and runs (`module_build_link`); the
 include file declares what the package defines with `extern` and no body, and
 each declaration takes the package's Cone name. Congo drives it: `congo run`
 compiles each package a program imports on its own, from a build description it

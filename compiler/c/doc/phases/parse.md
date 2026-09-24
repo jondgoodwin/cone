@@ -80,7 +80,7 @@ byte is refused as a token (`ErrorBadTok`) rather than absorbed into a name, and
 the scan resumes at the byte after it rather than at the length its lead byte
 claimed. `utf8ByteSkip` never advances past the character in front of it, which
 is what keeps a malformed byte from consuming the source that follows.
-`lexical-reject-tokens` holds both shapes.
+`lexical_reject_tokens` holds both shapes.
 
 **An integer literal is 64 bits wide at most.** `lexScanNumber` accumulates
 into a `uint64_t` and refuses a digit that would carry past it
@@ -88,7 +88,7 @@ into a `uint64_t` and refuses a digit that would carry past it
 have been consumed, so the token still ends where it should and the parser
 carries on with it. The digits of a float are exempt: they are read again by
 `lexToFloat`, so a mantissa wider than 64 bits is a value, not an overflow.
-`lexical-reject-overflow` holds the boundary in both bases.
+`lexical_reject_overflow` holds the boundary in both bases.
 
 **Names are interned at scan time, and `Name.node` is the binding slot.**
 `nametblFind` returns one immovable `Name*` per unique string. That same
@@ -114,7 +114,7 @@ default and `@unsized` declines it. A `#` word is held for metaprogramming:
 was followed by is not reported again. `?.` is held for None propagation:
 `ErrorReserved`, and it is read as `.`. `lexScanIdent` returns 0 for a dropped
 word and `lexNextToken` scans on from where it stopped.
-`lexical-reject-unbuilt` holds all three.
+`lexical_reject_unbuilt` holds all three.
 
 **A word held for an unimplemented feature is reserved; a word that names an
 unbuilt *kind of declaration* is a token.** `mod` and `actor` are the two kinds

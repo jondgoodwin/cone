@@ -96,7 +96,7 @@ another's (`modFoldNames`), a type resolved by demand from another module
 ones are in reach. Layering would let the outer scope's names answer whatever
 the inner module's namespace does not hold: a sister's `use Dir;` would find the
 `Dir` of the sister whose import reached it, and a child's its parent's.
-`module-fold-scope-nameres` pins each.
+`module_fold_scope_nameres` pins each.
 
 **A path starts in the hook table like anything else.** `a.b.name` looks `a` up
 as the bare name it is, so a local of that spelling shadows a module of it.

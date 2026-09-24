@@ -34,7 +34,7 @@ expectation at once.
 
 **It is an inner-loop filter, not a substitute for the full run**, and the reason
 is worth understanding. A scenario's tags say what it is *about*, not every phase
-it passes through — `typemgmt-success` is tagged `typecheck, genllvm, runtime`
+it passes through — `typemgmt_success` is tagged `typecheck, genllvm, runtime`
 even though its source obviously goes through the parser. So a parser change
 selects the scenarios written to exercise parsing, not every scenario a parser
 change could conceivably break. Widening the map until it could would select
@@ -109,16 +109,17 @@ than filing it somewhere convenient.
 
 Each group is a directory. Scenario files carry the group name as a prefix, so
 they stay unambiguous when opened by name or compiled by hand into a shared
-output directory:
+output directory. A name is written with underscores, never hyphens, so that a
+scenario's file name is also the name of the module it compiles to:
 
 ```
 test/cases/core/
   cases.toml                    every scenario: category, tags, runs, file-level expectations
-  core-success.cone             the group's success program
-  core-success.out              expected stdout, for a run scenario
-  core-parse-delimiters.cone    parse-stage rejects, expectations annotated inline
-  core-parse-decls.cone
-  core-typecheck.cone
+  core_success.cone             the group's success program
+  core_success.out              expected stdout, for a run scenario
+  core_parse_delimiters.cone    parse-stage rejects, expectations annotated inline
+  core_parse_decls.cone
+  core_typecheck.cone
 ```
 
 A group holds one success program plus one failure scenario per compiler stage it
@@ -141,13 +142,13 @@ support module alike:
 
 ```
 test/cases/module/
-  module-folder-sweep/          a folder scenario
-    module-folder-sweep.cone      its designated file: what the runner compiles
-    module-folder-sweep.out       expected stdout, beside its source as always
+  module_folder_sweep/          a folder scenario
+    module_folder_sweep.cone      its designated file: what the runner compiles
+    module_folder_sweep.out       expected stdout, beside its source as always
     sibling.cone                  swept in by the compiler
     deep/nested.cone              and at any depth
-  module-submodule/             a folder scenario holding a module TREE
-    module-submodule.cone         the root module
+  module_submodule/             a folder scenario holding a module TREE
+    module_submodule.cone         the root module
     geometry/geometry.cone        a submodule of it, drawn by its own name
     geometry/scaling/scaling.cone and a submodule of that
   modfolder/                    a folder support module, imported by a scenario
@@ -176,7 +177,7 @@ test/cases/module/
   this compile *defines*, so it links like any single-file program. A module an
   `import` reached by a path is declared and never generated, which is what stops
   those from running — while an import of a SISTER loads nothing and links like
-  the rest of the tree, which `module-import-sister` runs.
+  the rest of the tree, which `module_import_sister` runs.
 - **A subfolder holding its own designated file is a submodule**, not more of the
   scenario's own files, and so is a file whose first statement is `mod` — a
   scenario file that opens with `mod` is a one-file module, not one of the
@@ -192,8 +193,8 @@ the folder is swept: a file it does not list is not compiled. Output filenames
 and the `.out` file derive from the description's name as from any source.
 Annotations live in the description, which the compiler reads with the Cone
 lexer and so reports against, and in every `.cone` file beneath the folder — the
-ones it lists and the ones its import lines name. `module-build-lib` and
-`module-build-exe` are the pair: a library and a program.
+ones it lists and the ones its import lines name. `module_build_lib` and
+`module_build_exe` are the pair: a library and a program.
 
 **Write a folder scenario when the file layout is the subject** — which files a
 module holds, what names them, what collides, what a subfolder draws. Anything
@@ -219,11 +220,11 @@ So flow diagnostics — `ErrorMove`, the lifetime checks in `assign.c` and
 `return.c`, and `ErrorNoMut` on an assignment, which is a flow diagnostic and not
 a type-check one despite appearances — may appear in several functions of one
 file, and after an earlier declaration has failed at either stage.
-`core-flow-gate` pins both gates, and is the one file in the corpus that
+`core_flow_gate` pins both gates, and is the one file in the corpus that
 deliberately mixes a signature failure, a body failure and flow diagnostics.
 
-Several flow scenarios are one function each, and `closure-typecheck-sig` is
-split from `closure-typecheck-use` and `closure-typecheck-call`. Those splits
+Several flow scenarios are one function each, and `closure_typecheck_sig` is
+split from `closure_typecheck_use` and `closure_typecheck_call`. Those splits
 are simplifications rather than requirements.
 
 **One gate is global**: name resolution returns before type checking begins if it
@@ -249,7 +250,7 @@ all late in the file, check that gate first.
 - **One diagnostic's whole story.** Where a single `ErrorCode` covers several
   distinct causes with different remedies, the cases belong side by side, so that
   a reader can check each cause names the right advice and a change that reworded
-  one is visible against the others. `struct-typecheck-nosize` is that file for
+  one is visible against the others. `struct_typecheck_nosize` is that file for
   `ErrorNoSize` and its five causes.
 
 **Length is not a reason to split.** Ten scenarios carry more than six
@@ -261,11 +262,11 @@ about one thing; never for a count.
 though it costs something worth writing down in the file. If that guard
 regresses, the scenario does not fail an assertion — the process dies and
 every expectation in the file is lost with it, including coverage of unrelated
-things. `generic-typecheck-macro` carries both arity and non-termination and says
+things. `generic_typecheck_macro` carries both arity and non-termination and says
 so at the top. Accepting that cost is the ordinary choice; a separate file buys
 only the isolation.
 
-Name the split for what it covers — `core-parse-delimiters`, not `core-parse-1`.
+Name the split for what it covers — `core_parse_delimiters`, not `core_parse_1`.
 
 ### What cannot be a scenario at all
 
@@ -300,7 +301,7 @@ Runtime programs print one `name = value` line per fact established, through
 repository's `packages/` folder, which a `conec` built by CMake finds by default,
 with no option and no setup. The runner passes nothing to find it. A run that
 needs another package of the same name adds a `--path` folder in its `options`,
-which is searched ahead of `packages/` (`module-package-path`); the
+which is searched ahead of `packages/` (`module_package_path`); the
 `CONE_PACKAGES` environment variable, which replaces `packages/` itself, is not
 something a scenario can set.
 
@@ -313,7 +314,7 @@ the scenario's options, to an object of its own in the same output folder, and
 linked in beside the program's object. A diagnostic or a failing compile there
 fails the scenario. It belongs to a folder `run` scenario only, and a linked
 source may not share the scenario's own basename, since its object would take
-the same name (`module-build-link`). A named check with an `object` key reads
+the same name (`module_build_link`). A named check with an `object` key reads
 what a linked compile generated (section 4, "`cases.toml` keys").
 
 ## 4. Assert
@@ -373,7 +374,7 @@ Two consequences worth knowing. A support module carrying annotations imposes
 them on **every** scenario that imports it, which is the honest reading: if two
 scenarios both pull in a module that fails, both must say so. And a scenario
 whose annotations are all in a support module still has none of its own —
-`module-typecheck-provenance` is the case, and its whole assertion is which file
+`module_typecheck_provenance` is the case, and its whole assertion is which file
 gets named.
 
 Two constraints follow from annotations living on lines:
@@ -414,7 +415,7 @@ An assertion against LLVM IR, the symbols it declares, or a run's stdout has no
 source line to attach to. Write it as a named check in `cases.toml`:
 
 ```toml
-[[scenario.struct-methods.check]]
+[[scenario.struct_methods.check]]
 name = "methods-lower-to-concrete-symbols"
 target = "symbols"
 contains = ["define internal Point.addValue comdat nodeduplicate"]
@@ -507,7 +508,7 @@ The demangler lives in `test/run.py`, and every run begins by reading the
 scheme's worked examples through it (`--selftest` does only that). A grammar
 change that broke a reading therefore stops the run as one fault, and the
 scenarios then check conec's encoder against the demangler on the symbols it
-actually emits; `struct-methods` is where a punycoded name does so.
+actually emits; `struct_methods` is where a punycoded name does so.
 
 ### `cases.toml` keys
 
@@ -518,7 +519,7 @@ never compiled on their own, each of which may likewise be a file or a folder.
 ```toml
 support = []
 
-[scenario.core-overload]
+[scenario.core_overload]
 category    = "run"          # required; one of the six categories
 description = "..."          # one line, for failure output
 tags        = ["typecheck", "genllvm", "runtime"]
@@ -526,30 +527,30 @@ diagnostics = 0              # total count; required for 'recover'
 exit        = 0              # only where it is not the category's default
 xfail       = false          # omit unless true
 
-[scenario.module-build-link]
+[scenario.module_build_link]
 category    = "run"
 link        = ["q/q.conebuild"]  # compiled alone first, and linked in (section 3)
 
-[scenario.driver-bad-option]
+[scenario.driver_bad_option]
 category    = "driver"       # a driver scenario has no .cone file
 argv        = ["--bogus"]    # the whole invocation; nothing is appended
 exit        = 4              # required: asserting it is the whole category
 
-[[scenario.core-overload.run]]   # omit entirely for a single default run
+[[scenario.core_overload.run]]   # omit entirely for a single default run
 name    = "debug"                # declare all of them once you declare any
 options = ["--debug"]
 
-[[scenario.core-overload.unlocated]]   # diagnostics errorMsg prints with no line
+[[scenario.core_overload.unlocated]]   # diagnostics errorMsg prints with no line
 code    = "ErrorNoLoop"
 message = "may not be used as an expression"
 
-[[scenario.core-overload.check]]
+[[scenario.core_overload.check]]
 name     = "overload-lowers-to-concrete"
 target   = "symbols"           # or "llvmir", "preir", or "stdout" for a 'run' scenario
 contains = ["define internal scaleInt comdat nodeduplicate"]
 excludes = ["scale "]          # a definition's name is followed by its COMDAT
 
-[[scenario.module-build-link.check]]
+[[scenario.module_build_link.check]]
 name     = "the-library-shares-its-own-instances"
 target   = "symbols"
 object   = "q"                 # read what a 'link' entry's compile generated
@@ -565,7 +566,7 @@ linkage in each, say.
 **Several runs of one source** is how an option matrix avoids duplicating a
 `.cone` file. Every run is compared against the same expectations, so what a
 second run buys is the assertion that those expectations do not depend on the
-option. `core-success` declares `release` and `debug`, the second passing
+option. `core_success` declares `release` and `debug`, the second passing
 `--debug` to turn optimization off — which is the only way the corpus can catch
 code generation that is wrong in a way the optimizer happens to repair. Declaring
 one run means declaring all of them; the default run disappears.

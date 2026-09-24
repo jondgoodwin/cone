@@ -7,11 +7,11 @@
 # The subject is the requirement/implementation split: a trait names methods and
 # fields, a type satisfies them, and a virtual reference dispatches to whichever
 # implementation it points at. The two success programs divide at the seam
-# between dispatch and its inverse. trait-success establishes what a virtual
+# between dispatch and its inverse. trait_success establishes what a virtual
 # call reaches -- structural conformance, nominal conformance with 'is',
 # inherited defaults, field requirements, marker traits -- and carries the LLVM IR
 # checks, because which declaration a vtable slot points at is exactly what a run
-# cannot observe. trait-variants establishes recovering the concrete type again,
+# cannot observe. trait_variants establishes recovering the concrete type again,
 # for an enum's closed set of variants, for an open trait's is-a implementers and
 # for a type that conforms structurally without naming the trait at all, which is
 # the operation the enum group deliberately left here.
@@ -19,16 +19,16 @@
 # The reject scenarios are split first by pipeline stage, because analysis halts
 # between stages, and then by sub-family:
 #
-# - trait-nameres is alone at its stage. '&<' applied to a value rather than a
+# - trait_nameres is alone at its stage. '&<' applied to a value rather than a
 #   type is diagnosed during name resolution, which returns before type
 #   checking, so nothing else in its file would be reached.
-# - trait-typecheck-conform is about a type's relationship to the abstractions it
+# - trait_typecheck_conform is about a type's relationship to the abstractions it
 #   asserts, method requirements and field requirements alike, all of which are
 #   checked when the struct is checked. That is the same pass as
 #   function bodies but not the same pass as function signatures, and a
 #   signature error suppresses the whole pass (module.c:181), so that file
 #   declares no function outside a struct.
-# - trait-parse-extends is a stage earlier: it is the base clause grammar, which
+# - trait_parse_extends is a stage earlier: it is the base clause grammar, which
 #   is parse's, so nothing in that file is name resolved and it holds nothing
 #   else. It is in this group rather than struct's because what it is about is the
 #   'is' clause -- that a type states its abstractions once, that 'extends' names
@@ -36,15 +36,15 @@
 #   the two are separate assertions a type may make together. What may be
 #   enriched, and what an enrichment may declare, is a stage later and is
 #   struct's.
-# - trait-parse-kind-modifier is at that same stage and separate from it because
+# - trait_parse_kind_modifier is at that same stage and separate from it because
 #   the subject is the kind keyword rather than the base clause: the 'trait'
 #   modifier written twice, and the two kinds the grammar admits and the compiler
 #   does not build.
-# - trait-typecheck-vref and trait-typecheck-dispatch answer different
+# - trait_typecheck_vref and trait_typecheck_dispatch answer different
 #   questions -- what a virtual reference may be built from, versus what may be
 #   done through one that is well formed. Together they would be twenty-two
 #   diagnostics.
-# - trait-flow-vref is a stage later still: ErrorNoMut on an assignment is a
+# - trait_flow_vref is a stage later still: ErrorNoMut on an assignment is a
 #   data-flow diagnostic despite reading like a type-check one, and what it
 #   pins is the permission a write or a read through a virtual reference is
 #   checked against.
@@ -58,15 +58,15 @@
 #   piece that can be written -- a trait declaring '()', reached through a
 #   virtual reference, which is the mechanism the page describes -- fails
 #   because a call is never routed through the vtable. That is asserted in
-#   trait-typecheck-dispatch, which is the whole of what can be claimed here.
+#   trait_typecheck_dispatch, which is the whole of what can be claimed here.
 #   Function references, the thing a closure reference would generalize, are
 #   ref's and closure's.
 #
 # - An anonymous 'trait {'. It is the same parseStruct path as 'struct {' and
-#   'enum {', and struct-parse covers all three together rather than testing one
+#   'enum {', and struct_parse covers all three together rather than testing one
 #   parser function once per group.
 #
-# - A trait as a value type, beyond the one diagnostic in trait-typecheck-vref.
+# - A trait as a value type, beyond the one diagnostic in trait_typecheck_vref.
 #   A trait is not instantiable, so there is no behavior to establish past the
 #   rejection itself.
 #
@@ -74,11 +74,11 @@
 #   its base lacks, so that the base's own values reach a trait by being bound to
 #   the enriched name. It dispatches through a virtual reference and so reads as
 #   this group's, but what it establishes is what 'extends' delivers, and every
-#   other claim about the enrichment is in struct-extends with it.
+#   other claim about the enrichment is in struct_extends with it.
 #
 # Codes this group does not claim: ErrorNoImpl, which an abstract method without
 # a body provokes and which reads as trait's, is a parse-stage diagnostic
-# already covered by core-parse-fns, struct-parse and closure-parse-sig, and a
+# already covered by core_parse_fns, struct_parse and closure_parse_sig, and a
 # trait is the one place the construct is legal.
 
 support = ["traitmeter.cone", "traitscale.cone"]
@@ -88,16 +88,16 @@ support = ["traitmeter.cone", "traitscale.cone"]
 # 'trait' is a modifier on the kind, so 'struct trait X' and 'trait X' are one
 # declaration. A run rather than a compile because the claim is that the long
 # spelling is a trait in every respect, and which implementation a vtable slot
-# holds is exactly what compiling clean cannot show. Separate from trait-success
+# holds is exactly what compiling clean cannot show. Separate from trait_success
 # because that file's subject is the requirement/implementation split and this
 # one's is the spelling: every line here would still belong if that split were
 # established nowhere.
-[scenario.trait-kind-modifier]
+[scenario.trait_kind_modifier]
 category = "run"
 description = "'struct trait' and 'trait' as one declaration, in a chain that crosses both spellings"
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 
-[scenario.trait-success]
+[scenario.trait_success]
 category = "run"
 description = "Trait requirements satisfied structurally and with 'is', and dispatched through a virtual reference"
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
@@ -107,7 +107,7 @@ tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 # vtable selected and the one it must not. Which of them a slot holds is what
 # the run prints ('virtual-dispatch-overload-candidate'); the slot's shape is
 # the IR's to show, below.
-[[scenario.trait-success.check]]
+[[scenario.trait_success.check]]
 name = "each-implementer-supplies-a-vtable"
 target = "symbols"
 contains = [
@@ -123,7 +123,7 @@ contains = [
 # left null: the bitcast's operand is a function over that type's pointer.
 # The run's printed numbers say which method; the IR says the slot was wired
 # from a symbol at all.
-[[scenario.trait-success.check]]
+[[scenario.trait_success.check]]
 name = "vtable-slot-holds-a-method-of-the-implementer"
 target = "llvmir"
 contains = [
@@ -139,7 +139,7 @@ excludes = ['constant %"Shape:Vtable" { i32 (i8*)* null']
 # 'reading' gets. Nothing is spelled after the trait, and the clone carries no
 # type arguments, because an inherited default is a copy rather than an
 # instance of a generic.
-[[scenario.trait-success.check]]
+[[scenario.trait_success.check]]
 name = "inherited-default-is-cloned-per-implementing-type"
 target = "symbols"
 contains = [
@@ -154,7 +154,7 @@ excludes = ["Meter.reading"]
 # parameter lowers to a pointer, so a widening that let a value satisfy a
 # reference requirement would show here as a mismatched slot type. Each
 # implementer's slot must hold its own method rather than be left null.
-[[scenario.trait-success.check]]
+[[scenario.trait_success.check]]
 name = "parameterized-requirement-types-its-vtable-slot"
 target = "llvmir"
 contains = [
@@ -169,7 +169,7 @@ excludes = ['constant %"Scaler:Vtable" { i32 (i8*, i32)* null']
 
 # A virtual reference is a fat pointer of value and vtable, and a trait's field
 # requirement is a vtable slot holding an offset rather than a function pointer
-[[scenario.trait-success.check]]
+[[scenario.trait_success.check]]
 name = "vtable-layout-carries-methods-then-field-offsets"
 target = "llvmir"
 contains = [
@@ -181,7 +181,7 @@ contains = [
 # with several traits has several lists and LLVM never has to tell two apart
 # with its '.1' uniquifier. The list is internal whatever the compile: it holds
 # the implementers this compile saw, so no two objects could agree on one.
-[[scenario.trait-success.check]]
+[[scenario.trait_success.check]]
 name = "vtable-list-is-named-per-trait"
 target = "symbols"
 contains = [
@@ -193,7 +193,7 @@ contains = [
 excludes = ["(vtable list).1"]
 
 # The list holds one entry per implementer, which is its length to show.
-[[scenario.trait-success.check]]
+[[scenario.trait_success.check]]
 name = "vtable-list-holds-every-implementer"
 target = "preir"
 contains = [
@@ -209,7 +209,7 @@ contains = [
 # mixed in (Tally). A run cannot see any of this: every printed number would be
 # the same whatever sat in front of it, and what a trait used to add was a
 # constant zero byte nothing ever read.
-[[scenario.trait-success.check]]
+[[scenario.trait_success.check]]
 name = "composing-traits-adds-no-hidden-field"
 target = "preir"
 contains = [
@@ -223,11 +223,11 @@ contains = [
 
 # A trait method whose parameter is a virtual reference to its own trait makes
 # the vtable recursive: one of its slots takes the fat pointer to itself. Its
-# own file, rather than more of trait-success, because the subject is the
+# own file, rather than more of trait_success, because the subject is the
 # recursion and not the requirement/implementation split, and because the
 # construct used to overflow the compiler's stack, which would take every other
 # expectation in a shared file down with it.
-[scenario.trait-self-vref]
+[scenario.trait_self_vref]
 category = "run"
 description = "A trait method taking a virtual reference to its own trait, dispatched through the receiver and the argument"
 tags = ["typecheck", "genllvm", "runtime"]
@@ -235,7 +235,7 @@ tags = ["typecheck", "genllvm", "runtime"]
 # The recursive slot is typed with the virtual reference to its own vtable,
 # which LLVM can only say through the vtable's name: the reference type is
 # declared before the vtable's body is filled in.
-[[scenario.trait-self-vref.check]]
+[[scenario.trait_self_vref.check]]
 name = "recursive-slot-takes-a-reference-to-its-own-vtable"
 target = "llvmir"
 contains = [
@@ -243,7 +243,7 @@ contains = [
   '%"Meter:Vtable.0" = type { i8*, %"Meter:Vtable"* }',
 ]
 
-[scenario.trait-inherited-defaults]
+[scenario.trait_inherited_defaults]
 category = "compile"
 description = "Two types inheriting one trait default each get their own copy of it, spelled after the type"
 tags = ["typecheck", "genllvm"]
@@ -253,7 +253,7 @@ tags = ["typecheck", "genllvm"]
 # definition here, linked as a method written in that type would be. The
 # trait's own copy is not a symbol at all. A collision between the two clones
 # would show as LLVM's '.1' uniquifier on the second definition.
-[[scenario.trait-inherited-defaults.check]]
+[[scenario.trait_inherited_defaults.check]]
 name = "each-implementing-type-defines-its-own-clone"
 target = "symbols"
 contains = [
@@ -272,7 +272,7 @@ excludes = [
 # reference node kept the original's interned type record and the LLVM type is
 # memoized on it. Beta's clone took a '%Alpha*' and would have read 'span' off
 # the end of an Alpha.
-[[scenario.trait-inherited-defaults.check]]
+[[scenario.trait_inherited_defaults.check]]
 name = "each-clone-takes-its-own-receiver"
 target = "llvmir"
 contains = [
@@ -285,7 +285,7 @@ contains = [
 # implementer. One function serves implementers of two different sizes, so any
 # implementer's type here would be wrong for the other -- and being the larger of
 # the two, '%Beta' would read past the end of an Alpha.
-[[scenario.trait-inherited-defaults.check]]
+[[scenario.trait_inherited_defaults.check]]
 name = "a-trait-reference-takes-the-traits-own-layout"
 target = "llvmir"
 contains = [
@@ -304,7 +304,7 @@ excludes = [
 # module's scope, with what that module folds in visible to the trait's default
 # method. What is asserted is that the compile succeeds at all, and what the
 # root declares for the names the inherited default reached.
-[scenario.trait-import-inherit]
+[scenario.trait_import_inherit]
 category = "compile"
 description = "A type declaring is-a against a trait from an imported module, whose inherited default names what that module folded in"
 tags = ["parse", "nameres", "typecheck", "genllvm"]
@@ -312,7 +312,7 @@ tags = ["parse", "nameres", "typecheck", "genllvm"]
 # The inherited default is the root type's own clone, and the function it
 # reached by the other module's fold is declared under the module that
 # declares it. Nothing is spelled after traitmeter for the fold.
-[[scenario.trait-import-inherit.check]]
+[[scenario.trait_import_inherit.check]]
 name = "inherited-default-reaches-the-other-modules-fold"
 target = "symbols"
 contains = [
@@ -321,7 +321,7 @@ contains = [
 ]
 excludes = ["traitmeter.twice", "traitmeter.Meter.doubled"]
 
-[scenario.trait-variants]
+[scenario.trait_variants]
 category = "run"
 description = "A base type's abstract method implemented per variant, dispatched and then narrowed back"
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
@@ -334,7 +334,7 @@ tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 # An enum's variant is owned by its enum, so its vtable reads as the enum's
 # variant. Tri, declared after the function whose signature builds Shape's
 # vtable, gets a vtable like the others.
-[[scenario.trait-variants.check]]
+[[scenario.trait_variants.check]]
 name = "vtables-are-discardable"
 target = "symbols"
 contains = [
@@ -349,7 +349,7 @@ contains = [
 # holding a null function pointer is what the IR shows and what the printed
 # numbers cannot, and a bitcast of a Tri method is the proof the slot was
 # filled from a symbol rather than left empty.
-[[scenario.trait-variants.check]]
+[[scenario.trait_variants.check]]
 name = "late-declared-structural-conformer-fills-its-vtable-slot"
 target = "llvmir"
 contains = ['constant %"Shape:Vtable" { i32 (i8*)* bitcast (i32 (%Tri*)* @']
@@ -363,19 +363,19 @@ excludes = ['constant %"Shape:Vtable" { i32 (i8*)* null']
 # diagnostic stops the compile before name resolution, so nothing else here
 # would be reached. Both kinds that can write one are here, because the
 # diagnostic names the kind it was written on.
-[scenario.trait-parse-extends]
+[scenario.trait_parse_extends]
 category = "reject"
 description = "The base clause grammar: 'extends' on an abstraction, and either clause written twice"
 tags = ["parse"]
 diagnostics = 3
 
-# The other half of trait-kind-modifier: what the modifier grammar refuses. The
+# The other half of trait_kind_modifier: what the modifier grammar refuses. The
 # modifier does not stack, and a kind whose abstraction does not exist says so
 # where the declaration is written rather than being accepted with nothing under
 # it. 'actor' is here rather than in a concurrency group because carrying this
 # modifier is the only thing that spelling does today. 'mod trait' is built and
 # belongs to module, as 'mod' by itself does.
-[scenario.trait-parse-kind-modifier]
+[scenario.trait_parse_kind_modifier]
 category = "reject"
 description = "'trait' written twice, and the kind whose abstraction the grammar admits and the compiler does not build"
 tags = ["parse"]
@@ -383,15 +383,15 @@ diagnostics = 4
 
 # -------- name resolution stage --------
 
-[scenario.trait-nameres]
+[scenario.trait_nameres]
 category = "reject"
 description = "Borrowing or allocating a virtual reference instead of coercing one"
 tags = ["nameres"]
 diagnostics = 3
 
-# The other half of trait-success's 'Meter.scale': a static function belongs to
+# The other half of trait_success's 'Meter.scale': a static function belongs to
 # the type that declares it and is reached through that name alone.
-[scenario.trait-nameres-static]
+[scenario.trait_nameres_static]
 category = "reject"
 description = "A trait's static function, named through an implementer or a variant"
 tags = ["nameres"]
@@ -400,7 +400,7 @@ diagnostics = 2
 # Its converse: a method of a trait or an enum belongs to each implementer or
 # variant, so a path through the abstraction names a copy nothing generates.
 # Each of these crashed generation with no diagnostic.
-[scenario.trait-nameres-method-path]
+[scenario.trait_nameres_method_path]
 category = "reject"
 description = "A trait's or enum's method, named through the trait or the enum"
 tags = ["nameres"]
@@ -410,8 +410,8 @@ diagnostics = 7
 # that each stand on the other are this stage's. The cycle used to hang the
 # compiler. The duplicate-field half of this file is gone with the splice: a trait
 # contributes no fields, so declaring the name is compliance rather than a clash,
-# and the splice that can still produce one is the enum's -- enum-nameres-splice.
-[scenario.trait-nameres-inherit]
+# and the splice that can still produce one is the enum's -- enum_nameres_splice.
+[scenario.trait_nameres_inherit]
 category = "reject"
 description = "Types that each name the other as a base, or mix in themselves"
 tags = ["nameres"]
@@ -423,19 +423,19 @@ diagnostics = 2
 # the fields it requires the type to declare in its order at position 0. The field
 # half points at the field that breaks the prefix rather than at the struct, which
 # is the member a reader would go to; everything else is reported on the struct.
-[scenario.trait-typecheck-conform]
+[scenario.trait_typecheck_conform]
 category = "reject"
 description = "Types whose declarations do not satisfy the abstraction they assert or mix in"
 tags = ["typecheck"]
 diagnostics = 9
 
-[scenario.trait-typecheck-vref]
+[scenario.trait_typecheck_vref]
 category = "reject"
 description = "Types a virtual reference cannot be made of, or coerced to and from, and traits no virtual reference can dispatch through"
 tags = ["typecheck"]
 diagnostics = 16
 
-[scenario.trait-typecheck-dispatch]
+[scenario.trait_typecheck_dispatch]
 category = "reject"
 description = "Members and operations a virtual reference cannot reach, and comparing what a reference to a trait refers to"
 tags = ["typecheck"]
@@ -443,7 +443,7 @@ diagnostics = 8
 
 # -------- flow stage --------
 
-[scenario.trait-flow-vref]
+[scenario.trait_flow_vref]
 category = "reject"
 description = "Writing a trait field through a virtual reference that grants no write, and reading one through a reference that grants no read"
 tags = ["flow"]
@@ -455,7 +455,7 @@ diagnostics = 3
 # lost, so widening a plain reference to a base trait's reference type -- the
 # same coercion, lost the same way -- is asserted beside it here rather than in
 # ref, whose lifetime scenarios all start from a borrow expression.
-[scenario.trait-flow-vref-lifetime]
+[scenario.trait_flow_vref_lifetime]
 category = "reject"
 description = "A virtual reference, or a reference widened to a base trait, stored or returned past the value it borrows"
 tags = ["flow"]
