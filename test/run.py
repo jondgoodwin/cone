@@ -3329,4 +3329,11 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    # A failure can quote a character the output's encoding has no byte for:
+    # a Windows console's code page, or the locale's when output is piped.
+    # Printing it would raise and lose the rest of the report, so such a
+    # character is written as its escape (≠) instead. Every other
+    # character is written as before.
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(errors="backslashreplace")
     sys.exit(main(sys.argv[1:]))
