@@ -64,7 +64,7 @@ static int foldStarAdmits(INode *member, int admit) {
 // takes and 'but' does not leave out. Not Self, not an unnamed node, not a
 // private name, and never the source's own finalizer or clone, which belong to
 // its values' lifecycle. A module's star clause is made pass by pass instead,
-// since a module read round a cycle of imports holds more in a later pass
+// since a module whose own folds waited holds more in a later pass
 // (importFoldStar).
 void foldStarItems(Namespace *ns, Name *srcname, FoldClause *fold, int admit) {
     INode **nodesp;
@@ -419,7 +419,7 @@ void foldModUseExpand(NameResState *pstate, ModuleNode *mod, ModUseNode *use) {
     if (fold->expanded)
         return;
     // An enum named through a binding not there yet -- a re-export still to
-    // arrive round a cycle of imports -- waits for a later fold pass
+    // arrive in a later pass (modFoldAll) -- waits for that pass
     if (!modFoldReporting() && modFoldAwaits(use->source)) {
         modFoldWait();
         return;

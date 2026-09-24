@@ -20,9 +20,9 @@
 		<span class="pre">mod</span></a>. A module
 		reaches its own submodules by name, folds their names in with a
 		<a href="#usesub"><span class="pre">use</span> statement</a>, and reaches a
-		<a href="refinclude.html#sister">sister by importing her</a>, and
-		<a href="refinclude.html#parent">a public name of its parent</a> the same
-		way. A module
+		<a href="refinclude.html#sister">sister by importing her</a>, but never
+		<a href="refinclude.html#parent">a name of its parent</a>: modules
+		<a href="#dag">depend on each other in one direction only</a>. A module
 		may <a href="#extends">extend</a> another, reusing its names as
 		its own, and may name on its <span class="pre">mod</span> line the
 		<a href="#default">names a bare import of it folds</a>. A module is never
@@ -254,20 +254,34 @@ geometry/
 		<a href="refinclude.html#sister">importing a sister module</a> — and
 		nothing arrives unasked, because a name nobody imported is not a name of
 		the module.</p>
-	<p><b>A submodule imports its parent's public names the same way.</b> The
-		registry is the parent's namespace, so it holds what the parent declares
-		as well as its modules: <span class="pre">import Point;</span> inside
-		<span class="pre">scaling</span> binds <span class="pre">geometry</span>'s
-		public <span class="pre">Point</span>, a type, a function or a global
-		alike — see <a href="refinclude.html#parent">importing a name of the
-		parent</a>. A name the parent keeps private cannot be imported, so
-		<span class="pre">pub</span> shares a name downward to the parent's own
-		modules as well as outward.</p>
-	<p>That reach is one level and does not accumulate as you go down. A module
-		sees the names of its own parent, and not its grandparent's: if it
-		needs one of those, its parent imports it and re-exports it with
-		<span class="pre">pub</span>. And a submodule cannot name its parent —
-		containment runs one way.</p>
+	<p><b>A submodule does not import its parent's names.</b> A module depends on
+		each of its own submodules, so a submodule that depended on its parent —
+		<span class="pre">import Point;</span> inside <span class="pre">scaling</span>,
+		naming <span class="pre">geometry</span>'s <span class="pre">Point</span> —
+		would make the two depend on each other, and that is an error (see
+		<a href="#dag">below</a>). What a parent and its submodules share belongs
+		in a sister of theirs, which each of them imports. A submodule cannot name
+		its parent either — containment runs one way.</p>
+	<p>The reach between sisters is one level and does not accumulate as you go
+		down. A module sees its own parent's submodules, and not its
+		grandparent's.</p>
+
+	<h3 id="dag">Modules depend on each other in one direction</h3>
+	<p>Imports never go round in a loop, between the modules of a package as
+		much as between packages. A module <b>depends on</b> each module it
+		imports, on the module holding a name it imports, on the module it
+		<a href="#extends">extends</a>, and on each of its own submodules. If
+		those dependencies ever lead from a module back to itself, the program is
+		in error, and the error names the modules round the loop:</p>
+<pre>
+Import loop between modules: geometry -> geometry.scaling -> geometry.
+Imports between modules must not loop (geometry contains geometry.scaling;
+geometry.scaling imports Point of geometry at scaling.cone:3). A module may
+not depend on a module that contains it: move what they share into a sister
+both import.
+</pre>
+	<p>So every program's modules have an order, each after everything it
+		depends on. That is the order their initializers will run in.</p>
 
 	<h3 id="extends">A module extending a module</h3>
 	<p>A module can be built out of another one: it takes in everything the other
@@ -330,8 +344,11 @@ pub fn volume(w i64, h i64, d i64) i64 {
 			name.</b> <span class="pre">shapes</span> is a name of
 			<span class="pre">solids</span> only if <span class="pre">solids</span>
 			imports it.</li>
-		<li>A module may not extend itself, a module it contains, or its parent, and a
-			chain of <span class="pre">extends</span> may not come back round.</li>
+		<li>A module may not extend itself, a module it contains, or its parent.
+			A module depends on the module it extends, so a chain of
+			<span class="pre">extends</span> may not come back round, and a module
+			may not import one that extends it: each is a
+			<a href="#dag">loop</a>.</li>
 		<li><span class="pre">extends</span> names a module to reuse. A module
 			conforming to a module's abstraction is a different reading, spelled
 			<a href="#modtrait"><span class="pre">is</span></a>:
@@ -392,7 +409,7 @@ mod bigint extends base use BigInt;
 			in the clause on a <span class="pre">mod</span> line.</li>
 	</ul>
 	<p>The default applies wherever a module is imported with no clause of its own:
-		a sister, a name of the parent, a module found by its file. A
+		a sister, or a module found by its file. A
 		<a href="#usesub"><span class="pre">use</span></a> of a submodule is not an
 		import, and still folds every public name.</p>
 
@@ -508,7 +525,9 @@ output = "executable"
 		is written by hand for now. The packages that come with Cone,
 		<span class="pre">core</span> and <span class="pre">stdio</span>, are
 		packages of this shape. Imports between packages may not loop: a package
-		never imports, directly or through others, a package that imports it.</p>
+		never imports, directly or through others, a package that imports it.
+		Nor may the modules inside one (<a href="#dag">above</a>). Congo checks
+		both before it compiles anything.</p>
 
 	<h3 id="build">A package's build description</h3>
 	<p>A package can be built on its own. The build tool, Congo, reads each file's

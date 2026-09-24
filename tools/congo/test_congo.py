@@ -54,6 +54,13 @@ class HeaderScan(unittest.TestCase):
                          ["stdio", "geometry", '"../q/q"'])
         self.assertEqual([i.line for i in header.imports], [5, 6, 7])
 
+    def test_extends_is_read_from_the_mod_line(self):
+        header = self.scan("mod tower extends plinth is Shell;\nimport stdio;")
+        self.assertEqual(header.mod, "tower")
+        self.assertEqual((header.extends.name, header.extends.line), ("plinth", 1))
+        self.assertEqual([i.name for i in header.imports], ["stdio"])
+        self.assertIsNone(self.scan("mod plain use run;").extends)
+
     def test_c_named_and_pub_mod_lines(self):
         self.assertEqual(self.scan('mod @c("SDL_") sdl;\nimport a;').mod, "sdl")
         self.assertEqual(self.scan("mod @c(system) win;").mod, "win")
@@ -276,6 +283,49 @@ class Scenarios(unittest.TestCase):
         run = self.congo("run", "p.cone", cwd=self.root, ok=False)
         self.assertEqual(run.returncode, 1)
         self.assertIn("import loop between packages: ping -> pong -> ping", run.stderr)
+
+    def test_an_import_loop_between_modules_is_refused(self):
+        # Two sisters importing each other, and, once that is fixed, a child
+        # importing a name of its parent: both loops, found before conec runs
+        self.congo("new", "tree", cwd=self.root)
+        pkg = self.root / "tree"
+        write(pkg / "src" / "tree.cone", """
+            mod tree;
+
+            pub fn shared() i64 {
+              1i64;
+            }
+
+            fn main() i32 {
+              0i32;
+            }
+            """)
+        write(pkg / "src" / "lexer.cone", "mod lexer;\n\nimport parser;\n")
+        write(pkg / "src" / "parser" / "parser.cone", "mod parser;\n\nimport lexer;\n")
+        run = self.congo("build", cwd=pkg, ok=False)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("import loop between modules of package tree:"
+                      " tree.lexer -> tree.parser -> tree.lexer", run.stderr)
+        self.assertIn("tree.parser imports tree.lexer at", run.stderr)
+        self.assertFalse((pkg / "build" / "debug" / "tree.conebuild").exists())
+
+        write(pkg / "src" / "parser" / "parser.cone", "mod parser extends lexer;\n")
+        run = self.congo("build", cwd=pkg, ok=False)
+        self.assertIn("tree.parser extends tree.lexer at", run.stderr)
+
+        write(pkg / "src" / "parser" / "parser.cone", "mod parser;\n\nimport shared;\n")
+        run = self.congo("build", cwd=pkg, ok=False)
+        # lexer still imports parser, so the walk reaches parser through it
+        self.assertIn("import loop between modules of package tree:"
+                      " tree -> tree.lexer -> tree.parser -> tree", run.stderr)
+        self.assertIn("tree contains tree.lexer; tree.lexer imports tree.parser at",
+                      run.stderr)
+        self.assertIn("tree.parser imports shared of tree at", run.stderr)
+        self.assertIn("move what they share into a sister both import", run.stderr)
+
+        # A sister both import, and the loop is gone
+        write(pkg / "src" / "parser" / "parser.cone", "mod parser;\n")
+        self.congo("build", cwd=pkg)
 
     def test_an_unknown_import_is_named(self):
         write(self.root / "p.cone", "import nosuch;\n\nfn main() i32 {\n  0i32;\n}\n")
