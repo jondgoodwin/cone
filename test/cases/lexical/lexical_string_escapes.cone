@@ -1,0 +1,78 @@
+mod lexical_string_escapes;
+
+import stdio use *;
+
+// String literals that begin with an escape sequence, and runs of escaped
+// quotes. The lexer sizes each literal before building it, so a count short
+// of what the build writes overruns the literal, and the literals lexed after
+// it overwrite the tail: every literal here is followed by others, and each is
+// printed whole, a byte at a time between bars, so an overrun shows as a
+// wrong byte.
+//
+// A byte that is not printable ASCII prints as its value in angle brackets, so
+// control characters and the bytes of a UTF-8 encoding are visible.
+
+fn show(label &[]u8, text &[]u8) {
+  printStr(label);
+  printStr(" = |");
+  mut i = 0u64;
+  while i < text.len {
+    imm c = text[i];
+    if c < ' ' {
+      printStr("<");
+      printUInt(u64[c]);
+      printStr(">");
+    }
+    elif c > '~' {
+      printStr("<");
+      printUInt(u64[c]);
+      printStr(">");
+    }
+    else {
+      printChar(u64[c]);
+    }
+    i = i + 1;
+  }
+  printStr("|, len ");
+  printUInt(u64[text.len]);
+  printStr("\n");
+}
+
+fn main() i32 {
+  // Each escape kind as the literal's first character
+  show("quote", "\"quote-first");
+  show("backslash", "\\backslash-first");
+  show("apostrophe", "\'apostrophe-first");
+  show("newline", "\nnewline-first");
+  show("tab", "\ttab-first");
+  show("return", "\rreturn-first");
+  show("alarm", "\aalarm-first");
+  show("backspace", "\bbackspace-first");
+  show("formfeed", "\fformfeed-first");
+  show("vtab", "\vvtab-first");
+  show("space", "\ space-first");
+  show("hex", "\x41hex-first");
+  show("u-two-bytes", "étwo-bytes");
+  show("u-three-bytes", "€three-bytes");
+  show("U-four-bytes", "\U0001F600four-bytes");
+
+  // Escaped quotes in a row, first and later in the literal
+  show("quotes-first", "\"\"\"three-quotes-first");
+  show("quotes-inside", "a\"\"two-quotes-inside");
+  show("quote-each", "\"a\"b\"c\"d\"e\"f");
+
+  // A backslash escaped before a quote, and a literal ending in an escaped
+  // backslash, which ends there and not at the next literal's quote
+  show("backslash-quote", "\\\"backslash-then-quote");
+  show("ends-backslash", "ends-in-backslash\\");
+  show("only-quote", "\"");
+  show("only-backslash", "\\");
+
+  // A multi-line literal whose content begins with an escaped quote
+  imm multi = "
+    \"multi-line-first
+    ";
+  show("multi-line", multi);
+
+  0;
+}

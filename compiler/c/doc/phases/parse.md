@@ -109,6 +109,16 @@ the rules; `lexical_reject_mlstring` the refusal. A literal that spans lines
 without its opening quote ending one is read as before: its line ends and the
 white space after each are dropped.
 
+**A string literal is sized before it is built, by the same walk that ends
+it.** `lexScanString` allocates the literal as many bytes as the source holds
+between its quotes, found by stepping over each escape sequence whole, which is
+how the build steps too; and nothing the build reads becomes more bytes than it
+takes, so the allocation always holds what is written. When a backslash is the
+last character of the source, `lexScanEscape` stops on the source's closing NUL
+rather than stepping past it, so neither a string nor a character literal reads
+beyond the source. `lexical_string_escapes` holds a literal beginning with each
+escape kind, and runs of escaped quotes, each printed whole.
+
 **Names are interned at scan time, and `Name.node` is the binding slot.**
 `nametblFind` returns one immovable `Name*` per unique string. That same
 `node` field is what makes classification O(1) in the scanner: `keywordInit`

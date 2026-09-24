@@ -258,7 +258,7 @@ char *lexScanEscape(char *srcp, uint64_t *charval) {
     case '\"': *charval = '\"'; return ++srcp;
     case '\\': *charval = '\\'; return ++srcp;
     case ' ': *charval = ' '; return ++srcp;
-    case '\0': *charval = '\0'; return ++srcp;
+    case '\0': *charval = '\0'; return srcp;  // the source's end: stay on it
     case 'x': return lexHexDigits(2, ++srcp, charval);
     case 'u': return lexHexDigits(4, ++srcp, charval);
     case 'U': return lexHexDigits(8, ++srcp, charval);
@@ -361,19 +361,21 @@ void lexScanString(char *srcp) {
     int multiline = lexEolLen(srcp) != 0;
     uint32_t indent = 0;
 
-    // Conservatively count the size of the string
-    uint32_t srclen = 0;
-    if (multiline) {
-        // Find the closing quote, stepping over each escape sequence whole.
-        // No escape sequence or end of line yields more bytes than it takes.
-        char *endp = srcp;
-        while (*endp && *endp != '"') {
-            if (*endp == '\\' && *(endp + 1))
-                ++endp;
+    // Conservatively count the size of the string: the bytes of source up to
+    // the closing quote, found as the build below finds it, by stepping over
+    // each escape sequence whole, so an escaped quote never ends the count
+    // early. Nothing the build reads yields more bytes than it takes: an
+    // escape sequence, a line's end, a control character, each is at most as
+    // long in the string as in the source.
+    char *endp = srcp;
+    while (*endp && *endp != '"') {
+        if (*endp == '\\' && *(endp + 1))
             ++endp;
-        }
-        srclen = (uint32_t)(endp - srcp);
+        ++endp;
+    }
+    uint32_t srclen = (uint32_t)(endp - srcp);
 
+    if (multiline) {
         // The closing quote's indentation, which must be all its line holds before it
         if (*endp == '"') {
             char *linebeg = endp;
@@ -383,16 +385,6 @@ void lexScanString(char *srcp) {
                 indent = (uint32_t)(endp - linebeg);
             else
                 errorMsgLex(ErrorBadTok, "A multi-line string literal's closing quote must begin its line");
-        }
-    }
-    else {
-        while (*srcp && *srcp != '"') {
-            srclen++;
-            srcp++;
-            if (*srcp == '\\' && *(srcp + 1) == '"') {
-                srclen++;
-                srcp += 2;
-            }
         }
     }
 
