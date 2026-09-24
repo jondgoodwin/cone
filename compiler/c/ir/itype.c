@@ -79,6 +79,24 @@ int itypeRefuseBareGeneric(INode *type) {
     return 1;
 }
 
+// Refuse a name that names a module or a module trait where a type must be, and
+// return 1 if it is one. nameUseGroup answers such a name as a type, so
+// isTypeNode does not tell it apart; left alone it reaches generation, which has
+// no type to give it.
+int itypeRefuseModule(INode *type) {
+    if (!isNameUseNode(type))
+        return 0;
+    INode *dcl = nameUseGetDcl((NameUseNode*)type);
+    if (dcl == NULL || (dcl->tag != ModuleTag && dcl->tag != ModTraitTag))
+        return 0;
+    errorMsgNode(type, ErrorNotType, "%s is a %s, not a type.",
+        &((NameUseNode*)type)->namesym->namestr,
+        dcl->tag == ModuleTag ? "module" : "module trait");
+    // Bound to the error type from here on, as a bare generic is
+    ((NameUseNode*)type)->dclnode = errorType;
+    return 1;
+}
+
 // Type check node, expecting it to be a type. Give error and return 0, if not.
 int itypeTypeCheck(TypeCheckState *pstate, INode **node) {
     inodeTypeCheckAny(pstate, node);
@@ -86,7 +104,7 @@ int itypeTypeCheck(TypeCheckState *pstate, INode **node) {
         errorMsgNode(*node, ErrorNotTyped, "Expected a type.");
         return 0;
     }
-    if (itypeRefuseBareGeneric(*node))
+    if (itypeRefuseBareGeneric(*node) || itypeRefuseModule(*node))
         return 0;
     return 1;
 }

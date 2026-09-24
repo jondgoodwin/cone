@@ -62,6 +62,10 @@ INode *iTypeFindFnField(INode *type, Name *name);
 // wanted, and return 1 if this is one
 int itypeRefuseBareGeneric(INode *type);
 
+// Refuse a name of a module or a module trait where a type is wanted, and
+// return 1 if this is one
+int itypeRefuseModule(INode *type);
+
 // Type check node, expecting it to be a type. Give error and return 0, if not.
 int itypeTypeCheck(TypeCheckState *pstate, INode **node);
 

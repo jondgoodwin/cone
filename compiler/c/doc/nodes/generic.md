@@ -246,7 +246,9 @@ report it again. `genericMemoize` asks the same of each type argument, so
 makes of its parameter. Inside its own braces a generic's bare name arrives here
 already re-pointed at the instance being defined (Clone, above), which carries no
 `genericinfo` and is not refused; a different generic named bare there still
-names its template, and is.
+names its template, and is. A module's or a module trait's name is refused at
+the same places, and bound to `errorType` the same way, by `itypeRefuseModule`
+with `ErrorNotType`.
 
 A **tagged trait** fans out: the base trait is cloned, then every entry of its
 `derived` list, each registering into its own `memonodes`. **The base and every

@@ -133,7 +133,7 @@ enum ErrorCode {
     // Argument lists, split out of ErrorManyArgs, which now means only that a
     // call passed more arguments than the declaration accepts
     ErrorArgCount = 1070,       // An instantiation's argument count is not its parameter count
-    ErrorNotType = 1071,        // A generic argument that must be a type is not one
+    ErrorNotType = 1071,        // A name where a type must be that names no type: a generic argument, a pattern naming a value, a module or module trait
     ErrorNoArgs = 1072,         // A generic or macro with parameters was named without arguments
     ErrorFldArgs = 1073,        // Arguments given to a field access, which accepts none
 

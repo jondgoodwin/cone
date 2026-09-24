@@ -603,6 +603,11 @@ names a member with no code or storage of its own, `ErrorAbstractMeth`, as a
 path to a struct trait's method is. `extends` naming a module trait is
 `ErrorModExtends`, whose message says to write `is`.
 
+**A module's or a module trait's name where a type is wanted is refused**
+(`itypeRefuseModule`), `ErrorNotType`: neither is a type, though `nameUseGroup`
+answers such a name as one. It is asked where a bare generic is
+([generic.md](generic.md), "A generic named bare where a type is wanted").
+
 **What is not built** [Jon 23 Sep]: host traits (a shell's, a web server's), the
 entry glue — a trait default the host calls as `main`, running `init` and
 `final` — traits that require types, and generic modules. Conformance declared by

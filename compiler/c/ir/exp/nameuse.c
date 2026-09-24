@@ -94,7 +94,8 @@ INode *nameUseGetDcl(NameUseNode *name) {
 // variable, function, overload set, field or constant makes it an expression; a
 // macro or a generic parameter makes it a meta node; every other declaration
 // makes it a type. That last is a fallthrough rather than a claim: a module is
-// not a type, and a use of its name answers as one. A name bound to nothing --
+// not a type, and a use of its name answers as one, which itypeRefuseModule
+// refuses where a type is wanted. A name bound to nothing --
 // not yet resolved, or a member name before type check selects the member
 // against the receiver's type -- is in no group: not an expression, not a
 // type, not a meta node.
