@@ -576,6 +576,73 @@ ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
     return importnode;
 }
 
+// Parse the '@c' marker, if the lexer is on one, into the facts and the string
+// of 'dclinfo', returning whether it was there. It is written after the keyword
+// of a 'mod' line or a 'fn' [Jon 23 Sep], in one of four forms: '@c', '@c("str")',
+// '@c(system)' and '@c("str", system)'. What the string means is the position's:
+// on a module ('onmod') a prefix every C name it gives carries, on a function
+// its whole symbol. 'system' is the platform's system calling convention.
+int parseCAttr(DclInfo *dclinfo, int onmod) {
+    if (!lexIsToken(CAttrToken))
+        return 0;
+    lexNextToken();
+    dclinfo->facts |= DclCName;
+    if (!lexIsToken(LParenToken))
+        return 1;
+    lexNextToken();
+    int wantcc = 1, bad = 0;
+    if (lexIsToken(StringLitToken)) {
+        if (lex->strlen == 0) {
+            errorMsgLex(ErrorCAttr, onmod
+                ? "A module's '@c' string is the prefix its C names carry, and an empty one is no prefix: write '@c'."
+                : "A function's '@c' string is its whole symbol, and an empty one names nothing.");
+            bad = 1;
+        }
+        else
+            dclinfo->cname = lex->val.strlit;
+        lexNextToken();
+        wantcc = lexIsToken(CommaToken);
+        if (wantcc)
+            lexNextToken();
+    }
+    if (wantcc) {
+        if (lexIsToken(IdentToken) && strcmp(&lex->val.ident->namestr, "system") == 0) {
+            dclinfo->facts |= DclSystemCC;
+            lexNextToken();
+        }
+        else {
+            errorMsgLex(ErrorCAttr,
+                "'@c' takes a string, 'system', or both: '@c(\"name\")', '@c(system)', '@c(\"name\", system)'.");
+            bad = 1;
+            while (!lexIsToken(RParenToken) && !lexIsToken(SemiToken) && !lexIsToken(LCurlyToken) && !lexIsToken(EofToken))
+                lexNextToken();
+        }
+    }
+    parseCloseTok(RParenToken);
+    // A marker already reported is dropped whole, so that nothing is reported
+    // again for what it would have said
+    if (bad) {
+        dclinfo->facts &= ~DclStated;
+        dclinfo->cname = NULL;
+        return 0;
+    }
+    return 1;
+}
+
+// Report 'extern' on a function whose body an importer must have to use it:
+// an inline function is expanded where it is called, and a generic one is
+// instantiated there, so neither has a definition elsewhere to reach
+void parseExternFnCheck(FnDclNode *fn) {
+    if (!(fn->flags & FlagExtern))
+        return;
+    if (fn->flags & FlagInline)
+        errorMsgNode((INode*)fn, ErrorBadExtern,
+            "An inline function is expanded where it is called, so it has no definition elsewhere for 'extern' to name. Write its body.");
+    else if (fn->genericinfo)
+        errorMsgNode((INode*)fn, ErrorBadExtern,
+            "A generic function is instantiated where it is used, so it has no definition elsewhere for 'extern' to name. Write its body.");
+}
+
 // Parse function or variable, as it may be preceded by a qualifier
 // Return NULL if not either
 void parseFnOrVar(ParseState *parse, uint16_t flags) {
@@ -583,6 +650,18 @@ void parseFnOrVar(ParseState *parse, uint16_t flags) {
     if (lexIsToken(FnToken)) {
         FnDclNode *node = (FnDclNode*)parseFn(parse, (flags&FlagExtern)? (ParseMayName | ParseMaySig) : (ParseMayName | ParseMayImpl));
         node->flags |= flags;
+        parseExternFnCheck(node);
+        // A bare '@c' in a module that already gives its functions C names says
+        // nothing: the name is C already [Penny 23 Sep, delegated by Jon]. The
+        // string form is the override and says something; so does '@c(system)'
+        // where the module's convention is not already the system one
+        DclInfo *dclinfo = &node->dclinfo;
+        DclInfo *modinfo = &parse->mod->dclinfo;
+        if (node->namesym && (dclinfo->facts & DclCName) && dclinfo->cname == NULL && (modinfo->facts & DclCName)
+            && (!(dclinfo->facts & DclSystemCC) || (modinfo->facts & DclSystemCC)))
+            errorMsgNode((INode*)node, ErrorCNameTwice,
+                "Module %s already gives its functions C names, so a bare '@c' on %s says nothing. To spell its symbol differently, write it: '@c(\"symbol\")'.",
+                &parse->mod->namesym->namestr, &node->namesym->namestr);
         modAddFn(parse->mod, node);
         return;
     }
@@ -735,6 +814,10 @@ static FoldClause *parseModDefaultFold(ParseState *parse) {
 // Its own declaration is the only place it can be written, since the parent
 // declares nothing about a subfolder or a file -- where it sits is the
 // declaration. A module with no parent has nothing to be visible outside of.
+//
+// '@c' after 'mod' makes the module C-named: 'mod @c("SDL_") sdl;'. The
+// module's naming is the only thing it states; whether a declaration is defined
+// elsewhere is that declaration's own 'extern' [Jon 23 Sep] (parseCAttr).
 void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t pubflag) {
     // Where the declaration is written. The module node was made positioned at
     // the first line of its designated file, which is the nearest thing a module
@@ -767,6 +850,14 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
         parseSkipDclBody();
         return;
     }
+
+    // '@c' after 'mod' gives the module C naming: every function and global it
+    // owns directly is spelled as C spells it, after the prefix a string states
+    // [Jon 23 Sep]. Read into a record of its own, and given to the module only
+    // where the declaration is accepted
+    DclInfo cattr;
+    dclInfoInit(&cattr);
+    parseCAttr(&cattr, 1);
 
     Name *modname = NULL;
     if (lexIsToken(IdentToken)) {
@@ -851,6 +942,8 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
             mod->flags |= FlagModDcl;
             mod->extendsname = (INode*)extendsname;
             mod->deffold = deffold;
+            mod->dclinfo.facts |= cattr.facts & DclStated;
+            mod->dclinfo.cname = cattr.cname;
             // What 'pub' does, where there is a parent for it to speak to: the
             // submodule joins its parent's namespace as a public name, which its
             // parent's neighbours may then name a path through
@@ -1009,16 +1102,25 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             break;
         }
 
-        // 'extern' qualifier in front of fn or var (block). A 'pub' before
-        // 'extern' reaches every declaration in the block; one inside it
+        // 'extern' qualifier in front of fn or var (block): defined elsewhere,
+        // and nothing more [Jon 23 Sep]. The symbol is spelled by the module's
+        // naming like any other declaration's, so in a Cone-named module an
+        // extern declaration reaches a Cone package's definition, and a C
+        // function is reached by a C-named module or the fn's own '@c'. A 'pub'
+        // before 'extern' reaches every declaration in the block; one inside it
         // reaches that declaration alone.
         case ExternToken:
         {
             lexNextToken();
             uint16_t extflag = FlagExtern | pubflag;
+            // 'extern system' said C naming and the system convention together,
+            // which are now '@c(system)' on the fn
             if (lexIsToken(IdentToken)) {
                 if (strcmp(&lex->val.ident->namestr, "system")==0)
-                    extflag |= FlagSystem;
+                    errorMsgLex(ErrorCAttr,
+                        "'extern' says only that a declaration is defined elsewhere. The system calling convention, and the C name that came with it, are '@c(system)' after 'fn': 'extern fn @c(system) name(...)'.");
+                else
+                    errorMsgLex(ErrorBadExtern, "'extern' is followed by a function, a global, or a block of them");
                 lexNextToken();
             }
             if (lexIsToken(ColonToken) || lexIsToken(LCurlyToken)) {

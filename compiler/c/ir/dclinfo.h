@@ -24,13 +24,21 @@ typedef struct DclInfo {
     INode *owner;       // Enclosing module or type node. NULL for the root module,
                         // and for a declaration no namespace owns (a local, a parameter)
     uint16_t facts;     // DclFacts bits
+    char *cname;        // What '@c("...")' stated, or NULL: on a module, the prefix
+                        // every C name it gives carries; on a fn, its whole symbol
 } DclInfo;
 
 enum DclFacts {
     DclPrivate    = 0x0001,   // Not declared 'pub': visible only within its owner
-    DclExternal   = 0x0002,   // Externally supplied: this compile emits no definition
-    DclCName      = 0x0004,   // C-style name: no owner prefix, never mangled
-    DclSystemCC   = 0x0008,   // System calling convention (stdcall and dllimport today)
+    DclExternal   = 0x0002,   // 'extern': defined elsewhere, so this compile emits no definition.
+                              // Says nothing about the name: that is the module's, or '@c''s
+    DclCName      = 0x0004,   // C naming, from '@c': on a module, every function and global
+                              // it owns directly takes a C name; on a fn or global, its
+                              // symbol is 'cname', or the owning C module's prefix and its
+                              // name, never mangled
+    DclSystemCC   = 0x0008,   // '@c(system)': the system calling convention (stdcall on
+                              // x86 Windows); on a module, for every function it names.
+                              // An 'extern' one is also imported from a DLL
     DclNamesChain = 0x0010,   // Module only: contributes its name to the owner chain
     DclExpandReached = 0x0020 // Named by a body an importer expands in its own object: an
                               // inline, generic or macro body, a trait default, a
@@ -40,11 +48,16 @@ enum DclFacts {
                               // (genlIsExported)
 };
 
-#define dclInfoInit(dclinfo) ((dclinfo)->owner = NULL, (dclinfo)->facts = 0)
+#define dclInfoInit(dclinfo) ((dclinfo)->owner = NULL, (dclinfo)->facts = 0, (dclinfo)->cname = NULL)
+
+// The facts the parser writes straight onto a declaration from its '@c', before
+// it joins anything, and which joining keeps
+#define DclStated (DclCName | DclSystemCC)
 
 // Record that a declaration has joined the namespace of 'owner': set its owner
-// and write its facts from its parser flags. No-op for a node without DclInfo.
-// Modules are not joined this way; their facts are set where they are created (parsemod.c).
+// and write its facts from its parser flags, keeping what its own '@c' stated.
+// A function or global a C-named module owns directly takes the module's C
+// naming. No-op for a node without DclInfo.
 void dclInfoJoin(INode *node, INode *owner);
 
 // The nearest module enclosing a declaration (the node itself, if a module), or NULL

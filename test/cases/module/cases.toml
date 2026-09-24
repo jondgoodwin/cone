@@ -39,7 +39,7 @@ support = ["modulesub.cone",
            "modulemacro.cone", "moduledeclared.cone",
            "modulefold.cone", "modulefoldlate.cone", "modfolder",
            "moduleextbase.cone", "modulepkgs", "modtree",
-           "moduleinline.cone"]
+           "moduleinline.cone", "moduleextern.cone"]
 
 # -------- success --------
 
@@ -940,19 +940,20 @@ excludes = ["moduletransit.plain", "moduletransit.scale\n", "modulelate.plain", 
 
 # -------- symbol kinds --------
 #
-# The four scenarios below assert the symbol an importer emits for kinds no
-# other check names: an 'extern system' declaration, an imported global, an
-# imported private declaration, an extern inside an imported module, an import
-# cycle, and two modules whose names would once have joined into one symbol.
+# The scenarios below assert the symbol an importer emits for kinds no other
+# check names: a C function with the system convention, an imported global, an
+# imported private declaration, extern declarations inside an imported module,
+# an import cycle, and two modules whose names would once have joined into one
+# symbol.
 
 [scenario.module-extern-system]
 category = "compile"
-description = "An 'extern system' declaration and the imported, stdcall symbol it lowers to"
+description = "An 'extern' fn with '@c(system)' and the imported, stdcall symbol it lowers to"
 tags = ["parse", "genllvm"]
 
-# Pins today's spelling for the symbol-generation refactor: 'system' adds the
-# DLL import storage class and the x86 stdcall convention to an otherwise
-# ordinary extern declaration, which still takes no prefix and no COMDAT.
+# '@c(system)' gives the C name and the x86 stdcall convention; on an 'extern'
+# declaration the DLL import storage class comes with it. The declaration takes
+# no prefix and no COMDAT.
 [[scenario.module-extern-system.check]]
 name = "extern-system-declares-a-dllimport-stdcall-symbol"
 target = "llvmir"
@@ -1011,13 +1012,104 @@ target = "llvmir"
 contains = ["%Gadget = type"]
 excludes = ["%modulesyms_Gadget", '%"modulesyms.Gadget"']
 
-# An 'extern' declared inside an imported module is still the bare C name,
-# with no module path.
+# A C function declared inside an imported module, with 'extern' and '@c', is
+# the bare C name, with no module path: '@c' names it, not 'extern'.
 [[scenario.module-symbols.check]]
-name = "extern-inside-an-imported-module-takes-no-prefix"
+name = "c-named-extern-inside-an-imported-module-takes-no-prefix"
 target = "symbols"
 contains = ["declare labs"]
 excludes = ["modulesyms.labs"]
+
+[scenario.module-extern-cone-names]
+category = "compile"
+description = "Body-less 'extern' functions, methods, an operator and globals in a Cone-named module take its Cone names"
+tags = ["parse", "nameres", "typecheck", "genllvm"]
+
+# 'extern' says only "defined elsewhere", and the module names the symbol
+# [Jon 23 Sep]: in a Cone-named module an extern declaration is spelled after
+# the module (and the type), exactly as a package compiled on its own defines
+# it, so an include file reaches the package's object. The private ones are
+# declared too, since the public inline body the importer expands names them.
+# None is a definition here, so none leads a COMDAT.
+[[scenario.module-extern-cone-names.check]]
+name = "extern-declarations-take-the-module-cone-name"
+target = "symbols"
+contains = [
+  "declare moduleextern.twice\n",
+  "declare moduleextern.hidden\n",
+  "external global moduleextern.count\n",
+  "external constant moduleextern.limit\n",
+  "declare moduleextern.Vec2.+\n",
+  "declare moduleextern.Vec2.len\n",
+  "declare moduleextern.Vec2.size\n",
+  "declare moduleextern.Vec2.origin\n",
+]
+excludes = ["define moduleextern", "define internal moduleextern", "declare twice", "declare hidden", "global count"]
+
+[scenario.module-c-names]
+category = "run"
+description = "'@c' on a 'mod' line (a prefix) and on a fn (the whole symbol): C functions bound, Cone bodies exported under C names, 'main' under another Cone name"
+tags = ["parse", "genllvm", "runtime"]
+
+# The C-named module's names are its prefix and the name as written; a fn's own
+# '@c("...")' is the whole symbol and takes no prefix. Nothing is spelled after
+# the module or the type.
+[[scenario.module-c-names.check]]
+name = "a-c-named-module-spells-prefix-and-name-and-the-fn-override-whole"
+target = "symbols"
+contains = ["declare printStr\n", "declare printInt\n", "declare labs\n"]
+excludes = ["cio.", "printabs", "declare abs"]
+
+# 'pub' and '@c' export a body to C: external, where a private C-named body is
+# internal like any program definition [Jon 23 Sep]. That holds for the
+# functions and the global of the C-named module, and for a Cone-named
+# module's '@c' functions. 'main' is external under any Cone name.
+[[scenario.module-c-names.check]]
+name = "pub-and-c-export-a-body-and-a-private-one-stays-internal"
+target = "symbols"
+contains = [
+  "define printLine comdat nodeduplicate",
+  "define printQuad comdat nodeduplicate",
+  "define internal printTwice comdat nodeduplicate",
+  "global printCount comdat nodeduplicate",
+  "define cone_square comdat nodeduplicate",
+  "define internal cone_cube comdat nodeduplicate",
+  "define main comdat nodeduplicate",
+]
+excludes = ["start", " square ", " cube "]
+
+[scenario.module-c-system]
+category = "compile"
+description = "'@c(system)' on a 'mod' line: the system convention for the functions it names, and a DLL import only for the extern one"
+tags = ["parse", "genllvm"]
+
+# Both functions take the x86 stdcall convention from the module; only the
+# 'extern' one is imported from a DLL. The body is exported under its own
+# '@c' name.
+[[scenario.module-c-system.check]]
+name = "a-system-module-gives-its-functions-the-convention"
+target = "symbols"
+contains = [
+  "declare dllimport x86_stdcallcc GetTickCount\n",
+  "define x86_stdcallcc ConeTicks comdat nodeduplicate",
+]
+excludes = ["win.", "dllimport x86_stdcallcc ConeTicks"]
+
+# The calls are made with the convention too, not only the declarations
+[[scenario.module-c-system.check]]
+name = "calls-to-a-system-function-use-the-convention"
+target = "preir"
+contains = ["call x86_stdcallcc i32 @ConeTicks()", "call x86_stdcallcc i32 @GetTickCount()"]
+
+[scenario.module-c-reject]
+category = "reject"
+description = "'@c' that says nothing, is malformed, or names what has no symbol"
+tags = ["parse"]
+
+[scenario.module-extern-reject]
+category = "reject"
+description = "'extern' on a declaration whose body its user needs, or on what is not a function or a global"
+tags = ["parse"]
 
 [scenario.module-inline-private]
 category = "compile"

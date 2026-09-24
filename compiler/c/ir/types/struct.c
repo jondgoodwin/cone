@@ -2079,8 +2079,10 @@ static void structCheckTraitReqs(StructNode *node) {
                 continue;
             FnDclNode *traitmeth = (FnDclNode*)*nodesp;
             INode *binding = namespaceFind(&node->namespace, traitmeth->namesym);
+            // An 'extern' method has no body here and is implemented all the same:
+            // its definition is in the object that defines the type
             if (!(node->flags & TraitType) && binding && binding->tag == FnDclTag
-                && ((FnDclNode*)binding)->value == NULL) {
+                && ((FnDclNode*)binding)->value == NULL && !(binding->flags & FlagExtern)) {
                 errorMsgNode((INode*)node, ErrorInvType, "Type must implement %s method, as required by %s",
                     &traitmeth->namesym->namestr, &trait->namesym->namestr);
                 continue;

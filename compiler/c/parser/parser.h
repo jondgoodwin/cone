@@ -79,6 +79,11 @@ uint16_t parsePub();
 uint16_t parseStatic();
 // Report 'static' on a declaration that has no per-instance copies to share
 void parseBadStatic(uint16_t staticflag);
+// Parse a '@c' marker, if the lexer is on one, into dclinfo's facts and string:
+// on a module ('onmod') the string is a prefix, on a fn the whole symbol
+int parseCAttr(DclInfo *dclinfo, int onmod);
+// Report 'extern' on an inline or generic fn, whose body its user must have
+void parseExternFnCheck(FnDclNode *fn);
 
 // parsefnflow.c
 INode *parseFn(ParseState *parse, uint16_t mayflags);

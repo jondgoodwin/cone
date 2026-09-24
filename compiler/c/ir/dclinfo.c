@@ -14,7 +14,9 @@ void dclInfoJoin(INode *node, INode *owner) {
         return;
     dclinfo->owner = owner;
 
-    uint16_t facts = 0;
+    // What the declaration's own '@c' stated survives the join; everything else
+    // is written here
+    uint16_t facts = dclinfo->facts & DclStated;
     // The parser's flag, read once: this is where the bit inodeIsPrivate reads
     // is written. A module carries a visibility only where it has a parent to be
     // visible outside of -- a submodule, which its parent's subfolder drew. A
@@ -23,12 +25,22 @@ void dclInfoJoin(INode *node, INode *owner) {
     // what clears the bit this sets.
     if ((node->tag != ModuleTag || owner != NULL) && !(node->flags & FlagPub))
         facts |= DclPrivate;
-    // 'extern' and 'extern system' are fn/var flags; the same bits mean other things on a type
+    // 'extern' is a fn/var flag; the same bit means other things on a type. It
+    // says only where the definition is: the symbol is spelled by the owning
+    // module's naming, C or Cone, like any other declaration's [Jon 23 Sep]
     if (node->tag == FnDclTag || node->tag == VarDclTag) {
         if (node->flags & FlagExtern)
-            facts |= DclExternal | DclCName;
-        if (node->flags & FlagSystem)
-            facts |= DclSystemCC;
+            facts |= DclExternal;
+        // A C-named module names the functions and globals it owns directly. A
+        // type's methods keep Cone names, as does a generic function, whose
+        // instances need a name each
+        if (owner != NULL && owner->tag == ModuleTag
+            && (((ModuleNode*)owner)->dclinfo.facts & DclCName)
+            && !(node->tag == FnDclTag && ((FnDclNode*)node)->genericinfo)) {
+            facts |= DclCName;
+            if (node->tag == FnDclTag)
+                facts |= ((ModuleNode*)owner)->dclinfo.facts & DclSystemCC;
+        }
     }
     dclinfo->facts = facts;
 }
@@ -69,7 +81,7 @@ void dclInfoPrint(INode *node) {
     if (dclinfo->facts & DclExternal)
         inodeFprint(" extern");
     if (dclinfo->facts & DclCName)
-        inodeFprint(" cname");
+        inodeFprint(dclinfo->cname ? " cname \"%s\"" : " cname", dclinfo->cname);
     if (dclinfo->facts & DclSystemCC)
         inodeFprint(" system");
     if (dclinfo->facts & DclExpandReached)

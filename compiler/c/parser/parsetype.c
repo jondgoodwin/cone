@@ -599,6 +599,14 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
             strflags &= ~SameSize;
             lexNextToken();
         }
+        else if (lex->toktype == CAttrToken) {
+            // '@c' spells a symbol, and a type has none: its methods are named
+            // one at a time, and its layout is not a name
+            errorMsgLex(ErrorCAttr, "'@c' gives a function or a module's functions and globals C names. A type has no symbol for it to name.");
+            DclInfo ignored;
+            dclInfoInit(&ignored);
+            parseCAttr(&ignored, 0);
+        }
         else
             break;
     }
@@ -746,8 +754,34 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 continue;
             }
             parseBadStatic(staticflag);
+            // 'extern' before a method or a type's function: defined elsewhere,
+            // so written without a body, as an include file declares what a
+            // package's object defines. Its symbol is the one the definition
+            // has, spelled after the module and the type. A trait's methods and
+            // a generic type's are copied into each implementer or instance,
+            // which is where their bodies are needed, so they have no one
+            // definition elsewhere to name
+            uint16_t externflag = 0;
+            if (lexIsToken(ExternToken)) {
+                lexNextToken();
+                if (!lexIsToken(FnToken)) {
+                    errorMsgLex(ErrorBadExtern,
+                        "Inside a type, 'extern' declares a method or function defined elsewhere, written 'extern fn'. A field is part of the value, and is declared as it is.");
+                    parseSkipToNextStmt();
+                    continue;
+                }
+                if (strnode->flags & TraitType)
+                    errorMsgLex(ErrorBadExtern,
+                        "A trait's method is a requirement each implementer meets, or a default copied into each, so it is defined in no one place for 'extern' to name.");
+                else if (strnode->genericinfo)
+                    errorMsgLex(ErrorBadExtern,
+                        "A generic type's methods are instantiated with it where it is used, so they are defined in no one place for 'extern' to name.");
+                externflag = FlagExtern;
+            }
             if (lexIsToken(FnToken)) {
-                FnDclNode *fn = (FnDclNode*)parseFn(parse, methflags);
+                FnDclNode *fn = (FnDclNode*)parseFn(parse, externflag ? ParseMayName | ParseMaySig : methflags);
+                fn->flags |= externflag;
+                parseExternFnCheck(fn);
                 if (fn && isNamedNode(fn)) {
                     Nodes *parms = ((FnSigNode *)fn->vtype)->parms;
                     if (parms->used > 0 && ((VarDclNode*)nodesGet(parms, 0))->namesym == selfName)

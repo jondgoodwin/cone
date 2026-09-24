@@ -25,7 +25,9 @@
 		Separate compilation is built only through a
 		<a href="refmodule.html#build">build description</a>: a library compiled
 		from one exports what its importers need, and a program whose import line
-		names that library's include file links with the library's object. Without
+		names that library's include file links with the library's object. The
+		include file is written by hand for now, declaring what the library defines
+		with <a href="#extern"><span class="pre">extern</span></a>. Without
 		one, a module found on the
 		<a href="#packages">package search path</a> is compiled into the program
 		that imports it, and one found beside the importing file is only declared,
@@ -38,7 +40,9 @@
 		and the compiler finds every one of them itself.
 		On this page, we introduce the two mechanisms that reach beyond a module:
 		<span class="pre">import</span>, for another Cone module,
-		and <span class="pre">extern</span>, for code written in another language.</p>
+		and <span class="pre">extern</span>, for what is defined in another
+		compiled unit — a separately built Cone package, or code written in
+		another language such as C.</p>
 
 	<h2 id="include">include is retired</h2>
 	<p>A file joins a module by being in the module's folder, so no statement
@@ -308,54 +312,138 @@ import opengl use * but Point3;   // math3d's Point3 is the one wanted here
 		too. The name is bound once, and if either fold made it public, it is public.</p>
 
 <h2 id="extern">extern</h2>
-<p>Sometimes we want to make use of functions and global variables
-	that have been implemented in another language, such as C.
-	Since the Cone compiler cannot process source files written in another language,
-	<span class="pre">import</span> will not suffice.
-	Instead, an <span class="pre">extern</span> block must be used to
-	declare these entities and their types so that Cone logic may make use of them.</p>
+<p><span class="pre">extern</span> says one thing: this function, method or
+	global variable is <i>defined elsewhere</i>, in another compiled unit, so it
+	is declared here without a body or a value, and the linker finds its
+	definition. It says nothing about how the symbol is spelled. That is the
+	<a href="refmodule.html#cnames">module's</a> to say: in an ordinary module a
+	declaration has a Cone name, and in a module marked
+	<a href="#cnaming"><span class="pre">@c</span></a> it has a C name.</p>
+<p>It is written in front of a declaration, or of a block of them:</p>
 <pre>
-extern {
-  // Functions
-  fn printFloat(nbr f32);
-  fn printInt(nbr i32);
-  fn printString(str *u8) trust;
+pub extern fn addOne(n i64) i64;
+extern mut hits i64;
 
-  // Global variables
-  mut indentation;
+pub extern {
+  fn printStr(str &amp;[]u8);
+  fn printInt(nbr i64);
 }
 </pre>
-<p>The printString function has been marked
-	as <a href="reftrust.html">trustable</a>.
-	This indicates that we trust it to safely make use of the pointer it is given.
-	If we had not done so, any attempt to call such a potentially unsafe
-	<span class="pre">extern</span> function would require
-	use of <span class="pre">trust</span>.</p>
-<p>Although these <span class="pre">extern</span> names are effectively owned by some other module,
-	this folds these names into the current module, 
-	so that they can be used by any logic in this module.
-	Since they are owned by another module, that module is responsible for
-	initializing its global variables and implementing its functions.
-	Thus, no functions in an <span class="pre">extern</span> block
-	should be given implementation code, nor should variables be initialized.</p>
+<p>A <span class="pre">pub</span> before a block reaches every declaration in it.
+	A declaration may be private: an include file declares the private names a
+	public <span class="pre">inline</span> body reaches, since that body is
+	compiled into the importer, which then needs them. A function with a body,
+	or a global with a value, is an error in an
+	<span class="pre">extern</span> declaration.</p>
 
-<h3>Associated types and methods</h3>
+<h3 id="externmethods">Methods and operators</h3>
+<p>Inside a type, <span class="pre">extern fn</span> declares a method, a
+	static function or an operator that is defined elsewhere:</p>
+<pre>
+pub struct Acc {
+  pub total i64;
+
+  pub extern fn plus(self, n i64) i64;
+  pub extern fn `+`(self, other Acc) Acc;
+  pub extern fn zero() Acc;
+}
+</pre>
+<p>Such a method meets a trait's requirement like any other. What a user needs
+	the body of cannot be <span class="pre">extern</span>, and is an error: an
+	<span class="pre">inline</span> or generic function, a trait's methods, a
+	generic type's methods. They are written whole, and compiled where they are
+	used. A type's fields are part of its value, and are declared as they
+	are.</p>
+
+<h3 id="includefile">Declaring a Cone package</h3>
+<p>A package compiled on its own is reached through an include file: the
+	package's root module, with everything its object defines declared
+	<span class="pre">extern</span>, and its types, macros and
+	<span class="pre">inline</span> bodies written in full. The include file's
+	module is an ordinary, Cone-named module of the package's name, so each
+	<span class="pre">extern</span> declaration is spelled exactly as the package
+	defines it, and the two objects link. For now the include file is written
+	by hand.</p>
+
+<h3 id="cnaming">C names: @c</h3>
+<p>Code written in C is reached the same way, with its names spelled as C
+	spells them. <span class="pre">@c</span> says so, and is written after the
+	keyword of a <span class="pre">mod</span> line or a <span class="pre">fn</span>,
+	in one of four forms: <span class="pre">@c</span>,
+	<span class="pre">@c("text")</span>, <span class="pre">@c(system)</span> and
+	<span class="pre">@c("text", system)</span>.</p>
+<p>On a <span class="pre">mod</span> line it makes the whole
+	<a href="refmodule.html#cnames">module C-named</a>: its functions and global
+	variables take their names unchanged, after the prefix the string gives. A
+	C library's binding is such a module, and everyone else imports it and sees
+	Cone:</p>
+<pre>
+mod @c("SDL_") sdl;
+
+pub extern {
+  fn Init(flags u32) i32;                    // the C function SDL_Init
+  fn Quit();                                 // SDL_Quit
+  fn @c("IMG_Load") LoadImage(file *u8) *u8; // a name outside the prefix
+}
+</pre>
+<p>On a <span class="pre">fn</span> it gives that one function a C name: bare,
+	its own name; with a string, the string is its whole symbol and no prefix is
+	added. That is how a name outside a module's prefix is reached, and how a C
+	function is declared in an ordinary module:</p>
+<pre>
+pub extern fn @c malloc(size usize) *u8;
+</pre>
+<p>A bare <span class="pre">@c</span> on a function its module already gives a C
+	name says nothing, and is an error; the string form is fine there.
+	<span class="pre">system</span> selects the platform's system calling
+	convention (stdcall on 32-bit Windows), for the function or for every
+	function of the module; an <span class="pre">extern</span> one is also
+	imported from a DLL:</p>
+<pre>
+extern fn @c(system) GetTickCount() u32;
+</pre>
+<p><span class="pre">@c</span> goes only where there is one symbol to name. It
+	is an error on a type, on an anonymous, generic or
+	<span class="pre">inline</span> function, and on a trait's or a generic
+	type's method. In a C-named module a type's methods, and a generic function,
+	keep Cone names. <span class="pre">extern system</span>, the older spelling
+	of the system convention, is an error that names
+	<span class="pre">@c(system)</span>.</p>
+
+<h3 id="exporting">Exporting to C</h3>
+<p>A Cone function with a body is published to C under a C name by writing
+	<span class="pre">pub</span> and <span class="pre">@c</span>: the symbol is
+	then external, so C code links against it. Without
+	<span class="pre">pub</span> it is still spelled as C spells it, but stays
+	private to its object. The same holds for the bodies of a C-named module.</p>
+<pre>
+pub fn @c("cone_square") square(x i64) i64 { x * x; }
+
+fn @c("main") start() i32 {    // the program's entry, under another Cone name
+  0i32;
+}
+</pre>
+
+<h3>Associated types</h3>
 <p>Not uncommonly, external functions and variables depend on custom types and constants
-	defined by the external module.
-	If so, these types should also be declared in the <span class="pre">extern</span> block.
+	defined by the external library.
+	If so, these types are declared beside the <span class="pre">extern</span>
+	declarations, in the same module: an <span class="pre">extern</span> block holds
+	functions and variables only.
 	Constants can be defined using an <span class="pre">enum</span>.
 	If the internal field structure of a type is unknown,
-	an <a href="refstruct.html#opaque">opaque <span class="pre">struct</span></a> may be used.</p>
-<p>When custom types are defined, any externally defined function that take a value of
-	that type as the first parameter may be declared as methods on that type.
-	This allows the more convenient use of the dot operator when invoking
-	functions on some data value.</p>
+	an <a href="refstruct.html#opaque">opaque <span class="pre">struct</span></a> may be used.
+	Marking an external function <a href="reftrust.html">trustable</a>, so that
+	a call to it that passes a pointer needs no <span class="pre">trust</span>
+	block, is not built yet.</p>
 
 <h3>extern in a file of its own</h3>
-<p>It can be helpful to put the <span class="pre">extern</span> block
+<p>It can be helpful to put the <span class="pre">extern</span> declarations
 	for some C-compatible library (e.g., libcurl or sdl2) into a file of its own.
 	Placed in a module's folder, that file is one of the module's files like any other,
-	so every file of the module can use its declarations.</p>
+	so every file of the module can use its declarations. A C-named binding is a
+	module of its own, since <span class="pre">@c</span> is on its
+	<span class="pre">mod</span> line.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refmeta.html"><img alt="_" src="next.png" /></a>

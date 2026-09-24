@@ -249,7 +249,7 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
     switch (fndcl->value? fndcl->value->tag : BlockTag) {
     case BlockTag: {
         fncallret = LLVMBuildCall(gen->builder, genlFnSym(gen, fndcl), fnargs, fnargcnt, "");
-        if (fndcl->flags & FlagSystem) {
+        if (fndcl->dclinfo.facts & DclSystemCC) {
             LLVMSetInstructionCallConv(fncallret, LLVMX86StdcallCallConv);
         }
         break;

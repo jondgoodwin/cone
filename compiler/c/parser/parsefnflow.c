@@ -691,6 +691,10 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
     // Skip past the 'fn'.
     lexNextToken();
 
+    // '@c' after the keyword: this function's symbol is a C name, its own name
+    // or the string written, and 'system' its calling convention [Jon 23 Sep]
+    int hasc = parseCAttr(&fnnode->dclinfo, 0);
+
     // Process function name, if provided
     if (lexIsToken(IdentToken)) {
         if (!(mayflags&ParseMayName))
@@ -739,6 +743,26 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
     if (lexIsToken(InlineToken)) {
         fnnode->flags |= FlagInline;
         lexNextToken();
+    }
+
+    // '@c' names a symbol, so it goes only where a function has one of its own
+    if (hasc) {
+        INsTypeNode *type = parse->typenode;
+        const char *why = NULL;
+        if (fnnode->namesym == NULL)
+            why = "An anonymous function has no name for '@c' to give C spelling to.";
+        else if (fnnode->genericinfo)
+            why = "A generic function has a symbol per instance, each spelled with its type arguments, so '@c' cannot name them.";
+        else if (fnnode->flags & FlagInline)
+            why = "An inline function is expanded where it is called and leaves no symbol for '@c' to name.";
+        else if (type && type->tag == StructTag
+            && ((type->flags & TraitType) || ((StructNode*)type)->genericinfo))
+            why = "A trait's method is copied into each type that implements it, and a generic type's into each instance, so no one symbol is there for '@c' to name.";
+        if (why) {
+            errorMsgNode((INode*)fnnode, ErrorCAttr, "%s", why);
+            fnnode->dclinfo.facts &= ~DclStated;
+            fnnode->dclinfo.cname = NULL;
+        }
     }
 
     // Process statements block that implements function, if provided
