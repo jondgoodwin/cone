@@ -1,0 +1,48 @@
+mod lexical_reject_escape_newline;
+
+// A backslash right before a line's end, in a string and in a character
+// literal. The backslash is an invalid escape, reported at the literal's
+// opening quote. The escape took the line's end with it without counting the
+// line, so every later diagnostic in the file came out one line early. Each
+// later '$' below is reported on its own line, at its own column: the line
+// numbers and columns are the assertion here, and are written by hand.
+//
+// lexical_reject_escape_newline_crlf is the same file with CRLF line ends,
+// which were always counted. This file is kept LF byte for byte
+// (.gitattributes). A multi-line string's backslash before a line's end is
+// not an escape but a line join; lexical_mlstring runs it.
+//
+// The literals cut by a line's end cannot carry their annotations, so these
+// sit on the line after, pointing back two lines.
+
+fn afterString(a i32) i32 {
+  imm s = "x\
+y";
+  //~^^ ErrorBadTok:11 "Invalid escape sequence: a backslash at the end of a line"
+  a $ a;               //~ ErrorBadTok:5 "Bad character '$' starting unknown token"
+                       //~^ ErrorNoSemi:4 follow-on
+  a;
+}
+
+// The escape's line end is followed by the literal's closing quote
+fn afterChar(a i32) i32 {
+  imm c = '\
+';
+  //~^^ ErrorBadTok:11 "Invalid escape sequence: a backslash at the end of a line"
+  a $ a;               //~ ErrorBadTok:5 "Bad character '$' starting unknown token"
+                       //~^ ErrorNoSemi:4 follow-on
+  a;
+}
+
+// Something other than the closing quote follows the line end, so the literal
+// is too long as well. That is said at its opening quote, on the line the
+// literal begins, though the line after it has been counted by then.
+fn afterLongChar(a i32) i32 {
+  imm c = '\
+x';
+  //~^^ ErrorBadTok:11 "Invalid escape sequence: a backslash at the end of a line"
+  //~^^^ ErrorBadTok:11 "Invalid lifetime or too-long character literal" follow-on
+  a $ a;               //~ ErrorBadTok:5 "Bad character '$' starting unknown token"
+                       //~^ ErrorNoSemi:4 follow-on
+  a;
+}

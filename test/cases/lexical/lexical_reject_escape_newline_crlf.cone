@@ -1,0 +1,37 @@
+mod lexical_reject_escape_newline_crlf;
+
+// lexical_reject_escape_newline with CRLF line ends: a backslash right before
+// a line's end, in a string and in a character literal, and a later '$' that
+// is reported on its own line. The escape takes the carriage return and leaves
+// the new-line to be counted where any other is, so these lines were always
+// right; the twin pins that they stay so. This file is kept CRLF byte for byte
+// (.gitattributes).
+//
+// A character literal is left unfinished by the carriage return, where the LF
+// file's closes on the next line: the literal is too long, and the next line
+// is lexed afresh, so its closing quote begins another literal, too long in
+// turn. Each missing ';' is reported after its literal, which takes in the
+// carriage return, so the column counts it. All four are follow-ons, and none
+// moves the later '$'.
+
+fn afterString(a i32) i32 {
+  imm s = "x\
+y";
+  //~^^ ErrorBadTok:11 "Invalid escape sequence: a backslash at the end of a line"
+  a $ a;               //~ ErrorBadTok:5 "Bad character '$' starting unknown token"
+                       //~^ ErrorNoSemi:4 follow-on
+  a;
+}
+
+fn afterChar(a i32) i32 {
+  imm c = '\
+';
+  //~^^ ErrorBadTok:11 "Invalid escape sequence: a backslash at the end of a line"
+  //~^^^ ErrorBadTok:11 "Invalid lifetime or too-long character literal" follow-on
+  //~^^^^ ErrorNoSemi:14 follow-on
+  //~^^^^ ErrorBadTok:1 "Invalid lifetime or too-long character literal" follow-on
+  //~^^^^^ ErrorNoSemi:4 follow-on
+  a $ a;              //~ ErrorBadTok:5 "Bad character '$' starting unknown token"
+                       //~^ ErrorNoSemi:4 follow-on
+  a;
+}

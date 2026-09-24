@@ -300,6 +300,13 @@ char *lexScanEscape(char *srcp, uint64_t *charval) {
             errorMsgLex(ErrorBadTok, "Invalid escape sequence: a backslash followed by the byte 0x%02X, which begins no UTF-8 character",
                 (unsigned char)*srcp);
         *charval = *srcp++;
+        // A new-line taken here is a line passed, and counted as one. A CRLF
+        // line end is not taken whole: its new-line is left, and counted, where
+        // any other is
+        if (*charval == '\n') {
+            ++lex->linenbr;
+            lex->linep = srcp;
+        }
         return srcp;
     }
 }
@@ -323,6 +330,12 @@ void lexScanChar(char *srcp) {
         // This is not a lifetime variable. Reset to try it as a character literal
         srcp = lex->tokp;
     }
+
+    // The literal's own line: a backslash before a line's end counts that line
+    // before the literal is finished, and what is said of the literal is said
+    // at its opening quote
+    uint32_t toklinenbr = lex->linenbr;
+    char *toklinep = lex->linep;
 
     // Obtain a single character/unicode (possibly escaped)
     int isUnicode = 0;
@@ -358,7 +371,13 @@ void lexScanChar(char *srcp) {
         }
         ++srcp;
     }
+    uint32_t endlinenbr = lex->linenbr;
+    char *endlinep = lex->linep;
+    lex->linenbr = toklinenbr;
+    lex->linep = toklinep;
     errorMsgLex(ErrorBadTok, "Invalid lifetime or too-long character literal");
+    lex->linenbr = endlinenbr;
+    lex->linep = endlinep;
     lex->langtype = (INode*)u8Type;
     lex->toktype = IntLitToken;
     lex->srcp = srcp;

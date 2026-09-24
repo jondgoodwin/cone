@@ -179,9 +179,23 @@ two lines. `lexCharIsNameable` is the test, shared with the hex escape message
 above, whose ender is likewise named only if it prints; a byte that is not
 UTF-8 after too few hex digits is therefore "too short" as well. A space after
 a backslash is itself an escape, and the reader stays on the source's end, as
-the `\0` paragraph says, so neither reaches the message. As with a quote before a line's end, the escape
-takes the line end as its character, and the line goes uncounted.
+the `\0` paragraph says, so neither reaches the message.
 `lexical_reject_bad_escape` holds each kind in a character literal or a string.
+
+**A backslash before a line's end counts the line.** Outside a multi-line
+string, where it is the line join above, a backslash before a line's end is the
+invalid escape just described, and it takes an LF line end as its character.
+It used not to count that line, so every later diagnostic in the file came out
+one line early. `lexScanEscape` now counts it and moves the line start past it,
+as `lexNewLine` does. A CRLF line end was always right: the escape takes only
+its carriage return, and the new-line is counted where any other is. What is
+accepted and refused is unchanged, and so is every diagnostic but the line of
+those that follow. A character literal left too long by the escape is still
+reported at its opening quote, on the line it begins, which `lexScanChar`
+remembers across the escape. `lexical_reject_escape_newline` and its CRLF twin
+pin a later error's line after each, in a string and in a character literal.
+Unlike this, a quote or backtick right before a line's end still takes the line
+end uncounted (above): refusing `'<LF>'`, which compiles today, is a ruling.
 
 **Names are interned at scan time, and `Name.node` is the binding slot.**
 `nametblFind` returns one immovable `Name*` per unique string. That same
