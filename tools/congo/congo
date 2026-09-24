@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+
+# Build tool for a Cone program
+# (Future Direction is an executable program.
+#  see https://github.com/ponylang/ponyc/blob/master/src/libponyc/codegen/genexe.c#L404
+
+import os
+import sys
+from subprocess import call
+import toml
+
+conehome = os.environ['CONEHOME']
+
+# Operating system-specific configuration
+if sys.platform.startswith('linux'):
+  osname = 'linux'
+  cpu = 'x64'
+  objext = '.o'
+  exeext = ''
+elif sys.platform.startswith('win'):
+  osname = 'win'
+  cpu = 'x86'
+  objext = '.obj'
+  exeext = '.exe'
+else:
+   print("Unsupported operating system")
+   sys.exit(1)
+
+# Obtain project name
+sep = '\\' if osname == 'win' else '/'
+project = os.getcwd().split(sep)[-1]
+
+# Determine desired build configuration
+if len(sys.argv) > 1:
+  config = sys.argv[1]
+else:
+  config = 'release'
+
+# Establish build directory and ensure it exists
+if config == 'release':
+  builddir = 'release'
+elif config == 'debug':
+  builddir = 'debug'
+elif config == 'web':
+  builddir = 'public'
+else:
+  print("Unknown configuration: " + config)
+  sys.exit(1)
+if not os.path.exists(builddir):
+  os.mkdir(builddir)
+objlist = []
+
+# Obtain TOML file info, if it exists
+if os.path.exists('congo.toml'):
+  conf = toml.load('congo.toml')
+  for depend, version in conf['dependencies'].items():
+    if depend == 'opengl':
+      objlist = objlist + ['glew32.lib', 'opengl32.lib']
+    elif depend == 'sdl2':
+      objlist = objlist + ['sdl2.lib', 'sdl2main.lib']
+else:
+  conf = {}
+
+# Compile Cone program
+if os.path.exists('main.cone'):
+	pgm = 'main'
+	target = 'exe'
+	if config == 'release':
+	  compopt = []
+	elif config == 'debug':
+	  compopt = ['-d', '--ir', '--asm', '--llvmir']
+	elif config == 'web':
+	  compopt = ['--wasm']
+	rc = call(["conec"] + compopt + ["-o"+builddir, pgm])
+	if rc != 0:
+	  sys.exit(rc)
+	objlist.append(os.path.join(builddir, pgm + objext))
+	pkg = 'conestd'
+	pkgpath = os.path.join(os.path.join(conehome, "packages"), pkg)
+	if osname == 'win':
+	  libname = pkg+'.lib'
+	else:
+	  libname = 'lib'+pkg+'.a'
+	objlist.append(os.path.join(os.path.join(pkgpath, config), libname))
+
+elif os.path.exists('main.c'):
+	pgm = 'main'
+	target = 'lib'
+	if osname == 'win':
+		ccomp = ["cl", '/Fo'+builddir+'\\', '/c', '/W3', '/analyze-', '/sdl', '/Zc:inline', '/FC', '/nologo', '/EHsc']
+		if config == 'release':
+		  ccomp = ccomp + ['/Gy','/O2', '/Oi', '/MD', '/GL']
+		elif config == 'debug':
+		  ccomp = ccomp + ['/MDd', '/Od']
+	else:
+		ccomp = ["gcc", '-c', '-Wall', '-o', os.path.join(builddir, pgm + objext)]
+		if config == 'release':
+		  ccomp = ccomp + ['-O2']
+		elif config == 'debug':
+		  ccomp = ccomp + ['-g', '-Og']
+	rc = call(ccomp + [pgm+'.c'])
+	if rc != 0:
+	  sys.exit(rc)
+	objlist.append(os.path.join(builddir, pgm + objext))
+
+# Package everything
+if config != 'web':
+  if target == 'exe':
+	  # Create executable program
+	  exename = os.path.join(builddir, project + exeext)
+	  if osname == 'win':
+		  tolink = ["link", "/NOLOGO", "/OUT:"+exename]
+		  if config == 'release':
+		    tolink.append("/LTCG")
+		  # /MANIFEST /ManifestFile:"Debug\ConeTest.exe.intermediate.manifest" /MANIFESTUAC:"level='asInvoker' uiAccess='false'"
+		  # /DEBUG:FASTLINK /PDB:"D:\sol\Cone\Debug\ConeTest.pdb" 
+		  # it will include: "msvcrt.lib oldnames.lib kernel32.lib vcruntime.lib"
+	  else:
+	    tolink = ['gcc','-o',exename]
+	    os.environ['PATH'] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	  tolink.extend(objlist)
+	  rc = call(tolink)
+	  if rc != 0:
+	    sys.exit(rc)
+  elif target == 'lib':
+	  # Create library
+	  if osname == 'win':
+	    libname = os.path.join(builddir, project + '.lib')
+	    tolib = ["lib", "/NOLOGO", "/OUT:"+libname]
+	    if config == 'release':
+	       tolib.append("/LTCG")
+	  else:
+	    libname = os.path.join(builddir, 'lib'+project+'.a')
+	    tolib = ['ar','rcs',libname]
+	  tolib.extend(objlist)
+	  rc = call(tolib)
+	  if rc != 0:
+	    sys.exit(rc)
+else:
+	# linkedit wasm to get export/import stuff
+	wasmfile = os.path.join(builddir, "main.wasm")
+	tolink = ["wasm-ld", wasmfile, "-o", wasmfile, "--no-entry", "--import-memory", "-allow-undefined"]
+	rc = call(tolink)
+	if rc != 0:
+	  sys.exit(rc)
+
+
+# Compile C
+# llvm-lib main.obj  (llvm-ar rc main.a main.o)

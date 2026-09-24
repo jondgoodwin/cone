@@ -1,0 +1,126 @@
+
+import stdio::*
+
+extern:
+    fn SDL_GetError() *u8
+    fn SDL_ClearError()
+    fn SDL_Init(flags u32) i32
+    fn SDL_CreateWindow(title *u8, x u32, y u32, w u32, h u32, flags u32) *SDL_Window
+    fn SDL_GL_CreateContext(window *SDL_Window) *SDL_GLContext
+    fn SDL_GL_SetAttribute(attr i32, value i32) i32
+    fn SDL_GL_SetSwapInterval(interval i32) i32
+    fn SDL_GL_DeleteContext(context *SDL_GLContext)
+    fn SDL_DestroyWindow(window *SDL_Window)
+    fn SDL_Quit()
+    fn SDL_GL_SwapWindow(window *SDL_Window)
+    fn SDL_PollEvent(event &SDL_Event) i32
+
+extern system:
+    fn glClearColor(r f32, g f32, b f32, a f32)
+    fn glClear(bits u32)
+imm GL_COLOR_BUFFER_BIT u32 = 0x00004000u
+
+struct @opaque SDL_Window      // Opaque
+struct @opaque SDL_GLContext   // Opaque
+
+struct SDL_Event:
+    type u32
+    timestamp u32   // In milliseconds
+    buffer [248; u8]
+
+struct SDL_KeyboardEvent:
+    type u32        // ::SDL_KEYDOWN or ::SDL_KEYUP
+    timestamp u32   // In milliseconds, populated using SDL_GetTicks()
+    windowID u32    // The window with keyboard focus, if any
+    state u8        // ::SDL_PRESSED or ::SDL_RELEASED
+    repeat u8       // Non-zero if this is a key repeat
+    padding2 u8
+    padding3 u8
+    keysym SDL_Keysym  // The key that was pressed or released
+
+struct SDL_Keysym:
+    scancode u32        // SDL_Scancode SDL physical key code - see ::SDL_Scancode for details
+    sym u32             // SDL_Keycode SDL virtual key code - see ::SDL_Keycode for details
+    modifier u16       // current key modifiers
+    unused u32
+
+imm SDL_INIT_VIDEO = 0x20u32
+const SDL_WINDOW_OPENGL = 2u
+imm SDL_GL_DOUBLEBUFFER = 5
+imm SDL_GL_CONTEXT_MAJOR_VERSION = 17 // SDL_GLattr
+imm SDL_GL_CONTEXT_MINOR_VERSION = 18
+imm SDL_GL_CONTEXT_PROFILE_MASK = 21
+imm SDL_GL_CONTEXT_PROFILE_CORE = 1
+const SDL_QUIT = 256u
+const SDL_KEYDOWN = 768u
+
+struct Rgba:
+    r f32
+    g f32
+    b f32
+    a f32
+
+struct SdlOpenGL:
+  mainWindow *SDL_Window
+  mainContext *SDL_GLContext
+  
+
+    fn open(self &mut	) Bool:
+        // Initialize SDL's video subsystem
+        if SDL_Init(SDL_INIT_VIDEO) < 0:
+            print <- "Failed to initialize SDL\n"
+            return false
+
+        // Create our window centered at 512x512 resolution
+        mainWindow = SDL_CreateWindow(&"OpenGL/SDL window" as *u8, 0x2FFF0000u, 0x2FFF0000u, 512u, 512u, SDL_WINDOW_OPENGL)
+        if !mainWindow:
+            print <- "Unable to create window\n"
+            _handleError()
+            return false
+
+        // Create our opengl context and attach it to our window
+        mainContext = SDL_GL_CreateContext(mainWindow)
+
+        // Set our OpenGL version.
+        // SDL_GL_CONTEXT_CORE gives us only the newer version, deprecated functions are disabled
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+
+        // 3.2 is part of the modern versions of OpenGL, but most video cards whould be able to run it
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+
+        // Turn on double buffering with a 24bit Z buffer.
+        // You may need to change this to 16 or 32 for your system
+        SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+
+        // This makes our buffer swap synchronized with the monitor's vertical refresh
+        SDL_GL_SetSwapInterval(1);
+
+        // Init GLEW
+        // glewExperimental = GL_TRUE;
+        // glewInit();
+
+        true
+
+    fn _handleError():
+        imm error = SDL_GetError()
+        if *error:
+            print <- "SDL Error: ", error, "\n"
+            SDL_ClearError()
+
+    fn final(self &mut):
+        // Delete our OpengL context
+        SDL_GL_DeleteContext(mainContext);
+
+        // Destroy our window
+        SDL_DestroyWindow(mainWindow);
+
+        // Shutdown SDL 2
+        SDL_Quit();
+
+    fn swapWindow(self &mut):
+        SDL_GL_SwapWindow(mainWindow)
+
+    fn clear(self &mut, color Rgba):
+        glClearColor(color.r, color.g, color.b, color.a)
+        glClear(GL_COLOR_BUFFER_BIT)
