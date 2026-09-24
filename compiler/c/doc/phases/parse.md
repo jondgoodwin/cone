@@ -128,9 +128,26 @@ what the source holds, and the parser, finding the end of the file after it,
 reports what the unfinished statement lacks as well: those are follow-ons, and
 they come after. `lexical_reject_unclosed_string` and
 `lexical_reject_unclosed_mlstring` hold one literal each, since a literal that
-runs to the end of the file is one per file. A character literal needs no such
-case: its scan never passes the end of its line, and a missing closing quote is
-already `ErrorBadTok`, "Invalid lifetime or too-long character literal".
+runs to the end of the file is one per file.
+
+**A character literal or back-ticked identifier cut off by the source's end
+stays on it.** A character literal missing its closing quote is `ErrorBadTok`,
+"Invalid lifetime or too-long character literal", at the opening quote, and its
+scan stops at the end of its line. When the opening quote is the last character
+of the source, `lexScanChar` takes the value 0 and stays on the source's closing
+NUL instead of stepping past it. A back-ticked identifier missing its closing
+backtick is `ErrorBadTok` at the backtick; `lexScanTickedIdent` recovers by
+taking the next character as the name and the one after as the missing
+backtick, unless the source ends before both, when the name is what there is
+and the scan stays on the source's end. Either way the parser then reports what
+the unfinished statement lacks at the end, as a follow-on.
+`lexical_reject_unclosed_char` and `lexical_reject_unclosed_backtick` hold one
+each. A file cannot end in the quote or backtick and still carry the
+annotation after it, so each source is ended by a null character in that
+place, which ends a source as the end of the file does and is the byte the
+compiler puts after every file it reads; the annotations follow it. A quote or
+backtick right before a line's end is not the same case: each still takes the
+line end as its content, and the line goes uncounted.
 
 **`\0` is the null character and nothing more.** `lexScanEscape` reads the
 digit `0` after a backslash as U+0000: a 0 byte in a string literal, the value

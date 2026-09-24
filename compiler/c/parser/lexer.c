@@ -296,8 +296,10 @@ void lexScanChar(char *srcp) {
         isUnicode = *(srcp + 1) == 'u' || *(srcp + 1) == 'U';
         srcp = lexScanEscape(srcp, &lex->val.uintlit);
     }
-    else
+    else if (*srcp)
         lex->val.uintlit = *srcp++;
+    else
+        lex->val.uintlit = '\0';  // the source's end: stay on it
 
     // If following character is end quote, return as integer literal
     if (*srcp == '\'')
@@ -713,15 +715,19 @@ void lexScanTickedIdent(char *srcp) {
     // Look for closing backtick, but not past end of line
     while (*srcp != '`' && *srcp && *srcp != '\n' && *srcp != '\x1a')
         srcp++;
+    // Without one, the character after the backtick is taken as the name and
+    // the next as the missing backtick, unless the source ends before both:
+    // then the name is what there is, and the scan stays on the source's end
     if (*srcp != '`') {
         errorMsgLex(ErrorBadTok, "Back-ticked identifier requires closing backtick");
-        srcp = srcbeg + 2;
+        if (*srcp || srcp > srcbeg + 2)
+            srcp = srcbeg + 2;
     }
 
     // Find identifier token in name table and preserve info about it
     lex->val.ident = nametblFind(srcbeg+1, srcp - srcbeg - 1);
     lex->toktype = IdentToken;
-    lex->srcp = srcp+1;
+    lex->srcp = *srcp ? srcp + 1 : srcp;
 }
 
 // Skip over nested block comment. Every line inside it is counted, so the
