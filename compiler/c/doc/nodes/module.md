@@ -166,7 +166,7 @@ node's own clause (`foldModUseModule`).
    registered to the root — before anything is parsed, so that which files the
    root holds does not depend on what a parse of one of them imports. An import
    cycle back to any of them then finds the root in the registry.
-3. `core` is loaded (`parseLoadCore`): `core/core.cone`, found on the package
+3. `core` is loaded (`parseLoadCore`): `core/src/core.cone`, found on the package
    search path and nowhere else, so no file beside a program stands in for it.
    It is loaded exactly as an imported module is, and is the one module loaded
    with no auto-import of itself.
@@ -189,7 +189,9 @@ loaded, and it is three steps rather than one:
   file's folder, and where that finds nothing `fileFindPackage` tries each folder
   of the package search path in turn — every `--path` folder, then the packages
   folder — each trying `name.cone` and then `name/name.cone`, the designated-file
-  convention. Either returns the path and reads nothing.
+  convention, except that `fileFindPackage` tries a Congo package's
+  `name/src/name.cone` between the two ("The packages folder", below). Either
+  returns the path and reads nothing.
 - **Register.** The path is interned and looked up in the file registry. A hit
   *is* the answer: that module already holds the file, and the file is not read
   again. A miss makes the module, sets `filesym`, `foldersym` and `namesym`,
@@ -615,15 +617,25 @@ structure alone does not exist and is not planned.
 
 ### The packages folder
 
-**`core` and `stdio` are packages, and a package is a folder of Cone source.**
-The repository's root holds `packages/`, one folder per package, each an
-ordinary folder module with its designated file: `packages/core/core.cone` and
-`packages/stdio/stdio.cone`. Nothing about either is known to the compiler but
-the name `core`: the folder names each module, as any folder does, and each is
-located, registered, swept and parsed on the path every imported module takes.
-`stdio`'s printing is C, declared in its `pub extern` block, each function
-marked `@c` so that it takes its C name rather than `stdio`'s Cone one, and
-supplied by `conestd`.
+**`core` and `stdio` are packages, laid out as Congo lays out every package.**
+The repository's root holds `packages/`, one folder per package, each holding
+a manifest, `congo.toml`; the package's source, `src/<name>.cone`; and its
+hand-written include file, `<name>.cone` at the package root, which is what a
+program Congo builds is compiled against. Nothing about either is known to the
+compiler but the name `core`: each is located, registered and parsed on the
+path every imported module takes, and named by its file. `stdio`'s printing is
+C, declared in its `pub extern` block, each function marked `@c` so that it
+takes its C name rather than `stdio`'s Cone one, and supplied by `conestd`.
+
+**A compile that finds a package on the search path wants its source**, since
+it builds the package into its own object (below), so `fileFindPackage` tries
+`name/src/name.cone` after `name.cone` and **before** the designated file
+`name/name.cone`, which in a Congo package is the include file. The source is
+then a lone file, not a designated one — `src` is not `name` — so nothing
+beside it is swept: a package found this way is its one root file. Only a bare
+name is looked for there. This lookup is the compiler's side of the
+**package folder**, and it lives only as long as the search path does; a Congo
+build names every file itself ("A described build", below).
 
 **The packages folder is found by default.** It ends the **package search
 path**, `package_search_paths` in `coneopts.c`, which `lexInit` hands to
@@ -632,7 +644,7 @@ the packages folder. That folder is chosen in three steps, first found wins:
 
 1. the one the `CONE_PACKAGES` environment variable names;
 2. **the one that travels with `conec`**: the nearest `packages/` holding
-   `core/core.cone`, looked for in the executable's own folder and then each
+   `core/src/core.cone` or `core/core.cone`, looked for in the executable's own folder and then each
    folder above it (`coneOptExePackages`, with the executable's folder asked of
    the operating system by `fileExeFolder`, never read from `argv[0]`). One rule
    serves the build tree, where `build/x64-release/conec.exe` finds the
@@ -714,6 +726,31 @@ each module's imports are. The compiler loads exactly those files, checks what i
 was told against each file's own `mod` line rather than trusting it, and never
 searches. So the folder rules live in one place, Congo, and the folder sweep
 above stays only until the test runner uses Congo's scanner.
+
+**Congo's side of the contract** (`tools/congo/congo.py`, whose README is its
+guide) is what makes a Congo build rely on nothing else here:
+
+- **One description, one package, one `conec` run.** Congo writes
+  `build/<mode>/<package>.conebuild` in the package being built, for it and for
+  every package it imports, and runs `conec -o build/<mode> <description>` on
+  each alone, the imported ones first. The object is named after the
+  description, so it is `<package>.obj`. The package being built gets the
+  `output` its manifest says; every package it imports is `output: library`.
+- **Every path is absolute**, written with `/`. The root module holds
+  `src/<name>.cone` first, then the files a folder sweep would have given it;
+  each child module is written where a subfolder or a one-file module draws it.
+  So the compiler's own designated-file rule is never asked about `src/`.
+- **An import line names another package's include file**, `<name>.cone` at that
+  package's root, and is written in the module whose file imports it. A
+  submodule's import of a sister, or of a name of its parent, gets no line: the
+  registry answers it before the description is asked.
+- **The prelude is the one module Congo does not describe.** `core` is loaded
+  from the package search path as always, so Congo sets `CONE_PACKAGES` to the
+  registry folder it found `core` in. Compiled on its own, `core`'s description
+  then lists the very file the prelude is, and the two are one module, keyed by
+  path; a description listing a *different* copy of `core` meets the prelude's
+  names as duplicates (`ErrorDupName`, one per name). Its object defines
+  nothing, since all of `core` is `inline`, generic or `extern`.
 
 `conec` takes a description where it would take a source file, told apart by its
 extension, `.conebuild`:
@@ -1679,7 +1716,7 @@ Three descriptions are live at once:
   global state, and its API.
 - `refregionglo.html` shows a **`region` declaration** — `region @move so:` —
   with `fn alloc(size usize) Option[*u8]` and `fn free(self &uni rc)`.
-- The core package, `packages/core/core.cone`, implements them as
+- The core package, `packages/core/src/core.cone`, implements them as
   **`struct @move so`** with `fn alloc(size usize) *u8` and no `free` method at
   all.
 
@@ -1803,7 +1840,7 @@ annotation on a reference names is a type.
   `--path` names a folder that holds one.
 - **The walk up from the executable has no stopping point but the root.** A
   `conec` installed with no `packages/` of its own, under a folder that happens to
-  hold `packages/core/core.cone` further up, takes that one ahead of the
+  hold `packages/core/` further up, takes that one ahead of the
   compiled-in fallback.
 - **A module's public names are folded whether or not anything uses them.** A
   wildcard import walks the source's whole namespace, so a name the importer

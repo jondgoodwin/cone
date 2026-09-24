@@ -1,2 +1,3 @@
 @echo off
-python %CONEHOME%\bin\congo %1 %2 %3 %4 %5 %6 %7 %8 %9
+rem Congo, the Cone build tool: congo.py beside this file (README.md is the guide)
+python "%~dp0congo.py" %*

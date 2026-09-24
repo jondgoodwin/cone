@@ -58,7 +58,7 @@ void stdPermInit() {
 }
 
 // What core declares in Cone -- Option, Result, and the 'so' and 'rc' regions --
-// is the core package's source, packages/core/core.cone, not this file's.
+// is the core package's source, packages/core/src/core.cone, not this file's.
 
 // Set up the standard library, whose names are always shared by all modules
 void stdlibInit(int ptrsize) {
