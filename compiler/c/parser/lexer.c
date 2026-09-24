@@ -258,6 +258,7 @@ char *lexScanEscape(char *srcp, uint64_t *charval) {
     case '\"': *charval = '\"'; return ++srcp;
     case '\\': *charval = '\\'; return ++srcp;
     case ' ': *charval = ' '; return ++srcp;
+    case '0': *charval = '\0'; return ++srcp;  // the null character, and only the one digit
     case '\0': *charval = '\0'; return srcp;  // the source's end: stay on it
     case 'x': return lexHexDigits(2, ++srcp, charval);
     case 'u': return lexHexDigits(4, ++srcp, charval);

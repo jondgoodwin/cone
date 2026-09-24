@@ -119,6 +119,13 @@ rather than stepping past it, so neither a string nor a character literal reads
 beyond the source. `lexical_string_escapes` holds a literal beginning with each
 escape kind, and runs of escaped quotes, each printed whole.
 
+**`\0` is the null character and nothing more.** `lexScanEscape` reads the
+digit `0` after a backslash as U+0000: a 0 byte in a string literal, the value
+0 in a character literal. The source's own closing NUL after a backslash is a
+different case, the end of the source, on which the reader stays. The manual
+names no octal escapes, so the digits after `\0` are content: `"\012"` is a 0
+byte then `1` and `2`. `lexical_escape_null` holds both kinds of literal.
+
 **Names are interned at scan time, and `Name.node` is the binding slot.**
 `nametblFind` returns one immovable `Name*` per unique string. That same
 `node` field is what makes classification O(1) in the scanner: `keywordInit`
