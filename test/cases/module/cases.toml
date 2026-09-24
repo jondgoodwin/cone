@@ -18,7 +18,9 @@
 # Only module-success, module-package-path and folder scenarios run. Each of them
 # is one module or one tree of them compiled into one object, which is what a
 # program is -- module-package-path's package included, since a module found on
-# the package search path is compiled in. Everything else about 'import'
+# the package search path is compiled in. (module-build-exe is a folder scenario
+# too, and runs because the one module it imports declares only C functions,
+# which conestd supplies.) Everything else about 'import'
 # compiles and stops there:
 # a program spanning modules cannot be linked yet, and compiler/c/doc/diagnostics/test-suite.md
 # section 4 forbids adding a synthetic 'main' to promote a scenario's category.
@@ -1255,3 +1257,107 @@ category = "reject"
 description = "A period whose left side names neither a module nor a type"
 tags = ["nameres", "typecheck"]
 diagnostics = 3
+
+# -------- build descriptions --------
+
+# A scenario folder holding <name>.conebuild rather than <name>.cone hands the
+# compiler that build description, which lists the package's files and modules
+# itself: nothing is swept. Its annotations live in the description and in every
+# .cone file of the folder.
+
+[scenario.module-build-lib]
+category = "compile"
+description = "A package compiled on its own from a build description: a library root named for the package, a child module, an import line"
+tags = ["parse", "genllvm"]
+
+# 'output: library' names the root, so every declaration of the package is
+# spelled after it as an importer of 'q' spells it: the root's own functions, a
+# global and a type's method, and the child module's function after both. Only
+# the spelling moves here; the linkage is still a program's.
+[[scenario.module-build-lib.check]]
+name = "a-described-library-root-prefixes-its-symbols"
+target = "symbols"
+contains = [
+  "define internal q.addOne comdat nodeduplicate",
+  "define internal q.deep comdat nodeduplicate",
+  "global internal q.counter comdat nodeduplicate",
+  "define internal q.Acc.put comdat nodeduplicate",
+  "define internal q.inner.triple comdat nodeduplicate",
+]
+excludes = ["define internal addOne", "define internal inner.triple"]
+
+# The same symbols, mangled: what an importer of q declares.
+[[scenario.module-build-lib.check]]
+name = "the-library-root-mangles-as-a-top-module"
+target = "preir"
+contains = ["@_CNvC1q6addOne(i64", "@_CNvNtC1q5inner6triple(i64", "@_CNvNtC1q3Acc3put("]
+
+# The file an import line names is found where the line says, is named by the
+# import, and is only declared: it stands for another package's include file.
+[[scenario.module-build-lib.check]]
+name = "an-import-line-file-is-declared-under-the-import-name"
+target = "symbols"
+contains = ["declare dep.twice"]
+excludes = ["dep.twice comdat"]
+
+# A file beside the description that it does not list is not compiled.
+[[scenario.module-build-lib.check]]
+name = "an-unlisted-file-is-not-compiled"
+target = "symbols"
+excludes = ["unlistedFn"]
+
+# 'build: release' decides the optimisation options: no debug information.
+[[scenario.module-build-lib.check]]
+name = "build-release-emits-no-debug-info"
+target = "preir"
+excludes = ["!dbg"]
+
+[scenario.module-build-exe]
+category = "run"
+description = "A program built from a build description and run: an unnamed root whose main links, a child module, and stdio reached through import lines"
+tags = ["parse", "genllvm", "runtime"]
+
+# 'output: executable' leaves the root out of every symbol, so 'main' is the
+# entry point the linker looks for and the root's functions are bare; the child
+# module is spelled after itself alone, as a folder program's submodule is.
+[[scenario.module-build-exe.check]]
+name = "a-described-executable-root-stays-bare"
+target = "symbols"
+contains = [
+  "define main comdat nodeduplicate",
+  "define internal helper comdat nodeduplicate",
+  "define internal calc.square comdat nodeduplicate",
+]
+excludes = ["prog."]
+
+# Both of the package's import lines name one file, which is one module, read
+# once and declared once, its 'extern' functions under their C names.
+[[scenario.module-build-exe.check]]
+name = "two-import-lines-naming-one-file-are-one-module"
+target = "symbols"
+contains = ["declare printStr", "declare printInt"]
+excludes = ["stdio.printStr"]
+
+# 'build: debug' decides the optimisation options: debug information.
+[[scenario.module-build-exe.check]]
+name = "build-debug-emits-debug-info"
+target = "preir"
+contains = ["!dbg"]
+
+[scenario.module-build-reject]
+category = "reject"
+description = "A build description that cannot be read: a bad setting value, an unknown setting, an import line missing its ':', a child module named twice, a module listing no file, a setting after the module"
+tags = ["parse"]
+diagnostics = 6
+
+[scenario.module-build-modname-parse]
+category = "reject"
+description = "Each file's 'mod' line checked against the build description: a later file, a child's first file and an import line's file naming another module, and a second declaration of the right name"
+tags = ["parse"]
+diagnostics = 4
+
+[scenario.module-build-import-parse]
+category = "reject"
+description = "An import a described module writes that the build description provides nothing for, by name and by path"
+tags = ["parse"]
+diagnostics = 2

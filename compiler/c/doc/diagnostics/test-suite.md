@@ -185,6 +185,16 @@ test/cases/module/
   it listed — and an annotation in a submodule's file works exactly as one in a
   swept file does.
 
+**A folder scenario may instead hold a build description**, `<name>/<name>.conebuild`,
+and no designated file — both is an error. The runner hands `conec` the
+description, which lists the package's files and modules itself, so nothing in
+the folder is swept: a file it does not list is not compiled. Output filenames
+and the `.out` file derive from the description's name as from any source.
+Annotations live in the description, which the compiler reads with the Cone
+lexer and so reports against, and in every `.cone` file beneath the folder — the
+ones it lists and the ones its import lines name. `module-build-lib` and
+`module-build-exe` are the pair: a library and a program.
+
 **Write a folder scenario when the file layout is the subject** — which files a
 module holds, what names them, what collides, what a subfolder draws. Anything
 else belongs in a flat scenario, because a folder costs a reader a directory

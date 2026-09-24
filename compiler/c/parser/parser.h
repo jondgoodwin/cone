@@ -11,12 +11,39 @@
 #include "../ir/ir.h"
 typedef struct ConeOptions ConeOptions;
 
+// A BUILD DESCRIPTION is what Congo hands the compiler: which files make up
+// each module of one package, where each module's imports are, and what to
+// produce (parsebuild.c). These are its entries, read before anything is parsed.
+
+// 'import name: "path"': where a described module's 'import name' is found
+typedef struct BuildImport {
+    Name *name;
+    char *path;             // Canonical; a relative path is relative to the description's folder
+} BuildImport;
+
+// 'name: { ... }': one module of the package, its files and its child modules
+typedef struct BuildModule {
+    Name *name;
+    char **files;           // Canonical paths, in the order written; the first may declare the module
+    struct BuildModule **children;
+    BuildImport *imports;
+    uint32_t nfiles, nchildren, nimports;
+    uint32_t availfiles, availchildren, availimports;
+    int isimport;           // Stands for the file an import line names, whose name is the import's
+} BuildModule;
+
+typedef struct BuildDesc {
+    BuildModule *root;      // The package's module
+    int library;            // 'output: library': the root is named, and prefixes every symbol
+} BuildDesc;
+
 typedef struct ParseState {
     ProgramNode *pgm;       // Program node
     ModuleNode *mod;        // Current module
     INsTypeNode *typenode;  // Current type
     int inrettype;          // Non-zero while parseFnSig reads a return type, where a '{' opens the declared function's body
     ModuleNode *core;       // The core package, once loaded: every module loaded after it imports it
+    BuildModule *build;     // The build description's entry for the current module; NULL where it is not described
 } ParseState;
 
 // When parsing a variable definition, what syntax is allowed?
@@ -29,8 +56,23 @@ enum ParseFlags {
     ParseMayFold = 0x0400,        // The variable may carry a fold clause: a module's global
 };
 
+// parsebuild.c
+// Does this source path name a build description, by its extension?
+int parseIsBuildDesc(char *path);
+// Read the build description at opt->srcpath, before generation is set up,
+// since its 'build' line decides whether the output is optimised
+BuildDesc *parseBuildDesc(ConeOptions *opt);
+// The import line a described module writes for this name, or NULL
+BuildImport *parseBuildFindImport(BuildModule *build, Name *name);
+// The entry that stands for the module an import line's file draws
+BuildModule *parseBuildImportModule(BuildImport *import);
+
 // parsemod.c
-ProgramNode *parsePgm(ConeOptions *opt);
+// Set up the name table and the lexer, which a build description needs too
+void parseInit(ConeOptions *opt);
+ProgramNode *parsePgm(ConeOptions *opt, BuildDesc *desc);
+// folder + name, where folder carries its trailing slash
+char *parsePathJoin(char *folder, char *name);
 // Consume a 'pub' that precedes a declaration, returning FlagPub, or 0
 uint16_t parsePub();
 // Consume a 'static' that precedes a declaration, returning FlagStatic, or 0

@@ -254,6 +254,11 @@ enum ErrorCode {
     // One-file modules: a file of a module's folder whose first statement is 'mod' is a submodule of its own
     ErrorModFileFolder = 1128,  // A one-file module beside a module folder of the same name in one parent's folder: 'lexer.cone' declaring 'mod' beside 'lexer/lexer.cone'
 
+    // The build description: the file that says which files make up each module of one package, and where each import is
+    ErrorBuildDesc = 1129,      // A build description that is not well formed: a setting, module, file or import line that cannot be read, a name written twice, a module listing no file
+    ErrorBuildModName = 1130,   // A 'mod' line naming a module other than the one the build description lists its file in, or imports it as
+    ErrorBuildImport = 1131,    // An 'import' in a described module that the build description provides nothing for: the compiler never searches for one
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

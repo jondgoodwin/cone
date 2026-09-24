@@ -431,7 +431,11 @@ module and emits `@_CNvC9modulesub8scaleInt`, `modulesub.scaleInt`. The two
 object files never resolve against each other. Compounding it, an ordinary
 imported module does not get `FlagGenMod`,
 so only a `declare` is emitted for it. Separate compilation is what has to
-settle it.
+settle it. A library built from a build description has the spelling half:
+its root is named, so `modulesub` built that way emits
+`@_CNvC9modulesub8scaleInt` itself ([module](../nodes/module.md), "A described
+build"). The linkage half is not built: `genlLinkage` still makes that
+definition internal, so nothing outside the object can reach it.
 
 Also absent: closures with an environment — an anonymous `fn` is lifted to
 module scope and a `&fn` value is a bare function pointer with no capture

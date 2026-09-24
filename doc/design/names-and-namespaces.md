@@ -513,7 +513,7 @@ stored as a string — and five bits:
 | `DclExternal` | externally supplied: this compile emits no definition | `extern` |
 | `DclCName` | C-style name: no owner prefix, never mangled | `extern` [differs: the regime is meant to be declared on a module, and is inferred per declaration from `extern` until it is] |
 | `DclSystemCC` | system calling convention | `extern system` |
-| `DclNamesChain` | module only: contributes its name to the owner chain | set on every loaded module, never on the root |
+| `DclNamesChain` | module only: contributes its name to the owner chain | set on every loaded module, and on the root only where a build description says `output: library` |
 
 **Owner is set where a declaration joins a namespace**: `modAddNode` for a
 module's declarations and `iNsTypeAddFn` for a type's methods. That placement
@@ -529,7 +529,10 @@ symbols are spelled after it.
 
 An imported file module has no owner: it is a top-level module of the program,
 not something inside the root. The root has a name — its file's basename, which
-is what lets an import cycle find it — and contributes nothing to any chain.
+is what lets an import cycle find it — and contributes nothing to any chain,
+except a library root that a build description names: a package built on its
+own is imported by that name, so its root is spelled as its importers spell it,
+`q.addOne` ([module](../../compiler/c/doc/nodes/module.md), "A described build").
 
 **What the node stores, and what generation derives.** The author writes
 visibility; linkage is the compiler's to derive.
@@ -565,7 +568,9 @@ Rules for Cone-consumed names; C FFI names have their own (S5).
   prefix-less on purpose, which is why `main` needs no special case: a root
   declaration with nothing to encode is spelled bare, and one with something
   to encode — a root type's method, an instance of a root generic — starts its
-  chain at the first named owner.
+  chain at the first named owner. The exception is a library's root that a
+  build description names, which is spelled as the top module it is to its
+  importers.
 - **S4.** Each owner in the chain is spelled the way its own path would be.
   The only owner carrying more than its identifier is a generic type instance,
   whose component carries its type arguments, so `fn tally(self) i64` is told
@@ -895,7 +900,9 @@ package, so "outside" means outside the object.
   from such bodies or accepted as external and hidden.
 - **L6.** The compiler must be told whether it is producing an importable
   package; a `mod util` inside a program looks identical to a package's module,
-  and `--library` today changes only the relocation mode. Under S3 a program's
+  and `--library` today changes only the relocation mode. A build
+  description's `output: library` is how it is told; today that names the
+  root and changes no linkage. Under S3 a program's
   prefix-less symbols are internal, which is what makes prefix-less sound: a
   program's `@log` cannot satisfy a package's reference to libm's `log`.
 

@@ -112,6 +112,18 @@ struct enrichment wears for the same mistake. One question — is this
 relationship declared correctly — with the cause in the
 message.
 
+`ErrorBuildDesc` is a third: a build description that cannot be read, whether a
+setting is unknown, set twice, badly valued or written after the module, a line
+is malformed, a child module or an import is named twice, or a module lists no
+file. The description is written by a tool, and every cause has the one remedy
+of fixing the line reported, so nothing would branch on which. What the
+description says about the *source* is not among them: a `mod` line naming
+another module is `ErrorBuildModName`, and an import it provides nothing for is
+`ErrorBuildImport`, each its own condition with its own remedy. The first is kept
+apart from `ErrorModName`, the same mistake against a folder's or a file's name,
+because what is wrong differs — the description or the file — and so does who
+fixes it.
+
 That is a narrow licence, and the tell that it has been stretched is the
 scenarios: **when a scenario needs a message substring to tell two uses of one
 code apart, the substring is doing the code's job.** Wrong arity, a non-type
