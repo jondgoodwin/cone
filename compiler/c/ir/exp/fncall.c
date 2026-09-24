@@ -171,6 +171,8 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
         namespace = &((ModuleNode*)basedcl)->namespace;
     else if (basedcl->tag == StructTag)
         namespace = &((StructNode*)basedcl)->namespace;
+    else if (basedcl->tag == ModTraitTag)
+        namespace = &((ModTraitNode*)basedcl)->namespace;
     else
         return 0;  // a value: this '.' is a member access, and type check binds it
 
@@ -230,6 +232,13 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
         && fnCallNamesMethod(member->dclnode))
         errorMsgNode((INode*)member, ErrorAbstractMeth,
             "%s names a method of %s, which has no code of its own for it: each implementer or variant has its own copy. Call it on a value, or name it through a type that has it.",
+            &member->namesym->namestr, &inodeGetName(basedcl)->namestr);
+    // A module trait's members are all templates in the same way: a requirement
+    // has no body, and each module conforming to the trait owns and generates
+    // its own copy of a default, function or global
+    if (basedcl->tag == ModTraitTag)
+        errorMsgNode((INode*)member, ErrorAbstractMeth,
+            "%s names a member of module trait %s, which has no code or storage of its own for it: each module conforming to it has its own. Name it through such a module.",
             &member->namesym->namestr, &inodeGetName(basedcl)->namestr);
 
     if (node->args == NULL) {

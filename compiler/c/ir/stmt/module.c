@@ -28,6 +28,9 @@ ModuleNode *newModuleNode() {
     mod->extendsname = NULL;
     mod->extends = NULL;
     mod->deffold = NULL;
+    mod->traitname = NULL;
+    mod->trait = NULL;
+    mod->ntaken = 0;
     return mod;
 }
 
@@ -240,6 +243,8 @@ void modPrint(ModuleNode *mod) {
         inodeFprint("IR for program %s", mod->lexer->url);
     if (mod->extendsname)
         inodeFprint(" extends %s", &((NameUseNode*)mod->extendsname)->namesym->namestr);
+    if (mod->traitname)
+        inodeFprint(" is %s", &((NameUseNode*)mod->traitname)->namesym->namestr);
     dclInfoPrint((INode*)mod);
     inodeFprint("\n");
     inodePrintIncr();
@@ -341,10 +346,10 @@ void modExtendsResolve(ModuleNode *mod) {
             &name->namesym->namestr);
         return;
     }
-    if (found != NULL && found->tag == StructTag && (found->flags & TraitType)) {
+    if (found != NULL && (found->tag == ModTraitTag || (found->tag == StructTag && (found->flags & TraitType)))) {
         errorMsgNode((INode*)name, ErrorModExtends,
-            "%s is a trait. A module's 'extends' reuses a concrete module; a module conforming to a module trait, as in 'mod arena extends Region', is a different reading and is not built.",
-            &name->namesym->namestr);
+            "%s is a trait. A module's 'extends' reuses a concrete module; a module conforms to a module trait with 'is': 'mod name is %s'.",
+            &name->namesym->namestr, &name->namesym->namestr);
         return;
     }
     if (found == NULL || found->tag != ModuleTag) {
@@ -671,6 +676,12 @@ void modFoldNames(NameResState *pstate, ModuleNode *mod) {
     if (foldreporting && mod->deffold)
         modDefaultFoldCheck(mod);
 
+    // The module's namespace is complete, and nothing folding from this module
+    // has read it yet, so this is where it takes its module trait's defaults:
+    // a module extending it, or importing it with 'use *', then takes them as
+    // this module's own declarations (modTraitConform)
+    modTraitConform(pstate, mod, 0);
+
     modHook(mod, NULL);
     pstate->mod = owningmod;
     mod->folding = 0;
@@ -727,7 +738,13 @@ void modNameRes(NameResState *pstate, ModuleNode *mod) {
             aliasDclCheckCycle((AliasDclNode*)*nodesp);
     }
 
+    // The copies of a module trait's defaults are the last 'ntaken' nodes, and
+    // arrived resolved in the trait's scope (modTraitConform): a walk of them
+    // here would bind their names a second time, in the wrong scope
+    uint32_t own = mod->nodes->used - mod->ntaken;
     for (nodesFor(mod->nodes, cnt, nodesp)) {
+        if (own-- == 0)
+            break;
         // Resolved by one of the passes above
         if ((*nodesp)->tag == VarDclTag && ((VarDclNode*)*nodesp)->fold != NULL)
             continue;
@@ -751,6 +768,10 @@ void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
     for (nodesFor(mod->imports, cnt, nodesp)) {
         inodeTypeCheckAny(pstate, nodesp);
     }
+
+    // What the module declares for each member of the module trait it
+    // conforms to has the member's shape, checked where 'is' is written
+    modTraitCheck(pstate, mod);
 
     // Then analyze every declaration this module holds, in the order written.
     //

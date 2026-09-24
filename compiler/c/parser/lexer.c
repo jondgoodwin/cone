@@ -99,9 +99,10 @@ void keywordInit() {
     keyAdd("typedef", TypedefToken),
     // The kinds a type declaration may be, and the modifier that makes one
     // abstract. 'trait' is not a kind of its own: written by itself it means
-    // 'struct trait'. 'mod' and 'actor' name kinds the grammar admits and the
-    // compiler does not build yet, so that 'mod trait' and 'actor trait' can be
-    // written the day those kinds arrive rather than having to be designed then.
+    // 'struct trait'. 'mod' is a built kind and 'mod trait' its abstraction;
+    // 'actor' names a kind the grammar admits and the compiler does not build
+    // yet, so that 'actor trait' can be written the day it arrives rather than
+    // having to be designed then.
     keyAdd("struct", StructToken);
     keyAdd("mod", ModToken);
     keyAdd("actor", ActorToken);
@@ -1083,10 +1084,14 @@ static char *lexSkipTrivia(char *srcp) {
 // asks it of every file it finds before any file is parsed, because the answer
 // decides which module the file is: one that opens with a 'mod' declaration is a
 // module of its own. It is read off the text, so nothing is lexed twice and
-// nothing about the file's first tokens is reported ahead of its parse
+// nothing about the file's first tokens is reported ahead of its parse.
+// 'mod trait' is not a module declaration but a declaration of a module trait,
+// which a file of the folder's module may open with like any other
 int lexOpensWithMod(char *src) {
     char *srcp = lexSkipTrivia(src);
     if (lexIsWordAt(srcp, "pub"))
         srcp = lexSkipTrivia(srcp + 3);
-    return lexIsWordAt(srcp, "mod");
+    if (!lexIsWordAt(srcp, "mod"))
+        return 0;
+    return !lexIsWordAt(lexSkipTrivia(srcp + 3), "trait");
 }

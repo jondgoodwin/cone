@@ -121,11 +121,12 @@ unbuilt *kind of declaration* is a token.** `mod` and `actor` are the two kinds
 that carry abstractions, so both are ordinary keywords with an arm of their own in
 the global dispatch. `mod` builds a declaration — it declares the module a
 folder's files, or one file, belong to, [module](../nodes/module.md), "The `mod`
-declaration".
+declaration" — and so does `mod trait`, the module's abstraction, which the arm
+tells apart by the word after `mod` and hands to `parseModTrait`
+([module](../nodes/module.md), "Module traits").
 `actor`
 does not, and its arm reports `ErrorUnbuiltKind` where the declaration is written
-and names the abstraction's spelling, `actor trait`; `mod trait`, the shape of
-`mod` that is unbuilt, reports the same code the same way. An in-file
+and names the abstraction's spelling, `actor trait`. An in-file
 `mod name { ... }` block is refused under that code too, though it is no unbuilt
 shape: it does not exist, since a nested module is a file of its own or a
 subfolder.
@@ -370,7 +371,7 @@ never be analyzed.
 | --- | --- |
 | a spelling the lexer refuses | a reserved word, `?.`, or a `@` or `#` word that names nothing is reported in the lexer and handed on as what it stands for or not at all (section 2), so the parser never sees it |
 | `parseSkipToNextStmt` | the main resync; consumes through the next `;`, or stops short of a `}` or EOF for the enclosing block to handle |
-| an unbuilt form's body | `parseSkipDclBody` skips a following `{ … }` whole, counting depth, so nothing inside is read as a global statement and reported again, and resyncs at the next `;` where there is no block. `actor`, `mod trait` and the refused in-file `mod name { … }` block all use it, so each is reported once, where it is written |
+| an unbuilt form's body | `parseSkipDclBody` skips a following `{ … }` whole, counting depth, so nothing inside is read as a global statement and reported again, and resyncs at the next `;` where there is no block. `actor` and the refused in-file `mod name { … }` block use it, and so does a member a module trait refuses (`parseModTraitSkipMember`), so each is reported once, where it is written |
 | the retired `include` | `parseRetiredInclude` reports `ErrorInclude` at the word, then reads what the statement took — names or quoted paths, comma-separated — and its `;`, so a statement naming one file, a path or a list is one diagnostic and a `pub` before it adds none. A missing `;` ends the statement at its last name rather than swallowing the next declaration; only where no name follows does it resync with `parseSkipToNextStmt` |
 | `parseCloseTok` | reports `ErrorNoRParen`, scans for the closer, gives up at `;`, `}`, EOF |
 | `parseBlockStart` | on `:`, reports `ErrorColonBlock` and reads what follows as the block; on anything else that is not `{`, reports `ErrorNoLCurly` and scans forward for one |
@@ -411,12 +412,13 @@ numbers.
 | | `lexScanIdent` | identifier scan and name-table classification; reserved-word release; a `@` or `#` word that names nothing reported and dropped |
 | | `lexScanNumber`, `lexScanString`, `lexScanChar`, `lexScanEscape` | literals; UTF-8 re-encoding of escapes; lifetime-vs-char disambiguation |
 | | `lexNewLine`, `lexBlockComment` | line counting for diagnostics, inside comments included |
-| | `lexOpensWithMod` | whether a source's first statement begins `mod` or `pub mod`, read off its text past white space and comments with nothing lexed: the folder sweep's probe for a one-file module |
+| | `lexOpensWithMod` | whether a source's first statement begins `mod` or `pub mod`, and not `mod trait`, read off its text past white space and comments with nothing lexed: the folder sweep's probe for a one-file module |
 | `parser/parsemod.c` | `parseInit`, `parsePgm`, `parseLoadCore` | **entry point** — `parseInit` sets up the name table and the lexer, ahead of generation's setup since a build description is read with them; `parsePgm` the type tables, program, main module (a source file's, or the one a build description names), the `core` package from the search path, main file |
 | `parser/parsebuild.c` | `parseIsBuildDesc`, `parseBuildDesc`, `parseBuildFindImport` | the build description: told apart by its `.conebuild` extension, read by the lexer into a tree of `BuildModule`s — settings, each module's files, child modules and import lines, each malformed line `ErrorBuildDesc` — and the import line a described module writes for a name |
 | `parser/parsemod.c` | `parseBuildModuleTree`, `parseBuildSubmoduleDraw`, `parseBuildFiles`, `parseLoadBuildImport` | a described build's module tree: each module named and filled as the description says, nothing swept, and the file an import line names loaded as a declared module under the import's name. `ParseState.build` is the current module's entry, which `parseModuleDcl` checks the `mod` line against (`ErrorBuildModName`) and `parseImport` answers names from (`ErrorBuildImport`) |
-| | `parseGlobalStmts` | the global statement dispatch loop; `trait` by itself enters `parseStruct` with `TraitType` already set, and `actor` is the unbuilt kind refused here. It is told whether it is reading the start of a module's first file or of another of its files, which is what decides where a `mod` declaration may stand and which ones a build description checks |
-| | `parseModuleDcl` | `mod name;`, the declaration a module's designated file or one file makes: the placement rule, the check against the folder's name, the one-file submodule's file's or the build description's, the rename a lone file still gets, the module's own name bound into its namespace, what `pub` does for a submodule and why it is refused on any other module, the `@c` after `mod` that makes the module C-named (its `DclCName`, `DclSystemCC` and prefix, given only where the declaration is accepted), the `extends` it records for name resolution to resolve, and the refusal of the in-file block, which does not exist, and of `mod trait` |
+| | `parseGlobalStmts` | the global statement dispatch loop; `trait` by itself enters `parseStruct` with `TraitType` already set, `mod trait` enters `parseModTrait`, and `actor` is the unbuilt kind refused here. It is told whether it is reading the start of a module's first file or of another of its files, which is what decides where a `mod` declaration may stand and which ones a build description checks |
+| | `parseModuleDcl` | `mod name;`, the declaration a module's designated file or one file makes: the placement rule, the check against the folder's name, the one-file submodule's file's or the build description's, the rename a lone file still gets, the module's own name bound into its namespace, what `pub` does for a submodule and why it is refused on any other module, the `@c` after `mod` that makes the module C-named (its `DclCName`, `DclSystemCC` and prefix, given only where the declaration is accepted), the `extends` and the `is` it records for name resolution to resolve, in the order `extends`, `is`, `use` (`ErrorModIs`, `ErrorBadFold` otherwise), and the refusal of the in-file block, which does not exist |
+| | `parseModTrait` | `mod trait Name { ... }`, a module trait: a function or a global per member, a requirement without a body or initialiser and a default with one; anything else, a generic fn and an overload name `ErrorModTraitBody`, skipped whole (`parseModTraitSkipMember`); no body makes a marker |
 | | `parseCAttr` | `@c`, `@c("str")`, `@c(system)`, `@c("str", system)` after `mod` or `fn`, written onto a `DclInfo`: the string is a module's prefix or a function's whole symbol. A malformed one is `ErrorCAttr` and dropped whole |
 | | `parseFnOrVar`, `parseExternFnCheck` | a module's `fn` or global, with `extern` (single or block) meaning only "defined elsewhere": a body-less signature, refused on an `inline` or generic fn (`ErrorBadExtern`). A bare `@c` on a fn its C-named module already names is `ErrorCNameTwice`. The retired `extern system` is `ErrorCAttr`, naming `@c(system)` |
 | | `parseSkipDclBody` | skip an unbuilt form's `{ … }` whole, or resync at the next `;` |

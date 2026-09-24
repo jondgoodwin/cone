@@ -623,6 +623,9 @@ void genlGlobalImpl(GenState *gen, INode *node) {
     // Nor has an alias: it is a binding, and what it stands for is generated
     // wherever that is declared
     case AliasDclTag:
+    // Nor has a module trait: a requirement has no body, and each default is
+    // generated as the copy each conforming module owns (modTraitConform)
+    case ModTraitTag:
         break;
 
     default:

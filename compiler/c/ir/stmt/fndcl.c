@@ -130,10 +130,13 @@ void fnOverloadDclPrint(FnOverloadDclNode *node) {
 
 // Whether an importer expands this function's body in its own object rather than
 // calling a symbol: an inline or generic function, a trait's default (cloned
-// into each implementer), and any method of a generic type (cloned into each
-// instance). 'typenode' is the type whose braces declare it, or NULL.
+// into each implementer), a module trait's default (cloned into each conforming
+// module), and any method of a generic type (cloned into each instance).
+// 'typenode' is the type or module trait whose braces declare it, or NULL.
 static int fnDclIsExpanded(FnDclNode *fndclnode, INode *typenode) {
     if ((fndclnode->flags & FlagInline) || fndclnode->genericinfo)
+        return 1;
+    if (typenode && typenode->tag == ModTraitTag)
         return 1;
     if (typenode && typenode->tag == StructTag
         && (((StructNode*)typenode)->genericinfo || (typenode->flags & TraitType)))
@@ -229,9 +232,12 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     if (errors != errorsOnEntry)
         return;
 
-    // No need to type check function body if no body or is a default method of a trait
-    if (!fnnode->value 
-        || ((fnnode->flags & FlagMethFld) && pstate->typenode->tag == StructTag && (pstate->typenode->flags & TraitType)))
+    // No need to type check function body if no body or is a default method of a
+    // trait, or a module trait's default: each is checked in the copy its
+    // implementer or conforming module owns, where its names are that one's
+    if (!fnnode->value
+        || ((fnnode->flags & FlagMethFld) && pstate->typenode->tag == StructTag && (pstate->typenode->flags & TraitType))
+        || (pstate->typenode && pstate->typenode->tag == ModTraitTag))
         return;
 
     // Ensure self parameter on a method is (reference to) its enclosing type

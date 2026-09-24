@@ -687,6 +687,58 @@ category = "run"
 description = "A module importing with 'use *' a module that extends it, in both fold orders: its own names come back as the bindings they already are"
 tags = ["nameres", "typecheck", "genllvm", "runtime"]
 
+# A MODULE TRAIT and the modules conforming to it. module-trait runs every way a
+# default is taken or not: taken whole, overridden by a function and by a global,
+# a default global as per-module storage, a default's body reaching a private
+# helper of the trait's module, a module extending a conforming one and conforming
+# too, with every 'mod' line clause in the ruled order, and a default fold of a
+# taken default. module-trait-parse pins what the declaration and the 'is' clause
+# refuse as written, module-trait-nameres what conformance refuses once names are
+# bound, and module-trait-typecheck what differs in shape once they have types.
+[scenario.module-trait]
+category = "run"
+description = "A module trait's defaults taken, overridden by a function and a global, per-module default global storage, a default reaching the trait module's private helper, 'mod layered extends plain is Runner use run', and a default fold of a taken default"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+# A default taken is the conforming module's own declaration, so it is spelled
+# after that module: plain's and custom's copies are each their own symbol. The
+# trait's members are generated nowhere, and layered and caller, which reach
+# plain's copies through 'extends' and a fold, declare none.
+[[scenario.module-trait.check]]
+name = "a-taken-default-is-the-conforming-modules-own"
+target = "symbols"
+contains = [
+  "define internal plain.run comdat nodeduplicate",
+  "define internal plain.tick comdat nodeduplicate",
+  "global internal plain.offset comdat nodeduplicate",
+  "global internal plain.calls comdat nodeduplicate",
+  "define internal custom.run comdat nodeduplicate",
+  "global internal custom.calls comdat nodeduplicate",
+  "define internal custom.label comdat nodeduplicate",
+  "define internal hosts.unit comdat nodeduplicate",
+]
+excludes = ["hosts.run", "hosts.tick", "hosts.offset", "hosts.calls", "hosts.label",
+            "hosts.step", "hosts.scale", "Runner", "layered.run", "layered.tick",
+            "layered.calls", "layered.offset", "caller.run"]
+
+[scenario.module-trait-parse]
+category = "reject"
+description = "What a module trait's body refuses -- a type, an import, a generic fn, an overload name, a name twice -- a trait with no name, and the 'is' clause by a path, as a list, before 'extends', after 'use', and naming nothing"
+tags = ["parse"]
+diagnostics = 11
+
+[scenario.module-trait-nameres]
+category = "reject"
+description = "What conformance refuses once names are bound: requirements declared nowhere, 'is' naming a struct's trait, a module, a function or nothing, a path through a module trait, and 'extends' naming one"
+tags = ["nameres"]
+diagnostics = 8
+
+[scenario.module-trait-typecheck]
+category = "reject"
+description = "What a conforming module declares under a member's name without the member's shape: another signature, a global for a function and the reverse, another type for a required and an overriding global, and another permission"
+tags = ["typecheck"]
+diagnostics = 6
+
 [scenario.module-extends-import]
 category = "compile"
 description = "A module extending a module it imports by its file, reaching the base's function and global bare"
@@ -1195,15 +1247,14 @@ diagnostics = 2
 
 # Separate from module-parse because the subject is the 'mod' declaration rather
 # than 'extern', and because it needs an accepted header first: what follows is
-# then refused for its own reason instead of for following a bad declaration. The
-# 'mod trait' spelling is asserted in trait-parse-kind-modifier as well, where the
-# subject is 'trait' as a modifier on a kind; here it is the shape of 'mod' that
-# is admitted and unbuilt, beside the in-file block, which does not exist.
+# then refused for its own reason instead of for following a bad declaration. A
+# 'mod trait' among them is accepted and is no late 'mod': it declares a module
+# trait, which the module-trait scenarios own.
 [scenario.module-parse-mod]
 category = "reject"
-description = "A 'mod' declaration that is misplaced, has no name or is 'pub' with no parent module, the unbuilt abstraction shape, and the in-file block that does not exist"
+description = "A 'mod' declaration that is misplaced, has no name or is 'pub' with no parent module, a module trait declared late that is no late 'mod', and the in-file block that does not exist"
 tags = ["parse"]
-diagnostics = 6
+diagnostics = 5
 
 # A module's name meeting another name of the module, which is the ordinary
 # duplicate rule. What it pins is where each half is reported: at the import

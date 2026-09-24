@@ -569,7 +569,8 @@ Kept so that reopening one is a decision rather than a rediscovery.
 | `ir/types/struct.c` | `structTypeCheck` | the ten steps of section 10.1; sets `TypeChecked` at the layout point; `structSetDropFn` is step 8 and `structCheckTraitReqs` step 10 |
 | `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the eight steps of section 10.3, including both error-delta gates |
 | `ir/stmt/vardcl.c` | `varDclTypeCheck` | section 10.4 |
-| `ir/stmt/module.c` | `modTypeCheck` | imports first, then declarations, and an enum extension's copies right after it (`structEnumCheckCopies`) — section 10.5 |
+| `ir/stmt/module.c` | `modTypeCheck` | imports first, then the module-trait check, then declarations, and an enum extension's copies right after it (`structEnumCheckCopies`) — section 10.5 |
+| `ir/stmt/modtrait.c` | `modTraitCheck`, `modTraitTypeCheck` | what a conforming module has for each member of its module trait against the member's shape — one candidate of exactly the signature, or a global of the type and permission — each difference `ErrorModTraitMismatch` at the `is`; the trait's own members' signatures and globals, never a default's body, which each copy checks. [module](../nodes/module.md), "Module traits" |
 | `ir/meta/generic.c` | `genericInstantiate`, `genericInstantiateEnter` | instantiation, memoization, and the depth bound |
 | `ir/clone.c` | `clonePushState`, `clonePopState` | the one place type check hooks a name |
 | `ir/ir.h` | (`TypeCheckState`) | the walk context of section 9 |

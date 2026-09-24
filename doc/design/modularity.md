@@ -64,7 +64,7 @@ large**, which is why the interesting decisions are at the bottom of this table.
 | **function** | the block it holds, and the calls in it | parameters and locals | body invisible; the signature is the interface | function references | generics | overload sets ⚠ *unconfirmed reading* |
 | **type** | fields; an enum's spliced into its variants at compile time | members | members are private unless `pub`; an enum and its variants are one boundary | traits and virtual references, asserted with `is` or noticed structurally | generics; trait defaults cloned into implementers | ⚠ **unknown** — whether a type can gain methods outside its own declaration is not established |
 | **thread** | **absent** | **absent** | **absent** | **absent** | **absent** | **absent** |
-| **module** | the files of a folder, swept from the designated file the compiler is given, plus the submodules its subfolders and its one-file modules draw; an organisational subfolder's files, at any depth, join the enclosing module | yes — the folder, or a one-file module's file, names the module, and a submodule is reached by a path through its parent | names are private unless `pub`, and a submodule is private to its parent unless `pub` | **absent** — module traits are planned | **absent** — generic modules are planned | **absent** |
+| **module** | the files of a folder, swept from the designated file the compiler is given, plus the submodules its subfolders and its one-file modules draw; an organisational subfolder's files, at any depth, join the enclosing module | yes — the folder, or a one-file module's file, names the module, and a submodule is reached by a path through its parent | names are private unless `pub`, and a submodule is private to its parent unless `pub` | module traits, asserted with `is` and checked where written; static, since a module is one instance | **absent** — generic modules are planned; module-trait defaults cloned into conforming modules | **absent** |
 | **program / library** | linking; `extern` declarations — functions, methods, operators and globals defined in another object — each spelled by its module's naming, Cone or C (`@c`) | ⚠ **absent — the linker has one flat symbol space**, and nothing in a generated name carries the package | partial — a program's definitions are internal to its object, and a library built from a build description exports its public definitions and the private ones an expanded body reaches; a generic's instance is not yet shared between objects | **absent** | **absent** | **absent** |
 
 ⚠ **The six-column table shows something the three-column one could not.**
@@ -94,11 +94,13 @@ There are two families of module system, and Cone is currently the simpler one:
   to subtype and parametric polymorphism; some descendants make modules
   first-class values.
 
-Cone's modules carry namespace and encapsulation, and nothing above them. Adding
+Cone's modules carry namespace and encapsulation, and substitution through
+module traits, asserted with `is`; generativity is still above them. Adding
 substitution and generativity is explicitly seen as an opportunity — it "would
 improve the versatility of modules, at some cost to complexity", letting a
 program be configured by plugging in modules rather than by creating singleton
-types.
+types. The first use is a program plugging into a framework — a shell, a web
+server — through the framework's module trait.
 
 **What Cone's modules actually are is not this note's subject.** The package as
 unit of distribution and compilation, the module as a nesting namespace within

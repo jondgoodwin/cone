@@ -80,6 +80,7 @@ add_executable(conec
 	compiler/c/ir/stmt/import.c
 	compiler/c/ir/stmt/intrinsic.c
 	compiler/c/ir/stmt/module.c
+	compiler/c/ir/stmt/modtrait.c
 	compiler/c/ir/stmt/program.c
 	compiler/c/ir/stmt/return.c
 	compiler/c/ir/stmt/swap.c

@@ -16,12 +16,14 @@ node, one flag, and the same declaration either way. The word it modifies is wha
 says which **family** the abstraction serves, which is what the kind-match rule
 needs: a struct composes a struct or a struct-trait, and an actor will compose an
 actor or an actor-trait. So no trait declaration carries anything to say which
-family it is for, and nothing is inferred from what it declares. `mod trait` and
-`actor trait` are admitted by the grammar so that the spelling of those
-abstractions is settled; neither abstraction exists, so both report
-`ErrorUnbuiltKind` where they are written — `mod` itself is a built declaration,
-which [module](module.md) owns. `enum trait` is refused, and that absence is the
-one below.
+family it is for, and nothing is inferred from what it declares. `mod trait` is
+the module's abstraction, built as a node of its own, `ModTraitNode`, which
+[module](module.md), "Module traits", owns: a module has functions and globals
+rather than fields and methods, and one instance, so it shares this node's
+cloning of defaults but none of its layout. `actor trait` is admitted by the
+grammar so that the spelling of that abstraction is settled; it does not exist,
+so it reports `ErrorUnbuiltKind` where it is written. `enum trait` is refused,
+and that absence is the one below.
 
 **At a glance.** `parseStruct` does a great deal — tag synthesis, mixin
 placeholders, variants in both of their spellings, tag numbering, generic

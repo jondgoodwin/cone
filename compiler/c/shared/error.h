@@ -185,7 +185,7 @@ enum ErrorCode {
 
     // 'trait' as a modifier on the kind
     ErrorDupTrait = 1099,       // 'trait' written twice: by itself it already means 'struct trait'
-    ErrorUnbuiltKind = 1100,    // A kind of declaration the grammar admits and the compiler does not build: 'actor', 'mod trait'. Also the retired in-file 'mod name { }' block, recognised only to refuse it
+    ErrorUnbuiltKind = 1100,    // A kind of declaration the grammar admits and the compiler does not build: 'actor', 'actor trait'. Also the retired in-file 'mod name { }' block, recognised only to refuse it
 
     // 'extends': enriching a concrete type with methods
     ErrorExtendsBase = 1101,    // What an 'extends' names cannot serve as a concrete base
@@ -263,6 +263,12 @@ enum ErrorCode {
     ErrorCAttr = 1132,          // '@c' written wrongly or where nothing has a symbol for it to name: a bad argument, a type, an anonymous, generic or inline fn, a trait's method, the retired 'extern system'
     ErrorCNameTwice = 1133,     // A bare '@c' (or '@c(system)' where the module is already system) on a fn whose module already gives it that C naming
     ErrorBadExtern = 1134,      // 'extern' on a declaration an importer needs the body of -- inline, generic, a trait's or a generic type's method -- or on something not a fn or a global
+
+    // A module trait, and a module conforming to one with 'is'
+    ErrorModIs = 1135,          // A 'mod' line's 'is' naming something other than one module trait by one name -- a struct trait, a module, a path, a list -- or written before 'extends'
+    ErrorModTraitBody = 1136,   // A module trait's body holding something other than a function or a global: a type, an import, a 'use', a macro, a generic fn, an overload name
+    ErrorModTraitMissing = 1137, // A module conforming to a module trait declares nothing under a member's name, and the trait gives that member no default
+    ErrorModTraitMismatch = 1138, // What a conforming module declares under a member's name is not the member's kind, signature, type or permission
 
     // Warnings
     WarnCode = 3000,

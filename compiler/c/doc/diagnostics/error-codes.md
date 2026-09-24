@@ -137,6 +137,22 @@ nothing — a bare one on a function its C-named module already names — is kep
 apart as `ErrorCNameTwice`: the marker is right in itself, and what is wrong is
 that the module already said it.
 
+A module trait and a module's conformance to one take four codes, split where
+the remedy is: the author of the `mod` line, of the trait, or of the module's
+declarations. `ErrorModIs` is a `mod` line's `is` that does not name one module
+trait by one name — a struct's trait, a module or anything else not a module
+trait, a path, a list — or is written before `extends`; the remedy is on that
+line. `ErrorModTraitBody` is a trait's member that is not a function or a
+global, or is a generic function or declares an overload name; the remedy is in
+the trait. What conformance finds is two conditions a reader would tell apart:
+`ErrorModTraitMissing`, a requirement the module declares nothing for (declare
+it), and `ErrorModTraitMismatch`, a declaration under a member's name without
+the member's shape — not a function or not a global, another signature, type or
+permission (change it). A name nothing binds is `ErrorUnkName`, a path through a
+module trait `ErrorAbstractMeth` and `extends` naming one `ErrorModExtends`, each
+the code the same mistake wears elsewhere, and `use` written before `is` is
+`ErrorBadFold`, as it is before `extends`.
+
 That is a narrow licence, and the tell that it has been stretched is the
 scenarios: **when a scenario needs a message substring to tell two uses of one
 code apart, the substring is doing the code's job.** Wrong arity, a non-type
