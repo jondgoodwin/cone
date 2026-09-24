@@ -72,12 +72,17 @@ void genlComdat(GenState *gen, LLVMValueRef global);
 typedef enum GenlDefinition {
     GenlDeclared,   // Only names it: some other object defines it
     GenlDefined,    // Defines it for itself alone
-    GenlExported    // Defines it for other objects too: a library's export
+    GenlExported,   // Defines it for other objects too: a library's export
+    GenlShared      // Defines it as every object using it does, and the linker
+                    // keeps one copy: a generic's instance, or a vtable, in a
+                    // described build ('linkonce_odr', 'comdat any')
 } GenlDefinition;
 
 // Set a declared symbol's linkage, storage class and calling convention from its
 // node's facts (NULL for a vtable), and what this object does with it
 void genlLinkage(LLVMValueRef global, INode *dclnode, GenlDefinition defined);
+// What an object does with a vtable it builds: shared in a described build
+GenlDefinition genlVtableDefinition(GenState *gen);
 void genlGloVarName(GenState *gen, VarDclNode *glovar);
 void genlGloVar(GenState *gen, VarDclNode *varnode);
 void genlGloFnName(GenState *gen, FnDclNode *glofn);

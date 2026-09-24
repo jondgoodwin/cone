@@ -313,7 +313,8 @@ the scenario's options, to an object of its own in the same output folder, and
 linked in beside the program's object. A diagnostic or a failing compile there
 fails the scenario. It belongs to a folder `run` scenario only, and a linked
 source may not share the scenario's own basename, since its object would take
-the same name (`module-build-link`).
+the same name (`module-build-link`). A named check with an `object` key reads
+what a linked compile generated (section 4, "`cases.toml` keys").
 
 ## 4. Assert
 
@@ -468,11 +469,13 @@ Each line is, in order, separated by single spaces:
 2. the **linkage, visibility, storage-class and calling-convention words**
    exactly as LLVM prints them, in LLVM's order, and only those it prints —
    so nothing for `external` linkage or `default` visibility: `internal`,
-   `dllimport x86_stdcallcc`; a program compile sets no visibility and asks
-   nothing to merge, so `hidden` and `linkonce` are what an `excludes` guards
-   against. A library's export is external and so prints no word —
-   `define q.addOne comdat nodeduplicate` — which is what tells it apart from
-   the `define internal` a program gives the same definition;
+   `dllimport x86_stdcallcc`; a program compiled with no build description
+   sets no visibility and asks nothing to merge, so `hidden` and `linkonce` are
+   what an `excludes` guards against there. A library's export is external and
+   so prints no word — `define q.addOne comdat nodeduplicate` — which is what
+   tells it apart from the `define internal` a program gives the same
+   definition. In a described build a generic's instance and a vtable are
+   `linkonce_odr` — `define linkonce_odr q.larger[i64] comdat any`;
 3. the **demangled name**: the symbol read back through the scheme in
    `doc/design/names-and-namespaces.md`, "Symbols" — `sub.SubPt.get`,
    `Holder[i64].tally`, `pick[&so mut i32]`, `Vec.+`, a vtable as
@@ -545,7 +548,19 @@ name     = "overload-lowers-to-concrete"
 target   = "symbols"           # or "llvmir", "preir", or "stdout" for a 'run' scenario
 contains = ["define internal scaleInt comdat nodeduplicate"]
 excludes = ["scale "]          # a definition's name is followed by its COMDAT
+
+[[scenario.module-build-link.check]]
+name     = "the-library-shares-its-own-instances"
+target   = "symbols"
+object   = "q"                 # read what a 'link' entry's compile generated
+contains = ["define linkonce_odr q.larger[i64] comdat any"]
 ```
+
+`object` names a `link` entry by its stem, and the check reads that package's
+dump — `q.preir`, from `q/q.conebuild` — in place of the scenario's own; the
+runner then compiles that entry with `--llvmir`. It is how a scenario that
+links two objects asserts on both: that a symbol both define has the same
+linkage in each, say.
 
 **Several runs of one source** is how an option matrix avoids duplicating a
 `.cone` file. Every run is compared against the same expectations, so what a

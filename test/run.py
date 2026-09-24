@@ -587,6 +587,9 @@ class Check:
     target: str
     contains: tuple[str, ...]
     excludes: tuple[str, ...]
+    # The stem of a 'link' entry whose object the check reads, in place of the
+    # scenario's own: what a package compiled on its own generated
+    object: str | None = None
 
 
 @dataclass(frozen=True)
@@ -730,10 +733,18 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
 
         checks = []
         for entry in table.get("check", []):
-            _require_keys(f"{where}.check", entry, {"name", "target", "contains", "excludes"})
+            _require_keys(f"{where}.check", entry, {"name", "target", "contains", "excludes", "object"})
             if entry.get("target") not in ("llvmir", "preir", "symbols", "stdout"):
                 raise SuiteError(
                     f"{where}.check: target must be 'llvmir', 'preir', 'symbols' or 'stdout'")
+            # 'object' reads what a package the scenario links generated
+            if "object" in entry:
+                if entry["target"] == "stdout":
+                    raise SuiteError(f"{where}.check: 'object' names a generated object, which has no stdout")
+                if entry["object"] not in {path.stem for path in link}:
+                    raise SuiteError(
+                        f"{where}.check: 'object' names {entry['object']!r}, which is not the stem"
+                        f" of an entry in the scenario's 'link'")
             if entry["target"] == "stdout" and category != "run":
                 raise SuiteError(
                     f"{where}.check: only a 'run' scenario produces stdout to check")
@@ -745,6 +756,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
                 target=entry["target"],
                 contains=tuple(entry.get("contains", [])),
                 excludes=tuple(entry.get("excludes", [])),
+                object=entry.get("object"),
             ))
 
         scenario = Scenario(
@@ -2074,6 +2086,8 @@ class Runner:
             lib_rel = lib.relative_to(REPO).as_posix()
             lib_cmd = [str(self.conec), *spec.options, "--checktree", "--verify",
                        "-o", out_rel, lib_rel]
+            if any(c.object == lib.stem for c in scenario.checks):
+                lib_cmd.insert(-3, "--llvmir")
             result.commands.append(quote(lib_cmd))
             built = execute(lib_cmd, REPO, out_dir, f"conec-{lib.stem}",
                             self.args.timeout, self.args.max_output)
@@ -2371,10 +2385,12 @@ class Runner:
         """R2.3. Named checks against a generated artifact — LLVM IR, the
         symbols it declares, or a run's stdout — for what has no source line
         to attach to."""
-        symbols: str | None = None
+        symbols: dict[str, str] = {}
         for check in scenario.checks:
             if check.target != target:
                 continue
+            # The scenario's own object, or a linked package's
+            stem = check.object or scenario.source.stem
             if check.target in ("llvmir", "preir"):
                 # genllvm writes <srcname>.ir after optimization and .preir
                 # before it. The post-optimization dump is what reaches the
@@ -2387,7 +2403,7 @@ class Runner:
                 # 'compile' scenario, or in a function 'main' absorbs, is
                 # read before it runs.
                 suffix = ".ir" if check.target == "llvmir" else ".preir"
-                artifact = out_dir / f"{scenario.source.stem}{suffix}"
+                artifact = out_dir / f"{stem}{suffix}"
                 if not artifact.exists():
                     result.status = FAIL
                     result.problems.append(
@@ -2400,18 +2416,18 @@ class Runner:
                 # drops an internal definition nothing references, and a
                 # check on an uncalled definition must still see it. The
                 # derived lines are written beside the dump for reading.
-                artifact = out_dir / f"{scenario.source.stem}.preir"
+                artifact = out_dir / f"{stem}.preir"
                 if not artifact.exists():
                     result.status = FAIL
                     result.problems.append(
                         f"check {check.name!r}: no LLVM IR dump at {artifact.name}")
                     continue
-                if symbols is None:
+                if stem not in symbols:
                     ir = normalize(artifact.read_text(encoding="utf-8", errors="replace"))
-                    symbols = "\n".join(symbol_lines(ir)) + "\n"
-                    (out_dir / f"{scenario.source.stem}.symbols").write_text(
-                        symbols, encoding="utf-8")
-                text = symbols
+                    symbols[stem] = "\n".join(symbol_lines(ir)) + "\n"
+                    (out_dir / f"{stem}.symbols").write_text(
+                        symbols[stem], encoding="utf-8")
+                text = symbols[stem]
             else:
                 text = result.program_stdout or ""
             for needle in check.contains:

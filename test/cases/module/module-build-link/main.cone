@@ -1,5 +1,6 @@
 // The program: every value it prints comes from package q's object, through a
-// call, an expanded inline body, or a global.
+// call, an expanded inline body, or a global, or from a generic's instance or a
+// vtable that both objects define and the linker merges.
 
 mod prog;
 
@@ -13,6 +14,13 @@ fn show(label &[]u8, n i64) {
   printStr("\n");
 }
 
+fn showF(label &[]u8, n f64) {
+  printStr(label);
+  printStr(" = ");
+  printFloat(n);
+  printStr("\n");
+}
+
 fn main() i32 {
   show("addOne", q.addOne(4i64));
   show("answer", q.answer());
@@ -22,5 +30,29 @@ fn main() i32 {
   show("boxed", q.boxed(8i64));
   imm acc = q.Acc[3i64];
   show("plus", acc.plus(4i64));
+
+  // Generics. The i64 instances are defined in this object and in q's, and
+  // the linker keeps one; the f64 instances are defined in this object alone.
+  show("qLarger", q.qLarger());
+  show("larger", q.larger(4i64, 11i64));
+  showF("largerF", q.larger(2.5d, 1.5d));
+  show("qPairSum", q.qPairSum());
+  imm pi = q.Pair[i64][5i64, 6i64];
+  show("pairSum", pi.sum());
+  show("pairCount", pi.count());
+  imm pf = q.Pair[f64][1.25d, 2.5d];
+  showF("pairSumF", pf.sum());
+  show("pairCountF", pf.count());
+  // The instance of a public generic whose body instantiates a private one
+  show("kept", q.kept(77i64));
+
+  // A vtable. This object builds Square's vtable for Shape, and q's object
+  // builds it too; q tells a Square by its address, so the linker must have
+  // kept one copy for both. The program's own test is against the same copy.
+  imm sq = q.Square[3i64];
+  imm shape &<q.Shape = &sq;
+  show("isSquare", q.isSquare(shape));
+  show("areaOf", q.areaOf(shape));
+  show("isSquareHere", if shape is &q.Square {1i64;} else {0i64;});
   0i32;
 }

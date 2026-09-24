@@ -271,5 +271,9 @@ BuildDesc *parseBuildDesc(ConeOptions *opt) {
     // exporting its public definitions (genlIsExported). Generation's setup,
     // which reads the first, runs after this
     opt->library = desc->library;
+    // A described package is one object of several, library or program, so an
+    // instance of a generic may be defined in more than one of them and the
+    // linker keeps one copy (genlDefinition)
+    opt->described = 1;
     return desc;
 }

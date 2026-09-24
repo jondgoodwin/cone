@@ -639,10 +639,21 @@ importer can reach, and every private definition that a body an importer
 expands names: an `inline`, generic or macro body, or a trait's default, whose
 copy in the importer calls the private symbol it reached (the importer's side
 of that is `genlFnSym` and `genlVarSym`). Everything else is internal as in a
-program, and an instance of a generic is not exported yet. So a package
-compiled alone links with a program compiled against its include file:
-`module-build-link` builds both, links them and runs the program, and
-`module-build-export` pins each case of the rule.
+program. So a package compiled alone links with a program compiled against its
+include file: `module-build-link` builds both, links them and runs the program,
+and `module-build-export` pins each case of the rule.
+
+**A generic's instances are shared, in every described build.** A description
+also sets `opt->described`, for a program as for a library, and each object then
+defines every instance it uses — the package the ones it uses itself, an
+importer the ones it makes from the body its include file carries, a module it
+does not generate notwithstanding (`genlImportedInstances`) — as `linkonce_odr`
+with a COMDAT of kind `any`, so identical instances in several objects merge
+at link. The members of a generic type's instance are shared with it, and so
+is every vtable, which each object coercing a type to a trait builds and whose
+address pattern matching compares. `module-build-link` exercises an instance
+both objects define, one only the program does, and a virtual reference built
+in the program and tested in the package.
 
 **An include file declares with `extern`.** Each function, method, operator
 and global the package's object defines is written there `extern` and without a
@@ -1032,12 +1043,15 @@ links and runs today, and one spanning any other import does not**, which is
 what lets a folder scenario reaching two levels of submodule be a `run` scenario,
 and `module-package-path` too.
 
-`ImportTag` is an explicit no-op in `genlGlobalImpl`. `genlLinkage` makes every
-definition of a program internal except `main` and a public C-named one, and leaves
-an imported module's declarations external. A library compile exports what its
-importers link against (`genlIsExported`, "A described build"); what
-generation still only anticipates is an instance of a generic and a vtable
-made `linkonce`, so that each importer's copy merges.
+`ImportTag` is an explicit no-op in `genlGlobalImpl`. A module not flagged
+`FlagGenMod` still has one kind of body generated here: the instances this
+compile made of its generics (`genlImportedInstances`), since its package has
+none for an importer to link against. `genlLinkage` makes every definition of a
+program internal except `main` and a public C-named one, and leaves an imported
+module's declarations external. A library compile exports what its importers
+link against (`genlIsExported`, "A described build"), and a described build
+makes an instance of a generic and a vtable `linkonce_odr` with a COMDAT of
+`any`, so that each object's copy merges.
 
 The privacy filter in pass 1 assumes nothing outside a module can reach its
 private names, and a public overload name cannot break that assumption: a
@@ -1091,8 +1105,8 @@ because they remove work rather than adding it:
 - **Deduplication happens in the IR, not in the linker.** `genericinfo`'s
   `memonodes` memoizes an instantiation on the generic's declaration, matched by
   argument types, so twenty files instantiating `Option[i32]` produce one
-  instance and one symbol. `LLVMLinkOnceAnyLinkage` is therefore a
-  **cross-package** mechanism only.
+  instance and one symbol. `linkonce_odr` (`LLVMLinkOnceODRLinkage`, built
+  for a described build) is therefore a **cross-package** mechanism only.
 
 ### The module is a namespace
 
@@ -1188,10 +1202,14 @@ one-file module beside a module folder of its name.
   and a cloned trait default have no definition in the imported package to link
   against, because the package cannot know which ones exist — the same reason
   the interface artifact below cannot hold signatures alone. So an importing
-  compile does emit definitions for those, and `LLVMLinkOnceAnyLinkage` is what
-  lets several importers each emit the same one. This is the whole of the
-  exception: it does not extend to anything the imported package could have
-  emitted itself.
+  compile does emit definitions for those, and `linkonce_odr` with a COMDAT of
+  `any` is what lets several importers, and the package itself, each emit the
+  same one (built for generic instances, 23 Sep 2026; an `inline` body and a
+  macro leave no symbol). This is the whole of the exception: it does not extend
+  to anything the imported package could have emitted itself. ▸ A vtable sits
+  on the edge: every object coercing a type to a trait builds one — the pair is
+  known only at the coercion, since a type may satisfy a trait it never names —
+  and it is shared the same way, so that its address is one across objects.
 - **A module imports a given package at most once.** A second import of the same
   package is an error, whether its fold spec is identical or differs: two ways of
   bringing in the same thing is a cleanliness issue [Jon 23 Sep]. (An identical
@@ -1472,7 +1490,9 @@ into:
 
 - **Linkage for what a program does not export** is settled and built: every
   definition of a program compile is `LLVMInternalLinkage`, in `genlLinkage`,
-  except `main` and a public C-named one, and nothing is `hidden`. Hidden visibility
+  except `main`, a public C-named one, and — in a described build — a generic's
+  instance and a vtable, which are `linkonce_odr` so that the copies other
+  objects make merge with it; nothing is `hidden`. Hidden visibility
   would keep a symbol out of a shared library's export table but leave it a
   global symbol at static link, so it could still collide; internal linkage
   makes it object-local and collision-proof. The hazard that distinguishes them

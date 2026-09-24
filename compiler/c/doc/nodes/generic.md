@@ -42,7 +42,9 @@ parameter constraints rather than ahead of them.**
 
 **Instances are reachable only through `memonodes`.** ▸ **Settles** that
 deduplication happens in the IR rather than in the linker, which is why
-`linkonce` is a cross-package mechanism only.
+`linkonce_odr` is a cross-package mechanism only: a described build gives it to
+every instance, so that a package's and its importers' copies merge
+("Generation").
 
 ## Shape
 
@@ -320,13 +322,24 @@ parameter does not have.
 ## Generation
 
 `genlGlobalSyms` and `genlGlobalImpl` each have two generic branches, both
-walking `memonodes` with the pair stride. `genlLinkage` makes an instance
-internal like every other definition, in a library compile too
-(`genlIsExported` never exports one); the C++ template answer — `linkonce`, so
-several translation units may emit one and the linker keeps one — is still to
-come. What a library compile does export is each private function, global or
-type a generic's body names (`DclExpandReached`), since the importer's instance
-calls it.
+walking `memonodes` with the pair stride. For a module this object does not
+generate — an imported package's, whose include file carries the generic's
+full body, since a generic cannot be `extern` — `genlImportedInstances` walks
+the same branches and generates only the instances, private generics'
+included: **every object that uses an instance defines it**, because the
+generic's own package cannot know which instances its importers make.
+
+**Linkage is the C++ template answer, in a described build.** An instance, and
+every member of a generic type's instance (`genlIsInstance` — the members carry
+no `instnode` of their own, so their owners are asked), is `linkonce_odr` with
+a COMDAT of kind `any` (`GenlShared`): the package's own instances and each
+importer's are identical, and the linker keeps one copy. A compile with no
+build description is the program's only object, and there an instance is
+internal like every other definition. `genlIsExported` never exports one. What a
+library compile does export is each private function, global or type a
+generic's body names (`DclExpandReached`), since the importer's instance calls
+it. `module-build-link` links a package and a program that both instantiate a
+generic function and a generic type at `i64`, and the program alone at `f64`.
 
 **The symbol keys off being an instance**, which `nameSymbol` reads off the
 node: the function's own `instnode` carries type arguments

@@ -39,6 +39,7 @@ typedef struct ConeOptions {
     int wasm;        // 1=WebAssembly
     int release;    // 0=debug (no optimizations). 1=release (default)
     int library;    // 1=generate a C-API compatible static library
+    int described;  // 1=a build description names the package: one object of several linked together
     int runtimebc;    // Compile with the LLVM bitcode file for the runtime
     int pic;        // Compile using position independent code
     int print_stats;    // Print some compiler statistics

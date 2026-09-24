@@ -1447,7 +1447,7 @@ contains = ["!dbg"]
 
 [scenario.module-build-export]
 category = "compile"
-description = "A library compile's linkage: public definitions and the private ones an expanded body names are exported, every other private one and a generic's instance stay internal"
+description = "A library compile's linkage: public definitions and the private ones an expanded body names are exported, every other private one stays internal, and a generic's instance is shared"
 tags = ["nameres", "genllvm"]
 
 # Exported, so external: each public function, global and type function, the
@@ -1484,11 +1484,10 @@ contains = ["define ex.Reached.get comdat", "define ex.WithInline.secret comdat"
 
 # Internal: a private definition no expanded body names, whether the library
 # calls it or not, the child module's too; a private method of a type holding
-# no expanded body; every function of a private type nothing expanded names,
-# public or not; and the instance of a generic the library makes for its own
-# use, which an importer makes for itself.
+# no expanded body; and every function of a private type nothing expanded
+# names, public or not.
 [[scenario.module-build-export.check]]
-name = "other-private-definitions-and-instances-stay-internal"
+name = "other-private-definitions-stay-internal"
 target = "symbols"
 contains = [
   "define internal ex.privCalled comdat",
@@ -1497,8 +1496,15 @@ contains = [
   "define internal ex.Plain.hidden comdat",
   "define internal ex.Hidden.get comdat",
   "define internal ex.inner.innerPriv comdat",
-  "define internal ex.viaGeneric[i64] comdat",
 ]
+
+# Neither exported nor internal: the instance of a generic the library makes for
+# its own use is shared. An importer using the same instance defines it too,
+# and the linker keeps one copy (module-build-link links the two).
+[[scenario.module-build-export.check]]
+name = "an-instance-is-shared"
+target = "symbols"
+contains = ["define linkonce_odr ex.viaGeneric[i64] comdat any"]
 
 # An inline function is expanded where it is called and has no symbol.
 [[scenario.module-build-export.check]]
@@ -1515,7 +1521,7 @@ excludes = ["ex.viaInline", "ex.privInline", "ex.WithInline.get", "ex.viaReached
 # function, global and type, whose symbols q exports for them.
 [scenario.module-build-link]
 category = "run"
-description = "A package compiled alone and a program compiled against its hand-written include file, linked and run"
+description = "A package compiled alone and a program compiled against its hand-written include file, linked and run: generic instances and vtables both objects define merge at link"
 tags = ["genllvm", "runtime"]
 link = ["q/q.conebuild"]
 
@@ -1533,6 +1539,74 @@ contains = [
   "external global q.shared",
 ]
 excludes = ["q.addOne comdat", "q.secret comdat", "q.Box.twice comdat", "q.answer", "q.bump", "q.boxed"]
+
+# A generic's instances are defined by every object that uses them: q has none
+# for the program to link against, since it cannot know which ones the program
+# makes. So the program defines each from the body q's include file carries,
+# 'linkonce_odr' in a COMDAT of kind 'any': the i64 instances q defines too,
+# and the linker keeps one copy, and the f64 instances only the program has --
+# as are 'kept' and the private generic 'same' its body instantiates. The
+# private function a method of Pair names is q's export, declared here.
+[[scenario.module-build-link.check]]
+name = "the-program-defines-each-instance-it-uses-shared"
+target = "symbols"
+contains = [
+  "define linkonce_odr q.larger[i64] comdat any",
+  "define linkonce_odr q.larger[f64] comdat any",
+  "define linkonce_odr q.Pair[i64].sum comdat any",
+  "define linkonce_odr q.Pair[i64].count comdat any",
+  "define linkonce_odr q.Pair[f64].sum comdat any",
+  "define linkonce_odr q.Pair[f64].count comdat any",
+  "define linkonce_odr q.kept[i64] comdat any",
+  "define linkonce_odr q.same[i64] comdat any",
+  "declare q.unit",
+  "declare q.qLarger",
+  "declare q.qPairSum",
+]
+excludes = ["declare q.larger", "declare q.Pair", "internal q.larger", "internal q.Pair", "define q.larger", "define q.Pair"]
+
+# q's own instances have the same linkage, so the i64 copies in the two objects
+# merge at link rather than colliding; a strong or 'nodeduplicate' definition in
+# both is a duplicate-symbol error. q defines no f64 instance: nothing in q
+# makes one. Its other definitions keep their library linkage: the private
+# 'unit', named by Pair's methods, exported.
+[[scenario.module-build-link.check]]
+name = "the-library-shares-its-own-instances"
+target = "symbols"
+object = "q"
+contains = [
+  "define linkonce_odr q.larger[i64] comdat any",
+  "define linkonce_odr q.Pair[i64].sum comdat any",
+  "define linkonce_odr q.Pair[i64].count comdat any",
+  "define q.unit comdat nodeduplicate",
+  "define q.qLarger comdat nodeduplicate",
+  "define q.qPairSum comdat nodeduplicate",
+]
+excludes = ["[f64]", "internal q.larger", "internal q.Pair", "define q.larger", "define q.Pair"]
+
+# A vtable is built by every object that coerces its type to its trait, and a
+# virtual reference carries its address across objects: q's 'isSquare' tells a
+# Square by comparing that address with its own copy's. So both objects' copies
+# are shared, and the one the linker keeps is the one both compare against;
+# internal, the program's reference would not match q's copy ('isSquare' 0).
+# The list of a trait's vtables holds the implementers one object saw, so it
+# stays each object's own.
+[[scenario.module-build-link.check]]
+name = "the-program-shares-its-vtables"
+target = "symbols"
+contains = [
+  "constant linkonce_odr q.Square as q.Shape (vtable) comdat any",
+  "constant internal q.Shape (vtable list) comdat nodeduplicate",
+]
+
+[[scenario.module-build-link.check]]
+name = "the-library-shares-its-vtables"
+target = "symbols"
+object = "q"
+contains = [
+  "constant linkonce_odr q.Square as q.Shape (vtable) comdat any",
+  "constant internal q.Shape (vtable list) comdat nodeduplicate",
+]
 
 [scenario.module-build-reject]
 category = "reject"

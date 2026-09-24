@@ -131,9 +131,10 @@ void genlVtableImpl(GenState *gen, Vtable *vtable, VtableImpl *impl, LLVMTypeRef
     char symbol[2048];
     impl->llvmvtablep = LLVMAddGlobal(gen->module, vtableRef, nameVtableImpl(symbol, impl->structdcl, vtable->trait));
     LLVMSetGlobalConstant(impl->llvmvtablep, 1);
-    // Defined here: a program compile is the only user of its vtables. A package
-    // compile will make this 'linkonce any', as every object using the trait builds one.
-    genlLinkage(impl->llvmvtablep, NULL, GenlDefined);
+    // Every object that coerces this type to the trait builds this vtable, and
+    // pattern matching compares its address: shared in a described build, so
+    // one copy survives the link (genlVtableDefinition)
+    genlLinkage(impl->llvmvtablep, NULL, genlVtableDefinition(gen));
     genlComdat(gen, impl->llvmvtablep);
     LLVMSetInitializer(impl->llvmvtablep, implRef);
 }
