@@ -1115,12 +1115,46 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
     parseEndOfStatement();
 }
 
+// A file's header is its 'mod' line, where it has one, and then its imports; a
+// module's first file -- its designated file, a one-file module's file, a lone
+// file, the first file a build description lists -- opens with the 'mod' line
+// naming the module [Jon 24 Sep], and every file's imports come before anything
+// else it declares. 'atmodstart' is as parseModuleDcl describes it
 void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
-    // Create and populate a Module node for the program
+    // An empty first file has no statement to report against, so the end of
+    // the file stands in for it
+    if (atmodstart == 1 && lexIsToken(EofToken))
+        errorMsgLex(ErrorNoModDcl,
+            "A module's first file opens with its 'mod' line, and this file opens module '%s': begin it with 'mod %s;', after any comments.",
+            &mod->namesym->namestr, &mod->namesym->namestr);
+    // Set by the first statement that is neither the 'mod' line nor an import
+    int pastheader = 0;
     while (lex->toktype!=EofToken && !parseBlockEnd()) {
         int atstart = atmodstart;
         atmodstart = 0;
+        // Where the statement starts, before any 'pub' or 'static', which is
+        // where a header rule reports it
+        INode stmtat;
+        memset(&stmtat, 0, sizeof(stmtat));
+        stmtat.lexer = lex;
+        stmtat.srcp = lex->tokp;
+        stmtat.linep = lex->linep;
+        stmtat.linenbr = lex->linenbr;
         uint16_t pubflag = parsePub();
+        int modline = lexIsToken(ModToken) && !lexNextIsWord("trait");
+        // The module is named by its folder, its file or its build description,
+        // and the 'mod' line restates that name where a reader of the file will
+        // look first. The statement is still parsed as written
+        if (atstart == 1 && !modline)
+            errorMsgNode(&stmtat, ErrorNoModDcl,
+                "A module's first file opens with its 'mod' line, and this file opens module '%s': begin it with 'mod %s;', after any comments.",
+                &mod->namesym->namestr, &mod->namesym->namestr);
+        if (lexIsToken(ImportToken) && pastheader)
+            errorMsgNode(&stmtat, ErrorImportLate,
+                "Imports belong right after the 'mod' line, ahead of every other declaration: move this one up into the file's header.");
+        // A retired 'include' is reported as that, and ends no header
+        if (!modline && !lexIsToken(ImportToken) && !lexIsToken(IncludeToken))
+            pastheader = 1;
         // At module scale a static is shared across every instantiation of the
         // module. An ordinary module is instantiated once, so today it is a
         // global like any other; the flag is recorded for the generic module

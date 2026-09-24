@@ -4,21 +4,27 @@
 // than where the source wrote it: an import binds once the whole statement is
 // parsed and the module loaded, and a module node is made before any file of its
 // is parsed. So what is pinned is the position of each half of the diagnostic --
-// the import statement, the 'mod' declaration, and, for a module named only by
-// its folder, the first line of its designated file.
+// the import statement, and the 'mod' declaration. (Where a module has no 'mod'
+// line to be reported at, its half is at the first line of its designated file,
+// which module_submodule_reject pins.)
 //
 // Parse stage, which is why it is its own scenario: a duplicate is found as the
 // name is bound, and a parse diagnostic stops the compile before name resolution.
 //
-// The imported modules are modulesub.cone, which declares no module and so is
-// named for its file, moduledeclared.cone, which declares 'mod renamed', and the
-// folder modselfnamed/, which declares no module and so is named for its folder.
+// The imported modules are modulesub.cone, whose 'mod' line names it for its
+// file, moduledeclared.cone, which declares 'mod renamed', and the folder
+// modselfnamed/, which is named for its folder.
 
 // This file's module takes the name of the module the next statement imports, so
 // the import's binding is the duplicate and the declaration the original
 mod modulesub;          //~ ErrorDupName:1 "conflicting definition"
 
 import modulesub;       //~ ErrorDupName:1 "already defined"
+
+// Inside the imported module, not here: its folder's name is bound in its own
+// namespace, and a declaration of its own spells that name. Both halves are in
+// modselfnamed/modselfnamed.cone, the module's at its 'mod' line
+import modselfnamed;
 
 // The other way round: the import binds first, under the name the imported
 // module declares for itself rather than its file's, and a declaration of this
@@ -28,9 +34,3 @@ import moduledeclared;  //~ ErrorDupName:1 "conflicting definition"
 fn renamed() i64 {      //~ ErrorDupName:1 "already defined"
   1i64;
 }
-
-// Inside the imported module, not here: its folder's name is bound in its own
-// namespace, and a declaration of its own spells that name. Both halves are in
-// modselfnamed/modselfnamed.cone, the module's at its first line, since the
-// module has no 'mod' line to be reported at
-import modselfnamed;

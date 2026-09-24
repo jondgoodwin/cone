@@ -40,7 +40,8 @@ support = ["modulesub.cone",
            "modulemacro.cone", "moduledeclared.cone",
            "modulefold.cone", "modulefoldlate.cone", "modfolder",
            "moduleextbase.cone", "modulepkgs", "modtree",
-           "moduleinline.cone", "moduleextern.cone"]
+           "moduleinline.cone", "moduleextern.cone",
+           "modulenomod.cone", "modulecomments.cone"]
 
 # -------- success --------
 
@@ -195,16 +196,18 @@ excludes = ["module_submodule.", "detail.", "helpers.", "shapes.", "geometry.det
 
 [scenario.module_submodule_reject]
 category = "reject"
-description = "What the module tree refuses: a designated file too deep to draw a module, an import naming the module's own submodule, and a submodule's name shared with a declaration or with its parent, with a module that declares nothing reported at its designated file's first line"
+description = "What the module tree refuses: a designated file too deep to draw a module, an import naming the module's own submodule, a submodule's designated file with no 'mod' line, and a submodule's name shared with a declaration or with its parent, with a name bound before a module's 'mod' line is parsed reported at its designated file's first line"
 tags = ["parse"]
-diagnostics = 9
+diagnostics = 10
 
-# A module named only by its folder has no 'mod' line, so its half of a
-# duplicate name is reported at line 1, column 1 of its designated file -- the
-# file that makes the folder a module. The root, bare/ and the subfolder named
-# like the root each declare nothing, and each carries that half as an
-# annotation on its first line; sub/ declares itself, and is reported at the
-# declaration.
+# A module named by its folder is positioned at line 1, column 1 of its
+# designated file -- the file that makes the folder a module -- until its 'mod'
+# line is parsed, which moves it to the line. So a duplicate found before then
+# is reported at the first line: the root against the subfolder named like it,
+# found when that subfolder is drawn, and bare/, whose file has no 'mod' line
+# and is refused for it. Each carries that half as an annotation on its first
+# line; sub/ is reported at its 'mod' line, since its collision is found when
+# the root's file is parsed, after sub/'s.
 
 # The refusal of a module folder that is not a direct child of its parent
 # module's folder has no line of its own: which folder draws a module is a fact
@@ -997,7 +1000,7 @@ diagnostics = 2
 
 [scenario.module_declared]
 category = "compile"
-description = "A module named by its 'mod' declaration rather than by its filename, beside one still named by its file"
+description = "A module named by its 'mod' declaration rather than by its filename, beside one whose 'mod' line restates its file's name"
 tags = ["parse", "nameres", "typecheck", "genllvm"]
 
 # The declared name is the module's identity at every point it is used: the
@@ -1014,11 +1017,10 @@ contains = [
 ]
 excludes = ["moduledeclared"]
 
-# The transitional half: a module that declares none keeps the name its filename
-# gave it, so both kinds of neighbour are reached the same way. This goes when the
-# folder walk replaces filename naming altogether.
+# The other half: a 'mod' line restating the filename names the module after
+# it, so both kinds of neighbour are reached the same way.
 [[scenario.module_declared.check]]
-name = "a-module-with-no-declaration-keeps-its-filename"
+name = "a-mod-line-restating-the-filename-keeps-it"
 target = "symbols"
 contains = ["declare modulesub.plain"]
 
@@ -1418,15 +1420,48 @@ diagnostics = 5
 
 # A module's name meeting another name of the module, which is the ordinary
 # duplicate rule. What it pins is where each half is reported: at the import
-# statement, at the 'mod' declaration, and -- for an imported module named only
-# by its folder -- at line 1, column 1 of its designated file, none of which is
-# where the lexer stood when the binding was made. The submodule half of the same
-# question is in module_submodule_reject.
+# statement and at the 'mod' declaration -- for an imported module named by its
+# folder too, whose 'mod' line is where the folder's name is reported once the
+# file is parsed -- neither of which is where the lexer stood when the binding
+# was made. The submodule half of the same question, and a module with no 'mod'
+# line to be reported at, are in module_submodule_reject.
 [scenario.module_parse_dupname]
 category = "reject"
-description = "A module's name meeting another binding of it: an import against a declaration either way round, reported at the import and at the declaration, and a folder module's own name against its own declaration, reported at its designated file's first line"
+description = "A module's name meeting another binding of it: an import against a declaration either way round, reported at the import and at the declaration, and a folder module's own name against its own declaration, reported at its 'mod' line"
 tags = ["parse"]
 diagnostics = 6
+
+# -------- a file's header: the 'mod' line, then the imports --------
+#
+# Every file the compiler builds as a module opens with its 'mod' line, and every
+# file's imports come right after it, ahead of anything else it declares [Jon 24
+# Sep]. module_header is the accepted shape, a folder so that a file of the
+# module that is not its designated file carries no 'mod' line; the rest are
+# what is refused. A submodule's designated file with no 'mod' line is in
+# module_submodule_reject.
+
+[scenario.module_header]
+category = "run"
+description = "A file's header accepted: comments between the 'mod' line and the imports, and a file of a folder module that is not its designated file with no 'mod' line"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.module_parse_header]
+category = "reject"
+description = "An import after a declaration: after a function, a type or a standalone 'use', plain, with a 'use' clause, and 'pub'"
+tags = ["parse"]
+diagnostics = 3
+
+[scenario.module_header_reject]
+category = "reject"
+description = "An import after a declaration in a file of a folder module that is not its designated file, and so has no 'mod' line"
+tags = ["parse"]
+diagnostics = 1
+
+[scenario.module_parse_nomod]
+category = "reject"
+description = "A module's first file with no 'mod' line: a lone root file, an imported one opening with a module trait, which is no 'mod' line, and an imported one holding only comments, reported at its end"
+tags = ["parse"]
+diagnostics = 3
 
 # What the sweep refuses. It is a folder scenario because several of its
 # diagnostics are reported against a file the scenario's own source never names:

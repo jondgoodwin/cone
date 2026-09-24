@@ -214,6 +214,8 @@ class Scenarios(unittest.TestCase):
 
     def test_a_lone_file(self):
         write(self.root / "lone.cone", """
+            mod lone;
+
             import stdio use *;
 
             fn main() i32 {

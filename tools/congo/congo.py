@@ -884,7 +884,8 @@ def build(pkg: Package, mode: str) -> Path:
 
 def lone_package(file: Path) -> Package:
     """A lone file with no manifest is a program of one module, named by its
-    'mod' line or, with none, by the file."""
+    'mod' line. A file with none is named by the file here, and the compiler
+    refuses it for the missing line (ErrorNoModDcl)."""
     file = file.resolve()
     if not file.is_file():
         raise CongoError(f"no file {file}")

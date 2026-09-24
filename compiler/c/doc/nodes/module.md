@@ -243,12 +243,14 @@ rather than reading it a second time.
 **A module is positioned at its designated file's first line** — line 1,
 column 1 of `matrix/matrix.cone`, or of a module's one file —
 from the moment it is made, and `parseModulePosition` is what does it, on all
-three paths. **Ruled by the author, 23 September 2026:** a module named only by
-its folder has no line in any source that declares it, and the file that makes
-the folder a module is the nearest thing it has to a declaration, so that is
-where its half of a diagnostic — `ErrorDupName` against its name — is
-reported. A `mod` declaration is nearer,
-and moves the position to itself. **The file is read when the module is made**,
+three paths. **Ruled by the author, 23 September 2026:** until its `mod` line is
+parsed, a module named by its folder has no line in any source that declares
+it, and the file that makes the folder a module is the nearest thing it has to
+a declaration, so that is where its half of a diagnostic — `ErrorDupName`
+against its name — is reported. Its `mod` declaration is nearer, and moves the
+position to itself when it is parsed; a collision found before that, at the
+draw, and one with a module whose file is refused for having no `mod` line,
+stay at the first line (`module_submodule_reject`). **The file is read when the module is made**,
 before any file of the tree is parsed, because the module's name is bound then
 and a collision is reported as the second binding is made: a submodule named like
 its parent meets the parent's own name at the draw. `lexLoadPath` reads it into a
@@ -472,6 +474,30 @@ once** (`ErrorModDcl` otherwise). It claims the module, so nothing may precede i
 file. A file the folder swept in declares nothing: one that opened with a
 declaration would have been a one-file module instead, so a `mod` in a swept
 file is always a late one.
+
+### A file's header
+
+**Every module's first file opens with its `mod` line** [Jon 24 Sep]: the
+designated file of a folder module, a one-file module's file, a lone file, and
+the first file a build description lists for a module or an import line
+names. A first statement that is anything else — `mod trait` included, which
+declares a trait and names no module — is `ErrorNoModDcl`, reported at the
+statement, and a first file with no statement at all at its end; the message
+gives the line to write. The statement is still parsed as written, and the
+module is still the one its folder, file or description names, so nothing else
+follows from the refusal. The line restates a name the filesystem already
+gives; what it buys is that the name is where a reader of the file looks first,
+and that the file says which module it opens. The other files of a folder
+module carry none, since one would make the file a one-file module.
+
+**A file's imports come right after its `mod` line**, or first in a file that
+has none, ahead of every other declaration [Jon 24 Sep]. `parseGlobalStmts`
+notes the first statement that is neither the `mod` line nor an `import` (a
+retired `include` is neither refused nor counted), and an `import` after it,
+`pub` or with a `use` clause alike, is `ErrorImportLate`. The import is still
+made. So a file's header is comments, the `mod` line and the imports, which is
+exactly what Congo reads of it (`tools/congo/README.md`); an import below the
+header is one Congo never sees.
 
 **`pub` on the declaration opens a submodule to its parent's neighbours**, and is
 `ErrorBadPub` on any other module: the root, a lone file and one an `import`
@@ -1640,8 +1666,8 @@ because they remove work rather than adding it:
 - **A module's name is its own, and reaches its own hidden names.** There is no
   root anchor and no parent access: a module reaches an upper module by importing
   and naming it, and a name of its own that a local or a type member hides by
-  qualifying it with the module's name. **A program's root may carry a `mod`
-  header for exactly that reason** — to have a name — and naming the root changes
+  qualifying it with the module's name. **A program's root carries a `mod` line,
+  as every module's first file does** [Jon 24 Sep], and naming the root changes
   no symbol.
 - **Namespace machinery is meant to be common to modules and types** — nesting,
   generics, interfaces and name folding, so that the layers look alike rather
@@ -1685,6 +1711,13 @@ the module tree:
   or as a direct child folder. So the module tree's *shape* mirrors the folder
   tree's. A designated file or a one-file module found beneath an organizational
   folder is an error, not a deeper submodule.
+- **Every file the compiler builds as a module opens with its `mod` line** [Jon
+  24 Sep] — a lone file, a module's root, a folder module's designated file, a
+  one-file submodule — and **every file's imports come right after it**, ahead
+  of everything else the file declares. The other files of a folder module, and
+  the files of its organisational subfolders, carry no `mod` line: the folder
+  names the module they join. So a file's header is comments, the `mod` line,
+  the imports, which is all Congo reads.
 - **A module's name is its folder's name, or its one file's**, and a name written
   in its `mod` declaration is checked against that rather than replacing it. The
   boundary is declared in code — a folder is a module because it holds a
@@ -1868,7 +1901,9 @@ namespace, where folding a member is delegated inheritance.
 **Little of it.** **A module spans a folder's files**, found by the walk from the
 designated file the compiler is given, and named for the folder; `mod name;` as
 that file's first statement declares the module and is checked against the
-folder's name. **The module tree is real**: a subfolder holding its own designated
+folder's name. **Every module's first file opens with its `mod` line, and every
+file's imports come right after it**, each refused otherwise ("A file's header"
+above). **The module tree is real**: a subfolder holding its own designated
 file is a submodule, private to its parent unless it writes `pub`, spelled after
 its parent in every symbol, and reached from its parent by path — while a
 subfolder that holds none is organisational at any depth, and a designated file

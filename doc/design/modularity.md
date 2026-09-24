@@ -131,6 +131,13 @@ variants**: code anywhere inside its braces, or an extension's, sees every
 variant's private members, since a closed enum is one type written in one place
 (Jon, 23 Sep 2026).
 
+**A file states its module and its dependencies first.** Every file the
+compiler builds as a module opens with its `mod` line, and every file's imports
+come right after it, ahead of everything else (Jon, 24 Sep 2026). That header —
+comments, the `mod` line, the imports — is what a reader sees first and all
+Congo reads, and the compiler refuses a first file without the line
+(`ErrorNoModDcl`) and an import below the header (`ErrorImportLate`).
+
 **Composition is compile-time flattening, and it is the same operation at two
 layers.** A trait's fields are a requirement rather than state it hands over: the
 implementer declares them itself, in the trait's order, at position 0, and takes
