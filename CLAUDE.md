@@ -54,6 +54,12 @@ Visual Studio projects stay at the root.
 - `conesite/`: the rest of the static content for
   [cone.jondgoodwin.com](https://cone.jondgoodwin.com) — the author's articles,
   the playground and examples — and its deployment wrapper.
+- `tools/congo/`: Congo, the build tool. What is here today is the 2022 Python
+  prototype brought in from the `conehome` repository with its history; it
+  still expects that repository's `CONEHOME` layout.
+- `samples/`: sample Cone programs (OpenGL and WebGL), from `conehome`. They
+  predate the current language and no longer compile (the first error in each
+  is the retired `include`); the test suite does not build them.
 - `workitems/`: the plan and backlog are kept by the project owner outside this
   repository; `workitems/_index.md` says so. `workitems/done/` holds completed
   items.

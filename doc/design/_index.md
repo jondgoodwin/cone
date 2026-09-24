@@ -259,11 +259,10 @@ design behind it.
 built** — see "The language reference" below. Three categories above have no
 design note at all, and the concurrency one has no implementation either.
 
-⚠ **Congo — the build tool — is absent from this folder entirely.** It is not
-`conec`, it lives at `c:/src/conehome/bin/congo`, and whether its design belongs
-in this repo is an open question owned by the repo-convergence work item in the
-author's corpus. **Recorded here so the gap is visible rather than merely
-unfilled.**
+⚠ **Congo — the build tool — has no design note.** It is not `conec`; it lives
+at `tools/congo/`, and a tool's design and user docs sit with the tool, in
+`tools/congo/doc/`, which does not exist yet. **Recorded here so the gap is
+visible rather than merely unfilled.**
 
 ## Nodes
 
