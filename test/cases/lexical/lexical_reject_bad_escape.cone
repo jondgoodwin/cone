@@ -1,0 +1,38 @@
+mod lexical_reject_bad_escape;
+
+// A backslash followed by a character that begins no escape sequence, where
+// that character cannot be printed. The message named it between quotes, so a
+// tab or a control character was printed raw into it, and a line's end split
+// it across two lines. It is now described instead: a tab, a line's end, a
+// control character or a byte that begins no UTF-8 character, the last two by
+// their hexadecimal value. A printable character is still named, as '\q' in
+// lexical_reject_tokens shows.
+//
+// This file holds a raw tab, control characters, a byte that is not UTF-8 and
+// a CRLF line on purpose, so it is kept byte for byte (.gitattributes).
+//
+// Each is reported at the literal's opening quote. A character literal cut by
+// a line's end is left out: the escape takes the line's end with it, so what
+// follows is reported a line early, which is a separate defect. The string
+// cut by a new-line comes last for the same reason.
+
+// In a character literal
+imm t1 = '\	';                //~ ErrorBadTok:10 "Invalid escape sequence: a backslash followed by a tab"
+imm c1 = '\';                //~ ErrorBadTok:10 "Invalid escape sequence: a backslash followed by the control character 0x01"
+imm d1 = '\';                //~ ErrorBadTok:10 "Invalid escape sequence: a backslash followed by the control character 0x7F"
+imm b1 = '\ÿ';                //~ ErrorBadTok:10 "Invalid escape sequence: a backslash followed by the byte 0xFF, which begins no UTF-8 character"
+
+// The same byte after a \x escape cut short is no digit, so the escape is too
+// short, as lexical_reject_short_escape says; the byte was printed raw there too
+imm h1 = '\x4ÿ';              //~ ErrorBadTok:10 "Escape sequence '\\x4' is too short: '\\x' takes 2 hexadecimal digits"
+                                //~^ ErrorBadTok:10 "Invalid lifetime or too-long character literal" follow-on
+
+// In a string, including one cut by a CRLF line end and one by a new-line
+imm t2 = "a\	b";              //~ ErrorBadTok:10 "Invalid escape sequence: a backslash followed by a tab"
+imm c2 = "a\b";              //~ ErrorBadTok:10 "Invalid escape sequence: a backslash followed by the control character 0x01"
+imm r2 = "a\
+b";
+//~^^ ErrorBadTok:10 "Invalid escape sequence: a backslash at the end of a line"
+imm n2 = "a\
+b";
+//~^^ ErrorBadTok:10 "Invalid escape sequence: a backslash at the end of a line"

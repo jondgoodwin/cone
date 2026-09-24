@@ -225,6 +225,16 @@ char *lexNewLine(char *srcp) {
 
 // ******  TOKEN-SPECIFIC LEXING **********
 
+/** Can a diagnostic print the character at srcp between quotes, as itself?
+ * Not a space, a control character or a byte that begins no UTF-8 character:
+ * each would print as nothing visible, or raw, or split the message's line */
+static int lexCharIsNameable(char *srcp) {
+    unsigned char c = (unsigned char)*srcp;
+    if (c <= ' ' || c == 0x7f)
+        return 0;
+    return c < 0x80 || utf8IsMultibyte(srcp);
+}
+
 /** Read the 'cnt' hex digits of a \x, \u or \U escape at srcp, just after its letter */
 char *lexHexDigits(int cnt, char *srcp, uint64_t *val) {
     char *escp = srcp - 2;  // The escape's backslash
@@ -241,11 +251,10 @@ char *lexHexDigits(int cnt, char *srcp, uint64_t *val) {
         else {
             // A character that could have been meant as a digit is named. What
             // ends the escape short -- the source's end, the line's, a space, a
-            // quote, any other control character -- is not: it would print as
-            // nothing, as a raw control byte or as a bare quote. The escape so
-            // far is named instead, which is backslash, letter and digits only
-            unsigned char c = (unsigned char)*srcp;
-            if (c > ' ' && c != 0x7f && c != '\'' && c != '"')
+            // quote, any other control character, a byte that is no character --
+            // is not: it would print as nothing, raw or as a bare quote. The
+            // escape so far is named instead: backslash, letter and digits only
+            if (lexCharIsNameable(srcp) && *srcp != '\'' && *srcp != '"')
                 errorMsgLex(ErrorBadTok, "Invalid hexadecimal character '%.*s'", utf8ByteSkip(srcp), srcp);
             else
                 errorMsgLex(ErrorBadTok, "Escape sequence '%.*s' is too short: '\\%c' takes %d hexadecimal digits",
@@ -276,7 +285,20 @@ char *lexScanEscape(char *srcp, uint64_t *charval) {
     case 'u': return lexHexDigits(4, ++srcp, charval);
     case 'U': return lexHexDigits(8, ++srcp, charval);
     default:
-        errorMsgLex(ErrorBadTok, "Invalid escape sequence '%.*s'", utf8ByteSkip(srcp), srcp);
+        // A printable character is named. Anything else is described, never
+        // printed: raw, a line's end would split the message across two lines
+        if (lexCharIsNameable(srcp))
+            errorMsgLex(ErrorBadTok, "Invalid escape sequence '%.*s'", utf8ByteSkip(srcp), srcp);
+        else if (*srcp == '\t')
+            errorMsgLex(ErrorBadTok, "Invalid escape sequence: a backslash followed by a tab");
+        else if (*srcp == '\n' || (*srcp == '\r' && *(srcp + 1) == '\n'))
+            errorMsgLex(ErrorBadTok, "Invalid escape sequence: a backslash at the end of a line");
+        else if ((unsigned char)*srcp < 0x80)
+            errorMsgLex(ErrorBadTok, "Invalid escape sequence: a backslash followed by the control character 0x%02X",
+                (unsigned char)*srcp);
+        else
+            errorMsgLex(ErrorBadTok, "Invalid escape sequence: a backslash followed by the byte 0x%02X, which begins no UTF-8 character",
+                (unsigned char)*srcp);
         *charval = *srcp++;
         return srcp;
     }

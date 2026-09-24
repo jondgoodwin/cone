@@ -168,6 +168,21 @@ control byte or as a bare quote; the message names the escape so far instead,
 line's end after one; `lexical_reject_short_escape_end` the source's end, ended
 by a null character as the unclosed character literal's file is.
 
+**A backslash before a character that begins no escape names it only if it
+prints.** `lexScanEscape` reports `ErrorBadTok` at the literal's opening quote,
+"Invalid escape sequence 'q'", naming the character when it is printable. A
+tab, a line's end, a control character or a byte that begins no UTF-8
+character is described instead, the last two by value: "Invalid escape
+sequence: a backslash followed by the control character 0x01". Printed raw, a
+control byte would land in the message and a line's end would split it across
+two lines. `lexCharIsNameable` is the test, shared with the hex escape message
+above, whose ender is likewise named only if it prints; a byte that is not
+UTF-8 after too few hex digits is therefore "too short" as well. A space after
+a backslash is itself an escape, and the reader stays on the source's end, as
+the `\0` paragraph says, so neither reaches the message. As with a quote before a line's end, the escape
+takes the line end as its character, and the line goes uncounted.
+`lexical_reject_bad_escape` holds each kind in a character literal or a string.
+
 **Names are interned at scan time, and `Name.node` is the binding slot.**
 `nametblFind` returns one immovable `Name*` per unique string. That same
 `node` field is what makes classification O(1) in the scanner: `keywordInit`
