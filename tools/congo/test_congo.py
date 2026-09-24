@@ -66,6 +66,12 @@ class HeaderScan(unittest.TestCase):
         self.assertEqual(self.scan("mod @c(system) win;").mod, "win")
         self.assertEqual(self.scan("pub mod lexer;\nimport tokens;").mod, "lexer")
 
+    def test_a_generic_mod_line(self):
+        header = self.scan("pub mod stack[T, U] extends base;\nimport seq;")
+        self.assertEqual(header.mod, "stack")
+        self.assertEqual(header.extends.name, "base")
+        self.assertEqual([i.name for i in header.imports], ["seq"])
+
     def test_a_mod_trait_is_not_a_mod_line(self):
         header = self.scan("mod trait Shell {\n  fn run();\n}\nimport stdio;")
         self.assertIsNone(header.mod)

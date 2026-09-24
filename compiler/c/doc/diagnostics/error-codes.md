@@ -179,6 +179,21 @@ give it a value. What `init` does wrong with such a global wears the code the
 same mistake wears for a local: a read before it is assigned is `ErrorMove`, a
 second assignment of an `imm` one `ErrorNoMut`.
 
+A generic module takes three codes, split where the remedy is.
+`ErrorGenModBare` is the generic named without type arguments where only an
+instance has members — a path through it, a standalone `use`, an import's `use`
+clause, `extends`, a default fold on its own `mod` line; the remedy is to name
+an instance, `stack[i64].push`, or to stop folding. `ErrorGenModBody` is what a
+generic module holds that an instance is not yet built for — a generic function
+or type, a trait or an enum, a macro, a module trait, a global's `use` clause,
+a submodule; the remedy is in the generic module, and the code retires piece
+by piece as the clone learns each. `ErrorGenModRoot` is an executable's root
+declared generic; the remedy is to move the generic module under a root. What an
+instance is given that is not a type, or the wrong number of arguments, wears
+`ErrorNotType` and `ErrorArgCount`, as for a generic type, and a member an
+instance lacks or keeps private `ErrorUnkName` and `ErrorNotPublic`, as through
+any module; `@c` on a generic module is `ErrorCAttr`, as on a generic function.
+
 That is a narrow licence, and the tell that it has been stretched is the
 scenarios: **when a scenario needs a message substring to tell two uses of one
 code apart, the substring is doing the code's job.** Wrong arity, a non-type

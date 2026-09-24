@@ -27,7 +27,10 @@ names every module of one package and lists its files, and nothing is swept: see
 Name resolution folds imports before it resolves anything else the
 module declares. Type check walks imports first, then
 every declaration in source order. Generation declares symbols for every module
-and emits bodies only for those flagged `FlagGenMod`.
+and emits bodies only for those flagged `FlagGenMod`. **A generic module**,
+`mod stack[T];`, is resolved once and never checked or generated; each
+instance, `stack[i64]`, is a module of its own that type check clones from it
+and the program then holds like any other: see "Generic modules".
 
 *Provenance: read from source. The root-versus-import symbol asymmetry and the
 generation of a package found on the search path were measured from emitted LLVM
@@ -38,7 +41,8 @@ See [Measuring](../diagnostics/measuring.md).*
 ## Shape
 
 **`ProgramNode`** carries `Nodes *modules` — the root module first, then every
-other module in the order it was first loaded — and `Namespace files`, **the file
+other module in the order it was first loaded, and after type check every
+instance of a generic module in the order made — and `Namespace files`, **the file
 registry**: every source file the compile has read, keyed by its path, mapped to
 the module that holds it. **Every module of the program is in that one flat list,
 however deep in the tree it sits**, which is what gives each of them name
@@ -48,8 +52,9 @@ it is a child's `dclinfo.owner` pointing at its parent, and the parent's
 module again, **in dependency order**, each after every module it depends on —
 the order the program's stitched init runs module `init`s in, and its stitched
 final runs finalizers in the reverse of — made by `pgmModuleOrder` at name
-resolution ("The module order", below) and read by `genlStitch` ("Init and
-final", below).
+resolution, each generic module's instances placed in it by `pgmInstanceOrder`
+after type check ("The module order", below), and read by `genlStitch` ("Init
+and final", below).
 
 **The registry is what makes a file read once and owned once.** Its key is the
 **canonical** path rather than a name, because what must happen exactly once is
@@ -85,6 +90,9 @@ like any other, registered under their canonical paths in the packages folder
 | `ntaken` | how many of `nodes`, at its end, are copies of the trait's defaults the module took (`modTraitConform`). They arrive resolved, so `modNameRes` walks the nodes before them only |
 | `initfn` | the module's own `init`, once `modLifecycle` has found it well formed; NULL where it declares none. What the stitched init calls |
 | `finalfn` | what finalizes the module: the `drop` `modLifecycle` gives it where a global needs finalizing, else its own `final`; NULL where it has neither. What the stitched final calls |
+| `genericinfo` | `mod stack[T]`: a generic module's type parameters and its instances (`memonodes`, as a generic type's), from the `mod` line; NULL for any other module. See "Generic modules" |
+| `generic` | an instance of a generic module: the generic it was cloned from; NULL for every module the source declares. `instnode` is then the call that made it, whose arguments are the instance's type arguments |
+| `instdeps` | an instance: the modules it follows in the init order besides its generic — each its type arguments come from, and each instance its own body made (`pgmInstanceOrder`) |
 
 **`ModTraitNode`** (`ir/stmt/modtrait.h`) is a module trait, `mod trait Shell
 { ... }`: `namesym`, `dclinfo` — owned by the module whose file declares it,
@@ -502,6 +510,15 @@ one name, as `extends` names one module: a path or a list after `is` is
 `ErrorModIs`, nothing at all `ErrorNoName`, and each refusal passes over what it
 refused. What `is` does is "Module traits" below.
 
+**`mod stack[T];` declares a generic module** [Jon 23 Sep], its type parameters
+in square brackets straight after the name, read by `parseGenericParms` as a
+generic type's are, and recorded on `genericinfo` where the declaration is
+accepted. The clauses follow them: `mod stack[T] extends base is Counter;`.
+Type parameters only; an empty list is `ErrorNoGenParms`, as it is for a type.
+A generic module is not C-named: `@c` on its line is `ErrorCAttr`, since a C
+name has no room for an instance's type arguments. What a generic module is and
+does is "Generic modules" below.
+
 **`mod trait` is not this declaration.** `parseGlobalStmts` sees `trait` after
 `mod` and hands the statement to `parseModTrait`, which declares a module trait,
 a declaration of the module like a type — anywhere in the file, and never a late
@@ -636,9 +653,114 @@ answers such a name as one. It is asked where a bare generic is
 **What is not built** [Jon 23 Sep]: host traits (a shell's, a web server's), the
 entry glue — a trait default the host calls as `main`, running the program's
 stitched init and final round the program's own `main` ("Init and final":
-`initAll()` and `finalAll()` are what it would call) — traits that require
-types, and generic modules. Conformance declared by
-structure alone does not exist and is not planned.
+`initAll()` and `finalAll()` are what it would call) — and traits that require
+types. Conformance declared by
+structure alone does not exist and is not planned. A generic module conforms by
+its `mod` line: the generic takes the defaults as any module does, and each
+instance clones them with the rest of its declarations and is checked against
+the trait itself ("Generic modules").
+
+### Generic modules
+
+**A generic module is treated as a generic type is** [Jon 23 Sep: *"if I
+treated generic modules like I treated generic types, how would I treat
+them?"*]. It is written with type parameters on its `mod` line, `pub mod
+stack[T];`, and instantiated where it is used, `stack[i64].push(3i64)`, as
+`Box[i64]` names an instance of a type. The analogy decides every detail below;
+[generic.md](generic.md) is the machinery both share.
+
+```
+pub mod stack[T];
+
+pub mut count i64 = 0i64;
+pub mut top T = 0;
+
+pub fn push(x T) {
+    top = x;
+    count = count + 1i64;
+}
+```
+
+**Nothing of it is compiled until an instance is named.** The generic is
+resolved once, in place, with its parameters hooked over its own names
+(`modNameRes`), and never type checked (`modTypeCheck` returns after its
+imports) or generated (`genlProgram` passes it over): its body is written
+against parameters that stand for nothing. Its imports, folds and `is` are
+made once, on the generic, and every instance shares them.
+
+**An instance is a module of its own**, made by `modInstantiate` the first
+time type check meets `stack[i64]` — `genericSubstitute` asks `genericMemoize`,
+whose memo is the generic's `memonodes`. **Identical arguments anywhere are one
+instance**, compared by `itypeIsSame`, so `stack[i64]` in two modules is one
+module with one set of globals (`module-generic`). The instance is named as
+the generic is, owned where it is, marked with the call that made it
+(`instnode`, which `generic` points back from), and flagged `FlagGenMod`. Its
+declarations are cloned the way a generic type's members are
+(`cloneStructNode`): a shell for each — a function, a global, a type, an
+overload name, a type alias — mapped from the generic's before anything is
+copied, then every signature, body, type and initial value, so a body naming
+another declaration of the module, before it or after, names the instance's.
+The generic's own name is mapped to the instance, so `stack.count` or
+`stack[T].count` inside the body is this instance's global, while another
+argument list, `stack[f64]`, is another instance reached through the memo
+(`cloneFnCallNode`). Every other name the generic's namespace binds — what its
+imports bound and folded — is bound in the instance's to the same declaration.
+A module trait's defaults the generic took are declarations of it, and are
+cloned with the rest; the instance keeps the generic's `trait`, so
+`modTraitCheck` checks each instance. It is registered before it is type checked, so a body
+naming its own instance reaches it rather than instantiating it again; it is
+then type checked with no function around it, which runs `modLifecycle`, so
+**each instance has its own `init` and `final`** and its own `drop`.
+
+**A path through an instance is collapsed at type check** (`fnCallTypeCheck`,
+`fnCallModuleInstancePath`), since the instance does not exist at name
+resolution: `stack[i64].push` looks `push` up in the instance's namespace, a
+private member named from outside it is `ErrorNotPublic`, and the hop
+disappears as `fnCallNameResPath` makes it for any other module. What a
+generic is given that is not a list of types is refused as a generic type's is
+— `ErrorNotType`, `ErrorArgCount`; nothing is inferred.
+
+**Nothing of the generic itself has members to reach**, so its bare name is
+refused wherever a member is wanted, `ErrorGenModBare`: a path, `stack.push`
+(`fnCallNameResPath`; inside its own body the name means the instance); a
+standalone `use stack;`; an import's `use` clause (`importNameRes`, which binds
+the name and folds nothing); `extends stack`; and a default fold on its own
+`mod` line (`pgmGenericModulesCheck`). An import of it binds its name, and an
+instance is then written through that name.
+
+**What an instance is cloned from is its generic's own declarations**, so what
+a clone does not yet re-point is refused where the generic declares it,
+`ErrorGenModBody` (`modGenericCheckBody`): a generic function or type inside it,
+whose own parameters the clone would have to carry through; a trait or an enum,
+a macro and a module trait; and a global's `use` clause, whose aliases are
+reached through the generic's global. **A generic module's submodules are not
+built** (the same code, `pgmGenericModulesCheck`): by the analogy they are
+instantiated with it, as a generic type's methods are, and the flat case is
+what is built. **An executable's root may not be generic** (`ErrorGenModRoot`):
+nothing could instantiate the program. A library's root may, and so may a
+submodule or an imported module.
+
+**Its symbols carry the instance's type arguments on the module**, as a generic
+type instance's carry them on the type: the instance's `instnode` is what
+`nameOwnTypeArgs` reads, so `namePath` wraps the module's component in `I…E` —
+`stack[i64].push` is `_CNvIC5stackxE4push`, `stack[i64].Entry.doubled` is
+`_CNvNtIC5stackxE5Entry7doubled` — and each member's own component is its
+identifier alone. [Names and Namespaces](../../../../doc/design/names-and-namespaces.md),
+"Symbols", is the rule.
+
+**An instance joins the program's modules once type check is done**
+(`pgmTypeCheck`), since the module list is being walked while instances are
+made; `modInstanceList` holds them until then. It is then generated like any
+module the compile generates, and its place in the init order is "The module
+order" below. **Every object that uses an instance defines it**, as it defines
+a generic function's: in a described build `genlIsInstance` answers for every
+declaration of the instance — its owners are asked up to the module, and an
+instance module is an instance — so its functions *and its globals* are
+`linkonce_odr` with a COMDAT of `any`, and the copies separately compiled
+objects make merge into one, with one set of globals. The generic's own
+package defines nothing of it; its include file carries the generic module's
+full source, which is what an importer compiles the instance from
+(`module-generic-link`).
 
 ### The packages folder
 
@@ -1072,6 +1194,21 @@ the one thing reported. Congo refuses the same loops before `conec` runs
 walk starts where — the program's module list, root first — decides which edge
 closes a loop, and so where it is reported, never whether.
 
+**An instance of a generic module is placed once type check has made it**
+(`pgmInstanceOrder`, from `pgmTypeCheck`), since the walk runs at name
+resolution, before any instance exists. It goes straight after the last of
+what it depends on [Jon 23 Sep]: its generic — which the walk placed after
+everything the generic imports, so the instance follows those too — each module
+its type arguments come from (`modTypeArgModules`, through references, arrays
+and tuples to each named type's module), and each instance made while its own
+body was checked, which is one it uses. Instances that follow the same module
+keep the order they were made in. So an instance runs its `init` before every
+module that follows those and uses it — **except a module that supplied one of
+its type arguments**, which the instance follows: in `module-generic`,
+`tally[user.Tag]` runs its `init` after `user`'s. A module that uses an instance
+places no edge of its own: its place was fixed at name resolution. Instances
+that use one another round a loop are placed last, in the order made.
+
 `modFoldNames` runs four kinds of fold, in order: what the module extends, then its `imports`,
 then every global carrying a `use` clause, then every standalone `use` on
 `moduses` — last, so an enum may be named through anything the others folded
@@ -1268,7 +1405,9 @@ that enum's copies of its base's variants, which the module does not own
 from elsewhere pulls its declaration forward. See
 [Type Check Phase](../phases/type-check.md). **Last, once every global's type is
 settled, `modLifecycle`** finds and checks the module's `init` and `final`, and
-gives it the `drop` that finalizes its globals ("Init and final", below).
+gives it the `drop` that finalizes its globals ("Init and final", below). A
+generic module stops after its imports: only its instances are checked, each as
+it is made ("Generic modules").
 
 **No program reaching type check has an import loop**: name resolution refused
 it ("The module order"), and a name-resolution error ends the compile before
@@ -1288,6 +1427,10 @@ without a value holding nothing ("Init and final").
    is generated in each caller, so a private function, method or global it names
    is declared there on first use instead (`genlFnSym`, `genlVarSym`).
 2. **Implementations.** Only modules flagged `FlagGenMod`.
+
+Both passes pass a generic module over: what it compiles to is its instances,
+each a module of the program by then, flagged `FlagGenMod` whatever its generic
+is, since every object that uses an instance defines it ("Generic modules").
 
 **The root is flagged `FlagGenMod`, and so is a module found on the package
 search path; a module an import found beside its importer is not, nor is one a
@@ -1421,6 +1564,17 @@ less than its package has leaks rather than misbehaves: an `init` it omits is no
 run, and where it omits the global a `drop` finalizes, the program calls
 `final` alone; one that declares more fails to link.
 
+**An instance of a generic module has its own `init` and `final`**, stitched in
+its place in the order ("The module order"). Across separately compiled
+packages each object's copy of an instance's `init` is the one merged function,
+and the program's stitched init calls it once, where the program names that
+instance itself (`module-generic-link`). ⚠ **An instance only a package uses is
+invisible to the program**: the package's include file says nothing of it, so
+the program's stitched pair makes no call to its `init` or finalizer, and a
+global it would assign keeps the zero it was stored with — measured at the IR,
+not at run time. By the rule above it leaks rather than misbehaves; what closes
+it is open.
+
 ## Principles — the model, as decided
 
 **This section is this note's principles**, and it is `[planned]` almost
@@ -1500,8 +1654,8 @@ exists once, its state is gathered by the link editor and reached at a fixed
 address, and its functions take no `self`. Singleton state is not what tells
 them apart, because a type holds it too — a `static` in a type is one copy
 shared by every value of the type, exactly as a module's globals are one copy
-shared by everything in the module — and a generic module will hold one copy
-per instantiation as a generic type's instances each hold their own. That
+shared by everything in the module — and a generic module holds one copy per
+instantiation as a generic type's instances each hold their own. That
 distinction is what makes a module the natural shape for a region or a
 subsystem and a type the natural shape for a value, and it is why a module
 cannot be nested inside a type. A module holding a single type is therefore
@@ -1743,7 +1897,10 @@ found on the package search path and compiled into the importing object ("The
 packages folder" above).
 **A module conforms to a module trait**, `mod prog is Runner;`, checked where it
 is written, taking a copy of each default it does not declare ("Module traits"
-above); `import` takes a file path where the registry has no answer, and
+above). **A module may be generic**, `mod stack[T];`, instantiated as
+`stack[i64]` where it is used, one instance per argument list with its own
+globals, `init` and `final`, and compiled only as its instances — the flat case,
+without submodules ("Generic modules" above); `import` takes a file path where the registry has no answer, and
 folds with a `use` clause — selecting, renaming and excluding as a global's
 clause does. A lone file — the root, or a module an import reached by its
 path — is still named after that file, and its declaration still renames it. Sections and
@@ -1884,19 +2041,19 @@ into:
 ### How far the module/type convergence goes
 
 Modules and types are meant to share namespace machinery while staying distinct
-in state. `mod X[T]:` is accepted syntax from the start so that no source needs
-rewriting when the semantics arrive; what a generic module *means* is not
-settled — per-instantiation global state, per-instantiation `init`, mangling
-that encodes the instantiation, and cloning every declaration across every file
-of the module rather than just a type's methods. Whether a package's own
-top-level module may be parameterized is the sharpest form of the question,
-since importing such a package would mean instantiating it.
+in state. **What a generic module means is settled by that convergence** [Jon 23
+Sep]: a generic module is treated as a generic type is — parameters on its
+`mod` line, instances named with type arguments and memoized, each instance with
+its own globals, `init` and `final`, nothing compiled until an instance is named,
+and across packages the full source in the include file ("Generic modules"
+above). What the analogy leaves to be built is a generic module's submodules,
+which it instantiates with the module as a generic type's methods are.
 
-**Substitution was wanted before generativity, and is built first.** An entry
+**Substitution was wanted before generativity, and was built first.** An entry
 kind — a shell executable, a web request's receiver — is an interface a module
 plugs into, and so is a region protocol, a module supplying alloc, free, alias
 and dealias; module traits are that interface ("Module traits" above). A generic
-module is a separate axis.
+module is a separate axis, and conforms to a module trait as any module does.
 
 Also unsettled: whether folding into a module and folding into a type are
 literally one operation. That is the case the author has called out as the
@@ -2077,7 +2234,16 @@ annotation on a reference names is a type.
   whole, and folded as any refused loop is.
 - **A use of a module's name answers `isTypeNode` true** — `nameUseGroup`'s
   fallthrough for every declaration that is not a value, a macro or a generic
-  parameter, not because a module is a type.
+  parameter, not because a module is a type. `genericSubstitute` leans on it:
+  that is what lets `stack[i64]` reach the generic path at all.
+- **An instance's namespace is a copy of its generic's, made when the instance
+  is.** Every fold has run by type check, so the copy is complete; a binding made
+  in the generic's namespace after an instance exists would not reach it.
+- **A generic module's type parameters are hooked only by `modNameRes`.** A fold
+  of the generic that resolves a declaration (a global's `use` clause, refused
+  in a generic module) or a type of it resolved by demand from another module's
+  pass (`structNameResDemand`) would meet its parameters unbound. Neither is
+  reachable while a bare path through a generic is refused.
 
 ## What lives elsewhere
 

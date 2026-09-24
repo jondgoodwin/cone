@@ -213,9 +213,12 @@ void genlGloVar(GenState *gen, VarDclNode *varnode) {
 // function's instance), or it is a member of one (a method or static of a
 // generic type's instance, or of an instance of a generic trait or enum). The
 // members of a type's instance carry no instantiating node of their own; their
-// type does, so the owners are asked up to the module.
+// type does, so the owners are asked up to the module -- and the module too,
+// since every declaration of a generic module's instance is a member of it.
 static int genlIsInstance(INode *dclnode) {
-    for (INode *node = dclnode; node && node->tag != ModuleTag; node = inodeGetOwner(node)) {
+    for (INode *node = dclnode; node; node = inodeGetOwner(node)) {
+        if (node->tag == ModuleTag)
+            return ((ModuleNode*)node)->generic != NULL;
         if (itypeInstanceTypeArgs(node) != NULL)
             return 1;
     }
@@ -771,6 +774,10 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
     for (nodesFor(pgm->modules, cnt, nodesp)) {
         ModuleNode *mod = (ModuleNode*)*nodesp;
         int16_t generating = mod->flags & FlagGenMod;
+        // A generic module is compiled only as its instances: each is a module
+        // of the program (pgmTypeCheck), generated in every object that uses it
+        if (mod->genericinfo)
+            continue;
 
         uint32_t icnt;
         INode **inodesp;
@@ -784,6 +791,8 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
     // Now generate implementation logic, including function logic or var init
     for (nodesFor(pgm->modules, cnt, nodesp)) {
         ModuleNode *mod = (ModuleNode*)*nodesp;
+        if (mod->genericinfo)
+            continue;
 
         // Generate implementation only for module(s) flagged for generation,
         // and of any other module, only the instances this compile made of its

@@ -34,6 +34,9 @@ ModuleNode *newModuleNode() {
     mod->ntaken = 0;
     mod->initfn = NULL;
     mod->finalfn = NULL;
+    mod->genericinfo = NULL;
+    mod->generic = NULL;
+    mod->instdeps = NULL;
     return mod;
 }
 
@@ -244,6 +247,21 @@ void modPrint(ModuleNode *mod) {
         inodeFprint("module %s", &mod->namesym->namestr);
     else
         inodeFprint("IR for program %s", mod->lexer->url);
+    if (mod->genericinfo)
+        genericInfoPrint(mod->genericinfo);
+    // An instance of a generic module: its type arguments
+    if (mod->generic) {
+        Nodes *args = ((FnCallNode*)mod->instnode)->args;
+        INode **argsp;
+        uint32_t argcnt;
+        inodeFprint("[");
+        for (nodesFor(args, argcnt, argsp)) {
+            inodePrintNode(*argsp);
+            if (argcnt > 1)
+                inodeFprint(", ");
+        }
+        inodeFprint("]");
+    }
     if (mod->extendsname)
         inodeFprint(" extends %s", &((NameUseNode*)mod->extendsname)->namesym->namestr);
     if (mod->traitname)
@@ -372,6 +390,14 @@ void modExtendsResolve(ModuleNode *mod) {
                 &name->namesym->namestr);
             return;
         }
+    }
+    // A generic module's names belong to each instance, and 'extends' names a
+    // module by one name, which cannot carry type arguments
+    if (base->genericinfo) {
+        errorMsgNode((INode*)name, ErrorGenModBare,
+            "%s is a generic module, whose names belong to each instance: a module cannot extend it.",
+            &name->namesym->namestr);
+        return;
     }
     name->dclnode = (INode*)base;
 
@@ -698,6 +724,285 @@ void modFoldAll(NameResState *pstate, Nodes *modules) {
     foldreporting = 0;
 }
 
+// ---- Generic modules: 'mod stack[T];' ---------------------------------------
+//
+// A generic module is treated as a generic type is [Jon 23 Sep: "if I treated
+// generic modules like I treated generic types, how would I treat them?"]. It
+// is written with its type parameters in square brackets on its 'mod' line,
+// resolved once in place with them hooked, and never type checked or generated
+// itself. 'stack[i64]' names an INSTANCE, made the first time those arguments
+// are named and memoized on the generic (genericMemoize): the same arguments
+// anywhere in the program are one instance, with one set of globals. An
+// instance is a module of its own -- its own globals, its own 'init' and
+// 'final' -- cloned from the generic with each parameter substituted, as a
+// generic type's instance is cloned from the type.
+
+// Refuse what a generic module holds that an instance cannot yet be cloned with.
+// Its functions, globals, plain types, overload names and type aliases are
+// cloned; a generic function or type inside it would need its own parameters
+// carried through the clone, and a trait, an enum, a macro, a module trait or a
+// global's 'use' clause each keep bindings the clone does not re-point.
+static void modGenericCheckBody(ModuleNode *mod) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(mod->nodes, cnt, nodesp)) {
+        INode *node = *nodesp;
+        char *what = NULL;
+        switch (node->tag) {
+        case FnDclTag:
+            if (((FnDclNode*)node)->genericinfo)
+                what = "a generic function";
+            break;
+        case VarDclTag:
+            if (((VarDclNode*)node)->fold)
+                what = "a global with a 'use' clause";
+            break;
+        case StructTag:
+        {
+            StructNode *strnode = (StructNode*)node;
+            if (strnode->genericinfo)
+                what = "a generic type";
+            else if (strnode->basetrait)
+                continue;   // a variant: its enum or trait is reported
+            else if (node->flags & TraitType)
+                what = "a trait or an enum";
+            break;
+        }
+        case FnOverloadDclTag:
+        case AliasDclTag:
+            break;
+        case MacroDclTag:
+            what = "a macro";
+            break;
+        case ModTraitTag:
+            what = "a module trait";
+            break;
+        default:
+            what = "this declaration";
+            break;
+        }
+        if (what)
+            errorMsgNode(node, ErrorGenModBody,
+                "Generic module %s may not hold %s: an instance of a generic module is not built for one yet.",
+                &mod->namesym->namestr, what);
+    }
+}
+
+// The instances of generic modules made so far, in the order they were made.
+// Each is also on its generic's memonodes, as a generic type's instances are;
+// this list is what the program adds to its modules once type check is done
+// (pgmTypeCheck), since the program's module list is being walked while they
+// are made
+static Nodes *modInstances = NULL;
+
+Nodes *modInstanceList() {
+    return modInstances;
+}
+
+// Add to 'deps' the module that declares each named type in 'type': an
+// instance follows in the init order the modules its type arguments come from
+static void modTypeArgModules(Nodes **deps, INode *type) {
+    if (type == NULL)
+        return;
+    if (isNameUseNode(type))
+        type = nameUseGetDcl((NameUseNode*)type);
+    if (type == NULL)
+        return;
+    switch (type->tag) {
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+        modTypeArgModules(deps, ((RefNode*)type)->vtexp);
+        return;
+    case PtrTag:
+        modTypeArgModules(deps, ((StarNode*)type)->vtexp);
+        return;
+    case ArrayTag:
+        modTypeArgModules(deps, arrayElemType(type));
+        return;
+    case TTupleTag:
+    {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode*)type)->elems, cnt, nodesp))
+            modTypeArgModules(deps, *nodesp);
+        return;
+    }
+    case AliasDclTag:
+        modTypeArgModules(deps, ((AliasDclNode*)type)->target);
+        return;
+    default:
+        break;
+    }
+    if (inodeGetDclInfo(type) == NULL)
+        return;
+    ModuleNode *mod = dclInfoGetModule(type);
+    if (mod != NULL)
+        nodesAdd(deps, (INode*)mod);
+}
+
+// Make the instance of a generic module for the type arguments 'srcgencall'
+// gives, register it, and type check it (module.h).
+//
+// The instance is a module of its own: named as the generic is, owned where the
+// generic is, and marked with the call that made it (instnode), which is what
+// spells its symbols with the type arguments -- 'stack[i64].push' -- as a
+// generic type's instance is spelled. Its imports are the generic's: they were
+// bound and folded once, and what the generic depends on the instance depends on.
+//
+// Its declarations are cloned the way a generic type's members are
+// (cloneStructNode): a shell for each first, bound in the instance's namespace
+// and mapped from the generic's declaration, and only then each signature, body,
+// type and initial value -- so a body naming another declaration of the module,
+// before or after it, names the instance's. The generic's own name is mapped to
+// the instance too, so 'stack.count' inside the generic means this instance's
+// global; given type arguments it names the generic again (cloneFnCallNode). A
+// use of a type parameter becomes a copy of the argument (cloneNode). Every
+// other name the generic's namespace binds -- what its imports bound and folded
+// -- is bound to the same declaration in the instance's.
+//
+// It is registered on the generic's memonodes BEFORE it is type checked, as a
+// generic type's instance is, so a body naming 'stack[i64]' inside the instance
+// reaches it rather than instantiating it again.
+ModuleNode *modInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, ModuleNode *generic) {
+    GenericInfo *geninfo = generic->genericinfo;
+    ModuleNode *inst = newModuleNode();
+    inodeLexCopy((INode*)inst, (INode*)generic);
+    inst->namesym = generic->namesym;
+    inst->filesym = generic->filesym;
+    inst->foldersym = generic->foldersym;
+    inst->dclinfo = generic->dclinfo;
+    inst->flags = (generic->flags & (FlagModDcl | FlagPub)) | FlagGenMod | NameResolved;
+    inst->instnode = (INode*)srcgencall;
+    inst->generic = generic;
+    inst->imports = generic->imports;
+    inst->traitname = generic->traitname;
+    inst->trait = generic->trait;
+    inst->ntaken = generic->ntaken;
+    inst->instdeps = newNodes(2);
+
+    CloneState cstate;
+    clonePushState(&cstate, (INode*)srcgencall, NULL, 0, geninfo->parms, srcgencall->args);
+    uint32_t dclpos = cloneDclPush();
+    cloneDclSetMap((INode*)generic, (INode*)inst);
+
+    // A shell for every declaration, mapped from the generic's, before anything
+    // is copied into any of them
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(generic->nodes, cnt, nodesp)) {
+        INode *node = *nodesp;
+        INode *copy;
+        switch (node->tag) {
+        case FnDclTag:
+            copy = (INode*)cloneFnDclShell((FnDclNode*)node);
+            break;
+        case VarDclTag:
+            copy = (INode*)cloneVarDclShell((VarDclNode*)node);
+            break;
+        case StructTag:
+            // Filled by cloneStructNode, which takes a reserved shell
+            copy = memAllocBlk(sizeof(StructNode));
+            break;
+        case FnOverloadDclTag:
+        {
+            FnOverloadDclNode *ovl = newFnOverloadDclNode(((FnOverloadDclNode*)node)->namesym);
+            inodeLexCopy((INode*)ovl, node);
+            copy = (INode*)ovl;
+            break;
+        }
+        case AliasDclTag:
+            copy = memAllocBlk(sizeof(AliasDclNode));
+            memcpy(copy, node, sizeof(AliasDclNode));
+            break;
+        default:
+            // modGenericCheckBody refused it, and a compile with errors at
+            // name resolution never reaches type check
+            errorUnreachable(node, "a declaration a generic module's instance has no clone for");
+            copy = node;
+            break;
+        }
+        copy->instnode = (INode*)srcgencall;
+        cloneDclSetMap(node, copy);
+        nodesAdd(&inst->nodes, copy);
+    }
+
+    // Now every signature, body, type and initial value, in the same order
+    INode **copyp = &nodesGet(inst->nodes, 0);
+    for (nodesFor(generic->nodes, cnt, nodesp)) {
+        INode *node = *nodesp;
+        INode *copy = *copyp++;
+        switch (node->tag) {
+        case FnDclTag:
+            cloneFnDclFill(&cstate, (FnDclNode*)copy, (FnDclNode*)node);
+            break;
+        case VarDclTag:
+            cloneVarDclFill(&cstate, (VarDclNode*)copy, (VarDclNode*)node);
+            break;
+        case StructTag:
+            cstate.structshell = copy;
+            cloneNode(&cstate, node);
+            break;
+        case FnOverloadDclTag:
+        {
+            INode **candp;
+            uint32_t candcnt;
+            for (nodesFor(((FnOverloadDclNode*)node)->overloads, candcnt, candp))
+                fnOverloadDclAdd((FnOverloadDclNode*)copy, (FnDclNode*)cloneDclFix(*candp));
+            break;
+        }
+        case AliasDclTag:
+            ((AliasDclNode*)copy)->target = cloneNode(&cstate, ((AliasDclNode*)node)->target);
+            break;
+        }
+        DclInfo *dclinfo = inodeGetDclInfo(copy);
+        if (dclinfo)
+            dclinfo->owner = (INode*)inst;
+    }
+
+    // The instance's namespace: its own declarations where the generic has its,
+    // itself under its own name, and every other binding the generic's holds
+    Namespace *ns = &generic->namespace;
+    namespaceInit(&inst->namespace, ns->avail);
+    namespaceFor(ns) {
+        NameNode *nn = &ns->namenodes[__i];
+        if (nn->name == NULL)
+            continue;
+        namespaceSet(&inst->namespace, nn->name, cloneDclFix(nn->node));
+    }
+    cloneDclPop(dclpos);
+    clonePopState();
+
+    // Remembered before it is checked, as a generic type's instance is
+    if (!geninfo->memonodes)
+        geninfo->memonodes = newNodes(2);
+    nodesAdd(&geninfo->memonodes, (INode*)srcgencall);
+    nodesAdd(&geninfo->memonodes, (INode*)inst);
+    if (modInstances == NULL)
+        modInstances = newNodes(4);
+    nodesAdd(&modInstances, (INode*)inst);
+
+    // Its place in the init order: after the generic, which follows what the
+    // generic imports, and after the modules its type arguments come from. An
+    // instance made while another instance is checked is one that instance
+    // uses, so that one follows it (pgmInstanceOrder)
+    for (nodesFor(srcgencall->args, cnt, nodesp))
+        modTypeArgModules(&inst->instdeps, *nodesp);
+    ModuleNode *user = pstate->fn ? dclInfoGetModule((INode*)pstate->fn) : NULL;
+    if (user && user->generic)
+        nodesAdd(&user->instdeps, (INode*)inst);
+
+    // Checked with no function or type around it, as the program's own
+    // modules are, whichever function's body named it
+    TypeCheckState tstate;
+    tstate.typenode = NULL;
+    tstate.fn = NULL;
+    tstate.scope = 0;
+    INode *instnode = (INode*)inst;
+    inodeTypeCheckAny(&tstate, &instnode);
+    return inst;
+}
+
 // Name resolution of the module node. Modules are resolved in the order they
 // were loaded, the root first -- and what that order no longer decides is what
 // a name reaches, because every module's folds are in place before the first of
@@ -713,6 +1018,17 @@ void modNameRes(NameResState *pstate, ModuleNode *mod) {
     INode **nodesp;
     uint32_t cnt;
     mod->flags |= NameResolving;
+
+    // A generic module is resolved once, in place, as a generic type is: its
+    // type parameters are hooked over its own names, and every use of one in its
+    // body binds to the parameter. An instance is never resolved: it is a clone,
+    // which re-points each use at the instance's argument (modInstantiate)
+    if (mod->genericinfo) {
+        nametblHookPush();
+        for (nodesFor(mod->genericinfo->parms, cnt, nodesp))
+            inodeNameRes(pstate, nodesp);
+        modGenericCheckBody(mod);
+    }
 
     // A type alias names a type expression, and a use of the alias asks what is
     // at the end of that chain. Resolved ahead of the walk for the same reason a
@@ -742,6 +1058,8 @@ void modNameRes(NameResState *pstate, ModuleNode *mod) {
         inodeNameRes(pstate, nodesp);
     }
     mod->flags = (mod->flags & ~NameResolving) | NameResolved;
+    if (mod->genericinfo)
+        nametblHookPop();
 
     // Switch name table back to owner module
     modHook(mod, NULL);
@@ -759,6 +1077,12 @@ void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
     for (nodesFor(mod->imports, cnt, nodesp)) {
         inodeTypeCheckAny(pstate, nodesp);
     }
+
+    // A generic module is never checked, as a generic type is not: its body is
+    // written against its type parameters, which stand for nothing. Each
+    // instance is checked as it is made (modInstantiate)
+    if (mod->genericinfo)
+        return;
 
     // What the module declares for each member of the module trait it
     // conforms to has the member's shape, checked where 'is' is written

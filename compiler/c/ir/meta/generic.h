@@ -20,8 +20,8 @@ void genericInfoPrint(GenericInfo *info);
 
 // Obtain the GenericInfo a declaration carries, or NULL if it is not a generic.
 // This is what distinguishes a generic from every other declaration: a generic
-// is an ordinary FnDcl or StructNode with a parameter list attached, and not a
-// declaration node of its own.
+// is an ordinary FnDcl, StructNode or ModuleNode with a parameter list
+// attached, and not a declaration node of its own.
 GenericInfo *genericGetInfo(INode *node);
 
 // Bound the nesting of generic instantiation and macro expansion.

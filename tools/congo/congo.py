@@ -257,7 +257,8 @@ def scan_header(path: Path) -> Header:
     lines, and then Congo stops reading.
 
     The 'mod' line is 'mod name', optionally 'pub' before and '@c' or '@c(...)'
-    after the keyword, then whatever clauses follow: 'extends' is read, since it
+    after the keyword, and a generic module's '[T, ...]' after the name, then
+    whatever clauses follow: 'extends' is read, since it
     is a dependency like an import, and 'is' and 'use' are passed over. 'mod
     trait' declares a module trait and is not a 'mod' line. An
     'import' is 'import name' or 'import "path"', optionally with 'pub', and
@@ -283,6 +284,11 @@ def scan_header(path: Path) -> Header:
         if kind == "name":
             mod = value
             toks.next()
+            # A generic module's type parameters, 'mod stack[T]', come before
+            # its clauses
+            if toks.peek()[:2] == ("punct", "["):
+                while toks.peek()[0] != "eof" and toks.next()[:2] != ("punct", "]"):
+                    pass
             if toks.is_name("extends"):
                 toks.next()
                 kind, value, line = toks.peek()

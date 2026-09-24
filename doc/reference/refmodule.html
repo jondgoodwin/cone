@@ -35,7 +35,10 @@
 		a library built so is named in its symbols and links with a program
 		compiled against its include file, which is written by hand.
 		A module may <a href="#modtrait">conform to a module trait</a>, taking
-		the trait's defaults it does not declare. A module may declare its own
+		the trait's defaults it does not declare. A module may be
+		<a href="#generic">generic</a>, instantiated with type arguments where it
+		is used, each instance with its own globals; a generic module may not yet
+		hold submodules. A module may declare its own
 		<a href="#dyninit">initializer and finalizer</a>, and every global
 		without an initial value must be assigned by its initializer; a program
 		runs every module's by calling <span class="pre">initAll()</span> and
@@ -492,6 +495,73 @@ mod layered extends plain is Runner use run;
 </pre>
 	<p>A module that extends a conforming module takes the defaults that module
 		took as that module's, as it takes all its names.</p>
+
+	<h3 id="generic">Generic modules</h3>
+	<p>A module may be <b>generic</b>, written as a
+		<a href="refgeneric.html">generic type</a> is: its type parameters in square
+		brackets after its name on the <span class="pre">mod</span> line.</p>
+<pre>
+pub mod stack[T];
+
+pub mut count i64 = 0i64;
+pub mut top T = 0;
+
+fn @initpure init() {
+  // runs once for each instance
+}
+
+pub fn push(x T) {
+  top = x;
+  count = count + 1i64;
+}
+</pre>
+	<p>A generic module is used through an <b>instance</b>, named with type
+		arguments where it is used, as <span class="pre">Box[i64]</span> names an
+		instance of a generic type:</p>
+<pre>
+import stack;
+
+fn main() {
+  stack[i64].push(3i64);
+  stack[f64].push(1.5d);
+  imm n = stack[i64].count;    // 1
+}
+</pre>
+	<ul>
+		<li><b>Each instance is a module of its own</b>, with its own global
+			variables and its own <a href="#dyninit">initializer and finalizer</a>:
+			<span class="pre">stack[i64].count</span> and
+			<span class="pre">stack[f64].count</span> are two globals.</li>
+		<li><b>The same arguments are the same instance</b>, wherever they are
+			written: <span class="pre">stack[i64]</span> named in two modules is one
+			module with one set of globals.</li>
+		<li><b>Nothing of a generic module is compiled until an instance is
+			named.</b> It has no members of its own to reach, so its name without
+			type arguments names no member, and nothing of it can be folded or
+			extended: <span class="pre">stack.push</span>,
+			<span class="pre">use stack;</span>,
+			<span class="pre">import stack use *</span> and
+			<span class="pre">extends stack</span> are errors. Inside its own
+			body, its name is the instance being defined:
+			<span class="pre">stack.count</span> there is that instance's global.</li>
+		<li><b>An instance initializes after its generic's dependencies and after
+			the modules its type arguments come from</b>, and finalizes in the
+			reverse. Given a type of the module that uses it, the instance's
+			initializer runs after that module's.</li>
+		<li><b>Across packages</b>, a package's include file carries its generic
+			module's whole source, and each package or program that uses an instance
+			compiles it; the copies merge when the program is linked, so an instance
+			still has one set of globals. A library's root module may be generic;
+			a program's may not.</li>
+		<li>A generic module conforms to a <a href="#modtrait">module trait</a> on
+			its <span class="pre">mod</span> line, as any module does, and each
+			instance is checked against it.</li>
+	</ul>
+	<p><i>Type parameters only: parameters with constraints or of other kinds
+		are not implemented. A generic module may not yet hold a submodule, a
+		generic function or type, a trait or an enum, a macro, a module trait,
+		or a global with a <span class="pre">use</span> clause, and it may not be
+		C-named.</i></p>
 
 	<h3 id="package">Packages and Congo</h3>
 	<p>A <b>package</b> is one top-level module and the modules inside it, built on
