@@ -125,6 +125,7 @@ add_executable(conec
 
 	compiler/c/parser/lexer.c
 	compiler/c/parser/parsemod.c
+	compiler/c/parser/parsebuild.c
 	compiler/c/parser/parsefnflow.c
 	compiler/c/parser/parseexpr.c
 	compiler/c/parser/parsetype.c

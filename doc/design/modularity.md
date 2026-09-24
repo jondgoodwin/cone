@@ -225,7 +225,9 @@ enclosing modules, then enclosing types, then the name — and **the root module
 contributes nothing to it**. Compiling `modulesub.cone` directly emits
 `@scaleInt`, bare; compiling a `main.cone` that imports it emits
 `@_CNvC9modulesub8scaleInt`, `modulesub.scaleInt`, and the two never resolve.
-**A program spanning modules cannot be linked today.**
+**A program spanning modules cannot be linked today.** A library compiled from a
+build description is the first step off that: its root is named, so its symbols
+are spelled as its importers spell them. They are still internal to its object.
 
 The generation machinery, though, is not the missing part. An imported module's
 bodies are emitted whenever it is flagged for generation, and **every module found
@@ -248,7 +250,11 @@ public interface information from source files."
 folder, then the packages folder, where `core` and `stdio` are folder modules —
 finds files, and `--safe=package` appears in the option help, but there is no
 package in the language — no manifest, no versioning, and nothing that makes a
-set of source files one compiled, distributable thing.
+set of source files one compiled, distributable thing. What the compiler does
+take is a **build description**: Congo's list of one package's modules and files
+and where each import is, which the compiler checks against each file's `mod`
+line and never searches beyond ([module](../../compiler/c/doc/nodes/module.md),
+"A described build").
 
 **There is no thread layer.** Which of async/await, gothreads or actors Cone
 adopts is an open question the author treats as unsettled across the field; the

@@ -171,7 +171,9 @@ itself); outside the runner, build before believing any failure.
 
 Useful `conec` options: `--ir` writes an IR/AST dump, `--llvmir` writes LLVM IR
 before and after optimization, `--wasm` targets WebAssembly, and `--path=<dir>`
-adds a package folder searched before `packages/`. The output
+adds a package folder searched before `packages/`. A source path ending in
+`.conebuild` is a build description, which lists a package's modules and files
+itself (`compiler/c/doc/nodes/module.md`, "A described build"). The output
 directory must already exist, and each run writes several files, so use a
 git-ignored directory such as `build/`.
 

@@ -445,20 +445,32 @@ def named_source(group_dir: Path, name: str) -> Path | None:
     """
     flat = group_dir / f"{name}.cone"
     designated = group_dir / name / f"{name}.cone"
+    # A folder may instead hold a build description named for it, which lists
+    # the package's files itself: the compiler is handed that, and sweeps
+    # nothing. The folder's .cone files are still what the annotations live in
+    described = group_dir / name / f"{name}.conebuild"
     if flat.exists() and designated.exists():
         raise SuiteError(
             f"{group_dir}: {name!r} is written both as {flat.name} and as"
             f" {name}/{designated.name}. The compiler takes the first and never"
             f" reads the folder, so one of them has to go")
+    if described.exists() and (flat.exists() or designated.exists()):
+        raise SuiteError(
+            f"{group_dir}: {name!r} has a build description, {name}/{described.name},"
+            f" and a source the compiler could be pointed at instead. One of them"
+            f" has to go")
     if flat.exists():
         return flat
     if designated.exists():
         return designated
+    if described.exists():
+        return described
     folder = group_dir / name
     if folder.is_dir():
         raise SuiteError(
             f"{folder}: a folder holds a module when it holds the file named for"
-            f" it, so this one needs {name}.cone as its designated file")
+            f" it, so this one needs {name}.cone as its designated file, or"
+            f" {name}.conebuild as its build description")
     return None
 
 
@@ -468,7 +480,10 @@ def folder_files(source: Path) -> list[Path]:
     The compiler sweeps the folder, so these files *are* the scenario: they are
     not registered one by one, because listing them would restate what the sweep
     is for. They are what the runner reads annotations out of, since a diagnostic
-    reported in a swept file carries that file's path.
+    reported in a swept file carries that file's path. A build description comes
+    first in the same way, followed by every ``.cone`` file beside and beneath it:
+    the files it lists and the ones its import lines name, each of which reports
+    against itself, and the description reports against itself too.
     """
     if source.parent.name != source.stem:
         return [source]
@@ -675,8 +690,8 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             source = named_source(group_dir, name)
             if source is None:
                 raise SuiteError(
-                    f"{where}: listed scenario has neither {name}.cone nor"
-                    f" {name}/{name}.cone (R2.12)")
+                    f"{where}: listed scenario has neither {name}.cone,"
+                    f" {name}/{name}.cone nor {name}/{name}.conebuild (R2.12)")
 
         # R2.10 names the total diagnostic count as recover's file-level
         # expectation. It asserts the count rather than each diagnostic, so

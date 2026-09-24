@@ -51,6 +51,9 @@ char *fileCanonicalPath(char *path);
 // filename, or 0 where the path carries no folder
 size_t fileFolder(char *fn);
 
+// Where a path's extension begins, at its last '.' after its last '/', or NULL
+char *fileExtPos(char *fn);
+
 // The name of the current directory, or NULL where there is none to read
 char *fileCurFolderName();
 

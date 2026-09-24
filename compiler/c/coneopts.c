@@ -108,6 +108,8 @@ static void usage()
         "cone [OPTIONS] <source_file>\n"
         ,
         "The source directory defaults to the current directory.\n"
+        "A <source_file> ending in .conebuild is a build description: it names\n"
+        "the package's modules and files, and where each import is found.\n"
         ,
         "Options:\n"
         "  --version, -v   Print the version of the compiler and exit.\n"

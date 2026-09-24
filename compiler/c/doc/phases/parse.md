@@ -384,10 +384,17 @@ would drop the whole body on the floor and turn its opening brace into the next
 global statement.
 
 **Two conditions abort the process outright**, with no recovery:
-a source file `fileFindSrc` cannot find, or `lexInjectPath` cannot read (`ExitNF`), and
+a source file `fileFindSrc` cannot find, or `lexInjectPath` cannot read (`ExitNF`) —
+a build description, or a file it lists or an import line names, included — and
 `parseFilename` when `import` is followed by something that is
 neither an identifier nor a string (`ExitNF` as well, despite being a malformed
 token rather than a missing file).
+
+**A build description with an error in it stops the compile before any source
+is parsed**: `conec.c` reads it ahead of `parsePgm` and ends with the error
+summary where `parseBuildDesc` reported anything. Its own recovery is a line at a
+time — a malformed line is reported once and passed over up to the next token
+that can begin one.
 
 Diagnostics come from `errorMsgLex` (position from the lexer — the parser's
 workhorse), `errorMsgNode` (position from a node, plus the instantiation trace),
@@ -405,9 +412,11 @@ numbers.
 | | `lexScanNumber`, `lexScanString`, `lexScanChar`, `lexScanEscape` | literals; UTF-8 re-encoding of escapes; lifetime-vs-char disambiguation |
 | | `lexNewLine`, `lexBlockComment` | line counting for diagnostics, inside comments included |
 | | `lexOpensWithMod` | whether a source's first statement begins `mod` or `pub mod`, read off its text past white space and comments with nothing lexed: the folder sweep's probe for a one-file module |
-| `parser/parsemod.c` | `parsePgm`, `parseLoadCore` | **entry point** — tables, program, main module, the `core` package from the search path, main file |
-| | `parseGlobalStmts` | the global statement dispatch loop; `trait` by itself enters `parseStruct` with `TraitType` already set, and `actor` is the unbuilt kind refused here. It is told whether it is reading the start of a module's own source, which is what decides where a `mod` declaration may stand |
-| | `parseModuleDcl` | `mod name;`, the declaration a module's designated file or one file makes: the placement rule, the check against the folder's name or the one-file submodule's file's, the rename a lone file still gets, the module's own name bound into its namespace, what `pub` does for a submodule and why it is refused on any other module, the `extends` it records for name resolution to resolve, and the refusal of the in-file block, which does not exist, and of `mod trait` |
+| `parser/parsemod.c` | `parseInit`, `parsePgm`, `parseLoadCore` | **entry point** — `parseInit` sets up the name table and the lexer, ahead of generation's setup since a build description is read with them; `parsePgm` the type tables, program, main module (a source file's, or the one a build description names), the `core` package from the search path, main file |
+| `parser/parsebuild.c` | `parseIsBuildDesc`, `parseBuildDesc`, `parseBuildFindImport` | the build description: told apart by its `.conebuild` extension, read by the lexer into a tree of `BuildModule`s — settings, each module's files, child modules and import lines, each malformed line `ErrorBuildDesc` — and the import line a described module writes for a name |
+| `parser/parsemod.c` | `parseBuildModuleTree`, `parseBuildSubmoduleDraw`, `parseBuildFiles`, `parseLoadBuildImport` | a described build's module tree: each module named and filled as the description says, nothing swept, and the file an import line names loaded as a declared module under the import's name. `ParseState.build` is the current module's entry, which `parseModuleDcl` checks the `mod` line against (`ErrorBuildModName`) and `parseImport` answers names from (`ErrorBuildImport`) |
+| | `parseGlobalStmts` | the global statement dispatch loop; `trait` by itself enters `parseStruct` with `TraitType` already set, and `actor` is the unbuilt kind refused here. It is told whether it is reading the start of a module's first file or of another of its files, which is what decides where a `mod` declaration may stand and which ones a build description checks |
+| | `parseModuleDcl` | `mod name;`, the declaration a module's designated file or one file makes: the placement rule, the check against the folder's name, the one-file submodule's file's or the build description's, the rename a lone file still gets, the module's own name bound into its namespace, what `pub` does for a submodule and why it is refused on any other module, the `extends` it records for name resolution to resolve, and the refusal of the in-file block, which does not exist, and of `mod trait` |
 | | `parseSkipDclBody` | skip an unbuilt form's `{ … }` whole, or resync at the next `;` |
 | | `parseLoadAndParseModuleFile`, `parseLoadModulePath` | per-module unit: locate beside the importer and then on the search path, `FlagGenMod` for what the search path found, register by path, naming, the folder sweep, the `core` import, `modHook`, and a parse per file |
 | | `parseDesignatedFolder`, `parseCollectFolder`, `parseModuleFiles` | the folder sweep: whether the file is its folder's designated file, which files the folder brings in, each read into its block as it is found, which files are one-file modules and which subfolders draw submodules, in the order of their names, and the refusals — a designated file or one-file module too deep to be a module, a one-file module beside a module folder of its name |

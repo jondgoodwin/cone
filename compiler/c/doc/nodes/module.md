@@ -21,6 +21,9 @@ submodule is a module like any other, owned by the module whose folder holds it,
 bound in its namespace, and reached from it by path. **So does a file of the
 folder whose first statement is a `mod` declaration**: a *one-file module*, named
 for its file, and in every other respect the submodule a subfolder would draw.
+**Or the compiler is handed a build description** (`parser/parsebuild.c`), which
+names every module of one package and lists its files, and nothing is swept: see
+"A described build".
 Name resolution folds imports before it resolves anything else the
 module declares. Type check walks imports first, then
 every declaration in source order. Generation declares symbols for every module
@@ -58,10 +61,10 @@ like any other, registered under their canonical paths in the packages folder
 
 | Field | Meaning |
 | --- | --- |
-| `namesym` | the module's name: its **folder's**, where a designated file drew the module out of a folder, and `filesym` otherwise. What an importer binds it under, what a path through it is written with, and what its declarations' symbols are spelled after |
+| `namesym` | the module's name: the **build description's** where one names the module, its **folder's** where a designated file drew the module out of a folder, and `filesym` otherwise. What an importer binds it under, what a path through it is written with, and what its declarations' symbols are spelled after |
 | `filesym` | the name derived from the module's *filename* — the source file's basename for the root, the imported file's or the one-file module's for every other. It names a module that is one file, and nothing else reads it. **For a one-file submodule it is a filesystem fact as a folder is**, and a `mod` declaration's name is checked against it; for a lone file a declaration may rename it |
 | `foldersym` | the module's folder, when that folder's designated file drew it; NULL for a module that is one file. It is what a folder module's `mod` declaration is checked against, and what says a folder was swept |
-| `dclinfo` | the declaration facts — [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols". `owner` is **the parent module for a submodule**, whether a subfolder or a one-file module drew it, and NULL for the root, for a lone file and for a module an `import` reached. **The root is the module without `DclNamesChain`**: it has a name and contributes it to no symbol. `DclPrivate` is set on a submodule that does not write `pub`, and on no other module, because a module with no parent has nothing to be visible outside of |
+| `dclinfo` | the declaration facts — [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols". `owner` is **the parent module for a submodule**, whether a subfolder or a one-file module drew it, and NULL for the root, for a lone file and for a module an `import` reached. **The root is the module without `DclNamesChain`**: it has a name and contributes it to no symbol — except a library's root that a build description names, which carries the flag and is spelled as a top module. `DclPrivate` is set on a submodule that does not write `pub`, and on no other module, because a module with no parent has nothing to be visible outside of |
 | `imports` | `ImportNode`s only, held apart from `nodes` so folding can run before anything else resolves |
 | `moduses` | `ModUseNode`s only — every standalone `use` written at module scope, of an enum or of a submodule — held apart from `nodes` for the same reason, and because the statement is neither a declaration nor a field: what it declares is bindings, made in the fold pass |
 | `nodes` | every declaration the module owns, in source order, **an enum's variants among them**: a variant is walked, checked and generated as the module's, though its name is bound in its enum. This is what printing and generation iterate |
@@ -162,6 +165,11 @@ node's own clause (`foldModUseModule`).
 5. The submodules its subfolders and one-file modules draw are drawn, each
    recursively.
 6. The root's own files are parsed, its designated file first.
+
+Given a build description, steps 1, 2 and 5 take its word instead of the
+filesystem's: the root is named by the description, flagged `DclNamesChain` when
+it says `output: library`, and holds the files it lists; the child modules drawn
+are the ones it lists ("A described build", below).
 
 `parseLoadAndParseModuleFile` is the single path by which any other module is
 loaded, and it is three steps rather than one:
@@ -408,6 +416,12 @@ whether the filesystem already supplied one.**
 - **A lone file — the root, or a module an `import` reached by its path — is
   named after that file**, and its declaration still renames it and binds the new
   name. That is transitional, and it is what keeps today's programs working.
+- **A described module's name is the build description's** — the module's
+  `name: { }`, or an import line's name for the file that line names — bound at
+  load, and a `mod` line opening **any** of its files is checked against it
+  (`ErrorBuildModName`), ahead of the rule that only the first listed file may
+  declare. So a file the description put in the wrong module is reported as
+  that, and a later file restating the right name is `ErrorModDcl` as ever.
 
 Either way the bound name is duplicate-checked against the module's declarations
 like any other, and is in reach inside the module for the rest of the parse.
@@ -456,7 +470,8 @@ recognises the block only to say so, under the same code, and skips its body.
 
 **A `mod` declaration in the root file names the module and does not change a
 single symbol.** The root still has no `DclNamesChain`, so its declarations stay
-bare and `main` stays linkable. Naming the module is what makes its hidden names
+bare and `main` stays linkable. What names a root in its symbols is a build
+description saying `output: library`, never the declaration. Naming the module is what makes its hidden names
 reachable; what spells a symbol is the owner chain, and that is a separate
 question — see "Consequences that follow whichever way those go" below.
 
@@ -549,11 +564,84 @@ it are visible in emitted IR:
   no name to the owner chain its declarations are spelled from.
 
 So **a symbol's identity depends on which compilation the module was the root
-of**, and the two spellings never resolve against each other. That, and not the
+of**, and the two spellings never resolve against each other — unless the root
+was compiled as a library from a build description, which names it ("A
+described build"). That, and not the
 declarations, is why an import cannot be linked against: nothing can emit the
 definitions those declarations name. How a symbol is spelled from its
 declaration, and the linkage it gets, is
 [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols".
+
+### A described build
+
+**Congo discovers; the compiler is told** [Jon 23 Sep]. Congo walks a package's
+folders and reads each file's header, and hands the compiler a **build
+description**: the module tree of one package, each module's files, and where
+each module's imports are. The compiler loads exactly those files, checks what it
+was told against each file's own `mod` line rather than trusting it, and never
+searches. So the folder rules live in one place, Congo, and the folder sweep
+above stays only until the test runner uses Congo's scanner.
+
+`conec` takes a description where it would take a source file, told apart by its
+extension, `.conebuild`:
+
+```
+build: debug
+output: library
+q: {
+    "src/q.cone"
+    "src/more.cone"
+    import stdio: "../stdio/stdio.cone"
+    inner: {
+        "src/inner.cone"
+    }
+}
+```
+
+**The format** is Jon's brace shape [Jon 23 Sep], read by the compiler's own
+lexer (`parser/parsebuild.c`), so a comment is a Cone comment and a path is a
+Cone string — a backslash begins an escape, so paths are written with `/`.
+
+- **Settings first**, each at most once: `build` is `debug` or `release`, and
+  sets what `--debug` sets, so the description is read before generation is set
+  up; `output` is `executable` (the default) or `library`.
+- **Then the package's one module**, `name: { ... }`, whose body holds three
+  kinds of line: a quoted path is a file of the module, `name: { ... }` a child
+  module, and `import name: "path"` where this module's `import name` is found.
+  Imports are per module, since each module has its own. A relative path is
+  relative to the description's folder.
+- A malformed line, a name written twice, a setting after the module and a
+  module listing no file are each `ErrorBuildDesc`, one code with the cause in
+  the message. Nothing is compiled against a description with an error in it.
+
+**What it builds** is the same module tree a folder gives, by a different route
+(`parseBuildModuleTree`, `parseBuildSubmoduleDraw`): each module named by the
+description, holding the files it lists in the order listed, its first file the
+one whose `mod` line may declare it; each child owned by its parent, bound in the
+parent's namespace, private to it until its own `mod` line says `pub`, drawn
+before any is parsed and before the parent's own files, in the order written.
+The file registry, `core`'s auto-import and every later phase are unchanged.
+Nothing is swept and nothing is probed: a file beside a listed one is not
+compiled.
+
+**The root is named by the description.** Under `output: executable` it still
+contributes nothing to a symbol, so `main` links; under `output: library` it
+carries `DclNamesChain`, so a package built on its own spells its declarations
+as an importer spells them — `q.addOne`, `_CNvC1q6addOne` — rather than bare.
+That is the spelling half of separate compilation; the linkage is still a
+program's (`genlLinkage` makes every definition internal).
+
+**An import in a described module is answered by the description.** After the
+registry — a sister, a module the parent bound — `parseImport` looks up the
+module's import line for the name, and loads the file it names as a module named
+by the import, one file swept for nothing, declared and not generated
+(`parseLoadBuildImport`): it stands for another package's include file. A file
+two import lines name is one module, read once. A submodule's other bare names
+are its parent's, as anywhere. Anything else — a name the description gives no
+line for, `stdio` included, or a quoted path — is `ErrorBuildImport`. The module
+an import line loads is not itself described, so an import written in *that*
+file is refused the same way. `core` is loaded from the package search path as
+always.
 
 ### What an import reaches
 
@@ -908,8 +996,9 @@ Flow analysis has no module concept; it runs per function body.
 2. **Implementations.** Only modules flagged `FlagGenMod`.
 
 **The root is flagged `FlagGenMod`, and so is a module found on the package
-search path; a module an import found beside its importer is not, and a
-submodule is flagged exactly as its parent is.** A submodule of the root is
+search path; a module an import found beside its importer is not, nor is one a
+build description's import line names, and a submodule is flagged exactly as
+its parent is.** A submodule of the root is
 part of the program the compiler was pointed at — its bodies belong in this
 object exactly as a swept file's do — and a submodule of an import is part of
 that import, declared or generated with it. A package is
@@ -1051,6 +1140,10 @@ the module tree:
   needs no package concept to do this. The layout convention that a package's top
   module lives in `src/` as `<package>.cone` is congo's, and the compiler never
   sees it.
+- **Or it is handed a build description, and walks nothing** [Jon 23 Sep]:
+  Congo applies the folder rules and tells the compiler the result, which the
+  compiler checks against each file's `mod` line. The walk above retires once
+  the test runner uses Congo's scanner.
 
 Collisions follow, and each wants a diagnostic that names full paths: two
 organizational subfolders can each declare the same name into the enclosing
@@ -1231,7 +1324,12 @@ an alias [Jon 23 Sep]. The registry is the
 immediate parent's namespace and no ancestor's, which is the scoped reading,
 adopted provisionally. There is no nesting within a *file*, and none is planned —
 a `mod name { ... }` block is refused, `ErrorUnbuiltKind` — no package as a unit
-of compilation, no manifest and no interface artifact. What stands in for
+of compilation, no manifest and no interface artifact. **What the compiler does
+take is a build description** ("A described build"): one package's module tree
+and files, each file's `mod` line checked against it, imports found only where
+it says, and a library's root named from it, so a package compiled on its own
+spells its symbols as its importers do — though still with a program's internal
+linkage. What stands in for
 packages is the **packages folder**: `core` and `stdio` are folder modules there,
 found on the package search path and compiled into the importing object ("The
 packages folder" above);
@@ -1422,7 +1520,9 @@ annotation on a reference names is a type.
 ### Consequences that follow whichever way those go
 
 - **Symbol identity must stop depending on which module was the root.** The
-  measured asymmetry above is the mechanism. A generated name is the module
+  measured asymmetry above is the mechanism. A library built from a build
+  description no longer has it — its root is named — while a program's root
+  and a source file compiled directly still do. A generated name is the module
   path, outermost first, and there is no package component: a package
   correlates to one top-level module, whose name is what makes a public name
   distinguishable once the linker flattens every namespace into one. The rules,
@@ -1469,6 +1569,9 @@ annotation on a reference names is a type.
 
 ## Hazards
 
+- **A build description's `build` line wins over `--debug`.** The description is
+  read after the options, so `build: release` optimises a compile run with
+  `--debug`. A description with no `build` line leaves the option as given.
 - **A path is canonicalized before it becomes a registry key** (`fileCanonicalPath`),
   so two spellings of one file are one key and the file is read once. What that
   closed was a miscompile: `import "../b/b"` inside submodule `a` composed a path

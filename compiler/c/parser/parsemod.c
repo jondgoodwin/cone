@@ -22,6 +22,7 @@
 
 void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart);
 ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name *filesym);
+static ModuleNode *parseLoadBuildImport(ParseState *parse, BuildImport *import);
 
 // ---------------------------------------------------------------------------
 // The file registry and the folder tree
@@ -461,6 +462,30 @@ ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
         return NULL;
     }
 
+    // IN A DESCRIBED MODULE THE COMPILER NEVER SEARCHES. After the registry, a
+    // name is answered by the build description's import line for it, which says
+    // where the file is; a submodule's other bare names are its parent's, as
+    // below; and anything else -- a quoted path, a name the description does
+    // not provide -- is refused, naming what the description lacks. The file an
+    // import line names is loaded below, where every file an import reaches is
+    // checked
+    BuildImport *buildimport = NULL;
+    if (newmod == NULL && parse->build != NULL) {
+        buildimport = isname ? parseBuildFindImport(parse->build, filesym) : NULL;
+        if (buildimport == NULL && isname && parse->mod->dclinfo.owner != NULL)
+            return parseImportName(parse, importnode, filesym);
+        if (buildimport == NULL) {
+            if (isname)
+                errorMsgLexAfter(ErrorBuildImport,
+                    "The build description provides nothing for 'import %s' in module %s: a described module's import is found where its 'import %s: \"path\"' line says.",
+                    filename, &parse->mod->namesym->namestr, filename);
+            else
+                errorMsgLexAfter(ErrorBuildImport,
+                    "An import in a described module is written by name, and found where the build description's import line for that name says; a path is not searched for.");
+            return NULL;
+        }
+    }
+
     // THE REGISTRY HOLDS MORE THAN MODULES [Jon 23 Sep]. A submodule's bare name
     // may be any public name of its parent -- a type, a function, a global -- and
     // is bound as an alias rather than loaded. The submodule is parsed before its
@@ -468,7 +493,7 @@ ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
     // no file answers either is held, and bound in the fold passes once the
     // parent's namespace is complete (importBindName). A package is a file the
     // name reaches, like any other
-    if (newmod == NULL && isname && parse->mod->dclinfo.owner != NULL
+    if (newmod == NULL && buildimport == NULL && isname && parse->mod->dclinfo.owner != NULL
         && fileFindSrc(lex ? lex->url : NULL, filename) == NULL)
         return parseImportName(parse, importnode, filesym);
     if (newmod == NULL && isname && parse->mod->dclinfo.owner != NULL)
@@ -476,9 +501,11 @@ ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
 
     if (newmod == NULL) {
         // Nothing of that name in the registry, so the name is a FILE PATH:
-        // beside the importing file, and then on the package search path, which
-        // is how 'import stdio' reaches the packages folder
-        newmod = parseLoadAndParseModuleFile(parse, filename, filesym);
+        // where the build description's import line says, or else beside the
+        // importing file and then on the package search path, which is how
+        // 'import stdio' reaches the packages folder
+        newmod = buildimport ? parseLoadBuildImport(parse, buildimport)
+            : parseLoadAndParseModuleFile(parse, filename, filesym);
 
         // A file of this module's own folder is already part of this module, so
         // naming it here asks the module to import itself. The folder is what
@@ -694,8 +721,10 @@ static FoldClause *parseModDefaultFold(ParseState *parse) {
 // file, and a nested module is a file of its own or a subfolder with its own
 // designated file.
 //
-// 'atmodstart' is whether this is the first statement of the module's designated
-// or one file. The declaration claims the module, so nothing may precede it, a
+// 'atmodstart' is 1 at the first statement of the module's designated or one
+// file -- or, in a described module, of the first file the build description
+// lists -- 2 at the first statement of any other of its files, and 0 anywhere
+// else. The declaration claims the module, so nothing may precede it, a
 // second one has nothing left to declare, and a file the folder swept in carries
 // none at all: a swept file that opened with one would have been a one-file
 // module rather than swept.
@@ -797,9 +826,25 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
         return;
     }
     // Reported before the statement's ';' is consumed, so that the diagnostic
-    // lands on this declaration rather than on the token that follows it
-    if (modname != NULL) {
-        if (!atmodstart || (mod->flags & FlagModDcl))
+    // lands on this declaration rather than on the token that follows it.
+    //
+    // A DESCRIBED module's name is the build description's, bound at load as a
+    // folder's is, and a 'mod' line opening any of its files is checked against
+    // it: a file listed in the wrong module is reported as that, wherever in the
+    // module's list it sits, before the rule that only the first may declare
+    BuildModule *build = parse->build;
+    if (modname != NULL && build != NULL && atmodstart && modname != build->name) {
+        if (build->isimport)
+            errorMsgLex(ErrorBuildModName,
+                "The build description imports this file as '%s', and its 'mod' line names '%s'. The import's name is what names the module.",
+                &build->name->namestr, &modname->namestr);
+        else
+            errorMsgLex(ErrorBuildModName,
+                "The build description lists this file in module '%s', and its 'mod' line names '%s'. A file declares the module the description lists it in.",
+                &build->name->namestr, &modname->namestr);
+    }
+    else if (modname != NULL) {
+        if (atmodstart != 1 || (mod->flags & FlagModDcl))
             errorMsgLex(ErrorModDcl,
                 "A 'mod' declaration must be its file's first statement, and a module declares itself once. A file that does not open with one is a file of its folder's module, and declares nothing.");
         else {
@@ -813,7 +858,12 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
                 mod->flags |= FlagPub;
                 mod->dclinfo.facts &= ~DclPrivate;
             }
-            if (mod->foldersym != NULL) {
+            if (build != NULL) {
+                // The description names the module and has bound that name
+                // already; the declaration restates it, as checked above
+                copyNodeLex(mod, &dclat);
+            }
+            else if (mod->foldersym != NULL) {
                 // The folder names the module and has bound that name already
                 if (modname != mod->foldersym)
                     errorMsgLex(ErrorModName,
@@ -1047,7 +1097,7 @@ void parseModuleFilesParse(ParseState *parse, ModuleNode *mod, SrcFiles *files) 
             lexPush(files->blocks[i]);
         else
             lexInjectPath(files->paths[i]);
-        parseGlobalStmts(parse, mod, i == 0);
+        parseGlobalStmts(parse, mod, i == 0 ? 1 : 2);
         if (lex->toktype != EofToken) {
             errorMsgLex(ErrorNoEof, "Expected end-of-file");
         }
@@ -1061,10 +1111,12 @@ typedef struct DrawnModule {
     ModuleNode *mod;          // NULL where the submodule's file could not join
     SrcFiles files;
     SrcFiles submodules;
+    BuildModule *build;       // The build description's entry, where the module is described
 } DrawnModule;
 
 void parseSubmoduleDraw(ParseState *parse, ModuleNode *parent, char *path, Lexer *block, DrawnModule *drawn);
 void parseSubmoduleParse(ParseState *parse, DrawnModule *drawn);
+void parseBuildModuleTree(ParseState *parse, ModuleNode *mod, SrcFiles *files, BuildModule *build);
 
 // Add the auto-import of the core package, which every module but core itself
 // carries, ahead of whatever the module's own files import. Core is loaded
@@ -1128,6 +1180,7 @@ void parseModuleTree(ParseState *parse, ModuleNode *mod, SrcFiles *files, SrcFil
 // is bound and registered before any of their files is read
 void parseSubmoduleDraw(ParseState *parse, ModuleNode *parent, char *path, Lexer *block, DrawnModule *drawn) {
     drawn->mod = NULL;
+    drawn->build = NULL;
     Name *pathsym = nametblFind(path, strlen(path));
     ModuleNode *held = pgmFindFile(parse->pgm, pathsym);
     if (held) {
@@ -1180,14 +1233,70 @@ void parseSubmoduleParse(ParseState *parse, DrawnModule *drawn) {
     if (mod == NULL)
         return;
     ModuleNode *svmod = parse->mod;
+    BuildModule *svbuild = parse->build;
     parse->mod = mod;
+    parse->build = drawn->build;
     modHook(svmod, mod);
-    // Its folder or its file names it, so its name is in reach inside it whether
-    // or not a declaration restates it
+    // Its folder, its file or the build description names it, so its name is in
+    // reach inside it whether or not a declaration restates it
     modAddNamedNode(mod, mod->namesym, (INode*)mod);
-    parseModuleTree(parse, mod, &drawn->files, &drawn->submodules);
+    if (drawn->build)
+        parseBuildModuleTree(parse, mod, &drawn->files, drawn->build);
+    else
+        parseModuleTree(parse, mod, &drawn->files, &drawn->submodules);
     modHook(mod, svmod);
     parse->mod = svmod;
+    parse->build = svbuild;
+}
+
+// ---------------------------------------------------------------------------
+// A described build
+//
+// Where the compiler is given a BUILD DESCRIPTION (parsebuild.c), it is told
+// the whole module tree of one package rather than finding it: each module's
+// name, its files in order and its child modules. Nothing is swept and no file
+// is probed; the folder rules are Congo's, which wrote the description, and
+// the compiler checks what it was told against each file's own 'mod' line
+// (parseModuleDcl). Everything else -- the registry, the order modules are drawn
+// and parsed in, ownership, 'pub' -- is exactly what a folder tree gets.
+// ---------------------------------------------------------------------------
+
+// A described module's files, the first read into its block now, as a
+// designated file's is, since the module takes its position from it
+static void parseBuildFiles(SrcFiles *files, BuildModule *build, ModuleNode *mod) {
+    parseSrcFilesInit(files);
+    for (uint32_t i = 0; i < build->nfiles; ++i)
+        parseSrcFilesAdd(files, build->files[i], i == 0 ? parseModulePosition(mod, build->files[0], NULL) : NULL);
+}
+
+// Draw a described child module: owned by its parent and bound in its
+// namespace under the name the description gives it, private to it until its
+// own 'mod' line says 'pub', and generated exactly when its parent is
+static void parseBuildSubmoduleDraw(ParseState *parse, ModuleNode *parent, BuildModule *build, DrawnModule *drawn) {
+    ModuleNode *mod = pgmAddMod(parse->pgm, parent->flags & FlagGenMod);
+    parseBuildFiles(&drawn->files, build, mod);
+    parseSrcFilesInit(&drawn->submodules);
+    mod->filesym = mod->namesym = build->name;
+    dclInfoJoin((INode*)mod, (INode*)parent);
+    mod->dclinfo.facts |= DclNamesChain;
+    modAddNamedNode(parent, mod->namesym, (INode*)mod);
+    parseRegisterModuleFiles(parse, mod, &drawn->files);
+    parseAddCorelibImport(parse, mod);
+    drawn->mod = mod;
+    drawn->build = build;
+}
+
+// Draw a described module's children, then parse them, then parse its own
+// files: the order parseModuleTree keeps, for the same reasons. The children
+// are taken in the order the description writes them
+void parseBuildModuleTree(ParseState *parse, ModuleNode *mod, SrcFiles *files, BuildModule *build) {
+    DrawnModule *drawn = build->nchildren
+        ? (DrawnModule*)memAllocBlk(build->nchildren * sizeof(DrawnModule)) : NULL;
+    for (uint32_t i = 0; i < build->nchildren; ++i)
+        parseBuildSubmoduleDraw(parse, mod, build->children[i], &drawn[i]);
+    for (uint32_t i = 0; i < build->nchildren; ++i)
+        parseSubmoduleParse(parse, &drawn[i]);
+    parseModuleFilesParse(parse, mod, files);
 }
 
 // Load the module whose file is at 'path', unless a module holds that file
@@ -1199,7 +1308,7 @@ void parseSubmoduleParse(ParseState *parse, DrawnModule *drawn) {
 // The de-dup key is the file's PATH, because what must happen exactly once is
 // reading the file; neither the filename nor a 'mod' declaration's name decides
 // it, and either may be shared by files in different folders
-static ModuleNode *parseLoadModulePath(ParseState *parse, char *path, Name *filesym, uint16_t genflag) {
+static ModuleNode *parseLoadModulePath(ParseState *parse, char *path, Name *filesym, uint16_t genflag, BuildModule *build) {
     Name *pathsym = nametblFind(path, strlen(path));
 
     // REGISTER. If a module holds this file already, that module is what the
@@ -1210,18 +1319,22 @@ static ModuleNode *parseLoadModulePath(ParseState *parse, char *path, Name *file
 
     // Create and add this new module to list of modules, and make it the current one
     ModuleNode *svmod = parse->mod;
+    BuildModule *svbuild = parse->build;
     mod = pgmAddMod(parse->pgm, genflag);
     Lexer *dsgfile = parseModulePosition(mod, path, NULL);
     mod->filesym = filesym;
     // The module's name is a filesystem fact: its folder's, where a designated
     // file drew the module out of a folder, and its file's otherwise. Filename
-    // naming is transitional and is what a designated file replaces
-    mod->foldersym = parseDesignatedFolder(path);
+    // naming is transitional and is what a designated file replaces. A file a
+    // build description's import line names is one file, swept for nothing, and
+    // the import's name is its name
+    mod->foldersym = build ? NULL : parseDesignatedFolder(path);
     mod->namesym = mod->foldersym ? mod->foldersym : filesym;
     // Every loaded module names itself in the owner chain; only the root does not
     dclInfoJoin((INode*)mod, NULL);
     mod->dclinfo.facts |= DclNamesChain;
     parse->mod = mod;
+    parse->build = build;
 
     // The module's files, all registered before any of them is parsed, so that
     // which files the module holds does not depend on what the parse of one of
@@ -1237,15 +1350,26 @@ static ModuleNode *parseLoadModulePath(ParseState *parse, char *path, Name *file
     // Parse the module's source, then pop lexer and name hook
     modHook(svmod, mod);
     // A module folder's name is in reach inside the module whether or not a
-    // declaration restates it, since the folder is what names it
-    if (mod->foldersym)
+    // declaration restates it, since the folder is what names it; so is one a
+    // build description names
+    if (mod->foldersym || build)
         modAddNamedNode(mod, mod->namesym, (INode*)mod);
     parseModuleTree(parse, mod, &files, &submodules);
     modHook(mod, svmod);
 
     // Restore focus to original module we were working on
     parse->mod = svmod;
+    parse->build = svbuild;
     return mod;
+}
+
+// Load the module a described module's import line names. The compiler never
+// searches in a described build: the description says where the file is, and
+// the import's name is the module's. It is one file, whose bodies this object
+// only declares -- a package is built on its own, and imported through its
+// include file [Jon 23 Sep]
+static ModuleNode *parseLoadBuildImport(ParseState *parse, BuildImport *import) {
+    return parseLoadModulePath(parse, import->path, import->name, 0, parseBuildImportModule(import));
 }
 
 // Load the module a name reaches, unless a module holds its file already, then
@@ -1268,7 +1392,7 @@ ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name 
     }
     if (path == NULL)
         errorExit(ExitNF, "Cannot find or read source file %s", filename);
-    return parseLoadModulePath(parse, path, filesym, genflag);
+    return parseLoadModulePath(parse, path, filesym, genflag, NULL);
 }
 
 // Load the core package, the prelude every module imports. It is found on the
@@ -1278,15 +1402,20 @@ static ModuleNode *parseLoadCore(ParseState *parse) {
     char *path = fileFindPackage("core");
     if (path == NULL)
         errorExit(ExitNF, "Cannot find the core package, core/core.cone, on the package search path. The packages folder is named by CONE_PACKAGES, else found at or above conec's own folder, else built into the compiler, and '--path' adds folders ahead of it.");
-    return parseLoadModulePath(parse, path, nametblFind("core", 4), FlagGenMod);
+    return parseLoadModulePath(parse, path, nametblFind("core", 4), FlagGenMod, NULL);
 }
 
-// Parse a program = the main module
-ProgramNode *parsePgm(ConeOptions *opt) {
-    // Initialize name table and lexer
+// Set up the name table and the lexer. A build description is read by the
+// lexer, and before generation is set up, so this comes first of all
+void parseInit(ConeOptions *opt) {
     nametblInit();
-    typetblInit();
     lexInit(opt);
+}
+
+// Parse a program = the main module. 'desc' is the build description the
+// compiler was given, or NULL where it was given a source file
+ProgramNode *parsePgm(ConeOptions *opt, BuildDesc *desc) {
+    typetblInit();
     stdlibInit(opt->ptrsize);
 
     ProgramNode *pgm = newProgramNode();
@@ -1298,27 +1427,43 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     parse.typenode = NULL;
     parse.inrettype = 0;
     parse.core = NULL;
+    parse.build = NULL;
 
     // Create module node and set up for parsing main source file.
     // The root's file is registered like any other, so an import cycle back to
     // it finds the module already parsed instead of reading the file again as a
     // second module. It sets no DclNamesChain: the root contributes no prefix, so
     // its declarations are spelled bare -- and naming the root module changes
-    // what it is called, never how the program's symbols are spelled.
+    // what it is called, never how the program's symbols are spelled. The one
+    // exception is a LIBRARY a build description names: a package built on its
+    // own is imported by name, so its root is spelled as its importers spell it
     ModuleNode *mod = pgmAddMod(pgm, FlagGenMod);
-    mod->filesym = nametblFind(opt->srcname, strlen(opt->srcname));
-
-    // The program is one file, or a folder's worth of them: the file the
-    // compiler was pointed at sweeps its folder when it is that folder's
-    // designated file, and is a module of one file otherwise
-    char *path = fileFindSrc(lex ? lex->url : NULL, opt->srcpath);
-    if (path == NULL)
-        errorExit(ExitNF, "Cannot find or read source file %s", opt->srcpath);
-    Lexer *dsgfile = parseModulePosition(mod, path, NULL);
-    mod->foldersym = parseDesignatedFolder(path);
-    mod->namesym = mod->foldersym ? mod->foldersym : mod->filesym;
     SrcFiles files, submodules;
-    parseModuleFiles(&files, &submodules, path, dsgfile, mod->foldersym != NULL);
+    if (desc != NULL) {
+        // A described build: the description names the root and lists its
+        // files, and nothing is swept
+        mod->filesym = mod->namesym = desc->root->name;
+        parseBuildFiles(&files, desc->root, mod);
+        parseSrcFilesInit(&submodules);
+        if (desc->library) {
+            dclInfoJoin((INode*)mod, NULL);
+            mod->dclinfo.facts |= DclNamesChain;
+        }
+    }
+    else {
+        mod->filesym = nametblFind(opt->srcname, strlen(opt->srcname));
+
+        // The program is one file, or a folder's worth of them: the file the
+        // compiler was pointed at sweeps its folder when it is that folder's
+        // designated file, and is a module of one file otherwise
+        char *path = fileFindSrc(lex ? lex->url : NULL, opt->srcpath);
+        if (path == NULL)
+            errorExit(ExitNF, "Cannot find or read source file %s", opt->srcpath);
+        Lexer *dsgfile = parseModulePosition(mod, path, NULL);
+        mod->foldersym = parseDesignatedFolder(path);
+        mod->namesym = mod->foldersym ? mod->foldersym : mod->filesym;
+        parseModuleFiles(&files, &submodules, path, dsgfile, mod->foldersym != NULL);
+    }
     parseRegisterModuleFiles(&parse, mod, &files);
 
     // Load and parse the core package, auto-imported into main source and, from
@@ -1334,12 +1479,18 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     // Now actually parse the main module's files
     parse.mod = mod;
     modHook(NULL, mod);
-    if (mod->foldersym)
+    if (mod->foldersym || desc)
         modAddNamedNode(mod, mod->namesym, (INode*)mod);
     // A stray '}' at global scope ends a file's statement loop. Without the
     // end-of-file check inside, the rest of that file would be silently
     // discarded
-    parseModuleTree(&parse, mod, &files, &submodules);
+    if (desc) {
+        parse.build = desc->root;
+        parseBuildModuleTree(&parse, mod, &files, desc->root);
+        parse.build = NULL;
+    }
+    else
+        parseModuleTree(&parse, mod, &files, &submodules);
     modHook(mod, NULL);
     return pgm;
 }

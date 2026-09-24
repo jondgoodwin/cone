@@ -92,13 +92,25 @@ int main(int argc, char **argv) {
     coneopt.srcpath = argv[1];
     coneopt.srcname = fileName(coneopt.srcpath);
 
+    // A build description names the package's files and modules and says what
+    // to build. Its 'build' line decides whether the output is optimised, which
+    // generation's setup reads, so it is read first, and nothing is compiled
+    // against a description that could not be read
+    parseInit(&coneopt);
+    BuildDesc *desc = NULL;
+    if (parseIsBuildDesc(coneopt.srcpath)) {
+        desc = parseBuildDesc(&coneopt);
+        if (errors)
+            errorSummary();
+    }
+
     // We set up generation early because we need target info, e.g.: pointer size
     timerBegin(SetupTimer);
     genSetup(&gen, &coneopt);
 
     // Parse source file, do semantic analysis, and generate code
     timerBegin(ParseTimer);
-    ProgramNode* pgmnode = parsePgm(&coneopt);
+    ProgramNode* pgmnode = parsePgm(&coneopt, desc);
     if (errors == 0) {
         timerBegin(SemTimer);
         doAnalysis(&coneopt, &pgmnode);
