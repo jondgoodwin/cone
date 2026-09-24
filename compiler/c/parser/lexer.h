@@ -139,6 +139,7 @@ enum TokenTypes {
     MoveToken,     // '@move'
     OpaqueToken,   // '@opaque'
     UnsizedToken,  // '@unsized'
+    CAttrToken,    // '@c': C naming, on a 'mod' line or a 'fn'
     ExtendsToken,  // 'extends'
     MixinToken,    // 'mixin'
     UseToken,      // 'use'

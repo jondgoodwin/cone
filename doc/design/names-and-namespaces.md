@@ -505,14 +505,15 @@ Every node that declares a symbol carries a `DclInfo` by value — `FnDclNode`,
 `VarDclNode` (a global), `StructNode` and `ModuleNode` — and `inodeGetDclInfo`
 is the one switch that knows which kinds those are. It holds the **owner**, a
 pointer to the enclosing module or type node — the chain is walked, never
-stored as a string — and six bits:
+stored as a string — six bits, and `cname`, the string a `@c("...")` stated:
+on a module the prefix its C names carry, on a function its whole symbol.
 
 | Bit | Meaning | Written from |
 | --- | --- | --- |
 | `DclPrivate` | visible only within its owner | the absence of `pub`, once |
-| `DclExternal` | externally supplied: this compile emits no definition | `extern` |
-| `DclCName` | C-style name: no owner prefix, never mangled | `extern` [differs: the regime is meant to be declared on a module, and is inferred per declaration from `extern` until it is] |
-| `DclSystemCC` | system calling convention | `extern system` |
+| `DclExternal` | externally supplied: this compile emits no definition. It says nothing about the name | `extern` |
+| `DclCName` | C naming: no owner path, never mangled (S5) | on a module, its `mod` line's `@c`; on a function, its own `@c`, or a C-named module that owns it directly (a type's methods and a generic function are not named by the module); on a global, the C-named module that owns it |
+| `DclSystemCC` | system calling convention | `@c(system)`, on the function or on its module |
 | `DclNamesChain` | module only: contributes its name to the owner chain | set on every loaded module, and on the root only where a build description says `output: library` |
 | `DclExpandReached` | a function, global or type named by a body an importer expands — an `inline`, generic or macro body, a trait's default, a generic type's method | name resolution, where the body names it (`nameUseMarkExpandReached`); read only by a library compile, which exports it (L5) |
 
@@ -576,17 +577,24 @@ Rules for Cone-consumed names; C FFI names have their own (S5).
   The only owner carrying more than its identifier is a generic type instance,
   whose component carries its type arguments, so `fn tally(self) i64` is told
   apart across `Holder[i64]` and `Holder[f64]`.
-- **S5. C FFI names.** Every module is flagged C-style or Cone-style. In a
-  C-style module the owner chain contributes no prefix, no name is mangled and
-  nothing carries a suffix, so such a module cannot declare a generic. The flag
-  may carry a literal prefix — `SDL_` — prepended to every name, written by the
-  author and never derived. The flag affects the symbol only; resolution is
-  through the ordinary module, so a caller writes `sdl.Init`. Inbound (a C
-  library's symbols) and outbound (a Cone declaration published to C) are one
-  mechanism in two directions, and `main` is the existing outbound case.
-  [differs: there is no module flag and no literal prefix; the regime is per
-  declaration, from `extern`, and an `extern` inside a Cone module is spelled
-  bare wherever it is declared]
+- **S5. C FFI names.** Naming belongs to the module, and `extern` has no say in
+  it: `extern` means only "defined elsewhere", so an `extern` declaration in a
+  Cone-named module is spelled with the module's Cone path like any other —
+  which is how an include file reaches a package's symbols [Jon 23 Sep]. A
+  module is C-named by `@c` after `mod` (`mod @c("SDL_") sdl;`): the functions
+  and globals it owns directly take no owner path, are never mangled and carry
+  no suffix, and a string is a literal prefix prepended to each, written by the
+  author and never derived. A type's methods and a generic function in a
+  C-named module keep Cone names, since a C name has no room for an owner or
+  type arguments. One function is C-named by the same marker after `fn`
+  (`fn @c("main") start`): bare, it is the declared name; with a string, the
+  string is the whole symbol and no prefix is added, which is the per-name
+  override in a C-named module. A bare `@c` on a function its module already
+  C-names is `ErrorCNameTwice`. `@c(system)` adds the system calling
+  convention. The marker affects the symbol only; resolution is through the
+  ordinary module, so a caller writes `sdl.Init`. Inbound (a C library's
+  symbols) and outbound (a Cone body published to C, `pub fn @c(...)`) are one
+  mechanism in two directions.
 - **S6. Vtables.** A vtable is the implementing type then the trait's path,
   `Y<type><trait-path>` — this type as that trait — and a trait's vtable list
   is the trait's path alone, `L<trait-path>`. The thunk that fills a slot a
@@ -679,9 +687,11 @@ the instantiating node its owner's cloning stamped on it, which is the owner's
 and not its own, so the arguments are spelled on the owner once. A variant of
 a tagged trait is owned by the trait, `NtNt7Extense8Variant1`.
 
-**The bare rule** is `nameSymbol`'s: a C-style name, or a declaration with an
-empty owner chain that is not itself an instance of a generic — every root fn
-and global, `main` among them — is its declared name alone. Everything else is
+**The bare rule** is `nameSymbol`'s: a C name is what `@c` states — the
+function's own string, or the C-named module's prefix and the declared name —
+and a declaration with an empty owner chain that is not itself an instance of a
+generic — every root fn and global, `main` among them, `extern` or not — is its
+declared name alone. Everything else, an `extern` declaration included, is
 `_C` and its path. A function with no name at all, a lifted `fn` literal,
 spells the empty string and is named `anon` at generation.
 
@@ -734,7 +744,9 @@ demangler in `test/run.py`:
 | `passThrough[T]` at `&opaq fn(i64) i64` | `_CINv11passThroughR04opaqFxExE` | `passThrough[&opaq fn(i64) i64]` — borrowed, so the region is `0` |
 | `passThrough` at `(i64,i64)`, at `[2] i64`, at `void` | `_CINv11passThroughTxxEE`, `_CINv11passThroughAx2_E`, `_CINv11passThroughuE` | `passThrough[(i64,i64)]`, `passThrough[[2] i64]`, `passThrough[void]` |
 | `fn größe(self)` and `` fn `a b`(self) `` on `Umlaut` | `_CNvNt6Umlautu9_gre_6ka8i`, `_CNvNt6Umlautu8_ab_eh24y` | `Umlaut.größe`, ``Umlaut.`a b` `` — punycode, read back in backticks where source needs them |
-| `extern fn abs`, `extern system GetTickCount` | `@abs`, `@GetTickCount` | C names, bare (S5) |
+| `extern fn @c labs` in a Cone module, `extern fn @c(system) GetTickCount` | `@labs`, `@GetTickCount` | C names, bare (S5) |
+| `extern fn twice` in Cone module `moduleextern`; `extern fn len(self)` in its `Vec2` | `_CNvC12moduleextern5twice`, `_CNvNtC12moduleextern4Vec23len` | `moduleextern.twice`, `moduleextern.Vec2.len` — `extern` does not change the name |
+| `fn Str` in `mod @c("print") cio`; `fn @c("labs") abs` there | `@printStr`, `@labs` | the prefix and the name; the fn's string is the whole symbol (S5) |
 | `modulex.y_z` and `modulex_y.z` | `_CNvC7modulex3y_z`, `_CNvC9modulex_y1z` | distinct by construction |
 | `modulesub.cone` compiled as root, then imported | `@scaleInt` vs `_CNvC9modulesub8scaleInt` | two spellings for one declaration; a module name declared in source is what would reunite them |
 
@@ -795,7 +807,7 @@ Not in version 0: it doubles the encoder and the demangler for no benefit until 
 get long.
 
 **D8 · Program linkage.** In a program compile every definition is internal
-except `main` and a C-style name; a declaration is external, as an LLVM
+except `main` and a public C-named one; a declaration is external, as an LLVM
 `declare` can be nothing else; visibility is never set. The soundness argument
 is S3's: a program's bare `@log` must never satisfy a package's reference to
 libm's `log`. The consequence is that LLVM's optimizer deletes an internal
@@ -843,14 +855,15 @@ The cases, in a program compile:
 | an instance of a generic, wherever declared | internal — this object is the only one that references it |
 | a vtable for a type declared here | internal |
 | a trait's vtable list | internal, in every kind of compile (L4) |
-| a C-style declaration, inbound or outbound | external, unique |
+| a C-named declaration, inbound, or outbound and public (`pub fn @c(...)`) | external, unique |
+| a private C-named definition | internal: `@c` names it, and `pub` is what exports it to C [Jon 23 Sep] |
 | an imported module's declaration — a symbol this object does not define | external: an LLVM `declare` can be nothing else |
 
 **As built, the program rule.** `genlLinkage` asks one question: does this
 object define the symbol? A definition — a declaration whose module is flagged
 `FlagGenMod`, not `extern`, with a body if a function; every vtable and vtable
-list — is `internal`, except `main` and a C-style name, which stay external. A
-declaration is external. No visibility is ever set: a private name is spelled
+list — is `internal`, except `main` and a public C-named definition, which stay
+external. A declaration is external. No visibility is ever set: a private name is spelled
 and linked exactly as a public one, since privacy is a fact about the
 namespace, not the object file.
 
@@ -937,14 +950,17 @@ which is where the `symbols` check target reads them.
 | synthesized drop function | `_CNvNt6Bundle4drop` — `Bundle.drop` | as its type's methods |
 | vtable | `@_CYNt5GaugeNt5Meter = internal constant %"Meter:Vtable" { ... }, comdat` — `Gauge as Meter` | internal · `nodeduplicate` |
 | vtable list | `@_CLNt5Meter = internal constant [2 x %"Meter:Vtable"*] [...], comdat` — one per trait, so LLVM never uniquifies one | internal · `nodeduplicate` |
-| `extern` | `declare i32 @abs(i32)` — bare inside a module too | external · none |
-| `extern system` | `declare dllimport x86_stdcallcc i32 @GetTickCount()` | external · none |
+| `extern` in a Cone-named module | `declare i64 @_CNvC12moduleextern5twice(i64)` — `moduleextern.twice`, the module's Cone name; in the root, bare, as every root declaration is | external · none |
+| `extern` with `@c`, or in a C-named module | `declare i32 @abs(i32)`; `declare %void @printStr({ i8*, i64 })` for `Str` in `mod @c("print") cio` | external · none |
+| `extern fn @c(system)` | `declare dllimport x86_stdcallcc i32 @GetTickCount()` — the DLL import only because it is `extern` | external · none |
+| `pub fn @c("cone_square")`, a body | `define i64 @cone_square(i64 %0) comdat {` — exported to C; private, it would be `define internal` | external · `nodeduplicate` |
+| `pub fn @c("ConeTicks")` in `mod @c(system) win` | `define x86_stdcallcc i32 @ConeTicks() comdat {` — the convention, and no DLL import on a definition | external · `nodeduplicate` |
 | string literal | `@string = internal constant [6 x i8] c"hello\00", comdat` | internal · `nodeduplicate` |
 | anonymous `fn` | `define internal i32 @anon(i32 %0) comdat {` | internal · `nodeduplicate` |
 | `inline` fn | no symbol | |
 | overload name | no symbol; each candidate is spelled as an ordinary `fn`, and a public name holds only public candidates (L5) | |
 | `stdio` | defined in every importer, since `stdio` is a package the search path finds, and so a generating module: `@_CNvC5stdio5print = internal global %IOStream zeroinitializer, comdat`, `define internal %void @_CNvNtC5stdio8IOStream9appendInt(...) comdat {` — internal, so two such objects cannot clash | internal · `nodeduplicate` |
-| core's `extern fn malloc`, `free` from `genlFree`, `llvm.trap`, `llvm.sqrt.*` | `declare i8* @malloc(i64)` and so on — C and LLVM names, minted outside these rules | external · none |
+| core's `extern fn @c malloc`, `free` from `genlFree`, `llvm.trap`, `llvm.sqrt.*` | `declare i8* @malloc(i64)` and so on — C and LLVM names; `malloc`'s from its `@c`, the others minted outside these rules | external · none |
 | `a_b.c` and `a.b_c` | `_CNvC3a_b1c` and `_CNvC1a3b_c` — distinct by construction | |
 | an import cycle back to the root | the root is found by name, and each root declaration is defined once | |
 

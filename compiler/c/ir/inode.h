@@ -185,8 +185,9 @@ enum NodeTags {
 
 // VarDclTag, FnDclTag and MacroDclTag flags
 #define FlagMethFld   0x0001        // FnDcl, VarDcl, MacroDcl: Method or field (vs. static)
-#define FlagExtern    0x0002        // FnDcl, VarDcl: C ABI extern (no value, no mangle)
-#define FlagSystem    0x0004        // FnDcl: imported system call (+stdcall on Winx86)
+// 'extern': defined elsewhere, so no body or value here. The parser's word,
+// read once by dclInfoJoin into DclExternal; the name is the module's to spell.
+#define FlagExtern    0x0002        // FnDcl, VarDcl: 'extern', defined in another compiled unit
 #define FlagInline    0x0008        // FnDcl: "inline" fn/method
 // A declaration written 'pub' is visible from outside the namespace that owns
 // it; unmarked, it is private to that namespace. Set by the parser on whatever
@@ -215,8 +216,7 @@ enum NodeTags {
 // but that: no fold has brought the same module in under the name as well. A
 // module's imports are its dependencies, not its contents, so a module that
 // extends this one does not take the binding [Jon 23 Sep]. 0x0004 because it is
-// FlagSystem on a fn or variable and a type flag on a type, and an alias is
-// neither; nothing reads 0x0004 on one.
+// a type flag on a type, and an alias is not one; nothing reads 0x0004 on one.
 #define FlagImportName 0x0004       // AliasDcl: an import's binding of its module's name, which 'extends' does not carry
 // A binding a star clause made -- a wildcard 'use *', a module's 'extends', the
 // implicit core import -- and so a name the module never wrote. Where two

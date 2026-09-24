@@ -429,9 +429,11 @@ char *nameType(char *bufp, INode *vtype) {
 // ---- Symbols ---------------------------------------------------------------
 
 // Spell the linker symbol of a declaring node (fn or global variable) into buf,
-// which is returned. A C-style name, or a declaration with nothing to encode --
-// an empty owner chain and not an instance of a generic, which is every root fn
-// and global including 'main' -- is its declared name alone. Everything else is
+// which is returned. A C name is what '@c' states: the fn's own string, or the
+// C-named module's prefix and the declared name. A declaration with nothing to
+// encode -- an empty owner chain and not an instance of a generic, which is
+// every root fn and global including 'main' -- is its declared name alone,
+// 'extern' or not. Everything else, an 'extern' declaration included, is
 // '_C' and its path. A function with no name at all (a lifted 'fn' literal)
 // spells the empty string, and is named at generation instead.
 char *nameSymbol(char *buf, INode *dclnode) {
@@ -441,8 +443,26 @@ char *nameSymbol(char *buf, INode *dclnode) {
         return buf;
 
     DclInfo *dclinfo = inodeGetDclInfo(dclnode);
-    if ((dclinfo->facts & DclCName)
-        || (nameChainIsEmpty(dclinfo->owner) && nameOwnTypeArgs(dclnode) == NULL)) {
+    // A C name is stated, never derived [Jon 27 Aug]: the declaration's own
+    // '@c("sym")' is the whole symbol; otherwise it is its name, after the
+    // prefix its C-named module's '@c("prefix")' states, if it has one
+    if (dclinfo->facts & DclCName) {
+        if (dclinfo->cname) {
+            strcpy(buf, dclinfo->cname);
+            return buf;
+        }
+        INode *owner = dclinfo->owner;
+        char *prefix = owner && owner->tag == ModuleTag
+            && (((ModuleNode*)owner)->dclinfo.facts & DclCName) ? ((ModuleNode*)owner)->dclinfo.cname : NULL;
+        if (prefix) {
+            strcpy(buf, prefix);
+            strcat(buf, &name->namestr);
+        }
+        else
+            strcpy(buf, &name->namestr);
+        return buf;
+    }
+    if (nameChainIsEmpty(dclinfo->owner) && nameOwnTypeArgs(dclnode) == NULL) {
         strcpy(buf, &name->namestr);
         return buf;
     }

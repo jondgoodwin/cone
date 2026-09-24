@@ -89,7 +89,10 @@ lowers them, in two functions and a derivation:
   `extern`, and a function has a body; then `GenlExported` where a library
   compile exports it (`genlIsExported`, below), else `GenlDefined`. A vtable,
   which no node declares, is always `GenlDefined`. It is the one place that
-  decides them, and it sets no visibility.
+  decides them, and it sets no visibility. A `DclSystemCC` function takes the
+  x86 stdcall convention whether defined here or not, and the DLL import
+  storage class only when it is `extern`; every call to one is made with the
+  convention too (`genlFnCallInternal`).
 - **`genlComdat`** then derives the COMDAT selection kind from the linkage
   already on the global, at each definition site.
 
@@ -108,7 +111,8 @@ its linkage:
 | a definition of a program — a function, a global, an instance of a generic, a vtable, a vtable list | `internal`: nothing outside the object may resolve against a program's symbols | `nodeduplicate` — nothing can collide with it, and a duplicate within the object is a real error |
 | a library's export (`GenlExported`) | external: an importer's object links against it, and the optimiser keeps it though the library itself may never use it | `nodeduplicate` — one package defines it |
 | a library's other definitions — the same list as a program's | `internal` | `nodeduplicate` |
-| `main`, or a C-style definition | external | `nodeduplicate` — a duplicate definition is a real error and stays one |
+| `main`, or a public C-named definition (`pub` and `@c` export to C) | external | `nodeduplicate` — a duplicate definition is a real error and stays one |
+| a private C-named definition | `internal`, as a program's | `nodeduplicate` |
 | a definition nothing outside can name — an anonymous `fn`, a string literal | `internal`, set at the site that names it | `nodeduplicate`; nothing can collide with it in any case |
 | a declaration — an imported module's function, an `extern` | external, since an LLVM `declare` can be nothing else | nothing: **only a definition may lead a COMDAT**, and `LLVMVerifyModule` rejects one that does not |
 
@@ -329,7 +333,7 @@ Two consequences that are easy to get wrong:
 A region is any struct with a suitable `_alloc`; `so` and `rc` are declared in
 Cone source in the core package, `packages/core/core.cone`, not built into the
 compiler. `malloc` is an
-ordinary `extern`; `free` is declared directly by `genlFree`. `conestd` supplies
+ordinary `extern fn @c`; `free` is declared directly by `genlFree`. `conestd` supplies
 only stdio, no allocator.
 
 ## 4. Pointer levels

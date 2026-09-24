@@ -65,7 +65,7 @@ large**, which is why the interesting decisions are at the bottom of this table.
 | **type** | fields; an enum's spliced into its variants at compile time | members | members are private unless `pub`; an enum and its variants are one boundary | traits and virtual references, asserted with `is` or noticed structurally | generics; trait defaults cloned into implementers | ⚠ **unknown** — whether a type can gain methods outside its own declaration is not established |
 | **thread** | **absent** | **absent** | **absent** | **absent** | **absent** | **absent** |
 | **module** | the files of a folder, swept from the designated file the compiler is given, plus the submodules its subfolders and its one-file modules draw; an organisational subfolder's files, at any depth, join the enclosing module | yes — the folder, or a one-file module's file, names the module, and a submodule is reached by a path through its parent | names are private unless `pub`, and a submodule is private to its parent unless `pub` | **absent** — module traits are planned | **absent** — generic modules are planned | **absent** |
-| **program / library** | linking; `extern` and the C ABI | ⚠ **absent — the linker has one flat symbol space**, and nothing in a generated name carries the package | partial — a program's definitions are internal to its object, and a library built from a build description exports its public definitions and the private ones an expanded body reaches; a generic's instance is not yet shared between objects | **absent** | **absent** | **absent** |
+| **program / library** | linking; `extern` declarations — functions, methods, operators and globals defined in another object — each spelled by its module's naming, Cone or C (`@c`) | ⚠ **absent — the linker has one flat symbol space**, and nothing in a generated name carries the package | partial — a program's definitions are internal to its object, and a library built from a build description exports its public definitions and the private ones an expanded body reaches; a generic's instance is not yet shared between objects | **absent** | **absent** | **absent** |
 
 ⚠ **The six-column table shows something the three-column one could not.**
 **Namespace at the program/library layer is absent** — a flat linker symbol space
@@ -229,10 +229,11 @@ never resolve. A library compiled from a build description is the way off that:
 its root is named, so its symbols are spelled as its importers spell them, and
 it exports what they need — its public definitions, and each private one an
 `inline`, generic or macro body reaches — so a program compiled against a
-hand-written include file for it links and runs (`module-build-link`). What is
-still missing is a generic's instance made in the importer (it is declared and
-defined nowhere), declarations without bodies in the include file, and Congo
-driving it.
+hand-written include file for it links and runs (`module-build-link`); the
+include file declares what the package defines with `extern` and no body, and
+each declaration takes the package's Cone name. What is still missing is a
+generic's instance made in the importer (it is declared and defined nowhere),
+and Congo driving it.
 
 The generation machinery, though, is not the missing part. An imported module's
 bodies are emitted whenever it is flagged for generation, and **every module found

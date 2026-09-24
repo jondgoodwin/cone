@@ -124,6 +124,19 @@ apart from `ErrorModName`, the same mistake against a folder's or a file's name,
 because what is wrong differs — the description or the file — and so does who
 fixes it.
 
+`ErrorCAttr` and `ErrorBadExtern` are the same shape over the two C-interop
+words. `ErrorCAttr` is a `@c` that is malformed (an argument other than a
+string and `system`, an empty function symbol) or written where there is no one
+symbol for it to name (a type, an anonymous, generic or `inline` function, a
+trait's or a generic type's method), and the retired `extern system`; the one
+remedy is to move or drop the marker. `ErrorBadExtern` is `extern` on what its
+user needs the body of (an `inline` or generic function, a trait's or a generic
+type's method) or on what is not a function or global; the remedy is to write
+the body, or the declaration, without it. A `@c` that is well formed and says
+nothing — a bare one on a function its C-named module already names — is kept
+apart as `ErrorCNameTwice`: the marker is right in itself, and what is wrong is
+that the module already said it.
+
 That is a narrow licence, and the tell that it has been stretched is the
 scenarios: **when a scenario needs a message substring to tell two uses of one
 code apart, the substring is doing the code's job.** Wrong arity, a non-type

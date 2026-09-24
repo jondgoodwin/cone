@@ -158,7 +158,7 @@ LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name) {
 // so like the literal's own it is one byte longer than its type, and its
 // llvmvar is its address recast to a pointer to that type.
 static int genlGloVarHasNul(VarDclNode *glovar) {
-    return !(glovar->flags & FlagExtern) && glovar->value && glovar->value->tag == StringLitTag;
+    return !(glovar->dclinfo.facts & DclExternal) && glovar->value && glovar->value->tag == StringLitTag;
 }
 
 // The LLVM global itself behind a global variable's llvmvar, which is a
@@ -173,12 +173,12 @@ void genlGloVar(GenState *gen, VarDclNode *varnode) {
 
     // An extern global is defined in some other object file; this one only
     // names it, and a declaration may not lead a COMDAT
-    if (!(varnode->flags & FlagExtern))
+    if (!(varnode->dclinfo.facts & DclExternal))
         genlComdat(gen, global);
 
     if (!varnode->value) {
         // If no value on non-extern, initialize with the zero initializer
-        if (!(varnode->flags & FlagExtern))
+        if (!(varnode->dclinfo.facts & DclExternal))
             LLVMSetInitializer(global, LLVMConstNull(genlType(gen,varnode->vtype)));
         return;
     }
@@ -284,10 +284,13 @@ static GenlDefinition genlDefinition(GenState *gen, INode *dclnode) {
 //
 // The program rule: a definition is internal, since nothing outside this
 // object may resolve against a program's symbols -- except 'main', which the C
-// runtime resolves, and a C-style name, which is published to or imported from
-// C. A declaration is external, as an LLVM declaration can be nothing else; a
-// system-convention one is imported with its calling convention. Visibility is
-// never set: a private name is a fact about the namespace, not the object file.
+// runtime resolves, and a public C-named one, which 'pub' and '@c' together
+// export to C. A declaration is external, as an LLVM declaration can be nothing
+// else. A system-convention ('@c(system)') function takes that convention
+// whether it is defined here or not, and an 'extern' one is also imported from
+// a DLL: the storage class is about reaching a symbol defined elsewhere, which
+// a definition is not. Visibility is never set: a private name is a fact about
+// the namespace, not the object file.
 //
 // The library rule adds one case: a definition the library exports to its
 // importers (genlIsExported) keeps the external linkage LLVM gave it, and so
@@ -302,9 +305,10 @@ void genlLinkage(LLVMValueRef global, INode *dclnode, GenlDefinition defined) {
         DclInfo *dclinfo = inodeGetDclInfo(dclnode);
         if (dclnode->tag == FnDclTag && (dclinfo->facts & DclSystemCC)) {
             LLVMSetFunctionCallConv(global, LLVMX86StdcallCallConv);
-            LLVMSetDLLStorageClass(global, LLVMDLLImportStorageClass);
+            if (dclinfo->facts & DclExternal)
+                LLVMSetDLLStorageClass(global, LLVMDLLImportStorageClass);
         }
-        if (dclinfo->facts & DclCName)
+        if ((dclinfo->facts & DclCName) && !(dclinfo->facts & DclPrivate))
             return;
     }
     if (defined != GenlDefined)

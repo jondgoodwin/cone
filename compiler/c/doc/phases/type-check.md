@@ -382,7 +382,8 @@ Steps marked **→** are where a demand can leave and re-enter.
 9. **→** Analyze the methods — not the generated `drop`, which is built lowered.
 10. **→** Verify each mixed-in trait's method requirements against the signatures
    now known: a name the type declares itself must have the one candidate of the
-   trait's signature, and a requirement with no body is unmet in a struct. Each
+   trait's signature, and a requirement with no body is unmet in a struct — an
+   `extern` method has no body here and meets it, being defined elsewhere. Each
    requirement is analyzed first, under the trait's walk state. This type may have
    been demanded from inside the trait's own step 9 — a static function written
    above the requirement names it in its signature — and an unchecked requirement

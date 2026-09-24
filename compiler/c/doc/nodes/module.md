@@ -489,8 +489,9 @@ ordinary folder module with its designated file: `packages/core/core.cone` and
 `packages/stdio/stdio.cone`. Nothing about either is known to the compiler but
 the name `core`: the folder names each module, as any folder does, and each is
 located, registered, swept and parsed on the path every imported module takes.
-`stdio`'s printing is C, declared in its `pub extern` block and supplied by
-`conestd`.
+`stdio`'s printing is C, declared in its `pub extern` block, each function
+marked `@c` so that it takes its C name rather than `stdio`'s Cone one, and
+supplied by `conestd`.
 
 **The packages folder is found by default.** It ends the **package search
 path**, `package_search_paths` in `coneopts.c`, which `lexInit` hands to
@@ -642,6 +643,16 @@ program, and an instance of a generic is not exported yet. So a package
 compiled alone links with a program compiled against its include file:
 `module-build-link` builds both, links them and runs the program, and
 `module-build-export` pins each case of the rule.
+
+**An include file declares with `extern`.** Each function, method, operator
+and global the package's object defines is written there `extern` and without a
+body — the private ones an `inline` body reaches too — and, the include file's
+module being Cone-named like the package's, each is spelled with the package's
+Cone name, the one the object exports (`module-build-link`,
+`module-extern-cone-names`). `extern` says only "defined elsewhere"; the naming
+is the module's. What an importer must have the body of — an `inline` or
+generic function, a macro, a trait's methods, a generic type's — is written
+whole, and `extern` on it is `ErrorBadExtern`.
 
 **An import in a described module is answered by the description.** After the
 registry — a sister, a module the parent bound — `parseImport` looks up the
@@ -1022,7 +1033,7 @@ what lets a folder scenario reaching two levels of submodule be a `run` scenario
 and `module-package-path` too.
 
 `ImportTag` is an explicit no-op in `genlGlobalImpl`. `genlLinkage` makes every
-definition of a program internal except `main` and a C-style name, and leaves
+definition of a program internal except `main` and a public C-named one, and leaves
 an imported module's declarations external. A library compile exports what its
 importers link against (`genlIsExported`, "A described build"); what
 generation still only anticipates is an instance of a generic and a vtable
@@ -1427,19 +1438,25 @@ supplied elsewhere — one written by hand and one emitted by the compiler.
 
 Cone code must be able to use C-API libraries, and the mechanism must produce
 something `import` can name — a package — rather than declarations sprinkled
-through user code. `extern` therefore does not disappear so much as move: it
-becomes how a package declares that its symbols are supplied by something the
-compiler cannot read, and the `extern` block that today sits in a file of its own
-beside the module that uses it becomes the package itself.
+through user code. Two facts, kept apart [Jon 23 Sep]: **`extern` says a
+declaration is defined elsewhere**, for C and Cone alike, and **naming is the
+module's**. A module is C-named by `@c` after `mod` — `mod @c("SDL_") sdl;` —
+and its functions and globals then bind to C symbols, the prefix and the name
+as written; a function's own `@c("sym")` is its whole symbol, the override for a
+name outside the prefix; `@c(system)` is the system calling convention
+(`module-c-names`, `module-c-system`). A C binding module writes both words, and
+exporting a Cone body to C writes only `pub fn @c(...)`. Symbol spelling is
+[Names and Namespaces](../../../../doc/design/names-and-namespaces.md), S5.
 
-What that needs, and none of it is designed: how a Cone name maps to an
-unmangled C symbol, how calling convention and `trust` are stated, how opaque
-types are declared, and whether such a package is written in Cone source or
-generated. `--safe=package`, which exists in the option help and controls which
-packages may use C FFI, is the policy half of the same question.
+What is still open: how `trust` is stated, how opaque types are declared, and
+whether such a package is written in Cone source or generated. `--safe=package`,
+which exists in the option help and controls which packages may use C FFI, is
+the policy half of the same question; that C naming is now written on the
+module is what gives it something to check.
 
-Until then a file holding an `extern` block needs nothing of its own: it joins
-its module the way any other file does, by being in the module's folder.
+`core` and `stdio` still hold their C declarations inside their Cone-named
+modules, each function marked `@c`, rather than in a C-named module of their
+own.
 
 ### What a package exports, and what that does to its symbols
 
@@ -1455,7 +1472,7 @@ into:
 
 - **Linkage for what a program does not export** is settled and built: every
   definition of a program compile is `LLVMInternalLinkage`, in `genlLinkage`,
-  except `main` and a C-style name, and nothing is `hidden`. Hidden visibility
+  except `main` and a public C-named one, and nothing is `hidden`. Hidden visibility
   would keep a symbol out of a shared library's export table but leave it a
   global symbol at static link, so it could still collide; internal linkage
   makes it object-local and collision-proof. The hazard that distinguishes them
@@ -1472,9 +1489,10 @@ into:
 - **Build-mode defaults, or an explicit export set.** `--library` and congo's
   `exe`/`lib` targets already distinguish the modes. But a program built as a
   WebAssembly module or a DLL does export more than an entry point — the samples
-  carry a `wasm.syms` listing exactly that. An explicit export set covers all
-  three with one mechanism and three defaults, and gives the C ABI its hook,
-  since exporting under an unmangled C name is the same operation.
+  carry a `wasm.syms` listing exactly that. `pub fn @c(...)` now exports one
+  Cone body under a C name from any compile, which is the per-declaration form
+  of such a set; whether a build mode should also choose a default set is
+  still open.
 
 ### How far the module/type convergence goes
 

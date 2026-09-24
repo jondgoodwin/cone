@@ -109,6 +109,7 @@ void keywordInit() {
     keyAdd("@move", MoveToken);
     keyAdd("@opaque", OpaqueToken);
     keyAdd("@unsized", UnsizedToken);
+    keyAdd("@c", CAttrToken);
     keyAdd("extends", ExtendsToken);
     keyAdd("mixin", MixinToken);
     keyAdd("use", UseToken);
@@ -594,7 +595,7 @@ int lexScanIdent(char *srcp) {
                 }
                 else if (identNode && identNode->tag == PermTag)
                     lex->toktype = PermToken;
-                // Every attribute is a keyword ('@move', '@opaque', '@unsized'),
+                // Every attribute is a keyword ('@move', '@opaque', '@unsized', '@c'),
                 // so a '@' word that reaches here names none. It is reported
                 // and dropped, and what follows it is read as though it were
                 // absent.

@@ -259,6 +259,11 @@ enum ErrorCode {
     ErrorBuildModName = 1130,   // A 'mod' line naming a module other than the one the build description lists its file in, or imports it as
     ErrorBuildImport = 1131,    // An 'import' in a described module that the build description provides nothing for: the compiler never searches for one
 
+    // 'extern' says a declaration is defined elsewhere; '@c' says its symbol takes C naming
+    ErrorCAttr = 1132,          // '@c' written wrongly or where nothing has a symbol for it to name: a bad argument, a type, an anonymous, generic or inline fn, a trait's method, the retired 'extern system'
+    ErrorCNameTwice = 1133,     // A bare '@c' (or '@c(system)' where the module is already system) on a fn whose module already gives it that C naming
+    ErrorBadExtern = 1134,      // 'extern' on a declaration an importer needs the body of -- inline, generic, a trait's or a generic type's method -- or on something not a fn or a global
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

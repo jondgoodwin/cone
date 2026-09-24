@@ -655,7 +655,9 @@ another. See [module](module.md).
    `traits`, the type's binding for the name must have the one candidate of the
    trait's signature — an inherited default meets that by construction — and a
    requirement with no body, inherited as such, is unmet in a struct; a trait
-   may pass it on.
+   may pass it on. An `extern` method is not such a requirement: it has no
+   body here because it is defined elsewhere, as an include file declares a
+   package's methods, and it meets the trait's requirement.
 
 ## Name folding
 
