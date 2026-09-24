@@ -75,6 +75,8 @@ void inodePrintNode(INode *node) {
         pgmPrint((ProgramNode *)node); break;
     case ModuleTag:
         modPrint((ModuleNode *)node); break;
+    case ModTraitTag:
+        modTraitPrint((ModTraitNode *)node); break;
     case FnDclTag:
         fnDclPrint((FnDclNode *)node); break;
     case FnOverloadDclTag:
@@ -221,6 +223,8 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         pgmNameRes(pstate, (ProgramNode*)*node); break;
     case ModuleTag:
         modNameRes(pstate, (ModuleNode*)*node); break;
+    case ModTraitTag:
+        modTraitNameRes(pstate, (ModTraitNode*)*node); break;
     case FnDclTag:
         fnDclNameRes(pstate, (FnDclNode *)*node); break;
     case VarDclTag:
@@ -332,7 +336,8 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     // marks. Marking the instantiation itself would strand a mark on a node the
     // walk abandoned, and a second walk of the same node -- a match pattern and
     // the variable it declares share one -- would then read as a recursive type.
-    if (((isTypeNode(*node) && (*node)->tag != FnCallTag)) || (*node)->tag == ModuleTag) {
+    if (((isTypeNode(*node) && (*node)->tag != FnCallTag)) || (*node)->tag == ModuleTag
+        || (*node)->tag == ModTraitTag) {
         if ((*node)->flags & TypeChecked)
             return;
         // Under analysis and reached again. Its identity is established, which
@@ -377,6 +382,8 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         pgmTypeCheck(pstate, (ProgramNode *)*node); break;
     case ModuleTag:
         modTypeCheck(pstate, (ModuleNode*)*node); break;
+    case ModTraitTag:
+        modTraitTypeCheck(pstate, (ModTraitNode*)*node); break;
     case FnDclTag:
         fnDclTypeCheck(pstate, (FnDclNode *)*node); break;
     case VarDclTag:
@@ -492,7 +499,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     // now -- an instantiation leaves behind the instance it named, which is a
     // declaration and does take the mark.
     if (((isTypeNode(*node) && (*node)->tag != FnCallTag)) || (*node)->tag == ModuleTag
-            || inodeIsDcl(*node)) {
+            || (*node)->tag == ModTraitTag || inodeIsDcl(*node)) {
         (*node)->flags |= TypeChecked;
     }
 }
@@ -533,6 +540,8 @@ Name *inodeGetName(INode *node) {
         return ((StructNode*)node)->namesym;
     case ModuleTag:
         return ((ModuleNode*)node)->namesym;
+    case ModTraitTag:
+        return ((ModTraitNode*)node)->namesym;
     case IntNbrTag:
         return ((NbrNode*)node)->namesym;
     case UintNbrTag:
@@ -562,6 +571,8 @@ DclInfo *inodeGetDclInfo(INode *node) {
         return &((StructNode*)node)->dclinfo;
     case ModuleTag:
         return &((ModuleNode*)node)->dclinfo;
+    case ModTraitTag:
+        return &((ModTraitNode*)node)->dclinfo;
     default:
         return NULL;
     }
@@ -661,6 +672,7 @@ static NodeTagFacts nodeTagFacts[NodeTagCount] = {
     [StarTag] = {StmtGroup, 0, 0},
 
     [ModuleTag] = {StmtGroup, 1, 0},
+    [ModTraitTag] = {StmtGroup, 1, 0},
     [FnDclTag] = {StmtGroup, 1, 0},
     [FnOverloadDclTag] = {StmtGroup, 1, 0},
     [VarDclTag] = {StmtGroup, 1, 0},

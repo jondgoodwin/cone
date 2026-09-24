@@ -558,8 +558,8 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     // trait X' declares the abstraction of a struct, and 'trait X' by itself is
     // a synonym for it. The family a trait serves therefore comes from the kind
     // keyword, with nothing inferred and nothing extra carried on the
-    // declaration -- which is what lets 'mod trait' and 'actor trait' name the
-    // abstractions of those kinds when they arrive.
+    // declaration -- which is what lets 'mod trait' name the abstraction of a
+    // module (parseModTrait), and 'actor trait' an actor's when actors arrive.
     int isvariant = svtype && ((INode*)svtype)->tag == StructTag && (((INode*)svtype)->flags & EnumType);
     while (lexIsToken(TraitToken)) {
         // An enum's identity is its variant set, so there is no abstraction that

@@ -763,6 +763,87 @@ static FoldClause *parseModDefaultFold(ParseState *parse) {
     return fold;
 }
 
+// Pass over a member a module trait's body may not hold, however it is written:
+// up to and including its ';', or its braced body whole, stopping short of the
+// '}' that closes the trait
+static void parseModTraitSkipMember() {
+    while (!lexIsToken(EofToken) && !lexIsToken(RCurlyToken)) {
+        if (lexIsToken(SemiToken)) {
+            lexNextToken();
+            return;
+        }
+        if (lexIsToken(LCurlyToken)) {
+            parseSkipDclBody();
+            if (lexIsToken(SemiToken))
+                lexNextToken();
+            return;
+        }
+        lexNextToken();
+    }
+}
+
+// Parse a module trait, 'mod trait Shell { ... }', with the lexer on 'mod'.
+//
+// A module trait is a module's abstraction, as 'struct trait' is a struct's: the
+// spelling is 'trait' modifying the kind. It is a declaration of the module whose
+// file writes it, reached, imported and folded as any declaration is, and 'pub'
+// before it is its own visibility. Its body holds the two things a module's
+// interface to a framework is made of, functions and globals, each with its own
+// 'pub': a function with a body and a global with an initialiser are DEFAULTS, a
+// conforming module's unless it declares its own; a function with no body and a
+// global with none are REQUIREMENTS. Nothing else is a member [Jon 23 Sep]: a type
+// would be a trait requiring types, which is not built, and an import, a 'use',
+// a macro or a 'mod' is not something a module conforms to. A generic function
+// and an overload name are refused too, since a member is one name with one
+// signature for a module to match. With no body, the trait is a marker with no
+// members.
+static ModTraitNode *parseModTrait(ParseState *parse, uint16_t pubflag) {
+    lexNextToken();   // 'mod'
+    lexNextToken();   // 'trait'
+    ModTraitNode *trait = newModTraitNode(anonName);
+    if (lexIsToken(IdentToken)) {
+        trait->namesym = lex->val.ident;
+        lexNextToken();
+    }
+    else
+        errorMsgLex(ErrorNoName, "Expected a name for the module trait");
+    trait->flags |= pubflag;
+
+    if (!parseHasBlock()) {
+        parseEndOfStatement();
+        return trait;
+    }
+    parseBlockStart();
+    while (!parseBlockEnd()) {
+        uint16_t memberpub = parsePub();
+        if (lexIsToken(FnToken)) {
+            FnDclNode *fn = (FnDclNode*)parseFn(parse, ParseMayName | ParseMaySig | ParseMayImpl);
+            fn->flags |= memberpub;
+            if (fn->genericinfo)
+                errorMsgNode((INode*)fn, ErrorModTraitBody,
+                    "A module trait's function is one signature a conforming module declares or takes, so it cannot be generic.");
+            else if (fn->overloadsym)
+                errorMsgNode((INode*)fn, ErrorModTraitBody,
+                    "A module trait's function is required or given under its own name, so it declares no overload name.");
+            else if (fn->namesym)
+                modTraitAddMember(trait, (INode*)fn);
+        }
+        else if (lexIsToken(PermToken)) {
+            VarDclNode *var = parseVarDcl(parse, immPerm, ParseMayImpl | ParseMaySig);
+            var->flags |= memberpub;
+            var->flowtempflags |= VarInitialized;   // A global always holds a valid value
+            parseEndOfStatement();
+            modTraitAddMember(trait, (INode*)var);
+        }
+        else {
+            errorMsgLex(ErrorModTraitBody,
+                "A module trait holds functions and globals, each a requirement or a default, and nothing else: a type it would require is not built.");
+            parseModTraitSkipMember();
+        }
+    }
+    return trait;
+}
+
 // Parse a 'mod' declaration, which declares the module a folder's files belong
 // to.
 //
@@ -793,12 +874,16 @@ static FoldClause *parseModDefaultFold(ParseState *parse) {
 // the fold an import writing none of its own gets (parseModDefaultFold). With
 // 'extends', it comes last: 'mod bigint extends base use BigInt;'.
 //
-// 'mod trait', a module's abstraction, is admitted and refused because nothing
-// is behind it yet: reporting it where it is written is what settles its
-// spelling without accepting it. A 'mod name { ... }' block is recognised only
-// to refuse it, since it does not exist: a module is never declared inside a
-// file, and a nested module is a file of its own or a subfolder with its own
-// designated file.
+// 'mod prog is Shell;' says the module conforms to a module trait: it declares,
+// or takes the trait's default for, each member the trait has, and that is
+// checked where it is written (modTraitConform, modTraitCheck). The line's order
+// is 'mod prog extends base is Shell use Y;' [Jon 23 Sep].
+//
+// 'mod trait Shell { ... }' is not this declaration: it declares a module trait,
+// a declaration of the module like any other (parseModTrait). A
+// 'mod name { ... }' block is recognised only to refuse it, since it does not
+// exist: a module is never declared inside a file, and a nested module is a file
+// of its own or a subfolder with its own designated file.
 //
 // 'atmodstart' is 1 at the first statement of the module's designated or one
 // file -- or, in a described module, of the first file the build description
@@ -838,18 +923,6 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
         errorMsgLex(ErrorBadPub,
             "'pub' on a module declaration says the module is visible outside its parent module, and this module has no parent.");
     lexNextToken();
-
-    // 'mod trait' is a module's abstraction: the spelling is settled by 'trait'
-    // being a modifier on the kind, and there is nothing behind it
-    if (lexIsToken(TraitToken)) {
-        errorMsgLex(ErrorUnbuiltKind,
-            "'mod trait' names a module's abstraction, which the compiler does not build yet.");
-        lexNextToken();
-        if (lexIsToken(IdentToken))
-            lexNextToken();
-        parseSkipDclBody();
-        return;
-    }
 
     // '@c' after 'mod' gives the module C naming: every function and global it
     // owns directly is spelled as C spells it, after the prefix a string states
@@ -896,14 +969,48 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
             errorMsgLex(ErrorNoName, "Expected the name of the module this one extends");
     }
 
+    // 'is' names the module trait this module conforms to, after 'extends' and
+    // before 'use' [Jon 23 Sep]. One trait, by one name, as 'extends' names one
+    // module: a trait further away is imported and folded in first. What it
+    // names is resolved once every fold has run (modTraitConform), so it is only
+    // recorded here
+    NameUseNode *traitname = NULL;
+    if (lexIsToken(IsToken)) {
+        lexNextToken();
+        if (lexIsToken(IdentToken)) {
+            traitname = newNameUseNode(lex->val.ident);
+            lexNextToken();
+            if (lexIsToken(DotToken)) {
+                errorMsgLex(ErrorModIs,
+                    "A module's 'is' names a module trait by one name. Import the module that declares it and fold the trait in: 'import hosts use Shell'.");
+                traitname = NULL;
+                while (lexIsToken(DotToken) || lexIsToken(IdentToken))
+                    lexNextToken();
+            }
+            if (lexIsToken(CommaToken)) {
+                errorMsgLex(ErrorModIs, "A module conforms to one module trait.");
+                while (lexIsToken(CommaToken) || lexIsToken(IdentToken) || lexIsToken(DotToken))
+                    lexNextToken();
+            }
+        }
+        else
+            errorMsgLex(ErrorNoName, "Expected the name of the module trait this module conforms to");
+        if (lexIsToken(ExtendsToken)) {
+            errorMsgLex(ErrorModIs,
+                "A 'mod' line's 'is' comes after 'extends': 'mod name extends base is Trait'.");
+            while (lexIsToken(ExtendsToken) || lexIsToken(IdentToken))
+                lexNextToken();
+        }
+    }
+
     // What a bare import of this module folds by default, last on the line
     FoldClause *deffold = NULL;
     if (parseIsFoldClause()) {
         deffold = parseModDefaultFold(parse);
-        if (lexIsToken(ExtendsToken)) {
+        if (lexIsToken(ExtendsToken) || lexIsToken(IsToken)) {
             errorMsgLex(ErrorBadFold,
-                "A 'mod' line's 'use' comes last, after 'extends': 'mod name extends base use ...'.");
-            while (lexIsToken(ExtendsToken) || lexIsToken(IdentToken))
+                "A 'mod' line's 'use' comes last, after 'extends' and 'is': 'mod name extends base is Trait use ...'.");
+            while (lexIsToken(ExtendsToken) || lexIsToken(IsToken) || lexIsToken(IdentToken))
                 lexNextToken();
         }
     }
@@ -941,6 +1048,7 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
         else {
             mod->flags |= FlagModDcl;
             mod->extendsname = (INode*)extendsname;
+            mod->traitname = (INode*)traitname;
             mod->deffold = deffold;
             mod->dclinfo.facts |= cattr.facts & DclStated;
             mod->dclinfo.cname = cattr.cname;
@@ -1063,6 +1171,13 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
         // parent; a module has no instances for a 'static' to be shared across
         case ModToken:
             parseBadStatic(staticflag);
+            // 'mod trait' declares a module trait, a declaration of this module
+            // like any other, and 'pub' is its visibility
+            if (lexNextIsWord("trait")) {
+                ModTraitNode *trait = parseModTrait(parse, pubflag);
+                modAddNode(mod, trait->namesym, (INode*)trait);
+                break;
+            }
             parseModuleDcl(parse, mod, atstart, pubflag);
             break;
 

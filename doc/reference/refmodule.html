@@ -32,9 +32,10 @@
 		A package may instead be built from a <a href="#build">build description</a>
 		that lists its modules and files; a library built so is named in its
 		symbols and links with a program compiled against its include file.
-		Module initializers, and
-		a module's abstraction (<span class="pre">mod trait</span>), and so a
-		module conforming to one, are not implemented.</i></p>
+		A module may <a href="#modtrait">conform to a module trait</a>, taking
+		the trait's defaults it does not declare. Module initializers, the
+		framework traits a program plugs into, and the entry they would supply,
+		are not implemented.</i></p>
 
 	<p>Many things are given names: variables, functions, types, fields, methods, etc.
 		The collection of all names defined for a scope is called a namespace.
@@ -330,10 +331,9 @@ pub fn volume(w i64, h i64, d i64) i64 {
 		<li>A module may not extend itself, a module it contains, or its parent, and a
 			chain of <span class="pre">extends</span> may not come back round.</li>
 		<li><span class="pre">extends</span> names a module to reuse. A module
-			conforming to a module's abstraction —
-			<span class="pre">mod arena extends Region</span>, with
-			<span class="pre">Region</span> a <span class="pre">mod trait</span> — is a
-			different reading, and is not implemented.</li>
+			conforming to a module's abstraction is a different reading, spelled
+			<a href="#modtrait"><span class="pre">is</span></a>:
+			<span class="pre">mod arena is Region</span>.</li>
 	</ul>
 
 	<h3 id="default">A module's default fold</h3>
@@ -393,6 +393,80 @@ mod bigint extends base use BigInt;
 		a sister, a name of the parent, a module found by its file. A
 		<a href="#usesub"><span class="pre">use</span></a> of a submodule is not an
 		import, and still folds every public name.</p>
+
+	<h3 id="modtrait">A module conforming to a module trait</h3>
+	<p>A program plugs into a larger framework — a shell that runs it, a web server
+		that hands it requests — and the framework says what every program plugging
+		into it must provide. That interface is a <b>module trait</b>: the
+		abstraction of a module, as a <a href="reftrait.html">trait</a> is the
+		abstraction of a struct. It declares functions and global variables. One
+		written with a body, or with an initial value, is a <b>default</b>; one
+		written without is a <b>requirement</b>:</p>
+<pre>
+mod hosts;
+
+pub mod trait Runner {
+  pub fn step(n i64) i64;        // required
+  pub mut scale i64;             // required
+
+  pub mut offset = 100i64;       // a default
+  pub fn run(n i64) i64 {        // a default
+    step(n) * scale + offset;
+  }
+}
+</pre>
+	<p>A module trait is a declaration of the module whose file writes it, like a
+		type: it is imported, folded and made public as any declaration is. A module
+		says it conforms on its <span class="pre">mod</span> line, with
+		<span class="pre">is</span>:</p>
+<pre>
+mod plain is Runner;
+
+import hosts use Runner;
+
+pub fn step(n i64) i64 {
+  n + 1i64;
+}
+
+pub mut scale = 2i64;
+</pre>
+	<ul>
+		<li><b>Conformance is declared, never inferred.</b> A module whose
+			declarations happen to match a trait does not conform to it unless its
+			<span class="pre">mod</span> line says so. A module conforms to one trait,
+			named by one name that the module can reach; a trait further away is
+			imported and folded in first.</li>
+		<li><b>It is checked where it is written.</b> For each requirement the module
+			must declare a function with exactly the trait's signature, or a global of
+			the trait's type and permission. A requirement the module does not declare,
+			or declares differently, is an error at the <span class="pre">is</span>,
+			naming the member.</li>
+		<li><b>Defaults are copied into the module.</b> A default the module does
+			not declare becomes the module's own: <span class="pre">plain.run</span> and
+			<span class="pre">plain.offset</span> are functions and globals of
+			<span class="pre">plain</span>, reached like any other. Where a default's
+			body names another member of the trait, the copy names the module's —
+			so <span class="pre">plain.run</span> calls <span class="pre">plain.step</span>.
+			A default global is storage of each module that takes it.</li>
+		<li><b>A module may override a default</b> by declaring its own, with the
+			same shape: the copies of the other defaults then use it.</li>
+		<li><b>Conformance is static.</b> A module is one instance, so nothing is
+			dispatched at run time, and there is no virtual reference to a module.
+			A member of the trait has no code or storage of its own, so
+			<span class="pre">Runner.run</span> is an error: name it through a module
+			that conforms.</li>
+		<li><b>A module trait holds functions and globals only.</b> A trait requiring
+			a type is not implemented, and neither is a generic function or an overload
+			name among its members.</li>
+	</ul>
+	<p>On the <span class="pre">mod</span> line, <span class="pre">is</span> comes
+		after <span class="pre">extends</span> and before a
+		<a href="#default">default fold</a>:</p>
+<pre>
+mod layered extends plain is Runner use run;
+</pre>
+	<p>A module that extends a conforming module takes the defaults that module
+		took as that module's, as it takes all its names.</p>
 
 	<h3 id="build">A package's build description</h3>
 	<p>A package is one top-level module and the modules inside it, and it can be

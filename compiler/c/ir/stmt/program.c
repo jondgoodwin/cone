@@ -64,6 +64,14 @@ void pgmPrint(ProgramNode *pgm) {
 // cycle of them refused: the fold follows that edge dependency-first, so every
 // edge has to be known, and a cycle cut, before the first fold runs. A cycle of
 // imports is not refused: the folds are repeated until they settle (modFoldAll).
+//
+// A module conforming to a module trait takes the defaults it does not declare
+// at the end of its own folds (modTraitConform, from modFoldNames). Between the
+// folds and the bodies, any module that could not take them there takes them
+// now, and what is wrong with a conformance is reported: after the folds, so a
+// name the module holds by folding meets a member as its own declaration does,
+// and before any body, so a default the module took is a name of it wherever it
+// is named.
 void pgmNameRes(NameResState *pstate, ProgramNode *pgm) {
     INode **nodesp;
     uint32_t cnt;
@@ -72,6 +80,8 @@ void pgmNameRes(NameResState *pstate, ProgramNode *pgm) {
     for (nodesFor(pgm->modules, cnt, nodesp))
         modExtendsCheckCycle((ModuleNode*)*nodesp, pgm->modules->used);
     modFoldAll(pstate, pgm->modules);
+    for (nodesFor(pgm->modules, cnt, nodesp))
+        modTraitConform(pstate, (ModuleNode*)*nodesp, 1);
     for (nodesFor(pgm->modules, cnt, nodesp)) {
         inodeNameRes(pstate, nodesp);
     }

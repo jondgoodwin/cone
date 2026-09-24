@@ -72,6 +72,7 @@ typedef struct DclInfo DclInfo;          // dclinfo.h
 
 #include "exp/block.h"
 #include "stmt/module.h"
+#include "stmt/modtrait.h"
 #include "stmt/break.h"
 #include "stmt/continue.h"
 #include "stmt/fielddcl.h"

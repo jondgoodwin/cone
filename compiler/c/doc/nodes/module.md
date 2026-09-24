@@ -74,6 +74,17 @@ like any other, registered under their canonical paths in the packages folder
 | `extendsname` | `mod A extends B`: B as written, a `NameUseNode` bound to the module once `modExtendsResolve` finds it; NULL where the module extends nothing |
 | `extends` | the fold `extends` makes: an `ImportNode` marked `isextends`, whose module is B and whose clause is a star clause over B's declarations and folds, private ones included, but not the names B's imports bind to their modules, made once B resolves. **Not on `imports`** — it binds no name of its own — and folded first by `modFoldNames` |
 | `deffold` | `mod A use B`: the module's **default fold**, the `FoldClause` a bare import of it folds; NULL where its `mod` line has no `use`. Read by importers, never folded into this module |
+| `traitname` | `mod A is T`: T as written, a `NameUseNode` bound to the module trait once `modTraitConform` finds it; NULL where the module conforms to none |
+| `trait` | the `ModTraitNode` `traitname` names, once resolved: what `modTraitCheck` compares the module against in type check |
+| `ntaken` | how many of `nodes`, at its end, are copies of the trait's defaults the module took (`modTraitConform`). They arrive resolved, so `modNameRes` walks the nodes before them only |
+
+**`ModTraitNode`** (`ir/stmt/modtrait.h`) is a module trait, `mod trait Shell
+{ ... }`: `namesym`, `dclinfo` — owned by the module whose file declares it,
+private unless `pub` — `nodes`, each member in the order written, a `FnDclNode`
+or a `VarDclNode`, and `namespace`, each member by its name. A member is owned by
+the trait. It is a named node in `StmtGroup`, as a module is, and a declaration
+of its module: bound in the namespace, folded, imported and reached by path like
+any other. See "Module traits" below.
 
 **A module's own name is in its own namespace, and that is what makes a hidden
 module-level name reachable.** `mymod.x` reaches an `x` that a local or a type
@@ -460,13 +471,23 @@ The clause runs the other way from every other `use` — it folds into importers
 not into this module — and it is not an export list: `pub` still decides what is
 reachable. What it names is checked once the module's names are known (below).
 
-**`mod trait`, a module's abstraction, is admitted and unbuilt**, reported where
-it is written and its body skipped whole (`ErrorUnbuiltKind`); its spelling is
-settled by `trait` being a modifier on the kind. **A `mod name { ... }` block does
-not exist**: a module is never declared inside a file, and nesting is by files
-and folders only, a nested module being a file of its own or a subfolder with its
-own designated file. The parser
-recognises the block only to say so, under the same code, and skips its body.
+**`mod bigint is Shell;` says the module conforms to a module trait** [Jon 23
+Sep], and the declaration only records the name, as a `NameUseNode` on
+`traitname`: it is resolved once the module's folds have run, so the import that
+puts the trait in reach may follow it. **The line's order is `mod prog extends
+base is Shell use Y;`**: `is` written before `extends` is `ErrorModIs`, and a
+`use` before `is` is `ErrorBadFold`, as a `use` before `extends` is. One trait, by
+one name, as `extends` names one module: a path or a list after `is` is
+`ErrorModIs`, nothing at all `ErrorNoName`, and each refusal passes over what it
+refused. What `is` does is "Module traits" below.
+
+**`mod trait` is not this declaration.** `parseGlobalStmts` sees `trait` after
+`mod` and hands the statement to `parseModTrait`, which declares a module trait,
+a declaration of the module like a type — anywhere in the file, and never a late
+`mod`. **A `mod name { ... }` block does not exist**: a module is never declared
+inside a file, and nesting is by files and folders only, a nested module being a
+file of its own or a subfolder with its own designated file. The parser
+recognises the block only to say so, `ErrorUnbuiltKind`, and skips its body.
 
 **A `mod` declaration in the root file names the module and does not change a
 single symbol.** The root still has no `DclNamesChain`, so its declarations stay
@@ -480,6 +501,112 @@ a folder replaces.** A lone file is named after that file, which is what lets
 today's programs go on working unchanged. A module drawn out of a folder is named
 after the folder, and nothing about its filename is a name; a one-file module is
 named after its file, and that name is as fixed as a folder's.
+
+### Module traits
+
+**A module trait is a module's abstraction** [Jon 23 Sep]: the interface a module
+plugs into a framework with — a shell executable's entry, a web request's
+receiver — spelled `mod trait`, `trait` modifying the kind as `struct trait`
+does. **It is a declaration of the module whose file writes it**, as a struct
+trait is: in-file, anywhere among the module's statements, `pub` or private,
+named, imported and folded like any declaration (`import hosts use Runner`), and
+reached by path. What reaching a member by path cannot do is below.
+
+```
+pub mod trait Runner {
+    pub fn step(n i64) i64;         // a requirement
+    pub mut scale i64;              // a requirement
+    pub mut offset = 100i64;        // a default
+    pub fn run(n i64) i64 {         // a default
+        step(n) * scale + offset;
+    }
+}
+```
+
+**Its body holds functions and globals, and nothing else** (`parseModTrait`). A
+function with a body and a global with an initialiser are **defaults**; one
+without is a **requirement**. Anything else is `ErrorModTraitBody`, skipped
+whole: a type (a trait requiring types is not built), an import, a `use`, a
+macro, a `mod`. So is a generic function and an overload name, since a member is
+one name with one signature for a module to match; a name written twice is
+`ErrorDupName`. A trait with no body is a marker, with no members. **The probe
+that finds one-file modules (`lexOpensWithMod`) passes over `mod trait`**, so a
+swept file may open with one.
+
+**A module conforms by saying so, and only by saying so**: `mod prog is Runner;`
+(the `mod` declaration, above). Nothing is inferred from what a module happens to
+declare. A module conforms to one trait. **A module is one instance, so
+conformance is static**: no vtable, no dispatch — what the trait supplies becomes
+the module's own.
+
+**Conformance is made where it is written** (`modTraitConform`), in three steps:
+
+1. **Resolve what `is` names**, in the module's namespace and then in the
+   registry its parent is, looked up and never loaded, as `extends` looks. A name
+   nothing binds is `ErrorUnkName`; one that is not a module trait — a struct's
+   trait, a module, a function — is `ErrorModIs`, with the cause in the message.
+2. **Resolve the trait** in the scope of the module that declares it, with its own
+   members hooked over that module's names (`modTraitNameRes`, demanded from the
+   conforming module), so a default's body names another member bare. Done once
+   per trait. Its default bodies count as expanded ones (`fnDclIsExpanded`), so
+   what they name of the declaring module is marked for a library to export.
+3. **Meet each member.** A member the module has a name for is met by it: a
+   declaration of the module, or a name its folds brought, what it `extends`
+   among them — conformance is a question of names and signatures, as a struct
+   trait's is. A member it has no name for is a **missing requirement**
+   (`ErrorModTraitMissing`, at the `is`, naming it) unless the trait gives a
+   default, which is **cloned into the module**: a shell for each default, owned
+   by the module (`dclInfoJoin`), appended to its `nodes`, bound in its namespace,
+   positioned where the trait wrote it, with `instnode` the `is` — before any
+   body is copied, with every member mapped (`cloneDclSetMap`) to what the module
+   has under its name. Then the bodies are copied (`cloneFnDclFill`,
+   `cloneVarDclFill`), the way a generic type's members are. **So a default's
+   body naming another member names the module's**: its own declaration where it
+   has one, overriding the default, or the copy of another default. A name that is
+   not a member keeps what it bound in the trait's scope, a private helper of the
+   declaring module included. The copies arrive resolved; `ntaken` says how many,
+   and `modNameRes` leaves them alone.
+
+**A copy is the module's own declaration**: spelled after the module
+(`plain.run`), private unless the trait wrote `pub`, and generated wherever the
+module is. **A default global is storage of each module that took it**, so two
+modules conforming to one trait count separately (`module-trait`). **The trait's
+own members are generated nowhere** (`genlGlobalImpl` passes a `ModTraitTag`
+over): a requirement has no body, and a default's body is the template.
+
+**When it runs is what makes a copy a declaration to everyone who reads the
+module.** `modTraitConform` is attempted at the end of the module's own fold
+pass (`modFoldNames`): its namespace is complete there, and the fold pass is
+dependency-first, so nothing folding from it has read it yet. A module extending
+it therefore takes its copies as the base's declarations — aliases, one storage —
+and an importer's `use *` folds them like any other public name. That holds
+because imports form a DAG [Jon 23 Sep]. Where the attempt cannot be made there —
+`is` not resolving yet, or the trait's module still mid-fold (a parent's trait,
+the parent folding its child) — it is left, and `pgmNameRes` makes it after the
+fold passes, reporting whatever is wrong, before any module's own names are
+resolved.
+
+**What the module has for each member must have the member's shape**
+(`modTraitCheck`, at the start of `modTypeCheck`, once both sides have types): a
+function or an overload name for a function, one candidate with exactly the
+member's signature (`fnSigEqual`; no coercion, as for a struct trait); a global
+for a global, of the member's type and permission. Each difference is
+`ErrorModTraitMismatch` at the `is`, naming the member. A copy has the shape by
+construction and is passed over, and where a difference was reported the copies
+are marked checked rather than analyzed, since their bodies were written against
+the trait's members and would report the difference again. An `extern`
+declaration meets a requirement, as an include file will declare what a
+package's object defines. Visibility is not compared.
+
+**A path through a module trait is refused** (`fnCallNameResPath`): `Runner.run`
+names a member with no code or storage of its own, `ErrorAbstractMeth`, as a
+path to a struct trait's method is. `extends` naming a module trait is
+`ErrorModExtends`, whose message says to write `is`.
+
+**What is not built** [Jon 23 Sep]: host traits (a shell's, a web server's), the
+entry glue — a trait default the host calls as `main`, running `init` and
+`final` — traits that require types, and generic modules. Conformance declared by
+structure alone does not exist and is not planned.
 
 ### The packages folder
 
@@ -1002,7 +1129,9 @@ private.
 
 ## Type check
 
-`modTypeCheck` type checks the imported modules first, then every declaration
+`modTypeCheck` type checks the imported modules first, then — where the module
+conforms to a module trait — what it has for each member against the member's
+shape (`modTraitCheck`, "Module traits"), then every declaration
 the module owns, in source order, and right after an enum that extends another,
 that enum's copies of its base's variants, which the module does not own
 ([struct](struct.md), "An enum extending an enum"). As everywhere in this phase,
@@ -1374,9 +1503,10 @@ spells its symbols as its importers do and exports what they link against. What
 stands in for
 packages is the **packages folder**: `core` and `stdio` are folder modules there,
 found on the package search path and compiled into the importing object ("The
-packages folder" above);
-`mod trait` holds the spelling of a module's abstraction against the day there is
-something behind it; `import` takes a file path where the registry has no answer, and
+packages folder" above).
+**A module conforms to a module trait**, `mod prog is Runner;`, checked where it
+is written, taking a copy of each default it does not declare ("Module traits"
+above); `import` takes a file path where the registry has no answer, and
 folds with a `use` clause — selecting, renaming and excluding as a global's
 clause does. A lone file — the root, or a module an import reached by its
 path — is still named after that file, and its declaration still renames it. Sections and
@@ -1417,8 +1547,8 @@ base's, and as visible here as there, so its code reads the base's private names
 while its importers see only the public ones [Jon 23 Sep] — and adding its own
 declarations beside them. The base is a module already in reach, a sister or one
 an import bound; a chain of `extends` transits, and a tree that extends links and
-runs. What it does not do: extend a trait (the module-trait reading,
-`mod arena extends Region`, is unbuilt), or extend more than one module.
+runs. What it does not do: extend a trait (a module conforms to a module trait
+with `is`, `mod arena is Region`), or extend more than one module.
 
 **Every binding has a visibility of its own, and an import's bindings are
 bindings.** A declaration has `DclPrivate`, written from the absence of `pub`
@@ -1525,10 +1655,11 @@ of the module rather than just a type's methods. Whether a package's own
 top-level module may be parameterized is the sharpest form of the question,
 since importing such a package would mean instantiating it.
 
-**Substitution is wanted before generativity.** A region protocol — a module
-supplying alloc, free, alias and dealias — is an interface, so module traits are
-what the region work is waiting on, and a generic module is a separate axis.
-Nothing forces that order technically; the demand does.
+**Substitution was wanted before generativity, and is built first.** An entry
+kind — a shell executable, a web request's receiver — is an interface a module
+plugs into, and so is a region protocol, a module supplying alloc, free, alias
+and dealias; module traits are that interface ("Module traits" above). A generic
+module is a separate axis.
 
 Also unsettled: whether folding into a module and folding into a type are
 literally one operation. That is the case the author has called out as the
@@ -1563,8 +1694,9 @@ generalized.
 
 Whether that protocol is a contract the compiler holds structurally — a module
 supplying the right methods — or one written in Cone as a module trait is itself
-open. The first is buildable now; the second is what makes a region fully
-library code.
+open. Both are buildable now; the second is what makes a region fully library
+code, and a region protocol would also want what a module trait does not yet
+hold, a type among its requirements.
 
 That a module carries global singleton state, and a type does not, is why the
 region-as-module description is the one that fits the state half; what a region
@@ -1622,6 +1754,19 @@ annotation on a reference names is a type.
 
 ## Hazards
 
+- **A module trait's copies are the last `ntaken` of a module's `nodes`**, and
+  `modNameRes` walks only the nodes before them, since the copies arrived
+  resolved in the trait's scope and a second walk would bind their names again
+  in the module's. Anything appended to `nodes` between `modTraitConform` and
+  `modNameRes` would be taken for a copy and left unresolved.
+- **Where a module's defaults are taken decides who sees them.** A copy made at
+  the end of the module's fold pass is read by every module folding from it;
+  one the fallback in `pgmNameRes` makes, after the fold passes, is not — no
+  `extends` of the module and no importer's `use *` takes it, though a path
+  reaches it. The fallback is taken only when the trait's module is mid-fold at
+  the attempt or `is` does not resolve by then, which an acyclic program meets
+  only for a trait declared by the conforming module's parent while the parent
+  folds it.
 - **A build description's `build` line wins over `--debug`.** The description is
   read after the options, so `build: release` optimises a compile run with
   `--debug`. A description with no `build` line leaves the option as given.

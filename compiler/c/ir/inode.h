@@ -111,6 +111,7 @@ enum NodeTags {
 
     // Named, non-type declaration nodes
     ModuleTag,      // Module namespace
+    ModTraitTag,    // Module trait: the functions and globals a module conforming to it declares or takes
     FnDclTag,       // Function/method declaration
     FnOverloadDclTag, // Overloaded function/method declarations sharing one name
     VarDclTag,      // Variable declaration (global, local, parm)

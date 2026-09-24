@@ -33,6 +33,9 @@ typedef struct ModuleNode {
     INode *extendsname;      // 'mod A extends B': B as written, a NameUseNode; NULL where the module extends nothing
     struct ImportNode *extends; // The fold 'extends' makes of B's names, once B resolves (modExtendsResolve); else NULL
     struct FoldClause *deffold; // 'mod A use B': what a bare import of this module folds by default; NULL where the line has no 'use'
+    INode *traitname;        // 'mod A is T': T as written, a NameUseNode bound to the module trait once modTraitConform finds it; else NULL
+    struct ModTraitNode *trait; // The module trait 'is' names, once resolved; else NULL
+    uint32_t ntaken;         // How many of 'nodes', at its end, are copies of the trait's defaults, made resolved (modTraitConform)
 } ModuleNode;
 
 ModuleNode *newModuleNode();
