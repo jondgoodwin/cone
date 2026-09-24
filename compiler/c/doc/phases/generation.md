@@ -82,10 +82,13 @@ lowers them, in two functions and a derivation:
   `genlGloFnName` and `genlGloVarName` hand `LLVMAddFunction` and
   `LLVMAddGlobal` what `nameSymbol` returns.
 - **`genlLinkage`** sets linkage, storage class and calling convention
-  together, from the declaration facts and one argument saying whether this
-  object defines the symbol — `genlIsDefinedHere` for a declared node: its
-  module is flagged `FlagGenMod`, it is not `extern`, and a function has a
-  body; always for a vtable, which no node declares. It is the one place that
+  together, from the declaration facts and one argument, an `enum
+  GenlDefinition`, saying what this object does with the symbol. For a
+  declared node `genlDefinition` answers it: `GenlDeclared` unless
+  `genlIsDefinedHere` — its module is flagged `FlagGenMod`, it is not
+  `extern`, and a function has a body; then `GenlExported` where a library
+  compile exports it (`genlIsExported`, below), else `GenlDefined`. A vtable,
+  which no node declares, is always `GenlDefined`. It is the one place that
   decides them, and it sets no visibility.
 - **`genlComdat`** then derives the COMDAT selection kind from the linkage
   already on the global, at each definition site.
@@ -103,15 +106,37 @@ its linkage:
 | What the symbol is | Linkage `genlLinkage` sets | What `genlComdat` then does |
 | --- | --- | --- |
 | a definition of a program — a function, a global, an instance of a generic, a vtable, a vtable list | `internal`: nothing outside the object may resolve against a program's symbols | `nodeduplicate` — nothing can collide with it, and a duplicate within the object is a real error |
+| a library's export (`GenlExported`) | external: an importer's object links against it, and the optimiser keeps it though the library itself may never use it | `nodeduplicate` — one package defines it |
+| a library's other definitions — the same list as a program's | `internal` | `nodeduplicate` |
 | `main`, or a C-style definition | external | `nodeduplicate` — a duplicate definition is a real error and stays one |
 | a definition nothing outside can name — an anonymous `fn`, a string literal | `internal`, set at the site that names it | `nodeduplicate`; nothing can collide with it in any case |
 | a declaration — an imported module's function, an `extern` | external, since an LLVM `declare` can be nothing else | nothing: **only a definition may lead a COMDAT**, and `LLVMVerifyModule` rejects one that does not |
 
-A package compile, which does not exist yet, will add the row L2 of [Names and
-Namespaces](../../../../doc/design/names-and-namespaces.md) describes: an instance of a generic and a
-vtable as `linkonce` with a COMDAT of `any`, since every object that uses one
-produces it. The vtable list stays internal there too — it holds the
-implementers this compile saw, so no two objects could agree on one.
+**A library compile** is one whose build description says `output: library`
+(or `--library` with no description), which sets `opt->library`;
+`genlProgram` then records the root module in `gen->libroot`. What it exports
+is `genlIsExported`'s answer, the rule L1 and L5 of [Names and
+Namespaces](../../../../doc/design/names-and-namespaces.md), "Linkage", state:
+
+- only a definition of the package's own modules — the root, or a module whose
+  chain of owners reaches it — never `core` or a package the search path
+  compiled in beside them;
+- never an instance of a generic, nor a method of a generic type's instance
+  (`itypeInstanceTypeArgs`): that is the linkonce half, still to come;
+- a declaration name resolution marked `DclExpandReached` — named by an
+  `inline`, generic or macro body, a trait's default or a generic type's method,
+  bare or through a path ([Name Resolution](name-resolution.md), "Contract");
+- a public function or global of a module;
+- a function of a type an importer can reach — a public type, or one an
+  expanded body names — where the function is public, or the type holds an
+  expanded body (`genlTypeHoldsExpanded`), which can reach a private method
+  through a receiver that name resolution never binds.
+
+Everything else is internal, as in a program. Still to come is the row L2
+describes: an instance of a generic and a vtable as `linkonce` with a COMDAT of
+`any`, since every object that uses one produces it. The vtable list stays
+internal there too — it holds the implementers this compile saw, so no two
+objects could agree on one.
 
 That last row is why the attachment is at the definition sites and not in the
 symbol pass. An imported module's functions have bodies in the IR and are
@@ -421,21 +446,26 @@ after. `--ir` is not an LLVM option at all — it dumps the Cone IR/AST.
 `--asm` adds a `.wat` or `.asm`. `--verify` runs `LLVMVerifyModule` and is off
 by default. `--debug` emits DWARF and drops optimization — it is the only
 switch here, with release as the default. Debug info covers only files and
-subprograms, and the file name is hardcoded.
+subprograms, and the file name is hardcoded. A subprogram is attached only to a
+function this object defines: an imported module's function has a body in the
+IR but is a declaration here, and the verifier rejects a declaration carrying
+one.
 
-**Cross-module linking is broken.** A symbol is spelled from its owner chain,
-and the root module contributes no name to it — [Names and Namespaces](../../../../doc/design/names-and-namespaces.md),
+**Cross-module linking works for a library built on its own, and nothing
+else.** A symbol is spelled from its owner chain, and the root module
+contributes no name to it — [Names and Namespaces](../../../../doc/design/names-and-namespaces.md),
 "Symbols". So compiling `modulesub.cone` directly makes it the root and emits
-`@scaleInt`, bare; compiling a `main.cone` that imports it makes it an imported
-module and emits `@_CNvC9modulesub8scaleInt`, `modulesub.scaleInt`. The two
-object files never resolve against each other. Compounding it, an ordinary
-imported module does not get `FlagGenMod`,
-so only a `declare` is emitted for it. Separate compilation is what has to
-settle it. A library built from a build description has the spelling half:
-its root is named, so `modulesub` built that way emits
-`@_CNvC9modulesub8scaleInt` itself ([module](../nodes/module.md), "A described
-build"). The linkage half is not built: `genlLinkage` still makes that
-definition internal, so nothing outside the object can reach it.
+`@scaleInt`, bare and internal; compiling a `main.cone` that imports it makes it
+an imported module and emits `@_CNvC9modulesub8scaleInt`, `modulesub.scaleInt`.
+The two object files never resolve against each other. A library built from a
+build description settles both halves: its root is named, so `modulesub` built
+that way emits `@_CNvC9modulesub8scaleInt` itself ([module](../nodes/module.md),
+"A described build"), and it exports that definition (`genlIsExported`), so an
+importer's `declare` resolves against it at link. `module-build-link` compiles
+a package alone, compiles a program against a hand-written include file for it,
+links the two objects and runs the program. An instance of a generic is still
+internal to the object that makes it, so an importer that instantiates a
+package's generic declares an instance nothing defines.
 
 Also absent: closures with an environment — an anonymous `fn` is lifted to
 module scope and a `&fn` value is a bare function pointer with no capture
@@ -462,7 +492,8 @@ variables.
 | | `genlGlobalSyms`, `genlGlobalImpl` | declare a node's symbol; emit its body |
 | | `genlFn`, `genlParmVar`, `genlAlloca` | function body, parameter allocas, entry-block alloca placement |
 | | `genlGloFnName`, `genlGloVarName` | declare a function or global under the symbol `nameSymbol` spells |
-| | `genlLinkage`, `genlIsDefinedHere` | linkage, storage class and calling convention, together, from the declaration facts and whether this object defines the symbol |
+| | `genlLinkage`, `genlDefinition`, `genlIsDefinedHere` | linkage, storage class and calling convention, together, from the declaration facts and what this object does with the symbol: declares it, defines it, or defines and exports it |
+| | `genlIsExported`, `genlTypeHoldsExpanded` | whether a library compile exports a definition to its importers |
 | | `genlComdat`, `genlNameAnonFn` | the per-definition COMDAT that lets the linker drop a symbol, its kind read off the linkage; the private name an anonymous `fn` needs to have one |
 | | `genlComdatSupport` | what the target's object format does with COMDATs |
 | | `genlOut` | set triple and layout, emit object and asm |

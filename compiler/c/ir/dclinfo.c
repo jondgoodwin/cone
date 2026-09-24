@@ -72,5 +72,7 @@ void dclInfoPrint(INode *node) {
         inodeFprint(" cname");
     if (dclinfo->facts & DclSystemCC)
         inodeFprint(" system");
+    if (dclinfo->facts & DclExpandReached)
+        inodeFprint(" expand-reached");
     inodeFprint("]");
 }

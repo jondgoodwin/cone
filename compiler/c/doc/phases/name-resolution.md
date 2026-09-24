@@ -242,6 +242,19 @@ is the contract; there is never a second name resolution pass.
 - Every `StructNode` and `ModuleNode` carries `NameResolved`, the phase's own
   mark; `NameResolving` is never left set.
 - Wildcard import folding is done, so module namespaces are complete.
+- **Every function, global and type an expanded body names carries
+  `DclExpandReached`.** An expanded body is one an importer generates in its own
+  object rather than calling: an `inline` or generic function, a macro, a
+  trait's default, and any method of a generic type (`fnDclIsExpanded`).
+  `NameResState.expander` is set for the duration of such a body —
+  `fnDclNameRes` and `macroNameRes` set it, a function nested in the body
+  inherits it, and `structNameRes` clears it for its members — and
+  `nameUseNameRes` marks what each bound use names, a pre-bound path included;
+  an overload name marks every candidate. It is the one fact this pass writes
+  onto a declaration other than the one it is resolving, and only a library
+  compile reads it (`genlIsExported`, [Generation](generation.md)). A method
+  reached through a receiver is bound at type check and so is never marked;
+  the type it belongs to is, where the body names that type.
 - **Nothing is typed.** No `vtype` is established, and no type check mark is
   set.
 
@@ -320,8 +333,9 @@ next pass a null to trip over.
   each resolve their parameter list *inside* `nametblHookPush` for exactly that
   reason; resolving one beforehand leaks it into the enclosing scope, where the
   matching pop never reaches it.
-- **`pstate->typenode` is written and never read** in this phase.
-  `structNameRes` saves and restores it; nothing consults it.
+- **`pstate->typenode` is read once** in this phase: `fnDclIsExpanded` asks
+  whether a method's type is a trait or a generic, whose every method an
+  importer expands. `structNameRes` saves and restores it.
 - **`fnSigNameRes` forces `scope = 0`** so that a signature reached as a *type*
   does not leak its parameter names. `fnDclNameRes` hooks the same parameters
   itself, at scope 1, only when there is a body.
@@ -333,11 +347,12 @@ next pass a null to trip over.
 | File | Function | Purpose |
 | --- | --- | --- |
 | `conec.c` | `doAnalysis` | initializes `NameResState`, walks, gates on `errors` |
-| `ir/ir.h` | (`NameResState`) | `mod`, `typenode`, `loopblock`, `scope`, and why it is separate from `TypeCheckState` |
+| `ir/ir.h` | (`NameResState`) | `mod`, `typenode`, `loopblock`, `macromethod`, `expander`, `scope`, and why it is separate from `TypeCheckState` |
+| `ir/stmt/fndcl.c` | `fnDclIsExpanded` | whether an importer expands a function's body, which makes it the `expander` for what the body names |
 | `ir/inode.c` | `inodeNameRes` | the dispatch switch — start here to add a node kind |
 | `ir/nametbl.c` | `nametblFind`, `nametblHook*` | interning and the hook stack that implements all scoping |
 | `ir/namespace.c` | `namespaceFind`, `namespaceSet` | the hash table a module or type owns |
-| `ir/exp/nameuse.c` | `nameUseNameRes` | the whole resolution decision: early-out, qualified walk, privacy; it binds `dclnode` and changes nothing else |
+| `ir/exp/nameuse.c` | `nameUseNameRes` | the whole resolution decision: early-out, qualified walk, privacy; it binds `dclnode`, and inside an expanded body marks what it names (`nameUseMarkExpandReached`) |
 | `ir/exp/nameuse.c` | `nameUseGroup` | what a resolved name answers to `isExpNode`, `isTypeNode` and `isMetaNode`, asked of its declaration |
 | `ir/stmt/program.c` | `pgmNameRes` | three steps over the module list: what every module's `extends` names, every module's folds (`modFoldAll`), then every module's body |
 | `ir/stmt/module.c` | `modExtendsResolve`, `modExtendsCheckCycle` | what a module's `extends` names, looked up in its own namespace and then its parent's, and refused where it is not a concrete module it may reuse or where a chain of them comes back round |

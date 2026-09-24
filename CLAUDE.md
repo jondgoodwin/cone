@@ -194,13 +194,16 @@ link it against `conestd` and the C runtime from a VS environment:
 link prog.obj build\x64-release\conestd.lib /OUT:prog.exe /SUBSYSTEM:CONSOLE msvcrt.lib legacy_stdio_definitions.lib
 ```
 
-A program that spans an `import` cannot be linked yet, because an imported
-module's bodies are declared and never generated — except a package found on the
-package search path, such as `stdio`, which is compiled into the importing
-object. So runtime checks live in what one compile defines: one source file, the
-files of one folder, or that folder and the submodules its subfolders draw, whose
-bodies are generated like the rest of the program's, plus the packages it
-imports. `compiler/c/doc/nodes/module.md` explains why.
+A program that spans an `import` links only in two cases, because an imported
+module's bodies are declared and never generated: a package found on the
+package search path, such as `stdio`, is compiled into the importing object; and
+a package compiled on its own from a build description saying
+`output: library` exports what its importers need, so its object links beside
+theirs (a scenario's `link` key does that in the suite). Otherwise runtime
+checks live in what one compile defines: one source file, the files of one
+folder, or that folder and the submodules its subfolders draw, whose bodies are
+generated like the rest of the program's, plus the packages it imports.
+`compiler/c/doc/nodes/module.md` explains why.
 
 ## Change discipline
 

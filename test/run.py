@@ -119,7 +119,7 @@ ANNOTATABLE = ("reject", "warn")
 
 SCENARIO_KEYS = {
     "category", "description", "tags", "diagnostics", "exit", "xfail",
-    "run", "unlocated", "check", "argv",
+    "run", "unlocated", "check", "argv", "link",
 }
 
 
@@ -616,6 +616,9 @@ class Scenario:
     # the support modules it imports. Bless writes back to each.
     annot_sources: tuple[Path, ...] = ()
     argv: tuple[str, ...] = ()   # 'driver' only: the whole invocation
+    # 'run' only: sources compiled on their own before the scenario's, each to
+    # an object of its own, and linked into the program with it
+    link: tuple[Path, ...] = ()
     xfail: bool = False
     annotations: list[Annotation] = field(default_factory=list)
 
@@ -693,6 +696,25 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
                     f"{where}: listed scenario has neither {name}.cone,"
                     f" {name}/{name}.cone nor {name}/{name}.conebuild (R2.12)")
 
+        # Separate compilation: each source 'link' names is compiled on its own
+        # and its object linked into the program, which is what a 'run'
+        # scenario alone produces. The paths are relative to the scenario's
+        # folder, so the package's sources live beside the program's.
+        link: tuple[Path, ...] = ()
+        if "link" in table:
+            if category != "run":
+                raise SuiteError(f"{where}: only a 'run' scenario links, so 'link' belongs to one")
+            if source is None or source.parent.name != name:
+                raise SuiteError(f"{where}: 'link' needs a folder scenario to hold what it names")
+            link = tuple(source.parent / entry for entry in table["link"])
+            for path in link:
+                if not path.is_file():
+                    raise SuiteError(f"{where}: 'link' names {path}, which does not exist")
+                if path.stem == source.stem:
+                    raise SuiteError(
+                        f"{where}: 'link' names {path.name}, whose object would"
+                        f" overwrite the scenario's own")
+
         # R2.10 names the total diagnostic count as recover's file-level
         # expectation. It asserts the count rather than each diagnostic, so
         # without it the scenario asserts nothing but the exit status.
@@ -739,6 +761,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             checks=tuple(checks),
             unlocated=tuple(table.get("unlocated", [])),
             argv=argv,
+            link=link,
             xfail=bool(table.get("xfail", False)),
         )
         if source is not None:
@@ -1441,13 +1464,14 @@ class Linker:
             return False
         return "Microsoft" in (banner.stdout + banner.stderr)
 
-    def command(self, obj: Path, exe: Path) -> list[str]:
+    def command(self, objs: list[Path], exe: Path) -> list[str]:
+        """The program's object first, then any a scenario 'link's with it."""
         if IS_WINDOWS:
             return [
-                self.tool, "/NOLOGO", str(obj), str(self.conestd), f"/OUT:{exe}",
+                self.tool, "/NOLOGO", *map(str, objs), str(self.conestd), f"/OUT:{exe}",
                 "/SUBSYSTEM:CONSOLE", "msvcrt.lib", "legacy_stdio_definitions.lib",
             ]
-        return [self.tool, str(obj), str(self.conestd), "-o", str(exe), "-lm"]
+        return [self.tool, *map(str, objs), str(self.conestd), "-o", str(exe), "-lm"]
 
 
 # ---------------------------------------------------------------------------
@@ -2043,6 +2067,25 @@ class Runner:
             options.append("--llvmir")
 
         out_rel = out_dir.relative_to(REPO).as_posix()
+
+        # What the program links against is compiled first, each on its own, to
+        # an object beside the program's. A failure here is the scenario's.
+        for lib in scenario.link:
+            lib_rel = lib.relative_to(REPO).as_posix()
+            lib_cmd = [str(self.conec), *spec.options, "--checktree", "--verify",
+                       "-o", out_rel, lib_rel]
+            result.commands.append(quote(lib_cmd))
+            built = execute(lib_cmd, REPO, out_dir, f"conec-{lib.stem}",
+                            self.args.timeout, self.args.max_output)
+            if built.killed or built.code != 0 or parse_diagnostics(built.stderr):
+                result.status = FAIL
+                result.problems.append(
+                    f"compiling {lib_rel}, which the scenario links, "
+                    + (f"was {built.killed}" if built.killed else f"exited {built.code}")
+                    + ("\n" + indent(normalize_stderr(built.stderr)) if built.stderr.strip() else ""))
+                result.seconds = time.monotonic() - started
+                return result
+
         cmd = [str(self.conec), *options, "-o", out_rel, scenario.source_rel]
         result.commands.append(quote(cmd))
         compiled = execute(cmd, REPO, out_dir, "conec",
@@ -2280,7 +2323,9 @@ class Runner:
         stem = scenario.source.stem
         obj = out_dir / f"{stem}.{object_extension(spec.options)}"
         exe = out_dir / (f"{stem}.exe" if IS_WINDOWS else stem)
-        link_cmd = self.linker.command(obj, exe)
+        ext = object_extension(spec.options)
+        link_cmd = self.linker.command(
+            [obj, *(out_dir / f"{lib.stem}.{ext}" for lib in scenario.link)], exe)
         result.commands.append(quote(link_cmd))
         linked = execute(link_cmd, REPO, out_dir, "link",
                          self.args.timeout, self.args.max_output, env=self.linker.env)

@@ -41,6 +41,7 @@ typedef struct GenState {
     LLVMTypeRef emptyStructType;
 
     ConeOptions *opt;
+    ModuleNode *libroot;    // The package's root module in a library compile, else NULL
     int comdats;            // enum ComdatSupport, from the target's object format
     INode *fnblock;
     GenBlockState *blockstack;
@@ -67,9 +68,16 @@ void genClose(GenState *gen);
 void genpgm(GenState *gen, ProgramNode *pgm);
 void genlFn(GenState *gen, FnDclNode *fnnode);
 void genlComdat(GenState *gen, LLVMValueRef global);
+// What this object file does with a declared symbol, which genlLinkage reads
+typedef enum GenlDefinition {
+    GenlDeclared,   // Only names it: some other object defines it
+    GenlDefined,    // Defines it for itself alone
+    GenlExported    // Defines it for other objects too: a library's export
+} GenlDefinition;
+
 // Set a declared symbol's linkage, storage class and calling convention from its
-// node's facts (NULL for a vtable); 'defined' says this object file defines it
-void genlLinkage(LLVMValueRef global, INode *dclnode, int defined);
+// node's facts (NULL for a vtable), and what this object does with it
+void genlLinkage(LLVMValueRef global, INode *dclnode, GenlDefinition defined);
 void genlGloVarName(GenState *gen, VarDclNode *glovar);
 void genlGloVar(GenState *gen, VarDclNode *varnode);
 void genlGloFnName(GenState *gen, FnDclNode *glofn);

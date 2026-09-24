@@ -565,10 +565,10 @@ it are visible in emitted IR:
 
 So **a symbol's identity depends on which compilation the module was the root
 of**, and the two spellings never resolve against each other — unless the root
-was compiled as a library from a build description, which names it ("A
-described build"). That, and not the
-declarations, is why an import cannot be linked against: nothing can emit the
-definitions those declarations name. How a symbol is spelled from its
+was compiled as a library from a build description, which names it and exports
+its definitions ("A described build"). That is the one way an import is linked
+against today: the importer's declarations resolve against the library's
+object. How a symbol is spelled from its
 declaration, and the linkage it gets, is
 [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols".
 
@@ -628,8 +628,20 @@ compiled.
 contributes nothing to a symbol, so `main` links; under `output: library` it
 carries `DclNamesChain`, so a package built on its own spells its declarations
 as an importer spells them — `q.addOne`, `_CNvC1q6addOne` — rather than bare.
-That is the spelling half of separate compilation; the linkage is still a
-program's (`genlLinkage` makes every definition internal).
+That is the spelling half of separate compilation. **The linkage half is
+built too:** `output: library` sets `opt->library`, so the object is
+position-independent and a library compile's rule decides linkage
+(`genlIsExported`, [Generation](../phases/generation.md), "Symbols, linkage
+and COMDATs"). The package's own modules — the root and its children, never
+`core` — export every public function and global, every function of a type an
+importer can reach, and every private definition that a body an importer
+expands names: an `inline`, generic or macro body, or a trait's default, whose
+copy in the importer calls the private symbol it reached (the importer's side
+of that is `genlFnSym` and `genlVarSym`). Everything else is internal as in a
+program, and an instance of a generic is not exported yet. So a package
+compiled alone links with a program compiled against its include file:
+`module-build-link` builds both, links them and runs the program, and
+`module-build-export` pins each case of the rule.
 
 **An import in a described module is answered by the description.** After the
 registry — a sister, a module the parent bound — `parseImport` looks up the
@@ -1011,9 +1023,10 @@ and `module-package-path` too.
 
 `ImportTag` is an explicit no-op in `genlGlobalImpl`. `genlLinkage` makes every
 definition of a program internal except `main` and a C-style name, and leaves
-an imported module's declarations external; the only place generation
-anticipates more than one Cone object file is the comment saying a package
-compile will make an instance of a generic and a vtable `linkonce`.
+an imported module's declarations external. A library compile exports what its
+importers link against (`genlIsExported`, "A described build"); what
+generation still only anticipates is an instance of a generic and a vtable
+made `linkonce`, so that each importer's copy merges.
 
 The privacy filter in pass 1 assumes nothing outside a module can reach its
 private names, and a public overload name cannot break that assumption: a
@@ -1328,8 +1341,8 @@ of compilation, no manifest and no interface artifact. **What the compiler does
 take is a build description** ("A described build"): one package's module tree
 and files, each file's `mod` line checked against it, imports found only where
 it says, and a library's root named from it, so a package compiled on its own
-spells its symbols as its importers do — though still with a program's internal
-linkage. What stands in for
+spells its symbols as its importers do and exports what they link against. What
+stands in for
 packages is the **packages folder**: `core` and `stdio` are folder modules there,
 found on the package search path and compiled into the importing object ("The
 packages folder" above);
@@ -1449,11 +1462,13 @@ into:
   is silent: were a program's `fn log(...)` emitted as an external `@log`, a
   package calling libm's `log` would have its `declare` satisfied from the
   program and `log.o` never pulled — the wrong function with no diagnostic.
-- **Whether private names in a *library* also become internal.** It shrinks the
-  mangled namespace to exactly the names that cross a package boundary. It also
-  means a private helper reached from a public inline or generic body must be
-  re-emitted per importer rather than linked against, which is the package
-  compile's `linkonce` rule for generic instances (L2).
+- **Private names in a *library* are internal, except what an expanded body
+  reaches, which is linked against** ([Names and
+  Namespaces](../../../../doc/design/names-and-namespaces.md), "Linkage", L5).
+  Built in `genlIsExported`: the mangled namespace shrinks to the names that
+  cross the package boundary, and a private helper an `inline`, generic or
+  macro body reaches is exported once rather than re-emitted per importer.
+  Hidden visibility is not set on it, as no visibility is set anywhere.
 - **Build-mode defaults, or an explicit export set.** `--library` and congo's
   `exe`/`lib` targets already distinguish the modes. But a program built as a
   WebAssembly module or a DLL does export more than an entry point — the samples

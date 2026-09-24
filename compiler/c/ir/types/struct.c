@@ -1755,6 +1755,11 @@ void structNameRes(NameResState *pstate, StructNode *node) {
 
     INode *svtypenode = pstate->typenode;
     pstate->typenode = (INode*)node;
+    // Nothing of an enclosing body is in force in a type's braces: each method
+    // decides for itself whether an importer expands it (fnDclNameRes). A
+    // field's default is a literal, so it names nothing to mark
+    INode *svexpander = pstate->expander;
+    pstate->expander = NULL;
 
     // Anything written inside an enum's braces sees every name the enum declares
     // bare, and a variant's body is written there. The enum's own methods get that
@@ -2009,6 +2014,7 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     if (enclosing)
         nametblHookPop();
     pstate->typenode = svtypenode;
+    pstate->expander = svexpander;
     node->flags = (node->flags & ~NameResolving) | NameResolved;
 }
 

@@ -197,6 +197,9 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
         return 0;
     }
     member->flags |= FlagQualified;
+    // What the path reaches is marked as a bare name's would be, since
+    // nameUseNameRes returns at once for a use that arrives bound
+    nameUseMarkExpandReached(pstate, member);
 
     // A private name belongs to the module that declares it, and naming a path
     // through that module reaches past it. Refusing it here is what

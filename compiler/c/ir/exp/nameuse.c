@@ -131,6 +131,33 @@ void nameUsePrint(NameUseNode *name) {
     inodeFprint("%s", &name->namesym->namestr);
 }
 
+// Mark what a use inside an expanded body names (NameResState.expander): an
+// importer generates that body in its own object, so a function or global it
+// names must be a symbol the importer can link against, private or not. A type
+// it names is marked too: the body can call that type's methods through a
+// value, which only type check binds. An overload name marks every candidate,
+// as selection has not yet chosen one. Only the declaring module's own compile
+// reads the mark (genlIsExported). Called for a bare name here, and for a path
+// by fnCallNameResPath, which binds it.
+void nameUseMarkExpandReached(NameResState *pstate, NameUseNode *name) {
+    if (pstate->expander == NULL)
+        return;
+    INode *dcl = nameUseGetDcl(name);
+    if (dcl == NULL)
+        return;
+    if (dcl->tag == FnOverloadDclTag) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((FnOverloadDclNode*)dcl)->overloads, cnt, nodesp))
+            ((FnDclNode*)*nodesp)->dclinfo.facts |= DclExpandReached;
+    }
+    else if (dcl->tag == FnDclTag || dcl->tag == VarDclTag || dcl->tag == StructTag) {
+        DclInfo *dclinfo = inodeGetDclInfo(dcl);
+        if (dclinfo->owner != NULL)   // a local or a parameter has no symbol
+            dclinfo->facts |= DclExpandReached;
+    }
+}
+
 // Handle name resolution for name use references: point dclnode at the name's
 // declaration. That is all a use needs -- whether it is a type, a value or a
 // macro is asked of the declaration (nameUseGroup), and a bare field name is
@@ -172,6 +199,8 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
         errorMsgNode((INode*)name, ErrorBareMbr,
             "In a macro method, %s must be reached through self, as self.%s",
             &name->namesym->namestr, &name->namesym->namestr);
+
+    nameUseMarkExpandReached(pstate, name);
 }
 
 // Report a use of a member of a generic type itself, such as 'Box.stat' on a

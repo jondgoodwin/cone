@@ -128,10 +128,30 @@ void fnOverloadDclPrint(FnOverloadDclNode *node) {
     }
 }
 
+// Whether an importer expands this function's body in its own object rather than
+// calling a symbol: an inline or generic function, a trait's default (cloned
+// into each implementer), and any method of a generic type (cloned into each
+// instance). 'typenode' is the type whose braces declare it, or NULL.
+static int fnDclIsExpanded(FnDclNode *fndclnode, INode *typenode) {
+    if ((fndclnode->flags & FlagInline) || fndclnode->genericinfo)
+        return 1;
+    if (typenode && typenode->tag == StructTag
+        && (((StructNode*)typenode)->genericinfo || (typenode->flags & TraitType)))
+        return 1;
+    return 0;
+}
+
 // Resolve all names in a function
 void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
     INode **nodesp;
     uint32_t cnt;
+
+    // What an expanded body names is marked by nameUseNameRes, so a library
+    // compile can give it a symbol an importer links against. A function nested
+    // in such a body is part of it, so it inherits the expander.
+    INode *svexpander = nstate->expander;
+    if (fnDclIsExpanded(fndclnode, nstate->typenode))
+        nstate->expander = (INode*)fndclnode;
 
     nametblHookPush();
     // Resolve generic parameters inside the hooked context. Resolving one hooks
@@ -160,6 +180,7 @@ void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
     }
 
     nametblHookPop();
+    nstate->expander = svexpander;
 }
 
 // Syntactic sugar: Turn last statement implicit returns into explicit returns
