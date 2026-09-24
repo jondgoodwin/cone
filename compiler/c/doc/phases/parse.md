@@ -119,6 +119,19 @@ rather than stepping past it, so neither a string nor a character literal reads
 beyond the source. `lexical_string_escapes` holds a literal beginning with each
 escape kind, and runs of escaped quotes, each printed whole.
 
+**A string literal that is never closed is reported at its opening quote.**
+When the sizing walk reaches the source's end without finding a closing quote,
+`lexScanString` reports `ErrorBadTok` there and then, before the build counts
+the lines the literal runs over, so the position is the opening quote's line
+whether the literal is ordinary or multi-line. The literal is still built from
+what the source holds, and the parser, finding the end of the file after it,
+reports what the unfinished statement lacks as well: those are follow-ons, and
+they come after. `lexical_reject_unclosed_string` and
+`lexical_reject_unclosed_mlstring` hold one literal each, since a literal that
+runs to the end of the file is one per file. A character literal needs no such
+case: its scan never passes the end of its line, and a missing closing quote is
+already `ErrorBadTok`, "Invalid lifetime or too-long character literal".
+
 **`\0` is the null character and nothing more.** `lexScanEscape` reads the
 digit `0` after a backslash as U+0000: a 0 byte in a string literal, the value
 0 in a character literal. The source's own closing NUL after a backslash is a

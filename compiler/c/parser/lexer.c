@@ -376,6 +376,11 @@ void lexScanString(char *srcp) {
     }
     uint32_t srclen = (uint32_t)(endp - srcp);
 
+    // No closing quote before the source's end. Reported here, at the opening
+    // quote, before the build below counts the lines the literal runs over
+    if (*endp != '"')
+        errorMsgLex(ErrorBadTok, "String literal is never closed: no closing quote before the end of the file");
+
     if (multiline) {
         // The closing quote's indentation, which must be all its line holds before it
         if (*endp == '"') {
