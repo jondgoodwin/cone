@@ -828,8 +828,6 @@ suite asserts `Holder[i64].tally` rather than bytes. Not a C demangler in
 has settled, with no second consumer to justify it.
 
 **Open.** Back-references, and with them the first use of the version digit.
-In the package linkage table under "Linkage", the mergeable rows — a generic's
-instance and a vtable — are the rule and not yet the code.
 
 ### Linkage
 
@@ -845,7 +843,8 @@ instance and a vtable — are the rule and not yet the code.
   the clone lands on the implementing type, which one package declares, so that
   package alone emits it.
 
-The cases, in a program compile:
+The cases, in a program compile with no build description, which is the
+program's only object:
 
 | Declaration | Linkage |
 | --- | --- |
@@ -867,9 +866,18 @@ external. A declaration is external. No visibility is ever set: a private name i
 and linked exactly as a public one, since privacy is a fact about the
 namespace, not the object file.
 
+**A described build is one object of several**, program or library, since a
+build description is how a package is compiled on its own. There the mergeable
+symbols of L2 are defined by every object that uses them, as `linkonce_odr`
+with a COMDAT of kind `any`, so the linker keeps one copy: an instance of a
+generic — the package's own, and each importer's from the body its include file
+carries — every member of a generic type's instance, and a vtable. A program
+compiled from a description gives them this linkage too, since the instances
+it makes of an imported generic are the same symbols the package and other
+importers define.
+
 In a package compile — a build description saying `output: library` — the
-rows marked built are what `genlIsExported` does; the others are still the
-rule and not the code:
+rows are what `genlIsExported` and `genlDefinition` do:
 
 | Declaration | Linkage | |
 | --- | --- | --- |
@@ -880,8 +888,8 @@ rule and not the code:
 | private global, unreached from outside | internal | built |
 | method on a public type | external, unique — a public method; a private one is external only when the type holds an expanded body, which reaches it through a receiver name resolution cannot see | built |
 | method on a private type | internal — unless an expanded body names the type, which then counts as a public type | built |
-| an instance of a generic the package itself instantiated | external, mergeable | not built: internal |
-| a vtable | external, mergeable | not built: internal |
+| an instance of a generic the package itself instantiated, and every method or static of a generic type's instance | external, mergeable: `linkonce_odr`, `comdat any` | built |
+| a vtable | external, mergeable: `linkonce_odr`, `comdat any` — its address is what pattern matching compares, so one copy must survive | built |
 | a trait default cloned into a type this package declares | external, unique — one package emits it | built, as the implementing type's method |
 | a trait's vtable list | internal (L4) | built |
 | any definition of `core`, or of a package the search path compiled in | internal: this package does not export it | built |
@@ -921,14 +929,20 @@ package, so "outside" means outside the object.
   the compiler it is producing an importable package: it names the root and
   sets `opt->library`, which makes the object position-independent and
   switches generation to the package rule above. `--library` on the command
-  line sets the same flag, and is what an `output` line overrides. Under S3 a
+  line sets the same flag, and is what an `output` line overrides. Any build
+  description, library or executable, also sets `opt->described`, which makes
+  the mergeable symbols of L2 `linkonce_odr`; with no description they are
+  internal, as the program is then the only object. Under S3 a
   program's prefix-less symbols are internal, which is what makes prefix-less
   sound: a program's `@log` cannot satisfy a package's reference to libm's
   `log`.
 
 ### As built
 
-One row per kind of symbol, a program compile. Linkage is LLVM's spelling —
+One row per kind of symbol, a program compile with no build description; in a
+described build, the instance rows and the vtable row are `linkonce_odr` ·
+`any` instead (`define linkonce_odr i64 @_CINvC1q6largerxE(...) comdat {`).
+Linkage is LLVM's spelling —
 absent means `external` — and the COMDAT is the selection kind of the one each
 definition leads; a declaration leads none. No symbol carries a visibility.
 Measured on the default x64 Windows triple from the pre-optimization dump,

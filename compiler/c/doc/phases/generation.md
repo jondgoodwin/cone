@@ -56,8 +56,14 @@ here, before parsing.
    A skipped private node is declared on first use when a public inline body,
    generated in its caller, names it: `genlFnSym` and `genlVarSym` in
    `genlexpr.c` ask for the symbol rather than assume it.
-2. **Implementations** — `genlGlobalImpl`, only for modules flagged
-   `FlagGenMod`.
+2. **Implementations** — `genlGlobalImpl`, for modules flagged `FlagGenMod`;
+   for every other module, `genlImportedInstances`, which generates only the
+   instances this compile made of that module's generics. An imported package
+   has no instance for an importer to link against — it cannot know which ones
+   its importers make — so the importer defines each one it uses, from the body
+   the include file carries. A private generic's instance counts too (a public
+   generic's body may make one), and the symbol pass skipped it, so it is named
+   here.
 
 Both recurse into a type's method list, into a generic's
 `genericinfo->memonodes`, and into an enum extension's copies of its base's
@@ -85,10 +91,13 @@ lowers them, in two functions and a derivation:
   together, from the declaration facts and one argument, an `enum
   GenlDefinition`, saying what this object does with the symbol. For a
   declared node `genlDefinition` answers it: `GenlDeclared` unless
-  `genlIsDefinedHere` — its module is flagged `FlagGenMod`, it is not
-  `extern`, and a function has a body; then `GenlExported` where a library
-  compile exports it (`genlIsExported`, below), else `GenlDefined`. A vtable,
-  which no node declares, is always `GenlDefined`. It is the one place that
+  `genlIsDefinedHere` — its module is flagged `FlagGenMod` or it belongs to a
+  generic's instance (`genlIsInstance`), it is not `extern`, and a function has
+  a body. A defined instance is then `GenlShared` in a described build and
+  `GenlDefined` otherwise; anything else defined is `GenlExported` where a
+  library compile exports it (`genlIsExported`, below), else `GenlDefined`. A
+  vtable, which no node declares, is `GenlShared` in a described build and
+  `GenlDefined` otherwise (`genlVtableDefinition`). It is the one place that
   decides them, and it sets no visibility. A `DclSystemCC` function takes the
   x86 stdcall convention whether defined here or not, and the DLL import
   storage class only when it is `extern`; every call to one is made with the
@@ -108,9 +117,10 @@ its linkage:
 
 | What the symbol is | Linkage `genlLinkage` sets | What `genlComdat` then does |
 | --- | --- | --- |
-| a definition of a program — a function, a global, an instance of a generic, a vtable, a vtable list | `internal`: nothing outside the object may resolve against a program's symbols | `nodeduplicate` — nothing can collide with it, and a duplicate within the object is a real error |
+| a definition of a program compiled with no build description — a function, a global, an instance of a generic, a vtable, a vtable list | `internal`: nothing outside the object may resolve against a program's symbols | `nodeduplicate` — nothing can collide with it, and a duplicate within the object is a real error |
+| in a described build, library or program, an instance of a generic, a member of one, or a vtable (`GenlShared`) | `linkonce_odr`: every object that uses it defines it, all the copies are the same, and an unused one may be dropped | `any` — the linker keeps one copy. `nodeduplicate` would make the copies a duplicate-symbol error (LNK2005), and internal would leave two vtables with two addresses |
 | a library's export (`GenlExported`) | external: an importer's object links against it, and the optimiser keeps it though the library itself may never use it | `nodeduplicate` — one package defines it |
-| a library's other definitions — the same list as a program's | `internal` | `nodeduplicate` |
+| a described build's other definitions — a program's, or a library's that are not exported, and every vtable list | `internal` | `nodeduplicate` |
 | `main`, or a public C-named definition (`pub` and `@c` export to C) | external | `nodeduplicate` — a duplicate definition is a real error and stays one |
 | a private C-named definition | `internal`, as a program's | `nodeduplicate` |
 | a definition nothing outside can name — an anonymous `fn`, a string literal | `internal`, set at the site that names it | `nodeduplicate`; nothing can collide with it in any case |
@@ -125,8 +135,10 @@ Namespaces](../../../../doc/design/names-and-namespaces.md), "Linkage", state:
 - only a definition of the package's own modules — the root, or a module whose
   chain of owners reaches it — never `core` or a package the search path
   compiled in beside them;
-- never an instance of a generic, nor a method of a generic type's instance
-  (`itypeInstanceTypeArgs`): that is the linkonce half, still to come;
+- never an instance of a generic, nor a method or static of a generic type's
+  instance (`genlIsInstance`, which asks the owners too: a member of a type's
+  instance carries no instantiating node of its own, only its type does) —
+  those are shared instead, below;
 - a declaration name resolution marked `DclExpandReached` — named by an
   `inline`, generic or macro body, a trait's default or a generic type's method,
   bare or through a path ([Name Resolution](name-resolution.md), "Contract");
@@ -136,11 +148,25 @@ Namespaces](../../../../doc/design/names-and-namespaces.md), "Linkage", state:
   expanded body (`genlTypeHoldsExpanded`), which can reach a private method
   through a receiver that name resolution never binds.
 
-Everything else is internal, as in a program. Still to come is the row L2
-describes: an instance of a generic and a vtable as `linkonce` with a COMDAT of
-`any`, since every object that uses one produces it. The vtable list stays
-internal there too — it holds the implementers this compile saw, so no two
-objects could agree on one.
+Everything else is internal, as in a program.
+
+**A described build shares** what every object using it produces, the row L2
+describes: `opt->described`, set by `parseBuildDesc` for a library or a program
+alike, makes an instance of a generic, every member of a generic type's
+instance, and a vtable `GenlShared`, which `genlLinkage` lowers to
+`linkonce_odr` and `genlComdat` reads as a COMDAT of `any`. The generic's own
+package defines the instances it uses; each importer defines the ones it uses,
+from the full body its include file carries (a generic cannot be `extern`);
+identical instances in two objects merge at link, and one only an importer
+makes is in that importer's object alone. A vtable is shared because pattern
+matching tells a concrete type by comparing a virtual reference's vtable
+address with the one its own object built (`genlIsType`): a reference built in
+the program and tested in the library matched nothing while each object kept
+an internal copy (measured 23 Sep 2026). The vtable list stays internal — it
+holds the implementers one compile saw, so no two objects could agree on one;
+so does a folded method's thunk, which a surviving vtable reaches in its own
+object. **A compile with no build description is unchanged**: it is the
+program's only object, and its instances and vtables are internal.
 
 That last row is why the attachment is at the definition sites and not in the
 symbol pass. An imported module's functions have bodies in the IR and are
@@ -467,9 +493,11 @@ that way emits `@_CNvC9modulesub8scaleInt` itself ([module](../nodes/module.md),
 "A described build"), and it exports that definition (`genlIsExported`), so an
 importer's `declare` resolves against it at link. `module-build-link` compiles
 a package alone, compiles a program against a hand-written include file for it,
-links the two objects and runs the program. An instance of a generic is still
-internal to the object that makes it, so an importer that instantiates a
-package's generic declares an instance nothing defines.
+links the two objects and runs the program. A generic's instances and the
+vtables both objects build are defined in each, `linkonce_odr`, and merge at
+link: the scenario instantiates a generic function and a generic type in the
+package and in the program, at a type argument both use and at one only the
+program uses, and tests in the package a virtual reference the program built.
 
 Also absent: closures with an environment — an anonymous `fn` is lifted to
 module scope and a `&fn` value is a bare function pointer with no capture
@@ -494,9 +522,11 @@ variables.
 | | `genpgm` | generate, verify, dump, optimize, emit |
 | | `genlProgram` | the two-pass symbols-then-implementations walk |
 | | `genlGlobalSyms`, `genlGlobalImpl` | declare a node's symbol; emit its body |
+| | `genlImportedInstances` | emit the bodies of the instances this compile made of a module it does not generate |
 | | `genlFn`, `genlParmVar`, `genlAlloca` | function body, parameter allocas, entry-block alloca placement |
 | | `genlGloFnName`, `genlGloVarName` | declare a function or global under the symbol `nameSymbol` spells |
-| | `genlLinkage`, `genlDefinition`, `genlIsDefinedHere` | linkage, storage class and calling convention, together, from the declaration facts and what this object does with the symbol: declares it, defines it, or defines and exports it |
+| | `genlLinkage`, `genlDefinition`, `genlIsDefinedHere`, `genlVtableDefinition` | linkage, storage class and calling convention, together, from the declaration facts and what this object does with the symbol: declares it, defines it, defines and exports it, or defines it shared |
+| | `genlIsInstance` | whether a declaration is a generic's instance or a member of one |
 | | `genlIsExported`, `genlTypeHoldsExpanded` | whether a library compile exports a definition to its importers |
 | | `genlComdat`, `genlNameAnonFn` | the per-definition COMDAT that lets the linker drop a symbol, its kind read off the linkage; the private name an anonymous `fn` needs to have one |
 | | `genlComdatSupport` | what the target's object format does with COMDATs |

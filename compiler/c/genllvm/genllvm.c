@@ -197,15 +197,35 @@ void genlGloVar(GenState *gen, VarDclNode *varnode) {
         LLVMSetGlobalConstant(global, 1);
 }
 
+// Whether a declaration belongs to a generic's instance: it is one (a generic
+// function's instance), or it is a member of one (a method or static of a
+// generic type's instance, or of an instance of a generic trait or enum). The
+// members of a type's instance carry no instantiating node of their own; their
+// type does, so the owners are asked up to the module.
+static int genlIsInstance(INode *dclnode) {
+    for (INode *node = dclnode; node && node->tag != ModuleTag; node = inodeGetOwner(node)) {
+        if (itypeInstanceTypeArgs(node) != NULL)
+            return 1;
+    }
+    return 0;
+}
+
 // Whether this object file defines a declared symbol rather than merely
 // declaring it: the declaration is not externally supplied, its module is one
 // this compile generates bodies for, and a function has a body to generate.
 // An imported module's functions have bodies in the IR and are declarations
 // here, which is why the module's flag decides and not the node alone.
+//
+// A generic's instance is the exception: every object that uses one defines it,
+// whether its generic's module is generated here or not. The generic's package
+// cannot know which instances its importers make, so it has none for them to
+// link against (genlImportedInstances generates the bodies).
 static int genlIsDefinedHere(INode *dclnode) {
     DclInfo *dclinfo = inodeGetDclInfo(dclnode);
     if (dclinfo->facts & DclExternal)
         return 0;
+    if (genlIsInstance(dclnode))
+        return dclnode->tag != FnDclTag || ((FnDclNode*)dclnode)->value != NULL;
     ModuleNode *mod = dclInfoGetModule(dclnode);
     if (mod == NULL || !(mod->flags & FlagGenMod))
         return 0;
@@ -248,9 +268,10 @@ static int genlTypeHoldsExpanded(INode *type) {
 //   expanded body that can reach its private ones through a receiver.
 // Everything else is internal: a private definition nothing expanded names, and
 // every function of a private type no expanded body names. An instance of a
-// generic is not exported here either: every importer makes its own.
+// generic, or a member of one, is never exported: every object that uses it
+// defines it (genlDefinition).
 static int genlIsExported(GenState *gen, INode *dclnode) {
-    if (gen->libroot == NULL || itypeInstanceTypeArgs(dclnode) != NULL)
+    if (gen->libroot == NULL || genlIsInstance(dclnode))
         return 0;
     ModuleNode *mod = dclInfoGetModule(dclnode);
     while (mod && mod->dclinfo.owner)
@@ -270,11 +291,29 @@ static int genlIsExported(GenState *gen, INode *dclnode) {
     return !(dclinfo->facts & DclPrivate) || genlTypeHoldsExpanded(owner);
 }
 
-// What this object file does with a declared node's symbol
+// What this object file does with a declared node's symbol.
+//
+// A generic's instance is defined in every object that uses it. In a described
+// build that is several objects -- the generic's own package, and each package
+// importing it -- so each copy is shared, and the linker keeps one. A compile
+// with no build description is the program's only object, and its instances
+// are its own, as its other definitions are.
 static GenlDefinition genlDefinition(GenState *gen, INode *dclnode) {
     if (!genlIsDefinedHere(dclnode))
         return GenlDeclared;
+    if (genlIsInstance(dclnode))
+        return gen->opt->described ? GenlShared : GenlDefined;
     return genlIsExported(gen, dclnode) ? GenlExported : GenlDefined;
+}
+
+// What this object does with a vtable it builds. Every object that coerces a
+// type to a trait builds that pair's vtable, and a virtual reference carries its
+// address to wherever it is passed: pattern matching tells the concrete type by
+// comparing that address with its own object's vtable (genlIsType). So in a
+// described build every copy is shared and the linker keeps one, as for an
+// instance; alone, the program's vtables are its own.
+GenlDefinition genlVtableDefinition(GenState *gen) {
+    return gen->opt->described ? GenlShared : GenlDefined;
 }
 
 // Set a just-created global's linkage, storage class and calling convention
@@ -296,11 +335,20 @@ static GenlDefinition genlDefinition(GenState *gen, INode *dclnode) {
 // importers (genlIsExported) keeps the external linkage LLVM gave it, and so
 // also survives optimisation when nothing in the library itself uses it.
 //
+// A described build adds the shared case: a generic's instance, or a vtable,
+// that every object using it defines is 'linkonce_odr', and genlComdat reads
+// that as a COMDAT of kind 'any', so the linker keeps one of the identical
+// copies and drops the rest. With 'nodeduplicate' the copies would be a
+// duplicate-symbol error (LNK2005); internal, each object would keep its own,
+// and two objects' vtables for one type would have two addresses.
+//
 // 'dclnode' is NULL for a vtable, which no node declares. 'defined' says what
-// this object does with the symbol. A package compile will make an instance of a generic and a
-// vtable 'linkonce any' here, since every object that uses one produces it; for
-// now each object is the only consumer of its own, so internal.
+// this object does with the symbol.
 void genlLinkage(LLVMValueRef global, INode *dclnode, GenlDefinition defined) {
+    if (defined == GenlShared) {
+        LLVMSetLinkage(global, LLVMLinkOnceODRLinkage);
+        return;
+    }
     if (dclnode) {
         DclInfo *dclinfo = inodeGetDclInfo(dclnode);
         if (dclnode->tag == FnDclTag && (dclinfo->facts & DclSystemCC)) {
@@ -323,6 +371,10 @@ void genlLinkage(LLVMValueRef global, INode *dclnode, GenlDefinition defined) {
 // Generate LLVMValueRef for a global variable
 // It sets appropriate visibility, linkage and constant flags for the linker
 void genlGloVarName(GenState *gen, VarDclNode *glovar) {
+    // Named once: an instance's static may be reached both by the symbol pass
+    // and by genlImportedInstances
+    if (glovar->llvmvar)
+        return;
     char symbol[2048];
     LLVMTypeRef vartype = genlType(gen, glovar->vtype);
     LLVMValueRef global;
@@ -579,6 +631,60 @@ void genlGlobalImpl(GenState *gen, INode *node) {
     }
 }
 
+// Define every instance of a generic that a module this object does not
+// generate has: an imported package's generic, instantiated by this compile.
+// The package cannot know which instances its importers make, so it has none
+// for them to link against, and the importer defines each one it uses from the
+// body its include file carries (genlIsDefinedHere). A private generic counts
+// too -- a public generic's body may instantiate it -- and the symbol pass skips
+// an imported module's private names, so an instance is named here if nothing
+// named it yet. Walks a module's node as genlGlobalImpl does, but generates
+// only instances.
+static void genlImportedInstances(GenState *gen, INode *node) {
+    if (isTypeNode(node)) {
+        if (node->tag != StructTag)
+            return;
+        StructNode *strnode = (StructNode*)node;
+        uint32_t copies = structEnumCopyCount(strnode);
+        uint32_t pos;
+        for (pos = 0; pos < copies; ++pos)
+            genlImportedInstances(gen, nodesGet(strnode->derived, pos));
+        INode **nodesp;
+        uint32_t cnt;
+        if (strnode->genericinfo) {
+            Nodes *memonodes = strnode->genericinfo->memonodes;
+            if (memonodes == NULL)
+                return;
+            for (nodesFor(memonodes, cnt, nodesp)) {
+                ++nodesp; --cnt;  // memonodes holds pairs: the call, then what it instantiated
+                genlGenericInstanceSyms(gen, *nodesp);
+                genlGlobalImpl(gen, *nodesp);
+            }
+            return;
+        }
+        // A non-generic type's generic methods
+        int istrait = node->flags & TraitType;
+        for (nodelistFor(&strnode->nodelist, cnt, nodesp)) {
+            if (istrait && ((*nodesp)->flags & FlagMethFld))
+                continue;
+            genlImportedInstances(gen, *nodesp);
+        }
+        return;
+    }
+    if (node->tag == FnDclTag && ((FnDclNode*)node)->genericinfo) {
+        Nodes *memonodes = ((FnDclNode*)node)->genericinfo->memonodes;
+        if (memonodes == NULL)
+            return;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(memonodes, cnt, nodesp)) {
+            ++nodesp; --cnt;
+            genlGloFnName(gen, (FnDclNode*)*nodesp);
+            genlFn(gen, (FnDclNode*)*nodesp);
+        }
+    }
+}
+
 // Generate the program
 void genlProgram(GenState *gen, ProgramNode *pgm) {
 
@@ -616,13 +722,16 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
     for (nodesFor(pgm->modules, cnt, nodesp)) {
         ModuleNode *mod = (ModuleNode*)*nodesp;
 
-        // Generate implementation only for module(s) flagged for generation
-        if (mod->flags & FlagGenMod) {
-            uint32_t icnt;
-            INode **inodesp;
-            for (nodesFor(mod->nodes, icnt, inodesp)) {
+        // Generate implementation only for module(s) flagged for generation,
+        // and of any other module, only the instances this compile made of its
+        // generics
+        uint32_t icnt;
+        INode **inodesp;
+        for (nodesFor(mod->nodes, icnt, inodesp)) {
+            if (mod->flags & FlagGenMod)
                 genlGlobalImpl(gen, *inodesp);
-            }
+            else
+                genlImportedInstances(gen, *inodesp);
         }
     }
 
