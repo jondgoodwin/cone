@@ -9,7 +9,8 @@
 
 CONGO DISCOVERS, THE COMPILER IS TOLD [Jon 23 Sep 2026]. Congo walks each
 package's folders and reads each source file's header -- its leading comments,
-its 'mod' line and its 'import' lines, and nothing after them. It resolves every
+its 'mod' line and its 'import' lines, and nothing after them; a module's
+imports are those of its designated file, the one with the 'mod' line. It resolves every
 import that names another package through the package-folder registries, orders
 the packages so that each is built after what it imports (refusing an import
 loop between packages, or between the modules of one), writes each package's BUILD DESCRIPTION into
@@ -407,8 +408,9 @@ def scan_folder_module(name: str, folder: Path, designated: Path) -> Module:
             child.add_imports(header)
             module.children.append(child)
         else:
+            # No 'mod' line, so no imports: a module's imports are all in its
+            # designated file [Jon 23 Sep], and the compiler refuses any here
             module.files.append(file)
-            module.add_imports(header)
     for sub in folders:
         if sub.name == "build":
             continue
@@ -431,8 +433,8 @@ def scan_organisational(module: Module, folder: Path) -> None:
             raise CongoError(f"{file}: a file opening with 'mod' is a module, and a module"
                              f" must sit directly in its parent module's folder, not in"
                              f" the organisational folder {folder}")
+        # Like any file of the module but its designated one, it has no imports
         module.files.append(file)
-        module.add_imports(header)
     for sub in folders:
         if (sub / f"{sub.name}.cone").is_file():
             raise CongoError(f"{sub / (sub.name + '.cone')}: a module must sit directly in"

@@ -132,11 +132,13 @@ variant's private members, since a closed enum is one type written in one place
 (Jon, 23 Sep 2026).
 
 **A file states its module and its dependencies first.** Every file the
-compiler builds as a module opens with its `mod` line, and every file's imports
-come right after it, ahead of everything else (Jon, 24 Sep 2026). That header —
-comments, the `mod` line, the imports — is what a reader sees first and all
-Congo reads, and the compiler refuses a first file without the line
-(`ErrorNoModDcl`) and an import below the header (`ErrorImportLate`).
+compiler builds as a module opens with its `mod` line (Jon, 24 Sep 2026), and
+the module's imports come right after it, ahead of everything else — so all of
+them are in its designated file, since its other files have no `mod` line to
+follow (Jon, 23 Sep 2026). That header — comments, the `mod` line, the imports —
+is what a reader sees first and all Congo reads, and the compiler refuses a
+first file without the line (`ErrorNoModDcl`) and an import below the header or
+in another file (`ErrorImportLate`).
 
 **Composition is compile-time flattening, and it is the same operation at two
 layers.** A trait's fields are a requirement rather than state it hands over: the

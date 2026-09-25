@@ -490,14 +490,24 @@ gives; what it buys is that the name is where a reader of the file looks first,
 and that the file says which module it opens. The other files of a folder
 module carry none, since one would make the file a one-file module.
 
-**A file's imports come right after its `mod` line**, or first in a file that
-has none, ahead of every other declaration [Jon 24 Sep]. `parseGlobalStmts`
-notes the first statement that is neither the `mod` line nor an `import` (a
-retired `include` is neither refused nor counted), and an `import` after it,
-`pub` or with a `use` clause alike, is `ErrorImportLate`. The import is still
-made. So a file's header is comments, the `mod` line and the imports, which is
-exactly what Congo reads of it (`tools/congo/README.md`); an import below the
-header is one Congo never sees.
+**A module's imports come right after its `mod` line**, ahead of every other
+declaration, and so **all of them are in its designated file** [Jon 23 Sep]:
+*"Imports can't happen in a sibling file because they all have to be after
+`mod`, right? And a sibling file doesn't have a `mod`. So there's no place to
+put it … all of that stuff has to be in the main designated file."* A module's
+whole inbound dependency list is therefore at its declaration. The rule is
+about `import` alone; `use` goes wherever a fold applies, in any file of the
+module. `parseGlobalStmts` refuses an `import` anywhere in a file other than
+the module's first — one the folder sweeps in, one in an organisational
+subfolder, one a build description lists after the first — as
+`ErrorImportLate`, naming the designated file. In the first file it notes the
+first statement that is neither the `mod` line nor an `import` (a retired
+`include` is neither refused nor counted), and an `import` after it, `pub` or
+with a `use` clause alike, is `ErrorImportLate` too. Either way the import is
+still made. So a module's header is comments, the `mod` line and the imports,
+which is exactly what Congo reads of its designated file
+(`tools/congo/README.md`); an import below the header, or in another file, is
+one Congo never sees.
 
 **`pub` on the declaration opens a submodule to its parent's neighbours**, and is
 `ErrorBadPub` on any other module: the root, a lone file and one an `import`
@@ -1151,9 +1161,9 @@ one holds is declared, fields and all.
 **Types keep every field**, private ones included, since an importer lays the
 type out; each member is decided by the rules above, and an enum's variants
 likewise. **As written**: the `mod` line (its `extends`, `is` and default fold
-with it), every import [Q7: all of them for now; pruning is later] — a later
-file's imports moved up into the first file's header, since an import may not
-follow a declaration — and each typedef, const, macro and module trait, which
+with it), every import [Q7: all of them for now; pruning is later] — all in the
+first file's header, since a module's other files have none [Jon 23 Sep] — and
+each typedef, const, macro and module trait, which
 declare no symbol and whose uses nothing records, so a private one stays in too.
 A standalone `use` stays where what it names is in the file or another
 package's, and goes where it privately folds a submodule's names.

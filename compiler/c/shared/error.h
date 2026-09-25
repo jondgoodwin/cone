@@ -238,7 +238,7 @@ enum ErrorCode {
     ErrorUnkAttr = 1119,        // A '@' word that names no attribute
 
     // Moves: what a move-typed value may be moved out of
-    ErrorMoveOut = 1120,        // A move-typed value moved out through a borrowed reference, which does not own it
+    ErrorMoveOut = 1120,        // A move-typed value moved out through a reference that does not solely own it: a borrowed one, or a shared (aliasable) owning one
 
     // 'mod A extends B': a module reusing another module's public names
     ErrorModExtends = 1122,     // What a module's 'extends' names cannot be reused: not a module, a trait (conforming to a module trait is not built), the module itself or one it contains, or a path (a loop of 'extends' is ErrorImportLoop)
@@ -284,7 +284,7 @@ enum ErrorCode {
 
     // A file's header: its 'mod' line, then its imports
     ErrorNoModDcl = 1145,       // A module's first file -- designated, one-file, lone, or first listed in a build description -- not opening with its 'mod' line
-    ErrorImportLate = 1146,     // An 'import' after a declaration: imports come right after the 'mod' line, ahead of everything else
+    ErrorImportLate = 1146,     // An 'import' not right after the 'mod' line: after a declaration, or in a module's file that has no 'mod' line
 
     // Generating a library's include file
     // 1147 was ErrorIncSubmodule, a reach into one of the root's submodules; the include file now writes a nested module block for it

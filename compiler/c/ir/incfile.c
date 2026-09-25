@@ -1190,10 +1190,11 @@ static int incHasBlocks(IncGen *g, IncMod *m) {
     return 0;
 }
 
-// Edit one module's text, statement by statement. A file other than the
-// first has its imports moved up into the first file's header, since an
-// import may not follow a declaration, and the header is where the module's
-// nested blocks go
+// Edit one module's text, statement by statement. A module's imports are all
+// in its first file's header [Jon 23 Sep], and the header is where the
+// module's nested blocks go. An import in another file is refused at parse
+// (ErrorImportLate), so a compile that reaches here has none; one would be
+// moved up into the header
 static void incEditModule(IncGen *g, IncMod *m) {
     int isroot = m->mod == g->root;
     int generic = m->mod->genericinfo != NULL;

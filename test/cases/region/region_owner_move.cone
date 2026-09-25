@@ -1,0 +1,127 @@
+mod region_owner_move;
+
+import stdio use *;
+
+// What the refusal in region_flow_shared_move leaves alone.
+//
+// A sole owner may give up the value it owns: '+so', whose region is
+// 'struct @move', and '+rc-uni' -- also what '+rc' with no permission means --
+// which is a move type and so the only holder of its count. Moving the value
+// out deactivates the owner, and the value is finalized once, by its new
+// holder: each function below shows what it received, and the one finalize
+// that follows the line is its whole release. A by-value 'self' is the callee's,
+// so it is finalized as the method ends, before the line naming its result.
+//
+// A copy value read out through a shared owner is a copy, whole or as a field
+// or as a by-value 'self', and every holder still reads its own. So is a copy
+// field of a move value reached through one.
+//
+// Left out: what the owner's allocation does afterwards. Freeing an owning
+// reference does not finalize what it points to, and one whose value was moved
+// out is not freed at all; both are recorded in the backlog, and neither shows
+// in what a run prints.
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct Noisy {
+  pub id i64;
+  fn final(self &uni) { show("finalized", id); }
+  pub fn take(self) i64 { id; }
+}
+
+struct NoisyBox {
+  pub inner Noisy;
+  pub n i64;
+}
+
+struct Plain {
+  pub x i64;
+  pub y i64;
+  pub fn sum(self) i64 { x + y; }
+}
+
+struct @move Handle {
+  pub id i64;
+}
+
+struct HandleBox {
+  pub h Handle;
+  pub n i64;
+}
+
+// -------- a sole owner gives the value up --------
+
+fn soDeref() {
+  imm a = +so Noisy[1];
+  imm c = *a;
+  show("so-deref-moved-out", c.id);
+}
+
+fn soField() {
+  imm a = +so NoisyBox[Noisy[2], 20];
+  imm c = a.inner;
+  show("so-field-moved-out", c.id);
+}
+
+fn soSelfByValue() {
+  imm a = +so Noisy[3];
+  show("so-self-by-value", a.take());
+}
+
+fn rcUniDeref() {
+  imm a = +rc-uni Noisy[4];
+  imm c = *a;
+  show("rc-uni-deref-moved-out", c.id);
+}
+
+fn rcDefaultDeref() {
+  imm a = +rc Noisy[5];
+  imm c = *a;
+  show("rc-default-deref-moved-out", c.id);
+}
+
+fn rcUniField() {
+  imm a = +rc-uni NoisyBox[Noisy[6], 60];
+  imm c = a.inner;
+  show("rc-uni-field-moved-out", c.id);
+}
+
+// -------- a copy value read through a shared owner --------
+
+fn copies() {
+  imm a = +rc-mut Plain[7, 8];
+  imm b = a;
+  imm p = *a;
+  show("copy-out-of-rc-mut", p.x);
+  show("rc-mut-holder-keeps-its-copy", a.y);
+  show("other-holder-keeps-its-copy", b.x);
+  imm y = b.y;
+  show("copy-field-out-of-rc-mut", y);
+  show("copy-self-through-rc-mut", a.sum());
+
+  imm i = +rc-imm Plain[9, 10];
+  imm q = *i;
+  show("copy-out-of-rc-imm", q.y);
+
+  imm hb = +rc-mut HandleBox[Handle[11], 12];
+  imm hb2 = hb;
+  imm id = hb.h.id;
+  show("copy-field-of-move-value-through-rc-mut", id);
+  show("other-holder-reads-it-too", hb2.h.id);
+}
+
+fn main() i32 {
+  soDeref();
+  soField();
+  soSelfByValue();
+  rcUniDeref();
+  rcDefaultDeref();
+  rcUniField();
+  copies();
+  0i32;
+}

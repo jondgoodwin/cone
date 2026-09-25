@@ -1,0 +1,89 @@
+mod region_flow_shared_move;
+
+// A move value may not be moved out through a shared owning reference.
+//
+// An 'rc' reference whose permission lets it be aliased -- 'mut', 'imm', 'ro'
+// or 'mut1' -- is one of possibly many holders counting the same value, so it
+// does not solely own it. Moving the value out through it would leave the other
+// holders pointing at a value that has a new owner, which finalizes it while
+// they still read it: 'imm b = a; imm c = *a;' printed c's value, then b's read
+// of it, then c's finalizer, with b still holding the finalized value. It is the
+// borrowed-reference rule's principle (move_flow_borrow): a place that does not
+// solely own a value cannot give it up.
+//
+// A sole owner may: '+so', and '+rc-uni', which is a move type and so the only
+// holder there is. region_owner_move runs both, and the copy value read out
+// through a shared owner, which the rule leaves alone.
+//
+// One refusal per function, so that each is reported whatever flow analysis
+// does after the first error in a function.
+
+struct Inner {
+  pub n i64;
+  fn final(self &uni) {}
+  pub fn take(self) i64 { n; }
+}
+
+struct Outer {
+  pub inner Inner;
+  pub k i64;
+}
+
+// A struct holding a counted reference: the field is one more holder
+struct Holder {
+  pub r +rc-mut Inner;
+}
+
+fn consume(i Inner) {}
+
+fn boundMut() {
+  imm a = +rc-mut Inner[1];
+  imm b = a;
+  imm c = *a;                     //~ ErrorMoveOut:11 "through a shared owning reference"
+}
+
+fn boundImm() {
+  imm a = +rc-imm Inner[2];
+  imm c = *a;                     //~ ErrorMoveOut:11 "through a shared owning reference"
+}
+
+fn boundRo() {
+  imm a = +rc-ro Inner[3];
+  imm c = *a;                     //~ ErrorMoveOut:11 "through a shared owning reference"
+}
+
+fn boundMut1() {
+  imm a = +rc-mut1 Inner[9];
+  imm c = *a;                     //~ ErrorMoveOut:11 "through a shared owning reference"
+}
+
+fn sliceElement(s +[]rc-mut Inner) {
+  imm c = s[0];                   //~ ErrorMoveOut:12 "through a shared owning reference"
+}
+
+fn fieldOfReferent() {
+  imm a = +rc-mut Outer[Inner[4], 5];
+  imm c = a.inner;                //~ ErrorMoveOut:11 "through a shared owning reference"
+}
+
+fn countedField() {
+  imm h = Holder[+rc-mut Inner[6]];
+  imm c = *h.r;                   //~ ErrorMoveOut:11 "through a shared owning reference"
+}
+
+fn selfByValue() i64 {
+  imm a = +rc-mut Inner[7];
+  a.take();                       //~ ErrorMoveOut:3 "through a shared owning reference"
+}
+
+fn passed() {
+  imm a = +rc-mut Inner[8];
+  consume(*a);                    //~ ErrorMoveOut:11 "through a shared owning reference"
+}
+
+fn returned(a +rc-mut Inner) Inner {
+  *a;                             //~ ErrorMoveOut:3 "through a shared owning reference"
+}
+
+fn main() {
+}

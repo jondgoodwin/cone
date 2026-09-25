@@ -19,6 +19,33 @@ static int flowIsBorrowedRef(INode *exp) {
         && itypeGetTypeDcl(reftype->region) == borrowRef;
 }
 
+// Is this expression a shared owner -- an owning reference that other holders
+// may be sharing? An owning reference that may be aliased ('+rc-mut', '+rc-imm',
+// '+rc-ro', and every 'rc' form but '+rc-uni') is one of possibly many holders
+// counting the same value, so it does not solely own it. An owning reference
+// that is a move type -- a 'uni' one, or any in the '@move' region 'so' -- is
+// the only holder, and may give the value up.
+static int flowIsSharedOwner(INode *exp) {
+    INode *reftype = iexpGetTypeDcl(exp);
+    return (reftype->tag == RefTag || reftype->tag == ArrayRefTag || reftype->tag == VirtRefTag)
+        && itypeGetTypeDcl(((RefNode *)reftype)->region) != borrowRef
+        && !itypeIsMove(reftype);
+}
+
+// Refuse a move out through a reference that does not solely own what it points
+// at. Returns 1 when it refused.
+static int flowRefuseMoveThrough(INode *node, INode *ref) {
+    if (flowIsBorrowedRef(ref)) {
+        errorMsgNode(node, ErrorMoveOut, "May not move a value out through a borrowed reference, which does not own it.");
+        return 1;
+    }
+    if (flowIsSharedOwner(ref)) {
+        errorMsgNode(node, ErrorMoveOut, "May not move a value out through a shared owning reference, which does not solely own it.");
+        return 1;
+    }
+    return 0;
+}
+
 // Add a variable to a list of the variables a move leaves without their value
 static void flowAddMoved(Nodes **moved, INode *vardcl) {
     INode **nodesp;
@@ -67,8 +94,9 @@ static void flowMoveExit(INode *exp, Nodes **moved, Nodes **common, int *first) 
 // Walk inwards from a moved value to its source: refuse a move out of a place
 // that does not own the value, and, when 'moved' is given, add to it each
 // source variable the move leaves without its value. A value reached through a
-// borrowed reference still belongs to what was borrowed, so moving it out would
-// leave two owners of one value.
+// borrowed reference still belongs to what was borrowed, and one reached through
+// a shared owning reference still belongs to its other holders, so moving it out
+// would leave two owners of one value.
 static void flowMoveSource(INode *node, Nodes **moved) {
     // For a variable, its value is what moves
     if (isNameUseNode(node) && isExpNode(node)) {
@@ -88,20 +116,16 @@ static void flowMoveSource(INode *node, Nodes **moved) {
     case ArrIndexTag:
     {
         INode *objfn = ((FnCallNode*)node)->objfn;
-        if (flowIsBorrowedRef(objfn)) {
-            errorMsgNode(node, ErrorMoveOut, "May not move a value out through a borrowed reference, which does not own it.");
+        if (flowRefuseMoveThrough(node, objfn))
             return;
-        }
         flowMoveSource(objfn, moved);
         break;
     }
     case DerefTag:
     {
         INode *ref = ((StarNode*)node)->vtexp;
-        if (flowIsBorrowedRef(ref)) {
-            errorMsgNode(node, ErrorMoveOut, "May not move a value out through a borrowed reference, which does not own it.");
+        if (flowRefuseMoveThrough(node, ref))
             return;
-        }
         flowMoveSource(ref, moved);
         break;
     }

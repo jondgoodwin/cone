@@ -109,14 +109,15 @@ the framework that calls it — and Congo does not read it.
 
 ## Imports, the registries, and the machine config
 
-Congo reads the **header** of every source file: its leading comments, its
-`mod` line, its `import` lines, and nothing after them. That is the language's
-rule too: every file a module is built from opens with its `mod` line (a file
-of a folder module other than its designated file has none), and its imports
-come right after it (or at the top of a file with none), ahead of everything
-else. An `import` further down is not seen by Congo; the compiler refuses it
-(`ErrorImportLate`), and reports it too as an import the build description
-gives no line for.
+Congo reads the **header** of every module's designated file: its leading
+comments, its `mod` line, its `import` lines, and nothing after them. That is
+the language's rule too: a module's designated file opens with its `mod` line,
+and the module's imports come right after it, ahead of everything else. A file
+of a folder module other than its designated file has no `mod` line, and so no
+imports: Congo reads its header only to see that it has no `mod` line. An
+`import` further down, or in such a file, is not seen by Congo; the compiler
+refuses it (`ErrorImportLate`), and reports it too as an import the build
+description gives no line for.
 
 An import names a module. Congo answers each one this way:
 
