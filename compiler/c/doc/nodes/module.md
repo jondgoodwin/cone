@@ -1853,9 +1853,12 @@ and the program's stitched init calls it once, where the program names that
 instance itself (`module_generic_link`). ⚠ **An instance only a package uses is
 invisible to the program**: the package's include file says nothing of it, so
 the program's stitched pair makes no call to its `init` or finalizer, and a
-global it would assign keeps the zero it was stored with — measured at the IR,
-not at run time. By the rule above it leaks rather than misbehaves; what closes
-it is open.
+global it would assign keeps the zero it was stored with. Measured at run time
+through Congo, 25 Sep 2026: package `q` uses `g[i64]` and the program imports
+`q` alone; `q`'s `init` runs and `g[i64]`'s does not, its count of inits read
+back as 0, and neither does its `final`. Where the program names `g[i64]`
+itself, it runs once. By the rule above it leaks rather than misbehaves; what
+closes it is open (`Backlog\init-and-final.md`).
 
 ## Principles — the model, as decided
 
@@ -2452,19 +2455,21 @@ annotation on a reference names is a type.
   `initpure` rule that such a function call only `pure` or `initpure` functions,
   and that one other than `init` read no uninitialized global of its module:
   `pure` itself is unbuilt. Nothing runs the stitched init and final but a call
-  to `initAll()` and `finalAll()`, until the entry glue does. ⚠ **The
-  program's compile now SEES a package that only another package imports**:
+  to `initAll()` and `finalAll()`, until the entry glue does. **A package the
+  program reaches only through other packages has its `init` and `final` run**:
   an include file imports, and the package lines list the whole closure ("A
   described build"), so every include file the program's imports reach,
   directly or through other include files, is a module of the program's
-  compile. **How their `init`s run is
-  still open** — Jon's chaining idea (`WI\first-congo-milestone.md`), for the
-  entry-trait conversation. What happens today falls out of the stitched pair
-  rather than being decided: an indirect package whose include file declares
-  its `init` is in `pgm->initorder` like any module, so `initAll()` calls it
-  (measured by hand, 25 Sep 2026: `b.init` setting a global to 7, reached only
-  through `a`'s include file, ran from the program's `initAll()`); one whose
-  include file does not declare it is not run, as for a direct import.
+  compile, in `pgm->initorder` like any module, and the stitched pair calls it.
+  Measured through Congo and pinned, 25 Sep 2026: the program imports `a` and
+  `c`, each importing `b`, which holds a submodule; `b.sub`'s `init` runs, then
+  `b`'s once, then `a`'s and `c`'s, and every `final` in exactly the reverse
+  (`module_init_transitive`; Congo's
+  `test_an_indirect_package_runs_its_init_once`). An include file that does not
+  declare an `init` leaves it unrun, as for a direct import. Jon's chaining
+  idea (`WI\first-congo-milestone.md`) stays open for the entry-trait
+  conversation; nothing now needs it for a package. ⚠ **A generic instance
+  only a package uses is still not run** ("Init and final").
 - **Dependency fan-out is unmeasured.** Section GC decides what reaches the
   binary; it does not decide what must resolve at link time. Archive member
   extraction precedes it, so calling one function from a package pulls its whole

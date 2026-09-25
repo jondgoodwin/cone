@@ -761,6 +761,8 @@ diagnostics = 6
 # exactly the reverse. module_init runs a chain of modules, printing from each;
 # module_init_link runs a package compiled on its own, whose 'init' and
 # finalizer the program's stitched pair reach through its include file;
+# module_init_transitive runs a package the program reaches only through two
+# others' include files, and its submodule, each once;
 # module_init_reject pins what a module's 'init' refuses about its globals, and
 # what 'init' and 'final' must be.
 [scenario.module_init]
@@ -821,6 +823,33 @@ contains = [
   "define internal cone.finalAll comdat nodeduplicate",
 ]
 excludes = ["declare lib.final", "define lib.init", "define lib.drop"]
+
+# A package the program reaches only through other packages: the program
+# imports a and c, each of which imports b, and b holds a submodule. b and its
+# submodule are modules of the program's compile, through a's and c's include
+# files and the package line for b, so they take their place in the module
+# order and the stitched pair calls them, b's 'init' once for the diamond.
+[scenario.module_init_transitive]
+category = "run"
+description = "A package reached only through two other packages' include files, and its submodule: each 'init' runs once, dependencies first, from the program's 'initAll()', and each 'final' in the reverse from 'finalAll()'"
+tags = ["genllvm", "runtime"]
+link = ["b/b.conebuild", "a/a.conebuild", "c/c.conebuild"]
+include = ["include/b.cone", "include/a.cone", "include/c.cone"]
+
+# The program declares b's and its submodule's 'init' and 'final', which its
+# stitched pair calls, and defines none of them: they are b's object's.
+[[scenario.module_init_transitive.check]]
+name = "the-program-calls-the-indirect-packages-lifecycle"
+target = "symbols"
+contains = [
+  "declare b.init",
+  "declare b.final",
+  "declare b.sub.init",
+  "declare b.sub.final",
+  "define internal cone.initAll comdat nodeduplicate",
+  "define internal cone.finalAll comdat nodeduplicate",
+]
+excludes = ["define b."]
 
 [scenario.module_init_reject]
 category = "reject"

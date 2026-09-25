@@ -389,6 +389,134 @@ class Scenarios(unittest.TestCase):
         # a's generated include file imports b, as a's source does
         self.assertIn("\nimport b;\n", (out / "a.cone").read_text())
 
+    def test_an_indirect_package_runs_its_init_once(self):
+        # A diamond: the program imports a and c, each of which imports b, and
+        # b holds a submodule. The program never imports b, yet b and its
+        # submodule are modules of its compile, through a's and c's include
+        # files, so the program's initAll() runs their 'init's and finalAll()
+        # their 'final's
+        packages = self.root / "diamond"
+        self.registry(packages)
+        for name in ("a", "b", "c"):
+            write(packages / name / "congo.toml",
+                  f'[package]\nname = "{name}"\nversion = "0.1.0"\noutput = "library"\n')
+        write(packages / "b" / "src" / "b.cone", """
+            mod b;
+
+            import stdio;
+
+            pub imm value i64;
+
+            fn @initpure init() {
+              value = sub.base + 7i64;
+              stdio.print <- "b init ";
+              stdio.print <- value;
+              stdio.print <- "\\n";
+            }
+
+            fn final() {
+              stdio.print <- "b final\\n";
+            }
+
+            pub fn get() i64 {
+              value;
+            }
+            """)
+        write(packages / "b" / "src" / "sub.cone", """
+            pub mod sub;
+
+            import stdio;
+
+            pub imm base i64;
+
+            fn @initpure init() {
+              base = 100i64;
+              stdio.print <- "b.sub init\\n";
+            }
+
+            fn final() {
+              stdio.print <- "b.sub final\\n";
+            }
+            """)
+        write(packages / "a" / "src" / "a.cone", """
+            mod a;
+
+            import stdio;
+            import b;
+
+            fn @initpure init() {
+              stdio.print <- "a init ";
+              stdio.print <- b.get();
+              stdio.print <- "\\n";
+            }
+
+            fn final() {
+              stdio.print <- "a final\\n";
+            }
+
+            pub fn readB() i64 {
+              b.value;
+            }
+            """)
+        write(packages / "c" / "src" / "c.cone", """
+            mod c;
+
+            import stdio;
+            import b;
+
+            fn @initpure init() {
+              stdio.print <- "c init\\n";
+            }
+
+            fn final() {
+              stdio.print <- "c final\\n";
+            }
+
+            pub fn twiceB() i64 {
+              b.get() * 2i64;
+            }
+            """)
+        write(self.root / "app.cone", """
+            mod app;
+
+            import stdio;
+            import a;
+            import c;
+
+            fn main() i32 {
+              initAll();
+              stdio.print <- "main ";
+              stdio.print <- a.readB();
+              stdio.print <- " ";
+              stdio.print <- c.twiceB();
+              stdio.print <- "\\n";
+              finalAll();
+              0i32;
+            }
+            """)
+        run = self.congo("run", "app.cone", cwd=self.root)
+        # b's submodule first, since b contains it: base is 100. Then b, once
+        # though a and c both import it: value is 100+7 = 107, which a's init
+        # reads back. Then c. main reads 107 through a and 2*107 = 214 through
+        # c. Every final in exactly the reverse, each once
+        self.assertEqual(self.program_output(run),
+                         "b.sub init\nb init 107\na init 107\nc init\n"
+                         "main 107 214\n"
+                         "c final\na final\nb final\nb.sub final\n")
+        compiled = [line.split()[1] for line in run.stdout.splitlines()
+                    if line.strip().startswith("Compiling")]
+        self.assertEqual(compiled, ["core", "stdio", "b", "a", "c", "app"])
+        out = next((self.root / "home" / "lone").glob("app-*")) / "debug"
+        # b's generated include file declares b's 'init' and 'final' and its
+        # submodule's, which is what the program's stitched pair calls
+        generated = (out / "b.cone").read_text()
+        self.assertEqual(generated.count("extern fn @initpure init();"), 2)
+        self.assertEqual(generated.count("extern fn final();"), 2)
+        self.assertIn("\nmod sub {", generated)
+        # The program's own module imports a and c alone
+        desc = (out / "app.conebuild").read_text()
+        self.assertNotIn("import b:", desc[desc.index("app: {"):])
+
     def test_a_library_with_submodules(self):
         # A library laid out as a root, a folder submodule holding a one-file
         # submodule of its own, and a one-file submodule, its API re-exported at
