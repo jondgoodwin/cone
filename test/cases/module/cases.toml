@@ -1883,11 +1883,85 @@ contains = [
   "constant internal q.Shape (vtable list) comdat nodeduplicate",
 ]
 
+# Three packages, each compiled on its own: b defines a struct with methods, a
+# imports b and takes and returns b's type, and the program imports a alone. An
+# include file is a module file like any other [Jon 25 Sep], so a's include file
+# imports b, and the program's description answers that import from its package
+# lines, which list the compile's whole dependency closure. Every value the
+# program prints comes from a's object (the Counter it builds) or from b's (the
+# methods), since both include files declare them 'extern'.
+[scenario.module_build_transitive]
+category = "run"
+description = "An include file that imports another package's include file, answered by the program's package lines: a program imports a, whose functions take and return b's type"
+tags = ["parse", "genllvm", "runtime"]
+link = ["b/b.conebuild", "a/a.conebuild"]
+
+# The program declares a's functions and b's methods, and defines neither.
+[[scenario.module_build_transitive.check]]
+name = "the-program-declares-both-packages"
+target = "symbols"
+contains = ["declare a.start", "declare a.advance", "declare b.Counter.next", "declare b.Counter.scaled"]
+excludes = ["define a.", "define b."]
+
+# The package lines answer an include file's imports and nothing else: a program
+# that imports b by its own name needs its own module's line for b, and an
+# include file importing a package with no package line is refused, naming it.
+[scenario.module_build_transitive_parse]
+category = "reject"
+description = "Package lines answer an include file's imports only: the program's own import of a package only a package line names, and an include file's import of a package no line names"
+tags = ["parse"]
+diagnostics = 2
+
+# A package reached only through another's include file is not in the
+# program's view: the program imports a, and a's include file imports b
+# privately, so b is neither a name of the program nor a public name of a.
+[scenario.module_build_transitive_nameres]
+category = "reject"
+description = "A package the program reaches only through another package's include file is not the program's to name, bare or through the importing package"
+tags = ["nameres"]
+diagnostics = 2
+
+# Package knob folds its public global's members into its namespace with
+# 'pub use *'; its include file declares that global 'extern', with no value, and
+# the same fold clause [Jon 25 Sep], so the program, folding knob in, reaches
+# the names bare as knob itself does. Every value comes from knob's one
+# 'config', defined in knob's object: the include gives it no value to read.
+[scenario.module_build_fold_extern]
+category = "run"
+description = "A fold clause on an 'extern' global in an include file: the program reaches, reads and writes the folded names bare, and they are the package's global"
+tags = ["parse", "nameres", "genllvm", "runtime"]
+link = ["knob/knob.conebuild"]
+
+# The program declares knob's global and defines no copy of its own.
+[[scenario.module_build_fold_extern.check]]
+name = "the-folded-global-is-knobs"
+target = "symbols"
+contains = ["external global knob.config", "declare knob.Config.product", "declare knob.faster"]
+excludes = ["global knob.config comdat"]
+
+# A fold on an 'extern' global reads its declared type, so where the type is out
+# of view the fold is refused as the type is, where it is written, and nothing
+# more; and what a fold refuses on a global with a value it refuses on an
+# 'extern' one.
+[scenario.module_build_fold_extern_nameres]
+category = "reject"
+description = "Folds on 'extern' globals whose type is out of view (undeclared, private to another module), is no struct, or whose 'pub use' goes through a private global"
+tags = ["nameres"]
+diagnostics = 4
+
+# Include files that import each other loop like any two modules, and the
+# compile refuses it (ErrorImportLoop).
+[scenario.module_build_transitive_loop]
+category = "reject"
+description = "Two include files that import each other through the program's package lines: an import loop, refused at the edge that closes it"
+tags = ["nameres"]
+diagnostics = 1
+
 [scenario.module_build_reject]
 category = "reject"
-description = "A build description that cannot be read: a bad setting value, an unknown setting, an import line missing its ':', a child module named twice, a module listing no file, a setting after the module"
+description = "A build description that cannot be read: a bad setting value, an unknown setting, a package line written twice, an import line missing its ':', a module's import line naming a different file from the package line, a child module named twice, a module listing no file, a setting and a package line after the module"
 tags = ["parse"]
-diagnostics = 6
+diagnostics = 9
 
 [scenario.module_build_modname_parse]
 category = "reject"

@@ -181,7 +181,29 @@ source, the package's root module as an importer needs to see it:
 - its types are written with their fields, and what an importer must have the
   body of — an `inline` or generic function, a generic type's methods, a macro —
   is written whole;
-- a private name that such a body reaches is declared too.
+- a private name that such a body reaches is declared too;
+- a global whose members the package folds into its namespace
+  (`pub mut config Config = ... pub use *;`) is declared `extern` with the same
+  clause (`pub extern mut config Config pub use *;`), so an importer reaches
+  the folded names as the package does.
+
+**An include file is a module file like any other** [Jon 25 Sep]: it opens with
+its `mod` line, and its imports follow. So a package whose public functions
+take or return another package's types imports that package in its include
+file, as its source does:
+
+```
+mod a;
+
+import b;
+
+pub extern fn start(n i64) b.Counter;
+```
+
+A program that imports `a` alone can then use the `b.Counter` that `start`
+returns, its fields and its methods, without importing `b`. It cannot name `b`
+itself: `b` is a name of `a`'s include file, private to it unless the import
+says `pub`. A program that wants `b`'s names writes `import b`.
 
 `packages/stdio/stdio.cone` is the example. Include files are written by hand
 for now, so one must be kept in step with the package's source: a declaration
@@ -240,8 +262,12 @@ package named which library.
    `build/<mode>/<package>.conebuild`, and run `conec` on it alone. The one
    being built gets the `output` its manifest says; every package it imports is
    a `library`. Each description lists the package's modules and their files
-   and, per module, where each import's include file is. The format is the
-   compiler's: `compiler/c/doc/nodes/module.md`, "A described build".
+   and, per module, where each import's include file is; and, at its top, a
+   **package line** for every package in the package's dependency closure,
+   direct or indirect, `core` first and each after what it imports, which is
+   where an include file's own imports are found. The package's own modules
+   import only what their own lines give them. The format is the compiler's:
+   `compiler/c/doc/nodes/module.md`, "A described build".
 5. **Link** the objects, the program's first, with `conestd`, the C libraries
    the packages' `[link]` tables name, and the C runtime,
    into `build/<mode>/<name>.exe`. A library stops at its object,
@@ -277,7 +303,8 @@ python tools/congo/test_congo.py
 builds real programs in a temporary folder with the repository's `conec` (build
 it first, `python test/run.py --build`): `congo new` then `congo run`, a
 package with submodules printing through `stdio`, a lone file, a library from a
-registry folder that itself imports `stdio`, a C package linking a Windows
+registry folder that itself imports `stdio`, three packages chained through an
+include file that imports another package's, a C package linking a Windows
 system library (shlwapi), a C library built in the test and found through
 `[link] paths`, the loop refusals between packages and between modules, and the
 manifest's checks. The test suite (`test/run.py`) does not run Congo.

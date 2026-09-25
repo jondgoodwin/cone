@@ -330,7 +330,8 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   global is its one-instance analogue of a field
   ([Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Folding through a
   global"); `parseVarDcl` admits the clause only where `ParseMayFold` says so,
-  which is the module-level declaration alone. **`is` names abstractions and
+  which is the module-level declaration alone, `extern` or not [Jon 25 Sep: the
+  fold reads only the declared type, which an `extern` global has]. **`is` names abstractions and
   folds nothing**: an abstraction has no value for a folded name to be reached
   through, and delegation is what a field's own clause is for.
 - **`pub use` is refused at every type-level site**, and so is the retired

@@ -9,6 +9,8 @@
  *
  *     build: debug
  *     output: library
+ *     import stdio: "../stdio/stdio.cone"
+ *     import geometry: "../geometry/geometry.cone"
  *     q: {
  *         "src/q.cone"
  *         "src/more.cone"
@@ -19,11 +21,20 @@
  *     }
  *
  * The settings come first, each at most once: 'build' is 'debug' or 'release',
- * and 'output' is 'executable' or 'library'. Then the package's one module, a
- * name and a braced body holding three kinds of line: a quoted path is a file of
- * this module, 'name: { ... }' is a child module, and 'import name: "path"' says
+ * and 'output' is 'executable' or 'library'. Then the PACKAGE LINES, one
+ * 'import name: "path"' at the top level for each package in the compile's
+ * dependency closure, direct or indirect: they answer an import that an
+ * include file writes, since an include file is a module file like any other
+ * and may import [Jon 25 Sep]. Then the package's one module, a name and a
+ * braced body holding three kinds of line: a quoted path is a file of this
+ * module, 'name: { ... }' is a child module, and 'import name: "path"' says
  * where this module's 'import name' is found. A relative path is relative to the
  * description's own folder.
+ *
+ * The package lines answer an include file's imports and nothing else: the
+ * package's own modules import only what their own lines give them, so a
+ * package reached only through another's include file is in view to that
+ * include file, not to the program.
  *
  * The file is read by the compiler's own lexer, so a comment is a Cone comment,
  * and a path is a Cone string: a backslash begins an escape, so a path is
@@ -49,6 +60,11 @@
 // The description's own folder, with its trailing slash, or "" for the current
 // directory. A relative path the description writes is relative to it
 static char *buildFolder;
+
+// The description's package lines, held as the import lines of an entry that
+// stands for no module: every include file the compile loads is answered from
+// them (parseBuildImportModule)
+static struct BuildModule *buildPackages;
 
 int parseIsBuildDesc(char *path) {
     char *ext = fileExtPos(path);
@@ -88,9 +104,16 @@ BuildImport *parseBuildFindImport(BuildModule *build, Name *name) {
     return NULL;
 }
 
+// An include file is a module file like any other, so it may import; what its
+// imports reach is what the description's package lines say, the same lines for
+// every include file of the compile
 BuildModule *parseBuildImportModule(BuildImport *import) {
     BuildModule *mod = newBuildModule(import->name);
     mod->isimport = 1;
+    if (buildPackages != NULL) {
+        mod->imports = buildPackages->imports;
+        mod->nimports = buildPackages->nimports;
+    }
     return mod;
 }
 
@@ -113,8 +136,10 @@ static void buildSkipLine() {
 
 static void buildParseBody(BuildModule *mod);
 
-// 'import name: "path"', with the lexer on 'import'
+// 'import name: "path"', with the lexer on 'import': a line of module 'mod', or,
+// where 'mod' is buildPackages, one of the description's package lines
 static void buildParseImport(BuildModule *mod) {
+    int ispackage = mod == buildPackages;
     lexNextToken();
     if (!lexIsToken(IdentToken)) {
         errorMsgLex(ErrorBuildDesc, "Expected the name this module's 'import' is written with: 'import name: \"path\"'.");
@@ -135,14 +160,29 @@ static void buildParseImport(BuildModule *mod) {
         return;
     }
     if (parseBuildFindImport(mod, name)) {
-        errorMsgLex(ErrorBuildDesc, "Module %s says where 'import %s' is found twice: a module imports a name once.",
-            &mod->name->namestr, &name->namestr);
+        if (ispackage)
+            errorMsgLex(ErrorBuildDesc, "The description says where package %s is found twice: a package line names each package once.",
+                &name->namestr);
+        else
+            errorMsgLex(ErrorBuildDesc, "Module %s says where 'import %s' is found twice: a module imports a name once.",
+                &mod->name->namestr, &name->namestr);
+        lexNextToken();
+        return;
+    }
+    char *path = buildPath(lex->val.strlit);
+    // A module's import of a package the package lines also name is the same
+    // include file: two files under one package name would be two modules the
+    // compile cannot tell apart
+    BuildImport *package = ispackage ? NULL : parseBuildFindImport(buildPackages, name);
+    if (package != NULL && strcmp(package->path, path) != 0) {
+        errorMsgLex(ErrorBuildDesc, "Module %s's 'import %s' names a different file from the description's package line for %s: a package is imported through its one include file.",
+            &mod->name->namestr, &name->namestr, &name->namestr);
         lexNextToken();
         return;
     }
     mod->imports = (BuildImport*)buildGrow(mod->imports, mod->nimports, &mod->availimports, sizeof(BuildImport));
     mod->imports[mod->nimports].name = name;
-    mod->imports[mod->nimports++].path = buildPath(lex->val.strlit);
+    mod->imports[mod->nimports++].path = path;
     lexNextToken();
 }
 
@@ -232,11 +272,20 @@ BuildDesc *parseBuildDesc(ConeOptions *opt) {
     // overrides '--release' and '--debug'
     desc->library = opt->library;
     int seenbuild = 0, seenoutput = 0;
+    buildPackages = newBuildModule(NULL);
 
     lexInjectPath(opt->srcpath);
     while (!lexIsToken(EofToken)) {
+        // A package line comes before the module, as a setting does: the
+        // module's own import lines are checked against them
+        if (lexIsToken(ImportToken)) {
+            if (desc->root != NULL)
+                errorMsgLex(ErrorBuildDesc, "A package line comes before the package's module, at the top of the description.");
+            buildParseImport(buildPackages);
+            continue;
+        }
         if (!lexIsToken(IdentToken)) {
-            errorMsgLex(ErrorBuildDesc, "Expected a setting, 'build: ...' or 'output: ...', or the package's module, 'name: { ... }'.");
+            errorMsgLex(ErrorBuildDesc, "Expected a setting, 'build: ...' or 'output: ...', a package line, 'import name: \"path\"', or the package's module, 'name: { ... }'.");
             buildSkipLine();
             continue;
         }

@@ -114,7 +114,9 @@ message.
 
 `ErrorBuildDesc` is a third: a build description that cannot be read, whether a
 setting is unknown, set twice, badly valued or written after the module, a line
-is malformed, a child module or an import is named twice, or a module lists no
+is malformed, a child module, an import or a package line is named twice, a
+package line is written after the module, a module's import line names a
+different file from the package line of the same name, or a module lists no
 file. The description is written by a tool, and every cause has the one remedy
 of fixing the line reported, so nothing would branch on which. What the
 description says about the *source* is not among them: a `mod` line naming

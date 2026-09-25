@@ -15,7 +15,8 @@ typedef struct ConeOptions ConeOptions;
 // each module of one package, where each module's imports are, and what to
 // produce (parsebuild.c). These are its entries, read before anything is parsed.
 
-// 'import name: "path"': where a described module's 'import name' is found
+// 'import name: "path"': where a described module's 'import name' is found; or,
+// written at the top level, a PACKAGE LINE, where an include file's is found
 typedef struct BuildImport {
     Name *name;
     char *path;             // Canonical; a relative path is relative to the description's folder
@@ -29,7 +30,8 @@ typedef struct BuildModule {
     BuildImport *imports;
     uint32_t nfiles, nchildren, nimports;
     uint32_t availfiles, availchildren, availimports;
-    int isimport;           // Stands for the file an import line names, whose name is the import's
+    int isimport;           // Stands for the file an import line names, whose name is the import's,
+                            // and whose imports are the description's package lines
 } BuildModule;
 
 typedef struct BuildDesc {
@@ -64,7 +66,8 @@ int parseIsBuildDesc(char *path);
 BuildDesc *parseBuildDesc(ConeOptions *opt);
 // The import line a described module writes for this name, or NULL
 BuildImport *parseBuildFindImport(BuildModule *build, Name *name);
-// The entry that stands for the module an import line's file draws
+// The entry that stands for the module an import line's file draws: an include
+// file, whose own imports the description's package lines answer
 BuildModule *parseBuildImportModule(BuildImport *import);
 
 // parsemod.c
