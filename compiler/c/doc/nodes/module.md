@@ -2607,5 +2607,5 @@ annotation on a reference names is a type.
   [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols"
 - The lowering of those rules, linkage, COMDATs, and the allocation header:
   [Generation](../phases/generation.md)
-- Mixins, trait inheritance, and types as namespaces: [struct](struct.md)
+- What an `is` list takes in, trait inheritance, and types as namespaces: [struct](struct.md)
 - Instantiation, cloning and memonodes: [generic](generic.md)

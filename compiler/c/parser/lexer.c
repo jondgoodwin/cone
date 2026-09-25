@@ -113,6 +113,9 @@ void keywordInit() {
     keyAdd("@c", CAttrToken);
     keyAdd("@initpure", InitPureToken);
     keyAdd("extends", ExtendsToken);
+    // Retired like 'include', and kept a keyword for the same reason: released
+    // to an identifier, 'mixin Meter;' would read as a field named 'mixin' of
+    // type Meter, and a body that took a trait in would quietly declare a field
     keyAdd("mixin", MixinToken);
     keyAdd("use", UseToken);
     keyAdd("but", ButToken);

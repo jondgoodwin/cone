@@ -1,0 +1,147 @@
+mod trait_enum_is;
+
+import stdio use *;
+
+// An enum, and a variant, declaring with 'is' that it complies with an open trait.
+//
+// An enum's 'is' gives every variant the trait's requirements and defaults: a
+// default the variant does not declare is cloned into it, and a requirement is
+// met by the variant's own method or by one the enum gives every variant. A
+// variant's 'is' names open traits beyond its enum, which stays its base
+// without being written. Neither names a base of its own, so a trait either
+// names requires no fields (trait_typecheck_conform).
+//
+// Both were written with 'mixin' in the body until 25 Sept 2026, and the 'is'
+// form builds the same IR. A run, because which method a slot reached is what
+// the printed numbers say -- each worked out by hand in the comment beside it.
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+trait Named {
+  pub fn label(self &) i32;
+  pub fn loud(self &) i32 {label() * 100;}
+}
+
+trait Sized {
+  pub fn size(self &) i32 {7;}
+}
+
+fn labelOf(n &<Named) i32 {n.label();}
+fn loudOf(n &<Named) i32 {n.loud();}
+fn sizeOf(n &<Sized) i32 {n.size();}
+
+// -------- an enum's 'is' --------
+
+// Named's requirement is met for every variant by the enum's own method, which
+// Circle replaces; Named's default reaches both. Square also names a trait of its
+// own beyond its enum.
+enum Shape is Named {
+  pub k i32;
+  pub fn label(self &) i32 {k;}
+
+  struct Circle {
+    pub r i32;
+    pub fn label(self &) i32 {r * 10;}
+  }
+  struct Square is Sized {
+    pub s i32;
+  }
+}
+
+// A plain reference to the enum converted to the trait's virtual reference: the
+// variant's vtable is chosen by the tag where the conversion is made
+fn shapeLoud(n &Shape) i32 {loudOf(n);}
+// And the trait's default called through the enum's own reference
+fn shapeDirect(n &Shape) i32 {n.loud();}
+
+// An extension takes its base's 'is' with the variants it copies -- it may not
+// write one of its own (enum_parse_extends) -- and a variant it adds is the
+// base's traits too, and may name one of its own
+enum MoreShapes extends Shape {
+  struct Dot is Sized {
+    pub fn label(self &) i32 {k + 50;}
+  }
+}
+
+fn moreLoud(n &MoreShapes) i32 {loudOf(n);}
+
+// A generic enum's 'is' is taken per instance, as its fields are
+enum Opt[T] is Named {
+  pub fn label(self &) i32 {2;}
+
+  struct Nothing {}
+  struct Some is Sized {
+    pub v T;
+    pub fn label(self &) i32 {3;}
+  }
+}
+
+fn optLoud(n &Opt[i32]) i32 {loudOf(n);}
+
+// -------- a variant's 'is' --------
+
+// Pet names no trait itself. Dog is two open traits beyond Pet, meets Named's
+// requirement and takes both defaults; Fish replaces Sized's default; Cat is
+// neither, and nothing of either trait reaches it.
+enum Pet {
+  pub age i32;
+
+  struct Dog is Named, Sized {
+    pub fn label(self &) i32 {age + 1;}
+  }
+  struct Fish is Sized {
+    pub fn size(self &) i32 {age * 2;}
+  }
+  struct Cat {
+    pub lives i32;
+  }
+}
+
+fn petAge(p &Pet) i32 {p.age;}
+
+fn main() i32 {
+  imm c = Shape.Circle[1, 7];   // k 1, r 7
+  imm sq = Shape.Square[2, 3];  // k 2, s 3
+  show("enum-is-variant-own-requirement", labelOf(&c));        // r * 10 = 70
+  show("enum-is-enum-method-meets-requirement", labelOf(&sq)); // k = 2
+  show("enum-is-default-reaches-variant", loudOf(&c));         // 70 * 100 = 7000
+  show("enum-is-default-other-variant", loudOf(&sq));          // 2 * 100 = 200
+  show("enum-is-default-called-directly", (&sq).loud());       // 200
+  show("enum-ref-to-trait-first-variant", shapeLoud(&c));      // 7000
+  show("enum-ref-to-trait-second-variant", shapeLoud(&sq));    // 200
+  show("enum-ref-calls-default", shapeDirect(&c));             // 7000
+  show("enum-is-and-variant-is", sizeOf(&sq));                 // Sized's default, 7
+
+  imm mc = MoreShapes.Circle[1, 2]; // k 1, r 2
+  imm msq = MoreShapes.Square[3, 4]; // k 3, s 4
+  imm dot = MoreShapes.Dot[4];      // k 4
+  show("extension-copy-is-base-trait", loudOf(&mc));           // 2 * 10 * 100 = 2000
+  show("extension-copy-keeps-variant-is", sizeOf(&msq));       // 7
+  show("extension-added-is-base-trait", loudOf(&dot));         // (4 + 50) * 100 = 5400
+  show("extension-added-variant-is", sizeOf(&dot));            // 7
+  show("extension-ref-to-base-trait", moreLoud(&msq));         // 3 * 100 = 300
+
+  imm none = Opt.Nothing[i32][];
+  imm some = Opt.Some[4];
+  show("generic-enum-is-enum-method", loudOf(&none));          // 2 * 100 = 200
+  show("generic-enum-is-variant-method", loudOf(&some));       // 3 * 100 = 300
+  show("generic-enum-ref-to-trait", optLoud(&some));           // 300
+  show("generic-variant-is", sizeOf(&some));                   // 7
+
+  imm dog = Pet.Dog[3];         // age 3
+  imm fish = Pet.Fish[5];       // age 5
+  imm cat = Pet.Cat[4, 9];      // age 4, lives 9
+  show("variant-is-requirement", labelOf(&dog));               // age + 1 = 4
+  show("variant-is-default", loudOf(&dog));                    // 4 * 100 = 400
+  show("variant-is-second-trait-default", sizeOf(&dog));       // 7
+  show("variant-is-default-called-directly", (&dog).size());   // 7
+  show("variant-is-replaces-default", sizeOf(&fish));          // age * 2 = 10
+  show("variant-is-leaves-enum-fields", petAge(&dog));         // 3
+  show("variant-without-is-unchanged", petAge(&cat) + cat.lives); // 4 + 9 = 13
+  0;
+}

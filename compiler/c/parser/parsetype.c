@@ -334,7 +334,7 @@ static void parseUseAdmits(ParseState *parse, FoldClause *fold, char *starmsg) {
 
 // Parse a type body's 'use' clause, with the lexer on the 'use': the sibling
 // enrichment it folds in, then what it admits of it. Held in a field-like node,
-// as 'mixin' and a further 'is' are, because that is what carries a type
+// as a further name in an 'is' list is, because that is what carries a type
 // expression and a fold clause through cloning; it is not a field and never
 // joins the field list, since a sibling contributes no representation.
 static FieldDclNode *parseUseSibling(ParseState *parse) {
@@ -419,6 +419,16 @@ static FieldDclNode *parseFieldDclBody(ParseState *parse, FieldDclNode *fldnode)
 }
 
 
+// Does a type name, as written, spell the declaration 'type' by its own name?
+// A bare name, or that name instantiated with arguments. Asked before anything is
+// resolved, so it sees only the spelling: a path or an alias reaching the same
+// type is left for name resolution to find.
+static int parseNamesType(INode *named, StructNode *type) {
+    if (named->tag == FnCallTag)
+        named = ((FnCallNode*)named)->objfn;
+    return named->tag == NameUseTag && ((NameUseNode*)named)->namesym == type->namesym;
+}
+
 // Join a variant to the enum that declares it: the closed-type flags, the
 // base link back to the enum, the tag number, and its name.
 //
@@ -441,10 +451,8 @@ static void parseAddVariant(ParseState *parse, StructNode *strnode, StructNode *
     // parameters are, so a variant restating either is refused rather than ignored.
     // Reported on the variant, whose node carries the position of its name in
     // both of its spellings, rather than at whatever token the body ended on.
-    if (substruct->basetrait)
-        errorMsgNode((INode*)substruct, ErrorVariantDcl,
-            "%s is a member of the enum it is written inside; remove the 'is'.",
-            &substruct->namesym->namestr);
+    // Its enum written in its own 'is' list was refused where the list was read,
+    // and what else the list names is held as placeholders beside this base.
     if (substruct->genericinfo)
         errorMsgNode((INode*)substruct, ErrorVariantDcl,
             "%s takes its enum's type parameters; it may not declare its own.",
@@ -525,8 +533,8 @@ static int parseIsEnumExtension(int isenum, StructNode *strnode) {
 
 // Report a member an enum extension may not declare, at the token the member
 // starts on, and then let the member be parsed as any other: one diagnostic is the
-// whole of it. For a macro and a mixin: neither reaches the copies of the base's
-// variants, so each belongs on the base, whose members come along with the copies.
+// whole of it. For a macro: it does not reach the copies of the base's variants,
+// so it belongs on the base, whose members come along with the copies.
 // A common field and a requirement each have a reason of their own, said where
 // they are recognized.
 static void parseEnumExtensionMember(int isenum, StructNode *strnode, char *what) {
@@ -677,13 +685,22 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     //
     // The first trait is the base: the only one that may require fields, which is
     // what makes its requirement a positional prefix at position 0. Each further
-    // trait is held as a mixin-style placeholder, exactly as 'mixin' is, and must
-    // require no fields at all.
+    // trait is held as a placeholder field flagged IsMixin, taken in at name
+    // resolution, and must require no fields at all.
+    //
+    // An enum and a variant hold EVERY name that way, the first included. An enum
+    // stands on nothing: it is the base of its own variants, which is what a NULL
+    // 'basetrait' on an enum means throughout. A variant's base is its enum,
+    // which parseAddVariant supplies. So what either names is an open trait whose
+    // requirements and defaults it takes in beside that relationship, and never a
+    // base. Every name in every list is checked at name resolution for being a
+    // closed type, which none of them may be (structRefuseClosedIs).
     //
     // 'extends' names a CONCRETE base to enrich with methods, which is a different
     // assertion, so a type may write both clauses. They are therefore read in a
     // loop rather than as alternatives: either order, each one once.
     int sawis = 0, sawextends = 0;
+    INode *firstis = NULL;
     while (lexIsToken(IsToken) || lexIsToken(ExtendsToken)) {
         if (lexIsToken(IsToken)) {
             lexNextToken();
@@ -692,14 +709,31 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 parseTypeName(parse);
                 continue;
             }
-            strnode->basetrait = parseTypeName(parse);  // Type could be a qualified name or generic
-            while (lexIsToken(CommaToken)) {
-                lexNextToken();
+            int nth = 0;
+            do {
+                if (nth++ > 0)
+                    lexNextToken();     // the comma
+                INode *named = parseTypeName(parse);  // Could be a qualified name or generic
+                if (nth == 1)
+                    firstis = named;
+                if (nth == 1 && !(isenum || isvariant)) {
+                    strnode->basetrait = named;
+                    continue;
+                }
+                // A variant is a member of its enum already, which is not an
+                // abstraction it could also assert. A spelling of the enum this
+                // cannot see through is refused at name resolution as a closed type.
+                if (isvariant && parseNamesType(named, (StructNode*)svtype)) {
+                    errorMsgNode((INode*)strnode, ErrorVariantDcl,
+                        "%s is a member of the enum it is written inside; remove the 'is'.",
+                        &strnode->namesym->namestr);
+                    continue;
+                }
                 FieldDclNode *isafld = newFieldDclNode(anonName, (INode*)immPerm);
                 isafld->flags |= IsMixin | FlagMethFld;
-                isafld->vtype = parseTypeName(parse);
+                isafld->vtype = named;
                 structAddField(strnode, isafld);
-            }
+            } while (lexIsToken(CommaToken));
             // 'is' takes no siblings to fold from: it names abstractions, and an
             // abstraction has no value to reach a folded name through. Delegation is
             // what a field's own 'use' clause is for.
@@ -737,6 +771,19 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         }
         strnode->extendsbase = parseTypeName(parse);
     }
+
+    // An enum that extends another takes its base's abstractions with the variants
+    // it copies from there: those copies already answer everything the base is,
+    // and were written against the base with no body of their own to meet a new
+    // requirement in. So an 'is' belongs on the base, whose variants come along,
+    // or on a variant this enum declares, which may name its own. It is the same
+    // reason a macro or a requirement is refused in such an enum's body. A struct
+    // may write both clauses because it owns what its 'extends' copies in; an
+    // extension does not own the variants it copies.
+    if (isenum && firstis && strnode->extendsbase)
+        errorMsgNode(firstis, ErrorEnumExtends,
+            "%s extends an enum, and takes its base's abstractions with the variants it copies from there: an 'is' belongs on the enum it extends, or on a variant declared here.",
+            &strnode->namesym->namestr);
 
     // An extension's discriminant is its base's: the type node is shared with the
     // base and every variant, so the integer type it is laid out in was settled there
@@ -858,26 +905,19 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 parseSpan(parse, &strnode->spans, (INode*)use, mstart, mkw, SpanMember);
             }
             else if (lexIsToken(MixinToken)) {
-                // Handle a trait mixin, capturing it in a field-like node.
-                // It binds no name, so there is nothing for 'pub' to expose.
-                if (pubflag)
-                    errorMsgLex(ErrorBadPub, "'pub' may not precede a mixin, which declares no name");
-                parseEnumExtensionMember(isenum, strnode, "a mixin");
-                FieldDclNode *field = newFieldDclNode(anonName, (INode*)immPerm);
-                field->flags |= IsMixin | FlagMethFld;
+                // 'mixin' is retired: what it took in is declared with 'is' on the
+                // declaration line, the type's, the enum's or the variant's, where
+                // every abstraction a type complies with is named in one list.
+                // Reported once, at the keyword, and the statement read through so
+                // that the body recovers. A parse diagnostic ends the compile before
+                // name resolution, so nothing is built for it.
+                errorMsgLex(ErrorMixin,
+                    "'mixin' is retired: declare conformance with 'is' on the declaration line -- the type's, the enum's or the variant's -- as in 'struct Gauge is Meter'.");
                 lexNextToken();
-                INode *vtype;
-                if ((vtype = parseType(parse)))
-                    field->vtype = vtype;
-                // A mixin brings the trait's members in already; there is
-                // nothing left for a fold to admit
-                if (parseIsFoldClause()) {
-                    errorMsgLex(ErrorBadFold, "A mixin brings in every member of the trait; it does not fold.");
+                parseType(parse);
+                if (parseIsFoldClause())
                     parseFoldClause(parse, FoldRecover);
-                }
-                structAddField(strnode, field);
                 parseEndOfStatement();
-                parseSpan(parse, &strnode->spans, (INode*)field, mstart, mkw, SpanMember);
             }
             else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
                 INode *perm = parseDclPerm(mutPerm);

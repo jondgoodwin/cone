@@ -65,9 +65,9 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     newnode->extendsbase = cloneNode(cstate, node->extendsbase);
     if (node->derived)
         newnode->derived = newNodes(node->derived->used);
-    // The traits name resolution mixed into the template are the instance's
+    // The traits name resolution took into the template are the instance's
     // too, since their members are cloned below with everything else. The list
-    // is the instance's own, because a generic base trait is mixed in only once
+    // is the instance's own, because a generic base trait is taken in only once
     // the instance exists (structTypeCheck) and is appended here.
     if (node->traits) {
         newnode->traits = newNodes(node->traits->used);
@@ -83,7 +83,7 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     if (node->siblings)
         newnode->siblings = cloneNodes(cstate, node->siblings);
 
-    // Recreate clones of fields/mixins and methods, sequentially and in namespace dictionary
+    // Recreate clones of fields, placeholders and methods, sequentially and in namespace dictionary
     namespaceInit(&newnode->namespace, node->namespace.avail);
     INode **newnodesp = (INode**)memAllocBlk(node->fields.avail * sizeof(INode *));
     newnode->fields.nodes = newnodesp;
@@ -215,7 +215,8 @@ static int structBaseGivesFields(StructNode *base) {
     return (base->flags & EnumType) != 0;
 }
 
-// Expand the placeholder field at 'fldpos' that stands for a base or a mixin:
+// Expand the placeholder field at 'fldpos' that stands for a base or a further
+// name of an 'is' list:
 // the base's fields replace it as clones where it contributes any, and otherwise
 // it is removed, since a trait adds nothing to the layout. Each method the trait
 // gives a body to is cloned into this type's method list unless the type declares
@@ -270,7 +271,7 @@ static void structInheritTrait(StructNode *node, uint32_t fldpos, StructNode *tr
     nodesAdd(&node->traits, (INode*)trait);
 }
 
-// The trait declaration a base or mixin type expression names, or NULL when it
+// The trait declaration a base or placeholder type expression names, or NULL when it
 // names something else: a generic instantiation, which is a call node until type
 // check instantiates it; a type that is not a trait, which type check reports; or
 // a name that did not resolve. The base of an 'is' must be an abstraction, and
@@ -286,7 +287,7 @@ static StructNode *structNameResTrait(INode *typeexp) {
 }
 
 // Resolve a type's declaration now, ahead of the walk, because another type's
-// resolution needs its members: what a type is-a or mixes in must have its
+// resolution needs its members: what a type's 'is' list names must have its
 // own members in place before they are read. Returns 0 when the type is
 // already being resolved, which means the two depend on each other.
 //
@@ -1577,8 +1578,8 @@ static void structHookInherited(StructNode *node, uint32_t fldpos, uint32_t fldc
 // Name resolution of a struct type
 //
 // The dictionary is built whole here, before any method body is resolved: the
-// members declared in the type, every default method of each abstraction it
-// is-a or mixes in, and, for a variant, its enum's fields. A method body may then
+// members declared in the type, every default method of each abstraction its
+// 'is' list names, and, for a variant, its enum's fields. A method body may then
 // name an inherited member bare, exactly as it names the type's own. That needs
 // each such base resolved first, so it is demanded (structNameResDemand); the
 // members copied in
@@ -1739,11 +1740,36 @@ static void structHookEnclosingEnum(StructNode *enumnode) {
     structEnumHookBaseNames(ns, enumnode, NULL);
 }
 
+// Refuse a name written in an 'is' list that is a closed type, and say whether
+// it was one. Only a name read from a list is asked: the placeholder that stands
+// for a base -- a variant's enum, an extension's base -- carries the base's name,
+// while one read from a list is anonymous (parseStruct).
+//
+// An enum's variants are all declared inside it, so nothing outside may join its
+// set, and a type that took one in would carry its discriminant and common
+// fields with no variant number that means anything in it. The first name of a
+// struct's or a trait's list is its base, refused by type check in the same words;
+// this is every other name, and every name of an enum's or a variant's list.
+// 'ownenum' is the enum a variant belongs to, whose name the parser refuses
+// already where it is spelled bare; here it arrives spelled some other way.
+static int structRefuseClosedIs(StructNode *node, FieldDclNode *field, StructNode *trait, StructNode *ownenum) {
+    if (field->namesym != anonName || !(trait->flags & EnumType))
+        return 0;
+    if (ownenum && trait == ownenum)
+        errorMsgNode((INode*)node, ErrorVariantDcl,
+            "%s is a member of the enum it is written inside; remove the 'is'.",
+            &node->namesym->namestr);
+    else
+        errorMsgNode(field->vtype, ErrorInvType,
+            "An enum's variants are declared inside it, so nothing outside may join the set");
+    return 1;
+}
+
 void structNameRes(NameResState *pstate, StructNode *node) {
     INode **nodesp;
     uint32_t cnt;
 
-    // Reached once: by demand from a type that is-a or mixes it in, or by
+    // Reached once: by demand from a type that names it in an 'is' list, or by
     // the module's walk, whichever comes first
     if (node->flags & (NameResolved | NameResolving))
         return;
@@ -1772,7 +1798,7 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     //
     // The enum is demanded first, because an extension's namespace receives its
     // copies of its base's variants only while it is resolved. It is the enum the
-    // variant stands on in any case, which the mixin below demands anyway; a
+    // variant stands on in any case, which its placeholder below demands anyway; a
     // demand that finds the enum under way leaves it to that one to report.
     StructNode *enclosing = structEnclosingEnum(node);
     if (enclosing) {
@@ -1797,7 +1823,10 @@ void structNameRes(NameResState *pstate, StructNode *node) {
 
     // Resolve the base before any other name in the type is hooked, and when it is
     // a declaration this type may stand on, stand a placeholder field for it at
-    // position 0, as an explicit 'mixin' stands for its trait. The walk below
+    // position 0, as a further name of an 'is' list stands for its trait. This
+    // one carries the base's name, which is what tells it from those
+    // (structRefuseClosedIs): it is the one way an enum's fields reach a type.
+    // The walk below
     // replaces each placeholder with what the base contributes -- an enum's fields
     // for a variant, and for a trait nothing but its default methods, so there the
     // placeholder is simply removed. Anything else about the base -- an instance of
@@ -1898,19 +1927,27 @@ void structNameRes(NameResState *pstate, StructNode *node) {
         }
     }
 
-    // Each trait to be mixed in, and the type of each field that folds names
-    // in, is resolved before this type's own names are hooked, so that its
+    // Each abstraction to be taken in, and the type of each field that folds
+    // names in, is resolved before this type's own names are hooked, so that its
     // bodies bind in its own scope rather than this type's. Two types that
-    // each extend or mix in the other can never both be first; a fold from a
-    // type still under way is refused when the clause is expanded below.
-    for (nodelistFor(&node->fields, cnt, nodesp)) {
+    // each stand on the other can never both be first; a fold from a type still
+    // under way is refused when the clause is expanded below. A name of an 'is'
+    // list that turns out to be a closed type is refused here and its
+    // placeholder dropped, so nothing of the enum is spliced in.
+    uint32_t fldi = 0;
+    while (fldi < node->fields.used) {
+        nodesp = &nodelistGet(&node->fields, fldi);
         FieldDclNode *field = (FieldDclNode*)*nodesp;
         if (field->flags & IsMixin) {
             inodeNameRes(pstate, (INode**)nodesp);
             StructNode *trait = structNameResTrait(field->vtype);
+            if (trait && structRefuseClosedIs(node, field, trait, enclosing)) {
+                nodelistMakeSpace(&node->fields, fldi, -1);
+                continue;
+            }
             if (trait && !structNameResDemand(pstate, trait))
                 errorMsgNode(field->vtype, ErrorCircular,
-                    "Cannot extend or mix in %s here: %s is not complete until %s is, so each depends on the other.",
+                    "Cannot take in %s here: %s is not complete until %s is, so each depends on the other.",
                     &trait->namesym->namestr, &trait->namesym->namestr, &node->namesym->namestr);
         }
         else if (field->fold) {
@@ -1919,6 +1956,7 @@ void structNameRes(NameResState *pstate, StructNode *node) {
             if (srcdcl && srcdcl->tag == StructTag)
                 structNameResDemand(pstate, (StructNode*)srcdcl);
         }
+        ++fldi;
     }
 
     // And every sibling a type-body 'use' names, on the same terms and for the
@@ -2158,7 +2196,11 @@ static void structCheckIsaFields(StructNode *node) {
     if (base != NULL && (base->tag != StructTag || !(base->flags & TraitType)))
         base = NULL;
 
-    // Every abstraction past the first must require no fields at all
+    // Every abstraction past the first must require no fields at all. An enum
+    // and a variant have no first: every name in their lists stands beside the
+    // enum, which lays out itself and every variant, so none of them may require
+    // fields, and the message says why in those terms
+    int enumlaid = (node->flags & EnumType) || (base && structBaseGivesFields(base));
     if (node->traits) {
         INode **traitp;
         uint32_t traitcnt;
@@ -2166,7 +2208,13 @@ static void structCheckIsaFields(StructNode *node) {
             StructNode *trait = (StructNode*)*traitp;
             if (trait == base || structBaseGivesFields(trait))
                 continue;
-            if (structTraitRequiresFields(trait))
+            if (!structTraitRequiresFields(trait))
+                continue;
+            if (enumlaid)
+                errorMsgNode((INode*)node, ErrorIsaMulti,
+                    "%s requires fields, and an enum's 'is' or a variant's may name only abstractions that require none: the enum lays out itself and every variant",
+                    &trait->namesym->namestr);
+            else
                 errorMsgNode((INode*)node, ErrorIsaMulti,
                     "%s requires fields, and only the first abstraction named may: its fields would have to hold position zero too",
                     &trait->namesym->namestr);
@@ -2443,7 +2491,7 @@ static void structLayoutVariants(TypeCheckState *pstate, StructNode *node) {
 }
 
 // Check a laid-out type's members: its methods, static functions and statics,
-// then every overload set it declares, then what the traits mixed into it require
+// then every overload set it declares, then what the traits taken into it require
 // of those members. Every layout the program has begun is finished by now.
 static void structCheckMembers(StructNode *node) {
     TypeCheckState tstate;
@@ -2578,13 +2626,13 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
 
     // Handle when a base trait is specified
     if (node->basetrait) {
-        // Name resolution mixed in a base trait that was a declaration then, and
+        // Name resolution took in a base trait that was a declaration then, and
         // recorded it. One that was not -- an instance of a generic trait, which
-        // exists only once the instantiation is type checked here -- is mixed in
+        // exists only once the instantiation is type checked here -- is taken in
         // below, through a placeholder field inserted at position 0 as name
         // resolution would have.
         //
-        // One more is mixed in already: a generic enum's copy of a variant of an
+        // One more is taken in already: a generic enum's copy of a variant of an
         // enum that is not generic. That variant had its enum's fields spliced in
         // at name resolution, before it was copied, and the copy records the
         // extension's template in their place (structEnumCopyVariant). So an
@@ -2639,8 +2687,8 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         }
     }
 
-    // Every trait name resolution mixed in is type checked before this type's
-    // layout is settled, as the one mixed in below is by its placeholder
+    // Every trait name resolution took in is type checked before this type's
+    // layout is settled, as one taken in below is by its placeholder
     if (node->traits) {
         INode **traitp;
         uint32_t traitcnt;
@@ -2648,7 +2696,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
             inodeTypeCheckAny(pstate, traitp);
     }
 
-    // Iterate backwards through all fields to type check them and to mix in any
+    // Iterate backwards through all fields to type check them and to take in any
     // trait still standing as a placeholder. Backwards, so that replacing a
     // placeholder with the trait's fields does not move a field not yet reached.
     int32_t fldpos;
@@ -2666,6 +2714,12 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         StructNode *trait = (StructNode*)itypeGetTypeDcl(field->vtype);
         if (trait->tag != StructTag || !(trait->flags & TraitType)) {
             errorMsgNode(field->vtype, ErrorInvType, "Only an abstraction may be named here, and this is not a trait");
+            continue;
+        }
+        // An instance of a generic enum is a closed type only now that it exists;
+        // a declaration was refused at name resolution
+        if (structRefuseClosedIs(node, field, trait, node->basetrait ? structBaseTraitDcl(node) : NULL)) {
+            nodelistMakeSpace(&node->fields, fldpos, -1);
             continue;
         }
         CloneState cstate;
@@ -2769,7 +2823,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         node->flags |= OpaqueType;
 
     // Mark the type laid out here: fields are indexed, its own size is known,
-    // and the member set is complete -- mixins were expanded and trait methods
+    // and the member set is complete -- placeholders were expanded and trait methods
     // inherited during the field walk above. Its members are not checked here
     // at all; they wait until no layout is in flight (structCheckMembers).
     //

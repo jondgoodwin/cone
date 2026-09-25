@@ -315,6 +315,54 @@ Reading.High[1, 4].get()      // 1: High's own copy of get
 		to recover the variant, or declare the method with a reference receiver, which dispatches
 		as above.</i></p>
 
+	<h3 id="isa">Complying with a trait</h3>
+	<p>An enum may say in its declaration that it complies with one or more open
+		<a href="reftrait.html#isa">traits</a>, exactly as a struct does, with
+		<span class="pre">is</span> after its name. What the trait requires and what it gives then
+		reach <b>every variant</b>: a default the variant does not declare becomes its own copy, and a
+		requirement is met by the variant's own method or by one with a body the enum gives every
+		variant.</p>
+<pre>
+trait Named {
+	fn label(self &amp;) i32;
+	fn loud(self &amp;) i32 {label() * 100;}
+}
+
+trait Sized {
+	fn size(self &amp;) i32 {7;}
+}
+
+enum Shape is Named {
+	pub k i32;
+	pub fn label(self &amp;) i32 {k;}    // meets Named's requirement for every variant
+
+	pub struct Circle {
+		pub r i32;
+		pub fn label(self &amp;) i32 {r * 10;}
+	}
+	pub struct Square is Sized {        // a variant may name traits of its own
+		pub s i32;
+	}
+}
+
+fn loudOf(n &amp;&lt;Named) i32 {n.loud();}
+fn shapeLoud(s &amp;Shape) i32 {loudOf(s);}   // passes the variant's vtable, chosen by the tag
+
+loudOf(&amp;Shape.Circle[1, 7])     // 7000: Circle's own label, Named's loud
+loudOf(&amp;Shape.Square[2, 3])     // 200: the enum's label, Named's loud
+</pre>
+	<p>A <b>variant</b> may name traits of its own in the same way, beyond its enum:
+		<span class="pre">struct Square is Sized</span> above. Its enum is its base without being
+		written, and naming the enum in the list is an error, since a variant is already a member of
+		the enum it is written inside.</p>
+	<p>An enum's list and a variant's name only <b>open</b> traits, and none of them is a base in
+		the sense a struct's first one is: the enum lays out itself and every variant, discriminant
+		first, so a trait either one names may not require fields. Nor may any
+		<span class="pre">is</span> list name an enum, whether first or later: an enum's variants
+		are all declared inside it, and nothing outside may join the set. An enum that
+		<a href="#extends">extends</a> another takes its base's traits with the variants it copies
+		and names none of its own.</p>
+
 	<h3>Comparing</h3>
 	<p>A value may be compared for equivalence, and not for order: which variant a value holds is
 		what a comparison can answer, and declaration order is not a magnitude.</p>
@@ -500,6 +548,11 @@ enum RichColors extends Colors {
 			written for the base's.</li>
 		<li>The <b>discriminant</b>, which is the base's: an extension writes neither a tag field nor
 			the integer type tag values are laid out in.</li>
+		<li>An <b><span class="pre">is</span></b>, naming <a href="#isa">traits</a> for the whole set:
+			it would give the copies requirements they have no body to meet. The base's own
+			<span class="pre">is</span> comes along with its variants, so an extension of an enum that
+			is a trait is that trait too, copies and added variants alike. A variant the extension
+			adds may still name traits of its own.</li>
 	</ul>
 	<p>And an extension <b>adds names to its base's, and never redeclares or overloads one</b>. A
 		name the base has &mdash; a method, a variant, a static, or one it inherits from further down

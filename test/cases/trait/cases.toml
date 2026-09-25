@@ -205,8 +205,8 @@ contains = [
 # type holds is one it declared: Sensor's 'id' appears in Logger and in each
 # implementer because each one declares it to comply, not because anything was
 # spliced in, and 'Probe' is its own two fields and nothing more. Marker traits
-# cost nothing at all, whether named after the first in an 'is' list (Ledger) or
-# mixed in (Tally). A run cannot see any of this: every printed number would be
+# cost nothing at all when named after the first in an 'is' list (Ledger), and
+# neither do two that each require a method (Tally). A run cannot see any of this: every printed number would be
 # the same whatever sat in front of it, and what a trait used to add was a
 # constant zero byte nothing ever read.
 [[scenario.trait_success.check]]
@@ -387,7 +387,46 @@ excludes = [
   "Tagged as Labelled (vtable)",
 ]
 
+# An enum's 'is' and a variant's, each naming open traits, which 'mixin' in the
+# body was the only way to write until 25 Sept 2026. The enum's gives every
+# variant the trait's requirements and defaults; a variant's adds traits beyond
+# its enum, which stays its base. Its own file rather than more of
+# trait_enum_vref, because the subject is what the declaration gives each
+# variant, and the conversion from '&Shape' is one use of it among several. A
+# run, because which method each slot reached is what the numbers say.
+[scenario.trait_enum_is]
+category = "run"
+description = "An enum and a variant declaring with 'is' that they comply with open traits: requirements, defaults reaching every variant, a generic enum's instance, and a reference to the enum converted to the trait's virtual reference"
+tags = ["nameres", "typecheck", "genllvm", "runtime"]
+
+# Each trait a variant takes in gets a vtable per variant that is it, and the
+# enums get none, as in trait_enum_vref; Cat names neither trait and gets neither.
+[[scenario.trait_enum_is.check]]
+name = "each-variant-that-is-a-trait-gets-its-vtable"
+target = "symbols"
+contains = [
+  "constant internal Shape.Circle as Named (vtable) comdat nodeduplicate",
+  "constant internal Shape.Square as Sized (vtable) comdat nodeduplicate",
+  "constant internal Pet.Dog as Named (vtable) comdat nodeduplicate",
+  "constant internal Pet.Dog as Sized (vtable) comdat nodeduplicate",
+  "constant internal Pet.Fish as Sized (vtable) comdat nodeduplicate",
+]
+excludes = [
+  "Shape as Named (vtable)",
+  "Pet.Cat as",
+]
+
 # -------- parse stage --------
+
+# 'mixin' is retired into 'is' (25 Sept 2026) and kept a keyword only to be
+# refused, once per statement, at the keyword. Every kind of body that could
+# write one is here -- a struct's, a trait's, an enum's and a variant's -- and a
+# fold after it, which is read through with the statement.
+[scenario.trait_parse_mixin]
+category = "reject"
+description = "The retired 'mixin', in each kind of type body, pointed at 'is' on the declaration line"
+tags = ["parse"]
+diagnostics = 5
 
 # 'extends' no longer spells nominal conformance, and it is not yet the concrete
 # enrichment it is reserved for, so it is refused at the clause where it is
@@ -445,9 +484,20 @@ diagnostics = 7
 # and the splice that can still produce one is the enum's -- enum_nameres_splice.
 [scenario.trait_nameres_inherit]
 category = "reject"
-description = "Types that each name the other as a base, or mix in themselves"
+description = "Types that each name the other as a base, or name themselves after the first in an 'is' list"
 tags = ["nameres"]
 diagnostics = 2
+
+# Every name of an 'is' list is checked for being a closed type, not only the
+# first (25 Sept 2026): a later one let a plain struct take in an enum's tag and
+# common fields. A later name is taken in at name resolution, so it is refused
+# there; the first name of a struct's list is its base, judged at type check
+# (enum_typecheck_variant), so none is written first here.
+[scenario.trait_nameres_closed_is]
+category = "reject"
+description = "An enum named in an 'is' list after the first, or in an enum's or a variant's list"
+tags = ["nameres"]
+diagnostics = 5
 
 # -------- type check stage --------
 
@@ -457,9 +507,9 @@ diagnostics = 2
 # is the member a reader would go to; everything else is reported on the struct.
 [scenario.trait_typecheck_conform]
 category = "reject"
-description = "Types whose declarations do not satisfy the abstraction they assert or mix in"
+description = "Types whose declarations do not satisfy the abstractions they assert, an enum's and a variant's among them"
 tags = ["typecheck"]
-diagnostics = 9
+diagnostics = 10
 
 [scenario.trait_typecheck_vref]
 category = "reject"

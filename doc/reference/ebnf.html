@@ -71,8 +71,11 @@
 	structtype ::= 'struct' 'trait'? ident_token? baseclause* ('{' structstmt (',' structstmt)* '}')?
 	baseclause ::= isaclause | extendsclause   /* either order, each at most once; 'extends' not on a trait */
 	isaclause ::= 'is' genqualname (',' genqualname)*
+		/* every name is an open trait: an enum anywhere in the list is refused.
+		   On a struct or a trait the first is its base; an enum and a variant have none of their own */
 	extendsclause ::= 'extends' genqualname   /* the concrete base this type enriches with methods */
-	structstmt ::= var_stmt | fn_stmt | 'mixin' genqualname | usestmt
+	structstmt ::= var_stmt | fn_stmt | usestmt
+		/* 'mixin', retired, is refused: a type names what it complies with in its isaclause */
 	usestmt ::= 'use' genqualname folditems? ';'   /* folds in a sibling: a type that declared the same 'extends' base */
 	foldclause ::= 'pub'? 'use' ('*' ('but' ident_token (',' ident_token)*)? | folditems | '{' folditems ','? '}')
 		/* written after the type of a struct's field or of a module's global, or after an import's module; 'pub' not on a field's.
@@ -81,11 +84,13 @@
 		| 'but' ident_token (',' ident_token)*   /* omitted admits every member of the sibling named */
 	traittype ::= 'trait' ident_token? isaclause? ('{' structstmt* '}')?   /* a synonym for 'struct trait' */
 	unbuiltkind ::= 'actor' 'trait'? ident_token? ('{' structstmt* '}')?   /* accepted, not implemented */
-	enumtype ::= 'enum' '@unsized'? ident_token nbrtype? ('extends' genqualname)? '{' enumstmt* '}'
+	enumtype ::= 'enum' '@unsized'? ident_token nbrtype? (('extends' genqualname) | isaclause)? '{' enumstmt* '}'
 		/* 'extends' names another enum, a generic one with its type arguments, whose variants
-		   this one holds copies of; such an enum declares only variants in its body and writes
-		   no integer type of its own */
-	enumstmt ::= structstmt | variantlist | 'struct' ident_token ('=' integer_token)? structbody?
+		   this one holds copies of; such an enum declares only variants in its body, writes
+		   no integer type of its own, and names no isaclause: its base's comes with the copies.
+		   An isaclause gives every variant the traits' requirements and defaults */
+	enumstmt ::= structstmt | variantlist | 'struct' ident_token ('=' integer_token)? isaclause? structbody?
+		/* a variant's isaclause names open traits beyond its enum, which is its base unwritten */
 	variantlist ::= variant (',' variant)* ';'
 	variant ::= ident_token ('=' integer_token)?
 	tagtype ::= 'tag'

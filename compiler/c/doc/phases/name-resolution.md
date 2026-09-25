@@ -130,7 +130,7 @@ on a module or a struct. The collapse that walks them is `fnCallNameResPath` —
 | Kind | Owns a `Namespace` hash table? | Populated |
 | --- | --- | --- |
 | Module | yes, `ModuleNode.namespace` | at **parse** time by `modAddNamedNode`, which is also where an import binds the module it names; extended by the fold pass — `importNameRes` for what the module extends and what it imports, `foldGlobalExpand` and `foldModUseExpand` — ahead of any module's body |
-| Namespaced type | yes, `INsTypeNode.namespace` | at **parse** time, an enum's variants included; `structNameRes` adds `Self`, the default methods of every abstraction the type is-a or mixes in, for a variant, its enum's fields, and for an enum that extends another, its copies of the base's variants |
+| Namespaced type | yes, `INsTypeNode.namespace` | at **parse** time, an enum's variants included; `structNameRes` adds `Self`, the default methods of every abstraction the type's `is` list names, for a variant, its enum's fields, and for an enum that extends another, its copies of the base's variants |
 | Lexical block / parameter list | **no** | not a namespace at all — locals are hooked one at a time |
 
 That a module's and a type's names exist before the pass runs is what lets the
@@ -254,7 +254,7 @@ is the contract; there is never a second name resolution pass.
   the `FlagLoopStep` allowance for `each`'s synthesized step.
 - Every local `VarDclNode` carries its `scope`.
 - Every `StructNode` namespace contains `Self`, the default methods of every
-  abstraction it is-a or mixes in, an enum's fields where this is a variant, and
+  abstraction its `is` list names, an enum's fields where this is a variant, and
   the copies and aliases
   every fold clause admits, wherever the trait or the field's type was a
   declaration when the type was resolved — what an instance of a
@@ -316,7 +316,7 @@ type check reports),
 in a fold), `ErrorDupName` (duplicate local, duplicate lifetime label,
 colliding folded import, a trait's field arriving under a name the type
 declares, a folded name already taken), `ErrorCircular` (two types that each
-extend or mix in the other, or a type folding from a field of a type not yet
+extend or name the other in an `is`, or a type folding from a field of a type not yet
 complete; the same code type check gives a declaration defined in terms of
 itself), `ErrorImportLoop` (modules depending on each other round a loop — by an
 import of a module or of a name of it, by `extends`, or by containment, a child

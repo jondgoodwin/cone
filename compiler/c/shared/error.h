@@ -125,7 +125,7 @@ enum ErrorCode {
 
     // Demand-driven analysis
     ErrorCircular = 1068,       // A declaration whose type comes from a value that names it back,
-                                // or two types that each extend or mix in the other
+                                // or two types that each extend or name the other in an 'is'
 
     // Layout
     ErrorNoSize = 1069,         // A value whose type cannot report a size
@@ -196,7 +196,7 @@ enum ErrorCode {
     ErrorUseSibling = 1104,     // A type-body 'use' naming what is not a sibling of this type, or a member that does not fold from one
 
     // 'extends': an enum adding variants to another enum's variant set
-    ErrorEnumExtends = 1105,    // What an enum's 'extends' names cannot be its base, or what such an enum's body may not declare: a requirement, a common field, a discriminant, a macro or a mixin
+    ErrorEnumExtends = 1105,    // What an enum's 'extends' names cannot be its base, or what such an enum may not declare: a requirement, a common field, a discriminant, a macro, or an 'is' of its own
     // 1106 was ErrorEnumExtendsSize; an extension's variants are copies with their own layout, so an added one may be any size
 
     // 'mod': the declaration that names a file's module
@@ -293,6 +293,9 @@ enum ErrorCode {
 
     // Enum methods
     ErrorEnumValueDispatch = 1150,  // An enum's method called on a value of the enum: the variant's would be chosen by the tag, which is not built for a value receiver
+
+    // 'mixin', retired: conformance is declared with 'is' on the declaration line
+    ErrorMixin = 1151,          // A 'mixin' statement in a type's body: what it took in is named in the 'is' list of the type, the enum or the variant
 
     // Warnings
     WarnCode = 3000,

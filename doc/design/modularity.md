@@ -300,11 +300,12 @@ discipline — unstructured concurrency being "similar to GOTO."
 
 ## Hazards
 
-- **A mixin brings fields in at a position**, so adding one shifts every later
-  field index, and positional type literals move with it.
-- **Two mixins of closed types each bring a discriminant field**, reported as a
-  second tag rather than as a composition that cannot work. An open trait
-  carries no discriminant, so any number of those compose.
+- **An enum splices its fields into every variant at the front**, so adding a
+  common field shifts every variant's own field indexes, and positional type
+  literals move with it. A trait brings in no fields, so naming one more in an
+  `is` list moves nothing. (`mixin`, which could once bring a closed type's
+  discriminant and fields into any struct, is retired into `is`, and an `is` list
+  refuses a closed type at every position.)
 - **A use of a module's name answers `isTypeNode` true** — `nameUseGroup`'s
   fallthrough for every declaration that is not a value, a macro or a generic
   parameter, not because a module is a type.
@@ -312,6 +313,6 @@ discipline — unstructured concurrency being "similar to GOTO."
 ## What lives elsewhere
 
 - Lookup, qualification, hooking and overloading: [Names and Namespaces](names-and-namespaces.md)
-- Mixin expansion and trait inheritance, step by step: [struct](../../compiler/c/doc/nodes/struct.md)
+- Taking in what an `is` names, and trait inheritance, step by step: [struct](../../compiler/c/doc/nodes/struct.md)
 - Instantiation and monomorphization: [generic](../../compiler/c/doc/nodes/generic.md)
 - The symbol-naming rule in full: [Names and Namespaces](names-and-namespaces.md), "Symbols"; its lowering: [Generation](../../compiler/c/doc/phases/generation.md)
