@@ -15,8 +15,10 @@
 #include "parser/lexer.h"
 #include "parser/parser.h"
 #include "genllvm/genllvm.h"
+#include "ir/incfile.h"
 
 #include <stdio.h>
+#include <string.h>
 #include <assert.h>
 
 // Run all semantic analysis passes against the AST/IR (after parse and before gen)
@@ -79,6 +81,57 @@ void doAnalysis(ConeOptions *opt, ProgramNode **pgm) {
         inodeCheckTree((INode*)*pgm);
 }
 
+static int writeFile(char *path, char *text, size_t len) {
+    FILE *file = fopen(path, "wb");
+    if (file == NULL)
+        return 0;
+    size_t written = fwrite(text, 1, len, file);
+    return fclose(file) == 0 && written == len;
+}
+
+// Write the package's include file, <package>.cone in the output directory
+// [Jon 25 Sep, Q3], once it parses and name-resolves as the package's module:
+// the self-check, which turns a fault of the generator into a compile error
+// here rather than a failure in some importer's build
+static void writeIncludeFile(ConeOptions *opt, ProgramNode *pgm, BuildDesc *desc, char *text, size_t len) {
+    ModuleNode *root = (ModuleNode*)nodesGet(pgm->modules, 0);
+    char *path = fileMakePath(opt->output, &root->namesym->namestr, "cone");
+    char *canon = fileCanonicalPath(path);
+    if (pgmFindFile(pgm, nametblFind(canon, strlen(canon)))) {
+        errorMsg(ErrorIncWrite,
+            "Package %s's include file would be written to %s, which is a source file of this compile. Name another output directory.",
+            &root->namesym->namestr, path);
+        return;
+    }
+
+    // Its imports are answered as the root's are: by the root's import lines
+    // in a described build, and from the root's own folder otherwise
+    char *url = path;
+    if (desc == NULL && root->lexer && root->lexer->url) {
+        char *rooturl = root->lexer->url;
+        size_t folder = fileFolder(rooturl);
+        url = memAllocStr(rooturl, folder + strlen(&root->namesym->namestr) + 32);
+        url[folder] = '\0';
+        strcat(url, &root->namesym->namestr);
+        strcat(url, ".include.cone");
+    }
+    int before = errors;
+    ModuleNode *check = parseIncludeCheck(pgm, desc, text, url);
+    if (errors == before)
+        pgmNameResAlone(pgm, check);
+    if (errors != before) {
+        char *rejected = fileMakePath(opt->output, &root->namesym->namestr, "cone.rejected");
+        writeFile(rejected, text, len);
+        errorMsg(ErrorIncCheck,
+            "The include file generated for package %s does not parse and name-resolve as %s's module, so it is not written; what was generated is in %s. The generator cannot yet write what this package needs.",
+            &root->namesym->namestr, &root->namesym->namestr, rejected);
+        return;
+    }
+    if (!writeFile(path, text, len))
+        errorMsg(ErrorIncWrite, "Package %s's include file cannot be written to %s.",
+            &root->namesym->namestr, path);
+}
+
 int main(int argc, char **argv) {
     ConeOptions coneopt;
     GenState gen;
@@ -123,8 +176,20 @@ int main(int argc, char **argv) {
             timerBegin(GenTimer);
             if (coneopt.print_ir)
                 inodePrint(coneopt.output, coneopt.srcname, (INode*)pgmnode);
-            genpgm(&gen, pgmnode);
-            genClose(&gen);
+            // A library's include file is generated from the analysed program,
+            // before anything is generated, so that what it cannot declare
+            // fails the compile. It is checked and written last, since checking
+            // parses and resolves a module beside the program's
+            char *inctext = NULL;
+            size_t inclen = 0;
+            if ((desc && desc->library) || coneopt.emit_include)
+                inctext = incFileGenerate(pgmnode, &inclen);
+            if (errors == 0) {
+                genpgm(&gen, pgmnode);
+                genClose(&gen);
+                if (inctext)
+                    writeIncludeFile(&coneopt, pgmnode, desc, inctext, inclen);
+            }
         }
     }
     timerBegin(TimerCount);

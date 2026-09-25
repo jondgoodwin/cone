@@ -60,6 +60,7 @@ add_executable(conec
 	compiler/c/ir/dclinfo.c
 	compiler/c/ir/dclspan.c
 	compiler/c/ir/export.c
+	compiler/c/ir/incfile.c
 	compiler/c/ir/flow.c
 	compiler/c/ir/iexp.c
 	compiler/c/ir/inode.c

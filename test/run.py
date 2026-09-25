@@ -119,7 +119,7 @@ ANNOTATABLE = ("reject", "warn")
 
 SCENARIO_KEYS = {
     "category", "description", "tags", "diagnostics", "exit", "xfail",
-    "run", "unlocated", "check", "argv", "link",
+    "run", "unlocated", "check", "argv", "link", "include",
 }
 
 
@@ -622,6 +622,10 @@ class Scenario:
     # 'run' only: sources compiled on their own before the scenario's, each to
     # an object of its own, and linked into the program with it
     link: tuple[Path, ...] = ()
+    # 'run' only: the include file each package 'link' builds must generate,
+    # byte for byte, pinned beside the program, which compiles against it.
+    # Named for its package, so 'include/q.cone' is what 'q/q.conebuild' writes
+    includes: tuple[Path, ...] = ()
     xfail: bool = False
     annotations: list[Annotation] = field(default_factory=list)
 
@@ -718,6 +722,21 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
                         f"{where}: 'link' names {path.name}, whose object would"
                         f" overwrite the scenario's own")
 
+        # The round trip: a package 'link' builds writes its include file, which
+        # must be the golden file pinned here, and the program's build
+        # description names that golden file, so the program compiles against
+        # exactly what the package generated
+        includes: tuple[Path, ...] = ()
+        if "include" in table:
+            if not link:
+                raise SuiteError(f"{where}: 'include' pins what a package 'link' builds generates, so it needs 'link'")
+            includes = tuple(source.parent / entry for entry in table["include"])
+            for path in includes:
+                if path.stem not in {lib.stem for lib in link}:
+                    raise SuiteError(
+                        f"{where}: 'include' names {path.name}, and no entry of"
+                        f" 'link' builds a package named {path.stem!r}")
+
         # R2.10 names the total diagnostic count as recover's file-level
         # expectation. It asserts the count rather than each diagnostic, so
         # without it the scenario asserts nothing but the exit status.
@@ -774,6 +793,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             unlocated=tuple(table.get("unlocated", [])),
             argv=argv,
             link=link,
+            includes=includes,
             xfail=bool(table.get("xfail", False)),
         )
         if source is not None:
@@ -1601,6 +1621,9 @@ class Result:
     compiled: Completed | None = None
     diagnostics: list[Diagnostic] = field(default_factory=list)
     program_stdout: str | None = None
+    # A generated include file that differs from its golden file, by the golden
+    # file's path: what bless records there
+    generated: dict[Path, str] = field(default_factory=dict)
 
     @property
     def label(self) -> str:
@@ -2099,6 +2122,30 @@ class Runner:
                     + ("\n" + indent(normalize_stderr(built.stderr)) if built.stderr.strip() else ""))
                 result.seconds = time.monotonic() - started
                 return result
+
+        # Each package's generated include file, <package>.cone beside its
+        # object, is the golden file the program compiles against, or the round
+        # trip is not tested: a difference fails here, before the program is
+        # compiled against a file its package no longer generates
+        for golden in scenario.includes:
+            generated = out_dir / f"{golden.stem}.cone"
+            if not generated.exists():
+                result.status = FAIL
+                result.problems.append(f"no include file generated at {generated.name}")
+                continue
+            text = normalize(generated.read_text(encoding="utf-8"))
+            expected = normalize(golden.read_text(encoding="utf-8")) if golden.exists() else ""
+            if text != expected:
+                result.status = FAIL
+                result.generated[golden] = text
+                result.problems.append(
+                    f"the include file {golden.stem}'s compile generated is not "
+                    + golden.relative_to(REPO).as_posix() + " (bless records it):\n"
+                    + indent(delta(expected.split("\n"), text.split("\n"),
+                                   golden.name, "generated")))
+        if result.status != PASS:
+            result.seconds = time.monotonic() - started
+            return result
 
         cmd = [str(self.conec), *options, "-o", out_rel, scenario.source_rel]
         result.commands.append(quote(cmd))
@@ -2755,6 +2802,17 @@ def bless_scenario(scenario: Scenario, results: list[Result],
             "marked xfail: its expectations record a defect rather than claim to"
             " be current, so what the compiler produces is not a new one")
         blessing.routine = True
+        return blessing
+
+    # A package's generated include file is recorded as its golden file. The
+    # program was not compiled against a stale one, so what else it produced
+    # is recorded by the next bless
+    goldens = {path: text for result in results for path, text in result.generated.items()}
+    if goldens:
+        for path, text in goldens.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(text.encode("utf-8"))
+        blessing.rewrote = [f"{path.name}: the include file its package generated" for path in goldens]
         return blessing
 
     for result in results:

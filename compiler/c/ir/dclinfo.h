@@ -49,10 +49,14 @@ enum DclFacts {
     DclInitPure   = 0x0040,   // Fn only: '@initpure', a function a module's 'init' may
                               // call, which 'init' itself is declared. Written by the
                               // parser, kept by joining, and not checked: purity is unbuilt
-    DclLifecycle  = 0x0080    // Fn only: a module's 'init', its 'final', or the 'drop' it
+    DclLifecycle  = 0x0080,   // Fn only: a module's 'init', its 'final', or the 'drop' it
                               // is given (modLifecycle). The program's stitched init or
                               // final calls it, so a library compile exports it whatever
                               // its visibility (dclIsExported)
+    DclSubReached = 0x0100    // DclExpandReached from a body the root module itself
+                              // declares, on a declaration of one of the root's
+                              // submodules: the root's include file would have to
+                              // declare it, which it cannot yet (incFileGenerate)
 };
 
 #define dclInfoInit(dclinfo) ((dclinfo)->owner = NULL, (dclinfo)->facts = 0, (dclinfo)->cname = NULL)

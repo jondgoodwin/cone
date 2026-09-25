@@ -1729,6 +1729,65 @@ static ModuleNode *parseLoadCore(ParseState *parse) {
     return parseLoadModulePath(parse, path, nametblFind("core", 4), FlagGenMod, NULL);
 }
 
+// Parse a generated include file's text as the module it declares, for the
+// generator's self-check (conec.c): a module of its own beside the root it
+// stands for, never generated and never added to the program's modules. Its
+// imports are answered as the root's are -- by the root's import lines in a
+// described build, and from the root's folder otherwise, which 'url' names
+ModuleNode *parseIncludeCheck(ProgramNode *pgm, BuildDesc *desc, char *text, char *url) {
+    ModuleNode *root = (ModuleNode*)nodesGet(pgm->modules, 0);
+    ParseState parse;
+    parse.pgm = pgm;
+    parse.mod = NULL;
+    parse.typenode = NULL;
+    parse.inrettype = 0;
+    parse.core = NULL;
+    parse.build = NULL;
+    parse.bodyp = parse.bodyendp = parse.nameendp = NULL;
+    parse.typed = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(root->imports, cnt, nodesp)) {
+        if (((ImportNode*)*nodesp)->iscore)
+            parse.core = ((ImportNode*)*nodesp)->module;
+    }
+    // Compiling core itself, the include file is core's, and imports nothing
+    if (parse.core == root)
+        parse.core = NULL;
+
+    BuildModule check;
+    if (desc != NULL) {
+        memset(&check, 0, sizeof(check));
+        check.name = root->namesym;
+        check.files = &url;
+        check.nfiles = check.availfiles = 1;
+        check.imports = desc->root->imports;
+        check.nimports = check.availimports = desc->root->nimports;
+        parse.build = &check;
+    }
+
+    ModuleNode *mod = newModuleNode();
+    Lexer *file = lexNew(text, url);
+    mod->lexer = file;
+    mod->srcp = mod->linep = file->source;
+    mod->linenbr = 1;
+    mod->filesym = mod->namesym = root->namesym;
+    dclInfoJoin((INode*)mod, NULL);
+    mod->dclinfo.facts |= DclNamesChain;
+    parse.mod = mod;
+    parseAddCorelibImport(&parse, mod);
+    modHook(NULL, mod);
+    if (desc != NULL)
+        modAddNamedNode(mod, mod->namesym, (INode*)mod);
+    lexPush(file);
+    parseGlobalStmts(&parse, mod, 1);
+    if (lex->toktype != EofToken)
+        errorMsgLex(ErrorNoEof, "Expected end-of-file");
+    lexPop();
+    modHook(mod, NULL);
+    return mod;
+}
+
 // Set up the name table and the lexer. A build description is read by the
 // lexer, and before generation is set up, so this comes first of all
 void parseInit(ConeOptions *opt) {

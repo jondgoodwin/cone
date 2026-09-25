@@ -140,6 +140,30 @@ void nameUsePrint(NameUseNode *name) {
 // as selection has not yet chosen one. Only the declaring module's own compile
 // reads the mark (dclIsExported). Called for a bare name here, and for a path
 // by fnCallNameResPath, which binds it.
+//
+// Where the body is the root's own and what it names sits in one of the root's
+// submodules, the mark says so too (DclSubReached): the root's include file
+// would have to declare it, which the include-file generator cannot yet do.
+static void nameUseMarkOne(NameResState *pstate, INode *dcl) {
+    DclInfo *dclinfo = inodeGetDclInfo(dcl);
+    if (dclinfo->owner == NULL)   // a local or a parameter has no symbol
+        return;
+    dclinfo->facts |= DclExpandReached;
+    ModuleNode *root = pstate->mod;
+    if (root == NULL || root->dclinfo.owner != NULL)
+        return;
+    ModuleNode *mod = dclInfoGetModule(dcl);
+    if (mod == root)
+        return;
+    while (mod && mod->dclinfo.owner) {
+        mod = dclInfoGetModule(mod->dclinfo.owner);
+        if (mod == root) {
+            dclinfo->facts |= DclSubReached;
+            return;
+        }
+    }
+}
+
 void nameUseMarkExpandReached(NameResState *pstate, NameUseNode *name) {
     if (pstate->expander == NULL)
         return;
@@ -150,13 +174,10 @@ void nameUseMarkExpandReached(NameResState *pstate, NameUseNode *name) {
         INode **nodesp;
         uint32_t cnt;
         for (nodesFor(((FnOverloadDclNode*)dcl)->overloads, cnt, nodesp))
-            ((FnDclNode*)*nodesp)->dclinfo.facts |= DclExpandReached;
+            nameUseMarkOne(pstate, *nodesp);
     }
-    else if (dcl->tag == FnDclTag || dcl->tag == VarDclTag || dcl->tag == StructTag) {
-        DclInfo *dclinfo = inodeGetDclInfo(dcl);
-        if (dclinfo->owner != NULL)   // a local or a parameter has no symbol
-            dclinfo->facts |= DclExpandReached;
-    }
+    else if (dcl->tag == FnDclTag || dcl->tag == VarDclTag || dcl->tag == StructTag)
+        nameUseMarkOne(pstate, dcl);
 }
 
 // Handle name resolution for name use references: point dclnode at the name's

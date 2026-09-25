@@ -82,6 +82,9 @@ BuildModule *parseBuildImportModule(BuildImport *import);
 // Set up the name table and the lexer, which a build description needs too
 void parseInit(ConeOptions *opt);
 ProgramNode *parsePgm(ConeOptions *opt, BuildDesc *desc);
+// Parse a generated include file's text as the module it declares, beside the
+// root it stands for, for the generator's self-check
+ModuleNode *parseIncludeCheck(ProgramNode *pgm, BuildDesc *desc, char *text, char *url);
 // folder + name, where folder carries its trailing slash
 char *parsePathJoin(char *folder, char *name);
 // Consume a 'pub' that precedes a declaration, returning FlagPub, or 0
