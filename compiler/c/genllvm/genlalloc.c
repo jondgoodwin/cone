@@ -44,9 +44,6 @@ void genlRefTypeSetup(GenState *gen, RefNode *reftype) {
 }
 
 
-// Function declarations for malloc() and free()
-LLVMValueRef genlfreeval = NULL;
-
 // The pointer a release routine works on. A single reference is its pointer;
 // an owning slice is a fat {T*, usize} value whose pointer word is what the
 // allocation header sits before.
@@ -85,18 +82,21 @@ void genlDealiasFlds(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
     }
 }
 
-// Call free() (and generate declaration if needed)
+// Call C's free(), declaring it if the module has not. The program may declare
+// 'free' itself, in its own signature (its no-value return is '%void', not
+// LLVM's void). A second function of that name would be renamed 'free.1', which
+// nothing defines, so the program's declaration is called, cast to this one.
 LLVMValueRef genlFree(GenState *gen, LLVMValueRef ref) {
     LLVMTypeRef parmtype = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
-    // Declare free() external function
-    if (genlfreeval == NULL) {
-        LLVMTypeRef rettype = LLVMVoidTypeInContext(gen->context);
-        LLVMTypeRef fnsig = LLVMFunctionType(rettype, &parmtype, 1, 0);
-        genlfreeval = LLVMAddFunction(gen->module, "free", fnsig);
-    }
+    LLVMTypeRef fnsig = LLVMFunctionType(LLVMVoidTypeInContext(gen->context), &parmtype, 1, 0);
+    LLVMValueRef freefn = LLVMGetNamedFunction(gen->module, "free");
+    if (freefn == NULL)
+        freefn = LLVMAddFunction(gen->module, "free", fnsig);
+    else if (LLVMGetElementType(LLVMTypeOf(freefn)) != fnsig)
+        freefn = LLVMConstBitCast(freefn, LLVMPointerType(fnsig, 0));
     // Cast ref to *u8 and then call free()
     LLVMValueRef refcast = LLVMBuildBitCast(gen->builder, ref, parmtype, "");
-    return LLVMBuildCall(gen->builder, genlfreeval, &refcast, 1, "");
+    return LLVMBuildCall(gen->builder, freefn, &refcast, 1, "");
 }
 
 // Generate repetitive array fill of a value

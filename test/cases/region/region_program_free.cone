@@ -1,0 +1,41 @@
+// A program may declare C's 'free' itself and still allocate in 'so' and 'rc'.
+// Releasing an owning reference calls 'free', and the compiler used to declare
+// its own 'free' beside the program's; LLVM renamed that second one 'free.1',
+// which nothing defines, so the program did not link. The release now calls the
+// program's declaration, cast to its own signature: the two differ, because a
+// Cone function with no return value returns '%void' where C's returns LLVM's
+// void. The program's own call reaches the same C function, freeing a buffer
+// from core's 'malloc', which core declares and 'free' it does not.
+
+mod region_program_free;
+
+import stdio use *;
+
+extern {
+  fn @c free(p *u8);
+}
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn soValue() i64 {
+  imm a = +so 5i32;
+  i64[*a];
+}
+
+fn rcValue() i64 {
+  imm b = +rc-mut 7i32;
+  i64[*b];
+}
+
+fn main() i32 {
+  imm buf = malloc(16);
+  free(buf);
+  show("so-released", soValue());
+  show("rc-released", rcValue());
+  0i32;
+}

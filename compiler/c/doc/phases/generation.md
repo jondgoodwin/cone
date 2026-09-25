@@ -402,7 +402,10 @@ Two consequences that are easy to get wrong:
 A region is any struct with a suitable `alloc`; `so` and `rc` are declared in
 Cone source in the core package, `packages/core/src/core.cone`, not built into the
 compiler. `malloc` is an
-ordinary `extern fn @c`; `free` is declared directly by `genlFree`. `conestd` supplies
+ordinary `extern fn @c`; `free` is declared directly by `genlFree`, unless the
+program declared C's `free` itself, whose declaration it then calls, cast to
+`void (i8*)` where the signatures differ. LLVM renames a second function of one
+name (`free.1`), and nothing defines the renamed one. `conestd` supplies
 only stdio, no allocator.
 
 ## 4. Pointer levels
