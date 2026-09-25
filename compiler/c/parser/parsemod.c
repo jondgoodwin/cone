@@ -651,7 +651,7 @@ void parseExternFnCheck(FnDclNode *fn) {
 
 // Parse function or variable, as it may be preceded by a qualifier
 // Return NULL if not either
-void parseFnOrVar(ParseState *parse, uint16_t flags) {
+INode *parseFnOrVar(ParseState *parse, uint16_t flags) {
 
     if (lexIsToken(FnToken)) {
         FnDclNode *node = (FnDclNode*)parseFn(parse, (flags&FlagExtern)? (ParseMayName | ParseMaySig) : (ParseMayName | ParseMayImpl));
@@ -669,7 +669,7 @@ void parseFnOrVar(ParseState *parse, uint16_t flags) {
                 "Module %s already gives its functions C names, so a bare '@c' on %s says nothing. To spell its symbol differently, write it: '@c(\"symbol\")'.",
                 &parse->mod->namesym->namestr, &node->namesym->namestr);
         modAddFn(parse->mod, node);
-        return;
+        return (INode*)node;
     }
 
     // A global variable declaration, if it begins with a permission
@@ -687,11 +687,12 @@ void parseFnOrVar(ParseState *parse, uint16_t flags) {
         node->flowtempflags |= VarInitialized;   // Globals always hold a valid value
         parseEndOfStatement();
         modAddNode(parse->mod, node->namesym, (INode*)node);
+        return (INode*)node;
     }
     else {
         errorMsgLex(ErrorBadGloStmt, "Expected function or variable declaration");
         parseSkipToNextStmt();
-        return;
+        return NULL;
     }
 }
 
@@ -1160,6 +1161,12 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
         stmtat.linep = lex->linep;
         stmtat.linenbr = lex->linenbr;
         uint16_t pubflag = parsePub();
+        // Where the statement's keyword is, after its 'pub', and what it makes:
+        // its span is recorded once it is parsed (dclspan.h)
+        char *kwat = lex->tokp;
+        INode *made = NULL;
+        uint16_t spankind = SpanDcl;
+        DclSpans *items = NULL;
         int modline = lexIsToken(ModToken) && !lexNextIsWord("trait");
         // The module is named by its folder, its file or its build description,
         // and the 'mod' line restates that name where a reader of the file will
@@ -1192,6 +1199,8 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             ImportNode *newnode = parseImport(parse, pubflag);
             if (newnode)
                 modAddNode(mod, NULL, (INode*)newnode);
+            made = (INode*)newnode;
+            spankind = SpanImport;
             break;
         }
 
@@ -1199,6 +1208,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
         // speaks for a statement that is gone, so it earns no diagnostic of its own
         case IncludeToken:
             parseRetiredInclude();
+            spankind = SpanOther;
             break;
 
         // 'use' folds an enum's variants, or a submodule's public names, in as
@@ -1209,6 +1219,8 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             parseBadStatic(staticflag);
             ModUseNode *use = parseModUse(parse, pubflag);
             modAddNode(mod, NULL, (INode*)use);
+            made = (INode*)use;
+            spankind = SpanUse;
             break;
         }
 
@@ -1221,6 +1233,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
                 break;
             newnode->flags |= pubflag;
             modAddNode(mod, newnode->namesym, (INode*)newnode);
+            made = (INode*)newnode;
             break;
         }
 
@@ -1228,6 +1241,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
         case StructToken: {
             INode *node = parseStruct(parse, pubflag);
             modAddNode(mod, inodeGetName(node), node);
+            made = node;
             break;
         }
 
@@ -1236,6 +1250,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
         case TraitToken: {
             INode *node = parseStruct(parse, TraitType | pubflag);
             modAddNode(mod, inodeGetName(node), node);
+            made = node;
             break;
         }
 
@@ -1249,9 +1264,12 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             if (lexNextIsWord("trait")) {
                 ModTraitNode *trait = parseModTrait(parse, pubflag);
                 modAddNode(mod, trait->namesym, (INode*)trait);
+                made = (INode*)trait;
                 break;
             }
             parseModuleDcl(parse, mod, atstart, pubflag);
+            made = (INode*)mod;
+            spankind = SpanModLine;
             break;
 
         // 'actor' is a kind the grammar admits and the compiler does not build.
@@ -1269,6 +1287,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             if (lexIsToken(IdentToken))
                 lexNextToken();
             parseSkipDclBody();
+            spankind = SpanOther;
             break;
         }
 
@@ -1279,6 +1298,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
         case EnumToken: {
             INode *node = parseStruct(parse, TraitType | SameSize | EnumType | pubflag);
             modAddNode(mod, inodeGetName(node), node);
+            made = node;
             break;
         }
 
@@ -1287,6 +1307,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             MacroDclNode *macro = parseMacro(parse);
             macro->flags |= pubflag;
             modAddNode(mod, macro->namesym, (INode*)macro);
+            made = (INode*)macro;
             break;
         }
 
@@ -1313,10 +1334,16 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             }
             if (lexIsToken(ColonToken) || lexIsToken(LCurlyToken)) {
                 parseBlockStart();
+                spankind = SpanExternBlock;
                 while (!parseBlockEnd()) {
+                    char *itemat = lex->tokp;
                     uint16_t itemflag = extflag | parsePub();
-                    if (lexIsToken(FnToken) || lexIsToken(PermToken))
-                        parseFnOrVar(parse, itemflag);
+                    char *itemkw = lex->tokp;
+                    if (lexIsToken(FnToken) || lexIsToken(PermToken)) {
+                        INode *item = parseFnOrVar(parse, itemflag);
+                        if (item)
+                            parseSpan(parse, &items, item, itemat, itemkw, SpanDcl);
+                    }
                     else {
                         errorMsgLex(ErrorNoSemi, "Extern expects only functions and variables");
                         parseSkipToNextStmt();
@@ -1324,17 +1351,17 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
                 }
             }
             else
-                parseFnOrVar(parse, extflag);
+                made = parseFnOrVar(parse, extflag);
         }
             break;
 
         // Function or variable
         case FnToken:
             parseBadStatic(staticflag);
-            parseFnOrVar(parse, pubflag);
+            made = parseFnOrVar(parse, pubflag);
             break;
         case PermToken:
-            parseFnOrVar(parse, pubflag | staticflag);
+            made = parseFnOrVar(parse, pubflag | staticflag);
             break;
 
         // Named const declaration
@@ -1342,6 +1369,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             ConstDclNode *constnode = parseConstDcl(parse);
             constnode->flags |= pubflag;
             modAddNode(parse->mod, constnode->namesym, (INode*)constnode);
+            made = (INode*)constnode;
             break;
         }
 
@@ -1349,8 +1377,12 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             errorMsgLex(ErrorBadGloStmt, "Invalid global area statement");
             lexNextToken();
             parseSkipToNextStmt();
+            spankind = SpanOther;
             break;
         }
+
+        DclSpan *span = parseSpan(parse, &mod->spans, made, stmtat.srcp, kwat, spankind);
+        span->members = items;
     }
 }
 
@@ -1720,6 +1752,8 @@ ProgramNode *parsePgm(ConeOptions *opt, BuildDesc *desc) {
     parse.inrettype = 0;
     parse.core = NULL;
     parse.build = NULL;
+    parse.bodyp = parse.bodyendp = parse.nameendp = NULL;
+    parse.typed = 0;
 
     // Create module node and set up for parsing main source file.
     // The root's file is registered like any other, so an import loop back to

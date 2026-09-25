@@ -31,6 +31,7 @@ enum
     OPT_NOPIC,
     OPT_DOCS,
     OPT_DOCS_PUBLIC,
+    OPT_EMIT_INCLUDE,
 
     OPT_SAFE,
     OPT_CPU,
@@ -51,6 +52,7 @@ enum
     OPT_VERIFY,
     OPT_FILENAMES,
     OPT_CHECKTREE,
+    OPT_SPANS,
     OPT_EXTFUN,
     OPT_SIMPLEBUILTIN,
     OPT_LINT_LLVM,
@@ -75,6 +77,7 @@ static opt_arg_t args[] =
     { "nopic", '\0', OPT_ARG_NONE, OPT_NOPIC },
     { "docs", 'g', OPT_ARG_NONE, OPT_DOCS },
     { "docs-public", '\0', OPT_ARG_NONE, OPT_DOCS_PUBLIC },
+    { "emit-include", '\0', OPT_ARG_NONE, OPT_EMIT_INCLUDE },
 
     { "safe", '\0', OPT_ARG_OPTIONAL, OPT_SAFE },
     { "cpu", '\0', OPT_ARG_REQUIRED, OPT_CPU },
@@ -95,6 +98,7 @@ static opt_arg_t args[] =
     { "verify", '\0', OPT_ARG_NONE, OPT_VERIFY },
     { "files", '\0', OPT_ARG_NONE, OPT_FILENAMES },
     { "checktree", '\0', OPT_ARG_NONE, OPT_CHECKTREE },
+    { "spans", '\0', OPT_ARG_NONE, OPT_SPANS },
     { "extfun", '\0', OPT_ARG_NONE, OPT_EXTFUN },
     { "simplebuiltin", '\0', OPT_ARG_NONE, OPT_SIMPLEBUILTIN },
     { "lint-llvm", '\0', OPT_ARG_NONE, OPT_LINT_LLVM },
@@ -127,6 +131,8 @@ static void usage()
         "    =path         Defaults to the current directory.\n"
         "  --library, -l   Compile a library: position independent, exporting\n"
         "                  its public definitions. An 'output' line overrides it.\n"
+        "  --emit-include  Write the package's include file, <package>.cone, to\n"
+        "                  the output directory, as 'output: library' does.\n"
         "  --runtimebc     Compile with the LLVM bitcode file for the runtime.\n"
         "  --wasm          Compile for WebAssembly target.\n"
         "  --pic           Compile using position independent code.\n"
@@ -165,6 +171,8 @@ static void usage()
         "    =columns      Defaults to the terminal width.\n"
         "  --immerr        Report errors immediately rather than deferring.\n"
         "  --checktree     Verify IR well-formedness.\n"
+        "  --spans         Print where each of the root module's declarations\n"
+        "                  and each of its types' members starts and ends.\n"
         "  --verify        Verify LLVM IR.\n"
         "  --extfun        Set function default linkage to external.\n"
         "  --simplebuiltin Use a minimal builtin package.\n"
@@ -347,6 +355,8 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
         case OPT_SIMPLEBUILTIN: opt->simple_builtin = 1; break;
         case OPT_FILENAMES: opt->print_filenames = 1; break;
         case OPT_CHECKTREE: opt->check_tree = 1; break;
+        case OPT_SPANS: opt->print_spans = 1; break;
+        case OPT_EMIT_INCLUDE: opt->emit_include = 1; break;
         case OPT_LINT_LLVM: opt->lint_llvm = 1; break;
 
         case OPT_VERBOSE:

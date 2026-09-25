@@ -38,11 +38,13 @@ typedef struct NameResState NameResState;
 typedef struct TypeCheckState TypeCheckState;
 typedef struct GenericInfo GenericInfo;
 typedef struct DclInfo DclInfo;          // dclinfo.h
+typedef struct DclSpans DclSpans;        // dclspan.h
 
 // Interfaces & headers shared across nodes
 #include "inode.h"
 #include "name.h"
 #include "dclinfo.h"
+#include "dclspan.h"
 #include "itype.h"
 #include "iexp.h"
 #include "instype.h"

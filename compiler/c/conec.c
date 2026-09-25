@@ -112,6 +112,10 @@ int main(int argc, char **argv) {
     // Parse source file, do semantic analysis, and generate code
     timerBegin(ParseTimer);
     ProgramNode* pgmnode = parsePgm(&coneopt, desc);
+    // What the parser recorded of where the root's declarations sit, which the
+    // include file is copied from, measured before anything depends on it
+    if (coneopt.print_spans)
+        dclSpanPrintModule((ModuleNode*)nodesGet(pgmnode->modules, 0));
     if (errors == 0) {
         timerBegin(SemTimer);
         doAnalysis(&coneopt, &pgmnode);

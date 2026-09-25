@@ -46,6 +46,7 @@ typedef struct StructNode {
     Vtable *vtable;         // Pointer to vtable info (may be NULL)
     GenericInfo *genericinfo;     // Link to generic parms, etc (or NULL if not generic)
     uint32_t tagnbr;        // If a tagged struct, this is the number in the tag field
+    DclSpans *spans;        // Where each member of its braces sits in its file, in the order parsed (dclspan.h); NULL for none
 } StructNode;
 
 // A variant whose tag value has not been settled yet. The parser writes it before

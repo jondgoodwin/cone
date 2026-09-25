@@ -93,6 +93,21 @@ int parseBlockEnd() {
     return 0;
 }
 
+// Record the span of the statement just parsed (dclspan.h). The lexer is on the
+// token after it, so the span ends where the previous token did
+DclSpan *parseSpan(ParseState *parse, DclSpans **listp, INode *node, char *start, char *kw, uint16_t kind) {
+    DclSpan *span = dclSpanAdd(listp, node, lex, start, kw, lex->prevend, kind);
+    if (node && (node->tag == FnDclTag || node->tag == VarDclTag)) {
+        span->body = parse->bodyp;
+        span->bodyend = parse->bodyendp;
+        if (node->tag == VarDclTag) {
+            span->nameend = parse->nameendp;
+            span->typed = (uint16_t)parse->typed;
+        }
+    }
+    return span;
+}
+
 // Expect closing token (e.g., right parenthesis). If not found, search for it or '}' or ';'
 void parseCloseTok(uint16_t closetok) {
     if (!lexIsToken(closetok))

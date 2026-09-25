@@ -60,18 +60,24 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     // Obtain variable's name
     if (!lexIsToken(IdentToken)) {
         errorMsgLex(ErrorNoIdent, "Expected variable name for declaration");
+        parse->bodyp = parse->bodyendp = parse->nameendp = NULL;
+        parse->typed = 0;
         return newVarDclFull(anonName, VarDclTag, unknownType, perm, NULL);
     }
     varnode = newVarDclNode(lex->val.ident, VarDclTag, perm);
     lexNextToken();
+    char *nameendp = lex->prevend;
 
     // Get value type, if provided
     varnode->vtype = parseType(parse);
+    int typed = varnode->vtype != unknownType;
 
     // Get initialization value after '=', if provided
+    char *bodyp = NULL, *bodyendp = NULL;
     if (lexIsToken(AssgnToken)) {
         if (!(flags&ParseMayImpl))
             errorMsgLex(ErrorBadImpl, "A default/initial value may not be specified here.");
+        bodyp = lex->tokp;
         lexNextToken();
         if (lexIsToken(UndefToken)) {
             // 'undef' is used to signal that programmer believes variable
@@ -81,6 +87,7 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
         }
         else
             varnode->value = parseAnyExpr(parse);
+        bodyendp = lex->prevend;
     }
     else {
         if (!(flags&ParseMaySig))
@@ -101,6 +108,11 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
         }
     }
 
+    // Where the name ends and the value is, for the span the caller records
+    parse->bodyp = bodyp;
+    parse->bodyendp = bodyendp;
+    parse->nameendp = nameendp;
+    parse->typed = typed;
     return varnode;
 }
 
@@ -740,7 +752,11 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     if (parseHasBlock()) {
         parseBlockStart();
         while (!parseBlockEnd()) {
+            // Where the member starts, at its 'pub', and its keyword after that:
+            // each member's span is recorded once it is parsed (dclspan.h)
+            char *mstart = lex->tokp;
             uint16_t pubflag = parsePub();
+            char *mkw = lex->tokp;
             uint16_t staticflag = parseStatic();
             if (staticflag && (lexIsToken(PermToken) || lexIsToken(IdentToken))) {
                 // One copy shared by every value of the type: a variable in the
@@ -751,6 +767,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 var->flags |= FlagStatic | pubflag;
                 iNsTypeAddStatic((INsTypeNode*)strnode, var);
                 parseEndOfStatement();
+                parseSpan(parse, &strnode->spans, (INode*)var, mstart, mkw, SpanDcl);
                 continue;
             }
             parseBadStatic(staticflag);
@@ -798,6 +815,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                     fn->flags |= pubflag;
                     iNsTypeAddFn((INsTypeNode*)strnode, fn);
                 }
+                parseSpan(parse, &strnode->spans, (INode*)fn, mstart, mkw, SpanDcl);
             }
             else if (lexIsToken(MacroToken)) {
                 // A macro is a member by the same rule as a function: it is a
@@ -812,6 +830,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                     macro->flags |= pubflag;
                     iNsTypeAddMacro((INsTypeNode*)strnode, macro);
                 }
+                parseSpan(parse, &strnode->spans, (INode*)macro, mstart, mkw, SpanDcl);
             }
             else if (lexIsToken(UseToken)) {
                 // A type body's 'use' folds in a SIBLING: another type that
@@ -836,6 +855,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 if (strnode->siblings == NULL)
                     strnode->siblings = newNodes(4);
                 nodesAdd(&strnode->siblings, (INode*)use);
+                parseSpan(parse, &strnode->spans, (INode*)use, mstart, mkw, SpanMember);
             }
             else if (lexIsToken(MixinToken)) {
                 // Handle a trait mixin, capturing it in a field-like node.
@@ -857,6 +877,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 }
                 structAddField(strnode, field);
                 parseEndOfStatement();
+                parseSpan(parse, &strnode->spans, (INode*)field, mstart, mkw, SpanMember);
             }
             else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
                 INode *perm = parseDclPerm(mutPerm);
@@ -900,6 +921,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                         parseAddVariant(parse, strnode, next, &nexttag);
                     }
                     parseEndOfStatement();
+                    parseSpan(parse, &strnode->spans, NULL, mstart, mkw, SpanMember);
                     continue;
                 }
 
@@ -944,6 +966,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 }
                 structAddField(strnode, field);
                 parseEndOfStatement();
+                parseSpan(parse, &strnode->spans, (INode*)field, mstart, mkw, SpanMember);
             }
             else if (lexIsToken(StructToken)) {
                 // A struct written inside an enum is one of its variants.
@@ -959,6 +982,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                     // the enum can match on it. It may also be declared 'pub' itself.
                     StructNode *substruct = (StructNode *)parseStruct(parse, pubflag | (strnode->flags & FlagPub));
                     parseAddVariant(parse, strnode, substruct, &nexttag);
+                    parseSpan(parse, &strnode->spans, (INode*)substruct, mstart, mkw, SpanDcl);
                 }
                 else if (strnode->flags & TraitType) {
                     errorMsgLex(ErrorOpenTrait, "A trait is open: its implementers are declared beside it and name it with 'is'. A closed set of variants is an 'enum'.");
