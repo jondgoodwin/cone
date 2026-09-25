@@ -295,7 +295,8 @@ support module, a folder's designated file, a one-file module — opens, after i
 comments, with its `mod` line naming the file or the folder, and its imports
 come right after that. A scenario that leaves either out is asserting
 `ErrorNoModDcl` or `ErrorImportLate`. The other files of a folder module carry
-no `mod` line, since one would make the file a module of its own.
+no `mod` line, since one would make the file a module of its own, and so no
+import either: every import of the module is in its designated file.
 
 **Use no construct you are not testing.** Simplest syntax that exercises the
 feature. Incidental scaffolding is what a language change has to be dragged

@@ -284,7 +284,7 @@ enum ErrorCode {
 
     // A file's header: its 'mod' line, then its imports
     ErrorNoModDcl = 1145,       // A module's first file -- designated, one-file, lone, or first listed in a build description -- not opening with its 'mod' line
-    ErrorImportLate = 1146,     // An 'import' after a declaration: imports come right after the 'mod' line, ahead of everything else
+    ErrorImportLate = 1146,     // An 'import' not right after the 'mod' line: after a declaration, or in a module's file that has no 'mod' line
 
     // Generating a library's include file
     // 1147 was ErrorIncSubmodule, a reach into one of the root's submodules; the include file now writes a nested module block for it

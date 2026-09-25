@@ -1208,11 +1208,13 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
     parseEndOfStatement();
 }
 
-// A file's header is its 'mod' line, where it has one, and then its imports; a
-// module's first file -- its designated file, a one-file module's file, a lone
-// file, the first file a build description lists -- opens with the 'mod' line
-// naming the module [Jon 24 Sep], and every file's imports come before anything
-// else it declares. 'atmodstart' is as parseModuleDcl describes it
+// A module's header is its 'mod' line and then its imports: a module's first
+// file -- its designated file, a one-file module's file, a lone file, the first
+// file a build description lists -- opens with the 'mod' line naming the module
+// [Jon 24 Sep], and its imports come right after it, before anything else it
+// declares. A module's other files have no 'mod' line, and so no place for an
+// import: a module's whole inbound dependency list is in its designated file
+// [Jon 23 Sep]. 'atmodstart' is as parseModuleDcl describes it
 void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
     // An empty first file has no statement to report against, so the end of
     // the file stands in for it
@@ -1222,6 +1224,8 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             &mod->namesym->namestr, &mod->namesym->namestr);
     // Set by the first statement that is neither the 'mod' line nor an import
     int pastheader = 0;
+    // A file of the module other than its first has no 'mod' line to follow
+    int nomodline = atmodstart == 2;
     while (lex->toktype!=EofToken && !parseBlockEnd()) {
         int atstart = atmodstart;
         atmodstart = 0;
@@ -1248,7 +1252,11 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             errorMsgNode(&stmtat, ErrorNoModDcl,
                 "A module's first file opens with its 'mod' line, and this file opens module '%s': begin it with 'mod %s;', after any comments.",
                 &mod->namesym->namestr, &mod->namesym->namestr);
-        if (lexIsToken(ImportToken) && pastheader)
+        if (lexIsToken(ImportToken) && nomodline)
+            errorMsgNode(&stmtat, ErrorImportLate,
+                "Imports belong in the designated file of module '%s', %s, right after its 'mod' line: this file of the module has no 'mod' line, so it has no place for one. Move this import there.",
+                &mod->namesym->namestr, mod->lexer && mod->lexer->url ? mod->lexer->url : "the file that opens the module");
+        else if (lexIsToken(ImportToken) && pastheader)
             errorMsgNode(&stmtat, ErrorImportLate,
                 "Imports belong right after the 'mod' line, ahead of every other declaration: move this one up into the file's header.");
         // A retired 'include' is reported as that, and ends no header

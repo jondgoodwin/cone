@@ -200,9 +200,11 @@ A file's header takes two codes, one per rule, since each remedy is a different
 edit. `ErrorNoModDcl` is a module's first file — its designated file, a lone
 file, the first a build description lists — whose first statement is not its
 `mod` line, `mod trait` included; the remedy is to write `mod name;` there, and
-the message names the name. `ErrorImportLate` is an `import` after any other
-declaration of its file; the remedy is to move it up, next to the file's other
-imports. A `mod` line in the wrong place stays `ErrorModDcl`: that is the
+the message names the name. `ErrorImportLate` is an `import` that is not right
+after the `mod` line: after any other declaration of the designated file, or
+anywhere in a file of the module that has no `mod` line [Jon 23 Sep]. The
+remedy is the same edit either way, to move it up next to the module's other
+imports, and the second message names the designated file they are in. A `mod` line in the wrong place stays `ErrorModDcl`: that is the
 declaration the module already has, or one a file may not make.
 
 That is a narrow licence, and the tell that it has been stretched is the
