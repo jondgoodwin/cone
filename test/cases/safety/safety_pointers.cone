@@ -248,6 +248,29 @@ fn integers() {
   showB("ref-as-usize-agrees", (&cells[0] as usize) == n);
 }
 
+// -------- a struct's stride --------
+
+// An i64 then an i32: 12 bytes of fields, padded to 16 on x64 so the next
+// element's i64 stays 8-aligned. The padding is the target's data layout, not
+// the fields, so this stride is what shows the layout was used.
+struct Wide {
+  pub a i64;
+  pub b i32;
+}
+
+mut wides [2; Wide] = [Wide[1i64, 2i32], Wide[3i64, 4i32]];
+
+fn stride() {
+  // The array is global so its address is a link-time constant: the optimizer,
+  // not the backend, folds this arithmetic, and it folds against the layout the
+  // module carries
+  imm p *Wide = &wides[0];
+  imm q = p + 1;
+  showU("struct-stride-bytes", u64[(q as usize) - (p as usize)]);
+  showU("struct-stride-counts-one", u64[q - p]);
+  show("struct-stride-reaches-next", i64[q.b]);
+}
+
 // -------- interaction with control flow --------
 
 fn walk() {
@@ -282,6 +305,7 @@ fn main() i32 {
   comparison();
   structs();
   integers();
+  stride();
   walk();
   0i32;
 }

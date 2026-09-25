@@ -49,6 +49,12 @@ type inference, `castBitsize` comparisons, array-length types and the slice
 length word are all sized before a token is read. An unusable `--triple` fails
 here, before parsing.
 
+**`genlProgram` gives the module the target's triple and data layout as it
+creates it**, before any IR is built. The IR builder and the optimization passes
+fold sizes, offsets and alignments against the module's own layout, and a module
+with none gets LLVM's default, in which `i64` aligns to 4: pointer arithmetic on
+a global would then fold to a stride the backend does not use.
+
 `genlProgram` is a strict two-pass walk over the modules:
 
 1. **Symbols** — `genlGlobalSyms` for every module, generating or not, skipping
@@ -558,7 +564,7 @@ variables.
 | `conec.c` | `main` | calls `genSetup` **before** parsing, for target pointer size |
 | `genllvm/genllvm.c` | `genSetup`, `genClose` | target machine, data layout, context, `%void` |
 | | `genpgm` | generate, verify, dump, optimize, emit |
-| | `genlProgram` | the two-pass symbols-then-implementations walk, then the stitched pair |
+| | `genlProgram` | create the module with the target's triple and data layout, the two-pass symbols-then-implementations walk, then the stitched pair |
 | | `genlStitchFn`, `genlStitch` | the program's stitched init and final: declared on the first call to `initAll()` or `finalAll()`, built last, every module's `init` in the module order and every finalizer in the reverse |
 | | `genlGlobalSyms`, `genlGlobalImpl` | declare a node's symbol; emit its body |
 | | `genlImportedInstances` | emit the bodies of the instances this compile made of a module it does not generate |
@@ -568,7 +574,7 @@ variables.
 | | `genlLinkage`, `genlDefinition`, `genlIsDefinedHere`, `genlVtableDefinition` | linkage, storage class and calling convention, together, from the declaration facts and what this object does with the symbol: declares it, defines it, defines and exports it, or defines it shared |
 | | `genlComdat`, `genlNameAnonFn` | the per-definition COMDAT that lets the linker drop a symbol, its kind read off the linkage; the private name an anonymous `fn` needs to have one |
 | | `genlComdatSupport` | what the target's object format does with COMDATs |
-| | `genlOut` | set triple and layout, emit object and asm |
+| | `genlOut` | emit object and asm |
 | `ir/export.c` | `dclIsInstance` | whether a declaration is a generic's instance or a member of one — every function and global of a generic module's instance among them |
 | | `dclIsExported`, `typeHoldsExpanded` | whether a library compile exports a definition to its importers; the include-file generator asks the same |
 | `genllvm/genltype.c` | `genlType`, `_genlType` | the memoizing entry and the per-tag lowering switch |

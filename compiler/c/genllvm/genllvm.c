@@ -678,6 +678,13 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
 
     assert(pgm->tag == ProgramTag);
     gen->module = LLVMModuleCreateWithNameInContext(gen->opt->srcname, gen->context);
+    // The target comes before any IR: the builder and the passes fold sizes,
+    // offsets and alignments against the module's layout, and a module without
+    // one gets LLVM's default, where i64 aligns to 4
+    LLVMSetTarget(gen->module, gen->opt->triple);
+    char *layout = LLVMCopyStringRepOfTargetData(gen->datalayout);
+    LLVMSetDataLayout(gen->module, layout);
+    LLVMDisposeMessage(layout);
     if (!gen->opt->release) {
         gen->dibuilder = LLVMCreateDIBuilder(gen->module);
         gen->difile = LLVMDIBuilderCreateFile(gen->dibuilder, gen->opt->srcpath, strlen(gen->opt->srcpath), ".", 1);
@@ -779,16 +786,8 @@ LLVMTargetMachineRef genlCreateMachine(ConeOptions *opt) {
 }
 
 // Generate requested object file
-void genlOut(char *objpath, char *asmpath, LLVMModuleRef mod, char *triple, LLVMTargetMachineRef machine) {
+void genlOut(char *objpath, char *asmpath, LLVMModuleRef mod, LLVMTargetMachineRef machine) {
     char *err;
-    LLVMTargetDataRef dataref;
-    char *layout;
-
-    LLVMSetTarget(mod, triple);
-    dataref = LLVMCreateTargetDataLayout(machine);
-    layout = LLVMCopyStringRepOfTargetData(dataref);
-    LLVMSetDataLayout(mod, layout);
-    LLVMDisposeMessage(layout);
 
     // Generate assembly file if requested
     if (asmpath && LLVMTargetMachineEmitToFile(machine, mod, asmpath, LLVMAssemblyFile, &err) != 0) {
@@ -852,7 +851,7 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
     if (gen->machine)
         genlOut(fileMakePath(gen->opt->output, gen->opt->srcname, gen->opt->wasm? "wasm" : objext),
             gen->opt->print_asm? fileMakePath(gen->opt->output, gen->opt->srcname, gen->opt->wasm? "wat" : asmext) : NULL,
-            gen->module, gen->opt->triple, gen->machine);
+            gen->module, gen->machine);
 
     LLVMDisposeModule(gen->module);
     // LLVMContextDispose(gen.context);  // Only need if we created a new context
