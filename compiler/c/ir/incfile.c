@@ -224,6 +224,9 @@ static void incDelete(IncGen *g, DclSpan *span, char *floor) {
         else if (above && *next == '}')
             from = above;
     }
+    // Sharing its line with other code, it goes with the space before it
+    else
+        from = linefrom;
     incEdit(g, span->lexer, from, to, NULL);
 }
 
@@ -291,9 +294,12 @@ static int incTypeText(IncGen *g, IncBuf *buf, INode *type) {
         if (dim->tag != ULitTag)
             return 0;
         char dimtext[32];
-        snprintf(dimtext, sizeof(dimtext), "[%llu] ", (unsigned long long)((ULitNode*)dim)->uintlit);
+        snprintf(dimtext, sizeof(dimtext), "[%llu; ", (unsigned long long)((ULitNode*)dim)->uintlit);
         incBufPuts(buf, dimtext);
-        return incTypeText(g, buf, nodesGet(array->elems, 0));
+        if (!incTypeText(g, buf, nodesGet(array->elems, 0)))
+            return 0;
+        incBufPuts(buf, "]");
+        return 1;
     }
     default:
         return 0;

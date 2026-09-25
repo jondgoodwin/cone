@@ -251,13 +251,17 @@ imports it emits `@_CNvC9modulesub8scaleInt`, `modulesub.scaleInt`, and the two
 never resolve. A library compiled from a build description is the way off that:
 its root is named, so its symbols are spelled as its importers spell them, and
 it exports what they need — its public definitions, and each private one an
-`inline`, generic or macro body reaches — so a program compiled against a
-hand-written include file for it links and runs (`module_build_link`); the
-include file declares what the package defines with `extern` and no body, and
-each declaration takes the package's Cone name. Congo drives it: `congo run`
-compiles each package a program imports on its own, from a build description it
-writes, and links the objects (`tools/congo/README.md`). What is still missing
-is generating the include file; it is written by hand.
+`inline`, generic or macro body reaches — so a program compiled against the
+include file for it links and runs (`module_build_link`); the include file
+declares what the package defines with `extern` and no body, and each
+declaration takes the package's Cone name. The library's compile generates that
+include file from its own source ([module](../../compiler/c/doc/nodes/module.md),
+"Generating the include file"). Congo drives it: `congo run` compiles each
+package a program imports on its own, from a build description it writes, and
+links the objects (`tools/congo/README.md`). What is still missing is Congo
+compiling against the generated include file, which it does not yet: the
+packages still name hand-written ones, and a library whose include file would
+reach into one of its submodules is refused.
 
 The generation machinery, though, is not the missing part. An imported module's
 bodies are emitted whenever it is flagged for generation, and **every module found

@@ -521,8 +521,9 @@ build description settles both halves: its root is named, so `modulesub` built
 that way emits `@_CNvC9modulesub8scaleInt` itself ([module](../nodes/module.md),
 "A described build"), and it exports that definition (`dclIsExported`), so an
 importer's `declare` resolves against it at link. `module_build_link` compiles
-a package alone, compiles a program against a hand-written include file for it,
-links the two objects and runs the program. A generic's instances and the
+a package alone, compiles a program against the include file the package's
+compile generated ([module](../nodes/module.md), "Generating the include
+file"), links the two objects and runs the program. A generic's instances and the
 vtables both objects build are defined in each, `linkonce_odr`, and merge at
 link: the scenario instantiates a generic function and a generic type in the
 package and in the program, at a type argument both use and at one only the
