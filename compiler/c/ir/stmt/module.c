@@ -37,6 +37,7 @@ ModuleNode *newModuleNode() {
     mod->genericinfo = NULL;
     mod->generic = NULL;
     mod->instdeps = NULL;
+    mod->spans = NULL;
     return mod;
 }
 
@@ -759,6 +760,35 @@ void modFoldAll(NameResState *pstate, Nodes *modules) {
     foldreporting = 1;
     for (nodesFor(modules, cnt, nodesp))
         modFoldNames(pstate, (ModuleNode*)*nodesp);
+    foldreporting = 0;
+}
+
+// Stamp every module of 'modules' as folded in the current pass, so that the
+// dependency-first walk stops at each rather than running its folds again
+static void modFoldStampDone(Nodes *modules) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(modules, cnt, nodesp)) {
+        ((ModuleNode*)*nodesp)->foldpass = foldpass;
+        ((ModuleNode*)*nodesp)->folding = 0;
+    }
+}
+
+// Fold one module parsed after the program's modules were all resolved -- the
+// include-file generator's self-check -- as modFoldAll would: the modules it
+// imports keep the namespaces their own folds made, and are not folded again
+void modFoldAlone(NameResState *pstate, Nodes *modules, ModuleNode *mod) {
+    do {
+        ++foldpass;
+        foldcycled = foldwaited = foldprogress = 0;
+        modFoldStampDone(modules);
+        modFoldNames(pstate, mod);
+    } while (foldprogress && (foldcycled || foldwaited));
+
+    ++foldpass;
+    modFoldStampDone(modules);
+    foldreporting = 1;
+    modFoldNames(pstate, mod);
     foldreporting = 0;
 }
 

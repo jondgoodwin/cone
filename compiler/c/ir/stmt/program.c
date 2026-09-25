@@ -298,6 +298,24 @@ void pgmNameRes(NameResState *pstate, ProgramNode *pgm) {
     }
 }
 
+// Resolve the names of one module parsed after the program was analysed: the
+// include-file generator's self-check, whose module stands for the root and
+// imports what the root imports. The same steps as pgmNameRes, for it alone:
+// the program's modules keep what their own resolution made
+void pgmNameResAlone(ProgramNode *pgm, ModuleNode *mod) {
+    NameResState nstate;
+    nstate.mod = NULL;
+    nstate.typenode = NULL;
+    nstate.loopblock = NULL;
+    nstate.macromethod = NULL;
+    nstate.expander = NULL;
+    nstate.scope = 0;
+    modExtendsResolve(mod);
+    modFoldAlone(&nstate, pgm->modules, mod);
+    modTraitConform(&nstate, mod, 1);
+    inodeNameRes(&nstate, (INode**)&mod);
+}
+
 // Where a module sits in the init order, or -1 where it has no place yet
 static int32_t pgmOrderIndex(ProgramNode *pgm, INode *mod) {
     INode **nodesp;

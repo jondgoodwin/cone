@@ -780,10 +780,13 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
     }
 
     // Process statements block that implements function, if provided
+    char *bodyp = NULL, *bodyendp = NULL;
     if (parseHasBlock()) {
         if (!(mayflags&ParseMayImpl))
             errorMsgNode((INode*)fnnode, ErrorBadImpl, "Function/method implementation is not allowed here.");
+        bodyp = lex->tokp;
         fnnode->value = parseExprBlock(parse, 0);
+        bodyendp = lex->prevend;
     }
     else {
         if (!(mayflags&ParseMaySig))
@@ -792,5 +795,8 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
             parseEndOfStatement();
     }
 
+    // Where the body is, for the span the caller records
+    parse->bodyp = bodyp;
+    parse->bodyendp = bodyendp;
     return (INode*)fnnode;
 }

@@ -42,6 +42,7 @@ typedef struct ModuleNode {
     GenericInfo *genericinfo; // 'mod stack[T]': a generic module, its type parameters and its instances; else NULL
     struct ModuleNode *generic; // An instance of a generic module: the generic it was cloned from; else NULL
     Nodes *instdeps;         // An instance: the modules it follows in the init order besides its generic (pgmInstanceOrder); else NULL
+    DclSpans *spans;         // Where each of its statements sits in its files, in the order parsed (dclspan.h); NULL for none
 } ModuleNode;
 
 ModuleNode *newModuleNode();
@@ -66,6 +67,10 @@ void modHook(ModuleNode *oldmod, ModuleNode *newmod);
 // (pgmModuleOrder); round a loop already refused, the same passes carry the names
 // on, so the loop is the one thing reported.
 void modFoldAll(NameResState *pstate, Nodes *modules);
+
+// Fold one module parsed after every module of 'modules' was resolved -- the
+// include-file generator's self-check -- without folding any of those again
+void modFoldAlone(NameResState *pstate, Nodes *modules, ModuleNode *mod);
 
 // Run one module's folds for the current pass, if they have not run in it
 // already. Reached from modFoldAll, and by demand from a global's fold that

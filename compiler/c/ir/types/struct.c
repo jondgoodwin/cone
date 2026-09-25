@@ -29,6 +29,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->vtable = NULL;
     snode->genericinfo = NULL;
     snode->tagnbr = 0;
+    snode->spans = NULL;
     return snode;
 }
 

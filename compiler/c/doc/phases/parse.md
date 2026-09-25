@@ -510,6 +510,13 @@ diagnostics.
   synthesizes — with `dclnode` already set. `nameUseNameRes` returns immediately
   for these.
 - Blocks always have a non-NULL `stmts` list.
+- Every module-level statement has a span on its module's `spans`, and every
+  member of a type's braces one on the type's (`ir/dclspan.h`): where it starts,
+  at its `pub`; its keyword; a function's body from its `{` or a global's value
+  from its `=`, start and end; and its end. A global's also says where its name
+  ends and whether its type is written. Only the include-file generator reads
+  them ([module](../nodes/module.md), "Generating the include file"), and
+  `--spans` prints the root module's.
 
 **Not yet true:**
 
@@ -614,6 +621,8 @@ numbers.
 | | `parseIf`, `parseMatch`, `parseBoundMatch` | `if`/`elif`/`else` and the `match`-to-`if` desugaring; every pattern's root name is marked (`castPatternMark`) to be looked up in the matched value's enum at type check, as `parseCmp` marks an `is` test's |
 | | `parseMatchPattern`, `parseMatchRange` | one pattern of a case — `is`, a comparison, a range — lowered to the condition that tests the captured value; a value alone is `ErrorPatBare`, since whether it means `==` is undecided |
 | | `parseWhile`, `parseEach`, `parseWith`, `parseLifetime` | loop and scope desugaring |
+| `parser/parsehelper.c` | `parseSpan` | record the statement just parsed as a span (`ir/dclspan.c`, `dclSpanAdd`), taking a function's body or a global's value from where `parseFn` and `parseVarDcl` left it on `ParseState` (`bodyp`, `bodyendp`, `nameendp`, `typed`) |
+| `parser/parsemod.c` | `parseIncludeCheck` | the include-file generator's self-check: a generated include file's text parsed as the package's module, beside the root and outside the program's modules, its imports answered by the root's import lines |
 | `ir/stmt/module.c` | `modAddNode`, `modAddNamedNode`, `modAddFn`, `modHook` | parse-time namespace population and hook-stack swapping |
 | `ir/nametbl.c` | `nametblFind`, `nametblHookPush`, `nametblHookNode`, `nametblHookPop` | interning and the binding stack |
 

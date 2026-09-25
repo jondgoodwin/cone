@@ -787,12 +787,15 @@ excludes = ["top.drop", "top.init", "base.final", "constant internal base.mark"]
 
 [scenario.module_init_link]
 category = "run"
-description = "A package compiled on its own, whose 'init' and finalizer the program's stitched init and final call through its include file, linked and run"
+description = "A package compiled on its own, whose 'init' and finalizer the program's stitched init and final call through the include file its compile generates, and whose type's private 'final' the program's drop of a value calls, linked and run"
 tags = ["genllvm", "runtime"]
 link = ["package/lib.conebuild"]
+include = ["include/lib.cone"]
 
 # lib's 'init', 'final' and 'drop' are private, and a library compile exports
 # them: the program's stitched init and final call them from another object.
+# So is Handle's 'final', which the program's drop of a Handle it made calls:
+# a type's 'final' and 'clone' are called wherever a value is dropped or copied.
 [[scenario.module_init_link.check]]
 name = "the-library-exports-its-lifecycle"
 target = "symbols"
@@ -801,6 +804,7 @@ contains = [
   "define lib.init comdat nodeduplicate",
   "define lib.final comdat nodeduplicate",
   "define lib.drop comdat nodeduplicate",
+  "define lib.Handle.final comdat nodeduplicate",
 ]
 
 # The program derives lib's finalizer from the include file as lib's compile
@@ -861,11 +865,15 @@ excludes = ["stack.push", "stack.count", "tally.see"]
 # defined in q's object and in the program's, shared, and the linker keeps one
 # copy, so q's code and the program's add to one total. A package's include
 # file shows its root module alone, which is why the generic here is a root.
+# Each package's include file is the one its compile generates ('include'):
+# g's is g's whole source, since every declaration of a generic module is
+# instantiated where it is used, and q compiles against it as the program does.
 [scenario.module_generic_link]
 category = "run"
 description = "A generic module in a package of its own, instantiated at i64 in a package compiled alone and in the program, whose copies of the instance -- functions and globals -- merge at link; and an instance the program alone uses"
 tags = ["genllvm", "runtime"]
 link = ["g/g.conebuild", "q/q.conebuild"]
+include = ["include/g.cone", "include/q.cone"]
 
 # q's object defines g[i64] -- its functions, its 'init' and its globals --
 # shared, as the program's object does
@@ -1787,18 +1795,22 @@ name = "an-inline-function-has-no-symbol"
 target = "symbols"
 excludes = ["ex.viaInline", "ex.privInline", "ex.WithInline.get", "ex.viaReached", "ex.viaPath"]
 
-# Package q compiled on its own, the program compiled against q's hand-written
-# include file, and the two objects linked: the scenario's 'link' compiles
-# q/q.conebuild first, into an object of its own, and links it in. Every value
-# the program prints comes from q's object: the include's non-inline bodies all
-# give 0 and are never generated, so a right answer can only be q's. The
-# bodies the program does generate, the expanded inlines, reach q's private
-# function, global and type, whose symbols q exports for them.
+# Package q compiled on its own, the program compiled against the include file
+# q's compile generates, and the two objects linked: the scenario's 'link'
+# compiles q/q.conebuild first, into an object of its own, which writes q.cone,
+# its include file; 'include' requires that file to be include/q.cone byte for
+# byte, and the program's description names include/q.cone. So the program
+# compiles against exactly what q generated. Every value the program prints
+# comes from q's object: the include file keeps no body q defines, so a right
+# answer can only be q's. The bodies the program does generate, the expanded
+# inlines, reach q's private function, global and type, whose symbols q
+# exports for them and the include file declares.
 [scenario.module_build_link]
 category = "run"
-description = "A package compiled alone and a program compiled against its hand-written include file, linked and run: generic instances and vtables both objects define merge at link"
+description = "A package compiled alone and a program compiled against the include file its compile generates, linked and run: generic instances and vtables both objects define merge at link"
 tags = ["genllvm", "runtime"]
 link = ["q/q.conebuild"]
+include = ["include/q.cone"]
 
 # The program only declares what q defines, the private names its expanded
 # inline bodies reach among them, under the names q exports them by.
@@ -1882,6 +1894,84 @@ contains = [
   "constant linkonce_odr q.Square as q.Shape (vtable) comdat any",
   "constant internal q.Shape (vtable list) comdat nodeduplicate",
 ]
+
+# The round trip over every kind of declaration an include file carries. Three
+# packages are compiled on their own, each writing its include file, which
+# 'include' requires to be the golden file under include/ byte for byte: base,
+# which t extends; dep, whose type t re-exports with 'pub use' on its import;
+# and t, which has one of each kind -- enums with variants, a variant meeting
+# its enum's requirement privately, a trait with a default, a macro reaching a
+# private function, a C-named function, a default fold on its 'mod' line, a
+# global folding its type's members in, globals whose types are inferred
+# (a number, dep's type, its own), a private type a public one holds, a
+# typedef and a const, 'init' and 'final' in a second file whose import moves
+# up into the header, and a private function and type nothing reaches, left
+# out. t compiles against base's and dep's generated include files, and the
+# program against all three.
+[scenario.module_include_roundtrip]
+category = "run"
+description = "Packages compiled alone and a program compiled against the include files they generate, linked and run: enums, traits, macros, C names, folds, extends, re-exports, inferred types, init and final"
+tags = ["parse", "nameres", "genllvm", "runtime"]
+link = ["base/base.conebuild", "dep/dep.conebuild", "t/t.conebuild"]
+include = ["include/base.cone", "include/dep.cone", "include/t.cone"]
+
+# What t exports because an importer's object calls it without t's source: the
+# private function the macro reaches, the private method meeting Shape's
+# requirement that the program's vtable for Rect calls, 'init' and 'final',
+# and the C-named function under its C name.
+[[scenario.module_include_roundtrip.check]]
+name = "t-exports-what-the-include-file-declares"
+target = "symbols"
+object = "t"
+contains = [
+  "define t.step comdat nodeduplicate",
+  "define t.Shape.Rect.area comdat nodeduplicate",
+  "define t.init comdat nodeduplicate",
+  "define t.final comdat nodeduplicate",
+  "define t_sum comdat nodeduplicate",
+  "define internal t.unused comdat nodeduplicate",
+]
+
+# The program defines none of it: the macro's body is expanded here and calls
+# t's 'step', and the vtables for t's variants call t's methods
+[[scenario.module_include_roundtrip.check]]
+name = "the-program-declares-what-t-defines"
+target = "symbols"
+contains = ["declare t.step", "declare t.Shape.Rect.area", "declare t.Shape.Square.area", "declare base.origin", "declare dep.Gadget.bigger"]
+excludes = ["define t.", "define base.", "define dep."]
+
+# What a generated include file cannot declare yet: anything one of the root's
+# submodules holds [Jon 25 Sep, Q1: the next step writes a private, pruned
+# nested module]. A public signature, a global's type and a public type's field
+# naming a submodule's type are each refused where written, a 'pub use' of the
+# submodule's names or of an enum it holds likewise, and a function the root's
+# inline body names in the submodule where that function is declared. What does
+# not reach the include file -- a private function's signature, a public
+# function's body -- is not refused.
+[scenario.module_include_refuse]
+category = "reject"
+description = "A library whose include file would have to declare what its submodule holds: a signature, a global's type, a field, two 'pub use's and an inline body reaching it, each refused"
+tags = ["genllvm"]
+diagnostics = 6
+
+# The self-check. The generator misses a reach into a submodule -- a macro, which
+# name resolution does not mark as an expanded body's reach -- and the file it
+# writes names what it does not declare. Parsing and name-resolving that file
+# reports the name, located in the rejected text the compile writes beside its
+# object, and the compile fails (ErrorIncCheck) with no include file written.
+[scenario.module_include_check]
+category = "reject"
+description = "A generated include file that does not name-resolve as its package's module fails the library compile, reporting what did not resolve"
+tags = ["genllvm"]
+diagnostics = 2
+
+[[scenario.module_include_check.unlocated]]
+code = "ErrorUnkName"
+message = "The name parts does not refer to a declared name"
+
+[[scenario.module_include_check.unlocated]]
+code = "ErrorIncCheck"
+message = "does not parse and name-resolve as c's module"
 
 # Three packages, each compiled on its own: b defines a struct with methods, a
 # imports b and takes and returns b's type, and the program imports a alone. An

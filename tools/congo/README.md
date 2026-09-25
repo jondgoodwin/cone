@@ -208,6 +208,10 @@ says `pub`. A program that wants `b`'s names writes `import b`.
 `packages/stdio/stdio.cone` is the example. Include files are written by hand
 for now, so one must be kept in step with the package's source: a declaration
 the source no longer defines is a link error in every program that uses it.
+`conec` already generates each library's include file as it compiles it, and
+Congo's build leaves it beside the object, `build/<mode>/<name>.cone`; Congo
+does not compile against it yet. A library whose include file would have to
+declare what one of its submodules holds fails to compile, refused.
 `congo new --lib` writes a starting pair. The reference manual's *import and
 extern* page, "Declaring a Cone package", is the rule.
 

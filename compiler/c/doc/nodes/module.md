@@ -779,7 +779,7 @@ identifier alone. [Names and Namespaces](../../../../doc/design/names-and-namesp
 made; `modInstanceList` holds them until then. It is then generated like any
 module the compile generates, and its place in the init order is "The module
 order" below. **Every object that uses an instance defines it**, as it defines
-a generic function's: in a described build `genlIsInstance` answers for every
+a generic function's: in a described build `dclIsInstance` answers for every
 declaration of the instance — its owners are asked up to the module, and an
 instance module is an instance — so its functions *and its globals* are
 `linkonce_odr` with a COMDAT of `any`, and the copies separately compiled
@@ -794,7 +794,8 @@ full source, which is what an importer compiles the instance from
 The repository's root holds `packages/`, one folder per package, each holding
 a manifest, `congo.toml`; the package's source, `src/<name>.cone`; and its
 hand-written include file, `<name>.cone` at the package root, which is what a
-program Congo builds is compiled against. Nothing about either is known to the
+program Congo builds is compiled against (a library compile also generates one,
+which nothing uses yet: "Generating the include file"). Nothing about either is known to the
 compiler but the name `core`: each is located, registered and parsed on the
 path every imported module takes, and named by its file. `stdio`'s printing is
 C, declared in its `pub extern` block, each function marked `@c` so that it
@@ -964,7 +965,9 @@ Cone string — a backslash begins an escape, so paths are written with `/`.
 
 - **Settings first**, each at most once: `build` is `debug` or `release`, and
   sets what `--debug` sets, so the description is read before generation is set
-  up; `output` is `executable` (the default) or `library`.
+  up; `output` is `executable` (the default) or `library`, and a library
+  compile also writes its package's include file into the output directory
+  ("Generating the include file").
 - **Then the package lines**, `import name: "path"` at the top level, one per
   package of the compile's dependency closure: where each package's include
   file is, for the imports an include file writes. In the example, `q` imports
@@ -998,7 +1001,7 @@ as an importer spells them — `q.addOne`, `_CNvC1q6addOne` — rather than bare
 That is the spelling half of separate compilation. **The linkage half is
 built too:** `output: library` sets `opt->library`, so the object is
 position-independent and a library compile's rule decides linkage
-(`genlIsExported`, [Generation](../phases/generation.md), "Symbols, linkage
+(`dclIsExported`, [Generation](../phases/generation.md), "Symbols, linkage
 and COMDATs"). The package's own modules — the root and its children, never
 `core` — export every public function and global, every function of a type an
 importer can reach, and every private definition that a body an importer
@@ -1067,6 +1070,103 @@ module in the importing module's namespace with the import's visibility
 `b`'s types still reach the program through `a`'s functions, with their fields
 and methods (`module_build_transitive`). Under Congo the difference never
 shows: a program that writes `import b` gets its own line for it.
+
+### Generating the include file
+
+**A library compile writes its package's include file** [Jon 23 Sep: include
+files are *"hand-written at first and generated soon after"*; the seven
+questions ruled 25 Sep]: `<package>.cone` in the output directory [Q3], the Cone
+source a program compiles against in place of the package's source. It is
+written when the build description says `output: library`, or when
+`--emit-include` asks, after type check and only where there were no errors
+(`conec.c`). It is generated before any code is, so that what it cannot declare
+fails the compile with no object written, and checked and written after. Congo
+does not yet compile against it: a package's dependents still name the
+hand-written include file at its root, and `core` and `stdio` keep theirs, so
+in a Congo build the generated files sit unused in `build/<mode>/`.
+
+**It is the author's own text, edited; nothing is printed from the IR**
+(`ir/incfile.c`, `incFileGenerate`). By type check the parser has desugared
+bodies and type check has lowered them, so the IR no longer reads as the source
+did. The parser instead records where each statement sits (`ir/dclspan.h`):
+one span per module-level statement, in a side list on the module, and one per
+member of a type's braces, on the type — where it starts (at its `pub`), where
+its keyword is, where its body or value starts and ends, and where it ends, and
+for a global where its name ends and whether its type is written. `--spans`
+prints the root module's, which is how they were measured. The IR then decides,
+statement by statement, whether the text goes in whole, goes in cut to an
+`extern` declaration, or stays out:
+
+- **Whole**, where an importer expands the body: an `inline` or generic
+  function, a macro, a trait's methods, a generic type's, an enum's own
+  (`fnDclIsExpanded`).
+- **Cut to `extern`**, where the object defines and exports it
+  (`dclIsExported`, the rule generation follows, so the object and the include
+  file cannot disagree [Q5]): `extern` is written in before the keyword, and the
+  body from its `{`, or the value from its `=`, is left out. A global's fold
+  clause stays [Q4], and a module-level `static` becomes `extern`.
+- **Out**, anything else, with the comments directly above it, no blank line
+  between. A private declaration nothing an importer expands names is not
+  exported, and so not declared.
+
+**Beyond the exported set**, three kinds go in because an importer's compile
+reads them without naming them: a global the module's finalizer drops, so the
+importer derives the package's `drop` as the package did ("Init and final"); a
+type's `final` and `clone`, which decide what dropping or copying a value
+does; and a method meeting a requirement of a trait its type is, which the
+importer's type check asks for. The last two are exported too, public or not
+(`fnIsTypeLifecycle`, `fnIsTraitMethod`), since an importer's drop and its
+vtables call them. And **a type goes in whenever an included declaration names
+it** — in a signature, a global's type, a field — so a private type a public
+one holds is declared, fields and all.
+
+**Types keep every field**, private ones included, since an importer lays the
+type out; each member is decided by the rules above, and an enum's variants
+likewise. **As written**: the `mod` line (its `extends`, `is` and default fold
+with it), every import [Q7: all of them for now; pruning is later] — a later
+file's imports moved up into the first file's header, since an import may not
+follow a declaration — and each typedef, const, macro and module trait, which
+declare no symbol and whose uses nothing records, so a private one stays in too.
+A standalone `use` stays where what it names is in the file or another
+package's, and goes where it privately folds a submodule's names.
+
+**A global whose type was inferred gets its type written in** [Q6], the one
+thing printed from the IR: a number type, a struct — an instance of a generic
+one with its arguments, another package's through its module's name, `core`'s
+bare — or an array, `[2; u8]`. A type none of those is refused
+(`ErrorIncCheck`), asking for the type to be written.
+
+**Every comment in the kept text is kept** [Q2], those between declarations
+included, and a banner at the top says the file is generated, from which of
+the package's files, and not to edit it. A generic module's include file is its
+source whole, since every declaration of it is instantiated where it is used.
+
+**What reaches one of the root's submodules is refused** (`ErrorIncSubmodule`),
+since the include file has no submodules and a name there is spelled after the
+submodule [Q1: the ruling is a private, pruned nested `mod` block in generated
+include files; this first version refuses]. Three routes reach there: a type
+an included declaration names; a declaration an expanded body of the root's
+names, which name resolution marks `DclSubReached` beside `DclExpandReached`;
+and a `pub use` of a submodule's names or of an enum one holds. A private
+function's signature, a public function's body and a private `use` are not in
+the file and are not refused (`module_include_refuse`).
+
+**The file is checked before it is written.** It is parsed as the package's
+module beside the program (`parseIncludeCheck`), its imports answered by the
+root's own import lines, and name-resolved against the program's modules as
+they are (`pgmNameResAlone`, `modFoldAlone`, which folds it without folding
+them again). A failure is the generator's, not the author's: it is
+`ErrorIncCheck`, the text goes to `<package>.cone.rejected`, where what did not
+resolve is reported, and no include file is written. A root inline body using a
+submodule's macro, a reach name resolution does not mark, is caught this way
+(`module_include_check`). **Nor does it ever overwrite a source of the
+compile** (`ErrorIncWrite`, checked before anything is generated,
+`driver_include_over_source`).
+
+`module_build_link`, `module_init_link`, `module_generic_link` and
+`module_include_roundtrip` compile programs against the include files their
+packages generate, each pinned as a golden file the program's description names
+(the runner's `include` key), and link and run them.
 
 ### What an import reaches
 
@@ -1525,7 +1625,7 @@ compile made of its generics (`genlImportedInstances`), since its package has
 none for an importer to link against. `genlLinkage` makes every definition of a
 program internal except `main` and a public C-named one, and leaves an imported
 module's declarations external. A library compile exports what its importers
-link against (`genlIsExported`, "A described build"), and a described build
+link against (`dclIsExported`, "A described build"), and a described build
 makes an instance of a generic and a vtable `linkonce_odr` with a COMDAT of
 `any`, so that each object's copy merges.
 
@@ -1630,7 +1730,7 @@ call them once the entry glue does, belongs to the entry-trait conversation.
 
 **Across separately compiled packages**, a package's `init`, `final` and `drop`
 keep the package's Cone names (`lib.init`, `lib.drop`), and a library compile
-exports each whatever its visibility (`DclLifecycle` in `genlIsExported`). The
+exports each whatever its visibility (`DclLifecycle` in `dclIsExported`). The
 program's compile sees the package through its include file, which declares
 them: `extern fn @initpure init();` where the package has an `init`,
 `extern fn final();` where it has a `final`, and each global the package's
@@ -1640,7 +1740,10 @@ include file exactly as the package's compile derives it from its source — a
 calls the declared symbols (`module_init_link`). An include file that declares
 less than its package has leaks rather than misbehaves: an `init` it omits is not
 run, and where it omits the global a `drop` finalizes, the program calls
-`final` alone; one that declares more fails to link.
+`final` alone; one that declares more fails to link. **A type's `final` and
+`clone` are exported the same way** when an importer can reach the type, public
+or not (`fnIsTypeLifecycle`): a program that drops or copies a value of the type
+calls them without naming them (`module_init_link` drops a `lib.Handle`).
 
 **An instance of a generic module has its own `init` and `final`**, stitched in
 its place in the order ("The module order"). Across separately compiled
@@ -1973,7 +2076,10 @@ module's `init` in, its stitched final the finalizers in reverse ("Init and fina
 immediate parent's namespace and no ancestor's, which is the scoped reading,
 adopted provisionally. There is no nesting within a *file*, and none is planned —
 a `mod name { ... }` block is refused, `ErrorUnbuiltKind` — no package as a unit
-of compilation, no manifest and no interface artifact. **What the compiler does
+of compilation and no manifest. **The interface artifact is generated**: a
+library compile writes its package's include file from the root's own text
+("Generating the include file"), though Congo does not compile against it yet
+and a root whose include file would reach into a submodule is refused. **What the compiler does
 take is a build description** ("A described build"): one package's module tree
 and files, each file's `mod` line checked against it, imports found only where
 it says, and a library's root named from it, so a package compiled on its own
@@ -2128,7 +2234,7 @@ into:
 - **Private names in a *library* are internal, except what an expanded body
   reaches, which is linked against** ([Names and
   Namespaces](../../../../doc/design/names-and-namespaces.md), "Linkage", L5).
-  Built in `genlIsExported`: the mangled namespace shrinks to the names that
+  Built in `dclIsExported`: the mangled namespace shrinks to the names that
   cross the package boundary, and a private helper an `inline`, generic or
   macro body reaches is exported once rather than re-emitted per importer.
   Hidden visibility is not set on it, as no visibility is set anywhere.
@@ -2216,15 +2322,18 @@ annotation on a reference names is a type.
   private declaration is needed from outside its module, since a public
   overload name may hold no private candidate.
 
-  **The format is Cone source, not serialized IR.** `[planned]` **Decided by the
+  **The format is Cone source, not serialized IR.** **Decided by the
   author, 12 September 2026:** the artifact is **auto-generated**, with
   **hand-written as a transitional stage** — and nobody hand-writes serialized
   IR, so the format is the language itself. ▸ **This is also what makes a C
   library's package and a generated package interface one artifact with one
-  loading path**, which is what that decision requires. Emitting it needs a
-  printer producing valid Cone rather than the `--ir` debug dump; the prior art
-  is Swift's textual `.swiftinterface`, chosen for the same reason — a module
-  built by one compiler version stays readable by a later one.
+  loading path**, which is what that decision requires. It is generated by
+  copying the author's text rather than printing the IR ("Generating the
+  include file"), as Swift's textual `.swiftinterface` copies an inlinable
+  body's source; Swift chose text for the same reason — a module built by one
+  compiler version stays readable by a later one. `[planned]` Congo compiling
+  dependents against the generated file, and `core` and `stdio` retiring their
+  hand-written ones.
 
   ⚠ **This paragraph previously read "the artifact is therefore serialized IR."**
   That was stated here and contradicted in the packages backlog item, with
@@ -2348,6 +2457,27 @@ annotation on a reference names is a type.
 - **An instance's namespace is a copy of its generic's, made when the instance
   is.** Every fold has run by type check, so the copy is complete; a binding made
   in the generic's namespace after an instance exists would not reach it.
+- **An expanded body's reach through a macro, a typedef or a const is not
+  recorded.** Name resolution marks only functions, globals and types, so the
+  include-file generator keeps every private typedef, const, macro and module
+  trait, and a reach through one into a submodule is caught only by the
+  self-check (`module_include_check`), as `ErrorIncCheck` rather than
+  `ErrorIncSubmodule`.
+- **A type an included declaration names but no expanded body does is declared
+  and not reachable by the export rule.** Its `final`, `clone` and trait
+  methods are declared in the include file and, where the type is private and
+  unreached, kept internal by `dclIsExported`: an importer that could call one
+  directly would fail to link. Nothing an importer can write reaches one today
+  but through the public type's own exported functions.
+- **A method an expanded body reaches only through a receiver is exported only
+  where its type holds an expanded body or the body names the type**
+  (`typeHoldsExpanded`, `DclExpandReached`). A private type reached some other
+  way — through a field of a named type — has its methods left internal and out
+  of the include file.
+- **The self-check of a compile with no build description looks for its imports
+  beside the root's first file**, and names its lexer
+  `<folder>/<package>.include.cone`, a file that does not exist, so what it
+  reports is located there.
 - **A generic module's type parameters are hooked only by `modNameRes`.** A fold
   of the generic that resolves a declaration (a global's `use` clause, refused
   in a generic module) or a type of it resolved by demand from another module's

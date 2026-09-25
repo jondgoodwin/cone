@@ -273,9 +273,13 @@ is the contract; there is never a second name resolution pass.
   `nameUseNameRes` marks what each bound use names, a pre-bound path included;
   an overload name marks every candidate. It is the one fact this pass writes
   onto a declaration other than the one it is resolving, and only a library
-  compile reads it (`genlIsExported`, [Generation](generation.md)). A method
+  compile reads it (`dclIsExported`, [Generation](generation.md)). A method
   reached through a receiver is bound at type check and so is never marked;
-  the type it belongs to is, where the body names that type.
+  the type it belongs to is, where the body names that type. Where the body is
+  the root module's own and what it names sits in one of the root's
+  submodules, the declaration is also marked `DclSubReached`: the root's include
+  file would have to declare it, which the generator refuses for now
+  ([module](../nodes/module.md), "Generating the include file").
 - **Nothing is typed.** No `vtype` is established, and no type check mark is
   set.
 

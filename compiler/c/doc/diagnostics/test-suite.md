@@ -324,6 +324,17 @@ source may not share the scenario's own basename, since its object would take
 the same name (`module_build_link`). A named check with an `object` key reads
 what a linked compile generated (section 4, "`cases.toml` keys").
 
+**The round trip** of a package's include file is the `include` key beside
+`link`. A linked package compiled as a library writes its include file,
+`<package>.cone`, beside its object; each golden file `include` names — named
+for its package, `include/q.cone` for `q/q.conebuild` — must be that file byte
+for byte, checked as soon as the package is compiled and before anything else
+is, and the scenario's build descriptions name the golden file where they import
+the package. So the program, and any later package, compiles against exactly
+what the package generated, and a change to the generator shows as a diff of
+the golden file. `--bless` records a generated file that differs as its golden
+file, and nothing else in that pass (`module_include_roundtrip`).
+
 ## 4. Assert
 
 Every scenario declares a **category** in `cases.toml`. It tells the runner what
@@ -537,6 +548,7 @@ xfail       = false          # omit unless true
 [scenario.module_build_link]
 category    = "run"
 link        = ["q/q.conebuild"]  # compiled alone first, and linked in (section 3)
+include     = ["include/q.cone"] # what q's compile must generate, which the program compiles against
 
 [scenario.driver_bad_option]
 category    = "driver"       # a driver scenario has no .cone file
@@ -547,9 +559,9 @@ exit        = 4              # required: asserting it is the whole category
 name    = "debug"                # declare all of them once you declare any
 options = ["--debug"]
 
-[[scenario.core_overload.unlocated]]   # diagnostics errorMsg prints with no line
-code    = "ErrorNoLoop"
-message = "may not be used as an expression"
+[[scenario.core_overload.unlocated]]   # diagnostics errorMsg prints with no line,
+code    = "ErrorNoLoop"                # or located in a file the compile wrote under
+message = "may not be used as an expression"  # the output folder, which has no source to annotate
 
 [[scenario.core_overload.check]]
 name     = "overload-lowers-to-concrete"

@@ -108,10 +108,10 @@ lowers them, in two functions and a derivation:
   GenlDefinition`, saying what this object does with the symbol. For a
   declared node `genlDefinition` answers it: `GenlDeclared` unless
   `genlIsDefinedHere` — its module is flagged `FlagGenMod` or it belongs to a
-  generic's instance (`genlIsInstance`), it is not `extern`, and a function has
+  generic's instance (`dclIsInstance`), it is not `extern`, and a function has
   a body. A defined instance is then `GenlShared` in a described build and
   `GenlDefined` otherwise; anything else defined is `GenlExported` where a
-  library compile exports it (`genlIsExported`, below), else `GenlDefined`. A
+  library compile exports it (`dclIsExported`, below), else `GenlDefined`. A
   vtable, which no node declares, is `GenlShared` in a described build and
   `GenlDefined` otherwise (`genlVtableDefinition`). It is the one place that
   decides them, and it sets no visibility. A `DclSystemCC` function takes the
@@ -145,15 +145,19 @@ its linkage:
 **A library compile** is one whose build description says `output: library`
 (or `--library` with no description), which sets `opt->library`;
 `genlProgram` then records the root module in `gen->libroot`. What it exports
-is `genlIsExported`'s answer, the rule L1 and L5 of [Names and
-Namespaces](../../../../doc/design/names-and-namespaces.md), "Linkage", state:
+is `dclIsExported`'s answer, the rule L1 and L5 of [Names and
+Namespaces](../../../../doc/design/names-and-namespaces.md), "Linkage", state.
+It lives in the front end (`ir/export.c`), not here, because the include-file
+generator asks the same question to decide what the include file declares
+([module](../nodes/module.md), "Generating the include file"), and one function
+answering both is what keeps the object and the include file from disagreeing:
 
 - only a definition of the package's own modules — the root, or a module whose
   chain of owners reaches it — never `core` or a package the search path
   compiled in beside them;
 - never an instance of a generic, nor a method or static of a generic type's
   instance, nor a function or global of a generic module's instance
-  (`genlIsInstance`, which asks the owners too, up to the module: a member of a
+  (`dclIsInstance`, which asks the owners too, up to the module: a member of a
   type's instance carries no instantiating node of its own, only its type does,
   and an instance module answers for everything it holds) —
   those are shared instead, below;
@@ -166,8 +170,11 @@ Namespaces](../../../../doc/design/names-and-namespaces.md), "Linkage", state:
 - a public function or global of a module;
 - a function of a type an importer can reach — a public type, or one an
   expanded body names — where the function is public, or the type holds an
-  expanded body (`genlTypeHoldsExpanded`), which can reach a private method
-  through a receiver that name resolution never binds.
+  expanded body (`typeHoldsExpanded`), which can reach a private method
+  through a receiver that name resolution never binds, or the function is the
+  type's `final` or `clone` (`fnIsTypeLifecycle`), which an importer's object
+  calls wherever it drops or copies a value of the type, naming neither
+  (`module_init_link` drops a package's type whose `final` is private).
 
 Everything else is internal, as in a program.
 
@@ -512,10 +519,11 @@ an imported module and emits `@_CNvC9modulesub8scaleInt`, `modulesub.scaleInt`.
 The two object files never resolve against each other. A library built from a
 build description settles both halves: its root is named, so `modulesub` built
 that way emits `@_CNvC9modulesub8scaleInt` itself ([module](../nodes/module.md),
-"A described build"), and it exports that definition (`genlIsExported`), so an
+"A described build"), and it exports that definition (`dclIsExported`), so an
 importer's `declare` resolves against it at link. `module_build_link` compiles
-a package alone, compiles a program against a hand-written include file for it,
-links the two objects and runs the program. A generic's instances and the
+a package alone, compiles a program against the include file the package's
+compile generated ([module](../nodes/module.md), "Generating the include
+file"), links the two objects and runs the program. A generic's instances and the
 vtables both objects build are defined in each, `linkonce_odr`, and merge at
 link: the scenario instantiates a generic function and a generic type in the
 package and in the program, at a type argument both use and at one only the
@@ -550,11 +558,11 @@ variables.
 | | `genlGloFnName`, `genlGloVarName` | declare a function or global under the symbol `nameSymbol` spells |
 | | `genlGloVarIsConstant` | whether an `imm` global is an LLVM constant: an initial value, not `extern`, no drop function |
 | | `genlLinkage`, `genlDefinition`, `genlIsDefinedHere`, `genlVtableDefinition` | linkage, storage class and calling convention, together, from the declaration facts and what this object does with the symbol: declares it, defines it, defines and exports it, or defines it shared |
-| | `genlIsInstance` | whether a declaration is a generic's instance or a member of one — every function and global of a generic module's instance among them |
-| | `genlIsExported`, `genlTypeHoldsExpanded` | whether a library compile exports a definition to its importers |
 | | `genlComdat`, `genlNameAnonFn` | the per-definition COMDAT that lets the linker drop a symbol, its kind read off the linkage; the private name an anonymous `fn` needs to have one |
 | | `genlComdatSupport` | what the target's object format does with COMDATs |
 | | `genlOut` | set triple and layout, emit object and asm |
+| `ir/export.c` | `dclIsInstance` | whether a declaration is a generic's instance or a member of one — every function and global of a generic module's instance among them |
+| | `dclIsExported`, `typeHoldsExpanded` | whether a library compile exports a definition to its importers; the include-file generator asks the same |
 | `genllvm/genltype.c` | `genlType`, `_genlType` | the memoizing entry and the per-tag lowering switch |
 | | `genlSetupTaggedTrait`, `genlSameSizeTrait` | the three enum shapes |
 | | `genlVtable`, `genlVtableImpl` | vtable type, per-struct constants, the virtref fat pointer |

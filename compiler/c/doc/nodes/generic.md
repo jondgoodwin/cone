@@ -345,14 +345,14 @@ module's instances are not walked there: each is a module of the program by
 generation, flagged to generate, and `genlProgram` passes the generic over.
 
 **Linkage is the C++ template answer, in a described build.** An instance, and
-every member of a generic type's instance (`genlIsInstance` — the members carry
+every member of a generic type's instance (`dclIsInstance` — the members carry
 no `instnode` of their own, so their owners are asked, up to the module, and an
 instance of a generic module answers for every declaration it holds, globals
 included), is `linkonce_odr` with
 a COMDAT of kind `any` (`GenlShared`): the package's own instances and each
 importer's are identical, and the linker keeps one copy. A compile with no
 build description is the program's only object, and there an instance is
-internal like every other definition. `genlIsExported` never exports one. What a
+internal like every other definition. `dclIsExported` never exports one. What a
 library compile does export is each private function, global or type a
 generic's body names (`DclExpandReached`), since the importer's instance calls
 it. `module_build_link` links a package and a program that both instantiate a

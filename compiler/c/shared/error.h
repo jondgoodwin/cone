@@ -286,6 +286,11 @@ enum ErrorCode {
     ErrorNoModDcl = 1145,       // A module's first file -- designated, one-file, lone, or first listed in a build description -- not opening with its 'mod' line
     ErrorImportLate = 1146,     // An 'import' after a declaration: imports come right after the 'mod' line, ahead of everything else
 
+    // Generating a library's include file
+    ErrorIncSubmodule = 1147,   // The include file would have to declare what one of the root's submodules holds -- named by a public signature, a body an importer expands, or a 'pub use' -- which a generated include file cannot express yet
+    ErrorIncWrite = 1148,       // The include file cannot be written, or would overwrite a source file of the compile
+    ErrorIncCheck = 1149,       // The generated include file could not be completed, or does not parse and name-resolve as the package's module: a compiler limitation or bug
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

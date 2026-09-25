@@ -209,22 +209,6 @@ void genlGloVar(GenState *gen, VarDclNode *varnode) {
         LLVMSetGlobalConstant(global, 1);
 }
 
-// Whether a declaration belongs to a generic's instance: it is one (a generic
-// function's instance), or it is a member of one (a method or static of a
-// generic type's instance, or of an instance of a generic trait or enum). The
-// members of a type's instance carry no instantiating node of their own; their
-// type does, so the owners are asked up to the module -- and the module too,
-// since every declaration of a generic module's instance is a member of it.
-static int genlIsInstance(INode *dclnode) {
-    for (INode *node = dclnode; node; node = inodeGetOwner(node)) {
-        if (node->tag == ModuleTag)
-            return ((ModuleNode*)node)->generic != NULL;
-        if (itypeInstanceTypeArgs(node) != NULL)
-            return 1;
-    }
-    return 0;
-}
-
 // Whether this object file defines a declared symbol rather than merely
 // declaring it: the declaration is not externally supplied, its module is one
 // this compile generates bodies for, and a function has a body to generate.
@@ -239,73 +223,12 @@ static int genlIsDefinedHere(INode *dclnode) {
     DclInfo *dclinfo = inodeGetDclInfo(dclnode);
     if (dclinfo->facts & DclExternal)
         return 0;
-    if (genlIsInstance(dclnode))
+    if (dclIsInstance(dclnode))
         return dclnode->tag != FnDclTag || ((FnDclNode*)dclnode)->value != NULL;
     ModuleNode *mod = dclInfoGetModule(dclnode);
     if (mod == NULL || !(mod->flags & FlagGenMod))
         return 0;
     return dclnode->tag != FnDclTag || ((FnDclNode*)dclnode)->value != NULL;
-}
-
-// Whether a type's own braces hold a body an importer expands: an inline or
-// generic method, a macro method, or -- in a trait or a generic type -- every
-// method (fnDclIsExpanded). A private method is reached only from its own
-// type's methods, and through a receiver, which name resolution cannot see
-// (it binds the member at type check), so such a type exports all of them.
-static int genlTypeHoldsExpanded(INode *type) {
-    if (type->tag != StructTag)
-        return 0;
-    StructNode *strnode = (StructNode*)type;
-    if (strnode->genericinfo || (type->flags & TraitType))
-        return 1;
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodelistFor(&strnode->nodelist, cnt, nodesp)) {
-        INode *node = *nodesp;
-        if (node->tag == MacroDclTag
-            || (node->tag == FnDclTag && ((node->flags & FlagInline) || ((FnDclNode*)node)->genericinfo)))
-            return 1;
-    }
-    return 0;
-}
-
-// Whether a library compile exports a definition, so that an importer's
-// object links against it (names-and-namespaces.md, "Linkage", L1 and L5).
-// Only the package's own modules export: the root and its submodules, never
-// core or a package compiled in beside them. Of those, a definition is
-// exported when it is:
-// - named by a body an importer expands (DclExpandReached): an inline,
-//   generic or macro body, a trait default, a generic type's method --
-//   private or not; or
-// - a module's 'init', its 'final' or the 'drop' it is given (DclLifecycle),
-//   public or not, since the program's stitched init and final call them; or
-// - a public function or global of a module; or
-// - a function of a type an importer can reach -- a public type, or one an
-//   expanded body names -- when the function is public, or the type holds an
-//   expanded body that can reach its private ones through a receiver.
-// Everything else is internal: a private definition nothing expanded names, and
-// every function of a private type no expanded body names. An instance of a
-// generic, or a member of one, is never exported: every object that uses it
-// defines it (genlDefinition).
-static int genlIsExported(GenState *gen, INode *dclnode) {
-    if (gen->libroot == NULL || genlIsInstance(dclnode))
-        return 0;
-    ModuleNode *mod = dclInfoGetModule(dclnode);
-    while (mod && mod->dclinfo.owner)
-        mod = dclInfoGetModule(mod->dclinfo.owner);
-    if (mod != gen->libroot)
-        return 0;
-    DclInfo *dclinfo = inodeGetDclInfo(dclnode);
-    if (dclinfo->facts & (DclExpandReached | DclLifecycle))
-        return 1;
-    INode *owner = dclinfo->owner;
-    if (owner == NULL || owner->tag == ModuleTag)
-        return !(dclinfo->facts & DclPrivate);
-    DclInfo *typeinfo = inodeGetDclInfo(owner);
-    if (typeinfo == NULL
-        || ((typeinfo->facts & DclPrivate) && !(typeinfo->facts & DclExpandReached)))
-        return 0;
-    return !(dclinfo->facts & DclPrivate) || genlTypeHoldsExpanded(owner);
 }
 
 // What this object file does with a declared node's symbol.
@@ -318,9 +241,10 @@ static int genlIsExported(GenState *gen, INode *dclnode) {
 static GenlDefinition genlDefinition(GenState *gen, INode *dclnode) {
     if (!genlIsDefinedHere(dclnode))
         return GenlDeclared;
-    if (genlIsInstance(dclnode))
+    if (dclIsInstance(dclnode))
         return gen->opt->described ? GenlShared : GenlDefined;
-    return genlIsExported(gen, dclnode) ? GenlExported : GenlDefined;
+    // The rule the include file's generator asks too, so the two agree (ir/export.c)
+    return dclIsExported(gen->libroot, dclnode) ? GenlExported : GenlDefined;
 }
 
 // What this object does with a vtable it builds. Every object that coerces a
@@ -349,7 +273,7 @@ GenlDefinition genlVtableDefinition(GenState *gen) {
 // the namespace, not the object file.
 //
 // The library rule adds one case: a definition the library exports to its
-// importers (genlIsExported) keeps the external linkage LLVM gave it, and so
+// importers (dclIsExported) keeps the external linkage LLVM gave it, and so
 // also survives optimisation when nothing in the library itself uses it.
 //
 // A described build adds the shared case: a generic's instance, or a vtable,
@@ -713,7 +637,7 @@ static void genlImportedInstances(GenState *gen, INode *node) {
 // neither gets no call. The order is pgm->initorder (pgmModuleOrder), and a
 // module this object does not generate -- another package, reached through its
 // include file -- is called by its symbol, which its own object exports
-// (genlIsExported). The functions are this object's own, internal, and made
+// (dclIsExported). The functions are this object's own, internal, and made
 // only when a call asks for one: 'initAll()' and 'finalAll()' today, the entry
 // glue once it is built.
 LLVMValueRef genlStitchFn(GenState *gen, int16_t intrinsic) {
@@ -762,7 +686,7 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
             gen->difile, "Cone compiler", 13, 0, "", 0, 0, "", 0, LLVMDWARFEmissionFull, 0, 0, 0, "", 0, "", 0);
     }
 
-    // A library exports what its root and submodules define (genlIsExported).
+    // A library exports what its root and submodules define (dclIsExported).
     // The root is the program's first module, added before core (parsePgm).
     gen->libroot = gen->opt->library ? (ModuleNode*)nodesGet(pgm->modules, 0) : NULL;
     gen->pgm = pgm;

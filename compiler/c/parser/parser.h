@@ -46,6 +46,14 @@ typedef struct ParseState {
     int inrettype;          // Non-zero while parseFnSig reads a return type, where a '{' opens the declared function's body
     ModuleNode *core;       // The core package, once loaded: every module loaded after it imports it
     BuildModule *build;     // The build description's entry for the current module; NULL where it is not described
+
+    // Where the declaration parseFn or parseVarDcl last read has its body or
+    // value, for the span its caller records (dclspan.h). Each is written as the
+    // function returns, so a function nested in a body does not disturb it
+    char *bodyp;            // A function's '{', a variable's '='; NULL where it has none
+    char *bodyendp;         // Just past that body or value
+    char *nameendp;         // A variable: just past its name
+    int typed;              // A variable: its type is written
 } ParseState;
 
 // When parsing a variable definition, what syntax is allowed?
@@ -74,6 +82,9 @@ BuildModule *parseBuildImportModule(BuildImport *import);
 // Set up the name table and the lexer, which a build description needs too
 void parseInit(ConeOptions *opt);
 ProgramNode *parsePgm(ConeOptions *opt, BuildDesc *desc);
+// Parse a generated include file's text as the module it declares, beside the
+// root it stands for, for the generator's self-check
+ModuleNode *parseIncludeCheck(ProgramNode *pgm, BuildDesc *desc, char *text, char *url);
 // folder + name, where folder carries its trailing slash
 char *parsePathJoin(char *folder, char *name);
 // Consume a 'pub' that precedes a declaration, returning FlagPub, or 0
@@ -157,5 +168,10 @@ void parseBlockStart();
 int parseBlockEnd();
 // Expect closing token (e.g., right parenthesis). If not found, search for it or '}' or ';'
 void parseCloseTok(uint16_t closetok);
+// Record the span of the statement just parsed, from 'start' (its 'pub', where
+// written) and 'kw' (the token after that) to the end of its last token, in the
+// list '*listp' points to. A function's or variable's body is the one parseFn or
+// parseVarDcl just read
+DclSpan *parseSpan(ParseState *parse, DclSpans **listp, INode *node, char *start, char *kw, uint16_t kind);
 
 #endif

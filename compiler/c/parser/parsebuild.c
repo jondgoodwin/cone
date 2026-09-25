@@ -317,7 +317,7 @@ BuildDesc *parseBuildDesc(ConeOptions *opt) {
     lexPop();
     // A library is compiled as one: position-independent, since it may be
     // linked into a position-independent executable or a shared library, and
-    // exporting its public definitions (genlIsExported). Generation's setup,
+    // exporting its public definitions (dclIsExported). Generation's setup,
     // which reads the first, runs after this
     opt->library = desc->library;
     // A described package is one object of several, library or program, so an

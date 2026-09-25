@@ -133,7 +133,7 @@ void fnOverloadDclPrint(FnOverloadDclNode *node) {
 // into each implementer), a module trait's default (cloned into each conforming
 // module), and any method of a generic type (cloned into each instance).
 // 'typenode' is the type or module trait whose braces declare it, or NULL.
-static int fnDclIsExpanded(FnDclNode *fndclnode, INode *typenode) {
+int fnDclIsExpanded(FnDclNode *fndclnode, INode *typenode) {
     if ((fndclnode->flags & FlagInline) || fndclnode->genericinfo)
         return 1;
     if (typenode && typenode->tag == ModTraitTag)
