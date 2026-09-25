@@ -19,12 +19,14 @@ into build/<mode>/<name>.exe. The folder rules live here, in one place: conec
 never searches for a file of a Congo build.
 
 A package is a folder holding congo.toml and src/<name>.cone, the root module's
-designated file. A package that others import has a hand-written INCLUDE FILE
-beside its manifest, <name>.cone: what an importer is compiled against in place
-of the package's source. An include file is a module file like any other and
-may import [Jon 25 Sep]; each description's package lines, the compile's whole
-dependency closure, are where those imports are found. A C PACKAGE, whose whole source is one '@c' module
-declaring a C library's functions, is its own include file.
+designated file. A package that others import is compiled as a library, and
+that compile GENERATES its INCLUDE FILE, build/<mode>/<name>.cone beside its
+object: what an importer is compiled against in place of the package's source,
+written by conec from the package's own text. Every dependent is compiled
+against that generated file, core's and a C package's included, and never
+against a file written by hand. An include file is a module file like any
+other and may import [Jon 25 Sep]; each description's package lines, the
+compile's whole dependency closure, are where those imports are found.
 
 Python 3.11 or later, standard library only. README.md beside this file is the
 user's guide.
@@ -95,8 +97,9 @@ class Package:
     link_paths: list[Path] = field(default_factory=list)  # [link] paths, absolute
 
     @property
-    def include_file(self) -> Path:
-        """What an importer is compiled against: <name>.cone at the package root."""
+    def hand_include(self) -> Path:
+        """Where an include file written by hand used to sit, <name>.cone at the
+        package root. Congo no longer reads one, and says so where it finds one."""
         return self.root / f"{self.name}.cone"
 
     def label(self) -> str:
@@ -532,34 +535,30 @@ class Unit:
     pkg: Package
     tree: Module
     deps: dict[str, Package]                          # other packages, first-seen order
-    lines: dict[int, dict[str, Path]]                 # id(module) -> import name -> include file
+    lines: dict[int, dict[str, Package]]              # id(module) -> import name -> package
 
 
-def include_for(pkg: Package) -> Path | None:
-    """What an importer of pkg is compiled against, or None where there is nothing.
+def include_for(pkg: Package, out: Path) -> Path:
+    """What an importer of pkg is compiled against: the include file pkg's own
+    compile generated, <name>.cone in the build folder, beside its object. Every
+    package of a build is compiled into that one folder, each before what imports
+    it, so the file is there, and current, when an importer's compile reads it.
 
-    A package's include file, <name>.cone beside its manifest. Else, for a C
-    PACKAGE -- one whose whole source is the one file src/<name>.cone, a C-named
-    module ('mod @c ...') declaring what a C library defines -- that file itself:
-    a C library's package and a package's include file are the same artifact,
-    public declarations whose symbols are supplied elsewhere [Jon 12 Sep], so the
-    one file serves as both. It must be the whole package, since an importer
-    loads the one file an import line names and nothing beside it."""
-    if pkg.include_file.is_file():
-        return pkg.include_file
-    if (pkg.src.is_file() and scan_header(pkg.src).c
-            and list(pkg.src.parent.rglob("*.cone")) == [pkg.src]):
-        return pkg.src
-    return None
+    That holds for core, the prelude, whose include file the description names
+    in a package line that conec loads the prelude from; and for a C PACKAGE,
+    whose source is a C-named module ('mod @c ...') declaring what a C library
+    defines: its generated include file is that source with a banner, and one
+    rule for every package is simpler than an exception that saves nothing."""
+    return out / f"{pkg.name}.cone"
 
 
 def resolve_imports(pkg: Package, tree: Module, registry: Registry) -> Unit:
-    """Which of each module's imports name another package, and where that
-    package's include file is. A submodule's import of a sister is answered
-    inside the package, and one of a name of its parent too: those get no line.
-    'core' is the prelude, which the compiler loads itself."""
+    """Which of each module's imports name another package. A submodule's import
+    of a sister is answered inside the package, and one of a name of its parent
+    too: those get no line. An import of 'core' names the prelude, which the
+    compiler loads from the same include file its package line names."""
     deps: dict[str, Package] = {}
-    lines: dict[int, dict[str, Path]] = {}
+    lines: dict[int, dict[str, Package]] = {}
     for module, parent in tree.walk():
         mine = lines.setdefault(id(module), {})
         sisters = {m.name for m in parent.children} if parent else set()
@@ -574,7 +573,7 @@ def resolve_imports(pkg: Package, tree: Module, registry: Registry) -> Unit:
                 # the very file it was loaded from, so the two are one module
                 core = registry.find(PRELUDE)
                 if core is not None and pkg.name != PRELUDE:
-                    mine[imp.name] = core.src
+                    mine[imp.name] = core
                 continue
             found = registry.find(imp.name)
             if found is None:
@@ -583,16 +582,8 @@ def resolve_imports(pkg: Package, tree: Module, registry: Registry) -> Unit:
                 raise CongoError(f"{imp.where()}: import {imp.name}: no package named"
                                  f" '{imp.name}' in the registries searched:"
                                  f" {registry.searched()}")
-            include = include_for(found)
-            if include is None:
-                raise CongoError(f"{imp.where()}: import {imp.name}: package {imp.name}"
-                                 f" at {found.root} has no include file,"
-                                 f" {found.include_file.name} beside its {MANIFEST}"
-                                 f" (include files are written by hand for now; a C"
-                                 f" package, whose whole source is one '@c' module in"
-                                 f" src/{found.name}.cone, needs none)")
             deps.setdefault(found.name, found)
-            mine[imp.name] = include
+            mine[imp.name] = found
     check_module_loops(pkg, tree, registry)
     return Unit(pkg, tree, deps, lines)
 
@@ -720,7 +711,8 @@ def closure(unit: Unit, units: dict[str, Unit], registry_core: Package | None) -
     """Every package in the unit's dependency closure, direct or indirect, in
     build order (each after what it imports), the prelude first. These are the
     description's PACKAGE LINES: an include file is a module file like any other
-    and may import [Jon 25 Sep], and what its imports reach is found there."""
+    and may import [Jon 25 Sep], and what its imports reach is found there. The
+    prelude's line is also where conec loads the prelude from."""
     seen: dict[str, Package] = {}
 
     def visit(pkg: Package) -> None:
@@ -735,7 +727,7 @@ def closure(unit: Unit, units: dict[str, Unit], registry_core: Package | None) -
     return first + list(seen.values())
 
 
-def description(unit: Unit, mode: str, output: str,
+def description(unit: Unit, mode: str, output: str, out: Path,
                 packages: list[Package] = ()) -> str:
     pkg = unit.pkg
     lines = [
@@ -747,11 +739,11 @@ def description(unit: Unit, mode: str, output: str,
         "",
     ]
     # The package lines: where each package of the closure is found, for an
-    # include file's own imports. The package's own modules import only what
-    # their own lines, below, give them
+    # include file's own imports and, for core, for the prelude. Each is the
+    # include file that package's compile generated into 'out'. The package's
+    # own modules import only what their own lines, below, give them
     for dep in packages:
-        include = dep.src if dep.name == PRELUDE else include_for(dep)
-        lines.append(f'import {dep.name}: "{cone_path(include)}"')
+        lines.append(f'import {dep.name}: "{cone_path(include_for(dep, out))}"')
     if packages:
         lines.append("")
 
@@ -760,8 +752,8 @@ def description(unit: Unit, mode: str, output: str,
         lines.append(f"{pad}{module.name}: {{")
         for file in module.files:
             lines.append(f'{pad}    "{cone_path(file)}"')
-        for name, include in unit.lines.get(id(module), {}).items():
-            lines.append(f'{pad}    import {name}: "{cone_path(include)}"')
+        for name, dep in unit.lines.get(id(module), {}).items():
+            lines.append(f'{pad}    import {name}: "{cone_path(include_for(dep, out))}"')
         for child in module.children:
             emit(child, depth + 1)
         lines.append(f"{pad}}}")
@@ -915,10 +907,15 @@ def compile_unit(conec: Path, unit: Unit, out: Path, mode: str, top: bool,
     """Write the package's build description into build/<mode>/ and compile the
     package on its own. Every package but the one being built is a library;
     the one being built is what its manifest says. 'packages' is the unit's
-    dependency closure, which the description lists for its include files."""
+    dependency closure, which the description lists for its include files.
+    A library's compile writes its include file beside its object, which is
+    what every package compiled after it that imports it is compiled against."""
     output = unit.pkg.output if top else "library"
     desc = out / f"{unit.pkg.name}.conebuild"
-    desc.write_text(description(unit, mode, output, packages), encoding="utf-8")
+    desc.write_text(description(unit, mode, output, out, packages), encoding="utf-8")
+    # A library's include file is written afresh, so one left by an earlier
+    # build never stands in for it
+    include_for(unit.pkg, out).unlink(missing_ok=True)
     say("Compiling", f"{unit.pkg.label()} ({unit.pkg.root})")
     result = subprocess.run([str(conec), "-o", str(out), str(desc)], env=env,
                             capture_output=True, text=True, errors="replace")
@@ -932,6 +929,9 @@ def compile_unit(conec: Path, unit: Unit, out: Path, mode: str, top: bool,
     obj = out / f"{unit.pkg.name}{OBJ_EXT}"
     if not obj.is_file():
         raise CongoError(f"conec wrote no object at {obj}")
+    include = include_for(unit.pkg, out)
+    if output == "library" and not include.is_file():
+        raise CongoError(f"conec wrote no include file for {unit.pkg.name} at {include}")
     return obj
 
 
@@ -957,12 +957,22 @@ def build(pkg: Package, mode: str) -> Path:
     out = build_folder(pkg, mode)
     out.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
-    # The prelude conec loads must be the very file core is compiled from, or
-    # the two are two modules named core: so the packages folder conec takes
-    # it from is the registry folder Congo found core in
+    # Every package after core loads the prelude from core's generated include
+    # file, which its package line names. core's own compile has no such line,
+    # and loads the prelude from the package search path, which must give the
+    # very file core is compiled from, or the two are two modules named core: so
+    # the packages folder conec takes it from is the registry folder Congo found
+    # core in
     core = next((u.pkg for u in order if u.pkg.name == PRELUDE), None)
     if core is not None:
         env["CONE_PACKAGES"] = str(core.root.parent)
+    # An include file written by hand at a package's root is no longer read:
+    # say so, once, so that nobody edits it expecting it to count
+    for unit in order:
+        if not unit.pkg.lone and unit.pkg.hand_include.is_file():
+            print(f"warning: {unit.pkg.hand_include} is not used: a package's importers"
+                  f" compile against the include file its own compile generates,"
+                  f" build/<mode>/{unit.pkg.name}.cone", file=sys.stderr)
     by_name = {unit.pkg.name: unit for unit in order}
     objs = [compile_unit(conec, unit, out, mode, unit.pkg is pkg, env,
                          closure(unit, by_name, core)) for unit in order]
@@ -1036,24 +1046,14 @@ fn main() i32 {{
 
 LIBRARY_TEMPLATE = """\
 // {name}: a library package. A program imports it by name, and is compiled
-// against its include file, {name}.cone beside congo.toml, which says what this
-// package defines. Keep the two in step.
+// against its include file, which compiling {name} generates from this source:
+// build/<mode>/{name}.cone, beside its object.
 
 mod {name};
 
 pub fn answer() i64 {{
   42i64;
 }}
-"""
-
-INCLUDE_TEMPLATE = """\
-// {name}'s include file, written by hand: what a program importing {name} is
-// compiled against in place of src/{name}.cone. Each function the package
-// defines is declared 'extern' here, without its body.
-
-mod {name};
-
-pub extern fn answer() i64;
 """
 
 
@@ -1073,9 +1073,6 @@ def cmd_new(args: argparse.Namespace) -> int:
         encoding="utf-8")
     template = LIBRARY_TEMPLATE if args.lib else PROGRAM_TEMPLATE
     (root / "src" / f"{name}.cone").write_text(template.format(name=name), encoding="utf-8")
-    if args.lib:
-        (root / f"{name}.cone").write_text(INCLUDE_TEMPLATE.format(name=name),
-                                           encoding="utf-8")
     say("Created", f"{output} package {name} ({shown(root)})")
     return 0
 
@@ -1113,7 +1110,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     new.add_argument("name", help="the package's name")
     new.add_argument("path", nargs="?", help="the folder to make (default: the name)")
     new.add_argument("--lib", action="store_true",
-                     help="a library package, with its include file")
+                     help="a library package, whose include file its build generates")
     new.set_defaults(func=cmd_new)
     for name, func, text in (("build", cmd_build, "build this package"),
                              ("run", cmd_run, "build this package or a lone file, and run it")):

@@ -291,9 +291,11 @@ tells apart by the word after `mod` and hands to `parseModTrait`
 `actor`
 does not, and its arm reports `ErrorUnbuiltKind` where the declaration is written
 and names the abstraction's spelling, `actor trait`. An in-file
-`mod name { ... }` block is refused under that code too, though it is no unbuilt
-shape: it does not exist, since a nested module is a file of its own or a
-subfolder.
+`mod name { ... }` block is refused in source under that code too, though it is
+no unbuilt shape: it does not exist there, since a nested module is a file of
+its own or a subfolder. A generated include file alone writes one, for each of
+the package's submodules it reaches, and `parseModuleBlock` parses it as a
+submodule ([module](../nodes/module.md), "Generating the include file").
 Admitting a shape is what settles its spelling now instead of leaving it to be
 designed when the semantics land, and reporting it is what keeps a declaration
 from being accepted with nothing under it. The cost is the standing one in the

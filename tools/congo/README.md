@@ -8,7 +8,7 @@ or later, standard library only, living in the Cone repository beside
 
 ```
 congo new hello            make a program package, hello/
-congo new geometry --lib   make a library package, with its include file
+congo new geometry --lib   make a library package
 congo build                build the package this folder is in (debug)
 congo build --release      the same, optimised
 congo run                  build it and run it
@@ -45,9 +45,11 @@ hello/
     src/hello.cone      the root module's designated file, named for the package
     src/...             the root module's other files, and its submodules
     tests/              the package's tests (congo new makes it; nothing runs them yet)
-    hello.cone          a library's include file, written by hand (below)
     build/debug/        what a build writes; build/release/ for --release
 ```
+
+There is no include file to write: a library's build generates it (below,
+"Include files").
 
 - **`src/<name>.cone` is the root**, where `<name>` is the package's name as the
   manifest gives it. The outer folder's name does not matter.
@@ -63,9 +65,10 @@ hello/
   folders itself and hands the compiler every file by name in the build
   description, and the root's name comes from the manifest, not the folder.
 - **Build output goes in the package, in `build/<mode>/`**: each package's build
-  description, each package's object, and the executable,
-  `build/debug/<name>.exe`. The packages a program imports are compiled into
-  the program's `build/<mode>/` too, so a registry folder is only ever read.
+  description, each package's object, each library's generated include file,
+  and the executable, `build/debug/<name>.exe`. The packages a program imports
+  are compiled into the program's `build/<mode>/` too, so a registry folder is
+  only ever read. `congo clean` deletes the folder, include files and all.
 
 ## The manifest: `congo.toml`
 
@@ -172,8 +175,14 @@ The compiler refuses the same loops with the same shape of message
 ## Include files
 
 **Every package is compiled on its own, and imported only through its include
-file**: `<name>.cone` at the package root, beside `congo.toml`. It is Cone
-source, the package's root module as an importer needs to see it:
+file**, which that compile **generates** from the package's own source:
+`build/<mode>/<name>.cone`, beside the package's object, in the build folder of
+the package being built. Congo compiles each package before whatever imports
+it, and every importer's build description names that generated file, never one
+written by hand; `core`'s and `stdio`'s are generated the same way. A
+`<name>.cone` left at a package's root from before is not read, and Congo warns
+that it is not. The include file is Cone source, the package's root module as
+an importer needs to see it, with a banner saying it is generated:
 
 - each function, method, operator and global the package's object defines is
   declared `extern` and without a body, and spelled with the package's Cone
@@ -185,7 +194,12 @@ source, the package's root module as an importer needs to see it:
 - a global whose members the package folds into its namespace
   (`pub mut config Config = ... pub use *;`) is declared `extern` with the same
   clause (`pub extern mut config Config pub use *;`), so an importer reaches
-  the folded names as the package does.
+  the folded names as the package does;
+- what the root reaches in one of the package's submodules — a type a public
+  function names, what an `inline` body calls, what a `pub use` re-exports — is
+  declared in a private nested block, `mod vec { ... }`, holding only that, so
+  a package laid out as a root re-exporting its submodules' API works as it is.
+  No importer can name the submodule itself.
 
 **An include file is a module file like any other** [Jon 25 Sep]: it opens with
 its `mod` line, and its imports follow. So a package whose public functions
@@ -205,22 +219,18 @@ returns, its fields and its methods, without importing `b`. It cannot name `b`
 itself: `b` is a name of `a`'s include file, private to it unless the import
 says `pub`. A program that wants `b`'s names writes `import b`.
 
-`packages/stdio/stdio.cone` is the example. Include files are written by hand
-for now, so one must be kept in step with the package's source: a declaration
-the source no longer defines is a link error in every program that uses it.
-`conec` already generates each library's include file as it compiles it, and
-Congo's build leaves it beside the object, `build/<mode>/<name>.cone`; Congo
-does not compile against it yet. A library whose include file would have to
-declare what one of its submodules holds fails to compile, refused.
-`congo new --lib` writes a starting pair. The reference manual's *import and
-extern* page, "Declaring a Cone package", is the rule.
+A build of any program that prints leaves `build/<mode>/stdio.cone` to read as
+the example. Since it is generated on every build from the source, it cannot
+fall out of step with it. The reference manual's *import and extern* page,
+"Declaring a Cone package", is the rule, and `compiler/c/doc/nodes/module.md`,
+"Generating the include file", is how it is made.
 
 ## C packages
 
 A **C package** wraps a C library, so that a program imports it by name and
-writes no C declarations of its own. Its whole source is one file,
-`src/<name>.cone`, a C-named module (`@c` on its `mod` line) declaring what the
-library defines, and its manifest names the library:
+writes no C declarations of its own. Its source is `src/<name>.cone`, a C-named
+module (`@c` on its `mod` line) declaring what the library defines, and its
+manifest names the library:
 
 ```
 winstr/
@@ -228,13 +238,12 @@ winstr/
     src/winstr.cone     mod @c("Str") winstr;  pub extern { fn ToIntA(s *u8) i32; }
 ```
 
-- **It is its own include file.** A C library's declarations are already an
-  include file's shape (public, no bodies, the symbols supplied elsewhere), so
-  when a package has no `<name>.cone` beside its manifest, and its source is
-  that one `@c` file and nothing else under `src/`, Congo's import line names
-  `src/<name>.cone` itself. A package of more files needs an include file as
-  any other does, since an importer loads only the one file an import line
-  names.
+- **Its include file is generated, as any package's is.** A C library's
+  declarations are already an include file's shape (public, no bodies, the
+  symbols supplied elsewhere), so the generated file is the source with its
+  banner, `@c` line and all. It used to be the source itself; one rule for every
+  package is simpler, and a C package may now hold a Cone helper beside its
+  declarations, which its own object defines.
 - **It is compiled and linked like any package.** Compiled on its own, a module
   of `extern` declarations is an empty object, as `core`'s is; Congo links it
   rather than skipping it, which keeps it right when the `@c` module holds a Cone
@@ -265,12 +274,15 @@ package named which library.
 4. **Describe and compile**: for each package, write its **build description**,
    `build/<mode>/<package>.conebuild`, and run `conec` on it alone. The one
    being built gets the `output` its manifest says; every package it imports is
-   a `library`. Each description lists the package's modules and their files
-   and, per module, where each import's include file is; and, at its top, a
-   **package line** for every package in the package's dependency closure,
-   direct or indirect, `core` first and each after what it imports, which is
-   where an include file's own imports are found. The package's own modules
-   import only what their own lines give them. The format is the compiler's:
+   a `library`, and each library's compile writes its include file,
+   `build/<mode>/<package>.cone`, which Congo checks is there. Each description
+   lists the package's modules and their files and, per module, where each
+   import's include file is — the one that package's compile generated; and,
+   at its top, a **package line** for every package in the package's
+   dependency closure, direct or indirect, `core` first and each after what it
+   imports, which is where an include file's own imports are found, and, for
+   `core`, where the prelude is loaded from. The package's own modules import
+   only what their own lines give them. The format is the compiler's:
    `compiler/c/doc/nodes/module.md`, "A described build".
 5. **Link** the objects, the program's first, with `conestd`, the C libraries
    the packages' `[link]` tables name, and the C runtime,
@@ -291,9 +303,12 @@ Everything is rebuilt every time.
   when it is Microsoft's (a Developer Command Prompt), and otherwise finds Visual
   Studio's `vcvars64.bat` and takes its environment, so no Developer Command
   Prompt is needed. Elsewhere, `cc` or `gcc`.
-- **The prelude.** `conec` loads `core` itself, from its packages folder; Congo
-  sets `CONE_PACKAGES` to the registry folder it found `core` in, so the prelude
-  the compiler loads is the very file Congo compiles `core` from.
+- **The prelude.** Every package compiled after `core` loads the prelude from
+  `core`'s generated include file, which its description's package line for
+  `core` names. `core`'s own compile has no such line, and `conec` loads the
+  prelude from its packages folder: Congo sets `CONE_PACKAGES` to the registry
+  folder it found `core` in, so the prelude is the very file Congo compiles
+  `core` from.
 
 A lone file's build goes in the Congo home, `lone/<file>-<hash>/<mode>/`, not
 beside the file.
@@ -307,17 +322,19 @@ python tools/congo/test_congo.py
 builds real programs in a temporary folder with the repository's `conec` (build
 it first, `python test/run.py --build`): `congo new` then `congo run`, a
 package with submodules printing through `stdio`, a lone file, a library from a
-registry folder that itself imports `stdio`, three packages chained through an
-include file that imports another package's, a C package linking a Windows
-system library (shlwapi), a C library built in the test and found through
-`[link] paths`, the loop refusals between packages and between modules, and the
-manifest's checks. The test suite (`test/run.py`) does not run Congo.
+registry folder that itself imports `stdio` (beside a stale hand-written include
+file, which is not read), three packages chained through an include file that
+imports another package's, a library of submodules re-exported at its root whose
+include file holds nested blocks, a C package linking a Windows system library
+(shlwapi), a C library built in the test and found through `[link] paths`, the
+loop refusals between packages and between modules, and the manifest's checks.
+Each program is compiled against the include files its packages' compiles
+generated. The test suite (`test/run.py`) does not run Congo.
 
 ## Not built yet
 
-- Generating the include file from the package's source, into `build/`.
-- A package of C sources, which Congo would compile; a C package of more than
-  one module; library names per platform (`opengl32` on Windows is `GL`
+- A package of C sources, which Congo would compile; a C package whose root
+  reaches a C-named submodule (untried); library names per platform (`opengl32` on Windows is `GL`
   elsewhere); and link folders in the machine config, where a machine's own
   install location belongs.
 - `congo test`, and anything reading `tests/`.

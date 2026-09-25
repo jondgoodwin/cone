@@ -287,7 +287,7 @@ enum ErrorCode {
     ErrorImportLate = 1146,     // An 'import' after a declaration: imports come right after the 'mod' line, ahead of everything else
 
     // Generating a library's include file
-    ErrorIncSubmodule = 1147,   // The include file would have to declare what one of the root's submodules holds -- named by a public signature, a body an importer expands, or a 'pub use' -- which a generated include file cannot express yet
+    // 1147 was ErrorIncSubmodule, a reach into one of the root's submodules; the include file now writes a nested module block for it
     ErrorIncWrite = 1148,       // The include file cannot be written, or would overwrite a source file of the compile
     ErrorIncCheck = 1149,       // The generated include file could not be completed, or does not parse and name-resolve as the package's module: a compiler limitation or bug
 

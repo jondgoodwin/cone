@@ -36,6 +36,7 @@ typedef struct BuildModule {
 
 typedef struct BuildDesc {
     BuildModule *root;      // The package's module
+    BuildModule *packages;  // The package lines, as the import lines of an entry standing for no module
     int library;            // 'output: library': the root is named, and prefixes every symbol
 } BuildDesc;
 
@@ -46,6 +47,10 @@ typedef struct ParseState {
     int inrettype;          // Non-zero while parseFnSig reads a return type, where a '{' opens the declared function's body
     ModuleNode *core;       // The core package, once loaded: every module loaded after it imports it
     BuildModule *build;     // The build description's entry for the current module; NULL where it is not described
+    int generated;          // The file being parsed is a generated include file, which alone may
+                            // hold a nested module block, 'mod sub { ... }' (parseModuleBlock)
+    Nodes *blockmods;       // Where a nested block's module goes instead of the program's modules:
+                            // the generator's self-check, which parses beside the program
 
     // Where the declaration parseFn or parseVarDcl last read has its body or
     // value, for the span its caller records (dclspan.h). Each is written as the
@@ -83,8 +88,9 @@ BuildModule *parseBuildImportModule(BuildImport *import);
 void parseInit(ConeOptions *opt);
 ProgramNode *parsePgm(ConeOptions *opt, BuildDesc *desc);
 // Parse a generated include file's text as the module it declares, beside the
-// root it stands for, for the generator's self-check
-ModuleNode *parseIncludeCheck(ProgramNode *pgm, BuildDesc *desc, char *text, char *url);
+// root it stands for, for the generator's self-check. Returns that module and
+// then the modules its nested blocks declare, none added to the program's
+Nodes *parseIncludeCheck(ProgramNode *pgm, BuildDesc *desc, char *text, char *url);
 // folder + name, where folder carries its trailing slash
 char *parsePathJoin(char *folder, char *name);
 // Consume a 'pub' that precedes a declaration, returning FlagPub, or 0

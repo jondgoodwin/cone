@@ -1940,38 +1940,70 @@ target = "symbols"
 contains = ["declare t.step", "declare t.Shape.Rect.area", "declare t.Shape.Square.area", "declare base.origin", "declare dep.Gadget.bigger"]
 excludes = ["define t.", "define base.", "define dep."]
 
-# What a generated include file cannot declare yet: anything one of the root's
-# submodules holds [Jon 25 Sep, Q1: the next step writes a private, pruned
-# nested module]. A public signature, a global's type and a public type's field
-# naming a submodule's type are each refused where written, a 'pub use' of the
-# submodule's names or of an enum it holds likewise, and a function the root's
-# inline body names in the submodule where that function is declared. What does
-# not reach the include file -- a private function's signature, a public
-# function's body -- is not refused.
-[scenario.module_include_refuse]
-category = "reject"
-description = "A library whose include file would have to declare what its submodule holds: a signature, a global's type, a field, two 'pub use's and an inline body reaching it, each refused"
-tags = ["genllvm"]
-diagnostics = 6
+# A package laid out as a collections library is: a root re-exporting the
+# public API of its submodules vec, map (holding a nested submodule slot), kinds
+# (a one-file module), pair (a generic one-file module) and util (reached by
+# nothing the program sees). coll's include file holds a private, pruned
+# nested module block for each submodule it reaches, with just what it
+# reaches [Jon 25 Sep, Q1], and 'include' pins it byte for byte. The program
+# reaches everything through coll's root: types with methods, a generic type
+# and function, a macro and the private function it reaches, an enum and its
+# variants, an inline body naming a submodule's function, a generic
+# submodule's instance, a global of a submodule's type, and a parameter
+# default naming a submodule's const.
+[scenario.module_include_nested]
+category = "run"
+description = "A package of a root and nested submodules, compiled alone, and a program compiled against the include file it generates, whose nested module blocks declare what the root reaches"
+tags = ["parse", "nameres", "genllvm", "runtime"]
+link = ["coll/coll.conebuild"]
+include = ["include/coll.cone"]
 
-# The self-check. The generator misses a reach into a submodule -- a macro, which
-# name resolution does not mark as an expanded body's reach -- and the file it
-# writes names what it does not declare. Parsing and name-resolving that file
-# reports the name, located in the rejected text the compile writes beside its
-# object, and the compile fails (ErrorIncCheck) with no include file written.
-[scenario.module_include_check]
-category = "reject"
-description = "A generated include file that does not name-resolve as its package's module fails the library compile, reporting what did not resolve"
-tags = ["genllvm"]
-diagnostics = 2
+# The submodules' symbols are spelled after their real owners in both objects:
+# the program declares what coll's object defines under the same names.
+[[scenario.module_include_nested.check]]
+name = "the-program-declares-each-submodule-by-its-owner"
+target = "symbols"
+contains = [
+  "declare coll.vec.stackOf",
+  "declare coll.vec.scaled",
+  "declare coll.vec.Stack.push",
+  "declare coll.map.Map.of",
+  "declare coll.map.slot.Slot.doubled",
+  "declare coll.map.base",
+  "declare coll.countOf",
+  "external global coll.unit",
+]
+excludes = ["coll.util", "coll.vec.unseen", "coll.kinds.kindOf", "coll.helper"]
 
-[[scenario.module_include_check.unlocated]]
-code = "ErrorUnkName"
-message = "The name parts does not refer to a declared name"
+# What the program declares, coll's object defines and exports.
+[[scenario.module_include_nested.check]]
+name = "coll-exports-what-the-program-declares"
+target = "symbols"
+object = "coll"
+contains = [
+  "define coll.vec.stackOf comdat nodeduplicate",
+  "define coll.vec.scaled comdat nodeduplicate",
+  "define coll.map.slot.Slot.doubled comdat nodeduplicate",
+  "define coll.map.base comdat nodeduplicate",
+]
 
-[[scenario.module_include_check.unlocated]]
-code = "ErrorIncCheck"
-message = "does not parse and name-resolve as c's module"
+# A private type a public one holds in a public field. The program calls the
+# private type's public method through that field, in its own code and in an
+# inline body it expands, so the type's include-file declaration carries the
+# method and the package's object exports it (DclIncluded), as it would a
+# public type's.
+[scenario.module_include_field_reach]
+category = "run"
+description = "A private type's public method reached only through a field of a public type: declared in the include file, exported by the package, and called by the program"
+tags = ["genllvm", "runtime"]
+link = ["h/h.conebuild"]
+include = ["include/h.cone"]
+
+[[scenario.module_include_field_reach.check]]
+name = "h-exports-the-private-type's-method"
+target = "symbols"
+object = "h"
+contains = ["define h.Inner.get comdat nodeduplicate"]
 
 # Three packages, each compiled on its own: b defines a struct with methods, a
 # imports b and takes and returns b's type, and the program imports a alone. An
@@ -2064,3 +2096,27 @@ category = "reject"
 description = "An import a described module writes that the build description provides nothing for, by name and by path"
 tags = ["parse"]
 diagnostics = 2
+
+# Where a nested module block may be written. Only a generated include file
+# holds one [Jon 25 Sep, Q1], and it is known by two things together: its role,
+# a file a build description's import line names, and the generator's banner at
+# its top. A source file carrying the banner and a hand-written include file
+# without it are each refused as source is, and a generated file's block may not
+# be 'pub', since a submodule is private to its package.
+[scenario.module_include_block_parse]
+category = "reject"
+description = "A module block where only a generated include file may write one: in source bearing the banner, in a hand-written include file, and 'pub' in a generated one"
+tags = ["parse"]
+diagnostics = 3
+
+# What a generated include file still refuses: a global whose type is inferred
+# and that the generator cannot spell. user's global takes its type from
+# coll.Stack, which coll's root re-exports from its private submodule vec, so
+# the type is coll.vec.Stack, which nothing outside coll may name. The
+# generator asks for the type to be written (ErrorIncCheck). coll.cone stands
+# for coll's generated include file, nested block and all.
+[scenario.module_include_infer_reject]
+category = "reject"
+description = "A library global whose inferred type is another package's submodule type, re-exported at that package's root: the include file cannot spell it"
+tags = ["genllvm"]
+diagnostics = 1

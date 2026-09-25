@@ -45,9 +45,10 @@ void pgmModuleOrder(ProgramNode *pgm);
 
 void pgmNameRes(NameResState *pstate, ProgramNode *mod);
 
-// Resolve the names of one module parsed after the program was analysed -- the
-// include-file generator's self-check -- leaving the program's modules as they are
-void pgmNameResAlone(ProgramNode *pgm, ModuleNode *mod);
+// Resolve the names of the modules parsed after the program was analysed -- the
+// include-file generator's self-check, its file's module and those its nested
+// blocks declare -- leaving the program's modules as they are
+void pgmNameResAlone(ProgramNode *pgm, Nodes *mods);
 
 void pgmTypeCheck(TypeCheckState *pstate, ProgramNode *mod);
 

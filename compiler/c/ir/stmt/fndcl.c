@@ -164,7 +164,12 @@ void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
         for (nodesFor(fndclnode->genericinfo->parms, cnt, nodesp))
             inodeNameRes(nstate, nodesp);
     }
+    // A parameter's default value is expanded where the function is called
+    // (fnSigNameRes)
+    INode *svsigfn = nstate->sigfn;
+    nstate->sigfn = (INode*)fndclnode;
     inodeNameRes(nstate, &fndclnode->vtype);
+    nstate->sigfn = svsigfn;
 
     if (fndclnode->value) {
 

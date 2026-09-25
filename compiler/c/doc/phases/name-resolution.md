@@ -275,10 +275,15 @@ is the contract; there is never a second name resolution pass.
   onto a declaration other than the one it is resolving, and only a library
   compile reads it (`dclIsExported`, [Generation](generation.md)). A method
   reached through a receiver is bound at type check and so is never marked;
-  the type it belongs to is, where the body names that type. Where the body is
-  the root module's own and what it names sits in one of the root's
-  submodules, the declaration is also marked `DclSubReached`: the root's include
-  file would have to declare it, which the generator refuses for now
+  the type it belongs to is, where the body names that type.
+- **What each expanded body names is recorded against it** (`exportReachAdd`):
+  every declaration on the way to what a use means — a typedef it names, then
+  the function, global or type — and a macro or a const, which carry no
+  `DclInfo` to mark. **A parameter's default value counts as an expanded body of
+  its function** (`NameResState.sigfn`, set by `fnDclNameRes` round the
+  signature, read by `fnSigNameRes`), since an importer evaluates it where it
+  calls. The include-file generator follows the record, so what a body it copies
+  names is declared beside it, in whichever of the package's modules it sits
   ([module](../nodes/module.md), "Generating the include file").
 - **Nothing is typed.** No `vtype` is established, and no type check mark is
   set.

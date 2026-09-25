@@ -53,10 +53,12 @@ enum DclFacts {
                               // is given (modLifecycle). The program's stitched init or
                               // final calls it, so a library compile exports it whatever
                               // its visibility (dclIsExported)
-    DclSubReached = 0x0100    // DclExpandReached from a body the root module itself
-                              // declares, on a declaration of one of the root's
-                              // submodules: the root's include file would have to
-                              // declare it, which it cannot yet (incFileGenerate)
+    DclIncluded   = 0x0100    // Type only: declared by the package's generated include
+                              // file (incFileGenerate), so an importer holds values of
+                              // it -- through a field or a signature, whether or not it
+                              // can name the type -- and calls its public methods. A
+                              // library compile exports them as it would a public
+                              // type's (dclIsExported)
 };
 
 #define dclInfoInit(dclinfo) ((dclinfo)->owner = NULL, (dclinfo)->facts = 0, (dclinfo)->cname = NULL)

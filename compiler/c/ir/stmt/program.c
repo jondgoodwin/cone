@@ -298,22 +298,29 @@ void pgmNameRes(NameResState *pstate, ProgramNode *pgm) {
     }
 }
 
-// Resolve the names of one module parsed after the program was analysed: the
-// include-file generator's self-check, whose module stands for the root and
-// imports what the root imports. The same steps as pgmNameRes, for it alone:
-// the program's modules keep what their own resolution made
-void pgmNameResAlone(ProgramNode *pgm, ModuleNode *mod) {
+// Resolve the names of modules parsed after the program was analysed: the
+// include-file generator's self-check, whose first module stands for the root
+// and imports what the root imports, and whose others are the modules its
+// nested blocks declare. The same steps as pgmNameRes, for them alone: the
+// program's modules keep what their own resolution made
+void pgmNameResAlone(ProgramNode *pgm, Nodes *mods) {
     NameResState nstate;
     nstate.mod = NULL;
     nstate.typenode = NULL;
     nstate.loopblock = NULL;
     nstate.macromethod = NULL;
     nstate.expander = NULL;
+    nstate.sigfn = NULL;
     nstate.scope = 0;
-    modExtendsResolve(mod);
-    modFoldAlone(&nstate, pgm->modules, mod);
-    modTraitConform(&nstate, mod, 1);
-    inodeNameRes(&nstate, (INode**)&mod);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(mods, cnt, nodesp))
+        modExtendsResolve((ModuleNode*)*nodesp);
+    modFoldAlone(&nstate, pgm->modules, mods);
+    for (nodesFor(mods, cnt, nodesp))
+        modTraitConform(&nstate, (ModuleNode*)*nodesp, 1);
+    for (nodesFor(mods, cnt, nodesp))
+        inodeNameRes(&nstate, nodesp);
 }
 
 // Where a module sits in the init order, or -1 where it has no place yet

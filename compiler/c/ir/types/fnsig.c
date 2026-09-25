@@ -47,14 +47,34 @@ void fnSigPrint(FnSigNode *sig) {
     inodePrintNode(sig->rettype);
 }
 
-// Name resolution of the function signature
+// Name resolution of the function signature.
+//
+// A parameter's default value is evaluated where the function is called, so
+// an importer's object evaluates it from the include file's text: what it names
+// is marked and recorded as an expanded body's reach is, against the function
+// (NameResState.sigfn), so a library exports it and its include file carries
+// it. The parameter itself is resolved first, at scope 0, so nothing is hooked
+// that the value could see
 void fnSigNameRes(NameResState *pstate, FnSigNode *sig) {
     uint16_t svscope = pstate->scope;
     pstate->scope = 0; // Make scope 0 to avoid parameter names being hooked.
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(sig->parms, cnt, nodesp))
+    for (nodesFor(sig->parms, cnt, nodesp)) {
+        VarDclNode *parm = (VarDclNode*)*nodesp;
+        INode *dflt = parm->tag == VarDclTag ? parm->value : NULL;
+        if (dflt == NULL || pstate->sigfn == NULL || pstate->expander != NULL) {
+            inodeNameRes(pstate, nodesp);
+            continue;
+        }
+        parm->value = NULL;
         inodeNameRes(pstate, nodesp);
+        parm = (VarDclNode*)*nodesp;
+        parm->value = dflt;
+        pstate->expander = pstate->sigfn;
+        inodeNameRes(pstate, &parm->value);
+        pstate->expander = NULL;
+    }
     inodeNameRes(pstate, &sig->rettype);
     pstate->scope = svscope;
 }

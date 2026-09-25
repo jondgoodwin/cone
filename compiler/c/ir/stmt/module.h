@@ -68,9 +68,9 @@ void modHook(ModuleNode *oldmod, ModuleNode *newmod);
 // on, so the loop is the one thing reported.
 void modFoldAll(NameResState *pstate, Nodes *modules);
 
-// Fold one module parsed after every module of 'modules' was resolved -- the
-// include-file generator's self-check -- without folding any of those again
-void modFoldAlone(NameResState *pstate, Nodes *modules, ModuleNode *mod);
+// Fold the modules 'mods' parsed after every module of 'modules' was resolved --
+// the include-file generator's self-check -- without folding any of those again
+void modFoldAlone(NameResState *pstate, Nodes *modules, Nodes *mods);
 
 // Run one module's folds for the current pass, if they have not run in it
 // already. Reached from modFoldAll, and by demand from a global's fold that

@@ -32,6 +32,7 @@ void doAnalysis(ConeOptions *opt, ProgramNode **pgm) {
     nstate.loopblock = NULL;
     nstate.macromethod = NULL;
     nstate.expander = NULL;
+    nstate.sigfn = NULL;
     nstate.scope = 0;
     inodeNameRes(&nstate, (INode**)pgm);
     if (errors) {
@@ -127,7 +128,7 @@ static void writeIncludeFile(ConeOptions *opt, ProgramNode *pgm, BuildDesc *desc
         strcat(url, ".include.cone");
     }
     int before = errors;
-    ModuleNode *check = parseIncludeCheck(pgm, desc, text, url);
+    Nodes *check = parseIncludeCheck(pgm, desc, text, url);
     if (errors == before)
         pgmNameResAlone(pgm, check);
     if (errors != before) {

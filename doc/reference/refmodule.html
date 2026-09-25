@@ -28,7 +28,9 @@
 		may <a href="#extends">extend</a> another, reusing its names as
 		its own, and may name on its <span class="pre">mod</span> line the
 		<a href="#default">names a bare import of it folds</a>. A module is never
-		declared inside a file: nesting is by files and folders.
+		declared inside a source file: nesting is by files and folders. Only a
+		package's generated <a href="refinclude.html#nested">include file</a>
+		writes a module block, for each submodule it reaches.
 		A module may be <a href="#cnames">C-named</a> with
 		<span class="pre">@c</span> on its <span class="pre">mod</span> line.
 		A <a href="#package">package</a> is a folder with a manifest that the
@@ -252,7 +254,11 @@ pub use detail;                  // detail's public names, re-exported as geomet
 		<span class="pre">pub</span> goes on the submodule's own declaration,
 		since the parent declares nothing about a subfolder or a file, and it
 		means what it means everywhere else: this entry is visible outside this
-		namespace.</p>
+		namespace. It opens a submodule to the rest of its package, never beyond:
+		a program importing the package reaches a submodule's names only where
+		the package's root re-exports them with <span class="pre">pub use</span>,
+		since the package's <a href="refinclude.html#nested">include file</a>
+		declares each submodule in a private block.</p>
 	<p id="onefile"><b>A submodule of one file needs no folder.</b> A folder is
 		only worth making when a module has more than one file, so a file of a
 		module's folder whose first statement is a <span class="pre">mod</span>
@@ -634,18 +640,19 @@ output = "executable"
 		Congo finds each package a program imports by its name, in a list of
 		package folders, compiles each one on its own, and links them. A package
 		is imported through its <a href="refinclude.html#includefile">include
-		file</a>, <span class="pre">hello.cone</span> beside its manifest, which
-		is written by hand for now; the compiler also generates one for each
-		package it builds, which Congo does not use yet. The packages that come with Cone,
+		file</a>, which compiling the package generates from its source:
+		<span class="pre">build/debug/hello.cone</span>, beside its object. Congo
+		compiles every package before what imports it, and compiles each importer
+		against that generated file; nothing is written by hand. The packages that come with Cone,
 		<span class="pre">core</span> and <span class="pre">stdio</span>, are
 		packages of this shape. Imports between packages may not loop: a package
 		never imports, directly or through others, a package that imports it.
 		Nor may the modules inside one (<a href="#dag">above</a>). Congo checks
 		both before it compiles anything.</p>
-	<p id="cpackage">A <b>C package</b> wraps a C library. Its whole source is one
+	<p id="cpackage">A <b>C package</b> wraps a C library. Its source is a
 		<a href="#cnames">C-named</a> module, <span class="pre">src/<i>name</i>.cone</span>,
-		declaring what the library defines, and that file is its include file too,
-		so it needs no other. Its manifest names the C library under
+		declaring what the library defines, and its include file is generated from
+		it as any package's is. Its manifest names the C library under
 		<span class="pre">[link]</span>, and Congo links that library into every
 		program that imports the package:</p>
 <pre>
@@ -672,13 +679,14 @@ paths = ["clib"]             # folders to look in first, relative to the package
 <pre>
 build: debug
 output: library
-import stdio: "../stdio/stdio.cone"
+import core: "core.cone"
+import stdio: "stdio.cone"
 geometry: {
-    "src/geometry.cone"
-    "src/shapes.cone"
-    import stdio: "../stdio/stdio.cone"
+    "../../src/geometry.cone"
+    "../../src/shapes.cone"
+    import stdio: "stdio.cone"
     scaling: {
-        "src/scaling/scaling.cone"
+        "../../src/scaling/scaling.cone"
     }
 }
 </pre>
@@ -694,7 +702,11 @@ geometry: {
 			imports are found: an include file is a module file like any other,
 			so it may import, and a package whose functions take or return another
 			package's types imports that package in its include file. They do not
-			add to what the package's own modules import.</li>
+			add to what the package's own modules import. The line for
+			<span class="pre">core</span>, where there is one, is also where the
+			prelude every module imports is loaded from. Congo writes the
+			description into the build folder, beside the include files the earlier
+			compiles generated.</li>
 		<li><b>Then the package's module</b>, a name and a braced body. In it, a quoted
 			path is a file of the module, <span class="pre">name: { ... }</span> is a
 			module inside it, and <span class="pre">import name: "path"</span> says
