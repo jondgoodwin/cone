@@ -172,7 +172,9 @@ static LLVMValueRef genlVtableForTag(GenState *gen, Vtable *vtable, StructNode *
                 break;
             }
         }
-        // structMakeVtable prewires every variant, so a miss is a broken
+        // structMakeVtable prewires every variant into the enum's own vtable,
+        // and structVirtRefMatches maps every one into another trait's before
+        // it lets a reference to the enum convert, so a miss is a broken
         // invariant rather than a program the compiler should diagnose
         if (variantvtable == NULL)
             errorExit(ExitGen, "No vtable implementation registered for an enum variant");
@@ -678,7 +680,10 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
                 FieldDclNode *tagnode = (FieldDclNode*)*nodesp;
                 LLVMValueRef val = LLVMBuildStructGEP(gen->builder, genexp, tagnode->index, "tagref");
                 val = LLVMBuildLoad(gen->builder, val, "tag");
-                if (genlTagsIndexVtables(strnode)) {
+                // Only the enum's own vtable list is in 'derived' order. Another
+                // trait's lists implementations as coercions registered them,
+                // so there the variant's is found by comparison.
+                if (trait == strnode && genlTagsIndexVtables(strnode)) {
                     LLVMValueRef indexes[2];
                     indexes[0] = LLVMConstInt(genlUsize(gen), 0, 0);
                     indexes[1] = val;

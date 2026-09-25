@@ -1,0 +1,117 @@
+mod trait_enum_vref;
+
+import stdio use *;
+
+// A plain reference to an enum converted to a virtual reference to some other
+// trait.
+//
+// What such a reference points at is one of the enum's variants, and only the
+// tag says which, so the vtable the fat pointer carries is the variant's, chosen
+// by the tag where the conversion is made -- the same choice a method call
+// through '&Shape' makes for the enum's own vtable. No vtable is built for the
+// enum itself: none of its methods is generated, so one named them and failed
+// to link.
+//
+// A run, because which variant's method a slot reached is what the printed
+// numbers say. Shape's tags are dense and Color's are pinned, and both are
+// looked up by comparison, since another trait's vtable list is in the order
+// conversions registered them rather than in tag order.
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+trait Named {
+  pub k i32;
+  pub fn label(self &) i32;
+}
+
+trait Labelled {
+  pub fn label(self &) i32;
+}
+
+fn namedOf(n &<Named) i32 {n.label() + n.k;}
+fn labelledOf(n &<Labelled) i32 {n.label();}
+fn isCircle(n &<Named) i32 {
+  if n is &Shape.Circle {return 1;}
+  0;
+}
+
+enum Shape {
+  pub k i32;
+  pub fn label(self &) i32;
+  struct Circle {
+    pub r i32;
+    pub fn label(self &) i32 {r * 10;}
+  }
+  struct Square {
+    pub s i32;
+    pub fn label(self &) i32 {s * 100;}
+  }
+  struct Dot {
+    pub fn label(self &) i32 {5;}
+  }
+}
+
+enum Color {
+  pub fn label(self &) i32;
+  struct Red = 0xFF0000 {
+    pub fn label(self &) i32 {1;}
+  }
+  struct Green = 0xFF00 {
+    pub fn label(self &) i32 {2;}
+  }
+  struct Blue = 0xFF {
+    pub fn label(self &) i32 {3;}
+  }
+}
+
+// A method with a body on the enum is a default cloned into each variant, and
+// mixing the trait in changes nothing about the conversion
+enum Tagged {
+  mixin Labelled;
+  pub k i32;
+  pub fn label(self &) i32 {k + 1000;}
+  struct One {}
+  struct Two {
+    pub t i32;
+  }
+}
+
+fn shapeNamed(n &Shape) i32 {namedOf(n);}
+fn shapeLabelled(n &Shape) i32 {labelledOf(n);}
+fn shapeIsCircle(n &Shape) i32 {isCircle(n);}
+fn colorLabelled(n &Color) i32 {labelledOf(n);}
+fn taggedLabelled(n &Tagged) i32 {labelledOf(n);}
+
+fn main() i32 {
+  imm c = Shape.Circle[1, 7];
+  imm s = Shape.Square[2, 3];
+  imm d = Shape.Dot[4];
+  show("enum-ref-to-trait-circle-method-and-field", shapeNamed(&c));
+  show("enum-ref-to-trait-square-method-and-field", shapeNamed(&s));
+  show("enum-ref-to-trait-fieldless-variant", shapeNamed(&d));
+  show("enum-ref-to-second-trait", shapeLabelled(&s));
+
+  // The vtable the tag chose is the one a reference to the variant gets, so
+  // narrowing compares equal to it
+  show("enum-ref-narrows-to-its-variant", shapeIsCircle(&c));
+  show("enum-ref-narrows-not-to-another-variant", shapeIsCircle(&s));
+  show("variant-ref-narrows-to-itself", isCircle(&c));
+
+  imm r = Color.Red[];
+  imm g = Color.Green[];
+  imm b = Color.Blue[];
+  show("pinned-tag-red", colorLabelled(&r));
+  show("pinned-tag-green", colorLabelled(&g));
+  show("pinned-tag-blue", colorLabelled(&b));
+
+  imm one = Tagged.One[6];
+  imm two = Tagged.Two[8, 9];
+  show("mixed-in-default-first-variant", taggedLabelled(&one));
+  show("mixed-in-default-second-variant", taggedLabelled(&two));
+  0;
+}

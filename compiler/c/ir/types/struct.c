@@ -2807,9 +2807,9 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     pstate->typenode = svtypenode;
 }
 
-// Add a vtable implementation to a base struct's vtable
-// Return 1 if it successfully type matches, 0 if not
-int structAddVtableImpl(StructNode *basenode, StructNode *strnode) {
+// Map a struct's members onto a base struct's vtable slots, registering nothing
+// Return the implementation if it successfully type matches, NULL if not
+static VtableImpl *structMapVtableImpl(StructNode *basenode, StructNode *strnode) {
     Vtable *vtable = basenode->vtable;
 
     // Create Vtable impl data structure and populate
@@ -2861,8 +2861,16 @@ int structAddVtableImpl(StructNode *basenode, StructNode *strnode) {
         }
     }
 
-    // We accomplished a successful mapping - add it
-    nodesAdd(&vtable->impl, (INode*)impl);
+    return impl;
+}
+
+// Add a vtable implementation to a base struct's vtable
+// Return 1 if it successfully type matches, 0 if not
+int structAddVtableImpl(StructNode *basenode, StructNode *strnode) {
+    VtableImpl *impl = structMapVtableImpl(basenode, strnode);
+    if (impl == NULL)
+        return 0;
+    nodesAdd(&basenode->vtable->impl, (INode*)impl);
     return 1;
 }
 
@@ -2940,6 +2948,29 @@ TypeCompare structVirtRefMatches(StructNode *trait, StructNode *strnode) {
 
     if (trait->vtable == NULL)
         structMakeVtable(trait);
+
+    // A trait cannot fill another trait's slots with its own methods: none of
+    // them is generated, since a default is cloned into each implementer and an
+    // abstract method has no body. What a plain reference to an enum points at is
+    // one of its variants, so every variant is mapped instead, and the coercion
+    // picks the variant's vtable by the tag (genlConvert), as it does for a
+    // virtual reference to the enum itself. The enum still has to comply in its
+    // own right, as any type does; its mapping is only not kept. An open trait
+    // has no tag to pick with, so a plain reference to one converts to no other
+    // trait.
+    if (strnode->flags & TraitType) {
+        if (!(strnode->flags & HasTagField) || strnode->derived == NULL || strnode->derived->used == 0
+            || structMapVtableImpl(trait, strnode) == NULL)
+            return NoMatch;
+        INode **varp;
+        uint32_t varcnt;
+        for (nodesFor(strnode->derived, varcnt, varp)) {
+            if (structVirtRefMatches(trait, (StructNode*)*varp) == NoMatch)
+                return NoMatch;
+        }
+        return ConvSubtype;
+    }
+
     Vtable *vtable = trait->vtable;
 
     // No need to build VtableImpl for this struct if it has already been done earlier

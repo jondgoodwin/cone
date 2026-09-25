@@ -206,7 +206,11 @@ So `&mut T` is invariant in `T` while `&ro T` is covariant.
 
 `refvirtMatchesRef` builds a fat pointer, so it refuses `Monomorph` outright and
 applies **no** value-type variance. Same-struct requires `HasTagField`, since
-the tag is what selects the vtable at runtime.
+the tag is what selects the vtable at runtime. A reference to an enum converted
+to a different trait needs the tag for the same reason: `structVirtRefMatches`
+registers each variant's implementation, not the enum's, and the conversion
+selects among them by the tag. A reference to an open trait converts to no other
+trait ([struct](struct.md), "A reference to an enum converts").
 
 `arrayRefMatchesRef` handles `&[T; n]` → `&[]T` and is never better than
 `ConvSubtype` — a fat pointer must be built.

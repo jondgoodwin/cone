@@ -348,6 +348,16 @@ void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
         StructNode *tostr = (StructNode*)itypeGetTypeDcl(((RefNode*)totype)->vtexp);
         if (fromstr->tag == StructTag && tostr->tag == StructTag) {
             if (from->tag == VirtRefTag) {
+                // A virtual reference to an open trait was made from a concrete
+                // type, and its vtable pointer says which. A trait or an enum is
+                // no such type: no vtable is ever built for one, only for its
+                // implementers or variants, so there is nothing to compare with.
+                if ((tostr->flags & TraitType) && !(fromstr->flags & HasTagField)) {
+                    errorMsgNode((INode*)node, ErrorInvType,
+                        "%s is a trait or enum, and a virtual reference narrows only to the concrete type it was made from. Narrow to one of its variants or implementers.",
+                        &tostr->namesym->namestr);
+                    return;
+                }
                 if (structVirtRefMatches(fromstr, tostr))
                     return;
             }

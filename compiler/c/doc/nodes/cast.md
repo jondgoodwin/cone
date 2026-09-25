@@ -148,7 +148,10 @@ discriminant to do it.
   recast exists between them, not even into a borrow. Then permissions must
   match. Then the pointed-at structs: a virtual reference asks
   `structVirtRefMatches`; a plain one needs `HasTagField` on the source and
-  `structMatches` under `Regref`.
+  `structMatches` under `Regref`. A virtual reference to an untagged trait may
+  not narrow to a trait or an enum: it was made from a concrete type, its vtable
+  pointer is compared with that type's, and no vtable is built for a trait or an
+  enum, so the comparison had nothing to find and failed at link.
 - **Struct to struct**: needs `HasTagField`, then `structMatches` under
   `Coercion`.
 

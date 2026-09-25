@@ -1,0 +1,68 @@
+mod trait_typecheck_enum_vref;
+
+// The refusals beside trait_enum_vref: a plain reference to a trait or an enum
+// that cannot become a virtual reference to another trait, and narrowing a
+// virtual reference to a trait or an enum rather than to a concrete type.
+//
+// The open trait and both narrowings used to compile and then fail: in
+// generation, on a trait with no tag to choose a vtable by, or at link, naming
+// a method of the trait or enum that is never generated. The enum that does
+// not comply was refused before too, and is here as the boundary of what the
+// conversion accepts.
+
+trait Named {
+  pub fn label(self &) i32;
+}
+
+trait Gauge {
+  pub level i32;
+  pub fn label(self &) i32;
+}
+
+struct Tank is Gauge {
+  pub level i32;
+  pub fn label(self &) i32 {level;}
+}
+
+// Every variant declares 'label' and the enum does not. The variants' vtables
+// could be built, but a type complies with a trait by declaring what it
+// requires, and Shape does not.
+enum Shape {
+  pub k i32;
+  struct Circle {
+    pub r i32;
+    pub fn label(self &) i32 {r;}
+  }
+  struct Square {
+    pub s i32;
+    pub fn label(self &) i32 {s;}
+  }
+}
+
+enum Whole {
+  pub fn label(self &) i32;
+  struct Only {
+    pub fn label(self &) i32 {1;}
+  }
+}
+
+fn labelOf(n &<Named) i32 {n.label();}
+
+fn main() {
+  // An open trait has no tag, so nothing says which implementer's vtable to use
+  imm t = Tank[9];
+  imm g &Gauge = &t;
+  labelOf(g);   //~ ErrorInvType:11 "does not match declared parameter"
+
+  // The enum has to comply itself, not only its variants
+  imm c = Shape.Circle[1, 7];
+  imm sh &Shape = &c;
+  labelOf(sh);   //~ ErrorInvType:11 "does not match declared parameter"
+
+  // A virtual reference was made from a concrete type, and its vtable pointer
+  // says which; no vtable is built for a trait or an enum to compare with
+  imm o = Whole.Only[];
+  imm n &<Named = &o;
+  if n is &Whole {labelOf(n);}   //~ ErrorInvType:8 "narrows only to the concrete type"
+  if n is &Gauge {labelOf(n);}   //~ ErrorInvType:8 "narrows only to the concrete type"
+}

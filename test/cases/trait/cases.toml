@@ -355,6 +355,38 @@ target = "llvmir"
 contains = ['constant %"Shape:Vtable" { i32 (i8*)* bitcast (i32 (%Tri*)* @']
 excludes = ['constant %"Shape:Vtable" { i32 (i8*)* null']
 
+# A plain reference to an enum passed where a virtual reference to another trait
+# is expected. What it points at is one of the variants, so the fat pointer
+# carries that variant's vtable, chosen by the tag. Its own file, rather than
+# more of trait_variants, because the subject is the conversion from the enum's
+# reference and not narrowing a trait's reference back: before 25 Sept 2026 the
+# conversion built a vtable for the enum itself, whose methods are never
+# generated, and the program failed to link.
+[scenario.trait_enum_vref]
+category = "run"
+description = "A plain reference to an enum converted to a virtual reference to another trait, dispatching to the variant its tag names"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# Each variant gets a vtable for the other trait and the enum gets none. One
+# for the enum would fill its slots with the enum's own methods, which are
+# never generated: that was the unresolved symbol.
+[[scenario.trait_enum_vref.check]]
+name = "each-variant-gets-a-vtable-and-the-enum-none"
+target = "symbols"
+contains = [
+  "constant internal Shape.Circle as Named (vtable) comdat nodeduplicate",
+  "constant internal Shape.Square as Named (vtable) comdat nodeduplicate",
+  "constant internal Shape.Dot as Named (vtable) comdat nodeduplicate",
+  "constant internal Color.Red as Labelled (vtable) comdat nodeduplicate",
+  "constant internal Tagged.Two as Labelled (vtable) comdat nodeduplicate",
+]
+excludes = [
+  "Shape as Named (vtable)",
+  "Shape as Labelled (vtable)",
+  "Color as Labelled (vtable)",
+  "Tagged as Labelled (vtable)",
+]
+
 # -------- parse stage --------
 
 # 'extends' no longer spells nominal conformance, and it is not yet the concrete
@@ -440,6 +472,17 @@ category = "reject"
 description = "Members and operations a virtual reference cannot reach, and comparing what a reference to a trait refers to"
 tags = ["typecheck"]
 diagnostics = 8
+
+# trait_enum_vref's refusals: a plain reference to an open trait, or to an enum
+# that does not itself declare what the trait requires, converted to another
+# trait's virtual reference, and a virtual reference narrowed to a trait or an
+# enum. All but the enum used to compile and then fail at link or in
+# generation; the enum is the boundary, refused before and after.
+[scenario.trait_typecheck_enum_vref]
+category = "reject"
+description = "References to a trait or an enum that cannot become another trait's virtual reference, and narrowing to a trait or an enum"
+tags = ["typecheck"]
+diagnostics = 4
 
 # -------- flow stage --------
 

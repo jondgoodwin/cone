@@ -1237,6 +1237,20 @@ compares instead, one `select` per variant with the last as the fall-through
 proportional to the largest value, and it needs no basic blocks, so nothing depends
 on where the coercion sits.
 
+**A reference to an enum converts to a virtual reference to another trait the
+same way, always by comparison.** What `&Shape` points at is a variant, so the fat
+pointer must carry that variant's vtable for the other trait, and no vtable is
+built for the enum itself: its slots would name the enum's methods, none of which
+is generated, and before 25 Sept 2026 that is what linked as an unresolved symbol.
+`structVirtRefMatches` asks the enum to comply as any type does, keeps nothing
+from that mapping, and registers every variant instead; the conversion then picks
+the variant's by the tag. The other trait's vtable list is in the order conversions
+registered its implementers, not in tag order, so the tag never indexes it
+(`genlConvert` indexes only when the source is the enum's own vtable). An open
+trait has no tag to pick with, so a plain reference to one converts to no other
+trait. `trait_enum_vref` runs it, and `trait_typecheck_enum_vref` pins the
+refusals.
+
 **Generation consumes without validating**: `FieldDclNode.index` for every GEP
 and `extractvalue`, and `vtblidx` for vtable slots.
 
@@ -1303,7 +1317,8 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   value typed as the enum — possible only for a by-value `self` — would need the
   same dispatch on a value, which is not built, so `fnCallLowerMethod` refuses it
   with `ErrorEnumValueDispatch` rather than leave a call to a function that does
-  not exist.
+  not exist. The same absence is why a virtual reference to another trait is
+  built from the variant's vtable and never from one for the enum.
 - **`structAddField` drops a duplicate-named field from `fields`** while the
   parser has already assigned indices, so positional literals shift.
 - **An enum's equality is declared even where it cannot be given.** Where a variant
