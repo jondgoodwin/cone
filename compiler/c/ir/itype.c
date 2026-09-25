@@ -350,17 +350,17 @@ static INode *itypeNoSizeField(INode *dcltype, uint32_t depth);
 //
 // An enum's size is the largest of its variants, and generation is what computes
 // that. Its own TypeChecked mark says only that its own fields are settled, which
-// begins with the tag: the variants are type checked separately, each pulling the
-// enum in as its base and finishing it before its own fields are walked. So the
-// mark cannot be read as 'has a size' here, and one variant still in flight is
-// exactly the case where the enum has none -- which is what a variant holding its
-// own enum by value asks for.
+// begins with the tag: its variants are laid out after that, each taking the enum
+// as its base -- and when the enum was demanded by its first variant, the rest
+// wait until that one is done (structTypeCheck). So the mark cannot be read as
+// 'has a size' here, and one variant still in flight is exactly the case where
+// the enum has none -- which is what a variant holding its own enum by value asks
+// for. No member asks inside that window: members are checked only once every
+// layout is done.
 //
-// In flight, not merely unfinished. A variant not yet begun is one the module
-// walk has not reached: a parameter written above the enum, or in a parent of
-// the enum's module, asks before any variant is. Nothing of that variant is on
-// the demand stack, so it cannot close a cycle with the asker, and if it does
-// hold the enum, its own field asks again once it is in flight, and is refused.
+// In flight, not merely unfinished. A variant not yet begun is not on the demand
+// stack, so it cannot close a cycle with the asker, and if it does hold the enum,
+// its own field asks again once it is in flight, and is refused.
 static int itypeVariantPending(INode *dcltype) {
     // TraitType and a derived list are both required: a *variant* carries the
     // closed flags too, inherited from its enum, and has no derived list at all.
@@ -418,10 +418,9 @@ static char *itypeNoSizeOwnCause(INode *dcltype, uint32_t depth) {
 
     // A type whose implementations differ in size has no one size: a trait,
     // whose implementers are open-ended, or an enum that declined the padding.
-    // Asked before the pending question below: an '@unsized' enum's own members
-    // are checked while its first variant is still in flight, and a by-value
-    // 'self' there is refused because the enum will never have a size, not
-    // because that variant has not finished.
+    // Asked before the pending question below, so that an '@unsized' enum held
+    // by value inside one of its variants' layouts is refused because it will
+    // never have a size, not because that variant has not finished.
     if (dcltype->tag == StructTag && (dcltype->flags & OpaqueType)
         && (dcltype->flags & TraitType) && !(dcltype->flags & SameSize))
         return (dcltype->flags & EnumType)

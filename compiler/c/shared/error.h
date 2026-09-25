@@ -291,6 +291,9 @@ enum ErrorCode {
     ErrorIncWrite = 1148,       // The include file cannot be written, or would overwrite a source file of the compile
     ErrorIncCheck = 1149,       // The generated include file could not be completed, or does not parse and name-resolve as the package's module: a compiler limitation or bug
 
+    // Enum methods
+    ErrorEnumValueDispatch = 1150,  // An enum's method called on a value of the enum: the variant's would be chosen by the tag, which is not built for a value receiver
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

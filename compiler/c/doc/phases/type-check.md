@@ -130,11 +130,12 @@ mark; it says nothing about what the marked node is.
 
 **For a type, `TypeChecked` means laid out**, not "everything about me is done". It
 is set in `structTypeCheck` at the point the layout settles — fields indexed,
-size known, method set complete — and *before* the methods themselves are
-analyzed. The placement is load-bearing: a method may use its own type by value,
-`fn twin(self) Self`, so the size has to be available before methods run.
-Nothing needs a state stronger than that, and nothing should be added that
-does — see "Settled deliberately" below.
+size known, method set complete — and the type's members are not analyzed by
+that check at all: they wait until no layout is in flight anywhere (section 4,
+"Layout before members"). So a method may use its own type by value,
+`fn twin(self) Self`, or any other type, and find its size settled. Nothing
+needs a state stronger than "laid out", and nothing should be added that does —
+see "Settled deliberately" below.
 
 **The marks live on the node, not on the name.** Generic and macro instantiation
 clones declarations, and each clone is legitimately unanalyzed, so every clone
@@ -165,6 +166,12 @@ signature's reference parameter matches no receiver. `self.later()` was
 walk state of the candidate's own type rather than the caller's (Rule 8:
 `fnDclTypeCheck` compares a method's `self` with `pstate->typenode`). A number
 type's methods are skipped: corenumber builds them typed and nothing checks them.
+**A bare name is demanded the same way** (`nameUseTypeCheck`): a member of a type
+not yet begun is analyzed under its own type's walk state, not the use's. A bare
+call in a generic enum's variant is bound to the enum instance's own method, and
+checked under the variant's state that method was refused as not taking the
+variant for `self`; it was reached only when a variant's members happened to be
+checked before its enum's.
 
 Because the declaration is analyzed at the moment a use has to decide anything
 about it, each decision is locally justified. A namespace asked for a member is
@@ -181,6 +188,69 @@ initial value, which is the case nothing else can serve.
 **Locals are not part of this.** They are hooked and unhooked during the walk, in
 source order, and `mut a = a` inside a function fails at name resolution because
 the name is not yet in scope.
+
+### Layout before members
+
+**Every type is laid out before any type's members are checked.** A type's
+layout — its fields, its own size, for an enum its variants, and the move and
+thread-bound properties that follow from them — is what a size question reads,
+and what a move or thread question reads. A member checked while some layout is
+still in flight could see a type with no size yet, or one that does not yet know
+it moves, and which of those it saw would follow the order the declarations are
+written in. So demanding a type lays it out and nothing more; its members wait.
+
+**The mechanism is two queues and a count**, in `struct.c`:
+
+- `structLayoutEnter` and `structLayoutExit` count the layouts in flight. They
+  are called by `inodeTypeCheck` around the check of every type that holds
+  values by value — a struct, an array, a tuple. A reference answers its own
+  size and a function signature has none, so neither counts.
+- `structTypeCheck` lays the type out, sets `TypeChecked`, settles its drop
+  function, and puts the type in the **members queue**. An enum then lays out
+  each of its variants not yet begun, an extension's copies of its base's
+  variants among them (section 10.2) — unless one of them is in flight, which
+  means the enum was demanded from inside that variant's layout. A sibling laid
+  out there could hold that variant by value and find it unfinished, which would
+  be a cycle only by the order of the walk, so the enum goes in the **variants
+  queue** instead.
+- When the count returns to zero, `structLayoutExit` works the queues: every
+  waiting enum's remaining variants first, counted as in flight so that nothing
+  is checked until all are laid out, then each waiting type's members
+  (`structCheckMembers`: every member in its `nodelist`, then its overload sets,
+  then its traits' requirements), first laid out first, under a walk state of the
+  type's own.
+
+**Checking a member may begin new layouts**, from a signature or a body, and
+when the last of those finishes the queues are worked from there, nested. So
+when a use that demanded a type from a function body gets control back, that
+type's members are checked — unless they were already waiting behind the ones
+being checked, which is the same state a type in flight was always in. The
+module walk itself needs nothing of this: whatever a declaration reaches is laid
+out on demand, and its members are checked before the walk moves on.
+
+**What it fixed.** Before, `structTypeCheck` laid a type out and then checked its
+members in the same call, so a type demanded from inside another's layout had its
+members checked while the demander was in flight. Measured on `2f3225cb`:
+`struct S { t T; }` above `struct T { fn g(self &, s S) }` was `ErrorNoSize` on
+`s`, while the other order compiled; and an enum, which the module walk reaches
+first through its first variant, had its own members checked inside that
+variant's layout, so a by-value `self`, a static function taking the enum, a
+function below it that a static function calls, and a struct field naming it
+that a member's signature names were all refused as a cycle. The same window
+made the enum look copyable to its members before its variants' move properties
+reached it, and a struct or function written above the enum laid it out ahead of
+any variant, so a value of an enum with a `@move` variant could be copied twice
+or moved out through a borrowed reference twice, clean. Laying out every
+variant with its enum closes both (`move_flow_infection`).
+
+**What it does not change.** A real by-value cycle is still refused, by the same
+size question (section 6): one of its types is always asked while in flight. And
+a reference still type checks its target, which lays it out (`refTypeCheck`, which
+also reads the target's thread-bound flag) — so a variant's field `&W`, where `W`
+holds the enum by value, lays `W` out while the variant is in flight, and `W`'s
+field is refused as though it closed a cycle. Written with `W` above the enum it
+compiles. That is the one source-order dependence measured to remain; see
+section 13.
 
 ## 5. Re-entry
 
@@ -377,9 +447,18 @@ Steps marked **→** are where a demand can leave and re-enter.
 8. Settle the drop fn: validate `final`, and generate a `drop` if a field needs
    finalizing — but not on a trait or an enum, whose methods are its
    implementers' and would make that `drop` a requirement on each of them.
-   Before the methods, because each method's flow pass finalizes a
+   Part of the layout, because each method's flow pass finalizes a
    by-value `self`, or a local of this type, only if the type has one by then.
-9. **→** Analyze the methods — not the generated `drop`, which is built lowered.
+   The generated `drop` is built lowered and carries `TypeChecked` from birth.
+8a. Put the type in the members queue. **→** An enum lays out each variant not
+   yet begun, or waits in the variants queue if one is in flight (section 4,
+   "Layout before members"). The layout ends here.
+
+Steps 9 and 10 run from the members queue (`structCheckMembers`), once no
+layout is in flight:
+
+9. **→** Analyze every member — methods, static functions, statics — then each
+   overload set the type declares.
 10. **→** Verify each mixed-in trait's method requirements against the signatures
    now known: a name the type declares itself must have the one candidate of the
    trait's signature, and a requirement with no body is unmet in a struct — an
@@ -390,8 +469,9 @@ Steps marked **→** are where a demand can leave and re-enter.
    matched nothing, so whether a variant or an implementer conformed followed
    source order.
 
-Steps 2 and 4 are where recursion arrives; step 7 is why a method at step 9 may
-use its own type by value, and step 8 why it finalizes one. The members themselves — which fields and which
+Steps 2, 4 and 8a are where recursion arrives; the members queue is why a method
+at step 9 may use its own type, or any type, by value, and step 8 why it
+finalizes one. The members themselves — which fields and which
 default methods a type inherits — were settled by name resolution, which builds
 the dictionary whole before any body is resolved; see [struct](../nodes/struct.md).
 
@@ -407,13 +487,13 @@ written inside its body.
   another is the exception**: name resolution puts its copies of the base's variants
   at the front of its list and numbers its own from there, since the values the
   base's variants hold are not known until the base is resolved.
-- **An extension's copies are checked by the module walk, right after the
-  extension** (`structEnumCheckCopies`, from `modTypeCheck`), since they are no
-  module's nodes. Not inside the extension's own check, which an added variant
-  demands before its own is done: a copy's method body that builds that variant by
-  value would find it still in flight. A generic extension's copies are templates,
-  so the walk passes over them, and each instance of the extension instantiates and
-  checks its copies with its own variants (`genericMemoize`). **A generic base is an
+- **An extension's copies are laid out by the extension's layout**, with its own
+  variants (step 8a), since they are no module's nodes; their members wait in the
+  queue like any variant's, so a copy's method body that builds an added variant by
+  value finds it finished however the extension was reached. A generic extension's
+  copies are templates, so nothing reaches them, and each instance of the
+  extension instantiates its copies with its own variants (`genericMemoize`) and
+  lays them out with them. **A generic base is an
   instance**, written with its arguments, so type check is where it exists: the
   extension's `extendsbase` is checked into it, and the placeholder standing for it
   is expanded into the extension's fields, and into each copy's through its enum, as
@@ -444,22 +524,24 @@ The rule that a derived type lives in the same module as its enum keeps the firs
 two true.
 
 **An enum's `TypeChecked` mark does not mean it has a size.** It means its
-*own* fields are laid out, which begins with the tag. Each variant is reached
-separately and pulls the enum in as its base, finishing it before walking
-its own fields — so the enum is marked long before the variants that determine
-its size are done. Anything asking an enum for a size has to ask whether a
-variant is still being laid out as well; `itypeVariantPending` is that question,
-and section 6 is where it is asked. Without it a variant could hold its own enum
-by value, which compiled clean and generated a layout with the field dropped.
+*own* fields are laid out, which begins with the tag. Its variants are laid out
+after that, each taking the enum as its base — so the enum is marked before the
+variants that determine its size are done. The module walk usually reaches the
+enum through its first variant, which demands it as its base; then that variant
+is in flight while the enum is laid out, and the enum's other variants wait until
+it is done (step 8a). Anything asking an enum for a size inside that window has
+to ask whether a variant is still being laid out as well; `itypeVariantPending`
+is that question, and section 6 is where it is asked. Without it a variant could
+hold its own enum by value, which compiled clean and generated a layout with the
+field dropped. No member is ever checked inside the window: members wait until
+every layout is done, variants included.
 
 The question is whether a variant is *in flight* — `TypeChecking` without
-`TypeChecked` — not whether every variant has finished. A variant the module walk
-has not reached yet is neither: a parameter or field written above the enum, or
-in a module walked before the enum's, asks before any variant is begun. Such a
-variant is not on the demand stack, so it cannot close a cycle with whatever
-asked, and if it does hold the enum by value its own field asks again once it is
-in flight, and is refused there. Counting it as pending made the answer depend on
-source order, which the rules of section 2 together forbid.
+`TypeChecked` — not whether every variant has finished. A variant not yet begun is
+not on the demand stack, so it cannot close a cycle with whatever asked, and if
+it does hold the enum by value its own field asks again once it is in flight, and
+is refused there. Counting it as pending made the answer depend on source order,
+which the rules of section 2 together forbid.
 
 ### 10.3 Function and method
 
@@ -495,9 +577,9 @@ elsewhere, whichever walk arrived at it.
 1. **→** Analyze imports first. A module's swept files are not modules and are
    not visited separately.
 2. Iterate the declarations and analyze each. Demand pulls forward whatever a
-   forward reference needs; one already analyzed returns at once. After an enum
-   that extends another, analyze its copies of the base's variants, which are no
-   module's nodes (`structEnumCheckCopies`).
+   forward reference needs; one already analyzed returns at once. A type reached
+   here is laid out, and its members are checked before the walk moves on, once
+   no layout is in flight (section 4, "Layout before members").
 
 ## 11. Diagnostics type check owns
 
@@ -527,7 +609,8 @@ Kept so that reopening one is a decision rather than a rediscovery.
 | Does the name-resolution gate change? | No. One eager pass, global gate. |
 | Is name binding tracked as its own state? | For a module and a type only, by name resolution's own two marks, so that a type may be resolved ahead of the walk when another type names it as a base. Nothing else asks, and type check never reads them. |
 | What state does demand need? | None beyond the two marks, read rather than refused. |
-| Does anything need "complete" beyond "laid out"? | No consumer exists. A `SizeKnown` field on `ITypeNodeHdr` would separate "laid out" from "methods checked", but `TypeChecked` at the layout point already says the first and nothing asks for the second. Do not add one. |
+| Does anything need "complete" beyond "laid out"? | No consumer exists. A `SizeKnown` field on `ITypeNodeHdr` would separate "laid out" from "methods checked", but `TypeChecked` at the layout point already says the first and nothing asks for the second. Do not add one. The members queue needs no mark either: a type joins it once, where its layout settles. |
+| Is layout-before-members two passes over the module? | No. A type is laid out on demand, as before, and its members wait in a queue that is worked whenever no layout is in flight. Two passes would still need demand for a layout reached across modules or from a generic instance, and would check a type's members far from the declaration that reached it. |
 | Should a size question have five codes? | No. One code, cause in the message. |
 | Should a repeated diagnostic be suppressed? | Not for now. It needs a `Failed` state per declaration plus a test at every reporting site. |
 
@@ -539,6 +622,19 @@ Kept so that reopening one is a decision rather than a rediscovery.
 - **The suite cannot assert an absent check.** Where a rule is unenforced the
   corpus records it by establishing the opposite, so a scenario that starts
   failing may be one a change correctly invalidated.
+- **A reference inside a variant's layout can still refuse a non-cycle.** A
+  reference type checks its target, so a variant's `&W`, where `W` holds the enum
+  by value and is written below the enum, lays `W` out while the variant is in
+  flight, and `W`'s field is `ErrorNoSize` "a variant still being laid out".
+  Written above the enum, `W` is laid out first and it compiles. Closing it needs
+  a reference that does not demand its target's layout, or a thread-bound flag
+  settled after the layouts; measured, not built.
+- **One declaration's error can silence another's body.** `fnDclTypeCheck` skips a
+  body when the error count moved during its signature's check, and demand can
+  run other declarations inside that check — a signature naming an enum lays the
+  enum out, and the queues then check its members there. An error in one of them
+  skips the function's own body. Measured the same before and after layout-before-
+  members; the gate would have to count only errors reported on the signature.
 - **Node `flags` bits are not one namespace.** Check every declaration family
   before claiming a bit, not just the type block. A collision has no
   diagnostic: `0x0040` overlapping `HasTagField` stops type checking every
@@ -560,16 +656,18 @@ Kept so that reopening one is a decision rather than a rediscovery.
 | File | Function | Purpose |
 | --- | --- | --- |
 | `conec.c` | `doAnalysis` | runs name resolution, gates on errors, then walks the program for type check |
-| `ir/inode.c` | `inodeTypeCheck` | the dispatch switch, and where both marks are set and tested |
+| `ir/inode.c` | `inodeTypeCheck` | the dispatch switch, where both marks are set and tested, and where a struct, array or tuple layout is counted in flight |
 | | `inodeTypeCheckAny` | the same with no expected type |
 | `ir/itype.c` | `itypeTypeCheck` | check a node expected to be a type |
 | | `itypeNoSizeCause`, `itypeNoSizeExplain` | the five causes of section 6, and the hop-by-hop trace |
 | | `itypeVariantPending` | whether a variant of an enum is still being laid out — section 10.2 |
 | `ir/iexp.c` | `iexpTypeCheckAny` | check a node expected to be an expression |
-| `ir/types/struct.c` | `structTypeCheck` | the ten steps of section 10.1; sets `TypeChecked` at the layout point; `structSetDropFn` is step 8 and `structCheckTraitReqs` step 10 |
+| `ir/types/struct.c` | `structTypeCheck` | the layout, steps 1 to 8a of section 10.1; sets `TypeChecked` at the layout point; `structSetDropFn` is step 8 |
+| | `structCheckMembers` | steps 9 and 10, run from the members queue; `structCheckTraitReqs` is step 10 |
+| | `structLayoutEnter`, `structLayoutExit` | the count of layouts in flight, and the queues worked when it returns to zero — section 4, "Layout before members" |
 | `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the eight steps of section 10.3, including both error-delta gates |
 | `ir/stmt/vardcl.c` | `varDclTypeCheck` | section 10.4 |
-| `ir/stmt/module.c` | `modTypeCheck` | imports first, then the module-trait check, then declarations, and an enum extension's copies right after it (`structEnumCheckCopies`) — section 10.5 — and last `modLifecycle` |
+| `ir/stmt/module.c` | `modTypeCheck` | imports first, then the module-trait check, then declarations — section 10.5 — and last `modLifecycle` |
 | `ir/stmt/module.c` | `modLifecycle`, `modGiveDrop` | once every global's type is settled: the module's `init` and `final` checked as `fn @initpure init()` and `fn final()` (`ErrorModLifecycle`), each global without a value reported where the module has no `init` (`ErrorGlobalUninit`), and the module given a pre-lowered `drop` — its `final`, then each finalizing global's drop — where a global needs it. [module](../nodes/module.md), "Init and final" |
 | `ir/stmt/modtrait.c` | `modTraitCheck`, `modTraitTypeCheck` | what a conforming module has for each member of its module trait against the member's shape — one candidate of exactly the signature, or a global of the type and permission — each difference `ErrorModTraitMismatch` at the `is`; the trait's own members' signatures and globals, never a default's body, which each copy checks. [module](../nodes/module.md), "Module traits" |
 | `ir/meta/generic.c` | `genericInstantiate`, `genericInstantiateEnter` | instantiation, memoization, and the depth bound |

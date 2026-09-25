@@ -1176,12 +1176,13 @@ void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
     // Order still does not decide what is analyzed, only when: this loop reaches
     // every declaration, and one already analyzed by demand returns at once.
     // An enum that extends another holds copies of its base's variants that are
-    // no module's nodes, and they are reached through it.
-    for (nodesFor(mod->nodes, cnt, nodesp)) {
+    // no module's nodes; its layout lays them out with its own variants.
+    //
+    // A type reached here is laid out, and its members are checked only once no
+    // layout is in flight (structLayoutExit), so no type's members ever see
+    // another type half laid out, whatever order the two are written in.
+    for (nodesFor(mod->nodes, cnt, nodesp))
         inodeTypeCheckAny(pstate, nodesp);
-        if ((*nodesp)->tag == StructTag)
-            structEnumCheckCopies(pstate, (StructNode*)*nodesp);
-    }
 
     // Last, once every global's type is settled: the module's 'init' and 'final',
     // and the 'drop' that finalizes its globals
