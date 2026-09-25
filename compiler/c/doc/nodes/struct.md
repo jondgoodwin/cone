@@ -215,7 +215,9 @@ abstract over. **A trait may declare `is` against another trait** [Jon 22 Sep:
 me."*].
 
 **Two base relationships: `is` on an abstraction, `extends` on a concrete type.**
-The keyword was settled as `is` the same evening [Jon 22 Sep]: the `is` that asks
+The keyword was settled as `is` the same evening [Jon 22 Sep]. The reasoning
+recorded with it is Penny's [Penny 22 Sep; his own words for it were not found
+in the session transcripts, checked 25 Sep]: the `is` that asks
 a value's variant at run time (`p is Mobile`) asserts a type's relationship at its
 declaration, and a future `where T is Comparable` asks it a third time — one
 predicate over two kinds of operand, and a net deletion, since `is` was already a
