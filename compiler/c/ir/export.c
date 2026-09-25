@@ -63,7 +63,7 @@ int fnIsTypeLifecycle(INode *dclnode) {
 }
 
 // Whether a type's method meets a requirement, or takes the place of a default,
-// of a trait the type is -- its base, or one it mixes in. Wherever a value of
+// of a trait the type is -- its base, or a further name of its 'is' list. Wherever a value of
 // the type is coerced to the trait, a vtable is built that calls it, naming
 // nothing: in an importer's object as in the package's
 static int traitHasMember(INode *trait, Name *name) {

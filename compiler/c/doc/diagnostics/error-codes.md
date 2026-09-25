@@ -104,7 +104,7 @@ right.
 `ErrorEnumExtends` is the same shape, over what an enum extending another may name
 and declare: a base that is not an enum, a base that is itself, a discriminant of
 its own, a member its copies of the base's variants could not be given — a
-requirement, a common field, a macro or a mixin — and no variant at all. A generic
+requirement, a common field, a macro or an `is` — and no variant at all. A generic
 base written with the wrong number of arguments, none included, is not among them:
 it is `ErrorArgCount`, the code every instantiation's arity wears. Nor is a member
 declared under a name the base has: that is `ErrorExtendsOverride`, the code a

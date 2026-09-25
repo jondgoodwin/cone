@@ -1,8 +1,10 @@
 // What a nominal assertion demands of the type that makes it, where the demand is
 // about types: a base that is not an abstraction, a method requirement the type
 // meets with nothing or with the wrong signature, the fields a trait requires not
-// declared where it requires them, a second trait requiring fields at all, and a
-// second discriminant arriving from a second enum.
+// declared where it requires them, a second trait requiring fields at all, and an
+// enum or a variant naming a trait that requires fields. A closed type named in an
+// 'is', which once brought a second discriminant into a layout, is refused a stage
+// earlier: trait_nameres_closed_is.
 //
 // Most diagnostics are reported against the struct declaration itself rather than
 // the member that is wrong, so each of those needs its own struct. A field
@@ -109,29 +111,22 @@ struct Loaded is Pair, Heavy {   //~ ErrorIsaMulti:8 "only the first abstraction
   pub weight i32;
 }
 
-// -------- two closed families in one layout --------
+// -------- an enum's abstractions and a variant's --------
 
-// A discriminant belongs to one closed family. An open trait carries none, so a
-// type may name a chain of them and mix in as many as it likes; an enum
-// carries one, and mixing in two brings two into the same layout with no variant
-// number that could mean anything in either family.
-enum Left {
-  pub l i32;
-
-  struct LeftOne { pub a i32; }
-  struct LeftTwo { pub b i32; }
+// An enum and a variant may each name open traits in an 'is', and none of them is
+// a base: the enum lays out itself and every variant, discriminant first, so there
+// is no position zero for a trait's fields to hold. Every trait either names must
+// require no fields, and the message says so in those terms rather than as the
+// "first abstraction" rule, since there is no first. What else two traits taken in
+// this way must meet is trait_enum_is's.
+enum Crates is Heavy {           //~ ErrorIsaMulti:6 "an enum's 'is' or a variant's may name only abstractions that require none"
+  pub weight i32;
+  Empty;
 }
 
-enum Right {
-  pub r i32;
-
-  struct RightOne { pub c i32; }
-  struct RightTwo { pub d i32; }
-}
-
-struct Both {  //~ ErrorInvType:1 "A closed type carries one discriminant"
-  mixin Left;
-  mixin Right;
-
-  pub n i32;
+enum Parcels {
+  pub weight i32;
+  struct Boxed is Heavy {        //~ ErrorIsaMulti:10 "an enum's 'is' or a variant's may name only abstractions that require none"
+    pub w i32;
+  }
 }

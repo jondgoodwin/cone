@@ -175,7 +175,7 @@ checked before its enum's.
 
 Because the declaration is analyzed at the moment a use has to decide anything
 about it, each decision is locally justified. A namespace asked for a member is
-complete — the traits mixed in by name resolution, or, for an instance of a
+complete — the traits taken in by name resolution, or, for an instance of a
 generic trait, at step 4 below. A type read for its size has one, or says why
 not.
 
@@ -428,12 +428,13 @@ Steps marked **→** are where a demand can leave and re-enter.
 2. **→** Analyze the base trait.
 3. Propagate the base trait's closed-type flags (`SameSize`, `HasTagField`). A
    variant must be declared in the same module as its enum, and a type outside an
-   enum may not join its variant set. If name resolution did not mix the base trait
-   in — it was an instance of a generic, which exists only now — insert a mixin
+   enum may not join its variant set. If name resolution did not take the base trait
+   in — it was an instance of a generic, which exists only now — insert a
    placeholder for it at position 0.
-4. **→** Analyze every trait name resolution mixed in, then walk fields
+4. **→** Analyze every trait name resolution took in, then walk fields
    **backwards**: expand any placeholder still standing — splicing in the
-   trait's fields and inheriting its methods, as name resolution does — and
+   trait's fields and inheriting its methods, as name resolution does, or refusing
+   an instance of a generic enum that an `is` list named — and
    **→** analyze each ordinary field. Backwards so that splicing does not
    invalidate the position. Then expand any fold clause name resolution left
    (a field whose type was an instance of a generic), and refresh every folded
@@ -587,7 +588,7 @@ elsewhere, whichever walk arrived at it.
 | --- | --- |
 | `ErrorNoRefType` (1074) | a reference or slice type never says what it refers to — `refTypeCheck` and `arrayRefTypeCheck` are its only two sites |
 | `ErrorNoSize` (1069) | a value's type cannot say how large it is — five causes, named in the message |
-| `ErrorCircular` (1068) | a constant or inferred declaration is defined in terms of itself. Name resolution raises the same code for two types that each extend or mix in the other |
+| `ErrorCircular` (1068) | a constant or inferred declaration is defined in terms of itself. Name resolution raises the same code for two types that each extend or name the other in an `is` |
 | `ErrorInstDepth` (1067) | generic or macro expansion nests past `TypeCheckLoopMax` |
 
 **`ErrorRecurse` (1049) is retired and its number must not be reused.** It

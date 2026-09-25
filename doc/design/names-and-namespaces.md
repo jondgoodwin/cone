@@ -93,7 +93,7 @@ changing it.
 | C file | Name/namespace capability |
 | --- | --- |
 | `compiler/c/ir/instype.c` | Provides shared namespaced-type operations, binding of each concrete function/method name and of its separate overload node, field/method lookup, and all-candidate method selection. |
-| `compiler/c/ir/types/struct.c` | Owns struct/trait member namespaces; inserts fields, `Self`, the default methods of every abstraction the type is-a or mixes in and, for a variant, its enum's fields, the base resolved on demand first; hooks members and generic parameters during resolution; and performs the inherited-member collision checks. |
+| `compiler/c/ir/types/struct.c` | Owns struct/trait member namespaces; inserts fields, `Self`, the default methods of every abstraction the type's `is` list names and, for a variant, its enum's fields, the base resolved on demand first; hooks members and generic parameters during resolution; and performs the inherited-member collision checks. |
 | `compiler/c/ir/exp/fncall.c` | Resolves fields and overloaded methods from type namespaces, lowers member access/calls, inserts implicit `self`, and finds `init` for type calls. **All of this is `fnCallTypeCheck`'s**, not name resolution's — `fnCallNameRes` walks `objfn` and the arguments and deliberately leaves `methfld` alone, since selecting a member needs the receiver's type. |
 | `compiler/c/ir/meta/macro.c` | Establishes macro parameter scope and resolves names in macro bodies before expansion. |
 | `compiler/c/ir/meta/genvardcl.c` | Binds generic variables into the active resolution scope. |

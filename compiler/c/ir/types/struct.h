@@ -39,7 +39,7 @@ typedef struct StructNode {
     INode *extendsbase;     // The type expression an 'extends' names: a concrete base to enrich, or, on an enum, the enum whose variants join its set
     INode *extendsdcl;      // An enriched base's declaration, set once its members have been taken; NULL until then, and always NULL for an enum, which licenses no substitution
     Nodes *derived;         // If a closed, base trait, this lists all structs derived from it
-    Nodes *traits;          // Every trait whose members were mixed in (NULL if none)
+    Nodes *traits;          // Every trait whose members were taken in (NULL if none)
     Nodes *siblings;        // A field-like node per type-body 'use': its 'vtype' the sibling named, its 'fold' what the clause admits (NULL if none)
     Nodes *lifecycle;       // Unlowered copies of its 'final' and 'clone', set aside as its layout settles and before its methods are type checked, for an enrichment taken after that (NULL if none)
     NodeList fields;        // Ordered list of all fields

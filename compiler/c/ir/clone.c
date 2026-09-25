@@ -37,7 +37,7 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     }
     else if (isNameUseNode(nodep)) {
         node = cloneNameUseNode(cstate, (NameUseNode *)nodep);
-        // For traits as mixins, repoint 'Self' to the struct node
+        // For a trait's members taken into a type, repoint 'Self' to the struct node
         if (cstate->selftype && ((NameUseNode*)node)->namesym == selfTypeName)
             ((NameUseNode*)node)->dclnode = cstate->selftype;
     }

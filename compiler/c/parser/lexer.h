@@ -142,7 +142,7 @@ enum TokenTypes {
     CAttrToken,    // '@c': C naming, on a 'mod' line or a 'fn'
     InitPureToken, // '@initpure': after 'fn', a function a module's 'init' may call, 'init' among them
     ExtendsToken,  // 'extends'
-    MixinToken,    // 'mixin'
+    MixinToken,    // 'mixin', retired: kept a keyword so the parser can point it at 'is'
     UseToken,      // 'use'
     ButToken,      // 'but'
     EnumToken,     // 'enum'

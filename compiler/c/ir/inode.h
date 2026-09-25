@@ -230,7 +230,8 @@ enum NodeTags {
 #define FlagUnlisted  0x0008        // AliasDcl: made by a star clause, not written as this name by the module
 
 #define IsTagField    0x0010        // FieldNode: This field is the trait's discriminant tag
-#define IsMixin       0x0020        // FieldNode: Is a trait mixin, vs. an instantiated field
+#define IsMixin       0x0020        // FieldNode: a placeholder for a base or a name of an 'is' list, vs. an instantiated field
+                                    // (named for the retired 'mixin', whose machinery 'is' builds through)
 
 #define FlagIndex     0x0001        // FnCall: arguments are an index in []
 #define FlagBorrow    0x0002        // FnCall: part of a borrow chain

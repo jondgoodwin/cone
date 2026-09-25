@@ -25,11 +25,11 @@ grammar so that the spelling of that abstraction is settled; it does not exist,
 so it reports `ErrorUnbuiltKind` where it is written. `enum trait` is refused,
 and that absence is the one below.
 
-**At a glance.** `parseStruct` does a great deal — tag synthesis, mixin
-placeholders, variants in both of their spellings, tag numbering, generic
+**At a glance.** `parseStruct` does a great deal — tag synthesis, the placeholders
+an `is` list becomes, variants in both of their spellings, tag numbering, generic
 parameter copying. Name resolution builds the dictionary whole: it inserts `Self`,
 gives an enum its equality, takes the default methods of every abstraction the
-type is-a or mixes in, splices an enum's fields into its variants, takes
+type's `is` list names, splices an enum's fields into its variants, takes
 everything a concrete `extends` base has, and only then resolves the method
 bodies, so an inherited member may be named bare. Type
 check indexes fields, computes infectious flags, settles the discriminant's width,
@@ -222,7 +222,7 @@ neither slots nor requirements and cost the trait nothing.
 | `siblings` | a **field-like node per type-body `use`**, or NULL: its `vtype` the type expression of the sibling named, its `fold` what the clause admits. Never in `fields`, because a sibling contributes no representation; the node type is reused for what it already carries through cloning — a type expression and a clause. Read only by `structUseSiblings` |
 | `lifecycle` | unlowered copies of this type's `final` and `clone`, set aside as its layout settles and before its methods are type checked (`structKeepLifecycle`), or NULL. Read only by an enrichment taken after that — in type check, where this type or its enrichment is a generic's instance — since by then the methods themselves may be lowered (see Hazards) |
 | `derived` | for an **enum**, its variants in declaration order — **an extension's begins with its copies of its base's list**, in the base's order, and they are in no module's node list, so this is how the module walk and generation reach them (`structEnumCopyCount` says how many: those whose `instnode` is the extension). A generic instance's list holds the instances of its template's variants, copies included, put there by `genericMemoize`. A variant is in exactly one enum's list. The index is the `tagnbr` only where nothing pinned one, which is what generation asks before using the tag to index the vtable list |
-| `traits` | every abstraction whose members were taken — the base, each further name in the `is` list, and each `mixin` — or NULL. Written where the members are taken (`structInheritTrait`) and read by type check's two requirement checks, the only things that still need to know which trait a requirement came from. **Which entry is the base is asked of `basetrait`, not of this list's order**, since the field walk that fills it runs backwards |
+| `traits` | every abstraction whose members were taken — the base, and each further name in the `is` list (every name, for an enum or a variant) — or NULL. Written where the members are taken (`structInheritTrait`) and read by type check's two requirement checks, the only things that still need to know which trait a requirement came from. **Which entry is the base is asked of `basetrait`, not of this list's order**, since the field walk that fills it runs backwards |
 | `fields` | all fields in layout order. A declared field may carry a fold clause (`FieldDclNode.fold`); a folded copy is never here |
 | `vtable` | NULL until `structMakeVtable` |
 | `tagnbr` | discriminant value, assigned at parse: the value the author pinned, or the next in sequence. `TagUnassigned` is the sentinel between reading a variant's name and settling its value, which is why no flag bit records whether one was written — a type has none to spare, and nothing after parse needs to know. **A variant of an extension keeps the sentinel until name resolution**, which is when the base's values are known and its own can continue from them |
@@ -290,23 +290,44 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   parsed rather than dumped onto the module's statement stream.
 - Each method joins the type through `iNsTypeAddFn`, which records the type as
   its owner; that is what spells its symbol `Type_meth` at generation.
-- **`is` takes a comma-separated list.** The first name becomes `basetrait`;
-  each further one becomes the same `FieldDclNode` placeholder a `mixin` does, so
-  nothing new carries them. Only the first may require fields, and the rest are
-  therefore field-less, which is why a placeholder for one costs no layout.
-- `mixin T` becomes a `FieldDclNode` named `_` flagged `IsMixin`, a **placeholder
-  standing for a trait, which name resolution removes once it has taken the
-  trait's default methods** — or type check does, when the trait is an instance of
-  a generic. It is replaced by fields rather than removed only for an enum.
+- **`is` takes a comma-separated list.** On a struct or a trait the first name
+  becomes `basetrait`; each further one becomes a `FieldDclNode` named `_` flagged
+  `IsMixin`, a **placeholder standing for a trait, which name resolution removes
+  once it has taken the trait's default methods** — or type check does, when the
+  trait is an instance of a generic. Only the first may require fields, and the
+  rest are therefore field-less, which is why a placeholder for one costs no
+  layout. A placeholder is replaced by fields rather than removed only for an
+  enum, and only the base placeholders name resolution inserts — a variant's enum,
+  an extension's base — ever stand for one: **they carry the base's name, and a
+  placeholder read from a list is anonymous**, which is how `structRefuseClosedIs`
+  tells the two apart.
+- **On an enum or a variant, every name in the list is a placeholder**, the first
+  included. An enum stands on nothing — a NULL `basetrait` is what marks an enum
+  as the base of its own variants throughout — and a variant's `basetrait` is its
+  enum, supplied by `parseAddVariant`. So what either names is an open trait taken
+  in beside that relationship, never a base; the node list it builds is the one
+  the retired `mixin` built, and the IR is the same. **A variant naming its own
+  enum** by its bare name is `ErrorVariantDcl` here (`parseNamesType`); spelled
+  some other way it is caught at name resolution in the same words. **An enum that
+  extends another may not write `is`** (`ErrorEnumExtends`): its copies of the
+  base's variants were written against the base with no body to meet a new
+  requirement in, and the base's own `is` comes along with them — measured, a
+  reference to the extension converts to the base's trait. A struct may write both
+  clauses because it owns what its `extends` copies in; an extension does not own
+  the variants it copies.
+- **`mixin` is retired into `is`** [Jon 25 Sep], and kept a keyword only so that
+  `ErrorMixin` can point at `is`: released to an identifier, `mixin Meter;` would
+  read as a field named `mixin`. The statement is read through, fold clause and
+  all, and nothing is built for it. The `IsMixin` flag keeps its name as the
+  machinery an `is` list builds through.
 - **`is` and `extends` are read in a loop, each once, in either order**, because
   they are different assertions: `is` names the abstractions this type complies
   with, `extends` names the one concrete type it enriches. A repeat of either is
   `ErrorExtends`, as is `extends` on a **trait** — an abstraction holds no value,
   so there is nothing of it to enrich. On an **enum** the keyword means the third
   relationship, the enum whose variants join this one's set, and it is read into
-  `extendsbase` like any other base. A **variant** writing it is `ErrorVariantDcl`
-  beside the `is` it may not write either: its fields are its enum's, so it has no
-  representation of its own to stand on.
+  `extendsbase` like any other base. A **variant** writing it is `ErrorVariantDcl`:
+  its fields are its enum's, so it has no representation of its own to stand on.
 - **An enum that extends another declares, beside its variants, only what can be
   given to its copies of its base's variants**: a method with a body, a static
   function and a static (`parseIsEnumExtension`). The rest is `ErrorEnumExtends`
@@ -315,8 +336,8 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   it in; a **common field**, because it would move what the copies' methods read;
   a **discriminant** field, or an integer type for its tag, because its layout is
   its base's, shared with the variants it takes from it, so no discriminant is
-  synthesized here either; and a **macro** or a **mixin**, which reach no copy
-  (`parseEnumExtensionMember`). A body with no variant at all is the same code,
+  synthesized here either; a **macro**, which reaches no copy
+  (`parseEnumExtensionMember`); and an **`is`** on its declaration line, above. A body with no variant at all is the same code,
   reported at the declaration's own name — the block has ended by then, so the
   lexer is on whatever follows it.
 - A field's trailing `use` clause (`parseFoldClause`) is stored on the field,
@@ -324,7 +345,7 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   namespace at parse**, since whether a name is a field or a method is not
   known until the field's type is. `use` on anything that is not a struct's
   field, a struct's body or **a module's global** — a local, a parameter, a
-  static, a mixin, an `is` clause, a trait's or an enum's field or body — is
+  static, an `is` clause, a trait's or an enum's field or body — is
   `ErrorBadFold` there, so the diagnostic is the fold's own. **A module's global
   does fold**, because a module is the namespace a name would fold into and a
   global is its one-instance analogue of a field
@@ -344,7 +365,7 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   `but` has no place in one.
 - **A `use` standing as a statement in a struct's body folds a SIBLING in**
   (`parseUseSibling`): the type it names, then what it admits of it. Held in a
-  field-like node on `siblings`, as `mixin` and a further `is` are held in one, so
+  field-like node on `siblings`, as a further name of an `is` list is held in one, so
   that one node type carries a type expression and a fold clause through cloning —
   and off the field list, because a sibling contributes no representation. It
   declares no name of its own, so `pub` before it is `ErrorBadPub`; each folded
@@ -371,18 +392,21 @@ LLVM struct, which is why a reference to a trait could not be lowered.
     name, before the choice is made, so that a diagnostic about either points at
     the name rather than at what follows it.
   - **A variant restating what the enum decides is `ErrorVariantDcl`** — its own
-    `is`, or its own generic parameters. One code for both, because a reader
-    would not branch on which and the remedy is the same: delete it.
+    enum named in its `is`, or its own generic parameters. One code for both,
+    because a reader would not branch on which and the remedy is the same: delete
+    it. Other traits in its `is` are its own to name.
 - **Tag numbering runs across the whole body**, ascending from zero, and a written
   value resets it, so numbering continues from there — **except in an extension,
   whose numbering waits for name resolution**, since the values its base's variants
   hold are not known until the base is. Two variants holding one
-  value is `ErrorDupTag`, reported on the second. **A variant may not assert
-  conformance to an unrelated trait, and the absence is deliberate** — a variant's
-  relationship to its enum is membership, the enum owns its layout, and a second
-  base would require fields the enum did not put there.
+  value is `ErrorDupTag`, reported on the second. **A variant may name open
+  traits beyond its enum [Jon 25 Sep], but never a second base** — a variant's
+  relationship to its enum is membership, the enum owns its layout, and a base
+  would require fields the enum did not put there. So the traits it names are
+  taken in as placeholders, and one that requires fields is `ErrorIsaMulti`
+  (`structCheckIsaFields`), as it is on an enum's own `is`.
 - **A tag field is synthesized at position 0 of an enum** that has variants and did
-  not place its own, and every variant inherits it through mixin expansion. A
+  not place its own, and every variant inherits it through its base placeholder. A
   trait's implementers are open-ended, so no value could be
   unique and there is nothing to synthesize; `%Box = { i32 }` for a struct whose
   own declaration is one `i32`, whatever it is-a, and naming several abstractions
@@ -445,9 +469,9 @@ inherited member bare, exactly as it names the type's own.
    comment says "before any other name in type is hooked", and the reason is
    scoping: once step 7 hooks the members, they shadow module scope, and the
    type's own name is among them. When it names a declaration this type may stand
-   on (a trait, and closed only if this type is), **insert a mixin placeholder for
-   it at position 0**, exactly as `mixin` does — which is how the base, the rest
-   of an `is` list and `mixin` become one mechanism.
+   on (a trait, and closed only if this type is), **insert a placeholder for it at
+   position 0**, named for the base, exactly as a further name of an `is` list is
+   held — which is how the base and the rest of the list become one mechanism.
 4a. **Resolve an `extends` base and demand it too**, for the same reason, and
    check here that it may be enriched at all (`structExtendsEligible`). Taking
    its members waits for step 8a, after the field walk, so that whatever is left
@@ -459,8 +483,8 @@ inherited member bare, exactly as it names the type's own.
    has, anywhere down its chain, is `ErrorExtendsOverride`, each of its
    variants is demanded and **copied** (`structEnumCopyVariant`) to the front of this
    enum's `derived` list and bound in its namespace, this enum's own are numbered from
-   the base's last value, its `==` is made, and the base stands as a **mixin
-   placeholder at position 0** so the field walk splices its fields in exactly as a
+   the base's last value, its `==` is made, and the base stands as a **placeholder
+   at position 0** so the field walk splices its fields in exactly as a
    variant's enum does — or, for a generic base named with its arguments, leaves it
    standing for type check, as a generic variant's enum is left. Before step 7, so
    the copies are names of this enum when its namespace is hooked. A clause that is
@@ -473,10 +497,16 @@ inherited member bare, exactly as it names the type's own.
    module's scope if it lives elsewhere, so that its own members are complete
    before they are read. Still before this type's names are hooked, so the
    trait's bodies bind in the trait's scope and not in this type's. A trait
-   already under way is a cycle — `A is B is A`, or a trait mixing
-   itself in — and is `ErrorCircular` where it is named; the compiler used to
+   already under way is a cycle — `A is B is A`, or a trait naming itself in
+   its own `is` list — and is `ErrorCircular` where it is named; the compiler used to
    loop here without end. A fold from a type still under way is refused at
-   step 9 instead.
+   step 9 instead. **Before it is demanded, a placeholder read from an `is` list
+   that names an enum is refused and dropped** (`structRefuseClosedIs`): every
+   name of every list is checked, not only the first, which is judged at type
+   check as the base. It is `ErrorInvType` in the base's words, or
+   `ErrorVariantDcl` where a variant has named its own enum in a spelling the
+   parser could not see through. Until 25 Sep 2026 only the first name was
+   checked, and `is Named, Left` gave a plain struct Left's tag and fields.
 6. Insert `Self` into the namespace, aliasing the struct to itself — done
    ahead of step 4, in fact, since a field's type may name it. This is what
    `parseFnSig`'s `Self` inference for a method parameter depends on.
@@ -570,9 +600,9 @@ members", is the mechanism.
    propagate `SameSize`/`HasTagField` down from the bottom-most base, and
    require a closed type's derived types to share its module. A base
    name resolution did not expand — it is in `traits` when it did — is an
-   instance of a generic that exists only now, so **insert a mixin placeholder
+   instance of a generic that exists only now, so **insert a placeholder
    for it at index 0** as name resolution would have. Where `traits` holds the
-   *template* of the generic `basetrait` names, the mixin was done before the copy
+   *template* of the generic `basetrait` names, it was taken in before the copy
    was made (a generic enum's copy of a variant of an enum that is not generic), and
    the entry becomes the instance.
 3. Type check every trait in `traits`, so each is laid out before this type is.
@@ -581,7 +611,9 @@ members", is the mechanism.
    the generic case — is expanded exactly as name
    resolution expands one (`structInheritTrait`), except that nothing is
    hooked: no body is resolved after this. Such a type's inherited members
-   cannot be named bare (see Hazards).
+   cannot be named bare (see Hazards). One read from an `is` list that names an
+   instance of a generic enum is refused and dropped here, as name resolution
+   refuses a declaration (`structRefuseClosedIs`).
 4a. **Take the concrete base's members** where step 1a found one to take, as name
    resolution takes them at its own step 8a and in the same place in the order.
    **Then any body `use` name resolution could not expand** — this type or the
@@ -986,7 +1018,7 @@ the wrong module. The copy is then made the extension's:
 
 The copies go first in `derived` and in the base's order, and the extension's own
 variants are numbered on from the base's last value, so **every copy has its
-original's tag value by construction**. The base stands as a mixin placeholder at
+original's tag value by construction**. The base stands as a placeholder at
 position 0, so the field walk gives the extension its base's discriminant and common
 fields.
 
@@ -1024,7 +1056,7 @@ can spell); the second puts the arguments in their place.
   own name resolution, and records the extension's template in `traits` where the
   base was. So an instance of such a copy is not given the fields a second time:
   `structTypeCheck` takes a recorded template of the generic its `basetrait` names
-  as the mixin already done, and replaces it with the instance.
+  as already taken in, and replaces it with the instance.
 - The base's own layout is untouched: its instances' `derived` lists hold only its
   own variants, so `Option[&i32]` is still a bare pointer beside a tagged
   `Pending[&i32]`.
@@ -1157,8 +1189,9 @@ holds here too. enum_privacy and enum_typecheck_privacy pin both directions.
 
 **What an extension may not do**, all `ErrorEnumExtends` unless named otherwise:
 declare a requirement, since a copy has no body to meet it in; declare a common
-field, since it would move what the copies' methods read; declare a macro or a
-mixin, neither of which reaches a copy; declare a name its base has, down the chain
+field, since it would move what the copies' methods read; declare a macro, which
+reaches no copy; write an `is`, since its base's comes along with the copies and a
+new requirement could not be met by them; declare a name its base has, down the chain
 (`ErrorExtendsOverride`); declare a discriminant or the integer type one is laid out
 in; extend anything but an
 enum, or itself; name a generic base without its arguments, or with the wrong number
@@ -1259,10 +1292,14 @@ and `extractvalue`, and `vtblidx` for vtable slots.
 - **Whether `&<Struct` should work at all**, rather than be refused, is an open
   language question. `refvirtTypeCheck` requires a `TraitType` today, so the
   answer in force is "refused".
-- **Mixing in two enums brings two tag fields**, and no duplicate-name error fires
-  because `namespaceAdd` silently ignores `_`, so what reports it is type check's
-  one-discriminant rule. Traits carry no tag, so a chain of `is` bases and any number
-  of `mixin`s meet nothing here.
+- **An `is` list refuses an enum at every position, and the check is by name**:
+  `structRefuseClosedIs` asks only placeholders named `_`, since the base
+  placeholders name resolution inserts carry the base's name and are the one
+  legitimate way an enum's fields reach a type. A new kind of placeholder must keep
+  that distinction, or an enum in a list will splice its tag in again — which is
+  what `is Named, Left` and `mixin Left` both did until 25 Sep 2026, a second
+  discriminant being caught only by type check's one-discriminant rule, since
+  `namespaceAdd` silently ignores `_`.
 - **A member taken from an `extends` base, or folded from a sibling, cannot be
   named bare where either side is a generic.** Both are taken in type check
   there, after every body has been resolved, so `self.name` is how such a member

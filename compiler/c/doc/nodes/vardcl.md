@@ -164,7 +164,8 @@ parameter names**.
 
 `fieldDclTypeCheck` differs three ways: it uses `inodeTypeCheckAny` on the
 permission rather than demanding a type, which would let an unset one through —
-every construction site supplies a real one today, the synthetic mixin field and
+every construction site supplies a real one today, the placeholder an `is` list's
+name becomes and
 `cloneFieldDclNode`'s `memcpy` included, so nothing reaches that laxity; the
 **literal check comes first**, before coercion, so a non-literal default is
 reported as non-literal and never type-matched; and its size check is the
@@ -249,5 +250,5 @@ Fields and constants have no flow participation at all.
 - The order a declaration is checked in, and what it may answer mid-check: [Type Check Phase](../phases/type-check.md)
 - Move-or-copy and the flow stack: [Flow Analysis](../phases/flow.md)
 - Where mutability is actually enforced: [assign](assign.md)
-- Field layout, mixins, and the vtable: [struct](struct.md)
+- Field layout, the placeholders an `is` list becomes, and the vtable: [struct](struct.md)
 - How a global's symbol is spelled and linked: [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols"; why cross-module linking is broken: [Generation](../phases/generation.md)

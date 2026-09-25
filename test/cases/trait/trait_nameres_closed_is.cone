@@ -1,0 +1,56 @@
+mod trait_nameres_closed_is;
+
+// A closed type named in an 'is' list anywhere but first.
+//
+// An enum's variants are all declared inside it, so nothing outside may join the
+// set, and a type that took one in would carry its discriminant and common fields
+// with no variant number that means anything in it. Until 25 Sept 2026 only the
+// FIRST name of a list was checked for being an enum, so 'is Named, Left' gave a
+// plain struct Left's tag and fields -- the accident 'mixin Left' had always
+// allowed. Every name is checked now.
+//
+// Name-resolution stage: a later name is taken in while the type is resolved,
+// and refused there before anything of the enum is spliced. The FIRST name of a
+// struct's list is its base, whose kind is type check's to judge, and
+// enum_typecheck_variant holds that refusal in the same words; so no type here
+// names an enum first, or its diagnostic would never be reached. An enum's and a
+// variant's lists have no base, and every name in them is refused here.
+
+trait Named {
+  pub fn label(self &) i32 {1;}
+}
+
+trait Sealed {}
+
+enum Left {
+  pub l i32;
+
+  struct LeftOne { pub a i32; }
+  struct LeftTwo { pub b i32; }
+}
+
+enum Right {
+  Up, Down;
+}
+
+// Each closed type in a list is reported where it is named
+struct Box is Named, Left, Right {  //~ ErrorInvType:22 "nothing outside may join the set"
+                                    //~^ ErrorInvType:28 "nothing outside may join the set"
+  pub n i32;
+}
+
+// A trait's list is checked the same way
+trait Boxed is Sealed, Left {       //~ ErrorInvType:24 "nothing outside may join the set"
+}
+
+// An enum's list, whose first name is not a base
+enum Paired is Right {              //~ ErrorInvType:16 "nothing outside may join the set"
+  One, Two;
+}
+
+// A variant belongs to its own enum only; another's set is closed to it too
+enum Holder {
+  struct Held is Named, Right {     //~ ErrorInvType:25 "nothing outside may join the set"
+    pub h i32;
+  }
+}
