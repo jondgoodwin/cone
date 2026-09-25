@@ -39,7 +39,7 @@ static int utf8SeqLen(const char *src) {
 }
 
 int utf8ByteSkip(const char *src) {
-    if (*src == '\0' || *src == '\x1A')
+    if (*src == '\0')
         return 0;
     int nbytes = utf8SeqLen(src);
     return nbytes ? nbytes : 1;

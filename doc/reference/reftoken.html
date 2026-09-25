@@ -41,7 +41,7 @@
 		<li><b><a href="#oper">Operator</a></b>
 		begins with certain punctuation characters between U+0021 and U+007F.</li>
 		<li><b><a href="#eof">End-of-file</a></b>, 
-		which is the null character (U+0000), end-of-file character (U+001A) or the end of the program.</li>
+		which is the null character (U+0000) or the end of the program.</li>
 		</ul>
 
 		<h3 id="number">Numeric Literal</h3>
@@ -96,7 +96,13 @@
 		Its type is u8 if its value fits in a byte.
 		Otherwise it is u32 (an unsigned, 32-bit integer) if its does not fit in a byte
 		or has a 'u' appended at the end of the literal (e.g., <span class="pre">'a'u</span>).</p>
-		<p>Any character whose Unicode value is 0x0020 or higher can be specified explicitly.
+		<p>Any character whose Unicode value is 0x0020 or higher can be specified explicitly,
+		other than delete (U+007F), and so can a tab.
+		A line's end cannot: a character literal ends with its line, so a new-line is written
+		<span class="pre">'\n'</span> and a carriage return <span class="pre">'\r'</span>.
+		Nor can any other control character (U+0001 to U+001F, and U+007F):
+		it cannot be seen in an editor, so writing one as itself is an error,
+		and it is written with an escape sequence, such as <span class="pre">'\x1B'</span>.
 		Alternatively, one of the following escape sequences that begin with '\' may be used:</p>
 		<dl id="escape">
 		<dt>\a</dt><dd>Alarm (U+0007)</dd>
@@ -109,8 +115,11 @@
 		<dt>\\</dt><dd>\</dd>
 		<dt>\'</dt><dd>'</dd>
 		<dt>\"</dt><dd>"</dd>
-		<dt>\0</dt><dd>Null character (U+0000)</dd>
-		<dt>\x<i>nn</i></dt><dd>hexadecimal code value for a byte.</dd>
+		<dt>\0</dt><dd>Null character (U+0000). It may not be followed by a digit:
+		Cone has no octal escapes, so <span class="pre">"\012"</span> is an error rather than
+		a null followed by '1' and '2'. A null followed by a digit is written with
+		<span class="pre">\x00</span>, as in <span class="pre">"\x001"</span>.</dd>
+		<dt>\x<i>nn</i></dt><dd>hexadecimal code value for a byte, in exactly two hexadecimal digits.</dd>
 		<dt>\u<i>nnnn</i></dt><dd>unicode character which matches the specified hexadecimal code point.</dd>
 		<dt>\U<i>nnnnnnnn</i></dt><dd>unicode character which matches the specified hexadecimal code point.</dd>
 		</dl>
@@ -122,6 +131,12 @@
 		as needed for different circumstances.</p>
 		<p>A null character (U+0000) is always appended to the end of a string literal, for C compability.
 		All string literals are treated as immutable.</p>
+		<p>A tab written as itself inside a string literal is part of its content.
+		Any other control character (U+0001 to U+001F, and U+007F) written as itself is an error,
+		since it cannot be seen in an editor: it is written with an
+		<a href="#escape">escape sequence</a>, such as <span class="pre">\x1B</span>.
+		Line ends are the exception, as described for
+		<a href="#multiline">multi-line string literals</a> below.</p>
 		
 		<h4>Escaped vs. Raw Text</h4>
 		<p>Many times it is convenient to use <a href="escape">escape sequences</a>
@@ -150,18 +165,26 @@
 """"Happy Birthday!""""   // yields the string literal: "Happy Birthday!"
 </pre>
 
-		<h4>Multi-line String Literals</h4>
+		<h4 id="multiline">Multi-line String Literals</h4>
 		<p>Some string literals are long enough to require multiple lines of code to specify.
 		It would be convenient to be able to format such content properly using indentation and
-		readable margins, without that formatting necessarily carrying over into the text of the literal.</p>
+		readable margins, without that formatting necessarily carrying over into the text of the literal.
+		A multi-line literal can sit indented with the code around it and still come out flush:
+		a shader embedded in a program, say, is indented as the code is,
+		but the shader's own text needs none of that indentation,
+		and would look out of place written hard against the left edge.</p>
 		<p>These are the rules that make that possible:</p>
 		<ul>
 		<li>Multi-line string literals must end the line right after the last of the opening double-quotes.
 		The end-of-line character(s) that follow are not included in the string literal.</li>
 		<li>The double quotes that terminate the literal must appear at the start of a subsequent line,
-		although they may be indented by any number of spaces or tabs.</li>
+		although they may be indented by any number of spaces or tabs.
+		That indentation is the literal's margin.</li>
 		<li>The lines in-between contain the string literal's content.
-		Space or tab indentation equivalent to that found on the terminating double-quotes line are stripped.
+		A line that is blank, or holds nothing but spaces and tabs, is an empty line.
+		Every other line must begin with exactly the margin: the same spaces and tabs in the same order,
+		not just as many of them. The margin is stripped, and any further indentation is content.
+		A line that does not begin with the margin is an error.
 		A new-line character is appended to the line's content, unless the end-of-line is preceded by a backslash.</li>
 		</ul>
 		<p>For example:</p>
@@ -204,7 +227,11 @@ balance toReturn True temp_ $ π `*`
 		<p>These keywords are <b>reserved</b> and may not be used as identifiers:</p>
 		<p>Some are reserved ahead of the feature that will use them, so that a program
 		written today does not have to be rewritten when that feature arrives.
-		The compiler reports the use of any reserved word as an identifier.</p>
+		The compiler reports the use of any reserved word as an identifier.
+		The six static permissions, <span class="pre">imm</span>, <span class="pre">mut</span>,
+		<span class="pre">mut1</span>, <span class="pre">opaq</span>, <span class="pre">ro</span>
+		and <span class="pre">uni</span>, are reserved words too: the compiler reads each as a
+		permission wherever it is written, so none can name a variable, a function, a type or a module.</p>
 		
 		<dl>
 		<dt>actor</dt>
@@ -239,6 +266,8 @@ balance toReturn True temp_ $ π `*`
 		<dd>The value of 'false'</dd>
 		<dt>if</dt>
 		<dd>A conditional statement</dd>
+		<dt>imm</dt>
+		<dd>the immutable <a href="refperm.html">static permission</a></dd>
 		<dt>in</dt>
 		<dd>A clause within a 'each' block</dd>
 		<dt>include</dt>
@@ -274,10 +303,17 @@ balance toReturn True temp_ $ π `*`
 		There is no <span class="pre">mod name { ... }</span>: a module is never declared
 		inside a file, and a nested module is a <a href="refmodule.html#onefile">file of its own</a>
 		or a subfolder with its own designated file</dd>
+		<dt>mut</dt>
+		<dd>the mutable <a href="refperm.html">static permission</a></dd>
+		<dt>mut1</dt>
+		<dd>a <a href="refperm.html">static permission</a> the compiler defines beside the five
+		the permissions page describes: it may read, change and share its value</dd>
 		<dt>new</dt>
 		<dd>Creates a new instance</dd>
 		<dt>not</dt>
 		<dd>logical 'not' operator used in boolean expressions</dd>
+		<dt>opaq</dt>
+		<dd>the opaque <a href="refperm.html">static permission</a>, which neither reads nor changes its value</dd>
 		<dt>or</dt>
 		<dd>logical 'or' operator used in boolean expressions</dd>
 		<dt>panic</dt>
@@ -286,6 +322,8 @@ balance toReturn True temp_ $ π `*`
 		<dd>declares a name visible outside the module or type that owns it; a name not so declared is private. Before <span class="pre">import</span> it makes every name the import binds public; before a fold clause's <span class="pre">use</span>, as <span class="pre">pub use</span>, only the names the clause folds in. It always comes first, before the keyword of what it makes public</dd>
 		<dt>return</dt>
 		<dd>terminate execution of a method with a return value</dd>
+		<dt>ro</dt>
+		<dd>the read-only <a href="refperm.html">static permission</a></dd>
 		<dt>self</dt>
 		<dd>references the method's self parameter value</dd>
 		<dt>selfmethod</dt>
@@ -302,6 +340,8 @@ balance toReturn True temp_ $ π `*`
 		<span class="pre">struct trait</span></dd>
 		<dt>true</dt>
 		<dd>The value of 'true'</dd>
+		<dt>uni</dt>
+		<dd>the unique <a href="refperm.html">static permission</a></dd>
 		<dt>use</dt>
 		<dd>folds members of a field's type, of a sibling enrichment, or of a module's global in as names of the type or module holding it (<a href="refinherit.html">delegated inheritance</a>); on an <span class="pre">import</span>, it folds the imported module's public names in as names of the importing module (<a href="refinclude.html#folding">Namespace folding</a>); written as a statement of a module, it folds an enum's variants (<a href="refenum.html#naming">Naming a variant</a>) or a submodule's public names (<a href="refmodule.html#usesub">Submodules</a>) in as names of the module; on a <span class="pre">mod</span> line it runs the other way, naming what a bare import of the module folds into the importer (<a href="refmodule.html#default">A module's default fold</a>)</dd>
 		<dt>using</dt>
@@ -470,8 +510,8 @@ balance toReturn True temp_ $ π `*`
 			See <a href="#line">lines, statements and blocks</a>.</p>
 		
 		<h3 id="eof">End-of-File</h3>
-		<p>The program code ends when it reaches a null character (U+0000), end-of-file character (U+001A) 
-		or has no more characters. 
+		<p>The program code ends when it reaches a null character (U+0000)
+		or has no more characters.
 		The lexer will tidy up whatever is unfinished (e.g., still open blocks, literals, or comments)
 		and then will generate the end-of-file token for the parser.</p>
 		

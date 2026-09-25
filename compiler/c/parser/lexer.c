@@ -235,6 +235,40 @@ static int lexCharIsNameable(char *srcp) {
     return c < 0x80 || utf8IsMultibyte(srcp);
 }
 
+/** Describe a character lexCharIsNameable refuses, other than a space or a
+ * line's end, for a diagnostic to say in its place: a tab, a control character
+ * by its value, or a byte that begins no UTF-8 character by its value */
+static char *lexCharDescribe(char *srcp, char *buf, size_t size) {
+    unsigned char c = (unsigned char)*srcp;
+    if (c == '\t')
+        return "a tab";
+    if (c < 0x80)
+        snprintf(buf, size, "the control character 0x%02X", c);
+    else
+        snprintf(buf, size, "the byte 0x%02X, which begins no UTF-8 character", c);
+    return buf;
+}
+
+/** Is the character at srcp one a literal refuses to hold raw? Every control
+ * character is, but a tab, which is content, and a line's end, which each kind
+ * of literal treats in its own way */
+static int lexIsRawControl(char *srcp) {
+    unsigned char c = (unsigned char)*srcp;
+    return (c < ' ' && c != '\0' && c != '\t' && c != '\n' && c != '\r') || c == 0x7f;
+}
+
+/** Refuse a raw control character in a literal, at the character itself. It
+ * is invisible in an editor, so it is named by value, and the \x escape that
+ * writes it visibly is offered */
+static void lexRawControlError(char *srcp, char *literal) {
+    char buf[64];
+    char *tokp = lex->tokp;
+    lex->tokp = srcp;
+    errorMsgLex(ErrorBadTok, "A %s cannot hold %s raw, where it cannot be seen: write it as \\x%02X",
+        literal, lexCharDescribe(srcp, buf, sizeof(buf)), (unsigned char)*srcp);
+    lex->tokp = tokp;
+}
+
 /** Read the 'cnt' hex digits of a \x, \u or \U escape at srcp, just after its letter */
 char *lexHexDigits(int cnt, char *srcp, uint64_t *val) {
     char *escp = srcp - 2;  // The escape's backslash
@@ -279,7 +313,16 @@ char *lexScanEscape(char *srcp, uint64_t *charval) {
     case '\"': *charval = '\"'; return ++srcp;
     case '\\': *charval = '\\'; return ++srcp;
     case ' ': *charval = ' '; return ++srcp;
-    case '0': *charval = '\0'; return ++srcp;  // the null character, and only the one digit
+    case '0':
+        // The null character. Cone has no octal escapes, so a digit after it
+        // is refused rather than read as one: a C programmer's "\012" would
+        // otherwise be a null, '1' and '2' without a word said. The digit is
+        // left to be read as content
+        *charval = '\0';
+        if (*(srcp + 1) >= '0' && *(srcp + 1) <= '9')
+            errorMsgLex(ErrorBadTok, "'\\0' may not be followed by a digit, since Cone has no octal escapes: a null character then '%c' is written '\\x00%c'",
+                *(srcp + 1), *(srcp + 1));
+        return ++srcp;
     case '\0': *charval = '\0'; return srcp;  // the source's end: stay on it
     case 'x': return lexHexDigits(2, ++srcp, charval);
     case 'u': return lexHexDigits(4, ++srcp, charval);
@@ -289,16 +332,13 @@ char *lexScanEscape(char *srcp, uint64_t *charval) {
         // printed: raw, a line's end would split the message across two lines
         if (lexCharIsNameable(srcp))
             errorMsgLex(ErrorBadTok, "Invalid escape sequence '%.*s'", utf8ByteSkip(srcp), srcp);
-        else if (*srcp == '\t')
-            errorMsgLex(ErrorBadTok, "Invalid escape sequence: a backslash followed by a tab");
         else if (*srcp == '\n' || (*srcp == '\r' && *(srcp + 1) == '\n'))
             errorMsgLex(ErrorBadTok, "Invalid escape sequence: a backslash at the end of a line");
-        else if ((unsigned char)*srcp < 0x80)
-            errorMsgLex(ErrorBadTok, "Invalid escape sequence: a backslash followed by the control character 0x%02X",
-                (unsigned char)*srcp);
-        else
-            errorMsgLex(ErrorBadTok, "Invalid escape sequence: a backslash followed by the byte 0x%02X, which begins no UTF-8 character",
-                (unsigned char)*srcp);
+        else {
+            char buf[64];
+            errorMsgLex(ErrorBadTok, "Invalid escape sequence: a backslash followed by %s",
+                lexCharDescribe(srcp, buf, sizeof(buf)));
+        }
         *charval = *srcp++;
         // A new-line taken here is a line passed, and counted as one. A CRLF
         // line end is not taken whole: its new-line is left, and counted, where
@@ -343,8 +383,27 @@ void lexScanChar(char *srcp) {
         isUnicode = *(srcp + 1) == 'u' || *(srcp + 1) == 'U';
         srcp = lexScanEscape(srcp, &lex->val.uintlit);
     }
-    else if (*srcp)
+    // A raw line end is refused: '\n' and '\r' are how those characters are
+    // written. The literal ends where its line does, and the scan stays on the
+    // line end, so it is counted where any other is
+    else if (*srcp == '\n' || *srcp == '\r') {
+        if (*srcp == '\r' && *(srcp + 1) != '\n')
+            errorMsgLex(ErrorBadTok, "A character literal cannot hold a raw carriage return: write '\\r'");
+        else
+            errorMsgLex(ErrorBadTok, "A character literal cannot hold a line's end: write a new-line as '\\n'");
+        lex->val.uintlit = *srcp;
+        lex->langtype = (INode*)u8Type;
+        lex->toktype = IntLitToken;
+        lex->srcp = srcp;
+        return;
+    }
+    // A raw tab is the character 9. Any other raw control character is
+    // refused, and taken as its value so that the literal still closes
+    else if (*srcp) {
+        if (lexIsRawControl(srcp))
+            lexRawControlError(srcp, "character literal");
         lex->val.uintlit = *srcp++;
+    }
     else
         lex->val.uintlit = '\0';  // the source's end: stay on it
 
@@ -393,29 +452,69 @@ static int lexEolLen(char *srcp) {
     return 0;
 }
 
-// Skip past the end of line at srcp, counting it, then strip up to 'indent'
-// characters of space or tab indentation from the line that follows.
-static char *lexStringNewLine(char *srcp, uint32_t indent) {
+// Pass over the margin at the start of a multi-line string literal's line: the
+// closing quote's whitespace, 'marginlen' spaces and tabs at 'margin'. A line
+// that holds only spaces and tabs is an empty line, whatever it holds, so the
+// scan goes straight to its end. Every other line must begin with the margin
+// exactly, the same characters in the same order and not just as many, and one
+// that does not is refused at the first character that differs. It is then
+// read as though it began with as much of the margin as it has white space for.
+static char *lexStringMargin(char *srcp, char *margin, uint32_t marginlen) {
+    char *blankp = srcp;
+    while (*blankp == ' ' || *blankp == '\t')
+        ++blankp;
+    if (lexEolLen(blankp))
+        return blankp;
+
+    uint32_t len = 0;
+    while (len < marginlen && srcp[len] == margin[len])
+        ++len;
+    if (len < marginlen) {
+        uint32_t spaces = 0;
+        for (uint32_t i = 0; i < marginlen; ++i)
+            spaces += margin[i] == ' ';
+        char *tokp = lex->tokp;
+        lex->tokp = srcp + len;
+        if (spaces == marginlen)
+            errorMsgLex(ErrorBadTok, "A multi-line string literal's line must begin with the closing quote's indentation: %u space%s",
+                marginlen, marginlen == 1 ? "" : "s");
+        else if (spaces == 0)
+            errorMsgLex(ErrorBadTok, "A multi-line string literal's line must begin with the closing quote's indentation: %u tab%s",
+                marginlen, marginlen == 1 ? "" : "s");
+        else
+            errorMsgLex(ErrorBadTok, "A multi-line string literal's line must begin with the closing quote's indentation: the same %u spaces and tabs, in the same order",
+                marginlen);
+        lex->tokp = tokp;
+        while (len < marginlen && (srcp[len] == ' ' || srcp[len] == '\t'))
+            ++len;
+    }
+    return srcp + len;
+}
+
+// Skip past the end of line at srcp, counting it, then past the margin of the
+// multi-line string literal's line that follows.
+static char *lexStringNewLine(char *srcp, char *margin, uint32_t marginlen) {
     srcp += lexEolLen(srcp);
     ++lex->linenbr;
     lex->linep = srcp;
-    while (indent-- && (*srcp == ' ' || *srcp == '\t'))
-        ++srcp;
-    return srcp;
+    return lexStringMargin(srcp, margin, marginlen);
 }
 
 // A string literal whose opening quote ends its line is a multi-line string
 // literal (doc/reference/reftoken.html, "Multi-line String Literals"). The
 // end of line after the opening quote is not content. The closing quote must
-// begin a later line, after any spaces or tabs, and that many characters of
-// indentation are stripped from each content line. Each content line's end of
+// begin a later line, after any spaces or tabs, and those are the literal's
+// margin: a content line of nothing but spaces and tabs is an empty line, and
+// every other must begin with the margin exactly, which is stripped (the Swift
+// and C# rule, Jon's ruling of 24 September 2026). Each content line's end of
 // line becomes one new-line character, whether written LF or CRLF, unless a
 // backslash precedes it, which joins the line to the next.
 void lexScanString(char *srcp) {
     uint64_t uchar;
     lex->tokp = srcp++;
     int multiline = lexEolLen(srcp) != 0;
-    uint32_t indent = 0;
+    char *margin = srcp;
+    uint32_t marginlen = 0;
 
     // Conservatively count the size of the string: the bytes of source up to
     // the closing quote, found as the build below finds it, by stepping over
@@ -442,8 +541,10 @@ void lexScanString(char *srcp) {
             char *linebeg = endp;
             while (*(linebeg - 1) == ' ' || *(linebeg - 1) == '\t')
                 --linebeg;
-            if (*(linebeg - 1) == '\n')
-                indent = (uint32_t)(endp - linebeg);
+            if (*(linebeg - 1) == '\n') {
+                margin = linebeg;
+                marginlen = (uint32_t)(endp - linebeg);
+            }
             else
                 errorMsgLex(ErrorBadTok, "A multi-line string literal's closing quote must begin its line");
         }
@@ -455,34 +556,42 @@ void lexScanString(char *srcp) {
     lex->val.strlit = newp;
     srcp = lex->tokp+1;
     if (multiline)
-        srcp = lexStringNewLine(srcp, indent);  // the opening quote's end of line is not content
+        srcp = lexStringNewLine(srcp, margin, marginlen);  // the opening quote's end of line is not content
     while (*srcp != '"' && *srcp) {
         if (multiline) {
             // A line's end is a new-line in the content; a backslash before it joins the lines
             if (lexEolLen(srcp)) {
                 *newp++ = '\n';
                 srclen++;
-                srcp = lexStringNewLine(srcp, indent);
+                srcp = lexStringNewLine(srcp, margin, marginlen);
                 continue;
             }
             if (*srcp == '\\' && lexEolLen(srcp + 1)) {
-                srcp = lexStringNewLine(srcp + 1, indent);
-                continue;
-            }
-            if (*srcp == '\t') {
-                *newp++ = *srcp++;
-                srclen++;
+                srcp = lexStringNewLine(srcp + 1, margin, marginlen);
                 continue;
             }
         }
 
-        // discard all control chars, including spaces after new-line
-        if ((unsigned char)*srcp < ' ') {
-            if (*srcp++ == '\n') {
-                ++lex->linenbr;
-                lex->linep = srcp;
-                while (*srcp <= ' ' && *srcp)
+        // A tab is content. Any other control character is refused, since it
+        // cannot be seen, and left out. A literal that spans lines without
+        // being a multi-line one drops each line's end, its carriage return
+        // included, and the spaces and tabs that begin the next line; every
+        // line is counted, a blank one too
+        if ((unsigned char)*srcp < ' ' || *srcp == 0x7f) {
+            if (*srcp == '\t') {
+                *newp++ = *srcp++;
+                srclen++;
+            }
+            else if (*srcp == '\n') {
+                srcp = lexNewLine(srcp);
+                while (*srcp == ' ' || *srcp == '\t')
                     ++srcp;
+            }
+            else if (*srcp == '\r')
+                ++srcp;
+            else {
+                lexRawControlError(srcp, "string literal");
+                ++srcp;
             }
             continue;
         }
@@ -746,7 +855,7 @@ int lexScanIdent(char *srcp) {
                     errorMsgLex(ErrorReserved,
                         "'%s': '#' is reserved for metaprogramming, which is not implemented yet",
                         &lex->val.ident->namestr);
-                    while (*srcp && *srcp != '\n' && *srcp != '\x1a')
+                    while (*srcp && *srcp != '\n')
                         srcp++;
                     lex->srcp = srcp;
                     return 0;
@@ -765,22 +874,27 @@ void lexScanTickedIdent(char *srcp) {
     char *srcbeg = srcp++;    // Pointer to the start of the token
     lex->tokp = srcbeg;
 
-    // Look for closing backtick, but not past end of line
-    while (*srcp != '`' && *srcp && *srcp != '\n' && *srcp != '\x1a')
+    // Look for closing backtick, but not past the end of the line
+    while (*srcp != '`' && *srcp && *srcp != '\n' && *srcp != '\r')
         srcp++;
     // Without one, the character after the backtick is taken as the name and
-    // the next as the missing backtick, unless the source ends before both:
-    // then the name is what there is, and the scan stays on the source's end
+    // the next as the missing backtick, but neither is taken from past the
+    // line's end or the source's: the name is what there is before it, and the
+    // scan stays on it, so a line end is counted where any other is
     if (*srcp != '`') {
         errorMsgLex(ErrorBadTok, "Back-ticked identifier requires closing backtick");
-        if (*srcp || srcp > srcbeg + 2)
-            srcp = srcbeg + 2;
+        char *eol = srcp;
+        char *namend = srcbeg + 2 < eol ? srcbeg + 2 : eol;
+        lex->val.ident = nametblFind(srcbeg+1, namend - srcbeg - 1);
+        lex->toktype = IdentToken;
+        lex->srcp = namend < eol ? namend + 1 : eol;
+        return;
     }
 
     // Find identifier token in name table and preserve info about it
     lex->val.ident = nametblFind(srcbeg+1, srcp - srcbeg - 1);
     lex->toktype = IdentToken;
-    lex->srcp = *srcp ? srcp + 1 : srcp;
+    lex->srcp = srcp + 1;
 }
 
 // Skip over nested block comment. Every line inside it is counted, so the
@@ -1086,7 +1200,7 @@ void lexNextTokenx() {
             // Line comment: '//'
             if (*(srcp+1)=='/') {
                 srcp += 2;
-                while (*srcp && *srcp!='\n' && *srcp!='\x1a')
+                while (*srcp && *srcp!='\n')
                     srcp++;
             }
             // Block comment, nested: '/*'
@@ -1101,8 +1215,11 @@ void lexNextTokenx() {
                 lexReturnPuncTok(SlashToken, 1);
             break;
 
-        // Ignore white space
-        case ' ': case '\t':
+        // Ignore white space. U+001A (Ctrl-Z, the old DOS end-of-file mark) is
+        // white space like the space and the tab, not an end of the source:
+        // only NUL ends one. So a file ending in a Ctrl-Z still compiles, and
+        // code after one is read as code
+        case ' ': case '\t': case '\x1a':
             srcp++;
             break;
 
@@ -1117,7 +1234,7 @@ void lexNextTokenx() {
             break;
 
         // End-of-file
-        case '\0': case '\x1a':
+        case '\0':
             lexReturnPuncTok(EofToken, 0);
 
         // Bad character
@@ -1164,7 +1281,7 @@ static int lexIsWordAt(char *srcp, char *word) {
 
 int lexNextIsWord(char *word) {
     char *srcp = lex->srcp;
-    while (*srcp == ' ' || *srcp == '\t' || *srcp == '\r' || *srcp == '\n')
+    while (*srcp == ' ' || *srcp == '\t' || *srcp == '\r' || *srcp == '\n' || *srcp == '\x1a')
         srcp++;
     return lexIsWordAt(srcp, word);
 }
@@ -1173,10 +1290,10 @@ int lexNextIsWord(char *word) {
 // not a block: nothing is counted, since there is no block to count it in
 static char *lexSkipTrivia(char *srcp) {
     while (1) {
-        if (*srcp == ' ' || *srcp == '\t' || *srcp == '\r' || *srcp == '\n')
+        if (*srcp == ' ' || *srcp == '\t' || *srcp == '\r' || *srcp == '\n' || *srcp == '\x1a')
             srcp++;
         else if (*srcp == '/' && srcp[1] == '/') {
-            while (*srcp && *srcp != '\n' && *srcp != '\x1a')
+            while (*srcp && *srcp != '\n')
                 srcp++;
         }
         else if (*srcp == '/' && srcp[1] == '*') {

@@ -1,0 +1,53 @@
+mod lexical_reject_raw_control;
+
+// A raw control character inside a literal, other than a tab and a line's
+// end, is refused (Jon's ruling of 24 September 2026): it cannot be seen in
+// an editor. The message names it by value and gives the \x escape that
+// writes it visibly, and is reported at the character itself. A string
+// literal used to drop every one silently, 0x7F excepted, which it kept; a
+// character literal took any as its value. Ctrl-Z (U+001A), no longer an end
+// of the source, is refused like the rest. A raw tab is content
+// (lexical_raw_tab); a raw line end in a character literal is refused in
+// its own words (lexical_reject_char_line_end).
+//
+// The file holds raw control characters, so it is kept byte for byte
+// (.gitattributes).
+
+// In a one-line string: the lowest, a vertical tab, Ctrl-Z, escape, the
+// highest below a space, and delete
+imm s1 = "ab";       //~ ErrorBadTok:12 "cannot hold the control character 0x01 raw, where it cannot be seen: write it as \\x01"
+imm s2 = "ab";       //~ ErrorBadTok:12 "control character 0x0B"
+imm s3 = "ab";       //~ ErrorBadTok:12 "control character 0x1A"
+imm s4 = "ab";       //~ ErrorBadTok:12 "control character 0x1B"
+imm s5 = "ab";       //~ ErrorBadTok:12 "control character 0x1F"
+imm s6 = "ab";       //~ ErrorBadTok:12 "control character 0x7F"
+
+// Each one in a string is refused, not only the first
+imm s7 = "";      //~ ErrorBadTok:11 "control character 0x01"
+                        //~^ ErrorBadTok:12 "control character 0x02"
+
+// Right after a line end in a string that spans lines, where the white
+// space that begins the line used to be dropped with it
+imm s8 = "a
+b";                    //~ ErrorBadTok:1 "control character 0x0C"
+
+// In a multi-line string, past the margin
+imm m1 = "
+  ab
+  ";
+//~^^ ErrorBadTok:4 "control character 0x1A"
+
+// In a character literal: the literal still closes, so nothing follows
+imm c1 = '';           //~ ErrorBadTok:11 "A character literal cannot hold the control character 0x01 raw"
+imm c2 = '';           //~ ErrorBadTok:11 "control character 0x1A"
+imm c3 = '';           //~ ErrorBadTok:11 "control character 0x7F"
+
+// The white space dropped after a line end in a string that spans lines is
+// spaces and tabs only. It used to be everything up to a space, blank lines'
+// ends included and uncounted, so this reserved word was reported two lines
+// early
+imm s9 = "a
+
+
+  b";
+imm wait = 1;             //~ ErrorReserved:5

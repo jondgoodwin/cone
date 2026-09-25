@@ -1,0 +1,29 @@
+mod lexical_reject_octal;
+
+// Cone has no octal escapes, and \0 followed by a decimal digit is refused
+// (Jon, 24 September 2026; JavaScript strict mode's rule), so a C programmer's
+// "\012" fails loudly instead of meaning a null, '1' and '2'. The message
+// names the spelling that does mean that: \x00, which takes exactly two hex
+// digits, then the digit. \0 before anything else is the null character, as
+// lexical_escape_null runs. Each is reported at the literal's opening quote,
+// but for the multi-line string's at the end.
+
+// In a string: the digit is named in the spelling the message offers
+imm s1 = "\012";          //~ ErrorBadTok:10 "a null character then '1' is written '\\x001'"
+imm s2 = "a\09b";         //~ ErrorBadTok:10 "'\\0' may not be followed by a digit"
+
+// A second 0 is a digit like any other
+imm s3 = "\00";           //~ ErrorBadTok:10 "a null character then '0' is written '\\x000'"
+
+// In a character literal, which the digit then leaves too long
+imm c1 = '\07';           //~ ErrorBadTok:10 "'\\0' may not be followed by a digit"
+                          //~^ ErrorBadTok:10 "too-long character literal" follow-on
+
+// In a multi-line string. Every escape error there is reported on the line
+// that holds the escape but at the column of nothing in particular, since the
+// position is the opening quote's on a line that has been counted past: the
+// line is pinned here and the column is not
+imm m1 = "
+  x\05
+  ";
+//~^^ ErrorBadTok "'\\0' may not be followed by a digit"

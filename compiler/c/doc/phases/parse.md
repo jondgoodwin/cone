@@ -85,6 +85,17 @@ claimed. `utf8ByteSkip` never advances past the character in front of it, which
 is what keeps a malformed byte from consuming the source that follows.
 `lexical_reject_tokens` holds both shapes.
 
+**Only NUL ends the source.** U+001A, the DOS end-of-file mark, used to end it
+too, but only between tokens: a string, a character literal and a block comment
+ran straight through one. Jon dropped it on 24 September 2026, so it is now a
+control character like any other. Between tokens `lexNextTokenx` passes over it
+as it does a space, so a file ending in one still compiles and code after one
+is read as code; a line comment, a dropped `#` word and a back-ticked identifier
+no longer stop at one; and inside a literal it is refused, as every raw control
+character but the tab is (below). `utf8ByteSkip` no longer calls it the end
+either. `lexical_ctrlz` compiles and runs code after one, ending in one;
+`lexical_reject_ctrlz` reports an error written after one.
+
 **An integer literal is 64 bits wide at most.** `lexScanNumber` accumulates
 into a `uint64_t` and refuses a digit that would carry past it
 (`ErrorLitOverflow`), once per literal and after every digit and the suffix
@@ -97,17 +108,46 @@ carries on with it. The digits of a float are exempt: they are read again by
 literal**, read by the rules of `doc/reference/reftoken.html`, "Multi-line String
 Literals". `lexScanString` finds the closing quote first, stepping over each
 escape sequence whole, and takes its indentation — the spaces and tabs before it
-on its line, counted as characters — as what to strip from the start of every
-content line. The end of line after the opening quote is dropped; every other
-one, LF or CRLF, becomes one `\n` in the content, unless a backslash precedes it,
-which joins the line to the next. Tabs are content. A closing quote with
-anything but spaces or tabs before it on its line is `ErrorBadTok`, reported at
-the opening quote. A content line indented less than the closing quote loses
-only the indentation it has — the manual does not say what such a line means,
-and this is not a ruling. `lexical_mlstring` and `lexical_mlstring_crlf` hold
-the rules; `lexical_reject_mlstring` the refusal. A literal that spans lines
+on its line — as the literal's margin. `lexStringMargin` reads the start of
+every content line against it, by Jon's ruling of 24 September 2026, the Swift
+and C# rule: a line of nothing but spaces and tabs is an empty line, whatever it
+holds, and every other line must begin with exactly the margin — the same
+characters in the same order, not just as many — which is stripped. A line that
+does not is `ErrorBadTok` on that line, at the first character that differs,
+and the message says what the margin is (so many spaces, so many tabs, or both
+in order); it is then read as though it began with as much of the margin as it
+has white space for. The end of line after the opening quote is dropped; every
+other one, LF or CRLF, becomes one `\n` in the content, unless a backslash
+precedes it, which joins the line to the next, itself held to the margin. Tabs
+past the margin are content. A closing quote with anything but spaces or tabs
+before it on its line is `ErrorBadTok`, reported at the opening quote, and the
+margin is then empty. This replaced stripping whatever indentation a line had,
+up to the closing quote's count with a tab counted as one. `lexical_mlstring`
+and `lexical_mlstring_crlf` hold the rules, `lexical_mlstring_margin` the
+margin; `lexical_reject_mlstring` and `lexical_reject_mlstring_margin` the
+refusals. A literal that spans lines
 without its opening quote ending one is read as before: its line ends and the
-white space after each are dropped.
+spaces and tabs that begin each next line are dropped.
+
+**A raw tab in a literal is content; every other raw control character is
+refused.** Jon's ruling of 24 September 2026: a tab written as itself is part
+of a one-line string, a multi-line string or a character literal alike, and
+any other control character — 0x01 to 0x1F but the tab and the line ends, and
+0x7F, Ctrl-Z included — is `ErrorBadTok`, since it cannot be seen in an editor.
+The message is reported at the character itself, names it by value
+(`lexCharDescribe`, the description the unprintable-escape message uses too),
+and gives the `\x` escape that writes it: "A string literal cannot hold the
+control character 0x01 raw, where it cannot be seen: write it as \x01". The
+string leaves it out; the character literal takes it as its value, so the
+literal still closes. Before, a one-line string dropped every control
+character silently, a tab included, but kept 0x7F; a character literal took
+any as its value. A line end is not in this rule: a string that spans lines
+drops it (above), a multi-line string makes it a new-line, and a character
+literal refuses it in its own words (below). Dropping the white space after a
+line end used to skip further line ends uncounted as well, so a blank line
+inside such a string put every later diagnostic a line early; the white space
+dropped is now spaces and tabs only, and each line is counted. `lexical_raw_tab`
+runs the tab in each kind; `lexical_reject_raw_control` holds the refusals.
 
 **A string literal is sized before it is built, by the same walk that ends
 it.** `lexScanString` allocates the literal as many bytes as the source holds
@@ -145,16 +185,32 @@ the unfinished statement lacks at the end, as a follow-on.
 each. A file cannot end in the quote or backtick and still carry the
 annotation after it, so each source is ended by a null character in that
 place, which ends a source as the end of the file does and is the byte the
-compiler puts after every file it reads; the annotations follow it. A quote or
-backtick right before a line's end is not the same case: each still takes the
-line end as its content, and the line goes uncounted.
+compiler puts after every file it reads; the annotations follow it.
+
+**Nor does either take a line's end.** A raw line end right after a character
+literal's opening quote — a new-line, a CRLF, or a carriage return alone — is
+`ErrorBadTok` at the quote, naming `'\n'` (or `'\r'`) as the spelling: Jon's
+ruling of 24 September 2026, the rule of C, Go, Rust and Swift. `lexScanChar`
+ends the literal there and stays on the line end, so it is counted where any
+other is. `'<LF>'` compiled as the value 10 before, and the line went
+uncounted, so every later diagnostic came out a line early. An unclosed
+back-ticked identifier's recovery, one character as the name and the next as
+the missing backtick, takes neither from past the line's end: the name is what
+there is before it, and the scan stays on it. `lexical_reject_char_line_end`
+holds each, LF, CRLF and a lone carriage return, with a later diagnostic
+pinning the line after each.
 
 **`\0` is the null character and nothing more.** `lexScanEscape` reads the
 digit `0` after a backslash as U+0000: a 0 byte in a string literal, the value
 0 in a character literal. The source's own closing NUL after a backslash is a
-different case, the end of the source, on which the reader stays. The manual
-names no octal escapes, so the digits after `\0` are content: `"\012"` is a 0
-byte then `1` and `2`. `lexical_escape_null` holds both kinds of literal.
+different case, the end of the source, on which the reader stays. Cone has no
+octal escapes, and a decimal digit right after `\0` is `ErrorBadTok` at the
+literal's opening quote (Jon's ruling of 24 September 2026, JavaScript strict
+mode's rule), so a C programmer's `"\012"` fails loudly instead of meaning a 0
+byte, `1` and `2`. The message names `\x00` then the digit as the spelling of
+that; `\x` takes exactly two hex digits, so `"\x001"` is a 0 byte then `1`. The
+digit is left to be read as content. `lexical_escape_null` holds both kinds of
+literal; `lexical_reject_octal` the refusal.
 
 **A hex escape cut short says so.** `\x`, `\u` and `\U` take exactly 2, 4 and
 8 hexadecimal digits (`lexHexDigits`). Where a character that is not a digit
@@ -194,8 +250,6 @@ those that follow. A character literal left too long by the escape is still
 reported at its opening quote, on the line it begins, which `lexScanChar`
 remembers across the escape. `lexical_reject_escape_newline` and its CRLF twin
 pin a later error's line after each, in a string and in a character literal.
-Unlike this, a quote or backtick right before a line's end still takes the line
-end uncounted (above): refusing `'<LF>'`, which compiles today, is a ruling.
 
 **Names are interned at scan time, and `Name.node` is the binding slot.**
 `nametblFind` returns one immovable `Name*` per unique string. That same
@@ -205,7 +259,10 @@ token type. Permissions reach the same effect by a different route:
 `stdPermInit` binds each permission name's `node` to the `PermNode` itself, and
 `lexScanIdent` has a separate branch turning a `PermTag` binding into a
 `PermToken`. So `mut` and `uni` are lexically distinguished without being
-keywords — copy the right one of these two patterns if you add a third family. A reserved word is reported once,
+keyword tokens — copy the right one of these two patterns if you add a third
+family. To the language they are reserved words all the same: the manual lists
+all six static permissions with the keywords (Jon's ruling of 24 September
+2026), since a name the lexer always reads as a permission can never be used. A reserved word is reported once,
 at first use, and then **released** — `Name.node` is cleared and the word
 continues as an ordinary identifier, so the rest of the compile is not derailed
 by it.
