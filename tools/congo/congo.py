@@ -14,13 +14,15 @@ import that names another package through the package-folder registries, orders
 the packages so that each is built after what it imports (refusing an import
 loop between packages, or between the modules of one), writes each package's BUILD DESCRIPTION into
 build/<mode>/, compiles each package on its own with conec, and links the
-objects with conestd into build/<mode>/<name>.exe. The folder rules live here,
-in one place: conec never searches for a file of a Congo build.
+objects with conestd, and with the C libraries the packages' [link] tables name,
+into build/<mode>/<name>.exe. The folder rules live here, in one place: conec
+never searches for a file of a Congo build.
 
 A package is a folder holding congo.toml and src/<name>.cone, the root module's
 designated file. A package that others import has a hand-written INCLUDE FILE
 beside its manifest, <name>.cone: what an importer is compiled against in place
-of the package's source.
+of the package's source. A C PACKAGE, whose whole source is one '@c' module
+declaring a C library's functions, is its own include file.
 
 Python 3.11 or later, standard library only. README.md beside this file is the
 user's guide.
@@ -87,6 +89,8 @@ class Package:
     root: Path            # the package folder; a lone file's own folder
     src: Path             # the root module's designated file
     lone: bool = False
+    libraries: list[str] = field(default_factory=list)    # [link] libraries
+    link_paths: list[Path] = field(default_factory=list)  # [link] paths, absolute
 
     @property
     def include_file(self) -> Path:
@@ -97,8 +101,40 @@ class Package:
         return f"{self.name} v{self.version}" if self.version else self.name
 
 
+# A C library as the linker is told it, without its prefix or suffix: SDL2 is
+# SDL2.lib on Windows and -lSDL2 (libSDL2.a or .so) elsewhere
+LIBRARY_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*\Z")
+LIBRARY_SUFFIXES = (".lib", ".a", ".so", ".dylib", ".dll")
+
+
+def read_link(path: Path, table: object) -> tuple[list[str], list[Path]]:
+    """[link]: the C libraries a program using this package must be linked with,
+    and folders to search for them, relative to the package folder."""
+    if not isinstance(table, dict):
+        raise CongoError(f"{path}: [link] must be a table, with libraries and paths")
+    for key in table:
+        if key not in ("libraries", "paths"):
+            raise CongoError(f"{path}: '{key}' is not a [link] key; the keys are"
+                             " libraries and paths")
+    libraries, paths = table.get("libraries", []), table.get("paths", [])
+    for key, value in (("libraries", libraries), ("paths", paths)):
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise CongoError(f"{path}: [link] {key} must be a list of strings")
+    for lib in libraries:
+        if not LIBRARY_RE.match(lib) or lib.lower().endswith(LIBRARY_SUFFIXES):
+            raise CongoError(f"{path}: [link] library \"{lib}\" must be the library's bare"
+                             " name, such as \"SDL2\": no folder, prefix or suffix, which"
+                             " Congo adds for the linker (and paths says where to look)")
+    folders = []
+    for entry in paths:
+        folder = Path(os.path.expandvars(os.path.expanduser(entry)))
+        folders.append((folder if folder.is_absolute() else path.parent / folder).resolve())
+    return libraries, folders
+
+
 def read_manifest(path: Path) -> Package:
-    """congo.toml: a [package] table with name, version and output, and nothing else.
+    """congo.toml: a [package] table with name, version and output, and, for a
+    package that needs C libraries linked, a [link] table.
 
     There is no dependencies section: the imports in the source are the
     dependency list, and the registries say where each one is [Jon 23 Sep]."""
@@ -107,11 +143,11 @@ def read_manifest(path: Path) -> Package:
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise CongoError(f"{path}: cannot read the manifest: {exc}") from None
     for key in data:
-        if key != "package":
+        if key not in ("package", "link"):
             extra = (" There is no dependencies section: a package's imports are its"
                      " dependencies." if key == "dependencies" else "")
             raise CongoError(f"{path}: [{key}] is not part of a Congo manifest, which"
-                             f" holds [package] alone.{extra}")
+                             f" holds [package] and [link].{extra}")
     table = data.get("package")
     if not isinstance(table, dict):
         raise CongoError(f"{path}: the manifest needs a [package] table with name,"
@@ -128,8 +164,10 @@ def read_manifest(path: Path) -> Package:
                          " \"0.1.0\"")
     if output not in OUTPUTS:
         raise CongoError(f"{path}: [package] output must be \"executable\" or \"library\"")
+    libraries, link_paths = read_link(path, data["link"]) if "link" in data else ([], [])
     root = path.parent.resolve()
-    return Package(name, version, output, root, root / "src" / f"{name}.cone")
+    return Package(name, version, output, root, root / "src" / f"{name}.cone",
+                   libraries=libraries, link_paths=link_paths)
 
 
 def find_manifest(start: Path) -> Path | None:
@@ -161,6 +199,7 @@ class Header:
     mod: str | None       # the name on the 'mod' line, or None where there is none
     imports: list[Import]
     extends: Import | None = None   # 'mod a extends b': b, where the line says so
+    c: bool = False       # 'mod @c ...': a C-named module
 
 
 class HeaderTokens:
@@ -270,13 +309,14 @@ def scan_header(path: Path) -> Header:
     toks = HeaderTokens(text)
     mod = None
     extends = None
+    c_named = False
     k = 1 if toks.is_name("pub") else 0
     if toks.is_name("mod", k) and not toks.is_name("trait", k + 1):
         for _ in range(k + 1):
             toks.next()
         if toks.peek()[:2] == ("punct", "@"):
             toks.next()
-            toks.next()                       # the 'c'
+            c_named = toks.next()[:2] == ("name", "c")
             if toks.peek()[:2] == ("punct", "("):
                 while toks.peek()[0] != "eof" and toks.next()[:2] != ("punct", ")"):
                     pass
@@ -308,7 +348,7 @@ def scan_header(path: Path) -> Header:
         elif kind == "string":
             imports.append(Import(None, f'"{value}"', path, line))
         toks.skip_statement()
-    return Header(mod, imports, extends)
+    return Header(mod, imports, extends, c_named)
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +533,24 @@ class Unit:
     lines: dict[int, dict[str, Path]]                 # id(module) -> import name -> include file
 
 
+def include_for(pkg: Package) -> Path | None:
+    """What an importer of pkg is compiled against, or None where there is nothing.
+
+    A package's include file, <name>.cone beside its manifest. Else, for a C
+    PACKAGE -- one whose whole source is the one file src/<name>.cone, a C-named
+    module ('mod @c ...') declaring what a C library defines -- that file itself:
+    a C library's package and a package's include file are the same artifact,
+    public declarations whose symbols are supplied elsewhere [Jon 12 Sep], so the
+    one file serves as both. It must be the whole package, since an importer
+    loads the one file an import line names and nothing beside it."""
+    if pkg.include_file.is_file():
+        return pkg.include_file
+    if (pkg.src.is_file() and scan_header(pkg.src).c
+            and list(pkg.src.parent.rglob("*.cone")) == [pkg.src]):
+        return pkg.src
+    return None
+
+
 def resolve_imports(pkg: Package, tree: Module, registry: Registry) -> Unit:
     """Which of each module's imports name another package, and where that
     package's include file is. A submodule's import of a sister is answered
@@ -523,13 +581,16 @@ def resolve_imports(pkg: Package, tree: Module, registry: Registry) -> Unit:
                 raise CongoError(f"{imp.where()}: import {imp.name}: no package named"
                                  f" '{imp.name}' in the registries searched:"
                                  f" {registry.searched()}")
-            if not found.include_file.is_file():
+            include = include_for(found)
+            if include is None:
                 raise CongoError(f"{imp.where()}: import {imp.name}: package {imp.name}"
                                  f" at {found.root} has no include file,"
                                  f" {found.include_file.name} beside its {MANIFEST}"
-                                 f" (include files are written by hand for now)")
+                                 f" (include files are written by hand for now; a C"
+                                 f" package, whose whole source is one '@c' module in"
+                                 f" src/{found.name}.cone, needs none)")
             deps.setdefault(found.name, found)
-            mine[imp.name] = found.include_file
+            mine[imp.name] = include
     check_module_loops(pkg, tree, registry)
     return Unit(pkg, tree, deps, lines)
 
@@ -801,12 +862,18 @@ class Linker:
                 env[key] = value
         return env
 
-    def command(self, objs: list[Path], exe: Path) -> list[str]:
+    def command(self, objs: list[Path], exe: Path, libraries: list[str] = (),
+                paths: list[Path] = ()) -> list[str]:
+        """The link line: the objects, conestd, then the C libraries the packages'
+        [link] tables name, each searched for first in their [link] paths."""
         if IS_WINDOWS:
             return [self.tool, "/NOLOGO", *map(str, objs), str(self.conestd),
+                    *(f"/LIBPATH:{p}" for p in paths), *(f"{lib}.lib" for lib in libraries),
                     f"/OUT:{exe}", "/SUBSYSTEM:CONSOLE", "msvcrt.lib",
                     "legacy_stdio_definitions.lib"]
-        return [self.tool, *map(str, objs), str(self.conestd), "-o", str(exe), "-lm"]
+        return [self.tool, *map(str, objs), str(self.conestd),
+                *(f"-L{p}" for p in paths), *(f"-l{lib}" for lib in libraries),
+                "-o", str(exe), "-lm"]
 
 
 # ---------------------------------------------------------------------------
@@ -871,13 +938,26 @@ def build(pkg: Package, mode: str) -> Path:
         return objs[-1]
     exe = out / f"{pkg.name}{EXE_EXT}"
     linker = Linker(find_conestd(conec))
-    # The program's object first, then the packages it imports, last built first
-    command = linker.command([objs[-1], *reversed(objs[:-1])], exe)
+    # The program's object first, then the packages it imports, last built first;
+    # and the C libraries every one of them names, in the same order, each once.
+    # A C package's own object is linked like any other: it defines nothing
+    # (as core's does not), and so needs no case of its own
+    units = [order[-1], *reversed(order[:-1])]
+    libraries = list(dict.fromkeys(lib for u in units for lib in u.pkg.libraries))
+    paths = list(dict.fromkeys(p for u in units for p in u.pkg.link_paths))
+    command = linker.command([objs[-1], *reversed(objs[:-1])], exe, libraries, paths)
     say("Linking", shown(exe))
     result = subprocess.run(command, env=linker.env, capture_output=True, text=True,
                             errors="replace")
     if result.returncode != 0:
-        raise CongoError(f"link failed:\n{' '.join(command)}\n{result.stdout}{result.stderr}")
+        named = "; ".join(f"{u.pkg.name} names {', '.join(u.pkg.libraries)}"
+                          for u in units if u.pkg.libraries)
+        where = ("the folders the LIB environment variable lists" if IS_WINDOWS
+                 else "the linker's own search path")
+        hint = (f"\nC libraries linked ({named}): the linker looks for each in the"
+                f" folders [link] paths names, then in {where}" if named else "")
+        raise CongoError(f"link failed:\n{' '.join(command)}\n{result.stdout}"
+                         f"{result.stderr}{hint}")
     say("Finished", f"{mode} {shown(exe)}")
     return exe
 

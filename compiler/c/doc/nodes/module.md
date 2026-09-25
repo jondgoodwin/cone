@@ -914,7 +914,9 @@ guide) is what makes a Congo build rely on nothing else here:
   each child module is written where a subfolder or a one-file module draws it.
   So the compiler's own designated-file rule is never asked about `src/`.
 - **An import line names another package's include file**, `<name>.cone` at that
-  package's root, and is written in the module whose file imports it. A
+  package's root — or, for a C package, whose whole source is one `@c` module,
+  that module's own file, `src/<name>.cone` ("How a C library becomes a Cone
+  package", below) — and is written in the module whose file imports it. A
   submodule's import of a sister, or of a name of its parent, gets no line: the
   registry answers it before the description is asked.
 - **A loop is refused before any `conec` run**, at both scales, from the header
@@ -2034,8 +2036,23 @@ name outside the prefix; `@c(system)` is the system calling convention
 exporting a Cone body to C writes only `pub fn @c(...)`. Symbol spelling is
 [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), S5.
 
-What is still open: how `trust` is stated, how opaque types are declared, and
-whether such a package is written in Cone source or generated. `--safe=package`,
+**The hand-written form is built, as a C package** (`tools/congo/README.md`, "C
+packages"). A package whose whole source is one file, `src/<name>.cone`, whose
+`mod` line carries `@c`, is its own include file: Congo's import line names that
+file, and the importer loads it declared and not generated, as any include
+file. The package's manifest names the C library in a `[link]` table
+(`libraries`, and optionally `paths` to search, relative to the package), and
+Congo puts every library the packages of a build name on the executable's link
+line. The compiler is not involved in linking and needed no change: compiled on
+its own, as Congo compiles every package, a declarations-only `@c` module is an
+empty object, as `core`'s is, and Congo links it like any other rather than
+treating a C package as a case of its own. That also keeps a `@c` module that
+holds a Cone body correct, since the body is in that object.
+
+What is still open: how `trust` is stated, how opaque types are declared,
+a C package of more than one module (an import loads one file), per-platform
+library names (`opengl32` on Windows is `GL` elsewhere), and generating such a
+package from a C header. `--safe=package`,
 which exists in the option help and controls which packages may use C FFI, is
 the policy half of the same question; that C naming is now written on the
 module is what gives it something to check.
