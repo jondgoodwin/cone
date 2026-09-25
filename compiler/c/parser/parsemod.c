@@ -14,6 +14,7 @@
 #include "../shared/error.h"
 #include "../shared/fileio.h"
 #include "../ir/nametbl.h"
+#include "../ir/incfile.h"
 #include "../coneopts.h"
 #include "lexer.h"
 
@@ -890,9 +891,10 @@ static ModTraitNode *parseModTrait(ParseState *parse, uint16_t pubflag) {
 //
 // 'mod trait Shell { ... }' is not this declaration: it declares a module trait,
 // a declaration of the module like any other (parseModTrait). A
-// 'mod name { ... }' block is recognised only to refuse it, since it does not
-// exist: a module is never declared inside a file, and a nested module is a file
-// of its own or a subfolder with its own designated file.
+// 'mod name { ... }' block is refused in source: a module is never declared
+// inside a file there, and a nested module is a file of its own or a subfolder
+// with its own designated file. A generated include file alone writes one
+// (parseModuleBlock).
 //
 // 'atmodstart' is 1 at the first statement of the module's designated or one
 // file -- or, in a described module, of the first file the build description
@@ -909,6 +911,57 @@ static ModTraitNode *parseModTrait(ParseState *parse, uint16_t pubflag) {
 // declares nothing about a subfolder or a file -- where it sits is the
 // declaration. A module with no parent has nothing to be visible outside of.
 //
+void parseAddCorelibImport(ParseState *parse, ModuleNode *mod);
+
+// A nested module block, 'mod sub { ... }', with the lexer on its '{'. Only a
+// generated include file holds one (ParseState.generated): the package's
+// generator writes one for each of the package's submodules the file reaches,
+// holding just what it reaches, so that each name is spelled after its real
+// owner, as the package's object spells it [Jon 25 Sep, Q1]. The block is a
+// submodule of the module it is written in, in every respect a drawn one is --
+// owned, bound in its parent's namespace, given core, parsed with its own
+// namespace hooked -- and it is always private: a submodule is private to its
+// package, so no importer can name it, and 'pub' on it is refused. Its
+// statements are a module file's, its imports first
+static void parseModuleBlock(ParseState *parse, ModuleNode *parent, Name *name, INode *dclat,
+    uint16_t pubflag, DclInfo *cattr, GenericInfo *genericinfo, NameUseNode *extendsname,
+    NameUseNode *traitname) {
+    if (pubflag)
+        errorMsgNode(dclat, ErrorBadPub,
+            "A module block in an include file is private to its package: no importer may name it, so 'pub' has nothing to open it to.");
+
+    // Declared with its parent: an include file's modules are never generated.
+    // The generator's self-check keeps its modules out of the program's
+    ModuleNode *mod;
+    if (parse->blockmods) {
+        mod = newModuleNode();
+        mod->flags |= parent->flags & FlagGenMod;
+        nodesAdd(&parse->blockmods, (INode*)mod);
+    }
+    else
+        mod = pgmAddMod(parse->pgm, parent->flags & FlagGenMod);
+    copyNodeLex(mod, dclat);
+    mod->filesym = mod->namesym = name;
+    dclInfoJoin((INode*)mod, (INode*)parent);
+    mod->dclinfo.facts |= DclNamesChain | (cattr->facts & DclStated);
+    mod->dclinfo.cname = cattr->cname;
+    mod->flags |= FlagModDcl;
+    mod->extendsname = (INode*)extendsname;
+    mod->traitname = (INode*)traitname;
+    mod->genericinfo = genericinfo;
+    modAddNamedNode(parent, name, (INode*)mod);
+    parseAddCorelibImport(parse, mod);
+
+    ModuleNode *svmod = parse->mod;
+    parse->mod = mod;
+    modHook(svmod, mod);
+    modAddNamedNode(mod, name, (INode*)mod);
+    parseBlockStart();
+    parseGlobalStmts(parse, mod, 0);
+    modHook(mod, svmod);
+    parse->mod = svmod;
+}
+
 // '@c' after 'mod' makes the module C-named: 'mod @c("SDL_") sdl;'. The
 // module's naming is the only thing it states; whether a declaration is defined
 // elsewhere is that declaration's own 'extern' [Jon 23 Sep] (parseCAttr).
@@ -928,10 +981,9 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
     // A submodule is the module its parent owns, and the only one 'pub' can speak
     // for. The root, a module that is a file of its own and an imported module are
     // each inside nothing
+    // Reported once the statement is known not to be a module block, which
+    // refuses 'pub' for a reason of its own, and where the declaration starts
     int issubmodule = mod->dclinfo.owner != NULL;
-    if (pubflag && !issubmodule)
-        errorMsgLex(ErrorBadPub,
-            "'pub' on a module declaration says the module is visible outside its parent module, and this module has no parent.");
     lexNextToken();
 
     // '@c' after 'mod' gives the module C naming: every function and global it
@@ -1045,14 +1097,27 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
         }
     }
 
-    // An in-file module block. Nesting is by files and folders only, so there is
-    // no such construct; its body is skipped so that nothing in it is reported again
+    // An in-file module block. In source, nesting is by files and folders only,
+    // so there is no such construct, and its body is skipped so that nothing in
+    // it is reported again. A generated include file writes one for each
+    // submodule of the package that the file reaches [Jon 25 Sep, Q1]
     if (lexIsToken(LCurlyToken) || lexIsToken(ColonToken)) {
+        if (parse->generated && lexIsToken(LCurlyToken) && modname != NULL) {
+            parseModuleBlock(parse, mod, modname, &dclat, pubflag, &cattr, genericinfo,
+                extendsname, traitname);
+            return;
+        }
+        if (pubflag && !issubmodule)
+            errorMsgNode(&dclat, ErrorBadPub,
+                "'pub' on a module declaration says the module is visible outside its parent module, and this module has no parent.");
         errorMsgLex(ErrorUnbuiltKind,
-            "A module cannot be declared inside a file: a nested module is a file of its own, or a subfolder with its own designated file.");
+            "A module cannot be declared inside a file: a nested module is a file of its own, or a subfolder with its own designated file. Only a generated include file writes a module block.");
         parseSkipDclBody();
         return;
     }
+    if (pubflag && !issubmodule)
+        errorMsgNode(&dclat, ErrorBadPub,
+            "'pub' on a module declaration says the module is visible outside its parent module, and this module has no parent.");
     // Reported before the statement's ';' is consumed, so that the diagnostic
     // lands on this declaration rather than on the token that follows it.
     //
@@ -1643,8 +1708,15 @@ static ModuleNode *parseLoadModulePath(ParseState *parse, char *path, Name *file
     // Create and add this new module to list of modules, and make it the current one
     ModuleNode *svmod = parse->mod;
     BuildModule *svbuild = parse->build;
+    int svgenerated = parse->generated;
     mod = pgmAddMod(parse->pgm, genflag);
     Lexer *dsgfile = parseModulePosition(mod, path, NULL);
+    // A generated include file may hold nested module blocks. It is known by
+    // two things together: its role, the file a build description's import
+    // line names, which is an include file; and its banner, which says the
+    // generator wrote it. A hand-written include file, and every source file,
+    // may not
+    parse->generated = build && build->isimport && incFileIsGenerated(dsgfile->source);
     mod->filesym = filesym;
     // The module's name is a filesystem fact: its folder's, where a designated
     // file drew the module out of a folder, and its file's otherwise. Filename
@@ -1683,6 +1755,7 @@ static ModuleNode *parseLoadModulePath(ParseState *parse, char *path, Name *file
     // Restore focus to original module we were working on
     parse->mod = svmod;
     parse->build = svbuild;
+    parse->generated = svgenerated;
     return mod;
 }
 
@@ -1729,12 +1802,33 @@ static ModuleNode *parseLoadCore(ParseState *parse) {
     return parseLoadModulePath(parse, path, nametblFind("core", 4), FlagGenMod, NULL);
 }
 
+// Add the import lines of a described module and of every module inside it,
+// each name once, to 'check'
+static void parseCheckImports(BuildModule *check, BuildModule *build) {
+    for (uint32_t i = 0; i < build->nimports; ++i) {
+        if (parseBuildFindImport(check, build->imports[i].name))
+            continue;
+        if (check->nimports == check->availimports) {
+            check->availimports = check->availimports ? check->availimports * 2 : 8;
+            BuildImport *grown = (BuildImport*)memAllocBlk(check->availimports * sizeof(BuildImport));
+            if (check->nimports)
+                memcpy(grown, check->imports, check->nimports * sizeof(BuildImport));
+            check->imports = grown;
+        }
+        check->imports[check->nimports++] = build->imports[i];
+    }
+    for (uint32_t i = 0; i < build->nchildren; ++i)
+        parseCheckImports(check, build->children[i]);
+}
+
 // Parse a generated include file's text as the module it declares, for the
 // generator's self-check (conec.c): a module of its own beside the root it
-// stands for, never generated and never added to the program's modules. Its
-// imports are answered as the root's are -- by the root's import lines in a
+// stands for, never generated and never added to the program's modules, and so
+// are the modules its nested blocks declare. Returns them all, the file's own
+// module first. Its imports are answered as the package's are -- by the import
+// lines of the root and of its submodules, whose blocks the file holds, in a
 // described build, and from the root's folder otherwise, which 'url' names
-ModuleNode *parseIncludeCheck(ProgramNode *pgm, BuildDesc *desc, char *text, char *url) {
+Nodes *parseIncludeCheck(ProgramNode *pgm, BuildDesc *desc, char *text, char *url) {
     ModuleNode *root = (ModuleNode*)nodesGet(pgm->modules, 0);
     ParseState parse;
     parse.pgm = pgm;
@@ -1743,6 +1837,8 @@ ModuleNode *parseIncludeCheck(ProgramNode *pgm, BuildDesc *desc, char *text, cha
     parse.inrettype = 0;
     parse.core = NULL;
     parse.build = NULL;
+    parse.generated = incFileIsGenerated(text);
+    parse.blockmods = newNodes(4);
     parse.bodyp = parse.bodyendp = parse.nameendp = NULL;
     parse.typed = 0;
     INode **nodesp;
@@ -1761,12 +1857,13 @@ ModuleNode *parseIncludeCheck(ProgramNode *pgm, BuildDesc *desc, char *text, cha
         check.name = root->namesym;
         check.files = &url;
         check.nfiles = check.availfiles = 1;
-        check.imports = desc->root->imports;
-        check.nimports = check.availimports = desc->root->nimports;
+        parseCheckImports(&check, desc->root);
         parse.build = &check;
     }
 
     ModuleNode *mod = newModuleNode();
+    Nodes *mods = newNodes(4);
+    nodesAdd(&mods, (INode*)mod);
     Lexer *file = lexNew(text, url);
     mod->lexer = file;
     mod->srcp = mod->linep = file->source;
@@ -1785,7 +1882,10 @@ ModuleNode *parseIncludeCheck(ProgramNode *pgm, BuildDesc *desc, char *text, cha
         errorMsgLex(ErrorNoEof, "Expected end-of-file");
     lexPop();
     modHook(mod, NULL);
-    return mod;
+    INode **blockp;
+    for (nodesFor(parse.blockmods, cnt, blockp))
+        nodesAdd(&mods, *blockp);
+    return mods;
 }
 
 // Set up the name table and the lexer. A build description is read by the
@@ -1811,6 +1911,8 @@ ProgramNode *parsePgm(ConeOptions *opt, BuildDesc *desc) {
     parse.inrettype = 0;
     parse.core = NULL;
     parse.build = NULL;
+    parse.generated = 0;
+    parse.blockmods = NULL;
     parse.bodyp = parse.bodyendp = parse.nameendp = NULL;
     parse.typed = 0;
 

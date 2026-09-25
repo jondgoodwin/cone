@@ -774,21 +774,29 @@ static void modFoldStampDone(Nodes *modules) {
     }
 }
 
-// Fold one module parsed after the program's modules were all resolved -- the
-// include-file generator's self-check -- as modFoldAll would: the modules it
-// imports keep the namespaces their own folds made, and are not folded again
-void modFoldAlone(NameResState *pstate, Nodes *modules, ModuleNode *mod) {
+// Fold the modules parsed after the program's modules were all resolved -- the
+// include-file generator's self-check, its file's module and the modules its
+// nested blocks declare -- as modFoldAll would: the modules they import keep the
+// namespaces their own folds made, and are not folded again. The blocks are
+// folded last-parsed first, so a module's own blocks are folded before it; a
+// sister a block imports is folded on demand, as any import is
+static void modFoldAloneEach(NameResState *pstate, Nodes *mods) {
+    for (uint32_t i = mods->used; i > 0; --i)
+        modFoldNames(pstate, (ModuleNode*)nodesGet(mods, i - 1));
+}
+
+void modFoldAlone(NameResState *pstate, Nodes *modules, Nodes *mods) {
     do {
         ++foldpass;
         foldcycled = foldwaited = foldprogress = 0;
         modFoldStampDone(modules);
-        modFoldNames(pstate, mod);
+        modFoldAloneEach(pstate, mods);
     } while (foldprogress && (foldcycled || foldwaited));
 
     ++foldpass;
     modFoldStampDone(modules);
     foldreporting = 1;
-    modFoldNames(pstate, mod);
+    modFoldAloneEach(pstate, mods);
     foldreporting = 0;
 }
 

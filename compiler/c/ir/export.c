@@ -8,6 +8,8 @@
 #include "ir.h"
 #include "export.h"
 
+#include <string.h>
+
 // Whether a declaration belongs to a generic's instance: it is one (a generic
 // function's instance), or it is a member of one (a method or static of a
 // generic type's instance, or of an instance of a generic trait or enum). The
@@ -102,8 +104,9 @@ int fnIsTraitMethod(INode *dclnode) {
 // - a module's 'init', its 'final' or the 'drop' it is given (DclLifecycle),
 //   public or not, since the program's stitched init and final call them; or
 // - a public function or global of a module; or
-// - a function of a type an importer can reach -- a public type, or one an
-//   expanded body names -- when the function is public, or the type holds an
+// - a function of a type an importer can reach -- a public type, one an
+//   expanded body names, or one the include file declares (DclIncluded) --
+//   when the function is public, or the type holds an
 //   expanded body that can reach its private ones through a receiver, or the
 //   function is the type's 'final' or 'clone', which an importer's object
 //   calls wherever it drops or copies a value of the type, or it meets a
@@ -126,10 +129,76 @@ int dclIsExported(ModuleNode *libroot, INode *dclnode) {
     INode *owner = dclinfo->owner;
     if (owner == NULL || owner->tag == ModuleTag)
         return !(dclinfo->facts & DclPrivate);
+    // A type the include file declares (DclIncluded) is one an importer holds
+    // values of, whether or not it can name it: a private type a public one
+    // holds in a field, say, whose public methods the importer calls through
+    // that field
     DclInfo *typeinfo = inodeGetDclInfo(owner);
     if (typeinfo == NULL
-        || ((typeinfo->facts & DclPrivate) && !(typeinfo->facts & DclExpandReached)))
+        || ((typeinfo->facts & DclPrivate) && !(typeinfo->facts & (DclExpandReached | DclIncluded))))
         return 0;
     return !(dclinfo->facts & DclPrivate) || typeHoldsExpanded(owner)
         || fnIsTypeLifecycle(dclnode) || fnIsTraitMethod(dclnode);
+}
+
+// ---- What expanded bodies reach ---------------------------------------------
+
+// A table from each expanded body to the declarations it names, open
+// addressing on the body's address
+typedef struct ReachSlot {
+    INode *from;
+    Nodes *to;
+} ReachSlot;
+
+static ReachSlot *reachslots = NULL;
+static size_t reachavail = 0, reachused = 0;
+
+static size_t reachHash(INode *from, size_t avail) {
+    size_t h = (size_t)from;
+    h ^= h >> 17;
+    h *= 0x9E3779B1u;
+    return (h ^ (h >> 13)) & (avail - 1);
+}
+
+static ReachSlot *reachSlot(INode *from) {
+    size_t i = reachHash(from, reachavail);
+    while (reachslots[i].from != NULL && reachslots[i].from != from)
+        i = (i + 1) & (reachavail - 1);
+    return &reachslots[i];
+}
+
+void exportReachAdd(INode *from, INode *to) {
+    if (from == NULL || to == NULL || from == to)
+        return;
+    if ((reachused + 1) * 2 > reachavail) {
+        ReachSlot *old = reachslots;
+        size_t oldavail = reachavail;
+        reachavail = oldavail ? oldavail * 2 : 256;
+        reachslots = (ReachSlot*)memAllocBlk(reachavail * sizeof(ReachSlot));
+        memset(reachslots, 0, reachavail * sizeof(ReachSlot));
+        for (size_t i = 0; i < oldavail; ++i) {
+            if (old[i].from)
+                *reachSlot(old[i].from) = old[i];
+        }
+    }
+    ReachSlot *slot = reachSlot(from);
+    if (slot->from == NULL) {
+        slot->from = from;
+        slot->to = newNodes(4);
+        ++reachused;
+    }
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(slot->to, cnt, nodesp)) {
+        if (*nodesp == to)
+            return;
+    }
+    nodesAdd(&slot->to, to);
+}
+
+Nodes *exportReachesOf(INode *from) {
+    if (reachavail == 0 || from == NULL)
+        return NULL;
+    ReachSlot *slot = reachSlot(from);
+    return slot->from ? slot->to : NULL;
 }

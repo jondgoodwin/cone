@@ -168,8 +168,11 @@ answering both is what keeps the object and the include file from disagreeing:
   public or not: the program's stitched init and final call them from its own
   object;
 - a public function or global of a module;
-- a function of a type an importer can reach — a public type, or one an
-  expanded body names — where the function is public, or the type holds an
+- a function of a type an importer can reach — a public type, one an
+  expanded body names, or one the package's include file declares
+  (`DclIncluded`, which the include-file generator writes before any code is
+  generated: an importer holds values of such a type through a field or a
+  signature, whether or not it can name it) — where the function is public, or the type holds an
   expanded body (`typeHoldsExpanded`), which can reach a private method
   through a receiver that name resolution never binds, or the function is the
   type's `final` or `clone` (`fnIsTypeLifecycle`), which an importer's object

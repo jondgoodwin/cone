@@ -141,43 +141,57 @@ void nameUsePrint(NameUseNode *name) {
 // reads the mark (dclIsExported). Called for a bare name here, and for a path
 // by fnCallNameResPath, which binds it.
 //
-// Where the body is the root's own and what it names sits in one of the root's
-// submodules, the mark says so too (DclSubReached): the root's include file
-// would have to declare it, which the include-file generator cannot yet do.
+// Each declaration the use reaches is also recorded against the body
+// (exportReachAdd): a typedef it names on the way, and a macro or a const,
+// which have no symbol to mark. The include-file generator follows those
+// records, so that what a body it copies names is declared beside it.
 static void nameUseMarkOne(NameResState *pstate, INode *dcl) {
     DclInfo *dclinfo = inodeGetDclInfo(dcl);
     if (dclinfo->owner == NULL)   // a local or a parameter has no symbol
         return;
     dclinfo->facts |= DclExpandReached;
-    ModuleNode *root = pstate->mod;
-    if (root == NULL || root->dclinfo.owner != NULL)
-        return;
-    ModuleNode *mod = dclInfoGetModule(dcl);
-    if (mod == root)
-        return;
-    while (mod && mod->dclinfo.owner) {
-        mod = dclInfoGetModule(mod->dclinfo.owner);
-        if (mod == root) {
-            dclinfo->facts |= DclSubReached;
-            return;
-        }
-    }
+    exportReachAdd(pstate->expander, dcl);
 }
 
 void nameUseMarkExpandReached(NameResState *pstate, NameUseNode *name) {
     if (pstate->expander == NULL)
         return;
-    INode *dcl = nameUseGetDcl(name);
+    // Every declaration on the way to what the name means: a typedef, then
+    // what it stands for. A fold's alias is the fold's, not a declaration
+    INode *dcl = name->dclnode;
+    while (dcl) {
+        if (isNameUseNode(dcl)) {
+            dcl = ((NameUseNode*)dcl)->dclnode;
+            continue;
+        }
+        if (dcl->tag != AliasDclTag)
+            break;
+        if (dcl->flags & FlagTypeAlias)
+            exportReachAdd(pstate->expander, dcl);
+        dcl = ((AliasDclNode*)dcl)->target;
+    }
     if (dcl == NULL)
         return;
-    if (dcl->tag == FnOverloadDclTag) {
+    switch (dcl->tag) {
+    case FnOverloadDclTag: {
         INode **nodesp;
         uint32_t cnt;
         for (nodesFor(((FnOverloadDclNode*)dcl)->overloads, cnt, nodesp))
             nameUseMarkOne(pstate, *nodesp);
+        break;
     }
-    else if (dcl->tag == FnDclTag || dcl->tag == VarDclTag || dcl->tag == StructTag)
+    case FnDclTag:
+    case VarDclTag:
+    case StructTag:
         nameUseMarkOne(pstate, dcl);
+        break;
+    case MacroDclTag:
+    case ConstDclTag:
+        exportReachAdd(pstate->expander, dcl);
+        break;
+    default:
+        break;
+    }
 }
 
 // Handle name resolution for name use references: point dclnode at the name's

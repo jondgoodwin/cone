@@ -16,6 +16,12 @@
  *   const, macro, module trait) go in as written.
  * - Everything else stays out, with the comments directly above it.
  *
+ * What the root reaches in one of its SUBMODULES goes in a private, pruned
+ * nested module block, 'mod sub { ... }', holding only what is reached [Jon 25
+ * Sep, Q1]: the submodule's own text, edited by the same rules. The block
+ * spells each name after its real owner, as the package's object does, and
+ * nobody outside the package can name it.
+ *
  * Every comment in the text kept is kept [Jon 25 Sep, Q2].
  *
  * @file
@@ -50,7 +56,8 @@ static void incBufPutn(IncBuf *buf, const char *text, size_t n) {
         buf->text = grown;
         buf->avail = avail;
     }
-    memcpy(buf->text + buf->len, text, n);
+    if (n)
+        memcpy(buf->text + buf->len, text, n);
     buf->len += n;
     buf->text[buf->len] = '\0';
 }
@@ -59,32 +66,105 @@ static void incBufPuts(IncBuf *buf, const char *text) {
     incBufPutn(buf, text, strlen(text));
 }
 
+// A map from a node to what the generator knows of it, open addressing on
+// the node's address
+typedef struct IncMap {
+    void **keys;
+    void **vals;
+    size_t avail;
+    size_t used;
+} IncMap;
+
+static size_t incHash(void *key, size_t avail) {
+    size_t h = (size_t)key;
+    h ^= h >> 17;
+    h *= 0x9E3779B1u;
+    return (h ^ (h >> 13)) & (avail - 1);
+}
+
+static size_t incMapIndex(IncMap *map, void *key) {
+    size_t i = incHash(key, map->avail);
+    while (map->keys[i] != NULL && map->keys[i] != key)
+        i = (i + 1) & (map->avail - 1);
+    return i;
+}
+
+static void *incMapGet(IncMap *map, void *key) {
+    if (map->avail == 0 || key == NULL)
+        return NULL;
+    size_t i = incMapIndex(map, key);
+    return map->keys[i] ? map->vals[i] : NULL;
+}
+
+static void incMapPut(IncMap *map, void *key, void *val) {
+    if ((map->used + 1) * 2 > map->avail) {
+        void **oldkeys = map->keys, **oldvals = map->vals;
+        size_t oldavail = map->avail;
+        map->avail = oldavail ? oldavail * 2 : 64;
+        map->keys = (void**)memAllocBlk(map->avail * sizeof(void*));
+        map->vals = (void**)memAllocBlk(map->avail * sizeof(void*));
+        memset(map->keys, 0, map->avail * sizeof(void*));
+        memset(map->vals, 0, map->avail * sizeof(void*));
+        for (size_t i = 0; i < oldavail; ++i) {
+            if (oldkeys[i]) {
+                size_t j = incMapIndex(map, oldkeys[i]);
+                map->keys[j] = oldkeys[i];
+                map->vals[j] = oldvals[i];
+            }
+        }
+    }
+    size_t i = incMapIndex(map, key);
+    if (map->keys[i] == NULL) {
+        map->keys[i] = key;
+        ++map->used;
+    }
+    map->vals[i] = val;
+}
+
+// One module of the package: the root, or one of its submodules at any depth
+typedef struct IncMod {
+    ModuleNode *mod;
+    struct IncMod *parent;  // NULL for the root
+    int emitted;            // Its text is in the file: the root, or a submodule's block
+    DclSpan *header;        // Its first file's last header statement: its 'mod' line or an import
+    IncBuf moved;           // The imports of its later files, moved up into that header
+} IncMod;
+
+// Where a declaration of the package is written
+typedef struct IncDcl {
+    IncMod *m;              // Its module
+    StructNode *type;       // The type whose braces declare it, at the top; NULL at module level
+    DclSpan *span;
+} IncDcl;
+
 // One change to one file's text: [from, to) is replaced by 'text', or removed
-// where 'text' is NULL; an insertion has 'from' and 'to' the same
+// where 'text' is NULL; an insertion has 'from' and 'to' the same. 'blocks'
+// inserts the moved imports and the nested module blocks of that module
 typedef struct IncEdit {
     Lexer *lexer;
     char *from;
     char *to;
     char *text;
+    IncMod *blocks;
     uint32_t seq;
 } IncEdit;
 
 typedef struct IncGen {
     ModuleNode *root;
     ModuleNode *core;       // Its types are written bare: every module folds core in
+    IncMod **mods;          // The root first, then its submodules in the program's module order
+    uint32_t nmods;
+    IncMap dcls;            // Each declaration of the package with a span -> its IncDcl
+    IncMap wanted;          // What goes in beyond the root's own rules: every type the file
+                            // declares, each submodule declaration, a typedef reached
     IncEdit *edits;
     uint32_t nedits, availedits;
-    StructNode **needed;    // The root's types an included declaration names
-    uint32_t nneeded, availneeded;
-    INode **refused;        // Each refusal reported, as a pair: where, and what,
-    uint32_t nrefused, availrefused;    // so that each is reported once
-    INode *from;            // The included declaration whose types are being walked
     int probing;            // Walking only to learn whether a type reaches a submodule
     int probehit;
     int failed;
 } IncGen;
 
-static void incEdit(IncGen *g, Lexer *lexer, char *from, char *to, char *text) {
+static IncEdit *incEdit(IncGen *g, Lexer *lexer, char *from, char *to, char *text) {
     if (g->nedits == g->availedits) {
         g->availedits = g->availedits ? g->availedits * 2 : 64;
         IncEdit *edits = (IncEdit*)memAllocBlk(g->availedits * sizeof(IncEdit));
@@ -97,7 +177,13 @@ static void incEdit(IncGen *g, Lexer *lexer, char *from, char *to, char *text) {
     edit->from = from;
     edit->to = to;
     edit->text = text;
+    edit->blocks = NULL;
     edit->seq = g->nedits++;
+    return edit;
+}
+
+static int incWanted(IncGen *g, INode *node) {
+    return incMapGet(&g->wanted, node) != NULL;
 }
 
 // ---- Reading the text around a declaration ----------------------------------
@@ -230,18 +316,120 @@ static void incDelete(IncGen *g, DclSpan *span, char *floor) {
     incEdit(g, span->lexer, from, to, NULL);
 }
 
+// ---- The package's modules --------------------------------------------------
+
+// The package module a module is, or NULL where it is not one of the package's:
+// core, another package's include file. An instance of a generic module is its
+// generic's, whose block holds its whole text
+static IncMod *incModOf(IncGen *g, ModuleNode *mod) {
+    if (mod && mod->generic)
+        mod = mod->generic;
+    for (uint32_t i = 0; i < g->nmods; ++i) {
+        if (g->mods[i]->mod == mod)
+            return g->mods[i];
+    }
+    return NULL;
+}
+
+// Is 'mod' 'anc' or inside it, at any depth?
+static int incWithin(ModuleNode *mod, ModuleNode *anc) {
+    while (mod) {
+        if (mod == anc)
+            return 1;
+        mod = mod->dclinfo.owner ? dclInfoGetModule(mod->dclinfo.owner) : NULL;
+    }
+    return 0;
+}
+
+// Record where each declaration of a type's braces is written, against the
+// type at the top: a variant's members are its enum's
+static void incMapType(IncGen *g, IncMod *m, StructNode *top, StructNode *strnode) {
+    DclSpans *spans = strnode->spans;
+    for (uint32_t i = 0; spans && i < spans->count; ++i) {
+        DclSpan *span = spans->items[i];
+        if (span->node == NULL || span->kind != SpanDcl)
+            continue;
+        IncDcl *dcl = (IncDcl*)memAllocBlk(sizeof(IncDcl));
+        dcl->m = m;
+        dcl->type = top;
+        dcl->span = span;
+        incMapPut(&g->dcls, span->node, dcl);
+        if (span->node->tag == StructTag)
+            incMapType(g, m, top, (StructNode*)span->node);
+    }
+}
+
+// Record where each declaration of a module is written
+static void incMapModule(IncGen *g, IncMod *m) {
+    DclSpans *spans = m->mod->spans;
+    for (uint32_t i = 0; spans && i < spans->count; ++i) {
+        DclSpan *span = spans->items[i];
+        DclSpans *items = NULL;
+        if (span->kind == SpanExternBlock)
+            items = span->members;
+        else if (span->kind != SpanDcl || span->node == NULL)
+            continue;
+        for (uint32_t j = 0; j < (items ? items->count : 1); ++j) {
+            DclSpan *one = items ? items->items[j] : span;
+            if (one->node == NULL)
+                continue;
+            IncDcl *dcl = (IncDcl*)memAllocBlk(sizeof(IncDcl));
+            dcl->m = m;
+            dcl->type = NULL;
+            dcl->span = one;
+            incMapPut(&g->dcls, one->node, dcl);
+            if (one->node->tag == StructTag)
+                incMapType(g, m, (StructNode*)one->node, (StructNode*)one->node);
+        }
+    }
+}
+
 // ---- Writing an inferred type -----------------------------------------------
 
-// Write a type as Cone spells it, for a global whose type was inferred from its
-// value [Jon 25 Sep, Q6]. A global's value is a literal, so its type is a
-// number, a struct (an instance of a generic one included) or an array of
-// either. Returns 0 for a type this does not spell
-static int incTypeText(IncGen *g, IncBuf *buf, INode *type) {
+// A module's name as a declaration of 'inmod' reaches it: bare from inside it,
+// a path down to one of its own submodules, a sister's name, another package's
+// name. Returns 0 for a module 'inmod' does not reach by name
+static int incModuleRef(IncGen *g, IncBuf *buf, ModuleNode *mod, ModuleNode *inmod) {
+    if (mod == inmod || mod == g->core)
+        return 1;
+    if (incModOf(g, mod) == NULL) {
+        // Another package's module, reached through the name its import binds
+        if (mod->dclinfo.owner != NULL)
+            return 0;
+        incBufPuts(buf, &mod->namesym->namestr);
+        incBufPuts(buf, ".");
+        return 1;
+    }
+    ModuleNode *parent = mod->dclinfo.owner ? dclInfoGetModule(mod->dclinfo.owner) : NULL;
+    if (parent == NULL)
+        return 0;
+    // A sister, which 'inmod' imported to name it
+    ModuleNode *inparent = inmod->dclinfo.owner ? dclInfoGetModule(inmod->dclinfo.owner) : NULL;
+    if (parent == inparent) {
+        incBufPuts(buf, &mod->namesym->namestr);
+        incBufPuts(buf, ".");
+        return 1;
+    }
+    // One of 'inmod''s own, at any depth
+    if (!incWithin(parent, inmod))
+        return 0;
+    if (parent != inmod && !incModuleRef(g, buf, parent, inmod))
+        return 0;
+    incBufPuts(buf, &mod->namesym->namestr);
+    incBufPuts(buf, ".");
+    return 1;
+}
+
+// Write a type as Cone spells it inside module 'inmod', for a global whose type
+// was inferred from its value [Jon 25 Sep, Q6]. A global's value is a literal,
+// so its type is a number, a struct (an instance of a generic one included) or
+// an array of either. Returns 0 for a type this does not spell
+static int incTypeText(IncGen *g, IncBuf *buf, INode *type, ModuleNode *inmod) {
     if (type == NULL)
         return 0;
     if (isNameUseNode(type)) {
         INode *dcl = nameUseGetDcl((NameUseNode*)type);
-        return dcl ? incTypeText(g, buf, dcl) : 0;
+        return dcl ? incTypeText(g, buf, dcl, inmod) : 0;
     }
     switch (type->tag) {
     case IntNbrTag:
@@ -254,14 +442,8 @@ static int incTypeText(IncGen *g, IncBuf *buf, INode *type) {
         ModuleNode *mod = dclInfoGetModule(type);
         if (mod == NULL || mod->generic != NULL)
             return 0;
-        // Another package's type is reached through its module's name, which
-        // its import binds; core's are folded into every module
-        if (mod != g->root && mod != g->core) {
-            if (mod->dclinfo.owner != NULL)
-                return 0;
-            incBufPuts(buf, &mod->namesym->namestr);
-            incBufPuts(buf, ".");
-        }
+        if (!incModuleRef(g, buf, mod, inmod))
+            return 0;
         // A variant is reached through its enum
         INode *owner = strnode->dclinfo.owner;
         if (owner && owner->tag == StructTag) {
@@ -279,7 +461,7 @@ static int incTypeText(IncGen *g, IncBuf *buf, INode *type) {
                 if (!first)
                     incBufPuts(buf, ", ");
                 first = 0;
-                if (!incTypeText(g, buf, *nodesp))
+                if (!incTypeText(g, buf, *nodesp, inmod))
                     return 0;
             }
             incBufPuts(buf, "]");
@@ -296,7 +478,7 @@ static int incTypeText(IncGen *g, IncBuf *buf, INode *type) {
         char dimtext[32];
         snprintf(dimtext, sizeof(dimtext), "[%llu; ", (unsigned long long)((ULitNode*)dim)->uintlit);
         incBufPuts(buf, dimtext);
-        if (!incTypeText(g, buf, nodesGet(array->elems, 0)))
+        if (!incTypeText(g, buf, nodesGet(array->elems, 0), inmod))
             return 0;
         incBufPuts(buf, "]");
         return 1;
@@ -307,78 +489,83 @@ static int incTypeText(IncGen *g, IncBuf *buf, INode *type) {
 }
 
 // ---- What the include file needs --------------------------------------------
-
-// Is this module one of the root's submodules, at any depth?
-static int incInRootTree(IncGen *g, ModuleNode *mod) {
-    while (mod && mod->dclinfo.owner) {
-        mod = dclInfoGetModule(mod->dclinfo.owner);
-        if (mod == g->root)
-            return 1;
-    }
-    return 0;
-}
-
-// A module as a path names it from the root: 'q.sub'
-static void incModulePath(IncBuf *buf, ModuleNode *mod) {
-    if (mod->dclinfo.owner && mod->dclinfo.owner->tag == ModuleTag) {
-        incModulePath(buf, (ModuleNode*)mod->dclinfo.owner);
-        incBufPuts(buf, ".");
-    }
-    incBufPuts(buf, mod->namesym ? &mod->namesym->namestr : "?");
-}
-
-static char *incName(INode *node) {
-    Name *name = inodeGetName(node);
-    return name ? &name->namestr : "?";
-}
-
-// Report something of a submodule that the include file would have to declare,
-// once. A generated include file cannot declare a submodule's names yet [Jon 25
-// Sep, Q1: a private, pruned nested module is the ruling, and the next step]
-static void incRefuse(IncGen *g, INode *at, INode *dcl, char *why) {
-    for (uint32_t i = 0; i < g->nrefused; i += 2) {
-        if (g->refused[i] == at && g->refused[i + 1] == dcl)
-            return;
-    }
-    if (g->nrefused + 2 > g->availrefused) {
-        g->availrefused = g->availrefused ? g->availrefused * 2 : 16;
-        INode **refused = (INode**)memAllocBlk(g->availrefused * sizeof(INode*));
-        if (g->nrefused)
-            memcpy(refused, g->refused, g->nrefused * sizeof(INode*));
-        g->refused = refused;
-    }
-    g->refused[g->nrefused++] = at;
-    g->refused[g->nrefused++] = dcl;
-    g->failed = 1;
-    IncBuf path;
-    memset(&path, 0, sizeof(path));
-    incModulePath(&path, dclInfoGetModule(dcl));
-    if (dcl->tag == ModuleTag) {
-        errorMsgNode(at, ErrorIncSubmodule,
-            "Package %s's include file would have to declare the names submodule %s holds, since %s. A generated include file cannot declare a submodule's names yet: keep this 'use' private, or move what it re-exports into module %s.",
-            &g->root->namesym->namestr, path.text, why, &g->root->namesym->namestr);
-        return;
-    }
-    errorMsgNode(at, ErrorIncSubmodule,
-        "Package %s's include file would have to declare %s, which submodule %s holds, since %s. A generated include file cannot declare a submodule's names yet: move %s into module %s, or keep it out of what %s shows its importers.",
-        &g->root->namesym->namestr, incName(dcl), path.text, why,
-        incName(dcl), &g->root->namesym->namestr, &g->root->namesym->namestr);
-}
-
-static int incIsNeeded(IncGen *g, StructNode *strnode) {
-    for (uint32_t i = 0; i < g->nneeded; ++i) {
-        if (g->needed[i] == strnode)
-            return 1;
-    }
-    return 0;
-}
+//
+// The root's own declarations go in by the rules above. What they reach in the
+// package -- a type an included signature, field or global names; what a body
+// the file copies whole names (exportReachesOf); what a 'pub use' re-exports --
+// is WANTED, and a wanted declaration of a submodule puts that submodule's
+// block in the file, with everything the declaration reaches in turn.
 
 static void incWalkType(IncGen *g, INode *type);
 static void incNeed(IncGen *g, StructNode *strnode);
+static void incWant(IncGen *g, INode *node);
+static void incEmit(IncGen *g, IncMod *m);
+
+// Want what a declaration the file holds reaches (exportReachesOf): everything
+// a body it copies whole names, and what a parameter's default value names,
+// which an importer evaluates where it calls -- a function, global or type, a
+// macro, typedef or const, in whichever of the package's modules
+static void incFollow(IncGen *g, INode *from) {
+    Nodes *reached = exportReachesOf(from);
+    if (reached == NULL)
+        return;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(reached, cnt, nodesp))
+        incWant(g, *nodesp);
+}
+
+// Want the declaration a binding stands for, and a typedef on the way to it:
+// a fold's alias is followed to its target
+static void incWantChain(IncGen *g, INode *node) {
+    while (node) {
+        if (isNameUseNode(node))
+            node = ((NameUseNode*)node)->dclnode;
+        else if (node->tag == AliasDclTag) {
+            if ((node->flags & FlagTypeAlias) && incMapGet(&g->dcls, node)) {
+                incWant(g, node);
+                return;
+            }
+            node = ((AliasDclNode*)node)->target;
+        }
+        else
+            break;
+    }
+    if (node)
+        incWant(g, node);
+}
+
+// Want each name a fold clause lists
+static void incWantItems(IncGen *g, FoldClause *fold) {
+    if (fold == NULL || fold->star)
+        return;
+    INode **itemp;
+    uint32_t cnt;
+    for (nodesFor(fold->items, cnt, itemp))
+        incWantChain(g, *itemp);
+}
+
+// Want every public name of a module a star clause folds: a 'pub use' of a
+// submodule makes each one a public name of the package
+static void incWantAll(IncGen *g, ModuleNode *src, FoldClause *fold) {
+    Namespace *ns = &src->namespace;
+    namespaceFor(ns) {
+        NameNode *nn = &ns->namenodes[__i];
+        if (nn->name == NULL || nn->node == NULL)
+            continue;
+        if (nn->name == selfTypeName || nn->name == anonName || nn->name == finalName
+            || nn->name == cloneName || nn->name == src->namesym || foldExcluded(fold, nn->name))
+            continue;
+        if (inodeIsPrivate(nn->node))
+            continue;
+        incWantChain(g, nn->node);
+    }
+}
 
 // A type an included declaration names. One of the root's goes in, with what
-// its own fields and signatures name; one of a submodule's is refused; one of
-// another package's is that package's include file's to declare
+// its own fields and signatures name; one of a submodule's goes in that
+// submodule's block; one of another package's is that package's include file's
+// to declare
 static void incReachStruct(IncGen *g, StructNode *strnode) {
     // A variant is declared by its enum, and an instance by its generic
     StructNode *top = strnode;
@@ -396,24 +583,15 @@ static void incReachStruct(IncGen *g, StructNode *strnode) {
             return;
         top = (StructNode*)generic;
     }
-    ModuleNode *mod = dclInfoGetModule((INode*)top);
-    if (mod == NULL)
+    IncMod *m = incModOf(g, dclInfoGetModule((INode*)top));
+    if (m == NULL)
         return;
-    if (mod == g->root) {
-        if (!g->probing)
-            incNeed(g, top);
-    }
-    else if (incInRootTree(g, mod)) {
-        if (g->probing)
+    if (g->probing) {
+        if (!incWanted(g, (INode*)top))
             g->probehit = 1;
-        else if (g->from->tag == ModUseTag)
-            incRefuse(g, g->from, (INode*)top, "'pub use' makes what it names public names of the package");
-        else {
-            char why[256];
-            snprintf(why, sizeof(why), "%s, which the include file declares, names it in its signature, type or fields", incName(g->from));
-            incRefuse(g, g->from, (INode*)top, why);
-        }
+        return;
     }
+    incNeed(g, top);
 }
 
 // Walk a type expression for the types it names
@@ -421,7 +599,7 @@ static void incWalkType(IncGen *g, INode *type) {
     if (type == NULL)
         return;
     if (isNameUseNode(type)) {
-        INode *dcl = nameUseGetDcl((NameUseNode*)type);
+        INode *dcl = ((NameUseNode*)type)->dclnode;
         if (dcl)
             incWalkType(g, dcl);
         return;
@@ -433,7 +611,10 @@ static void incWalkType(IncGen *g, INode *type) {
         incReachStruct(g, (StructNode*)type);
         break;
     case AliasDclTag:
-        if (type->flags & FlagTypeAlias)
+        // A typedef of the package goes in, and with it what it names
+        if ((type->flags & FlagTypeAlias) && !g->probing && incMapGet(&g->dcls, type))
+            incWant(g, type);
+        else
             incWalkType(g, ((AliasDclNode*)type)->target);
         break;
     case RefTag:
@@ -486,10 +667,12 @@ static int incMemberVarWanted(IncGen *g, StructNode *type, INode *var) {
 }
 
 // Walk what an included type names: its bases, its fields, the signatures of
-// the members that go in with it, and an enum's variants
+// the members that go in with it, what the bodies it carries whole name, and
+// an enum's variants. The type is marked DclIncluded first: an importer holds
+// its values, so the object exports its public methods (dclIsExported), and
+// that decides which members go in
 static void incWalkStruct(IncGen *g, StructNode *strnode) {
-    INode *svfrom = g->from;
-    g->from = (INode*)strnode;
+    strnode->dclinfo.facts |= DclIncluded;
     incWalkType(g, strnode->basetrait);
     incWalkType(g, strnode->extendsbase);
     INode **nodesp;
@@ -504,8 +687,12 @@ static void incWalkStruct(IncGen *g, StructNode *strnode) {
     }
     for (nodelistFor(&strnode->nodelist, cnt, nodesp)) {
         INode *member = *nodesp;
-        if (member->tag == FnDclTag && incMemberFnWanted(g, strnode, member))
+        if (member->tag == FnDclTag && incMemberFnWanted(g, strnode, member)) {
             incWalkType(g, ((FnDclNode*)member)->vtype);
+            incFollow(g, member);
+        }
+        else if (member->tag == MacroDclTag)
+            incFollow(g, member);
         else if (member->tag == VarDclTag && incMemberVarWanted(g, strnode, member))
             incWalkType(g, ((VarDclNode*)member)->vtype);
     }
@@ -513,29 +700,99 @@ static void incWalkStruct(IncGen *g, StructNode *strnode) {
         for (nodesFor(strnode->derived, cnt, nodesp))
             incWalkStruct(g, (StructNode*)*nodesp);
     }
-    g->from = svfrom;
 }
 
 static void incNeed(IncGen *g, StructNode *strnode) {
-    if (incIsNeeded(g, strnode))
+    if (incWanted(g, (INode*)strnode))
         return;
-    if (g->nneeded == g->availneeded) {
-        g->availneeded = g->availneeded ? g->availneeded * 2 : 16;
-        StructNode **needed = (StructNode**)memAllocBlk(g->availneeded * sizeof(StructNode*));
-        if (g->nneeded)
-            memcpy(needed, g->needed, g->nneeded * sizeof(StructNode*));
-        g->needed = needed;
-    }
-    g->needed[g->nneeded++] = strnode;
+    incMapPut(&g->wanted, strnode, strnode);
+    IncMod *m = incModOf(g, dclInfoGetModule((INode*)strnode));
+    if (m)
+        incEmit(g, m);
     incWalkStruct(g, strnode);
+}
+
+// A module-trait's members: the signatures, and what the defaults name
+static void incWalkModTrait(IncGen *g, ModTraitNode *trait) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(trait->nodes, cnt, nodesp)) {
+        if ((*nodesp)->tag == FnDclTag) {
+            incWalkType(g, ((FnDclNode*)*nodesp)->vtype);
+            incFollow(g, *nodesp);
+        }
+        else if ((*nodesp)->tag == VarDclTag)
+            incWalkType(g, ((VarDclNode*)*nodesp)->vtype);
+    }
+}
+
+// Want a declaration of the package the file must hold, with what it reaches.
+// A member of a type brings its type, which decides its members. The root's
+// functions, globals, macros and consts go in by the root's own rules; a
+// submodule's go in because they are wanted
+static void incWant(IncGen *g, INode *node) {
+    if (g->probing || node == NULL)
+        return;
+    IncDcl *dcl = (IncDcl*)incMapGet(&g->dcls, node);
+    if (dcl == NULL) {
+        // A declaration of an instance of one of the package's generic
+        // modules brings the generic's block, which holds its whole text.
+        // Anything else is not the package's -- core's, another package's --
+        // or a copy with no text of its own
+        DclInfo *info = inodeGetDclInfo(node);
+        ModuleNode *mod = info && info->owner ? dclInfoGetModule(node) : NULL;
+        IncMod *m = mod && mod->generic ? incModOf(g, mod) : NULL;
+        if (m)
+            incEmit(g, m);
+        return;
+    }
+    if (dcl->type) {
+        incNeed(g, dcl->type);
+        return;
+    }
+    if (node->tag == StructTag) {
+        incNeed(g, (StructNode*)node);
+        return;
+    }
+    if (incWanted(g, node))
+        return;
+    int isroot = dcl->m->mod == g->root;
+    if (isroot && node->tag != AliasDclTag)
+        return;
+    incMapPut(&g->wanted, node, node);
+    incEmit(g, dcl->m);
+    switch (node->tag) {
+    case FnDclTag:
+        incWalkType(g, ((FnDclNode*)node)->vtype);
+        incFollow(g, node);
+        break;
+    case VarDclTag:
+        incWalkType(g, ((VarDclNode*)node)->vtype);
+        break;
+    case AliasDclTag:
+        if (node->flags & FlagTypeAlias)
+            incWalkType(g, ((AliasDclNode*)node)->target);
+        break;
+    case MacroDclTag:
+        incFollow(g, node);
+        break;
+    case ModTraitTag:
+        incWalkModTrait(g, (ModTraitNode*)node);
+        break;
+    default:
+        break;
+    }
 }
 
 // Whether a module-level global goes in: it is exported, or it is one the
 // module's finalizer drops, which an importer must see to derive that the
 // package's finalizer is its 'drop' (module.md, "Init and final")
+static int incGlobalDropped(VarDclNode *var) {
+    return !(var->dclinfo.facts & DclCName) && itypeGetDropFnDcl(var->vtype) != NULL;
+}
+
 static int incGlobalWanted(IncGen *g, VarDclNode *var) {
-    return dclIsExported(g->root, (INode*)var)
-        || (!(var->dclinfo.facts & DclCName) && itypeGetDropFnDcl(var->vtype) != NULL);
+    return dclIsExported(g->root, (INode*)var) || incGlobalDropped(var);
 }
 
 // Whether a module-level type goes in of its own: it is public, or a body an
@@ -565,17 +822,105 @@ static INode *incUseSource(ModUseNode *use) {
     return NULL;
 }
 
-// The declarations of one statement of the root: an extern block's items, or
-// the statement's own
+// What a module's standalone 'use' needs in the file. A 'pub use' at the root
+// makes names public names of the package, so what it re-exports goes in: an
+// enum, or every name it folds from a submodule. A list names what it folds,
+// so each of those goes in wherever the 'use' is kept
+static void incSeedUse(IncGen *g, IncMod *m, ModUseNode *use) {
+    INode *source = incUseSource(use);
+    int ispub = use->fold->ispub && m->mod == g->root;
+    if (use->modfold) {
+        IncMod *src = incModOf(g, use->modfold->module);
+        if (src == NULL)
+            return;
+        incWantItems(g, use->fold);
+        if (ispub) {
+            incEmit(g, src);
+            if (use->fold->star)
+                incWantAll(g, src->mod, use->fold);
+        }
+    }
+    else if (ispub && source && source->tag == StructTag)
+        incReachStruct(g, (StructNode*)source);
+}
+
+// Put a submodule's block in the file, and its parent's around it. What its
+// own header and 'mod' line name comes with it: a sister it extends, and each
+// name an import of a sister lists. A module conforming to a module trait
+// keeps every declaration, since the trait decides which it needs
+static void incEmit(IncGen *g, IncMod *m) {
+    if (m->emitted)
+        return;
+    m->emitted = 1;
+    if (m->parent)
+        incEmit(g, m->parent);
+    ModuleNode *mod = m->mod;
+    if (mod->extends && mod->extends->module) {
+        IncMod *base = incModOf(g, mod->extends->module);
+        if (base)
+            incEmit(g, base);
+    }
+    DclSpans *spans = mod->spans;
+
+    // A generic module's block is its whole text, since every declaration is
+    // instantiated where it is used, and what that text reaches in a sister is
+    // not recorded: a sister it imports goes in whole too
+    if (mod->genericinfo) {
+        for (uint32_t i = 0; spans && i < spans->count; ++i) {
+            DclSpan *span = spans->items[i];
+            if (span->kind != SpanImport || span->node == NULL)
+                continue;
+            IncMod *sister = incModOf(g, ((ImportNode*)span->node)->module);
+            if (sister == NULL)
+                continue;
+            incEmit(g, sister);
+            DclSpans *sspans = sister->mod->spans;
+            for (uint32_t j = 0; sspans && j < sspans->count; ++j) {
+                DclSpan *sspan = sspans->items[j];
+                if (sspan->kind == SpanDcl)
+                    incWant(g, sspan->node);
+                else if (sspan->kind == SpanExternBlock) {
+                    for (uint32_t k = 0; sspan->members && k < sspan->members->count; ++k)
+                        incWant(g, sspan->members->items[k]->node);
+                }
+            }
+        }
+        return;
+    }
+    for (uint32_t i = 0; spans && i < spans->count; ++i) {
+        DclSpan *span = spans->items[i];
+        if (span->node == NULL)
+            continue;
+        if (span->kind == SpanImport) {
+            ImportNode *import = (ImportNode*)span->node;
+            if (import->module && incModOf(g, import->module))
+                incWantItems(g, import->fold);
+        }
+        else if (span->kind == SpanUse)
+            incSeedUse(g, m, (ModUseNode*)span->node);
+        else if (mod->traitname && m->parent) {
+            if (span->kind == SpanDcl)
+                incWant(g, span->node);
+            else if (span->kind == SpanExternBlock) {
+                for (uint32_t j = 0; span->members && j < span->members->count; ++j)
+                    incWant(g, span->members->items[j]->node);
+            }
+        }
+    }
+}
+
+// The root's declarations of one statement: an extern block's items, or the
+// statement's own
 static void incSeedDcl(IncGen *g, DclSpan *span) {
     INode *node = span->node;
     if (node == NULL)
         return;
-    g->from = node;
     switch (node->tag) {
     case FnDclTag:
-        if (dclIsExported(g->root, node))
+        if (dclIsExported(g->root, node)) {
             incWalkType(g, ((FnDclNode*)node)->vtype);
+            incFollow(g, node);
+        }
         break;
     case VarDclTag:
         if (incGlobalWanted(g, (VarDclNode*)node))
@@ -585,15 +930,38 @@ static void incSeedDcl(IncGen *g, DclSpan *span) {
         if (incTypeReached((StructNode*)node))
             incNeed(g, (StructNode*)node);
         break;
+    case AliasDclTag:
+        if ((node->flags & FlagTypeAlias) && (node->flags & FlagPub))
+            incWant(g, node);
+        break;
+    case MacroDclTag:
+        incFollow(g, node);
+        break;
+    case ModTraitTag:
+        incWalkModTrait(g, (ModTraitNode*)node);
+        break;
     default:
         break;
     }
 }
 
-// Work out which of the root's types go in: the ones reached of their own, and
-// every one an included declaration names, transitively. What names a
-// submodule's is refused here
+// A submodule's declarations the program reaches without naming them: its
+// 'init' and 'final', which the program's stitched pair calls, and each global
+// its finalizer drops, from which the program derives that finalizer
+static void incSeedLifecycle(IncGen *g, DclSpan *span) {
+    INode *node = span->node;
+    if (node == NULL)
+        return;
+    if ((node->tag == FnDclTag && (((FnDclNode*)node)->dclinfo.facts & DclLifecycle))
+        || (node->tag == VarDclTag && incGlobalDropped((VarDclNode*)node)))
+        incWant(g, node);
+}
+
+// Work out what goes in: from the root's own declarations, what each reaches,
+// transitively, in the root and in its submodules
 static void incSelect(IncGen *g) {
+    IncMod *root = g->mods[0];
+    root->emitted = 1;
     DclSpans *spans = g->root->spans;
     for (uint32_t i = 0; spans && i < spans->count; ++i) {
         DclSpan *span = spans->items[i];
@@ -603,26 +971,30 @@ static void incSelect(IncGen *g) {
         }
         else if (span->kind == SpanDcl)
             incSeedDcl(g, span);
-        else if (span->kind == SpanUse) {
-            // 'pub use' makes an enum's variants public names of the root,
-            // which an importer can reach, so the enum goes in
-            ModUseNode *use = (ModUseNode*)span->node;
-            INode *source = incUseSource(use);
-            if (use->fold->ispub && use->modfold == NULL && source && source->tag == StructTag) {
-                g->from = (INode*)use;
-                incReachStruct(g, (StructNode*)source);
+        else if (span->kind == SpanUse && span->node)
+            incSeedUse(g, root, (ModUseNode*)span->node);
+    }
+    for (uint32_t k = 1; k < g->nmods; ++k) {
+        spans = g->mods[k]->mod->spans;
+        for (uint32_t i = 0; spans && i < spans->count; ++i) {
+            DclSpan *span = spans->items[i];
+            if (span->kind == SpanExternBlock) {
+                for (uint32_t j = 0; span->members && j < span->members->count; ++j)
+                    incSeedLifecycle(g, span->members->items[j]);
             }
+            else if (span->kind == SpanDcl)
+                incSeedLifecycle(g, span);
         }
     }
 }
 
-// ---- Editing the root's text ------------------------------------------------
+// ---- Editing the text -------------------------------------------------------
 
 // Declare a definition 'extern' in place of its body or value: 'extern' written
 // in before its keyword, and its body -- a function's from its '{', a global's
 // value from its '=' -- left out, with what follows the value (a fold clause)
 // kept. A global whose type was inferred gets its type written in [Jon 25 Sep, Q6]
-static void incCut(IncGen *g, DclSpan *span) {
+static void incCut(IncGen *g, IncMod *m, DclSpan *span) {
     INode *node = span->node;
     Lexer *lexer = span->lexer;
     if (node->tag == VarDclTag && (node->flags & FlagStatic)) {
@@ -639,12 +1011,12 @@ static void incCut(IncGen *g, DclSpan *span) {
         IncBuf type;
         memset(&type, 0, sizeof(type));
         incBufPuts(&type, " ");
-        if (incTypeText(g, &type, ((VarDclNode*)node)->vtype))
+        if (incTypeText(g, &type, ((VarDclNode*)node)->vtype, m->mod))
             incEdit(g, lexer, span->nameend, span->nameend, type.text);
         else {
             errorMsgNode(node, ErrorIncCheck,
                 "The include file declares %s 'extern', without its value, so it must write its type, and the generator cannot spell the type inferred from the value. Write the type on the declaration.",
-                incName(node));
+                &inodeGetName(node)->namestr);
             g->failed = 1;
         }
     }
@@ -660,7 +1032,7 @@ static void incCut(IncGen *g, DclSpan *span) {
 }
 
 // The members of an included type: each whole, cut to 'extern' or left out
-static void incEditType(IncGen *g, StructNode *strnode, char *floor) {
+static void incEditType(IncGen *g, IncMod *m, StructNode *strnode, char *floor) {
     DclSpans *spans = strnode->spans;
     for (uint32_t i = 0; spans && i < spans->count; ++i) {
         DclSpan *span = spans->items[i];
@@ -673,14 +1045,14 @@ static void incEditType(IncGen *g, StructNode *strnode, char *floor) {
                 if (!incMemberFnWanted(g, strnode, node))
                     incDelete(g, span, floor);
                 else if (!(node->flags & FlagExtern))
-                    incCut(g, span);
+                    incCut(g, m, span);
                 break;
             case VarDclTag:
                 if (!incMemberVarWanted(g, strnode, node))
                     incDelete(g, span, floor);
                 break;
             case StructTag:
-                incEditType(g, (StructNode*)node, span->kw);
+                incEditType(g, m, (StructNode*)node, span->kw);
                 break;
             default:
                 break;
@@ -691,7 +1063,7 @@ static void incEditType(IncGen *g, StructNode *strnode, char *floor) {
 }
 
 // A declaration of the root's: whole, cut to 'extern', or left out
-static void incEditDcl(IncGen *g, DclSpan *span, char *floor) {
+static void incEditRootDcl(IncGen *g, IncMod *m, DclSpan *span, char *floor) {
     INode *node = span->node;
     if (node == NULL)
         return;
@@ -700,80 +1072,217 @@ static void incEditDcl(IncGen *g, DclSpan *span, char *floor) {
         if (!dclIsExported(g->root, node))
             incDelete(g, span, floor);
         else if (!(node->flags & FlagExtern) && !fnDclIsExpanded((FnDclNode*)node, NULL))
-            incCut(g, span);
+            incCut(g, m, span);
         break;
     case VarDclTag:
         if (!incGlobalWanted(g, (VarDclNode*)node))
             incDelete(g, span, floor);
         else if (!(node->flags & FlagExtern))
-            incCut(g, span);
+            incCut(g, m, span);
         break;
     case StructTag:
-        if (!incIsNeeded(g, (StructNode*)node))
+        if (!incWanted(g, node))
             incDelete(g, span, floor);
         else
-            incEditType(g, (StructNode*)node, span->kw);
+            incEditType(g, m, (StructNode*)node, span->kw);
         break;
     case AliasDclTag:
-        // A typedef declares no symbol, and what names it is not recorded, so
-        // one goes in unless it names what a submodule holds, which a public one
-        // cannot and a private one need not
-        if (node->flags & FlagTypeAlias) {
+        // A typedef declares no symbol. One goes in unless it is private,
+        // nothing the file holds reaches it, and it names a type of the
+        // package's that the file leaves out
+        if ((node->flags & FlagTypeAlias) && !(node->flags & FlagPub) && !incWanted(g, node)) {
             g->probing = 1;
             g->probehit = 0;
             incWalkType(g, ((AliasDclNode*)node)->target);
             g->probing = 0;
-            if (g->probehit) {
-                if (node->flags & FlagPub) {
-                    g->from = node;
-                    incWalkType(g, ((AliasDclNode*)node)->target);
-                }
-                else
-                    incDelete(g, span, floor);
-            }
+            if (g->probehit)
+                incDelete(g, span, floor);
         }
         break;
     default:
-        // A const, a macro or a module trait declares no symbol, and what names
-        // it is not recorded: each goes in as written
+        // A const, a macro or a module trait declares no symbol, and each goes
+        // in as written
         break;
     }
 }
 
-// A standalone 'use': kept where what it names is in the include file or
-// another package, left out where it folds a submodule's names privately, and
-// refused where it would make a submodule's names public
+// A declaration of a submodule's: in the block only where wanted, then whole or
+// cut to 'extern' by the root's rules
+static void incEditSubDcl(IncGen *g, IncMod *m, DclSpan *span, char *floor) {
+    INode *node = span->node;
+    if (node == NULL)
+        return;
+    if (!incWanted(g, node)) {
+        incDelete(g, span, floor);
+        return;
+    }
+    switch (node->tag) {
+    case FnDclTag:
+        if (!(node->flags & FlagExtern) && !fnDclIsExpanded((FnDclNode*)node, NULL))
+            incCut(g, m, span);
+        break;
+    case VarDclTag:
+        if (!(node->flags & FlagExtern))
+            incCut(g, m, span);
+        break;
+    case StructTag:
+        incEditType(g, m, (StructNode*)node, span->kw);
+        break;
+    default:
+        break;
+    }
+}
+
+// A standalone 'use': kept where what it names is in the file or is another
+// package's, and left out where it names an enum or a submodule the file does
+// not hold
 static void incEditUse(IncGen *g, DclSpan *span, char *floor) {
     ModUseNode *use = (ModUseNode*)span->node;
-    INode *source = incUseSource(use);
-    ModuleNode *mod = use->modfold ? use->modfold->module
-        : source && source->tag == StructTag ? dclInfoGetModule(source) : NULL;
-    if (mod == NULL || mod == g->root) {
-        if (source && source->tag == StructTag && !incIsNeeded(g, (StructNode*)source))
+    if (use->modfold) {
+        IncMod *src = incModOf(g, use->modfold->module);
+        if (src && !src->emitted)
             incDelete(g, span, floor);
         return;
     }
-    if (!incInRootTree(g, mod))
-        return;
-    if (use->fold->ispub)
-        incRefuse(g, (INode*)use, use->modfold ? (INode*)mod : source,
-            "'pub use' makes what it names public names of the package");
-    else
+    INode *source = incUseSource(use);
+    if (source && source->tag == StructTag && incModOf(g, dclInfoGetModule(source))
+        && !incWanted(g, source))
         incDelete(g, span, floor);
 }
 
-// What a body an importer expands names in a submodule, the root's own body
-// having named it (DclSubReached): refused where it is declared
-static void incRefuseSubReached(IncGen *g, INode *node) {
-    DclInfo *dclinfo = inodeGetDclInfo(node);
-    if (dclinfo && (dclinfo->facts & DclSubReached))
-        incRefuse(g, node, node,
-            "a body an importer expands -- an inline, generic or macro body, or a trait's default -- that the root module declares names it");
-    if (node->tag == StructTag) {
-        INode **nodesp;
-        uint32_t cnt;
-        for (nodelistFor(&((StructNode*)node)->nodelist, cnt, nodesp))
-            incRefuseSubReached(g, *nodesp);
+// An import: kept, unless it imports a sister whose block is not in the file
+static int incImportKept(IncGen *g, DclSpan *span) {
+    ImportNode *import = (ImportNode*)span->node;
+    if (import == NULL || import->module == NULL)
+        return 1;
+    IncMod *im = incModOf(g, import->module);
+    return im == NULL || im->emitted;
+}
+
+// A submodule's 'mod' line becomes its block's opening: 'mod name {', with its
+// '@c', 'extends' and 'is' as written. Its 'pub' goes, since the block is
+// private to the package, and so does its default fold, which says what an
+// import of it folds, and nothing imports it
+static char *incBlockOpening(IncMod *m, DclSpan *span) {
+    char *from = span->kw;
+    char *to = span->end;
+    FoldClause *deffold = m->mod->deffold;
+    if (deffold && deffold->at && deffold->at->srcp > from && deffold->at->srcp < to)
+        to = deffold->at->srcp;
+    else if (to > from && to[-1] == ';')
+        --to;
+    while (to > from && (incIsBlank(to[-1]) || to[-1] == '\n'))
+        --to;
+    IncBuf buf;
+    memset(&buf, 0, sizeof(buf));
+    incBufPutn(&buf, from, to - from);
+    incBufPuts(&buf, " {");
+    return buf.text;
+}
+
+// Edit one module's text, statement by statement. A file other than the
+// first has its imports moved up into the first file's header, since an
+// import may not follow a declaration, and the header is where the module's
+// nested blocks go
+static void incEditModule(IncGen *g, IncMod *m) {
+    int isroot = m->mod == g->root;
+    int generic = m->mod->genericinfo != NULL;
+    DclSpans *spans = m->mod->spans;
+    Lexer *first = spans && spans->count ? spans->items[0]->lexer : NULL;
+    Lexer *curlex = NULL;
+    char *floor = NULL;
+    for (uint32_t i = 0; spans && i < spans->count; ++i) {
+        DclSpan *span = spans->items[i];
+        if (span->lexer != curlex) {
+            curlex = span->lexer;
+            floor = curlex->source;
+        }
+        switch (span->kind) {
+        case SpanModLine:
+            if (curlex == first) {
+                m->header = span;
+                if (!isroot) {
+                    // The block's opening, and a blank line after it goes
+                    char *to = span->end;
+                    char *p = to;
+                    while (incIsBlank(*p))
+                        ++p;
+                    if (*p == '\n') {
+                        char *q = p + 1;
+                        while (incIsBlank(*q))
+                            ++q;
+                        if (*q == '\n')
+                            to = p + 1;
+                    }
+                    incEdit(g, curlex, span->start, to, incBlockOpening(m, span));
+                }
+            }
+            break;
+        case SpanImport:
+            if (curlex == first) {
+                m->header = span;
+                if (!incImportKept(g, span))
+                    incDelete(g, span, floor);
+            }
+            else {
+                if (incImportKept(g, span)) {
+                    incBufPuts(&m->moved, "\n");
+                    incBufPutn(&m->moved, span->start, span->end - span->start);
+                }
+                incDelete(g, span, floor);
+            }
+            break;
+        case SpanUse:
+            if (!generic && span->node)
+                incEditUse(g, span, floor);
+            break;
+        case SpanExternBlock: {
+            if (generic)
+                break;
+            uint32_t kept = 0;
+            for (uint32_t j = 0; span->members && j < span->members->count; ++j) {
+                INode *item = span->members->items[j]->node;
+                if (isroot ? dclIsExported(g->root, item) : incWanted(g, item))
+                    ++kept;
+            }
+            if (kept == 0) {
+                incDelete(g, span, floor);
+                break;
+            }
+            char *itemfloor = span->kw;
+            for (uint32_t j = 0; span->members && j < span->members->count; ++j) {
+                DclSpan *item = span->members->items[j];
+                if (!(isroot ? dclIsExported(g->root, item->node) : incWanted(g, item->node)))
+                    incDelete(g, item, itemfloor);
+                itemfloor = item->end;
+            }
+            break;
+        }
+        case SpanDcl:
+            if (generic)
+                break;
+            if (isroot)
+                incEditRootDcl(g, m, span, floor);
+            else
+                incEditSubDcl(g, m, span, floor);
+            break;
+        default:
+            break;
+        }
+        floor = span->end;
+    }
+
+    // Where the moved imports and the nested blocks go
+    int haschild = 0;
+    for (uint32_t k = 0; k < g->nmods; ++k) {
+        if (g->mods[k]->parent == m && g->mods[k]->emitted)
+            haschild = 1;
+    }
+    if (m->moved.len || haschild) {
+        IncEdit *edit = m->header
+            ? incEdit(g, m->header->lexer, m->header->end, m->header->end, NULL)
+            : incEdit(g, first, first->source, first->source, NULL);
+        edit->blocks = m;
     }
 }
 
@@ -790,7 +1299,7 @@ static int incEditOrder(const void *a, const void *b) {
     return x->seq < y->seq ? -1 : x->seq > y->seq ? 1 : 0;
 }
 
-// The files the root's statements are written in, in the order parsed. 'files'
+// The files a module's statements are written in, in the order parsed. 'files'
 // has room for one per statement
 static uint32_t incFiles(DclSpans *spans, Lexer **files) {
     uint32_t nfiles = 0;
@@ -807,11 +1316,66 @@ static uint32_t incFiles(DclSpans *spans, Lexer **files) {
     return nfiles;
 }
 
+static void incAssemble(IncGen *g, IncMod *m, IncBuf *out);
+
+// A module's moved imports, then the block of each of its submodules the file
+// holds, in the program's module order: a sister a block imports is ahead of it
+static void incPutBlocks(IncGen *g, IncMod *m, IncBuf *out) {
+    incBufPutn(out, m->moved.text, m->moved.len);
+    for (uint32_t k = 0; k < g->nmods; ++k) {
+        IncMod *child = g->mods[k];
+        if (child->parent != m || !child->emitted)
+            continue;
+        IncBuf text;
+        memset(&text, 0, sizeof(text));
+        incAssemble(g, child, &text);
+        char *start = text.text ? text.text : "";
+        char *end = start + text.len;
+        while (start < end && (incIsBlank(*start) || *start == '\n'))
+            ++start;
+        while (end > start && (incIsBlank(end[-1]) || end[-1] == '\n'))
+            --end;
+        incBufPuts(out, "\n\n");
+        incBufPutn(out, start, end - start);
+        incBufPuts(out, "\n}");
+    }
+}
+
+// A module's text, its edits made, its files one after another
+static void incAssemble(IncGen *g, IncMod *m, IncBuf *out) {
+    DclSpans *spans = m->mod->spans;
+    Lexer **files = (Lexer**)memAllocBlk((spans ? spans->count : 0) * sizeof(Lexer*) + sizeof(Lexer*));
+    uint32_t nfiles = incFiles(spans, files);
+    for (uint32_t f = 0; f < nfiles; ++f) {
+        Lexer *lexer = files[f];
+        if (f > 0 && out->len > 0) {
+            if (out->text[out->len - 1] != '\n')
+                incBufPuts(out, "\n");
+            if (out->len < 2 || out->text[out->len - 2] != '\n')
+                incBufPuts(out, "\n");
+        }
+        char *p = lexer->source;
+        for (uint32_t e = 0; e < g->nedits; ++e) {
+            IncEdit *edit = &g->edits[e];
+            if (edit->lexer != lexer || edit->from < p)
+                continue;
+            incBufPutn(out, p, edit->from - p);
+            if (edit->text)
+                incBufPuts(out, edit->text);
+            if (edit->blocks)
+                incPutBlocks(g, edit->blocks, out);
+            p = edit->to;
+        }
+        incBufPuts(out, p);
+    }
+}
+
 // The banner: that the file is generated, from what, and not to be edited
-// [Jon 25 Sep, Q2 and Q3]
+// [Jon 25 Sep, Q2 and Q3]. Its first words are what marks the file as
+// generated where it is read (incFileIsGenerated)
 static void incBanner(IncBuf *out, ModuleNode *root, Lexer **files, uint32_t nfiles) {
     char *name = &root->namesym->namestr;
-    incBufPuts(out, "// Generated by conec: the include file of package ");
+    incBufPuts(out, IncFileBanner);
     incBufPuts(out, name);
     incBufPuts(out, ", from ");
     for (uint32_t i = 0; i < nfiles; ++i) {
@@ -829,6 +1393,15 @@ static void incBanner(IncBuf *out, ModuleNode *root, Lexer **files, uint32_t nfi
     incBufPuts(out, " again.\n\n");
 }
 
+// Whether a file's text is a generated include file: it opens with the banner
+int incFileIsGenerated(char *text) {
+    if (text == NULL)
+        return 0;
+    if ((unsigned char)text[0] == 0xEF && (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF)
+        text += 3;
+    return strncmp(text, IncFileBanner, strlen(IncFileBanner)) == 0;
+}
+
 // Generate the include file of the program's root module
 char *incFileGenerate(ProgramNode *pgm, size_t *lenp) {
     IncGen gen;
@@ -843,121 +1416,54 @@ char *incFileGenerate(ProgramNode *pgm, size_t *lenp) {
     }
     if (g->core == NULL)
         g->core = g->root;  // compiling core itself
-    DclSpans *spans = g->root->spans;
 
-    // A generic module's every declaration is instantiated where it is used,
-    // so its include file is its source, whole
+    // The package's modules: the root, then its submodules in the program's
+    // module order, where each module follows what it depends on
+    Nodes *order = pgm->initorder && pgm->initorder->used ? pgm->initorder : pgm->modules;
+    g->mods = (IncMod**)memAllocBlk((order->used + 1) * sizeof(IncMod*));
+    IncMod *rootm = (IncMod*)memAllocBlk(sizeof(IncMod));
+    memset(rootm, 0, sizeof(IncMod));
+    rootm->mod = g->root;
+    g->mods[g->nmods++] = rootm;
     if (g->root->genericinfo == NULL) {
-        incSelect(g);
-
-        // What the root's expanded bodies name in its submodules
-        for (nodesFor(pgm->modules, cnt, nodesp)) {
+        for (nodesFor(order, cnt, nodesp)) {
             ModuleNode *mod = (ModuleNode*)*nodesp;
-            if (mod == g->root || !incInRootTree(g, mod))
+            if (mod == g->root || mod->tag != ModuleTag || mod->generic || !incWithin(mod, g->root))
                 continue;
-            INode **dclp;
-            uint32_t dclcnt;
-            for (nodesFor(mod->nodes, dclcnt, dclp))
-                incRefuseSubReached(g, *dclp);
+            IncMod *m = (IncMod*)memAllocBlk(sizeof(IncMod));
+            memset(m, 0, sizeof(IncMod));
+            m->mod = mod;
+            g->mods[g->nmods++] = m;
         }
-    }
+        for (uint32_t k = 1; k < g->nmods; ++k)
+            g->mods[k]->parent = incModOf(g, dclInfoGetModule(g->mods[k]->mod->dclinfo.owner));
+        for (uint32_t k = 0; k < g->nmods; ++k)
+            incMapModule(g, g->mods[k]);
 
-    // Edit the root's text, statement by statement. A file other than the
-    // first has its imports moved up into the first file's header, since an
-    // import may not follow a declaration
-    Lexer **files = (Lexer**)memAllocBlk((spans ? spans->count : 0) * sizeof(Lexer*) + sizeof(Lexer*));
-    uint32_t nfiles = incFiles(spans, files);
-    Lexer *first = nfiles ? files[0] : NULL;
-    DclSpan *header = NULL;     // The first file's last header statement
-    IncBuf moved;
-    memset(&moved, 0, sizeof(moved));
-    Lexer *curlex = NULL;
-    char *floor = NULL;
-    for (uint32_t i = 0; spans && i < spans->count; ++i) {
-        DclSpan *span = spans->items[i];
-        if (span->lexer != curlex) {
-            curlex = span->lexer;
-            floor = curlex->source;
-        }
-        switch (span->kind) {
-        case SpanModLine:
-            if (curlex == first)
-                header = span;
-            break;
-        case SpanImport:
-            if (curlex == first)
-                header = span;
-            else {
-                incBufPuts(&moved, "\n");
-                incBufPutn(&moved, span->start, span->end - span->start);
-                incDelete(g, span, floor);
-            }
-            break;
-        case SpanUse:
-            if (g->root->genericinfo == NULL)
-                incEditUse(g, span, floor);
-            break;
-        case SpanExternBlock: {
-            if (g->root->genericinfo != NULL)
-                break;
-            uint32_t kept = 0;
-            for (uint32_t j = 0; span->members && j < span->members->count; ++j) {
-                if (dclIsExported(g->root, span->members->items[j]->node))
-                    ++kept;
-            }
-            if (kept == 0) {
-                incDelete(g, span, floor);
-                break;
-            }
-            char *itemfloor = span->kw;
-            for (uint32_t j = 0; span->members && j < span->members->count; ++j) {
-                DclSpan *item = span->members->items[j];
-                if (!dclIsExported(g->root, item->node))
-                    incDelete(g, item, itemfloor);
-                itemfloor = item->end;
-            }
-            break;
-        }
-        case SpanDcl:
-            if (g->root->genericinfo == NULL)
-                incEditDcl(g, span, floor);
-            break;
-        default:
-            break;
-        }
-        floor = span->end;
+        // A generic module's every declaration is instantiated where it is
+        // used, so its include file is its source, whole
+        incSelect(g);
     }
-    if (moved.len && header)
-        incEdit(g, header->lexer, header->end, header->end, moved.text);
+    else
+        rootm->emitted = 1;
 
+    for (uint32_t k = 0; k < g->nmods; ++k) {
+        if (g->mods[k]->emitted)
+            incEditModule(g, g->mods[k]);
+    }
     if (g->failed)
         return NULL;
 
-    // The banner, then each file's text with its edits made
+    // The banner, then the root's text with its edits made, its submodules'
+    // blocks inside it
     qsort(g->edits, g->nedits, sizeof(IncEdit), incEditOrder);
+    DclSpans *spans = g->root->spans;
+    Lexer **files = (Lexer**)memAllocBlk((spans ? spans->count : 0) * sizeof(Lexer*) + sizeof(Lexer*));
+    uint32_t nfiles = incFiles(spans, files);
     IncBuf out;
     memset(&out, 0, sizeof(out));
     incBanner(&out, g->root, files, nfiles);
-    for (uint32_t f = 0; f < nfiles; ++f) {
-        Lexer *lexer = files[f];
-        if (f > 0 && out.len > 0) {
-            if (out.text[out.len - 1] != '\n')
-                incBufPuts(&out, "\n");
-            if (out.len < 2 || out.text[out.len - 2] != '\n')
-                incBufPuts(&out, "\n");
-        }
-        char *p = lexer->source;
-        for (uint32_t e = 0; e < g->nedits; ++e) {
-            IncEdit *edit = &g->edits[e];
-            if (edit->lexer != lexer || edit->from < p)
-                continue;
-            incBufPutn(&out, p, edit->from - p);
-            if (edit->text)
-                incBufPuts(&out, edit->text);
-            p = edit->to;
-        }
-        incBufPuts(&out, p);
-    }
+    incAssemble(g, rootm, &out);
     *lenp = out.len;
     return out.text;
 }

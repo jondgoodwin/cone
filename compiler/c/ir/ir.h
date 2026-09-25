@@ -136,6 +136,9 @@ typedef struct NameResState {
     INode *macromethod;     // The macro method whose body is being resolved (or NULL)
     INode *expander;        // The declaration whose body is being resolved, when an
                             // importer expands that body in its own object (or NULL)
+    INode *sigfn;           // The function whose signature is being resolved (or NULL):
+                            // a parameter's default value is evaluated where the function
+                            // is called, an importer included, so it is expanded there
     uint16_t scope;         // The current block scope (0=global, 1=fnsig, 2+=blocks)
 } NameResState;
 

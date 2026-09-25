@@ -548,10 +548,13 @@ does is "Generic modules" below.
 **`mod trait` is not this declaration.** `parseGlobalStmts` sees `trait` after
 `mod` and hands the statement to `parseModTrait`, which declares a module trait,
 a declaration of the module like a type — anywhere in the file, and never a late
-`mod`. **A `mod name { ... }` block does not exist**: a module is never declared
-inside a file, and nesting is by files and folders only, a nested module being a
-file of its own or a subfolder with its own designated file. The parser
-recognises the block only to say so, `ErrorUnbuiltKind`, and skips its body.
+`mod`. **A `mod name { ... }` block does not exist in source**: a module is never
+declared inside a source file, and nesting is by files and folders only, a
+nested module being a file of its own or a subfolder with its own designated
+file. The parser recognises the block there only to say so, `ErrorUnbuiltKind`,
+and skips its body. **A generated include file alone writes one** [Jon 25 Sep,
+Q1], a private, pruned block for each submodule the file reaches
+(`parseModuleBlock`, "Generating the include file").
 
 **A `mod` declaration in the root file names the module and does not change a
 single symbol.** The root still has no `DclNamesChain`, so its declarations stay
@@ -1141,32 +1144,89 @@ included, and a banner at the top says the file is generated, from which of
 the package's files, and not to edit it. A generic module's include file is its
 source whole, since every declaration of it is instantiated where it is used.
 
-**What reaches one of the root's submodules is refused** (`ErrorIncSubmodule`),
-since the include file has no submodules and a name there is spelled after the
-submodule [Q1: the ruling is a private, pruned nested `mod` block in generated
-include files; this first version refuses]. Three routes reach there: a type
-an included declaration names; a declaration an expanded body of the root's
-names, which name resolution marks `DclSubReached` beside `DclExpandReached`;
-and a `pub use` of a submodule's names or of an enum one holds. A private
-function's signature, a public function's body and a private `use` are not in
-the file and are not refused (`module_include_refuse`).
+**What the root reaches in one of its submodules goes in a nested module
+block** [Jon 25 Sep, Q1: *"Sure, we can go with B. The important part is we want
+stuff to work correctly."*]: `mod vec { ... }`, written after the root's header,
+holding the submodule's own text edited by the same rules, and nested as deep as
+the submodules are — `mod map { ... mod slot { ... } ... }`. **Only what is
+reached goes in**, and a submodule nothing reaches has no block. Because the
+block is a submodule of the include file's module, every name in it is spelled
+after its real owner — `coll.map.slot.Slot.doubled` — exactly as the package's
+object spells it, and `pub use vec Stack` in the root copies as written. **The
+block is private**: its `mod` line loses its `pub` and its default fold, keeping
+its `@c`, `extends` and `is`, so no importer can name `coll.vec`; a submodule is
+private to its package. What is reached, transitively:
+
+- **A type** an included declaration names — in a signature, a global's type, a
+  field, a type's base — wherever in the package it is declared; it goes in with
+  every field, and its members by the root's rules.
+- **What a body the file copies names.** Name resolution records, for each
+  expanded body — inline, generic, macro, trait default — each declaration it
+  names (`exportReachAdd`, `exportReachesOf`): a function, global or type, and a
+  macro, typedef or const too, which have no symbol and so no
+  `DclExpandReached`. It records **a parameter's default value** the same way,
+  against its function, since an importer evaluates the default where it calls
+  (`NameResState.sigfn`). The generator follows the record from every function,
+  macro and default the file holds.
+- **What a `pub use` at the root re-exports**: each name a list names, every
+  public name a submodule's star fold brings, an enum and its variants. A list
+  anywhere — a `use`, an import of a sister — brings what it names, so the fold
+  finds it.
+- **A submodule's `init`, `final` and each global its finalizer drops**, which the
+  program's stitched pair calls or derives from, so a submodule's `init` now runs
+  in a program that imports the package.
+- **The blocks around a block**: a nested submodule's parent, a sister a block
+  imports or extends. A block's import of a sister with no block is dropped, and
+  so is a `use` of a submodule or enum the file does not hold.
+
+A module conforming to a module trait (`mod x is T`) keeps every declaration,
+since the trait decides which it needs. **A generic submodule's block is its
+whole text**, as a generic root's file is: every declaration is instantiated
+where it is used. What that text reaches in a sister is not recorded, so a
+sister it imports goes in whole. The blocks come in the program's module order,
+so a sister a block imports is ahead of it, and the block's import finds her in
+the registry as a folder's would.
+
+**A type the include file declares is marked `DclIncluded`**, and the export
+rule treats it as it treats a type an expanded body names: its public methods,
+`final`, `clone` and trait methods are exported (`dclIsExported`). An importer
+holds values of every such type, through a field or a signature, whether or
+not it can name the type, and calls its public methods through them
+(`module_include_field_reach`: a private type held in a public field).
 
 **The file is checked before it is written.** It is parsed as the package's
-module beside the program (`parseIncludeCheck`), its imports answered by the
-root's own import lines, and name-resolved against the program's modules as
-they are (`pgmNameResAlone`, `modFoldAlone`, which folds it without folding
-them again). A failure is the generator's, not the author's: it is
+module beside the program (`parseIncludeCheck`), its blocks' modules beside it
+and kept out of the program's list, its imports answered by the import lines of
+the root and its submodules, and name-resolved against the program's modules as
+they are (`pgmNameResAlone`, `modFoldAlone`, which folds them without folding
+the program's again). A failure is the generator's, not the author's: it is
 `ErrorIncCheck`, the text goes to `<package>.cone.rejected`, where what did not
-resolve is reported, and no include file is written. A root inline body using a
-submodule's macro, a reach name resolution does not mark, is caught this way
-(`module_include_check`). **Nor does it ever overwrite a source of the
-compile** (`ErrorIncWrite`, checked before anything is generated,
+resolve is reported, and no include file is written. No known package fails it
+now: every reach it once caught is recorded. **Nor does it ever overwrite a
+source of the compile** (`ErrorIncWrite`, checked before anything is generated,
 `driver_include_over_source`).
 
-`module_build_link`, `module_init_link`, `module_generic_link` and
-`module_include_roundtrip` compile programs against the include files their
+**Where a module block may be written.** Source may not write one: a nested
+module is a file or a folder ("The `mod` declaration"), and the block there is
+`ErrorUnbuiltKind` as it always was. A **generated include file** may, and it is
+known by two things together (`ParseState.generated`): its **role**, a file a
+build description's import line names, which is an include file; and its
+**banner**, whose first words are the generator's (`IncFileBanner`,
+`incFileIsGenerated`). The banner alone does not make a source file an include
+file, and a hand-written include file has no banner, so each is refused as
+source is; and `pub` on a block is `ErrorBadPub` (`module_include_block_parse`).
+A block is a submodule in every respect a drawn one is (`parseModuleBlock`):
+owned by the module it is written in, bound in its namespace, given `core`,
+parsed with its own namespace hooked, generated when its parent is — never, in an
+include file.
+
+`module_build_link`, `module_init_link`, `module_generic_link`,
+`module_include_roundtrip`, `module_include_nested` and
+`module_include_field_reach` compile programs against the include files their
 packages generate, each pinned as a golden file the program's description names
-(the runner's `include` key), and link and run them.
+(the runner's `include` key), and link and run them. `module_include_nested` is
+a collections package — `vec`, `map` holding `slot`, a one-file `kinds`, a
+generic `pair`, and a `util` nothing reaches — re-exported at its root.
 
 ### What an import reaches
 
@@ -2074,12 +2134,13 @@ form a DAG**: the modules are put in dependency order, a loop refused naming the
 modules round it, and the order is the one the program's stitched init runs each
 module's `init` in, its stitched final the finalizers in reverse ("Init and final"). The registry is the
 immediate parent's namespace and no ancestor's, which is the scoped reading,
-adopted provisionally. There is no nesting within a *file*, and none is planned —
-a `mod name { ... }` block is refused, `ErrorUnbuiltKind` — no package as a unit
-of compilation and no manifest. **The interface artifact is generated**: a
-library compile writes its package's include file from the root's own text
-("Generating the include file"), though Congo does not compile against it yet
-and a root whose include file would reach into a submodule is refused. **What the compiler does
+adopted provisionally. There is no nesting within a *source file*, and none is
+planned — a `mod name { ... }` block there is refused, `ErrorUnbuiltKind` — no
+package as a unit of compilation and no manifest. **The interface artifact is
+generated**: a library compile writes its package's include file from the root's
+own text ("Generating the include file"), with a private, pruned nested module
+block for what the root reaches in each submodule, the one place a module block
+is written, though Congo does not compile against it yet. **What the compiler does
 take is a build description** ("A described build"): one package's module tree
 and files, each file's `mod` line checked against it, imports found only where
 it says, and a library's root named from it, so a package compiled on its own
@@ -2457,23 +2518,26 @@ annotation on a reference names is a type.
 - **An instance's namespace is a copy of its generic's, made when the instance
   is.** Every fold has run by type check, so the copy is complete; a binding made
   in the generic's namespace after an instance exists would not reach it.
-- **An expanded body's reach through a macro, a typedef or a const is not
-  recorded.** Name resolution marks only functions, globals and types, so the
-  include-file generator keeps every private typedef, const, macro and module
-  trait, and a reach through one into a submodule is caught only by the
-  self-check (`module_include_check`), as `ErrorIncCheck` rather than
-  `ErrorIncSubmodule`.
-- **A type an included declaration names but no expanded body does is declared
-  and not reachable by the export rule.** Its `final`, `clone` and trait
-  methods are declared in the include file and, where the type is private and
-  unreached, kept internal by `dclIsExported`: an importer that could call one
-  directly would fail to link. Nothing an importer can write reaches one today
-  but through the public type's own exported functions.
-- **A method an expanded body reaches only through a receiver is exported only
-  where its type holds an expanded body or the body names the type**
-  (`typeHoldsExpanded`, `DclExpandReached`). A private type reached some other
-  way — through a field of a named type — has its methods left internal and out
-  of the include file.
+- **The root keeps every private const, macro and module trait of its own**, as
+  the first version did, though what an expanded body names of them is now
+  recorded (`exportReachesOf`): a const may size an array in a signature, which
+  the generator does not walk, so pruning them is left alone. A submodule's are
+  pruned to what is reached. A private typedef of the root goes where it names a
+  type of the package the file leaves out and nothing the file holds reaches it.
+- **What a generic submodule's text reaches in a sister is not recorded** — its
+  functions are resolved once in place, not as expanded bodies — so a sister it
+  imports goes in whole rather than pruned.
+- **`DclIncluded` is written by the generator, and read by generation.** It
+  decides exports only because a library compile generates its include file
+  before any code. A compile that generates no include file marks nothing, and
+  `--emit-include` without `output: library` exports nothing whatever it marks.
+- **A method an expanded body reaches only through a receiver is exported where
+  its type holds an expanded body, the body names the type, or the include file
+  declares the type** (`typeHoldsExpanded`, `DclExpandReached`, `DclIncluded`).
+  Before `DclIncluded`, a private type held in a public type's field had its
+  public methods left internal and out of the include file, and a program
+  calling one through the field failed to type check (measured,
+  `module_include_field_reach`).
 - **The self-check of a compile with no build description looks for its imports
   beside the root's first file**, and names its lexer
   `<folder>/<package>.include.cone`, a file that does not exist, so what it
