@@ -746,7 +746,7 @@ int lexScanIdent(char *srcp) {
                     errorMsgLex(ErrorReserved,
                         "'%s': '#' is reserved for metaprogramming, which is not implemented yet",
                         &lex->val.ident->namestr);
-                    while (*srcp && *srcp != '\n' && *srcp != '\x1a')
+                    while (*srcp && *srcp != '\n')
                         srcp++;
                     lex->srcp = srcp;
                     return 0;
@@ -766,7 +766,7 @@ void lexScanTickedIdent(char *srcp) {
     lex->tokp = srcbeg;
 
     // Look for closing backtick, but not past end of line
-    while (*srcp != '`' && *srcp && *srcp != '\n' && *srcp != '\x1a')
+    while (*srcp != '`' && *srcp && *srcp != '\n')
         srcp++;
     // Without one, the character after the backtick is taken as the name and
     // the next as the missing backtick, unless the source ends before both:
@@ -1086,7 +1086,7 @@ void lexNextTokenx() {
             // Line comment: '//'
             if (*(srcp+1)=='/') {
                 srcp += 2;
-                while (*srcp && *srcp!='\n' && *srcp!='\x1a')
+                while (*srcp && *srcp!='\n')
                     srcp++;
             }
             // Block comment, nested: '/*'
@@ -1101,8 +1101,11 @@ void lexNextTokenx() {
                 lexReturnPuncTok(SlashToken, 1);
             break;
 
-        // Ignore white space
-        case ' ': case '\t':
+        // Ignore white space. U+001A (Ctrl-Z, the old DOS end-of-file mark) is
+        // white space like the space and the tab, not an end of the source:
+        // only NUL ends one. So a file ending in a Ctrl-Z still compiles, and
+        // code after one is read as code
+        case ' ': case '\t': case '\x1a':
             srcp++;
             break;
 
@@ -1117,7 +1120,7 @@ void lexNextTokenx() {
             break;
 
         // End-of-file
-        case '\0': case '\x1a':
+        case '\0':
             lexReturnPuncTok(EofToken, 0);
 
         // Bad character
@@ -1164,7 +1167,7 @@ static int lexIsWordAt(char *srcp, char *word) {
 
 int lexNextIsWord(char *word) {
     char *srcp = lex->srcp;
-    while (*srcp == ' ' || *srcp == '\t' || *srcp == '\r' || *srcp == '\n')
+    while (*srcp == ' ' || *srcp == '\t' || *srcp == '\r' || *srcp == '\n' || *srcp == '\x1a')
         srcp++;
     return lexIsWordAt(srcp, word);
 }
@@ -1173,10 +1176,10 @@ int lexNextIsWord(char *word) {
 // not a block: nothing is counted, since there is no block to count it in
 static char *lexSkipTrivia(char *srcp) {
     while (1) {
-        if (*srcp == ' ' || *srcp == '\t' || *srcp == '\r' || *srcp == '\n')
+        if (*srcp == ' ' || *srcp == '\t' || *srcp == '\r' || *srcp == '\n' || *srcp == '\x1a')
             srcp++;
         else if (*srcp == '/' && srcp[1] == '/') {
-            while (*srcp && *srcp != '\n' && *srcp != '\x1a')
+            while (*srcp && *srcp != '\n')
                 srcp++;
         }
         else if (*srcp == '/' && srcp[1] == '*') {

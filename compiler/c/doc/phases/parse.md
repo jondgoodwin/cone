@@ -85,6 +85,16 @@ claimed. `utf8ByteSkip` never advances past the character in front of it, which
 is what keeps a malformed byte from consuming the source that follows.
 `lexical_reject_tokens` holds both shapes.
 
+**Only NUL ends the source.** U+001A, the DOS end-of-file mark, used to end it
+too, but only between tokens: a string, a character literal and a block comment
+ran straight through one. Jon dropped it on 24 September 2026, so it is now a
+control character like any other. Between tokens `lexNextTokenx` passes over it
+as it does a space, so a file ending in one still compiles and code after one
+is read as code; a line comment, a dropped `#` word and a back-ticked identifier
+no longer stop at one; and inside a literal it is read as any other control
+character is. `utf8ByteSkip` no longer calls it the end either. `lexical_ctrlz` compiles and runs code after one, ending in one;
+`lexical_reject_ctrlz` reports an error written after one.
+
 **An integer literal is 64 bits wide at most.** `lexScanNumber` accumulates
 into a `uint64_t` and refuses a digit that would carry past it
 (`ErrorLitOverflow`), once per literal and after every digit and the suffix
