@@ -1,0 +1,110 @@
+mod lexical_mlstring_margin;
+
+import stdio use *;
+
+// A multi-line string literal's margin, by doc/reference/reftoken.html,
+// "Multi-line String Literals" (the Swift and C# rule, Jon's ruling of 24
+// September 2026): the closing quote's whitespace is the margin; a content
+// line of nothing but spaces and tabs is an empty line, whatever it holds;
+// every other content line begins with exactly the margin, the same
+// characters in the same order, and loses it. lexical_mlstring holds the rest
+// of the rules, and lexical_reject_mlstring_margin the lines refused.
+//
+// Every literal is printed a byte at a time between bars, a new-line, tab or
+// carriage return spelled as its escape. The file's whitespace-only lines,
+// its tabs and its one CRLF-ended literal are its subject, so it is kept byte
+// for byte (.gitattributes).
+
+fn show(label &[]u8, text &[]u8) {
+  printStr(label);
+  printStr(" = |");
+  mut i = 0u64;
+  while i < text.len {
+    imm c = text[i];
+    if c == '\n' {
+      printStr("\\n");
+    }
+    elif c == '\t' {
+      printStr("\\t");
+    }
+    elif c == '\r' {
+      printStr("\\r");
+    }
+    else {
+      printChar(u64[c]);
+    }
+    i = i + 1;
+  }
+  printStr("|, len ");
+  printUInt(u64[text.len]);
+  printStr("\n");
+}
+
+fn main() i32 {
+  // A blank line inside an indented literal is an empty line
+  imm blank = "
+    a
+
+    b
+    ";
+  show("blank-line", blank);
+
+  // So is a line of fewer spaces than the margin, and one of more
+  imm spaces = "
+    a
+  
+    b
+        
+    c
+    ";
+  show("whitespace-only", spaces);
+
+  // And a line of tabs alone, though the margin is spaces
+  imm tabsonly = "
+    a
+		
+    b
+    ";
+  show("tabs-only-line", tabsonly);
+
+  // A margin of tabs: each line begins with the two tabs, and what follows
+  // them, spaces included, is content
+  imm tabs = "
+		one
+		  two
+		";
+  show("tab-margin", tabs);
+
+  // A margin of a tab and two spaces: each line begins with those three, in
+  // that order, and a tab after them is content
+  imm mixed = "
+	  x
+	  	y
+	  ";
+  show("mixed-margin", mixed);
+
+  // A backslash joins a line to a blank one, which is still an empty line
+  imm joined = "
+    a\
+
+    b
+    ";
+  show("join-to-blank", joined);
+
+  // A blank last line, right before the closing quote
+  imm trailing = "
+    a
+
+    ";
+  show("blank-last-line", trailing);
+
+  // A whitespace-only line ended by a CRLF is an empty line as well
+  imm crlf = "
+    a
+  
+    b
+    ";
+  show("crlf-blank-line", crlf);
+
+  0;
+}

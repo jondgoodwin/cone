@@ -107,15 +107,24 @@ carries on with it. The digits of a float are exempt: they are read again by
 literal**, read by the rules of `doc/reference/reftoken.html`, "Multi-line String
 Literals". `lexScanString` finds the closing quote first, stepping over each
 escape sequence whole, and takes its indentation — the spaces and tabs before it
-on its line, counted as characters — as what to strip from the start of every
-content line. The end of line after the opening quote is dropped; every other
-one, LF or CRLF, becomes one `\n` in the content, unless a backslash precedes it,
-which joins the line to the next. Tabs are content. A closing quote with
-anything but spaces or tabs before it on its line is `ErrorBadTok`, reported at
-the opening quote. A content line indented less than the closing quote loses
-only the indentation it has — the manual does not say what such a line means,
-and this is not a ruling. `lexical_mlstring` and `lexical_mlstring_crlf` hold
-the rules; `lexical_reject_mlstring` the refusal. A literal that spans lines
+on its line — as the literal's margin. `lexStringMargin` reads the start of
+every content line against it, by Jon's ruling of 24 September 2026, the Swift
+and C# rule: a line of nothing but spaces and tabs is an empty line, whatever it
+holds, and every other line must begin with exactly the margin — the same
+characters in the same order, not just as many — which is stripped. A line that
+does not is `ErrorBadTok` on that line, at the first character that differs,
+and the message says what the margin is (so many spaces, so many tabs, or both
+in order); it is then read as though it began with as much of the margin as it
+has white space for. The end of line after the opening quote is dropped; every
+other one, LF or CRLF, becomes one `\n` in the content, unless a backslash
+precedes it, which joins the line to the next, itself held to the margin. Tabs
+past the margin are content. A closing quote with anything but spaces or tabs
+before it on its line is `ErrorBadTok`, reported at the opening quote, and the
+margin is then empty. This replaced stripping whatever indentation a line had,
+up to the closing quote's count with a tab counted as one. `lexical_mlstring`
+and `lexical_mlstring_crlf` hold the rules, `lexical_mlstring_margin` the
+margin; `lexical_reject_mlstring` and `lexical_reject_mlstring_margin` the
+refusals. A literal that spans lines
 without its opening quote ending one is read as before: its line ends and the
 white space after each are dropped.
 

@@ -416,29 +416,69 @@ static int lexEolLen(char *srcp) {
     return 0;
 }
 
-// Skip past the end of line at srcp, counting it, then strip up to 'indent'
-// characters of space or tab indentation from the line that follows.
-static char *lexStringNewLine(char *srcp, uint32_t indent) {
+// Pass over the margin at the start of a multi-line string literal's line: the
+// closing quote's whitespace, 'marginlen' spaces and tabs at 'margin'. A line
+// that holds only spaces and tabs is an empty line, whatever it holds, so the
+// scan goes straight to its end. Every other line must begin with the margin
+// exactly, the same characters in the same order and not just as many, and one
+// that does not is refused at the first character that differs. It is then
+// read as though it began with as much of the margin as it has white space for.
+static char *lexStringMargin(char *srcp, char *margin, uint32_t marginlen) {
+    char *blankp = srcp;
+    while (*blankp == ' ' || *blankp == '\t')
+        ++blankp;
+    if (lexEolLen(blankp))
+        return blankp;
+
+    uint32_t len = 0;
+    while (len < marginlen && srcp[len] == margin[len])
+        ++len;
+    if (len < marginlen) {
+        uint32_t spaces = 0;
+        for (uint32_t i = 0; i < marginlen; ++i)
+            spaces += margin[i] == ' ';
+        char *tokp = lex->tokp;
+        lex->tokp = srcp + len;
+        if (spaces == marginlen)
+            errorMsgLex(ErrorBadTok, "A multi-line string literal's line must begin with the closing quote's indentation: %u space%s",
+                marginlen, marginlen == 1 ? "" : "s");
+        else if (spaces == 0)
+            errorMsgLex(ErrorBadTok, "A multi-line string literal's line must begin with the closing quote's indentation: %u tab%s",
+                marginlen, marginlen == 1 ? "" : "s");
+        else
+            errorMsgLex(ErrorBadTok, "A multi-line string literal's line must begin with the closing quote's indentation: the same %u spaces and tabs, in the same order",
+                marginlen);
+        lex->tokp = tokp;
+        while (len < marginlen && (srcp[len] == ' ' || srcp[len] == '\t'))
+            ++len;
+    }
+    return srcp + len;
+}
+
+// Skip past the end of line at srcp, counting it, then past the margin of the
+// multi-line string literal's line that follows.
+static char *lexStringNewLine(char *srcp, char *margin, uint32_t marginlen) {
     srcp += lexEolLen(srcp);
     ++lex->linenbr;
     lex->linep = srcp;
-    while (indent-- && (*srcp == ' ' || *srcp == '\t'))
-        ++srcp;
-    return srcp;
+    return lexStringMargin(srcp, margin, marginlen);
 }
 
 // A string literal whose opening quote ends its line is a multi-line string
 // literal (doc/reference/reftoken.html, "Multi-line String Literals"). The
 // end of line after the opening quote is not content. The closing quote must
-// begin a later line, after any spaces or tabs, and that many characters of
-// indentation are stripped from each content line. Each content line's end of
+// begin a later line, after any spaces or tabs, and those are the literal's
+// margin: a content line of nothing but spaces and tabs is an empty line, and
+// every other must begin with the margin exactly, which is stripped (the Swift
+// and C# rule, Jon's ruling of 24 September 2026). Each content line's end of
 // line becomes one new-line character, whether written LF or CRLF, unless a
 // backslash precedes it, which joins the line to the next.
 void lexScanString(char *srcp) {
     uint64_t uchar;
     lex->tokp = srcp++;
     int multiline = lexEolLen(srcp) != 0;
-    uint32_t indent = 0;
+    char *margin = srcp;
+    uint32_t marginlen = 0;
 
     // Conservatively count the size of the string: the bytes of source up to
     // the closing quote, found as the build below finds it, by stepping over
@@ -465,8 +505,10 @@ void lexScanString(char *srcp) {
             char *linebeg = endp;
             while (*(linebeg - 1) == ' ' || *(linebeg - 1) == '\t')
                 --linebeg;
-            if (*(linebeg - 1) == '\n')
-                indent = (uint32_t)(endp - linebeg);
+            if (*(linebeg - 1) == '\n') {
+                margin = linebeg;
+                marginlen = (uint32_t)(endp - linebeg);
+            }
             else
                 errorMsgLex(ErrorBadTok, "A multi-line string literal's closing quote must begin its line");
         }
@@ -478,18 +520,18 @@ void lexScanString(char *srcp) {
     lex->val.strlit = newp;
     srcp = lex->tokp+1;
     if (multiline)
-        srcp = lexStringNewLine(srcp, indent);  // the opening quote's end of line is not content
+        srcp = lexStringNewLine(srcp, margin, marginlen);  // the opening quote's end of line is not content
     while (*srcp != '"' && *srcp) {
         if (multiline) {
             // A line's end is a new-line in the content; a backslash before it joins the lines
             if (lexEolLen(srcp)) {
                 *newp++ = '\n';
                 srclen++;
-                srcp = lexStringNewLine(srcp, indent);
+                srcp = lexStringNewLine(srcp, margin, marginlen);
                 continue;
             }
             if (*srcp == '\\' && lexEolLen(srcp + 1)) {
-                srcp = lexStringNewLine(srcp + 1, indent);
+                srcp = lexStringNewLine(srcp + 1, margin, marginlen);
                 continue;
             }
             if (*srcp == '\t') {
