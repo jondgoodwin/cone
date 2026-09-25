@@ -1575,14 +1575,15 @@ the reverse. A module with neither gets no call. Each is internal, made only
 when a call asks for it (`genlStitchFn`), and built last, after every module's
 bodies. **A program calls them through two compiler-provided functions,
 `initAll()` and `finalAll()`** (`corelib.c`, `InitAllIntrinsic` and
-`FinalAllIntrinsic`): bound as names every module reaches, as it reaches `i64`,
-and hidden by a declaration of the same name. They stand in for the entry glue
-until it is built; nothing calls them implicitly, and how an executable's C
-`main` is chosen is unchanged. Nothing stops them being called twice.
-⚠ **Measured 24 Sep: only a local hides them.** A module-level declaration named
-`initAll` is refused as a duplicate at parse (`modAddNamedNode`), as one named
-`i64` is; which of the two this paragraph and that refusal should be is open
+`FinalAllIntrinsic`): bound as names every module reaches, as it reaches `i64`.
+Only a local declaration of the same name hides them; a module-level one is
+refused as a duplicate at parse (`modAddNamedNode`), as one named `i64` is —
+Jon, 24 September 2026: the compiler is right, and they hold that place for now
 ([Name Resolution](../phases/name-resolution.md), "Some bindings are never hooked").
+They stand in for the entry glue until it is built; nothing calls them
+implicitly, and how an executable's C `main` is chosen is unchanged. Nothing
+stops them being called twice. Where they end up, since user code should not
+call them once the entry glue does, belongs to the entry-trait conversation.
 
 **Across separately compiled packages**, a package's `init`, `final` and `drop`
 keep the package's Cone names (`lib.init`, `lib.drop`), and a library compile

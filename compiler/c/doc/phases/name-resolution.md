@@ -84,10 +84,15 @@ having none, with follow-ons. A reserved word is the exception to the
 duplicate: `modAddNamedNode` reports it as `ErrorReserved`, as `lexScanIdent`
 does one it reads, and releases it the same way, so the name is bound and
 neither the parent's namespace nor the `mod` line reports it again. ⚠ **Whether that
-refusal is right** is open: these names are looked up after a module's own,
-which would let a module's name hide one, and nothing written says a module may
-not. For `initAll` and `finalAll`, [module](../nodes/module.md) says a
-declaration of the name hides them, and a module-level one is refused.
+refusal is right for a built-in type's name** (`i8`, `f64`) is open: these
+names are looked up after a module's own, which would let a module's name hide
+one, and nothing written says a module may not. The numbers work settles it
+(Jon, 24 September 2026): the number types move into `core`, and core's name
+rule then decides the case, since no module may declare a name core already
+defines; until then today's refusal stands. `initAll` and `finalAll` are
+settled already: they hold their place as `i64` does, so only a local
+declaration hides them and a module-level one is refused (Jon, 24 September
+2026; [module](../nodes/module.md), "Init and final").
 
 **The slot is not this phase's alone.** `lexScanIdent` reads it on *every*
 identifier, to classify keywords and permissions and to release a reserved word;
