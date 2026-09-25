@@ -259,7 +259,10 @@ token type. Permissions reach the same effect by a different route:
 `stdPermInit` binds each permission name's `node` to the `PermNode` itself, and
 `lexScanIdent` has a separate branch turning a `PermTag` binding into a
 `PermToken`. So `mut` and `uni` are lexically distinguished without being
-keywords — copy the right one of these two patterns if you add a third family. A reserved word is reported once,
+keyword tokens — copy the right one of these two patterns if you add a third
+family. To the language they are reserved words all the same: the manual lists
+all six static permissions with the keywords (Jon's ruling of 24 September
+2026), since a name the lexer always reads as a permission can never be used. A reserved word is reported once,
 at first use, and then **released** — `Name.node` is cleared and the word
 continues as an ordinary identifier, so the rest of the compile is not derailed
 by it.
