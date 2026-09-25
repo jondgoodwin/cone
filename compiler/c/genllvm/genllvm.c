@@ -309,6 +309,163 @@ void genlLinkage(LLVMValueRef global, INode *dclnode, GenlDefinition defined) {
     LLVMSetLinkage(global, LLVMInternalLinkage);
 }
 
+// ---- One symbol, one global [Jon 25 Sep] ----------------------------------
+//
+// LLVM keeps one global per name: a second function or global added under a
+// name the module already holds is renamed ('abs.1'), which nothing defines,
+// and the link fails. Two declarations may spell one symbol legitimately -- two
+// modules that each declare C's 'abs' -- so each global a declaration adds is
+// checked for that rename, and genlClaimSymbol decides who has the symbol.
+
+// Whether a global is local to this object: an internal or private symbol is
+// reached through its LLVM value alone, and nothing links against its name
+static int genlIsLocal(LLVMValueRef global) {
+    LLVMLinkage linkage = LLVMGetLinkage(global);
+    return linkage == LLVMInternalLinkage || linkage == LLVMPrivateLinkage;
+}
+
+// The LLVM global a declaring node's symbol is, beneath the recast through
+// which a global carrying a NUL is reached
+static LLVMValueRef genlSymGlobal(INode *node) {
+    return node->tag == FnDclTag ? ((FnDclNode*)node)->llvmvar : genlGloVarGlobal((VarDclNode*)node);
+}
+
+// The declaration that added a global, or NULL for one the compiler made
+// itself: a vtable, a thunk, a string literal, C's 'free', an intrinsic
+static INode *genlSymOwner(GenState *gen, LLVMValueRef global) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(gen->symnodes, cnt, nodesp)) {
+        if (genlSymGlobal(*nodesp) == global)
+            return *nodesp;
+    }
+    return NULL;
+}
+
+// Whether two declarations of one symbol declare the same thing, as the object
+// file sees it: two functions of one LLVM function type and one calling
+// convention, or two globals of one LLVM value type and one permission
+static int genlSymAgree(GenState *gen, INode *a, INode *b) {
+    if (a->tag != b->tag)
+        return 0;
+    if (a->tag == FnDclTag)
+        return genlType(gen, ((FnDclNode*)a)->vtype) == genlType(gen, ((FnDclNode*)b)->vtype)
+            && (inodeGetDclInfo(a)->facts & DclSystemCC) == (inodeGetDclInfo(b)->facts & DclSystemCC);
+    VarDclNode *va = (VarDclNode*)a;
+    VarDclNode *vb = (VarDclNode*)b;
+    return genlType(gen, va->vtype) == genlType(gen, vb->vtype) && permIsSame(va->perm, vb->perm);
+}
+
+static void genlSymSetVar(INode *node, LLVMValueRef var) {
+    if (node->tag == FnDclTag)
+        ((FnDclNode*)node)->llvmvar = var;
+    else
+        ((VarDclNode*)node)->llvmvar = var;
+}
+
+static void genlSymDelete(LLVMValueRef global) {
+    if (LLVMIsAFunction(global))
+        LLVMDeleteFunction(global);
+    else
+        LLVMDeleteGlobal(global);
+}
+
+// A declaration's global has just been added, linkage and all, and was to be
+// named 'symbol'. Where LLVM had to rename it, another global already has that
+// name, and one of them gives way:
+// - two symbols neither of which is C-named are two of Cone's own spellings
+//   meeting, which is a compiler defect;
+// - a local global takes no particular name, so a local newcomer keeps the name
+//   LLVM gave it, and a local holder of the name gives it up;
+// - two declarations the linker sees must agree (genlSymAgree), or it is
+//   ErrorCNameConflict. Then a declaration shares the global already there,
+//   and a definition takes it over from the declarations before it, so the
+//   definition owns the symbol whichever is reached first. Two definitions are
+//   ErrorCNameDefTwice.
+// An error leaves the renamed global in place, so generation can carry on;
+// genpgm then emits nothing.
+static void genlClaimSymbol(GenState *gen, INode *node, LLVMValueRef global, GenlDefinition defined, char *symbol) {
+    size_t namelen;
+    const char *name = LLVMGetValueName2(global, &namelen);
+    size_t symlen = strlen(symbol);
+    if (namelen == symlen && memcmp(name, symbol, symlen) == 0) {
+        nodesAdd(&gen->symnodes, node);
+        return;
+    }
+
+    LLVMValueRef existing = LLVMGetNamedFunction(gen->module, symbol);
+    if (existing == NULL)
+        existing = LLVMGetNamedGlobal(gen->module, symbol);
+    INode *owner = existing ? genlSymOwner(gen, existing) : NULL;
+    if (existing == NULL || (owner && !(inodeGetDclInfo(node)->facts & DclCName)
+        && !(inodeGetDclInfo(owner)->facts & DclCName)))
+        errorUnreachable(node, "two declarations spelled one symbol, and neither has a C name");
+
+    if (genlIsLocal(global)) {
+        nodesAdd(&gen->symnodes, node);
+        return;
+    }
+    if (genlIsLocal(existing)) {
+        LLVMSetValueName2(existing, "", 0);
+        LLVMSetValueName2(global, symbol, symlen);
+        LLVMSetValueName2(existing, symbol, symlen);  // LLVM appends a suffix
+        if (LLVMGetComdat(existing))
+            genlComdat(gen, existing);   // a COMDAT is named for its symbol
+        nodesAdd(&gen->symnodes, node);
+        return;
+    }
+
+    // An external symbol the compiler declared itself. C's 'free' is the one a
+    // declaration can meet, and it is shared as genlFree shares the program's
+    if (owner == NULL) {
+        if (node->tag == FnDclTag && defined == GenlDeclared
+            && LLVMIsAFunction(existing) && LLVMIsDeclaration(existing)) {
+            LLVMTypeRef fnptr = LLVMTypeOf(global);
+            genlSymSetVar(node, LLVMTypeOf(existing) == fnptr ? existing : LLVMConstBitCast(existing, fnptr));
+            LLVMDeleteFunction(global);
+            nodesAdd(&gen->symnodes, node);
+        }
+        else
+            errorMsgNode(node, ErrorCNameConflict,
+                "The C name %s is a symbol the compiler generates itself. Give this declaration another C name.",
+                symbol);
+        return;
+    }
+
+    if (!genlSymAgree(gen, owner, node)) {
+        errorMsgNode(node, ErrorCNameConflict,
+            "The C name %s is declared differently at %s:%u. Every declaration of one C name must agree: a function in its signature, a global in its type and permission.",
+            symbol, owner->lexer->url, owner->linenbr);
+        return;
+    }
+    int ownerdefines = genlDefinition(gen, owner) != GenlDeclared;
+    if (ownerdefines && defined != GenlDeclared) {
+        errorMsgNode(node, ErrorCNameDefTwice,
+            "The C name %s is defined already, at %s:%u. One C name has one definition: declare it without a body everywhere else.",
+            symbol, owner->lexer->url, owner->linenbr);
+        return;
+    }
+    if (defined == GenlDeclared) {
+        genlSymSetVar(node, node->tag == FnDclTag ? ((FnDclNode*)owner)->llvmvar : ((VarDclNode*)owner)->llvmvar);
+        genlSymDelete(global);
+    }
+    else {
+        // No body refers to the declaration yet, but a vtable built while
+        // typing a signature may
+        LLVMValueRef var = node->tag == FnDclTag ? ((FnDclNode*)node)->llvmvar : ((VarDclNode*)node)->llvmvar;
+        LLVMReplaceAllUsesWith(existing, var);
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(gen->symnodes, cnt, nodesp)) {
+            if (genlSymGlobal(*nodesp) == existing)
+                genlSymSetVar(*nodesp, var);
+        }
+        genlSymDelete(existing);
+        LLVMSetValueName2(global, symbol, symlen);
+    }
+    nodesAdd(&gen->symnodes, node);
+}
+
 // Generate LLVMValueRef for a global variable
 // It sets appropriate visibility, linkage and constant flags for the linker
 void genlGloVarName(GenState *gen, VarDclNode *glovar) {
@@ -336,7 +493,9 @@ void genlGloVarName(GenState *gen, VarDclNode *glovar) {
     if (genlGloVarIsConstant(glovar))
         LLVMSetGlobalConstant(global, 1);
 
-    genlLinkage(global, (INode*)glovar, genlDefinition(gen, (INode*)glovar));
+    GenlDefinition defined = genlDefinition(gen, (INode*)glovar);
+    genlLinkage(global, (INode*)glovar, defined);
+    genlClaimSymbol(gen, (INode*)glovar, global, defined, symbol);
 }
 
 // Generate LLVMValueRef for a global function
@@ -365,6 +524,7 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
         glofn->llvmvar = LLVMAddFunction(gen->module, symbol, fntype);
         GenlDefinition defined = genlDefinition(gen, (INode*)glofn);
         genlLinkage(glofn->llvmvar, (INode*)glofn, defined);
+        genlClaimSymbol(gen, (INode*)glofn, glofn->llvmvar, defined, symbol);
 
         // Add metadata on implemented functions (debug mode only). Implemented
         // HERE: an imported module's function has a body in the IR and is only a
@@ -698,6 +858,7 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
     gen->libroot = gen->opt->library ? (ModuleNode*)nodesGet(pgm->modules, 0) : NULL;
     gen->pgm = pgm;
     gen->stitch[0] = gen->stitch[1] = NULL;
+    gen->symnodes = newNodes(64);
 
     // First, generate global symbols for all modules, so that forward references succeed
     INode **nodesp;
@@ -806,8 +967,15 @@ void genlOut(char *objpath, char *asmpath, LLVMModuleRef mod, LLVMTargetMachineR
 void genpgm(GenState *gen, ProgramNode *pgm) {
     char *err;
 
-    // Generate IR to LLVM IR 
+    // Generate IR to LLVM IR
     genlProgram(gen, pgm);
+
+    // Generation reports only what makes an object wrong -- a C name declared
+    // two ways (genlClaimSymbol) -- so nothing is emitted after one
+    if (errors) {
+        LLVMDisposeModule(gen->module);
+        return;
+    }
 
     // Verify generated IR
     if (gen->opt->verify) {

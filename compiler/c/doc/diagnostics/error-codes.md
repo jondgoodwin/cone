@@ -139,6 +139,17 @@ nothing — a bare one on a function its C-named module already names — is kep
 apart as `ErrorCNameTwice`: the marker is right in itself, and what is wrong is
 that the module already said it.
 
+One C name declared by two declarations of one compile is one symbol, and what
+can be wrong with that takes two codes, because the remedies differ.
+`ErrorCNameConflict` is two declarations that do not agree — functions of
+different signatures or calling conventions, globals of different types or
+permissions, a function and a global, or a C name the compiler already uses for
+a symbol of its own — and the remedy is to make them say the same thing, C's
+"conflicting types". `ErrorCNameDefTwice` is two that agree and both have a
+body (or a value) the linker would see; the remedy is to delete one body. Both
+are reported by generation, at the declaration generated second, naming the
+first.
+
 A module trait and a module's conformance to one take four codes, split where
 the remedy is: the author of the `mod` line, of the trait, or of the module's
 declarations. `ErrorModIs` is a `mod` line's `is` that does not name one module

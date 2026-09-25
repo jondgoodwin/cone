@@ -1,0 +1,50 @@
+// One C name declared by several Cone declarations in one compile is one
+// symbol, and run. LLVM keeps one global per name and renamed a second one
+// ('abs.1'), which nothing defines, so a program that declared a C function in
+// two modules did not link.
+//
+// - 'abs' is declared by this module and by sub, both bodiless and alike: the
+//   two share one declaration.
+// - 'cone_first' is defined here and declared in sub, and 'cone_later' is
+//   declared here and defined in sub. This module is generated first, so one
+//   definition meets a declaration already there and one is met by it: either
+//   way the definition owns the symbol, exported to C.
+// - tally and peek are C-named modules doing the same with globals, each
+//   defining one the other declares: 'Hits' a plain one, 'Greeting' one whose
+//   storage is its text and a NUL, a byte longer than its type.
+// - tally also defines a private 'abs' of its own, internal to this object.
+//   Nothing links against an internal symbol's name, so it keeps the name LLVM
+//   gives it and takes nothing from C's 'abs', which the others still call.
+
+mod module_c_name_shared;
+
+import stdio use *;
+
+extern {
+  fn @c abs(n i32) i32;
+  fn @c cone_later(n i64) i64;
+}
+
+pub fn @c cone_first(n i64) i64 {
+  n * 3i64;
+}
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn main() i32 {
+  show("root-abs", i64[abs(-3i32)]);
+  show("sub-abs", i64[sub.absTwice(-4i32)]);
+  show("root-calls-sub-definition", cone_later(5i64));
+  show("sub-calls-root-definition", sub.first(2i64));
+  show("private-abs", i64[tally.Private(1i32)]);
+  show("hits-through-declaration", peek.Bump());
+  show("hits-through-definition", tally.Hits);
+  show("greeting-through-declaration", tally.Second());
+  show("greeting-through-definition", peek.Last());
+  0i32;
+}

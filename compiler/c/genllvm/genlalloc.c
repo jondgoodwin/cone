@@ -86,6 +86,9 @@ void genlDealiasFlds(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
 // 'free' itself, in its own signature (its no-value return is '%void', not
 // LLVM's void). A second function of that name would be renamed 'free.1', which
 // nothing defines, so the program's declaration is called, cast to this one.
+// Every declaration the symbol pass names comes before this; one named later,
+// a private 'free' an imported inline body reaches, shares this declaration
+// in turn (genlClaimSymbol).
 LLVMValueRef genlFree(GenState *gen, LLVMValueRef ref) {
     LLVMTypeRef parmtype = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
     LLVMTypeRef fnsig = LLVMFunctionType(LLVMVoidTypeInContext(gen->context), &parmtype, 1, 0);

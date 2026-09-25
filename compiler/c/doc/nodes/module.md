@@ -2303,6 +2303,18 @@ name outside the prefix; `@c(system)` is the system calling convention
 exporting a Cone body to C writes only `pub fn @c(...)`. Symbol spelling is
 [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), S5.
 
+**One C name is one symbol in a compile** [Jon 25 Sep], because the modules of
+one compile share one object: two modules that each declare C's `abs` share
+one declaration, and a `pub fn @c` body in one module owns the symbol another
+module declares, whichever is generated first (`module_c_name_shared`). Two
+declarations that disagree — signature, calling convention, a global's type or
+permission — are `ErrorCNameConflict`, and two bodies `ErrorCNameDefTwice`,
+reported at the second and naming the first (`module_c_name_reject`). A private
+C-named body is internal and takes no part: a C-named module's private helper
+may share its spelling with a C function another module declares. Generation
+decides all of it ([Generation](../phases/generation.md), "Symbols, linkage and
+COMDATs"), since only there do two modules' symbols meet.
+
 **The hand-written form is built, as a C package** (`tools/congo/README.md`, "C
 packages"). A package whose source is a C-named module, its `mod` line carrying
 `@c`, is compiled as any package is, and its include file is generated as any

@@ -45,6 +45,7 @@ typedef struct GenState {
     ProgramNode *pgm;       // The program being generated, whose module order genlStitch reads
     LLVMValueRef stitch[2]; // The stitched init and final, once a call asks for one (genlStitchFn); else NULL
     int comdats;            // enum ComdatSupport, from the target's object format
+    Nodes *symnodes;        // Every declaration given a global, which genlClaimSymbol searches for a clash
     INode *fnblock;
     GenBlockState *blockstack;
     uint32_t blockstackcnt;

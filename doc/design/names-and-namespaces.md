@@ -642,7 +642,12 @@ Rules for Cone-consumed names; C FFI names have their own (S5).
   string is the whole symbol and no prefix is added, which is the per-name
   override in a C-named module. A bare `@c` on a function its module already
   C-names is `ErrorCNameTwice`. `@c(system)` adds the system calling
-  convention. The marker affects the symbol only; resolution is through the
+  convention. **One C name is one symbol in a compile** [Jon 25 Sep], however
+  many declarations spell it — two modules that each declare C's `abs`: every
+  declaration of it must agree (`ErrorCNameConflict`), and at most one may
+  define it (`ErrorCNameDefTwice`), which then owns it. A private C-named
+  definition is internal, so nothing links against its name, and it takes no
+  part. The marker affects the symbol only; resolution is through the
   ordinary module, so a caller writes `sdl.Init`. Inbound (a C library's
   symbols) and outbound (a Cone body published to C, `pub fn @c(...)`) are one
   mechanism in two directions.

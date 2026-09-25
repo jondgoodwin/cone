@@ -41,7 +41,7 @@ support = ["modulesub.cone",
            "modulefold.cone", "modulefoldlate.cone", "modfolder",
            "moduleextbase.cone", "modulepkgs", "modtree",
            "moduleinline.cone", "moduleextern.cone",
-           "modulenomod.cone", "modulecomments.cone"]
+           "modulenomod.cone", "modulecomments.cone", "modulecfree.cone"]
 
 # -------- success --------
 
@@ -1383,6 +1383,73 @@ excludes = ["win.", "dllimport x86_stdcallcc ConeTicks"]
 name = "calls-to-a-system-function-use-the-convention"
 target = "preir"
 contains = ["call x86_stdcallcc i32 @ConeTicks()", "call x86_stdcallcc i32 @GetTickCount()"]
+
+[scenario.module_c_name_shared]
+category = "run"
+description = "One C name declared by several modules is one symbol: two declarations share it, and a definition owns it whether generated before or after a declaration, for functions and for globals"
+tags = ["genllvm", "runtime"]
+
+# Debug too: a definition that takes a declaration's symbol over carries the
+# subprogram, which the verifier refuses on a declaration
+[[scenario.module_c_name_shared.run]]
+name = "release"
+options = []
+
+[[scenario.module_c_name_shared.run]]
+name = "debug"
+options = ["--debug"]
+
+# One global per C name, under the name itself: nothing is renamed 'abs.1'. The
+# definitions are external, as 'pub' and '@c' make them, and no declaration of
+# a defined name is left beside its definition.
+[[scenario.module_c_name_shared.check]]
+name = "one-c-name-is-one-symbol-owned-by-its-definition"
+target = "symbols"
+contains = [
+  "declare abs\n",
+  "define cone_first comdat nodeduplicate",
+  "define cone_later comdat nodeduplicate",
+  "global Hits comdat nodeduplicate",
+  "constant Greeting comdat nodeduplicate",
+]
+excludes = [
+  "declare abs.",
+  "declare cone_",
+  "cone_first.",
+  "cone_later.",
+  "external global Hits",
+  "Hits.",
+  "external constant Greeting",
+  "Greeting.",
+]
+
+# The private 'abs' is internal and keeps the name LLVM gives it beside C's
+[[scenario.module_c_name_shared.check]]
+name = "an-internal-definition-gives-way-to-the-c-name"
+target = "symbols"
+contains = ["define internal abs."]
+
+[scenario.module_c_name_late_free]
+category = "compile"
+description = "A C name declared after the compiler declared the same symbol itself shares that declaration: a private 'free' an imported inline body reaches"
+tags = ["genllvm"]
+
+[[scenario.module_c_name_late_free.check]]
+name = "a-late-c-declaration-shares-the-compilers-free"
+target = "symbols"
+contains = ["declare free\n"]
+excludes = ["free."]
+
+# Cone's 'free' returns '%void', C's LLVM's void, so the call is through a cast
+[[scenario.module_c_name_late_free.check]]
+name = "the-late-declaration-calls-through-a-cast"
+target = "preir"
+contains = ["call %void bitcast (void (i8*)* @free to %void (i8*)*)"]
+
+[scenario.module_c_name_reject]
+category = "reject"
+description = "One C name declared two ways in one compile: differing signatures, calling conventions or permissions, and two definitions"
+tags = ["genllvm"]
 
 [scenario.module_c_reject]
 category = "reject"

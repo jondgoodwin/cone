@@ -1,5 +1,7 @@
 Generation lowers the analyzed IR to an LLVM module and emits an object file. It
-validates almost nothing: every assumption in section 5 is a hard prerequisite,
+validates almost nothing — the one thing it refuses in a program is a C name
+declared two ways, which only the object file's one symbol table can see
+(section 2, "Symbols, linkage and COMDATs"): every assumption in section 5 is a hard prerequisite,
 and what guards them is uneven — the sites that meant *unreachable* report and
 exit, while the ordinary value asserts beside them are compiled out of the
 release build. Section 5 says which is which.
@@ -126,6 +128,32 @@ lowers them, in two functions and a derivation:
   convention too (`genlFnCallInternal`).
 - **`genlComdat`** then derives the COMDAT selection kind from the linkage
   already on the global, at each definition site.
+
+**One symbol is one LLVM global.** LLVM keeps one global per name and renames a
+second one added under a name it holds (`abs.1`), which nothing defines, so the
+link fails. Two declarations spell one symbol legitimately when both are
+C-named — two modules that each declare C's `abs`. So `genlGloFnName` and
+`genlGloVarName`, once the global is added and its linkage set, hand it to
+**`genlClaimSymbol`**, which does nothing unless LLVM renamed it. Then the
+global already holding the name is found (`LLVMGetNamedFunction`, then
+`LLVMGetNamedGlobal`), and its declaring node in `gen->symnodes`, the list of
+every declaration given a global so far, and one of them gives way:
+
+| The two | What happens |
+| --- | --- |
+| neither C-named | `errorUnreachable`: two of Cone's own spellings meeting is a compiler defect. Nothing in the suite or Congo's tests reaches it: a candidate reached twice, an instance named by the symbol pass and again by `genlImportedInstances`, a method a vtable declared while its signature was typed, a module's `init` the stitch names — each finds its `llvmvar` set and returns before adding anything |
+| the newcomer is local (internal or private) | it keeps the name LLVM gave it: nothing links against a local symbol's name. A private C-named definition beside an `extern` declaration of the same C name stays its module's own, and the declaration still reaches the C function |
+| the holder is local | it gives the name up, taking a suffix (and a COMDAT renamed to match), and the newcomer takes it |
+| both external, and they disagree — a function's LLVM function type or `DclSystemCC`, a global's LLVM value type or permission, or a function and a global | `ErrorCNameConflict`, at the newcomer, naming the holder's file and line |
+| both external, both defined here | `ErrorCNameDefTwice` |
+| the newcomer only declares it | it shares the holder's global, and its own is deleted |
+| the newcomer defines it, the holder only declares it | the definition takes over: every use of the declaration and every node pointing at it is moved to the definition's global, the declaration is deleted, and the definition takes the name. So the linkage, calling convention, storage class and debug subprogram are the definition's whichever is generated first, and `genlFn` or `genlGloVar` attaches the body or the value to that one global |
+| the holder is an external symbol the compiler declared itself | C's `free` (`genlFree`, during bodies) is the one a declaration can meet — a private `free` of an imported module, declared when an inline body reaching it is generated — and a function declaration shares it, cast to its own type where they differ, as `genlFree` shares the program's. Anything else is `ErrorCNameConflict` |
+
+"Defined here" is `genlDefinition`'s answer, not whether a body is written: an
+imported module's `fn @c` body is a declaration in this object. An error leaves
+the renamed global in place, so generation carries on and stays well typed, and
+`genpgm` then emits nothing.
 
 A section is all-or-nothing, so without further help every function an object
 file defines ships whether or not the program can reach it. **Each definition
@@ -404,8 +432,9 @@ Cone source in the core package, `packages/core/src/core.cone`, not built into t
 compiler. `malloc` is an
 ordinary `extern fn @c`; `free` is declared directly by `genlFree`, unless the
 program declared C's `free` itself, whose declaration it then calls, cast to
-`void (i8*)` where the signatures differ. LLVM renames a second function of one
-name (`free.1`), and nothing defines the renamed one. `conestd` supplies
+`void (i8*)` where the signatures differ; a second function of that name would
+be renamed (`free.1`), and nothing defines the renamed one. A declaration of
+`free` generated after it shares it the same way (`genlClaimSymbol`). `conestd` supplies
 only stdio, no allocator.
 
 ## 4. Pointer levels
@@ -566,13 +595,14 @@ variables.
 | --- | --- | --- |
 | `conec.c` | `main` | calls `genSetup` **before** parsing, for target pointer size |
 | `genllvm/genllvm.c` | `genSetup`, `genClose` | target machine, data layout, context, `%void` |
-| | `genpgm` | generate, verify, dump, optimize, emit |
+| | `genpgm` | generate, verify, dump, optimize, emit; nothing past generation once it reported an error |
 | | `genlProgram` | create the module with the target's triple and data layout, the two-pass symbols-then-implementations walk, then the stitched pair |
 | | `genlStitchFn`, `genlStitch` | the program's stitched init and final: declared on the first call to `initAll()` or `finalAll()`, built last, every module's `init` in the module order and every finalizer in the reverse |
 | | `genlGlobalSyms`, `genlGlobalImpl` | declare a node's symbol; emit its body |
 | | `genlImportedInstances` | emit the bodies of the instances this compile made of a module it does not generate |
 | | `genlFn`, `genlParmVar`, `genlAlloca` | function body, parameter allocas, entry-block alloca placement |
 | | `genlGloFnName`, `genlGloVarName` | declare a function or global under the symbol `nameSymbol` spells |
+| | `genlClaimSymbol`, `genlSymAgree`, `genlSymOwner` | one symbol, one global: which of two declarations spelling one symbol has it, or `ErrorCNameConflict` / `ErrorCNameDefTwice` |
 | | `genlGloVarIsConstant` | whether an `imm` global is an LLVM constant: an initial value, not `extern`, no drop function |
 | | `genlLinkage`, `genlDefinition`, `genlIsDefinedHere`, `genlVtableDefinition` | linkage, storage class and calling convention, together, from the declaration facts and what this object does with the symbol: declares it, defines it, defines and exports it, or defines it shared |
 | | `genlComdat`, `genlNameAnonFn` | the per-definition COMDAT that lets the linker drop a symbol, its kind read off the linkage; the private name an anonymous `fn` needs to have one |

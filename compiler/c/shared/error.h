@@ -263,6 +263,8 @@ enum ErrorCode {
     ErrorCAttr = 1132,          // '@c' written wrongly or where nothing has a symbol for it to name: a bad argument, a type, an anonymous, generic or inline fn, a trait's method, a generic module, the retired 'extern system'
     ErrorCNameTwice = 1133,     // A bare '@c' (or '@c(system)' where the module is already system) on a fn whose module already gives it that C naming
     ErrorBadExtern = 1134,      // 'extern' on a declaration an importer needs the body of -- inline, generic, a trait's or a generic type's method -- or on something not a fn or a global
+    ErrorCNameConflict = 1152,  // One C name declared two ways in one compile: functions of differing signatures, globals of differing type or permission, a function and a global, or a symbol the compiler generates itself
+    ErrorCNameDefTwice = 1153,  // One C name defined twice in one compile: two bodies the linker would see, or two defined globals
 
     // A module trait, and a module conforming to one with 'is'
     ErrorModIs = 1135,          // A 'mod' line's 'is' naming something other than one module trait by one name -- a struct trait, a module, a path, a list -- or written before 'extends'
