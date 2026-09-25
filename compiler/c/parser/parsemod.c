@@ -677,10 +677,12 @@ void parseFnOrVar(ParseState *parse, uint16_t flags) {
         // A module's global may carry a fold clause: it is the one-instance
         // analogue of a field, so 'config Config use *' admits Config's members
         // as names of this module, reached through 'config'. An 'extern' global
-        // is supplied from elsewhere and has no clause to write, since there is
-        // no declaration here for the fold to read.
+        // may too [Jon 25 Sep]: the fold reads only the declared type, which an
+        // 'extern' global has, and 'extern' says only that the global is defined
+        // in a differently compiled unit. It is how an include file passes on
+        // what a folded global puts into its package's namespace.
         VarDclNode *node = parseVarDcl(parse, immPerm,
-            (flags&FlagExtern) ? ParseMaySig : ParseMayImpl | ParseMaySig | ParseMayFold);
+            (flags&FlagExtern) ? ParseMaySig | ParseMayFold : ParseMayImpl | ParseMaySig | ParseMayFold);
         node->flags |= flags;
         node->flowtempflags |= VarInitialized;   // Globals always hold a valid value
         parseEndOfStatement();

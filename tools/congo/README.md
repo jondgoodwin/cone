@@ -181,7 +181,11 @@ source, the package's root module as an importer needs to see it:
 - its types are written with their fields, and what an importer must have the
   body of — an `inline` or generic function, a generic type's methods, a macro —
   is written whole;
-- a private name that such a body reaches is declared too.
+- a private name that such a body reaches is declared too;
+- a global whose members the package folds into its namespace
+  (`pub mut config Config = ... pub use *;`) is declared `extern` with the same
+  clause (`pub extern mut config Config pub use *;`), so an importer reaches
+  the folded names as the package does.
 
 **An include file is a module file like any other** [Jon 25 Sep]: it opens with
 its `mod` line, and its imports follow. So a package whose public functions

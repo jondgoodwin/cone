@@ -1029,7 +1029,12 @@ Cone name, the one the object exports (`module_build_link`,
 `module_extern_cone_names`). `extern` says only "defined elsewhere"; the naming
 is the module's. What an importer must have the body of — an `inline` or
 generic function, a macro, a trait's methods, a generic type's — is written
-whole, and `extern` on it is `ErrorBadExtern`.
+whole, and `extern` on it is `ErrorBadExtern`. **A global the package folds
+through is declared `extern` with the source's fold clause** [Jon 25 Sep],
+`pub extern mut config Config pub use *;`: the fold reads only the declared
+type, so an importer reaches the folded names as the package does, each the
+package's one global (`module_build_fold_extern`; the refusals where the type
+is out of view, `module_build_fold_extern_nameres`).
 
 **An import in a described module is answered by the description.** After the
 registry — a sister, a module the parent bound — `parseImport` looks up the
