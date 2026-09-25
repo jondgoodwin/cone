@@ -91,8 +91,9 @@ ran straight through one. Jon dropped it on 24 September 2026, so it is now a
 control character like any other. Between tokens `lexNextTokenx` passes over it
 as it does a space, so a file ending in one still compiles and code after one
 is read as code; a line comment, a dropped `#` word and a back-ticked identifier
-no longer stop at one; and inside a literal it is read as any other control
-character is. `utf8ByteSkip` no longer calls it the end either. `lexical_ctrlz` compiles and runs code after one, ending in one;
+no longer stop at one; and inside a literal it is refused, as every raw control
+character but the tab is (below). `utf8ByteSkip` no longer calls it the end
+either. `lexical_ctrlz` compiles and runs code after one, ending in one;
 `lexical_reject_ctrlz` reports an error written after one.
 
 **An integer literal is 64 bits wide at most.** `lexScanNumber` accumulates
@@ -126,7 +127,27 @@ and `lexical_mlstring_crlf` hold the rules, `lexical_mlstring_margin` the
 margin; `lexical_reject_mlstring` and `lexical_reject_mlstring_margin` the
 refusals. A literal that spans lines
 without its opening quote ending one is read as before: its line ends and the
-white space after each are dropped.
+spaces and tabs that begin each next line are dropped.
+
+**A raw tab in a literal is content; every other raw control character is
+refused.** Jon's ruling of 24 September 2026: a tab written as itself is part
+of a one-line string, a multi-line string or a character literal alike, and
+any other control character — 0x01 to 0x1F but the tab and the line ends, and
+0x7F, Ctrl-Z included — is `ErrorBadTok`, since it cannot be seen in an editor.
+The message is reported at the character itself, names it by value
+(`lexCharDescribe`, the description the unprintable-escape message uses too),
+and gives the `\x` escape that writes it: "A string literal cannot hold the
+control character 0x01 raw, where it cannot be seen: write it as \x01". The
+string leaves it out; the character literal takes it as its value, so the
+literal still closes. Before, a one-line string dropped every control
+character silently, a tab included, but kept 0x7F; a character literal took
+any as its value. A line end is not in this rule: a string that spans lines
+drops it (above), a multi-line string makes it a new-line, and a character
+literal refuses it in its own words (below). Dropping the white space after a
+line end used to skip further line ends uncounted as well, so a blank line
+inside such a string put every later diagnostic a line early; the white space
+dropped is now spaces and tabs only, and each line is counted. `lexical_raw_tab`
+runs the tab in each kind; `lexical_reject_raw_control` holds the refusals.
 
 **A string literal is sized before it is built, by the same walk that ends
 it.** `lexScanString` allocates the literal as many bytes as the source holds

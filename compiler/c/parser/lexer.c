@@ -235,6 +235,40 @@ static int lexCharIsNameable(char *srcp) {
     return c < 0x80 || utf8IsMultibyte(srcp);
 }
 
+/** Describe a character lexCharIsNameable refuses, other than a space or a
+ * line's end, for a diagnostic to say in its place: a tab, a control character
+ * by its value, or a byte that begins no UTF-8 character by its value */
+static char *lexCharDescribe(char *srcp, char *buf, size_t size) {
+    unsigned char c = (unsigned char)*srcp;
+    if (c == '\t')
+        return "a tab";
+    if (c < 0x80)
+        snprintf(buf, size, "the control character 0x%02X", c);
+    else
+        snprintf(buf, size, "the byte 0x%02X, which begins no UTF-8 character", c);
+    return buf;
+}
+
+/** Is the character at srcp one a literal refuses to hold raw? Every control
+ * character is, but a tab, which is content, and a line's end, which each kind
+ * of literal treats in its own way */
+static int lexIsRawControl(char *srcp) {
+    unsigned char c = (unsigned char)*srcp;
+    return (c < ' ' && c != '\0' && c != '\t' && c != '\n' && c != '\r') || c == 0x7f;
+}
+
+/** Refuse a raw control character in a literal, at the character itself. It
+ * is invisible in an editor, so it is named by value, and the \x escape that
+ * writes it visibly is offered */
+static void lexRawControlError(char *srcp, char *literal) {
+    char buf[64];
+    char *tokp = lex->tokp;
+    lex->tokp = srcp;
+    errorMsgLex(ErrorBadTok, "A %s cannot hold %s raw, where it cannot be seen: write it as \\x%02X",
+        literal, lexCharDescribe(srcp, buf, sizeof(buf)), (unsigned char)*srcp);
+    lex->tokp = tokp;
+}
+
 /** Read the 'cnt' hex digits of a \x, \u or \U escape at srcp, just after its letter */
 char *lexHexDigits(int cnt, char *srcp, uint64_t *val) {
     char *escp = srcp - 2;  // The escape's backslash
@@ -298,16 +332,13 @@ char *lexScanEscape(char *srcp, uint64_t *charval) {
         // printed: raw, a line's end would split the message across two lines
         if (lexCharIsNameable(srcp))
             errorMsgLex(ErrorBadTok, "Invalid escape sequence '%.*s'", utf8ByteSkip(srcp), srcp);
-        else if (*srcp == '\t')
-            errorMsgLex(ErrorBadTok, "Invalid escape sequence: a backslash followed by a tab");
         else if (*srcp == '\n' || (*srcp == '\r' && *(srcp + 1) == '\n'))
             errorMsgLex(ErrorBadTok, "Invalid escape sequence: a backslash at the end of a line");
-        else if ((unsigned char)*srcp < 0x80)
-            errorMsgLex(ErrorBadTok, "Invalid escape sequence: a backslash followed by the control character 0x%02X",
-                (unsigned char)*srcp);
-        else
-            errorMsgLex(ErrorBadTok, "Invalid escape sequence: a backslash followed by the byte 0x%02X, which begins no UTF-8 character",
-                (unsigned char)*srcp);
+        else {
+            char buf[64];
+            errorMsgLex(ErrorBadTok, "Invalid escape sequence: a backslash followed by %s",
+                lexCharDescribe(srcp, buf, sizeof(buf)));
+        }
         *charval = *srcp++;
         // A new-line taken here is a line passed, and counted as one. A CRLF
         // line end is not taken whole: its new-line is left, and counted, where
@@ -366,8 +397,13 @@ void lexScanChar(char *srcp) {
         lex->srcp = srcp;
         return;
     }
-    else if (*srcp)
+    // A raw tab is the character 9. Any other raw control character is
+    // refused, and taken as its value so that the literal still closes
+    else if (*srcp) {
+        if (lexIsRawControl(srcp))
+            lexRawControlError(srcp, "character literal");
         lex->val.uintlit = *srcp++;
+    }
     else
         lex->val.uintlit = '\0';  // the source's end: stay on it
 
@@ -534,20 +570,28 @@ void lexScanString(char *srcp) {
                 srcp = lexStringNewLine(srcp + 1, margin, marginlen);
                 continue;
             }
+        }
+
+        // A tab is content. Any other control character is refused, since it
+        // cannot be seen, and left out. A literal that spans lines without
+        // being a multi-line one drops each line's end, its carriage return
+        // included, and the spaces and tabs that begin the next line; every
+        // line is counted, a blank one too
+        if ((unsigned char)*srcp < ' ' || *srcp == 0x7f) {
             if (*srcp == '\t') {
                 *newp++ = *srcp++;
                 srclen++;
-                continue;
             }
-        }
-
-        // discard all control chars, including spaces after new-line
-        if ((unsigned char)*srcp < ' ') {
-            if (*srcp++ == '\n') {
-                ++lex->linenbr;
-                lex->linep = srcp;
-                while (*srcp <= ' ' && *srcp)
+            else if (*srcp == '\n') {
+                srcp = lexNewLine(srcp);
+                while (*srcp == ' ' || *srcp == '\t')
                     ++srcp;
+            }
+            else if (*srcp == '\r')
+                ++srcp;
+            else {
+                lexRawControlError(srcp, "string literal");
+                ++srcp;
             }
             continue;
         }
