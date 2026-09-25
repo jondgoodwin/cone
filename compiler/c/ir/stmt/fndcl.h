@@ -50,6 +50,12 @@ void fnDclPrint(FnDclNode *fn);
 
 void fnOverloadDclPrint(FnOverloadDclNode *fn);
 
+// Whether an importer expands this function's body in its own object rather than
+// calling a symbol: inline, generic, or a default or method that 'typenode' --
+// the type or module trait whose braces declare it, or NULL -- copies. Name
+// resolution asks it, and so does the include-file generator
+int fnDclIsExpanded(FnDclNode *fndclnode, INode *typenode);
+
 /// Resolve all names in a function
 void fnDclNameRes(NameResState *pstate, FnDclNode *name);
 

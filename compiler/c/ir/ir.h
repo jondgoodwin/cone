@@ -104,6 +104,8 @@ typedef struct DclSpans DclSpans;        // dclspan.h
 #include "exp/sizeof.h"
 #include "exp/vtuple.h"
 
+#include "export.h"
+
 #include "meta/genvardcl.h"
 #include "meta/macro.h"
 #include "meta/generic.h"

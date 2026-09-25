@@ -779,7 +779,7 @@ identifier alone. [Names and Namespaces](../../../../doc/design/names-and-namesp
 made; `modInstanceList` holds them until then. It is then generated like any
 module the compile generates, and its place in the init order is "The module
 order" below. **Every object that uses an instance defines it**, as it defines
-a generic function's: in a described build `genlIsInstance` answers for every
+a generic function's: in a described build `dclIsInstance` answers for every
 declaration of the instance — its owners are asked up to the module, and an
 instance module is an instance — so its functions *and its globals* are
 `linkonce_odr` with a COMDAT of `any`, and the copies separately compiled
@@ -998,7 +998,7 @@ as an importer spells them — `q.addOne`, `_CNvC1q6addOne` — rather than bare
 That is the spelling half of separate compilation. **The linkage half is
 built too:** `output: library` sets `opt->library`, so the object is
 position-independent and a library compile's rule decides linkage
-(`genlIsExported`, [Generation](../phases/generation.md), "Symbols, linkage
+(`dclIsExported`, [Generation](../phases/generation.md), "Symbols, linkage
 and COMDATs"). The package's own modules — the root and its children, never
 `core` — export every public function and global, every function of a type an
 importer can reach, and every private definition that a body an importer
@@ -1525,7 +1525,7 @@ compile made of its generics (`genlImportedInstances`), since its package has
 none for an importer to link against. `genlLinkage` makes every definition of a
 program internal except `main` and a public C-named one, and leaves an imported
 module's declarations external. A library compile exports what its importers
-link against (`genlIsExported`, "A described build"), and a described build
+link against (`dclIsExported`, "A described build"), and a described build
 makes an instance of a generic and a vtable `linkonce_odr` with a COMDAT of
 `any`, so that each object's copy merges.
 
@@ -1630,7 +1630,7 @@ call them once the entry glue does, belongs to the entry-trait conversation.
 
 **Across separately compiled packages**, a package's `init`, `final` and `drop`
 keep the package's Cone names (`lib.init`, `lib.drop`), and a library compile
-exports each whatever its visibility (`DclLifecycle` in `genlIsExported`). The
+exports each whatever its visibility (`DclLifecycle` in `dclIsExported`). The
 program's compile sees the package through its include file, which declares
 them: `extern fn @initpure init();` where the package has an `init`,
 `extern fn final();` where it has a `final`, and each global the package's
@@ -2128,7 +2128,7 @@ into:
 - **Private names in a *library* are internal, except what an expanded body
   reaches, which is linked against** ([Names and
   Namespaces](../../../../doc/design/names-and-namespaces.md), "Linkage", L5).
-  Built in `genlIsExported`: the mangled namespace shrinks to the names that
+  Built in `dclIsExported`: the mangled namespace shrinks to the names that
   cross the package boundary, and a private helper an `inline`, generic or
   macro body reaches is exported once rather than re-emitted per importer.
   Hidden visibility is not set on it, as no visibility is set anywhere.

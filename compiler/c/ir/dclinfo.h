@@ -45,14 +45,14 @@ enum DclFacts {
                               // generic type's method. Written by name resolution
                               // (nameUseNameRes); a library compile exports such a
                               // definition, and a type's reachable functions
-                              // (genlIsExported)
+                              // (dclIsExported)
     DclInitPure   = 0x0040,   // Fn only: '@initpure', a function a module's 'init' may
                               // call, which 'init' itself is declared. Written by the
                               // parser, kept by joining, and not checked: purity is unbuilt
     DclLifecycle  = 0x0080    // Fn only: a module's 'init', its 'final', or the 'drop' it
                               // is given (modLifecycle). The program's stitched init or
                               // final calls it, so a library compile exports it whatever
-                              // its visibility (genlIsExported)
+                              // its visibility (dclIsExported)
 };
 
 #define dclInfoInit(dclinfo) ((dclinfo)->owner = NULL, (dclinfo)->facts = 0, (dclinfo)->cname = NULL)

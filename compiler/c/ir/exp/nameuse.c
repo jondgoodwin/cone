@@ -138,7 +138,7 @@ void nameUsePrint(NameUseNode *name) {
 // it names is marked too: the body can call that type's methods through a
 // value, which only type check binds. An overload name marks every candidate,
 // as selection has not yet chosen one. Only the declaring module's own compile
-// reads the mark (genlIsExported). Called for a bare name here, and for a path
+// reads the mark (dclIsExported). Called for a bare name here, and for a path
 // by fnCallNameResPath, which binds it.
 void nameUseMarkExpandReached(NameResState *pstate, NameUseNode *name) {
     if (pstate->expander == NULL)
