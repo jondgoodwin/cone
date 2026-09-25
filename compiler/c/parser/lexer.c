@@ -343,6 +343,20 @@ void lexScanChar(char *srcp) {
         isUnicode = *(srcp + 1) == 'u' || *(srcp + 1) == 'U';
         srcp = lexScanEscape(srcp, &lex->val.uintlit);
     }
+    // A raw line end is refused: '\n' and '\r' are how those characters are
+    // written. The literal ends where its line does, and the scan stays on the
+    // line end, so it is counted where any other is
+    else if (*srcp == '\n' || *srcp == '\r') {
+        if (*srcp == '\r' && *(srcp + 1) != '\n')
+            errorMsgLex(ErrorBadTok, "A character literal cannot hold a raw carriage return: write '\\r'");
+        else
+            errorMsgLex(ErrorBadTok, "A character literal cannot hold a line's end: write a new-line as '\\n'");
+        lex->val.uintlit = *srcp;
+        lex->langtype = (INode*)u8Type;
+        lex->toktype = IntLitToken;
+        lex->srcp = srcp;
+        return;
+    }
     else if (*srcp)
         lex->val.uintlit = *srcp++;
     else
@@ -765,22 +779,27 @@ void lexScanTickedIdent(char *srcp) {
     char *srcbeg = srcp++;    // Pointer to the start of the token
     lex->tokp = srcbeg;
 
-    // Look for closing backtick, but not past end of line
-    while (*srcp != '`' && *srcp && *srcp != '\n')
+    // Look for closing backtick, but not past the end of the line
+    while (*srcp != '`' && *srcp && *srcp != '\n' && *srcp != '\r')
         srcp++;
     // Without one, the character after the backtick is taken as the name and
-    // the next as the missing backtick, unless the source ends before both:
-    // then the name is what there is, and the scan stays on the source's end
+    // the next as the missing backtick, but neither is taken from past the
+    // line's end or the source's: the name is what there is before it, and the
+    // scan stays on it, so a line end is counted where any other is
     if (*srcp != '`') {
         errorMsgLex(ErrorBadTok, "Back-ticked identifier requires closing backtick");
-        if (*srcp || srcp > srcbeg + 2)
-            srcp = srcbeg + 2;
+        char *eol = srcp;
+        char *namend = srcbeg + 2 < eol ? srcbeg + 2 : eol;
+        lex->val.ident = nametblFind(srcbeg+1, namend - srcbeg - 1);
+        lex->toktype = IdentToken;
+        lex->srcp = namend < eol ? namend + 1 : eol;
+        return;
     }
 
     // Find identifier token in name table and preserve info about it
     lex->val.ident = nametblFind(srcbeg+1, srcp - srcbeg - 1);
     lex->toktype = IdentToken;
-    lex->srcp = *srcp ? srcp + 1 : srcp;
+    lex->srcp = srcp + 1;
 }
 
 // Skip over nested block comment. Every line inside it is counted, so the

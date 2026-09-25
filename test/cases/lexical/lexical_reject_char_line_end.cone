@@ -1,0 +1,64 @@
+mod lexical_reject_char_line_end;
+
+// A raw line end right after a character literal's opening quote. The
+// literal took it as its character, so '<new-line>' compiled as the value 10,
+// and the line went uncounted, so every later diagnostic in the file came out
+// a line early. It is now refused at the opening quote: a new-line is
+// written '\n' and a carriage return '\r'. The literal ends where its line
+// does, and the line end is counted where any other is.
+//
+// An unclosed back-ticked identifier right before a line end took the line
+// end as its name, or as its missing backtick, in the same way. Its recovery
+// now stops at the line end.
+//
+// Each case is followed by a reserved word, one diagnostic whose line is the
+// assertion that the line end was counted. The file holds CRLF lines on
+// purpose, so it is kept byte for byte (.gitattributes).
+//
+// Not here: a carriage return alone, which is refused as itself ("write
+// '\r'"). The test runner reads a lone carriage return as a line break, in
+// the source and in the compiler's echo of it, so it cannot place one.
+
+// A new-line: the literal ends there, and the ';' on the next line ends the
+// statement
+imm c1 = '
+;
+//~^^ ErrorBadTok:10 "cannot hold a line's end"
+imm async = 1;           //~ ErrorReserved:5
+
+// The form that compiled as 10. The quote on the next line then begins a
+// literal of its own, which is not closed, and the parser finds two literals
+// in a row
+imm c2 = '
+';
+//~^^ ErrorBadTok:10 "cannot hold a line's end"
+//~^^^ ErrorNoSemi:11 follow-on
+//~^^^ ErrorBadTok:1 "too-long character literal" follow-on
+//~^^^^ ErrorBadGloStmt:1 follow-on
+imm baseurl = 1;         //~ ErrorReserved:5
+
+// A CRLF line end is a line end too
+imm c3 = '
+;
+//~^^ ErrorBadTok:10 "cannot hold a line's end"
+imm context = 1;         //~ ErrorReserved:5
+
+// A backtick right before the line end: the name is empty, and the ';' on
+// the next line ends the statement
+imm b1 = `
+;
+//~^^ ErrorBadTok:10 "requires closing backtick"
+imm new = 1;             //~ ErrorReserved:5
+
+// One character before the line end: it is the name, and the line end is
+// not taken as the missing backtick
+imm b2 = `x
+;
+//~^^ ErrorBadTok:10 "requires closing backtick"
+imm selfmethod = 1;      //~ ErrorReserved:5
+
+// The same before a CRLF line end
+imm b3 = `
+;
+//~^^ ErrorBadTok:10 "requires closing backtick"
+imm using = 1;           //~ ErrorReserved:5

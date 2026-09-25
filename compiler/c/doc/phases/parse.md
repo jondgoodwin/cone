@@ -155,9 +155,20 @@ the unfinished statement lacks at the end, as a follow-on.
 each. A file cannot end in the quote or backtick and still carry the
 annotation after it, so each source is ended by a null character in that
 place, which ends a source as the end of the file does and is the byte the
-compiler puts after every file it reads; the annotations follow it. A quote or
-backtick right before a line's end is not the same case: each still takes the
-line end as its content, and the line goes uncounted.
+compiler puts after every file it reads; the annotations follow it.
+
+**Nor does either take a line's end.** A raw line end right after a character
+literal's opening quote — a new-line, a CRLF, or a carriage return alone — is
+`ErrorBadTok` at the quote, naming `'\n'` (or `'\r'`) as the spelling: Jon's
+ruling of 24 September 2026, the rule of C, Go, Rust and Swift. `lexScanChar`
+ends the literal there and stays on the line end, so it is counted where any
+other is. `'<LF>'` compiled as the value 10 before, and the line went
+uncounted, so every later diagnostic came out a line early. An unclosed
+back-ticked identifier's recovery, one character as the name and the next as
+the missing backtick, takes neither from past the line's end: the name is what
+there is before it, and the scan stays on it. `lexical_reject_char_line_end`
+holds each, LF, CRLF and a lone carriage return, with a later diagnostic
+pinning the line after each.
 
 **`\0` is the null character and nothing more.** `lexScanEscape` reads the
 digit `0` after a backslash as U+0000: a 0 byte in a string literal, the value
@@ -204,8 +215,6 @@ those that follow. A character literal left too long by the escape is still
 reported at its opening quote, on the line it begins, which `lexScanChar`
 remembers across the escape. `lexical_reject_escape_newline` and its CRLF twin
 pin a later error's line after each, in a string and in a character literal.
-Unlike this, a quote or backtick right before a line's end still takes the line
-end uncounted (above): refusing `'<LF>'`, which compiles today, is a ruling.
 
 **Names are interned at scan time, and `Name.node` is the binding slot.**
 `nametblFind` returns one immovable `Name*` per unique string. That same
