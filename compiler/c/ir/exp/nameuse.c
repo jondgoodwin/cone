@@ -352,7 +352,25 @@ void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
     // leave behind. A declaration already type checked returns at once; one still
     // under type check returns having established its own type, which is all a use
     // needs and is what lets two functions call each other.
-    inodeTypeCheckAny(pstate, &name->dclnode);
+    //
+    // Rule 8: a member of a type not yet begun is analyzed under that type's walk
+    // state, not this use's, as fnCallDemandCandidates does for a member name.
+    // fnDclTypeCheck compares a method's 'self' with the type it is checked under,
+    // and passes over a method of a trait or an enum, which its implementers
+    // check. A bare name in a generic enum's variant is bound to the enum
+    // instance's own method, so a variant's members checked before the enum's
+    // found that method unchecked and checked it as the variant's.
+    INode *owner = inodeGetOwner(name->dclnode);
+    if (owner != NULL && owner->tag == StructTag && owner != pstate->typenode
+        && !(name->dclnode->flags & (TypeChecked | TypeChecking))) {
+        TypeCheckState tstate;
+        tstate.typenode = owner;
+        tstate.fn = NULL;
+        tstate.scope = 0;
+        inodeTypeCheckAny(&tstate, &name->dclnode);
+    }
+    else
+        inodeTypeCheckAny(pstate, &name->dclnode);
 
     // Rule 6: a constant, and a variable or field whose type is inferred, take
     // their type *from* the value that may name them back, so re-entering one

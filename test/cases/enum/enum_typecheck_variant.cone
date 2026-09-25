@@ -66,10 +66,10 @@ struct Outside is Shape {      //~ ErrorInvType:19 "nothing outside may join the
 // it is legal and is how a tree is written, which enum_success covers.
 //
 // The enum's own laid-out mark does not settle this. It says its own fields --
-// the tag -- are done, and the variants are analyzed after that, each pulling
-// the enum in as its base. So the size is not known until every variant is,
-// which is what the diagnostic says. Before it, this compiled clean and
-// generated a layout with the field simply dropped.
+// the tag -- are done, and its variants are laid out after that, each taking
+// the enum as its base. So the size is not known until every variant is, which
+// is what the diagnostic says. Before it, this compiled clean and generated a
+// layout with the field simply dropped.
 enum Container {
   kind i32;
 
@@ -96,4 +96,24 @@ enum Crate[T] {
 }
 
 fn holdsCrate(c &Crate[i32]) {
+}
+
+// An enum's method belongs to its variants: each has a clone, and the enum's own
+// is never generated. On a variant's value the call reaches that variant's
+// clone, and through a reference to the enum the tag selects it. On a value
+// typed as the enum, which only a by-value 'self' can be called on, the tag
+// would have to select it at run time too, and that is not built -- so it is
+// refused. It was not before: with the enum reached from above its declaration,
+// the call compiled into a call to a function that does not exist, which only
+// LLVM's verifier or the linker caught. The declaration itself is fine, as
+// enum_success shows.
+enum Reading {
+  pub id i32;
+  pub fn get(self) i32 {id;}
+  struct Low {}
+  struct High {pub n i32;}
+}
+
+fn readValue(r Reading) i32 {
+  r.get();    //~ ErrorEnumValueDispatch:4 "not built for a value receiver"
 }

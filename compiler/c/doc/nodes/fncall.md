@@ -254,6 +254,15 @@ and the remedy: obtain a virtual reference first. **A field takes none of this**
 — it lives in the trait's own layout, a prefix of every implementer, so
 `fnCallLowerMethod` reaches it directly.
 
+**A method called on a value typed as an enum is refused**, `ErrorEnumValueDispatch`,
+in `fnCallLowerMethod` once a candidate is selected: a method of a trait reached
+without `FlagVDisp`, other than an intrinsic such as a payload-free enum's `==`.
+Only a by-value `self` can be called on a value, and which variant's clone runs
+would have to be read from the tag at run time, which is built for a reference and
+not for a value. Before, the call named the enum's own declaration, which is never
+generated, and only LLVM's verifier or the linker caught it. On a variant's value
+the call reaches that variant's clone and is fine.
+
 ### Selecting a candidate
 
 `fnCallLowerMethod`: look the name up in the receiver's namespace, check

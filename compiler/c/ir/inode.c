@@ -327,9 +327,10 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     // pass lowers and replaces nodes, so a second walk of one corrupts it; the
     // marks are a correctness requirement rather than an optimization.
     //
-    // Type nodes are fully checked the first time they are referenced, so that
-    // we know everything we need about managing their values (infectious
-    // constraints have to be inferred from the fields they compose).
+    // Type nodes are laid out the first time they are referenced, so that we
+    // know everything we need about managing their values (infectious
+    // constraints have to be inferred from the fields they compose). A type's
+    // members are checked later, once no layout is in flight (structLayoutExit).
     //
     // A generic instantiation is a type but not a type declaration: this pass
     // replaces it with the instance it names, and the instance carries these
@@ -361,6 +362,14 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
             return;
         (*node)->flags |= TypeChecking;
     }
+
+    // A type that holds values by value is a layout in flight until its check
+    // ends, and no type's members are checked while one is (structLayoutExit).
+    // A reference answers its own size and a signature has none, so neither
+    // counts. See compiler/c/doc/phases/type-check.md, "Layout before members".
+    int layout = (*node)->tag == StructTag || (*node)->tag == ArrayTag || (*node)->tag == TTupleTag;
+    if (layout)
+        structLayoutEnter();
 
     // A resolved name is checked as what its declaration is: a type, a value,
     // or a macro to expand. A member name never arrives here: the call it
@@ -502,6 +511,9 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
             || (*node)->tag == ModTraitTag || inodeIsDcl(*node)) {
         (*node)->flags |= TypeChecked;
     }
+
+    if (layout)
+        structLayoutExit();
 }
 
 

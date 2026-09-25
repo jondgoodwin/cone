@@ -1514,7 +1514,7 @@ use Held;
 // each asks for its size before the module walk has reached any of its variants.
 // A variant not yet reached is not one being laid out -- nothing of it is on the
 // demand stack, so it closes no cycle -- and this was once refused as though it
-// were one. The variants are laid out when the walk reaches them, and generation
+// were one. Demanding the enum lays its variants out with it, and generation
 // sizes the enum from them, as it does for every enum.
 struct Shipment {
   pub load Crate;
@@ -1545,13 +1545,14 @@ fn heldAboveDeclaration() {
 
 // -------- a static naming a variant above an enum method --------
 
-// A static function whose signature names a variant demands that variant while
-// the enum is still checking its own members in order. The variant checks its
-// clone of each enum method and then compares it with the enum's own -- which the
-// enum has not reached yet when it is written below the static. That comparison
-// analyzes the enum's method first, so the order the two are written in does not
-// decide whether a variant conforms. It once did: Meter's Over was refused as not
-// having the 'probe' its enum requires, while Needle, the other order, compiled.
+// A static function whose signature names a variant once demanded that variant
+// while the enum was still checking its own members in order. The variant checked
+// its clone of each enum method and then compared it with the enum's own -- which
+// the enum had not reached yet when it is written below the static. That
+// comparison analyzes the enum's method first, so the order the two are written
+// in does not decide whether a variant conforms. It once did: Meter's Over was
+// refused as not having the 'probe' its enum requires, while Needle, the other
+// order, compiled.
 enum Meter {
   pub id i32;
   struct Under {pub lo i32;}
@@ -1575,6 +1576,43 @@ fn staticAboveMethod() {
   imm left = Needle.Left[4, 6];
   imm right = Needle.Right[1, 8];
   show("enum-method-above-static", Needle.rightOf(&right) * 100 + (&right).probe(&left));
+}
+
+// -------- held by value by its own members --------
+
+// An enum's own members may hold it by value: a method's 'self', a static
+// function's parameter, a function written below the enum that a static function
+// passes it to, and a struct holding it that a method builds. Every type is laid
+// out -- an enum with all its variants -- before any member is checked, so each
+// finds the enum's size settled. All four were refused as a cycle when the enum's
+// members were checked from inside its first variant's layout, which is where the
+// module walk first reached the enum. None is a cycle. A by-value 'self' runs on a
+// variant's value, which calls that variant's clone; on a value typed as the enum
+// it is refused, and enum_typecheck_variant holds that.
+enum Keeper {
+  pub id i64;
+  pub fn get(self) i64 {id;}
+  pub fn take(k Keeper) i64 {k.id + 10;}
+  pub fn viaBelow(k &Keeper) i64 {keeperTriple(*k);}
+  pub fn boxed(self &) KeeperBox {KeeperBox[*self];}
+  struct Full {pub n i64;}
+  struct Bare {}
+}
+
+fn keeperTriple(k Keeper) i64 {k.id * 3;}
+
+struct KeeperBox {
+  pub k Keeper;
+}
+
+fn heldByOwnMembers() {
+  show("enum-self-by-value", Keeper.Full[1, 4].get());
+  imm bare = Keeper.Bare[5];
+  show("enum-self-by-value-other-variant", bare.get());
+  show("enum-static-by-value", Keeper.take(Keeper.Full[2, 4]));
+  imm full Keeper = Keeper.Full[7, 4];
+  show("enum-passed-to-function-below", Keeper.viaBelow(&full));
+  show("enum-in-struct-built-by-method", (&full).boxed().k.id);
 }
 
 // An enum may reach itself through a reference, which is how a tree is written.
@@ -1622,5 +1660,6 @@ fn main() i32 {
   interactions();
   heldAboveDeclaration();
   staticAboveMethod();
+  heldByOwnMembers();
   0i32;
 }

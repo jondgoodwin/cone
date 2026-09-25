@@ -114,10 +114,6 @@ uint32_t structEnumCopyCount(StructNode *node);
 // extends no instance of that template
 INode *structEnumBaseInstanceMember(INode *where, INode *dcl);
 
-// Type check an extension's copies of its base's variants, which the module
-// walk reaches through the extension
-void structEnumCheckCopies(TypeCheckState *pstate, StructNode *node);
-
 // Resolve an enum that extends another now, so its copies of its base's variants
 // exist -- from anywhere, a function body included. Returns 0 when it is already
 // being resolved.
@@ -131,8 +127,15 @@ int structEnumSeesPrivate(TypeCheckState *pstate, INode *type);
 // Get bottom-most base trait for some trait/struct, or NULL if there is not one
 StructNode *structGetBaseTrait(StructNode *node);
 
-// Type check a struct type
+// Type check a struct type: its layout. Its members are checked once no layout
+// is in flight.
 void structTypeCheck(TypeCheckState *pstate, StructNode *name);
+
+// A layout of a type holding values by value begins, or ends. When the last one
+// in flight ends, every variant still waiting is laid out and every waiting
+// type's members are checked.
+void structLayoutEnter(void);
+void structLayoutExit(void);
 
 // Settle an enum's discriminant width from its variants' tag values, refusing a
 // value too large for the integer type it declared

@@ -192,6 +192,46 @@ fn statics() {
   show("type-call-reaches-init", seeded.seed);
 }
 
+// -------- types that name each other --------
+
+// A method may take by value a type that holds its own type by value, and the
+// order the two are written in makes no difference. Every type is laid out before
+// any type's methods are checked, so 'o Outer' finds Outer finished whether Outer
+// was written first -- and laid Inner out while in flight itself -- or second.
+// Written first, this was refused as a cycle: Inner's methods were checked from
+// inside Outer's layout, which had not yet finished.
+struct Outer {
+  pub inner Inner;
+}
+
+struct Inner {
+  pub k i64;
+  pub fn sum(self &, o Outer) i64 {k + o.inner.k;}
+  pub fn product(self, o Outer) i64 {k * o.inner.k;}
+}
+
+// The same pair the other way round
+struct Inside {
+  pub k i64;
+  pub fn sum(self &, o Outside) i64 {k + o.inside.k;}
+  pub fn product(self, o Outside) i64 {k * o.inside.k;}
+}
+
+struct Outside {
+  pub inside Inside;
+}
+
+fn nameEachOther() {
+  imm inner = Inner[5];
+  imm outer = Outer[Inner[3]];
+  show("holder-written-first-by-reference-self", (&inner).sum(outer));
+  show("holder-written-first-by-value-self", inner.product(outer));
+  imm inside = Inside[6];
+  imm outside = Outside[Inside[4]];
+  show("holder-written-second-by-reference-self", (&inside).sum(outside));
+  show("holder-written-second-by-value-self", inside.product(outside));
+}
+
 // -------- overloaded methods --------
 
 // One overload name across three candidates that differ only in how they take
@@ -624,6 +664,7 @@ fn main() i32 {
   receivers();
   privacy();
   statics();
+  nameEachOther();
   overloads();
   operators();
   indexing();

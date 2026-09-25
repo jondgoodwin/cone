@@ -214,13 +214,13 @@ neither slots nor requirements and cost the trait nothing.
 `trait_typecheck_vref` pins all three, and
 `doc/reference/refvirtref.html`, "Type Restrictions", is the rule.
 | `namespace` | every named member: fields, methods, macros, overload sets, `Self`, **an enum's variants** — each a `StructNode`, bound at parse, and never a member of the enum's values: a lookup through a value passes one over (`fnCallLowerMethod`) — and what a fold admits — a **copy** of a folded field (a `FieldDclNode` with a `hop`) and an **alias** (`AliasDclNode`) for a folded method, overload set or macro method, for every member of an `extends` base but its fields, `final` and `clone` (those two are copied into `nodelist`, as a trait's defaults are), and for every member a sibling `use` admits. The copies and aliases live here only; `fields` and `nodelist` never hold one |
-| `dropfn` | NULL until type check settles the layout, and set before the methods are checked |
+| `dropfn` | NULL until type check settles the layout, and set as part of it, before any method is checked |
 | `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols". The owner is a module, or the enum for a variant declared inside one — for an extension's copy of a base variant, the extension, so the copy's methods are spelled after it. Read for one thing besides naming: rejecting a variant declared outside its enum's module, through `dclInfoGetModule` |
 | `basetrait` | the **type expression** of the first abstraction an `is` names, or of the enum a variant belongs to — a `NameUseNode`, or an `FnCallNode` for a generic base. **Not a `StructNode*`.** Two helpers unwrap it and they answer different questions: `structBaseTraitDcl` takes **one hop**, to the declaration this type stands on, while `structGetBaseTrait` recurses to the **bottom-most** one. Picking the wrong one is how the infection loop hangs |
 | `extendsbase` | the **type expression** whatever base an `extends` names, on the same terms: the concrete type this enriches, or, **on an enum, the enum whose variants join this one's set**. **A separate slot from `basetrait` on purpose**: they are different assertions, a type may write both, and every walk that reads `basetrait` is asking about an abstraction — which is also why an enum's base is here and not there, since no substitution runs between the two enums. `structEnumBaseDcl` unwraps this one for an enum. A generic enum is named here with its arguments (`Option[T]`), an `FnCallNode` until type check replaces it with the instance |
 | `extendsdcl` | an **enriched** base's declaration, written once its members have been taken and NULL until then — so it says both *which* type this enriches and *that* the enrichment has happened, which is what tells name resolution's expansion from type check's. `structExtendsRoot` walks it to the bottom of the chain, and `structExtendsEquiv` compares two roots: that comparison is the whole substitution rule. **Always NULL for an enum**, deliberately: an enum extension licenses no substitution, so it writes nothing the rule reads |
 | `siblings` | a **field-like node per type-body `use`**, or NULL: its `vtype` the type expression of the sibling named, its `fold` what the clause admits. Never in `fields`, because a sibling contributes no representation; the node type is reused for what it already carries through cloning — a type expression and a clause. Read only by `structUseSiblings` |
-| `lifecycle` | unlowered copies of this type's `final` and `clone`, set aside as its layout settles and before its methods are type checked (`structKeepLifecycle`), or NULL. Read only by an enrichment taken after that — in type check, where this type or its enrichment is a generic's instance — since by then the methods themselves are lowered (see Hazards) |
+| `lifecycle` | unlowered copies of this type's `final` and `clone`, set aside as its layout settles and before its methods are type checked (`structKeepLifecycle`), or NULL. Read only by an enrichment taken after that — in type check, where this type or its enrichment is a generic's instance — since by then the methods themselves may be lowered (see Hazards) |
 | `derived` | for an **enum**, its variants in declaration order — **an extension's begins with its copies of its base's list**, in the base's order, and they are in no module's node list, so this is how the module walk and generation reach them (`structEnumCopyCount` says how many: those whose `instnode` is the extension). A generic instance's list holds the instances of its template's variants, copies included, put there by `genericMemoize`. A variant is in exactly one enum's list. The index is the `tagnbr` only where nothing pinned one, which is what generation asks before using the tag to index the vtable list |
 | `traits` | every abstraction whose members were taken — the base, each further name in the `is` list, and each `mixin` — or NULL. Written where the members are taken (`structInheritTrait`) and read by type check's two requirement checks, the only things that still need to know which trait a requirement came from. **Which entry is the base is asked of `basetrait`, not of this list's order**, since the field walk that fills it runs backwards |
 | `fields` | all fields in layout order. A declared field may carry a fold clause (`FieldDclNode.fold`); a folded copy is never here |
@@ -544,7 +544,11 @@ another. See [module](module.md).
 
 ## Type check
 
-`structTypeCheck` is the longest ordered sequence in the compiler:
+`structTypeCheck` is the longest ordered sequence in the compiler. **It is the
+type's layout and nothing else**: its members — steps 9 and 10 — are checked by
+`structCheckMembers` once no layout is in flight anywhere, so no member ever
+meets a type half laid out. [Type Check](../phases/type-check.md), "Layout before
+members", is the mechanism.
 
 1. **A template returns immediately** — only clones are checked.
 1a. **An `extends` base name resolution could not take is taken here** — this
@@ -624,13 +628,12 @@ another. See [module](module.md).
    both ways: it splices its fields in, so a variant declares none of them.
 6. `final` forces `MoveType`; `clone` clears it. Then propagate up the base
    chain, one `structBaseTraitDcl` hop per iteration.
-7. **`TypeChecked` is set here, before the methods.** The placement is
-   load-bearing, not an optimization: fields are indexed, size is known, and the
-   method set is complete, so a method may use its own type by value —
-   `fn twin(self) Self`. Just before it, a type that may be enriched sets its
-   `final` and `clone` aside unlowered in `lifecycle` (`structKeepLifecycle`), for
-   an enrichment taken after its methods are checked; so an enrichment reads
-   `TypeChecked` on its base to know which to copy.
+7. **`TypeChecked` is set here: laid out.** Fields are indexed, the type's own
+   size is known, and the method set is complete. Just before it, a type that may
+   be enriched sets its `final` and `clone` aside unlowered in `lifecycle`
+   (`structKeepLifecycle`), for an enrichment taken after its methods may have
+   been checked; so an enrichment reads `TypeChecked` on its base to know which
+   to copy.
 8. **`structSetDropFn`** — validate a `final` method, then, if any field's type
    has a drop function, synthesize a `drop` method, owned by the type so its
    symbol is spelled as any method's — `Bundle.drop`, `_CNvNt6Bundle4drop` —
@@ -652,9 +655,23 @@ another. See [module](module.md).
    variant, which the pre-lowered body cannot survive. An enum's common fields
    are spliced into each variant, so the variant's own `drop` finalizes them.
    A module is given its `drop` the same way, its globals standing for the
-   fields ([module](module.md), "Init and final").
-9. Type check every method — those in `nodelist` before step 8, so not the
-   generated `drop`.
+   fields ([module](module.md), "Init and final"). The generated `drop` carries
+   `TypeChecked` from birth, so step 9's walk passes it by.
+8a. **The type's members wait** in the members queue, and **an enum lays out
+   its variants**: its size, and whether its values move or stay on their
+   thread, are theirs, so its layout is not finished until theirs are. Each
+   variant not yet begun — an extension's copies of its base's variants among
+   them — is laid out now, unless one is in flight already. That means the enum
+   was demanded from inside that variant's layout, and a sibling laid out there
+   could hold that variant by value and find it unfinished, a cycle only by the
+   order of the walk; so the enum waits in the variants queue instead, worked
+   before any member once the layout in flight is done. The enum's members are
+   queued ahead of the variants it lays out, in the order written.
+
+Steps 9 and 10 are `structCheckMembers`, run from the members queue:
+
+9. Type check every member in `nodelist` — methods, static functions, statics —
+   under a walk state of this type's own, then each overload set it declares.
 10. **Verify the traits' method requirements** (`structCheckTraitReqs`), now
    that every signature has its types: for each method of each trait in
    `traits`, the type's binding for the name must have the one candidate of the
@@ -1021,16 +1038,14 @@ clause, and an argument that is no type is `ErrorNotType`.
 made it: `structEnumCopyCount` says how many of the extension's `derived` list are
 copies — those whose `instnode` is the extension, which is also what answers none
 for a generic extension's *instance*, whose copies' instances are reached through
-their templates' `memonodes` like every other instance. The module walk type checks
-the copies right after the extension
-(`structEnumCheckCopies`, from `modTypeCheck`; a generic extension's are templates,
-and return at once), and generation reaches them from the extension
+their templates' `memonodes` like every other instance. The extension's layout lays
+the copies out with its own variants (step 8a of the type check sequence above; a
+generic extension's are templates and are never reached), and their members are
+checked from the members queue like any variant's, once no layout is in flight — so
+a copy's method body that builds an added variant by value finds it finished,
+however the extension was first reached. Generation reaches them from the extension
 (`genlGlobalSyms`, `genlGlobalImpl`, ahead of a generic's early return, since a
-generic extension's copies are how their instances are reached). Not from the
-extension's own type
-check: that is often demanded from inside an added variant's, which checks its enum
-first, and a copy's method body that builds that variant by value would then find it
-still in flight.
+generic extension's copies are how their instances are reached).
 
 **Anything that needs an extension's variants before its name resolution demands
 it** (`structEnumDemandSet`): a module's `use RichColors;` in the fold pass, which
@@ -1277,7 +1292,18 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   one of them binds to it silently, where it would otherwise be `ErrorUnkName`.
   Only a program already in error can meet it.
 - **An enum's `TypeChecked` does not mean it has a size.** Its size is computed at
-  generation from `derived`. `itypeVariantPending` exists for exactly this.
+  generation from `derived`, and while one of its variants is being laid out it
+  has none. `itypeVariantPending` exists for exactly this. No member meets that
+  window, since members wait until every layout is done; only a layout does — a
+  real cycle through the variant, or a reference in the variant's layout whose
+  target holds the enum by value (see [Type Check](../phases/type-check.md),
+  "Layout before members").
+- **An enum's method is never generated for the enum.** Each variant has a clone,
+  and a call through a reference to the enum dispatches on the tag. A call on a
+  value typed as the enum — possible only for a by-value `self` — would need the
+  same dispatch on a value, which is not built, so `fnCallLowerMethod` refuses it
+  with `ErrorEnumValueDispatch` rather than leave a call to a function that does
+  not exist.
 - **`structAddField` drops a duplicate-named field from `fields`** while the
   parser has already assigned indices, so positional literals shift.
 - **An enum's equality is declared even where it cannot be given.** Where a variant

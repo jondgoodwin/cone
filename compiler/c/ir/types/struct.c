@@ -2269,6 +2269,9 @@ void structSetDropFn(StructNode *node) {
             // Pub, because the value may be dropped wherever it travels: the
             // symbol is reached from any module that holds one of these.
             INode *newdropfn = (INode*)newFnDclNode(dropName, FlagMethFld | FlagPub, (INode*)fnsig, (INode*)block);
+            // Built lowered, so it carries the mark a check would have left, and
+            // the walk over this type's members (structCheckMembers) passes it by
+            newdropfn->flags |= TypeChecked;
             // Owned by the type it drops, so its symbol is spelled after that
             // type and stays unique among all the program's drop functions
             nodelistAdd(&node->nodelist, newdropfn);
@@ -2383,7 +2386,145 @@ void structTypeCheckEnumInstance(TypeCheckState *pstate, StructNode *instance) {
     structTagWidthDeferred = saved;
 }
 
-// Type check a struct type
+// -------- Layout before members --------
+//
+// Type check lays out every type before it checks any type's members. A layout
+// is what a size question reads, and what a move or a thread question reads, so a
+// member checked while some layout is still in flight could see a type with no
+// size yet, or one that does not yet know it moves -- and whether it did would
+// follow the order the declarations happen to be written in. So a layout never
+// checks members: structTypeCheck lays the type out and puts it in the members
+// queue, and the queue is worked only when no layout is in flight.
+//
+// 'In flight' is counted by structLayoutEnter and structLayoutExit, around the
+// type check of every type that holds values by value -- a struct, an array and
+// a tuple (inodeTypeCheck). A reference answers its own size and a function
+// signature has none, so neither is counted. See
+// compiler/c/doc/phases/type-check.md, "Layout before members".
+static uint32_t structLayoutDepth = 0;
+// Types laid out whose members are not yet checked, first laid out first
+static Nodes *structMembersWaiting = NULL;
+static uint32_t structMembersNext = 0;
+// Enums demanded from inside one of their own variants' layouts, whose other
+// variants are laid out once that layout is done
+static Nodes *structVariantsWaiting = NULL;
+static uint32_t structVariantsNext = 0;
+
+static void structWait(Nodes **queue, StructNode *node) {
+    if (*queue == NULL)
+        *queue = newNodes(16);
+    nodesAdd(queue, (INode*)node);
+}
+
+// Is this a closed set -- an enum, or an instance of one -- whose variants its
+// size and its move and thread properties come from?
+static int structIsClosedSet(StructNode *node) {
+    return (node->flags & TraitType) && (node->flags & (HasTagField | SameSize))
+        && node->derived != NULL;
+}
+
+// Is one of this closed set's variants being laid out right now?
+static int structVariantInFlight(StructNode *node) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(node->derived, cnt, nodesp)) {
+        if (((*nodesp)->flags & TypeChecking) && !((*nodesp)->flags & TypeChecked))
+            return 1;
+    }
+    return 0;
+}
+
+// Lay out each variant of a closed set not laid out already. An extension's
+// copies of its base's variants are among them, at the front of the list.
+static void structLayoutVariants(TypeCheckState *pstate, StructNode *node) {
+    uint32_t pos;
+    for (pos = 0; pos < node->derived->used; ++pos)
+        inodeTypeCheckAny(pstate, &nodesGet(node->derived, pos));
+}
+
+// Check a laid-out type's members: its methods, static functions and statics,
+// then every overload set it declares, then what the traits mixed into it require
+// of those members. Every layout the program has begun is finished by now.
+static void structCheckMembers(StructNode *node) {
+    TypeCheckState tstate;
+    tstate.typenode = (INode*)node;
+    tstate.fn = NULL;
+    tstate.scope = 0;
+
+    // A generated drop fn carries its mark already, and is passed by
+    uint32_t methcnt = node->nodelist.used;
+    uint32_t pos;
+    for (pos = 0; pos < methcnt; ++pos)
+        inodeTypeCheckAny(&tstate, &nodelistGet(&node->nodelist, pos));
+
+    // Now that every method's signature is known, verify that no overload name this
+    // type declares has two candidates that would accept the same arguments.
+    // Each set is checked once, when its first candidate is reached.
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&node->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag || ((FnDclNode*)*nodesp)->overloadsym == NULL)
+            continue;
+        INode *binding = namespaceFind(&node->namespace, ((FnDclNode*)*nodesp)->overloadsym);
+        if (binding != NULL && binding->tag == FnOverloadDclTag
+            && nodesGet(((FnOverloadDclNode*)binding)->overloads, 0) == *nodesp)
+            fnOverloadDclTypeCheck(&tstate, (FnOverloadDclNode*)binding);
+    }
+
+    structCheckTraitReqs(node);
+}
+
+// Work both queues until they are empty: first every variant still waiting to be
+// laid out, so that no member is checked against an enum that does not yet know
+// its size or whether it moves; then the members. Checking a member may begin new
+// layouts, and when those finish they work the queues from there, nested, so by
+// the time a type's check returns to the use that demanded it, its members are
+// checked -- unless it was demanded from inside a layout, or its members were
+// already waiting behind the ones being checked.
+static void structWorkQueues(void) {
+    for (;;) {
+        if (structVariantsWaiting && structVariantsNext < structVariantsWaiting->used) {
+            StructNode *node = (StructNode*)nodesGet(structVariantsWaiting, structVariantsNext++);
+            TypeCheckState tstate;
+            tstate.typenode = (INode*)node;
+            tstate.fn = NULL;
+            tstate.scope = 0;
+            // Counted as in flight, so that no member is checked until every one
+            // of them is laid out
+            ++structLayoutDepth;
+            structLayoutVariants(&tstate, node);
+            --structLayoutDepth;
+            continue;
+        }
+        if (structMembersWaiting && structMembersNext < structMembersWaiting->used) {
+            StructNode *node = (StructNode*)nodesGet(structMembersWaiting, structMembersNext++);
+            structCheckMembers(node);
+            continue;
+        }
+        break;
+    }
+    if (structVariantsWaiting)
+        structVariantsWaiting->used = 0;
+    structVariantsNext = 0;
+    if (structMembersWaiting)
+        structMembersWaiting->used = 0;
+    structMembersNext = 0;
+}
+
+// A layout begins. See "Layout before members" above.
+void structLayoutEnter(void) {
+    ++structLayoutDepth;
+}
+
+// A layout ends. When it was the last one in flight, every waiting variant is laid
+// out and every waiting member checked.
+void structLayoutExit(void) {
+    if (--structLayoutDepth == 0)
+        structWorkQueues();
+}
+
+// Type check a struct type: its layout. Its members are checked afterwards, once
+// no layout is in flight (structCheckMembers).
 void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     // Wait until a generic struct is instantiated before type checking
     if (node->genericinfo)
@@ -2421,8 +2562,8 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     // An enum this one extends is type checked first: the discriminant's width is
     // settled there, and this enum shares the node it is settled on. Name
     // resolution copied the base's variants and took its members already, so there
-    // is nothing left to take here; the copies are checked after this enum, by
-    // structEnumCheckCopies. A generic base was written with its arguments, and
+    // is nothing left to take here; the copies are laid out with this enum's own
+    // variants, below. A generic base was written with its arguments, and
     // that instance exists only once the instantiation is type checked, here.
     if ((node->flags & EnumType) && node->extendsbase && node->extendsbase->tag == FnCallTag
         && itypeTypeCheck(pstate, &node->extendsbase) == 0) {
@@ -2627,66 +2768,43 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     if ((node->flags & TraitType) && !(node->flags & SameSize))
         node->flags |= OpaqueType;
 
-    // Mark the type checked here, before its methods are checked, because this
-    // is the point its layout settles: fields are indexed, size is known, and
-    // the method set is complete -- mixins were expanded and trait methods
-    // inherited during the field walk above. What follows is each method being
-    // checked in its own right, which nothing outside this type waits on.
-    //
-    // The placement is load-bearing, not an optimization. A method may use its
-    // own type by value ('fn twin(self) Self'), so the size has to be available
-    // before step below runs. See compiler/c/doc/phases/type-check.md, "Struct and trait".
+    // Mark the type laid out here: fields are indexed, its own size is known,
+    // and the member set is complete -- mixins were expanded and trait methods
+    // inherited during the field walk above. Its members are not checked here
+    // at all; they wait until no layout is in flight (structCheckMembers).
     //
     // A type that may be enriched sets its lifecycle aside first, unlowered, for an
     // enrichment taken after this: an enrichment reads TypeChecked to know that
-    // the methods themselves are no longer fit to copy.
+    // the methods themselves may no longer be fit to copy.
     if (!(node->flags & (TraitType | HasTagField)))
         structKeepLifecycle(node);
     node->flags |= TypeChecked;
 
-    // Settle the drop fn before any method is checked, because each method's
-    // flow pass asks for it: a by-value 'self', or a local of this type, is
-    // finalized at the method's scope exit only if the type has one by then.
-    // The fields are checked, so each field's drop fn is known. A generated drop
-    // fn joins the nodelist already lowered, so the walk below stops short of it.
-    uint32_t methcnt = node->nodelist.used;
+    // Settle the drop fn as part of the layout, because each method's flow pass
+    // asks for it: a by-value 'self', or a local of this type, is finalized at
+    // the method's scope exit only if the type has one by then. The fields are
+    // laid out, so each field's drop fn is known.
     structSetDropFn(node);
 
-    // Type check all methods, etc.
-    for (nodesp = node->nodelist.nodes, cnt = methcnt; cnt; cnt--, nodesp++) {
-        inodeTypeCheckAny(pstate, (INode**)nodesp);
-    }
+    // The members wait for every layout in flight to finish. An enum's wait
+    // ahead of those of the variants it lays out below, in the order written.
+    structWait(&structMembersWaiting, node);
 
-    // Now that every method's signature is known, verify that no overload name this
-    // type declares has two candidates that would accept the same arguments.
-    // Each set is checked once, when its first candidate is reached.
-    for (nodelistFor(&node->nodelist, cnt, nodesp)) {
-        if ((*nodesp)->tag != FnDclTag || ((FnDclNode*)*nodesp)->overloadsym == NULL)
-            continue;
-        INode *binding = namespaceFind(&node->namespace, ((FnDclNode*)*nodesp)->overloadsym);
-        if (binding != NULL && binding->tag == FnOverloadDclTag
-            && nodesGet(((FnOverloadDclNode*)binding)->overloads, 0) == *nodesp)
-            fnOverloadDclTypeCheck(pstate, (FnOverloadDclNode*)binding);
+    // An enum's size, and whether its values move or stay on their thread, are
+    // its variants', so its layout is not finished until theirs are. Each one
+    // not yet begun is laid out now -- unless one is in flight already, which
+    // means this enum was demanded from inside that variant's layout. A sibling
+    // laid out here could then hold that variant by value and find it unfinished,
+    // which would be a cycle only by the order the walk happened to take, so the
+    // rest wait until the layout in flight is done (structLayoutExit).
+    if (structIsClosedSet(node)) {
+        if (structVariantInFlight(node))
+            structWait(&structVariantsWaiting, node);
+        else
+            structLayoutVariants(pstate, node);
     }
-
-    structCheckTraitReqs(node);
 
     pstate->typenode = svtypenode;
-}
-
-// Type check an extension's copies of its base's variants. They are no module's
-// nodes, so the module walk reaches them through the extension, right after it.
-//
-// Not from the extension's own type check, which is often demanded from inside a
-// variant's: a variant the extension declares checks its enum first. Checking the
-// copies there would check their method bodies nested inside that variant's check,
-// and a body that builds the variant by value would find it still in flight. A
-// copy a use reaches earlier is checked then, and returns here.
-void structEnumCheckCopies(TypeCheckState *pstate, StructNode *node) {
-    uint32_t copies = structEnumCopyCount(node);
-    uint32_t pos;
-    for (pos = 0; pos < copies; ++pos)
-        inodeTypeCheckAny(pstate, &nodesGet(node->derived, pos));
 }
 
 // Add a vtable implementation to a base struct's vtable

@@ -49,6 +49,32 @@ struct HasMoveField {
   pub n i32;
 }
 
+// An enum moves when one of its variants does, and every holder has to see it
+// however the declarations are ordered: the enum's own static function, and a
+// struct and a function written above the enum. Every type is laid out -- an
+// enum with all its variants -- before any member is checked, so each does.
+// Before, the struct written above laid the enum out, and checked its members,
+// ahead of any variant, so the enum did not yet move and all three compiled
+// clean: 'dup' copied its parameter twice, 'twice' moved out through a borrowed
+// reference twice, and main copies a HoldsLater twice. With the enum reached
+// through its first variant instead, 'dup' was refused as a cycle it is not.
+struct HoldsLater {
+  pub l Later;
+}
+
+fn sinkLater(l Later) i32 {1;}
+
+enum Later {
+  pub id i32;
+  pub fn dup(l Later) i32 {imm a = l; imm b = l; 1;}   //~ ErrorMove:47 "moved out"
+  pub fn twice(l &Later) i32 {
+    sinkLater(*l) + sinkLater(*l);   //~ ErrorMoveOut:15 "through a borrowed reference"
+                                     //~^ ErrorMoveOut:31 "through a borrowed reference"
+  }
+  struct Plain {}
+  struct Carries { pub a Attributed; }
+}
+
 fn main() i32 {
   imm a = Attributed[1];
   imm a2 = a;
@@ -78,6 +104,10 @@ fn main() i32 {
   imm g = EnrichedBox[i32][9];
   imm g2 = g;
   imm useG = g.v;            //~ ErrorMove:14 "moved out"
+
+  imm h = HoldsLater[Later.Plain[1]];
+  imm h2 = h;
+  imm useH = h.l.id;         //~ ErrorMove:14 "moved out"
 
   0i32;
 }

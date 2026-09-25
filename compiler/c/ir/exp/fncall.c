@@ -813,6 +813,26 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
         return 1;
     }
 
+    // An enum's method belongs to its variants: each has a clone of it, and the
+    // enum's own is never generated. Called through a reference, the tag selects
+    // the variant's (fnCallLowerTraitMethod). Called on a value of the enum --
+    // which only a method taking 'self' by value can be -- the tag would have to
+    // select it too, and dispatch on a value is not built, so it is refused here
+    // rather than left as a call to a function that does not exist. An intrinsic,
+    // such as a payload-free enum's '==', is no function and is not refused. On a
+    // variant's value the receiver's type is the variant, whose clone is selected.
+    if (!(callnode->flags & FlagVDisp) && (selected->flags & FlagMethFld)
+        && (selected->value == NULL || selected->value->tag != IntrinsicTag)) {
+        INode *owner = inodeGetOwner((INode*)selected);
+        if (owner != NULL && owner->tag == StructTag && (owner->flags & TraitType)) {
+            errorMsgNode((INode*)callnode, ErrorEnumValueDispatch,
+                "`%s` runs the variant's own, and which variant a value of %s is would have to be read from its tag at run time, which is not built for a value receiver. Match to reach the variant, or declare the method with a reference receiver, which dispatches on the tag.",
+                &methsym->namestr, &((StructNode*)owner)->namesym->namestr);
+            callnode->vtype = errorType;
+            return 1;
+        }
+    }
+
     // For a method call, make sure object is specified as first argument
     if (callnode->args == NULL) {
         callnode->args = newNodes(1);
