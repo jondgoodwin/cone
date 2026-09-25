@@ -350,7 +350,7 @@ paragraph, or a bullet, so the referent is never ambiguous:
 
 ```
 Regions are declared `region @move so:` with `alloc` and `free`
-[differs: implemented as `struct @move so:` with `_alloc`, and no `free` at all]
+[differs: implemented as `struct @move so:` with `alloc`, and no `free` at all]
 ```
 
 Mark at the coarsest level that is true, and override inline only where a child

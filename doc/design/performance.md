@@ -143,7 +143,7 @@ them.
 | **a two-variant enum with a pointer payload** | no struct is emitted at all — the value *is* the pointer, null is the empty variant |
 | **a payload-free enum's `==`** | one integer compare: every variant is empty, so the value *is* the tag |
 | **zero-size types** | `void` and an empty struct are `%void = {}` |
-| **`inline` functions** | inlined by the generator itself — no call, no symbol. This is how a region's `_alloc` becomes a direct `malloc` at each allocation site |
+| **`inline` functions** | inlined by the generator itself — no call, no symbol. This is how a region's `alloc` becomes a direct `malloc` at each allocation site |
 
 The first four are one claim restated: **the static safety apparatus is
 free.** That is the bet the language is making, and it is the one worth
@@ -191,7 +191,7 @@ instance has concrete types, so LLVM inlines and specializes it the same way it
 would a monomorphic function. The compiler memoizes instances so each distinct
 type argument is built once.
 
-**Explicit allocation lets the allocator inline.** `_alloc` is an ordinary
+**Explicit allocation lets the allocator inline.** `alloc` is an ordinary
 `inline` method on a region struct, so the generator splices it in and the
 emitted code calls `malloc` directly with a constant size.
 

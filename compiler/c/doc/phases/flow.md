@@ -438,7 +438,7 @@ the built-in permissions are zero-sized. See [Generation](generation.md),
 | `ir/exp/fncall.c` | `fnCallFlowStoredBorrow` | `ErrorCallEscape` for a `&mut &T` argument the callee could store a narrower borrow through |
 | `ir/exp/arraylit.c` | `arrayLitFlow` | fill-form rules and the n / n-1 alias amount |
 | `ir/types/reference.c` | `refAdoptInfections` | where a reference type acquires `MoveType` |
-| `ir/types/region.c` | `isRegion`, `regionAllocTypeCheck` | region identity; `_alloc`/`init` validation |
+| `ir/types/region.c` | `isRegion`, `regionAllocTypeCheck` | region identity; `alloc`/`init` validation |
 | `genllvm/genlalloc.c` | `genlRcCounter`, `genlDealiasNodes` | what consumes everything flow injected |
 
 Test sources that pin behavior precisely: `test/cases/move/move-flow-*.cone`,

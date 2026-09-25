@@ -17,7 +17,7 @@ needed. Safety is preserved across all of it.
 **The distance** is large and worth stating plainly. Two regions ship, `so` and
 `rc`, both written as Cone text inside the compiler. **There is no way for a
 user to define a region**, no `region` keyword, and none of the protocol below
-beyond `_alloc` and `init`. The strategies that motivate the whole design —
+beyond `alloc` and `init`. The strategies that motivate the whole design —
 arena, pool, tracing GC — are unwritten.
 
 The argument is in *Memory Managed Your Way* (`conesite/public/memory.html`) and
@@ -53,7 +53,7 @@ rather than the present arrangement.
    locality [Expressiveness and Attention](expressiveness-and-attention.md)
    depends on.
 2. **A region is an ordinary struct**, not a compiler concept. Anything with a
-   suitable `_alloc` is one. ▸ **Settles** that a new strategy is library work,
+   suitable `alloc` is one. ▸ **Settles** that a new strategy is library work,
    not compiler work. ⚠ **[differs: seven sites across `ir/flow.c`,
    `genllvm/genlalloc.c`, `genllvm/genlexpr.c` and `ir/exp/arraylit.c` dispatch
    on whether a region is *named* `rc` or `so`]** — so today the principle holds
@@ -84,17 +84,17 @@ imm shared = +rc Person["Tako"]     // counted: freed at zero
 | `borrowRef` | a sentinel node, not a struct — the default for `&` | none; a borrow owns nothing |
 | `so` | `struct @move so` in the core package, `packages/core/src/core.cone`, no fields | single owner frees |
 | `rc` | `struct rc { cnt usize }` in the core package | reference counting |
-| user-defined | any struct with `_alloc(usize) *u8` and an optional `init()` | whatever it implements |
+| user-defined | any struct with `alloc(usize) *u8` and an optional `init()` | whatever it implements |
 
 **`so` and `rc` are Cone source, not built into the compiler.**
-`regionAllocTypeCheck` validates the `_alloc` signature and nothing else, so a
-third struct with an `_alloc` is declarable today and the test corpus declares
+`regionAllocTypeCheck` validates the `alloc` signature and nothing else, so a
+third struct with an `alloc` is declarable today and the test corpus declares
 one.
 
 **But the intended shape is much larger than that.** A region is meant to be a
 *module* containing the region annotation type, the region's global state, and
 its API — where the annotation is "effectively a special-purpose trait"
-declaring bookkeeping fields plus a protocol of methods: `_alloc`, `_init`,
+declaring bookkeeping fields plus a protocol of methods: `alloc`, `init`,
 `_alias`, `_dealias`, `_free`, `_readBarrier`/`_writeBarrier`, `isAlive`,
 `weak`, `drop` — and attributes such as `@move` and `traced` that the compiler
 keys off.
@@ -269,7 +269,7 @@ gap:
 
 | Rule | Enforced by | Phase |
 | --- | --- | --- |
-| region must be a struct with `_alloc` | `regionAllocTypeCheck` | type check |
+| region must be a struct with `alloc` | `regionAllocTypeCheck` | type check |
 | requested permission vs. the source's | `permMatches` in `borrowTypeCheck` | type check |
 | value-type variance | `refMatches` and friends | type check |
 | region coercion direction | `regionMatches` | type check |

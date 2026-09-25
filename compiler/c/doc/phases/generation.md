@@ -388,7 +388,7 @@ Two consequences that are easy to get wrong:
   value as generated. `genlDealiasFlds` walks no slice's elements: what an
   element owns is left where an array of owning references leaves it.
 
-A region is any struct with a suitable `_alloc`; `so` and `rc` are declared in
+A region is any struct with a suitable `alloc`; `so` and `rc` are declared in
 Cone source in the core package, `packages/core/src/core.cone`, not built into the
 compiler. `malloc` is an
 ordinary `extern fn @c`; `free` is declared directly by `genlFree`. `conestd` supplies

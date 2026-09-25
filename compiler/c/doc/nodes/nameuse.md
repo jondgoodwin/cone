@@ -48,6 +48,19 @@ tells it from the `ULitTag` a tuple index puts in the same slot. Once
 `fnCallLowerMethod` has selected the member the node is usually repurposed into
 the call's `objfn`, and answers as a value from then on.
 
+**How the one tag was reached, measured** (PRs 84 and 85, 16 Sep 2026). A name
+use used to be retagged at resolution into one of six destination tags, and the
+group bits decided what it was. The predicates replaced them only after shadow
+instrumentation compared the old mask answer with the new one at every call,
+over the suite and a root compile of all 153 test files — 196,623 `isExpNode`,
+298,388 `isTypeNode` and 26,177 `isMetaNode` calls, then, with the retag block
+gone, 724,268 name-use predicate calls and 121,462 checks at the 30 converted
+readers — with **zero disagreements**. `MbrNameUseTag` went on the same kind of
+evidence: of 29,382 name uses that reached name resolution and 28,034 that
+reached type check, none was a member name, and the one reader that depended on
+the tag alone, the unbound-name fallback, was asked 18 times, each an unresolved
+name in a reject scenario.
+
 ## Constructors
 
 | Function | For |

@@ -50,7 +50,13 @@ module's namespace holds for every name a global's `use` clause folded in, with
 `through` naming the global, and what a `typedef` is, with a type expression as
 its target; `aliasDclResolve` follows a chain of them to the declaration. It
 carries no `vtype`, no marks and no storage, so nothing here about type check,
-flow or generation applies to it.
+flow or generation applies to it. The name is Jon's [Jon 19 Sep]: it joins the
+declaration family, and the flow node that had held the name `AliasNode` — one
+adding holders to a reference count, nothing to do with names — was renamed
+`RefCountNode`, because he judged that use of the name not acceptable. He asked for it
+as a general node from the start [Jon 20 Sep]: *"which we're going to need for
+all kinds of other stuff later, which can point to a node of any kind of name
+node, and it operates in its stead with transitivity."*
 
 **A global carries the fold clause a field carries**, `FoldClause *fold`, and it
 is the one `VarDclNode` slot no local or parameter uses: a global is the
@@ -97,6 +103,27 @@ owes both halves, the mark clearing above included; `const.c` carries that note.
 statement — is `ErrorBadStatic`, and the declaration is then parsed as if the
 word were not there. A function has no per-call copy to share, so `static fn`
 means nothing; a type's functions are the ones declared without `self`.
+
+**`static` is one rule at three scales: one copy for all instances of the
+enclosing thing, rather than one per instance** [Jon 18 Sep] — per call in a
+function, per value in a type, per instantiation of a module. A generic type or
+module has one copy **per instantiation** [Jon 25 Sep]: each instantiation is a
+type or module in its own right, so "all instances" means all instances of that
+instantiation. Measured 25 Sep: `Box[T]` with a static counter prints `1 2 1`
+for `Box[i32]`, `Box[i32]`, `Box[f32]`, and a generic module's instance already
+has its own copy of every global. At module scale `static` is therefore the same
+as a plain global, and is kept so the word is spelled the same at every scale.
+State shared across instantiations lives in an ordinary module the generic one
+imports. *Jon's reasons.* On 18 Sep: *"each separate generic instantiation has
+its own static, and that's exactly the way it should be."* On 25 Sep, settling
+it against an earlier table that said "shared across every instantiation", his
+deciding reason: a static may name `T` (`static cache Option[T]`), so it cannot
+be one storage across instantiations. *"Yep, sounds like we're okay."* The
+survey put beside it: C++ and C# are per-instantiation throughout, Java shares
+only because erasure leaves one class and forbids `T` in a static, and Rust
+forbids generic statics. The `static { fn … }`
+block that once grouped a type's functions is dropped [Jon 23 Sep]: a static
+function is one with no `self`.
 
 **The permission rule is the same at all three.** `parseDclPerm` takes whatever
 was written, substitutes the default for nothing, and reports `ErrorInvType` for

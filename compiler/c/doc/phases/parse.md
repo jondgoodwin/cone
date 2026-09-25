@@ -320,6 +320,44 @@ closing `}` is required like any other; a block's value is its last
 statement's value with or without one (see [block](../nodes/block.md)), so
 requiring it costs nothing.
 
+**Whose rule, and why.** Every statement terminated and nothing inferred is
+Jon's ruling [Jon 18 Sep]: *"I think the semicolon has to come back in… But I
+think that's necessary."* It went with the off-side rule because inference in
+Cone was an indentation feature — the old `lexIsStmtBreak` ended a statement at a
+token first on its line and not indented past the statement's start. In his
+words: *"I don't think you can do semicolon
+inference without the off-side stuff. They go together hand in glove."* Rust's
+rule is not taken [Jon 18 Sep]: *"I don't really want to follow Rust's rule of the
+semicolon not being needed on the last statement. That just feels a little bit
+confusing. Just always put it there."* Position yields and punctuation
+terminates, so a `;` must never become what discards a block's value. Go's rule,
+inferring from a line's last token, was considered and closed: Go leans on a
+universal formatter to make its rule a convention, and Cone has none. *Jon's
+reasons for dropping indentation as syntax* [Jon 18 Sep]: one consistent style
+beats the flexibility of two; he put the case for indentation first — vertical
+density, *"I really prefer that conciseness"* — which an editor can give by
+hiding a closing brace; the compiler cost was not the reason (*"It's not a big
+problem for the compiler to do it both ways, and I'm particularly proud of the
+elegant way I found to do it"*); and it frees the colon, which stays unassigned
+until a grammar pass spends it. Penny's addition, accepted: two block syntaxes
+tax the ecosystem — every tutorial, sample and reader — more than the compiler.
+His 2020 post on semicolon inference stands unedited (*"I don't actually disagree
+with my blog post"*); he declined a postscript.
+
+⚠ **No `;` after a statement that finishes with a block** — `if`, `while`,
+`each`, `match`, `with`, a bare block, a `fn` or type with a body — **is Penny's
+default from the build, not Jon's ruling** [Penny 19 Sep], standing unless he
+objects. Measured 25 Sep: `if … {…}` needs none and tolerates one;
+`imm x = if … {…} else {…};` requires one, as in Rust; and a block's last
+statement needs its own `;`, unlike Rust.
+
+**Layout is a documented style, not enforced** [Jon 25 Sep]: `else` and `elif`
+join the closing brace, `} else {` and `} elif x {`, as Rust, Go, Swift, Java
+and JavaScript write them. A chain written one branch per line — `if a {x;}`,
+`elif b {y;}`, `else {z;}` — stays as written, since the rule is about a `}`
+standing alone on its line; and a `match`'s `else` arm is a different construct
+and keeps a line of its own.
+
 `parseBlockStart` consumes the `{` and `parseBlockEnd` the `}`, reporting
 `ErrorNoRCurly` at end of file. `parseEndOfStatement` consumes the `;`, and
 otherwise reports `ErrorNoSemi` **after the token the `;` should have

@@ -444,8 +444,11 @@ path reaches a module with no parent, which is what an external module is today.
 
 ### The `mod` declaration
 
-`parseModuleDcl` parses `mod name;`. **What it does with the name depends on
-whether the filesystem already supplied one.**
+`parseModuleDcl` parses `mod name;`, and the name is always written [Jon 23 Sep:
+*"We definitely want mod to have a name always."*] — `mod;` is `ErrorNoName`,
+even where the name is checked against a folder's; "optional and checked" was
+never his. **What it does with the name depends on whether the filesystem
+already supplied one.**
 
 - **A folder module's name is its folder's**, bound into the module's own
   namespace at load, before any of its files is parsed. A name written in the
@@ -814,6 +817,14 @@ compiler but the name `core`: each is located, registered and parsed on the
 path every imported module takes, and named by its file. `stdio`'s printing is
 C, declared in its `pub extern` block, each function marked `@c` so that it
 takes its C name rather than `stdio`'s Cone one, and supplied by `conestd`.
+The shape is Jon's [Jon 23 Sep], taken before C modules so the built-ins would
+stop being text inside the compiler: *"a whole root level folder … subdivided
+into the different libraries, each of which is effectively a package … stick
+core in there and standard IO in there and just internally inside the compiler
+point to them … then we get close to packages without actually having to do
+packages … and then the move to packages becomes a whole lot easier."* The folder
+is `packages`, not `lib`, which `.gitignore` hides (*"Yes, packages, of
+course."*).
 
 **A compile that finds a package on the search path wants its source**, since
 it builds the package into its own object (below), so `fileFindPackage` tries
@@ -2040,15 +2051,19 @@ one-file module beside a module folder of its name.
   standing alone for a namespace already in scope:
 
   ```
-  import opengl use setColor, sub.* but green
+  import opengl use setColor, drawLine as line;
+  import glu use * but green;
   use matrix;
   ```
 
   The fold lives with the declaration when there is one, which is what keeps a
   package's fold spec in a single place. `but` binds to the wildcard it
   follows. A `use` clause does not unbind the package name, which stays
-  available as a qualifier. A long list takes a block form. `using` stays
-  reserved so that spelling can be diagnosed rather than merely rejected.
+  available as a qualifier. A long list takes a block form. `.*` after a
+  module name is retired [Jon 23 Sep]; the clause is the one spelling of a fold.
+  `using` stays reserved for a feature of its own that the reference documents
+  and nothing builds yet — `match … using` and `with … using` — and not as a
+  retired spelling of `use`.
 - **A package may name its own default fold, on its `mod` line** [Jon 23 Sep]:
   `mod bigint use BigInt;` is what a bare `import bigint;` folds. See "The idiom
   for reaching a package's members" below.

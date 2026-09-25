@@ -73,7 +73,9 @@ the base's own field list alone.
 **The one field splice left is the enum's.** An enum owns its variants' layout, so
 its fields — the discriminant among them — are cloned into every variant, which
 declares none of them. ▸ **Forbids** giving a variant a base of its own: its
-relationship to its enum is membership, not is-a conformance.
+relationship to its enum is membership, not is-a conformance. ⚠ *That refusal is
+Penny's default from the enum build, not Jon's ruling* [Penny 22 Sep], standing
+unless he objects. Open traits it may name with `is` (below).
 
 **An enrichment adds methods and no fields, and that is what makes its values
 and its base's interchangeable.** A type declared with `extends` over a concrete
@@ -133,8 +135,11 @@ before it was the only way for the enum's own code to read it. It is the privacy
 half of the names rule (everything an enum declares is bare inside its braces).
 ▸ **Forbids** nothing new, and widens nothing else: a struct's private members are
 still reached only through `self`, and a function the module owns is outside
-every enum, including one written or instantiated inside the braces. The
-mechanism is `structEnumSeesPrivate`, asked by `fnCallLowerMethod` and the type
+every enum, including one written or instantiated inside the braces. ⚠ *That
+last clause is Penny's reading of the ruling, not Jon's: an anonymous function
+written inside the braces, or a generic function instantiated from inside them,
+counts as the module's — her default, standing unless he objects* [Penny 23 Sep].
+The mechanism is `structEnumSeesPrivate`, asked by `fnCallLowerMethod` and the type
 literal's private-field check; the site is the owner of `pstate->fn`, because
 `pstate->typenode` is inherited by a generic function's instance from wherever it
 was first called.
@@ -172,6 +177,130 @@ fields in *at a position*, so adding one shifts every later field index in every
 variant and positional type literals move with it. Adding one to a trait is the
 same hazard reached differently: it is a new requirement, so every implementer
 must declare it, and inserting it rather than appending moves every field after it.
+
+## Jon's rulings and reasons — the type-composition session, 22 September 2026
+
+The principles above are read from source. These are the rulings behind them, in
+Jon's words, from the session that designed them (its conversation record is the
+planning corpus's `WI\type-composition-mixins.md`). A principle above that has no
+ruling here is the build's, and the ⚠ marks above name the ones that are Penny's
+defaults.
+
+**The cut is static against dynamic, not where the clause sits** [Jon 22 Sep]:
+*"every part of name folding that deals with static information, one-time
+information, is pure name folding. That's all that it is. But then when we get to
+places where the values can change dynamically, and the functions depend upon
+those dynamic values … that's where we have a little bit of extra logic."*
+**Ownership follows it, static aliasing and dynamic replicating**: *"the fields
+are never accessible by another type. This is important: the fields and methods
+with receivers are always referencing their own (type's) version of the field.
+Only static name-folding preserves the original owner."* **A number type is on the
+dynamic side**: *"A number type is arguably a struct with one field. So it is
+really not static at all."*
+
+**The kinds must match, so traits are kinded** [Jon 22 Sep], for a type-body fold
+and not a field's: *"An actor can't fold in a struct and a struct can't fold in an
+actor… we're not folding apples into oranges"*, and *"we'll have different kinds
+of traits for different kinds of types."* **So `trait` modifies the kind.** He
+proposed `struct abstract` (*"traits are already represented by a struct node
+anyway — it's literally just a flag"*) and replaced it the same session: *"Can we
+keep `trait` by itself? … use `trait` instead of `abstract`… I don't think people
+are going to know what that means."* `mod trait` was admitted because *"we will
+have traits on modules, and that's coming in the not too distant future."*
+**`enum trait` stays refused** [Jon 23 Sep: *"Let's keep it refused."*]: an
+abstraction exists to treat different concrete things uniformly, and an enum and
+its extension substitute in neither direction, so there is nothing for one to
+abstract over. **A trait may declare `is` against another trait** [Jon 22 Sep:
+*"I see no reason a trait can't be is-a to another trait. Sounds positive to
+me."*].
+
+**Two base relationships: `is` on an abstraction, `extends` on a concrete type.**
+The keyword was settled as `is` the same evening [Jon 22 Sep]: the `is` that asks
+a value's variant at run time (`p is Mobile`) asserts a type's relationship at its
+declaration, and a future `where T is Comparable` asks it a third time — one
+predicate over two kinds of operand, and a net deletion, since `is` was already a
+keyword. `mixin` retired into it on 25 Sep [Jon 25 Sep]. He refused the claim that `extends` had nothing left to assert — *"I think it is
+important. And I think it's important for two reasons."* **is-a is nominal**: *"we
+are establishing a subtype and we're establishing it nominally, as opposed to
+structurally… there is an is-a relationship here. That's crucially, crucially,
+crucially important."* A trait's default is the fallback, not an override: *"if I
+fail to implement something that the trait defines, you get the trait's
+implementation for free."* **A trait contributes no fields**: *"We only copy over
+method implementations. So the concrete type can't rely on the trait having
+defined the fields for it. It has to define the fields. And if the trait defined
+the fields, then they have to comply."* **In order, at position zero**:
+*"absolutely field order is necessary in is-a and they need to be at position
+zero."* **Only the first trait may require fields**: *"only the first can have
+fields, and none of the rest can. Only the first, and it might not be at all."*
+**Why a nominal assertion must exist at all**: *"An awful lot of traits are really
+not field values at all. In fact, they're just testable invariants… There's no
+such thing as a structural match to a trait that doesn't have any methods,
+doesn't have any values… people have to nominate it"*; and a declaration forces
+conformance *"at the moment that you're declaring it and not afterwards when
+you're checking it out."* **A type may do both**: *"a type can both extend and
+is-a. That makes sense to me."* The thesis beneath all of it — subtypes are always
+abstractions, never concrete — is in the corpus's
+`Ruminations\inheritance-folding-and-extensions.md`, in his words.
+
+**`extends` is a starting point that adds methods and overrides nothing** [Jon 22
+Sep]: *"I don't want to allow any overriding… Everything comes in."* *"No, floaters
+CAN touch fields. Its floater methods can touch fields. It just may not ADD
+fields."* **Two distinct types, substitutable both ways**: *"it's not one type.
+They're still two distinct types in the system"*; *"They're not subtypes, but they
+are structurally equivalent… I could structurally substitute them the other
+direction as well."* **The declaration is the licence**: *"Structurally equivalent
+is not valid for two unrelated structs. The fact that I'm able to do it with an
+extends is because the extends specifically says this is the base. That's what
+relates them."* **Nothing lifts through a container** — he proposed a recursive
+check and withdrew it within the hour: *"I tried to make something more
+sophisticated than I could… I'm trying to keep the language simple, but with some
+nice flexibility options."* **Inside the base's boundary**: *"it kind of lives in
+that quote unquote protected world… we are acting as if we are a float."* **The
+coupling is taken knowingly and SemVer protects it**: *"if I add fields, that
+should automatically be a new version, and as long as I stay constant to the old
+version, there's not an issue"*; *"extending fields should be a version change…
+It should be very deliberately done"*; and against making the base opt in, *"I
+don't know how making the base opt-in matters. That visibility is happening
+because the base is effectively the same."* **Siblings** are what the construct is
+for: *"other modules that also said that same type was a base… I'm building a new
+one flavored by all these others, but the uses that I've added to it are based on
+the same thing."* A sibling may not add fields — *"I think that gets too
+complicated real fast… a restriction for now"* — and is inside the base's
+boundary too, from which a chain's transitivity follows: *"transitive down a chain
+is kind of meaningless. It's just true… The base cannot see the enrichment and
+does not know it exists… At least let's start there."* Chains were confirmed [Jon
+23 Sep: *"Chains sound good to me… let's make it so."*]. **`inherits` is gone**:
+*"if somebody wants to do inherits, then they create fields of all the types that
+they want to inherit and then use the `use` statement on it"*; *"It's gone for
+now… I think it's a cleaner, simpler solution all the way around."*
+
+**`trait` is open and `enum` is the whole closed family** [Jon 22 Sep]: *"Cone
+should only use trait for open and compliance, and it should use enum for both
+closed varieties, where the only difference is in effect a same-size
+characteristic."* His brief for it: *"I really like an enum built out of structs…
+But I also want numeric-based enums to be super easy to define."* **A numeric enum
+is closed too**: *"the numerical enum isn't effectively open. It's a closed
+construct either way."* A payload is *"implicit fields in the variant"*, which is
+where same-size matters. **Same-size is the default, because graphs go to open
+traits**: *"IR is not going to be an enum… The moment you go to a graph, you no
+longer want same size."* **No flat form**: *"for open, which is what trait does,
+flat's fine. For closed, I think we're better off having everything together in
+one place."* **An enum is extendable**: *"we want to be able to create a new enum
+that extends an existing enum by adding more variants. We want that. Absolutely,
+100%, we want that."* **Multi-level enums were struck** [Jon 25 Sep]: a variant
+holding a field of another enum type is enough — *"what we have is good enough…
+if I think of something else the language needs… I'll raise it then."*
+
+**Extending an enum may not cost what it extends** [Jon 23 Sep]: *"I don't think
+that extending Option should have any impact on Option whatsoever. That doesn't
+make sense that a downstream extension should ever rule out the upper one from
+working properly."* So each extension holds its own copies of its base's
+variants; an interim guard was dropped — *"Why not just do all of the work in
+dependent order?"* — and a generic enum extends and is extended because *"I
+thought that was part of the whole reason of us doing this is to obtain the full
+value."* A variant is named through its enum — *"enums should stay qualified
+unless you specifically say otherwise"* [Jon 22 Sep] — and the declaring module
+gets no exception [Jon 23 Sep: *"Keep as built, no exceptions."*].
 
 ## Shape
 
@@ -400,8 +529,9 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   whose numbering waits for name resolution**, since the values its base's variants
   hold are not known until the base is. Two variants holding one
   value is `ErrorDupTag`, reported on the second. **A variant may name open
-  traits beyond its enum [Jon 25 Sep], but never a second base** — a variant's
-  relationship to its enum is membership, the enum owns its layout, and a base
+  traits beyond its enum [Jon 25 Sep], but never a second base** — ⚠ *the second
+  half is Penny's default, not his ruling* [Penny 22 Sep], standing unless he
+  objects — a variant's relationship to its enum is membership, the enum owns its layout, and a base
   would require fields the enum did not put there. So the traits it names are
   taken in as placeholders, and one that requires fields is `ErrorIsaMulti`
   (`structCheckIsaFields`), as it is on an enum's own `is`.
@@ -768,7 +898,13 @@ use bound to an alias. Visibility is *not* resolved: it is the alias's own bit,
 public by construction. A copy needs no such step — it carries the tag, type
 and permission every reader wants — so the sites that only read type or
 permission are right unchanged, and only the sites that build an access or an
-offset look at the `hop`.
+offset look at the `hop`. Why a copy keeps the field tag rather than a tag of its
+own, measured 20 Sep: of the 23 `FieldDclTag` tests in the compiler, 17 walk the
+fields list (which a copy is never in) or are generic dispatchers that want a copy
+to behave as a field; of the six that reach a member through `namespaceFind`,
+three only read type or permission, and three build an access or an offset. A
+separate tag, so those sites would fail loudly, was Penny's first instinct and was
+withdrawn once they were found by reading.
 
 **Building the access** is `fnCallFieldAccess`: for a copy, an access per hop,
 root first, then one for the copy itself — the nesting the hand-written path

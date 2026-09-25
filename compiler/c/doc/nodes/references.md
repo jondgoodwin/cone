@@ -176,9 +176,9 @@ dimension rather than from the node); refuse an abstract or zero-size type; buil
 `inodeTypeCheckAny` on it — **that line is load-bearing**, because it is what
 routes to `refTypeCheck` and therefore what populates `typeinfo`, which
 `genlallocref` dereferences unconditionally. Finally validate the region's
-`_alloc(usize) *u8` and the permission's `init`.
+`alloc(usize) *u8` and the permission's `init`.
 
-A region is any struct with a suitable `_alloc`; `so` and `rc` are ordinary Cone
+A region is any struct with a suitable `alloc`; `so` and `rc` are ordinary Cone
 declarations in the core package, `packages/core/src/core.cone`, not compiler
 built-ins.
 
