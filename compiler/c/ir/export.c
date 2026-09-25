@@ -65,7 +65,10 @@ int fnIsTypeLifecycle(INode *dclnode) {
 // Whether a type's method meets a requirement, or takes the place of a default,
 // of a trait the type is -- its base, or a further name of its 'is' list. Wherever a value of
 // the type is coerced to the trait, a vtable is built that calls it, naming
-// nothing: in an importer's object as in the package's
+// nothing: in an importer's object as in the package's. Each trait is asked of
+// the type's 'traits', where taking its members in recorded it: by now no
+// placeholder field is left to ask. A trait's own namespace holds what it took
+// from the traits it is, so a requirement inherited that way is found too.
 static int traitHasMember(INode *trait, Name *name) {
     if (trait == NULL || !isTypeNode(trait) || trait->tag == FnCallTag)
         return 0;
@@ -83,11 +86,12 @@ int fnIsTraitMethod(INode *dclnode) {
     StructNode *strnode = (StructNode*)owner;
     if (traitHasMember(strnode->basetrait, fn->namesym))
         return 1;
+    if (strnode->traits == NULL)
+        return 0;
     INode **nodesp;
     uint32_t cnt;
-    for (nodelistFor(&strnode->fields, cnt, nodesp)) {
-        FieldDclNode *field = (FieldDclNode*)*nodesp;
-        if ((field->flags & IsMixin) && traitHasMember(field->vtype, fn->namesym))
+    for (nodesFor(strnode->traits, cnt, nodesp)) {
+        if (traitHasMember(*nodesp, fn->namesym))
             return 1;
     }
     return 0;

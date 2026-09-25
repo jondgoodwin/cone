@@ -177,7 +177,12 @@ answering both is what keeps the object and the include file from disagreeing:
   through a receiver that name resolution never binds, or the function is the
   type's `final` or `clone` (`fnIsTypeLifecycle`), which an importer's object
   calls wherever it drops or copies a value of the type, naming neither
-  (`module_init_link` drops a package's type whose `final` is private).
+  (`module_init_link` drops a package's type whose `final` is private), or the
+  function meets a requirement of a trait the type is (`fnIsTraitMethod`),
+  which a vtable an importer builds calls. That is asked of every trait the
+  type took members from (its `traits`), so a later name of its `is` list
+  counts as its first does, and so does a trait one of them is
+  (`module_build_trait_methods`).
 
 Everything else is internal, as in a program.
 
