@@ -11,6 +11,7 @@ it prints from, not copied from a run.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,7 @@ sys.path.insert(0, str(HERE))
 import congo  # noqa: E402
 
 CONGO = [sys.executable, str(HERE / "congo.py")]
+IS_WINDOWS = congo.IS_WINDOWS
 
 
 def write(path: Path, text: str) -> None:
@@ -62,9 +64,13 @@ class HeaderScan(unittest.TestCase):
         self.assertIsNone(self.scan("mod plain use run;").extends)
 
     def test_c_named_and_pub_mod_lines(self):
-        self.assertEqual(self.scan('mod @c("SDL_") sdl;\nimport a;').mod, "sdl")
-        self.assertEqual(self.scan("mod @c(system) win;").mod, "win")
-        self.assertEqual(self.scan("pub mod lexer;\nimport tokens;").mod, "lexer")
+        header = self.scan('mod @c("SDL_") sdl;\nimport a;')
+        self.assertEqual((header.mod, header.c), ("sdl", True))
+        self.assertEqual([i.name for i in header.imports], ["a"])
+        self.assertTrue(self.scan("mod @c(system) win;").c)
+        self.assertTrue(self.scan("mod @c k32;").c)
+        header = self.scan("pub mod lexer;\nimport tokens;")
+        self.assertEqual((header.mod, header.c), ("lexer", False))
 
     def test_a_generic_mod_line(self):
         header = self.scan("pub mod stack[T, U] extends base;\nimport seq;")
@@ -278,6 +284,101 @@ class Scenarios(unittest.TestCase):
                     if line.strip().startswith("Compiling")]
         self.assertEqual(compiled, ["core", "stdio", "greet", "app"])
 
+    @unittest.skipUnless(IS_WINDOWS,"shlwapi is a Windows system library")
+    def test_a_c_package_links_the_library_it_names(self):
+        # A C package: its whole source is one '@c' module of declarations, so
+        # it is its own include file, and its manifest names the C library.
+        # shlwapi is part of every Windows SDK and, unlike kernel32, is not
+        # linked unless named, so the link fails until [link] names it
+        packages = self.root / "cpkgs"
+        self.registry(packages)
+        write(packages / "winstr" / "congo.toml",
+              '[package]\nname = "winstr"\nversion = "0.1.0"\noutput = "library"\n')
+        write(packages / "winstr" / "src" / "winstr.cone", """
+            // shlwapi's string functions, the part used here: '@c("Str")' binds
+            // ToIntA to the C function StrToIntA
+            mod @c("Str") winstr;
+
+            pub extern {
+              fn ToIntA(s *u8) i32;
+            }
+            """)
+        write(self.root / "app.cone", """
+            mod app;
+
+            import stdio;
+            import winstr;
+
+            fn main() i32 {
+              stdio.print <- winstr.ToIntA(&"1234" as *u8);
+              stdio.print <- "\\n";
+              stdio.print <- winstr.ToIntA(&"-56" as *u8) + 100i32;
+              stdio.print <- "\\n";
+              0i32;
+            }
+            """)
+        run = self.congo("run", "app.cone", cwd=self.root, ok=False)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("unresolved external symbol StrToIntA", run.stderr)
+
+        write(packages / "winstr" / "congo.toml",
+              '[package]\nname = "winstr"\nversion = "0.1.0"\noutput = "library"\n'
+              '\n[link]\nlibraries = ["shlwapi"]\n')
+        run = self.congo("run", "app.cone", cwd=self.root)
+        # StrToIntA("1234") is 1234; StrToIntA("-56") is -56, and -56 + 100 = 44
+        self.assertEqual(self.program_output(run), "1234\n44\n")
+        out = next((self.root / "home" / "lone").glob("app-*")) / "debug"
+        # The program is compiled against the C package's own source, and the C
+        # package's object, which defines nothing, is linked like any other
+        self.assertRegex((out / "app.conebuild").read_text(),
+                         r'import winstr: ".*/winstr/src/winstr\.cone"')
+        self.assertTrue((out / f"winstr{congo.OBJ_EXT}").is_file())
+
+        # Only a package that is that one '@c' file is its own include file
+        write(packages / "winstr" / "src" / "more.cone", "fn helper() {}\n")
+        run = self.congo("run", "app.cone", cwd=self.root, ok=False)
+        self.assertIn("package winstr", run.stderr)
+        self.assertIn("has no include file", run.stderr)
+
+    def test_link_paths_find_a_c_library_in_the_package(self):
+        # A C library built here, into a folder of the package that only [link]
+        # paths names: 'triple' multiplies by three
+        packages = self.root / "cpkgs"
+        self.registry(packages)
+        pkg = packages / "tri"
+        write(pkg / "csrc" / "triple.c", "int triple(int n) { return 3 * n; }\n")
+        (pkg / "clib").mkdir()
+        if congo.IS_WINDOWS:
+            env = congo.Linker.vs_environment()
+            for tool, *args in (["cl", "/nologo", "/c", "/Fo:triple.obj", "triple.c"],
+                                ["lib", "/nologo", "triple.obj", "/OUT:../clib/tri3.lib"]):
+                found = shutil.which(tool, path=env["PATH"])
+                subprocess.run([found, *args], cwd=pkg / "csrc", env=env, check=True,
+                               capture_output=True)
+        else:
+            for command in (["cc", "-c", "-fPIC", "-o", "triple.o", "triple.c"],
+                            ["ar", "rcs", "../clib/libtri3.a", "triple.o"]):
+                subprocess.run(command, cwd=pkg / "csrc", check=True, capture_output=True)
+        write(pkg / "congo.toml",
+              '[package]\nname = "tri"\nversion = "0.1.0"\noutput = "library"\n'
+              '\n[link]\nlibraries = ["tri3"]\npaths = ["clib"]\n')
+        write(pkg / "src" / "tri.cone", "mod @c tri;\n\npub extern fn triple(n i32) i32;\n")
+        write(self.root / "app.cone", """
+            mod app;
+
+            import stdio;
+            import tri;
+
+            fn main() i32 {
+              stdio.print <- tri.triple(14i32);
+              stdio.print <- "\\n";
+              0i32;
+            }
+            """)
+        run = self.congo("run", "app.cone", cwd=self.root)
+        # 3 * 14 = 42
+        self.assertEqual(self.program_output(run), "42\n")
+
     def test_an_import_loop_between_packages_is_refused(self):
         packages = self.root / "loop"
         self.registry(packages)
@@ -355,6 +456,15 @@ class Scenarios(unittest.TestCase):
                                   'output = "library"\n[dependencies]\nstdio = "1"\n')
         self.assertIn("no dependencies section",
                       self.congo("build", cwd=pkg, ok=False).stderr)
+        # [link] names a library by its bare name, and has two keys
+        head = '[package]\nname = "lib1"\nversion = "1.0.0"\noutput = "library"\n'
+        write(pkg / "congo.toml", head + '[link]\nlibraries = ["SDL2.lib"]\n')
+        self.assertIn("bare name", self.congo("build", cwd=pkg, ok=False).stderr)
+        write(pkg / "congo.toml", head + '[link]\nlibs = ["SDL2"]\n')
+        self.assertIn("'libs' is not a [link] key",
+                      self.congo("build", cwd=pkg, ok=False).stderr)
+        write(pkg / "congo.toml", head + '[link]\nlibraries = ["SDL2"]\npaths = ["x"]\n')
+        self.congo("build", cwd=pkg)     # a library links nothing, so names are only read
 
 
 if __name__ == "__main__":

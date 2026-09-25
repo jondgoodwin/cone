@@ -82,6 +82,20 @@ output = "executable"
 | `version` | `MAJOR.MINOR.PATCH`. Recorded and checked for form; never compared yet |
 | `output` | `"executable"` or `"library"`: what the package builds into |
 
+A package that needs C libraries linked adds a `[link]` table (below, "C
+packages"):
+
+```toml
+[link]
+libraries = ["SDL2", "opengl32"]
+paths = ["clib"]
+```
+
+| Key | Value |
+| --- | --- |
+| `libraries` | the C libraries to link, each by its bare name: `SDL2`, not `SDL2.lib` or `libSDL2.a` |
+| `paths` | folders the linker searches for them first; a relative one is relative to the package folder. Optional |
+
 That is the whole manifest; any other key or table is an error. **There is no
 dependencies section**: the `import` lines in the source are the dependency
 list, and the registries say where each dependency is.
@@ -175,6 +189,44 @@ the source no longer defines is a link error in every program that uses it.
 `congo new --lib` writes a starting pair. The reference manual's *import and
 extern* page, "Declaring a Cone package", is the rule.
 
+## C packages
+
+A **C package** wraps a C library, so that a program imports it by name and
+writes no C declarations of its own. Its whole source is one file,
+`src/<name>.cone`, a C-named module (`@c` on its `mod` line) declaring what the
+library defines, and its manifest names the library:
+
+```
+winstr/
+    congo.toml          [package] ... and [link] libraries = ["shlwapi"]
+    src/winstr.cone     mod @c("Str") winstr;  pub extern { fn ToIntA(s *u8) i32; }
+```
+
+- **It is its own include file.** A C library's declarations are already an
+  include file's shape (public, no bodies, the symbols supplied elsewhere), so
+  when a package has no `<name>.cone` beside its manifest, and its source is
+  that one `@c` file and nothing else under `src/`, Congo's import line names
+  `src/<name>.cone` itself. A package of more files needs an include file as
+  any other does, since an importer loads only the one file an import line
+  names.
+- **It is compiled and linked like any package.** Compiled on its own, a module
+  of `extern` declarations is an empty object, as `core`'s is; Congo links it
+  rather than skipping it, which keeps it right when the `@c` module holds a Cone
+  body too.
+- **Every library a package of the build names is linked into the executable**,
+  once each, after the objects and `conestd`, in the order the objects are:
+  the program's first, then what it imports. On Windows `SDL2` becomes `SDL2.lib`
+  and each path `/LIBPATH:`; elsewhere `-lSDL2` and `-L`. The linker looks in
+  `[link] paths` first, then where it always looks: on Windows the folders the
+  `LIB` environment variable lists, which Visual Studio's environment sets to
+  the Windows SDK's (so `opengl32`, `user32` or `shlwapi` need no path).
+- **Any package may have `[link]`**, a program's too: `samples/opengl` binds
+  SDL2 and OpenGL in submodules of its own and names both libraries in its own
+  manifest.
+
+A library that is not installed is the linker's to report, and Congo adds which
+package named which library.
+
 ## What a build does
 
 1. **Find the package**: the nearest `congo.toml` in this folder or one above
@@ -190,7 +242,8 @@ extern* page, "Declaring a Cone package", is the rule.
    a `library`. Each description lists the package's modules and their files
    and, per module, where each import's include file is. The format is the
    compiler's: `compiler/c/doc/nodes/module.md`, "A described build".
-5. **Link** the objects, the program's first, with `conestd` and the C runtime,
+5. **Link** the objects, the program's first, with `conestd`, the C libraries
+   the packages' `[link]` tables name, and the C runtime,
    into `build/<mode>/<name>.exe`. A library stops at its object,
    `build/<mode>/<name>.obj`.
 
@@ -224,14 +277,18 @@ python tools/congo/test_congo.py
 builds real programs in a temporary folder with the repository's `conec` (build
 it first, `python test/run.py --build`): `congo new` then `congo run`, a
 package with submodules printing through `stdio`, a lone file, a library from a
-registry folder that itself imports `stdio`, the loop refusals between packages
-and between modules, and the manifest's checks. The test suite (`test/run.py`) does not run Congo.
+registry folder that itself imports `stdio`, a C package linking a Windows
+system library (shlwapi), a C library built in the test and found through
+`[link] paths`, the loop refusals between packages and between modules, and the
+manifest's checks. The test suite (`test/run.py`) does not run Congo.
 
 ## Not built yet
 
 - Generating the include file from the package's source, into `build/`.
-- A C package naming the C libraries to link (the old prototype's `opengl` and
-  `sdl2` lines), and a package of C sources.
+- A package of C sources, which Congo would compile; a C package of more than
+  one module; library names per platform (`opengl32` on Windows is `GL`
+  elsewhere); and link folders in the machine config, where a machine's own
+  install location belongs.
 - `congo test`, and anything reading `tests/`.
 - WebAssembly (`--target`), which the prototype's `web` mode did.
 - A static library file (`.lib`/`.a`) for a library package; it builds an object.
