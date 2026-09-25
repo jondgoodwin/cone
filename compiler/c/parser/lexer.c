@@ -279,7 +279,16 @@ char *lexScanEscape(char *srcp, uint64_t *charval) {
     case '\"': *charval = '\"'; return ++srcp;
     case '\\': *charval = '\\'; return ++srcp;
     case ' ': *charval = ' '; return ++srcp;
-    case '0': *charval = '\0'; return ++srcp;  // the null character, and only the one digit
+    case '0':
+        // The null character. Cone has no octal escapes, so a digit after it
+        // is refused rather than read as one: a C programmer's "\012" would
+        // otherwise be a null, '1' and '2' without a word said. The digit is
+        // left to be read as content
+        *charval = '\0';
+        if (*(srcp + 1) >= '0' && *(srcp + 1) <= '9')
+            errorMsgLex(ErrorBadTok, "'\\0' may not be followed by a digit, since Cone has no octal escapes: a null character then '%c' is written '\\x00%c'",
+                *(srcp + 1), *(srcp + 1));
+        return ++srcp;
     case '\0': *charval = '\0'; return srcp;  // the source's end: stay on it
     case 'x': return lexHexDigits(2, ++srcp, charval);
     case 'u': return lexHexDigits(4, ++srcp, charval);

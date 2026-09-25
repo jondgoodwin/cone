@@ -173,9 +173,14 @@ pinning the line after each.
 **`\0` is the null character and nothing more.** `lexScanEscape` reads the
 digit `0` after a backslash as U+0000: a 0 byte in a string literal, the value
 0 in a character literal. The source's own closing NUL after a backslash is a
-different case, the end of the source, on which the reader stays. The manual
-names no octal escapes, so the digits after `\0` are content: `"\012"` is a 0
-byte then `1` and `2`. `lexical_escape_null` holds both kinds of literal.
+different case, the end of the source, on which the reader stays. Cone has no
+octal escapes, and a decimal digit right after `\0` is `ErrorBadTok` at the
+literal's opening quote (Jon's ruling of 24 September 2026, JavaScript strict
+mode's rule), so a C programmer's `"\012"` fails loudly instead of meaning a 0
+byte, `1` and `2`. The message names `\x00` then the digit as the spelling of
+that; `\x` takes exactly two hex digits, so `"\x001"` is a 0 byte then `1`. The
+digit is left to be read as content. `lexical_escape_null` holds both kinds of
+literal; `lexical_reject_octal` the refusal.
 
 **A hex escape cut short says so.** `\x`, `\u` and `\U` take exactly 2, 4 and
 8 hexadecimal digits (`lexHexDigits`). Where a character that is not a digit
