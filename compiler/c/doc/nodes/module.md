@@ -795,10 +795,11 @@ full source, which is what an importer compiles the instance from
 
 **`core` and `stdio` are packages, laid out as Congo lays out every package.**
 The repository's root holds `packages/`, one folder per package, each holding
-a manifest, `congo.toml`; the package's source, `src/<name>.cone`; and its
-hand-written include file, `<name>.cone` at the package root, which is what a
-program Congo builds is compiled against (a library compile also generates one,
-which nothing uses yet: "Generating the include file"). Nothing about either is known to the
+a manifest, `congo.toml`, and the package's source, `src/<name>.cone`. Neither
+holds an include file: a program Congo builds is compiled against the one each
+package's own compile generates, `build/<mode>/<name>.cone` ("Generating the
+include file"). The hand-written `core.cone` and `stdio.cone` that stood at the
+package roots are gone. Nothing about either is known to the
 compiler but the name `core`: each is located, registered and parsed on the
 path every imported module takes, and named by its file. `stdio`'s printing is
 C, declared in its `pub extern` block, each function marked `@c` so that it
@@ -807,7 +808,8 @@ takes its C name rather than `stdio`'s Cone one, and supplied by `conestd`.
 **A compile that finds a package on the search path wants its source**, since
 it builds the package into its own object (below), so `fileFindPackage` tries
 `name/src/name.cone` after `name.cone` and **before** the designated file
-`name/name.cone`, which in a Congo package is the include file. The source is
+`name/name.cone`, where a Congo package once kept a hand-written include file,
+and one left behind must not stand in for the source. The source is
 then a lone file, not a designated one — `src` is not `name` — so nothing
 beside it is swept: a package found this way is its one root file. Only a bare
 name is looked for there. This lookup is the compiler's side of the
@@ -821,7 +823,8 @@ the packages folder. That folder is chosen in three steps, first found wins:
 
 1. the one the `CONE_PACKAGES` environment variable names;
 2. **the one that travels with `conec`**: the nearest `packages/` holding
-   `core/src/core.cone` or `core/core.cone`, looked for in the executable's own folder and then each
+   `core/src/core.cone` (the repository's layout) or `core/core.cone` (a
+   designated file), looked for in the executable's own folder and then each
    folder above it (`coneOptExePackages`, with the executable's folder asked of
    the operating system by `fileExeFolder`, never read from `argv[0]`). One rule
    serves the build tree, where `build/x64-release/conec.exe` finds the
@@ -847,9 +850,12 @@ and a `--path` folder's `stdio` wins over the packages folder's
 (`module_package_path`).
 
 **What is still special about `core` is that it is the prelude.** `parsePgm`
-loads it before any module of the program (`parseLoadCore`), from the search path
-alone, and every other module is given a star import of it
-(`parseAddCorelibImport`). Missing, it ends the compile (`ExitNF`), naming where
+loads it before any module of the program (`parseLoadCore`), and every other
+module is given a star import of it (`parseAddCorelibImport`). **It is loaded
+from the search path alone, unless a build description's package line names
+it**: then from that file, `core`'s generated include file, loaded as any file
+an import line names is, declared and not generated ("A described build").
+Missing from the search path, it ends the compile (`ExitNF`), naming where
 the packages folder comes from. Its name is `core`, its folder's, so an
 `import core` reaches the prelude module and binds that name; the IR dump reads
 `module core`. No symbol is spelled after it, since everything it defines is
@@ -917,16 +923,22 @@ guide) is what makes a Congo build rely on nothing else here:
   `src/<name>.cone` first, then the files a folder sweep would have given it;
   each child module is written where a subfolder or a one-file module draws it.
   So the compiler's own designated-file rule is never asked about `src/`.
-- **An import line names another package's include file**, `<name>.cone` at that
-  package's root — or, for a C package, whose whole source is one `@c` module,
-  that module's own file, `src/<name>.cone` ("How a C library becomes a Cone
-  package", below) — and is written in the module whose file imports it. A
-  submodule's import of a sister, or of a name of its parent, gets no line: the
-  registry answers it before the description is asked.
+- **An import line names another package's generated include file**,
+  `build/<mode>/<name>.cone`: every package of a Congo build is compiled into
+  the one build folder of the package being built, each before what imports it,
+  and each library's compile writes its include file there beside its object,
+  so it is there, and current, when an importer's compile reads it. Congo
+  deletes it before the compile and checks the compile wrote it. **Never a file
+  written by hand**: one left at a package's root is not read, and Congo warns
+  that it is not. A C package's include file is generated too, the same rule:
+  its `@c` module's source with a banner ("How a C library becomes a Cone
+  package", below). The line is written in the module whose file imports the
+  package. A submodule's import of a sister, or of a name of its parent, gets no
+  line: the registry answers it before the description is asked.
 - **The package lines list the compile's whole dependency closure** [Jon 25
   Sep]: one top-level `import name: "path"` for every package the compiled
   package depends on, directly or through another package, `core` first and each
-  after what it imports, each naming that package's include file as its import
+  after what it imports, each naming that package's generated include file as its import
   lines do. They are what an include file's own imports resolve against, since
   an include file is a module file like any other and may import. Congo takes
   the closure from the packages' sources, never from their include files.
@@ -936,11 +948,16 @@ guide) is what makes a Congo build rely on nothing else here:
   contains, the compiler's own edges ("The module order"). Its message names the
   loop the way `ErrorImportLoop` does. The compiler's check is the backstop for
   a direct run.
-- **The prelude is the one module Congo does not describe.** `core` is loaded
-  from the package search path as always, so Congo sets `CONE_PACKAGES` to the
-  registry folder it found `core` in. Compiled on its own, `core`'s description
-  then lists the very file the prelude is, and the two are one module, keyed by
-  path; a description listing a *different* copy of `core` meets the prelude's
+- **The prelude is described by its package line.** Every description but
+  `core`'s own has one for `core`, naming the include file `core`'s compile
+  generated, and `conec` loads the prelude from it (`parseLoadCore`), so a
+  program is compiled against `core`'s include file as against any package's.
+  An explicit `import core` names the same file, and the two are one module.
+  `core`'s own description has no such line, since `core` is its root: the
+  prelude is then loaded from the package search path, so Congo sets
+  `CONE_PACKAGES` to the registry folder it found `core` in, and the root and
+  the prelude are the very same file, one module, keyed by path. A description
+  listing a *different* copy of `core` as a module's file meets the prelude's
   names as duplicates (`ErrorDupName`, one per name). Its object defines
   nothing, since all of `core` is `inline`, generic or `extern`.
 
@@ -950,17 +967,22 @@ extension, `.conebuild`:
 ```
 build: debug
 output: library
-import stdio: "../stdio/stdio.cone"
-import geometry: "../geometry/geometry.cone"
+import core: "core.cone"
+import geometry: "geometry.cone"
+import stdio: "stdio.cone"
 q: {
-    "src/q.cone"
-    "src/more.cone"
-    import stdio: "../stdio/stdio.cone"
+    "../../src/q.cone"
+    "../../src/more.cone"
+    import stdio: "stdio.cone"
     inner: {
-        "src/inner.cone"
+        "../../src/inner.cone"
     }
 }
 ```
+
+(Written by Congo into `q/build/debug/`, beside the include files the earlier
+compiles generated, it names every path absolutely; they are relative here only
+to be read.)
 
 **The format** is Jon's brace shape [Jon 23 Sep], read by the compiler's own
 lexer (`parser/parsebuild.c`), so a comment is a Cone comment and a path is a
@@ -975,7 +997,8 @@ Cone string — a backslash begins an escape, so paths are written with `/`.
   package of the compile's dependency closure: where each package's include
   file is, for the imports an include file writes. In the example, `q` imports
   only `stdio`, and `geometry` is there because `stdio`'s include file (say)
-  imports it. A package line comes before the module, as a setting does.
+  imports it. The line for `core`, where there is one, is also where the prelude
+  is loaded from. A package line comes before the module, as a setting does.
 - **Then the package's one module**, `name: { ... }`, whose body holds three
   kinds of line: a quoted path is a file of the module, `name: { ... }` a child
   module, and `import name: "path"` where this module's `import name` is found.
@@ -1083,10 +1106,12 @@ source a program compiles against in place of the package's source. It is
 written when the build description says `output: library`, or when
 `--emit-include` asks, after type check and only where there were no errors
 (`conec.c`). It is generated before any code is, so that what it cannot declare
-fails the compile with no object written, and checked and written after. Congo
-does not yet compile against it: a package's dependents still name the
-hand-written include file at its root, and `core` and `stdio` keep theirs, so
-in a Congo build the generated files sit unused in `build/<mode>/`.
+fails the compile with no object written, and checked and written after.
+**Congo compiles every dependent against it**, never against a file written by
+hand: each library's compile writes it into `build/<mode>/`, and the importers'
+descriptions name it there, `core`'s and `stdio`'s included ("A described
+build"). Include files written by hand are still legal wherever a description
+names one, as the suite's scenarios do.
 
 **It is the author's own text, edited; nothing is printed from the IR**
 (`ir/incfile.c`, `incFileGenerate`). By type check the parser has desugared
@@ -1135,9 +1160,15 @@ package's, and goes where it privately folds a submodule's names.
 
 **A global whose type was inferred gets its type written in** [Q6], the one
 thing printed from the IR: a number type, a struct — an instance of a generic
-one with its arguments, another package's through its module's name, `core`'s
-bare — or an array, `[2; u8]`. A type none of those is refused
-(`ErrorIncCheck`), asking for the type to be written.
+one with its arguments, one of the package's own by its path from the module
+declaring the global (bare, `vec.Stack`, a sister's `vec.Stack` or deeper),
+another package's through its module's name, `core`'s bare — or an array,
+`[2; u8]`. A type none of those is refused (`ErrorIncCheck`), asking for the
+type to be written. **So is a type another package holds in a submodule**, even
+where that package's root re-exports it: it is `coll.vec.Stack`, and nobody
+outside `coll` may name `coll.vec`. The generator does not look for the
+re-exported name; written as `coll.Stack`, the type is copied
+(`module_include_infer_reject`).
 
 **Every comment in the kept text is kept** [Q2], those between declarations
 included, and a banner at the top says the file is generated, from which of
@@ -2140,7 +2171,7 @@ package as a unit of compilation and no manifest. **The interface artifact is
 generated**: a library compile writes its package's include file from the root's
 own text ("Generating the include file"), with a private, pruned nested module
 block for what the root reaches in each submodule, the one place a module block
-is written, though Congo does not compile against it yet. **What the compiler does
+is written, and Congo compiles every package's dependents against it. **What the compiler does
 take is a build description** ("A described build"): one package's module tree
 and files, each file's `mod` line checked against it, imports found only where
 it says, and a library's root named from it, so a package compiled on its own
@@ -2245,10 +2276,15 @@ exporting a Cone body to C writes only `pub fn @c(...)`. Symbol spelling is
 [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), S5.
 
 **The hand-written form is built, as a C package** (`tools/congo/README.md`, "C
-packages"). A package whose whole source is one file, `src/<name>.cone`, whose
-`mod` line carries `@c`, is its own include file: Congo's import line names that
-file, and the importer loads it declared and not generated, as any include
-file. The package's manifest names the C library in a `[link]` table
+packages"). A package whose source is a C-named module, its `mod` line carrying
+`@c`, is compiled as any package is, and its include file is generated as any
+package's is: the declarations as written, with the banner. Congo's import line
+names that file, and the importer loads it declared and not generated. It was
+the package's own source until the generated include files were wired in
+[25 Sep]; one rule for every package is simpler than an exception that saves
+nothing, and it lifts the old limit that such a package be one file, since a
+Cone helper beside the declarations is its object's to define. The package's
+manifest names the C library in a `[link]` table
 (`libraries`, and optionally `paths` to search, relative to the package), and
 Congo puts every library the packages of a build name on the executable's link
 line. The compiler is not involved in linking and needed no change: compiled on
@@ -2258,7 +2294,8 @@ treating a C package as a case of its own. That also keeps a `@c` module that
 holds a Cone body correct, since the body is in that object.
 
 What is still open: how `trust` is stated, how opaque types are declared,
-a C package of more than one module (an import loads one file), per-platform
+a C package whose root reaches a C-named submodule (its block keeps the
+submodule's `@c`, unmeasured), per-platform
 library names (`opengl32` on Windows is `GL` elsewhere), and generating such a
 package from a C header. `--safe=package`,
 which exists in the option help and controls which packages may use C FFI, is
@@ -2392,9 +2429,10 @@ annotation on a reference names is a type.
   copying the author's text rather than printing the IR ("Generating the
   include file"), as Swift's textual `.swiftinterface` copies an inlinable
   body's source; Swift chose text for the same reason — a module built by one
-  compiler version stays readable by a later one. `[planned]` Congo compiling
-  dependents against the generated file, and `core` and `stdio` retiring their
-  hand-written ones.
+  compiler version stays readable by a later one. **Built [25 Sep]**: Congo
+  compiles dependents against the generated file, and `core` and `stdio` have
+  retired their hand-written ones; the transitional stage is over for every
+  package Congo builds.
 
   ⚠ **This paragraph previously read "the artifact is therefore serialized IR."**
   That was stated here and contradicted in the packages backlog item, with

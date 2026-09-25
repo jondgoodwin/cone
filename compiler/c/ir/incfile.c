@@ -410,9 +410,7 @@ static int incModuleRef(IncGen *g, IncBuf *buf, ModuleNode *mod, ModuleNode *inm
         incBufPuts(buf, ".");
         return 1;
     }
-    // One of 'inmod''s own, at any depth
-    if (!incWithin(parent, inmod))
-        return 0;
+    // One of 'inmod''s own, or of a sister's, at any depth, by the path down
     if (parent != inmod && !incModuleRef(g, buf, parent, inmod))
         return 0;
     incBufPuts(buf, &mod->namesym->namestr);
@@ -1160,11 +1158,14 @@ static int incImportKept(IncGen *g, DclSpan *span) {
 }
 
 // A submodule's 'mod' line becomes its block's opening: 'mod name {', with its
-// '@c', 'extends' and 'is' as written. Its 'pub' goes, since the block is
-// private to the package, and so does its default fold, which says what an
-// import of it folds, and nothing imports it
+// '@c', 'extends' and 'is' as written. A block the root holds loses its 'pub',
+// since it is private to the package: an importer names nothing through it. A
+// block inside another keeps it, since there 'pub' opens it to its parent's
+// neighbours, all inside the package, and the root may reach through it as the
+// source does. Its default fold goes, which says what an import of it folds,
+// and nothing imports it
 static char *incBlockOpening(IncMod *m, DclSpan *span) {
-    char *from = span->kw;
+    char *from = m->parent && m->parent->parent ? span->start : span->kw;
     char *to = span->end;
     FoldClause *deffold = m->mod->deffold;
     if (deffold && deffold->at && deffold->at->srcp > from && deffold->at->srcp < to)
@@ -1178,6 +1179,15 @@ static char *incBlockOpening(IncMod *m, DclSpan *span) {
     incBufPutn(&buf, from, to - from);
     incBufPuts(&buf, " {");
     return buf.text;
+}
+
+// Whether any of a module's submodules has a block in the file
+static int incHasBlocks(IncGen *g, IncMod *m) {
+    for (uint32_t k = 0; k < g->nmods; ++k) {
+        if (g->mods[k]->parent == m && g->mods[k]->emitted)
+            return 1;
+    }
+    return 0;
 }
 
 // Edit one module's text, statement by statement. A file other than the
@@ -1203,18 +1213,21 @@ static void incEditModule(IncGen *g, IncMod *m) {
                 m->header = span;
                 if (!isroot) {
                     // The block's opening, and a blank line after it goes
-                    char *to = span->end;
-                    char *p = to;
+                    // unless nested blocks follow it: a separate edit, so that
+                    // the header's end, where those go, is not inside either
+                    incEdit(g, curlex, span->start, span->end, incBlockOpening(m, span));
+                    int importnext = i + 1 < spans->count && spans->items[i + 1]->kind == SpanImport
+                        && spans->items[i + 1]->lexer == curlex;
+                    char *p = span->end;
                     while (incIsBlank(*p))
                         ++p;
-                    if (*p == '\n') {
+                    if (*p == '\n' && (importnext || !incHasBlocks(g, m))) {
                         char *q = p + 1;
                         while (incIsBlank(*q))
                             ++q;
                         if (*q == '\n')
-                            to = p + 1;
+                            incEdit(g, curlex, span->end, p + 1, NULL);
                     }
-                    incEdit(g, curlex, span->start, to, incBlockOpening(m, span));
                 }
             }
             break;
@@ -1273,12 +1286,7 @@ static void incEditModule(IncGen *g, IncMod *m) {
     }
 
     // Where the moved imports and the nested blocks go
-    int haschild = 0;
-    for (uint32_t k = 0; k < g->nmods; ++k) {
-        if (g->mods[k]->parent == m && g->mods[k]->emitted)
-            haschild = 1;
-    }
-    if (m->moved.len || haschild) {
+    if (m->moved.len || incHasBlocks(g, m)) {
         IncEdit *edit = m->header
             ? incEdit(g, m->header->lexer, m->header->end, m->header->end, NULL)
             : incEdit(g, first, first->source, first->source, NULL);

@@ -250,9 +250,10 @@ static char *fileFindPackageSrc(char *folder, char *srcfn) {
 // folder in order, the packages folder last (coneopts.c). In each folder,
 // 'name.cone', then a package laid out for Congo, 'name/src/name.cone', then
 // the designated file 'name/name.cone'. The package's source comes before its
-// designated-file spelling because a package laid out for Congo keeps its
-// hand-written include file there: a compile that finds a package here builds
-// the package's source into its own object, so it wants the source
+// designated-file spelling because a package laid out for Congo once kept a
+// hand-written include file there, and one left behind must not stand in for the
+// source: a compile that finds a package here builds the package's source into
+// its own object, so it wants the source
 char *fileFindPackage(char *srcfn) {
     char **searchPaths = fileSearchPaths;
     if (searchPaths == NULL)

@@ -36,6 +36,7 @@ typedef struct BuildModule {
 
 typedef struct BuildDesc {
     BuildModule *root;      // The package's module
+    BuildModule *packages;  // The package lines, as the import lines of an entry standing for no module
     int library;            // 'output: library': the root is named, and prefixes every symbol
 } BuildDesc;
 

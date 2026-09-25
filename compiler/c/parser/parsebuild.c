@@ -9,14 +9,15 @@
  *
  *     build: debug
  *     output: library
- *     import stdio: "../stdio/stdio.cone"
- *     import geometry: "../geometry/geometry.cone"
+ *     import core: "core.cone"
+ *     import geometry: "geometry.cone"
+ *     import stdio: "stdio.cone"
  *     q: {
- *         "src/q.cone"
- *         "src/more.cone"
- *         import stdio: "../stdio/stdio.cone"
+ *         "../../src/q.cone"
+ *         "../../src/more.cone"
+ *         import stdio: "stdio.cone"
  *         inner: {
- *             "src/inner.cone"
+ *             "../../src/inner.cone"
  *         }
  *     }
  *
@@ -25,7 +26,9 @@
  * 'import name: "path"' at the top level for each package in the compile's
  * dependency closure, direct or indirect: they answer an import that an
  * include file writes, since an include file is a module file like any other
- * and may import [Jon 25 Sep]. Then the package's one module, a name and a
+ * and may import [Jon 25 Sep], and the line for 'core' is where the prelude is
+ * loaded from (parseLoadCore). Congo's lines name the include files each
+ * package's compile generated, beside the description. Then the package's one module, a name and a
  * braced body holding three kinds of line: a quoted path is a file of this
  * module, 'name: { ... }' is a child module, and 'import name: "path"' says
  * where this module's 'import name' is found. A relative path is relative to the
@@ -273,6 +276,7 @@ BuildDesc *parseBuildDesc(ConeOptions *opt) {
     desc->library = opt->library;
     int seenbuild = 0, seenoutput = 0;
     buildPackages = newBuildModule(NULL);
+    desc->packages = buildPackages;
 
     lexInjectPath(opt->srcpath);
     while (!lexIsToken(EofToken)) {

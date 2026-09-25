@@ -854,6 +854,65 @@ static ModTraitNode *parseModTrait(ParseState *parse, uint16_t pubflag) {
     return trait;
 }
 
+void parseAddCorelibImport(ParseState *parse, ModuleNode *mod);
+
+// A nested module block, 'mod sub { ... }', with the lexer on its '{'. Only a
+// generated include file holds one (ParseState.generated): the package's
+// generator writes one for each of the package's submodules the file reaches,
+// holding just what it reaches, so that each name is spelled after its real
+// owner, as the package's object spells it [Jon 25 Sep, Q1]. The block is a
+// submodule of the module it is written in, in every respect a drawn one is --
+// owned, bound in its parent's namespace, given core, parsed with its own
+// namespace hooked -- and no importer can name it: a submodule is private to
+// its package. So 'pub' on a block the file's own module holds is refused. On
+// a block inside another it is kept, as the source wrote it, since it opens
+// the block only to its parent's neighbours, all of them inside the package,
+// and the root may reach through it. Its statements are a module file's, its
+// imports first
+static void parseModuleBlock(ParseState *parse, ModuleNode *parent, Name *name, INode *dclat,
+    uint16_t pubflag, DclInfo *cattr, GenericInfo *genericinfo, NameUseNode *extendsname,
+    NameUseNode *traitname) {
+    int nested = parent->dclinfo.owner != NULL;
+    if (pubflag && !nested)
+        errorMsgNode(dclat, ErrorBadPub,
+            "A module block in an include file is private to its package: no importer may name it, so 'pub' has nothing to open it to.");
+
+    // Declared with its parent: an include file's modules are never generated.
+    // The generator's self-check keeps its modules out of the program's
+    ModuleNode *mod;
+    if (parse->blockmods) {
+        mod = newModuleNode();
+        mod->flags |= parent->flags & FlagGenMod;
+        nodesAdd(&parse->blockmods, (INode*)mod);
+    }
+    else
+        mod = pgmAddMod(parse->pgm, parent->flags & FlagGenMod);
+    copyNodeLex(mod, dclat);
+    mod->filesym = mod->namesym = name;
+    dclInfoJoin((INode*)mod, (INode*)parent);
+    mod->dclinfo.facts |= DclNamesChain | (cattr->facts & DclStated);
+    mod->dclinfo.cname = cattr->cname;
+    if (pubflag && nested) {
+        mod->flags |= FlagPub;
+        mod->dclinfo.facts &= ~DclPrivate;
+    }
+    mod->flags |= FlagModDcl;
+    mod->extendsname = (INode*)extendsname;
+    mod->traitname = (INode*)traitname;
+    mod->genericinfo = genericinfo;
+    modAddNamedNode(parent, name, (INode*)mod);
+    parseAddCorelibImport(parse, mod);
+
+    ModuleNode *svmod = parse->mod;
+    parse->mod = mod;
+    modHook(svmod, mod);
+    modAddNamedNode(mod, name, (INode*)mod);
+    parseBlockStart();
+    parseGlobalStmts(parse, mod, 0);
+    modHook(mod, svmod);
+    parse->mod = svmod;
+}
+
 // Parse a 'mod' declaration, which declares the module a folder's files belong
 // to.
 //
@@ -911,57 +970,6 @@ static ModTraitNode *parseModTrait(ParseState *parse, uint16_t pubflag) {
 // declares nothing about a subfolder or a file -- where it sits is the
 // declaration. A module with no parent has nothing to be visible outside of.
 //
-void parseAddCorelibImport(ParseState *parse, ModuleNode *mod);
-
-// A nested module block, 'mod sub { ... }', with the lexer on its '{'. Only a
-// generated include file holds one (ParseState.generated): the package's
-// generator writes one for each of the package's submodules the file reaches,
-// holding just what it reaches, so that each name is spelled after its real
-// owner, as the package's object spells it [Jon 25 Sep, Q1]. The block is a
-// submodule of the module it is written in, in every respect a drawn one is --
-// owned, bound in its parent's namespace, given core, parsed with its own
-// namespace hooked -- and it is always private: a submodule is private to its
-// package, so no importer can name it, and 'pub' on it is refused. Its
-// statements are a module file's, its imports first
-static void parseModuleBlock(ParseState *parse, ModuleNode *parent, Name *name, INode *dclat,
-    uint16_t pubflag, DclInfo *cattr, GenericInfo *genericinfo, NameUseNode *extendsname,
-    NameUseNode *traitname) {
-    if (pubflag)
-        errorMsgNode(dclat, ErrorBadPub,
-            "A module block in an include file is private to its package: no importer may name it, so 'pub' has nothing to open it to.");
-
-    // Declared with its parent: an include file's modules are never generated.
-    // The generator's self-check keeps its modules out of the program's
-    ModuleNode *mod;
-    if (parse->blockmods) {
-        mod = newModuleNode();
-        mod->flags |= parent->flags & FlagGenMod;
-        nodesAdd(&parse->blockmods, (INode*)mod);
-    }
-    else
-        mod = pgmAddMod(parse->pgm, parent->flags & FlagGenMod);
-    copyNodeLex(mod, dclat);
-    mod->filesym = mod->namesym = name;
-    dclInfoJoin((INode*)mod, (INode*)parent);
-    mod->dclinfo.facts |= DclNamesChain | (cattr->facts & DclStated);
-    mod->dclinfo.cname = cattr->cname;
-    mod->flags |= FlagModDcl;
-    mod->extendsname = (INode*)extendsname;
-    mod->traitname = (INode*)traitname;
-    mod->genericinfo = genericinfo;
-    modAddNamedNode(parent, name, (INode*)mod);
-    parseAddCorelibImport(parse, mod);
-
-    ModuleNode *svmod = parse->mod;
-    parse->mod = mod;
-    modHook(svmod, mod);
-    modAddNamedNode(mod, name, (INode*)mod);
-    parseBlockStart();
-    parseGlobalStmts(parse, mod, 0);
-    modHook(mod, svmod);
-    parse->mod = svmod;
-}
-
 // '@c' after 'mod' makes the module C-named: 'mod @c("SDL_") sdl;'. The
 // module's naming is the only thing it states; whether a declaration is defined
 // elsewhere is that declaration's own 'extern' [Jon 23 Sep] (parseCAttr).
@@ -1792,10 +1800,22 @@ ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name 
     return parseLoadModulePath(parse, path, filesym, genflag, NULL);
 }
 
-// Load the core package, the prelude every module imports. It is found on the
-// package search path and nowhere else, so no file beside a program can stand in
-// for it, and like every package found there it is compiled into this object
-static ModuleNode *parseLoadCore(ParseState *parse) {
+// Load the core package, the prelude every module imports.
+//
+// In a described build whose package lines name core, that line says where it
+// is: core's include file, which Congo's compile of core generated, loaded as
+// any include file an import line names is, and only declared, since core's
+// own compile built it (a package is imported only through its include file).
+// Otherwise -- a direct compile, core's own compile, a description with no line
+// for core -- it is found on the package search path and nowhere else, so no
+// file beside a program can stand in for it, and like every package found there
+// it is compiled into this object
+static ModuleNode *parseLoadCore(ParseState *parse, BuildDesc *desc) {
+    if (desc && desc->packages) {
+        BuildImport *line = parseBuildFindImport(desc->packages, nametblFind("core", 4));
+        if (line)
+            return parseLoadBuildImport(parse, line);
+    }
     char *path = fileFindPackage("core");
     if (path == NULL)
         errorExit(ExitNF, "Cannot find the core package, core/src/core.cone or core/core.cone, on the package search path. The packages folder is named by CONE_PACKAGES, else found at or above conec's own folder, else built into the compiler, and '--path' adds folders ahead of it.");
@@ -1955,7 +1975,7 @@ ProgramNode *parsePgm(ConeOptions *opt, BuildDesc *desc) {
 
     // Load and parse the core package, auto-imported into main source and, from
     // here on, into every module loaded
-    ModuleNode *corelib = parseLoadCore(&parse);
+    ModuleNode *corelib = parseLoadCore(&parse, desc);
     parse.core = corelib;
     ImportNode *importnode = newImportNode();
     importnode->fold = newFoldClause();

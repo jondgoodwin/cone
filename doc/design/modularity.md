@@ -258,10 +258,10 @@ declaration takes the package's Cone name. The library's compile generates that
 include file from its own source ([module](../../compiler/c/doc/nodes/module.md),
 "Generating the include file"). Congo drives it: `congo run` compiles each
 package a program imports on its own, from a build description it writes, and
-links the objects (`tools/congo/README.md`). What is still missing is Congo
-compiling against the generated include file, which it does not yet: the
-packages still name hand-written ones, and a library whose include file would
-reach into one of its submodules is refused.
+links the objects (`tools/congo/README.md`), each dependent compiled against
+the include file its package's compile generated, `core`'s and `stdio`'s
+included; what a package's root reaches in its submodules is declared there in
+private nested module blocks.
 
 The generation machinery, though, is not the missing part. An imported module's
 bodies are emitted whenever it is flagged for generation, and **every module found
