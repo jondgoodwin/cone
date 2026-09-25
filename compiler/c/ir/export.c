@@ -73,7 +73,9 @@ int fnIsTypeLifecycle(INode *dclnode) {
 // - a public function or global of a module; or
 // - a function of a type an importer can reach -- a public type, or one an
 //   expanded body names -- when the function is public, or the type holds an
-//   expanded body that can reach its private ones through a receiver.
+//   expanded body that can reach its private ones through a receiver, or the
+//   function is the type's 'final' or 'clone', which an importer's object
+//   calls wherever it drops or copies a value of the type.
 // Everything else is internal: a private definition nothing expanded names, and
 // every function of a private type no expanded body names. An instance of a
 // generic, or a member of one, is never exported: every object that uses it
@@ -96,5 +98,5 @@ int dclIsExported(ModuleNode *libroot, INode *dclnode) {
     if (typeinfo == NULL
         || ((typeinfo->facts & DclPrivate) && !(typeinfo->facts & DclExpandReached)))
         return 0;
-    return !(dclinfo->facts & DclPrivate) || typeHoldsExpanded(owner);
+    return !(dclinfo->facts & DclPrivate) || typeHoldsExpanded(owner) || fnIsTypeLifecycle(dclnode);
 }

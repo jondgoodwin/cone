@@ -171,7 +171,10 @@ answering both is what keeps the object and the include file from disagreeing:
 - a function of a type an importer can reach — a public type, or one an
   expanded body names — where the function is public, or the type holds an
   expanded body (`typeHoldsExpanded`), which can reach a private method
-  through a receiver that name resolution never binds.
+  through a receiver that name resolution never binds, or the function is the
+  type's `final` or `clone` (`fnIsTypeLifecycle`), which an importer's object
+  calls wherever it drops or copies a value of the type, naming neither
+  (`module_init_link` drops a package's type whose `final` is private).
 
 Everything else is internal, as in a program.
 

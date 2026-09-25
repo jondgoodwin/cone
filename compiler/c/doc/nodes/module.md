@@ -1640,7 +1640,10 @@ include file exactly as the package's compile derives it from its source — a
 calls the declared symbols (`module_init_link`). An include file that declares
 less than its package has leaks rather than misbehaves: an `init` it omits is not
 run, and where it omits the global a `drop` finalizes, the program calls
-`final` alone; one that declares more fails to link.
+`final` alone; one that declares more fails to link. **A type's `final` and
+`clone` are exported the same way** when an importer can reach the type, public
+or not (`fnIsTypeLifecycle`): a program that drops or copies a value of the type
+calls them without naming them (`module_init_link` drops a `lib.Handle`).
 
 **An instance of a generic module has its own `init` and `final`**, stitched in
 its place in the order ("The module order"). Across separately compiled
