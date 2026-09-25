@@ -790,8 +790,9 @@ static int incEditOrder(const void *a, const void *b) {
     return x->seq < y->seq ? -1 : x->seq > y->seq ? 1 : 0;
 }
 
-// The files the root's statements are written in, in the order parsed
-static uint32_t incFiles(DclSpans *spans, Lexer **files, uint32_t max) {
+// The files the root's statements are written in, in the order parsed. 'files'
+// has room for one per statement
+static uint32_t incFiles(DclSpans *spans, Lexer **files) {
     uint32_t nfiles = 0;
     for (uint32_t i = 0; spans && i < spans->count; ++i) {
         Lexer *lexer = spans->items[i]->lexer;
@@ -800,7 +801,7 @@ static uint32_t incFiles(DclSpans *spans, Lexer **files, uint32_t max) {
             if (files[j] == lexer)
                 break;
         }
-        if (j == nfiles && nfiles < max)
+        if (j == nfiles)
             files[nfiles++] = lexer;
     }
     return nfiles;
@@ -864,8 +865,8 @@ char *incFileGenerate(ProgramNode *pgm, size_t *lenp) {
     // Edit the root's text, statement by statement. A file other than the
     // first has its imports moved up into the first file's header, since an
     // import may not follow a declaration
-    Lexer *files[256];
-    uint32_t nfiles = incFiles(spans, files, 256);
+    Lexer **files = (Lexer**)memAllocBlk((spans ? spans->count : 0) * sizeof(Lexer*) + sizeof(Lexer*));
+    uint32_t nfiles = incFiles(spans, files);
     Lexer *first = nfiles ? files[0] : NULL;
     DclSpan *header = NULL;     // The first file's last header statement
     IncBuf moved;
