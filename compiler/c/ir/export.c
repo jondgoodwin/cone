@@ -60,6 +60,37 @@ int fnIsTypeLifecycle(INode *dclnode) {
         || fn->overloadsym == finalName || fn->overloadsym == cloneName;
 }
 
+// Whether a type's method meets a requirement, or takes the place of a default,
+// of a trait the type is -- its base, or one it mixes in. Wherever a value of
+// the type is coerced to the trait, a vtable is built that calls it, naming
+// nothing: in an importer's object as in the package's
+static int traitHasMember(INode *trait, Name *name) {
+    if (trait == NULL || !isTypeNode(trait) || trait->tag == FnCallTag)
+        return 0;
+    trait = itypeGetTypeDcl(trait);
+    return trait->tag == StructTag && namespaceFind(&((StructNode*)trait)->namespace, name) != NULL;
+}
+
+int fnIsTraitMethod(INode *dclnode) {
+    if (dclnode->tag != FnDclTag)
+        return 0;
+    FnDclNode *fn = (FnDclNode*)dclnode;
+    INode *owner = fn->dclinfo.owner;
+    if (owner == NULL || owner->tag != StructTag || fn->namesym == NULL)
+        return 0;
+    StructNode *strnode = (StructNode*)owner;
+    if (traitHasMember(strnode->basetrait, fn->namesym))
+        return 1;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode*)*nodesp;
+        if ((field->flags & IsMixin) && traitHasMember(field->vtype, fn->namesym))
+            return 1;
+    }
+    return 0;
+}
+
 // Whether a library compile exports a definition, so that an importer's
 // object links against it (names-and-namespaces.md, "Linkage", L1 and L5).
 // Only the package's own modules export: the root and its submodules, never
@@ -75,7 +106,8 @@ int fnIsTypeLifecycle(INode *dclnode) {
 //   expanded body names -- when the function is public, or the type holds an
 //   expanded body that can reach its private ones through a receiver, or the
 //   function is the type's 'final' or 'clone', which an importer's object
-//   calls wherever it drops or copies a value of the type.
+//   calls wherever it drops or copies a value of the type, or it meets a
+//   trait's requirement, which a vtable an importer builds calls.
 // Everything else is internal: a private definition nothing expanded names, and
 // every function of a private type no expanded body names. An instance of a
 // generic, or a member of one, is never exported: every object that uses it
@@ -98,5 +130,6 @@ int dclIsExported(ModuleNode *libroot, INode *dclnode) {
     if (typeinfo == NULL
         || ((typeinfo->facts & DclPrivate) && !(typeinfo->facts & DclExpandReached)))
         return 0;
-    return !(dclinfo->facts & DclPrivate) || typeHoldsExpanded(owner) || fnIsTypeLifecycle(dclnode);
+    return !(dclinfo->facts & DclPrivate) || typeHoldsExpanded(owner)
+        || fnIsTypeLifecycle(dclnode) || fnIsTraitMethod(dclnode);
 }

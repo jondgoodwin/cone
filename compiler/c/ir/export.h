@@ -28,6 +28,10 @@ int typeHoldsExpanded(INode *type);
 // calls wherever it is dropped or copied, without naming it
 int fnIsTypeLifecycle(INode *dclnode);
 
+// Whether a type's method meets a requirement, or replaces a default, of a
+// trait the type is: a vtable built wherever the type is coerced calls it
+int fnIsTraitMethod(INode *dclnode);
+
 // Whether a library compile whose root module is 'libroot' exports a definition,
 // so that an importer's object links against it. NULL 'libroot' exports nothing
 int dclIsExported(ModuleNode *libroot, INode *dclnode);

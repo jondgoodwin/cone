@@ -76,8 +76,8 @@ typedef struct IncGen {
     uint32_t nedits, availedits;
     StructNode **needed;    // The root's types an included declaration names
     uint32_t nneeded, availneeded;
-    INode **refused;        // What has been reported already, so it is reported once
-    uint32_t nrefused, availrefused;
+    INode **refused;        // Each refusal reported, as a pair: where, and what,
+    uint32_t nrefused, availrefused;    // so that each is reported once
     INode *from;            // The included declaration whose types are being walked
     int probing;            // Walking only to learn whether a type reaches a submodule
     int probehit;
@@ -330,22 +330,29 @@ static char *incName(INode *node) {
 // once. A generated include file cannot declare a submodule's names yet [Jon 25
 // Sep, Q1: a private, pruned nested module is the ruling, and the next step]
 static void incRefuse(IncGen *g, INode *at, INode *dcl, char *why) {
-    for (uint32_t i = 0; i < g->nrefused; ++i) {
-        if (g->refused[i] == dcl)
+    for (uint32_t i = 0; i < g->nrefused; i += 2) {
+        if (g->refused[i] == at && g->refused[i + 1] == dcl)
             return;
     }
-    if (g->nrefused == g->availrefused) {
-        g->availrefused = g->availrefused ? g->availrefused * 2 : 8;
+    if (g->nrefused + 2 > g->availrefused) {
+        g->availrefused = g->availrefused ? g->availrefused * 2 : 16;
         INode **refused = (INode**)memAllocBlk(g->availrefused * sizeof(INode*));
         if (g->nrefused)
             memcpy(refused, g->refused, g->nrefused * sizeof(INode*));
         g->refused = refused;
     }
+    g->refused[g->nrefused++] = at;
     g->refused[g->nrefused++] = dcl;
     g->failed = 1;
     IncBuf path;
     memset(&path, 0, sizeof(path));
     incModulePath(&path, dclInfoGetModule(dcl));
+    if (dcl->tag == ModuleTag) {
+        errorMsgNode(at, ErrorIncSubmodule,
+            "Package %s's include file would have to declare the names submodule %s holds, since %s. A generated include file cannot declare a submodule's names yet: keep this 'use' private, or move what it re-exports into module %s.",
+            &g->root->namesym->namestr, path.text, why, &g->root->namesym->namestr);
+        return;
+    }
     errorMsgNode(at, ErrorIncSubmodule,
         "Package %s's include file would have to declare %s, which submodule %s holds, since %s. A generated include file cannot declare a submodule's names yet: move %s into module %s, or keep it out of what %s shows its importers.",
         &g->root->namesym->namestr, incName(dcl), path.text, why,
@@ -393,6 +400,8 @@ static void incReachStruct(IncGen *g, StructNode *strnode) {
     else if (incInRootTree(g, mod)) {
         if (g->probing)
             g->probehit = 1;
+        else if (g->from->tag == ModUseTag)
+            incRefuse(g, g->from, (INode*)top, "'pub use' makes what it names public names of the package");
         else {
             char why[256];
             snprintf(why, sizeof(why), "%s, which the include file declares, names it in its signature, type or fields", incName(g->from));

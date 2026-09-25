@@ -2123,29 +2123,29 @@ class Runner:
                 result.seconds = time.monotonic() - started
                 return result
 
-        # Each package's generated include file, <package>.cone beside its
-        # object, is the golden file the program compiles against, or the round
-        # trip is not tested: a difference fails here, before the program is
-        # compiled against a file its package no longer generates
-        for golden in scenario.includes:
-            generated = out_dir / f"{golden.stem}.cone"
-            if not generated.exists():
-                result.status = FAIL
-                result.problems.append(f"no include file generated at {generated.name}")
-                continue
-            text = normalize(generated.read_text(encoding="utf-8"))
-            expected = normalize(golden.read_text(encoding="utf-8")) if golden.exists() else ""
-            if text != expected:
-                result.status = FAIL
-                result.generated[golden] = text
-                result.problems.append(
-                    f"the include file {golden.stem}'s compile generated is not "
-                    + golden.relative_to(REPO).as_posix() + " (bless records it):\n"
-                    + indent(delta(expected.split("\n"), text.split("\n"),
-                                   golden.name, "generated")))
-        if result.status != PASS:
-            result.seconds = time.monotonic() - started
-            return result
+            # The package's generated include file, <package>.cone beside its
+            # object, is the golden file what follows compiles against, or the
+            # round trip is not tested: a difference fails here, before anything
+            # is compiled against a file its package no longer generates
+            for golden in (g for g in scenario.includes if g.stem == lib.stem):
+                generated = out_dir / f"{lib.stem}.cone"
+                if not generated.exists():
+                    result.status = FAIL
+                    result.problems.append(f"compiling {lib_rel} generated no include file {generated.name}")
+                    continue
+                text = normalize(generated.read_text(encoding="utf-8"))
+                expected = normalize(golden.read_text(encoding="utf-8")) if golden.exists() else ""
+                if text != expected:
+                    result.status = FAIL
+                    result.generated[golden] = text
+                    result.problems.append(
+                        f"the include file compiling {lib_rel} generated is not "
+                        + golden.relative_to(REPO).as_posix() + " (bless records it):\n"
+                        + indent(delta(expected.split("\n"), text.split("\n"),
+                                       golden.name, "generated")))
+            if result.status != PASS:
+                result.seconds = time.monotonic() - started
+                return result
 
         cmd = [str(self.conec), *options, "-o", out_rel, scenario.source_rel]
         result.commands.append(quote(cmd))
@@ -2269,8 +2269,14 @@ class Runner:
                         diagnostics: list[Diagnostic]) -> None:
         """R3.4/R3.5. Every annotated diagnostic matched by code and location,
         and no unannotated ones."""
-        located = [d for d in diagnostics if d.line is not None]
-        unlocated = [d for d in diagnostics if d.line is None]
+        # A diagnostic located in a file the compile wrote -- a generated
+        # include file that failed its self-check -- has no source to be
+        # annotated in, so it is matched as an unlocated one is
+        generated = self.out_root.relative_to(REPO).as_posix() + "/"
+        def in_output(d: Diagnostic) -> bool:
+            return d.path is not None and normalize_path(d.path).startswith(generated)
+        located = [d for d in diagnostics if d.line is not None and not in_output(d)]
+        unlocated = [d for d in diagnostics if d.line is None or in_output(d)]
         missing, extra = match_diagnostics(scenario.annotations, located)
         extra += self.claim_unlocated(result, scenario, unlocated)
 
