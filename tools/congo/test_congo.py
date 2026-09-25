@@ -284,6 +284,105 @@ class Scenarios(unittest.TestCase):
                     if line.strip().startswith("Compiling")]
         self.assertEqual(compiled, ["core", "stdio", "greet", "app"])
 
+    def test_an_include_file_imports_another_package(self):
+        # Three packages: b defines Counter and its method; a imports b and
+        # takes and returns b's Counter; the program imports a alone. a's include
+        # file is a module file like any other, so it imports b, and the
+        # program's description lists b among its package lines for it to
+        # find [Jon 25 Sep]
+        packages = self.root / "chain"
+        self.registry(packages)
+        for name in ("a", "b"):
+            write(packages / name / "congo.toml",
+                  f'[package]\nname = "{name}"\nversion = "0.1.0"\noutput = "library"\n')
+        write(packages / "b" / "src" / "b.cone", """
+            mod b;
+
+            pub struct Counter {
+              pub count i64;
+              pub step i64;
+
+              pub fn next(self) i64 {
+                count + step;
+              }
+            }
+            """)
+        write(packages / "b" / "b.cone", """
+            mod b;
+
+            pub struct Counter {
+              pub count i64;
+              pub step i64;
+
+              pub extern fn next(self) i64;
+            }
+            """)
+        write(packages / "a" / "src" / "a.cone", """
+            mod a;
+
+            import b;
+
+            pub fn start(n i64) b.Counter {
+              b.Counter[n, 5i64];
+            }
+
+            pub fn advance(c b.Counter) b.Counter {
+              b.Counter[c.next(), c.step];
+            }
+            """)
+        write(packages / "a" / "a.cone", """
+            mod a;
+
+            import b;
+
+            pub extern fn start(n i64) b.Counter;
+
+            pub extern fn advance(c b.Counter) b.Counter;
+            """)
+        write(self.root / "app.cone", """
+            mod app;
+
+            import stdio;
+            import a;
+
+            fn main() i32 {
+              imm c = a.start(30i64);
+              stdio.print <- c.next();
+              stdio.print <- "\\n";
+              imm d = a.advance(a.advance(c));
+              stdio.print <- d.count;
+              stdio.print <- "\\n";
+              stdio.print <- d.step;
+              stdio.print <- "\\n";
+              0i32;
+            }
+            """)
+        run = self.congo("run", "app.cone", cwd=self.root)
+        # start(30) is Counter[30, 5], whose next() is 30+5 = 35, from b's
+        # object. Advanced twice: [35, 5], then [40, 5], built in a's object
+        self.assertEqual(self.program_output(run), "35\n40\n5\n")
+        compiled = [line.split()[1] for line in run.stdout.splitlines()
+                    if line.strip().startswith("Compiling")]
+        self.assertEqual(compiled, ["core", "stdio", "b", "a", "app"])
+        out = next((self.root / "home" / "lone").glob("app-*")) / "debug"
+        desc = (out / "app.conebuild").read_text()
+        # The package lines: the whole closure, b included though the program
+        # does not import it, each after what it imports, the prelude first
+        tops = [line.split(":")[0] for line in desc.splitlines()
+                if line.startswith("import ")]
+        self.assertEqual(tops, ["import core", "import stdio", "import b", "import a"])
+        self.assertRegex(desc, r'\nimport b: ".*/chain/b/b\.cone"\n')
+        # The program's own module imports only what it writes
+        module = desc[desc.index("app: {"):]
+        self.assertIn("import a:", module)
+        self.assertIn("import stdio:", module)
+        self.assertNotIn("import b:", module)
+        # a's description lists b both ways: its module imports b, and b's is
+        # the one include file its compile loads
+        a_desc = (out / "a.conebuild").read_text()
+        self.assertRegex(a_desc, r'\nimport b: ".*/chain/b/b\.cone"\n')
+        self.assertRegex(a_desc[a_desc.index("a: {"):], r'import b: ".*/chain/b/b\.cone"')
+
     @unittest.skipUnless(IS_WINDOWS,"shlwapi is a Windows system library")
     def test_a_c_package_links_the_library_it_names(self):
         # A C package: its whole source is one '@c' module of declarations, so

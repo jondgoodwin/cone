@@ -919,6 +919,13 @@ guide) is what makes a Congo build rely on nothing else here:
   package", below) — and is written in the module whose file imports it. A
   submodule's import of a sister, or of a name of its parent, gets no line: the
   registry answers it before the description is asked.
+- **The package lines list the compile's whole dependency closure** [Jon 25
+  Sep]: one top-level `import name: "path"` for every package the compiled
+  package depends on, directly or through another package, `core` first and each
+  after what it imports, each naming that package's include file as its import
+  lines do. They are what an include file's own imports resolve against, since
+  an include file is a module file like any other and may import. Congo takes
+  the closure from the packages' sources, never from their include files.
 - **A loop is refused before any `conec` run**, at both scales, from the header
   scan: between packages, and between the modules of one package — a sister
   imported or extended, a name of the parent imported, and each child its parent
@@ -939,6 +946,8 @@ extension, `.conebuild`:
 ```
 build: debug
 output: library
+import stdio: "../stdio/stdio.cone"
+import geometry: "../geometry/geometry.cone"
 q: {
     "src/q.cone"
     "src/more.cone"
@@ -956,14 +965,21 @@ Cone string — a backslash begins an escape, so paths are written with `/`.
 - **Settings first**, each at most once: `build` is `debug` or `release`, and
   sets what `--debug` sets, so the description is read before generation is set
   up; `output` is `executable` (the default) or `library`.
+- **Then the package lines**, `import name: "path"` at the top level, one per
+  package of the compile's dependency closure: where each package's include
+  file is, for the imports an include file writes. In the example, `q` imports
+  only `stdio`, and `geometry` is there because `stdio`'s include file (say)
+  imports it. A package line comes before the module, as a setting does.
 - **Then the package's one module**, `name: { ... }`, whose body holds three
   kinds of line: a quoted path is a file of the module, `name: { ... }` a child
   module, and `import name: "path"` where this module's `import name` is found.
   Imports are per module, since each module has its own. A relative path is
   relative to the description's folder.
-- A malformed line, a name written twice, a setting after the module and a
-  module listing no file are each `ErrorBuildDesc`, one code with the cause in
-  the message. Nothing is compiled against a description with an error in it.
+- A malformed line, a name written twice, a setting or a package line after the
+  module, a module's import line naming a different file from the package line
+  of the same name, and a module listing no file are each `ErrorBuildDesc`, one
+  code with the cause in the message. Nothing is compiled against a description
+  with an error in it.
 
 **What it builds** is the same module tree a folder gives, by a different route
 (`parseBuildModuleTree`, `parseBuildSubmoduleDraw`): each module named by the
@@ -1022,10 +1038,30 @@ by the import, one file swept for nothing, declared and not generated
 (`parseLoadBuildImport`): it stands for another package's include file. A file
 two import lines name is one module, read once. A submodule's other bare names
 are its parent's, as anywhere. Anything else — a name the description gives no
-line for, `stdio` included, or a quoted path — is `ErrorBuildImport`. The module
-an import line loads is not itself described, so an import written in *that*
-file is refused the same way. `core` is loaded from the package search path as
-always.
+line for, `stdio` included, or a quoted path — is `ErrorBuildImport`. `core` is
+loaded from the package search path as always.
+
+**An include file imports like any module file** [Jon 25 Sep: an include file
+*"is in fact a mod file… Starts off mod… and then you can have [imports] after
+it"*]. The module an import line loads is answered from the description's
+**package lines** (`parseBuildImportModule` gives its entry those lines), so its
+imports load further include files the same way, each read once by path, to
+whatever depth the closure has; one the package lines do not name is
+`ErrorBuildImport`, naming the missing package line. Include files that import
+each other loop like any two modules (`ErrorImportLoop`,
+`module_build_transitive_loop`), whether or not Congo's package-level check,
+which reads the packages' sources, saw it. **The package lines answer only an
+include file's imports.** The compiled package's own modules import only what
+their own lines give them, so a package in the closure that the program does
+not import is in view to the include files that import it and to nothing else:
+the program's `import b` with only a package line for `b` is `ErrorBuildImport`,
+`b` is not a name the program has, and `a.b` is `ErrorNotPublic` where `a`'s
+include file imports `b` without `pub`, since a module-level import binds the
+module in the importing module's namespace with the import's visibility
+(`module_build_transitive_parse`, `module_build_transitive_nameres`). Values of
+`b`'s types still reach the program through `a`'s functions, with their fields
+and methods (`module_build_transitive`). Under Congo the difference never
+shows: a program that writes `import b` gets its own line for it.
 
 ### What an import reaches
 
@@ -2193,12 +2229,19 @@ annotation on a reference names is a type.
   `initpure` rule that such a function call only `pure` or `initpure` functions,
   and that one other than `init` read no uninitialized global of its module:
   `pure` itself is unbuilt. Nothing runs the stitched init and final but a call
-  to `initAll()` and `finalAll()`, until the entry glue does. ⚠ **A package
-  that only another package imports is outside the program's stitched pair**:
-  the program's compile sees a package only through an include file the program
-  itself imports, and an include file may not import
-  (`ErrorBuildImport`), so the program never sees a package's own
-  dependencies, and their `init`s do not run.
+  to `initAll()` and `finalAll()`, until the entry glue does. ⚠ **The
+  program's compile now SEES a package that only another package imports**:
+  an include file imports, and the package lines list the whole closure ("A
+  described build"), so every include file the program's imports reach,
+  directly or through other include files, is a module of the program's
+  compile. **How their `init`s run is
+  still open** — Jon's chaining idea (`WI\first-congo-milestone.md`), for the
+  entry-trait conversation. What happens today falls out of the stitched pair
+  rather than being decided: an indirect package whose include file declares
+  its `init` is in `pgm->initorder` like any module, so `initAll()` calls it
+  (measured by hand, 25 Sep 2026: `b.init` setting a global to 7, reached only
+  through `a`'s include file, ran from the program's `initAll()`); one whose
+  include file does not declare it is not run, as for a direct import.
 - **Dependency fan-out is unmeasured.** Section GC decides what reaches the
   binary; it does not decide what must resolve at link time. Archive member
   extraction precedes it, so calling one function from a package pulls its whole

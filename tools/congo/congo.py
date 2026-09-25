@@ -21,7 +21,9 @@ never searches for a file of a Congo build.
 A package is a folder holding congo.toml and src/<name>.cone, the root module's
 designated file. A package that others import has a hand-written INCLUDE FILE
 beside its manifest, <name>.cone: what an importer is compiled against in place
-of the package's source. A C PACKAGE, whose whole source is one '@c' module
+of the package's source. An include file is a module file like any other and
+may import [Jon 25 Sep]; each description's package lines, the compile's whole
+dependency closure, are where those imports are found. A C PACKAGE, whose whole source is one '@c' module
 declaring a C library's functions, is its own include file.
 
 Python 3.11 or later, standard library only. README.md beside this file is the
@@ -714,7 +716,27 @@ def cone_path(path: Path) -> str:
     return str(path.resolve()).replace("\\", "/").replace('"', '\\"')
 
 
-def description(unit: Unit, mode: str, output: str) -> str:
+def closure(unit: Unit, units: dict[str, Unit], registry_core: Package | None) -> list[Package]:
+    """Every package in the unit's dependency closure, direct or indirect, in
+    build order (each after what it imports), the prelude first. These are the
+    description's PACKAGE LINES: an include file is a module file like any other
+    and may import [Jon 25 Sep], and what its imports reach is found there."""
+    seen: dict[str, Package] = {}
+
+    def visit(pkg: Package) -> None:
+        for name, dep in units[pkg.name].deps.items():
+            if name not in seen:
+                visit(dep)
+                seen[name] = dep
+
+    visit(unit.pkg)
+    first = ([registry_core] if registry_core is not None
+             and unit.pkg.name != PRELUDE else [])
+    return first + list(seen.values())
+
+
+def description(unit: Unit, mode: str, output: str,
+                packages: list[Package] = ()) -> str:
     pkg = unit.pkg
     lines = [
         f"// The build description of {pkg.label()}, written by Congo for conec;",
@@ -724,6 +746,14 @@ def description(unit: Unit, mode: str, output: str) -> str:
         f"output: {output}",
         "",
     ]
+    # The package lines: where each package of the closure is found, for an
+    # include file's own imports. The package's own modules import only what
+    # their own lines, below, give them
+    for dep in packages:
+        include = dep.src if dep.name == PRELUDE else include_for(dep)
+        lines.append(f'import {dep.name}: "{cone_path(include)}"')
+    if packages:
+        lines.append("")
 
     def emit(module: Module, depth: int) -> None:
         pad = "    " * depth
@@ -881,13 +911,14 @@ class Linker:
 # ---------------------------------------------------------------------------
 
 def compile_unit(conec: Path, unit: Unit, out: Path, mode: str, top: bool,
-                 env: dict[str, str]) -> Path:
+                 env: dict[str, str], packages: list[Package] = ()) -> Path:
     """Write the package's build description into build/<mode>/ and compile the
     package on its own. Every package but the one being built is a library;
-    the one being built is what its manifest says."""
+    the one being built is what its manifest says. 'packages' is the unit's
+    dependency closure, which the description lists for its include files."""
     output = unit.pkg.output if top else "library"
     desc = out / f"{unit.pkg.name}.conebuild"
-    desc.write_text(description(unit, mode, output), encoding="utf-8")
+    desc.write_text(description(unit, mode, output, packages), encoding="utf-8")
     say("Compiling", f"{unit.pkg.label()} ({unit.pkg.root})")
     result = subprocess.run([str(conec), "-o", str(out), str(desc)], env=env,
                             capture_output=True, text=True, errors="replace")
@@ -932,7 +963,9 @@ def build(pkg: Package, mode: str) -> Path:
     core = next((u.pkg for u in order if u.pkg.name == PRELUDE), None)
     if core is not None:
         env["CONE_PACKAGES"] = str(core.root.parent)
-    objs = [compile_unit(conec, unit, out, mode, unit.pkg is pkg, env) for unit in order]
+    by_name = {unit.pkg.name: unit for unit in order}
+    objs = [compile_unit(conec, unit, out, mode, unit.pkg is pkg, env,
+                         closure(unit, by_name, core)) for unit in order]
     if pkg.output == "library":
         say("Finished", f"{mode} library object {shown(objs[-1])}")
         return objs[-1]

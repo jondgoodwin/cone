@@ -466,16 +466,22 @@ ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
     // name is answered by the build description's import line for it, which says
     // where the file is; a submodule's other bare names are its parent's, as
     // below; and anything else -- a quoted path, a name the description does
-    // not provide -- is refused, naming what the description lacks. The file an
-    // import line names is loaded below, where every file an import reaches is
-    // checked
+    // not provide -- is refused, naming what the description lacks. An include
+    // file an import line loaded imports like any module file [Jon 25 Sep], and
+    // its lines are the description's package lines (parseBuildImportModule).
+    // The file an import line names is loaded below, where every file an import
+    // reaches is checked
     BuildImport *buildimport = NULL;
     if (newmod == NULL && parse->build != NULL) {
         buildimport = isname ? parseBuildFindImport(parse->build, filesym) : NULL;
         if (buildimport == NULL && isname && parse->mod->dclinfo.owner != NULL)
             return parseImportName(parse, importnode, filesym);
         if (buildimport == NULL) {
-            if (isname)
+            if (isname && parse->build->isimport)
+                errorMsgLexAfter(ErrorBuildImport,
+                    "The build description has no package line for %s, which 'import %s' in module %s names: an include file's import is found where the description's top-level 'import %s: \"path\"' line says.",
+                    filename, filename, &parse->mod->namesym->namestr, filename);
+            else if (isname)
                 errorMsgLexAfter(ErrorBuildImport,
                     "The build description provides nothing for 'import %s' in module %s: a described module's import is found where its 'import %s: \"path\"' line says.",
                     filename, &parse->mod->namesym->namestr, filename);
@@ -1650,7 +1656,8 @@ static ModuleNode *parseLoadModulePath(ParseState *parse, char *path, Name *file
 // searches in a described build: the description says where the file is, and
 // the import's name is the module's. It is one file, whose bodies this object
 // only declares -- a package is built on its own, and imported through its
-// include file [Jon 23 Sep]
+// include file [Jon 23 Sep]. What the include file itself imports is found where
+// the description's package lines say
 static ModuleNode *parseLoadBuildImport(ParseState *parse, BuildImport *import) {
     return parseLoadModulePath(parse, import->path, import->name, 0, parseBuildImportModule(import));
 }
