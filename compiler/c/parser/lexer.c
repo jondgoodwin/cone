@@ -108,7 +108,6 @@ void keywordInit() {
     keyAdd("mod", ModToken);
     keyAdd("actor", ActorToken);
     keyAdd("trait", TraitToken);
-    keyAdd("@move", MoveToken);
     keyAdd("@opaque", OpaqueToken);
     keyAdd("@unsized", UnsizedToken);
     keyAdd("@c", CAttrToken);
@@ -851,14 +850,19 @@ int lexScanIdent(char *srcp) {
                 }
                 else if (identNode && identNode->tag == PermTag)
                     lex->toktype = PermToken;
-                // Every attribute is a keyword ('@move', '@opaque', '@unsized', '@c'),
+                // Every attribute is a keyword ('@opaque', '@unsized', '@c', ...),
                 // so a '@' word that reaches here names none. It is reported
                 // and dropped, and what follows it is read as though it were
-                // absent.
+                // absent. An attribute is an instruction about representation
+                // or linkage that no code asks about; a fact other code may ask
+                // about is a trait, which is what move-ness became [Jon 26 Sep].
                 else if (*srcbeg == '@') {
                     if (strcmp(&lex->val.ident->namestr, "@samesize") == 0)
                         errorMsgLex(ErrorUnkAttr,
                             "'@samesize' is not an attribute: an enum is same-size by default, and '@unsized' declines it");
+                    else if (strcmp(&lex->val.ident->namestr, "@move") == 0)
+                        errorMsgLex(ErrorUnkAttr,
+                            "'@move' is not an attribute: a type that moves declares the trait, 'struct Name is Move'");
                     else
                         errorMsgLex(ErrorUnkAttr, "'%s' is not a Cone attribute",
                             &lex->val.ident->namestr);

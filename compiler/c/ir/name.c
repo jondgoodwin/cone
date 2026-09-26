@@ -69,6 +69,8 @@ Name *aliasMethodName;
 Name *dealiasMethodName;
 Name *freeMethodName;
 Name *regionRefName;
+Name *moveTraitName;
+Name *copyTraitName;
 
 // ---- Identifiers -----------------------------------------------------------
 //

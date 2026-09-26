@@ -602,11 +602,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
 
     // Handle attributes
     while (1) {
-        if (lex->toktype == MoveToken) {
-            strflags |= MoveType;
-            lexNextToken();
-        }
-        else if (lex->toktype == OpaqueToken) {
+        if (lex->toktype == OpaqueToken) {
             strflags |= OpaqueType | DeclaredOpaque;
             lexNextToken();
         }

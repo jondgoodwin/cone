@@ -8,15 +8,17 @@
 // 'tally' counts like 'rc', with a header two fields wide, so the value sits
 // sixteen bytes past where 'alloc' returned rather than eight: 'free' printing
 // the serial 'init' stored proves each method was handed the header, found from
-// the layout rather than from a guess at its size. 'solo' has no 'alias', so a
-// copy of a reference to it is a move and its one owner's going is the death.
+// the layout rather than from a guess at its size. 'solo' declares 'Move' and
+// no 'alias', so a copy of a reference to it is a move and its one owner's
+// going is the death.
 //
 // Two more leave out what 'rc' has, and an absent method's operation simply
 // does not happen: 'kept' has 'alias' and no 'dealias', so copies are counted
 // but an owner's going reports nothing, the value never dies by count, and its
 // 'free' is never called -- it leaks, as such a region's values do until a
-// collector frees them. 'asked' has 'dealias' and no 'alias', so it is a
-// single owner whose going still asks 'dealias', and dies on its answer.
+// collector frees them. 'asked' declares 'Move', has 'dealias' and no 'alias',
+// so it is a single owner whose going still asks 'dealias', and dies on its
+// answer. A region declaring neither 'Move' nor 'alias' is region_collected's.
 
 mod region_regionref;
 
@@ -40,7 +42,7 @@ struct tally is RegionRef {
   fn free(self &uni tally) inline { line("free, serial ", usize[serial]); libc.free(self as *u8); }
 }
 
-struct solo is RegionRef {
+struct solo is RegionRef, Move {
   fn alloc(size usize) *u8 inline { line("solo alloc ", size); malloc(size); }
   fn free(self &uni solo) inline { printStr("solo free\n"); libc.free(self as *u8); }
 }
@@ -53,7 +55,7 @@ struct kept is RegionRef {
   fn free(self &uni kept) inline { printStr("kept free\n"); libc.free(self as *u8); }
 }
 
-struct asked is RegionRef {
+struct asked is RegionRef, Move {
   fn alloc(size usize) *u8 inline { line("asked alloc ", size); malloc(size); }
   fn dealias(self &uni asked) Bool inline { printStr("asked dealias\n"); true; }
   fn free(self &uni asked) inline { printStr("asked free\n"); libc.free(self as *u8); }

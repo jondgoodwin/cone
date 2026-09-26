@@ -3,8 +3,10 @@
 # Key reference: compiler/c/doc/diagnostics/test-suite.md, "cases.toml keys".
 # The group directory supplies the feature tag, so tags carry pipeline phases.
 #
-# A move type is declared with 'struct @move', or inferred from a finalizer, a
-# move-typed field, or a move-typed array or tuple element. None of those needs a region,
+# A move type is declared with the built-in trait, 'struct Handle is Move', or
+# inferred from a finalizer, a move-typed field, or a move-typed array or tuple
+# element. 'is Copy' asserts the opposite, and is refused where the type moves
+# (move_typecheck_copy). None of those needs a region,
 # so this group stands on its own; 'region' owns the other way a value becomes
 # non-copyable, which is an owning or non-aliasable reference.
 #
@@ -47,8 +49,16 @@ support = []
 
 [scenario.move_success]
 category = "run"
-description = "Moving a value between variables and calls, borrowing before a move, after reassignment and before any value is given, swap and left-assignment, a copy type, a clone method that leaves a finalizing type a move type, finalized once, and a value handed back or bound through a block, an if or a loop, finalized once"
+description = "Moving a value between variables and calls, borrowing before a move, after reassignment and before any value is given, swap and left-assignment, a copy type, one declaring 'is Copy' (a generic's instance included), a clone method that leaves a finalizing type a move type, finalized once, and a value handed back or bound through a block, an if or a loop, finalized once"
 tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+# -------- type-check stage --------
+
+[scenario.move_typecheck_copy]
+category = "reject"
+description = "'is Copy' refused on a type that moves: one declaring Move too (either order), with a final, with a field that moves (a move struct, an owning 'so' reference), enriching a base that moves, an enum with a variant that moves, and a generic's instance at a move type argument"
+tags = ["typecheck"]
+diagnostics = 8
 
 # -------- flow stage --------
 
@@ -59,7 +69,7 @@ tags = ["flow"]
 
 [scenario.move_flow_infection]
 category = "reject"
-description = "Which types get move semantics: the @move attribute, a finalizer, either one kept despite a clone method, a move-typed field (a tuple holding a move value included: directly, nested, as a generic's type argument and in an enum's variant), a move-typed array element (a tuple holding one included, the array's type written out or inferred from its literal), an enrichment of a @move type, and an enum with a move-typed variant, seen by its own static function and by a struct and a function written above it"
+description = "Which types get move semantics: the built-in trait 'Move' declared, a finalizer, either one kept despite a clone method, a move-typed field (a tuple holding a move value included: directly, nested, as a generic's type argument and in an enum's variant), a move-typed array element (a tuple holding one included, the array's type written out or inferred from its literal), an enrichment of a type declaring 'Move', a generic declaring it and its enrichment, and an enum with a move-typed variant, seen by its own static function and by a struct and a function written above it"
 tags = ["flow"]
 
 [scenario.move_flow_aggregate]

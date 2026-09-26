@@ -1,0 +1,87 @@
+// A region ref declaring neither 'alias' nor 'dealias' nor 'Move': the shape a
+// tracing collector's or an arena's region ref has. An absent method means its
+// operation does not happen, and a region ref that does not declare 'Move' is
+// not single owner [Jon 26 Sep]. So a copy of a reference into it calls
+// nothing and is not a move -- the source stays usable -- and an owner going
+// away does nothing: the compiler never finalizes the value and never calls the
+// region's 'free'. Death is the region's own business, in its own loop, which
+// is not built; this region has none, so what it allocates is simply kept.
+//
+// 'swept' declares a 'free' that prints, and the value it holds a 'final' that
+// prints, so the output is the assertion: neither line ever appears. Writing
+// through one copy and reading through another shows the copies are one
+// value's references, not copies of the value.
+//
+// A 'uni' reference into it is still a move type, since its permission forbids
+// aliasing, and its going does nothing either.
+
+mod region_collected;
+
+import stdio use *;
+import libc;
+
+fn line(label &[]u8, n i32) {
+  printStr(label);
+  printInt(i64[n]);
+  printStr("\n");
+}
+
+struct swept is RegionRef {
+  fn alloc(size usize) *u8 inline { printStr("swept alloc\n"); malloc(size); }
+  // Never called: the compiler frees nothing from a region that is not 'Move'
+  // and declares no 'dealias'
+  fn free(self &uni swept) inline { printStr("swept free\n"); libc.free(self as *u8); }
+}
+
+struct Fin {
+  pub v i32;
+  fn final(self &uni) { line("final ", v); }
+}
+
+// A struct holding such references copies too: none of its fields moves
+struct Pair {
+  pub a +swept-mut i32;
+  pub b +swept-mut i32;
+}
+
+fn peek(r +swept-mut i32) i32 { *r; }
+
+fn copies() {
+  printStr("-- copies\n");
+  imm a = +swept-mut 5i32;
+  imm b = a;
+  imm c = a;
+  *b = 6i32;
+  line("read through the source after writing through a copy ", *a);
+  line("read through the other copy ", *c);
+  line("passed to a call ", peek(a));
+  line("still held after the call ", *a);
+  imm p = Pair[a, b];
+  imm q = p;
+  line("through a copied struct ", *q.a + *p.b);
+}
+
+fn neverFinalized() {
+  printStr("-- never finalized\n");
+  imm f = +swept-mut Fin[7i32];
+  imm g = f;
+  line("held ", f.v);
+  line("held by the copy ", g.v);
+}
+
+fn unique() {
+  printStr("-- unique\n");
+  imm u = +swept Fin[9i32];
+  imm w = u;
+  line("moved to ", w.v);
+}
+
+fn main() i32 {
+  copies();
+  printStr("copies done\n");
+  neverFinalized();
+  printStr("never finalized done\n");
+  unique();
+  printStr("unique done\n");
+  0i32;
+}

@@ -281,10 +281,14 @@ by it.
 **Every token the lexer returns has a reader.** A spelling no feature reads is
 reported in the lexer and never reaches the parser, because a token nothing
 consumes is a cascade of parse errors behind it. Three are refused this way, each
-with one diagnostic. An attribute is a keyword (`@move`, `@opaque`, `@unsized`, `@c`, `@initpure`, `@intrinsic`),
+with one diagnostic. An attribute is a keyword (`@opaque`, `@unsized`, `@c`, `@initpure`, `@intrinsic`),
 so any other `@` word is `ErrorUnkAttr` and is dropped, the declaration read
-without it; `@samesize` gets its own wording, since an enum is same-size by
-default and `@unsized` declines it. A `#` word is held for metaprogramming:
+without it. Two get their own wording because they were once attributes:
+`@samesize`, since an enum is same-size by default and `@unsized` declines it,
+and `@move`, since move-ness became the built-in trait `Move`, declared with
+`is`. **An attribute is an instruction to the compiler about representation or
+linkage that no code asks about; a fact other code may ask about or constrain
+on is a trait** [Jon 26 Sep] — which is why `@move` went and `@opaque` stays. A `#` word is held for metaprogramming:
 `ErrorReserved`, and it is dropped with the rest of its line, so what `#if`
 was followed by is not reported again. `?.` is held for None propagation:
 `ErrorReserved`, and it is read as `.`. `lexScanIdent` returns 0 for a dropped

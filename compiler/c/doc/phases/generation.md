@@ -446,8 +446,9 @@ What follows from that:
 **The release routines call the region's methods and know no region.**
 `genlReleaseOwning` is one owner going away: `genlRegionDealias` calls the
 region's `dealias` and branches on its `Bool` to the death. A region without
-`dealias` goes straight to the death when it has no `alias` (single owner), and
-emits nothing at all when it has one: that value never dies by count. The death,
+`dealias` goes straight to the death when it is `Move` (single owner,
+`regionIsMove`), and emits nothing at all otherwise: that value never dies by an
+owner, whether its copies are counted or free. The death,
 `genlRegionDeath`, runs in three steps: the value's finalizer — its type's drop
 (`itypeGetDropFnDcl`), which is the type's `final` followed by each finalizing
 field's drop (`structSetDropFn`), called on the value pointer as a stack value's

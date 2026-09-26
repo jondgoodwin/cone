@@ -239,7 +239,7 @@ function below it that a static function calls, and a struct field naming it
 that a member's signature names were all refused as a cycle. The same window
 made the enum look copyable to its members before its variants' move properties
 reached it, and a struct or function written above the enum laid it out ahead of
-any variant, so a value of an enum with a `@move` variant could be copied twice
+any variant, so a value of an enum with a variant holding a move field could be copied twice
 or moved out through a borrowed reference twice, clean. Laying out every
 variant with its enum closes both (`move_flow_infection`).
 
@@ -444,7 +444,10 @@ Steps marked **→** are where a demand can leave and re-enter.
    parse; any other enum-typed field is refused.
 6. `final` forces `MoveType`; `clone` does not clear it, since no copy calls
    `clone` and a bitwise copy of a finalizing value is finalized twice. Propagate
-   infection up to base traits.
+   infection up to base traits, but not into a built-in one (`Move`, `Copy`,
+   `RegionRef`). A declared `is Move` was marked at name resolution; a declared
+   `is Copy` is checked against the result with the members (`structCheckCopy`,
+   `ErrorCopyMove`), once every variant is laid out.
 7. **Size is now known**, and `TypeChecked` is set here — meaning laid out.
 8. Settle the drop fn: validate `final`, and generate a `drop` if a field needs
    finalizing — but not on a trait or an enum, whose methods are its

@@ -23,8 +23,10 @@ static int flowIsBorrowedRef(INode *exp) {
 // may be sharing? An owning reference that may be aliased ('+rc-mut', '+rc-imm',
 // '+rc-ro', and every 'rc' form but '+rc-uni') is one of possibly many holders
 // counting the same value, so it does not solely own it. An owning reference
-// that is a move type -- a 'uni' one, or any in the '@move' region 'so' -- is
-// the only holder, and may give the value up.
+// that is a move type -- a 'uni' one, or any in the 'Move' region 'so' -- is
+// the only holder, and may give the value up. One into a region that is
+// neither counted nor 'Move' -- a collector's -- is shared freely, and is
+// refused too.
 static int flowIsSharedOwner(INode *exp) {
     INode *reftype = iexpGetTypeDcl(exp);
     return (reftype->tag == RefTag || reftype->tag == ArrayRefTag || reftype->tag == VirtRefTag)

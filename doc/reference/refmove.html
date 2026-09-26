@@ -13,8 +13,9 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: Most of this is implemented: the @move attribute, a finalizer or a
-		move-typed field inferring move semantics, source deactivation
+	<p style="margin-left: 40px;"><i>Note: Most of this is implemented: the built-in Move and Copy traits
+		(declaring <span class="pre">is Move</span>, and <span class="pre">is Copy</span> refused on a type that moves),
+		a finalizer or a move-typed field inferring move semantics, source deactivation
 		on assignment and on a call, including through a block, an if or a loop value that moves it
 		on every branch (a deactivated source may be neither read nor borrowed), refusal of a move out through a borrowed reference or a shared owning reference,
 		refusal of a move out of a struct's field or a tuple's element, or of a value reached through one,
@@ -23,7 +24,10 @@
 		and a finalizer still makes it a move type. Assigning to the anonymous
 		variable '_' to destroy a value early is not, and nor is deactivating a source that
 		a block, an if or a loop value moves on only some branches (a conditional move). A move out of an indexed array element is
-		permitted, and deactivates the whole array, rather than being prohibited.</i></p>
+		permitted, and deactivates the whole array, rather than being prohibited.
+		Nothing yet asks whether a type is Move or Copy: there is no <span class="pre">where</span> clause
+		and no compile-time <span class="pre">if</span>, and <span class="pre">v is Move</span>
+		in an expression is the variant test, which refuses a value that has no variants.</i></p>
 	
 	<p>Values are copied as they flow from 
 		variable-to-variable or function-to-function.
@@ -61,13 +65,18 @@ a;          // is still 3
 		
 	<h2>Move vs. Copy Types</h2>
 	<p>Whether a value is handled by move vs. copy semantics is determined by its type.
+		Every type is exactly one of two things, named by two built-in
+		<a href="reftrait.html#marker">marker traits</a>: <span class="pre">Move</span> or
+		<span class="pre">Copy</span>.
 		In general, Cone treats most types as having copy semantics, unless it detects some reason
-		why move semantics restrictions are needed. Here are the rules:</p>
+		why move semantics restrictions are needed; the compiler grants the type the trait
+		that follows from these rules:</p>
 	<ol>
 		<li>If the type declares that it uses move semantics, then it does. This is as simple as
-			adding the <span class="pre">@move</span> attribute on the type declaration:
+			naming the built-in trait <span class="pre">Move</span> in the type's
+			<span class="pre">is</span> list:
 <pre>
-struct @move Handle {
+struct Handle is Move {
    pub id i32;
 }
 </pre></li>
@@ -90,6 +99,28 @@ struct @move Handle {
 		<li>If the type is marked as having move semantics, that's what it gets.</li>
 		<li>If none of the above apply, the type's values have copy semantics.</li>
 	</ol>
+	<p>A type may also declare <span class="pre">is Copy</span>. That is an assertion, not an
+		instruction: it changes nothing about a type that copies anyway, and the compiler refuses it on a
+		type the rules above make a move type &mdash; one that also declares <span class="pre">Move</span>,
+		or has a finalizer, a field that moves, a base it enriches that moves,
+		or (for an enum) a variant that moves.</p>
+<pre>
+struct Point is Copy {     // accepted: nothing here moves
+   pub x i32;
+   pub y i32;
+}
+struct Log is Copy {       // **ERROR**: its finalizer makes it move
+   fn final(self &amp;uni) { }
+}
+</pre>
+	<p>Move-ness is a trait rather than an attribute because it is a fact other code may
+		ask about, which is what a trait is for; an attribute is an instruction to the compiler
+		about representation or linkage that no code asks about. The asking side &mdash;
+		a generic requiring <span class="pre">where T is Copy</span>, or a compile-time test &mdash;
+		is not built yet.</p>
+	<p>An owning reference is a move type when its permission forbids aliasing, or when its
+		region ref declares <span class="pre">Move</span>, as <span class="pre">so</span> does
+		(<a href="refregionglo.html">Regions</a>).</p>
 
 	<h2>Move Capabilities and Restrictions</h2>
 	<p>Even when we want to prohibit the copying of these values,
@@ -177,6 +208,8 @@ callfn(socket);        // **ERROR**. socket is deactivated
 			<span class="pre">+rc-mut</span>, <span class="pre">+rc-imm</span> or <span class="pre">+rc-ro</span>.
 			Such a reference is one of possibly many holders of the value,
 			and the others would still point at it after the move.
+			So is one into a region ref that declares neither <span class="pre">alias</span> nor
+			<span class="pre">Move</span>, whose references are shared freely.
 			A sole owner may give its value up: a <span class="pre">+so</span> reference,
 			or a <span class="pre">+rc-uni</span> one (which is what <span class="pre">+rc</span> means),
 			since a unique reference is the only holder there is.

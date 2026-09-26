@@ -21,9 +21,14 @@
 		bookkeeping), <span class="pre">fn alias(self &amp;uni R)</span>,
 		<span class="pre">fn dealias(self &amp;uni R) Bool</span>, which answers whether the last owner is
 		gone rather than calling free itself, and <span class="pre">fn free(self &amp;uni R)</span>. Each is
-		handed the bookkeeping data, not the value. An absent method's operation does not happen: an
-		allocator without alias is single-owner, as described below, and one with alias but no dealias
-		(the gc allocator's shape) never frees a value by count, which waits for a collector to be built. When
+		handed the bookkeeping data, not the value. An absent method's operation does not happen, and
+		single ownership is declared rather than read off a missing alias: an allocator whose struct declares
+		the built-in trait <a href="refmove.html"><span class="pre">Move</span></a>
+		(<span class="pre">struct so is RegionRef, Move</span>) is single-owner, as described below, and
+		may not also have alias. One with neither alias nor <span class="pre">Move</span> (the gc
+		allocator's shape) shares its references freely, needing no alias method that does nothing; with no
+		dealias either, an owner going away does nothing and the compiler never frees the value, which waits
+		for a collector to be built. One with alias but no dealias never frees a value by count. When
 		the last owner goes, the compiler runs the value's finalizer before calling free, as described below,
 		and allocator methods are not trust blocks.</i></p>
 
@@ -76,14 +81,16 @@ alloc rc {
 	Before executing its logic, the compiler will invoke the finalizer on the object, if it exist,
 	which disposes of any resources obtained by the owning reference.</li>
 	</ul>
-	<p>Any allocator which does not define the alias method (e.g., the 'own' allocator)
+	<p>Any allocator which declares the built-in <span class="pre">Move</span> trait, and so does not
+	define the alias method (e.g., the 'so' allocator),
 	ensures single-owner <a href="refmove.html">move semantics</a>,
 	as it prevents multiple copies of the reference from being created.
 	The single-owner reference is moved instead of being copied.
 	This restriction also constrains the permissions on borrowed references,
 	effectively disallowing <span class="pre">mut</span> and all other shared mutable permissions.</p>
-	<p>Alternatively, an allocator may also define the alias method which performs no logic (e.g., the gc allocator).
-	In this case, multiple, sharable references to the same value become possible.</p>
+	<p>Alternatively, an allocator may declare neither <span class="pre">Move</span> nor the alias
+	method (e.g., the gc allocator).
+	In this case, multiple, sharable references to the same value become possible, and copying one costs nothing.</p>
 	<p>Notice also that allocators work with pointers (which have no assigned allocator).
 	All allocator methods are considered wrapped as trust blocks, which allows the use of pointers
 	as well as trusted functions like malloc() and free().

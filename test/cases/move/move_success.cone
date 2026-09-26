@@ -12,8 +12,10 @@
 // this file can establish is the negative: for a copy type, the source is still
 // there afterwards.
 //
-// Structs appear because a move type has to be some type and 'struct @move' is
-// the only attribute that makes one directly; 'struct' owns their depth.
+// Structs appear because a move type has to be some type and declaring the
+// built-in trait, 'struct Handle is Move', is the direct way to make one;
+// 'struct' owns their depth. Its counterpart, 'is Copy', asserts the type
+// copies, and is accepted where it does.
 
 mod move_success;
 
@@ -26,8 +28,9 @@ fn show(label &[]u8, n i64) {
   printStr("\n");
 }
 
-// The @move attribute is the direct way to declare a type non-copyable
-struct @move Handle {
+// Declaring the built-in trait 'Move' is the direct way to make a type
+// non-copyable
+struct Handle is Move {
   pub id i32;
 }
 
@@ -44,6 +47,16 @@ struct Plain {
   pub id i32;
   pub fn doubled(self) i32 { id * 2; }
   pub fn fill(self &mut, n i32) { id = n; }
+}
+
+// The same, asserted: 'is Copy' is accepted on a type that copies anyway, and
+// changes nothing about it -- on a generic too, whose instance copies
+struct Asserted is Copy {
+  pub id i32;
+}
+
+struct AssertedBox[T] is Copy {
+  pub v T;
 }
 
 // A finalizer makes a type a move type by inference, and a clone method does not
@@ -110,7 +123,7 @@ fn moves() {
   imm arr2 = arr;
   show("moved-array-elem", arr2[1].id);
 
-  // Across an enrichment of a @move type: base to enrichment, enrichment to
+  // Across an enrichment of a 'Move' type: base to enrichment, enrichment to
   // enrichment, back to the base, and the enrichment into a call wanting the base
   imm r RichHandle = Handle[9];
   imm r2 = r;
@@ -181,6 +194,16 @@ fn copies() {
   imm q = p;
   show("copy-source-still-usable", p.id);
   show("copy-destination", q.id);
+
+  // So does one declaring 'is Copy'
+  imm ap = Asserted[71];
+  imm aq = ap;
+  show("asserted-copy-source-still-usable", ap.id);
+  show("asserted-copy-destination", aq.id);
+  imm bp = AssertedBox[i32][72];
+  imm bq = bp;
+  show("asserted-generic-copy-source-still-usable", bp.v);
+  show("asserted-generic-copy-destination", bq.v);
 
   cloneStillMoves();
 

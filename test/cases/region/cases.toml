@@ -5,11 +5,12 @@
 # The group directory supplies the feature tag, so tags carry pipeline phases.
 #
 # Two regions exist, both declared in packages/core: 'rc', which counts its
-# owners and frees at the last, and 'so', which has no 'alias' and is freed by
+# owners and frees at the last, and 'so', which declares 'Move' and is freed by
 # its single owner. Neither is privileged: a region is a struct declaring 'is
 # RegionRef', whose methods the compiler calls at each reference event, so
-# region_regionref declares two more and region_success a third, and that is
-# what the type-check scenarios are about.
+# region_regionref declares more, region_success another and region_collected
+# one declaring neither 'alias' nor 'Move', and that is what the type-check
+# scenarios are about.
 #
 # The failure scenarios split first by pipeline stage. Within the type-check
 # stage they split again by which check raised the message, because the
@@ -23,7 +24,7 @@
 # - region_typecheck_init asks the same about the optional 'init' method, for a
 #   region and for a permission.
 # - region_typecheck_set asks which sets of region methods are accepted: every
-#   one that leaves methods out, and not '@move' with 'alias'.
+#   one that leaves methods out, and not 'Move' with 'alias'.
 # - region_typecheck_regionref asks where 'RegionRef' itself may stand, and
 #   refuses a region that does not declare it.
 # - region_typecheck_coerce asks which coercions between regions are allowed,
@@ -65,7 +66,7 @@
 # Nothing here is left uncovered for want of a code. ErrorBadAlloc (1036) is the
 # alloc and init shape rules and an allocation from a region with no 'alloc';
 # ErrorRegionMeth (1155) the shape of 'alias', 'dealias' and 'free';
-# ErrorRegionSet (1156) '@move' with an 'alias', a region contradicting itself; ErrorNotRegion
+# ErrorRegionSet (1156) 'Move' with an 'alias', a region contradicting itself; ErrorNotRegion
 # (1154) a region that does not declare 'is RegionRef'; ErrorRegionRefUse (1157)
 # 'RegionRef' anywhere but a struct's 'is'. A region slot naming no struct at all
 # stays ErrorInvType, because that is a type error rather than a region one.
@@ -117,11 +118,11 @@ support = []
 # The whole method set, called for regions the compiler has never heard of:
 # alloc and init at the allocation, alias for each copy that becomes an owner
 # (a variable, a call's argument, an owning slice), dealias for each owner
-# going away and free at the last, and for a region with no 'alias', the move
+# going away and free at the last, and for a region declaring 'Move', the move
 # and the one death. Two regions leave out what 'rc' has, and the absent
 # operation does not happen: with no 'dealias' a counted value never dies and
-# is never freed, and with no 'alias' a single owner's going still asks
-# 'dealias'. Its 'finalized' case shows a death's order in the region calls:
+# is never freed, and a 'Move' region with no 'alias' has a single owner whose
+# going still asks 'dealias'. Its 'finalized' case shows a death's order in the region calls:
 # the value's 'final', then the release of the owner its field holds, then its
 # own 'free'. The .out file is the whole assertion. Before regions
 # became RegionRef the compiler dispatched on the names 'rc' and 'so', and this
@@ -129,7 +130,17 @@ support = []
 # called, and nothing was freed.
 [scenario.region_regionref]
 category = "run"
-description = "A region written in Cone and named neither 'rc' nor 'so' has its alloc, init, alias, dealias and free called at each reference event, and one with no 'alias' is a single owner"
+description = "A region written in Cone and named neither 'rc' nor 'so' has its alloc, init, alias, dealias and free called at each reference event, and one declaring 'Move' is a single owner"
+tags = ["nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+# The other reading of a missing method [Jon 26 Sep]: a region ref declaring
+# neither 'alias' nor 'dealias' nor 'Move' -- a tracing collector's or an
+# arena's shape -- copies its references for nothing, and an owner's going does
+# nothing: the compiler never finalizes the value and never calls 'free'. Its
+# 'free' and the value's 'final' print, and the .out file shows neither.
+[scenario.region_collected]
+category = "run"
+description = "A region ref with neither alias, dealias nor Move: references copy freely (the source stays usable, a write through one copy is read through another, a struct holding them copies), and the compiler never finalizes or frees what it holds; a 'uni' reference into it still moves"
 tags = ["nameres", "typecheck", "flow", "genllvm", "runtime"]
 
 # A value held by '+so' or '+rc' is finalized when it dies -- its 'final', its
@@ -603,9 +614,9 @@ diagnostics = 4
 
 [scenario.region_typecheck_set]
 category = "reject"
-description = "No set of region methods is refused for what it leaves out; the one refusal is '@move' with 'alias', which contradicts itself"
+description = "No set of region methods is refused for what it leaves out, nor 'Move' without 'alias'; the one refusal is 'Move' with 'alias', in either order of the 'is' list, which contradicts itself"
 tags = ["typecheck"]
-diagnostics = 1
+diagnostics = 2
 
 [scenario.region_typecheck_regionref]
 category = "reject"
@@ -623,9 +634,9 @@ diagnostics = 3
 
 [scenario.region_flow]
 category = "reject"
-description = "Owning references that move rather than copy, and a permission that forbids the write"
+description = "Owning references that move rather than copy, those into a region neither counted nor Move that copy freely and may not be moved out through, and a permission that forbids the write"
 tags = ["flow"]
-diagnostics = 8
+diagnostics = 9
 
 [scenario.region_flow_shared_move]
 category = "reject"

@@ -92,6 +92,10 @@ extern Name *dealiasMethodName; // "dealias"
 extern Name *freeMethodName;   // "free"
 extern Name *regionRefName;    // "RegionRef"
 
+// The built-in marker traits every type has exactly one of (corelib.c)
+extern Name *moveTraitName;    // "Move"
+extern Name *copyTraitName;    // "Copy"
+
 typedef struct VarDclNode VarDclNode;
 
 // Spell the linker symbol of a declaring node (fn or global variable) into buf,

@@ -17,17 +17,18 @@ int regionIsRegionRef(INode *region);
 FnDclNode *regionMethod(INode *region, Name *name);
 
 // Is a copy of a reference into this region another owner, counted by its
-// 'alias'? A region without one has a single owner, and a copy is a move.
+// 'alias'? Without one, a copy is a move where the region is 'Move', and costs
+// nothing where it is not.
 int regionIsCounted(INode *region);
 
-// Is a reference into this region released when an owner goes away: through
-// 'dealias' where the region has one, and as the value's death where it has a
-// single owner? Every RegionRef is.
-int regionIsOwning(INode *region);
+// Is this region ref 'Move': one owner per value, a copy of a reference a move,
+// and every owner's going the value's death?
+int regionIsMove(INode *region);
 
-// At the end of a struct's name resolution: a RegionRef without 'alias' is
-// marked MoveType, as '@move' marks it
-void regionNameRes(StructNode *node);
+// Is a reference into this region an owner, whose going is the region's to
+// hear of: through 'dealias' where it has one, as the value's death where it is
+// 'Move', and not at all where it has neither? Every RegionRef is.
+int regionIsOwning(INode *region);
 
 // Hold a struct declaring 'is RegionRef' to the shapes and set of its methods
 void regionRefCheck(StructNode *node);

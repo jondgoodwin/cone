@@ -226,9 +226,11 @@ entirely**.
 
 Where a reference type acquires `MoveType`: **when its permission lacks
 `MayAlias`, or its region is itself a move type.** Of the six permissions only
-`uni` lacks `MayAlias`, and a region with no `alias` method, `so` among them, is
-a move type (`regionNameRes`). Since `+region` defaults to `uni`, essentially
-every owning reference moves.
+`uni` lacks `MayAlias`, and a region ref is a move type by declaring `is Move`,
+as `so` does ([struct](struct.md), "Move and Copy"). Since `+region` defaults to
+`uni`, every owning reference written without a permission moves; one with an
+aliasable permission into a region ref declaring neither `Move` nor `alias`
+copies, and the copy calls nothing.
 
 ## Flow
 

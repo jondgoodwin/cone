@@ -47,8 +47,10 @@ padded variants, or to nothing at all.
 more abstractions, and the compiler verifies the compliance there. ▸ **That is the
 only way to comply with an abstraction that has nothing in it to notice** — a
 marker trait is empty, so no structural match could distinguish a type that
-carries it from one that does not, and only a declaration can say. ▸ And it forces
-conformance at the moment of declaring rather than later at a use.
+carries it from one that does not, and only a declaration can say. The
+compiler's own marker traits are the plainest case: `RegionRef`, and `Move` and
+`Copy`, which it also grants from what it infers ("Move and Copy", below). ▸ And
+it forces conformance at the moment of declaring rather than later at a use.
 **Structural conformance stays**, and the two coexist on purpose: what `is` adds
 is the assertion and the check, not the capability.
 
@@ -400,7 +402,7 @@ LLVM struct, which is why a reference to a trait could not be lowered.
 
 `parseStruct` arrives with much already done:
 
-- `@move`, `@opaque` and `@unsized` attributes consumed into flags. `@unsized`
+- `@opaque` and `@unsized` attributes consumed into flags. `@unsized`
   *clears* `SameSize`, which the caller set: padding is the default and the
   attribute declines it. On anything but an enum it is `ErrorBadUnsized`, since
   nothing else has variants to pad.
@@ -692,9 +694,10 @@ inherited member bare, exactly as it names the type's own.
     extending one that is not generic then clones its own bodied methods into its
     copies** (`structEnumCloneOwnMethods`), which arrived resolved at step 4c with
     their enum's members already spliced; see "An enum extending an enum".
-    **A region with no `alias` method is then marked `MoveType`**
-    (`regionNameRes`): one declaring `is RegionRef` has one owner per value
-    ([What a region is](module.md)).
+    **A type declaring `is Move` is then marked `MoveType`**, every
+    abstraction being taken in by now, so a type asking before this one is
+    laid out is answered — a region ref's references among them ([What a
+    region is](module.md)). See "Move and Copy" below.
 11. Pop, and mark `NameResolved`.
 
 **Reached by demand.** `structNameResDemand` is the one place name resolution
@@ -798,7 +801,9 @@ members", is the mechanism.
 6. `final` forces `MoveType`. `clone` does not clear it: no copy calls
    `clone`, so a copy is bitwise, and a copyable type holding a finalizer or an
    owner would be finalized once per copy. Then propagate up the base
-   chain, one `structBaseTraitDcl` hop per iteration.
+   chain, one `structBaseTraitDcl` hop per iteration, stopping at a built-in
+   trait (`corelibIsBuiltinTrait`): `Move`, `Copy` and `RegionRef` describe the
+   types declaring them and never take on their flags.
 7. **`TypeChecked` is set here: laid out.** Fields are indexed, the type's own
    size is known, and the method set is complete. Just before it, a type that may
    be enriched sets its `final` and `clone` aside unlowered in `lifecycle`
@@ -839,7 +844,7 @@ members", is the mechanism.
    before any member once the layout in flight is done. The enum's members are
    queued ahead of the variants it lays out, in the order written.
 
-Steps 9 and 10 are `structCheckMembers`, run from the members queue:
+Steps 9 to 11 are `structCheckMembers`, run from the members queue:
 
 9. Type check every member in `nodelist` — methods, static functions, statics —
    under a walk state of this type's own, then each overload set it declares.
@@ -855,6 +860,36 @@ Steps 9 and 10 are `structCheckMembers`, run from the members queue:
    instead to the region methods' shapes (`regionRefCheck`), each
    optional and fixed in shape where present, which no requirement written in
    Cone can say ([What a region is](module.md)).
+11. **An `is Copy` is verified** (`structCheckCopy`): a type declaring it that
+   moves after all is `ErrorCopyMove`. Here, not at layout, because an enum
+   moves when a variant does and its variants are laid out after it.
+
+### Move and Copy
+
+`Move` and `Copy` are built-in traits [Jon 26 Sep], made in C beside
+`RegionRef` (`corelib.c`, `newBuiltinTrait`) and reached by every module the
+same way; neither has members. Every type has exactly one: the compiler
+**grants** it from what it already infers, the `MoveType` flag that
+`itypeIsMove` answers — a `final`, a field that moves, an owning reference that
+cannot be aliased, an array or tuple of what moves — and a type may **declare**
+one in its `is` list like any trait (first or not; either way it lands in
+`traits`, which `structDeclaresTrait` asks):
+
+- `is Move` marks the type `MoveType` at the end of its name resolution. It is
+  the fourth route to move-ness, and the only one that says it outright; it
+  replaces the retired `@move` attribute, which the lexer now reports as an
+  unknown attribute naming `is Move`.
+- `is Copy` is an assertion and changes nothing: refused (`ErrorCopyMove`,
+  step 11) where the type moves anyway, and so where it declares `Move` too.
+
+The declared trait lives in `traits` and the grant in the flag, so a type is
+asked "is it Move" through `itypeIsMove`, never by looking for `moveTrait` in
+its list. What a declaration reaches is the declaring node only: a trait
+declaring `is Move` does not make its implementers move, and a variant
+declaring it does not make its enum move, as `@move` on either did not. Nothing
+in the language asks the question yet: `where` and a compile-time `if` are not
+built, and the expression `v is Move` is the variant test, which refuses a value
+without a tag.
 
 ## Name folding
 
@@ -1028,13 +1063,15 @@ own methods no longer are, so there the copy is taken from what the base set asi
 module boundary in `struct_extends_import`. Neither folds from a **sibling**: a
 type folding one has its own copy from the base they share.
 
-The base's **`@move` and `@opaque` flags are carried** (`MoveType`, `OpaqueType`,
-`DeclaredOpaque`, OR'd onto this type as the members are taken). What the base's
-fields and `final` make of it is inferred again from the copies at layout, but an
-attribute exists only as the flag parse set on the base, and the carry is what
-makes an enrichment of an `@move` type move and one of an `@opaque` type refuse a
-value. Measured in `move_flow_infection` and `move_success` for `@move`, and
-`struct_typecheck_nosize` for `@opaque`.
+The base's **declared `Move` and `@opaque` flags are carried** (`MoveType`,
+`OpaqueType`, `DeclaredOpaque`, OR'd onto this type as the members are taken).
+What the base's fields and `final` make of it is inferred again from the copies
+at layout, but a declaration exists only as the flag set on the base, and the
+carry is what makes an enrichment of a type declaring `is Move` move and one of
+an `@opaque` type refuse a value. Measured in `move_flow_infection` and
+`move_success` for `Move`, and `struct_typecheck_nosize` for `@opaque`. An
+enrichment declaring `is Copy` over a base that moves is refused
+(`move_typecheck_copy`).
 
 **Every other member becomes an alias** — methods, overload sets, macro methods
 and statics alike, private ones included, under the base's own visibility. A

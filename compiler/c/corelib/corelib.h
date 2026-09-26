@@ -51,9 +51,16 @@ extern INsTypeNode *arrayRefType;
 extern FnDclNode *initAllFn;
 extern FnDclNode *finalAllFn;
 
-// 'RegionRef', the built-in trait a region's annotation struct declares with
-// 'is', a name every module reaches unless it declares the name itself
+// The built-in traits, each a name every module reaches unless it declares the
+// name itself, and none with members: 'RegionRef', which a region ref struct
+// declares with 'is'; and 'Move' and 'Copy', one of which every type has, the
+// compiler granting it from what it infers and a type able to declare it
 extern StructNode *regionRefTrait;
+extern StructNode *moveTrait;
+extern StructNode *copyTrait;
+
+// Is this declaration one of the built-in traits?
+int corelibIsBuiltinTrait(INode *node);
 
 void stdlibInit(int ptrsize);
 void keywordInit();

@@ -146,7 +146,7 @@ enum ErrorCode {
     // Regions: the annotation struct after '+', and the 'RegionRef' methods the compiler calls on it
     ErrorNotRegion = 1154,      // A reference's region names a struct that does not declare 'is RegionRef'
     ErrorRegionMeth = 1155,     // A region's 'alias', 'dealias' or 'free' not of the shape the compiler calls it with
-    ErrorRegionSet = 1156,      // A region whose declaration contradicts itself: '@move' (one owner per value) with an 'alias' method (another owner)
+    ErrorRegionSet = 1156,      // A region whose declaration contradicts itself: 'is Move' (one owner per value) with an 'alias' method (another owner)
     ErrorRegionRefUse = 1157,   // 'RegionRef' anywhere but a struct's 'is' list: the type a reference points at, or the 'is' of a trait, enum or variant
 
     // Intrinsics: '@intrinsic' declarations, checked against the compiler's registry (ir/stmt/intrinsic.c)
@@ -252,7 +252,7 @@ enum ErrorCode {
     // A path through an abstraction: 'Trait.name', 'Enum.name'
     ErrorAbstractMeth = 1118,   // A trait's or enum's method named through it, which owns no code for it: each implementer or variant owns a copy
 
-    // Attributes, which are keywords: '@move', '@opaque', '@unsized'
+    // Attributes, which are keywords: '@opaque', '@unsized', '@c', '@initpure', '@intrinsic'
     ErrorUnkAttr = 1119,        // A '@' word that names no attribute
 
     // Moves: what a move-typed value may be moved out of
@@ -319,6 +319,9 @@ enum ErrorCode {
 
     // Moving out of a field
     ErrorMoveField = 1166,      // A move-typed value moved out of a field -- a struct's or a tuple's, or what an owning reference held in one points at -- which would leave the struct with a hole in it
+
+    // The built-in traits 'Move' and 'Copy'
+    ErrorCopyMove = 1167,       // 'is Copy' on a type that moves: it declares 'Move' too, or has a 'final', a field that moves, or a base that moves
 
     // Warnings
     WarnCode = 3000,

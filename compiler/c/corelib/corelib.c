@@ -77,17 +77,20 @@ static FnDclNode *newStitchFn(char *name, int16_t intrinsic) {
 }
 
 StructNode *regionRefTrait;
+StructNode *moveTrait;
+StructNode *copyTrait;
 
-// 'RegionRef', the built-in trait a region's annotation struct declares with
-// 'is' [Jon 25 Sep]. It has no members: each method a region may declare is
-// optional, with a fixed shape when present, which no trait written in Cone can
-// say, so the struct is held to it by regionRefCheck rather than by the
-// ordinary requirement check.
-static StructNode *newRegionRefTrait() {
-    StructNode *trait = newStructNode(regionRefName);
+// A trait the compiler declares, with no members, bound as a name every module
+// reaches unless it declares the name itself
+static StructNode *newBuiltinTrait(Name *name) {
+    StructNode *trait = newStructNode(name);
     trait->flags |= TraitType | FlagPub | NameResolved | TypeChecked;
-    regionRefName->node = (INode*)trait;
+    name->node = (INode*)trait;
     return trait;
+}
+
+int corelibIsBuiltinTrait(INode *node) {
+    return node == (INode*)regionRefTrait || node == (INode*)moveTrait || node == (INode*)copyTrait;
 }
 
 // Set up the standard library, whose names are always shared by all modules
@@ -117,5 +120,16 @@ void stdlibInit(int ptrsize) {
     initAllFn = newStitchFn("initAll", InitAllIntrinsic);
     finalAllFn = newStitchFn("finalAll", FinalAllIntrinsic);
 
-    regionRefTrait = newRegionRefTrait();
+    // 'RegionRef', the trait a region ref struct declares with 'is' [Jon 25
+    // Sep]. Each method a region may declare is optional, with a fixed shape
+    // when present, which no trait written in Cone can say, so the struct is
+    // held to it by regionRefCheck rather than by the ordinary requirement check.
+    regionRefTrait = newBuiltinTrait(regionRefName);
+    // 'Move' and 'Copy' [Jon 26 Sep]: every type has exactly one. The compiler
+    // grants them from what it infers (itypeIsMove: a 'final', a field that
+    // moves, an owning reference that cannot be aliased); a type declaring 'is
+    // Move' moves whatever it holds, and one declaring 'is Copy' is refused
+    // where it moves after all (structCheckCopy).
+    moveTrait = newBuiltinTrait(moveTraitName);
+    copyTrait = newBuiltinTrait(copyTraitName);
 }
