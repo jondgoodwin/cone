@@ -1,0 +1,212 @@
+// The same three programs collected incrementally and then generationally,
+// and what the collecting cost each time.
+//
+//   congo run --release packages/collector/examples/generations.cone
+//
+// Each keeps a tree for its whole run and makes garbage, 8 times over:
+// - garbage: a tree of 4,095 nodes, and 491,520 short-lived nodes, each born
+//   holding its children, dropped at once;
+// - churn, pauses.cone's load: the same, and 163,840 grafts, each a new node
+//   stored under one of the kept tree's 2,048 bottom nodes in place of the
+//   one grafted there before, so a graft lives through 2,048 more;
+// - forest, forest.cone's load: a tree of 1,023 nodes, and 512 more grown
+//   and dropped, each built by storing every child into its parent (and each
+//   child points back up).
+//
+// Generationally, what survives a collection is old, and the next collection
+// is minor: it does not mark the old generation, and its sweep stops at the
+// first old object, so its work is the young objects. garbage is the case
+// generations are for: the kept tree is old after the first collection, and
+// every minor collection after it marks nothing and sweeps only garbage. In
+// churn a graft lives long enough to be promoted, and becomes old garbage
+// when it is replaced, so full collections still come, when the promotions
+// add up. forest is the other side: the barrier cannot tell an old parent
+// from a young one, so every node stored into another survives the next
+// minor collection; each finds its young generation mostly live, and the
+// collector backs off to full collections. The work is objects marked, swept
+// and finalized, each costing its bytes; the milliseconds include the
+// program's own work, and the barrier's, which is on between collections when
+// running generationally.
+
+mod generations;
+
+import stdio use *;
+import collector;
+
+extern fn @c("clock") clock() i32;
+
+struct Node {
+  pub n i64;
+  pub left Option[+gc-mut Node];
+  pub right Option[+gc-mut Node];
+  pub up Option[+gc-mut Node];
+}
+
+fn none() Option[+gc-mut Node] {
+  None[+gc-mut Node][];
+}
+
+// Matched by value: through the 'mut' nodes an Option hangs from, a reference
+// into it could see another reference empty it while in use
+fn count(t Option[+gc-mut Node]) i64 {
+  match t {
+    case imm s Some[+gc-mut Node] { count(s.value.left) + count(s.value.right) + 1; }
+    else { 0; }
+  }
+}
+
+// -- churn
+
+// Born holding its children: no store, so no barrier
+fn grown(depth i64) Option[+gc-mut Node] {
+  if depth == 0 {
+    return none();
+  }
+  Some[+gc-mut Node][+gc-mut Node[depth, grown(depth - 1), grown(depth - 1), none()]];
+}
+
+fn graft(t Option[+gc-mut Node], path i64) {
+  match t {
+    case imm s Some[+gc-mut Node] {
+      if s.value.n == 1 {
+        s.value.left = Some[+gc-mut Node][+gc-mut Node[100, none(), none(), none()]];
+      }
+      else if path % 2 == 0 {
+        graft(s.value.left, path / 2);
+      }
+      else {
+        graft(s.value.right, path / 2);
+      }
+    }
+    else { }
+  }
+}
+
+fn junk(k i64) i64 {
+  imm a = +gc-mut Node[k, none(), none(), none()];
+  imm b = +gc-mut Node[k, none(), none(), none()];
+  imm c = +gc-mut Node[k, Some[+gc-mut Node][a], Some[+gc-mut Node][b], none()];
+  c.n;
+}
+
+
+// Each load runs this many times over
+const scale = 8i64;
+
+// The most bytes live, as the loads see it between their iterations
+mut peak = 0usize;
+fn watch() {
+  if gc.liveBytes() > peak { peak = gc.liveBytes(); }
+}
+
+// The kept tree's node count at the end: 4,095
+fn garbage() i64 {
+  imm tree = grown(12);
+  mut i = 0i64;
+  while i < scale * 20480 {
+    junk(i);
+    watch();
+    i = i + 1;
+  }
+  count(tree);
+}
+
+// The kept tree's node count at the end: 4,095, and the 2,048 grafts in it
+fn churn() i64 {
+  imm tree = grown(12);
+  mut i = 0i64;
+  while i < scale * 20480 {
+    graft(tree, i % 2048);
+    junk(i);
+    watch();
+    i = i + 1;
+  }
+  count(tree);
+}
+
+// -- forest
+
+// Built by stores: each child stored into its parent, pointing up at it
+fn stored(depth i64, up Option[+gc-mut Node]) Option[+gc-mut Node] {
+  if depth == 0 {
+    return none();
+  }
+  imm node = +gc-mut Node[depth, none(), none(), up];
+  node.left = stored(depth - 1, Some[+gc-mut Node][node]);
+  node.right = stored(depth - 1, Some[+gc-mut Node][node]);
+  Some[+gc-mut Node][node];
+}
+
+fn round() i64 {
+  imm t = stored(10, none());
+  watch();
+  count(t);
+}
+
+// Every dropped tree's nodes counted, 512 * 1,023 = 523,776, and the kept
+// tree's at the end, 1,023: 524,799
+fn forest() i64 {
+  imm kept = stored(10, none());
+  mut total = 0i64;
+  mut i = 0i64;
+  while i < scale * 64 {
+    total = total + round();
+    i = i + 1;
+  }
+  total + count(kept);
+}
+
+// -- Measuring
+
+fn show(label &[]u8, n usize) {
+  printStr(label); printUInt(u64[n]);
+}
+fn per(work usize, n usize) usize {
+  if n == 0usize {0usize;} else {work / n;};
+}
+
+// One load, in one mode, from a heap with nothing in it
+fn measure(name &[]u8, gen Bool, load i64) {
+  gc.setGenerational(gen);
+  gc.collect();
+  gc.collect();
+  peak = 0usize;
+  imm c0 = gc.collections();
+  imm n0 = gc.minorCollections();
+  imm m0 = gc.markedObjects();
+  imm s0 = gc.sweptObjects();
+  imm w0 = gc.work();
+  imm mw0 = gc.minorWork();
+  imm t0 = clock();
+  imm check = if load == 0 {garbage();} else if load == 1 {churn();} else {forest();};
+  imm t1 = clock();
+  imm colls = gc.collections() - c0;
+  imm minors = gc.minorCollections() - n0;
+  imm work = gc.work() - w0;
+  imm minorWork = gc.minorWork() - mw0;
+  printStr(name);
+  if gen { printStr(", generational:"); } else { printStr(", incremental:"); }
+  printStr(" check "); printInt(check);
+  printStr(", "); printInt(i64[t1 - t0]); printStr(" ms");
+  show(", peak ", peak); printStr(" bytes live\n");
+  show("  collections ", colls);
+  show(": full ", colls - minors);
+  show(", each ", per(work - minorWork, colls - minors));
+  show(" bytes of work; minor ", minors);
+  show(", each ", per(minorWork, minors));
+  printStr("\n");
+  show("  in all ", work);
+  show(" bytes of work: objects marked ", gc.markedObjects() - m0);
+  show(", swept ", gc.sweptObjects() - s0);
+  printStr("\n");
+}
+
+fn main() {
+  printStr("the check: garbage's must be 4095, churn's 6143, forest's 524799\n");
+  measure("garbage", false, 0);
+  measure("garbage", true, 0);
+  measure("churn", false, 1);
+  measure("churn", true, 1);
+  measure("forest", false, 2);
+  measure("forest", true, 2);
+}

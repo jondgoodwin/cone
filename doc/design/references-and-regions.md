@@ -44,7 +44,11 @@ mark and sweep over those roots and the type records' traces, a step at a
 time inside allocations once the heap passes its trigger (and whole on
 `gc.collect()`), its `writeBarrier` shading what a store puts into an object
 it has marked, with Lua's separation of finalizers, which run a collection
-before their objects are freed. The arena and the pool are written only as library values: the
+before their objects are freed; and, chosen by `gc.setGenerational`, Acorn's
+generational mode, whose minor collections mark and sweep only the young
+objects, the barrier on between collections (keyed on the value, it keeps
+every young object stored into the heap through the next minor collection).
+The arena and the pool are written only as library values: the
 `arena` package's `Arena`, a dynamic region allocated into by a call on the
 value (`a.alloc(v)`), not by a `+` allocation through a region ref,
 whose `alloc` is not handed the region value. It finalizes
