@@ -13,11 +13,9 @@
 #include "../shared/fileio.h"
 #include "genllvm.h"
 
-#include <llvm-c/ExecutionEngine.h>
 #include <llvm-c/Target.h>
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
-#include <llvm-c/Transforms/Scalar.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -35,30 +33,36 @@
 // namespace: nothing in the language can name it, and no slot a declared method
 // fills has one.
 static LLVMValueRef genlVtableThunk(GenState *gen, Vtable *vtable, VtableImpl *impl, unsigned int pos,
-        FnDclNode *meth, Nodes *path, LLVMTypeRef slottype) {
+        FnDclNode *meth, Nodes *path) {
     char symbol[2048];
     FnDclNode *slot = (FnDclNode*)nodesGet(vtable->methfld, pos);
     LLVMValueRef fn = LLVMAddFunction(gen->module, nameVtableThunk(symbol, impl->structdcl, vtable->trait, slot->namesym),
-        LLVMGetElementType(slottype));
+        genlVtableSlotFnType(gen, slot));
     genlLinkage(fn, NULL, GenlDefined);
     genlComdat(gen, fn);
 
     // Its own builder: a vtable is built while some other function may be
     LLVMBuilderRef svbuilder = gen->builder;
-    gen->builder = LLVMCreateBuilder();
+    gen->builder = LLVMCreateBuilderInContext(gen->context);
     LLVMPositionBuilderAtEnd(gen->builder, LLVMAppendBasicBlockInContext(gen->context, fn, "entry"));
 
-    // The receiver arrives erased; shift it to the field the method was folded through
+    // The receiver arrives erased; shift it to the field the method was folded
+    // through. 'recvtype' is the Cone type 'recv' points at.
+    INode *recvtype = impl->structdcl;
     LLVMValueRef recv = LLVMBuildBitCast(gen->builder, LLVMGetParam(fn, 0),
-        LLVMPointerType(genlType(gen, impl->structdcl), 0), "");
+        LLVMPointerType(genlType(gen, recvtype), 0), "");
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(path, cnt, nodesp)) {
         FieldDclNode *field = (FieldDclNode*)*nodesp;
-        recv = LLVMBuildStructGEP(gen->builder, recv, field->index, &field->namesym->namestr);
+        recv = LLVMBuildStructGEP2(gen->builder, genlType(gen, recvtype), recv, field->index, &field->namesym->namestr);
         INode *fldtype = itypeGetTypeDcl(field->vtype);
-        if (fldtype->tag == RefTag || fldtype->tag == PtrTag)
-            recv = LLVMBuildLoad(gen->builder, recv, "");
+        if (fldtype->tag == RefTag || fldtype->tag == PtrTag) {
+            recv = LLVMBuildLoad2(gen->builder, genlType(gen, fldtype), recv, "");
+            recvtype = genlPointee(fldtype);
+        }
+        else
+            recvtype = fldtype;
     }
 
     // The method takes its self as it declared it: a pointer, or the value
@@ -68,7 +72,7 @@ static LLVMValueRef genlVtableThunk(GenState *gen, Vtable *vtable, VtableImpl *i
     if (LLVMGetTypeKind(selftype) == LLVMPointerTypeKind)
         recv = LLVMBuildBitCast(gen->builder, recv, selftype, "");
     else
-        recv = LLVMBuildLoad(gen->builder, recv, "");
+        recv = LLVMBuildLoad2(gen->builder, genlType(gen, recvtype), recv, "");
 
     unsigned int argcnt = LLVMCountParams(fn);
     LLVMValueRef *args = (LLVMValueRef *)memAllocBlk(argcnt * sizeof(LLVMValueRef));
@@ -76,7 +80,7 @@ static LLVMValueRef genlVtableThunk(GenState *gen, Vtable *vtable, VtableImpl *i
     unsigned int argi;
     for (argi = 1; argi < argcnt; ++argi)
         args[argi] = LLVMGetParam(fn, argi);
-    LLVMValueRef call = LLVMBuildCall(gen->builder, meth->llvmvar, args, argcnt, "");
+    LLVMValueRef call = LLVMBuildCall2(gen->builder, genlType(gen, meth->vtype), meth->llvmvar, args, argcnt, "");
     LLVMSetTailCall(call, 1);
     LLVMBuildRet(gen->builder, call);
 
@@ -120,7 +124,7 @@ void genlVtableImpl(GenState *gen, Vtable *vtable, VtableImpl *impl, LLVMTypeRef
             // receiver to the field the method was folded through
             Nodes *path = impl->foldpaths ? (Nodes*)nodesGet(impl->foldpaths, pos) : NULL;
             if (path)
-                val = genlVtableThunk(gen, vtable, impl, pos, meth, path, newfntyp);
+                val = genlVtableThunk(gen, vtable, impl, pos, meth, path);
             else
                 val = LLVMBuildBitCast(gen->builder, meth->llvmvar, newfntyp, "");
         }
@@ -137,6 +141,24 @@ void genlVtableImpl(GenState *gen, Vtable *vtable, VtableImpl *impl, LLVMTypeRef
     genlLinkage(impl->llvmvtablep, NULL, genlVtableDefinition(gen));
     genlComdat(gen, impl->llvmvtablep);
     LLVMSetInitializer(impl->llvmvtablep, implRef);
+}
+
+// The function type of the vtable slot a method fills. A self parameter that
+// is a reference is re-cast into *u8, so the one slot takes every implementer.
+LLVMTypeRef genlVtableSlotFnType(GenState *gen, FnDclNode *meth) {
+    FnSigNode *fnsig = (FnSigNode*)itypeGetTypeDcl(meth->vtype);
+    LLVMTypeRef *param_types = (LLVMTypeRef *)memAllocBlk(fnsig->parms->used * sizeof(LLVMTypeRef));
+    LLVMTypeRef *parm = param_types;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(fnsig->parms, cnt, nodesp)) {
+        assert((*nodesp)->tag == VarDclTag);
+        if (cnt == fnsig->parms->used && iexpGetTypeDcl(*nodesp)->tag == RefTag)
+            *parm++ = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
+        else
+            *parm++ = genlType(gen, ((IExpNode *)*nodesp)->vtype);
+    }
+    return LLVMFunctionType(genlType(gen, fnsig->rettype), param_types, fnsig->parms->used, 0);
 }
 
 // Generate a vtable type
@@ -170,25 +192,9 @@ void genlVtable(GenState *gen, Vtable *vtable) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(vtable->methfld, cnt, nodesp)) {
-        if ((*nodesp)->tag == FnDclTag) {
-            // Generate a pointer to function signature
-            // Note: parm types are not specified to avoid LLVM type check errors on self parm
-            FnSigNode *fnsig = (FnSigNode*)itypeGetTypeDcl(((FnDclNode *)*nodesp)->vtype);
-            LLVMTypeRef *param_types = (LLVMTypeRef *)memAllocBlk(fnsig->parms->used * sizeof(LLVMTypeRef));
-            LLVMTypeRef *parm = param_types;
-            INode **nodesp;
-            uint32_t cnt;
-            for (nodesFor(fnsig->parms, cnt, nodesp)) {
-                assert((*nodesp)->tag == VarDclTag);
-                if (cnt == fnsig->parms->used && iexpGetTypeDcl(*nodesp)->tag == RefTag)
-                    // Self parameter ref is re-cast into *u8
-                    *parm++ = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
-                else
-                    *parm++ = genlType(gen, ((IExpNode *)*nodesp)->vtype);
-            }
-            LLVMTypeRef fnsigref = LLVMFunctionType(genlType(gen, fnsig->rettype), param_types, fnsig->parms->used, 0);
-            *field_type_ptr++ = LLVMPointerType(fnsigref, 0);
-        }
+        if ((*nodesp)->tag == FnDclTag)
+            // A pointer to the method's function
+            *field_type_ptr++ = LLVMPointerType(genlVtableSlotFnType(gen, (FnDclNode *)*nodesp), 0);
         else
             // All virtual fields are 32-bit offsets into the object
             *field_type_ptr++ = LLVMInt32TypeInContext(gen->context);
@@ -582,6 +588,25 @@ LLVMTypeRef genlType(GenState *gen, INode *typ) {
     }
     else
         return _genlType(gen, "", dcltype);
+}
+
+// The Cone type a reference, pointer or slice points at
+INode *genlPointee(INode *type) {
+    INode *dcltype = itypeGetTypeDcl(type);
+    switch (dcltype->tag) {
+    case RefTag: case ArrayRefTag: case ArrayDerefTag: case VirtRefTag:
+        return ((RefNode *)dcltype)->vtexp;
+    case PtrTag:
+        return ((StarNode *)dcltype)->vtexp;
+    default:
+        errorUnreachable(dcltype, "the pointee of a type that points at nothing");
+        return NULL;
+    }
+}
+
+// The LLVM type of the Cone type a reference, pointer or slice points at
+LLVMTypeRef genlPointeeType(GenState *gen, INode *type) {
+    return genlType(gen, genlPointee(type));
 }
 
 // Generate LLVM value corresponding to the size of a type

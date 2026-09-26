@@ -294,10 +294,13 @@ alloca point. Every parameter and local is memory-backed on purpose — the
 comment is that all allocas belong in the entry block so `PromoteMemoryToRegister`
 and SRoA can undo it.
 
-`genpgm` then optionally verifies, dumps `.preir`, runs the pass manager
-(mem2reg, reassociate, GVN, CFG simplification, plus function inlining), dumps
-`.ir`, and emits. **There is no `--release` flag** — release is the default and
-`--debug` turns it off, dropping optimization and enabling DWARF.
+`genpgm` then optionally verifies, dumps `.preir`, runs LLVM's new pass manager
+through `LLVMRunPasses` — `function(mem2reg,reassociate,gvn,simplifycfg)`, and
+in a release build `cgscc(inline)` after it, with no target machine, so the
+inliner's costs are the target-independent ones — dumps `.ir`, and emits.
+**There is no `--release` flag** — release is the default and `--debug` turns it
+off, dropping inlining and the code generator's optimization and enabling
+DWARF.
 
 ## 3. Type lowering
 
@@ -306,17 +309,20 @@ and SRoA can undo it.
 | integer / float | `i1`…`i64`, `float`/`double`. Bool is a 1-bit unsigned |
 | **`void`** | **`%void = type {}`** — a zero-field named struct, *not* LLVM `void`. A function returning nothing returns `%void`; so does `nil` |
 | **permission** | **`%void`** — permissions are fully erased |
-| `*T` | `T*` |
-| **`&T`, `&mut T`, `+rc T`, `+so T`** | **`T*`, identically.** Region and permission contribute nothing to the reference value |
-| **`&[]T`** | **anonymous `{ T*, usize }`** — element pointer at 0, element **count** at 1 |
-| **`&<Trait`** | **named `{ i8*, Vtable* }`** — object as `i8*`, then vtable pointer |
-| `fn` signature | `LLVMFunctionType`, never varargs; a `&fn` is a pointer to it |
+| `*T` | `ptr` |
+| **`&T`, `&mut T`, `+rc T`, `+so T`** | **`ptr`, identically.** Region and permission contribute nothing to the reference value |
+| **`&[]T`** | **anonymous `{ ptr, usize }`** — element pointer at 0, element **count** at 1 |
+| **`&<Trait`** | **named `{ ptr, ptr }`** — the object, then its vtable |
+| `fn` signature | `LLVMFunctionType`, never varargs; a `&fn` is a `ptr` to it |
 | struct / trait | named struct, fields in declaration order. **A trait's body is its own fields**, which are a prefix of every implementer's, so `&Trait` points at the trait's layout and reaches the fields the trait declares. Only a type declared `@opaque` is left an opaque LLVM struct, and `DeclaredOpaque` — not `OpaqueType` — is what says so: a trait carries `OpaqueType` because it has no size as a *value*, which does not mean it has no fields |
 | enum | `i8`…`i64` by `EnumNode.bytes` |
 | tuple | anonymous struct |
 | array | nested `LLVMArrayType`; each dimension must be a `ULitTag` |
 
-Verified: `&[]i32` emits `{ i32*, i64 }`, with `extractvalue ..., 1` yielding a
+Every pointer is LLVM's opaque `ptr`, whatever it points at: the table's pointee
+lives in the Cone type, never in the LLVM one (section 4).
+
+Verified: `&[]i32` emits `{ ptr, i64 }`, with `extractvalue ..., 1` yielding a
 *count* of 3 for a 3-element array — not a byte length.
 
 **Erased with no representation at all:** lifetimes (`LifetimeTag` has no
@@ -368,8 +374,9 @@ both known. Generation reads `bytes` and does not adjust it.
 ### Vtables
 
 A named `"<Trait>:Vtable"` struct whose fields are, per slot, either a function
-pointer **whose self parameter is erased to `i8*`** (to avoid LLVM type-check
-errors on self) or an `i32` **byte offset** for a virtual field. One `internal
+pointer, called with the function type `genlVtableSlotFnType` gives it, **whose
+self parameter is erased to a plain pointer** so one slot type serves every
+implementer, or an `i32` **byte offset** for a virtual field. One `internal
 constant` per implementing struct, plus one internal list per trait, prewired in
 `derived` order for the enum-to-virtref coercion. `nameVtable`, `nameVtableImpl`
 and `nameVtableList` spell the three from the trait and implementing type nodes.
@@ -429,14 +436,14 @@ Verified for `+rc-mut` of an `i32`:
 What follows from that:
 
 - **A region method is handed the header, found from the layout.**
-  `genlRegionHeader` bitcasts the value pointer to `i8*` and steps back by
-  `LLVMOffsetOfElement(structype, ValueField)` — 8 for `rc`, 0 for `so`, 16 for
-  a region with a `{usize, u32}` header — then casts to the region struct's
-  pointer. Every call of `alias`, `dealias` and `free` goes through it, so a
+  `genlRegionHeader` steps back from the value pointer, a GEP over `i8`, by
+  `LLVMOffsetOfElement(structype, ValueField)` bytes — 8 for `rc`, 0 for `so`,
+  16 for a region with a `{usize, u32}` header; for `so` the header is the
+  value pointer itself, and no instruction is emitted. Every call of `alias`, `dealias` and `free` goes through it, so a
   wider header or a permission with state moves the value and the header with
   it. The optimizer folds the byte step and the region's field GEP into one
   constant offset: for `rc` the same address the count has always had.
-- **An owning slice is the fat `{T*, usize}` value, and the header sits before
+- **An owning slice is the fat `{ptr, usize}` value, and the header sits before
   its pointer word.** `genlRefPtr`, at the entry of `genlRegionDealias` and
   `genlRegionAlias`, `extractvalue`s word 0 of an `ArrayRefTag` reference, so
   every release site — scope exit, a `RefCountNode`, `genlStore` — hands over
@@ -535,19 +542,31 @@ This is what the CLAUDE.md warning is about. The conventions:
 | a local or parameter (`var->llvmvar`) | **pointer to** its type — always an alloca |
 | `genlExpr(nameuse)` | the loaded value |
 | `genlAddr(x)` | pointer to `x`'s type |
-| `&T` value | `T*` |
+| `&T` value | a `ptr` to the `T` |
 | `&[]T` value, `&<Trait` value | an **aggregate value**, not a pointer |
-| owning reference value | `T*` pointing **past** the header |
-| owning slice value | `{T*, usize}`, its `T*` pointing past the header |
+| owning reference value | a `ptr` to the `T`, **past** the header |
+| owning slice value | `{ptr, usize}`, its `ptr` pointing past the header |
 | allocation base, the region's header | `ref` stepped back by the value's offset in `%refstruct` (`genlRegionHeader`) |
-| vtable field slot | an `i32` **byte offset**, applied to an `i8*` |
+| vtable field slot | an `i32` **byte offset**, applied to the object pointer as a GEP over `i8` |
 | vtable method slot | reached by `structgep` **then load** |
+
+**What a pointer points at is never asked of the LLVM pointer.** Every load,
+GEP and call names the type it reads, steps over or calls, and that type comes
+from the Cone type: `genlPointee` for what a reference, pointer or slice points
+at, `genlAddrType` for what `genlAddr`'s address points at, the function's own
+signature for a call, and `genlVtableSlotFnType` for a call through a vtable
+slot. LLVM's pointers are opaque: a pointer is only `ptr`, with no element
+type to ask, and the bitcasts between pointer types generation still emits fold
+away as they are built. So a load or GEP one level off is not even an LLVM type
+error: the verifier accepts it. `genlAddrType` reads through a dereference to the reference's
+own pointee rather than the dereference's type, because a dereference the
+compiler builds itself — a synthesized drop's — carries no type.
 
 Concrete hazards, each of which has been gotten wrong here before:
 
-- **A struct's drop must load after `StructGEP`.** The GEP gives `T**` for a
-  ref-typed field; the release routines want the reference the field holds, so
-  `genlFinalizeAt` loads it.
+- **A struct's drop must load after `StructGEP`.** The GEP gives the address
+  of a ref-typed field; the release routines want the reference the field holds,
+  so `genlFinalizeAt` loads it.
 - **`genlAddr`'s array index uses `genlAddr(objfn)` for an array but
   `genlExpr(objfn)` for a reference to one.** An array *is* memory; a reference
   *holds* the address. One level apart, same GEP shape.
@@ -557,8 +576,8 @@ Concrete hazards, each of which has been gotten wrong here before:
   tuple value into an unnamed alloca and returns that; any other value there is
   `ErrorUnreachable`. Writing into or borrowing such a temporary is refused at
   type check, so the alloca is only ever read.
-- **`genlRegionHeader` steps back in bytes, through `i8*`**: a GEP on the value
-  pointer's own type would scale the offset by the value's size.
+- **`genlRegionHeader` steps back in bytes, a GEP over `i8`**: a GEP over the
+  value's own type would scale the offset by the value's size.
 - **A struct field read and a field address are different instruction
   sequences, chosen by `FlagBorrow`** — not by context. Without the flag,
   generation loads the *whole aggregate* and `extractvalue`s, except through a
@@ -570,7 +589,9 @@ Concrete hazards, each of which has been gotten wrong here before:
 - **Mutating intrinsics take self as an lvalue pointer; non-mutating ones take a
   value.** The switch for the intrinsics built in C dispatches on the LLVM *type
   kind* of argument 0, so both land in the same branch and are told apart only by
-  which intrinsic it is. The intrinsics declared in core never reach that switch:
+  which intrinsic it is. What that pointer points at — a number to add to, or a
+  pointer to step — is read from argument 0's Cone type, which `genlFnCall`
+  passes down as `selftype`. The intrinsics declared in core never reach that switch:
   `genlDeclaredIntrinsic` decides each by its kind and its instance's Cone type
   ([intrinsic](../nodes/intrinsic.md)), and a new intrinsic goes there, never
   into the LLVM-type switch.
@@ -655,11 +676,20 @@ bounds checked.**
 after. `--ir` is not an LLVM option at all — it dumps the Cone IR/AST.
 `--asm` adds a `.wat` or `.asm`. `--verify` runs `LLVMVerifyModule` and is off
 by default. `--debug` emits DWARF and drops optimization — it is the only
-switch here, with release as the default. Debug info covers only files and
-subprograms, and the file name is hardcoded. A subprogram is attached only to a
+switch here, with release as the default. Debug info covers only files,
+subprograms and each instruction's line and column, and the file name is hardcoded. A subprogram is attached only to a
 function this object defines: an imported module's function has a body in the
 IR but is a declaration here, and the verifier rejects a declaration carrying
-one.
+one. Every `genlExpr` sets the builder's debug location to its node's line and
+column, and `genlAlloca` puts it back after taking an alloca in the entry
+block: positioning the builder before the `allocaPoint` takes that
+instruction's location, which is none, and the verifier refuses a call with no
+location in a function with debug info.
+
+The environment variable `CONE_LLVM_OPTIONS` hands LLVM command-line options,
+separated by spaces, parsed in `genSetup` before the LLVM context exists. It is
+a testing aid, for LLVM's own debugging options, which the C API has no call
+for.
 
 **Cross-module linking works for a library built on its own, and nothing
 else.** A symbol is spelled from its owner chain, and the root module
@@ -692,6 +722,9 @@ variables.
   operand constant-folds. A non-constant operand there would be catastrophic.
 - **A string literal emits a fresh global per occurrence.** Nothing deduplicates
   them, and constant merging is not in the pass list.
+- **A function nothing calls stays in the optimized module.** The new pass
+  manager's inliner deletes only a function whose last call it inlined; the
+  linker's `/OPT:REF` drops the rest, each being in a COMDAT of its own.
 - **The block stack is a fixed 256 entries** and overflow is a hard exit.
 
 ## 9. Code pointer map
@@ -700,6 +733,7 @@ variables.
 | --- | --- | --- |
 | `conec.c` | `main` | calls `genSetup` **before** parsing, for target pointer size |
 | `genllvm/genllvm.c` | `genSetup`, `genClose` | target machine, data layout, context, `%void` |
+| | `genlLLVMOptions` | the LLVM options `CONE_LLVM_OPTIONS` names, parsed before the context exists |
 | | `genpgm` | generate, verify, dump, optimize, emit; nothing past generation once it reported an error |
 | | `genlProgram` | create the module with the target's triple and data layout, the two-pass symbols-then-implementations walk, then the stitched pair |
 | | `genlStitchFn`, `genlStitch` | the program's stitched init and final: declared on the first call to `initAll()` or `finalAll()`, built last, every module's `init` in the module order and every finalizer in the reverse |
@@ -717,12 +751,15 @@ variables.
 | `ir/export.c` | `dclIsInstance` | whether a declaration is a generic's instance or a member of one — every function and global of a generic module's instance among them |
 | | `dclIsExported`, `typeHoldsExpanded` | whether a library compile exports a definition to its importers; the include-file generator asks the same |
 | `genllvm/genltype.c` | `genlType`, `_genlType` | the memoizing entry and the per-tag lowering switch |
+| | `genlPointee`, `genlPointeeType` | the Cone type a reference, pointer or slice points at, and its LLVM type: what every load, GEP and call through it is typed by |
+| | `genlVtableSlotFnType` | a vtable slot's function type, self erased to `*u8`: the slot's type, a thunk's, and a virtual call's |
 | | `genlSetupTaggedTrait`, `genlSameSizeTrait` | the three enum shapes |
 | | `genlVtable`, `genlVtableImpl` | vtable type, per-struct constants, the virtref fat pointer |
 | | `genlVtableThunk` | the function filling a slot a folded method satisfies: shift the receiver along the recorded field path, tail-call the method |
 | `genllvm/genlstmt.c` | `genlBlock` | block creation, phi state, terminator suppression |
 | | `genlBreak`, `genlReturn` | phi edges and dealias; inlined-return-as-break |
 | `genllvm/genlexpr.c` | `genlExpr`, `genlAddr`, `genlStore` | the value / address / store trio — section 4 |
+| | `genlAddrType` | the Cone type of what `genlAddr`'s address points at |
 | | `genlFnCallInternal` | indirect calls, virtual dispatch, generator-level inlining, the intrinsic switch |
 | | `genlDeclaredIntrinsic` | the LLVM implementation of each intrinsic declared in core, by kind and Cone type |
 | | `genlConvert`, `genlRecast`, `genlIsType` | the three cast forms |
