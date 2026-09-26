@@ -67,6 +67,10 @@ int litAdoptNumberType(INode **nodep, INode *totype);
 // literal. Returns 1 when *nodep is now a literal of that type, 0 otherwise.
 int litWidenFloat(INode **nodep, INode *totype);
 
+// Fold a use of a named constant into a literal of the wider number type it
+// reaches. Returns 1 when *nodep is now a literal of that type, 0 otherwise.
+int litWidenConst(INode **nodep, INode *totype);
+
 // Refuse an untyped integer literal, reached by generation, whose value does
 // not fit the i32 it defaulted to
 void litCheckDefaultRange(ULitNode *lit);

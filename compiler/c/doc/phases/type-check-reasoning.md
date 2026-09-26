@@ -95,7 +95,7 @@ expensive:
 | `NoMatch` | incompatible | nothing; returns 0 |
 | `EqMatch` | same type | nothing |
 | `CastSubtype` | compile-time upcast | `newRecastNode` |
-| `ConvSubtype` | runtime upcast | `newConvCastNode`, except that a float literal is widened in place and stays a literal (`litWidenFloat`, [literals](../nodes/literals.md)) |
+| `ConvSubtype` | runtime upcast | `newConvCastNode`, except that a float literal, or a named constant's use whose value is a number literal, is folded into a literal of the wider type (`litWidenFloat`, `litWidenConst`, [literals](../nodes/literals.md)) |
 | `ConvByMeth` | convertible by calling a method | an `isTrue()` call |
 | `ConvBorrow` | convertible by auto-borrowing | a borrow node |
 

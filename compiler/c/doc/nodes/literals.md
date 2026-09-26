@@ -116,6 +116,25 @@ argument, a return value and a field do. `typemgmt_success` pins the positions
 that require a literal, with values exact in `f32`, and pins that a global and a
 local given the same literal agree.
 
+**A named constant's use widened is folded the same way.** The manual has a
+constant's name stand for its literal value, but the use is typed as the
+constant is: `const K = 5` is an `i32`, and its use reaches an `i64` by
+widening. When `iexpCoerce` finds that widening and the value names a
+constant, `litWidenConst` follows the constant, and a constant whose value names
+another, to its literal and replaces the use with a literal of the wider type,
+leaving the constant's own literal for its other uses. An integer is
+sign-extended from a signed type and zero-extended from an unsigned one, as the
+conversion would, so `const B i8 = -128` reaches an `i64` as `-128` and
+`const U u8 = -1` a `u32` as `255`; a float goes through `litWidenFloat`. A
+widening holds every value of the narrower type, so nothing is range checked at
+the wider one. The one value not yet checked is an untyped integer's `i32`
+default, which generation checks (below): a constant whose value does not fit it
+is not folded, so its use keeps the conversion and generation still refuses it
+at the constant. Only widening folds: `const K = 300` then `imm b u8 = K` is a
+type mismatch, as `i32` does not coerce to `u8`. `typemgmt_success` pins a
+global, a static, a parameter default and a typed constant initialized from a
+widened constant, with the edge values above.
+
 **`FlagUnkType` is also read by `iexpMatches`**, which returns `ConvSubtype` for
 an untyped integer literal against any number type. `iexpCoerce` adopts before
 it asks, so this answers only the callers that ask without coercing: overload

@@ -117,6 +117,7 @@ void flitPrint(FLitNode *lit) {
     inodePrintNode(lit->vtype);
 }
 
+static int litFitsType(ULitNode *lit);
 static void litCheckRange(ULitNode *lit, int defaulted);
 
 // Name resolution of lit node
@@ -209,25 +210,80 @@ int litWidenFloat(INode **nodep, INode *totype) {
     return 1;
 }
 
-// Refuse an integer literal whose value does not fit the integer type it now
-// has, in place of materializing it at that width and silently dropping every
-// bit above it: '300u8' and 'mut n u8 = 300' stored 44. The digits written are
-// the literal's magnitude, recovered from the two's complement value by
-// FlagLitNeg. A signed type takes one more magnitude negated than not, so
-// '-128i8' fits and '128i8' does not. An unsigned type takes any magnitude it
-// can hold, negated or not: the manual has a minus on an unsigned literal
+// Fold a use of a named constant into a literal of the wider number type it
+// reaches, in place of wrapping the use in a conversion. The manual has a
+// constant's name substitute its literal value wherever it is used, but its use
+// is typed as the constant is, so 'const K = 5' is an i32 and reaches an i64 by
+// the implicit widening every i32 value has. Left as a conversion node, the use
+// stopped being a literal, and every position that requires one refused it --
+// 'imm g i64 = K' as a global, a static, a parameter default and
+// 'const K3 i64 = K' -- while a use of the constant's own type was accepted.
+// The constant's own literal is left alone, since other uses still read it; the
+// value is the one the conversion generated, sign-extended from a signed type
+// and zero-extended from an unsigned one, so no position's value changes. A
+// widening holds every value of the narrower type, so there is no range to
+// check at the wider one; the constant's value was held to its own type where
+// it was declared -- except an untyped integer's i32 default, which only
+// generation asks about (litCheckDefaultRange). A constant whose value does not
+// fit that default is not folded: its use keeps the conversion, so generation
+// reports it at the constant as it does every such literal, rather than a fold
+// here carrying the whole value into the wider type. Returns 1 when *nodep is
+// now a literal of the wider type, 0 when it does not name a constant whose
+// value is a number literal, the target is not a wider number of the same kind,
+// or the value does not fit its default.
+int litWidenConst(INode **nodep, INode *totype) {
+    INode *use = *nodep;
+    if (!nameUseNames(use, ConstDclTag))
+        return 0;
+    // A constant's value may name another constant
+    INode *lit = use;
+    while (nameUseNames(lit, ConstDclTag))
+        lit = ((ConstDclNode*)((NameUseNode*)lit)->dclnode)->value;
+
+    if (lit->tag == FLitTag) {
+        if (!litWidenFloat(&lit, totype))
+            return 0;
+        inodeLexCopy(lit, use);
+        *nodep = lit;
+        return 1;
+    }
+    if (lit->tag != ULitTag)
+        return 0;
+    ULitNode *ulit = (ULitNode*)lit;
+    NbrNode *fromtype = (NbrNode*)itypeGetTypeDcl(ulit->vtype);
+    NbrNode *nbrtype = (NbrNode*)itypeGetTypeDcl(totype);
+    if ((fromtype->tag != IntNbrTag && fromtype->tag != UintNbrTag)
+        || nbrtype->tag != fromtype->tag || nbrtype->bits <= fromtype->bits)
+        return 0;
+    if ((ulit->flags & FlagUnkType) && !litFitsType(ulit))
+        return 0;
+    uint64_t value = ulit->uintlit;
+    if (fromtype->bits < 64) {
+        uint64_t mask = ((uint64_t)1 << fromtype->bits) - 1;
+        value &= mask;
+        if (fromtype->tag == IntNbrTag && (value >> (fromtype->bits - 1)))
+            value |= ~mask;
+    }
+    ULitNode *wide = newULitNodeTC(value, (INode*)nbrtype);
+    if (fromtype->tag == IntNbrTag && (int64_t)value < 0)
+        wide->flags |= FlagLitNeg;
+    inodeLexCopy((INode*)wide, use);
+    *nodep = (INode*)wide;
+    return 1;
+}
+
+// Does an integer literal's value fit the integer type it now has? The digits
+// written are the literal's magnitude, recovered from the two's complement
+// value by FlagLitNeg. A signed type takes one more magnitude negated than not,
+// so '-128i8' fits and '128i8' does not. An unsigned type takes any magnitude
+// it can hold, negated or not: the manual has a minus on an unsigned literal
 // leave it unsigned, so '-1u8' is 255, the value negation has in 8 bits.
 // Bool is a 1-bit unsigned by tag but is never a literal's own type
 // (litAdoptNumberType refuses it), so it is not asked.
-//
-// 'defaulted' says the type is the i32 newULitNode gave a literal nothing
-// else typed, which the message says, since the reader wrote no type. Reported
-// once: the literal becomes a zero of its type, so a literal checked again, or
-// a constant generated at each use, does not repeat it.
-static void litCheckRange(ULitNode *lit, int defaulted) {
+static int litFitsType(ULitNode *lit) {
     NbrNode *type = (NbrNode*)itypeGetTypeDcl(lit->vtype);
     if ((type->tag != IntNbrTag && type->tag != UintNbrTag) || type->bits <= 1)
-        return;
+        return 1;
     int negated = (lit->flags & FlagLitNeg) != 0;
     uint64_t magnitude = negated ? 0 - lit->uintlit : lit->uintlit;
     uint64_t most;   // The largest magnitude the type holds, as written
@@ -235,8 +291,22 @@ static void litCheckRange(ULitNode *lit, int defaulted) {
         most = ((uint64_t)1 << (type->bits - 1)) - (negated ? 0 : 1);
     else
         most = type->bits >= 64 ? UINT64_MAX : ((uint64_t)1 << type->bits) - 1;
-    if (magnitude <= most)
+    return magnitude <= most;
+}
+
+// Refuse an integer literal whose value does not fit the integer type it now
+// has, in place of materializing it at that width and silently dropping every
+// bit above it: '300u8' and 'mut n u8 = 300' stored 44.
+//
+// 'defaulted' says the type is the i32 newULitNode gave a literal nothing
+// else typed, which the message says, since the reader wrote no type. Reported
+// once: the literal becomes a zero of its type, so a literal checked again, or
+// a constant generated at each use, does not repeat it.
+static void litCheckRange(ULitNode *lit, int defaulted) {
+    if (litFitsType(lit))
         return;
+    NbrNode *type = (NbrNode*)itypeGetTypeDcl(lit->vtype);
+    int negated = (lit->flags & FlagLitNeg) != 0;
 
     // Quoted as written, digits and suffix, with the minus that was folded in
     int len = 0;
