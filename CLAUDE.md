@@ -36,7 +36,9 @@ Visual Studio projects stay at the root.
   `libc` and `posix` are C packages of raw bindings to the C library and the
   POSIX functions beyond it (Windows first), and `core` imports `libc` for its
   allocator; `math3d` is 3D math (vectors, quaternions, matrices, colors,
-  rectangles) ported from the Pegasus3D browser, its trigonometry from `libc`.
+  rectangles) ported from the Pegasus3D browser, its trigonometry from `libc`;
+  `testing` is the checks a package's tests call (`expectInt`, `require…`,
+  `done`), ordinary library code the compiler knows nothing of.
   A package's example programs live in its own `examples/` folder, each run
   with `congo run packages/<name>/examples/<file>.cone`, and its tests in its
   own `tests/` folder, one program each beside the output it must print;

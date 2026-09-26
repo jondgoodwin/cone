@@ -149,8 +149,8 @@ An import names a module. Congo answers each one this way:
 `congo.toml` being one package, known by the name its manifest gives. Congo
 searches, in order:
 
-1. the Cone repository's own `packages/` (`core`, `stdio`, `libc`, `posix` and
-   `math3d` are there), then
+1. the Cone repository's own `packages/` (`core`, `stdio`, `libc`, `posix`,
+   `math3d` and `testing` are there), then
 2. each folder the **machine config** lists.
 
 The machine config is `config.toml` in the Congo home, which is the folder
@@ -342,6 +342,55 @@ so, and still builds its examples.
 - **A test of an executable package** cannot import it, since only a library
   can be imported; `congo test` says so and fails the tests.
 
+### Writing checks with `testing`
+
+A test may print whatever it likes for its `.out` file to pin, as
+`math3d`'s `operations` test does. Or it may check values itself with the
+`testing` package, an ordinary library in `packages/`, and print only what
+fails:
+
+```
+mod rotations;
+
+import testing use *;
+import math3d use *;
+
+fn main() i32 {
+  imm q = Quat.angleAxis(pi / 2., Xyz[0., 0., 1.]);
+  requireFloat(q.dot(q), 1., 0.00001d, "a unit quaternion");
+  expectFloat(q.rotate(Xyz[1., 0., 0.]).y, 1., 0.00001d, "x turns to y");
+  expectInt(Rect[10, 20, 640, 480].w, 640, "width");
+  done();
+}
+```
+
+- **`expect(cond, label)`**, and **`expectInt`**, **`expectUInt`**,
+  **`expectFloat`** (with a tolerance), **`expectStr`** and **`expectBool`**,
+  each `(got, want, label)`, `expectFloat` `(got, want, within, label)`. A
+  check that passes prints nothing; one that fails prints
+  `label: expected W, got G` (`x turns to y: expected 1.000000 within 1e-05, got 0.000000`)
+  and the test goes on, so a run reports every failing check.
+- **`require…`**, the same six, stops the test when its check fails: it prints
+  the failure, then `stopped:` and the summary, and exits with status 1
+  through the C library's `exit`.
+- **`done()`** prints `3 checks passed` or `3 checks, 1 failed` and returns the
+  exit status, 0 or 1, for `main` to return. So a passing test's `.out` is its
+  one summary line, which pins how many checks ran as well; a test expected to
+  fail says `1` in its `.exit`.
+
+Integers print exactly, floats to six decimal places, strings in double
+quotes. The package's source, `packages/testing/src/testing.cone`, documents
+each function, and `packages/testing/examples/sums.cone` is a test to read.
+
+It is **the first phase** [Jon 26 Sep]: a library, nothing known to the
+compiler. Deferred to the design of testing: a failure naming the expression
+it checked and its line, which needs the compiler to hand a function its
+caller's expression text and location; test functions marked in source
+(`@test`) and a test build; a test reaching a package's private submodules;
+fixtures, setup and teardown; and mocks.
+
+### Testing the repository's packages
+
 The repository's packages are tested with
 
 ```
@@ -438,8 +487,8 @@ the packages' tests: `congo test` in `packages/` does.
   install location belongs.
 - Anything of testing past its first phase, above: how a test is scaffolded,
   what it may reach of a package beyond its interface, mocks and integration
-  environments, assertions beyond comparing output, and running examples. That
-  is a design of its own, not yet made.
+  environments, checks the compiler knows of (the `testing` package's are a
+  library), and running examples. That is a design of its own, not yet made.
 - WebAssembly (`--target`), which the prototype's `web` mode did.
 - A static library file (`.lib`/`.a`) for a library package; it builds an object.
 - An internet registry, downloads, a lockfile and version selection.
