@@ -1,0 +1,281 @@
+// The testing package: checks for a package's tests. A test is a program in
+// the package's tests/ folder that imports the package it tests, and this one,
+// by name; 'congo test' runs it and compares what it prints and the status it
+// exits with. This package is ordinary library code, the first phase of how
+// Cone tests: nothing in it is known to the compiler.
+//
+//   mod sums;
+//   import testing use *;
+//   import mylib;
+//
+//   fn main() i32 {
+//     expectInt(mylib.sum(2, 3), 5, "sum of 2 and 3");
+//     expectFloat(mylib.mean(1., 2.), 1.5, 0.000001, "mean of 1 and 2");
+//     expect(mylib.isEven(4), "4 is even");
+//     done();
+//   }
+//
+// Each check counts itself and, when it passes, prints nothing. When it fails,
+// it prints one line, the label and then what was expected against what was
+// got,
+//
+//   sum of 2 and 3: expected 5, got 6
+//
+// and the test goes on, so one run reports every check that fails. 'done'
+// prints the summary, '3 checks passed' or '3 checks, 1 failed', and returns
+// the exit status, 0 or 1, which 'main' returns. The summary is part of the
+// output the test's .out file pins, so the file also pins how many checks ran.
+//
+// Each 'expect' function has a 'require' twin that stops the test when its
+// check fails: it prints the failure line, then 'stopped: 2 checks, 1 failed',
+// and ends the program with exit status 1 through the C library's 'exit', which
+// writes out what was printed first. Use it where going on would make no
+// sense, as when a later check reads something this one found missing. Each
+// test is its own program, so stopping one stops nothing else.
+//
+// Every 'expect' and 'require' function returns true when its check passed,
+// for a test that wants to branch on it.
+//
+// How values print:
+// - integers exactly;
+// - floats to six decimal places, rounded, so the noise in the last digits of
+//   an f32 does not show ('-0.000000' prints as '0.000000'); NaN and infinity
+//   as 'nan', 'inf' and '-inf'; a value of nine million million or more as the
+//   C library's '%g' does ('1e+20'). A float check also prints its tolerance,
+//   as '%g' does. When the tolerance is below a millionth, a failing expected
+//   and got can print alike. A float literal with no suffix is an f32, so it
+//   carries an f32's rounding into the f64 a check takes: against an f64
+//   result, with a tolerance finer than about a ten-millionth of the value,
+//   write the expected value as an f64, '0.1d';
+// - strings as given, in double quotes, so leading and trailing spaces show;
+// - Bool as 'true' or 'false'.
+//
+// Each kind of value has a check of its own name (expectInt, expectUInt, ...)
+// rather than one overloaded name, because overloads for i64 and u64 make a
+// check of two plain integer literals ambiguous: the compiler does not prefer
+// an exact match over a coercion.
+//
+// Not here yet, deferred to the careful design of testing, which is not yet
+// made: a failure naming the expression it checked
+// and the line it is on, which needs the compiler to hand a function its
+// caller's expression text and location; test functions marked in source
+// ('@test') and a test build; a test reaching a package's private submodules;
+// fixtures, setup and teardown beyond a program's own; and mocks.
+
+mod testing;
+
+import stdio;
+import libc;
+
+// How many checks have run, and how many of them failed
+mut checks = 0u64;
+mut failures = 0u64;
+
+// -------- checks that record a failure and go on --------
+
+// The condition holds. A failure prints 'label: failed'.
+pub fn expect(cond Bool, label &[]u8) Bool {
+  if cond {
+    pass();
+  } else {
+    fail(label);
+    stdio.printStr("failed\n");
+    false;
+  };
+}
+
+// Two signed integers are equal. An i32, i16 or i8 value is widened to i64.
+pub fn expectInt(got i64, want i64, label &[]u8) Bool {
+  if got == want {
+    pass();
+  } else {
+    fail(label);
+    stdio.printStr("expected ");
+    stdio.printInt(want);
+    stdio.printStr(", got ");
+    stdio.printInt(got);
+    stdio.printStr("\n");
+    false;
+  };
+}
+
+// Two unsigned integers are equal. A usize, u32, u16 or u8 value is widened
+// to u64.
+pub fn expectUInt(got u64, want u64, label &[]u8) Bool {
+  if got == want {
+    pass();
+  } else {
+    fail(label);
+    stdio.printStr("expected ");
+    stdio.printUInt(want);
+    stdio.printStr(", got ");
+    stdio.printUInt(got);
+    stdio.printStr("\n");
+    false;
+  };
+}
+
+// Two floats differ by no more than the tolerance, 'within'. An f32 value is
+// widened to f64. A NaN is never within any tolerance of anything. A failure
+// prints 'label: expected 0.500000 within 0.0001, got 0.600000'.
+pub fn expectFloat(got f64, want f64, within f64, label &[]u8) Bool {
+  imm diff = if got < want {want - got;} else {got - want;};
+  if diff <= within {
+    pass();
+  } else {
+    fail(label);
+    stdio.printStr("expected ");
+    printFixed(want);
+    stdio.printStr(" within ");
+    stdio.printFloat(within);
+    stdio.printStr(", got ");
+    printFixed(got);
+    stdio.printStr("\n");
+    false;
+  };
+}
+
+// Two strings hold the same bytes. A failure prints both in double quotes.
+pub fn expectStr(got &[]u8, want &[]u8, label &[]u8) Bool {
+  if sameBytes(got, want) {
+    pass();
+  } else {
+    fail(label);
+    stdio.printStr("expected \"");
+    stdio.printStr(want);
+    stdio.printStr("\", got \"");
+    stdio.printStr(got);
+    stdio.printStr("\"\n");
+    false;
+  };
+}
+
+// Two Bools are equal. A failure prints 'label: expected true, got false'.
+pub fn expectBool(got Bool, want Bool, label &[]u8) Bool {
+  if got == want {
+    pass();
+  } else {
+    fail(label);
+    stdio.printStr("expected ");
+    printBool(want);
+    stdio.printStr(", got ");
+    printBool(got);
+    stdio.printStr("\n");
+    false;
+  };
+}
+
+// -------- checks that stop the test when they fail --------
+
+// Each is its 'expect' twin, and when the check fails, prints the summary
+// with 'stopped:' before it and ends the program with exit status 1.
+
+pub fn require(cond Bool, label &[]u8) Bool {
+  if expect(cond, label) {true;} else {stop();};
+}
+
+pub fn requireInt(got i64, want i64, label &[]u8) Bool {
+  if expectInt(got, want, label) {true;} else {stop();};
+}
+
+pub fn requireUInt(got u64, want u64, label &[]u8) Bool {
+  if expectUInt(got, want, label) {true;} else {stop();};
+}
+
+pub fn requireFloat(got f64, want f64, within f64, label &[]u8) Bool {
+  if expectFloat(got, want, within, label) {true;} else {stop();};
+}
+
+pub fn requireStr(got &[]u8, want &[]u8, label &[]u8) Bool {
+  if expectStr(got, want, label) {true;} else {stop();};
+}
+
+pub fn requireBool(got Bool, want Bool, label &[]u8) Bool {
+  if expectBool(got, want, label) {true;} else {stop();};
+}
+
+// -------- the end of a test --------
+
+// Prints '5 checks passed', or '5 checks, 2 failed', and returns the exit
+// status for 'main' to return: 0 when every check passed, 1 when any failed.
+pub fn done() i32 {
+  summary();
+  if failures == 0u64 {0i32;} else {1i32;};
+}
+
+// -------- inside the package --------
+
+fn pass() Bool {
+  checks = checks + 1u64;
+  true;
+}
+
+// Counts a failure and starts its line with the label
+fn fail(label &[]u8) {
+  checks = checks + 1u64;
+  failures = failures + 1u64;
+  stdio.printStr(label);
+  stdio.printStr(": ");
+}
+
+// Ends the program at a failed 'require' check. The C library's exit writes
+// out what was printed before the program ends.
+fn stop() Bool {
+  stdio.printStr("stopped: ");
+  summary();
+  libc.exit(1i32);
+  false;
+}
+
+fn summary() {
+  stdio.printUInt(checks);
+  if checks == 1u64 {stdio.printStr(" check");} else {stdio.printStr(" checks");};
+  if failures == 0u64 {
+    stdio.printStr(" passed\n");
+  } else {
+    stdio.printStr(", ");
+    stdio.printUInt(failures);
+    stdio.printStr(" failed\n");
+  };
+}
+
+fn sameBytes(a &[]u8, b &[]u8) Bool {
+  mut same = a.len == b.len;
+  mut i = 0usize;
+  while same and i < a.len {
+    if a[i] != b[i] {same = false;};
+    i = i + 1usize;
+  };
+  same;
+}
+
+fn printBool(b Bool) {
+  if b {stdio.printStr("true");} else {stdio.printStr("false");};
+}
+
+// Six decimal places, rounded half away from zero. NaN and the infinities are
+// spelled here, since C runtimes spell them differently; any other magnitude
+// too large to scale into a u64 prints as '%g' does.
+fn printFixed(v f64) {
+  imm mag = if v < 0. {-v;} else {v;};
+  if v != v {
+    stdio.printStr("nan");
+  } elif mag - mag != 0. {
+    // Only an infinity minus itself is not 0 (NaN, the other, is past)
+    if v < 0. {stdio.printStr("-inf");} else {stdio.printStr("inf");};
+  } elif mag < 9000000000000. {
+    imm n = u64[mag * 1000000. + 0.5];
+    if v < 0. and n > 0u64 {stdio.printStr("-");};
+    stdio.printUInt(n / 1000000u64);
+    stdio.printStr(".");
+    imm frac = n % 1000000u64;
+    mut pad = 100000u64;
+    while pad > 1u64 and frac < pad {
+      stdio.printStr("0");
+      pad = pad / 10u64;
+    };
+    stdio.printUInt(frac);
+  } else {
+    stdio.printFloat(v);
+  };
+}
