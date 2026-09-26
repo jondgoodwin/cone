@@ -299,6 +299,14 @@ So `&mut T` is invariant in `T` and `&ro T` is covariant — the opposite of the
 intuition that a mutable reference is "more capable" and therefore more
 permissive.
 
+**Covariance does not turn a move type behind a reference into a copy type.**
+A read through the reference copies what it holds when that is a copy type, so
+a borrow of a sole owner may not be seen as a borrow of a shared one:
+`&+rc-mut T` from `&+rc T` would copy a second, writable owner out of a value
+`uni` promised unique. The permission lattice still lets `uni` coerce down
+where the owner itself is moved. A `+so` owner may be seen as `+so-mut` behind
+a borrow, since both move and a move out through a borrow is refused.
+
 **Lifetime is a `uint16_t` scope depth** on the reference's *type*: 0 global, 1
 parameter, 2+ a local. It is not a type parameter, not a constraint variable,
 and not part of type identity — `refIsSame` ignores it and `refFindSuper` drops
@@ -340,6 +348,7 @@ gap:
 | a region allocated from has `alloc` | `regionAllocTypeCheck` | type check |
 | requested permission vs. the source's | `permMatches` in `borrowTypeCheck` | type check |
 | value-type variance | `refMatches` and friends | type check |
+| a sole owner behind a borrow is not seen as a shared one | `refHeldMoveSeenAsCopy`, from `refMatches` and `arrayRefMatchesRef` | type check |
 | region coercion direction | `regionMatches` | type check |
 | move-ness infection | `refAdoptInfections` | type check |
 | may not write through this reference | `assignlvalrtype`, `swapFlow` | **flow** |

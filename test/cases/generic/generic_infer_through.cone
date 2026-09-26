@@ -2,7 +2,7 @@
 // from a parameter whose type is the type parameter itself. No call below
 // writes a type argument. Each parameter type is matched against its
 // argument's type: a pointer, a reference or a slice to T takes T from what
-// the argument points at; a generic type's instance takes each of its type
+// the argument points at, and an owning reference, '+rc-mut T', is a reference; a generic type's instance takes each of its type
 // arguments from the argument's instance of the same generic; and a variant
 // passed for its enum is taken as its enum's instance.
 //
@@ -44,6 +44,9 @@ fn derefTwice[T](p **T) T { **p; }
 fn peek[T](r &T) T { *r; }
 fn bump[T](r &mut T, amount T) { *r = *r + amount; }
 fn first[T](s &[]T) T { s[0]; }
+fn peekOwned[T](r &+rc-mut T) T { **r; }
+fn takeOwned[T](r +rc-mut T) T { *r; }
+fn firstOwned[T](s &+[]so T) T { (*s)[0]; }
 fn unbox[T](b Box[T]) T { b.v; }
 fn unboxRef[T](b &Box[T]) T { b.v; }
 fn second[A, B](p &Pair[A, B]) B { p.b; }
@@ -85,6 +88,17 @@ fn slices() {
   show("slice", first(s));
   // A reference to a fixed-size array, which the call turns into the slice
   show("array-to-slice", first(&arr));
+}
+
+// An owning reference parameter, borrowed or taken by value: the template holds
+// '+rc-mut T' as an allocation, since T is not yet a type, and the match did
+// not descend through it, so each call below was 'could not infer'
+fn owning() {
+  imm r = +rc-mut Box[i64][13i64];
+  show("borrowed-owning-reference", peekOwned(&r).v);
+  show("owning-reference", i64[takeOwned(+rc-mut 14i64)]);
+  imm s = +[]so [15i64, 16i64];
+  show("borrowed-owning-slice", firstOwned(&s));
 }
 
 fn instances() {
@@ -130,6 +144,7 @@ fn main() {
   pointers();
   references();
   slices();
+  owning();
   instances();
   variants();
   intrinsics();

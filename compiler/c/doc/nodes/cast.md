@@ -48,7 +48,8 @@ against the value it was borrowed from.
 
 `parseCast` sits between `parseMult` and `parsePrefix` in the precedence
 cascade, so a cast binds tighter than any binary operator and looser than a
-prefix one. `is` is **a keyword**, not an operator symbol, and `parseCmp`
+prefix one. Casts chain left to right, `as` and `into` alike: `p as *T as usize`
+casts `p as *T`. `is` is **a keyword**, not an operator symbol, and `parseCmp`
 handles it at comparison precedence. `parsefnflow.c` also builds `IsTag` nodes
 when desugaring `match` arms and bound patterns.
 

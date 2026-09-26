@@ -1438,6 +1438,11 @@ static int fnCallMethodTypeArgs(TypeCheckState *pstate, FnCallNode **nodep) {
         return 1;
     }
 
+    // The type arguments are checked as a generic function's are before it is
+    // instantiated, so a written instance, 'Box[i32]', is the type it names
+    for (nodesFor(typeargs, cnt, argsp))
+        inodeTypeCheckAny(pstate, argsp);
+
     methfld->dclnode = (INode*)genericMethodInstance(pstate, node, (FnDclNode*)found, typeargs);
     if (methfld->dclnode == NULL) {
         node->vtype = errorType;

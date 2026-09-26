@@ -241,6 +241,19 @@ TypeCompare regionMatches(INode *to, INode *from, SubtypeConstraint constraint) 
     return NoMatch;
 }
 
+// Would a reference held behind a readable reference, seen as 'to' in place of
+// its own type 'from', be copied out by a read where its own type moves?
+// '&+rc-mut T' from '&+rc T' is the case: '+rc' is 'uni', the only owner, and a
+// read of '+rc-mut' copies, so a second owner of a value promised unique would
+// come out of a borrow of the first. Not behind a reference the same coercion
+// is a move, which consumes the source, and is sound.
+int refHeldMoveSeenAsCopy(INode *to, INode *from) {
+    INode *todcl = itypeGetTypeDcl(to);
+    if (todcl->tag != RefTag && todcl->tag != ArrayRefTag && todcl->tag != VirtRefTag)
+        return 0;
+    return itypeIsMove(from) && !itypeIsMove(to);
+}
+
 // Will from-reference coerce to a to-reference (we know they are not the same)
 TypeCompare refMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint) {
 
@@ -262,6 +275,8 @@ TypeCompare refMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint)
     switch (permGetFlags(to->perm) & (MayWrite | MayRead)) {
     case 0:
     case MayRead:
+        if (refHeldMoveSeenAsCopy(to->vtexp, from->vtexp))
+            return NoMatch;
         match = itypeMatches(to->vtexp, from->vtexp, Regref); // covariant
         break;
     case MayWrite:

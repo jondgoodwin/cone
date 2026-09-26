@@ -241,7 +241,8 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    argument's type wherever the parameter's names a generic parameter. The match
    descends through a pointer, a reference and an array reference to what each
    points at (`p *T` given a `*Fin` captures `Fin`), accepting both the type
-   tags and the template's dereference and borrow tags (Clone, above); an array
+   tags and the template's dereference, borrow and allocate tags (Clone, above;
+   an owning reference, `+rc-mut T` or `+[]so T`, is held as an allocate); an array
    slice parameter also descends into the fixed-size array, or reference to one,
    that the call converts to a slice. A generic type's instance, `List[T]`,
    matches an argument that is an instance of the same generic, found in the

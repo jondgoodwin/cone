@@ -259,15 +259,29 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // move and lifetime checking for every function that follows it.
     int errorsOnEntry = errors;
 
+    // Rule 3: the signature is established before anything that could call this
+    // function is checked. Checking it can lay out a type for the first time --
+    // 'Option[T]' returned by a method of an instance is instantiated here -- and
+    // the last layout to finish works the members queue, which could hold the
+    // type whose method calls this one. Held as a layout in flight, the queue is
+    // worked only once the whole signature is in place, so such a call reads the
+    // return type rather than the generic call it was written as. See
+    // compiler/c/doc/phases/type-check.md, "Layout before members".
+    structLayoutEnter();
     itypeTypeCheck(pstate, &fnnode->vtype);
+    int sigfailed = errors != errorsOnEntry;
+    structLayoutExit();
 
     // A body is not checked against a signature that failed: every use of the
     // types that check was supposed to establish would report again, naming
     // nothing the author can act on. This is the same shape as the flow gate
     // below -- the count this call entered with, so that it is about this
-    // declaration alone and not about whatever failed elsewhere.
-    if (errors != errorsOnEntry)
+    // declaration alone and not about whatever failed elsewhere. Whatever the
+    // queue checked on the way out of the signature belongs to other
+    // declarations, so the count starts again after it.
+    if (sigfailed)
         return;
+    errorsOnEntry = errors;
 
     // A declared intrinsic has no body to check: its meaning is the registry's,
     // and what is left to check is the type it was instantiated for
