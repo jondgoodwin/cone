@@ -1,0 +1,125 @@
+// The libc package, reached on the package search path and compiled into this
+// object, called by the C names it declares and linked against the C runtime.
+// Each line is one fact the C library established, printed as a number:
+//
+// - calloc gives zeroed memory, realloc grows it keeping what it held, free
+//   takes it back; malloc is libc's, and a bare name everywhere, since core
+//   folds it in too, publicly: here it arrives by both routes as one binding;
+// - a file written with fopen/fwrite/fflush/fclose reads back with fread,
+//   and remove deletes it, so a second fopen for reading fails;
+// - getenv answers null for a variable no one sets; system returns the
+//   command's exit status;
+// - strlen, strcmp, memcpy and memset, and a string literal passed as a C
+//   string, since it carries its NUL;
+// - stdout() is the stream stdio prints to, so what is written to it comes out
+//   in order with the rest;
+// - exit ends the program with the status given, flushing what was written:
+//   main returns 1, which the runner would report, after a call that exits 0.
+//
+// The file it writes is 'module_package_libc.tmp' in the folder TEMP names,
+// its path joined with strlen and memcpy, and it removes the file.
+
+mod module_package_libc;
+
+import stdio use *;
+import libc use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn isNull(p *u8) i64 {if p == 0usize as *u8 {1i64;} else {0i64;};}
+
+fn memory() {
+  // calloc: eight zeroed bytes
+  mut p = calloc(8usize, 1usize);
+  mut sum = 0i64;
+  mut i = 0usize;
+  while i < 8usize {sum = sum + i64[p[i]]; i = i + 1usize;};
+  show("calloc-zeroed-sum", sum);
+  // Filled 1 to 8, grown to 4096 bytes: the first eight survive
+  i = 0usize;
+  while i < 8usize {p[i] = u8[i] + 1u8; i = i + 1usize;};
+  p = realloc(p, 4096usize);
+  p[4095] = 9u8;
+  sum = 0i64;
+  i = 0usize;
+  while i < 8usize {sum = sum + i64[p[i]]; i = i + 1usize;};
+  show("realloc-kept-sum", sum);
+  show("realloc-last", i64[p[4095]]);
+  free(p);
+  // malloc, bare: core's fold of libc's and this module's own meet as one
+  imm q = malloc(16usize);
+  show("malloc-null", isNull(q));
+  free(q);
+}
+
+fn files() {
+  // TEMP, a '\', and the file's name, with the NUL the literal carries
+  mut path [512; u8] = [512; 0u8];
+  imm name *u8 = &[]path;
+  imm temp = getenv(&[]"TEMP");
+  imm templen = strlen(temp);
+  memcpy(name, temp, templen);
+  memcpy(name + templen, &[]"\\module_package_libc.tmp", 25usize);
+  show("path-length", i64[strlen(name) - templen]);
+
+  imm out = fopen(name, &[]"wb");
+  show("fopen-write-null", isNull(out as *u8));
+  imm text = &[]"line one\nline two\n";
+  show("fwrite-count", i64[fwrite(text, 1usize, 18usize, out)]);
+  show("fflush", i64[fflush(out)]);
+  show("fclose", i64[fclose(out)]);
+
+  mut buf [64; u8] = [64; 0u8];
+  imm back = fopen(name, &[]"rb");
+  imm got = fread(&[]buf, 1usize, 64usize, back);
+  fclose(back);
+  show("fread-count", i64[got]);
+  show("read-back-equal", if strcmp(&[]buf, text) == 0i32 {1i64;} else {0i64;});
+
+  show("remove", i64[remove(name)]);
+  show("fopen-after-remove-null", isNull(fopen(name, &[]"rb") as *u8));
+}
+
+fn process() {
+  show("getenv-unset-null", isNull(getenv(&[]"CONE_LIBC_NEVER_SET")));
+  show("system-status", i64[system(&[]"exit /b 3")]);
+}
+
+fn strings() {
+  show("strlen-literal", i64[strlen(&[]"hello")]);
+  show("strcmp-less", if strcmp(&[]"abc", &[]"abd") < 0i32 {1i64;} else {0i64;});
+  mut buf [8; u8] = [8; 0u8];
+  imm at *u8 = &[]buf;
+  memset(at, i32['x'], 3usize);
+  memcpy(at + 3usize, &[]"yz", 3usize);
+  printStr("built = ");
+  printCStr(&[]buf);
+  printStr("\n");
+}
+
+fn streams() {
+  printStr("stream = ");
+  fwrite(&[]"through stdout()\n", 1usize, 17usize, stdout());
+}
+
+// Ends the program: nothing after the call runs
+fn finish() {
+  printStr("exit = 0\n");
+  exit(0i32);
+  printStr("after-exit = 1\n");
+}
+
+fn main() i32 {
+  memory();
+  files();
+  process();
+  strings();
+  streams();
+  finish();
+  1i32;
+}

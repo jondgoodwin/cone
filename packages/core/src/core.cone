@@ -8,8 +8,19 @@
 // generates core's include file, which says what this file says; every package
 // Congo compiles after it loads the prelude from that include file, which its
 // build description's package line for core names.
+//
+// The C runtime's allocator is libc's, whose package declares it once for the
+// whole program. core imports libc, which, being a C-named module, gets no
+// prelude of its own, so the import makes no loop; Congo builds libc before
+// core.
 
 mod core;
+
+// libc's 'malloc' is folded in publicly, so it stays a bare name of every
+// module, as a region's own allocator writes it; 'libc' itself is not. A module
+// that imports libc and folds its names in too meets the same declaration by
+// two routes nobody wrote, which is one binding, not a collision
+import libc pub use malloc;
 
 pub enum Option[T] {
   struct None {}
@@ -28,15 +39,12 @@ pub enum Result[T,E] {
 pub use Option;
 pub use Result;
 
-// The C runtime's allocator: defined elsewhere, and spelled as C spells it
-pub extern fn @c malloc(size usize) *u8;
-
 pub struct @move so {
-  fn alloc(size usize) *u8 inline {malloc(size);}
+  fn alloc(size usize) *u8 inline {libc.malloc(size);}
 }
 
 pub struct rc {
   cnt usize;
-  fn alloc(size usize) *u8 inline {malloc(size);}
+  fn alloc(size usize) *u8 inline {libc.malloc(size);}
   fn init() rc inline {rc[1usize];}
 }

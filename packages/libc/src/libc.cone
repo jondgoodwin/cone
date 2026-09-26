@@ -1,0 +1,72 @@
+// The libc package: raw bindings to the ISO C standard library. A program
+// reaches it with 'import libc', and calls each function by its C name, with
+// C's types: a C string is a '*u8' to bytes ending in a NUL, and a string
+// literal carries that NUL, so '&[]"rb"' can be passed straight through.
+//
+// Raw means nothing is wrapped. Errors come back as C reports them (a null
+// pointer, a nonzero or negative return, errno), strings are the caller's to
+// NUL-terminate and to free, and the caller keeps every rule C states. A
+// Cone-flavoured layer over it (Result errors, slices, owned strings) comes
+// later, as a package of its own; this one stays the C library as C spells it.
+//
+// Windows first: Cone cannot yet choose declarations by target, so this
+// version binds the Windows C runtime (the UCRT, linked through msvcrt.lib,
+// which every Congo and test-suite link already names). Where the UCRT
+// spells a function differently or has it only as a macro, the binding says
+// so beside it. The POSIX functions, which the ISO C library lacks, are the
+// posix package's, which is built on this one.
+//
+// This is a C-named module ('@c' on the 'mod' line): each function below binds
+// to the C symbol of its own name. Its object defines nothing: the three stream
+// functions are 'inline'. Being C-named, it gets no prelude, and uses nothing
+// of core: core imports it instead, for the allocator its regions call.
+
+mod @c libc;
+
+// A C stream, 'FILE' in stdio.h. Cone has no way yet to declare an opaque
+// type, so it is a struct with no fields: a program holds and passes a
+// '*FILE' and never looks inside one.
+pub struct FILE {}
+
+// stdlib.h: memory. This is the program's one declaration of the C allocator:
+// core re-exports 'malloc', so it is a bare name everywhere, and the regions'
+// allocation and release call these same functions.
+pub extern {
+  fn malloc(size usize) *u8;
+  fn calloc(count usize, size usize) *u8;
+  fn realloc(p *u8, size usize) *u8;
+  fn free(p *u8);
+}
+
+// stdlib.h: the environment and the process
+pub extern {
+  fn getenv(name *u8) *u8;
+  fn system(command *u8) i32;
+  fn exit(status i32);
+}
+
+// stdio.h: files
+pub extern {
+  fn fopen(path *u8, mode *u8) *FILE;
+  fn fclose(stream *FILE) i32;
+  fn fread(buf *u8, size usize, count usize, stream *FILE) usize;
+  fn fwrite(buf *u8, size usize, count usize, stream *FILE) usize;
+  fn fflush(stream *FILE) i32;
+  fn remove(path *u8) i32;
+}
+
+// stdio.h: the standard streams. C's 'stdin', 'stdout' and 'stderr' are
+// macros, which the UCRT expands to a call of '__acrt_iob_func' with the
+// stream's number; these three functions are that expansion.
+extern fn __acrt_iob_func(index u32) *FILE;
+pub fn stdin() *FILE inline {__acrt_iob_func(0u32);}
+pub fn stdout() *FILE inline {__acrt_iob_func(1u32);}
+pub fn stderr() *FILE inline {__acrt_iob_func(2u32);}
+
+// string.h
+pub extern {
+  fn strlen(s *u8) usize;
+  fn strcmp(a *u8, b *u8) i32;
+  fn memcpy(dest *u8, src *u8, count usize) *u8;
+  fn memset(dest *u8, value i32, count usize) *u8;
+}

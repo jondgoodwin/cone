@@ -1,0 +1,166 @@
+// A tour of the OS layer Congo needs, through the libc and posix packages:
+// memory, files, directories, processes and the environment, each exercised
+// and checked, one line printed per step. Build and run it with Congo:
+//
+//     python tools/congo/congo.py run        (from samples/oslayer)
+//
+// Everything is raw C: C strings are '*u8' ending in a NUL, which a string
+// literal carries, so '&[]"text"' passes straight to C; errors come back as C
+// reports them. Windows first, as the packages are. The program works in a
+// folder of its own under TEMP, 'oslayer-tour', and removes it, printing no
+// path and no time, so its output is the same on every run.
+
+mod oslayer;
+
+import stdio use *;
+import libc use *;
+import posix use *;
+
+// How many steps failed, which main returns as the exit status
+mut failures = 0i32;
+
+// A step's result: its name, and whether what it checked held
+fn step(what &[]u8, ok Bool) {
+  if !ok {failures = failures + 1i32;};
+  printStr(if ok {&[]"  ok    ";} else {&[]"  FAIL  ";});
+  printStr(what);
+  printStr("\n");
+}
+
+fn same(a *u8, b *u8) Bool {strcmp(a, b) == 0i32;}
+
+// Memory: a list of i64 grown by doubling with realloc, then freed
+fn memory() {
+  printStr("memory\n");
+  mut cap = 2usize;
+  mut list = malloc(cap * 8usize) as *i64;
+  mut len = 0usize;
+  while len < 100usize {
+    if len == cap {
+      cap = cap * 2usize;
+      list = realloc(list as *u8, cap * 8usize) as *i64;
+    };
+    list[len] = i64[len] * i64[len];
+    len = len + 1usize;
+  };
+  mut sum = 0i64;
+  mut i = 0usize;
+  while i < len {sum = sum + list[i]; i = i + 1usize;};
+  // 0 + 1 + 4 + ... + 99*99 = 99*100*199/6
+  step("100 squares kept through 6 reallocs sum to 328350", sum == 328350i64 and cap == 128usize);
+  free(list as *u8);
+  imm zeroed = calloc(16usize, 1usize);
+  step("calloc gives zeroed memory", zeroed[0] == 0u8 and zeroed[15] == 0u8);
+  free(zeroed);
+}
+
+// Files: written, read back, their status taken, removed
+fn files() {
+  printStr("files\n");
+  imm name = &[]"notes.txt";
+  imm text = &[]"first line\nsecond line\n";
+  imm out = fopen(name, &[]"wb");
+  imm wrote = fwrite(text, 1usize, strlen(text), out);
+  fflush(out);
+  fclose(out);
+  step("wrote 23 bytes to notes.txt", wrote == 23usize);
+
+  mut buf [64; u8] = [64; 0u8];
+  imm back = fopen(name, &[]"rb");
+  imm got = fread(&[]buf, 1usize, 63usize, back);
+  fclose(back);
+  step("read the same 23 bytes back", got == 23usize and same(&[]buf, text));
+
+  mut st = Stat[0u32, 0u16, 0u16, 0i16, 0i16, 0i16, 0u32, 0i64, 0i64, 0i64, 0i64];
+  step("stat: notes.txt exists, a regular file of 23 bytes",
+    stat(name, &mut st) == 0i32 and (st.st_mode & S_IFMT) == S_IFREG and st.st_size == 23i64);
+  step("stat: missing.txt does not exist", stat(&[]"missing.txt", &mut st) != 0i32);
+}
+
+// Directories: made, entered and left, the current one named, listed
+fn directories() {
+  printStr("directories\n");
+  mut here [260; u8] = [260; 0u8];
+  mut there [260; u8] = [260; 0u8];
+  imm herep *u8 = &[]here;
+  imm therep *u8 = &[]there;
+  getcwd(herep, 260usize);
+  step("mkdir made sub", mkdir(&[]"sub", 0x1EDu32) == 0i32);
+  step("chdir went into sub", chdir(&[]"sub") == 0i32);
+  getcwd(therep, 260usize);
+  imm n = strlen(herep);
+  step("getcwd there is getcwd here with \\sub after it",
+    strlen(therep) == n + 4usize and same(therep + n, &[]"\\sub"));
+  step("chdir came back out", chdir(&[]"..") == 0i32);
+  imm full = realpath(&[]"sub/../notes.txt", 0usize as *u8);
+  step("realpath of sub/../notes.txt is here with \\notes.txt after it",
+    strlen(full) == n + 10usize and same(full + n, &[]"\\notes.txt"));
+  free(full);
+
+  // Listing, the Windows-only piece: the folder holds notes.txt and sub
+  mut info = FindData64[0u32, 0i64, 0i64, 0i64, 0i64, [260; 0u8]];
+  mut count = 0i32;
+  mut sawNotes = false;
+  mut sawSub = false;
+  imm h = _findfirst64(&[]"*", &mut info);
+  mut going = h != -1isize;
+  while going {
+    imm entry *u8 = &[]info.name;
+    if !same(entry, &[]".") and !same(entry, &[]"..") {count = count + 1i32;};
+    if same(entry, &[]"notes.txt") and info.size == 23i64 {sawNotes = true;};
+    if same(entry, &[]"sub") and (info.attrib & _A_SUBDIR) != 0u32 {sawSub = true;};
+    going = _findnext64(h, &mut info) == 0i32;
+  };
+  _findclose(h);
+  step("listing found two entries: notes.txt (23 bytes) and sub (a directory)",
+    count == 2i32 and sawNotes and sawSub);
+}
+
+// Processes and the environment: a variable set, a command run and heard
+fn processes() {
+  printStr("processes and the environment\n");
+  step("setenv set OSLAYER_GREETING", setenv(&[]"OSLAYER_GREETING", &[]"hello", 1i32) == 0i32);
+  step("getenv reads it back", same(getenv(&[]"OSLAYER_GREETING"), &[]"hello"));
+
+  mut buf [64; u8] = [64; 0u8];
+  imm bufp *u8 = &[]buf;
+  imm pipe = popen(&[]"echo %OSLAYER_GREETING% from a child", &[]"r");
+  imm got = fread(bufp, 1usize, 63usize, pipe);
+  imm status = pclose(pipe);
+  step("popen captured what the child printed, the variable included",
+    status == 0i32 and got == 19usize and same(bufp, &[]"hello from a child\n"));
+  printStr("        the child said: ");
+  printCStr(bufp);
+  step("system returns the command's exit status", system(&[]"exit /b 7") == 7i32);
+}
+
+// Everything made, removed
+fn cleanUp() {
+  printStr("cleaning up\n");
+  step("removed notes.txt", remove(&[]"notes.txt") == 0i32);
+  step("removed sub", rmdir(&[]"sub") == 0i32);
+  step("left and removed oslayer-tour", chdir(&[]"..") == 0i32 and rmdir(&[]"oslayer-tour") == 0i32);
+}
+
+fn main() i32 {
+  // A folder of our own under TEMP, cleared of anything a stopped run left
+  chdir(getenv(&[]"TEMP"));
+  if chdir(&[]"oslayer-tour") == 0i32 {
+    remove(&[]"notes.txt");
+    rmdir(&[]"sub");
+    chdir(&[]"..");
+    rmdir(&[]"oslayer-tour");
+  };
+  mkdir(&[]"oslayer-tour", 0x1EDu32);
+  if chdir(&[]"oslayer-tour") != 0i32 {
+    printStr("cannot work in TEMP\\oslayer-tour\n");
+    return 1i32;
+  };
+
+  memory();
+  files();
+  directories();
+  processes();
+  cleanUp();
+  failures;
+}

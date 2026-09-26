@@ -148,7 +148,7 @@ every declaration given a global so far, and one of them gives way:
 | both external, both defined here | `ErrorCNameDefTwice` |
 | the newcomer only declares it | it shares the holder's global, and its own is deleted |
 | the newcomer defines it, the holder only declares it | the definition takes over: every use of the declaration and every node pointing at it is moved to the definition's global, the declaration is deleted, and the definition takes the name. So the linkage, calling convention, storage class and debug subprogram are the definition's whichever is generated first, and `genlFn` or `genlGloVar` attaches the body or the value to that one global |
-| the holder is an external symbol the compiler declared itself | C's `free` (`genlFree`, during bodies) is the one a declaration can meet — a private `free` of an imported module, declared when an inline body reaching it is generated — and a function declaration shares it, cast to its own type where they differ, as `genlFree` shares the program's. Anything else is `ErrorCNameConflict` |
+| the holder is an external symbol the compiler declared itself | C's `free` (`genlFree`, during bodies) is the one a declaration can meet — a private `free` of an imported module, declared when an inline body reaching it is generated — and a function declaration shares it, cast to its own type where they differ, as `genlFree` shares the program's. Anything else is `ErrorCNameConflict`. Since `libc`, which every compile loads, declares `free` before any body is generated, the compiler declares its own only in a compile whose prelude does not import `libc` |
 
 "Defined here" is `genlDefinition`'s answer, not whether a body is written: an
 imported module's `fn @c` body is a declaration in this object. An error leaves
@@ -429,12 +429,14 @@ Two consequences that are easy to get wrong:
 
 A region is any struct with a suitable `alloc`; `so` and `rc` are declared in
 Cone source in the core package, `packages/core/src/core.cone`, not built into the
-compiler. `malloc` is an
-ordinary `extern fn @c`; `free` is declared directly by `genlFree`, unless the
-program declared C's `free` itself, whose declaration it then calls, cast to
-`void (i8*)` where the signatures differ; a second function of that name would
-be renamed (`free.1`), and nothing defines the renamed one. A declaration of
-`free` generated after it shares it the same way (`genlClaimSymbol`). `conestd` supplies
+compiler. `malloc` and `free` are `libc`'s ordinary `extern` declarations,
+which `core`'s import of `libc` puts in every compile, declared before any body
+is generated. `genlFree` calls the module's `free` where one is declared, cast
+to `void (i8*)` where the signatures differ (`libc`'s returns `%void`, as a Cone
+function with no return value does), and declares `free` itself only where no
+module has; a second function of that name would be renamed (`free.1`), and
+nothing defines the renamed one. A declaration of `free` generated after it
+shares it the same way (`genlClaimSymbol`). `conestd` supplies
 only stdio, no allocator.
 
 ## 4. Pointer levels

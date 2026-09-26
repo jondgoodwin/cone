@@ -63,7 +63,7 @@ declared name is not known until its file has been read. `fileCanonicalPath`
 gives one spelling — separators as `/`, a `.` segment dropped, a `..` segment
 cancelled against the one in front of it — so that a path a source writes to walk
 somewhere and back finds the entry the folder sweep made rather than missing it
-and reading the file a second time. The packages `core` and `stdio` are files
+and reading the file a second time. The packages folder's packages are files
 like any other, registered under their canonical paths in the packages folder
 ("The packages folder", below).
 
@@ -187,10 +187,12 @@ node's own clause (`foldModUseModule`).
 3. `core` is loaded (`parseLoadCore`): `core/src/core.cone`, found on the package
    search path and nowhere else, so no file beside a program stands in for it.
    It is loaded exactly as an imported module is, and is the one module loaded
-   with no auto-import of itself.
+   with no auto-import of itself. What it imports, `libc`, is loaded during its
+   parse, before there is a `core` to import.
 4. An `ImportNode` carrying a star clause is added to the root for `core`, and
    `ParseState.core` is set, so every module loaded from then on is given the
-   same import.
+   same import — and a module whose `mod` line makes it C-named gives it back
+   ("What is still special about `core`", below).
 5. The submodules its subfolders and one-file modules draw are drawn, each
    recursively.
 6. The root's own files are parsed, its designated file first.
@@ -806,17 +808,22 @@ full source, which is what an importer compiles the instance from
 
 ### The packages folder
 
-**`core` and `stdio` are packages, laid out as Congo lays out every package.**
+**`core`, `stdio`, `libc` and `posix` are packages, laid out as Congo lays out
+every package.**
 The repository's root holds `packages/`, one folder per package, each holding
-a manifest, `congo.toml`, and the package's source, `src/<name>.cone`. Neither
+a manifest, `congo.toml`, and the package's source, `src/<name>.cone`. None
 holds an include file: a program Congo builds is compiled against the one each
 package's own compile generates, `build/<mode>/<name>.cone` ("Generating the
 include file"). The hand-written `core.cone` and `stdio.cone` that stood at the
-package roots are gone. Nothing about either is known to the
+package roots are gone. Nothing about any of them is known to the
 compiler but the name `core`: each is located, registered and parsed on the
 path every imported module takes, and named by its file. `stdio`'s printing is
 C, declared in its `pub extern` block, each function marked `@c` so that it
 takes its C name rather than `stdio`'s Cone one, and supplied by `conestd`.
+`libc` and `posix` are C packages ("How a C library becomes a Cone package",
+below): raw bindings to the ISO C library and to the POSIX functions beyond
+it, Windows first, `posix` built on `libc`, and supplied by the C runtime every
+link names.
 The shape is Jon's [Jon 23 Sep], taken before C modules so the built-ins would
 stop being text inside the compiler: *"a whole root level folder … subdivided
 into the different libraries, each of which is effectively a package … stick
@@ -858,7 +865,7 @@ the packages folder. That folder is chosen in three steps, first found wins:
    `packages/` under the current directory.
 
 So the test runner and a direct run of a `conec` built from this repository find
-`core` and `stdio` with no setup, from any directory, and a `conec` copied out
+every package there with no setup, from any directory, and a `conec` copied out
 with a `packages/` folder beside or above it takes that folder with it.
 `--path` adds to the search path and replaces nothing, so a package in
 a `--path` folder is found ahead of the packages folder's of the same name;
@@ -881,6 +888,29 @@ the packages folder comes from. Its name is `core`, its folder's, so an
 `import core` reaches the prelude module and binds that name; the IR dump reads
 `module core`. No symbol is spelled after it, since everything it defines is
 `inline` or `extern`.
+
+**`core` imports `libc`, and a C-named module gets no prelude** [Jon 26 Sep:
+core imports libc, so that libc is the one declaration of the C allocator and
+the compiler is hardwired to nothing but core; the no-prelude rule is Penny's,
+under his authorisation]. The regions' `alloc` calls `libc.malloc`, and
+`import libc pub use malloc;` keeps `malloc` a bare name of every module, as a
+region's own allocator writes it. `libc` itself is a private name of `core`, so
+it reaches no program that does not import it. The import makes no loop
+because a module whose `mod` line carries `@c` takes back the star import of
+`core` it was given before its files were read (`parseDropCorelibImport`, from
+`parseModuleDcl`; a generated module block is never given one): a C binding
+module declares what a C library defines, in C's types, and needs nothing of
+the prelude. So in a C-named module core's names are simply not there: one it
+declares itself is no collision, and one it uses is unknown
+(`module_c_no_prelude`). A C-named module that wants them imports `core`
+itself, which `libc` may not. `libc` is loaded by every compile: while `core`
+is being parsed, before `ParseState.core` is set, so it is never given the
+import to take back; a program that imports `libc` too reaches the same
+module, by its file, and meets `malloc` by two routes of which at most one
+was written, which is one binding ("The module order": the fold rules;
+`module_package_libc`). Where `libc` is the root — its own
+compile — `core`, found on the search path, imports the root by its path, the
+two spellings canonical and the same.
 
 **Until separate compilation lands, every module found on the search path is
 compiled into this object.** That is the truth of today's single-object
@@ -981,6 +1011,17 @@ guide) is what makes a Congo build rely on nothing else here:
   listing a *different* copy of `core` as a module's file meets the prelude's
   names as duplicates (`ErrorDupName`, one per name). Its object defines
   nothing, since all of `core` is `inline`, generic or `extern`.
+- **What `core` imports is built before it, with no prelude line.** `core`
+  imports `libc`, so Congo builds `libc` first, and `libc`'s description has
+  no package line for `core`, whose include file does not exist yet: `libc` is
+  C-named and gets no prelude, and its compile loads `core` from the package
+  search path, which imports the root back by its path. Every later
+  description names `libc` before `core` among its package lines, since
+  `core`'s include file imports it. `libc` built on its own is the whole
+  build. A copy of `libc` built as a package of its own, outside the packages
+  folder, is not the file `core`'s import reaches: the two are two modules,
+  each with its own `FILE`, so every C function taking one is declared two
+  ways (`ErrorCNameConflict`).
 
 `conec` takes a description where it would take a source file, told apart by its
 extension, `.conebuild`:
@@ -2205,8 +2246,8 @@ and files, each file's `mod` line checked against it, imports found only where
 it says, and a library's root named from it, so a package compiled on its own
 spells its symbols as its importers do and exports what they link against. What
 stands in for
-packages is the **packages folder**: `core` and `stdio` are folder modules there,
-found on the package search path and compiled into the importing object ("The
+packages is the **packages folder**: `core`, `stdio`, `libc` and `posix` are
+there, found on the package search path and compiled into the importing object ("The
 packages folder" above).
 **A module conforms to a module trait**, `mod prog is Runner;`, checked where it
 is written, taking a copy of each default it does not declare ("Module traits"
@@ -2342,9 +2383,20 @@ which exists in the option help and controls which packages may use C FFI, is
 the policy half of the same question; that C naming is now written on the
 module is what gives it something to check.
 
-`core` and `stdio` still hold their C declarations inside their Cone-named
-modules, each function marked `@c`, rather than in a C-named module of their
-own.
+**The packages folder holds two C packages, `libc` and `posix`** [Jon 25–26
+Sep]: raw bindings, C names, C types and C strings, with a Cone-flavoured layer
+to come later as packages of their own, and Windows first, since nothing yet
+chooses declarations by target. Neither names a `[link]` library: the C runtime
+they bind is the one every link already names. `posix` presents POSIX names:
+bound straight to the Windows runtime's spelling with a function's own
+`@c("_mkdir")` where the arguments agree, and an `inline` function with POSIX's
+signature calling the runtime's where they do not, so that neither package's
+object defines anything; directory listing, which Windows lacks, is the
+runtime's own `_findfirst64` family under its own names. The structs they
+declare (`posix.Stat`, `posix.FindData64`) are the runtime's layouts, measured
+against its headers (`module_package_posix`). `stdio` still holds its C
+declarations inside its Cone-named module, each function marked `@c`, and
+`core` holds none: its allocator is `libc`'s.
 
 ### What a package exports, and what that does to its symbols
 

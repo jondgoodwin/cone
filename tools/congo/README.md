@@ -26,6 +26,7 @@ as `python tools/congo/congo.py`. Put `tools/congo/` on `PATH` to type `congo`.
      Created executable package hello (hello)
 > cd hello
 > congo run
+   Compiling libc v0.1.0 (C:\src\cone\packages\libc)
    Compiling core v0.1.0 (C:\src\cone\packages\core)
    Compiling stdio v0.1.0 (C:\src\cone\packages\stdio)
    Compiling hello v0.1.0 (C:\work\hello)
@@ -134,7 +135,8 @@ An import names a module. Congo answers each one this way:
 `congo.toml` being one package, known by the name its manifest gives. Congo
 searches, in order:
 
-1. the Cone repository's own `packages/` (`core` and `stdio` are there), then
+1. the Cone repository's own `packages/` (`core`, `stdio`, `libc` and `posix`
+   are there), then
 2. each folder the **machine config** lists.
 
 The machine config is `config.toml` in the Congo home, which is the folder
@@ -263,6 +265,13 @@ winstr/
 A library that is not installed is the linker's to report, and Congo adds which
 package named which library.
 
+**The packages folder holds two C packages**, `libc` (the ISO C library) and
+`posix` (the POSIX functions beyond it, built on `libc`): raw bindings, C names,
+C types and C strings, Windows first. They name no `[link]` library, since the C
+runtime they bind is on every link line already. `core` imports `libc` for its
+allocator, so every build compiles `libc` first. `samples/oslayer` is a tour of
+both, and each package's source says what it binds and how.
+
 ## What a build does
 
 1. **Find the package**: the nearest `congo.toml` in this folder or one above
@@ -270,8 +279,8 @@ package named which library.
    named by its `mod` line or else by the file.
 2. **Scan**: walk `src/`, read each file's header, and make the module tree.
 3. **Resolve**: answer each import through the registries, scan each package
-   found the same way, and order them all, `core` first, each after what it
-   imports.
+   found the same way, and order them all, each after what it imports: `core`
+   first, after what `core` itself imports (`libc`).
 4. **Describe and compile**: for each package, write its **build description**,
    `build/<mode>/<package>.conebuild`, and run `conec` on it alone. The one
    being built gets the `output` its manifest says; every package it imports is
@@ -306,7 +315,11 @@ Everything is rebuilt every time.
   Prompt is needed. Elsewhere, `cc` or `gcc`.
 - **The prelude.** Every package compiled after `core` loads the prelude from
   `core`'s generated include file, which its description's package line for
-  `core` names. `core`'s own compile has no such line, and `conec` loads the
+  `core` names, after a line for `libc`, which `core`'s include file imports.
+  `libc` itself is compiled before `core`, with no line for it: a C-named
+  module gets no prelude, so `libc` needs nothing of `core`, and its compile
+  loads `core` from the packages folder as `core`'s own compile does. Built on
+  its own, `libc` is the whole build. `core`'s own compile has no such line, and `conec` loads the
   prelude from its packages folder: Congo sets `CONE_PACKAGES` to the registry
   folder it found `core` in, so the prelude is the very file Congo compiles
   `core` from.
@@ -327,8 +340,10 @@ registry folder that itself imports `stdio` (beside a stale hand-written include
 file, which is not read), three packages chained through an include file that
 imports another package's, a library of submodules re-exported at its root whose
 include file holds nested blocks, a C package linking a Windows system library
-(shlwapi), a C library built in the test and found through `[link] paths`, the
-loop refusals between packages and between modules, and the manifest's checks.
+(shlwapi), a C library built in the test and found through `[link] paths`,
+`libc` built before `core` with no prelude line, the `samples/oslayer` tour of
+`libc` and `posix` (Windows), the loop refusals between packages and between
+modules, and the manifest's checks.
 Each program is compiled against the include files its packages' compiles
 generated. The test suite (`test/run.py`) does not run Congo.
 

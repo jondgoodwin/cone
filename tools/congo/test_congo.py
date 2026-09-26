@@ -297,11 +297,12 @@ class Scenarios(unittest.TestCase):
             """)
         run = self.congo("run", "app.cone", cwd=self.root)
         # count starts at 3: hello(3+4) prints 7 and makes it 4; hello(4*10)
-        # prints 40. Built in order: core, stdio (greet's import), greet, app
+        # prints 40. Built in order: libc (core's import), core, stdio (greet's
+        # import), greet, app
         self.assertEqual(self.program_output(run), "greet 7\ngreet 40\n")
         compiled = [line.split()[1] for line in run.stdout.splitlines()
                     if line.strip().startswith("Compiling")]
-        self.assertEqual(compiled, ["core", "stdio", "greet", "app"])
+        self.assertEqual(compiled, ["libc", "core", "stdio", "greet", "app"])
         self.assertIn("greeting", run.stderr)
         self.assertIn("greet.cone is not used", run.stderr)
         out = next((self.root / "home" / "lone").glob("app-*")) / "debug"
@@ -367,14 +368,15 @@ class Scenarios(unittest.TestCase):
         self.assertEqual(self.program_output(run), "35\n40\n5\n")
         compiled = [line.split()[1] for line in run.stdout.splitlines()
                     if line.strip().startswith("Compiling")]
-        self.assertEqual(compiled, ["core", "stdio", "b", "a", "app"])
+        self.assertEqual(compiled, ["libc", "core", "stdio", "b", "a", "app"])
         out = next((self.root / "home" / "lone").glob("app-*")) / "debug"
         desc = (out / "app.conebuild").read_text()
         # The package lines: the whole closure, b included though the program
         # does not import it, each after what it imports, the prelude first
+        # after libc, which the prelude imports
         tops = [line.split(":")[0] for line in desc.splitlines()
                 if line.startswith("import ")]
-        self.assertEqual(tops, ["import core", "import stdio", "import b", "import a"])
+        self.assertEqual(tops, ["import libc", "import core", "import stdio", "import b", "import a"])
         self.assertRegex(desc, r'\nimport b: ".*/app-[0-9a-f]+/debug/b\.cone"\n')
         # The program's own module imports only what it writes
         module = desc[desc.index("app: {"):]
@@ -505,7 +507,7 @@ class Scenarios(unittest.TestCase):
                          "c final\na final\nb final\nb.sub final\n")
         compiled = [line.split()[1] for line in run.stdout.splitlines()
                     if line.strip().startswith("Compiling")]
-        self.assertEqual(compiled, ["core", "stdio", "b", "a", "c", "app"])
+        self.assertEqual(compiled, ["libc", "core", "stdio", "b", "a", "c", "app"])
         out = next((self.root / "home" / "lone").glob("app-*")) / "debug"
         # b's generated include file declares b's 'init' and 'final' and its
         # submodule's, which is what the program's stitched pair calls
@@ -718,6 +720,82 @@ class Scenarios(unittest.TestCase):
         run = self.congo("run", "app.cone", cwd=self.root)
         # 3 * 14 = 42
         self.assertEqual(self.program_output(run), "42\n")
+
+    def test_the_prelude_rests_on_libc(self):
+        # core imports libc, a C package the compiler gives no prelude, so libc
+        # is compiled first, with no package line for core, whose include file
+        # does not exist yet; every later description names libc before core
+        self.congo("new", "hello", cwd=self.root)
+        pkg = self.root / "hello"
+        run = self.congo("run", cwd=pkg)
+        self.assertEqual(self.program_output(run), "Hello, world!\n")
+        compiled = [line.split()[1] for line in run.stdout.splitlines()
+                    if line.strip().startswith("Compiling")]
+        self.assertEqual(compiled, ["libc", "core", "stdio", "hello"])
+        out = pkg / "build" / "debug"
+        self.assertNotIn("import", (out / "libc.conebuild").read_text())
+        self.assertIn("import libc pub use malloc;", (out / "core.cone").read_text())
+        self.assertIn('mod @c libc;', (out / "libc.cone").read_text())
+        core_desc = (out / "core.conebuild").read_text()
+        self.assertRegex(core_desc, r'\nimport libc: ".*/hello/build/debug/libc\.cone"\n')
+        self.assertNotIn("import core", core_desc)
+        hello_desc = (out / "hello.conebuild").read_text()
+        self.assertRegex(hello_desc, r'\nimport libc: ".*/libc\.cone"\nimport core: ".*/core\.cone"\n')
+
+        # libc built on its own needs no core at all: it is the whole build.
+        # Asked of the build order, so nothing is written into the repository
+        registry = congo.Registry([congo.REPO_PACKAGES])
+        libc = registry.find("libc")
+        self.assertEqual([u.pkg.name for u in congo.build_order(libc, registry)], ["libc"])
+        core = registry.find("core")
+        self.assertEqual([u.pkg.name for u in congo.build_order(core, registry)],
+                         ["libc", "core"])
+
+    @unittest.skipUnless(IS_WINDOWS, "libc and posix bind the Windows C runtime")
+    def test_the_os_layer_sample(self):
+        # samples/oslayer, copied here and run: libc and posix from the
+        # repository's packages, posix importing libc. Each step prints 'ok' when
+        # what it checked held; the program exits with the count that did not
+        sample = self.root / "oslayer"
+        shutil.copytree(congo.REPO / "samples" / "oslayer", sample,
+                        ignore=shutil.ignore_patterns("build"))
+        run = self.congo("run", cwd=sample)
+        compiled = [line.split()[1] for line in run.stdout.splitlines()
+                    if line.strip().startswith("Compiling")]
+        self.assertEqual(compiled, ["libc", "core", "stdio", "posix", "oslayer"])
+        self.assertEqual(self.program_output(run), textwrap.dedent("""\
+            memory
+              ok    100 squares kept through 6 reallocs sum to 328350
+              ok    calloc gives zeroed memory
+            files
+              ok    wrote 23 bytes to notes.txt
+              ok    read the same 23 bytes back
+              ok    stat: notes.txt exists, a regular file of 23 bytes
+              ok    stat: missing.txt does not exist
+            directories
+              ok    mkdir made sub
+              ok    chdir went into sub
+              ok    getcwd there is getcwd here with \\sub after it
+              ok    chdir came back out
+              ok    realpath of sub/../notes.txt is here with \\notes.txt after it
+              ok    listing found two entries: notes.txt (23 bytes) and sub (a directory)
+            processes and the environment
+              ok    setenv set OSLAYER_GREETING
+              ok    getenv reads it back
+              ok    popen captured what the child printed, the variable included
+                    the child said: hello from a child
+              ok    system returns the command's exit status
+            cleaning up
+              ok    removed notes.txt
+              ok    removed sub
+              ok    left and removed oslayer-tour
+            """))
+        # posix's include file imports libc, answered by the program's package
+        # line for libc; the program imports both
+        out = sample / "build" / "debug"
+        self.assertIn("import libc;", (out / "posix.cone").read_text())
+        self.assertRegex((out / "posix.conebuild").read_text(),
+                         r'\nimport libc: ".*/libc\.cone"\nimport core: ".*/core\.cone"\n')
 
     def test_an_import_loop_between_packages_is_refused(self):
         packages = self.root / "loop"
