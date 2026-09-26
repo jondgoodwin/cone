@@ -6,6 +6,7 @@
 */
 
 #include "../ir.h"
+#include "../../shared/timer.h"
 
 #include <string.h>
 #include <assert.h>
@@ -343,7 +344,14 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // nothing, as a local does, and must leave each one assigned
     ModuleNode *initmod = modInitOf(fnnode);
     uint16_t *saved = initmod ? modInitFlowBegin(initmod) : NULL;
+    // Flow runs inside type check's span, which may itself be nested in another
+    // function's, so the timer hands the time back to whichever was running
+    size_t svTimer = timerCurrent;
+    if (timerFine)
+        timerBegin(FlowTimer);
     blockFlow(&fstate, (BlockNode **)&fnnode->value);
+    if (timerFine)
+        timerBegin(svTimer);
     if (initmod)
         modInitFlowEnd(initmod, saved);
 }
