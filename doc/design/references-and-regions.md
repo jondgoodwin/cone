@@ -88,10 +88,12 @@ imm shared = +rc Person["Tako"]     // counted: freed at zero
 | user-defined | any struct declaring `is RegionRef` | whatever its methods do |
 
 **`so` and `rc` are Cone source, not built into the compiler**, and nothing in
-the compiler names either. Each method is optional: without `alias` a region
-has one owner per value and a copy is a move; `dealias` answers whether the
-owner that went was the last; `free` gives the memory back. The compiler checks
-the methods' shapes and set where the struct is declared, and the test corpus
+the compiler names either. Each method is optional, and an absent one's
+operation does not happen: without `alias` a region has one owner per value and
+a copy is a move; `dealias` answers whether the owner that went was the last,
+and without it a shared value never dies by count; `free` gives the memory
+back. The compiler checks the methods' shapes where the struct is declared,
+refusing only `@move` with `alias`, which contradicts itself; and the test corpus
 declares regions of its own that get every call `rc` and `so` get
 ([What a region is](../../compiler/c/doc/nodes/module.md)).
 
@@ -276,7 +278,7 @@ gap:
 | Rule | Enforced by | Phase |
 | --- | --- | --- |
 | region must be a struct declaring `is RegionRef` | `refRegionCheck` | type check |
-| a region's methods have the shapes the compiler calls, and make a coherent set | `regionRefCheck`, at the declaration | type check |
+| a region's methods have the shapes the compiler calls, and `@move` is not contradicted by an `alias` | `regionRefCheck`, at the declaration | type check |
 | a region allocated from has `alloc` | `regionAllocTypeCheck` | type check |
 | requested permission vs. the source's | `permMatches` in `borrowTypeCheck` | type check |
 | value-type variance | `refMatches` and friends | type check |

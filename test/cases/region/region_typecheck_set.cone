@@ -1,49 +1,43 @@
 // The set a region's methods make together. Each method is optional, and a
-// missing one means its event needs nothing done -- but some sets cannot be
-// acted on, and ir/types/region.c refuses them where the region is declared,
-// with ErrorRegionSet.
-//
-// The coherent sets are two: neither 'alias' nor 'dealias' (one owner per
-// value, like 'so': a copy is a move and every owner's going is the death),
-// and both (shared owners, like 'rc': 'dealias' says when the last has gone).
-// Everything below is one of the others. Each region is well formed method by
-// method, so the only complaint is about the set, and nothing allocates from
-// any of them: the check does not wait for a use.
+// missing one means its operation does not happen, so no combination is
+// refused for what it leaves out: every region below but one is accepted. The
+// one refused is a contradiction, not an absence: '@move' says one owner per
+// value and an 'alias' method says there may be another (ErrorRegionSet). What
+// the accepted combinations do at run time is region_regionref's to show.
 
 mod region_typecheck_set;
 
-// Copies would be counted and their going never reported, so nothing held
-// could die. The shape a traced region would take, when there is one.
+// No 'dealias': copies are counted and an owner's going reports nothing, so a
+// value never dies by count -- it waits for a collector to free it, as a region
+// with no 'free' never gives memory back
 struct countsUp is RegionRef {
   cnt usize;
   fn alloc(size usize) *u8 inline { malloc(size); }
-  fn alias(self &uni countsUp) inline { cnt = cnt + 1usize; }        //~ ErrorRegionSet "alias but no dealias"
+  fn alias(self &uni countsUp) inline { cnt = cnt + 1usize; }
 }
 
-// Without 'alias' a value has one owner, whose going is always the last
+// No 'alias': a single owner, whose going still asks 'dealias'
 struct countsDown is RegionRef {
   cnt usize;
   fn alloc(size usize) *u8 inline { malloc(size); }
-  fn dealias(self &uni countsDown) Bool inline { true; }             //~ ErrorRegionSet "dealias but no alias"
+  fn dealias(self &uni countsDown) Bool inline { true; }
 }
 
-// 'init' sets up the memory 'alloc' returns, so without 'alloc' it is never called
+// No 'alloc': nothing allocates from it, so its 'init' is never called
 struct initOnly is RegionRef {
   cnt usize;
-  fn init() initOnly inline { initOnly[1usize]; }                    //~ ErrorRegionSet "init but no alloc"
+  fn init() initOnly inline { initOnly[1usize]; }
 }
 
-// '@move' says one owner per value, which is what having no 'alias' says;
-// with an 'alias' the two contradict each other
+// '@move' on a region with no 'alias' only says again what the absence says
+struct @move movesAlready is RegionRef {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+}
+
+// '@move' with an 'alias' contradicts itself
 struct @move movesAndCounts is RegionRef {                            //~ ErrorRegionSet "'@move', one owner per value, but declares alias"
   cnt usize;
   fn alloc(size usize) *u8 inline { malloc(size); }
   fn alias(self &uni movesAndCounts) inline { cnt = cnt + 1usize; }
   fn dealias(self &uni movesAndCounts) Bool inline { cnt = cnt - 1usize; cnt == 0usize; }
-}
-
-// '@move' on a region with no 'alias' only says again what the absence says,
-// and is accepted
-struct @move movesAlready is RegionRef {
-  fn alloc(size usize) *u8 inline { malloc(size); }
 }

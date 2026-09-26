@@ -445,8 +445,9 @@ What follows from that:
 
 **The release routines call the region's methods and know no region.**
 `genlReleaseOwning` is one owner going away: `genlRegionDealias` calls the
-region's `dealias` and branches on its `Bool` to the death, or, for a region
-without `dealias` (single owner), goes straight to it. The death,
+region's `dealias` and branches on its `Bool` to the death. A region without
+`dealias` goes straight to the death when it has no `alias` (single owner), and
+emits nothing at all when it has one: that value never dies by count. The death,
 `genlRegionDeath`, releases the owning references the value's fields hold
 (`genlDealiasFlds`), then calls the region's `free` if it has one.
 `genlRegionAlias` calls `alias` once per owner a `RefCountNode` adds — written

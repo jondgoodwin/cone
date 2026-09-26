@@ -848,7 +848,7 @@ Steps 9 and 10 are `structCheckMembers`, run from the members queue:
    body here because it is defined elsewhere, as an include file declares a
    package's methods, and it meets the trait's requirement. **`RegionRef`, the
    built-in trait, has no methods to verify**: a type declaring it is held
-   instead to the region methods' shapes and set (`regionRefCheck`), each
+   instead to the region methods' shapes (`regionRefCheck`), each
    optional and fixed in shape where present, which no requirement written in
    Cone can say ([What a region is](module.md)).
 

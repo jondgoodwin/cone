@@ -2484,7 +2484,7 @@ events only it can see (`ir/types/region.c`):
 | `fn alloc(size usize) *u8`, static | `+R value` allocates; `size` is the whole allocation, header included; null fails | the allocation is refused (`ErrorBadAlloc`) |
 | `fn init() R`, static | after `alloc`; the result is stored as the header | the header is left as allocated |
 | `fn alias(self &uni R)` | a copy of an owning reference becomes another owner | a copy is a **move**: the region has one owner per value |
-| `fn dealias(self &uni R) Bool` | an owner goes away; answers whether it was the last | every owner's going is the value's death |
+| `fn dealias(self &uni R) Bool` | an owner goes away; answers whether it was the last | an owner's going reports nothing: with no `alias` either it is the value's death; with `alias` the value never dies by count and is never freed, left for something other than its owners (a collector, once one exists) to free |
 | `fn free(self &uni R)` | the value is dead, after its fields' owners are released | the memory is not given back a value at a time |
 
 Every method but `alloc` and `init` is handed the allocation's **header**, the
@@ -2494,13 +2494,14 @@ from the value pointer by the value's offset in that layout
 without `alias` is marked `MoveType` at the end of its name resolution
 (`regionNameRes`), the mark `@move` gives, which `@move` may still write.
 
-The struct is held to the method shapes and to a coherent set **at its
-declaration**, after its methods are type checked (`regionRefCheck`, from
-`structCheckMembers`): `ErrorBadAlloc` for `alloc`/`init`, `ErrorRegionMeth`
-for the other three, and `ErrorRegionSet` for `alias` without `dealias` or the
-reverse, `init` without `alloc`, and `@move` with `alias`. The coherent sets are
-neither `alias` nor `dealias` (single owner: `so`) and both (shared owners:
-`rc`).
+The struct is held to the method shapes **at its declaration**, after its
+methods are type checked (`regionRefCheck`, from `structCheckMembers`):
+`ErrorBadAlloc` for `alloc`/`init`, `ErrorRegionMeth` for the other three. No
+combination is refused for what it leaves out, since an absent method's
+operation simply does not happen [Jon 25 Sep]: `dealias` without `alias` is a
+single owner whose going still asks `dealias`, and `init` without `alloc` is
+never called. The one refusal is a contradiction, `@move` with `alias`
+(`ErrorRegionSet`).
 
 `so` and `rc` are written this way in `packages/core/src/core.cone`, `inline`,
 their `free` calling libc's by its qualified name, since inside a method named

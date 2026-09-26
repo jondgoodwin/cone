@@ -147,28 +147,23 @@ static void regionCheckInit(FnDclNode *initmeth, StructNode *region) {
 }
 
 // Hold a struct that declares 'is RegionRef' to what that promises: each region
-// method it declares has the shape the compiler calls it with, and together they
-// make a set the compiler can act on. Run once, at the declaration, after its
-// methods are type checked, so a malformed region is reported whether or not
-// anything allocates from it.
+// method it declares has the shape the compiler calls it with. Run once, at the
+// declaration, after its methods are type checked, so a malformed region is
+// reported whether or not anything allocates from it.
 //
-// Every method is optional, and an absent one means its event needs nothing
-// done. The coherent sets:
-// - neither 'alias' nor 'dealias': one owner per value ('so', an arena). A copy
-//   is a move, and every owner going away is the value's death.
-// - 'alias' and 'dealias': shared owners ('rc'). 'dealias' answers whether the
-//   owner that went was the last, which is the death.
-// - 'alias' without 'dealias' is refused: copies would be counted and their going
-//   never reported, so nothing could die. It is the shape a traced region's would
-//   take, and waits for one.
-// - 'dealias' without 'alias' is refused: with one owner every going is the last,
-//   so there is nothing for it to answer.
-// - 'init' without 'alloc' is refused: 'init' sets up memory 'alloc' returned.
-// - '@move' with 'alias' is refused: '@move' says one owner, 'alias' another.
-//   '@move' without 'alias' says again what the absence says, and is accepted.
-// 'alloc' and 'free' may each be absent: a region nothing allocates from with
-// '+R value' (refused at the allocation, regionAllocTypeCheck), and one whose
-// memory is not given back a value at a time.
+// Every method is optional, and an absent one means its operation does not
+// happen [Jon 25 Sep]; no combination is refused for what it leaves out:
+// - no 'alias': one owner per value ('so'). A copy is a move.
+// - no 'dealias': an owner going away reports nothing. With no 'alias' too,
+//   every owner's going is the value's death; with 'alias', the value is shared
+//   and never dies by count, so it is never freed until something other than
+//   its owners frees it -- a collector, when one exists.
+// - 'dealias' without 'alias': a single owner whose going still asks 'dealias'.
+// - no 'free': the memory is not given back a value at a time.
+// - no 'alloc': nothing allocates from the region (refused at '+R value',
+//   regionAllocTypeCheck), and an 'init' it has is never called.
+// The one refusal is a contradiction: '@move' says one owner, 'alias' another.
+// '@move' without 'alias' says again what the absence says, and is accepted.
 void regionRefCheck(StructNode *node) {
     StructNode *base = structBaseTraitDcl(node);
     if ((node->flags & (TraitType | EnumType)) || (base != NULL && (base->flags & EnumType))) {
@@ -186,31 +181,16 @@ void regionRefCheck(StructNode *node) {
     INode *initmember = iNsTypeFindFnField((INsTypeNode*)node, initMethodName);
     if (initmember && initmember->tag != FnDclTag)
         errorMsgNode(initmember, ErrorBadAlloc, "Region init must be a static method returning the header's initial value.");
-    else if (initmember) {
+    else if (initmember)
         regionCheckInit((FnDclNode*)initmember, node);
-        if (allocmember == NULL)
-            errorMsgNode(initmember, ErrorRegionSet,
-                "Region %s declares init but no alloc: init sets up the memory alloc returns, so it would never be called.",
-                &node->namesym->namestr);
-    }
 
     regionCheckSelfMeth(node, aliasMethodName, 0);
     regionCheckSelfMeth(node, dealiasMethodName, 1);
     regionCheckSelfMeth(node, freeMethodName, 0);
 
-    // The set is judged by the methods: a member of the name that is not one
-    // was reported above, and is no event the compiler calls
-    INode *aliasmember = (INode*)regionMethod((INode*)node, aliasMethodName);
-    INode *dealiasmember = (INode*)regionMethod((INode*)node, dealiasMethodName);
-    if (aliasmember && dealiasmember == NULL)
-        errorMsgNode(aliasmember, ErrorRegionSet,
-            "Region %s declares alias but no dealias: each copy would be counted and no owner's going reported, so nothing it holds could die.",
-            &node->namesym->namestr);
-    else if (dealiasmember && aliasmember == NULL)
-        errorMsgNode(dealiasmember, ErrorRegionSet,
-            "Region %s declares dealias but no alias: without alias a value has one owner, whose going is always the last.",
-            &node->namesym->namestr);
-    if (aliasmember && (node->flags & MoveType))
+    // Judged by the method: a member of the name that is not one was reported
+    // above, and is no operation the compiler calls
+    if (regionMethod((INode*)node, aliasMethodName) && (node->flags & MoveType))
         errorMsgNode((INode*)node, ErrorRegionSet,
             "Region %s is '@move', one owner per value, but declares alias, which makes another. A region without alias is single owner already.",
             &node->namesym->namestr);

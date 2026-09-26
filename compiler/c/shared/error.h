@@ -145,7 +145,7 @@ enum ErrorCode {
     // Regions: the annotation struct after '+', and the 'RegionRef' methods the compiler calls on it
     ErrorNotRegion = 1154,      // A reference's region names a struct that does not declare 'is RegionRef'
     ErrorRegionMeth = 1155,     // A region's 'alias', 'dealias' or 'free' not of the shape the compiler calls it with
-    ErrorRegionSet = 1156,      // A region's methods that do not make a coherent set: 'alias' without 'dealias' or the reverse, 'init' without 'alloc', '@move' with 'alias'
+    ErrorRegionSet = 1156,      // A region whose declaration contradicts itself: '@move' (one owner per value) with an 'alias' method (another owner)
     ErrorRegionRefUse = 1157,   // 'RegionRef' anywhere but a struct's 'is' list: the type a reference points at, or the 'is' of a trait, enum or variant
 
     // The compiler's own invariants. This is the one code no source is supposed

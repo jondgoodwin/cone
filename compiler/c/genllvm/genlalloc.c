@@ -112,11 +112,15 @@ static void genlRegionDeath(GenState *gen, LLVMValueRef valptr, RefNode *refnode
 }
 
 // One owner of an owning reference goes away. A region with 'dealias' is asked
-// whether it was the last, and the value dies only if so; a region without one
-// has a single owner, so its going is the value's death.
+// whether it was the last, and the value dies only if so. Without one, a
+// single owner's going (no 'alias') is the value's death, and a shared owner's
+// going is nothing at all: such a value never dies by count, and is left for
+// something other than its owners to free.
 static void genlRegionDealias(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
-    LLVMValueRef valptr = genlRefPtr(gen, ref, refnode);
     FnDclNode *dealiasmeth = regionMethod(refnode->region, dealiasMethodName);
+    if (dealiasmeth == NULL && regionMethod(refnode->region, aliasMethodName) != NULL)
+        return;
+    LLVMValueRef valptr = genlRefPtr(gen, ref, refnode);
     if (dealiasmeth == NULL) {
         genlRegionDeath(gen, valptr, refnode);
         return;
