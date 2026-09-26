@@ -1283,6 +1283,19 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
     }
 }
 
+static int genlAddrThroughRef(INode *lval);
+
+// A value was just stored at 'lvalptr', the address of 'lval': where that is
+// memory other code can reach -- through a reference or a pointer, a borrow's
+// included -- rather than a local (a variable, or a field or element of one),
+// each traced reference the value holds goes to its region's 'writeBarrier'.
+// A local needs none: a collector that marks while the program runs traces
+// every stack again, uninterrupted, before it ends its marking.
+static void genlStoreBarrier(GenState *gen, INode *lval, LLVMValueRef lvalptr) {
+    if (genlAddrThroughRef(lval))
+        genlBarrierAt(gen, lvalptr, ((IExpNode *)lval)->vtype);
+}
+
 void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
     if (isNameUseNode(lval) && isExpNode(lval) && ((NameUseNode*)lval)->namesym == anonName)
         return;
@@ -1293,6 +1306,7 @@ void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
     if (!(lval->flags & FlagFirstAssign) && flowIsOwningType(lvaltype))
         genlReleaseOwning(gen, LLVMBuildLoad2(gen->builder, genlType(gen, genlAddrType(lval)), lvalptr, "dealiasref"), lvaltype);
     LLVMBuildStore(gen->builder, rval, lvalptr);
+    genlStoreBarrier(gen, lval, lvalptr);
 }
 
 // Whether the address genlAddr takes of 'lval' is reached through a reference
@@ -1631,6 +1645,8 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         LLVMValueRef leftval = LLVMBuildLoad2(gen->builder, genlType(gen, genlAddrType(lval)), lvalptr, "");
         LLVMBuildStore(gen->builder, rightval, lvalptr);
         LLVMBuildStore(gen->builder, leftval, rvalptr);
+        genlStoreBarrier(gen, lval, lvalptr);
+        genlStoreBarrier(gen, rval, rvalptr);
         return leftval;
     }
     case AssignTag:
@@ -1650,6 +1666,7 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
             LLVMValueRef lvalptr = genlAddr(gen, lval);
             LLVMValueRef leftval = LLVMBuildLoad2(gen->builder, genlType(gen, genlAddrType(lval)), lvalptr, "");
             LLVMBuildStore(gen->builder, valueref, lvalptr);
+            genlStoreBarrier(gen, lval, lvalptr);
             return leftval;
         }
 

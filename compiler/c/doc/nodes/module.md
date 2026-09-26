@@ -2491,7 +2491,7 @@ reaches like `initAll`, and has no members: it is a check, not an abstraction va
 is refused wherever the reference type is checked (`ErrorNotRegion`,
 `refRegionCheck`).
 
-The compiler knows no region by name. It knows six methods a region may
+The compiler knows no region by name. It knows seven methods a region may
 declare, each found by name and each optional (but `mark`, which a traced
 region promises), and calls them at the reference events only it can see
 (`ir/types/region.c`):
@@ -2504,6 +2504,7 @@ region promises), and calls them at the reference events only it can see
 | `fn dealias(self &uni R) Bool` | an owner goes away; answers whether it was the last | an owner's going asks nothing: where the region is `Move` it is the value's death; where it is not, it does nothing — the value never dies by an owner and the compiler never frees it, left to the region's own loop (a collector's, an arena's) |
 | `fn free(self &uni R)` | the value is dead, after it is finalized and its fields' owners are released | the memory is not given back a value at a time |
 | `fn mark(self &uni R)`, or `fn mark(self &uni R, perm u32, mode u32)`, on a region declaring `Traced` | a trace finds a reference into the region: a record's trace, or `mem.trace`; `perm` is the reference's permission, a constant, and `mode` what the trace was called with | refused where the region declares `Traced` (`ErrorTracedMark`); never called where it does not |
+| `fn writeBarrier(self &uni R)`, on a region declaring `Traced` | a reference into the region was just stored into memory that is not a local: a field, element or dereference reached through any reference or pointer, a borrow's included, a swap's either half, `:=`, and each such reference inside a whole value so stored; the header is what was stored | no store calls anything; never called where the region does not declare `Traced` |
 
 Every method but `alloc` and `init` is handed the allocation's **header**, the
 region struct at the front of the `{region, permission, value}` layout, found
@@ -2555,7 +2556,13 @@ collector starts is the **roots**: every function holding a traced reference on
 its stack links a frame of them, and `mem.traceRoots` hands each to its region's
 `mark` ([Generation](../phases/generation.md), "Roots"). Releasing an owner of a
 traced region with no `dealias` does nothing, so its references need no
-finalizing (`regionReleaseActs`, `itypeNeedsFinal`).
+finalizing (`regionReleaseActs`, `itypeNeedsFinal`). A traced region that
+marks while the program runs declares a `writeBarrier`, which a store hands the
+header of the reference it stored and nothing of the container: a store
+through a borrow cannot know its container, and a value-keyed barrier does not
+ask ([Generation](../phases/generation.md), "The write barrier"). Its shape is
+held at the declaration (`ErrorRegionMeth`); on a region not declaring
+`Traced`, a method of the name is an ordinary one, as `mark` is.
 
 **A traced reference may be held only where a collector can find it**: a
 local, a parameter, a temporary, a value inline in one of those, or a value a
@@ -2583,7 +2590,7 @@ judges none.
 The struct is held to the method shapes **at its declaration**, after its
 methods are type checked (`regionRefCheck`, from `structCheckMembers`):
 `ErrorBadAlloc` for `alloc`/`init` (an `alloc` taking anything but the size
-and, after it, the type record), `ErrorRegionMeth` for the other four. No
+and, after it, the type record), `ErrorRegionMeth` for the other five. No
 combination is refused for what it leaves out, since an absent method's
 operation simply does not happen [Jon 25 Sep]: `dealias` without `alias` on a
 `Move` region is a single owner whose going still asks `dealias`, and `init`
@@ -2593,9 +2600,14 @@ without `alloc` is never called. The refusals are contradictions, `Move` with
 
 A region declared in a package compiled on its own is called from its
 importers' objects, wherever they allocate, copy, drop or trace a reference
-into it, naming none of its methods. So its include file declares, and its
-object exports, each of the six methods it has, private or not, as a type's
-`final` and `clone` are (`fnIsTypeLifecycle`; `region_traced_link`).
+into it, or store one, naming none of its methods. So its include file
+declares, and its object exports, each of the seven methods it has, private
+or not, as a type's `final` and `clone` are (`fnIsTypeLifecycle`;
+`region_traced_link`). An `inline` one is expanded in the importer's object,
+and what its body reaches of the package -- a private module global, a
+private method -- is exported for it the same way: the `collector` package's
+inline `writeBarrier` tests a private global in line and calls its private
+`shade` only while a collection marks.
 
 `so` and `rc` are written this way in `packages/core/src/core.cone`, `inline`,
 their `free` calling libc's by its qualified name, since inside a method named

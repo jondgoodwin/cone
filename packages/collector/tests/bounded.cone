@@ -2,13 +2,22 @@
 // tree of 15 nodes (depth 4; a node is a 32-byte header and 24 bytes of
 // value, 56) and drops it; 20,000 rounds allocate 300,000 objects, 16.8 MB.
 // Every bound is worked out by hand from the rules:
-// - an allocation collects first when it would take the heap past the
-//   trigger: twice what was live after the last collection, and never less
-//   than 256 KiB. What is live at any collection here is at most a tree in
-//   the making (840 bytes), so the trigger stays 256 KiB and the heap never
-//   passes it; 16.8 MB through a 256 KiB heap is at least 64 collections;
-// - under a limit the trigger is the limit, and garbage that needs
-//   finalizing is finalized by one collection and freed by the next, so a
+// - an allocation starts a collection when it would take the heap past the
+//   trigger: twice what the last collection found live, and never less than
+//   256 KiB. What is live at any collection here is at most a tree in the
+//   making (840 bytes), so the trigger stays 256 KiB. The collection's first
+//   step, 16 KiB of work, before the allocation is made, marks all of that
+//   and ends the marking, and sweeps garbage with the rest -- the newest
+//   objects first, at most 15 of them live -- freeing more than the
+//   allocation takes; each later step, after 8 KiB more is allocated, sweeps
+//   16 KiB. So the heap never passes the trigger. The sweep frees what was
+//   there at its start (about the trigger's worth) while half as much is
+//   allocated, which it leaves; the next collection starts when the heap has
+//   grown by the other half: a collection per 256 KiB allocated, and 16.8 MB
+//   is at least 64 of them;
+// - under a limit, an allocation that would pass it runs a full collection,
+//   and garbage that needs finalizing is finalized by one collection and
+//   freed by the next, so a
 //   64 KiB heap (1,170 nodes) serves 300,000 finalizable nodes without an
 //   allocation ever failing, which would end the program.
 

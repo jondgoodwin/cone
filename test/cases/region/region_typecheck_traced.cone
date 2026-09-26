@@ -5,7 +5,8 @@
 // carries a trace that hands each one a value holds to the region's 'mark'. So
 // it promises a 'mark' of a shape the trace calls -- '(self &uni R)', or
 // '(self &uni R, perm u32, mode u32)' to be told each reference's permission and
-// the trace's mode -- returning nothing. A traced region is not 'Move': one
+// the trace's mode -- returning nothing; a 'writeBarrier' it declares has the
+// one shape '(self &uni R)', returning nothing. A traced region is not 'Move': one
 // owner deciding each value's death leaves a collector nothing to find. Only a
 // region ref may declare it.
 //
@@ -26,6 +27,14 @@ struct shortMark is RegionRef, Traced {
 struct longMark is RegionRef, Traced {
   fn alloc(size usize, ty *TypeRecord) *u8 inline { malloc(size); }
   fn mark(self &uni longMark, perm u32, mode u32) { }
+}
+
+// And a 'writeBarrier', which a collector marking while the program runs
+// declares, of the one shape the compiler calls
+struct barriered is RegionRef, Traced {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn mark(self &uni barriered) { }
+  fn writeBarrier(self &uni barriered) { }
 }
 
 struct counted is RegionRef, Traced {
@@ -62,6 +71,19 @@ struct markStatic is RegionRef, Traced {
   fn mark(p *u8) { }   //~ ErrorRegionMeth "mark must be declared"
 }
 
+// A barrier is handed the header of what was stored, and returns nothing
+struct barrierReturns is RegionRef, Traced {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn mark(self &uni barrierReturns) { }
+  fn writeBarrier(self &uni barrierReturns) Bool { true; }   //~ ErrorRegionMeth "writeBarrier must be declared"
+}
+
+struct barrierContext is RegionRef, Traced {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn mark(self &uni barrierContext) { }
+  fn writeBarrier(self &uni barrierContext, perm u32, mode u32) { }   //~ ErrorRegionMeth "writeBarrier must be declared"
+}
+
 // One owner per value, and a collector, contradict each other
 struct movedTraced is RegionRef, Move, Traced {   //~ ErrorRegionSet "is not Move"
   fn alloc(size usize) *u8 inline { malloc(size); }
@@ -77,16 +99,19 @@ trait tracedTrait is Traced {   //~ ErrorTracedUse "Only a region ref may declar
   fn f(self &) i32;
 }
 
-// A region ref that does not declare 'Traced' may have a 'mark' of any shape:
-// it is an ordinary method the compiler never calls
+// A region ref that does not declare 'Traced' may have a 'mark' or a
+// 'writeBarrier' of any shape: each is an ordinary method the compiler never
+// calls
 struct untracedMark is RegionRef {
   fn alloc(size usize) *u8 inline { malloc(size); }
   fn mark(self &uni untracedMark) Bool { true; }
+  fn writeBarrier(n i32) i32 { n; }
 }
 
 fn main() {
   imm a = +shortMark-mut Leaf[1i32];
   imm b = +longMark-mut Leaf[2i32];
+  imm e = +barriered-mut Leaf[5i32];
   imm c = +counted-mut Leaf[3i32];
   imm d = +untracedMark-mut Leaf[4i32];
 }

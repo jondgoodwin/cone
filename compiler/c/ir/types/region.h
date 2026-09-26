@@ -54,6 +54,10 @@ int regionIsTraced(INode *region);
 // trace's mode, 'fn mark(self &uni R, perm u32, mode u32)'?
 int regionMarkTakesContext(INode *region);
 
+// Is this a traced region declaring 'writeBarrier', which the compiler calls
+// with each of its references stored into memory that is not a local?
+int regionHasBarrier(INode *region);
+
 // A type declaring 'Traced' that is not a region ref is refused
 void regionTracedUseCheck(StructNode *node);
 

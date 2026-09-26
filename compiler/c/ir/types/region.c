@@ -12,7 +12,9 @@
  * owner's going a death. A region that also declares 'Traced' has its
  * references found by tracing: each type's record carries a trace that hands
  * every such reference a value holds to the region's 'mark', and where such a
- * reference may be held is restricted to where a collector can find it.
+ * reference may be held is restricted to where a collector can find it. One
+ * that also declares 'writeBarrier' is handed each of its references stored
+ * into memory that is not a local, as the store happens.
  * compiler/c/doc/nodes/module.md, "What a region is", has the contract.
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -169,6 +171,21 @@ static void regionCheckTraced(StructNode *region) {
         errorMsgNode(member, ErrorRegionMeth,
             "A traced region's mark must be declared 'fn mark(self &uni %s)', or 'fn mark(self &uni %s, perm u32, mode u32)' to be told each reference's permission and the trace's mode: it is handed the header, and returns nothing.",
             name, name);
+    // Optional: a collector that marks while the program runs hears of every
+    // store of one of its references that no root will show it
+    INode *barrier = iNsTypeFindFnField((INsTypeNode*)region, writeBarrierMethodName);
+    if (barrier && (barrier->tag != FnDclTag || !regionIsSelfRef((FnDclNode*)barrier, region, 1)
+        || !regionMethReturnsNothing((FnDclNode*)barrier)))
+        errorMsgNode(barrier, ErrorRegionMeth,
+            "A traced region's writeBarrier must be declared 'fn writeBarrier(self &uni %s)': it is handed the header of what was stored, and returns nothing.",
+            name);
+}
+
+// Does the traced region declare 'writeBarrier'? A region that is not traced
+// may have a method of the name: it is an ordinary one the compiler never
+// calls, as 'mark' is.
+int regionHasBarrier(INode *region) {
+    return regionIsTraced(region) && regionMethod(region, writeBarrierMethodName) != NULL;
 }
 
 // Check a static 'alloc' of a shape the compiler calls: a usize, the whole

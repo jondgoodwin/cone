@@ -52,12 +52,20 @@
 		hands each one every running function holds -- in its locals, its parameters and the temporaries it is
 		making -- to its allocator's <span class="pre">mark</span>, which is what a collector starts from.
 		A traced allocation makes its value before it calls <span class="pre">alloc</span>, so a collection
-		inside <span class="pre">alloc</span> finds the value's parts. One collector is built, as library
+		inside <span class="pre">alloc</span> finds the value's parts. A traced allocator may also declare
+		<span class="pre">fn writeBarrier(self &amp;uni R)</span>: every store of one of its references into
+		memory that is not a local (a field, an element or a dereference reached through any reference, a
+		borrow included; a swap; <span class="pre">:=</span>) then hands it the bookkeeping of what was
+		stored, just after the store. It is told nothing of where the reference went. Stores into locals
+		and a new value's own contents get none, so a collector that marks while the program runs traces
+		the stacks again before it finishes marking. One collector is built, as library
 		code: the <span class="pre">collector</span> package's <span class="pre">gc</span> allocator
-		(<span class="pre">import collector;</span> then <span class="pre">+gc-mut T[...]</span>), a
-		stop-the-world mark and sweep that collects inside <span class="pre">alloc</span> and on
-		<span class="pre">gc.collect()</span>, and runs a dead value's finalizer one collection before
-		it frees the value, so a finalizer may still read the gc values it holds.</i></p>
+		(<span class="pre">import collector;</span> then <span class="pre">+gc-mut T[...]</span>), an
+		incremental mark and sweep that works a bounded step at a time inside <span class="pre">alloc</span>
+		once the heap passes its trigger, and whole on <span class="pre">gc.collect()</span>, and runs a
+		dead value's finalizer one collection before it frees the value, so a finalizer may still read the
+		gc values it holds. A finalizer runs some time after its value became unreachable, when a
+		collection's step reaches it, not at a moment the program chooses.</i></p>
 
 	<p>Although Cone provides a rich collection of standard allocators, there are times that
 		other allocators can prove valuable. For example:

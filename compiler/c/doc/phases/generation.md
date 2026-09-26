@@ -651,6 +651,45 @@ collecting inside `alloc` — is at a frame's push, where every parameter is
 rooted and nothing else is yet, and on a loop's back edge (`genlBlock`'s branch
 to `blockbeg`) for a loop that calls nothing. Nothing emits one yet.
 
+### The write barrier
+
+**After every store of a traced reference into memory that is not a local,
+the reference goes to its region's `writeBarrier`**, where the region declares
+one (`regionHasBarrier`). A collector that marks while the program runs needs
+it: a store could otherwise put an object it has not reached into one it has
+finished with. The barrier is keyed on **what was stored**, never on the
+container, so a store through a borrow — which cannot know what it points
+into — gets it as surely as one through a `+R` reference.
+
+- **Where.** `genlStoreBarrier`, after each store an expression makes: an
+  assignment's (`genlStore`, a parallel assignment's each), `:=`'s, and each
+  half of a swap. The destination is memory other code can reach when
+  `genlAddrThroughRef` says its address is reached through a reference or a
+  pointer — a dereference, a field or element of one, a slice's element, a
+  virtual reference's field — and the barrier goes only there. A variable, a
+  field or element of a local value, and a parameter get none: they are roots,
+  which a collector traces again, uninterrupted, before it ends a mark. A `+R
+  T[...]` allocation's store of its value gets none: a new object cannot have
+  been finished with. `mem.writeRaw` and `mem.moveRaw` get none, since their
+  instances at a type holding a traced reference are refused.
+- **What.** `genlBarrierAt` walks the value just stored, at its destination,
+  with the trace's walk (`genlTraceWalk`), handing each reference into a
+  region with a `writeBarrier` to it as the header of what it points at
+  (`genlRegionHeader`), and passing over a null one: a reference itself, each
+  such field of a struct, element of a tuple, element of a fixed array (in a
+  loop), and the fields of the variant an enum's tag picks. It descends only
+  into parts holding such a reference (`genlHoldsBarriered`), so a type
+  holding none emits nothing — every type, in a program with no traced region,
+  which is why such a program generates exactly what it did before barriers
+  existed. The walk is shared with `mark`'s: the same routines, the method
+  chosen by a flag set around the walk (`genlTraceBarrier`), cleared around a
+  trace generated while a barrier walks.
+- **The call** is an ordinary region method call (`genlFnCallInternal`), so an
+  `inline` `writeBarrier` is expanded at the store: the `collector` package's
+  tests its phase in line and calls out only while marking. The method must
+  not collect: no birth slot holds what a swap or `:=` hands back until the
+  barrier has run.
+
 ## 4. Pointer levels
 
 This is what the CLAUDE.md warning is about. The conventions:
@@ -879,6 +918,7 @@ variables.
 | | `genlBreak`, `genlReturn` | phi edges and dealias; inlined-return-as-break |
 | `genllvm/genlexpr.c` | `genlExpr`, `genlAddr`, `genlStore` | the value / address / store trio — section 4 |
 | | `genlTerm`, `genlIsBirth`, `genlAddrThroughRef`, `genlExprForLocal` | an expression's value, and whether it is a birth to root (section 3, "Roots") |
+| | `genlStoreBarrier` | after a store through a reference or pointer, the barrier on what was stored (section 3, "The write barrier") |
 | | `genlAddrType` | the Cone type of what `genlAddr`'s address points at |
 | | `genlFnCallInternal` | indirect calls, virtual dispatch, generator-level inlining, the intrinsic switch |
 | | `genlDeclaredIntrinsic` | the LLVM implementation of each intrinsic declared in core, by kind and Cone type |
@@ -894,6 +934,7 @@ variables.
 | | `genlAliasHeld` | a copied struct, enum, tuple or array: `alias` on each counted reference its death releases |
 | | `genlTypeRecord`, `genlTypeRecordOf`, `genlTypeRecFn`, `genlTypeRecNothing` | a type's record, once per object: its size, alignment, finalizer function, trace function and flags; what an `alloc` that asks is handed, `mem.typeRecord`, and a root map's entries |
 | | `genlTraceAt`, `genlTraceWalk`, `genlTraceRef`, `genlTraceVariants` | a value's traced references, each handed to its region's `mark`: a record's trace, and `mem.trace` |
+| | `genlBarrierAt`, `genlHoldsBarriered` | the write barrier: the same walk over a value just stored, each reference into a region with a `writeBarrier` handed to it |
 | `packages/conestd/roots.c` | `cone_gcframes`, `cone_traceRoots` | the head of the chain of frames, and its walk, which `mem.traceRoots` calls |
 | `ir/types/reference.h` | `enum ManagedRefFields` | `RegionField`, `PermField`, `ValueField` |
 | `ir/name.c` | `nameSymbol`, `nameType`, `nameVtable`, `nameVtableImpl`, `nameVtableList` | spelling a symbol from a node's owner chain and facts, and a type argument within it — the rules are in [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols" |

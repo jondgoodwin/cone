@@ -1,16 +1,21 @@
-// The stress mode: a full collection at every allocation, and every freed
-// object scribbled over with 0xDD bytes. A reference the roots missed -- a
-// temporary held only in a register while something allocates -- would have
-// its object freed and scribbled at the next allocation, and read back wrong
-// here. So each check reads back a value made where a collection was sure to
-// run while it was held only as a temporary, a parameter, or a value loaded
-// through a reference. Every value is worked out by hand from the source; the
-// counts of collections from the rule that the stress mode collects once at
-// each allocation, and nowhere else but gc.collect().
+// The stress mode: a step of collection work at every allocation, a new
+// collection started as soon as one ends, and every freed object scribbled
+// over with 0xDD bytes. So collections run almost all the time, a little at
+// each allocation, marking while the program stores references and sweeping
+// while it allocates. A reference the roots missed -- a temporary held only
+// in a register while something allocates -- or a store the barrier missed
+// would have its object freed and scribbled by the next sweep, and read back
+// wrong here. So each check reads back a value made, stored or held while
+// collections ran, as a temporary, a parameter, a value loaded through a
+// reference, or a reference stored into an object while it was being
+// marked. Every value is worked out by hand from the source; the counts of
+// steps from the rule that the stress mode steps once at each allocation.
 //
 // This test turns the mode on itself. CONE_GC_STRESS, set in the environment,
 // turns it on for every test of the package, whose expected output does not
 // change with it: run 'congo test' so to test them all this way.
+// CONE_GC_STRESS=full runs a whole collection at every allocation instead,
+// which finds a missed root at the very next allocation.
 
 mod stress;
 
@@ -58,9 +63,9 @@ fn listSum(l Option[+gc-mut Link]) i64 {
 }
 
 fn temporaries() {
-  imm c0 = gc.collections();
+  imm s0 = gc.steps();
   expectInt(add(leaf(1), leaf(2)), 3, "two results held as temporaries while a third is made");
-  expectUInt(u64[gc.collections() - c0], 3, "three allocations, three collections");
+  expectUInt(u64[gc.steps() - s0], 3, "three allocations, three steps");
   imm p = +gc-mut Pair[leaf(3), leaf(4)];
   expectInt(p.left.n + p.right.n, 7, "a value's parts held while the pair is allocated");
   expectInt(add(p.left, leaf(10)), 13, "a field loaded as an argument, held while another is made");

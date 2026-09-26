@@ -206,6 +206,7 @@ void nametblInit() {
     dealiasMethodName = nametblFind("dealias", 7);
     freeMethodName = nametblFind("free", 4);
     markMethodName = nametblFind("mark", 4);
+    writeBarrierMethodName = nametblFind("writeBarrier", 12);
     regionRefName = nametblFind("RegionRef", 9);
     tracedTraitName = nametblFind("Traced", 6);
     moveTraitName = nametblFind("Move", 4);
