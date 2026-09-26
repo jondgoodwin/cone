@@ -1,0 +1,33 @@
+// Range indexes that are refused.
+//
+// Type-check stage. A range makes a slice only when borrowed, '&x[a..b]';
+// written bare it would copy or fill a segment of the array, which is not
+// implemented. It indexes an array or a slice, so a struct's own '[]' method is
+// never handed a range's two ends as though they were two indices, and a slice
+// of part of what a pointer points at is not implemented (mem.sliceFromParts
+// makes one).
+
+mod collection_typecheck_range;
+
+struct Grid {
+  pub cells [4; i32];
+  pub fn at overload `[]`(self &, i usize, j usize) i32 { cells[i + j]; }
+}
+
+fn unborrowed(s &[]i32) {
+  imm r = s[1..2];               //~ ErrorBadIndex:12 "copying or filling a segment"
+}
+
+fn onAStruct(g &Grid) {
+  imm r = &g[1..2];              //~ ErrorBadIndex:13 "A range may only index an array or a slice"
+}
+
+// A subslice asks the permission an element's borrow would: a read-only slice
+// lends no '&mut' of part of itself
+fn mutOfReadOnly(s &[]i32) {
+  imm r = &mut s[0..1];          //~ ErrorBadPerm:11 "cannot obtain this permission"
+}
+
+fn onAPointer(p *i32) {
+  imm r = &p[0..2];              //~ ErrorBadIndex:13 "sliceFromParts"
+}

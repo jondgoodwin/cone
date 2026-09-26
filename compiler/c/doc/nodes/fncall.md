@@ -377,6 +377,16 @@ carries ([intrinsic](intrinsic.md)).
 address; without it, load the **whole aggregate** and `extractvalue`. Getting
 the flag wrong is not a type error.
 
+**A range index** (`FlagRange`, set by the parser's `parseIndexArgs`) is a slice
+of part of an array or a slice, and exists only borrowed: `fnCallTypeCheck`
+refuses it on any other receiver before a `[]` method could take its two ends
+for two indices (`ErrorBadIndex`, naming `mem.sliceFromParts` for a pointer),
+and `fnCallArrIndex` refuses it unborrowed, where it would copy or fill a
+segment. Borrowed, its type is an `ArrayRefTag` slice with the permission and
+scope an element's borrow gets, and `genlSubslice` builds `{&x[start], end -
+start}` after checking `start <= end <= count` at run time (`end` is the count
+when the range runs to the end, and one past what was written for `...`).
+
 ## Hazards
 
 - **`methfld` is NULL after lowering.** Code written against the parsed shape

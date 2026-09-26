@@ -987,6 +987,53 @@ void genlBoundsCheck(GenState *gen, LLVMValueRef index, LLVMValueRef count) {
     LLVMPositionBuilderAtEnd(gen->builder, boundsblk);
 }
 
+// A slice of part of an array or a slice, '&x[a..b]': the address of element
+// a and the count b - a ('a...b' counts b too), once a <= b <= the count it is
+// taken from is checked at run time, as an index is. The receiver is what the
+// borrow was of: an array (reached directly or through a reference, whose
+// dereference genlAddr reads through), or a slice's dereference.
+static LLVMValueRef genlSubslice(GenState *gen, FnCallNode *fncall) {
+    INode *obj = fncall->objfn;
+    INode *objtype = iexpGetTypeDcl(obj);
+    LLVMValueRef base, count;
+    if (objtype->tag == ArrayTag) {
+        ULitNode *dimen = (ULitNode*)nodesGet(((ArrayNode*)objtype)->dimens, 0);
+        assert(dimen->tag == ULitTag);
+        count = LLVMConstInt(genlUsize(gen), dimen->uintlit, 0);
+        LLVMValueRef zeros[2] = {LLVMConstInt(genlUsize(gen), 0, 0), LLVMConstInt(genlUsize(gen), 0, 0)};
+        base = LLVMBuildGEP(gen->builder, genlAddr(gen, obj), zeros, 2, "");
+    }
+    else {
+        // fnCallArrIndex accepts a range only on an array or a slice, and a
+        // borrow reaches a slice through the dereference borrowTypeCheck injected
+        assert(objtype->tag == ArrayDerefTag && obj->tag == DerefTag);
+        LLVMValueRef arrref = genlExpr(gen, ((StarNode *)obj)->vtexp);
+        count = LLVMBuildExtractValue(gen->builder, arrref, 1, "count");
+        base = LLVMBuildExtractValue(gen->builder, arrref, 0, "sliceptr");
+    }
+    LLVMValueRef start = genlExpr(gen, nodesGet(fncall->args, 0));
+    LLVMValueRef end = fncall->args->used > 1 ? genlExpr(gen, nodesGet(fncall->args, 1)) : count;
+    if (fncall->flags & FlagRangeIncl)
+        end = LLVMBuildAdd(gen->builder, end, LLVMConstInt(genlUsize(gen), 1, 0), "rangeend");
+
+    // Panic unless start <= end <= count
+    LLVMBasicBlockRef panicblk = genlInsertBlock(gen, "panic");
+    LLVMBasicBlockRef boundsblk = genlInsertBlock(gen, "rangeok");
+    LLVMValueRef ordered = LLVMBuildICmp(gen->builder, LLVMIntULE, start, end, "");
+    LLVMValueRef within = LLVMBuildICmp(gen->builder, LLVMIntULE, end, count, "");
+    LLVMBuildCondBr(gen->builder, LLVMBuildAnd(gen->builder, ordered, within, ""), boundsblk, panicblk);
+    LLVMPositionBuilderAtEnd(gen->builder, panicblk);
+    genlPanic(gen);
+    LLVMBuildBr(gen->builder, boundsblk);
+    LLVMPositionBuilderAtEnd(gen->builder, boundsblk);
+
+    LLVMValueRef slice = LLVMGetUndef(genlType(gen, fncall->vtype));
+    slice = LLVMBuildInsertValue(gen->builder, slice,
+        LLVMBuildGEP(gen->builder, base, &start, 1, ""), 0, "sliceptr");
+    return LLVMBuildInsertValue(gen->builder, slice,
+        LLVMBuildSub(gen->builder, end, start, "slicelen"), 1, "slice");
+}
+
 // Index a fixed-size array, given a pointer to the array itself. The caller
 // supplies that pointer because where it comes from depends on what is being
 // indexed: an array lval has its address taken, while a reference to an array
@@ -1335,6 +1382,8 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         FnCallNode *fncall = (FnCallNode *)termnode;
         assert(fncall->objfn->tag == BorrowTag);
         fncall->objfn = ((RefNode *)fncall->objfn)->vtexp;
+        if (termnode->flags & FlagRange)
+            return genlSubslice(gen, fncall);
         return genlAddr(gen, termnode);
     }
     case FldAccessTag:

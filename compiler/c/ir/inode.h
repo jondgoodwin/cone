@@ -253,6 +253,14 @@ enum NodeTags {
 // private member exactly where the method it stands in for could. Set only by
 // cloneFnCallNode, during a macro method's expansion.
 #define FlagSelfRecv  0x0040        // FnCall: receiver was a macro method's 'self'
+// An index whose argument is a range, 'x[a..b]', which a borrow makes a slice of
+// part of an array. Its arguments are the start and, unless the range runs to
+// the end ('x[a..]'), the end; FlagRangeIncl marks an end written with '...',
+// which includes it. Set only by the parser (parseIndexArgs). 0x0080 and 0x0100
+// are free on a FnCall: FirstAssign is a name use's, and the type flags that
+// use them are never read off an expression.
+#define FlagRange     0x0080        // FnCall: index argument is a range
+#define FlagRangeIncl 0x0100        // FnCall: the range's end is included ('...')
 
 #define FlagLoop      0x0001        // Block: is a Loop block
 // 'each' lowers to a 'while' whose body ends with the step that advances the loop

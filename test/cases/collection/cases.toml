@@ -33,7 +33,9 @@
 #   diagnostic. It no longer matters what other functions did: fnDclTypeCheck
 #   gates on this function's error count rather than on the global one.
 #
-# There is no parse-stage or name-resolution scenario. '&[]' is a single token
+# The one parse-stage scenario is a range index's: 'a...' with no end, which
+# nothing later could report. There is no other parse-stage or name-resolution
+# scenario. '&[]' is a single token
 # (lexical proves that) and a malformed slice type produces the generic
 # ErrorBadTerm core already covers; a slice type names only a permission and an
 # element type, both of which resolve like any other name.
@@ -74,6 +76,11 @@ category = "run"
 description = "Slices borrowed from arrays: length, indexing, aliasing, comparison and slices as values"
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 
+[scenario.collection_subslice]
+category = "run"
+description = "A slice of part of an array or a slice, borrowed with a range index: each range form, through a reference, of a slice, written through, and returned from a parameter"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
 # -------- generated code --------
 
 # A slice's length is a field of the value, not of its type, so the check
@@ -105,6 +112,19 @@ name = "fixed-array-index-needs-no-bounds-check"
 target = "preir"
 excludes = ["icmp"]
 
+# A range's two comparisons, start against end and end against the length the
+# slice carries, both unsigned and inclusive, joined before one branch to the
+# trap; then the length the new slice carries is the difference.
+[scenario.collection_bounds_subslice]
+category = "compile"
+description = "A range index on a slice is bounds-checked: the start may not pass the end, nor the end the slice's length"
+tags = ["typecheck", "genllvm"]
+
+[[scenario.collection_bounds_subslice.check]]
+name = "range-emits-bounds-check"
+target = "preir"
+contains = ["icmp ule i64", ", %count", "call void @llvm.trap()", "%slicelen = sub i64"]
+
 # -------- type check stage --------
 
 [scenario.collection_typecheck_slice]
@@ -112,6 +132,20 @@ category = "reject"
 description = "Operations a slice does not support: dereference, unknown members, calls, comparing elements"
 tags = ["typecheck"]
 diagnostics = 5
+
+[scenario.collection_typecheck_range]
+category = "reject"
+description = "Range indexes refused: unborrowed, on a struct's own index operator, a '&mut' of part of a read-only slice, and through a pointer"
+tags = ["typecheck"]
+diagnostics = 4
+
+# A range that includes its end must say where it ends: a parse error, so a
+# scenario of its own, since analysis halts after the parse stage
+[scenario.collection_parse_range]
+category = "reject"
+description = "A range written with '...' and no end"
+tags = ["parse"]
+diagnostics = 1
 
 [scenario.collection_typecheck_perm]
 category = "reject"
