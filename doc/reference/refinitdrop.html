@@ -14,8 +14,10 @@
     <div class="text">
 
 	<p style="margin-left: 40px;"><i>Note: Finalizers are implemented; a type that defines final is destroyed
-		through it at the end of its value's life. A value typed as an enum, rather than as one of its
-		variants, is not yet finalized. A module's global variable whose type defines final is
+		through it at the end of its value's life, whether the value lives on the stack or in a region
+		(so, rc, or any struct declaring is RegionRef), where it is finalized just before its memory is
+		freed. A value typed as an enum, rather than as one of its variants, is not yet finalized, nor
+		are the elements of an array or of an owning slice. A module's global variable whose type defines final is
 		finalized by its module's finalizer when the program shuts down. Initializers are not
 		implemented, nor is the new permission they are declared with, nor a clone method written
 		against it. A module's own initializer and finalizer are, and are described with
@@ -130,6 +132,14 @@ fn final(self &amp;uni) {
 			while still breaking all dependencies. 
 		  After the finalizer finishes, the object will cease to exist.</li>
 	</ul>
+	<p>A value allocated in a region is finalized when the region lets it go: when its single
+		owner expires, or, for a counted region, its last owner. Its finalizer runs first, then the
+		finalizers of its fields, then the owning references its fields hold are released, and only
+		then is its memory freed, so a finalizer may still use everything its value owns.
+		A value moved out of a region's object belongs to its new holder, which finalizes it;
+		the object's memory is freed without finalizing what was moved out. When only a field
+		was moved out, the object's own finalizer does not run, since the object is no longer whole,
+		but each of its other fields is finalized or released.</p>
 	<p>A global variable lives until the program shuts down, and a value its type finalizes is
 		finalized then, by its module's finalizer, after the module's own
 		<span class="pre">final</span>: see

@@ -448,8 +448,31 @@ What follows from that:
 region's `dealias` and branches on its `Bool` to the death. A region without
 `dealias` goes straight to the death when it has no `alias` (single owner), and
 emits nothing at all when it has one: that value never dies by count. The death,
-`genlRegionDeath`, releases the owning references the value's fields hold
-(`genlDealiasFlds`), then calls the region's `free` if it has one.
+`genlRegionDeath`, runs in three steps: the value's finalizer — its type's drop
+(`itypeGetDropFnDcl`), which is the type's `final` followed by each finalizing
+field's drop (`structSetDropFn`), called on the value pointer as a stack value's
+drop is called on its address — then the release of the owning references the
+value's fields hold (`genlDealiasFlds`), then the region's `free` if it has one.
+The drop does not touch owning-reference fields and `genlDealiasFlds` touches
+nothing else, so nothing is released twice; a type with no drop emits exactly
+what it did before the finalizer was added.
+
+**A hollow death** (`genlHollowDeath`) is the death of a value a part of which
+was moved out through its sole owner (flow's `HollowNode`). `genlHollowRelease`
+turns each recorded move into a path of steps outward from the variable
+(`genlMovedPath`: dereferences, field accesses, element indexes), and the
+owner goes away through `genlRegionDealiasPart`, the same `dealias` question
+with the hollow death in place of the death. That runs no finalizer for the
+value and releases what did not move (`genlReleasePart`), then calls `free`.
+Of a struct with a field moved out: its own `final` does not run, since it is
+handed all of the struct; each untouched field is finalized by its drop, then
+each untouched owning field released; a field a path runs through is released
+in turn without its moved part, and an owning field a path runs through dies
+hollow itself. A path that ends at a value moved all of it out; a path through
+anything else — an array or tuple element, or a field the struct cannot be
+shown to own — leaves that value whole to what moved, so nothing is released
+that might have moved. A slice's elements are never walked, as a death walks
+none.
 `genlRegionAlias` calls `alias` once per owner a `RefCountNode` adds — written
 out in line up to `RegionAliasUnroll` (16), a loop beyond, since the optimizer
 pipeline runs no loop pass and folds only calls written out. Core's methods are
@@ -457,8 +480,7 @@ pipeline runs no loop pass and folds only calls written out. Core's methods are
 (`genlFnCallInternal`); after optimization `rc`'s and `so`'s events are the
 instructions the compiler used to emit itself, with one exception: an array
 fill literal adding n owners is n increments rather than one `add n`, because
-the pipeline has no instruction combining after `GVN` to fold them. A value's
-`final` is not called at its death.
+the pipeline has no instruction combining after `GVN` to fold them.
 
 `so` and `rc` are declared in Cone source in the core package,
 `packages/core/src/core.cone` ([What a region is](../nodes/module.md)). `malloc`
@@ -659,7 +681,8 @@ variables.
 | | `genlConvert`, `genlRecast`, `genlIsType` | the three cast forms |
 | | `genlArrayIndex`, `genlBoundsCheck` | multi-dimensional GEP and its checks |
 | `genllvm/genlalloc.c` | `genlRefTypeSetup`, `genlallocref` | the `{region, perm, value}` header and its emission |
-| | `genlRegionHeader`, `genlRegionAlias`, `genlRegionDealias`, `genlRegionDeath` | the header a region method is handed; calling `alias`, `dealias` and `free` at each reference event |
+| | `genlRegionHeader`, `genlRegionAlias`, `genlRegionDealias`, `genlRegionDeath` | the header a region method is handed; calling `alias`, `dealias` and `free` at each reference event; a death's finalizer, field releases and `free` |
+| | `genlHollowRelease`, `genlRegionDealiasPart`, `genlHollowDeath`, `genlReleasePart` | a hollowed variable's release: the death of a value with parts moved out, releasing only what stayed |
 | | `genlReleaseOwning`, `genlDealiasFlds`, `genlDealiasNodes` | releasing what a variable, a tuple's elements or a dead value's fields own, and replaying flow's lists |
 | `ir/types/reference.h` | `enum ManagedRefFields` | `RegionField`, `PermField`, `ValueField` |
 | `ir/name.c` | `nameSymbol`, `nameType`, `nameVtable`, `nameVtableImpl`, `nameVtableList` | spelling a symbol from a node's owner chain and facts, and a type argument within it — the rules are in [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols" |

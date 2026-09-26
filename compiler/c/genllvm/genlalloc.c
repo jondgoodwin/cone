@@ -102,9 +102,33 @@ static LLVMValueRef genlRegionCall(GenState *gen, FnDclNode *meth, LLVMValueRef 
     return genlFnCallInternal(gen, SimpleDispatch, (INode*)meth, 1, &header);
 }
 
-// The value an owning reference points at is dead: release what its fields
-// own, then give the memory back through the region's 'free', where it has one
-static void genlRegionDeath(GenState *gen, LLVMValueRef valptr, RefNode *refnode) {
+// A path from a value inwards to a part of it that was moved out: each step is
+// the node that took it -- a field access, an element index or a dereference --
+// outermost last, so steps[0] is the first step inside the value.
+typedef struct {
+    INode **steps;
+    int len;
+} MovedPath;
+
+static void genlHollowDeath(GenState *gen, LLVMValueRef valptr, RefNode *refnode, MovedPath *paths, int npaths, int depth);
+
+// The value an owning reference points at is dead: finalize it, release what
+// its fields own, then give the memory back through the region's 'free', where
+// it has one. The finalizer is the type's drop: its own 'final', then each
+// field's that has one (structSetDropFn), as a value on the stack is
+// finalized. The owning references its fields hold are not in that drop, so
+// releasing them after it releases nothing twice. With 'paths', parts of the
+// value were moved out, and it dies hollow (genlHollowDeath) instead.
+static void genlRegionDeath(GenState *gen, LLVMValueRef valptr, RefNode *refnode, MovedPath *paths, int npaths, int depth) {
+    if (paths) {
+        genlHollowDeath(gen, valptr, refnode, paths, npaths, depth);
+        return;
+    }
+    if (refnode->tag == RefTag) {
+        INode *dropfn = itypeGetDropFnDcl(refnode->vtexp);
+        if (dropfn)
+            genlFnCallInternal(gen, SimpleDispatch, dropfn, 1, &valptr);
+    }
     genlDealiasFlds(gen, valptr, refnode);
     FnDclNode *freemeth = regionMethod(refnode->region, freeMethodName);
     if (freemeth)
@@ -115,14 +139,15 @@ static void genlRegionDeath(GenState *gen, LLVMValueRef valptr, RefNode *refnode
 // whether it was the last, and the value dies only if so. Without one, a
 // single owner's going (no 'alias') is the value's death, and a shared owner's
 // going is nothing at all: such a value never dies by count, and is left for
-// something other than its owners to free.
-static void genlRegionDealias(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
+// something other than its owners to free. 'paths' (NULL for a whole value)
+// are the parts moved out of what it points at, starting at 'depth'.
+static void genlRegionDealiasPart(GenState *gen, LLVMValueRef ref, RefNode *refnode, MovedPath *paths, int npaths, int depth) {
     FnDclNode *dealiasmeth = regionMethod(refnode->region, dealiasMethodName);
     if (dealiasmeth == NULL && regionMethod(refnode->region, aliasMethodName) != NULL)
         return;
     LLVMValueRef valptr = genlRefPtr(gen, ref, refnode);
     if (dealiasmeth == NULL) {
-        genlRegionDeath(gen, valptr, refnode);
+        genlRegionDeath(gen, valptr, refnode, paths, npaths, depth);
         return;
     }
     LLVMValueRef last = genlRegionCall(gen, dealiasmeth, genlRegionHeader(gen, valptr, refnode));
@@ -130,9 +155,159 @@ static void genlRegionDealias(GenState *gen, LLVMValueRef ref, RefNode *refnode)
     LLVMBasicBlockRef dofree = genlInsertBlock(gen, "free");
     LLVMBuildCondBr(gen->builder, last, dofree, nofree);
     LLVMPositionBuilderAtEnd(gen->builder, dofree);
-    genlRegionDeath(gen, valptr, refnode);
+    genlRegionDeath(gen, valptr, refnode, paths, npaths, depth);
     LLVMBuildBr(gen->builder, nofree);
     LLVMPositionBuilderAtEnd(gen->builder, nofree);
+}
+
+static void genlRegionDealias(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
+    genlRegionDealiasPart(gen, ref, refnode, NULL, 0, 0);
+}
+
+// The field a path step names, or NULL where it is not a struct's field (a
+// tuple's index, an element, a dereference)
+static INode *genlStepField(INode *step) {
+    if (step->tag != FldAccessTag)
+        return NULL;
+    INode *methfld = ((FnCallNode *)step)->methfld;
+    if (!isNameUseNode(methfld))
+        return NULL;
+    return ((NameUseNode *)methfld)->dclnode;
+}
+
+// Release a value in memory at 'ptr' of type 'type', parts of which were moved
+// out ('paths', from 'depth' on); the rest is released as the value's death
+// would release it. A path that ends here says the whole value moved: nothing
+// is left to release. A struct with a part moved out is no longer whole, so its
+// own 'final' does not run -- it is handed '&uni self', all of it -- and its
+// fields are released one by one: each untouched one finalized by its drop
+// (first, as a death finalizes before it releases), then each untouched owning
+// reference released, and a field a path runs through released in turn
+// without its moved part. An owning reference a path runs through dies hollow.
+// Anything else a path runs through -- an array element, a tuple's -- is left
+// whole to what moved, as a death would release none of it either.
+static void genlReleasePart(GenState *gen, LLVMValueRef ptr, INode *type, MovedPath *paths, int npaths, int depth) {
+    for (int i = 0; i < npaths; ++i) {
+        if (paths[i].len <= depth)
+            return;
+    }
+    INode *typedcl = itypeGetTypeDcl(type);
+
+    // An owning reference stored here, a part of what it points at moved out
+    if (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag) {
+        RefNode *reftype = (RefNode *)typedcl;
+        if (!regionIsOwning(reftype->region))
+            return;
+        genlRegionDealiasPart(gen, LLVMBuildLoad(gen->builder, ptr, "partref"), reftype, paths, npaths, depth);
+        return;
+    }
+
+    if (typedcl->tag != StructTag || (typedcl->flags & TraitType))
+        return;
+    StructNode *strnode = (StructNode *)typedcl;
+    // Every path must name one of this struct's fields, or which field moved is
+    // not known here, and releasing any could release the part that moved
+    for (int i = 0; i < npaths; ++i) {
+        INode *fld = genlStepField(paths[i].steps[depth]);
+        if (fld == NULL || fld->tag != FieldDclTag || ((FieldDclNode *)fld)->index >= strnode->fields.used
+            || nodelistGet(&strnode->fields, ((FieldDclNode *)fld)->index) != fld)
+            return;
+    }
+    MovedPath *sub = (MovedPath *)memAllocBlk(npaths * sizeof(MovedPath));
+    for (int pass = 0; pass < 2; ++pass) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            FieldDclNode *field = (FieldDclNode *)*nodesp;
+            int nsub = 0;
+            for (int i = 0; i < npaths; ++i) {
+                if (genlStepField(paths[i].steps[depth]) == (INode *)field)
+                    sub[nsub++] = paths[i];
+            }
+            INode *fldtype = itypeGetTypeDcl(field->vtype);
+            int isowning = fldtype->tag == RefTag && regionIsOwning(((RefNode *)fldtype)->region);
+            if (nsub > 0) {
+                // The path's field: a struct in the first pass, a reference in
+                // the second, as the untouched ones are
+                if ((pass == 0 && fldtype->tag == StructTag) || (pass == 1 && isowning))
+                    genlReleasePart(gen, LLVMBuildStructGEP(gen->builder, ptr, field->index, &field->namesym->namestr),
+                        field->vtype, sub, nsub, depth + 1);
+                continue;
+            }
+            if (pass == 0) {
+                INode *dropfn = itypeGetDropFnDcl(field->vtype);
+                if (dropfn) {
+                    LLVMValueRef fldptr = LLVMBuildStructGEP(gen->builder, ptr, field->index, &field->namesym->namestr);
+                    genlFnCallInternal(gen, SimpleDispatch, dropfn, 1, &fldptr);
+                }
+            }
+            else if (isowning) {
+                LLVMValueRef fldptr = LLVMBuildStructGEP(gen->builder, ptr, field->index, &field->namesym->namestr);
+                genlReleaseOwning(gen, LLVMBuildLoad(gen->builder, fldptr, "fldref"), (INode *)fldtype);
+            }
+        }
+    }
+}
+
+// The value an owning reference points at dies with parts of it moved out: no
+// finalizer runs for it, what is left is released (genlReleasePart), and the
+// memory goes back through the region's 'free'. A path of one step moved the
+// whole value out, leaving only the memory. A slice's elements are never
+// walked, as a death walks none of them.
+static void genlHollowDeath(GenState *gen, LLVMValueRef valptr, RefNode *refnode, MovedPath *paths, int npaths, int depth) {
+    if (refnode->tag == RefTag)
+        genlReleasePart(gen, valptr, refnode->vtexp, paths, npaths, depth + 1);
+    FnDclNode *freemeth = regionMethod(refnode->region, freeMethodName);
+    if (freemeth)
+        genlRegionCall(gen, freemeth, genlRegionHeader(gen, valptr, refnode));
+}
+
+// The steps from a variable out to what a hollowing move took, found by
+// walking the move's chain inwards to the variable (flowHollowOwner's walk)
+static MovedPath genlMovedPath(INode *moved, VarDclNode *var) {
+    MovedPath path;
+    int len = 0;
+    for (INode *exp = moved; !(isNameUseNode(exp) && isExpNode(exp)); ) {
+        switch (exp->tag) {
+        case FldAccessTag: case ArrIndexTag:
+            ++len; exp = ((FnCallNode *)exp)->objfn; break;
+        case DerefTag:
+            ++len; exp = ((StarNode *)exp)->vtexp; break;
+        case CastTag:
+            exp = ((CastNode *)exp)->exp; break;
+        default:
+            errorUnreachable(moved, "a hollowing move whose chain does not reach its variable");
+            path.steps = NULL; path.len = 0;
+            return path;
+        }
+    }
+    path.steps = (INode **)memAllocBlk(len * sizeof(INode *));
+    path.len = len;
+    int pos = len;
+    for (INode *exp = moved; !(isNameUseNode(exp) && isExpNode(exp)); ) {
+        switch (exp->tag) {
+        case FldAccessTag: case ArrIndexTag:
+            path.steps[--pos] = exp; exp = ((FnCallNode *)exp)->objfn; break;
+        case DerefTag:
+            path.steps[--pos] = exp; exp = ((StarNode *)exp)->vtexp; break;
+        default:
+            exp = ((CastNode *)exp)->exp; break;
+        }
+    }
+    return path;
+}
+
+// A hollowed variable's release: its owning reference goes away as any owner
+// does, and if that is the value's death, it dies hollow
+void genlHollowRelease(GenState *gen, HollowNode *hnode) {
+    VarDclNode *var = hnode->var;
+    RefNode *reftype = (RefNode *)itypeGetTypeDcl(var->vtype);
+    int npaths = hnode->moved->used;
+    MovedPath *paths = (MovedPath *)memAllocBlk(npaths * sizeof(MovedPath));
+    for (int i = 0; i < npaths; ++i)
+        paths[i] = genlMovedPath(nodesGet(hnode->moved, i), var);
+    LLVMValueRef ref = LLVMBuildLoad(gen->builder, var->llvmvar, "hollowref");
+    genlRegionDealiasPart(gen, ref, reftype, paths, npaths, 0);
 }
 
 // Up to this many owners gained at once, 'alias' is called in line, once for

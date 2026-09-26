@@ -19,8 +19,8 @@ needed. Safety is preserved across all of it.
 same way — a struct declaring `is RegionRef`, whose `alloc`, `init`, `alias`,
 `dealias` and `free` the compiler calls — but no more of the protocol below is
 built: no barriers, no weak references, no per-type record handed to a region,
-no region with global state, and a value's `final` is not run when its region
-frees it. The strategies that motivate the whole design — arena, pool, tracing
+no region with global state, and no finalizing of a slice's elements when its
+region frees it. The strategies that motivate the whole design — arena, pool, tracing
 GC — are unwritten.
 
 The argument is in *Memory Managed Your Way* (`conesite/public/memory.html`) and
@@ -92,7 +92,13 @@ the compiler names either. Each method is optional, and an absent one's
 operation does not happen: without `alias` a region has one owner per value and
 a copy is a move; `dealias` answers whether the owner that went was the last,
 and without it a shared value never dies by count; `free` gives the memory
-back. The compiler checks the methods' shapes where the struct is declared,
+back. **The region decides when a value dies; the compiler runs the death**,
+because only it knows the value's type: the value's finalizer (its `final`,
+then its finalizing fields'), then the owners its fields hold, then `free` —
+the order a value on the stack is finalized in. A value moved out through its
+sole owner leaves that owner **hollow**: its memory is still freed, but nothing
+that moved is finalized there, and what did not move is released as a death
+would release it. The compiler checks the methods' shapes where the struct is declared,
 refusing only `@move` with `alias`, which contradicts itself; and the test corpus
 declares regions of its own that get every call `rc` and `so` get
 ([What a region is](../../compiler/c/doc/nodes/module.md)).

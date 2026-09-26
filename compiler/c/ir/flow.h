@@ -60,6 +60,26 @@ typedef struct {
     int16_t amt;       // count nbr if not a tuple, # of counts if tuple
 } RefCountNode;
 
+// Hollow release: 'var' holds a sole owning reference out of whose referent a
+// part was moved, and this releases it without the parts that moved. 'moved'
+// holds each move-source expression that took one out; walked inwards, each
+// reaches 'var'. Injected by flow analysis, never parsed: into a scope's
+// release list with 'exp' NULL, and around the value a reassignment stores into
+// such a variable, where the old value is released after 'exp' is evaluated,
+// just as genlStore releases a whole one.
+typedef struct {
+    IExpNodeHdr;
+    INode *exp;
+    VarDclNode *var;
+    Nodes *moved;
+} HollowNode;
+
+// The local variable holding an owning reference that 'ref' names, or NULL
+VarDclNode *flowOwningLocal(INode *ref);
+
+// A hollow release of a hollowed variable, for the moves that hollowed it so far
+HollowNode *flowNewHollow(VarDclNode *var);
+
 // Handle when moving or copying a value to a new destination
 void flowHandleMoveOrCopy(INode **nodep);
 

@@ -1255,6 +1255,15 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         }
         return val;
     }
+    case HollowTag:
+    {
+        // A reassignment's new value is evaluated before the old one goes, as
+        // genlStore orders it; in a release list there is no new value
+        HollowNode *hnode = (HollowNode*)termnode;
+        LLVMValueRef val = hnode->exp ? genlExpr(gen, hnode->exp) : NULL;
+        genlHollowRelease(gen, hnode);
+        return val;
+    }
     case FnCallTag:
         return genlFnCall(gen, (FnCallNode *)termnode);
     case ArrIndexTag:

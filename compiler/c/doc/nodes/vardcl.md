@@ -27,7 +27,8 @@ copies the initializer, and marks it initialized. Generation allocas.
 | `hop` | none | on a **folded copy**, the field of the same type it is reached through; NULL on a declared field | none |
 | `dclinfo` | owner and the facts the linker symbol is spelled from, globals only — [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols" | none | none |
 | `llvmvar` | alloca or global | none | **none** |
-| `flowtempflags` | `VarInitialized`, `VarMoved` | none | none |
+| `flowtempflags` | `VarInitialized`, `VarMoved`, `VarHollow` | none | none |
+| `hollowed` | on a local owning reference, each move that took a part out of what it points at ([Flow Analysis](../phases/flow.md), "A move out through a sole owner") | none | none |
 | `flowflags` | **dead** — zeroed twice, never read | none | none |
 
 The absences are the point:

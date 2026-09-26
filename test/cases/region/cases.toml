@@ -121,7 +121,9 @@ support = []
 # and the one death. Two regions leave out what 'rc' has, and the absent
 # operation does not happen: with no 'dealias' a counted value never dies and
 # is never freed, and with no 'alias' a single owner's going still asks
-# 'dealias'. The .out file is the whole assertion. Before regions
+# 'dealias'. Its 'finalized' case shows a death's order in the region calls:
+# the value's 'final', then the release of the owner its field holds, then its
+# own 'free'. The .out file is the whole assertion. Before regions
 # became RegionRef the compiler dispatched on the names 'rc' and 'so', and this
 # program printed only its allocs and inits: no alias or dealias was ever
 # called, and nothing was freed.
@@ -129,6 +131,28 @@ support = []
 category = "run"
 description = "A region written in Cone and named neither 'rc' nor 'so' has its alloc, init, alias, dealias and free called at each reference event, and one with no 'alias' is a single owner"
 tags = ["nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+# A value held by '+so' or '+rc' is finalized when it dies -- its 'final', its
+# finalizing fields, then the owners its fields hold, then 'free' -- and only
+# once: 'rc' at its last owner, a reassignment's old value when it is
+# replaced, a value moved to a callee there. Before this, a region-held value
+# was never finalized; the stack value is the control. The .out file is the
+# whole assertion.
+[scenario.region_final]
+category = "run"
+description = "A value held by a region is finalized once, when it dies: its final, then its finalizing fields, then the owners its fields hold, then its memory"
+tags = ["flow", "genllvm", "runtime"]
+
+# Moving a value or a part of it out through a sole owner leaves the owner
+# hollow: its allocation is freed without finalizing what moved, and what did
+# not move is released. The regions print their frees, so the .out file is
+# the whole assertion; the file's header states each rule, and pins the one
+# path the missing drop flag gets wrong -- a value left in place on a path that
+# did not move it is freed but not finalized.
+[scenario.region_hollow]
+category = "run"
+description = "Moving a value or a part out through a sole owning reference frees its allocation without finalizing what moved, and releases what did not"
+tags = ["flow", "genllvm", "runtime"]
 
 [scenario.region_success]
 category = "run"

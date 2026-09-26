@@ -1,0 +1,89 @@
+// A value held by a region is finalized when it dies, just before its memory
+// is freed, as a value on the stack is finalized when its scope ends. The
+// death runs in this order: the value's finalizer -- its type's own 'final',
+// then each finalizing field's -- then the owners its fields hold are released,
+// then the region's 'free'. Each 'final' below prints its value, so the output
+// is the whole assertion: which values were finalized, in what order, and that
+// none was finalized twice.
+//
+// 'so' dies when its one owner goes. 'rc' dies when its 'dealias' says the
+// last owner went, so of two owners only the second finalizes. A reassignment
+// kills the value it replaces. A value moved to a callee dies there, once. A
+// struct held by a region, with a finalizing field and an owning field in
+// another region, finalizes itself, then its field, then releases the owner
+// its other field holds -- whose value is finalized in turn.
+//
+// The trace of the region calls themselves, interleaved with these, is
+// region_regionref's 'finalized' case. What happens when a part of the value
+// was moved out before it died is region_hollow.
+
+mod region_final;
+
+import stdio use *;
+
+fn show(label &[]u8, n i32) {
+  printStr(label);
+  printInt(i64[n]);
+  printStr("\n");
+}
+
+struct Fin {
+  pub v i32;
+  fn final(self &uni) { show("final ", v); }
+}
+
+// Its own final, a finalizing field, and an owning field in another region
+struct Hold {
+  pub f Fin;
+  pub r +rc-mut Fin;
+  pub n i32;
+  fn final(self &uni) { show("hold final ", n); }
+}
+
+// No final of its own, but a finalizing field: its synthesized drop runs
+struct Plain {
+  pub f Fin;
+}
+
+fn take(p +so Fin) { printStr("took it\n"); }
+fn look(p +rc-imm Fin) { show("looked at ", p.v); }
+
+fn main() i32 {
+  printStr("-- stack\n");
+  { imm a = Fin[1i32]; }
+  printStr("-- so\n");
+  { imm b = +so Fin[2i32]; }
+  printStr("-- rc, two owners\n");
+  {
+    imm a = +rc-imm Fin[3i32];
+    {
+      imm b = a;
+      printStr("inner block done\n");
+    }
+    printStr("outer block done\n");
+  }
+  printStr("-- rc, a copy passed to a call\n");
+  {
+    imm a = +rc-imm Fin[4i32];
+    look(a);
+    printStr("call done\n");
+  }
+  printStr("-- reassigned\n");
+  {
+    mut p = +so Fin[5i32];
+    p = +so Fin[6i32];
+    printStr("reassigned\n");
+  }
+  printStr("-- held in a region-held struct's fields\n");
+  { imm h = +so Hold[Fin[7i32], +rc-mut Fin[8i32], 9i32]; }
+  printStr("-- no final of its own\n");
+  { imm p = +rc Plain[Fin[10i32]]; }
+  printStr("-- moved to a callee\n");
+  {
+    imm p = +so Fin[11i32];
+    take(p);
+    printStr("call done\n");
+  }
+  printStr("-- end\n");
+  0i32;
+}

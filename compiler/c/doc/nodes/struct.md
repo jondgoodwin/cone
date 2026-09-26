@@ -1365,8 +1365,11 @@ result, and appends a synthesized `dropfn(&uni var)` call to the block's dealias
 list. A variable that was only declared, or whose value now lives in another
 variable, gets no call: the drop fn would run over storage that holds no value
 of the type. Neither does one the scope hands back, which the caller receives
-and finalizes. **That is the entire mechanism by which struct destruction
-happens.**
+and finalizes. **That is the entire mechanism by which a struct on the stack is
+destroyed.** One held by a region is destroyed by generation instead, which
+calls the same drop at the value's death, before its fields' owners are
+released and its memory freed (`genlRegionDeath`,
+[Generation](../phases/generation.md), "The allocation header").
 
 Per-field release is not flow's — it is `genlDealiasFlds` at generation, walking
 `fields` by `index`. It resolves each field's declared type with

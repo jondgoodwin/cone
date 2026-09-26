@@ -25,11 +25,13 @@ typedef struct VarDclNode {
     uint16_t index;            // index within this scope (e.g., parameter number)
     uint16_t flowflags;        // Data flow pass permanent flags
     uint16_t flowtempflags;    // Data flow pass temporary flags
+    Nodes *hollowed;           // Data flow: each move that took a part out of what this owning reference points at
 } VarDclNode;
 
 enum VarFlowTemp {
     VarInitialized = 0x0001,    // Variable has been initialized
-    VarMoved = 0x0002           // Variable has been moved
+    VarMoved = 0x0002,          // Variable has been moved
+    VarHollow = 0x0004          // A part of what this owning reference points at was moved out ('hollowed')
 };
 
 VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *perm);
