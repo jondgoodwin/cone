@@ -642,9 +642,10 @@ The environment variable `CONE_LLVM_OPTIONS` hands LLVM command-line options,
 separated by spaces, parsed in `genSetup` before the LLVM context exists. It is
 a testing aid, and what it is for is LLVM 13's experimental opaque pointers:
 `-force-opaque-pointers` makes every pointer type `ptr`. LLVM 13's own inliner,
-GVN and X86 code generator still crash on some opaque-pointer IR, so a suite run
-that way adds `-inline-threshold=-100000 -disable-lsr` and still has a few
-compiles fail inside LLVM; the IR it generates verifies either way.
+GVN and X86 code generator still crash on, or miscompile, some opaque-pointer
+IR, so a suite run that way adds `-inline-threshold=-100000 -disable-lsr` and
+still has a few compiles fail inside LLVM; the IR generation hands LLVM verifies
+either way.
 
 **Cross-module linking works for a library built on its own, and nothing
 else.** A symbol is spelled from its owner chain, and the root module
