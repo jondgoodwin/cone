@@ -13,7 +13,7 @@
 
 #include <llvm-c/Core.h>
 #include <llvm-c/DebugInfo.h>
-#include <llvm-c/ExecutionEngine.h>
+#include <llvm-c/TargetMachine.h>
 
 // An entry for each active loop block in current control flow stack
 #define GenBlockStackMax 256

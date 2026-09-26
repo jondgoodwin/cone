@@ -228,14 +228,14 @@ tags = ["flow", "genllvm", "runtime"]
 [[scenario.region_uninit_never_assigned.check]]
 name = "never-assigned-variables-not-released"
 target = "preir"
-excludes = ["%header", "call %void @free(", "add i64", "sub i64"]
+excludes = ["allocref", "call %void @free(", "add i64", "sub i64"]
 
 # The run is the claim: without the fix the compiler faults before emitting
 # anything. The check is the layout, which the run cannot see: an Option of an
 # owning reference takes the nullable-pointer shape enum_nullable_ptr owns, so
-# the readers take a pointer to a bare pointer and no tag or wrapper struct is
-# emitted for the Option or either variant. Read before optimization, where the
-# readers still exist as definitions.
+# the locals 'main' holds one in for rc, so and never are each a bare pointer,
+# and no tag or wrapper struct is emitted for the Option or either variant.
+# Read before optimization, where the locals are still allocas.
 [scenario.region_fallible_alloc]
 category = "run"
 description = "'?+region-perm value' yields an Option holding the owning reference, or empty when the region's alloc returns null"
@@ -244,7 +244,7 @@ tags = ["nameres", "typecheck", "genllvm", "runtime"]
 [[scenario.region_fallible_alloc.check]]
 name = "option-of-owning-ref-is-a-bare-pointer"
 target = "preir"
-contains = ["@readRcMut(i32**", "@readSoMut(i32**", "@readNever(i32**"]
+contains = ["%a = alloca ptr, align 8", "%c = alloca ptr, align 8", "%e = alloca ptr, align 8"]
 excludes = ["%Option", "%Some", "%None"]
 
 [scenario.region_borrow_coerce]
@@ -268,8 +268,8 @@ tags = ["flow", "genllvm", "runtime"]
 # value is below the amount: 20 against 19 is exactly the lvalue-versus-temporary
 # difference being asserted, and the names are generation's own. The fill of
 # three writes 'alias' out three times, 'cnt + 1' each; those registers were
-# read out of the dump, and only 'fillFewFromLval' reaches %9 and %11 as
-# increments. A fourth would be %13, which the exclude forbids.
+# read out of the dump, and only 'fillFewFromLval' reaches %6 and %8 as
+# increments. A fourth would be %10, which the exclude forbids.
 [scenario.region_fill_count]
 category = "compile"
 description = "An array fill literal adding its value as an owner of every element: n owners from an lvalue, n-1 from a temporary"
@@ -288,8 +288,8 @@ contains = ["%aliasmore = icmp ult i64 %aliasnext, 19"]
 [[scenario.region_fill_count.check]]
 name = "small-fill-calls-alias-once-per-owner"
 target = "preir"
-contains = ["%7 = add i64 %6, 1", "%9 = add i64 %8, 1", "%11 = add i64 %10, 1"]
-excludes = ["%13 = add i64 %12, 1"]
+contains = ["%4 = add i64 %3, 1", "%6 = add i64 %5, 1", "%8 = add i64 %7, 1"]
+excludes = ["%10 = add i64 %9, 1"]
 
 # The claim is the count, because a run cannot see it: without the fix the read
 # after the early free still finds the value, and the second release decrements
@@ -305,7 +305,7 @@ tags = ["flow", "genllvm"]
 [[scenario.region_enrich_count.check]]
 name = "alias-across-an-enrichment-is-counted"
 target = "preir"
-contains = ["%8 = add i64 %7, 1"]
+contains = ["%4 = add i64 %3, 1"]
 
 # Returning owning references in a value tuple. The claim is that 'pair' adjusts
 # no counter at all: both allocations are handed to the caller, so neither is
@@ -323,7 +323,7 @@ tags = ["flow", "genllvm"]
 [[scenario.region_tuple_return.check]]
 name = "returned-tuple-elements-not-released"
 target = "preir"
-excludes = ["%header", "call %void @free(", "add i64", "sub i64"]
+excludes = ["allocref", "call %void @free(", "add i64", "sub i64"]
 
 # The caller's side of region_tuple_return: a tuple held in a variable is one
 # holder of each rc reference it carries. Destructuring it, or copying it whole,
@@ -332,7 +332,10 @@ excludes = ["%header", "call %void @free(", "add i64", "sub i64"]
 # are what make that so, since a leak would print the same. Each holder added
 # is 'rc''s 'alias' written out in line, whose 'cnt + 1' is a '+1' line below,
 # and each released its 'dealias', whose 'cnt - 1' is a '-1' ('sub ..., 1')
-# line. Register numbers were read out of the pre-optimization dump. In
+# line. Register numbers were read out of the pre-optimization dump, and where
+# another function writes the same line, the check carries the lines before it
+# that only this one writes: the load of the count's own 'cnt' address, or, in
+# 'mixed', the whole release from the '{ ptr, i32 }' element it begins with. In
 # 'twiceFromVariable' the two '+1' lines are the second destructuring's, and the
 # two '-1' lines are the tuple variable's own release, the last in the function,
 # after the four destructured variables'; in 'mixed' the '+1' is the second
@@ -351,26 +354,34 @@ tags = ["flow", "genllvm", "runtime"]
 [[scenario.region_tuple_destructure.check]]
 name = "destructured-elements-gain-a-holder"
 target = "preir"
-contains = ["%17 = add i64 %16, 1", "%22 = add i64 %21, 1", "%12 = add i64 %11, 1"]
+contains = ["%14 = add i64 %13, 1", "%18 = add i64 %17, 1", "%10 = add i64 %9, 1"]
 
 [[scenario.region_tuple_destructure.check]]
 name = "tuple-variable-releases-its-elements"
 target = "preir"
-contains = ["%74 = sub i64 %73, 1", "%85 = sub i64 %84, 1", "%44 = sub i64 %43, 1"]
+contains = [
+  "%56 = load i64, ptr %cnt76, align 8\n  %57 = sub i64 %56, 1",
+  "%64 = load i64, ptr %cnt87, align 8\n  %65 = sub i64 %64, 1",
+  "%32 = extractvalue { ptr, i32 } %allocref37, 0\n  %33 = getelementptr i8, ptr %32, i64 -8\n  store ptr %33, ptr %self38, align 8\n  %self39 = load ptr, ptr %self38, align 8\n  %cnt40 = getelementptr inbounds nuw %rc, ptr %self39, i32 0, i32 0\n  %34 = load i64, ptr %cnt40, align 8\n  %35 = sub i64 %34, 1",
+]
 
 [[scenario.region_tuple_destructure.check]]
 name = "overwritten-tuple-releases-previous-elements"
 target = "preir"
-contains = ["%dealiasref = load { i32*, i32* }, { i32*, i32* }* %v, align 8", "%35 = sub i64 %34, 1", "%46 = sub i64 %45, 1"]
+contains = [
+  "%dealiasref = load { ptr, ptr }, ptr %v, align 8",
+  "%27 = load i64, ptr %cnt34, align 8\n  %28 = sub i64 %27, 1",
+  "%36 = sub i64 %35, 1",
+]
 
 [[scenario.region_tuple_destructure.check]]
 name = "so-tuple-left-in-variable-is-freed-through-it"
 target = "preir"
 contains = [
-  "%6 = extractvalue { i32*, i32* } %allocref, 0",
-  "%8 = call %void @free(i8* %7)",
-  "%9 = extractvalue { i32*, i32* } %allocref, 1",
-  "%11 = call %void @free(i8* %10)",
+  "%6 = extractvalue { ptr, ptr } %allocref, 0",
+  "%7 = call %void @free(ptr %self4)",
+  "%8 = extractvalue { ptr, ptr } %allocref, 1",
+  "%9 = call %void @free(ptr %self6)",
 ]
 
 # The same two claims for a tuple type named by a typedef, which is what says an
@@ -381,12 +392,12 @@ contains = [
 [[scenario.region_tuple_destructure.check]]
 name = "alias-destructured-elements-gain-a-holder"
 target = "preir"
-contains = ["%23 = add i64 %22, 1", "%28 = add i64 %27, 1", "%33 = add i64 %32, 1"]
+contains = ["%19 = add i64 %18, 1", "%23 = add i64 %22, 1", "%27 = add i64 %26, 1"]
 
 [[scenario.region_tuple_destructure.check]]
 name = "alias-tuple-variable-releases-its-elements"
 target = "preir"
-contains = ["%108 = sub i64 %107, 1", "%119 = sub i64 %118, 1", "%130 = sub i64 %129, 1"]
+contains = ["%83 = sub i64 %82, 1", "%91 = sub i64 %90, 1", "%99 = sub i64 %98, 1"]
 
 # A local moved into a call that is the block's final expression. The claim is
 # that nothing in this module is released: every allocation is handed on, to a
@@ -406,7 +417,7 @@ tags = ["flow", "genllvm"]
 [[scenario.region_tail_move.check]]
 name = "tail-call-move-releases-nothing"
 target = "preir"
-excludes = ["%header", "call %void @free(", "add i64"]
+excludes = ["allocref", "call %void @free(", "add i64"]
 
 # The same release list, for a value whose type has a drop fn, where a run can
 # see it: the drop fn prints. Three claims share the file because one list makes
@@ -445,7 +456,7 @@ tags = ["flow", "genllvm", "runtime"]
 # chosen. Each release is 'rc''s 'dealias' written out in line, whose 'cnt - 1'
 # is the pinned subtraction: the continue's one, and the break's two -- 'inner'
 # then 'outer', on the path that ends at the loop's exit, before the loop's own
-# end-of-iteration release of 'outer' (%31). Without the fix 'continueReleases'
+# end-of-iteration release of 'outer' (%20). Without the fix 'continueReleases'
 # releases nothing at all and 'breakReleasesEveryScope' one instead of two.
 [scenario.region_jump_release]
 category = "compile"
@@ -455,12 +466,12 @@ tags = ["flow", "genllvm"]
 [[scenario.region_jump_release.check]]
 name = "continue-releases-its-scope"
 target = "preir"
-contains = ["%7 = sub i64 %6, 1"]
+contains = ["%4 = sub i64 %3, 1"]
 
 [[scenario.region_jump_release.check]]
 name = "break-releases-the-scopes-between"
 target = "preir"
-contains = ["%11 = sub i64 %10, 1", "%21 = sub i64 %20, 1"]
+contains = ["%6 = sub i64 %5, 1", "%13 = sub i64 %12, 1"]
 
 # An owning slice released at scope exit, in both regions and every spelling a
 # single reference has: held, moved to a variable, into a parameter, returned,
@@ -468,9 +479,9 @@ contains = ["%11 = sub i64 %10, 1", "%21 = sub i64 %20, 1"]
 # checks below show the releases are emitted at all, which the run cannot,
 # because a leak prints the same as a free. The register numbers were read out
 # of the pre-optimization dump. The free is soScope's: 'so''s 'free' written out
-# in line, handed the header found from the slice's pointer word, which is the
-# line naming %sliceptr5 (soMoved's free has the same register, and its own
-# pointer word). The three count adjustments are rcCopied's, 'rc''s 'alias' and
+# in line, handed as its header the slice's pointer word, %sliceptr5, through
+# 'self' (soMoved's free has the same register, and its own 'self'). The three
+# count adjustments are rcCopied's, 'rc''s 'alias' and
 # 'dealias' written out in line -- one owner added ('cnt + 1'), then each of its
 # two variables released ('cnt - 1'). Without the fix the module frees nothing
 # and adjusts no count.
@@ -482,12 +493,12 @@ tags = ["flow", "genllvm", "runtime"]
 [[scenario.region_slice_release.check]]
 name = "so-slice-freed-at-scope-exit"
 target = "preir"
-contains = ["%header = bitcast i32* %sliceptr5 to %so*", "%13 = call %void @free(i8* %12)"]
+contains = ["store ptr %sliceptr5, ptr %self, align 8", "%10 = call %void @free(ptr %self6)"]
 
 [[scenario.region_slice_release.check]]
 name = "rc-slice-copy-counts-a-holder-and-releases-each"
 target = "preir"
-contains = ["%10 = add i64 %9, 1", "%24 = sub i64 %23, 1", "%34 = sub i64 %33, 1"]
+contains = ["%7 = add i64 %6, 1", "%20 = sub i64 %19, 1", "%27 = sub i64 %26, 1"]
 
 # Reassigning a variable that holds an 'so' reference frees the value it held,
 # in every spelling the store has: a single reference, a slice, a struct field,
@@ -498,10 +509,10 @@ contains = ["%10 = add i64 %9, 1", "%24 = sub i64 %23, 1", "%34 = sub i64 %33, 1
 # release is emitted at all, since a leak prints the same. The store releases
 # the old value through what it loads as 'dealiasref', and 'so''s 'free' is
 # handed that value's header, so the first check names the previous value
-# freed: its header taken from 'dealiasref'; the free reassign and fieldReassign
-# each make of it (%9, the same register in both); the loop body's (%10); and
-# for the slice, its old value's pointer word taken from 'dealiasref', and the
-# scope exit's free (%22), whose register moved when the reassignment's free
+# freed: 'dealiasref' stored as the header 'free' takes as 'self'; the free
+# reassign and fieldReassign each make of it (%4, the same register in both);
+# the loop body's (%5); and for the slice, its old value's pointer word taken
+# from 'dealiasref', and the scope exit's free (%16), whose register moved when the reassignment's free
 # preceded it. The numbers were read out of the pre-optimization dump, and
 # before the fix the module holds none of them. The second check is the 'uni'
 # 'rc' spelling of the moved-out gate: a count is not dropped a second time by
@@ -517,17 +528,17 @@ tags = ["flow", "genllvm", "runtime"]
 name = "reassignment-frees-the-previous-so-value"
 target = "preir"
 contains = [
-  "%header = bitcast i32* %dealiasref to %so*",
-  "%9 = call %void @free(i8* %8)",
-  "%10 = call %void @free(i8* %9)",
-  "%sliceptr = extractvalue { i32*, i64 } %dealiasref, 0",
-  "%22 = call %void @free(i8* %21)",
+  "store ptr %dealiasref, ptr %self, align 8",
+  "%4 = call %void @free(ptr %self9)",
+  "%5 = call %void @free(ptr %self12)",
+  "%sliceptr = extractvalue { ptr, i64 } %dealiasref, 0",
+  "%16 = call %void @free(ptr %self25)",
 ]
 
 [[scenario.region_so_reassign.check]]
 name = "moved-out-uni-rc-not-dropped-again-on-reassignment"
 target = "preir"
-contains = ["%15 = sub i64 %14, 1"]
+contains = ["%10 = sub i64 %9, 1"]
 
 # The other half: a slice moved out is not released by its source. Every
 # allocation in the file is handed on and returned, so the module may hold no
@@ -545,7 +556,7 @@ tags = ["flow", "genllvm"]
 [[scenario.region_slice_move.check]]
 name = "moved-slice-not-released-by-its-source"
 target = "preir"
-excludes = ["%header", "call %void @free(", "allocref", "add i64"]
+excludes = ["call %void @free(", "allocref", "add i64"]
 
 # A typedef is a transparent alias, so an owning type reached through one is
 # released exactly as the type it names is. Nothing rewrites the alias away: a
@@ -567,8 +578,8 @@ tags = ["flow", "genllvm", "runtime"]
 name = "aliased-owning-fields-released-with-their-struct"
 target = "preir"
 contains = [
-  "%r19 = getelementptr inbounds %Held, %Held* %allocref, i32 0, i32 0",
-  "%s28 = getelementptr inbounds %Held, %Held* %allocref, i32 0, i32 1",
+  "%r19 = getelementptr inbounds nuw %Held, ptr %allocref, i32 0, i32 0",
+  "%s27 = getelementptr inbounds nuw %Held, ptr %allocref, i32 0, i32 1",
 ]
 
 # A program that declares C's 'free' itself links beside the releases 'so' and
@@ -586,9 +597,9 @@ tags = ["genllvm", "runtime"]
 name = "releases-call-the-programs-own-free"
 target = "preir"
 contains = [
-  "declare %void @free(i8*)",
-  "%6 = call %void @free(i8* %5)",
-  "%14 = call %void @free(i8* %13)",
+  "declare %void @free(ptr)",
+  "%3 = call %void @free(ptr %self3)",
+  "%9 = call %void @free(ptr %self9)",
 ]
 excludes = ["@free.1"]
 

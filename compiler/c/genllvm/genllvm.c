@@ -14,7 +14,6 @@
 #include "../shared/fileio.h"
 #include "genllvm.h"
 
-#include <llvm-c/ExecutionEngine.h>
 #include <llvm-c/Target.h>
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
@@ -122,7 +121,7 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
 
     // Attach block and builder to function
     LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "entry");
-    gen->builder = LLVMCreateBuilder();
+    gen->builder = LLVMCreateBuilderInContext(gen->context);
     LLVMPositionBuilderAtEnd(gen->builder, entry);
 
     // Create our alloca insert point by generating a dummy instruction.
@@ -155,11 +154,17 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
 // Insert every alloca before the allocaPoint in the function's entry block.
 // Why? To improve LLVM optimization of SRoA and mem2reg, all allocas
 // should be located in the function's entry block before the first call.
+// Positioning before an instruction also takes that instruction's debug
+// location, and the allocaPoint has none, so the builder's is put back after:
+// without it, the next call in a function with debug info has no location,
+// which the verifier refuses of a call that could be inlined.
 LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name) {
     LLVMBasicBlockRef current_block = LLVMGetInsertBlock(gen->builder);
+    LLVMMetadataRef debugloc = LLVMGetCurrentDebugLocation2(gen->builder);
     LLVMPositionBuilderBefore(gen->builder, gen->allocaPoint);
     LLVMValueRef alloca = LLVMBuildAlloca(gen->builder, type, name);
     LLVMPositionBuilderAtEnd(gen->builder, current_block);
+    LLVMSetCurrentDebugLocation2(gen->builder, debugloc);
     return alloca;
 }
 
@@ -209,7 +214,7 @@ void genlGloVar(GenState *gen, VarDclNode *varnode) {
     // The text, and the NUL after it that the variable's type does not count
     else if (varnode->value->tag == StringLitTag) {
         SLitNode *strnode = (SLitNode*)varnode->value;
-        LLVMSetInitializer(global, LLVMConstStringInContext(gen->context, strnode->strlit, strnode->strlen, 0));
+        LLVMSetInitializer(global, LLVMConstStringInContext2(gen->context, strnode->strlit, strnode->strlen, 0));
     }
     else
         LLVMSetInitializer(global, genlExpr(gen, varnode->value));
@@ -1097,8 +1102,8 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     gen->datalayout = LLVMCreateTargetDataLayout(machine);
     opt->ptrsize = LLVMPointerSize(gen->datalayout) << 3;
 
-    gen->context = LLVMGetGlobalContext(); // LLVM inlining bugs prevent use of LLVMContextCreate();
-    gen->builder = LLVMCreateBuilder();
+    gen->context = LLVMContextCreate();
+    gen->builder = LLVMCreateBuilderInContext(gen->context);
     gen->fn = NULL;
     gen->fnblock = NULL;
     gen->exitzero = 0;

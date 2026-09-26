@@ -13,7 +13,6 @@
 #include "../shared/fileio.h"
 #include "genllvm.h"
 
-#include <llvm-c/ExecutionEngine.h>
 #include <llvm-c/Target.h>
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
@@ -44,7 +43,7 @@ static LLVMValueRef genlVtableThunk(GenState *gen, Vtable *vtable, VtableImpl *i
 
     // Its own builder: a vtable is built while some other function may be
     LLVMBuilderRef svbuilder = gen->builder;
-    gen->builder = LLVMCreateBuilder();
+    gen->builder = LLVMCreateBuilderInContext(gen->context);
     LLVMPositionBuilderAtEnd(gen->builder, LLVMAppendBasicBlockInContext(gen->context, fn, "entry"));
 
     // The receiver arrives erased; shift it to the field the method was folded

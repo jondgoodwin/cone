@@ -100,20 +100,21 @@ description = "Struct fields: declaring, constructing, reading, changing and cop
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 
 # Structs that reach themselves through a reference must survive into code
-# generation as self-referential types rather than being flattened or dropped.
-# A type whose own name appears inside its body is the whole claim, and runtime
-# cannot see it. Read before optimization: the functions that mention these
-# types are folded into 'main' and deleted, and a type nothing mentions is not
-# printed.
+# generation rather than being flattened or dropped: each is a named struct
+# whose reference field is a pointer, and Owner holds Held by value. LLVM's
+# pointers carry no pointee, so the reference field is a bare 'ptr' and a
+# type's own name no longer appears inside its body. Runtime cannot see the
+# layout. Read before optimization: the functions that mention these types are
+# folded into 'main' and deleted, and a type nothing mentions is not printed.
 [[scenario.struct_success.check]]
 name = "recursive-types-reach-code-generation"
 target = "preir"
 contains = [
-  "%Node = type { i64, %Node* }",
+  "%Node = type { i64, ptr }",
   "%Owner = type { i64, %Held }",
-  "%Held = type { %Owner* }",
-  "%Left = type { i64, %Right* }",
-  "%Right = type { %Left* }",
+  "%Held = type { ptr }",
+  "%Left = type { i64, ptr }",
+  "%Right = type { ptr }",
 ]
 
 # A global built from nested struct literals is one constant, every level of it

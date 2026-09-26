@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 2.8)
 project(conec)
 
-find_package(LLVM 13 REQUIRED CONFIG)
+# LLVM's package version check matches major.minor, so name both.
+find_package(LLVM 23.1 REQUIRED CONFIG)
 
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
@@ -17,16 +18,11 @@ set(LLVM_LINK_COMPONENTS
 		Analysis
 		BitReader
 		Core
-		ExecutionEngine
 		InstCombine
-		Interpreter
 		MC
 		MCDisassembler
-		MCJIT
 		Object
-		OrcJIT
 		Passes
-		RuntimeDyld
 		ScalarOpts
 		Support
 		Target

@@ -95,7 +95,7 @@ the two are tested against each other by running one scenario both ways
 | `alignof[T]` | constant | `LLVMABIAlignmentOfType`, `genlAlignof` |
 | `needsFinal[T]` | constant | `itypeNeedsFinal`, a front-end question, emitted as an `i1` |
 | `finalize[T]` | expansion | `genlFinalizeAt`: release an owning reference; else the type's drop, then `genlReleaseFlds` |
-| `sliceFromParts[T]`, `…Mut` | expansion | two `insertvalue`s into the `{T*, usize}` pair |
+| `sliceFromParts[T]`, `…Mut` | expansion | two `insertvalue`s into the `{ptr, usize}` pair |
 | `readRaw[T]` | expansion | a load (`%rawread`) |
 | `writeRaw[T]` | expansion | a store |
 | `moveRaw[T]` | operation | `LLVMBuildMemMove` of `count * sizeof(T)` bytes |

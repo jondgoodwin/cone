@@ -13,7 +13,6 @@
 #include "../shared/fileio.h"
 #include "genllvm.h"
 
-#include <llvm-c/ExecutionEngine.h>
 #include <llvm-c/Target.h>
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
@@ -368,6 +367,7 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
             LLVMTypeRef ptrToType = NULL;   // The LLVM type the pointer points at
             LLVMTypeKind ptrToKind = LLVMVoidTypeKind;
             LLVMTypeRef stepType = NULL;    // Where that is a pointer, the type it steps over
+            int ptrToFloat = 0;             // Whether it is a float of any width, which '++' adds 1.0 to
             if (op != IsTrueIntrinsic && op != EqIntrinsic && op != NeIntrinsic && op != LtIntrinsic
                 && op != LeIntrinsic && op != GtIntrinsic && op != GeIntrinsic) {
                 if (selftype == NULL)
@@ -375,6 +375,7 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
                 INode *pointee = genlPointee(selftype);
                 ptrToType = genlType(gen, pointee);
                 ptrToKind = LLVMGetTypeKind(ptrToType);
+                ptrToFloat = itypeGetTypeDcl(pointee)->tag == FloatNbrTag;
                 if (ptrToKind == LLVMPointerTypeKind)
                     stepType = genlPointeeType(gen, pointee);
             }
@@ -394,7 +395,7 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
                     LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 0);
                     fncallret = LLVMBuildGEP2(gen->builder, stepType, val, &constone, 1, "");
                 }
-                else if (ptrToKind == LLVMFloatTypeKind)
+                else if (ptrToFloat)
                     fncallret = LLVMBuildFAdd(gen->builder, val, LLVMConstReal(ptrToType, 1.), "");
                 else // LLVMIntegerTypeKind
                     fncallret = LLVMBuildAdd(gen->builder, val, LLVMConstInt(ptrToType, 1, 0), "");
@@ -408,7 +409,7 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
                     LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), -1, 1);
                     fncallret = LLVMBuildGEP2(gen->builder, stepType, val, &constone, 1, "");
                 }
-                else if (ptrToKind == LLVMFloatTypeKind)
+                else if (ptrToFloat)
                     fncallret = LLVMBuildFSub(gen->builder, val, LLVMConstReal(ptrToType, 1.), "");
                 else // LLVMIntegerTypeKind
                     fncallret = LLVMBuildSub(gen->builder, val, LLVMConstInt(ptrToType, 1, 0), "");
@@ -423,7 +424,7 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
                     LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 0);
                     val = LLVMBuildGEP2(gen->builder, stepType, fncallret, &constone, 1, "");
                 }
-                else if (ptrToKind == LLVMFloatTypeKind)
+                else if (ptrToFloat)
                     val = LLVMBuildFAdd(gen->builder, fncallret, LLVMConstReal(ptrToType, 1.), "");
                 else // LLVMIntegerTypeKind
                     val = LLVMBuildAdd(gen->builder, fncallret, LLVMConstInt(ptrToType, 1, 0), "");
@@ -438,7 +439,7 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
                     LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), -1, 1);
                     val = LLVMBuildGEP2(gen->builder, stepType, fncallret, &constone, 1, "");
                 }
-                else if (ptrToKind == LLVMFloatTypeKind)
+                else if (ptrToFloat)
                     val = LLVMBuildFSub(gen->builder, fncallret, LLVMConstReal(ptrToType, 1.), "");
                 else // LLVMIntegerTypeKind
                     val = LLVMBuildSub(gen->builder, fncallret, LLVMConstInt(ptrToType, 1, 0), "");
@@ -1228,7 +1229,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         // byte longer than that type, and its address is recast to a pointer
         // to the type, so every use sees the text's length and nothing more.
         SLitNode *strnode = (SLitNode *)lval;
-        LLVMValueRef strconst = LLVMConstStringInContext(gen->context, strnode->strlit, strnode->strlen, 0);
+        LLVMValueRef strconst = LLVMConstStringInContext2(gen->context, strnode->strlit, strnode->strlen, 0);
         LLVMValueRef sglobal = LLVMAddGlobal(gen->module, LLVMTypeOf(strconst), "string");
         LLVMSetLinkage(sglobal, LLVMInternalLinkage);
         LLVMSetGlobalConstant(sglobal, 1);
@@ -1295,8 +1296,19 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     case NilLitTag:
         return LLVMGetUndef(gen->emptyStructType);
     case ULitTag:
+    {
+        // A literal holds its value in 64 bits, a negative one sign-extended
+        // there even when its type is narrower. LLVMConstInt takes only a value
+        // that fits the type: handed more bits, it keeps them, unchecked in a
+        // release LLVM, and folding an extension of the constant reads them.
         litCheckDefaultRange((ULitNode*)termnode);
-        return LLVMConstInt(genlType(gen, ((ULitNode*)termnode)->vtype), ((ULitNode*)termnode)->uintlit, 0);
+        LLVMTypeRef littype = genlType(gen, ((ULitNode*)termnode)->vtype);
+        unsigned int width = LLVMGetIntTypeWidth(littype);
+        uint64_t val = ((ULitNode*)termnode)->uintlit;
+        if (width < 64)
+            val &= (1ull << width) - 1;
+        return LLVMConstInt(littype, val, 0);
+    }
     case FLitTag:
         return LLVMConstReal(genlType(gen, ((FLitNode*)termnode)->vtype), ((FLitNode*)termnode)->floatlit);
     case ArrayLitTag:
