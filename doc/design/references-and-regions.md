@@ -338,7 +338,11 @@ a borrow, since both move and a move out through a borrow is refused.
 **Lifetime is a `uint16_t` scope depth** on the reference's *type*: 0 global, 1
 parameter, 2+ a local. It is not a type parameter, not a constraint variable,
 and not part of type identity — `refIsSame` ignores it and `refFindSuper` drops
-it.
+it. How long a borrow *freezes* its source is a different question, and is not
+in the type at all: flow's loan walk records which loans each local may hold,
+per path, and a borrow's source stays frozen until the last use of whatever
+holds its loan ([Flow Analysis](../../compiler/c/doc/phases/flow.md), "The loan
+walk").
 
 **That integer is a placeholder for a much larger design.** The intent is an
 encoding of source variable, *invariance group*, and relative scope, forming a
@@ -384,8 +388,7 @@ gap:
 | a moved-out value may not be used | `nameuseFlow` | **flow** |
 | a borrow may not outlive what it points at | `assignlvalrtype` and `swapFlow` (one check, `assignBorrowLifetimeCheck`), `returnFlowEscape`, `fnCallFlowStoredBorrow` | **flow**, at three sites only |
 | a call's returned borrow lives as long as the narrowest borrow it was handed | `fnCallFinalizeArgs`, on a reference node of the call's own — or on the borrowed elements of a tuple of its own, where the call returns several values | type check |
-| aliasing of borrows | — | **nowhere** |
-| freezing a borrow's source | — | **nowhere** |
+| freezing a borrow's source, and so aliasing of borrows: a borrow held in a local freezes its source until the borrow's last use | the loan walk, `loanAccess` and `loanUse` (`ErrorFrozen`) | **flow**, for a borrow held in a local whose type is a borrowed reference only — not one a method returns, or one held inside another value |
 
 ## Hazards
 
@@ -397,8 +400,10 @@ gap:
   more permissive subtyping, this is backwards.
 - **A borrow's lifetime is checked at three sites only.** Storing (by
   assignment, or by a swap in either direction), returning, and passing one beside a `&mut &T` argument. Capturing it, storing it in a
-  field, or laundering it through a variable are all unchecked — see
-  [Safety](safety.md).
+  field, or laundering it through a variable and returning it are all
+  unchecked — see [Safety](safety.md). A laundered borrow used past the end of
+  its source's block is refused, but by freezing (the source's end conflicts
+  with the borrow still held), not by its lifetime.
 - **The permission on a reference is not the permission on the binding.**
   `imm fixed = &mut target` is a writable target through an unrebindable name.
 - **`&[]x` on a non-array is legal** and yields a one-element slice.

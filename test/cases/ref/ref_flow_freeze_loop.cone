@@ -1,0 +1,73 @@
+// A borrow's next use may be on the loop's next iteration, or after the loop,
+// reached by a path the walk follows around the back edge, through a
+// 'continue', or out through a 'break'. Each function touches the source
+// while such a use is still to come.
+//
+// Separate from ref_flow_freeze because each case is about which path reaches
+// the use, not what the touch was. The lenient loops -- a borrow used only
+// through itself around the back edge, one dead before each iteration's
+// change -- are in ref_freeze_success.
+
+mod ref_flow_freeze_loop;
+
+import stdio use *;
+
+// Used again at the top of the next iteration
+fn nextIteration() {
+  mut k = 1;
+  imm r = &mut k;
+  mut j = 0;
+  while j < 3 {
+    *r = j;
+    printInt(k);             //~ ErrorFrozen:14 "may not be read"
+    j = j + 1;
+  }
+}
+
+// Borrowed on one iteration, which then continues, and the source changed on
+// a later one before the borrow is used again
+fn throughContinue(c Bool) {
+  mut k = 1;
+  mut n = 0;
+  mut r = &mut n;
+  mut j = 0;
+  while j < 5 {
+    j = j + 1;
+    *r = 1;
+    if c {
+      r = &mut k;
+      continue;
+    }
+    k = 3;                   //~ ErrorFrozen:5 "may not be changed"
+  }
+}
+
+// Borrowed inside the loop, which breaks out, and used after it
+fn outThroughBreak(c Bool) {
+  mut k = 1;
+  mut n = 0;
+  mut r = &mut n;
+  while c {
+    r = &mut k;
+    if c {
+      break;
+    }
+  }
+  printInt(k);               //~ ErrorFrozen:12 "may not be read"
+  *r = 5;
+}
+
+// The source's block ends at a 'break' while the borrow lives on outside
+fn endsAtBreak(c Bool) {
+  mut zero = 0i64;
+  mut r &i64 = &zero;
+  while c {
+    mut a = 1i64;            //~ ErrorFrozen:9 "goes out of scope while"
+    imm b &i64 = &a;
+    r = b;
+    if c {
+      break;
+    }
+  }
+  printInt(*r);
+}
