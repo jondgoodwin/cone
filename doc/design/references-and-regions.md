@@ -42,6 +42,31 @@ want the shape before the detail.
 *Provenance: read from source; the lowerings and the permission table were
 measured.*
 
+## Vocabulary — [Jon 26 Sep]
+
+- **Region**: the part of memory managed by that region's management
+  protocols. **Every point in memory is managed by exactly one region.** The
+  **global region** is memory the linker sets up; the **local region** is a
+  thread's stack, one per thread; every other region is memory owned and
+  managed by the region that allocated it.
+- **Regions nest.** Uniqueness holds one level at a time: each piece of memory
+  has exactly one *immediate* manager, and managers stack — an `rc` allocation
+  holds a `List`'s block, and inside that block the `List` manages its
+  elements.
+- **Static region**: its state and its lifetime are global; a module manages
+  the state (a tracing collector's heap, say).
+- **Dynamic region**: its state is a value, allocated dynamically on the heap
+  or held locally (a thread's stack is itself carved from free memory), and the
+  region lives as long as that value does — an arena, a pool, a collection.
+- **Region ref**: the struct declaring the built-in trait `RegionRef` — the
+  header a region puts in front of each value it manages, whose methods the
+  compiler calls at each reference event. It is what `+rc` names; the region is
+  the module (or, for a dynamic region, the value) behind it. Never "a region is
+  a struct".
+- **The dance**: the region decides *when* a value dies; the compiler, which
+  alone knows the value's type, runs the death — the value's `final`, then its
+  fields' finalizers, then the owners its fields hold, then `free`.
+
 ## Principles — [derived]
 
 ⚠ **The premise above is the author's and is quoted. These four are read from
@@ -55,7 +80,7 @@ rather than the present arrangement.
    against**, and it is why an error at one axis is fixable at that axis —
    locality [Expressiveness and Attention](expressiveness-and-attention.md)
    depends on.
-2. **A region is an ordinary struct**, not a compiler concept: one declaring the
+2. **A region ref is an ordinary struct**, not a compiler concept: one declaring the
    built-in trait `RegionRef`, whose methods the compiler calls at each
    reference event and whose absent methods say what it does. ▸ **Settles**
    that a new strategy is library work, not compiler work.

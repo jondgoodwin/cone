@@ -179,7 +179,7 @@ routes to `refTypeCheck` and therefore what populates `typeinfo`, which
 an `alloc` at all (its shape was checked at the region's declaration) and
 validate the permission's `init`.
 
-A region is a struct declaring `is RegionRef`, which `refTypeCheck`,
+A region ref is a struct declaring `is RegionRef`, which `refTypeCheck`,
 `arrayRefTypeCheck` and `refvirtTypeCheck` each require of an owning
 reference's region (`refRegionCheck`, `ErrorNotRegion`); `so` and `rc` are
 ordinary Cone declarations in the core package, `packages/core/src/core.cone`,
