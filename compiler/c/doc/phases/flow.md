@@ -4,7 +4,8 @@ the compiler least like other languages and the least guessable from the source.
 
 Read this before changing anything about ownership, moves, aliasing, drops, or
 borrow lifetimes — and read "What a reader from Rust will get wrong" before
-assuming it does anything a borrow checker does. It does not.
+assuming it does anything a borrow checker does. Most of it does not; the loan
+walk, which freezes a borrow's source, does some of it, for some borrows.
 
 *Provenance: read from source; the defects in Hazards were measured by reading
 emitted LLVM IR, and the claims about what is **not** enforced are corroborated
@@ -23,7 +24,9 @@ graph, a cross-function lifetime. Section 1 below says why: flow needs types, an
 types arrive by demand, so there is no moment at which "type checking is done"
 for the program.
 
-**It is not a borrow checker, and reasoning by analogy to Rust will be wrong.**
+**It is not Rust's borrow checker, and reasoning by analogy to Rust will be
+wrong.** The loan walk takes Rust's rule for freezing a borrow's source, and
+takes it for a borrow held in a local only, by its own mechanism.
 ▸ The note carries "What a reader from Rust will get wrong" for exactly this.
 **This is the least guessable part of the compiler**, and the principle is that
 guessing is not a method here.
@@ -43,7 +46,9 @@ may be one a fix correctly invalidated** — the same convention
 `doAnalysis` runs exactly two whole-program walks: name resolution, then type
 check. Flow rides on the second. `fnDclTypeCheck` is the only caller of
 `blockFlow` from outside flow's own recursion, at the close of type checking
-each function's body — so it is the single entry point to the whole pass.
+each function's body — so it is the single entry point to the whole pass. The
+loan walk (§6) is a second walk of one function's body, right after `blockFlow`
+in the same call, and only of a function the gate marked.
 
 It is scheduled per function rather than globally because flow needs types, and
 Cone infers types bottom-up by demand: there is no point at which "type checking
@@ -76,11 +81,16 @@ injected nodes. That is safe only because generation does not run when
 
 Put these first, because every one of them is load-bearing.
 
-1. **There is no borrow checker.** Nothing tracks aliasing of borrows. A `&mut`
-   and a `&` to the same variable coexist freely, and the source of a borrow
-   stays fully usable and mutable while the borrow is alive. `borrowFlow` asks
-   only that what is borrowed was not moved out, as a read does; it deactivates
-   nothing and records nothing about the borrow.
+1. **The borrow checking there is covers a borrow held in a local, and only
+   by freezing its source.** The loan walk ("The loan walk", below) refuses a
+   source touched while a borrow of it held in a local variable whose type is
+   a borrowed reference is still to be used: changed, moved, ended, borrowed
+   in conflict, or, under a mutable borrow, read. Everything else is as it was:
+   a borrow a method returns (`list[0usize]`, `a.alloc(v)`), one held inside
+   another value, and a method called through a reference freeze nothing, and
+   two copies of one `&mut` may reach one place two ways. `borrowFlow`, in the
+   main walk, still asks only that what is borrowed was not moved out, as a read
+   does; it deactivates nothing and records nothing about the borrow.
 2. **A lifetime is a `uint16_t` block-nesting depth on the borrow expression's
    type node.** Not a constraint variable, not region inference. 0 is global, 1
    is a parameter, 2+ is a local. The rule is a numeric comparison at three
@@ -98,12 +108,17 @@ Put these first, because every one of them is load-bearing.
    `mut r &i32; r = &local; return r` compiles clean: assignment does not carry
    the borrow's scope onto the variable's declared type. `ref_flow_return.cone`
    asserts this absence deliberately.
-4. **Flow is path-insensitive and does not iterate.** No CFG, no lattice, no
-   join, no fixed point. `ifFlow` walks both arms against one shared mutable
-   state, so a move in the `then` arm marks the source moved for the `else` arm
-   and for everything after. A loop body is walked once. **Not building a CFG is
-   a deliberate design choice**, not a simplification to be outgrown — the
-   block-structured IR is held to be easy enough to follow directly.
+4. **The main walk is path-insensitive and does not iterate.** No CFG, no
+   lattice, no join, no fixed point. `ifFlow` walks both arms against one shared
+   mutable state, so a move in the `then` arm marks the source moved for the
+   `else` arm and for everything after. A loop body is walked once. The loan
+   walk is the other kind: it keeps its state per path, joins the arms of an
+   `if` and the paths into a loop's head and out of a block, and walks a loop
+   body again until its head stops growing — but only for a function the gate
+   marked, and over the same block-structured IR. **Not building a CFG is a
+   deliberate design choice**, not a simplification to be outgrown — the
+   block-structured IR is held to be easy enough to follow directly, joins and
+   all.
 5. **Ownership is not one model, and flow reads which one from the region
    ref.** One with `alias` (`rc`) is counted; one declaring `Move` (`so`) has a
    single owner, and a copy of a reference to it is a move; one with neither
@@ -123,19 +138,20 @@ Put these first, because every one of them is load-bearing.
 | --- | --- |
 | `fnsig` | `blockFlow`, to `flowAddVar` each parameter on entering the function's main block |
 | `scope` | `blockFlow`, only as `if (++fstate->scope == 2)` — the test for "this is the main block" |
-| `gate` | nothing that decides anything: `flowGateCount` tallies it for `-V 2` (below, "The gate") |
+| `gate` | `fnDclTypeCheck`, which runs the loan walk on a function it marks; `flowGateCount` tallies it for `-V 2` (below, "The gate") |
 | `inflight`, `inflightcnt` | the gate's `flowGateUse`, from `nameuseFlow` and `nameuseFlowBorrowed` |
 
 ### The gate
 
 The walk also records whether the function holds a borrow in a way that only a
-walk following each path could check — the functions borrow freezing would walk
-again. **Nothing reads it yet**; it is measured, so that the cost of the walk
-that will read it can be budgeted. `FlowState.gate` gathers one bit per trigger:
+walk following each path could check. `fnDclTypeCheck` reads it: a function it
+marks, and in which `blockFlow` reported no error, is walked again by the loan
+walk (below); any other is not, which is what keeps the cost of freezing off
+code that holds no borrow. `FlowState.gate` gathers one bit per trigger:
 
 | Bit | Set by | When |
 | --- | --- | --- |
-| `FlowGateHolder` | `varDclFlow`, `assignFlow`, `swapFlow` | a local declared, or a place assigned or swapped, whose type carries a borrow (a local assigned by name is not asked again: its declaration was) |
+| `FlowGateHolder` | `varDclFlow`, `assignFlow`, `swapFlow` | a local declared, or a place assigned or swapped, whose type carries a borrow (a local assigned by name is not asked again: its declaration was). The temporary an operator changing its operand in place borrows it through (`x += 1`, `v <- (a, b)`; named `tempName`) is not asked: it is the operator's, as a method's receiver is, and the loan walk holds nothing in it |
 | `FlowGateResult` | `blockFlow` | a `return`, `break` or block end hands out a value carrying a borrow that is not itself a bare borrowed reference (a bare one has its scope number checked already) |
 | `FlowGateStore` | `fnCallFlow` | a call with a `&mut X` argument, `X` carrying a borrow, beside another argument carrying one |
 | `FlowGateInCall` | `nameuseFlow`, `nameuseFlowBorrowed` | a variable named while a borrow of it made by an earlier operand of the same call, struct or array literal or value tuple is still waiting for it (`v.add(v.len())`) |
@@ -165,7 +181,10 @@ triggers cost flow 25–30% on code holding no borrow; inline, about 4%. An
 ordinary compile stops asking once any bit is set; `-V 2` asks every trigger to
 the end, so that it can count each, and prints
 `Flow gate: G of N functions (holder …, result …, store …, in-call …)`
-(`flowGatePrint`).
+(`flowGatePrint`). The loan walk only follows borrowed-reference locals so far,
+so a function gated for anything else is walked and finds nothing to hold; the
+triggers are the ones the walk will need as it grows, and the walk of such a
+function costs little.
 
 **Flow computes no lifetimes of its own.** `VarDclNode.scope` is set during name
 resolution; `RefNode.scope` during type check by `borrowTypeCheck`, by
@@ -187,8 +206,7 @@ Every imprecision below follows from that one fact.
 
 A file-static variable stack (`gVarFlowStackp`) records which declarations are
 in scope. It is global mutable state, safe only because flow never runs
-re-entrantly — it never descends into a callee. `VarFlowInfo.flags` and
-`VarDclNode.flowflags` are both dead.
+re-entrantly — it never descends into a callee. `VarFlowInfo.flags` is dead.
 
 ## 4. Moves and counting
 
@@ -438,12 +456,119 @@ by `blockFlow` and valid only while flow is inside that block — and
 `blockJumpMark` falls back to the current position for a jump whose target
 failed to resolve.
 
-## 6. What it decides, and what it does not
+## 6. The loan walk
+
+A second walk, over a function the gate marked, once `blockFlow` has found no
+error in it (`fnDclTypeCheck` calls `flowPathWalk`, `ir/flowpath.c`). It
+enforces **freezing**: a borrow held in a local freezes its source until the
+borrow's last use. Borrow freezing is its one client (`ir/flowloan.c`); the path
+machinery — state per path, joins, loops walked to a fixed point — is meant to
+serve drop flags as well.
+
+**It is read-only.** It injects nothing and changes no node, so it may walk a
+loop body more than once; that is its difference from the main walk, which
+mutates and visits each node once. It walks the tree as `blockFlow` left it,
+through the `RefCountTag` and `HollowTag` wrappers, every block ending in a
+jump or a `BlockRetTag`, and fails with `errorUnreachable` on a value tag it has
+no case for, as `flowLoadValue` does.
+
+**The words.** A *place* is a root and a path (`Place`). The root is a variable
+— local, parameter or global — or what a borrowed-reference variable points at:
+`*r`, `r.x` through the injected dereference, `s[i]` on a slice. The path is
+steps: a field, an element (any index — `a[0]` and `a[1]` overlap), a
+dereference of an owning reference. Two places overlap when they share a root
+and one path is a prefix of the other, step by step; only two different fields
+are disjoint. Nothing is tracked through a raw pointer. A *loan* is one borrow
+(`BorrowTag`, `ArrayBorrowTag`) of a place, the same loan each time a loop
+walks it again; it is *exclusive* when its permission has `MayWrite`, *shared*
+when it has `MayRead` only, and a *pin* (`opaq`) when it has neither. A *holder*
+is a local or a parameter whose type is a borrowed reference: it may hold
+loans. An *access* is what an expression does to a place:
+
+| Access | Conflicts with a live loan that is |
+| --- | --- |
+| a read, a copy out | exclusive |
+| a read-only borrow | exclusive |
+| a write — `=`, an operator changing it in place (`+=`, `++`, `<-`), one side of `<=>` — or a mutable borrow | shared or exclusive |
+| a move, a replacement of the whole (its old value finalized), the end of its scope | any, a pin too |
+| an `&opaq` borrow | none |
+
+A holder reaching its loan's source through the loan — `*b = 9`, `r.x` — uses
+the holder; it does not access the source.
+
+**What holds what.** Each expression walked yields the loans its value may
+carry (a `PathSet`): a borrow, its new loan and whatever the holder at the root
+of the borrowed place holds (a reborrow `&mut *r`, or `&r`, keeps what `r`
+holds); a holder named, or a place read through it, what it holds; a recast, an
+`if`, a block, and a tuple, struct or array literal, the union of theirs; a
+call, nothing. A holder's declaration, or an assignment to the whole of it,
+*replaces* what it holds with what the value carries.
+
+**How long: the last use, found forward.** At an access that conflicts with a
+loan, each holder that may hold the loan on this path gets a *pending conflict*
+(`loanAccess`; `Loan.mayhold` lists who to ask). It is not reported yet: the
+holder may never be used again. A *use* of a holder — any name use of it but as
+the whole target of an assignment or swap — fires the pending conflicts it
+carries (`loanUse`): that is the error, `ErrorFrozen`, reported at the access,
+naming the borrow and the use. Reassigning the holder whole, or its dying,
+drops them, because it was dead at the access. So a pending conflict fires
+exactly when a path runs from the access to a use of the holder without
+reassigning it, which is what "the holder is live at the access" means. Each
+access is reported once, however many loans it conflicts with.
+
+**Paths.** The state — per variable, the loans it may hold and the pending
+conflicts a use of it fires (`PathVar`) — is one current state and an undo log
+(`pathSetFacts`, `pathRollback`). A fork remembers the log's position; each
+arm's end takes what the arm changed (`pathDelta`) and rolls back; the join sets
+each fact any arm changed to the union over the arms (`pathJoin`), an arm that
+did not change it contributing its value at the fork, so a join costs what the
+arms changed rather than the state's size. An `if`'s branches are paths from
+the state its conditions leave, a missing `else` a path of its own; an `and`'s
+or `or`'s right operand is an arm; a `break` or `continue` ends the blocks it
+leaves and deposits its path with the block it names (`pwJump`), and a block
+joins its fall-through end with every `break` that left it; a `return` ends the
+path, every holder being a local of the function. A path that jumped away
+contributes nothing where it would have fallen through.
+
+**Loops.** A loop body is walked from the state at its head; the paths back to
+the head — its end, each `continue` — join into it, and if that added anything
+the body is walked again from the grown head. Facts only grow, so it settles,
+nearly always on the first walk. An error fires on whichever walk first meets
+it, once. A loop still growing after four walks has each holder that changed
+around it widened to every loan (`pathSetAll`): conservative, and then it
+settles. The paths out are its `break`s. `-V 2` prints
+`Loan walk: F functions, L loops, W walked again, C widened` (`flowPathPrint`).
+
+**Scope ends.** As a block ends, at its end or at a jump leaving it
+(`pwScopeEnd`), its holders die first, dropping what they were pending on; then
+each of its variables ends, an access conflicting with every loan of it: a
+holder declared outside the block still holding one, and used afterwards, is
+refused. That is the laundered borrow kept past its source,
+`{ mut a = 1i64; imm b &i64 = &a; r = b; } *r`, which the lifetime check does not
+see because assignment does not carry a scope onto a variable.
+
+**What is not held.** The temporary an operator changing its operand in place
+borrows it through (`x += 1` is `{imm tmp = &mut x; *tmp = *tmp + 1}`, and
+`v <- (a, b)` appends through one; both named `tempName`) is an access, a write,
+and holds nothing, as a method's receiver does: `k += k` compiles. A borrow a
+call returns — a method's included, `list[0usize]`, `a.alloc(v)` — carries no
+loan, a borrow held inside another value has no holder, and a method called
+through a reference (`r.bump()` passes `r` itself: a use of it, not a reborrow
+of `*r`) accesses nothing. Copies of one `&mut` reach one place two ways
+unchecked, and a global a callee changes is invisible.
+
+**Its state** is file-static, as the variable stack is, and safe for the same
+reason: flow never runs re-entrantly (`flowPathWalk` refuses to). The buffers
+come from the compiler's arena, small at first, and are kept from one walk to
+the next; a variable's index is `VarDclNode.flowindex` for the length of a walk.
+
+## 7. What it decides, and what it does not
 
 | Analysis | In flow? | Enforced | Not enforced |
 | --- | --- | --- | --- |
 | **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable, and on a borrow of a moved-out one; move out of a field, or of a global, or out through a borrowed or a shared owning reference, refused | element granularity — moving `a[0]` deactivates all of `a`; conditional moves; loop-carried moves |
-| **Escape / lifetime** | representation in type check, enforcement here | storing a borrow into a longer-lived lval, by assignment or by either direction of a swap; returning a borrow of a local; a borrow arriving through a call's result, singly or as one of several values destructured into lvals, each carrying the narrowest argument borrow's scope; a `&mut &T` argument whose pointee would outlive another borrow passed with it; a borrow coerced to another reference type, whether widened to a base trait's reference or made a virtual reference | a borrow laundered through a variable; a borrow stored in a field or captured; distinguishing parameter lifetimes — there is no lifetime annotation syntax; freezing a borrow's source |
+| **Escape / lifetime** | representation in type check, enforcement here | storing a borrow into a longer-lived lval, by assignment or by either direction of a swap; returning a borrow of a local; a borrow arriving through a call's result, singly or as one of several values destructured into lvals, each carrying the narrowest argument borrow's scope; a `&mut &T` argument whose pointee would outlive another borrow passed with it; a borrow coerced to another reference type, whether widened to a base trait's reference or made a virtual reference | a borrow laundered through a variable and returned (kept past its source's scope and used, it is refused by freezing, below); a borrow stored in a field or captured; distinguishing parameter lifetimes — there is no lifetime annotation syntax |
+| **Freezing** | the loan walk, on a gated function | a borrow held in a local whose type is a borrowed reference, and its copies, freeze the source until the last use: `ErrorFrozen` at a change, a move, a conflicting borrow, the source's end, and, under a mutable borrow, a read | a borrow a call returns; a borrow held inside another value; a method called through a reference; two copies of one `&mut`; a global a callee changes |
 | **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs and slices, of drop-fn structs and enums, and of tuples and arrays holding what finalizes or owns, from a jump down to the block it names | an array an element was moved out of leaks the rest; a variable moved out, or initialized, on only one path — see Hazards |
 | **Permission** | `MayWrite` and `MayRead` | `ErrorNoMut` on assignment and swap; `ErrorNoRead` on a read through a reference — a dereference, an index, or a field of a virtual reference | `MayAliasWrite`, `RaceSafe`, `IsLockless` are populated and read nowhere |
 | **Initialization** | yes | `ErrorMove` "has not been initialized" | "initialized on one branch" reads as initialized everywhere; a variable never initialized may be borrowed, so a method taking it `&mut` can fill it, and nothing then stops a field it left unset being read through the borrow; the unused-variable warning in `flow.h`'s header does not exist |
@@ -467,12 +592,13 @@ Everything else about permissions is type check's: `permMatches` in
 | `ErrorFillCount` | `arrayLitFlow` | fill count not constant, or too large |
 | `ErrorEscape` | `returnFlowEscape` | returned borrow outlives the local it points at |
 | `ErrorCallEscape` | `fnCallFlowStoredBorrow` | a `&mut &T` argument points at a place that outlives another borrow passed to the same call |
+| `ErrorFrozen` | `loanUse`, for a conflict `loanAccess` recorded | a source read, changed, moved, borrowed or ended while a borrow of it that forbids that is still to be used; reported at the access, naming the borrow and its next use |
 
 `ErrorBadFill` and `ErrorFillCount` are deliberately distinct: the first is a
 language rule, the second an implementation limit that should disappear when a
 fill lowers to a loop.
 
-## 7. Contract
+## 8. Contract
 
 **Before flow runs:** name resolution succeeded program-wide; this function's
 signature and body type checked cleanly; every expression has a resolved
@@ -482,7 +608,8 @@ parameters and fields already carry `VarInitialized`.
 
 **After flow, for a function that ran it:** every block ends in a node carrying
 a `dealias` list; every recognized counted acquisition has a `RefCountNode`; every
-first-assignment target carries `FlagFirstAssign`.
+first-assignment target carries `FlagFirstAssign`. The loan walk adds nothing to
+the tree.
 
 **What generation relies on.** `genlBlock`, `genlBreak` and `genlReturn` call
 `genlDealiasNodes` and do no analysis of their own. If flow did not run, the
@@ -496,7 +623,7 @@ variable is not `VarInitialized`, or is `VarMoved` or `VarHollow`, at the
 assignment; for a hollowed one, the `HollowNode` wrapped round the stored value
 is what releases the old allocation.
 
-## 8. Hazards
+## 9. Hazards
 
 - **A moved-out variable is skipped at scope exit on every path**, because
   `VarMoved` is a whole-function summary. That leaks rather than double-frees,
@@ -555,11 +682,17 @@ is what releases the old allocation.
   initialization check for that value. Whether any tag reaches it is
   unestablished.
 
-## 9. Code pointer map
+## 10. Code pointer map
 
 | File | Function | Purpose |
 | --- | --- | --- |
-| `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the only entry point; the per-function error-delta gate; `FlowTimer` round `blockFlow` under `-V 1`; `flowGateCount` after it |
+| `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the only entry point; the per-function error-delta gate; `FlowTimer` round `blockFlow` and the loan walk under `-V 1`; the loan walk on a gated function `blockFlow` found no error in; `flowGateCount` after it |
+| `ir/flowpath.c` | `flowPathWalk`, `flowPathPrint` | the loan walk (§6): its entry, and its `-V 2` tallies |
+| | `pathSetFacts`, `pathRollback`, `pathDelta`, `pathJoin` | the state per path: set a fact, recording the old one; undo to a fork; what a path changed; join paths |
+| | `pwValue`, `pwPlace`, `pwThrough`, `pwBorrow`, `pwCall`, `pwStore`, `pwSwap`, `pwVarDcl` | the walk's dispatch: what each node accesses, which holders it uses, what loans its value carries |
+| | `pwStmts`, `pwBlock`, `pwBlockExits`, `pwLoop`, `pwIf`, `pwJump`, `pwScopeEnd` | forks and joins, loops to a fixed point, jumps, and a scope's end as an access |
+| `ir/flowloan.c` | `loanMake`, `loanHeldBy` | a borrow's loan, and who may hold it |
+| | `loanAccess`, `loanUse` | a conflicting access records a pending conflict on each holder of the loan; a use of the holder fires it (`ErrorFrozen`) |
 | `ir/stmt/module.c` | `modInitOf`, `modInitFlowBegin`, `modInitFlowEnd` | round a module's `init` only: its module's globals without a value start the pass uninitialized, as locals, so `init` assigns each once and reads none first; one never assigned is `ErrorGlobalUninit`. [module](../nodes/module.md), "Init and final" |
 | `ir/flow.c` | `flowLoadValue` | the walk's spine — tag dispatch for a value being read |
 | | `flowLoadThroughRef` | `MayRead` on the reference a value is read through; called from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` |
@@ -592,9 +725,11 @@ is what releases the old allocation.
 
 Test sources that pin behavior precisely: `test/cases/move/move-flow-*.cone`,
 `test/cases/region/region_flow*.cone`, `test/cases/ref/ref_flow.cone`,
-`test/cases/ref/ref_flow_return.cone`, `test/cases/core/core_flow_gate.cone`.
+`test/cases/ref/ref_flow_return.cone`, `test/cases/core/core_flow_gate.cone`, and
+for the loan walk `test/cases/ref/ref_flow_freeze.cone`,
+`test/cases/ref/ref_flow_freeze_loop.cone` and `test/cases/ref/ref_freeze_success.cone`.
 
-## 10. What lives elsewhere
+## 11. What lives elsewhere
 
 | Question | Note |
 | --- | --- |

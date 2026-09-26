@@ -22,7 +22,8 @@ and the measurements are on file.
 
 0. **No solvers, and no abstraction layers in semantic analysis.** Type
    inference and borrow checking use cascading conditionals; semantic analysis
-   traverses the full IR only three times, and none of it runs through core
+   traverses the full IR only three times — flow's loan walk goes over again only
+   the functions its gate marks, a few in a hundred — and none of it runs through core
    library templates or generics. ▸ **Forbids** a constraint solver, an immutable
    IR and generic-based analysis layers — each would contradict a written
    commitment, so make the case before making the change.
@@ -103,12 +104,14 @@ code generation, which usually dominate.
 
 **`FlowTimer` is carved out of `SemTimer`.** Flow runs per function, inside type
 check (and a type check can be nested in another function's), so
-`fnDclTypeCheck` starts the flow timer round `blockFlow` and then hands the time
-back to whichever timer was running. `-V 1`'s "Analysis" is therefore semantic
-analysis *without* flow, and Analysis + Flow is what an older compiler reported
-as Analysis. Being two clock reads per function, it runs only when `-V 1` or
-more asks (`timerFine`). `-V 2` adds the count of functions flow's gate marked
-([Flow](../phases/flow.md), "The gate").
+`fnDclTypeCheck` starts the flow timer round `blockFlow` and the loan walk, and
+then hands the time back to whichever timer was running. `-V 1`'s "Analysis" is
+therefore semantic analysis *without* flow, and Analysis + Flow is what an older
+compiler reported as Analysis. Being two clock reads per function, it runs only
+when `-V 1` or more asks (`timerFine`). `-V 2` adds the count of functions flow's
+gate marked ([Flow](../phases/flow.md), "The gate"), and the loan walk's: the
+functions it walked, their loops, how many loop bodies it walked again, and how
+many loops it had to widen to settle ("The loan walk").
 
 **`tools/flowbench/flowbench.py`** measures flow's cost before and after a
 change: `python tools/flowbench/flowbench.py --base <master's conec>`. It

@@ -36,8 +36,12 @@
 # - 'uni' and 'mut1' permissions on a borrow. They are named in the permission
 #   table but a borrow of a local variable can never obtain them, so there is
 #   nothing to establish here that is not region's move semantics.
-# - Freezing the source of a borrow. Documented and unimplemented: a variable
-#   stays fully usable while a reference to it is alive.
+# - Freezing through a borrow a method returns ('list[0usize]', 'a.alloc(v)'),
+#   or one held inside another value (a struct field, an 'Option'). Only a
+#   borrow held in a local whose type is a borrowed reference freezes its
+#   source so far; the others compile, and the arena and pool packages' own
+#   notes say so. What is built is ref_flow_freeze, ref_flow_freeze_loop and
+#   ref_freeze_success.
 #
 # Owning references, array references and slices, and virtual references belong
 # to region, collection and trait. The one place an owning reference and a raw
@@ -63,6 +67,14 @@ tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 category = "run"
 description = "Dereference resolves a type alias -- explicit '*p', a write through one, and the deref injected for a field access, a method call and an operator"
 tags = ["typecheck", "genllvm", "runtime"]
+
+# Separate from ref_success because its subject is what a borrow's source may
+# still do while the borrow is held -- the leniency of freezing -- which each
+# case shows by reading through the borrow and then the source.
+[scenario.ref_freeze_success]
+category = "run"
+description = "What a held borrow leaves its source: reads under a read-only borrow, touches after the last use, reborrows, both arms of an if, loops, disjoint fields, a reassigned holder, '&opaq'"
+tags = ["flow", "genllvm", "runtime"]
 
 # -------- type check stage --------
 
@@ -150,5 +162,22 @@ diagnostics = 13
 [scenario.ref_flow_swap]
 category = "reject"
 description = "Swapping a borrowed reference into a variable that outlives it, in either position, through a call's result, and as a slice"
+tags = ["flow"]
+diagnostics = 4
+
+# A borrow held in a local freezes its source until its last use. One function
+# per touch, so that one borrow's conflict cannot stand in for another's.
+[scenario.ref_flow_freeze]
+category = "reject"
+description = "A source read, changed, moved, replaced, swapped, borrowed or ended while a borrow of it that forbids that is still to be used"
+tags = ["flow"]
+diagnostics = 9
+
+# Separate from ref_flow_freeze because its subject is the path that reaches
+# the borrow's next use: around a loop's back edge, through a 'continue', out
+# through a 'break'.
+[scenario.ref_flow_freeze_loop]
+category = "reject"
+description = "A borrow's next use reached around a loop: the next iteration, a continue, a break, and a source ended at a break"
 tags = ["flow"]
 diagnostics = 4

@@ -14,7 +14,10 @@
     <div class="text">
 
 	<p style="margin-left: 40px;"><i>Note: Although most of these permissions are supported,
-			only the right to read, the right to modify, and coercion are enforced.</i></p>
+			only the right to read, the right to modify, coercion,
+			and freezing the source of a borrow held in a local variable are enforced.
+			An owning reference coerced to a borrowed one, as in "From 'uni'" below,
+			does not yet freeze its source.</i></p>
 	
 	<p>Every reference's type specifies a permission which controls
 		what may, and may not, be done with that reference.
@@ -152,22 +155,21 @@ ref4 = &amp;mut x;   // ok
 	<h3>From 'uni'</h3>
 	<p>At some point in the lifetime of a <span class="pre">uni</span> reference's value, 
 		one may need to transition to allowing multiple, shared references to that value.
-		On a temporary basis (for some lexical lifetime), this transition may be accomplished
+		On a temporary basis (until the borrow's last use), this transition may be accomplished
 		by using <a href="refborref.html#permtrans">borrowed references</a>.</p>
 	<p>Using borrowed references <i>does</i> make it possible to temporarily transition
-		a <span class="pre">uni</span> reference to some shared reference permission. 
-		During the lifetime of a borrowed reference, the source for the borrowed reference may not be used.
-		However, once the lifetime of the borrowed reference expires,
+		a <span class="pre">uni</span> reference to some shared reference permission.
+		While a mutable borrowed reference is still to be used, the source for the borrowed reference
+		may not be used (<a href="refborref.html">Freezing access to the source of a borrow</a>).
+		However, once the borrowed references' last use is behind it,
 		the original source becomes usable again:</p>
 <pre>
 imm uniref = +rc 5;
-{
-  imm bref1 &amp;mut i32 = uniref;   // Coerce owning reference to a 'mut' borrowed reference
-  imm bref2 = ref2;              // Share with another borrowed reference
-  *bref2 = *bref1 + 1;
-  *uniref = 6;                   // Error, uniref is unusable during scope of borrowed 'bref1'
-}
-*uniref = 7;                     // Allowed, since borrowed references have expired
+imm bref1 &amp;mut i32 = uniref;     // Coerce owning reference to a 'mut' borrowed reference
+imm bref2 = bref1;               // Share with another borrowed reference
+*uniref = 6;                     // Error, uniref is frozen while 'bref1' and 'bref2' are still to be used
+*bref2 = *bref1 + 1;             // The borrowed references' last use
+*uniref = 7;                     // Allowed, since the borrowed references are not used again
 </pre>
 
 	<p>What such a borrow shares is the value the <span class="pre">uni</span> reference points to.
@@ -209,9 +211,9 @@ imm newref2 &amp;mut i32 = newref1;  // Two 'mut' references to the same object
 	<ul>
 	<li><b>Borrowed reference recovery.</b>
 		Borrowing a reference temporarily transitions to a new permission. 
-		When the borrowed reference expires, the original permission on the source reference is restored.
+		After the borrowed reference's last use, the original permission on the source reference is restored.
 		So, a <span class="pre">uni</span> can be borrowed as <span class="pre">mut</span> or <span class="pre">imm</span>.
-		When the borrowed references expire, you once again again have the original <span class="pre">uni</span> reference.
+		After the borrowed references' last use, you once again have the original <span class="pre">uni</span> reference.
 		Similarly, one can borrow as <span class="pre">ro</span> and get back the original reference's permission later.</li>
 	<li><b>Pure method calls</b>
 		Sometimes it is polymorphically convenient to be able to call a method on an object where we have

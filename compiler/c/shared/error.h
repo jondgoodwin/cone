@@ -113,6 +113,7 @@ enum ErrorCode {
     // Lifetimes
     ErrorEscape = 1064,         // A borrowed reference would outlive what it borrows from
     ErrorCallEscape = 1085,     // A call could store a borrowed-reference argument where it would outlive what it points at
+    ErrorFrozen = 1168,         // A borrowed source read, changed, moved, borrowed or ended while a borrow of it that forbids that is still to be used
 
     // Words and spellings held for language features not yet implemented
     ErrorReserved = 1065,       // A reserved word used as an identifier; '?.'; a '#' word

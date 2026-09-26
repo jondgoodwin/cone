@@ -57,11 +57,11 @@ most consequential thing this note settles.
 | a borrow returned through a call, singly or as one of several values | **yes** | `fnCallFinalizeArgs` types the call with the narrowest argument borrow's scope, on a reference node or on a tuple's borrowed elements, which the two rows above then read |
 | a borrow passed beside a `&mut &T` argument the callee could store it through | **yes** | `fnCallFlowStoredBorrow`, one site |
 | a borrow coerced to another reference type — widened to a base trait's reference, or made a `&<Trait` | **yes** | `iexpCoerce` types the injected cast with a copy of the target reference type carrying the source borrow's scope, which the rows above then read |
-| a borrow **laundered through a variable** | **no** | assignment does not carry scope onto the variable's declared type |
+| a borrow **laundered through a variable** | **partly** | kept in a variable past the end of its source's block, and used there: refused, since the source's end is a conflict with the borrow still held (`ErrorFrozen`, the loan walk). Returned: not checked — assignment does not carry scope onto the variable's declared type |
 | a borrow **captured or stored in a field** | **no** | — |
 | two parameter borrows with different lifetimes | **no** | there is no lifetime annotation syntax to express it; every borrow in a signature is taken to share one lifetime |
-| aliasing of borrows | **no** | `borrowFlow` checks only that the borrowed place was not moved out |
-| freezing a borrow's source | **no** | documented; never implemented |
+| aliasing of borrows | **partly** | a mutable borrow held in a local excludes every other borrow of its source until its last use (the freezing row below). Copies of one `&mut` borrow may still reach one place two ways, and a borrow a method returns or one held inside another value excludes nothing |
+| freezing a borrow's source | **partly** | the loan walk (`flowpath.c`, `flowloan.c`, `ErrorFrozen`): a borrow held in a local whose type is a borrowed reference freezes its source until the borrow's last use, on each path — against a change, a move, a borrow that would conflict, the source's end, and, for a mutable borrow, a read. Not yet: a borrow a method returns (`list[0usize]`, `a.alloc(v)`, `pool.get(id)`), one held inside another value, and a method called through a reference (`r.bump()` for `r &mut T` is not a reborrow of what `r` points at) |
 | array and slice bounds | **yes** | `genlBoundsCheck`, per dimension |
 | **raw pointer** bounds | **no** | unchecked by construction |
 | raw pointer deref / arithmetic gated by `trust` | **no** | `trust` is not a keyword and has no parse rule |
@@ -77,8 +77,7 @@ way wherever it appears.
 **1. A rule with a representation but no consumer.** The data is computed and
 nothing reads it. `RaceSafe`, `MayAliasWrite`, `MayIntRefSum` and `IsLockless`
 are set on every permission and consulted nowhere. `lifeMatches` exists and is
-called from nowhere. `VarDclNode.flowflags` is zeroed twice and never read.
-These look like working machinery in a grep and are inert.
+called from nowhere. These look like working machinery in a grep and are inert.
 
 **2. A rule enforced at some sites and not others.** Borrow lifetime is the
 worst case: the scope is recorded correctly on every borrow, and checked at
@@ -91,7 +90,8 @@ the whole function rather than a program point. A move in one arm of an `if`
 marks the source moved for the other arm and everything after. This is a
 deliberate conservative approximation — it leaks rather than double-frees — but
 it means "the compiler accepted it" and "this program is correct" are further
-apart than usual.
+apart than usual. Freezing is the exception: the loan walk keeps its state per
+path, and joins the paths where they meet.
 
 **4. A guard that does not exist yet.** `trust` is the whole of this. The
 compiler has no `trust` keyword, so a program using one fails as an unknown
