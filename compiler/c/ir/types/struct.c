@@ -3312,6 +3312,12 @@ INode *structRefFindSuper(INode *type1, INode *type2) {
     if (structExtendsEquiv(type1, type2))
         return type1;
 
+    // A reference's value type need not be a struct (&i32, &f64), and no other
+    // value type has a supertype through a reference. structFindSuper is only
+    // reached with two structs; this is reached with any two pointees.
+    if (typ1->tag != StructTag || typ2->tag != StructTag)
+        return NULL;
+
     // The only supertype supported with structs is they both use the same base trait
     if (typ1->basetrait && typ2->basetrait
         && structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ1->basetrait)) == structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ2->basetrait)))
