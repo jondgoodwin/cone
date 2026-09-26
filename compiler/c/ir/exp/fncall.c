@@ -1358,6 +1358,14 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         return;
     }
 
+    // 'name: value' is a type literal's alone; a function, method, closure or
+    // initializer call and an index have no parameter a name is matched to
+    int isTypeLit = isTypeNode(node->objfn) && (node->flags & FlagIndex);
+    if (!isTypeLit && namedValRefuseArgs(node->args, node->flags & FlagIndex ? "an index" : "a call")) {
+        node->vtype = errorType;
+        return;
+    }
+
     // If objfn is a type, handle it as a constructor or initializer
     if (isTypeNode(node->objfn)) {
         // Handle type constructor, e.g.:  Point[1., 2.]

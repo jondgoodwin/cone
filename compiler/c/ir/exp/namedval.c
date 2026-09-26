@@ -44,3 +44,29 @@ void namedValTypeCheck(TypeCheckState *pstate, NamedValNode *node) {
         return;
     node->vtype = ((IExpNode*)node->val)->vtype;
 }
+
+// The parser wraps 'name: value' wherever an argument list is written, because
+// it cannot tell 'Point[x: 1]' from 'f(x: 1)'. Only a type literal matches the
+// name to anything (typelit.c), so every other use is refused here rather than
+// left to reach flow analysis and generation, which know the node only there.
+int namedValRefuseArgs(Nodes *args, char *what) {
+    int found = 0;
+    INode **argsp;
+    uint32_t cnt;
+    if (args == NULL)
+        return 0;
+    for (nodesFor(args, cnt, argsp)) {
+        NamedValNode *arg = (NamedValNode*)*argsp;
+        if (arg->tag != NamedValTag)
+            continue;
+        found = 1;
+        if (arg->name->tag == NameUseTag)
+            errorMsgNode((INode*)arg, ErrorNamedArg,
+                "Named arguments are not supported in %s; pass `%s` by position. Only a type literal, such as `Point[x: 1]`, takes values by name.",
+                what, &((NameUseNode*)arg->name)->namesym->namestr);
+        else
+            errorMsgNode((INode*)arg, ErrorNamedArg,
+                "Named arguments are not supported in %s. Only a type literal, such as `Point[x: 1]`, takes values by name.", what);
+    }
+    return found;
+}

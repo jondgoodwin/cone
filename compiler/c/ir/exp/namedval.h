@@ -28,4 +28,9 @@ void namedValNameRes(NameResState *pstate, NamedValNode *node);
 // Type check named value node
 void namedValTypeCheck(TypeCheckState *pstate, NamedValNode *node);
 
+// Report each 'name: value' in args, where only a type literal may take one.
+// 'what' names the use for the message ("a call", "a macro use"). Answers
+// whether any was found.
+int namedValRefuseArgs(Nodes *args, char *what);
+
 #endif

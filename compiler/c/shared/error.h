@@ -136,6 +136,7 @@ enum ErrorCode {
     ErrorNotType = 1071,        // A name where a type must be that names no type: a generic argument, a pattern naming a value, a module or module trait
     ErrorNoArgs = 1072,         // A generic or macro with parameters was named without arguments
     ErrorFldArgs = 1073,        // Arguments given to a field access, which accepts none
+    ErrorNamedArg = 1165,       // A 'name: value' argument anywhere but a type literal: a call, an index or a macro use
 
     // Reference types
     ErrorNoRefType = 1074,      // A reference type did not name what it refers to

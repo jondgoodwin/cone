@@ -225,6 +225,9 @@ generic argument, a call that expects arguments and gets none, and arguments
 given to a field access are four conditions a reader would absolutely
 distinguish — so they are four codes, `ErrorArgCount`, `ErrorNotType`,
 `ErrorNoArgs` and `ErrorFldArgs`, and `ErrorManyArgs` means only what it says.
+A `name: value` argument anywhere but a type literal is `ErrorNamedArg`, one
+code for a call, an index and a macro use, because the remedy is the same for
+each: pass the value by position.
 
 ## The one code with no scenario
 

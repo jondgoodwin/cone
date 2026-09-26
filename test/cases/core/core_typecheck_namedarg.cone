@@ -1,0 +1,81 @@
+// 'name: value' in an argument list, which only a type literal accepts.
+//
+// The parser wraps 'name: value' in every argument list, because it cannot
+// tell 'Point[x: 1]' from 'f(x: 1)'. A type literal matches the name to a field;
+// nothing else matches it to anything, and every other kind of call, an index
+// and a macro use must refuse it rather than pass it on. The literal itself,
+// with its names out of order, is struct_success's.
+//
+// Type-check stage only: this file parses and resolves cleanly, so every
+// diagnostic below is reached.
+
+mod core_typecheck_namedarg;
+
+struct Point {
+  pub x i32;
+  pub y i32;
+
+  pub fn sum(self, k i32) i32 { x + y + k; }
+  fn make(n i32) Point { Point[n, n]; }
+  fn init(n i32) Point { Point[n, n]; }
+}
+
+fn one(a i32) i32 { a; }
+fn defaults(a i32 = 1, b i32 = 2) i32 { a + b; }
+fn id[T](a T) T { a; }
+macro twice[p] { p + p; }
+
+// A type literal takes its values by name, so these are refused nowhere
+fn literal() i32 {
+  imm p = Point[y: 2, x: 1];
+  p.x;
+}
+
+fn function() i32 {
+  one(a: 3);             //~ ErrorNamedArg:8 "not supported in a call; pass `a` by position"
+}
+
+fn trailingDefault() i32 {
+  defaults(b: 3);        //~ ErrorNamedArg:13
+}
+
+fn afterPositional() i32 {
+  defaults(1, b: 3);     //~ ErrorNamedArg:16
+}
+
+fn generic() i32 {
+  id(a: 3);              //~ ErrorNamedArg:7
+}
+
+fn method() i32 {
+  imm p = Point[1, 2];
+  p.sum(k: 4);           //~ ErrorNamedArg:10
+}
+
+fn staticFn() i32 {
+  Point.make(n: 4).x;    //~ ErrorNamedArg:15
+}
+
+// Calling the type reaches its 'init', a function like any other
+fn initializer() i32 {
+  Point(n: 4).x;         //~ ErrorNamedArg:10
+}
+
+fn closure() i32 {
+  imm f = &fn(a i32) i32 { a + 1; };
+  f(a: 3);               //~ ErrorNamedArg:6
+}
+
+fn functionRef() i32 {
+  imm r = &one;
+  r(a: 3);               //~ ErrorNamedArg:6
+}
+
+fn index() i32 {
+  imm arr = [1, 2, 3];
+  arr[i: 1];             //~ ErrorNamedArg:8 "not supported in an index"
+}
+
+fn macroUse() i32 {
+  twice(p: 3);           //~ ErrorNamedArg:10 "not supported in a macro use"
+}

@@ -44,6 +44,12 @@ becomes `dimens` and a fresh list is gathered into `elems`.
 A type literal is not built as one: `parseSuffix` builds an `FnCallNode` with
 `FlagIndex`, and `parseArg` wraps `name: value` in a `NamedValNode`. Whether
 `Point[1,2]` is an index, an instantiation, or a construction is type check's.
+So is refusing the wrapper everywhere else, since `parseArg` builds it in every
+argument list: `fnCallTypeCheck`, once it knows the call is not a type literal,
+and `macroExpand` report each one through `namedValRefuseArgs`
+(`ErrorNamedArg`). A function, method, closure or initializer call, an index
+and a macro use take arguments by position only, and flow analysis and
+generation meet a `NamedValNode` only inside a type literal.
 
 **A minus before a literal is folded into it.** `parsePrefix` negates a
 `ULitTag`'s `uintlit` in place, two's complement, and a `FLitTag`'s `floatlit`,

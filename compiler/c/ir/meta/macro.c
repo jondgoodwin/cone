@@ -113,6 +113,11 @@ static void macroExpand(TypeCheckState *pstate, INode **nodep, MacroDclNode *mac
         errorMsgNode(*nodep, ErrorArgCount, "Incorrect number of arguments vs. parameters expected");
         return;
     }
+    // Arguments substitute for parameters by position, so a name has nothing to match
+    if (namedValRefuseArgs(args, "a macro use")) {
+        *nodep = newErrorNode(*nodep);
+        return;
+    }
 
     // A macro whose body names itself expands without end, and no mark can see
     // it: each expansion is a fresh clone, never the node expanded before.
