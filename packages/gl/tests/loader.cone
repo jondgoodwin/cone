@@ -1,0 +1,46 @@
+// The gl package's loader, without OpenGL: 'load' is handed stand-ins for
+// SDL_GL_GetProcAddress and never calls what they return. Only a failure
+// prints, so loader.out holds the summary alone.
+//
+// - Before any load, nothing is loaded.
+// - A lookup that finds nothing (every address 0) leaves load answering false
+//   and nothing loaded, having asked for each of the 38 functions once.
+// - A lookup that finds everything (here, the address of the name it was
+//   asked for, which is not 0) makes load answer true, and 'loaded' true.
+// - Every name asked for begins "gl": the C name, prefix and all.
+
+mod loader;
+
+import testing use *;
+import gl;
+
+mut asked = 0;
+mut badNames = 0;
+
+fn count(name *u8) {
+  asked = asked + 1;
+  if *name != 'g' or *(name + 1usize) != 'l' { badNames = badNames + 1; }
+}
+
+fn findNothing(name *u8) *u8 {
+  count(name);
+  0usize as *u8;
+}
+
+fn findEverything(name *u8) *u8 {
+  count(name);
+  name;
+}
+
+fn main() i32 {
+  expectBool(gl.loaded(), false, "nothing loaded at first");
+  expectBool(gl.load(&findNothing), false, "a lookup that finds nothing");
+  expectBool(gl.loaded(), false, "still nothing loaded");
+  expectInt(i64[asked], 38, "each function asked for once");
+  asked = 0;
+  expectBool(gl.load(&findEverything), true, "a lookup that finds everything");
+  expectBool(gl.loaded(), true, "loaded");
+  expectInt(i64[asked], 38, "each asked for once again");
+  expectInt(i64[badNames], 0, "every name begins gl");
+  done();
+}

@@ -150,7 +150,7 @@ An import names a module. Congo answers each one this way:
 searches, in order:
 
 1. the Cone repository's own `packages/` (`core`, `stdio`, `libc`, `posix`,
-   `math3d`, `testing` and `collections` are there), then
+   `sdl`, `gl`, `math3d`, `testing` and `collections` are there), then
 2. each folder the **machine config** lists.
 
 The machine config is `config.toml` in the Congo home, which is the folder
@@ -272,9 +272,9 @@ winstr/
   `[link] paths` first, then where it always looks: on Windows the folders the
   `LIB` environment variable lists, which Visual Studio's environment sets to
   the Windows SDK's (so `opengl32`, `user32` or `shlwapi` need no path).
-- **Any package may have `[link]`**, a program's too: `samples/opengl` binds
-  SDL2 and OpenGL in submodules of its own and names both libraries in its own
-  manifest.
+- **Any package may have `[link]`**, a program's too. A program importing a C
+  package names nothing itself: `samples/opengl` imports `sdl` and `gl`, and
+  their manifests name `SDL2` and `opengl32`.
 
 A library that is not installed is the linker's to report, and Congo adds which
 package named which library.
@@ -287,6 +287,16 @@ allocator, so every build compiles `libc` first. `samples/oslayer` is a tour of
 both, and each package's source says what it binds and how. `math3d`, 3D math
 in Cone, is built on `libc` for its trigonometry, and its example is
 `packages/math3d/examples/tour.cone`.
+
+Two more bind libraries beyond the C runtime, and name them: `sdl` (SDL2: a
+window with an OpenGL context, its events and clock; `[link]` names `SDL2`,
+which is not part of the Windows SDK, so SDL2's `lib` folder must be on `LIB`,
+and `SDL2.dll` on `PATH` to run) and `gl` (OpenGL; `[link]` names `opengl32`,
+from the Windows SDK). OpenGL's functions newer than 1.1 are exported by no
+library: the driver hands out their addresses once a context exists, so `gl`
+holds a Cone body for each, calling through the address `gl.load` found, beside
+the `extern` declarations of the rest. Neither has a test that needs its
+library at run time, so testing `packages/` needs no display.
 
 ## Testing a package
 
