@@ -1,7 +1,11 @@
 /** Borrow freezing: the loan walk's client
  * @file
  *
- * A borrow held in a local freezes its source until the borrow's last use. A
+ * A borrow held in a local freezes its source until the borrow's last use: a
+ * source reached as 'uni' (a local, or through 'uni' references) against
+ * whatever the borrow's permission forbids; a source reached through a shared
+ * path (a 'mut' or 'ro' reference, a '+rc-mut' owner) only against ending,
+ * and against a borrow that would promise more than the path can. A
  * loan is one borrow of a place; a holder is a variable whose type carries a
  * borrow; an access is anything done to a place. At an access that conflicts
  * with a loan a holder still holds, a pending conflict is recorded against the
@@ -18,6 +22,9 @@
 
 // Start one function's walk: its loans and pending conflicts are its own
 void loanWalkBegin();
+
+// The access a borrow with the permission 'perm' makes of what it borrows
+int loanBorrowAccess(INode *perm);
 
 // The loan made by the borrow at 'site' of the place 'pl', with the permission
 // 'perm'. A site walked again (a loop body) makes the same loan.

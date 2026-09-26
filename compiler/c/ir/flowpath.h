@@ -42,11 +42,19 @@ int pathSetHas(PathSet *set, uint32_t id);
 // (a borrowed reference) points at, and a path of steps from it. Two places
 // overlap when they share a root and one path is a prefix of the other, step by
 // step: only two different fields are disjoint.
+//
+// A place is reached through a shared path when a reference on the way to it
+// -- the borrowed reference its root is read through, or an owning reference
+// a step dereferences -- may alias ('mut', 'ro', 'imm', 'opaq', 'mut1'), so
+// that other references may reach it too. A place reached through none is
+// reached as 'uni': a local, or through 'uni' references only.
 #define PlaceMaxSteps 6
 typedef struct {
     uint32_t var;       // the root variable's index in the walk
     uint8_t deref;      // 1: the root is what that variable, a borrowed reference, points at
     uint8_t nsteps;     // A path longer than PlaceMaxSteps is cut short, which only overlaps more
+    uint8_t shared;     // 1: reached through a shared path
+    uint8_t sharedlen;  // then, how many steps lead to the first reference that may alias (0: the root's)
     uintptr_t steps[PlaceMaxSteps];
 } Place;
 // A step is a field's name (a Name pointer, so even), a tuple element's index
@@ -58,8 +66,10 @@ typedef struct {
 // What an expression does to a place
 enum PathAccess {
     AccessRead,         // a copy out
-    AccessBorrow,       // a read-only borrow ('&', '&imm', '&ro')
-    AccessBorrowMut,    // a borrow that may write ('&mut', '&uni', '&mut1')
+    AccessBorrow,       // a read-only borrow others may change under ('&', '&ro')
+    AccessBorrowImm,    // a borrow promising the value never changes ('&imm')
+    AccessBorrowMut,    // a borrow that may write, and may alias ('&mut', '&mut1')
+    AccessBorrowUni,    // a borrow that may write, the only one ('&uni')
     AccessBorrowOpaq,   // an '&opaq' borrow: its address only
     AccessWrite,        // a store into it, or an operator that changes it in place
     AccessMove,         // a move-typed value taken to a new holder

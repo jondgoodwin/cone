@@ -128,6 +128,31 @@ generation, where the data layout exists.
 | `VirtRefTag` | — accepted unconditionally here; generation does the work |
 | struct | a struct carrying `SameSize` |
 
+**A reference narrowed from a sum type to a variant** (`RefTag` to `RefTag`,
+the from-type's referent a trait with `HasTagField` or `SameSize` — an enum, a
+tagged trait, an `Option`-shaped enum — and the to-type's another struct) is a
+reference into the value's payload, which a change of variant would reread as
+the wrong type (Jon's 2018 rule: for `mut` references to shape-changing types,
+no interior references). `castSumInterior` allows it when nothing can change
+the variant while the narrowed reference is used, and refuses it
+(`ErrorBadPerm`) otherwise:
+- the from-reference's permission has `MayIntRefSum` — `uni`, `imm`, `mut1`; or
+- it is a borrow made here of a place reached as `uni` (`castBorrowsUni`): the
+  `BorrowTag` itself (`&s into &Circle`) or the value of the hidden `_` variable
+  a `match` or bound `if` captures its scrutinee in, whose place
+  (`castUniPlace`) is a non-static variable of this function held by value, a
+  field or array element of one (not reached through a reference, slice or
+  pointer), or a dereference of a `uni` reference such a place holds. The loan
+  walk then freezes that place while the borrow, and the binding that holds its
+  loan, are used.
+
+Everything else — a parameter of reference type, a reborrow through a shared
+path, a field reached through a `mut` reference or a `+rc-mut` owner, a variable
+the program names holding a borrow (a copy of it would reach the local another
+way, which freezing does not follow) — is refused. This is a bound pattern's
+conversion, and `into` written out; the `is` test binds nothing and is not
+asked. A narrowing from a virtual reference is not asked either.
+
 A slice deliberately does **not** convert to an integer: the length and the data
 address are both candidates and both are spelled better already, as `s.len` and
 `p into usize`. Everything else is `ErrorInvType`.

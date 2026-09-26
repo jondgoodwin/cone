@@ -186,7 +186,11 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
   to `fnCallOpAssgn` too, and stage 3's reference arm never sees it. That is
   what makes the derivation an operator-assign is entitled to — `a += b`
   rewritten to `a = a + b` where the type declares no `+=` — reachable through
-  a reference as it is by value. Stage 3's arm loses nothing by not seeing it:
+  a reference as it is by value. `<-` is routed the same way (the parser flags
+  it `FlagOpAssgn` too) but has no base operator to be rewritten to
+  (`fnCallOpEqMethod` answers NULL), so a type that declares no `<-` is
+  reported `ErrorNoMbr` under `<-`, as any missing operator method is.
+  Stage 3's arm loses nothing by not seeing it:
   of the operator names, `refType` declares only the identity comparisons,
   `===` and `!==`.
 - **`===` and `!==` on a receiver that is neither a reference, a slice, a

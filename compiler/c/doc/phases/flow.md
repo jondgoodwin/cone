@@ -85,7 +85,11 @@ Put these first, because every one of them is load-bearing.
    by freezing its source.** The loan walk ("The loan walk", below) refuses a
    source touched while a borrow of it held in a local variable whose type is
    a borrowed reference is still to be used: changed, moved, ended, borrowed
-   in conflict, or, under a mutable borrow, read. Everything else is as it was:
+   in conflict, or, under a mutable borrow, read. That is for a source reached
+   as `uni`, a local's own storage above all; Cone's `mut` is shared, so a
+   source reached through a `&mut` or `&ro` reference or a `+rc-mut` owner is
+   only kept alive, and reading or writing it through another path is no
+   conflict. Everything else is as it was:
    a borrow a method returns (`list[0usize]`, `a.alloc(v)`), one held inside
    another value, and a method called through a reference freeze nothing, and
    two copies of one `&mut` may reach one place two ways. `borrowFlow`, in the
@@ -480,20 +484,57 @@ no case for, as `flowLoadValue` does.
 steps: a field, an element (any index — `a[0]` and `a[1]` overlap), a
 dereference of an owning reference. Two places overlap when they share a root
 and one path is a prefix of the other, step by step; only two different fields
-are disjoint. Nothing is tracked through a raw pointer. A *loan* is one borrow
-(`BorrowTag`, `ArrayBorrowTag`) of a place, the same loan each time a loop
-walks it again; it is *exclusive* when its permission has `MayWrite`, *shared*
-when it has `MayRead` only, and a *pin* (`opaq`) when it has neither. A *holder*
-is a local or a parameter whose type is a borrowed reference: it may hold
-loans. An *access* is what an expression does to a place:
+are disjoint. Nothing is tracked through a raw pointer.
+
+**Cone's `mut` is not Rust's `&mut`.** `uni` is Rust's `&mut` (one active
+reference); `mut` is shared mutable within a thread, `ro` a view others may
+change (`refperm.html`). So how a place is reached decides what a borrow of it
+may freeze. A place is reached **as `uni`** when no reference on the way to it
+may alias: a local (its only owner is the stack, whatever its declaration says),
+a field of one, or what a `uni` reference points at. It is reached through a
+**shared path** (`Place.shared`) when a reference on the way — the borrowed
+reference its root is read through, or an owning reference a step dereferences
+— has `MayAlias` (`mut`, `ro`, `imm`, `opaq`, `mut1`); `Place.sharedlen` is how
+many steps lead to that reference (0 when it is the root's). A dereference cut
+off by the step limit is not marked shared, so the place is held to the
+stricter rule.
+
+A *loan* is one borrow (`BorrowTag`, `ArrayBorrowTag`) of a place, the same
+loan each time a loop walks it again. Its kind comes from the borrow's
+permission and the place (`loanKindOf`):
+
+| Kind | Borrow | Of a place reached |
+| --- | --- | --- |
+| *exclusive* | `&mut`, `&mut1` / `&uni` | as `uni` / either way |
+| *shared* | `&ro` (the default `&`), `&imm` / `&imm` | as `uni` / through a shared path |
+| *alias* | `&mut`, `&mut1`, `&ro` | through a shared path |
+| *pin* | `&opaq` | either way |
+
+A *holder* is a local or a parameter whose type is a borrowed reference: it
+may hold loans. An *access* is what an expression does to a place:
 
 | Access | Conflicts with a live loan that is |
 | --- | --- |
 | a read, a copy out | exclusive |
-| a read-only borrow | exclusive |
-| a write — `=`, an operator changing it in place (`+=`, `++`, `<-`), one side of `<=>` — or a mutable borrow | shared or exclusive |
+| a read-only borrow (`&`, `&ro`) | exclusive |
+| an `&imm` borrow | exclusive, alias |
+| a write — `=`, an operator changing it in place (`+=`, `++`, `<-`), one side of `<=>` — or a `&mut`/`&mut1` borrow | shared or exclusive |
+| a `&uni` borrow | any but a pin |
 | a move, a replacement of the whole (its old value finalized), the end of its scope | any, a pin too |
 | an `&opaq` borrow | none |
+
+An alias loan needs only its source alive, and a borrow of it to promise no
+more than the path can: others may read and write it through the shared path
+anyway, so freezing it against them would protect nothing. But the part of the
+path *before* the shared reference — the field of a local holding a `+rc-mut`
+owner — is reached as `uni`, and the loan reads it: an access to a place with
+fewer steps than the loan's `sharedlen` meets an alias loan as a shared one, so
+`h.p = +rc-mut Pt[..]` or `&mut h.p` while `&mut h.p.x` is live is refused,
+since either could release what the borrow points into. A source reached
+through a borrowed reference is never ended by anything done here — reassigning
+`r` leaves `*r` alive — so an alias loan of `*r` conflicts with nothing a
+function can do but a `&uni` or `&imm` borrow, which the type check already
+refuses through a `mut` or `ro` reference (`ref_typecheck_perm`).
 
 A holder reaching its loan's source through the loan — `*b = 9`, `r.x` — uses
 the holder; it does not access the source.
@@ -570,7 +611,7 @@ the next; a variable's index is `VarDclNode.flowindex` for the length of a walk.
 | --- | --- | --- | --- |
 | **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable, and on a borrow of a moved-out one; move out of a field, or of a global, or out through a borrowed or a shared owning reference, refused | element granularity — moving `a[0]` deactivates all of `a`; conditional moves; loop-carried moves |
 | **Escape / lifetime** | representation in type check, enforcement here | storing a borrow into a longer-lived lval, by assignment or by either direction of a swap; returning a borrow of a local; a borrow arriving through a call's result, singly or as one of several values destructured into lvals, each carrying the narrowest argument borrow's scope; a `&mut &T` argument whose pointee would outlive another borrow passed with it; a borrow coerced to another reference type, whether widened to a base trait's reference or made a virtual reference | a borrow laundered through a variable and returned (kept past its source's scope and used, it is refused by freezing, below); a borrow stored in a field or captured; distinguishing parameter lifetimes — there is no lifetime annotation syntax |
-| **Freezing** | the loan walk, on a gated function | a borrow held in a local whose type is a borrowed reference, and its copies, freeze the source until the last use: `ErrorFrozen` at a change, a move, a conflicting borrow, the source's end, and, under a mutable borrow, a read | a borrow a call returns; a borrow held inside another value; a method called through a reference; two copies of one `&mut`; a global a callee changes |
+| **Freezing** | the loan walk, on a gated function | a borrow held in a local whose type is a borrowed reference, and its copies, freeze the source until the last use: `ErrorFrozen` at a change, a move, a conflicting borrow, the source's end, and, under a mutable borrow, a read — for a source reached as `uni`; for one reached through a shared path, only its owner's move, replacement or end, a change or mutable borrow of the owner where it is held, and an `&uni` or `&imm` borrow | a borrow a call returns; a borrow held inside another value; a method called through a reference; two copies of one `&mut`; a global a callee changes |
 | **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs and slices, of drop-fn structs and enums, and of tuples and arrays holding what finalizes or owns, from a jump down to the block it names | an array an element was moved out of leaks the rest; a variable moved out, or initialized, on only one path — see Hazards |
 | **Permission** | `MayWrite` and `MayRead` | `ErrorNoMut` on assignment and swap; `ErrorNoRead` on a read through a reference — a dereference, an index, or a field of a virtual reference | `MayAliasWrite`, `RaceSafe`, `IsLockless` are populated and read nowhere |
 | **Initialization** | yes | `ErrorMove` "has not been initialized" | "initialized on one branch" reads as initialized everywhere; a variable never initialized may be borrowed, so a method taking it `&mut` can fill it, and nothing then stops a field it left unset being read through the borrow; the unused-variable warning in `flow.h`'s header does not exist |

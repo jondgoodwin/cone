@@ -46,8 +46,11 @@ use Maybe;
 
 // -------- recovering the variant --------
 
-// Matching through a reference to the enum, binding the narrowed value
-fn read(m &Maybe) i32 {
+// Matching through a reference to the enum, binding the narrowed value. The
+// binding is a reference into the value, so the reference matched is '&imm':
+// through a 'mut' or 'ro' one, another reference could empty the value while
+// the binding is used.
+fn read(m &imm Maybe) i32 {
   match m {
     case imm j &Just {*j.p;}
     case imm n &Nothing {-1i32;}
@@ -64,7 +67,7 @@ fn present(m &Maybe) Bool {
 
 // -------- the shape through the generic Option --------
 
-fn readOption(o &Option[&i32]) i32 {
+fn readOption(o &imm Option[&i32]) i32 {
   match o {
     case imm s &Some[&i32] {*s.value;}
     else {-1i32;}
@@ -76,11 +79,11 @@ fn main() i32 {
   imm w = 7;
 
   // Both variants are ordinary values of the enum
-  mut some Maybe = Just[&v];
-  mut none Maybe = Nothing[];
+  imm some Maybe = Just[&v];
+  imm none Maybe = Nothing[];
 
-  show("match-reference-variant", read(&some));
-  show("match-empty-variant", read(&none));
+  show("match-reference-variant", read(&imm some));
+  show("match-empty-variant", read(&imm none));
   showB("is-reference-variant", present(&some));
   showB("is-empty-variant", present(&none));
 
@@ -97,17 +100,23 @@ fn main() i32 {
   show("field-write", *j.p);
 
   // A variant assigned into the enum and recovered from it again survives the
-  // round trip, which is the whole of what the representation must guarantee
+  // round trip, which is the whole of what the representation must guarantee.
+  // A 'mut' local lends only 'mut' and 'ro' references, so what is matched
+  // through '&imm' is an 'imm' copy of it.
   mut back Maybe = j;
-  show("round-trip", read(&back));
+  imm backNow = back;
+  show("round-trip", read(&imm backNow));
 
   // Assigning the other variant over it empties the same storage
   back = Nothing[];
-  show("reassigned-to-empty", read(&back));
+  imm backEmptied = back;
+  show("reassigned-to-empty", read(&imm backEmptied));
 
   mut opt Option[&i32] = Some[&v];
-  show("option-some", readOption(&opt));
+  imm optSome = opt;
+  show("option-some", readOption(&imm optSome));
   opt = None[&i32][];
-  show("option-none", readOption(&opt));
+  imm optNone = opt;
+  show("option-none", readOption(&imm optNone));
   0i32;
 }

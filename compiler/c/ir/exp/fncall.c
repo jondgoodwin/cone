@@ -1226,6 +1226,15 @@ void fnCallOpAssgn(TypeCheckState *pstate, FnCallNode **nodep) {
         return;
     }
 
+    // '<-' has no base operator to rewrite to, so a type that does not declare
+    // it is missing it, and is reported as any other missing operator method is
+    Name *basesym = fnCallOpEqMethod(methsym);
+    if (basesym == NULL) {
+        errorMsgNode((INode*)callnode, ErrorNoMbr, "Method or field `%s` not found.", &methsym->namestr);
+        callnode->vtype = errorType;
+        return;
+    }
+
     // Let's try rewriting to: {imm tmp = lval; *tmp = *tmp + expr}
     VarDclNode *tmpvar = newVarDclFull(tempName, VarDclTag, ((IExpNode*)callnode->objfn)->vtype, (INode*)immPerm, callnode->objfn);
     inodeLexCopy((INode*)tmpvar, (INode*)callnode);
@@ -1237,7 +1246,7 @@ void fnCallOpAssgn(TypeCheckState *pstate, FnCallNode **nodep) {
     derefInject(&derefvar);
     inodeLexCopy(derefvar, (INode*)callnode);
     callnode->objfn = derefvar;
-    methfld->namesym = fnCallOpEqMethod(methsym);
+    methfld->namesym = basesym;
     if (fnCallLowerMethod(pstate, callnode) == 0) {
         errorMsgNode((INode*)callnode, ErrorNoMeth,
             "No method/field named %s found that matches the call's arguments.",
