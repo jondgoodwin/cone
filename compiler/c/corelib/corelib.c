@@ -79,6 +79,7 @@ static FnDclNode *newStitchFn(char *name, int16_t intrinsic) {
 StructNode *regionRefTrait;
 StructNode *moveTrait;
 StructNode *copyTrait;
+StructNode *tracedTrait;
 
 // A trait the compiler declares, with no members, bound as a name every module
 // reaches unless it declares the name itself
@@ -90,7 +91,8 @@ static StructNode *newBuiltinTrait(Name *name) {
 }
 
 int corelibIsBuiltinTrait(INode *node) {
-    return node == (INode*)regionRefTrait || node == (INode*)moveTrait || node == (INode*)copyTrait;
+    return node == (INode*)regionRefTrait || node == (INode*)moveTrait || node == (INode*)copyTrait
+        || node == (INode*)tracedTrait;
 }
 
 // Set up the standard library, whose names are always shared by all modules
@@ -132,4 +134,10 @@ void stdlibInit(int ptrsize) {
     // where it moves after all (structCheckCopy).
     moveTrait = newBuiltinTrait(moveTraitName);
     copyTrait = newBuiltinTrait(copyTraitName);
+    // 'Traced', which a region ref declares beside 'RegionRef' to say that
+    // its references are found by tracing: a type's record carries a trace
+    // that hands each one to the region's 'mark', and where such a reference
+    // may be held is restricted to where a collector can find it
+    // (regionTracedCheckAll). Held to 'mark' by regionRefCheck.
+    tracedTrait = newBuiltinTrait(tracedTraitName);
 }

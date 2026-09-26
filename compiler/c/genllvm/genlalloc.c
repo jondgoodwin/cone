@@ -230,37 +230,202 @@ enum TypeRecordField {
     TypeRecSize,        // usize: the value's size
     TypeRecAlign,       // usize: the value's alignment
     TypeRecFinalize,    // &fn(p *u8): the value's death in place, less any free
-    TypeRecTrace,       // &fn(p *u8): its traced references, each handed to its region
+    TypeRecTrace,       // &fn(p *u8, mode u32): its traced references, each handed to its region's 'mark'
     TypeRecFlags,       // u32: TypeRecFlagFinal, TypeRecFlagTraced
     TypeRecFieldCount
 };
 #define TypeRecFlagFinal  1u    // finalizing the value does something
-#define TypeRecFlagTraced 2u    // the value holds a traced reference (none can yet)
+#define TypeRecFlagTraced 2u    // the value holds a traced reference (itypeHoldsTraced)
 
-// A function of type 'fntype' (a record slot's, 'fn(p *u8)') that does nothing:
-// what a record's finalizer is for a type with nothing to finalize, and every
-// record's trace, so neither slot is ever null. One per object.
-static LLVMValueRef genlTypeRecNothing(GenState *gen, LLVMTypeRef fntype) {
-    if (gen->tyrecnothing)
-        return gen->tyrecnothing;
-    LLVMValueRef fn = LLVMAddFunction(gen->module, "cone.tyrec.nothing", fntype);
+// A function of type 'fntype' (a record slot's) that does nothing, one per
+// object and slot, remembered at '*memo': 'cone.tyrec.nothing', what a
+// record's finalizer is for a type with nothing to finalize, and
+// 'cone.tyrec.untraced', what its trace is for a type holding no traced
+// reference, so neither slot is ever null
+static LLVMValueRef genlTypeRecNothing(GenState *gen, LLVMTypeRef fntype, LLVMValueRef *memo, char *name) {
+    if (*memo)
+        return *memo;
+    LLVMValueRef fn = LLVMAddFunction(gen->module, name, fntype);
     LLVMSetLinkage(fn, LLVMPrivateLinkage);
     LLVMBuilderRef builder = LLVMCreateBuilderInContext(gen->context);
     LLVMPositionBuilderAtEnd(builder, LLVMAppendBasicBlockInContext(gen->context, fn, "entry"));
     LLVMBuildRet(builder, LLVMGetUndef(LLVMGetReturnType(fntype)));
     LLVMDisposeBuilder(builder);
-    return gen->tyrecnothing = fn;
+    return *memo = fn;
 }
 
-// The finalizer a record holds for 'vtype': a function of type 'fntype' whose
-// body is the value's death in place at the address it is handed, as
-// 'mem.finalize' expands it (genlFinalizeAt): its 'final', its fields that
-// need it, then the owners it holds. It is generated as a function of its own,
-// so the generator's state for the function being generated is set aside
-// around it, as genlFn does for a nested one.
-static LLVMValueRef genlTypeRecFinalizer(GenState *gen, INode *vtype, LLVMTypeRef fntype, uint32_t index) {
-    char name[64];
-    sprintf(name, "cone.tyrec.final.%u", index);
+static LLVMValueRef genlRegionHeader(GenState *gen, LLVMValueRef valptr, RefNode *refnode);
+
+// The mode the trace being expanded was called in, handed on to each 'mark'
+// that takes it; set around genlTraceAt's walk, which genlEachElem's action
+// cannot be handed
+static LLVMValueRef genlTraceMode = NULL;
+
+// A traced reference is handed to its region's 'mark' as the header of what it
+// points at -- with, where 'mark' asks for them, the reference's permission,
+// a constant (its PermNode flags: MayRead 1, MayWrite 2, MayAlias 4,
+// MayAliasWrite 8, RaceSafe 16, MayIntRefSum 32, IsLockless 64), and the mode
+// the trace was called in. A null reference (a root not yet assigned, an
+// absent option) is passed over.
+static void genlTraceRef(GenState *gen, LLVMValueRef refptr, RefNode *refnode) {
+    FnDclNode *markmeth = regionMethod(refnode->region, markMethodName);
+    LLVMValueRef ref = LLVMBuildLoad2(gen->builder, genlType(gen, (INode*)refnode), refptr, "tracedref");
+    // Each is placed just after the current block, so the mark lands before its join
+    LLVMBasicBlockRef doneblk = genlInsertBlock(gen, "marked");
+    LLVMBasicBlockRef markblk = genlInsertBlock(gen, "mark");
+    LLVMBuildCondBr(gen->builder, LLVMBuildIsNotNull(gen->builder, ref, "present"), markblk, doneblk);
+    LLVMPositionBuilderAtEnd(gen->builder, markblk);
+    LLVMValueRef args[3];
+    uint32_t nargs = 1;
+    args[0] = genlRegionHeader(gen, ref, refnode);
+    if (regionMarkTakesContext(refnode->region)) {
+        INode *perm = itypeGetTypeDcl(refnode->perm);
+        LLVMTypeRef u32 = LLVMInt32TypeInContext(gen->context);
+        args[nargs++] = LLVMConstInt(u32, perm->tag == PermTag ? permGetFlags(perm) : 0, 0);
+        args[nargs++] = genlTraceMode;
+    }
+    genlFnCallInternal(gen, SimpleDispatch, (INode*)markmeth, nargs, args, NULL);
+    LLVMBuildBr(gen->builder, doneblk);
+    LLVMPositionBuilderAtEnd(gen->builder, doneblk);
+}
+
+static void genlTraceWalk(GenState *gen, LLVMValueRef valptr, INode *vtype);
+
+static void genlTraceElem(GenState *gen, LLVMValueRef elemptr, INode *elemtype, long long amount) {
+    genlTraceWalk(gen, elemptr, elemtype);
+}
+
+// The fields of the struct 'strnode' at 'valptr' that hold a traced reference,
+// each traced where it sits
+static void genlTraceFields(GenState *gen, LLVMValueRef valptr, StructNode *strnode) {
+    LLVMTypeRef strtype = genlType(gen, (INode*)strnode);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode *)*nodesp;
+        if (itypeHoldsTraced(field->vtype))
+            genlTraceWalk(gen, LLVMBuildStructGEP2(gen->builder, strtype, valptr, field->index, &field->namesym->namestr), field->vtype);
+    }
+}
+
+// The value an enum (or a closed trait held by value) at 'valptr' holds is
+// whichever variant its tag says, and only that variant's fields are traced:
+// the same dispatch its generated drop makes (genlEnumDrop). The nullable
+// pointer layout has no tag: the value is the one variant's reference, and
+// null is the empty variant.
+static void genlTraceVariants(GenState *gen, LLVMValueRef valptr, StructNode *enumnode) {
+    INode **nodesp;
+    uint32_t cnt;
+    if (enumnode->flags & NullablePtr) {
+        for (nodesFor(enumnode->derived, cnt, nodesp)) {
+            StructNode *variant = (StructNode *)*nodesp;
+            if (variant->fields.used != 2)
+                continue;
+            RefNode *reftype = (RefNode *)itypeGetTypeDcl(((FieldDclNode *)nodelistGet(&variant->fields, 1))->vtype);
+            if (reftype->tag == RefTag && regionIsTraced(reftype->region))
+                genlTraceRef(gen, valptr, reftype);
+        }
+        return;
+    }
+    FieldDclNode *tagfld = NULL;
+    for (nodelistFor(&enumnode->fields, cnt, nodesp)) {
+        if ((*nodesp)->flags & IsTagField)
+            tagfld = (FieldDclNode*)*nodesp;
+    }
+    if (tagfld == NULL)
+        return;
+    LLVMTypeRef enumtype = genlType(gen, (INode*)enumnode);
+    LLVMTypeRef tagtype = genlType(gen, tagfld->vtype);
+    LLVMValueRef tagptr = LLVMBuildStructGEP2(gen->builder, enumtype, valptr, tagfld->index, "tagref");
+    LLVMValueRef tag = LLVMBuildLoad2(gen->builder, tagtype, tagptr, "tag");
+    LLVMBasicBlockRef doneblk = genlInsertBlock(gen, "tracedone");
+    LLVMValueRef dispatch = LLVMBuildSwitch(gen->builder, tag, doneblk, enumnode->derived->used);
+    for (nodesFor(enumnode->derived, cnt, nodesp)) {
+        StructNode *variant = (StructNode *)*nodesp;
+        if (!itypeHoldsTraced((INode*)variant))
+            continue;
+        LLVMBasicBlockRef caseblk = genlInsertBlock(gen, "tracevariant");
+        LLVMAddCase(dispatch, LLVMConstInt(tagtype, variant->tagnbr, 0), caseblk);
+        LLVMPositionBuilderAtEnd(gen->builder, caseblk);
+        genlTraceFields(gen, valptr, variant);
+        LLVMBuildBr(gen->builder, doneblk);
+    }
+    LLVMPositionBuilderAtEnd(gen->builder, doneblk);
+}
+
+// Walk the value of type 'vtype' at 'valptr', statically and completely, and
+// hand each traced reference it holds inline to its region's 'mark': a
+// reference into a traced region; a tuple's elements and a struct's fields
+// that hold one; each element of a fixed-size array whose element type does,
+// in a loop; the variant an enum's tag picks. It stops at every other
+// reference and every pointer: the placement rules keep a traced reference
+// from hiding behind them (regionTracedCheckAll).
+static void genlTraceWalk(GenState *gen, LLVMValueRef valptr, INode *vtype) {
+    INode *typedcl = itypeGetTypeDcl(vtype);
+    switch (typedcl->tag) {
+    case RefTag:
+        // An owning slice or virtual reference into a traced region is refused
+        // (ErrorTracedRefKind), so a traced reference is a single one
+        if (regionIsTraced(((RefNode *)typedcl)->region))
+            genlTraceRef(gen, valptr, (RefNode *)typedcl);
+        return;
+    case TTupleTag:
+    {
+        LLVMTypeRef tupllvm = genlType(gen, typedcl);
+        INode **elemp;
+        uint32_t cnt;
+        unsigned index = 0;
+        for (nodesFor(((TupleNode *)typedcl)->elems, cnt, elemp)) {
+            if (itypeHoldsTraced(*elemp))
+                genlTraceWalk(gen, LLVMBuildStructGEP2(gen->builder, tupllvm, valptr, index, "tupelem"), *elemp);
+            ++index;
+        }
+        return;
+    }
+    case ArrayTag:
+    {
+        INode *elemtype = arrayElemType(typedcl);
+        if (!itypeHoldsTraced(elemtype))
+            return;
+        LLVMValueRef count;
+        LLVMValueRef first = genlArrayFirst(gen, valptr, typedcl, &count);
+        genlEachElem(gen, first, count, elemtype, genlTraceElem, 0);
+        return;
+    }
+    case StructTag:
+    {
+        StructNode *strnode = (StructNode *)typedcl;
+        if (strnode->derived)
+            genlTraceVariants(gen, valptr, strnode);
+        else
+            genlTraceFields(gen, valptr, strnode);
+        return;
+    }
+    default:
+        return;
+    }
+}
+
+// Hand each traced reference the value of type 'vtype' at 'valptr' holds to
+// its region's 'mark', with 'mode' where 'mark' takes it: what 'mem.trace'
+// expands to, and the body of a record's trace. Nothing, for a type holding
+// no traced reference.
+void genlTraceAt(GenState *gen, LLVMValueRef valptr, INode *vtype, LLVMValueRef mode) {
+    if (!itypeHoldsTraced(vtype))
+        return;
+    LLVMValueRef svmode = genlTraceMode;
+    genlTraceMode = mode;
+    genlTraceWalk(gen, valptr, vtype);
+    genlTraceMode = svmode;
+}
+
+// A record's function for 'vtype' (its finalizer or its trace), of type
+// 'fntype' and named 'name': 'body' generates what it does to the value at its
+// first parameter. It is generated as a function of its own, so the
+// generator's state for the function being generated is set aside around it,
+// as genlFn does for a nested one.
+typedef void (*GenlTypeRecBody)(GenState *gen, LLVMValueRef fn, INode *vtype);
+static LLVMValueRef genlTypeRecFn(GenState *gen, INode *vtype, LLVMTypeRef fntype, char *name, GenlTypeRecBody body) {
     LLVMValueRef fn = LLVMAddFunction(gen->module, name, fntype);
     LLVMSetLinkage(fn, LLVMPrivateLinkage);
 
@@ -274,7 +439,7 @@ static LLVMValueRef genlTypeRecFinalizer(GenState *gen, INode *vtype, LLVMTypeRe
     gen->exitzero = 0;
 
     // A call it makes to an inlinable function needs a location in a debug
-    // build, so the finalizer has a subprogram, placed at the type
+    // build, so the function has a subprogram, placed at the type
     INode *typedcl = itypeGetTypeDcl(vtype);
     if (!gen->opt->release) {
         LLVMMetadataRef sptype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, gen->difile, NULL, 0, 0);
@@ -291,7 +456,7 @@ static LLVMValueRef genlTypeRecFinalizer(GenState *gen, INode *vtype, LLVMTypeRe
     }
     gen->allocaPoint = LLVMBuildAlloca(gen->builder, LLVMInt32TypeInContext(gen->context), "alloca_point");
 
-    genlFinalizeAt(gen, LLVMGetParam(fn, 0), vtype);
+    body(gen, fn, vtype);
     LLVMBuildRet(gen->builder, LLVMGetUndef(LLVMGetReturnType(fntype)));
 
     if (LLVMGetInstructionParent(gen->allocaPoint))
@@ -305,23 +470,44 @@ static LLVMValueRef genlTypeRecFinalizer(GenState *gen, INode *vtype, LLVMTypeRe
     return fn;
 }
 
+// The finalizer's body: the value's death in place at the address it is
+// handed, as 'mem.finalize' expands it (genlFinalizeAt): its 'final', its
+// fields that need it, then the owners it holds
+static void genlTypeRecFinalBody(GenState *gen, LLVMValueRef fn, INode *vtype) {
+    genlFinalizeAt(gen, LLVMGetParam(fn, 0), vtype);
+}
+
+// The trace's body: each traced reference in the value at the address it is
+// handed, given to its region's 'mark' with the mode it was called in, as
+// 'mem.trace' expands it (genlTraceAt)
+static void genlTypeRecTraceBody(GenState *gen, LLVMValueRef fn, INode *vtype) {
+    genlTraceAt(gen, LLVMGetParam(fn, 0), vtype, LLVMGetParam(fn, 1));
+}
+
 // Whether core's TypeRecord is laid out as the compiler fills it: two usizes,
-// two pointers to functions taking one pointer, and a u32
-static int genlTypeRecLayoutOk(GenState *gen, LLVMTypeRef rectype, LLVMTypeRef fntype) {
+// two pointers to functions, and a u32; the finalizer's function taking a
+// pointer, the trace's a pointer and a u32
+static int genlTypeRecLayoutOk(GenState *gen, LLVMTypeRef rectype, LLVMTypeRef finaltype, LLVMTypeRef tracetype) {
     if (LLVMGetTypeKind(rectype) != LLVMStructTypeKind || LLVMCountStructElementTypes(rectype) != TypeRecFieldCount)
         return 0;
     LLVMTypeRef usize = genlType(gen, (INode*)usizeType);
+    LLVMTypeRef u32 = LLVMInt32TypeInContext(gen->context);
+    LLVMTypeRef traceparms[2];
+    if (tracetype == NULL || LLVMCountParamTypes(tracetype) != 2)
+        return 0;
+    LLVMGetParamTypes(tracetype, traceparms);
     return LLVMStructGetTypeAtIndex(rectype, TypeRecSize) == usize
         && LLVMStructGetTypeAtIndex(rectype, TypeRecAlign) == usize
         && LLVMGetTypeKind(LLVMStructGetTypeAtIndex(rectype, TypeRecFinalize)) == LLVMPointerTypeKind
         && LLVMGetTypeKind(LLVMStructGetTypeAtIndex(rectype, TypeRecTrace)) == LLVMPointerTypeKind
-        && LLVMStructGetTypeAtIndex(rectype, TypeRecFlags) == LLVMInt32TypeInContext(gen->context)
-        && fntype != NULL && LLVMCountParamTypes(fntype) == 1;
+        && LLVMStructGetTypeAtIndex(rectype, TypeRecFlags) == u32
+        && finaltype != NULL && LLVMCountParamTypes(finaltype) == 1
+        && LLVMGetTypeKind(traceparms[0]) == LLVMPointerTypeKind && traceparms[1] == u32;
 }
 
-// The function type a record's finalize and trace slots point at: 'fn(p *u8)',
-// read from core's declaration of the slot, so a call through it is typed as
-// the slot is
+// The function type a record's finalize or trace slot points at: 'fn(p *u8)',
+// or 'fn(p *u8, mode u32)', read from core's declaration of the slot, so a
+// call through it is typed as the slot is
 static LLVMTypeRef genlTypeRecSlotFnType(GenState *gen, StructNode *recnode, unsigned index) {
     if (recnode->fields.used != TypeRecFieldCount)
         return NULL;
@@ -336,9 +522,11 @@ static LLVMTypeRef genlTypeRecSlotFnType(GenState *gen, StructNode *recnode, uns
 // region's 'alloc(size usize, ty *TypeRecord)' is handed and what
 // 'mem.typeRecord[T]()' is the address of. Its size and alignment are the
 // target's (as mem.sizeof and mem.alignof); its finalizer is the value's death
-// in place (genlTypeRecFinalizer), or the shared do-nothing function where
-// finalizing does nothing, which its flags say too; its trace is the
-// do-nothing function until traced references exist. Built once per type in
+// in place (genlTypeRecFinalBody), or the shared do-nothing function where
+// finalizing does nothing, which its flags say too; its trace hands each
+// traced reference the value holds to its region's 'mark' (genlTypeRecTraceBody),
+// or is the shared do-nothing trace where it holds none, which its flags say
+// too. Built once per type in
 // each object, so two objects hold two records of one type: nothing compares
 // records by address. 'recptrtype' is the '*TypeRecord' the caller declared,
 // which names the struct to build.
@@ -352,12 +540,12 @@ LLVMValueRef genlTypeRecord(GenState *gen, INode *vtype, INode *recptrtype) {
     LLVMTypeRef rectype = genlType(gen, (INode*)recnode);
     LLVMTypeRef finaltype = genlTypeRecSlotFnType(gen, recnode, TypeRecFinalize);
     LLVMTypeRef tracetype = genlTypeRecSlotFnType(gen, recnode, TypeRecTrace);
-    if (!genlTypeRecLayoutOk(gen, rectype, finaltype) || tracetype != finaltype)
+    if (!genlTypeRecLayoutOk(gen, rectype, finaltype, tracetype))
         errorExit(ExitGen, "Internal error: core's TypeRecord is not laid out as the compiler fills it: "
-            "'size usize; align usize; finalize &fn(p *u8); trace &fn(p *u8); flags u32;'");
+            "'size usize; align usize; finalize &fn(p *u8); trace &fn(p *u8, mode u32); flags u32;'");
 
-    // The record is remembered before its finalizer is generated, which may
-    // ask for records of its own, this one among them
+    // The record is remembered before its finalizer and trace are generated,
+    // which may ask for records of their own, this one among them
     uint32_t index = gen->tyreccnt;
     char name[64];
     sprintf(name, "cone.tyrec.%u", index);
@@ -381,14 +569,26 @@ LLVMValueRef genlTypeRecord(GenState *gen, INode *vtype, INode *recptrtype) {
     gen->tyreccnt = index + 1;
 
     int needsfinal = itypeNeedsFinal(vtype);
+    int traced = itypeHoldsTraced(vtype);
     LLVMTypeRef valtype = genlType(gen, vtype);
     LLVMTypeRef usize = genlType(gen, (INode*)usizeType);
     LLVMValueRef fields[TypeRecFieldCount];
     fields[TypeRecSize] = LLVMConstInt(usize, LLVMABISizeOfType(gen->datalayout, valtype), 0);
     fields[TypeRecAlign] = LLVMConstInt(usize, LLVMABIAlignmentOfType(gen->datalayout, valtype), 0);
-    fields[TypeRecFinalize] = needsfinal ? genlTypeRecFinalizer(gen, vtype, finaltype, index) : genlTypeRecNothing(gen, finaltype);
-    fields[TypeRecTrace] = genlTypeRecNothing(gen, tracetype);
-    fields[TypeRecFlags] = LLVMConstInt(LLVMInt32TypeInContext(gen->context), needsfinal ? TypeRecFlagFinal : 0, 0);
+    if (needsfinal) {
+        sprintf(name, "cone.tyrec.final.%u", index);
+        fields[TypeRecFinalize] = genlTypeRecFn(gen, vtype, finaltype, name, genlTypeRecFinalBody);
+    }
+    else
+        fields[TypeRecFinalize] = genlTypeRecNothing(gen, finaltype, &gen->tyrecnothing, "cone.tyrec.nothing");
+    if (traced) {
+        sprintf(name, "cone.tyrec.trace.%u", index);
+        fields[TypeRecTrace] = genlTypeRecFn(gen, vtype, tracetype, name, genlTypeRecTraceBody);
+    }
+    else
+        fields[TypeRecTrace] = genlTypeRecNothing(gen, tracetype, &gen->tyrecuntraced, "cone.tyrec.untraced");
+    fields[TypeRecFlags] = LLVMConstInt(LLVMInt32TypeInContext(gen->context),
+        (needsfinal ? TypeRecFlagFinal : 0) | (traced ? TypeRecFlagTraced : 0), 0);
     LLVMSetInitializer(record, LLVMConstNamedStruct(rectype, fields, TypeRecFieldCount));
     return record;
 }

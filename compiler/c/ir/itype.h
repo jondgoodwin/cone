@@ -60,6 +60,16 @@ INode *itypeGetDerefTypeDcl(INode *node);
 // Remembered per struct once the struct is type checked.
 int itypeCarriesBorrow(INode *type);
 
+// Does a value of this type hold a traced reference where it sits: a reference
+// into a region declaring 'Traced', or a tuple, array, struct or enum holding
+// one inline (not through another reference or a pointer)? Remembered per
+// struct once the struct is type checked.
+int itypeHoldsTraced(INode *type);
+
+// Does a value of this type hold a borrowed reference (not a function's) where
+// it sits, inline rather than through an owning reference or a pointer?
+int itypeHoldsBorrow(INode *type);
+
 // Look for named field/method in type
 INode *iTypeFindFnField(INode *type, Name *name);
 

@@ -173,8 +173,8 @@ pub struct TypeRecord {
   pub size usize;              // sizeof[T]()
   pub align usize;             // alignof[T]()
   pub finalize &amp;fn(p *u8);     // what finalize[T] does to the T at p
-  pub trace &amp;fn(p *u8);        // for a tracing region; does nothing yet
-  pub flags u32;               // bit 0: needsFinal[T](); bit 1: never set yet
+  pub trace &amp;fn(p *u8, mode u32);  // what trace[T] does to the T at p
+  pub flags u32;               // bit 0: needsFinal[T](); bit 1: holdsTraced[T]()
 }
 </pre>
 	<p><span class="pre">size</span> and <span class="pre">align</span> are what
@@ -184,9 +184,11 @@ pub struct TypeRecord {
 		does to it, with the same needs: a live, initialized <span class="pre">T</span>
 		there, dead afterwards. Where <span class="pre">T</span> needs no finalizing it is a
 		function that does nothing, and bit 0 of <span class="pre">flags</span> is clear, so
-		a caller can skip the call. <span class="pre">trace</span> is meant for a tracing
-		collector, to find the traced references a value holds; since none can be declared
-		yet, it does nothing, and bit 1 of <span class="pre">flags</span> is never set.
+		a caller can skip the call. <span class="pre">trace</span> is a function that,
+		called with the address of a <span class="pre">T</span> and a mode, does exactly
+		what <span class="pre">trace[T]</span> does to it: what a tracing collector calls
+		to find the traced references a value holds. Where <span class="pre">T</span> holds
+		none it does nothing, and bit 1 of <span class="pre">flags</span> is clear.
 		Neither function pointer is ever null.</p>
 <pre>
 imm rec = mem.typeRecord[Point]() as &amp;TypeRecord;
@@ -198,6 +200,37 @@ fin(p as *u8);          // p's Point dies where it sits
 		can also be handed the record of every value it allocates, by declaring its
 		<span class="pre">alloc</span> to take one (<a href="refalloccust.html">Custom
 		Allocators</a>). A constant. No fallback.</p>
+
+	<h3>holdsTraced</h3>
+<pre>
+fn @intrinsic holdsTraced[T]() Bool
+</pre>
+	<p>Whether a <span class="pre">T</span> holds a <b>traced reference</b> where it
+		sits: whether <span class="pre">T</span> is a reference into a region that declares
+		<span class="pre">Traced</span> (<a href="refalloccust.html">Custom Allocators</a>),
+		or a struct, tuple, fixed-size array or enum holding one inline. What any other
+		reference or a raw pointer points at is not part of the value, so a struct
+		holding an <span class="pre">+rc</span> reference to a value holding traced
+		references does not itself hold one. A constant. No fallback.</p>
+
+	<h3>trace</h3>
+<pre>
+fn @intrinsic trace[T](p *T, mode u32)
+</pre>
+	<p>Hands each traced reference the <span class="pre">T</span> at
+		<span class="pre">p</span> holds to its region's <span class="pre">mark</span>: a
+		struct's fields in field order, recursively; a tuple's elements in order; a
+		fixed-size array's elements in element order; an enum's fields as the variant it
+		holds. A reference that is null (an <span class="pre">Option</span> holding
+		<span class="pre">None</span>) is passed over. Where the region's
+		<span class="pre">mark</span> takes them, it is also handed the reference's
+		permission and <span class="pre">mode</span>, which means whatever the region's
+		collector wants it to: the compiler only passes it on. For a type holding no
+		traced reference (<span class="pre">holdsTraced[T]()</span> is false) it does
+		nothing.</p>
+	<p>Needs trust: <span class="pre">p</span> must point at a live, initialized
+		<span class="pre">T</span>. No fallback: the walk the compiler builds for
+		<span class="pre">T</span> is the implementation.</p>
 
 	<h3>sliceFromParts and sliceFromPartsMut</h3>
 <pre>
@@ -241,6 +274,11 @@ fn @intrinsic writeRaw[T](p *T, value T)
 		<span class="pre">T</span> and point into memory the caller may write. If the slot
 		held a live value, that value is simply forgotten, never finalized. No fallback:
 		nothing written in Cone stores without releasing.</p>
+	<p>A <span class="pre">T</span> holding a traced reference is refused, and so it is
+		for <span class="pre">moveRaw</span>: memory placed this way is an arena's, a
+		pool's or a collection's, which no collector traces. Where the call is in a
+		generic's body, the refusal is reported where the program chose the type, as at
+		<span class="pre">List[+gc-mut Node]</span>.</p>
 
 	<h3>moveRaw</h3>
 <pre>

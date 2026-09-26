@@ -82,11 +82,14 @@ pub struct TypeRecord {
   // what 'mem.finalize' runs. A function that does nothing where the type
   // needs no finalizing, which bit 0 of 'flags' also says
   pub finalize &fn(p *u8);
-  // For every traced reference the value holds, tell its region. None can be
-  // declared yet, so this is always a function that does nothing
-  pub trace &fn(p *u8);
+  // Every traced reference the value holds where it sits (a reference into a
+  // region declaring 'Traced'), handed to its region's 'mark', called with its
+  // address and a mode the region's collector chooses, which 'mark' is handed
+  // on: what 'mem.trace' runs. A function that does nothing where the type
+  // holds none, which bit 1 of 'flags' also says
+  pub trace &fn(p *u8, mode u32);
   // Bit 0: finalizing the value does something. Bit 1: the value holds a
-  // traced reference (never set yet)
+  // traced reference
   pub flags u32;
 }
 
@@ -116,8 +119,13 @@ pub struct @opaque mem {
   pub fn @intrinsic needsFinal[T]() Bool;
   // Run the death of the T at p where it sits, without freeing its memory
   pub fn @intrinsic finalize[T](p *T);
-  // T's record: its size, its alignment, its finalizer. A constant
+  // T's record: its size, its alignment, its finalizer, its trace. A constant
   pub fn @intrinsic typeRecord[T]() *TypeRecord;
+  // Whether a T holds a traced reference where it sits: a constant
+  pub fn @intrinsic holdsTraced[T]() Bool;
+  // Hand every traced reference in the T at p to its region's 'mark', with
+  // mode where 'mark' takes it
+  pub fn @intrinsic trace[T](p *T, mode u32);
   // A slice of the len values starting at p
   pub fn @intrinsic sliceFromParts[T](p *T, len usize) &[]T;
   pub fn @intrinsic sliceFromPartsMut[T](p *T, len usize) &[]mut T;

@@ -94,7 +94,9 @@ extern Name *initMethodName;   // "init"
 extern Name *aliasMethodName;  // "alias"
 extern Name *dealiasMethodName; // "dealias"
 extern Name *freeMethodName;   // "free"
+extern Name *markMethodName;   // "mark", which a traced region's trace calls
 extern Name *regionRefName;    // "RegionRef"
+extern Name *tracedTraitName;  // "Traced", a region ref whose references are traced
 
 // The built-in marker traits every type has exactly one of (corelib.c)
 extern Name *moveTraitName;    // "Move"

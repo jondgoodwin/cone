@@ -1,0 +1,92 @@
+// What a region ref declaring 'Traced' promises, checked where it is declared.
+//
+// 'Traced' is a built-in trait beside 'RegionRef', 'Move' and 'Copy'. A region
+// ref declares it to say that its references are traced: a type's record
+// carries a trace that hands each one a value holds to the region's 'mark'. So
+// it promises a 'mark' of a shape the trace calls -- '(self &uni R)', or
+// '(self &uni R, perm u32, mode u32)' to be told each reference's permission and
+// the trace's mode -- returning nothing. A traced region is not 'Move': one
+// owner deciding each value's death leaves a collector nothing to find. Only a
+// region ref may declare it.
+//
+// Each diagnostic lands on the offending declaration: the struct, or its
+// 'mark'. What a traced reference may be held in is region_typecheck_traced_place.
+
+mod region_typecheck_traced;
+
+struct Leaf { pub n i32; }
+
+// Accepted: each shape of 'mark', and a traced region with 'dealias' (a
+// counted and traced region, whose count the collector may read)
+struct shortMark is RegionRef, Traced {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn mark(self &uni shortMark) { }
+}
+
+struct longMark is RegionRef, Traced {
+  fn alloc(size usize, ty *TypeRecord) *u8 inline { malloc(size); }
+  fn mark(self &uni longMark, perm u32, mode u32) { }
+}
+
+struct counted is RegionRef, Traced {
+  pub count usize;
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn init() counted { counted[1usize]; }
+  fn alias(self &uni counted) { count = count + 1usize; }
+  fn dealias(self &uni counted) Bool { count = count - 1usize; count == 0usize; }
+  fn mark(self &uni counted) { }
+}
+
+// A trace hands its region each reference it finds, through 'mark'
+struct noMark is RegionRef, Traced {   //~ ErrorTracedMark "through a method it has not declared"
+  fn alloc(size usize) *u8 inline { malloc(size); }
+}
+
+struct markReturns is RegionRef, Traced {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn mark(self &uni markReturns) Bool { true; }   //~ ErrorRegionMeth "mark must be declared"
+}
+
+struct markTwoParms is RegionRef, Traced {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn mark(self &uni markTwoParms, perm u32) { }   //~ ErrorRegionMeth "mark must be declared"
+}
+
+struct markWideMode is RegionRef, Traced {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn mark(self &uni markWideMode, perm u32, mode u64) { }   //~ ErrorRegionMeth "mark must be declared"
+}
+
+struct markStatic is RegionRef, Traced {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn mark(p *u8) { }   //~ ErrorRegionMeth "mark must be declared"
+}
+
+// One owner per value, and a collector, contradict each other
+struct movedTraced is RegionRef, Move, Traced {   //~ ErrorRegionSet "is not Move"
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn mark(self &uni movedTraced) { }
+}
+
+// Only a region ref declares it
+struct notRegion is Traced {   //~ ErrorTracedUse "Only a region ref may declare Traced"
+  pub n i32;
+}
+
+trait tracedTrait is Traced {   //~ ErrorTracedUse "Only a region ref may declare Traced"
+  fn f(self &) i32;
+}
+
+// A region ref that does not declare 'Traced' may have a 'mark' of any shape:
+// it is an ordinary method the compiler never calls
+struct untracedMark is RegionRef {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn mark(self &uni untracedMark) Bool { true; }
+}
+
+fn main() {
+  imm a = +shortMark-mut Leaf[1i32];
+  imm b = +longMark-mut Leaf[2i32];
+  imm c = +counted-mut Leaf[3i32];
+  imm d = +untracedMark-mut Leaf[4i32];
+}

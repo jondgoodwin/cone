@@ -891,6 +891,7 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
     gen->tyrecs = NULL;
     gen->tyreccnt = gen->tyrecmax = 0;
     gen->tyrecnothing = NULL;
+    gen->tyrecuntraced = NULL;
 
     // First, generate global symbols for all modules, so that forward references succeed
     INode **nodesp;
