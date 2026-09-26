@@ -185,7 +185,12 @@ A region ref is a struct declaring `is RegionRef`, which `refTypeCheck`,
 `arrayRefTypeCheck` and `refvirtTypeCheck` each require of an owning
 reference's region (`refRegionCheck`, `ErrorNotRegion`); `so` and `rc` are
 ordinary Cone declarations in the core package, `packages/core/src/core.cone`,
-not compiler built-ins ([What a region is](module.md)).
+not compiler built-ins ([What a region is](module.md)). A region slot naming
+something other than a type (a function, say) is reported twice, as no type and
+as no struct, and `refRegionCheck` then puts the error type in the slot, since the
+reference type is still hashed and asked whether it moves; an allocation asks
+before that, so `refAdoptInfections` and `regionDcl` pass over a slot that is no
+type.
 
 ### Matching
 

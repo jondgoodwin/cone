@@ -70,7 +70,10 @@ INode *cloneRefNode(CloneState *cstate, RefNode *node) {
 void refAdoptInfections(RefNode *refnode) {
     if (refnode->perm == NULL || refnode->vtexp == unknownType)
         return;  // Wait until we have this info
-    if (!(permGetFlags(refnode->perm) & MayAlias) || itypeIsMove(refnode->region))
+    // A region slot naming something other than a type is reported by
+    // refTypeCheck, and says nothing about moving
+    if (!(permGetFlags(refnode->perm) & MayAlias)
+        || (isTypeNode(refnode->region) && itypeIsMove(refnode->region)))
         refnode->flags |= MoveType;
     // Unwrap the permission before comparing: a permission written in source is
     // a name use wrapping the singleton, which is why the MayAlias test above
@@ -138,10 +141,20 @@ void refNameRes(NameResState *pstate, RefNode *node) {
 }
 
 // An owning reference's region is a struct declaring 'is RegionRef': that is
-// what says the compiler may call its methods at each reference event
-void refRegionCheck(INode *region) {
+// what says the compiler may call its methods at each reference event.
+// A slot naming something other than a type (itypeTypeCheck has said so) is
+// reported again here, where it was written, as no struct; the reference type
+// is still hashed and asked about, which only a type may be, so the slot
+// holds the error type from here on.
+void refRegionCheck(INode **regionp) {
+    INode *region = *regionp;
     if (region == borrowRef)
         return;
+    if (!isTypeNode(region)) {
+        errorMsgNode(region, ErrorInvType, "Reference's region must be a struct type.");
+        *regionp = errorType;
+        return;
+    }
     INode *dcl = itypeGetTypeDcl(region);
     if (dcl->tag != StructTag)
         errorMsgNode(region, ErrorInvType, "Reference's region must be a struct type.");
@@ -163,7 +176,7 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
         node->perm = newPermUseNode(node->vtexp->tag == FnSigTag ? opaqPerm :
         (node->region == borrowRef ? roPerm : uniPerm));
     itypeTypeCheck(pstate, &node->region);
-    refRegionCheck(node->region);
+    refRegionCheck(&node->region);
     itypeTypeCheck(pstate, (INode**)&node->perm);
     // A reference in a parameter position parses with no pointee, because
     // parseAmper leaves it to be inferred. Only a method's 'self' is ever
@@ -192,7 +205,7 @@ void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
     if (node->perm == unknownType)
         node->perm = newPermUseNode(node->region == borrowRef ? roPerm : uniPerm);
     itypeTypeCheck(pstate, &node->region);
-    refRegionCheck(node->region);
+    refRegionCheck(&node->region);
     itypeTypeCheck(pstate, (INode**)&node->perm);
     if (itypeTypeCheck(pstate, &node->vtexp) == 0)
         return;
