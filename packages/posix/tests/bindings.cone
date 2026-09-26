@@ -1,0 +1,200 @@
+// The posix package, imported by name as any program imports it, with libc
+// beneath it, each compiled on its own and linked with this test, called by the POSIX names it declares and linked against the Windows C
+// runtime, which spells most of them with an underscore. Each line is one fact
+// established, printed as a number or as the text a function gave back:
+//
+// - Stat and FindData64 are laid out as the runtime's 'struct _stat64' and
+//   'struct __finddata64_t' are: 56 and 304 bytes, measured with cl.exe;
+// - setenv sets a variable, keeps it where 'overwrite' is zero, and replaces it
+//   where it is not; a command the program starts sees it;
+// - mkdir makes a directory and refuses to make it again, chdir goes into it
+//   and back out, and getcwd and realpath both name it: the text they give is
+//   the one before plus the directory's name, checked without printing a path;
+// - stat reports a file's size and kind, a directory's kind, and fails for a
+//   name that is not there; its times are seconds since 1970;
+// - _findfirst64 and _findnext64, the Windows-only listing, find the three
+//   entries made in the directory, and the size and kind of each;
+// - popen runs a command through the shell and hands back what it printed, in
+//   text mode, so cmd's line end reads as one '\n'; pclose gives its status;
+// - rmdir and libc's remove clear everything away again.
+//
+// It works in the folder TEMP names, making 'module_package_posix.dir' there,
+// and removes it; a directory left by an interrupted run is cleared first.
+
+mod bindings;
+
+import stdio use *;
+import libc use *;
+import posix use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn showText(label &[]u8, text *u8) {
+  printStr(label);
+  printStr(" = [");
+  printCStr(text);
+  printStr("]\n");
+}
+
+fn yes(b Bool) i64 {if b {1i64;} else {0i64;};}
+
+fn same(a *u8, b *u8) i64 {yes(strcmp(a, b) == 0i32);}
+
+// A type's size in bytes, read off the address of the second of an array of
+// them laid at address zero
+fn sizeOf[T]() usize {
+  imm zero = 0usize as *T;
+  imm one = zero + 1;
+  one as usize;
+}
+
+fn newStat() Stat {
+  Stat[0u32, 0u16, 0u16, 0i16, 0i16, 0i16, 0u32, 0i64, 0i64, 0i64, 0i64];
+}
+
+fn newFindData() FindData64 {
+  FindData64[0u32, 0i64, 0i64, 0i64, 0i64, [260; 0u8]];
+}
+
+fn writeFile(name *u8, text *u8) {
+  imm f = fopen(name, &[]"wb");
+  fwrite(text, 1usize, strlen(text), f);
+  fclose(f);
+}
+
+// What a command prints, read to the end through a pipe into 'buf', which is
+// left NUL-terminated with its final line end taken off; the command's status
+fn capture(command *u8, buf *u8, size usize) i32 {
+  imm pipe = popen(command, &[]"r");
+  imm got = fread(buf, 1usize, size - 1usize, pipe);
+  buf[got] = 0u8;
+  if got > 0usize and buf[got - 1usize] == '\n' {buf[got - 1usize] = 0u8;};
+  pclose(pipe);
+}
+
+fn layouts() {
+  show("stat-size", i64[sizeOf[Stat]()]);
+  show("finddata-size", i64[sizeOf[FindData64]()]);
+}
+
+fn environment() {
+  imm name = &[]"CONE_POSIX_TEST";
+  show("setenv", i64[setenv(name, &[]"first", 1i32)]);
+  showText("getenv", getenv(name));
+  show("setenv-keep", i64[setenv(name, &[]"second", 0i32)]);
+  showText("getenv-kept", getenv(name));
+  show("setenv-replace", i64[setenv(name, &[]"second", 1i32)]);
+  showText("getenv-replaced", getenv(name));
+}
+
+fn processes() {
+  mut buf [64; u8] = [64; 0u8];
+  imm at *u8 = &[]buf;
+  show("popen-status", i64[capture(&[]"echo hello", at, 64usize)]);
+  showText("captured", at);
+  capture(&[]"echo %CONE_POSIX_TEST%", at, 64usize);
+  showText("child-sees-setenv", at);
+  show("pclose-exit-status", i64[capture(&[]"exit /b 4", at, 64usize)]);
+}
+
+// Whatever an interrupted run left behind, cleared; each call may fail
+fn clearAway(dir *u8) {
+  if chdir(dir) == 0i32 {
+    remove(&[]"a.txt");
+    remove(&[]"b.txt");
+    rmdir(&[]"sub");
+    chdir(&[]"..");
+    rmdir(dir);
+  };
+}
+
+fn filesAndDirectories() {
+  imm dir = &[]"module_package_posix.dir";
+  show("chdir-temp", i64[chdir(getenv(&[]"TEMP"))]);
+  clearAway(dir);
+
+  show("mkdir", i64[mkdir(dir, 0x1EDu32)]);
+  show("mkdir-again", i64[mkdir(dir, 0x1EDu32)]);
+  mut st = newStat();
+  show("stat-dir", i64[stat(dir, &mut st)]);
+  show("stat-dir-is-dir", yes((st.st_mode & S_IFMT) == S_IFDIR));
+
+  // In and back out: getcwd inside is getcwd outside, a '\' and the name
+  mut outside [260; u8] = [260; 0u8];
+  mut inside [260; u8] = [260; 0u8];
+  imm out *u8 = &[]outside;
+  imm in2 *u8 = &[]inside;
+  show("getcwd-null", yes(getcwd(out, 260usize) == 0usize as *u8));
+  show("chdir-in", i64[chdir(dir)]);
+  getcwd(in2, 260usize);
+  imm outlen = strlen(out);
+  show("getcwd-inside-extends-outside",
+    yes(strlen(in2) == outlen + 25usize and in2[outlen] == '\\' and same(in2 + outlen + 1usize, dir) == 1i64));
+
+  // realpath, into a buffer and malloc'd: the directory and the file's name
+  mut real [260; u8] = [260; 0u8];
+  imm rp *u8 = &[]real;
+  realpath(&[]"a.txt", rp);
+  show("realpath-length", i64[strlen(rp) - strlen(in2)]);
+  imm grown = realpath(&[]"./sub/../a.txt", 0usize as *u8);
+  show("realpath-malloced-same", same(grown, rp));
+  free(grown);
+
+  // Three entries: a file of five bytes, an empty one, and a directory
+  writeFile(&[]"a.txt", &[]"12345");
+  writeFile(&[]"b.txt", &[]"");
+  show("mkdir-sub", i64[mkdir(&[]"sub", 0x1EDu32)]);
+  st = newStat();
+  show("stat-file", i64[stat(&[]"a.txt", &mut st)]);
+  show("stat-file-size", st.st_size);
+  show("stat-file-is-regular", yes((st.st_mode & S_IFMT) == S_IFREG));
+  show("stat-file-mtime-after-2020", yes(st.st_mtime > 1577836800i64));
+  show("stat-missing", i64[stat(&[]"missing.txt", &mut st)]);
+
+  listing();
+
+  show("remove-a", i64[remove(&[]"a.txt")]);
+  show("remove-b", i64[remove(&[]"b.txt")]);
+  show("rmdir-sub", i64[rmdir(&[]"sub")]);
+  show("chdir-out", i64[chdir(&[]"..")]);
+  show("rmdir", i64[rmdir(dir)]);
+  show("stat-after-rmdir", i64[stat(dir, &mut st)]);
+}
+
+// The Windows-only listing, of the current directory
+fn listing() {
+  mut info = newFindData();
+  imm handle = _findfirst64(&[]"*", &mut info);
+  show("findfirst-failed", yes(handle == -1isize));
+  mut entries = 0i64;
+  mut aSize = -1i64;
+  mut bSize = -1i64;
+  mut subIsDir = 0i64;
+  mut going = handle != -1isize;
+  while going {
+    imm name *u8 = &[]info.name;
+    if same(name, &[]"a.txt") == 1i64 {aSize = info.size;};
+    if same(name, &[]"b.txt") == 1i64 {bSize = info.size;};
+    if same(name, &[]"sub") == 1i64 {subIsDir = yes((info.attrib & _A_SUBDIR) != 0u32);};
+    if same(name, &[]".") == 0i64 and same(name, &[]"..") == 0i64 {entries = entries + 1i64;};
+    going = _findnext64(handle, &mut info) == 0i32;
+  };
+  show("findclose", i64[_findclose(handle)]);
+  show("listed-entries", entries);
+  show("listed-a-size", aSize);
+  show("listed-b-size", bSize);
+  show("listed-sub-is-dir", subIsDir);
+}
+
+fn main() i32 {
+  layouts();
+  environment();
+  processes();
+  filesAndDirectories();
+  0i32;
+}

@@ -38,7 +38,10 @@ Visual Studio projects stay at the root.
   allocator; `math3d` is 3D math (vectors, quaternions, matrices, colors,
   rectangles) ported from the Pegasus3D browser, its trigonometry from `libc`.
   A package's example programs live in its own `examples/` folder, each run
-  with `congo run packages/<name>/examples/<file>.cone`.
+  with `congo run packages/<name>/examples/<file>.cone`, and its tests in its
+  own `tests/` folder, one program each beside the output it must print;
+  `congo test` builds the package, runs its tests against the package compiled
+  on its own, and builds its examples.
   The folder is both Congo's first registry and the compiler's packages
   folder: `conec` finds it by walking up from its own executable (and a CMake
   build also compiles its path in as the fallback), so the test runner and a
@@ -64,7 +67,7 @@ Visual Studio projects stay at the root.
 - `conesite/`: the rest of the static content for
   [cone.jondgoodwin.com](https://cone.jondgoodwin.com) — the author's articles,
   the playground and examples — and its deployment wrapper.
-- `tools/congo/`: Congo, the build tool (`congo new`, `build`, `run`, `clean`;
+- `tools/congo/`: Congo, the build tool (`congo new`, `build`, `run`, `test`, `clean`;
   Python 3.11+, standard library only). It reads a package's `congo.toml`, scans
   each source file's header for its `mod` line and imports, resolves the
   imports through the package-folder registries (`packages/` first), writes one
@@ -173,6 +176,16 @@ Run the test suite. It builds nothing and needs no installation:
 python test/run.py
 ```
 
+The suite tests the compiler. The packages' own tests, each package's
+`tests/` folder, are run by Congo, from the packages folder:
+
+```powershell
+cd packages
+python ../tools/congo/congo.py test
+```
+
+`tools/congo/README.md`, "Testing a package", is how they work.
+
 It compiles every scenario under `test/cases/`, asserts what each one's category
 and inline `//~` annotations claim, links and runs the `run` scenarios, and
 reports tier 0 first. `--list` prints what would run; a group, scenario, check
@@ -197,7 +210,8 @@ For a compiler change:
 
 1. Build `conec` and run `python test/run.py`. A change to `tools/congo/`, to
    `packages/`, or to how `conec` reads a build description or finds a package
-   also runs `python tools/congo/test_congo.py`.
+   also runs `python tools/congo/test_congo.py` and `congo test` in
+   `packages/`.
 2. Add coverage for the change: a scenario in the owning group under
    `test/cases/`, following `compiler/c/doc/diagnostics/test-suite.md`. A fix for a
    crash or a miscompile lands with the case that fails without it, and a new

@@ -7,6 +7,14 @@ assert, and how to update expectations.
 Run the full suite before every merge. `python test/run.py` takes a few seconds
 and is the default for a reason.
 
+The suite tests the compiler, not the packages. What a package does — `libc`'s
+bindings, `math3d`'s values — is tested by the package's own `tests/` folder,
+which `congo test` runs against the package compiled on its own
+(`tools/congo/README.md`, "Testing a package"): from `packages/`,
+`python ../tools/congo/congo.py test`. A scenario here that imports a package
+asserts what the compiler makes of it, such as the symbols its declarations
+become (`module_package_libc`), not what its functions return.
+
 ## Principles — [derived]
 
 **An unknown widens the run; it never narrows it.** An unmapped path, or a change
@@ -666,4 +674,5 @@ accident — and update this list when you do.
   compilation is exercised: there is no Congo run in the suite. Congo is
   checked by its own script, `tools/congo/test_congo.py`, which builds and runs
   programs against the packages folder's `libc`, `core`, `stdio`, `posix` and
-  `math3d`, each compiled alone.
+  `math3d`, each compiled alone; and the packages' own tests are `congo test`'s,
+  run from `packages/`, each against its package compiled alone.

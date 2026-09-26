@@ -14,6 +14,9 @@ congo build --release      the same, optimised
 congo run                  build it and run it
 congo run hello.cone       build and run one lone file, no manifest needed
 congo run -- a b           arguments after '--' go to the program
+congo test                 build the package, run its tests, build its examples
+congo test vec             only the tests and examples with 'vec' in their name
+congo test --bless         write a new test's expected output from a run
 congo clean                delete the package's build/ folder
 congo clean hello.cone     delete a lone file's build
 ```
@@ -45,7 +48,7 @@ hello/
     congo.toml          the manifest
     src/hello.cone      the root module's designated file, named for the package
     src/...             the root module's other files, and its submodules
-    tests/              the package's tests (congo new makes it; nothing runs them yet)
+    tests/              the package's tests, one program each (congo test runs them)
     examples/           programs showing the package's API, each a lone file
     build/debug/        what a build writes; build/release/ for --release
 ```
@@ -76,7 +79,11 @@ There is no include file to write: a library's build generates it (below,
   `congo run examples/<file>.cone`, and imports the package by name like any
   other program, so the package is found through the registries: the
   examples of `packages/math3d` run as they stand, while a package in no
-  registry cannot yet run its own. `congo new` does not make the folder.
+  registry cannot yet run its own that way (`congo test` builds them, below,
+  since it finds the package under test first). `congo new` does not make the
+  folder.
+- **A package's tests live in its `tests/` folder**, which no build of the
+  package reads either: below, "Testing a package".
 
 ## The manifest: `congo.toml`
 
@@ -281,6 +288,69 @@ both, and each package's source says what it binds and how. `math3d`, 3D math
 in Cone, is built on `libc` for its trigonometry, and its example is
 `packages/math3d/examples/tour.cone`.
 
+## Testing a package
+
+**This is the first phase of testing, and deliberately thin** [Jon 26 Sep]:
+enough to test a package through its interface today, deciding nothing about
+how tests will be scaffolded, mocked or asserted later.
+
+```
+packages/math3d/
+    src/math3d.cone
+    tests/operations.cone     one test: a program
+    tests/operations.out      what it must print
+    examples/tour.cone        built by congo test, not run
+```
+
+`congo test`, in a package's folder (or any folder below it, as for `build`):
+
+1. **Builds the package** as `congo build` does. A package that does not build
+   is reported, and nothing of it is tested.
+2. **Runs each test.** A test is one program, `tests/<name>.cone`, a lone file
+   with its own `mod` line and a `main`, that **imports the package by name**
+   as any user's program does. So it is compiled against the package's
+   generated include file and linked with the package's object, compiled on
+   its own: the path every importer takes, reaching only what the package
+   makes `pub`. The package under test is found first under its name, before
+   the registries, so a package in no registry can be tested where it stands,
+   and a test reaches the copy being tested. Each test is built in
+   `build/<mode>/tests/<name>/` and run there, with no arguments and no input,
+   for at most 60 seconds.
+3. **Compares** what the test printed with `tests/<name>.out`, line ends and
+   trailing blank lines aside, and its exit status with 0, or with the number
+   in `tests/<name>.exit` where there is one. A mismatch prints a diff of the
+   output, or both statuses.
+4. **Builds each example**, `examples/<name>.cone`, the same way, and does not
+   run it. An example that does not build is a failure.
+
+Each result prints as `test <name> ... ok` or `FAILED`, then a summary line;
+`congo test` exits 1 if anything failed. A package with no `tests/` folder says
+so, and still builds its examples.
+
+- **`congo test <text>`** runs only the tests and examples whose file name
+  contains the text. One that matches nothing is an error.
+- **`--bless`** writes `tests/<name>.out` (and `.exit`, if the status is not 0)
+  from a run, for a test that has **no** expected file yet. It never rewrites
+  one that exists: to change an expected file, edit it, or delete it and bless
+  again. **Blessed output is a claim that the package is right; check every
+  line of it by hand against the source before committing it.** A value worked
+  out from the math catches what a copied run cannot (`math3d`'s test found two
+  errors in the code it was ported from that way).
+- **At a folder of packages**, such as the repository's `packages/`, `congo
+  test` tests each package in it in turn, and ends with a summary of them all.
+  Each package's builds go in its own `build/` folder, as a build of it would.
+- **A test of an executable package** cannot import it, since only a library
+  can be imported; `congo test` says so and fails the tests.
+
+The repository's packages are tested with
+
+```
+cd packages
+python ../tools/congo/congo.py test
+```
+
+beside the compiler's suite, `python test/run.py`, which tests the compiler.
+
 ## What a build does
 
 1. **Find the package**: the nearest `congo.toml` in this folder or one above
@@ -353,9 +423,12 @@ include file holds nested blocks, a C package linking a Windows system library
 `libc` built before `core` with no prelude line, the `samples/oslayer` tour of
 `libc` and `posix` (Windows), `math3d`'s example run where it stands (Windows),
 the loop refusals between packages and between
-modules, and the manifest's checks.
+modules, the manifest's checks, and `congo test` itself (a passing test, a
+failing output with its diff, an exit status, a filter, bless, an example that
+does not build, a package with no tests, and a folder of packages).
 Each program is compiled against the include files its packages' compiles
-generated. The test suite (`test/run.py`) does not run Congo.
+generated. The test suite (`test/run.py`) does not run Congo, and does not run
+the packages' tests: `congo test` in `packages/` does.
 
 ## Not built yet
 
@@ -363,7 +436,10 @@ generated. The test suite (`test/run.py`) does not run Congo.
   reaches a C-named submodule (untried); library names per platform (`opengl32` on Windows is `GL`
   elsewhere); and link folders in the machine config, where a machine's own
   install location belongs.
-- `congo test`, and anything reading `tests/`.
+- Anything of testing past its first phase, above: how a test is scaffolded,
+  what it may reach of a package beyond its interface, mocks and integration
+  environments, assertions beyond comparing output, and running examples. That
+  is a design of its own, not yet made.
 - WebAssembly (`--target`), which the prototype's `web` mode did.
 - A static library file (`.lib`/`.a`) for a library package; it builds an object.
 - An internet registry, downloads, a lockfile and version selection.

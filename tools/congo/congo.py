@@ -5,6 +5,9 @@
     congo build [--release]           build the package the current folder is in
     congo run [--release] [file.cone] [-- args...]
                                       build it (or one lone file) and run it
+    congo test [name] [--release] [--bless]
+                                      build the package, run each program in
+                                      its tests/ and build each in examples/
     congo clean [file.cone]           delete what a build wrote
 
 CONGO DISCOVERS, THE COMPILER IS TOLD [Jon 23 Sep 2026]. Congo walks each
@@ -36,6 +39,7 @@ user's guide.
 from __future__ import annotations
 
 import argparse
+import difflib
 import hashlib
 import os
 import re
@@ -761,6 +765,8 @@ def closure(unit: Unit, units: dict[str, Unit], registry_core: Package | None) -
 
 def description(unit: Unit, mode: str, output: str, out: Path,
                 packages: list[Package] = ()) -> str:
+    """The build description of one package; 'out' is the folder the include
+    files of the packages it imports are in."""
     pkg = unit.pkg
     lines = [
         f"// The build description of {pkg.label()}, written by Congo for conec;",
@@ -935,20 +941,26 @@ class Linker:
 # ---------------------------------------------------------------------------
 
 def compile_unit(conec: Path, unit: Unit, out: Path, mode: str, top: bool,
-                 env: dict[str, str], packages: list[Package] = ()) -> Path:
+                 env: dict[str, str], packages: list[Package] = (),
+                 includes: Path | None = None, announce: bool = True) -> Path:
     """Write the package's build description into build/<mode>/ and compile the
     package on its own. Every package but the one being built is a library;
     the one being built is what its manifest says. 'packages' is the unit's
     dependency closure, which the description lists for its include files.
     A library's compile writes its include file beside its object, which is
-    what every package compiled after it that imports it is compiled against."""
+    what every package compiled after it that imports it is compiled against.
+    'includes' is the folder those include files are in, where it is not 'out'
+    itself: a test program is compiled into a folder of its own, against the
+    include files in the package's build folder."""
     output = unit.pkg.output if top else "library"
     desc = out / f"{unit.pkg.name}.conebuild"
-    desc.write_text(description(unit, mode, output, out, packages), encoding="utf-8")
+    desc.write_text(description(unit, mode, output, includes or out, packages),
+                    encoding="utf-8")
     # A library's include file is written afresh, so one left by an earlier
     # build never stands in for it
     include_for(unit.pkg, out).unlink(missing_ok=True)
-    say("Compiling", f"{unit.pkg.label()} ({unit.pkg.root})")
+    if announce:
+        say("Compiling", f"{unit.pkg.label()} ({unit.pkg.root})")
     result = subprocess.run([str(conec), "-o", str(out), str(desc)], env=env,
                             capture_output=True, text=True, errors="replace")
     chatter = [line for line in (result.stdout + result.stderr).splitlines()
@@ -980,59 +992,114 @@ def lone_build_root(file: Path) -> Path:
     return congo_home() / "lone" / f"{file.stem}-{digest}"
 
 
-def build(pkg: Package, mode: str) -> Path:
+class Session:
+    """The compiles of one build folder, and its link. A package is compiled at
+    most once in a session: 'congo test' builds the package, then each test
+    program against the objects and include files that build left, compiling
+    only what a test imports that the package does not (stdio, say)."""
+
+    def __init__(self, registry: Registry, out: Path, mode: str):
+        self.registry = registry
+        self.out = out
+        self.mode = mode
+        self.objs: dict[str, Path] = {}      # each library compiled into 'out'
+        self.warned: set[str] = set()
+        self._conec: Path | None = None
+        self._linker: Linker | None = None
+
+    @property
+    def conec(self) -> Path:
+        """Found at the first compile, after the imports are resolved, so that an
+        error in the source is reported before anything about the machine."""
+        if self._conec is None:
+            self._conec = find_conec()
+        return self._conec
+
+    def compile(self, order: list[Unit], top: Package, top_out: Path | None = None,
+                announce: bool = True) -> list[Path]:
+        """Compile every unit of the order not compiled already, each after what
+        it imports; return the objects in the order's order. 'top' gets the
+        output its manifest says, into 'top_out' where that is given (a test
+        program's own folder); every other package is a library, into 'out'."""
+        conec = self.conec
+        self.out.mkdir(parents=True, exist_ok=True)
+        env = dict(os.environ)
+        # Every package after core loads the prelude from core's generated include
+        # file, which its package line names. core's own compile has no such line,
+        # and loads the prelude from the package search path, which must give the
+        # very file core is compiled from, or the two are two modules named core: so
+        # the packages folder conec takes it from is the registry folder Congo found
+        # core in
+        core = next((u.pkg for u in order if u.pkg.name == PRELUDE), None)
+        if core is not None:
+            env["CONE_PACKAGES"] = str(core.root.parent)
+        # An include file written by hand at a package's root is no longer read:
+        # say so, once, so that nobody edits it expecting it to count
+        for unit in order:
+            if (not unit.pkg.lone and unit.pkg.hand_include.is_file()
+                    and unit.pkg.name not in self.warned):
+                self.warned.add(unit.pkg.name)
+                print(f"warning: {unit.pkg.hand_include} is not used: a package's importers"
+                      f" compile against the include file its own compile generates,"
+                      f" build/<mode>/{unit.pkg.name}.cone", file=sys.stderr)
+        by_name = {unit.pkg.name: unit for unit in order}
+        objs = []
+        for unit in order:
+            is_top = unit.pkg is top
+            if not is_top and unit.pkg.name in self.objs:
+                objs.append(self.objs[unit.pkg.name])
+                continue
+            into = top_out if is_top and top_out is not None else self.out
+            into.mkdir(parents=True, exist_ok=True)
+            obj = compile_unit(conec, unit, into, self.mode, is_top, env,
+                               closure(unit, by_name, core), self.out,
+                               announce or not is_top)
+            if into == self.out and (not is_top or unit.pkg.output == "library"):
+                self.objs[unit.pkg.name] = obj
+            objs.append(obj)
+        return objs
+
+    def link(self, order: list[Unit], objs: list[Path], exe: Path,
+             announce: bool = True) -> None:
+        if self._linker is None:
+            self._linker = Linker(find_conestd(self.conec))
+        linker = self._linker
+        # The program's object first, then the packages it imports, last built first;
+        # and the C libraries every one of them names, in the same order, each once.
+        # A C package's own object is linked like any other: it defines nothing
+        # (as core's does not), and so needs no case of its own
+        units = [order[-1], *reversed(order[:-1])]
+        libraries = list(dict.fromkeys(lib for u in units for lib in u.pkg.libraries))
+        paths = list(dict.fromkeys(p for u in units for p in u.pkg.link_paths))
+        command = linker.command([objs[-1], *reversed(objs[:-1])], exe, libraries, paths)
+        if announce:
+            say("Linking", shown(exe))
+        exe.unlink(missing_ok=True)
+        result = subprocess.run(command, env=linker.env, capture_output=True, text=True,
+                                errors="replace")
+        if result.returncode != 0:
+            named = "; ".join(f"{u.pkg.name} names {', '.join(u.pkg.libraries)}"
+                              for u in units if u.pkg.libraries)
+            where = ("the folders the LIB environment variable lists" if IS_WINDOWS
+                     else "the linker's own search path")
+            hint = (f"\nC libraries linked ({named}): the linker looks for each in the"
+                    f" folders [link] paths names, then in {where}" if named else "")
+            raise CongoError(f"link failed:\n{' '.join(command)}\n{result.stdout}"
+                             f"{result.stderr}{hint}")
+
+
+def build(pkg: Package, mode: str, session: Session | None = None) -> Path:
     """Build pkg and everything it imports; return the executable, or for a
     library its object."""
-    registry = Registry(registry_folders())
-    order = build_order(pkg, registry)
-    conec = find_conec()
-    out = build_folder(pkg, mode)
-    out.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ)
-    # Every package after core loads the prelude from core's generated include
-    # file, which its package line names. core's own compile has no such line,
-    # and loads the prelude from the package search path, which must give the
-    # very file core is compiled from, or the two are two modules named core: so
-    # the packages folder conec takes it from is the registry folder Congo found
-    # core in
-    core = next((u.pkg for u in order if u.pkg.name == PRELUDE), None)
-    if core is not None:
-        env["CONE_PACKAGES"] = str(core.root.parent)
-    # An include file written by hand at a package's root is no longer read:
-    # say so, once, so that nobody edits it expecting it to count
-    for unit in order:
-        if not unit.pkg.lone and unit.pkg.hand_include.is_file():
-            print(f"warning: {unit.pkg.hand_include} is not used: a package's importers"
-                  f" compile against the include file its own compile generates,"
-                  f" build/<mode>/{unit.pkg.name}.cone", file=sys.stderr)
-    by_name = {unit.pkg.name: unit for unit in order}
-    objs = [compile_unit(conec, unit, out, mode, unit.pkg is pkg, env,
-                         closure(unit, by_name, core)) for unit in order]
+    if session is None:
+        session = Session(Registry(registry_folders()), build_folder(pkg, mode), mode)
+    order = build_order(pkg, session.registry)
+    objs = session.compile(order, pkg)
     if pkg.output == "library":
         say("Finished", f"{mode} library object {shown(objs[-1])}")
         return objs[-1]
-    exe = out / f"{pkg.name}{EXE_EXT}"
-    linker = Linker(find_conestd(conec))
-    # The program's object first, then the packages it imports, last built first;
-    # and the C libraries every one of them names, in the same order, each once.
-    # A C package's own object is linked like any other: it defines nothing
-    # (as core's does not), and so needs no case of its own
-    units = [order[-1], *reversed(order[:-1])]
-    libraries = list(dict.fromkeys(lib for u in units for lib in u.pkg.libraries))
-    paths = list(dict.fromkeys(p for u in units for p in u.pkg.link_paths))
-    command = linker.command([objs[-1], *reversed(objs[:-1])], exe, libraries, paths)
-    say("Linking", shown(exe))
-    result = subprocess.run(command, env=linker.env, capture_output=True, text=True,
-                            errors="replace")
-    if result.returncode != 0:
-        named = "; ".join(f"{u.pkg.name} names {', '.join(u.pkg.libraries)}"
-                          for u in units if u.pkg.libraries)
-        where = ("the folders the LIB environment variable lists" if IS_WINDOWS
-                 else "the linker's own search path")
-        hint = (f"\nC libraries linked ({named}): the linker looks for each in the"
-                f" folders [link] paths names, then in {where}" if named else "")
-        raise CongoError(f"link failed:\n{' '.join(command)}\n{result.stdout}"
-                         f"{result.stderr}{hint}")
+    exe = session.out / f"{pkg.name}{EXE_EXT}"
+    session.link(order, objs, exe)
     say("Finished", f"{mode} {shown(exe)}")
     return exe
 
@@ -1051,12 +1118,16 @@ def lone_package(file: Path) -> Package:
     return Package(name, None, "executable", file.parent, file, lone=True)
 
 
-def current_package() -> Package:
+def current_package_manifest() -> Path:
     manifest = find_manifest(Path.cwd())
     if manifest is None:
         raise CongoError(f"no {MANIFEST} in this folder or any above it; 'congo new <name>'"
                          f" makes a package, and 'congo run <file.cone>' runs a lone file")
-    return read_manifest(manifest)
+    return manifest
+
+
+def current_package() -> Package:
+    return read_manifest(current_package_manifest())
 
 
 # ---------------------------------------------------------------------------
@@ -1135,6 +1206,242 @@ def cmd_clean(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# congo test
+# ---------------------------------------------------------------------------
+#
+# The first phase of package testing, and deliberately thin [Jon 26 Sep]: each
+# program in a package's tests/ folder is built as a program that imports the
+# package by name, as any user's program does -- the package compiled on its
+# own, the test compiled against the include file that compile generated, the
+# two linked -- then run, its output and exit status compared with the expected
+# files beside it. Every program in examples/ is built. Nothing here decides how
+# tests are scaffolded, mocked or asserted, or whether one may reach a private
+# name: a test sees what any importer sees.
+
+TESTS = "tests"
+EXAMPLES = "examples"
+TEST_TIMEOUT = 60     # seconds a test program may run before it fails
+
+
+@dataclass
+class Tally:
+    passed: int = 0
+    failed: int = 0
+    built: int = 0
+    unbuilt: int = 0
+    broken: int = 0       # packages that did not build, so nothing of theirs ran
+    failures: list[str] = field(default_factory=list)
+
+    def add(self, other: "Tally") -> None:
+        self.passed += other.passed
+        self.failed += other.failed
+        self.built += other.built
+        self.unbuilt += other.unbuilt
+        self.broken += other.broken
+        self.failures += other.failures
+
+    def ok(self) -> bool:
+        return not self.failed and not self.unbuilt and not self.broken
+
+    def summary(self) -> str:
+        def count(n: int, word: str) -> str:
+            return f"{n} {word}{'' if n == 1 else 's'}"
+        text = (f"{count(self.passed + self.failed, 'test')}: {self.passed} passed,"
+                f" {self.failed} failed; {count(self.built + self.unbuilt, 'example')}:"
+                f" {self.built} built, {self.unbuilt} failed to build")
+        if self.broken:
+            text += f"; {count(self.broken, 'package')} did not build"
+        return text
+
+
+def normalized_lines(text: str) -> list[str]:
+    """Output as it is compared: line ends made '\\n' (git may check an expected
+    file out with CRLF), and trailing blank lines dropped, as the compiler's
+    suite compares a run's output."""
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return lines
+
+
+def expected_exit(program: Path) -> int:
+    """tests/<name>.exit holds the exit status the program must end with, where
+    it is not 0: one integer, as the compiler suite's 'program_exit' is."""
+    path = program.with_suffix(".exit")
+    if not path.is_file():
+        return 0
+    text = path.read_text(encoding="utf-8").strip()
+    try:
+        return int(text)
+    except ValueError:
+        raise CongoError(f"{shown(path)} must hold one integer, the exit status the"
+                         f" test ends with; it holds {text!r}") from None
+
+
+def indent(text: str, pad: str = "        ") -> str:
+    return "\n".join(pad + line for line in text.rstrip("\n").split("\n"))
+
+
+def programs(folder: Path, name_filter: str | None) -> list[Path]:
+    """The .cone programs directly in a tests/ or examples/ folder, by name,
+    those whose name contains the filter where one is given."""
+    if not folder.is_dir():
+        return []
+    found = sorted(p for p in folder.iterdir() if p.is_file() and p.suffix == ".cone")
+    return [p for p in found if name_filter is None or name_filter in p.stem]
+
+
+def build_program(session: Session, file: Path, into: Path) -> Path:
+    """A test or example program, built as a lone file of its own that imports
+    the package by name: its imports resolved through the session's registry,
+    where the package under test is found first; the packages it imports
+    compiled into the package's build folder (once each, most already there),
+    and the program itself into a folder of its own, then linked."""
+    pkg = lone_package(file)
+    order = build_order(pkg, session.registry)
+    objs = session.compile(order, pkg, top_out=into, announce=False)
+    exe = into / f"{pkg.name}{EXE_EXT}"
+    session.link(order, objs, exe, announce=False)
+    return exe
+
+
+def run_test(session: Session, file: Path, bless: bool) -> tuple[bool, str]:
+    """Build, run and compare one test program: (passed, what to show)."""
+    into = session.out / TESTS / file.stem
+    exe = build_program(session, file, into)
+    try:
+        # Run in its own build folder, so a file it writes by a relative name
+        # lands there and not in the package's source
+        ran = subprocess.run([str(exe)], cwd=into, capture_output=True,
+                             stdin=subprocess.DEVNULL, timeout=TEST_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return False, f"timed out after {TEST_TIMEOUT} seconds"
+    stdout = ran.stdout.decode("utf-8", errors="replace")
+    stderr = ran.stderr.decode("utf-8", errors="replace")
+    expected_path = file.with_suffix(".out")
+    if not expected_path.is_file():
+        if not bless:
+            return False, (f"no expected output, {shown(expected_path)}: write it by"
+                           f" hand, or run 'congo test {file.stem} --bless' and check"
+                           f" what it writes against the source")
+        # Blessed only where there is nothing yet: an expected file is written
+        # by hand, or blessed once and then checked by hand, and never rewritten
+        # from a run, which would pin whatever the package does today
+        expected_path.write_text("\n".join(normalized_lines(stdout)) + "\n",
+                                 encoding="utf-8", newline="\n")
+        note = f"blessed {shown(expected_path)}"
+        if ran.returncode != 0:
+            file.with_suffix(".exit").write_text(f"{ran.returncode}\n", encoding="utf-8",
+                                                 newline="\n")
+            note += f" and {shown(file.with_suffix('.exit'))} ({ran.returncode})"
+        return True, note + ": check it by hand against the source"
+    problems = []
+    want = expected_exit(file)
+    if ran.returncode != want:
+        problems.append(f"exited {ran.returncode}, expected {want}")
+    expected = normalized_lines(expected_path.read_text(encoding="utf-8"))
+    actual = normalized_lines(stdout)
+    if actual != expected:
+        diff = difflib.unified_diff(expected, actual, fromfile=shown(expected_path),
+                                    tofile="actual", lineterm="", n=2)
+        problems.append("output differs:\n" + indent("\n".join(diff), "  "))
+    if problems and stderr.strip():
+        problems.append("stderr:\n" + indent(stderr, "  "))
+    return not problems, "\n".join(problems)
+
+
+def test_package(pkg: Package, mode: str, name_filter: str | None, bless: bool) -> Tally:
+    """Build the package, then run each test and build each example."""
+    tally = Tally()
+    say("Testing", f"{pkg.label()} ({pkg.root})")
+    # The package under test is found first, under its own name, so a test
+    # imports this copy -- whether or not it is in a registry, and whatever
+    # else a registry holds of that name
+    registry = Registry(registry_folders())
+    registry.packages[pkg.name] = pkg
+    session = Session(registry, build_folder(pkg, mode), mode)
+    tests = programs(pkg.root / TESTS, name_filter)
+    examples = programs(pkg.root / EXAMPLES, name_filter)
+    try:
+        build(pkg, mode, session)
+    except CongoError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        tally.broken += 1
+        tally.failures.append(f"{pkg.name}: the package does not build")
+        say("Result", f"{pkg.name}: the package does not build")
+        return tally
+    if not (pkg.root / TESTS).is_dir():
+        say("Tests", f"none: {pkg.name} has no {TESTS} folder")
+    elif pkg.output != "library" and tests:
+        print(f"error: {pkg.name} is an executable package, and a test imports the"
+              f" package it tests; only a library can be imported, so its tests"
+              f" cannot run yet", file=sys.stderr)
+        tally.failed += len(tests)
+        tally.failures += [f"{pkg.name}: test {t.stem}" for t in tests]
+        tests = []
+    elif not tests and name_filter is None:
+        say("Tests", f"none: {pkg.name}'s {TESTS} folder holds no .cone program")
+    for file in tests:
+        try:
+            passed, detail = run_test(session, file, bless)
+        except CongoError as exc:
+            passed, detail = False, str(exc)
+        print(f"        test {file.stem} ... {'ok' if passed else 'FAILED'}", flush=True)
+        if detail:
+            print(indent(detail), flush=True)
+        if passed:
+            tally.passed += 1
+        else:
+            tally.failed += 1
+            tally.failures.append(f"{pkg.name}: test {file.stem}")
+    for file in examples:
+        try:
+            build_program(session, file, session.out / EXAMPLES / file.stem)
+            passed, detail = True, ""
+        except CongoError as exc:
+            passed, detail = False, str(exc)
+        print(f"     example {file.stem} ... {'built' if passed else 'FAILED to build'}",
+              flush=True)
+        if detail:
+            print(indent(detail), flush=True)
+        if passed:
+            tally.built += 1
+        else:
+            tally.unbuilt += 1
+            tally.failures.append(f"{pkg.name}: example {file.stem}")
+    say("Result", f"{pkg.name}: {tally.summary()}")
+    return tally
+
+
+def package_manifests(folder: Path) -> list[Path]:
+    """The manifests of a folder of packages, a registry folder such as packages/."""
+    return [sub / MANIFEST for sub in sorted(folder.iterdir(), key=lambda p: p.name)
+            if (sub / MANIFEST).is_file()]
+
+
+def cmd_test(args: argparse.Namespace) -> int:
+    mode = "release" if args.release else "debug"
+    here = Path.cwd()
+    # A folder of packages (a registry folder such as packages/) that is not a
+    # package itself: each package in it is tested
+    manifests = [] if (here / MANIFEST).is_file() else package_manifests(here)
+    if not manifests:
+        manifests = [current_package_manifest()]
+    total = Tally()
+    for manifest in manifests:
+        total.add(test_package(read_manifest(manifest), mode, args.name, args.bless))
+    if args.name is not None and not (total.passed + total.failed + total.built
+                                      + total.unbuilt + total.broken):
+        raise CongoError(f"no test or example has '{args.name}' in its name")
+    if len(manifests) > 1:
+        say("Result", f"{len(manifests)} packages: {total.summary()}")
+    if not total.ok():
+        print("failed:\n" + indent("\n".join(total.failures), "    "), file=sys.stderr)
+        return 1
+    return 0
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="congo", description="The Cone build tool.")
     sub = parser.add_subparsers(dest="command", required=True, metavar="command")
@@ -1152,6 +1459,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             p.add_argument("file", nargs="?", help="a lone .cone file, run with no manifest")
             p.epilog = "Arguments after '--' are passed to the program."
         p.set_defaults(func=func)
+    test = sub.add_parser("test", help="build this package, run its tests and build its"
+                                       " examples")
+    test.add_argument("name", nargs="?",
+                      help="only the tests and examples whose file name contains this")
+    test.add_argument("--release", action="store_true", help="an optimised build")
+    test.add_argument("--bless", action="store_true",
+                      help="write the expected output of a test that has none, from a"
+                           " run; check it by hand against the source")
+    test.set_defaults(func=cmd_test)
     clean = sub.add_parser("clean", help="delete what a build wrote")
     clean.add_argument("file", nargs="?", help="a lone .cone file whose build to delete")
     clean.set_defaults(func=cmd_clean)
