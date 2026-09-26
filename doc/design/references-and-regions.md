@@ -33,7 +33,12 @@ and a traced allocation makes its value before its `alloc` runs. No more of the
 protocol below is built: no barriers, no weak reference kind, no region with
 global state, and no finalizing of a slice's elements when its region frees it.
 Of the strategies that motivate the whole design, a tracing collector is
-unwritten, and the arena and the pool are written only as library values: the
+written as library code, stop-the-world: the `collector` package's region ref
+`gc` (`+gc-mut T[...]`), Acorn's mark and sweep over those roots and the type
+records' traces, collecting inside `alloc` when the heap passes its trigger and
+on `gc.collect()`, with Lua's separation of finalizers, which run a collection
+before their objects are freed; nothing about it is incremental yet, so no
+barrier is emitted. The arena and the pool are written only as library values: the
 `arena` package's `Arena`, a dynamic region allocated into by a call on the
 value (`a.alloc(v)`), not by a `+` allocation through a region ref,
 whose `alloc` is not handed the region value. It finalizes

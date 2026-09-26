@@ -1,0 +1,189 @@
+// Garbage is freed: what no root reaches is gone after a collection, and what
+// one reaches is kept, however it is reached. Every count is worked out by
+// hand from the rules:
+// - the roots are what the running functions hold on their stacks: locals,
+//   parameters, and each temporary's birth slot, which keeps its value until
+//   the function returns. So each section is a function of its own, and its
+//   garbage is made in functions it calls, whose frames are gone when it
+//   collects; main holds no '+gc' reference, so it has no roots at all;
+// - an object whose type needs no finalizing is freed by the first
+//   collection that finds it unreachable. settle() collects twice, which
+//   frees every unreachable object whatever it needs, so its counts do not
+//   depend on when earlier collections ran (the stress mode's included);
+// - an object is its value after a 32-byte header, rounded up to 8: a Leaf
+//   takes 40 bytes, a Pair or a Node 48.
+
+mod garbage;
+
+import testing use *;
+import collector;
+
+struct Leaf { pub n i64; }
+struct Pair { pub left +gc-mut Leaf; pub right +gc-mut Leaf; }
+struct Node { pub n i64; pub left Option[+gc-mut Node]; pub right Option[+gc-mut Node]; }
+
+fn settle() {
+  gc.collect();
+  gc.collect();
+}
+
+fn live() u64 { u64[gc.liveObjects()]; }
+
+// Three leaves made, the second returned
+fn keepSecond() +gc-mut Leaf {
+  imm a = +gc-mut Leaf[1];
+  imm b = +gc-mut Leaf[2];
+  imm c = +gc-mut Leaf[3];
+  b;
+}
+
+fn keptAndDropped() {
+  imm k = keepSecond();
+  settle();
+  expectUInt(live(), 1, "the returned leaf is kept, the other two freed");
+  expectUInt(u64[gc.liveBytes()], 40, "a leaf is 40 bytes, header included");
+  expectInt(k.n, 2, "and it is the second");
+}
+
+// A tree of the given depth: 2^depth - 1 nodes, each numbered by its depth
+fn tree(depth i64) Option[+gc-mut Node] {
+  if depth == 0 {
+    return None[+gc-mut Node][];
+  }
+  Some[+gc-mut Node][+gc-mut Node[depth, tree(depth - 1), tree(depth - 1)]];
+}
+
+fn count(t &Option[+gc-mut Node]) i64 {
+  match t {
+    case imm s &Some[+gc-mut Node] { count(&s.value.left) + count(&s.value.right) + 1; }
+    else { 0; }
+  }
+}
+
+fn sum(t &Option[+gc-mut Node]) i64 {
+  match t {
+    case imm s &Some[+gc-mut Node] { s.value.n + sum(&s.value.left) + sum(&s.value.right); }
+    else { 0; }
+  }
+}
+
+fn leftOf(t &Option[+gc-mut Node]) Option[+gc-mut Node] {
+  match t {
+    case imm s &Some[+gc-mut Node] { s.value.left; }
+    else { None[+gc-mut Node][]; }
+  }
+}
+
+fn dropTree() {
+  tree(4);
+}
+
+fn wholeTree() {
+  imm t = tree(4);
+  settle();
+  expectUInt(live(), 15, "a tree of depth 4 is 15 nodes, all kept");
+  expectInt(count(&t), 15, "and all 15 are there");
+  // 1*8 + 2*4 + 3*2 + 4*1
+  expectInt(sum(&t), 26, "numbered by depth");
+}
+
+fn subtree() {
+  imm l = keepLeft();
+  settle();
+  expectUInt(live(), 7, "the left subtree of depth 3 is kept, the root and right freed");
+  expectInt(sum(&l), 11, "3 + 2*2 + 1*4");
+}
+fn keepLeft() Option[+gc-mut Node] {
+  imm t = tree(4);
+  leftOf(&t);
+}
+
+// Replacing a field lets go of what it held
+fn replaceLeft(p +gc-mut Pair) {
+  p.left = +gc-mut Leaf[3];
+}
+fn makePair() +gc-mut Pair {
+  +gc-mut Pair[+gc-mut Leaf[1], +gc-mut Leaf[2]];
+}
+fn replaced() {
+  imm p = makePair();
+  replaceLeft(p);
+  settle();
+  expectUInt(live(), 3, "the pair, its new left and its right; the old left freed");
+  expectUInt(u64[gc.liveBytes()], 128, "48 + 40 + 40");
+  expectInt(p.left.n + p.right.n, 5, "3 + 2");
+}
+
+// Copies of a reference: each is a root, and none costs anything
+fn copies() {
+  imm a = keepSecond();
+  imm b = a;
+  mut c = b;
+  settle();
+  expectUInt(live(), 1, "three copies of one reference reach one object");
+  c.n = 20;
+  expectInt(a.n, 20, "all three are the one object");
+}
+
+// A thousand leaves made and dropped, one at a time
+fn many() {
+  mut i = 0i64;
+  mut total = 0i64;
+  while i < 1000 {
+    imm l = +gc-mut Leaf[i];
+    total = total + l.n;
+    i = i + 1;
+  }
+  expectInt(total, 499500, "each leaf read back as made");
+}
+
+// Stopped, the collector runs no automatic collection: ten thousand leaves,
+// 400,000 bytes, pass the 256 KiB trigger with none. Started again, the next
+// allocation, still past the trigger, collects first, and frees them all.
+fn dropLeaves() {
+  mut i = 0i64;
+  while i < 10000 {
+    imm l = +gc-mut Leaf[i];
+    i = i + 1;
+  }
+}
+fn stopped() {
+  imm c0 = gc.collections();
+  gc.stop();
+  dropLeaves();
+  expectUInt(u64[gc.collections() - c0], 0, "stopped: no collection");
+  expectUInt(live(), 10000, "every leaf still there");
+  gc.start();
+  imm l = +gc-mut Leaf[1];
+  expectUInt(u64[gc.collections() - c0], 1, "started: the next allocation collects");
+  expectUInt(live(), 1, "and only the new leaf is left");
+}
+
+fn main() i32 {
+  settle();
+  expectUInt(live(), 0, "nothing allocated yet");
+  keptAndDropped();
+  settle();
+  expectUInt(live(), 0, "once its section returns, the kept leaf goes too");
+  wholeTree();
+  settle();
+  expectUInt(live(), 0, "and the tree");
+  dropTree();
+  settle();
+  expectUInt(live(), 0, "a tree no one kept");
+  subtree();
+  settle();
+  expectUInt(live(), 0, "and the subtree");
+  replaced();
+  settle();
+  copies();
+  settle();
+  imm before = gc.freed();
+  many();
+  settle();
+  expectUInt(live(), 0, "every leaf of the loop freed");
+  expectUInt(u64[gc.freed() - before], 1000, "each of the thousand, once");
+  expectUInt(u64[gc.liveBytes()], 0, "and no bytes held");
+  stopped();
+  done();
+}

@@ -1,0 +1,95 @@
+// The stress mode: a full collection at every allocation, and every freed
+// object scribbled over with 0xDD bytes. A reference the roots missed -- a
+// temporary held only in a register while something allocates -- would have
+// its object freed and scribbled at the next allocation, and read back wrong
+// here. So each check reads back a value made where a collection was sure to
+// run while it was held only as a temporary, a parameter, or a value loaded
+// through a reference. Every value is worked out by hand from the source; the
+// counts of collections from the rule that the stress mode collects once at
+// each allocation, and nowhere else but gc.collect().
+//
+// This test turns the mode on itself. CONE_GC_STRESS, set in the environment,
+// turns it on for every test of the package, whose expected output does not
+// change with it: run 'congo test' so to test them all this way.
+
+mod stress;
+
+import testing use *;
+import collector;
+
+struct Leaf { pub n i64; }
+struct Pair { pub left +gc-mut Leaf; pub right +gc-mut Leaf; }
+struct Link { pub n i64; pub next Option[+gc-mut Link]; }
+
+fn leaf(n i64) +gc-mut Leaf {
+  +gc-mut Leaf[n];
+}
+
+// Allocates while both parameters are held
+fn add(a +gc-mut Leaf, b +gc-mut Leaf) i64 {
+  imm c = +gc-mut Leaf[100];
+  a.n + b.n + c.n - 100;
+}
+
+// Replaces the pair's left while the caller still holds the old one, loaded
+fn clobber(p +gc-mut Pair) i64 {
+  p.left = +gc-mut Leaf[50];
+  0;
+}
+fn both(a +gc-mut Leaf, z i64) i64 {
+  imm c = +gc-mut Leaf[0];
+  a.n + z;
+}
+
+// A list of n links, each made while the rest is held only by a call's result
+fn list(n i64) Option[+gc-mut Link] {
+  if n == 0 {
+    return None[+gc-mut Link][];
+  }
+  Some[+gc-mut Link][+gc-mut Link[n, list(n - 1)]];
+}
+fn listSum(l &Option[+gc-mut Link]) i64 {
+  match l {
+    case imm s &Some[+gc-mut Link] { s.value.n + listSum(&s.value.next); }
+    else { 0; }
+  }
+}
+
+fn temporaries() {
+  imm c0 = gc.collections();
+  expectInt(add(leaf(1), leaf(2)), 3, "two results held as temporaries while a third is made");
+  expectUInt(u64[gc.collections() - c0], 3, "three allocations, three collections");
+  imm p = +gc-mut Pair[leaf(3), leaf(4)];
+  expectInt(p.left.n + p.right.n, 7, "a value's parts held while the pair is allocated");
+  expectInt(add(p.left, leaf(10)), 13, "a field loaded as an argument, held while another is made");
+  expectInt(both(p.left, clobber(p)), 3, "the old left, loaded, held while clobber replaces it");
+  expectInt(p.left.n, 50, "and the new left in place");
+  p.left <=> p.right;
+  imm n = leaf(0);
+  expectInt(p.left.n * 100 + p.right.n, 450, "swapped (4 and 50), then something allocated");
+}
+
+fn lists() {
+  imm l = list(100);
+  expectInt(listSum(&l), 5050, "a hundred links, each made under collection");
+  mut i = 0i64;
+  mut last = leaf(0);
+  while i < 1000 {
+    last = +gc-mut Leaf[i];
+    imm junk = +gc-mut Link[i, None[+gc-mut Link][]];
+    i = i + 1;
+  }
+  expectInt(last.n, 999, "the last leaf of a thousand, each loop allocating garbage");
+  expectInt(listSum(&l), 5050, "the list untouched by all that collecting");
+}
+
+fn main() i32 {
+  gc.setStress(true);
+  expectBool(gc.stressed(), true, "the stress mode is on");
+  temporaries();
+  lists();
+  gc.collect();
+  gc.collect();
+  expectUInt(u64[gc.liveObjects()], 0, "everything freed once its function returned");
+  done();
+}

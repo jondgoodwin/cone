@@ -55,7 +55,10 @@ Visual Studio projects stay at the root.
   only by making a counted owner; `pool` is a generational `Pool[T]`, its
   values in one block of slots, each reached through a copyable `Ref[T]` (a
   slot and a generation) that finds nothing once its value is removed;
-  `render` draws 3D
+  `collector` is `gc`, a garbage-collected region ref and its stop-the-world
+  collector (Acorn's mark and sweep, Lua's separation of finalizers), which a
+  bare `import collector;` brings in, since a package named `gc` could not
+  also declare a struct `gc`; `render` draws 3D
   shapes through OpenGL (`Shape` and its sphere, plane and cube, `Shader`,
   `Image` from BMP, `Texture`, `Camera`, `Light`), ported from Pegasus3D
   over `gl`, `math3d` and `collections`, needing no window to build or test;
