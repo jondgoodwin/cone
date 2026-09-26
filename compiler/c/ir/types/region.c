@@ -65,6 +65,11 @@ int regionIsOwning(INode *region) {
     return regionIsRegionRef(region);
 }
 
+int regionReleaseActs(INode *region) {
+    return regionIsOwning(region)
+        && (regionMethod(region, dealiasMethodName) != NULL || regionIsMove(region));
+}
+
 // Whether any struct of this compile declared 'is RegionRef, Traced', set as
 // each region is checked (regionRefCheck). Until one has, no reference is
 // traced, and the placement rules have nothing to look for.

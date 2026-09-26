@@ -30,6 +30,12 @@ int regionIsMove(INode *region);
 // 'Move', and not at all where it has neither? Every RegionRef is.
 int regionIsOwning(INode *region);
 
+// Does an owner of a reference into this region going away do anything: ask
+// the region's 'dealias', or, for a 'Move' region, the value's death? For
+// every other region ref it is nothing at all, and releasing such an owner
+// generates nothing.
+int regionReleaseActs(INode *region);
+
 // Hold a struct declaring 'is RegionRef' to the shapes and set of its methods
 void regionRefCheck(StructNode *node);
 

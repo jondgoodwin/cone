@@ -819,9 +819,9 @@ static void genlRegionDeath(GenState *gen, LLVMValueRef ref, LLVMValueRef valptr
 // to free. 'paths' (NULL for a whole value) are the parts moved out of what it
 // points at, starting at 'depth'.
 static void genlRegionDealiasPart(GenState *gen, LLVMValueRef ref, RefNode *refnode, MovedPath *paths, int npaths, int depth) {
-    FnDclNode *dealiasmeth = regionMethod(refnode->region, dealiasMethodName);
-    if (dealiasmeth == NULL && !regionIsMove(refnode->region))
+    if (!regionReleaseActs(refnode->region))
         return;
+    FnDclNode *dealiasmeth = regionMethod(refnode->region, dealiasMethodName);
     LLVMValueRef valptr = genlRefPtr(gen, ref, refnode);
     if (dealiasmeth == NULL) {
         genlRegionDeath(gen, ref, valptr, refnode, paths, npaths, depth);
