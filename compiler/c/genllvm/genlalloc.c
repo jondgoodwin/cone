@@ -77,13 +77,26 @@ void genlFinalizeAt(GenState *gen, LLVMValueRef valptr, INode *vtype) {
     genlReleaseFlds(gen, valptr, vtype);
 }
 
-// If the value at 'ref' is a struct, release each owning reference its fields hold
+// If the value at 'ref' is a struct, release each owning reference its fields hold.
+//
+// Not an enum's: its drop releases what its variant's fields own, the common
+// fields among them (genlEnumDrop), and an enum's drop always runs before this.
+// A variant laid out as a nullable pointer has no struct to reach into: the
+// value is its one reference.
 void genlReleaseFlds(GenState *gen, LLVMValueRef ref, INode *vtype) {
     StructNode *strnode = (StructNode*)itypeGetTypeDcl(vtype);
-    if (strnode->tag != StructTag)
+    if (strnode->tag != StructTag || (strnode->flags & TraitType))
         return;
     INode **nodesp;
     uint32_t cnt;
+    if (strnode->flags & NullablePtr) {
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            RefNode *vartype = (RefNode *)itypeGetTypeDcl(((FieldDclNode *)*nodesp)->vtype);
+            if (vartype->tag == RefTag && regionIsOwning(vartype->region))
+                genlReleaseOwning(gen, LLVMBuildLoad2(gen->builder, genlType(gen, (INode*)vartype), ref, "nullableref"), (INode*)vartype);
+        }
+        return;
+    }
     for (nodelistFor(&strnode->fields, cnt, nodesp)) {
         FieldDclNode *field = (FieldDclNode *)*nodesp;
         // Resolved, because a field's declared type may be a name standing for
@@ -97,6 +110,147 @@ void genlReleaseFlds(GenState *gen, LLVMValueRef ref, INode *vtype) {
         LLVMValueRef fldref = LLVMBuildLoad2(gen->builder, genlType(gen, (INode*)vartype), fldptr, "fldref");
         genlReleaseOwning(gen, fldref, (INode*)vartype);
     }
+}
+
+// A struct or enum value at 'valptr' was copied: each counted reference its drop
+// releases gains 'amount' holders (flowHeldCounted), as a tuple's elements do.
+// The mirror of that drop: through a field whose own drop releases one, and in
+// an enum, through the variant the tag picks, into each counted field it holds.
+void genlAliasHeld(GenState *gen, LLVMValueRef valptr, INode *type, long long amount) {
+    StructNode *strnode = (StructNode *)itypeGetTypeDcl(type);
+    LLVMTypeRef strtype = genlType(gen, (INode*)strnode);
+    INode **nodesp;
+    uint32_t cnt;
+    if (!(strnode->flags & EnumType)) {
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            FieldDclNode *field = (FieldDclNode *)*nodesp;
+            if (flowHeldCounted(field->vtype))
+                genlAliasHeld(gen, LLVMBuildStructGEP2(gen->builder, strtype, valptr, field->index, ""), field->vtype, amount);
+        }
+        return;
+    }
+
+    LLVMBasicBlockRef doneblk = genlInsertBlock(gen, "aliasheld");
+    if (strnode->flags & NullablePtr) {
+        // The one variant with a field is the reference; null is the empty one
+        for (nodesFor(strnode->derived, cnt, nodesp)) {
+            StructNode *variant = (StructNode *)*nodesp;
+            if (variant->fields.used != 2 || !flowVariantHeldCounted((INode*)variant))
+                continue;
+            RefNode *reftype = (RefNode *)itypeGetTypeDcl(((FieldDclNode *)nodelistGet(&variant->fields, 1))->vtype);
+            LLVMValueRef ref = LLVMBuildLoad2(gen->builder, strtype, valptr, "nullable");
+            LLVMBasicBlockRef someblk = genlInsertBlock(gen, "aliassome");
+            LLVMBuildCondBr(gen->builder, LLVMBuildIsNotNull(gen->builder, ref, "present"), someblk, doneblk);
+            LLVMPositionBuilderAtEnd(gen->builder, someblk);
+            genlRegionAlias(gen, ref, amount, reftype);
+        }
+        LLVMBuildBr(gen->builder, doneblk);
+        LLVMPositionBuilderAtEnd(gen->builder, doneblk);
+        return;
+    }
+
+    FieldDclNode *tagfld = NULL;
+    for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+        if ((*nodesp)->flags & IsTagField)
+            tagfld = (FieldDclNode*)*nodesp;
+    }
+    LLVMTypeRef tagtype = genlType(gen, tagfld->vtype);
+    LLVMValueRef tagptr = LLVMBuildStructGEP2(gen->builder, strtype, valptr, tagfld->index, "tagref");
+    LLVMValueRef dispatch = LLVMBuildSwitch(gen->builder, LLVMBuildLoad2(gen->builder, tagtype, tagptr, "tag"),
+        doneblk, strnode->derived->used);
+    for (nodesFor(strnode->derived, cnt, nodesp)) {
+        StructNode *variant = (StructNode *)*nodesp;
+        if (!flowVariantHeldCounted((INode*)variant))
+            continue;
+        LLVMBasicBlockRef caseblk = genlInsertBlock(gen, "aliasvariant");
+        LLVMAddCase(dispatch, LLVMConstInt(tagtype, variant->tagnbr, 0), caseblk);
+        LLVMPositionBuilderAtEnd(gen->builder, caseblk);
+        LLVMTypeRef vartype = genlType(gen, (INode*)variant);
+        LLVMValueRef varptr = LLVMBuildBitCast(gen->builder, valptr, LLVMPointerType(vartype, 0), "variant");
+        INode **fldp;
+        uint32_t fldcnt;
+        for (nodelistFor(&variant->fields, fldcnt, fldp)) {
+            FieldDclNode *field = (FieldDclNode *)*fldp;
+            LLVMValueRef fldptr;
+            if (flowIsCountedField(field->vtype)) {
+                fldptr = LLVMBuildStructGEP2(gen->builder, vartype, varptr, field->index, "");
+                RefNode *reftype = (RefNode *)itypeGetTypeDcl(field->vtype);
+                genlRegionAlias(gen, LLVMBuildLoad2(gen->builder, genlType(gen, (INode*)reftype), fldptr, "heldref"), amount, reftype);
+            }
+            else if (flowHeldCounted(field->vtype)) {
+                fldptr = LLVMBuildStructGEP2(gen->builder, vartype, varptr, field->index, "");
+                genlAliasHeld(gen, fldptr, field->vtype, amount);
+            }
+        }
+        LLVMBuildBr(gen->builder, doneblk);
+    }
+    LLVMPositionBuilderAtEnd(gen->builder, doneblk);
+}
+
+// The body of an enum's drop (structSetEnumDropFn): the value 'self' points at
+// dies as the variant it holds would, finalized in place (genlFinalizeAt): the
+// variant's drop -- its own 'final', the enum's 'final', each finalizing field's
+// drop -- then the owning references its fields hold, the common fields' among
+// them. The tag picks the variant, and a variant with nothing to do has no case.
+// The nullable-pointer layout has no tag: the value is the one variant's
+// reference, and null is the empty variant, which has nothing to do.
+void genlEnumDrop(GenState *gen, FnDclNode *fnnode) {
+    StructNode *enumnode = (StructNode*)fnnode->dclinfo.owner;
+    LLVMValueRef selfptr = LLVMGetParam(gen->fn, 0);
+    // No expression gives its calls a place, so each is placed at the enum,
+    // where the drop was made (a call with none fails verification in debug)
+    if (!gen->opt->release) {
+        LLVMMetadataRef loc = LLVMDIBuilderCreateDebugLocation(gen->context,
+            fnnode->linenbr, (unsigned)(fnnode->srcp - fnnode->linep), LLVMGetSubprogram(gen->fn), NULL);
+        LLVMSetCurrentDebugLocation(gen->builder, LLVMMetadataAsValue(gen->context, loc));
+    }
+    LLVMTypeRef enumtype = genlType(gen, (INode*)enumnode);
+    LLVMBasicBlockRef doneblk = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "dropdone");
+    INode **nodesp;
+    uint32_t cnt;
+
+    if (enumnode->flags & NullablePtr) {
+        StructNode *somenode = NULL;
+        for (nodesFor(enumnode->derived, cnt, nodesp)) {
+            if (((StructNode*)*nodesp)->fields.used == 2)
+                somenode = (StructNode*)*nodesp;
+        }
+        LLVMValueRef ptr = LLVMBuildLoad2(gen->builder, enumtype, selfptr, "nullable");
+        if (LLVMGetTypeKind(enumtype) != LLVMPointerTypeKind)
+            ptr = LLVMBuildExtractValue(gen->builder, ptr, 0, "ptr");   // a fat pointer's
+        LLVMValueRef present = LLVMBuildIsNotNull(gen->builder, ptr, "present");
+        LLVMBasicBlockRef someblk = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "dropsome");
+        LLVMBuildCondBr(gen->builder, present, someblk, doneblk);
+        LLVMPositionBuilderAtEnd(gen->builder, someblk);
+        genlFinalizeAt(gen, selfptr, (INode*)somenode);
+        LLVMBuildBr(gen->builder, doneblk);
+    }
+    else {
+        FieldDclNode *tagfld = NULL;
+        for (nodelistFor(&enumnode->fields, cnt, nodesp)) {
+            if ((*nodesp)->flags & IsTagField)
+                tagfld = (FieldDclNode*)*nodesp;
+        }
+        LLVMTypeRef tagtype = genlType(gen, tagfld->vtype);
+        LLVMValueRef tagptr = LLVMBuildStructGEP2(gen->builder, enumtype, selfptr, tagfld->index, "tagref");
+        LLVMValueRef tag = LLVMBuildLoad2(gen->builder, tagtype, tagptr, "tag");
+        LLVMValueRef dispatch = LLVMBuildSwitch(gen->builder, tag, doneblk, enumnode->derived->used);
+        for (nodesFor(enumnode->derived, cnt, nodesp)) {
+            StructNode *variant = (StructNode*)*nodesp;
+            if (!itypeNeedsFinal((INode*)variant))
+                continue;
+            LLVMBasicBlockRef caseblk = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "dropvariant");
+            LLVMAddCase(dispatch, LLVMConstInt(tagtype, variant->tagnbr, 0), caseblk);
+            LLVMPositionBuilderAtEnd(gen->builder, caseblk);
+            LLVMValueRef varptr = LLVMBuildBitCast(gen->builder, selfptr,
+                LLVMPointerType(genlType(gen, (INode*)variant), 0), "variant");
+            genlFinalizeAt(gen, varptr, (INode*)variant);
+            LLVMBuildBr(gen->builder, doneblk);
+        }
+    }
+    // A function returning nothing returns the empty value, as a 'return' does
+    LLVMPositionBuilderAtEnd(gen->builder, doneblk);
+    LLVMBuildRet(gen->builder, LLVMGetUndef(gen->emptyStructType));
 }
 
 // The region's header for the value an owning reference points at: the

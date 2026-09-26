@@ -465,6 +465,28 @@ The drop does not touch owning-reference fields and `genlDealiasFlds` touches
 nothing else, so nothing is released twice; a type with no drop emits exactly
 what it did before the finalizer was added.
 
+**An enum's drop is built here, not lowered** (`genlEnumDrop`, reached from
+`genlFn` for the function `structSetEnumDropFn` made, which has an empty block).
+It reads the tag through the enum's own layout and switches on it; each variant
+with anything to do is a case, which recasts the pointer to the variant and
+finalizes it in place (`genlFinalizeAt`): the variant's drop — its own `final`,
+the enum's `final`, each finalizing field's drop — then the owning references
+its fields hold, the common fields' among them. A variant with nothing to do has
+no case, and the default leaves. The nullable-pointer layout has no tag: the
+value is the one variant's reference, tested against null, and for that variant
+`genlReleaseFlds` loads the value itself rather than a field of a struct there is
+none of. Since an enum's drop has released what the variant's fields own,
+`genlReleaseFlds` passes an enum by, so a death (`genlRegionDeath`) or a
+finalize in place calling it after the drop releases nothing twice. No
+expression places the drop's calls, so in a debug build each is placed at the
+enum, where a call without a location would fail verification.
+
+**A copy of a struct or an enum holding counted references its drop releases**
+(flow's `flowHeldCounted`) reaches `genlAliasHeld` from the `RefCountNode`: the
+copied value is stored to a slot and walked as the drop would walk it, through
+each field whose drop releases one and, in an enum, the variant its tag picks,
+calling `alias` on each counted field there.
+
 **A hollow death** (`genlHollowDeath`) is the death of a value that, or an
 element of which, was moved out through its sole owner (flow's `HollowNode`).
 `genlHollowRelease` turns each recorded move into a path of steps outward from
@@ -731,6 +753,8 @@ variables.
 | | `genlHollowRelease`, `genlRegionDealiasPart`, `genlHollowDeath`, `genlReleasePart` | a hollowed variable's release: the death of a value moved out, or an element of it, finalizing none of it and freeing the memory |
 | | `genlReleaseOwning`, `genlDealiasFlds`, `genlReleaseFlds`, `genlDealiasNodes` | releasing what a variable, a tuple's elements or a dead value's fields own, and replaying flow's lists |
 | | `genlFinalizeAt` | the `finalize` intrinsic: a death in place, less the `free` |
+| | `genlEnumDrop` | the body of an enum's drop: the tag's variant finalized in place |
+| | `genlAliasHeld` | a copied struct or enum: `alias` on each counted reference its drop releases |
 | `ir/types/reference.h` | `enum ManagedRefFields` | `RegionField`, `PermField`, `ValueField` |
 | `ir/name.c` | `nameSymbol`, `nameType`, `nameVtable`, `nameVtableImpl`, `nameVtableList` | spelling a symbol from a node's owner chain and facts, and a type argument within it — the rules are in [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols" |
 | `ir/dclinfo.c` | `dclInfoJoin` | writes the declaration facts where a declaration joins its namespace |

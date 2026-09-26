@@ -23,6 +23,7 @@ Name *thisName;
 Name *cloneName;
 Name *dropName;
 Name *finalName;
+Name *enumFinalName;
 Name *initName;
 Name *tagName;
 Name *plusEqName;

@@ -249,6 +249,18 @@ as its enrichment or base is still the scope's result). Missing any one of them
 leaves one value under two names: finalized or freed twice, or counted once for
 two holders. A converting cast (`FlagConvert`) is not looked through.
 
+**A match's binding is the matched value.** `case imm c Circle` desugars to a
+variable initialized with the matched value converted to its variant (a
+`CastTag` carrying `FlagMatchBind`), and the match holds the matched value in
+a variable of its own. The binding is that value under the variant's name, not
+a second value: `flowMatchBound` answers the matched value's name for it, and
+the walks treat the two as one. `flowScopeDealias` never releases the binding,
+since the matched value's variable releases it, as the enum, whichever arm ran;
+`flowHandleMove` on the binding deactivates the matched value too; and
+`flowIsScopeResult` exempts the matched value when the binding is handed back.
+A guard's binding (`case imm c Circle if g`) is a second binding of the same
+value, and owns nothing either.
+
 **The count counts holders.** From the ownership work:
 
 - `+rc[2]` creates the object *and* the first reference. Born at 1.
@@ -258,6 +270,11 @@ two holders. A converting cast (`FlagConvert`) is not looked through.
 - A tuple is one holder of each counted reference it carries. `imm t = pair()`
   adds nothing (a temporary again); `a, b = t` and `imm u = t` add one per rc
   element, and `t` releases each at scope exit.
+- A struct or an enum is one holder of each counted reference its drop releases
+  (`flowHeldCounted`): an enum's drop releases what its variant's fields own, so
+  `imm o2 = o` over an `Option[+rc-mut T]` adds one, through the variant the
+  tag picks, and a struct holding such an enum adds one through that field. A
+  struct's own counted fields are not in its drop, and add nothing.
 
 `flowHandleMoveOrCopy` is the whole decision:
 
@@ -304,10 +321,13 @@ depends on:
 carrying one.** `flowInjectRefCountAmt` returns early unless the type is a
 `RefTag` or `ArrayRefTag` into a region with `alias` (`flowIsRcRef`,
 `regionIsCounted` — an owning slice is counted exactly as a single reference
-is), or a `TTupleTag` with at least one such element; for the tuple it fills
+is), or a `TTupleTag` with at least one such element, or a struct or enum whose
+drop releases one (`flowHeldCounted`); for the tuple it fills
 the node's `counts` array with `amt` per counted element and `0` per other
 element, `amt` then holding the element count, and generation's tuple arm adds
-the owners to each counted element after an `extractvalue`. A reference into a
+the owners to each counted element after an `extractvalue`. The struct and enum
+arm (`genlAliasHeld`) mirrors the drop: through each field whose drop releases
+one, and in an enum through the variant its tag picks. A reference into a
 `Move` region (`so`) and a `uni`-permissioned reference into one with `alias`
 are both move types and take the move path instead, as does a tuple carrying
 one. A reference into a region with neither is copied with no node at all.
@@ -316,9 +336,11 @@ one. A reference into a region with neither is copied with no node at all.
 the top to a start position, so release order is the reverse of declaration
 order. Per variable: one that was never initialized or was moved out is
 skipped, whatever its type, because it owns nothing to release or finalize; so
+is a match's binding, which owns nothing (`flowMatchBound`); so
 is one the scope hands back, which is the caller's to release or finalize, and
 `flowIsScopeResult` matches it against the result expression, walking a
-`VTupleTag` element by element and a recast to its operand. A move-typed
+`VTupleTag` element by element, a recast to its operand, and a match's binding
+to the matched value. A move-typed
 array element handed back matches the variable it is taken from
 (`flowIsScopeResultOwner`, the walk through elements and owning dereferences
 that `flowMoveSource` takes), because moving an element out gives up the whole
@@ -370,7 +392,7 @@ failed to resolve.
 | --- | --- | --- | --- |
 | **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable, and on a borrow of a moved-out one; move out of a field, or of a global, or out through a borrowed or a shared owning reference, refused | element granularity — moving `a[0]` deactivates all of `a`; conditional moves; loop-carried moves |
 | **Escape / lifetime** | representation in type check, enforcement here | storing a borrow into a longer-lived lval, by assignment or by either direction of a swap; returning a borrow of a local; a borrow arriving through a call's result, singly or as one of several values destructured into lvals, each carrying the narrowest argument borrow's scope; a `&mut &T` argument whose pointee would outlive another borrow passed with it; a borrow coerced to another reference type, whether widened to a base trait's reference or made a virtual reference | a borrow laundered through a variable; a borrow stored in a field or captured; distinguishing parameter lifetimes — there is no lifetime annotation syntax; freezing a borrow's source |
-| **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs and slices, and of drop-fn structs, from a jump down to the block it names | arrays of owning references; a variable moved out, or initialized, on only one path — see Hazards |
+| **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs and slices, and of drop-fn structs and enums, from a jump down to the block it names | arrays of owning references; a variable moved out, or initialized, on only one path — see Hazards |
 | **Permission** | `MayWrite` and `MayRead` | `ErrorNoMut` on assignment and swap; `ErrorNoRead` on a read through a reference — a dereference, an index, or a field of a virtual reference | `MayAliasWrite`, `RaceSafe`, `IsLockless` are populated and read nowhere |
 | **Initialization** | yes | `ErrorMove` "has not been initialized" | "initialized on one branch" reads as initialized everywhere; a variable never initialized may be borrowed, so a method taking it `&mut` can fill it, and nothing then stops a field it left unset being read through the borrow; the unused-variable warning in `flow.h`'s header does not exist |
 | **Array fill rules** | yes | `ErrorBadFill` for a repeated move value; `ErrorFillCount` for a non-constant count | — |
@@ -448,6 +470,15 @@ is what releases the old allocation.
   did not move leaves what `b` points at unfinalized. That is the deliberate
   side of the choice — a finalizer skipped rather than run twice — and it needs
   the drop flag to be right.
+- **A match's binding moved on one arm moves the matched value on every arm.**
+  `match e { case imm a A { take(a); } else {...} }` deactivates the matched
+  value for the whole function, so when the `else` arm runs, what it holds is
+  never finalized. The same drop flag is the answer.
+- **A match's binding declared `mut` and assigned over holds its own copy.** The
+  conversion copies the matched value into the binding's storage, so a value
+  assigned into the binding is in neither the matched value nor anything that
+  releases it: `case mut a A { a = A[Fin[2]]; }` finalizes the matched value's
+  original as the match ends and leaks `Fin[2]`.
 - **A hollowed variable reassigned by a destructuring of one value**
   (`b, x = pair()`) leaks its old allocation: `assignMultRetFlow` has no single
   value to wrap a `HollowNode` round, so it takes the moved variable's path
@@ -482,8 +513,10 @@ is what releases the old allocation.
 | | `flowOwningLocal`, `flowNewHollow` | the local owning reference a move reaches through; the `HollowNode` releasing a hollowed variable as it stands |
 | | `flowResultMove` | the same refusals for a returned value, deactivating nothing |
 | | `flowIsLvalRead` | the temporary-vs-lvalue test that makes counting correct |
-| | `flowInjectRefCountAmt` | wrap a counted reference, or a tuple carrying one, in a `RefCountNode` |
+| | `flowInjectRefCountAmt` | wrap a counted reference, or a tuple carrying one, or a struct or enum whose drop releases one, in a `RefCountNode` |
 | | `flowIsRcRef`, `flowIsOwningType` | is this type counted; must a variable of this type be released |
+| | `flowHeldCounted`, `flowVariantHeldCounted`, `flowIsCountedField` | does a copy of this struct or enum add a holder to a counted reference its drop releases |
+| | `flowMatchBound` | the matched value a match's binding stands for, or NULL |
 | | `flowScopePush`, `flowScopePop`, `flowAddVar` | the variable stack |
 | | `flowScopeDealias` | build a scope's release list; skip an uninitialized, moved-out or handed-back variable; release a hollowed one hollow |
 | `ir/exp/block.c` | `blockFlow` | scope push/pop, `blockret` injection, result walk then dealias capture; a `return`'s move source |

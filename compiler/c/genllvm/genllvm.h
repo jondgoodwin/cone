@@ -127,6 +127,11 @@ void genlReleaseFlds(GenState *gen, LLVMValueRef ref, INode *vtype);
 // Finalize the value at 'valptr' where it sits, as its death would, without
 // freeing its memory: the 'finalize' intrinsic
 void genlFinalizeAt(GenState *gen, LLVMValueRef valptr, INode *vtype);
+// The body of an enum's drop, dispatching on the tag to what the variant's death does
+void genlEnumDrop(GenState *gen, FnDclNode *fnnode);
+// A copied struct or enum at 'valptr': each counted reference its drop releases
+// gains 'amount' holders
+void genlAliasHeld(GenState *gen, LLVMValueRef valptr, INode *type, long long amount);
 // Release a hollowed variable's owning reference without the parts moved out
 void genlHollowRelease(GenState *gen, HollowNode *hnode);
 // A counted reference gains 'amount' owners, through its region's 'alias'

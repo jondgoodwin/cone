@@ -6,6 +6,7 @@
 //   recursively, then the owning references its fields hold are released: a
 //   '+so' one's value dies and is freed, an '+rc' one's only if that was its
 //   last owner;
+// - a value typed as an enum dies as the variant it holds;
 // - a borrowed reference finalizes nothing, so a value referred to from
 //   another arena value dies once, by its own arena;
 // - a value whose type needs no finalizing gets no finalizer header at all.
@@ -116,6 +117,19 @@ fn generic() {
   expectUInt(u64[a.finalizers()], 1, "Box[Fin] does");
 }
 
+// Typed by the local rather than 'a.alloc[Option[Fin]](...)', which crashes
+// the compiler (1075: a method's explicit type argument that is a generic
+// type's instance)
+fn enumValue() {
+  mut a = Arena.empty();
+  imm v Option[Fin] = Some[Fin][Fin[3]];
+  a.alloc(v);
+  expectUInt(u64[a.finalizers()], 1, "an Option of a finalizing value gets a header");
+  imm n Option[i64] = Some[i64][4i64];
+  a.alloc(n);
+  expectUInt(u64[a.finalizers()], 1, "an Option of a plain one does not");
+}
+
 fn ownerAsValue() {
   mut a = Arena.empty();
   imm r = a.alloc(+so Fin[6]);
@@ -200,6 +214,9 @@ fn main() i32 {
   log = 0;
   generic();
   expectInt(log, 5, "a generic type finalizes at a finalizing argument");
+  log = 0;
+  enumValue();
+  expectInt(log, 3, "a value typed as an enum dies as its variant");
   log = 0;
   ownerAsValue();
   expectInt(log, 6, "an owning reference allocated as the value is released");

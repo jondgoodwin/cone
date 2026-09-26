@@ -43,14 +43,16 @@
 // and no variant's drop, taking its own self, met it. A generic enum's instance
 // cloned it into each variant instead, and the compiler stopped on its
 // pre-lowered body. A trait requiring a finalizing field was refused the same
-// way on every implementer. A trait or an enum now generates no drop fn.
+// way on every implementer. A trait generates no drop fn.
 //
 // Nor is an enum's own 'final' its drop fn: it is never generated for the enum,
 // only cloned into each variant, so the drop call built for a value typed as the
 // enum reached no function and the compiler crashed -- as a local, a parameter,
-// a field, and on a generic enum's instance. A value typed as the enum itself is
-// not finalized, whether or not the enum declares a 'final': that needs a drop
-// dispatching on the tag, which is not built. Typed as a variant, it is.
+// a field, and on a generic enum's instance. An enum's drop is its own kind,
+// generated for it once its variants are laid out: it reads the tag and runs
+// that variant's death. So a value typed as the enum is finalized once, as the
+// variant it holds, whether or not the enum declares a 'final' -- as a local, a
+// parameter, a field and a generic's instance, here. enum_final is the rest.
 
 mod struct_final_once;
 
@@ -280,7 +282,7 @@ enum Held {
   }
 }
 
-// The enum's own finalizer is a default each variant inherits
+// The enum's own finalizer runs for each variant, after the variant's own
 enum HeldFinal {
   pub f Fin;
 
@@ -421,7 +423,7 @@ fn enumFinalAsVariant() {
   imm o = OwnFinal.Some[65, 66];
 }
 
-// Typed as the enum, nothing is finalized, as for an enum with no finalizer
+// Typed as the enum, the same finalizer runs, through the enum's drop
 fn enumFinalAsEnum() {
   imm o OwnFinal = OwnFinal.Some[67, 68];
 }

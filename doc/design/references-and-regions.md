@@ -44,8 +44,8 @@ and reaching the value only by making a counted `+rcw-mut` owner, in an
 `Option` (`upgrade`) or checked first (`alive`, `strong`). Its value dies at
 its last strong owner, and its memory is freed at its last weak reference:
 death and freeing separate, with the compiler told nothing new. The owner an
-`upgrade` hands back in a `Some` is never released, because nothing held in an
-enum is.
+`upgrade` hands back in a `Some` is released when the `Option` goes, as what any
+enum holds is.
 
 The argument is in *Memory Managed Your Way* (`conesite/public/memory.html`) and
 `c:/src/progling/content/post/gradual-memory-management.md`. The origin is

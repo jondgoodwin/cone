@@ -3,7 +3,8 @@
 // worked out by hand from the rules:
 // - 'remove' finalizes its value at once, where it sits, exactly once: the
 //   value's 'final', then its fields', then the owners its fields hold
-//   (mem.finalize, the death the compiler builds for the type);
+//   (mem.finalize, the death the compiler builds for the type), and a value
+//   typed as an enum dies as the variant it holds;
 // - a value already removed is not finalized again, by a second 'remove' or
 //   by the pool's death;
 // - the pool's death finalizes every value still in it, in slot order (not
@@ -65,6 +66,20 @@ fn owners() {
   p.remove(a);
   expectInt(log, 12, "the value, then the owner its field held");
   log = 0;
+}
+
+// Values typed as an enum: each dies as the variant it holds, and None,
+// holding nothing, finalizes nothing
+fn enumValues() {
+  mut p = Pool[Option[Fin]].empty();
+  imm v Option[Fin] = Some[Fin][Fin[5]];
+  imm a = p.add(v);
+  imm w Option[Fin] = Some[Fin][Fin[6]];
+  p.add(w);
+  imm n Option[Fin] = None[Fin][];
+  p.add(n);
+  p.remove(a);
+  expectInt(log, 5, "the value removed dies at once");
 }
 
 // Owning references as the values themselves
@@ -142,6 +157,9 @@ fn main() i32 {
   log = 0;
   owners();
   expectInt(log, 34, "the pool's death releases the owners its values hold");
+  log = 0;
+  enumValues();
+  expectInt(log, 56, "and the pool's death the rest, as their variants");
   log = 0;
   soValues();
   expectInt(log, 2, "the pool's death frees its +so values");

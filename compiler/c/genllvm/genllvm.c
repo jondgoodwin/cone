@@ -135,8 +135,12 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     for (nodesFor(fnsig->parms, cnt, nodesp))
         genlParmVar(gen, (VarDclNode*)*nodesp);
 
-    // Generate the function's code (always a block)
-    genlBlock(gen, (BlockNode *)fnnode->value);
+    // Generate the function's code (always a block). An enum's drop has an
+    // empty one: its body is built here, from the enum's layout.
+    if (structIsEnumDropFn((INode*)fnnode))
+        genlEnumDrop(gen, fnnode);
+    else
+        genlBlock(gen, (BlockNode *)fnnode->value);
 
 	// erase temporary dummy alloca inserted earlier
     if (LLVMGetInstructionParent(allocaPoint))

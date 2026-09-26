@@ -215,6 +215,40 @@ static int structBaseGivesFields(StructNode *base) {
     return (base->flags & EnumType) != 0;
 }
 
+// Is this an enum's own 'final', about to be given to one of its variants?
+//
+// An enum's 'final' runs for every value of the enum, and a variant's own
+// 'final' does not replace it: the variant's runs first, then the enum's,
+// derived before base [Jon 26 Sep]. So it is not a default a variant may
+// override. A variant declaring no 'final' takes the enum's as its own, as it
+// takes any default; one declaring its own keeps the enum's beside it
+// (structAddEnumFinal), and its drop calls the two in that order.
+static int structIsEnumFinal(StructNode *base, FnDclNode *meth) {
+    return (base->flags & EnumType) && meth->namesym == finalName && meth->value != NULL;
+}
+
+// Keep a clone of the enum's 'final' in a variant that declares its own, under
+// a name no source spells: it is this variant's method, so its symbol is spelled
+// after the variant, and it is in the method list, so it is checked and generated
+// like the rest, but it is not in the namespace, so nothing names it and it
+// answers no requirement. Only the variant's drop calls it.
+static void structAddEnumFinal(StructNode *node, FnDclNode *clone) {
+    clone->namesym = enumFinalName;
+    nodelistAdd(&node->nodelist, (INode*)clone);
+    dclInfoJoin((INode*)clone, (INode*)node);
+}
+
+// The enum's 'final' this variant keeps beside its own, or NULL
+static FnDclNode *structEnumFinalOf(StructNode *node) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&node->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag == FnDclTag && ((FnDclNode*)*nodesp)->namesym == enumFinalName)
+            return (FnDclNode*)*nodesp;
+    }
+    return NULL;
+}
+
 // Expand the placeholder field at 'fldpos' that stands for a base or a further
 // name of an 'is' list:
 // the base's fields replace it as clones where it contributes any, and otherwise
@@ -264,6 +298,8 @@ static void structInheritTrait(StructNode *node, uint32_t fldpos, StructNode *tr
         // implementers, and a struct is told to implement it by type check.
         if (iNsTypeFindFnField((INsTypeNode *)node, traitmeth->namesym) == NULL)
             iNsTypeAddFn((INsTypeNode *)node, (FnDclNode*)cloneNode(cstate, (INode*)traitmeth));
+        else if (structIsEnumFinal(trait, traitmeth))
+            structAddEnumFinal(node, (FnDclNode*)cloneNode(cstate, (INode*)traitmeth));
     }
 
     if (node->traits == NULL)
@@ -1273,11 +1309,21 @@ static void structEnumCloneOwnMethods(StructNode *node, uint32_t ownmethods) {
             FnDclNode *meth = (FnDclNode*)nodelistGet(&node->nodelist, cnt);
             if (meth->tag != FnDclTag || !(meth->flags & FlagMethFld) || meth->value == NULL)
                 continue;
-            if (iNsTypeFindFnField((INsTypeNode*)copy, meth->namesym) != NULL)
-                continue;
+            // The extension's own 'final' is kept beside a copy's, as an enum's is
+            // beside a variant's (structIsEnumFinal)
+            int keepfinal = 0;
+            if (iNsTypeFindFnField((INsTypeNode*)copy, meth->namesym) != NULL) {
+                if (!structIsEnumFinal(node, meth))
+                    continue;
+                keepfinal = 1;
+            }
             CloneState cstate;
             clonePushState(&cstate, (INode*)copy, (INode*)copy, 0, NULL, NULL);
-            iNsTypeAddFn((INsTypeNode*)copy, (FnDclNode*)cloneNode(&cstate, (INode*)meth));
+            FnDclNode *clone = (FnDclNode*)cloneNode(&cstate, (INode*)meth);
+            if (keepfinal)
+                structAddEnumFinal(copy, clone);
+            else
+                iNsTypeAddFn((INsTypeNode*)copy, clone);
             clonePopState();
         }
     }
@@ -2298,30 +2344,30 @@ void structSetDropFn(StructNode *node) {
     // A trait's methods -- an enum's too -- belong to its implementers: each is
     // cloned into them or required of them, and none is generated for the trait.
     // A drop built here would be one more, a requirement none could meet, since
-    // each one's own drop takes its own self. Each already drops those fields: an
-    // enum's common fields are spliced into its variants, and the fields a trait
-    // requires are declared by its implementers.
-    //
-    // Nor is its own 'final' its drop: that too is never generated for it, so a
-    // call to it had no function to reach, and the compiler crashed on a value
-    // typed as the enum. Such a value is not finalized, whether or not the enum
-    // declares a 'final'; dispatching on the tag to the variant's drop is the
-    // unbuilt "final handling for union".
+    // each one's own drop takes its own self. Nor is its own 'final' its drop:
+    // that too is cloned into each variant or implementer and never generated
+    // for it. An open trait holds no value, so it has no drop at all. An enum's
+    // is its own kind, generated for it and dispatching on the tag to the
+    // variant's, and settled once its variants are laid out (structSetEnumDropFn),
+    // since what it has to do is theirs.
     if (node->flags & TraitType) {
         node->dropfn = NULL;
         return;
     }
 
+    // A variant declaring its own 'final' keeps its enum's beside it, and its
+    // drop calls the two in turn, its own first
+    FnDclNode *enumfinal = structEnumFinalOf(node);
+
     // if any field requires drop logic, build a new drop function for struct
     BlockNode *block = NULL;
     INode *selfDcl = NULL;
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodelistFor(&node->fields, cnt, nodesp)) {
-        // See whether field's type requires a finalizer
-        VarDclNode *fld = (VarDclNode*)*nodesp;
-        INode *flddrop = itypeGetDropFnDcl(fld->vtype);
-        if (flddrop == NULL)
+    for (int pos = enumfinal ? -1 : 0; pos < (int)node->fields.used; ++pos) {
+        // See whether field's type requires a finalizer. Position -1 is the
+        // enum's 'final', and begins the drop function on its own.
+        VarDclNode *fld = pos < 0 ? NULL : (VarDclNode*)nodelistGet(&node->fields, pos);
+        INode *flddrop = fld ? itypeGetDropFnDcl(fld->vtype) : NULL;
+        if (fld && flddrop == NULL)
             continue;
 
         // Before we can add field's drop logic to new drop function, let's make sure it exists
@@ -2355,6 +2401,14 @@ void structSetDropFn(StructNode *node) {
             dropfn = newdropfn;
         }
 
+        // Then the enum's 'final', over the same self
+        if (fld == NULL) {
+            FnCallNode *finalcall = newFnCallLower((INode*)node, (INode*)enumfinal, 1);
+            nodesAdd(&finalcall->args, (INode*)newNameUseFromDclNode(selfDcl, (INode*)node));
+            nodesAdd(&block->stmts, (INode*)finalcall);
+            continue;
+        }
+
         // Add call to field's drop fn
         FnCallNode *dropfncall = newFnCallLower((INode*)node, flddrop, 1);
         INode *dropnameuse = (INode*)newNameUseFromDclNode(selfDcl, (INode*)node);
@@ -2377,6 +2431,58 @@ void structSetDropFn(StructNode *node) {
     }
 
     node->dropfn = dropfn;
+}
+
+// Settle an enum's drop, once every one of its variants is laid out. A value
+// typed as the enum dies as the variant it holds would: its variant's drop runs
+// -- the variant's own 'final', the enum's 'final', each finalizing field's drop
+// -- and then what the variant's fields own is released. So the enum has a drop
+// exactly when one of its variants has anything to do when it dies
+// (itypeNeedsFinal), and each instance of a generic enum is asked on its own:
+// 'Option[i32]' has none, 'Option[String]' has one [Jon 26 Sep].
+//
+// Its body is not Cone: generation builds it (genlEnumDrop), reading the tag and
+// reaching each variant's fields through that variant's layout. So it is made
+// with an empty block, lowered, and carries the mark a check would have left.
+// It is not a method, since an enum's methods are its variants' -- each cloned
+// into them or required of them, and generated for none of them as the enum's
+// -- and this one is generated for the enum alone, as its static functions are.
+// Pub, as a struct's drop is, because the value may be dropped wherever it goes.
+void structSetEnumDropFn(StructNode *node) {
+    if (node->dropfn || node->genericinfo || !(node->flags & EnumType) || node->derived == NULL)
+        return;
+    int needed = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(node->derived, cnt, nodesp)) {
+        if (itypeNeedsFinal(*nodesp))
+            needed = 1;
+    }
+    if (!needed)
+        return;
+
+    INode *selftype = newNameUseFromDclNode((INode*)node, (INode*)node);
+    INode *refselftype = (INode*)newRefNodeFull(RefTag, (INode*)node, (INode*)borrowRef, (INode*)uniPerm, selftype);
+    INode *selfDcl = (INode*)newVarDclFull(selfName, VarDclTag, refselftype, (INode*)immPerm, NULL);
+    FnSigNode *fnsig = newFnSigNode();
+    nodesAdd(&fnsig->parms, selfDcl);
+    fnsig->rettype = (INode*)newVoidNode();
+    FnDclNode *dropfn = newFnDclNode(dropName, FlagPub, (INode*)fnsig, (INode*)newBlockNode());
+    inodeLexCopy((INode*)dropfn, (INode*)node);
+    dropfn->flags |= TypeChecked;
+    nodelistAdd(&node->nodelist, (INode*)dropfn);
+    dclInfoJoin((INode*)dropfn, (INode*)node);
+    node->dropfn = (INode*)dropfn;
+}
+
+// Is this the drop an enum is given (structSetEnumDropFn), whose body generation
+// builds rather than lowers?
+int structIsEnumDropFn(INode *fn) {
+    if (fn->tag != FnDclTag)
+        return 0;
+    INode *owner = ((FnDclNode*)fn)->dclinfo.owner;
+    return owner && owner->tag == StructTag && (owner->flags & EnumType)
+        && ((StructNode*)owner)->dropfn == fn;
 }
 
 // Settle the discriminant's width, and refuse a tag value the enum's own integer
@@ -2504,10 +2610,13 @@ static int structVariantInFlight(StructNode *node) {
 
 // Lay out each variant of a closed set not laid out already. An extension's
 // copies of its base's variants are among them, at the front of the list.
+// The enum's drop is theirs to decide, so it is settled here, as the last of them
+// is laid out.
 static void structLayoutVariants(TypeCheckState *pstate, StructNode *node) {
     uint32_t pos;
     for (pos = 0; pos < node->derived->used; ++pos)
         inodeTypeCheckAny(pstate, &nodesGet(node->derived, pos));
+    structSetEnumDropFn(node);
 }
 
 // 'is Copy' is an assertion [Jon 26 Sep]: the type is refused where it moves
@@ -2875,6 +2984,11 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     // type holding a finalizer or an owner would be finalized once per copy.
     if (namespaceFind(&node->namespace, finalName))
         infectFlag |= MoveType;           // Let's not make copies of finalized objects
+    // A declared 'Move' reaches as far as an inferred one: a variant that moves
+    // makes its enum move, however it came to [Jon 26 Sep]. The type itself was
+    // marked at name resolution.
+    if (structDeclaresTrait(node, moveTrait))
+        infectFlag |= MoveType;
 
     // Populate infection flags in this struct/trait, and recursively to all
     // inherited traits -- but never into a built-in trait, which describes its

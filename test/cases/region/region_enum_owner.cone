@@ -1,0 +1,154 @@
+// An owning reference held in an enum is released when the enum value dies:
+// the enum's drop releases what its variant's fields own, as a struct's death
+// in a region releases what its fields own. 'Option[+so T]' and 'Option[+rc T]'
+// are nullable pointers -- the Option is the reference, null its None -- and a
+// tagged enum holds its owner behind the tag; both are here.
+//
+// A counted reference is a copy type, so an enum holding one is too, and a copy
+// of the enum is one more holder of the reference inside it, as a copy of a
+// tuple holding one is: its region's 'alias' is called for it, through the
+// variant the tag picks, or not at all for None. Without it each copy's drop
+// released the one owner again. The same holds for a struct holding such an
+// enum, whose drop calls the enum's. 'tally' is region_regionref's counting
+// region, printing each count, so every line is worked out by hand from the
+// source: one owner at the allocation, one more per copy, one fewer per holder
+// going away, 'free' at zero.
+//
+// Matching by value copies the matched value once, into the match's own holder,
+// and the variant it binds is that holder's value under the variant's name, so
+// it adds no owner.
+//
+// A fallible allocation, '?+so', is an Option of the reference, and so is
+// released as any Option is.
+
+mod region_enum_owner;
+
+import stdio use *;
+import libc;
+
+fn line(label &[]u8, n usize) {
+  printStr(label);
+  printInt(i64[n]);
+  printStr(" ");
+}
+
+struct tally is RegionRef {
+  owners usize;
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn init() tally inline { tally[1usize]; }
+  fn alias(self &uni tally) inline { owners = owners + 1usize; line("alias", owners); }
+  fn dealias(self &uni tally) Bool inline { owners = owners - 1usize; line("dealias", owners); owners == 0usize; }
+  fn free(self &uni tally) inline { printStr("free "); libc.free(self as *u8); }
+}
+
+struct Fin {
+  pub id i32;
+  fn final(self &uni) {
+    printStr("fin");
+    printInt(i64[id]);
+    printStr(" ");
+  }
+}
+
+// A tagged enum holding a counted owner in one variant: a copy type
+enum Holds {
+  struct Counted { pub r +tally-mut i32; pub n i32; }
+  struct Neither {}
+}
+
+// And one holding a single owner, which makes it move, so that assigning it
+// moves it and nothing is counted
+enum HoldsOne {
+  struct Counted { pub r +tally-mut i32; }
+  struct Single { pub s +so Fin; }
+}
+
+struct Wrap {
+  pub o Option[+tally-mut i32];
+}
+
+fn show(label &[]u8) {
+  printStr(label);
+  printStr(": ");
+}
+
+fn end() {
+  printStr("|\n");
+}
+
+fn takeOption(o Option[+tally-mut i32]) {
+  printStr("took ");
+}
+
+fn soSome() { imm o Option[+so Fin] = Some[+so Fin][+so Fin[1]]; }
+fn soNone() { imm o Option[+so Fin] = None[+so Fin][]; }
+fn rcSome() { imm o Option[+rc Fin] = Some[+rc Fin][+rc Fin[2]]; }
+fn fallible() { imm o = ?+so Fin[3]; }
+
+fn countedLocal() {
+  imm o Option[+tally-mut i32] = Some[+tally-mut i32][+tally-mut 1i32];
+}
+fn countedNone() {
+  imm o Option[+tally-mut i32] = None[+tally-mut i32][];
+}
+fn countedCopy() {
+  imm o Option[+tally-mut i32] = Some[+tally-mut i32][+tally-mut 1i32];
+  imm o2 = o;
+  printStr("copied ");
+}
+fn countedNoneCopy() {
+  imm o Option[+tally-mut i32] = None[+tally-mut i32][];
+  imm o2 = o;
+  printStr("copied ");
+}
+fn countedPassed() {
+  imm o Option[+tally-mut i32] = Some[+tally-mut i32][+tally-mut 1i32];
+  takeOption(o);
+}
+fn countedMatched() {
+  imm o Option[+tally-mut i32] = Some[+tally-mut i32][+tally-mut 1i32];
+  match o {
+    case imm s Some[+tally-mut i32] { printStr("some "); }
+    else { printStr("none "); }
+  }
+}
+fn countedInStruct() {
+  imm w = Wrap[Some[+tally-mut i32][+tally-mut 1i32]];
+  imm w2 = w;
+  printStr("copied ");
+}
+fn taggedCounted() {
+  imm h Holds = Holds.Counted[+tally-mut 1i32, 2];
+  imm h2 = h;
+  printStr("copied ");
+}
+fn taggedNeither() {
+  imm h Holds = Holds.Neither[];
+  imm h2 = h;
+  printStr("copied ");
+}
+fn taggedSingle() { imm h HoldsOne = HoldsOne.Single[+so Fin[4]]; }
+fn taggedMoved() {
+  imm h HoldsOne = HoldsOne.Counted[+tally-mut 1i32];
+  imm h2 = h;
+  printStr("moved ");
+}
+
+fn main() i32 {
+  show("so-some"); soSome(); end();
+  show("so-none"); soNone(); end();
+  show("rc-some"); rcSome(); end();
+  show("fallible"); fallible(); end();
+  show("counted-local"); countedLocal(); end();
+  show("counted-none"); countedNone(); end();
+  show("counted-copy"); countedCopy(); end();
+  show("counted-none-copy"); countedNoneCopy(); end();
+  show("counted-passed"); countedPassed(); end();
+  show("counted-matched"); countedMatched(); end();
+  show("counted-in-struct"); countedInStruct(); end();
+  show("tagged-counted"); taggedCounted(); end();
+  show("tagged-neither"); taggedNeither(); end();
+  show("tagged-single"); taggedSingle(); end();
+  show("tagged-moved"); taggedMoved(); end();
+  0i32;
+}

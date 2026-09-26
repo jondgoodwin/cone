@@ -1,0 +1,292 @@
+// A value typed as an enum is finalized as the variant it holds would be, once,
+// at the end of its life [Jon 26 Sep]. The compiler gives each enum whose
+// variants have anything to do as they die a drop of its own, which reads the
+// tag and runs that variant's death: the variant's own 'final', then the
+// enum's 'final', then each finalizing field's, then the owning references its
+// fields hold. An enum with nothing to finalize has no drop -- 'Option[i32]'
+// none, 'Option[Fin]' one, each instance of a generic asked on its own -- and
+// the nullable-pointer 'Option[&T]' stays a bare pointer with none; cases.toml
+// asserts both, since a run cannot see them.
+//
+// Every shape a value lives in is here: a local, a parameter, a struct's field,
+// a function's result, a value moved and passed on, a generic's instance and a
+// generic function's parameter, an extension's copy and its own variant, a
+// module's global, and one an owning reference holds. The order is here too,
+// with an enum declaring its own 'final': a variant's own runs first, derived
+// before base, and an extension's 'final' runs after a base variant's own.
+//
+// Matching by value binds the variant to the matched value, which the match
+// holds and finalizes as the enum when it ends: the binding is that value
+// under its variant's name, not a second value. So whichever arm runs, it is
+// finalized once, a guard's binding included -- before this, the guard's and
+// the arm's bindings were each finalized, and the matched value never was.
+// Moving the binding moves the matched value, and handing it back hands the
+// matched value back.
+//
+// Pinned as they are, each a gap belonging elsewhere:
+// - A value moved on one path only is taken as moved on all of them (drop
+//   flags are ruled but not built): kept, it leaks. The same for a match whose
+//   arm that moves the binding does not run.
+// - A binding declared 'mut' and assigned over holds its own copy: the matched
+//   value's original is finalized, and what the binding was given leaks.
+// - A value assigned over is not finalized (reassignment), and a temporary
+//   discarded unbound is not finalized, as neither is for a struct.
+
+mod enum_final;
+
+import stdio use *;
+
+struct Fin {
+  pub id i32;
+  fn final(self &uni) {
+    printStr("fin");
+    printInt(i64[id]);
+    printStr(" ");
+  }
+}
+
+enum E {
+  struct A { pub f Fin; }
+  struct B { pub n i32; }
+  struct C { pub g Fin; }
+}
+use E;
+
+// The enum's own 'final', a variant's own, and a finalizing field
+enum Ordered {
+  fn final(self &uni) { printStr("enumfin "); }
+  struct Own {
+    pub f Fin;
+    fn final(self &uni) { printStr("varfin "); }
+  }
+  struct Inherits { pub f Fin; }
+  struct Empty {}
+}
+
+// A finalizing common field, spliced into every variant
+enum Held {
+  pub f Fin;
+  struct Full { pub n i32; }
+  struct Bare {}
+}
+
+enum Gen[T] {
+  struct Has { pub x T; }
+  struct Hasnt {}
+}
+
+// An extension's copies of E's variants, and a variant of its own
+enum RichE extends E {
+  struct D { pub g Fin; pub h Fin; }
+}
+
+// A base variant with its own 'final', and an extension declaring the enum's
+enum Base {
+  struct P { pub n i32; fn final(self &uni) { printStr("pfin "); } }
+  struct Q {}
+}
+enum Ext extends Base {
+  fn final(self &uni) { printStr("extfin "); }
+  struct R {}
+}
+
+// Recursive, through an owning reference
+enum List {
+  struct Cons { pub v Fin; pub next +so List; }
+  struct Nil {}
+}
+
+struct Pocket {
+  pub e E;
+  pub k i32;
+}
+
+mut kept E;
+
+fn @initpure init() {
+  kept = A[Fin[99]];
+}
+
+fn show(label &[]u8) {
+  printStr(label);
+  printStr(": ");
+}
+
+fn end() {
+  printStr("|\n");
+}
+
+fn cond(b Bool) Bool { b; }
+fn takeE(e E) { printStr("took "); }
+fn takeA(a A) { printStr("took "); }
+fn mkE() E { A[Fin[6]]; }
+fn passGeneric[T](x T) { }
+
+// -------- where a value typed as the enum lives --------
+
+fn inLocal() { imm e E = A[Fin[1]]; }
+fn localEmpty() { imm e E = B[2]; }
+fn param() { takeE(A[Fin[3]]); }
+fn field() { imm p = Pocket[A[Fin[4]], 5]; }
+fn returned() { imm e = mkE(); }
+fn moved() { imm e E = A[Fin[7]]; imm e2 = e; }
+fn condMove(b Bool) { imm e E = A[Fin[8]]; if cond(b) { takeE(e); } }
+fn generic() { imm g Gen[Fin] = Gen.Has[Fin][Fin[9]]; }
+fn genericNone() { imm g Gen[i32] = Gen.Has[i32][10]; }
+fn genericParam() { imm e E = A[Fin[11]]; passGeneric[E](e); }
+fn optionSome() { imm o Option[Fin] = Some[Fin][Fin[12]]; }
+fn optionNone() { imm o Option[Fin] = None[Fin][]; }
+fn optionNested() { imm o Option[Option[Fin]] = Some[Option[Fin]][Some[Fin][Fin[13]]]; }
+fn optionRef() {
+  imm f = Fin[14];
+  imm o Option[&Fin] = Some[&Fin][&f];
+}
+fn result() {
+  imm r Result[Fin, Fin] = Ok[Fin, Fin][Fin[15]];
+  imm s Result[Fin, Fin] = Error[Fin, Fin][Fin[16]];
+}
+fn heldFull() { imm h Held = Held.Full[Fin[17], 18]; }
+fn heldBare() { imm h Held = Held.Bare[Fin[19]]; }
+fn owned() { imm e E = A[Fin[20]]; imm p = +so e; }
+fn counted() { imm e E = A[Fin[21]]; imm p = +rc-mut e; imm q = p; }
+fn list() {
+  imm empty List = List.Nil[];
+  imm inner List = List.Cons[Fin[23], +so empty];
+  imm outer List = List.Cons[Fin[22], +so inner];
+}
+
+// -------- the order, with an enum's own 'final' --------
+
+fn ownFinal() { imm o Ordered = Ordered.Own[Fin[24]]; }
+fn ownFinalAsVariant() { imm o = Ordered.Own[Fin[25]]; }
+fn inheritsFinal() { imm o Ordered = Ordered.Inherits[Fin[26]]; }
+fn emptyFinal() { imm o Ordered = Ordered.Empty[]; }
+fn extCopy() { imm e RichE = RichE.A[Fin[27]]; }
+fn extOwn() { imm e RichE = RichE.D[Fin[28], Fin[29]]; }
+fn extFinalBaseVariant() { imm e Ext = Ext.P[1]; }
+fn extFinalOwnVariant() { imm e Ext = Ext.R[]; }
+fn baseVariant() { imm e Base = Base.P[2]; }
+
+// -------- matching by value --------
+
+fn matchBound() {
+  imm e E = A[Fin[30]];
+  match e {
+    case imm a A { printStr("A "); }
+    else { printStr("else "); }
+  }
+}
+fn matchOther() {
+  imm e E = C[Fin[31]];
+  match e {
+    case imm a A { printStr("A "); }
+    else { printStr("else "); }
+  }
+}
+fn matchGuard(b Bool) {
+  imm e E = A[Fin[32]];
+  match e {
+    case imm a A if cond(b) { printStr("guarded "); }
+    case imm a A { printStr("unguarded "); }
+    else { printStr("else "); }
+  }
+}
+fn matchMoves() {
+  imm e E = A[Fin[33]];
+  match e {
+    case imm a A { takeA(a); }
+    else { printStr("else "); }
+  }
+}
+fn matchMovesNotRun() {
+  imm e E = C[Fin[34]];
+  match e {
+    case imm a A { takeA(a); }
+    else { printStr("else "); }
+  }
+}
+fn handBack(e E) A {
+  match e {
+    case imm a A { a; }
+    else { A[Fin[0]]; }
+  }
+}
+fn matchHandsBack() { imm a = handBack(A[Fin[35]]); printStr("got "); }
+fn ifBound() {
+  imm e E = A[Fin[36]];
+  if imm a A = e { printStr("if "); }
+}
+fn matchTemporary() {
+  match mkE() {
+    case imm a A { printStr("A "); }
+    else { printStr("else "); }
+  }
+}
+fn matchThroughRef() {
+  imm e E = A[Fin[37]];
+  match &e {
+    case imm a &A { printStr("A "); }
+    else { printStr("else "); }
+  }
+}
+fn matchMutAssigned() {
+  imm e E = A[Fin[38]];
+  match e {
+    case mut a A { a = A[Fin[39]]; printStr("assigned "); }
+    else { }
+  }
+}
+
+// -------- gaps belonging elsewhere --------
+
+fn reassigned() { mut e E = A[Fin[40]]; e = A[Fin[41]]; }
+fn temporary() { mkE(); }
+
+fn main() i32 {
+  initAll();
+  show("local"); inLocal(); end();
+  show("local-empty"); localEmpty(); end();
+  show("param"); param(); end();
+  show("field"); field(); end();
+  show("returned"); returned(); end();
+  show("moved"); moved(); end();
+  show("cond-move-taken"); condMove(true); end();
+  show("cond-move-kept"); condMove(false); end();
+  show("generic"); generic(); end();
+  show("generic-none"); genericNone(); end();
+  show("generic-param"); genericParam(); end();
+  show("option-some"); optionSome(); end();
+  show("option-none"); optionNone(); end();
+  show("option-nested"); optionNested(); end();
+  show("option-ref"); optionRef(); end();
+  show("result"); result(); end();
+  show("held-full"); heldFull(); end();
+  show("held-bare"); heldBare(); end();
+  show("owned"); owned(); end();
+  show("counted"); counted(); end();
+  show("list"); list(); end();
+  show("own-final"); ownFinal(); end();
+  show("own-final-as-variant"); ownFinalAsVariant(); end();
+  show("inherits-final"); inheritsFinal(); end();
+  show("empty-final"); emptyFinal(); end();
+  show("ext-copy"); extCopy(); end();
+  show("ext-own"); extOwn(); end();
+  show("ext-final-base-variant"); extFinalBaseVariant(); end();
+  show("ext-final-own-variant"); extFinalOwnVariant(); end();
+  show("base-variant"); baseVariant(); end();
+  show("match-bound"); matchBound(); end();
+  show("match-other"); matchOther(); end();
+  show("match-guard-true"); matchGuard(true); end();
+  show("match-guard-false"); matchGuard(false); end();
+  show("match-moves"); matchMoves(); end();
+  show("match-moves-not-run"); matchMovesNotRun(); end();
+  show("match-hands-back"); matchHandsBack(); end();
+  show("if-bound"); ifBound(); end();
+  show("match-temporary"); matchTemporary(); end();
+  show("match-through-ref"); matchThroughRef(); end();
+  show("match-mut-assigned"); matchMutAssigned(); end();
+  show("reassigned"); reassigned(); end();
+  show("temporary"); temporary(); end();
+  show("global"); finalAll(); end();
+  0i32;
+}

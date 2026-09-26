@@ -1428,6 +1428,14 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
                 ++index; ++countp;
             }
         }
+        // A struct or enum holding counted references its drop releases
+        // (flowHeldCounted), reached through a copy of the value in memory,
+        // since which of an enum's variants it holds is read from its tag
+        else if (reftype->tag == StructTag) {
+            LLVMValueRef copy = genlAlloca(gen, LLVMTypeOf(val), "heldcopy");
+            LLVMBuildStore(gen->builder, val, copy);
+            genlAliasHeld(gen, copy, (INode*)reftype, anode->amt);
+        }
         return val;
     }
     case HollowTag:

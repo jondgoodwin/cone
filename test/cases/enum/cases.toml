@@ -60,6 +60,13 @@
 # it adds -- plain, generic, of an instance, generic over plain, and down plain,
 # generic and mixed chains -- beside a variant's own name winning over a base's.
 #
+# When a value typed as an enum dies has a run program of its own, enum_final:
+# every place such a value lives, the order an enum's own 'final' runs in beside
+# a variant's, and matching by value, which is the one place a variant and the
+# enum value it came from are two names for one value. What the drop releases of
+# the owning references a variant holds is region's, region_enum_owner; that a
+# variant which moves makes its enum move is move's, move_flow_infection.
+#
 # Left out, with reasons:
 #
 # - Comparing two values of an enum whose variants carry fields. That would have
@@ -153,6 +160,26 @@ name = "nullable-ptr-has-no-tag-and-no-struct"
 target = "preir"
 contains = ["%some = alloca ptr, align 8", "%opt = alloca ptr, align 8"]
 excludes = ["%Maybe", "%Just", "%Nothing", "%Some", "%Option"]
+
+[scenario.enum_final]
+category = "run"
+description = "A value typed as an enum is finalized once, as its variant: every place it lives, the order with an enum's own 'final', an extension's, and matching by value, whichever arm runs"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+# Whether an enum has a drop at all is per instance, and a run cannot see a drop
+# with nothing to do: 'Gen[i32]' and 'Option[&Fin]' would print the same lines
+# with an empty one. So the drops generated are asserted here, before the
+# optimizer inlines them: 'Gen[Fin]', 'Option[Fin]' and 'Option[Option[Fin]]'
+# have one, 'Gen[i32]' none, and the nullable-pointer 'Option[&Fin]' none.
+[[scenario.enum_final.check]]
+name = "a-drop-only-where-a-variant-finalizes"
+target = "preir"
+contains = [
+  "@_CNvINt3GenNt3FinE4drop(",
+  "@_CNvINtC4core6OptionNt3FinE4drop(",
+  "@_CNvINtC4core6OptionINtC4core6OptionNt3FinEE4drop(",
+]
+excludes = ["3GenlE4drop", "6OptionR0"]
 
 [scenario.enum_extends]
 category = "run"

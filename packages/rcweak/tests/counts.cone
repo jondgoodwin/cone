@@ -6,6 +6,10 @@
 // - each Weak[T] made or cloned is one more weak reference, and each one
 //   going away one fewer; weakCount counts only these;
 // - strong() and upgrade() each make one more strong owner;
+// - an Option holding a strong owner -- upgrade()'s Some, or a fallible
+//   '?+rcw-mut' allocation -- is that owner, let go when the Option goes, and
+//   a copy of the Option is one more; a match holds the Option it matches,
+//   and the variant it binds is that Option's value, no owner more;
 // - the value dies when its last strong owner goes, and its block is freed
 //   only when its last weak reference has gone as well (liveBlocks).
 
@@ -62,6 +66,30 @@ fn unique() {
   expectUInt(u64[liveBlocks()], 1, "its block stays for the weak reference");
 }
 
+fn upgraded() {
+  imm r = +rcw-mut Fin[4];
+  imm w = Weak[Fin].of(r);
+  match w.upgrade() {
+    case imm s Some {
+      expectInt(s.value.n, 4, "upgrade() reaches a live value");
+      expectUInt(u64[w.strongCount()], 2, "r and the Some's owner");
+    }
+    case is None { expect(false, "upgrade() reaches a live value"); }
+  }
+  expectUInt(u64[w.strongCount()], 1, "the Some's owner went with the match");
+  {
+    imm o = w.upgrade();
+    imm o2 = o;
+    expectUInt(u64[w.strongCount()], 3, "an Option copied is one owner more");
+  }
+  expectUInt(u64[w.strongCount()], 1, "both went at their scope's end");
+}
+
+fn fallible() {
+  imm o = ?+rcw-mut Fin[5];
+  expectUInt(u64[liveBlocks()], 1, "a fallible allocation's block");
+}
+
 fn main() i32 {
   strongAndWeak();
   expectUInt(u64[liveBlocks()], 0, "the last owner and weak gone: the block is freed");
@@ -76,5 +104,9 @@ fn main() i32 {
   none();
   unique();
   expectUInt(u64[liveBlocks()], 0, "every block given back");
+  upgraded();
+  expectUInt(u64[liveBlocks()], 0, "the upgraded value died with r, and its block was freed");
+  fallible();
+  expectUInt(u64[liveBlocks()], 0, "and so did the fallible allocation's");
   done();
 }
