@@ -20,8 +20,13 @@ same way — a struct declaring `is RegionRef`, whose `alloc`, `init`, `alias`,
 `dealias` and `free` the compiler calls — but no more of the protocol below is
 built: no barriers, no weak references, no per-type record handed to a region,
 no region with global state, and no finalizing of a slice's elements when its
-region frees it. The strategies that motivate the whole design — arena, pool, tracing
-GC — are unwritten.
+region frees it. Of the strategies that motivate the whole design, pool and
+tracing GC are unwritten, and the arena is written only as a library value: the
+`arena` package's `Arena`, a dynamic region allocated into by a call on the
+value (`Arena.alloc(&mut a, v)`), not by a `+` allocation through a region ref,
+which is handed neither the region value nor the value's type. It finalizes
+each value through `mem.finalize` when it dies, newest first; nothing yet
+pairs a reference with its arena's lifetime.
 
 The argument is in *Memory Managed Your Way* (`conesite/public/memory.html`) and
 `c:/src/progling/content/post/gradual-memory-management.md`. The origin is

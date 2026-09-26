@@ -1,0 +1,104 @@
+// How an arena lays values out in its blocks: an empty arena, many values
+// across many blocks, values of every alignment the target has, and a value
+// larger than a block. Expected counts worked out by hand from the layout:
+// a block has 4096 bytes of room after its 8-byte header; a value needing
+// finalizing has a 16-byte header just before it, the header aligned to 8.
+
+mod blocks;
+
+import testing use *;
+import arena use *;
+
+mut deaths = 0i64;
+mut sum = 0i64;
+struct Counted {
+  pub n i64;
+  fn final(self &uni) { deaths = deaths + 1i64; sum = sum + n; }
+}
+
+fn empty() {
+  imm a = Arena.empty();
+  expectUInt(u64[a.blockCount()], 0, "an empty arena has no block");
+}
+
+// Each Counted takes 24 bytes, its header and its 8: the k-th of a block ends
+// 32 + 24k bytes past the block's start and the room ends at 4104, so a block
+// holds k = 0 to 169, 170 of them, and 10000 of them take 59 blocks
+fn many() {
+  mut a = Arena.empty();
+  mut i = 1i64;
+  while i <= 10000i64 { Arena.alloc(&mut a, Counted[i]); i = i + 1i64; }
+  expectUInt(u64[a.finalizers()], 10000, "every one has a header");
+  expectUInt(u64[a.blockCount()], 59, "170 to a block");
+  expectInt(deaths, 0, "none dies before the arena");
+}
+
+struct B1 { pub v u8; }
+struct B2 { pub v u16; }
+struct B4 { pub v u32; }
+struct B8 { pub v f64; }
+// The digits of the first ten FinBytes to die
+mut small = 0i64;
+mut smallDeaths = 0i64;
+struct FinByte {
+  pub v u8;
+  fn final(self &uni) {
+    if smallDeaths < 10i64 { small = small * 10i64 + i64[v]; }
+    smallDeaths = smallDeaths + 1i64;
+  }
+}
+
+fn aligned[T](p &mut T) Bool {
+  ((p as *T) as usize) % mem.alignof[T]() == 0usize;
+}
+
+// Every alignment, interleaved with a finalizing value whose own alignment is
+// 1 but whose header needs 8
+fn alignment() {
+  mut a = Arena.empty();
+  mut ok = true;
+  mut i = 0i64;
+  while i < 50i64 {
+    imm b1 = Arena.alloc(&mut a, B1[1u8]);
+    imm f = Arena.alloc(&mut a, FinByte[u8[i % 10i64]]);
+    imm b2 = Arena.alloc(&mut a, B2[2u16]);
+    imm b4 = Arena.alloc(&mut a, B4[4u32]);
+    imm b8 = Arena.alloc(&mut a, B8[8.]);
+    ok = ok and aligned(b1) and aligned(f) and aligned(b2) and aligned(b4) and aligned(b8);
+    ok = ok and ((f as *FinByte) as usize) % 8usize == 0usize;
+    ok = ok and b1.v == 1u8 and b2.v == 2u16 and b4.v == 4u32 and b8.v == 8.;
+    i = i + 1i64;
+  }
+  expect(ok, "every value aligned and intact");
+  expectUInt(u64[a.finalizers()], 50, "only the finalizing ones have headers");
+}
+
+// Larger than a block: a block of its own, and the next value a fresh one
+fn large() {
+  mut a = Arena.empty();
+  Arena.alloc(&mut a, Counted[1]);
+  imm big = Arena.alloc(&mut a, [1000; 7i64]);
+  Arena.alloc(&mut a, Counted[2]);
+  mut total = 0i64;
+  mut i = 0usize;
+  while i < 1000usize { total = total + big[i]; i = i + 1usize; }
+  expectInt(total, 7000, "the large value intact");
+  expectUInt(u64[a.blockCount()], 3, "a block each side of the large one's own");
+}
+
+fn main() i32 {
+  empty();
+  many();
+  expectInt(deaths, 10000, "each of 10000 dies once");
+  expectInt(sum, 50005000, "1 + 2 + ... + 10000");
+  alignment();
+  // FinByte's digits were 0 to 9, five times over, and die newest first
+  expectInt(small, 9876543210, "the last ten to be made died first");
+  expectInt(smallDeaths, 50, "and all fifty died");
+  deaths = 0;
+  sum = 0;
+  large();
+  expectInt(deaths, 2, "both around the large value died");
+  expectInt(sum, 3, "1 + 2");
+  done();
+}

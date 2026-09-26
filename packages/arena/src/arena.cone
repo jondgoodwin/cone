@@ -1,0 +1,205 @@
+// The arena package: a dynamic region. An Arena value owns blocks of memory;
+// values are allocated into it one after another and never freed one by one;
+// when the Arena dies, every value in it that needs finalizing is finalized,
+// the newest first, and then all its blocks are freed together.
+//
+//   mod scene;
+//   import arena use *;
+//
+//   fn build() {
+//     mut a = Arena.empty();
+//     imm root = Arena.alloc(&mut a, Node[0, 0usize as *Node]);
+//     imm leaf = Arena.alloc(&mut a, Node[1, root as *Node]);
+//     ...
+//   }   // 'a' dies here: leaf's death, then root's, then the blocks
+//
+// Allocation is a call naming the arena, 'Arena.alloc(&mut a, value)', which
+// moves the value into the arena and returns a '&mut' to it there. It is meant
+// to be the method call 'a.alloc(value)', which waits on the compiler: a
+// generic method cannot yet be called. A reference into an arena costs nothing
+// to copy and nothing to drop: no count, no move. How a '+' allocation should
+// name a region VALUE rather than a region ref is an open design question, so
+// this package does not use '+' at all.
+//
+// THE HOLE. Nothing yet stops a reference into an arena from outliving the
+// arena. The design's answer is invariant lifetimes pairing an arena with the
+// references allocated from it (key and lock: the reference is usable only
+// through its own arena), and that is not built. What the compiler checks
+// today is what it checks of any borrow: 'Arena.alloc(&mut a, v)' returns a
+// borrow no longer-lived than the borrow of 'a' it was handed, so returning it
+// from the function that holds 'a', or storing it where it would outlive 'a',
+// is refused. But nothing stops 'a' itself from dying or moving away while
+// such a borrow is still in use: 'consume(a); r.n' compiles, and reads freed
+// memory. Keep every reference into an arena within the arena's own life.
+//
+// How a value is finalized. A value whose type needs finalizing
+// ('mem.needsFinal[T]()') gets a small header just before it, allocated in
+// the same bump: the next header in the arena's list, and a pointer to the
+// function that finalizes a T at a given address. The arena keeps the list
+// newest first, so teardown walks it in reverse order of allocation, as a
+// function's locals die in reverse order of declaration. That function, the
+// type's "thunk", is 'Finalizer[T].run', which runs 'mem.finalize[T]': the
+// same death the compiler runs for a T anywhere, the value's own 'final', then
+// each field's finalizer, recursively, then the owning references its fields
+// hold are released (a '+so' one finalized and freed, an '+rc' one counted
+// down and finalized only if it was the last owner). A value whose type needs
+// no finalizing costs no header and no list entry: nothing is run for it.
+// A reference to another arena value is a borrow, and finalizing does nothing
+// through a borrow, so every arena value is finalized once, by its own header.
+//
+// During teardown every block stays allocated until the last value has been
+// finalized, so a 'final' that reads another value of the same arena reads
+// live memory. The newer one may already be finalized; the older one is not
+// yet. A 'final' that allocates into the arena it is dying in (through a
+// reference it holds to it) is allowed: its value is finalized too, before
+// the blocks go, since each header is taken off the list before its thunk
+// runs.
+//
+// What the compiler does not yet finalize, the arena does not either, since
+// 'mem.finalize' is its implementation: a fixed-size array's elements, a
+// tuple's, or a value typed as an enum (such a value gets no header); nor an
+// owning reference held two fields deep, in a field of a field. A value
+// assigned over through the reference ('*r = v') is not finalized either; the
+// arena finalizes whatever the slot holds when it dies. tests/gaps.cone pins
+// each of these as it is today.
+
+mod arena;
+
+import libc;
+
+// The header before each value that needs finalizing
+struct FinalNode {
+  pub next *FinalNode;
+  pub run &fn(p *u8);
+}
+
+// The thunk for T: the finalizer the compiler builds for T, as a plain function
+// whose address the arena keeps. It is a function of a generic type rather than
+// a generic function because Cone can borrow a reference to the one
+// ('&Finalizer[T].run') and not yet to the other ('&finalizeAs[T]' is refused).
+struct Finalizer[T] {
+  pub fn run(p *u8) { mem.finalize(p as *T); }
+}
+
+// The header before each block: the block allocated before it, which teardown
+// follows to free them all
+struct Block {
+  pub prev *Block;
+}
+
+// Room a new block has for values, unless a value needs more
+const blockBytes = 4096usize;
+
+pub struct Arena {
+  blocks *Block;       // the newest block, or null
+  top usize;           // the address of its first unused byte
+  limit usize;         // the address just past its end
+  finals *FinalNode;   // the newest header, or null
+  nfinals usize;       // how many headers the list has held
+  nblocks usize;       // how many blocks it holds
+
+  // An arena holding nothing, with no block until the first value arrives
+  pub fn empty() Arena {
+    Arena[0usize as *Block, 0usize, 0usize, 0usize as *FinalNode, 0usize, 0usize];
+  }
+
+  // Move value into arena 'a', and a reference to it there. The reference is
+  // good for as long as the arena lives, and nothing checks that it is not
+  // kept longer (see the top of this file).
+  //
+  // Written 'Arena.alloc(&mut a, v)', not 'a.alloc(v)': a generic method
+  // cannot yet be called, so this is a generic function of the type taking the
+  // arena as a parameter. A private member is reachable only through 'self',
+  // so the work is done by the two public methods below, which it calls
+  // through 'a'.
+  pub fn alloc[T](a &mut Arena, value T) &mut T {
+    imm at = if mem.needsFinal[T]() {
+      a.placeFinal(mem.sizeof[T](), mem.alignof[T](), &Finalizer[T].run);
+    }
+    else {
+      a.place(mem.sizeof[T](), mem.alignof[T]());
+    };
+    mem.writeRaw(at as *T, value);
+    at as &mut T;
+  }
+
+  // How many values have been given a finalizer header, and how many blocks
+  // it holds: for tests and for tuning, not for correctness
+  pub fn finalizers(self &) usize { nfinals; }
+  pub fn blockCount(self &) usize { nblocks; }
+
+  // Room for a value of 'size' bytes aligned to 'align' that needs no
+  // finalizing: its address. Needs trust: the caller writes the value there.
+  pub fn place(self &mut, size usize, align usize) *u8 {
+    self.bump(0usize, align, size) as *u8;
+  }
+
+  // Room for a value of 'size' bytes aligned to 'align' whose death is
+  // 'run', called with its address when the arena dies: that address. Needs
+  // trust: the caller writes a live value there before anything else can
+  // reach the arena, since from here on its teardown will finalize it.
+  pub fn placeFinal(self &mut, size usize, align usize, run &fn(p *u8)) *u8 {
+    imm hdr = mem.sizeof[FinalNode]();
+    mut al = align;
+    if al < mem.alignof[FinalNode]() { al = mem.alignof[FinalNode](); }
+    imm at = self.bump(hdr, al, size);
+    // The newest header goes at the front of the list: it is finalized first
+    imm node = (at - hdr) as *FinalNode;
+    mem.writeRaw(node, FinalNode[finals, run]);
+    finals = node;
+    nfinals = nfinals + 1usize;
+    at as *u8;
+  }
+
+  // Room for a value of 'size' bytes aligned to 'align', with 'hdr' bytes
+  // just before it for its header, if it has one: the value's address. The
+  // header ends where the value starts, whatever the value's alignment, since
+  // 'align' is then at least the header's and the header's size is a multiple
+  // of its alignment, so the header is aligned too.
+  fn bump(self &mut, hdr usize, align usize, size usize) usize {
+    mut at = roundUp(top + hdr, align);
+    if top == 0usize or at + size > limit {
+      self.grow(hdr + size + align);
+      at = roundUp(top + hdr, align);
+    }
+    top = at + size;
+    at;
+  }
+
+  // A new block with room for at least 'need' bytes, made the one allocation
+  // bumps through. What was left of the one before is not used again.
+  fn grow(self &mut, need usize) {
+    mut room = blockBytes;
+    if room < need { room = need; }
+    imm blk = libc.malloc(mem.sizeof[Block]() + room) as *Block;
+    mem.writeRaw(blk, Block[blocks]);
+    blocks = blk;
+    nblocks = nblocks + 1usize;
+    top = blk as usize + mem.sizeof[Block]();
+    limit = top + room;
+  }
+
+  // Its death: every value that needs it finalized, newest first, each header
+  // taken off the list before its value's thunk runs, so a value allocated by
+  // a 'final' during teardown is finalized too, and none twice; then every
+  // block freed. The blocks all stay until the last finalizer has run.
+  fn final(self &uni) {
+    while finals as usize != 0usize {
+      imm node = finals;
+      imm hdr = node as &FinalNode;
+      finals = hdr.next;
+      imm run = hdr.run;
+      run((node as usize + mem.sizeof[FinalNode]()) as *u8);
+    }
+    while blocks as usize != 0usize {
+      imm blk = blocks;
+      blocks = (blk as &Block).prev;
+      libc.free(blk as *u8);
+    }
+  }
+}
+
+// n rounded up to a multiple of align, a power of two
+fn roundUp(n usize, align usize) usize {
+  (n + align - 1usize) & (0usize - align);
+}
