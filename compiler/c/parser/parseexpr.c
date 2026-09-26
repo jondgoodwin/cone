@@ -511,22 +511,22 @@ INode *parsePrefix(ParseState *parse) {
     }
 }
 
-// Parse type cast
+// Parse type cast. Casts chain left to right: 'p as *T as usize' casts
+// 'p as *T' to usize.
 INode *parseCast(ParseState *parse) {
     INode *lhnode = parsePrefix(parse);
-    if (lexIsToken(AsToken)) {
-        CastNode *node = newRecastNode(lhnode, unknownType);
+    while (1) {
+        CastNode *node;
+        if (lexIsToken(AsToken))
+            node = newRecastNode(lhnode, unknownType);
+        else if (lexIsToken(IntoToken))
+            node = newConvCastNode(lhnode, unknownType);
+        else
+            return lhnode;
         lexNextToken();
         node->typ = parseType(parse);
-        return (INode*)node;
+        lhnode = (INode*)node;
     }
-    else if (lexIsToken(IntoToken)) {
-        CastNode *node = newConvCastNode(lhnode, unknownType);
-        lexNextToken();
-        node->typ = parseType(parse);
-        return (INode*)node;
-    }
-    return lhnode;
 }
 
 // Parse binary multiply, divide, rem operator

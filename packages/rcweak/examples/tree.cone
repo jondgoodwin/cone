@@ -1,0 +1,73 @@
+// A tree of folders: each folder owns its subfolders, and knows the folder it
+// is in through a weak reference, so the tree is no cycle of owners. Walking
+// up from the deepest folder prints its path; when the root's last owner goes,
+// the whole tree dies, and a weak reference kept to a folder in it finds it
+// gone: 'alive()' is false and 'upgrade()' is None. The walk up uses
+// 'alive()' and 'strong()' rather than 'upgrade()', because the compiler does
+// not yet release the owner a Some holds (the package header's THE HOLE).
+// Run it with
+//   congo run packages/rcweak/examples/tree.cone
+
+mod tree;
+
+import stdio use *;
+import rcweak use *;
+import collections use *;
+
+struct Folder {
+  pub name String;
+  pub parent Weak[Folder];
+  pub subs List[+rcw-mut Folder];
+  fn final(self &uni) {
+    printStr("  gone: ");
+    printStr(name.view());
+    printStr("\n");
+  }
+}
+
+// A new folder inside 'parent', which owns it; a strong owner of it comes back
+fn add(parent +rcw-mut Folder, name &[]u8) +rcw-mut Folder {
+  imm f = +rcw-mut Folder[String.from(name), Weak[Folder].of(parent), List[+rcw-mut Folder].empty()];
+  parent.subs.push(f);
+  f;
+}
+
+// Its path, printed by walking up through each folder's weak reference to the
+// folder it is in: a strong owner of that one is held while its own path prints
+fn printPath(f +rcw-mut Folder) {
+  if f.parent.alive() {
+    imm up = f.parent.strong();
+    printPath(up);
+    printStr("/");
+  }
+  printStr(f.name.view());
+}
+
+fn build() Weak[Folder] {
+  imm root = +rcw-mut Folder[String.from("root"), Weak[Folder].none(), List[+rcw-mut Folder].empty()];
+  imm home = add(root, "home");
+  imm jon = add(home, "jon");
+  imm cone = add(jon, "cone");
+  imm tmp = add(root, "tmp");
+  printStr("deepest: ");
+  printPath(cone);
+  printStr("\n");
+  printStr("blocks held: ");
+  printInt(i64[liveBlocks()]);
+  printStr("\nleaving build, so the root's last owner goes:\n");
+  Weak[Folder].of(cone);
+}
+
+fn main() {
+  imm kept = build();
+  printStr("the kept weak reference's folder is alive: ");
+  if kept.alive() { printStr("yes"); } else { printStr("no"); }
+  printStr("\nand upgrade() says: ");
+  match kept.upgrade() {
+    case imm f Some { printStr(f.value.name.view()); }
+    case is None { printStr("None"); }
+  }
+  printStr("\nblocks held: ");
+  printInt(i64[liveBlocks()]);
+  printStr(", the folder's, for the weak reference\n");
+}

@@ -18,7 +18,7 @@ needed. Safety is preserved across all of it.
 `rc`, both written in Cone in the core package. A user can define a region the
 same way — a struct declaring `is RegionRef`, whose `alloc`, `init`, `alias`,
 `dealias` and `free` the compiler calls — but no more of the protocol below is
-built: no barriers, no weak references, no per-type record handed to a region,
+built: no barriers, no weak reference kind, no per-type record handed to a region,
 no region with global state, and no finalizing of a slice's elements when its
 region frees it. Of the strategies that motivate the whole design, tracing GC
 is unwritten, and the arena and the pool are written only as library values: the
@@ -37,6 +37,15 @@ returns is checked like the scratch arena's; the one inside `get`'s `Option`
 is not (a borrow held inside another value carries no lifetime), and no
 invariant lifetime yet pairs a `Ref` with its own pool, so one used with
 another pool of its type is merely bounds- and generation-checked there.
+A third region ref is a library package too: `rcweak`'s `rcw`, reference
+counting whose header also counts weak references. A weak reference is no
+reference kind but an ordinary struct, `Weak[T]`, holding the header's address
+and reaching the value only by making a counted `+rcw-mut` owner, in an
+`Option` (`upgrade`) or checked first (`alive`, `strong`). Its value dies at
+its last strong owner, and its memory is freed at its last weak reference:
+death and freeing separate, with the compiler told nothing new. The owner an
+`upgrade` hands back in a `Some` is never released, because nothing held in an
+enum is.
 
 The argument is in *Memory Managed Your Way* (`conesite/public/memory.html`) and
 `c:/src/progling/content/post/gradual-memory-management.md`. The origin is
@@ -125,6 +134,7 @@ imm shared = +rc Person["Tako"]     // counted: freed at zero
 | `borrowRef` | a sentinel node, not a struct — the default for `&` | none; a borrow owns nothing |
 | `so` | `struct so is RegionRef, Move` in the core package, `packages/core/src/core.cone`: no fields, `alloc` and `free`, no `alias` | single owner frees |
 | `rc` | `struct rc is RegionRef { cnt usize }` in the core package, with `init`, `alias` and `dealias` too | reference counting |
+| `rcw` | `struct rcw is RegionRef { strong usize; weak usize }` in the `rcweak` package, `packages/rcweak/src/rcweak.cone`; its `free` gives back one weak count, and the last one frees | reference counting with weak references (`Weak[T]`, a struct) |
 | user-defined | any struct declaring `is RegionRef` | whatever its methods do |
 
 **`so` and `rc` are Cone source, not built into the compiler**, and nothing in
@@ -297,6 +307,14 @@ So `&mut T` is invariant in `T` and `&ro T` is covariant — the opposite of the
 intuition that a mutable reference is "more capable" and therefore more
 permissive.
 
+**Covariance does not turn a move type behind a reference into a copy type.**
+A read through the reference copies what it holds when that is a copy type, so
+a borrow of a sole owner may not be seen as a borrow of a shared one:
+`&+rc-mut T` from `&+rc T` would copy a second, writable owner out of a value
+`uni` promised unique. The permission lattice still lets `uni` coerce down
+where the owner itself is moved. A `+so` owner may be seen as `+so-mut` behind
+a borrow, since both move and a move out through a borrow is refused.
+
 **Lifetime is a `uint16_t` scope depth** on the reference's *type*: 0 global, 1
 parameter, 2+ a local. It is not a type parameter, not a constraint variable,
 and not part of type identity — `refIsSame` ignores it and `refFindSuper` drops
@@ -338,6 +356,7 @@ gap:
 | a region allocated from has `alloc` | `regionAllocTypeCheck` | type check |
 | requested permission vs. the source's | `permMatches` in `borrowTypeCheck` | type check |
 | value-type variance | `refMatches` and friends | type check |
+| a sole owner behind a borrow is not seen as a shared one | `refHeldMoveSeenAsCopy`, from `refMatches` and `arrayRefMatchesRef` | type check |
 | region coercion direction | `regionMatches` | type check |
 | move-ness infection | `refAdoptInfections` | type check |
 | may not write through this reference | `assignlvalrtype`, `swapFlow` | **flow** |

@@ -204,7 +204,9 @@ written in. So demanding a type lays it out and nothing more; its members wait.
 - `structLayoutEnter` and `structLayoutExit` count the layouts in flight. They
   are called by `inodeTypeCheck` around the check of every type that holds
   values by value — a struct, an array, a tuple. A reference answers its own
-  size and a function signature has none, so neither counts.
+  size and a function signature has none, so neither counts there; a
+  function declaration's signature is held as one by `fnDclTypeCheck`, for
+  another reason (below).
 - `structTypeCheck` lays the type out, sets `TypeChecked`, settles its drop
   function, and puts the type in the **members queue**. An enum then lays out
   each of its variants not yet begun, an extension's copies of its base's
@@ -221,7 +223,16 @@ written in. So demanding a type lays it out and nothing more; its members wait.
   type's own.
 
 **Checking a member may begin new layouts**, from a signature or a body, and
-when the last of those finishes the queues are worked from there, nested. So
+when the last of those finishes the queues are worked from there, nested. A
+function's signature is held as a layout in flight while it is checked
+(`fnDclTypeCheck`), so a layout its signature begins works the queues only once
+the whole signature is in place: the queue may hold a type whose method calls
+this function, and that call reads the return type (rule 3). Before, a method of
+a generic type's instance returning `Option[T]`, where that signature was the
+first to name `Option[i64]`, had its caller checked mid-signature; the call's
+type was still the unchecked `Option[T]`, and a `match` on it refused `Some`
+as a bare generic — unless a field had named `Option[i64]` first
+(`generic_signature_first`). So
 when a use that demanded a type from a function body gets control back, that
 type's members are checked — unless they were already waiting behind the ones
 being checked, which is the same state a type in flight was always in. The

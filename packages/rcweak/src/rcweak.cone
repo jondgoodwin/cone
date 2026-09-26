@@ -1,0 +1,204 @@
+// The rcweak package: reference counting with weak references. A value
+// allocated with '+rcw' is shared by counted owners, as with core's '+rc', and
+// may also be pointed at by weak references, which do not keep it alive.
+//
+//   mod family;
+//   import rcweak use *;
+//   import collections use *;
+//
+//   struct Child { pub name i64; pub parent Weak[Parent]; }
+//   struct Parent { pub name i64; pub kids List[+rcw-mut Child]; }
+//
+//   fn build() {
+//     imm p = +rcw-mut Parent[1, List[+rcw-mut Child].empty()];
+//     p.kids.push(+rcw-mut Child[2, Weak[Parent].of(p)]);
+//     ...
+//   }   // p's last owner goes: the parent dies, then its children, and the
+//       // children's weak references to it do not hold it up
+//
+// A strong owner is an ordinary owning reference, '+rcw-mut T': copying one
+// counts another owner, and when the last goes the value dies -- its 'final',
+// its fields' finalizers, the owners its fields hold -- as an '+rc' value does.
+// '+rcw-mut' is the form to share: a weak reference is made only from it.
+// Plain '+rcw' (unique) moves instead of copying, as plain '+rc' does, and
+// handing one to 'Weak[T].of' gives it up.
+//
+// A weak reference is a 'Weak[T]': made from a strong owner with
+// 'Weak[T].of(owner)', or pointing at nothing with 'Weak[T].none()'. It cannot
+// be read through: its value may have died. To reach the value, ask for a
+// strong owner, which keeps the value alive for as long as it is held:
+//
+//   w.upgrade()   an 'Option': Some strong owner, or None once the value has
+//                 died (see THE HOLE below before relying on it)
+//   w.alive()     whether the value is still alive
+//   w.strong()    a strong owner, or the program ends if the value has died;
+//                 'if w.alive() { imm p = w.strong(); ... }' is the form that
+//                 costs nothing it does not give back
+//
+// A 'Weak[T]' moves when assigned or passed; 'w.clone()' makes a second one.
+// Each one going away counts one weak reference fewer, and the last one
+// frees the memory of a value that has already died.
+//
+// Death and freeing are separate here. When the last strong owner goes, the
+// value dies at once, finalized by the compiler exactly as an '+rc' value is,
+// whatever weak references remain; its memory stays, holding the counts, until
+// the last weak reference goes too, so that a weak reference can always ask
+// whether its value is alive. A 'final' that asks a weak reference to its own
+// dying value is told it has died: 'alive()' is false, 'upgrade()' is None.
+//
+// THE HOLE. The compiler never releases an owning reference held inside an
+// Option, nor anything else held in an enum. So the strong owner a Some from
+// 'upgrade()' holds is counted and never let go: the value it names never dies,
+// and its memory is never freed. The same is true of '?+rcw-mut' allocation,
+// and of every region's. Until that is built, reach the value with 'alive()'
+// and 'strong()', which hand back a plain owner that is released like any
+// local, and use 'upgrade()' only where a value that lives on is harmless.
+// tests/gaps.cone pins it, and the other shapes the compiler does not yet
+// release: a strong owner used as a temporary without being bound
+// ('w.strong().n'), a 'Weak' moved away on one path only, and a 'Weak'
+// assigned over. Each keeps its count for ever.
+//
+// How it is laid out. The region ref 'rcw' is the header before each value:
+// two counts. 'strong' is the number of strong owners. 'weak' is the number of
+// weak references, plus one held on behalf of all the strong owners together
+// while any remains. The compiler calls 'alias' for each strong owner copied,
+// and 'dealias' for each one going away; at zero it runs the value's death and
+// then 'free', which here gives back only that one weak count. Whichever of
+// 'free' or a weak reference's 'final' takes 'weak' to zero frees the memory.
+// So a plain '+rcw' value that never had a weak reference is freed at its death,
+// as an '+rc' one is; it costs one word more of header.
+//
+// Nothing here is known to the compiler. 'Weak[T]' is an ordinary struct
+// holding the header's address: it finds the value after the header as the
+// compiler lays it out, the header's size rounded up to the value's alignment,
+// and makes a strong owner from that address with a cast, having counted it.
+
+mod rcweak;
+
+import libc;
+
+// How many blocks this region has allocated and not yet given back
+mut blocks = 0usize;
+
+// How many blocks '+rcw' allocations hold: each is freed only when its value
+// has died and its last weak reference has gone. For tests and for finding
+// leaks, not for correctness.
+pub fn liveBlocks() usize { blocks; }
+
+// The header before each '+rcw' value. Its fields are public so that 'Weak'
+// can reach them; a program cannot, since nothing hands it a header.
+pub struct rcw is RegionRef {
+  pub strong usize;   // strong owners
+  pub weak usize;     // weak references, plus one while any strong owner remains
+
+  fn alloc(size usize) *u8 {
+    imm p = libc.malloc(size);
+    if p as usize != 0usize { blocks = blocks + 1usize; }
+    p;
+  }
+  fn init() rcw inline { rcw[1usize, 1usize]; }
+  fn alias(self &uni rcw) inline { strong = strong + 1usize; }
+  fn dealias(self &uni rcw) Bool inline { strong = strong - 1usize; strong == 0usize; }
+  // Called once the value has died: the strong owners' weak count goes
+  fn free(self &uni rcw) { dropWeak(self as *rcw); }
+}
+
+// One weak count goes; the last frees the block
+fn dropWeak(h *rcw) {
+  imm hr = h as &mut rcw;
+  hr.weak = hr.weak - 1usize;
+  if hr.weak == 0usize {
+    blocks = blocks - 1usize;
+    libc.free(h as *u8);
+  }
+}
+
+// How far after its header a T sits: where the compiler places the value of
+// an owning reference, the header's size rounded up to the value's alignment
+fn valueOffset[T]() usize { roundUp(mem.sizeof[rcw](), mem.alignof[T]()); }
+
+// n rounded up to a multiple of align, a power of two
+fn roundUp(n usize, align usize) usize { (n + align - 1usize) & (0usize - align); }
+
+// A weak reference to a T allocated with '+rcw', or to nothing
+pub struct Weak[T] {
+  hdr *rcw;   // the value's header, or null for none()
+
+  // A weak reference to what 'owner' points at. The owner is passed by value,
+  // so a shared '+rcw-mut' owner is copied and a unique '+rcw' one moves in
+  // and is given up.
+  pub fn of(owner +rcw-mut T) Weak[T] {
+    imm at = owner as *T;
+    imm h = (at as usize - valueOffset[T]()) as *rcw;
+    imm hr = h as &mut rcw;
+    hr.weak = hr.weak + 1usize;
+    Weak[T][h];
+  }
+
+  // A weak reference to nothing: never alive
+  pub fn none() Weak[T] { Weak[T][0usize as *rcw]; }
+
+  // Whether its value is alive: some strong owner still holds it
+  pub fn alive(self &) Bool {
+    hdr as usize != 0usize and (hdr as &rcw).strong > 0usize;
+  }
+
+  // Some new strong owner of its value, or None if the value has died.
+  // Today the owner in a Some is never released (see THE HOLE, above).
+  pub fn upgrade(self &) Option[+rcw-mut T] {
+    if !self.alive() { return None[+rcw-mut T][]; }
+    Some[+rcw-mut T][self.owner()];
+  }
+
+  // A new strong owner of its value; the program ends if the value has died
+  pub fn strong(self &) +rcw-mut T {
+    if !self.alive() { dead(); }
+    self.owner();
+  }
+
+  // A new strong owner of a live value: counted here, since a cast is not a copy
+  fn owner(self &) +rcw-mut T {
+    imm hr = hdr as &mut rcw;
+    hr.strong = hr.strong + 1usize;
+    (hdr as usize + valueOffset[T]()) as +rcw-mut T;
+  }
+
+  // Another weak reference to the same value
+  pub fn clone(self &) Weak[T] {
+    if hdr as usize != 0usize {
+      imm hr = hdr as &mut rcw;
+      hr.weak = hr.weak + 1usize;
+    }
+    Weak[T][hdr];
+  }
+
+  // How many strong owners its value has: 0 once it has died
+  pub fn strongCount(self &) usize {
+    if hdr as usize == 0usize { return 0usize; }
+    (hdr as &rcw).strong;
+  }
+
+  // How many weak references its value has, this one among them. Asked while
+  // the value is dying -- in its own 'final' -- the answer is one more: the
+  // count the strong owners held, which their value's death gives back last.
+  pub fn weakCount(self &) usize {
+    if hdr as usize == 0usize { return 0usize; }
+    imm hr = hdr as &rcw;
+    if hr.strong > 0usize { hr.weak - 1usize; } else { hr.weak; };
+  }
+
+  fn final(self &uni) {
+    if hdr as usize != 0usize { dropWeak(hdr); }
+  }
+}
+
+// The package's panic: what went wrong on stderr, and the program ends at
+// once through the C library's 'abort'. Cone's 'panic' is not built yet; when
+// it is, this is where it goes.
+fn dead() { die("rcweak: strong() of a weak reference whose value has died\n"); }
+
+fn die(msg &[]u8) {
+  libc.fflush(libc.stdout());
+  libc.fwrite(msg, 1usize, msg.len, libc.stderr());
+  libc.abort();
+}

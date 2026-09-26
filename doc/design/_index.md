@@ -153,7 +153,7 @@ summary here was thin; the note was not.**
 
 | Note | Serves | The position | The distance |
 | --- | --- | --- | --- |
-| [References and Regions](references-and-regions.md) | **both** | Memory strategy chosen per object, with safety preserved across all of them | mechanism built, two regions ship; an arena and a generational pool ship as library values, not regions an allocation names; tracing GC is not written |
+| [References and Regions](references-and-regions.md) | **both** | Memory strategy chosen per object, with safety preserved across all of them | mechanism built, two regions ship in core and a third, reference counting with weak references, as a library package; an arena and a generational pool ship as library values, not regions an allocation names; tracing GC is not written |
 | [Performance](performance.md) | performance | Give knowledgeable programmers the levers for proven high-performance strategies | most levers unbuilt; what exists is the machinery making them cheap to add and free to skip |
 | [Modularity](modularity.md) | agility | Every layer — block, function, type, thread, module, program — surfacing the same six strategies | composition, namespace and encapsulation broadly present; substitution, generativity and extensibility thin out above the type layer; no thread layer; the program layer has no namespace at all |
 | [Safety](safety.md) | agility | Memory and type safety without a garbage collector, at no runtime cost | a scorecard: what is checked, what is not, and the four shapes the gaps take |
