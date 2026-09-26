@@ -256,6 +256,16 @@ category = "run"
 description = "An owning reference held in an enum is released when the enum value dies, and a copy of an enum holding a counted one counts one more owner"
 tags = ["flow", "genllvm", "runtime"]
 
+# The same count for every other value that releases a counted reference as it
+# dies: a struct holding one in a field, a tuple or an array in an element,
+# however deep; a tuple literal's copies of one read out of a variable; and an
+# array fill literal repeating such a value. Every line is the counting
+# region's own report, worked out by hand.
+[scenario.region_held_counted]
+category = "run"
+description = "A copy of a struct, tuple or array holding a counted reference counts one more owner, and the value releases it as it dies"
+tags = ["flow", "genllvm", "runtime"]
+
 [scenario.region_borrow_coerce]
 category = "compile"
 description = "An owning reference coerces to a borrowed reference"
@@ -354,7 +364,8 @@ excludes = ["allocref", "call %void @free(", "add i64", "sub i64"]
 # the module holds no '+1' at all and no tuple release. The 'so' spelling is a
 # move, so the destructured 't' releases nothing and the run is the whole claim
 # there; a 'so' tuple left in its variable is freed through it, and the last
-# check names the two elements 'soWholeVariable' extracts, and the free of each.
+# check names the two elements 'soWholeVariable' finalizes in place, each
+# reached by its address in the variable, and the free of each.
 [scenario.region_tuple_destructure]
 category = "run"
 description = "Destructuring or copying a tuple variable counts each rc element it carries, and the variable releases what it holds at scope exit"
@@ -369,9 +380,9 @@ contains = ["%14 = add i64 %13, 1", "%18 = add i64 %17, 1", "%10 = add i64 %9, 1
 name = "tuple-variable-releases-its-elements"
 target = "preir"
 contains = [
-  "%56 = load i64, ptr %cnt76, align 8\n  %57 = sub i64 %56, 1",
-  "%64 = load i64, ptr %cnt87, align 8\n  %65 = sub i64 %64, 1",
-  "%32 = extractvalue { ptr, i32 } %allocref37, 0\n  %33 = getelementptr i8, ptr %32, i64 -8\n  store ptr %33, ptr %self38, align 8\n  %self39 = load ptr, ptr %self38, align 8\n  %cnt40 = getelementptr inbounds nuw %rc, ptr %self39, i32 0, i32 0\n  %34 = load i64, ptr %cnt40, align 8\n  %35 = sub i64 %34, 1",
+  "%55 = load i64, ptr %cnt76, align 8\n  %56 = sub i64 %55, 1",
+  "%62 = load i64, ptr %cnt89, align 8\n  %63 = sub i64 %62, 1",
+  "%tupelem = getelementptr inbounds nuw { ptr, i32 }, ptr %t, i32 0, i32 0\n  %finalref37 = load ptr, ptr %tupelem, align 8\n  %32 = getelementptr i8, ptr %finalref37, i64 -8\n  store ptr %32, ptr %self38, align 8\n  %self39 = load ptr, ptr %self38, align 8\n  %cnt40 = getelementptr inbounds nuw %rc, ptr %self39, i32 0, i32 0\n  %33 = load i64, ptr %cnt40, align 8\n  %34 = sub i64 %33, 1",
 ]
 
 [[scenario.region_tuple_destructure.check]]
@@ -387,10 +398,8 @@ contains = [
 name = "so-tuple-left-in-variable-is-freed-through-it"
 target = "preir"
 contains = [
-  "%6 = extractvalue { ptr, ptr } %allocref, 0",
-  "%7 = call %void @free(ptr %self4)",
-  "%8 = extractvalue { ptr, ptr } %allocref, 1",
-  "%9 = call %void @free(ptr %self6)",
+  "%tupelem = getelementptr inbounds nuw { ptr, ptr }, ptr %t, i32 0, i32 0\n  %finalref = load ptr, ptr %tupelem, align 8\n  store ptr %finalref, ptr %self, align 8\n  %self4 = load ptr, ptr %self, align 8\n  %6 = call %void @free(ptr %self4)",
+  "%tupelem5 = getelementptr inbounds nuw { ptr, ptr }, ptr %t, i32 0, i32 1\n  %finalref6 = load ptr, ptr %tupelem5, align 8\n  store ptr %finalref6, ptr %self7, align 8\n  %self8 = load ptr, ptr %self7, align 8\n  %7 = call %void @free(ptr %self8)",
 ]
 
 # The same two claims for a tuple type named by a typedef, which is what says an
@@ -406,7 +415,7 @@ contains = ["%19 = add i64 %18, 1", "%23 = add i64 %22, 1", "%27 = add i64 %26, 
 [[scenario.region_tuple_destructure.check]]
 name = "alias-tuple-variable-releases-its-elements"
 target = "preir"
-contains = ["%83 = sub i64 %82, 1", "%91 = sub i64 %90, 1", "%99 = sub i64 %98, 1"]
+contains = ["%82 = sub i64 %81, 1", "%89 = sub i64 %88, 1", "%96 = sub i64 %95, 1"]
 
 # A local moved into a call that is the block's final expression. The claim is
 # that nothing in this module is released: every allocation is handed on, to a
@@ -573,11 +582,12 @@ excludes = ["call %void @free(", "allocref", "add i64"]
 # that asks what a variable or field holds must resolve it. The run covers the
 # spellings that already did -- a local, a reassignment and a move-out, in 'so',
 # 'rc', an owning slice, an alias of an alias, and a struct with a finalizer --
-# and the check covers the one that did not: genlDealiasFlds read a field's
-# declared type raw, so a struct's owning field spelled through an alias leaked
-# on every release. A leak prints what correct code prints, so the check names
-# the field GEPs that begin the two releases, whose registers were read out of
-# the pre-optimization dump; before the fix the module holds neither.
+# and the check covers the one that did not: the release of a struct's fields
+# read a field's declared type raw, so a struct's owning field spelled through an
+# alias leaked on every release. A leak prints what correct code prints, so the
+# check names the field GEPs that begin the two releases in Held's generated
+# drop, read out of the pre-optimization dump; before the fix the module holds
+# neither.
 [scenario.region_typedef_release]
 category = "run"
 description = "An owning reference, slice or finalized struct declared through a typedef is released as the aliased type is, as a variable and as a struct field"
@@ -587,8 +597,8 @@ tags = ["flow", "genllvm", "runtime"]
 name = "aliased-owning-fields-released-with-their-struct"
 target = "preir"
 contains = [
-  "%r19 = getelementptr inbounds nuw %Held, ptr %allocref, i32 0, i32 0",
-  "%s27 = getelementptr inbounds nuw %Held, ptr %allocref, i32 0, i32 1",
+  "%r = getelementptr inbounds nuw %Held, ptr %0, i32 0, i32 0",
+  "%s = getelementptr inbounds nuw %Held, ptr %0, i32 0, i32 1",
 ]
 
 # A program that declares C's 'free' itself links beside the releases 'so' and

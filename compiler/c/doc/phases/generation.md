@@ -447,8 +447,8 @@ What follows from that:
   its pointer word.** `genlRefPtr`, at the entry of `genlRegionDealias` and
   `genlRegionAlias`, `extractvalue`s word 0 of an `ArrayRefTag` reference, so
   every release site — scope exit, a `RefCountNode`, `genlStore` — hands over
-  the value as generated. `genlDealiasFlds` walks no slice's elements: what an
-  element owns is left where an array of owning references leaves it.
+  the value as generated. A death reads the length from word 1 and finalizes
+  each element in place, in element order (`genlEachElem`).
 
 **The release routines call the region's methods and know no region.**
 `genlReleaseOwning` is one owner going away: `genlRegionDealias` calls the
@@ -456,36 +456,52 @@ region's `dealias` and branches on its `Bool` to the death. A region without
 `dealias` goes straight to the death when it is `Move` (single owner,
 `regionIsMove`), and emits nothing at all otherwise: that value never dies by an
 owner, whether its copies are counted or free. The death,
-`genlRegionDeath`, runs in three steps: the value's finalizer — its type's drop
-(`itypeGetDropFnDcl`), which is the type's `final` followed by each finalizing
-field's drop (`structSetDropFn`), called on the value pointer as a stack value's
-drop is called on its address — then the release of the owning references the
-value's fields hold (`genlDealiasFlds`), then the region's `free` if it has one.
-The drop does not touch owning-reference fields and `genlDealiasFlds` touches
-nothing else, so nothing is released twice; a type with no drop emits exactly
-what it did before the finalizer was added.
+`genlRegionDeath`, runs in two steps: the value dies in place
+(`genlFinalizeAt`), as a value on the stack does at its scope's end — for a
+single reference the value it points at, for an owning slice each element in
+element order — then the region's `free` if it has one.
 
-**An enum's drop is built here, not lowered** (`genlEnumDrop`, reached from
-`genlFn` for the function `structSetEnumDropFn` made, which has an empty block).
-It reads the tag through the enum's own layout and switches on it; each variant
-with anything to do is a case, which recasts the pointer to the variant and
-finalizes it in place (`genlFinalizeAt`): the variant's drop — its own `final`,
-the enum's `final`, each finalizing field's drop — then the owning references
-its fields hold, the common fields' among them. A variant with nothing to do has
-no case, and the default leaves. The nullable-pointer layout has no tag: the
-value is the one variant's reference, tested against null, and for that variant
-`genlReleaseFlds` loads the value itself rather than a field of a struct there is
-none of. Since an enum's drop has released what the variant's fields own,
-`genlReleaseFlds` passes an enum by, so a death (`genlRegionDeath`) or a
-finalize in place calling it after the drop releases nothing twice. No
-expression places the drop's calls, so in a debug build each is placed at the
-enum, where a call without a location would fail verification.
+**One routine is a value's death in place, whatever its type**
+(`genlFinalizeAt`), and every death reaches it: a local's at its scope's end
+(flow lists the variable, or for a struct or an enum a call to its drop), a
+region value's before its `free`, a field's inside its holder's drop, and the
+`finalize` intrinsic. An owning reference is released (`genlReleaseOwning`). A
+struct or an enum calls its drop, which is the whole death, its owners' release
+included. A tuple finalizes each element that needs it, in order, each reached
+by its address (`StructGEP2`). A fixed-size array finalizes each element in
+element order, first element first, as a struct's fields die in field order,
+in a loop (`genlEachElem`), since the optimizer pipeline runs no loop pass that
+would undo an unrolling. A type for which `itypeNeedsFinal` is false generates
+nothing. The drop call recasts the value's pointer to the drop's parameter
+type (`genlCallDrop`), since a variant laid out as a nullable pointer is reached
+through a pointer to its enum.
 
-**A copy of a struct or an enum holding counted references its drop releases**
-(flow's `flowHeldCounted`) reaches `genlAliasHeld` from the `RefCountNode`: the
-copied value is stored to a slot and walked as the drop would walk it, through
-each field whose drop releases one and, in an enum, the variant its tag picks,
-calling `alias` on each counted field there.
+**A drop the compiler gives a type is built here, not lowered**
+(`genlTypeDrop`, reached from `genlFn` for a function `structIsGeneratedDropFn`
+recognizes). A struct's (`genlStructDrop`, for the function `structSetDropFn`
+made) runs the calls its block holds — the type's own `final`, then, for a
+variant keeping its enum's, the enum's — then finalizes each field that needs
+it in place, in field order, then releases each owning reference a field holds,
+in field order: the ruled order, `final`, fields, owners [Jon 26 Sep]. A
+variant laid out as a nullable pointer is only its reference, so its drop loads
+the value itself as that reference and releases it. An enum's
+(`genlEnumDrop`, for the function `structSetEnumDropFn` made, which has an
+empty block) reads the tag through the enum's own layout and switches on it;
+each variant with anything to do is a case, which recasts the pointer to the
+variant and finalizes it in place — the variant's drop. A variant with nothing
+to do has no case, and the default leaves. The nullable-pointer layout has no
+tag: the value is the one variant's reference, tested against null. No
+expression places a generated drop's calls, so in a debug build each is placed
+at the type, where a call without a location would fail verification.
+
+**A copy of a value holding counted references its death releases** (flow's
+`flowHeldCounted`: a struct, an enum, a tuple or an array holding one, however
+deep) reaches `genlAliasHeld` from the `RefCountNode`: the copied value is
+stored to a slot and walked as its death would walk it — each field of a
+struct, the variant an enum's tag picks, each element of a tuple, each element
+of an array in a loop — calling `alias` on each counted reference there. A
+tuple's `RefCountNode` counts per element, and an element holding counted
+references rather than being one is stored to a slot and walked the same way.
 
 **A hollow death** (`genlHollowDeath`) is the death of a value that, or an
 element of which, was moved out through its sole owner (flow's `HollowNode`).
@@ -497,9 +513,9 @@ place of the death. That runs no finalizer for the value, releases what is left
 (`genlReleasePart`), then calls `free`. A path that ends at a value moved all of
 it out, leaving nothing to release; one that runs on through an owning
 reference (`**b`) makes that reference's own death hollow in turn; one through
-an array element leaves the array whole to what moved, so nothing is released
-that might have moved. A slice's elements are never walked, as a death walks
-none.
+an array element finalizes none of the array, since which elements are left is
+not tracked: the ones that did not move leak rather than one being finalized
+twice. A slice's elements are not walked, for the same reason.
 `genlRegionAlias` calls `alias` once per owner a `RefCountNode` adds — written
 out in line up to `RegionAliasUnroll` (16), a loop beyond, since the optimizer
 pipeline runs no loop pass and folds only calls written out. Core's methods are
@@ -548,8 +564,9 @@ compiler builds itself — a synthesized drop's — carries no type.
 
 Concrete hazards, each of which has been gotten wrong here before:
 
-- **`genlDealiasFlds` must load after `StructGEP`.** The GEP gives the address
-  of a ref-typed field; the release routines want the reference the field holds.
+- **A struct's drop must load after `StructGEP`.** The GEP gives the address
+  of a ref-typed field; the release routines want the reference the field holds,
+  so `genlFinalizeAt` loads it.
 - **`genlAddr`'s array index uses `genlAddr(objfn)` for an array but
   `genlExpr(objfn)` for a reference to one.** An array *is* memory; a reference
   *holds* the address. One level apart, same GEP shape.
@@ -749,12 +766,12 @@ variables.
 | | `genlArrayIndex`, `genlBoundsCheck` | multi-dimensional GEP and its checks |
 | | `genlSubslice` | a borrowed range index, `&x[a..b]`: the slice `{&x[a], b - a}` once `a <= b <= count` is checked |
 | `genllvm/genlalloc.c` | `genlRefTypeSetup`, `genlallocref` | the `{region, perm, value}` header and its emission |
-| | `genlRegionHeader`, `genlRegionAlias`, `genlRegionDealias`, `genlRegionDeath` | the header a region method is handed; calling `alias`, `dealias` and `free` at each reference event; a death's finalizer, field releases and `free` |
+| | `genlRegionHeader`, `genlRegionAlias`, `genlRegionDealias`, `genlRegionDeath` | the header a region method is handed; calling `alias`, `dealias` and `free` at each reference event; a death in place, then `free` |
 | | `genlHollowRelease`, `genlRegionDealiasPart`, `genlHollowDeath`, `genlReleasePart` | a hollowed variable's release: the death of a value moved out, or an element of it, finalizing none of it and freeing the memory |
-| | `genlReleaseOwning`, `genlDealiasFlds`, `genlReleaseFlds`, `genlDealiasNodes` | releasing what a variable, a tuple's elements or a dead value's fields own, and replaying flow's lists |
-| | `genlFinalizeAt` | the `finalize` intrinsic: a death in place, less the `free` |
-| | `genlEnumDrop` | the body of an enum's drop: the tag's variant finalized in place |
-| | `genlAliasHeld` | a copied struct or enum: `alias` on each counted reference its drop releases |
+| | `genlReleaseOwning`, `genlDealiasNodes` | releasing one owner of an owning reference or of each a tuple value carries, and replaying flow's lists |
+| | `genlFinalizeAt`, `genlCallDrop`, `genlEachElem` | a value's death in place, whatever its type: a local's, a field's, a region value's before its `free`, and the `finalize` intrinsic |
+| | `genlTypeDrop`, `genlStructDrop`, `genlEnumDrop` | the body of a drop the compiler gave a type: a struct's `final` calls, its fields' deaths, its owners' release; an enum's tag dispatching to its variant's |
+| | `genlAliasHeld` | a copied struct, enum, tuple or array: `alias` on each counted reference its death releases |
 | `ir/types/reference.h` | `enum ManagedRefFields` | `RegionField`, `PermField`, `ValueField` |
 | `ir/name.c` | `nameSymbol`, `nameType`, `nameVtable`, `nameVtableImpl`, `nameVtableList` | spelling a symbol from a node's owner chain and facts, and a type argument within it — the rules are in [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols" |
 | `ir/dclinfo.c` | `dclInfoJoin` | writes the declaration facts where a declaration joins its namespace |

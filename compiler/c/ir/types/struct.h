@@ -145,10 +145,10 @@ void structLayoutExit(void);
 void structSetTagWidth(StructNode *node);
 
 // Give an enum whose variants are laid out its drop, when any variant has
-// something to do as it dies; and is this function such a drop, whose body
-// generation builds?
+// something to do as it dies; and is this function a drop the compiler gave a
+// struct or an enum, whose body generation builds?
 void structSetEnumDropFn(StructNode *node);
-int structIsEnumDropFn(INode *fn);
+int structIsGeneratedDropFn(INode *fn);
 
 // Type check an instance of a generic enum whose variants are already listed,
 // leaving its discriminant's width to the caller

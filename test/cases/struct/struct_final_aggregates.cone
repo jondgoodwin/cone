@@ -1,0 +1,100 @@
+// A tuple or a fixed-size array of values that finalize, or of owning
+// references, dies with them: a tuple element by element, an array element by
+// element in element order, first element first, as a struct's fields die in
+// field order. Wherever it lives -- a local, a parameter, a value the scope
+// hands back, a struct's field, a variant's field, a generic's instance, a
+// value a region holds -- and nested, an array of tuples of structs.
+//
+// Neither had a drop: 'itypeGetDropFnDcl' answered only a struct, so a tuple
+// of a finalizing struct and an array of one were never finalized anywhere, an
+// array of owning references was never released, and a struct holding either
+// by value was given no drop for it. A tuple of owning references alone was
+// released. Now each dies in place (genlFinalizeAt), and a type holding one is
+// given a drop that runs its death.
+//
+// An owning slice's elements die the same way, in order, before its memory is
+// given back.
+//
+// Moving an element out of an array marks the whole array moved, so the ones
+// that stayed are not finalized: they leak rather than the moved one dying
+// twice. 'element-moved' pins that: Fin 1 dies once, as 'x', and Fin 2 is
+// never finalized.
+//
+// 'one' is a single-owner region that prints its 'free'. 'F<n>' is a Fin's
+// 'final'.
+
+mod struct_final_aggregates;
+
+import stdio use *;
+import libc;
+
+struct one is RegionRef, Move {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn free(self &uni one) inline { printStr("free "); libc.free(self as *u8); }
+}
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { printStr("F"); printInt(n); printStr(" "); }
+}
+
+struct HasTuple { pub t (Fin, i64); }
+struct HasArray { pub a [2; Fin]; }
+struct Box[T] { pub v T; }
+
+enum Shape {
+  struct Many { pub a [2; Fin]; pub o +one Fin; }
+  struct Empty { }
+}
+
+fn show(label &[]u8) { printStr(label); printStr(": "); }
+fn end() { printStr("|\n"); }
+
+fn takeTuple(t (Fin, i64)) { printStr("in "); }
+fn makeTuple() (Fin, i64) { (Fin[1], 2i64); }
+fn takeArray(a [2; Fin]) { printStr("in "); }
+fn passArray(a [2; Fin]) { takeArray(a); printStr("out "); }
+fn makeArray() [2; Fin] { [Fin[1], Fin[2]]; }
+
+fn tupleLocal() { imm t = (Fin[1], Fin[2]); }
+fn tupleMixed() { imm t = (Fin[1], 5i64, +one Fin[2]); }
+fn tupleParam() { takeTuple((Fin[1], 2i64)); }
+fn tupleReturned() { imm t = makeTuple(); printStr("made "); }
+fn tupleField() { imm h = HasTuple[(Fin[1], 2i64)]; }
+fn tupleHeld() { imm p = +one (Fin[1], Fin[2]); }
+fn arrayLocal() { imm a = [Fin[1], Fin[2], Fin[3]]; }
+fn arrayParam() { takeArray([Fin[1], Fin[2]]); }
+fn arrayPassedOn() { passArray([Fin[1], Fin[2]]); }
+fn arrayReturned() { imm a = makeArray(); printStr("made "); }
+fn arrayField() { imm h = HasArray[[Fin[1], Fin[2]]]; }
+fn arrayHeld() { imm p = +one [Fin[1], Fin[2]]; }
+fn arrayOfOwners() { imm a = [+one Fin[1], +one Fin[2]]; }
+fn arrayOfTuples() { imm a = [(Fin[1], Fin[2]), (Fin[3], Fin[4])]; }
+fn variantField() { imm s Shape = Shape.Many[[Fin[1], Fin[2]], +one Fin[3]]; }
+fn generic() { imm b = Box[[2; Fin]][[Fin[1], Fin[2]]]; }
+fn inOption() { imm o Option[(Fin, Fin)] = Some[(Fin, Fin)][(Fin[1], Fin[2])]; }
+fn ownedSlice() { imm s = +[]one [Fin[1], Fin[2]]; }
+fn elementMoved() { imm a = [Fin[1], Fin[2]]; imm x = a[0]; printStr("took "); }
+
+fn main() i32 {
+  show("tuple-local"); tupleLocal(); end();
+  show("tuple-mixed"); tupleMixed(); end();
+  show("tuple-param"); tupleParam(); end();
+  show("tuple-returned"); tupleReturned(); end();
+  show("tuple-field"); tupleField(); end();
+  show("tuple-held"); tupleHeld(); end();
+  show("array-local"); arrayLocal(); end();
+  show("array-param"); arrayParam(); end();
+  show("array-passed-on"); arrayPassedOn(); end();
+  show("array-returned"); arrayReturned(); end();
+  show("array-field"); arrayField(); end();
+  show("array-held"); arrayHeld(); end();
+  show("array-of-owners"); arrayOfOwners(); end();
+  show("array-of-tuples"); arrayOfTuples(); end();
+  show("variant-field"); variantField(); end();
+  show("generic"); generic(); end();
+  show("in-option"); inOption(); end();
+  show("owned-slice"); ownedSlice(); end();
+  show("element-moved"); elementMoved(); end();
+  0;
+}

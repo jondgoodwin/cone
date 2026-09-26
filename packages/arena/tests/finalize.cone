@@ -7,6 +7,8 @@
 //   '+so' one's value dies and is freed, an '+rc' one's only if that was its
 //   last owner;
 // - a value typed as an enum dies as the variant it holds;
+// - a tuple dies element by element, and an array in element order, first
+//   element first, as a struct's fields do;
 // - a borrowed reference finalizes nothing, so a value referred to from
 //   another arena value dies once, by its own arena;
 // - a value whose type needs no finalizing gets no finalizer header at all.
@@ -37,6 +39,9 @@ struct Outer { pub n i64; pub b Middle; fn final(self &uni) { note(n); } }
 
 struct HoldsSo { pub n i64; pub o +so Fin; fn final(self &uni) { note(n); } }
 struct HoldsRc { pub n i64; pub r +rc-mut Fin; fn final(self &uni) { note(n); } }
+
+// An owning reference held two fields deep: in a field of a field
+struct TwoDeep { pub n i64; pub h HoldsSo; }
 
 // A chain of single owners: each owner's release runs the next one's death
 struct ChainTop { pub n i64; pub o +so HoldsSo; fn final(self &uni) { note(n); } }
@@ -130,6 +135,23 @@ fn enumValue() {
   expectUInt(u64[a.finalizers()], 1, "an Option of a plain one does not");
 }
 
+fn array() {
+  mut a = Arena.empty();
+  a.alloc([Fin[1], Fin[2]]);
+  expectUInt(u64[a.finalizers()], 1, "an array of finalizing values gets one header");
+}
+
+fn tuple() {
+  mut a = Arena.empty();
+  a.alloc[(Fin, i64)]((Fin[1], 2i64));
+  expectUInt(u64[a.finalizers()], 1, "a tuple holding a finalizing value gets one header");
+}
+
+fn twoDeep() {
+  mut a = Arena.empty();
+  a.alloc(TwoDeep[1, HoldsSo[2, +so Fin[3]]]);
+}
+
 fn ownerAsValue() {
   mut a = Arena.empty();
   imm r = a.alloc(+so Fin[6]);
@@ -217,6 +239,15 @@ fn main() i32 {
   log = 0;
   enumValue();
   expectInt(log, 3, "a value typed as an enum dies as its variant");
+  log = 0;
+  array();
+  expectInt(log, 12, "an array's elements, in element order");
+  log = 0;
+  tuple();
+  expectInt(log, 1, "a tuple's finalizing element");
+  log = 0;
+  twoDeep();
+  expectInt(log, 23, "the field's final, then the owner it holds");
   log = 0;
   ownerAsValue();
   expectInt(log, 6, "an owning reference allocated as the value is released");

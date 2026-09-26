@@ -94,15 +94,17 @@ the two are tested against each other by running one scenario both ways
 | `sizeof[T]` | constant | `LLVMABISizeOfType` (alloc size, tail padding included), `genlSizeof` |
 | `alignof[T]` | constant | `LLVMABIAlignmentOfType`, `genlAlignof` |
 | `needsFinal[T]` | constant | `itypeNeedsFinal`, a front-end question, emitted as an `i1` |
-| `finalize[T]` | expansion | `genlFinalizeAt`: release an owning reference; else the type's drop, then `genlReleaseFlds` |
+| `finalize[T]` | expansion | `genlFinalizeAt`: release an owning reference; a struct's or an enum's drop; a tuple's elements, an array's in element order |
 | `sliceFromParts[T]`, `…Mut` | expansion | two `insertvalue`s into the `{ptr, usize}` pair |
 | `readRaw[T]` | expansion | a load (`%rawread`) |
 | `writeRaw[T]` | expansion | a store |
 | `moveRaw[T]` | operation | `LLVMBuildMemMove` of `count * sizeof(T)` bytes |
 
 `finalize` runs what a region-held value's death runs, less the region's `free`
-(`genlRegionDeath`): the drop, then the owners the fields hold. `itypeNeedsFinal`
-is true exactly when that does something.
+(`genlRegionDeath`), which is what a local's death at its scope's end runs: its
+`final`, its fields that need it, then the owners it holds; a tuple element by
+element, an array in element order. `itypeNeedsFinal` is true exactly when that
+does something.
 
 ## Hazards
 
@@ -134,6 +136,6 @@ is true exactly when that does something.
 | registry and checks | `ir/stmt/intrinsic.c`: `intrinsicRegistry`, `intrinsicDclNameRes`, `intrinsicDclTypeCheck` |
 | hooks | `fndcl.c` `fnDclNameRes`, `fnDclTypeCheck`, `fnDclIsExpanded` |
 | forced fallback | `--intrinsic-fallback` → `intrinsicForceFallback` (`conec.c`) |
-| generation | `genlexpr.c` `genlDeclaredIntrinsic`; `genlalloc.c` `genlFinalizeAt`, `genlReleaseFlds`; `genltype.c` `genlAlignof` |
+| generation | `genlexpr.c` `genlDeclaredIntrinsic`; `genlalloc.c` `genlFinalizeAt`; `genltype.c` `genlAlignof` |
 | declarations | `packages/core/src/core.cone`, `struct @opaque mem` |
 | tests | `test/cases/intrinsic/` |

@@ -1421,17 +1421,23 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             int16_t *countp = anode->counts;
             for (nodesFor(tuple->elems, cnt, nodesp)) {
                 if (*countp != 0) {
-                    reftype = (RefNode *)itypeGetTypeDcl(*nodesp);
-                    LLVMValueRef strval = LLVMBuildExtractValue(gen->builder, val, index, "");
-                    genlRegionAlias(gen, strval, *countp, reftype);
+                    LLVMValueRef elemval = LLVMBuildExtractValue(gen->builder, val, index, "");
+                    if (flowIsRcRef(*nodesp))
+                        genlRegionAlias(gen, elemval, *countp, (RefNode *)itypeGetTypeDcl(*nodesp));
+                    else {
+                        // An element holding counted references, as below
+                        LLVMValueRef copy = genlAlloca(gen, LLVMTypeOf(elemval), "heldcopy");
+                        LLVMBuildStore(gen->builder, elemval, copy);
+                        genlAliasHeld(gen, copy, *nodesp, *countp);
+                    }
                 }
                 ++index; ++countp;
             }
         }
-        // A struct or enum holding counted references its drop releases
-        // (flowHeldCounted), reached through a copy of the value in memory,
-        // since which of an enum's variants it holds is read from its tag
-        else if (reftype->tag == StructTag) {
+        // A struct, an enum or an array holding counted references its death
+        // releases (flowHeldCounted), reached through a copy of the value in
+        // memory, since which of an enum's variants it holds is read from its tag
+        else if (reftype->tag == StructTag || reftype->tag == ArrayTag) {
             LLVMValueRef copy = genlAlloca(gen, LLVMTypeOf(val), "heldcopy");
             LLVMBuildStore(gen->builder, val, copy);
             genlAliasHeld(gen, copy, (INode*)reftype, anode->amt);

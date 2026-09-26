@@ -135,10 +135,11 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     for (nodesFor(fnsig->parms, cnt, nodesp))
         genlParmVar(gen, (VarDclNode*)*nodesp);
 
-    // Generate the function's code (always a block). An enum's drop has an
-    // empty one: its body is built here, from the enum's layout.
-    if (structIsEnumDropFn((INode*)fnnode))
-        genlEnumDrop(gen, fnnode);
+    // Generate the function's code (always a block). A drop the compiler gave
+    // a type is built here, from the type's layout: an enum's block is empty,
+    // and a struct's holds only its 'final' calls.
+    if (structIsGeneratedDropFn((INode*)fnnode))
+        genlTypeDrop(gen, fnnode);
     else
         genlBlock(gen, (BlockNode *)fnnode->value);
 

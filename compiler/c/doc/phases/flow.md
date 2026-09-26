@@ -270,16 +270,22 @@ value, and owns nothing either.
 - A tuple is one holder of each counted reference it carries. `imm t = pair()`
   adds nothing (a temporary again); `a, b = t` and `imm u = t` add one per rc
   element, and `t` releases each at scope exit.
-- A struct or an enum is one holder of each counted reference its drop releases
-  (`flowHeldCounted`): an enum's drop releases what its variant's fields own, so
-  `imm o2 = o` over an `Option[+rc-mut T]` adds one, through the variant the
-  tag picks, and a struct holding such an enum adds one through that field. A
-  struct's own counted fields are not in its drop, and add nothing.
+- A struct, an enum, a tuple or an array is one holder of each counted
+  reference its death releases (`flowHeldCounted`), however deep: a struct's
+  drop releases what its fields own, an enum's what its variant's fields own,
+  and a tuple or an array dies element by element. So `imm s2 = s` over a
+  struct with a `+rc-mut` field adds one, `imm o2 = o` over an
+  `Option[+rc-mut T]` adds one through the variant the tag picks, and a copy of
+  an array of them adds one per element.
+- A tuple literal holds its elements' values, each moved or copied into it on
+  its own, as a struct literal's fields are: `(r, 5)` over a counted variable
+  `r` adds one.
 
 `flowHandleMoveOrCopy` is the whole decision:
 
 ```c
-if (iexpIsMove(*nodep))          flowHandleMove(*nodep);      // deactivate source
+if (*nodep is a tuple literal)   each element, as below;
+else if (iexpIsMove(*nodep))     flowHandleMove(*nodep);      // deactivate source
 else if (flowIsLvalRead(*nodep)) flowInjectRefCount(nodep);   // +1
 ```
 
@@ -291,18 +297,20 @@ allocation would never reach zero.
 It is called from exactly seven places — `varDclFlow` (the initializer),
 `assignSingleFlow` (the rval), `assignMultRetFlow` (the one rval a
 destructuring takes apart), `fnCallFlow` (per argument), `allocateFlow` (the
-allocated value), `typeLitFlow` (per field) and `arrayLitFlow` (per element, in
-the list form only). The array **fill** form does its own arithmetic instead,
-because one value goes to n holders.
+allocated value), `typeLitFlow` (per field) and `arrayLitFlow` (per element in
+the list form, and a fill's tuple literal's elements). The array **fill** form
+does its own arithmetic for the value it repeats, because one value goes to n
+holders: a value that is or holds a counted reference gains n, or n - 1 for a
+temporary.
 
 **Decrements are never reference-count nodes.** They come from generation: walking a
 `dealias` list at scope exit, and `genlStore` releasing an lval's previous value
-unless `FlagFirstAssign` says there was none. Both go through
-`genlReleaseOwning`: one owner goes away, through the region's `dealias` where
-it has one, as the value's death where the region is `Move`, and as nothing
-otherwise; a tuple's
-owning elements one by one. A hollowed variable's owner goes away the same
-way, through a `HollowNode` instead, and its death is hollow.
+unless `FlagFirstAssign` says there was none, and a value's death releasing the
+owners it holds. Each goes through `genlReleaseOwning`: one owner goes away,
+through the region's `dealias` where it has one, as the value's death where the
+region is `Move`, and as nothing otherwise; a tuple's owning elements one by
+one. A hollowed variable's owner goes away the same way, through a
+`HollowNode` instead, and its death is hollow.
 
 ## 5. What it injects
 
@@ -317,17 +325,17 @@ depends on:
 | `FlagFirstAssign` | `assignlvalrtype`, when the variable is uninitialized, moved out or hollowed | `genlStore` skips releasing a previous value the variable does not hold whole |
 | `HollowTag` | `flowScopeDealias`, in a `dealias` list, for a hollowed variable or one whose part the scope hands back; `assignSingleFlow`, wrapped round the value stored into a hollowed variable | `genlHollowRelease`: the owner goes, and a death frees without what moved — after the new value is evaluated, for the wrapper, as `genlStore` orders a whole release |
 
-**A reference-count node is built only for a counted reference, or a tuple
-carrying one.** `flowInjectRefCountAmt` returns early unless the type is a
+**A reference-count node is built only for a counted reference, or a value
+holding one.** `flowInjectRefCountAmt` returns early unless the type is a
 `RefTag` or `ArrayRefTag` into a region with `alias` (`flowIsRcRef`,
 `regionIsCounted` — an owning slice is counted exactly as a single reference
-is), or a `TTupleTag` with at least one such element, or a struct or enum whose
-drop releases one (`flowHeldCounted`); for the tuple it fills
-the node's `counts` array with `amt` per counted element and `0` per other
-element, `amt` then holding the element count, and generation's tuple arm adds
-the owners to each counted element after an `extractvalue`. The struct and enum
-arm (`genlAliasHeld`) mirrors the drop: through each field whose drop releases
-one, and in an enum through the variant its tag picks. A reference into a
+is), or a struct, enum, tuple or array whose death releases one
+(`flowHeldCounted`); for a tuple it fills the node's `counts` array with `amt`
+per element that is or holds a counted reference and `0` per other element,
+`amt` then holding the element count, and generation's tuple arm adds the
+owners to each such element after an `extractvalue`. The struct, enum and array
+arm (`genlAliasHeld`) mirrors the death: through each field of a struct, the
+variant an enum's tag picks, and each element of an array. A reference into a
 `Move` region (`so`) and a `uni`-permissioned reference into one with `alias`
 are both move types and take the move path instead, as does a tuple carrying
 one. A reference into a region with neither is copied with no node at all.
@@ -358,16 +366,17 @@ and is not deactivation, because each `return` builds its own list and
 out only, and `a` is still usable and finalized on the path that goes on. The match is on the
 declaration the result's name resolves to, not on the name: a `return` asks over the whole function's
 stack, where an inner block's `a` and an outer `a` both sit, and only the one
-handed back is exempt. What survives both is an owning reference into a
-region, single (`RefTag`) or slice (`ArrayRefTag`), or a tuple carrying one
-(`flowIsOwningType`), added to the list; anything else asks
-`itypeGetDropFnDcl` and, if there is one, builds a call to the drop fn on a
-`&uni` borrow, positioned on the result expression, or on the jump that ends the
-scope where there is no result expression — a `continue` hands back no value.
-Generation releases a tuple variable element by element
-(`genlReleaseOwning`); a tuple carrying a `so` reference is a move type, so
-destructuring or copying it deactivates the variable and the scope releases
-nothing of it.
+handed back is exempt. What survives both is released as its type dies: a
+struct or an enum has a drop (`itypeGetDropFnDcl`), and the list gets a call
+to it on a `&uni` borrow, positioned on the result expression, or on the jump
+that ends the scope where there is no result expression — a `continue` hands
+back no value; anything else with anything to do as it dies
+(`itypeNeedsFinal`) — an owning reference into a region, single (`RefTag`) or
+slice (`ArrayRefTag`), or a tuple or an array of values that finalize or own —
+is added to the list itself, and generation finalizes it in place
+(`genlFinalizeAt`), a tuple element by element, an array in element order. A
+tuple carrying a `so` reference is a move type, so destructuring or copying it
+deactivates the variable and the scope releases nothing of it.
 
 **The result expression is walked before the list is built.** `blockFlow` calls
 `flowLoadValue` over a block's result — a `return`'s, a `break`'s or an injected
@@ -392,7 +401,7 @@ failed to resolve.
 | --- | --- | --- | --- |
 | **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable, and on a borrow of a moved-out one; move out of a field, or of a global, or out through a borrowed or a shared owning reference, refused | element granularity — moving `a[0]` deactivates all of `a`; conditional moves; loop-carried moves |
 | **Escape / lifetime** | representation in type check, enforcement here | storing a borrow into a longer-lived lval, by assignment or by either direction of a swap; returning a borrow of a local; a borrow arriving through a call's result, singly or as one of several values destructured into lvals, each carrying the narrowest argument borrow's scope; a `&mut &T` argument whose pointee would outlive another borrow passed with it; a borrow coerced to another reference type, whether widened to a base trait's reference or made a virtual reference | a borrow laundered through a variable; a borrow stored in a field or captured; distinguishing parameter lifetimes — there is no lifetime annotation syntax; freezing a borrow's source |
-| **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs and slices, and of drop-fn structs and enums, from a jump down to the block it names | arrays of owning references; a variable moved out, or initialized, on only one path — see Hazards |
+| **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs and slices, of drop-fn structs and enums, and of tuples and arrays holding what finalizes or owns, from a jump down to the block it names | an array an element was moved out of leaks the rest; a variable moved out, or initialized, on only one path — see Hazards |
 | **Permission** | `MayWrite` and `MayRead` | `ErrorNoMut` on assignment and swap; `ErrorNoRead` on a read through a reference — a dereference, an index, or a field of a virtual reference | `MayAliasWrite`, `RaceSafe`, `IsLockless` are populated and read nowhere |
 | **Initialization** | yes | `ErrorMove` "has not been initialized" | "initialized on one branch" reads as initialized everywhere; a variable never initialized may be borrowed, so a method taking it `&mut` can fill it, and nothing then stops a field it left unset being read through the borrow; the unused-variable warning in `flow.h`'s header does not exist |
 | **Array fill rules** | yes | `ErrorBadFill` for a repeated move value; `ErrorFillCount` for a non-constant count | — |
@@ -487,7 +496,10 @@ is what releases the old allocation.
   `VarInitialized` is the same kind of summary: once an assignment anywhere
   before the scope exit has set it, the exit releases the variable whether or
   not that assignment ran. On the path that skipped it, that frees storage that
-  never held a reference. Only a variable that is never assigned at all is
+  never held a reference, and finalizes storage that never held a value — for
+  every type with a death: a struct with a `final` or an owning field, an enum,
+  a tuple or an array of any of them (`mut t (Fin, i64); if c { t = make(); }`
+  runs `Fin`'s `final` over garbage when `c` is false). Only a variable that is never assigned at all is
   skipped. Releasing the right thing on each path needs a runtime drop flag per
   variable — the same mechanism a conditional move needs — and belongs with it.
 - **`flowIsLvalRead` is not `iexpIsLval`.** They disagree on recursion into
@@ -508,14 +520,14 @@ is what releases the old allocation.
 | `ir/stmt/module.c` | `modInitOf`, `modInitFlowBegin`, `modInitFlowEnd` | round a module's `init` only: its module's globals without a value start the pass uninitialized, as locals, so `init` assigns each once and reads none first; one never assigned is `ErrorGlobalUninit`. [module](../nodes/module.md), "Init and final" |
 | `ir/flow.c` | `flowLoadValue` | the walk's spine — tag dispatch for a value being read |
 | | `flowLoadThroughRef` | `MayRead` on the reference a value is read through; called from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` |
-| | `flowHandleMoveOrCopy` | move vs. alias, for a value going to a new holder |
+| | `flowHandleMoveOrCopy` | move vs. alias, for a value going to a new holder; a tuple literal's element by element |
 | | `flowHandleMove` | deactivate the source — each move-typed element's, for a tuple literal; for a block or an `if`, what every value it hands back moves out of; hollow a local sole owner moved out through; refuse a move out of a field (`flowRefuseMoveField`) or a global, or out through a borrowed or a shared owning reference |
 | | `flowOwningLocal`, `flowNewHollow` | the local owning reference a move reaches through; the `HollowNode` releasing a hollowed variable as it stands |
 | | `flowResultMove` | the same refusals for a returned value, deactivating nothing |
 | | `flowIsLvalRead` | the temporary-vs-lvalue test that makes counting correct |
-| | `flowInjectRefCountAmt` | wrap a counted reference, or a tuple carrying one, or a struct or enum whose drop releases one, in a `RefCountNode` |
-| | `flowIsRcRef`, `flowIsOwningType` | is this type counted; must a variable of this type be released |
-| | `flowHeldCounted`, `flowVariantHeldCounted`, `flowIsCountedField` | does a copy of this struct or enum add a holder to a counted reference its drop releases |
+| | `flowInjectRefCountAmt` | wrap a counted reference, or a struct, enum, tuple or array whose death releases one, in a `RefCountNode` |
+| | `flowIsRcRef`, `flowIsOwningType` | is this type counted; is it an owning reference, or a tuple of them, that a store releases |
+| | `flowHeldCounted`, `flowVariantHeldCounted` | does a copy of this struct, enum, tuple or array add a holder to a counted reference its death releases |
 | | `flowMatchBound` | the matched value a match's binding stands for, or NULL |
 | | `flowScopePush`, `flowScopePop`, `flowAddVar` | the variable stack |
 | | `flowScopeDealias` | build a scope's release list; skip an uninitialized, moved-out or handed-back variable; release a hollowed one hollow |

@@ -2359,78 +2359,59 @@ void structSetDropFn(StructNode *node) {
     // drop calls the two in turn, its own first
     FnDclNode *enumfinal = structEnumFinalOf(node);
 
-    // if any field requires drop logic, build a new drop function for struct
-    BlockNode *block = NULL;
-    INode *selfDcl = NULL;
-    for (int pos = enumfinal ? -1 : 0; pos < (int)node->fields.used; ++pos) {
-        // See whether field's type requires a finalizer. Position -1 is the
-        // enum's 'final', and begins the drop function on its own.
-        VarDclNode *fld = pos < 0 ? NULL : (VarDclNode*)nodelistGet(&node->fields, pos);
-        INode *flddrop = fld ? itypeGetDropFnDcl(fld->vtype) : NULL;
-        if (fld && flddrop == NULL)
-            continue;
-
-        // Before we can add field's drop logic to new drop function, let's make sure it exists
-        if (block == NULL) {
-            // Create function dcl for new type drop function
-            INode *selftype = newNameUseFromDclNode((INode*)node, (INode*)node);
-            INode *refselftype = (INode*)newRefNodeFull(RefTag, (INode*)node, (INode*)borrowRef, (INode*)uniPerm, selftype);
-            selfDcl = (INode*)newVarDclFull(selfName, VarDclTag, (INode*)refselftype, (INode*)immPerm, NULL);
-            FnSigNode *fnsig = newFnSigNode();
-            nodesAdd(&fnsig->parms, (INode*)selfDcl);
-            fnsig->rettype = (INode*)newVoidNode();
-            block = newBlockNode();
-            // Pub, because the value may be dropped wherever it travels: the
-            // symbol is reached from any module that holds one of these.
-            INode *newdropfn = (INode*)newFnDclNode(dropName, FlagMethFld | FlagPub, (INode*)fnsig, (INode*)block);
-            // Built lowered, so it carries the mark a check would have left, and
-            // the walk over this type's members (structCheckMembers) passes it by
-            newdropfn->flags |= TypeChecked;
-            // Owned by the type it drops, so its symbol is spelled after that
-            // type and stays unique among all the program's drop functions
-            nodelistAdd(&node->nodelist, newdropfn);
-            dclInfoJoin(newdropfn, (INode*)node);
-
-            // Block begins with call to struct's finalizer, if there is one
-            if (dropfn) {
-                FnCallNode *dropfncall = newFnCallLower((INode*)node, dropfn, 1);
-                INode *dropnameuse = (INode*)newNameUseFromDclNode(selfDcl, (INode*)node);
-                nodesAdd(&dropfncall->args, dropnameuse);
-                nodesAdd(&block->stmts, (INode*)dropfncall);
-            }
-            dropfn = newdropfn;
-        }
-
-        // Then the enum's 'final', over the same self
-        if (fld == NULL) {
-            FnCallNode *finalcall = newFnCallLower((INode*)node, (INode*)enumfinal, 1);
-            nodesAdd(&finalcall->args, (INode*)newNameUseFromDclNode(selfDcl, (INode*)node));
-            nodesAdd(&block->stmts, (INode*)finalcall);
-            continue;
-        }
-
-        // Add call to field's drop fn
-        FnCallNode *dropfncall = newFnCallLower((INode*)node, flddrop, 1);
-        INode *dropnameuse = (INode*)newNameUseFromDclNode(selfDcl, (INode*)node);
-        StarNode *deref = newStarNode(DerefTag);
-        deref->vtexp = dropnameuse;
-        FnCallNode *fldref = newFnCallLower((INode*)node, (INode*)deref, 0);
-        fldref->tag = FldAccessTag;
-        fldref->flags |= FlagBorrow;
-        fldref->methfld = newNameUseFromDclNode((INode*)fld, (INode*)node);
-        nodesAdd(&dropfncall->args, (INode*)fldref);
-        nodesAdd(&block->stmts, (INode*)dropfncall);
+    // Does any field have anything to do as it dies: a value with a drop, a
+    // tuple or an array holding one, an owning reference to release?
+    int fldsneed = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&node->fields, cnt, nodesp)) {
+        if (itypeNeedsFinal(((FieldDclNode*)*nodesp)->vtype))
+            fldsneed = 1;
     }
 
-    // If we have been building a drop function, end it with a return
-    if (block != NULL) {
-        BreakRetNode *retnode = newReturnNode();
-        retnode->exp = (INode*)newNilLitNode();
-        retnode->block = block;
-        nodesAdd(&block->stmts, (INode*)retnode);
+    // With nothing but its own 'final' to run, that 'final' is the drop
+    if (!fldsneed && enumfinal == NULL) {
+        node->dropfn = dropfn;
+        return;
     }
 
-    node->dropfn = dropfn;
+    // Otherwise the type is given a drop: the value's whole death in place, in
+    // the ruled order [Jon 26 Sep] -- its own 'final', the enum's 'final', each
+    // field that needs finalizing, then the owning references it holds. Only
+    // the two 'final' calls are built here, as its body; generation runs them
+    // and then builds the fields' deaths from the layout (genlStructDrop),
+    // since a field's death may be a tuple's or an array's, an owner's release,
+    // or reach through a nullable pointer, none of which Cone can spell.
+    INode *selftype = newNameUseFromDclNode((INode*)node, (INode*)node);
+    INode *refselftype = (INode*)newRefNodeFull(RefTag, (INode*)node, (INode*)borrowRef, (INode*)uniPerm, selftype);
+    INode *selfDcl = (INode*)newVarDclFull(selfName, VarDclTag, (INode*)refselftype, (INode*)immPerm, NULL);
+    FnSigNode *fnsig = newFnSigNode();
+    nodesAdd(&fnsig->parms, (INode*)selfDcl);
+    fnsig->rettype = (INode*)newVoidNode();
+    BlockNode *block = newBlockNode();
+    // Pub, because the value may be dropped wherever it travels: the
+    // symbol is reached from any module that holds one of these.
+    FnDclNode *newdropfn = newFnDclNode(dropName, FlagMethFld | FlagPub, (INode*)fnsig, (INode*)block);
+    inodeLexCopy((INode*)newdropfn, (INode*)node);
+    // Built lowered, so it carries the mark a check would have left, and
+    // the walk over this type's members (structCheckMembers) passes it by
+    newdropfn->flags |= TypeChecked;
+    // Owned by the type it drops, so its symbol is spelled after that
+    // type and stays unique among all the program's drop functions
+    nodelistAdd(&node->nodelist, (INode*)newdropfn);
+    dclInfoJoin((INode*)newdropfn, (INode*)node);
+
+    if (dropfn) {
+        FnCallNode *finalcall = newFnCallLower((INode*)node, dropfn, 1);
+        nodesAdd(&finalcall->args, (INode*)newNameUseFromDclNode(selfDcl, (INode*)node));
+        nodesAdd(&block->stmts, (INode*)finalcall);
+    }
+    if (enumfinal) {
+        FnCallNode *finalcall = newFnCallLower((INode*)node, (INode*)enumfinal, 1);
+        nodesAdd(&finalcall->args, (INode*)newNameUseFromDclNode(selfDcl, (INode*)node));
+        nodesAdd(&block->stmts, (INode*)finalcall);
+    }
+    node->dropfn = (INode*)newdropfn;
 }
 
 // Settle an enum's drop, once every one of its variants is laid out. A value
@@ -2475,14 +2456,14 @@ void structSetEnumDropFn(StructNode *node) {
     node->dropfn = (INode*)dropfn;
 }
 
-// Is this the drop an enum is given (structSetEnumDropFn), whose body generation
-// builds rather than lowers?
-int structIsEnumDropFn(INode *fn) {
-    if (fn->tag != FnDclTag)
+// Is this a drop the compiler gave a type -- an enum's (structSetEnumDropFn) or
+// a struct's (structSetDropFn) -- whose body generation builds from the layout,
+// rather than a type's own 'final' standing as its drop?
+int structIsGeneratedDropFn(INode *fn) {
+    if (fn->tag != FnDclTag || ((FnDclNode*)fn)->namesym != dropName)
         return 0;
     INode *owner = ((FnDclNode*)fn)->dclinfo.owner;
-    return owner && owner->tag == StructTag && (owner->flags & EnumType)
-        && ((StructNode*)owner)->dropfn == fn;
+    return owner && owner->tag == StructTag && ((StructNode*)owner)->dropfn == fn;
 }
 
 // Settle the discriminant's width, and refuse a tag value the enum's own integer
