@@ -1,0 +1,44 @@
+// An '@intrinsic' declaration is checked against the compiler's registry, which
+// defines each intrinsic's meaning and so its signature: a name the registry
+// does not define is refused, and so is a declaration of a defined name that
+// says something else -- other type parameters, other parameters, another
+// result, a default value, or a body where the registry gives it no fallback.
+// A correct declaration raises nothing, with or without the fallback body its
+// entry allows: packages/core declares every intrinsic, and every scenario that
+// does not stand in for core compiles those declarations.
+//
+// This module is named 'core', which is the one place '@intrinsic' is allowed,
+// and it is compiled against an empty core package (see cases.toml) so that the
+// registry's own names are free to declare here.
+
+mod core;
+
+// A name the registry does not define, even one letter off
+fn @intrinsic sizeOf[T]() usize;                     //~ ErrorIntrinsicName "no intrinsic named sizeOf"
+
+// The type parameters
+fn @intrinsic alignof() usize;                       //~ ErrorIntrinsicSig "'fn @intrinsic alignof[T]() usize'"
+fn @intrinsic needsFinal[T, U]() Bool;               //~ ErrorIntrinsicSig "'fn @intrinsic needsFinal[T]() Bool'"
+
+// The parameters: a borrowed reference is not a raw pointer, one is missing,
+// usize is not u32, and a default value would let a call leave one out
+fn @intrinsic finalize[T](p &T);                     //~ ErrorIntrinsicSig "'fn @intrinsic finalize[T](p *T)'"
+fn @intrinsic writeRaw[T](p *T);                     //~ ErrorIntrinsicSig "'fn @intrinsic writeRaw[T](p *T, value T)'"
+fn @intrinsic sliceFromPartsMut[T](p *T, len u32) &[]mut T;   //~ ErrorIntrinsicSig "sliceFromPartsMut[T](p *T, len usize) &[]mut T"
+fn @intrinsic moveRaw[T](to *T, from *T, count usize = 1usize); //~ ErrorIntrinsicSig "moveRaw[T](to *T, from *T, count usize)"
+
+// The result: a pointer is not the value, and a writable slice is not the
+// read-only one
+fn @intrinsic readRaw[T](p *T) *T;                   //~ ErrorIntrinsicSig "'fn @intrinsic readRaw[T](p *T) T'"
+fn @intrinsic sliceFromParts[T](p *T, len usize) &[]mut T;    //~ ErrorIntrinsicSig "sliceFromParts[T](p *T, len usize) &[]T"
+
+// A body for an intrinsic that has no fallback: nothing in Cone can say how
+// large a type is
+fn @intrinsic sizeof[T]() usize {                    //~ ErrorIntrinsicBody "sizeof has no fallback body"
+  8usize;
+}
+
+// Not a function of the module: a type's method is refused wherever it is
+struct Holder {
+  fn @intrinsic sizeof[T]() usize;                   //~ ErrorIntrinsicPlace:3 "the core package's own module"
+}

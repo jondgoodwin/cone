@@ -565,6 +565,7 @@ on a module the prefix its C names carry, on a function its whole symbol.
 | `DclInitPure` | function only: `@initpure`, one a module's `init` may call; recorded, not yet checked | the parser, from `fn @initpure`; kept when the declaration joins its owner |
 | `DclLifecycle` | function only: a module's `init`, its `final`, or the `drop` it is given — what the program's stitched init and final call | type check (`modLifecycle`); read only by a library compile, which exports it whatever its visibility |
 | `DclIncluded` | type only: declared by the package's generated include file, so an importer holds values of it — through a field or a signature — whether or not it can name it | the include-file generator (`incFileGenerate`), before code generation; read only by a library compile, which exports the type's functions as it would a public type's (L5) |
+| `DclIntrinsic` | function only: `@intrinsic`, one whose meaning the compiler's registry supplies; it never has a symbol, and the include file keeps it whole | the parser, from `fn @intrinsic`; kept when the declaration joins its owner; checked by name resolution (`intrinsicDclNameRes`) |
 
 **Owner is set where a declaration joins a namespace**: `modAddNode` for a
 module's declarations and `iNsTypeAddFn` for a type's methods. That placement

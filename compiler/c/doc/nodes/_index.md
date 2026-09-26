@@ -123,7 +123,9 @@ the struct:
 method such as integer `+` is **not** written in Cone text: `corenumber.c` calls
 `iNsTypeAddFn` with a `newIntrinsicNode`. Only the region and option types are
 Cone source, and they are not in `corelib/` at all but in the core package,
-`packages/core/src/core.cone`.
+`packages/core/src/core.cone`. So are the intrinsics declared with `@intrinsic`
+(`sizeof`, `finalize` …), whose meaning is the registry's in
+`ir/stmt/intrinsic.c`: [intrinsic](intrinsic.md).
 
 ## 2. The header every node carries
 
@@ -310,6 +312,7 @@ phase notes for mechanism rather than restating it:
 | `ir/exp/if.c` | [if](if.md) | a flat alternating list, an identity-compared sentinel, and `match` lowered into it |
 | `ir/exp/literal.c`, `arraylit.c`, `typelit.c` | [literals](literals.md) | the array node is also the array type; the type literal is also a call |
 | `ir/meta/generic.c`, `macro.c`, `ir/clone.c` | [generic](generic.md) | no node of its own; cloning stands in for name resolution |
+| `ir/stmt/intrinsic.c` | [intrinsic](intrinsic.md) | two kinds on one node: those built in C, decided by an LLVM type, and those declared in core, decided by a registry in Cone terms |
 
 ## 8. FnOverloadDcl
 

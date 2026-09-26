@@ -228,7 +228,7 @@ Most real work crosses phases. Start here instead.
 | find out what the compiler is actually doing | [Measuring](../../compiler/c/doc/diagnostics/measuring.md) — probes, `--ir`, `--llvmir`, `--checktree` |
 | add or change a diagnostic | [Error Codes](../../compiler/c/doc/diagnostics/error-codes.md) |
 | add or update test coverage | [Test Suite](../../compiler/c/doc/diagnostics/test-suite.md) |
-| find a built-in type, operator method, or intrinsic | `corelib/` — see the family map in [IR Nodes](../../compiler/c/doc/nodes/_index.md); `Option`, `Result`, `so` and `rc` are Cone source in `packages/core/src/core.cone` |
+| find a built-in type, operator method, or intrinsic | `corelib/` — see the family map in [IR Nodes](../../compiler/c/doc/nodes/_index.md); `Option`, `Result`, `so` and `rc` are Cone source in `packages/core/src/core.cone`, and so are the intrinsics declared with `@intrinsic`, whose registry is `ir/stmt/intrinsic.c` ([intrinsic](../../compiler/c/doc/nodes/intrinsic.md)) |
 | find `core` or `stdio`, or change where packages are found | `packages/` at the repository's root — [Module](../../compiler/c/doc/nodes/module.md), "The packages folder" |
 
 ## By language feature
@@ -249,7 +249,7 @@ design behind it.
 | **References, permissions, regions** | `refrefs` · `refptr` · `refborref` · `refperm` · `refpermlock` · `refweakref` · `refarrayref` · `refallocref` · `refalloccust` · `refregionglo` · `refmove` · `reflifefn` | [references](../../compiler/c/doc/nodes/references.md) · [References and Regions](references-and-regions.md) · [Flow Analysis](../../compiler/c/doc/phases/flow.md) |
 | **Lifetime and construction** | `refinitdrop` · `reftypemanage` | [Flow Analysis](../../compiler/c/doc/phases/flow.md) · [vardcl](../../compiler/c/doc/nodes/vardcl.md) |
 | **Modules and packages** | `refmodule` · `refinclude` | [module](../../compiler/c/doc/nodes/module.md) |
-| **Safety and trust** | `refsafety` · `reftypesafe` · `reftrust` | [Safety](safety.md) |
+| **Safety and trust** | `refsafety` · `reftypesafe` · `reftrust` · `refintrinsic` | [Safety](safety.md) · [intrinsic](../../compiler/c/doc/nodes/intrinsic.md) |
 | **Error handling** | `refexcept` · `refoption` · `refresult` | ⚠ **no note** |
 | **Metaprogramming** | `refmacro` · `refmeta` | [generic](../../compiler/c/doc/nodes/generic.md) |
 | **Concurrency** | `refconc` · `refconccomm` · `refconcio` · `refcorout` | ⚠ **no note; no thread layer exists** |

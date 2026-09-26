@@ -1,0 +1,200 @@
+<html>
+  <head>
+	  <title>Intrinsics - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Intrinsics</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: Everything on this page is implemented,
+		except that no call is yet required to be inside <a href="reftrust.html">trust</a>,
+		because trust itself is not implemented.</i></p>
+
+	<p>Library code sometimes needs something only the compiler can do: say how large
+		a type is, run a value's finalizer where it sits, or make a slice from a pointer
+		and a count. An <b>intrinsic</b> is how Cone hands such a capability to library
+		code. It looks like a function, and is called like one, but the compiler supplies
+		what it does, expanding it where it is called.</p>
+
+	<p>Each intrinsic is defined by what it means in Cone, stated below with every edge
+		case: never as "whatever the code generator's instruction does". A code
+		generator is one way to implement that meaning. This is what lets an intrinsic
+		mean the same thing on any back end.</p>
+
+	<h2>Declaring an intrinsic</h2>
+
+	<p>An intrinsic is declared with the <span class="pre">@intrinsic</span> attribute
+		after <span class="pre">fn</span>, and an ordinary Cone signature:</p>
+<pre>
+pub fn @intrinsic sizeof[T]() usize;
+</pre>
+	<p>Only the <span class="pre">core</span> package may declare one, in its own module
+		(not in a type or a submodule). Anywhere else, <span class="pre">@intrinsic</span>
+		is an error. Other packages call the intrinsics core declares <span class="pre">pub</span>,
+		which, core being every module's prelude, are names every module reaches.
+		A module may not declare a function of the same name as one of them.</p>
+
+	<p>The compiler keeps a registry of the intrinsics it defines. A declaration must
+		name one of them, and must say exactly what the registry says: the same type
+		parameters, parameters and result. An unknown name or a different signature is
+		an error. An intrinsic has no symbol of its own, so it may not be
+		<span class="pre">extern</span>, carry <span class="pre">@c</span>, or have a
+		reference to it borrowed.</p>
+
+	<p>A type argument must be of the kind the intrinsic accepts. Every intrinsic
+		below needs a type with a size: one declared <span class="pre">@opaque</span>,
+		for example, is refused where the intrinsic is instantiated for it.</p>
+
+	<h3>Fallback bodies</h3>
+
+	<p>Where the registry allows it, the declaration may give a body written in Cone:</p>
+<pre>
+pub fn @intrinsic readRaw[T](p *T) T {*p;}
+</pre>
+	<p>The body is the <b>fallback</b>: a back end with no implementation of its own
+		for the intrinsic runs it instead, expanded at each call as an inline function
+		would be. It must mean exactly what the intrinsic means. An intrinsic that
+		nothing written in Cone can express, such as <span class="pre">sizeof</span>,
+		has no fallback, and a body for it is an error. The compiler's
+		<span class="pre">--intrinsic-fallback</span> option runs every fallback body in
+		place of the compiler's own implementation, so that the two can be tested to
+		agree.</p>
+
+	<p>Today's LLVM back end implements every intrinsic itself. Those with a fallback
+		body are <span class="pre">readRaw</span> and <span class="pre">moveRaw</span>.</p>
+
+	<h2>The intrinsics</h2>
+
+	<p>Several intrinsics take a raw pointer and trust the caller's promise about it.
+		Misused, they break memory safety in ways the compiler cannot see, so a call to
+		one belongs inside <span class="pre">trust</span>. That is marked below as
+		"needs trust" (not yet enforced).</p>
+
+	<h3>sizeof</h3>
+<pre>
+fn @intrinsic sizeof[T]() usize
+</pre>
+	<p>The number of bytes from one <span class="pre">T</span> to the next in an array:
+		its size, including the padding at its end that keeps the next one aligned.
+		<span class="pre">sizeof[T]() * n</span> is the memory <span class="pre">n</span>
+		values need. A struct with no fields has size 0. The answer is a constant for
+		the target: no code runs to compute it. It is not yet usable where the compiler
+		itself needs a number, such as an array's length, because the compiler asks the
+		target's layout for it when it generates code. No fallback.</p>
+
+	<h3>alignof</h3>
+<pre>
+fn @intrinsic alignof[T]() usize
+</pre>
+	<p>The alignment in bytes the target requires of a <span class="pre">T</span> in
+		memory: always a power of two, at least 1, and <span class="pre">sizeof[T]()</span>
+		is always a multiple of it. A struct's alignment is its strictest field's. A
+		constant for the target, as <span class="pre">sizeof</span> is. No fallback.</p>
+
+	<h3>needsFinal</h3>
+<pre>
+fn @intrinsic needsFinal[T]() Bool
+</pre>
+	<p>Whether <span class="pre">finalize[T]</span> does anything: true when
+		<span class="pre">T</span> is an owning reference (or a tuple holding one), has a
+		<span class="pre">final</span> method, has a field whose type needs finalizing, or
+		has a field holding an owning reference. False for numbers, raw pointers,
+		borrowed references, and structs of them. A constant. It lets a collection skip
+		the loop over its elements when there is nothing to do. No fallback.</p>
+
+	<h3>finalize</h3>
+<pre>
+fn @intrinsic finalize[T](p *T)
+</pre>
+	<p>Runs the death of the <span class="pre">T</span> at <span class="pre">p</span>
+		where it sits, exactly as a region-held value of type <span class="pre">T</span>
+		dies, except that its memory is not given back: first <span class="pre">T</span>'s
+		own <span class="pre">final</span>, if it has one; then each field's finalizer, in
+		field order; then each owning reference its fields hold is released (which may
+		finalize and free what that reference points at). If <span class="pre">T</span> is
+		itself an owning reference, that reference is released: one owner goes away, and
+		if it was the last, the value it points at dies. For a type with nothing to
+		finalize (<span class="pre">needsFinal[T]()</span> is false) it does nothing.
+		Owning references held inside a field's own fields are not released, as a
+		region-held value's death does not release them either.</p>
+	<p>Needs trust: <span class="pre">p</span> must point at a live, initialized
+		<span class="pre">T</span>, aligned for it. Afterwards that <span class="pre">T</span>
+		is dead: reading it as a <span class="pre">T</span> or finalizing it again is a
+		program error the compiler cannot detect. No fallback: the finalizer the compiler
+		builds for <span class="pre">T</span> is the implementation.</p>
+
+	<h3>sliceFromParts and sliceFromPartsMut</h3>
+<pre>
+fn @intrinsic sliceFromParts[T](p *T, len usize) &amp;[]T
+fn @intrinsic sliceFromPartsMut[T](p *T, len usize) &amp;[]mut T
+</pre>
+	<p>A borrowed slice of the <span class="pre">len</span> consecutive
+		<span class="pre">T</span> values starting at <span class="pre">p</span>: read-only
+		from <span class="pre">sliceFromParts</span>, writable from
+		<span class="pre">sliceFromPartsMut</span>. A <span class="pre">len</span> of 0
+		gives an empty slice, whatever <span class="pre">p</span> is.</p>
+	<p>Needs trust: the <span class="pre">len</span> values must be initialized, lie in
+		one allocation, and stay there, unmoved and unfreed, for as long as the slice is
+		used, which the compiler cannot see. A writable slice must be the only way
+		those values are reached while it is used. No fallback.</p>
+
+	<h3>readRaw</h3>
+<pre>
+fn @intrinsic readRaw[T](p *T) T
+</pre>
+	<p>Moves the <span class="pre">T</span> at <span class="pre">p</span> out and returns
+		it: the value is the caller's now, and the slot is left dead. Nothing at the slot
+		is finalized, and <span class="pre">p</span> may be used again (for another slot,
+		or to write this one). This differs from <span class="pre">*p</span>, which, for a
+		move type, marks the variable <span class="pre">p</span> itself as moved.</p>
+	<p>Needs trust: <span class="pre">p</span> must point at a live, initialized
+		<span class="pre">T</span>. Reading the same live value twice gives two owners of
+		it, and it dies twice. Fallback: <span class="pre">{*p;}</span>.</p>
+
+	<h3>writeRaw</h3>
+<pre>
+fn @intrinsic writeRaw[T](p *T, value T)
+</pre>
+	<p>Moves <span class="pre">value</span> into the slot at <span class="pre">p</span>,
+		which is treated as holding nothing: whatever was there is neither finalized nor
+		released. This is how a value goes into memory that has just been allocated.
+		<span class="pre">*p = value</span> is not the same: storing an owning reference
+		that way releases the reference the slot is taken to hold, which in
+		uninitialized memory is whatever bytes are there.</p>
+	<p>Needs trust: <span class="pre">p</span> must be aligned for
+		<span class="pre">T</span> and point into memory the caller may write. If the slot
+		held a live value, that value is simply forgotten, never finalized. No fallback:
+		nothing written in Cone stores without releasing.</p>
+
+	<h3>moveRaw</h3>
+<pre>
+fn @intrinsic moveRaw[T](to *T, from *T, count usize)
+</pre>
+	<p>Moves <span class="pre">count</span> consecutive values from
+		<span class="pre">from</span> to <span class="pre">to</span>, as if each were read
+		with <span class="pre">readRaw</span> and written with <span class="pre">writeRaw</span>.
+		The two ranges may overlap, and the result is as if every value were read before
+		any was written. Nothing is finalized: the values now live at
+		<span class="pre">to</span>, and the slots of <span class="pre">from</span> that
+		<span class="pre">to</span> does not cover are dead. A <span class="pre">count</span>
+		of 0 does nothing.</p>
+	<p>Needs trust: both ranges must lie in memory the caller may use, and the values
+		at <span class="pre">from</span> must be live. Fallback: a loop of
+		<span class="pre">readRaw</span> and <span class="pre">writeRaw</span>, running
+		upward when <span class="pre">to</span> is below <span class="pre">from</span> and
+		downward otherwise. The LLVM back end does it as one block move.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="reftoken.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

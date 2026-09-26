@@ -1,0 +1,112 @@
+# intrinsic - functions the compiler supplies, declared in core with
+# '@intrinsic' and defined by the compiler's registry. Tier 2.
+#
+# Key reference: compiler/c/doc/diagnostics/test-suite.md, "cases.toml keys".
+# The group directory supplies the feature tag, so tags carry pipeline phases.
+# The chapter is doc/reference/refintrinsic.html; each intrinsic's meaning and
+# edge cases are stated there, and intrinsic_success pins them.
+#
+# '@intrinsic' is allowed only in the core package's own module, so the
+# scenarios about the declaration itself -- intrinsic_parse_form and
+# intrinsic_nameres_registry -- are modules named 'core'. They are compiled
+# against intrinsicpkgs, a core package with nothing in it found through
+# '--path' ahead of the real one: as every module's prelude, the real core
+# already holds the registry's names, and a module may not declare a name its
+# prelude has (ErrorDupName).
+#
+# Left out deliberately:
+#
+# - An intrinsic with no lowering on this back end, which needs a fallback body
+#   (the second ErrorIntrinsicBody message). Every intrinsic in the registry has
+#   an LLVM lowering, so nothing can provoke it.
+# - 'trust'. The registry marks which intrinsics a call can break memory safety
+#   with, and a call to one belongs inside 'trust', but 'trust' does not exist
+#   (safety group, cases.toml), so a call outside it cannot be refused yet.
+# - A non-generic intrinsic. The registry has none, so a registry name declared
+#   without type parameters is only ever a signature mismatch.
+
+support = ["intrinsicpkgs"]
+
+# -------- success --------
+
+# One .out for two runs: the lowering and the Cone fallback bodies agree
+[scenario.intrinsic_success]
+category = "run"
+description = "sizeof, alignof, needsFinal, finalize, sliceFromParts(Mut), readRaw, writeRaw and moveRaw on a range of types, lowered and through their fallback bodies"
+tags = ["nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.intrinsic_success.run]]
+name = "lowered"
+options = []
+
+[[scenario.intrinsic_success.run]]
+name = "fallback"
+options = ["--intrinsic-fallback"]
+
+# -------- generation --------
+
+[scenario.intrinsic_genllvm_lowering]
+category = "compile"
+description = "Every intrinsic is expanded where it is called: no function or call of its own, a size a constant, moveRaw one block move"
+tags = ["genllvm"]
+
+[[scenario.intrinsic_genllvm_lowering.check]]
+name = "each-intrinsic-is-expanded-at-its-call"
+target = "preir"
+contains = [
+  "call i8* @malloc(i64 72)",
+  "call void @llvm.memmove",
+  "%rawread = load %Pad",
+  "%slice = insertvalue",
+  "store i1 false, i1* %f",
+]
+excludes = ["sizeof", "alignof", "needsFinal", "finalize", "sliceFromParts", "readRaw", "writeRaw", "moveRaw"]
+
+[scenario.intrinsic_genllvm_fallback]
+category = "compile"
+description = "With --intrinsic-fallback, moveRaw and readRaw run their Cone bodies in place, and writeRaw, which has none, keeps its lowering"
+tags = ["genllvm"]
+
+[[scenario.intrinsic_genllvm_fallback.run]]
+name = "fallback"
+options = ["--intrinsic-fallback"]
+
+[[scenario.intrinsic_genllvm_fallback.check]]
+name = "a-fallback-body-replaces-the-lowering"
+target = "preir"
+contains = ["icmp ult i64* %to", "%deref = load i64", "store i64 1, i64* %p1"]
+excludes = ["llvm.memmove", "rawread", "moveRaw", "readRaw", "writeRaw"]
+
+# -------- parse stage --------
+
+[scenario.intrinsic_parse_form]
+category = "reject"
+description = "'@intrinsic' beside 'extern' or '@c', which speak of a symbol an intrinsic never has"
+tags = ["parse"]
+
+[[scenario.intrinsic_parse_form.run]]
+name = "empty-core"
+options = ["--path=test/cases/intrinsic/intrinsicpkgs"]
+
+# -------- name resolution stage --------
+
+[scenario.intrinsic_nameres_registry]
+category = "reject"
+description = "An '@intrinsic' declaration the registry refuses: an unknown name, another signature, a default value, a body with no fallback, a type's method"
+tags = ["nameres"]
+
+[[scenario.intrinsic_nameres_registry.run]]
+name = "empty-core"
+options = ["--path=test/cases/intrinsic/intrinsicpkgs"]
+
+[scenario.intrinsic_nameres_place]
+category = "reject"
+description = "'@intrinsic' outside the core package's own module: in another module, and on a type's method"
+tags = ["nameres"]
+
+# -------- type check stage --------
+
+[scenario.intrinsic_typecheck_class]
+category = "reject"
+description = "An intrinsic instantiated at a type with no size, and a borrowed reference to an intrinsic"
+tags = ["typecheck"]

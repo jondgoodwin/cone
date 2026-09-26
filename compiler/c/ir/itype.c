@@ -570,3 +570,24 @@ INode *itypeGetDropFnDcl(INode *typenode) {
         return NULL;
     }
 }
+
+// Whether a value of this type has anything to do when it dies in place: it is
+// an owning reference (or a tuple holding one) to release, or its type has a
+// drop function (its 'final', then each field's), or it is a struct with a
+// field holding an owning reference. This is what the 'finalize' intrinsic does
+// (genlFinalizeAt), and what 'needsFinal' answers, in Cone's terms.
+int itypeNeedsFinal(INode *typenode) {
+    if (flowIsOwningType(typenode) || itypeGetDropFnDcl(typenode) != NULL)
+        return 1;
+    INode *type = itypeGetTypeDcl(typenode);
+    if (type->tag != StructTag)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&((StructNode*)type)->fields, cnt, nodesp)) {
+        INode *fldtype = itypeGetTypeDcl(((FieldDclNode *)*nodesp)->vtype);
+        if (fldtype->tag == RefTag && regionIsOwning(((RefNode *)fldtype)->region))
+            return 1;
+    }
+    return 0;
+}

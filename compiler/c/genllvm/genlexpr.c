@@ -195,6 +195,59 @@ static LLVMValueRef genlVtableForTag(GenState *gen, Vtable *vtable, StructNode *
     return chosen;
 }
 
+// Expand a call to an intrinsic declared in core with '@intrinsic'. What each
+// one means is the registry's (ir/stmt/intrinsic.c) and the reference manual's
+// (refintrinsic.html); this is LLVM's implementation of it. The type it acts on
+// is the Cone type the instance carries, 'typearg', never an argument's LLVM
+// type. Answers NULL for one that gives no value.
+static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMValueRef *fnargs) {
+    IntrinsicNode *intrinsic = (IntrinsicNode *)fndcl->value;
+    INode *type = intrinsic->typearg;
+    switch (intrinsic->intrinsicFn) {
+    // Constants for the target, from the type alone
+    case SizeofIntrinsic:
+        return genlSizeof(gen, type);
+    case AlignofIntrinsic:
+        return genlAlignof(gen, type);
+    case NeedsFinalIntrinsic:
+        return LLVMConstInt(genlType(gen, (INode*)boolType), itypeNeedsFinal(type), 0);
+
+    // The death of the value at the pointer, in place
+    case FinalizeIntrinsic:
+        genlFinalizeAt(gen, fnargs[0], type);
+        return NULL;
+
+    // A slice is the {pointer, length} pair; the pointer is the first element's
+    case SliceFromPartsIntrinsic:
+    case SliceFromPartsMutIntrinsic: {
+        LLVMTypeRef slicetype = genlType(gen, ((FnSigNode *)fndcl->vtype)->rettype);
+        LLVMValueRef slice = LLVMGetUndef(slicetype);
+        slice = LLVMBuildInsertValue(gen->builder, slice, fnargs[0], 0, "sliceptr");
+        return LLVMBuildInsertValue(gen->builder, slice, fnargs[1], 1, "slice");
+    }
+
+    // A load and a store that leave ownership to the caller: nothing at the
+    // slot is finalized or released, and the value read is the caller's
+    case ReadRawIntrinsic:
+        return LLVMBuildLoad(gen->builder, fnargs[0], "rawread");
+    case WriteRawIntrinsic:
+        LLVMBuildStore(gen->builder, fnargs[1], fnargs[0]);
+        return NULL;
+
+    // A block move of 'count' values, the two ranges free to overlap
+    case MoveRawIntrinsic: {
+        unsigned align = LLVMABIAlignmentOfType(gen->datalayout, genlType(gen, type));
+        LLVMValueRef bytes = LLVMBuildMul(gen->builder, fnargs[2], genlSizeof(gen, type), "movebytes");
+        LLVMBuildMemMove(gen->builder, fnargs[0], align, fnargs[1], align, bytes);
+        return NULL;
+    }
+
+    default:
+        errorExit(ExitGen, "Internal error: no generation for declared intrinsic %d", (int)intrinsic->intrinsicFn);
+        return NULL;
+    }
+}
+
 LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint32_t fnargcnt, LLVMValueRef *fnargs) {
 
     // Handle call when we have a derefed pointer to a function
@@ -263,6 +316,12 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
         break;
     }
     case IntrinsicTag: {
+        // One declared in Cone is decided by its Cone type, not by an argument
+        if (intrinsicIsDeclared(fndcl)) {
+            fncallret = genlDeclaredIntrinsic(gen, fndcl, fnargs);
+            break;
+        }
+
         // The program's stitched init and final take no argument: each is a
         // call to the function this object builds for it
         int16_t stitched = ((IntrinsicNode *)fndcl->value)->intrinsicFn;

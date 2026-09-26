@@ -116,6 +116,8 @@ void inodePrintNode(INode *node) {
         fnCallPrint((FnCallNode *)node); break;
     case SizeofTag:
         sizeofPrint((SizeofNode *)node); break;
+    case IntrinsicTag:
+        intrinsicPrint((IntrinsicNode *)node); break;
     case CastTag:  case IsTag:
         castPrint((CastNode *)node); break;
     case DerefTag:

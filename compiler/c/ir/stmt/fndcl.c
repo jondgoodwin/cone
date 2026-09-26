@@ -129,12 +129,14 @@ void fnOverloadDclPrint(FnOverloadDclNode *node) {
 }
 
 // Whether an importer expands this function's body in its own object rather than
-// calling a symbol: an inline or generic function, a trait's default (cloned
+// calling a symbol: an inline or generic function, an intrinsic (whose meaning,
+// or fallback body, is expanded at each call), a trait's default (cloned
 // into each implementer), a module trait's default (cloned into each conforming
 // module), and any method of a generic type (cloned into each instance).
 // 'typenode' is the type or module trait whose braces declare it, or NULL.
 int fnDclIsExpanded(FnDclNode *fndclnode, INode *typenode) {
-    if ((fndclnode->flags & FlagInline) || fndclnode->genericinfo)
+    if ((fndclnode->flags & FlagInline) || fndclnode->genericinfo
+        || (fndclnode->dclinfo.facts & DclIntrinsic))
         return 1;
     if (typenode && typenode->tag == ModTraitTag)
         return 1;
@@ -187,6 +189,11 @@ void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
         nstate->scope = oldscope;
     }
 
+    // An intrinsic is checked against the registry once its types are bound,
+    // and given its meaning or its fallback body
+    if (fndclnode->dclinfo.facts & DclIntrinsic)
+        intrinsicDclNameRes(fndclnode);
+
     nametblHookPop();
     nstate->expander = svexpander;
 }
@@ -236,6 +243,13 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // declaration alone and not about whatever failed elsewhere.
     if (errors != errorsOnEntry)
         return;
+
+    // A declared intrinsic has no body to check: its meaning is the registry's,
+    // and what is left to check is the type it was instantiated for
+    if (intrinsicIsDeclared(fnnode)) {
+        intrinsicDclTypeCheck(pstate, fnnode);
+        return;
+    }
 
     // No need to type check function body if no body or is a default method of a
     // trait, or a module trait's default: each is checked in the copy its

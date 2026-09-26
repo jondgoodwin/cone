@@ -68,6 +68,8 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         node = cloneNamedValNode(cstate, (NamedValNode *)nodep); break;
     case SizeofTag:
         node = cloneSizeofNode(cstate, (SizeofNode *)nodep); break;
+    case IntrinsicTag:
+        node = cloneIntrinsicNode(cstate, (IntrinsicNode *)nodep); break;
     case VTupleTag:
         node = cloneTupleNode(cstate, (TupleNode *)nodep); break;
     case NilLitTag:
