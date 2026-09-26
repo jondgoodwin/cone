@@ -93,7 +93,8 @@ pub fn @intrinsic readRaw[T](p *T) T {*p;}
 	<h2>The intrinsics</h2>
 
 	<p>Each is declared in core's <span class="pre">mem</span> and called as
-		<span class="pre">mem.<i>name</i>[T](...)</span>. Where an argument is a pointer to
+		<span class="pre">mem.<i>name</i>[T](...)</span> (<span class="pre">traceRoots</span>,
+		which takes no type, as <span class="pre">mem.traceRoots(...)</span>). Where an argument is a pointer to
 		<span class="pre">T</span> or a <span class="pre">T</span>, the type argument may be left
 		for the call to <a href="refgeneric.html">infer</a>:
 		<span class="pre">mem.finalize(p)</span> for a <span class="pre">p *Point</span>.
@@ -128,13 +129,16 @@ fn @intrinsic alignof[T]() usize
 fn @intrinsic needsFinal[T]() Bool
 </pre>
 	<p>Whether <span class="pre">finalize[T]</span> does anything: true when
-		<span class="pre">T</span> is an owning reference, has a
+		<span class="pre">T</span> is an owning reference whose release does something
+		(its region declares <span class="pre">dealias</span>, or is
+		<span class="pre">Move</span>), has a
 		<span class="pre">final</span> method, has a field whose type needs finalizing
-		(an owning reference among them), is a tuple or an array whose element type
+		(such an owning reference among them), is a tuple or an array whose element type
 		does, or is an enum one of whose variants does:
 		true for <span class="pre">Option[String]</span>, false for
 		<span class="pre">Option[i32]</span>. False for numbers, raw pointers,
-		borrowed references, and structs of them. A constant. It lets a collection skip
+		borrowed references, references into a region whose owners' going does nothing
+		(a traced region's, whose collector frees its values), and structs of them. A constant. It lets a collection skip
 		the loop over its elements when there is nothing to do. No fallback.</p>
 
 	<h3>finalize</h3>
@@ -231,6 +235,31 @@ fn @intrinsic trace[T](p *T, mode u32)
 	<p>Needs trust: <span class="pre">p</span> must point at a live, initialized
 		<span class="pre">T</span>. No fallback: the walk the compiler builds for
 		<span class="pre">T</span> is the implementation.</p>
+
+	<h3>traceRoots</h3>
+<pre>
+fn @intrinsic traceRoots(mode u32)
+</pre>
+	<p>Hands every traced reference the running functions hold on the stack to its
+		region's <span class="pre">mark</span>, as <span class="pre">trace</span> hands
+		those a value holds, with the same <span class="pre">mode</span>: what a collector
+		starts its marking from. The one intrinsic with no type parameter. The stack's traced
+		references are every local and parameter whose type holds one (a reference into a
+		traced region, or a struct, tuple, array or enum holding one where it sits), in every
+		function that has not yet returned, and every temporary such a function is making:
+		an allocation's result, a call's result, and a value read through a reference or
+		made from a raw pointer, each kept until the same expression runs again or its
+		function returns. So a reference that is only an argument being gathered for a call
+		is found while an earlier argument's call runs, and the value of a traced allocation,
+		made before its region's <span class="pre">alloc</span> is called, is found while
+		<span class="pre">alloc</span> runs. A borrowed reference is not traced: what it
+		borrows from is held by its owner, which is. Where more than one of them holds a
+		reference, <span class="pre">mark</span> is called for each. A function holding no
+		traced reference costs nothing and is passed over; a value reached only through
+		another object is not a root.</p>
+	<p>No fallback: the frames the compiler links in each function holding traced
+		references are the implementation, walked by the C library the compiler links
+		with.</p>
 
 	<h3>sliceFromParts and sliceFromPartsMut</h3>
 <pre>

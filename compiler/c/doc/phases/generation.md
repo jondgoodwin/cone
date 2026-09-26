@@ -41,7 +41,9 @@ a description of the present arrangement.**
 4. **Generation decides nothing about memory.** Every release, count adjustment
    and drop call was injected by flow analysis; generation replays the lists. ▸
    **Forbids** this phase reasoning about ownership at all — a double-release bug
-   is a flow bug, and searching for it here wastes the search.
+   is a flow bug, and searching for it here wastes the search. What it adds of
+   its own is the roots of traced references (section 3, "Roots"), which are a
+   fact of where a value sits on the stack, not of who owns it.
 5. **Every definition is separately discardable.** Each leads a COMDAT of its
    own, so the linker decides at symbol granularity rather than object-file
    granularity. ▸ **Settles** the one-object-file-per-package model: coarse
@@ -153,7 +155,7 @@ every declaration given a global so far, and one of them gives way:
 | both external, both defined here | `ErrorCNameDefTwice` |
 | the newcomer only declares it | it shares the holder's global, and its own is deleted |
 | the newcomer defines it, the holder only declares it | the definition takes over: every use of the declaration and every node pointing at it is moved to the definition's global, the declaration is deleted, and the definition takes the name. So the linkage, calling convention, storage class and debug subprogram are the definition's whichever is generated first, and `genlFn` or `genlGloVar` attaches the body or the value to that one global |
-| the holder is an external symbol the compiler declared itself | an LLVM intrinsic it calls by name (`llvm.trap`, `genlPanic`): a function declaration shares it, cast to its own type where they differ. Anything else is `ErrorCNameConflict`. The compiler declares no C function of its own: a region's memory goes back through the region's `free`, which calls `libc`'s |
+| the holder is an external symbol the compiler declared itself | an LLVM intrinsic it calls by name (`llvm.trap`, `genlPanic`): a function declaration shares it, cast to its own type where they differ. Anything else is `ErrorCNameConflict`. The compiler declares no C function of the C library: a region's memory goes back through the region's `free`, which calls `libc`'s. It declares two of conestd's, and only while generating bodies, after every declaration has its global: `cone_gcframes` and `cone_traceRoots` (roots, below), each looked up by name first and shared with any declaration already holding it |
 
 "Defined here" is `genlDefinition`'s answer, not whether a body is written: an
 imported module's `fn @c` body is a declaration in this object. An error leaves
@@ -295,8 +297,9 @@ C-named entry, `fn @c("main") start()`, is treated alike. A `main` that declares
 return type returns what it returns.
 
 `genlFn` per function: entry block, a dummy `allocaPoint` alloca, an alloca and
-store for **every** parameter, then `genlBlock` on the body, then erase the
-alloca point. Every parameter and local is memory-backed on purpose — the
+store for **every** parameter, then `genlBlock` on the body, then, where the
+function holds a traced reference, its frame's push and pops (`genlRootFrame`,
+section 3, "Roots"), then erase the alloca point. Every parameter and local is memory-backed on purpose — the
 comment is that all allocas belong in the entry block so `PromoteMemoryToRegister`
 and SRoA can undo it.
 
@@ -570,13 +573,81 @@ every other reference and every pointer: the placement rules keep a traced
 reference from hiding behind them. It does not share the finalizer's walk,
 which finalizes an owner's value where the trace must not follow one.
 
+**A traced allocation evaluates its value before it calls `alloc`**
+(`genlallocref`): a traced region's `alloc` may collect, and a value that
+allocates would otherwise be collected around with the new object linked in
+and holding garbage. The value's traced parts are births ("Roots", below), so
+rooted while `alloc` runs. Every other region keeps its order, `alloc` then the
+value.
+
 `so` and `rc` are declared in Cone source in the core package,
 `packages/core/src/core.cone` ([What a region is](../nodes/module.md)). `malloc`
 and `free` are `libc`'s ordinary `extern` declarations, which `core`'s import
 of `libc` puts in every compile; the regions' `alloc` and `free` call them by
 their qualified names, and a program's own declaration of `free` meets
 `libc`'s as any two declarations of one C name do (`genlClaimSymbol`).
-`conestd` supplies only stdio, no allocator.
+`conestd` supplies stdio and the head of the roots' chain and its walk (below),
+no allocator.
+
+### Roots: the shadow stack
+
+**Every function holding a traced reference on its stack links a frame of them
+into one chain** while it runs, so a collector can find every live one:
+`mem.traceRoots(mode)` is a call to conestd's `cone_traceRoots`
+(`packages/conestd/roots.c`), which walks the chain from its head,
+`cone_gcframes`, and calls each root's record's trace. A **root** is a stack
+slot whose type holds a traced reference (`itypeHoldsTraced`), noted as it is
+made (`genlRootNote`, on `gen->roots`):
+
+- a **local's or a parameter's** alloca (`genlLocalVar`, `genlParmVar`, and an
+  inline function's parameters, which are its caller's slots and so in its
+  caller's frame);
+- a **birth's**: a slot of its own for each site that makes such a value
+  outside a local, stored as soon as the value exists (`genlRootBirth`, from
+  `genlExpr`, whose switch is `genlTerm`), so that no collection during a later
+  call of the same expression finds it only in a register. `genlIsBirth` says
+  which: a `+R` allocation, a call's result, a load through a reference or
+  pointer (a dereference, or a field or element whose address is reached
+  through one: `genlAddrThroughRef`), the old value a swap or `<-` hands back,
+  and a cast making a traced reference of something holding none. A value about
+  to be given to a local skips its birth (`genlExprForLocal`: a declaration's
+  value, and an assignment's to a variable whose old value's release does
+  nothing), the local being its root. A birth slot keeps what it holds until
+  its site runs again or its function returns: a little floating garbage,
+  bounded by the sites. A borrow is never a root: what it borrows from is held
+  by an owner that is, for at least the borrow's life.
+
+Once the body is generated, `genlRootFrame` builds the frame of a function
+with any root. One with none gets nothing, which is why a program with no
+traced region generates exactly what it did before roots existed.
+
+```llvm
+@cone.roots.<k> = private constant { i64, [n x ptr] } { i64 n, [n x ptr] [<each root's record>] }
+%gcframe = alloca { ptr, ptr, [n x ptr] }       ; prev, map, each root's address
+```
+
+The **push** goes at the top of the entry block, after its allocas and before
+anything the body does: every root zeroed (a collection may come before a local
+is assigned, and a trace passes a null reference over), each root's address and
+the map stored into the frame, the chain's head loaded into the frame's `prev`,
+and the frame stored as the head. The **pop**, that loaded head stored back,
+goes before **every `ret`**, found by scanning every block's terminator rather
+than by trusting the return sites: a `return` from inside loops and nested
+blocks, and the function's end, all leave through one. `break` and `continue`
+stay in the function and need none; a panic aborts, so nothing unwinds past a
+pop. The map's records come from core's `TypeRecord` (`genlTypeRecordOf`,
+handed `typeRecordStruct`). A record's own finalizer and trace are functions
+`genlTypeRecFn` builds mid-function, which root themselves the same way and set
+the function's roots aside around them (`genlRootsSave`, `genlRootsRestore`),
+as `genlFn` does for its own. Every root is an alloca whose address is stored
+into memory, so `mem2reg` never promotes it and no pass can shorten its life;
+LLVM's inliner moves an inlined callee's frame into its caller with its push and
+pop. The chain is one global: a thread would need its own, thread-local.
+
+Where a **safe point** would go — a check whether to collect, rather than
+collecting inside `alloc` — is at a frame's push, where every parameter is
+rooted and nothing else is yet, and on a loop's back edge (`genlBlock`'s branch
+to `blockbeg`) for a loop that calls nothing. Nothing emits one yet.
 
 ## 4. Pointer levels
 
@@ -785,6 +856,7 @@ variables.
 | | `genlGlobalSyms`, `genlGlobalImpl` | declare a node's symbol; emit its body |
 | | `genlImportedInstances` | emit the bodies of the instances this compile made of a module it does not generate |
 | | `genlFn`, `genlParmVar`, `genlAlloca` | function body, parameter allocas, entry-block alloca placement |
+| | `genlRootNote`, `genlRootBirth`, `genlRootFrame`, `genlRootsSave`, `genlRootsRestore` | roots: a slot noted as one, a birth's slot, the frame's map, push and pops; the roots set aside around a nested function |
 | | `genlGloFnName`, `genlGloVarName` | declare a function or global under the symbol `nameSymbol` spells |
 | | `genlIsVoidMain` | whether a function is a `main` returning nothing, generated returning `i32 0` for the exit status |
 | | `genlClaimSymbol`, `genlSymAgree`, `genlSymOwner` | one symbol, one global: which of two declarations spelling one symbol has it, or `ErrorCNameConflict` / `ErrorCNameDefTwice` |
@@ -804,6 +876,7 @@ variables.
 | `genllvm/genlstmt.c` | `genlBlock` | block creation, phi state, terminator suppression |
 | | `genlBreak`, `genlReturn` | phi edges and dealias; inlined-return-as-break |
 | `genllvm/genlexpr.c` | `genlExpr`, `genlAddr`, `genlStore` | the value / address / store trio — section 4 |
+| | `genlTerm`, `genlIsBirth`, `genlAddrThroughRef`, `genlExprForLocal` | an expression's value, and whether it is a birth to root (section 3, "Roots") |
 | | `genlAddrType` | the Cone type of what `genlAddr`'s address points at |
 | | `genlFnCallInternal` | indirect calls, virtual dispatch, generator-level inlining, the intrinsic switch |
 | | `genlDeclaredIntrinsic` | the LLVM implementation of each intrinsic declared in core, by kind and Cone type |
@@ -817,8 +890,9 @@ variables.
 | | `genlFinalizeAt`, `genlCallDrop`, `genlEachElem` | a value's death in place, whatever its type: a local's, a field's, a region value's before its `free`, and the `finalize` intrinsic |
 | | `genlTypeDrop`, `genlStructDrop`, `genlEnumDrop` | the body of a drop the compiler gave a type: a struct's `final` calls, its fields' deaths, its owners' release; an enum's tag dispatching to its variant's |
 | | `genlAliasHeld` | a copied struct, enum, tuple or array: `alias` on each counted reference its death releases |
-| | `genlTypeRecord`, `genlTypeRecFn`, `genlTypeRecNothing` | a type's record, once per object: its size, alignment, finalizer function, trace function and flags; what an `alloc` that asks is handed, and `mem.typeRecord` |
+| | `genlTypeRecord`, `genlTypeRecordOf`, `genlTypeRecFn`, `genlTypeRecNothing` | a type's record, once per object: its size, alignment, finalizer function, trace function and flags; what an `alloc` that asks is handed, `mem.typeRecord`, and a root map's entries |
 | | `genlTraceAt`, `genlTraceWalk`, `genlTraceRef`, `genlTraceVariants` | a value's traced references, each handed to its region's `mark`: a record's trace, and `mem.trace` |
+| `packages/conestd/roots.c` | `cone_gcframes`, `cone_traceRoots` | the head of the chain of frames, and its walk, which `mem.traceRoots` calls |
 | `ir/types/reference.h` | `enum ManagedRefFields` | `RegionField`, `PermField`, `ValueField` |
 | `ir/name.c` | `nameSymbol`, `nameType`, `nameVtable`, `nameVtableImpl`, `nameVtableList` | spelling a symbol from a node's owner chain and facts, and a type argument within it — the rules are in [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols" |
 | `ir/dclinfo.c` | `dclInfoJoin` | writes the declaration facts where a declaration joins its namespace |

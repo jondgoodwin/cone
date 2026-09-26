@@ -434,6 +434,8 @@ static LLVMValueRef genlTypeRecFn(GenState *gen, INode *vtype, LLVMTypeRef fntyp
     LLVMValueRef svallocaPoint = gen->allocaPoint;
     INode *svfnblock = gen->fnblock;
     int svexitzero = gen->exitzero;
+    GenRoots svroots;
+    genlRootsSave(gen, &svroots);
     gen->fn = fn;
     gen->fnblock = NULL;
     gen->exitzero = 0;
@@ -458,6 +460,8 @@ static LLVMValueRef genlTypeRecFn(GenState *gen, INode *vtype, LLVMTypeRef fntyp
 
     body(gen, fn, vtype);
     LLVMBuildRet(gen->builder, LLVMGetUndef(LLVMGetReturnType(fntype)));
+    // Rooted like any function, should what it expands hold a traced reference
+    genlRootFrame(gen);
 
     if (LLVMGetInstructionParent(gen->allocaPoint))
         LLVMInstructionEraseFromParent(gen->allocaPoint);
@@ -467,6 +471,7 @@ static LLVMValueRef genlTypeRecFn(GenState *gen, INode *vtype, LLVMTypeRef fntyp
     gen->allocaPoint = svallocaPoint;
     gen->fnblock = svfnblock;
     gen->exitzero = svexitzero;
+    genlRootsRestore(gen, &svroots);
     return fn;
 }
 
@@ -531,12 +536,17 @@ static LLVMTypeRef genlTypeRecSlotFnType(GenState *gen, StructNode *recnode, uns
 // records by address. 'recptrtype' is the '*TypeRecord' the caller declared,
 // which names the struct to build.
 LLVMValueRef genlTypeRecord(GenState *gen, INode *vtype, INode *recptrtype) {
+    return genlTypeRecordOf(gen, vtype, (StructNode *)itypeGetTypeDcl(((StarNode *)itypeGetTypeDcl(recptrtype))->vtexp));
+}
+
+// The same, handed core's TypeRecord struct itself: a root map's records,
+// which no declaration names (genlRootFrame)
+LLVMValueRef genlTypeRecordOf(GenState *gen, INode *vtype, StructNode *recnode) {
     for (uint32_t i = 0; i < gen->tyreccnt; ++i) {
         if (itypeIsSame(gen->tyrectypes[i], vtype))
             return gen->tyrecs[i];
     }
 
-    StructNode *recnode = (StructNode *)itypeGetTypeDcl(((StarNode *)itypeGetTypeDcl(recptrtype))->vtexp);
     LLVMTypeRef rectype = genlType(gen, (INode*)recnode);
     LLVMTypeRef finaltype = genlTypeRecSlotFnType(gen, recnode, TypeRecFinalize);
     LLVMTypeRef tracetype = genlTypeRecSlotFnType(gen, recnode, TypeRecTrace);
@@ -819,9 +829,9 @@ static void genlRegionDeath(GenState *gen, LLVMValueRef ref, LLVMValueRef valptr
 // to free. 'paths' (NULL for a whole value) are the parts moved out of what it
 // points at, starting at 'depth'.
 static void genlRegionDealiasPart(GenState *gen, LLVMValueRef ref, RefNode *refnode, MovedPath *paths, int npaths, int depth) {
-    FnDclNode *dealiasmeth = regionMethod(refnode->region, dealiasMethodName);
-    if (dealiasmeth == NULL && !regionIsMove(refnode->region))
+    if (!regionReleaseActs(refnode->region))
         return;
+    FnDclNode *dealiasmeth = regionMethod(refnode->region, dealiasMethodName);
     LLVMValueRef valptr = genlRefPtr(gen, ref, refnode);
     if (dealiasmeth == NULL) {
         genlRegionDeath(gen, ref, valptr, refnode, paths, npaths, depth);
@@ -1073,6 +1083,16 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
         sizeval = LLVMBuildAdd(gen->builder, sizeval, extra, "");
     }
 
+    // A traced region's value is evaluated before its 'alloc' is called: an
+    // 'alloc' may collect, and a value that allocates ('+gc Pair[+gc Leaf[1],
+    // ...]') would otherwise run that collection with the new object linked in
+    // and holding garbage. Its traced parts are births, so rooted while 'alloc'
+    // runs. Every other region keeps the order it always had: 'alloc', then
+    // the value, evaluated straight into the new memory.
+    LLVMValueRef tracedval = NULL;
+    if (reftype->tag == RefTag && regionIsTraced((INode*)region))
+        tracedval = genlExpr(gen, allocatenode->vtexp);
+
     // Do region allocation (using its alloc method) and then bitcast to multi-layered-struct ptr.
     // An 'alloc' that asks for it is handed the value type's record after the
     // size: an owning slice's is its element type's. One that does not is
@@ -1135,7 +1155,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     // Initialize value (via copy or init function) and return pointer to it
     LLVMValueRef valuep = LLVMBuildStructGEP2(gen->builder, reftype->typeinfo->structype, ptrstructype, ValueField, ""); // Point to value
     if (reftype->tag == RefTag) {
-        LLVMBuildStore(gen->builder, genlExpr(gen, allocatenode->vtexp), valuep); // Copy value
+        LLVMBuildStore(gen->builder, tracedval ? tracedval : genlExpr(gen, allocatenode->vtexp), valuep); // Copy value
     }
     else {
         // Handle array fill via run-time generation

@@ -432,8 +432,10 @@ struct or an enum has a drop (`itypeGetDropFnDcl`), and the list gets a call
 to it on a `&uni` borrow, positioned on the result expression, or on the jump
 that ends the scope where there is no result expression — a `continue` hands
 back no value; anything else with anything to do as it dies
-(`itypeNeedsFinal`) — an owning reference into a region, single (`RefTag`) or
-slice (`ArrayRefTag`), or a tuple or an array of values that finalize or own —
+(`itypeNeedsFinal`) — an owning reference, single (`RefTag`) or slice
+(`ArrayRefTag`), into a region whose release does something (`dealias`, or
+`Move`: `regionReleaseActs`), or a tuple or an array of values that finalize or
+own such a reference —
 is added to the list itself, and generation finalizes it in place
 (`genlFinalizeAt`), a tuple element by element, an array in element order. A
 tuple carrying a `so` reference is a move type, so destructuring or copying it

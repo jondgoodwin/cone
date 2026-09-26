@@ -1,0 +1,54 @@
+// Package keeper's source, compiled on its own into a library object: a traced
+// region ref, a function holding traced references of its own while it calls
+// back into the program, and the walk of the roots. Its frames and the
+// program's are links of the one chain, whose head is conestd's, so the roots
+// it traces are both objects'.
+
+mod keeper;
+
+import stdio use *;
+
+mut nextId = 1i64;
+mut head = 0usize;
+
+pub struct tr is RegionRef, Traced {
+  pub id i64;
+  pub next usize;
+  pub marks i64;
+
+  fn alloc(size usize, ty *TypeRecord) *u8 {
+    imm p = malloc(size);
+    mem.writeRaw(p as *tr, tr[nextId, head, 0]);
+    nextId = nextId + 1;
+    head = p as usize;
+    p;
+  }
+  fn mark(self &uni tr) {
+    marks = marks + 1;
+  }
+}
+
+pub struct Leaf { pub n i64; }
+
+// Every object a root reaches, newest first, with how many do where more than one
+pub fn roots(label &[]u8) {
+  mem.traceRoots(0u32);
+  printStr(label); printStr(":");
+  mut at = head;
+  while at != 0usize {
+    imm hdr = at as &mut tr;
+    if hdr.marks > 0 {
+      printStr(" "); printInt(hdr.id);
+      if hdr.marks > 1 { printStr("x"); printInt(hdr.marks); }
+      hdr.marks = 0;
+    }
+    at = hdr.next;
+  }
+  printStr("\n");
+}
+
+// Holds its parameter and a leaf of its own while the program's function runs
+pub fn hold(l +tr-mut Leaf, back &fn(n i64)) {
+  imm mine = +tr-mut Leaf[l.n + 1];
+  back(mine.n);
+}

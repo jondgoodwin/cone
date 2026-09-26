@@ -103,6 +103,8 @@ static IntrinsicSpec intrinsicRegistry[] = {
         1, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
     {"trace", TraceIntrinsic, "trace[T](p *T, mode u32)",
         1, 2, {ShapePtrT, ShapeU32}, ShapeVoid, 1, 0, PhaseExpansion, 1},
+    {"traceRoots", TraceRootsIntrinsic, "traceRoots(mode u32)",
+        0, 1, {ShapeU32}, ShapeVoid, 0, 0, PhaseExpansion, 1},
 };
 
 #define IntrinsicCount (sizeof(intrinsicRegistry) / sizeof(IntrinsicSpec))
@@ -233,22 +235,36 @@ static int intrinsicInCore(FnDclNode *fndcl) {
 // what the compiler puts in one (genlTypeRecord) is the layout core declares,
 // which the compiler holds it to when it builds the first one. A struct of
 // another module named TypeRecord is an ordinary struct.
-int typeRecordIsPtr(INode *type) {
+static StructNode *typeRecordPointee(INode *type) {
     if (type == NULL)
-        return 0;
+        return NULL;
     INode *ptr = type->tag == DerefTag || !isTypeNode(type) ? type : itypeGetTypeDcl(type);
     if (ptr->tag != PtrTag && ptr->tag != DerefTag)
-        return 0;
+        return NULL;
     INode *vtexp = ((StarNode *)ptr)->vtexp;
     if (vtexp == NULL)
-        return 0;
+        return NULL;
     // An unresolved name, or one a template still holds as an expression
     INode *rec = isNameUseNode(vtexp) ? nameUseGetDcl((NameUseNode *)vtexp) : vtexp;
     if (rec == NULL || rec->tag != StructTag)
-        return 0;
+        return NULL;
     StructNode *strnode = (StructNode *)rec;
-    return strnode->namesym != NULL && strcmp(&strnode->namesym->namestr, "TypeRecord") == 0
-        && strnode->genericinfo == NULL && intrinsicModuleIsCore(strnode->dclinfo.owner);
+    if (strnode->namesym != NULL && strcmp(&strnode->namesym->namestr, "TypeRecord") == 0
+        && strnode->genericinfo == NULL && intrinsicModuleIsCore(strnode->dclinfo.owner))
+        return strnode;
+    return NULL;
+}
+
+int typeRecordIsPtr(INode *type) {
+    return typeRecordPointee(type) != NULL;
+}
+
+// Core's TypeRecord, remembered from the result of core's 'mem.typeRecord'
+// declaration as the registry accepts it
+static StructNode *typeRecordCore = NULL;
+
+StructNode *typeRecordStruct(void) {
+    return typeRecordCore;
 }
 
 // Check an '@intrinsic' declaration against the registry, once its signature
@@ -293,6 +309,8 @@ void intrinsicDclNameRes(FnDclNode *fndcl) {
             &name->namestr);
         return;
     }
+    if (spec->intrinsicFn == TypeRecordIntrinsic)
+        typeRecordCore = typeRecordPointee(((FnSigNode *)fndcl->vtype)->rettype);
     if (hasbody && (intrinsicForceFallback || !spec->lowered)) {
         fndcl->flags |= FlagInline;
         return;

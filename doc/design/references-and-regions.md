@@ -25,9 +25,12 @@ hands each reference into the region a value holds to the region's `mark` (with
 the reference's permission and a mode, where `mark` asks), and the compiler
 refuses a traced reference wherever a collector could not find it — behind an
 `rc` or `so` owner, in a global, in raw memory placed by `mem.writeRaw` (an
-arena's, a pool's, a collection's), and, in a traced value, beside a borrow. No
-more of the protocol below is built: no roots (nothing yet finds the traced
-references on the stack), no barriers, no weak reference kind, no region with
+arena's, a pool's, a collection's), and, in a traced value, beside a borrow.
+The traced references on the stack are its **roots**: every function holding
+one links a frame of them (its locals, parameters and temporaries holding one)
+into a chain that `mem.traceRoots` walks, handing each to its region's `mark`,
+and a traced allocation makes its value before its `alloc` runs. No more of the
+protocol below is built: no barriers, no weak reference kind, no region with
 global state, and no finalizing of a slice's elements when its region frees it.
 Of the strategies that motivate the whole design, a tracing collector is
 unwritten, and the arena and the pool are written only as library values: the

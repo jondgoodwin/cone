@@ -825,7 +825,9 @@ members", is the mechanism.
    to copy.
 8. **`structSetDropFn`** — validate a `final` method, then, if any field has
    anything to do as it dies (`itypeNeedsFinal`: a value with a drop, a tuple or
-   an array holding one, an owning reference), synthesize a `drop` method, owned
+   an array holding one, an owning reference whose release does something —
+   into a region with `dealias` or one that is `Move`, `regionReleaseActs`; a
+   traced region's reference has nothing to do), synthesize a `drop` method, owned
    by the type so its symbol is spelled as any method's — `Bundle.drop`,
    `_CNvNt6Bundle4drop` — that is the value's whole death in the ruled order
    [Jon 26 Sep]: its `final`, then each field that needs finalizing, in field

@@ -7,7 +7,7 @@ they differ in who declares them and in how their meaning is decided.
 | --- | --- | --- |
 | Declared by | `corenumber.c`, `corelib.c`, `struct.c` (an enum's `==`) | `packages/core/src/core.cone`, as functions of the opaque struct `mem` |
 | Named | as a method or operator of a type | through `mem`: `mem.sizeof[T]()` |
-| Kinds | `NegIntrinsic` … `FinalAllIntrinsic` | `SizeofIntrinsic` … `TraceIntrinsic` (`FirstDeclaredIntrinsic` onward) |
+| Kinds | `NegIntrinsic` … `FinalAllIntrinsic` | `SizeofIntrinsic` … `TraceRootsIntrinsic` (`FirstDeclaredIntrinsic` onward) |
 | Meaning decided | at generation, by the LLVM type kind of argument 0 | by the registry, in Cone terms; the Cone type rides on the node (`typearg`) |
 | Reference page | none: the number and pointer methods | `doc/reference/refintrinsic.html` |
 
@@ -21,7 +21,8 @@ in core, entered in the registry, and given an arm in `genlDeclaredIntrinsic`.**
 
 **The registry is the definition of record, and it speaks Cone.** Each entry in
 `intrinsicRegistry` (`ir/stmt/intrinsic.c`) is a name, its signature as shapes
-over the one type parameter `T`, whether a call can break memory safety (and so
+over the one type parameter `T` (or over none: `traceRoots` is the one entry
+without it, and its instance carries no `typearg`), whether a call can break memory safety (and so
 belongs in `trust`), whether a Cone fallback body may be written, the phase that
 answers it, and whether this back end lowers it itself. No LLVM name appears in
 it. ▸ **Forbids** passing an LLVM intrinsic name through (`@intrinsic("llvm.…")`)
@@ -108,6 +109,7 @@ the two are tested against each other by running one scenario both ways
 | `typeRecord[T]` | constant | the address of T's record, a private constant `genlTypeRecord` builds once per object |
 | `holdsTraced[T]` | constant | `itypeHoldsTraced`, a front-end question, emitted as an `i1` |
 | `trace[T]` | expansion | `genlTraceAt`: each traced reference the value holds, loaded and, where not null, handed to its region's `mark` with its permission and `mode` where `mark` takes them |
+| `traceRoots` | expansion | a call to conestd's `cone_traceRoots(mode)`, which walks the chain of frames each function holding traced references links ([Generation](../phases/generation.md), "Roots") and calls each root's record's trace |
 
 `finalize` runs what a region-held value's death runs, less the region's `free`
 (`genlRegionDeath`), which is what a local's death at its scope's end runs: its
@@ -123,7 +125,10 @@ its own, and its trace `trace`'s; what the record holds, and why each slot is
 never null, is
 [Generation](../phases/generation.md), "The allocation header". The same record
 is what a region whose `alloc` takes `ty *TypeRecord` is handed
-([What a region is](module.md)).
+([What a region is](module.md)). Accepting core's `typeRecord` declaration
+also remembers the struct its result points at (`typeRecordStruct`), which is
+how generation builds a root map's records, where no declaration names the
+type.
 
 ## Hazards
 

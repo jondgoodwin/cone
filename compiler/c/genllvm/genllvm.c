@@ -39,6 +39,7 @@ void genlParmVar(GenState *gen, VarDclNode *var) {
     assert(var->tag == VarDclTag);
     // We always alloca in case variable is mutable or we want to take address of its value
     var->llvmvar = genlAlloca(gen, genlType(gen, var->vtype), &var->namesym->namestr);
+    genlRootNote(gen, var->llvmvar, var->vtype);
     LLVMBuildStore(gen->builder, LLVMGetParam(gen->fn, var->index), var->llvmvar);
 }
 
@@ -111,6 +112,8 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     LLVMValueRef svallocaPoint = gen->allocaPoint;
     INode *svfnblock = gen->fnblock;
     int svexitzero = gen->exitzero;
+    GenRoots svroots;
+    genlRootsSave(gen, &svroots);
 
     FnSigNode *fnsig = (FnSigNode*)fnnode->vtype;
     assert(fnnode->value->tag == BlockTag);
@@ -143,6 +146,9 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     else
         genlBlock(gen, (BlockNode *)fnnode->value);
 
+    // A function holding traced references links its frame of them
+    genlRootFrame(gen);
+
 	// erase temporary dummy alloca inserted earlier
     if (LLVMGetInstructionParent(allocaPoint))
         LLVMInstructionEraseFromParent(allocaPoint);
@@ -154,6 +160,7 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     gen->allocaPoint = svallocaPoint;
     gen->fnblock = svfnblock;
     gen->exitzero = svexitzero;
+    genlRootsRestore(gen, &svroots);
 }
 
 // Insert every alloca before the allocaPoint in the function's entry block.
@@ -171,6 +178,144 @@ LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name) {
     LLVMPositionBuilderAtEnd(gen->builder, current_block);
     LLVMSetCurrentDebugLocation2(gen->builder, debugloc);
     return alloca;
+}
+
+// ---- Roots: the shadow stack ------------------------------------------------
+//
+// Every function holding a traced reference on its stack links a frame of them
+// into one chain, the head of which is conestd's 'cone_gcframes', so that a
+// collector can find every live one (mem.traceRoots, conestd's
+// 'cone_traceRoots'). A root is a stack slot whose type holds a traced
+// reference: a local's or a parameter's (its alloca), or a birth's -- a slot
+// of its own for each site that makes such a value outside any local, stored
+// as soon as the value exists, so that no collection can find it only in a
+// register. The frame is
+//
+//   { ptr prev, ptr map, [n x ptr] slot }
+//
+// each 'slot' the address of a root, and the map a private constant,
+//
+//   cone.roots.<k> = { usize n, [n x ptr] rec }
+//
+// each 'rec' the type record of the root at the same position, whose trace
+// hands what the slot holds to 'mark'. A function with no root has no frame
+// and generates exactly what it did before roots existed.
+
+void genlRootNote(GenState *gen, LLVMValueRef slot, INode *vtype) {
+    if (!itypeHoldsTraced(vtype))
+        return;
+    GenRoots *roots = &gen->roots;
+    if (roots->cnt == roots->max) {
+        uint32_t newmax = roots->max ? roots->max * 2 : 8;
+        LLVMValueRef *slots = (LLVMValueRef *)memAllocBlk(newmax * sizeof(LLVMValueRef));
+        INode **types = (INode **)memAllocBlk(newmax * sizeof(INode *));
+        if (roots->cnt) {
+            memcpy(slots, roots->slots, roots->cnt * sizeof(LLVMValueRef));
+            memcpy(types, roots->types, roots->cnt * sizeof(INode *));
+        }
+        roots->slots = slots;
+        roots->types = types;
+        roots->max = newmax;
+    }
+    roots->slots[roots->cnt] = slot;
+    roots->types[roots->cnt++] = vtype;
+}
+
+// One slot per site: a site run again (in a loop) overwrites what it stored
+// last time, and what it stored stays rooted until then or the return
+void genlRootBirth(GenState *gen, LLVMValueRef val, INode *vtype) {
+    LLVMValueRef slot = genlAlloca(gen, genlType(gen, vtype), "birth");
+    genlRootNote(gen, slot, vtype);
+    LLVMBuildStore(gen->builder, val, slot);
+}
+
+void genlRootsSave(GenState *gen, GenRoots *saved) {
+    *saved = gen->roots;
+    memset(&gen->roots, 0, sizeof(GenRoots));
+}
+
+void genlRootsRestore(GenState *gen, GenRoots *saved) {
+    gen->roots = *saved;
+}
+
+// The head of the chain of frames, defined by conestd; a declaration here
+static LLVMValueRef genlRootChain(GenState *gen) {
+    LLVMValueRef chain = LLVMGetNamedGlobal(gen->module, "cone_gcframes");
+    if (chain == NULL)
+        chain = LLVMAddGlobal(gen->module, LLVMPointerTypeInContext(gen->context, 0), "cone_gcframes");
+    return chain;
+}
+
+// Build the frame of the function whose body was just generated, where it has
+// any root. The push goes at the top of the entry block, before anything the
+// body does: zero every root (a collection can come before a local is
+// assigned), store each root's address and the map into the frame, link it at
+// the head of the chain. The pop goes before every 'ret', found by scanning
+// every block's terminator rather than trusting the return sites: a 'return'
+// anywhere, from inside loops and nested blocks, and the function's end, all
+// leave through one of them. 'break' and 'continue' stay in the function and
+// need none. A panic aborts, so nothing unwinds past a pop.
+void genlRootFrame(GenState *gen) {
+    GenRoots *roots = &gen->roots;
+    if (roots->cnt == 0)
+        return;
+    StructNode *recnode = typeRecordStruct();
+    if (recnode == NULL)
+        errorExit(ExitGen, "Internal error: a function holds traced references, and core declares no 'mem.typeRecord' whose TypeRecord its roots' map could hold");
+
+    LLVMContextRef context = gen->context;
+    LLVMTypeRef ptrtype = LLVMPointerTypeInContext(context, 0);
+    LLVMTypeRef usize = genlUsize(gen);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(context);
+    uint32_t n = roots->cnt;
+
+    // The map: the count, then each root's type record, in slot order. A
+    // record may generate its trace, a function of its own, which sets these
+    // roots aside and back around itself.
+    LLVMValueRef *recs = (LLVMValueRef *)memAllocBlk(n * sizeof(LLVMValueRef));
+    for (uint32_t i = 0; i < n; ++i)
+        recs[i] = genlTypeRecordOf(gen, roots->types[i], recnode);
+    LLVMTypeRef maptypes[2] = { usize, LLVMArrayType2(ptrtype, n) };
+    LLVMTypeRef maptype = LLVMStructTypeInContext(context, maptypes, 2, 0);
+    char name[32];
+    sprintf(name, "cone.roots.%u", gen->rootmaps++);
+    LLVMValueRef map = LLVMAddGlobal(gen->module, maptype, name);
+    LLVMSetGlobalConstant(map, 1);
+    LLVMSetLinkage(map, LLVMPrivateLinkage);
+    LLVMValueRef mapvals[2] = { LLVMConstInt(usize, n, 0), LLVMConstArray2(ptrtype, recs, n) };
+    LLVMSetInitializer(map, LLVMConstStructInContext(context, mapvals, 2, 0));
+
+    LLVMTypeRef frametypes[3] = { ptrtype, ptrtype, LLVMArrayType2(ptrtype, n) };
+    LLVMTypeRef frametype = LLVMStructTypeInContext(context, frametypes, 3, 0);
+    LLVMValueRef frame = genlAlloca(gen, frametype, "gcframe");
+    LLVMValueRef chain = genlRootChain(gen);
+
+    // The push, after the entry block's allocas and before its first
+    // instruction that is not one
+    LLVMValueRef first = LLVMGetNextInstruction(gen->allocaPoint);
+    if (first)
+        LLVMPositionBuilderBefore(gen->builder, first);
+    else
+        LLVMPositionBuilderAtEnd(gen->builder, LLVMGetInstructionParent(gen->allocaPoint));
+    for (uint32_t i = 0; i < n; ++i)
+        LLVMBuildStore(gen->builder, LLVMConstNull(genlType(gen, roots->types[i])), roots->slots[i]);
+    for (uint32_t i = 0; i < n; ++i) {
+        LLVMValueRef index[3] = { LLVMConstInt(i32, 0, 0), LLVMConstInt(i32, 2, 0), LLVMConstInt(i32, i, 0) };
+        LLVMBuildStore(gen->builder, roots->slots[i], LLVMBuildInBoundsGEP2(gen->builder, frametype, frame, index, 3, "gcslot"));
+    }
+    LLVMBuildStore(gen->builder, map, LLVMBuildStructGEP2(gen->builder, frametype, frame, 1, "gcmap"));
+    LLVMValueRef prev = LLVMBuildLoad2(gen->builder, ptrtype, chain, "gcprev");
+    LLVMBuildStore(gen->builder, prev, LLVMBuildStructGEP2(gen->builder, frametype, frame, 0, "gcprevat"));
+    LLVMBuildStore(gen->builder, frame, chain);
+
+    // The pop, before every return: the previous frame is the head again
+    for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(gen->fn); block; block = LLVMGetNextBasicBlock(block)) {
+        LLVMValueRef term = LLVMGetBasicBlockTerminator(block);
+        if (term == NULL || LLVMGetInstructionOpcode(term) != LLVMRet)
+            continue;
+        LLVMPositionBuilderBefore(gen->builder, term);
+        LLVMBuildStore(gen->builder, prev, chain);
+    }
 }
 
 // Whether a global's storage is a string literal's text plus a NUL. Such a
@@ -892,6 +1037,8 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
     gen->tyreccnt = gen->tyrecmax = 0;
     gen->tyrecnothing = NULL;
     gen->tyrecuntraced = NULL;
+    memset(&gen->roots, 0, sizeof(GenRoots));
+    gen->rootmaps = 0;
 
     // First, generate global symbols for all modules, so that forward references succeed
     INode **nodesp;

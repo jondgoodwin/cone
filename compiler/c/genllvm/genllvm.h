@@ -26,6 +26,17 @@ typedef struct {
     uint32_t phiCnt;
 } GenBlockState;
 
+// The roots of the function being generated: each stack slot holding a value
+// whose type holds a traced reference -- a local's, a parameter's, a birth's --
+// and that type, in slot order. What its frame and root map are built from
+// (genlRootFrame), once its body is.
+typedef struct GenRoots {
+    LLVMValueRef *slots;
+    INode **types;
+    uint32_t cnt;
+    uint32_t max;
+} GenRoots;
+
 typedef struct GenState {
     LLVMTargetMachineRef machine;
     LLVMTargetDataRef datalayout;
@@ -59,6 +70,9 @@ typedef struct GenState {
     uint32_t tyrecmax;
     LLVMValueRef tyrecnothing; // The shared do-nothing finalizer a record's empty finalize slot points at
     LLVMValueRef tyrecuntraced; // The shared do-nothing trace a record of a type holding no traced reference points at
+
+    GenRoots roots;         // The function being generated's roots, set aside around a nested one
+    uint32_t rootmaps;      // How many root maps this object has built, which numbers them
 } GenState;
 
 // What the target's object file format does with COMDATs, which is how a
@@ -153,6 +167,21 @@ LLVMValueRef genlTypeRecord(GenState *gen, INode *vtype, INode *recptrtype);
 void genlTraceAt(GenState *gen, LLVMValueRef valptr, INode *vtype, LLVMValueRef mode);
 // Create an alloca (will be pushed to the entry point of the function.
 LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name);
+
+// genllvm.c: roots, the shadow stack
+// A stack slot of the function being generated is a root when its type holds a
+// traced reference: a local's, a parameter's
+void genlRootNote(GenState *gen, LLVMValueRef slot, INode *vtype);
+// A birth of a value holding a traced reference: stored into a root slot of
+// its own for the site, so no collection finds it only in a register
+void genlRootBirth(GenState *gen, LLVMValueRef val, INode *vtype);
+// Set aside the roots of the function being generated, around generating
+// another; and, once a function's body is generated, build its frame
+void genlRootsSave(GenState *gen, GenRoots *saved);
+void genlRootsRestore(GenState *gen, GenRoots *saved);
+void genlRootFrame(GenState *gen);
+// The type record of 'vtype', from core's TypeRecord struct itself
+LLVMValueRef genlTypeRecordOf(GenState *gen, INode *vtype, StructNode *recnode);
 
 // genltype.c
 // Generate a type value

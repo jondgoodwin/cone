@@ -2550,7 +2550,12 @@ reference's permission and the trace's mode — which a collector that ignores
 them (Acorn's) need not declare, and one that sorts references by them (ORCA's)
 can: the shape is the request, as `alloc`'s is for the record. `Traced` is a
 region ref's only (`ErrorTracedUse`), promises a `mark` (`ErrorTracedMark`), and
-contradicts `Move` (`ErrorRegionSet`); with `dealias` it is accepted.
+contradicts `Move` (`ErrorRegionSet`); with `dealias` it is accepted. Where a
+collector starts is the **roots**: every function holding a traced reference on
+its stack links a frame of them, and `mem.traceRoots` hands each to its region's
+`mark` ([Generation](../phases/generation.md), "Roots"). Releasing an owner of a
+traced region with no `dealias` does nothing, so its references need no
+finalizing (`regionReleaseActs`, `itypeNeedsFinal`).
 
 **A traced reference may be held only where a collector can find it**: a
 local, a parameter, a temporary, a value inline in one of those, or a value a
