@@ -47,6 +47,7 @@ typedef struct GenState {
     int comdats;            // enum ComdatSupport, from the target's object format
     Nodes *symnodes;        // Every declaration given a global, which genlClaimSymbol searches for a clash
     INode *fnblock;
+    int exitzero;           // The function generated is a 'main' returning nothing, whose returns return i32 0
     GenBlockState *blockstack;
     uint32_t blockstackcnt;
 } GenState;
@@ -89,6 +90,9 @@ GenlDefinition genlVtableDefinition(GenState *gen);
 void genlGloVarName(GenState *gen, VarDclNode *glovar);
 void genlGloVar(GenState *gen, VarDclNode *varnode);
 void genlGloFnName(GenState *gen, FnDclNode *glofn);
+// Whether a function whose symbol is 'symbol' is a 'main' returning nothing,
+// which is generated returning i32 0 for the C runtime's exit status
+int genlIsVoidMain(FnDclNode *fnnode, const char *symbol);
 // The program's stitched init or final (InitAllIntrinsic or FinalAllIntrinsic),
 // declared on the first call that asks for it; its body is built once every
 // module is generated (genlStitch)

@@ -346,7 +346,7 @@ Never hand-assert what a category already covers.
 | Category | Runner does | Runner asserts |
 | --- | --- | --- |
 | `compile` | Compiles | Exit 0, no diagnostics, zero warnings, object emitted |
-| `run` | Compiles, links against `conestd`, executes | The above, plus stdout matches the `.out` file |
+| `run` | Compiles, links against `conestd`, executes | The above, plus the program exits 0 (or `program_exit`) and stdout matches the `.out` file |
 | `warn` | Compiles | Exit 0, every annotated warning matched, no unannotated ones, no errors |
 | `reject` | Compiles | Exit exactly 1, every annotated diagnostic matched by code and location, and no unannotated ones |
 | `recover` | Compiles | Exit exactly 1, the expected diagnostic count, no crash and no hang |
@@ -417,6 +417,9 @@ Some facts belong to the file rather than a line:
   annotate.
 - **Total diagnostic count**, which `recover` asserts.
 - **Expected exit status**, where it is not the category's default.
+- **The program's own exit status**, `program_exit = <n>`, for a `run`
+  scenario whose program returns other than 0. `exit` is the compiler's
+  status; a `run` program is expected to return 0 unless this says otherwise.
 
 ### Two choices, for lowering and codegen defects
 

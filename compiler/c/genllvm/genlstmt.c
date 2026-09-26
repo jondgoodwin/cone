@@ -68,6 +68,8 @@ void genlReturn(GenState *gen, BreakRetNode *retnode) {
 
     LLVMValueRef retval = genlExpr(gen, retnode->exp);
     genlDealiasNodes(gen, retnode->dealias);
+    if (gen->exitzero)
+        retval = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0);
     LLVMBuildRet(gen->builder, retval);
 }
 

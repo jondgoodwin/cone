@@ -30,9 +30,15 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval);
 // body of that module is generated in each caller, and what it names -- a
 // private function, method or global -- is reached from here. Asking declares
 // it on first use; a symbol already declared is untouched.
+// A 'main' returning nothing is generated returning i32 (genlIsVoidMain), so a
+// call or reference reaches it as the function its signature declares.
 static LLVMValueRef genlFnSym(GenState *gen, FnDclNode *fndcl) {
     if (fndcl->llvmvar == NULL)
         genlGloFnName(gen, fndcl);
+    size_t namelen;
+    if (fndcl->llvmvar && LLVMIsAFunction(fndcl->llvmvar)
+        && genlIsVoidMain(fndcl, LLVMGetValueName2(fndcl->llvmvar, &namelen)))
+        return LLVMConstBitCast(fndcl->llvmvar, LLVMPointerType(genlType(gen, fndcl->vtype), 0));
     return fndcl->llvmvar;
 }
 static LLVMValueRef genlVarSym(GenState *gen, VarDclNode *var) {

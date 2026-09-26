@@ -90,6 +90,14 @@ static void genlNameAnonFn(GenState *gen, LLVMValueRef fn) {
     LLVMSetLinkage(fn, LLVMInternalLinkage);
 }
 
+// Whether a function is a 'main' returning nothing. The C runtime that calls
+// 'main' takes its return as the process's exit status, so such a 'main' is
+// generated returning i32, and each of its returns returns 0 (genlReturn).
+int genlIsVoidMain(FnDclNode *fnnode, const char *symbol) {
+    return strcmp(symbol, "main") == 0
+        && itypeGetTypeDcl(((FnSigNode*)fnnode->vtype)->rettype)->tag == VoidTag;
+}
+
 // Generate a function
 void genlFn(GenState *gen, FnDclNode *fnnode) {
     // Only a concrete declaration has an implementation. An overload name is a
@@ -105,11 +113,14 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     LLVMBuilderRef svbuilder = gen->builder;
     LLVMValueRef svallocaPoint = gen->allocaPoint;
     INode *svfnblock = gen->fnblock;
+    int svexitzero = gen->exitzero;
 
     FnSigNode *fnsig = (FnSigNode*)fnnode->vtype;
     assert(fnnode->value->tag == BlockTag);
     gen->fn = fnnode->llvmvar;
     gen->fnblock = fnnode->value;
+    size_t namelen;
+    gen->exitzero = genlIsVoidMain(fnnode, LLVMGetValueName2(fnnode->llvmvar, &namelen));
 
     // Attach block and builder to function
     LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "entry");
@@ -140,6 +151,7 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     gen->fn = svfn;
     gen->allocaPoint = svallocaPoint;
     gen->fnblock = svfnblock;
+    gen->exitzero = svexitzero;
 }
 
 // Insert every alloca before the allocaPoint in the function's entry block.
@@ -521,6 +533,12 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
             return;
         char symbol[2048];
         nameSymbol(symbol, (INode*)glofn);
+        if (genlIsVoidMain(glofn, symbol)) {
+            unsigned parmcnt = LLVMCountParamTypes(fntype);
+            LLVMTypeRef *parmtypes = memAllocBlk((parmcnt ? parmcnt : 1) * sizeof(LLVMTypeRef));
+            LLVMGetParamTypes(fntype, parmtypes);
+            fntype = LLVMFunctionType(LLVMInt32TypeInContext(gen->context), parmtypes, parmcnt, LLVMIsFunctionVarArg(fntype));
+        }
         glofn->llvmvar = LLVMAddFunction(gen->module, symbol, fntype);
         GenlDefinition defined = genlDefinition(gen, (INode*)glofn);
         genlLinkage(glofn->llvmvar, (INode*)glofn, defined);
@@ -1057,6 +1075,7 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     gen->builder = LLVMCreateBuilder();
     gen->fn = NULL;
     gen->fnblock = NULL;
+    gen->exitzero = 0;
     gen->allocaPoint = NULL;
     gen->blockstack = memAllocBlk(sizeof(GenBlockState)*GenBlockStackMax);
     gen->blockstackcnt = 0;

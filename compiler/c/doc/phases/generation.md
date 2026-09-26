@@ -272,6 +272,17 @@ reaches the object file — as for every other internal definition. The suffix L
 appends to keep `anon` unique is the module symbol table's counter, so it shifts
 when unrelated globals are added.
 
+**A `main` returning nothing is generated returning `i32 0`** (`genlIsVoidMain`).
+The C runtime takes what `main` returns as the process's exit status, and Cone's
+`void` lowers to the empty struct `%void`, whose `ret %void undef` left the
+status to whatever the return register held. So `genlGloFnName` declares such a
+`main` with an `i32` return, `genlFn` sets `gen->exitzero` for its body, and
+`genlReturn` returns 0 at every return; `genlFnSym` hands a call or a reference
+to it the function bitcast to the type its signature declares, so the IR stays
+well typed. The test is the symbol `main` itself, as `genlLinkage`'s is, so a
+C-named entry, `fn @c("main") start()`, is treated alike. A `main` that declares a
+return type returns what it returns.
+
 `genlFn` per function: entry block, a dummy `allocaPoint` alloca, an alloca and
 store for **every** parameter, then `genlBlock` on the body, then erase the
 alloca point. Every parameter and local is memory-backed on purpose — the
@@ -606,6 +617,7 @@ variables.
 | | `genlImportedInstances` | emit the bodies of the instances this compile made of a module it does not generate |
 | | `genlFn`, `genlParmVar`, `genlAlloca` | function body, parameter allocas, entry-block alloca placement |
 | | `genlGloFnName`, `genlGloVarName` | declare a function or global under the symbol `nameSymbol` spells |
+| | `genlIsVoidMain` | whether a function is a `main` returning nothing, generated returning `i32 0` for the exit status |
 | | `genlClaimSymbol`, `genlSymAgree`, `genlSymOwner` | one symbol, one global: which of two declarations spelling one symbol has it, or `ErrorCNameConflict` / `ErrorCNameDefTwice` |
 | | `genlGloVarIsConstant` | whether an `imm` global is an LLVM constant: an initial value, not `extern`, no drop function |
 | | `genlLinkage`, `genlDefinition`, `genlIsDefinedHere`, `genlVtableDefinition` | linkage, storage class and calling convention, together, from the declaration facts and what this object does with the symbol: declares it, defines it, defines and exports it, or defines it shared |

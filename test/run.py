@@ -119,7 +119,7 @@ ANNOTATABLE = ("reject", "warn")
 
 SCENARIO_KEYS = {
     "category", "description", "tags", "diagnostics", "exit", "xfail",
-    "run", "unlocated", "check", "argv", "link", "include",
+    "run", "unlocated", "check", "argv", "link", "include", "program_exit",
 }
 
 
@@ -626,6 +626,8 @@ class Scenario:
     # byte for byte, pinned beside the program, which compiles against it.
     # Named for its package, so 'include/q.cone' is what 'q/q.conebuild' writes
     includes: tuple[Path, ...] = ()
+    # 'run' only: the exit status the program itself must return
+    program_exit: int = 0
     xfail: bool = False
     annotations: list[Annotation] = field(default_factory=list)
 
@@ -737,6 +739,11 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
                         f"{where}: 'include' names {path.name}, and no entry of"
                         f" 'link' builds a package named {path.stem!r}")
 
+        # 'exit' is the compiler's status; what the linked program returns is
+        # asserted apart from it, and only a 'run' scenario runs a program
+        if "program_exit" in table and category != "run":
+            raise SuiteError(f"{where}: only a 'run' scenario runs a program, so 'program_exit' belongs to one")
+
         # R2.10 names the total diagnostic count as recover's file-level
         # expectation. It asserts the count rather than each diagnostic, so
         # without it the scenario asserts nothing but the exit status.
@@ -794,6 +801,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             argv=argv,
             link=link,
             includes=includes,
+            program_exit=table.get("program_exit", 0),
             xfail=bool(table.get("xfail", False)),
         )
         if source is not None:
@@ -2410,9 +2418,9 @@ class Runner:
             result.status = FAIL
             result.problems.append(f"program {ran.killed}")
             return
-        if ran.code != 0:
+        if ran.code != scenario.program_exit:
             result.status = FAIL
-            result.problems.append(f"program exited {ran.code}, expected 0")
+            result.problems.append(f"program exited {ran.code}, expected {scenario.program_exit}")
             return
 
         # Recorded here, before the comparison rather than after it, because a
