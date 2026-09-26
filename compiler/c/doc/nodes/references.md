@@ -257,8 +257,9 @@ do read through — type check injects a dereference on both operands
 reference they are `ErrorNoRead`.
 
 **The `scope` a borrow recorded is enforced at three consumers, none of them
-the borrow site**: `assignlvalrtype` when a borrow is stored into a
-longer-lived lval, `returnFlowEscape` when one is returned, and
+the borrow site**: `assignBorrowLifetimeCheck` when a borrow is stored into a
+longer-lived lval — by `assignlvalrtype` for an assignment, and by `swapFlow`
+once in each direction for a swap, which stores both ways — `returnFlowEscape` when one is returned, and
 `fnCallFlowStoredBorrow` when one is passed to a call beside a `&mut &T`
 argument that points at a longer-lived place. Each reads `RefTag`, `ArrayRefTag`
 and `VirtRefTag` alike: a virtual reference is a borrowed reference carrying a

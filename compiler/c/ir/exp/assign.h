@@ -38,4 +38,8 @@ void assignTypeCheck(TypeCheckState *pstate, AssignNode *node);
 // Perform data flow analysis on assignment node
 void assignFlow(FlowState *fstate, AssignNode **node);
 
+// Refuse storing a borrowed reference of type 'rtype' into an lval living at
+// 'lvalscope' that would outlive it (assignment, and each direction of a swap)
+void assignBorrowLifetimeCheck(INode *lval, uint16_t lvalscope, INode *rtype);
+
 #endif

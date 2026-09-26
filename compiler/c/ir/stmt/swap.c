@@ -59,22 +59,29 @@ void swapTypeCheck(TypeCheckState *pstate, SwapNode *node) {
 
 // Perform data flow analysis on swap node
 // - lval and rval need to be mutable.
+// - a swap is a store in both directions, so each side is held to the borrow
+//   lifetime rule assignment applies: neither may outlive a borrowed reference
+//   it receives from the other
 void swapFlow(FlowState *fstate, SwapNode **nodep) {
     SwapNode *node = *nodep;
 
     uint16_t lvalscope;
     INode *lvalperm;
-    INode *lvalvar = iexpGetLvalInfo(node->lval, &lvalperm, &lvalscope);
+    iexpGetLvalInfo(node->lval, &lvalperm, &lvalscope);
     if (!(MayWrite & permGetFlags(lvalperm))) {
         errorMsgNode(node->lval, ErrorNoMut, "You do not have permission to modify lval");
         return;
     }
 
-    lvalvar = iexpGetLvalInfo(node->rval, &lvalperm, &lvalscope);
+    uint16_t rvalscope;
+    iexpGetLvalInfo(node->rval, &lvalperm, &rvalscope);
     if (!(MayWrite & permGetFlags(lvalperm))) {
         errorMsgNode(node->rval, ErrorNoMut, "You do not have permission to modify rval");
         return;
     }
+
+    assignBorrowLifetimeCheck(node->lval, lvalscope, ((IExpNode*)node->rval)->vtype);
+    assignBorrowLifetimeCheck(node->rval, rvalscope, ((IExpNode*)node->lval)->vtype);
 
     flowLoadValue(fstate, &node->lval);
     flowLoadValue(fstate, &node->rval);
