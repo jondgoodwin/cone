@@ -1,0 +1,82 @@
+// A path through an instance of a generic type to one of its functions:
+// 'Box[i64].make(5)'. A generic type has no members of its own, only each
+// instance has its copy, and a type that is not generic already reaches its
+// functions by a path ('Plain.get(p)'); this is the same path, naming the
+// instance. It is how a collection is made from outside its module when its
+// fields are private: 'List[i64].empty()'.
+//
+// Reached: a static function, returning the instance; a method named by path
+// and handed its self; each candidate of an overload name; a private function
+// from inside its own module; a generic enum's static function; a reference
+// to a function borrowed through the path; and a path whose instance is only
+// made by that path. Each printed value was checked by hand against the
+// function it reaches.
+
+mod generic_instance_path;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct Plain {
+  pub v i64;
+  pub fn get(self) i64 { v; }
+}
+
+struct Box[T] {
+  pub v T;
+  pub fn make(v T) Box { Box[v]; }
+  pub fn get(self) T { v; }
+  pub fn one overload of(a T) Box { Box[a]; }
+  pub fn two overload of(a T, b T) Box { Box[a + b]; }
+  fn hidden() i64 { 3i64; }
+}
+
+// Fields private, so only its own functions can make one
+struct Bag[T] {
+  items T;
+  count i64;
+  pub fn empty(zero T) Bag { Bag[zero, 0i64]; }
+  pub fn size(self) i64 { count; }
+}
+
+enum Maybe[T] {
+  pub fn nothing() Maybe { Maybe.No[]; }
+  struct Yes { pub value T; }
+  struct No {}
+}
+
+fn main() {
+  // The same path through a type that is not generic
+  imm p = Plain[4i64];
+  show("plain-method-by-path", Plain.get(p));
+
+  imm b = Box[i64].make(5i64);
+  show("static-function", b.v);
+  show("method-by-path", Box[i64].get(b));
+  show("overload-one", Box[i64].of(6i64).v);
+  show("overload-two", Box[i64].of(6i64, 1i64).v);
+  show("private-inside-its-module", Box[i64].hidden());
+
+  // A second instance, made by this path alone
+  imm f = Box[f64].make(2.5d);
+  show("another-instance", i64[f.v * 2.0d]);
+
+  // What a collection with private fields needs
+  imm bag = Bag[i64].empty(0i64);
+  show("private-fields-made-by-its-function", bag.size());
+
+  imm m = Maybe[i64].nothing();
+  match m {
+    case is Maybe.No[i64] {printStr("enum-static-function no\n");}
+    case is Maybe.Yes[i64] {printStr("enum-static-function yes\n");}
+  }
+
+  imm fr = &Box[i64].make;
+  show("function-reference", fr(9i64).v);
+}

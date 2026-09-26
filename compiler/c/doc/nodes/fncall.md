@@ -118,7 +118,14 @@ name to look at.
 
 **What it does not reach** is a base that is not a namespace *yet* — an alias,
 a number type, a generic instance, a generic parameter. Those arrive at type
-check as member accesses and are refused there by stage 2's type receiver.
+check as member accesses. **An instance's path is collapsed there**, once the
+receiver's check has made the instance: a generic module's by
+`fnCallModuleInstancePath`, `stack[i64].push(3)`, and a generic type's by
+`fnCallTypeInstancePath`, `List[i64].empty()`, which looks the member up in the
+instance's namespace and applies the same privacy and abstract-method rules as
+above, the privacy judged against the instance's module. A generic type's path
+reaches only a function or an overload name; any other member, and every other
+base, is refused by stage 2's type receiver.
 
 ## Type check
 

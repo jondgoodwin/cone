@@ -249,9 +249,16 @@ int nameUseTemplateMember(NameUseNode *name, INode *dcl) {
     if (owner == NULL || owner->tag != StructTag || ((StructNode*)owner)->genericinfo == NULL)
         return 0;
     Name *ownername = ((StructNode*)owner)->namesym;
-    errorMsgNode((INode*)name, ErrorArgCount,
-        "%s is generic, so %s belongs to each of its instances, named with type arguments as %s[...]; reaching a member through an instance is not built.",
-        &ownername->namestr, &name->namesym->namestr, &ownername->namestr);
+    // A function is reached through an instance (fnCallTypeInstancePath); any
+    // other member is not yet
+    if (dcl->tag == FnDclTag || dcl->tag == FnOverloadDclTag)
+        errorMsgNode((INode*)name, ErrorArgCount,
+            "%s is generic, so %s belongs to each of its instances: name one with type arguments, as %s[...].%s.",
+            &ownername->namestr, &name->namesym->namestr, &ownername->namestr, &name->namesym->namestr);
+    else
+        errorMsgNode((INode*)name, ErrorArgCount,
+            "%s is generic, so %s belongs to each of its instances, named with type arguments as %s[...]; reaching it through an instance is not built.",
+            &ownername->namestr, &name->namesym->namestr, &ownername->namestr);
     return 1;
 }
 

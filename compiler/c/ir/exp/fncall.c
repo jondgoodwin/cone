@@ -1220,6 +1220,46 @@ static int fnCallModuleInstancePath(TypeCheckState *pstate, FnCallNode **nodep) 
     return 0;
 }
 
+// A path through an instance of a generic type to one of its functions --
+// 'List[i64].empty()', 'Box[f32].make(1.)' -- collapsed as fnCallNameResPath
+// collapses a path through any type, but here, for the reason a generic
+// module's instance is (fnCallModuleInstancePath): the instance does not exist
+// until type check makes it. The member is looked up in the instance's
+// namespace, and the same rules apply as to a path through a type that was
+// named: a private member is refused from outside the type's module, and a
+// method of an enum or trait, which has no code of its own, is refused. Only a
+// function is reached this way; any other member is left as it was, and
+// diagnosed below as a path this does not collapse. Returns 1 when the node was
+// replaced outright (and checked), so the caller stops.
+static int fnCallTypeInstancePath(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    StructNode *inst = (StructNode*)nameUseGetDcl((NameUseNode*)node->objfn);
+    NameUseNode *member = (NameUseNode*)node->methfld;
+    INode *found = namespaceFind(&inst->namespace, member->namesym);
+    if (found == NULL || (found->tag != FnDclTag && found->tag != FnOverloadDclTag))
+        return 0;
+    member->dclnode = found;
+    member->flags |= FlagQualified;
+    ModuleNode *qualmod = dclInfoGetModule((INode*)inst);
+    ModuleNode *asker = pstate->fn ? dclInfoGetModule((INode*)pstate->fn) : NULL;
+    if (qualmod && qualmod != asker && inodeIsPrivate(found))
+        errorMsgNode((INode*)member, ErrorNotPublic,
+            "%s is private to its module and may not be named from outside it.",
+            &member->namesym->namestr);
+    if ((inst->flags & TraitType) && fnCallNamesMethod(found))
+        errorMsgNode((INode*)member, ErrorAbstractMeth,
+            "%s names a method of %s, which has no code of its own for it: each implementer or variant has its own copy. Call it on a value, or name it through a type that has it.",
+            &member->namesym->namestr, &inst->namesym->namestr);
+    if (node->args == NULL) {
+        *((INode**)nodep) = (INode*)member;
+        inodeTypeCheckAny(pstate, (INode**)nodep);
+        return 1;
+    }
+    node->objfn = (INode*)member;
+    node->methfld = NULL;
+    return 0;
+}
+
 // Perform type check on function/method call node
 // This should only be run once on a node, as it mutably lowers the node to another form:
 // - If a generic/macro, it instantiates, then type checks instantiated nodes
@@ -1300,6 +1340,16 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             objfnChecked = 0;
             calleeIsOverload = nameUseNames(node->objfn, FnOverloadDclTag);
         }
+        // 'List[i64].empty()': a path through an instance of a generic type,
+        // which likewise exists only now
+        else if (isTypeNode(node->objfn) && nameUseNames(node->objfn, StructTag)) {
+            if (fnCallTypeInstancePath(pstate, nodep))
+                return;
+            if (node->methfld == NULL) {
+                objfnChecked = 0;
+                calleeIsOverload = nameUseNames(node->objfn, FnOverloadDclTag);
+            }
+        }
         else if (isExpNode(node->objfn)) {
             INode *rcvtype = iexpGetDerefTypeDcl(node->objfn);
             if (isMethodType(rcvtype)) {
@@ -1378,7 +1428,8 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         // A member named on a type is a path through that type's namespace, and
         // name resolution collapses every path whose base it can see: a module,
         // a struct or a trait. One that arrives here is one it could not -- an
-        // alias, a number type, a generic instance, a generic parameter.
+        // alias, a number type, a generic parameter, or a generic instance's
+        // member other than a function (fnCallTypeInstancePath took those).
         // Diagnosed rather than left to read as a bad call.
         if (node->methfld != NULL) {
             errorMsgNode(node->objfn, ErrorUnkName,
