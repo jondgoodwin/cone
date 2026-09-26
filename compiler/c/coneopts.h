@@ -55,6 +55,7 @@ typedef struct ConeOptions {
     int print_spans;       // Print the root module's declaration spans after parse
     int emit_include;      // Write the package's include file, as a library compile does
     int lint_llvm;        // Run the LLVM linting pass on generated IR
+    int intrinsic_fallback; // Use each intrinsic's Cone fallback body wherever it has one
     int docs;            // Generate code documentation
     int docs_private;    // Generate code docs for private
     int verbosity;       // 0 - 4 (0 = default)

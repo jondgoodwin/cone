@@ -84,6 +84,7 @@ TIERS = {
     "exception": 2,
     "concurrency": 2,
     "safety": 2,
+    "intrinsic": 2,
     "meta": 2,
 }
 

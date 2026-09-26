@@ -129,4 +129,7 @@ int itypeIsGenericType(INode *type);
 // Return drop function (or NULL) for type
 INode *itypeGetDropFnDcl(INode *type);
 
+// Whether a value of this type does anything when it dies in place
+int itypeNeedsFinal(INode *type);
+
 #endif

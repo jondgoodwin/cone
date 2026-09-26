@@ -120,6 +120,11 @@ void genlDealiasNodes(GenState *gen, Nodes *nodes);
 // the region's 'dealias' or, for a single owner, as the value's death; each
 // element of a tuple
 void genlReleaseOwning(GenState *gen, LLVMValueRef val, INode *type);
+// Release each owning reference held by a field of the struct value at 'ref'
+void genlReleaseFlds(GenState *gen, LLVMValueRef ref, INode *vtype);
+// Finalize the value at 'valptr' where it sits, as its death would, without
+// freeing its memory: the 'finalize' intrinsic
+void genlFinalizeAt(GenState *gen, LLVMValueRef valptr, INode *vtype);
 // Release a hollowed variable's owning reference without the parts moved out
 void genlHollowRelease(GenState *gen, HollowNode *hnode);
 // A counted reference gains 'amount' owners, through its region's 'alias'
@@ -132,6 +137,8 @@ LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name);
 LLVMTypeRef genlType(GenState *gen, INode *typ);
 // Generate LLVM value corresponding to the size of a type
 LLVMValueRef genlSizeof(GenState *gen, INode *vtype);
+// Generate LLVM value corresponding to the alignment of a type
+LLVMValueRef genlAlignof(GenState *gen, INode *vtype);
 // Generate unsigned integer whose bits are same size as a pointer
 LLVMTypeRef genlUsize(GenState *gen);
 LLVMTypeRef genlEmptyStruct(GenState* gen);

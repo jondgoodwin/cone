@@ -59,7 +59,29 @@ void genlDealiasFlds(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
     // the same element-granularity work an array of owning references needs.
     if (refnode->tag != RefTag)
         return;
-    StructNode *strnode = (StructNode*)itypeGetTypeDcl(refnode->vtexp);
+    genlReleaseFlds(gen, ref, refnode->vtexp);
+}
+
+// Finalize the value of type 'vtype' at 'valptr' where it sits, as its death
+// would, without giving its memory back: the 'finalize' intrinsic. An owning
+// reference (or a tuple of them) is released. Anything else runs its type's
+// drop -- its own 'final', then each finalizing field's -- and then releases
+// the owning references its fields hold: genlRegionDeath's order, less the
+// region's 'free'. A type for which itypeNeedsFinal is false generates nothing.
+void genlFinalizeAt(GenState *gen, LLVMValueRef valptr, INode *vtype) {
+    if (flowIsOwningType(vtype)) {
+        genlReleaseOwning(gen, LLVMBuildLoad(gen->builder, valptr, "finalref"), vtype);
+        return;
+    }
+    INode *dropfn = itypeGetDropFnDcl(vtype);
+    if (dropfn)
+        genlFnCallInternal(gen, SimpleDispatch, dropfn, 1, &valptr);
+    genlReleaseFlds(gen, valptr, vtype);
+}
+
+// If the value at 'ref' is a struct, release each owning reference its fields hold
+void genlReleaseFlds(GenState *gen, LLVMValueRef ref, INode *vtype) {
+    StructNode *strnode = (StructNode*)itypeGetTypeDcl(vtype);
     if (strnode->tag != StructTag)
         return;
     INode **nodesp;

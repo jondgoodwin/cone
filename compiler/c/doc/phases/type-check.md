@@ -552,14 +552,18 @@ which the rules of section 2 together forbid.
 3. If the signature raised anything, stop. A body checked against a signature
    that failed reports again at every use of the types that check was meant to
    establish.
-4. If there is no body, or it is a trait's default method, stop.
-5. Check that a method's `self` parameter matches its enclosing type.
-6. Turn an implicit final-expression return into an explicit one.
-7. **→** Analyze the body, with `fn` and `scope` saved and reset.
-8. Run flow analysis on the body — escape, permission, lifetime, move — and skip
+4. If it is an intrinsic declared in core, with its meaning from the registry,
+   **→** analyze the type it acts on (its instance's type argument), which must
+   have a size (`ErrorIntrinsicType`, reported at the call that instantiated it),
+   and stop: it has no body ([intrinsic](../nodes/intrinsic.md)).
+5. If there is no body, or it is a trait's default method, stop.
+6. Check that a method's `self` parameter matches its enclosing type.
+7. Turn an implicit final-expression return into an explicit one.
+8. **→** Analyze the body, with `fn` and `scope` saved and reset.
+9. Run flow analysis on the body — escape, permission, lifetime, move — and skip
    it if this function raised anything.
 
-Steps 3 and 8 both compare the error count against the one this call entered
+Steps 3 and 9 both compare the error count against the one this call entered
 with, so each is about this declaration alone and not about whatever failed
 elsewhere, whichever walk arrived at it.
 
@@ -666,7 +670,8 @@ Kept so that reopening one is a decision rather than a rediscovery.
 | `ir/types/struct.c` | `structTypeCheck` | the layout, steps 1 to 8a of section 10.1; sets `TypeChecked` at the layout point; `structSetDropFn` is step 8 |
 | | `structCheckMembers` | steps 9 and 10, run from the members queue; `structCheckTraitReqs` is step 10 |
 | | `structLayoutEnter`, `structLayoutExit` | the count of layouts in flight, and the queues worked when it returns to zero — section 4, "Layout before members" |
-| `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the eight steps of section 10.3, including both error-delta gates |
+| `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the nine steps of section 10.3, including both error-delta gates |
+| `ir/stmt/intrinsic.c` | `intrinsicDclTypeCheck` | step 4 of section 10.3: a declared intrinsic's type argument must have a size |
 | `ir/stmt/vardcl.c` | `varDclTypeCheck` | section 10.4 |
 | `ir/stmt/module.c` | `modTypeCheck` | imports first, then the module-trait check, then declarations — section 10.5 — and last `modLifecycle` |
 | `ir/stmt/module.c` | `modLifecycle`, `modGiveDrop` | once every global's type is settled: the module's `init` and `final` checked as `fn @initpure init()` and `fn final()` (`ErrorModLifecycle`), each global without a value reported where the module has no `init` (`ErrorGlobalUninit`), and the module given a pre-lowered `drop` — its `final`, then each finalizing global's drop — where a global needs it. [module](../nodes/module.md), "Init and final" |
@@ -681,6 +686,6 @@ Kept so that reopening one is a decision rather than a rediscovery.
 | --- | --- |
 | What a check actually decides — coercion, overloads, casts, borrows | [Type Check Reasoning](type-check-reasoning.md) |
 | What may be assumed already bound, and why the gate exists | [Name Resolution](name-resolution.md) |
-| Moves, aliasing, drops — what runs at step 8 of section 10.3 | [Flow Analysis](flow.md) |
+| Moves, aliasing, drops — what runs at step 9 of section 10.3 | [Flow Analysis](flow.md) |
 | Node headers, marks as flag bits, the sentinels | [IR Nodes](../nodes/_index.md) |
 | How to re-measure any claim here | [Measuring](../diagnostics/measuring.md) |

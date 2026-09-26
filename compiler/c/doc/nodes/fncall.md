@@ -348,10 +348,13 @@ dispatch (extract the object and vtable from the fat pointer, `structgep` the
 slot, load, call), generator-level inlining for `FlagInline`, an ordinary call,
 or an intrinsic.
 
-**The intrinsic switch dispatches on the LLVM type kind of argument 0**, not on
-the Cone type — so a mutating intrinsic's receiver, which arrives as an lvalue
-pointer, and a non-mutating one's, which arrives as a value, land in the same
-branch and are told apart only by which intrinsic it is.
+**The switch for the intrinsics built in C dispatches on the LLVM type kind of
+argument 0**, not on the Cone type — so a mutating intrinsic's receiver, which
+arrives as an lvalue pointer, and a non-mutating one's, which arrives as a value,
+land in the same branch and are told apart only by which intrinsic it is. An
+intrinsic declared in core with `@intrinsic` is taken first, by
+`genlDeclaredIntrinsic`, and decided by its kind and the Cone type its instance
+carries ([intrinsic](intrinsic.md)).
 
 `FldAccessTag` splits on `FlagBorrow`: with it, `StructGEP` the receiver's
 address; without it, load the **whole aggregate** and `extractvalue`. Getting

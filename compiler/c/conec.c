@@ -156,6 +156,7 @@ int main(int argc, char **argv) {
         errorExit(ExitOpts, "Specify a Cone program to compile.");
     coneopt.srcpath = argv[1];
     coneopt.srcname = fileName(coneopt.srcpath);
+    intrinsicForceFallback = coneopt.intrinsic_fallback;
 
     // A build description names the package's files and modules and says what
     // to build. Its 'build' line decides whether the output is optimised, which

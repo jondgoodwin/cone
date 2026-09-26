@@ -590,6 +590,12 @@ LLVMValueRef genlSizeof(GenState *gen, INode *vtype) {
     return LLVMConstInt(genlType(gen, (INode*)usizeType), size, 0);
 }
 
+// Generate LLVM value corresponding to the alignment the target requires of a type
+LLVMValueRef genlAlignof(GenState *gen, INode *vtype) {
+    unsigned align = LLVMABIAlignmentOfType(gen->datalayout, genlType(gen, vtype));
+    return LLVMConstInt(genlType(gen, (INode*)usizeType), align, 0);
+}
+
 // Generate unsigned integer whose bits are same size as a pointer
 LLVMTypeRef genlUsize(GenState *gen) {
     return (LLVMPointerSize(gen->datalayout) == 4) ? LLVMInt32TypeInContext(gen->context) : LLVMInt64TypeInContext(gen->context);

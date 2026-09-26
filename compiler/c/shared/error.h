@@ -140,7 +140,7 @@ enum ErrorCode {
 
     // Reference types
     ErrorNoRefType = 1074,      // A reference type did not name what it refers to
-    ErrorInlineRef = 1083,      // A borrow of an inline function, which has no code of its own to point at
+    ErrorInlineRef = 1083,      // A borrow of an inline function or an intrinsic, which has no code of its own to point at
     ErrorNoRead = 1084,         // A read through a reference whose permission grants no read
 
     // Regions: the annotation struct after '+', and the 'RegionRef' methods the compiler calls on it
@@ -148,6 +148,13 @@ enum ErrorCode {
     ErrorRegionMeth = 1155,     // A region's 'alias', 'dealias' or 'free' not of the shape the compiler calls it with
     ErrorRegionSet = 1156,      // A region whose declaration contradicts itself: '@move' (one owner per value) with an 'alias' method (another owner)
     ErrorRegionRefUse = 1157,   // 'RegionRef' anywhere but a struct's 'is' list: the type a reference points at, or the 'is' of a trait, enum or variant
+
+    // Intrinsics: '@intrinsic' declarations, checked against the compiler's registry (ir/stmt/intrinsic.c)
+    ErrorIntrinsicPlace = 1160, // '@intrinsic' on a function not of the core package -- of its root, a submodule, or a plain struct one declares: another package's, a method taking 'self', a generic type's or a trait's
+    ErrorIntrinsicName = 1161,  // '@intrinsic' on a function whose name the compiler's registry does not define
+    ErrorIntrinsicSig = 1162,   // An intrinsic declared with a signature other than the registry's: type parameters, parameters or return type
+    ErrorIntrinsicBody = 1163,  // A body written for an intrinsic the registry gives no fallback, or none where it has no lowering to use instead
+    ErrorIntrinsicType = 1164,  // An intrinsic instantiated at a type outside its type class: one with no size, for every intrinsic built so far
 
     // The compiler's own invariants. This is the one code no source is supposed
     // to be able to produce, and so the one code with no scenario: reaching it
@@ -271,9 +278,9 @@ enum ErrorCode {
     ErrorBuildImport = 1131,    // An 'import' in a described module that the build description provides nothing for: the compiler never searches for one
 
     // 'extern' says a declaration is defined elsewhere; '@c' says its symbol takes C naming
-    ErrorCAttr = 1132,          // '@c' written wrongly or where nothing has a symbol for it to name: a bad argument, a type, an anonymous, generic or inline fn, a trait's method, a generic module, the retired 'extern system'
+    ErrorCAttr = 1132,          // '@c' written wrongly or where nothing has a symbol for it to name: a bad argument, a type, an anonymous, generic or inline fn, an intrinsic, a trait's method, a generic module, the retired 'extern system'
     ErrorCNameTwice = 1133,     // A bare '@c' (or '@c(system)' where the module is already system) on a fn whose module already gives it that C naming
-    ErrorBadExtern = 1134,      // 'extern' on a declaration an importer needs the body of -- inline, generic, a trait's or a generic type's method -- or on something not a fn or a global
+    ErrorBadExtern = 1134,      // 'extern' on a declaration an importer needs the body of -- inline, generic, an intrinsic, a trait's or a generic type's method -- or on something not a fn or a global
     ErrorCNameConflict = 1152,  // One C name declared two ways in one compile: functions of differing signatures, globals of differing type or permission, a function and a global, or a symbol the compiler generates itself
     ErrorCNameDefTwice = 1153,  // One C name defined twice in one compile: two bodies the linker would see, or two defined globals
 

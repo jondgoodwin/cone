@@ -186,8 +186,15 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     // into each caller and emits no symbol, so a reference to it would point at
     // nothing. An anonymous 'inline' function arrives the same way, as a name
     // use of the lifted declaration. The reference type is still built below,
-    // so the rest of the function type checks without follow-on noise.
+    // so the rest of the function type checks without follow-on noise. Nor has
+    // an intrinsic: the compiler expands its meaning, or its fallback body, at
+    // each call.
     if (nameUseNames(node->vtexp, FnDclTag)
+        && (((FnDclNode*)nameUseGetDcl((NameUseNode*)node->vtexp))->dclinfo.facts & DclIntrinsic)) {
+        errorMsgNode(node->vtexp, ErrorInlineRef,
+            "May not borrow a reference to an intrinsic. The compiler expands what it does at each call, so it has no code of its own to point at.");
+    }
+    else if (nameUseNames(node->vtexp, FnDclTag)
         && (nameUseGetDcl((NameUseNode*)node->vtexp)->flags & FlagInline)) {
         errorMsgNode(node->vtexp, ErrorInlineRef,
             "May not borrow a reference to an inline function. Its body is copied into each caller, so it has no code of its own to point at.");

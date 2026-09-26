@@ -95,7 +95,10 @@ apart than usual.
 compiler has no `trust` keyword, so a program using one fails as an unknown
 name. The operations `trust` is meant to gate — raw pointer dereference,
 indexing and arithmetic — all compile with no guard anywhere, which means none
-of the checks it would switch off are switched on to begin with.
+of the checks it would switch off are switched on to begin with. The same holds
+for the intrinsics whose misuse breaks memory safety (`finalize`, the slice
+constructors, `readRaw`, `writeRaw`, `moveRaw`): the compiler's registry marks
+each as needing `trust`, and nothing yet asks for it (`refintrinsic.html`).
 
 **`trust` is meant to be narrow.** It is framed as a remedy for compiler
 over-reach — constraints that are "sometimes overzealous, preventing behavior

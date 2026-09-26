@@ -696,6 +696,14 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
     // '@initpure' there too, before or after it: a function a module's 'init'
     // may call, as 'init' itself is declared (refmodule.html, "Dynamic
     // initialization"). Recorded, not yet checked
+    // '@intrinsic' there too, first or after the others: a function whose meaning
+    // the compiler supplies, declared in core (refintrinsic.html). Where it may
+    // be and what it must say is checked by intrinsicDclNameRes
+    int intrinsic = 0;
+    if (lexIsToken(IntrinsicAttrToken)) {
+        intrinsic = 1;
+        lexNextToken();
+    }
     int initpure = 0;
     if (lexIsToken(InitPureToken)) {
         initpure = 1;
@@ -706,8 +714,18 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
         initpure = 1;
         lexNextToken();
     }
+    if (!intrinsic && lexIsToken(IntrinsicAttrToken)) {
+        intrinsic = 1;
+        lexNextToken();
+    }
     if (initpure)
         fnnode->dclinfo.facts |= DclInitPure;
+    // An intrinsic's meaning is the compiler's, so its body is optional: the
+    // fallback a back end with no lowering of its own uses
+    if (intrinsic) {
+        fnnode->dclinfo.facts |= DclIntrinsic;
+        mayflags |= ParseMaySig;
+    }
 
     // Process function name, if provided
     if (lexIsToken(IdentToken)) {
@@ -765,6 +783,8 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
         const char *why = NULL;
         if (fnnode->namesym == NULL)
             why = "An anonymous function has no name for '@c' to give C spelling to.";
+        else if (intrinsic)
+            why = "An intrinsic is expanded where it is called and leaves no symbol for '@c' to name.";
         else if (fnnode->genericinfo)
             why = "A generic function has a symbol per instance, each spelled with its type arguments, so '@c' cannot name them.";
         else if (fnnode->flags & FlagInline)

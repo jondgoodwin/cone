@@ -53,12 +53,16 @@ enum DclFacts {
                               // is given (modLifecycle). The program's stitched init or
                               // final calls it, so a library compile exports it whatever
                               // its visibility (dclIsExported)
-    DclIncluded   = 0x0100    // Type only: declared by the package's generated include
+    DclIncluded   = 0x0100,   // Type only: declared by the package's generated include
                               // file (incFileGenerate), so an importer holds values of
                               // it -- through a field or a signature, whether or not it
                               // can name the type -- and calls its public methods. A
                               // library compile exports them as it would a public
                               // type's (dclIsExported)
+    DclIntrinsic  = 0x0200    // Fn only: '@intrinsic', a function whose meaning the
+                              // compiler's registry supplies (intrinsicDclNameRes). Written
+                              // by the parser, kept by joining. It never has a symbol:
+                              // every call is expanded where it is made
 };
 
 #define dclInfoInit(dclinfo) ((dclinfo)->owner = NULL, (dclinfo)->facts = 0, (dclinfo)->cname = NULL)

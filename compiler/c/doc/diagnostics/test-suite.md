@@ -74,6 +74,7 @@ as that group's own subject requires.
 | 2 | `module` | Modules, namespaces, `import`/`extern` |
 | 2 | `exception` | Exception handling |
 | 2 | `concurrency`, `safety`, `meta` | Concurrency; trust and raw pointers; metaprogramming |
+| 2 | `intrinsic` | Intrinsics: `@intrinsic` declarations, the registry's checks, each intrinsic's meaning, lowered and through its fallback body |
 
 One row is reserved rather than built. **`stream` will own the `<-` append
 operator** and whatever iteration protocol arrives with collections. `<-` is

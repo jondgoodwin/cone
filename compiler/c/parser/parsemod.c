@@ -637,12 +637,15 @@ int parseCAttr(DclInfo *dclinfo, int onmod) {
 }
 
 // Report 'extern' on a function whose body an importer must have to use it:
-// an inline function is expanded where it is called, and a generic one is
-// instantiated there, so neither has a definition elsewhere to reach
+// an inline function or an intrinsic is expanded where it is called, and a
+// generic one is instantiated there, so none has a definition elsewhere to reach
 void parseExternFnCheck(FnDclNode *fn) {
     if (!(fn->flags & FlagExtern))
         return;
-    if (fn->flags & FlagInline)
+    if (fn->dclinfo.facts & DclIntrinsic)
+        errorMsgNode((INode*)fn, ErrorBadExtern,
+            "An intrinsic is expanded where it is called, from the compiler's own meaning for it, so it has no definition elsewhere for 'extern' to name. Declare it without 'extern'.");
+    else if (fn->flags & FlagInline)
         errorMsgNode((INode*)fn, ErrorBadExtern,
             "An inline function is expanded where it is called, so it has no definition elsewhere for 'extern' to name. Write its body.");
     else if (fn->genericinfo)

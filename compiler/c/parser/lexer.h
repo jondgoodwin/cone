@@ -141,6 +141,7 @@ enum TokenTypes {
     UnsizedToken,  // '@unsized'
     CAttrToken,    // '@c': C naming, on a 'mod' line or a 'fn'
     InitPureToken, // '@initpure': after 'fn', a function a module's 'init' may call, 'init' among them
+    IntrinsicAttrToken, // '@intrinsic': after 'fn' in core, a function whose meaning the compiler supplies
     ExtendsToken,  // 'extends'
     MixinToken,    // 'mixin', retired: kept a keyword so the parser can point it at 'is'
     UseToken,      // 'use'

@@ -525,9 +525,12 @@ Concrete hazards, each of which has been gotten wrong here before:
   aggregate load would hide. With the flag, it GEPs. Getting the flag wrong is
   not a type error.
 - **Mutating intrinsics take self as an lvalue pointer; non-mutating ones take a
-  value.** The intrinsic switch dispatches on the LLVM *type kind* of argument
-  0, so both land in the same branch and are told apart only by which intrinsic
-  it is.
+  value.** The switch for the intrinsics built in C dispatches on the LLVM *type
+  kind* of argument 0, so both land in the same branch and are told apart only by
+  which intrinsic it is. The intrinsics declared in core never reach that switch:
+  `genlDeclaredIntrinsic` decides each by its kind and its instance's Cone type
+  ([intrinsic](../nodes/intrinsic.md)), and a new intrinsic goes there, never
+  into the LLVM-type switch.
 - **`genlRecast` picks by generated LLVM kinds, not Cone tags** — deliberately,
   because a reference is not always a plain pointer once fat pointers are in
   play.
@@ -678,12 +681,14 @@ variables.
 | | `genlBreak`, `genlReturn` | phi edges and dealias; inlined-return-as-break |
 | `genllvm/genlexpr.c` | `genlExpr`, `genlAddr`, `genlStore` | the value / address / store trio — section 4 |
 | | `genlFnCallInternal` | indirect calls, virtual dispatch, generator-level inlining, the intrinsic switch |
+| | `genlDeclaredIntrinsic` | the LLVM implementation of each intrinsic declared in core, by kind and Cone type |
 | | `genlConvert`, `genlRecast`, `genlIsType` | the three cast forms |
 | | `genlArrayIndex`, `genlBoundsCheck` | multi-dimensional GEP and its checks |
 | `genllvm/genlalloc.c` | `genlRefTypeSetup`, `genlallocref` | the `{region, perm, value}` header and its emission |
 | | `genlRegionHeader`, `genlRegionAlias`, `genlRegionDealias`, `genlRegionDeath` | the header a region method is handed; calling `alias`, `dealias` and `free` at each reference event; a death's finalizer, field releases and `free` |
 | | `genlHollowRelease`, `genlRegionDealiasPart`, `genlHollowDeath`, `genlReleasePart` | a hollowed variable's release: the death of a value with parts moved out, releasing only what stayed |
-| | `genlReleaseOwning`, `genlDealiasFlds`, `genlDealiasNodes` | releasing what a variable, a tuple's elements or a dead value's fields own, and replaying flow's lists |
+| | `genlReleaseOwning`, `genlDealiasFlds`, `genlReleaseFlds`, `genlDealiasNodes` | releasing what a variable, a tuple's elements or a dead value's fields own, and replaying flow's lists |
+| | `genlFinalizeAt` | the `finalize` intrinsic: a death in place, less the `free` |
 | `ir/types/reference.h` | `enum ManagedRefFields` | `RegionField`, `PermField`, `ValueField` |
 | `ir/name.c` | `nameSymbol`, `nameType`, `nameVtable`, `nameVtableImpl`, `nameVtableList` | spelling a symbol from a node's owner chain and facts, and a type argument within it — the rules are in [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols" |
 | `ir/dclinfo.c` | `dclInfoJoin` | writes the declaration facts where a declaration joins its namespace |
