@@ -21,8 +21,17 @@ enum Timers {
     OptTimer,
     CodeGenTimer,
     SetupTimer,
+    FlowTimer,      // Data flow analysis: runs inside SemTimer's span, per function
     TimerCount
 };
+
+// The timer now running, so a timer started inside another's span can hand
+// the time back to it when it stops
+extern size_t timerCurrent;
+
+// Whether the per-function timers run (FlowTimer). Set for -V 1 and up, so an
+// ordinary compile does not pay two clock reads per function.
+extern int timerFine;
 
 // Start timing ticks for a specific timer
 void timerBegin(size_t aTimer);

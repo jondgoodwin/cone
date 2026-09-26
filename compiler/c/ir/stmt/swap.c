@@ -83,6 +83,8 @@ void swapFlow(FlowState *fstate, SwapNode **nodep) {
     assignBorrowLifetimeCheck(node->lval, lvalscope, ((IExpNode*)node->rval)->vtype);
     assignBorrowLifetimeCheck(node->rval, rvalscope, ((IExpNode*)node->lval)->vtype);
 
+    flowGateAssigned(fstate, node->lval);
+    flowGateAssigned(fstate, node->rval);
     flowLoadValue(fstate, &node->lval);
     flowLoadValue(fstate, &node->rval);
 }

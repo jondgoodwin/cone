@@ -169,10 +169,13 @@ void arrayLitFlow(FlowState *fstate, ArrayNode **nodep) {
 
     // List form: each element is its own holder
     if (arrlit->dimens->used == 0) {
+        uint16_t inflight = fstate->inflightcnt;
         for (nodesFor(arrlit->elems, cnt, elemsp)) {
             flowLoadValue(fstate, elemsp);
             flowHandleMoveOrCopy(elemsp);
+            flowGateOperand(fstate, *elemsp);
         }
+        flowGateOperandsEnd(fstate, inflight);
         return;
     }
 

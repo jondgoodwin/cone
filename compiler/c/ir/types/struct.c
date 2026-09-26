@@ -30,6 +30,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->genericinfo = NULL;
     snode->tagnbr = 0;
     snode->spans = NULL;
+    snode->carriesborrow = CarriesBorrowUnknown;
     return snode;
 }
 
@@ -44,6 +45,9 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     newnode->genericinfo = NULL;
     newnode->lifecycle = NULL;
     newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
+    // An instance's fields are the generic's with its parameters bound, so
+    // whether they carry a borrow is the instance's own question
+    newnode->carriesborrow = CarriesBorrowUnknown;
 
     // Within the copy, 'Self' is the copy. A method's self parameter is declared
     // as a use of 'Self' (parsetype.c), and name resolution has already pointed

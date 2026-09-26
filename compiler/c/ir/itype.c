@@ -39,6 +39,101 @@ INode *itypeGetDerefTypeDcl(INode *node) {
     return typnode;
 }
 
+// Set when an answer reached a struct that cannot give a final one: a struct
+// still being asked (a cycle through owning references or pointers) or one
+// not yet type checked. A "no" that depended on it is not remembered.
+static int itypeCarriesProvisional = 0;
+
+static int itypeStructCarriesBorrow(StructNode *type) {
+    switch (type->carriesborrow) {
+    case CarriesBorrowYes:
+        return 1;
+    case CarriesBorrowNo:
+        return 0;
+    case CarriesBorrowAsking:
+        // Reached again round a cycle: whatever this struct carries is found
+        // where it was first asked, so the loop adds nothing
+        itypeCarriesProvisional = 1;
+        return 0;
+    default:
+        break;
+    }
+    int svprovisional = itypeCarriesProvisional;
+    itypeCarriesProvisional = 0;
+    type->carriesborrow = CarriesBorrowAsking;
+
+    int carries = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&type->fields, cnt, nodesp)) {
+        if (itypeCarriesBorrow(((IExpNode *)*nodesp)->vtype)) {
+            carries = 1;
+            break;
+        }
+    }
+    // A closed trait or enum holds whichever of its variants the value is.
+    // An open trait's implementors are not known here: a value of one is held
+    // only through a reference, which answers for itself.
+    if (!carries && type->derived) {
+        for (nodesFor(type->derived, cnt, nodesp)) {
+            if (itypeCarriesBorrow(*nodesp)) {
+                carries = 1;
+                break;
+            }
+        }
+    }
+
+    // A borrow found is final once the struct is checked. A "no" is final only
+    // for a checked struct whose answer did not lean on one still being asked.
+    if (!(type->flags & TypeChecked))
+        itypeCarriesProvisional = 1;
+    if (carries && (type->flags & TypeChecked))
+        type->carriesborrow = CarriesBorrowYes;
+    else if (!carries && !itypeCarriesProvisional)
+        type->carriesborrow = CarriesBorrowNo;
+    else
+        type->carriesborrow = CarriesBorrowUnknown;
+    itypeCarriesProvisional |= svprovisional;
+    return carries;
+}
+
+// May a value of this type hold a borrowed reference?
+int itypeCarriesBorrow(INode *type) {
+    if (type == NULL)
+        return 0;
+    switch (type->tag) {
+    // A name, or an alias, answers for the type it stands for. One that names
+    // no type -- a generic's parameter in its template -- answers nothing.
+    case NameUseTag:
+        return isTypeNode(type) ? itypeCarriesBorrow(itypeGetTypeDcl(type)) : 0;
+    case AliasDclTag:
+        return itypeCarriesBorrow(((AliasDclNode *)type)->target);
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+        if (itypeGetTypeDcl(((RefNode *)type)->region) == borrowRef)
+            return 1;
+        return itypeCarriesBorrow(((RefNode *)type)->vtexp);
+    case PtrTag:
+        return itypeCarriesBorrow(((StarNode *)type)->vtexp);
+    case ArrayTag:
+        return itypeCarriesBorrow(arrayElemType(type));
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (itypeCarriesBorrow(*nodesp))
+                return 1;
+        }
+        return 0;
+    }
+    case StructTag:
+        return itypeStructCarriesBorrow((StructNode *)type);
+    default:
+        return 0;
+    }
+}
+
 // Look for named field/method in type
 INode *iTypeFindFnField(INode *type, Name *name) {
     switch (type->tag) {

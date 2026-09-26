@@ -9,6 +9,7 @@
 
 #include <assert.h>
 #include <memory.h>
+#include <stdio.h>
 
 // Is this expression a borrowed reference -- one that does not own what it
 // points at? Its permission does not matter: a '&uni' is the only path to its
@@ -621,9 +622,12 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         INode **nodesp;
         uint32_t cnt;
         uint32_t index = 0;
+        uint16_t inflight = fstate->inflightcnt;
         for (nodesFor(((TupleNode *)*nodep)->elems, cnt, nodesp)) {
             flowLoadValue(fstate, nodesp);
+            flowGateOperand(fstate, *nodesp);
         }
+        flowGateOperandsEnd(fstate, inflight);
         break;
     }
     case DerefTag:
@@ -928,4 +932,135 @@ void flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp, INode *le
 // Back out of current scope
 void flowScopePop(size_t startpos) {
     gVarFlowStackPos = startpos;
+}
+
+// *********************
+// The gate: which functions hold a borrow in a way only a walk following each
+// path could check. It is set as this walk goes, at O(1) per node (a type's
+// answer is remembered, itypeCarriesBorrow), and nothing reads it yet.
+// *********************
+
+int flowGateCountAll = 0;
+
+// Functions walked, functions gated, and functions each trigger fired in
+static uint32_t flowGateFns = 0;
+static uint32_t flowGateGated = 0;
+static uint32_t flowGateByTrigger[4] = { 0, 0, 0, 0 };
+
+// Is this type (a declaration) a bare borrowed reference?
+static int flowGateIsBorrowRef(INode *typedcl) {
+    return (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag || typedcl->tag == VirtRefTag)
+        && itypeGetTypeDcl(((RefNode *)typedcl)->region) == borrowRef;
+}
+
+// A name standing for a type, resolved to what it names; any other type node
+// as it is
+static INode *flowGateTypeDcl(INode *type) {
+    return (type->tag == NameUseTag || type->tag == AliasDclTag) && isTypeNode(type)
+        ? itypeGetTypeDcl(type) : type;
+}
+
+void flowStateInit(FlowState *fstate, FnSigNode *fnsig) {
+    fstate->fnsig = fnsig;
+    fstate->scope = 1;
+    fstate->gate = 0;
+    fstate->inflightcnt = 0;
+}
+
+// A bare borrowed reference handed out keeps its existing check (its scope
+// number); a borrow inside another value has none
+void flowGateResultAsk(FlowState *fstate, INode *type) {
+    INode *typedcl = flowGateTypeDcl(type);
+    if (!flowGateIsBorrowRef(typedcl) && itypeCarriesBorrow(typedcl))
+        fstate->gate |= FlowGateResult;
+}
+
+void flowGateCallAsk(FlowState *fstate, Nodes *args) {
+    INode **argsp;
+    uint32_t cnt;
+    INode *storer = NULL;
+    for (nodesFor(args, cnt, argsp)) {
+        INode *type = ((IExpNode *)*argsp)->vtype;
+        if (type->tag != RefTag && type->tag != NameUseTag && type->tag != AliasDclTag)
+            continue;
+        RefNode *argtype = (RefNode *)flowGateTypeDcl(type);
+        if (argtype->tag == RefTag && itypeGetTypeDcl(argtype->region) == borrowRef
+            && (permGetFlags(argtype->perm) & MayWrite) && itypeCarriesBorrow(argtype->vtexp)) {
+            storer = *argsp;
+            break;
+        }
+    }
+    if (storer == NULL)
+        return;
+    for (nodesFor(args, cnt, argsp)) {
+        if (*argsp != storer && itypeCarriesBorrow(((IExpNode *)*argsp)->vtype)) {
+            fstate->gate |= FlowGateStore;
+            return;
+        }
+    }
+}
+
+// The variable at the root of a borrowed place, or NULL for one not rooted in
+// a variable. A place reached through a reference is keyed by that reference.
+static VarDclNode *flowGatePlaceRoot(INode *place) {
+    while (1) {
+        if (isNameUseNode(place) && isExpNode(place)) {
+            INode *dcl = ((NameUseNode *)place)->dclnode;
+            return dcl->tag == VarDclTag ? (VarDclNode *)dcl : NULL;
+        }
+        switch (place->tag) {
+        case FldAccessTag:
+        case ArrIndexTag:
+            place = ((FnCallNode *)place)->objfn;
+            break;
+        case DerefTag:
+            place = ((StarNode *)place)->vtexp;
+            break;
+        case CastTag:
+            place = ((CastNode *)place)->exp;
+            break;
+        default:
+            return NULL;
+        }
+    }
+}
+
+void flowGateOperandAsk(FlowState *fstate, INode *operand) {
+    while (operand->tag == CastTag)
+        operand = ((CastNode *)operand)->exp;
+    if (operand->tag != BorrowTag && operand->tag != ArrayBorrowTag)
+        return;
+    VarDclNode *root = flowGatePlaceRoot(((RefNode *)operand)->vtexp);
+    if (root == NULL)
+        return;
+    if (fstate->inflightcnt == FlowInflightMax) {
+        fstate->gate |= FlowGateInCall;
+        return;
+    }
+    fstate->inflight[fstate->inflightcnt++] = root;
+}
+
+void flowGateUse(FlowState *fstate, VarDclNode *var) {
+    for (uint16_t i = 0; i < fstate->inflightcnt; ++i) {
+        if (fstate->inflight[i] == var) {
+            fstate->gate |= FlowGateInCall;
+            return;
+        }
+    }
+}
+
+void flowGateCount(FlowState *fstate) {
+    ++flowGateFns;
+    if (fstate->gate)
+        ++flowGateGated;
+    for (int bit = 0; bit < 4; ++bit) {
+        if (fstate->gate & (1 << bit))
+            ++flowGateByTrigger[bit];
+    }
+}
+
+void flowGatePrint() {
+    printf("Flow gate: %u of %u functions (holder %u, result %u, store %u, in-call %u)\n\n",
+        flowGateGated, flowGateFns, flowGateByTrigger[0], flowGateByTrigger[1],
+        flowGateByTrigger[2], flowGateByTrigger[3]);
 }

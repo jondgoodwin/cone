@@ -359,11 +359,15 @@ void assignFlow(FlowState *fstate, AssignNode **nodep) {
     if (node->lval->tag == VTupleTag) {
         INode **lvalp;
         uint32_t cnt;
-        for (nodesFor(((TupleNode*)node->lval)->elems, cnt, lvalp))
+        for (nodesFor(((TupleNode*)node->lval)->elems, cnt, lvalp)) {
             assignFlowLvalReads(fstate, lvalp);
+            flowGateAssigned(fstate, *lvalp);
+        }
     }
-    else
+    else {
         assignFlowLvalReads(fstate, &node->lval);
+        flowGateAssigned(fstate, node->lval);
+    }
 
     // Handle tuple decomposition for parallel assignment
     INode *lval = node->lval;

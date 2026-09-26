@@ -186,11 +186,14 @@ void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *
 void typeLitFlow(FlowState *fstate, FnCallNode **nodep) {
     INode **argsp;
     uint32_t cnt;
+    uint16_t inflight = fstate->inflightcnt;
     for (nodesFor((*nodep)->args, cnt, argsp)) {
         INode **valp = (*argsp)->tag == NamedValTag ? &((NamedValNode *)*argsp)->val : argsp;
         flowLoadValue(fstate, valp);
         flowHandleMoveOrCopy(valp);
+        flowGateOperand(fstate, *valp);
     }
+    flowGateOperandsEnd(fstate, inflight);
 }
 
 void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *arrlit) {

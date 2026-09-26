@@ -373,6 +373,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
             BreakRetNode *brknode = (BreakRetNode *)*nodesp;
             INode **brkexp = &brknode->exp;
             INode *result = *brkexp;
+            flowGateResult(fstate, result);
             if (result->tag != NilLitTag)
                 flowLoadValue(fstate, brkexp);
             flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, result, *nodesp);
@@ -408,6 +409,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         returnFlow((BreakRetNode *)*nodesp);
         INode *result = *retexp;
         if (result != unknownType) {
+            flowGateResult(fstate, result);
             flowLoadValue(fstate, retexp);
             // A returned value is moved to the caller, so it must be one this
             // function may move: not a value it reached through a borrow
@@ -420,6 +422,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
     {
         INode **retexp = &((BreakRetNode *)*nodesp)->exp;
         INode *result = *retexp;
+        flowGateResult(fstate, result);
         if (result->tag != NilLitTag)
             flowLoadValue(fstate, retexp);
         flowScopeDealias(svpos, &((BreakRetNode *)*nodesp)->dealias, result, *nodesp);
@@ -429,6 +432,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         BreakRetNode *brknode = (BreakRetNode *)*nodesp;
         INode **brkexp = &brknode->exp;
         INode *result = *brkexp;
+        flowGateResult(fstate, result);
         if (result->tag != NilLitTag)
             flowLoadValue(fstate, brkexp);
         flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, result, *nodesp);

@@ -83,6 +83,7 @@ into a scan.
 | a generic instance | the type arguments, compared with `itypeIsSame` | `genericMemoize` |
 | a named type's LLVM type | the `llvmtype` field | `genlType` |
 | a reference type's LLVM type | the interned `typeinfo` | `genlType` |
+| whether a struct carries a borrow | the `carriesborrow` field, once the struct is type checked | `itypeCarriesBorrow` |
 
 **The `TypeChecked` mark is not primarily an optimization** — type check lowers
 and replaces nodes, so a second walk corrupts the declaration. It is a
@@ -96,8 +97,48 @@ inner call hits the half-built instance rather than cloning again.
 
 `shared/timer.h` defines the phases the compiler times itself on: `LoadTimer`,
 `LexTimer`, `ParseTimer`, `SemTimer`, `GenTimer`, `VerifyTimer`, `OptTimer`,
-`CodeGenTimer`. That split is the first place to look — it separates the front
-end from LLVM's own optimization and code generation, which usually dominate.
+`CodeGenTimer`, and `FlowTimer`. `-V 1` prints them. That split is the first
+place to look — it separates the front end from LLVM's own optimization and
+code generation, which usually dominate.
+
+**`FlowTimer` is carved out of `SemTimer`.** Flow runs per function, inside type
+check (and a type check can be nested in another function's), so
+`fnDclTypeCheck` starts the flow timer round `blockFlow` and then hands the time
+back to whichever timer was running. `-V 1`'s "Analysis" is therefore semantic
+analysis *without* flow, and Analysis + Flow is what an older compiler reported
+as Analysis. Being two clock reads per function, it runs only when `-V 1` or
+more asks (`timerFine`). `-V 2` adds the count of functions flow's gate marked
+([Flow](../phases/flow.md), "The gate").
+
+**`tools/flowbench/flowbench.py`** measures flow's cost before and after a
+change: `python tools/flowbench/flowbench.py --base <master's conec>`. It
+compiles the packages' sources, every suite file on its own, and the stress
+files `tools/flowbench/genstress.py` writes (each a group of statements holding a
+`&mut` across a loop that branches on it, repeated), taking each file's minimum
+of 5 runs per timer with the two compilers' runs interleaved. It prints both
+compilers' flow, front end (Analysis + Flow) and total, and the borrow-freezing
+budget measured against the base. One compiler against a copy of itself reads
+within 1% on the suite (flow −0.8%, front end −0.2%, total −0.2%, at 10 runs);
+a single-file input moves a few percent from run to run, and `--runs 10`
+steadies it. A single unrepeated compile varies by ±10%.
+
+The baseline, on master `b5e182e1` with the flow timer added, 26 September 2026
+(min of 5 per file, summed; ms). The gate column is from `-V 2` with the gate in
+place, and is how many functions borrow freezing's own walk would visit:
+
+| Input | Files | Lines | Flow | Front end | Total | Flow share | Gated functions |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| packages | 14 | 3,348 | 0.63 | 4.35 | 227 | 0.3% | 29 of 687 |
+| suite | 732 | 36,181 | 22.0 | 144 | 2,149 | 1.0% | 242 of 7,482 |
+| `many_500` (every function holds a `&mut` across a loop) | 1 | 22,505 | 2.59 | 14.0 | 130 | 2.0% | 500 of 512 |
+| `plain_500` (the same, no borrow) | 1 | 18,505 | 2.27 | 12.4 | 122 | 1.9% | 0 of 512 |
+| `big_250` (one function) | 1 | 2,509 | 0.31 | 1.71 | 68 | 0.5% | 1 of 13 |
+| `big_1000` (one function) | 1 | 10,009 | 1.26 | 6.70 | 995 | 0.1% | 1 of 13 |
+| `nest_3` (loops nested 3 deep) | 1 | 44,505 | 5.01 | 26.6 | 291 | 1.7% | 500 of 512 |
+| `flat_3` (the same loops in sequence) | 1 | 44,505 | 5.00 | 26.4 | 310 | 1.6% | 500 of 512 |
+
+Flow is linear (`big_1000` over `big_250`: 4× the code, 4× the flow time), and
+LLVM is almost all of every compile.
 
 For anything finer, instrument and compile the corpus:
 [Measuring](../diagnostics/measuring.md).

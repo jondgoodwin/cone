@@ -99,6 +99,10 @@ Visual Studio projects stay at the root.
   build description per package, compiles each package on its own with `conec`,
   and links with `conestd`. `tools/congo/README.md` is its guide and design;
   `python tools/congo/test_congo.py` checks it against a built `conec`.
+- `tools/flowbench/`: measures what flow analysis costs, before and after a
+  change (`flowbench.py --base <master's conec>`), over the packages, the suite
+  and the stress files `genstress.py` generates.
+  `compiler/c/doc/compiler/performance.md`, "Measuring it", holds the baseline.
 - `samples/`: sample Cone programs. `oslayer` tours the `libc` and `posix`
   packages and is built and run by `test_congo.py`, as is `math3d`'s example,
   `packages/math3d/examples/tour.cone`. `opengl` opens a window cleared to

@@ -47,7 +47,18 @@ typedef struct StructNode {
     GenericInfo *genericinfo;     // Link to generic parms, etc (or NULL if not generic)
     uint32_t tagnbr;        // If a tagged struct, this is the number in the tag field
     DclSpans *spans;        // Where each member of its braces sits in its file, in the order parsed (dclspan.h); NULL for none
+    uint8_t carriesborrow;  // itypeCarriesBorrow's remembered answer (CarriesBorrow*), once the type is checked
 } StructNode;
+
+// What StructNode.carriesborrow remembers of whether a value of the type may
+// hold a borrowed reference: not yet known, being asked (a cycle reached it
+// again), or the answer
+enum CarriesBorrow {
+    CarriesBorrowUnknown,
+    CarriesBorrowAsking,
+    CarriesBorrowNo,
+    CarriesBorrowYes
+};
 
 // A variant whose tag value has not been settled yet. The parser writes it before
 // looking for a value the author pinned, so that keeping a pinned value and

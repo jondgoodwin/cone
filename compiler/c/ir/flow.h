@@ -22,11 +22,54 @@
 typedef struct VarDclNode VarDclNode;
 typedef struct FnSigNode FnSigNode;
 
+// Why a function would need a walk that follows borrows along each path: the
+// gate, set as the walk meets each trigger. Nothing reads it yet; -V 2 counts it.
+enum FlowGate {
+    FlowGateHolder = 0x1,   // a local declared, assigned or swapped whose type carries a borrow
+    FlowGateResult = 0x2,   // a value a scope hands out carrying a borrow, not as a bare borrowed reference
+    FlowGateStore  = 0x4,   // a call with a '&mut X' argument, X carrying a borrow, beside another argument carrying one
+    FlowGateInCall = 0x8,   // a variable named while an operand's borrow of it waits for its call or literal
+};
+
+// How many operands' borrows the gate remembers waiting at once; past that,
+// the function is gated
+#define FlowInflightMax 8
+
 // Context used across the data flow pass for a specific function/method
 typedef struct FlowState {
     FnSigNode *fnsig;    // The type signature of the function we are within
     int16_t scope;      // Current block scope (2 = main block)
+    uint16_t gate;      // FlowGate bits found so far
+    uint16_t inflightcnt;   // How many of 'inflight' are in use
+    VarDclNode *inflight[FlowInflightMax];  // The variable each waiting operand's borrow is of
 } FlowState;
+
+// Start the flow state for a function with this signature
+void flowStateInit(FlowState *fstate, FnSigNode *fnsig);
+
+// The gate's triggers are inline tests in flowgate.h, which read node types
+// and so follow every node header; these are the questions they ask out of
+// line, once the quick test says the answer may matter
+
+// Set for -V 2, to ask every trigger and count each; otherwise the first one
+// found settles the gate
+extern int flowGateCountAll;
+
+// A value a return, break or block end hands out has this type
+void flowGateResultAsk(FlowState *fstate, INode *type);
+// A call of two or more arguments has one that is a borrowed reference
+void flowGateCallAsk(FlowState *fstate, Nodes *args);
+// An operand just walked may be a borrow
+void flowGateOperandAsk(FlowState *fstate, INode *operand);
+#define flowGateOperandsEnd(fstate, mark) ((fstate)->inflightcnt = (mark))
+
+// A variable is named while an operand's borrow waits: gate trigger when it is
+// the one borrowed. Called only when 'inflightcnt' is not zero.
+void flowGateUse(FlowState *fstate, VarDclNode *var);
+
+// Tally a function's gate once its walk is done, and print the tallies (-V 2)
+void flowGateCount(FlowState *fstate);
+void flowGatePrint();
 
 // Perform data flow analysis on a node whose value we intend to load
 // At minimum, we check that it is a valid, readable value

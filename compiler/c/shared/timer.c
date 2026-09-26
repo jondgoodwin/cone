@@ -10,6 +10,7 @@
 #include "timer.h"
 
 size_t timerCurrent = TimerCount;
+int timerFine = 0;
 uint64_t timerStamp = 0;
 uint64_t timers[TimerCount];
 
@@ -67,6 +68,7 @@ void timerPrint() {
     printf("  Lexer:      %.6g\n", timerGetSecs(LexTimer));
     printf("  Parse:      %.6g\n", timerGetSecs(ParseTimer));
     printf("  Analysis    %.6g\n", timerGetSecs(SemTimer));
+    printf("  Flow:       %.6g\n", timerGetSecs(FlowTimer));
     printf("  Gen:        %.6g\n", timerGetSecs(GenTimer));
     printf("  Verify:     %.6g\n", timerGetSecs(VerifyTimer));
     printf("  Optimize:   %.6g\n", timerGetSecs(OptTimer));

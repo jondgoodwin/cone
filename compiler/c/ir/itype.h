@@ -55,6 +55,11 @@ INode *itypeGetTypeDcl(INode *node);
 // Return node's type's declaration node (or vtexp if a ref or ptr)
 INode *itypeGetDerefTypeDcl(INode *node);
 
+// May a value of this type hold a borrowed reference: is it one, or an owning
+// reference, pointer, array, tuple or struct (a variant included) reaching one?
+// Remembered per struct once the struct is type checked.
+int itypeCarriesBorrow(INode *type);
+
 // Look for named field/method in type
 INode *iTypeFindFnField(INode *type, Name *name);
 

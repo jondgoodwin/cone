@@ -112,6 +112,9 @@ typedef struct DclSpans DclSpans;        // dclspan.h
 
 #include "stmt/program.h"
 
+// Inline tests that read the node types above
+#include "flowgate.h"
+
 #include "../corelib/corelib.h"
 
 #define TypeCheckLoopMax 256
