@@ -1,0 +1,214 @@
+// A scratch arena: an Arena held in a local variable, whose values live until
+// the local does and are reached through borrows with the local's lifetime.
+// Each function below is one case of how a scratch is used; each expected
+// value is worked out by hand from the rules:
+// - a value dies when its scratch does, at the end of the block holding it:
+//   the function's return, an early 'return', or a loop body's end;
+// - a scratch's values die newest first, and an inner scratch before an outer;
+// - a borrow into a scratch may be passed down, stored in another value of the
+//   same scratch or of a shorter-lived one, and used by a function the scratch
+//   was lent to, which may also allocate into it for its caller.
+//
+// What must NOT compile -- a borrow returned from the function holding its
+// scratch, or stored where it would outlive the scratch -- cannot be a test
+// here, since each test is a program that runs. The compiler's own suite pins
+// those refusals: test/cases/region/region_flow_arena_escape.cone. What a
+// failed block allocation does is tests/nomemory.cone's and
+// tests/overflow.cone's.
+//
+// THE HOLES, which compile today and read freed memory, so no check here can
+// pin what they print. Written out so a reader knows what is not yet safe:
+//
+//   fn consume(a Arena) {}
+//   fn freezing() i64 {
+//     mut a = Arena.empty();
+//     imm r = a.alloc(Fin[5]);
+//     consume(a);             // the scratch dies here, while r is still used:
+//     r.n;                    // nothing freezes a borrow's source
+//   }
+//
+//   struct Holder { pub r &mut Pt; }
+//   fn field() Holder {
+//     mut a = Arena.empty();
+//     Holder[a.alloc(Pt[1, 2])];   // a borrow in a field of a returned value:
+//   }                              // a field's borrow is not checked
+//
+// The first is the missing freezing rule; '{ imm b = a; } r.n' and
+// 'a <=> other' are the same hole. The second is a borrow held inside another
+// value, which carries no lifetime; returning a '+rc Holder[...]' or an
+// 'Option' holding the borrow, assigning 'outer = Holder[a.alloc(..)]',
+// pushing it onto an outer List, a call storing one argument in a field of
+// another, and returning one read back out of a list ('*seen[0usize]') are the
+// same hole. A third: swapping a borrow into an outer variable ('outer <=> r')
+// is not checked as storing it there.
+
+mod scratch;
+
+import testing use *;
+import arena use *;
+
+mut log = 0i64;
+fn note(d i64) { log = log * 10i64 + d; }
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { note(n); }
+}
+
+struct Pt { pub x i64; pub y i64; }
+
+// Refers to another value, which it does not own
+struct Watches {
+  pub n i64;
+  pub r &mut Fin;
+  fn final(self &uni) { note(n); }
+}
+
+// Values that are made and read in a scratch, and never leave it
+fn readBack() i64 {
+  mut s = Arena.empty();
+  imm p = s.alloc(Pt[3, 4]);
+  imm q = s.alloc(Pt[p.x + 1, p.y + 1]);
+  p.x + q.y;
+}
+
+fn bump(p &mut Pt) { p.x = p.x + 10; }
+fn getX(p &Pt) i64 { p.x; }
+
+// Borrows passed down to functions that write and read through them
+fn passDown() i64 {
+  mut s = Arena.empty();
+  imm p = s.alloc(Pt[1, 2]);
+  bump(p);
+  bump(p);
+  getX(p);
+}
+
+// A value of the scratch refers to others of it, built with the reference
+// and then pointed at another by assignment
+fn siblings() i64 {
+  mut s = Arena.empty();
+  imm x = s.alloc(Fin[1]);
+  imm w = s.alloc(Watches[2, x]);
+  imm y = s.alloc(Fin[3]);
+  w.r = y;
+  w.r.n;
+}
+
+// A shorter-lived scratch's value refers into a longer-lived one's
+fn innerRefersOuter() i64 {
+  mut outer = Arena.empty();
+  imm keep = outer.alloc(Fin[1]);
+  mut seen = 0i64;
+  {
+    mut inner = Arena.empty();
+    imm w = inner.alloc(Watches[3, keep]);
+    seen = w.r.n;
+  }
+  expectInt(log, 3, "the inner scratch's value died at its block's end");
+  seen;
+}
+
+// A callee with a scratch of its own, handed a borrow into its caller's
+fn helper(up &mut Fin) i64 {
+  mut mine = Arena.empty();
+  imm w = mine.alloc(Watches[2, up]);
+  imm f = mine.alloc(Fin[3]);
+  w.r.n + f.n;
+}
+
+fn nestedCalls() i64 {
+  mut s = Arena.empty();
+  imm f = s.alloc(Fin[1]);
+  helper(f) * 10 + f.n;
+}
+
+// The scratch lent to a function that allocates into it for its caller: what
+// it returns lives as long as the caller's scratch
+fn make(s &mut Arena, n i64) &mut Fin { s.alloc(Fin[n]); }
+
+fn allocForCaller() i64 {
+  mut s = Arena.empty();
+  imm x = make(&mut s, 4);
+  imm y = make(&mut s, 5);
+  x.n * 10 + y.n;
+}
+
+// An early return ends the scratch too, with what it held so far
+fn earlyReturn(stop Bool) i64 {
+  mut s = Arena.empty();
+  s.alloc(Fin[1]);
+  if stop { return 7; }
+  s.alloc(Fin[2]);
+  8;
+}
+
+// A scratch in a loop's body is a new one each time round, dying at the end
+// of each pass
+fn perPass() {
+  mut i = 1i64;
+  while i <= 3i64 {
+    mut s = Arena.empty();
+    s.alloc(Fin[i]);
+    s.alloc(Fin[i + 4i64]);
+    i = i + 1i64;
+  }
+}
+
+mut deaths = 0i64;
+struct Counted {
+  pub n i64;
+  fn final(self &uni) { deaths = deaths + 1i64; }
+}
+
+// Room for 1000 Counted in its first block, asked for up front. Each takes 24
+// bytes, its header and its 8: the k-th ends 32 + 24k bytes past the block's
+// start, and 24000 bytes of room end 24008 bytes past it, so k runs from 0 to
+// 999. The 1001st starts a second block.
+fn roomUpFront() {
+  mut s = Arena.withRoom(24000usize);
+  expectUInt(u64[s.blockCount()], 1, "the first block is there before any value");
+  mut i = 0i64;
+  while i < 1000i64 { s.alloc(Counted[i]); i = i + 1i64; }
+  expectUInt(u64[s.blockCount()], 1, "1000 values fit in the room asked for");
+  s.alloc(Counted[1000]);
+  expectUInt(u64[s.blockCount()], 2, "the 1001st needs another block");
+}
+
+// Less room than a block asks for a block's worth
+fn smallRoom() {
+  mut s = Arena.withRoom(16usize);
+  imm p = s.alloc(Pt[5, 6]);
+  s.alloc([100; 1i64]);
+  expectInt(p.x + p.y, 11, "values read back");
+  expectUInt(u64[s.blockCount()], 1, "16 bytes of room is a 4096-byte block");
+}
+
+fn main() i32 {
+  expectInt(readBack(), 8, "3 + 5, read from two values of the scratch");
+  expectInt(passDown(), 21, "written twice through a borrow passed down");
+  expectInt(siblings(), 3, "a value of the scratch refers to another");
+  expectInt(log, 321, "the scratch's values die newest first, each once");
+  log = 0;
+  expectInt(innerRefersOuter(), 1, "an inner scratch's value reads an outer one's");
+  expectInt(log, 31, "the inner scratch dies first, the outer at the return");
+  log = 0;
+  expectInt(nestedCalls(), 41, "the callee read its caller's value and its own");
+  expectInt(log, 321, "the callee's scratch dies at its return, the caller's at its own");
+  log = 0;
+  expectInt(allocForCaller(), 45, "values the callee allocated for its caller");
+  expectInt(log, 54, "and they die with the caller's scratch");
+  log = 0;
+  expectInt(earlyReturn(true), 7, "the early return");
+  expectInt(log, 1, "ends the scratch with what it held");
+  log = 0;
+  expectInt(earlyReturn(false), 8, "the normal return");
+  expectInt(log, 21, "ends it with both");
+  log = 0;
+  perPass();
+  expectInt(log, 516273, "each pass's scratch dies at the end of that pass");
+  roomUpFront();
+  expectInt(deaths, 1001, "every value across both blocks dies with the scratch");
+  smallRoom();
+  done();
+}

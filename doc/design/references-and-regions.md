@@ -26,7 +26,9 @@ tracing GC are unwritten, and the arena is written only as a library value: the
 value (`a.alloc(v)`), not by a `+` allocation through a region ref,
 which is handed neither the region value nor the value's type. It finalizes
 each value through `mem.finalize` when it dies, newest first; nothing yet
-pairs a reference with its arena's lifetime.
+pairs a reference with its arena's lifetime. Held in a local, an `Arena` is the
+**scratch arena**: `alloc` returns a borrow of that local, so the borrow rules
+are its whole safety, with their gaps (below, "Where each rule is enforced").
 
 The argument is in *Memory Managed Your Way* (`conesite/public/memory.html`) and
 `c:/src/progling/content/post/gradual-memory-management.md`. The origin is
@@ -332,7 +334,7 @@ gap:
 | move-ness infection | `refAdoptInfections` | type check |
 | may not write through this reference | `assignlvalrtype`, `swapFlow` | **flow** |
 | a moved-out value may not be used | `nameuseFlow` | **flow** |
-| a borrow may not outlive what it points at | `assignlvalrtype`, `returnFlowEscape`, `fnCallFlowStoredBorrow` | **flow**, at three sites only |
+| a borrow may not outlive what it points at | `assignlvalrtype` and `swapFlow` (one check, `assignBorrowLifetimeCheck`), `returnFlowEscape`, `fnCallFlowStoredBorrow` | **flow**, at three sites only |
 | a call's returned borrow lives as long as the narrowest borrow it was handed | `fnCallFinalizeArgs`, on a reference node of the call's own — or on the borrowed elements of a tuple of its own, where the call returns several values | type check |
 | aliasing of borrows | — | **nowhere** |
 | freezing a borrow's source | — | **nowhere** |
@@ -345,8 +347,8 @@ gap:
   semantics you did not ask for.
 - **`&mut T` is invariant.** Coming from a language where mutability implies
   more permissive subtyping, this is backwards.
-- **A borrow's lifetime is checked at three sites only.** Storing, returning,
-  and passing one beside a `&mut &T` argument. Capturing it, storing it in a
+- **A borrow's lifetime is checked at three sites only.** Storing (by
+  assignment, or by a swap in either direction), returning, and passing one beside a `&mut &T` argument. Capturing it, storing it in a
   field, or laundering it through a variable are all unchecked — see
   [Safety](safety.md).
 - **The permission on a reference is not the permission on the binding.**

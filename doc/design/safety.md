@@ -51,7 +51,8 @@ most consequential thing this note settles.
 | write through a read-only reference | **yes** | `assignlvalrtype`, `swapFlow` — `MayWrite` only |
 | write through an `imm` *field* | **yes** | `iexpGetLvalInfo`, taking the minimum of the field's permission and its container's |
 | read through a reference lacking `MayRead` | **yes** | `flowLoadThroughRef`, from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` — a pointer carries no permission and is not asked |
-| a borrow stored into a longer-lived place | **yes** | `assignlvalrtype`, one site |
+| a borrow stored into a longer-lived place | **yes** | `assignlvalrtype`, through `assignBorrowLifetimeCheck` |
+| a borrow swapped into a longer-lived place | **yes** | `swapFlow`, the same check once in each direction: a swap stores both ways, so neither side may outlive a borrow it receives from the other |
 | a borrow returned from a function | **yes** | `returnFlowEscape`, one site |
 | a borrow returned through a call, singly or as one of several values | **yes** | `fnCallFinalizeArgs` types the call with the narrowest argument borrow's scope, on a reference node or on a tuple's borrowed elements, which the two rows above then read |
 | a borrow passed beside a `&mut &T` argument the callee could store it through | **yes** | `fnCallFlowStoredBorrow`, one site |

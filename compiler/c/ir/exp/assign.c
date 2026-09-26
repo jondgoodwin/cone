@@ -217,11 +217,18 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
         var->hollowed = NULL;
     }
 
-    // Handle lifetime enforcement for borrowed references
-    // A slice (ArrayRefTag) borrows exactly as a single reference does, and so
-    // does a virtual reference (VirtRefTag), which doc/reference/refvirtref.html
-    // describes as a borrowed reference carrying a vtable; all three tags carry
-    // the same scope and are subject to the same rule.
+    assignBorrowLifetimeCheck(lval, lvalscope, rtype);
+    return 0;
+}
+
+// Refuse storing a value of type 'rtype' into 'lval', whose storage lives at
+// 'lvalscope', when the value is a borrowed reference the lval would outlive.
+// Assignment stores one way; swap stores both ways and so calls this twice.
+// A slice (ArrayRefTag) borrows exactly as a single reference does, and so
+// does a virtual reference (VirtRefTag), which doc/reference/refvirtref.html
+// describes as a borrowed reference carrying a vtable; all three tags carry
+// the same scope and are subject to the same rule.
+void assignBorrowLifetimeCheck(INode *lval, uint16_t lvalscope, INode *rtype) {
     RefNode* rvaltype = (RefNode *)rtype;
     RefNode* lvaltype = (RefNode *)((IExpNode*)lval)->vtype;
     if ((rvaltype->tag == RefTag || rvaltype->tag == ArrayRefTag || rvaltype->tag == VirtRefTag)
@@ -231,7 +238,6 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
             errorMsgNode(lval, ErrorInvType, "lval outlives the borrowed reference you are storing");
         }
     }
-    return 0;
 }
 
 // Perform data flow analysis between two single assignment nodes:
