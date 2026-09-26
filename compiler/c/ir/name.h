@@ -30,6 +30,10 @@ extern Name *thisName;  // "this"
 extern Name *dropName;  // "drop"
 extern Name *cloneName; // "clone" method
 extern Name *finalName; // "final": a type's finalizer method, and a module's own finalizer
+// "-final": an enum's 'final' as cloned into a variant that declares its own,
+// which the variant's drop calls right after that one. No source can spell it,
+// so it collides with no method a variant declares and no name reaches it.
+extern Name *enumFinalName;
 extern Name *initName;  // "init": a module's initializer
 
 // "tag" -- the discriminant's type. Recognized where a field's type is written

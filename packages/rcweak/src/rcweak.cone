@@ -29,11 +29,9 @@
 // strong owner, which keeps the value alive for as long as it is held:
 //
 //   w.upgrade()   an 'Option': Some strong owner, or None once the value has
-//                 died (see THE HOLE below before relying on it)
+//                 died; the owner goes when the Option does
 //   w.alive()     whether the value is still alive
-//   w.strong()    a strong owner, or the program ends if the value has died;
-//                 'if w.alive() { imm p = w.strong(); ... }' is the form that
-//                 costs nothing it does not give back
+//   w.strong()    a strong owner, or the program ends if the value has died
 //
 // A 'Weak[T]' moves when assigned or passed; 'w.clone()' makes a second one.
 // Each one going away counts one weak reference fewer, and the last one
@@ -46,17 +44,13 @@
 // whether its value is alive. A 'final' that asks a weak reference to its own
 // dying value is told it has died: 'alive()' is false, 'upgrade()' is None.
 //
-// THE HOLE. The compiler never releases an owning reference held inside an
-// Option, nor anything else held in an enum. So the strong owner a Some from
-// 'upgrade()' holds is counted and never let go: the value it names never dies,
-// and its memory is never freed. The same is true of '?+rcw-mut' allocation,
-// and of every region's. Until that is built, reach the value with 'alive()'
-// and 'strong()', which hand back a plain owner that is released like any
-// local, and use 'upgrade()' only where a value that lives on is harmless.
-// tests/gaps.cone pins it, and the other shapes the compiler does not yet
-// release: a strong owner used as a temporary without being bound
-// ('w.strong().n'), a 'Weak' moved away on one path only, and a 'Weak'
-// assigned over. Each keeps its count for ever.
+// THE HOLES. An owner is let go when what holds it goes: a local, a field, the
+// Option 'upgrade()' returns. The compiler does not yet release a few shapes,
+// for every region, and each keeps its count for ever: a strong owner used as
+// a temporary without being bound ('w.strong().n'), and so an Option of one
+// left unbound ('w.upgrade();'); a 'Weak' moved away on one path only; and a
+// 'Weak' assigned over. tests/gaps.cone pins each. Bind what 'strong()' and
+// 'upgrade()' return, as 'imm p = w.strong()' or 'match w.upgrade() {...}' does.
 //
 // How it is laid out. The region ref 'rcw' is the header before each value:
 // two counts. 'strong' is the number of strong owners. 'weak' is the number of
@@ -143,8 +137,8 @@ pub struct Weak[T] {
     hdr as usize != 0usize and (hdr as &rcw).strong > 0usize;
   }
 
-  // Some new strong owner of its value, or None if the value has died.
-  // Today the owner in a Some is never released (see THE HOLE, above).
+  // Some new strong owner of its value, or None if the value has died. The
+  // owner goes when the Option does.
   pub fn upgrade(self &) Option[+rcw-mut T] {
     if !self.alive() { return None[+rcw-mut T][]; }
     Some[+rcw-mut T][self.owner()];

@@ -35,7 +35,8 @@ bodies, so an inherited member may be named bare. Type
 check indexes fields, computes infectious flags, settles the discriminant's width,
 verifies that the fields the abstractions require are declared here, sets
 `TypeChecked` **before** methods, verifies their method requirements, then
-synthesizes a drop function. Generation lowers to a named LLVM struct, or to
+synthesizes a drop function — an enum's, dispatching on the tag, once its
+variants are laid out. Generation lowers to a named LLVM struct, or to
 padded variants, or to nothing at all.
 
 *Provenance: read from source.*
@@ -347,7 +348,7 @@ neither slots nor requirements and cost the trait nothing.
 `trait_typecheck_vref` pins all three, and
 `doc/reference/refvirtref.html`, "Type Restrictions", is the rule.
 | `namespace` | every named member: fields, methods, macros, overload sets, `Self`, **an enum's variants** — each a `StructNode`, bound at parse, and never a member of the enum's values: a lookup through a value passes one over (`fnCallLowerMethod`) — and what a fold admits — a **copy** of a folded field (a `FieldDclNode` with a `hop`) and an **alias** (`AliasDclNode`) for a folded method, overload set or macro method, for every member of an `extends` base but its fields, `final` and `clone` (those two are copied into `nodelist`, as a trait's defaults are), and for every member a sibling `use` admits. The copies and aliases live here only; `fields` and `nodelist` never hold one |
-| `dropfn` | NULL until type check settles the layout, and set as part of it, before any method is checked |
+| `dropfn` | NULL until type check settles the layout, and set as part of it, before any method is checked — an enum's once its variants are laid out, and only where one of them has something to do as it dies (type check, step 8a) |
 | `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols". The owner is a module, or the enum for a variant declared inside one — for an extension's copy of a base variant, the extension, so the copy's methods are spelled after it. Read for one thing besides naming: rejecting a variant declared outside its enum's module, through `dclInfoGetModule` |
 | `basetrait` | the **type expression** of the first abstraction an `is` names, or of the enum a variant belongs to — a `NameUseNode`, or an `FnCallNode` for a generic base. **Not a `StructNode*`.** Two helpers unwrap it and they answer different questions: `structBaseTraitDcl` takes **one hop**, to the declaration this type stands on, while `structGetBaseTrait` recurses to the **bottom-most** one. Picking the wrong one is how the infection loop hangs |
 | `extendsbase` | the **type expression** whatever base an `extends` names, on the same terms: the concrete type this enriches, or, **on an enum, the enum whose variants join this one's set**. **A separate slot from `basetrait` on purpose**: they are different assertions, a type may write both, and every walk that reads `basetrait` is asking about an abstraction — which is also why an enum's base is here and not there, since no substitution runs between the two enums. `structEnumBaseDcl` unwraps this one for an enum. A generic enum is named here with its arguments (`Option[T]`), an `FnCallNode` until type check replaces it with the instance |
@@ -657,7 +658,16 @@ inherited member bare, exactly as it names the type's own.
    **an enum's fields replace it** as clones in the enum's order, entered in the
    namespace (a name the variant already declared is `ErrorDupName`, reported on
    the clone, which keeps the enum's position). Either way, a clone of each
-   default method whose name the type does not declare. A
+   default method whose name the type does not declare. **An enum's `final` is
+   no default a variant overrides**: it runs for every value of the enum, after
+   the variant's own [Jon 26 Sep]. A variant declaring no `final` takes it as
+   its own; one declaring its own keeps a clone of the enum's beside it
+   (`structAddEnumFinal`), in `nodelist` under `enumFinalName`, `-final`, which
+   no source spells — so it is checked and generated as the variant's method,
+   its symbol spelled after the variant, but no name reaches it and it answers no
+   requirement — and the variant's drop calls the two in turn (step 8 of the
+   type check). An extension's own `final` is kept beside a copy's the same way
+   (`structEnumCloneOwnMethods`). A
    requirement with no body is inherited as it is, so that the name is in the
    dictionary: a trait passes it on, and a struct is told to implement it by
    type check. The new entries are hooked as they land. A placeholder whose
@@ -798,7 +808,9 @@ members", is the mechanism.
    list. And every abstraction past the first must require no fields at all
    (`ErrorIsaMulti`), since only one can hold position zero. An enum base is exempt
    both ways: it splices its fields in, so a variant declares none of them.
-6. `final` forces `MoveType`. `clone` does not clear it: no copy calls
+6. `final` forces `MoveType`, and so does a declared `is Move`, which marked the
+   type at name resolution and is counted again here so that it reaches as far as
+   an inferred move does. `clone` does not clear it: no copy calls
    `clone`, so a copy is bitwise, and a copyable type holding a finalizer or an
    owner would be finalized once per copy. Then propagate up the base
    chain, one `structBaseTraitDcl` hop per iteration, stopping at a built-in
@@ -813,23 +825,25 @@ members", is the mechanism.
 8. **`structSetDropFn`** — validate a `final` method, then, if any field's type
    has a drop function, synthesize a `drop` method, owned by the type so its
    symbol is spelled as any method's — `Bundle.drop`, `_CNvNt6Bundle4drop` —
-   calling `final` and then each droppable field. The
+   calling `final` and then each droppable field. A variant that keeps its
+   enum's `final` beside its own (name resolution, step 8) always gets one,
+   calling its own `final`, then the enum's, then each droppable field. The
    generated body is built pre-lowered and is **never type checked or flow
    analyzed**. **Before the methods, and load-bearing**: each method's flow pass
    asks `itypeGetDropFnDcl` about its by-value `self` and its locals of this
    type, and a `dropfn` still NULL then finalizes neither. The fields are
    checked by now, so every field's drop function is known. **A trait or an
-   enum synthesizes none**, and its `dropfn` stays NULL even when it declares
-   a `final`: that `final` is cloned into each variant or implementer and never
-   generated for the enum, so a drop call to it reached no function and the
-   compiler crashed. A value typed as the enum itself is therefore not
-   finalized; a drop dispatching on the tag to the variant's is unbuilt. A method
+   enum synthesizes none here**, and its `dropfn` is not its `final`: that
+   `final` is cloned into each variant or implementer and never generated for
+   the trait, so a drop call to it would reach no function. A method
    of a trait is its implementers' — cloned into them, required of them, never
-   generated for the trait — so a synthesized `drop` there was one more
+   generated for the trait — so a synthesized `drop` method there was one more
    requirement, which no variant or implementer could meet (its own `drop`
    takes its own `self`), and a generic enum's instance cloned it into each
-   variant, which the pre-lowered body cannot survive. An enum's common fields
-   are spliced into each variant, so the variant's own `drop` finalizes them.
+   variant, which the pre-lowered body cannot survive. An open trait holds no
+   value and has no drop at all; an enum's is its own kind, settled at step 8a.
+   An enum's common fields are spliced into each variant, so the variant's own
+   `drop` finalizes them.
    A module is given its `drop` the same way, its globals standing for the
    fields ([module](module.md), "Init and final"). The generated `drop` carries
    `TypeChecked` from birth, so step 9's walk passes it by.
@@ -843,6 +857,24 @@ members", is the mechanism.
    order of the walk; so the enum waits in the variants queue instead, worked
    before any member once the layout in flight is done. The enum's members are
    queued ahead of the variants it lays out, in the order written.
+   **The enum's drop is settled as the last of its variants is laid out**
+   (`structSetEnumDropFn`, at the end of `structLayoutVariants`, on either path).
+   A value typed as the enum dies as the variant it holds [Jon 26 Sep], so the
+   enum has a drop exactly when one of its variants has anything to do as it
+   dies (`itypeNeedsFinal`: a drop, or a field holding an owning reference), and
+   each instance of a generic enum is asked on its own — `Option[i32]` has none,
+   `Option[Fin]` one, `Option[&Fin]` none and stays a bare pointer. It is a
+   function of the enum, `drop`, owned by it so its symbol is `E.drop`, public
+   as a struct's is, and **not a method**: an enum's methods are its variants'
+   (requirements on them, defaults cloned into them, generated for none as the
+   enum's), so without `FlagMethFld` it is neither cloned nor required, and is
+   generated for the enum as its static functions are. Its body is an empty
+   block; generation builds the real one from the layout (`structIsEnumDropFn`,
+   `genlEnumDrop`): the tag picks the variant, whose death runs in place — its
+   drop, then the owning references its fields hold. Nothing holding the enum by
+   value is laid out before this: a type holding it while one of its variants
+   is in flight is refused as a cycle (`ErrorNoSize`), so every holder's own
+   drop sees the enum's.
 
 Steps 9 to 11 are `structCheckMembers`, run from the members queue:
 
@@ -884,9 +916,11 @@ one in its `is` list like any trait (first or not; either way it lands in
 
 The declared trait lives in `traits` and the grant in the flag, so a type is
 asked "is it Move" through `itypeIsMove`, never by looking for `moveTrait` in
-its list. What a declaration reaches is the declaring node only: a trait
-declaring `is Move` does not make its implementers move, and a variant
-declaring it does not make its enum move, as `@move` on either did not. Nothing
+its list. A declaration reaches exactly as far as an inferred move does (type
+check, step 6): up the base chain, so **a variant declaring it makes its enum
+move** — if any variant moves, the enum moves [Jon 26 Sep] — and an implementer
+declaring it marks its open trait too, as an inferred move always has. It never
+reaches down: a trait declaring `is Move` does not make its implementers move. Nothing
 in the language asks the question yet: `where` and a compile-time `if` are not
 built, and the expression `v is Move` is the variant test, which refuses a value
 without a tag.
@@ -1418,6 +1452,17 @@ Per-field release is not flow's — it is `genlDealiasFlds` at generation, walki
 name it was written with, so a typedef of an owning reference stands there as a
 `NameUseNode` and matches no region read raw.
 
+**An enum is destroyed the same way, through its own drop** (type check, step
+8a): a value typed as the enum gets the call, and the drop releases what the
+variant's fields own as well, so a value typed as an enum releases its
+owners on the stack where a struct's are not released. Two consequences are
+flow's. A copy of an enum whose variant holds a counted reference — or of a
+struct holding such an enum — adds a holder to it ([Flow](../phases/flow.md),
+"The count counts holders"), or each copy's drop would release the one owner
+again. And a match's binding is the matched value under its variant's name, so
+it owns nothing and the matched value is what the scope releases (Flow, "A
+match's binding is the matched value").
+
 ## Generation
 
 Three shapes, the first two chosen in `genlSetupTaggedTrait`:
@@ -1442,6 +1487,12 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
 **The discriminant's width is not generation's.** Type check settles it, because it
 follows the largest tag value rather than the variant count and generation cannot
 see a pinned value in `derived->used`.
+
+**An enum's drop is built in each shape** (`genlEnumDrop`): a switch on the tag
+in the two tagged shapes, each case the variant finalized in place through a
+pointer recast to it, and a null test in the nullable-pointer one, whose one
+variant's reference is the value itself. [Generation](../phases/generation.md),
+"The allocation header", is the rest.
 
 **Every variant is in one enum's list**, an extension's copies being declarations of
 their own, so the memoized `llvmtype` slot is set once, by its own enum

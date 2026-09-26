@@ -19,6 +19,24 @@ static int flowIsBorrowedRef(INode *exp) {
         && itypeGetTypeDcl(reftype->region) == borrowRef;
 }
 
+// The value a match binds this variable to -- the matched value, which the
+// match holds in a variable of its own -- or NULL for any other variable.
+// 'case imm c Circle' binds 'c' to the matched value converted to its variant,
+// which is the same value under the variant's name, not a second one: the
+// matched value's variable owns it, and is what releases it as its scope ends,
+// as the enum, so that whichever arm runs it is finalized once. So the binding
+// is never released itself; moving it moves the matched value, and handing it
+// back hands back the matched value.
+INode *flowMatchBound(INode *var) {
+    if (var->tag != VarDclTag)
+        return NULL;
+    INode *value = ((VarDclNode *)var)->value;
+    if (value == NULL || value->tag != CastTag || !(value->flags & FlagMatchBind))
+        return NULL;
+    INode *matched = ((CastNode *)value)->exp;
+    return isNameUseNode(matched) && isExpNode(matched) ? matched : NULL;
+}
+
 // Is this expression a shared owner -- an owning reference that other holders
 // may be sharing? An owning reference that may be aliased ('+rc-mut', '+rc-imm',
 // '+rc-ro', and every 'rc' form but '+rc-uni') is one of possibly many holders
@@ -171,7 +189,9 @@ static void flowMoveExit(INode *exp, Nodes **moved, Nodes **common, int *first, 
 // variable owning the allocation: 'parts' notes the move as hollowing the
 // variable rather than as moving it.
 static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *parts) {
-    // For a variable, its value is what moves
+    // For a variable, its value is what moves. A variable a match binds is the
+    // matched value under its variant's name, which owns it (flowMatchBound):
+    // moving the one moves the other.
     if (isNameUseNode(node) && isExpNode(node)) {
         VarDclNode *vardclnode = (VarDclNode *)((NameUseNode*)node)->dclnode;
         if (moved) {
@@ -181,6 +201,9 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
         if (vardclnode->scope == 0) {
             errorMsgNode(node, ErrorInvType, "May not move a value out of a global variable.");
         }
+        INode *matched = flowMatchBound((INode *)vardclnode);
+        if (matched)
+            flowMoveSource(matched, moved, top, parts);
         return;
     }
     switch (node->tag) {
@@ -402,9 +425,58 @@ int flowIsOwningType(INode *type) {
     return 0;
 }
 
+// Is this field one an enum's drop releases, as it releases each owning
+// reference a variant's field holds (genlReleaseFlds), and a counted one?
+int flowIsCountedField(INode *fldtype) {
+    RefNode *reftype = (RefNode *)itypeGetTypeDcl(fldtype);
+    return reftype->tag == RefTag && regionIsOwning(reftype->region) && regionIsCounted(reftype->region);
+}
+
+// Does a copy of a value of this struct or enum type add a holder to a counted
+// reference inside it, which the value's drop releases? An enum's drop releases
+// what its variant's fields own (genlEnumDrop), so an enum whose variant holds a
+// counted reference does, and so does a struct whose drop calls such an enum's,
+// through a field; the count must then rise with each copy, as a tuple's does,
+// or each copy's drop would release the one holder again. A struct's own
+// owning fields are not in its drop, so they are no reason. A move type is
+// never copied, so the answer is only ever asked of a copy type.
+int flowHeldCounted(INode *type) {
+    StructNode *strnode = (StructNode *)itypeGetTypeDcl(type);
+    if (strnode->tag != StructTag || itypeGetDropFnDcl((INode *)strnode) == NULL)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    if (strnode->flags & EnumType) {
+        for (nodesFor(strnode->derived, cnt, nodesp)) {
+            if (flowVariantHeldCounted(*nodesp))
+                return 1;
+        }
+        return 0;
+    }
+    for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+        if (flowHeldCounted(((FieldDclNode *)*nodesp)->vtype))
+            return 1;
+    }
+    return 0;
+}
+
+// Does a variant hold a counted reference its enum's drop releases: in a field
+// of its own, or inside one (flowHeldCounted)?
+int flowVariantHeldCounted(INode *variant) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&((StructNode *)variant)->fields, cnt, nodesp)) {
+        INode *fldtype = ((FieldDclNode *)*nodesp)->vtype;
+        if (flowIsCountedField(fldtype) || flowHeldCounted(fldtype))
+            return 1;
+    }
+    return 0;
+}
+
 // If needed, inject a reference-count node for rc/own references, adjusting the count by amt.
 // One value can become more than one holder at once: an array fill literal stores
-// the reference it evaluates once into every one of its elements.
+// the reference it evaluates once into every one of its elements. A struct or an
+// enum is one holder of each counted reference its drop releases (flowHeldCounted).
 void flowInjectRefCountAmt(INode **nodep, int16_t amt) {
     INode *vtype = ((IExpNode*)*nodep)->vtype;
     INode *typedcl = itypeGetTypeDcl(vtype);
@@ -427,7 +499,7 @@ void flowInjectRefCountAmt(INode **nodep, int16_t amt) {
         amt = (int16_t)elems->used;
     }
     // No need for injected node if we are not dealing with rc references
-    else if (!flowIsRcRef(vtype))
+    else if (!flowIsRcRef(vtype) && !flowHeldCounted(vtype))
         return;
 
     // Inject the reference-count node
@@ -732,7 +804,14 @@ static int flowIsScopeResult(INode *retexp, VarDclNode *varnode, Nodes **hollow)
             break;
         }
     }
-    return isNameUseNode(retexp) && isExpNode(retexp) && ((NameUseNode *)retexp)->dclnode == (INode *)varnode;
+    if (!(isNameUseNode(retexp) && isExpNode(retexp)))
+        return 0;
+    INode *named = ((NameUseNode *)retexp)->dclnode;
+    if (named == (INode *)varnode)
+        return 1;
+    // A match's binding handed back hands back the matched value
+    INode *matched = flowMatchBound(named);
+    return matched ? flowIsScopeResult(matched, varnode, hollow) : 0;
 }
 
 // A hollow release of a variable, as it stands now: the moves that hollowed it
@@ -767,6 +846,9 @@ void flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp, INode *le
         // nothing to release or finalize: freeing its storage, or running a
         // drop fn over it, would act on garbage.
         if (!(avar->node->flowtempflags & VarInitialized))
+            continue;
+        // A match's binding owns nothing: the matched value's variable does
+        if (flowMatchBound((INode *)avar->node))
             continue;
         // Stopgap: a variable whose value was moved out no longer owns it, so
         // releasing or finalizing it here would act on the new owner's value a

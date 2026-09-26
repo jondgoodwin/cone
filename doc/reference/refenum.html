@@ -258,6 +258,35 @@ fn pushed(e &amp;Event) Bool {
 	<p>Because they are all one size, allocated memory holding one variant can be given a value of a
 		different variant instead, and a pool allocator can hand out and reclaim variants of one
 		enum interchangeably.</p>
+	<p>If any variant is a <a href="refmove.html">move type</a> &mdash; it declares
+		<span class="pre">Move</span>, has a finalizer, or holds a value that moves &mdash; the enum is
+		a move type too, since a value of the enum may be that variant: it is moved rather than
+		copied.</p>
+
+	<h3 id="final">Finalizing</h3>
+	<p>A value typed as the enum is finalized at the end of its life as the variant it holds would
+		be: the tag says which variant it is. An enum may declare its own
+		<a href="refinitdrop.html#finalizer">finalizer</a>, which runs for every variant, after the
+		variant's own if it has one, and before the finalizers of the variant's fields:</p>
+<pre>
+enum Resource {
+	fn final(self &amp;uni) {
+		log("released");     // runs for every variant, after its own
+	}
+	struct File {
+		pub handle Handle;
+		fn final(self &amp;uni) {
+			close(handle);    // runs first, for a File
+		}
+	}
+	struct Nothing {}
+}
+</pre>
+	<p>An enum with nothing to finalize in any variant costs nothing: dropping an
+		<span class="pre">Option[i32]</span> does no work, while dropping an
+		<span class="pre">Option[String]</span> finalizes the string when it holds one. An owning
+		reference a variant holds is released as the enum value dies, so the owner held in a
+		<span class="pre">Some</span> is let go with its Option.</p>
 
 	<h3>Value Access</h3>
 	<p>A common field is readable from a value whose variant is not yet known, because every variant
