@@ -797,6 +797,61 @@ class Scenarios(unittest.TestCase):
         self.assertRegex((out / "posix.conebuild").read_text(),
                          r'\nimport libc: ".*/libc\.cone"\nimport core: ".*/core\.cone"\n')
 
+    @unittest.skipUnless(IS_WINDOWS, "libc binds the Windows C runtime")
+    def test_the_math3d_example(self):
+        # packages/math3d/examples/tour.cone, run where it stands as a lone
+        # file: math3d from the registry, compiled alone as a library over libc,
+        # and the example linked against its object. Its build is in the home,
+        # so nothing is written into the repository
+        example = congo.REPO_PACKAGES / "math3d" / "examples" / "tour.cone"
+        run = self.congo("run", str(example), cwd=self.root)
+        compiled = [line.split()[1] for line in run.stdout.splitlines()
+                    if line.strip().startswith("Compiling")]
+        self.assertEqual(compiled, ["libc", "core", "stdio", "math3d", "tour"])
+        self.assertEqual(self.program_output(run), textwrap.dedent("""\
+            perspective, 60 degrees, 16:9:
+                 0.9743   0.0000   0.0000   0.0000
+                 0.0000   1.7321   0.0000   0.0000
+                 0.0000   0.0000  -1.0020  -0.2002
+                 0.0000   0.0000  -1.0000   0.0000
+            view from (0, 2, 5) looking at the origin:
+                 1.0000   0.0000   0.0000   0.0000
+                 0.0000   0.9285  -0.3714   0.0000
+                 0.0000   0.3714   0.9285  -5.3852
+                 0.0000   0.0000   0.0000   1.0000
+            the origin, seen by the camera: (0.0000, 0.0000, -5.3852)
+            its distance from the eye: 5.3852
+
+            a quarter turn about z: (0.0000, 0.0000, 0.7071, 0.7071)
+            x turned by it: (0.0000, 1.0000, 0.0000)
+            halfway there, by slerp: (0.0000, 0.0000, 0.3827, 0.9239)
+            an eighth turn, made directly: (0.0000, 0.0000, 0.3827, 0.9239)
+            x turned by the halfway orientation: (0.7071, 0.7071, 0.0000)
+
+            placed at (1, 2, 3), turned, scaled by (2, 3, 4):
+                 0.0000  -3.0000   0.0000   1.0000
+                 2.0000   0.0000   0.0000   2.0000
+                 0.0000   0.0000   4.0000   3.0000
+                 0.0000   0.0000   0.0000   1.0000
+            its corner (1, 1, 1), placed: (-2.0000, 4.0000, 7.0000)
+            and brought back by the inverse: (1.0000, 1.0000, 1.0000)
+            the inverse times the placement:
+                 1.0000   0.0000   0.0000   0.0000
+                 0.0000   1.0000   0.0000   0.0000
+                 0.0000   0.0000   1.0000   0.0000
+                 0.0000   0.0000   0.0000   1.0000
+
+            orange: 1.0000 0.5000 0.0000 alpha 1.0000
+            screen: 1280 by 720
+            """))
+        # math3d's include file imports libc, and the example's description
+        # finds math3d at its own compile's output
+        out = next((self.root / "home" / "lone").glob("tour-*")) / "debug"
+        self.assertIn("import libc;", (out / "math3d.cone").read_text())
+        self.assertRegex((out / "tour.conebuild").read_text(),
+                         r'\nimport math3d: ".*/math3d\.cone"\n')
+        self.assertFalse((example.parent / "build").exists())
+
     def test_an_import_loop_between_packages_is_refused(self):
         packages = self.root / "loop"
         self.registry(packages)

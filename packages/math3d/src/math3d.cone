@@ -1,0 +1,485 @@
+// The math3d package: the numbers a 3D world is built from. A program reaches
+// it with 'import math3d', and gets five value types:
+//
+// - Xyz, a point or a direction in space: adding, scaling, dot and cross
+//   products, length, distance, a unit vector, blending between two points;
+// - Quat, an orientation, as a quaternion: made from an angle about an axis,
+//   from rotations about the three axes, or as the turn from one direction to
+//   another; combined, inverted, applied to an Xyz, and blended smoothly from
+//   one orientation to another;
+// - Mat4, a 4x4 transformation matrix: the camera's projection (perspective or
+//   orthographic), a camera or object placed to look at a point, a placement
+//   from position, orientation and scale; multiplied, inverted, applied to an
+//   Xyz;
+// - Color, red, green, blue and alpha;
+// - Rect, a rectangle of whole pixels.
+//
+// Each is a small struct passed by value: a method returns a new value and
+// never changes the one it is called on.
+//
+// It is ported from the Pegasus3D browser's world libraries (xyz, quat,
+// matrix4, xyzmath, color and rect), keeping Pegasus's conventions, which are
+// OpenGL's:
+//
+// - Numbers are f32, as OpenGL's GLfloat is, so a matrix's 'm' can be handed
+//   to OpenGL as it stands.
+// - Space is right-handed: x to the right, y up, z towards the viewer, so a
+//   camera looks down its own -z. A positive angle turns counterclockwise when
+//   seen from the tip of the axis looking back: 90 degrees about z takes x to y.
+// - Angles are radians, except Mat4.perspective's field of view, which is the
+//   vertical angle in degrees, as Pegasus has it. 'pi' is here to convert.
+// - A matrix is stored column by column (column-major), as OpenGL wants it:
+//   m[0..3] is the first column, and the translation is m[12], m[13], m[14].
+//   'a * b' applies b first, then a, and 'm * p' transforms the point p (its
+//   w taken as 1).
+// - A quaternion is (x, y, z, w), w the scalar part; a rotation is a unit
+//   quaternion, and 'a * b' is the rotation b followed by a.
+//
+// Two things differ from Pegasus on purpose, each marked where it stands: the
+// sign of Mat4.ortho's depth, and Quat.conjugate.
+//
+// Square roots, sines and cosines are the f32 methods the compiler builds in;
+// the tangent and the absolute value come from the libc package.
+
+mod math3d;
+
+import libc;
+
+// Pi, for converting degrees to radians: radians = degrees * pi / 180.
+pub imm pi f32 = 3.14159265358979;
+
+// Two numbers are equal when they differ by less than a ten-millionth, or by
+// no more than f32's precision at the larger one (FLT_EPSILON)
+fn almostEqual(a f32, b f32) Bool {
+  imm diff = libc.fabsf(a - b);
+  imm aa = libc.fabsf(a);
+  imm bb = libc.fabsf(b);
+  imm largest = if bb > aa {bb;} else {aa;};
+  diff < 0.0000001 or diff <= largest * 1.1920929e-7;
+}
+
+// A point or direction in space
+pub struct Xyz {
+  pub x f32;
+  pub y f32;
+  pub z f32;
+
+  pub fn add overload `+`(self, o Xyz) Xyz {Xyz[x + o.x, y + o.y, z + o.z];}
+  pub fn sub overload `-`(self, o Xyz) Xyz {Xyz[x - o.x, y - o.y, z - o.z];}
+  pub fn neg overload `-`(self) Xyz {Xyz[-x, -y, -z];}
+
+  // Each component multiplied by one number
+  pub fn scale overload `*`(self, s f32) Xyz {Xyz[x * s, y * s, z * s];}
+
+  // Component by component: x by x, y by y, z by z
+  pub fn mult overload `*`(self, o Xyz) Xyz {Xyz[x * o.x, y * o.y, z * o.z];}
+
+  // The dot product. It does not normalize either vector
+  pub fn dot(self, o Xyz) f32 {x * o.x + y * o.y + z * o.z;}
+
+  // The cross product: perpendicular to both, by the right-hand rule
+  pub fn cross(self, o Xyz) Xyz {
+    Xyz[y * o.z - z * o.y, z * o.x - x * o.z, x * o.y - y * o.x];
+  }
+
+  pub fn length(self) f32 {(x * x + y * y + z * z).sqrt();}
+  pub fn lengthSquared(self) f32 {x * x + y * y + z * z;}
+  pub fn distance(self, o Xyz) f32 {(self - o).length();}
+  pub fn distanceSquared(self, o Xyz) f32 {(self - o).lengthSquared();}
+
+  // The vector of length 1 in the same direction. The zero vector has no
+  // direction, and gives (1, 0, 0), as Pegasus has it
+  pub fn unit(self) Xyz {
+    imm len = length();
+    if len > 0. {
+      imm inv = 1. / len;
+      Xyz[x * inv, y * inv, z * inv];
+    } else {
+      Xyz[1., 0., 0.];
+    };
+  }
+
+  // The point the fraction t of the way from self to 'to' (0 is self, 1 is 'to')
+  pub fn lerp(self, to Xyz, t f32) Xyz {
+    imm s = 1. - t;
+    Xyz[s * x + t * to.x, s * y + t * to.y, s * z + t * to.z];
+  }
+
+  // Equal but for rounding: see almostEqual
+  pub fn equals(self, o Xyz) Bool {
+    almostEqual(x, o.x) and almostEqual(y, o.y) and almostEqual(z, o.z);
+  }
+
+  pub fn isZero(self) Bool {
+    almostEqual(x, 0.) and almostEqual(y, 0.) and almostEqual(z, 0.);
+  }
+}
+
+// Eberly's constants for the fast slerp below, as Pegasus has them
+imm slerpU [8; f32] = [0.333333333333333f, 0.100000000000000f, 0.047619047619048f,
+  0.027777777777778f, 0.018181818181818f, 0.012820512820513f, 0.009523809523810f,
+  0.013978731275863f];
+imm slerpV [8; f32] = [0.333333333333333f, 0.400000000000000f, 0.428571428571429f,
+  0.444444444444444f, 0.454545454545455f, 0.461538461538462f, 0.466666666666667f,
+  0.894638801655200f];
+
+// An orientation, or a rotation, as a quaternion: (x, y, z) the vector part
+// and w the scalar part. A rotation is a unit quaternion.
+pub struct Quat {
+  pub x f32;
+  pub y f32;
+  pub z f32;
+  pub w f32;
+
+  // No rotation at all
+  pub fn identity() Quat {Quat[0., 0., 0., 1.];}
+
+  // A turn of 'angle' radians about 'axis', which must be a unit vector
+  pub fn angleAxis(angle f32, axis Xyz) Quat {
+    imm s = (angle * 0.5).sin();
+    Quat[axis.x * s, axis.y * s, axis.z * s, (angle * 0.5).cos()];
+  }
+
+  // Turns of rot.x, rot.y and rot.z radians about the x, y and z axes: first
+  // about x, then about the turned y, then about the twice-turned z. It is the
+  // product of the three single turns, x * y * z
+  pub fn rotateXyz(rot Xyz) Quat {
+    imm cx = (rot.x * 0.5).cos();
+    imm cy = (rot.y * 0.5).cos();
+    imm cz = (rot.z * 0.5).cos();
+    imm sx = (rot.x * 0.5).sin();
+    imm sy = (rot.y * 0.5).sin();
+    imm sz = (rot.z * 0.5).sin();
+    Quat[sx * cy * cz + cx * sy * sz,
+      cx * sy * cz - sx * cy * sz,
+      cx * cy * sz + sx * sy * cz,
+      cx * cy * cz - sx * sy * sz];
+  }
+
+  // The same, taken in the order y, x, z: the product y * x * z
+  pub fn rotateYxz(rot Xyz) Quat {
+    imm cx = (rot.x * 0.5).cos();
+    imm cy = (rot.y * 0.5).cos();
+    imm cz = (rot.z * 0.5).cos();
+    imm sx = (rot.x * 0.5).sin();
+    imm sy = (rot.y * 0.5).sin();
+    imm sz = (rot.z * 0.5).sin();
+    Quat[sx * cy * cz + cx * sy * sz,
+      cx * sy * cz - sx * cy * sz,
+      cx * cy * sz - sx * sy * cz,
+      cx * cy * cz + sx * sy * sz];
+  }
+
+  // The shortest turn that takes the direction of u to the direction of v.
+  // When they point exactly opposite ways, any half turn will do, and this
+  // takes one about an axis perpendicular to u. (After lolengine.net's
+  // "quaternion from two vectors", as Pegasus has it.)
+  pub fn fromVectors(u Xyz, v Xyz) Quat {
+    imm normuv = (u.dot(u) * v.dot(v)).sqrt();
+    mut real = normuv + u.dot(v);
+    mut axis = u.cross(v);
+    if real < 0.000001 * normuv {
+      real = 0.;
+      axis = if libc.fabsf(u.x) > libc.fabsf(u.z) {Xyz[-u.y, u.x, 0.];} else {Xyz[0., -u.z, u.y];};
+    };
+    imm inv = 1. / (real * real + axis.dot(axis)).sqrt();
+    Quat[axis.x * inv, axis.y * inv, axis.z * inv, real * inv];
+  }
+
+  // The rotation o followed by the rotation self (the Hamilton product)
+  pub fn mult overload `*`(self, o Quat) Quat {
+    imm va = Xyz[x, y, z];
+    imm vb = Xyz[o.x, o.y, o.z];
+    imm vaxb = va.cross(vb);
+    Quat[w * vb.x + o.w * va.x + vaxb.x,
+      w * vb.y + o.w * va.y + vaxb.y,
+      w * vb.z + o.w * va.z + vaxb.z,
+      w * o.w - va.dot(vb)];
+  }
+
+  pub fn dot(self, o Quat) f32 {x * o.x + y * o.y + z * o.z + w * o.w;}
+
+  // The vector part negated: for a unit quaternion, the opposite rotation.
+  // (Pegasus's Conjugate, given no argument, negated w as well, which gives
+  // back the same rotation; this is the conjugate its one-argument form made.)
+  pub fn conjugate(self) Quat {Quat[-x, -y, -z, w];}
+
+  // The quaternion of length 1 in the same direction; zero stays zero
+  pub fn unit(self) Quat {
+    imm len = (x * x + y * y + z * z + w * w).sqrt();
+    if len == 0. {
+      Quat[0., 0., 0., 0.];
+    } else {
+      imm inv = 1. / len;
+      Quat[x * inv, y * inv, z * inv, w * inv];
+    };
+  }
+
+  // The quaternion that multiplied by self gives the identity: the conjugate
+  // divided by the length squared. Zero stays zero
+  pub fn inverse(self) Quat {
+    imm len2 = x * x + y * y + z * z + w * w;
+    if len2 > 0. {
+      imm inv = 1. / len2;
+      Quat[-x * inv, -y * inv, -z * inv, w * inv];
+    } else {
+      self;
+    };
+  }
+
+  // The vector v turned by this rotation (self must be a unit quaternion)
+  pub fn rotate(self, v Xyz) Xyz {
+    imm ix = w * v.x + y * v.z - z * v.y;
+    imm iy = w * v.y + z * v.x - x * v.z;
+    imm iz = w * v.z + x * v.y - y * v.x;
+    imm iw = -x * v.x - y * v.y - z * v.z;
+    Xyz[ix * w - iw * x - iy * z + iz * y,
+      iy * w - iw * y - iz * x + ix * z,
+      iz * w - iw * z - ix * y + iy * x];
+  }
+
+  // The orientation the fraction t of the way from self to 'to' along the
+  // shortest arc, turning at an even rate (spherical linear interpolation).
+  // It is David Eberly's fast approximation, accurate to about a millionth,
+  // which needs no trigonometry (adapted from Cesium.js, as Pegasus has it)
+  pub fn slerp(self, to Quat, t f32) Quat {
+    mut d = dot(to);
+    mut sign f32 = 1.;
+    if d < 0. {
+      sign = -1.;
+      d = -d;
+    };
+    imm dm1 = d - 1.;
+    imm topp = 1. - t;
+    imm sqrT = t * t;
+    imm sqrD = topp * topp;
+    // Each series is 1 + b0 (1 + b1 (1 + ... (1 + b7))), summed from the inside
+    mut ct f32 = 1.;
+    mut cd f32 = 1.;
+    mut i = 8usize;
+    while i > 0usize {
+      i = i - 1usize;
+      ct = 1. + (slerpU[i] * sqrT - slerpV[i]) * dm1 * ct;
+      cd = 1. + (slerpU[i] * sqrD - slerpV[i]) * dm1 * cd;
+    };
+    ct = sign * t * ct;
+    cd = topp * cd;
+    Quat[cd * x + ct * to.x, cd * y + ct * to.y, cd * z + ct * to.z, cd * w + ct * to.w];
+  }
+}
+
+// A 4x4 transformation matrix, stored column by column: the cell in row r and
+// column c is m[4 * c + r].
+//     m[0] m[4] m[8]  m[12]
+//     m[1] m[5] m[9]  m[13]
+//     m[2] m[6] m[10] m[14]
+//     m[3] m[7] m[11] m[15]
+pub struct Mat4 {
+  pub m [16; f32];
+
+  pub fn identity() Mat4 {
+    Mat4[[1f, 0f, 0f, 0f,  0f, 1f, 0f, 0f,  0f, 0f, 1f, 0f,  0f, 0f, 0f, 1f]];
+  }
+
+  // A perspective projection: 'fov' the vertical field of view in degrees,
+  // 'near' and 'far' the distances to the clipping planes, 'aspect' the width
+  // over the height. It maps the view volume onto OpenGL's cube from -1 to 1
+  pub fn perspective(fov f32, near f32, far f32, aspect f32) Mat4 {
+    imm t = libc.tanf(fov * pi / 360.);
+    mut r = Mat4[[16; 0f]];
+    r.m[0] = 1. / (t * aspect);
+    r.m[5] = 1. / t;
+    r.m[10] = (far + near) / (near - far);
+    r.m[11] = -1.;
+    r.m[14] = 2. * far * near / (near - far);
+    r;
+  }
+
+  // A perspective projection given the half-height of the view at the near
+  // plane in place of the field of view
+  pub fn heightPerspective(height f32, near f32, far f32, aspect f32) Mat4 {
+    mut r = Mat4[[16; 0f]];
+    r.m[0] = near / (height * aspect);
+    r.m[5] = near / height;
+    r.m[10] = (far + near) / (near - far);
+    r.m[11] = -1.;
+    r.m[14] = 2. * far * near / (near - far);
+    r;
+  }
+
+  // An orthographic projection, 'height' the half-height of the view. Like the
+  // perspective, it looks down -z and maps the near plane to -1 and the far
+  // one to 1, as OpenGL's glOrtho does. (Pegasus's has the opposite sign in
+  // m[10], which looks down +z instead.)
+  pub fn ortho(height f32, near f32, far f32, aspect f32) Mat4 {
+    mut r = identity();
+    r.m[0] = 1. / (height * aspect);
+    r.m[5] = 1. / height;
+    r.m[10] = 2. / (near - far);
+    r.m[14] = (far + near) / (near - far);
+    r;
+  }
+
+  // The rotation a unit quaternion describes
+  pub fn fromQuat(q Quat) Mat4 {
+    imm x2 = q.x + q.x;
+    imm y2 = q.y + q.y;
+    imm z2 = q.z + q.z;
+    imm xx = q.x * x2;
+    imm xy = q.x * y2;
+    imm xz = q.x * z2;
+    imm yy = q.y * y2;
+    imm yz = q.y * z2;
+    imm zz = q.z * z2;
+    imm wx = q.w * x2;
+    imm wy = q.w * y2;
+    imm wz = q.w * z2;
+    Mat4[[1. - (yy + zz), xy + wz, xz - wy, 0f,
+      xy - wz, 1. - (xx + zz), yz + wx, 0f,
+      xz + wy, yz - wx, 1. - (xx + yy), 0f,
+      0f, 0f, 0f, 1f]];
+  }
+
+  // Something at 'loc' facing the point 'at', 'up' saying which way is up:
+  // its own -z points at 'at'. This one carries its local coordinates into
+  // its parent's (world) coordinates
+  pub fn lookAt(loc Xyz, at Xyz, up Xyz) Mat4 {
+    imm fwd = (at - loc).unit();
+    imm side = fwd.cross(up).unit();
+    imm nup = side.cross(fwd);
+    Mat4[[side.x, side.y, side.z, 0f,
+      nup.x, nup.y, nup.z, 0f,
+      -fwd.x, -fwd.y, -fwd.z, 0f,
+      loc.x, loc.y, loc.z, 1f]];
+  }
+
+  // A camera at 'eye' looking at 'center': the inverse of lookAt, carrying
+  // world coordinates into the camera's (the view matrix)
+  pub fn inverseLookAt(eye Xyz, center Xyz, up Xyz) Mat4 {
+    imm fwd = (center - eye).unit();
+    imm side = fwd.cross(up).unit();
+    imm nup = side.cross(fwd);
+    Mat4[[side.x, nup.x, -fwd.x, 0f,
+      side.y, nup.y, -fwd.y, 0f,
+      side.z, nup.z, -fwd.z, 0f,
+      -side.dot(eye), -nup.dot(eye), fwd.dot(eye), 1f]];
+  }
+
+  // Scaled by 'scale', turned rot.x radians about the x axis, then rot.y about
+  // the y axis, then rot.z about the z axis (fixed axes), then moved to 'pos'
+  pub fn euler(pos Xyz, rot Xyz, scale Xyz) Mat4 {
+    imm cx = rot.x.cos();
+    imm sx = rot.x.sin();
+    imm cy = rot.y.cos();
+    imm sy = rot.y.sin();
+    imm cz = rot.z.cos();
+    imm sz = rot.z.sin();
+    Mat4[[scale.x * cy * cz, scale.x * cy * sz, -scale.x * sy, 0f,
+      scale.y * (sx * sy * cz - cx * sz), scale.y * (cx * cz + sx * sy * sz), scale.y * sx * cy, 0f,
+      scale.z * (sx * sz + cx * sy * cz), scale.z * (cx * sy * sz - sx * cz), scale.z * cx * cy, 0f,
+      pos.x, pos.y, pos.z, 1f]];
+  }
+
+  // Scaled by 'scale', turned by 'orient', then moved to 'origin': how a
+  // thing is placed in its parent
+  pub fn place(origin Xyz, orient Quat, scale Xyz) Mat4 {
+    fromQuat(orient).scale(scale).withPos(origin);
+  }
+
+  // The cell in row 'row' and column 'col', each 0 to 3
+  pub fn cell(self, row usize, col usize) f32 {m[4usize * col + row];}
+
+  // The matrix with its first three columns scaled by s.x, s.y and s.z: the
+  // scaling happens before what the matrix already does
+  pub fn scale(self, s Xyz) Mat4 {
+    mut r = self;
+    r.m[0] = m[0] * s.x;
+    r.m[1] = m[1] * s.x;
+    r.m[2] = m[2] * s.x;
+    r.m[4] = m[4] * s.y;
+    r.m[5] = m[5] * s.y;
+    r.m[6] = m[6] * s.y;
+    r.m[8] = m[8] * s.z;
+    r.m[9] = m[9] * s.z;
+    r.m[10] = m[10] * s.z;
+    r;
+  }
+
+  // The matrix with its translation replaced by 'pos'
+  pub fn withPos(self, pos Xyz) Mat4 {
+    mut r = self;
+    r.m[12] = pos.x;
+    r.m[13] = pos.y;
+    r.m[14] = pos.z;
+    r;
+  }
+
+  // The matrix product: o applied first, then self
+  pub fn mult overload `*`(self, o Mat4) Mat4 {
+    mut r = Mat4[[16; 0f]];
+    mut col = 0usize;
+    while col < 4usize {
+      imm c = 4usize * col;
+      mut row = 0usize;
+      while row < 4usize {
+        r.m[c + row] = m[row] * o.m[c] + m[4usize + row] * o.m[c + 1usize]
+          + m[8usize + row] * o.m[c + 2usize] + m[12usize + row] * o.m[c + 3usize];
+        row = row + 1usize;
+      };
+      col = col + 1usize;
+    };
+    r;
+  }
+
+  // The point p carried through the matrix, its w taken as 1
+  pub fn transform overload `*`(self, p Xyz) Xyz {
+    Xyz[m[0] * p.x + m[4] * p.y + m[8] * p.z + m[12],
+      m[1] * p.x + m[5] * p.y + m[9] * p.z + m[13],
+      m[2] * p.x + m[6] * p.y + m[10] * p.z + m[14]];
+  }
+
+  // The inverse, for a matrix whose bottom row is 0 0 0 1 -- every placement,
+  // look-at and scaling, but not a projection
+  pub fn inverse(self) Mat4 {
+    imm det = m[0] * m[5] * m[10] + m[4] * m[9] * m[2] + m[8] * m[1] * m[6]
+      - m[0] * m[9] * m[6] - m[4] * m[1] * m[10] - m[8] * m[5] * m[2];
+    mut r = Mat4[[16; 0f]];
+    r.m[0] = (m[5] * m[10] - m[9] * m[6]) / det;
+    r.m[4] = (m[8] * m[6] - m[4] * m[10]) / det;
+    r.m[8] = (m[4] * m[9] - m[8] * m[5]) / det;
+    r.m[1] = (m[9] * m[2] - m[1] * m[10]) / det;
+    r.m[5] = (m[0] * m[10] - m[8] * m[2]) / det;
+    r.m[9] = (m[8] * m[1] - m[0] * m[9]) / det;
+    r.m[2] = (m[1] * m[6] - m[5] * m[2]) / det;
+    r.m[6] = (m[4] * m[2] - m[0] * m[6]) / det;
+    r.m[10] = (m[0] * m[5] - m[4] * m[1]) / det;
+    r.m[12] = (m[4] * m[13] * m[10] + m[8] * m[5] * m[14] + m[12] * m[9] * m[6]
+      - m[4] * m[9] * m[14] - m[8] * m[13] * m[6] - m[12] * m[5] * m[10]) / det;
+    r.m[13] = (m[0] * m[9] * m[14] + m[8] * m[13] * m[2] + m[12] * m[1] * m[10]
+      - m[0] * m[13] * m[10] - m[8] * m[1] * m[14] - m[12] * m[9] * m[2]) / det;
+    r.m[14] = (m[0] * m[13] * m[6] + m[4] * m[1] * m[14] + m[12] * m[5] * m[2]
+      - m[0] * m[5] * m[14] - m[4] * m[13] * m[2] - m[12] * m[1] * m[6]) / det;
+    r.m[15] = 1.;
+    r;
+  }
+}
+
+// A color: red, green and blue from 0 to 1, and alpha from 0 (invisible) to 1
+// (opaque), which a literal may leave out. Color[1., 0.5, 0.] is orange
+pub struct Color {
+  pub red f32;
+  pub green f32;
+  pub blue f32;
+  pub alpha f32 = 1.;
+
+  // A shade of gray, 0 black and 1 white
+  pub fn gray(level f32) Color {Color[level, level, level, 1.];}
+}
+
+// A rectangle of whole pixels: its corner at (x, y), 'w' wide and 'h' high
+pub struct Rect {
+  pub x i32;
+  pub y i32;
+  pub w i32;
+  pub h i32;
+}

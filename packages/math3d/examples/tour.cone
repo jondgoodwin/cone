@@ -1,0 +1,112 @@
+// A tour of the math3d package: a camera for a scene, a turn applied to a
+// point, a smooth blend between two orientations, and a placement undone by
+// its inverse. Run it from the repository's root with
+//
+//     python tools/congo/congo.py run packages/math3d/examples/tour.cone
+
+mod tour;
+
+import stdio use *;
+import math3d use *;
+
+// A number to four decimal places. printFloat keeps six significant digits,
+// which prints a rounding error such as -4.37114e-08 where 0 is meant
+fn num(v f32) {
+  imm scaled = f64[v] * 10000.;
+  imm mag = if scaled < 0. {-scaled;} else {scaled;};
+  imm n = i64[mag + 0.5];
+  if scaled < 0. and n > 0i64 {printStr("-");};
+  printInt(n / 10000i64);
+  printStr(".");
+  imm frac = n % 10000i64;
+  if frac < 1000i64 {printStr("0");};
+  if frac < 100i64 {printStr("0");};
+  if frac < 10i64 {printStr("0");};
+  printInt(frac);
+}
+
+fn xyz(label &[]u8, v Xyz) {
+  printStr(label);
+  printStr(" (");
+  num(v.x); printStr(", ");
+  num(v.y); printStr(", ");
+  num(v.z); printStr(")\n");
+}
+
+fn quat(label &[]u8, q Quat) {
+  printStr(label);
+  printStr(" (");
+  num(q.x); printStr(", ");
+  num(q.y); printStr(", ");
+  num(q.z); printStr(", ");
+  num(q.w); printStr(")\n");
+}
+
+// A matrix as it is written on paper, row by row, though it is stored by column
+fn mat(label &[]u8, m Mat4) {
+  printStr(label);
+  printStr("\n");
+  mut row = 0usize;
+  while row < 4usize {
+    printStr("  ");
+    mut col = 0usize;
+    while col < 4usize {
+      // A space where a minus sign would go keeps the columns lined up
+      imm v = m.cell(row, col);
+      printStr("  ");
+      if v > -0.00005 {printStr(" ");};
+      num(v);
+      col = col + 1usize;
+    };
+    printStr("\n");
+    row = row + 1usize;
+  };
+}
+
+fn main() i32 {
+  // The camera: a 60-degree lens on a 16:9 screen, seeing from 0.1 to 100
+  // units away, standing at (0, 2, 5) and looking at the origin
+  imm projection = Mat4.perspective(60., 0.1, 100., 16. / 9.);
+  mat("perspective, 60 degrees, 16:9:", projection);
+  imm eye = Xyz[0., 2., 5.];
+  imm view = Mat4.inverseLookAt(eye, Xyz[0., 0., 0.], Xyz[0., 1., 0.]);
+  mat("view from (0, 2, 5) looking at the origin:", view);
+  // What the camera looks at is straight ahead of it, down its -z, as far
+  // away as the camera stands from it
+  xyz("the origin, seen by the camera:", view * Xyz[0., 0., 0.]);
+  printStr("its distance from the eye: ");
+  num(eye.length());
+  printStr("\n\n");
+
+  // A quarter turn about z takes x to y
+  imm quarter = Quat.angleAxis(pi / 2., Xyz[0., 0., 1.]);
+  quat("a quarter turn about z:", quarter);
+  xyz("x turned by it:", quarter.rotate(Xyz[1., 0., 0.]));
+
+  // Halfway from facing ahead to that quarter turn is an eighth of a turn
+  imm half = Quat.identity().slerp(quarter, 0.5);
+  quat("halfway there, by slerp:", half);
+  quat("an eighth turn, made directly:", Quat.angleAxis(pi / 4., Xyz[0., 0., 1.]));
+  xyz("x turned by the halfway orientation:", half.rotate(Xyz[1., 0., 0.]));
+  printStr("\n");
+
+  // Something placed at (1, 2, 3), turned a quarter about z and scaled by
+  // (2, 3, 4); its inverse undoes all three, so the two multiply to identity
+  imm placed = Mat4.place(Xyz[1., 2., 3.], quarter, Xyz[2., 3., 4.]);
+  mat("placed at (1, 2, 3), turned, scaled by (2, 3, 4):", placed);
+  imm corner = placed * Xyz[1., 1., 1.];
+  xyz("its corner (1, 1, 1), placed:", corner);
+  xyz("and brought back by the inverse:", placed.inverse() * corner);
+  mat("the inverse times the placement:", placed.inverse() * placed);
+  printStr("\n");
+
+  // A color and a rectangle are plain values
+  imm orange = Color[1., 0.5, 0.];
+  printStr("orange: ");
+  num(orange.red); printStr(" "); num(orange.green); printStr(" ");
+  num(orange.blue); printStr(" alpha "); num(orange.alpha); printStr("\n");
+  imm screen = Rect[0, 0, 1280, 720];
+  printStr("screen: ");
+  printInt(screen.w); printStr(" by "); printInt(screen.h); printStr("\n");
+  0i32;
+}

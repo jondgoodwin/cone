@@ -46,6 +46,7 @@ hello/
     src/hello.cone      the root module's designated file, named for the package
     src/...             the root module's other files, and its submodules
     tests/              the package's tests (congo new makes it; nothing runs them yet)
+    examples/           programs showing the package's API, each a lone file
     build/debug/        what a build writes; build/release/ for --release
 ```
 
@@ -70,6 +71,12 @@ There is no include file to write: a library's build generates it (below,
   and the executable, `build/debug/<name>.exe`. The packages a program imports
   are compiled into the program's `build/<mode>/` too, so a registry folder is
   only ever read. `congo clean` deletes the folder, include files and all.
+- **A package's example programs live in its `examples/` folder**, which no
+  build of the package reads. Each is a lone file, run with
+  `congo run examples/<file>.cone`, and imports the package by name like any
+  other program, so the package is found through the registries: the
+  examples of `packages/math3d` run as they stand, while a package in no
+  registry cannot yet run its own. `congo new` does not make the folder.
 
 ## The manifest: `congo.toml`
 
@@ -135,8 +142,8 @@ An import names a module. Congo answers each one this way:
 `congo.toml` being one package, known by the name its manifest gives. Congo
 searches, in order:
 
-1. the Cone repository's own `packages/` (`core`, `stdio`, `libc` and `posix`
-   are there), then
+1. the Cone repository's own `packages/` (`core`, `stdio`, `libc`, `posix` and
+   `math3d` are there), then
 2. each folder the **machine config** lists.
 
 The machine config is `config.toml` in the Congo home, which is the folder
@@ -270,7 +277,9 @@ package named which library.
 C types and C strings, Windows first. They name no `[link]` library, since the C
 runtime they bind is on every link line already. `core` imports `libc` for its
 allocator, so every build compiles `libc` first. `samples/oslayer` is a tour of
-both, and each package's source says what it binds and how.
+both, and each package's source says what it binds and how. `math3d`, 3D math
+in Cone, is built on `libc` for its trigonometry, and its example is
+`packages/math3d/examples/tour.cone`.
 
 ## What a build does
 
@@ -342,7 +351,8 @@ imports another package's, a library of submodules re-exported at its root whose
 include file holds nested blocks, a C package linking a Windows system library
 (shlwapi), a C library built in the test and found through `[link] paths`,
 `libc` built before `core` with no prelude line, the `samples/oslayer` tour of
-`libc` and `posix` (Windows), the loop refusals between packages and between
+`libc` and `posix` (Windows), `math3d`'s example run where it stands (Windows),
+the loop refusals between packages and between
 modules, and the manifest's checks.
 Each program is compiled against the include files its packages' compiles
 generated. The test suite (`test/run.py`) does not run Congo.
