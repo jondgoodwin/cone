@@ -104,6 +104,14 @@ carries on with it. The digits of a float are exempt: they are read again by
 `lexToFloat`, so a mantissa wider than 64 bits is a value, not an overflow.
 `lexical_reject_overflow` holds the boundary in both bases.
 
+**A float literal must fit the type its suffix gives it.** Its type is decided
+here — `f32` unless suffixed `d` or `f64` — and nothing later changes it, so a
+value past that type's range would be generated as infinity. `lexScanNumber`
+refuses one (`ErrorFloatRange`), rounding to `f32` as generation does, so a
+value just past `f32`'s maximum that rounds down to it still fits.
+`lexical_reject_float_range` holds the boundary. A value too small for the type
+is not refused: it rounds to zero or to a subnormal.
+
 **A string literal whose opening quote ends its line is a multi-line string
 literal**, read by the rules of `doc/reference/reftoken.html`, "Multi-line String
 Literals". `lexScanString` finds the closing quote first, stepping over each

@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <stdio.h>
+#include <math.h>
 
 // Global lexer state
 Lexer *lex = NULL;        // Current lexer
@@ -770,6 +771,18 @@ void lexScanNumber(char *srcp) {
     if (isFloat) {
         lex->val.floatlit = lexToFloat(srcbeg, srcp);
         lex->toktype = FloatLitToken;
+        // A float literal is never context-typed, so the type decided here is
+        // the one it is generated at, and a value past its range was generated
+        // as infinity: '1e39' is an f32 and printed inf, even as an f64's
+        // initializer. Rounded as generation rounds it, so a value just past
+        // f32's maximum that rounds down to it still fits
+        int f32lit = lex->langtype == (INode*)f32Type;
+        double value = lex->val.floatlit;
+        if (isinf(value) || (f32lit && isinf((float)value)))
+            errorMsgLex(ErrorFloatRange, f32lit
+                ? "Float literal '%.*s' does not fit f32, the type of a float literal with no suffix or 'f'. An f64 is written with the 'd' suffix."
+                : "Float literal '%.*s' does not fit f64.",
+                (int)(srcp - srcbeg), srcbeg);
     }
     else {
         if (overflow)

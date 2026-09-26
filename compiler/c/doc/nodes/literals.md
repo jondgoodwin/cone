@@ -24,7 +24,8 @@ composite literal takes ownership of. Generation emits constants where it can.
 
 **`FlagUnkType`** is set only by `newULitNode`, only when the lexer gave no type
 suffix. **There is no float equivalent** — a suffix-less float defaults to `f32`
-concretely.
+concretely, and the lexer refuses a float literal past its type's range
+(`ErrorFloatRange`; [Parse](../phases/parse.md)).
 
 **The array node serves both a type and a literal.** `[3; i32]` and `[3; 7]`
 have the identical shape — `dimens` `[3]`, `elems` `[i32]` or `[7]`. The list
