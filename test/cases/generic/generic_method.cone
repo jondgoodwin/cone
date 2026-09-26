@@ -1,0 +1,89 @@
+// Generic methods: a method with type parameters of its own, declared by a
+// plain type or a generic one, and called every way a method is called. On a
+// receiver, 'h.pick(6)' infers the type arguments from the arguments after
+// 'self', and 'h.pick[i32](6)' writes them. Through the type,
+// 'Holder.pick(&h, 6)' is handed its receiver as the first argument, and
+// infers from it too. Named bare inside the type's own braces, 'pick(6)' is
+// 'self.pick(6)'. A generic type's instance has its own copy of each generic
+// method, still generic, with its own instances. A type argument may be a type
+// parameter of the caller: a generic function's, another generic method's, or
+// the generic type's own. Each is instantiated once per set of type
+// arguments, and its receiver is borrowed or dereferenced to fit its 'self' as
+// any method's is. Each printed value was checked by hand against the method
+// it reaches.
+
+mod generic_method;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct Holder {
+  pub k i64;
+
+  pub fn pick[T](self &, v T) T { v; }
+  pub fn times[T](self &, a T, b T) T { a * b; }
+  pub fn zero[T](self &) T { 0; }
+  pub fn plusK[T](self, v T) i64 { k + 1; }
+  pub fn bump[T](self &mut, n T) T { k = k + 1; n; }
+
+  // Bare inside the braces: 'self.pick', inferred and written
+  pub fn inside(self &) i64 { pick(20i64) + pick[i64](2); }
+
+  // A generic method calling another with its own type parameter
+  pub fn relay[U](self &, u U) U { pick[U](u) + pick(u); }
+}
+
+struct Box[T] {
+  pub v T;
+
+  pub fn pair[U](self &, u U) U { u; }
+  pub fn first[U](self &, u U) T { v; }
+  // The instance's own type argument given to its generic method
+  pub fn again(self &) T { pair(v) + pair[T](v); }
+}
+
+// A generic function calling a generic method with its type parameter
+fn useIt[T](h &Holder, v T) T { h.pick(v) + h.pick[T](v); }
+
+fn main() {
+  mut h = Holder[1];
+
+  show("inferred", h.pick(6i64));
+  show("written", h.pick[i64](7));
+  show("inferred-i32", h.pick(8i32));
+  show("two-arguments", h.times(3i64, 4i64));
+  show("no-arguments-parens", h.zero[i64]());
+  show("no-arguments-bare", h.zero[i64]);
+
+  // Through the type, the receiver passed
+  show("path-inferred", Holder.pick(&h, 9i64));
+  show("path-written", Holder.pick[i64](&h, 10));
+
+  // Through a reference, and by value
+  imm r = &h;
+  show("reference-receiver", r.pick(11i64));
+  show("value-self", h.plusK(0i32));
+
+  // A 'self &mut' method borrows the variable mutably
+  show("mutable-self", h.bump(12i64));
+  show("mutated", h.k);
+
+  show("bare-inside", h.inside());
+  show("method-calls-generic-method", h.relay(16i64));
+  show("generic-function-calls-it", useIt(&h, 17i64));
+
+  // A generic type's instance, each with its own generic methods
+  imm b = Box[5i64];
+  show("generic-type-inferred", b.pair(13i64));
+  show("generic-type-written", b.pair[i64](14));
+  show("generic-type-outer", b.first(0i32));
+  show("generic-type-own-argument", b.again());
+  imm bf = Box[2.5];
+  show("other-instance", bf.pair(15i64));
+}

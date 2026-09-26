@@ -132,6 +132,18 @@ base, is refused by stage 2's type receiver.
 `fnCallTypeCheck` in three stages. This is the map worth carrying.
 
 **Stage 1 — syntax, before the callee is known.**
+A generic method given type arguments on a receiver, `h.pick[i32](6)` or
+`h.pick[i32]`, first (`fnCallMethodTypeArgs`). It parses as the member access
+`h.pick` indexed by the type arguments, with the call applied to that; a type is
+never an index, so a member access with no arguments indexed by a type is taken
+for this. The receiver is checked, the name looked up on its type, and the whole
+of it lowered here to the one method call `h.pick(6)`, positioned on the member
+access, with the instance the arguments name bound to the member
+(`genericMethodInstance`) — finished here rather than handed back, since the
+receiver is already checked. A member that is not a generic method is
+`ErrorNotTyped` at the first type argument. A base that is a type or a module,
+or an instance of a generic one (`fnCallIsPathBase`), is a path rather than a
+receiver and is left alone.
 Macro call (only when `methfld` is NULL — with it set, the name is a receiver
 and expands like any other value; a macro *method* named bare is first rewritten
 to `self.name`); `<-` on a value tuple, which becomes a block of applications.
@@ -286,6 +298,17 @@ For a folded method the receiver is rewritten before any candidate is tried:
 through, reborrowed with a reference receiver's permission, so selection,
 borrowing and the permission checks see the receiver the method was declared
 for. [struct](struct.md), "Name folding", has the rule.
+
+**A generic method is selected as its instance.** A generic method may not
+declare an overload name, so a name binding one binds it alone, and the
+candidate tried is the instance: the one already bound to the member — by
+`fnCallMethodTypeArgs` for written type arguments, or by substitution for a
+bare `pick[i32](6)` that became `self.pick` — which `genericIsInstanceOf`
+recognizes in the generic's memo, else the one the call's arguments infer
+(`genericMethodInstance`). Inference matches the arguments against the
+parameters after `self`, since the receiver is not among them yet, so the
+receiver tells it nothing. The instance is then selected like any method, and
+the receiver dereferenced or borrowed to fit its `self`.
 
 Then the node is rewritten: the receiver is inserted at `args[0]`, `methfld`'s
 name-use node is repurposed into `objfn` pointing at the selected function,

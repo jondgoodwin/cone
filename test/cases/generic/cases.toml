@@ -17,7 +17,8 @@
 # body may not use. The type-check stage is split again by mechanism:
 # generic_typecheck_infer covers type arguments that are absent and cannot be
 # derived, generic_typecheck_args covers type arguments that are written out
-# and do not match the declaration (and a generic type that writes none where
+# and do not match the declaration or are given to a method that is not
+# generic (and a generic type that writes none where
 # one is required: a member path through it, or a type position, outside its
 # own braces or inside another generic's), and generic_typecheck_macro covers what
 # expansion itself cannot serve -- an argument list that does not match, a body
@@ -157,6 +158,28 @@ category = "run"
 description = "Type arguments inferred through a pointer, reference or slice parameter, a generic type's instance, and a variant passed for its enum, including the intrinsics a collection calls"
 tags = ["typecheck", "genllvm", "runtime"]
 
+[scenario.generic_method]
+category = "run"
+description = "Generic methods of a plain type and of a generic type's instance, called on a receiver with type arguments inferred and written, through the type with the receiver passed, and bare inside the type's braces"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# One instance per set of type arguments, however the method was named: a call
+# on the receiver, through the type, and bare inside its braces all reach
+# Holder.pick[i64]. A generic type's instance has its own copy of the generic
+# method, so its instances read as that instance's. None is the generic's own,
+# and none is told apart from another by LLVM's '.1' uniquifier.
+[[scenario.generic_method.check]]
+name = "one-instance-per-type-argument"
+target = "symbols"
+contains = [
+  "define internal Holder.pick[i64] comdat nodeduplicate",
+  "define internal Holder.pick[i32] comdat nodeduplicate",
+  "define internal Holder.zero[i64] comdat nodeduplicate",
+  "define internal Box[i64].pair[i64] comdat nodeduplicate",
+  "define internal Box[f32].pair[i64] comdat nodeduplicate",
+]
+excludes = [" Holder.pick ", " Box[i64].pair ", "].1 "]
+
 [scenario.generic_macro]
 category = "run"
 description = "Macro expansion: substitution rather than evaluation, what a macro parameter may be, every value position a parameterless name expands in, and macros declared in a type as its methods"
@@ -187,15 +210,15 @@ diagnostics = 4
 
 [scenario.generic_typecheck_infer]
 category = "reject"
-description = "Generic uses whose type arguments cannot be inferred, directly or through a pointer parameter"
+description = "Generic uses whose type arguments cannot be inferred, directly, through a pointer parameter, or from a generic method's arguments"
 tags = ["typecheck"]
-diagnostics = 6
+diagnostics = 8
 
 [scenario.generic_typecheck_args]
 category = "reject"
-description = "Type argument lists written out that do not match the generic's parameters, and a generic type that writes none outside its own braces: on a path to its member, or where a type is wanted"
+description = "Type argument lists written out that do not match the generic's parameters, given to a method that is not generic, and a generic type that writes none outside its own braces: on a path to its member, or where a type is wanted"
 tags = ["typecheck"]
-diagnostics = 22
+diagnostics = 24
 
 [scenario.generic_typecheck_instance_path]
 category = "reject"

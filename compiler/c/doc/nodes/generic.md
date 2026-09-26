@@ -249,7 +249,35 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    enum is matched as its enum's instance. Region and permission take no part:
    the instance's own check of the call judges them. Any other shape captures
    nothing. A slot filled twice must agree by `itypeIsSame`. Any slot still NULL
-   is "could not infer".
+   is "could not infer". A generic method named bare inside its type's braces
+   is called on an implicit `self` that is not among the arguments, so they are
+   matched against the parameters after it; named through its type,
+   `Holder.pick(&h, 6)`, the receiver is the first argument. The instance's name
+   use keeps the `FlagQualified` of the name it stands for, so the second is
+   never rewritten to `self.pick` (`genericKeepQualified`).
+
+**A generic method called on a receiver** — `h.pick(6)`, `h.pick[i32](6)` — is
+instantiated by `fnCallLowerMethod` rather than here, since the method is known
+only from the receiver's type ([fncall](fncall.md), "Selecting a candidate"):
+`genericMethodInstance` infers from the arguments after `self`, or takes the
+written type arguments, and memoizes as a call does. A method's instance is
+type checked with its owner as the walk's type, whatever type the call is in,
+as a method reached by demand is. A generic method copied with its type — into
+a generic type's instance, or a trait's default into an implementer — is still
+generic (`cloneFnDclShell` gives the copy a `GenericInfo` of its own, sharing
+the original's parameters), and `cloneFnDclFill` hooks each of those parameters
+to itself while it copies, so the copy's uses of them stay uses rather than
+substitutions, as a macro's copy does. So `Box[i64]` has its own generic
+`pair[U]` with its own instances, `Box[i64].pair[i64]`. `genericClone` makes
+the one copy that is not generic — the instance itself — and clears it there.
+
+Not yet built: a trait's public generic method met by a type that is the trait.
+`structCheckTraitReqs` compares the requirement with the type's method, its own
+or the copy of a default, by `fnSigVrefEqual`, and `itypeIsSame` finds no two
+uses of a type parameter the same — a use of one is not a type, so neither
+resolves to a declaration — so every such type is `ErrorInvType`, "none of
+what it declares has the signature". Comparing them would mean matching type
+parameters by position.
 
 `genericMemoize` validates arity and that every argument is a type, then looks
 up: **the memo key is the stored call's argument list, compared pairwise with
@@ -391,7 +419,8 @@ are [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Sym
 - **`cloneNode`'s generic-parameter substitution re-enters `cloneNode` on a
   *global*** — the parameter name's hooked node — whose value at type-check time
   need not be what name resolution saw. Its one guard is for the name being
-  hooked to a `GenVarDclNode`, a template being copied, which it copies as a use.
+  hooked to a `GenVarDclNode` — a template being copied, a macro's or a generic
+  method's — which it copies as a use.
   Otherwise NULL yields NULL silently, and an unhandled tag kills the compile.
   This one path is where an unrelated defect elsewhere becomes a hard abort.
 - **A clone must clear the type check marks**, or the instance silently skips

@@ -842,6 +842,23 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
         obj = callnode->objfn;
     }
 
+    // A generic method is called through its instance: the one its written type
+    // arguments name, already made and bound to the member (fnCallMethodTypeArgs,
+    // or a bare name's substitution), or else the one its arguments infer. The
+    // instance is then the one candidate, selected as any method is, so the
+    // receiver is dereferenced or borrowed to fit its 'self'. A generic method
+    // takes no overload name, so the name binds it alone.
+    if (foundnode->tag == FnDclTag && ((FnDclNode*)foundnode)->genericinfo) {
+        if (genericIsInstanceOf(methfld->dclnode, (FnDclNode*)foundnode))
+            foundnode = methfld->dclnode;
+        else
+            foundnode = (INode*)genericMethodInstance(pstate, callnode, (FnDclNode*)foundnode, NULL);
+        if (foundnode == NULL) {
+            callnode->vtype = errorType;
+            return -1;
+        }
+    }
+
     // Test every candidate the name declares, without altering the call
     fnCallDemandCandidates(foundnode);
     enum OverloadMatch status;
@@ -1343,6 +1360,93 @@ static int fnCallTypeInstancePath(TypeCheckState *pstate, FnCallNode **nodep) {
     return 0;
 }
 
+// Is this, name resolved but not yet type checked, a type or module, or an
+// instance of a generic one -- a path's base rather than a receiver?
+static int fnCallIsPathBase(INode *node) {
+    if (node->tag == FnCallTag && (node->flags & FlagIndex))
+        node = ((FnCallNode*)node)->objfn;
+    return isNameUseNode(node) && (isTypeNode(node) || nameUseNames(node, ModuleTag));
+}
+
+// Type arguments given to a method called on a receiver: 'h.pick[i32](6)', or
+// 'h.pick[i32]' taking no arguments. The parser reads the member access
+// 'h.pick' with no arguments, indexes it by the type arguments, and applies the
+// call to that. A type is never an index, so a member access indexed by one is
+// a generic method given its type arguments, and this lowers the whole of it --
+// the call when there is one, else the index -- to the one method call
+// 'h.pick(6)' calling the instance they name. The receiver is checked here, to
+// learn what the name is, so the lowering is finished here too rather than
+// handed back to check the receiver again. A member that is not a generic
+// method is refused, which it was before: a type is not a value to index with.
+// A path through a type or a module, 'Box[i64].make[i32]', is not a receiver
+// and is left alone. Returns 1 when the node was handled.
+static int fnCallMethodTypeArgs(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    FnCallNode *index = node;
+    if (node->methfld == NULL && !(node->flags & FlagIndex) && node->objfn->tag == FnCallTag)
+        index = (FnCallNode*)node->objfn;
+    if (!(index->flags & FlagIndex) || (index->flags & (FlagRange | FlagBorrow))
+        || index->methfld != NULL || index->objfn->tag != FnCallTag || !fnCallHasTypeArgs(index))
+        return 0;
+    FnCallNode *member = (FnCallNode*)index->objfn;
+    if (member->methfld == NULL || !isNameUseNode(member->methfld) || member->args != NULL
+        || (member->flags & (FlagOperator | FlagIndex)) || fnCallIsPathBase(member->objfn))
+        return 0;
+
+    inodeTypeCheckAny(pstate, &member->objfn);
+    if (inodeIsError(member->objfn)) {
+        node->vtype = errorType;
+        return 1;
+    }
+    NameUseNode *methfld = (NameUseNode*)member->methfld;
+    INode *rcvtype = isExpNode(member->objfn) ? iexpGetDerefTypeDcl(member->objfn) : NULL;
+    INode *found = rcvtype && isMethodType(rcvtype)
+        ? aliasDclResolve(iNsTypeFindFnField((INsTypeNode*)rcvtype, methfld->namesym)) : NULL;
+    if (found == NULL || found->tag != FnDclTag || !(found->flags & FlagMethFld)
+        || ((FnDclNode*)found)->genericinfo == NULL) {
+        errorMsgNode(nodesGet(index->args, 0), ErrorNotTyped,
+            "Expected a typed expression: `%s` is not a generic method, so it takes no type arguments.",
+            &methfld->namesym->namestr);
+        node->vtype = errorType;
+        return 1;
+    }
+
+    // One method call: the receiver, the member, and the call's own arguments,
+    // positioned where 'h.pick(6)' would be
+    Nodes *typeargs = index->args;
+    inodeLexCopy((INode*)node, (INode*)member);
+    node->objfn = member->objfn;
+    node->methfld = (INode*)methfld;
+    if (node == index)
+        node->args = NULL;
+    node->flags &= ~FlagIndex;
+
+    INode **argsp;
+    uint32_t cnt;
+    int badarg = 0;
+    if (node->args) {
+        for (nodesFor(node->args, cnt, argsp)) {
+            inodeTypeCheckAny(pstate, argsp);
+            if (!isExpNode(*argsp)) {
+                errorMsgNode(*argsp, ErrorNotTyped, "Expected a typed expression.");
+                badarg = 1;
+            }
+        }
+    }
+    if (badarg || namedValRefuseArgs(node->args, "a call")) {
+        node->vtype = errorType;
+        return 1;
+    }
+
+    methfld->dclnode = (INode*)genericMethodInstance(pstate, node, (FnDclNode*)found, typeargs);
+    if (methfld->dclnode == NULL) {
+        node->vtype = errorType;
+        return 1;
+    }
+    fnCallLowerMethod(pstate, node);
+    return 1;
+}
+
 // Perform type check on function/method call node
 // This should only be run once on a node, as it mutably lowers the node to another form:
 // - If a generic/macro, it instantiates, then type checks instantiated nodes
@@ -1368,6 +1472,10 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             node->methfld = access->methfld;
         }
     }
+
+    // 'h.pick[i32](6)': a generic method given its type arguments
+    if (fnCallMethodTypeArgs(pstate, nodep))
+        return;
 
     // If we have a true macro, go handle it elsewhere
     // Note: Macros don't want us to type check arguments until after substitution

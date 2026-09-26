@@ -43,4 +43,12 @@ void genericInstantiateExit();
 // Return 1 if done/error needed. Return 0 if not generic or it leaves behind a lit/fncall that needs processing.
 int genericSubstitute(TypeCheckState *pstate, FnCallNode **nodep);
 
+// The instance of generic method 'genmeth' that a call on a receiver names,
+// its type arguments 'typeargs' or, when NULL, inferred from the call's
+// arguments. NULL once an error is reported.
+FnDclNode *genericMethodInstance(TypeCheckState *pstate, FnCallNode *callnode, FnDclNode *genmeth, Nodes *typeargs);
+
+// Is 'fn' one of the instances made of generic function or method 'generic'?
+int genericIsInstanceOf(INode *fn, FnDclNode *generic);
+
 #endif

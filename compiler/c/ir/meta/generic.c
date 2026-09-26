@@ -167,12 +167,16 @@ static int genericInferType(FnCallNode *inferredgencall, Nodes *genparms, INode 
     }
 }
 
-// Infer generic type parameters from the function call arguments
-int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNode *genfnsig,
-        FnCallNode *srcgencall, FnCallNode *inferredgencall) {
+// Infer generic type parameters from the function call arguments 'args', which
+// match the signature's parameters from 'firstparm' on: 1 for a method called
+// on a receiver, whose 'self' is not among the arguments yet, else 0.
+static int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNode *genfnsig,
+        Nodes *args, uint32_t firstparm, INode *errnode, FnCallNode *inferredgencall) {
 
-    if (srcgencall->args->used > genfnsig->parms->used) {
-        errorMsgNode((INode*)srcgencall, ErrorManyArgs, "Too many arguments provided for generic function.");
+    if (args == NULL)
+        return 1;
+    if (args->used + firstparm > genfnsig->parms->used) {
+        errorMsgNode(errnode, ErrorManyArgs, "Too many arguments provided for generic function.");
         return 0;
     }
 
@@ -180,8 +184,8 @@ int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNode *genf
     int retcode = 1;
     INode **argsp;
     uint32_t cnt;
-    INode **parmp = &nodesGet(genfnsig->parms, 0);
-    for (nodesFor(srcgencall->args, cnt, argsp)) {
+    INode **parmp = &nodesGet(genfnsig->parms, firstparm);
+    for (nodesFor(args, cnt, argsp)) {
         INode *parmtype = ((VarDclNode *)(*parmp))->vtype;
         INode *argtype = ((IExpNode *)*argsp)->vtype;
         // Capture the type of each generic variable the parameter's type names
@@ -233,7 +237,20 @@ static INode *genericClone(TypeCheckState *pstate, FnCallNode *srcgencall, INode
     CloneState cstate;
     clonePushState(&cstate, (INode*)srcgencall, NULL, pstate->scope, genericinfo->parms, srcgencall->args);
     cstate.structshell = shell;
-    INode *instance = cloneNode(&cstate, nodetoclone);
+    INode *instance;
+    // A generic function's instance is not generic itself, so its type
+    // parameters are the ones substituted. A clone keeps a generic method
+    // nested in what it copies generic (cloneFnDclShell), so a generic type's
+    // instance still has its generic methods.
+    if (nodetoclone->tag == FnDclTag) {
+        FnDclNode *fn = cloneFnDclShell((FnDclNode*)nodetoclone);
+        fn->genericinfo = NULL;
+        cloneFnDclFill(&cstate, fn, (FnDclNode*)nodetoclone);
+        fn->instnode = cstate.instnode;
+        instance = (INode*)fn;
+    }
+    else
+        instance = cloneNode(&cstate, nodetoclone);
     clonePopState();
 
     // Remember instantiation for the future
@@ -259,8 +276,19 @@ INode *genericInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, INode 
     INode *instance = genericClone(pstate, srcgencall, nodetoclone, genericinfo, shell);
     cloneDclPop(dclpos);
 
-    // Type check the instanced declaration
-    inodeTypeCheckAny(pstate, &instance);
+    // Type check the instanced declaration. A generic method's instance is
+    // checked as a method of the type that owns it, whatever type the call
+    // naming it is in, as any method reached by demand is (fnCallDemandCandidates).
+    INode *owner = inodeGetOwner(instance);
+    if (instance->tag == FnDclTag && (instance->flags & FlagMethFld) && owner && owner->tag == StructTag) {
+        TypeCheckState tstate;
+        tstate.typenode = owner;
+        tstate.fn = NULL;
+        tstate.scope = 0;
+        inodeTypeCheckAny(&tstate, &instance);
+    }
+    else
+        inodeTypeCheckAny(pstate, &instance);
 
     return instance;
 }
@@ -415,6 +443,15 @@ GenericInfo *genericGetInfo(INode *node) {
     }
 }
 
+// The name use of an instance stands where the generic's name was written, so
+// it keeps whether that was reached through a namespace. 'Holder.pick(&h, 6)'
+// names a method with its receiver passed, and must not be taken for a bare
+// method name lowered to 'self.pick'.
+static void genericKeepQualified(INode *instance, INode *generic) {
+    if (isNameUseNode(instance) && !inodeIsError(instance))
+        instance->flags |= generic->flags & FlagQualified;
+}
+
 // Perform generic substitution, if this is a correctly set up generic "srcgencall"
 // Return 1 if generic subsituted or error. Return 0 if not generic or it leaves behind a lit/srcgencall that needs processing.
 int genericSubstitute(TypeCheckState *pstate, FnCallNode **srcgencallp) {
@@ -449,6 +486,7 @@ int genericSubstitute(TypeCheckState *pstate, FnCallNode **srcgencallp) {
     // so what it is given is checked as type arguments, and refused if it is not
     if (usesTypeArgs || nodetoclone->tag == ModuleTag) {
         *((INode**)srcgencallp) = genericMemoize(pstate, srcgencall, nodetoclone, genericinfo, name);
+        genericKeepQualified(*((INode**)srcgencallp), objfn);
         inodeTypeCheckAny(pstate, (INode **)srcgencallp);
         return 1;
     }
@@ -469,12 +507,18 @@ int genericSubstitute(TypeCheckState *pstate, FnCallNode **srcgencallp) {
 
     // Inference varies depending on the kind of generic
     switch (nodetoclone->tag) {
-    case FnDclTag:
-        // Infer based on function call arguments
+    case FnDclTag: {
+        // Infer based on function call arguments. A method named bare inside
+        // its type's braces is called on an implicit 'self' that is not among
+        // the arguments; named through its type, 'Holder.pick(&h, 6)', its
+        // receiver is the first argument.
+        uint32_t firstparm = (nodetoclone->flags & FlagMethFld) && !(objfn->flags & FlagQualified) ? 1 : 0;
         if (genericInferFnParms(pstate, genericinfo->parms,
-            (FnSigNode*)itypeGetTypeDcl(((FnDclNode *)nodetoclone)->vtype), srcgencall, inferredgencall) == 0)
+            (FnSigNode*)itypeGetTypeDcl(((FnDclNode *)nodetoclone)->vtype), srcgencall->args, firstparm,
+            (INode*)srcgencall, inferredgencall) == 0)
             return 1;
         break;
+    }
     case StructTag:
         // Infer based on type constructor arguments
         if (genericInferStructParms(pstate, genericinfo->parms, (StructNode*)itypeGetTypeDcl(nodetoclone), srcgencall, inferredgencall) == 0)
@@ -503,7 +547,58 @@ int genericSubstitute(TypeCheckState *pstate, FnCallNode **srcgencallp) {
         *((INode**)srcgencallp) = instance;
         return 1;
     }
+    genericKeepQualified(instance, objfn);
     *((INode**)&srcgencall->objfn) = instance;
 
+    return 0;
+}
+
+// The instance of generic method 'genmeth' that a call on a receiver names:
+// 'h.pick(6)', or 'h.pick[i32](6)' with 'typeargs' written. Unwritten, the type
+// arguments are inferred from the call's arguments, which do not yet hold the
+// receiver, so they match the method's parameters after 'self'. Returns NULL
+// once an error is reported.
+FnDclNode *genericMethodInstance(TypeCheckState *pstate, FnCallNode *callnode, FnDclNode *genmeth, Nodes *typeargs) {
+    GenericInfo *genericinfo = genmeth->genericinfo;
+    uint32_t nparms = genericinfo->parms->used;
+    FnCallNode *gencall = newFnCallNode(newNameUseFromDclNode((INode*)genmeth, callnode->methfld), nparms);
+    inodeLexCopy((INode*)gencall, (INode*)callnode);
+    INode **argsp;
+    uint32_t cnt;
+    if (typeargs) {
+        for (nodesFor(typeargs, cnt, argsp))
+            nodesAdd(&gencall->args, *argsp);
+    }
+    else {
+        while (nparms--)
+            nodesAdd(&gencall->args, (INode*)NULL);
+        if (genericInferFnParms(pstate, genericinfo->parms, (FnSigNode*)itypeGetTypeDcl(genmeth->vtype),
+            callnode->args, 1, (INode*)callnode, gencall) == 0)
+            return NULL;
+        for (nodesFor(gencall->args, cnt, argsp)) {
+            if (*argsp == NULL) {
+                errorMsgNode((INode*)callnode, ErrorInvType, "Could not infer all of generic's type parameters.");
+                return NULL;
+            }
+        }
+    }
+    INode *instance = genericMemoize(pstate, gencall, (INode*)genmeth, genericinfo, genmeth->namesym);
+    if (inodeIsError(instance))
+        return NULL;
+    return (FnDclNode*)nameUseGetDcl((NameUseNode*)instance);
+}
+
+// Is 'fn' an instance of generic function or method 'generic'?
+int genericIsInstanceOf(INode *fn, FnDclNode *generic) {
+    Nodes *memonodes = generic->genericinfo->memonodes;
+    if (fn == NULL || memonodes == NULL)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(memonodes, cnt, nodesp)) {
+        ++nodesp; --cnt;  // memonodes holds pairs: the call, then what it instantiated
+        if (*nodesp == fn)
+            return 1;
+    }
     return 0;
 }

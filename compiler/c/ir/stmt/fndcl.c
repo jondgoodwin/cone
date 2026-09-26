@@ -75,15 +75,40 @@ FnDclNode *cloneFnDclShell(FnDclNode *oldfn) {
     // memcpy carries the type check marks with everything else, and a clone that
     // kept them would be skipped by the guard in inodeTypeCheck.
     newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
-    newnode->genericinfo = NULL;
+    // A generic method copied with its type -- into a generic type's instance,
+    // or a trait's default into an implementer -- is still generic there, with
+    // its own instances. It shares the original's type parameters, so its
+    // signature is the original's: a trait's requirement and an implementer's
+    // copy of its default name the same T. Instantiating a generic makes a
+    // copy that is not generic (genericClone).
+    if (oldfn->genericinfo) {
+        newnode->genericinfo = newGenericInfo();
+        newnode->genericinfo->parms = oldfn->genericinfo->parms;
+    }
     return newnode;
 }
 
-// Copy the original's signature and body into its shell
+// Copy the original's signature and body into its shell.
+// A copy that is still generic keeps its type parameters, and a use of one in
+// what is copied stays a use of it rather than a substitution. Each is hooked
+// to itself for the copy, as a macro's copy hooks its own parameters
+// (cloneMacroDclNode): the type parameters this clone substitutes are the
+// enclosing generic's, never these, and a name hooked to nothing would be
+// read as a substitution of nothing.
 void cloneFnDclFill(CloneState *cstate, FnDclNode *newnode, FnDclNode *oldfn) {
     uint32_t dclpos = cloneDclPush();
+    int generic = newnode->genericinfo != NULL;
+    if (generic) {
+        nametblHookPush();
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(newnode->genericinfo->parms, cnt, nodesp))
+            nametblHookNode(((GenVarDclNode*)*nodesp)->namesym, *nodesp);
+    }
     newnode->vtype = cloneNode(cstate, oldfn->vtype);
     newnode->value = cloneNode(cstate, oldfn->value);
+    if (generic)
+        nametblHookPop();
     cloneDclPop(dclpos);
 }
 
