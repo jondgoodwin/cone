@@ -228,6 +228,9 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
         return genlAlignof(gen, type);
     case NeedsFinalIntrinsic:
         return LLVMConstInt(genlType(gen, (INode*)boolType), itypeNeedsFinal(type), 0);
+    // The address of T's record, a constant this object builds once
+    case TypeRecordIntrinsic:
+        return genlTypeRecord(gen, type, ((FnSigNode *)fndcl->vtype)->rettype);
 
     // The death of the value at the pointer, in place
     case FinalizeIntrinsic:

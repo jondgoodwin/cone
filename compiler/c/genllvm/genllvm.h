@@ -50,6 +50,14 @@ typedef struct GenState {
     int exitzero;           // The function generated is a 'main' returning nothing, whose returns return i32 0
     GenBlockState *blockstack;
     uint32_t blockstackcnt;
+
+    // The type records this object has built (genlTypeRecord): each value type,
+    // and its record's constant, in the same order
+    INode **tyrectypes;
+    LLVMValueRef *tyrecs;
+    uint32_t tyreccnt;
+    uint32_t tyrecmax;
+    LLVMValueRef tyrecnothing; // The shared do-nothing function a record's empty slots point at
 } GenState;
 
 // What the target's object file format does with COMDATs, which is how a
@@ -135,6 +143,10 @@ void genlAliasHeld(GenState *gen, LLVMValueRef valptr, INode *type, long long am
 void genlHollowRelease(GenState *gen, HollowNode *hnode);
 // A counted reference gains 'amount' owners, through its region's 'alias'
 void genlRegionAlias(GenState *gen, LLVMValueRef ref, long long amount, RefNode *refnode);
+// The type record of 'vtype': a constant core's TypeRecord (the pointee of
+// 'recptrtype', the '*TypeRecord' the caller was declared with) holding its size,
+// its alignment, its finalizer and its trace, built once per object and type
+LLVMValueRef genlTypeRecord(GenState *gen, INode *vtype, INode *recptrtype);
 // Create an alloca (will be pushed to the entry point of the function.
 LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name);
 

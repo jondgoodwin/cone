@@ -1,0 +1,114 @@
+// A region ref that asks for the value's type record. Its 'alloc' takes one
+// after the size, 'fn alloc(size usize, ty *TypeRecord) *u8', and that shape is
+// the whole request: the compiler passes the record of the allocated value's
+// type (core's TypeRecord: size, alignment, finalizer, trace, flags) to such an
+// 'alloc', and only to such an 'alloc'. 'rc' and 'so', whose 'alloc' takes the
+// size alone, are called as they always were (the 'plain-regions-unchanged'
+// check), in the same program.
+//
+// 'kept' is a collector's shape, a region that owns death in its own loop: it
+// declares no 'alias', no 'dealias' and not 'Move', so the compiler never
+// finalizes or frees what it holds. Its 'alloc' writes the header itself --
+// the next object and the record -- and links it into a list, printing what
+// the record says. 'sweep' is that loop: it walks the list, finds each value
+// past its header by the record's alignment, and runs the record's finalizer
+// on it, then frees it. So each value's death in the output comes from the
+// record alone: 'final', then its fields' finalizers, then the owners its fields
+// hold (a '+so' one finalized and freed), exactly as the compiler runs it for
+// the same type anywhere; nothing for a type with nothing to finalize.
+//
+// The record 'alloc' is handed is the one 'mem.typeRecord[T]()' gives in the
+// same object, so the two compare equal.
+
+mod region_typerecord;
+
+import stdio use *;
+import libc;
+
+fn line(label &[]u8, n usize) {
+  printStr(label);
+  printInt(i64[n]);
+  printStr("\n");
+}
+
+// The newest object 'kept' allocated, as an address; 0 for none
+mut keptHead = 0usize;
+
+struct kept is RegionRef {
+  pub next usize;      // the object allocated before this one
+  pub ty *TypeRecord;  // what 'alloc' was handed
+
+  fn alloc(size usize, ty *TypeRecord) *u8 {
+    imm rec = ty as &TypeRecord;
+    printStr("kept alloc "); printInt(i64[size]);
+    printStr(": value "); printInt(i64[rec.size]);
+    printStr(", align "); printInt(i64[rec.align]);
+    printStr(", flags "); printInt(i64[rec.flags]);
+    printStr("\n");
+    imm p = malloc(size);
+    mem.writeRaw(p as *kept, kept[keptHead, ty]);
+    keptHead = p as usize;
+    p;
+  }
+}
+
+// Every object 'kept' holds dies, newest first: its value finalized by its
+// record, then its memory freed. The value sits after the header, rounded up
+// to the value's alignment, which is where the compiler put it (the
+// {region, permission, value} layout, whose permission takes no room).
+fn sweep() {
+  while keptHead != 0usize {
+    imm hdr = keptHead as &kept;
+    keptHead = hdr.next;
+    imm rec = hdr.ty as &TypeRecord;
+    imm align = rec.align;
+    imm at = (hdr as usize + mem.sizeof[kept]() + align - 1usize) & (0usize - align);
+    imm fin = rec.finalize;
+    fin(at as *u8);
+    libc.free(hdr as *u8);
+  }
+}
+
+struct Fin {
+  pub v i32;
+  fn final(self &uni) { line("Fin final ", usize[v]); }
+}
+
+// Its death: its own 'final', reading what its field owns, then the owner
+struct Holder {
+  pub id i32;
+  pub inner +so Fin;
+  fn final(self &uni) { line("Holder final, holds ", usize[inner.v]); }
+}
+
+struct Plain {
+  pub a i64;
+  pub b u8;
+}
+
+// A value holding an array: its record's size is the whole of it
+struct Wide {
+  pub a [4; u64];
+}
+
+fn main() {
+  printStr("-- allocate\n");
+  imm a = +kept-mut Fin[1i32];
+  imm b = +kept-mut Plain[2, 3u8];
+  imm c = +kept-mut Holder[4i32, +so Fin[5i32]];
+  imm d = +kept-mut 6i32;
+  imm e = +kept-mut Wide[[7u64, 8u64, 9u64, 10u64]];
+  line("read back ", usize[a.v] + usize[b.b] + usize[c.inner.v] + usize[*d] + usize[e.a[3]]);
+  // The same record in this object as 'mem.typeRecord' gives
+  if (keptHead as &kept).ty == mem.typeRecord[Wide]() { printStr("same record\n"); }
+
+  printStr("-- rc and so, unchanged\n");
+  {
+    imm r = +rc-mut Fin[11i32];
+    imm s = +so Fin[12i32];
+  }
+
+  printStr("-- sweep\n");
+  sweep();
+  printStr("swept\n");
+}

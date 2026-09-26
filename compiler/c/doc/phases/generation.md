@@ -525,6 +525,27 @@ instructions the compiler used to emit itself, with one exception: an array
 fill literal adding n owners is n increments rather than one `add n`, because
 the pipeline has no instruction combining after `GVN` to fold them.
 
+**A type record is a constant, one per type in each object**
+(`genlTypeRecord`), built the first time a region's `alloc` asks for one
+(`genlallocref`, where `regionAllocTakesRecord`) or `mem.typeRecord[T]()`
+names one, and found again by type (`itypeIsSame`) from a list on the
+generator's state. It is a private global `cone.tyrec.<n>` of core's
+`TypeRecord`, whose layout the compiler checks as it builds the first — two
+`usize`, two function pointers of `fn(p *u8)`, a `u32` — and fills with the
+value's ABI size and alignment (as `mem.sizeof` and `mem.alignof`), its
+finalizer, a trace, and flags (bit 0, `itypeNeedsFinal`; bit 1, holding a
+traced reference, never set). The finalizer of a type that finalizes is a
+private function `cone.tyrec.final.<n>` whose body is `genlFinalizeAt` on its
+parameter, generated on the spot with the generator's per-function state set
+aside around it, as `genlFn` does; in a debug build it has a subprogram and a
+location at the type, since the calls it makes (an `rc` owner's inline
+`dealias` among them) need one. Every other slot — the finalizer of a type
+with nothing to finalize, and every trace — points at one private do-nothing
+function, `cone.tyrec.nothing`, so none is null. The record is remembered
+before its finalizer is generated, so a finalizer that asks for records,
+its own type's among them, finds them. Being private, two objects hold two
+records of one type; nothing compares records across objects.
+
 `so` and `rc` are declared in Cone source in the core package,
 `packages/core/src/core.cone` ([What a region is](../nodes/module.md)). `malloc`
 and `free` are `libc`'s ordinary `extern` declarations, which `core`'s import
@@ -772,6 +793,7 @@ variables.
 | | `genlFinalizeAt`, `genlCallDrop`, `genlEachElem` | a value's death in place, whatever its type: a local's, a field's, a region value's before its `free`, and the `finalize` intrinsic |
 | | `genlTypeDrop`, `genlStructDrop`, `genlEnumDrop` | the body of a drop the compiler gave a type: a struct's `final` calls, its fields' deaths, its owners' release; an enum's tag dispatching to its variant's |
 | | `genlAliasHeld` | a copied struct, enum, tuple or array: `alias` on each counted reference its death releases |
+| | `genlTypeRecord`, `genlTypeRecFinalizer`, `genlTypeRecNothing` | a type's record, once per object: its size, alignment, finalizer function, trace and flags; what an `alloc` that asks is handed, and `mem.typeRecord` |
 | `ir/types/reference.h` | `enum ManagedRefFields` | `RegionField`, `PermField`, `ValueField` |
 | `ir/name.c` | `nameSymbol`, `nameType`, `nameVtable`, `nameVtableImpl`, `nameVtableList` | spelling a symbol from a node's owner chain and facts, and a type argument within it — the rules are in [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols" |
 | `ir/dclinfo.c` | `dclInfoJoin` | writes the declaration facts where a declaration joins its namespace |

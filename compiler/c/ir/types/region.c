@@ -105,17 +105,19 @@ static void regionCheckSelfMeth(StructNode *region, Name *name, int retbool) {
             &name->namestr, &name->namestr, &region->namesym->namestr);
 }
 
-// Check a static 'alloc' of the shape the compiler calls: one usize, the whole
-// allocation's size with the header in it, returning '*u8' (null for failure)
+// Check a static 'alloc' of a shape the compiler calls: a usize, the whole
+// allocation's size with the header in it, and optionally the value type's
+// record ('ty *TypeRecord'), returning '*u8' (null for failure). Which shape it
+// has is how a region asks for the record: the compiler passes one only to an
+// 'alloc' that takes it (regionAllocTakesRecord).
 static void regionCheckAlloc(FnDclNode *allocmeth) {
     FnSigNode *allocsig = (FnSigNode*)itypeGetTypeDcl(allocmeth->vtype);
-    if (allocsig->parms->used != 1) {
-        errorMsgNode((INode*)allocmeth, ErrorBadAlloc, "Region alloc method needs single usize parm.");
-        return;
-    }
-    NbrNode *sizetype = (NbrNode *)itypeGetTypeDcl(iexpGetTypeDcl(nodesGet(allocsig->parms, 0)));
-    if (sizetype != usizeType) {
-        errorMsgNode((INode*)allocmeth, ErrorBadAlloc, "Region alloc method needs single usize parm.");
+    uint32_t nparms = allocsig->parms->used;
+    NbrNode *sizetype = nparms >= 1 ? (NbrNode *)itypeGetTypeDcl(iexpGetTypeDcl(nodesGet(allocsig->parms, 0))) : NULL;
+    if (nparms < 1 || nparms > 2 || sizetype != usizeType
+        || (nparms == 2 && !typeRecordIsPtr(((VarDclNode *)nodesGet(allocsig->parms, 1))->vtype))) {
+        errorMsgNode((INode*)allocmeth, ErrorBadAlloc,
+            "Region alloc method takes 'size usize', and may take the value's type record after it: 'fn alloc(size usize, ty *TypeRecord) *u8'.");
         return;
     }
     RefNode *rettype = (RefNode*)itypeGetTypeDcl(allocsig->rettype);
@@ -165,7 +167,7 @@ void regionRefCheck(StructNode *node) {
 
     INode *allocmember = iNsTypeFindFnField((INsTypeNode*)node, allocMethodName);
     if (allocmember && allocmember->tag != FnDclTag)
-        errorMsgNode(allocmember, ErrorBadAlloc, "Region alloc must be a static method: 'fn alloc(size usize) *u8'.");
+        errorMsgNode(allocmember, ErrorBadAlloc, "Region alloc must be a static method: 'fn alloc(size usize) *u8', or 'fn alloc(size usize, ty *TypeRecord) *u8'.");
     else if (allocmember)
         regionCheckAlloc((FnDclNode*)allocmember);
 
@@ -185,6 +187,17 @@ void regionRefCheck(StructNode *node) {
         errorMsgNode((INode*)node, ErrorRegionSet,
             "Region %s is Move, one owner per value, but declares alias, which makes another. A counted region is not Move; a single-owner one declares no alias.",
             &node->namesym->namestr);
+}
+
+// Does the region's 'alloc' take the value type's record as well as the size?
+// Only a region whose 'alloc' asks is handed one, so a region that does not
+// ask (so, rc) is called exactly as it would be if records did not exist
+int regionAllocTakesRecord(INode *region) {
+    FnDclNode *allocmeth = regionMethod(region, allocMethodName);
+    if (allocmeth == NULL)
+        return 0;
+    FnSigNode *allocsig = (FnSigNode*)itypeGetTypeDcl(allocmeth->vtype);
+    return allocsig->parms->used == 2;
 }
 
 // At an allocation '+R value': the region is a RegionRef (refTypeCheck reports

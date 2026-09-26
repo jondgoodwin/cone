@@ -143,6 +143,28 @@ category = "run"
 description = "A region ref with neither alias, dealias nor Move: references copy freely (the source stays usable, a write through one copy is read through another, a struct holding them copies), and the compiler never finalizes or frees what it holds; a 'uni' reference into it still moves"
 tags = ["nameres", "typecheck", "flow", "genllvm", "runtime"]
 
+# A region ref whose 'alloc' asks for the value's type record, by taking one
+# after the size, is handed it at every allocation; one whose 'alloc' does not
+# ask ('rc', 'so') is called with the size alone, as before records existed.
+# The region keeps each record in its header and later finalizes each value
+# through it alone, in its own loop, as a collector will: the .out file shows
+# each record's size, alignment and flags, and each value's death in the ruled
+# order, run from the record.
+[scenario.region_typerecord]
+category = "run"
+description = "A region ref whose alloc takes 'ty *TypeRecord' is handed the value type's record (size, alignment, flags, the same record mem.typeRecord gives) and finalizes each value later through it alone; rc and so, whose alloc takes only the size, are called as before"
+tags = ["nameres", "typecheck", "genllvm", "runtime"]
+
+[[scenario.region_typerecord.check]]
+name = "record-passed-only-where-asked"
+target = "preir"
+contains = [
+  "call ptr @_CNvNt4kept5alloc(i64 24, ptr @cone.tyrec.0)",
+  "@cone.tyrec.0 = private constant %TypeRecord { i64 4, i64 4, ptr @cone.tyrec.final.0, ptr @cone.tyrec.nothing, i32 1 }",
+  "@cone.tyrec.1 = private constant %TypeRecord { i64 16, i64 8, ptr @cone.tyrec.nothing, ptr @cone.tyrec.nothing, i32 0 }",
+  "call %void @_CNvNt6Holder4drop(ptr %0)",
+]
+
 # The rcweak package's weak reference, found on the search path and compiled
 # into the scenario's object, as math3d is in module_package_math3d. Its
 # runtime behaviour is the package's own tests'; this pins what is refused.
@@ -640,9 +662,9 @@ diagnostics = 4
 
 [scenario.region_typecheck_region]
 category = "reject"
-description = "The shape of each region method, checked where the region is declared, and an allocation from a region with no 'alloc'"
+description = "The shape of each region method, checked where the region is declared (an 'alloc' taking anything but the size and, after it, the type record), and an allocation from a region with no 'alloc'"
 tags = ["typecheck"]
-diagnostics = 9
+diagnostics = 11
 
 [scenario.region_typecheck_init]
 category = "reject"

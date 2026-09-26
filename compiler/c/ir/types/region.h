@@ -36,4 +36,8 @@ void regionRefCheck(StructNode *node);
 // At an allocation: the region can allocate
 void regionAllocTypeCheck(INode *region);
 
+// Does the region's 'alloc' ask for the value type's record, by taking
+// 'ty *TypeRecord' after the size?
+int regionAllocTakesRecord(INode *region);
+
 #endif

@@ -2497,7 +2497,7 @@ events only it can see (`ir/types/region.c`):
 
 | Method | Called when | If absent |
 |---|---|---|
-| `fn alloc(size usize) *u8`, static | `+R value` allocates; `size` is the whole allocation, header included; null fails | the allocation is refused (`ErrorBadAlloc`) |
+| `fn alloc(size usize) *u8`, or `fn alloc(size usize, ty *TypeRecord) *u8`, static | `+R value` allocates; `size` is the whole allocation, header included; `ty`, where it is declared, is the value type's record; null fails | the allocation is refused (`ErrorBadAlloc`) |
 | `fn init() R`, static | after `alloc`; the result is stored as the header | the header is left as allocated |
 | `fn alias(self &uni R)` | a copy of an owning reference becomes another owner | a copy calls nothing: it is a **move** where the region is `Move`, and free where it is not |
 | `fn dealias(self &uni R) Bool` | an owner goes away; answers whether it was the last | an owner's going asks nothing: where the region is `Move` it is the value's death; where it is not, it does nothing — the value never dies by an owner and the compiler never frees it, left to the region's own loop (a collector's, an arena's) |
@@ -2507,6 +2507,25 @@ Every method but `alloc` and `init` is handed the allocation's **header**, the
 region struct at the front of the `{region, permission, value}` layout, found
 from the value pointer by the value's offset in that layout
 (`genlRegionHeader`), so no region's or permission's size is assumed.
+
+**A region asks for the value's type record by the shape of its `alloc`.** An
+`alloc` taking `ty *TypeRecord` after the size is handed, at each allocation,
+the record of the allocated value's type — of an owning slice, its element
+type's (`genlallocref`, asking `regionAllocTakesRecord`). The record is core's
+`TypeRecord`, a constant the compiler builds once per type in each object
+(`genlTypeRecord`): the value's size and alignment, its finalizer — the death
+`mem.finalize` runs, as a function taking the value's address — a trace slot
+for a tracing region (a function that does nothing while no reference can be
+traced), and flags saying whether finalizing does anything. With it a region
+that owns death in its own loop, as a collector does, can finalize a value it
+cannot name the type of (`region_typerecord`). An `alloc` taking only the size
+is called with only the size, so a region that does not ask pays nothing: `so`
+and `rc` are generated exactly as they were before records existed. The type
+record is recognized as core's struct named `TypeRecord` (`typeRecordIsPtr`),
+as the intrinsics are recognized as core's, and its layout is the one the
+compiler fills in, which it checks when it builds the first record; a
+module cannot declare its own `TypeRecord`, since core's public names are
+folded into every module.
 
 Whether the region has one owner per value is not read off a missing method
 but **declared**, with the built-in trait `Move` [Jon 26 Sep]: `struct so is
@@ -2520,7 +2539,8 @@ region owns death in its own loop (`region_collected`).
 
 The struct is held to the method shapes **at its declaration**, after its
 methods are type checked (`regionRefCheck`, from `structCheckMembers`):
-`ErrorBadAlloc` for `alloc`/`init`, `ErrorRegionMeth` for the other three. No
+`ErrorBadAlloc` for `alloc`/`init` (an `alloc` taking anything but the size
+and, after it, the type record), `ErrorRegionMeth` for the other three. No
 combination is refused for what it leaves out, since an absent method's
 operation simply does not happen [Jon 25 Sep]: `dealias` without `alias` on a
 `Move` region is a single owner whose going still asks `dealias`, and `init`
