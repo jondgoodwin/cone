@@ -660,5 +660,5 @@ accident — and update this list when you do.
   package alone and links its object in (section 3). Nothing else of separate
   compilation is exercised: there is no Congo run in the suite. Congo is
   checked by its own script, `tools/congo/test_congo.py`, which builds and runs
-  programs against the packages folder's `core` and `stdio`, each compiled
-  alone.
+  programs against the packages folder's `libc`, `core`, `stdio` and `posix`,
+  each compiled alone.

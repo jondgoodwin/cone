@@ -662,7 +662,10 @@ def first_import(unit: Unit, name: str) -> Import:
 def build_order(top: Package, registry: Registry) -> list[Unit]:
     """Every package the build needs, each after what it imports. Imports are a
     DAG between packages [Jon 23 Sep]: a loop is refused, naming it. The prelude,
-    core, comes first of all, since every package uses it."""
+    core, comes first of all, since every package uses it -- after the packages
+    core itself imports (libc), which are C packages, given no prelude by the
+    compiler, and so built before it. A package core imports, built on its own,
+    needs no core at all."""
     order: list[Unit] = []
     state: dict[str, str] = {}
     units: dict[str, Unit] = {}
@@ -695,8 +698,30 @@ def build_order(top: Package, registry: Registry) -> list[Unit]:
             raise CongoError(f"no package named '{PRELUDE}', the prelude, in the"
                              f" registries searched: {registry.searched()}")
         visit(core)
+        if top.name in state:
+            # One of core's own imports: built with what it imports, and no core
+            order.clear()
+            state.clear()
     visit(top)
     return order
+
+
+def prelude_needs(units: dict[str, Unit]) -> set[str]:
+    """The packages core imports, directly or not: the C packages the prelude
+    rests on (libc). Each is built before core and gets no prelude, so its
+    description has no package line for core, whose include file does not exist
+    yet when it is compiled."""
+    needs: set[str] = set()
+
+    def visit(name: str) -> None:
+        for dep in units[name].deps:
+            if dep not in needs:
+                needs.add(dep)
+                visit(dep)
+
+    if PRELUDE in units:
+        visit(PRELUDE)
+    return needs
 
 
 # ---------------------------------------------------------------------------
@@ -711,10 +736,13 @@ def cone_path(path: Path) -> str:
 
 def closure(unit: Unit, units: dict[str, Unit], registry_core: Package | None) -> list[Package]:
     """Every package in the unit's dependency closure, direct or indirect, in
-    build order (each after what it imports), the prelude first. These are the
-    description's PACKAGE LINES: an include file is a module file like any other
-    and may import [Jon 25 Sep], and what its imports reach is found there. The
-    prelude's line is also where conec loads the prelude from."""
+    build order (each after what it imports), the prelude first, after what the
+    prelude itself imports. These are the description's PACKAGE LINES: an include
+    file is a module file like any other and may import [Jon 25 Sep], and what
+    its imports reach is found there -- so core's include file's import of libc
+    is answered by libc's line, in every description that has core's. The
+    prelude's line is also where conec loads the prelude from. A package core
+    imports gets neither: it is built before core, and has no prelude."""
     seen: dict[str, Package] = {}
 
     def visit(pkg: Package) -> None:
@@ -723,10 +751,12 @@ def closure(unit: Unit, units: dict[str, Unit], registry_core: Package | None) -
                 visit(dep)
                 seen[name] = dep
 
+    if (registry_core is not None and unit.pkg.name != PRELUDE
+            and PRELUDE in units and unit.pkg.name not in prelude_needs(units)):
+        visit(registry_core)
+        seen[PRELUDE] = registry_core
     visit(unit.pkg)
-    first = ([registry_core] if registry_core is not None
-             and unit.pkg.name != PRELUDE else [])
-    return first + list(seen.values())
+    return list(seen.values())
 
 
 def description(unit: Unit, mode: str, output: str, out: Path,

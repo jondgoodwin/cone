@@ -855,6 +855,7 @@ static ModTraitNode *parseModTrait(ParseState *parse, uint16_t pubflag) {
 }
 
 void parseAddCorelibImport(ParseState *parse, ModuleNode *mod);
+void parseDropCorelibImport(ModuleNode *mod);
 
 // A nested module block, 'mod sub { ... }', with the lexer on its '{'. Only a
 // generated include file holds one (ParseState.generated): the package's
@@ -901,7 +902,9 @@ static void parseModuleBlock(ParseState *parse, ModuleNode *parent, Name *name, 
     mod->traitname = (INode*)traitname;
     mod->genericinfo = genericinfo;
     modAddNamedNode(parent, name, (INode*)mod);
-    parseAddCorelibImport(parse, mod);
+    // A C-named module gets no prelude, as parseModuleDcl says
+    if (!(cattr->facts & DclCName))
+        parseAddCorelibImport(parse, mod);
 
     ModuleNode *svmod = parse->mod;
     parse->mod = mod;
@@ -970,9 +973,11 @@ static void parseModuleBlock(ParseState *parse, ModuleNode *parent, Name *name, 
 // declares nothing about a subfolder or a file -- where it sits is the
 // declaration. A module with no parent has nothing to be visible outside of.
 //
-// '@c' after 'mod' makes the module C-named: 'mod @c("SDL_") sdl;'. The
-// module's naming is the only thing it states; whether a declaration is defined
-// elsewhere is that declaration's own 'extern' [Jon 23 Sep] (parseCAttr).
+// '@c' after 'mod' makes the module C-named: 'mod @c("SDL_") sdl;'. It states
+// the module's naming, and takes back the module's automatic import of core (a
+// C binding module needs no prelude, and core imports libc); whether a
+// declaration is defined elsewhere is that declaration's own 'extern' [Jon 23
+// Sep] (parseCAttr).
 void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t pubflag) {
     // Where the declaration is written. The module node was made positioned at
     // the first line of its designated file, which is the nearest thing a module
@@ -1155,6 +1160,11 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
             mod->deffold = deffold;
             mod->dclinfo.facts |= cattr.facts & DclStated;
             mod->dclinfo.cname = cattr.cname;
+            // A C-named module gets no prelude: it declares what a C library
+            // defines, in C's types, and needs nothing of core -- and core
+            // itself imports one, libc, which a prelude would make a loop
+            if (cattr.facts & DclCName)
+                parseDropCorelibImport(mod);
             // A C name has no room for an instance's type arguments, so each
             // instance's globals would be one symbol: a generic module keeps Cone
             // names, as a generic function in a C-named module does
@@ -1534,6 +1544,19 @@ void parseAddCorelibImport(ParseState *parse, ModuleNode *mod) {
     importnode->module = corelib;
     importnode->iscore = 1;
     modAddNode(mod, NULL, (INode*)importnode);
+}
+
+// Take the auto-import of core back off a module whose 'mod' line makes it
+// C-named (parseModuleDcl). It was added before the module's files were read,
+// as every module's is, and nothing has folded it yet: folding comes after the
+// whole program is parsed
+void parseDropCorelibImport(ModuleNode *mod) {
+    for (uint32_t i = 0; i < mod->imports->used; ++i) {
+        if (((ImportNode*)nodesGet(mod->imports, i))->iscore) {
+            nodesMakeSpace(&mod->imports, i, -1);
+            return;
+        }
+    }
 }
 
 // Draw the submodules this module holds, then parse them, then

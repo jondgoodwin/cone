@@ -1,0 +1,125 @@
+// The posix package: raw bindings to the POSIX functions a program needs
+// beyond the ISO C library, for files, directories, processes and the
+// environment. A program reaches it with 'import posix'. It is built on the
+// libc package, whose 'FILE' stream it shares, and like libc it is raw: C
+// names, C types, C strings ('*u8' to bytes ending in a NUL, which a string
+// literal carries), errors as C reports them. A Cone-flavoured layer comes
+// later, as a package of its own.
+//
+// Windows first. Cone cannot yet choose declarations by target, so this
+// version binds the Windows C runtime (the UCRT), which is not a POSIX system:
+// it spells most POSIX functions with a leading underscore ('_mkdir',
+// '_popen'), sizes some of their arguments differently, and lacks others. So:
+//
+// - Where the runtime's function takes POSIX's arguments in POSIX's order,
+//   the POSIX name binds straight to the runtime's symbol with '@c("...")'.
+// - Where the arguments differ (mkdir's mode, setenv's overwrite flag,
+//   realpath's order, getcwd's size), the POSIX name is a small 'inline'
+//   function with POSIX's signature that calls the runtime's, and says what
+//   Windows does differently. Being inline, it defines no symbol of its own.
+// - Where the runtime has no equivalent at all, listing a directory (POSIX's
+//   opendir and readdir), the runtime's own Windows-only functions are bound
+//   under their own names, '_findfirst64' and its partners, at the end of
+//   this file. A program using them is a Windows program.
+//
+// This is a C-named module ('@c' on the 'mod' line): a function without its
+// own '@c("...")' binds to the C symbol of its own name.
+
+mod @c posix;
+
+import libc;
+
+// sys/stat.h: a file's status, as the UCRT's '_stat64' fills it in. This is
+// 'struct _stat64', whose layout was measured against the runtime's own
+// header with cl.exe (x64): 56 bytes, fields at offsets 0, 4, 6, 8, 10, 12,
+// 16, 24, 32, 40 and 48. On Windows 'st_ino', 'st_uid' and 'st_gid' are
+// always zero. The times are seconds since 1970 (UTC).
+pub struct Stat {
+  pub st_dev u32;
+  pub st_ino u16;
+  pub st_mode u16;
+  pub st_nlink i16;
+  pub st_uid i16;
+  pub st_gid i16;
+  pub st_rdev u32;
+  pub st_size i64;
+  pub st_atime i64;
+  pub st_mtime i64;
+  pub st_ctime i64;
+}
+
+// The file-type bits of 'st_mode', and the mask over them
+pub const S_IFMT = 0xF000u16;
+pub const S_IFDIR = 0x4000u16;
+pub const S_IFREG = 0x8000u16;
+
+// sys/stat.h, direct.h and unistd.h: files and directories. 'stat' follows
+// no symbolic link, since Windows' runtime has none to follow.
+pub extern {
+  fn @c("_stat64") stat(path *u8, buf &mut Stat) i32;
+  fn @c("_chdir") chdir(path *u8) i32;
+  fn @c("_rmdir") rmdir(path *u8) i32;
+}
+
+// mkdir(path, mode): Windows has no permission bits, so 'mode' is ignored
+extern fn _mkdir(path *u8) i32;
+pub fn mkdir(path *u8, mode u32) i32 inline {_mkdir(path);}
+
+// getcwd(buf, size): the runtime's '_getcwd' takes the size as an 'int'
+extern fn _getcwd(buf *u8, size i32) *u8;
+pub fn getcwd(buf *u8, size usize) *u8 inline {_getcwd(buf, i32[size]);}
+
+// realpath(path, resolved): the runtime's '_fullpath(resolved, path, size)'
+// takes the buffer first, with its size. 'resolved' must hold PATH_MAX bytes,
+// or be null, when the result is malloc'd for the caller to free, as POSIX
+// says. Unlike POSIX's, it neither requires the path to exist nor resolves
+// symbolic links: it only makes the path absolute and removes '.' and '..'.
+pub const PATH_MAX = 260usize;
+extern fn _fullpath(resolved *u8, path *u8, size usize) *u8;
+pub fn realpath(path *u8, resolved *u8) *u8 inline {_fullpath(resolved, path, PATH_MAX);}
+
+// stdlib.h: setting an environment variable. The runtime's '_putenv_s'
+// always overwrites, so where 'overwrite' is zero and the variable is set,
+// nothing is done, as POSIX says. It returns 0, or an error number where
+// POSIX returns -1.
+extern fn _putenv_s(name *u8, value *u8) i32;
+pub fn setenv(name *u8, value *u8, overwrite i32) i32 inline {
+  if overwrite == 0i32 and libc.getenv(name) != 0usize as *u8 {0i32;} else {_putenv_s(name, value);};
+}
+
+// stdio.h: running a command through the shell (cmd.exe on Windows) with a
+// pipe to what it prints ('r') or to what it reads ('w'). 'pclose' waits for
+// it and returns its exit status.
+pub extern {
+  fn @c("_popen") popen(command *u8, mode *u8) *libc.FILE;
+  fn @c("_pclose") pclose(stream *libc.FILE) i32;
+}
+
+// ---------------------------------------------------------------------------
+// Windows only: listing a directory. POSIX's opendir/readdir have no
+// equivalent in the Windows runtime; these are its own functions, from io.h,
+// under their own names. '_findfirst64' takes a pattern ("dir/*" lists dir,
+// '.' and '..' included), fills 'info' with the first match and returns a
+// handle, or -1 when nothing matches; '_findnext64' fills in the next and
+// returns 0, or -1 after the last; '_findclose' releases the handle.
+// ---------------------------------------------------------------------------
+
+// 'struct __finddata64_t', measured with cl.exe (x64): 304 bytes, fields at
+// offsets 0, 8, 16, 24, 32 and 40; 'name' is a NUL-terminated file name.
+pub struct FindData64 {
+  pub attrib u32;
+  pub time_create i64;
+  pub time_access i64;
+  pub time_write i64;
+  pub size i64;
+  pub name [260; u8];
+}
+
+// The bit of 'attrib' that marks a directory
+pub const _A_SUBDIR = 0x10u32;
+
+pub extern {
+  fn _findfirst64(pattern *u8, info &mut FindData64) isize;
+  fn _findnext64(handle isize, info &mut FindData64) i32;
+  fn _findclose(handle isize) i32;
+}

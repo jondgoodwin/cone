@@ -396,6 +396,43 @@ target = "symbols"
 contains = ["define internal stdio.show comdat nodeduplicate"]
 excludes = ["IOStream", "stdio.print"]
 
+# -------- the C library packages --------
+#
+# libc and posix are C packages in the packages folder: C-named modules of raw
+# bindings to the C runtime, Windows first. Found on the search path, each is
+# compiled into the program's object, where its declarations are C symbols the
+# C runtime the link names supplies. core imports libc, for 'malloc', so libc is
+# loaded by every compile; a program that imports it too reaches the same
+# module, and folding its names in beside core's re-export of 'malloc' meets one
+# declaration twice, which is no collision.
+
+[scenario.module_package_libc]
+category = "run"
+description = "The libc package's ISO C bindings -- memory, files, the environment, the process, strings, the standard streams, exit -- called by their C names and linked against the C runtime"
+tags = ["nameres", "genllvm", "runtime"]
+
+# C names, one declaration each: calloc, fopen and the rest are the C runtime's
+# symbols, and malloc is declared once though core and libc both put it in reach
+[[scenario.module_package_libc.check]]
+name = "libc-binds-the-c-symbols"
+target = "symbols"
+contains = ["declare calloc", "declare fopen", "declare malloc", "declare __acrt_iob_func"]
+excludes = ["malloc.1", "libc."]
+
+[scenario.module_package_posix]
+category = "run"
+description = "The posix package's bindings over the Windows C runtime -- setenv, popen and pclose, stat, mkdir, chdir, getcwd, realpath, rmdir, and the Windows-only directory listing -- with structs laid out as the runtime's"
+tags = ["nameres", "genllvm", "runtime"]
+
+# A POSIX name bound to the runtime's underscore spelling is that symbol; one
+# whose arguments differ is an inline function, which defines nothing and calls
+# the runtime's own
+[[scenario.module_package_posix.check]]
+name = "posix-names-bind-the-runtimes-spellings"
+target = "symbols"
+contains = ["declare _stat64", "declare _popen", "declare _chdir", "declare _mkdir", "declare _putenv_s", "declare _fullpath", "declare _findfirst64"]
+excludes = ["define internal mkdir", "define internal setenv", "define internal realpath"]
+
 # -------- import of a parent's name --------
 #
 # 'import' takes ANY name the registry holds, not only a module [Jon 23 Sep]:
@@ -1431,7 +1468,7 @@ contains = ["define internal abs."]
 
 [scenario.module_c_name_late_free]
 category = "compile"
-description = "A C name declared after the compiler declared the same symbol itself shares that declaration: a private 'free' an imported inline body reaches"
+description = "A C name declared late, when an imported inline body reaching it is expanded, shares the declaration already there: a private 'free' meeting libc's, which the compiler's own release reuses too"
 tags = ["genllvm"]
 
 [[scenario.module_c_name_late_free.check]]
@@ -1440,11 +1477,16 @@ target = "symbols"
 contains = ["declare free\n"]
 excludes = ["free."]
 
-# Cone's 'free' returns '%void', C's LLVM's void, so the call is through a cast
+# libc's 'free' is declared first, by core's import of libc, so the private
+# declaration shares it and calls it as it is, both returning Cone's '%void';
+# the compiler's release, which wants LLVM's void, calls it through a cast
 [[scenario.module_c_name_late_free.check]]
-name = "the-late-declaration-calls-through-a-cast"
+name = "the-late-declaration-and-the-release-share-libcs-free"
 target = "preir"
-contains = ["call %void bitcast (void (i8*)* @free to %void (i8*)*)"]
+contains = [
+  "call void bitcast (%void (i8*)* @free to void (i8*)*)(i8* %5)",
+  "%1 = call %void @free(i8* %p1)",
+]
 
 [scenario.module_c_name_reject]
 category = "reject"
@@ -1455,6 +1497,11 @@ tags = ["genllvm"]
 category = "reject"
 description = "'@c' that says nothing, is malformed, or names what has no symbol"
 tags = ["parse"]
+
+[scenario.module_c_no_prelude]
+category = "reject"
+description = "A C-named module gets no prelude: declaring a name core has is no collision, and a core name it does not declare is unknown"
+tags = ["parse", "nameres"]
 
 [scenario.module_extern_reject]
 category = "reject"
