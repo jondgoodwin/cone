@@ -154,11 +154,17 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
 // Insert every alloca before the allocaPoint in the function's entry block.
 // Why? To improve LLVM optimization of SRoA and mem2reg, all allocas
 // should be located in the function's entry block before the first call.
+// Positioning before an instruction also takes that instruction's debug
+// location, and the allocaPoint has none, so the builder's is put back after:
+// without it, the next call in a function with debug info has no location,
+// which the verifier refuses of a call that could be inlined.
 LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name) {
     LLVMBasicBlockRef current_block = LLVMGetInsertBlock(gen->builder);
+    LLVMMetadataRef debugloc = LLVMGetCurrentDebugLocation2(gen->builder);
     LLVMPositionBuilderBefore(gen->builder, gen->allocaPoint);
     LLVMValueRef alloca = LLVMBuildAlloca(gen->builder, type, name);
     LLVMPositionBuilderAtEnd(gen->builder, current_block);
+    LLVMSetCurrentDebugLocation2(gen->builder, debugloc);
     return alloca;
 }
 

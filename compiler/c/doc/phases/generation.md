@@ -637,11 +637,15 @@ bounds checked.**
 after. `--ir` is not an LLVM option at all — it dumps the Cone IR/AST.
 `--asm` adds a `.wat` or `.asm`. `--verify` runs `LLVMVerifyModule` and is off
 by default. `--debug` emits DWARF and drops optimization — it is the only
-switch here, with release as the default. Debug info covers only files and
-subprograms, and the file name is hardcoded. A subprogram is attached only to a
+switch here, with release as the default. Debug info covers only files,
+subprograms and each instruction's line and column, and the file name is hardcoded. A subprogram is attached only to a
 function this object defines: an imported module's function has a body in the
 IR but is a declaration here, and the verifier rejects a declaration carrying
-one.
+one. Every `genlExpr` sets the builder's debug location to its node's line and
+column, and `genlAlloca` puts it back after taking an alloca in the entry
+block: positioning the builder before the `allocaPoint` takes that
+instruction's location, which is none, and the verifier refuses a call with no
+location in a function with debug info.
 
 The environment variable `CONE_LLVM_OPTIONS` hands LLVM command-line options,
 separated by spaces, parsed in `genSetup` before the LLVM context exists. It is
