@@ -175,12 +175,15 @@ typed a fixed-size array, and `genlallocref` takes the count from that type's
 dimension rather than from the node); refuse an abstract or zero-size type; build the result type; then
 `inodeTypeCheckAny` on it — **that line is load-bearing**, because it is what
 routes to `refTypeCheck` and therefore what populates `typeinfo`, which
-`genlallocref` dereferences unconditionally. Finally validate the region's
-`alloc(usize) *u8` and the permission's `init`.
+`genlallocref` dereferences unconditionally. Finally check the region declares
+an `alloc` at all (its shape was checked at the region's declaration) and
+validate the permission's `init`.
 
-A region is any struct with a suitable `alloc`; `so` and `rc` are ordinary Cone
-declarations in the core package, `packages/core/src/core.cone`, not compiler
-built-ins.
+A region is a struct declaring `is RegionRef`, which `refTypeCheck`,
+`arrayRefTypeCheck` and `refvirtTypeCheck` each require of an owning
+reference's region (`refRegionCheck`, `ErrorNotRegion`); `so` and `rc` are
+ordinary Cone declarations in the core package, `packages/core/src/core.cone`,
+not compiler built-ins ([What a region is](module.md)).
 
 ### Matching
 
@@ -223,8 +226,9 @@ entirely**.
 
 Where a reference type acquires `MoveType`: **when its permission lacks
 `MayAlias`, or its region is itself a move type.** Of the six permissions only
-`uni` lacks `MayAlias`, and `so` is `struct @move`. Since `+region` defaults to
-`uni`, essentially every owning reference moves.
+`uni` lacks `MayAlias`, and a region with no `alias` method, `so` among them, is
+a move type (`regionNameRes`). Since `+region` defaults to `uni`, essentially
+every owning reference moves.
 
 ## Flow
 
@@ -283,14 +287,14 @@ no allocation header. Otherwise it builds `%refstruct = { region, perm, value }`
 Measured: `{ %rc, %void, i32 }` where `%rc = { i64 }` and `%void = {}`.
 
 **`genlallocref` returns the pointer to `ValueField`**, so an owning reference
-points into the *middle* of its allocation. `genlRcCounter` therefore reaches
-the count by bitcasting to `usize*` and GEPing `-1`, and frees *that*.
-`genlDealiasOwn` frees the value pointer directly, correct only because `so`'s
-region struct is empty.
+points into the *middle* of its allocation. The region's methods other than
+`alloc` and `init` are handed the header instead, which `genlRegionHeader`
+reaches by stepping back the value's offset in `%refstruct` — 8 bytes for `rc`,
+none for `so` — so nothing assumes a region's size. The region's `free`, where
+it has one, is what gives the memory back; the compiler calls no `free` of its
+own ([What a region is](module.md)).
 
-`BorrowTag` generates as nothing but `genlAddr(vtexp)`. There is **no region
-`_free` hook** anywhere — a region controls allocation but not release; both
-paths call libc `free`.
+`BorrowTag` generates as nothing but `genlAddr(vtexp)`.
 
 ## Hazards
 
@@ -301,9 +305,6 @@ paths call libc `free`.
   path and the allocate path have different invariants for the same field.
   Anything reading `typeinfo` off an arbitrary reference type crashes on borrows
   only.
-- **`genlRcCounter` assumes the counter sits exactly one `usize` before the
-  value.** True only because `rc` has one field, the permission is zero-sized,
-  and the value needs no alignment padding after it.
 - **Coming from Rust:** `&mut T` is invariant and `&ro T` covariant; `uni` is
   not `&mut` but the *unique* permission, which is what makes owning references
   move; lifetimes are a block-nesting integer that is not part of type identity

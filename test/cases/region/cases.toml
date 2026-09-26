@@ -4,23 +4,27 @@
 # Key reference: compiler/c/doc/diagnostics/test-suite.md, "cases.toml keys".
 # The group directory supplies the feature tag, so tags carry pipeline phases.
 #
-# Two regions exist, both declared in packages/core: 'rc', which carries a count and
-# frees at zero, and 'so', which is 'struct @move' and is freed by its single
-# owner. Neither is privileged -- a region is a struct with an 'alloc' method
-# returning '*u8', so region_success declares a third -- and that is what the
-# type-check scenarios are about.
+# Two regions exist, both declared in packages/core: 'rc', which counts its
+# owners and frees at the last, and 'so', which has no 'alias' and is freed by
+# its single owner. Neither is privileged: a region is a struct declaring 'is
+# RegionRef', whose methods the compiler calls at each reference event, so
+# region_regionref declares two more and region_success a third, and that is
+# what the type-check scenarios are about.
 #
 # The failure scenarios split first by pipeline stage. Within the type-check
-# stage they split again by which check raised the message, because the three
-# families ask different questions and would otherwise be twelve diagnostics in
+# stage they split again by which check raised the message, because the
+# families ask different questions and would otherwise be twenty diagnostics in
 # one file:
 #
 # - region_typecheck_alloc asks what the allocation expression itself may say:
 #   what may be allocated, and what may stand in the region slot.
-# - region_typecheck_region asks what the named region must have declared for
-#   allocation to be possible at all: its 'alloc' method.
+# - region_typecheck_region asks what shape each region method must have where
+#   it is declared, and refuses an allocation from a region with no 'alloc'.
 # - region_typecheck_init asks the same about the optional 'init' method, for a
 #   region and for a permission.
+# - region_typecheck_set asks which sets of region methods can be acted on.
+# - region_typecheck_regionref asks where 'RegionRef' itself may stand, and
+#   refuses a region that does not declare it.
 # - region_typecheck_coerce asks which coercions between regions are allowed,
 #   which is a rule about reference types rather than about allocating.
 #
@@ -57,12 +61,13 @@
 #   a literal, so 'mut g = +rc-mut 80' is ErrorNotLit -- a fact about global
 #   initialization, which core owns, rather than about regions.
 #
-# Nothing here is left uncovered for want of a code. ErrorBadAlloc (1036) was
-# listed here as dead while ir/types/region.c raised every allocator complaint as
-# ErrorInvType; region.c now raises 1036 for the alloc and init shape rules, and
-# region_typecheck_region and region_typecheck_init assert it. "Not a valid
-# region" stays ErrorInvType, because a non-struct region is a type error rather
-# than an allocation one.
+# Nothing here is left uncovered for want of a code. ErrorBadAlloc (1036) is the
+# alloc and init shape rules and an allocation from a region with no 'alloc';
+# ErrorRegionMeth (1155) the shape of 'alias', 'dealias' and 'free';
+# ErrorRegionSet (1156) a set of methods that cannot be acted on; ErrorNotRegion
+# (1154) a region that does not declare 'is RegionRef'; ErrorRegionRefUse (1157)
+# 'RegionRef' anywhere but a struct's 'is'. A region slot naming no struct at all
+# stays ErrorInvType, because that is a type error rather than a region one.
 #
 # Five defects this group recorded as xfails are now fixed, and their scenarios
 # assert the behavior instead: a moved 'so' reference frees once, a first
@@ -108,6 +113,19 @@ support = []
 
 # -------- success --------
 
+# The whole method set, called for regions the compiler has never heard of:
+# alloc and init at the allocation, alias for each copy that becomes an owner
+# (a variable, a call's argument, an owning slice), dealias for each owner
+# going away and free at the last, and for a region with no 'alias', the move
+# and the one death. The .out file is the whole assertion. Before regions
+# became RegionRef the compiler dispatched on the names 'rc' and 'so', and this
+# program printed only its allocs and inits: no alias or dealias was ever
+# called, and nothing was freed.
+[scenario.region_regionref]
+category = "run"
+description = "A region written in Cone and named neither 'rc' nor 'so' has its alloc, init, alias, dealias and free called at each reference event, and one with no 'alias' is a single owner"
+tags = ["nameres", "typecheck", "flow", "genllvm", "runtime"]
+
 [scenario.region_success]
 category = "run"
 description = "Allocating in a region, reference counting, single ownership, permissions, and owning references through fields, calls and branches"
@@ -149,7 +167,11 @@ tags = ["flow", "genllvm", "runtime"]
 # frees the garbage in the declared slots and dies of heap corruption -- and the
 # check says why in the one place it can be seen: the module holds no release at
 # all, neither the 'free' an 'so' variable would get nor the count adjustment an
-# 'rc' one would. Read before optimization, as region_tuple_return is.
+# 'rc' one would. Read before optimization, as region_tuple_return is. Every
+# call of a region's 'alias', 'dealias' or 'free' is handed the allocation's
+# header, which generation names 'header', so '%header' is excluded here and in
+# the exclude checks below that say nothing is released, with the free call and
+# the count's arithmetic that 'rc''s methods write out in line.
 [scenario.region_uninit_never_assigned]
 category = "run"
 description = "An owning-reference variable declared without a value and never assigned one releases nothing at scope exit"
@@ -158,7 +180,7 @@ tags = ["flow", "genllvm", "runtime"]
 [[scenario.region_uninit_never_assigned.check]]
 name = "never-assigned-variables-not-released"
 target = "preir"
-excludes = ["call void @free", "@free to void (i8*)*)", "add i64"]
+excludes = ["%header", "call %void @free(", "add i64", "sub i64"]
 
 # The run is the claim: without the fix the compiler faults before emitting
 # anything. The check is the layout, which the run cannot see: an Option of an
@@ -192,24 +214,34 @@ tags = ["flow", "genllvm", "runtime"]
 # shows neither. So it is a 'compile' carrying checks against the IR generation
 # wrote, which is the one place the number appears -- read before optimization,
 # because nothing calls these functions and the optimizer deletes an internal
-# definition nothing references. The register numbers below were read out of
-# the dump rather than chosen; the two functions are the same shape up to the
-# amount, so 12 against 11 is exactly the lvalue-versus-temporary difference
-# being asserted.
+# definition nothing references. Each owner added is one call of the region's
+# 'alias'. Twenty is past the count generation writes out in line, so the two
+# fills of twenty call it in a loop whose counter runs from 0 while the next
+# value is below the amount: 20 against 19 is exactly the lvalue-versus-temporary
+# difference being asserted, and the names are generation's own. The fill of
+# three writes 'alias' out three times, 'cnt + 1' each; those registers were
+# read out of the dump, and only 'fillFewFromLval' reaches %9 and %11 as
+# increments. A fourth would be %13, which the exclude forbids.
 [scenario.region_fill_count]
 category = "compile"
-description = "An array fill literal counting its value into every element: n holders from an lvalue, n-1 from a temporary"
+description = "An array fill literal adding its value as an owner of every element: n owners from an lvalue, n-1 from a temporary"
 tags = ["flow", "genllvm"]
 
 [[scenario.region_fill_count.check]]
 name = "fill-from-lvalue-counts-n"
 target = "preir"
-contains = ["add i64 %6, 12"]
+contains = ["%aliasmore = icmp ult i64 %aliasnext, 20"]
 
 [[scenario.region_fill_count.check]]
 name = "fill-from-temporary-counts-n-minus-one"
 target = "preir"
-contains = ["add i64 %6, 11"]
+contains = ["%aliasmore = icmp ult i64 %aliasnext, 19"]
+
+[[scenario.region_fill_count.check]]
+name = "small-fill-calls-alias-once-per-owner"
+target = "preir"
+contains = ["%7 = add i64 %6, 1", "%9 = add i64 %8, 1", "%11 = add i64 %10, 1"]
+excludes = ["%13 = add i64 %12, 1"]
 
 # The claim is the count, because a run cannot see it: without the fix the read
 # after the early free still finds the value, and the second release decrements
@@ -243,21 +275,26 @@ tags = ["flow", "genllvm"]
 [[scenario.region_tuple_return.check]]
 name = "returned-tuple-elements-not-released"
 target = "preir"
-excludes = ["add i64"]
+excludes = ["%header", "call %void @free(", "add i64", "sub i64"]
 
 # The caller's side of region_tuple_return: a tuple held in a variable is one
 # holder of each rc reference it carries. Destructuring it, or copying it whole,
 # adds a holder per rc element, and the variable releases its elements at scope
 # exit. The run says the program frees nothing twice; the checks say the counts
-# are what make that so, since a leak would print the same. Register numbers
-# were read out of the pre-optimization dump. In 'twiceFromVariable' the two
-# '+1' lines are the second destructuring's, and the two '-1' lines are the
-# tuple variable's own release, the last in the function; in 'wholeCopy' the two
-# '-1' lines are the previous value released when 'v' is overwritten. Without
-# the fix the module holds no '+1' at all and no tuple release. The 'so'
-# spelling is a move, so the destructured 't' releases nothing and the run is
-# the whole claim there; a 'so' tuple left in its variable is freed through it,
-# and the last check names the two elements 'soWholeVariable' extracts to free.
+# are what make that so, since a leak would print the same. Each holder added
+# is 'rc''s 'alias' written out in line, whose 'cnt + 1' is a '+1' line below,
+# and each released its 'dealias', whose 'cnt - 1' is a '-1' ('sub ..., 1')
+# line. Register numbers were read out of the pre-optimization dump. In
+# 'twiceFromVariable' the two '+1' lines are the second destructuring's, and the
+# two '-1' lines are the tuple variable's own release, the last in the function,
+# after the four destructured variables'; in 'mixed' the '+1' is the second
+# destructuring's one counted element and the '-1' the tuple's release of it; in
+# 'wholeCopy' the two '-1' lines are the previous value released when 'v' is
+# overwritten, read from what the store loads as 'dealiasref'. Without the fix
+# the module holds no '+1' at all and no tuple release. The 'so' spelling is a
+# move, so the destructured 't' releases nothing and the run is the whole claim
+# there; a 'so' tuple left in its variable is freed through it, and the last
+# check names the two elements 'soWholeVariable' extracts, and the free of each.
 [scenario.region_tuple_destructure]
 category = "run"
 description = "Destructuring or copying a tuple variable counts each rc element it carries, and the variable releases what it holds at scope exit"
@@ -271,23 +308,28 @@ contains = ["%17 = add i64 %16, 1", "%22 = add i64 %21, 1", "%12 = add i64 %11, 
 [[scenario.region_tuple_destructure.check]]
 name = "tuple-variable-releases-its-elements"
 target = "preir"
-contains = ["%54 = add i64 %53, -1", "%60 = add i64 %59, -1", "%34 = add i64 %33, -1"]
+contains = ["%74 = sub i64 %73, 1", "%85 = sub i64 %84, 1", "%44 = sub i64 %43, 1"]
 
 [[scenario.region_tuple_destructure.check]]
 name = "overwritten-tuple-releases-previous-elements"
 target = "preir"
-contains = ["%35 = add i64 %34, -1", "%41 = add i64 %40, -1"]
+contains = ["%dealiasref = load { i32*, i32* }, { i32*, i32* }* %v, align 8", "%35 = sub i64 %34, 1", "%46 = sub i64 %45, 1"]
 
 [[scenario.region_tuple_destructure.check]]
 name = "so-tuple-left-in-variable-is-freed-through-it"
 target = "preir"
-contains = ["%6 = extractvalue { i32*, i32* } %allocref, 0", "%8 = extractvalue { i32*, i32* } %allocref, 1"]
+contains = [
+  "%6 = extractvalue { i32*, i32* } %allocref, 0",
+  "%8 = call %void @free(i8* %7)",
+  "%9 = extractvalue { i32*, i32* } %allocref, 1",
+  "%11 = call %void @free(i8* %10)",
+]
 
 # The same two claims for a tuple type named by a typedef, which is what says an
 # alias counts exactly as the spelled-out type does rather than merely
-# compiling. The registers are the second destructure's three adds and the three
-# the tuple variable's own release writes, in 'aliasTrioFromVariable'; three
-# elements rather than two is what makes them the file's own.
+# compiling. The registers are the second destructure's three '+1' lines and the
+# three the tuple variable's own release writes, in 'aliasTrioFromVariable';
+# three elements rather than two is what makes them the file's own.
 [[scenario.region_tuple_destructure.check]]
 name = "alias-destructured-elements-gain-a-holder"
 target = "preir"
@@ -296,7 +338,7 @@ contains = ["%23 = add i64 %22, 1", "%28 = add i64 %27, 1", "%33 = add i64 %32, 
 [[scenario.region_tuple_destructure.check]]
 name = "alias-tuple-variable-releases-its-elements"
 target = "preir"
-contains = ["%78 = add i64 %77, -1", "%84 = add i64 %83, -1", "%90 = add i64 %89, -1"]
+contains = ["%108 = sub i64 %107, 1", "%119 = sub i64 %118, 1", "%130 = sub i64 %129, 1"]
 
 # A local moved into a call that is the block's final expression. The claim is
 # that nothing in this module is released: every allocation is handed on, to a
@@ -316,7 +358,7 @@ tags = ["flow", "genllvm"]
 [[scenario.region_tail_move.check]]
 name = "tail-call-move-releases-nothing"
 target = "preir"
-excludes = ["call void @free", "@free to void (i8*)*)", "add i64"]
+excludes = ["%header", "call %void @free(", "add i64"]
 
 # The same release list, for a value whose type has a drop fn, where a run can
 # see it: the drop fn prints. Three claims share the file because one list makes
@@ -352,9 +394,11 @@ tags = ["flow", "genllvm", "runtime"]
 # is visible to a run for the reason region_fill_count gives: too few releases
 # leaks, too many frees what is still held, and stdout shows neither. The
 # register numbers below were read out of the pre-optimization dump rather than
-# chosen; the break's two releases are the two adds before its loop's own
-# end-of-iteration release. Without the fix 'continueReleases' adjusts no
-# counter at all and 'breakReleasesEveryScope' adjusts one instead of two.
+# chosen. Each release is 'rc''s 'dealias' written out in line, whose 'cnt - 1'
+# is the pinned subtraction: the continue's one, and the break's two -- 'inner'
+# then 'outer', on the path that ends at the loop's exit, before the loop's own
+# end-of-iteration release of 'outer' (%31). Without the fix 'continueReleases'
+# releases nothing at all and 'breakReleasesEveryScope' one instead of two.
 [scenario.region_jump_release]
 category = "compile"
 description = "A break or continue releases every scope it leaves, and a continue releases at all"
@@ -363,21 +407,25 @@ tags = ["flow", "genllvm"]
 [[scenario.region_jump_release.check]]
 name = "continue-releases-its-scope"
 target = "preir"
-contains = ["%7 = add i64 %6, -1"]
+contains = ["%7 = sub i64 %6, 1"]
 
 [[scenario.region_jump_release.check]]
 name = "break-releases-the-scopes-between"
 target = "preir"
-contains = ["%11 = add i64 %10, -1", "%16 = add i64 %15, -1"]
+contains = ["%11 = sub i64 %10, 1", "%21 = sub i64 %20, 1"]
 
 # An owning slice released at scope exit, in both regions and every spelling a
 # single reference has: held, moved to a variable, into a parameter, returned,
 # copied, reassigned. The run shows the values survive every hand-over; the
 # checks below show the releases are emitted at all, which the run cannot,
 # because a leak prints the same as a free. The register numbers were read out
-# of the pre-optimization dump: the free is soScope's, and the three counter
-# adjustments are rcCopied's -- one holder added, then each of its two variables
-# released. Without the fix the module frees nothing and adjusts no count.
+# of the pre-optimization dump. The free is soScope's: 'so''s 'free' written out
+# in line, handed the header found from the slice's pointer word, which is the
+# line naming %sliceptr5 (soMoved's free has the same register, and its own
+# pointer word). The three count adjustments are rcCopied's, 'rc''s 'alias' and
+# 'dealias' written out in line -- one owner added ('cnt + 1'), then each of its
+# two variables released ('cnt - 1'). Without the fix the module frees nothing
+# and adjusts no count.
 [scenario.region_slice_release]
 category = "run"
 description = "An owning slice is released when its owner's scope ends: freed for 'so', counted down for 'rc', once per holder"
@@ -386,12 +434,12 @@ tags = ["flow", "genllvm", "runtime"]
 [[scenario.region_slice_release.check]]
 name = "so-slice-freed-at-scope-exit"
 target = "preir"
-contains = ["call void bitcast (%void (i8*)* @free to void (i8*)*)(i8* %12)"]
+contains = ["%header = bitcast i32* %sliceptr5 to %so*", "%13 = call %void @free(i8* %12)"]
 
 [[scenario.region_slice_release.check]]
 name = "rc-slice-copy-counts-a-holder-and-releases-each"
 target = "preir"
-contains = ["%10 = add i64 %9, 1", "%24 = add i64 %23, -1", "%29 = add i64 %28, -1"]
+contains = ["%10 = add i64 %9, 1", "%24 = sub i64 %23, 1", "%34 = sub i64 %33, 1"]
 
 # Reassigning a variable that holds an 'so' reference frees the value it held,
 # in every spelling the store has: a single reference, a slice, a struct field,
@@ -399,14 +447,18 @@ contains = ["%10 = add i64 %9, 1", "%24 = add i64 %23, -1", "%29 = add i64 %28, 
 # nothing is freed twice -- a first assignment to a declared-but-empty variable
 # and a reassignment after a move both release nothing first, and on Windows a
 # double free dies of heap corruption. What the run cannot show is that the
-# release is emitted at all, since a leak prints the same, so the first check
-# names four frees only the fix emits -- reassign's two, the loop body's, and
-# the slice's scope exit, whose register moved when the reassignment's free
-# preceded it; the numbers were read out of the pre-optimization dump, and
-# before the fix the module holds none of them (the field's %8 is reassign's
-# too). The second check is the 'uni' 'rc' spelling of the moved-out gate: a
-# count is not dropped a second time by the reassignment, which the run cannot
-# see because the decrement lands in freed memory. Its one decrement is the
+# release is emitted at all, since a leak prints the same. The store releases
+# the old value through what it loads as 'dealiasref', and 'so''s 'free' is
+# handed that value's header, so the first check names the previous value
+# freed: its header taken from 'dealiasref'; the free reassign and fieldReassign
+# each make of it (%9, the same register in both); the loop body's (%10); and
+# for the slice, its old value's pointer word taken from 'dealiasref', and the
+# scope exit's free (%22), whose register moved when the reassignment's free
+# preceded it. The numbers were read out of the pre-optimization dump, and
+# before the fix the module holds none of them. The second check is the 'uni'
+# 'rc' spelling of the moved-out gate: a count is not dropped a second time by
+# the reassignment, which the run cannot see because the decrement lands in
+# freed memory. Its one decrement, 'rc''s 'dealias' written out in line, is the
 # scope exit's, at the register it has only when no other precedes it.
 [scenario.region_so_reassign]
 category = "run"
@@ -416,12 +468,18 @@ tags = ["flow", "genllvm", "runtime"]
 [[scenario.region_so_reassign.check]]
 name = "reassignment-frees-the-previous-so-value"
 target = "preir"
-contains = ["call void bitcast (%void (i8*)* @free to void (i8*)*)(i8* %8)", "call void bitcast (%void (i8*)* @free to void (i8*)*)(i8* %11)", "call void bitcast (%void (i8*)* @free to void (i8*)*)(i8* %9)", "call void bitcast (%void (i8*)* @free to void (i8*)*)(i8* %20)"]
+contains = [
+  "%header = bitcast i32* %dealiasref to %so*",
+  "%9 = call %void @free(i8* %8)",
+  "%10 = call %void @free(i8* %9)",
+  "%sliceptr = extractvalue { i32*, i64 } %dealiasref, 0",
+  "%22 = call %void @free(i8* %21)",
+]
 
 [[scenario.region_so_reassign.check]]
 name = "moved-out-uni-rc-not-dropped-again-on-reassignment"
 target = "preir"
-contains = ["%15 = add i64 %14, -1"]
+contains = ["%15 = sub i64 %14, 1"]
 
 # The other half: a slice moved out is not released by its source. Every
 # allocation in the file is handed on and returned, so the module may hold no
@@ -439,7 +497,7 @@ tags = ["flow", "genllvm"]
 [[scenario.region_slice_move.check]]
 name = "moved-slice-not-released-by-its-source"
 target = "preir"
-excludes = ["call void @free", "@free to void (i8*)*)", "allocref", "add i64"]
+excludes = ["%header", "call %void @free(", "allocref", "add i64"]
 
 # A typedef is a transparent alias, so an owning type reached through one is
 # released exactly as the type it names is. Nothing rewrites the alias away: a
@@ -461,18 +519,19 @@ tags = ["flow", "genllvm", "runtime"]
 name = "aliased-owning-fields-released-with-their-struct"
 target = "preir"
 contains = [
-  "%r20 = getelementptr inbounds %Held, %Held* %allocref, i32 0, i32 0",
-  "%s21 = getelementptr inbounds %Held, %Held* %allocref, i32 0, i32 1",
+  "%r19 = getelementptr inbounds %Held, %Held* %allocref, i32 0, i32 0",
+  "%s28 = getelementptr inbounds %Held, %Held* %allocref, i32 0, i32 1",
 ]
 
-# A program that declares C's 'free' itself links beside the releases the
-# compiler generates. The run is the claim, since a second declaration was
-# renamed 'free.1' and failed at the linker; the check names the two releases
-# (the 'so' one and the 'rc' one at a zero count) calling the program's own
-# declaration through a cast, and that no renamed one exists.
+# A program that declares C's 'free' itself links beside the releases 'so' and
+# 'rc' make, whose 'free' methods call libc's. The run is the claim, since a
+# second declaration was renamed 'free.1' and failed at the linker; the check
+# names the two releases (soValue's, and rcValue's at a zero count) calling the
+# one declaration the program's and libc's share, and that no renamed one
+# exists. The registers were read out of the dump.
 [scenario.region_program_free]
 category = "run"
-description = "A program declaring C's 'free' in its own signature links and runs beside 'so' and 'rc' releases, which call its declaration"
+description = "A program declaring C's 'free' in its own signature links and runs beside 'so' and 'rc' releases, which call the one declaration it shares with libc's"
 tags = ["genllvm", "runtime"]
 
 [[scenario.region_program_free.check]]
@@ -480,8 +539,8 @@ name = "releases-call-the-programs-own-free"
 target = "preir"
 contains = [
   "declare %void @free(i8*)",
-  "call void bitcast (%void (i8*)* @free to void (i8*)*)(i8* %5)",
-  "call void bitcast (%void (i8*)* @free to void (i8*)*)(i8* %9)",
+  "%6 = call %void @free(i8* %5)",
+  "%14 = call %void @free(i8* %13)",
 ]
 excludes = ["@free.1"]
 
@@ -503,15 +562,27 @@ diagnostics = 4
 
 [scenario.region_typecheck_region]
 category = "reject"
-description = "The 'alloc' method a region must declare"
+description = "The shape of each region method, checked where the region is declared, and an allocation from a region with no 'alloc'"
 tags = ["typecheck"]
-diagnostics = 4
+diagnostics = 9
 
 [scenario.region_typecheck_init]
 category = "reject"
 description = "The 'init' method a region or a permission may declare, and its required shape"
 tags = ["typecheck"]
 diagnostics = 4
+
+[scenario.region_typecheck_set]
+category = "reject"
+description = "Sets of region methods that cannot be acted on: 'alias' without 'dealias' or the reverse, 'init' without 'alloc', '@move' with 'alias'"
+tags = ["typecheck"]
+diagnostics = 4
+
+[scenario.region_typecheck_regionref]
+category = "reject"
+description = "A region that does not declare 'is RegionRef', and 'RegionRef' where it may not stand: as a type, or on a trait, an enum or a variant"
+tags = ["typecheck"]
+diagnostics = 8
 
 [scenario.region_typecheck_coerce]
 category = "reject"
@@ -525,7 +596,7 @@ diagnostics = 3
 category = "reject"
 description = "Owning references that move rather than copy, and a permission that forbids the write"
 tags = ["flow"]
-diagnostics = 7
+diagnostics = 8
 
 [scenario.region_flow_shared_move]
 category = "reject"

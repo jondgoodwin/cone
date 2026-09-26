@@ -2049,6 +2049,9 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     }
     if (clonecopies)
         structEnumCloneOwnMethods(node, ownmethods);
+    // Every abstraction is taken in and every method named, which is what says
+    // whether this is a single-owner region
+    regionNameRes(node);
     nametblHookPop();
     if (enclosing)
         nametblHookPop();
@@ -2520,6 +2523,11 @@ static void structCheckMembers(StructNode *node) {
     }
 
     structCheckTraitReqs(node);
+
+    // 'RegionRef' requires nothing an ordinary requirement can state: each region
+    // method is optional, with a fixed shape where declared
+    if (regionIsRegionRef((INode*)node))
+        regionRefCheck(node);
 }
 
 // Work both queues until they are empty: first every variant still waiting to be

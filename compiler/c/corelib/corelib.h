@@ -51,6 +51,10 @@ extern INsTypeNode *arrayRefType;
 extern FnDclNode *initAllFn;
 extern FnDclNode *finalAllFn;
 
+// 'RegionRef', the built-in trait a region's annotation struct declares with
+// 'is', a name every module reaches unless it declares the name itself
+extern StructNode *regionRefTrait;
+
 void stdlibInit(int ptrsize);
 void keywordInit();
 void stdNbrInit(int ptrsize);

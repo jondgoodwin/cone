@@ -76,6 +76,20 @@ static FnDclNode *newStitchFn(char *name, int16_t intrinsic) {
     return fn;
 }
 
+StructNode *regionRefTrait;
+
+// 'RegionRef', the built-in trait a region's annotation struct declares with
+// 'is' [Jon 25 Sep]. It has no members: each method a region may declare is
+// optional, with a fixed shape when present, which no trait written in Cone can
+// say, so the struct is held to it by regionRefCheck rather than by the
+// ordinary requirement check.
+static StructNode *newRegionRefTrait() {
+    StructNode *trait = newStructNode(regionRefName);
+    trait->flags |= TraitType | FlagPub | NameResolved | TypeChecked;
+    regionRefName->node = (INode*)trait;
+    return trait;
+}
+
 // Set up the standard library, whose names are always shared by all modules
 void stdlibInit(int ptrsize) {
 
@@ -102,4 +116,6 @@ void stdlibInit(int ptrsize) {
     // entry glue calls them itself
     initAllFn = newStitchFn("initAll", InitAllIntrinsic);
     finalAllFn = newStitchFn("finalAll", FinalAllIntrinsic);
+
+    regionRefTrait = newRegionRefTrait();
 }

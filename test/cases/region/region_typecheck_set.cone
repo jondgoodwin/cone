@@ -1,0 +1,49 @@
+// The set a region's methods make together. Each method is optional, and a
+// missing one means its event needs nothing done -- but some sets cannot be
+// acted on, and ir/types/region.c refuses them where the region is declared,
+// with ErrorRegionSet.
+//
+// The coherent sets are two: neither 'alias' nor 'dealias' (one owner per
+// value, like 'so': a copy is a move and every owner's going is the death),
+// and both (shared owners, like 'rc': 'dealias' says when the last has gone).
+// Everything below is one of the others. Each region is well formed method by
+// method, so the only complaint is about the set, and nothing allocates from
+// any of them: the check does not wait for a use.
+
+mod region_typecheck_set;
+
+// Copies would be counted and their going never reported, so nothing held
+// could die. The shape a traced region would take, when there is one.
+struct countsUp is RegionRef {
+  cnt usize;
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn alias(self &uni countsUp) inline { cnt = cnt + 1usize; }        //~ ErrorRegionSet "alias but no dealias"
+}
+
+// Without 'alias' a value has one owner, whose going is always the last
+struct countsDown is RegionRef {
+  cnt usize;
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn dealias(self &uni countsDown) Bool inline { true; }             //~ ErrorRegionSet "dealias but no alias"
+}
+
+// 'init' sets up the memory 'alloc' returns, so without 'alloc' it is never called
+struct initOnly is RegionRef {
+  cnt usize;
+  fn init() initOnly inline { initOnly[1usize]; }                    //~ ErrorRegionSet "init but no alloc"
+}
+
+// '@move' says one owner per value, which is what having no 'alias' says;
+// with an 'alias' the two contradict each other
+struct @move movesAndCounts is RegionRef {                            //~ ErrorRegionSet "'@move', one owner per value, but declares alias"
+  cnt usize;
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn alias(self &uni movesAndCounts) inline { cnt = cnt + 1usize; }
+  fn dealias(self &uni movesAndCounts) Bool inline { cnt = cnt - 1usize; cnt == 0usize; }
+}
+
+// '@move' on a region with no 'alias' only says again what the absence says,
+// and is accepted
+struct @move movesAlready is RegionRef {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+}

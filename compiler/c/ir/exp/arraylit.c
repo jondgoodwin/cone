@@ -184,7 +184,7 @@ void arrayLitFlow(FlowState *fstate, ArrayNode **nodep) {
         return;
     }
     RefNode *reftype = (RefNode *)iexpGetTypeDcl(*valp);
-    if (reftype->tag != RefTag || !isRegion(reftype->region, rcName))
+    if (reftype->tag != RefTag || !regionIsCounted(reftype->region))
         return;   // Any other value copies freely, needing no count
 
     int64_t nbrelems = arrayLitFillCount(arrlit);

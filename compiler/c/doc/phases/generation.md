@@ -153,7 +153,7 @@ every declaration given a global so far, and one of them gives way:
 | both external, both defined here | `ErrorCNameDefTwice` |
 | the newcomer only declares it | it shares the holder's global, and its own is deleted |
 | the newcomer defines it, the holder only declares it | the definition takes over: every use of the declaration and every node pointing at it is moved to the definition's global, the declaration is deleted, and the definition takes the name. So the linkage, calling convention, storage class and debug subprogram are the definition's whichever is generated first, and `genlFn` or `genlGloVar` attaches the body or the value to that one global |
-| the holder is an external symbol the compiler declared itself | C's `free` (`genlFree`, during bodies) is the one a declaration can meet — a private `free` of an imported module, declared when an inline body reaching it is generated — and a function declaration shares it, cast to its own type where they differ, as `genlFree` shares the program's. Anything else is `ErrorCNameConflict`. Since `libc`, which every compile loads, declares `free` before any body is generated, the compiler declares its own only in a compile whose prelude does not import `libc` |
+| the holder is an external symbol the compiler declared itself | an LLVM intrinsic it calls by name (`llvm.trap`, `genlPanic`): a function declaration shares it, cast to its own type where they differ. Anything else is `ErrorCNameConflict`. The compiler declares no C function of its own: a region's memory goes back through the region's `free`, which calls `libc`'s |
 
 "Defined here" is `genlDefinition`'s answer, not whether a body is written: an
 imported module's `fn @c` body is a declaration in this object. An error leaves
@@ -426,34 +426,46 @@ Verified for `+rc-mut` of an `i32`:
 `genlallocref` GEPs to that field and hands the result out. So the header sits
 *before* the payload and the reference cannot see it.
 
-Two consequences that are easy to get wrong:
+What follows from that:
 
-- **`genlRcCounter` finds the count at `((usize*)ref) - 1` and frees from
-  *that* pointer.** That is correct only because `rc` has exactly one `usize`
-  field and the permission is zero-sized. Nothing checks it. A region with a
-  two-field header, or a non-zero-size (locked) permission, would silently
-  corrupt memory.
-- **`genlDealiasOwn` calls `free(ref)` directly**, correct only because `so`'s
-  region struct is empty, so the payload offset is 0 and the reference *is* the
-  allocation base.
+- **A region method is handed the header, found from the layout.**
+  `genlRegionHeader` bitcasts the value pointer to `i8*` and steps back by
+  `LLVMOffsetOfElement(structype, ValueField)` — 8 for `rc`, 0 for `so`, 16 for
+  a region with a `{usize, u32}` header — then casts to the region struct's
+  pointer. Every call of `alias`, `dealias` and `free` goes through it, so a
+  wider header or a permission with state moves the value and the header with
+  it. The optimizer folds the byte step and the region's field GEP into one
+  constant offset: for `rc` the same address the count has always had.
 - **An owning slice is the fat `{T*, usize}` value, and the header sits before
-  its pointer word.** `genlRefPtr`, at the entry of `genlDealiasOwn` and
-  `genlRcCounter`, `extractvalue`s word 0 of an `ArrayRefTag` reference, so every
-  release site — scope exit, a `RefCountNode`, `genlStore` — hands over the
-  value as generated. `genlDealiasFlds` walks no slice's elements: what an
+  its pointer word.** `genlRefPtr`, at the entry of `genlRegionDealias` and
+  `genlRegionAlias`, `extractvalue`s word 0 of an `ArrayRefTag` reference, so
+  every release site — scope exit, a `RefCountNode`, `genlStore` — hands over
+  the value as generated. `genlDealiasFlds` walks no slice's elements: what an
   element owns is left where an array of owning references leaves it.
 
-A region is any struct with a suitable `alloc`; `so` and `rc` are declared in
-Cone source in the core package, `packages/core/src/core.cone`, not built into the
-compiler. `malloc` and `free` are `libc`'s ordinary `extern` declarations,
-which `core`'s import of `libc` puts in every compile, declared before any body
-is generated. `genlFree` calls the module's `free` where one is declared, cast
-to `void (i8*)` where the signatures differ (`libc`'s returns `%void`, as a Cone
-function with no return value does), and declares `free` itself only where no
-module has; a second function of that name would be renamed (`free.1`), and
-nothing defines the renamed one. A declaration of `free` generated after it
-shares it the same way (`genlClaimSymbol`). `conestd` supplies
-only stdio, no allocator.
+**The release routines call the region's methods and know no region.**
+`genlReleaseOwning` is one owner going away: `genlRegionDealias` calls the
+region's `dealias` and branches on its `Bool` to the death, or, for a region
+without `dealias` (single owner), goes straight to it. The death,
+`genlRegionDeath`, releases the owning references the value's fields hold
+(`genlDealiasFlds`), then calls the region's `free` if it has one.
+`genlRegionAlias` calls `alias` once per owner a `RefCountNode` adds — written
+out in line up to `RegionAliasUnroll` (16), a loop beyond, since the optimizer
+pipeline runs no loop pass and folds only calls written out. Core's methods are
+`inline`, so each call is the method's body pasted at the site
+(`genlFnCallInternal`); after optimization `rc`'s and `so`'s events are the
+instructions the compiler used to emit itself, with one exception: an array
+fill literal adding n owners is n increments rather than one `add n`, because
+the pipeline has no instruction combining after `GVN` to fold them. A value's
+`final` is not called at its death.
+
+`so` and `rc` are declared in Cone source in the core package,
+`packages/core/src/core.cone` ([What a region is](../nodes/module.md)). `malloc`
+and `free` are `libc`'s ordinary `extern` declarations, which `core`'s import
+of `libc` puts in every compile; the regions' `alloc` and `free` call them by
+their qualified names, and a program's own declaration of `free` meets
+`libc`'s as any two declarations of one C name do (`genlClaimSymbol`).
+`conestd` supplies only stdio, no allocator.
 
 ## 4. Pointer levels
 
@@ -468,7 +480,7 @@ This is what the CLAUDE.md warning is about. The conventions:
 | `&[]T` value, `&<Trait` value | an **aggregate value**, not a pointer |
 | owning reference value | `T*` pointing **past** the header |
 | owning slice value | `{T*, usize}`, its `T*` pointing past the header |
-| allocation base | `((usize*)ref) - 1` for `rc`; `ref` itself for `so` |
+| allocation base, the region's header | `ref` stepped back by the value's offset in `%refstruct` (`genlRegionHeader`) |
 | vtable field slot | an `i32` **byte offset**, applied to an `i8*` |
 | vtable method slot | reached by `structgep` **then load** |
 
@@ -479,12 +491,16 @@ Concrete hazards, each of which has been gotten wrong here before:
 - **`genlAddr`'s array index uses `genlAddr(objfn)` for an array but
   `genlExpr(objfn)` for a reference to one.** An array *is* memory; a reference
   *holds* the address. One level apart, same GEP shape.
-- **`genlRcCounter`'s bitcast to `usize*` changes the GEP stride**, which is the
-  only reason `-1` lands on the counter.
+- **`genlRegionHeader` steps back in bytes, through `i8*`**: a GEP on the value
+  pointer's own type would scale the offset by the value's size.
 - **A struct field read and a field address are different instruction
   sequences, chosen by `FlagBorrow`** — not by context. Without the flag,
-  generation loads the *whole aggregate* and `extractvalue`s. With it, it GEPs.
-  Getting the flag wrong is not a type error.
+  generation loads the *whole aggregate* and `extractvalue`s, except through a
+  dereference (`self.cnt` in a method, `p.x` for a reference `p`), where it GEPs
+  to the field and loads it alone: a store to the field and a later read of it
+  are then the same address and type, which `GVN` forwards and which an
+  aggregate load would hide. With the flag, it GEPs. Getting the flag wrong is
+  not a type error.
 - **Mutating intrinsics take self as an lvalue pointer; non-mutating ones take a
   value.** The intrinsic switch dispatches on the LLVM *type kind* of argument
   0, so both land in the same branch and are told apart only by which intrinsic
@@ -642,7 +658,8 @@ variables.
 | | `genlConvert`, `genlRecast`, `genlIsType` | the three cast forms |
 | | `genlArrayIndex`, `genlBoundsCheck` | multi-dimensional GEP and its checks |
 | `genllvm/genlalloc.c` | `genlRefTypeSetup`, `genlallocref` | the `{region, perm, value}` header and its emission |
-| | `genlRcCounter`, `genlDealiasOwn`, `genlReleaseOwning`, `genlDealiasNodes` | count adjustment, free, releasing what a variable (or a tuple's rc elements) holds, and replaying flow's lists |
+| | `genlRegionHeader`, `genlRegionAlias`, `genlRegionDealias`, `genlRegionDeath` | the header a region method is handed; calling `alias`, `dealias` and `free` at each reference event |
+| | `genlReleaseOwning`, `genlDealiasFlds`, `genlDealiasNodes` | releasing what a variable, a tuple's elements or a dead value's fields own, and replaying flow's lists |
 | `ir/types/reference.h` | `enum ManagedRefFields` | `RegionField`, `PermField`, `ValueField` |
 | `ir/name.c` | `nameSymbol`, `nameType`, `nameVtable`, `nameVtableImpl`, `nameVtableList` | spelling a symbol from a node's owner chain and facts, and a type argument within it — the rules are in [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols" |
 | `ir/dclinfo.c` | `dclInfoJoin` | writes the declaration facts where a declaration joins its namespace |

@@ -63,10 +63,12 @@ Name *parensName;
 Name *indexName;
 Name *refIndexName;
 Name *optionName;
-Name *rcName;
-Name *soName;
 Name *allocMethodName;
 Name *initMethodName;
+Name *aliasMethodName;
+Name *dealiasMethodName;
+Name *freeMethodName;
+Name *regionRefName;
 
 // ---- Identifiers -----------------------------------------------------------
 //

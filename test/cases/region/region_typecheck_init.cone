@@ -4,9 +4,12 @@
 // 'init' is optional on both. Where it exists, allocation calls it and stores
 // what it returns into the allocation's header -- core's 'rc' uses it to set
 // the reference count to one -- so it may take no arguments and must return its
-// own type. The region check is ir/types/region.c and the permission check is
-// ir/types/permission.c; they are separated from the 'alloc' scenario because
-// they are about a different method and are reached by a different call.
+// own type. The region check is ir/types/region.c, run where the region is
+// declared, and the permission check is ir/types/permission.c, run where an
+// allocation names the permission, which is why the permissions are allocated
+// from below and the regions need not be; they are separated from the
+// scenario for the other region methods, region_typecheck_region, because the
+// permission half is reached by a different call.
 //
 // The permission cases are the only part of this group that touches a lock
 // permission. There are no lock permission types: the six permissions are
@@ -17,12 +20,12 @@
 
 mod region_typecheck_init;
 
-struct regionParms {
+struct regionParms is RegionRef {
   fn alloc(size usize) *u8 inline { malloc(size); }
   fn init(x usize) regionParms inline { regionParms[]; }            //~ ErrorBadAlloc "Region init method may not have parameters"
 }
 
-struct regionReturn {
+struct regionReturn is RegionRef {
   fn alloc(size usize) *u8 inline { malloc(size); }
   fn init() usize inline { 1usize; }                                //~ ErrorBadAlloc "Region init method must return initial value"
 }
@@ -38,8 +41,6 @@ struct permReturn {
 }
 
 fn f() {
-  imm a = +regionParms-mut 1;
-  imm b = +regionReturn-mut 2;
   imm c = +rc-permParms 3;
   imm d = +rc-permReturn 4;
 }

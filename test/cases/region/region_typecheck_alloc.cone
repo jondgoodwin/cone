@@ -1,13 +1,18 @@
 // What an allocation may allocate, and what may stand in the region slot.
 //
-// These are the checks ir/exp/allocate.c makes about the allocation expression
-// itself. The other two type-check scenarios are about the declaration of the
-// region a valid allocation names, which is a separate question and a separate
-// family of messages.
+// These are the checks ir/exp/allocate.c and the reference type make about the
+// allocation expression itself. The other type-check scenarios are about the
+// declaration of the region a valid allocation names, which is a separate
+// question and a separate family of messages.
 
 mod region_typecheck_alloc;
 
 struct Nothing { }
+
+// A struct with an allocator's shape that does not say it is a region
+struct Plain {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+}
 
 fn notAType() { }
 
@@ -17,9 +22,12 @@ fn f() {
 
   // A region is a struct type. A function name resolves and is a name for
   // something, so the region slot accepts it as far as name resolution and then
-  // rejects it three times over: once for not being a type at all, once by the
-  // reference type, and once by the allocator check that follows it.
+  // rejects it twice over: once for not being a type at all, and once by the
+  // reference type.
   imm b = +notAType-mut 5;      //~ ErrorNotTyped "Expected a type"
                                //~^ ErrorInvType "region must be a struct type" follow-on
-                               //~^^ ErrorInvType "Not a valid region" follow-on
+
+  // And a struct is a region only when it declares 'is RegionRef': having the
+  // methods is not enough, since nothing then says they are meant to be called
+  imm c = +Plain-mut 5;         //~ ErrorNotRegion "Plain is not a region"
 }

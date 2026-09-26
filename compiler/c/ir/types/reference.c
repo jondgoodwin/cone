@@ -137,16 +137,33 @@ void refNameRes(NameResState *pstate, RefNode *node) {
     }
 }
 
+// An owning reference's region is a struct declaring 'is RegionRef': that is
+// what says the compiler may call its methods at each reference event
+void refRegionCheck(INode *region) {
+    if (region == borrowRef)
+        return;
+    INode *dcl = itypeGetTypeDcl(region);
+    if (dcl->tag != StructTag)
+        errorMsgNode(region, ErrorInvType, "Reference's region must be a struct type.");
+    else if (!regionIsRegionRef(region))
+        errorMsgNode(region, ErrorNotRegion, "%s is not a region: a region's annotation is a struct declaring 'is RegionRef'.",
+            &((StructNode*)dcl)->namesym->namestr);
+}
+
+// 'RegionRef' is a check on a region's annotation, not a type a value has
+static void refRefuseRegionRef(RefNode *node) {
+    if (itypeGetTypeDcl(node->vtexp) == (INode*)regionRefTrait)
+        errorMsgNode(node->vtexp, ErrorRegionRefUse,
+            "RegionRef is not a type a value has: a region's annotation struct declares it with 'is', and nothing refers to it.");
+}
+
 // Type check a reference node
 void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     if (node->perm == unknownType)
         node->perm = newPermUseNode(node->vtexp->tag == FnSigTag ? opaqPerm :
         (node->region == borrowRef ? roPerm : uniPerm));
     itypeTypeCheck(pstate, &node->region);
-    if (node->region != borrowRef &&
-        itypeGetTypeDcl(node->region)->tag != StructTag) {
-        errorMsgNode(node->region, ErrorInvType, "Reference's region must be a struct type.");
-    }
+    refRegionCheck(node->region);
     itypeTypeCheck(pstate, (INode**)&node->perm);
     // A reference in a parameter position parses with no pointee, because
     // parseAmper leaves it to be inferred. Only a method's 'self' is ever
@@ -161,8 +178,9 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     }
     if (itypeTypeCheck(pstate, &node->vtexp) == 0)
         return;
+    refRefuseRegionRef(node);
     refAdoptInfections(node);
-    
+
     // Normalize reference type and point to its metadata
     node->typeinfo = typetblFind((INode*)node, refTypeInfoAlloc);
 }
@@ -172,9 +190,11 @@ void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
     if (node->perm == unknownType)
         node->perm = newPermUseNode(node->region == borrowRef ? roPerm : uniPerm);
     itypeTypeCheck(pstate, &node->region);
+    refRegionCheck(node->region);
     itypeTypeCheck(pstate, (INode**)&node->perm);
     if (itypeTypeCheck(pstate, &node->vtexp) == 0)
         return;
+    refRefuseRegionRef(node);
     refAdoptInfections(node);
 
     StructNode *trait = (StructNode*)itypeGetTypeDcl(node->vtexp);

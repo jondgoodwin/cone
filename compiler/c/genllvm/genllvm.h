@@ -116,12 +116,12 @@ void genlRefTypeSetup(GenState *gen, RefNode *reftype);
 LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode);
 // Progressively dealias or drop all declared variables in nodes list
 void genlDealiasNodes(GenState *gen, Nodes *nodes);
-// Release an owning value: free 'so', drop an 'rc' holder, each element of a tuple
+// Release an owning value: one owner of an owning reference goes away, through
+// the region's 'dealias' or, for a single owner, as the value's death; each
+// element of a tuple
 void genlReleaseOwning(GenState *gen, LLVMValueRef val, INode *type);
-// Add to the counter of an rc allocated reference
-void genlRcCounter(GenState *gen, LLVMValueRef ref, long long amount, RefNode *refnode);
-// Dealias an own allocated reference
-void genlDealiasOwn(GenState *gen, LLVMValueRef ref, RefNode *refnode);
+// A counted reference gains 'amount' owners, through its region's 'alias'
+void genlRegionAlias(GenState *gen, LLVMValueRef ref, long long amount, RefNode *refnode);
 // Create an alloca (will be pushed to the entry point of the function.
 LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name);
 

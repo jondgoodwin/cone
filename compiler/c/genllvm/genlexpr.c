@@ -1233,13 +1233,11 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     {
         RefCountNode *anode = (RefCountNode*)termnode;
         LLVMValueRef val = genlExpr(gen, anode->exp);
+        // Flow injects this node only for a counted reference (flowIsRcRef),
+        // whose region's 'alias' is called once per owner added
         RefNode *reftype = (RefNode*)iexpGetTypeDcl(termnode);
-        if (reftype->tag == RefTag || reftype->tag == ArrayRefTag) {
-            if (isRegion(reftype->region, soName))
-                genlDealiasOwn(gen, val, reftype);
-            else
-                genlRcCounter(gen, val, anode->amt, reftype);
-        }
+        if (reftype->tag == RefTag || reftype->tag == ArrayRefTag)
+            genlRegionAlias(gen, val, anode->amt, reftype);
         else if (reftype->tag == TTupleTag) {
             TupleNode *tuple = (TupleNode*)reftype;
             INode **nodesp;
@@ -1250,10 +1248,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
                 if (*countp != 0) {
                     reftype = (RefNode *)itypeGetTypeDcl(*nodesp);
                     LLVMValueRef strval = LLVMBuildExtractValue(gen->builder, val, index, "");
-                    if (isRegion(reftype->region, soName))
-                        genlDealiasOwn(gen, strval, reftype);
-                    else
-                        genlRcCounter(gen, strval, *countp, reftype);
+                    genlRegionAlias(gen, strval, *countp, reftype);
                 }
                 ++index; ++countp;
             }
@@ -1289,6 +1284,15 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             }
             else if (termnode->flags & FlagBorrow) {
                 return LLVMBuildStructGEP(gen->builder, genlAddr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
+            }
+            // A field read through a reference loads the field alone, from the
+            // address a write to it would store to, rather than loading the
+            // whole value to extract one field: the optimizer can then forward
+            // a store to the field into a later read of it, as a region's
+            // 'dealias' needs when it tests the count it just wrote
+            else if (fncall->objfn->tag == DerefTag) {
+                LLVMValueRef fldp = LLVMBuildStructGEP(gen->builder, genlAddr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
+                return LLVMBuildLoad(gen->builder, fldp, "");
             }
             else {
                 return LLVMBuildExtractValue(gen->builder, genlExpr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);

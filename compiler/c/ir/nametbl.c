@@ -199,10 +199,12 @@ void nametblInit() {
 
     optionName = nametblFind("Option", 6);
 
-    rcName = nametblFind("rc", 2);
-    soName = nametblFind("so", 2);
     allocMethodName = nametblFind("alloc", 5);
     initMethodName = nametblFind("init", 4);
+    aliasMethodName = nametblFind("alias", 5);
+    dealiasMethodName = nametblFind("dealias", 7);
+    freeMethodName = nametblFind("free", 4);
+    regionRefName = nametblFind("RegionRef", 9);
 }
 
 

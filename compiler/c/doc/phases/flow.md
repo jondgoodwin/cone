@@ -104,9 +104,11 @@ Put these first, because every one of them is load-bearing.
    and for everything after. A loop body is walked once. **Not building a CFG is
    a deliberate design choice**, not a simplification to be outgrown — the
    block-structured IR is held to be easy enough to follow directly.
-5. **Ownership is not one model.** `so` is unique-owner-frees; `rc` is counted;
-   `borrowRef` is a sentinel node, not a struct, and is a reference's default
-   region.
+5. **Ownership is not one model, and flow reads which one from the region's
+   methods.** A region with `alias` (`rc`) is counted; one without (`so`) has a
+   single owner, and a copy of a reference to it is a move; `borrowRef` is a
+   sentinel node, not a struct, and is a reference's default region. No region
+   is known by name ([What a region is](../nodes/module.md)).
 6. **Permission belongs to the reference, not the binding.**
    `imm fixed = &mut target` is a writable target through an unrebindable name.
 7. **`&uni` is not `&mut` with extra rules.** `uni` lacks `MayAlias`, which is
@@ -239,8 +241,9 @@ because one value goes to n holders.
 **Decrements are never reference-count nodes.** They come from generation: walking a
 `dealias` list at scope exit, and `genlStore` releasing an lval's previous value
 unless `FlagFirstAssign` says there was none. Both go through
-`genlReleaseOwning`: an `so` reference is freed, an `rc` one drops a holder, a
-tuple's owning elements one by one.
+`genlReleaseOwning`: one owner goes away, through the region's `dealias` where
+it has one and as the value's death where it has a single owner; a tuple's
+owning elements one by one.
 
 ## 5. What it injects
 
@@ -250,21 +253,21 @@ depends on:
 | Injection | Where | Generation uses it for |
 | --- | --- | --- |
 | `BlockRetTag` | `blockFlow`, for any block not already ending in one | a loop block, **and** a regular block ending in an expression, both get theirs here — it is where the dealias list hangs |
-| `RefCountTag` | `flowInjectRefCountAmt` | `genlRcCounter(val, amt)` |
+| `RefCountTag` | `flowInjectRefCountAmt` | `genlRegionAlias(val, amt)`: the region's `alias`, once per owner added |
 | `dealias` lists | `flowScopeDealias`, onto every `BreakRetNode` | `genlDealiasNodes` replays them |
 | `FlagFirstAssign` | `assignlvalrtype`, when the variable is uninitialized or moved out | `genlStore` skips releasing a previous value the variable does not hold |
 
 **A reference-count node is built only for a counted reference, or a tuple
 carrying one.** `flowInjectRefCountAmt` returns early unless the type is a
-`RefTag` or `ArrayRefTag` in region `rc` (`flowIsRcRef` — an owning slice is
-counted exactly as a single reference is), or a `TTupleTag` with at least one
-such element; for the tuple it fills the node's `counts` array with `amt` per
-rc element and `0` per other element, `amt` then holding the element count,
-and generation's tuple arm adjusts each counted element after an
-`extractvalue`. A `+so` reference and a `uni`-permissioned `+rc` reference are
-both move types and take the move path instead, as does a tuple carrying one,
-so the `so` arm of generation's `RefCountTag` case is unreachable as the code
-stands.
+`RefTag` or `ArrayRefTag` into a region with `alias` (`flowIsRcRef`,
+`regionIsCounted` — an owning slice is counted exactly as a single reference
+is), or a `TTupleTag` with at least one such element; for the tuple it fills
+the node's `counts` array with `amt` per counted element and `0` per other
+element, `amt` then holding the element count, and generation's tuple arm adds
+the owners to each counted element after an `extractvalue`. A reference into a
+region without `alias` (`so`) and a `uni`-permissioned reference into one with
+it are both move types and take the move path instead, as does a tuple
+carrying one.
 
 **Scope dealiasing.** `flowScopeDealias` walks the variable stack downward from
 the top to a start position, so release order is the reverse of declaration
@@ -288,8 +291,8 @@ The exemption is the result's own and is not deactivation, because each
 usable and finalized on the path that goes on. The match is on the
 declaration the result's name resolves to, not on the name: a `return` asks over the whole function's
 stack, where an inner block's `a` and an outer `a` both sit, and only the one
-handed back is exempt. What survives both is an `so` or `rc`
-reference, single (`RefTag`) or slice (`ArrayRefTag`), or a tuple carrying one
+handed back is exempt. What survives both is an owning reference into a
+region, single (`RefTag`) or slice (`ArrayRefTag`), or a tuple carrying one
 (`flowIsOwningType`), added to the list; anything else asks
 `itypeGetDropFnDcl` and, if there is one, builds a call to the drop fn on a
 `&uni` borrow, positioned on the result expression, or on the jump that ends the
@@ -322,7 +325,7 @@ failed to resolve.
 | --- | --- | --- | --- |
 | **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable; move out of a global, or out through a borrowed or a shared owning reference, refused | field granularity — moving `p.x` deactivates all of `p`; conditional moves; loop-carried moves |
 | **Escape / lifetime** | representation in type check, enforcement here | storing a borrow into a longer-lived lval; returning a borrow of a local; a borrow arriving through a call's result, singly or as one of several values destructured into lvals, each carrying the narrowest argument borrow's scope; a `&mut &T` argument whose pointee would outlive another borrow passed with it; a borrow coerced to another reference type, whether widened to a base trait's reference or made a virtual reference | a borrow laundered through a variable; a borrow stored in a field or captured; distinguishing parameter lifetimes — there is no lifetime annotation syntax; freezing a borrow's source |
-| **De-aliasing / drops** | flow decides, generation executes | scope-exit release of `so`/`rc` refs and slices, and of drop-fn structs, from a jump down to the block it names | arrays of owning references; a variable moved out, or initialized, on only one path — see Hazards |
+| **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs and slices, and of drop-fn structs, from a jump down to the block it names | arrays of owning references; a variable moved out, or initialized, on only one path — see Hazards |
 | **Permission** | `MayWrite` and `MayRead` | `ErrorNoMut` on assignment and swap; `ErrorNoRead` on a read through a reference — a dereference, an index, or a field of a virtual reference | `MayAliasWrite`, `RaceSafe`, `IsLockless` are populated and read nowhere |
 | **Initialization** | yes | `ErrorMove` "has not been initialized" | "initialized on one branch" reads as initialized everywhere; the unused-variable warning in `flow.h`'s header does not exist |
 | **Array fill rules** | yes | `ErrorBadFill` for a repeated move value; `ErrorFillCount` for a non-constant count | — |
@@ -366,17 +369,10 @@ first-assignment target carries `FlagFirstAssign`.
 lists are NULL, `genlDealiasNodes` returns immediately, and **nothing is ever
 released** — there is no fallback. Likewise, without `FlagFirstAssign` every
 first assignment to an uninitialized owning variable releases garbage, and a
-reassignment after a move releases what the new owner holds: `genlStore` frees
-an `so` lval's previous value and drops a holder of an `rc` one — single,
-slice, or tuple element — whenever the flag is absent. `assignlvalrtype` sets
-it when the variable is not `VarInitialized`, or is `VarMoved`, at the
-assignment.
-
-**One layout invariant generation depends on and flow does not state.**
-`genlRcCounter` finds the count by bitcasting the reference to `usize*` and
-GEPing `-1`. That is correct only because `rc` has exactly one `usize` field and
-the built-in permissions are zero-sized. See [Generation](generation.md),
-"The allocation header".
+reassignment after a move releases what the new owner holds: `genlStore`
+releases one owner of an owning lval's previous value — single, slice, or
+tuple element — whenever the flag is absent. `assignlvalrtype` sets it when the
+variable is not `VarInitialized`, or is `VarMoved`, at the assignment.
 
 ## 8. Hazards
 
@@ -438,8 +434,8 @@ the built-in permissions are zero-sized. See [Generation](generation.md),
 | `ir/exp/fncall.c` | `fnCallFlowStoredBorrow` | `ErrorCallEscape` for a `&mut &T` argument the callee could store a narrower borrow through |
 | `ir/exp/arraylit.c` | `arrayLitFlow` | fill-form rules and the n / n-1 alias amount |
 | `ir/types/reference.c` | `refAdoptInfections` | where a reference type acquires `MoveType` |
-| `ir/types/region.c` | `isRegion`, `regionAllocTypeCheck` | region identity; `alloc`/`init` validation |
-| `genllvm/genlalloc.c` | `genlRcCounter`, `genlDealiasNodes` | what consumes everything flow injected |
+| `ir/types/region.c` | `regionIsCounted`, `regionIsOwning`, `regionMethod` | which region methods a region declares, which is what flow asks of it |
+| `genllvm/genlalloc.c` | `genlRegionAlias`, `genlReleaseOwning`, `genlDealiasNodes` | what consumes everything flow injected |
 
 Test sources that pin behavior precisely: `test/cases/move/move-flow-*.cone`,
 `test/cases/region/region_flow*.cone`, `test/cases/ref/ref_flow.cone`,

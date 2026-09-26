@@ -53,7 +53,7 @@ static LLVMValueRef genlRefPtr(GenState *gen, LLVMValueRef ref, RefNode *refnode
     return ref;
 }
 
-// If ref type is struct, dealias any fields holding rc/own references
+// If ref type is struct, release each owning reference its fields hold
 void genlDealiasFlds(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
     // A slice's elements are not walked: releasing what each element owns is
     // the same element-granularity work an array of owning references needs.
@@ -69,37 +69,111 @@ void genlDealiasFlds(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
         // Resolved, because a field's declared type may be a name standing for
         // the reference type rather than the reference type itself
         RefNode *vartype = (RefNode *)itypeGetTypeDcl(field->vtype);
-        if (vartype->tag != RefTag || !(isRegion(vartype->region, rcName) || isRegion(vartype->region, soName)))
+        if (vartype->tag != RefTag || !regionIsOwning(vartype->region))
             continue;
-        // The GEP yields the field's address; the release routines want the
+        // The GEP yields the field's address; the release routine wants the
         // reference the field holds, so load it.
         LLVMValueRef fldptr = LLVMBuildStructGEP(gen->builder, ref, field->index, &field->namesym->namestr);
         LLVMValueRef fldref = LLVMBuildLoad(gen->builder, fldptr, "fldref");
-        if (isRegion(vartype->region, soName))
-            genlDealiasOwn(gen, fldref, vartype);
-        else
-            genlRcCounter(gen, fldref, -1, vartype);
+        genlReleaseOwning(gen, fldref, (INode*)vartype);
     }
 }
 
-// Call C's free(), declaring it if the module has not. The program may declare
-// 'free' itself, in its own signature (its no-value return is '%void', not
-// LLVM's void). A second function of that name would be renamed 'free.1', which
-// nothing defines, so the program's declaration is called, cast to this one.
-// Every declaration the symbol pass names comes before this; one named later,
-// a private 'free' an imported inline body reaches, shares this declaration
-// in turn (genlClaimSymbol).
-LLVMValueRef genlFree(GenState *gen, LLVMValueRef ref) {
-    LLVMTypeRef parmtype = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
-    LLVMTypeRef fnsig = LLVMFunctionType(LLVMVoidTypeInContext(gen->context), &parmtype, 1, 0);
-    LLVMValueRef freefn = LLVMGetNamedFunction(gen->module, "free");
-    if (freefn == NULL)
-        freefn = LLVMAddFunction(gen->module, "free", fnsig);
-    else if (LLVMGetElementType(LLVMTypeOf(freefn)) != fnsig)
-        freefn = LLVMConstBitCast(freefn, LLVMPointerType(fnsig, 0));
-    // Cast ref to *u8 and then call free()
-    LLVMValueRef refcast = LLVMBuildBitCast(gen->builder, ref, parmtype, "");
-    return LLVMBuildCall(gen->builder, freefn, &refcast, 1, "");
+// The region's header for the value an owning reference points at: the
+// allocation's first field, which is where 'alloc' returned. It sits before
+// the value by the offset of the value in the {region, permission, value}
+// layout, so the address is computed from that layout rather than assuming any
+// region's or permission's size. This is the 'self' every region method but
+// 'alloc' and 'init' is handed.
+static LLVMValueRef genlRegionHeader(GenState *gen, LLVMValueRef valptr, RefNode *refnode) {
+    genlType(gen, (INode*)refnode);    // Make sure typeinfo is populated
+    unsigned long long offset = LLVMOffsetOfElement(gen->datalayout, refnode->typeinfo->structype, ValueField);
+    LLVMTypeRef hdrptrtype = LLVMPointerType(genlType(gen, refnode->region), 0);
+    if (offset == 0)
+        return LLVMBuildBitCast(gen->builder, valptr, hdrptrtype, "header");
+    LLVMValueRef bytep = LLVMBuildBitCast(gen->builder, valptr, LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0), "");
+    LLVMValueRef back = LLVMConstInt(genlType(gen, (INode*)usizeType), -(long long)offset, 1);
+    bytep = LLVMBuildGEP(gen->builder, bytep, &back, 1, "");
+    return LLVMBuildBitCast(gen->builder, bytep, hdrptrtype, "header");
+}
+
+// Call a region method that takes the header as 'self'
+static LLVMValueRef genlRegionCall(GenState *gen, FnDclNode *meth, LLVMValueRef header) {
+    return genlFnCallInternal(gen, SimpleDispatch, (INode*)meth, 1, &header);
+}
+
+// The value an owning reference points at is dead: release what its fields
+// own, then give the memory back through the region's 'free', where it has one
+static void genlRegionDeath(GenState *gen, LLVMValueRef valptr, RefNode *refnode) {
+    genlDealiasFlds(gen, valptr, refnode);
+    FnDclNode *freemeth = regionMethod(refnode->region, freeMethodName);
+    if (freemeth)
+        genlRegionCall(gen, freemeth, genlRegionHeader(gen, valptr, refnode));
+}
+
+// One owner of an owning reference goes away. A region with 'dealias' is asked
+// whether it was the last, and the value dies only if so; a region without one
+// has a single owner, so its going is the value's death.
+static void genlRegionDealias(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
+    LLVMValueRef valptr = genlRefPtr(gen, ref, refnode);
+    FnDclNode *dealiasmeth = regionMethod(refnode->region, dealiasMethodName);
+    if (dealiasmeth == NULL) {
+        genlRegionDeath(gen, valptr, refnode);
+        return;
+    }
+    LLVMValueRef last = genlRegionCall(gen, dealiasmeth, genlRegionHeader(gen, valptr, refnode));
+    LLVMBasicBlockRef nofree = genlInsertBlock(gen, "nofree");
+    LLVMBasicBlockRef dofree = genlInsertBlock(gen, "free");
+    LLVMBuildCondBr(gen->builder, last, dofree, nofree);
+    LLVMPositionBuilderAtEnd(gen->builder, dofree);
+    genlRegionDeath(gen, valptr, refnode);
+    LLVMBuildBr(gen->builder, nofree);
+    LLVMPositionBuilderAtEnd(gen->builder, nofree);
+}
+
+// Up to this many owners gained at once, 'alias' is called in line, once for
+// each: the optimizer pipeline (genllvm.c) runs no loop pass, so only calls
+// written out fold, for an 'alias' that adds to a count, into one addition
+#define RegionAliasUnroll 16
+
+// A counted reference gains 'amount' owners: its region's 'alias' is called
+// once for each. Only an array fill literal makes more than one at once, up to
+// INT16_MAX (arraylit.c); beyond RegionAliasUnroll that is a loop. A negative
+// amount is owners going away: a fill literal of no elements drops the
+// temporary it was given.
+void genlRegionAlias(GenState *gen, LLVMValueRef ref, long long amount, RefNode *refnode) {
+    if (amount < 0) {
+        for (long long i = 0; i < -amount; ++i)
+            genlRegionDealias(gen, ref, refnode);
+        return;
+    }
+    FnDclNode *aliasmeth = regionMethod(refnode->region, aliasMethodName);
+    if (aliasmeth == NULL || amount == 0)
+        return;
+    LLVMValueRef header = genlRegionHeader(gen, genlRefPtr(gen, ref, refnode), refnode);
+    if (amount <= RegionAliasUnroll) {
+        for (long long i = 0; i < amount; ++i)
+            genlRegionCall(gen, aliasmeth, header);
+        return;
+    }
+    LLVMTypeRef usize = genlType(gen, (INode*)usizeType);
+    LLVMBasicBlockRef entryblk = LLVMGetInsertBlock(gen->builder);
+    LLVMBasicBlockRef doneblk = genlInsertBlock(gen, "aliasdone");
+    LLVMBasicBlockRef loopblk = genlInsertBlock(gen, "aliasloop");
+    LLVMBuildBr(gen->builder, loopblk);
+    LLVMPositionBuilderAtEnd(gen->builder, loopblk);
+    LLVMValueRef counter = LLVMBuildPhi(gen->builder, usize, "aliascount");
+    genlRegionCall(gen, aliasmeth, header);
+    LLVMValueRef next = LLVMBuildAdd(gen->builder, counter, LLVMConstInt(usize, 1, 0), "aliasnext");
+    LLVMValueRef more = LLVMBuildICmp(gen->builder, LLVMIntULT, next, LLVMConstInt(usize, amount, 0), "aliasmore");
+    // The call may have split the loop's block, so the back edge leaves from
+    // wherever the builder is now
+    LLVMBasicBlockRef loopend = LLVMGetInsertBlock(gen->builder);
+    LLVMBuildCondBr(gen->builder, more, loopblk, doneblk);
+    LLVMValueRef incoming[2] = { LLVMConstInt(usize, 0, 0), next };
+    LLVMBasicBlockRef fromblks[2] = { entryblk, loopend };
+    LLVMAddIncoming(counter, incoming, fromblks, 2);
+    LLVMPositionBuilderAtEnd(gen->builder, doneblk);
 }
 
 // Generate repetitive array fill of a value
@@ -290,53 +364,15 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     return phi;
 }
 
-// Dealias an own allocated reference
-void genlDealiasOwn(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
-    ref = genlRefPtr(gen, ref, refnode);
-    genlDealiasFlds(gen, ref, refnode);
-    genlFree(gen, ref);
-}
-
-// Add to the counter of an rc allocated reference
-void genlRcCounter(GenState *gen, LLVMValueRef ref, long long amount, RefNode *refnode) {
-    ref = genlRefPtr(gen, ref, refnode);
-    // Point backwards to ref counter
-    LLVMTypeRef ptrusize = LLVMPointerType(genlType(gen, (INode*)usizeType), 0);
-    LLVMValueRef refcast = LLVMBuildBitCast(gen->builder, ref, ptrusize, "");
-    LLVMValueRef minusone = LLVMConstInt(genlType(gen, (INode*)usizeType), -1, 1);
-    LLVMValueRef cntptr = LLVMBuildGEP(gen->builder, refcast, &minusone, 1, "");
-
-    // Increment ref counter
-    LLVMValueRef cnt = LLVMBuildLoad(gen->builder, cntptr, "");
-    LLVMTypeRef usize = genlType(gen, (INode*)usizeType);
-    LLVMValueRef newcnt = LLVMBuildAdd(gen->builder, cnt, LLVMConstInt(usize, amount, 0), "");
-    LLVMBuildStore(gen->builder, newcnt, cntptr);
-
-    // Free if zero. Otherwise, don't
-    if (amount < 0) {
-        LLVMBasicBlockRef nofree = genlInsertBlock(gen, "nofree");
-        LLVMBasicBlockRef dofree = genlInsertBlock(gen, "free");
-        LLVMValueRef test = LLVMBuildICmp(gen->builder, LLVMIntEQ, newcnt, LLVMConstInt(usize, 0, 0), "iszero");
-        LLVMBuildCondBr(gen->builder, test, dofree, nofree);
-        LLVMPositionBuilderAtEnd(gen->builder, dofree);
-        genlDealiasFlds(gen, ref, refnode);
-        genlFree(gen, cntptr);
-        LLVMBuildBr(gen->builder, nofree);
-        LLVMPositionBuilderAtEnd(gen->builder, nofree);
-    }
-}
-
-// Release what a variable holds: free an 'so' reference, drop a holder of an
-// 'rc' one, single or slice. A tuple is one holder of each owning reference it
-// carries, so each is released.
+// Release what a variable holds: one owner of an owning reference, single or
+// slice, goes away. A tuple is one owner of each owning reference it carries,
+// so each is released.
 void genlReleaseOwning(GenState *gen, LLVMValueRef val, INode *type) {
     INode *typedcl = itypeGetTypeDcl(type);
     if (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag) {
         RefNode *reftype = (RefNode *)typedcl;
-        if (isRegion(reftype->region, soName))
-            genlDealiasOwn(gen, val, reftype);
-        else if (isRegion(reftype->region, rcName))
-            genlRcCounter(gen, val, -1, reftype);
+        if (regionIsOwning(reftype->region))
+            genlRegionDealias(gen, val, reftype);
     }
     else if (typedcl->tag == TTupleTag) {
         INode **elemp;

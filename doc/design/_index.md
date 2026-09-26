@@ -350,7 +350,7 @@ paragraph, or a bullet, so the referent is never ambiguous:
 
 ```
 Regions are declared `region @move so:` with `alloc` and `free`
-[differs: implemented as `struct @move so:` with `alloc`, and no `free` at all]
+[differs: implemented as `struct so is RegionRef`, single owner by having no `alias`]
 ```
 
 Mark at the coarsest level that is true, and override inline only where a child
@@ -359,7 +359,7 @@ largely-built one.
 
 **This is not an exception to the no-changelog rule above.** `[differs]` states a
 present gap between the design and the code. "Was `assert(0)`" is history and is
-deleted; "[differs: dispatches on whether the region is named `rc` or `so`]" is
+deleted; "[differs: a value's `final` is not run when its region frees it]" is
 the current fact.
 
 **There is no marker for code a note does not describe.** A note is an abstract
