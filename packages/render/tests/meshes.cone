@@ -1,0 +1,215 @@
+// The render package's mesh generators, checked with the testing package
+// against values worked out by hand from the geometry. Only a failure prints,
+// so meshes.out holds the summary alone. Positions are f32 from sines and
+// cosines, checked to within a hundred-thousandth.
+//
+// A sphere of radius 2 in 4 segments has a pole, 3 circles of latitude of 5
+// vertices (4 around, then the first again at u = 1), and a pole: 17
+// vertices, numbered top pole 0, circle 1 from 1 to 5, circle 2 from 6 to 10,
+// circle 3 from 11 to 15, bottom pole 16. Circle i is at the angle i * 45
+// degrees from the top, vertex j at j * 90 degrees around, at
+// (-cos(around) sin(down), cos(down), sin(around) sin(down)) times the radius:
+// vertex 1 at (-sqrt 2, sqrt 2, 0), 2 at (0, sqrt 2, sqrt 2), 6 at (-2, 0, 0),
+// 11 at (-sqrt 2, -sqrt 2, 0), and 5, circle 1's repeat, where 1 is.
+// Its triangles: 4 at each pole and 8 for each of the 2 bands between circles,
+// 24, so 72 indices: 6n(n - 1) for n segments. The first joins the top pole to
+// vertices 2 and 1; the first band's first two are (1, 7, 6) and (1, 2, 7)
+// from index 12; the bottom cap's first is (11, 12, 16) from index 60 and its
+// last (14, 15, 16). Every triangle winds clockwise seen from outside, so the
+// cross product of its edges points inwards, against the sum of its corners.
+// With Pegasus's joining (5 vertices a circle taken as 4) the bottom cap met
+// vertex 13, not the pole, and vertex 16 was never used; here every vertex is.
+//
+// A plane in 2 segments has 3 by 3 vertices, x and z from -1 to 1 in steps of
+// 1, row by row along x, so vertex 4 is the middle and 8 the corner (1, 0, 1).
+// Its 8 triangles are 24 indices, the first square's (0, 4, 3) and (0, 1, 4),
+// the last square's (4, 8, 7) and (4, 5, 8). The uv (0, 0) is at (-1, 0, 1),
+// vertex 6, and a repeat of 15 puts vertex 2, (1, 0, -1), at uv (15, 15).
+//
+// Pegasus's cube of size 2: 24 corners, four to a face, the first (-2, 2, -2),
+// the front face's second (2, 2, 2), the last (2, -2, 2); 36 indices, the last
+// three 20, 22, 23; no normals or uvs.
+
+mod meshes;
+
+import testing use *;
+import math3d use *;
+import render use *;
+
+imm near = 0.00001d;
+
+fn point(got Xyz, x f32, y f32, z f32, label &[]u8) {
+  expectFloat(got.x, x, near, label);
+  expectFloat(got.y, y, near, label);
+  expectFloat(got.z, z, near, label);
+}
+
+fn uv(got Uv, u f32, v f32, label &[]u8) {
+  expectFloat(got.u, u, near, label);
+  expectFloat(got.v, v, near, label);
+}
+
+// How many positions a shape has (a method on a temporary is refused, 1016)
+fn vertices(s Shape) i64 { i64[s.positions.len()]; }
+
+fn index(s &Shape, at usize) i64 { i64[*s.indices[at]]; }
+
+fn triangle(s &Shape, at usize, a i64, b i64, c i64, label &[]u8) {
+  expectInt(index(s, at), a, label);
+  expectInt(index(s, at + 1usize), b, label);
+  expectInt(index(s, at + 2usize), c, label);
+}
+
+fn sphere() {
+  imm s = Shape.sphere(2., 4);
+  requireInt(i64[s.positions.len()], 17, "sphere vertices");
+  expectInt(i64[s.normals.len()], 17, "sphere normals");
+  expectInt(i64[s.uvs.len()], 17, "sphere uvs");
+  expectInt(i64[s.indices.len()], 72, "sphere indices");
+  expectInt(i64[s.vertexCount()], 17, "sphere vertex count");
+
+  imm r2 f32 = 1.4142136;
+  point(*s.positions[0usize], 0., 2., 0., "top pole");
+  point(*s.positions[1usize], -r2, r2, 0., "circle 1, vertex 0");
+  point(*s.positions[2usize], 0., r2, r2, "circle 1, vertex 1");
+  point(*s.positions[5usize], -r2, r2, 0., "circle 1's repeat");
+  point(*s.positions[6usize], -2., 0., 0., "circle 2, vertex 0");
+  point(*s.positions[11usize], -r2, -r2, 0., "circle 3, vertex 0");
+  point(*s.positions[16usize], 0., -2., 0., "bottom pole");
+  point(*s.normals[6usize], -1., 0., 0., "circle 2's normal");
+  point(*s.normals[16usize], 0., -1., 0., "bottom pole's normal");
+
+  uv(*s.uvs[0usize], 0., 1., "top pole uv");
+  uv(*s.uvs[2usize], 0.25, 0.75, "circle 1, vertex 1 uv");
+  uv(*s.uvs[5usize], 1., 0.75, "circle 1's repeat uv");
+  uv(*s.uvs[8usize], 0.5, 0.5, "circle 2, vertex 2 uv");
+  uv(*s.uvs[16usize], 0., 0., "bottom pole uv");
+
+  triangle(&s, 0usize, 0, 2, 1, "top cap's first triangle");
+  triangle(&s, 12usize, 1, 7, 6, "first band's first triangle");
+  triangle(&s, 15usize, 1, 2, 7, "first band's second triangle");
+  triangle(&s, 60usize, 11, 12, 16, "bottom cap's first triangle");
+  triangle(&s, 69usize, 14, 15, 16, "bottom cap's last triangle");
+
+  // Every normal is the position over the radius, of length 1
+  mut v = 0usize;
+  mut normalsOk = true;
+  while v < 17usize {
+    imm p = *s.positions[v];
+    imm n = *s.normals[v];
+    if (p * 0.5 - n).length() > 0.00001 or (n.length() - 1.) * (n.length() - 1.) > 0.0000000001 {
+      normalsOk = false;
+    }
+    v = v + 1usize;
+  }
+  expect(normalsOk, "each normal is the unit position");
+
+  // Every vertex is used, no index is past the end, and every triangle
+  // winds clockwise seen from outside
+  mut used [17; Bool] = [17; false];
+  mut inRange = true;
+  mut clockwise = 0;
+  mut t = 0usize;
+  while t < 72usize {
+    imm ia = *s.indices[t];
+    imm ib = *s.indices[t + 1usize];
+    imm ic = *s.indices[t + 2usize];
+    if ia >= 17u16 or ib >= 17u16 or ic >= 17u16 {
+      inRange = false;
+    } else {
+      used[usize[ia]] = true;
+      used[usize[ib]] = true;
+      used[usize[ic]] = true;
+      imm a = *s.positions[usize[ia]];
+      imm b = *s.positions[usize[ib]];
+      imm c = *s.positions[usize[ic]];
+      if (b - a).cross(c - a).dot(a + b + c) < 0. { clockwise = clockwise + 1; }
+    }
+    t = t + 3usize;
+  }
+  expect(inRange, "every index is a vertex");
+  mut allUsed = true;
+  v = 0usize;
+  while v < 17usize {
+    if !used[v] { allUsed = false; }
+    v = v + 1usize;
+  }
+  expect(allUsed, "every vertex is used");
+  expectInt(i64[clockwise], 24, "triangles winding clockwise from outside");
+
+  // Pegasus's default sphere, 15 segments: 14 circles of 16, and 2 poles
+  imm d = Shape.sphere(1., 15);
+  expectInt(i64[d.positions.len()], 226, "15-segment sphere vertices");
+  expectInt(i64[d.indices.len()], 1260, "15-segment sphere indices");
+
+  // Too few segments, or too many for 16-bit indices: 256 segments would be
+  // 257 * 255 + 2 = 65537 vertices, 255 are 256 * 254 + 2 = 65026
+  expectInt(vertices(Shape.sphere(1., 2)), 0, "2-segment sphere");
+  expectInt(vertices(Shape.sphere(1., 256)), 0, "256-segment sphere");
+  imm big = Shape.sphere(1., 255);
+  expectInt(i64[big.positions.len()], 65026, "255-segment sphere vertices");
+  expectInt(i64[big.indices.len()], 388620, "255-segment sphere indices");
+}
+
+fn plane() {
+  imm s = Shape.plane(2, 1.);
+  requireInt(i64[s.positions.len()], 9, "plane vertices");
+  expectInt(i64[s.indices.len()], 24, "plane indices");
+  point(*s.positions[0usize], -1., 0., -1., "plane's first corner");
+  point(*s.positions[4usize], 0., 0., 0., "plane's middle");
+  point(*s.positions[5usize], 1., 0., 0., "plane's vertex 5");
+  point(*s.positions[8usize], 1., 0., 1., "plane's last corner");
+  point(*s.normals[8usize], 0., 1., 0., "plane's normal");
+  uv(*s.uvs[0usize], 0., 1., "plane's first uv");
+  uv(*s.uvs[6usize], 0., 0., "plane's uv origin");
+  uv(*s.uvs[8usize], 1., 0., "plane's last uv");
+  triangle(&s, 0usize, 0, 4, 3, "plane's first triangle");
+  triangle(&s, 3usize, 0, 1, 4, "plane's second triangle");
+  triangle(&s, 18usize, 4, 8, 7, "plane's last square, first");
+  triangle(&s, 21usize, 4, 5, 8, "plane's last square, second");
+
+  imm r = Shape.plane(2, 15.);
+  uv(*r.uvs[2usize], 15., 15., "repeated uv");
+  uv(*r.uvs[6usize], 0., 0., "repeated uv origin");
+
+  expectInt(vertices(Shape.plane(0, 1.)), 0, "0-segment plane");
+}
+
+fn cube() {
+  imm s = Shape.cube(2.);
+  requireInt(i64[s.positions.len()], 24, "cube vertices");
+  expectInt(i64[s.indices.len()], 36, "cube indices");
+  expectInt(i64[s.normals.len()], 0, "cube normals");
+  expectInt(i64[s.uvs.len()], 0, "cube uvs");
+  point(*s.positions[0usize], -2., 2., -2., "cube's first corner");
+  point(*s.positions[13usize], 2., 2., 2., "front face's second corner");
+  point(*s.positions[23usize], 2., -2., 2., "cube's last corner");
+  triangle(&s, 0usize, 0, 1, 2, "cube's first triangle");
+  triangle(&s, 33usize, 20, 22, 23, "cube's last triangle");
+}
+
+fn defaults() {
+  imm s = Shape.empty();
+  expectInt(i64[s.draw], 4, "drawn as triangles");
+  expectBool(s.transparent, false, "opaque");
+  expectFloat(s.mmatrix.m[0], 1., near, "placed by the identity");
+  expectFloat(s.mmatrix.m[12], 0., near, "at the origin");
+  expectInt(i64[s.uniforms.len()], 0, "no uniforms");
+  expectInt(i64[s.vertexCount()], 0, "no vertices");
+
+  expectInt(i64[drawMode("Triangles")], 4, "Triangles");
+  expectInt(i64[drawMode("TriangleStrip")], 5, "TriangleStrip");
+  expectInt(i64[drawMode("LineLoop")], 2, "LineLoop");
+  expectInt(i64[drawMode("Points")], 0, "Points");
+  expectInt(i64[drawMode("Polygon")], 6, "Polygon, as a triangle fan");
+  expectInt(i64[drawMode("Patches")], 14, "Patches");
+  expectInt(i64[drawMode("Squiggle")], 4, "an unknown name");
+}
+
+fn main() i32 {
+  sphere();
+  plane();
+  cube();
+  defaults();
+  done();
+}

@@ -1,0 +1,290 @@
+// Shader: a GLSL program, compiled and linked the first time it draws.
+//
+// As in Pegasus, a shader carries the names of its vertex attributes, in the
+// order their locations are bound (0, 1, ...), and of its uniforms. A shape
+// gives the attribute of each name from its buffer of the same name
+// ('positions', 'normals', 'uvs', 'colors'). Each uniform is given, by name:
+// 'mvpmatrix', 'mvmatrix' and 'mmatrix' worked out from the camera and the
+// shape; 'cameraOrigin', the camera's origin; and any other name from the
+// shape's Uniforms, else the camera's, else not at all.
+
+pub struct Shader {
+  pub vertex String;             // the vertex shader's GLSL
+  pub fragment String;           // the fragment shader's GLSL
+  pub attributes List[String];   // attribute names, location 0 first
+  pub uniforms List[String];     // uniform names
+  program u32;                   // 0 until linked
+  failed Bool;                   // compiling or linking failed: do not try again
+  locations List[i32];           // each uniform's location, once linked
+
+  // A shader of this GLSL, its attribute and uniform names each given as one
+  // string of names separated by spaces: "positions normals uvs"
+  pub fn from(vertex &[]u8, fragment &[]u8, attributes &[]u8, uniforms &[]u8) Shader {
+    Shader[String.from(vertex), String.from(fragment), names(attributes), names(uniforms),
+      0u, false, List[i32].empty()];
+  }
+
+  // The same, the GLSL read from two files. A file that cannot be read gives
+  // empty source, which fails to compile and says so when first drawn.
+  pub fn load(vertexPath &[]u8, fragmentPath &[]u8, attributes &[]u8, uniforms &[]u8) Shader {
+    mut ok = true;
+    imm v = readFile(vertexPath, &mut ok);
+    if !ok { logFailure("Shader file not found: ", vertexPath); }
+    imm f = readFile(fragmentPath, &mut ok);
+    if !ok { logFailure("Shader file not found: ", fragmentPath); }
+    Shader[v, f, names(attributes), names(uniforms), 0u, false, List[i32].empty()];
+  }
+
+  // Pegasus's horseworld shaders/diffuse_shader: each vertex lit by one light
+  // (lightOrigin, lightColor) reflecting a diffuse color, plus ambient light
+  pub fn diffuse() Shader {
+    mut v = String.empty();
+    v <- "#version 130\n";
+    v <- "in vec3 positions;\n";
+    v <- "in vec3 normals;\n";
+    v <- "out vec3 LightIntensity;\n";
+    diffuseUniforms(&mut v);
+    v <- "void main()\n";
+    v <- "{\n";
+    diffuseLighting(&mut v);
+    v <- "  gl_Position = mvpmatrix * vec4(positions,1.0);\n";
+    v <- "}\n";
+    mut f = String.empty();
+    f <- "#version 130\n";
+    f <- "in vec3 LightIntensity;\n";
+    f <- "out vec4 FragColor;\n";
+    f <- "void main() {\n";
+    f <- "  FragColor = vec4(LightIntensity, 1.0);\n";
+    f <- "}\n";
+    Shader[v, f, names("positions normals"),
+      names("lightOrigin lightColor ambient diffuse mmatrix mvpmatrix"), 0u, false, List[i32].empty()];
+  }
+
+  // Pegasus's horseworld shaders/diffuse_texshader: the same light, the color
+  // taken from the texture 'tex' at each fragment's uv
+  pub fn diffuseTextured() Shader {
+    mut v = String.empty();
+    v <- "#version 130\n";
+    v <- "in vec3 positions;\n";
+    v <- "in vec3 normals;\n";
+    v <- "in vec2 uvs;\n";
+    v <- "out vec3 LightIntensity;\n";
+    v <- "out vec2 Texcoord;\n";
+    diffuseUniforms(&mut v);
+    v <- "void main()\n";
+    v <- "{\n";
+    diffuseLighting(&mut v);
+    v <- "  Texcoord = uvs;\n";
+    v <- "  gl_Position = mvpmatrix * vec4(positions,1.0);\n";
+    v <- "}\n";
+    mut f = String.empty();
+    f <- "#version 130\n";
+    f <- "in vec3 LightIntensity;\n";
+    f <- "in vec2 Texcoord;\n";
+    f <- "out vec4 FragColor;\n";
+    f <- "uniform sampler2D tex;\n";
+    f <- "void main() {\n";
+    f <- "  FragColor = texture(tex, Texcoord) * vec4(LightIntensity, 1.0);\n";
+    f <- "}\n";
+    Shader[v, f, names("positions normals uvs"),
+      names("lightOrigin lightColor ambient diffuse tex mmatrix mvpmatrix"), 0u, false, List[i32].empty()];
+  }
+
+  // Whether it is linked, and OpenGL's name for the program (0 until then)
+  pub fn isCompiled(self &) Bool { program != 0u; }
+  pub fn programName(self &) u32 { program; }
+
+  // Compile both stages and link them, binding each attribute name to its
+  // location first. On failure it logs OpenGL's message to stderr and answers
+  // false. (Pegasus's shader_make.)
+  pub fn compile(self &mut) Bool {
+    imm vshader = compileStage(&vertex, gl.VERTEX_SHADER);
+    imm fshader = compileStage(&fragment, gl.FRAGMENT_SHADER);
+    if vshader == 0u or fshader == 0u {
+      // (Pegasus kept the stage that did compile; it is deleted here)
+      if vshader != 0u { gl.DeleteShader(vshader); }
+      if fshader != 0u { gl.DeleteShader(fshader); }
+      failed = true;
+      return false;
+    }
+
+    // Link the shaders together into a program, attributes bound in order
+    imm pgm = gl.CreateProgram();
+    gl.AttachShader(pgm, vshader);
+    gl.AttachShader(pgm, fshader);
+    mut i = 0usize;
+    while i < attributes.len() {
+      mut name = attributes[i].copy();
+      gl.BindAttribLocation(pgm, u32[i], name.cstr());
+      i = i + 1usize;
+    }
+    gl.LinkProgram(pgm);
+    gl.DetachShader(pgm, vshader);
+    gl.DetachShader(pgm, fshader);
+    gl.DeleteShader(vshader);
+    gl.DeleteShader(fshader);
+
+    // Linking fails when, say, the two stages do not match
+    mut linked = 0;
+    gl.GetProgramiv(pgm, gl.LINK_STATUS, &mut linked);
+    if linked == 0 {
+      mut len = 0;
+      gl.GetProgramiv(pgm, gl.INFO_LOG_LENGTH, &mut len);
+      logInfo("Shader program linkage error: ", len, pgm, false);
+      gl.DeleteProgram(pgm);
+      failed = true;
+      return false;
+    }
+
+    // Every listed attribute must be an input of the GLSL program under the
+    // same name, or the driver picks its own locations and vertex data lands
+    // in the wrong inputs
+    i = 0usize;
+    while i < attributes.len() {
+      mut name = attributes[i].copy();
+      if gl.GetAttribLocation(pgm, name.cstr()) < 0 {
+        logFailure("Shader attribute is not an input of the GLSL program; vertex data will be misassigned: ",
+          name.view());
+      }
+      i = i + 1usize;
+    }
+
+    // Each uniform's location, found once here. (Pegasus asked for it again at
+    // every draw; the answer does not change while the program lives.)
+    locations.clear();
+    i = 0usize;
+    while i < uniforms.len() {
+      mut name = uniforms[i].copy();
+      locations.push(gl.GetUniformLocation(pgm, name.cstr()));
+      i = i + 1usize;
+    }
+    program = pgm;
+    true;
+  }
+
+  // Put the program in use and give each uniform its value, for drawing
+  // 'shape' under 'camera': compiled the first time. A shader that failed
+  // leaves no program in use. (Pegasus's _Render. Pegasus tried again at every
+  // draw after a failure, logging the same error each frame; this tries once.)
+  pub fn render(self &mut, camera &Camera, shape &Shape) {
+    if program == 0u and !failed { self.compile(); }
+    if program == 0u {
+      gl.UseProgram(0u);
+      return;
+    }
+    gl.UseProgram(program);
+
+    // mvpmatrix = pmatrix * (mvmatrix = vmatrix * mmatrix)
+    imm mv = camera.vmatrix * shape.mmatrix;
+    imm mvp = camera.pmatrix * mv;
+
+    mut i = 0usize;
+    while i < uniforms.len() {
+      imm name = uniforms[i];
+      imm loc = *locations[i];
+      if name.equals("mvpmatrix") {
+        gl.UniformMatrix4fv(loc, 1, gl.FALSE, &mvp.m[0]);
+      } elif name.equals("mvmatrix") {
+        gl.UniformMatrix4fv(loc, 1, gl.FALSE, &mv.m[0]);
+      } elif name.equals("mmatrix") {
+        gl.UniformMatrix4fv(loc, 1, gl.FALSE, &shape.mmatrix.m[0]);
+      } elif name.equals("cameraOrigin") {
+        imm u = Uniform.xyz(camera.origin);
+        setUniform(loc, &u);
+      } elif shape.uniforms.has(name.view()) {
+        setUniform(loc, shape.uniforms[name.view()]);
+      } elif camera.uniforms.has(name.view()) {
+        setUniform(loc, camera.uniforms[name.view()]);
+      }
+      i = i + 1usize;
+    }
+  }
+
+  // Give the program back to OpenGL (a context must still be current). It
+  // is compiled again if drawn again. (Pegasus deleted it in a finalizer;
+  // here it is asked for, since a value may outlive the window's context.)
+  pub fn release(self &mut) {
+    if program != 0u { gl.DeleteProgram(program); }
+    program = 0u;
+    failed = false;
+    locations.clear();
+  }
+}
+
+// The names in a string of names separated by spaces, empty ones dropped
+pub fn names(list &[]u8) List[String] {
+  mut out = List[String].empty();
+  mut start = 0usize;
+  mut i = 0usize;
+  while i <= list.len {
+    if i == list.len or isSpace(list[i]) {
+      if i > start { out.push(String.from(&list[start..i])); }
+      start = i + 1usize;
+    }
+    i = i + 1usize;
+  }
+  out;
+}
+
+// The uniforms the two diffuse shaders' vertex stages declare
+fn diffuseUniforms(v &mut String) {
+  v <- "uniform vec4 ambient;\n";
+  v <- "uniform vec3 lightOrigin;\n";
+  v <- "uniform vec4 lightColor;\n";
+  v <- "uniform vec4 diffuse;\n";
+  v <- "uniform mat4 mmatrix;\n";
+  v <- "uniform mat4 mvpmatrix;\n";
+}
+
+// Their shared lighting: normals and positions in world coordinates, then
+// the diffuse shading equation
+fn diffuseLighting(v &mut String) {
+  v <- "  vec3 vertnorm = vec3(normalize(mmatrix * vec4(normals,0.0)));\n";
+  v <- "  vec3 vertpos = vec3(mmatrix * vec4(positions,1.0));\n";
+  v <- "  vec3 direction = normalize(lightOrigin - vertpos);\n";
+  v <- "  LightIntensity = vec3(ambient) + vec3(lightColor) * vec3(diffuse) * max( dot( direction, vertnorm ), 0.0 );\n";
+}
+
+// Compile one stage, or answer 0 after logging why it failed
+fn compileStage(source &String, kind u32) u32 {
+  imm shader = gl.CreateShader(kind);
+  mut text = source.copy();
+  mut src = text.cstr();
+  gl.ShaderSource(shader, 1, &mut src, 0usize as *i32);
+  gl.CompileShader(shader);
+  mut compiled = 0;
+  gl.GetShaderiv(shader, gl.COMPILE_STATUS, &mut compiled);
+  if compiled == 0 {
+    mut len = 0;
+    gl.GetShaderiv(shader, gl.INFO_LOG_LENGTH, &mut len);
+    logInfo("Shader compilation failure: ", len, shader, true);
+    gl.DeleteShader(shader);
+    return 0u;
+  }
+  shader;
+}
+
+// Log OpenGL's info log for a shader (or a program) after a message
+fn logInfo(msg &[]u8, len i32, obj u32, isShader Bool) {
+  mut log = List[u8].withCapacity(usize[len + 1]);
+  mut i = 0;
+  while i <= len {
+    log.push(0u8);
+    i = i + 1;
+  }
+  imm buf = log.view();
+  mut got = 0;
+  if isShader {
+    gl.GetShaderInfoLog(obj, len, &mut got, &buf[0] as *u8);
+  } else {
+    gl.GetProgramInfoLog(obj, len, &mut got, &buf[0] as *u8);
+  }
+  imm n = if got > 0 {usize[got];} else {0usize;};
+  logFailure(msg, &buf[..n]);
+}
+
+fn logFailure(msg &[]u8, detail &[]u8) {
+  mut m = String.from(msg);
+  m <- detail;
+  logLine(m.view());
+}

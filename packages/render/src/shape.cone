@@ -1,0 +1,319 @@
+// Shape: a mesh, and the generators for a sphere, a plane and a cube.
+//
+// A shape holds a buffer for each kind of per-vertex data, as Pegasus's shape
+// held its 'positions', 'normals', 'uvs' and 'colors' properties, and the
+// indices that join the vertices into primitives, three to a triangle. A
+// buffer that is empty is not given to the shader. The same vertex index
+// reaches the same place in every buffer.
+//
+// The generators wind their triangles clockwise as seen from the side the
+// normals point to (OpenGL's front faces are counterclockwise). Pegasus drew
+// with face culling off, as this package does, so the winding does not show.
+
+// A texture coordinate: u across the image, v up it, each 0 to 1 over the image
+pub struct Uv {
+  pub u f32;
+  pub v f32;
+}
+
+pub struct Shape {
+  pub positions List[Xyz];
+  pub normals List[Xyz];
+  pub uvs List[Uv];
+  pub colors List[Color];
+  pub indices List[u16];     // empty: draw the vertices in order
+  pub draw u32;              // the primitive: gl.TRIANGLES unless set ('drawMode')
+  pub transparent Bool;      // blend with what is behind, by alpha
+  pub mmatrix Mat4;          // where it is: its coordinates into the world's
+  pub uniforms Uniforms;     // its own uniform values: 'diffuse', 'tex', ...
+
+  // A shape with no vertices, drawn as triangles, placed at the origin
+  pub fn empty() Shape {
+    Shape[List[Xyz].empty(), List[Xyz].empty(), List[Uv].empty(), List[Color].empty(),
+      List[u16].empty(), gl.TRIANGLES, false, Mat4.identity(), Uniforms.empty()];
+  }
+
+  // A sphere of 'radius' centered at the origin, by longitude and latitude:
+  // 'nsegments' slices around and as many from pole to pole. The normals point
+  // outwards. The top pole's uv is (0, 1), and u runs once around each circle
+  // of latitude, which ends in a repeat of its first vertex at u = 1, so the
+  // texture's edges meet. Fewer than 3 segments, or so many that an index
+  // would not fit in 16 bits, gives an empty shape. Pegasus's defaults were a
+  // radius of 1 and 15 segments.
+  pub fn sphere(radius f32, nsegments i32) Shape {
+    mut s = Shape.empty();
+    imm n = nsegments;
+    // A pole, n - 1 circles of n + 1 vertices, a pole. (Pegasus counted
+    // (n + 1) * (n - 2) + 2, which let 256 segments overflow the indices.)
+    imm nverts = (n + 1) * (n - 1) + 2;
+    if n <= 2 or nverts >= 65536 { return s; }
+    s.positions.reserve(usize[nverts]);
+    s.normals.reserve(usize[nverts]);
+    s.uvs.reserve(usize[nverts]);
+    s.indices.reserve(usize[6 * n * (n - 1)]);
+
+    // Top pole vertex
+    s.positions.push(Xyz[0., radius, 0.]);
+    s.normals.push(Xyz[0., 1., 0.]);
+    s.uvs.push(Uv[0., 1.]);
+
+    // Each circle of latitude, top to bottom, and each vertex around it.
+    // (Pegasus joined the circles as if each had n vertices, not n + 1, so
+    // every circle after the first was joined to the wrong vertices and the
+    // bottom cap to the wrong pole. 'stride' was n there.)
+    imm stride = n + 1;
+    mut i = 1;
+    while i < n {
+      imm mang = pi * f32[i] / f32[n];
+      mut j = 0;
+      while j < n {
+        imm nang = 2. * pi * f32[j] / f32[n];
+        imm x = -nang.cos() * mang.sin();
+        imm y = mang.cos();
+        imm z = nang.sin() * mang.sin();
+        s.normals.push(Xyz[x, y, z]);
+        s.positions.push(Xyz[x * radius, y * radius, z * radius]);
+        s.uvs.push(Uv[f32[j] / f32[n], f32[n - i] / f32[n]]);
+
+        // Two triangles per segment; one where the circle meets the pole
+        if i == 1 {
+          s.indices.push(0u16);
+          s.indices.push(u16[j + 2]);
+          s.indices.push(u16[j + 1]);
+        } else {
+          imm v0 = (i - 2) * stride + j + 1;
+          imm v1 = (i - 2) * stride + j + 2;
+          imm v2 = (i - 1) * stride + j + 2;
+          imm v3 = (i - 1) * stride + j + 1;
+          s.indices.push(u16[v0]);
+          s.indices.push(u16[v2]);
+          s.indices.push(u16[v3]);
+          s.indices.push(u16[v0]);
+          s.indices.push(u16[v1]);
+          s.indices.push(u16[v2]);
+        }
+        j = j + 1;
+      }
+      // The circle's first vertex again, at u = 1
+      imm x = -mang.sin();
+      imm y = mang.cos();
+      s.normals.push(Xyz[x, y, 0.]);
+      s.positions.push(Xyz[x * radius, y * radius, 0.]);
+      s.uvs.push(Uv[1., f32[n - i] / f32[n]]);
+      i = i + 1;
+    }
+
+    // Bottom pole vertex
+    s.uvs.push(Uv[0., 0.]);
+    s.positions.push(Xyz[0., -radius, 0.]);
+    s.normals.push(Xyz[0., -1., 0.]);
+
+    // The bottom circle joined to it
+    mut j = 0;
+    while j < n {
+      s.indices.push(u16[(n - 2) * stride + j + 1]);
+      s.indices.push(u16[(n - 2) * stride + j + 2]);
+      s.indices.push(u16[(n - 1) * stride + 1]);
+      j = j + 1;
+    }
+    s;
+  }
+
+  // A flat square in y = 0 from -1 to 1 in x and z, facing up (+y), cut into
+  // 'nsegments' by 'nsegments' squares of two triangles. The uv (0, 0) is the
+  // corner at (-1, 0, 1), and 'uvrepeat' is how many times the texture repeats
+  // across it. Fewer than 1 segment, or too many, gives an empty shape.
+  // Pegasus's defaults were 1 segment and a repeat of 1.
+  pub fn plane(nsegments i32, uvrepeat f32) Shape {
+    mut s = Shape.empty();
+    imm n = nsegments;
+    imm nverts = (n + 1) * (n + 1);
+    if n < 1 or nverts >= 65536 { return s; }
+    s.positions.reserve(usize[nverts]);
+    s.normals.reserve(usize[nverts]);
+    s.uvs.reserve(usize[nverts]);
+    s.indices.reserve(usize[6 * n * n]);
+
+    mut segz = 0;
+    while segz <= n {
+      mut segx = 0;
+      while segx <= n {
+        imm x = 2. * f32[segx] / f32[n] - 1.;
+        imm z = 2. * f32[segz] / f32[n] - 1.;
+        s.positions.push(Xyz[x, 0., z]);
+        s.normals.push(Xyz[0., 1., 0.]);
+        s.uvs.push(Uv[uvrepeat * f32[segx] / f32[n], uvrepeat * (1. - f32[segz] / f32[n])]);
+
+        // Two triangles per square
+        if segx > 0 and segz > 0 {
+          imm v0 = (segz - 1) * (n + 1) + segx - 1;
+          imm v1 = (segz - 1) * (n + 1) + segx;
+          imm v2 = segz * (n + 1) + segx;
+          imm v3 = segz * (n + 1) + segx - 1;
+          s.indices.push(u16[v0]);
+          s.indices.push(u16[v2]);
+          s.indices.push(u16[v3]);
+          s.indices.push(u16[v0]);
+          s.indices.push(u16[v1]);
+          s.indices.push(u16[v2]);
+        }
+        segx = segx + 1;
+      }
+      segz = segz + 1;
+    }
+    s;
+  }
+
+  // A cube centered at the origin, reaching 'size' along each axis each way:
+  // four vertices for each face, two triangles each. It has no normals or uvs,
+  // as Pegasus's had none (its use was a skybox, sampled by direction).
+  // Pegasus's default size was 1.
+  pub fn cube(size f32) Shape {
+    mut s = Shape.empty();
+    s.positions.reserve(24usize);
+    mut v = 0usize;
+    while v < 72usize {
+      s.positions.push(Xyz[size * cubePositions[v], size * cubePositions[v + 1usize],
+        size * cubePositions[v + 2usize]]);
+      v = v + 3usize;
+    }
+    s.indices.reserve(36usize);
+    mut i = 0usize;
+    while i < 36usize {
+      s.indices.push(cubeIndices[i]);
+      i = i + 1usize;
+    }
+    s;
+  }
+
+  // How many vertices it has: the fewest of any buffer it has
+  pub fn vertexCount(self &) usize {
+    mut n = positions.len();
+    if normals.len() > 0usize and normals.len() < n { n = normals.len(); }
+    if uvs.len() > 0usize and uvs.len() < n { n = uvs.len(); }
+    if colors.len() > 0usize and colors.len() < n { n = colors.len(); }
+    n;
+  }
+
+  // Draw it under the camera with the shader: the shader's program and
+  // uniforms, then a buffer for each of the shader's attributes that the
+  // shape has, then the primitives, by index when it has indices. The buffers
+  // are made, filled and given back at each draw, as Pegasus did.
+  // (Pegasus's _Render; which shader draws it was the shape's property, or
+  // else the camera's, and is here the caller's choice.)
+  pub fn render(self &, camera &Camera, shader &mut Shader) {
+    shader.render(camera, self);
+
+    // Blending for a shape with translucent colors
+    if transparent {
+      gl.Enable(gl.BLEND);
+      gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    }
+
+    // A vertex array object, and a buffer for each attribute the shape has
+    mut vao = 0u;
+    gl.GenVertexArrays(1, &mut vao);
+    gl.BindVertexArray(vao);
+    mut vbo [16; u32] = [16; 0u];
+    imm nattrs = if shader.attributes.len() < 16usize {shader.attributes.len();} else {16usize;};
+    mut nverts = 0usize;
+    mut any = false;
+    mut i = 0usize;
+    while i < nattrs {
+      imm name = shader.attributes[i];
+      imm count = self.bindAttribute(name.view(), u32[i], &mut vbo[i]);
+      // Draw no more vertices than the shortest buffer holds
+      if count > 0usize {
+        if !any or count < nverts { nverts = count; }
+        any = true;
+      }
+      i = i + 1usize;
+    }
+
+    // The primitives, by index when there are indices
+    if indices.len() > 0usize {
+      mut elements = 0u;
+      gl.GenBuffers(1, &mut elements);
+      gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, elements);
+      imm iv = indices.view();
+      gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, isize[iv.len * 2usize], &iv[0] as *u8, gl.STATIC_DRAW);
+      gl.DrawElements(draw, i32[iv.len], gl.UNSIGNED_SHORT, 0usize as *u8);
+      gl.DeleteBuffers(1, &mut elements);
+    } elif nverts > 0usize {
+      // (Pegasus drew 'unsigned -1' vertices when the shape had no buffer the
+      // shader wanted; nothing is drawn then)
+      gl.DrawArrays(draw, 0, i32[nverts]);
+    }
+
+    // Give back the buffers and the vertex array
+    i = 0usize;
+    while i < nattrs {
+      gl.DisableVertexAttribArray(u32[i]);
+      if vbo[i] != 0u { gl.DeleteBuffers(1, &mut vbo[i]); }
+      i = i + 1usize;
+    }
+    gl.DeleteVertexArrays(1, &mut vao);
+
+    if transparent { gl.Disable(gl.BLEND); }
+  }
+
+  // Fill a buffer with the shape's data for the attribute 'name', bound at
+  // 'index', and answer how many vertices it holds: 0 when the shape has none
+  fn bindAttribute(self &, name &[]u8, index u32, vbo &mut u32) usize {
+    if bytesEqual(name, "positions") { return fillBuffer(&positions, index, 3, vbo); }
+    if bytesEqual(name, "normals") { return fillBuffer(&normals, index, 3, vbo); }
+    if bytesEqual(name, "uvs") { return fillBuffer(&uvs, index, 2, vbo); }
+    if bytesEqual(name, "colors") { return fillBuffer(&colors, index, 4, vbo); }
+    0usize;
+  }
+}
+
+// Copy a list of vertex data, each element 'size' floats, into a new buffer
+// bound as the attribute 'index'. An empty list makes no buffer.
+fn fillBuffer[T](list &List[T], index u32, size i32, vbo &mut u32) usize {
+  imm n = list.len();
+  if n == 0usize { return 0usize; }
+  gl.GenBuffers(1, vbo);
+  gl.BindBuffer(gl.ARRAY_BUFFER, *vbo);
+  imm v = list.view();
+  gl.BufferData(gl.ARRAY_BUFFER, isize[n * mem.sizeof[T]()], &v[0] as *u8, gl.STATIC_DRAW);
+  gl.VertexAttribPointer(index, size, gl.FLOAT, gl.FALSE, 0, 0usize as *u8);
+  gl.EnableVertexAttribArray(index);
+  n;
+}
+
+// The OpenGL primitive a Pegasus 'draw' symbol names: 'Triangles',
+// 'TriangleStrip', 'TriangleFan', 'Lines', 'LineStrip', 'LineLoop', 'Points',
+// the four adjacency forms, 'Patches' and 'Polygon'. Any other is triangles.
+// ('Polygon' was GL_POLYGON in Pegasus, which a core profile context does not
+// have; a triangle fan draws the same convex polygon, as Pegasus's comment
+// said.)
+pub fn drawMode(name &[]u8) u32 {
+  if bytesEqual(name, "Triangles") { return gl.TRIANGLES; }
+  if bytesEqual(name, "TriangleStrip") { return gl.TRIANGLE_STRIP; }
+  if bytesEqual(name, "TriangleFan") { return gl.TRIANGLE_FAN; }
+  if bytesEqual(name, "TrianglesAdjacency") { return gl.TRIANGLES_ADJACENCY; }
+  if bytesEqual(name, "TriangleStripAdjacency") { return gl.TRIANGLE_STRIP_ADJACENCY; }
+  if bytesEqual(name, "Patches") { return gl.PATCHES; }
+  if bytesEqual(name, "Lines") { return gl.LINES; }
+  if bytesEqual(name, "LineStrip") { return gl.LINE_STRIP; }
+  if bytesEqual(name, "LineLoop") { return gl.LINE_LOOP; }
+  if bytesEqual(name, "LinesAdjacency") { return gl.LINES_ADJACENCY; }
+  if bytesEqual(name, "LineStripAdjacency") { return gl.LINE_STRIP_ADJACENCY; }
+  if bytesEqual(name, "Points") { return gl.POINTS; }
+  if bytesEqual(name, "Polygon") { return gl.TRIANGLE_FAN; }
+  gl.TRIANGLES;
+}
+
+// Pegasus's cube: the four corners of each face (top, bottom, back, front,
+// left, right), and two triangles for each
+imm cubePositions [72; f32] = [
+  -1f, 1f, -1f,  1f, 1f, -1f,  1f, 1f, 1f,  -1f, 1f, 1f,
+  -1f, -1f, -1f,  1f, -1f, -1f,  1f, -1f, 1f,  -1f, -1f, 1f,
+  -1f, 1f, -1f,  1f, 1f, -1f,  1f, -1f, -1f,  -1f, -1f, -1f,
+  -1f, 1f, 1f,  1f, 1f, 1f,  1f, -1f, 1f,  -1f, -1f, 1f,
+  -1f, -1f, -1f,  -1f, 1f, -1f,  -1f, 1f, 1f,  -1f, -1f, 1f,
+  1f, -1f, -1f,  1f, 1f, -1f,  1f, 1f, 1f,  1f, -1f, 1f];
+imm cubeIndices [36; u16] = [0u16, 1u16, 2u16, 0u16, 2u16, 3u16, 4u16, 5u16, 6u16, 4u16, 6u16, 7u16,
+  8u16, 9u16, 10u16, 8u16, 10u16, 11u16, 12u16, 13u16, 14u16, 12u16, 14u16, 15u16,
+  16u16, 17u16, 18u16, 16u16, 18u16, 19u16, 20u16, 21u16, 22u16, 20u16, 22u16, 23u16];

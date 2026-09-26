@@ -1,0 +1,206 @@
+// The window package: a window with an OpenGL context to render into, opened
+// and driven through SDL, and the glue of a render loop around it: the time
+// each frame takes, and the events every window handles the same way.
+//
+//   mut win = Window.open("Horse World");
+//   while win.running {
+//     imm dt = win.nextFrame();        // seconds since the last frame
+//     win.pollEvents();                // quit, Escape, F11, resizing
+//     ... draw, with the render package ...
+//     win.swapBuffers();
+//   }
+//
+// Opening the window also finds OpenGL's functions ('gl.load'), so the render
+// package can draw as soon as 'open' returns.
+//
+// It is ported from the Pegasus3D browser: its window (window.cpp), the main
+// loop's frame timing (pegasus3d.cpp), and the part of its world's input
+// handling that belongs to the window rather than to a world (world.cpp): a
+// quit or Escape stops the loop, F11 toggles fullscreen, and a resize resets
+// OpenGL's viewport. Keys a world reacts to are the caller's: 'pollEvent'
+// hands each event on after that handling.
+//
+// It needs SDL2 (the sdl package): SDL2.lib on LIB to link, SDL2.dll on PATH
+// to run, and a display.
+
+mod window;
+
+import libc;
+import sdl;
+import gl;
+import math3d use Rect;
+import collections use String;
+
+pub struct Window {
+  sdlWindow *sdl.Window;
+  sdlContext *sdl.GLContext;
+  pub fullscreen Bool;      // filling the screen (F11 toggles it)
+  pub running Bool;         // false once asked to quit
+  lastTicks u32;            // SDL's clock at the last frame
+
+  // Open a window with an OpenGL context: centered, three quarters of the
+  // display each way, resizable, 'title' in its title bar. Check 'isOpen':
+  // without a display, or without OpenGL 3.2, it is not, and SDL's reason has
+  // gone to stderr.
+  pub fn open(title &[]u8) Window {
+    // (Built from locals and made at the end: a function of the type that is
+    // not a method may not set a private field of a value it holds.)
+    if sdl.Init(sdl.INIT_VIDEO) < 0 {
+      logSDLError("Failed to initialize SDL2's Video subsystem");
+      return Window.unopened();
+    }
+
+    // The context wanted, asked for before the window is made, since the
+    // window's pixel format is chosen when it is: OpenGL 3.2's core profile,
+    // double buffered, a 24-bit depth buffer, multisampled 4 times for smooth
+    // edges. (Pegasus set these after making the context, when all but the
+    // swap interval come too late to matter, so it ran with SDL's defaults.)
+    sdl.GL_SetAttribute(sdl.GL_CONTEXT_PROFILE_MASK, sdl.GL_CONTEXT_PROFILE_CORE);
+    sdl.GL_SetAttribute(sdl.GL_CONTEXT_MAJOR_VERSION, 3);
+    sdl.GL_SetAttribute(sdl.GL_CONTEXT_MINOR_VERSION, 2);
+    sdl.GL_SetAttribute(sdl.GL_DOUBLEBUFFER, 1);
+    sdl.GL_SetAttribute(sdl.GL_DEPTH_SIZE, 24);
+    sdl.GL_SetAttribute(sdl.GL_MULTISAMPLEBUFFERS, 1);
+    sdl.GL_SetAttribute(sdl.GL_MULTISAMPLESAMPLES, 4);
+
+    // Centered, three quarters of the display each way
+    mut bounds = sdl.Rect[0, 0, 1024, 768];
+    sdl.GetDisplayBounds(0, &mut bounds);
+    mut ctitle = String.from(title);
+    imm window = sdl.CreateWindow(ctitle.cstr(), sdl.WINDOWPOS_CENTERED, sdl.WINDOWPOS_CENTERED,
+      bounds.w * 3 / 4, bounds.h * 3 / 4, sdl.WINDOW_OPENGL | sdl.WINDOW_RESIZABLE);
+    if !window {
+      logSDLError("Unable to open window");
+      return Window.unopened();
+    }
+
+    // The OpenGL context, attached to the window; later contexts share with it
+    imm glcontext = sdl.GL_CreateContext(window);
+    if !glcontext {
+      logSDLError("Unable to create an OpenGL context");
+      sdl.DestroyWindow(window);
+      return Window.unopened();
+    }
+    sdl.GL_SetAttribute(sdl.GL_SHARE_WITH_CURRENT_CONTEXT, 1);
+
+    // Swap buffers in step with the monitor's vertical refresh
+    sdl.GL_SetSwapInterval(1);
+
+    // Find OpenGL's functions, as Pegasus's glewInit did
+    if !gl.load(&sdl.GL_GetProcAddress) {
+      logLine("Some OpenGL functions are missing: OpenGL 2.0 or later is needed");
+    }
+    Window[window, glcontext, false, true, sdl.GetTicks()];
+  }
+
+  // A window that did not open: 'isOpen' is false, and everything else does
+  // nothing
+  fn unopened() Window {
+    Window[0usize as *sdl.Window, 0usize as *sdl.GLContext, false, false, 0u32];
+  }
+
+  // Whether the window and its context opened
+  pub fn isOpen(self &) Bool {
+    if !sdlWindow { return false; }
+    if !sdlContext { return false; }
+    true;
+  }
+
+  // Its size in pixels, as a rectangle at (0, 0)
+  pub fn size(self &) Rect {
+    mut w = 0;
+    mut h = 0;
+    if self.isOpen() { sdl.GetWindowSize(sdlWindow, &mut w, &mut h); }
+    Rect[0, 0, w, h];
+  }
+
+  // Draw into this window from now on (its context current), answering its
+  // size (Pegasus's MakeCurrent)
+  pub fn makeCurrent(self &mut) Rect {
+    if self.isOpen() { sdl.GL_MakeCurrent(sdlWindow, sdlContext); }
+    self.size();
+  }
+
+  // Fill the screen, or go back to a window
+  pub fn setFullscreen(self &mut, on Bool) {
+    fullscreen = on;
+    if self.isOpen() {
+      sdl.SetWindowFullscreen(sdlWindow, if on {sdl.WINDOW_FULLSCREEN_DESKTOP;} else {0u;});
+    }
+  }
+
+  // Show what has been drawn (Pegasus's SwapBuffers)
+  pub fn swapBuffers(self &mut) {
+    if self.isOpen() { sdl.GL_SwapWindow(sdlWindow); }
+  }
+
+  // The seconds since the last call (or since 'open'), for moving things at
+  // a steady speed however fast frames come
+  pub fn nextFrame(self &mut) f32 {
+    imm now = sdl.GetTicks();
+    imm dt = f32[now - lastTicks] / 1000.;
+    lastTicks = now;
+    dt;
+  }
+
+  // Take the next waiting event into 'event', handling it as every window
+  // does: a quit, or Escape, clears 'running'; F11 toggles fullscreen; a
+  // resize resets OpenGL's viewport to the whole window. Answers false when
+  // no event was waiting. The caller sees every event, handled or not.
+  pub fn pollEvent(self &mut, event &mut sdl.Event) Bool {
+    if sdl.PollEvent(event) == 0 { return false; }
+    if event.type == sdl.QUIT {
+      running = false;
+    } elif event.type == sdl.WINDOWEVENT {
+      imm we = event as &sdl.WindowEvent;
+      if we.event == sdl.WINDOWEVENT_RESIZED { gl.Viewport(0, 0, we.data1, we.data2); }
+    } elif event.type == sdl.KEYDOWN {
+      imm ke = event as &sdl.KeyboardEvent;
+      if ke.keysym.sym == sdl.K_ESCAPE {
+        running = false;
+      } elif ke.keysym.sym == sdl.K_F11 {
+        self.setFullscreen(!fullscreen);
+      }
+    }
+    true;
+  }
+
+  // Handle every waiting event as 'pollEvent' does, and drop them
+  pub fn pollEvents(self &mut) {
+    mut event = sdl.Event.empty();
+    while self.pollEvent(&mut event) {}
+  }
+
+  // Its end: the context, the window, and SDL. (Pegasus's finalizer gave
+  // back the first two; its main program shut SDL down after them.)
+  fn final(self &uni) {
+    if sdlContext { sdl.GL_DeleteContext(sdlContext); }
+    if sdlWindow { sdl.DestroyWindow(sdlWindow); }
+    sdl.Quit();
+  }
+}
+
+// Report SDL's reason for a failure to stderr, after a message (Pegasus's
+// logSDLError, which compared the error to "" by address, so always printed)
+fn logSDLError(msg &[]u8) {
+  mut m = String.from(msg);
+  imm err = sdl.GetError();
+  if *err != 0u8 {
+    m <- ". SDL error message: ";
+    mut i = 0usize;
+    while *(err + i) != 0u8 {
+      m.appendByte(*(err + i));
+      i = i + 1usize;
+    }
+    sdl.ClearError();
+  }
+  logLine(m.view());
+}
+
+fn logLine(msg &[]u8) {
+  mut m = String.from(msg);
+  m.appendByte('\n');
+  imm v = m.view();
+  libc.fflush(libc.stdout());
+  libc.fwrite(v, 1usize, v.len, libc.stderr());
+}
