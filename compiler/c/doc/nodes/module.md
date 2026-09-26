@@ -825,7 +825,9 @@ below): raw bindings to the ISO C library and to the POSIX functions beyond
 it, Windows first, `posix` built on `libc`, and supplied by the C runtime every
 link names. `math3d` is a Cone package over `libc`: 3D math as value types
 (`module_package_math3d`), with its example programs in its own `examples/`
-folder, which no compile of the package sweeps.
+folder and its tests in its own `tests/`, neither of which any compile of the
+package sweeps; `congo test` builds both (`tools/congo/README.md`, "Testing a
+package").
 The shape is Jon's [Jon 23 Sep], taken before C modules so the built-ins would
 stop being text inside the compiler: *"a whole root level folder … subdivided
 into the different libraries, each of which is effectively a package … stick
@@ -2396,7 +2398,7 @@ signature calling the runtime's where they do not, so that neither package's
 object defines anything; directory listing, which Windows lacks, is the
 runtime's own `_findfirst64` family under its own names. The structs they
 declare (`posix.Stat`, `posix.FindData64`) are the runtime's layouts, measured
-against its headers (`module_package_posix`). `stdio` still holds its C
+against its headers (`posix`'s own test, `packages/posix/tests/`). `stdio` still holds its C
 declarations inside its Cone-named module, each function marked `@c`, and
 `core` holds none: its allocator is `libc`'s. `libc`'s math.h functions are
 declared in both forms; the one the UCRT has only as an inline function on x64,

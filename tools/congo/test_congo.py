@@ -942,5 +942,139 @@ class Scenarios(unittest.TestCase):
         self.congo("build", cwd=pkg)     # a library links nothing, so names are only read
 
 
+class Testing(unittest.TestCase):
+    """congo test: a package's tests/ programs built against its generated
+    include file, run, and compared; its examples/ programs built."""
+
+    setUp = Scenarios.setUp
+    tearDown = Scenarios.tearDown
+    congo = Scenarios.congo
+
+    def counter(self, root: Path) -> Path:
+        """A library in no registry, with one function; a test of it that
+        passes, one whose expected output is wrong, and one that ends with the
+        status its .exit file names; an example that builds and one that does
+        not."""
+        pkg = root / "counter"
+        write(pkg / "congo.toml",
+              '[package]\nname = "counter"\nversion = "0.1.0"\noutput = "library"\n')
+        write(pkg / "src" / "counter.cone", """
+            mod counter;
+
+            pub fn twice(n i64) i64 {
+              n * 2i64;
+            }
+            """)
+        test = """
+            mod {name};
+
+            import stdio use *;
+            import counter;
+
+            fn main() i32 {{
+              printInt(counter.twice({n}i64));
+              printStr("\\n");
+              {status};
+            }}
+            """
+        write(pkg / "tests" / "doubles.cone", test.format(name="doubles", n=21, status="0i32"))
+        write(pkg / "tests" / "doubles.out", "42\n")
+        write(pkg / "tests" / "wrong.cone", test.format(name="wrong", n=2, status="0i32"))
+        write(pkg / "tests" / "wrong.out", "5\n")
+        # twice(1) + 1 is 3, the status main returns
+        write(pkg / "tests" / "status.cone",
+              test.format(name="status", n=4, status="i32[counter.twice(1i64) + 1i64]"))
+        write(pkg / "tests" / "status.out", "8\n")
+        write(pkg / "tests" / "status.exit", "3\n")
+        write(pkg / "examples" / "show.cone", test.format(name="show", n=5, status="0i32"))
+        write(pkg / "examples" / "broken.cone", """
+            mod broken;
+
+            import counter;
+
+            fn main() i32 {
+              counter.thrice(1i64);
+              0i32;
+            }
+            """)
+        return pkg
+
+    def test_tests_run_against_the_include_file(self):
+        pkg = self.counter(self.root)
+        run = self.congo("test", cwd=pkg, ok=False)
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        out = run.stdout
+        self.assertIn("test doubles ... ok", out)
+        self.assertIn("test status ... ok", out)
+        self.assertIn("test wrong ... FAILED", out)
+        # The diff of the wrong one: 5 expected, twice(2) printed
+        self.assertIn("output differs:", out)
+        self.assertRegex(out, r"\n\s*-5\n\s*\+4\n")
+        self.assertIn("example show ... built", out)
+        self.assertIn("example broken ... FAILED to build", out)
+        self.assertIn("counter: 3 tests: 2 passed, 1 failed; 2 examples: 1 built,"
+                      " 1 failed to build", out)
+        self.assertIn("counter: test wrong", run.stderr)
+        self.assertIn("counter: example broken", run.stderr)
+        # counter is in no registry: the tests found it as the package under
+        # test, compiled on its own as a library, and each was compiled against
+        # the include file that compile generated, then linked with its object
+        build = pkg / "build" / "debug"
+        self.assertIn("pub extern fn twice(n i64) i64;", (build / "counter.cone").read_text())
+        desc = (build / "tests" / "doubles" / "doubles.conebuild").read_text()
+        self.assertRegex(desc, r'import counter: ".*/build/debug/counter\.cone"')
+        self.assertTrue((build / "tests" / "doubles" / f"doubles{congo.EXE_EXT}").is_file())
+        self.assertFalse((build / "examples" / "broken" / f"broken{congo.EXE_EXT}").exists())
+
+    def test_a_filter_and_an_exit_status(self):
+        pkg = self.counter(self.root)
+        run = self.congo("test", "doubles", cwd=pkg)
+        self.assertIn("test doubles ... ok", run.stdout)
+        self.assertNotIn("wrong", run.stdout)
+        self.assertNotIn("example show", run.stdout)
+        self.assertIn("1 test: 1 passed, 0 failed; 0 examples", run.stdout)
+        # Without its .exit file, status's 3 is a failure
+        (pkg / "tests" / "status.exit").unlink()
+        run = self.congo("test", "status", cwd=pkg, ok=False)
+        self.assertIn("test status ... FAILED", run.stdout)
+        self.assertIn("exited 3, expected 0", run.stdout)
+        self.assertNotIn("output differs", run.stdout)
+        run = self.congo("test", "nosuch", cwd=pkg, ok=False)
+        self.assertIn("no test or example has 'nosuch' in its name", run.stderr)
+
+    def test_bless_writes_only_what_is_missing(self):
+        pkg = self.counter(self.root)
+        (pkg / "tests" / "doubles.out").unlink()
+        run = self.congo("test", "doubles", cwd=pkg, ok=False)
+        self.assertIn("no expected output", run.stdout)
+        run = self.congo("test", "--bless", cwd=pkg, ok=False)
+        self.assertIn("blessed", run.stdout)
+        self.assertIn("check it by hand against the source", run.stdout)
+        self.assertEqual((pkg / "tests" / "doubles.out").read_bytes(), b"42\n")
+        # An expected file already there is compared, never rewritten
+        self.assertIn("test wrong ... FAILED", run.stdout)
+        self.assertEqual((pkg / "tests" / "wrong.out").read_text(), "5\n")
+        self.congo("test", "doubles", cwd=pkg)
+
+    def test_no_tests_and_a_folder_of_packages(self):
+        shelf = self.root / "shelf"
+        self.congo("new", "plain", str(shelf / "plain"), "--lib", cwd=self.root)
+        # congo new makes tests/ empty; with it gone the package says it has none
+        (shelf / "plain" / "tests").rmdir()
+        run = self.congo("test", cwd=shelf / "plain")
+        self.assertIn("none: plain has no tests folder", run.stdout)
+        self.assertIn("plain: 0 tests: 0 passed, 0 failed; 0 examples", run.stdout)
+        # At a folder of packages, each package's tests run
+        pkg = self.counter(shelf)
+        for name in ("wrong", "status"):
+            (pkg / "tests" / f"{name}.cone").unlink()
+        (pkg / "examples" / "broken.cone").unlink()
+        run = self.congo("test", cwd=shelf)
+        self.assertIn("Testing counter", run.stdout)
+        self.assertIn("Testing plain", run.stdout)
+        self.assertIn("2 packages: 1 test: 1 passed, 0 failed; 1 example: 1 built,"
+                      " 0 failed to build", run.stdout)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
