@@ -21,13 +21,28 @@ ArrayNode *newArrayNode() {
     return anode;
 }
 
+// An array is ThreadBound or a move type when its element type is. Whether the
+// element moves is asked of itypeIsMove rather than read off its flags, since a
+// tuple carries no flag of its own and moves when one of its elements does.
+static void arrayInfectFlags(ArrayNode *node, INode *elemtype) {
+    node->flags |= itypeGetTypeDcl(elemtype)->flags & ThreadBound;
+    if (itypeIsMove(elemtype))
+        node->flags |= MoveType;
+}
+
 // Create a new array type of a specified size and element type
 // This only works for a single dimension array type
+//
+// The type is built already checked and never passes through arrayTypeCheck,
+// so the element type must be one type check has settled. It takes the
+// element's flags here; without them an array literal's inferred type would
+// copy where the same type written out moves.
 ArrayNode *newArrayNodeTyped(INode *lexnode, size_t size, INode *elemtype) {
     ArrayNode *anode = newArrayNode();
     inodeLexCopy((INode*)anode, lexnode);
     nodesAdd(&anode->dimens, (INode*)newULitNode(size, (INode*)u64Type));
     nodesAdd(&anode->elems, elemtype);
+    arrayInfectFlags(anode, elemtype);
     return anode;
 }
 
@@ -126,9 +141,7 @@ void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *node) {
             itypeName(elemroot), elemnosize);
         itypeNoSizeExplain(*elemtypep);
     }
-    // If the element's type if ThreadBound or Move, so is the array's type
-    ITypeNode *elemtype = (ITypeNode*)itypeGetTypeDcl(*elemtypep);
-    node->flags |= elemtype->flags & (ThreadBound | MoveType);
+    arrayInfectFlags(node, *elemtypep);
 }
 
 // Compare two array types to see if they are equivalent
