@@ -1,0 +1,62 @@
+// A method of a generic type's instance returning 'Option[T]', where that
+// signature is the first thing in the program to name 'Option[i64]' or
+// 'Option[*SelfRef]', so checking it lays the instance out for the first time.
+// The call is matched from a method of another type and from a free function,
+// both checked from the members queue that layout works on its way out. The
+// signature is in place before either is checked (fnDclTypeCheck), so the call
+// has the instance as its type: a bare 'Some' takes its type arguments from it,
+// and a 'Some[i64]' written out narrows it. Before, whether this compiled
+// followed whether some field had named 'Option[i64]' first. Each printed value
+// was checked by hand against the arm it reaches.
+
+mod generic_signature_first;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct G[T] {
+  pub v T;
+  pub fn get(self &) Option[T] { Some[T][v]; }
+}
+
+// A method of another type, the pattern bare and written out
+struct S {
+  pub g G[i64];
+  pub fn bare(self &) i64 {
+    match self.g.get() { case is Some { 1; } case is None { 0; } }
+  }
+  pub fn written(self &) i64 {
+    match self.g.get() { case is Some[i64] { 2; } case is None[i64] { 0; } }
+  }
+}
+
+// A free function over a type that refers to itself through the generic
+struct W[T] {
+  pub p *T;
+  pub fn upgrade(self &) Option[*T] {
+    if p == (0usize as *T) { None[*T][]; } else { Some[*T][p]; }
+  }
+}
+
+struct SelfRef {
+  pub n i64;
+  pub me W[SelfRef];
+  pub fn look(self &) i64 { upgraded(&me); }
+}
+
+fn upgraded(w &W[SelfRef]) i64 { match w.upgrade() { case is Some { 8; } case is None { 9; } }; }
+
+fn main() i32 {
+  imm s = S[G[i64][4]];
+  show("method-bare", s.bare());
+  show("method-written", s.written());
+  imm r = SelfRef[1, W[SelfRef][0usize as *SelfRef]];
+  show("free-function", r.look());
+  0;
+}
