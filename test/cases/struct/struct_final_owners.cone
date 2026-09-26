@@ -1,0 +1,85 @@
+// A struct held by value releases the owning references its fields hold when it
+// dies, wherever it lives: a local, a parameter, a by-value 'self', a value the
+// scope hands back, a generic's instance, a field of another struct, a value a
+// region holds. The ruled order [Jon 26 Sep] is the value's own 'final', then
+// its fields that need finalizing, then the owners it holds, then (for a value
+// a region holds) its own memory's 'free'.
+//
+// A field that is an owning reference gave its struct no drop, so a struct on
+// the stack never released it: 'Holds[+one Fin[1]]' leaked its allocation and
+// never finalized what it pointed at, as a local, a parameter and a by-value
+// 'self'. A struct in a region was released only one level deep: a struct
+// holding such a struct by value ran the inner one's 'final' and never
+// released the owner inside it. A struct's drop is now its whole death, the
+// owners included, and every holder runs it.
+//
+// 'one' is a single-owner region that prints its 'free', so each line reads as
+// the events in order: 'F<n>' a Fin's 'final', 'H<n>' a holder's, 'free' an
+// owner's memory given back. A move leaves nothing for its source to release,
+// so each death appears once.
+
+mod struct_final_owners;
+
+import stdio use *;
+import libc;
+
+struct one is RegionRef, Move {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn free(self &uni one) inline { printStr("free "); libc.free(self as *u8); }
+}
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { printStr("F"); printInt(n); printStr(" "); }
+}
+
+// An owner and nothing else: the drop is all generated
+struct Holds {
+  pub o +one Fin;
+  pub fn eat(self Holds) { printStr("eat "); }
+}
+
+// Its own 'final' first, then a finalizing field, then the owner
+struct Ordered {
+  pub n i64;
+  pub o +one Fin;
+  pub f Fin;
+  fn final(self &uni) { printStr("H"); printInt(n); printStr(" "); }
+}
+
+// An owner two fields deep: in a field of a field
+struct HoldsFin { pub n i64; pub o +one Fin; fn final(self &uni) { printStr("H"); printInt(n); printStr(" "); } }
+struct TwoDeep { pub n i64; pub h HoldsFin; }
+
+struct Box[T] { pub v T; }
+
+fn show(label &[]u8) { printStr(label); printStr(": "); }
+fn end() { printStr("|\n"); }
+
+fn take(h Holds) { printStr("took "); }
+fn make() Holds { Holds[+one Fin[1]]; }
+
+fn onStack() { imm h = Holds[+one Fin[1]]; }
+fn param() { take(Holds[+one Fin[1]]); }
+fn byValueSelf() { imm h = Holds[+one Fin[1]]; h.eat(); }
+fn returned() { imm h = make(); printStr("made "); }
+fn moved() { imm h = Holds[+one Fin[1]]; imm g = h; printStr("moved "); }
+fn order() { imm o = Ordered[1, +one Fin[3], Fin[2]]; }
+fn twoDeep() { imm t = TwoDeep[1, HoldsFin[2, +one Fin[3]]]; }
+fn twoDeepHeld() { imm t = +one TwoDeep[1, HoldsFin[2, +one Fin[3]]]; }
+fn generic() { imm b = Box[Holds][Holds[+one Fin[1]]]; }
+fn inOption() { imm o Option[Holds] = Some[Holds][Holds[+one Fin[1]]]; }
+
+fn main() i32 {
+  show("local"); onStack(); end();
+  show("param"); param(); end();
+  show("by-value-self"); byValueSelf(); end();
+  show("returned"); returned(); end();
+  show("moved"); moved(); end();
+  show("order"); order(); end();
+  show("two-deep"); twoDeep(); end();
+  show("two-deep-held"); twoDeepHeld(); end();
+  show("generic"); generic(); end();
+  show("in-option"); inOption(); end();
+  0;
+}

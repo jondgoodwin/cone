@@ -99,15 +99,14 @@ void flowInjectRefCountAmt(INode **nodep, int16_t amt);
 // Is this type a counted (rc) reference, single or slice?
 int flowIsRcRef(INode *type);
 
-// Is a field of this type a counted owning reference an enum's drop releases?
-int flowIsCountedField(INode *fldtype);
-// Does a copy of this struct or enum add a holder to a counted reference its
-// drop releases? And does this variant hold one its enum's drop releases?
+// Does a copy of a value of this type -- a struct, an enum, a tuple, an array --
+// add a holder to a counted reference its death releases? And does this
+// variant hold one its enum's drop releases?
 int flowHeldCounted(INode *type);
 int flowVariantHeldCounted(INode *variant);
 
-// Does a variable of this type hold something its scope must release:
-// an rc or so reference, single or slice, or a tuple carrying one?
+// Is this type an rc or so reference, single or slice, or a tuple carrying
+// one: what a store releases before it overwrites?
 int flowIsOwningType(INode *type);
 
 #endif

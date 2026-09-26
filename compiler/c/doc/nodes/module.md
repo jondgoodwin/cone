@@ -1877,9 +1877,10 @@ fields. Its finalizer (`finalfn`) is that `drop`, else its own `final`. A
 C-named global is C's storage and is not finalized. A global's drop runs whether
 the global was given a literal or assigned by `init`, since either way it holds
 a value by then. A module that needs a `drop` and declares one of its own is
-`ErrorModLifecycle`: both would be one symbol. Only drop functions count: a
-global that is an owning reference is not freed, as a struct field that is one
-is not.
+`ErrorModLifecycle`: both would be one symbol. Only a struct's or an enum's
+drop counts, so a global that is an owning reference is not freed, and one that
+is a tuple or an array of values that finalize is not finalized, where a struct
+field of either type is.
 
 **The stitched pair** (`genlStitch`, `genllvm/genllvm.c`) is two functions of the
 object being generated: `cone.initAll`, calling `initfn` of each module in

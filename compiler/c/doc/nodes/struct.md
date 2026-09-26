@@ -822,17 +822,26 @@ members", is the mechanism.
    (`structKeepLifecycle`), for an enrichment taken after its methods may have
    been checked; so an enrichment reads `TypeChecked` on its base to know which
    to copy.
-8. **`structSetDropFn`** — validate a `final` method, then, if any field's type
-   has a drop function, synthesize a `drop` method, owned by the type so its
-   symbol is spelled as any method's — `Bundle.drop`, `_CNvNt6Bundle4drop` —
-   calling `final` and then each droppable field. A variant that keeps its
-   enum's `final` beside its own (name resolution, step 8) always gets one,
-   calling its own `final`, then the enum's, then each droppable field. The
-   generated body is built pre-lowered and is **never type checked or flow
-   analyzed**. **Before the methods, and load-bearing**: each method's flow pass
+8. **`structSetDropFn`** — validate a `final` method, then, if any field has
+   anything to do as it dies (`itypeNeedsFinal`: a value with a drop, a tuple or
+   an array holding one, an owning reference), synthesize a `drop` method, owned
+   by the type so its symbol is spelled as any method's — `Bundle.drop`,
+   `_CNvNt6Bundle4drop` — that is the value's whole death in the ruled order
+   [Jon 26 Sep]: its `final`, then each field that needs finalizing, in field
+   order, then each owning reference a field holds, released in field order. A
+   variant that keeps its enum's `final` beside its own (name resolution, step
+   8) always gets one, calling its own `final`, then the enum's, then the
+   fields. With nothing but its own `final` to run, that `final` is the drop.
+   The generated body holds only the `final` calls, built pre-lowered and
+   **never type checked or flow analyzed**; generation runs them and then builds
+   the fields' deaths from the layout (`structIsGeneratedDropFn`,
+   `genlStructDrop`), since a field's death may be a tuple's or an array's, an
+   owner's release, or reach through a nullable pointer, none of which Cone can
+   spell. **Before the methods, and load-bearing**: each method's flow pass
    asks `itypeGetDropFnDcl` about its by-value `self` and its locals of this
    type, and a `dropfn` still NULL then finalizes neither. The fields are
-   checked by now, so every field's drop function is known. **A trait or an
+   laid out by now, so every field's type's drop is settled, and
+   `itypeNeedsFinal` asks a struct or an enum only for its drop. **A trait or an
    enum synthesizes none here**, and its `dropfn` is not its `final`: that
    `final` is cloned into each variant or implementer and never generated for
    the trait, so a drop call to it would reach no function. A method
@@ -861,7 +870,8 @@ members", is the mechanism.
    (`structSetEnumDropFn`, at the end of `structLayoutVariants`, on either path).
    A value typed as the enum dies as the variant it holds [Jon 26 Sep], so the
    enum has a drop exactly when one of its variants has anything to do as it
-   dies (`itypeNeedsFinal`: a drop, or a field holding an owning reference), and
+   dies (`itypeNeedsFinal`: a drop, which a variant has when it or a field
+   finalizes or a field holds an owner), and
    each instance of a generic enum is asked on its own — `Option[i32]` has none,
    `Option[Fin]` one, `Option[&Fin]` none and stays a bare pointer. It is a
    function of the enum, `drop`, owned by it so its symbol is `E.drop`, public
@@ -869,9 +879,10 @@ members", is the mechanism.
    (requirements on them, defaults cloned into them, generated for none as the
    enum's), so without `FlagMethFld` it is neither cloned nor required, and is
    generated for the enum as its static functions are. Its body is an empty
-   block; generation builds the real one from the layout (`structIsEnumDropFn`,
-   `genlEnumDrop`): the tag picks the variant, whose death runs in place — its
-   drop, then the owning references its fields hold. Nothing holding the enum by
+   block; generation builds the real one from the layout
+   (`structIsGeneratedDropFn`, `genlEnumDrop`): the tag picks the variant, whose
+   death runs in place — its drop, the owning references its fields hold
+   among it. Nothing holding the enum by
    value is laid out before this: a type holding it while one of its variants
    is in flight is refused as a cycle (`ErrorNoSize`), so every holder's own
    drop sees the enum's.
@@ -1442,26 +1453,25 @@ variable, gets no call: the drop fn would run over storage that holds no value
 of the type. Neither does one the scope hands back, which the caller receives
 and finalizes. **That is the entire mechanism by which a struct on the stack is
 destroyed.** One held by a region is destroyed by generation instead, which
-calls the same drop at the value's death, before its fields' owners are
-released and its memory freed (`genlRegionDeath`,
-[Generation](../phases/generation.md), "The allocation header").
+calls the same drop at the value's death, before its memory is freed
+(`genlRegionDeath`, [Generation](../phases/generation.md), "The allocation
+header"), and so does a holder's drop for a struct held in its field.
 
-Per-field release is not flow's — it is `genlDealiasFlds` at generation, walking
-`fields` by `index`. It resolves each field's declared type with
-`itypeGetTypeDcl` before asking which region owns it: a field's `vtype` is the
-name it was written with, so a typedef of an owning reference stands there as a
-`NameUseNode` and matches no region read raw.
+Per-field release is not flow's — it is the generated drop's, at generation
+(`genlStructDrop`), walking `fields` by `index`. It resolves each field's
+declared type with `itypeGetTypeDcl` before asking which region owns it: a
+field's `vtype` is the name it was written with, so a typedef of an owning
+reference stands there as a `NameUseNode` and matches no region read raw.
 
 **An enum is destroyed the same way, through its own drop** (type check, step
-8a): a value typed as the enum gets the call, and the drop releases what the
-variant's fields own as well, so a value typed as an enum releases its
-owners on the stack where a struct's are not released. Two consequences are
-flow's. A copy of an enum whose variant holds a counted reference — or of a
-struct holding such an enum — adds a holder to it ([Flow](../phases/flow.md),
-"The count counts holders"), or each copy's drop would release the one owner
-again. And a match's binding is the matched value under its variant's name, so
-it owns nothing and the matched value is what the scope releases (Flow, "A
-match's binding is the matched value").
+8a): a value typed as the enum gets the call, and the drop runs the variant's,
+which releases what the variant's fields own. Two consequences are flow's. A
+copy of a value whose death releases a counted reference — a struct holding one
+in a field, an enum in a variant's, however deep — adds a holder to it
+([Flow](../phases/flow.md), "The count counts holders"), or each copy's drop
+would release the one owner again. And a match's binding is the matched value
+under its variant's name, so it owns nothing and the matched value is what the
+scope releases (Flow, "A match's binding is the matched value").
 
 ## Generation
 

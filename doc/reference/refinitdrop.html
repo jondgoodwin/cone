@@ -17,9 +17,12 @@
 		through it at the end of its value's life, whether the value lives on the stack or in a region
 		(so, rc, or any struct declaring is RegionRef), where it is finalized just before its memory is
 		freed. A value typed as an enum is finalized as the variant it holds, the enum's own final
-		after the variant's. The elements of an array or of an owning slice are not yet finalized,
-		nor is a value assigned over. A module's global variable whose type defines final is
-		finalized by its module's finalizer when the program shuts down. Initializers are not
+		after the variant's. A tuple, an array or an owning slice is finalized element by element,
+		and the owning references a value holds are released with it, however deep. A value
+		assigned over is not yet finalized, nor is one moved out on only some paths. A module's
+		global variable whose type is a struct or an enum that finalizes is finalized by its
+		module's finalizer when the program shuts down; one that is a tuple or an array is not
+		yet. Initializers are not
 		implemented, nor is the new permission they are declared with, nor a clone method written
 		against it. A method named clone may be declared and called, but no copy calls it, and it does
 		not make a type copyable. A module's own initializer and finalizer are, and are described with
@@ -134,9 +137,14 @@ fn final(self &amp;uni) {
 			while still breaking all dependencies. 
 		  After the finalizer finishes, the object will cease to exist.</li>
 	</ul>
+	<p>A value dies the same way wherever it lives &mdash; a local variable at the end of its
+		scope, a parameter at the end of its function, a field inside the value holding it:
+		its finalizer runs first, then the finalizers of its fields, in the order they are
+		declared, then the owning references its fields hold are released, in the order they are
+		declared. A tuple's elements die in order, as fields do, and so do an array's, first element
+		first.</p>
 	<p>A value allocated in a region is finalized when the region lets it go: when its single
-		owner expires, or, for a counted region, its last owner. Its finalizer runs first, then the
-		finalizers of its fields, then the owning references its fields hold are released, and only
+		owner expires, or, for a counted region, its last owner. It dies as above, and only
 		then is its memory freed, so a finalizer may still use everything its value owns.
 		A value moved out of a region's object belongs to its new holder, which finalizes it;
 		the object's memory is freed without finalizing what was moved out. Only the whole value

@@ -120,14 +120,13 @@ void genlDealiasNodes(GenState *gen, Nodes *nodes);
 // the region's 'dealias', as the value's death for a 'Move' region, and as
 // nothing for any other; each element of a tuple
 void genlReleaseOwning(GenState *gen, LLVMValueRef val, INode *type);
-// Release each owning reference held by a field of the struct value at 'ref'
-void genlReleaseFlds(GenState *gen, LLVMValueRef ref, INode *vtype);
 // Finalize the value at 'valptr' where it sits, as its death would, without
-// freeing its memory: the 'finalize' intrinsic
+// freeing its memory: the 'finalize' intrinsic, and a local's death
 void genlFinalizeAt(GenState *gen, LLVMValueRef valptr, INode *vtype);
-// The body of an enum's drop, dispatching on the tag to what the variant's death does
-void genlEnumDrop(GenState *gen, FnDclNode *fnnode);
-// A copied struct or enum at 'valptr': each counted reference its drop releases
+// The body of a drop the compiler gave a struct or an enum, built from its
+// layout: an enum's dispatches on the tag to what the variant's death does
+void genlTypeDrop(GenState *gen, FnDclNode *fnnode);
+// A copied value at 'valptr': each counted reference its death releases
 // gains 'amount' holders
 void genlAliasHeld(GenState *gen, LLVMValueRef valptr, INode *type, long long amount);
 // Release a hollowed variable's owning reference without the parts moved out

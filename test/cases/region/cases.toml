@@ -256,6 +256,16 @@ category = "run"
 description = "An owning reference held in an enum is released when the enum value dies, and a copy of an enum holding a counted one counts one more owner"
 tags = ["flow", "genllvm", "runtime"]
 
+# The same count for every other value that releases a counted reference as it
+# dies: a struct holding one in a field, a tuple or an array in an element,
+# however deep; a tuple literal's copies of one read out of a variable; and an
+# array fill literal repeating such a value. Every line is the counting
+# region's own report, worked out by hand.
+[scenario.region_held_counted]
+category = "run"
+description = "A copy of a struct, tuple or array holding a counted reference counts one more owner, and the value releases it as it dies"
+tags = ["flow", "genllvm", "runtime"]
+
 [scenario.region_borrow_coerce]
 category = "compile"
 description = "An owning reference coerces to a borrowed reference"
@@ -351,7 +361,8 @@ excludes = ["%header", "call %void @free(", "add i64", "sub i64"]
 # the module holds no '+1' at all and no tuple release. The 'so' spelling is a
 # move, so the destructured 't' releases nothing and the run is the whole claim
 # there; a 'so' tuple left in its variable is freed through it, and the last
-# check names the two elements 'soWholeVariable' extracts, and the free of each.
+# check names the two elements 'soWholeVariable' finalizes in place, each
+# reached by its address in the variable, and the free of each.
 [scenario.region_tuple_destructure]
 category = "run"
 description = "Destructuring or copying a tuple variable counts each rc element it carries, and the variable releases what it holds at scope exit"
@@ -365,7 +376,7 @@ contains = ["%17 = add i64 %16, 1", "%22 = add i64 %21, 1", "%12 = add i64 %11, 
 [[scenario.region_tuple_destructure.check]]
 name = "tuple-variable-releases-its-elements"
 target = "preir"
-contains = ["%74 = sub i64 %73, 1", "%85 = sub i64 %84, 1", "%44 = sub i64 %43, 1"]
+contains = ["%73 = sub i64 %72, 1", "%83 = sub i64 %82, 1", "%43 = sub i64 %42, 1"]
 
 [[scenario.region_tuple_destructure.check]]
 name = "overwritten-tuple-releases-previous-elements"
@@ -376,10 +387,10 @@ contains = ["%dealiasref = load { i32*, i32* }, { i32*, i32* }* %v, align 8", "%
 name = "so-tuple-left-in-variable-is-freed-through-it"
 target = "preir"
 contains = [
-  "%6 = extractvalue { i32*, i32* } %allocref, 0",
-  "%8 = call %void @free(i8* %7)",
-  "%9 = extractvalue { i32*, i32* } %allocref, 1",
-  "%11 = call %void @free(i8* %10)",
+  "%tupelem = getelementptr inbounds { i32*, i32* }, { i32*, i32* }* %t, i32 0, i32 0",
+  "%7 = call %void @free(i8* %6)",
+  "%tupelem5 = getelementptr inbounds { i32*, i32* }, { i32*, i32* }* %t, i32 0, i32 1",
+  "%9 = call %void @free(i8* %8)",
 ]
 
 # The same two claims for a tuple type named by a typedef, which is what says an
@@ -395,7 +406,7 @@ contains = ["%23 = add i64 %22, 1", "%28 = add i64 %27, 1", "%33 = add i64 %32, 
 [[scenario.region_tuple_destructure.check]]
 name = "alias-tuple-variable-releases-its-elements"
 target = "preir"
-contains = ["%108 = sub i64 %107, 1", "%119 = sub i64 %118, 1", "%130 = sub i64 %129, 1"]
+contains = ["%107 = sub i64 %106, 1", "%117 = sub i64 %116, 1", "%127 = sub i64 %126, 1"]
 
 # A local moved into a call that is the block's final expression. The claim is
 # that nothing in this module is released: every allocation is handed on, to a
@@ -562,11 +573,12 @@ excludes = ["%header", "call %void @free(", "allocref", "add i64"]
 # that asks what a variable or field holds must resolve it. The run covers the
 # spellings that already did -- a local, a reassignment and a move-out, in 'so',
 # 'rc', an owning slice, an alias of an alias, and a struct with a finalizer --
-# and the check covers the one that did not: genlDealiasFlds read a field's
-# declared type raw, so a struct's owning field spelled through an alias leaked
-# on every release. A leak prints what correct code prints, so the check names
-# the field GEPs that begin the two releases, whose registers were read out of
-# the pre-optimization dump; before the fix the module holds neither.
+# and the check covers the one that did not: the release of a struct's fields
+# read a field's declared type raw, so a struct's owning field spelled through an
+# alias leaked on every release. A leak prints what correct code prints, so the
+# check names the field GEPs that begin the two releases in Held's generated
+# drop, read out of the pre-optimization dump; before the fix the module holds
+# neither.
 [scenario.region_typedef_release]
 category = "run"
 description = "An owning reference, slice or finalized struct declared through a typedef is released as the aliased type is, as a variable and as a struct field"
@@ -576,8 +588,8 @@ tags = ["flow", "genllvm", "runtime"]
 name = "aliased-owning-fields-released-with-their-struct"
 target = "preir"
 contains = [
-  "%r19 = getelementptr inbounds %Held, %Held* %allocref, i32 0, i32 0",
-  "%s28 = getelementptr inbounds %Held, %Held* %allocref, i32 0, i32 1",
+  "%r = getelementptr inbounds %Held, %Held* %0, i32 0, i32 0",
+  "%s = getelementptr inbounds %Held, %Held* %0, i32 0, i32 1",
 ]
 
 # A program that declares C's 'free' itself links beside the releases 'so' and
