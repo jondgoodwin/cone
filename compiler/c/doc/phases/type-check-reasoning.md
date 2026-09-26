@@ -216,14 +216,18 @@ candidates is `OverloadAmbiguous` and an error, not a tie-break.
 argument to its parameter, then append defaults for what was not supplied. This
 ordering is the reason selection can be a pure filter.
 
-Two adjustments are worth knowing because they are asymmetric on purpose:
+Three adjustments are worth knowing, two because they are asymmetric on purpose:
 
 - **The deref retry.** A receiver held through a reference or pointer still
   satisfies a method declaring `self` by value: `fnCallLowerMethod` calls
   `derefInject` and selects again. It runs *only* when no candidate matched at
-  all, so a genuine ambiguity is still reported as one. Nothing is borrowed on
-  the receiver's behalf — a method wanting `self &mut` stays out of reach of a
-  value.
+  all, so a genuine ambiguity is still reported as one.
+- **The borrow retry.** A receiver held as a value — never a pointer — reaches a
+  method wanting `self &` or `self &mut` by being borrowed, the weakest
+  permission a candidate accepts first (`fnCallBorrowReceiver`,
+  [fncall](../nodes/fncall.md)). It runs after the deref retry, so a by-value
+  candidate is always preferred, and it borrows through `borrowMutRef`, so the
+  permission and lifetime rules are a written borrow's.
 - **An operator written on a pointer does not reach through.** `p + 2` offsets
   the pointer because `ptrType` declares `+`; `p * 2` is an error rather than
   quietly becoming `(*p) * 2`. `FlagOperator` is what records that the source

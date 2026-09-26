@@ -627,8 +627,9 @@ static void fnCallNoCandidate(INode *callnode, enum OverloadMatch status, Name *
 // Find the one field or method that accepts the call's receiver and arguments,
 // then lower the node to a function call (objfn+args) or field access (objfn+methfld).
 // A receiver held through a reference or pointer is dereferenced where the selected
-// method declared 'self' by value; nothing is borrowed on the receiver's behalf, and
-// an operator written on a pointer does not reach through at all.
+// method declared 'self' by value; a receiver held as a value is borrowed where it
+// declared 'self &' or 'self &mut'; and an operator written on a pointer does not
+// reach through at all.
 // The access reaching field 'fld' on 'obj', positioned on 'lexnode'. For a
 // declared field that is one field access; for a folded copy it is an access
 // per hop, root first, and then one for the copy itself -- the nesting the
@@ -687,6 +688,57 @@ static void fnCallDemandCandidates(INode *binding) {
         tstate.scope = 0;
         inodeTypeCheckAny(&tstate, &cand);
     }
+}
+
+// A receiver held as a value -- 'v.push(x)' for a 'mut v List[i64]' -- reaches
+// a method that declared 'self &' or 'self &mut' by being borrowed, as though
+// '(&v).len()' or '(&mut v).push(x)' had been written: "Cone will automatically
+// transform 'self' to a mutable borrowed reference" (doc/reference/
+// reftypesafe.html, "Implicit Coercion of 'self'"), as lval operators already
+// do. Asked only when no candidate accepts the receiver as it is, so a method
+// taking 'self' by value is always preferred, and never of a receiver that is
+// already a reference or a pointer: a pointer is not borrowed from.
+//
+// The weakest borrow a candidate accepts is taken: 'ro' first, so a 'self &'
+// method borrows for reading even from a mutable variable, then 'mut'. The
+// borrow is made by borrowMutRef, so its permission and lifetime are the ones a
+// hand-written '&mut v' gets: a 'self &mut' method on an immutable variable is
+// ErrorBadPerm. A temporary has no place to borrow, so a call whose only
+// candidates want a borrowed self is ErrorBadLval, once, as '&' of it is.
+// Returns the selected method, with the borrow now the receiver, or NULL.
+static FnDclNode *fnCallBorrowReceiver(FnCallNode *callnode, INode *foundnode, enum OverloadMatch *status) {
+    INode *obj = callnode->objfn;
+    INode *objtype = iexpGetTypeDcl(obj);
+    if (fnCallIsRefReceiver(objtype) || objtype->tag == PtrTag || !isMethodType(objtype))
+        return NULL;
+    // '(*p).push(x)' written on a pointer is the pointer's own business: the
+    // borrow would be '&mut *p', a reference made from a pointer
+    if (obj->tag == DerefTag && iexpGetTypeDcl(((StarNode*)obj)->vtexp)->tag == PtrTag)
+        return NULL;
+    PermNode *perms[] = {roPerm, mutPerm};
+    for (int i = 0; i < 2; ++i) {
+        INode *perm = newPermUseNode(perms[i]);
+        INode *probe = newBorrowMutRef(obj, objtype, perm);
+        enum OverloadMatch probestatus;
+        FnDclNode *selected = iNsTypeFindMethod(foundnode, &probe, callnode->args, &probestatus);
+        if (selected == NULL) {
+            if (probestatus == OverloadAmbiguous) {
+                *status = probestatus;
+                return NULL;
+            }
+            continue;
+        }
+        if (iexpIsLval(obj))
+            borrowMutRef(&callnode->objfn, objtype, perm);
+        else {
+            errorMsgNode(obj, ErrorBadLval,
+                "May not borrow a temporary value. `%s` takes a borrowed self, which needs a place in memory to point at.",
+                &((NameUseNode*)callnode->methfld)->namesym->namestr);
+            callnode->objfn = probe;
+        }
+        return selected;
+    }
+    return NULL;
 }
 
 // Returns 1 when lowered, 0 when the receiver's type supports no methods at all
@@ -772,8 +824,8 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
     // A receiver held through a reference or a pointer still satisfies a method that
     // declared 'self' by value, so dereference it and select again. That is a load and
     // a copy -- the same adjustment a field access already makes -- and nothing more:
-    // no reference is manufactured, so a method wanting 'self &' or 'self &mut' stays
-    // out of the reach of a value or a pointer. The retry runs only when no candidate
+    // no reference is manufactured here, and none ever is from a pointer (the borrow
+    // retry below serves a value receiver). The retry runs only when no candidate
     // matched at all, so an ambiguity among the candidates the receiver already fits is
     // reported as such, and a set holding both a value and a reference candidate still
     // selects the reference one for a reference receiver.
@@ -792,6 +844,11 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
         if (selected == NULL)
             callnode->objfn = obj;  // a failed retry leaves the call as it was found
     }
+
+    // A receiver held as a value reaches a method declaring 'self &' or
+    // 'self &mut' by being borrowed (fnCallBorrowReceiver)
+    if (selected == NULL && status == OverloadNone)
+        selected = fnCallBorrowReceiver(callnode, foundnode, &status);
 
     if (selected == NULL) {
         fnCallNoCandidate((INode*)callnode, status, methsym, "method");
