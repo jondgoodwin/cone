@@ -223,7 +223,10 @@ nullable-pointer enum (compare against null), and tagged (read the
   after checking does not tell you what the author wrote.
 - **A pattern's root may be unbound until its `is` test is checked.** Anything
   that reads a pattern's `typ` before then — `ifExhaustCheck` scanning the later
-  arms — must ask `castPatternPending` first.
+  arms — must ask `castPatternPending` first. And a pattern whose name was
+  bound to nothing (`castPatternBind` reported it) is never type checked, so a
+  pattern written with arguments is still the unchecked call node: ask
+  `isTypeNode` before unwrapping one.
 - **A struct reinterpret is checked in generation, not type check.** A size
   mismatch surfaces late, as `ErrorRecastSize`.
 - **`genlConvert`'s two "unknown source" arms report `ErrorUnreachable` and
