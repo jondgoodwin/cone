@@ -88,7 +88,9 @@ enum IntrinsicFn {
     ReadRawIntrinsic,       // readRaw[T](p *T) T
     WriteRawIntrinsic,      // writeRaw[T](p *T, value T)
     MoveRawIntrinsic,       // moveRaw[T](to *T, from *T, count usize)
-    TypeRecordIntrinsic     // typeRecord[T]() *TypeRecord
+    TypeRecordIntrinsic,    // typeRecord[T]() *TypeRecord
+    HoldsTracedIntrinsic,   // holdsTraced[T]() Bool
+    TraceIntrinsic          // trace[T](p *T, mode u32)
 };
 
 // The first kind declared in Cone rather than built in C

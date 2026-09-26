@@ -40,4 +40,26 @@ void regionAllocTypeCheck(INode *region);
 // 'ty *TypeRecord' after the size?
 int regionAllocTakesRecord(INode *region);
 
+// Is this region slot's type a region ref declaring 'Traced', whose references
+// a trace hands to its 'mark'?
+int regionIsTraced(INode *region);
+
+// Does the traced region's 'mark' take each reference's permission and the
+// trace's mode, 'fn mark(self &uni R, perm u32, mode u32)'?
+int regionMarkTakesContext(INode *region);
+
+// A type declaring 'Traced' that is not a region ref is refused
+void regionTracedUseCheck(StructNode *node);
+
+// Note, as type check meets them, the places where a traced reference may not
+// be held: an owning reference type, a global or static, an instance of
+// mem.writeRaw or mem.moveRaw. Each is judged by regionTracedCheckAll.
+void regionTracedRefNote(RefNode *node);
+void regionTracedGlobalNote(VarDclNode *var);
+void regionTracedRawNote(FnDclNode *fndcl, int16_t intrinsic, INode *typearg);
+
+// Judge every noted place, once type check has finished and every type is laid
+// out: the rules of where a traced reference may be held
+void regionTracedCheckAll();
+
 #endif

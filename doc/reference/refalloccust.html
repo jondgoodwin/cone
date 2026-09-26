@@ -19,7 +19,7 @@
 		optional: <span class="pre">fn alloc(size usize) *u8</span> (for allocate, static; the size includes the
 		bookkeeping, and null fails), or <span class="pre">fn alloc(size usize, ty *TypeRecord) *u8</span>,
 		which is also handed the allocated value's <a href="refintrinsic.html">type record</a> (its size,
-		alignment and finalizer, so the allocator can later finalize a value of any type itself; an owning
+		alignment, finalizer and trace, so the allocator can later finalize a value of any type itself; an owning
 		slice's is its element type's), <span class="pre">fn init() R</span> (static; its result is stored as the
 		bookkeeping), <span class="pre">fn alias(self &amp;uni R)</span>,
 		<span class="pre">fn dealias(self &amp;uni R) Bool</span>, which answers whether the last owner is
@@ -33,7 +33,22 @@
 		dealias either, an owner going away does nothing and the compiler never frees the value, which waits
 		for a collector to be built. One with alias but no dealias never frees a value by count. When
 		the last owner goes, the compiler runs the value's finalizer before calling free, as described below,
-		and allocator methods are not trust blocks.</i></p>
+		and allocator methods are not trust blocks.
+		An allocator whose struct also declares the built-in trait <span class="pre">Traced</span>
+		(<span class="pre">struct gc is RegionRef, Traced</span>) has its references traced: it declares
+		<span class="pre">fn mark(self &amp;uni R)</span>, or <span class="pre">fn mark(self &amp;uni R, perm u32,
+		mode u32)</span> to be told each reference's permission and the mode it was traced in, and every
+		type record's trace (and <a href="refintrinsic.html"><span class="pre">mem.trace</span></a>) hands
+		it the bookkeeping of each of its references a value holds. It may not be
+		<span class="pre">Move</span>. A traced reference may be held only where a collector can find it:
+		in a local, a parameter, a temporary, a value held in one of those, or a value a traced allocator
+		allocated. So the compiler refuses one held by an allocator that is not traced (a
+		<span class="pre">+rc</span> or <span class="pre">+so</span> value holding it), in a global, or in
+		memory placed by <span class="pre">mem.writeRaw</span> (an arena's, a pool's, a collection's); and
+		refuses a traced allocator's value holding a borrowed reference, a traced owning slice or virtual
+		reference, and a permission that takes room. A traced value may hold <span class="pre">+rc</span>
+		and <span class="pre">+so</span> references, which its finalizer releases. No collector is built
+		yet, and nothing finds the traced references on the stack.</i></p>
 
 	<p>Although Cone provides a rich collection of standard allocators, there are times that
 		other allocators can prove valuable. For example:

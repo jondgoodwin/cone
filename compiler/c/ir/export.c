@@ -49,8 +49,11 @@ int typeHoldsExpanded(INode *type) {
 }
 
 // Whether a function is a type's 'final' or 'clone' -- by its own name or by the
-// overload name it answers to. A value of the type calls it wherever it is
-// dropped or copied, which names neither
+// overload name it answers to -- or one of the methods the compiler calls on a
+// region ref: 'alloc', 'init', 'alias', 'dealias', 'free', and a traced
+// region's 'mark'. A value of the type calls the first two wherever it is
+// dropped or copied, and a reference into the region calls the others wherever
+// it is allocated, copied, dropped or traced, which names none of them
 int fnIsTypeLifecycle(INode *dclnode) {
     if (dclnode->tag != FnDclTag)
         return 0;
@@ -58,8 +61,13 @@ int fnIsTypeLifecycle(INode *dclnode) {
     INode *owner = fn->dclinfo.owner;
     if (owner == NULL || owner->tag != StructTag)
         return 0;
-    return fn->namesym == finalName || fn->namesym == cloneName
-        || fn->overloadsym == finalName || fn->overloadsym == cloneName;
+    if (fn->namesym == finalName || fn->namesym == cloneName
+        || fn->overloadsym == finalName || fn->overloadsym == cloneName)
+        return 1;
+    Name *name = fn->namesym;
+    return regionIsRegionRef(owner)
+        && (name == allocMethodName || name == initMethodName || name == aliasMethodName
+            || name == dealiasMethodName || name == freeMethodName || name == markMethodName);
 }
 
 // Whether a type's method meets a requirement, or takes the place of a default,

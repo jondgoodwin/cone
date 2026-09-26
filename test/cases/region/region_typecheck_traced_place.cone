@@ -1,0 +1,126 @@
+// Where a traced reference may be held: only where a collector can find it --
+// a local, a parameter, a temporary, a value held inline in one of those, or a
+// value a traced region allocated. So each of these is refused, each with its
+// own code:
+//
+// 1. an owning reference of a region that is not traced ('+rc', '+so', any
+//    region ref not declaring 'Traced') to a value holding a traced reference,
+//    wherever the reference type is written: a field, a parameter, an
+//    allocation, a generic's instance (ErrorTracedHeld);
+// 2. a global or a static (ErrorTracedGlobal);
+// 3. what a traced region allocates holding a borrowed reference, which its
+//    trace cannot see and no lifetime covers (ErrorTracedBorrow);
+// 4. mem.writeRaw and mem.moveRaw of a type holding one, which is how an arena,
+//    a pool and every collection place values in memory no collector traces --
+//    reported where the program chose the type, as in 'List[+tr-mut Leaf]'
+//    (ErrorTracedRaw);
+// 5. an owning slice or an owning virtual reference into a traced region,
+//    whose length or value type the trace could not find (ErrorTracedRefKind);
+// 6. a traced region's reference whose permission takes room, putting the value
+//    somewhere other than right after the header (ErrorTracedPerm).
+//
+// What a traced region allocates may hold '+rc' and '+so' owners, which its
+// finalizer releases; a borrow or a raw pointer to a value holding traced
+// references may be held anywhere, being unchecked or lifetime-bound. Every
+// judgment waits until each type is laid out, which is what lets a struct be
+// refused for a traced field declared after a field pointing back at it
+// ('Node').
+
+mod region_typecheck_traced_place;
+
+import collections;
+import arena;
+import pool;
+
+struct tr is RegionRef, Traced {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn mark(self &uni tr, perm u32, mode u32) { }
+}
+
+struct Leaf { pub n i32; }
+struct Pair { pub left +tr-mut Leaf; pub right +tr-mut Leaf; }
+struct Fin { pub v i32; fn final(self &uni) { } }
+struct Box { pub b +tr-mut Leaf; }
+
+// Accepted: a traced object holding '+rc' and '+so' owners, a function
+// reference, and a traced object holding another
+struct Mixed {
+  pub g +tr-mut Leaf;
+  pub r +rc-mut Fin;
+  pub s +so Fin;
+  pub f &fn(x i32) i32;
+  pub p +tr-mut Pair;
+}
+
+// Rule 1: in fields, however the traced reference is held inside
+struct RcHolder {
+  pub pr +rc-mut Pair;              //~ ErrorTracedHeld "may not point at Pair"
+  pub ok +rc-mut Leaf;
+}
+struct SoOption {
+  pub o +so Option[+tr-mut Leaf];   //~ ErrorTracedHeld "so is not traced"
+}
+struct Node {
+  pub next +rc-mut Node;            //~ ErrorTracedHeld "may not point at Node"
+  pub g +tr-mut Leaf;
+}
+struct RcBox[T] { pub v +rc-mut T; }   //~ ErrorTracedHeld "may not point at +tr-mut Leaf"
+fn useBox(b &RcBox[+tr-mut Leaf]) { }
+
+// Rule 1: in a parameter
+fn takesRc(p +rc-mut Pair) { }      //~ ErrorTracedHeld "may not point at Pair"
+
+// Rule 2: a global
+mut gp Pair;                        //~ ErrorTracedGlobal "gp is a global"
+fn @initpure init() { gp = Pair[+tr-mut Leaf[1i32], +tr-mut Leaf[2i32]]; }
+
+// Rule 3: a traced value holding a borrow
+struct Borrows { pub b &i32; }
+struct HoldsBorrows { pub h (i64, Borrows); }
+
+// Rule 5: an owning slice and an owning virtual reference into a traced region
+trait Shape { fn area(self &) i32; }
+struct Sq is Shape { pub s i32; fn area(self &) i32 { s * s; } }
+struct Kinds {
+  pub sl +[]tr-mut Leaf;            //~ ErrorTracedRefKind "a single reference"
+  pub vr +<tr-mut Shape;            //~ ErrorTracedRefKind "a single reference"
+}
+
+// Rule 6: a permission that takes room
+struct Lock { pub held i32; }
+struct Locked {
+  pub l +tr-Lock Leaf;              //~ ErrorTracedPerm "Lock does"
+}
+
+// Accepted: nothing held behind a permission taking no room
+struct Unlock { }
+struct Unlocked { pub l +tr-Unlock Leaf; }
+
+// Rule 4: the raw moves, directly and through a collection
+fn raw(p *Pair, q *Pair, v Pair) {
+  mem.writeRaw[Pair](p, v);         //~ ErrorTracedRaw "mem.writeRaw would place Pair"
+  mem.moveRaw[Pair](p, q, 1usize);  //~ ErrorTracedRaw "mem.moveRaw would place Pair"
+  mem.writeRaw[i32](p as *i32, 5i32);
+}
+
+fn main() {
+  imm l = +tr-mut Leaf[1i32];
+  imm pr = Pair[l, l];
+  // Accepted: a borrow and a raw pointer to a value holding traced references
+  imm b = &pr;
+  imm rp = &pr as *Pair;
+  imm mx = +tr-mut Mixed[l, +rc-mut Fin[1i32], +so Fin[2i32], &nothing, +tr-mut Pair[l, l]];
+  imm rc = +rc-mut Pair[l, l];      //~ ErrorTracedHeld "may not point at Pair"
+  imm n = 3i32;
+  imm hb = +tr-mut HoldsBorrows[(1i64, Borrows[&n])];   //~ ErrorTracedBorrow "which holds a borrowed reference"
+  mut list = collections.List[+tr-mut Leaf].empty();    //~ ErrorTracedRaw "would place +tr-mut Leaf"
+  list.push(l);
+  // Each instance of a raw move is judged once, for its type, so these place
+  // types nothing above has placed
+  mut a = arena.Arena.empty();
+  a.alloc((1i32, l));                                   //~ ErrorTracedRaw "would place a tuple"
+  mut p = pool.Pool[Box].empty();                       //~ ErrorTracedRaw "would place Box"
+  p.add(Box[l]);
+}
+
+fn nothing(x i32) i32 { x; }

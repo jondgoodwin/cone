@@ -31,6 +31,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->tagnbr = 0;
     snode->spans = NULL;
     snode->carriesborrow = CarriesBorrowUnknown;
+    snode->holdstraced = HoldsTracedUnknown;
     return snode;
 }
 
@@ -46,8 +47,10 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     newnode->lifecycle = NULL;
     newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
     // An instance's fields are the generic's with its parameters bound, so
-    // whether they carry a borrow is the instance's own question
+    // whether they carry a borrow, or hold a traced reference, is the
+    // instance's own question
     newnode->carriesborrow = CarriesBorrowUnknown;
+    newnode->holdstraced = HoldsTracedUnknown;
 
     // Within the copy, 'Self' is the copy. A method's self parameter is declared
     // as a use of 'Self' (parsetype.c), and name resolution has already pointed
@@ -2675,9 +2678,12 @@ static void structCheckMembers(StructNode *node) {
     structCheckTraitReqs(node);
 
     // 'RegionRef' requires nothing an ordinary requirement can state: each region
-    // method is optional, with a fixed shape where declared
+    // method is optional, with a fixed shape where declared. 'Traced' says
+    // something only of a region ref, which regionRefCheck holds to its 'mark'.
     if (regionIsRegionRef((INode*)node))
         regionRefCheck(node);
+    else
+        regionTracedUseCheck(node);
 
     structCheckCopy(node);
 }

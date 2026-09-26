@@ -180,6 +180,8 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
         return;
     refRefuseRegionRef(node);
     refAdoptInfections(node);
+    // Where a traced reference may be held, judged once every type is laid out
+    regionTracedRefNote(node);
 
     // Normalize reference type and point to its metadata
     node->typeinfo = typetblFind((INode*)node, refTypeInfoAlloc);
@@ -196,6 +198,7 @@ void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
         return;
     refRefuseRegionRef(node);
     refAdoptInfections(node);
+    regionTracedRefNote(node);
 
     StructNode *trait = (StructNode*)itypeGetTypeDcl(node->vtexp);
     if (trait->tag != StructTag || !(trait->flags & TraitType)) {

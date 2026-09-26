@@ -1,8 +1,10 @@
 // 'mem.typeRecord[T]()' on a range of types: the address of T's record, a
 // constant the compiler builds once per type in an object. Each record's size
 // and alignment are what 'mem.sizeof' and 'mem.alignof' say, its flags' bit 0
-// is what 'mem.needsFinal' says, and its trace does nothing (no traced
-// reference can be declared yet).
+// is what 'mem.needsFinal' says, and, since none of these types holds a traced
+// reference ('mem.holdsTraced' says no, and so does bit 1), its trace is the
+// one do-nothing trace every such record holds (a u8's record's among them).
+// Records of types that do hold one are region_traced's.
 //
 // Its finalizer is the death 'mem.finalize' runs, as a function whose address
 // the record holds, so library code can finalize a value it cannot name the
@@ -13,7 +15,8 @@
 // value's memory given back, 'dealias' an '+rc' owner going); a tuple element
 // by element, an array in element order; an enum as the variant it holds. A
 // type with nothing to finalize runs nothing: its finalizer is the do-nothing
-// function every record's trace also holds, so the two are the same address.
+// function every such record holds, a u8's among them, so the two are the same
+// address.
 //
 // A generic function asking for its type parameter's record gets the record of
 // each instance's type, the same one a direct call names.
@@ -51,15 +54,17 @@ fn yes(b Bool) { if b {printStr("yes");} else {printStr("no");} }
 // T's record against what the other intrinsics say of T
 fn describe[T](label &[]u8) {
   imm rec = mem.typeRecord[T]() as &TypeRecord;
+  imm plain = mem.typeRecord[u8]() as &TypeRecord;
   printStr(label);
   printStr(": size "); printInt(i64[rec.size]);
   printStr(", align "); printInt(i64[rec.align]);
   printStr(", flags "); printInt(i64[rec.flags]);
   printStr(", agrees ");
   yes(rec.size == mem.sizeof[T]() and rec.align == mem.alignof[T]()
-    and (rec.flags & 1u32 == 1u32) == mem.needsFinal[T]() and rec.flags & 2u32 == 0u32);
+    and (rec.flags & 1u32 == 1u32) == mem.needsFinal[T]() and rec.flags & 2u32 == 0u32
+    and !mem.holdsTraced[T]() and rec.trace as *u8 == plain.trace as *u8);
   printStr(", finalizer is the do-nothing one ");
-  yes(rec.finalize as *u8 == rec.trace as *u8);
+  yes(rec.finalize as *u8 == plain.finalize as *u8);
   printStr("\n");
 }
 

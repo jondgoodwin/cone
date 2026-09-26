@@ -7,7 +7,7 @@ they differ in who declares them and in how their meaning is decided.
 | --- | --- | --- |
 | Declared by | `corenumber.c`, `corelib.c`, `struct.c` (an enum's `==`) | `packages/core/src/core.cone`, as functions of the opaque struct `mem` |
 | Named | as a method or operator of a type | through `mem`: `mem.sizeof[T]()` |
-| Kinds | `NegIntrinsic` … `FinalAllIntrinsic` | `SizeofIntrinsic` … `TypeRecordIntrinsic` (`FirstDeclaredIntrinsic` onward) |
+| Kinds | `NegIntrinsic` … `FinalAllIntrinsic` | `SizeofIntrinsic` … `TraceIntrinsic` (`FirstDeclaredIntrinsic` onward) |
 | Meaning decided | at generation, by the LLVM type kind of argument 0 | by the registry, in Cone terms; the Cone type rides on the node (`typearg`) |
 | Reference page | none: the number and pointer methods | `doc/reference/refintrinsic.html` |
 
@@ -81,7 +81,13 @@ the two are tested against each other by running one scenario both ways
 4. **Type check** (`fnDclTypeCheck` → `intrinsicDclTypeCheck`). A declared
    intrinsic's instance has no body to check; its `typearg` is type checked and
    must have a size (`itypeNoSizeCause`), else `ErrorIntrinsicType`, reported at
-   the call that instantiated it (`instnode`), not in core.
+   the call that instantiated it (`instnode`), not in core. An instance of
+   `writeRaw` or `moveRaw` is also noted for the rule that no traced reference
+   is placed in raw memory (`regionTracedRawNote`, `ErrorTracedRaw`), judged
+   once type check has finished and reported at the outermost instantiation
+   — a collection's in the program's source, where it was reached through the
+   collection's body ([What a region is](module.md)). Each instance is judged
+   once, for its type, as an instance is made once.
 5. **Flow** sees an ordinary call: an argument passed by value is moved into it,
    as `writeRaw`'s value is.
 6. **Generation** (`genlDeclaredIntrinsic`), dispatched by kind before the C-built
@@ -100,6 +106,8 @@ the two are tested against each other by running one scenario both ways
 | `writeRaw[T]` | expansion | a store |
 | `moveRaw[T]` | operation | `LLVMBuildMemMove` of `count * sizeof(T)` bytes |
 | `typeRecord[T]` | constant | the address of T's record, a private constant `genlTypeRecord` builds once per object |
+| `holdsTraced[T]` | constant | `itypeHoldsTraced`, a front-end question, emitted as an `i1` |
+| `trace[T]` | expansion | `genlTraceAt`: each traced reference the value holds, loaded and, where not null, handed to its region's `mark` with its permission and `mode` where `mark` takes them |
 
 `finalize` runs what a region-held value's death runs, less the region's `free`
 (`genlRegionDeath`), which is what a local's death at its scope's end runs: its
@@ -111,7 +119,8 @@ does something.
 pointer to core's struct named `TypeRecord` (`typeRecordIsPtr`, shape
 `ShapePtrTypeRecord`), which the declaration's result names and generation
 builds. The record's finalizer is `finalize`'s expansion made a function of
-its own; what the record holds, and why each slot is never null, is
+its own, and its trace `trace`'s; what the record holds, and why each slot is
+never null, is
 [Generation](../phases/generation.md), "The allocation header". The same record
 is what a region whose `alloc` takes `ty *TypeRecord` is handed
 ([What a region is](module.md)).
@@ -146,6 +155,6 @@ is what a region whose `alloc` takes `ty *TypeRecord` is handed
 | registry and checks | `ir/stmt/intrinsic.c`: `intrinsicRegistry`, `intrinsicDclNameRes`, `intrinsicDclTypeCheck` |
 | hooks | `fndcl.c` `fnDclNameRes`, `fnDclTypeCheck`, `fnDclIsExpanded` |
 | forced fallback | `--intrinsic-fallback` → `intrinsicForceFallback` (`conec.c`) |
-| generation | `genlexpr.c` `genlDeclaredIntrinsic`; `genlalloc.c` `genlFinalizeAt`, `genlTypeRecord`; `genltype.c` `genlAlignof` |
+| generation | `genlexpr.c` `genlDeclaredIntrinsic`; `genlalloc.c` `genlFinalizeAt`, `genlTypeRecord`, `genlTraceAt`; `genltype.c` `genlAlignof` |
 | declarations | `packages/core/src/core.cone`, `struct @opaque mem` |
 | tests | `test/cases/intrinsic/` |

@@ -62,6 +62,7 @@ void arrayRefTypeCheck(TypeCheckState *pstate, RefNode *node) {
         // the identical type allocateTypeCheck builds, which goes through
         // newRefNodeFull. refAdoptInfections reads vtexp, so it stays guarded.
         refAdoptInfections(node);
+        regionTracedRefNote(node);
     }
 
     // Normalize reference type and point to its metadata

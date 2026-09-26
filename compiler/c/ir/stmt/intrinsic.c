@@ -50,7 +50,8 @@ typedef enum {
     ShapePtrT,          // *T
     ShapeSliceT,        // &[]T: a borrowed slice, read only
     ShapeSliceMutT,     // &[]mut T: a borrowed slice, writable
-    ShapePtrTypeRecord  // *TypeRecord: core's type record (typeRecordIsPtr)
+    ShapePtrTypeRecord, // *TypeRecord: core's type record (typeRecordIsPtr)
+    ShapeU32            // u32
 } IntrinsicShape;
 
 // Where the compiler answers an intrinsic: every one built so far is answered
@@ -98,6 +99,10 @@ static IntrinsicSpec intrinsicRegistry[] = {
         1, 3, {ShapePtrT, ShapePtrT, ShapeUsize}, ShapeVoid, 1, 1, PhaseOperation, 1},
     {"typeRecord", TypeRecordIntrinsic, "typeRecord[T]() *TypeRecord",
         1, 0, {0}, ShapePtrTypeRecord, 0, 0, PhaseConstant, 1},
+    {"holdsTraced", HoldsTracedIntrinsic, "holdsTraced[T]() Bool",
+        1, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
+    {"trace", TraceIntrinsic, "trace[T](p *T, mode u32)",
+        1, 2, {ShapePtrT, ShapeU32}, ShapeVoid, 1, 0, PhaseExpansion, 1},
 };
 
 #define IntrinsicCount (sizeof(intrinsicRegistry) / sizeof(IntrinsicSpec))
@@ -172,6 +177,7 @@ static int intrinsicShapeIs(INode *type, IntrinsicShape shape, INode *tparm) {
     switch (shape) {
     case ShapeVoid:  return dcl->tag == VoidTag;
     case ShapeUsize: return dcl == (INode *)usizeType;
+    case ShapeU32:   return dcl == (INode *)u32Type;
     case ShapeBool:  return dcl == (INode *)boolType;
     default:         return 0;
     }
@@ -318,6 +324,9 @@ void intrinsicDclTypeCheck(TypeCheckState *pstate, FnDclNode *fndcl) {
             &fndcl->namesym->namestr, itypeName(nosizeroot), nosize);
         itypeNoSizeExplain(node->typearg);
     }
+    // A raw placement of a traced reference hides it from every collector
+    // (judged once every type is laid out)
+    regionTracedRawNote(fndcl, node->intrinsicFn, node->typearg);
 }
 
 // Whether a function is a declared intrinsic with its meaning from the registry

@@ -53,11 +53,13 @@ extern FnDclNode *finalAllFn;
 
 // The built-in traits, each a name every module reaches unless it declares the
 // name itself, and none with members: 'RegionRef', which a region ref struct
-// declares with 'is'; and 'Move' and 'Copy', one of which every type has, the
-// compiler granting it from what it infers and a type able to declare it
+// declares with 'is'; 'Move' and 'Copy', one of which every type has, the
+// compiler granting it from what it infers and a type able to declare it; and
+// 'Traced', which a region ref struct declares to say its references are traced
 extern StructNode *regionRefTrait;
 extern StructNode *moveTrait;
 extern StructNode *copyTrait;
+extern StructNode *tracedTrait;
 
 // Is this declaration one of the built-in traits?
 int corelibIsBuiltinTrait(INode *node);

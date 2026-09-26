@@ -815,7 +815,7 @@ members", is the mechanism.
    `clone`, so a copy is bitwise, and a copyable type holding a finalizer or an
    owner would be finalized once per copy. Then propagate up the base
    chain, one `structBaseTraitDcl` hop per iteration, stopping at a built-in
-   trait (`corelibIsBuiltinTrait`): `Move`, `Copy` and `RegionRef` describe the
+   trait (`corelibIsBuiltinTrait`): `Move`, `Copy`, `RegionRef` and `Traced` describe the
    types declaring them and never take on their flags.
 7. **`TypeChecked` is set here: laid out.** Fields are indexed, the type's own
    size is known, and the method set is complete. Just before it, a type that may
@@ -903,7 +903,9 @@ Steps 9 to 11 are `structCheckMembers`, run from the members queue:
    built-in trait, has no methods to verify**: a type declaring it is held
    instead to the region methods' shapes (`regionRefCheck`), each
    optional and fixed in shape where present, which no requirement written in
-   Cone can say ([What a region is](module.md)).
+   Cone can say ([What a region is](module.md)). Nor has `Traced`: a region ref
+   declaring it is held to its `mark` by the same check, and any other type
+   declaring it is refused (`regionTracedUseCheck`, `ErrorTracedUse`).
 11. **An `is Copy` is verified** (`structCheckCopy`): a type declaring it that
    moves after all is `ErrorCopyMove`. Here, not at layout, because an enum
    moves when a variant does and its variants are laid out after it.
@@ -1477,7 +1479,11 @@ scope releases (Flow, "A match's binding is the matched value").
 Flow's gate asks whether each local's type carries a borrow
 ([Flow](../phases/flow.md), "The gate"), which for a struct means its fields and,
 for an enum, its variants. The answer is remembered in `carriesborrow`, because
-asked afresh at every variable it cost flow 10–20%.
+asked afresh at every variable it cost flow 10–20%. Whether a value of the type
+holds a traced reference inline (`itypeHoldsTraced`: its fields, an enum's
+variants, stopping at every reference but a traced one) is remembered the same
+way, in `holdstraced`, since the type record, the trace, and the placement
+rules of traced references all ask it ([What a region is](module.md)).
 
 ## Generation
 

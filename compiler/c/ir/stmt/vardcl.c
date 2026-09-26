@@ -157,6 +157,11 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
             errorMsgNode((INode*)name, ErrorNotLit, "Variable may only be initialized with a literal value.");
     }
 
+    // A global or a static is found by no collector, so it may not hold a
+    // traced reference (judged once every type is laid out)
+    if (name->scope == 0 || (name->flags & FlagStatic))
+        regionTracedGlobalNote(name);
+
     // A variable holds its type by value, so that type has to be able to say how
     // large it is
     INode *nosizeroot;
