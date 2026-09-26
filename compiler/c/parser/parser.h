@@ -69,6 +69,7 @@ enum ParseFlags {
     ParseMayImpl = 0x1000,        // The variable may implement a code block
     ParseEmbedded = 0x0800,       // Is embedded in expression (no semi)
     ParseMayFold = 0x0400,        // The variable may carry a fold clause: a module's global
+    ParseInList = 0x0200,         // A comma ends the value: a parameter, whose list the comma continues
 };
 
 // parsebuild.c

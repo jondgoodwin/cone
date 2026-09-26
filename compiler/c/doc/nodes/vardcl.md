@@ -98,7 +98,7 @@ owes both halves, the mark clearing above included; `const.c` carries that note.
 | local (`parseExprBlock`) | sig/impl | nothing — scope comes from name resolution |
 | static local (`parseExprBlock`, after `static`) | sig/impl | `FlagStatic`, `VarInitialized`. One copy shared by every call of the function; the function becomes its owner in type check, and its storage is a global |
 | type static (`parseStruct`, after `static`) | sig/impl | `FlagStatic`, then `iNsTypeAddStatic`, which records the type as owner, marks it initialized and binds it in the type's namespace beside the fields and methods. Not a field: no slot, no `index`, no receiver. Reached as `Type.name` from outside and by bare name from the type's own functions |
-| parameter (`parseFnSig`) | sig/impl, dropping to impl once one parameter has a default | `VarInitialized`, `scope = 1`, `index`, `Self` inference |
+| parameter (`parseFnSig`) | sig/impl, dropping to impl once one parameter has a default; in-list throughout, so a default is read as a simple expression and the comma after it begins the next parameter rather than a tuple | `VarInitialized`, `scope = 1`, `index`, `Self` inference |
 
 `static` before anything that is not a variable — a function, a type, a
 statement — is `ErrorBadStatic`, and the declaration is then parsed as if the

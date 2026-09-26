@@ -86,7 +86,9 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
             lexNextToken();
         }
         else
-            varnode->value = parseAnyExpr(parse);
+            // In a parameter list the comma begins the next parameter, so the
+            // value must not be read as the head of a tuple
+            varnode->value = (flags & ParseInList) ? parseSimpleExpr(parse) : parseAnyExpr(parse);
         bodyendp = lex->prevend;
     }
     else {
@@ -1099,7 +1101,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
 INode *parseFnSig(ParseState *parse) {
     FnSigNode *fnsig;
     uint16_t parmnbr = 0;
-    uint16_t parseflags = ParseMaySig | ParseMayImpl;
+    uint16_t parseflags = ParseMaySig | ParseMayImpl | ParseInList;
 
     // Set up memory block for the function's type signature
     fnsig = newFnSigNode();
@@ -1132,7 +1134,7 @@ INode *parseFnSig(ParseState *parse) {
             parm->scope = 1;
             parm->index = parmnbr++;
             if (parm->value)
-                parseflags = ParseMayImpl; // force remaining parms to specify default
+                parseflags = ParseMayImpl | ParseInList; // force remaining parms to specify default
             nodesAdd(&fnsig->parms, (INode*)parm);
             if (!lexIsToken(CommaToken))
                 break;
