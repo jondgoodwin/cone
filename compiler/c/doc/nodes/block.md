@@ -87,7 +87,12 @@ block, where `returnTypeCheck` already coerced returns against the signature.
 The fold loop uses a manual index because `breaks` can grow while iterating.
 
 `vtype` is `expectType` when one was given, else the inferred type. **A function
-body is checked with `noCareType`**, so its `vtype` is always `unknownType`.
+body is checked with `noCareType`**, so its `vtype` is `unknownType` — except an
+**inline** function's, which `fnDclTypeCheck` then sets to the signature's return
+type. That body is generated in each caller as a block whose returns are its
+breaks, so with more than one return it is a phi block, and the phi takes its
+type from `vtype`: at `unknownType` `genlBlock` would build no phi, and the call
+would have no value.
 
 ## Flow
 

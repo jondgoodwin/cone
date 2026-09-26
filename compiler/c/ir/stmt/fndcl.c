@@ -270,6 +270,13 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     pstate->scope = svScope;
     pstate->fn = svFn;
 
+    // An inline body is generated in each caller as a block whose value is the
+    // call's, its returns breaking out of it with that value. Every path ends in
+    // a return, so the block infers no type of its own; it has the function's
+    // return type, which is the phi's type where several returns converge.
+    if (fnnode->flags & FlagInline)
+        ((BlockNode *)fnnode->value)->vtype = ((FnSigNode *)fnnode->vtype)->rettype;
+
     // Immediately perform the data flow pass for this function
     // We run data flow separately as it requires type info which is inferred bottoms-up
     // Skip it when this function's own signature or body did not type check, as

@@ -533,7 +533,9 @@ Short-circuit `and`/`or` are two blocks and a 2-way `i1` phi. `not` is
 
 **`FlagInline` functions are inlined by the Cone generator, not by LLVM.** They
 get no symbol at all: their parameters become allocas at the call site and their
-body is generated inline. This is how the region allocator becomes a direct
+body is generated inline, as a block whose returns are breaks out of it. With
+more than one return that block converges on a phi of the function's return
+type, which type check stored as the body block's `vtype`. This is how the region allocator becomes a direct
 `malloc` call at each allocation. Having no symbol, one cannot be borrowed:
 `borrowTypeCheck` refuses `&name` on an inline function (`ErrorInlineRef`), so
 `genlAddr`'s function arm never meets a declaration without an `llvmvar`.

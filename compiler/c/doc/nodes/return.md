@@ -78,7 +78,9 @@ other and with what the block's context expects. See
 `continueTypeCheck` is empty.
 
 `fnDclTypeCheck` turns a function body's final expression into an explicit
-`return` before checking the body.
+`return` before checking the body. For an inline function it then gives the body
+block the signature's return type, the type of the value its returns carry out
+of the inlined body ([block](block.md), "Type check").
 
 ## Flow
 
