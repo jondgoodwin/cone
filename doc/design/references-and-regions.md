@@ -20,8 +20,8 @@ same way — a struct declaring `is RegionRef`, whose `alloc`, `init`, `alias`,
 `dealias` and `free` the compiler calls — but no more of the protocol below is
 built: no barriers, no weak references, no per-type record handed to a region,
 no region with global state, and no finalizing of a slice's elements when its
-region frees it. Of the strategies that motivate the whole design, pool and
-tracing GC are unwritten, and the arena is written only as a library value: the
+region frees it. Of the strategies that motivate the whole design, tracing GC
+is unwritten, and the arena and the pool are written only as library values: the
 `arena` package's `Arena`, a dynamic region allocated into by a call on the
 value (`a.alloc(v)`), not by a `+` allocation through a region ref,
 which is handed neither the region value nor the value's type. It finalizes
@@ -29,6 +29,14 @@ each value through `mem.finalize` when it dies, newest first; nothing yet
 pairs a reference with its arena's lifetime. Held in a local, an `Arena` is the
 **scratch arena**: `alloc` returns a borrow of that local, so the borrow rules
 are its whole safety, with their gaps (below, "Where each rule is enforced").
+The `pool` package's `Pool[T]` is a generational pool: `add` returns a
+`Ref[T]`, a slot's index and generation, which owns nothing and is checked
+against the slot each time it is used, through the pool value — `get` answers
+an `Option` of a borrow, `None` once the value is removed. The borrow `pool[r]`
+returns is checked like the scratch arena's; the one inside `get`'s `Option`
+is not (a borrow held inside another value carries no lifetime), and no
+invariant lifetime yet pairs a `Ref` with its own pool, so one used with
+another pool of its type is merely bounds- and generation-checked there.
 
 The argument is in *Memory Managed Your Way* (`conesite/public/memory.html`) and
 `c:/src/progling/content/post/gradual-memory-management.md`. The origin is

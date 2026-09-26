@@ -1,0 +1,157 @@
+// When a pool's values die. Each Fin records its death by appending its digit
+// to 'log', so a log of 312 says 3 died, then 1, then 2. Every expected log is
+// worked out by hand from the rules:
+// - 'remove' finalizes its value at once, where it sits, exactly once: the
+//   value's 'final', then its fields', then the owners its fields hold
+//   (mem.finalize, the death the compiler builds for the type);
+// - a value already removed is not finalized again, by a second 'remove' or
+//   by the pool's death;
+// - the pool's death finalizes every value still in it, in slot order (not
+//   the order they were added), then frees its block;
+// - growing moves values without finalizing any.
+
+mod finalize;
+
+import testing use *;
+import pool use *;
+import collections use *;
+
+mut log = 0i64;
+fn note(d i64) { log = log * 10i64 + d; }
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { note(n); }
+}
+
+fn removeOnce() {
+  mut p = Pool[Fin].empty();
+  imm a = p.add(Fin[1]);
+  imm b = p.add(Fin[2]);
+  imm c = p.add(Fin[3]);
+  p.remove(b);
+  expectInt(log, 2, "remove finalizes its value at once");
+  p.remove(b);
+  expectInt(log, 2, "and a second remove does not again");
+}
+
+// Slot 0 is removed and taken by 4, so slot order is 4, 2, 3
+fn slotOrder() {
+  mut p = Pool[Fin].empty();
+  imm a = p.add(Fin[1]);
+  p.add(Fin[2]);
+  p.add(Fin[3]);
+  p.remove(a);
+  p.add(Fin[4]);
+  log = 0;
+}
+
+// Nine values grow the block twice (4, 8, 16), moving them each time
+fn growsThenDies() {
+  mut p = Pool[Fin].empty();
+  mut i = 1i64;
+  while i <= 9i64 { p.add(Fin[i]); i = i + 1i64; }
+  expectInt(log, 0, "growing finalizes nothing");
+  expectUInt(u64[p.capacity()], 16, "grown twice");
+}
+
+// A value with owning fields: removing it releases what they hold
+struct HoldsSo { pub n i64; pub o +so Fin; fn final(self &uni) { note(n); } }
+
+fn owners() {
+  mut p = Pool[HoldsSo].empty();
+  imm a = p.add(HoldsSo[1, +so Fin[2]]);
+  p.add(HoldsSo[3, +so Fin[4]]);
+  p.remove(a);
+  expectInt(log, 12, "the value, then the owner its field held");
+  log = 0;
+}
+
+// Owning references as the values themselves
+fn soValues() {
+  mut p = Pool[+so Fin].empty();
+  imm a = p.add(+so Fin[1]);
+  p.add(+so Fin[2]);
+  p.remove(a);
+  expectInt(log, 1, "a +so value removed is freed and finalized");
+  log = 0;
+}
+
+fn rcValues() {
+  imm shared = +rc-mut Fin[7];
+  mut p = Pool[+rc-mut Fin].empty();
+  imm a = p.add(shared);
+  imm b = p.add(shared);
+  p.remove(a);
+  expectInt(log, 0, "an +rc value removed counts one owner down");
+  p.remove(b);
+  expectInt(log, 0, "and another; the local still holds it");
+}
+
+// A value that needs no finalizing: nothing is run for it, and the pool
+// still frees its block (a leak here would not show; the case is that it
+// compiles and runs the path that skips finalizing)
+fn plain() {
+  mut p = Pool[i64].empty();
+  imm a = p.add(1);
+  p.add(2);
+  p.remove(a);
+  expectUInt(u64[p.len()], 1, "one left");
+}
+
+// Strings, whose death frees their own blocks
+fn strings() {
+  mut p = Pool[String].empty();
+  imm a = p.add(String.from("hello"));
+  imm b = p.add(String.from("world"));
+  p.remove(a);
+  imm c = p.add(String.from("there"));
+  (&mut p[b]).append("!");
+  expectStr(p[c].view(), "there", "the new string in the reused slot");
+  expectStr(p[b].view(), "world!", "the other, appended to in place");
+}
+
+// A pool of pools: removing an inner pool is its death, which finalizes its
+// values; the outer pool's death finalizes the inner pools left, each of
+// which finalizes its own
+fn nested() {
+  mut outer = Pool[Pool[Fin]].empty();
+  mut one = Pool[Fin].empty();
+  one.add(Fin[1]);
+  one.add(Fin[2]);
+  mut two = Pool[Fin].empty();
+  two.add(Fin[3]);
+  imm r1 = outer.add(one);
+  imm r2 = outer.add(two);
+  (&mut outer[r2]).add(Fin[4]);
+  expectInt(log, 0, "moving pools in finalizes nothing");
+  outer.remove(r1);
+  expectInt(log, 12, "an inner pool removed: its values die");
+  log = 0;
+}
+
+fn main() i32 {
+  removeOnce();
+  expectInt(log, 213, "the pool's death: 1 and 3 in slot order; 2 not again");
+  log = 0;
+  slotOrder();
+  expectInt(log, 423, "in slot order, not the order they were added");
+  log = 0;
+  growsThenDies();
+  expectInt(log, 123456789, "each value once, after the moves");
+  log = 0;
+  owners();
+  expectInt(log, 34, "the pool's death releases the owners its values hold");
+  log = 0;
+  soValues();
+  expectInt(log, 2, "the pool's death frees its +so values");
+  log = 0;
+  rcValues();
+  expectInt(log, 7, "the value dies with its last owner, the local");
+  log = 0;
+  plain();
+  strings();
+  nested();
+  expectInt(log, 34, "the outer pool's death: the inner pool left, and its values");
+  done();
+}

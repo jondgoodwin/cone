@@ -14,7 +14,7 @@
     <div class="text">
 
 	<p style="margin-left: 40px;"><i>Note: Only the single-owner (so) and reference-counting (rc) strategies
-		exist, in the core package; tracing GC and pool are not built. An arena is built only as a value of
+		exist, in the core package; tracing GC is not built. An arena is built only as a value of
 		the <span class="pre">arena</span> package: <span class="pre">mut a = Arena.empty()</span>, allocated into with
 		<span class="pre">a.alloc(value)</span>, which returns a borrowed
 		<span class="pre">&amp;mut</span> reference, not with <span class="pre">+</span>. When the
@@ -25,6 +25,17 @@
 		another value, is not yet caught; the pairing of references with their arena by invariant
 		lifetimes is not built. A block it cannot allocate ends the program through the C library's
 		<span class="pre">abort</span>.
+		A pool is built likewise only as a value of the <span class="pre">pool</span> package, and only its
+		generational kind, not the <span class="pre">RcPool</span> and <span class="pre">SoPool</span> below: <span class="pre">mut p = Pool[T].empty()</span>;
+		<span class="pre">p.add(value)</span> returns a <span class="pre">Ref[T]</span>, a slot and a
+		generation, which owns nothing and is copied freely; <span class="pre">p.get(r)</span> answers
+		<span class="pre">Some</span> borrow of the value, or <span class="pre">None</span> once
+		<span class="pre">p.remove(r)</span> has finalized it, even after another value takes its slot;
+		<span class="pre">p[r]</span> and <span class="pre">&amp;mut p[r]</span> borrow it, ending the program if
+		it has been removed. The borrow in <span class="pre">get</span>'s Option is not yet checked against
+		the pool's lifetime, nothing yet stops the pool changing or dying while a borrow of one of its values
+		is used, and a <span class="pre">Ref</span> is not yet paired with its own pool: used with another
+		pool of the same type, it is checked there and cannot reach outside that pool's memory.
 		A region is written as a struct
 		declaring <span class="pre">is RegionRef</span>, not with a <span class="pre">region</span> declaration:
 		so is <span class="pre">struct so is RegionRef, Move</span>, with <span class="pre">fn alloc(size usize) *u8</span>

@@ -1,0 +1,81 @@
+// What happens when a slot's generations run out. A slot's generation is a
+// u32, odd while it holds a value, so a slot serves 2^31 occupants; after
+// the last it is retired, never taken again, so no old reference to it can
+// ever come alive. Reaching 2^31 takes too long for a test, so these pools
+// are made with 'withLastGeneration', which sets a lower last generation;
+// the rule is the same. Expected values worked out by hand: with the last
+// generation 5, a slot's occupants are generations 1, 3 and 5.
+
+mod generations;
+
+import testing use *;
+import pool use *;
+
+mut log = 0i64;
+fn note(d i64) { log = log * 10i64 + d; }
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { note(n); }
+}
+
+fn retired() {
+  mut p = Pool[Fin].withLastGeneration(5u32);
+  imm r1 = p.add(Fin[1]);
+  p.remove(r1);
+  imm r3 = p.add(Fin[2]);
+  p.remove(r3);
+  imm r5 = p.add(Fin[3]);
+  expectUInt(u64[r5.slot()], 0, "the third occupant of slot 0");
+  expectUInt(u64[r5.generation()], 5, "at the last generation");
+  expect(p.remove(r5), "is removed as any other");
+  expectInt(log, 123, "and finalized as any other");
+  expectUInt(u64[p.retiredSlots()], 1, "slot 0 is retired");
+  imm r = p.add(Fin[4]);
+  expectUInt(u64[r.slot()], 1, "the next value takes a fresh slot");
+  expectUInt(u64[r.generation()], 1, "as its first occupant");
+  expect(!p.alive(r1) and !p.alive(r3) and !p.alive(r5), "no reference to slot 0 is alive");
+  expect(!p.alive(Ref[Fin].of(0u32, 7u32)), "nor one at a generation it never reached");
+  expectUInt(u64[p.len()], 1, "one value");
+  log = 0;
+}
+
+// A slot retired at its last generation is not finalized again at the
+// pool's death, and a live value at its last generation is
+fn retiredAtDeath() {
+  mut p = Pool[Fin].withLastGeneration(3u32);
+  imm a = p.add(Fin[1]);
+  imm b = p.add(Fin[2]);
+  p.remove(a);
+  imm c = p.add(Fin[3]);
+  expectUInt(u64[c.generation()], 3, "slot 0's last occupant");
+  p.remove(c);
+  expectUInt(u64[p.retiredSlots()], 1, "slot 0 retired");
+  imm d = p.add(Fin[4]);
+  expectUInt(u64[d.slot()], 2, "a fresh slot");
+  p.remove(b);
+  imm e = p.add(Fin[5]);
+  expectUInt(u64[e.slot()], 1, "slot 1's second occupant");
+  expectUInt(u64[e.generation()], 3, "at its last generation");
+  log = 0;
+}
+
+// The last generation at its lowest: every slot serves one occupant
+fn oneEach() {
+  mut p = Pool[i64].withLastGeneration(0u32);
+  imm a = p.add(1);
+  p.remove(a);
+  imm b = p.add(2);
+  expectUInt(u64[b.slot()], 1, "no slot is taken twice");
+  expectUInt(u64[p.retiredSlots()], 1, "the first retired");
+}
+
+fn main() i32 {
+  retired();
+  expectInt(log, 4, "the pool's death: the one live value");
+  log = 0;
+  retiredAtDeath();
+  expectInt(log, 54, "slot 1's last occupant and slot 2's, once each");
+  oneEach();
+  done();
+}
