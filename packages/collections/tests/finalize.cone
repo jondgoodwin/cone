@@ -1,0 +1,179 @@
+// When a collection's elements die, and in what order. Each Fin records its
+// death by appending its digit to 'log', so a log of 312 says 3 died, then 1,
+// then 2. Every expected log is worked out by hand from the rules:
+// - a list's death finalizes its values first to last, then frees its block;
+// - 'pop' and 'remove' move a value out, and it dies where it ends up (here,
+//   the binding of the match arm, at the arm's end);
+// - 'set' and a dictionary's replacing 'insert' finalize what they replace;
+// - growing, swapping and rehashing move values without finalizing any;
+// - a collection behind '+so' dies with its owner, and one behind '+rc' with
+//   its last owner, once.
+
+mod finalize;
+
+import testing use *;
+import collections use *;
+
+mut log = 0i64;
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { log = log * 10i64 + n; }
+}
+
+fn listDies() {
+  mut l = List[Fin].empty();
+  l.push(Fin[1]);
+  l.push(Fin[2]);
+  l.push(Fin[3]);
+}
+
+// Nine pushes grow the block twice (4, 8, 16) and move every value each time
+fn growsThenDies() {
+  mut l = List[Fin].empty();
+  mut i = 1i64;
+  while i <= 9i64 { l.push(Fin[i]); i = i + 1i64; }
+  expectInt(log, 0, "growing finalizes nothing");
+  expectUInt(u64[l.capacity()], 16, "grown twice");
+}
+
+fn popped() {
+  mut l = List[Fin].empty();
+  l.push(Fin[1]);
+  l.push(Fin[2]);
+  l.push(Fin[3]);
+  match l.pop() {
+    case imm s Some {expectInt(s.value.n, 3, "popped 3");}
+    case is None {expect(false, "popped 3");}
+  }
+  expectInt(log, 3, "the popped value dies with its binding");
+}
+
+fn replaced() {
+  mut l = List[Fin].empty();
+  l.push(Fin[1]);
+  l.push(Fin[2]);
+  l.set(0usize, Fin[5]);
+  expectInt(log, 1, "set finalizes the value it replaces");
+}
+
+fn swapped() {
+  mut l = List[Fin].empty();
+  l.push(Fin[1]);
+  l.push(Fin[2]);
+  l.push(Fin[3]);
+  l.swap(0usize, 2usize);
+  expectInt(log, 0, "swap finalizes nothing");
+}
+
+fn cleared() {
+  mut l = List[Fin].empty();
+  l.push(Fin[1]);
+  l.push(Fin[2]);
+  l.clear();
+  expectInt(log, 12, "clear finalizes first to last");
+  l.push(Fin[3]);
+}
+
+// The inner lists die in order, each finalizing its own values in order
+fn nested() {
+  mut outer = List[List[Fin]].empty();
+  mut first = List[Fin].empty();
+  first.push(Fin[1]);
+  first.push(Fin[2]);
+  mut second = List[Fin].empty();
+  second.push(Fin[3]);
+  outer.push(first);
+  outer.push(second);
+}
+
+fn singleOwner() {
+  imm owned = +so List[Fin].empty();
+  owned.push(Fin[4]);
+  owned.push(Fin[5]);
+  expectUInt(u64[owned.len()], 2, "pushed through its so owner");
+}
+
+// Two owners of one list: the first to go finalizes nothing
+fn sharedOwners() {
+  imm a = +rc-mut List[Fin].empty();
+  {
+    imm b = a;
+    b.push(Fin[7]);
+  }
+  expectInt(log, 0, "one owner of two gone, nothing finalized");
+  a.push(Fin[8]);
+  expectUInt(u64[a.len()], 2, "both owners pushed to the one list");
+}
+
+fn dictEntries() {
+  mut d = Dict[String, Fin].empty();
+  d.insert(String.from("a"), Fin[1]);
+  d.insert(String.from("a"), Fin[2]);
+  expectInt(log, 1, "a replacing insert finalizes the old value");
+  d.insert(String.from("b"), Fin[3]);
+  match d.remove("b") {
+    case imm s Some {expectInt(s.value.n, 3, "removed 3");}
+    case is None {expect(false, "removed 3");}
+  }
+  expectInt(log, 13, "the removed value dies with its binding");
+}
+
+// Twenty entries rehash the block from 8 slots to 16 to 32, moving every
+// value; none dies until the dictionary does, and then every one, once:
+// the log is order-dependent, so count and add them instead
+mut deaths = 0i64;
+mut sum = 0i64;
+struct Counted {
+  pub n i64;
+  fn final(self &uni) { deaths = deaths + 1i64; sum = sum + n; }
+}
+
+fn dictGrows() {
+  mut d = Dict[String, Counted].empty();
+  mut i = 1i64;
+  while i <= 20i64 {
+    mut key = String.from("key");
+    key.appendInt(i);
+    d.insert(key, Counted[i]);
+    i = i + 1i64;
+  }
+  expectInt(deaths, 0, "rehashing finalizes nothing");
+  expectUInt(u64[d.capacity()], 32, "rehashed twice");
+}
+
+fn main() i32 {
+  listDies();
+  expectInt(log, 123, "a list's values die first to last");
+  log = 0;
+  growsThenDies();
+  expectInt(log, 123456789, "each of nine dies once, in order, after growing");
+  log = 0;
+  popped();
+  expectInt(log, 312, "then the rest, in order");
+  log = 0;
+  replaced();
+  expectInt(log, 152, "then the replacement and the other");
+  log = 0;
+  swapped();
+  expectInt(log, 321, "swapped values die where they were moved");
+  log = 0;
+  cleared();
+  expectInt(log, 123, "cleared ones once, the later one at death");
+  log = 0;
+  nested();
+  expectInt(log, 123, "a list of lists");
+  log = 0;
+  singleOwner();
+  expectInt(log, 45, "a list behind so dies with its owner");
+  log = 0;
+  sharedOwners();
+  expectInt(log, 78, "a list behind rc dies once, with its last owner");
+  log = 0;
+  dictEntries();
+  expectInt(log, 132, "the remaining entry dies with the dictionary");
+  dictGrows();
+  expectInt(deaths, 20, "each of twenty entries dies once");
+  expectInt(sum, 210, "1 + 2 + ... + 20");
+  done();
+}

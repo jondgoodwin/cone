@@ -1,0 +1,189 @@
+// Dict[String, V]: inserting, replacing, finding, removing, colliding and
+// growing. Every expected value is worked out by hand from the dictionary's
+// rules and FNV-1a's definition:
+// - the block starts at 8 slots and doubles before full and removed slots
+//   together would pass three quarters of it, so it holds 6 entries in 8
+//   slots, 12 in 16, 24 in 32, 48 in 64, 96 in 128, and 100 need 256; when
+//   removed slots are most of it, it is rebuilt at the same size instead;
+// - a key's first slot is its hash's low bits. For a one-byte key c, the hash
+//   is (basis ^ c) * prime; the basis ends in binary 101 and the prime in 011,
+//   so the low three bits are ((5 ^ (c & 7)) * 3) & 7. The letters a, i, q, y
+//   (0x61, 0x69, 0x71, 0x79) all end in 001, giving (4 * 3) & 7 = 4; h, p, x
+//   (0x68, 0x70, 0x78) end in 000, giving (5 * 3) & 7 = 7. The test checks
+//   those against 'hashBytes' before relying on them;
+// - a collision steps on to the next slot, wrapping from the last to the
+//   first; 'keys' lists the keys in slot order.
+
+mod dict;
+
+import testing use *;
+import collections use *;
+
+fn main() i32 {
+  // Empty: no block yet
+  mut d = Dict[String, i64].empty();
+  expectUInt(u64[d.len()], 0, "empty length");
+  expectUInt(u64[d.capacity()], 0, "empty capacity");
+  expectBool(d.contains("core"), false, "empty contains nothing");
+  expectNone(d.remove("core"), "removing from empty");
+
+  // Insert, then replace
+  expectBool(d.insert(String.from("core"), 1), false, "a new key");
+  expectUInt(u64[d.capacity()], 8, "the first entry makes 8 slots");
+  expectBool(d.insert(String.from("stdio"), 2), false, "another new key");
+  expectBool(d.insert(String.from("core"), 5), true, "the same key replaces");
+  expectUInt(u64[d.len()], 2, "replacing adds nothing");
+  expectInt(*d["core"], 5, "the replaced value");
+  expectInt(*d["stdio"], 2, "the other value");
+  expectBool(d.contains("stdio"), true, "contains stdio");
+  expectBool(d.contains("std"), false, "not a prefix of a key");
+  expectBool(d.contains(""), false, "not the empty key");
+  expectOpt(d.remove("stdio"), 2, "removed stdio");
+  expectBool(d.contains("stdio"), false, "stdio is gone");
+  expectUInt(u64[d.len()], 1, "one left");
+
+  // The slot arithmetic above, checked
+  expectUInt(hashBytes("a") & 7u64, 4, "a starts at slot 4");
+  expectUInt(hashBytes("i") & 7u64, 4, "i starts at slot 4");
+  expectUInt(hashBytes("q") & 7u64, 4, "q starts at slot 4");
+  expectUInt(hashBytes("y") & 7u64, 4, "y starts at slot 4");
+  expectUInt(hashBytes("h") & 7u64, 7, "h starts at slot 7");
+  expectUInt(hashBytes("p") & 7u64, 7, "p starts at slot 7");
+  expectUInt(hashBytes("x") & 7u64, 7, "x starts at slot 7");
+
+  // Collisions: a, i, q take slots 4, 5, 6
+  mut c = Dict[String, i64].empty();
+  c.insert(String.from("a"), 1);
+  c.insert(String.from("i"), 2);
+  c.insert(String.from("q"), 3);
+  expectKeys(c.keys(), "a", "i", "q", "", "colliding keys in slots 4, 5, 6");
+  expectInt(*c["q"], 3, "the third of three colliding keys");
+  // Removing i leaves slot 5 marked removed: q, past it, is still found
+  expectOpt(c.remove("i"), 2, "removed the middle one");
+  expectBool(c.contains("i"), false, "i is gone");
+  expectBool(c.contains("q"), true, "q is found past the removed slot");
+  expectInt(*c["q"], 3, "q's value past the removed slot");
+  expectUInt(u64[c.len()], 2, "two left");
+  // y also starts at 4, and takes the removed slot 5
+  c.insert(String.from("y"), 4);
+  expectKeys(c.keys(), "a", "y", "q", "", "y reuses the removed slot");
+  // i again: 4, 5, 6 are full, so slot 7
+  c.insert(String.from("i"), 5);
+  expectKeys(c.keys(), "a", "y", "q", "i", "i comes back in slot 7");
+  expectInt(*c["i"], 5, "i's new value");
+  expectInt(*c["a"], 1, "a untouched");
+  expectBool(c.insert(String.from("y"), 6), true, "replacing a colliding key");
+  expectInt(*c["y"], 6, "y replaced");
+  expectUInt(u64[c.len()], 4, "four entries");
+
+  // Wrapping: h, p, x all start at slot 7, the last; p and x wrap to 0 and 1,
+  // so in slot order they come first
+  mut w = Dict[String, i64].empty();
+  w.insert(String.from("h"), 1);
+  w.insert(String.from("p"), 2);
+  w.insert(String.from("x"), 3);
+  expectKeys(w.keys(), "p", "x", "h", "", "wrapped past the last slot");
+  expectInt(*w["x"], 3, "found after wrapping");
+
+  // Removed slots rebuilt away: six entries fill 8 slots to the limit;
+  // removing five leaves one entry and five removed slots, so the next insert
+  // (one entry, five removed and one more, 7 of 8) rebuilds the block at the
+  // same size, since one entry is far under half of it
+  mut r = Dict[String, i64].empty();
+  r.insert(String.from("a"), 1);
+  r.insert(String.from("b"), 2);
+  r.insert(String.from("c"), 3);
+  r.insert(String.from("d"), 4);
+  r.insert(String.from("e"), 5);
+  r.insert(String.from("f"), 6);
+  expectUInt(u64[r.capacity()], 8, "six fit in eight");
+  r.remove("a");
+  r.remove("b");
+  r.remove("c");
+  r.remove("d");
+  r.remove("e");
+  r.insert(String.from("g"), 7);
+  expectUInt(u64[r.capacity()], 8, "rebuilt at the same size");
+  expectUInt(u64[r.len()], 2, "f and g");
+  expectInt(*r["f"] + *r["g"], 13, "6 + 7");
+
+  // Growth: k0 to k99, each mapped to its square. 0^2 + 1^2 + ... + 99^2 =
+  // 99 * 100 * 199 / 6 = 328350
+  mut g = Dict[String, i64].empty();
+  mut n = 0i64;
+  while n < 100i64 {
+    mut key = String.from("k");
+    key.appendInt(n);
+    g.insert(key, n * n);
+    n = n + 1i64;
+  }
+  expectUInt(u64[g.len()], 100, "a hundred entries");
+  expectUInt(u64[g.capacity()], 256, "8 doubled five times");
+  mut wrong = 0i64;
+  n = 0i64;
+  while n < 100i64 {
+    mut key = String.from("k");
+    key.appendInt(n);
+    if *g[key.view()] != n * n { wrong = wrong + 1i64; }
+    n = n + 1i64;
+  }
+  expectInt(wrong, 0, "every key finds its own square");
+  imm ks = g.keys();
+  expectUInt(u64[ks.len()], 100, "a hundred keys");
+  mut total = 0i64;
+  mut j = 0usize;
+  while j < ks.len() {
+    total = total + *g[ks[j].view()];
+    j = j + 1usize;
+  }
+  expectInt(total, 328350, "the squares found through the keys");
+  expectBool(g.contains("k100"), false, "no k100");
+
+  // String values, replaced and removed
+  mut s = Dict[String, String].empty();
+  s.insert(String.from("name"), String.from("core"));
+  s.insert(String.from("name"), String.from("stdio"));
+  expectStr(s["name"].view(), "stdio", "a replaced string value");
+  match s.remove("name") {
+    case imm v Some {expectStr(v.value.view(), "stdio", "a removed string value");}
+    case is None {expect(false, "a removed string value");}
+  }
+  expectUInt(u64[s.len()], 0, "none left");
+
+  done();
+}
+
+fn expectOpt(got Option[i64], want i64, label &[]u8) {
+  match got {
+    case imm s Some {expectInt(s.value, want, label);}
+    case is None {expect(false, label);}
+  }
+}
+
+fn expectNone(got Option[i64], label &[]u8) {
+  match got {
+    case is Some[i64] {expect(false, label);}
+    case is None[i64] {expect(true, label);}
+  }
+}
+
+// The keys in slot order, as one string: "a y q" for a, y, q
+fn expectKeys(keys List[String], k1 &[]u8, k2 &[]u8, k3 &[]u8, k4 &[]u8, label &[]u8) {
+  mut got = String.empty();
+  mut i = 0usize;
+  while i < keys.len() {
+    if i > 0usize { got.append(" "); }
+    got.append(keys[i].view());
+    i = i + 1usize;
+  }
+  mut want = String.from(k1);
+  want.append(" ");
+  want.append(k2);
+  want.append(" ");
+  want.append(k3);
+  if k4.len > 0usize {
+    want.append(" ");
+    want.append(k4);
+  }
+  expectStr(got.view(), want.view(), label);
+}

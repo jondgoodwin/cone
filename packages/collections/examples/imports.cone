@@ -1,0 +1,153 @@
+// A small piece of what Congo does, with the collections: read the header of
+// each of three modules (here from string literals, as if read from files),
+// split it into lines, pick out the 'mod' name and the 'import' names, keep
+// the names in a List[String] in the order first seen, count how many modules
+// import each in a Dict[String, i64], sort the names, and write the command
+// line and the hash-named build folder Congo would use.
+//
+//   congo run packages/collections/examples/imports.cone
+//
+// prints
+//
+//   hello imports stdio collections
+//   collections imports libc
+//   testing imports stdio libc
+//   3 packages: collections 1, libc 2, stdio 2
+//   conec -o build/debug hello.conebuild
+//   lone folder hello-1c4c13d940
+
+mod imports;
+
+import stdio use *;
+import collections use *;
+
+// One module's header: its name, and what it imports
+struct Header {
+  pub name String;
+  pub imports List[String];
+}
+
+// Read the 'mod' line and the 'import' lines of a header, skipping blank
+// lines and line comments, and stopping at anything else
+fn scan(text &[]u8) Header {
+  imm src = String.from(text);
+  imm lines = src.lines();
+  mut name = String.empty();
+  mut imports = List[String].empty();
+  mut i = 0usize;
+  mut going = true;
+  while going and i < lines.len() {
+    imm line = lines[i].trim();
+    if line.isEmpty() or line.startsWith("//") {
+      // nothing to read
+    }
+    else if line.startsWith("mod ") {
+      name = line.sub(4usize, wordEnd(&line, 4usize));
+    }
+    else if line.startsWith("import ") {
+      imports.push(line.sub(7usize, wordEnd(&line, 7usize)));
+    }
+    else {
+      going = false;
+    }
+    i = i + 1usize;
+  }
+  Header[name, imports];
+}
+
+// Where the name starting at 'from' ends: at a space, a ';' or the end
+fn wordEnd(line &String, from usize) usize {
+  mut end = from;
+  while end < line.len() and line[end] != ' ' and line[end] != ';' { end = end + 1usize; }
+  end;
+}
+
+// Every name, once, in the order first seen; and how many import each
+fn tally(h &Header, names &mut List[String], counts &mut Dict[String, i64]) {
+  mut i = 0usize;
+  while i < h.imports.len() {
+    imm name = h.imports[i].view();
+    if counts.contains(name) {
+      imm n = *counts[name];
+      counts.insert(String.from(name), n + 1);
+    }
+    else {
+      names.push(String.from(name));
+      counts.insert(String.from(name), 1);
+    }
+    i = i + 1usize;
+  }
+}
+
+// Insertion sort, by bytes
+fn sort(names &mut List[String]) {
+  mut i = 1usize;
+  while i < names.len() {
+    mut j = i;
+    while j > 0usize and names[j].compare(names[j - 1usize].view()) < 0i32 {
+      names.swap(j, j - 1usize);
+      j = j - 1usize;
+    }
+    i = i + 1usize;
+  }
+}
+
+fn show(h &Header) {
+  mut line = String.from(h.name.view());
+  line <- " imports";
+  mut i = 0usize;
+  while i < h.imports.len() {
+    line <- " ";
+    line <- h.imports[i].view();
+    i = i + 1usize;
+  }
+  line <- "\n";
+  printStr(line.view());
+}
+
+fn main() {
+  imm hello = scan("// The program\nmod hello;\n\nimport stdio use *;\nimport collections use *;\n\nfn main() {}\n");
+  imm coll = scan("mod collections;\r\n\r\nimport libc;\r\n\r\npub struct List[T] {}\r\n");
+  imm test = scan("// Checks for tests\nmod testing;\nimport stdio;\nimport libc;\nmut checks = 0u64;\n");
+  show(&hello);
+  show(&coll);
+  show(&test);
+
+  mut names = List[String].empty();
+  mut counts = Dict[String, i64].empty();
+  tally(&hello, &mut names, &mut counts);
+  tally(&coll, &mut names, &mut counts);
+  tally(&test, &mut names, &mut counts);
+  sort(&mut names);
+  mut summary = String.empty();
+  summary <- u64[names.len()];
+  summary <- " packages:";
+  mut i = 0usize;
+  while i < names.len() {
+    if i > 0usize { summary <- ","; }
+    summary <- " ";
+    summary <- names[i].view();
+    summary <- " ";
+    summary <- *counts[names[i].view()];
+    i = i + 1usize;
+  }
+  summary <- "\n";
+  printStr(summary.view());
+
+  // A command line, its path written with '/' as a build description does
+  mut cmd = String.from("conec -o build\\debug ");
+  cmd <- hello.name.view();
+  cmd <- ".conebuild";
+  cmd.replaceByte('\\', '/');
+  printStr(cmd.view());
+  printStr("\n");
+
+  // A lone file's build folder: its stem and ten hex digits of a hash of its
+  // path (FNV-1a, which Congo would use in place of SHA-1)
+  mut folder = String.from("lone folder ");
+  folder <- hello.name.view();
+  folder.appendByte('-');
+  folder.appendHex(hashBytes("C:/work/hello.cone"), 10usize);
+  printStr(folder.view());
+  printStr("\n");
+}

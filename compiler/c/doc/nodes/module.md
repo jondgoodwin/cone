@@ -808,8 +808,8 @@ full source, which is what an importer compiles the instance from
 
 ### The packages folder
 
-**`core`, `stdio`, `libc`, `posix`, `math3d` and `testing` are packages, laid out
-as Congo lays out every package.**
+**`core`, `stdio`, `libc`, `posix`, `math3d`, `testing` and `collections` are
+packages, laid out as Congo lays out every package.**
 The repository's root holds `packages/`, one folder per package, each holding
 a manifest, `congo.toml`, and the package's source, `src/<name>.cone`. None
 holds an include file: a program Congo builds is compiled against the one each
@@ -829,7 +829,12 @@ folder and its tests in its own `tests/`, neither of which any compile of the
 package sweeps; `congo test` builds both (`tools/congo/README.md`, "Testing a
 package"). `testing` is a Cone package over `stdio` and `libc`: the checks a
 package's tests call, ordinary library code that the compiler knows nothing of
-(`tools/congo/README.md`, "Writing checks with `testing`").
+(`tools/congo/README.md`, "Writing checks with `testing`"). `collections` is a
+Cone package over `libc`: a growable `List[T]`, an owned `String` and a
+string-keyed `Dict[K, V]`, each holding its elements in one block from the C
+allocator and moving them with core's `mem` intrinsics; its generic types'
+methods are written whole into its include file, so each importer compiles the
+instances it uses.
 The shape is Jon's [Jon 23 Sep], taken before C modules so the built-ins would
 stop being text inside the compiler: *"a whole root level folder … subdivided
 into the different libraries, each of which is effectively a package … stick
@@ -2259,7 +2264,7 @@ it says, and a library's root named from it, so a package compiled on its own
 spells its symbols as its importers do and exports what they link against. What
 stands in for
 packages is the **packages folder**: `core`, `stdio`, `libc`, `posix`,
-`math3d` and `testing` are there, found on the package search path and compiled into the importing object ("The
+`math3d`, `testing` and `collections` are there, found on the package search path and compiled into the importing object ("The
 packages folder" above).
 **A module conforms to a module trait**, `mod prog is Runner;`, checked where it
 is written, taking a copy of each default it does not declare ("Module traits"

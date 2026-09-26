@@ -39,7 +39,10 @@ Visual Studio projects stay at the root.
   allocator; `math3d` is 3D math (vectors, quaternions, matrices, colors,
   rectangles) ported from the Pegasus3D browser, its trigonometry from `libc`;
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
-  `done`), ordinary library code the compiler knows nothing of.
+  `done`), ordinary library code the compiler knows nothing of;
+  `collections` is a growable `List[T]`, an owned `String` and a string-keyed
+  `Dict[K, V]`, each holding its elements in one block from `libc`'s
+  allocator and moving them with core's `mem` intrinsics.
   A package's example programs live in its own `examples/` folder, each run
   with `congo run packages/<name>/examples/<file>.cone`, and its tests in its
   own `tests/` folder, one program each beside the output it must print;

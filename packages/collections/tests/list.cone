@@ -1,0 +1,126 @@
+// List[T] with plain values: growing, reading, changing, taking out. Every
+// expected value is worked out by hand from the list's rules:
+// - a list starts with no block; pushing grows it to 4, then doubles it, so
+//   10 pushes leave room for 16, and 1000 pushes room for 1024;
+// - 'reserve' and 'withCapacity' give a block exactly big enough when that is
+//   more than double the old one, and never less than 4.
+
+mod list;
+
+import testing use *;
+import collections use *;
+
+fn main() i32 {
+  // Empty: no block yet
+  mut a = List[i64].empty();
+  expectUInt(u64[a.len()], 0, "empty length");
+  expectUInt(u64[a.capacity()], 0, "empty capacity");
+  expectBool(a.isEmpty(), true, "empty is empty");
+  match a.pop() {
+    case is Some[i64] {expect(false, "pop of an empty list is None");}
+    case is None[i64] {expect(true, "pop of an empty list is None");}
+  }
+
+  // The squares of 0 to 9: 0+1+4+9+16+25+36+49+64+81 = 285
+  mut i = 0i64;
+  while i < 10i64 { a.push(i * i); i = i + 1i64; }
+  expectUInt(u64[a.len()], 10, "ten pushed");
+  expectUInt(u64[a.capacity()], 16, "4, 8, then 16");
+  expectBool(a.isEmpty(), false, "not empty");
+  expectInt(*a[0usize], 0, "first");
+  expectInt(*a[9usize], 81, "last");
+  mut sum = 0i64;
+  imm v = a.view();
+  mut j = 0usize;
+  while j < v.len { sum = sum + v[j]; j = j + 1usize; }
+  expectInt(sum, 285, "sum through view");
+  expectUInt(u64[v.len], 10, "view length");
+
+  // Popping takes from the end
+  match a.pop() {
+    case imm s Some {expectInt(s.value, 81, "popped last");}
+    case is None {expect(false, "popped last");}
+  }
+  expectUInt(u64[a.len()], 9, "nine left");
+  expectUInt(u64[a.capacity()], 16, "popping keeps the block");
+
+  // set replaces, swap exchanges: [0,1,4,...] becomes [100,1,4,...], then
+  // indexes 0 and 8 swap: 64 first, 100 last
+  a.set(0usize, 100);
+  expectInt(*a[0usize], 100, "set");
+  a.swap(0usize, 8usize);
+  expectInt(*a[0usize], 64, "swapped in");
+  expectInt(*a[8usize], 100, "swapped out");
+  a.swap(3usize, 3usize);
+  expectInt(*a[3usize], 9, "swap with itself");
+
+  // The append operator is push
+  a <- 7i64;
+  expectUInt(u64[a.len()], 10, "appended");
+  expectInt(*a[9usize], 7, "appended value");
+
+  // clear empties it and keeps its block
+  a.clear();
+  expectUInt(u64[a.len()], 0, "cleared");
+  expectUInt(u64[a.capacity()], 16, "clear keeps the block");
+  a.push(5);
+  expectInt(*a[0usize], 5, "reused after clear");
+
+  // Growth across many reallocations: 1000 values, each still where it was
+  // put. 0 + 1 + ... + 999 = 999 * 1000 / 2 = 499500
+  mut big = List[i64].empty();
+  mut n = 0i64;
+  while n < 1000i64 { big.push(n); n = n + 1i64; }
+  expectUInt(u64[big.len()], 1000, "a thousand");
+  expectUInt(u64[big.capacity()], 1024, "doubled to 1024");
+  mut total = 0i64;
+  mut misplaced = 0i64;
+  mut k = 0usize;
+  while k < big.len() {
+    total = total + *big[k];
+    if *big[k] != i64[k] { misplaced = misplaced + 1i64; }
+    k = k + 1usize;
+  }
+  expectInt(total, 499500, "sum of 0 to 999");
+  expectInt(misplaced, 0, "every value at its index");
+
+  // Capacity asked for: exactly 5; then reserving 10 more beyond 5 held is 15,
+  // more than double 5; then one more past 15 doubles to 30
+  mut c = List[u8].withCapacity(5usize);
+  expectUInt(u64[c.capacity()], 5, "withCapacity 5");
+  expectUInt(u64[c.len()], 0, "withCapacity holds nothing");
+  mut b = 0u8;
+  while b < 5u8 { c.push(b); b = b + 1u8; }
+  expectUInt(u64[c.capacity()], 5, "five fit in five");
+  c.reserve(10usize);
+  expectUInt(u64[c.capacity()], 15, "reserve past double");
+  c.reserve(10usize);
+  expectUInt(u64[c.capacity()], 15, "reserve that fits changes nothing");
+  while b < 16u8 { c.push(b); b = b + 1u8; }
+  expectUInt(u64[c.capacity()], 30, "one past 15 doubles");
+  expectUInt(u64[*c[15usize]], 15, "the sixteenth");
+
+  // A small capacity asked for is at least 4
+  imm tiny = List[i64].withCapacity(1usize);
+  expectUInt(u64[tiny.capacity()], 4, "never less than 4");
+
+  // A list of strings: its values are moved in and read through a borrow
+  mut names = List[String].empty();
+  names.push(String.from("core"));
+  names <- String.from("stdio");
+  names.push(String.from(""));
+  expectUInt(u64[names.len()], 3, "three names");
+  expectStr(names[0usize].view(), "core", "first name");
+  expectStr(names[1usize].view(), "stdio", "second name");
+  expectUInt(u64[names[2usize].len()], 0, "empty name");
+  match names.pop() {
+    case imm s Some {expectUInt(u64[s.value.len()], 0, "popped the empty name");}
+    case is None {expect(false, "popped the empty name");}
+  }
+  names.set(0usize, String.from("libc"));
+  names.swap(0usize, 1usize);
+  expectStr(names[0usize].view(), "stdio", "after swap, first");
+  expectStr(names[1usize].view(), "libc", "after swap, second");
+
+  done();
+}
