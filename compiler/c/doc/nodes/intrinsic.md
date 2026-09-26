@@ -7,7 +7,7 @@ they differ in who declares them and in how their meaning is decided.
 | --- | --- | --- |
 | Declared by | `corenumber.c`, `corelib.c`, `struct.c` (an enum's `==`) | `packages/core/src/core.cone`, as functions of the opaque struct `mem` |
 | Named | as a method or operator of a type | through `mem`: `mem.sizeof[T]()` |
-| Kinds | `NegIntrinsic` … `FinalAllIntrinsic` | `SizeofIntrinsic` onward (`FirstDeclaredIntrinsic`) |
+| Kinds | `NegIntrinsic` … `FinalAllIntrinsic` | `SizeofIntrinsic` … `TypeRecordIntrinsic` (`FirstDeclaredIntrinsic` onward) |
 | Meaning decided | at generation, by the LLVM type kind of argument 0 | by the registry, in Cone terms; the Cone type rides on the node (`typearg`) |
 | Reference page | none: the number and pointer methods | `doc/reference/refintrinsic.html` |
 
@@ -99,12 +99,22 @@ the two are tested against each other by running one scenario both ways
 | `readRaw[T]` | expansion | a load (`%rawread`) |
 | `writeRaw[T]` | expansion | a store |
 | `moveRaw[T]` | operation | `LLVMBuildMemMove` of `count * sizeof(T)` bytes |
+| `typeRecord[T]` | constant | the address of T's record, a private constant `genlTypeRecord` builds once per object |
 
 `finalize` runs what a region-held value's death runs, less the region's `free`
 (`genlRegionDeath`), which is what a local's death at its scope's end runs: its
 `final`, its fields that need it, then the owners it holds; a tuple element by
 element, an array in element order. `itypeNeedsFinal` is true exactly when that
 does something.
+
+`typeRecord`'s result is the one registry shape that is not built from `T`: a
+pointer to core's struct named `TypeRecord` (`typeRecordIsPtr`, shape
+`ShapePtrTypeRecord`), which the declaration's result names and generation
+builds. The record's finalizer is `finalize`'s expansion made a function of
+its own; what the record holds, and why each slot is never null, is
+[Generation](../phases/generation.md), "The allocation header". The same record
+is what a region whose `alloc` takes `ty *TypeRecord` is handed
+([What a region is](module.md)).
 
 ## Hazards
 
@@ -136,6 +146,6 @@ does something.
 | registry and checks | `ir/stmt/intrinsic.c`: `intrinsicRegistry`, `intrinsicDclNameRes`, `intrinsicDclTypeCheck` |
 | hooks | `fndcl.c` `fnDclNameRes`, `fnDclTypeCheck`, `fnDclIsExpanded` |
 | forced fallback | `--intrinsic-fallback` → `intrinsicForceFallback` (`conec.c`) |
-| generation | `genlexpr.c` `genlDeclaredIntrinsic`; `genlalloc.c` `genlFinalizeAt`; `genltype.c` `genlAlignof` |
+| generation | `genlexpr.c` `genlDeclaredIntrinsic`; `genlalloc.c` `genlFinalizeAt`, `genlTypeRecord`; `genltype.c` `genlAlignof` |
 | declarations | `packages/core/src/core.cone`, `struct @opaque mem` |
 | tests | `test/cases/intrinsic/` |

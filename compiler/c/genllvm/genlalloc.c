@@ -225,6 +225,174 @@ void genlTypeDrop(GenState *gen, FnDclNode *fnnode) {
     LLVMBuildRet(gen->builder, LLVMGetUndef(gen->emptyStructType));
 }
 
+// The fields of core's TypeRecord, in the order the compiler fills them
+enum TypeRecordField {
+    TypeRecSize,        // usize: the value's size
+    TypeRecAlign,       // usize: the value's alignment
+    TypeRecFinalize,    // &fn(p *u8): the value's death in place, less any free
+    TypeRecTrace,       // &fn(p *u8): its traced references, each handed to its region
+    TypeRecFlags,       // u32: TypeRecFlagFinal, TypeRecFlagTraced
+    TypeRecFieldCount
+};
+#define TypeRecFlagFinal  1u    // finalizing the value does something
+#define TypeRecFlagTraced 2u    // the value holds a traced reference (none can yet)
+
+// A function of type 'fntype' (a record slot's, 'fn(p *u8)') that does nothing:
+// what a record's finalizer is for a type with nothing to finalize, and every
+// record's trace, so neither slot is ever null. One per object.
+static LLVMValueRef genlTypeRecNothing(GenState *gen, LLVMTypeRef fntype) {
+    if (gen->tyrecnothing)
+        return gen->tyrecnothing;
+    LLVMValueRef fn = LLVMAddFunction(gen->module, "cone.tyrec.nothing", fntype);
+    LLVMSetLinkage(fn, LLVMPrivateLinkage);
+    LLVMBuilderRef builder = LLVMCreateBuilderInContext(gen->context);
+    LLVMPositionBuilderAtEnd(builder, LLVMAppendBasicBlockInContext(gen->context, fn, "entry"));
+    LLVMBuildRet(builder, LLVMGetUndef(LLVMGetReturnType(fntype)));
+    LLVMDisposeBuilder(builder);
+    return gen->tyrecnothing = fn;
+}
+
+// The finalizer a record holds for 'vtype': a function of type 'fntype' whose
+// body is the value's death in place at the address it is handed, as
+// 'mem.finalize' expands it (genlFinalizeAt): its 'final', its fields that
+// need it, then the owners it holds. It is generated as a function of its own,
+// so the generator's state for the function being generated is set aside
+// around it, as genlFn does for a nested one.
+static LLVMValueRef genlTypeRecFinalizer(GenState *gen, INode *vtype, LLVMTypeRef fntype, uint32_t index) {
+    char name[64];
+    sprintf(name, "cone.tyrec.final.%u", index);
+    LLVMValueRef fn = LLVMAddFunction(gen->module, name, fntype);
+    LLVMSetLinkage(fn, LLVMPrivateLinkage);
+
+    LLVMValueRef svfn = gen->fn;
+    LLVMBuilderRef svbuilder = gen->builder;
+    LLVMValueRef svallocaPoint = gen->allocaPoint;
+    INode *svfnblock = gen->fnblock;
+    int svexitzero = gen->exitzero;
+    gen->fn = fn;
+    gen->fnblock = NULL;
+    gen->exitzero = 0;
+
+    // A call it makes to an inlinable function needs a location in a debug
+    // build, so the finalizer has a subprogram, placed at the type
+    INode *typedcl = itypeGetTypeDcl(vtype);
+    if (!gen->opt->release) {
+        LLVMMetadataRef sptype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder, gen->difile, NULL, 0, 0);
+        LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, gen->difile,
+            name, strlen(name), name, strlen(name), gen->difile, typedcl->linenbr, sptype, 1, 1, typedcl->linenbr, 0, 0);
+        LLVMSetSubprogram(fn, sp);
+    }
+    gen->builder = LLVMCreateBuilderInContext(gen->context);
+    LLVMPositionBuilderAtEnd(gen->builder, LLVMAppendBasicBlockInContext(gen->context, fn, "entry"));
+    if (!gen->opt->release) {
+        unsigned col = typedcl->srcp && typedcl->linep ? (unsigned)(typedcl->srcp - typedcl->linep) : 0;
+        LLVMMetadataRef loc = LLVMDIBuilderCreateDebugLocation(gen->context, typedcl->linenbr, col, LLVMGetSubprogram(fn), NULL);
+        LLVMSetCurrentDebugLocation2(gen->builder, loc);
+    }
+    gen->allocaPoint = LLVMBuildAlloca(gen->builder, LLVMInt32TypeInContext(gen->context), "alloca_point");
+
+    genlFinalizeAt(gen, LLVMGetParam(fn, 0), vtype);
+    LLVMBuildRet(gen->builder, LLVMGetUndef(LLVMGetReturnType(fntype)));
+
+    if (LLVMGetInstructionParent(gen->allocaPoint))
+        LLVMInstructionEraseFromParent(gen->allocaPoint);
+    LLVMDisposeBuilder(gen->builder);
+    gen->builder = svbuilder;
+    gen->fn = svfn;
+    gen->allocaPoint = svallocaPoint;
+    gen->fnblock = svfnblock;
+    gen->exitzero = svexitzero;
+    return fn;
+}
+
+// Whether core's TypeRecord is laid out as the compiler fills it: two usizes,
+// two pointers to functions taking one pointer, and a u32
+static int genlTypeRecLayoutOk(GenState *gen, LLVMTypeRef rectype, LLVMTypeRef fntype) {
+    if (LLVMGetTypeKind(rectype) != LLVMStructTypeKind || LLVMCountStructElementTypes(rectype) != TypeRecFieldCount)
+        return 0;
+    LLVMTypeRef usize = genlType(gen, (INode*)usizeType);
+    return LLVMStructGetTypeAtIndex(rectype, TypeRecSize) == usize
+        && LLVMStructGetTypeAtIndex(rectype, TypeRecAlign) == usize
+        && LLVMGetTypeKind(LLVMStructGetTypeAtIndex(rectype, TypeRecFinalize)) == LLVMPointerTypeKind
+        && LLVMGetTypeKind(LLVMStructGetTypeAtIndex(rectype, TypeRecTrace)) == LLVMPointerTypeKind
+        && LLVMStructGetTypeAtIndex(rectype, TypeRecFlags) == LLVMInt32TypeInContext(gen->context)
+        && fntype != NULL && LLVMCountParamTypes(fntype) == 1;
+}
+
+// The function type a record's finalize and trace slots point at: 'fn(p *u8)',
+// read from core's declaration of the slot, so a call through it is typed as
+// the slot is
+static LLVMTypeRef genlTypeRecSlotFnType(GenState *gen, StructNode *recnode, unsigned index) {
+    if (recnode->fields.used != TypeRecFieldCount)
+        return NULL;
+    INode *slottype = itypeGetTypeDcl(((FieldDclNode *)nodelistGet(&recnode->fields, index))->vtype);
+    if (slottype->tag != RefTag)
+        return NULL;
+    INode *fnsig = itypeGetTypeDcl(((RefNode *)slottype)->vtexp);
+    return fnsig->tag == FnSigTag ? genlType(gen, fnsig) : NULL;
+}
+
+// The type record of 'vtype': a private constant of core's TypeRecord, what a
+// region's 'alloc(size usize, ty *TypeRecord)' is handed and what
+// 'mem.typeRecord[T]()' is the address of. Its size and alignment are the
+// target's (as mem.sizeof and mem.alignof); its finalizer is the value's death
+// in place (genlTypeRecFinalizer), or the shared do-nothing function where
+// finalizing does nothing, which its flags say too; its trace is the
+// do-nothing function until traced references exist. Built once per type in
+// each object, so two objects hold two records of one type: nothing compares
+// records by address. 'recptrtype' is the '*TypeRecord' the caller declared,
+// which names the struct to build.
+LLVMValueRef genlTypeRecord(GenState *gen, INode *vtype, INode *recptrtype) {
+    for (uint32_t i = 0; i < gen->tyreccnt; ++i) {
+        if (itypeIsSame(gen->tyrectypes[i], vtype))
+            return gen->tyrecs[i];
+    }
+
+    StructNode *recnode = (StructNode *)itypeGetTypeDcl(((StarNode *)itypeGetTypeDcl(recptrtype))->vtexp);
+    LLVMTypeRef rectype = genlType(gen, (INode*)recnode);
+    LLVMTypeRef finaltype = genlTypeRecSlotFnType(gen, recnode, TypeRecFinalize);
+    LLVMTypeRef tracetype = genlTypeRecSlotFnType(gen, recnode, TypeRecTrace);
+    if (!genlTypeRecLayoutOk(gen, rectype, finaltype) || tracetype != finaltype)
+        errorExit(ExitGen, "Internal error: core's TypeRecord is not laid out as the compiler fills it: "
+            "'size usize; align usize; finalize &fn(p *u8); trace &fn(p *u8); flags u32;'");
+
+    // The record is remembered before its finalizer is generated, which may
+    // ask for records of its own, this one among them
+    uint32_t index = gen->tyreccnt;
+    char name[64];
+    sprintf(name, "cone.tyrec.%u", index);
+    LLVMValueRef record = LLVMAddGlobal(gen->module, rectype, name);
+    LLVMSetGlobalConstant(record, 1);
+    LLVMSetLinkage(record, LLVMPrivateLinkage);
+    if (index == gen->tyrecmax) {
+        uint32_t newmax = gen->tyrecmax ? gen->tyrecmax * 2 : 16;
+        INode **types = (INode **)memAllocBlk(newmax * sizeof(INode *));
+        LLVMValueRef *recs = (LLVMValueRef *)memAllocBlk(newmax * sizeof(LLVMValueRef));
+        if (index) {
+            memcpy(types, gen->tyrectypes, index * sizeof(INode *));
+            memcpy(recs, gen->tyrecs, index * sizeof(LLVMValueRef));
+        }
+        gen->tyrectypes = types;
+        gen->tyrecs = recs;
+        gen->tyrecmax = newmax;
+    }
+    gen->tyrectypes[index] = vtype;
+    gen->tyrecs[index] = record;
+    gen->tyreccnt = index + 1;
+
+    int needsfinal = itypeNeedsFinal(vtype);
+    LLVMTypeRef valtype = genlType(gen, vtype);
+    LLVMTypeRef usize = genlType(gen, (INode*)usizeType);
+    LLVMValueRef fields[TypeRecFieldCount];
+    fields[TypeRecSize] = LLVMConstInt(usize, LLVMABISizeOfType(gen->datalayout, valtype), 0);
+    fields[TypeRecAlign] = LLVMConstInt(usize, LLVMABIAlignmentOfType(gen->datalayout, valtype), 0);
+    fields[TypeRecFinalize] = needsfinal ? genlTypeRecFinalizer(gen, vtype, finaltype, index) : genlTypeRecNothing(gen, finaltype);
+    fields[TypeRecTrace] = genlTypeRecNothing(gen, tracetype);
+    fields[TypeRecFlags] = LLVMConstInt(LLVMInt32TypeInContext(gen->context), needsfinal ? TypeRecFlagFinal : 0, 0);
+    LLVMSetInitializer(record, LLVMConstNamedStruct(rectype, fields, TypeRecFieldCount));
+    return record;
+}
+
 static void genlAliasElem(GenState *gen, LLVMValueRef elemptr, INode *elemtype, long long amount) {
     genlAliasHeld(gen, elemptr, elemtype, amount);
 }
@@ -705,9 +873,19 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
         sizeval = LLVMBuildAdd(gen->builder, sizeval, extra, "");
     }
 
-    // Do region allocation (using its alloc method) and then bitcast to multi-layered-struct ptr
+    // Do region allocation (using its alloc method) and then bitcast to multi-layered-struct ptr.
+    // An 'alloc' that asks for it is handed the value type's record after the
+    // size: an owning slice's is its element type's. One that does not is
+    // called with the size alone, exactly as before records existed.
     FnDclNode *allocmeth = (FnDclNode*)iTypeFindFnField(region, allocMethodName);
-    LLVMValueRef malloc = genlFnCallInternal(gen, SimpleDispatch, (INode*)allocmeth, 1, &sizeval, NULL);
+    LLVMValueRef allocargs[2];
+    uint32_t allocargcnt = 1;
+    allocargs[0] = sizeval;
+    if (regionAllocTakesRecord(region)) {
+        VarDclNode *recparm = (VarDclNode *)nodesGet(((FnSigNode *)itypeGetTypeDcl(allocmeth->vtype))->parms, 1);
+        allocargs[allocargcnt++] = genlTypeRecord(gen, reftype->vtexp, recparm->vtype);
+    }
+    LLVMValueRef malloc = genlFnCallInternal(gen, SimpleDispatch, (INode*)allocmeth, allocargcnt, allocargs, NULL);
     LLVMValueRef ptrstructype = LLVMBuildBitCast(gen->builder, malloc, reftype->typeinfo->ptrstructype, "");
 
     // Handle when allocation fails (returns NULL pointer)

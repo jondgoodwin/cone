@@ -49,7 +49,8 @@ typedef enum {
     ShapeT,             // T
     ShapePtrT,          // *T
     ShapeSliceT,        // &[]T: a borrowed slice, read only
-    ShapeSliceMutT      // &[]mut T: a borrowed slice, writable
+    ShapeSliceMutT,     // &[]mut T: a borrowed slice, writable
+    ShapePtrTypeRecord  // *TypeRecord: core's type record (typeRecordIsPtr)
 } IntrinsicShape;
 
 // Where the compiler answers an intrinsic: every one built so far is answered
@@ -95,6 +96,8 @@ static IntrinsicSpec intrinsicRegistry[] = {
         1, 2, {ShapePtrT, ShapeT}, ShapeVoid, 1, 0, PhaseExpansion, 1},
     {"moveRaw", MoveRawIntrinsic, "moveRaw[T](to *T, from *T, count usize)",
         1, 3, {ShapePtrT, ShapePtrT, ShapeUsize}, ShapeVoid, 1, 1, PhaseOperation, 1},
+    {"typeRecord", TypeRecordIntrinsic, "typeRecord[T]() *TypeRecord",
+        1, 0, {0}, ShapePtrTypeRecord, 0, 0, PhaseConstant, 1},
 };
 
 #define IntrinsicCount (sizeof(intrinsicRegistry) / sizeof(IntrinsicSpec))
@@ -158,6 +161,8 @@ static int intrinsicShapeIs(INode *type, IntrinsicShape shape, INode *tparm) {
         INode *perm = ref->perm == unknownType ? (INode *)roPerm : itypeGetTypeDcl(ref->perm);
         return perm == (INode *)(shape == ShapeSliceT ? roPerm : mutPerm);
     }
+    case ShapePtrTypeRecord:
+        return typeRecordIsPtr(type);
     default:
         break;
     }
@@ -197,6 +202,16 @@ static int intrinsicSigMatches(FnDclNode *fndcl, IntrinsicSpec *spec) {
 // reached from outside it (refintrinsic.html). A generic type's or a trait's is
 // refused: it would be cloned into each instance or implementer. The root is
 // the module with no owner, as an imported package's and a compile's root are
+static int intrinsicModuleIsCore(INode *owner) {
+    if (owner == NULL || owner->tag != ModuleTag)
+        return 0;
+    ModuleNode *mod = (ModuleNode *)owner;
+    while (mod->dclinfo.owner && mod->dclinfo.owner->tag == ModuleTag)
+        mod = (ModuleNode *)mod->dclinfo.owner;
+    return mod->dclinfo.owner == NULL && mod->namesym != NULL
+        && strcmp(&mod->namesym->namestr, "core") == 0;
+}
+
 static int intrinsicInCore(FnDclNode *fndcl) {
     INode *owner = fndcl->dclinfo.owner;
     if (owner && owner->tag == StructTag) {
@@ -205,13 +220,29 @@ static int intrinsicInCore(FnDclNode *fndcl) {
             return 0;
         owner = type->dclinfo.owner;
     }
-    if (owner == NULL || owner->tag != ModuleTag)
+    return intrinsicModuleIsCore(owner);
+}
+
+// The type record is known by its name and its package, as the intrinsics are:
+// what the compiler puts in one (genlTypeRecord) is the layout core declares,
+// which the compiler holds it to when it builds the first one. A struct of
+// another module named TypeRecord is an ordinary struct.
+int typeRecordIsPtr(INode *type) {
+    if (type == NULL)
         return 0;
-    ModuleNode *mod = (ModuleNode *)owner;
-    while (mod->dclinfo.owner && mod->dclinfo.owner->tag == ModuleTag)
-        mod = (ModuleNode *)mod->dclinfo.owner;
-    return mod->dclinfo.owner == NULL && mod->namesym != NULL
-        && strcmp(&mod->namesym->namestr, "core") == 0;
+    INode *ptr = type->tag == DerefTag || !isTypeNode(type) ? type : itypeGetTypeDcl(type);
+    if (ptr->tag != PtrTag && ptr->tag != DerefTag)
+        return 0;
+    INode *vtexp = ((StarNode *)ptr)->vtexp;
+    if (vtexp == NULL)
+        return 0;
+    // An unresolved name, or one a template still holds as an expression
+    INode *rec = isNameUseNode(vtexp) ? nameUseGetDcl((NameUseNode *)vtexp) : vtexp;
+    if (rec == NULL || rec->tag != StructTag)
+        return 0;
+    StructNode *strnode = (StructNode *)rec;
+    return strnode->namesym != NULL && strcmp(&strnode->namesym->namestr, "TypeRecord") == 0
+        && strnode->genericinfo == NULL && intrinsicModuleIsCore(strnode->dclinfo.owner);
 }
 
 // Check an '@intrinsic' declaration against the registry, once its signature

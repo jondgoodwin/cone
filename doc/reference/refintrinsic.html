@@ -159,6 +159,46 @@ fn @intrinsic finalize[T](p *T)
 		program error the compiler cannot detect. No fallback: the finalizer the compiler
 		builds for <span class="pre">T</span> is the implementation.</p>
 
+	<h3>typeRecord</h3>
+<pre>
+fn @intrinsic typeRecord[T]() *TypeRecord
+</pre>
+	<p>The address of <span class="pre">T</span>'s <b>type record</b>, a constant holding
+		what library code needs to handle a <span class="pre">T</span> it cannot name the
+		type of: a region that keeps values of many types, and must later finalize each.
+		<span class="pre">TypeRecord</span> is a struct core declares, so it is a name of
+		every module:</p>
+<pre>
+pub struct TypeRecord {
+  pub size usize;              // sizeof[T]()
+  pub align usize;             // alignof[T]()
+  pub finalize &amp;fn(p *u8);     // what finalize[T] does to the T at p
+  pub trace &amp;fn(p *u8);        // for a tracing region; does nothing yet
+  pub flags u32;               // bit 0: needsFinal[T](); bit 1: never set yet
+}
+</pre>
+	<p><span class="pre">size</span> and <span class="pre">align</span> are what
+		<span class="pre">sizeof</span> and <span class="pre">alignof</span> say.
+		<span class="pre">finalize</span> is a function that, called with the address of
+		a <span class="pre">T</span>, does exactly what <span class="pre">finalize[T]</span>
+		does to it, with the same needs: a live, initialized <span class="pre">T</span>
+		there, dead afterwards. Where <span class="pre">T</span> needs no finalizing it is a
+		function that does nothing, and bit 0 of <span class="pre">flags</span> is clear, so
+		a caller can skip the call. <span class="pre">trace</span> is meant for a tracing
+		collector, to find the traced references a value holds; since none can be declared
+		yet, it does nothing, and bit 1 of <span class="pre">flags</span> is never set.
+		Neither function pointer is ever null.</p>
+<pre>
+imm rec = mem.typeRecord[Point]() as &amp;TypeRecord;
+imm fin = rec.finalize;
+fin(p as *u8);          // p's Point dies where it sits
+</pre>
+	<p>Asking twice in one compiled object gives the same address; nothing says two
+		objects share one record, so records should not be compared across them. A region
+		can also be handed the record of every value it allocates, by declaring its
+		<span class="pre">alloc</span> to take one (<a href="refalloccust.html">Custom
+		Allocators</a>). A constant. No fallback.</p>
+
 	<h3>sliceFromParts and sliceFromPartsMut</h3>
 <pre>
 fn @intrinsic sliceFromParts[T](p *T, len usize) &amp;[]T
