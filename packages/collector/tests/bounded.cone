@@ -1,0 +1,114 @@
+// A long-running allocation loop stays in bounded memory. Each round builds a
+// tree of 15 nodes (depth 4; a node is a 32-byte header and 24 bytes of
+// value, 56) and drops it; 20,000 rounds allocate 300,000 objects, 16.8 MB.
+// Every bound is worked out by hand from the rules:
+// - an allocation collects first when it would take the heap past the
+//   trigger: twice what was live after the last collection, and never less
+//   than 256 KiB. What is live at any collection here is at most a tree in
+//   the making (840 bytes), so the trigger stays 256 KiB and the heap never
+//   passes it; 16.8 MB through a 256 KiB heap is at least 64 collections;
+// - under a limit the trigger is the limit, and garbage that needs
+//   finalizing is finalized by one collection and freed by the next, so a
+//   64 KiB heap (1,170 nodes) serves 300,000 finalizable nodes without an
+//   allocation ever failing, which would end the program.
+
+mod bounded;
+
+import testing use *;
+import collector;
+
+fn settle() {
+  gc.collect();
+  gc.collect();
+}
+
+struct Node { pub n i64; pub left Option[+gc-mut Node]; pub right Option[+gc-mut Node]; }
+
+mut nfinals = 0i64;
+struct FinNode {
+  pub n i64;
+  pub left Option[+gc-mut FinNode];
+  pub right Option[+gc-mut FinNode];
+  fn final(self &uni) { nfinals = nfinals + 1; }
+}
+
+fn tree(depth i64) Option[+gc-mut Node] {
+  if depth == 0 {
+    return None[+gc-mut Node][];
+  }
+  Some[+gc-mut Node][+gc-mut Node[depth, tree(depth - 1), tree(depth - 1)]];
+}
+
+fn finTree(depth i64) Option[+gc-mut FinNode] {
+  if depth == 0 {
+    return None[+gc-mut FinNode][];
+  }
+  Some[+gc-mut FinNode][+gc-mut FinNode[depth, finTree(depth - 1), finTree(depth - 1)]];
+}
+
+// Matched by value: through the 'mut' nodes an Option hangs from, a reference
+// into it could see another reference empty it while in use
+fn sum(t Option[+gc-mut Node]) i64 {
+  match t {
+    case imm s Some[+gc-mut Node] { s.value.n + sum(s.value.left) + sum(s.value.right); }
+    else { 0; }
+  }
+}
+
+fn finSum(t Option[+gc-mut FinNode]) i64 {
+  match t {
+    case imm s Some[+gc-mut FinNode] { s.value.n + finSum(s.value.left) + finSum(s.value.right); }
+    else { 0; }
+  }
+}
+
+fn round() i64 {
+  imm t = tree(4);
+  sum(t);
+}
+
+fn finRound() i64 {
+  imm t = finTree(4);
+  finSum(t);
+}
+
+const rounds = 20000i64;
+
+fn plain() {
+  imm c0 = gc.collections();
+  imm f0 = gc.freed();
+  mut peak = 0usize;
+  mut total = 0i64;
+  mut i = 0i64;
+  while i < rounds {
+    total = total + round();
+    if gc.liveBytes() > peak { peak = gc.liveBytes(); }
+    i = i + 1;
+  }
+  expectInt(total, rounds * 26, "every tree read back whole: 1*8 + 2*4 + 3*2 + 4*1 a tree");
+  expect(peak <= 262144usize, "the heap never passed the trigger, 256 KiB");
+  expect(gc.collections() - c0 >= 64usize, "at least 64 collections");
+  settle();
+  expectUInt(u64[gc.freed() - f0], 300000, "every node freed");
+}
+
+fn limited() {
+  gc.setLimit(65536usize);
+  mut total = 0i64;
+  mut i = 0i64;
+  while i < rounds {
+    total = total + finRound();
+    i = i + 1;
+  }
+  expectInt(total, rounds * 26, "every tree read back whole");
+  settle();
+  expectInt(nfinals, 300000, "every node finalized once");
+  expectUInt(u64[gc.liveObjects()], 0, "and freed");
+  gc.setLimit(0usize);
+}
+
+fn main() i32 {
+  plain();
+  limited();
+  done();
+}

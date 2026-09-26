@@ -1,0 +1,31 @@
+// A plain '+gc' allocation that cannot have its memory, even after the
+// collector's emergency collection, ends the program: the compiler's panic,
+// 'llvm.trap', which every region's failed plain allocation takes. The limit
+// is one leaf (40 bytes: a 32-byte header and an i64), held by a local, so a
+// second leaf cannot fit. The first line is written out before the second
+// leaf is asked for; the second would be written only if the program went on,
+// and is not. The exit status is the trap's on Windows, 0xC000001D (an
+// illegal instruction).
+
+mod nomemory;
+
+import stdio use *;
+import collector;
+import libc;
+
+struct Leaf { pub n i64; }
+
+fn hold() {
+  imm first = +gc-mut Leaf[1];
+  printStr("asking\n");
+  libc.fflush(libc.stdout());
+  imm second = +gc-mut Leaf[2];
+  printStr("went on\n");
+  libc.fflush(libc.stdout());
+}
+
+fn main() i32 {
+  gc.setLimit(40usize);
+  hold();
+  0;
+}

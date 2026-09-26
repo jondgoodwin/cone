@@ -1,0 +1,372 @@
+// The collector package: 'gc', a garbage-collected region, and its collector.
+// A value allocated '+gc' lives until nothing reaches it, and then the
+// collector finalizes it and gives its memory back. Its references copy for
+// free and drop for free: no count, no free at scope end.
+//
+//   mod scene;
+//   import collector;          // binds 'gc', the region, as well as 'collector'
+//
+//   struct Leaf {
+//     pub n i64;
+//     fn final(self &uni) { ... }
+//   }
+//   struct Pair { pub left +gc-mut Leaf; pub right +gc-mut Leaf; }
+//
+//   fn build() {
+//     mut p = +gc-mut Pair[+gc-mut Leaf[1], +gc-mut Leaf[2]];
+//     p.left = +gc-mut Leaf[3];   // Leaf 1 is garbage now
+//     gc.collect();               // Leaf 1's 'final' runs here
+//   }
+//
+// THE NAME. The package is 'collector' and its region ref is 'gc'. A module's
+// own name is bound in its namespace, so a package named 'gc' cannot declare a
+// struct 'gc' (Error 1011 at the struct): 'rcweak' and its 'rcw' are the
+// precedent. The 'mod' line below makes 'gc' the package's default fold, so a
+// bare 'import collector;' binds both names, and a program writes '+gc-mut
+// Leaf[1]' and 'gc.collect()'. 'import collector use *;' binds them too.
+//
+// WHAT A PROGRAM CALLS:
+//   gc.collect()          a full collection, now
+//   gc.stop(), start()    turn the automatic collections off and on again,
+//                         the stress mode's included. An allocation that
+//                         fails still collects (below), and gc.collect()
+//                         still does
+//   gc.setStress(on)      collect at every allocation, and scribble over
+//                         every object freed: a temporary the roots missed
+//                         shows at once. Setting the environment variable
+//                         CONE_GC_STRESS does the same for a whole run, from
+//                         its first allocation; gc.stressed() says if it is on
+//   gc.setLimit(bytes)    no more than this many bytes of '+gc' values (with
+//                         their headers) at once; 0, the default, is no limit.
+//                         What exhaustion looks like, on demand
+//   gc.liveObjects(), gc.liveBytes(), gc.collections(), gc.finalized(),
+//   gc.freed()            the collector's counts, for tests and tuning
+//
+// WHEN IT COLLECTS. Stop-the-world, and only inside an allocation (or
+// gc.collect()): '+gc T[...]' evaluates its value first, then calls 'alloc',
+// so at that moment every '+gc' reference the program holds is in a stack
+// slot the compiler registered (its roots), and none is only in a register.
+// An allocation collects first when the bytes allocated would pass the
+// trigger: twice what was live after the last collection, and never less
+// than 256 KiB (Lua's pause of 200%), or would pass the limit, where one is
+// set. This is the place Jon's safe points
+// replace later: the trigger's test moves to a frame's push and a loop's back
+// edge, and 'alloc' keeps only the emergency collection, with headroom.
+//
+// OUT OF MEMORY. An allocation the C library cannot satisfy, or that would
+// pass the limit, runs an emergency collection -- no finalizers run in it, as
+// in Acorn and Lua -- and tries once more. If that fails too, 'alloc' returns
+// null: a '?+gc' allocation is then None, and a plain '+gc' one panics (the
+// compiler's panic, 'llvm.trap', as for every region's failed allocation).
+//
+// HOW IT COLLECTS: Acorn's collector (acornvm, avm_gc.cpp), whole cycles at a
+// time, with Lua's separation of finalizers. Every object carries a header,
+// the region ref: the next object in its list, its link in the gray list, the
+// type record the compiler handed 'alloc', and its colour. A collection
+// - marks: every root is handed to 'mark' (mem.traceRoots), which turns a
+//   white object gray and puts it on the gray list; each gray object is taken
+//   off, made black, and its record's trace hands each '+gc' reference it
+//   holds to 'mark' in turn, until nothing is gray;
+// - separates: every object that needs finalizing and is still white is
+//   unreachable. It moves to the to-be-finalized list, and it and everything
+//   it reaches is marked, so all of it lives through this cycle;
+// - flips the current white, so every object still carrying the old one is
+//   garbage, and sweeps: each is freed, each survivor made the new white;
+// - finalizes: each separated object is marked finalized and put back among
+//   the ordinary objects, then its record's finalizer runs -- its 'final',
+//   then its fields', then the owners its fields hold are released ('+rc'
+//   counted down, '+so' finalized and freed). Newest first.
+// An object is finalized once, and freed by the first collection that finds
+// it unreachable after that: a CYCLE LATE, so a 'final' may read its '+gc'
+// children, which are still there, possibly finalized, never freed. A 'final'
+// may allocate; nothing it does starts a collection.
+//
+// Objects whose type needs no finalizing are never separated, and are freed
+// by the collection that finds them unreachable.
+
+mod collector use gc;
+
+import libc;
+
+// The colour bits: two whites, whose meanings swap at each flip, black, and
+// finalized. Gray is neither white nor black.
+const whites = 3u32;
+const black = 4u32;
+const finalizedBit = 8u32;
+
+// The least the trigger is, in bytes
+const minTrigger = 262144usize;
+
+// Every header is linked into exactly one of these lists (each a header's
+// address, 0 for empty, newest first):
+mut allgc = 0usize;        // objects with nothing to finalize, or finalized
+mut finobj = 0usize;       // objects to finalize when unreachable
+mut tobefnz = 0usize;      // unreachable, awaiting their finalizer
+mut grays = 0usize;        // during marking: gray objects, through 'gray'
+
+mut curWhite = 1u32;       // what a new object is born, and a survivor made
+mut inCollect = false;     // a collection (or its finalizers) is running
+mut autoOn = true;         // gc.stop() / gc.start()
+mut stressOn = false;
+mut envRead = false;
+mut maxBytes = 0usize;     // gc.setLimit; 0 is none
+
+mut totalBytes = 0usize;   // bytes held by '+gc' objects, headers included
+mut trigger = 262144usize; // collect when an allocation would pass this
+mut nobjects = 0usize;
+mut ncollections = 0usize;
+mut nfinalized = 0usize;
+mut nfreed = 0usize;
+
+// The header before every '+gc' value: the region ref. Its fields are public
+// because a private field is reached only through 'self', and the collector
+// walks lists of headers; a program never holds a header to read them from.
+pub struct gc is RegionRef, Traced {
+  pub next usize;      // the next object in its list
+  pub gray usize;      // its link in the gray list
+  pub ty *TypeRecord;  // the value's type record: size, alignment, finalizer, trace
+  pub marked u32;      // its colour
+
+  // '+gc T[...]': the byte count of {header, value}, and T's type record.
+  // The value has been evaluated already, so every root is in its slot.
+  fn alloc(size usize, ty *TypeRecord) *u8 {
+    readEnv();
+    imm bytes = objBytes(ty);
+    // The limit caps the trigger, so a heap held under a limit is collected
+    // (and finalized) in the ordinary way, not only in emergencies
+    imm overLimit = maxBytes != 0usize and totalBytes + bytes > maxBytes;
+    imm due = totalBytes + bytes > trigger or overLimit;
+    if !inCollect and autoOn and (stressOn or due) {
+      fullCollect(false);
+    }
+    mut p = tryMalloc(size, bytes);
+    if p as usize == 0usize and !inCollect {
+      fullCollect(true);
+      p = tryMalloc(size, bytes);
+    }
+    if p as usize == 0usize {
+      return p;
+    }
+    imm fin = ((ty as &TypeRecord).flags & 1u32) != 0u32;
+    mem.writeRaw(p as *gc, gc[if fin {finobj;} else {allgc;}, 0usize, ty, curWhite]);
+    if fin { finobj = p as usize; } else { allgc = p as usize; }
+    totalBytes = totalBytes + bytes;
+    nobjects = nobjects + 1usize;
+    p;
+  }
+
+  // A '+gc' reference was found, by a root or in a value being traced
+  fn mark(self &uni gc) {
+    shade(self as *gc as usize);
+  }
+
+  // Stress mode for the whole run, if CONE_GC_STRESS is set, read once
+  fn readEnv() {
+    if !envRead {
+      envRead = true;
+      if libc.getenv(&[]"CONE_GC_STRESS") as usize != 0usize {
+        stressOn = true;
+      }
+    }
+  }
+
+  // Memory for an object, unless it would pass the limit
+  fn tryMalloc(size usize, bytes usize) *u8 {
+    if maxBytes != 0usize and totalBytes + bytes > maxBytes {
+      return 0usize as *u8;
+    }
+    libc.malloc(size);
+  }
+
+  // n rounded up to a multiple of align, a power of two
+  fn roundUp(n usize, align usize) usize {
+    (n + align - 1usize) & (0usize - align);
+  }
+
+  // Where the value sits after its header: the {region, permission, value}
+  // layout, whose permission takes no room (the compiler refuses a traced
+  // region with one that does)
+  fn valueOffset(ty *TypeRecord) usize {
+    roundUp(mem.sizeof[gc](), (ty as &TypeRecord).align);
+  }
+
+  // The bytes an object takes, as the compiler sized it for 'alloc'
+  fn objBytes(ty *TypeRecord) usize {
+    imm rec = ty as &TypeRecord;
+    mut al = rec.align;
+    if al < mem.alignof[gc]() { al = mem.alignof[gc](); }
+    roundUp(valueOffset(ty) + rec.size, al);
+  }
+
+  fn header(at usize) &mut gc {
+    at as &mut gc;
+  }
+
+  // The value of the object whose header is at 'at'
+  fn valueOf(at usize) *u8 {
+    (at + valueOffset(header(at).ty)) as *u8;
+  }
+
+  // Mark the object at 'at': a white one turns gray, onto the gray list
+  fn shade(at usize) {
+    imm h = header(at);
+    if h.marked & whites != 0u32 {
+      h.marked = h.marked & finalizedBit;
+      h.gray = grays;
+      grays = at;
+    }
+  }
+
+  // Take each gray object off the list, make it black, and mark what it holds
+  fn propagate() {
+    while grays != 0usize {
+      imm at = grays;
+      imm h = header(at);
+      grays = h.gray;
+      h.marked = h.marked | black;
+      imm rec = h.ty as &TypeRecord;
+      if rec.flags & 2u32 != 0u32 {
+        imm tracefn = rec.trace;
+        tracefn(valueOf(at), 0u32);
+      }
+    }
+  }
+
+  // Move every object on finobj that marking did not reach to the end of
+  // tobefnz, keeping their order: newest first
+  fn separate() {
+    mut tail = tobefnz;
+    if tail != 0usize {
+      while header(tail).next != 0usize { tail = header(tail).next; }
+    }
+    mut prev = 0usize;
+    mut at = finobj;
+    while at != 0usize {
+      imm h = header(at);
+      imm nxt = h.next;
+      if h.marked & whites != 0u32 {
+        if prev == 0usize { finobj = nxt; } else { header(prev).next = nxt; }
+        h.next = 0usize;
+        if tail == 0usize { tobefnz = at; } else { header(tail).next = at; }
+        tail = at;
+      }
+      else {
+        prev = at;
+      }
+      at = nxt;
+    }
+  }
+
+  // Free every object in the list that carries the dead white, make every
+  // other one the current white, and return what is left, in its order
+  fn sweep(list usize) usize {
+    imm dead = whites ^ curWhite;
+    mut head = 0usize;
+    mut tail = 0usize;
+    mut at = list;
+    while at != 0usize {
+      imm h = header(at);
+      imm nxt = h.next;
+      if h.marked & dead != 0u32 {
+        imm bytes = objBytes(h.ty);
+        totalBytes = totalBytes - bytes;
+        nobjects = nobjects - 1usize;
+        nfreed = nfreed + 1usize;
+        // Under stress, a freed object is scribbled over first, so a
+        // reference the roots missed reads 0xDD bytes, not its old value
+        if stressOn { libc.memset(at as *u8, 221i32, bytes); }
+        libc.free(at as *u8);
+      }
+      else {
+        h.marked = (h.marked & finalizedBit) | curWhite;
+        if tail == 0usize { head = at; } else { header(tail).next = at; }
+        tail = at;
+      }
+      at = nxt;
+    }
+    if tail != 0usize { header(tail).next = 0usize; }
+    head;
+  }
+
+  // Run the finalizer of every object separated, newest first. Each is
+  // marked finalized and put among the ordinary objects before its finalizer
+  // runs, so it is never finalized again, and is freed once it is found
+  // unreachable.
+  fn callFinalizers() {
+    while tobefnz != 0usize {
+      imm at = tobefnz;
+      imm h = header(at);
+      tobefnz = h.next;
+      h.marked = h.marked | finalizedBit;
+      h.next = allgc;
+      allgc = at;
+      nfinalized = nfinalized + 1usize;
+      imm fin = (h.ty as &TypeRecord).finalize;
+      fin(valueOf(at));
+    }
+  }
+
+  // A whole collection, stop-the-world. An emergency one, run because memory
+  // ran out, runs no finalizer: those wait for the next ordinary collection,
+  // their objects and what they reach kept alive until then.
+  fn fullCollect(emergency Bool) {
+    if inCollect {
+      return;
+    }
+    inCollect = true;
+    ncollections = ncollections + 1usize;
+
+    // Mark everything the roots reach
+    grays = 0usize;
+    mem.traceRoots(0u32);
+    propagate();
+
+    // Separate the unreachable objects that need finalizing, and keep them,
+    // and everything they reach, alive through this cycle
+    separate();
+    mut at = tobefnz;
+    while at != 0usize {
+      shade(at);
+      at = header(at).next;
+    }
+    propagate();
+
+    // Flip the white: whatever still carries the old one is garbage
+    curWhite = whites ^ curWhite;
+    allgc = sweep(allgc);
+    finobj = sweep(finobj);
+    tobefnz = sweep(tobefnz);
+
+    trigger = totalBytes * 2usize;
+    if trigger < minTrigger { trigger = minTrigger; }
+
+    if !emergency {
+      callFinalizers();
+    }
+    inCollect = false;
+  }
+
+  // A full collection, now. Nothing happens if one is running already (a
+  // 'final' asking for one).
+  pub fn collect() {
+    fullCollect(false);
+  }
+  // Turn the automatic collections off, and on again
+  pub fn stop() { autoOn = false; }
+  pub fn start() { autoOn = true; }
+  // Collect at every allocation, or stop doing so; and whether it does
+  pub fn setStress(on Bool) { readEnv(); stressOn = on; }
+  pub fn stressed() Bool { readEnv(); stressOn; }
+  // No more than 'bytes' of objects at once, headers included; 0 is no limit
+  pub fn setLimit(bytes usize) { maxBytes = bytes; }
+
+  // Objects not yet freed: live ones, and finalized ones awaiting the
+  // collection that frees them
+  pub fn liveObjects() usize { nobjects; }
+  // Their bytes, headers included
+  pub fn liveBytes() usize { totalBytes; }
+  // Collections run, finalizers run, objects freed, since the program began
+  pub fn collections() usize { ncollections; }
+  pub fn finalized() usize { nfinalized; }
+  pub fn freed() usize { nfreed; }
+}

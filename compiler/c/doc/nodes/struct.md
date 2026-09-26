@@ -341,7 +341,8 @@ pins it.
 is where that is said.** A vtable slot holds one machine signature and a generic
 method has one per instantiation, so no slot can be filled from it. The slot is
 counted anyway, which leaves a requirement no type satisfies and every coercion
-to `&<Trait` refused; `ErrorGenericVtable` names the method at its declaration in
+to `&<Trait` refused: `structMapVtableImpl` fails on it without comparing
+signatures, which are written in type parameters rather than types; `ErrorGenericVtable` names the method at its declaration in
 the trait, once per trait, when the first virtual reference to it asks for a
 vtable. A **private** generic method and a generic **static** function are
 neither slots nor requirements and cost the trait nothing.
@@ -1172,10 +1173,10 @@ cost":
   so an inferred type in common is whichever was seen first.
 
 ⚠ **It answers about two distinct declarations only.** One declaration is not
-substituting for anything, and every caller has asked that question already;
-`structMatches` is reached with equal types from `cast.c`'s narrowing check, and
-answering yes there swallowed the diagnostic that says a variant is already as
-narrow as it gets.
+substituting for anything, and every caller asks that question first (its
+`assert` says so). `cast.c`'s narrowing check is the one where it matters: a
+copy of an enum's default narrows a variant to itself, and a yes there would
+swallow the diagnostic that says a variant is already as narrow as it gets.
 
 ### Sibling folding
 

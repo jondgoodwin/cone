@@ -176,11 +176,14 @@ tag" — there is nothing at runtime to test.
 incompatible types**, because it is usually not a downcast the author wrote. A
 method with a body on an enum is a *default*, cloned into every variant with
 `Self` repointed, so inside the copy `self` is one variant and `match self` asks
-to narrow a type that is already as narrow as it gets. The message names the
+to narrow a type that is already as narrow as it gets; in the copy for the
+variant the pattern names, the two types are one, which is not handed to
+`structMatches` (it answers about two distinct declarations). The message names the
 variant and its enum, and says to declare the method without a body and implement
 it per variant — the shape that dispatches. It is reported once per copy, so an
-enum of two variants gives two. `enum_typecheck_narrow` holds both this and the
-same mistake written directly on a variant.
+enum of two variants gives two. `enum_typecheck_narrow` holds this, through a
+reference `self` and a by-value one, and the same mistake written directly on a
+variant.
 
 ## Flow
 
@@ -232,7 +235,10 @@ nullable-pointer enum (compare against null), and tagged (read the
   after checking does not tell you what the author wrote.
 - **A pattern's root may be unbound until its `is` test is checked.** Anything
   that reads a pattern's `typ` before then — `ifExhaustCheck` scanning the later
-  arms — must ask `castPatternPending` first.
+  arms — must ask `castPatternPending` first. And a pattern whose name was
+  bound to nothing (`castPatternBind` reported it) is never type checked, so a
+  pattern written with arguments is still the unchecked call node: ask
+  `isTypeNode` before unwrapping one.
 - **A struct reinterpret is checked in generation, not type check.** A size
   mismatch surfaces late, as `ErrorRecastSize`.
 - **`genlConvert`'s two "unknown source" arms report `ErrorUnreachable` and

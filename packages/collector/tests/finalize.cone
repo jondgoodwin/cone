@@ -1,0 +1,214 @@
+// What the collector finalizes, when, and in what order. Each finalizer
+// records its death by appending its digit to 'log', so a log of 312 says 3
+// died, then 1, then 2. Every expected value is worked out by hand from the
+// rules:
+// - an object is finalized by the first collection that finds it
+//   unreachable, and freed by the next one that finds it so: a cycle late.
+//   It is finalized once, however many collections pass;
+// - one object's death is the ruled order: its own 'final', then each
+//   field's, in field order, then the owners its fields hold, released in
+//   field order ('+so' finalized and freed, '+rc' counted down, finalized
+//   only if that was the last owner). A '+gc' field is not released: what
+//   it refers to dies by its own collection;
+// - the objects one collection finds unreachable are finalized newest first,
+//   and every one of them, and everything they reach, is still there while
+//   any of their finalizers runs: a 'final' may read its '+gc' children,
+//   even ones already finalized;
+// - finalizers run inside the collection, which starts no other: an
+//   allocation in a 'final' collects nothing, and gc.collect() there does
+//   nothing;
+// - garbage is made in functions that have returned, since a running
+//   function's frame roots what it made (garbage.cone says how).
+
+mod finalize;
+
+import testing use *;
+import collector;
+
+mut log = 0i64;
+fn note(d i64) { log = log * 10 + d; }
+
+fn settle() {
+  gc.collect();
+  gc.collect();
+}
+fn live() u64 { u64[gc.liveObjects()]; }
+fn reset() {
+  settle();
+  log = 0;
+}
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { note(n); }
+}
+struct Leaf { pub n i64; }
+
+// -- One object: finalized once, freed a cycle later
+fn dropFin() {
+  imm f = +gc-mut Fin[1];
+}
+fn once() {
+  imm before = gc.finalized();
+  dropFin();
+  gc.collect();
+  expectInt(log, 1, "finalized by the first collection finding it unreachable");
+  expectUInt(live(), 1, "and not yet freed");
+  gc.collect();
+  expectInt(log, 1, "not finalized again");
+  expectUInt(live(), 0, "freed by the second");
+  gc.collect();
+  expectInt(log, 1, "nor by a third");
+  expectUInt(u64[gc.finalized() - before], 1, "one finalizer run in all");
+}
+
+// -- One object's death, in the ruled order
+struct Big {
+  pub n i64;
+  pub f Fin;
+  pub o +so Fin;
+  pub r +rc-mut Fin;
+  fn final(self &uni) { note(n); }
+}
+fn dropBig() {
+  imm b = +gc-mut Big[1, Fin[2], +so Fin[3], +rc-mut Fin[4]];
+}
+fn ruledOrder() {
+  dropBig();
+  gc.collect();
+  expectInt(log, 1234, "its final, its field's, its so owner's value, its last rc owner's");
+}
+
+// -- An rc owner shared outside is counted down, not finalized
+struct HoldsRc {
+  pub n i64;
+  pub r +rc-mut Fin;
+  fn final(self &uni) { note(n); }
+}
+fn dropHolder(k +rc-mut Fin) {
+  imm h = +gc-mut HoldsRc[1, k];
+}
+fn rcShared() {
+  imm keep = +rc-mut Fin[4];
+  dropHolder(keep);
+  settle();
+  expectInt(log, 1, "the holder dies; keep still owns the rc value");
+}
+
+// -- Several objects found unreachable together: newest first
+fn dropThree() {
+  imm a = +gc-mut Fin[1];
+  imm b = +gc-mut Fin[2];
+  imm c = +gc-mut Fin[3];
+}
+fn newestFirst() {
+  dropThree();
+  gc.collect();
+  expectInt(log, 321, "the newest first");
+}
+
+// -- A final reads its children. Kid's final spoils its value after noting
+// it, so what Parent's final sees says whether Kid's ran first.
+mut seen = 0i64;
+struct Kid {
+  pub n i64;
+  fn final(self &uni) { note(n); n = 9; }
+}
+struct Parent {
+  pub n i64;
+  pub kid +gc-mut Kid;
+  fn final(self &uni) { note(n); seen = kid.n; }
+}
+// Kid 2 is made first, as the Parent's value, so the Parent is newer
+fn dropFamily() {
+  imm p = +gc-mut Parent[1, +gc-mut Kid[2]];
+}
+// Kid 4, Parent 3, then Kid 5, which replaces Kid 4 as the Parent's kid
+fn dropFamilyNewKid() {
+  imm p = +gc-mut Parent[3, +gc-mut Kid[4]];
+  p.kid = +gc-mut Kid[5];
+}
+fn childrenReadable() {
+  dropFamily();
+  gc.collect();
+  expectInt(log, 12, "the parent, then its older kid");
+  expectInt(seen, 2, "the parent read its kid before the kid was finalized");
+  reset();
+  dropFamilyNewKid();
+  gc.collect();
+  expectInt(log, 534, "kid 5, the parent, kid 4: newest first");
+  expectInt(seen, 9, "the parent read kid 5 after its final ran: finalized, not freed");
+}
+
+// -- A kept object keeps what it holds, through an Option too
+struct Holder {
+  pub n i64;
+  pub kid Option[+gc-mut Fin];
+  fn final(self &uni) { note(n); }
+}
+fn makeHolder() +gc-mut Holder {
+  +gc-mut Holder[1, Some[+gc-mut Fin][+gc-mut Fin[2]]];
+}
+fn kept() {
+  imm h = makeHolder();
+  settle();
+  expectInt(log, 0, "the holder and the fin it holds are both alive");
+  expectUInt(live(), 2, "both there");
+}
+
+// -- A final that allocates, and one that asks for a collection
+mut made = 0i64;
+struct Maker {
+  pub n i64;
+  fn final(self &uni) {
+    imm l = +gc-mut Leaf[n];
+    made = l.n;
+  }
+}
+fn dropMaker() {
+  imm m = +gc-mut Maker[7];
+}
+struct Collects {
+  pub n i64;
+  fn final(self &uni) { gc.collect(); note(n); }
+}
+fn dropCollects() {
+  imm c = +gc-mut Collects[8];
+}
+fn reentry() {
+  dropMaker();
+  imm c0 = gc.collections();
+  gc.collect();
+  expectInt(made, 7, "a final may allocate");
+  expectUInt(u64[gc.collections() - c0], 1, "and its allocation starts no collection");
+  expectUInt(live(), 2, "the maker, finalized, and the leaf its final made");
+  settle();
+  expectUInt(live(), 0, "both freed later");
+  dropCollects();
+  imm c1 = gc.collections();
+  gc.collect();
+  expectInt(log, 8, "a final asking for a collection");
+  expectUInt(u64[gc.collections() - c1], 1, "gets none");
+}
+
+fn main() i32 {
+  once();
+  reset();
+  ruledOrder();
+  reset();
+  rcShared();
+  expectInt(log, 14, "keep's going, when rcShared returns, is the rc value's last owner");
+  reset();
+  newestFirst();
+  reset();
+  childrenReadable();
+  reset();
+  kept();
+  settle();
+  expectInt(log, 12, "once kept returns, the holder and then its older fin");
+  reset();
+  reentry();
+  settle();
+  expectUInt(live(), 0, "nothing left");
+  done();
+}

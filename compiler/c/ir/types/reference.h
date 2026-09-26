@@ -58,8 +58,9 @@ void refPrint(RefNode *node);
 // Name resolution of a reference node
 void refNameRes(NameResState *pstate, RefNode *node);
 
-// Refuse an owning reference's region that is not a struct declaring 'is RegionRef'
-void refRegionCheck(INode *region);
+// Refuse an owning reference's region that is not a struct declaring 'is RegionRef'.
+// A slot naming something other than a type is given the error type.
+void refRegionCheck(INode **regionp);
 
 // Type check a reference node
 void refTypeCheck(TypeCheckState *pstate, RefNode *name);

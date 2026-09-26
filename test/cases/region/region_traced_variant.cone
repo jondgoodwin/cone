@@ -1,0 +1,79 @@
+// A variant of the nullable-pointer 'Option', held as itself rather than as
+// the Option: 'Some[+tr-mut Leaf]' is laid out as its enum is, only the
+// reference, with no tag before it. Its trace hands that reference to 'mark'.
+//
+// This compile used to crash: reading 't.value' through 't &Some[+tr-mut
+// Leaf]' -- what every match on a borrowed 'Option' of a traced reference
+// does -- makes '*t' a birth, whose slot's record traced the variant as a
+// struct of a tag and a field, a GEP into what is only a pointer, which LLVM
+// rejected. The record's trace now reads the reference where it is, and so
+// does 'mem.trace' of the variant.
+//
+// 'tr' prints each mark as the id of the object marked. Each line is
+// hand-checked below: Leaf 7 is object 1; 'roots' traces the roots the running
+// functions hold.
+
+mod region_traced_variant;
+
+import stdio use *;
+
+mut nextId = 1i64;
+
+struct tr is RegionRef, Traced {
+  pub id i64;
+
+  fn alloc(size usize, ty *TypeRecord) *u8 {
+    imm p = malloc(size);
+    mem.writeRaw(p as *tr, tr[nextId]);
+    nextId = nextId + 1;
+    p;
+  }
+  fn mark(self &uni tr) {
+    printStr(" "); printInt(id);
+  }
+}
+
+struct Leaf { pub n i64; }
+
+// Reads through the borrowed variant, whose dereference is a birth. The
+// roots here are read's two -- 'l', and that birth, the variant, whose trace
+// is the one that crashed -- and main's two: 'o', and the birth of the
+// allocation it wrapped in a Some. All four reach Leaf 7.
+//   roots: 1 1 1 1
+//   read 7
+fn read(t &Some[+tr-mut Leaf]) i64 {
+  imm l = t.value;
+  printStr("roots:");
+  mem.traceRoots(0u32);
+  printStr("\n");
+  l.n;
+}
+
+// '&imm', since the binding is a reference into the Option
+fn get(o &imm Option[+tr-mut Leaf]) i64 {
+  match o {
+    case imm s &Some[+tr-mut Leaf] { read(s); }
+    else { 0; }
+  }
+}
+
+fn main() {
+  imm o Option[+tr-mut Leaf] = Some[+tr-mut Leaf][+tr-mut Leaf[7]];
+  imm n = get(&imm o);
+  printStr("read "); printInt(n); printStr("\n");
+  // The variant traced in line and by its record: 1 each time
+  //   trace: 1
+  //   record: 1
+  match &imm o {
+    case imm s &Some[+tr-mut Leaf] {
+      printStr("trace:");
+      mem.trace[Some[+tr-mut Leaf]](s as *Some[+tr-mut Leaf], 0u32);
+      printStr("\n");
+      printStr("record:");
+      imm tracefn = (mem.typeRecord[Some[+tr-mut Leaf]]() as &TypeRecord).trace;
+      tracefn(s as *u8, 0u32);
+      printStr("\n");
+    }
+    else { }
+  }
+}

@@ -568,7 +568,9 @@ and, where it is not null, calls the region's `mark` with the header
 fields and a tuple's elements that hold one (`itypeHoldsTraced`), each element
 of a fixed-size array whose element type does, in a loop (`genlEachElem`), and
 the variant an enum's tag picks, by a switch, as `genlEnumDrop` dispatches; the
-nullable-pointer layout, which has no tag, is its one reference. It stops at
+nullable-pointer layout, which has no tag, is its one reference — and so is a
+variant of such an enum held as itself (`*t` for `t &Some[+gc T]`, a birth),
+whose layout is its enum's (`genlTraceNullableVariant`). It stops at
 every other reference and every pointer: the placement rules keep a traced
 reference from hiding behind them. It does not share the finalizer's walk,
 which finalizes an owner's value where the trace must not follow one.
