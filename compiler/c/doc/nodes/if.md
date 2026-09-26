@@ -112,7 +112,9 @@ are, and one of the variant tests is the **last** condition, it **overwrites tha
 condition with `elseCond`**. An arm after the one being checked may name its
 variant bare and not be bound to it yet (`castPatternPending`), so it counts as
 no match; the check runs again as each arm is checked, and the last one sees
-every pattern bound.
+every pattern bound. An arm whose pattern named nothing to narrow to has been
+reported and was left unchecked, so it may not be a type at all; it counts as no
+match too.
 
 Because `ifTypeCheck` calls this *before* testing for `elseCond`, the rewrite
 takes effect for the very condition being processed: `hasElse` becomes true and

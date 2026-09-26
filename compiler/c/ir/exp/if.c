@@ -114,7 +114,10 @@ void ifExhaustCheck(IfNode *ifnode, CastNode *condition) {
                 // A later test not yet type checked may name a variant it has not
                 // been bound to yet. The check runs again as each test is checked,
                 // and the last one sees every pattern bound.
-                if (castPatternPending(isnode->typ))
+                // A pattern that named nothing to narrow to has been reported,
+                // and was left unchecked, so it may not be a type: it matches no
+                // variant.
+                if (castPatternPending(isnode->typ) || !isTypeNode(isnode->typ))
                     ;
                 else if (ifSameScrutinee(isnode->exp, condition->exp) && itypeGetDerefTypeDcl(isnode->typ) == *varnodesp) {
                     found = 1;

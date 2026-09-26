@@ -366,7 +366,10 @@ void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
                 errorMsgNode((INode*)node, ErrorInvType, "Impossible to downcast without a tag");
                 return;
             }
-            if (structMatches(fromstr, (INode*)tostr, Regref))
+            // Narrowing to the type the value already has is no downcast, and
+            // structMatches is only for two different types: it falls through
+            // to the "already narrowed" diagnostic below
+            if (fromstr != tostr && structMatches(fromstr, (INode*)tostr, Regref))
                 return;
         }
     }
@@ -378,7 +381,7 @@ void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
             errorMsgNode((INode*)node, ErrorInvType, "Impossible to downcast without a tag");
             return;
         }
-        if (structMatches(from, totype, Coercion))
+        if ((INode*)from != totype && structMatches(from, totype, Coercion))
             return;
     }
 

@@ -15,8 +15,9 @@
 // (Note: only use after it has been type-checked)
 INode *itypeGetTypeDcl(INode *type) {
     assert(isTypeNode(type));
-    // A name that names something other than a type is handed back as it is,
-    // so that a caller's tag test reports it where it was written
+    // A caller whose slot may hold a name of something other than a type, on
+    // a path that has reported it, asks isTypeNode before coming here
+    // (refRegionCheck, regionDcl)
     while (1) {
         if (isNameUseNode(type) && isTypeNode(type))
             type = nameUseGetDcl((NameUseNode *)type);

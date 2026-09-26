@@ -27,7 +27,7 @@
 // The struct a reference's region slot names, or NULL for a borrowed
 // reference's region or anything that is not a struct
 static StructNode *regionDcl(INode *region) {
-    if (region == NULL || region->tag == BorrowRegTag)
+    if (region == NULL || region->tag == BorrowRegTag || !isTypeNode(region))
         return NULL;
     INode *dcl = itypeGetTypeDcl(region);
     return dcl->tag == StructTag ? (StructNode*)dcl : NULL;
