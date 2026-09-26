@@ -9,6 +9,10 @@
 // Split from that file because the failure here is not "this value will not
 // coerce to that type" but "no type exists that both values reach", and
 // because the operator case reports through overload selection instead.
+//
+// referenceBranches is also a crash guard: the supertype search once read any
+// two pointees as structs, and a reference to a number crashed the compiler.
+// Should that regress, the process dies and every expectation here is lost.
 
 mod typemgmt_typecheck_meet;
 
@@ -24,6 +28,22 @@ fn signedAndUnsignedBranches() {
 fn integerAndFloatBranches() {
   mut signed i32 = 1;
   imm y = if true {signed;} else {2.5;};       //~ ErrorInvType:34 "Branch's expression type inconsistent with other branches"
+}
+
+// Two references meet only when they point at the same type, or at structs
+// sharing a base trait. References to two different number types, or to a
+// struct and a number, have no type in common, and that is reported in every
+// context that folds several values into one: an 'if', a 'match', a loop's
+// breaks and an array literal's elements.
+struct Pt {x i32;}
+
+fn referenceBranches(c Bool, a i32, b i64, p Pt) {
+  imm r = if c {&a;} else {&b;};             //~ ErrorInvType:27 "Branch's expression type inconsistent with other branches"
+  imm s = if c {&p;} else {&b;};             //~ ErrorInvType:27 "Branch's expression type inconsistent with other branches"
+  imm t = if c {&b;} else {&p;};             //~ ErrorInvType:27 "Branch's expression type inconsistent with other branches"
+  imm u = match c {case true {&a;} else {&b;}};  //~ ErrorInvType:41 "Branch's expression type inconsistent with other branches"
+  imm v = while {if c {break &a;} else {break &b;}};  //~ ErrorInvType:47 "Branch's expression type inconsistent with other branches"
+  imm w = [&a, &b];                          //~ ErrorBadArray:16 "Inconsistent type of array literal value"
 }
 
 // An operator coerces its right operand to the left operand's type, and not
