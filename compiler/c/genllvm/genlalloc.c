@@ -308,6 +308,21 @@ static void genlTraceFields(GenState *gen, LLVMValueRef valptr, StructNode *strn
     }
 }
 
+// A variant of a nullable-pointer enum, held as itself ('&Some[+gc T]' dereferenced,
+// say), is laid out as its enum is: only its reference, at 'valptr', with no
+// tag before it (genlStructDrop's layout)
+static void genlTraceNullableVariant(GenState *gen, LLVMValueRef valptr, StructNode *variant) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&variant->fields, cnt, nodesp)) {
+        if ((*nodesp)->flags & IsTagField)
+            continue;
+        RefNode *reftype = (RefNode *)itypeGetTypeDcl(((FieldDclNode *)*nodesp)->vtype);
+        if (reftype->tag == RefTag && regionIsTraced(reftype->region))
+            genlTraceRef(gen, valptr, reftype);
+    }
+}
+
 // The value an enum (or a closed trait held by value) at 'valptr' holds is
 // whichever variant its tag says, and only that variant's fields are traced:
 // the same dispatch its generated drop makes (genlEnumDrop). The nullable
@@ -395,8 +410,14 @@ static void genlTraceWalk(GenState *gen, LLVMValueRef valptr, INode *vtype) {
     case StructTag:
     {
         StructNode *strnode = (StructNode *)typedcl;
+        // A variant's layout, nullable pointer or not, is its enum's decision
+        INode *enumnode = strnode->basetrait ? itypeGetTypeDcl(strnode->basetrait) : NULL;
+        if (enumnode && enumnode->tag == StructTag && (enumnode->flags & EnumType))
+            genlType(gen, enumnode);
         if (strnode->derived)
             genlTraceVariants(gen, valptr, strnode);
+        else if (strnode->flags & NullablePtr)
+            genlTraceNullableVariant(gen, valptr, strnode);
         else
             genlTraceFields(gen, valptr, strnode);
         return;

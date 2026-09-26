@@ -1,0 +1,101 @@
+// A forest grown and cut down, round after round, under the collector.
+//
+//   congo run packages/collector/examples/forest.cone
+//
+// Each round grows a tree of 1,023 nodes whose every node points back at its
+// parent, so the tree is cycles through and through: counting references
+// could never free it, since every parent and child keep each other's counts
+// up. Each round's tree is dropped when the round's function returns, and the
+// collector takes it, finalizing the Tree that held it (its 'final' prints)
+// and freeing every node. The automatic collections run inside allocations,
+// whenever the heap would pass its trigger; gc.collect() runs one on demand.
+// A Tree has a 'final', so a dropped one and every node it reaches live one
+// collection longer than they would otherwise -- its 'final' may read them --
+// and are freed by the next: watch the live counts after the first automatic
+// collection. One tree is kept to the end, and is still whole there.
+
+mod forest;
+
+import stdio use *;
+import collector;
+
+struct Node {
+  pub n i64;
+  pub left Option[+gc-mut Node];
+  pub right Option[+gc-mut Node];
+  pub up Option[+gc-mut Node];
+}
+
+struct Tree {
+  pub id i64;
+  pub root Option[+gc-mut Node];
+  fn final(self &uni) {
+    printStr("  (tree "); printInt(id); printStr(" finalized: its root still reads ");
+    printInt(count(&root)); printStr(" nodes)\n");
+  }
+}
+
+// A tree of the given depth, every node pointing up at its parent
+fn grow(depth i64, up Option[+gc-mut Node]) Option[+gc-mut Node] {
+  if depth == 0 {
+    return None[+gc-mut Node][];
+  }
+  imm node = +gc-mut Node[depth, None[+gc-mut Node][], None[+gc-mut Node][], up];
+  node.left = grow(depth - 1, Some[+gc-mut Node][node]);
+  node.right = grow(depth - 1, Some[+gc-mut Node][node]);
+  Some[+gc-mut Node][node];
+}
+
+fn count(t &Option[+gc-mut Node]) i64 {
+  match t {
+    case imm s &Some[+gc-mut Node] { count(&s.value.left) + count(&s.value.right) + 1; }
+    else { 0; }
+  }
+}
+
+fn plant(id i64) +gc-mut Tree {
+  +gc-mut Tree[id, grow(10, None[+gc-mut Node][])];
+}
+
+fn showLive(label &[]u8) {
+  printStr(label);
+  printStr(": ");
+  printInt(i64[gc.liveObjects()]);
+  printStr(" objects live, ");
+  printInt(i64[gc.liveBytes()]);
+  printStr(" bytes, ");
+  printInt(i64[gc.collections()]);
+  printStr(" collections so far\n");
+}
+
+// One round: a tree planted, measured, and dropped as the round returns
+fn round(id i64) {
+  imm t = plant(id);
+  printStr("round "); printInt(id); printStr(": a tree of ");
+  printInt(count(&t.root)); printStr(" nodes\n");
+  showLive("  while it stands");
+}
+
+fn main() {
+  mut id = 1i64;
+  while id <= 8 {
+    round(id);
+    id = id + 1;
+  }
+  showLive("after eight rounds");
+  gc.collect();
+  showLive("after a collection");
+  gc.collect();
+  showLive("after another");
+
+  imm kept = plant(99);
+  mut i = 0i64;
+  while i < 3 {
+    round(i + 100);
+    i = i + 1;
+  }
+  gc.collect();
+  gc.collect();
+  printStr("the kept tree still has "); printInt(count(&kept.root)); printStr(" nodes\n");
+  showLive("at the end");
+}

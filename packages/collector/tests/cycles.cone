@@ -1,0 +1,120 @@
+// Cycles are collected: objects that reach each other, and nothing else
+// reaches, are garbage like any other. Counting references would never free
+// them; tracing does. Every value is worked out by hand from the rules
+// garbage.cone and finalize.cone state: garbage is made in functions that have
+// returned, settle() frees everything unreachable, and objects found
+// unreachable together are finalized newest first.
+
+mod cycles;
+
+import testing use *;
+import collector;
+
+mut log = 0i64;
+fn note(d i64) { log = log * 10 + d; }
+
+fn settle() {
+  gc.collect();
+  gc.collect();
+}
+fn live() u64 { u64[gc.liveObjects()]; }
+
+// A ring whose members note their deaths
+struct Ring {
+  pub n i64;
+  pub next Option[+gc-mut Ring];
+  fn final(self &uni) { note(n); }
+}
+
+// A plain node, with nothing to finalize
+struct Node {
+  pub n i64;
+  pub next Option[+gc-mut Node];
+}
+
+fn nextOf(r &Option[+gc-mut Node]) Option[+gc-mut Node] {
+  match r {
+    case imm s &Some[+gc-mut Node] { s.value.next; }
+    else { None[+gc-mut Node][]; }
+  }
+}
+
+// Two objects each holding the other
+fn dropPair() {
+  imm a = +gc-mut Ring[1, None[+gc-mut Ring][]];
+  imm b = +gc-mut Ring[2, Some[+gc-mut Ring][a]];
+  a.next = Some[+gc-mut Ring][b];
+}
+
+// One object holding itself
+fn dropSelf() {
+  imm a = +gc-mut Ring[3, None[+gc-mut Ring][]];
+  a.next = Some[+gc-mut Ring][a];
+}
+
+// A ring of n plain nodes, numbered 1 to n; the first returned
+fn ring(n i64) +gc-mut Node {
+  imm first = +gc-mut Node[1, None[+gc-mut Node][]];
+  mut last = first;
+  mut i = 2i64;
+  while i <= n {
+    imm node = +gc-mut Node[i, None[+gc-mut Node][]];
+    last.next = Some[+gc-mut Node][node];
+    last = node;
+    i = i + 1;
+  }
+  last.next = Some[+gc-mut Node][first];
+  first;
+}
+
+fn dropRing() {
+  ring(100);
+}
+
+// Walk k steps round the ring from 'start', summing the numbers
+fn walk(start +gc-mut Node, k i64) i64 {
+  mut at Option[+gc-mut Node] = Some[+gc-mut Node][start];
+  mut total = 0i64;
+  mut i = 0i64;
+  while i < k {
+    match &at {
+      case imm s &Some[+gc-mut Node] { total = total + s.value.n; }
+      else { }
+    }
+    at = nextOf(&at);
+    i = i + 1;
+  }
+  total;
+}
+
+fn keptRing() {
+  imm r = ring(5);
+  settle();
+  expectUInt(live(), 5, "a ring reached from a root is kept whole");
+  expectInt(walk(r, 10), 30, "twice round: 2 * (1+2+3+4+5)");
+}
+
+fn main() i32 {
+  dropPair();
+  expectUInt(live(), 2, "the pair, before any collection");
+  gc.collect();
+  expectInt(log, 21, "both finalized, the newer first");
+  gc.collect();
+  expectUInt(live(), 0, "and both freed");
+
+  log = 0;
+  dropSelf();
+  settle();
+  expectInt(log, 3, "an object holding only itself is finalized");
+  expectUInt(live(), 0, "and freed");
+
+  dropRing();
+  expectUInt(live(), 100, "a ring of a hundred");
+  gc.collect();
+  expectUInt(live(), 0, "freed by one collection: nothing in it needs finalizing");
+
+  keptRing();
+  settle();
+  expectUInt(live(), 0, "once keptRing returns, its ring goes too");
+  done();
+}
