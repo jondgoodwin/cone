@@ -1,0 +1,80 @@
+// A value holding a counted reference -- a struct in a field, a tuple or an
+// array in an element, however deep -- releases it when it dies, so a copy of
+// that value is one more holder of it: its region's 'alias' is called for the
+// copy, as for a copy of the reference itself, or each copy's death would
+// release the one holder again.
+//
+// Before, a struct held by value never released its counted field and a tuple
+// or array holding a struct was never finalized, so a copy needed no count --
+// and got none, leaking the holder the struct was built with. A tuple literal
+// copied a counted reference out of a variable without counting it at all,
+// and its variable then released that reference a second time: 'imm t = (r,
+// 5)' took the count below zero. Each element of a tuple literal is now copied
+// on its own, as a struct literal's fields are.
+//
+// An array fill literal repeats its value, so a value holding a counted
+// reference is one more holder per element, as a counted reference is: the
+// count rises by the element count, or by one fewer when the value is a
+// temporary, which hands over what it was born holding.
+//
+// 'tally' prints every count change: '+n' after an 'alias', '-n' after a
+// 'dealias', 'tfree' when the count reaches zero, and 'F<n>' is the counted
+// value's 'final'. Every line is worked out by hand: one holder at the
+// allocation, one more per copy, one fewer per holder going away, locals dying
+// newest first.
+
+mod region_held_counted;
+
+import stdio use *;
+import libc;
+
+struct tally is RegionRef {
+  owners usize;
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn init() tally inline { tally[1usize]; }
+  fn alias(self &uni tally) inline { owners = owners + 1usize; printStr("+"); printInt(i64[owners]); printStr(" "); }
+  fn dealias(self &uni tally) Bool inline { owners = owners - 1usize; printStr("-"); printInt(i64[owners]); printStr(" "); owners == 0usize; }
+  fn free(self &uni tally) inline { printStr("tfree "); libc.free(self as *u8); }
+}
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { printStr("F"); printInt(n); printStr(" "); }
+}
+
+struct Shared { pub r +tally-mut Fin; }
+struct SharedArray { pub a [2; +tally-mut Fin]; }
+
+fn show(label &[]u8) { printStr(label); printStr(": "); }
+fn end() { printStr("|\n"); }
+
+fn take(s Shared) { printStr("in "); }
+
+fn structAlone() { imm s = Shared[+tally-mut Fin[1]]; }
+fn structCopied() { imm s = Shared[+tally-mut Fin[1]]; imm t = s; }
+fn structPassed() { imm s = Shared[+tally-mut Fin[1]]; take(s); }
+fn structLiteral() { imm r = +tally-mut Fin[1]; imm s = Shared[r]; }
+fn arrayCopied() { imm a = [+tally-mut Fin[1], +tally-mut Fin[2]]; imm b = a; }
+fn arrayFieldCopied() { imm s = SharedArray[[+tally-mut Fin[1], +tally-mut Fin[2]]]; imm t = s; }
+fn tupleCopied() { imm t = (Shared[+tally-mut Fin[1]], 2i64); imm u = t; }
+fn tupleLiteral() { imm r = +tally-mut Fin[1]; imm t = (r, 5i64); }
+fn destructured() { imm t = (Shared[+tally-mut Fin[1]], 2i64); imm a Shared; imm n i64; a, n = t; }
+fn optionCopied() { imm o Option[Shared] = Some[Shared][Shared[+tally-mut Fin[1]]]; imm p = o; }
+fn fillVariable() { imm s = Shared[+tally-mut Fin[1]]; imm a = [3; s]; }
+fn fillTuple() { imm r = +tally-mut Fin[1]; imm a = [2; (r, 5i64)]; }
+
+fn main() i32 {
+  show("struct-alone"); structAlone(); end();
+  show("struct-copied"); structCopied(); end();
+  show("struct-passed"); structPassed(); end();
+  show("struct-literal"); structLiteral(); end();
+  show("array-copied"); arrayCopied(); end();
+  show("array-field-copied"); arrayFieldCopied(); end();
+  show("tuple-copied"); tupleCopied(); end();
+  show("tuple-literal"); tupleLiteral(); end();
+  show("destructured"); destructured(); end();
+  show("option-copied"); optionCopied(); end();
+  show("fill-variable"); fillVariable(); end();
+  show("fill-tuple"); fillTuple(); end();
+  0;
+}

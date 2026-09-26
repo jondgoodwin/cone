@@ -13,11 +13,9 @@
 #include "../shared/fileio.h"
 #include "genllvm.h"
 
-#include <llvm-c/ExecutionEngine.h>
 #include <llvm-c/Target.h>
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
-#include <llvm-c/Transforms/Scalar.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -53,52 +51,342 @@ static LLVMValueRef genlRefPtr(GenState *gen, LLVMValueRef ref, RefNode *refnode
     return ref;
 }
 
-// If ref type is struct, release each owning reference its fields hold
-void genlDealiasFlds(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
-    // A slice's elements are not walked: releasing what each element owns is
-    // the same element-granularity work an array of owning references needs.
-    if (refnode->tag != RefTag)
-        return;
-    genlReleaseFlds(gen, ref, refnode->vtexp);
+static void genlEnumDrop(GenState *gen, FnDclNode *fnnode);
+
+// Call a type's drop on the value at 'valptr'. The pointer is recast to the
+// drop's parameter type: a variant laid out as a nullable pointer is reached
+// through a pointer to its enum, which is the pointer the variant is.
+static void genlCallDrop(GenState *gen, INode *dropfn, LLVMValueRef valptr) {
+    FnDclNode *fndcl = (FnDclNode *)dropfn;
+    if (!(fndcl->flags & FlagInline) && fndcl->llvmvar != NULL) {
+        LLVMTypeRef parmtype = LLVMTypeOf(LLVMGetParam(fndcl->llvmvar, 0));
+        if (LLVMTypeOf(valptr) != parmtype)
+            valptr = LLVMBuildBitCast(gen->builder, valptr, parmtype, "dropself");
+    }
+    genlFnCallInternal(gen, SimpleDispatch, dropfn, 1, &valptr, NULL);
+}
+
+// Do 'act' to each of 'count' elements of type 'elemtype', the first at
+// 'firstptr', in element order: a fixed-size array's or an owning slice's. A
+// loop, since the optimizer pipeline runs no loop pass that would undo an
+// unrolling, and a count of zero does nothing.
+typedef void (*GenlElemAct)(GenState *gen, LLVMValueRef elemptr, INode *elemtype, long long amount);
+static void genlEachElem(GenState *gen, LLVMValueRef firstptr, LLVMValueRef count, INode *elemtype,
+    GenlElemAct act, long long amount) {
+    LLVMTypeRef usize = genlType(gen, (INode*)usizeType);
+    LLVMTypeRef elemllvm = genlType(gen, elemtype);
+    LLVMBasicBlockRef entryblk = LLVMGetInsertBlock(gen->builder);
+    LLVMBasicBlockRef doneblk = genlInsertBlock(gen, "elemsdone");
+    LLVMBasicBlockRef loopblk = genlInsertBlock(gen, "eachelem");
+    LLVMValueRef none = LLVMBuildICmp(gen->builder, LLVMIntEQ, count, LLVMConstInt(usize, 0, 0), "noelems");
+    LLVMBuildCondBr(gen->builder, none, doneblk, loopblk);
+    LLVMPositionBuilderAtEnd(gen->builder, loopblk);
+    LLVMValueRef index = LLVMBuildPhi(gen->builder, usize, "elemindex");
+    act(gen, LLVMBuildGEP2(gen->builder, elemllvm, firstptr, &index, 1, "elem"), elemtype, amount);
+    LLVMValueRef next = LLVMBuildAdd(gen->builder, index, LLVMConstInt(usize, 1, 0), "elemnext");
+    LLVMValueRef more = LLVMBuildICmp(gen->builder, LLVMIntULT, next, count, "elemmore");
+    // What was done to the element may have split the loop's block, so the
+    // back edge leaves from wherever the builder is now
+    LLVMBasicBlockRef loopend = LLVMGetInsertBlock(gen->builder);
+    LLVMBuildCondBr(gen->builder, more, loopblk, doneblk);
+    LLVMValueRef incoming[2] = { LLVMConstInt(usize, 0, 0), next };
+    LLVMBasicBlockRef fromblks[2] = { entryblk, loopend };
+    LLVMAddIncoming(index, incoming, fromblks, 2);
+    LLVMPositionBuilderAtEnd(gen->builder, doneblk);
+}
+
+// The first element of the fixed-size array at 'arrptr', and how many it has
+static LLVMValueRef genlArrayFirst(GenState *gen, LLVMValueRef arrptr, INode *arraytype, LLVMValueRef *count) {
+    LLVMTypeRef arrllvm = genlType(gen, arraytype);
+    *count = LLVMConstInt(genlType(gen, (INode*)usizeType), LLVMGetArrayLength(arrllvm), 0);
+    LLVMValueRef zeros[2];
+    zeros[0] = zeros[1] = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0);
+    return LLVMBuildGEP2(gen->builder, arrllvm, arrptr, zeros, 2, "first");
+}
+
+static void genlFinalizeElem(GenState *gen, LLVMValueRef elemptr, INode *elemtype, long long amount) {
+    genlFinalizeAt(gen, elemptr, elemtype);
 }
 
 // Finalize the value of type 'vtype' at 'valptr' where it sits, as its death
-// would, without giving its memory back: the 'finalize' intrinsic. An owning
-// reference (or a tuple of them) is released. Anything else runs its type's
-// drop -- its own 'final', then each finalizing field's -- and then releases
-// the owning references its fields hold: genlRegionDeath's order, less the
-// region's 'free'. A type for which itypeNeedsFinal is false generates nothing.
+// would, without giving its memory back: the 'finalize' intrinsic, a local's
+// death as its scope ends, a field's inside its holder's drop, and what an
+// owning reference's death does to the value it points at before the region's
+// 'free'. An owning reference is released. A struct or an enum runs its drop:
+// the whole of its death, its owners' release included (genlStructDrop,
+// genlEnumDrop). A tuple finalizes each element in order, and an array each
+// element in element order, as a struct does its fields. A type for which
+// itypeNeedsFinal is false generates nothing.
 void genlFinalizeAt(GenState *gen, LLVMValueRef valptr, INode *vtype) {
-    if (flowIsOwningType(vtype)) {
-        genlReleaseOwning(gen, LLVMBuildLoad(gen->builder, valptr, "finalref"), vtype);
+    INode *typedcl = itypeGetTypeDcl(vtype);
+    switch (typedcl->tag) {
+    case RefTag:
+    case ArrayRefTag:
+        if (regionIsOwning(((RefNode *)typedcl)->region))
+            genlReleaseOwning(gen, LLVMBuildLoad2(gen->builder, genlType(gen, typedcl), valptr, "finalref"), typedcl);
+        return;
+    case TTupleTag:
+    {
+        LLVMTypeRef tupllvm = genlType(gen, typedcl);
+        INode **elemp;
+        uint32_t cnt;
+        unsigned index = 0;
+        for (nodesFor(((TupleNode *)typedcl)->elems, cnt, elemp)) {
+            if (itypeNeedsFinal(*elemp))
+                genlFinalizeAt(gen, LLVMBuildStructGEP2(gen->builder, tupllvm, valptr, index, "tupelem"), *elemp);
+            ++index;
+        }
         return;
     }
-    INode *dropfn = itypeGetDropFnDcl(vtype);
-    if (dropfn)
-        genlFnCallInternal(gen, SimpleDispatch, dropfn, 1, &valptr);
-    genlReleaseFlds(gen, valptr, vtype);
+    case ArrayTag:
+    {
+        INode *elemtype = arrayElemType(typedcl);
+        if (!itypeNeedsFinal(elemtype))
+            return;
+        LLVMValueRef count;
+        LLVMValueRef first = genlArrayFirst(gen, valptr, typedcl, &count);
+        genlEachElem(gen, first, count, elemtype, genlFinalizeElem, 0);
+        return;
+    }
+    default:
+    {
+        INode *dropfn = itypeGetDropFnDcl(typedcl);
+        if (dropfn)
+            genlCallDrop(gen, dropfn, valptr);
+        return;
+    }
+    }
 }
 
-// If the value at 'ref' is a struct, release each owning reference its fields hold
-void genlReleaseFlds(GenState *gen, LLVMValueRef ref, INode *vtype) {
-    StructNode *strnode = (StructNode*)itypeGetTypeDcl(vtype);
-    if (strnode->tag != StructTag)
-        return;
+// The body of a struct's drop (structSetDropFn), the value 'self' points at
+// dying in place in the ruled order [Jon 26 Sep]: its own 'final' and, for a
+// variant keeping its enum's, the enum's -- the calls type check built as the
+// body -- then each field that needs finalizing, in field order
+// (genlFinalizeAt: a struct's or an enum's drop, a tuple's or an array's
+// elements), then each owning reference a field holds, released in field order.
+// A variant laid out as a nullable pointer is only its reference: 'self' points
+// at the pointer, and releasing it is all there is.
+static void genlStructDrop(GenState *gen, FnDclNode *fnnode) {
+    StructNode *strnode = (StructNode*)fnnode->dclinfo.owner;
+    // A variant's layout, nullable pointer or not, is its enum's decision
+    INode *enumnode = strnode->basetrait ? itypeGetTypeDcl(strnode->basetrait) : NULL;
+    if (enumnode && enumnode->tag == StructTag && (enumnode->flags & EnumType))
+        genlType(gen, enumnode);
+    LLVMTypeRef strtype = genlType(gen, (INode*)strnode);
+    LLVMValueRef selfptr = LLVMGetParam(gen->fn, 0);
     INode **nodesp;
     uint32_t cnt;
-    for (nodelistFor(&strnode->fields, cnt, nodesp)) {
-        FieldDclNode *field = (FieldDclNode *)*nodesp;
-        // Resolved, because a field's declared type may be a name standing for
-        // the reference type rather than the reference type itself
-        RefNode *vartype = (RefNode *)itypeGetTypeDcl(field->vtype);
-        if (vartype->tag != RefTag || !regionIsOwning(vartype->region))
-            continue;
-        // The GEP yields the field's address; the release routine wants the
-        // reference the field holds, so load it.
-        LLVMValueRef fldptr = LLVMBuildStructGEP(gen->builder, ref, field->index, &field->namesym->namestr);
-        LLVMValueRef fldref = LLVMBuildLoad(gen->builder, fldptr, "fldref");
-        genlReleaseOwning(gen, fldref, (INode*)vartype);
+    for (nodesFor(((BlockNode *)fnnode->value)->stmts, cnt, nodesp))
+        genlExpr(gen, *nodesp);
+
+    if (strnode->flags & NullablePtr) {
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            INode *fldtype = itypeGetTypeDcl(((FieldDclNode *)*nodesp)->vtype);
+            if (flowIsOwningType(fldtype)) {
+                LLVMTypeRef refllvm = genlType(gen, fldtype);
+                LLVMValueRef refptr = LLVMBuildBitCast(gen->builder, selfptr, LLVMPointerType(refllvm, 0), "nullable");
+                genlReleaseOwning(gen, LLVMBuildLoad2(gen->builder, refllvm, refptr, "nullableref"), fldtype);
+            }
+        }
+        return;
     }
+    // The fields that finalize, then the owners
+    for (int owners = 0; owners <= 1; ++owners) {
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            FieldDclNode *field = (FieldDclNode *)*nodesp;
+            // Resolved, because a field's declared type may be a name standing
+            // for the reference type rather than the reference type itself
+            INode *fldtype = itypeGetTypeDcl(field->vtype);
+            int isowner = (fldtype->tag == RefTag || fldtype->tag == ArrayRefTag)
+                && regionIsOwning(((RefNode *)fldtype)->region);
+            if (isowner != owners || !itypeNeedsFinal(fldtype))
+                continue;
+            genlFinalizeAt(gen, LLVMBuildStructGEP2(gen->builder, strtype, selfptr, field->index, &field->namesym->namestr), fldtype);
+        }
+    }
+}
+
+// The body of a drop the compiler gave a type (structIsGeneratedDropFn), built
+// from the type's layout. No expression gives its calls a place, so each is
+// placed at the type, where the drop was made (a call with none fails
+// verification in debug).
+void genlTypeDrop(GenState *gen, FnDclNode *fnnode) {
+    StructNode *owner = (StructNode*)fnnode->dclinfo.owner;
+    if (!gen->opt->release) {
+        LLVMMetadataRef loc = LLVMDIBuilderCreateDebugLocation(gen->context,
+            fnnode->linenbr, (unsigned)(fnnode->srcp - fnnode->linep), LLVMGetSubprogram(gen->fn), NULL);
+        LLVMSetCurrentDebugLocation(gen->builder, LLVMMetadataAsValue(gen->context, loc));
+    }
+    if (owner->flags & EnumType)
+        genlEnumDrop(gen, fnnode);
+    else
+        genlStructDrop(gen, fnnode);
+    // A function returning nothing returns the empty value, as a 'return' does
+    LLVMBuildRet(gen->builder, LLVMGetUndef(gen->emptyStructType));
+}
+
+static void genlAliasElem(GenState *gen, LLVMValueRef elemptr, INode *elemtype, long long amount) {
+    genlAliasHeld(gen, elemptr, elemtype, amount);
+}
+
+// A value at 'valptr' was copied: each counted reference its death releases
+// gains 'amount' holders (flowHeldCounted). The mirror of that death: a counted
+// reference itself, each element of a tuple or an array, each field of a
+// struct, and in an enum, each field of the variant the tag picks.
+void genlAliasHeld(GenState *gen, LLVMValueRef valptr, INode *type, long long amount) {
+    INode *typedcl = itypeGetTypeDcl(type);
+    INode **nodesp;
+    uint32_t cnt;
+    switch (typedcl->tag) {
+    case RefTag:
+    case ArrayRefTag:
+        if (flowIsRcRef(typedcl))
+            genlRegionAlias(gen, LLVMBuildLoad2(gen->builder, genlType(gen, typedcl), valptr, "heldref"), amount, (RefNode *)typedcl);
+        return;
+    case TTupleTag:
+    {
+        LLVMTypeRef tupllvm = genlType(gen, typedcl);
+        unsigned index = 0;
+        for (nodesFor(((TupleNode *)typedcl)->elems, cnt, nodesp)) {
+            if (flowIsRcRef(*nodesp) || flowHeldCounted(*nodesp))
+                genlAliasHeld(gen, LLVMBuildStructGEP2(gen->builder, tupllvm, valptr, index, ""), *nodesp, amount);
+            ++index;
+        }
+        return;
+    }
+    case ArrayTag:
+    {
+        INode *elemtype = arrayElemType(typedcl);
+        if (!flowIsRcRef(elemtype) && !flowHeldCounted(elemtype))
+            return;
+        LLVMValueRef count;
+        LLVMValueRef first = genlArrayFirst(gen, valptr, typedcl, &count);
+        genlEachElem(gen, first, count, elemtype, genlAliasElem, amount);
+        return;
+    }
+    case StructTag:
+        break;
+    default:
+        return;
+    }
+    StructNode *strnode = (StructNode *)typedcl;
+    LLVMTypeRef strtype = genlType(gen, (INode*)strnode);
+    if (!(strnode->flags & EnumType)) {
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            FieldDclNode *field = (FieldDclNode *)*nodesp;
+            if (flowIsRcRef(field->vtype) || flowHeldCounted(field->vtype))
+                genlAliasHeld(gen, LLVMBuildStructGEP2(gen->builder, strtype, valptr, field->index, ""), field->vtype, amount);
+        }
+        return;
+    }
+
+    LLVMBasicBlockRef doneblk = genlInsertBlock(gen, "aliasheld");
+    if (strnode->flags & NullablePtr) {
+        // The one variant with a field is the reference; null is the empty one
+        for (nodesFor(strnode->derived, cnt, nodesp)) {
+            StructNode *variant = (StructNode *)*nodesp;
+            if (variant->fields.used != 2 || !flowVariantHeldCounted((INode*)variant))
+                continue;
+            RefNode *reftype = (RefNode *)itypeGetTypeDcl(((FieldDclNode *)nodelistGet(&variant->fields, 1))->vtype);
+            LLVMValueRef ref = LLVMBuildLoad2(gen->builder, strtype, valptr, "nullable");
+            LLVMBasicBlockRef someblk = genlInsertBlock(gen, "aliassome");
+            LLVMBuildCondBr(gen->builder, LLVMBuildIsNotNull(gen->builder, ref, "present"), someblk, doneblk);
+            LLVMPositionBuilderAtEnd(gen->builder, someblk);
+            genlRegionAlias(gen, ref, amount, reftype);
+        }
+        LLVMBuildBr(gen->builder, doneblk);
+        LLVMPositionBuilderAtEnd(gen->builder, doneblk);
+        return;
+    }
+
+    FieldDclNode *tagfld = NULL;
+    for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+        if ((*nodesp)->flags & IsTagField)
+            tagfld = (FieldDclNode*)*nodesp;
+    }
+    LLVMTypeRef tagtype = genlType(gen, tagfld->vtype);
+    LLVMValueRef tagptr = LLVMBuildStructGEP2(gen->builder, strtype, valptr, tagfld->index, "tagref");
+    LLVMValueRef dispatch = LLVMBuildSwitch(gen->builder, LLVMBuildLoad2(gen->builder, tagtype, tagptr, "tag"),
+        doneblk, strnode->derived->used);
+    for (nodesFor(strnode->derived, cnt, nodesp)) {
+        StructNode *variant = (StructNode *)*nodesp;
+        if (!flowVariantHeldCounted((INode*)variant))
+            continue;
+        LLVMBasicBlockRef caseblk = genlInsertBlock(gen, "aliasvariant");
+        LLVMAddCase(dispatch, LLVMConstInt(tagtype, variant->tagnbr, 0), caseblk);
+        LLVMPositionBuilderAtEnd(gen->builder, caseblk);
+        LLVMTypeRef vartype = genlType(gen, (INode*)variant);
+        LLVMValueRef varptr = LLVMBuildBitCast(gen->builder, valptr, LLVMPointerType(vartype, 0), "variant");
+        INode **fldp;
+        uint32_t fldcnt;
+        for (nodelistFor(&variant->fields, fldcnt, fldp)) {
+            FieldDclNode *field = (FieldDclNode *)*fldp;
+            LLVMValueRef fldptr;
+            if (flowIsRcRef(field->vtype) || flowHeldCounted(field->vtype)) {
+                fldptr = LLVMBuildStructGEP2(gen->builder, vartype, varptr, field->index, "");
+                genlAliasHeld(gen, fldptr, field->vtype, amount);
+            }
+        }
+        LLVMBuildBr(gen->builder, doneblk);
+    }
+    LLVMPositionBuilderAtEnd(gen->builder, doneblk);
+}
+
+// The body of an enum's drop (structSetEnumDropFn): the value 'self' points at
+// dies as the variant it holds would, finalized in place (genlFinalizeAt): the
+// variant's drop -- its own 'final', the enum's 'final', each finalizing field's
+// death, then the owning references its fields hold, the common fields' among
+// them. The tag picks the variant, and a variant with nothing to do has no case.
+// The nullable-pointer layout has no tag: the value is the one variant's
+// reference, and null is the empty variant, which has nothing to do.
+static void genlEnumDrop(GenState *gen, FnDclNode *fnnode) {
+    StructNode *enumnode = (StructNode*)fnnode->dclinfo.owner;
+    LLVMValueRef selfptr = LLVMGetParam(gen->fn, 0);
+    LLVMTypeRef enumtype = genlType(gen, (INode*)enumnode);
+    LLVMBasicBlockRef doneblk = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "dropdone");
+    INode **nodesp;
+    uint32_t cnt;
+
+    if (enumnode->flags & NullablePtr) {
+        StructNode *somenode = NULL;
+        for (nodesFor(enumnode->derived, cnt, nodesp)) {
+            if (((StructNode*)*nodesp)->fields.used == 2)
+                somenode = (StructNode*)*nodesp;
+        }
+        LLVMValueRef ptr = LLVMBuildLoad2(gen->builder, enumtype, selfptr, "nullable");
+        if (LLVMGetTypeKind(enumtype) != LLVMPointerTypeKind)
+            ptr = LLVMBuildExtractValue(gen->builder, ptr, 0, "ptr");   // a fat pointer's
+        LLVMValueRef present = LLVMBuildIsNotNull(gen->builder, ptr, "present");
+        LLVMBasicBlockRef someblk = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "dropsome");
+        LLVMBuildCondBr(gen->builder, present, someblk, doneblk);
+        LLVMPositionBuilderAtEnd(gen->builder, someblk);
+        genlFinalizeAt(gen, selfptr, (INode*)somenode);
+        LLVMBuildBr(gen->builder, doneblk);
+    }
+    else {
+        FieldDclNode *tagfld = NULL;
+        for (nodelistFor(&enumnode->fields, cnt, nodesp)) {
+            if ((*nodesp)->flags & IsTagField)
+                tagfld = (FieldDclNode*)*nodesp;
+        }
+        LLVMTypeRef tagtype = genlType(gen, tagfld->vtype);
+        LLVMValueRef tagptr = LLVMBuildStructGEP2(gen->builder, enumtype, selfptr, tagfld->index, "tagref");
+        LLVMValueRef tag = LLVMBuildLoad2(gen->builder, tagtype, tagptr, "tag");
+        LLVMValueRef dispatch = LLVMBuildSwitch(gen->builder, tag, doneblk, enumnode->derived->used);
+        for (nodesFor(enumnode->derived, cnt, nodesp)) {
+            StructNode *variant = (StructNode*)*nodesp;
+            if (!itypeNeedsFinal((INode*)variant))
+                continue;
+            LLVMBasicBlockRef caseblk = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "dropvariant");
+            LLVMAddCase(dispatch, LLVMConstInt(tagtype, variant->tagnbr, 0), caseblk);
+            LLVMPositionBuilderAtEnd(gen->builder, caseblk);
+            LLVMValueRef varptr = LLVMBuildBitCast(gen->builder, selfptr,
+                LLVMPointerType(genlType(gen, (INode*)variant), 0), "variant");
+            genlFinalizeAt(gen, varptr, (INode*)variant);
+            LLVMBuildBr(gen->builder, doneblk);
+        }
+    }
+    LLVMPositionBuilderAtEnd(gen->builder, doneblk);
 }
 
 // The region's header for the value an owning reference points at: the
@@ -113,15 +401,16 @@ static LLVMValueRef genlRegionHeader(GenState *gen, LLVMValueRef valptr, RefNode
     LLVMTypeRef hdrptrtype = LLVMPointerType(genlType(gen, refnode->region), 0);
     if (offset == 0)
         return LLVMBuildBitCast(gen->builder, valptr, hdrptrtype, "header");
-    LLVMValueRef bytep = LLVMBuildBitCast(gen->builder, valptr, LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0), "");
+    LLVMTypeRef bytetype = LLVMInt8TypeInContext(gen->context);
+    LLVMValueRef bytep = LLVMBuildBitCast(gen->builder, valptr, LLVMPointerType(bytetype, 0), "");
     LLVMValueRef back = LLVMConstInt(genlType(gen, (INode*)usizeType), -(long long)offset, 1);
-    bytep = LLVMBuildGEP(gen->builder, bytep, &back, 1, "");
+    bytep = LLVMBuildGEP2(gen->builder, bytetype, bytep, &back, 1, "");
     return LLVMBuildBitCast(gen->builder, bytep, hdrptrtype, "header");
 }
 
 // Call a region method that takes the header as 'self'
 static LLVMValueRef genlRegionCall(GenState *gen, FnDclNode *meth, LLVMValueRef header) {
-    return genlFnCallInternal(gen, SimpleDispatch, (INode*)meth, 1, &header);
+    return genlFnCallInternal(gen, SimpleDispatch, (INode*)meth, 1, &header, NULL);
 }
 
 // A path from a value inwards to a part of it that was moved out: each step is
@@ -134,24 +423,21 @@ typedef struct {
 
 static void genlHollowDeath(GenState *gen, LLVMValueRef valptr, RefNode *refnode, MovedPath *paths, int npaths, int depth);
 
-// The value an owning reference points at is dead: finalize it, release what
-// its fields own, then give the memory back through the region's 'free', where
-// it has one. The finalizer is the type's drop: its own 'final', then each
-// field's that has one (structSetDropFn), as a value on the stack is
-// finalized. The owning references its fields hold are not in that drop, so
-// releasing them after it releases nothing twice. With 'paths', the value or a
-// part of it was moved out, and it dies hollow (genlHollowDeath) instead.
-static void genlRegionDeath(GenState *gen, LLVMValueRef valptr, RefNode *refnode, MovedPath *paths, int npaths, int depth) {
+// The value an owning reference points at is dead: finalize it in place, as a
+// value on the stack is (genlFinalizeAt: its 'final', its fields that need
+// it, the owners it holds), then give the memory back through the region's
+// 'free', where it has one. An owning slice's elements each die so, in element
+// order, its length read from 'ref'. With 'paths', the value or a part of it
+// was moved out, and it dies hollow (genlHollowDeath) instead.
+static void genlRegionDeath(GenState *gen, LLVMValueRef ref, LLVMValueRef valptr, RefNode *refnode, MovedPath *paths, int npaths, int depth) {
     if (paths) {
         genlHollowDeath(gen, valptr, refnode, paths, npaths, depth);
         return;
     }
-    if (refnode->tag == RefTag) {
-        INode *dropfn = itypeGetDropFnDcl(refnode->vtexp);
-        if (dropfn)
-            genlFnCallInternal(gen, SimpleDispatch, dropfn, 1, &valptr);
-    }
-    genlDealiasFlds(gen, valptr, refnode);
+    if (refnode->tag == RefTag)
+        genlFinalizeAt(gen, valptr, refnode->vtexp);
+    else if (itypeNeedsFinal(refnode->vtexp))
+        genlEachElem(gen, valptr, LLVMBuildExtractValue(gen->builder, ref, 1, "slicelen"), refnode->vtexp, genlFinalizeElem, 0);
     FnDclNode *freemeth = regionMethod(refnode->region, freeMethodName);
     if (freemeth)
         genlRegionCall(gen, freemeth, genlRegionHeader(gen, valptr, refnode));
@@ -170,7 +456,7 @@ static void genlRegionDealiasPart(GenState *gen, LLVMValueRef ref, RefNode *refn
         return;
     LLVMValueRef valptr = genlRefPtr(gen, ref, refnode);
     if (dealiasmeth == NULL) {
-        genlRegionDeath(gen, valptr, refnode, paths, npaths, depth);
+        genlRegionDeath(gen, ref, valptr, refnode, paths, npaths, depth);
         return;
     }
     LLVMValueRef last = genlRegionCall(gen, dealiasmeth, genlRegionHeader(gen, valptr, refnode));
@@ -178,7 +464,7 @@ static void genlRegionDealiasPart(GenState *gen, LLVMValueRef ref, RefNode *refn
     LLVMBasicBlockRef dofree = genlInsertBlock(gen, "free");
     LLVMBuildCondBr(gen->builder, last, dofree, nofree);
     LLVMPositionBuilderAtEnd(gen->builder, dofree);
-    genlRegionDeath(gen, valptr, refnode, paths, npaths, depth);
+    genlRegionDeath(gen, ref, valptr, refnode, paths, npaths, depth);
     LLVMBuildBr(gen->builder, nofree);
     LLVMPositionBuilderAtEnd(gen->builder, nofree);
 }
@@ -193,8 +479,9 @@ static void genlRegionDealias(GenState *gen, LLVMValueRef ref, RefNode *refnode)
 // (flowRefuseMoveField), so a path runs on past a value only through an owning
 // reference -- '**b' took what a referent's own owning reference points at --
 // and that reference dies hollow in turn. Anything else a path runs through --
-// an array element -- is left whole to what moved, as a death would release
-// none of it either.
+// an array element -- is not finalized at all: which elements are left is not
+// tracked, so the ones that did not move leak rather than one being
+// finalized twice.
 static void genlReleasePart(GenState *gen, LLVMValueRef ptr, INode *type, MovedPath *paths, int npaths, int depth) {
     for (int i = 0; i < npaths; ++i) {
         if (paths[i].len <= depth)
@@ -205,7 +492,7 @@ static void genlReleasePart(GenState *gen, LLVMValueRef ptr, INode *type, MovedP
         RefNode *reftype = (RefNode *)typedcl;
         if (!regionIsOwning(reftype->region))
             return;
-        genlRegionDealiasPart(gen, LLVMBuildLoad(gen->builder, ptr, "partref"), reftype, paths, npaths, depth);
+        genlRegionDealiasPart(gen, LLVMBuildLoad2(gen->builder, genlType(gen, typedcl), ptr, "partref"), reftype, paths, npaths, depth);
     }
 }
 
@@ -213,7 +500,7 @@ static void genlReleasePart(GenState *gen, LLVMValueRef ptr, INode *type, MovedP
 // out: no finalizer runs for it, what is left is released (genlReleasePart),
 // and the memory goes back through the region's 'free'. A path of one step
 // moved the whole value out, leaving only the memory. A slice's elements are
-// never walked, as a death walks none of them.
+// not walked: one of them moved, and which is not tracked.
 static void genlHollowDeath(GenState *gen, LLVMValueRef valptr, RefNode *refnode, MovedPath *paths, int npaths, int depth) {
     if (refnode->tag == RefTag)
         genlReleasePart(gen, valptr, refnode->vtexp, paths, npaths, depth + 1);
@@ -266,7 +553,7 @@ void genlHollowRelease(GenState *gen, HollowNode *hnode) {
     MovedPath *paths = (MovedPath *)memAllocBlk(npaths * sizeof(MovedPath));
     for (int i = 0; i < npaths; ++i)
         paths[i] = genlMovedPath(nodesGet(hnode->moved, i), var);
-    LLVMValueRef ref = LLVMBuildLoad(gen->builder, var->llvmvar, "hollowref");
+    LLVMValueRef ref = LLVMBuildLoad2(gen->builder, genlType(gen, var->vtype), var->llvmvar, "hollowref");
     genlRegionDealiasPart(gen, ref, reftype, paths, npaths, 0);
 }
 
@@ -315,8 +602,8 @@ void genlRegionAlias(GenState *gen, LLVMValueRef ref, long long amount, RefNode 
     LLVMPositionBuilderAtEnd(gen->builder, doneblk);
 }
 
-// Generate repetitive array fill of a value
-void genlAllocFillArray(GenState *gen, LLVMValueRef nbrelems, ArrayNode *arraylit, LLVMValueRef valuep) {
+// Generate repetitive array fill of a value, each element of LLVM type 'elemtype'
+void genlAllocFillArray(GenState *gen, LLVMValueRef nbrelems, ArrayNode *arraylit, LLVMValueRef valuep, LLVMTypeRef elemtype) {
     LLVMValueRef ptrphis[2];
     LLVMValueRef cntphis[2];
     LLVMBasicBlockRef phiblks[2];
@@ -345,7 +632,7 @@ void genlAllocFillArray(GenState *gen, LLVMValueRef nbrelems, ArrayNode *arrayli
     LLVMPositionBuilderAtEnd(gen->builder, loopbody);
     LLVMBuildStore(gen->builder, fillval, loopptrphi);
     LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 1);
-    ptrphis[1] = LLVMBuildGEP(gen->builder, loopptrphi, &constone, 1, "");
+    ptrphis[1] = LLVMBuildGEP2(gen->builder, elemtype, loopptrphi, &constone, 1, "");
     cntphis[1] = LLVMBuildSub(gen->builder, loopcntphi, constone, "");
     phiblks[1] = loopbody;
     LLVMBuildBr(gen->builder, loopbeg);
@@ -394,7 +681,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     }
     INode *region = itypeGetTypeDcl(reftype->region);
     INode *perm = itypeGetTypeDcl(reftype->perm);
-    LLVMTypeRef valuetypllvm = LLVMStructGetTypeAtIndex(LLVMGetElementType(reftype->typeinfo->ptrstructype), ValueField);
+    LLVMTypeRef valuetypllvm = LLVMStructGetTypeAtIndex(reftype->typeinfo->structype, ValueField);
     LLVMTypeRef valueptrtyp = LLVMPointerType(valuetypllvm, 0);
 
     // Calculate how much memory space we need to allocate
@@ -420,7 +707,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
 
     // Do region allocation (using its alloc method) and then bitcast to multi-layered-struct ptr
     FnDclNode *allocmeth = (FnDclNode*)iTypeFindFnField(region, allocMethodName);
-    LLVMValueRef malloc = genlFnCallInternal(gen, SimpleDispatch, (INode*)allocmeth, 1, &sizeval);
+    LLVMValueRef malloc = genlFnCallInternal(gen, SimpleDispatch, (INode*)allocmeth, 1, &sizeval, NULL);
     LLVMValueRef ptrstructype = LLVMBuildBitCast(gen->builder, malloc, reftype->typeinfo->ptrstructype, "");
 
     // Handle when allocation fails (returns NULL pointer)
@@ -452,8 +739,8 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     // Initialize region using its 'init' method, if supplied
     INode *reginitmeth = iTypeFindFnField(region, initMethodName);
     if (reginitmeth) {
-        LLVMValueRef initval = genlFnCallInternal(gen, SimpleDispatch, (INode*)reginitmeth, 0, NULL);
-        LLVMValueRef regionp = LLVMBuildStructGEP(gen->builder, ptrstructype, 0, "region");
+        LLVMValueRef initval = genlFnCallInternal(gen, SimpleDispatch, (INode*)reginitmeth, 0, NULL, NULL);
+        LLVMValueRef regionp = LLVMBuildStructGEP2(gen->builder, reftype->typeinfo->structype, ptrstructype, 0, "region");
         LLVMBuildStore(gen->builder, initval, regionp);
     }
 
@@ -461,21 +748,21 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     if (perm->tag == StructTag) {
         INode *perminitmeth = iTypeFindFnField(perm, initMethodName);
         if (perminitmeth) {
-            LLVMValueRef initval = genlFnCallInternal(gen, SimpleDispatch, (INode*)perminitmeth, 0, NULL);
-            LLVMValueRef permp = LLVMBuildStructGEP(gen->builder, ptrstructype, 1, "perm");
+            LLVMValueRef initval = genlFnCallInternal(gen, SimpleDispatch, (INode*)perminitmeth, 0, NULL, NULL);
+            LLVMValueRef permp = LLVMBuildStructGEP2(gen->builder, reftype->typeinfo->structype, ptrstructype, 1, "perm");
             LLVMBuildStore(gen->builder, initval, permp);
         }
     }
 
     // Initialize value (via copy or init function) and return pointer to it
-    LLVMValueRef valuep = LLVMBuildStructGEP(gen->builder, ptrstructype, ValueField, ""); // Point to value
+    LLVMValueRef valuep = LLVMBuildStructGEP2(gen->builder, reftype->typeinfo->structype, ptrstructype, ValueField, ""); // Point to value
     if (reftype->tag == RefTag) {
         LLVMBuildStore(gen->builder, genlExpr(gen, allocatenode->vtexp), valuep); // Copy value
     }
     else {
         // Handle array fill via run-time generation
         if (allocatenode->vtexp->tag == ArrayLitTag && ((ArrayNode*)allocatenode->vtexp)->dimens->used > 0) {
-            genlAllocFillArray(gen, nbrelems, (ArrayNode*)allocatenode->vtexp, valuep);
+            genlAllocFillArray(gen, nbrelems, (ArrayNode*)allocatenode->vtexp, valuep, valuetypllvm);
         }
         else {
             // Copy initial value into allocated memory area for value
@@ -532,10 +819,12 @@ void genlDealiasNodes(GenState *gen, Nodes *nodes) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(nodes, cnt, nodesp)) {
-        // Hack for dealias on local variables holding region-owning reference
+        // A variable listed itself dies in place: an owning reference, or a
+        // tuple or an array whose elements have anything to do as they die
+        // (flowScopeDealias). A struct or an enum is listed as its drop's call.
         if ((*nodesp)->tag == VarDclTag) {
             VarDclNode *var = (VarDclNode *)*nodesp;
-            genlReleaseOwning(gen, LLVMBuildLoad(gen->builder, var->llvmvar, "allocref"), var->vtype);
+            genlFinalizeAt(gen, var->llvmvar, var->vtype);
         }
         // Generate function calls that drop/dealias values
         else {

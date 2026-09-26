@@ -128,9 +128,12 @@ fn @intrinsic alignof[T]() usize
 fn @intrinsic needsFinal[T]() Bool
 </pre>
 	<p>Whether <span class="pre">finalize[T]</span> does anything: true when
-		<span class="pre">T</span> is an owning reference (or a tuple holding one), has a
-		<span class="pre">final</span> method, has a field whose type needs finalizing, or
-		has a field holding an owning reference. False for numbers, raw pointers,
+		<span class="pre">T</span> is an owning reference, has a
+		<span class="pre">final</span> method, has a field whose type needs finalizing
+		(an owning reference among them), is a tuple or an array whose element type
+		does, or is an enum one of whose variants does:
+		true for <span class="pre">Option[String]</span>, false for
+		<span class="pre">Option[i32]</span>. False for numbers, raw pointers,
 		borrowed references, and structs of them. A constant. It lets a collection skip
 		the loop over its elements when there is nothing to do. No fallback.</p>
 
@@ -141,14 +144,15 @@ fn @intrinsic finalize[T](p *T)
 	<p>Runs the death of the <span class="pre">T</span> at <span class="pre">p</span>
 		where it sits, exactly as a region-held value of type <span class="pre">T</span>
 		dies, except that its memory is not given back: first <span class="pre">T</span>'s
-		own <span class="pre">final</span>, if it has one; then each field's finalizer, in
-		field order; then each owning reference its fields hold is released (which may
-		finalize and free what that reference points at). If <span class="pre">T</span> is
+		own <span class="pre">final</span>, if it has one; then each field's death, in
+		field order, recursively; then each owning reference its fields hold is released
+		(which may finalize and free what that reference points at). If <span class="pre">T</span> is
 		itself an owning reference, that reference is released: one owner goes away, and
-		if it was the last, the value it points at dies. For a type with nothing to
-		finalize (<span class="pre">needsFinal[T]()</span> is false) it does nothing.
-		Owning references held inside a field's own fields are not released, as a
-		region-held value's death does not release them either.</p>
+		if it was the last, the value it points at dies. If <span class="pre">T</span> is an
+		enum, the value dies as the variant it holds. If it is a tuple, each element dies
+		in order; if it is a fixed-size array, each element dies in element order, first
+		element first. For a type with nothing to
+		finalize (<span class="pre">needsFinal[T]()</span> is false) it does nothing.</p>
 	<p>Needs trust: <span class="pre">p</span> must point at a live, initialized
 		<span class="pre">T</span>, aligned for it. Afterwards that <span class="pre">T</span>
 		is dead: reading it as a <span class="pre">T</span> or finalizing it again is a

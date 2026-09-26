@@ -149,7 +149,8 @@ static int64_t arrayLitFillCount(ArrayNode *arrlit) {
 // - A move value has exactly one owner and cannot have n of them, so filling
 //   with one is refused however small n is. Proving n is 1 would buy a construct
 //   nobody writes at the cost of a rule that is harder to state.
-// - A counted reference may legitimately be repeated, but n holders appear
+// - A counted reference may legitimately be repeated, and so may a value
+//   holding one (a struct, a tuple, an array, an enum), but n holders appear
 //   rather than one, so the count rises by n -- or by n-1 when the value is a
 //   temporary, which hands over the one reference it was born holding. That
 //   amount is a constant in the alias node, so a count known only at run time
@@ -186,14 +187,21 @@ void arrayLitFlow(FlowState *fstate, ArrayNode **nodep) {
             "An array fill literal may not repeat a move value, which may have only one owner.");
         return;
     }
-    RefNode *reftype = (RefNode *)iexpGetTypeDcl(*valp);
-    if (reftype->tag != RefTag || !regionIsCounted(reftype->region))
+    // A tuple literal's elements are copied into it first, each read out of a
+    // variable gaining its holder there, and the tuple is then a temporary
+    if ((*valp)->tag == VTupleTag)
+        flowHandleMoveOrCopy(valp);
+
+    // A value holding counted references -- a struct, a tuple, an array, an
+    // enum -- is one more holder of each per element, as a counted reference is
+    INode *valtype = ((IExpNode *)*valp)->vtype;
+    if (!flowIsRcRef(valtype) && !flowHeldCounted(valtype))
         return;   // Any other value copies freely, needing no count
 
     int64_t nbrelems = arrayLitFillCount(arrlit);
     if (nbrelems < 0) {
         errorMsgNode(*valp, ErrorFillCount,
-            "An array fill literal whose value is a counted reference needs an element count known at compile time.");
+            "An array fill literal whose value is or holds a counted reference needs an element count known at compile time.");
         return;
     }
     if (nbrelems > INT16_MAX) {

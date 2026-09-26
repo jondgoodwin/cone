@@ -61,33 +61,25 @@ When finished, Cone will support these features:
 
 ## Building (Windows)
 
-A Visual Studio C++ solution can be created using the Cone.vcxproj project file.
-The generated object and executable files are created relative to the location of the 
-solutions file. 
+The build depends on [LLVM 23.1][llvm], built with the X86 and WebAssembly
+targets, and uses CMake with the Ninja generator from a VS 2022 x64 prompt:
 
-The build depends on [LLVM 13][llvm] being installed and libs/includes found at $(LLVMDIR).
+	cmake -S . -B build\x64-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR=<llvm root>\lib\cmake\llvm
+	cmake --build build\x64-release
 
-Building LLVM on Windows can be a pain. Some notes:
+Building LLVM itself on Windows, from `llvm-project-23.1.2.src.tar.xz` at
+https://github.com/llvm/llvm-project/releases, with the same generator:
 
-1. Download llvm-13.0.0.src.tar.xz from https://github.com/llvm/llvm-project/releases 
-2. Extract the src to a path having no spaces (e.g., D:\libs\llvm-13.0.0.src)
-3. Make sure you have a recent version of CMake (which has CMake-GUI)
-4. Use CMake-GUI to configure. Fill in the source folder (above) and a new target folder (D:\libs\llvm-13.0.0.build) and hit Configure button
-   - When it asks if build folder should be created, say Yes
-   - When it prompts for a generator, specify the Visual Studio version installed (e.g., 15).
-   - In next drop down, select "Win32" to build 32-bit compiler.
-5. In CMake-Gui, change defaults if you want (e.g., 32-bit target triple is i686-pc-win32), and then hit "Generate" button.
-6. From build folder, double clicked on llvm.sln file to open Visual Studio. 
-   - Select Release, and then build ALL_BUILD
-   - Select Debug, and then build ALL_BUILD. (fails if not enough memory, shut all pgms off)
-7. Copy llvm-c from llvm-13.0.0.src/include to llvm-13.0.0.build/include
-8) In command prompt: setx LLVMDIR d:\libs\llvm-13.0.0.build\
+	cmake -S llvm -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_TARGETS_TO_BUILD="X86;WebAssembly" -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF -DCMAKE_INSTALL_PREFIX=<llvm root>
+	cmake --build build --target install
+
+Only the `llvm`, `cmake` and `third-party` folders of the source are needed.
 
 ## Building (Linux and WSL in Windows)
 
 To build on Linux:
 
-	sudo apt-get install llvm-13-dev
+	sudo apt-get install llvm-23-dev
 	cmake .
 	make
 

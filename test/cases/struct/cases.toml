@@ -25,6 +25,12 @@
 # that one runs at all and what a generated drop fn calls; this file pins that
 # it runs exactly once, so its cases are the variables that must not be
 # finalized -- never assigned, moved out -- beside the ones that must.
+# struct_final_owners and struct_final_aggregates are beside it: what a death
+# reaches rather than when it runs. The first pins that a struct held by value
+# releases the owning references its fields hold, however deep, in the ruled
+# order; the second that a tuple or an array of values that finalize or own
+# dies with them, element by element, wherever it lives. Counting the holders a
+# copy of such a value makes is the region group's (region_held_counted).
 #
 # struct_extends is the seventh: enriching a concrete type with methods. It is
 # its own file rather than part of struct_fold, because the two folds differ in
@@ -100,20 +106,21 @@ description = "Struct fields: declaring, constructing, reading, changing and cop
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 
 # Structs that reach themselves through a reference must survive into code
-# generation as self-referential types rather than being flattened or dropped.
-# A type whose own name appears inside its body is the whole claim, and runtime
-# cannot see it. Read before optimization: the functions that mention these
-# types are folded into 'main' and deleted, and a type nothing mentions is not
-# printed.
+# generation rather than being flattened or dropped: each is a named struct
+# whose reference field is a pointer, and Owner holds Held by value. LLVM's
+# pointers carry no pointee, so the reference field is a bare 'ptr' and a
+# type's own name no longer appears inside its body. Runtime cannot see the
+# layout. Read before optimization: the functions that mention these types are
+# folded into 'main' and deleted, and a type nothing mentions is not printed.
 [[scenario.struct_success.check]]
 name = "recursive-types-reach-code-generation"
 target = "preir"
 contains = [
-  "%Node = type { i64, %Node* }",
+  "%Node = type { i64, ptr }",
   "%Owner = type { i64, %Held }",
-  "%Held = type { %Owner* }",
-  "%Left = type { i64, %Right* }",
-  "%Right = type { %Left* }",
+  "%Held = type { ptr }",
+  "%Left = type { i64, ptr }",
+  "%Right = type { ptr }",
 ]
 
 # A global built from nested struct literals is one constant, every level of it
@@ -338,6 +345,16 @@ contains = ["tail call i32 @_CNvNt6Engine5power("]
 [scenario.struct_final_once]
 category = "run"
 description = "A finalizer runs once at the end of its value's life, and not over a variable that was never assigned or was moved out"
+tags = ["flow", "genllvm", "runtime"]
+
+[scenario.struct_final_owners]
+category = "run"
+description = "A struct held by value releases the owning references its fields hold, two fields deep too, after its own final and its finalizing fields"
+tags = ["flow", "genllvm", "runtime"]
+
+[scenario.struct_final_aggregates]
+category = "run"
+description = "A tuple or a fixed-size array of values that finalize or own dies with them, element by element in order, wherever it lives"
 tags = ["flow", "genllvm", "runtime"]
 
 [scenario.struct_extends]

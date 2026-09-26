@@ -20,6 +20,24 @@ static int flowIsBorrowedRef(INode *exp) {
         && itypeGetTypeDcl(reftype->region) == borrowRef;
 }
 
+// The value a match binds this variable to -- the matched value, which the
+// match holds in a variable of its own -- or NULL for any other variable.
+// 'case imm c Circle' binds 'c' to the matched value converted to its variant,
+// which is the same value under the variant's name, not a second one: the
+// matched value's variable owns it, and is what releases it as its scope ends,
+// as the enum, so that whichever arm runs it is finalized once. So the binding
+// is never released itself; moving it moves the matched value, and handing it
+// back hands back the matched value.
+INode *flowMatchBound(INode *var) {
+    if (var->tag != VarDclTag)
+        return NULL;
+    INode *value = ((VarDclNode *)var)->value;
+    if (value == NULL || value->tag != CastTag || !(value->flags & FlagMatchBind))
+        return NULL;
+    INode *matched = ((CastNode *)value)->exp;
+    return isNameUseNode(matched) && isExpNode(matched) ? matched : NULL;
+}
+
 // Is this expression a shared owner -- an owning reference that other holders
 // may be sharing? An owning reference that may be aliased ('+rc-mut', '+rc-imm',
 // '+rc-ro', and every 'rc' form but '+rc-uni') is one of possibly many holders
@@ -172,7 +190,9 @@ static void flowMoveExit(INode *exp, Nodes **moved, Nodes **common, int *first, 
 // variable owning the allocation: 'parts' notes the move as hollowing the
 // variable rather than as moving it.
 static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *parts) {
-    // For a variable, its value is what moves
+    // For a variable, its value is what moves. A variable a match binds is the
+    // matched value under its variant's name, which owns it (flowMatchBound):
+    // moving the one moves the other.
     if (isNameUseNode(node) && isExpNode(node)) {
         VarDclNode *vardclnode = (VarDclNode *)((NameUseNode*)node)->dclnode;
         if (moved) {
@@ -182,6 +202,9 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
         if (vardclnode->scope == 0) {
             errorMsgNode(node, ErrorInvType, "May not move a value out of a global variable.");
         }
+        INode *matched = flowMatchBound((INode *)vardclnode);
+        if (matched)
+            flowMoveSource(matched, moved, top, parts);
         return;
     }
     switch (node->tag) {
@@ -384,8 +407,9 @@ int flowIsRcRef(INode *type) {
     return (reftype->tag == RefTag || reftype->tag == ArrayRefTag) && regionIsCounted(reftype->region);
 }
 
-// Does a variable of this type hold something its scope must release: an
-// owning reference into a region, single or slice, or a tuple carrying one?
+// Is this type an owning reference into a region, single or slice, or a tuple
+// carrying one: what a store releases before it overwrites (genlStore)? What a
+// scope's end does to a variable is itypeNeedsFinal's wider question.
 int flowIsOwningType(INode *type) {
     INode *typedcl = itypeGetTypeDcl(type);
     if (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag) {
@@ -403,16 +427,76 @@ int flowIsOwningType(INode *type) {
     return 0;
 }
 
+// Does a copy of a value of this type add a holder to a counted reference
+// inside it, which the value's death releases? A struct's drop releases what
+// its fields own, an enum's what its variant's fields own (genlStructDrop,
+// genlEnumDrop), and a tuple's or an array's death each element's
+// (genlFinalizeAt), so any of them holding a counted reference, directly or
+// deeper, does; the count must then rise with each copy, or each copy's death
+// would release the one holder again. A counted reference itself is
+// flowIsRcRef's. A move type is never copied, so the answer is only ever asked
+// of a copy type.
+int flowHeldCounted(INode *type) {
+    INode *typedcl = itypeGetTypeDcl(type);
+    INode **nodesp;
+    uint32_t cnt;
+    switch (typedcl->tag) {
+    case TTupleTag:
+        for (nodesFor(((TupleNode *)typedcl)->elems, cnt, nodesp)) {
+            if (flowIsRcRef(*nodesp) || flowHeldCounted(*nodesp))
+                return 1;
+        }
+        return 0;
+    case ArrayTag:
+    {
+        INode *elemtype = arrayElemType(typedcl);
+        return flowIsRcRef(elemtype) || flowHeldCounted(elemtype);
+    }
+    case StructTag:
+        break;
+    default:
+        return 0;
+    }
+    StructNode *strnode = (StructNode *)typedcl;
+    if (strnode->flags & EnumType) {
+        if (strnode->dropfn == NULL || strnode->derived == NULL)
+            return 0;
+        for (nodesFor(strnode->derived, cnt, nodesp)) {
+            if (flowVariantHeldCounted(*nodesp))
+                return 1;
+        }
+        return 0;
+    }
+    if (strnode->flags & TraitType)
+        return 0;
+    return flowVariantHeldCounted((INode *)strnode);
+}
+
+// Does a struct -- a variant among them -- hold a counted reference its drop
+// releases: in a field of its own, or inside one (flowHeldCounted)?
+int flowVariantHeldCounted(INode *variant) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&((StructNode *)variant)->fields, cnt, nodesp)) {
+        INode *fldtype = ((FieldDclNode *)*nodesp)->vtype;
+        if (flowIsRcRef(fldtype) || flowHeldCounted(fldtype))
+            return 1;
+    }
+    return 0;
+}
+
 // If needed, inject a reference-count node for rc/own references, adjusting the count by amt.
 // One value can become more than one holder at once: an array fill literal stores
-// the reference it evaluates once into every one of its elements.
+// the reference it evaluates once into every one of its elements. A struct or an
+// enum is one holder of each counted reference its drop releases (flowHeldCounted).
 void flowInjectRefCountAmt(INode **nodep, int16_t amt) {
     INode *vtype = ((IExpNode*)*nodep)->vtype;
     INode *typedcl = itypeGetTypeDcl(vtype);
     int16_t *counts = NULL;
     if (typedcl->tag == TTupleTag) {
         // A tuple value is one holder of each counted reference it carries, so
-        // every rc element gets the adjustment and every other element none.
+        // every rc element, and every element holding one, gets the
+        // adjustment and every other element none.
         Nodes *elems = ((TupleNode *)typedcl)->elems;
         counts = (int16_t *)memAllocBlk(elems->used * sizeof(int16_t));
         int16_t *countp = counts;
@@ -420,7 +504,7 @@ void flowInjectRefCountAmt(INode **nodep, int16_t amt) {
         INode **elemp;
         uint32_t cnt;
         for (nodesFor(elems, cnt, elemp)) {
-            *countp = flowIsRcRef(*elemp) ? amt : 0;
+            *countp = flowIsRcRef(*elemp) || flowHeldCounted(*elemp) ? amt : 0;
             anycounted |= *countp++;
         }
         if (!anycounted)
@@ -428,7 +512,7 @@ void flowInjectRefCountAmt(INode **nodep, int16_t amt) {
         amt = (int16_t)elems->used;
     }
     // No need for injected node if we are not dealing with rc references
-    else if (!flowIsRcRef(vtype))
+    else if (!flowIsRcRef(vtype) && !flowHeldCounted(vtype))
         return;
 
     // Inject the reference-count node
@@ -467,6 +551,16 @@ int flowIsLvalRead(INode *node) {
 }
 
 void flowHandleMoveOrCopy(INode **nodep) {
+    // A tuple literal has no storage of its own: each element's value is moved
+    // or copied into it on its own, as a struct literal's fields are, so a
+    // counted reference read out of a variable gains a holder there
+    if ((*nodep)->tag == VTupleTag) {
+        INode **elemp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)*nodep)->elems, cnt, elemp))
+            flowHandleMoveOrCopy(elemp);
+        return;
+    }
     if (iexpIsMove(*nodep)) {
         // Moving needs to deactivate source variable use
         flowHandleMove(*nodep);
@@ -736,7 +830,14 @@ static int flowIsScopeResult(INode *retexp, VarDclNode *varnode, Nodes **hollow)
             break;
         }
     }
-    return isNameUseNode(retexp) && isExpNode(retexp) && ((NameUseNode *)retexp)->dclnode == (INode *)varnode;
+    if (!(isNameUseNode(retexp) && isExpNode(retexp)))
+        return 0;
+    INode *named = ((NameUseNode *)retexp)->dclnode;
+    if (named == (INode *)varnode)
+        return 1;
+    // A match's binding handed back hands back the matched value
+    INode *matched = flowMatchBound(named);
+    return matched ? flowIsScopeResult(matched, varnode, hollow) : 0;
 }
 
 // A hollow release of a variable, as it stands now: the moves that hollowed it
@@ -772,6 +873,9 @@ void flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp, INode *le
         // drop fn over it, would act on garbage.
         if (!(avar->node->flowtempflags & VarInitialized))
             continue;
+        // A match's binding owns nothing: the matched value's variable does
+        if (flowMatchBound((INode *)avar->node))
+            continue;
         // Stopgap: a variable whose value was moved out no longer owns it, so
         // releasing or finalizing it here would act on the new owner's value a
         // second time. VarMoved, like VarInitialized, is the state at scope exit
@@ -801,23 +905,26 @@ void flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp, INode *le
             nodesAdd(varlist, (INode*)hnode);
             continue;
         }
-        if (flowIsOwningType(vartype)) {
-            if (*varlist == NULL)
-                *varlist = newNodes(4);
-            nodesAdd(varlist, (INode*)avar->node);
-        }
-        else {
-            // Add call to type's drop fn to dealias list, if there is one
-            INode *dropfn = itypeGetDropFnDcl(vartype);
-            if (dropfn != NULL) {
-                FnCallNode *dropfncall = newFnCallLower(dropat, dropfn, 1);
-                INode *dropnameuse = (INode*)newNameUseFromDclNode((INode*)avar->node, dropat);
-                INode *borrow = newBorrowMutRef(dropnameuse, ((IExpNode*)avar->node)->vtype, (INode*)uniPerm);
-                nodesAdd(&dropfncall->args, borrow);
+        // A struct or an enum dies through its drop: a call to it is listed.
+        // Anything else with anything to do as it dies -- an owning reference,
+        // a tuple or an array of values that finalize or own -- is listed
+        // itself, and generation finalizes it in place (genlFinalizeAt).
+        INode *dropfn = itypeGetDropFnDcl(vartype);
+        if (dropfn == NULL) {
+            if (itypeNeedsFinal(vartype)) {
                 if (*varlist == NULL)
                     *varlist = newNodes(4);
-                nodesAdd(varlist, (INode*)dropfncall);
+                nodesAdd(varlist, (INode*)avar->node);
             }
+        }
+        else {
+            FnCallNode *dropfncall = newFnCallLower(dropat, dropfn, 1);
+            INode *dropnameuse = (INode*)newNameUseFromDclNode((INode*)avar->node, dropat);
+            INode *borrow = newBorrowMutRef(dropnameuse, ((IExpNode*)avar->node)->vtype, (INode*)uniPerm);
+            nodesAdd(&dropfncall->args, borrow);
+            if (*varlist == NULL)
+                *varlist = newNodes(4);
+            nodesAdd(varlist, (INode*)dropfncall);
         }
     }
 }

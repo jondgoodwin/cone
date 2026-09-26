@@ -359,8 +359,8 @@ largely-built one.
 
 **This is not an exception to the no-changelog rule above.** `[differs]` states a
 present gap between the design and the code. "Was `assert(0)`" is history and is
-deleted; "[differs: a slice's elements are not finalized when its region frees
-it]" is the current fact.
+deleted; "[differs: a value assigned over through a reference is not
+finalized]" is the current fact.
 
 **There is no marker for code a note does not describe.** A note is an abstract
 summary from one perspective and necessarily leaves implementation detail out. If

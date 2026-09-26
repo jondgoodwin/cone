@@ -667,22 +667,31 @@ INode *itypeGetDropFnDcl(INode *typenode) {
 }
 
 // Whether a value of this type has anything to do when it dies in place: it is
-// an owning reference (or a tuple holding one) to release, or its type has a
-// drop function (its 'final', then each field's), or it is a struct with a
-// field holding an owning reference. This is what the 'finalize' intrinsic does
-// (genlFinalizeAt), and what 'needsFinal' answers, in Cone's terms.
+// an owning reference to release, or its type has a drop function (a struct's
+// or an enum's: its 'final', then each field's death, then its owners'
+// release), or it is a tuple or an array holding any such value. This is what
+// the 'finalize' intrinsic does (genlFinalizeAt), what a scope's end does to a
+// local, and what 'needsFinal' answers, in Cone's terms.
+//
+// A struct or an enum is asked only for its drop: a type held by value is laid
+// out, its drop settled, before any holder's is (structSetDropFn), and one held
+// in a cycle was refused and has none.
 int itypeNeedsFinal(INode *typenode) {
     if (flowIsOwningType(typenode) || itypeGetDropFnDcl(typenode) != NULL)
         return 1;
     INode *type = itypeGetTypeDcl(typenode);
-    if (type->tag != StructTag)
-        return 0;
     INode **nodesp;
     uint32_t cnt;
-    for (nodelistFor(&((StructNode*)type)->fields, cnt, nodesp)) {
-        INode *fldtype = itypeGetTypeDcl(((FieldDclNode *)*nodesp)->vtype);
-        if (fldtype->tag == RefTag && regionIsOwning(((RefNode *)fldtype)->region))
-            return 1;
+    switch (type->tag) {
+    case TTupleTag:
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (itypeNeedsFinal(*nodesp))
+                return 1;
+        }
+        return 0;
+    case ArrayTag:
+        return itypeNeedsFinal(arrayElemType(type));
+    default:
+        return 0;
     }
-    return 0;
 }

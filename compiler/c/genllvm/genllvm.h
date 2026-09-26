@@ -13,7 +13,7 @@
 
 #include <llvm-c/Core.h>
 #include <llvm-c/DebugInfo.h>
-#include <llvm-c/ExecutionEngine.h>
+#include <llvm-c/TargetMachine.h>
 
 // An entry for each active loop block in current control flow stack
 #define GenBlockStackMax 256
@@ -104,8 +104,10 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk);
 
 // genlexpr.c
 LLVMValueRef genlExpr(GenState *gen, INode *termnode);
-// Generate a function call, including special intrinsics (Internal version)
-LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint32_t fnargcnt, LLVMValueRef *fnargs);
+// Generate a function call, including special intrinsics (Internal version).
+// 'selftype' is the Cone type of the first argument, which a virtual dispatch
+// and the pointer intrinsics read; NULL for a call the compiler makes itself.
+LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint32_t fnargcnt, LLVMValueRef *fnargs, INode *selftype);
 // Generate a panic
 void genlPanic(GenState *gen);
 
@@ -120,11 +122,15 @@ void genlDealiasNodes(GenState *gen, Nodes *nodes);
 // the region's 'dealias', as the value's death for a 'Move' region, and as
 // nothing for any other; each element of a tuple
 void genlReleaseOwning(GenState *gen, LLVMValueRef val, INode *type);
-// Release each owning reference held by a field of the struct value at 'ref'
-void genlReleaseFlds(GenState *gen, LLVMValueRef ref, INode *vtype);
 // Finalize the value at 'valptr' where it sits, as its death would, without
-// freeing its memory: the 'finalize' intrinsic
+// freeing its memory: the 'finalize' intrinsic, and a local's death
 void genlFinalizeAt(GenState *gen, LLVMValueRef valptr, INode *vtype);
+// The body of a drop the compiler gave a struct or an enum, built from its
+// layout: an enum's dispatches on the tag to what the variant's death does
+void genlTypeDrop(GenState *gen, FnDclNode *fnnode);
+// A copied value at 'valptr': each counted reference its death releases
+// gains 'amount' holders
+void genlAliasHeld(GenState *gen, LLVMValueRef valptr, INode *type, long long amount);
 // Release a hollowed variable's owning reference without the parts moved out
 void genlHollowRelease(GenState *gen, HollowNode *hnode);
 // A counted reference gains 'amount' owners, through its region's 'alias'
@@ -135,6 +141,14 @@ LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name);
 // genltype.c
 // Generate a type value
 LLVMTypeRef genlType(GenState *gen, INode *typ);
+// The Cone type a reference, pointer or slice points at: what a load through it
+// reads and what a GEP over it steps by. An LLVM pointer does not know this
+// (opaque pointers), so a load, GEP or call is always typed from the Cone type.
+INode *genlPointee(INode *type);
+// The LLVM type of genlPointee
+LLVMTypeRef genlPointeeType(GenState *gen, INode *type);
+// The function type of a vtable slot holding a method, whose self is erased to *u8
+LLVMTypeRef genlVtableSlotFnType(GenState *gen, FnDclNode *meth);
 // Generate LLVM value corresponding to the size of a type
 LLVMValueRef genlSizeof(GenState *gen, INode *vtype);
 // Generate LLVM value corresponding to the alignment of a type

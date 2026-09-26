@@ -120,6 +120,10 @@ typedef struct {
 // The local variable holding an owning reference that 'ref' names, or NULL
 VarDclNode *flowOwningLocal(INode *ref);
 
+// The matched value a match binds this variable to, or NULL: such a variable
+// is the matched value under its variant's name, and owns nothing itself
+INode *flowMatchBound(INode *var);
+
 // A hollow release of a hollowed variable, for the moves that hollowed it so far
 HollowNode *flowNewHollow(VarDclNode *var);
 
@@ -138,8 +142,14 @@ void flowInjectRefCountAmt(INode **nodep, int16_t amt);
 // Is this type a counted (rc) reference, single or slice?
 int flowIsRcRef(INode *type);
 
-// Does a variable of this type hold something its scope must release:
-// an rc or so reference, single or slice, or a tuple carrying one?
+// Does a copy of a value of this type -- a struct, an enum, a tuple, an array --
+// add a holder to a counted reference its death releases? And does this
+// variant hold one its enum's drop releases?
+int flowHeldCounted(INode *type);
+int flowVariantHeldCounted(INode *variant);
+
+// Is this type an rc or so reference, single or slice, or a tuple carrying
+// one: what a store releases before it overwrites?
 int flowIsOwningType(INode *type);
 
 #endif

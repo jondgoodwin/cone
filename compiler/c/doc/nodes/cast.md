@@ -199,7 +199,8 @@ virtual references and fat pointers are in play.
 - `ArrayRefTag` from a ref-to-array: bitcast the pointer, then `insertvalue`
   the pointer and the compile-time dimension into the fat pointer.
 - `VirtRefTag`: build the vtable if needed, find the implementation, then
-  `{bitcast to i8*, vtablep}`.
+  `{object pointer, vtablep}`. Every pointer is LLVM's `ptr`, so the bitcasts
+  here and above fold away as they are built.
 
 `genlRecast` (no flag): **re-checks size for a struct target** with
 `LLVMABISizeOfType` and reports `ErrorRecastSize` — this is the check

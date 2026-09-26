@@ -60,6 +60,13 @@
 # it adds -- plain, generic, of an instance, generic over plain, and down plain,
 # generic and mixed chains -- beside a variant's own name winning over a base's.
 #
+# When a value typed as an enum dies has a run program of its own, enum_final:
+# every place such a value lives, the order an enum's own 'final' runs in beside
+# a variant's, and matching by value, which is the one place a variant and the
+# enum value it came from are two names for one value. What the drop releases of
+# the owning references a variant holds is region's, region_enum_owner; that a
+# variant which moves makes its enum move is move's, move_flow_infection.
+#
 # Left out, with reasons:
 #
 # - Comparing two values of an enum whose variants carry fields. That would have
@@ -79,6 +86,18 @@ support = []
 category = "run"
 description = "Enum declaration in both forms, variant construction, common members, a generic enum's static function, equivalence, every form of match built -- comparison, range and 'or' patterns and 'if' guards among them -- a variant named through its enum or folded in with 'use', a variant bare in a pattern, looked up in the matched value's enum, and every name of an enum bare inside its braces, a variant's body included -- a generic enum's variant and an extension's copy among them, and a generic enum's own name and its variants' names meaning this instance's"
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+# Debug too: a variant literal passed by value is built in a temporary, and
+# taking one moved the builder to the entry block's allocas, dropping its debug
+# location, so the call after it had none, which the verifier refuses in a
+# function with debug info
+[[scenario.enum_success.run]]
+name = "release"
+options = []
+
+[[scenario.enum_success.run]]
+name = "debug"
+options = ["--debug"]
 
 # The discriminant's width follows the largest tag VALUE rather than the variant
 # count, which runtime cannot see: three variants laid out in one byte and four
@@ -132,16 +151,35 @@ tags = ["typecheck", "genllvm", "runtime"]
 
 # The layout is the subject, and runtime cannot see it: a tagged enum of the
 # same shape would print exactly the same lines. So the representation is
-# asserted here, in the signatures 'read' and 'readOption' were generated with,
-# before the optimizer folds both into 'main'. A reference to the enum is a
-# reference to a bare pointer, which is the whole optimization, and none of the
-# enum's or its variants' struct types is emitted at all -- neither a tag nor
-# a wrapper exists.
+# asserted here, in the locals 'main' holds a Maybe and an Option[&i32] in,
+# before the optimizer promotes them. Each is one bare pointer, which is the
+# whole optimization, and none of the enum's or its variants' struct types is
+# emitted at all -- neither a tag nor a wrapper exists.
 [[scenario.enum_nullable_ptr.check]]
 name = "nullable-ptr-has-no-tag-and-no-struct"
 target = "preir"
-contains = ["@read(i32**", "@readOption(i32**"]
+contains = ["%some = alloca ptr, align 8", "%opt = alloca ptr, align 8"]
 excludes = ["%Maybe", "%Just", "%Nothing", "%Some", "%Option"]
+
+[scenario.enum_final]
+category = "run"
+description = "A value typed as an enum is finalized once, as its variant: every place it lives, the order with an enum's own 'final', an extension's, and matching by value, whichever arm runs"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+# Whether an enum has a drop at all is per instance, and a run cannot see a drop
+# with nothing to do: 'Gen[i32]' and 'Option[&Fin]' would print the same lines
+# with an empty one. So the drops generated are asserted here, before the
+# optimizer inlines them: 'Gen[Fin]', 'Option[Fin]' and 'Option[Option[Fin]]'
+# have one, 'Gen[i32]' none, and the nullable-pointer 'Option[&Fin]' none.
+[[scenario.enum_final.check]]
+name = "a-drop-only-where-a-variant-finalizes"
+target = "preir"
+contains = [
+  "@_CNvINt3GenNt3FinE4drop(",
+  "@_CNvINtC4core6OptionNt3FinE4drop(",
+  "@_CNvINtC4core6OptionINtC4core6OptionNt3FinEE4drop(",
+]
+excludes = ["3GenlE4drop", "6OptionR0"]
 
 [scenario.enum_extends]
 category = "run"
@@ -151,8 +189,9 @@ tags = ["nameres", "typecheck", "genllvm", "runtime"]
 # Each enum lays out its own set, and runtime cannot see that: a tagged Maybe, or
 # a Shape padded to Solid's Cube, would print the same lines. So it is asserted in
 # what generation wrote before the optimizer folds the readers into 'main'. Maybe
-# is still a bare pointer, taken as 'i32**' by reference, while MaybeMore is a
-# tagged struct. Shape is still padded to its own largest, Rect, while Solid is the
+# is still a bare pointer, so a local holding one, 'base', is a 'ptr', while
+# MaybeMore is a tagged struct, and 'ext' holds one. A signature cannot show
+# either: every reference is the same 'ptr'. Shape is still padded to its own largest, Rect, while Solid is the
 # size of the Cube it adds. Framed is padded although the Message it extends
 # declined the padding. An enum's own type is its discriminant and common fields,
 # then bytes out to its padded size, then a zero-length array for the strictest
@@ -164,9 +203,9 @@ tags = ["nameres", "typecheck", "genllvm", "runtime"]
 name = "each-enum-lays-out-its-own-set"
 target = "preir"
 contains = [
-  "@readMaybe(i32**",
-  "@readMaybeMore(%MaybeMore*",
-  "%MaybeMore = type { i8, [15 x i8], [0 x i32*] }",
+  "%base = alloca ptr, align 8",
+  "%ext = alloca %MaybeMore, align 8",
+  "%MaybeMore = type { i8, [15 x i8], [0 x ptr] }",
   "%Shape = type { i8, i32, [8 x i8] }",
   "%Solid = type { i8, i32, [24 x i8], [0 x i64] }",
   "%Cube = type { i8, i32, i64, i64, i64 }",
@@ -175,17 +214,18 @@ contains = [
 excludes = ["%Maybe = type"]
 
 # The same holds of a generic base and a generic extension, instance by instance.
-# Option[&i32] is still taken as 'i32**'; Pending[&i32], an instance of an
-# extension of Option that adds a third variant, is a tagged struct, and so is
-# Pending[i32]. Which of the two instances LLVM names '%Pending' and which it
-# numbers follows generation order, so only the prefix is asserted.
+# Option[&i32] is still a bare pointer, so the local 'osome' is a 'ptr';
+# Pending[&i32], an instance of an extension of Option that adds a third
+# variant, is a tagged struct, which 'psome' holds, and so is Pending[i32],
+# which 'some' holds. Which of the two instances LLVM names '%Pending' and which
+# it numbers follows generation order, so only the prefix is asserted.
 [[scenario.enum_extends.check]]
 name = "generic-extension-lays-out-apart-from-its-base"
 target = "preir"
 contains = [
-  "@optionRef(i32**",
-  "@pendingRef(%Pending",
-  "@pendingOr(%Pending",
+  "%osome = alloca ptr, align 8",
+  "%psome = alloca %Pending",
+  "%some = alloca %Pending",
 ]
 
 # An extension of an extension shares the discriminant of the enum at the bottom
