@@ -17,6 +17,7 @@
 		move-typed field inferring move semantics, source deactivation
 		on assignment and on a call, including through a block, an if or a loop value that moves it
 		on every branch (a deactivated source may be neither read nor borrowed), refusal of a move out through a borrowed reference or a shared owning reference,
+		refusal of a move out of a struct's field or a tuple's element, or of a value reached through one,
 		the swap operator and left-assignment. A clone method does not cancel move semantics:
 		no copy calls it yet, so a type declaring one keeps the semantics the other rules give it,
 		and a finalizer still makes it a move type. Assigning to the anonymous
@@ -150,9 +151,17 @@ callfn(socket);        // **ERROR**. socket is deactivated
 		things get more complicated, as other values are now potentially affected
 		by such a move:</p>
 	<ul>
-		<li>A non-copyable value held by a named field in a struct may be moved out.
-			However, doing so invalidates any future access to the variable holding that struct, 
-			including any values held by its other fields.</li>
+		<li>It is prohibited to move out a non-copyable value held by a named field in a struct,
+			or by an element of a tuple.
+			The struct would be left with a hole in it: it could no longer be used as a whole,
+			and there would be no sound answer to what destroying it should finalize.
+			This holds wherever the struct is (a variable, a parameter, a by-value <code>self</code>,
+			a temporary, or reached through a reference) and wherever the value would go
+			(into a variable, into a call, into a literal, or back to a caller, directly or as
+			the value of a block, an if or a loop).
+			It also holds for a value reached through a field, such as the value that an owning
+			reference held in a field points at, or an element of an array held in a field.
+			Moving the whole struct is always allowed, and takes every field with it.</li>
 		<li>It is prohibited to move out a non-copyable value held by some indexed element
 			in an array.</li>
 		<li>It is prohibited to move a non-copyable value out through a borrowed reference,
@@ -173,6 +182,15 @@ callfn(socket);        // **ERROR**. socket is deactivated
 			since a unique reference is the only holder there is.
 			Moving the value out deactivates the reference, as moving out of a variable does.</li>
 	</ul>
+<pre>
+struct Connection {
+  pub s Socket;
+  pub b i32;
+}
+imm conn = Connection[Socket(), 10];
+imm s = conn.s;        // **ERROR**: may not move a field out of its struct
+imm conn2 = conn;      // the whole struct moves, its socket with it
+</pre>
 	<p>These are significant limitations on the use of non-copyable values in structs and arrays.
 		However, these limitations can be ameliorated by using either the swap or left-assignment operator:</p>
 

@@ -125,8 +125,8 @@ static LLVMValueRef genlRegionCall(GenState *gen, FnDclNode *meth, LLVMValueRef 
 }
 
 // A path from a value inwards to a part of it that was moved out: each step is
-// the node that took it -- a field access, an element index or a dereference --
-// outermost last, so steps[0] is the first step inside the value.
+// the node that took it -- an element index or a dereference, never a field
+// access -- outermost last, so steps[0] is the first step inside the value.
 typedef struct {
     INode **steps;
     int len;
@@ -139,8 +139,8 @@ static void genlHollowDeath(GenState *gen, LLVMValueRef valptr, RefNode *refnode
 // it has one. The finalizer is the type's drop: its own 'final', then each
 // field's that has one (structSetDropFn), as a value on the stack is
 // finalized. The owning references its fields hold are not in that drop, so
-// releasing them after it releases nothing twice. With 'paths', parts of the
-// value were moved out, and it dies hollow (genlHollowDeath) instead.
+// releasing them after it releases nothing twice. With 'paths', the value or a
+// part of it was moved out, and it dies hollow (genlHollowDeath) instead.
 static void genlRegionDeath(GenState *gen, LLVMValueRef valptr, RefNode *refnode, MovedPath *paths, int npaths, int depth) {
     if (paths) {
         genlHollowDeath(gen, valptr, refnode, paths, npaths, depth);
@@ -186,96 +186,33 @@ static void genlRegionDealias(GenState *gen, LLVMValueRef ref, RefNode *refnode)
     genlRegionDealiasPart(gen, ref, refnode, NULL, 0, 0);
 }
 
-// The field a path step names, or NULL where it is not a struct's field (a
-// tuple's index, an element, a dereference)
-static INode *genlStepField(INode *step) {
-    if (step->tag != FldAccessTag)
-        return NULL;
-    INode *methfld = ((FnCallNode *)step)->methfld;
-    if (!isNameUseNode(methfld))
-        return NULL;
-    return ((NameUseNode *)methfld)->dclnode;
-}
-
-// Release a value in memory at 'ptr' of type 'type', parts of which were moved
-// out ('paths', from 'depth' on); the rest is released as the value's death
-// would release it. A path that ends here says the whole value moved: nothing
-// is left to release. A struct with a part moved out is no longer whole, so its
-// own 'final' does not run -- it is handed '&uni self', all of it -- and its
-// fields are released one by one: each untouched one finalized by its drop
-// (first, as a death finalizes before it releases), then each untouched owning
-// reference released, and a field a path runs through released in turn
-// without its moved part. An owning reference a path runs through dies hollow.
-// Anything else a path runs through -- an array element, a tuple's -- is left
-// whole to what moved, as a death would release none of it either.
+// Release a value in memory at 'ptr' of type 'type', out of which something
+// was moved ('paths', from 'depth' on). A path that ends here says the whole
+// value moved: nothing is left to release. Nothing moves out of a field
+// (flowRefuseMoveField), so a path runs on past a value only through an owning
+// reference -- '**b' took what a referent's own owning reference points at --
+// and that reference dies hollow in turn. Anything else a path runs through --
+// an array element -- is left whole to what moved, as a death would release
+// none of it either.
 static void genlReleasePart(GenState *gen, LLVMValueRef ptr, INode *type, MovedPath *paths, int npaths, int depth) {
     for (int i = 0; i < npaths; ++i) {
         if (paths[i].len <= depth)
             return;
     }
     INode *typedcl = itypeGetTypeDcl(type);
-
-    // An owning reference stored here, a part of what it points at moved out
     if (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag) {
         RefNode *reftype = (RefNode *)typedcl;
         if (!regionIsOwning(reftype->region))
             return;
         genlRegionDealiasPart(gen, LLVMBuildLoad(gen->builder, ptr, "partref"), reftype, paths, npaths, depth);
-        return;
-    }
-
-    if (typedcl->tag != StructTag || (typedcl->flags & TraitType))
-        return;
-    StructNode *strnode = (StructNode *)typedcl;
-    // Every path must name one of this struct's fields, or which field moved is
-    // not known here, and releasing any could release the part that moved
-    for (int i = 0; i < npaths; ++i) {
-        INode *fld = genlStepField(paths[i].steps[depth]);
-        if (fld == NULL || fld->tag != FieldDclTag || ((FieldDclNode *)fld)->index >= strnode->fields.used
-            || nodelistGet(&strnode->fields, ((FieldDclNode *)fld)->index) != fld)
-            return;
-    }
-    MovedPath *sub = (MovedPath *)memAllocBlk(npaths * sizeof(MovedPath));
-    for (int pass = 0; pass < 2; ++pass) {
-        INode **nodesp;
-        uint32_t cnt;
-        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
-            FieldDclNode *field = (FieldDclNode *)*nodesp;
-            int nsub = 0;
-            for (int i = 0; i < npaths; ++i) {
-                if (genlStepField(paths[i].steps[depth]) == (INode *)field)
-                    sub[nsub++] = paths[i];
-            }
-            INode *fldtype = itypeGetTypeDcl(field->vtype);
-            int isowning = fldtype->tag == RefTag && regionIsOwning(((RefNode *)fldtype)->region);
-            if (nsub > 0) {
-                // The path's field: a struct in the first pass, a reference in
-                // the second, as the untouched ones are
-                if ((pass == 0 && fldtype->tag == StructTag) || (pass == 1 && isowning))
-                    genlReleasePart(gen, LLVMBuildStructGEP(gen->builder, ptr, field->index, &field->namesym->namestr),
-                        field->vtype, sub, nsub, depth + 1);
-                continue;
-            }
-            if (pass == 0) {
-                INode *dropfn = itypeGetDropFnDcl(field->vtype);
-                if (dropfn) {
-                    LLVMValueRef fldptr = LLVMBuildStructGEP(gen->builder, ptr, field->index, &field->namesym->namestr);
-                    genlFnCallInternal(gen, SimpleDispatch, dropfn, 1, &fldptr);
-                }
-            }
-            else if (isowning) {
-                LLVMValueRef fldptr = LLVMBuildStructGEP(gen->builder, ptr, field->index, &field->namesym->namestr);
-                genlReleaseOwning(gen, LLVMBuildLoad(gen->builder, fldptr, "fldref"), (INode *)fldtype);
-            }
-        }
     }
 }
 
-// The value an owning reference points at dies with parts of it moved out: no
-// finalizer runs for it, what is left is released (genlReleasePart), and the
-// memory goes back through the region's 'free'. A path of one step moved the
-// whole value out, leaving only the memory. A slice's elements are never
-// walked, as a death walks none of them.
+// The value an owning reference points at dies with it, or a part of it, moved
+// out: no finalizer runs for it, what is left is released (genlReleasePart),
+// and the memory goes back through the region's 'free'. A path of one step
+// moved the whole value out, leaving only the memory. A slice's elements are
+// never walked, as a death walks none of them.
 static void genlHollowDeath(GenState *gen, LLVMValueRef valptr, RefNode *refnode, MovedPath *paths, int npaths, int depth) {
     if (refnode->tag == RefTag)
         genlReleasePart(gen, valptr, refnode->vtexp, paths, npaths, depth + 1);
@@ -291,7 +228,7 @@ static MovedPath genlMovedPath(INode *moved, VarDclNode *var) {
     int len = 0;
     for (INode *exp = moved; !(isNameUseNode(exp) && isExpNode(exp)); ) {
         switch (exp->tag) {
-        case FldAccessTag: case ArrIndexTag:
+        case ArrIndexTag:
             ++len; exp = ((FnCallNode *)exp)->objfn; break;
         case DerefTag:
             ++len; exp = ((StarNode *)exp)->vtexp; break;
@@ -308,7 +245,7 @@ static MovedPath genlMovedPath(INode *moved, VarDclNode *var) {
     int pos = len;
     for (INode *exp = moved; !(isNameUseNode(exp) && isExpNode(exp)); ) {
         switch (exp->tag) {
-        case FldAccessTag: case ArrIndexTag:
+        case ArrIndexTag:
             path.steps[--pos] = exp; exp = ((FnCallNode *)exp)->objfn; break;
         case DerefTag:
             path.steps[--pos] = exp; exp = ((StarNode *)exp)->vtexp; break;

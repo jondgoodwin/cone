@@ -1,0 +1,176 @@
+// Nothing moves out of a field. A move-typed value held by a struct's field,
+// or by a tuple's element, may not be moved out of it: the struct would be left
+// with a hole in it, which it could neither be used with nor finalized with.
+// Swap a value in with '<->' (move_success), or move the whole struct, which
+// takes every field with it.
+//
+// The refusal is the same wherever the struct is -- a local, a parameter, a
+// by-value 'self', behind a sole owner or a shared one or a borrow, a
+// temporary, a generic's instance -- wherever the value is going -- a
+// variable, a call, a literal, a by-value 'self', back to the caller directly
+// or through a block, an 'if' or a loop's 'break' -- and however deep the field
+// is. A value reached through a field is refused too: what an owning reference
+// held in a field points at, or an element of an array held in one. The struct
+// is not deactivated by the refused move, so nothing after it is refused as a
+// use of a moved-out value. Copying a copy-typed field is unaffected.
+
+mod move_flow_field;
+
+struct @move Handle {
+  pub id i32;
+  pub fn byValue(self) i32 { id; }
+}
+
+struct Wrapper {
+  pub h Handle;
+  pub n i32;
+}
+
+struct Nest {
+  pub w Wrapper;
+}
+
+struct Holder {
+  pub r +so Handle;
+  pub n i32;
+}
+
+struct Row {
+  pub hs [2; Handle];
+}
+
+struct Keeper {
+  pub h Handle;
+  pub n i32;
+
+  // The field of a by-value 'self', named bare and through 'self'
+  pub fn give(self) Handle {
+    h;                                //~ ErrorMoveField:5 "field 'h'"
+  }
+  pub fn keep(self) i32 {
+    imm k = self.h;                   //~ ErrorMoveField:17 "field 'h'"
+    k.id;
+  }
+}
+
+struct Wrap[T] {
+  pub v T;
+  pub n i32;
+
+  // Refused where T is a move type, and only there
+  pub fn unwrap(self) T {
+    v;                                //~ ErrorMoveField:5 "field 'v'"
+  }
+}
+
+fn take(h Handle) {}
+fn makeWrapper() Wrapper { Wrapper[Handle[1], 2]; }
+
+fn intoLocal() i32 {
+  imm w = Wrapper[Handle[1], 2];
+  imm h = w.h;                        //~ ErrorMoveField:12 "field 'h'"
+  w.n;
+}
+
+fn intoCall(w Wrapper) {
+  take(w.h);                          //~ ErrorMoveField:9 "field 'h'"
+}
+
+fn intoLiteral(w Wrapper) Wrapper {
+  Wrapper[w.h, 3];                    //~ ErrorMoveField:12 "field 'h'"
+}
+
+fn intoSelf(w Wrapper) i32 {
+  w.h.byValue();                      //~ ErrorMoveField:4 "field 'h'"
+}
+
+fn assigned(w Wrapper) {
+  mut h = Handle[4];
+  h = w.h;                            //~ ErrorMoveField:8 "field 'h'"
+}
+
+fn nested(n Nest) Handle {
+  n.w.h;                              //~ ErrorMoveField:6 "field 'h'"
+}
+
+fn returned(w Wrapper) Handle {
+  return w.h;                         //~ ErrorMoveField:11 "field 'h'"
+}
+
+fn outOfBlock(w Wrapper) Handle {
+  {w.h;};                             //~ ErrorMoveField:5 "field 'h'"
+}
+
+fn outOfIf(w Wrapper, pick Bool) Handle {
+  if pick {w.h;} else {Handle[5];};   //~ ErrorMoveField:13 "field 'h'"
+}
+
+fn outOfLoop(w Wrapper) Handle {
+  while {
+    if true {break w.h;};             //~ ErrorMoveField:21 "field 'h'"
+  };
+}
+
+fn boundFromBlock(w Wrapper) {
+  imm h = {w.h;};                     //~ ErrorMoveField:13 "field 'h'"
+}
+
+fn ofTemporary() {
+  imm h = makeWrapper().h;            //~ ErrorMoveField:24 "field 'h'"
+}
+
+fn throughSoleOwner() {
+  imm b = +so Wrapper[Handle[6], 7];
+  imm h = b.h;                        //~ ErrorMoveField:12 "field 'h'"
+}
+
+fn throughCountedOwner() {
+  imm b = +rc Wrapper[Handle[8], 9];
+  imm h = b.h;                        //~ ErrorMoveField:12 "field 'h'"
+}
+
+fn throughSharedOwner() {
+  imm b = +rc-mut Wrapper[Handle[10], 11];
+  imm h = b.h;                        //~ ErrorMoveField:12 "field 'h'"
+}
+
+fn throughBorrow(r &mut Wrapper) Handle {
+  r.h;                                //~ ErrorMoveField:4 "field 'h'"
+}
+
+// An owning reference held in a field: neither it nor what it points at
+fn owningField(o Holder) {
+  imm r = o.r;                        //~ ErrorMoveField:12 "field 'r'"
+}
+
+fn throughOwningField(o Holder) {
+  imm h = *o.r;                       //~ ErrorMoveField:11 "through field 'r'"
+}
+
+fn elementOfArrayField(row Row) {
+  imm h = row.hs[0];                  //~ ErrorMoveField:17 "through field 'hs'"
+}
+
+fn tupleElement() {
+  imm t = Handle[12], 13;
+  imm h = t.0;                        //~ ErrorMoveField:12 "element 0"
+}
+
+fn genericInstance() i32 {
+  imm w = Wrap[Handle][Handle[14], 15];
+  imm h = w.unwrap();
+  imm c = Wrap[i32][16, 17];
+  c.unwrap();
+}
+
+// Not refused: a copy-typed field copies, and the whole struct moves
+fn copiedField(w Wrapper) i32 {
+  imm n = w.n;
+  imm id = w.h.id;
+  imm whole = w;
+  n + id + whole.n;
+}
+
+fn main() i32 {
+  0i32;
+}

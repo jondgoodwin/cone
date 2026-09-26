@@ -1,7 +1,7 @@
 // What move semantics permit: a move value flowing from variable to variable,
 // into and out of a call, and back into a deactivated variable; the swap and
-// left-assignment operators that exist so a move value can be taken out of a
-// field without invalidating its container; a copy type, and a 'clone' method
+// left-assignment operators, the way a move value comes out of a field, which
+// nothing may be moved out of; a copy type, and a 'clone' method
 // that leaves a finalizing type a move type; and a move value handed back to a caller
 // through a block, an 'if' or a loop, which a finalizer shows is finalized once,
 // by the caller.
@@ -213,7 +213,7 @@ fn doubledThrough(r &Plain) i32 {
   r.doubled();
 }
 
-// -------- a field handed back through a block, an if or a loop --------
+// -------- a local handed back through a block, an if or a loop --------
 
 // A finalizer makes a type a move type, and says out loud when a value is
 // finalized, so a value finalized twice prints twice. Each call below is
@@ -221,34 +221,24 @@ fn doubledThrough(r &Plain) i32 {
 // would print before that line, and each value received is finalized once, at
 // the end of handedBack, in reverse order of declaration.
 //
-// A struct's field handed back directly is struct_final_once's. A block, an
-// 'if' or a loop used as the value handed back hands back what it yields, so a
-// field it yields -- or a whole local -- leaves the scope the same way, and the
-// struct holding it is not finalized here. Both were finalized twice.
+// A block, an 'if' or a loop used as the value handed back hands back what it
+// yields, so a local it yields leaves the scope as a local handed back
+// directly does, and is not finalized here. Each was finalized twice. (A field
+// is never handed back: nothing moves out of one, move_flow_field.)
 struct Noisy {
   pub id i32;
   fn final(self &uni) { show("finalized", id); }
 }
 
-struct NoisyBox {
-  pub inner Noisy;
-  pub n i32;
+fn localOutOfBlock() Noisy {
+  imm a = Noisy[104];
+  {a;};
 }
 
-fn fieldOutOfBlock() Noisy {
-  imm b = NoisyBox[Noisy[104], 1];
-  {b.inner;};
-}
-
-fn fieldOutOfIf(pick Bool) Noisy {
-  imm b = NoisyBox[Noisy[105], 1];
-  if pick {b.inner;} else {Noisy[106];};
-}
-
-fn fieldOutOfLoop() Noisy {
-  imm b = NoisyBox[Noisy[107], 1];
+fn localOutOfLoop() Noisy {
+  imm a = Noisy[107];
   while {
-    if true {break b.inner;};
+    if true {break a;};
   };
 }
 
@@ -257,38 +247,36 @@ fn localOutOfIf(pick Bool) Noisy {
   if pick {a;} else {Noisy[106];};
 }
 
-// Each return exempts the struct only on its own way out, so a struct whose
-// field one path returns early is still there on the other
-fn fieldReturnedEarly(id i32, early Bool) Noisy {
-  imm b = NoisyBox[Noisy[id], 1];
-  if early {return b.inner;};
-  show("struct-kept-after-early-return", b.n);
-  b.inner;
+// Each return exempts the local only on its own way out, so a local one path
+// returns early is still there on the other
+fn localReturnedEarly(id i32, early Bool) Noisy {
+  imm a = Noisy[id];
+  if early {return a;};
+  show("local-kept-after-early-return", a.id);
+  a;
 }
 
-// A block's own local hands its field back as the block's value the same way
-fn blockLocalFieldOut() {
+// A block's own local is handed back as the block's value the same way
+fn blockLocalOut() {
   imm kept = {
-    imm b = NoisyBox[Noisy[111], 1];
-    b.inner;
+    imm b = Noisy[111];
+    b;
   };
-  show("block-local-field-kept", kept.id);
+  show("block-local-kept", kept.id);
 }
 
 fn handedBack() {
-  imm d = fieldOutOfBlock();
-  show("field-out-of-block", d.id);
-  imm e = fieldOutOfIf(true);
-  show("field-out-of-if", e.id);
-  imm f = fieldOutOfLoop();
-  show("field-out-of-loop", f.id);
+  imm d = localOutOfBlock();
+  show("local-out-of-block", d.id);
+  imm f = localOutOfLoop();
+  show("local-out-of-loop", f.id);
   imm l = localOutOfIf(true);
   show("local-out-of-if", l.id);
-  imm g = fieldReturnedEarly(108, true);
-  show("field-returned-early", g.id);
-  imm h = fieldReturnedEarly(109, false);
-  show("field-returned-late", h.id);
-  blockLocalFieldOut();
+  imm g = localReturnedEarly(108, true);
+  show("local-returned-early", g.id);
+  imm h = localReturnedEarly(109, false);
+  show("local-returned-late", h.id);
+  blockLocalOut();
 }
 
 // -------- a value bound from a block, an if or a loop --------
@@ -305,30 +293,18 @@ fn boundFromBlock() {
   show("bound-from-block", y.id);
 }
 
-fn boundFieldFromBlock() {
-  imm b = NoisyBox[Noisy[121], 1];
-  imm y = {b.inner;};
-  show("bound-field-from-block", y.id);
-}
-
 fn boundFromIf(pick Bool) {
   imm a = Noisy[122];
   imm y = if pick {a;} else {a;};
   show("bound-from-if", y.id);
 }
 
-fn boundFieldFromIf(pick Bool) {
-  imm b = NoisyBox[Noisy[123], 1];
-  imm y = if pick {b.inner;} else {b.inner;};
-  show("bound-field-from-if", y.id);
-}
-
-fn boundFieldFromLoop() {
-  imm b = NoisyBox[Noisy[124], 1];
+fn boundFromLoop() {
+  imm a = Noisy[124];
   imm y = while {
-    if true {break b.inner;};
+    if true {break a;};
   };
-  show("bound-field-from-loop", y.id);
+  show("bound-from-loop", y.id);
 }
 
 fn takeNoisy(n Noisy) {
@@ -343,10 +319,8 @@ fn passedFromBlock() {
 
 fn boundFrom() {
   boundFromBlock();
-  boundFieldFromBlock();
   boundFromIf(false);
-  boundFieldFromIf(true);
-  boundFieldFromLoop();
+  boundFromLoop();
   passedFromBlock();
 }
 

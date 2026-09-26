@@ -145,7 +145,7 @@ enum NodeTags {
     BlockTag,       // Block (list of statements)
     IfTag,          // if .. elif .. else statement
     RefCountTag,    // (injected) adds holders to a counted reference's count
-    HollowTag,      // (injected) releases an owning reference whose referent had a part moved out
+    HollowTag,      // (injected) releases an owning reference whose referent, or an element of it, was moved out
     NamedValTag,    // Named value (e.g., for a struct literal)
     AbsenceTag,     // unique, unclonable node for absence of info
 

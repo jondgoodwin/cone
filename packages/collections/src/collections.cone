@@ -432,16 +432,18 @@ pub struct Dict[K, V] {
     &slots[i].value;
   }
 
-  // Move key's value out and forget the key, or None when it holds no such key
+  // Move key's value out and finalize the key, or None when it holds no such key
   pub fn remove(self &mut, key &[]u8) Option[V] {
     imm i = self.find(key);
     if i == cap { return None[V][]; }
-    imm gone = mem.readRaw(slots + i);
+    // The value is read out of its slot raw, since nothing moves out of a
+    // field, and the key is finalized where it sits
     imm slot = (slots + i) as &mut Slot[K, V];
     slot.state = slotRemoved;
     used = used - 1usize;
     removed = removed + 1usize;
-    Some[V][gone.value];
+    mem.finalize(&slot.key as *K);
+    Some[V][mem.readRaw(&slot.value as *V)];
   }
 
   // Copies of every key it holds, in the block's order
