@@ -1,8 +1,8 @@
 // What move semantics permit: a move value flowing from variable to variable,
 // into and out of a call, and back into a deactivated variable; the swap and
 // left-assignment operators that exist so a move value can be taken out of a
-// field without invalidating its container; the two ways a type escapes
-// move semantics and stays copyable; and a move value handed back to a caller
+// field without invalidating its container; a copy type, and a 'clone' method
+// that leaves a finalizing type a move type; and a move value handed back to a caller
 // through a block, an 'if' or a loop, which a finalizer shows is finalized once,
 // by the caller.
 //
@@ -46,12 +46,13 @@ struct Plain {
   pub fn fill(self &mut, n i32) { id = n; }
 }
 
-// A finalizer makes a type a move type by inference, but a clone method says
-// copies can be made after all and cancels that
+// A finalizer makes a type a move type by inference, and a clone method does not
+// cancel that: no copy calls 'clone', so a copy would be bitwise and each copy
+// would be finalized again. Both say when they run.
 struct Cloneable {
   pub id i32;
-  fn final(self &uni Cloneable) { }
-  fn clone(self &uni Cloneable) { }
+  fn final(self &uni Cloneable) { show("cloneable-finalized", id); }
+  pub fn clone(self &) Cloneable { show("clone-ran", id); Cloneable[id + 1]; }
 }
 
 fn takeHandle(h Handle) i32 {
@@ -181,12 +182,7 @@ fn copies() {
   show("copy-source-still-usable", p.id);
   show("copy-destination", q.id);
 
-  // A finalizer would make this a move type, but its clone method cancels that,
-  // so the source survives here too
-  imm c = Cloneable[80];
-  imm d = c;
-  show("clone-cancels-move", c.id);
-  show("clone-destination", d.id);
+  cloneStillMoves();
 
   // A copy value reads out through a borrowed reference, whole or as a
   // by-value 'self', and the place borrowed from keeps its own copy
@@ -195,6 +191,18 @@ fn copies() {
   show("copy-out-of-borrow", out.id);
   show("copy-borrowed-source-kept", pt.id);
   show("copy-self-through-borrow", doubledThrough(&pt));
+}
+
+// The binding moves the value, so 80 is finalized once, by 'd', and never by 'c'.
+// 'clone' runs only when called, and what it makes is a value of its own,
+// finalized once too. Both are finalized as the function ends, after its lines,
+// 'e' first. Copying a Cloneable finalized 80 once per copy, and never ran 'clone'.
+fn cloneStillMoves() {
+  imm c = Cloneable[80];
+  imm d = c;
+  show("clone-does-not-cancel-move", d.id);
+  imm e = (&d).clone();
+  show("clone-made", e.id);
 }
 
 fn readThrough(r &Plain) Plain {

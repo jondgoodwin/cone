@@ -442,8 +442,9 @@ Steps marked **→** are where a demand can leave and re-enter.
 5. Index the fields. Compute infectious flags from them: `ThreadBound`,
    `MoveType`, `OpaqueType`, `ZeroSizeType`. Validate the tag field marked at
    parse; any other enum-typed field is refused.
-6. `final` forces `MoveType`; `clone` clears it. Propagate infection up to base
-   traits.
+6. `final` forces `MoveType`; `clone` does not clear it, since no copy calls
+   `clone` and a bitwise copy of a finalizing value is finalized twice. Propagate
+   infection up to base traits.
 7. **Size is now known**, and `TypeChecked` is set here — meaning laid out.
 8. Settle the drop fn: validate `final`, and generate a `drop` if a field needs
    finalizing — but not on a trait or an enum, whose methods are its

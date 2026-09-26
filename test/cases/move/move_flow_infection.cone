@@ -45,6 +45,20 @@ struct EnrichedBox[T] extends AttrBox[T] {
   }
 }
 
+// A 'clone' method makes neither a finalizing type nor one holding a move field
+// copyable. No copy calls it: a copy is bitwise, so a copy of a finalizing value
+// would be finalized again.
+struct FinalizedClone {
+  pub id i32;
+  fn final(self &uni) { }
+  pub fn clone(self &) Self { Self[id]; }
+}
+
+struct MoveFieldClone {
+  pub h Attributed;
+  pub fn clone(self &) Self { Self[Attributed[h.id]]; }
+}
+
 // A field that cannot be copied makes the whole struct uncopyable
 struct HasMoveField {
   pub h Attributed;
@@ -106,6 +120,14 @@ fn main() i32 {
   imm b = Finalized[2];
   imm b2 = b;
   imm useB = b.id;           //~ ErrorMove:14 "moved out"
+
+  imm bc = FinalizedClone[2];
+  imm bc2 = bc;
+  imm useBc = bc.id;         //~ ErrorMove:15 "moved out"
+
+  imm mc = MoveFieldClone[Attributed[2]];
+  imm mc2 = mc;
+  imm useMc = mc.h.id;       //~ ErrorMove:15 "moved out"
 
   imm c = HasMoveField[Attributed[3], 4];
   imm c2 = c;

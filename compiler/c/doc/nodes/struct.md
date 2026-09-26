@@ -795,7 +795,9 @@ members", is the mechanism.
    list. And every abstraction past the first must require no fields at all
    (`ErrorIsaMulti`), since only one can hold position zero. An enum base is exempt
    both ways: it splices its fields in, so a variant declares none of them.
-6. `final` forces `MoveType`; `clone` clears it. Then propagate up the base
+6. `final` forces `MoveType`. `clone` does not clear it: no copy calls
+   `clone`, so a copy is bitwise, and a copyable type holding a finalizer or an
+   owner would be finalized once per copy. Then propagate up the base
    chain, one `structBaseTraitDcl` hop per iteration.
 7. **`TypeChecked` is set here: laid out.** Fields are indexed, the type's own
    size is known, and the method set is complete. Just before it, a type that may

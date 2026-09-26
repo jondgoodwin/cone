@@ -2810,11 +2810,13 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     structCheckIsaFields(node);
 
     // Use inference rules to decide if struct is ThreadBound or a MoveType
-    // based on whether its fields are, and whether it supports the .final or .clone method
+    // based on whether its fields are, and whether it supports the .final method.
+    //
+    // A 'clone' method does not make a move type copyable. The manual's clone
+    // makes every copy, but no copy calls it: a copy is bitwise, so a copyable
+    // type holding a finalizer or an owner would be finalized once per copy.
     if (namespaceFind(&node->namespace, finalName))
         infectFlag |= MoveType;           // Let's not make copies of finalized objects
-    if (namespaceFind(&node->namespace, cloneName))
-        infectFlag &= 0xFFFF - MoveType;  // 'clone' means we can make copies anyway
 
     // Populate infection flags in this struct/trait, and recursively to all inherited traits
     if (infectFlag) {
