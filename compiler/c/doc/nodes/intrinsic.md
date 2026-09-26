@@ -112,9 +112,6 @@ is true exactly when that does something.
 - **`trust` is recorded, not enforced.** The registry marks `finalize`, both
   slice constructors and the three raw operations; `trust` does not exist
   (`doc/design/safety.md`).
-- **Type arguments are not inferred through a pointer.** `finalize(p)` with `p`
-  a `*Fin` cannot infer `T` (`genericInferFnParms` captures only a parameter
-  whose type is `T` itself), so every call names it: `mem.finalize[Fin](p)`.
 - **`mem` is a struct because a submodule of core cannot be reached**, measured:
   a direct compile finds core on the package search path as the one file
   `core/src/core.cone`, and the sweep reads no file beside it (its folder is

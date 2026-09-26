@@ -79,8 +79,96 @@ int genericInferStructParms(TypeCheckState *pstate, Nodes *genparms, StructNode 
     return retcode;
 }
 
+// Match a parameter's declared type against its argument's type, capturing each
+// type parameter it names. A type parameter matches the argument's type whole;
+// a pointer, reference or array reference to one matches an argument of the
+// same kind, the type parameter taking what that argument points at, so
+// 'p *T' given a '*Fin' infers Fin; an array slice parameter also matches
+// the fixed-size array, or reference to one, that a call converts to a slice;
+// and 'List[T]' matches an instance of List, type argument by type argument.
+// In a template a type parameter is not yet
+// a type, so '*T' is held as a dereference and '&T' or '&[]T' as a borrow
+// (cloneStarNode, cloneRefNode), and both spellings are accepted here. Region
+// and permission take no part: the instance's own check of the call judges
+// them. Any other shape infers nothing, and returns 1 as a non-match does.
+// Returns 0 only when a type parameter is given two different types.
+static int genericInferType(FnCallNode *inferredgencall, Nodes *genparms, INode *parmtype, INode *argtype) {
+    if (parmtype == NULL || argtype == NULL)
+        return 1;
+    if (nameUseNames(parmtype, GenVarDclTag))
+        return genericCaptureType(inferredgencall, genparms, parmtype, argtype);
+    if (isNameUseNode(argtype))
+        argtype = itypeGetTypeDcl(argtype);
+    switch (parmtype->tag) {
+    case PtrTag:
+    case DerefTag:
+        if (argtype->tag != PtrTag)
+            return 1;
+        return genericInferType(inferredgencall, genparms,
+            ((StarNode *)parmtype)->vtexp, ((StarNode *)argtype)->vtexp);
+    case RefTag:
+    case BorrowTag:
+        if (argtype->tag != RefTag)
+            return 1;
+        return genericInferType(inferredgencall, genparms,
+            ((RefNode *)parmtype)->vtexp, ((RefNode *)argtype)->vtexp);
+    case ArrayRefTag:
+    case ArrayBorrowTag: {
+        // A fixed-size array, or a reference to one, is converted to the slice
+        // a parameter expects, so its element type is what the slice's is
+        INode *elemtype;
+        if (argtype->tag == ArrayRefTag)
+            elemtype = ((RefNode *)argtype)->vtexp;
+        else if (argtype->tag == ArrayTag)
+            elemtype = arrayElemType(argtype);
+        else if (argtype->tag == RefTag && itypeGetTypeDcl(((RefNode *)argtype)->vtexp)->tag == ArrayTag)
+            elemtype = arrayElemType(itypeGetTypeDcl(((RefNode *)argtype)->vtexp));
+        else
+            return 1;
+        return genericInferType(inferredgencall, genparms, ((RefNode *)parmtype)->vtexp, elemtype);
+    }
+    case FnCallTag: {
+        // An instance of a generic type, 'List[T]', matches an argument that is an
+        // instance of the same generic, each type argument against the instance's
+        FnCallNode *parmcall = (FnCallNode *)parmtype;
+        if (!isNameUseNode(parmcall->objfn) || parmcall->args == NULL)
+            return 1;
+        GenericInfo *info = genericGetInfo(nameUseGetDcl((NameUseNode *)parmcall->objfn));
+        if (info == NULL || info->memonodes == NULL)
+            return 1;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(info->memonodes, cnt, nodesp)) {
+            FnCallNode *instcall = (FnCallNode *)*nodesp;
+            nodesp++; cnt--;
+            if (*nodesp != argtype)
+                continue;
+            if (instcall->args->used != parmcall->args->used)
+                return 1;
+            INode **instargp = &nodesGet(instcall->args, 0);
+            INode **parmargp;
+            uint32_t parmcnt;
+            for (nodesFor(parmcall->args, parmcnt, parmargp)) {
+                if (genericInferType(inferredgencall, genparms, *parmargp, *instargp++) == 0)
+                    return 0;
+            }
+            return 1;
+        }
+        // A variant is passed where its enum is expected: 'Some[7]' is an Option
+        if (argtype->tag == StructTag) {
+            StructNode *base = structBaseTraitDcl((StructNode *)argtype);
+            if (base != NULL)
+                return genericInferType(inferredgencall, genparms, parmtype, (INode *)base);
+        }
+        return 1;
+    }
+    default:
+        return 1;
+    }
+}
+
 // Infer generic type parameters from the function call arguments
-int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNode *genfnsig, 
+int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNode *genfnsig,
         FnCallNode *srcgencall, FnCallNode *inferredgencall) {
 
     if (srcgencall->args->used > genfnsig->parms->used) {
@@ -96,9 +184,8 @@ int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNode *genf
     for (nodesFor(srcgencall->args, cnt, argsp)) {
         INode *parmtype = ((VarDclNode *)(*parmp))->vtype;
         INode *argtype = ((IExpNode *)*argsp)->vtype;
-        // If type of expected parm is a generic variable, capture type of corresponding argument
-        if (nameUseNames(parmtype, GenVarDclTag)
-            && genericCaptureType(inferredgencall, genparms, parmtype, argtype) == 0) {
+        // Capture the type of each generic variable the parameter's type names
+        if (genericInferType(inferredgencall, genparms, parmtype, argtype) == 0) {
             errorMsgNode(*argsp, ErrorInvType, "Inconsistent type for generic function");
             retcode = 0;
         }
