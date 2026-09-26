@@ -104,9 +104,10 @@ Put these first, because every one of them is load-bearing.
    and for everything after. A loop body is walked once. **Not building a CFG is
    a deliberate design choice**, not a simplification to be outgrown — the
    block-structured IR is held to be easy enough to follow directly.
-5. **Ownership is not one model, and flow reads which one from the region's
-   methods.** A region with `alias` (`rc`) is counted; one without (`so`) has a
-   single owner, and a copy of a reference to it is a move; `borrowRef` is a
+5. **Ownership is not one model, and flow reads which one from the region
+   ref.** One with `alias` (`rc`) is counted; one declaring `Move` (`so`) has a
+   single owner, and a copy of a reference to it is a move; one with neither
+   (a collector's shape) shares its references for nothing; `borrowRef` is a
    sentinel node, not a struct, and is a reference's default region. No region
    is known by name ([What a region is](../nodes/module.md)).
 6. **Permission belongs to the reference, not the binding.**
@@ -148,14 +149,19 @@ re-entrantly — it never descends into a callee. `VarFlowInfo.flags` and
 
 ## 4. Moves and counting
 
-**Move-ness is a type property, derived not declared.** `iexpIsMove` is
-`vtype`'s `MoveType` flag and nothing else — except for a tuple type, which has
-no declaration to carry a flag, so `itypeIsMove` asks its elements and answers
-yes if any of them does. A type acquires it from `@move`, a finalizer, a
-move-typed field or array element, a move-typed tuple element, and — for
-references — `refAdoptInfections`: **a reference is a move type when its
-permission lacks `MayAlias` or its region is itself a move type.** That single
-sentence is why `+rc x` moves while `+rc-mut x` copies, on the same region.
+**Move-ness is a type property: the built-in trait `Move`, which the type
+declares or the compiler grants** ([struct](../nodes/struct.md), "Move and
+Copy"). Flow never looks at the trait: `iexpIsMove` is `vtype`'s `MoveType`
+flag and nothing else — except for a tuple type, which has no declaration to
+carry a flag, so `itypeIsMove` asks its elements and answers yes if any of them
+does. A type acquires it from `is Move`, a finalizer, a move-typed field or
+array element, a move-typed tuple element, and — for references —
+`refAdoptInfections`: **a reference is a move type when its permission lacks
+`MayAlias` or its region ref is itself a move type**, which a region ref is by
+declaring `is Move`, as `so` does. That sentence is why `+rc x` moves while
+`+rc-mut x` copies, on the same region, and why a reference into a region ref
+declaring neither `Move` nor `alias` copies freely under any aliasable
+permission.
 
 A tuple literal has no storage of its own, so `flowHandleMove` on one
 deactivates the source of each element that is itself a move value and leaves
@@ -276,7 +282,8 @@ because one value goes to n holders.
 `dealias` list at scope exit, and `genlStore` releasing an lval's previous value
 unless `FlagFirstAssign` says there was none. Both go through
 `genlReleaseOwning`: one owner goes away, through the region's `dealias` where
-it has one and as the value's death where it has a single owner; a tuple's
+it has one, as the value's death where the region is `Move`, and as nothing
+otherwise; a tuple's
 owning elements one by one. A hollowed variable's owner goes away the same
 way, through a `HollowNode` instead, and its death is hollow.
 
@@ -301,9 +308,9 @@ is), or a `TTupleTag` with at least one such element; for the tuple it fills
 the node's `counts` array with `amt` per counted element and `0` per other
 element, `amt` then holding the element count, and generation's tuple arm adds
 the owners to each counted element after an `extractvalue`. A reference into a
-region without `alias` (`so`) and a `uni`-permissioned reference into one with
-it are both move types and take the move path instead, as does a tuple
-carrying one.
+`Move` region (`so`) and a `uni`-permissioned reference into one with `alias`
+are both move types and take the move path instead, as does a tuple carrying
+one. A reference into a region with neither is copied with no node at all.
 
 **Scope dealiasing.** `flowScopeDealias` walks the variable stack downward from
 the top to a start position, so release order is the reverse of declaration

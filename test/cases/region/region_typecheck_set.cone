@@ -1,9 +1,10 @@
 // The set a region's methods make together. Each method is optional, and a
 // missing one means its operation does not happen, so no combination is
 // refused for what it leaves out: every region below but one is accepted. The
-// one refused is a contradiction, not an absence: '@move' says one owner per
+// one refused is a contradiction, not an absence: 'Move' says one owner per
 // value and an 'alias' method says there may be another (ErrorRegionSet). What
-// the accepted combinations do at run time is region_regionref's to show.
+// the accepted combinations do at run time is region_regionref's and
+// region_collected's to show.
 
 mod region_typecheck_set;
 
@@ -16,8 +17,8 @@ struct countsUp is RegionRef {
   fn alias(self &uni countsUp) inline { cnt = cnt + 1usize; }
 }
 
-// No 'alias': a single owner, whose going still asks 'dealias'
-struct countsDown is RegionRef {
+// No 'alias', and 'Move': a single owner, whose going still asks 'dealias'
+struct countsDown is RegionRef, Move {
   cnt usize;
   fn alloc(size usize) *u8 inline { malloc(size); }
   fn dealias(self &uni countsDown) Bool inline { true; }
@@ -29,15 +30,27 @@ struct initOnly is RegionRef {
   fn init() initOnly inline { initOnly[1usize]; }
 }
 
-// '@move' on a region with no 'alias' only says again what the absence says
-struct @move movesAlready is RegionRef {
+// Neither 'alias' nor 'Move' nor 'dealias': copies are free and an owner's
+// going does nothing, which is a collector's shape
+struct sharesFreely is RegionRef {
   fn alloc(size usize) *u8 inline { malloc(size); }
 }
 
-// '@move' with an 'alias' contradicts itself
-struct @move movesAndCounts is RegionRef {                            //~ ErrorRegionSet "'@move', one owner per value, but declares alias"
+// 'Move' with no 'alias': one owner per value
+struct movesAlready is RegionRef, Move {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+}
+
+// 'Move' with an 'alias' contradicts itself, in either order
+struct movesAndCounts is RegionRef, Move {                            //~ ErrorRegionSet "is Move, one owner per value, but declares alias"
   cnt usize;
   fn alloc(size usize) *u8 inline { malloc(size); }
   fn alias(self &uni movesAndCounts) inline { cnt = cnt + 1usize; }
   fn dealias(self &uni movesAndCounts) Bool inline { cnt = cnt - 1usize; cnt == 0usize; }
+}
+
+struct countsAndMoves is Move, RegionRef {                            //~ ErrorRegionSet "is Move, one owner per value, but declares alias"
+  cnt usize;
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn alias(self &uni countsAndMoves) inline { cnt = cnt + 1usize; }
 }

@@ -136,7 +136,6 @@ enum TokenTypes {
     ModToken,      // 'mod'
     ActorToken,    // 'actor'
     TraitToken,    // 'trait'
-    MoveToken,     // '@move'
     OpaqueToken,   // '@opaque'
     UnsizedToken,  // '@unsized'
     CAttrToken,    // '@c': C naming, on a 'mod' line or a 'fn'

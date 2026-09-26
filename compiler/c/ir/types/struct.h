@@ -87,6 +87,9 @@ void structFoldReceiver(StructNode *type, Name *name, INode **objp, INode *lexno
 // Unwrap one hop: the declaration of the base this type names
 StructNode *structBaseTraitDcl(StructNode *node);
 
+// Does this type's 'is' list name this trait (once it has been taken in)?
+int structDeclaresTrait(StructNode *node, StructNode *trait);
+
 // The concrete type at the bottom of this type's 'extends' chain: the type
 // itself where it enriches nothing. Two types substitute for each other exactly
 // where this answers the same declaration for both -- which is what the

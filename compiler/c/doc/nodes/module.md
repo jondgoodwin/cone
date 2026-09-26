@@ -2483,8 +2483,8 @@ interesting one, since folding applied to types is delegated inheritance.
 A region's **annotation** — the name after `+` — is an ordinary struct that
 declares the built-in trait **`RegionRef`**: `struct rc is RegionRef { … }`.
 There is no `region` keyword. `RegionRef` is the compiler's own
-(`corelib.c`, `newRegionRefTrait`), a name every module reaches like `initAll`,
-and has no members: it is a check, not an abstraction values have, so
+(`corelib.c`, `newBuiltinTrait`, as `Move` and `Copy` are), a name every module
+reaches like `initAll`, and has no members: it is a check, not an abstraction values have, so
 `&RegionRef` and `is RegionRef` on a trait, an enum or a variant are refused
 (`ErrorRegionRefUse`), and a reference whose region struct does not declare it
 is refused wherever the reference type is checked (`ErrorNotRegion`,
@@ -2498,25 +2498,33 @@ events only it can see (`ir/types/region.c`):
 |---|---|---|
 | `fn alloc(size usize) *u8`, static | `+R value` allocates; `size` is the whole allocation, header included; null fails | the allocation is refused (`ErrorBadAlloc`) |
 | `fn init() R`, static | after `alloc`; the result is stored as the header | the header is left as allocated |
-| `fn alias(self &uni R)` | a copy of an owning reference becomes another owner | a copy is a **move**: the region has one owner per value |
-| `fn dealias(self &uni R) Bool` | an owner goes away; answers whether it was the last | an owner's going reports nothing: with no `alias` either it is the value's death; with `alias` the value never dies by count and is never freed, left for something other than its owners (a collector, once one exists) to free |
+| `fn alias(self &uni R)` | a copy of an owning reference becomes another owner | a copy calls nothing: it is a **move** where the region is `Move`, and free where it is not |
+| `fn dealias(self &uni R) Bool` | an owner goes away; answers whether it was the last | an owner's going asks nothing: where the region is `Move` it is the value's death; where it is not, it does nothing — the value never dies by an owner and the compiler never frees it, left to the region's own loop (a collector's, an arena's) |
 | `fn free(self &uni R)` | the value is dead, after it is finalized and its fields' owners are released | the memory is not given back a value at a time |
 
 Every method but `alloc` and `init` is handed the allocation's **header**, the
 region struct at the front of the `{region, permission, value}` layout, found
 from the value pointer by the value's offset in that layout
-(`genlRegionHeader`), so no region's or permission's size is assumed. A region
-without `alias` is marked `MoveType` at the end of its name resolution
-(`regionNameRes`), the mark `@move` gives, which `@move` may still write.
+(`genlRegionHeader`), so no region's or permission's size is assumed.
+
+Whether the region has one owner per value is not read off a missing method
+but **declared**, with the built-in trait `Move` [Jon 26 Sep]: `struct so is
+RegionRef, Move`. It marks the struct `MoveType` like any type declaring it
+(`structNameRes`), which every reference type into the region asks
+(`refAdoptInfections`), and `regionIsMove` is what a release asks. A missing
+method always means "nothing to do", so a region ref declaring neither `alias`
+nor `Move` shares its references freely, and one with no `dealias` either does
+nothing when an owner goes: the shape of a tracing collector or an arena, whose
+region owns death in its own loop (`region_collected`).
 
 The struct is held to the method shapes **at its declaration**, after its
 methods are type checked (`regionRefCheck`, from `structCheckMembers`):
 `ErrorBadAlloc` for `alloc`/`init`, `ErrorRegionMeth` for the other three. No
 combination is refused for what it leaves out, since an absent method's
-operation simply does not happen [Jon 25 Sep]: `dealias` without `alias` is a
-single owner whose going still asks `dealias`, and `init` without `alloc` is
-never called. The one refusal is a contradiction, `@move` with `alias`
-(`ErrorRegionSet`).
+operation simply does not happen [Jon 25 Sep]: `dealias` without `alias` on a
+`Move` region is a single owner whose going still asks `dealias`, and `init`
+without `alloc` is never called. The one refusal is a contradiction, `Move`
+with `alias` (`ErrorRegionSet`).
 
 `so` and `rc` are written this way in `packages/core/src/core.cone`, `inline`,
 their `free` calling libc's by its qualified name, since inside a method named

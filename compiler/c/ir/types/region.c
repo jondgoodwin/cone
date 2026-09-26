@@ -8,7 +8,9 @@
  * see: 'alloc' and 'init' when '+R value' allocates, 'alias' when a copy of an
  * owning reference becomes another owner, 'dealias' when an owner goes away,
  * and 'free' once the value is dead. What a region leaves out says what it
- * does. compiler/c/doc/nodes/module.md, "What a region is", has the contract.
+ * does, and whether it declares 'Move' says whether a copy is a move and an
+ * owner's going a death. compiler/c/doc/nodes/module.md, "What a region is",
+ * has the contract.
  *
  * This source file is part of the Cone Programming Language C compiler
  * See Copyright Notice in conec.h
@@ -25,19 +27,9 @@ static StructNode *regionDcl(INode *region) {
     return dcl->tag == StructTag ? (StructNode*)dcl : NULL;
 }
 
-// Does this struct declare 'is RegionRef'? Its 'traits' records every
-// abstraction its 'is' list named, the first included, once name resolution
-// has taken them in.
+// Does this struct declare 'is RegionRef'?
 static int regionStructIsRegionRef(StructNode *strnode) {
-    if (strnode->traits == NULL)
-        return 0;
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodesFor(strnode->traits, cnt, nodesp)) {
-        if (*nodesp == (INode*)regionRefTrait)
-            return 1;
-    }
-    return 0;
+    return structDeclaresTrait(strnode, regionRefTrait);
 }
 
 int regionIsRegionRef(INode *region) {
@@ -57,16 +49,14 @@ int regionIsCounted(INode *region) {
     return regionIsRegionRef(region) && regionMethod(region, aliasMethodName) != NULL;
 }
 
-int regionIsOwning(INode *region) {
-    return regionIsRegionRef(region);
+// The region ref's own move-ness: 'is Move' marks the struct MoveType, which is
+// what every reference type into it asks (refAdoptInfections)
+int regionIsMove(INode *region) {
+    return regionIsRegionRef(region) && itypeIsMove(region);
 }
 
-// A region without 'alias' has one owner per value: a copy of a reference to
-// it can only be a move. Marked on the struct as '@move' marks it, so the one
-// test every reference type asks (refAdoptInfections) answers for both.
-void regionNameRes(StructNode *node) {
-    if (regionStructIsRegionRef(node) && regionMethod((INode*)node, aliasMethodName) == NULL)
-        node->flags |= MoveType;
+int regionIsOwning(INode *region) {
+    return regionIsRegionRef(region);
 }
 
 int regionIsPtrU8(RefNode *ptrnode) {
@@ -152,18 +142,19 @@ static void regionCheckInit(FnDclNode *initmeth, StructNode *region) {
 // reported whether or not anything allocates from it.
 //
 // Every method is optional, and an absent one means its operation does not
-// happen [Jon 25 Sep]; no combination is refused for what it leaves out:
-// - no 'alias': one owner per value ('so'). A copy is a move.
-// - no 'dealias': an owner going away reports nothing. With no 'alias' too,
-//   every owner's going is the value's death; with 'alias', the value is shared
-//   and never dies by count, so it is never freed until something other than
-//   its owners frees it -- a collector, when one exists.
-// - 'dealias' without 'alias': a single owner whose going still asks 'dealias'.
+// happen [Jon 25 Sep, 26 Sep]; no combination is refused for what it leaves
+// out. One owner per value is said explicitly, by 'is Move' [Jon 26 Sep]:
+// - no 'alias': a copy of a reference calls nothing. It is a move where the
+//   region is 'Move' ('so'), and free where it is not (a collector's shape).
+// - no 'dealias': an owner going away asks nothing. Where the region is
+//   'Move', every owner's going is the value's death. Where it is not, the
+//   going does nothing: the value never dies by an owner, and the compiler
+//   never frees it -- the region owns death, in its own loop.
+// - 'dealias': every owner's going asks it, and its true is the death.
 // - no 'free': the memory is not given back a value at a time.
 // - no 'alloc': nothing allocates from the region (refused at '+R value',
 //   regionAllocTypeCheck), and an 'init' it has is never called.
-// The one refusal is a contradiction: '@move' says one owner, 'alias' another.
-// '@move' without 'alias' says again what the absence says, and is accepted.
+// The one refusal is a contradiction: 'Move' says one owner, 'alias' another.
 void regionRefCheck(StructNode *node) {
     StructNode *base = structBaseTraitDcl(node);
     if ((node->flags & (TraitType | EnumType)) || (base != NULL && (base->flags & EnumType))) {
@@ -192,7 +183,7 @@ void regionRefCheck(StructNode *node) {
     // above, and is no operation the compiler calls
     if (regionMethod((INode*)node, aliasMethodName) && (node->flags & MoveType))
         errorMsgNode((INode*)node, ErrorRegionSet,
-            "Region %s is '@move', one owner per value, but declares alias, which makes another. A region without alias is single owner already.",
+            "Region %s is Move, one owner per value, but declares alias, which makes another. A counted region is not Move; a single-owner one declares no alias.",
             &node->namesym->namestr);
 }
 

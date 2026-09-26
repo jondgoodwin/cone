@@ -83,16 +83,21 @@ imm shared = +rc Person["Tako"]     // counted: freed at zero
 | Region | Is | Strategy |
 | --- | --- | --- |
 | `borrowRef` | a sentinel node, not a struct — the default for `&` | none; a borrow owns nothing |
-| `so` | `struct so is RegionRef` in the core package, `packages/core/src/core.cone`: no fields, `alloc` and `free`, no `alias` | single owner frees |
+| `so` | `struct so is RegionRef, Move` in the core package, `packages/core/src/core.cone`: no fields, `alloc` and `free`, no `alias` | single owner frees |
 | `rc` | `struct rc is RegionRef { cnt usize }` in the core package, with `init`, `alias` and `dealias` too | reference counting |
 | user-defined | any struct declaring `is RegionRef` | whatever its methods do |
 
 **`so` and `rc` are Cone source, not built into the compiler**, and nothing in
 the compiler names either. Each method is optional, and an absent one's
-operation does not happen: without `alias` a region has one owner per value and
-a copy is a move; `dealias` answers whether the owner that went was the last,
-and without it a shared value never dies by count; `free` gives the memory
-back. **The region decides when a value dies; the compiler runs the death**,
+operation does not happen: without `alias` a copy of a reference calls nothing;
+`dealias` answers whether the owner that went was the last, and without it an
+owner's going asks nothing; `free` gives the memory back. **One owner per value
+is declared, not read off a missing method** [Jon 26 Sep]: a region ref
+declaring the built-in trait `Move`, as `so` does, has its copies moved and
+every owner's going is the value's death. One declaring neither `Move` nor
+`alias` shares its references for nothing, and with no `dealias` either its
+owners' going does nothing at all — the compiler never frees such a value, the
+region owning death in its own loop: a tracing collector's or an arena's shape. **The region decides when a value dies; the compiler runs the death**,
 because only it knows the value's type: the value's finalizer (its `final`,
 then its finalizing fields'), then the owners its fields hold, then `free` —
 the order a value on the stack is finalized in. A value moved out through its
@@ -100,7 +105,7 @@ sole owner leaves that owner **hollow**: its memory is still freed, but nothing
 that moved is finalized there. The whole value moves, never a field of it:
 nothing moves out of a field, so no value dies with a hole in it
 (`doc/reference/refmove.html`). The compiler checks the methods' shapes where the struct is declared,
-refusing only `@move` with `alias`, which contradicts itself; and the test corpus
+refusing only `Move` with `alias`, which contradicts itself; and the test corpus
 declares regions of its own that get every call `rc` and `so` get
 ([What a region is](../../compiler/c/doc/nodes/module.md)).
 
@@ -112,7 +117,11 @@ declaring bookkeeping fields plus a protocol of methods: `alloc`, `init`,
 `weak`, `drop` — and attributes such as `@move` and `traced` that the compiler
 keys off. ⚠ **[differs: of that protocol `alloc`, `init`, `alias`, `dealias` and
 `free` are built, spelled without the underscore; the annotation is a struct,
-not a module; and `@move` is read, but a missing `alias` says the same]**
+not a module; and what the compiler keys off is a trait, not an attribute:
+`Move`, the one built so far]** A trait is a fact other code may ask about or
+constrain on; an attribute is an instruction about representation or linkage
+that nothing asks about [Jon 26 Sep], and a region ref's capabilities are the
+first kind.
 
 **The compiler's intended role is choreography, not ownership**: "it is the
 compiler's job to choreograph how operations on references invoke
@@ -231,7 +240,7 @@ anything.
 
 **Move-ness.** `refAdoptInfections` is the whole rule: a reference is a move
 type **when its permission lacks `MayAlias`, or its region is itself a move
-type**. `so` has no `alias`, which makes it one, so every `+so` reference moves; `+rc` with the
+type**. `so` declares `is Move`, which makes it one, so every `+so` reference moves; `+rc` with the
 default `uni` moves too, on a region that counts. That one sentence explains why
 `+rc x` moves while `+rc-mut x` copies.
 
@@ -285,7 +294,7 @@ gap:
 | Rule | Enforced by | Phase |
 | --- | --- | --- |
 | region must be a struct declaring `is RegionRef` | `refRegionCheck` | type check |
-| a region's methods have the shapes the compiler calls, and `@move` is not contradicted by an `alias` | `regionRefCheck`, at the declaration | type check |
+| a region's methods have the shapes the compiler calls, and `Move` is not contradicted by an `alias` | `regionRefCheck`, at the declaration | type check |
 | a region allocated from has `alloc` | `regionAllocTypeCheck` | type check |
 | requested permission vs. the source's | `permMatches` in `borrowTypeCheck` | type check |
 | value-type variance | `refMatches` and friends | type check |

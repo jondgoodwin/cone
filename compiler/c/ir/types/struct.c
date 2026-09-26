@@ -847,10 +847,10 @@ static void structEnrichFromBase(StructNode *node, StructNode *base, int hook) {
 
     structEnrichLifecycle(node, base, hook);
 
-    // What the base's '@move' and '@opaque' say is said of the one representation,
-    // so a value moves, or may not be held, under either name. What its fields and
-    // its 'final' imply is inferred again from the copies above; the attributes
-    // are only on the base's flags.
+    // What the base's 'is Move' and '@opaque' say is said of the one
+    // representation, so a value moves, or may not be held, under either name.
+    // What its fields and its 'final' imply is inferred again from the copies
+    // above; the declarations are only on the base's flags.
     node->flags |= base->flags & (MoveType | OpaqueType | DeclaredOpaque);
 
     node->extendsdcl = (INode*)base;
@@ -2049,15 +2049,32 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     }
     if (clonecopies)
         structEnumCloneOwnMethods(node, ownmethods);
-    // Every abstraction is taken in and every method named, which is what says
-    // whether this is a single-owner region
-    regionNameRes(node);
+    // Every abstraction is taken in. A type declaring 'is Move' moves whatever
+    // it holds [Jon 26 Sep], marked as soon as that is known, so that a type
+    // asking before this one is laid out is answered
+    if (structDeclaresTrait(node, moveTrait))
+        node->flags |= MoveType;
     nametblHookPop();
     if (enclosing)
         nametblHookPop();
     pstate->typenode = svtypenode;
     pstate->expander = svexpander;
     node->flags = (node->flags & ~NameResolving) | NameResolved;
+}
+
+// Does this type's 'is' list name this trait? 'traits' records every
+// abstraction the list named, the first included, once name resolution (or,
+// for an instance of a generic trait, type check) has taken it in.
+int structDeclaresTrait(StructNode *node, StructNode *trait) {
+    if (node->traits == NULL)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(node->traits, cnt, nodesp)) {
+        if (*nodesp == (INode*)trait)
+            return 1;
+    }
+    return 0;
 }
 
 // Unwrap one hop: the declaration of the base this type names.
@@ -2493,6 +2510,45 @@ static void structLayoutVariants(TypeCheckState *pstate, StructNode *node) {
         inodeTypeCheckAny(pstate, &nodesGet(node->derived, pos));
 }
 
+// 'is Copy' is an assertion [Jon 26 Sep]: the type is refused where it moves
+// after all. Asked once every layout has finished, since an enum moves when
+// one of its variants does, and the variants are laid out after the enum.
+static void structCheckCopy(StructNode *node) {
+    if (!structDeclaresTrait(node, copyTrait) || !(node->flags & MoveType))
+        return;
+    char *name = &node->namesym->namestr;
+    if (structDeclaresTrait(node, moveTrait)) {
+        errorMsgNode((INode*)node, ErrorCopyMove,
+            "%s declares both Move and Copy, and a type is exactly one of them. Keep the one it is.", name);
+        return;
+    }
+    if (namespaceFind(&node->namespace, finalName)) {
+        errorMsgNode((INode*)node, ErrorCopyMove,
+            "%s is declared Copy, but its 'final' makes it move: each copy would be finalized.", name);
+        return;
+    }
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&node->fields, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode*)*nodesp;
+        if (itypeIsMove(field->vtype)) {
+            errorMsgNode((INode*)node, ErrorCopyMove,
+                "%s is declared Copy, but its field '%s' moves, and so it moves too.",
+                name, &field->namesym->namestr);
+            return;
+        }
+    }
+    if (node->extendsdcl && itypeIsMove(node->extendsdcl)) {
+        errorMsgNode((INode*)node, ErrorCopyMove,
+            "%s is declared Copy, but the base it enriches, %s, moves, and so it moves too.",
+            name, &((StructNode*)node->extendsdcl)->namesym->namestr);
+        return;
+    }
+    errorMsgNode((INode*)node, ErrorCopyMove,
+        (node->flags & EnumType) ? "%s is declared Copy, but one of its variants moves, and so it moves too."
+            : "%s is declared Copy, but it moves.", name);
+}
+
 // Check a laid-out type's members: its methods, static functions and statics,
 // then every overload set it declares, then what the traits taken into it require
 // of those members. Every layout the program has begun is finished by now.
@@ -2528,6 +2584,8 @@ static void structCheckMembers(StructNode *node) {
     // method is optional, with a fixed shape where declared
     if (regionIsRegionRef((INode*)node))
         regionRefCheck(node);
+
+    structCheckCopy(node);
 }
 
 // Work both queues until they are empty: first every variant still waiting to be
@@ -2818,11 +2876,14 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     if (namespaceFind(&node->namespace, finalName))
         infectFlag |= MoveType;           // Let's not make copies of finalized objects
 
-    // Populate infection flags in this struct/trait, and recursively to all inherited traits
+    // Populate infection flags in this struct/trait, and recursively to all
+    // inherited traits -- but never into a built-in trait, which describes its
+    // implementers rather than standing for them: 'Copy' does not move because
+    // a type that declared it does
     if (infectFlag) {
         node->flags |= infectFlag;
         StructNode *trait = structBaseTraitDcl(node);
-        while (trait) {
+        while (trait && !corelibIsBuiltinTrait((INode*)trait)) {
             trait->flags |= infectFlag;
             trait = structBaseTraitDcl(trait);
         }

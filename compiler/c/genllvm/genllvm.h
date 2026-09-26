@@ -117,8 +117,8 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode);
 // Progressively dealias or drop all declared variables in nodes list
 void genlDealiasNodes(GenState *gen, Nodes *nodes);
 // Release an owning value: one owner of an owning reference goes away, through
-// the region's 'dealias' or, for a single owner, as the value's death; each
-// element of a tuple
+// the region's 'dealias', as the value's death for a 'Move' region, and as
+// nothing for any other; each element of a tuple
 void genlReleaseOwning(GenState *gen, LLVMValueRef val, INode *type);
 // Release each owning reference held by a field of the struct value at 'ref'
 void genlReleaseFlds(GenState *gen, LLVMValueRef ref, INode *vtype);

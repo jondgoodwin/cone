@@ -205,6 +205,8 @@ void nametblInit() {
     dealiasMethodName = nametblFind("dealias", 7);
     freeMethodName = nametblFind("free", 4);
     regionRefName = nametblFind("RegionRef", 9);
+    moveTraitName = nametblFind("Move", 4);
+    copyTraitName = nametblFind("Copy", 4);
 }
 
 

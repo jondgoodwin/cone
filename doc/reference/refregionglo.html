@@ -16,13 +16,18 @@
 	<p style="margin-left: 40px;"><i>Note: Only the single-owner (so) and reference-counting (rc) strategies
 		exist, in the core package; arena, tracing GC and pool are not built. A region is written as a struct
 		declaring <span class="pre">is RegionRef</span>, not with a <span class="pre">region</span> declaration:
-		so is <span class="pre">struct so is RegionRef</span>, with <span class="pre">fn alloc(size usize) *u8</span>
+		so is <span class="pre">struct so is RegionRef, Move</span>, with <span class="pre">fn alloc(size usize) *u8</span>
 		(null for failure, rather than an Option) and <span class="pre">fn free(self &amp;uni so)</span>, which
-		calls C's <span class="pre">libc.free</span>; its having no <span class="pre">alias</span> is what makes
-		it single-owner, and <span class="pre">@move</span> is accepted but not needed. rc adds a count, an
+		calls C's <span class="pre">libc.free</span>; declaring the built-in trait
+		<a href="refmove.html"><span class="pre">Move</span></a> is what makes it single-owner. rc adds a count, an
 		<span class="pre">init</span> setting it to one, <span class="pre">alias</span>, and a
-		<span class="pre">dealias</span> that answers whether the count reached zero. The value's finalizer is
-		not yet run when either frees it.</i></p>
+		<span class="pre">dealias</span> that answers whether the count reached zero, and does not declare
+		<span class="pre">Move</span>, which with <span class="pre">alias</span> is refused. When either frees
+		a value, the value is finalized first: its <span class="pre">final</span>, then its fields, then
+		<span class="pre">free</span>. A region ref declaring neither <span class="pre">alias</span> nor
+		<span class="pre">Move</span> shares its references freely, and with no <span class="pre">dealias</span>
+		either, an owner going away does nothing and the compiler never frees the value: the shape a tracing
+		GC or an arena region ref will have, whose collection is not built.</i></p>
 	
 	<p>To allocate a new value, we ask a region to get it done:</p>
 <pre>
@@ -71,11 +76,11 @@ imm nbrref = +rc-imm 5;  // the 'rc' region counts references
 	    the memory for that value can be automatically finalized and freed when the reference expires.</p>
 	<p>Here is the simple definition of a single-owner region:</p>
 <pre>
-region @move so {      // @move ensures move semantics on references, i.e. no aliasing
+region so is Move {    // Move ensures move semantics on references, i.e. no aliasing
     pub fn alloc(size usize) Option[*u8] {
 	    malloc(size);  // May use any general-purpose memory allocator
     }
-	pub fn free(self &amp;uni rc) {
+	pub fn free(self &amp;uni so) {
 	    free();
 	}
 }
@@ -164,6 +169,10 @@ childnode.parent = parentnoderef.weak;
 		will trace out all references reachable from a root set of objects (including execution stacks).
 	  Any allocated value that cannot be traced from the root is considered unreachable,
 		and therefore is safe to automatically finalize and free.</p>
+	<p>Its region ref declares neither <span class="pre">alias</span> nor
+		<span class="pre">Move</span>, and has no <span class="pre">dealias</span>.
+		So copying one of its references costs nothing, and an owning reference going away
+		does nothing at all: it is the collector, not the reference, that decides when a value dies.</p>
 	<p>Tracing GC is a good choice if you are looking for:</p>
 	<ul>
 		<li>Data structure flexibility, supporting all kinds of data in the same way.</li>
