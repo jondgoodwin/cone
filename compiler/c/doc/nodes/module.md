@@ -2485,7 +2485,7 @@ events only it can see (`ir/types/region.c`):
 | `fn init() R`, static | after `alloc`; the result is stored as the header | the header is left as allocated |
 | `fn alias(self &uni R)` | a copy of an owning reference becomes another owner | a copy is a **move**: the region has one owner per value |
 | `fn dealias(self &uni R) Bool` | an owner goes away; answers whether it was the last | an owner's going reports nothing: with no `alias` either it is the value's death; with `alias` the value never dies by count and is never freed, left for something other than its owners (a collector, once one exists) to free |
-| `fn free(self &uni R)` | the value is dead, after its fields' owners are released | the memory is not given back a value at a time |
+| `fn free(self &uni R)` | the value is dead, after it is finalized and its fields' owners are released | the memory is not given back a value at a time |
 
 Every method but `alloc` and `init` is handed the allocation's **header**, the
 region struct at the front of the `{region, permission, value}` layout, found
@@ -2508,9 +2508,16 @@ their `free` calling libc's by its qualified name, since inside a method named
 `free` a bare `free` is the method. Core is their module wrapper; a region
 naming a module rather than a struct is not built.
 
-What a region's death does beyond the methods is the compiler's: releasing the
-owning references its value's fields hold, before `free`. A value's `final` is
-not run when a region lets it go.
+What a region's death does beyond the methods is the compiler's, because only
+it knows the value's type: the region's methods decide *when* a value dies,
+and at that point the compiler runs, in this order, the value's finalizer (its
+type's drop: `final`, then each finalizing field's), the release of the owning
+references its fields hold, and `free` (`genlRegionDeath`). It is the order a
+value on the stack is finalized in, so a value finalizes the same wherever it
+lives, and a `final` can still read what its fields own. A value moved out
+through its sole owner leaves the owner **hollow**, and its death then
+finalizes nothing that moved (`genlHollowDeath`; the rules are
+[Flow Analysis](../phases/flow.md), "A move out through a sole owner").
 
 That a module carries global singleton state, and a type does not, is why a
 region with global state (an arena's block list, a collector's roots) would

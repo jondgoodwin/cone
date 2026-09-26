@@ -120,6 +120,8 @@ void genlDealiasNodes(GenState *gen, Nodes *nodes);
 // the region's 'dealias' or, for a single owner, as the value's death; each
 // element of a tuple
 void genlReleaseOwning(GenState *gen, LLVMValueRef val, INode *type);
+// Release a hollowed variable's owning reference without the parts moved out
+void genlHollowRelease(GenState *gen, HollowNode *hnode);
 // A counted reference gains 'amount' owners, through its region's 'alias'
 void genlRegionAlias(GenState *gen, LLVMValueRef ref, long long amount, RefNode *refnode);
 // Create an alloca (will be pushed to the entry point of the function.

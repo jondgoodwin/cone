@@ -119,12 +119,18 @@ which every path calls. Per assignment:
    accesses, taking the reference's permission where one is crossed. Without
    `MayWrite`, `ErrorNoMut`. The exception is a variable that holds nothing yet,
    which is how an `imm` local gets initialized once.
-3. **Initialization tracking.** Set `VarInitialized`, clear `VarMoved`.
+3. **Initialization tracking.** Set `VarInitialized`, clear `VarMoved` and
+   `VarHollow`.
 4. **`FlagFirstAssign`** on the lval's name-use node when the variable holds
-   nothing: never initialized, or moved out. Generation reads this to *skip*
-   releasing a previous value that never existed or that another owner now
-   holds. It has to be a per-site flag because flow state is a running summary
-   over the whole function — only the assignment site itself can carry it.
+   nothing whole: never initialized, moved out, or hollowed. Generation reads
+   this to *skip* releasing a previous value that never existed or that another
+   owner now holds. It has to be a per-site flag because flow state is a running summary
+   over the whole function — only the assignment site itself can carry it. A
+   hollowed variable's old allocation still has to go back:
+   `assignlvalrtype` builds its `HollowNode` and `assignSingleFlow` wraps it
+   round the rval, after the rval's own move-or-copy, so the old allocation is
+   released once the new value is evaluated, as `genlStore` orders a whole
+   release. `assignMultRetFlow` has no one value to wrap, and leaks it.
 5. **Borrow lifetime.** When both sides are references and the lval is a borrow,
    `lvalscope < rvaltype->scope` is `ErrorInvType`, "lval outlives the borrowed
    reference you are storing". A slice carries the same scope as a single

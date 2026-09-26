@@ -167,7 +167,11 @@ void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
 // Handle data flow analysis related to single assignment rval
 // Pass type of rval so we can determine what semantics apply
 // Return true if lval is anonName
-int assignlvalrtype(INode *lval, INode *rtype) {
+// 'hollowrel', where given, receives the hollow release of a hollowed variable
+// being reassigned, for the caller to wrap around the value stored; where it is
+// not given, such a variable's old allocation is left unreleased, as a moved
+// one's value is.
+int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
     // '_' named lval is a placeholder that swallows (maybe drops) a value
     int lvalIsName = isNameUseNode(lval) && isExpNode(lval);
     if (lvalIsName && ((NameUseNode*)lval)->namesym == anonName) {
@@ -199,11 +203,18 @@ int assignlvalrtype(INode *lval, INode *rtype) {
         // initialized, or moved out -- so code generation does not release
         // uninitialized storage or a value another owner now holds. Flow state
         // is a running summary, so only the assignment site itself can carry this.
-        uint16_t flowflags = ((VarDclNode*)lvalvar)->flowtempflags;
-        if (!(flowflags & VarInitialized) || (flowflags & VarMoved))
+        // A hollowed variable holds an allocation but not all of its value:
+        // genlStore must not release it whole, and the hollow release takes
+        // its place.
+        VarDclNode *var = (VarDclNode*)lvalvar;
+        uint16_t flowflags = var->flowtempflags;
+        if (!(flowflags & VarInitialized) || (flowflags & (VarMoved | VarHollow)))
             lval->flags |= FlagFirstAssign;
-        ((VarDclNode*)lvalvar)->flowtempflags |= VarInitialized;
-        ((VarDclNode*)lvalvar)->flowtempflags &= 0xFFFF - VarMoved;
+        if ((flowflags & VarHollow) && !(flowflags & VarMoved) && hollowrel)
+            *hollowrel = flowNewHollow(var);
+        var->flowtempflags |= VarInitialized;
+        var->flowtempflags &= 0xFFFF - (VarMoved | VarHollow);
+        var->hollowed = NULL;
     }
 
     // Handle lifetime enforcement for borrowed references
@@ -228,13 +239,22 @@ int assignlvalrtype(INode *lval, INode *rtype) {
 // - Borrowed reference lifetime is greater than its container
 void assignSingleFlow(INode *lval, INode **rval) {
     // Handle lval-based data flow analysis
-    if (assignlvalrtype(lval, ((IExpNode*)*rval)->vtype))
+    HollowNode *hollowrel = NULL;
+    if (assignlvalrtype(lval, ((IExpNode*)*rval)->vtype, &hollowrel))
         return;
 
     // Non-anonymous lval means assignment moves/copies rvalue
     // - Enforce move semantics
     // - Handle copy semantic aliasing
     flowHandleMoveOrCopy(rval);
+
+    // The old value of a hollowed variable is released once the new one is
+    // evaluated, where genlStore releases a whole one
+    if (hollowrel) {
+        hollowrel->exp = *rval;
+        hollowrel->vtype = ((IExpNode*)*rval)->vtype;
+        *rval = (INode *)hollowrel;
+    }
 }
 
 // Handle parallel assignment (multiple values on both sides)
@@ -263,7 +283,7 @@ void assignMultRetFlow(TupleNode *lval, INode **rval) {
     int anyanon = 0;
     for (nodesFor(lnodes, lcnt, lnodesp)) {
         // Need mutability check and borrowed lifetime check
-        anyanon |= assignlvalrtype(*lnodesp, *rtypep++);
+        anyanon |= assignlvalrtype(*lnodesp, *rtypep++, NULL);
     }
 
     // The elements are moved or copied into their lvals as one value would be:

@@ -59,15 +59,52 @@ static void flowAddMoved(Nodes **moved, INode *vardcl) {
     nodesAdd(moved, vardcl);
 }
 
-static void flowMoveSource(INode *node, Nodes **moved);
+// What one move does to the variables it reads, beside the list of variables it
+// leaves without their value: the ones whose whole value moved, and the moves
+// that took a part out of what a local owning reference points at. Neither is
+// narrowed to what every value of a block or an 'if' moves (flowMoveExit).
+typedef struct {
+    Nodes *wholes;    // variables whose own value moved
+    Nodes *hollow;    // move sources, each reaching a local owning reference
+} MoveParts;
+
+// The local variable holding an owning reference that 'ref' names, or NULL.
+// Moving a part out through such a reference -- which flowRefuseMoveThrough
+// has let through only for a sole owner -- empties the part, not the variable:
+// the variable still owns the allocation, whose memory must go back.
+VarDclNode *flowOwningLocal(INode *ref) {
+    if (!(isNameUseNode(ref) && isExpNode(ref)))
+        return NULL;
+    VarDclNode *var = (VarDclNode *)((NameUseNode *)ref)->dclnode;
+    if (var->tag != VarDclTag || var->scope == 0)
+        return NULL;
+    RefNode *reftype = (RefNode *)itypeGetTypeDcl(var->vtype);
+    if ((reftype->tag != RefTag && reftype->tag != ArrayRefTag) || !regionIsOwning(reftype->region))
+        return NULL;
+    return var;
+}
+
+static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *parts);
+
+// A move out through a local sole owner: the variable is in 'moved', so that a
+// block's or an 'if''s values still narrow it as any moved variable, and the
+// move itself is noted, to become the variable's hollow release.
+static void flowMoveHollow(VarDclNode *owner, Nodes **moved, INode *top, MoveParts *parts) {
+    if (moved == NULL)
+        return;
+    flowAddMoved(moved, (INode *)owner);
+    if (parts->hollow == NULL)
+        parts->hollow = newNodes(2);
+    nodesAdd(&parts->hollow, top);
+}
 
 // Walk one of the values a block or an 'if' may hand back, narrowing 'common'
 // to the variables that every value walked so far moves out of ('first' says
 // none has been walked yet). With 'moved' NULL the walk only checks.
-static void flowMoveExit(INode *exp, Nodes **moved, Nodes **common, int *first) {
+static void flowMoveExit(INode *exp, Nodes **moved, Nodes **common, int *first, MoveParts *parts) {
     Nodes *these = NULL;
     if (iexpIsMove(exp))
-        flowMoveSource(exp, moved ? &these : NULL);
+        flowMoveSource(exp, moved ? &these : NULL, exp, parts);
     if (moved == NULL)
         return;
     if (*first) {
@@ -97,12 +134,21 @@ static void flowMoveExit(INode *exp, Nodes **moved, Nodes **common, int *first) 
 // borrowed reference still belongs to what was borrowed, and one reached through
 // a shared owning reference still belongs to its other holders, so moving it out
 // would leave two owners of one value.
-static void flowMoveSource(INode *node, Nodes **moved) {
+//
+// 'top' is the outermost node of the chain of fields, elements, dereferences
+// and recasts being walked -- the expression that names the part moving. A
+// chain that reaches a local owning reference through it (a dereference, or a
+// slice's element) moves a part out of the referent and leaves the variable
+// owning the allocation: 'parts' notes the move as hollowing the variable
+// rather than as moving it.
+static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *parts) {
     // For a variable, its value is what moves
     if (isNameUseNode(node) && isExpNode(node)) {
         VarDclNode *vardclnode = (VarDclNode *)((NameUseNode*)node)->dclnode;
-        if (moved)
+        if (moved) {
             flowAddMoved(moved, (INode *)vardclnode);
+            flowAddMoved(&parts->wholes, (INode *)vardclnode);
+        }
         if (vardclnode->scope == 0) {
             errorMsgNode(node, ErrorInvType, "May not move a value out of a global variable.");
         }
@@ -118,7 +164,12 @@ static void flowMoveSource(INode *node, Nodes **moved) {
         INode *objfn = ((FnCallNode*)node)->objfn;
         if (flowRefuseMoveThrough(node, objfn))
             return;
-        flowMoveSource(objfn, moved);
+        VarDclNode *owner = flowOwningLocal(objfn);
+        if (owner) {
+            flowMoveHollow(owner, moved, top, parts);
+            return;
+        }
+        flowMoveSource(objfn, moved, top, parts);
         break;
     }
     case DerefTag:
@@ -126,7 +177,12 @@ static void flowMoveSource(INode *node, Nodes **moved) {
         INode *ref = ((StarNode*)node)->vtexp;
         if (flowRefuseMoveThrough(node, ref))
             return;
-        flowMoveSource(ref, moved);
+        VarDclNode *owner = flowOwningLocal(ref);
+        if (owner) {
+            flowMoveHollow(owner, moved, top, parts);
+            return;
+        }
+        flowMoveSource(ref, moved, top, parts);
         break;
     }
 
@@ -134,7 +190,7 @@ static void flowMoveSource(INode *node, Nodes **moved) {
     // base, which share one representation -- so moving it moves the operand
     case CastTag:
         if (!(node->flags & FlagConvert))
-            flowMoveSource(((CastNode*)node)->exp, moved);
+            flowMoveSource(((CastNode*)node)->exp, moved, top, parts);
         break;
 
     // A tuple literal has no storage of its own: its sources are its elements,
@@ -145,7 +201,7 @@ static void flowMoveSource(INode *node, Nodes **moved) {
         uint32_t cnt;
         for (nodesFor(((TupleNode*)node)->elems, cnt, nodesp)) {
             if (iexpIsMove(*nodesp))
-                flowMoveSource(*nodesp, moved);
+                flowMoveSource(*nodesp, moved, *nodesp, parts);
         }
         break;
     }
@@ -170,12 +226,12 @@ static void flowMoveSource(INode *node, Nodes **moved) {
             if (blk->flags & FlagLoop)
                 flowResultMove(((BreakRetNode *)last)->exp);
             else
-                flowMoveExit(((BreakRetNode *)last)->exp, moved, &common, &first);
+                flowMoveExit(((BreakRetNode *)last)->exp, moved, &common, &first, parts);
         }
         if (blk->breaks) {
             for (nodesFor(blk->breaks, cnt, nodesp)) {
                 if ((*nodesp)->tag == BreakTag)
-                    flowMoveExit(((BreakRetNode *)*nodesp)->exp, moved, &common, &first);
+                    flowMoveExit(((BreakRetNode *)*nodesp)->exp, moved, &common, &first, parts);
             }
         }
         if (moved && common) {
@@ -194,7 +250,7 @@ static void flowMoveSource(INode *node, Nodes **moved) {
         uint32_t cnt;
         for (nodesFor(((IfNode *)node)->condblk, cnt, nodesp)) {
             nodesp++; cnt--;
-            flowMoveExit(*nodesp, moved, &common, &first);
+            flowMoveExit(*nodesp, moved, &common, &first, parts);
         }
         if (moved && common) {
             for (nodesFor(common, cnt, nodesp))
@@ -209,15 +265,73 @@ static void flowMoveSource(INode *node, Nodes **moved) {
     }
 }
 
-// Deactivate source of a moved value (or say move is illegal)
-void flowHandleMove(INode *node) {
-    Nodes *moved = NULL;
+static int flowNodesHas(Nodes *nodes, INode *node) {
     INode **nodesp;
     uint32_t cnt;
-    flowMoveSource(node, &moved);
+    if (nodes == NULL)
+        return 0;
+    for (nodesFor(nodes, cnt, nodesp)) {
+        if (*nodesp == node)
+            return 1;
+    }
+    return 0;
+}
+
+// The local owning reference a hollowing move's chain reaches, walked inwards
+// exactly as flowMoveSource walked it
+static VarDclNode *flowHollowOwner(INode *exp) {
+    while (1) {
+        INode *inner;
+        switch (exp->tag) {
+        case FldAccessTag:
+        case ArrIndexTag:
+            inner = ((FnCallNode *)exp)->objfn; break;
+        case DerefTag:
+            inner = ((StarNode *)exp)->vtexp; break;
+        case CastTag:
+            exp = ((CastNode *)exp)->exp;
+            continue;
+        default:
+            return NULL;
+        }
+        VarDclNode *owner = flowOwningLocal(inner);
+        if (owner)
+            return owner;
+        exp = inner;
+    }
+}
+
+// Deactivate source of a moved value (or say move is illegal)
+//
+// A move out through a local sole owner hollows the variable instead: it may
+// not be used again, as if moved, but it still owns the allocation, which its
+// release gives back without the parts that moved (HollowNode). A variable
+// hollowed on only some of the values a block or an 'if' hands back is
+// hollowed on all of them: what did not move is then left unfinalized on the
+// other paths, rather than finalized a second time on these. A variable whose
+// whole value also moved is left to that move.
+void flowHandleMove(INode *node) {
+    Nodes *moved = NULL;
+    MoveParts parts = { NULL, NULL };
+    INode **nodesp;
+    uint32_t cnt;
+    flowMoveSource(node, &moved, node, &parts);
     if (moved) {
-        for (nodesFor(moved, cnt, nodesp))
-            ((VarDclNode *)*nodesp)->flowtempflags |= VarMoved;
+        for (nodesFor(moved, cnt, nodesp)) {
+            if (flowNodesHas(parts.wholes, *nodesp))
+                ((VarDclNode *)*nodesp)->flowtempflags |= VarMoved;
+        }
+    }
+    if (parts.hollow) {
+        for (nodesFor(parts.hollow, cnt, nodesp)) {
+            VarDclNode *owner = flowHollowOwner(*nodesp);
+            if (flowNodesHas(parts.wholes, (INode *)owner))
+                continue;
+            owner->flowtempflags |= VarHollow;
+            if (owner->hollowed == NULL)
+                owner->hollowed = newNodes(2);
+            nodesAdd(&owner->hollowed, *nodesp);
+        }
     }
 }
 
@@ -227,7 +341,7 @@ void flowHandleMove(INode *node) {
 // flowScopeDealias instead.
 void flowResultMove(INode *node) {
     if (iexpIsMove(node))
-        flowMoveSource(node, NULL);
+        flowMoveSource(node, NULL, node, NULL);
 }
 
 // Is this type a counted reference: one into a region whose 'alias' is called
@@ -482,19 +596,25 @@ size_t flowScopePush() {
 
 // Is this variable where a part handed back is taken from? The same walk
 // inwards, through fields, elements and owning dereferences, that
-// flowMoveSource takes to the variable it deactivates.
+// flowMoveSource takes to the variable it deactivates. 1 says the part is of
+// the variable's own value; 2 says it was taken out through the variable, a
+// local owning reference, which is then hollowed rather than handed back.
 static int flowIsScopeResultOwner(INode *exp, VarDclNode *varnode) {
+    INode *inner;
     switch (exp->tag) {
     case FldAccessTag:
     case ArrIndexTag:
-        return flowIsScopeResultOwner(((FnCallNode *)exp)->objfn, varnode);
+        inner = ((FnCallNode *)exp)->objfn; break;
     case DerefTag:
-        return flowIsScopeResultOwner(((StarNode *)exp)->vtexp, varnode);
+        inner = ((StarNode *)exp)->vtexp; break;
     case CastTag:
-        return !(exp->flags & FlagConvert) && flowIsScopeResultOwner(((CastNode *)exp)->exp, varnode);
+        return (exp->flags & FlagConvert) ? 0 : flowIsScopeResultOwner(((CastNode *)exp)->exp, varnode);
     default:
         return isNameUseNode(exp) && isExpNode(exp) && ((NameUseNode *)exp)->dclnode == (INode *)varnode;
     }
+    if (flowOwningLocal(inner) == varnode)
+        return 2;
+    return flowIsScopeResultOwner(inner, varnode);
 }
 
 // Is this variable's value the one being handed to the caller, and therefore
@@ -506,27 +626,41 @@ static int flowIsScopeResultOwner(INode *exp, VarDclNode *varnode) {
 // The match is on the declaration the name resolves to, not on the name: a
 // 'return' exempts from the whole function's stack, where an inner block's 'a'
 // and an outer 'a' both sit, and only the one named is handed back.
-static int flowIsScopeResult(INode *retexp, VarDclNode *varnode) {
+// A part handed back out of what a local owning reference points at leaves the
+// variable owning the allocation: it is not exempt, and the part is added to
+// 'hollow', so that its release gives the memory back without the part.
+static int flowIsScopeResult(INode *retexp, VarDclNode *varnode, Nodes **hollow) {
     if (retexp == NULL)
         return 0;
     if (retexp->tag == VTupleTag) {
         INode **elemp;
         uint32_t cnt;
         for (nodesFor(((TupleNode*)retexp)->elems, cnt, elemp)) {
-            if (flowIsScopeResult(*elemp, varnode))
+            if (flowIsScopeResult(*elemp, varnode, hollow))
                 return 1;
         }
         return 0;
     }
     // A recast hands back its operand: a local returned as its enrichment or base
     if (retexp->tag == CastTag && !(retexp->flags & FlagConvert))
-        return flowIsScopeResult(((CastNode *)retexp)->exp, varnode);
+        return flowIsScopeResult(((CastNode *)retexp)->exp, varnode, hollow);
     // A move-typed part handed back moves out of the variable that holds it,
     // which as for any move out of a part no longer owns the whole: releasing
     // it would finalize the part a second time, in the caller. A copied part
     // leaves the variable owning everything it held.
-    if ((retexp->tag == FldAccessTag || retexp->tag == ArrIndexTag) && iexpIsMove(retexp))
-        return flowIsScopeResultOwner(((FnCallNode *)retexp)->objfn, varnode);
+    if ((retexp->tag == FldAccessTag || retexp->tag == ArrIndexTag || retexp->tag == DerefTag)
+        && iexpIsMove(retexp)) {
+        int owner = flowIsScopeResultOwner(retexp, varnode);
+        if (owner == 2) {
+            if (*hollow == NULL)
+                *hollow = newNodes(2);
+            nodesAdd(hollow, retexp);
+            return 0;
+        }
+        // A dereference handed back is exempt only as a hollowing: what a
+        // value's own field points at still belongs to that value's release
+        return retexp->tag == DerefTag ? 0 : owner;
+    }
     // A block or an 'if' used as a move value hands back what its final
     // expression, its breaks or its branches do, so what it hands back is matched
     // as if handed back directly. A local handed back on only some of those
@@ -541,12 +675,12 @@ static int flowIsScopeResult(INode *retexp, VarDclNode *varnode) {
             uint32_t cnt;
             INode *last = blk->stmts->used > 0 ? nodesLast(blk->stmts) : NULL;
             if (last != NULL && last->tag == BlockRetTag
-                && flowIsScopeResult(((BreakRetNode *)last)->exp, varnode))
+                && flowIsScopeResult(((BreakRetNode *)last)->exp, varnode, hollow))
                 return 1;
             if (blk->breaks) {
                 for (nodesFor(blk->breaks, cnt, nodesp)) {
                     if ((*nodesp)->tag == BreakTag
-                        && flowIsScopeResult(((BreakRetNode *)*nodesp)->exp, varnode))
+                        && flowIsScopeResult(((BreakRetNode *)*nodesp)->exp, varnode, hollow))
                         return 1;
                 }
             }
@@ -558,7 +692,7 @@ static int flowIsScopeResult(INode *retexp, VarDclNode *varnode) {
             uint32_t cnt;
             for (nodesFor(((IfNode *)retexp)->condblk, cnt, nodesp)) {
                 nodesp++; cnt--;
-                if (flowIsScopeResult(*nodesp, varnode))
+                if (flowIsScopeResult(*nodesp, varnode, hollow))
                     return 1;
             }
             return 0;
@@ -568,6 +702,24 @@ static int flowIsScopeResult(INode *retexp, VarDclNode *varnode) {
         }
     }
     return isNameUseNode(retexp) && isExpNode(retexp) && ((NameUseNode *)retexp)->dclnode == (INode *)varnode;
+}
+
+// A hollow release of a variable, as it stands now: the moves that hollowed it
+// so far are copied, since a later exit or reassignment sees a different set
+HollowNode *flowNewHollow(VarDclNode *var) {
+    HollowNode *hnode;
+    newNode(hnode, HollowNode, HollowTag);
+    hnode->vtype = (INode *)newVoidNode();
+    hnode->exp = NULL;
+    hnode->var = var;
+    hnode->moved = newNodes(2);
+    if (var->flowtempflags & VarHollow) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(var->hollowed, cnt, nodesp))
+            nodesAdd(&hnode->moved, *nodesp);
+    }
+    return hnode;
 }
 
 // Create de-alias list of all own/rc reference variables (except the retexp name(s))
@@ -596,8 +748,24 @@ void flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp, INode *le
             continue;
         // A variable the scope hands back is the caller's to release or finalize,
         // whether it owns a region reference or is a value the drop fn finalizes.
-        if (flowIsScopeResult(retexp, avar->node))
+        Nodes *hollow = NULL;
+        if (flowIsScopeResult(retexp, avar->node, &hollow))
             continue;
+        // A local owning reference out of whose referent a part was moved, or
+        // is handed back here, is released without what moved
+        if ((avar->node->flowtempflags & VarHollow) || hollow) {
+            HollowNode *hnode = flowNewHollow(avar->node);
+            if (hollow) {
+                INode **nodesp;
+                uint32_t cnt;
+                for (nodesFor(hollow, cnt, nodesp))
+                    nodesAdd(&hnode->moved, *nodesp);
+            }
+            if (*varlist == NULL)
+                *varlist = newNodes(4);
+            nodesAdd(varlist, (INode*)hnode);
+            continue;
+        }
         if (flowIsOwningType(vartype)) {
             if (*varlist == NULL)
                 *varlist = newNodes(4);

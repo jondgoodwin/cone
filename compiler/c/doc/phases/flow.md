@@ -135,6 +135,7 @@ The live state is on the declarations, in `VarDclNode.flowtempflags`:
 | --- | --- | --- |
 | `VarInitialized` | `varDclFlow`, `assignlvalrtype`; pre-set at parse for globals, fields and parameters | only round a module's `init`: `modInitFlowBegin` clears it on each global of the module without a value, and `modInitFlowEnd` puts every such global's flags back |
 | `VarMoved` | `flowHandleMove` | `assignlvalrtype` on reassignment |
+| `VarHollow`, with the moves that did it in `VarDclNode.hollowed` | `flowHandleMove`, for a move out through a local sole owner | `assignlvalrtype` on reassignment |
 
 Because these live on the declaration and are never saved or restored, **they
 are a running summary over the whole function, not per-program-point state.**
@@ -174,8 +175,8 @@ a **shared owning reference** — one that is not a move type, so may be aliased
 many holders of the value, and the others still point at it after the move, so
 it is refused the same way (`ErrorMoveOut`, `flowIsSharedOwner`). A **sole**
 owning reference — any `+so`, and `+rc-uni` (what `+rc` means) — is not
-refused: moving out through one deactivates the reference's variable like any
-other source, and the variable then releases nothing. Copy values are never
+refused, and moving out through one held in a local variable **hollows** the
+variable, below. Copy values are never
 walked, so they read out through a borrow or a shared owner freely, and swap
 and left-assignment take a move value out of either because they leave it
 holding one.
@@ -198,6 +199,29 @@ function: `if c {a;} else {Inner[0];}` bound to a variable still finalizes `a`
 twice on the path that moves it (and once, correctly, on the other). An
 expression statement never reaches `flowHandleMove`, so a block whose value is
 thrown away moves nothing.
+
+**A move out through a sole owner.** When the inward walk reaches a local
+variable holding an owning reference through that reference — `*b`, `b.inner`
+(a field access through the injected dereference), `*b.r`, `**b`, a slice's
+element `s[0]` — the value, or a part of it, leaves the allocation, but the
+variable still owns the allocation, whose memory must go back
+(`flowOwningLocal`). Such a move **hollows** the variable rather than moving
+it: `VarHollow` is set and the move's outermost node, the expression naming the
+part (`top` in `flowMoveSource`), is added to `VarDclNode.hollowed`. A hollowed
+variable is refused for any further use as a moved one is (`nameuseFlow`), and
+where it is released — its scope's exits, or a reassignment — it is released
+**hollow** (`HollowNode`): generation walks each recorded move inwards to the
+variable to learn which part left, and releases the rest (`genlHollowRelease`;
+[Generation](generation.md), "The allocation header"). A variable reached only
+through a value's own field (`*h.r` with `h` a struct on the stack) is moved
+whole, as before: the part left `h`'s field's allocation, which `h`'s own
+release would have to reach.
+
+A hollowing on only some of the values a block or an `if` hands back hollows
+the variable anyway, unlike a whole conditional move: what did not move is then
+freed but not finalized on the paths that left it in place, rather than
+finalized a second time on the ones that moved it. A variable moved whole by
+the same move as well is left to that move (`MoveParts.wholes`).
 
 **A recast is its operand.** Type check hands a value between an enrichment and
 its base, in either direction, wrapped in a `CastTag` with no `FlagConvert`: the
@@ -243,11 +267,12 @@ because one value goes to n holders.
 unless `FlagFirstAssign` says there was none. Both go through
 `genlReleaseOwning`: one owner goes away, through the region's `dealias` where
 it has one and as the value's death where it has a single owner; a tuple's
-owning elements one by one.
+owning elements one by one. A hollowed variable's owner goes away the same
+way, through a `HollowNode` instead, and its death is hollow.
 
 ## 5. What it injects
 
-Flow is not a read-only analysis. Four mutations, all of which generation
+Flow is not a read-only analysis. Five mutations, all of which generation
 depends on:
 
 | Injection | Where | Generation uses it for |
@@ -255,7 +280,8 @@ depends on:
 | `BlockRetTag` | `blockFlow`, for any block not already ending in one | a loop block, **and** a regular block ending in an expression, both get theirs here — it is where the dealias list hangs |
 | `RefCountTag` | `flowInjectRefCountAmt` | `genlRegionAlias(val, amt)`: the region's `alias`, once per owner added |
 | `dealias` lists | `flowScopeDealias`, onto every `BreakRetNode` | `genlDealiasNodes` replays them |
-| `FlagFirstAssign` | `assignlvalrtype`, when the variable is uninitialized or moved out | `genlStore` skips releasing a previous value the variable does not hold |
+| `FlagFirstAssign` | `assignlvalrtype`, when the variable is uninitialized, moved out or hollowed | `genlStore` skips releasing a previous value the variable does not hold whole |
+| `HollowTag` | `flowScopeDealias`, in a `dealias` list, for a hollowed variable or one whose part the scope hands back; `assignSingleFlow`, wrapped round the value stored into a hollowed variable | `genlHollowRelease`: the owner goes, and a death frees without what moved — after the new value is evaluated, for the wrapper, as `genlStore` orders a whole release |
 
 **A reference-count node is built only for a counted reference, or a tuple
 carrying one.** `flowInjectRefCountAmt` returns early unless the type is a
@@ -280,7 +306,10 @@ or element handed back matches the variable it is taken from
 (`flowIsScopeResultOwner`, the walk through fields, elements and owning
 dereferences that `flowMoveSource` takes), because moving a part out gives up
 the whole variable; releasing it would finalize the part again in the caller,
-and what else it held is not released. A copied part matches nothing. A block
+and what else it held is not released. A part — or the whole value, `*b` —
+taken out through the variable's own owning reference does not exempt it:
+the variable still owns the allocation, and its entry is a `HollowNode` naming
+the part, so the memory goes back without it. A copied part matches nothing. A block
 or an `if` used as a move value matches what it hands back — its final
 expression, each `break` that leaves it, each branch — so a field handed back
 through one is exempt the same way. A local handed back on only some branches
@@ -372,7 +401,9 @@ first assignment to an uninitialized owning variable releases garbage, and a
 reassignment after a move releases what the new owner holds: `genlStore`
 releases one owner of an owning lval's previous value — single, slice, or
 tuple element — whenever the flag is absent. `assignlvalrtype` sets it when the
-variable is not `VarInitialized`, or is `VarMoved`, at the assignment.
+variable is not `VarInitialized`, or is `VarMoved` or `VarHollow`, at the
+assignment; for a hollowed one, the `HollowNode` wrapped round the stored value
+is what releases the old allocation.
 
 ## 8. Hazards
 
@@ -392,6 +423,18 @@ variable is not `VarInitialized`, or is `VarMoved`, at the assignment.
   `imm y = if c {a;} else {Inner[0];}` finalizes `a` in `y` and again at `a`'s
   scope exit when `c` is true. Deactivating it would instead leak it on the
   other path. Either way it needs the drop flag a conditional move needs.
+  Now that a region's death finalizes, the same holds for a sole owning
+  reference moved whole on only some paths (`imm y = if c {b;} else {+so
+  Fin[0];}`): it is freed, and finalized, a second time on the path that moved it.
+- **A variable hollowed on only one path is released hollow on every path.**
+  `if c { imm x = *b; }` frees `b`'s memory on both paths, and on the path that
+  did not move leaves what `b` points at unfinalized. That is the deliberate
+  side of the choice — a finalizer skipped rather than run twice — and it needs
+  the drop flag to be right.
+- **A hollowed variable reassigned by a destructuring of one value**
+  (`b, x = pair()`) leaks its old allocation: `assignMultRetFlow` has no single
+  value to wrap a `HollowNode` round, so it takes the moved variable's path
+  (`FlagFirstAssign`, nothing released).
 - **A variable initialized on only one path is released on every path**, because
   `VarInitialized` is the same kind of summary: once an assignment anywhere
   before the scope exit has set it, the exit releases the variable whether or
@@ -418,24 +461,25 @@ variable is not `VarInitialized`, or is `VarMoved`, at the assignment.
 | `ir/flow.c` | `flowLoadValue` | the walk's spine — tag dispatch for a value being read |
 | | `flowLoadThroughRef` | `MayRead` on the reference a value is read through; called from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` |
 | | `flowHandleMoveOrCopy` | move vs. alias, for a value going to a new holder |
-| | `flowHandleMove` | deactivate the source — each move-typed element's, for a tuple literal; for a block or an `if`, what every value it hands back moves out of; refuse a move out of a global, or out through a borrowed or a shared owning reference |
+| | `flowHandleMove` | deactivate the source — each move-typed element's, for a tuple literal; for a block or an `if`, what every value it hands back moves out of; hollow a local sole owner moved out through; refuse a move out of a global, or out through a borrowed or a shared owning reference |
+| | `flowOwningLocal`, `flowNewHollow` | the local owning reference a move reaches through; the `HollowNode` releasing a hollowed variable as it stands |
 | | `flowResultMove` | the same refusals for a returned value, deactivating nothing |
 | | `flowIsLvalRead` | the temporary-vs-lvalue test that makes counting correct |
 | | `flowInjectRefCountAmt` | wrap a counted reference, or a tuple carrying one, in a `RefCountNode` |
 | | `flowIsRcRef`, `flowIsOwningType` | is this type counted; must a variable of this type be released |
 | | `flowScopePush`, `flowScopePop`, `flowAddVar` | the variable stack |
-| | `flowScopeDealias` | build a scope's release list; skip an uninitialized, moved-out or handed-back variable |
+| | `flowScopeDealias` | build a scope's release list; skip an uninitialized, moved-out or handed-back variable; release a hollowed one hollow |
 | `ir/exp/block.c` | `blockFlow` | scope push/pop, `blockret` injection, result walk then dealias capture; a `return`'s move source |
 | `ir/exp/if.c` | `ifFlow` | both arms against one shared state |
-| `ir/exp/assign.c` | `assignlvalrtype` | `MayWrite`, `VarInitialized`/`VarMoved`, `FlagFirstAssign`, borrow lifetime |
-| `ir/exp/nameuse.c` | `nameuseFlow` | the only place the two flags are *diagnosed* on; both `ErrorMove` messages |
+| `ir/exp/assign.c` | `assignlvalrtype`, `assignSingleFlow` | `MayWrite`, `VarInitialized`/`VarMoved`/`VarHollow`, `FlagFirstAssign`, the `HollowNode` round a hollowed variable's new value, borrow lifetime |
+| `ir/exp/nameuse.c` | `nameuseFlow` | the only place the flags are *diagnosed* on, a hollowed variable as a moved one; both `ErrorMove` messages |
 | `ir/exp/borrow.c` | `borrowFlow` | **empty** |
 | `ir/stmt/return.c` | `returnFlowEscape` | `ErrorEscape` for a returned borrow of a local |
 | `ir/exp/fncall.c` | `fnCallFlowStoredBorrow` | `ErrorCallEscape` for a `&mut &T` argument the callee could store a narrower borrow through |
 | `ir/exp/arraylit.c` | `arrayLitFlow` | fill-form rules and the n / n-1 alias amount |
 | `ir/types/reference.c` | `refAdoptInfections` | where a reference type acquires `MoveType` |
 | `ir/types/region.c` | `regionIsCounted`, `regionIsOwning`, `regionMethod` | which region methods a region declares, which is what flow asks of it |
-| `genllvm/genlalloc.c` | `genlRegionAlias`, `genlReleaseOwning`, `genlDealiasNodes` | what consumes everything flow injected |
+| `genllvm/genlalloc.c` | `genlRegionAlias`, `genlReleaseOwning`, `genlHollowRelease`, `genlDealiasNodes` | what consumes everything flow injected |
 
 Test sources that pin behavior precisely: `test/cases/move/move-flow-*.cone`,
 `test/cases/region/region_flow*.cone`, `test/cases/ref/ref_flow.cone`,

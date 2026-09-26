@@ -422,6 +422,6 @@ void nameuseFlow(FlowState *fstate, NameUseNode **nodep) {
         return;
     if (!(vardclnode->flowtempflags & VarInitialized))
         errorMsgNode((INode*)node, ErrorMove, "This variable has not been initialized. There is no value to use.");
-    else if (vardclnode->flowtempflags & VarMoved)
+    else if (vardclnode->flowtempflags & (VarMoved | VarHollow))
         errorMsgNode((INode*)node, ErrorMove, "This variable's value has been moved out. It is no longer there to use.");
 }

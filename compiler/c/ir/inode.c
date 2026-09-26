@@ -187,6 +187,15 @@ void inodePrintNode(INode *node) {
         inodeFprint(")");
         break;
     }
+    case HollowTag:
+    {
+        HollowNode *hnode = (HollowNode *)node;
+        inodeFprint("(hollow %s ", &hnode->var->namesym->namestr);
+        if (hnode->exp)
+            inodePrintNode(hnode->exp);
+        inodeFprint(")");
+        break;
+    }
     case MacroDclTag:
         macroPrint((MacroDclNode *)node); break;
     case GenVarDclTag:
@@ -717,6 +726,7 @@ static NodeTagFacts nodeTagFacts[NodeTagCount] = {
     [BlockTag] = {ExpGroup, 0, 0},
     [IfTag] = {ExpGroup, 0, 0},
     [RefCountTag] = {ExpGroup, 0, 0},
+    [HollowTag] = {ExpGroup, 0, 0},
     [NamedValTag] = {ExpGroup, 0, 0},
     [AbsenceTag] = {ExpGroup, 0, 0},
 

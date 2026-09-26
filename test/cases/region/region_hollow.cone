@@ -1,0 +1,179 @@
+// Moving a value, or a part of it, out through a sole owning reference leaves
+// the allocation behind, and the owner still gives its memory back: it dies
+// hollow. Nothing that moved is finalized there -- the new holder finalizes it,
+// once, at its own end -- and what did not move is released as a death would
+// release it.
+//
+// - The whole value moved out ('*b'): the memory is freed, and nothing else.
+// - A field moved out ('b.inner'): the struct is no longer whole, so its own
+//   'final' does not run; each other field is finalized or released as its
+//   type asks (finalizing fields first, then owning ones), and then the memory
+//   is freed.
+// - A part moved out through an owning field ('*b.r'): that field's allocation
+//   dies hollow in turn, before the struct's own memory is freed.
+// - An owning field moved out ('b.r'): its allocation is the new holder's.
+// - An element moved out of an owning slice ('s[0]'): the memory is freed. A
+//   slice's elements are never finalized when it dies, moved out or not
+//   (Fin 25 below), which is the same element-by-element work an array of
+//   owning references is still waiting for.
+//
+// The regions here print when they free, and the counted one when it is
+// asked, so the output is the whole assertion: what was freed, what was
+// finalized, and in what order. A hollow owner is released where it would have
+// been released whole: at its scope's end, at a return, or when it is
+// reassigned. A variable is hollowed for the rest of the function once any
+// path moves a part out: on a path that did not, the memory is still freed,
+// but what stayed is not finalized ('cond'), until variables carry a flag
+// saying at run time what they still hold.
+//
+// Before hollow deaths, every one of these allocations leaked except a whole
+// value handed back by a block or a return ('*b'), whose owner was released
+// whole: harmless while a death finalized nothing, a second finalize once it
+// does. The two regions' 'free' calls C's through its package, as
+// region_regionref's do.
+
+mod region_hollow;
+
+import stdio use *;
+import libc;
+
+fn show(label &[]u8, n i32) {
+  printStr(label);
+  printInt(i64[n]);
+  printStr("\n");
+}
+
+struct one is RegionRef {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn free(self &uni one) inline { printStr("one free\n"); libc.free(self as *u8); }
+}
+
+struct cnt is RegionRef {
+  owners usize;
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn init() cnt inline { cnt[1usize]; }
+  fn alias(self &uni cnt) inline { owners = owners + 1usize; }
+  fn dealias(self &uni cnt) Bool inline { printStr("cnt dealias\n"); owners = owners - 1usize; owners == 0usize; }
+  fn free(self &uni cnt) inline { printStr("cnt free\n"); libc.free(self as *u8); }
+}
+
+struct Fin {
+  pub v i32;
+  fn final(self &uni) { show("final ", v); }
+}
+
+struct Box {
+  pub inner Fin;
+  pub other Fin;
+}
+
+struct FinBox {
+  pub inner Fin;
+  pub other Fin;
+  fn final(self &uni) { printStr("finbox final\n"); }
+}
+
+struct Holder {
+  pub r +one Fin;
+  pub s Fin;
+  pub c +cnt-mut Fin;
+  fn final(self &uni) { printStr("holder final\n"); }
+}
+
+fn wholeOne() {
+  printStr("-- whole value, single owner\n");
+  imm c = { imm b = +one Fin[1i32]; *b; };
+  printStr("moved\n");
+}
+
+fn wholeCounted() {
+  printStr("-- whole value, sole counted owner\n");
+  imm c = { imm b = +cnt Fin[2i32]; imm d = *b; d; };
+  printStr("moved\n");
+}
+
+fn field() {
+  printStr("-- a field\n");
+  imm c = { imm b = +one Box[Fin[3i32], Fin[4i32]]; imm d = b.inner; d; };
+  printStr("moved\n");
+}
+
+fn fieldOfFinalizing() {
+  printStr("-- a field of a struct with a final\n");
+  imm c = { imm b = +one FinBox[Fin[5i32], Fin[6i32]]; imm d = b.inner; d; };
+  printStr("moved\n");
+}
+
+fn throughField() {
+  printStr("-- through an owning field\n");
+  imm c = { imm b = +one Holder[+one Fin[7i32], Fin[8i32], +cnt-mut Fin[9i32]]; imm d = *b.r; d; };
+  printStr("moved\n");
+}
+
+fn owningField() {
+  printStr("-- an owning field\n");
+  imm r = { imm b = +one Holder[+one Fin[10i32], Fin[11i32], +cnt-mut Fin[12i32]]; imm d = b.r; d; };
+  printStr("moved\n");
+}
+
+fn giveWhole() Fin { imm b = +one Fin[13i32]; *b; }
+fn giveField() Fin { imm b = +one Box[Fin[14i32], Fin[15i32]]; b.inner; }
+fn giveCounted() Fin { imm b = +cnt Fin[16i32]; return *b; }
+fn giveParm(b +one Box) Fin { b.inner; }
+
+fn returned() {
+  printStr("-- returned\n");
+  { imm a = giveWhole(); printStr("got it\n"); }
+  { imm a = giveField(); printStr("got it\n"); }
+  { imm a = giveCounted(); printStr("got it\n"); }
+  { imm a = giveParm(+one Box[Fin[17i32], Fin[18i32]]); printStr("got it\n"); }
+}
+
+fn reassigned() {
+  printStr("-- reassigned after\n");
+  mut b = +one Fin[19i32];
+  imm c = *b;
+  b = +one Fin[20i32];
+  printStr("reassigned\n");
+}
+
+fn early(c Bool) Fin {
+  imm b = +one Fin[21i32];
+  if c { return Fin[22i32]; }
+  *b;
+}
+
+fn cond(c Bool) {
+  imm b = +one Fin[23i32];
+  if c { imm x = *b; printStr("moved\n"); }
+  printStr("end of cond\n");
+}
+
+fn sliced() {
+  printStr("-- a slice's element\n");
+  imm s = +[]one [Fin[24i32], Fin[25i32]];
+  imm c = s[0];
+  printStr("moved\n");
+}
+
+fn main() i32 {
+  wholeOne();
+  wholeCounted();
+  field();
+  fieldOfFinalizing();
+  throughField();
+  owningField();
+  returned();
+  reassigned();
+  printStr("-- returned before the move\n");
+  { imm a = early(true); }
+  printStr("-- returned after the move\n");
+  { imm a = early(false); }
+  printStr("-- moved on one path, taken\n");
+  cond(true);
+  printStr("-- moved on one path, not taken\n");
+  cond(false);
+  sliced();
+  printStr("-- end\n");
+  0i32;
+}
