@@ -209,6 +209,16 @@ this is the part most worth internalizing:
 
 So `&mut T` is invariant in `T` while `&ro T` is covariant.
 
+**Covariance stops at a reference held behind one that would stop moving.**
+`refHeldMoveSeenAsCopy`, asked by the covariant arm of `refMatches` and of
+`arrayRefMatchesRef`, refuses a value type that is a reference whose own type
+moves seen as one that copies: `&+rc-mut T` (or `-imm`, `-ro`, `-opaq`, `-mut1`)
+from `&+rc T`, and a slice of them. A read through the outer reference copies
+a copy type out, so the view would make a second owner of a value `uni`
+promised unique. `permMatches` is untouched, and a move of the owner itself
+still coerces `uni` down. A `+so` owner keeps its view as `+so-mut`, since
+every `+so` reference moves and a move out through a borrow is refused in flow.
+
 `refvirtMatchesRef` builds a fat pointer, so it refuses `Monomorph` outright and
 applies **no** value-type variance. Same-struct requires `HasTagField`, since
 the tag is what selects the vtable at runtime. A reference to an enum converted

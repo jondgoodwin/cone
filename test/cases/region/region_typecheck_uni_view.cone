@@ -1,0 +1,55 @@
+// A borrow of a sole owner may not be seen as a borrow of a shared one.
+//
+// '+rc' is '+rc-uni': the only owner of its value, a move type. '+rc-mut',
+// '+rc-imm', '+rc-ro' and the others may alias, so a read of one copies it. A
+// borrow '&+rc-mut T' of a '+rc T' would let a read through the borrow copy out
+// a second owner of a value promised unique -- and one that may write, while the
+// first still believes itself alone. The same holds for any region that does not
+// declare 'Move', a user's as much as 'rc', and for a slice's elements.
+//
+// Not behind a borrow the same coercion is a move, which consumes the sole
+// owner, so it stays allowed; so does a '+so' owner seen as '+so-mut', because
+// 'so' declares 'Move' and every '+so' still moves, which a borrow refuses.
+
+mod region_typecheck_uni_view;
+
+struct Fin { pub n i64; }
+
+struct arena is RegionRef {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+}
+
+fn share(b &+rc-mut Fin) +rc-mut Fin { *b; }
+fn shareOne(b &[]+rc-mut Fin) +rc-mut Fin { b[0]; }
+fn shareArena(b &+arena-mut Fin) +arena-mut Fin { *b; }
+fn lookSo(b &+so-mut Fin) { }
+fn lookUni(b &+rc Fin) { }
+
+// A borrow's own type may not change on the way out either
+fn view(b &+rc Fin) &+rc-mut Fin {      //~ ErrorInvType:21 "This is the declared function's return type" follow-on
+  b;                                     //~ ErrorInvType:3 "Return expression type does not match"
+}
+
+fn f() i32 {
+  imm u = +rc Fin[1];
+  imm m = share(&u);                     //~ ErrorInvType
+  imm i &+rc-imm Fin = &u;               //~ ErrorInvType
+  imm r &+rc-ro Fin = &u;                //~ ErrorInvType
+
+  imm owners = [+rc Fin[2], +rc Fin[3]];
+  imm s = shareOne(&[]owners);           //~ ErrorInvType
+  imm t = shareOne(&owners);             //~ ErrorInvType
+
+  imm a = +arena Fin[4];
+  imm c = shareArena(&a);                //~ ErrorInvType
+
+  // Still allowed: the sole owner seen as itself, a '+so' owner whose view
+  // still moves, a shared owner seen as shared, and a move that consumes 'u'
+  lookUni(&u);
+  imm o = +so Fin[5];
+  lookSo(&o);
+  imm shared = +rc-mut Fin[6];
+  imm d = share(&shared);
+  imm moved +rc-mut Fin = u;
+  0;
+}

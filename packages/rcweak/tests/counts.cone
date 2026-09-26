@@ -1,0 +1,80 @@
+// The counts a '+rcw' value's header keeps, as strong owners and weak
+// references come and go. Every expected count is worked out by hand from the
+// rules:
+// - a new value has one strong owner; each copy of a '+rcw-mut' owner is one
+//   more, and each owner going away one fewer;
+// - each Weak[T] made or cloned is one more weak reference, and each one
+//   going away one fewer; weakCount counts only these;
+// - strong() and upgrade() each make one more strong owner;
+// - the value dies when its last strong owner goes, and its block is freed
+//   only when its last weak reference has gone as well (liveBlocks).
+
+mod counts;
+
+import testing use *;
+import rcweak use *;
+
+struct Fin { pub n i64; }
+
+fn strongAndWeak() {
+  imm r = +rcw-mut Fin[1];
+  imm w = Weak[Fin].of(r);
+  expectUInt(u64[w.strongCount()], 1, "a new value has one strong owner");
+  expectUInt(u64[w.weakCount()], 1, "and the one weak reference made");
+  expectUInt(u64[liveBlocks()], 1, "in one block");
+  {
+    imm r2 = r;
+    expectUInt(u64[w.strongCount()], 2, "a copied owner is counted");
+    imm w2 = w.clone();
+    expectUInt(u64[w.weakCount()], 2, "a cloned weak reference is counted");
+  }
+  expectUInt(u64[w.strongCount()], 1, "the copied owner went at its scope's end");
+  expectUInt(u64[w.weakCount()], 1, "and so did the clone");
+  {
+    imm s = w.strong();
+    expectInt(s.n, 1, "strong() reaches the value");
+    expectUInt(u64[w.strongCount()], 2, "and is a strong owner");
+  }
+  expectUInt(u64[w.strongCount()], 1, "which went at its scope's end");
+  expect(w.alive(), "alive while an owner holds it");
+}
+
+fn outlived() Weak[Fin] {
+  imm r = +rcw-mut Fin[2];
+  Weak[Fin].of(r);
+}
+
+fn none() {
+  imm w = Weak[Fin].none();
+  expect(!w.alive(), "none() is never alive");
+  expectUInt(u64[w.strongCount()], 0, "none() counts no strong owner");
+  expectUInt(u64[w.weakCount()], 0, "and no weak reference");
+  imm w2 = w.clone();
+  expect(!w2.alive(), "nor is its clone");
+}
+
+fn unique() {
+  // A unique owner moves into 'of' and is given up there, so the value has
+  // died by the time the weak reference is handed back
+  imm r = +rcw Fin[3];
+  imm w = Weak[Fin].of(r);
+  expect(!w.alive(), "a unique owner given to of() is gone");
+  expectUInt(u64[liveBlocks()], 1, "its block stays for the weak reference");
+}
+
+fn main() i32 {
+  strongAndWeak();
+  expectUInt(u64[liveBlocks()], 0, "the last owner and weak gone: the block is freed");
+  {
+    imm w = outlived();
+    expect(!w.alive(), "a weak reference outlives its value");
+    expectUInt(u64[w.strongCount()], 0, "which has no strong owner");
+    expectUInt(u64[w.weakCount()], 1, "only the weak reference");
+    expectUInt(u64[liveBlocks()], 1, "whose block it still holds");
+  }
+  expectUInt(u64[liveBlocks()], 0, "until it goes too");
+  none();
+  unique();
+  expectUInt(u64[liveBlocks()], 0, "every block given back");
+  done();
+}

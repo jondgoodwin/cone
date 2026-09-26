@@ -1,0 +1,246 @@
+// What a pool and its references do, case by case. Each expected value is
+// worked out by hand from the rules:
+// - slots are taken in order, 0, 1, 2, ..., and a removed slot is the next
+//   one taken (the free list is last in, first out);
+// - a slot's first occupant has generation 1, and each occupant after it the
+//   next odd number: removing moves the slot's generation to the even number
+//   after it, and taking the slot again to the odd one after that;
+// - a reference names a value while its slot's generation is its own, and
+//   not after that value is removed, whatever takes the slot next;
+// - the block starts at 4 slots and doubles when full, and references are
+//   indexes, so they stay good when it moves.
+
+mod basics;
+
+import testing use *;
+import pool use *;
+import collections use *;
+
+struct Pt { pub x i64; pub y i64; }
+
+fn addGetRemove() {
+  mut p = Pool[Pt].empty();
+  imm a = p.add(Pt[1, 2]);
+  imm b = p.add(Pt[3, 4]);
+  expectUInt(u64[a.slot()], 0, "first value in slot 0");
+  expectUInt(u64[a.generation()], 1, "as its first occupant");
+  expectUInt(u64[b.slot()], 1, "second value in slot 1");
+  expectUInt(u64[p.len()], 2, "two values");
+  expectInt(p[a].x, 1, "pool[r] reads the value");
+  expectInt(p[b].y, 4, "pool[r] reads the other");
+  expect(p.alive(a), "alive");
+  match p.get(b) {
+    case imm s Some { expectInt(s.value.x, 3, "get gives Some borrow"); }
+    case is None { expect(false, "get gives Some borrow"); }
+  }
+  expect(p.remove(a), "remove answers true");
+  expectUInt(u64[p.len()], 1, "one value left");
+  expectInt(p[b].x, 3, "the other is untouched");
+}
+
+fn stale() {
+  mut p = Pool[Pt].empty();
+  imm a = p.add(Pt[1, 2]);
+  p.remove(a);
+  expect(!p.alive(a), "a removed value's reference is not alive");
+  match p.get(a) {
+    case is Some { expect(false, "get of a removed value is None"); }
+    case is None { expect(true, "get of a removed value is None"); }
+  }
+  match p.getMut(a) {
+    case is Some { expect(false, "getMut of a removed value is None"); }
+    case is None { expect(true, "getMut of a removed value is None"); }
+  }
+  expect(!p.remove(a), "removing it again answers false");
+  expectUInt(u64[p.len()], 0, "and does nothing");
+  // A made-up Ref at the free slot's own, even, generation is taken as the
+  // odd one after it, so it names the slot's next occupant, not the free slot
+  imm madeUp = Ref[Pt].of(0u32, 2u32);
+  expectUInt(u64[madeUp.generation()], 3, "an even generation is made odd");
+  expect(!p.alive(madeUp), "so a made-up Ref never reaches a free slot");
+  imm b = p.add(Pt[5, 6]);
+  expect(p.alive(madeUp) and madeUp == b, "but does reach the next occupant");
+}
+
+fn reuse() {
+  mut p = Pool[Pt].empty();
+  imm a = p.add(Pt[1, 2]);
+  imm b = p.add(Pt[3, 4]);
+  p.remove(a);
+  imm c = p.add(Pt[5, 6]);
+  expectUInt(u64[c.slot()], 0, "the removed slot is taken again");
+  expectUInt(u64[c.generation()], 3, "by its second occupant");
+  expect(!p.alive(a), "the first occupant's reference stays dead");
+  expect(p.alive(c), "the second's is alive");
+  expect(!(a == c), "the two references differ");
+  expectInt(p[c].x, 5, "and reaches the new value");
+  p.remove(c);
+  imm d = p.add(Pt[7, 8]);
+  expectUInt(u64[d.generation()], 5, "a third occupant");
+  expect(!p.alive(a) and !p.alive(c), "neither earlier reference is alive");
+  expect(!p.remove(a) and !p.remove(c), "nor can remove the third");
+  expectInt(p[d].x, 7, "which is still there");
+  expectInt(p[b].x, 3, "slot 1 untouched through it all");
+}
+
+fn mutate() {
+  mut p = Pool[Pt].empty();
+  imm a = p.add(Pt[1, 2]);
+  match p.getMut(a) {
+    case imm s Some { s.value.x = 10; }
+    case is None { expect(false, "getMut gives Some"); }
+  }
+  expectInt(p[a].x, 10, "written through getMut");
+  imm m = &mut p[a];
+  m.y = 20;
+  expectInt(p[a].y, 20, "written through &mut pool[r]");
+  (&mut p[a]).x = 30;
+  expectInt(p[a].x, 30, "written through a borrowed index in place");
+}
+
+fn none() {
+  mut p = Pool[Pt].empty();
+  imm n = Ref[Pt].none();
+  expect(n.isNone(), "none() is none");
+  expect(!p.alive(n), "and never alive in an empty pool");
+  p.add(Pt[0, 0]);
+  expect(!p.alive(n), "nor in a pool holding a value");
+  expect(!p.remove(n), "and removes nothing");
+  expect(!p.add(Pt[1, 1]).isNone(), "a real reference is not none");
+}
+
+// Growth moves the block, 4 -> 8 -> 16 -> 32 -> 64 -> 128 for 100 values;
+// every reference still reaches its value
+fn growth() {
+  mut p = Pool[i64].empty();
+  mut refs = List[Ref[i64]].empty();
+  mut i = 0i64;
+  while i < 100i64 {
+    refs.push(p.add(i * 10i64));
+    i = i + 1i64;
+  }
+  expectUInt(u64[p.capacity()], 128, "grown five times");
+  mut sum = 0i64;
+  mut j = 0usize;
+  while j < refs.len() {
+    sum = sum + *p[*refs[j]];
+    j = j + 1usize;
+  }
+  expectInt(sum, 49500, "every reference reaches its value after the moves");
+  expectInt(*p[*refs[0usize]], 0, "the first");
+  expectInt(*p[*refs[99usize]], 990, "the last");
+}
+
+// Remove every other value of 50, then add 25: the 25 free slots are taken,
+// the block does not grow, and exactly the 25 not removed are alive
+fn churn() {
+  mut p = Pool[i64].empty();
+  mut refs = List[Ref[i64]].empty();
+  mut i = 0i64;
+  while i < 50i64 { refs.push(p.add(i)); i = i + 1i64; }
+  mut j = 0usize;
+  while j < refs.len() { p.remove(*refs[j]); j = j + 2usize; }
+  i = 0i64;
+  while i < 25i64 { p.add(1000i64); i = i + 1i64; }
+  mut alive = 0i64;
+  mut oddSum = 0i64;
+  j = 0usize;
+  while j < refs.len() {
+    if p.alive(*refs[j]) { alive = alive + 1i64; oddSum = oddSum + *p[*refs[j]]; }
+    j = j + 1usize;
+  }
+  expectInt(alive, 25, "the 25 not removed, and none of the others");
+  expectInt(oddSum, 625, "1 + 3 + ... + 49");
+  expectUInt(u64[p.len()], 50, "50 values");
+  expectUInt(u64[p.capacity()], 64, "the free slots were reused");
+}
+
+// A Ref is copied, not moved: it is used after being assigned, passed,
+// returned and stored in a struct and a list
+struct Holder { pub r Ref[Pt]; pub n i64; }
+fn pass(r Ref[Pt]) Ref[Pt] { r; }
+fn stash(l &mut List[Ref[Pt]], r Ref[Pt]) { l.push(r); }
+
+fn copies() {
+  mut p = Pool[Pt].empty();
+  imm a = p.add(Pt[1, 2]);
+  imm b = a;
+  imm c = pass(a);
+  imm h = Holder[a, 5];
+  mut l = List[Ref[Pt]].empty();
+  stash(&mut l, a);
+  expect(a == b and a == c and a == h.r and a == *l[0usize], "all name the same value");
+  expectInt(p[a].x + p[b].x + p[c].x + p[h.r].x + p[*l[0usize]].x, 5, "each reaches it");
+  p.remove(b);
+  expect(!p.alive(a) and !p.alive(c) and !p.alive(h.r) and !p.alive(*l[0usize]),
+    "removed through one, every copy is dead");
+}
+
+// Values naming other values of their own pool: a ring of three, walked
+// through the pool, then broken by removing one -- the value naming it finds
+// it gone, and the one it named is untouched
+struct Node { pub n i64; pub next Ref[Node]; }
+
+fn graph() {
+  mut p = Pool[Node].empty();
+  imm a = p.add(Node[1, Ref[Node].none()]);
+  imm b = p.add(Node[2, a]);
+  imm c = p.add(Node[3, b]);
+  (&mut p[a]).next = c;
+  mut walk = 0i64;
+  mut at = a;
+  mut i = 0;
+  while i < 4 {
+    walk = walk * 10i64 + p[at].n;
+    at = p[at].next;
+    i = i + 1;
+  }
+  expectInt(walk, 1321, "1 names 3, 3 names 2, 2 names 1");
+  p.remove(b);
+  expect(!p.alive(p[c].next), "3's next is gone");
+  expect(p.alive(p[a].next), "1's next is not");
+  expectInt(p[p[a].next].n, 3, "and is still 3");
+}
+
+// A reference made for one pool and used with another. The two pools here
+// hold the same type, so the compiler cannot tell them apart (no key and lock
+// yet): what is checked is that it stays memory-safe. A slot past the other
+// pool's end is refused by the bounds check; a slot whose generation differs
+// is refused by the generation check; and a slot at the same generation is
+// taken as a live value -- the other pool's, which is wrong, but a value of
+// the right type in memory the pool owns.
+fn wrongPool() {
+  mut p = Pool[i64].empty();
+  mut q = Pool[i64].empty();
+  imm pa = p.add(10);
+  p.add(11);
+  imm pc = p.add(12);
+  imm qa = q.add(20);
+  imm qb = q.add(21);
+  q.remove(qb);
+  q.add(22);
+  expect(!q.alive(pc), "past the other pool's slots: not alive");
+  match q.get(pc) {
+    case is Some { expect(false, "and get is None"); }
+    case is None { expect(true, "and get is None"); }
+  }
+  expect(!q.remove(pc), "and remove does nothing");
+  expect(!q.alive(Ref[i64].of(1u32, 1u32)), "a slot at another generation: not alive");
+  expect(q.alive(pa), "a slot at the same generation: alive");
+  expectInt(*q[pa], 20, "and reaches the other pool's value there");
+  expectUInt(u64[p.len()], 3, "the first pool is untouched");
+}
+
+fn main() i32 {
+  addGetRemove();
+  stale();
+  reuse();
+  mutate();
+  none();
+  growth();
+  churn();
+  copies();
+  graph();
+  wrongPool();
+  done();
+}

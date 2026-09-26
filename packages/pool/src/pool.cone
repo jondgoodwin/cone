@@ -1,0 +1,364 @@
+// The pool package: a generational pool. A Pool[T] holds values of one type,
+// each in a slot of one block, added and removed one at a time, in any order.
+// Adding a value gives back a Ref[T]: the number of its slot, and which
+// occupant of that slot it is (its generation). A Ref owns nothing: copying
+// or dropping one costs nothing, and any number of them may be kept anywhere
+// -- in other values of the same pool, in lists, across frames. When a value
+// is removed, every Ref to it stops reaching anything, even after another
+// value takes its slot.
+//
+//   mod game;
+//   import pool use *;
+//
+//   struct Npc { pub hp i64; pub target Ref[Npc]; }
+//
+//   fn play() {
+//     mut world = Pool[Npc].empty();
+//     imm orc = world.add(Npc[10, Ref[Npc].none()]);
+//     imm elf = world.add(Npc[8, orc]);         // the elf targets the orc
+//     world.remove(orc);                        // the orc dies
+//     match world.get(world[elf].target) {
+//       case imm s Some { ...s.value.hp... }
+//       case is None { ... }                    // here: its target is gone
+//     }
+//   }   // 'world' dies: the elf's death, then the block
+//
+// A Ref reaches its value only through the pool, and the pool checks it each
+// time: the slot must be one the pool has used and must still be at the Ref's
+// generation. So a removed value is never reached, and a Ref can never reach
+// outside the pool's own memory.
+//
+//   pool.get(r)     Some borrow of the value, or None if it has been removed
+//   pool.getMut(r)  the same, a mutable borrow
+//   pool.alive(r)   whether r's value is still there
+//   pool[r]         a borrow of it; the program ends if it has been removed
+//   &mut pool[r]    a mutable borrow of it, likewise
+//   pool.remove(r)  finalize it and free its slot, answering true; a Ref
+//                   whose value has already gone does nothing and answers
+//                   false, so two parts of a program removing the same value
+//                   is harmless
+//
+// The borrows are ordinary borrows, good for as long as the pool is not
+// changed; nothing about the pool comes with them.
+//
+// THE HOLES. The design's answer to a borrow outliving its value is that
+// taking one borrows the pool, and a borrowed pool is frozen: nothing may
+// remove, add (which may move every value) or move the pool while the borrow
+// lives. That rule, freezing, is not built, so today:
+// - 'pool.remove(r)', an 'add' that grows the block, and moving or dropping
+//   the pool itself all compile while a borrow from 'pool[r]', 'get' or
+//   'getMut' is still used, and the borrow then reads a finalized value or
+//   freed memory.
+// - The borrow INSIDE the Option that 'get' and 'getMut' return carries no
+//   lifetime at all (a borrow held inside another value is not checked), so
+//   returning the Option, storing it, or matching the borrow out of it and
+//   returning that, all compile and may dangle. 'pool[r]' and '&mut pool[r]'
+//   return a bare borrow, which the compiler does check: returning one from
+//   the function holding the pool, or storing it where it would outlive the
+//   pool, is refused (test/cases/region/region_flow_pool_escape.cone). So
+//   'if pool.alive(r) { ...pool[r]... }' is the checked form today.
+// - A Ref is not paired with the pool it came from (the design's invariant
+//   lifetimes, key and lock, are not built). Used with another pool of the
+//   same type it is checked there like any Ref: it reaches nothing, or,
+//   where that pool's slot is at the same generation, that pool's value --
+//   the wrong one, but a live value of the right type, never stray memory.
+// tests/gaps.cone writes these out, and pins the compiler's finalizing gaps
+// the pool inherits. Keep each borrow brief, and let no borrow into a pool
+// live across a change to it.
+//
+// How it is laid out. The pool value is small: a pointer to its block and a
+// few counts. The block is an array of slots, each a generation, a free-list
+// link and the value itself, grown by doubling (4, 8, 16, ...) and never
+// shrunk. A generation is odd while its slot holds a value and even while it
+// does not, so one compare checks both that a Ref's value is there and that
+// it is the same one. A slot's first occupant has generation 1; removing moves
+// it to 2, the next occupant takes 3, and so on. A removed slot is the next
+// taken (the free list is last in, first out). A slot whose generation has
+// reached the last, 2^32 - 1, is retired when its value is removed, never
+// taken again, so no old Ref to it can ever come alive: a slot serves 2^31
+// values. A Ref is 8 bytes, a u32 slot and a u32 generation, always odd;
+// Ref.none() names a slot past any pool's end, so it is never alive, and a Ref
+// made up with 'Ref.of' is given an odd generation, so it can name only a
+// value a pool holds, never a free or retired slot.
+//
+// How a value dies. 'remove' finalizes the value where it sits, with
+// 'mem.finalize': the same death the compiler runs for a T anywhere -- its own
+// 'final', then each field's finalizer, then the owners its fields hold. When
+// the pool dies it finalizes every value it still holds, in slot order (not
+// the order they were added), then frees its block. A type needing no
+// finalizing costs nothing at either.
+//
+// A value's 'final' may reach back into its pool (through a pointer to it it
+// holds): from its first moment the dying value is gone -- its own Ref is not
+// alive and cannot remove it again -- but its slot is not free until its
+// 'final' returns, so nothing is put where it still lies. It may remove other
+// values, which die at once, and add new ones. If an add grows the block while
+// a value is dying, the block is copied rather than moved and the old one kept
+// until the last 'final' running has returned, so the dying value never moves
+// under its own 'final'. At the pool's death, values a 'final' adds are
+// finalized too, before the blocks go.
+//
+// What the compiler does not yet finalize, the pool does not either, since
+// 'mem.finalize' is its implementation: a value typed as an enum, a
+// fixed-size array's or a tuple's elements. Nor is a value assigned over
+// through '&mut pool[r]' finalized. tests/gaps.cone pins the enum and the
+// assignment.
+//
+// A block the C library cannot allocate, or a pool of more than 2^32 - 2
+// slots, ends the program, as 'pool[r]' of a removed value does: what went
+// wrong on stderr, then the C library's 'abort', the pool's panic until Cone's
+// own 'panic' is built.
+
+mod pool;
+
+import libc;
+
+// One slot of a pool's block. 'gen' is odd while the slot holds a value and
+// even while it does not; 'next' is the next free slot while it is free.
+struct Slot[T] {
+  pub gen u32;
+  pub next u32;
+  pub value T;
+}
+
+// A block a re-entrant grow replaced while a value in it was being finalized,
+// kept until no finalizer is running
+struct Stale {
+  pub prev *Stale;
+  pub block *u8;
+}
+
+// The end of the free list, and the slot of Ref.none(): past any slot a pool
+// can hold, so the bounds check alone refuses it
+const noSlot = 4294967295u32;
+
+// The most slots a block may have, so that no slot is ever numbered noSlot
+const maxSlots = 4294967294u32;
+
+// A reference to the value a pool holds in one slot, as the occupant it was
+// when the reference was made
+pub struct Ref[T] {
+  index u32;
+  gen u32;
+
+  // A reference to nothing: never alive in any pool
+  pub fn none() Ref[T] { Ref[T][noSlot, 0u32]; }
+
+  // A reference naming a slot and a generation directly, as 'slot()' and
+  // 'generation()' gave them. A value's generation is always odd, and an even
+  // one is taken as the odd one after it, so a Ref made up this way can only
+  // ever name a value a pool holds, never a free slot.
+  pub fn of(slot u32, generation u32) Ref[T] { Ref[T][slot, generation | 1u32]; }
+
+  // Whether it is none()
+  pub fn isNone(self) Bool { gen == 0u32; }
+
+  // The slot it names, and which occupant of that slot
+  pub fn slot(self) u32 { index; }
+  pub fn generation(self) u32 { gen; }
+
+  // Whether two references name the same occupant of the same slot
+  pub fn `==`(self, other Ref[T]) Bool {
+    index == other.slot() and gen == other.generation();
+  }
+}
+
+pub struct Pool[T] {
+  slots *Slot[T];   // the block, or null before the first value
+  cap u32;          // slots the block has room for
+  high u32;         // slots ever used: each below it has a generation
+  free u32;         // the first free slot to reuse, or noSlot
+  live u32;         // slots holding a value
+  retired u32;      // slots whose generations ran out, never used again
+  lastGen u32;      // the last generation a slot may reach, odd
+  dying u32;        // finalizers running now, nested
+  stale *Stale;     // blocks replaced while one ran, or null
+
+  // An empty pool: no block until the first value arrives
+  pub fn empty() Pool[T] {
+    Pool[T][0usize as *Slot[T], 0u32, 0u32, noSlot, 0u32, 0u32, 4294967295u32, 0u32, 0usize as *Stale];
+  }
+
+  // An empty pool whose slots are retired after generation 'last' rather
+  // than after 2^32 - 1: for testing what a pool does when a slot's
+  // generations run out. An even 'last' is taken as the odd number below it,
+  // and 0 as 1.
+  pub fn withLastGeneration(last u32) Pool[T] {
+    imm odd = if last == 0u32 {1u32;} else if (last & 1u32) == 0u32 {last - 1u32;} else {last;};
+    Pool[T][0usize as *Slot[T], 0u32, 0u32, noSlot, 0u32, 0u32, odd, 0u32, 0usize as *Stale];
+  }
+
+  // How many values it holds, how many slots its block has room for, and how
+  // many slots have been retired
+  pub fn len(self &) usize { usize[live]; }
+  pub fn capacity(self &) usize { usize[cap]; }
+  pub fn retiredSlots(self &) usize { usize[retired]; }
+
+  // Move value in, and a reference to it there
+  pub fn add(self &mut, value T) Ref[T] {
+    mut i = free;
+    if i != noSlot {
+      free = ((slots + usize[i]) as &Slot[T]).next;
+    }
+    else {
+      if high == cap { self.grow(); }
+      i = high;
+      high = high + 1u32;
+      ((slots + usize[i]) as &mut Slot[T]).gen = 0u32;
+    }
+    imm s = (slots + usize[i]) as &mut Slot[T];
+    s.gen = s.gen + 1u32;
+    mem.writeRaw(&mut s.value as *T, value);
+    live = live + 1u32;
+    Ref[T].of(i, s.gen);
+  }
+
+  // Whether r names a value it holds
+  pub fn alive(self &, r Ref[T]) Bool {
+    r.slot() < high and ((slots + usize[r.slot()]) as &Slot[T]).gen == r.generation();
+  }
+
+  // Some borrow of the value r names, or None if it has been removed
+  pub fn get(self &, r Ref[T]) Option[&T] {
+    if !self.alive(r) { return None[&T][]; }
+    Some[&T][&slots[usize[r.slot()]].value];
+  }
+
+  // Some mutable borrow of the value r names, or None if it has been removed
+  pub fn getMut(self &mut, r Ref[T]) Option[&mut T] {
+    if !self.alive(r) { return None[&mut T][]; }
+    Some[&mut T][&mut slots[usize[r.slot()]].value];
+  }
+
+  // 'pool[r]': a borrow of the value r names; the program ends if it has
+  // been removed
+  pub fn `[]`(self &, r Ref[T]) &T {
+    if !self.alive(r) { deadRef(); }
+    &slots[usize[r.slot()]].value;
+  }
+
+  // '&mut pool[r]': a mutable borrow of the value r names; the program ends
+  // if it has been removed
+  pub fn `&[]`(self &mut, r Ref[T]) &mut T {
+    if !self.alive(r) { deadRef(); }
+    &mut slots[usize[r.slot()]].value;
+  }
+
+  // Remove the value r names, finalizing it where it sits, and answer true;
+  // or, if it has been removed already, do nothing and answer false
+  pub fn remove(self &mut, r Ref[T]) Bool {
+    if !self.alive(r) { return false; }
+    imm i = r.slot();
+    imm s = (slots + usize[i]) as &mut Slot[T];
+    imm retire = s.gen == lastGen;
+    // Gone from here on, to anything its finalizer asks the pool
+    s.gen = s.gen + 1u32;
+    live = live - 1u32;
+    if mem.needsFinal[T]() {
+      dying = dying + 1u32;
+      mem.finalize(&mut s.value as *T);
+      dying = dying - 1u32;
+    }
+    // Only now is the slot free for another value: none could be put in it
+    // while its old one was dying
+    if retire {
+      retired = retired + 1u32;
+    }
+    else {
+      imm now = (slots + usize[i]) as &mut Slot[T];
+      now.next = free;
+      free = i;
+    }
+    if dying == 0u32 { self.freeStale(); }
+    true;
+  }
+
+  // A block twice the size, or 4 slots to start. The block may move. While a
+  // finalizer is running, the value it is finalizing sits in the old block,
+  // so the old block is copied rather than reallocated, and kept until the
+  // last finalizer returns.
+  fn grow(self &mut) {
+    if cap >= maxSlots { outOfMemory(); }
+    imm want = if cap == 0u32 {4u32;} else if cap > maxSlots / 2u32 {maxSlots;} else {cap * 2u32;};
+    imm size = mem.sizeof[Slot[T]]();
+    if usize[want] > (0usize - 1usize) / size { outOfMemory(); }
+    if dying == 0u32 {
+      imm fresh = libc.realloc(slots as *u8, usize[want] * size);
+      if fresh as usize == 0usize { outOfMemory(); }
+      slots = fresh as *Slot[T];
+    }
+    else {
+      imm fresh = libc.malloc(usize[want] * size);
+      imm node = libc.malloc(mem.sizeof[Stale]()) as *Stale;
+      if fresh as usize == 0usize or node as usize == 0usize { outOfMemory(); }
+      libc.memcpy(fresh, slots as *u8, usize[cap] * size);
+      mem.writeRaw(node, Stale[stale, slots as *u8]);
+      stale = node;
+      slots = fresh as *Slot[T];
+    }
+    cap = want;
+  }
+
+  // Free the blocks kept for finalizers that have now returned
+  fn freeStale(self &mut) {
+    while stale as usize != 0usize {
+      imm node = stale;
+      stale = (node as &Stale).prev;
+      libc.free((node as &Stale).block);
+      libc.free(node as *u8);
+    }
+  }
+
+  // Its death: every value it holds, first slot to last, each as remove
+  // would; then its blocks. A value a finalizer adds meanwhile is finalized
+  // too, before the blocks go.
+  // (It repeats remove's and freeStale's work: calling a '&mut' method
+  // through 'self &uni' moves the unique borrow into the call rather than
+  // lending it, and 'self' is then gone for the rest.)
+  fn final(self &uni) {
+    if mem.needsFinal[T]() {
+      dying = dying + 1u32;
+      while live > 0u32 {
+        mut i = 0u32;
+        while i < high {
+          imm s = (slots + usize[i]) as &mut Slot[T];
+          if (s.gen & 1u32) == 1u32 {
+            imm retire = s.gen == lastGen;
+            s.gen = s.gen + 1u32;
+            live = live - 1u32;
+            mem.finalize(&mut s.value as *T);
+            if retire {
+              retired = retired + 1u32;
+            }
+            else {
+              imm now = (slots + usize[i]) as &mut Slot[T];
+              now.next = free;
+              free = i;
+            }
+          }
+          i = i + 1u32;
+        }
+      }
+      dying = dying - 1u32;
+    }
+    while stale as usize != 0usize {
+      imm node = stale;
+      stale = (node as &Stale).prev;
+      libc.free((node as &Stale).block);
+      libc.free(node as *u8);
+    }
+    libc.free(slots as *u8);
+  }
+}
+
+// The pool's panics: what went wrong on stderr, and the program ends at once
+// through the C library's 'abort'. Cone's 'panic' is not built yet; when it
+// is, this is where it goes.
+fn deadRef() { die("pool: pool[r] of a reference whose value has been removed\n"); }
+fn outOfMemory() { die("pool: out of memory\n"); }
+
+fn die(msg &[]u8) {
+  libc.fflush(libc.stdout());
+  libc.fwrite(msg, 1usize, msg.len, libc.stderr());
+  libc.abort();
+}

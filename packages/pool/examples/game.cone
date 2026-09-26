@@ -1,0 +1,100 @@
+// A tiny game world: its creatures live in a generational pool, and each
+// names the one it is attacking with a Ref, which it keeps across turns.
+// When a creature dies it is removed from the pool, and every Ref to it,
+// wherever it is kept, reaches None from then on -- even after a newcomer
+// takes its old slot. Run it with 'congo run packages/pool/examples/game.cone'.
+
+mod game;
+
+import stdio use *;
+import pool use *;
+import collections use *;
+
+struct Creature {
+  pub name &[]u8;
+  pub hp i64;
+  pub power i64;
+  pub target Ref[Creature];
+  fn final(self &uni) {
+    printStr("  (");
+    printStr(name);
+    printStr(" leaves the world)\n");
+  }
+}
+
+fn arrive(world &mut Pool[Creature], all &mut List[Ref[Creature]], name &[]u8, hp i64, power i64) Ref[Creature] {
+  imm r = world.add(Creature[name, hp, power, Ref[Creature].none()]);
+  all.push(r);
+  printStr(name);
+  printStr(" appears in slot ");
+  printInt(i64[r.slot()]);
+  printStr(", generation ");
+  printInt(i64[r.generation()]);
+  printStr("\n");
+  r;
+}
+
+// One creature's turn: hit its target, if its target is still there
+fn attack(world &mut Pool[Creature], who Ref[Creature]) {
+  if !world.alive(who) { return; }
+  imm target = world[who].target;
+  imm power = world[who].power;
+  printStr(world[who].name);
+  mut killed = false;
+  match world.getMut(target) {
+    case imm s Some {
+      s.value.hp = s.value.hp - power;
+      printStr(" hits ");
+      printStr(s.value.name);
+      printStr(", who has ");
+      printInt(s.value.hp);
+      printStr(" left\n");
+      killed = s.value.hp <= 0;
+    }
+    case is None {
+      printStr(" looks for its target, but it is gone\n");
+    }
+  }
+  if killed { world.remove(target); }
+}
+
+fn round(world &mut Pool[Creature], all &List[Ref[Creature]], n i64) {
+  printStr("-- round ");
+  printInt(n);
+  printStr("\n");
+  mut i = 0usize;
+  while i < all.len() {
+    attack(world, *all[i]);
+    i = i + 1usize;
+  }
+}
+
+fn main() i32 {
+  mut world = Pool[Creature].empty();
+  mut all = List[Ref[Creature]].empty();
+  imm orc = arrive(&mut world, &mut all, "orc", 10, 4);
+  imm elf = arrive(&mut world, &mut all, "elf", 8, 5);
+  imm goblin = arrive(&mut world, &mut all, "goblin", 6, 2);
+  (&mut world[orc]).target = goblin;
+  (&mut world[elf]).target = goblin;
+  (&mut world[goblin]).target = elf;
+
+  round(&mut world, &all, 1);
+  round(&mut world, &all, 2);
+
+  // A newcomer takes the goblin's old slot, at a new generation, so the
+  // orc's and the elf's old Refs to that slot still reach nothing
+  imm troll = arrive(&mut world, &mut all, "troll", 12, 3);
+  printStr("the orc's target is slot ");
+  printInt(i64[world[orc].target.slot()]);
+  printStr(", generation ");
+  printInt(i64[world[orc].target.generation()]);
+  printStr(": ");
+  if world.alive(world[orc].target) { printStr("alive\n"); } else { printStr("gone, though its slot is taken\n"); }
+  (&mut world[orc]).target = troll;
+  (&mut world[troll]).target = orc;
+
+  round(&mut world, &all, 3);
+  printStr("-- the world ends\n");
+  0;
+}

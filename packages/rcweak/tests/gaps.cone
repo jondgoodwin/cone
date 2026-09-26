@@ -1,0 +1,86 @@
+// What the compiler does not yet release, pinned as it is today. Each shape
+// keeps a count for ever: a strong count keeps its value from dying, and a
+// weak count keeps a dead value's block from being freed. None is rcweak's own;
+// each is a shape the compiler leaves unreleased for every region. When the
+// compiler learns one, its expectation here changes, and the package header's
+// "THE HOLE" with it. Every count is worked out by hand from the rules
+// counts.cone states, plus the one leak each case names.
+
+mod gaps;
+
+import testing use *;
+import rcweak use *;
+
+mut log = 0i64;
+fn note(d i64) { log = log * 10i64 + d; }
+
+struct Fin { pub n i64; fn final(self &uni) { note(n); } }
+
+fn cond(b Bool) Bool { b; }
+fn sink(w Weak[Fin]) { }
+
+// The owner in upgrade()'s Some is never released: an enum's contents never
+// are. The value it names never dies.
+fn upgraded() {
+  imm r = +rcw-mut Fin[1];
+  imm w = Weak[Fin].of(r);
+  match w.upgrade() {
+    case imm s Some { expectInt(s.value.n, 1, "upgrade() reaches a live value"); }
+    case is None { expect(false, "upgrade() reaches a live value"); }
+  }
+  expectUInt(u64[w.strongCount()], 2, "r and the Some's owner, never let go");
+}
+
+// So is a fallible allocation's
+fn fallible() {
+  imm o = ?+rcw-mut Fin[2];
+}
+
+// A strong owner used without being bound is a temporary, never released
+fn temporary() {
+  imm r = +rcw-mut Fin[3];
+  imm w = Weak[Fin].of(r);
+  expectInt(w.strong().n, 3, "read through a temporary owner");
+  expectUInt(u64[w.strongCount()], 2, "r and the temporary, never let go");
+}
+
+// A weak reference moved away on one path only is taken as moved on both:
+// drop flags are not built, so on the other path it is never let go
+fn condMove(b Bool) {
+  imm r = +rcw-mut Fin[4];
+  imm w = Weak[Fin].of(r);
+  if cond(b) { sink(w); }
+}
+
+// A weak reference assigned over is not let go first
+fn reassigned() {
+  imm r = +rcw-mut Fin[5];
+  mut w = Weak[Fin].of(r);
+  w = Weak[Fin].none();
+  imm c = Weak[Fin].of(r);
+  expectUInt(u64[c.weakCount()], 2, "the one assigned over, and this one");
+}
+
+fn main() i32 {
+  upgraded();
+  expectInt(log, 0, "the upgraded value never dies");
+  expectUInt(u64[liveBlocks()], 1, "and its block stays");
+  fallible();
+  expectInt(log, 0, "nor does a fallible allocation's");
+  expectUInt(u64[liveBlocks()], 2, "whose block stays");
+  temporary();
+  expectInt(log, 0, "nor a value a temporary owner named");
+  expectUInt(u64[liveBlocks()], 3, "whose block stays");
+  condMove(true);
+  expectInt(log, 4, "moved away: dies, and");
+  expectUInt(u64[liveBlocks()], 3, "the block is freed with the moved weak reference");
+  log = 0;
+  condMove(false);
+  expectInt(log, 4, "kept: dies too, but");
+  expectUInt(u64[liveBlocks()], 4, "the kept weak reference is never let go, nor the block");
+  log = 0;
+  reassigned();
+  expectInt(log, 5, "dies at its owner's going");
+  expectUInt(u64[liveBlocks()], 5, "but the weak reference assigned over holds its block");
+  done();
+}

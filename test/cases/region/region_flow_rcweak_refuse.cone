@@ -1,0 +1,53 @@
+// What the rcweak package's weak reference refuses at compile time, by the
+// ordinary rules and nothing of its own. A 'Weak[T]' is made only from a shared
+// '+rcw-mut' owner: an '+rcw-imm' one does not coerce to it, so a weak
+// reference can never hand back a mutable owner of an immutable value. It
+// cannot be read through, since its value may have died: it is a struct, not a
+// reference, and the header address it holds is private. It moves, so a
+// weak reference moved away is not there to ask. What it may do is run by the
+// package's own tests (packages/rcweak/tests).
+//
+// A unique '+rcw' owner is accepted by 'Weak[T].of', which takes its owner by
+// value: the unique owner moves in and is given up, which is what makes the
+// weak reference safe to make from it, and using the owner afterwards is
+// refused as any moved value is.
+
+mod region_flow_rcweak_refuse;
+
+import rcweak use *;
+
+struct Pt { pub x i64; }
+
+fn fromImm() {
+  imm r = +rcw-imm Pt[1];
+  imm w = Weak[Pt].of(r);         //~ ErrorInvType
+}
+
+fn readThrough() i64 {
+  imm r = +rcw-mut Pt[2];
+  imm w = Weak[Pt].of(r);
+  (*w).x;                         //~ ErrorNotPtr
+                                  //~^ ErrorNoMeth follow-on
+}
+
+fn header() {
+  imm r = +rcw-mut Pt[3];
+  imm w = Weak[Pt].of(r);
+  imm h = w.hdr;                  //~ ErrorNotPublic
+}
+
+fn movedAway() Bool {
+  imm r = +rcw-mut Pt[4];
+  imm w = Weak[Pt].of(r);
+  imm w2 = w;
+  w.alive();                      //~ ErrorMove
+}
+
+fn uniGivenUp() i64 {
+  imm r = +rcw Pt[5];
+  imm w = Weak[Pt].of(r);
+  r.x;                            //~ ErrorMove
+}
+
+fn main() {
+}

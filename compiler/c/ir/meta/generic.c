@@ -87,8 +87,9 @@ int genericInferStructParms(TypeCheckState *pstate, Nodes *genparms, StructNode 
 // the fixed-size array, or reference to one, that a call converts to a slice;
 // and 'List[T]' matches an instance of List, type argument by type argument.
 // In a template a type parameter is not yet
-// a type, so '*T' is held as a dereference and '&T' or '&[]T' as a borrow
-// (cloneStarNode, cloneRefNode), and both spellings are accepted here. Region
+// a type, so '*T' is held as a dereference, '&T' or '&[]T' as a borrow, and
+// an owning '+rc-mut T' or '+[]so T' as an allocate (cloneStarNode,
+// cloneRefNode), and each spelling is accepted here. Region
 // and permission take no part: the instance's own check of the call judges
 // them. Any other shape infers nothing, and returns 1 as a non-match does.
 // Returns 0 only when a type parameter is given two different types.
@@ -108,12 +109,14 @@ static int genericInferType(FnCallNode *inferredgencall, Nodes *genparms, INode 
             ((StarNode *)parmtype)->vtexp, ((StarNode *)argtype)->vtexp);
     case RefTag:
     case BorrowTag:
+    case AllocateTag:
         if (argtype->tag != RefTag)
             return 1;
         return genericInferType(inferredgencall, genparms,
             ((RefNode *)parmtype)->vtexp, ((RefNode *)argtype)->vtexp);
     case ArrayRefTag:
-    case ArrayBorrowTag: {
+    case ArrayBorrowTag:
+    case ArrayAllocTag: {
         // A fixed-size array, or a reference to one, is converted to the slice
         // a parameter expects, so its element type is what the slice's is
         INode *elemtype;

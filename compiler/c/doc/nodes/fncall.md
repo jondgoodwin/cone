@@ -140,7 +140,9 @@ for this. The receiver is checked, the name looked up on its type, and the whole
 of it lowered here to the one method call `h.pick(6)`, positioned on the member
 access, with the instance the arguments name bound to the member
 (`genericMethodInstance`) — finished here rather than handed back, since the
-receiver is already checked. A member that is not a generic method is
+receiver is already checked. The type arguments are checked before the
+instance is made, as a generic function's are, so a written instance of a
+generic type, `h.pick[Box[i32]](...)`, is the type it names. A member that is not a generic method is
 `ErrorNotTyped` at the first type argument. A base that is a type or a module,
 or an instance of a generic one (`fnCallIsPathBase`), is a path rather than a
 receiver and is left alone.
