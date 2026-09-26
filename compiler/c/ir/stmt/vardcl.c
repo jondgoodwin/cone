@@ -176,6 +176,7 @@ void varDclFlow(FlowState *fstate, VarDclNode **vardclnode) {
     if ((*vardclnode)->flags & FlagStatic)
         return;
     flowAddVar(*vardclnode);
+    flowGateHolder(fstate, (*vardclnode)->vtype);
     if ((*vardclnode)->value) {
         flowLoadValue(fstate, &((*vardclnode)->value));
         flowHandleMoveOrCopy(&((*vardclnode)->value));  // initialization copies/moves value

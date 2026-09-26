@@ -1921,10 +1921,14 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
     INode **argsp;
     uint32_t cnt;
+    uint16_t inflight = fstate->inflightcnt;
     for (nodesFor(node->args, cnt, argsp)) {
         flowLoadValue(fstate, argsp);
         flowHandleMoveOrCopy(argsp);  // Argument values are moved or copied
+        flowGateOperand(fstate, *argsp);
     }
+    flowGateOperandsEnd(fstate, inflight);
+    flowGateCall(fstate, node);
     fnCallFlowStoredBorrow(node);
 }
 

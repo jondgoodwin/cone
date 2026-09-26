@@ -117,12 +117,47 @@ Put these first, because every one of them is load-bearing.
 
 ## 3. State
 
-`FlowState` has two fields, and each is read in exactly one place:
+`FlowState` is made per function by `flowStateInit`. Its fields:
 
 | Field | Read by |
 | --- | --- |
 | `fnsig` | `blockFlow`, to `flowAddVar` each parameter on entering the function's main block |
 | `scope` | `blockFlow`, only as `if (++fstate->scope == 2)` — the test for "this is the main block" |
+| `gate` | nothing that decides anything: `flowGateCount` tallies it for `-V 2` (below, "The gate") |
+| `inflight`, `inflightcnt` | the gate's `flowGateUse`, from `nameuseFlow` and `nameuseFlowBorrowed` |
+
+### The gate
+
+The walk also records whether the function holds a borrow in a way that only a
+walk following each path could check — the functions borrow freezing would walk
+again. **Nothing reads it yet**; it is measured, so that the cost of the walk
+that will read it can be budgeted. `FlowState.gate` gathers one bit per trigger:
+
+| Bit | Set by | When |
+| --- | --- | --- |
+| `FlowGateHolder` | `varDclFlow`, `assignFlow`, `swapFlow` | a local declared, or a place assigned or swapped, whose type carries a borrow |
+| `FlowGateResult` | `blockFlow` | a `return`, `break` or block end hands out a value carrying a borrow that is not itself a bare borrowed reference (a bare one has its scope number checked already) |
+| `FlowGateStore` | `fnCallFlow` | a call with a `&mut X` argument, `X` carrying a borrow, beside another argument carrying one |
+| `FlowGateInCall` | `nameuseFlow`, `nameuseFlowBorrowed` | a variable named while a borrow of it made by an earlier operand of the same call, struct or array literal or value tuple is still waiting for it (`v.add(v.len())`) |
+
+"Carries a borrow" is `itypeCarriesBorrow`: the type is a borrowed reference, or
+an owning reference, pointer, array, tuple or struct (an enum's variants
+included) reaching one. A struct's answer is remembered on it
+(`StructNode.carriesborrow`), because asking afresh at every variable cost flow
+10–20% ([Performance](../compiler/performance.md), "Measuring it"). A parameter
+is not a trigger: what a caller lent is frozen by the caller.
+
+For `FlowGateInCall`, each operand that is a borrow (`BorrowTag` or
+`ArrayBorrowTag`, through casts) pushes the variable at the root of its place
+onto `inflight` once it is walked, and the call or literal pops back to where it
+started. A name use checks the list only when it is not empty, so a function
+with nothing waiting pays one test per name use. More than `FlowInflightMax`
+waiting at once gates the function.
+
+Each trigger costs O(1) per node. An ordinary compile stops asking once any bit
+is set; `-V 2` asks every trigger to the end, so that it can count each, and
+prints `Flow gate: G of N functions (holder …, result …, store …, in-call …)`
+(`flowGatePrint`).
 
 **Flow computes no lifetimes of its own.** `VarDclNode.scope` is set during name
 resolution; `RefNode.scope` during type check by `borrowTypeCheck`, by
@@ -473,7 +508,7 @@ is what releases the old allocation.
 
 | File | Function | Purpose |
 | --- | --- | --- |
-| `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the only entry point; the per-function error-delta gate |
+| `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the only entry point; the per-function error-delta gate; `FlowTimer` round `blockFlow` under `-V 1`; `flowGateCount` after it |
 | `ir/stmt/module.c` | `modInitOf`, `modInitFlowBegin`, `modInitFlowEnd` | round a module's `init` only: its module's globals without a value start the pass uninitialized, as locals, so `init` assigns each once and reads none first; one never assigned is `ErrorGlobalUninit`. [module](../nodes/module.md), "Init and final" |
 | `ir/flow.c` | `flowLoadValue` | the walk's spine — tag dispatch for a value being read |
 | | `flowLoadThroughRef` | `MayRead` on the reference a value is read through; called from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` |
@@ -486,6 +521,8 @@ is what releases the old allocation.
 | | `flowIsRcRef`, `flowIsOwningType` | is this type counted; must a variable of this type be released |
 | | `flowScopePush`, `flowScopePop`, `flowAddVar` | the variable stack |
 | | `flowScopeDealias` | build a scope's release list; skip an uninitialized, moved-out or handed-back variable; release a hollowed one hollow |
+| | `flowStateInit`, `flowGateHolder`, `flowGateResult`, `flowGateCall`, `flowGateOperand`, `flowGateUse`, `flowGateCount`, `flowGatePrint` | the gate (§3, "The gate"): its triggers, the waiting operands' borrows, the `-V 2` tallies |
+| `ir/itype.c` | `itypeCarriesBorrow` | may a value of this type hold a borrowed reference; a struct's answer remembered in `StructNode.carriesborrow` |
 | `ir/exp/block.c` | `blockFlow` | scope push/pop, `blockret` injection, result walk then dealias capture; a `return`'s move source |
 | `ir/exp/if.c` | `ifFlow` | both arms against one shared state |
 | `ir/exp/assign.c` | `assignlvalrtype`, `assignSingleFlow`, `assignBorrowLifetimeCheck` | `MayWrite`, `VarInitialized`/`VarMoved`/`VarHollow`, `FlagFirstAssign`, the `HollowNode` round a hollowed variable's new value, borrow lifetime |

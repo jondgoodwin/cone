@@ -338,8 +338,7 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     if (errors != errorsOnEntry)
         return;
     FlowState fstate;
-    fstate.fnsig = (FnSigNode *)fnnode->vtype;
-    fstate.scope = 1;
+    flowStateInit(&fstate, (FnSigNode *)fnnode->vtype);
     // A module's 'init' starts with its module's uninitialized globals holding
     // nothing, as a local does, and must leave each one assigned
     ModuleNode *initmod = modInitOf(fnnode);
@@ -352,6 +351,7 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     blockFlow(&fstate, (BlockNode **)&fnnode->value);
     if (timerFine)
         timerBegin(svTimer);
+    flowGateCount(&fstate);
     if (initmod)
         modInitFlowEnd(initmod, saved);
 }

@@ -360,6 +360,7 @@ neither slots nor requirements and cost the trait nothing.
 | `vtable` | NULL until `structMakeVtable` |
 | `tagnbr` | discriminant value, assigned at parse: the value the author pinned, or the next in sequence. `TagUnassigned` is the sentinel between reading a variant's name and settling its value, which is why no flag bit records whether one was written — a type has none to spare, and nothing after parse needs to know. **A variant of an extension keeps the sentinel until name resolution**, which is when the base's values are known and its own can continue from them |
 | `llvmtype` | generation memoizes here; non-NULL means "already generated" |
+| `carriesborrow` | `itypeCarriesBorrow`'s answer to whether a value of the type may hold a borrowed reference: `CarriesBorrowUnknown` until asked, `CarriesBorrowAsking` while its own fields and variants are being asked (a cycle through an owning reference or pointer that reaches it again adds nothing), then `CarriesBorrowYes` or `CarriesBorrowNo`. It is remembered only once the struct is type checked, and a "no" that leaned on a struct still being asked is not remembered. `newStructNode` sets it unknown, and so does `cloneStructNode`: an instance's fields are its own question |
 
 **What tells the three apart:**
 
@@ -1417,6 +1418,11 @@ Per-field release is not flow's — it is `genlDealiasFlds` at generation, walki
 `itypeGetTypeDcl` before asking which region owns it: a field's `vtype` is the
 name it was written with, so a typedef of an owning reference stands there as a
 `NameUseNode` and matches no region read raw.
+
+Flow's gate asks whether each local's type carries a borrow
+([Flow](../phases/flow.md), "The gate"), which for a struct means its fields and,
+for an enum, its variants. The answer is remembered in `carriesborrow`, because
+asked afresh at every variable it cost flow 10–20%.
 
 ## Generation
 
