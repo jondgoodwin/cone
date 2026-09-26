@@ -79,7 +79,7 @@ Put these first, because every one of them is load-bearing.
 1. **There is no borrow checker.** Nothing tracks aliasing of borrows. A `&mut`
    and a `&` to the same variable coexist freely, and the source of a borrow
    stays fully usable and mutable while the borrow is alive. `borrowFlow` asks
-   only that what is borrowed hold a value, as a read does; it deactivates
+   only that what is borrowed was not moved out, as a read does; it deactivates
    nothing and records nothing about the borrow.
 2. **A lifetime is a `uint16_t` block-nesting depth on the borrow expression's
    type node.** Not a constraint variable, not region inference. 0 is global, 1
@@ -352,11 +352,11 @@ failed to resolve.
 
 | Analysis | In flow? | Enforced | Not enforced |
 | --- | --- | --- | --- |
-| **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable, a borrow of it included; move out of a global, or out through a borrowed or a shared owning reference, refused | field granularity — moving `p.x` deactivates all of `p`; conditional moves; loop-carried moves |
+| **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable, and on a borrow of a moved-out one; move out of a global, or out through a borrowed or a shared owning reference, refused | field granularity — moving `p.x` deactivates all of `p`; conditional moves; loop-carried moves |
 | **Escape / lifetime** | representation in type check, enforcement here | storing a borrow into a longer-lived lval; returning a borrow of a local; a borrow arriving through a call's result, singly or as one of several values destructured into lvals, each carrying the narrowest argument borrow's scope; a `&mut &T` argument whose pointee would outlive another borrow passed with it; a borrow coerced to another reference type, whether widened to a base trait's reference or made a virtual reference | a borrow laundered through a variable; a borrow stored in a field or captured; distinguishing parameter lifetimes — there is no lifetime annotation syntax; freezing a borrow's source |
 | **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs and slices, and of drop-fn structs, from a jump down to the block it names | arrays of owning references; a variable moved out, or initialized, on only one path — see Hazards |
 | **Permission** | `MayWrite` and `MayRead` | `ErrorNoMut` on assignment and swap; `ErrorNoRead` on a read through a reference — a dereference, an index, or a field of a virtual reference | `MayAliasWrite`, `RaceSafe`, `IsLockless` are populated and read nowhere |
-| **Initialization** | yes | `ErrorMove` "has not been initialized" | "initialized on one branch" reads as initialized everywhere; the unused-variable warning in `flow.h`'s header does not exist |
+| **Initialization** | yes | `ErrorMove` "has not been initialized" | "initialized on one branch" reads as initialized everywhere; a variable never initialized may be borrowed, so a method taking it `&mut` can fill it, and nothing then stops a field it left unset being read through the borrow; the unused-variable warning in `flow.h`'s header does not exist |
 | **Array fill rules** | yes | `ErrorBadFill` for a repeated move value; `ErrorFillCount` for a non-constant count | — |
 
 Everything else about permissions is type check's: `permMatches` in
@@ -371,7 +371,7 @@ Everything else about permissions is type check's: `permMatches` in
 | `ErrorInvType` | `assignlvalrtype` | lval outlives the borrowed reference stored into it |
 | `ErrorNoMut` | `assignlvalrtype`, `swapFlow` | no write permission |
 | `ErrorNoRead` | `flowLoadThroughRef` | no read permission on the reference a dereference, an index or a virtual-reference field reads through |
-| `ErrorMove` | `nameuseFlow` | uninitialized, or moved out — read, or borrowed (`borrowFlow` walks the borrowed place to its variable) |
+| `ErrorMove` | `nameuseFlow`, `nameuseFlowBorrowed` | read: uninitialized, or moved out; borrowed: moved out only (`borrowFlow` walks the borrowed place to its variable) |
 | `ErrorBadFill` | `arrayLitFlow` | a fill may not repeat a move value |
 | `ErrorFillCount` | `arrayLitFlow` | fill count not constant, or too large |
 | `ErrorEscape` | `returnFlowEscape` | returned borrow outlives the local it points at |
@@ -472,8 +472,8 @@ is what releases the old allocation.
 | `ir/exp/block.c` | `blockFlow` | scope push/pop, `blockret` injection, result walk then dealias capture; a `return`'s move source |
 | `ir/exp/if.c` | `ifFlow` | both arms against one shared state |
 | `ir/exp/assign.c` | `assignlvalrtype`, `assignSingleFlow` | `MayWrite`, `VarInitialized`/`VarMoved`/`VarHollow`, `FlagFirstAssign`, the `HollowNode` round a hollowed variable's new value, borrow lifetime |
-| `ir/exp/nameuse.c` | `nameuseFlow` | the only place the flags are *diagnosed* on, a hollowed variable as a moved one; both `ErrorMove` messages |
-| `ir/exp/borrow.c` | `borrowFlow`, `borrowFlowPlace` | the borrowed place must hold a value: the variable at its root goes to `nameuseFlow`, a reference it is reached through is loaded as a value and not read through, an index is read; no aliasing tracked |
+| `ir/exp/nameuse.c` | `nameuseFlow`, `nameuseFlowBorrowed` | the only place the flags are *diagnosed* on, a hollowed variable as a moved one; both `ErrorMove` messages, and for a borrowed variable only the moved-out one |
+| `ir/exp/borrow.c` | `borrowFlow`, `borrowFlowPlace` | the borrowed place must not be moved out: the variable at its root goes to `nameuseFlowBorrowed`, which refuses it moved out or hollowed but not uninitialized; a reference it is reached through is loaded as a value and not read through, an index is read; no aliasing tracked |
 | `ir/stmt/return.c` | `returnFlowEscape` | `ErrorEscape` for a returned borrow of a local |
 | `ir/exp/fncall.c` | `fnCallFlowStoredBorrow` | `ErrorCallEscape` for a `&mut &T` argument the callee could store a narrower borrow through |
 | `ir/exp/arraylit.c` | `arrayLitFlow` | fill-form rules and the n / n-1 alias amount |

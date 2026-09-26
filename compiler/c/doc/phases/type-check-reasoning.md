@@ -287,8 +287,8 @@ from the lval; check the requested permission with `permMatches`; build the
 `RefNode` carrying `borrowRef` as its region and the lval's scope.
 
 **The scope it records is checked by flow analysis, not here — and not at the
-borrow site either.** `borrowFlow` checks only that the borrowed place holds a
-value, and no scope. A borrowed reference
+borrow site either.** `borrowFlow` checks only that the borrowed place was not
+moved out, and no scope. A borrowed reference
 can outlive what it points at by being stored, returned, or handed to a call
 that stores it through a `&mut &T` parameter, and those are the places checked,
 all during flow. Type check's other contribution is the scope a call's result

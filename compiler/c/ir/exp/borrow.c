@@ -283,14 +283,15 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     }
 }
 
-// Walk the place a borrow points at, checking that it holds a value.
+// Walk the place a borrow points at, checking that its value was not moved out.
 // The place itself is not read, so a reference the place is reached through is
 // loaded as a value (a pointer) rather than read through: the variable at the
-// root must be initialized and not moved out or hollowed, as for a read.
+// root must not be moved out or hollowed. It may be uninitialized, so that a
+// method taking it '&mut' can fill it in.
 static void borrowFlowPlace(FlowState *fstate, INode **placep) {
     INode *place = *placep;
     if (isNameUseNode(place) && isExpNode(place)) {
-        nameuseFlow(fstate, (NameUseNode**)placep);
+        nameuseFlowBorrowed(fstate, (NameUseNode**)placep);
         return;
     }
     switch (place->tag) {
@@ -327,7 +328,7 @@ static void borrowFlowPlace(FlowState *fstate, INode **placep) {
     }
 }
 
-// Perform data flow analysis on a borrow: what it borrows must hold a value.
+// Perform data flow analysis on a borrow: what it borrows must not be moved out.
 // No aliasing of borrows is tracked.
 void borrowFlow(FlowState *fstate, RefNode **nodep) {
     borrowFlowPlace(fstate, &(*nodep)->vtexp);

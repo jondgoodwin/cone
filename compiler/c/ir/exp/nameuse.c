@@ -432,3 +432,15 @@ void nameuseFlow(FlowState *fstate, NameUseNode **nodep) {
     else if (vardclnode->flowtempflags & (VarMoved | VarHollow))
         errorMsgNode((INode*)node, ErrorMove, "This variable's value has been moved out. It is no longer there to use.");
 }
+
+// Ensure the variable at the root of a borrowed place was not moved out or
+// hollowed. One never initialized is not refused: a borrow of it is what lets a
+// method fill it in.
+void nameuseFlowBorrowed(FlowState *fstate, NameUseNode **nodep) {
+    NameUseNode *node = *nodep;
+    VarDclNode *vardclnode = (VarDclNode *)((NameUseNode*)node)->dclnode;
+    if (vardclnode->tag != VarDclTag)
+        return;
+    if (vardclnode->flowtempflags & (VarMoved | VarHollow))
+        errorMsgNode((INode*)node, ErrorMove, "This variable's value has been moved out. It is no longer there to use.");
+}

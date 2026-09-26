@@ -76,5 +76,7 @@ void nameUseTypeCheckType(TypeCheckState *pstate, NameUseNode **name);
 
 // Handle flow checking for nameuse
 void nameuseFlow(FlowState *fstate, NameUseNode **nodep);
+// Handle flow checking for the variable at the root of a borrowed place
+void nameuseFlowBorrowed(FlowState *fstate, NameUseNode **nodep);
 
 #endif

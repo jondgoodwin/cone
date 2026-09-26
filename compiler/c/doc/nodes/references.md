@@ -233,9 +233,10 @@ every owning reference moves.
 ## Flow
 
 `allocateFlow` loads and move-or-copies the initial value. `borrowFlow` asks
-only that the borrowed place hold a value: it walks the place to the variable
-at its root, which `nameuseFlow` refuses if uninitialized, moved out or
-hollowed, exactly as for a read. A reference the place is reached through is
+only that the borrowed place was not moved out: it walks the place to the
+variable at its root, which `nameuseFlowBorrowed` refuses if moved out or
+hollowed, as a read is refused. Unlike a read, a variable never initialized may
+be borrowed, so that a method taking it `&mut` can fill it in. A reference the place is reached through is
 loaded as a value, not read through, and an index is read. A borrow
 deactivates nothing and records nothing, so no aliasing of borrows is tracked.
 
