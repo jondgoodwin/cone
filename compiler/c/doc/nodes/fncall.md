@@ -391,7 +391,10 @@ or an intrinsic.
 **The switch for the intrinsics built in C dispatches on the LLVM type kind of
 argument 0**, not on the Cone type — so a mutating intrinsic's receiver, which
 arrives as an lvalue pointer, and a non-mutating one's, which arrives as a value,
-land in the same branch and are told apart only by which intrinsic it is. An
+land in the same branch and are told apart only by which intrinsic it is. What
+the pointer points at — a number to add to, or a pointer to step and by what — is
+read from argument 0's Cone type, which `genlFnCall` passes down as `selftype`,
+as is the trait whose vtable a virtual dispatch reads. An
 intrinsic declared in core with `@intrinsic` is taken first, by
 `genlDeclaredIntrinsic`, and decided by its kind and the Cone type its instance
 carries ([intrinsic](intrinsic.md)).

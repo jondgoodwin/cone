@@ -294,10 +294,13 @@ alloca point. Every parameter and local is memory-backed on purpose — the
 comment is that all allocas belong in the entry block so `PromoteMemoryToRegister`
 and SRoA can undo it.
 
-`genpgm` then optionally verifies, dumps `.preir`, runs the pass manager
-(mem2reg, reassociate, GVN, CFG simplification, plus function inlining), dumps
-`.ir`, and emits. **There is no `--release` flag** — release is the default and
-`--debug` turns it off, dropping optimization and enabling DWARF.
+`genpgm` then optionally verifies, dumps `.preir`, runs LLVM's new pass manager
+through `LLVMRunPasses` — `function(mem2reg,reassociate,gvn,simplifycfg)`, and
+in a release build `cgscc(inline)` after it, with no target machine, so the
+inliner's costs are the target-independent ones — dumps `.ir`, and emits.
+**There is no `--release` flag** — release is the default and `--debug` turns it
+off, dropping inlining and the code generator's optimization and enabling
+DWARF.
 
 ## 3. Type lowering
 
@@ -505,6 +508,17 @@ This is what the CLAUDE.md warning is about. The conventions:
 | vtable field slot | an `i32` **byte offset**, applied to an `i8*` |
 | vtable method slot | reached by `structgep` **then load** |
 
+**What a pointer points at is never asked of the LLVM pointer.** Every load,
+GEP and call names the type it reads, steps over or calls, and that type comes
+from the Cone type: `genlPointee` for what a reference, pointer or slice points
+at, `genlAddrType` for what `genlAddr`'s address points at, the function's own
+signature for a call, and `genlVtableSlotFnType` for a call through a vtable
+slot. Under LLVM's opaque pointers a pointer is only `ptr`, with no element
+type to ask, and the bitcasts between pointer types generation still emits fold
+away to nothing. `genlAddrType` reads through a dereference to the reference's
+own pointee rather than the dereference's type, because a dereference the
+compiler builds itself — a synthesized drop's — carries no type.
+
 Concrete hazards, each of which has been gotten wrong here before:
 
 - **`genlDealiasFlds` must load after `StructGEP`.** The GEP gives `T**` for a
@@ -531,7 +545,9 @@ Concrete hazards, each of which has been gotten wrong here before:
 - **Mutating intrinsics take self as an lvalue pointer; non-mutating ones take a
   value.** The switch for the intrinsics built in C dispatches on the LLVM *type
   kind* of argument 0, so both land in the same branch and are told apart only by
-  which intrinsic it is. The intrinsics declared in core never reach that switch:
+  which intrinsic it is. What that pointer points at — a number to add to, or a
+  pointer to step — is read from argument 0's Cone type, which `genlFnCall`
+  passes down as `selftype`. The intrinsics declared in core never reach that switch:
   `genlDeclaredIntrinsic` decides each by its kind and its instance's Cone type
   ([intrinsic](../nodes/intrinsic.md)), and a new intrinsic goes there, never
   into the LLVM-type switch.
@@ -622,6 +638,14 @@ function this object defines: an imported module's function has a body in the
 IR but is a declaration here, and the verifier rejects a declaration carrying
 one.
 
+The environment variable `CONE_LLVM_OPTIONS` hands LLVM command-line options,
+separated by spaces, parsed in `genSetup` before the LLVM context exists. It is
+a testing aid, and what it is for is LLVM 13's experimental opaque pointers:
+`-force-opaque-pointers` makes every pointer type `ptr`. LLVM 13's own inliner,
+GVN and X86 code generator still crash on some opaque-pointer IR, so a suite run
+that way adds `-inline-threshold=-100000 -disable-lsr` and still has a few
+compiles fail inside LLVM; the IR it generates verifies either way.
+
 **Cross-module linking works for a library built on its own, and nothing
 else.** A symbol is spelled from its owner chain, and the root module
 contributes no name to it — [Names and Namespaces](../../../../doc/design/names-and-namespaces.md),
@@ -653,6 +677,14 @@ variables.
   operand constant-folds. A non-constant operand there would be catastrophic.
 - **A string literal emits a fresh global per occurrence.** Nothing deduplicates
   them, and constant merging is not in the pass list.
+- **On LLVM 13, GVN runs with no alias analysis.** 13's `LLVMRunPasses`
+  registers an empty alias-analysis pipeline, so GVN cannot tell that a call
+  leaves a local's memory alone, and reloads it after the call; the passes
+  named are the same, the optimized IR weaker. LLVM 23 registers the default
+  pipeline there.
+- **A function nothing calls stays in the optimized module.** The new pass
+  manager's inliner deletes only a function whose last call it inlined; the
+  linker's `/OPT:REF` drops the rest, each being in a COMDAT of its own.
 - **The block stack is a fixed 256 entries** and overflow is a hard exit.
 
 ## 9. Code pointer map
@@ -661,6 +693,7 @@ variables.
 | --- | --- | --- |
 | `conec.c` | `main` | calls `genSetup` **before** parsing, for target pointer size |
 | `genllvm/genllvm.c` | `genSetup`, `genClose` | target machine, data layout, context, `%void` |
+| | `genlLLVMOptions` | the LLVM options `CONE_LLVM_OPTIONS` names, parsed before the context exists |
 | | `genpgm` | generate, verify, dump, optimize, emit; nothing past generation once it reported an error |
 | | `genlProgram` | create the module with the target's triple and data layout, the two-pass symbols-then-implementations walk, then the stitched pair |
 | | `genlStitchFn`, `genlStitch` | the program's stitched init and final: declared on the first call to `initAll()` or `finalAll()`, built last, every module's `init` in the module order and every finalizer in the reverse |
@@ -678,12 +711,15 @@ variables.
 | `ir/export.c` | `dclIsInstance` | whether a declaration is a generic's instance or a member of one — every function and global of a generic module's instance among them |
 | | `dclIsExported`, `typeHoldsExpanded` | whether a library compile exports a definition to its importers; the include-file generator asks the same |
 | `genllvm/genltype.c` | `genlType`, `_genlType` | the memoizing entry and the per-tag lowering switch |
+| | `genlPointee`, `genlPointeeType` | the Cone type a reference, pointer or slice points at, and its LLVM type: what every load, GEP and call through it is typed by |
+| | `genlVtableSlotFnType` | a vtable slot's function type, self erased to `*u8`: the slot's type, a thunk's, and a virtual call's |
 | | `genlSetupTaggedTrait`, `genlSameSizeTrait` | the three enum shapes |
 | | `genlVtable`, `genlVtableImpl` | vtable type, per-struct constants, the virtref fat pointer |
 | | `genlVtableThunk` | the function filling a slot a folded method satisfies: shift the receiver along the recorded field path, tail-call the method |
 | `genllvm/genlstmt.c` | `genlBlock` | block creation, phi state, terminator suppression |
 | | `genlBreak`, `genlReturn` | phi edges and dealias; inlined-return-as-break |
 | `genllvm/genlexpr.c` | `genlExpr`, `genlAddr`, `genlStore` | the value / address / store trio — section 4 |
+| | `genlAddrType` | the Cone type of what `genlAddr`'s address points at |
 | | `genlFnCallInternal` | indirect calls, virtual dispatch, generator-level inlining, the intrinsic switch |
 | | `genlDeclaredIntrinsic` | the LLVM implementation of each intrinsic declared in core, by kind and Cone type |
 | | `genlConvert`, `genlRecast`, `genlIsType` | the three cast forms |
