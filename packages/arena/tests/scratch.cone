@@ -16,16 +16,14 @@
 // failed block allocation does is tests/nomemory.cone's and
 // tests/overflow.cone's.
 //
+// An allocation held in a local keeps its scratch alive: 'consume(a)',
+// '{ imm b = a; }', 'a <=> other' and 'a = Arena.empty()' while one is still
+// used are refused (test/cases/region/region_flow_arena_freeze.cone). It
+// loans nothing else of the scratch, so several live at once and a function
+// lent the scratch may allocate into it twice for its caller (allocForCaller).
+//
 // THE HOLES, which compile today and read freed memory, so no check here can
 // pin what they print. Written out so a reader knows what is not yet safe:
-//
-//   fn consume(a Arena) {}
-//   fn freezing() i64 {
-//     mut a = Arena.empty();
-//     imm r = a.alloc(Fin[5]);
-//     consume(a);             // the scratch dies here, while r is still used:
-//     r.n;                    // a method's borrow does not freeze 'a'
-//   }
 //
 //   struct Holder { pub r &mut Pt; }
 //   fn field() Holder {
@@ -33,14 +31,11 @@
 //     Holder[a.alloc(Pt[1, 2])];   // a borrow in a field of a returned value:
 //   }                              // a field's borrow is not checked
 //
-// The first is freezing, missing for a borrow a method returns (a borrow
-// written with '&' and held in a local does freeze its source);
-// '{ imm b = a; } r.n' and 'a <=> other' are the same hole. The second is a borrow held inside another
-// value, which carries no lifetime; returning a '+rc Holder[...]' or an
+// It is a borrow held inside another value, which carries no lifetime; returning a '+rc Holder[...]' or an
 // 'Option' holding the borrow, assigning 'outer = Holder[a.alloc(..)]',
 // pushing it onto an outer List, a call storing one argument in a field of
 // another, and returning one read back out of a list ('*seen[0usize]') are the
-// same hole. A third: swapping a borrow into an outer variable ('outer <=> r')
+// same hole. Another: swapping a borrow into an outer variable ('outer <=> r')
 // is not checked as storing it there.
 
 mod scratch;

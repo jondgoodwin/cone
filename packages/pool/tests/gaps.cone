@@ -12,14 +12,13 @@
 //     p.get(r);                  // the pool dies here; the borrow in the
 //   }                            // Option is returned and dangles
 //
-//   fn frozen() i64 {
-//     mut p = Pool[Pt].empty();
+//   fn frozen(p &mut Pool[Pt], q &mut Pool[Pt]) i64 {
 //     imm r = p.add(Pt[1, 2]);
 //     imm x = &mut p[r];
-//     p.remove(r);               // '&mut p[r]' is the '&[]' method's borrow,
-//                                // which does not freeze the pool while x lives:
-//     x.x;                       // x reads a finalized value
-//   }
+//     q.remove(r);               // called with one pool twice: through a
+//                                // '&mut' parameter the pool is reached by a
+//     x.x;                       // shared path, which a borrow does not
+//   }                            // freeze, so x reads a finalized value
 //
 // The first: a borrow held inside another value carries no lifetime, so the
 // borrow in 'get's and 'getMut's Option is not checked against the pool it
@@ -29,11 +28,15 @@
 // compiler's suite pins that returning one or storing it where it outlives
 // the pool is refused (test/cases/region/region_flow_pool_escape.cone). So
 // 'if pool.alive(r) { ...pool[r]... }' is the checked form today.
-// The second is freezing, missing for a borrow a method returns (a borrow
-// written with '&' and held in a local does freeze its source): 'remove', and an 'add' that grows
-// the block (so moves every value), and moving or dropping the pool itself,
-// all compile while a borrow from 'pool[r]', 'get' or 'getMut' is live.
-// A static pool (a module's global) is never frozen by anything, even then.
+// The second is freezing through a shared path. A borrow from 'pool[r]' or
+// '&mut pool[r]' held in a local freezes a local pool: 'remove', an 'add'
+// (which may move every value), and moving or dropping it are refused while
+// the borrow is live. A pool reached through a '&mut Pool' parameter, a field
+// of 'self' or a '+rc-mut' owner is not frozen, since another reference may
+// reach it; Jon's rule refuses such a borrow, and waits on 'uni' reborrowing.
+// A borrow from 'get' or 'getMut' freezes nothing yet (it is inside an
+// Option), and a static pool (a module's global) changed by a function
+// called while a borrow of it lives is not seen.
 
 mod gaps;
 

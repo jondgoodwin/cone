@@ -1,0 +1,98 @@
+// A borrow a method returns keeps the method's receiver loaned while it is
+// used, the Rust way: 'list[0usize]' borrows 'list' read-only, so while the
+// element is still to be used the list may be read but not changed -- a push
+// may move every element -- and a method returning a mutable borrow freezes
+// its receiver entirely. A call's arguments are in flight until it is made: an
+// argument may not touch what an earlier one borrowed in a way that borrow
+// forbids, except that a method receiver's mutable borrow is two-phase and
+// meets the arguments as a read-only borrow would ('v.push(v.len())' is
+// collection_freeze_success). Each error is reported at the touch.
+//
+// THE HOLE, documented rather than refused (Jon, 26 Sep 2026: to be closed by
+// 'uni' reborrowing and transitional permissions). Only a collection reached
+// as 'uni' -- a local, a field of one -- is loaned this way. An element borrow
+// through a shared path is not checked, and a push through another alias
+// leaves it dangling. Each of these compiles today:
+//   A. a parameter:       fn f(l &mut List[Pt], m &mut List[Pt]) { imm e = l[0usize]; m.push(p); e.x; }
+//                         (called with the same list twice)
+//   B. a field of 'self': struct Bag { items List[Pt]; fn grow(self &mut, o &mut Bag) {
+//                           imm e = items[0usize]; o.items.push(p); e.x; } }   (b.grow(&mut b)-alike)
+//   C. a '+rc-mut' owner: imm l = +rc-mut List[Pt].empty(); imm l2 = l;
+//                         imm e = l[0usize]; l2.push(p); e.x;
+//   D. a collection allocated in an arena and held by name:
+//                         imm l = a.alloc(List[Pt].empty()); imm l2 = l;
+//                         imm e = l[0usize]; l2.push(p); e.x;
+//   E. a reference made from a pointer: imm l = ptr as &mut List[Pt]; imm e = l[0usize];
+//                         (ptr as &mut List[Pt]).push(p); e.x;
+// List, String, Dict and Pool declare 'ShapeChanging', the marker a later
+// check will read to refuse these; it has no effect yet.
+
+mod collection_flow_freeze;
+
+import collections use *;
+import pool use *;
+
+struct Pt { pub x i64; pub y i64; }
+
+// A plain struct whose method lends a mutable borrow of its field
+struct Cell {
+  pub v i64;
+  pub fn get(self &mut) &mut i64 { &mut v; }
+}
+
+// Pushed onto while a borrow of an element is still to be used
+fn pushWhileElementHeld() i64 {
+  mut list = List[Pt].empty();
+  list.push(Pt[1, 2]);
+  imm first = list[0usize];
+  list.push(Pt[3, 4]);          //~ ErrorFrozen:3 "may not be borrowed mutably"
+  first.x;
+}
+
+// Read while a mutable borrow a method returned is still to be used
+fn readUnderReturnedMut() i64 {
+  mut c = Cell[5];
+  imm r = c.get();
+  imm seen = c.v;               //~ ErrorFrozen:15 "may not be read"
+  *r = 6;
+  seen;
+}
+
+// A value removed from a pool while a borrow of it is still to be used
+fn removeWhileHeld() i64 {
+  mut p = Pool[Pt].empty();
+  imm id = p.add(Pt[1, 2]);
+  imm e = p[id];
+  p.remove(id);                 //~ ErrorFrozen:3 "may not be borrowed mutably"
+  e.x;
+}
+
+fn fill(l &mut List[i64], n usize) { l.push(i64[n]); }
+
+// An explicit mutable borrow is not two-phase: a later argument may not read it
+fn explicitThenRead() {
+  mut v = List[i64].empty();
+  fill(&mut v, v.len());        //~ ErrorFrozen:16 "may not be borrowed"
+}
+
+fn takeLast(l &mut List[i64]) i64 {
+  match l.pop() {
+    case imm n Some { n.value; }
+    else { 0; }
+  }
+}
+
+// A receiver's reserved borrow meets its arguments as a read-only borrow:
+// one borrowing the receiver mutably is refused
+fn receiverThenMutArg() {
+  mut v = List[i64].empty();
+  v.push(takeLast(&mut v));     //~ ErrorFrozen:19 "may not be borrowed mutably"
+}
+
+// Activated at the call, a receiver's mutable borrow may not meet what another
+// argument carries: the slice 'view' lends would dangle once 'append' grows
+// the string
+fn appendOwnView() {
+  mut s = String.from("ab");
+  s.append(s.view());           //~ ErrorFrozen:3 "as the call's receiver"
+}

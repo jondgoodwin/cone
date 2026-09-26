@@ -211,6 +211,9 @@ void nametblInit() {
     tracedTraitName = nametblFind("Traced", 6);
     moveTraitName = nametblFind("Move", 4);
     copyTraitName = nametblFind("Copy", 4);
+    shapeChangingTraitName = nametblFind("ShapeChanging", 13);
+    noLoanMutTraitName = nametblFind("NoLoanMut", 9);
+    noLoanReadTraitName = nametblFind("NoLoanRead", 10);
 }
 
 

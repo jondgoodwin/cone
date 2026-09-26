@@ -329,6 +329,7 @@ static PathDelta *pathDeltaPush(PathDelta *list, PathDelta *delta) {
 
 static PathSet *pwValue(INode **nodep, int move);
 static PathSet *pwBlock(BlockNode *blk, int fnblock, int move);
+static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t *loan);
 
 // An access to a place, asked of borrow freezing only when some loan is rooted
 // at the place's variable: what kind of access it is is not worked out otherwise
@@ -491,26 +492,172 @@ static PathSet *pwBorrow(INode *node, int aswrite) {
     if (!pwPlace(&borrow->vtexp, &pl, &base))
         return base;
     INode *perm = ((RefNode *)iexpGetTypeDcl(node))->perm;
-    pwAccess(&pl, aswrite ? AccessWrite : loanBorrowAccess(perm), node);
-    uint32_t loan = loanMake(node, &pl, perm);
-    PathVar *pv = &pathVars[pl.var];
-    return pathSetAdd(pv->holder ? pv->holds : NULL, loan);
+    return pwLend(node, &pl, perm, aswrite ? AccessWrite : loanBorrowAccess(perm), NULL);
+}
+
+// A loan of the place 'pl', already walked, made by 'site' with the
+// permission 'perm': the access it makes, and the loans its value carries --
+// the new one and whatever the holder at the place's root holds. 'loan'
+// returns the new loan's id, if asked.
+static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t *loan) {
+    pwAccess(pl, access, site);
+    // A container declaring 'NoLoanMut' (an arena) never moves what it lent,
+    // whatever is done to it, so a borrow of the container itself needs it only
+    // alive, as a borrow through a shared path does: two '&mut a' may be live
+    // at once, and 'a.alloc(Spawner[2, &mut a])' is one call. '&uni' and
+    // '&imm' still promise what they say.
+    Place lent = *pl;
+    if (access == AccessBorrow || access == AccessBorrowMut || access == AccessWrite) {
+        INode *reftype = iexpGetTypeDcl(site);
+        INode *referent = reftype->tag == RefTag ? itypeGetTypeDcl(((RefNode *)reftype)->vtexp) : NULL;
+        if (referent && referent->tag == StructTag && ((StructNode *)referent)->lends == LendsNoLoanMut
+            && !lent.shared) {
+            lent.shared = 1;
+            lent.sharedlen = lent.nsteps;
+        }
+    }
+    uint32_t id = loanMake(site, &lent, perm);
+    if (loan)
+        *loan = id;
+    PathVar *pv = &pathVars[pl->var];
+    return pathSetAdd(pv->holder ? pv->holds : NULL, id);
+}
+
+// An owning reference coerced to a borrowed one ('imm b &i32 = u', 'u' a
+// '+so i32'): a borrow of what it owns, so 'u' may not be moved, replaced or
+// ended while the borrow is used
+static int pwIsOwnedLent(CastNode *cast) {
+    INode *to = iexpGetTypeDcl((INode *)cast);
+    INode *from = iexpGetTypeDcl(cast->exp);
+    return to->tag == RefTag && from->tag == RefTag && pwIsBorrowed(to) && !pwIsBorrowed(from);
+}
+
+static PathSet *pwOwnedLent(CastNode *cast) {
+    Place pl;
+    PathSet *base;
+    if (!pwThrough(&cast->exp, &pl, &base))
+        return base;
+    INode *perm = ((RefNode *)iexpGetTypeDcl((INode *)cast))->perm;
+    return pwLend((INode *)cast, &pl, perm, loanBorrowAccess(perm), NULL);
+}
+
+// The method a call calls, when its first argument is the method's receiver
+static FnDclNode *pwMethod(FnCallNode *call) {
+    if (call->args == NULL || call->args->used == 0 || !isNameUseNode(call->objfn))
+        return NULL;
+    INode *fn = ((NameUseNode *)call->objfn)->dclnode;
+    if (fn == NULL || fn->tag != FnDclTag || !(fn->flags & FlagMethFld))
+        return NULL;
+    Nodes *parms = ((FnSigNode *)((FnDclNode *)fn)->vtype)->parms;
+    return parms->used > 0 && ((VarDclNode *)nodesGet(parms, 0))->namesym == selfName ? (FnDclNode *)fn : NULL;
+}
+
+// Does a receiver's borrow with this access change it, so that it is
+// two-phase: reserved while the arguments are walked, activated at the call?
+static int pwTwoPhase(int access) {
+    return access == AccessBorrowMut || access == AccessBorrowUni || access == AccessWrite;
+}
+
+// The access a receiver's borrow makes while it is reserved: a read-only
+// borrow's, when it is two-phase
+static int pwReserved(int access) {
+    return pwTwoPhase(access) ? AccessBorrow : access;
+}
+
+// A method's receiver taken by reference: a loan of the receiver's place,
+// whether borrowed here ('list.push(x)' is '(&mut list).push(x)', the borrow
+// injected) or reached through a reference it is handed ('r.push(x)' for 'r
+// &mut List' reborrows '*r', with the permission the method declared for
+// 'self'). Its place, its loan and its access come back through 'pl', 'loan'
+// and 'access'; 'loan' is 0 when the receiver is no place the walk tracks.
+static PathSet *pwReceiver(FnCallNode *call, FnDclNode *meth, Place *pl, uint32_t *loan, int *access) {
+    INode **recvp = &nodesGet(call->args, 0);
+    INode *recv = *recvp;
+    PathSet *base;
+    *loan = 0;
+    if (recv->tag == BorrowTag) {
+        RefNode *borrow = (RefNode *)recv;
+        if (!pwPlace(&borrow->vtexp, pl, &base))
+            return base;
+        INode *perm = ((RefNode *)iexpGetTypeDcl(recv))->perm;
+        // An operator changing its operand in place writes it ('v <- x')
+        *access = (call->flags & FlagLvalOp) ? AccessWrite : loanBorrowAccess(perm);
+        return pwLend(recv, pl, perm, pwReserved(*access), loan);
+    }
+    INode *selftype = iexpGetTypeDcl(nodesGet(((FnSigNode *)meth->vtype)->parms, 0));
+    if (!pwIsBorrowed(iexpGetTypeDcl(recv)) || selftype->tag != RefTag)
+        return pwValue(recvp, 1);
+    if (!pwThrough(recvp, pl, &base))
+        return base;
+    INode *perm = ((RefNode *)selftype)->perm;
+    *access = loanBorrowAccess(perm);
+    return pwLend(recv, pl, perm, pwReserved(*access), loan);
 }
 
 // A call: the function reference it calls through, then each argument in
-// order. What a call returns carries no loan yet.
-static void pwCall(FnCallNode *call) {
+// order, each carrying its loans in flight until the call is made. A borrow
+// the call returns (or a value holding one) carries every argument's loans --
+// Cone's rule for an unannotated signature is that every borrow in it shares
+// one lifetime (reflifefn.html) -- so a borrow a method returns keeps its
+// receiver loaned while it is used. A container declaring a no-loan kind
+// ('NoLoanMut', an arena; 'NoLoanRead', for a read-only borrow) lends with
+// no loan on it: its receiver's place gets only a pin, which forbids moving,
+// replacing or ending it.
+static PathSet *pwCall(FnCallNode *call) {
     INode *objfn = call->objfn;
     if (pwNamedVar(objfn) || objfn->tag == DerefTag || objfn->tag == FldAccessTag)
         pwValue(&call->objfn, 0);
+    FnDclNode *meth = pwMethod(call);
+    int carries = pwCarries(call->vtype);
+    uint32_t mark = loanFlightMark();
+    PathSet *result = NULL;
+    PathSet *recvholds = NULL;
+    Place recvpl;
+    uint32_t recvloan = 0;
+    int recvaccess = AccessRead;
+    int twophase = 0;
     INode **argsp;
     uint32_t cnt;
     for (nodesFor(call->args, cnt, argsp)) {
-        if (argsp == &nodesGet(call->args, 0) && (call->flags & FlagLvalOp) && (*argsp)->tag == BorrowTag)
-            pwBorrow(*argsp, 1);
-        else
-            pwValue(argsp, 1);
+        PathSet *carried;
+        if (meth && argsp == &nodesGet(call->args, 0)) {
+            carried = pwReceiver(call, meth, &recvpl, &recvloan, &recvaccess);
+            twophase = recvloan && pwTwoPhase(recvaccess);
+            loanFlightPush(carried, twophase ? recvloan : 0);
+            recvholds = carried;
+            continue;
+        }
+        carried = pwValue(argsp, 1);
+        loanFlightPush(carried, 0);
+        if (carries)
+            result = pathSetUnion(result, carried);
     }
+    // The receiver's borrow activated: against what the other arguments carry,
+    // and then as the access it is, against every loan still held
+    if (twophase)
+        loanFlightActivate(mark, recvloan, recvaccess, nodesGet(call->args, 0));
+    loanFlightPop(mark);
+    if (twophase)
+        pwAccess(&recvpl, recvaccess, nodesGet(call->args, 0));
+    if (!carries)
+        return NULL;
+    if (recvloan) {
+        INode *recvtype = iexpGetTypeDcl(nodesGet(call->args, 0));
+        INode *container = recvtype->tag == RefTag ? itypeGetTypeDcl(((RefNode *)recvtype)->vtexp) : NULL;
+        uint8_t lends = container && container->tag == StructTag ? ((StructNode *)container)->lends : LendsLoaned;
+        INode *rettype = iexpGetTypeDcl((INode *)call);
+        if (lends == LendsNoLoanMut || (lends == LendsNoLoanRead && rettype->tag == RefTag
+                && !(permGetFlags(((RefNode *)rettype)->perm) & MayWrite))) {
+            // The receiver's own loan ends with the call; what its root holds stays
+            PathVar *pv = &pathVars[recvpl.var];
+            uint32_t pin = loanMake((INode *)call, &recvpl, (INode *)opaqPerm);
+            loanReturnedBy(pin, ((NameUseNode *)call->objfn)->namesym);
+            recvholds = pathSetAdd(pv->holder ? pv->holds : NULL, pin);
+        }
+        else
+            loanReturnedBy(recvloan, ((NameUseNode *)call->objfn)->namesym);
+    }
+    return pathSetUnion(result, recvholds);
 }
 
 // Store a value carrying 'holds' into an lval
@@ -860,8 +1007,7 @@ static PathSet *pwValue(INode **nodep, int move) {
     case AssignTag:
         return pwAssign((AssignNode *)node);
     case FnCallTag:
-        pwCall((FnCallNode *)node);
-        return NULL;
+        return pwCall((FnCallNode *)node);
     case BorrowTag:
     case ArrayBorrowTag:
         return pwBorrow(node, 0);
@@ -871,14 +1017,19 @@ static PathSet *pwValue(INode **nodep, int move) {
     case VTupleTag:
     case TypeLitTag:
     {
+        // Each element's loans are in flight until the value is built
         PathSet *holds = NULL;
         INode **nodesp;
         uint32_t cnt;
+        uint32_t mark = loanFlightMark();
         Nodes *elems = node->tag == VTupleTag ? ((TupleNode *)node)->elems : ((FnCallNode *)node)->args;
         for (nodesFor(elems, cnt, nodesp)) {
             INode **valp = (*nodesp)->tag == NamedValTag ? &((NamedValNode *)*nodesp)->val : nodesp;
-            holds = pathSetUnion(holds, pwValue(valp, node->tag == TypeLitTag || move));
+            PathSet *carried = pwValue(valp, node->tag == TypeLitTag || move);
+            loanFlightPush(carried, 0);
+            holds = pathSetUnion(holds, carried);
         }
+        loanFlightPop(mark);
         return holds;
     }
     case ArrayLitTag:
@@ -886,8 +1037,13 @@ static PathSet *pwValue(INode **nodep, int move) {
         PathSet *holds = NULL;
         INode **nodesp;
         uint32_t cnt;
-        for (nodesFor(((ArrayNode *)node)->elems, cnt, nodesp))
-            holds = pathSetUnion(holds, pwValue(nodesp, 1));
+        uint32_t mark = loanFlightMark();
+        for (nodesFor(((ArrayNode *)node)->elems, cnt, nodesp)) {
+            PathSet *carried = pwValue(nodesp, 1);
+            loanFlightPush(carried, 0);
+            holds = pathSetUnion(holds, carried);
+        }
+        loanFlightPop(mark);
         return holds;
     }
     case CastTag:
@@ -895,6 +1051,8 @@ static PathSet *pwValue(INode **nodep, int move) {
             pwValue(&((CastNode *)node)->exp, 0);
             return NULL;
         }
+        if (pwIsOwnedLent((CastNode *)node))
+            return pwOwnedLent((CastNode *)node);
         return pwValue(&((CastNode *)node)->exp, move);
     case IsTag:
         pwValue(&((CastNode *)node)->exp, 0);

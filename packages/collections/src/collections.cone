@@ -31,8 +31,14 @@
 // reading. 'list[i]' and 'dict[key]' give a '&' to one element, and 'view()'
 // a slice of the whole, to read at once and let go of. Nothing here stores a
 // borrow, and nothing a collection returns should be kept across a change to
-// it: a push can move the whole block, and the compiler does not yet catch a
-// borrow held across one. Where a borrow would have been the natural return
+// it: a push can move the whole block. The compiler catches that for a
+// collection held in a local -- while 'imm e = list[0usize]' is still used,
+// 'list' may be read but not pushed onto -- but not for one reached through a
+// shared path (a '&mut List' parameter, a field of 'self', a '+rc-mut'
+// owner), where a push through another reference to it leaves 'e' dangling.
+// Each type here declares 'ShapeChanging' (a provisional name), which the
+// check refusing that will read; nothing reads it yet. Where a borrow would
+// have been the natural return
 // (a trimmed piece of a string, the lines of a text, a dictionary's keys), the
 // collection returns owned copies instead.
 //
@@ -60,7 +66,7 @@ import libc;
 // A growable list of T, in one block of 'cap' slots of which the first 'used'
 // hold live values. Pushing grows it 4, 8, 16, ...; it never shrinks, and
 // gives its block back only when it dies.
-pub struct List[T] {
+pub struct List[T] is ShapeChanging {
   ptr *T;
   used usize;
   cap usize;
@@ -169,7 +175,7 @@ pub struct List[T] {
 // and dies as a list does. A string literal is a '&[]u8', not a String; every
 // method that reads text takes a '&[]u8', which a literal is and which 'view()'
 // gives of a String, so 's.startsWith("import")' and 'a.equals(b.view())'.
-pub struct String {
+pub struct String is ShapeChanging {
   bytes List[u8];
 
   pub fn empty() String { String[List[u8].empty()]; }
@@ -390,7 +396,7 @@ const slotRemoved = 2u8;
 // K is String: keys are reached through a String's 'view()'. It is written as a
 // type parameter so the name survives keys of other types, which wait for
 // bounds on type parameters.
-pub struct Dict[K, V] {
+pub struct Dict[K, V] is ShapeChanging {
   slots *Slot[K, V];
   used usize;
   removed usize;

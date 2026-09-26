@@ -89,10 +89,14 @@ Put these first, because every one of them is load-bearing.
    as `uni`, a local's own storage above all; Cone's `mut` is shared, so a
    source reached through a `&mut` or `&ro` reference or a `+rc-mut` owner is
    only kept alive, and reading or writing it through another path is no
-   conflict. Everything else is as it was:
-   a borrow a method returns (`list[0usize]`, `a.alloc(v)`), one held inside
-   another value, and a method called through a reference freeze nothing, and
-   two copies of one `&mut` may reach one place two ways. `borrowFlow`, in the
+   conflict. A borrow a call returns counts as a borrow of every argument —
+   `list[0usize]` keeps `list` loaned read-only while it is used — except
+   from a container declaring a no-loan kind (`a.alloc(v)` keeps only the
+   arena's life); a call's arguments conflict with each other where they
+   touch one place, a method receiver's mutable borrow being two-phase. A
+   borrow held inside another value freezes nothing yet, an element borrow
+   through a shared path is not refused, and two copies of one `&mut` may
+   reach one place two ways. `borrowFlow`, in the
    main walk, still asks only that what is borrowed was not moved out, as a read
    does; it deactivates nothing and records nothing about the borrow.
 2. **A lifetime is a `uint16_t` block-nesting depth on the borrow expression's
@@ -185,10 +189,11 @@ triggers cost flow 25–30% on code holding no borrow; inline, about 4%. An
 ordinary compile stops asking once any bit is set; `-V 2` asks every trigger to
 the end, so that it can count each, and prints
 `Flow gate: G of N functions (holder …, result …, store …, in-call …)`
-(`flowGatePrint`). The loan walk only follows borrowed-reference locals so far,
-so a function gated for anything else is walked and finds nothing to hold; the
-triggers are the ones the walk will need as it grows, and the walk of such a
-function costs little.
+(`flowGatePrint`). The loan walk holds loans only in borrowed-reference locals
+so far, and checks a call's arguments against each other, which the in-call
+trigger is for; a function gated for a result or a store is walked and finds
+nothing to hold. Those triggers are the ones the walk will need as it grows,
+and the walk of such a function costs little.
 
 **Flow computes no lifetimes of its own.** `VarDclNode.scope` is set during name
 resolution; `RefNode.scope` during type check by `borrowTypeCheck`, by
@@ -544,8 +549,52 @@ carry (a `PathSet`): a borrow, its new loan and whatever the holder at the root
 of the borrowed place holds (a reborrow `&mut *r`, or `&r`, keeps what `r`
 holds); a holder named, or a place read through it, what it holds; a recast, an
 `if`, a block, and a tuple, struct or array literal, the union of theirs; a
-call, nothing. A holder's declaration, or an assignment to the whole of it,
+call, below. An owning reference coerced to a borrowed one (`imm b &Pt = u`,
+`u` a `+so Pt`: a recast from an owning to a borrowed reference) is a borrow of
+what it owns, `*u`, so `u` may not be moved while `b` is used
+(`pwOwnedLent`). A holder's declaration, or an assignment to the whole of it,
 *replaces* what it holds with what the value carries.
+
+**Calls** (`pwCall`). A borrow a call returns, or a value that may hold one,
+carries the loans of every argument: Cone's rule for a signature without
+lifetime annotations is that every borrowed reference in it shares one
+lifetime (`reflifefn.html`), which `fnCallFinalizeArgs` already applies to the
+result's scope. So a borrow a method returns keeps its receiver loaned while
+it is used, the Rust way — the loan is the receiver's own: `list[0usize]`'s
+`&list`, read-only, lets `list` be read but not pushed onto; a method taking
+`self &mut` and returning a borrow freezes its receiver entirely. A receiver
+taken by reference is a loan whether the call borrows it (`list.push(x)` is
+`(&mut list).push(x)`, the borrow injected) or it is handed a reference (`r.push(x)`
+for `r &uni List` reborrows `*r`, with the permission the method declares for
+`self`) (`pwReceiver`). A message names the method: "'list' is borrowed (by
+'[]' at 5:15)".
+
+A container may declare that its element borrows need no loan on it, with a
+marker trait [Jon 26 Sep; names provisional] its `StructNode.lends` records:
+`NoLoanMut` (any borrow a method returns; the arena, whose allocations are
+fresh and never moved) or `NoLoanRead` (a read-only one). The result then
+carries only a *pin* of the receiver's place — it may not be moved, replaced
+or ended while the result is used — and a second `a.alloc(v)` is no conflict.
+A borrow of a `NoLoanMut` container itself is held as one through a shared
+path is (`pwLend`): it keeps the container alive and promises no more, so two
+`&mut a` may live at once and `a.alloc(Spawner[2, &mut a])` is one call. The
+third marker, `ShapeChanging` (`List`, `String`, `Dict`, `Pool`), is read by
+nothing yet: see "What is not held".
+
+**In flight.** A call's arguments are walked in order, each one's loans pushed
+*in flight* (`loanFlightPush`) until the call is made; so are a tuple, struct
+or array literal's elements until it is built. That value is certainly used,
+so an access conflicting with a loan in flight is reported at once
+(`loanFlightAccess`), not left pending: `f(&mut v, v.len())` is refused at
+`v`. A method receiver's mutable borrow is **two-phase** (Rust's RFC 2025):
+*reserved* while the arguments are walked, it accesses its place as a
+read-only borrow would and meets their accesses as one, so `v.push(v.len())`
+compiles and `v.push(takeLast(&mut v))` does not; then *activated* at the
+call, where it is checked against what every other argument carries
+(`loanFlightActivate`) and then accessed as what it is, against the loans
+still held — so a holder whose last use is an argument (`imm last = v[0];
+v.push(*last)`) is dead by then. An explicit `(&mut v).m(…)` is a receiver too,
+and two-phase with it, a leniency beyond Rust's.
 
 **How long: the last use, found forward.** At an access that conflicts with a
 loan, each holder that may hold the loan on this path gets a *pending conflict*
@@ -593,12 +642,19 @@ see because assignment does not carry a scope onto a variable.
 **What is not held.** The temporary an operator changing its operand in place
 borrows it through (`x += 1` is `{imm tmp = &mut x; *tmp = *tmp + 1}`, and
 `v <- (a, b)` appends through one; both named `tempName`) is an access, a write,
-and holds nothing, as a method's receiver does: `k += k` compiles. A borrow a
-call returns — a method's included, `list[0usize]`, `a.alloc(v)` — carries no
-loan, a borrow held inside another value has no holder, and a method called
-through a reference (`r.bump()` passes `r` itself: a use of it, not a reborrow
-of `*r`) accesses nothing. Copies of one `&mut` reach one place two ways
-unchecked, and a global a callee changes is invisible.
+and holds nothing: `k += k` compiles. A borrow held inside another value —
+`pool.get(id)`'s `Option[&T]`, a struct field — has no holder yet. A borrow a
+call returns carries its receiver's loan as the receiver was reached: through a
+shared path (`l &mut List`, a field of `self`, a `+rc-mut` owner) that loan
+only keeps the source alive, so `imm e = l[0usize]; m.push(p); e.x` compiles
+when `m` is another reference to the same list, and `e` dangles. Jon's rule
+refuses such an element borrow of a container that changes shape (it declares
+`ShapeChanging`); the check is not built, because it would refuse ordinary
+code — reading a `List[String]` element through a `&List` parameter, a
+method reading its own `self` list field — until `uni` reborrowing makes the
+alternatives writable. `collection_flow_freeze`'s header and `refborref.html`
+pin each shape. Copies of one `&mut` reach one place two ways unchecked, and a
+global a callee changes is invisible.
 
 **Its state** is file-static, as the variable stack is, and safe for the same
 reason: flow never runs re-entrantly (`flowPathWalk` refuses to). The buffers
@@ -611,7 +667,7 @@ the next; a variable's index is `VarDclNode.flowindex` for the length of a walk.
 | --- | --- | --- | --- |
 | **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable, and on a borrow of a moved-out one; move out of a field, or of a global, or out through a borrowed or a shared owning reference, refused | element granularity — moving `a[0]` deactivates all of `a`; conditional moves; loop-carried moves |
 | **Escape / lifetime** | representation in type check, enforcement here | storing a borrow into a longer-lived lval, by assignment or by either direction of a swap; returning a borrow of a local; a borrow arriving through a call's result, singly or as one of several values destructured into lvals, each carrying the narrowest argument borrow's scope; a `&mut &T` argument whose pointee would outlive another borrow passed with it; a borrow coerced to another reference type, whether widened to a base trait's reference or made a virtual reference | a borrow laundered through a variable and returned (kept past its source's scope and used, it is refused by freezing, below); a borrow stored in a field or captured; distinguishing parameter lifetimes — there is no lifetime annotation syntax |
-| **Freezing** | the loan walk, on a gated function | a borrow held in a local whose type is a borrowed reference, and its copies, freeze the source until the last use: `ErrorFrozen` at a change, a move, a conflicting borrow, the source's end, and, under a mutable borrow, a read — for a source reached as `uni`; for one reached through a shared path, only its owner's move, replacement or end, a change or mutable borrow of the owner where it is held, and an `&uni` or `&imm` borrow | a borrow a call returns; a borrow held inside another value; a method called through a reference; two copies of one `&mut`; a global a callee changes |
+| **Freezing** | the loan walk, on a gated function | a borrow held in a local whose type is a borrowed reference, and its copies, freeze the source until the last use, and so does a borrow a call returns, of every argument (from a `NoLoanMut` or `NoLoanRead` container, only its life): `ErrorFrozen` at a change, a move, a conflicting borrow, the source's end, and, under a mutable borrow, a read — for a source reached as `uni`; for one reached through a shared path, only its owner's move, replacement or end, a change or mutable borrow of the owner where it is held, and an `&uni` or `&imm` borrow | an element borrow through a shared path (Jon's rule refuses it for a `ShapeChanging` container; not built); a borrow held inside another value; two copies of one `&mut`; a global a callee changes |
 | **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs and slices, of drop-fn structs and enums, and of tuples and arrays holding what finalizes or owns, from a jump down to the block it names | an array an element was moved out of leaks the rest; a variable moved out, or initialized, on only one path — see Hazards |
 | **Permission** | `MayWrite` and `MayRead` | `ErrorNoMut` on assignment and swap; `ErrorNoRead` on a read through a reference — a dereference, an index, or a field of a virtual reference | `MayAliasWrite`, `RaceSafe`, `IsLockless` are populated and read nowhere |
 | **Initialization** | yes | `ErrorMove` "has not been initialized" | "initialized on one branch" reads as initialized everywhere; a variable never initialized may be borrowed, so a method taking it `&mut` can fill it, and nothing then stops a field it left unset being read through the borrow; the unused-variable warning in `flow.h`'s header does not exist |
@@ -635,7 +691,7 @@ Everything else about permissions is type check's: `permMatches` in
 | `ErrorFillCount` | `arrayLitFlow` | fill count not constant, or too large |
 | `ErrorEscape` | `returnFlowEscape` | returned borrow outlives the local it points at |
 | `ErrorCallEscape` | `fnCallFlowStoredBorrow` | a `&mut &T` argument points at a place that outlives another borrow passed to the same call |
-| `ErrorFrozen` | `loanUse`, for a conflict `loanAccess` recorded | a source read, changed, moved, borrowed or ended while a borrow of it that forbids that is still to be used; reported at the access, naming the borrow and its next use |
+| `ErrorFrozen` | `loanUse`, for a conflict `loanAccess` recorded; `loanFlightAccess`, `loanFlightActivate` | a source read, changed, moved, borrowed or ended while a borrow of it that forbids that is still to be used; reported at the access, naming the borrow (or the method that returned it) and its next use. Or, at once, an access conflicting with a loan an earlier operand of the same call or literal carries, or a two-phase receiver conflicting at its call with what another argument carries |
 
 `ErrorBadFill` and `ErrorFillCount` are deliberately distinct: the first is a
 language rule, the second an implementation limit that should disappear when a
@@ -732,7 +788,7 @@ is what releases the old allocation.
 | `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the only entry point; the per-function error-delta gate; `FlowTimer` round `blockFlow` and the loan walk under `-V 1`; the loan walk on a gated function `blockFlow` found no error in; `flowGateCount` after it |
 | `ir/flowpath.c` | `flowPathWalk`, `flowPathPrint` | the loan walk (§6): its entry, and its `-V 2` tallies |
 | | `pathSetFacts`, `pathRollback`, `pathDelta`, `pathJoin` | the state per path: set a fact, recording the old one; undo to a fork; what a path changed; join paths |
-| | `pwValue`, `pwPlace`, `pwThrough`, `pwBorrow`, `pwCall`, `pwStore`, `pwSwap`, `pwVarDcl` | the walk's dispatch: what each node accesses, which holders it uses, what loans its value carries |
+| | `pwValue`, `pwPlace`, `pwThrough`, `pwBorrow`, `pwLend`, `pwOwnedLent`, `pwStore`, `pwSwap`, `pwVarDcl` | the walk's dispatch: what each node accesses, which holders it uses, what loans its value carries |
 | | `pwStmts`, `pwBlock`, `pwBlockExits`, `pwLoop`, `pwIf`, `pwJump`, `pwScopeEnd` | forks and joins, loops to a fixed point, jumps, and a scope's end as an access |
 | `ir/flowloan.c` | `loanMake`, `loanHeldBy` | a borrow's loan, and who may hold it |
 | | `loanAccess`, `loanUse` | a conflicting access records a pending conflict on each holder of the loan; a use of the holder fires it (`ErrorFrozen`) |
@@ -770,7 +826,10 @@ Test sources that pin behavior precisely: `test/cases/move/move-flow-*.cone`,
 `test/cases/region/region_flow*.cone`, `test/cases/ref/ref_flow.cone`,
 `test/cases/ref/ref_flow_return.cone`, `test/cases/core/core_flow_gate.cone`, and
 for the loan walk `test/cases/ref/ref_flow_freeze.cone`,
-`test/cases/ref/ref_flow_freeze_loop.cone` and `test/cases/ref/ref_freeze_success.cone`.
+`test/cases/ref/ref_flow_freeze_loop.cone`, `test/cases/ref/ref_freeze_success.cone`, and for a borrow a call
+returns `test/cases/collection/collection_flow_freeze.cone`,
+`test/cases/region/region_flow_arena_freeze.cone` and
+`test/cases/collection/collection_freeze_success.cone`.
 
 ## 11. What lives elsewhere
 

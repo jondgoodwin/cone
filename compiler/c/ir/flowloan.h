@@ -41,4 +41,22 @@ void loanUse(uint32_t var, INode *usenode);
 // loan's place finds the holders to ask
 void loanHeldBy(uint32_t var, PathSet *holds);
 
+// A method's returned borrow carries this loan: name the method in a message
+void loanReturnedBy(uint32_t loan, Name *method);
+
+// Loans in flight: what the walked operands of a call or literal carry, until
+// the call is made. A mark to pop back to, and one operand's loans pushed;
+// 'reserved' is a two-phase receiver's own loan among them (0 for none).
+uint32_t loanFlightMark();
+void loanFlightPush(PathSet *carried, uint32_t reserved);
+void loanFlightPop(uint32_t mark);
+
+// An access to a place while loans are in flight: one it conflicts with is
+// reported at once (a reserved receiver's loan conflicts as a read-only one)
+void loanFlightAccess(Place *pl, int access, INode *node);
+
+// A two-phase receiver's loan activated at its call: reported at 'node' if its
+// access conflicts with what another operand pushed since 'mark' carries
+void loanFlightActivate(uint32_t mark, uint32_t receiver, int access, INode *node);
+
 #endif

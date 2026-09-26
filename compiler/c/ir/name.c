@@ -75,6 +75,9 @@ Name *regionRefName;
 Name *tracedTraitName;
 Name *moveTraitName;
 Name *copyTraitName;
+Name *shapeChangingTraitName;
+Name *noLoanMutTraitName;
+Name *noLoanReadTraitName;
 
 // ---- Identifiers -----------------------------------------------------------
 //

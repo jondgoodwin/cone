@@ -80,6 +80,9 @@ StructNode *regionRefTrait;
 StructNode *moveTrait;
 StructNode *copyTrait;
 StructNode *tracedTrait;
+StructNode *shapeChangingTrait;
+StructNode *noLoanMutTrait;
+StructNode *noLoanReadTrait;
 
 // A trait the compiler declares, with no members, bound as a name every module
 // reaches unless it declares the name itself
@@ -92,7 +95,8 @@ static StructNode *newBuiltinTrait(Name *name) {
 
 int corelibIsBuiltinTrait(INode *node) {
     return node == (INode*)regionRefTrait || node == (INode*)moveTrait || node == (INode*)copyTrait
-        || node == (INode*)tracedTrait;
+        || node == (INode*)tracedTrait || node == (INode*)shapeChangingTrait
+        || node == (INode*)noLoanMutTrait || node == (INode*)noLoanReadTrait;
 }
 
 // Set up the standard library, whose names are always shared by all modules
@@ -140,4 +144,23 @@ void stdlibInit(int ptrsize) {
     // may be held is restricted to where a collector can find it
     // (regionTracedCheckAll). Held to 'mark' by regionRefCheck.
     tracedTrait = newBuiltinTrait(tracedTraitName);
+    // What a container's element borrows cost it [Jon 26 Sep; names
+    // provisional]. A borrow a method returns keeps its receiver loaned, the
+    // Rust way (the loan walk, flowpath.c's pwCall). 'NoLoanMut' and
+    // 'NoLoanRead' say its element borrows (any, or read-only ones) need no
+    // loan on it -- every element is fresh and never moved, as an arena's
+    // allocations are -- only that it is not moved, replaced or ended while
+    // they are used; a container declaring 'NoLoanMut' is also borrowed
+    // itself for its life only. Trusted: the compiler cannot check the
+    // promise. 'ShapeChanging' says the container may move its elements (a
+    // list's push reallocates). It has NO EFFECT YET: Jon's rule refuses an
+    // element borrow of such a container reached through a shared path (a
+    // '&mut' or '&' of unseen origin, a 'self' field, a '+rc-mut' owner),
+    // but refusing it today breaks common collection code -- reading a
+    // 'List[String]' element through a '&List' parameter -- that 'uni'
+    // reborrowing is to make writable. Until then that is a documented hole
+    // (refborref.html), and the marker waits for the check that reads it.
+    shapeChangingTrait = newBuiltinTrait(shapeChangingTraitName);
+    noLoanMutTrait = newBuiltinTrait(noLoanMutTraitName);
+    noLoanReadTrait = newBuiltinTrait(noLoanReadTraitName);
 }
