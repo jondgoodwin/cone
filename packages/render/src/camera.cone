@@ -1,0 +1,138 @@
+// Camera and Light.
+//
+// A camera is placed like anything else (origin, orientation, scale) and looks
+// down its own -z. Each frame 'begin' clears what it draws into and works out
+// its two matrices: the projection (pmatrix), perspective or orthogonal, and
+// the view (vmatrix), which carries world coordinates into the camera's. A
+// camera may follow something: it is then placed relative to that thing's
+// placement, looking out from its 'eye'. The camera is also the render
+// context Pegasus's shapes drew in: the lights put their uniforms into it.
+
+// A camera's projection: Pegasus's 'Perspective' and 'Orthogonal' symbols
+pub const Perspective = 0;
+pub const Orthogonal = 1;
+
+pub struct Camera {
+  pub projection i32;       // Perspective (default) or Orthogonal
+  pub fov f32;              // perspective: the vertical field of view, in degrees
+  pub viewHeight f32;       // orthogonal: the height of what it sees
+  pub near f32;             // nothing nearer than this is drawn
+  pub far f32;              // nor further than this
+  pub origin Xyz;           // where it is
+  pub orientation Quat;     // which way it faces
+  pub scale Xyz;
+  pub targetRect Rect;      // what it draws into, in pixels ('begin' sets it)
+  pub viewport Rect;        // a part of that to draw in: none while its w is 0
+  pub background Color;     // what it clears to
+  pub following Bool;       // placed relative to 'followMatrix'?
+  pub followMatrix Mat4;    // the placement of the thing it follows
+  pub eye Xyz;              // where on that thing it looks out from
+  pub pmatrix Mat4;         // its projection, worked out by 'begin'
+  pub vmatrix Mat4;         // its view, worked out by 'begin'
+  pub uniforms Uniforms;    // values for the shaders: the lights' among them
+
+  // Pegasus's new camera: perspective, a field of view of 50 degrees (an
+  // orthogonal view 10 high), drawing from 0.1 to 1000 away, at (0, 0, 5)
+  // looking down -z at the origin, clearing to black
+  pub fn make() Camera {
+    Camera[Perspective, 50., 10., 0.1, 1000., Xyz[0., 0., 5.], Quat.identity(), Xyz[1., 1., 1.],
+      Rect[0, 0, 0, 0], Rect[0, 0, 0, 0], Color[0., 0., 0., 1.], false, Mat4.identity(),
+      Xyz[0., 0., 0.], Mat4.identity(), Mat4.identity(), Uniforms.empty()];
+  }
+
+  // The width of what it draws into over the height. (Pegasus divided by a
+  // height of 0 too; this takes 1 then.)
+  pub fn aspect(self &) f32 {
+    if targetRect.h == 0 { return 1.; }
+    f32[targetRect.w] / f32[targetRect.h];
+  }
+
+  // Its perspective projection (Pegasus's Perspective)
+  pub fn perspective(self &) Mat4 { Mat4.perspective(fov, near, far, self.aspect()); }
+
+  // Its orthogonal projection (Pegasus's Orthogonal). It looks down -z, as
+  // math3d's corrected Mat4.ortho does.
+  pub fn orthogonal(self &) Mat4 { Mat4.ortho(viewHeight, near, far, self.aspect()); }
+
+  // The projection its 'projection' names
+  pub fn projectionMatrix(self &) Mat4 {
+    if projection == Orthogonal { self.orthogonal(); } else { self.perspective(); }
+  }
+
+  // Its view matrix: the inverse of where it is placed, which is relative to
+  // the thing it follows, looking out from that thing's eye
+  pub fn viewMatrix(self &) Mat4 {
+    imm cammat = Mat4.place(origin, orientation, scale);
+    if following {
+      mut follow = followMatrix;
+      imm e = followMatrix * eye;
+      follow.m[12] = e.x;
+      follow.m[13] = e.y;
+      follow.m[14] = e.z;
+      (follow * cammat).inverse();
+    } else {
+      cammat.inverse();
+    }
+  }
+
+  // A point in the local coordinates of something placed by 'mmatrix', in
+  // the camera's (eye) coordinates, by the view matrix 'begin' worked out
+  // (Pegasus's CameraXyz)
+  pub fn cameraXyz(self &, p Xyz, mmatrix Mat4) Xyz { (vmatrix * mmatrix) * p; }
+
+  // Start a frame drawn into a target 'width' by 'height' pixels (a window's
+  // size): the viewport, the clear to the background with depth testing on,
+  // and the projection and view matrices. Then prepare the lights and draw
+  // the shapes. (The part of Pegasus's Camera._Render before the scene.)
+  pub fn begin(self &mut, width i32, height i32) {
+    targetRect = Rect[0, 0, width, height];
+    imm hasViewport = viewport.w > 0 and viewport.h > 0;
+    if hasViewport {
+      gl.Viewport(viewport.x, viewport.y, viewport.w, viewport.h);
+      targetRect.w = viewport.w;
+      targetRect.h = viewport.h;
+      gl.Scissor(viewport.x, viewport.y, viewport.w, viewport.h);
+      gl.Enable(gl.SCISSOR_TEST);
+    } else {
+      gl.Viewport(0, 0, width, height);
+    }
+
+    // Clear for 3D: closer things hide further ones
+    gl.ClearColor(background.red, background.green, background.blue, background.alpha);
+    gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.Enable(gl.DEPTH_TEST);
+    gl.DepthFunc(gl.LESS);
+    gl.UseProgram(0u);
+    if hasViewport { gl.Disable(gl.SCISSOR_TEST); }
+
+    pmatrix = self.projectionMatrix();
+    vmatrix = self.viewMatrix();
+  }
+}
+
+// A light: where it is, the color it gives, and the ambient light everything
+// gets from everywhere. It reaches the shaders through a camera's uniforms,
+// as 'lightOrigin', 'lightColor' and 'ambient'.
+pub struct Light {
+  pub mmatrix Mat4;         // where it is: its origin is the translation
+  pub ambient Color;
+  pub lightColor Color;
+
+  // A light at 'origin'
+  pub fn at(origin Xyz, ambient Color, lightColor Color) Light {
+    Light[Mat4.identity().withPos(origin), ambient, lightColor];
+  }
+
+  // Where it is, in world coordinates
+  pub fn origin(self &) Xyz { Xyz[mmatrix.m[12], mmatrix.m[13], mmatrix.m[14]]; }
+
+  // Give the camera this light's uniforms, before its shapes are drawn.
+  // (Pegasus's _RenderPrep. Its test for an existing 'lightOrigin' assigned
+  // where it meant to compare, 'if (lightoriginv = aNull)'; a field has no
+  // such question.)
+  pub fn prepare(self &, camera &mut Camera) {
+    camera.uniforms.set("lightOrigin", Uniform.xyz(self.origin()));
+    camera.uniforms.set("ambient", Uniform.color(ambient));
+    camera.uniforms.set("lightColor", Uniform.color(lightColor));
+  }
+}

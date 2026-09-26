@@ -1,0 +1,75 @@
+// spin: a lit, textured sphere turning in a window -- Pegasus's horseworld
+// earth, in Cone. The render package draws it, the window package gives it a
+// window, and math3d places the sphere and the camera.
+//
+// It stops on Escape, when the window is closed, or after 600 frames (about
+// ten seconds at 60 frames a second), and then prints how many frames it drew
+// and the color it found at the middle of the window on the tenth, which is
+// the sphere's. F11 toggles fullscreen.
+//
+//   congo run packages/window/examples/spin.cone
+//
+// It needs a display, SDL2.lib on LIB to link and SDL2.dll on PATH to run.
+
+mod spin;
+
+import stdio use *;
+import math3d use *;
+import render use *;
+import window use *;
+import gl;
+
+fn main() i32 {
+  mut win = Window.open("Cone: a lit, textured, turning sphere");
+  if !win.isOpen() {
+    print <- "No window could be opened\n";
+    return 1;
+  }
+  print <- "OpenGL "; print <- gl.GetString(gl.VERSION); print <- "\n";
+
+  // The camera at (0, 0, 3.5) looks down -z at the sphere, on a dark blue sky
+  mut camera = Camera.make();
+  camera.origin = Xyz[0., 0., 3.5];
+  camera.background = Color[0.05, 0.05, 0.15, 1.];
+
+  // horseworld's light: a low evening sun, up and to the left, behind the camera
+  imm light = Light.at(Xyz[-3.5, 5.5, 10.], Color[0.52, 0.55, 0.60, 1.], Color[0.78, 0.70, 0.55, 1.]);
+
+  // A sphere with horseworld earth's diffuse color, and a checkerboard for a
+  // texture: eight squares around, four from pole to pole
+  mut shader = Shader.diffuseTextured();
+  mut ball = Shape.sphere(1., 32);
+  mut tex = Texture.from(Image.checker(256, 128, 8, 4, Color[0.9, 0.3, 0.1, 1.], Color[0.95, 0.9, 0.8, 1.]));
+  ball.uniforms.set("diffuse", Uniform.color(Color[0.5882, 0.5882, 0.5882, 1.]));
+  ball.uniforms.set("tex", Uniform.texture(&mut tex));
+
+  // Tilted towards the camera, turning about its own axis
+  imm tilt = Quat.angleAxis(0.4, Xyz[1., 0., 0.]);
+  imm spinrate f32 = 0.8;     // radians a second
+  mut angle f32 = 0.;
+  mut frames = 0;
+  mut centre [4; u8] = [4; 0u8];
+  while win.running and frames < 600 {
+    imm dt = win.nextFrame();
+    win.pollEvents();
+    angle = angle + dt * spinrate;
+    ball.mmatrix = Mat4.place(Xyz[0., 0., 0.], tilt * Quat.angleAxis(angle, Xyz[0., 1., 0.]), Xyz[1., 1., 1.]);
+
+    imm size = win.size();
+    camera.begin(size.w, size.h);
+    light.prepare(&mut camera);
+    ball.render(&camera, &mut shader);
+    frames = frames + 1;
+
+    // What was drawn at the middle of the window, before it is shown
+    if frames == 10 {
+      gl.ReadPixels(size.w / 2, size.h / 2, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, &mut centre[0]);
+    }
+    win.swapBuffers();
+  }
+
+  print <- "Frames drawn: "; print <- frames; print <- "\n";
+  print <- "Middle of the window on frame 10: ";
+  print <- centre[0]; print <- " "; print <- centre[1]; print <- " "; print <- centre[2]; print <- "\n";
+  0;
+}

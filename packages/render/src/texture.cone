@@ -1,0 +1,222 @@
+// Image and Texture.
+//
+// Pegasus decoded its images (JPEG, PNG, GIF) with stb_image, a C library
+// held in one header. This package reads uncompressed BMP files itself, in
+// Cone, which is enough to texture a shape tonight and needs no C compiled
+// into the build; stb_image waits for Congo to compile a package's C sources.
+// An Image is what stb_image gave Pegasus with its "flip vertically on load"
+// set: rows from the bottom up, as OpenGL numbers them, each row 'width'
+// pixels of 'channels' bytes (3 is RGB, 4 is RGBA), with no padding.
+
+pub struct Image {
+  pub width i32;
+  pub height i32;
+  pub channels i32;       // bytes per pixel: 3 red, green, blue; 4 with alpha
+  pub pixels List[u8];    // bottom row first
+
+  // No pixels: what a decode that fails gives
+  pub fn empty() Image { Image[0, 0, 3, List[u8].empty()]; }
+
+  pub fn isEmpty(self &) Bool { width == 0 or height == 0; }
+
+  // Channel c (0 red, 1 green, 2 blue, 3 alpha) of the pixel x from the left
+  // and y from the bottom
+  pub fn at(self &, x i32, y i32, c i32) u8 {
+    *pixels[usize[(y * width + x) * channels + c]];
+  }
+
+  // A checkerboard 'width' by 'height' pixels, of 'across' squares by 'down',
+  // the bottom-left one colored a and its neighbours b. (Not Pegasus's: it
+  // gives the example a texture without a file.)
+  pub fn checker(width i32, height i32, across i32, down i32, a Color, b Color) Image {
+    mut img = Image[width, height, 3, List[u8].withCapacity(usize[width * height * 3])];
+    imm cw = if width / across > 0 {width / across;} else {1;};
+    imm ch = if height / down > 0 {height / down;} else {1;};
+    mut y = 0;
+    while y < height {
+      mut x = 0;
+      while x < width {
+        imm c = if (x / cw + y / ch) % 2 == 0 {a;} else {b;};
+        img.pixels.push(colorByte(c.red));
+        img.pixels.push(colorByte(c.green));
+        img.pixels.push(colorByte(c.blue));
+        x = x + 1;
+      }
+      y = y + 1;
+    }
+    img;
+  }
+
+  // The image in a BMP file, or an empty one when the file cannot be read or
+  // is not a BMP this decodes (see 'fromBmp')
+  pub fn load(path &[]u8) Image {
+    mut ok = true;
+    imm data = readFile(path, &mut ok);
+    if !ok { return Image.empty(); }
+    Image.fromBmp(data.view());
+  }
+
+  // The image a BMP file's bytes hold: uncompressed, 24 bits a pixel (RGB) or
+  // 32 (RGBA, its masks the usual ones), stored bottom-up or top-down. Any
+  // other BMP, or bytes that are not one, give an empty image.
+  pub fn fromBmp(data &[]u8) Image {
+    if data.len < 54usize { return Image.empty(); }
+    if data[0] != 'B' or data[1] != 'M' { return Image.empty(); }
+    imm offset = usize[le32(data, 10usize)];
+    imm headerSize = le32(data, 14usize);
+    imm width = i32[le32(data, 18usize)];
+    mut height = i32[le32(data, 22usize)];
+    imm bpp = le16(data, 28usize);
+    imm compression = le32(data, 30usize);
+
+    // A negative height means the rows are stored top row first
+    imm topDown = height < 0;
+    if topDown { height = -height; }
+    if width <= 0 or height <= 0 { return Image.empty(); }
+    if bpp != 24u16 and bpp != 32u16 { return Image.empty(); }
+
+    // Compression 0 is none. 3 (BI_BITFIELDS) says masks give each channel's
+    // bits; only the usual 32-bit masks (blue, green, red, alpha bytes) are read.
+    if compression == 3u32 {
+      if bpp != 32u16 or data.len < 66usize { return Image.empty(); }
+      if le32(data, 54usize) != 0x00FF0000u32 or le32(data, 58usize) != 0x0000FF00u32
+        or le32(data, 62usize) != 0x000000FFu32 {
+        return Image.empty();
+      }
+    } elif compression != 0u32 {
+      return Image.empty();
+    }
+    imm channels = i32[bpp] / 8;
+
+    // Each stored row is padded to a multiple of four bytes
+    imm rowSize = usize[(width * i32[bpp] + 31) / 32 * 4];
+    if offset + rowSize * usize[height] > data.len { return Image.empty(); }
+
+    // A 32-bit BMP without masks leaves its fourth byte unused: opaque
+    imm alphaStored = channels == 4 and compression == 3u32 and headerSize >= 56u32;
+
+    mut img = Image[width, height, channels, List[u8].withCapacity(usize[width * height * channels])];
+    mut row = 0;
+    while row < height {
+      imm stored = if topDown {height - 1 - row;} else {row;};
+      imm base = offset + usize[stored] * rowSize;
+      mut x = 0;
+      while x < width {
+        imm p = base + usize[x * channels];
+        // Stored blue, green, red (alpha)
+        img.pixels.push(data[p + 2usize]);
+        img.pixels.push(data[p + 1usize]);
+        img.pixels.push(data[p]);
+        if channels == 4 {
+          img.pixels.push(if alphaStored {data[p + 3usize];} else {255u8;});
+        }
+        x = x + 1;
+      }
+      row = row + 1;
+    }
+    img;
+  }
+}
+
+// A color component from 0 to 1 as a byte from 0 to 255
+fn colorByte(c f32) u8 {
+  if c <= 0. { return 0u8; }
+  if c >= 1. { return 255u8; }
+  u8[c * 255. + 0.5];
+}
+
+// Little-endian numbers in a byte slice
+fn le16(d &[]u8, at usize) u16 { u16[d[at]] | (u16[d[at + 1usize]] << 8u16); }
+fn le32(d &[]u8, at usize) u32 {
+  u32[d[at]] | (u32[d[at + 1usize]] << 8u32) | (u32[d[at + 2usize]] << 16u32) | (u32[d[at + 3usize]] << 24u32);
+}
+
+// Texture units handed out so far: Pegasus's Texture._nTextures. Each texture
+// keeps its own unit, bound once, for as long as the program runs.
+mut nTextures = 0;
+
+// An image for a shader to sample: a flat one (TEXTURE_2D), or six for a cube
+// map (TEXTURE_CUBE_MAP, a skybox's), and how it is wrapped and filtered.
+// Each field below is Pegasus's property of the same name, holding the OpenGL
+// value its symbol stood for ('Repeat' is gl.REPEAT).
+pub struct Texture {
+  pub image Image;
+  pub faces List[Image];   // a cube map's: +x, -x, +y, -y, +z, -z
+  pub mapping u32;         // gl.TEXTURE_2D (Pegasus's default) or gl.TEXTURE_CUBE_MAP
+  pub wrapS i32;           // gl.CLAMP_TO_EDGE (default), gl.REPEAT, gl.MIRRORED_REPEAT
+  pub wrapT i32;
+  pub mipmap Bool;         // true (default): make mipmaps
+  pub magFilter i32;       // gl.LINEAR (default) or gl.NEAREST
+  pub minFilter i32;       // gl.NEAREST_MIPMAP_LINEAR (default), or another filter
+  unit i32;                // -1 until handed to OpenGL
+  name u32;                // OpenGL's name for it
+
+  // A flat texture of one image, with Pegasus's defaults
+  pub fn from(image Image) Texture {
+    Texture[image, List[Image].empty(), gl.TEXTURE_2D, gl.CLAMP_TO_EDGE, gl.CLAMP_TO_EDGE, true,
+      gl.LINEAR, gl.NEAREST_MIPMAP_LINEAR, -1, 0u];
+  }
+
+  // A cube map of six images, one for each face
+  pub fn cubeMap(posX Image, negX Image, posY Image, negY Image, posZ Image, negZ Image) Texture {
+    mut faces = List[Image].withCapacity(6usize);
+    faces.push(posX);
+    faces.push(negX);
+    faces.push(posY);
+    faces.push(negY);
+    faces.push(posZ);
+    faces.push(negZ);
+    Texture[Image.empty(), faces, gl.TEXTURE_CUBE_MAP, gl.CLAMP_TO_EDGE, gl.CLAMP_TO_EDGE, false,
+      gl.LINEAR, gl.LINEAR, -1, 0u];
+  }
+
+  // Whether it has been handed to OpenGL, and the unit it has there
+  pub fn isLoaded(self &) Bool { unit >= 0; }
+  pub fn textureUnit(self &) i32 { unit; }
+
+  // Its texture unit, for a sampler uniform: the first time, it takes the
+  // next unit, and hands its image(s) to OpenGL there. (Pegasus's _Render.)
+  pub fn render(self &mut) i32 {
+    if unit >= 0 { return unit; }
+    unit = nTextures;
+    nTextures = nTextures + 1;
+    gl.ActiveTexture(gl.TEXTURE0 + u32[unit]);
+    gl.GenTextures(1, &mut name);
+    gl.BindTexture(mapping, name);
+
+    // Rows are packed with no padding. (Pegasus left OpenGL's default of
+    // four, which skews an RGB image whose width is not a multiple of four.)
+    gl.PixelStorei(gl.UNPACK_ALIGNMENT, 1);
+
+    if mapping == gl.TEXTURE_2D {
+      upload(gl.TEXTURE_2D, &image);
+      gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrapS);
+      gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrapT);
+      if mipmap { gl.GenerateMipmap(gl.TEXTURE_2D); }
+      gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, magFilter);
+      gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, minFilter);
+    } else {
+      mut i = 0usize;
+      while i < faces.len() and i < 6usize {
+        upload(gl.TEXTURE_CUBE_MAP_POSITIVE_X + u32[i], faces[i]);
+        i = i + 1usize;
+      }
+      gl.TexParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+      gl.TexParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.TexParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.TexParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.TexParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    }
+    unit;
+  }
+}
+
+// Hand one image to the texture bound at 'target'. An empty image hands over
+// nothing. (Pegasus stored every image as RGB inside OpenGL, dropping an
+// RGBA image's alpha; this stores what the image has.)
+fn upload(target u32, img &Image) {
+  if img.isEmpty() { return; }
+  imm format = if img.channels > 3 {gl.RGBA;} else {gl.RGB;};
+  imm px = img.pixels.view();
+  gl.TexImage2D(target, 0, i32[format], img.width, img.height, 0, format, gl.UNSIGNED_BYTE, &px[0] as *u8);
+}

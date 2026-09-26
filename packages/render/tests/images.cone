@@ -1,0 +1,248 @@
+// The render package's Image and Texture, checked with the testing package.
+// Only a failure prints, so images.out holds the summary alone. Handing a
+// texture to OpenGL needs a context, so only what is known before that is
+// checked here.
+//
+// The BMP files are built byte by byte: a 14-byte file header ('BM', the
+// file's size, where the pixels start), a 40-byte information header (its
+// size, width, height, 1 plane, bits a pixel, compression, ...), and rows of
+// pixels, blue before green before red, each row padded to four bytes, the
+// bottom row first unless the height is negative.
+//
+// - 2 by 2 at 24 bits: rows of 6 bytes padded to 8. Bottom row blue then
+//   green, top row red then white; decoded as RGB from the bottom up, so the
+//   pixel (0, 0) is blue (0, 0, 255), (1, 0) green, (0, 1) red (255, 0, 0),
+//   (1, 1) white. The same stored top-down (height -2, top row first) decodes
+//   the same. Written to a file and loaded, the same again.
+// - 3 by 1 at 24 bits: 9 bytes padded to 12, pixels stored (1, 2, 3),
+//   (4, 5, 6), (7, 8, 9) as blue, green, red, so decoded (3, 2, 1), ...
+// - 1 by 1 at 32 bits, stored 10, 20, 30, 40: with no masks the fourth byte is
+//   unused and the pixel is (30, 20, 10, 255); with the usual masks (red
+//   0x00FF0000, green, blue, alpha 0xFF000000) in a 56-byte header it is
+//   (30, 20, 10, 40).
+// - Not a BMP, too short, 8 bits a pixel, run-length compressed, rows cut
+//   short, no width: each an empty image.
+// - A checkerboard 4 by 2 of 2 by 1 squares is squares 2 pixels on a side:
+//   (0, 0) and (1, 1) the first color, red (255, 0, 0); (2, 0) and (3, 1) the
+//   second, (0, 0.5, 1) as (0, 128, 255), 0.5 rounding up from 127.5.
+
+mod images;
+
+import testing use *;
+import libc;
+import math3d use *;
+import collections use *;
+import render use *;
+
+fn push16(b &mut List[u8], v i32) {
+  b.push(u8[v & 255]);
+  b.push(u8[(v >> 8) & 255]);
+}
+
+fn push32(b &mut List[u8], v i32) {
+  push16(b, v & 65535);
+  push16(b, (v >> 16) & 65535);
+}
+
+// The two headers of a BMP whose pixels are 'size' bytes, the information
+// header 'infoSize' bytes (40, or 56 with masks), and then its masks
+fn header(b &mut List[u8], width i32, height i32, bpp i32, compression i32, infoSize i32, size i32) {
+  b.push('B');
+  b.push('M');
+  push32(b, 14 + infoSize + size);
+  push32(b, 0);
+  push32(b, 14 + infoSize);
+  push32(b, infoSize);
+  push32(b, width);
+  push32(b, height);
+  push16(b, 1);
+  push16(b, bpp);
+  push32(b, compression);
+  push32(b, size);
+  push32(b, 0);
+  push32(b, 0);
+  push32(b, 0);
+  push32(b, 0);
+  if infoSize == 56 {
+    push32(b, 0x00FF0000);
+    push32(b, 0x0000FF00);
+    push32(b, 0x000000FF);
+    push32(b, 0xFF000000u32 as i32);
+  }
+}
+
+fn pixel(b &mut List[u8], blue i32, green i32, red i32) {
+  b.push(u8[blue]);
+  b.push(u8[green]);
+  b.push(u8[red]);
+}
+
+// A row's two bytes of padding
+fn pad2(b &mut List[u8]) {
+  b.push(0u8);
+  b.push(0u8);
+}
+
+fn twoByTwo(topDown Bool) List[u8] {
+  mut b = List[u8].empty();
+  header(&mut b, 2, if topDown {-2;} else {2;}, 24, 0, 40, 16);
+  if topDown {
+    pixel(&mut b, 0, 0, 255);
+    pixel(&mut b, 255, 255, 255);
+    pad2(&mut b);
+  }
+  pixel(&mut b, 255, 0, 0);
+  pixel(&mut b, 0, 255, 0);
+  pad2(&mut b);
+  if !topDown {
+    pixel(&mut b, 0, 0, 255);
+    pixel(&mut b, 255, 255, 255);
+    pad2(&mut b);
+  }
+  b;
+}
+
+fn rgb(img &Image, x i32, y i32, r i64, g i64, bl i64, label &[]u8) {
+  expectInt(i64[img.at(x, y, 0)], r, label);
+  expectInt(i64[img.at(x, y, 1)], g, label);
+  expectInt(i64[img.at(x, y, 2)], bl, label);
+}
+
+fn checkTwoByTwo(img &Image, how &[]u8) {
+  expectInt(i64[img.width], 2, how);
+  expectInt(i64[img.height], 2, how);
+  expectInt(i64[img.channels], 3, how);
+  expectInt(i64[img.pixels.len()], 12, how);
+  rgb(img, 0, 0, 0, 0, 255, how);
+  rgb(img, 1, 0, 0, 255, 0, how);
+  rgb(img, 0, 1, 255, 0, 0, how);
+  rgb(img, 1, 1, 255, 255, 255, how);
+}
+
+fn decoding() {
+  imm up = twoByTwo(false);
+  imm a = Image.fromBmp(up.view());
+  checkTwoByTwo(&a, "2x2 bottom-up");
+  imm down = twoByTwo(true);
+  imm b = Image.fromBmp(down.view());
+  checkTwoByTwo(&b, "2x2 top-down");
+
+  mut odd = List[u8].empty();
+  header(&mut odd, 3, 1, 24, 0, 40, 12);
+  pixel(&mut odd, 1, 2, 3);
+  pixel(&mut odd, 4, 5, 6);
+  pixel(&mut odd, 7, 8, 9);
+  odd.push(0u8);
+  odd.push(0u8);
+  odd.push(0u8);
+  imm c = Image.fromBmp(odd.view());
+  expectInt(i64[c.width], 3, "3x1 width");
+  rgb(&c, 0, 0, 3, 2, 1, "3x1 first pixel");
+  rgb(&c, 2, 0, 9, 8, 7, "3x1 last pixel");
+
+  mut plain = List[u8].empty();
+  header(&mut plain, 1, 1, 32, 0, 40, 4);
+  plain.push(10u8);
+  plain.push(20u8);
+  plain.push(30u8);
+  plain.push(40u8);
+  imm d = Image.fromBmp(plain.view());
+  expectInt(i64[d.channels], 4, "32-bit channels");
+  rgb(&d, 0, 0, 30, 20, 10, "32-bit color");
+  expectInt(i64[d.at(0, 0, 3)], 255, "32-bit without masks is opaque");
+
+  mut masked = List[u8].empty();
+  header(&mut masked, 1, 1, 32, 3, 56, 4);
+  masked.push(10u8);
+  masked.push(20u8);
+  masked.push(30u8);
+  masked.push(40u8);
+  imm e = Image.fromBmp(masked.view());
+  rgb(&e, 0, 0, 30, 20, 10, "masked color");
+  expectInt(i64[e.at(0, 0, 3)], 40, "masked alpha");
+}
+
+fn refusals() {
+  mut notBmp = twoByTwo(false);
+  notBmp.set(1usize, 'X');
+  imm a = Image.fromBmp(notBmp.view());
+  expect(a.isEmpty(), "not a BMP");
+  imm short = twoByTwo(false);
+  imm sv = short.view();
+  imm b = Image.fromBmp(&sv[..40]);
+  expect(b.isEmpty(), "too short for its headers");
+  imm cut = twoByTwo(false);
+  imm cv = cut.view();
+  imm c = Image.fromBmp(&cv[..62]);
+  expect(c.isEmpty(), "rows cut short");
+
+  mut eight = List[u8].empty();
+  header(&mut eight, 2, 2, 8, 0, 40, 8);
+  mut i = 0;
+  while i < 8 { eight.push(0u8); i = i + 1; }
+  imm d = Image.fromBmp(eight.view());
+  expect(d.isEmpty(), "8 bits a pixel");
+
+  mut rle = twoByTwo(false);
+  rle.set(30usize, 1u8);
+  imm e = Image.fromBmp(rle.view());
+  expect(e.isEmpty(), "compressed");
+
+  mut narrow = twoByTwo(false);
+  narrow.set(18usize, 0u8);
+  imm f = Image.fromBmp(narrow.view());
+  expect(f.isEmpty(), "no width");
+
+  imm g = Image.empty();
+  expect(g.isEmpty(), "the empty image");
+}
+
+fn files() {
+  imm bytes = twoByTwo(false);
+  imm v = bytes.view();
+  imm f = libc.fopen(&"two.bmp" as *u8, &"wb" as *u8);
+  requireBool(!f, false, "a file to write");
+  libc.fwrite(v, 1usize, v.len, f);
+  libc.fclose(f);
+  imm img = Image.load("two.bmp");
+  checkTwoByTwo(&img, "2x2 from a file");
+  libc.remove(&"two.bmp" as *u8);
+  imm missing = Image.load("missing.bmp");
+  expect(missing.isEmpty(), "a file that is not there");
+}
+
+fn checker() {
+  imm img = Image.checker(4, 2, 2, 1, Color[1., 0., 0., 1.], Color[0., 0.5, 1., 1.]);
+  expectInt(i64[img.pixels.len()], 24, "checker bytes");
+  rgb(&img, 0, 0, 255, 0, 0, "checker (0, 0)");
+  rgb(&img, 1, 1, 255, 0, 0, "checker (1, 1)");
+  rgb(&img, 2, 0, 0, 128, 255, "checker (2, 0)");
+  rgb(&img, 3, 1, 0, 128, 255, "checker (3, 1)");
+}
+
+fn textures() {
+  imm t = Texture.from(Image.checker(4, 4, 2, 2, Color.gray(0.), Color.gray(1.)));
+  expectInt(i64[t.mapping], 0x0DE1, "a flat texture");
+  expectInt(i64[t.wrapS], 0x812F, "clamped across");
+  expectInt(i64[t.wrapT], 0x812F, "clamped up");
+  expectBool(t.mipmap, true, "mipmapped");
+  expectInt(i64[t.magFilter], 0x2601, "linear when magnified");
+  expectInt(i64[t.minFilter], 0x2702, "nearest mipmap, linear between, when shrunk");
+  expectBool(t.isLoaded(), false, "not yet in OpenGL");
+  expectInt(i64[t.textureUnit()], -1, "no unit yet");
+  expectInt(i64[t.image.width], 4, "its image");
+
+  imm cube = Texture.cubeMap(Image.empty(), Image.empty(), Image.empty(), Image.empty(), Image.empty(),
+    Image.empty());
+  expectInt(i64[cube.mapping], 0x8513, "a cube map");
+  expectInt(i64[cube.faces.len()], 6, "six faces");
+}
+
+fn main() i32 {
+  decoding();
+  refusals();
+  files();
+  checker();
+  textures();
+  done();
+}

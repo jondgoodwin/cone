@@ -46,7 +46,14 @@ Visual Studio projects stay at the root.
   `done`), ordinary library code the compiler knows nothing of;
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed
   `Dict[K, V]`, each holding its elements in one block from `libc`'s
-  allocator and moving them with core's `mem` intrinsics.
+  allocator and moving them with core's `mem` intrinsics; `render` draws 3D
+  shapes through OpenGL (`Shape` and its sphere, plane and cube, `Shader`,
+  `Image` from BMP, `Texture`, `Camera`, `Light`), ported from Pegasus3D
+  over `gl`, `math3d` and `collections`, needing no window to build or test;
+  `window` is a window with an OpenGL context through `sdl`, and the render
+  loop's glue (frame time, quit, Escape, fullscreen, resize), and its
+  example, `packages/window/examples/spin.cone`, draws a lit, textured,
+  turning sphere (building it needs SDL2's `lib` folder on `LIB`).
   A package's example programs live in its own `examples/` folder, each run
   with `congo run packages/<name>/examples/<file>.cone`, and its tests in its
   own `tests/` folder, one program each beside the output it must print;

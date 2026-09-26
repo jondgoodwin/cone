@@ -1,0 +1,80 @@
+// The render package: drawing 3D shapes with OpenGL. A program reaches it with
+// 'import render', and gets:
+//
+// - Shape, a mesh: positions, normals, texture coordinates, colors and the
+//   indices that join them into triangles, with the generators for a sphere, a
+//   plane and a cube; drawn through a Shader under a Camera.
+// - Shader, a GLSL program: vertex and fragment source, the names of its
+//   vertex attributes and its uniforms; compiled and linked the first time it
+//   is used, from strings or from files. 'Shader.diffuse()' and
+//   'Shader.diffuseTextured()' are Pegasus's horseworld shaders, lit by one
+//   light with ambient light.
+// - Image, pixels decoded from a BMP file (or made: 'Image.checker'), and
+//   Texture, an image handed to OpenGL, with how it is wrapped and filtered.
+// - Camera, which clears its target and works out the projection and view
+//   matrices (perspective or orthogonal, placed by origin and orientation, or
+//   following something), and Light, which gives the camera its light's
+//   position, color and the ambient light.
+// - Uniform and Uniforms: the values a shader's uniforms are given, found by
+//   name first among the shape's and then among the camera's.
+//
+// It is ported from the Pegasus3D browser's world libraries (shape, shader,
+// texture, image, camera and light), with Pegasus's conventions, which are
+// math3d's and OpenGL's: right-handed space, a camera looking down its own -z,
+// column-major matrices, f32 everywhere. What Pegasus did through Acorn's
+// dynamic objects (a shape found its shader, its uniforms and its buffers by
+// property name) is done here with fields and with the name lists Pegasus's
+// shaders already carried. Where Pegasus was wrong it is corrected, and each
+// correction is marked "(Pegasus ...)" where it stands.
+//
+// A frame, once a window with an OpenGL context is open and 'gl.load' has found
+// OpenGL's functions (the window package does both):
+//
+//   camera.begin(width, height);       // viewport, clear, the matrices
+//   light.prepare(&mut camera);        // the light's uniforms, into the camera
+//   ball.render(&camera, &mut shader); // uniforms, buffers, draw
+//
+// Which shader draws which shape, where each shape is placed ('mmatrix'), and
+// which lights reach which camera is the scene's business (Pegasus's world,
+// group and placement), which this package does not have.
+//
+// Nothing here runs without an OpenGL context but the building of meshes,
+// images, shaders' name lists and cameras' matrices, which is what the tests
+// check. It needs only the gl package: no window, and no SDL.
+
+mod render;
+
+import libc;
+import gl;
+import math3d use *;
+import collections use *;
+
+// Report a problem to stderr, as Pegasus's vmLog did to its log file
+fn logLine(msg &[]u8) {
+  mut m = String.from(msg);
+  m.appendByte('\n');
+  imm v = m.view();
+  libc.fflush(libc.stdout());
+  libc.fwrite(v, 1usize, v.len, libc.stderr());
+}
+
+// The whole of a file, or ok false when it cannot be opened
+fn readFile(path &[]u8, ok &mut Bool) String {
+  mut text = String.empty();
+  mut cpath = String.from(path);
+  imm f = libc.fopen(cpath.cstr(), &"rb" as *u8);
+  if !f {
+    *ok = false;
+    return text;
+  }
+  mut buf [4096; u8] = [4096; 0u8];
+  mut going = true;
+  while going {
+    imm n = libc.fread(&mut buf[0], 1usize, 4096usize, f);
+    if n > 0usize { text.append(&buf[..n]); }
+    going = n == 4096usize;
+  }
+  libc.fclose(f);
+  *ok = true;
+  text;
+}

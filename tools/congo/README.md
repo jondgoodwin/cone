@@ -150,7 +150,8 @@ An import names a module. Congo answers each one this way:
 searches, in order:
 
 1. the Cone repository's own `packages/` (`core`, `stdio`, `libc`, `posix`,
-   `sdl`, `gl`, `math3d`, `testing` and `collections` are there), then
+   `sdl`, `gl`, `math3d`, `testing`, `collections`, `render` and `window` are
+   there), then
 2. each folder the **machine config** lists.
 
 The machine config is `config.toml` in the Congo home, which is the folder
@@ -296,7 +297,10 @@ from the Windows SDK). OpenGL's functions newer than 1.1 are exported by no
 library: the driver hands out their addresses once a context exists, so `gl`
 holds a Cone body for each, calling through the address `gl.load` found, beside
 the `extern` declarations of the rest. Neither has a test that needs its
-library at run time, so testing `packages/` needs no display.
+library at run time, so testing `packages/` needs no display. `render` draws
+over `gl` alone, so its tests run anywhere; `window` opens its window through
+`sdl`, so building its example, as `congo test` does, needs `SDL2.lib` on
+`LIB`, and running it needs a display.
 
 ## Testing a package
 

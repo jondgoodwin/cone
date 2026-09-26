@@ -1,0 +1,110 @@
+// The render package's Shader before OpenGL sees it: its name lists, its
+// source from strings, from files, and the two horseworld shaders it builds.
+// Compiling and linking need a context, so nothing here is compiled. Only a
+// failure prints, so shaders.out holds the summary alone.
+//
+// - A name list splits at spaces and drops empty names: "  a   b " is a, b.
+// - The diffuse shader's attributes are positions, normals; its uniforms,
+//   in Pegasus's order, lightOrigin, lightColor, ambient, diffuse, mmatrix,
+//   mvpmatrix. Its vertex stage is 18 lines: the version, 3 inputs and
+//   outputs, 6 uniforms, 'void main()', '{', 4 lines of lighting, the
+//   position, '}'. Its fragment stage is exactly horseworld's.
+// - The textured one adds the attribute uvs and the uniform tex (fifth), a
+//   Texcoord passed through (21 lines in all), and a sampler in the fragment.
+
+mod shaders;
+
+import testing use *;
+import libc;
+import collections use *;
+import render use *;
+
+fn name(list &List[String], at usize, want &[]u8, label &[]u8) {
+  expectStr((*list[at]).view(), want, label);
+}
+
+fn lineCount(s &String) i64 {
+  imm lines = s.lines();
+  i64[lines.len()];
+}
+
+fn nameLists() {
+  imm three = names("positions normals uvs");
+  expectInt(i64[three.len()], 3, "three names");
+  name(&three, 1usize, "normals", "the second name");
+  imm spaced = names("  a   b ");
+  expectInt(i64[spaced.len()], 2, "spaces dropped");
+  name(&spaced, 0usize, "a", "first spaced name");
+  name(&spaced, 1usize, "b", "second spaced name");
+  imm none = names("");
+  expectInt(i64[none.len()], 0, "no names");
+}
+
+fn fromStrings() {
+  imm s = Shader.from("void main() {}", "void main() { }", "positions normals", "mvpmatrix diffuse");
+  expectStr(s.vertex.view(), "void main() {}", "vertex source");
+  expectStr(s.fragment.view(), "void main() { }", "fragment source");
+  expectInt(i64[s.attributes.len()], 2, "two attributes");
+  name(&s.uniforms, 1usize, "diffuse", "second uniform");
+  expectBool(s.isCompiled(), false, "not compiled");
+  expectInt(i64[s.programName()], 0, "no program");
+}
+
+fn writeFile(path &[]u8, text &[]u8) {
+  mut p = String.from(path);
+  imm f = libc.fopen(p.cstr(), &"wb" as *u8);
+  requireBool(!f, false, "a file to write");
+  libc.fwrite(text, 1usize, text.len, f);
+  libc.fclose(f);
+}
+
+fn fromFiles() {
+  writeFile("test.vert", "#version 130\nvoid main() {}\n");
+  writeFile("test.frag", "#version 130\nout vec4 c;\nvoid main() { c = vec4(1.0); }\n");
+  imm s = Shader.load("test.vert", "test.frag", "positions", "mvpmatrix");
+  expectStr(s.vertex.view(), "#version 130\nvoid main() {}\n", "vertex from a file");
+  expectInt(lineCount(&s.fragment), 3, "fragment from a file");
+  name(&s.attributes, 0usize, "positions", "its attribute");
+  libc.remove(&"test.vert" as *u8);
+  libc.remove(&"test.frag" as *u8);
+
+  // A missing file gives empty source, and says so on stderr
+  imm m = Shader.load("missing.vert", "missing.frag", "", "");
+  expectInt(i64[m.vertex.len()], 0, "missing vertex file");
+  expectInt(i64[m.attributes.len()], 0, "no attributes");
+}
+
+fn diffuse() {
+  imm s = Shader.diffuse();
+  expectInt(i64[s.attributes.len()], 2, "diffuse attributes");
+  name(&s.attributes, 0usize, "positions", "diffuse attribute 0");
+  name(&s.attributes, 1usize, "normals", "diffuse attribute 1");
+  expectInt(i64[s.uniforms.len()], 6, "diffuse uniforms");
+  name(&s.uniforms, 0usize, "lightOrigin", "diffuse uniform 0");
+  name(&s.uniforms, 2usize, "ambient", "diffuse uniform 2");
+  name(&s.uniforms, 5usize, "mvpmatrix", "diffuse uniform 5");
+  expect(s.vertex.startsWith("#version 130\n"), "diffuse version");
+  expect(s.vertex.contains("max( dot( direction, vertnorm ), 0.0 )"), "the diffuse equation");
+  expectInt(lineCount(&s.vertex), 18, "diffuse vertex lines");
+  expectStr(s.fragment.view(), "#version 130\nin vec3 LightIntensity;\nout vec4 FragColor;\nvoid main() {\n  FragColor = vec4(LightIntensity, 1.0);\n}\n",
+    "diffuse fragment");
+
+  imm t = Shader.diffuseTextured();
+  expectInt(i64[t.attributes.len()], 3, "textured attributes");
+  name(&t.attributes, 2usize, "uvs", "textured attribute 2");
+  expectInt(i64[t.uniforms.len()], 7, "textured uniforms");
+  name(&t.uniforms, 4usize, "tex", "textured uniform 4");
+  name(&t.uniforms, 6usize, "mvpmatrix", "textured uniform 6");
+  expect(t.vertex.contains("  Texcoord = uvs;\n"), "uvs passed on");
+  expectInt(lineCount(&t.vertex), 21, "textured vertex lines");
+  expect(t.fragment.contains("uniform sampler2D tex;\n"), "the sampler");
+  expect(t.fragment.contains("texture(tex, Texcoord) * vec4(LightIntensity, 1.0)"), "the textured color");
+}
+
+fn main() i32 {
+  nameLists();
+  fromStrings();
+  fromFiles();
+  diffuse();
+  done();
+}

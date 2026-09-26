@@ -1,0 +1,108 @@
+// Uniform and Uniforms: the values a shader's uniforms are given.
+//
+// Pegasus looked each of a shader's uniforms up by name, as a property of the
+// shape and then of the camera, and let the value's type choose the glUniform
+// call: a float, an integer, an Xyz, a Color or Quat, a matrix, or a Texture,
+// whose texture unit was the value. Here a shape and a camera each hold a
+// Uniforms, a dictionary from name to Uniform, and a Uniform carries its kind.
+
+// A Uniform's kind: which glUniform call gives it to the shader
+pub const UniformFloat = 1;      // glUniform1f
+pub const UniformInt = 2;        // glUniform1i
+pub const UniformVec2 = 3;       // glUniform2fv
+pub const UniformXyz = 4;        // glUniform3fv
+pub const UniformVec4 = 5;       // glUniform4fv: a Color or a Quat
+pub const UniformMat4 = 6;       // glUniformMatrix4fv
+pub const UniformTexture = 7;    // glUniform1i of the texture's unit
+
+// One uniform's value: its kind, and up to sixteen floats or one integer
+pub struct Uniform {
+  pub kind i32;
+  pub f [16; f32];
+  pub i i32;
+
+  pub fn float(v f32) Uniform {
+    mut u = Uniform[UniformFloat, [16; 0f], 0];
+    u.f[0] = v;
+    u;
+  }
+
+  pub fn int(v i32) Uniform { Uniform[UniformInt, [16; 0f], v]; }
+
+  pub fn vec2(u f32, v f32) Uniform {
+    mut r = Uniform[UniformVec2, [16; 0f], 0];
+    r.f[0] = u;
+    r.f[1] = v;
+    r;
+  }
+
+  pub fn xyz(v Xyz) Uniform {
+    mut u = Uniform[UniformXyz, [16; 0f], 0];
+    u.f[0] = v.x;
+    u.f[1] = v.y;
+    u.f[2] = v.z;
+    u;
+  }
+
+  pub fn color(c Color) Uniform {
+    mut u = Uniform[UniformVec4, [16; 0f], 0];
+    u.f[0] = c.red;
+    u.f[1] = c.green;
+    u.f[2] = c.blue;
+    u.f[3] = c.alpha;
+    u;
+  }
+
+  pub fn quat(q Quat) Uniform {
+    mut u = Uniform[UniformVec4, [16; 0f], 0];
+    u.f[0] = q.x;
+    u.f[1] = q.y;
+    u.f[2] = q.z;
+    u.f[3] = q.w;
+    u;
+  }
+
+  pub fn mat4(m Mat4) Uniform { Uniform[UniformMat4, m.m, 0]; }
+
+  // The texture's unit, which a sampler uniform takes. The texture is handed
+  // to OpenGL now if it has not been yet, so a context must be current.
+  // (Pegasus did that the first time a shader drew with it.)
+  pub fn texture(tex &mut Texture) Uniform { Uniform[UniformTexture, [16; 0f], tex.render()]; }
+}
+
+// Give the uniform at 'location' of the program in use its value
+fn setUniform(location i32, u &Uniform) {
+  if u.kind == UniformFloat {
+    gl.Uniform1f(location, u.f[0]);
+  } elif u.kind == UniformInt or u.kind == UniformTexture {
+    gl.Uniform1i(location, u.i);
+  } elif u.kind == UniformVec2 {
+    gl.Uniform2fv(location, 1, &u.f[0]);
+  } elif u.kind == UniformXyz {
+    gl.Uniform3fv(location, 1, &u.f[0]);
+  } elif u.kind == UniformVec4 {
+    gl.Uniform4fv(location, 1, &u.f[0]);
+  } elif u.kind == UniformMat4 {
+    gl.UniformMatrix4fv(location, 1, gl.FALSE, &u.f[0]);
+  }
+}
+
+// Named uniform values: a shape's own (its diffuse color, its texture), or a
+// camera's (the light's origin and color, the ambient light)
+pub struct Uniforms {
+  values Dict[String, Uniform];
+
+  pub fn empty() Uniforms { Uniforms[Dict[String, Uniform].empty()]; }
+
+  // Give 'name' this value, replacing any it had
+  pub fn set(self &mut, name &[]u8, value Uniform) {
+    values.insert(String.from(name), value);
+  }
+
+  pub fn has(self &, name &[]u8) Bool { values.contains(name); }
+
+  // The value of 'name', which must be there ('has')
+  pub fn `[]`(self &, name &[]u8) &Uniform { values[name]; }
+
+  pub fn len(self &) usize { values.len(); }
+}
