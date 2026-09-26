@@ -70,6 +70,7 @@ Name *aliasMethodName;
 Name *dealiasMethodName;
 Name *freeMethodName;
 Name *markMethodName;
+Name *writeBarrierMethodName;
 Name *regionRefName;
 Name *tracedTraitName;
 Name *moveTraitName;

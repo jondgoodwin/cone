@@ -219,13 +219,47 @@ options = []
 name = "debug"
 options = ["--debug"]
 
+# The write barrier: a traced region declaring 'writeBarrier' is handed the
+# header of each of its references stored into memory that is not a local --
+# through a reference of any kind, a borrow's included -- keyed on what was
+# stored, never on the container. The toy region prints each Leaf it is
+# handed, so the .out file is the runtime assertion for every store site, each
+# line hand-checked in the source, and for the stores that get none: locals,
+# a local's fields and elements, an allocation's value, a value holding no
+# traced reference, a traced region with no 'writeBarrier'. The check pins the
+# call's place: after the store, the stored reference loaded back and, where
+# it is not null, its header handed over.
+[scenario.region_barrier]
+category = "run"
+description = "The write barrier: each reference into a traced region declaring writeBarrier that is stored into memory not a local -- a field, element or dereference through a '+R' reference, a borrow, a slice or a pointer; a swap's two halves; ':='; a generic instance's method; a whole struct, tuple, array or enum, each traced reference in it, a null one passed over -- is handed to writeBarrier; locals, allocations' values, untraced values and a region without the method get none"
+tags = ["genllvm", "runtime"]
+
+[[scenario.region_barrier.check]]
+name = "barrier-after-store"
+target = "preir"
+contains = [
+  "store ptr %l1, ptr %left, align 8",
+  "%tracedref = load ptr, ptr %left, align 8",
+  "br i1 %present, label %barrier, label %barriered",
+  "call %void @_CNvNt2tr12writeBarrier(ptr %2)",
+]
+
+[[scenario.region_barrier.run]]
+name = "release"
+options = []
+
+[[scenario.region_barrier.run]]
+name = "debug"
+options = ["--debug"]
+
 # A traced region declared by a package compiled on its own, whose methods are
-# all private and none inline, as a collector's are: the program's traces and
-# allocations call its 'mark' and 'alloc' in the package's object, so the
-# library exports both, and its include file declares the region 'Traced'.
+# all private and none inline, as a collector's are: the program's traces,
+# allocations and stores call its 'mark', 'alloc' and 'writeBarrier' in the
+# package's object, so the library exports all three, and its include file
+# declares the region 'Traced'.
 [scenario.region_traced_link]
 category = "run"
-description = "A traced region of a package compiled on its own: the program's traces (a record's, and mem.trace in line) call its private, non-inline 'mark', and its allocations its 'alloc', both exported from the package's object; the include file keeps 'is RegionRef, Traced'"
+description = "A traced region of a package compiled on its own: the program's traces (a record's, and mem.trace in line) call its private, non-inline 'mark', its allocations its 'alloc', and a store into one of its objects its 'writeBarrier', all exported from the package's object; the include file keeps 'is RegionRef, Traced'"
 tags = ["genllvm", "runtime"]
 link = ["package/tracer.conebuild"]
 include = ["include/tracer.cone"]
@@ -799,9 +833,9 @@ diagnostics = 8
 
 [scenario.region_typecheck_traced]
 category = "reject"
-description = "What a region ref declaring 'Traced' promises: a 'mark' of one of the two shapes a trace calls, not 'Move'; and only a region ref may declare it. Both shapes of 'mark', and a traced region with 'dealias', are accepted"
+description = "What a region ref declaring 'Traced' promises: a 'mark' of one of the two shapes a trace calls, a 'writeBarrier' (where it declares one) of the one shape a store calls, not 'Move'; and only a region ref may declare it. Both shapes of 'mark', a traced region with 'writeBarrier', and one with 'dealias', are accepted"
 tags = ["typecheck"]
-diagnostics = 8
+diagnostics = 10
 
 [scenario.region_typecheck_traced_place]
 category = "reject"

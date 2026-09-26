@@ -95,6 +95,7 @@ extern Name *aliasMethodName;  // "alias"
 extern Name *dealiasMethodName; // "dealias"
 extern Name *freeMethodName;   // "free"
 extern Name *markMethodName;   // "mark", which a traced region's trace calls
+extern Name *writeBarrierMethodName; // "writeBarrier", called after a traced reference is stored where no root is
 extern Name *regionRefName;    // "RegionRef"
 extern Name *tracedTraitName;  // "Traced", a region ref whose references are traced
 

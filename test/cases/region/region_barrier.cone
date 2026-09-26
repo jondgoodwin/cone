@@ -1,0 +1,182 @@
+// The write barrier: a traced region ref that declares 'writeBarrier' is
+// handed each of its references stored into memory that is not a local, as
+// the store happens -- the header of what was stored, never where it went.
+// A collector that marks while the program runs needs it: a store could put
+// an object it has not reached yet into one it has finished with. Keyed on
+// the stored reference alone, the barrier needs nothing of the container, so
+// a store through a borrow, which cannot know its container, gets it too.
+//
+// The store sites: an assignment into a field, an element or a dereference
+// reached through a reference (a '+tr' one, a borrow, a slice, a pointer), a
+// swap's two halves, ':=' (which hands back the old value), a method of a
+// generic's instance storing its 'self' field, and a whole value stored so --
+// a struct, a tuple, an array, an enum -- whose every traced reference is
+// handed over (a null one passed over). None for a store into a local, a
+// field or element of a local, or a parameter (a collector traces every stack
+// again before it finishes marking); none for the value an allocation is
+// born with (a new object cannot have been finished with); none for a value
+// holding no traced reference; and none for a traced region that declares no
+// 'writeBarrier' ('tr0'), whose collector does not mark while the program
+// runs.
+//
+// 'wb' prints the number of each Leaf it is handed (the value after the
+// 8-byte header). Every Leaf is numbered as it is made, so each line is
+// hand-checked against the stores its section makes: the comment beside it.
+
+mod region_barrier;
+
+import stdio use *;
+import libc;
+
+struct tr is RegionRef, Traced {
+  pub id i64;
+  fn alloc(size usize) *u8 {
+    imm p = malloc(size);
+    mem.writeRaw(p as *tr, tr[0]);
+    p;
+  }
+  fn mark(self &uni tr) { }
+  // Every reference this test stores is to a Leaf, after the header
+  fn writeBarrier(self &uni tr) {
+    imm v = (self as *tr as usize + 8usize) as &Leaf;
+    printStr(" wb "); printInt(v.n);
+  }
+}
+
+// Traced, marked, and with no barrier
+struct tr0 is RegionRef, Traced {
+  pub id i64;
+  fn alloc(size usize) *u8 {
+    imm p = malloc(size);
+    mem.writeRaw(p as *tr0, tr0[0]);
+    p;
+  }
+  fn mark(self &uni tr0) { }
+}
+
+struct Leaf { pub n i64; }
+struct Pair { pub left +tr-mut Leaf; pub right +tr-mut Leaf; }
+struct Row { pub cells [3; +tr-mut Leaf]; pub n i64; }
+struct Tup { pub t (+tr-mut Leaf, i64, +tr-mut Leaf); }
+struct Opt { pub o Option[+tr-mut Leaf]; }
+enum Maybe {
+  struct Has { pub l +tr-mut Leaf; }
+  struct Two { pub a +tr-mut Leaf; pub n i64; pub b +tr-mut Leaf; }
+  struct Not { pub n i64; }
+}
+struct Holder { pub m Maybe; }
+struct Plain { pub l +tr0-mut Leaf; }
+struct Box[T] {
+  pub v T;
+  pub fn set(self &mut, v T) { self.v = v; }
+}
+
+fn label(s &[]u8) {
+  printStr(s);
+  printStr(":");
+}
+fn end() {
+  printStr("\n");
+}
+
+fn leaf(n i64) +tr-mut Leaf {
+  +tr-mut Leaf[n];
+}
+
+fn tri(a i64, b i64) (+tr-mut Leaf, i64, +tr-mut Leaf) {
+  (leaf(a), 2i64, leaf(b));
+}
+
+fn setLeft(p &mut Pair, l +tr-mut Leaf) {
+  p.left = l;
+}
+fn setCell(s &[]mut +tr-mut Leaf, i usize, l +tr-mut Leaf) {
+  s[i] = l;
+}
+fn setAt(p *Pair, l +tr-mut Leaf) {
+  (*p).right = l;
+}
+
+fn main() {
+  label("born");                           // none: a value an allocation is born with
+  imm p = +tr-mut Pair[leaf(1), leaf(2)];
+  end();
+  label("field");                          // 3, through the '+tr' reference
+  p.left = leaf(3);
+  end();
+  label("borrow");                         // 4, through a borrow
+  setLeft(&mut *p, leaf(4));
+  end();
+  label("pointer");                        // 5, through a raw pointer
+  setAt(&mut *p as *Pair, leaf(5));
+  end();
+  label("whole");                          // 6 and 7, both handed over
+  *p = Pair[leaf(6), leaf(7)];
+  end();
+  label("swap");                           // 7 into left, then 6 into right
+  p.left <=> p.right;
+  end();
+  mut loc = leaf(8);
+  label("swap local");                     // 8 into p.right; 6 into loc: none
+  loc <=> p.right;
+  end();
+  label("left assign");                    // 9 in; 7, the old left, handed back
+  imm old = p.left := leaf(9);
+  end();
+  label("plain value");                    // none: an i64 through the reference
+  imm r = +tr-mut Row[[leaf(10), leaf(11), leaf(12)], 0];
+  r.n = 5;
+  end();
+  label("element");                        // 13 at cell 1
+  r.cells[1] = leaf(13);
+  end();
+  label("slice");                          // 14 at cell 2, through a slice
+  setCell(&mut r.cells, 2usize, leaf(14));
+  end();
+  label("array");                          // 15 16 17, in element order
+  r.cells = [leaf(15), leaf(16), leaf(17)];
+  end();
+  label("tuple");                          // 20 and 21, not the i64 between
+  imm t = +tr-mut Tup[(leaf(18), 1i64, leaf(19))];
+  t.t = tri(20, 21);
+  end();
+  label("option");                         // Some: 22; None: nothing to hand over
+  imm o = +tr-mut Opt[None[+tr-mut Leaf][]];
+  o.o = Some[+tr-mut Leaf][leaf(22)];
+  o.o = None[+tr-mut Leaf][];
+  end();
+  label("enum");                           // Two: 23 and 24; Has: 25; Not: none
+  imm h = +tr-mut Holder[Maybe.Not[0]];
+  h.m = Maybe.Two[leaf(23), 3, leaf(24)];
+  h.m = Maybe.Has[leaf(25)];
+  h.m = Maybe.Not[4];
+  end();
+  label("generic");                        // Box[+tr-mut Leaf].set: 27; Box[i64]: none
+  imm b = +tr-mut Box[+tr-mut Leaf][leaf(26)];
+  b.set(leaf(27));
+  imm bi = +tr-mut Box[i64][1];
+  bi.set(2);
+  end();
+
+  label("locals");                         // none of these
+  mut lp = Pair[leaf(28), leaf(29)];
+  lp.left = leaf(30);
+  mut la = [leaf(31), leaf(32)];
+  la[0] = leaf(33);
+  loc = leaf(34);
+  imm pl = +tr0-mut Plain[+tr0-mut Leaf[35]];
+  pl.l = +tr0-mut Leaf[36];
+  end();
+
+  // What the stores left: left 9, right 8, the old left 7, cells 15+16+17,
+  // the tuple's 20+21, the box's 27
+  label("reads");
+  printStr(" "); printInt(p.left.n); printStr(" "); printInt(p.right.n);
+  printStr(" "); printInt(old.n);
+  printStr(" "); printInt(r.cells[0].n + r.cells[1].n + r.cells[2].n);
+  imm t0 = t.t.0;
+  imm t2 = t.t.2;
+  printStr(" "); printInt(t0.n + t2.n);
+  printStr(" "); printInt(b.v.n);
+  end();
+}

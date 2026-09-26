@@ -261,24 +261,75 @@ static LLVMValueRef genlRegionHeader(GenState *gen, LLVMValueRef valptr, RefNode
 // cannot be handed
 static LLVMValueRef genlTraceMode = NULL;
 
+// Set around genlBarrierAt's walk, which is the trace's walk handing each
+// reference to its region's 'writeBarrier' instead of its 'mark'
+static int genlTraceBarrier = 0;
+
+// Does a value of this type hold, inline, a reference into a traced region
+// declaring 'writeBarrier'? The trace's walk, asked of what a store wrote.
+static int genlHoldsBarriered(INode *type) {
+    if (!itypeHoldsTraced(type))
+        return 0;
+    INode *typedcl = itypeGetTypeDcl(type);
+    INode **nodesp;
+    uint32_t cnt;
+    switch (typedcl->tag) {
+    case RefTag:
+        return regionHasBarrier(((RefNode *)typedcl)->region);
+    case ArrayTag:
+        return genlHoldsBarriered(arrayElemType(typedcl));
+    case TTupleTag:
+        for (nodesFor(((TupleNode *)typedcl)->elems, cnt, nodesp)) {
+            if (genlHoldsBarriered(*nodesp))
+                return 1;
+        }
+        return 0;
+    case StructTag: {
+        StructNode *strnode = (StructNode *)typedcl;
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            if (genlHoldsBarriered(((FieldDclNode *)*nodesp)->vtype))
+                return 1;
+        }
+        if (strnode->derived) {
+            for (nodesFor(strnode->derived, cnt, nodesp)) {
+                if (genlHoldsBarriered(*nodesp))
+                    return 1;
+            }
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+// Whether the walk goes into a part of this type: one holding a traced
+// reference for a trace, one holding a barriered reference for a barrier
+static int genlTraceWants(INode *type) {
+    return genlTraceBarrier ? genlHoldsBarriered(type) : itypeHoldsTraced(type);
+}
+
 // A traced reference is handed to its region's 'mark' as the header of what it
 // points at -- with, where 'mark' asks for them, the reference's permission,
 // a constant (its PermNode flags: MayRead 1, MayWrite 2, MayAlias 4,
 // MayAliasWrite 8, RaceSafe 16, MayIntRefSum 32, IsLockless 64), and the mode
 // the trace was called in. A null reference (a root not yet assigned, an
-// absent option) is passed over.
+// absent option) is passed over. Walked for a barrier, the header goes to the
+// region's 'writeBarrier' instead, where it has one.
 static void genlTraceRef(GenState *gen, LLVMValueRef refptr, RefNode *refnode) {
-    FnDclNode *markmeth = regionMethod(refnode->region, markMethodName);
+    if (genlTraceBarrier && !regionHasBarrier(refnode->region))
+        return;
+    FnDclNode *markmeth = regionMethod(refnode->region, genlTraceBarrier ? writeBarrierMethodName : markMethodName);
     LLVMValueRef ref = LLVMBuildLoad2(gen->builder, genlType(gen, (INode*)refnode), refptr, "tracedref");
     // Each is placed just after the current block, so the mark lands before its join
-    LLVMBasicBlockRef doneblk = genlInsertBlock(gen, "marked");
-    LLVMBasicBlockRef markblk = genlInsertBlock(gen, "mark");
+    LLVMBasicBlockRef doneblk = genlInsertBlock(gen, genlTraceBarrier ? "barriered" : "marked");
+    LLVMBasicBlockRef markblk = genlInsertBlock(gen, genlTraceBarrier ? "barrier" : "mark");
     LLVMBuildCondBr(gen->builder, LLVMBuildIsNotNull(gen->builder, ref, "present"), markblk, doneblk);
     LLVMPositionBuilderAtEnd(gen->builder, markblk);
     LLVMValueRef args[3];
     uint32_t nargs = 1;
     args[0] = genlRegionHeader(gen, ref, refnode);
-    if (regionMarkTakesContext(refnode->region)) {
+    if (!genlTraceBarrier && regionMarkTakesContext(refnode->region)) {
         INode *perm = itypeGetTypeDcl(refnode->perm);
         LLVMTypeRef u32 = LLVMInt32TypeInContext(gen->context);
         args[nargs++] = LLVMConstInt(u32, perm->tag == PermTag ? permGetFlags(perm) : 0, 0);
@@ -303,7 +354,7 @@ static void genlTraceFields(GenState *gen, LLVMValueRef valptr, StructNode *strn
     uint32_t cnt;
     for (nodelistFor(&strnode->fields, cnt, nodesp)) {
         FieldDclNode *field = (FieldDclNode *)*nodesp;
-        if (itypeHoldsTraced(field->vtype))
+        if (genlTraceWants(field->vtype))
             genlTraceWalk(gen, LLVMBuildStructGEP2(gen->builder, strtype, valptr, field->index, &field->namesym->namestr), field->vtype);
     }
 }
@@ -357,7 +408,7 @@ static void genlTraceVariants(GenState *gen, LLVMValueRef valptr, StructNode *en
     LLVMValueRef dispatch = LLVMBuildSwitch(gen->builder, tag, doneblk, enumnode->derived->used);
     for (nodesFor(enumnode->derived, cnt, nodesp)) {
         StructNode *variant = (StructNode *)*nodesp;
-        if (!itypeHoldsTraced((INode*)variant))
+        if (!genlTraceWants((INode*)variant))
             continue;
         LLVMBasicBlockRef caseblk = genlInsertBlock(gen, "tracevariant");
         LLVMAddCase(dispatch, LLVMConstInt(tagtype, variant->tagnbr, 0), caseblk);
@@ -391,7 +442,7 @@ static void genlTraceWalk(GenState *gen, LLVMValueRef valptr, INode *vtype) {
         uint32_t cnt;
         unsigned index = 0;
         for (nodesFor(((TupleNode *)typedcl)->elems, cnt, elemp)) {
-            if (itypeHoldsTraced(*elemp))
+            if (genlTraceWants(*elemp))
                 genlTraceWalk(gen, LLVMBuildStructGEP2(gen->builder, tupllvm, valptr, index, "tupelem"), *elemp);
             ++index;
         }
@@ -400,7 +451,7 @@ static void genlTraceWalk(GenState *gen, LLVMValueRef valptr, INode *vtype) {
     case ArrayTag:
     {
         INode *elemtype = arrayElemType(typedcl);
-        if (!itypeHoldsTraced(elemtype))
+        if (!genlTraceWants(elemtype))
             return;
         LLVMValueRef count;
         LLVMValueRef first = genlArrayFirst(gen, valptr, typedcl, &count);
@@ -435,9 +486,28 @@ void genlTraceAt(GenState *gen, LLVMValueRef valptr, INode *vtype, LLVMValueRef 
     if (!itypeHoldsTraced(vtype))
         return;
     LLVMValueRef svmode = genlTraceMode;
+    int svbarrier = genlTraceBarrier;
     genlTraceMode = mode;
+    genlTraceBarrier = 0;
     genlTraceWalk(gen, valptr, vtype);
     genlTraceMode = svmode;
+    genlTraceBarrier = svbarrier;
+}
+
+// A value of type 'vtype' was just stored at 'valptr', memory that is not a
+// local: hand each reference it holds into a traced region declaring
+// 'writeBarrier' to that method, with the header of what it points at (the
+// trace's walk, genlTraceWalk). Keyed on what was stored, never on where: a
+// store through a borrow cannot know its container, and needs not. Nothing,
+// for a type holding no such reference -- every type, in a program with no
+// traced region.
+void genlBarrierAt(GenState *gen, LLVMValueRef valptr, INode *vtype) {
+    if (!genlHoldsBarriered(vtype))
+        return;
+    int svbarrier = genlTraceBarrier;
+    genlTraceBarrier = 1;
+    genlTraceWalk(gen, valptr, vtype);
+    genlTraceBarrier = svbarrier;
 }
 
 // A record's function for 'vtype' (its finalizer or its trace), of type

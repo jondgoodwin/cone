@@ -165,6 +165,10 @@ LLVMValueRef genlTypeRecord(GenState *gen, INode *vtype, INode *recptrtype);
 // Hand each traced reference the value of type 'vtype' at 'valptr' holds to its
 // region's 'mark', with its permission and 'mode' where 'mark' takes them
 void genlTraceAt(GenState *gen, LLVMValueRef valptr, INode *vtype, LLVMValueRef mode);
+// A value of type 'vtype' was just stored at 'valptr', memory that is not a
+// local: hand each traced reference it holds to its region's 'writeBarrier',
+// where the region has one
+void genlBarrierAt(GenState *gen, LLVMValueRef valptr, INode *vtype);
 // Create an alloca (will be pushed to the entry point of the function.
 LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name);
 
