@@ -408,16 +408,18 @@ excludes = ["IOStream", "stdio.print"]
 
 [scenario.module_package_libc]
 category = "run"
-description = "The libc package's ISO C bindings -- memory, files, the environment, the process, strings, the standard streams, exit -- called by their C names and linked against the C runtime"
+description = "The libc package's ISO C bindings -- memory, files, the environment, the process, strings, the standard streams, exit, and math.h in both its double and float forms -- called by their C names and linked against the C runtime"
 tags = ["nameres", "genllvm", "runtime"]
 
 # C names, one declaration each: calloc, fopen and the rest are the C runtime's
-# symbols, and malloc is declared once though core and libc both put it in reach
+# symbols, and malloc is declared once though core and libc both put it in reach.
+# 'fabsf' is an inline function over 'fabs', as the runtime has it on x64, so
+# it is no symbol
 [[scenario.module_package_libc.check]]
 name = "libc-binds-the-c-symbols"
 target = "symbols"
-contains = ["declare calloc", "declare fopen", "declare malloc", "declare __acrt_iob_func"]
-excludes = ["malloc.1", "libc."]
+contains = ["declare calloc", "declare fopen", "declare malloc", "declare __acrt_iob_func", "declare atan2", "declare atan2f", "declare fmodf", "declare fabs"]
+excludes = ["malloc.1", "libc.", "fabsf"]
 
 [scenario.module_package_posix]
 category = "run"
@@ -432,6 +434,25 @@ name = "posix-names-bind-the-runtimes-spellings"
 target = "symbols"
 contains = ["declare _stat64", "declare _popen", "declare _chdir", "declare _mkdir", "declare _putenv_s", "declare _fullpath", "declare _findfirst64"]
 excludes = ["define internal mkdir", "define internal setenv", "define internal realpath"]
+
+# -------- a Cone package over them --------
+#
+# math3d is a Cone package in the packages folder that imports libc: found on the
+# search path, it is compiled into the program's object, and so is what it calls
+# of libc, which the C runtime supplies.
+
+[scenario.module_package_math3d]
+category = "run"
+description = "The math3d package's value types -- Xyz, Quat, Mat4, Color, Rect -- each core operation checked against a value worked out by hand, with the trigonometry it takes from libc"
+tags = ["nameres", "genllvm", "runtime"]
+
+# Its tangent is libc's tanf and its absolute value libc's inline fabsf, which
+# calls fabs; the package's own methods are defined in this object
+[[scenario.module_package_math3d.check]]
+name = "math3d-calls-libc"
+target = "symbols"
+contains = ["declare tanf", "declare fabs"]
+excludes = ["fabsf"]
 
 # -------- import of a parent's name --------
 #

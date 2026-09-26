@@ -808,8 +808,8 @@ full source, which is what an importer compiles the instance from
 
 ### The packages folder
 
-**`core`, `stdio`, `libc` and `posix` are packages, laid out as Congo lays out
-every package.**
+**`core`, `stdio`, `libc`, `posix` and `math3d` are packages, laid out as Congo
+lays out every package.**
 The repository's root holds `packages/`, one folder per package, each holding
 a manifest, `congo.toml`, and the package's source, `src/<name>.cone`. None
 holds an include file: a program Congo builds is compiled against the one each
@@ -823,7 +823,9 @@ takes its C name rather than `stdio`'s Cone one, and supplied by `conestd`.
 `libc` and `posix` are C packages ("How a C library becomes a Cone package",
 below): raw bindings to the ISO C library and to the POSIX functions beyond
 it, Windows first, `posix` built on `libc`, and supplied by the C runtime every
-link names.
+link names. `math3d` is a Cone package over `libc`: 3D math as value types
+(`module_package_math3d`), with its example programs in its own `examples/`
+folder, which no compile of the package sweeps.
 The shape is Jon's [Jon 23 Sep], taken before C modules so the built-ins would
 stop being text inside the compiler: *"a whole root level folder … subdivided
 into the different libraries, each of which is effectively a package … stick
@@ -2246,8 +2248,8 @@ and files, each file's `mod` line checked against it, imports found only where
 it says, and a library's root named from it, so a package compiled on its own
 spells its symbols as its importers do and exports what they link against. What
 stands in for
-packages is the **packages folder**: `core`, `stdio`, `libc` and `posix` are
-there, found on the package search path and compiled into the importing object ("The
+packages is the **packages folder**: `core`, `stdio`, `libc`, `posix` and
+`math3d` are there, found on the package search path and compiled into the importing object ("The
 packages folder" above).
 **A module conforms to a module trait**, `mod prog is Runner;`, checked where it
 is written, taking a copy of each default it does not declare ("Module traits"
@@ -2396,7 +2398,11 @@ runtime's own `_findfirst64` family under its own names. The structs they
 declare (`posix.Stat`, `posix.FindData64`) are the runtime's layouts, measured
 against its headers (`module_package_posix`). `stdio` still holds its C
 declarations inside its Cone-named module, each function marked `@c`, and
-`core` holds none: its allocator is `libc`'s.
+`core` holds none: its allocator is `libc`'s. `libc`'s math.h functions are
+declared in both forms; the one the UCRT has only as an inline function on x64,
+`fabsf`, is an `inline` function calling `fabs`, as the runtime's is. Every
+compile loads `libc`, so each of its declarations is in every program's IR, and
+one the program never calls is no reference in its object.
 
 ### What a package exports, and what that does to its symbols
 

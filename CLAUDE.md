@@ -35,7 +35,10 @@ Visual Studio projects stay at the root.
   imports (`Option`, `Result`, the `so` and `rc` regions); `stdio` prints;
   `libc` and `posix` are C packages of raw bindings to the C library and the
   POSIX functions beyond it (Windows first), and `core` imports `libc` for its
-  allocator.
+  allocator; `math3d` is 3D math (vectors, quaternions, matrices, colors,
+  rectangles) ported from the Pegasus3D browser, its trigonometry from `libc`.
+  A package's example programs live in its own `examples/` folder, each run
+  with `congo run packages/<name>/examples/<file>.cone`.
   The folder is both Congo's first registry and the compiler's packages
   folder: `conec` finds it by walking up from its own executable (and a CMake
   build also compiles its path in as the fallback), so the test runner and a
@@ -69,7 +72,8 @@ Visual Studio projects stay at the root.
   and links with `conestd`. `tools/congo/README.md` is its guide and design;
   `python tools/congo/test_congo.py` checks it against a built `conec`.
 - `samples/`: sample Cone programs. `oslayer` tours the `libc` and `posix`
-  packages and is built and run by `test_congo.py`. The OpenGL and WebGL ones,
+  packages and is built and run by `test_congo.py`, as is `math3d`'s example,
+  `packages/math3d/examples/tour.cone`. The OpenGL and WebGL ones,
   from `conehome`, predate the current language and no longer compile (the
   first error in each is the retired `include`); the test suite builds none.
 - `workitems/`: the plan and backlog are kept by the project owner outside this

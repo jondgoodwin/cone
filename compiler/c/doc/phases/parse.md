@@ -506,8 +506,8 @@ statement it begins is `ErrorInclude` at the word and skipped to its `;` without
 the file it names being looked for, because the folder is what brings a module's
 files in (`parseRetiredInclude`).
 A path is looked for beside the importing file and then on the package search
-path, which ends at the packages folder holding `core`, `stdio`, `libc` and
-`posix`. `core`, the prelude, is loaded from there before the main file is parsed,
+path, which ends at the packages folder holding `core`, `stdio`, `libc`,
+`posix` and `math3d`. `core`, the prelude, is loaded from there before the main file is parsed,
 its own import of `libc` with it, and wildcard-imported into every module but a
 C-named one, whose `mod` line gives the import back (`parseDropCorelibImport`) ([Module](../nodes/module.md), "The packages
 folder").

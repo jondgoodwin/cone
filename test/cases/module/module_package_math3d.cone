@@ -1,0 +1,259 @@
+// The math3d package, reached on the package search path and compiled into this
+// object with the libc functions it calls. Each line is one operation of one
+// of its types, with a value worked out by hand from the math, not taken from
+// a run:
+//
+// - Xyz: the operators, dot and cross products, lengths and distances, the
+//   unit vector (and the zero vector's), lerp, and the rounding-tolerant
+//   comparisons;
+// - Quat: quarter turns about each axis applied to the axes, products in both
+//   orders, conjugate, inverse, unit, dot, the two Euler constructors (which
+//   differ only in order), the turn between two directions (and between two
+//   opposite ones), and slerp, including across the double cover;
+// - Mat4: identity, both perspectives and the orthographic projection, the
+//   quaternion's matrix, look-at and its inverse, Euler angles in their order,
+//   placement, the product's order, the point transform, and the inverse
+//   multiplied back to identity;
+// - Color's default alpha and gray, Rect's fields, and pi.
+//
+// A number is printed to four decimal places, rounded, so a rounding error in
+// the sixth or seventh digit of an f32 does not show; every value below is
+// well away from a rounding boundary. A quarter turn's sine and cosine are
+// both 1/sqrt(2), 0.7071.
+
+mod module_package_math3d;
+
+import stdio use *;
+import math3d use *;
+
+fn num(v f32) {
+  imm scaled = f64[v] * 10000.;
+  imm mag = if scaled < 0. {-scaled;} else {scaled;};
+  imm n = i64[mag + 0.5];
+  if scaled < 0. and n > 0i64 {printStr("-");};
+  printInt(n / 10000i64);
+  printStr(".");
+  imm frac = n % 10000i64;
+  if frac < 1000i64 {printStr("0");};
+  if frac < 100i64 {printStr("0");};
+  if frac < 10i64 {printStr("0");};
+  printInt(frac);
+}
+
+fn f(label &[]u8, v f32) {
+  printStr(label);
+  printStr(" = ");
+  num(v);
+  printStr("\n");
+}
+
+fn b(label &[]u8, v Bool) {
+  printStr(label);
+  if v {printStr(" = 1\n");} else {printStr(" = 0\n");};
+}
+
+fn xyz(label &[]u8, v Xyz) {
+  printStr(label);
+  printStr(" = (");
+  num(v.x); printStr(", ");
+  num(v.y); printStr(", ");
+  num(v.z); printStr(")\n");
+}
+
+fn quat(label &[]u8, q Quat) {
+  printStr(label);
+  printStr(" = (");
+  num(q.x); printStr(", ");
+  num(q.y); printStr(", ");
+  num(q.z); printStr(", ");
+  num(q.w); printStr(")\n");
+}
+
+// Row by row, as written on paper; the storage is by column
+fn mat(label &[]u8, m Mat4) {
+  printStr(label);
+  printStr(" =");
+  mut row = 0usize;
+  while row < 4usize {
+    printStr(" [");
+    mut col = 0usize;
+    while col < 4usize {
+      if col > 0usize {printStr(" ");};
+      num(m.cell(row, col));
+      col = col + 1usize;
+    };
+    printStr("]");
+    row = row + 1usize;
+  };
+  printStr("\n");
+}
+
+// Every cell within a hundred-thousandth
+fn sameMat(a Mat4, c Mat4) Bool {
+  mut same = true;
+  mut i = 0usize;
+  while i < 16usize {
+    imm d = a.m[i] - c.m[i];
+    if d > 0.00001 or d < -0.00001 {same = false;};
+    i = i + 1usize;
+  };
+  same;
+}
+
+fn vectors() {
+  imm a = Xyz[1., 2., 3.];
+  imm c = Xyz[4., 5., 6.];
+  xyz("xyz-add", a + c);
+  xyz("xyz-sub", c - a);
+  xyz("xyz-neg", -a);
+  xyz("xyz-scale", a * 2.);
+  xyz("xyz-mult", a * c);
+  f("xyz-dot", a.dot(c));
+  // (2*6 - 3*5, 3*4 - 1*6, 1*5 - 2*4)
+  xyz("xyz-cross", a.cross(c));
+  // The right-hand rule: x cross y is z
+  xyz("xyz-cross-x-y", Xyz[1., 0., 0.].cross(Xyz[0., 1., 0.]));
+  // 3, 4, 12 is a Pythagorean quadruple: 9 + 16 + 144 = 169
+  f("xyz-length", Xyz[3., 4., 12.].length());
+  f("xyz-length-squared", Xyz[3., 4., 12.].lengthSquared());
+  f("xyz-distance", Xyz[1., 1., 1.].distance(Xyz[4., 5., 1.]));
+  f("xyz-distance-squared", Xyz[1., 1., 1.].distanceSquared(Xyz[4., 5., 1.]));
+  xyz("xyz-unit", Xyz[0., 3., 4.].unit());
+  xyz("xyz-unit-of-zero", Xyz[0., 0., 0.].unit());
+  xyz("xyz-lerp-quarter", Xyz[0., 0., 0.].lerp(Xyz[10., 20., -4.], 0.25));
+  // 0.1 + 0.2 is not exactly 0.3 in binary, but equal to within rounding
+  b("xyz-equals-rounding", Xyz[0.1 + 0.2, 0., 0.].equals(Xyz[0.3, 0., 0.]));
+  b("xyz-equals-differs", a.equals(Xyz[1., 2., 3.001]));
+  b("xyz-is-zero", Xyz[0., 0., 0.].isZero());
+  b("xyz-is-zero-tiny", Xyz[0.000000001, 0., 0.].isZero());
+  b("xyz-is-zero-not", Xyz[0., 0.001, 0.].isZero());
+}
+
+fn quaternions() {
+  imm qx = Quat.angleAxis(pi / 2., Xyz[1., 0., 0.]);
+  imm qy = Quat.angleAxis(pi / 2., Xyz[0., 1., 0.]);
+  imm qz = Quat.angleAxis(pi / 2., Xyz[0., 0., 1.]);
+  xyz("quat-identity-rotate", Quat.identity().rotate(Xyz[1., 2., 3.]));
+  quat("quat-angle-axis-z", qz);
+  // Counterclockwise seen from the axis's tip: x to y, y to z, z to x
+  xyz("quat-z-turns-x", qz.rotate(Xyz[1., 0., 0.]));
+  xyz("quat-x-turns-y", qx.rotate(Xyz[0., 1., 0.]));
+  xyz("quat-y-turns-z", qy.rotate(Xyz[0., 0., 1.]));
+  // qz * qx turns about x first: z goes to -y, and -y about z to x.
+  // qx * qz turns about z first, which leaves z alone, then about x: -y
+  quat("quat-product", qz * qx);
+  xyz("quat-product-x-first", (qz * qx).rotate(Xyz[0., 0., 1.]));
+  xyz("quat-product-z-first", (qx * qz).rotate(Xyz[0., 0., 1.]));
+  imm half = Quat[0.5, 0.5, 0.5, 0.5];
+  quat("quat-conjugate", half.conjugate());
+  quat("quat-times-conjugate", half * half.conjugate());
+  quat("quat-inverse", Quat[1., 1., 1., 1.].inverse());
+  quat("quat-inverse-scalar", Quat[0., 0., 0., 2.].inverse());
+  quat("quat-unit", Quat[0., 0., 3., 4.].unit());
+  quat("quat-unit-of-zero", Quat[0., 0., 0., 0.].unit());
+  f("quat-dot", Quat[1., 2., 3., 4.].dot(Quat[5., 6., 7., 8.]));
+  // One axis alone is angleAxis about it
+  quat("quat-rotate-xyz-x", Quat.rotateXyz(Xyz[pi / 2., 0., 0.]));
+  // Two axes: x then y is qx * qy = (1/2, 1/2, 1/2, 1/2); y then x is
+  // qy * qx, which differs in the sign of z
+  quat("quat-rotate-xyz-xy", Quat.rotateXyz(Xyz[pi / 2., pi / 2., 0.]));
+  quat("quat-rotate-yxz-xy", Quat.rotateYxz(Xyz[pi / 2., pi / 2., 0.]));
+  // From x to y is a quarter turn about z; the lengths do not matter
+  quat("quat-from-vectors", Quat.fromVectors(Xyz[1., 0., 0.], Xyz[0., 1., 0.]));
+  // From x to z is a quarter turn about -y
+  quat("quat-from-vectors-scaled", Quat.fromVectors(Xyz[2., 0., 0.], Xyz[0., 0., 3.]));
+  // Opposite directions: a half turn about y, which takes x to -x
+  imm opp = Quat.fromVectors(Xyz[1., 0., 0.], Xyz[-1., 0., 0.]);
+  quat("quat-from-opposite-vectors", opp);
+  xyz("quat-from-opposite-turns-x", opp.rotate(Xyz[1., 0., 0.]));
+  // Halfway to a quarter turn about z is an eighth turn:
+  // (0, 0, sin 22.5deg, cos 22.5deg) = (0, 0, 0.3827, 0.9239)
+  quat("quat-slerp-start", Quat.identity().slerp(qz, 0.));
+  quat("quat-slerp-half", Quat.identity().slerp(qz, 0.5));
+  quat("quat-slerp-end", Quat.identity().slerp(qz, 1.));
+  // -qz is the same rotation as qz, and slerp takes the short way to it
+  imm negqz = Quat[-qz.x, -qz.y, -qz.z, -qz.w];
+  imm viaNeg = Quat.identity().slerp(negqz, 0.5);
+  quat("quat-slerp-double-cover", viaNeg);
+  // An eighth turn about z takes x to (cos 45deg, sin 45deg, 0)
+  xyz("quat-slerp-half-turns-x", viaNeg.rotate(Xyz[1., 0., 0.]));
+}
+
+fn matrices() {
+  mat("mat-identity", Mat4.identity());
+  // tan 45deg = 1: 1/1, 1/1, (3+1)/(1-3), -1, 2*3*1/(1-3)
+  mat("mat-perspective-90", Mat4.perspective(90., 1., 3., 1.));
+  // tan 30deg = 1/sqrt(3): sqrt(3)/2 = 0.8660, sqrt(3) = 1.7321,
+  // 11/-10 = -1.1, 2*10.5*0.5/-10 = -1.05
+  mat("mat-perspective-60", Mat4.perspective(60., 0.5, 10.5, 2.));
+  // The near plane goes to -1 (w is 1 there)
+  xyz("mat-perspective-near", Mat4.perspective(90., 1., 3., 1.) * Xyz[0., 0., -1.]);
+  // 1/(0.5*2), 1/0.5, and the same depth as perspective-90
+  mat("mat-height-perspective", Mat4.heightPerspective(0.5, 1., 3., 2.));
+  // 1/(2*2), 1/2, 2/(1-3), (3+1)/(1-3): near goes to -1 and far to 1
+  imm ortho = Mat4.ortho(2., 1., 3., 2.);
+  mat("mat-ortho", ortho);
+  xyz("mat-ortho-near", ortho * Xyz[0., 0., -1.]);
+  xyz("mat-ortho-far", ortho * Xyz[0., 0., -3.]);
+  // A quarter turn about z: x goes to y, y to -x
+  mat("mat-from-quat", Mat4.fromQuat(Quat.angleAxis(pi / 2., Xyz[0., 0., 1.])));
+  // At the origin looking along +x: local -z is +x, local x is +z
+  imm look = Mat4.lookAt(Xyz[0., 0., 0.], Xyz[1., 0., 0.], Xyz[0., 1., 0.]);
+  mat("mat-look-at", look);
+  xyz("mat-look-at-ahead", look * Xyz[0., 0., -2.]);
+  // A camera at (3, 0, 0) looking at the origin: the origin is 3 ahead,
+  // and (0, 0, -1) is 1 to the camera's right
+  imm view = Mat4.inverseLookAt(Xyz[3., 0., 0.], Xyz[0., 0., 0.], Xyz[0., 1., 0.]);
+  mat("mat-inverse-look-at", view);
+  xyz("mat-view-origin", view * Xyz[0., 0., 0.]);
+  xyz("mat-view-right", view * Xyz[0., 0., -1.]);
+  b("mat-view-is-look-at-inverse", sameMat(view,
+    Mat4.lookAt(Xyz[3., 0., 0.], Xyz[0., 0., 0.], Xyz[0., 1., 0.]).inverse()));
+  // A quarter turn about z, doubled, moved to (1, 2, 3): x goes to (0, 2, 0)
+  // and then to (1, 4, 3)
+  imm e = Mat4.euler(Xyz[1., 2., 3.], Xyz[0., 0., pi / 2.], Xyz[2., 2., 2.]);
+  mat("mat-euler", e);
+  xyz("mat-euler-x", e * Xyz[1., 0., 0.]);
+  // About x first: y goes to z, which about y goes to x. (About y first
+  // would leave y alone, and x would take it to z.)
+  imm exy = Mat4.euler(Xyz[0., 0., 0.], Xyz[pi / 2., pi / 2., 0.], Xyz[1., 1., 1.]);
+  xyz("mat-euler-order", exy * Xyz[0., 1., 0.]);
+  // Scale (1,1,1) to (2,3,4), turn it to (-3,2,4), move it to (-2,4,7)
+  imm qz = Quat.angleAxis(pi / 2., Xyz[0., 0., 1.]);
+  imm placed = Mat4.place(Xyz[1., 2., 3.], qz, Xyz[2., 3., 4.]);
+  mat("mat-place", placed);
+  xyz("mat-place-point", placed * Xyz[1., 1., 1.]);
+  f("mat-cell-translation", placed.cell(1usize, 3usize));
+  // Moving and turning: the right-hand matrix acts first
+  imm move = Mat4.identity().withPos(Xyz[5., 0., 0.]);
+  imm turn = Mat4.fromQuat(qz);
+  xyz("mat-mult-turn-then-move", (move * turn) * Xyz[0., 0., 0.]);
+  xyz("mat-mult-move-then-turn", (turn * move) * Xyz[0., 0., 0.]);
+  // Scale by (2, 4, 5) and move by (1, 2, 3): the inverse scales by
+  // (1/2, 1/4, 1/5) and moves by -(1/2, 2/4, 3/5)
+  imm sm = Mat4.place(Xyz[1., 2., 3.], Quat.identity(), Xyz[2., 4., 5.]);
+  mat("mat-inverse", sm.inverse());
+  mat("mat-inverse-times", placed.inverse() * placed);
+  mat("mat-times-inverse", placed * placed.inverse());
+  xyz("mat-inverse-point", placed.inverse() * Xyz[-2., 4., 7.]);
+}
+
+fn others() {
+  imm c = Color[1., 0.5, 0.];
+  quat("color-default-alpha", Quat[c.red, c.green, c.blue, c.alpha]);
+  imm g = Color.gray(0.25);
+  quat("color-gray", Quat[g.red, g.green, g.blue, g.alpha]);
+  imm r = Rect[10, 20, 640, 480];
+  printStr("rect = ");
+  printInt(r.x); printStr(" "); printInt(r.y); printStr(" ");
+  printInt(r.w); printStr(" "); printInt(r.h); printStr("\n");
+  f("pi", pi);
+}
+
+fn main() i32 {
+  vectors();
+  quaternions();
+  matrices();
+  others();
+  0i32;
+}
