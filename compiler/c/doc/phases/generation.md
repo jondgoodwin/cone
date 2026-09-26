@@ -686,7 +686,8 @@ into — gets it as surely as one through a `+R` reference.
   trace generated while a barrier walks.
 - **The call** is an ordinary region method call (`genlFnCallInternal`), so an
   `inline` `writeBarrier` is expanded at the store: the `collector` package's
-  tests its phase in line and calls out only while marking. The method must
+  tests a flag in line and calls out only while it is on: while marking, and
+  between collections when it runs generationally. The method must
   not collect: no birth slot holds what a swap or `:=` hands back until the
   barrier has run.
 
