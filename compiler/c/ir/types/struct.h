@@ -48,7 +48,17 @@ typedef struct StructNode {
     uint32_t tagnbr;        // If a tagged struct, this is the number in the tag field
     DclSpans *spans;        // Where each member of its braces sits in its file, in the order parsed (dclspan.h); NULL for none
     uint8_t carriesborrow;  // itypeCarriesBorrow's remembered answer (CarriesBorrow*), once the type is checked
+    uint8_t holdstraced;    // itypeHoldsTraced's remembered answer (HoldsTraced*), once the type is checked
 } StructNode;
+
+// What StructNode.holdstraced remembers of whether a value of the type holds a
+// traced reference where it sits: not yet known, being asked, or the answer
+enum HoldsTraced {
+    HoldsTracedUnknown,
+    HoldsTracedAsking,
+    HoldsTracedNo,
+    HoldsTracedYes
+};
 
 // What StructNode.carriesborrow remembers of whether a value of the type may
 // hold a borrowed reference: not yet known, being asked (a cycle reached it

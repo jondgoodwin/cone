@@ -231,6 +231,13 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
     // The address of T's record, a constant this object builds once
     case TypeRecordIntrinsic:
         return genlTypeRecord(gen, type, ((FnSigNode *)fndcl->vtype)->rettype);
+    case HoldsTracedIntrinsic:
+        return LLVMConstInt(genlType(gen, (INode*)boolType), itypeHoldsTraced(type), 0);
+
+    // Each traced reference in the value at the pointer, handed to its region
+    case TraceIntrinsic:
+        genlTraceAt(gen, fnargs[0], type, fnargs[1]);
+        return NULL;
 
     // The death of the value at the pointer, in place
     case FinalizeIntrinsic:

@@ -216,7 +216,13 @@ answering both is what keeps the object and the include file from disagreeing:
   through a receiver that name resolution never binds, or the function is the
   type's `final` or `clone` (`fnIsTypeLifecycle`), which an importer's object
   calls wherever it drops or copies a value of the type, naming neither
-  (`module_init_link` drops a package's type whose `final` is private), or the
+  (`module_init_link` drops a package's type whose `final` is private), or,
+  in a region ref, one of the methods the compiler calls at a reference's
+  events — `alloc`, `init`, `alias`, `dealias`, `free`, `mark` — which an
+  importer's object calls wherever it allocates, copies, drops or traces a
+  reference into the region (`fnIsTypeLifecycle` too; `region_traced_link`
+  allocates from and traces into a package's region whose methods are all
+  private and none inline), or the
   function meets a requirement of a trait the type is (`fnIsTraitMethod`),
   which a vtable an importer builds calls. That is asked of every trait the
   type took members from (its `traits`), so a later name of its `is` list
@@ -531,20 +537,38 @@ the pipeline has no instruction combining after `GVN` to fold them.
 names one, and found again by type (`itypeIsSame`) from a list on the
 generator's state. It is a private global `cone.tyrec.<n>` of core's
 `TypeRecord`, whose layout the compiler checks as it builds the first — two
-`usize`, two function pointers of `fn(p *u8)`, a `u32` — and fills with the
-value's ABI size and alignment (as `mem.sizeof` and `mem.alignof`), its
-finalizer, a trace, and flags (bit 0, `itypeNeedsFinal`; bit 1, holding a
-traced reference, never set). The finalizer of a type that finalizes is a
+`usize`, a function pointer of `fn(p *u8)` and one of `fn(p *u8, mode u32)`, a
+`u32` — and fills with the value's ABI size and alignment (as `mem.sizeof` and
+`mem.alignof`), its finalizer, its trace, and flags (bit 0, `itypeNeedsFinal`;
+bit 1, `itypeHoldsTraced`). The finalizer of a type that finalizes is a
 private function `cone.tyrec.final.<n>` whose body is `genlFinalizeAt` on its
-parameter, generated on the spot with the generator's per-function state set
-aside around it, as `genlFn` does; in a debug build it has a subprogram and a
-location at the type, since the calls it makes (an `rc` owner's inline
-`dealias` among them) need one. Every other slot — the finalizer of a type
-with nothing to finalize, and every trace — points at one private do-nothing
-function, `cone.tyrec.nothing`, so none is null. The record is remembered
-before its finalizer is generated, so a finalizer that asks for records,
-its own type's among them, finds them. Being private, two objects hold two
-records of one type; nothing compares records across objects.
+parameter, and the trace of a type holding a traced reference is a private
+function `cone.tyrec.trace.<n>` whose body is `genlTraceAt` on its two
+parameters; each is generated on the spot by `genlTypeRecFn`, with the
+generator's per-function state set aside around it, as `genlFn` does, and in a
+debug build has a subprogram and a location at the type, since the calls it
+makes (an `rc` owner's inline `dealias`, a region's inline `mark`) need one.
+The finalizer of a type with nothing to finalize points at one private
+do-nothing function, `cone.tyrec.nothing`, and the trace of a type holding no
+traced reference at another, `cone.tyrec.untraced`, so no slot is null. The
+record is remembered before its functions are generated, so one that asks for
+records, its own type's among them, finds them. Being private, two objects hold
+two records of one type; nothing compares records across objects.
+
+**A trace walks a value statically and completely** (`genlTraceAt`, the body
+of a record's trace and the expansion of `mem.trace`): for every reference into
+a region declaring `Traced` that the value holds inline, it loads the reference
+and, where it is not null, calls the region's `mark` with the header
+(`genlRegionHeader`) — and, where `mark` takes them
+(`regionMarkTakesContext`), the reference's permission, a constant (its
+`PermNode` flags), and the mode the trace was called with. It reaches a struct's
+fields and a tuple's elements that hold one (`itypeHoldsTraced`), each element
+of a fixed-size array whose element type does, in a loop (`genlEachElem`), and
+the variant an enum's tag picks, by a switch, as `genlEnumDrop` dispatches; the
+nullable-pointer layout, which has no tag, is its one reference. It stops at
+every other reference and every pointer: the placement rules keep a traced
+reference from hiding behind them. It does not share the finalizer's walk,
+which finalizes an owner's value where the trace must not follow one.
 
 `so` and `rc` are declared in Cone source in the core package,
 `packages/core/src/core.cone` ([What a region is](../nodes/module.md)). `malloc`
@@ -793,7 +817,8 @@ variables.
 | | `genlFinalizeAt`, `genlCallDrop`, `genlEachElem` | a value's death in place, whatever its type: a local's, a field's, a region value's before its `free`, and the `finalize` intrinsic |
 | | `genlTypeDrop`, `genlStructDrop`, `genlEnumDrop` | the body of a drop the compiler gave a type: a struct's `final` calls, its fields' deaths, its owners' release; an enum's tag dispatching to its variant's |
 | | `genlAliasHeld` | a copied struct, enum, tuple or array: `alias` on each counted reference its death releases |
-| | `genlTypeRecord`, `genlTypeRecFinalizer`, `genlTypeRecNothing` | a type's record, once per object: its size, alignment, finalizer function, trace and flags; what an `alloc` that asks is handed, and `mem.typeRecord` |
+| | `genlTypeRecord`, `genlTypeRecFn`, `genlTypeRecNothing` | a type's record, once per object: its size, alignment, finalizer function, trace function and flags; what an `alloc` that asks is handed, and `mem.typeRecord` |
+| | `genlTraceAt`, `genlTraceWalk`, `genlTraceRef`, `genlTraceVariants` | a value's traced references, each handed to its region's `mark`: a record's trace, and `mem.trace` |
 | `ir/types/reference.h` | `enum ManagedRefFields` | `RegionField`, `PermField`, `ValueField` |
 | `ir/name.c` | `nameSymbol`, `nameType`, `nameVtable`, `nameVtableImpl`, `nameVtableList` | spelling a symbol from a node's owner chain and facts, and a type argument within it — the rules are in [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols" |
 | `ir/dclinfo.c` | `dclInfoJoin` | writes the declaration facts where a declaration joins its namespace |

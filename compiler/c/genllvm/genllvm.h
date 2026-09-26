@@ -57,7 +57,8 @@ typedef struct GenState {
     LLVMValueRef *tyrecs;
     uint32_t tyreccnt;
     uint32_t tyrecmax;
-    LLVMValueRef tyrecnothing; // The shared do-nothing function a record's empty slots point at
+    LLVMValueRef tyrecnothing; // The shared do-nothing finalizer a record's empty finalize slot points at
+    LLVMValueRef tyrecuntraced; // The shared do-nothing trace a record of a type holding no traced reference points at
 } GenState;
 
 // What the target's object file format does with COMDATs, which is how a
@@ -147,6 +148,9 @@ void genlRegionAlias(GenState *gen, LLVMValueRef ref, long long amount, RefNode 
 // 'recptrtype', the '*TypeRecord' the caller was declared with) holding its size,
 // its alignment, its finalizer and its trace, built once per object and type
 LLVMValueRef genlTypeRecord(GenState *gen, INode *vtype, INode *recptrtype);
+// Hand each traced reference the value of type 'vtype' at 'valptr' holds to its
+// region's 'mark', with its permission and 'mode' where 'mark' takes them
+void genlTraceAt(GenState *gen, LLVMValueRef valptr, INode *vtype, LLVMValueRef mode);
 // Create an alloca (will be pushed to the entry point of the function.
 LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name);
 

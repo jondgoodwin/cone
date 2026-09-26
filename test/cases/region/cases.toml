@@ -27,6 +27,10 @@
 #   one that leaves methods out, and not 'Move' with 'alias'.
 # - region_typecheck_regionref asks where 'RegionRef' itself may stand, and
 #   refuses a region that does not declare it.
+# - region_typecheck_traced asks what a region declaring 'Traced' promises (its
+#   'mark'), and who may declare it.
+# - region_typecheck_traced_place asks where a traced reference may be held, and
+#   what a traced region may allocate: judged after type check, so apart.
 # - region_typecheck_coerce asks which coercions between regions are allowed,
 #   which is a rule about reference types rather than about allocating.
 #
@@ -160,10 +164,54 @@ name = "record-passed-only-where-asked"
 target = "preir"
 contains = [
   "call ptr @_CNvNt4kept5alloc(i64 24, ptr @cone.tyrec.0)",
-  "@cone.tyrec.0 = private constant %TypeRecord { i64 4, i64 4, ptr @cone.tyrec.final.0, ptr @cone.tyrec.nothing, i32 1 }",
-  "@cone.tyrec.1 = private constant %TypeRecord { i64 16, i64 8, ptr @cone.tyrec.nothing, ptr @cone.tyrec.nothing, i32 0 }",
+  "@cone.tyrec.0 = private constant %TypeRecord { i64 4, i64 4, ptr @cone.tyrec.final.0, ptr @cone.tyrec.untraced, i32 1 }",
+  "@cone.tyrec.1 = private constant %TypeRecord { i64 16, i64 8, ptr @cone.tyrec.nothing, ptr @cone.tyrec.untraced, i32 0 }",
   "call %void @_CNvNt6Holder4drop(ptr %0)",
 ]
+
+# A traced region ref: 'is RegionRef, Traced', with a 'mark' the compiler's
+# traces call. Each type's record carries a trace walking a value of it and
+# handing each traced reference it holds to its region's 'mark', with the
+# reference's permission (a constant) and the mode the trace was called with,
+# where 'mark' takes them; its flags' bit 1 says it holds one, as
+# 'mem.holdsTraced' does; 'mem.trace' runs the same walk in line. The .out
+# file shows every mark, as header id / permission / mode.
+[scenario.region_traced]
+category = "run"
+description = "A region ref declaring Traced: each type's record's trace (and mem.trace in line) hands every traced reference a value holds to its region's mark, with its permission and the trace's mode -- struct fields, nesting, tuples, fixed arrays in a loop, an enum's variant by its tag, the nullable-pointer Option, a generic's instance; null passed over; +rc and +so fields of a traced object not traced but released by its finalizer"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.region_traced.check]]
+name = "trace-in-record"
+target = "preir"
+contains = [
+  "@cone.tyrec.3 = private constant %TypeRecord { i64 16, i64 8, ptr @cone.tyrec.final.3, ptr @cone.tyrec.trace.3, i32 3 }",
+  "define private %void @cone.tyrec.trace.3(ptr %0, i32 %1)",
+  "call %void @_CNvNt2tr4mark(ptr %2, i32 79, i32 %1)",
+  "ptr @cone.tyrec.nothing, ptr @cone.tyrec.untraced, i32 0 }",
+]
+
+# A record's trace is a function the compiler makes, which in a debug build
+# needs debug information of its own for the calls it makes ('tr0's inline
+# 'mark' expanded in it among them); the one .out file is both builds' assertion
+[[scenario.region_traced.run]]
+name = "release"
+options = []
+
+[[scenario.region_traced.run]]
+name = "debug"
+options = ["--debug"]
+
+# A traced region declared by a package compiled on its own, whose methods are
+# all private and none inline, as a collector's are: the program's traces and
+# allocations call its 'mark' and 'alloc' in the package's object, so the
+# library exports both, and its include file declares the region 'Traced'.
+[scenario.region_traced_link]
+category = "run"
+description = "A traced region of a package compiled on its own: the program's traces (a record's, and mem.trace in line) call its private, non-inline 'mark', and its allocations its 'alloc', both exported from the package's object; the include file keeps 'is RegionRef, Traced'"
+tags = ["genllvm", "runtime"]
+link = ["package/tracer.conebuild"]
+include = ["include/tracer.cone"]
 
 # The rcweak package's weak reference, found on the search path and compiled
 # into the scenario's object, as math3d is in module_package_math3d. Its
@@ -683,6 +731,18 @@ category = "reject"
 description = "A region that does not declare 'is RegionRef', and 'RegionRef' where it may not stand: as a type, or on a trait, an enum or a variant"
 tags = ["typecheck"]
 diagnostics = 8
+
+[scenario.region_typecheck_traced]
+category = "reject"
+description = "What a region ref declaring 'Traced' promises: a 'mark' of one of the two shapes a trace calls, not 'Move'; and only a region ref may declare it. Both shapes of 'mark', and a traced region with 'dealias', are accepted"
+tags = ["typecheck"]
+diagnostics = 8
+
+[scenario.region_typecheck_traced_place]
+category = "reject"
+description = "Where a traced reference may not be held: behind an untraced region's owning reference (a field, a struct pointing back at itself, a generic's instance, a parameter, an allocation), in a global, placed raw by mem.writeRaw or mem.moveRaw (directly, and through List, Arena and Pool, reported at the program's instantiation); and what a traced region may not allocate: a value holding a borrow, an owning slice or virtual reference, a permission taking room"
+tags = ["typecheck"]
+diagnostics = 16
 
 [scenario.region_typecheck_coerce]
 category = "reject"

@@ -134,6 +134,146 @@ int itypeCarriesBorrow(INode *type) {
     }
 }
 
+// Set when an answer reached a struct not yet type checked, whose fields may
+// not all be known: a "no" that depended on it is not remembered
+static int itypeTracedProvisional = 0;
+
+static int itypeStructHoldsTraced(StructNode *type) {
+    switch (type->holdstraced) {
+    case HoldsTracedYes:
+        return 1;
+    case HoldsTracedNo:
+        return 0;
+    case HoldsTracedAsking:
+        // Only a struct held by value in itself reaches itself again, which
+        // layout refuses; what it holds is found where it was first asked
+        itypeTracedProvisional = 1;
+        return 0;
+    default:
+        break;
+    }
+    int svprovisional = itypeTracedProvisional;
+    itypeTracedProvisional = 0;
+    type->holdstraced = HoldsTracedAsking;
+
+    int holds = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&type->fields, cnt, nodesp)) {
+        if (itypeHoldsTraced(((IExpNode *)*nodesp)->vtype)) {
+            holds = 1;
+            break;
+        }
+    }
+    // An enum or a closed trait holds whichever of its variants the value is
+    if (!holds && type->derived) {
+        for (nodesFor(type->derived, cnt, nodesp)) {
+            if (itypeHoldsTraced(*nodesp)) {
+                holds = 1;
+                break;
+            }
+        }
+    }
+
+    if (!(type->flags & TypeChecked))
+        itypeTracedProvisional = 1;
+    if (holds && (type->flags & TypeChecked))
+        type->holdstraced = HoldsTracedYes;
+    else if (!holds && !itypeTracedProvisional)
+        type->holdstraced = HoldsTracedNo;
+    else
+        type->holdstraced = HoldsTracedUnknown;
+    itypeTracedProvisional |= svprovisional;
+    return holds;
+}
+
+// Does a value of this type hold a traced reference where it sits: is it a
+// reference into a region declaring 'Traced', or a tuple, array, struct or
+// enum holding one inline? The walk stops at every other reference and at
+// every pointer: what they point at is not part of the value, and where a
+// traced reference may be held behind them is the placement rules' question
+// (regionTracedCheckAll). A struct's answer is remembered once it is checked,
+// since the trace, the type record, the rules, and later rooting and
+// barriers, all ask it.
+int itypeHoldsTraced(INode *type) {
+    if (type == NULL)
+        return 0;
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? itypeHoldsTraced(itypeGetTypeDcl(type)) : 0;
+    case AliasDclTag:
+        return itypeHoldsTraced(((AliasDclNode *)type)->target);
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+        return regionIsTraced(((RefNode *)type)->region);
+    case ArrayTag:
+        return itypeHoldsTraced(arrayElemType(type));
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (itypeHoldsTraced(*nodesp))
+                return 1;
+        }
+        return 0;
+    }
+    case StructTag:
+        return itypeStructHoldsTraced((StructNode *)type);
+    default:
+        return 0;
+    }
+}
+
+// Does a value of this type hold a borrowed reference where it sits, other
+// than a reference to a function (which points at code, not at anything that
+// dies)? Like itypeHoldsTraced, the walk stops at owning references and
+// pointers. Asked only of what a traced region allocates.
+int itypeHoldsBorrow(INode *type) {
+    if (type == NULL)
+        return 0;
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? itypeHoldsBorrow(itypeGetTypeDcl(type)) : 0;
+    case AliasDclTag:
+        return itypeHoldsBorrow(((AliasDclNode *)type)->target);
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+        return itypeGetTypeDcl(((RefNode *)type)->region) == borrowRef
+            && itypeGetTypeDcl(((RefNode *)type)->vtexp)->tag != FnSigTag;
+    case ArrayTag:
+        return itypeHoldsBorrow(arrayElemType(type));
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (itypeHoldsBorrow(*nodesp))
+                return 1;
+        }
+        return 0;
+    }
+    case StructTag: {
+        StructNode *strnode = (StructNode *)type;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            if (itypeHoldsBorrow(((IExpNode *)*nodesp)->vtype))
+                return 1;
+        }
+        if (strnode->derived) {
+            for (nodesFor(strnode->derived, cnt, nodesp)) {
+                if (itypeHoldsBorrow(*nodesp))
+                    return 1;
+            }
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
 // Look for named field/method in type
 INode *iTypeFindFnField(INode *type, Name *name) {
     switch (type->tag) {
@@ -482,6 +622,8 @@ char *itypeName(INode *type) {
         return "an array";
     case RefTag: case VirtRefTag: case ArrayRefTag: case PtrTag:
         return "a reference";
+    case TTupleTag:
+        return "a tuple";
     default:
         break;
     }

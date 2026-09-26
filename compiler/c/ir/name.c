@@ -69,7 +69,9 @@ Name *initMethodName;
 Name *aliasMethodName;
 Name *dealiasMethodName;
 Name *freeMethodName;
+Name *markMethodName;
 Name *regionRefName;
+Name *tracedTraitName;
 Name *moveTraitName;
 Name *copyTraitName;
 

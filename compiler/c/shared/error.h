@@ -146,9 +146,19 @@ enum ErrorCode {
 
     // Regions: the annotation struct after '+', and the 'RegionRef' methods the compiler calls on it
     ErrorNotRegion = 1154,      // A reference's region names a struct that does not declare 'is RegionRef'
-    ErrorRegionMeth = 1155,     // A region's 'alias', 'dealias' or 'free' not of the shape the compiler calls it with
-    ErrorRegionSet = 1156,      // A region whose declaration contradicts itself: 'is Move' (one owner per value) with an 'alias' method (another owner)
+    ErrorRegionMeth = 1155,     // A region's 'alias', 'dealias', 'free' or 'mark' not of the shape the compiler calls it with
+    ErrorRegionSet = 1156,      // A region whose declaration contradicts itself: 'is Move' (one owner per value) with an 'alias' method (another owner), or with 'Traced' (a collector for a value one owner frees)
     ErrorRegionRefUse = 1157,   // 'RegionRef' anywhere but a struct's 'is' list: the type a reference points at, or the 'is' of a trait, enum or variant
+
+    // Traced regions: a region ref declaring 'Traced', and where its references may be held (ir/types/region.c)
+    ErrorTracedUse = 1169,      // 'Traced' declared by a type that is not a region ref: a struct not declaring 'RegionRef', a trait, an enum or a variant
+    ErrorTracedMark = 1170,     // A region declaring 'Traced' with no 'mark' method for its trace to call
+    ErrorTracedHeld = 1171,     // A traced reference held inside what a region that is not traced allocates: '+rc T', '+so T' with T holding one
+    ErrorTracedGlobal = 1172,   // A global or static whose type holds a traced reference, which no collector finds
+    ErrorTracedBorrow = 1173,   // A traced region's reference to a value that holds a borrowed reference, which its trace cannot see and no lifetime covers
+    ErrorTracedRaw = 1174,      // mem.writeRaw or mem.moveRaw of a type holding a traced reference: placing one in raw memory no collector traces (an arena's, a pool's, a collection's)
+    ErrorTracedRefKind = 1175,  // An owning slice or an owning virtual reference into a traced region, whose trace could not find its length or its header
+    ErrorTracedPerm = 1176,     // A traced region's reference whose permission takes room, putting the value somewhere other than where the collector finds it
 
     // Intrinsics: '@intrinsic' declarations, checked against the compiler's registry (ir/stmt/intrinsic.c)
     ErrorIntrinsicPlace = 1160, // '@intrinsic' on a function not of the core package -- of its root, a submodule, or a plain struct one declares: another package's, a method taking 'self', a generic type's or a trait's

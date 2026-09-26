@@ -2491,9 +2491,10 @@ reaches like `initAll`, and has no members: it is a check, not an abstraction va
 is refused wherever the reference type is checked (`ErrorNotRegion`,
 `refRegionCheck`).
 
-The compiler knows no region by name. It knows five methods a region may
-declare, each found by name and each optional, and calls them at the reference
-events only it can see (`ir/types/region.c`):
+The compiler knows no region by name. It knows six methods a region may
+declare, each found by name and each optional (but `mark`, which a traced
+region promises), and calls them at the reference events only it can see
+(`ir/types/region.c`):
 
 | Method | Called when | If absent |
 |---|---|---|
@@ -2502,6 +2503,7 @@ events only it can see (`ir/types/region.c`):
 | `fn alias(self &uni R)` | a copy of an owning reference becomes another owner | a copy calls nothing: it is a **move** where the region is `Move`, and free where it is not |
 | `fn dealias(self &uni R) Bool` | an owner goes away; answers whether it was the last | an owner's going asks nothing: where the region is `Move` it is the value's death; where it is not, it does nothing — the value never dies by an owner and the compiler never frees it, left to the region's own loop (a collector's, an arena's) |
 | `fn free(self &uni R)` | the value is dead, after it is finalized and its fields' owners are released | the memory is not given back a value at a time |
+| `fn mark(self &uni R)`, or `fn mark(self &uni R, perm u32, mode u32)`, on a region declaring `Traced` | a trace finds a reference into the region: a record's trace, or `mem.trace`; `perm` is the reference's permission, a constant, and `mode` what the trace was called with | refused where the region declares `Traced` (`ErrorTracedMark`); never called where it does not |
 
 Every method but `alloc` and `init` is handed the allocation's **header**, the
 region struct at the front of the `{region, permission, value}` layout, found
@@ -2514,9 +2516,10 @@ the record of the allocated value's type — of an owning slice, its element
 type's (`genlallocref`, asking `regionAllocTakesRecord`). The record is core's
 `TypeRecord`, a constant the compiler builds once per type in each object
 (`genlTypeRecord`): the value's size and alignment, its finalizer — the death
-`mem.finalize` runs, as a function taking the value's address — a trace slot
-for a tracing region (a function that does nothing while no reference can be
-traced), and flags saying whether finalizing does anything. With it a region
+`mem.finalize` runs, as a function taking the value's address — its trace (a
+function taking the value's address and a mode, handing each traced reference
+the value holds to its region's `mark`), and flags saying whether finalizing
+does anything and whether the value holds a traced reference. With it a region
 that owns death in its own loop, as a collector does, can finalize a value it
 cannot name the type of (`region_typerecord`). An `alloc` taking only the size
 is called with only the size, so a region that does not ask pays nothing: `so`
@@ -2537,15 +2540,57 @@ nor `Move` shares its references freely, and one with no `dealias` either does
 nothing when an owner goes: the shape of a tracing collector or an arena, whose
 region owns death in its own loop (`region_collected`).
 
+**Whether a region's references are traced is declared too,** with the built-in
+trait `Traced`: `struct gc is RegionRef, Traced`. It says that a collector finds
+the region's values by tracing, so every type's record carries a trace handing
+each reference into the region that a value holds inline to the region's `mark`
+(`genlTraceAt`; `itypeHoldsTraced` says whether a type holds one, remembered
+per struct in `holdstraced`). `mark` may take the header alone, or also the
+reference's permission and the trace's mode — which a collector that ignores
+them (Acorn's) need not declare, and one that sorts references by them (ORCA's)
+can: the shape is the request, as `alloc`'s is for the record. `Traced` is a
+region ref's only (`ErrorTracedUse`), promises a `mark` (`ErrorTracedMark`), and
+contradicts `Move` (`ErrorRegionSet`); with `dealias` it is accepted.
+
+**A traced reference may be held only where a collector can find it**: a
+local, a parameter, a temporary, a value inline in one of those, or a value a
+traced region allocates. So the compiler refuses, each with its own code, an
+owning reference of a region that is not traced to a value holding one
+(`ErrorTracedHeld`: `+rc T`, `+so T`, wherever the type is written); a global
+or static holding one (`ErrorTracedGlobal`); an instance of `mem.writeRaw` or
+`mem.moveRaw` at a type holding one (`ErrorTracedRaw`), which keeps traced
+references out of arenas, pools and collections, reported at the program's own
+instantiation where it was reached through a generic's body; and, of what a
+traced region allocates, a value holding a borrow (`ErrorTracedBorrow`), an
+owning slice or owning virtual reference (`ErrorTracedRefKind`), and a
+permission taking room, which would move the value off the place right after
+the header (`ErrorTracedPerm`). A traced object may hold `+rc` and `+so`
+owners, which its finalizer releases, and a borrow or a raw pointer to a value
+holding traced references goes anywhere a borrow or a pointer may. Whether a
+type holds a traced reference is final only once every type it holds inline is
+laid out, which a reference type met inside the struct it points at is not
+(`next +rc Node` before `g +gc Leaf`), so type check notes each place a rule
+looks at (`regionTracedRefNote`, `regionTracedGlobalNote`,
+`regionTracedRawNote`) and judges them all once it has finished
+(`regionTracedCheckAll`, from `conec.c`); a compile declaring no traced region
+judges none.
+
 The struct is held to the method shapes **at its declaration**, after its
 methods are type checked (`regionRefCheck`, from `structCheckMembers`):
 `ErrorBadAlloc` for `alloc`/`init` (an `alloc` taking anything but the size
-and, after it, the type record), `ErrorRegionMeth` for the other three. No
+and, after it, the type record), `ErrorRegionMeth` for the other four. No
 combination is refused for what it leaves out, since an absent method's
 operation simply does not happen [Jon 25 Sep]: `dealias` without `alias` on a
 `Move` region is a single owner whose going still asks `dealias`, and `init`
-without `alloc` is never called. The one refusal is a contradiction, `Move`
-with `alias` (`ErrorRegionSet`).
+without `alloc` is never called. The refusals are contradictions, `Move` with
+`alias` or with `Traced` (`ErrorRegionSet`), and a `Traced` region without the
+`mark` it promises (`ErrorTracedMark`).
+
+A region declared in a package compiled on its own is called from its
+importers' objects, wherever they allocate, copy, drop or trace a reference
+into it, naming none of its methods. So its include file declares, and its
+object exports, each of the six methods it has, private or not, as a type's
+`final` and `clone` are (`fnIsTypeLifecycle`; `region_traced_link`).
 
 `so` and `rc` are written this way in `packages/core/src/core.cone`, `inline`,
 their `free` calling libc's by its qualified name, since inside a method named

@@ -18,12 +18,19 @@ needed. Safety is preserved across all of it.
 `rc`, both written in Cone in the core package. A user can define a region the
 same way — a struct declaring `is RegionRef`, whose `alloc`, `init`, `alias`,
 `dealias` and `free` the compiler calls, and whose `alloc` may ask for the
-value's **type record** (core's `TypeRecord`: its size, alignment and
-finalizer) by taking one after the size — but no more of the protocol below is
-built: no barriers, no traced references, no weak reference kind, no region
-with global state, and no finalizing of a slice's elements when its region
-frees it. Of the strategies that motivate the whole design, tracing GC
-is unwritten, and the arena and the pool are written only as library values: the
+value's **type record** (core's `TypeRecord`: its size, alignment, finalizer
+and trace) by taking one after the size. A region may declare itself
+**`Traced`** beside `RegionRef`: every type's record then carries a trace that
+hands each reference into the region a value holds to the region's `mark` (with
+the reference's permission and a mode, where `mark` asks), and the compiler
+refuses a traced reference wherever a collector could not find it — behind an
+`rc` or `so` owner, in a global, in raw memory placed by `mem.writeRaw` (an
+arena's, a pool's, a collection's), and, in a traced value, beside a borrow. No
+more of the protocol below is built: no roots (nothing yet finds the traced
+references on the stack), no barriers, no weak reference kind, no region with
+global state, and no finalizing of a slice's elements when its region frees it.
+Of the strategies that motivate the whole design, a tracing collector is
+unwritten, and the arena and the pool are written only as library values: the
 `arena` package's `Arena`, a dynamic region allocated into by a call on the
 value (`a.alloc(v)`), not by a `+` allocation through a region ref,
 whose `alloc` is not handed the region value. It finalizes
@@ -158,7 +165,8 @@ sole owner leaves that owner **hollow**: its memory is still freed, but nothing
 that moved is finalized there. The whole value moves, never a field of it:
 nothing moves out of a field, so no value dies with a hole in it
 (`doc/reference/refmove.html`). The compiler checks the methods' shapes where the struct is declared,
-refusing only `Move` with `alias`, which contradicts itself; and the test corpus
+refusing only contradictions — `Move` with `alias`, `Move` with `Traced` — and
+a `Traced` region without its `mark`; and the test corpus
 declares regions of its own that get every call `rc` and `so` get
 ([What a region is](../../compiler/c/doc/nodes/module.md)).
 
@@ -169,9 +177,10 @@ declaring bookkeeping fields plus a protocol of methods: `alloc`, `init`,
 `_alias`, `_dealias`, `_free`, `_readBarrier`/`_writeBarrier`, `isAlive`,
 `weak`, `drop` — and attributes such as `@move` and `traced` that the compiler
 keys off. ⚠ **[differs: of that protocol `alloc`, `init`, `alias`, `dealias` and
-`free` are built, spelled without the underscore; the annotation is a struct,
-not a module; and what the compiler keys off is a trait, not an attribute:
-`Move`, the one built so far]** A trait is a fact other code may ask about or
+`free` are built, spelled without the underscore, and `mark`, which a traced
+region's trace calls; the annotation is a struct, not a module; and what the
+compiler keys off is a trait, not an attribute: `Move` and `Traced`, the two
+built so far]** A trait is a fact other code may ask about or
 constrain on; an attribute is an instruction about representation or linkage
 that nothing asks about [Jon 26 Sep], and a region ref's capabilities are the
 first kind.
@@ -359,7 +368,8 @@ gap:
 | Rule | Enforced by | Phase |
 | --- | --- | --- |
 | region must be a struct declaring `is RegionRef` | `refRegionCheck` | type check |
-| a region's methods have the shapes the compiler calls, and `Move` is not contradicted by an `alias` | `regionRefCheck`, at the declaration | type check |
+| a region's methods have the shapes the compiler calls, and `Move` is not contradicted by an `alias` or `Traced`; a `Traced` region has `mark` | `regionRefCheck`, at the declaration | type check |
+| a traced reference is held only where a collector finds it: not behind an untraced region's owner, in a global, or in raw memory; and a traced value holds no borrow, is reached by a single reference, and sits behind no permission taking room | `regionTracedCheckAll`, over what `regionTracedRefNote`, `regionTracedGlobalNote` and `regionTracedRawNote` noted | after type check |
 | a region allocated from has `alloc` | `regionAllocTypeCheck` | type check |
 | requested permission vs. the source's | `permMatches` in `borrowTypeCheck` | type check |
 | value-type variance | `refMatches` and friends | type check |
