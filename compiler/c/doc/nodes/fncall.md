@@ -301,13 +301,23 @@ method's own `self`, and to an access that a macro method's body wrote on *its*
 expansion, since by then the receiver is the use site's expression. Every other
 receiver gets `ErrorNotPublic`.
 
-Two asymmetries that are deliberate:
+Three adjustments, two of them asymmetric on purpose:
 
 - **The deref retry.** A receiver held through a reference still satisfies a
   method declaring `self` by value: `derefInject`, then select again. It runs
   *only* when no candidate matched at all, so a real ambiguity is still an
-  ambiguity. Nothing is borrowed on the receiver's behalf — `self &mut` stays
-  out of reach of a value.
+  ambiguity.
+- **The borrow retry** (`fnCallBorrowReceiver`). A receiver held as a value
+  reaches a method declaring `self &` or `self &mut`: it is probed as a `ro`
+  borrow, then a `mut` one, and the first that selects a candidate is made by
+  `borrowMutRef`, so the permission check and the lifetime are a written
+  `&mut v`'s — `ErrorBadPerm` for `&mut` of an immutable variable, and the
+  borrow's scope carried into a returned borrow. It runs only after both
+  selections above found nothing, so a by-value candidate is always preferred.
+  A temporary is `ErrorBadLval`, once, where a borrowed candidate would have
+  been selected. **A pointer is never borrowed from** — a pointer receiver,
+  and a dereference of one written out, are left as the deref retry left them.
+  An ambiguity among the probed candidates is reported as one.
 - **An operator on a pointer does not reach through.** `p + 2` offsets the
   pointer; `p * 2` is an error rather than becoming `(*p) * 2`. `FlagOperator`
   on a pointer receiver is what skips the retry. A reference's comparison is

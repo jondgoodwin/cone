@@ -1,0 +1,124 @@
+// A method declaring 'self &' or 'self &mut', called on a value: the receiver
+// is borrowed, as though '(&v).get()' or '(&mut v).bump()' had been written.
+// The reference manual's "Implicit Coercion of 'self'" (reftypesafe.html) says
+// this sugar "automatically coerces self from a value to a reference"; lval
+// operators ('<-', '+=', '++') already borrowed their receiver this way.
+//
+// What each case shows, the printed value checked by hand against the source:
+// a '&mut' method changes the variable itself, not a copy (bump twice, read
+// 2); a '&' method reads from a mutable variable and from an immutable one; a
+// field of a local and a field reached through a '&mut' reference are
+// borrowed as their paths allow; an index operator declared on a reference is
+// reached from a value; a folded method is reached through the field it was
+// folded from; a generic type's methods are reached from a value, which is
+// what a collection's API needs ('list.push(x)'); and where a type offers both
+// a by-value and a by-reference candidate, a value takes the by-value one and
+// nothing is borrowed.
+//
+// The rejects -- a temporary, and '&mut' of an immutable variable -- are in
+// struct_typecheck_methods.
+
+mod struct_autoborrow;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct Counter {
+  pub n i64;
+  pub fn bump(self &mut) { n = n + 1i64; }
+  pub fn get(self &) i64 { n; }
+  pub fn byValue overload pick(self) i64 { 1i64; }
+  pub fn byRef overload pick(self &) i64 { 2i64; }
+}
+
+struct Pair {
+  pub a i64;
+  pub b i64;
+  pub fn at overload `[]`(self &, i usize) i64 {
+    if i == 0usize {a;} else {b;}
+  }
+}
+
+struct Engine {
+  pub fuel i64;
+  pub fn thrust(self &mut, amount i64) { fuel = fuel - amount; }
+}
+
+struct Car {
+  pub engine Engine use thrust;
+  pub trips Counter;
+}
+
+// A stack of up to four values, in the shape a collection's API takes
+struct Stack[T] {
+  pub items [4; T];
+  pub used usize;
+  pub fn push(self &mut, value T) {
+    items[used] = value;
+    used = used + 1usize;
+  }
+  pub fn pop(self &mut) T {
+    used = used - 1usize;
+    items[used];
+  }
+  pub fn size(self &) usize { used; }
+}
+
+fn values() {
+  mut c = Counter[0i64];
+  c.bump();
+  c.bump();
+  show("mut-method-changes-the-variable", c.get());
+  imm d = Counter[9i64];
+  show("ref-method-on-immutable", d.get());
+}
+
+fn paths() {
+  mut car = Car[Engine[100i64], Counter[5i64]];
+  car.trips.bump();
+  show("field-of-a-local", car.trips.get());
+  imm r = &mut car;
+  r.trips.bump();
+  show("field-through-a-reference", car.trips.n);
+  // thrust is Engine's, folded into Car: the engine is what is borrowed
+  car.thrust(30i64);
+  show("folded-method", car.engine.fuel);
+}
+
+fn operators() {
+  imm p = Pair[7i64, 8i64];
+  show("index-operator-first", p[0usize]);
+  show("index-operator-second", p[1usize]);
+}
+
+fn generic() {
+  mut s = Stack[i64][[0i64, 0i64, 0i64, 0i64], 0usize];
+  s.push(4i64);
+  s.push(6i64);
+  s.push(9i64);
+  show("generic-size", i64[s.size()]);
+  show("generic-pop", s.pop());
+  show("generic-size-after", i64[s.size()]);
+}
+
+fn preference() {
+  imm c = Counter[0i64];
+  // Both candidates could be reached, but the by-value one accepts the value
+  // as it is, so nothing is borrowed
+  show("value-prefers-by-value", c.pick());
+  show("reference-prefers-by-reference", (&c).pick());
+}
+
+fn main() {
+  values();
+  paths();
+  operators();
+  generic();
+  preference();
+}

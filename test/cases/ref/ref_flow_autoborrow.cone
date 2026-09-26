@@ -11,7 +11,8 @@
 // refused. borrowMutRef and borrowAuto now record the lval's scope as
 // borrowTypeCheck does, and dereferencing a borrow expression yields that
 // borrow's scope, so every form below is refused with the diagnostic the
-// written borrow gets.
+// written borrow gets. A value receiver borrowed for a method declaring
+// 'self &' is made by borrowMutRef too, and is here for that reason.
 //
 // Every diagnostic here is a flow diagnostic. Flow keeps going after one of its
 // own within a function, so the stores share one function; each returning case
@@ -61,6 +62,11 @@ fn storesAutoBorrows() {
     r = (&car).cell();              //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
     r = c.cell();                   //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
 
+    // The receiver borrowed from a value for a method declaring 'self &', on
+    // a folded method and a type's own, as '(&car).cell()' written out is
+    r = car.cell();                 //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
+    r = car.engine.cell();          //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
+
     // What is not refused, and what makes the above a lifetime rule rather
     // than a refusal of auto-borrows: an auto-borrow of a global keeps its
     // global lifetime, and the result held inside the block it was borrowed
@@ -84,6 +90,10 @@ fn returnsOpAssign() &i32 {
 fn returnsFoldedField() &i32 {
   mut car = Car[Engine[5]];
   (&car).cell();                    //~ ErrorEscape:9 "Returned borrowed reference outlives the local value it points to"
+}
+fn returnsBorrowedReceiver() &i32 {
+  imm e = Engine[5];
+  e.cell();                         //~ ErrorEscape:4 "Returned borrowed reference outlives the local value it points to"
 }
 
 // The other half: a parameter's borrow reaches the folded field with the
