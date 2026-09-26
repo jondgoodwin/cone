@@ -1,0 +1,112 @@
+// Weak references held and moved in the shapes a program keeps them in: a
+// field, a List, a parameter and a result, a loop, and values of different
+// sizes and alignments. Each count is worked out by hand from the rules
+// counts.cone states; each read value is the one the source allocated.
+
+mod shapes;
+
+import testing use *;
+import rcweak use *;
+import collections use *;
+
+mut log = 0i64;
+fn note(d i64) { log = log * 10i64 + d; }
+
+struct Fin { pub n i64; fn final(self &uni) { note(n); } }
+
+// A local struct holding a weak reference: its death is the field's
+struct Holds { pub w Weak[Fin]; pub k i64; }
+
+fn inLocalStruct() {
+  imm r = +rcw-mut Fin[1];
+  {
+    imm h = Holds[Weak[Fin].of(r), 7];
+    imm c = Weak[Fin].of(r);
+    expectUInt(u64[c.weakCount()], 2, "the struct's and this one");
+  }
+  imm c = Weak[Fin].of(r);
+  expectUInt(u64[c.weakCount()], 1, "the struct's went with it");
+}
+
+// Passed by value it moves in; returned, it moves out
+fn through(w Weak[Fin]) Weak[Fin] {
+  expectUInt(u64[w.strongCount()], 1, "the value is alive inside");
+  w;
+}
+
+fn reachIt(w &Weak[Fin]) i64 {
+  imm s = w.strong();
+  s.n;
+}
+
+fn inList() {
+  imm r = +rcw-mut Fin[2];
+  mut l = List[Weak[Fin]].empty();
+  l.push(Weak[Fin].of(r));
+  l.push(Weak[Fin].of(r));
+  l.push(through(Weak[Fin].of(r)));
+  expectUInt(u64[l[0usize].weakCount()], 3, "three in the list");
+  expectInt(reachIt(l[2usize]), 2, "reached through a borrow of an element");
+}
+
+// Asked for a strong owner on each turn of a loop, which goes at the turn's end
+fn loop() {
+  imm r = +rcw-mut Fin[3];
+  imm w = Weak[Fin].of(r);
+  mut sum = 0i64;
+  mut i = 0;
+  while i < 4 {
+    imm s = w.strong();
+    sum = sum + s.n;
+    i = i + 1;
+  }
+  expectInt(sum, 12, "four reads of 3");
+  expectUInt(u64[w.strongCount()], 1, "no owner left over from the loop");
+}
+
+// A weak reference moves; nothing is counted
+fn moves() {
+  imm r = +rcw-mut Fin[4];
+  imm w = Weak[Fin].of(r);
+  imm w2 = w;
+  expectUInt(u64[w2.weakCount()], 1, "moved, not copied");
+}
+
+// The value sits after the header at the value's own alignment
+struct Wide { pub a f64; pub b u8; }
+struct Small { pub a u8; pub b u8; }
+
+fn layouts() {
+  imm b = +rcw-mut 200u8;
+  imm wb = Weak[u8].of(b);
+  imm sb = wb.strong();
+  expectInt(i64[*sb], 200, "a u8 read back through its weak reference");
+  imm d = +rcw-mut Wide[2.5, 9u8];
+  imm wd = Weak[Wide].of(d);
+  imm sd = wd.strong();
+  expectFloat(sd.a, 2.5, 0.0, "a Wide's first field");
+  expectInt(i64[sd.b], 9, "and its last");
+  imm s = +rcw-mut Small[5u8, 6u8];
+  imm ws = Weak[Small].of(s);
+  imm ss = ws.strong();
+  expectInt(i64[ss.b], 6, "a Small's second byte");
+}
+
+fn main() i32 {
+  inLocalStruct();
+  expectInt(log, 1, "dies once");
+  expectUInt(u64[liveBlocks()], 0, "freed");
+  log = 0;
+  inList();
+  expectInt(log, 2, "dies once");
+  expectUInt(u64[liveBlocks()], 0, "freed when the list's weak references went");
+  log = 0;
+  loop();
+  expectInt(log, 3, "dies once");
+  log = 0;
+  moves();
+  expectInt(log, 4, "dies once");
+  layouts();
+  expectUInt(u64[liveBlocks()], 0, "every block given back");
+  done();
+}

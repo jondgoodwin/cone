@@ -1,0 +1,104 @@
+// When a '+rcw' value dies and when its memory is freed. Each value records its
+// death by appending its digit to 'log', so a log of 123 says 1 died, then 2,
+// then 3. Every expected log and count is worked out by hand from the rules:
+// - a value dies once, when its last strong owner goes, whatever weak
+//   references remain: its own 'final', then its fields' finalizers in field
+//   order, then the owners its fields hold, as an '+rc' value's death;
+// - its block is freed only when the last weak reference has gone too;
+// - a 'final' asking a weak reference to its own dying value finds it dead.
+
+mod finalize;
+
+import testing use *;
+import rcweak use *;
+import collections use *;
+
+mut log = 0i64;
+fn note(d i64) { log = log * 10i64 + d; }
+
+struct Fin { pub n i64; fn final(self &uni) { note(n); } }
+
+// A parent owns its children; each child points back at it weakly, so the
+// family is no cycle of owners, and all of it dies
+struct Child { pub n i64; pub parent Weak[Parent]; fn final(self &uni) { note(n); } }
+struct Parent { pub n i64; pub kids List[+rcw-mut Child]; fn final(self &uni) { note(n); } }
+
+fn diesWithWeaksOutstanding() Weak[Fin] {
+  imm r = +rcw-mut Fin[1];
+  imm w = Weak[Fin].of(r);
+  imm w2 = w.clone();
+  w;
+}
+
+fn family() {
+  imm p = +rcw-mut Parent[1, List[+rcw-mut Child].empty()];
+  p.kids.push(+rcw-mut Child[2, Weak[Parent].of(p)]);
+  p.kids.push(+rcw-mut Child[3, Weak[Parent].of(p)]);
+  imm c = *p.kids[1usize];
+  imm up = c.parent.strong();
+  expectInt(up.n, 1, "a child reaches its parent");
+  expectUInt(u64[liveBlocks()], 3, "a parent and two children");
+}
+
+// A 'final' that looks at a weak reference to its own dying value
+mut sawAlive = 1i64;
+mut sawStrong = 9i64;
+mut sawCloned = 9i64;
+struct Selfish { pub n i64; pub me Weak[Selfish];
+  fn final(self &uni) {
+    note(n);
+    sawAlive = i64[me.alive()];
+    me.upgrade();
+    sawStrong = i64[me.strongCount()];
+    imm another = me.clone();
+    sawCloned = i64[another.weakCount()];
+  }
+}
+
+fn selfish() {
+  imm r = +rcw-mut Selfish[4, Weak[Selfish].none()];
+  r.me = Weak[Selfish].of(r);
+}
+
+// A weak reference kept many calls away from where its value lived
+fn deep(n i64) Weak[Fin] {
+  if n == 0 {
+    imm r = +rcw-mut Fin[5];
+    return Weak[Fin].of(r);
+  }
+  deep(n - 1);
+}
+
+fn main() i32 {
+  {
+    imm w = diesWithWeaksOutstanding();
+    expectInt(log, 1, "died with its last owner, a weak reference outstanding");
+    expect(!w.alive(), "and the weak reference knows it");
+    expectUInt(u64[liveBlocks()], 1, "its block stays");
+    match w.upgrade() {
+      case is Some { expect(false, "upgrade() of a dead value"); }
+      case is None { expect(true, "upgrade() of a dead value is None"); }
+    }
+  }
+  expectInt(log, 1, "finalized once only");
+  expectUInt(u64[liveBlocks()], 0, "freed with the last weak reference");
+  log = 0;
+  family();
+  expectInt(log, 123, "the parent, then its children in list order");
+  expectUInt(u64[liveBlocks()], 0, "the weak back-references held nothing up");
+  log = 0;
+  selfish();
+  expectInt(log, 4, "a value holding a weak reference to itself dies");
+  expectInt(sawAlive, 0, "its final finds itself not alive");
+  expectInt(sawStrong, 0, "upgrade() in its final made no owner: it was None");
+  expectInt(sawCloned, 3, "its final may clone the weak reference: 'me', the clone, the owners' one");
+  expectUInt(u64[liveBlocks()], 0, "and freed once its final's weak references went");
+  log = 0;
+  {
+    imm w = deep(6);
+    expectInt(log, 5, "the value died six calls down");
+    expect(!w.alive(), "its weak reference came back up");
+  }
+  expectUInt(u64[liveBlocks()], 0, "every block given back");
+  done();
+}
