@@ -1,0 +1,81 @@
+// An integer literal whose value does not fit the type it is given.
+//
+// A literal's value was built at the width of its type and every bit above it
+// silently dropped: '300u8' and 'mut n u8 = 300' stored 44, and
+// 'mut n i32 = 3000000000' stored -1294967296. Each is now refused, pointed at
+// the literal, whether the type comes from its suffix or from where it stands:
+// an initializer, an assignment, an argument, a return value, a struct field,
+// an 'if' whose expected type reaches its branches, a global, and a constant
+// nothing uses. An array literal's elements are not given the type the array
+// is wanted as, so they reach a narrow type only by suffix, list and fill form
+// alike.
+//
+// A minus is folded into the literal it precedes, and the literal records it,
+// so the digits written are what is measured: a signed type takes one more
+// negated than not ('-128i8' fits, '128i8' does not), and a minus applied
+// twice is a positive value again.
+//
+// The unannotated lines are the neighbours that must still compile: each
+// type's two ends. The values they hold are printed by lexical_literals and
+// typemgmt_success. A literal nothing gives a type is checked against its i32
+// default in typemgmt_genllvm_litrange.
+
+mod typemgmt_typecheck_litrange;
+
+struct Byte {
+  pub b u8;
+}
+
+fn wantU8(n u8) u8 {
+  n;
+}
+
+fn fillU8() u8 {
+  256;                            //~ ErrorLitRange
+}
+
+imm global u8 = 300;              //~ ErrorLitRange
+const Limit u8 = 300;             //~ ErrorLitRange
+
+fn suffixes() {
+  imm a = 256u8;                  //~ ErrorLitRange "'256u8' does not fit u8, whose values run from 0 to 255"
+  imm b = 128i8;                  //~ ErrorLitRange
+  imm c = -129i8;                 //~ ErrorLitRange "'-129i8' does not fit i8, whose values run from -128 to 127"
+  imm d = - -128i8;               //~ ErrorLitRange "'128i8'"
+  imm e = -256u8;                 //~ ErrorLitRange
+  imm f = 65536u16;               //~ ErrorLitRange
+  imm g = -32769i16;              //~ ErrorLitRange
+  imm h = 4294967296u32;          //~ ErrorLitRange
+  imm i = 2147483648i32;          //~ ErrorLitRange
+  imm j = 9223372036854775808i64; //~ ErrorLitRange
+  imm k = [256u8, 1u8];           //~ ErrorLitRange
+  imm l = [3; 256u8];             //~ ErrorLitRange
+
+  // Still compiled: each type's two ends
+  imm a1 = 255u8;
+  imm b1 = 127i8;
+  imm c1 = -128i8;
+  imm e1 = -1u8;
+  imm j1 = -9223372036854775808i64;
+  imm u1 = 18446744073709551615u64;
+}
+
+fn positions(v Bool) {
+  mut b u8 = 256;                 //~ ErrorLitRange
+  imm c i8 = -129;                //~ ErrorLitRange "'-129' does not fit i8"
+  b = 300;                        //~ ErrorLitRange
+  wantU8(256);                    //~ ErrorLitRange
+  imm s = Byte[256];              //~ ErrorLitRange
+  imm t u8 = if v {256;} else {1;}; //~ ErrorLitRange
+  imm d i32 = 3000000000;         //~ ErrorLitRange
+  imm e i64 = 9223372036854775808; //~ ErrorLitRange
+  imm f i64 = 18446744073709551615; //~ ErrorLitRange "'18446744073709551615' does not fit i64"
+  imm g i64 = -9223372036854775809; //~ ErrorLitRange
+
+  // Still compiled: each type's two ends
+  mut b1 u8 = 255;
+  imm c1 i8 = -128;
+  imm d1 i32 = -2147483648;
+  imm e1 i64 = -9223372036854775808;
+  imm f1 u64 = 18446744073709551615;
+}

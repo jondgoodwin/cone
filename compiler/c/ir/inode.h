@@ -269,6 +269,11 @@ enum NodeTags {
 #define FlagQues      0x0001        // Alloc:  Does it return Option[T]?
 
 #define FlagUnkType   0x0001        // ULit: type is unspecified and may be converted to other number
+// parsePrefix folds a unary minus into an integer literal by negating its value
+// in place, two's complement, so '-1' and '18446744073709551615' hold the same
+// bits. This records an odd number of folded minuses, which is what lets
+// litCheckRange read the magnitude the source wrote.
+#define FlagLitNeg    0x0002        // ULit: value is the negation of the digits written
 
 #define FlagFirstAssign 0x0080      // VarNameUse: assignment target held no prior value
 // A name reached through a namespace is written 'math3d.Point3', which parses as

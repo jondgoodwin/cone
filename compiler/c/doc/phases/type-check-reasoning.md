@@ -73,8 +73,9 @@ So the normal path is `iexpTypeCheckCoerce`:
 
 `litTypeCheck` uses `expectType` for one case: an untyped integer literal takes
 a number expected type and keeps it — an integer type by retyping, a float type
-by becoming a float literal — so its constant is built at that width.
-`iexpCoerce` does the same for a literal that reaches it still untyped, because
+by becoming a float literal — so its constant is built at that width, and one
+whose value an integer type cannot hold is refused there (`ErrorLitRange`), as
+a suffixed literal is against its own type. `iexpCoerce` does the same for a literal that reaches it still untyped, because
 a call's argument is checked before its callee is resolved. Neither reaches the
 branches of an `if` or a block passed as an argument, whose literals keep the
 `i32` default; generation refuses one whose value does not fit it

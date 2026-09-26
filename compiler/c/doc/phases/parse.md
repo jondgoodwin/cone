@@ -488,7 +488,9 @@ move against the range's direction; `prev` is a phantom variable the parser
 resolves itself. Either block stays one statement so a `continue` carries the
 guard with the step. `with e {…}` becomes a block with a `this` declaration
 first. Prefix `.f` becomes `this.f`. `else if` folds into `elif`. Unary minus on
-a literal is constant-folded in place.
+a literal is constant-folded in place, and an integer literal records it
+(`FlagLitNeg`), because its range check needs the digits written
+([literals](../nodes/literals.md)).
 
 **It binds module-level names.** `modAddNode`, `modAddNamedNode` and `modAddFn`
 run *during* parsing, so by the time a module's parse finishes its namespace is

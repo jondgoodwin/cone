@@ -412,14 +412,17 @@ INode *parsePrefix(ParseState *parse) {
         return (INode*)opttype;
     }
 
-    // '-' (negative). Optimize for literals
+    // '-' (negative). Optimize for literals. A folded integer literal records
+    // that it was negated, because its two's complement value alone cannot tell
+    // '-1' from '18446744073709551615' when its range is checked
     case DashToken:
     {
         FnCallNode *node = newFnCallOpname(NULL, minusName, 0);
         lexNextToken();
         INode *argnode = parsePrefix(parse);
         if (argnode->tag == ULitTag) {
-            ((ULitNode*)argnode)->uintlit = (uint64_t)-((int64_t)((ULitNode*)argnode)->uintlit);
+            ((ULitNode*)argnode)->uintlit = 0 - ((ULitNode*)argnode)->uintlit;
+            argnode->flags ^= FlagLitNeg;
             return argnode;
         }
         else if (argnode->tag == FLitTag) {

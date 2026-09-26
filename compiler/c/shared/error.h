@@ -173,7 +173,7 @@ enum ErrorCode {
     ErrorFloatRange = 1159,     // A float literal whose value is past its type's range: f32 unless suffixed 'd' or 'f64'
 
     // Literals: a value and the type it is built at
-    ErrorLitRange = 1158,       // An untyped integer literal given no type by anything, whose value does not fit the i32 it defaults to
+    ErrorLitRange = 1158,       // An integer literal whose value does not fit its type: its suffix's, the one it is given, or the i32 it defaults to
 
     // Virtual dispatch
     ErrorGenericVtable = 1087,  // A trait requiring a generic method, which has no one signature a vtable slot could hold

@@ -5,8 +5,8 @@ a call**.
 
 **At a glance.** The parser builds them without deciding types. Name resolution
 resolves each literal's type name, and decides whether `[…]` is an array type or
-an array literal. Type check sizes a string, checks array elements against each
-other, and reorders a type literal's fields. Flow accounts for the values a
+an array literal. Type check types an integer literal and checks it fits, sizes
+a string, checks array elements against each other, and reorders a type literal's fields. Flow accounts for the values a
 composite literal takes ownership of. Generation emits constants where it can.
 
 *Provenance: read from source.*
@@ -27,6 +27,10 @@ suffix. **There is no float equivalent** — a suffix-less float defaults to `f3
 concretely, and the lexer refuses a float literal past its type's range
 (`ErrorFloatRange`; [Parse](../phases/parse.md)).
 
+**`FlagLitNeg`** says `uintlit` is the negation of the digits written. It is set
+only by `parsePrefix`'s fold (see Parse), and toggled, so a minus applied twice
+clears it.
+
 **The array node serves both a type and a literal.** `[3; i32]` and `[3; 7]`
 have the identical shape — `dimens` `[3]`, `elems` `[i32]` or `[7]`. The list
 form `[a,b,c]` has empty `dimens`. The parser deliberately does not decide.
@@ -40,6 +44,13 @@ becomes `dimens` and a fresh list is gathered into `elems`.
 A type literal is not built as one: `parseSuffix` builds an `FnCallNode` with
 `FlagIndex`, and `parseArg` wraps `name: value` in a `NamedValNode`. Whether
 `Point[1,2]` is an index, an instantiation, or a construction is type check's.
+
+**A minus before a literal is folded into it.** `parsePrefix` negates a
+`ULitTag`'s `uintlit` in place, two's complement, and a `FLitTag`'s `floatlit`,
+and returns the literal instead of a negation call. The integer's bits alone
+then cannot tell `-1` from `18446744073709551615`, so the fold also toggles
+`FlagLitNeg`, and everything that reads the value as a number — the range check
+and the float adoption below — reads the magnitude written and its sign.
 
 ## Name resolution
 
@@ -62,8 +73,8 @@ bound, because it is matched against a field by symbol later.
 meets it, and no other literal is context-typed.** `litAdoptNumberType` is the
 one rule: a `ULitTag` carrying `FlagUnkType` against an integer type takes that
 type and drops the flag; against a float type it is replaced by an `FLitNode`
-holding the full 64-bit value, read as signed, rounded once at the target's own
-precision. `litTypeCheck` applies it when `expectType` is a number type, and
+holding the full 64-bit magnitude written, negated when `FlagLitNeg` says so,
+rounded once at the target's own precision. `litTypeCheck` applies it when `expectType` is a number type, and
 `iexpCoerce` applies it to a literal that reaches coercion still untyped — a
 call's argument, which is type checked before its callee is resolved, and a
 struct literal's field. Every other literal is typed by
@@ -110,10 +121,27 @@ literal is reached, in a body, a global's initializer and a constant's value
 alike, after everything that could have typed it has run.
 `typemgmt_genllvm_litrange` pins each position.
 
-⚠ **Nothing asks whether a value fits a type it was given.** `mut n u8 = 300`
-and `300u8` store `44` and `mut n i32 = 3000000000` stores `-1294967296`, all
-silently [differs]. See the hazard below for why the check is not simply a
-comparison.
+**A literal must fit the type it is given.** `litCheckRange` refuses an integer
+literal whose value its integer type cannot hold (`ErrorLitRange`) rather than
+materializing it at that width, which silently dropped every bit above it:
+`300u8` and `mut n u8 = 300` stored `44`. It runs where the type is decided —
+`litTypeCheck` for a literal whose suffix gave it one, `litAdoptNumberType` for
+one taking the type it is wanted as — and at generation for the `i32` default.
+It measures the magnitude written, recovered through `FlagLitNeg`: a signed
+*N*-bit type holds magnitudes up to 2^(*N*-1)-1, or 2^(*N*-1) negated, so
+`-128i8` fits and `128i8` does not; an unsigned type holds magnitudes up to
+2^*N*-1 negated or not, because the manual has a minus on an unsigned literal
+leave it unsigned, so `-1u8` is `255`, negation in its own width. `Bool` is
+not asked, since no literal is built at it. The message quotes the literal as
+written, digits and suffix, with a `-` for the folded minus; the typed message
+gives the type's range. Reported once: the literal is left a zero of its type,
+so a literal checked again, or a constant generated at each use, does not
+repeat it. `typemgmt_typecheck_litrange` pins each position and the edges;
+`typemgmt_success` and `lexical_literals` print the edges that fit.
+
+An explicit conversion is not a literal meeting a type: `u8[300]` and
+`300 into u8` convert the `i32` literal `300`, and keep its low bits as any
+conversion does.
 
 `slitTypeCheck` sets a string's type to an array of `u8` sized from `strlen`. A
 string literal is also an lval.
@@ -181,7 +209,8 @@ lowers to a loop.
 
 Scalars are LLVM constants; `nil` is `undef` of the empty struct. An integer
 literal still carrying `FlagUnkType` is range-checked against its `i32` default
-first (see Type check).
+first (see Type check). The constant is built from `uintlit`'s bits truncated to
+the type, which is the value itself once the range check has passed.
 
 **An array literal is emitted as a constant when every element is constant**,
 and otherwise as an `undef` plus a chain of `insertvalue`. The constant form is
@@ -220,20 +249,11 @@ is its type exactly and has no terminator.
 
 - **Only an integer literal is context-typed.** Every other literal is still
   adapted by coercion afterward, so `expectType` reads as more general than it is.
-- **`FlagUnkType` is a permission to convert, not a range check.** Nothing asks
-  whether the literal's value fits the type it is adopted as; only the `i32`
-  default is checked, and only at generation.
-- **A negated literal cannot be told from a large positive one**, which is what
-  makes that range check harder than a comparison. `parsePrefix` folds unary `-`
-  into the literal by negating `uintlit` in place, two's complement, and records
-  nothing — so `-1` and `18446744073709551615` are the same node. A check can
-  decide most cases by sign extension (a value fits a signed *N*-bit type when
-  bit *N*-1 repeats to the top), which is how `litCheckDefaultRange` reads the
-  `i32` default, but `18446744073709551615` is indistinguishable from `-1` and
-  passes it, as `mut n i64 = 18446744073709551615` would have to. Deciding that
-  one needs the parser to record that it negated. Its message quotes the
-  literal's digits as written for the same reason: printed from the value,
-  either a negated literal or one above `i64`'s maximum would read wrong.
+- **`uintlit` is not the value's number without `FlagLitNeg`.** Read alone, as
+  a signed or an unsigned 64-bit value, it answers wrong for one class or the
+  other: `18446744073709551615` read signed is `-1`, and `-1` read unsigned is
+  u64's maximum. Anything new that reads a literal's value as a number must read
+  the flag too.
 - **An array literal is not given the expected type.** `inodeTypeCheck`
   dispatches `arrayLitTypeCheck` without `expectType`, where the `BlockTag` and
   `IfTag` arms beside it pass it through. So the elements fold among themselves

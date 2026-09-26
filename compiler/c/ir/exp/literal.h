@@ -58,7 +58,8 @@ INode *cloneFLitNode(CloneState *cstate, FLitNode *lit);
 // Name resolution of lit node
 void litNameRes(NameResState* pstate, IExpNode *node);
 
-// Give an untyped integer literal the number type it is wanted as.
+// Give an untyped integer literal the number type it is wanted as, refusing a
+// value an integer type cannot hold.
 // Returns 1 when *nodep is now a literal of that type, 0 otherwise.
 int litAdoptNumberType(INode **nodep, INode *totype);
 

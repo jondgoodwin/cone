@@ -117,6 +117,8 @@ void flitPrint(FLitNode *lit) {
     inodePrintNode(lit->vtype);
 }
 
+static void litCheckRange(ULitNode *lit, int defaulted);
+
 // Name resolution of lit node
 void litNameRes(NameResState* pstate, IExpNode *node) {
     inodeNameRes(pstate, &node->vtype);
@@ -132,9 +134,9 @@ void litNameRes(NameResState* pstate, IExpNode *node) {
 // 'mut n f64 = 5000000000' held 705032704.0. Adopting the type builds the
 // constant once, at the width it is stored at.
 //
-// An integer target retypes the node. A float target replaces it with a float
-// literal built from the full 64-bit value, read as signed because that is how
-// the i32 default read it and how parsePrefix folded a unary minus into it.
+// An integer target retypes the node, and refuses a value it cannot hold. A
+// float target replaces it with a float literal built from the full 64-bit
+// magnitude written, negated when parsePrefix folded a unary minus into it.
 // Returns 1 when *nodep is now a literal of the wanted type, 0 when it was not
 // an untyped integer literal or the type is not a number.
 //
@@ -156,14 +158,19 @@ int litAdoptNumberType(INode **nodep, INode *totype) {
     case UintNbrTag:
         ((ULitNode*)node)->vtype = nbrtype;
         node->flags &= ~FlagUnkType;
+        litCheckRange((ULitNode*)node, 0);
         return 1;
     case FloatNbrTag: {
-        int64_t value = (int64_t)((ULitNode*)node)->uintlit;
+        // The magnitude written, with its sign: read as a signed value,
+        // '18446744073709551615' was -1
+        int negated = (node->flags & FlagLitNeg) != 0;
+        uint64_t magnitude = negated ? 0 - ((ULitNode*)node)->uintlit : ((ULitNode*)node)->uintlit;
         FLitNode *flit;
         newNode(flit, FLitNode, FLitTag);
         // Rounded once, at the target's own precision: rounding to double first
         // and to float after can land a value above 2^53 on the wrong neighbour
-        flit->floatlit = ((NbrNode*)nbrtype)->bits == 32 ? (double)(float)value : (double)value;
+        double value = ((NbrNode*)nbrtype)->bits == 32 ? (double)(float)magnitude : (double)magnitude;
+        flit->floatlit = negated ? -value : value;
         flit->vtype = nbrtype;
         inodeLexCopy((INode*)flit, node);
         *nodep = (INode*)flit;
@@ -174,6 +181,59 @@ int litAdoptNumberType(INode **nodep, INode *totype) {
     }
 }
 
+// Refuse an integer literal whose value does not fit the integer type it now
+// has, in place of materializing it at that width and silently dropping every
+// bit above it: '300u8' and 'mut n u8 = 300' stored 44. The digits written are
+// the literal's magnitude, recovered from the two's complement value by
+// FlagLitNeg. A signed type takes one more magnitude negated than not, so
+// '-128i8' fits and '128i8' does not. An unsigned type takes any magnitude it
+// can hold, negated or not: the manual has a minus on an unsigned literal
+// leave it unsigned, so '-1u8' is 255, the value negation has in 8 bits.
+// Bool is a 1-bit unsigned by tag but is never a literal's own type
+// (litAdoptNumberType refuses it), so it is not asked.
+//
+// 'defaulted' says the type is the i32 newULitNode gave a literal nothing
+// else typed, which the message says, since the reader wrote no type. Reported
+// once: the literal becomes a zero of its type, so a literal checked again, or
+// a constant generated at each use, does not repeat it.
+static void litCheckRange(ULitNode *lit, int defaulted) {
+    NbrNode *type = (NbrNode*)itypeGetTypeDcl(lit->vtype);
+    if ((type->tag != IntNbrTag && type->tag != UintNbrTag) || type->bits <= 1)
+        return;
+    int negated = (lit->flags & FlagLitNeg) != 0;
+    uint64_t magnitude = negated ? 0 - lit->uintlit : lit->uintlit;
+    uint64_t most;   // The largest magnitude the type holds, as written
+    if (type->tag == IntNbrTag)
+        most = ((uint64_t)1 << (type->bits - 1)) - (negated ? 0 : 1);
+    else
+        most = type->bits >= 64 ? UINT64_MAX : ((uint64_t)1 << type->bits) - 1;
+    if (magnitude <= most)
+        return;
+
+    // Quoted as written, digits and suffix, with the minus that was folded in
+    int len = 0;
+    if (lit->srcp)
+        while (isalnum((unsigned char)lit->srcp[len]) || lit->srcp[len] == '_')
+            ++len;
+    char *sign = negated ? "-" : "";
+    if (defaulted)
+        errorMsgNode((INode*)lit, ErrorLitRange,
+            "Integer literal '%s%.*s' does not fit %s, the type it defaults to where nothing gives it one. Give it a suffix ('%s%.*si64') or a declared type.",
+            sign, len, lit->srcp, &type->namesym->namestr, sign, len, lit->srcp);
+    else if (type->tag == IntNbrTag)
+        errorMsgNode((INode*)lit, ErrorLitRange,
+            "Integer literal '%s%.*s' does not fit %s, whose values run from %" PRId64 " to %" PRId64 ".",
+            sign, len, lit->srcp, &type->namesym->namestr,
+            (int64_t)(0 - ((uint64_t)1 << (type->bits - 1))), (int64_t)(((uint64_t)1 << (type->bits - 1)) - 1));
+    else
+        errorMsgNode((INode*)lit, ErrorLitRange,
+            "Integer literal '%s%.*s' does not fit %s, whose values run from 0 to %" PRIu64 ".",
+            sign, len, lit->srcp, &type->namesym->namestr,
+            type->bits >= 64 ? UINT64_MAX : ((uint64_t)1 << type->bits) - 1);
+    lit->uintlit = 0;
+    lit->flags &= ~(FlagUnkType | FlagLitNeg);
+}
+
 // Refuse an untyped integer literal whose value does not fit the i32 it
 // defaulted to. A literal still carrying FlagUnkType when it is generated was
 // given a type by nothing -- not litTypeCheck, whose expectType did not reach
@@ -182,46 +242,24 @@ int litAdoptNumberType(INode **nodep, INode *totype) {
 // them: 'i64arg(if v {5000000000;} else {1;})' passed 705032704. Only
 // generation sees every such literal, in a function body, a global's
 // initializer and a constant's value alike, after everything that could type it
-// has run. Signed values are read by sign extension, because parsePrefix folds
-// a unary minus into the value, which is also why '18446744073709551615' reads
-// as -1 and passes. Reported once: the flag is dropped, so a constant generated
-// at each use does not repeat it.
+// has run.
 void litCheckDefaultRange(ULitNode *lit) {
-    if (!(lit->flags & FlagUnkType))
-        return;
-    NbrNode *type = (NbrNode*)itypeGetTypeDcl(lit->vtype);
-    if ((type->tag != IntNbrTag && type->tag != UintNbrTag) || type->bits >= 64)
-        return;
-    int fits;
-    if (type->tag == IntNbrTag) {
-        int64_t value = (int64_t)lit->uintlit;
-        int64_t limit = (int64_t)1 << (type->bits - 1);
-        fits = value >= -limit && value < limit;
-    }
-    else
-        fits = (lit->uintlit >> type->bits) == 0;
-    if (fits)
-        return;
-    lit->flags &= ~FlagUnkType;
-    // Quoted as written: the value alone cannot tell -3000000000 from a large
-    // positive one
-    int len = 0;
-    if (lit->srcp)
-        while (isalnum((unsigned char)lit->srcp[len]) || lit->srcp[len] == '_')
-            ++len;
-    errorMsgNode((INode*)lit, ErrorLitRange,
-        "Integer literal '%.*s' does not fit %s, the type it defaults to where nothing gives it one. Give it a suffix ('%.*si64') or a declared type.",
-        len, lit->srcp, &type->namesym->namestr, len, lit->srcp);
+    if (lit->flags & FlagUnkType)
+        litCheckRange(lit, 1);
 }
 
 // Type check lit node
 void litTypeCheck(TypeCheckState* pstate, INode **nodep, INode *expectType) {
     itypeTypeCheck(pstate, &((IExpNode*)*nodep)->vtype);
 
+    // An integer literal with a suffix has its type, and must fit it
+    if ((*nodep)->tag == ULitTag && !((*nodep)->flags & FlagUnkType))
+        litCheckRange((ULitNode*)*nodep, 0);
+
     // An untyped integer literal takes the number type it is wanted as. One that
     // arrives with no expected type -- a call's argument, checked before its
     // callee is resolved -- is given it by iexpCoerce instead.
-    if (expectType != NULL && expectType != unknownType && expectType != noCareType)
+    else if (expectType != NULL && expectType != unknownType && expectType != noCareType)
         litAdoptNumberType(nodep, expectType);
 }
 
