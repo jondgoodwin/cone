@@ -1172,10 +1172,10 @@ cost":
   so an inferred type in common is whichever was seen first.
 
 ⚠ **It answers about two distinct declarations only.** One declaration is not
-substituting for anything, and every caller has asked that question already;
-`structMatches` is reached with equal types from `cast.c`'s narrowing check, and
-answering yes there swallowed the diagnostic that says a variant is already as
-narrow as it gets.
+substituting for anything, and every caller asks that question first (its
+`assert` says so). `cast.c`'s narrowing check is the one where it matters: a
+copy of an enum's default narrows a variant to itself, and a yes there would
+swallow the diagnostic that says a variant is already as narrow as it gets.
 
 ### Sibling folding
 
