@@ -427,8 +427,9 @@ static void genlClaimSymbol(GenState *gen, INode *node, LLVMValueRef global, Gen
         return;
     }
 
-    // An external symbol the compiler declared itself. C's 'free' is the one a
-    // declaration can meet, and it is shared as genlFree shares the program's
+    // An external symbol the compiler declared itself, which has no declaring
+    // node: an LLVM intrinsic it calls by name ('llvm.trap', genlPanic). A
+    // declaration meeting one shares it where it can
     if (owner == NULL) {
         if (node->tag == FnDclTag && defined == GenlDeclared
             && LLVMIsAFunction(existing) && LLVMIsDeclaration(existing)) {

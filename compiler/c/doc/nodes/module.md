@@ -2465,40 +2465,58 @@ interesting one, since folding applied to types is delegated inheritance.
 
 ### What a region is
 
-Three descriptions are live at once:
+A region's **annotation** — the name after `+` — is an ordinary struct that
+declares the built-in trait **`RegionRef`**: `struct rc is RegionRef { … }`.
+There is no `region` keyword. `RegionRef` is the compiler's own
+(`corelib.c`, `newRegionRefTrait`), a name every module reaches like `initAll`,
+and has no members: it is a check, not an abstraction values have, so
+`&RegionRef` and `is RegionRef` on a trait, an enum or a variant are refused
+(`ErrorRegionRefUse`), and a reference whose region struct does not declare it
+is refused wherever the reference type is checked (`ErrorNotRegion`,
+`refRegionCheck`).
 
-- *Region Modules* (`c:/src/progling/content/post/region-modules.md`) says a
-  region is an importable **module**, holding the annotation type, the region's
-  global state, and its API.
-- `refregionglo.html` shows a **`region` declaration** — `region @move so:` —
-  with `fn alloc(size usize) Option[*u8]` and `fn free(self &uni rc)`.
-- The core package, `packages/core/src/core.cone`, implements them as
-  **`struct @move so`** with `fn alloc(size usize) *u8` and no `free` method at
-  all.
+The compiler knows no region by name. It knows five methods a region may
+declare, each found by name and each optional, and calls them at the reference
+events only it can see (`ir/types/region.c`):
 
-The `region` keyword is interned by the lexer and parsed nowhere.
+| Method | Called when | If absent |
+|---|---|---|
+| `fn alloc(size usize) *u8`, static | `+R value` allocates; `size` is the whole allocation, header included; null fails | the allocation is refused (`ErrorBadAlloc`) |
+| `fn init() R`, static | after `alloc`; the result is stored as the header | the header is left as allocated |
+| `fn alias(self &uni R)` | a copy of an owning reference becomes another owner | a copy is a **move**: the region has one owner per value |
+| `fn dealias(self &uni R) Bool` | an owner goes away; answers whether it was the last | an owner's going reports nothing: with no `alias` either it is the value's death; with `alias` the value never dies by count and is never freed, left for something other than its owners (a collector, once one exists) to free |
+| `fn free(self &uni R)` | the value is dead, after its fields' owners are released | the memory is not given back a value at a time |
 
-This is not only a naming question. [Generation](../phases/generation.md)
-records that `genlRcCounter` finds the reference count at `((usize*)ref) - 1`,
-which holds only because `rc` has exactly one `usize` field and its permission
-is zero-sized, and that `genlDealiasOwn` frees the reference pointer directly,
-which holds only because `so`'s region struct is empty. Seven sites across
-`ir/flow.c`, `genllvm/genlalloc.c`, `genllvm/genlexpr.c` and
-`ir/exp/arraylit.c` branch on whether a region **is named** `rc` or `so`, via
-`isRegion`. So a region is library code in placement only; its behavior is
-compiled in. Any region beyond those two — arena, pool, tracing collector —
-needs that name dispatch replaced by a protocol and the allocation header
-generalized.
+Every method but `alloc` and `init` is handed the allocation's **header**, the
+region struct at the front of the `{region, permission, value}` layout, found
+from the value pointer by the value's offset in that layout
+(`genlRegionHeader`), so no region's or permission's size is assumed. A region
+without `alias` is marked `MoveType` at the end of its name resolution
+(`regionNameRes`), the mark `@move` gives, which `@move` may still write.
 
-Whether that protocol is a contract the compiler holds structurally — a module
-supplying the right methods — or one written in Cone as a module trait is itself
-open. Both are buildable now; the second is what makes a region fully library
-code, and a region protocol would also want what a module trait does not yet
-hold, a type among its requirements.
+The struct is held to the method shapes **at its declaration**, after its
+methods are type checked (`regionRefCheck`, from `structCheckMembers`):
+`ErrorBadAlloc` for `alloc`/`init`, `ErrorRegionMeth` for the other three. No
+combination is refused for what it leaves out, since an absent method's
+operation simply does not happen [Jon 25 Sep]: `dealias` without `alias` is a
+single owner whose going still asks `dealias`, and `init` without `alloc` is
+never called. The one refusal is a contradiction, `@move` with `alias`
+(`ErrorRegionSet`).
 
-That a module carries global singleton state, and a type does not, is why the
-region-as-module description is the one that fits the state half; what a region
-annotation on a reference names is a type.
+`so` and `rc` are written this way in `packages/core/src/core.cone`, `inline`,
+their `free` calling libc's by its qualified name, since inside a method named
+`free` a bare `free` is the method. Core is their module wrapper; a region
+naming a module rather than a struct is not built.
+
+What a region's death does beyond the methods is the compiler's: releasing the
+owning references its value's fields hold, before `free`. A value's `final` is
+not run when a region lets it go.
+
+That a module carries global singleton state, and a type does not, is why a
+region with global state (an arena's block list, a collector's roots) would
+want the module half of the *Region Modules* description
+(`c:/src/progling/content/post/region-modules.md`); what a region annotation on
+a reference names is a type, and that is what is built.
 
 ### Consequences that follow whichever way those go
 

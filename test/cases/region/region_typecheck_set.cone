@@ -1,0 +1,43 @@
+// The set a region's methods make together. Each method is optional, and a
+// missing one means its operation does not happen, so no combination is
+// refused for what it leaves out: every region below but one is accepted. The
+// one refused is a contradiction, not an absence: '@move' says one owner per
+// value and an 'alias' method says there may be another (ErrorRegionSet). What
+// the accepted combinations do at run time is region_regionref's to show.
+
+mod region_typecheck_set;
+
+// No 'dealias': copies are counted and an owner's going reports nothing, so a
+// value never dies by count -- it waits for a collector to free it, as a region
+// with no 'free' never gives memory back
+struct countsUp is RegionRef {
+  cnt usize;
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn alias(self &uni countsUp) inline { cnt = cnt + 1usize; }
+}
+
+// No 'alias': a single owner, whose going still asks 'dealias'
+struct countsDown is RegionRef {
+  cnt usize;
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn dealias(self &uni countsDown) Bool inline { true; }
+}
+
+// No 'alloc': nothing allocates from it, so its 'init' is never called
+struct initOnly is RegionRef {
+  cnt usize;
+  fn init() initOnly inline { initOnly[1usize]; }
+}
+
+// '@move' on a region with no 'alias' only says again what the absence says
+struct @move movesAlready is RegionRef {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+}
+
+// '@move' with an 'alias' contradicts itself
+struct @move movesAndCounts is RegionRef {                            //~ ErrorRegionSet "'@move', one owner per value, but declares alias"
+  cnt usize;
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn alias(self &uni movesAndCounts) inline { cnt = cnt + 1usize; }
+  fn dealias(self &uni movesAndCounts) Bool inline { cnt = cnt - 1usize; cnt == 0usize; }
+}

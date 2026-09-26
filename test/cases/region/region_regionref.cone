@@ -1,0 +1,141 @@
+// A region the compiler has never heard of, written here in Cone, gets every
+// call 'rc' and 'so' get. The compiler knows no region by name: it calls the
+// methods a struct declaring 'is RegionRef' has, at each reference event, and
+// what the struct leaves out says what it does. Each method below prints, so
+// the output is the whole assertion -- which method was called, in what order,
+// and how many owners the count says there are after each.
+//
+// 'tally' counts like 'rc', with a header two fields wide, so the value sits
+// sixteen bytes past where 'alloc' returned rather than eight: 'free' printing
+// the serial 'init' stored proves each method was handed the header, found from
+// the layout rather than from a guess at its size. 'solo' has no 'alias', so a
+// copy of a reference to it is a move and its one owner's going is the death.
+//
+// Two more leave out what 'rc' has, and an absent method's operation simply
+// does not happen: 'kept' has 'alias' and no 'dealias', so copies are counted
+// but an owner's going reports nothing, the value never dies by count, and its
+// 'free' is never called -- it leaks, as such a region's values do until a
+// collector frees them. 'asked' has 'dealias' and no 'alias', so it is a
+// single owner whose going still asks 'dealias', and dies on its answer.
+
+mod region_regionref;
+
+import stdio use *;
+import libc;
+
+fn line(label &[]u8, n usize) {
+  printStr(label);
+  printInt(i64[n]);
+  printStr("\n");
+}
+
+struct tally is RegionRef {
+  owners usize;
+  serial u32;
+  fn alloc(size usize) *u8 inline { line("alloc ", size); malloc(size); }
+  fn init() tally inline { printStr("init\n"); tally[1usize, 42u32]; }
+  fn alias(self &uni tally) inline { owners = owners + 1usize; line("alias, owners ", owners); }
+  fn dealias(self &uni tally) Bool inline { owners = owners - 1usize; line("dealias, owners ", owners); owners == 0usize; }
+  // A bare 'free' here is this method; C's is reached through its package
+  fn free(self &uni tally) inline { line("free, serial ", usize[serial]); libc.free(self as *u8); }
+}
+
+struct solo is RegionRef {
+  fn alloc(size usize) *u8 inline { line("solo alloc ", size); malloc(size); }
+  fn free(self &uni solo) inline { printStr("solo free\n"); libc.free(self as *u8); }
+}
+
+struct kept is RegionRef {
+  owners usize;
+  fn alloc(size usize) *u8 inline { line("kept alloc ", size); malloc(size); }
+  fn init() kept inline { kept[1usize]; }
+  fn alias(self &uni kept) inline { owners = owners + 1usize; line("kept alias, owners ", owners); }
+  fn free(self &uni kept) inline { printStr("kept free\n"); libc.free(self as *u8); }
+}
+
+struct asked is RegionRef {
+  fn alloc(size usize) *u8 inline { line("asked alloc ", size); malloc(size); }
+  fn dealias(self &uni asked) Bool inline { printStr("asked dealias\n"); true; }
+  fn free(self &uni asked) inline { printStr("asked free\n"); libc.free(self as *u8); }
+}
+
+struct Holder {
+  pub r +tally-imm i32;
+}
+
+// Two copies made and dropped in an inner block, then the original
+fn counted() {
+  printStr("-- counted\n");
+  imm a = +tally-imm 5i32;
+  {
+    imm b = a;
+    imm c = b;
+    line("value ", usize[*c]);
+  }
+  printStr("inner block done\n");
+}
+
+// A copy passed to a call is one more owner, which the callee's parameter drops
+fn peek(r +tally-imm i32) i32 { *r; }
+fn passed() {
+  printStr("-- passed\n");
+  imm a = +tally-imm 6i32;
+  line("value ", usize[peek(a)]);
+}
+
+// An owning slice is counted exactly as a single reference is
+fn sliced() {
+  printStr("-- sliced\n");
+  imm s = +[]tally-imm [1i32, 2i32, 3i32];
+  imm t = s;
+  line("element ", usize[t[2]]);
+}
+
+// A single owner: the copy is a move, and it dies once
+fn single() {
+  printStr("-- single\n");
+  imm s = +solo-mut 7i32;
+  imm t = s;
+  line("value ", usize[*t]);
+}
+
+// A struct allocated in one region holding an owner in another: its death
+// releases the owner its field holds before its own memory goes back
+fn nested() {
+  printStr("-- nested\n");
+  imm a = +tally-imm 9i32;
+  imm h = +solo Holder[a];
+  line("through the holder ", usize[*h.r]);
+}
+
+// Counted up and never down: no dealias, no death, no free
+fn neverDies() {
+  printStr("-- never dies\n");
+  imm a = +kept-imm 3i32;
+  {
+    imm b = a;
+    line("value ", usize[*b]);
+  }
+  printStr("inner block done\n");
+}
+
+// A single owner that is still asked: the copy is a move, and the one going
+// calls dealias, whose true is the death
+fn askedOnce() {
+  printStr("-- asked\n");
+  imm s = +asked-mut 4i32;
+  imm t = s;
+  line("value ", usize[*t]);
+}
+
+fn main() i32 {
+  counted();
+  passed();
+  sliced();
+  single();
+  nested();
+  neverDies();
+  askedOnce();
+  printStr("-- end\n");
+  0i32;
+}

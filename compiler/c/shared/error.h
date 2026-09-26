@@ -142,6 +142,12 @@ enum ErrorCode {
     ErrorInlineRef = 1083,      // A borrow of an inline function, which has no code of its own to point at
     ErrorNoRead = 1084,         // A read through a reference whose permission grants no read
 
+    // Regions: the annotation struct after '+', and the 'RegionRef' methods the compiler calls on it
+    ErrorNotRegion = 1154,      // A reference's region names a struct that does not declare 'is RegionRef'
+    ErrorRegionMeth = 1155,     // A region's 'alias', 'dealias' or 'free' not of the shape the compiler calls it with
+    ErrorRegionSet = 1156,      // A region whose declaration contradicts itself: '@move' (one owner per value) with an 'alias' method (another owner)
+    ErrorRegionRefUse = 1157,   // 'RegionRef' anywhere but a struct's 'is' list: the type a reference points at, or the 'is' of a trait, enum or variant
+
     // The compiler's own invariants. This is the one code no source is supposed
     // to be able to produce, and so the one code with no scenario: reaching it
     // means a compiler defect, not a bad program. See errorUnreachable.

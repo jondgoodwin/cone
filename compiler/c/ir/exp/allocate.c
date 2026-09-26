@@ -86,8 +86,9 @@ void allocateTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
         node->vtype = (INode *)reftype;
     inodeTypeCheckAny(pstate, &node->vtype);
 
-    // Type check that ref region + permission's allocation functions are declared correctly
-    regionAllocTypeCheck(itypeGetTypeDcl(node->region));
+    // The region can allocate (the shapes of its methods are checked at its
+    // declaration), and the permission's init is declared correctly
+    regionAllocTypeCheck(node->region);
     permInitTypeCheck(itypeGetTypeDcl(node->perm));
 }
 

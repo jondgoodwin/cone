@@ -15,10 +15,13 @@ borrowed references used to shed the overhead wherever region oversight is not
 needed. Safety is preserved across all of it.
 
 **The distance** is large and worth stating plainly. Two regions ship, `so` and
-`rc`, both written as Cone text inside the compiler. **There is no way for a
-user to define a region**, no `region` keyword, and none of the protocol below
-beyond `alloc` and `init`. The strategies that motivate the whole design —
-arena, pool, tracing GC — are unwritten.
+`rc`, both written in Cone in the core package. A user can define a region the
+same way — a struct declaring `is RegionRef`, whose `alloc`, `init`, `alias`,
+`dealias` and `free` the compiler calls — but no more of the protocol below is
+built: no barriers, no weak references, no per-type record handed to a region,
+no region with global state, and a value's `final` is not run when its region
+frees it. The strategies that motivate the whole design — arena, pool, tracing
+GC — are unwritten.
 
 The argument is in *Memory Managed Your Way* (`conesite/public/memory.html`) and
 `c:/src/progling/content/post/gradual-memory-management.md`. The origin is
@@ -52,12 +55,10 @@ rather than the present arrangement.
    against**, and it is why an error at one axis is fixable at that axis —
    locality [Expressiveness and Attention](expressiveness-and-attention.md)
    depends on.
-2. **A region is an ordinary struct**, not a compiler concept. Anything with a
-   suitable `alloc` is one. ▸ **Settles** that a new strategy is library work,
-   not compiler work. ⚠ **[differs: seven sites across `ir/flow.c`,
-   `genllvm/genlalloc.c`, `genllvm/genlexpr.c` and `ir/exp/arraylit.c` dispatch
-   on whether a region is *named* `rc` or `so`]** — so today the principle holds
-   in placement only.
+2. **A region is an ordinary struct**, not a compiler concept: one declaring the
+   built-in trait `RegionRef`, whose methods the compiler calls at each
+   reference event and whose absent methods say what it does. ▸ **Settles**
+   that a new strategy is library work, not compiler work.
 3. **A permission is a set of capability bits**, not a keyword the compiler
    special-cases. What a permission permits is data. ▸ **Forbids** a fixed
    permission vocabulary, and **settles** that adding one is a table entry.
@@ -82,14 +83,19 @@ imm shared = +rc Person["Tako"]     // counted: freed at zero
 | Region | Is | Strategy |
 | --- | --- | --- |
 | `borrowRef` | a sentinel node, not a struct — the default for `&` | none; a borrow owns nothing |
-| `so` | `struct @move so` in the core package, `packages/core/src/core.cone`, no fields | single owner frees |
-| `rc` | `struct rc { cnt usize }` in the core package | reference counting |
-| user-defined | any struct with `alloc(usize) *u8` and an optional `init()` | whatever it implements |
+| `so` | `struct so is RegionRef` in the core package, `packages/core/src/core.cone`: no fields, `alloc` and `free`, no `alias` | single owner frees |
+| `rc` | `struct rc is RegionRef { cnt usize }` in the core package, with `init`, `alias` and `dealias` too | reference counting |
+| user-defined | any struct declaring `is RegionRef` | whatever its methods do |
 
-**`so` and `rc` are Cone source, not built into the compiler.**
-`regionAllocTypeCheck` validates the `alloc` signature and nothing else, so a
-third struct with an `alloc` is declarable today and the test corpus declares
-one.
+**`so` and `rc` are Cone source, not built into the compiler**, and nothing in
+the compiler names either. Each method is optional, and an absent one's
+operation does not happen: without `alias` a region has one owner per value and
+a copy is a move; `dealias` answers whether the owner that went was the last,
+and without it a shared value never dies by count; `free` gives the memory
+back. The compiler checks the methods' shapes where the struct is declared,
+refusing only `@move` with `alias`, which contradicts itself; and the test corpus
+declares regions of its own that get every call `rc` and `so` get
+([What a region is](../../compiler/c/doc/nodes/module.md)).
 
 **But the intended shape is much larger than that.** A region is meant to be a
 *module* containing the region annotation type, the region's global state, and
@@ -97,7 +103,9 @@ its API — where the annotation is "effectively a special-purpose trait"
 declaring bookkeeping fields plus a protocol of methods: `alloc`, `init`,
 `_alias`, `_dealias`, `_free`, `_readBarrier`/`_writeBarrier`, `isAlive`,
 `weak`, `drop` — and attributes such as `@move` and `traced` that the compiler
-keys off.
+keys off. ⚠ **[differs: of that protocol `alloc`, `init`, `alias`, `dealias` and
+`free` are built, spelled without the underscore; the annotation is a struct,
+not a module; and `@move` is read, but a missing `alias` says the same]**
 
 **The compiler's intended role is choreography, not ownership**: "it is the
 compiler's job to choreograph how operations on references invoke
@@ -216,7 +224,7 @@ anything.
 
 **Move-ness.** `refAdoptInfections` is the whole rule: a reference is a move
 type **when its permission lacks `MayAlias`, or its region is itself a move
-type**. `so` is `struct @move`, so every `+so` reference moves; `+rc` with the
+type**. `so` has no `alias`, which makes it one, so every `+so` reference moves; `+rc` with the
 default `uni` moves too, on a region that counts. That one sentence explains why
 `+rc x` moves while `+rc-mut x` copies.
 
@@ -269,7 +277,9 @@ gap:
 
 | Rule | Enforced by | Phase |
 | --- | --- | --- |
-| region must be a struct with `alloc` | `regionAllocTypeCheck` | type check |
+| region must be a struct declaring `is RegionRef` | `refRegionCheck` | type check |
+| a region's methods have the shapes the compiler calls, and `@move` is not contradicted by an `alias` | `regionRefCheck`, at the declaration | type check |
+| a region allocated from has `alloc` | `regionAllocTypeCheck` | type check |
 | requested permission vs. the source's | `permMatches` in `borrowTypeCheck` | type check |
 | value-type variance | `refMatches` and friends | type check |
 | region coercion direction | `regionMatches` | type check |

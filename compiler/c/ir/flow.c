@@ -230,20 +230,21 @@ void flowResultMove(INode *node) {
         flowMoveSource(node, NULL);
 }
 
-// Is this type a counted (rc) reference? An owning slice (ArrayRefTag) is
+// Is this type a counted reference: one into a region whose 'alias' is called
+// for each copy that becomes another owner? An owning slice (ArrayRefTag) is
 // counted exactly as a single reference is.
 int flowIsRcRef(INode *type) {
     RefNode *reftype = (RefNode *)itypeGetTypeDcl(type);
-    return (reftype->tag == RefTag || reftype->tag == ArrayRefTag) && isRegion(reftype->region, rcName);
+    return (reftype->tag == RefTag || reftype->tag == ArrayRefTag) && regionIsCounted(reftype->region);
 }
 
-// Does a variable of this type hold something its scope must release: an rc
-// or so reference, single or slice, or a tuple carrying one?
+// Does a variable of this type hold something its scope must release: an
+// owning reference into a region, single or slice, or a tuple carrying one?
 int flowIsOwningType(INode *type) {
     INode *typedcl = itypeGetTypeDcl(type);
     if (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag) {
         RefNode *reftype = (RefNode *)typedcl;
-        return isRegion(reftype->region, soName) || isRegion(reftype->region, rcName);
+        return regionIsOwning(reftype->region);
     }
     if (typedcl->tag == TTupleTag) {
         INode **elemp;

@@ -47,6 +47,7 @@ void arrayRefTypeCheck(TypeCheckState *pstate, RefNode *node) {
     if (node->perm == unknownType)
         node->perm = newPermUseNode(node->region == borrowRef ? roPerm : uniPerm);
     itypeTypeCheck(pstate, &node->region);
+    refRegionCheck(node->region);
     itypeTypeCheck(pstate, (INode**)&node->perm);
     // See refTypeCheck: '&[]' before a ')' parses with no element type, and
     // nothing ever fills a slice's in.

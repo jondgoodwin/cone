@@ -21,6 +21,11 @@ struct Plain {
   pub n i32;
 }
 
+// A region with no 'alias': one owner per value
+struct lonely is RegionRef {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+}
+
 // An enrichment: Plain's representation under a second name
 struct RichPlain extends Plain {
   pub fn doubled(self &) i32 { n * 2; }
@@ -39,12 +44,18 @@ fn soPairAlias() SoPair {
 }
 
 fn moving() {
-  // 'so' is declared 'struct @move' in core, so every reference into it is a
-  // move type however aliasable its permission: the second read of the source
-  // finds nothing there
+  // 'so' declares no 'alias' in core, which makes it a single-owner region, so
+  // every reference into it is a move type however aliasable its permission:
+  // the second read of the source finds nothing there
   imm sole = +so 1;
   imm moved = sole;
   imm again = sole;             //~ ErrorMove "has been moved out"
+
+  // It is the method set that says so, not the name: a region declared here
+  // with no 'alias' is single owner in the same way
+  imm lone = +lonely-mut 7;
+  imm taken1 = lone;
+  imm taken2 = lone;            //~ ErrorMove "has been moved out"
 
   // The other path to the same place: an allocation with no stated permission is
   // 'uni', which lacks MayAlias, so an 'rc' reference moves too even though the

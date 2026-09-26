@@ -468,10 +468,12 @@ where the check is about a `$name = comdat` line or a call.
 Matches against the **pre-optimization** dump, `<name>.preir` — what
 generation wrote, before the optimizer deletes or folds it. Use it for an
 instruction, a type or a signature that is the claim: the `icmp` a slice index
-emits against its runtime count, the `add i64 %6, 12` flow analysis injects for
-a fill literal, `%Node = type { i64, %Node* }`, `@read(i32**`. Register numbers
-are the pre-optimization ones — allocas and loads are still there — and are
-read out of the dump rather than chosen. The same rule about symbol bytes
+emits against its runtime count, the trip count of the loop calling a region's
+`alias` once per owner a fill literal adds, `%Node = type { i64, %Node* }`,
+`@read(i32**`. Register numbers are the pre-optimization ones — allocas and
+loads are still there, and an inline method's body is pasted in whole, its
+parameters stored to allocas of their own — and are read out of the dump
+rather than chosen. The same rule about symbol bytes
 applies.
 
 #### `symbols`

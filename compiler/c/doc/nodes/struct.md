@@ -690,6 +690,9 @@ inherited member bare, exactly as it names the type's own.
     extending one that is not generic then clones its own bodied methods into its
     copies** (`structEnumCloneOwnMethods`), which arrived resolved at step 4c with
     their enum's members already spliced; see "An enum extending an enum".
+    **A region with no `alias` method is then marked `MoveType`**
+    (`regionNameRes`): one declaring `is RegionRef` has one owner per value
+    ([What a region is](module.md)).
 11. Pop, and mark `NameResolved`.
 
 **Reached by demand.** `structNameResDemand` is the one place name resolution
@@ -843,7 +846,11 @@ Steps 9 and 10 are `structCheckMembers`, run from the members queue:
    requirement with no body, inherited as such, is unmet in a struct; a trait
    may pass it on. An `extern` method is not such a requirement: it has no
    body here because it is defined elsewhere, as an include file declares a
-   package's methods, and it meets the trait's requirement.
+   package's methods, and it meets the trait's requirement. **`RegionRef`, the
+   built-in trait, has no methods to verify**: a type declaring it is held
+   instead to the region methods' shapes (`regionRefCheck`), each
+   optional and fixed in shape where present, which no requirement written in
+   Cone can say ([What a region is](module.md)).
 
 ## Name folding
 

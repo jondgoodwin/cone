@@ -1,35 +1,61 @@
-// The 'alloc' method a region must declare for an allocation to name it.
+// The shape of each method a region may declare, checked where the region is
+// declared.
 //
-// ir/types/region.c checks the shape when an allocation reaches the region, not
-// when the region is declared, so a malformed region that nothing allocates from
-// is silently fine. Every case below is therefore paired with an allocation at
-// the foot of the file.
+// A struct declaring 'is RegionRef' promises that each region method it has --
+// 'alloc', 'init', 'alias', 'dealias', 'free', all optional -- is of the shape
+// the compiler calls it with. ir/types/region.c holds it to that at the
+// declaration, after its methods are type checked, so a malformed region is
+// reported whether or not anything allocates from it: nothing below allocates
+// from any of these but 'noAlloc'.
 //
-// Each diagnostic lands on the offending declaration rather than on the
-// allocation that provoked it, which is why the four cases can share one
-// function without their messages piling onto one line.
+// Each diagnostic lands on the offending method. 'alloc' and 'init' keep the
+// allocator's code, ErrorBadAlloc; the three methods handed the header share
+// ErrorRegionMeth. 'init' has its own scenario, region_typecheck_init, and the
+// set the methods must make together is region_typecheck_set.
 
 mod region_typecheck_region;
 
 extern fn wmalloc(size usize) *u16;
 
-struct noAlloc { }             //~ ErrorBadAlloc "lacks alloc static method"
+// A region need not allocate (a companion region that only counts, say), but
+// '+R value' then has nothing to call: refused at the allocation
+struct noAlloc is RegionRef { }
 
-struct twoParms {
+struct twoParms is RegionRef {
   fn alloc(size usize, extra usize) *u8 inline { malloc(size); }   //~ ErrorBadAlloc "single usize parm"
 }
 
-struct wrongParm {
+struct wrongParm is RegionRef {
   fn alloc(size u32) *u8 inline { malloc(usize[size]); }           //~ ErrorBadAlloc "single usize parm"
 }
 
-struct wrongReturn {
+struct wrongReturn is RegionRef {
   fn alloc(size usize) *u16 inline { wmalloc(size); }              //~ ErrorBadAlloc "must return *u8"
 }
 
+// 'alias', 'dealias' and 'free' are each handed the allocation's header as
+// 'self &uni R'. 'dealias' answers whether the owner that went was the last.
+struct selfShapes is RegionRef {
+  cnt usize;
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn alias(self &mut selfShapes) inline { cnt = cnt + 1usize; }    //~ ErrorRegionMeth "fn alias(self &uni selfShapes)"
+  fn dealias(self &uni selfShapes) inline { cnt = cnt - 1usize; }  //~ ErrorRegionMeth "fn dealias(self &uni selfShapes) Bool"
+  fn free(p *u8) inline { }                                        //~ ErrorRegionMeth "fn free(self &uni selfShapes)"
+}
+
+// One that returns something from a method that returns nothing
+struct freeReturns is RegionRef {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn free(self &uni freeReturns) i32 inline { 0i32; }              //~ ErrorRegionMeth "fn free(self &uni freeReturns)"
+}
+
+// A field under a method's name is no method: reported once, as the wrong
+// shape, and not again as a set with an 'alias' in it
+struct fieldAlias is RegionRef {
+  alias usize;                                                     //~ ErrorRegionMeth "fn alias(self &uni fieldAlias)"
+  fn alloc(size usize) *u8 inline { malloc(size); }
+}
+
 fn f() {
-  imm a = +noAlloc-mut 1;
-  imm b = +twoParms-mut 2;
-  imm c = +wrongParm-mut 3;
-  imm d = +wrongReturn-mut 4;
+  imm a = +noAlloc-mut 1;       //~ ErrorBadAlloc "noAlloc cannot allocate"
 }

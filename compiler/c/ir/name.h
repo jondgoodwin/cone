@@ -82,10 +82,15 @@ extern Name *refIndexName; // "&[]"
 
 extern Name *optionName;   // "Option"
 
-extern Name *rcName;       // "rc"
-extern Name *soName;       // "so"
+// The methods a region's annotation struct may declare, which the compiler
+// calls at each reference event (ir/types/region.c), and the built-in trait
+// that checks them
 extern Name *allocMethodName;  // "alloc"
 extern Name *initMethodName;   // "init"
+extern Name *aliasMethodName;  // "alias"
+extern Name *dealiasMethodName; // "dealias"
+extern Name *freeMethodName;   // "free"
+extern Name *regionRefName;    // "RegionRef"
 
 typedef struct VarDclNode VarDclNode;
 

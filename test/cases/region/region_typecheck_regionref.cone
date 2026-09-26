@@ -1,0 +1,37 @@
+// 'RegionRef' itself: the built-in trait a region's annotation struct declares.
+// It is the compiler's, not declared in any Cone source, and has no members; it
+// is a check that the struct's region methods are there and well formed, not an
+// abstraction values have. So it may stand in exactly one place, a struct's
+// 'is' list, and a reference's region must be a struct that put it there.
+
+mod region_typecheck_regionref;
+
+// A struct with every method a region could want, but no 'is RegionRef'
+struct Unmarked {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+}
+
+// Refused as a region in every place a region is named: an allocation, a
+// reference type, and an owning slice's type
+fn allocates() {
+  imm a = +Unmarked-mut 1i32;                        //~ ErrorNotRegion "Unmarked is not a region"
+}
+fn takes(r +Unmarked-mut i32) { }                    //~ ErrorNotRegion "Unmarked is not a region"
+fn slices(s +[]Unmarked-mut i32) { }                 //~ ErrorNotRegion "Unmarked is not a region"
+
+// Not a type a value has, so nothing refers to it, plainly or virtually
+fn refers(r &RegionRef) { }                          //~ ErrorRegionRefUse "not a type a value has"
+fn refersVirtually(r &<RegionRef) { }                //~ ErrorRegionRefUse "not a type a value has"
+
+// Only a struct is a region's annotation: not an abstraction, not an enum,
+// and not a variant of one
+trait Abstract is RegionRef {                        //~ ErrorRegionRefUse "Only a struct may declare 'is RegionRef'"
+  fn alloc(size usize) *u8 inline { malloc(size); }
+}
+enum Picked is RegionRef {                           //~ ErrorRegionRefUse "Only a struct may declare 'is RegionRef'"
+  One, Two;
+}
+enum Shape {
+  struct Round is RegionRef { r i32; }               //~ ErrorRegionRefUse "Only a struct may declare 'is RegionRef'"
+  struct Square { s i32; }
+}
