@@ -363,11 +363,18 @@ static void pwStep(Place *pl, uintptr_t step) {
 
 static int pwPlace(INode **nodep, Place *pl, PathSet **base);
 
+// May other references reach what this reference points at? Every permission
+// but 'uni' may alias.
+static int pwMayAlias(INode *reftype) {
+    return (permGetFlags(((RefNode *)reftype)->perm) & MayAlias) != 0;
+}
+
 // The place reached through the reference 'ref' evaluates to. Through a
 // borrowed reference it is a root of its own, what the reference points at,
 // keyed by the variable the reference is read from; through an owning one, a
 // step further along the reference's own place. Nothing is tracked through a
-// raw pointer, or through a reference that is not read from a variable.
+// raw pointer, or through a reference that is not read from a variable. A
+// reference that may alias makes the path shared from there on.
 static int pwThrough(INode **refp, Place *pl, PathSet **base) {
     INode *reftype = iexpGetTypeDcl(*refp);
     if (reftype->tag != RefTag && reftype->tag != ArrayRefTag && reftype->tag != VirtRefTag) {
@@ -383,10 +390,20 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         pl->var = refpl.var;
         pl->deref = 1;
         pl->nsteps = 0;
+        pl->shared = pwMayAlias(reftype);
+        pl->sharedlen = 0;
         return 1;
     }
     *pl = refpl;
-    pwStep(pl, PlaceStepDeref);
+    // A dereference cut off by the step limit is not marked shared: the place
+    // then stands for more than itself, and is held to the stricter rule
+    if (pl->nsteps < PlaceMaxSteps) {
+        pwStep(pl, PlaceStepDeref);
+        if (!pl->shared && pwMayAlias(reftype)) {
+            pl->shared = 1;
+            pl->sharedlen = pl->nsteps;
+        }
+    }
     return 1;
 }
 
@@ -405,6 +422,8 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         pl->var = index;
         pl->deref = 0;
         pl->nsteps = 0;
+        pl->shared = 0;
+        pl->sharedlen = 0;
         return 1;
     }
     switch (node->tag) {
@@ -472,11 +491,7 @@ static PathSet *pwBorrow(INode *node, int aswrite) {
     if (!pwPlace(&borrow->vtexp, &pl, &base))
         return base;
     INode *perm = ((RefNode *)iexpGetTypeDcl(node))->perm;
-    uint16_t flags = permGetFlags(perm);
-    int access = aswrite ? AccessWrite
-        : (flags & MayWrite) ? AccessBorrowMut
-        : (flags & MayRead) ? AccessBorrow : AccessBorrowOpaq;
-    pwAccess(&pl, access, node);
+    pwAccess(&pl, aswrite ? AccessWrite : loanBorrowAccess(perm), node);
     uint32_t loan = loanMake(node, &pl, perm);
     PathVar *pv = &pathVars[pl.var];
     return pathSetAdd(pv->holder ? pv->holds : NULL, loan);
@@ -551,6 +566,8 @@ static void pwSwap(SwapNode *node) {
             pl.var = whole[i];
             pl.deref = 0;
             pl.nsteps = 0;
+            pl.shared = 0;
+            pl.sharedlen = 0;
             holds[i] = pathVars[whole[i]].holds;
             pwAccess(&pl, itypeNeedsFinal(var->vtype) ? AccessReplace : AccessWrite, *sides[i]);
         }

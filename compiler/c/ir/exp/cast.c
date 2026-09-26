@@ -227,6 +227,85 @@ int castConvertsToBool(INode *fromtype) {
     }
 }
 
+// Is this place reached as 'uni': a variable of this function held by value
+// (a local, or a parameter taken by value, but not a global, which a callee
+// may change), a field or an array element of one, or what a 'uni' reference
+// such a place holds points at? Nothing else can reach it while a borrow of it
+// made here lives, since the loan walk freezes it.
+static int castUniPlace(INode *node) {
+    if (isNameUseNode(node) && isExpNode(node)) {
+        INode *dcl = ((NameUseNode *)node)->dclnode;
+        return dcl && dcl->tag == VarDclTag && ((VarDclNode *)dcl)->scope >= 1
+            && !(dcl->flags & FlagStatic);
+    }
+    switch (node->tag) {
+    case FldAccessTag:
+    case ArrIndexTag:
+    {
+        // A reference's field or element is reached through an injected
+        // dereference, the case below; a virtual reference's, a slice's or a
+        // pointer's is reached with none, and is not reached as 'uni'
+        INode *obj = ((FnCallNode *)node)->objfn;
+        uint16_t objtag = iexpGetTypeDcl(obj)->tag;
+        if (objtag == RefTag || objtag == VirtRefTag || objtag == ArrayRefTag || objtag == PtrTag)
+            return 0;
+        return castUniPlace(obj);
+    }
+    case DerefTag:
+    {
+        INode *ref = ((StarNode *)node)->vtexp;
+        INode *reftype = iexpGetTypeDcl(ref);
+        return reftype->tag == RefTag && !(permGetFlags(((RefNode *)reftype)->perm) & MayAlias)
+            && castUniPlace(ref);
+    }
+    default:
+        return 0;
+    }
+}
+
+// Is this reference, whatever its permission, a borrow made here of a place
+// reached as 'uni': written in place ('&s into &Circle'), or the value a
+// 'match' or bound 'if' captured in its hidden variable ('match &s')? A
+// variable the program names is not asked: a copy of it could reach the value
+// another way, which freezing does not see.
+static int castBorrowsUni(INode *exp) {
+    if (isNameUseNode(exp) && isExpNode(exp)) {
+        INode *dcl = ((NameUseNode *)exp)->dclnode;
+        if (dcl == NULL || dcl->tag != VarDclTag || ((VarDclNode *)dcl)->namesym != anonName
+            || ((VarDclNode *)dcl)->value == NULL)
+            return 0;
+        exp = ((VarDclNode *)dcl)->value;
+    }
+    return exp->tag == BorrowTag && castUniPlace(((RefNode *)exp)->vtexp);
+}
+
+// A reference narrowed from a sum type -- an enum, a tagged trait, an
+// 'Option'-shaped enum -- to one of its variants points into the value's
+// payload. Changing which variant the value holds rereads that payload as
+// another type. Jon's 2018 rule ("Interior References and Shared
+// Mutability"): for 'mut' references to shape-changing types, no interior
+// references. So it narrows only when nothing can change the variant while the
+// narrowed reference is used: the reference is 'uni', 'imm' or 'mut1'
+// (MayIntRefSum), or, whatever its permission, it is a borrow made here of a
+// place reached as 'uni' -- a local above all, which the stack alone owns and
+// which the loan walk freezes against change while the borrow and the
+// narrowed reference live. A reference of unseen origin -- a parameter, one
+// reached through another reference or a shared owner -- may be one of
+// several, any of which may change the variant.
+static void castSumInterior(CastNode *node, RefNode *from, RefNode *to) {
+    StructNode *fromstr = (StructNode *)itypeGetTypeDcl(from->vtexp);
+    INode *tostr = itypeGetTypeDcl(to->vtexp);
+    if (fromstr->tag != StructTag || tostr == (INode *)fromstr || !(fromstr->flags & TraitType)
+        || !(fromstr->flags & (HasTagField | SameSize)))
+        return;
+    if ((permGetFlags(from->perm) & MayIntRefSum) || castBorrowsUni(node->exp))
+        return;
+    PermNode *perm = (PermNode *)itypeGetTypeDcl(from->perm);
+    errorMsgNode((INode *)node, ErrorBadPerm,
+        "A '%s' reference to %s, not borrowed here from a local, may not be narrowed to a reference into one of its variants: another reference may change which variant it holds while this one is used. Match a borrow of a local, a 'uni' or 'imm' reference, or the value.",
+        &perm->namesym->namestr, &fromstr->namesym->namestr);
+}
+
 // Type check cast node:
 // - reinterpret cast types must be same size
 // - Ensure type can be safely converted to target type
@@ -260,6 +339,7 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
         // Auto-generated downcasting "conversion" may in face be a bitcast
         if (fromtype->tag == RefTag && totype->tag == RefTag) {
             node->flags &= 0xFFFF - FlagConvert;
+            castSumInterior(node, (RefNode *)fromtype, (RefNode *)totype);
         }
     }
 

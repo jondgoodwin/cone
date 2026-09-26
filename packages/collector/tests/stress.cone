@@ -48,9 +48,11 @@ fn list(n i64) Option[+gc-mut Link] {
   }
   Some[+gc-mut Link][+gc-mut Link[n, list(n - 1)]];
 }
-fn listSum(l &Option[+gc-mut Link]) i64 {
+// Matched by value: through the 'mut' links an Option hangs from, a reference
+// into it could see another reference empty it while in use
+fn listSum(l Option[+gc-mut Link]) i64 {
   match l {
-    case imm s &Some[+gc-mut Link] { s.value.n + listSum(&s.value.next); }
+    case imm s Some[+gc-mut Link] { s.value.n + listSum(s.value.next); }
     else { 0; }
   }
 }
@@ -71,7 +73,7 @@ fn temporaries() {
 
 fn lists() {
   imm l = list(100);
-  expectInt(listSum(&l), 5050, "a hundred links, each made under collection");
+  expectInt(listSum(l), 5050, "a hundred links, each made under collection");
   mut i = 0i64;
   mut last = leaf(0);
   while i < 1000 {
@@ -80,7 +82,7 @@ fn lists() {
     i = i + 1;
   }
   expectInt(last.n, 999, "the last leaf of a thousand, each loop allocating garbage");
-  expectInt(listSum(&l), 5050, "the list untouched by all that collecting");
+  expectInt(listSum(l), 5050, "the list untouched by all that collecting");
 }
 
 fn main() i32 {

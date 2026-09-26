@@ -3,9 +3,12 @@
 // against what it forbids: a read-only borrow lets the source be read and
 // borrowed read-only again, a borrow of one field leaves the other fields
 // free, and an '&opaq' borrow, which reads and writes nothing, stops only a
-// move, a replacement or the end of the source. Each case prints a value read
-// through the borrow and then the source afterwards, so a borrow that compiled
-// but pointed at the wrong place would show.
+// move, a replacement or the end of the source. A source reached through a
+// shared path -- a '&mut' reference, a '+rc-mut' owner -- is not frozen at
+// all against reading and writing: Cone's 'mut' is shared, so other references
+// may read and change it anyway. Each case prints a value read through the
+// borrow and then the source afterwards, so a borrow that compiled but pointed
+// at the wrong place would show.
 //
 // The refusals are ref_flow_freeze and ref_flow_freeze_loop.
 
@@ -166,6 +169,53 @@ fn inCondition(c Bool) {
   show("source-after-condition", k);
 }
 
+// -------- through a shared path --------
+
+// A reborrow through a '&mut' parameter, then a write through the parameter
+// while the reborrow is still to be used: both are 'mut', shared by design
+fn reborrowParam(p &mut i64) {
+  imm q = &mut *p;
+  *p = 2;
+  *q = *q + 3;
+  show("write-through-param-under-reborrow", *p);
+}
+
+// The same through a local reference: what 'r' points at may be written
+// through 'r' while the reborrow lives. The local 'k' itself stays frozen
+// until the reborrow's last use, and is read after it.
+fn reborrowLocalRef() {
+  mut k = 1;
+  imm r = &mut k;
+  imm r2 = &mut *r;
+  *r = 2;
+  *r2 = *r2 + 30;
+  show("write-through-ref-under-reborrow", *r);
+  show("local-after-reborrow", k);
+}
+
+// A field of a '&mut' parameter borrowed, then the parameter's fields read and
+// written while the borrow is still to be used
+fn fieldThroughParam(p &mut Pt) {
+  imm fx = &mut p.x;
+  p.x = 7;
+  p.y = *fx + 1;
+  *fx = *fx + 10;
+  show("field-borrow-through-param", p.x * 100 + p.y);
+}
+
+// A field borrowed through a '+rc-mut' owner, then changed through another
+// alias of the owner and through the owner itself, and the owner copied
+fn rcMutOwner() {
+  imm u = +rc-mut Pt[1, 2];
+  imm alias = u;
+  imm b = &mut u.x;
+  alias.x = 5;
+  u.y = *b + 1;
+  imm again = u;
+  *b = *b + again.y;
+  show("rc-mut-owner-under-borrow", u.x * 100 + u.y);
+}
+
 fn main() i32 {
   readUnderShared();
   lastUseBeforeChange();
@@ -180,5 +230,12 @@ fn main() i32 {
   copiesInTurn();
   opaqueBorrow();
   inCondition(true);
+  mut n = 1i64;
+  reborrowParam(&mut n);
+  show("param-source-after", n);
+  reborrowLocalRef();
+  mut fp = Pt[1, 2];
+  fieldThroughParam(&mut fp);
+  rcMutOwner();
   0i32;
 }

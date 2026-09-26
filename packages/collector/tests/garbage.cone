@@ -53,23 +53,25 @@ fn tree(depth i64) Option[+gc-mut Node] {
   Some[+gc-mut Node][+gc-mut Node[depth, tree(depth - 1), tree(depth - 1)]];
 }
 
-fn count(t &Option[+gc-mut Node]) i64 {
+// Matched by value: through the 'mut' nodes an Option hangs from, a reference
+// into it could see another reference empty it while in use
+fn count(t Option[+gc-mut Node]) i64 {
   match t {
-    case imm s &Some[+gc-mut Node] { count(&s.value.left) + count(&s.value.right) + 1; }
+    case imm s Some[+gc-mut Node] { count(s.value.left) + count(s.value.right) + 1; }
     else { 0; }
   }
 }
 
-fn sum(t &Option[+gc-mut Node]) i64 {
+fn sum(t Option[+gc-mut Node]) i64 {
   match t {
-    case imm s &Some[+gc-mut Node] { s.value.n + sum(&s.value.left) + sum(&s.value.right); }
+    case imm s Some[+gc-mut Node] { s.value.n + sum(s.value.left) + sum(s.value.right); }
     else { 0; }
   }
 }
 
-fn leftOf(t &Option[+gc-mut Node]) Option[+gc-mut Node] {
+fn leftOf(t Option[+gc-mut Node]) Option[+gc-mut Node] {
   match t {
-    case imm s &Some[+gc-mut Node] { s.value.left; }
+    case imm s Some[+gc-mut Node] { s.value.left; }
     else { None[+gc-mut Node][]; }
   }
 }
@@ -82,20 +84,20 @@ fn wholeTree() {
   imm t = tree(4);
   settle();
   expectUInt(live(), 15, "a tree of depth 4 is 15 nodes, all kept");
-  expectInt(count(&t), 15, "and all 15 are there");
+  expectInt(count(t), 15, "and all 15 are there");
   // 1*8 + 2*4 + 3*2 + 4*1
-  expectInt(sum(&t), 26, "numbered by depth");
+  expectInt(sum(t), 26, "numbered by depth");
 }
 
 fn subtree() {
   imm l = keepLeft();
   settle();
   expectUInt(live(), 7, "the left subtree of depth 3 is kept, the root and right freed");
-  expectInt(sum(&l), 11, "3 + 2*2 + 1*4");
+  expectInt(sum(l), 11, "3 + 2*2 + 1*4");
 }
 fn keepLeft() Option[+gc-mut Node] {
   imm t = tree(4);
-  leftOf(&t);
+  leftOf(t);
 }
 
 // Replacing a field lets go of what it held
