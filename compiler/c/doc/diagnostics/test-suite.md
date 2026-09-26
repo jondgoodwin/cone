@@ -478,8 +478,11 @@ Matches against the **pre-optimization** dump, `<name>.preir` — what
 generation wrote, before the optimizer deletes or folds it. Use it for an
 instruction, a type or a signature that is the claim: the `icmp` a slice index
 emits against its runtime count, the trip count of the loop calling a region's
-`alias` once per owner a fill literal adds, `%Node = type { i64, %Node* }`,
-`@read(i32**`. Register numbers are the pre-optimization ones — allocas and
+`alias` once per owner a fill literal adds, `%Node = type { i64, ptr }`,
+`%some = alloca ptr`. LLVM's pointers carry no type, so a signature shows only
+`ptr` for every reference: what a reference points at is asserted where a body
+uses it — the struct a field address is taken in, the value a local holds.
+Register numbers are the pre-optimization ones — allocas and
 loads are still there, and an inline method's body is pasted in whole, its
 parameters stored to allocas of their own — and are read out of the dump
 rather than chosen. The same rule about symbol bytes
