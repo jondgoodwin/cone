@@ -6,7 +6,9 @@ get faster, so the wins come from architecting for performance, not from the
 back end being clever.
 
 **The distance** is that the levers the design is built around are mostly not
-built yet: arenas and pools do not exist, there is no thread layer, and the
+built yet: pools do not exist, an arena exists only as a library value (the
+`arena` package) rather than as a region an allocation names, there is no
+thread layer, and the
 array primitives for data-oriented layout are incomplete. What *is* built is the
 machinery that makes those levers cheap to add and free to not use.
 

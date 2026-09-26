@@ -1,0 +1,106 @@
+// An arena's teardown seen from inside a 'final': what another value of the
+// same arena looks like to it, and what happens when it allocates into the
+// arena that is dying. Expected logs worked out by hand:
+// - values die newest first, and every block stays until the last has died,
+//   so a 'final' reading an older value finds it not yet finalized, and one
+//   reading a newer value finds it finalized but its memory still there;
+// - a value a 'final' allocates during teardown goes to the front of the
+//   list, so it dies next, before any value older than the one that made it.
+
+mod teardown;
+
+import testing use *;
+import arena use *;
+
+mut log = 0i64;
+fn note(d i64) { log = log * 10i64 + d; }
+
+// Each notes its own digit, then 1 if its peer is not yet finalized or 0 if it
+// is, then marks itself finalized
+struct Peer {
+  pub n i64;
+  pub alive Bool;
+  pub peer *Peer;
+  fn final(self &uni) {
+    note(n);
+    note(if (peer as &Peer).alive {1i64;} else {0i64;});
+    alive = false;
+  }
+}
+
+fn peers() {
+  mut a = Arena.empty();
+  imm older = a.alloc(Peer[1, true, 0usize as *Peer]);
+  imm newer = a.alloc(Peer[2, true, older as *Peer]);
+  older.peer = newer as *Peer;
+}
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { note(n); }
+}
+
+// Its death allocates into the arena it lives in, through a reference to it
+struct Spawner {
+  pub n i64;
+  pub home &mut Arena;
+  fn final(self &uni) {
+    note(n);
+    home.alloc(Fin[n + 1i64]);
+  }
+}
+
+fn spawns() {
+  mut a = Arena.empty();
+  a.alloc(Fin[1]);
+  a.alloc(Spawner[2, &mut a]);
+  a.alloc(Fin[4]);
+}
+
+// Each death allocates the next, until 5: a chain made entirely in teardown
+struct Chain {
+  pub n i64;
+  pub home &mut Arena;
+  fn final(self &uni) {
+    note(n);
+    if n < 5i64 { home.alloc(Chain[n + 1i64, home]); }
+  }
+}
+
+fn chains() {
+  mut a = Arena.empty();
+  a.alloc(Chain[1, &mut a]);
+}
+
+// A death that allocates more than a block holds, so teardown adds a block
+// that the arena must still free
+struct Big {
+  pub n i64;
+  pub home &mut Arena;
+  fn final(self &uni) {
+    note(n);
+    imm arr = home.alloc([1000; 3i64]);
+    note(arr[999]);
+  }
+}
+
+fn growsInTeardown() {
+  mut a = Arena.empty();
+  a.alloc(Big[1, &mut a]);
+  expectUInt(u64[a.blockCount()], 1, "one block before teardown");
+}
+
+fn main() i32 {
+  peers();
+  expectInt(log, 2110, "the newer finds the older alive; the older finds the newer finalized");
+  log = 0;
+  spawns();
+  expectInt(log, 4231, "a value made in teardown dies next, before the older ones");
+  log = 0;
+  chains();
+  expectInt(log, 12345, "a chain made in teardown dies link by link");
+  log = 0;
+  growsInTeardown();
+  expectInt(log, 13, "a block added in teardown");
+  done();
+}

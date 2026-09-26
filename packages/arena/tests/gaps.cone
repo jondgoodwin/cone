@@ -1,0 +1,78 @@
+// The compiler's finalizing gaps, as an arena meets them. An arena finalizes a
+// value with 'mem.finalize', the death the compiler builds for its type, so
+// what the compiler does not finalize, the arena does not either -- nor does
+// the same value die any better on the stack. Every check here pins what
+// happens TODAY, which is wrong, and says so in its label: when the compiler
+// closes a gap, the check fails, and the right value is the one in the comment
+// above it.
+
+mod gaps;
+
+import testing use *;
+import arena use *;
+
+mut log = 0i64;
+fn note(d i64) { log = log * 10i64 + d; }
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { note(n); }
+}
+
+struct HoldsSo { pub n i64; pub o +so Fin; fn final(self &uni) { note(n); } }
+
+// An owning reference held two fields deep: in a field of a field
+struct TwoDeep { pub n i64; pub h HoldsSo; }
+
+// Right: 21, one header
+fn array() {
+  mut a = Arena.empty();
+  a.alloc([Fin[1], Fin[2]]);
+  expectUInt(u64[a.finalizers()], 0, "compiler gap: an array's elements do not need finalizing");
+}
+
+// Right: 1, one header
+fn tuple() {
+  mut a = Arena.empty();
+  a.alloc[(Fin, i64)]((Fin[1], 2i64));
+  expectUInt(u64[a.finalizers()], 0, "compiler gap: a tuple's elements do not need finalizing");
+}
+
+// Right: 3, one header
+fn enumValue() {
+  mut a = Arena.empty();
+  // Typed by the local rather than 'a.alloc[Option[Fin]](...)', which crashes
+  // the compiler (1075: a method's explicit type argument that is a generic
+  // type's instance)
+  imm v Option[Fin] = Some[Fin][Fin[3]];
+  a.alloc(v);
+  expectUInt(u64[a.finalizers()], 0, "compiler gap: a value typed as an enum does not need finalizing");
+}
+
+// Right: 23, the inner owner released after HoldsSo's final
+fn twoDeep() {
+  mut a = Arena.empty();
+  a.alloc(TwoDeep[1, HoldsSo[2, +so Fin[3]]]);
+}
+
+// Right: 12, the value assigned over finalized when it is replaced
+fn overwrite() {
+  mut a = Arena.empty();
+  imm r = a.alloc(Fin[1]);
+  *r = Fin[2];
+}
+
+fn main() i32 {
+  array();
+  expectInt(log, 0, "compiler gap: an array's elements are never finalized");
+  tuple();
+  expectInt(log, 0, "compiler gap: a tuple's elements are never finalized");
+  enumValue();
+  expectInt(log, 0, "compiler gap: a value typed as an enum is never finalized");
+  twoDeep();
+  expectInt(log, 2, "compiler gap: an owning reference two fields deep is never released");
+  log = 0;
+  overwrite();
+  expectInt(log, 2, "compiler gap: assigning through a reference does not finalize what it replaces");
+  done();
+}

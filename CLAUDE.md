@@ -46,7 +46,9 @@ Visual Studio projects stay at the root.
   `done`), ordinary library code the compiler knows nothing of;
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed
   `Dict[K, V]`, each holding its elements in one block from `libc`'s
-  allocator and moving them with core's `mem` intrinsics; `render` draws 3D
+  allocator and moving them with core's `mem` intrinsics; `arena` is an
+  `Arena`, a dynamic region whose values are finalized, newest first, and
+  freed together when it dies; `render` draws 3D
   shapes through OpenGL (`Shape` and its sphere, plane and cube, `Shader`,
   `Image` from BMP, `Texture`, `Camera`, `Light`), ported from Pegasus3D
   over `gl`, `math3d` and `collections`, needing no window to build or test;

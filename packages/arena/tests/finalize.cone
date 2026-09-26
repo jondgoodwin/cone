@@ -1,0 +1,226 @@
+// What an arena finalizes when it dies, and in what order. Each value records
+// its death by appending its digit to 'log', so a log of 312 says 3 died, then
+// 1, then 2. Every expected log is worked out by hand from the rules:
+// - an arena finalizes its values newest first (the reverse of allocation);
+// - a value's death is its own 'final', then each field's, in field order and
+//   recursively, then the owning references its fields hold are released: a
+//   '+so' one's value dies and is freed, an '+rc' one's only if that was its
+//   last owner;
+// - a borrowed reference finalizes nothing, so a value referred to from
+//   another arena value dies once, by its own arena;
+// - a value whose type needs no finalizing gets no finalizer header at all.
+
+mod finalize;
+
+import testing use *;
+import arena use *;
+import collections use *;
+
+mut log = 0i64;
+fn note(d i64) { log = log * 10i64 + d; }
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { note(n); }
+}
+
+struct Plain { pub a i64; pub b f64; }
+
+// No 'final' of its own: its only finalizing is its field's
+struct OnlyField { pub a i64; pub f Fin; }
+
+// Three deep, a 'final' at every level and a finalizing field beside the third
+struct Inner { pub n i64; fn final(self &uni) { note(n); } }
+struct Middle { pub n i64; pub c Inner; pub f Fin; fn final(self &uni) { note(n); } }
+struct Outer { pub n i64; pub b Middle; fn final(self &uni) { note(n); } }
+
+struct HoldsSo { pub n i64; pub o +so Fin; fn final(self &uni) { note(n); } }
+struct HoldsRc { pub n i64; pub r +rc-mut Fin; fn final(self &uni) { note(n); } }
+
+// A chain of single owners: each owner's release runs the next one's death
+struct ChainTop { pub n i64; pub o +so HoldsSo; fn final(self &uni) { note(n); } }
+
+// Refers to another value, which it does not own
+struct Watches { pub n i64; pub r &mut Fin; fn final(self &uni) { note(n); } }
+
+struct Box[T] { pub v T; }
+
+// Size zero, with a 'final'
+mut zdeaths = 0i64;
+struct Zero { fn final(self &uni) { zdeaths = zdeaths + 1i64; } }
+
+fn plain() {
+  mut a = Arena.empty();
+  imm p = a.alloc(Plain[4, 2.5]);
+  expectInt(p.a, 4, "a plain value reads back");
+  expectUInt(u64[a.finalizers()], 0, "a plain value gets no finalizer header");
+}
+
+fn onlyField() {
+  mut a = Arena.empty();
+  a.alloc(OnlyField[9, Fin[1]]);
+  expectUInt(u64[a.finalizers()], 1, "a field's finalizer is enough for a header");
+}
+
+fn nested() {
+  mut a = Arena.empty();
+  a.alloc(Outer[1, Middle[2, Inner[3], Fin[4]]]);
+}
+
+fn soField() {
+  mut a = Arena.empty();
+  a.alloc(HoldsSo[1, +so Fin[2]]);
+}
+
+fn soChain() {
+  mut a = Arena.empty();
+  a.alloc(ChainTop[1, +so HoldsSo[2, +so Fin[3]]]);
+}
+
+fn rcShared() {
+  imm keep = +rc-mut Fin[3];
+  {
+    mut a = Arena.empty();
+    a.alloc(HoldsRc[1, keep]);
+  }
+  expectInt(log, 1, "an rc owner shared outside is counted down, not finalized");
+}
+
+fn rcLast() {
+  mut a = Arena.empty();
+  a.alloc(HoldsRc[1, +rc-mut Fin[2]]);
+}
+
+fn refersToSibling() {
+  mut a = Arena.empty();
+  imm x = a.alloc(Fin[1]);
+  a.alloc(Watches[2, x]);
+  expectUInt(u64[a.finalizers()], 2, "each of the two has its own header");
+}
+
+fn refersToOtherArena() {
+  mut a1 = Arena.empty();
+  imm x = a1.alloc(Fin[1]);
+  {
+    mut a2 = Arena.empty();
+    a2.alloc(Watches[2, x]);
+  }
+  expectInt(log, 2, "the inner arena finalizes only its own value");
+}
+
+fn generic() {
+  mut a = Arena.empty();
+  imm b = a.alloc(Box[i64][5]);
+  expectUInt(u64[a.finalizers()], 0, "Box[i64] needs no finalizing");
+  a.alloc(Box[Fin][Fin[b.v]]);
+  expectUInt(u64[a.finalizers()], 1, "Box[Fin] does");
+}
+
+fn ownerAsValue() {
+  mut a = Arena.empty();
+  imm r = a.alloc(+so Fin[6]);
+  expectInt((*r).n, 6, "read through the owner held in the arena");
+}
+
+fn order() {
+  mut a = Arena.empty();
+  mut i = 1i64;
+  while i <= 5i64 { a.alloc(Fin[i]); i = i + 1i64; }
+}
+
+fn list() {
+  mut a = Arena.empty();
+  imm l = a.alloc(List[Fin].empty());
+  l.push(Fin[1]);
+  l.push(Fin[2]);
+  l.push(Fin[3]);
+  imm s = a.alloc(String.from("arena"));
+  s.append("s");
+  expectUInt(u64[s.len()], 6, "a String in an arena grows its own block");
+  imm d = a.alloc(Dict[String, Fin].empty());
+  d.insert(String.from("k"), Fin[4]);
+}
+
+fn nestedArenas() {
+  mut outer = Arena.empty();
+  imm inner = outer.alloc(Arena.empty());
+  inner.alloc(Fin[1]);
+  inner.alloc(Fin[2]);
+  outer.alloc(Fin[3]);
+}
+
+fn soHeldArena() {
+  imm a = +so Arena.empty();
+  a.alloc(Fin[1]);
+  a.alloc(Fin[2]);
+}
+
+fn swapOut() {
+  mut a = Arena.empty();
+  imm r = a.alloc(Fin[1]);
+  mut held = Fin[2];
+  held <=> *r;
+  expectInt(r.n, 2, "swapped in");
+}
+
+fn zeroSized() {
+  mut a = Arena.empty();
+  a.alloc(Zero[]);
+  a.alloc(Zero[]);
+  a.alloc(Fin[7]);
+  a.alloc(Zero[]);
+}
+
+fn main() i32 {
+  plain();
+  expectInt(log, 0, "nothing to finalize");
+  onlyField();
+  expectInt(log, 1, "the field's final");
+  log = 0;
+  nested();
+  expectInt(log, 1234, "own final, then fields in order, recursively");
+  log = 0;
+  soField();
+  expectInt(log, 12, "own final, then the so owner's value");
+  log = 0;
+  soChain();
+  expectInt(log, 123, "a chain of so owners, each released in turn");
+  log = 0;
+  rcShared();
+  expectInt(log, 13, "the shared value dies with its last owner, outside");
+  log = 0;
+  rcLast();
+  expectInt(log, 12, "the arena held the last rc owner");
+  log = 0;
+  refersToSibling();
+  expectInt(log, 21, "a referred-to value dies once, by its own header");
+  log = 0;
+  refersToOtherArena();
+  expectInt(log, 21, "and once by its own arena, when that dies");
+  log = 0;
+  generic();
+  expectInt(log, 5, "a generic type finalizes at a finalizing argument");
+  log = 0;
+  ownerAsValue();
+  expectInt(log, 6, "an owning reference allocated as the value is released");
+  log = 0;
+  order();
+  expectInt(log, 54321, "newest first");
+  log = 0;
+  list();
+  expectInt(log, 4123, "the dict dies, then the string, then the list's values in its order");
+  log = 0;
+  nestedArenas();
+  expectInt(log, 321, "an arena in an arena dies in its place, and its values with it");
+  log = 0;
+  soHeldArena();
+  expectInt(log, 21, "an arena behind so dies with its owner");
+  log = 0;
+  swapOut();
+  expectInt(log, 12, "the swapped-out value dies where it went, the swapped-in with the arena");
+  log = 0;
+  zeroSized();
+  expectInt(log, 7, "zero-sized values are finalized beside the rest");
+  expectInt(zdeaths, 3, "each zero-sized value once");
+  done();
+}
