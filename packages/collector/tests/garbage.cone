@@ -139,7 +139,11 @@ fn many() {
 
 // Stopped, the collector runs no automatic collection: ten thousand leaves,
 // 400,000 bytes, pass the 256 KiB trigger with none. Started again, the next
-// allocation, still past the trigger, collects first, and frees them all.
+// allocation, still past the trigger, starts a collection and takes its first
+// step: nothing is reached, so marking ends in it, and the sweep begins. The
+// sweep is finished a step at a time, and frees them all. Every other section
+// holds under the stress modes too; this one is the ordinary mode's, and
+// turns stress off.
 fn dropLeaves() {
   mut i = 0i64;
   while i < 10000 {
@@ -148,6 +152,9 @@ fn dropLeaves() {
   }
 }
 fn stopped() {
+  // What an ordinary allocation does, which either stress mode changes: off,
+  // for this section, the last
+  gc.setStress(false);
   imm c0 = gc.collections();
   gc.stop();
   dropLeaves();
@@ -155,8 +162,13 @@ fn stopped() {
   expectUInt(live(), 10000, "every leaf still there");
   gc.start();
   imm l = +gc-mut Leaf[1];
-  expectUInt(u64[gc.collections() - c0], 1, "started: the next allocation collects");
-  expectUInt(live(), 1, "and only the new leaf is left");
+  expectUInt(u64[gc.collections() - c0], 1, "started: the next allocation's step finishes marking, since nothing is reached");
+  expect(live() > 1u64 and live() < 10001u64, "and has begun the sweep, not finished it: a step, not a collection");
+  mut steps = 0i64;
+  while !gc.step(0usize) { steps = steps + 1; }
+  expect(steps > 0, "the least steps finish it, one object at a time");
+  expectUInt(u64[gc.collections() - c0], 1, "still that one collection");
+  expectUInt(live(), 1, "and only the new leaf is left: born after the flip, it is not swept");
 }
 
 fn main() i32 {

@@ -29,16 +29,22 @@ arena's, a pool's, a collection's), and, in a traced value, beside a borrow.
 The traced references on the stack are its **roots**: every function holding
 one links a frame of them (its locals, parameters and temporaries holding one)
 into a chain that `mem.traceRoots` walks, handing each to its region's `mark`,
-and a traced allocation makes its value before its `alloc` runs. No more of the
-protocol below is built: no barriers, no weak reference kind, no region with
-global state, and no finalizing of a slice's elements when its region frees it.
-Of the strategies that motivate the whole design, a tracing collector is
-written as library code, stop-the-world: the `collector` package's region ref
-`gc` (`+gc-mut T[...]`), Acorn's mark and sweep over those roots and the type
-records' traces, collecting inside `alloc` when the heap passes its trigger and
-on `gc.collect()`, with Lua's separation of finalizers, which run a collection
-before their objects are freed; nothing about it is incremental yet, so no
-barrier is emitted. The arena and the pool are written only as library values: the
+and a traced allocation makes its value before its `alloc` runs. A traced
+region may also declare a **`writeBarrier`**: the compiler then hands it each
+of its references stored into memory that is not a local — through any
+reference, a borrow's included — as the store happens, keyed on what was
+stored, never on where it went, which a borrow could not say; stores into
+locals get none, since a collector traces the stacks again before it ends a
+mark. No more of the protocol below is built: no read barrier, no weak
+reference kind, no region with global state, and no finalizing of a slice's
+elements when its region frees it. Of the strategies that motivate the whole
+design, a tracing collector is written as library code, incremental: the
+`collector` package's region ref `gc` (`+gc-mut T[...]`), Acorn's tri-colour
+mark and sweep over those roots and the type records' traces, a step at a
+time inside allocations once the heap passes its trigger (and whole on
+`gc.collect()`), its `writeBarrier` shading what a store puts into an object
+it has marked, with Lua's separation of finalizers, which run a collection
+before their objects are freed. The arena and the pool are written only as library values: the
 `arena` package's `Arena`, a dynamic region allocated into by a call on the
 value (`a.alloc(v)`), not by a `+` allocation through a region ref,
 whose `alloc` is not handed the region value. It finalizes
@@ -174,7 +180,8 @@ that moved is finalized there. The whole value moves, never a field of it:
 nothing moves out of a field, so no value dies with a hole in it
 (`doc/reference/refmove.html`). The compiler checks the methods' shapes where the struct is declared,
 refusing only contradictions — `Move` with `alias`, `Move` with `Traced` — and
-a `Traced` region without its `mark`; and the test corpus
+a `Traced` region without its `mark` (or with a `writeBarrier` of another
+shape); and the test corpus
 declares regions of its own that get every call `rc` and `so` get
 ([What a region is](../../compiler/c/doc/nodes/module.md)).
 
@@ -184,9 +191,10 @@ its API — where the annotation is "effectively a special-purpose trait"
 declaring bookkeeping fields plus a protocol of methods: `alloc`, `init`,
 `_alias`, `_dealias`, `_free`, `_readBarrier`/`_writeBarrier`, `isAlive`,
 `weak`, `drop` — and attributes such as `@move` and `traced` that the compiler
-keys off. ⚠ **[differs: of that protocol `alloc`, `init`, `alias`, `dealias` and
-`free` are built, spelled without the underscore, and `mark`, which a traced
-region's trace calls; the annotation is a struct, not a module; and what the
+keys off. ⚠ **[differs: of that protocol `alloc`, `init`, `alias`, `dealias`,
+`free` and `writeBarrier` are built, spelled without the underscore (the
+barrier a traced region's alone, handed only what was stored), and `mark`,
+which a traced region's trace calls; the annotation is a struct, not a module; and what the
 compiler keys off is a trait, not an attribute: `Move` and `Traced`, the two
 built so far]** A trait is a fact other code may ask about or
 constrain on; an attribute is an instruction about representation or linkage

@@ -26,63 +26,108 @@
 // Leaf[1]' and 'gc.collect()'. 'import collector use *;' binds them too.
 //
 // WHAT A PROGRAM CALLS:
-//   gc.collect()          a full collection, now
-//   gc.stop(), start()    turn the automatic collections off and on again,
-//                         the stress mode's included. An allocation that
-//                         fails still collects (below), and gc.collect()
-//                         still does
-//   gc.setStress(on)      collect at every allocation, and scribble over
-//                         every object freed: a temporary the roots missed
-//                         shows at once. Setting the environment variable
-//                         CONE_GC_STRESS does the same for a whole run, from
-//                         its first allocation; gc.stressed() says if it is on
+//   gc.collect()          a full collection, now: one in progress is finished
+//                         (or, while it is still marking, given up), and a
+//                         whole one run, finalizers and all
+//   gc.step(work)         some collection work now, as an allocation does:
+//                         at least 'work' bytes of objects marked, swept or
+//                         finalized (0: the least there is, one object),
+//                         starting a collection if none is running. True if
+//                         the step finished one. gc.phase() says where one is
+//   gc.stop(), start()    turn the automatic work off and on again, the
+//                         stress mode's included. An allocation that fails
+//                         still collects (below), and gc.collect() and
+//                         gc.step() still work
+//   gc.setStress(on)      a step at every allocation, a collection started as
+//                         soon as one ends, and every object freed scribbled
+//                         over: a temporary the roots missed, or a store the
+//                         barrier missed, shows soon. Setting the environment
+//                         variable CONE_GC_STRESS does the same for a whole
+//                         run, from its first allocation; CONE_GC_STRESS=full
+//                         runs a whole collection at every allocation
+//                         instead, which finds a missed root at once.
+//                         gc.stressed() says if either is on
 //   gc.setLimit(bytes)    no more than this many bytes of '+gc' values (with
 //                         their headers) at once; 0, the default, is no limit.
 //                         What exhaustion looks like, on demand
 //   gc.liveObjects(), gc.liveBytes(), gc.collections(), gc.finalized(),
-//   gc.freed()            the collector's counts, for tests and tuning
+//   gc.freed(), gc.steps(), gc.largestStep()
+//                         the collector's counts, for tests and tuning
 //
-// WHEN IT COLLECTS. Stop-the-world, and only inside an allocation (or
-// gc.collect()): '+gc T[...]' evaluates its value first, then calls 'alloc',
-// so at that moment every '+gc' reference the program holds is in a stack
-// slot the compiler registered (its roots), and none is only in a register.
-// An allocation collects first when the bytes allocated would pass the
-// trigger: twice what was live after the last collection, and never less
-// than 256 KiB (Lua's pause of 200%), or would pass the limit, where one is
-// set. This is the place Jon's safe points
-// replace later: the trigger's test moves to a frame's push and a loop's back
-// edge, and 'alloc' keeps only the emergency collection, with headroom.
+// HOW IT COLLECTS: Acorn's collector (acornvm, avm_gc.cpp), incremental, with
+// Lua's separation of finalizers. Every object carries a header, the region
+// ref: the next object in its list, its link in the gray list, the type
+// record the compiler handed 'alloc', and its colour. A collection runs a
+// step at a time, in phases:
+// - MARK: every root is handed to 'mark' (mem.traceRoots), which turns a
+//   white object gray and puts it on the gray list; then, a step at a time,
+//   gray objects are taken off, made black, and their record's trace hands
+//   each '+gc' reference they hold to 'mark' in turn. While it marks, the
+//   program runs between steps and stores references: the WRITE BARRIER
+//   (below) keeps it from hiding a white object in a black one;
+// - ATOMIC, the end of marking, in one step: the gray list emptied, the
+//   roots traced again -- the stacks get no barrier, so they are re-read
+//   here, uninterrupted -- and emptied again; then every object that needs
+//   finalizing and is still white is SEPARATED onto the to-be-finalized list,
+//   and it and everything it reaches marked, so all of it lives through this
+//   collection; then the current white is FLIPPED, so every object still
+//   carrying the old one is garbage;
+// - SWEEP, a step at a time: each garbage object freed, each survivor made
+//   the new white. An object allocated from here on is born the new white,
+//   and so survives the sweep;
+// - FINALIZE, a step at a time: each separated object is marked finalized
+//   and put back among the ordinary objects, then its record's finalizer runs
+//   -- its 'final', then its fields', then the owners its fields hold are
+//   released ('+rc' counted down, '+so' finalized and freed). Newest first.
+// An object is finalized once, and freed by the first collection that finds
+// it unreachable after that: a CYCLE LATE, so a 'final' may read its '+gc'
+// children, which are still there, possibly finalized, never freed. A 'final'
+// may allocate; nothing it does starts collection work.
+//
+// Objects whose type needs no finalizing are never separated, and are freed
+// by the collection that finds them unreachable.
+//
+// THE WRITE BARRIER. The compiler calls 'writeBarrier' after every store of a
+// '+gc' reference into memory that is not a local -- a field, an element, a
+// dereference, through a '+gc' reference or a borrow alike -- handing it the
+// header of what was stored. While marking, a white object so stored is made
+// gray: no black object ever points at a white one it could hide (Dijkstra's
+// insertion barrier, Acorn's mem_markChk). It asks nothing of where the
+// reference went, which a store through a borrow could not tell it. Stores
+// into locals get none: the atomic step traces the stacks again. Outside
+// marking it does nothing. It is 'inline', so the compiler expands it at each
+// store, in the program's object: a test of the phase in line, and a call
+// only while marking.
+//
+// WHEN IT WORKS, AND HOW MUCH (pacing in bytes, Lua's). Collection work runs
+// inside allocations (and gc.collect(), gc.step()): '+gc T[...]' evaluates
+// its value first, then calls 'alloc', so at that moment every '+gc'
+// reference the program holds is in a stack slot the compiler registered
+// (its roots), and none is only in a register. Between collections, one
+// starts when an allocation would take the heap past the TRIGGER: twice the
+// bytes found live by the last collection, never less than 256 KiB (Lua's
+// pause of 200%). While one runs, every 8 KiB allocated buys a step, which
+// does twice those bytes' worth of work (Lua's step multiplier of 200%): a
+// step marks, sweeps or finalizes objects, each costing its bytes, until the
+// budget is spent. So a collection finishes while the heap grows by about
+// half of what it had to sweep, and a pause is one step, not a collection.
+// An allocation that would pass the limit, where one is set, runs a full
+// collection instead.
+//
+// SAFE POINTS, LATER. 'workWanted' is the whole decision, and the step it
+// asks for is the only work 'alloc' does; the rest is making the object. To
+// move the work to safe points (a frame's push, a loop's back edge), 'alloc'
+// sets a flag where it now steps, and the safe point runs the step when the
+// flag is set -- every root is in its slot there too. 'alloc' then keeps only
+// the full collection for the limit and the emergency one, and the headroom
+// between the trigger and memory's end is what the steps owed may use until
+// the next safe point.
 //
 // OUT OF MEMORY. An allocation the C library cannot satisfy, or that would
 // pass the limit, runs an emergency collection -- no finalizers run in it, as
 // in Acorn and Lua -- and tries once more. If that fails too, 'alloc' returns
 // null: a '?+gc' allocation is then None, and a plain '+gc' one panics (the
 // compiler's panic, 'llvm.trap', as for every region's failed allocation).
-//
-// HOW IT COLLECTS: Acorn's collector (acornvm, avm_gc.cpp), whole cycles at a
-// time, with Lua's separation of finalizers. Every object carries a header,
-// the region ref: the next object in its list, its link in the gray list, the
-// type record the compiler handed 'alloc', and its colour. A collection
-// - marks: every root is handed to 'mark' (mem.traceRoots), which turns a
-//   white object gray and puts it on the gray list; each gray object is taken
-//   off, made black, and its record's trace hands each '+gc' reference it
-//   holds to 'mark' in turn, until nothing is gray;
-// - separates: every object that needs finalizing and is still white is
-//   unreachable. It moves to the to-be-finalized list, and it and everything
-//   it reaches is marked, so all of it lives through this cycle;
-// - flips the current white, so every object still carrying the old one is
-//   garbage, and sweeps: each is freed, each survivor made the new white;
-// - finalizes: each separated object is marked finalized and put back among
-//   the ordinary objects, then its record's finalizer runs -- its 'final',
-//   then its fields', then the owners its fields hold are released ('+rc'
-//   counted down, '+so' finalized and freed). Newest first.
-// An object is finalized once, and freed by the first collection that finds
-// it unreachable after that: a CYCLE LATE, so a 'final' may read its '+gc'
-// children, which are still there, possibly finalized, never freed. A 'final'
-// may allocate; nothing it does starts a collection.
-//
-// Objects whose type needs no finalizing are never separated, and are freed
-// by the collection that finds them unreachable.
 
 mod collector use gc;
 
@@ -94,8 +139,18 @@ const whites = 3u32;
 const black = 4u32;
 const finalizedBit = 8u32;
 
+// The phases, gc.phase()'s answers
+const pausePhase = 0u32;      // no collection running
+const markPhase = 1u32;       // marking; the barrier is on
+const sweepPhase = 2u32;      // sweeping
+const finalizePhase = 3u32;   // running finalizers
+
 // The least the trigger is, in bytes
 const minTrigger = 262144usize;
+// Bytes allocated between steps, while a collection runs
+const stepSize = 8192usize;
+// Bytes of work a step does for each byte allocated since the last one
+const stepMul = 2usize;
 
 // Every header is linked into exactly one of these lists (each a header's
 // address, 0 for empty, newest first):
@@ -105,18 +160,26 @@ mut tobefnz = 0usize;      // unreachable, awaiting their finalizer
 mut grays = 0usize;        // during marking: gray objects, through 'gray'
 
 mut curWhite = 1u32;       // what a new object is born, and a survivor made
-mut inCollect = false;     // a collection (or its finalizers) is running
+mut gcPhase = 0u32;        // where the collection is: pausePhase, ...
+mut sweepList = 0u32;      // sweeping allgc (0), finobj (1), tobefnz (2)
+mut sweepAt = 0usize;      // the object last kept there: the next is its next; 0, the list's head
+mut stepping = false;      // collection work (or a finalizer) is running
+mut debt = 0usize;         // bytes allocated, and not yet paid for by a step
+mut estimate = 0usize;     // bytes live at the flip, less what the sweep frees
 mut autoOn = true;         // gc.stop() / gc.start()
 mut stressOn = false;
+mut stressFull = false;    // CONE_GC_STRESS=full: a whole collection at every allocation
 mut envRead = false;
 mut maxBytes = 0usize;     // gc.setLimit; 0 is none
 
 mut totalBytes = 0usize;   // bytes held by '+gc' objects, headers included
-mut trigger = 262144usize; // collect when an allocation would pass this
+mut trigger = 262144usize; // start a collection when an allocation would pass this
 mut nobjects = 0usize;
 mut ncollections = 0usize;
 mut nfinalized = 0usize;
 mut nfreed = 0usize;
+mut nsteps = 0usize;
+mut maxStep = 0usize;      // the most work one automatic step did
 
 // The header before every '+gc' value: the region ref. Its fields are public
 // because a private field is reached only through 'self', and the collector
@@ -132,21 +195,27 @@ pub struct gc is RegionRef, Traced {
   fn alloc(size usize, ty *TypeRecord) *u8 {
     readEnv();
     imm bytes = objBytes(ty);
-    // The limit caps the trigger, so a heap held under a limit is collected
-    // (and finalized) in the ordinary way, not only in emergencies
-    imm overLimit = maxBytes != 0usize and totalBytes + bytes > maxBytes;
-    imm due = totalBytes + bytes > trigger or overLimit;
-    if !inCollect and autoOn and (stressOn or due) {
-      fullCollect(false);
+    if !stepping and autoOn {
+      // The limit caps the heap, so a heap held under one is collected (and
+      // finalized) in the ordinary way, not only in emergencies
+      if stressFull or (maxBytes != 0usize and totalBytes + bytes > maxBytes) {
+        fullCollect(false);
+      }
+      else if workWanted(bytes) {
+        stepOwed();
+      }
     }
     mut p = tryMalloc(size, bytes);
-    if p as usize == 0usize and !inCollect {
+    if p as usize == 0usize and !stepping {
       fullCollect(true);
       p = tryMalloc(size, bytes);
     }
     if p as usize == 0usize {
       return p;
     }
+    // Born the current white: during marking, reached only through the
+    // roots, traced again at the atomic step, or through a store, which the
+    // barrier shades; during the sweep, the new white, which survives it
     imm fin = ((ty as &TypeRecord).flags & 1u32) != 0u32;
     mem.writeRaw(p as *gc, gc[if fin {finobj;} else {allgc;}, 0usize, ty, curWhite]);
     if fin { finobj = p as usize; } else { allgc = p as usize; }
@@ -160,14 +229,51 @@ pub struct gc is RegionRef, Traced {
     shade(self as *gc as usize);
   }
 
-  // Stress mode for the whole run, if CONE_GC_STRESS is set, read once
+  // A '+gc' reference was stored into memory that is not a local. While
+  // marking, what it refers to is shaded, so no black object can come to
+  // hide a white one; otherwise nothing.
+  fn writeBarrier(self &uni gc) inline {
+    if gcPhase == markPhase {
+      shade(self as *gc as usize);
+    }
+  }
+
+  // Stress mode for the whole run, if CONE_GC_STRESS is set, read once:
+  // 'full' for a whole collection at every allocation, anything else for a
+  // step
   fn readEnv() {
     if !envRead {
       envRead = true;
-      if libc.getenv(&[]"CONE_GC_STRESS") as usize != 0usize {
+      imm val = libc.getenv(&[]"CONE_GC_STRESS");
+      if val as usize != 0usize {
         stressOn = true;
+        stressFull = libc.strcmp(val, &[]"full") == 0i32;
       }
     }
+  }
+
+  // Does allocating 'bytes' more want collection work done first? Between
+  // collections, when it would pass the trigger (one starts, with a full
+  // step's budget); during one, when a step's worth has been allocated since
+  // the last. Under stress, always, with the allocation's own budget. This
+  // is the decision a safe point would make instead (see SAFE POINTS).
+  fn workWanted(bytes usize) Bool {
+    if gcPhase == pausePhase {
+      if !stressOn and totalBytes + bytes <= trigger {
+        return false;
+      }
+      debt = if stressOn {bytes;} else {stepSize;};
+      return true;
+    }
+    debt = debt + bytes;
+    stressOn or debt >= stepSize;
+  }
+
+  // The step the bytes allocated have paid for
+  fn stepOwed() {
+    imm work = runStep(debt * stepMul);
+    debt = 0usize;
+    if work > maxStep { maxStep = work; }
   }
 
   // Memory for an object, unless it would pass the limit
@@ -217,19 +323,35 @@ pub struct gc is RegionRef, Traced {
     }
   }
 
-  // Take each gray object off the list, make it black, and mark what it holds
-  fn propagate() {
-    while grays != 0usize {
-      imm at = grays;
-      imm h = header(at);
-      grays = h.gray;
-      h.marked = h.marked | black;
-      imm rec = h.ty as &TypeRecord;
-      if rec.flags & 2u32 != 0u32 {
-        imm tracefn = rec.trace;
-        tracefn(valueOf(at), 0u32);
-      }
+  // Take one gray object off the list, make it black, and mark what it
+  // holds. Its bytes are the work done.
+  fn propagateOne() usize {
+    imm at = grays;
+    imm h = header(at);
+    grays = h.gray;
+    h.marked = h.marked | black;
+    imm rec = h.ty as &TypeRecord;
+    if rec.flags & 2u32 != 0u32 {
+      imm tracefn = rec.trace;
+      tracefn(valueOf(at), 0u32);
     }
+    objBytes(h.ty);
+  }
+
+  // Until nothing is gray
+  fn propagateAll() usize {
+    mut work = 0usize;
+    while grays != 0usize {
+      work = work + propagateOne();
+    }
+    work;
+  }
+
+  // A collection starts: every root is marked, and marking begins
+  fn begin() {
+    grays = 0usize;
+    mem.traceRoots(0u32);
+    gcPhase = markPhase;
   }
 
   // Move every object on finobj that marking did not reach to the end of
@@ -257,105 +379,194 @@ pub struct gc is RegionRef, Traced {
     }
   }
 
-  // Free every object in the list that carries the dead white, make every
-  // other one the current white, and return what is left, in its order
-  fn sweep(list usize) usize {
-    imm dead = whites ^ curWhite;
-    mut head = 0usize;
-    mut tail = 0usize;
-    mut at = list;
-    while at != 0usize {
-      imm h = header(at);
-      imm nxt = h.next;
-      if h.marked & dead != 0u32 {
-        imm bytes = objBytes(h.ty);
-        totalBytes = totalBytes - bytes;
-        nobjects = nobjects - 1usize;
-        nfreed = nfreed + 1usize;
-        // Under stress, a freed object is scribbled over first, so a
-        // reference the roots missed reads 0xDD bytes, not its old value
-        if stressOn { libc.memset(at as *u8, 221i32, bytes); }
-        libc.free(at as *u8);
-      }
-      else {
-        h.marked = (h.marked & finalizedBit) | curWhite;
-        if tail == 0usize { head = at; } else { header(tail).next = at; }
-        tail = at;
-      }
-      at = nxt;
-    }
-    if tail != 0usize { header(tail).next = 0usize; }
-    head;
-  }
-
-  // Run the finalizer of every object separated, newest first. Each is
-  // marked finalized and put among the ordinary objects before its finalizer
-  // runs, so it is never finalized again, and is freed once it is found
-  // unreachable.
-  fn callFinalizers() {
-    while tobefnz != 0usize {
-      imm at = tobefnz;
-      imm h = header(at);
-      tobefnz = h.next;
-      h.marked = h.marked | finalizedBit;
-      h.next = allgc;
-      allgc = at;
-      nfinalized = nfinalized + 1usize;
-      imm fin = (h.ty as &TypeRecord).finalize;
-      fin(valueOf(at));
-    }
-  }
-
-  // A whole collection, stop-the-world. An emergency one, run because memory
-  // ran out, runs no finalizer: those wait for the next ordinary collection,
-  // their objects and what they reach kept alive until then.
-  fn fullCollect(emergency Bool) {
-    if inCollect {
-      return;
-    }
-    inCollect = true;
-    ncollections = ncollections + 1usize;
-
-    // Mark everything the roots reach
-    grays = 0usize;
+  // The end of marking, uninterrupted: nothing gray; the roots again, since
+  // the stacks have no barrier; the unreachable objects that need
+  // finalizing separated and kept, with all they reach, through this
+  // collection; the white flipped, so whatever carries the old one is
+  // garbage; and the sweep begins
+  fn atomic() usize {
+    mut work = propagateAll();
     mem.traceRoots(0u32);
-    propagate();
-
-    // Separate the unreachable objects that need finalizing, and keep them,
-    // and everything they reach, alive through this cycle
+    work = work + propagateAll();
     separate();
     mut at = tobefnz;
     while at != 0usize {
       shade(at);
       at = header(at).next;
     }
-    propagate();
-
-    // Flip the white: whatever still carries the old one is garbage
+    work = work + propagateAll();
     curWhite = whites ^ curWhite;
-    allgc = sweep(allgc);
-    finobj = sweep(finobj);
-    tobefnz = sweep(tobefnz);
-
-    trigger = totalBytes * 2usize;
-    if trigger < minTrigger { trigger = minTrigger; }
-
-    if !emergency {
-      callFinalizers();
-    }
-    inCollect = false;
+    ncollections = ncollections + 1usize;
+    estimate = totalBytes;
+    gcPhase = sweepPhase;
+    sweepList = 0u32;
+    sweepAt = 0usize;
+    work + 1usize;
   }
 
-  // A full collection, now. Nothing happens if one is running already (a
-  // 'final' asking for one).
+  fn listHead(which u32) usize {
+    if which == 0u32 { allgc; } else if which == 1u32 { finobj; } else { tobefnz; }
+  }
+  fn setListHead(which u32, at usize) {
+    if which == 0u32 { allgc = at; } else if which == 1u32 { finobj = at; } else { tobefnz = at; }
+  }
+
+  // Sweep the next object: freed if it carries the dead white, made the
+  // current white if not. Its bytes are the work done. Past the last list,
+  // the sweep ends: the trigger is set from what the collection found live,
+  // and finalizing begins, if anything was separated.
+  fn sweepOne() usize {
+    mut at = if sweepAt == 0usize {listHead(sweepList);} else {header(sweepAt).next;};
+    while at == 0usize and sweepList < 2u32 {
+      sweepList = sweepList + 1u32;
+      sweepAt = 0usize;
+      at = listHead(sweepList);
+    }
+    if at == 0usize {
+      trigger = estimate * 2usize;
+      if trigger < minTrigger { trigger = minTrigger; }
+      gcPhase = if tobefnz != 0usize {finalizePhase;} else {pausePhase;};
+      return 1usize;
+    }
+    imm h = header(at);
+    imm bytes = objBytes(h.ty);
+    if h.marked & (whites ^ curWhite) != 0u32 {
+      if sweepAt == 0usize { setListHead(sweepList, h.next); } else { header(sweepAt).next = h.next; }
+      totalBytes = totalBytes - bytes;
+      estimate = estimate - bytes;
+      nobjects = nobjects - 1usize;
+      nfreed = nfreed + 1usize;
+      // Under stress, a freed object is scribbled over first, so a
+      // reference the roots or the barrier missed reads 0xDD bytes, not
+      // its old value
+      if stressOn { libc.memset(at as *u8, 221i32, bytes); }
+      libc.free(at as *u8);
+    }
+    else {
+      h.marked = (h.marked & finalizedBit) | curWhite;
+      sweepAt = at;
+    }
+    bytes;
+  }
+
+  // Run the finalizer of the newest object separated. It is marked
+  // finalized and put among the ordinary objects before its finalizer runs,
+  // so it is never finalized again, and is freed once it is found
+  // unreachable. Its bytes are the work done.
+  fn finalizeOne() usize {
+    imm at = tobefnz;
+    imm h = header(at);
+    tobefnz = h.next;
+    h.marked = h.marked | finalizedBit;
+    h.next = allgc;
+    allgc = at;
+    nfinalized = nfinalized + 1usize;
+    if tobefnz == 0usize { gcPhase = pausePhase; }
+    imm fin = (h.ty as &TypeRecord).finalize;
+    fin(valueOf(at));
+    objBytes(h.ty);
+  }
+
+  // One piece of the collection, whichever phase it is in; its work
+  fn stepOne() usize {
+    if gcPhase == pausePhase {
+      begin();
+      return 1usize;
+    }
+    if gcPhase == markPhase {
+      return if grays != 0usize {propagateOne();} else {atomic();};
+    }
+    if gcPhase == sweepPhase {
+      return sweepOne();
+    }
+    finalizeOne();
+  }
+
+  // Work until 'budget' bytes' worth is done, at least one piece, or until
+  // the collection ends. The work done.
+  fn runStep(budget usize) usize {
+    stepping = true;
+    nsteps = nsteps + 1usize;
+    mut work = 0usize;
+    mut going = true;
+    while going {
+      work = work + stepOne();
+      going = work < budget and gcPhase != pausePhase;
+    }
+    stepping = false;
+    work;
+  }
+
+  // Every mark of a collection given up while marking: each object the
+  // current white again, and nothing gray
+  fn unmark(list usize) {
+    mut at = list;
+    while at != 0usize {
+      imm h = header(at);
+      h.marked = (h.marked & finalizedBit) | curWhite;
+      at = h.next;
+    }
+  }
+
+  // A whole collection, stop-the-world. One in progress is finished first --
+  // or, if it is still marking, given up, since what it has marked black may
+  // have died since -- and then a whole one runs. An emergency one, run
+  // because memory ran out, runs no finalizer: those wait for the next
+  // ordinary collection, their objects and what they reach kept alive until
+  // then.
+  fn fullCollect(emergency Bool) {
+    if stepping {
+      return;
+    }
+    stepping = true;
+    if gcPhase == markPhase {
+      unmark(allgc);
+      unmark(finobj);
+      unmark(tobefnz);
+      grays = 0usize;
+      gcPhase = pausePhase;
+    }
+    mut round = 0u32;
+    while round < 2u32 {
+      if round == 1u32 {
+        begin();
+        atomic();
+      }
+      while gcPhase == sweepPhase { sweepOne(); }
+      if gcPhase == finalizePhase {
+        if emergency { gcPhase = pausePhase; }
+        else { while gcPhase == finalizePhase { finalizeOne(); } }
+      }
+      round = round + 1u32;
+    }
+    debt = 0usize;
+    stepping = false;
+  }
+
+  // A full collection, now. Nothing happens if collection work is running
+  // already (a 'final' asking for one).
   pub fn collect() {
     fullCollect(false);
   }
-  // Turn the automatic collections off, and on again
+  // At least 'work' bytes of collection work, now: objects marked, swept or
+  // finalized, each costing its bytes (0: one piece, the least there is).
+  // A collection starts if none is running. True if this step finished one.
+  // Nothing happens, and false, if collection work is running already.
+  pub fn step(work usize) Bool {
+    if stepping {
+      return false;
+    }
+    runStep(work);
+    gcPhase == pausePhase;
+  }
+  // Where the collection is: 0 none running, 1 marking, 2 sweeping,
+  // 3 finalizing
+  pub fn phase() u32 { gcPhase; }
+  // Turn the automatic work off, and on again
   pub fn stop() { autoOn = false; }
   pub fn start() { autoOn = true; }
-  // Collect at every allocation, or stop doing so; and whether it does
-  pub fn setStress(on Bool) { readEnv(); stressOn = on; }
+  // A step at every allocation, or not; and whether it does (either stress)
+  pub fn setStress(on Bool) { readEnv(); stressOn = on; stressFull = false; }
   pub fn stressed() Bool { readEnv(); stressOn; }
   // No more than 'bytes' of objects at once, headers included; 0 is no limit
   pub fn setLimit(bytes usize) { maxBytes = bytes; }
@@ -365,8 +576,12 @@ pub struct gc is RegionRef, Traced {
   pub fn liveObjects() usize { nobjects; }
   // Their bytes, headers included
   pub fn liveBytes() usize { totalBytes; }
-  // Collections run, finalizers run, objects freed, since the program began
+  // Collections that finished marking, finalizers run, objects freed, and
+  // steps taken (by allocations, and gc.step()), since the program began
   pub fn collections() usize { ncollections; }
   pub fn finalized() usize { nfinalized; }
   pub fn freed() usize { nfreed; }
+  pub fn steps() usize { nsteps; }
+  // The most work an allocation's step has done, in bytes: the longest pause
+  pub fn largestStep() usize { maxStep; }
 }
