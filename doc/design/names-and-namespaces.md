@@ -1024,9 +1024,9 @@ which is where the `symbols` check target reads them.
 | trait default cloned into an implementer | `define internal i32 @_CNvNt5Gauge7reading(%Gauge* %0) comdat {` — spelled exactly as an override written there, `Gauge.reading`; no arguments, since a copy is not an instance | internal · `nodeduplicate` |
 | synthesized drop function | `_CNvNt6Bundle4drop` — `Bundle.drop` | as its type's methods |
 | vtable | `@_CYNt5GaugeNt5Meter = internal constant %"Meter:Vtable" { ... }, comdat` — `Gauge as Meter` | internal · `nodeduplicate` |
-| vtable list | `@_CLNt5Meter = internal constant [2 x %"Meter:Vtable"*] [...], comdat` — one per trait, so LLVM never uniquifies one | internal · `nodeduplicate` |
+| vtable list | `@_CLNt5Meter = internal constant [2 x ptr] [...], comdat` — one per trait, so LLVM never uniquifies one | internal · `nodeduplicate` |
 | `extern` in a Cone-named module | `declare i64 @_CNvC12moduleextern5twice(i64)` — `moduleextern.twice`, the module's Cone name; in the root, bare, as every root declaration is | external · none |
-| `extern` with `@c`, or in a C-named module | `declare i32 @abs(i32)`; `declare %void @printStr({ i8*, i64 })` for `Str` in `mod @c("print") cio` | external · none |
+| `extern` with `@c`, or in a C-named module | `declare i32 @abs(i32)`; `declare %void @printStr({ ptr, i64 })` for `Str` in `mod @c("print") cio` | external · none |
 | `extern fn @c(system)` | `declare dllimport x86_stdcallcc i32 @GetTickCount()` — the DLL import only because it is `extern` | external · none |
 | `pub fn @c("cone_square")`, a body | `define i64 @cone_square(i64 %0) comdat {` — exported to C; private, it would be `define internal` | external · `nodeduplicate` |
 | `pub fn @c("ConeTicks")` in `mod @c(system) win` | `define x86_stdcallcc i32 @ConeTicks() comdat {` — the convention, and no DLL import on a definition | external · `nodeduplicate` |
@@ -1035,7 +1035,7 @@ which is where the `symbols` check target reads them.
 | `inline` fn | no symbol | |
 | overload name | no symbol; each candidate is spelled as an ordinary `fn`, and a public name holds only public candidates (L5) | |
 | `stdio` | defined in every importer, since `stdio` is a package the search path finds, and so a generating module: `@_CNvC5stdio5print = internal global %IOStream zeroinitializer, comdat`, `define internal %void @_CNvNtC5stdio8IOStream9appendInt(...) comdat {` — internal, so two such objects cannot clash | internal · `nodeduplicate` |
-| libc's `extern` functions (`malloc`, `free` and the rest, loaded in every compile by core's import), `llvm.trap`, `llvm.trap`, `llvm.sqrt.*` | `declare i8* @malloc(i64)` and so on — C and LLVM names; libc's from its `mod @c` line, the others minted outside these rules | external · none |
+| libc's `extern` functions (`malloc`, `free` and the rest, loaded in every compile by core's import), `llvm.trap`, `llvm.trap`, `llvm.sqrt.*` | `declare ptr @malloc(i64)` and so on — C and LLVM names; libc's from its `mod @c` line, the others minted outside these rules | external · none |
 | `a_b.c` and `a.b_c` | `_CNvC3a_b1c` and `_CNvC1a3b_c` — distinct by construction | |
 
 Read on COFF: `nodeduplicate` is selection 1, `internal` becomes `Static`, and

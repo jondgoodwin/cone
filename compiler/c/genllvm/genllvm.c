@@ -14,7 +14,6 @@
 #include "../shared/fileio.h"
 #include "genllvm.h"
 
-#include <llvm-c/ExecutionEngine.h>
 #include <llvm-c/Target.h>
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
@@ -122,7 +121,7 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
 
     // Attach block and builder to function
     LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "entry");
-    gen->builder = LLVMCreateBuilder();
+    gen->builder = LLVMCreateBuilderInContext(gen->context);
     LLVMPositionBuilderAtEnd(gen->builder, entry);
 
     // Create our alloca insert point by generating a dummy instruction.
@@ -209,7 +208,7 @@ void genlGloVar(GenState *gen, VarDclNode *varnode) {
     // The text, and the NUL after it that the variable's type does not count
     else if (varnode->value->tag == StringLitTag) {
         SLitNode *strnode = (SLitNode*)varnode->value;
-        LLVMSetInitializer(global, LLVMConstStringInContext(gen->context, strnode->strlit, strnode->strlen, 0));
+        LLVMSetInitializer(global, LLVMConstStringInContext2(gen->context, strnode->strlit, strnode->strlen, 0));
     }
     else
         LLVMSetInitializer(global, genlExpr(gen, varnode->value));
@@ -1097,8 +1096,8 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     gen->datalayout = LLVMCreateTargetDataLayout(machine);
     opt->ptrsize = LLVMPointerSize(gen->datalayout) << 3;
 
-    gen->context = LLVMGetGlobalContext(); // LLVM inlining bugs prevent use of LLVMContextCreate();
-    gen->builder = LLVMCreateBuilder();
+    gen->context = LLVMContextCreate();
+    gen->builder = LLVMCreateBuilderInContext(gen->context);
     gen->fn = NULL;
     gen->fnblock = NULL;
     gen->exitzero = 0;

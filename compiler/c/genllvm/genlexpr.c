@@ -13,7 +13,6 @@
 #include "../shared/fileio.h"
 #include "genllvm.h"
 
-#include <llvm-c/ExecutionEngine.h>
 #include <llvm-c/Target.h>
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
@@ -1228,7 +1227,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         // byte longer than that type, and its address is recast to a pointer
         // to the type, so every use sees the text's length and nothing more.
         SLitNode *strnode = (SLitNode *)lval;
-        LLVMValueRef strconst = LLVMConstStringInContext(gen->context, strnode->strlit, strnode->strlen, 0);
+        LLVMValueRef strconst = LLVMConstStringInContext2(gen->context, strnode->strlit, strnode->strlen, 0);
         LLVMValueRef sglobal = LLVMAddGlobal(gen->module, LLVMTypeOf(strconst), "string");
         LLVMSetLinkage(sglobal, LLVMInternalLinkage);
         LLVMSetGlobalConstant(sglobal, 1);
