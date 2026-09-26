@@ -150,7 +150,9 @@ Two entry points, because a type name and a value name want different things.
    a function or static whose owner still carries `GenericInfo`, reached as
    `Box.stat` on a `struct Box[T]`. Only an instance's copy of it is ever
    generated, so the use has to name an instance — `ErrorArgCount`, since no type
-   argument list is written where one is required. A use inside the generic's own
+   argument list is written where one is required. The message names the path
+   that works for a function, `Box[...].make`; a static global is not reached
+   through an instance yet, and its message says so. A use inside the generic's own
    body never arrives here bound to the template's member: the clone re-pointed
    it at the instance's ([generic](generic.md), "How a cloned name gets
    re-pointed"). `fnCallLowerOverloadFn` asks the same of an overload name's
