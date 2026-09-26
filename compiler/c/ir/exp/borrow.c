@@ -68,6 +68,7 @@ void borrowAuto(INode **from, INode *totypedcl) {
     iexpGetLvalInfo(*from, &lvalperm, &scope);
     addrtype->scope = scope;
     RefNode *borrownode = newRefNode(ArrayBorrowTag);
+    inodeLexCopy((INode*)borrownode, *from);
     borrownode->vtype = (INode*)addrtype;
     borrownode->vtexp = *from;
     *from = (INode*)borrownode;

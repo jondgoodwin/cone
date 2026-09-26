@@ -1,0 +1,99 @@
+// A borrow held in a local freezes its source until the borrow's last use.
+// A read-only borrow lets the source be read and borrowed read-only again, but
+// not changed, moved or ended; a mutable borrow lets nothing touch the source
+// but the borrow itself, not even a read. Each function here touches the
+// source while a borrow of it is still to be used, and the error is reported
+// at the touch, naming the borrow and its next use.
+//
+// Each has a function of its own, so that one borrow's conflicts cannot stand
+// in for another's. What stays allowed -- the same touches after the borrow's
+// last use, reads under a read-only borrow, disjoint fields, a holder
+// reassigned first -- is ref_freeze_success. The loop's back edge is
+// ref_flow_freeze_loop.
+
+mod ref_flow_freeze;
+
+import stdio use *;
+
+struct Pt { pub x i64; pub y i64; }
+
+// A value with a finalizer, so that moving it and replacing it are moves
+struct Fin {
+  pub n i64;
+  fn final(self &uni) {}
+}
+
+fn consume(f Fin) {}
+
+// The source read while a mutable borrow of it is still to be used
+fn readUnderMut() {
+  mut k = 5;
+  imm b = &mut k;
+  printInt(k);               //~ ErrorFrozen:12 "may not be read"
+  *b = 9;
+}
+
+// Changed while a read-only borrow is still to be used: by assignment, and by
+// an operator that changes it in place
+fn writeUnderShared() {
+  mut k = 5;
+  imm b = &k;
+  k = 6;                     //~ ErrorFrozen:3 "may not be changed"
+  k += 1;                    //~ ErrorFrozen:3 "may not be changed"
+  printInt(*b);
+}
+
+// Moved away, and replaced whole
+fn moveUnderShared() {
+  mut a = Fin[1];
+  imm r = &a;
+  consume(a);                //~ ErrorFrozen:11 "may not be moved"
+  printInt(r.n);
+}
+
+fn replaceUnderShared() {
+  mut a = Fin[1];
+  imm r = &a;
+  a = Fin[2];                //~ ErrorFrozen:3 "may not be changed"
+  printInt(r.n);
+}
+
+// Swapped while a mutable borrow is still to be used
+fn swapUnderMut() {
+  mut a = Fin[1];
+  mut other = Fin[2];
+  imm r = &mut a;
+  a <=> other;               //~ ErrorFrozen:3 "may not be changed"
+  r.n = 3;
+}
+
+// Borrowed read-only while a mutable borrow is still to be used
+fn borrowUnderMut() {
+  mut p = Pt[1, 2];
+  imm r = &mut p;
+  imm s = &p;                //~ ErrorFrozen:11 "may not be borrowed until"
+  r.x = 2;
+  printInt(s.x);
+}
+
+// A reborrow through a reference freezes what the reference points at
+fn reborrowFrozen() {
+  mut k = 1;
+  imm r = &mut k;
+  imm r2 = &mut *r;
+  *r = 2;                    //~ ErrorFrozen:3 "*r' is borrowed mutably"
+  *r2 = 3;
+}
+
+// The source goes out of scope while a variable declared outside its block
+// still holds a borrow of it
+fn scopeEnds() {
+  mut zero = 0i64;
+  mut r &i64 = &zero;
+  {
+    mut a = 1i64;            //~ ErrorFrozen:9 "goes out of scope while"
+    imm b &i64 = &a;
+    r = b;
+  }
+  printInt(*r);
+}

@@ -3,8 +3,8 @@
 //
 // Everything is printed, because a reference that compiles is not a reference
 // that points where it should. The pairs that matter are a write through the
-// reference followed by a read of the original variable, and a read through
-// the reference after the original was written.
+// reference followed by a read of the original variable, once the reference's
+// last use is behind it: until then the variable is frozen.
 //
 // Owning references ('+rc', '+so'), array references and slices ('&[]'), and
 // virtual references ('&<') belong to region, collection and trait; none of
@@ -68,7 +68,8 @@ fn showF(label &[]u8, n f64) {
 // -------- borrowing and dereference --------
 
 fn borrows() {
-  // '&mut' borrows a reference that may write; '*' reads and writes through it
+  // '&mut' borrows a reference that may write; '*' reads and writes through it.
+  // The variable may be read again once the borrow's last use is behind it.
   mut a = 3;
   imm rw = &mut a;
   show("read-through-mut", *rw);
@@ -80,9 +81,11 @@ fn borrows() {
   *stated = 8;
   show("stated-ref-type", a);
 
-  // Dereference is an expression like any other, so it composes
+  // Dereference is an expression like any other, so it composes. Two
+  // read-only borrows of one variable may be used together.
+  imm mine = &a;
   imm other = &a;
-  show("deref-in-expression", *rw + *other);
+  show("deref-in-expression", *mine + *other);
 }
 
 // A reference is borrowed from a variable, and a parameter is a variable
@@ -116,21 +119,24 @@ fn chained() {
 // no number type declares '+='. Through a reference the fallback reaches the
 // referent: 'r += 5' is '*r = *r + 5'. The binding holding the reference is
 // immutable throughout; it is the reference's own 'mut' that permits the write.
+// Each result is read back through the reference, since the variable itself
+// may not be read while its mutable borrow is still to be used; the last is
+// read from the variable, after that borrow's last use.
 fn opAssignsThroughRef() {
   mut n = 20;
   imm r = &mut n;
   r += 5;
-  show("plus-eq-through-ref", n);
+  show("plus-eq-through-ref", *r);
   r -= 3;
-  show("minus-eq-through-ref", n);
+  show("minus-eq-through-ref", *r);
   r *= 2;
-  show("mult-eq-through-ref", n);
+  show("mult-eq-through-ref", *r);
   r /= 4;
-  show("div-eq-through-ref", n);
+  show("div-eq-through-ref", *r);
 
   // '++' and '--' need an lval too, and take the reference the same way
   r++;
-  show("postfix-incr-through-ref", n);
+  show("postfix-incr-through-ref", *r);
   --r;
   show("prefix-decr-through-ref", n);
 
@@ -152,7 +158,7 @@ fn opAssignsThroughRef() {
   mut f = 10.0;
   imm fr = &mut f;
   fr += 5.0;
-  showF("float-plus-eq-through-ref", f);
+  showF("float-plus-eq-through-ref", *fr);
   fr /= 4.0;
   showF("float-div-eq-through-ref", f);
 }

@@ -23,8 +23,8 @@ typedef struct VarDclNode {
     struct FoldClause *fold;   // A global's fold clause, or NULL
     uint16_t scope;            // 0=global
     uint16_t index;            // index within this scope (e.g., parameter number)
-    uint16_t flowflags;        // Data flow pass permanent flags
     uint16_t flowtempflags;    // Data flow pass temporary flags
+    uint32_t flowindex;        // Transient: this variable's index in the loan walk (flowpath.c), 0 outside one
     Nodes *hollowed;           // Data flow: each move that took what this owning reference points at, or an element of it, out
 } VarDclNode;
 

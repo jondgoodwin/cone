@@ -15,8 +15,12 @@
 
 	<p style="margin-left: 40px;"><i>Note: These are largely implemented.
 			A lifetime is enforced when a borrowed reference is stored, including into a
-			variable of a wider scope, and when it is returned or returned through a call;
-			freezing is missing, and lifetimes struggle across method calls.</i></p>
+			variable of a wider scope, and when it is returned or returned through a call.
+			Freezing is enforced for a borrow held in a local variable; a borrow a method returns
+			(an element taken with <span class="pre">list[0usize]</span>, an allocation from an arena),
+			a borrow held inside another value (a struct's field, an <span class="pre">Option</span>),
+			and a method called through a reference do not yet freeze anything.
+			Lifetimes struggle across method calls.</i></p>
 	
 	<p>References work differently than other types.
 	The basic idea is simple: references carry an address that points to some value in memory.
@@ -225,19 +229,45 @@ fn getval() i32 {
 	<p>When a borrowed reference is created, its source is always a named variable.
 		That source variable either holds or points to the value we are borrowing a pointer to.
 		When we borrow from the source, we are not just gaining access to the value,
-		we are also gaining some or all of its access permissions.</p>
-	<p>Whenever we borrow from a non-global source,
-		the source variable is made inaccessible for the lifetime of the borrowed reference
-		in order to preserve permission guarantees:</p>
+		we are also gaining some or all of its access permissions.
+		To preserve the borrowed reference's guarantees, its source is frozen
+		while the borrowed reference is still to be used:</p>
+	<ul>
+	<li>While a <b>read-only</b> borrow (<span class="pre">&amp;</span>, <span class="pre">&amp;ro</span>,
+		<span class="pre">&amp;imm</span>) is still to be used, its source may be read,
+		and borrowed read-only again, but not changed, moved, or ended.</li>
+	<li>While a <b>mutable</b> borrow (<span class="pre">&amp;mut</span>, <span class="pre">&amp;uni</span>,
+		<span class="pre">&amp;mut1</span>) is still to be used, its source may not be touched at all
+		except through the borrow: it may not be read, borrowed, changed, moved, or ended.</li>
+	<li>An <span class="pre">&amp;opaq</span> borrow, which reads and writes nothing,
+		only keeps its source from being moved, replaced whole, or ended.</li>
+	</ul>
+	<p>"Still to be used" means until the borrow's last use, not the end of its block.
+		Once nothing will use the borrow again, the source is free, even in the middle of the
+		block that made it. The last use may be on any path the program can take:
+		a later iteration of a loop, or the code after it, is a use too.
+		A copy of a borrowed reference keeps the source frozen exactly as the borrow does.
+		"Ended" covers the source going out of scope, being moved away
+		(passed to a function that takes it, or assigned to another variable),
+		and being replaced whole (assigned or swapped).</p>
 <pre>
 fn freeze(n i32) i32 {
-  if n &gt; 1 {
-    imm borref = &amp;n;   // borrowing makes 'n' inaccessible in this block 
-    imm m = n;         // oops! n is frozen and may not be accessed
-  }
-  n;                   // Ok because the borrow has expired.
+  mut k = n;
+  imm r = &amp;mut k;
+  *r = 5;
+  imm m = k;         // Ok: r is not used again, so k is no longer frozen
+  imm s = &amp;k;
+  imm t = k;         // Ok: a read-only borrow still lets k be read
+  k = 6;             // Error: s is used again below, and may not see k change
+  *s + m + t;
 }
 </pre>
+	<p>Borrowing one field of a struct freezes that field, and the whole struct with it,
+		but leaves the struct's other fields free. Borrowing an element of an array freezes
+		the whole array, since the compiler cannot tell one index from another.
+		Borrowing through a borrowed reference (<span class="pre">&amp;mut *r</span>)
+		freezes what <span class="pre">r</span> points at, in the same way,
+		while the new borrow is still to be used.</p>
 	
 	<h2 id="ops">Reference Operations</h2>
 	<p>The de-referencing and comparison operators may be directly applied to references.</p>

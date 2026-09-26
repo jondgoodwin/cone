@@ -1,0 +1,184 @@
+// What a borrow held in a local still allows its source. A borrow freezes its
+// source only until its last use, not to the end of its block, and only
+// against what it forbids: a read-only borrow lets the source be read and
+// borrowed read-only again, a borrow of one field leaves the other fields
+// free, and an '&opaq' borrow, which reads and writes nothing, stops only a
+// move, a replacement or the end of the source. Each case prints a value read
+// through the borrow and then the source afterwards, so a borrow that compiled
+// but pointed at the wrong place would show.
+//
+// The refusals are ref_flow_freeze and ref_flow_freeze_loop.
+
+mod ref_freeze_success;
+
+import stdio use *;
+
+struct Pt { pub x i64; pub y i64; }
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// A read-only borrow: the source may be read, and borrowed read-only again,
+// while it is still to be used
+fn readUnderShared() {
+  mut v = Pt[1, 2];
+  imm r = &v;
+  show("source-read-under-shared", v.x);
+  imm s = &v;
+  show("two-shared-borrows", r.x + s.y);
+  v.x = 5;
+  show("changed-after-last-use", v.x);
+}
+
+// The borrow's last use comes before the change, in the middle of the block
+fn lastUseBeforeChange() {
+  mut p = Pt[1, 2];
+  imm r = &mut p;
+  r.x = 10;
+  show("written-through-borrow", r.x);
+  p.x = 20;
+  show("source-after-last-use", p.x);
+}
+
+// A reborrow through a reference: the reference is usable again after the
+// reborrow's last use
+fn reborrow() {
+  mut k = 1;
+  imm r = &mut k;
+  imm r2 = &mut *r;
+  *r2 = 30;
+  show("through-reborrow", *r2);
+  *r = *r + 1;
+  show("through-reference-after", *r);
+  show("source-after", k);
+}
+
+// Borrows in both arms of an 'if', each dead by the join
+fn bothArms(c Bool) {
+  mut p = Pt[1, 2];
+  if c {
+    imm r = &mut p;
+    r.x = 40;
+    show("mut-borrow-in-then", r.x);
+  }
+  else {
+    imm s = &p;
+    show("shared-borrow-in-else", s.x);
+  }
+  p.y = 41;
+  show("source-after-if", p.x + p.y);
+}
+
+// An 'if' value holds either borrow; both sources may still be read
+fn eitherBorrow(c Bool) {
+  mut p = Pt[1, 2];
+  mut q = Pt[3, 4];
+  imm w = if c { &p; } else { &q; };
+  imm both = p.x + q.x;
+  show("either-borrow", w.x);
+  show("sources-read-while-held", both);
+}
+
+// A borrow live around a loop's back edge, used only through itself
+fn loopThroughBorrow() {
+  mut p = Pt[0, 0];
+  imm r = &mut p;
+  mut n = 0;
+  while n < 3 {
+    r.x = r.x + 1;
+    n = n + 1;
+  }
+  show("through-borrow-in-loop", r.x);
+  show("source-after-loop", p.x);
+}
+
+// A borrow made and dead within each iteration, before that iteration's change
+fn loopDeadBeforeChange() {
+  mut p = Pt[1, 0];
+  mut n = 0;
+  while n < 3 {
+    imm e = &p;
+    imm doubled = e.x * 2;
+    p.x = doubled;
+    n = n + 1;
+  }
+  show("borrow-dead-before-change", p.x);
+}
+
+// A borrow of one field leaves the other fields free
+fn disjointFields() {
+  mut p = Pt[1, 2];
+  imm fx = &mut p.x;
+  p.y = 3;
+  *fx = 4;
+  show("through-field-borrow", *fx);
+  show("source-after-field-borrow", p.x * 10 + p.y);
+}
+
+// A holder reassigned before the conflict no longer holds what it did
+fn holderReassigned() {
+  mut a = 1;
+  mut b = 2;
+  mut r = &mut a;
+  *r = 5;
+  r = &mut b;
+  a = 7;
+  *r = 8;
+  show("through-reassigned-holder", *r);
+  show("first-source-changed", a * 10 + b);
+}
+
+// A copy of a borrow is used in turn with the borrow it was copied from
+fn copiesInTurn() {
+  mut k = 1;
+  imm b = &mut k;
+  imm b2 = b;
+  *b2 = 3;
+  *b = *b + 1;
+  show("through-copies", *b);
+  show("source-after-copies", k);
+}
+
+// '&opaq' holds only the address: the source may be read and written
+fn opaqueBorrow() {
+  mut k = 1;
+  imm o = &opaq k;
+  k = 2;
+  imm again = &opaq k;
+  mut same = 0;
+  if o === again { same = 1; }
+  show("opaq-source-written", k);
+  show("opaq-same-place", same);
+}
+
+// A read-only borrow's source may be read in the condition it guards
+fn inCondition(c Bool) {
+  mut k = 1;
+  imm r = &k;
+  if c and *r > 0 {
+    show("read-in-condition", k + *r);
+  }
+  k = 3;
+  show("source-after-condition", k);
+}
+
+fn main() i32 {
+  readUnderShared();
+  lastUseBeforeChange();
+  reborrow();
+  bothArms(true);
+  bothArms(false);
+  eitherBorrow(false);
+  loopThroughBorrow();
+  loopDeadBeforeChange();
+  disjointFields();
+  holderReassigned();
+  copiesInTurn();
+  opaqueBorrow();
+  inCondition(true);
+  0i32;
+}
