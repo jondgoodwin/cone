@@ -619,6 +619,24 @@ phases. A scenario with no annotations and no checks still needs its table: a
 `.cone` file that is neither a listed scenario nor a listed support module is an
 error, which is what keeps a forgotten registration from sitting unrun.
 
+### Running the suite with the compiler's asserts
+
+`build\x64-release` compiles `assert` out (`NDEBUG`), so an error path that goes
+on with a node of the wrong kind can still print the expected diagnostics there,
+by luck. Build a second compiler that keeps them, into its own directory, and hand
+it to the runner:
+
+```powershell
+cmake -S . -B build\x64-assert -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo "-DCMAKE_C_FLAGS_RELWITHDEBINFO=/MD /Zi /O2 /Ob1" -DLLVM_DIR=<llvm root>\lib\cmake\llvm
+cmake --build build\x64-assert
+python test/run.py --conec build\x64-assert\conec.exe --conestd build\x64-assert\conestd.lib
+```
+
+(The Visual Studio project's `Debug|x64`, `x64\Debug\conec.exe`, keeps them too.)
+A failed assert prints `Assertion failed:` on stderr and exits with a status
+outside the `ErrorCode` taxonomy, so the scenario fails. A fix for one lands with
+the scenario that reaches it, which fails only under this build.
+
 ## 5. Update expectations
 
 Blessing records what the compiler actually produced as the new expectation.
