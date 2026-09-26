@@ -119,6 +119,8 @@ TypeCompare arrayRefMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint con
     switch (permGetFlags(to->perm) & (MayWrite | MayRead)) {
     case 0:
     case MayRead:
+        if (refHeldMoveSeenAsCopy(to->vtexp, arrayElemType((INode*)arraytype)))
+            return NoMatch;
         match = itypeMatches(to->vtexp, arrayElemType((INode*)arraytype), constraint); // covariant
         break;
     case MayWrite:

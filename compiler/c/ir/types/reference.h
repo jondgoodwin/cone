@@ -79,6 +79,10 @@ int refIsRunSame(RefNode *node1, RefNode *node2);
 // Will from region coerce to a to region
 TypeCompare regionMatches(INode *to, INode *from, SubtypeConstraint constraint);
 
+// Would a reference held behind a readable reference, seen as 'to' in place of
+// its own type 'from', be copied out by a read where its own type moves?
+int refHeldMoveSeenAsCopy(INode *to, INode *from);
+
 // Will from reference coerce to a to reference (we know they are not the same)
 TypeCompare refMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint);
 
