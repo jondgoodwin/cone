@@ -108,6 +108,68 @@ class NotNames(unittest.TestCase):
         self.assertIn("not a Cone name", congo.name_fault("two-words"))
 
 
+@unittest.skipUnless(IS_WINDOWS, "an inherited Visual Studio environment is Windows'")
+class InheritedLinker(unittest.TestCase):
+    """Which inherited link.exe links for x64, and what LIB keeps when Congo
+    takes vcvars64.bat's environment instead. The folders are as Visual Studio
+    2022's Developer Command Prompt sets them."""
+    MSVC = r"C:\VS\VC\Tools\MSVC\14.42.34433"
+
+    def test_the_linkers_folder_names_its_target(self):
+        target = congo.msvc_target
+        self.assertEqual(target(self.MSVC + r"\bin\HostX86\x86\link.exe", {}), "x86")
+        self.assertEqual(target(self.MSVC + r"\bin\Hostx64\x64\link.exe", {}), "x64")
+        self.assertEqual(target(self.MSVC + r"\bin\HostX86\x64\link.exe", {}), "x64")
+        # The folder is the linker that would run, whatever the variable says
+        self.assertEqual(target(self.MSVC + r"\bin\HostX86\x86\link.exe",
+                                {"VSCMD_ARG_TGT_ARCH": "x64"}), "x86")
+
+    def test_else_the_environment_names_it(self):
+        self.assertEqual(congo.msvc_target(r"C:\tools\link.exe",
+                                           {"VSCMD_ARG_TGT_ARCH": "x86"}), "x86")
+        self.assertIsNone(congo.msvc_target(r"C:\tools\link.exe", {}))
+
+    def test_lib_keeps_the_users_folders_and_drops_visual_studios(self):
+        kits = r"C:\Program Files (x86)\Windows Kits\10"
+        env = {"VSINSTALLDIR": "C:\\VS\\", "WINDOWSSDKDIR": kits + "\\",
+               "LIB": ";".join([r"C:\libs\SDL2\lib\x64", self.MSVC + r"\ATLMFC\lib\x86",
+                                self.MSVC + r"\lib\x86", kits + r"\lib\10.0.22621.0\ucrt\x86",
+                                kits + r"\\lib\10.0.22621.0\\um\x86", r"C:\mine", ""]),
+               "PATH": self.MSVC + r"\bin\HostX86\x86"}
+        cleaned = congo.without_vs_libs(env)
+        self.assertEqual(cleaned["LIB"], r"C:\libs\SDL2\lib\x64;C:\mine")
+        self.assertEqual(cleaned["PATH"], env["PATH"])
+        # A folder merely beginning with Visual Studio's name is the user's
+        self.assertEqual(congo.without_vs_libs({"VSINSTALLDIR": r"C:\VS",
+                                                "LIB": r"C:\VS2;C:\VS\lib"})["LIB"],
+                         r"C:\VS2")
+
+    def test_set_output_replaces_a_variable_in_any_spelling(self):
+        # A Command Prompt's set prints Path, where os.environ spells it PATH
+        env = congo.with_set_output({"PATH": r"C:\old", "LIB": r"C:\mine"},
+                                    "Path=C:\\new;C:\\old\nVSCMD_VER=17.12.0\n")
+        self.assertEqual(env, {"PATH": r"C:\new;C:\old", "LIB": r"C:\mine",
+                               "VSCMD_VER": "17.12.0"})
+
+    def test_no_linker_says_what_ran_and_where_it_looked(self):
+        text = congo.Linker.no_linker(
+            r"C:\Git\usr\bin\link.exe", r"C:\a;C:\Git\usr\bin",
+            (r"C:\VS\vcvars64.bat", "banner\n[ERROR:vcvars.bat] Toolset directory not found\n"))
+        self.assertEqual(text.splitlines()[1:], [
+            r"the link.exe found, C:\Git\usr\bin\link.exe, is not Microsoft's",
+            r"ran C:\VS\vcvars64.bat, which printed (the end of it):",
+            "    banner", "    [ERROR:vcvars.bat] Toolset directory not found",
+            "searched for link.exe in PATH's folders:", r"    C:\a", r"    C:\Git\usr\bin"])
+
+    def test_vcvars64_keeps_what_lib_lists_behind_its_own(self):
+        mine = str(Path(tempfile.gettempdir()) / "congo-own-libs")
+        base = {k: v for k, v in os.environ.items() if k.upper() != "LIB"}
+        lib = congo.env_value(congo.Linker.vs_environment({**base, "LIB": mine}), "LIB")
+        entries = [e for e in lib.split(";") if e]
+        self.assertEqual(entries[-1], mine)
+        self.assertTrue(entries[0].lower().endswith("x64"), entries[0])
+
+
 class Scenarios(unittest.TestCase):
     """Congo run as a command, in a temporary folder."""
 

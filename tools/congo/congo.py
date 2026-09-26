@@ -923,22 +923,85 @@ def is_msvc_linker(tool: str) -> bool:
     return "Microsoft" in banner.stdout + banner.stderr
 
 
+def env_value(env: dict[str, str], name: str) -> str | None:
+    """A variable by its name in any case, as Windows names it: os.environ spells
+    WindowsSdkDir WINDOWSSDKDIR."""
+    name = name.upper()
+    return next((v for k, v in env.items() if k.upper() == name), None)
+
+
+def with_set_output(base: dict[str, str], printed: str) -> dict[str, str]:
+    """base with the variables cmd's set printed, one entry per variable in
+    base's spelling of its name: a Command Prompt's own PATH is Path, which set
+    prints, and os.environ, so base, spells it PATH."""
+    env = dict(base)
+    spelled = {k.upper(): k for k in env}
+    for line in printed.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            env[spelled.get(key.upper(), key)] = value
+    return env
+
+
+def msvc_target(tool: str, env: dict[str, str]) -> str | None:
+    """The machine a Microsoft link.exe links for, lower-cased (x64, x86, arm64),
+    or None when nothing says. Its folder says first, bin\\Host<host>\\<target>,
+    since that is the linker that would run; else what VsDevCmd.bat and
+    vcvars*.bat record, VSCMD_ARG_TGT_ARCH."""
+    folder = Path(tool).parent
+    if folder.parent.name.lower().startswith("host"):
+        return folder.name.lower()
+    target = env_value(env, "VSCMD_ARG_TGT_ARCH")
+    return target.lower() if target else None
+
+
+def without_vs_libs(env: dict[str, str]) -> dict[str, str]:
+    """env with the folders a Visual Studio environment put on LIB taken out --
+    each entry under the Visual Studio or Windows SDK folder the environment
+    names -- and every other entry, the user's own, kept in order. vcvars64.bat
+    puts its own folders in front of what LIB already lists, and an x86
+    environment's left behind them would still be searched. (PATH keeps its
+    x86 folders: vcvars64.bat's link.exe is found first.)"""
+    roots = [os.path.normcase(os.path.normpath(root)) + os.sep
+             for root in (env_value(env, k) for k in
+                          ("VSINSTALLDIR", "WindowsSdkDir", "UniversalCRTSdkDir"))
+             if root]
+
+    def put_there(entry: str) -> bool:
+        where = os.path.normcase(os.path.normpath(entry)) + os.sep
+        return any(where.startswith(root) for root in roots)
+
+    env = dict(env)
+    for key in env:
+        if key.upper() == "LIB":
+            env[key] = os.pathsep.join(entry for entry in env[key].split(os.pathsep)
+                                       if entry and not put_there(entry))
+    return env
+
+
 class Linker:
     """The system linker, with the environment it needs. On Windows that is
     Microsoft's link.exe in the environment vcvars64.bat sets up, which Congo
-    produces itself, so no Developer Command Prompt is needed."""
+    produces itself, so no Developer Command Prompt is needed. An inherited
+    environment is used only when its link.exe is Microsoft's and links for x64,
+    as conec's objects are: Visual Studio's default Developer Command Prompt
+    links for x86."""
 
     def __init__(self, conestd: Path):
         self.conestd = conestd
         self.env = dict(os.environ)
         if IS_WINDOWS:
+            ran: tuple[str, str] | None = None     # vcvars64.bat, and what it printed
             inherited = shutil.which("link.exe")
             if not (inherited and is_msvc_linker(inherited)):
-                self.env = self.vs_environment()
-            tool = shutil.which("link.exe", path=self.env.get("PATH", ""))
+                self.env, ran = self.run_vcvars(self.env)
+            elif msvc_target(inherited, self.env) not in (None, "x64"):
+                # Silently, as when there is no linker: nothing is the user's to fix
+                self.env, ran = self.run_vcvars(without_vs_libs(self.env))
+            path = env_value(self.env, "PATH") or ""
+            tool = shutil.which("link.exe", path=path)
             if tool is None or not is_msvc_linker(tool):
-                raise CongoError("no Microsoft link.exe: install Visual Studio's C++ tools"
-                                 " (Congo runs vcvars64.bat to find it)")
+                raise CongoError(self.no_linker(tool, path, ran))
             self.tool = tool
         else:
             tool = shutil.which("cc") or shutil.which("gcc")
@@ -947,22 +1010,46 @@ class Linker:
             self.tool = tool
 
     @staticmethod
-    def vs_environment() -> dict[str, str]:
+    def no_linker(tool: str | None, path: str, ran: tuple[str, str] | None) -> str:
+        """Why no Microsoft link.exe was found: which vcvars64.bat ran and how its
+        output ended, and the folders searched."""
+        lines = ["no Microsoft link.exe: install Visual Studio's C++ tools"
+                 " (Congo runs vcvars64.bat to find it)"]
+        if tool is not None:
+            lines.append(f"the link.exe found, {tool}, is not Microsoft's")
+        if ran is not None:
+            vcvars, printed = ran
+            tail = printed.strip().splitlines()[-15:]
+            lines.append(f"ran {vcvars}, which printed "
+                         + ("nothing" if not tail else "(the end of it):"))
+            lines += [f"    {line}" for line in tail]
+        lines.append("searched for link.exe in PATH's folders:")
+        lines += [f"    {folder}" for folder in path.split(os.pathsep) if folder]
+        return "\n".join(lines)
+
+    @staticmethod
+    def vs_environment(base: dict[str, str] | None = None) -> dict[str, str]:
+        """vcvars64.bat's environment, run in base (by default Congo's own). It
+        keeps what LIB already lists, behind its own folders."""
+        return Linker.run_vcvars(dict(os.environ) if base is None else base)[0]
+
+    @staticmethod
+    def run_vcvars(base: dict[str, str]) -> tuple[dict[str, str], tuple[str, str]]:
+        """vcvars64.bat's environment, run in base, and the batch file with what
+        it printed, which a failure to find link.exe shows."""
         vcvars = find_vcvars()
         if vcvars is None:
             raise CongoError("no Visual Studio C++ tools (vcvars64.bat) to link with")
         # A single string, not a list: list2cmdline would escape the quotes
-        # around the batch path, and cmd would not recognise it
-        result = subprocess.run(f'cmd /c ""{vcvars}" >nul && set"',
+        # around the batch path, and cmd would not recognise it. The marker
+        # divides what vcvars64.bat prints from the environment set prints.
+        marker = "--congo: vcvars64.bat's environment--"
+        result = subprocess.run(f'cmd /c ""{vcvars}" && echo {marker}&& set"', env=base,
                                 capture_output=True, text=True, errors="replace")
-        if result.returncode != 0:
-            raise CongoError(f"{vcvars} failed:\n{result.stdout}{result.stderr}")
-        env = dict(os.environ)
-        for line in result.stdout.splitlines():
-            if "=" in line:
-                key, value = line.split("=", 1)
-                env[key] = value
-        return env
+        printed, _, variables = result.stdout.partition(marker)
+        if result.returncode != 0 or not variables:
+            raise CongoError(f"{vcvars} failed:\n{printed}{result.stderr}")
+        return with_set_output(base, variables), (vcvars, printed + result.stderr)
 
     def command(self, objs: list[Path], exe: Path, libraries: list[str] = (),
                 paths: list[Path] = ()) -> list[str]:

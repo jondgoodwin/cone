@@ -459,9 +459,17 @@ Everything is rebuilt every time.
 - **`conestd`**, the C runtime library: the one `CONESTD` names, else the one
   built beside `conec` (`conestd.lib`, or `libconestd.a`).
 - **A linker.** On Windows, Microsoft's `link.exe`: Congo uses the one on `PATH`
-  when it is Microsoft's (a Developer Command Prompt), and otherwise finds Visual
-  Studio's `vcvars64.bat` and takes its environment, so no Developer Command
-  Prompt is needed. Elsewhere, `cc` or `gcc`.
+  when it is Microsoft's and links for x64, as `conec`'s objects are (an x64
+  Developer Command Prompt), and otherwise finds Visual Studio's `vcvars64.bat`
+  and takes its environment, so no Developer Command Prompt is needed. What a
+  `link.exe` links for is its folder's name, `bin\Host<host>\<target>`, else
+  `VSCMD_ARG_TGT_ARCH`. Visual Studio's default Developer Command Prompt links
+  for x86: from there Congo, saying nothing, takes out of `LIB` the folders
+  under the Visual Studio and Windows SDK folders that environment names,
+  keeping the rest (SDL2's `lib`, say), and runs `vcvars64.bat` over it, which
+  puts its x64 folders in front of what `LIB` still lists. When no Microsoft
+  `link.exe` is found even so, the error names the `vcvars64.bat` run, the end
+  of what it printed, and the folders searched. Elsewhere, `cc` or `gcc`.
 - **The prelude.** Every package compiled after `core` loads the prelude from
   `core`'s generated include file, which its description's package line for
   `core` names, after a line for `libc`, which `core`'s include file imports.
