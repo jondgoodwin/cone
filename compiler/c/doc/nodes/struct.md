@@ -382,7 +382,9 @@ A variant is a plain struct with a `basetrait`, a `tagnbr`, and no `derived`.
 variants", never "a trait's implementers".
 
 The infectious flags — `MoveType`, `ThreadBound`, `OpaqueType`, `ZeroSizeType` —
-are computed from the fields during type check. `NullablePtr` is set only during
+are computed from the fields during type check. A field's move-ness is asked of
+`itypeIsMove`, not read off its type's flags, because a tuple-typed field carries
+no flag and moves when one of its elements does. `NullablePtr` is set only during
 generation.
 
 ⚠ **`OpaqueType` means "no value of this may be held", and three unrelated facts

@@ -3,8 +3,8 @@
 // move type; a copy type would produce nothing here.
 //
 // Four ways a type becomes non-copyable are reachable without a region: the
-// @move attribute, an inferred finalizer, a field that is itself a move type,
-// and an array whose element type is -- a tuple holding a move type included,
+// @move attribute, an inferred finalizer, a field that is itself a move type (a
+// tuple holding one included), and an array whose element type is -- a tuple holding a move type included,
 // and whether the array's type is written out or inferred from its literal. The
 // two spellings of the same array type have to agree. The fifth the reference manual lists -- a
 // field that is a reference into another data structure -- is not: a borrowed
@@ -51,6 +51,27 @@ struct HasMoveField {
   pub n i32;
 }
 
+// A tuple field holding a move value is such a field, as the bare tuple moves:
+// directly, nested in another tuple, as a generic's type argument, and in an
+// enum's variant, which moves the enum too
+struct HasTupleField {
+  pub t (Finalized, i32);
+}
+
+struct HasNestedTuple {
+  pub t ((Finalized, i32), i32);
+}
+
+struct Holder[T] {
+  pub v T;
+}
+
+enum TupleVariant {
+  pub id i32;
+  struct Holds { pub t (Finalized, i32); }
+  struct Empty {}
+}
+
 // An enum moves when one of its variants does, and every holder has to see it
 // however the declarations are ordered: the enum's own static function, and a
 // struct and a function written above the enum. Every type is laid out -- an
@@ -89,6 +110,26 @@ fn main() i32 {
   imm c = HasMoveField[Attributed[3], 4];
   imm c2 = c;
   imm useC = c.n;            //~ ErrorMove:14 "moved out"
+
+  imm ct = HasTupleField[(Finalized[3], 4)];
+  imm ct2 = ct;
+  imm useCt = ct;            //~ ErrorMove:15 "moved out"
+
+  imm cn = HasNestedTuple[((Finalized[3], 4), 5)];
+  imm cn2 = cn;
+  imm useCn = cn;            //~ ErrorMove:15 "moved out"
+
+  imm cg = Holder[(Finalized, i32)][(Finalized[3], 4)];
+  imm cg2 = cg;
+  imm useCg = cg;            //~ ErrorMove:15 "moved out"
+
+  imm cv = TupleVariant.Holds[1, (Finalized[3], 4)];
+  imm cv2 = cv;
+  imm useCv = cv;            //~ ErrorMove:15 "moved out"
+
+  imm ce TupleVariant = TupleVariant.Empty[1];
+  imm ce2 = ce;
+  imm useCe = ce;            //~ ErrorMove:15 "moved out"
 
   mut d [2; Attributed] = [Attributed[5], Attributed[6]];
   imm d2 = d;

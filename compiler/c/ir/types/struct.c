@@ -2770,9 +2770,14 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     for (nodelistFor(&node->fields, cnt, nodesp)) {
         // Number field indexes to reflect their possibly altered position
         ((FieldDclNode*)*nodesp)->index = index++;
-        // Notice if a field's threadbound or movetype infects the struct
+        // Notice if a field's threadbound or movetype infects the struct. Whether
+        // the field moves is asked of itypeIsMove rather than read off its flags,
+        // since a tuple carries no flag of its own and moves when one of its
+        // elements does.
         ITypeNode *fldtype = (ITypeNode*)itypeGetTypeDcl(((IExpNode*)(*nodesp))->vtype);
-        infectFlag |= fldtype->flags & (ThreadBound | MoveType);
+        infectFlag |= fldtype->flags & ThreadBound;
+        if (itypeIsMove((INode*)fldtype))
+            infectFlag |= MoveType;
         // Handle impact of fields that are opaque or non-zero-size
         if (!itypeIsConcrete((INode*)fldtype))
             node->flags |= OpaqueType;
