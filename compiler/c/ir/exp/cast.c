@@ -227,6 +227,28 @@ int castConvertsToBool(INode *fromtype) {
     }
 }
 
+// A reference narrowed from a sum type -- an enum, a tagged trait, an
+// 'Option'-shaped enum -- to one of its variants points into the value's
+// payload. Changing which variant the value holds rereads that payload as
+// another type, so only a reference no other reference may change the variant
+// under may narrow: 'uni', 'imm' or 'mut1' (MayIntRefSum). A 'mut' or 'ro'
+// reference may be one of several, any of which may change it. (Jon's rule,
+// "Interior References and Shared Mutability", 2018: no interior references
+// into shape-changing values through a shared mutable reference.)
+static void castSumInterior(CastNode *node, RefNode *from, RefNode *to) {
+    StructNode *fromstr = (StructNode *)itypeGetTypeDcl(from->vtexp);
+    INode *tostr = itypeGetTypeDcl(to->vtexp);
+    if (fromstr->tag != StructTag || tostr == (INode *)fromstr || !(fromstr->flags & TraitType)
+        || !(fromstr->flags & (HasTagField | SameSize)))
+        return;
+    if (permGetFlags(from->perm) & MayIntRefSum)
+        return;
+    PermNode *perm = (PermNode *)itypeGetTypeDcl(from->perm);
+    errorMsgNode((INode *)node, ErrorBadPerm,
+        "A '%s' reference to %s may not be narrowed to a reference into one of its variants: another reference may change which variant it holds while this one is used. Match it through a 'uni' or 'imm' reference, or match its value.",
+        &perm->namesym->namestr, &fromstr->namesym->namestr);
+}
+
 // Type check cast node:
 // - reinterpret cast types must be same size
 // - Ensure type can be safely converted to target type
@@ -260,6 +282,7 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
         // Auto-generated downcasting "conversion" may in face be a bitcast
         if (fromtype->tag == RefTag && totype->tag == RefTag) {
             node->flags &= 0xFFFF - FlagConvert;
+            castSumInterior(node, (RefNode *)fromtype, (RefNode *)totype);
         }
     }
 

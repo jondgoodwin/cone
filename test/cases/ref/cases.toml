@@ -41,7 +41,17 @@
 #   borrow held in a local whose type is a borrowed reference freezes its
 #   source so far; the others compile, and the arena and pool packages' own
 #   notes say so. What is built is ref_flow_freeze, ref_flow_freeze_loop and
-#   ref_freeze_success.
+#   ref_freeze_success: a source reached as 'uni' (a local) frozen against
+#   what the borrow forbids, one reached through a shared path ('&mut', '&ro',
+#   '+rc-mut') only against ending.
+# - An element of a resizable collection borrowed through a shared path
+#   ('imm e = l[0usize]' for 'l &mut List[T]' or '+rc-mut List[T]', then a push
+#   through another alias). Jon's rule refuses it, as it refuses a reference into
+#   an enum's variant through 'mut' or 'ro' (enum_typecheck_narrow), but nothing
+#   marks a type as resizing today: an enum is told by its tag, a List is a
+#   struct like any other, and the arena, which a type-based guess (a raw
+#   buffer, a method handing back a borrow of it) would also catch, is ruled to
+#   lend its allocations with no loan on it.
 #
 # Owning references, array references and slices, and virtual references belong
 # to region, collection and trait. The one place an owning reference and a raw
@@ -95,9 +105,9 @@ tags = ["typecheck"]
 
 [scenario.ref_typecheck_perm]
 category = "reject"
-description = "Permissions a borrowed reference cannot obtain or coerce to, and the write a reading reference cannot make"
+description = "Permissions a borrowed reference cannot obtain or coerce to, from a variable or through a 'mut' reference, and the write a reading reference cannot make"
 tags = ["typecheck"]
-diagnostics = 7
+diagnostics = 9
 
 # Separate from the other two type-check files because its question is neither
 # what can be borrowed nor what a permission allows, but what two references can
@@ -169,9 +179,9 @@ diagnostics = 4
 # per touch, so that one borrow's conflict cannot stand in for another's.
 [scenario.ref_flow_freeze]
 category = "reject"
-description = "A source read, changed, moved, replaced, swapped, borrowed or ended while a borrow of it that forbids that is still to be used"
+description = "A local read, changed, moved, replaced, swapped, borrowed or ended while a borrow of it that forbids that is still to be used; a '+rc-mut' or '+so-mut' owner moved, replaced, changed or borrowed where it is held, or ended, while a borrow through it is"
 tags = ["flow"]
-diagnostics = 9
+diagnostics = 14
 
 # Separate from ref_flow_freeze because its subject is the path that reaches
 # the borrow's next use: around a loop's back edge, through a 'continue', out

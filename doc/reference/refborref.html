@@ -20,6 +20,9 @@
 			(an element taken with <span class="pre">list[0usize]</span>, an allocation from an arena),
 			a borrow held inside another value (a struct's field, an <span class="pre">Option</span>),
 			and a method called through a reference do not yet freeze anything.
+			An element borrowed from a resizable collection reached through a shared path
+			(a <span class="pre">List</span> through <span class="pre">&amp;mut</span> or
+			<span class="pre">+rc-mut</span>) is not yet refused.
 			Lifetimes struggle across method calls.</i></p>
 	
 	<p>References work differently than other types.
@@ -231,7 +234,14 @@ fn getval() i32 {
 		When we borrow from the source, we are not just gaining access to the value,
 		we are also gaining some or all of its access permissions.
 		To preserve the borrowed reference's guarantees, its source is frozen
-		while the borrowed reference is still to be used:</p>
+		while the borrowed reference is still to be used.
+		How much is frozen depends on how the source is reached.</p>
+	<p>A source reached as <a href="refperm.html#uni"><span class="pre">uni</span></a> &mdash;
+		a local variable, which the stack alone owns, a field of one,
+		or what a <span class="pre">uni</span> reference points at &mdash;
+		has no other reference to it, so the borrow may be given more than
+		the source can share, and the source waits until it is given back
+		(see <a href="refperm.html">"From 'uni'"</a>):</p>
 	<ul>
 	<li>While a <b>read-only</b> borrow (<span class="pre">&amp;</span>, <span class="pre">&amp;ro</span>,
 		<span class="pre">&amp;imm</span>) is still to be used, its source may be read,
@@ -242,6 +252,32 @@ fn getval() i32 {
 	<li>An <span class="pre">&amp;opaq</span> borrow, which reads and writes nothing,
 		only keeps its source from being moved, replaced whole, or ended.</li>
 	</ul>
+	<p>A source reached through a <b>shared path</b> &mdash; through a
+		<span class="pre">mut</span> or <span class="pre">ro</span> reference
+		(<span class="pre">&amp;mut *p</span>, <span class="pre">&amp;p.x</span> for a parameter
+		<span class="pre">p &amp;mut Point</span>), through a <span class="pre">+rc-mut</span>
+		or other aliasable owner, or a field reached through one &mdash;
+		may already be read and changed by other references,
+		since <span class="pre">mut</span> is shared.
+		Freezing it against reading or writing would protect nothing,
+		so a <span class="pre">&amp;mut</span> or <span class="pre">&amp;ro</span> borrow of it
+		only needs it to stay alive:</p>
+	<ul>
+	<li>The owner it is reached through may not be moved, replaced, changed where it is held,
+		or ended, and may not be borrowed mutably where it is held.</li>
+	<li>It may not be borrowed <span class="pre">&amp;uni</span> or <span class="pre">&amp;imm</span>,
+		which promise what the live borrow could break.
+		(A shared path cannot lend either today in any case.)</li>
+	<li>An <span class="pre">&amp;imm</span> borrow of it still forbids changing it,
+		and an <span class="pre">&amp;opaq</span> borrow is as above.</li>
+	</ul>
+<pre>
+fn bump(p &amp;mut Point) {
+  imm x = &amp;mut p.x;
+  p.x = 7;           // Ok: p's point is shared mutable, so x does not freeze it
+  *x = *x + 1;
+}
+</pre>
 	<p>"Still to be used" means until the borrow's last use, not the end of its block.
 		Once nothing will use the borrow again, the source is free, even in the middle of the
 		block that made it. The last use may be on any path the program can take:
@@ -266,8 +302,17 @@ fn freeze(n i32) i32 {
 		but leaves the struct's other fields free. Borrowing an element of an array freezes
 		the whole array, since the compiler cannot tell one index from another.
 		Borrowing through a borrowed reference (<span class="pre">&amp;mut *r</span>)
-		freezes what <span class="pre">r</span> points at, in the same way,
-		while the new borrow is still to be used.</p>
+		keeps frozen whatever <span class="pre">r</span> itself froze, while the new borrow
+		is still to be used; what <span class="pre">r</span> points at is reached through
+		a shared path, as above, unless <span class="pre">r</span> is <span class="pre">uni</span>.</p>
+	<p>Shape-changing values are the exception to shared mutability
+		(see <a href="refperm.html">permissions</a>). A reference into the payload of an
+		enum's variant &mdash; the binding of <span class="pre">case imm c &amp;Circle</span>
+		&mdash; may be made only through a <span class="pre">uni</span>,
+		<span class="pre">imm</span> or <span class="pre">mut1</span> reference, since through a
+		<span class="pre">mut</span> or <span class="pre">ro</span> one another reference could
+		change the variant while it is used
+		(see <a href="refmatch.html#enum">variant type partial matches</a>).</p>
 	
 	<h2 id="ops">Reference Operations</h2>
 	<p>The de-referencing and comparison operators may be directly applied to references.</p>

@@ -1,9 +1,13 @@
 // A borrow held in a local freezes its source until the borrow's last use.
-// A read-only borrow lets the source be read and borrowed read-only again, but
-// not changed, moved or ended; a mutable borrow lets nothing touch the source
-// but the borrow itself, not even a read. Each function here touches the
-// source while a borrow of it is still to be used, and the error is reported
-// at the touch, naming the borrow and its next use.
+// A local is a 'uni' source: a read-only borrow lets it be read and borrowed
+// read-only again, but not changed, moved or ended; a mutable borrow lets
+// nothing touch it but the borrow itself, not even a read. A source reached
+// through a shared path -- a '+rc-mut' owner, a '&mut' reference -- others may
+// read and change anyway, so a borrow of it needs only that it stays alive:
+// the owner may not be moved, replaced, changed where it is held, or ended.
+// Each function here touches the source while a borrow of it is still to be
+// used, and the error is reported at the touch, naming the borrow and its
+// next use.
 //
 // Each has a function of its own, so that one borrow's conflicts cannot stand
 // in for another's. What stays allowed -- the same touches after the borrow's
@@ -76,13 +80,69 @@ fn borrowUnderMut() {
   printInt(s.x);
 }
 
-// A reborrow through a reference freezes what the reference points at
-fn reborrowFrozen() {
+// A reborrow through a reference keeps what the reference borrowed frozen:
+// the local itself, not what the reference points at (which the reference
+// may still write, as ref_freeze_success shows)
+fn reborrowKeepsLocalFrozen() {
   mut k = 1;
   imm r = &mut k;
   imm r2 = &mut *r;
-  *r = 2;                    //~ ErrorFrozen:3 "*r' is borrowed mutably"
+  k = 2;                     //~ ErrorFrozen:3 "'k' is borrowed mutably"
   *r2 = 3;
+}
+
+// -------- through a shared path: only the owner's liveness --------
+
+fn consumeOwner(p +so-mut Pt) {}
+
+struct Holder { pub p +rc-mut Pt; }
+
+// A field borrowed through a '+so-mut' owner, then the owner moved away. (A
+// '+rc-mut' owner is copied, not moved, and a copy keeps the value alive.)
+fn sharedOwnerMoved() {
+  imm u = +so-mut Pt[1, 2];
+  imm b = &mut u.x;
+  consumeOwner(u);           //~ ErrorFrozen:16 "'u' is borrowed mutably"
+  *b = 3;
+}
+
+// ... replaced whole, which releases what the borrow points into
+fn sharedOwnerReplaced() {
+  mut u = +rc-mut Pt[1, 2];
+  imm b = &u.x;
+  u = +rc-mut Pt[3, 4];      //~ ErrorFrozen:3 "may not be changed"
+  printInt(*b);
+}
+
+// ... changed where it is held: the field holding the owner is on the way to
+// the borrow, not behind the shared path
+fn sharedOwnerFieldReplaced() {
+  mut h = Holder[+rc-mut Pt[1, 2]];
+  imm b = &mut h.p.x;
+  h.p = +rc-mut Pt[3, 4];    //~ ErrorFrozen:4 "may not be changed"
+  *b = 5;
+}
+
+// ... or borrowed mutably there, which could replace it the same way
+fn sharedOwnerFieldBorrowed() {
+  mut h = Holder[+rc-mut Pt[1, 2]];
+  imm b = &mut h.p.x;
+  imm hp = &mut h.p;         //~ ErrorFrozen:12 "may not be borrowed mutably"
+  *b = 5;
+  *hp = +rc-mut Pt[5, 6];
+}
+
+// ... or ended while a variable declared outside its block still holds the
+// borrow
+fn sharedOwnerEnds() {
+  mut zero = 0i64;
+  mut r &mut i64 = &mut zero;
+  {
+    imm u = +rc-mut Pt[1, 2];    //~ ErrorFrozen:9 "goes out of scope while"
+    imm b &mut i64 = &mut u.x;
+    r = b;
+  }
+  *r = 4;
 }
 
 // The source goes out of scope while a variable declared outside its block

@@ -128,6 +128,18 @@ generation, where the data layout exists.
 | `VirtRefTag` | — accepted unconditionally here; generation does the work |
 | struct | a struct carrying `SameSize` |
 
+**A reference narrowed from a sum type to a variant** (`RefTag` to `RefTag`,
+the from-type's referent a trait with `HasTagField` or `SameSize` — an enum, a
+tagged trait, an `Option`-shaped enum — and the to-type's another struct) is a
+reference into the value's payload, which a change of variant would reread as
+the wrong type. `castSumInterior` refuses it (`ErrorBadPerm`) unless the
+from-reference's permission has `MayIntRefSum` — `uni`, `imm`, `mut1` — since a
+`mut` or `ro` reference may be one of several that could change the variant
+(Jon's 2018 rule: no interior references into shape-changing values through a
+shared mutable reference). This is a bound pattern's conversion, and `into`
+written out; the `is` test binds nothing and is not asked. A narrowing from a
+virtual reference is not asked either.
+
 A slice deliberately does **not** convert to an integer: the length and the data
 address are both candidates and both are spelled better already, as `s.len` and
 `p into usize`. Everything else is `ErrorInvType`.

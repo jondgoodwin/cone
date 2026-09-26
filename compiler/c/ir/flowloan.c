@@ -13,10 +13,15 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-// How a loan restricts its source, from the borrow's permission
+// How a loan restricts its source, from the borrow's permission and from the
+// path the source is reached by. Cone's 'mut' is shared: other references may
+// read and change the value too, so only a source reached as 'uni' (a local,
+// or through 'uni' references) can be frozen against them. The refperm.html
+// manual page, "From 'uni'", is the rule; flow.md, "The loan walk", the note.
 enum LoanKind {
-    LoanShared,     // may read, not write: 'ro', 'imm'
-    LoanExcl,       // may write: 'mut', 'uni', 'mut1'
+    LoanShared,     // read-only: 'ro' or 'imm' of a 'uni' source; '&imm' of a shared one
+    LoanExcl,       // may write: 'mut', 'uni', 'mut1' of a 'uni' source; '&uni' of any
+    LoanAlias,      // 'mut', 'ro', 'mut1' of a shared source: it needs the source only alive
     LoanPin,        // neither: 'opaq', which holds only the address
 };
 
@@ -28,6 +33,7 @@ typedef struct {
     uint16_t nmay;
     uint16_t maycap;
     uint8_t kind;       // LoanKind
+    uint8_t writes;     // the borrow may write, for the message
 } Loan;
 
 // A pending conflict: 'access' conflicted with 'loan', held by 'holder'
@@ -153,11 +159,28 @@ void loanWalkBegin() {
 // Loans
 // *********************
 
-static uint8_t loanKindOf(INode *perm) {
+int loanBorrowAccess(INode *perm) {
     uint16_t flags = permGetFlags(perm);
     if (flags & MayWrite)
+        return (flags & MayAlias) ? AccessBorrowMut : AccessBorrowUni;
+    if (flags & MayRead)
+        return itypeGetTypeDcl(perm) == (INode *)immPerm ? AccessBorrowImm : AccessBorrow;
+    return AccessBorrowOpaq;
+}
+
+static uint8_t loanKindOf(INode *perm, Place *pl) {
+    switch (loanBorrowAccess(perm)) {
+    case AccessBorrowUni:
         return LoanExcl;
-    return (flags & MayRead) ? LoanShared : LoanPin;
+    case AccessBorrowMut:
+        return pl->shared ? LoanAlias : LoanExcl;
+    case AccessBorrowImm:
+        return LoanShared;
+    case AccessBorrow:
+        return pl->shared ? LoanAlias : LoanShared;
+    default:
+        return LoanPin;
+    }
 }
 
 uint32_t loanMake(INode *site, Place *pl, INode *perm) {
@@ -173,7 +196,8 @@ uint32_t loanMake(INode *site, Place *pl, INode *perm) {
     loan->mayhold = 0;
     loan->nmay = 0;
     loan->maycap = 0;
-    loan->kind = loanKindOf(perm);
+    loan->kind = loanKindOf(perm, pl);
+    loan->writes = (permGetFlags(perm) & MayWrite) != 0;
     // Linked from its root variable, so an access finds it
     loan->next = pathVars[pl->var].loans;
     pathVars[pl->var].loans = id;
@@ -215,17 +239,31 @@ void loanHeldBy(uint32_t var, PathSet *holds) {
     }
 }
 
-// Does this access conflict with a live loan of this kind? A read-only loan
-// lets its source be read and borrowed read-only again; a loan that may write
-// lets nothing touch the source but itself; an '&opaq' loan holds only the
-// address, so only moving, replacing or ending the source conflicts with it.
-static int loanConflicts(int access, uint8_t kind) {
+// Does this access, of the place 'pl', conflict with this live loan? A
+// read-only loan lets its source be read and borrowed read-only again; a loan
+// that may write lets nothing touch the source but itself; a loan of a source
+// reached through a shared path, which others may read and change anyway,
+// needs the source only to stay alive, and to promise no more than it does,
+// so it refuses only an '&uni' or '&imm' borrow of it besides moving,
+// replacing and ending it; an '&opaq' loan holds only the address, so only
+// moving, replacing or ending the source conflicts with it.
+static int loanConflicts(int access, Loan *loan, Place *pl) {
+    uint8_t kind = loan->kind;
+    // A place on the way to the shared path -- the field holding a '+rc-mut'
+    // owner the loan was reached through -- the loan reads: changing the
+    // owner there would end what it borrows
+    if (kind == LoanAlias && pl->nsteps < loan->place.sharedlen)
+        kind = LoanShared;
     switch (access) {
     case AccessRead:
     case AccessBorrow:
         return kind == LoanExcl;
+    case AccessBorrowImm:
+        return kind == LoanExcl || kind == LoanAlias;
     case AccessWrite:
     case AccessBorrowMut:
+        return kind == LoanExcl || kind == LoanShared;
+    case AccessBorrowUni:
         return kind != LoanPin;
     case AccessMove:
     case AccessReplace:
@@ -278,7 +316,7 @@ static void loanPend(INode *node, int access, uint32_t loan, uint32_t holder) {
 void loanAccess(Place *pl, int access, INode *node) {
     for (uint32_t id = pathVars[pl->var].loans; id; id = loans[id].next) {
         Loan *loan = &loans[id];
-        if (loan->place.deref != pl->deref || !loanConflicts(access, loan->kind)
+        if (loan->place.deref != pl->deref || !loanConflicts(access, loan, pl)
             || !placeOverlaps(&loan->place, pl))
             continue;
         for (uint16_t k = 0; k < loan->nmay; ++k)
@@ -311,7 +349,7 @@ static void loanReport(Pending *pend, INode *usenode) {
     uint32_t bcol = loanColumn(loan->site);
     uint32_t uline = usenode->linenbr;
     uint32_t ucol = loanColumn(usenode);
-    char *mutably = loan->kind == LoanExcl ? " mutably" : "";
+    char *mutably = loan->writes ? " mutably" : "";
     char *attempt;
     switch (pend->kind) {
     case AccessEnd:
@@ -325,6 +363,8 @@ static void loanReport(Pending *pend, INode *usenode) {
     case AccessRead: attempt = "read"; break;
     case AccessBorrow: attempt = "borrowed"; break;
     case AccessBorrowMut: attempt = "borrowed mutably"; break;
+    case AccessBorrowImm: attempt = "borrowed as 'imm'"; break;
+    case AccessBorrowUni: attempt = "borrowed as 'uni'"; break;
     case AccessMove: attempt = "moved"; break;
     default: attempt = "changed"; break;
     }

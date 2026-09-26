@@ -327,7 +327,7 @@ enum @unsized Packet {
 }
 use Packet;
 
-fn packetSize(p &Packet) i32 {
+fn packetSize(p &imm Packet) i32 {
   match p {
     case is &Ping {0;}
     case imm d &Payload {i32[d.a + d.b + d.c];}
@@ -343,8 +343,8 @@ fn readId(p &Packet) i32 {
 fn unsizedEnum() {
   imm ping = Ping[1];
   imm payload = Payload[2, 3i64, 4i64, 5i64];
-  show("unsized-empty-variant", packetSize(&ping));
-  show("unsized-payload-variant", packetSize(&payload));
+  show("unsized-empty-variant", packetSize(&imm ping));
+  show("unsized-payload-variant", packetSize(&imm payload));
   show("unsized-common-field-through-ref", readId(&payload));
 }
 
@@ -369,18 +369,18 @@ fn construction() {
 
   // A variant with no fields of its own still constructs, and an enum with no
   // common field is still told apart by its tag
-  mut h = Halt[];
-  mut st = Step[9];
-  mut d = Drift[1.5, 2.5];
-  show("empty-variant-matched", stride(&h));
-  show("sibling-variant-matched", stride(&st));
-  show("float-variant-matched", stride(&d));
+  imm h = Halt[];
+  imm st = Step[9];
+  imm d = Drift[1.5, 2.5];
+  show("empty-variant-matched", stride(&imm h));
+  show("sibling-variant-matched", stride(&imm st));
+  show("float-variant-matched", stride(&imm d));
 }
 
 // An enum whose variants share no field at all: only the tag distinguishes them.
 // The conversion is here because show prints integers, not because an enum
 // needs one.
-fn stride(s &Signal) i32 {
+fn stride(s &imm Signal) i32 {
   match s {
     case imm h &Halt {0;}
     case imm t &Step {t.amount;}
@@ -446,9 +446,14 @@ fn enumValues() {
 
 // -------- matching --------
 
+// A binding through a reference is a reference into the variant's payload, so
+// the reference matched is '&imm': a 'mut' or 'ro' reference may be one of
+// several, any of which may change the variant (enum_typecheck_narrow holds
+// that refusal). 'case is', which binds nothing, matches through any.
+
 // Matching every variant of a closed enum is exhaustive, so the match is a
 // value-producing expression with no 'else' clause
-fn area(s &Shape) i32 {
+fn area(s &imm Shape) i32 {
   match s {
     case imm c &Circle {c.radius * c.radius;}
     case imm r &Rect {r.w * r.h;}
@@ -464,25 +469,15 @@ fn isRect(s &Shape) i32 {
 }
 
 // An arm that does not name every variant needs an 'else' to be exhaustive
-fn radiusOr(s &Shape, dflt i32) i32 {
+fn radiusOr(s &imm Shape, dflt i32) i32 {
   match s {
     case imm c &Circle {c.radius;}
     else {dflt;}
   }
 }
 
-// A bound variable may be 'mut', which writes through to the matched value.
-// The parameter is '&mut Shape' rather than '&mut Circle' because a mutable
-// reference to a variant does not coerce to one to the enum.
-fn grow(s &mut Shape) {
-  match s {
-    case mut c &mut Circle {c.radius = c.radius + 10;}
-    case mut r &mut Rect {r.w = r.w + 10;}
-  }
-}
-
 // The single-pattern form of a match is an 'if' whose condition binds
-fn circleRadius(s &Shape) i32 {
+fn circleRadius(s &imm Shape) i32 {
   if imm c &Circle = s {
     c.radius;
   } else {
@@ -491,23 +486,16 @@ fn circleRadius(s &Shape) i32 {
 }
 
 fn matching() {
-  mut c = Circle[1, 5];
-  mut r = Rect[2, 3, 4];
-  show("match-dispatch-circle", area(&c));
-  show("match-dispatch-rect", area(&r));
+  imm c = Circle[1, 5];
+  imm r = Rect[2, 3, 4];
+  show("match-dispatch-circle", area(&imm c));
+  show("match-dispatch-rect", area(&imm r));
   show("match-is-circle", isRect(&c));
   show("match-is-rect", isRect(&r));
-  show("match-else-arm-taken", radiusOr(&r, 99));
-  show("match-named-arm-taken", radiusOr(&c, 99));
-  show("if-binding-taken", circleRadius(&c));
-  show("if-binding-not-taken", circleRadius(&r));
-
-  mut sc Shape = c;
-  mut sr Shape = r;
-  grow(&mut sc);
-  grow(&mut sr);
-  show("mut-binding-writes-through-circle", radiusOr(&sc, 99));
-  show("mut-binding-writes-through-rect", area(&sr));
+  show("match-else-arm-taken", radiusOr(&imm r, 99));
+  show("match-named-arm-taken", radiusOr(&imm c, 99));
+  show("if-binding-taken", circleRadius(&imm c));
+  show("if-binding-not-taken", circleRadius(&imm r));
 }
 
 // -------- matching through a type alias --------
@@ -525,13 +513,11 @@ fn matching() {
 typedef CircleRef &Circle;
 typedef RectRef &Rect;
 typedef CircleRefAgain CircleRef;
-typedef CircleMut &mut Circle;
-typedef RectMut &mut Rect;
 typedef CircleVal Circle;
 typedef RectVal Rect;
 
 // The same match as 'area', with both arms spelled through an alias
-fn areaAlias(s &Shape) i32 {
+fn areaAlias(s &imm Shape) i32 {
   match s {
     case imm c CircleRef {c.radius * c.radius;}
     case imm r RectRef {r.w * r.h;}
@@ -539,7 +525,7 @@ fn areaAlias(s &Shape) i32 {
 }
 
 // An alias of an alias, followed to its end
-fn areaAliasOfAlias(s &Shape) i32 {
+fn areaAliasOfAlias(s &imm Shape) i32 {
   match s {
     case imm c CircleRefAgain {c.radius * c.radius;}
     case imm r RectRef {r.w * r.h;}
@@ -547,7 +533,7 @@ fn areaAliasOfAlias(s &Shape) i32 {
 }
 
 // One arm concrete and one aliased: exhaustiveness has to account for both
-fn areaMixedSpelling(s &Shape) i32 {
+fn areaMixedSpelling(s &imm Shape) i32 {
   match s {
     case imm c &Circle {c.radius * c.radius;}
     case imm r RectRef {r.w * r.h;}
@@ -562,14 +548,6 @@ fn whichAlias(s &Shape) i32 {
   }
 }
 
-// A 'mut' binding through an alias of '&mut Variant', which writes through
-fn growAlias(s &mut Shape) {
-  match s {
-    case mut c CircleMut {c.radius = c.radius + 10;}
-    case mut r RectMut {r.w = r.w + 10;}
-  }
-}
-
 // Matched by value, where the alias names the variant struct rather than a
 // reference to it. This spelling was already right, and is here as the control
 // on the two that were not.
@@ -581,7 +559,7 @@ fn whichValueAlias(s Shape) i32 {
 }
 
 // The single-pattern 'if' form
-fn circleRadiusAlias(s &Shape) i32 {
+fn circleRadiusAlias(s &imm Shape) i32 {
   if imm c CircleRef = s {
     c.radius;
   } else {
@@ -591,7 +569,7 @@ fn circleRadiusAlias(s &Shape) i32 {
 
 // A match that names one variant is not exhaustive however it is spelled, so
 // the 'else' is still required
-fn radiusOrAlias(s &Shape, dflt i32) i32 {
+fn radiusOrAlias(s &imm Shape, dflt i32) i32 {
   match s {
     case imm c CircleRef {c.radius;}
     else {dflt;}
@@ -599,27 +577,20 @@ fn radiusOrAlias(s &Shape, dflt i32) i32 {
 }
 
 fn aliasMatching() {
-  mut c = Circle[1, 5];
-  mut r = Rect[2, 3, 4];
-  show("alias-match-circle", areaAlias(&c));
-  show("alias-match-rect", areaAlias(&r));
-  show("alias-of-alias-match", areaAliasOfAlias(&c));
-  show("alias-mixed-with-concrete", areaMixedSpelling(&r));
+  imm c = Circle[1, 5];
+  imm r = Rect[2, 3, 4];
+  show("alias-match-circle", areaAlias(&imm c));
+  show("alias-match-rect", areaAlias(&imm r));
+  show("alias-of-alias-match", areaAliasOfAlias(&imm c));
+  show("alias-mixed-with-concrete", areaMixedSpelling(&imm r));
   show("alias-case-is-circle", whichAlias(&c));
   show("alias-case-is-rect", whichAlias(&r));
   show("alias-by-value-circle", whichValueAlias(c));
   show("alias-by-value-rect", whichValueAlias(r));
-  show("alias-if-binding-taken", circleRadiusAlias(&c));
-  show("alias-if-binding-not-taken", circleRadiusAlias(&r));
-  show("alias-else-arm-taken", radiusOrAlias(&r, 99));
-  show("alias-named-arm-taken", radiusOrAlias(&c, 99));
-
-  mut sc Shape = c;
-  mut sr Shape = r;
-  growAlias(&mut sc);
-  growAlias(&mut sr);
-  show("alias-mut-binding-writes-through-circle", radiusOrAlias(&sc, 99));
-  show("alias-mut-binding-writes-through-rect", areaAlias(&sr));
+  show("alias-if-binding-taken", circleRadiusAlias(&imm c));
+  show("alias-if-binding-not-taken", circleRadiusAlias(&imm r));
+  show("alias-else-arm-taken", radiusOrAlias(&imm r, 99));
+  show("alias-named-arm-taken", radiusOrAlias(&imm c, 99));
 }
 
 // A match on a value rather than a variant compares with '=='
@@ -694,7 +665,7 @@ fn positiveOr(o Option[i32]) i32 {
 }
 
 // Through a reference, and on an 'is' pattern joined by 'or'
-fn wideCircle(s &Shape) i32 {
+fn wideCircle(s &imm Shape) i32 {
   match s {
     case imm c &Circle if c.radius > 10 {c.radius * 2;}
     case imm c &Circle {c.radius;}
@@ -763,14 +734,14 @@ fn valueMatching() {
   show("bound-guard-fails", positiveOr(Some[-5]));
   show("bound-guard-other-variant", positiveOr(None[i32][]));
 
-  mut big Shape = Circle[0, 20];
-  mut small Shape = Circle[0, 5];
-  mut square Shape = Rect[0, 3, 3];
-  mut oblong Shape = Rect[0, 3, 4];
-  show("ref-guard-holds", wideCircle(&big));
-  show("ref-guard-fails", wideCircle(&small));
-  show("ref-guard-second-variant", wideCircle(&square));
-  show("ref-guard-to-else", wideCircle(&oblong));
+  imm big Shape = Circle[0, 20];
+  imm small Shape = Circle[0, 5];
+  imm square Shape = Rect[0, 3, 3];
+  imm oblong Shape = Rect[0, 3, 4];
+  show("ref-guard-holds", wideCircle(&imm big));
+  show("ref-guard-fails", wideCircle(&imm small));
+  show("ref-guard-second-variant", wideCircle(&imm square));
+  show("ref-guard-to-else", wideCircle(&imm oblong));
 
   mut halt Signal = Halt[];
   mut step Signal = Step[2];
@@ -892,7 +863,7 @@ fn signOf(s Signs) i32 {
   }
 }
 
-fn qualifiedArea(s &Shape) i32 {
+fn qualifiedArea(s &imm Shape) i32 {
   match s {
     case imm c &Shape.Circle {c.radius * c.radius * 3;}
     case imm r &Shape.Rect {r.w * r.h;}
@@ -935,8 +906,8 @@ fn namingVariants() {
   show("qualified-construct-and-match", signOf(Signs.Minus[]));
   imm c Shape = Shape.Circle[1, 2];
   imm r Shape = Shape.Rect[2, 3, 4];
-  show("qualified-pattern-circle", qualifiedArea(&c));
-  show("qualified-pattern-rect", qualifiedArea(&r));
+  show("qualified-pattern-circle", qualifiedArea(&imm c));
+  show("qualified-pattern-rect", qualifiedArea(&imm r));
   show("qualified-by-value-circle", qualifiedAreaByValue(c));
   show("qualified-by-value-rect", qualifiedAreaByValue(r));
   show("qualified-by-value-guarded", qualifiedAreaByValue(Shape.Circle[1, 6]));
@@ -979,14 +950,14 @@ fn warmth(s Season) i32 {
 
 // Through a reference, in every form a pattern takes: a 'case', a bound 'if'
 // and its 'elif', and an 'is' test
-fn figureArea(f &Figure) i32 {
+fn figureArea(f &imm Figure) i32 {
   match f {
     case imm s &Square {s.side * s.side;}
     case imm t &Tri {t.base * t.height / 2;}
   }
 }
 
-fn figureWidth(f &Figure) i32 {
+fn figureWidth(f &imm Figure) i32 {
   if imm s &Square = f {s.side;}
   elif imm t &Tri = f {t.base;}
   else {0;}
@@ -1048,10 +1019,10 @@ fn barePatterns() {
   show("bare-plain-enum", warmth(Season.Autumn[]));
   imm sq Figure = Figure.Square[4];
   imm tr Figure = Figure.Tri[6, 3];
-  show("bare-case-through-ref", figureArea(&sq));
-  show("bare-case-other-variant", figureArea(&tr));
-  show("bare-bound-if", figureWidth(&sq));
-  show("bare-bound-elif", figureWidth(&tr));
+  show("bare-case-through-ref", figureArea(&imm sq));
+  show("bare-case-other-variant", figureArea(&imm tr));
+  show("bare-bound-if", figureWidth(&imm sq));
+  show("bare-bound-elif", figureWidth(&imm tr));
   showB("bare-is-test-true", isSquare(&sq));
   showB("bare-is-test-false", isSquare(&tr));
   show("bare-generic-args-from-value", someOr(Some[7], 99));
@@ -1233,7 +1204,7 @@ enum Tote[T] {
   }
 
   struct Hollow {
-    pub fn itemOr(self &, t &Tote[T], d T) T {
+    pub fn itemOr(self &, t &imm Tote[T], d T) T {
       match t {
         case imm s &Stuffed[T] {s.item;}
         case is &Hollow[T] {d;}
@@ -1402,8 +1373,8 @@ fn variantBodies() {
   show("generic-variant-exhaustive-bare-type-first", i64[(&tote).codeAllBare(stuffed)]);
   show("generic-variant-exhaustive-bare-type-last", i64[(&tote).codeAllBare(hollow)]);
   imm totehollow = Tote.Hollow[i64][0];
-  show("generic-variant-exhaustive-ref-first", (&totehollow).itemOr(&stuffed, 99));
-  show("generic-variant-exhaustive-ref-last", (&totehollow).itemOr(&hollow, 99));
+  show("generic-variant-exhaustive-ref-first", (&totehollow).itemOr(&imm stuffed, 99));
+  show("generic-variant-exhaustive-ref-last", (&totehollow).itemOr(&imm hollow, 99));
   show("generic-enum-method-exhaustive-first", i64[(&tote).which(stuffed)]);
   show("generic-enum-method-exhaustive-last", i64[(&totehollow).which(hollow)]);
   imm fruiting = Grove.Fruiting[i64][3, 7];
@@ -1442,8 +1413,8 @@ fn interactions() {
   mut total = 0;
   mut i = 0;
   while i < 6 {
-    mut s = stepped(i);
-    total = total + area(&s);
+    imm s = stepped(i);
+    total = total + area(&imm s);
     i++;
   }
   show("enum-returned-from-branch-summed", total);
@@ -1473,8 +1444,8 @@ fn interactions() {
   // refused one line down.
   imm asVariable Shape = Circle[1, 4];
   imm inField = Framed[Circle[1, 5]];
-  show("variant-coerces-in-initializer", area(&asVariable));
-  show("variant-coerces-in-struct-literal", area(&inField.s));
+  show("variant-coerces-in-initializer", area(&imm asVariable));
+  show("variant-coerces-in-struct-literal", area(&imm inField.s));
 }
 
 // A struct with an enum-typed field, for the literal above. It is here rather
