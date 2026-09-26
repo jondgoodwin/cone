@@ -1185,11 +1185,15 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
     }
     default: {
         INode *type = iexpGetTypeDcl(lval);
-        if (type->tag == ArrayTag) {
+        if (type->tag == ArrayTag || type->tag == StructTag || type->tag == TTupleTag) {
             // LLVM provides no useful way to get the address of an array not stored in memory
             // For example, a literal array or an array returned by a function
             // So we hack it by storing in an unnamed local variable and return that address
             // This is particularly necessary when doing an array index ([1,2,5][n])  (LLVM fail at this too)
+            // A struct or tuple returned by a call arrives here when an array
+            // field of it is indexed (make().m[1]): the index needs the array's
+            // address, and the field's address needs its container's.
+            // Assigning into or borrowing such a temporary is refused before now.
             LLVMValueRef temparray = genlAlloca(gen, genlType(gen, type), "temparray");
             LLVMBuildStore(gen->builder, genlExpr(gen, lval), temparray);
             return temparray;

@@ -1,0 +1,76 @@
+// Indexing an array that is a field of a value returned by a call, rather than
+// of a value held in a variable: make().m[1].
+//
+// An index is generated from the array's address, and a field's address from
+// its container's. A call's result is a value with no memory behind it, so
+// genlAddr had nowhere to point and stopped with a compiler defect. It now
+// stores such a struct or tuple into an unnamed local first, as it always did
+// for an array returned directly by a call (makeArr()[1]), which is kept here
+// alongside the others.
+//
+// Every element is different and derived from a parameter, so a GEP into the
+// wrong field or element prints the wrong number instead of passing, and the
+// index itself is a parameter in one case so the element is not chosen at
+// compile time.
+
+mod array_rvalue_index;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct M {
+  pub k i32;
+  pub m [4; i32];
+}
+
+struct N {
+  pub j i32;
+  pub inner M;
+}
+
+struct Cam {
+  pub base i32;
+
+  pub fn matrix(self &) M {
+    M[self.base, [self.base + 1, self.base + 2, self.base + 3, self.base + 4]];
+  }
+}
+
+fn make(n i32) M {
+  M[n, [n * 10, n * 10 + 1, n * 10 + 2, n * 10 + 3]];
+}
+
+fn makeN(n i32) N {
+  N[n, make(n + 1)];
+}
+
+fn makeT(n i32) ([3; i32], i32) {
+  ([n, n + 5, n + 7], n + 9);
+}
+
+fn makeArr(n i32) [4; i32] {
+  [n, n * 2, n * 3, n * 4];
+}
+
+fn main() i32 {
+  show("field-of-call-1", make(2i32).m[1]);        // 21
+  show("field-of-call-3", make(2i32).m[3]);        // 23
+
+  imm i = 2u32;
+  show("field-of-call-var-index", make(4i32).m[i]); // 42
+
+  imm c = Cam[100i32];
+  show("field-of-method", c.matrix().m[2]);         // 103
+
+  show("field-of-field", makeN(5i32).inner.m[3]);   // 63
+  show("tuple-element", makeT(1i32).0[2]);          // 8
+
+  show("array-from-call", makeArr(3i32)[2]);        // 9
+  0i32;
+}

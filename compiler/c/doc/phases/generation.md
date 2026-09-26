@@ -514,6 +514,12 @@ Concrete hazards, each of which has been gotten wrong here before:
 - **`genlAddr`'s array index uses `genlAddr(objfn)` for an array but
   `genlExpr(objfn)` for a reference to one.** An array *is* memory; a reference
   *holds* the address. One level apart, same GEP shape.
+- **An aggregate with no memory gets a temporary.** An index needs its array's
+  address and a field its container's, so `make().m[1]` asks `genlAddr` for the
+  address of a call's result. Its `default:` arm stores an array, struct or
+  tuple value into an unnamed alloca and returns that; any other value there is
+  `ErrorUnreachable`. Writing into or borrowing such a temporary is refused at
+  type check, so the alloca is only ever read.
 - **`genlRegionHeader` steps back in bytes, through `i8*`**: a GEP on the value
   pointer's own type would scale the offset by the value's size.
 - **A struct field read and a field address are different instruction
