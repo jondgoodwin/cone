@@ -186,11 +186,16 @@ cmd /c '"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Bu
 That prints a harmless `'vswhere.exe' is not recognized` line before the build
 output; it does not affect the result.
 
-The checked-in Visual Studio projects use the Windows 10 SDK and the VS 2022
-`v143` toolset, but CMake is the verified path for the minimal
-X86/WebAssembly LLVM build. `Cone.vcxproj` has only Win32 configurations, and
-its LLVM library list is the set the CMake build links, copied, looked for under
-`$(LLVMDIR)<Configuration>\lib`; nothing builds it.
+`Cone.sln` opens the checked-in Visual Studio projects, `Cone.vcxproj` (`conec`)
+and `Conestd.vcxproj` (`conestd`), with the VS 2022 `v143` toolset. They build
+Debug|x64 and Release|x64 into `x64\<Configuration>\`, against the same LLVM
+(`$(LLVMDIR)`, default `C:\LLVM\23\`). Debug turns optimization off and keeps
+`assert`, but links the release CRT (`/MD`), since LLVM's libraries are Release.
+The test runner takes that compiler with `--conec x64\Release\conec.exe`. The
+projects are hand-kept copies of `CMakeLists.txt`: its source files, defines and
+LLVM library list (the unique set on the CMake link line, in
+`build\x64-release\build.ninja`), and `Cone.vcxproj.filters` groups the sources
+by folder. Update them in the same change as `CMakeLists.txt`.
 
 ### CMake, Linux, and WSL
 
@@ -310,9 +315,9 @@ generated like the rest of the program's, plus the packages it imports.
   reports", or a hazard entry rewritten to say the hazard is gone. Git holds the
   history, and a reader asking how the compiler behaves is not asking for it.
   `doc/design/_index.md`, "Conventions", is the full rule.
-- Keep `CMakeLists.txt`, `Cone.vcxproj`, and `Conestd.vcxproj` synchronized when
-  adding, removing, or renaming C source files or changing shared toolchain
-  requirements.
+- Keep `CMakeLists.txt`, `Cone.vcxproj` (and its `.filters`), and
+  `Conestd.vcxproj` synchronized when adding, removing, or renaming C source
+  files or changing shared toolchain requirements.
 - LLVM values often use optimized representations such as pointers, fat
   pointers, or allocation headers. Verify the actual layout and pointer level
   before generating casts, GEPs, loads, or stores.
