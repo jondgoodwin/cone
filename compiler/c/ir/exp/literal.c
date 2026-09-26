@@ -8,6 +8,7 @@
 #include "../ir.h"
 
 #include <inttypes.h>
+#include <ctype.h>
 
 // Create a new nil literal node
 NilLitNode *newNilLitNode() {
@@ -171,6 +172,46 @@ int litAdoptNumberType(INode **nodep, INode *totype) {
     default:
         return 0;
     }
+}
+
+// Refuse an untyped integer literal whose value does not fit the i32 it
+// defaulted to. A literal still carrying FlagUnkType when it is generated was
+// given a type by nothing -- not litTypeCheck, whose expectType did not reach
+// it, nor iexpCoerce -- so the i32 newULitNode built it with is final, and the
+// constant would be materialized at 32 bits, silently dropping every bit above
+// them: 'i64arg(if v {5000000000;} else {1;})' passed 705032704. Only
+// generation sees every such literal, in a function body, a global's
+// initializer and a constant's value alike, after everything that could type it
+// has run. Signed values are read by sign extension, because parsePrefix folds
+// a unary minus into the value, which is also why '18446744073709551615' reads
+// as -1 and passes. Reported once: the flag is dropped, so a constant generated
+// at each use does not repeat it.
+void litCheckDefaultRange(ULitNode *lit) {
+    if (!(lit->flags & FlagUnkType))
+        return;
+    NbrNode *type = (NbrNode*)itypeGetTypeDcl(lit->vtype);
+    if ((type->tag != IntNbrTag && type->tag != UintNbrTag) || type->bits >= 64)
+        return;
+    int fits;
+    if (type->tag == IntNbrTag) {
+        int64_t value = (int64_t)lit->uintlit;
+        int64_t limit = (int64_t)1 << (type->bits - 1);
+        fits = value >= -limit && value < limit;
+    }
+    else
+        fits = (lit->uintlit >> type->bits) == 0;
+    if (fits)
+        return;
+    lit->flags &= ~FlagUnkType;
+    // Quoted as written: the value alone cannot tell -3000000000 from a large
+    // positive one
+    int len = 0;
+    if (lit->srcp)
+        while (isalnum((unsigned char)lit->srcp[len]) || lit->srcp[len] == '_')
+            ++len;
+    errorMsgNode((INode*)lit, ErrorLitRange,
+        "Integer literal '%.*s' does not fit %s, the type it defaults to where nothing gives it one. Give it a suffix ('%.*si64') or a declared type.",
+        len, lit->srcp, &type->namesym->namestr, len, lit->srcp);
 }
 
 // Type check lit node

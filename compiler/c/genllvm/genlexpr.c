@@ -1132,6 +1132,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     case NilLitTag:
         return LLVMGetUndef(gen->emptyStructType);
     case ULitTag:
+        litCheckDefaultRange((ULitNode*)termnode);
         return LLVMConstInt(genlType(gen, ((ULitNode*)termnode)->vtype), ((ULitNode*)termnode)->uintlit, 0);
     case FLitTag:
         return LLVMConstReal(genlType(gen, ((FLitNode*)termnode)->vtype), ((FLitNode*)termnode)->floatlit);

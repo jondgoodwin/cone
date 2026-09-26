@@ -165,6 +165,9 @@ enum ErrorCode {
     // Lexer
     ErrorLitOverflow = 1082,    // An integer literal whose digits do not fit in 64 bits
 
+    // Literals: a value and the type it is built at
+    ErrorLitRange = 1158,       // An untyped integer literal given no type by anything, whose value does not fit the i32 it defaults to
+
     // Virtual dispatch
     ErrorGenericVtable = 1087,  // A trait requiring a generic method, which has no one signature a vtable slot could hold
 

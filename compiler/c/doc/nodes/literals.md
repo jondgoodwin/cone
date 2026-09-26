@@ -95,9 +95,24 @@ it asks, so this answers only the callers that ask without coercing: overload
 resolution, struct field matching and the branch meet. It deliberately ignores
 subtype direction "for user convenience".
 
-⚠ **Nothing asks whether the value fits the type it lands on.** `mut n u8 = 300`
-stores `44` and `mut n i32 = 3000000000` stores `-1294967296`, both silently
-[differs]. See the hazard below for why the check is not simply a comparison.
+**A literal nothing typed keeps its `i32` default, and must fit it.** Some
+literals are reached by neither `litTypeCheck`'s `expectType` nor `iexpCoerce`:
+the branches of an `if` or a block passed as an argument, which the call checks
+before it knows the parameter's type, and every literal whose type comes from
+nothing but itself — a variable, global or constant declared without a type, an
+array literal's elements. Such a literal still carries `FlagUnkType` when it is
+generated, so the `i32` is final, and `litCheckDefaultRange`, called from
+`genlExpr`, refuses one whose value does not fit it (`ErrorLitRange`) rather than
+materializing it at 32 bits — `wantI64(if v {5000000000;} else {1;})` passed
+`705032704`. It is checked there because generation is the one place every such
+literal is reached, in a body, a global's initializer and a constant's value
+alike, after everything that could have typed it has run.
+`typemgmt_genllvm_litrange` pins each position.
+
+⚠ **Nothing asks whether a value fits a type it was given.** `mut n u8 = 300`
+and `300u8` store `44` and `mut n i32 = 3000000000` stores `-1294967296`, all
+silently [differs]. See the hazard below for why the check is not simply a
+comparison.
 
 `slitTypeCheck` sets a string's type to an array of `u8` sized from `strlen`. A
 string literal is also an lval.
@@ -163,7 +178,9 @@ lowers to a loop.
 
 ## Generation
 
-Scalars are LLVM constants; `nil` is `undef` of the empty struct.
+Scalars are LLVM constants; `nil` is `undef` of the empty struct. An integer
+literal still carrying `FlagUnkType` is range-checked against its `i32` default
+first (see Type check).
 
 **An array literal is emitted as a constant when every element is constant**,
 and otherwise as an `undef` plus a chain of `insertvalue`. The constant form is
@@ -203,15 +220,19 @@ is its type exactly and has no terminator.
 - **Only an integer literal is context-typed.** Every other literal is still
   adapted by coercion afterward, so `expectType` reads as more general than it is.
 - **`FlagUnkType` is a permission to convert, not a range check.** Nothing asks
-  whether the literal's value fits the type it lands on.
+  whether the literal's value fits the type it is adopted as; only the `i32`
+  default is checked, and only at generation.
 - **A negated literal cannot be told from a large positive one**, which is what
   makes that range check harder than a comparison. `parsePrefix` folds unary `-`
   into the literal by negating `uintlit` in place, two's complement, and records
   nothing — so `-1` and `18446744073709551615` are the same node. A check can
   decide most cases by sign extension (a value fits a signed *N*-bit type when
-  bit *N*-1 repeats to the top), but `mut n i64 = 18446744073709551615` is
-  indistinguishable from `mut n i64 = -1` and would have to pass. Deciding that
-  one needs the parser to record that it negated.
+  bit *N*-1 repeats to the top), which is how `litCheckDefaultRange` reads the
+  `i32` default, but `18446744073709551615` is indistinguishable from `-1` and
+  passes it, as `mut n i64 = 18446744073709551615` would have to. Deciding that
+  one needs the parser to record that it negated. Its message quotes the
+  literal's digits as written for the same reason: printed from the value,
+  either a negated literal or one above `i64`'s maximum would read wrong.
 - **An array literal is not given the expected type.** `inodeTypeCheck`
   dispatches `arrayLitTypeCheck` without `expectType`, where the `BlockTag` and
   `IfTag` arms beside it pass it through. So the elements fold among themselves

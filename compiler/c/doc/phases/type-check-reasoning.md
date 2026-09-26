@@ -75,7 +75,10 @@ So the normal path is `iexpTypeCheckCoerce`:
 a number expected type and keeps it — an integer type by retyping, a float type
 by becoming a float literal — so its constant is built at that width.
 `iexpCoerce` does the same for a literal that reaches it still untyped, because
-a call's argument is checked before its callee is resolved. **`Bool` is the one
+a call's argument is checked before its callee is resolved. Neither reaches the
+branches of an `if` or a block passed as an argument, whose literals keep the
+`i32` default; generation refuses one whose value does not fit it
+([literals](../nodes/literals.md)). **`Bool` is the one
 number type excluded** — `litAdoptNumberType` refuses it, so a literal meets
 `Bool` through section 5's `isTrue` branch as any other number does, rather than
 being built at `Bool`'s one bit and masked to it. Every other literal is typed by

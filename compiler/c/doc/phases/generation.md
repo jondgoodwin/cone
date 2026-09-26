@@ -1,7 +1,12 @@
 Generation lowers the analyzed IR to an LLVM module and emits an object file. It
-validates almost nothing — the one thing it refuses in a program is a C name
-declared two ways, which only the object file's one symbol table can see
-(section 2, "Symbols, linkage and COMDATs"): every assumption in section 5 is a hard prerequisite,
+validates almost nothing — what it refuses in a program is only what nothing
+before it can see: a C name declared two ways, which only the object file's one
+symbol table can see (section 2, "Symbols, linkage and COMDATs"); an `as` onto
+a struct of another size, which only the data layout measures
+([cast](../nodes/cast.md)); and an untyped integer literal too large for the
+`i32` default that nothing replaced, which only generation reaches after
+everything that could have typed it has run ([literals](../nodes/literals.md),
+`ErrorLitRange`). Every assumption in section 5 is a hard prerequisite,
 and what guards them is uneven — the sites that meant *unreachable* report and
 exit, while the ordinary value asserts beside them are compiled out of the
 release build. Section 5 says which is which.
