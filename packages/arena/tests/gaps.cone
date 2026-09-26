@@ -27,34 +27,38 @@ struct TwoDeep { pub n i64; pub h HoldsSo; }
 // Right: 21, one header
 fn array() {
   mut a = Arena.empty();
-  Arena.alloc(&mut a, [Fin[1], Fin[2]]);
+  a.alloc([Fin[1], Fin[2]]);
   expectUInt(u64[a.finalizers()], 0, "compiler gap: an array's elements do not need finalizing");
 }
 
 // Right: 1, one header
 fn tuple() {
   mut a = Arena.empty();
-  Arena.alloc[(Fin, i64)](&mut a, (Fin[1], 2i64));
+  a.alloc[(Fin, i64)]((Fin[1], 2i64));
   expectUInt(u64[a.finalizers()], 0, "compiler gap: a tuple's elements do not need finalizing");
 }
 
 // Right: 3, one header
 fn enumValue() {
   mut a = Arena.empty();
-  Arena.alloc[Option[Fin]](&mut a, Some[Fin][Fin[3]]);
+  // Typed by the local rather than 'a.alloc[Option[Fin]](...)', which crashes
+  // the compiler (1075: a method's explicit type argument that is a generic
+  // type's instance)
+  imm v Option[Fin] = Some[Fin][Fin[3]];
+  a.alloc(v);
   expectUInt(u64[a.finalizers()], 0, "compiler gap: a value typed as an enum does not need finalizing");
 }
 
 // Right: 23, the inner owner released after HoldsSo's final
 fn twoDeep() {
   mut a = Arena.empty();
-  Arena.alloc(&mut a, TwoDeep[1, HoldsSo[2, +so Fin[3]]]);
+  a.alloc(TwoDeep[1, HoldsSo[2, +so Fin[3]]]);
 }
 
 // Right: 12, the value assigned over finalized when it is replaced
 fn overwrite() {
   mut a = Arena.empty();
-  imm r = Arena.alloc(&mut a, Fin[1]);
+  imm r = a.alloc(Fin[1]);
   *r = Fin[2];
 }
 

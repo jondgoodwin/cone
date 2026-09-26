@@ -23,7 +23,7 @@ no region with global state, and no finalizing of a slice's elements when its
 region frees it. Of the strategies that motivate the whole design, pool and
 tracing GC are unwritten, and the arena is written only as a library value: the
 `arena` package's `Arena`, a dynamic region allocated into by a call on the
-value (`Arena.alloc(&mut a, v)`), not by a `+` allocation through a region ref,
+value (`a.alloc(v)`), not by a `+` allocation through a region ref,
 which is handed neither the region value nor the value's type. It finalizes
 each value through `mem.finalize` when it dies, newest first; nothing yet
 pairs a reference with its arena's lifetime.

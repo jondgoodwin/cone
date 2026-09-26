@@ -8,25 +8,23 @@
 //
 //   fn build() {
 //     mut a = Arena.empty();
-//     imm root = Arena.alloc(&mut a, Node[0, 0usize as *Node]);
-//     imm leaf = Arena.alloc(&mut a, Node[1, root as *Node]);
+//     imm root = a.alloc(Node[0, 0usize as *Node]);
+//     imm leaf = a.alloc(Node[1, root as *Node]);
 //     ...
 //   }   // 'a' dies here: leaf's death, then root's, then the blocks
 //
-// Allocation is a call naming the arena, 'Arena.alloc(&mut a, value)', which
-// moves the value into the arena and returns a '&mut' to it there. It is meant
-// to be the method call 'a.alloc(value)', which waits on the compiler: a
-// generic method cannot yet be called. A reference into an arena costs nothing
-// to copy and nothing to drop: no count, no move. How a '+' allocation should
-// name a region VALUE rather than a region ref is an open design question, so
-// this package does not use '+' at all.
+// Allocation is a method call on the arena, 'a.alloc(value)', which moves the
+// value into the arena and returns a '&mut' to it there. A reference into an
+// arena costs nothing to copy and nothing to drop: no count, no move. How a
+// '+' allocation should name a region VALUE rather than a region ref is an
+// open design question, so this package does not use '+' at all.
 //
 // THE HOLE. Nothing yet stops a reference into an arena from outliving the
 // arena. The design's answer is invariant lifetimes pairing an arena with the
 // references allocated from it (key and lock: the reference is usable only
 // through its own arena), and that is not built. What the compiler checks
-// today is what it checks of any borrow: 'Arena.alloc(&mut a, v)' returns a
-// borrow no longer-lived than the borrow of 'a' it was handed, so returning it
+// today is what it checks of any borrow: 'a.alloc(v)' returns a borrow no
+// longer-lived than the borrow of 'a' it was called through, so returning it
 // from the function that holds 'a', or storing it where it would outlive 'a',
 // is refused. But nothing stops 'a' itself from dying or moving away while
 // such a borrow is still in use: 'consume(a); r.n' compiles, and reads freed
@@ -103,21 +101,17 @@ pub struct Arena {
     Arena[0usize as *Block, 0usize, 0usize, 0usize as *FinalNode, 0usize, 0usize];
   }
 
-  // Move value into arena 'a', and a reference to it there. The reference is
+  // Move value into the arena, and a reference to it there. The reference is
   // good for as long as the arena lives, and nothing checks that it is not
-  // kept longer (see the top of this file).
-  //
-  // Written 'Arena.alloc(&mut a, v)', not 'a.alloc(v)': a generic method
-  // cannot yet be called, so this is a generic function of the type taking the
-  // arena as a parameter. A private member is reachable only through 'self',
-  // so the work is done by the two public methods below, which it calls
-  // through 'a'.
-  pub fn alloc[T](a &mut Arena, value T) &mut T {
+  // kept longer (see the top of this file). The placing is done by the two
+  // methods below, which are not generic, so each instance of this one is
+  // only the few lines that differ by T.
+  pub fn alloc[T](self &mut, value T) &mut T {
     imm at = if mem.needsFinal[T]() {
-      a.placeFinal(mem.sizeof[T](), mem.alignof[T](), &Finalizer[T].run);
+      self.placeFinal(mem.sizeof[T](), mem.alignof[T](), &Finalizer[T].run);
     }
     else {
-      a.place(mem.sizeof[T](), mem.alignof[T]());
+      self.place(mem.sizeof[T](), mem.alignof[T]());
     };
     mem.writeRaw(at as *T, value);
     at as &mut T;
@@ -129,16 +123,16 @@ pub struct Arena {
   pub fn blockCount(self &) usize { nblocks; }
 
   // Room for a value of 'size' bytes aligned to 'align' that needs no
-  // finalizing: its address. Needs trust: the caller writes the value there.
-  pub fn place(self &mut, size usize, align usize) *u8 {
+  // finalizing: its address. The caller writes the value there.
+  fn place(self &mut, size usize, align usize) *u8 {
     self.bump(0usize, align, size) as *u8;
   }
 
   // Room for a value of 'size' bytes aligned to 'align' whose death is
-  // 'run', called with its address when the arena dies: that address. Needs
-  // trust: the caller writes a live value there before anything else can
-  // reach the arena, since from here on its teardown will finalize it.
-  pub fn placeFinal(self &mut, size usize, align usize, run &fn(p *u8)) *u8 {
+  // 'run', called with its address when the arena dies: that address. The
+  // caller writes a live value there before anything else can reach the
+  // arena, since from here on its teardown will finalize it.
+  fn placeFinal(self &mut, size usize, align usize, run &fn(p *u8)) *u8 {
     imm hdr = mem.sizeof[FinalNode]();
     mut al = align;
     if al < mem.alignof[FinalNode]() { al = mem.alignof[FinalNode](); }
