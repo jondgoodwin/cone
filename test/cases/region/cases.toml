@@ -213,6 +213,54 @@ tags = ["genllvm", "runtime"]
 link = ["package/tracer.conebuild"]
 include = ["include/tracer.cone"]
 
+# Roots: every function holding a traced reference on its stack -- a local's,
+# a parameter's, or a birth's (an allocation's, a call's result, a load through
+# a reference, each rooted in a slot of its own as it is made) -- links a frame
+# of them into one chain, and 'mem.traceRoots' hands each root to its region's
+# 'mark'. The toy region counts marks and its 'roots' prints what the roots
+# reach, so the .out file is the whole runtime assertion, each line
+# hand-checked in the source: a local, a temporary across a call, a callee's
+# frame and its pop, recursion, an early return from inside a loop, 'break'
+# and 'continue', a load through a reference, a structure built across calls,
+# a struct and a tuple held by value, a generic's instance, an inline
+# function's parameters, and a traced allocation evaluating its value before
+# its 'alloc'. The checks pin the frame's shape: a function with no root has
+# none.
+[scenario.region_roots]
+category = "run"
+description = "Roots: each function holding traced references links a frame of its roots (locals, parameters, births) into one chain, pushed at entry and popped at every return; mem.traceRoots marks exactly what they hold; a traced allocation evaluates its value before its alloc"
+tags = ["genllvm", "runtime"]
+
+[[scenario.region_roots.check]]
+name = "frame"
+target = "preir"
+contains = [
+  "@cone_gcframes = external global ptr",
+  "%gcframe = alloca { ptr, ptr, [2 x ptr] }, align 8",
+  "store ptr %gcframe, ptr @cone_gcframes, align 8",
+  "store ptr %gcprev, ptr @cone_gcframes, align 8",
+  "call void @cone_traceRoots(i32 0)",
+]
+
+[[scenario.region_roots.run]]
+name = "release"
+options = []
+
+[[scenario.region_roots.run]]
+name = "debug"
+options = ["--debug"]
+
+# Roots across objects: a package compiled on its own holds traced references
+# in its own frames while it calls back into the program, and the program's
+# frames and the package's are links of the one chain whose head conestd
+# defines.
+[scenario.region_roots_link]
+category = "run"
+description = "Frames of traced references in a program and in a package compiled on its own are one chain: a trace from the package's code during a callback finds the program's roots and its own"
+tags = ["genllvm", "runtime"]
+link = ["package/keeper.conebuild"]
+include = ["include/keeper.cone"]
+
 # The rcweak package's weak reference, found on the search path and compiled
 # into the scenario's object, as math3d is in module_package_math3d. Its
 # runtime behaviour is the package's own tests'; this pins what is refused.

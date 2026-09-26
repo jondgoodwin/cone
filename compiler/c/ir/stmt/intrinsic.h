@@ -90,7 +90,8 @@ enum IntrinsicFn {
     MoveRawIntrinsic,       // moveRaw[T](to *T, from *T, count usize)
     TypeRecordIntrinsic,    // typeRecord[T]() *TypeRecord
     HoldsTracedIntrinsic,   // holdsTraced[T]() Bool
-    TraceIntrinsic          // trace[T](p *T, mode u32)
+    TraceIntrinsic,         // trace[T](p *T, mode u32)
+    TraceRootsIntrinsic     // traceRoots(mode u32)
 };
 
 // The first kind declared in Cone rather than built in C
@@ -132,5 +133,11 @@ int intrinsicIsDeclared(FnDclNode *fndcl);
 // compiler builds (genlTypeRecord). A template may still hold the '*' as a
 // dereference, as it holds '*T' (cloneStarNode), so both are accepted.
 int typeRecordIsPtr(INode *type);
+
+// Core's TypeRecord struct, once the core package's declaration of
+// 'mem.typeRecord' has been checked against the registry; NULL before, or in a
+// compile whose core declares none. Generation builds the records of a
+// function's roots from it (genlRootFrame), where no declaration names it.
+StructNode *typeRecordStruct(void);
 
 #endif

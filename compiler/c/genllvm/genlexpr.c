@@ -22,6 +22,8 @@
 #include <assert.h>
 
 LLVMValueRef genlAddr(GenState *gen, INode *lval);
+static LLVMValueRef genlExprForLocal(GenState *gen, INode *termnode);
+static int genlIsLocalName(INode *lval);
 
 // The Cone type of what genlAddr's address points at, which a load, store or
 // GEP through that address is typed by. Read as genlAddr reads its lval: a
@@ -239,6 +241,17 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
         genlTraceAt(gen, fnargs[0], type, fnargs[1]);
         return NULL;
 
+    // Every root on the chain of frames (genlRootFrame): conestd walks it
+    case TraceRootsIntrinsic: {
+        LLVMTypeRef u32 = LLVMInt32TypeInContext(gen->context);
+        LLVMTypeRef fntype = LLVMFunctionType(LLVMVoidTypeInContext(gen->context), &u32, 1, 0);
+        LLVMValueRef fn = LLVMGetNamedFunction(gen->module, "cone_traceRoots");
+        if (fn == NULL)
+            fn = LLVMAddFunction(gen->module, "cone_traceRoots", fntype);
+        LLVMBuildCall2(gen->builder, fntype, fn, fnargs, 1, "");
+        return NULL;
+    }
+
     // The death of the value at the pointer, in place
     case FinalizeIntrinsic:
         genlFinalizeAt(gen, fnargs[0], type);
@@ -331,6 +344,7 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
                 assert(var->tag == VarDclTag);
                 // We always alloca in case variable is mutable or we want to take address of its value
                 var->llvmvar = genlAlloca(gen, genlType(gen, var->vtype), &var->namesym->namestr);
+                genlRootNote(gen, var->llvmvar, var->vtype);
                 LLVMBuildStore(gen->builder, *fnargs++, var->llvmvar);
             }
         }
@@ -929,8 +943,9 @@ LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
         return NULL;
     }
     var->llvmvar = genlAlloca(gen, genlType(gen, var->vtype), &var->namesym->namestr);
+    genlRootNote(gen, var->llvmvar, var->vtype);
     if (var->value) {
-        val = genlExpr(gen, var->value);
+        val = genlExprForLocal(gen, var->value);
         LLVMBuildStore(gen->builder, val, var->llvmvar);
     }
     return val;
@@ -1280,8 +1295,91 @@ void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
     LLVMBuildStore(gen->builder, rval, lvalptr);
 }
 
-// Generate a term
+// Whether the address genlAddr takes of 'lval' is reached through a reference
+// or a pointer -- memory other code can write -- rather than lying in a local
+// (a variable, or a field or element of one) or a temporary copy
+static int genlAddrThroughRef(INode *lval) {
+    if (isNameUseNode(lval) && isExpNode(lval))
+        return 0;
+    switch (lval->tag) {
+    case DerefTag:
+        return 1;
+    case ArrIndexTag:
+    {
+        FnCallNode *fncall = (FnCallNode *)lval;
+        return iexpGetTypeDcl(fncall->objfn)->tag == ArrayTag ? genlAddrThroughRef(fncall->objfn) : 1;
+    }
+    case FldAccessTag:
+    {
+        FnCallNode *fncall = (FnCallNode *)lval;
+        return iexpGetTypeDcl(fncall->objfn)->tag == VirtRefTag ? 1 : genlAddrThroughRef(fncall->objfn);
+    }
+    default:
+        return 0;
+    }
+}
+
+// Is this expression a birth: a value that exists only as the instruction
+// making it, not in any local, and that a collection during a later call of
+// the same expression could miss? A '+R' allocation's result, a call's result,
+// a value loaded from memory reached through a reference, the old value an
+// exchange hands back, and a cast making a traced reference of a raw pointer
+// are. A value loaded from a local is not: the local is a
+// root already. Only one whose type holds a traced reference is rooted
+// (genlRootBirth), so a program with none generates as it always did.
+static int genlIsBirth(INode *node) {
+    switch (node->tag) {
+    case AllocateTag:
+    case FnCallTag:
+    case DerefTag:
+    case SwapTag:
+        break;
+    case AssignTag:
+        if (((AssignNode *)node)->assignType != LeftAssign)
+            return 0;
+        break;
+    // A traced reference made from something that holds none: a raw pointer
+    case CastTag:
+        if (itypeHoldsTraced(((IExpNode *)((CastNode *)node)->exp)->vtype))
+            return 0;
+        break;
+    case ArrIndexTag:
+    case FldAccessTag:
+        if ((node->flags & FlagBorrow) || !genlAddrThroughRef(node))
+            return 0;
+        break;
+    default:
+        return 0;
+    }
+    return itypeHoldsTraced(((IExpNode *)node)->vtype);
+}
+
+static LLVMValueRef genlTerm(GenState *gen, INode *termnode);
+
+// Generate an expression's value; a birth of a traced reference is rooted
+// as soon as it exists
 LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
+    LLVMValueRef val = genlTerm(gen, termnode);
+    if (gen->fn && genlIsBirth(termnode))
+        genlRootBirth(gen, val, ((IExpNode *)termnode)->vtype);
+    return val;
+}
+
+// Generate the value a local is about to be given, which nothing can collect
+// before it is stored there: the local is its root, so it needs no birth slot
+static LLVMValueRef genlExprForLocal(GenState *gen, INode *termnode) {
+    return genlTerm(gen, termnode);
+}
+
+// Whether an assignment's target is a variable itself, whose own slot is a
+// root. (A global is one too, but one never holds a traced reference.)
+static int genlIsLocalName(INode *lval) {
+    return isNameUseNode(lval) && isExpNode(lval)
+        && ((NameUseNode *)lval)->dclnode->tag == VarDclTag;
+}
+
+// Generate a term
+static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
     if (!gen->opt->release && gen->fn) {
         LLVMMetadataRef loc = LLVMDIBuilderCreateDebugLocation(gen->context, 
             termnode->linenbr, (unsigned)(termnode->srcp-termnode->linep), LLVMGetSubprogram(gen->fn), NULL);
@@ -1540,7 +1638,13 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         AssignNode *node = (AssignNode*)termnode;
         INode *lval = node->lval;
         INode *rval = node->rval;
-        LLVMValueRef valueref = genlExpr(gen, rval);
+        // A value stored straight into a variable is rooted there, unless
+        // the variable's old value is released first (genlStore), which may
+        // run a finalizer, and so a collection, while the new one waits
+        INode *lvaltype = ((IExpNode *)lval)->vtype;
+        LLVMValueRef valueref = node->assignType != LeftAssign && genlIsLocalName(lval)
+            && !(flowIsOwningType(lvaltype) && itypeNeedsFinal(lvaltype))
+            ? genlExprForLocal(gen, rval) : genlExpr(gen, rval);
         if (node->assignType == LeftAssign) {
             // Normal assignment, except value of expression is contents of lval before mutation
             LLVMValueRef lvalptr = genlAddr(gen, lval);

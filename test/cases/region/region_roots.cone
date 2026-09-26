@@ -1,0 +1,258 @@
+// Roots: every function holding a traced reference on its stack links a frame
+// of them into one chain, and 'mem.traceRoots' hands each one to its region's
+// 'mark'. A root is a local's or a parameter's slot whose type holds a traced
+// reference, or a birth's -- a slot of its own for each site making such a
+// value outside a local (an allocation, a call's result, a load through a
+// reference), stored as soon as it exists, so no collection can find it only
+// in a register. A birth slot keeps what it holds until its site runs again
+// or its function returns.
+//
+// 'tr' is a toy traced region: 'alloc' keeps every object on a list, newest
+// first, and 'mark' counts. 'roots' traces the roots, then prints every object
+// that was marked, newest first, with how many roots reach it where more than
+// one does ('3x2'), and clears the counts. A mark reaches only the object a
+// root refers to: what that object holds is the collector's to trace, not the
+// roots'. So each line is exactly the set of objects the running functions
+// hold on their stacks, hand-checked below against each section.
+//
+// main holds no traced reference, so it has no frame: each section is a
+// function of its own, and its roots go when it returns.
+
+mod region_roots;
+
+import stdio use *;
+import libc;
+
+mut nextId = 1i64;
+mut trHead = 0usize;
+mut collectInAlloc = false;
+
+struct tr is RegionRef, Traced {
+  pub id i64;
+  pub next usize;
+  pub marks i64;
+
+  fn alloc(size usize, ty *TypeRecord) *u8 {
+    // A collector's alloc may collect: this one shows what it would find
+    if collectInAlloc {
+      printStr("  alloc "); printInt(nextId);
+      roots(" finds");
+    }
+    imm p = malloc(size);
+    mem.writeRaw(p as *tr, tr[nextId, trHead, 0]);
+    nextId = nextId + 1;
+    trHead = p as usize;
+    p;
+  }
+  fn mark(self &uni tr) {
+    marks = marks + 1;
+  }
+}
+
+fn roots(label &[]u8) {
+  mem.traceRoots(0u32);
+  printStr(label); printStr(":");
+  mut at = trHead;
+  while at != 0usize {
+    imm hdr = at as &mut tr;
+    if hdr.marks > 0 {
+      printStr(" "); printInt(hdr.id);
+      if hdr.marks > 1 { printStr("x"); printInt(hdr.marks); }
+      hdr.marks = 0;
+    }
+    at = hdr.next;
+  }
+  printStr("\n");
+}
+
+struct Leaf { pub n i64; }
+struct Pair { pub left +tr-mut Leaf; pub right +tr-mut Leaf; }
+struct Link { pub n i64; pub next Option[+tr-mut Link]; }
+
+fn probe(label &[]u8) i64 {
+  roots(label);
+  0;
+}
+
+fn both(a +tr-mut Leaf, b i64) i64 {
+  a.n + b;
+}
+
+// -- A local, and a temporary held across a call. A value given straight to
+// a local has no birth slot: the local is its root.
+//   local: 1                 a
+//   argument: 2 1            Leaf 2 exists only as an argument while probe
+//                            runs, and its birth slot holds it
+//   after: 2 1               the slot keeps it until locals returns
+//   none:                    (in main) locals' frame is gone, main has none
+fn locals() {
+  imm a = +tr-mut Leaf[1];
+  roots("local");
+  both(+tr-mut Leaf[2], probe("argument"));
+  roots("after");
+}
+
+// -- A callee's frame, and its pop
+//   callee: 4 3x2            keep's mine and l; popped's birth of the argument
+//   popped: 3x2              the birth and k; keep's frame, and Leaf 4, gone
+fn keep(l +tr-mut Leaf) +tr-mut Leaf {
+  imm mine = +tr-mut Leaf[l.n + 10];
+  probe("callee");
+  l;
+}
+fn popped() {
+  imm k = keep(+tr-mut Leaf[3]);
+  roots("popped");
+}
+
+// -- Recursion: every level's frame is on the chain. Leaf 100 is 5, a birth
+// in recursion; deep(2) holds 5 and its mine, 6; deep(1) 6 and 7; deep(0) 7
+// and 8, and returns early from inside its 'if'.
+//   deepest: 8 7x2 6x2 5x2
+//   back: 5                  every deep frame popped; the birth remains
+fn deep(k i64, held +tr-mut Leaf) {
+  imm mine = +tr-mut Leaf[k];
+  if k == 0 {
+    roots("deepest");
+    return;
+  }
+  deep(k - 1, mine);
+}
+fn recursion() {
+  deep(2, +tr-mut Leaf[100]);
+  roots("back");
+}
+
+// -- Loops: an early return from inside a loop pops the frame; 'break' and
+// 'continue' stay in the function. search makes 9, 10, 11 in x, one slot
+// reused each time round, and returns 11 from inside the loop.
+//   found: 11                x holds only the latest
+//   searched: 11             s; search's frame is gone
+// Then kept is 12, and the loop makes x = 13 (kept), 14 (continue), 15
+// (kept), 16 (break).
+//   looped: 16 15 11         x's slot, kept, s
+fn search(limit i64) +tr-mut Leaf {
+  mut i = 0i64;
+  while i < 10 {
+    imm x = +tr-mut Leaf[i];
+    if i == limit {
+      probe("found");
+      return x;
+    }
+    i = i + 1;
+  }
+  +tr-mut Leaf[-1];
+}
+fn loops() {
+  imm s = search(2);
+  roots("searched");
+  mut i = 0i64;
+  mut kept = +tr-mut Leaf[50];
+  while i < 5 {
+    imm x = +tr-mut Leaf[i];
+    i = i + 1;
+    if i == 2 { continue; }
+    if i == 4 { break; }
+    kept = x;
+  }
+  roots("looped");
+}
+
+// -- A value loaded through a reference is a birth: the Pair's old left
+// stays rooted while clobber replaces it. Leaves 20 and 21 are 17 and 18,
+// births of the Pair's value, made before the Pair (19) is allocated.
+//   pair: 19 18 17           p; the two births. A root reaches only what it
+//                            refers to: the Pair's fields are not its roots
+//   clobbered: 20 19x2 18 17x2
+//                            clobber's birth of Leaf 99; its p and loaded's;
+//                            the birth of 21; the birth of 20 and the birth
+//                            of the p.left loaded as both's first argument,
+//                            no longer in the Pair
+fn clobber(p +tr-mut Pair) i64 {
+  p.left = +tr-mut Leaf[99];
+  roots("clobbered");
+  0;
+}
+fn loaded() {
+  imm p = +tr-mut Pair[+tr-mut Leaf[20], +tr-mut Leaf[21]];
+  roots("pair");
+  both(p.left, clobber(p));
+}
+
+// -- Structures built across calls: links 21, 22, 23, each made by its own
+// level's frame and holding the one before; only the head is a root.
+//   chain: 23
+fn chain(n i64) Option[+tr-mut Link] {
+  if n == 0 {
+    return None[+tr-mut Link][];
+  }
+  imm rest = chain(n - 1);
+  Some[+tr-mut Link][+tr-mut Link[n, rest]];
+}
+fn built() {
+  imm c = chain(3);
+  roots("chain");
+}
+
+// -- A traced allocation evaluates its value before its alloc: at each
+// alloc, the parts already made are rooted, and the new object is not yet.
+// The Pair is 26, allocated after its leaves, 24 and 25.
+//   alloc 24 finds:
+//   alloc 25 finds: 24
+//   alloc 26 finds: 25 24
+//   made: 26 25 24
+fn initOrder() {
+  collectInAlloc = true;
+  imm q = +tr-mut Pair[+tr-mut Leaf[30], +tr-mut Leaf[31]];
+  collectInAlloc = false;
+  roots("made");
+}
+
+// -- A struct or a tuple held by value is one root, whose record's trace
+// reaches each traced reference inside it; a generic's instance and an
+// inline function's parameters are roots too (an inline function's are its
+// caller's slots, in its caller's frame). Leaves 40, 41, 42 are 27, 28, 29.
+//   aggregates: 29x2 28x2 27x2   t and 42's birth; pr and 40's and 41's
+//   generic: 29x2 28x3 27x3      hold's v, a copy of pr, too
+//   inline: 29x3 28x2 27x2       twice's l, in aggregates' frame
+fn hold[T](v T) i64 {
+  probe("generic");
+}
+fn twice(l +tr-mut Leaf) i64 inline {
+  probe("inline");
+  l.n * 2;
+}
+fn aggregates() {
+  imm pr = Pair[+tr-mut Leaf[40], +tr-mut Leaf[41]];
+  imm t = (7i64, +tr-mut Leaf[42]);
+  roots("aggregates");
+  hold[Pair](pr);
+  twice(t.1);
+}
+
+// -- A traced reference made from a raw pointer is a birth too. Leaf 60 is
+// 30, and once make returns nothing roots it but the cast's birth slot.
+//   cast: 30
+//   end:                     (in main) no frame left
+fn make() *Leaf {
+  imm l = +tr-mut Leaf[60];
+  l as *Leaf;
+}
+fn cast() {
+  imm raw = make();
+  both(raw as +tr-mut Leaf, probe("cast"));
+}
+
+fn main() {
+  locals();
+  roots("none");
+  popped();
+  recursion();
+  loops();
+  loaded();
+  built();
+  initOrder();
+  aggregates();
+  cast();
+  roots("end");
+}
