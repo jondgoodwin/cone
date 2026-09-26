@@ -229,26 +229,44 @@ match oddval {
     <span class="pre">case</span>, a bound <span class="pre">if</span> or
     <span class="pre">elif</span>, and an <span class="pre">is</span> test such as
     <span class="pre">s is &amp;Circle</span> &mdash; and it looks through a reference, so
-    <span class="pre">case imm c &amp;Circle</span> on a <span class="pre">&amp;imm Shape</span> names
+    <span class="pre">case imm c &amp;Circle</span> on a <span class="pre">&amp;Shape</span> names
     <span class="pre">Shape.Circle</span>.</p>
   <p><b>A binding through a reference points into the variant.</b>
     Through a reference, <span class="pre">c</span> is a reference into the value's payload,
-    and a change of variant would have it read the payload as the wrong type. So a
-    binding may narrow only a reference that no other reference can change the variant
-    under: <span class="pre">uni</span>, <span class="pre">imm</span> or
-    <span class="pre">mut1</span>. Through a <span class="pre">mut</span> or
-    <span class="pre">ro</span> reference, which may be one of several, match the value
-    instead, or an <span class="pre">imm</span> copy of it. An <span class="pre">is</span>
+    and a change of variant would have it read the payload as the wrong type.
+    So a binding narrows a reference only where nothing can change the variant while
+    <span class="pre">c</span> is used:</p>
+  <ul>
+  <li>a borrow of a local variable (or a field of one, or a parameter taken by value),
+    made where it is matched, with any permission: the borrow freezes the local
+    (<a href="refborref.html">Freezing access to the source of a borrow</a>) until the
+    binding's last use;</li>
+  <li>a <span class="pre">uni</span>, <span class="pre">imm</span> or
+    <span class="pre">mut1</span> reference, wherever it came from.</li>
+  </ul>
+  <p>A <span class="pre">mut</span> or <span class="pre">ro</span> reference from anywhere
+    else &mdash; a parameter, a field reached through a reference, a shared owner such as
+    <span class="pre">+rc-mut</span>, a variable holding a borrow &mdash; may be one of
+    several references, any of which may change the variant, so it is refused: take it
+    as <span class="pre">&amp;imm</span>, or match the value. An <span class="pre">is</span>
     test binds nothing, and narrows through any reference.</p>
 <pre>
-fn radius(s &amp;imm Shape) i32 {
-  if imm c &amp;Circle = s {c.radius;} else {0;}      // Ok
-}
 fn grow(s &amp;mut Shape) {
   match s {
     case mut c &amp;mut Circle {c.radius = 2;}   // Error: another reference to s may change its variant
     else {}
   }
+}
+fn radius(s &amp;imm Shape) i32 {
+  if imm c &amp;Circle = s {c.radius;} else {0;}      // Ok: imm never changes
+}
+fn local(s Shape) i32 {
+  mut t = s;
+  match &amp;mut t {
+    case mut c &amp;mut Circle {c.radius = 2;}   // Ok: t is frozen while c is used
+    else {}
+  }
+  if imm c &amp;Circle = &amp;t {c.radius;} else {0;}
 }
 </pre>
   <p><b>The matched value's enum is asked first.</b> A bare name in a pattern means that enum's

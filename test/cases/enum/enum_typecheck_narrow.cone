@@ -116,38 +116,84 @@ enum Level {
 
 // -------- through a reference that may alias --------
 
-// A binding through a reference is a reference into the variant's payload.
-// Through a 'mut' or 'ro' reference, one of several, another may change which
-// variant the value holds while the binding is used, and the payload would be
-// read as the wrong variant's. Only 'uni', 'imm' and 'mut1' narrow (Jon's 2018
-// rule: no interior references into a shape-changing value through a shared
-// mutable reference). 'case is', which binds nothing, narrows through any.
+// A binding through a reference is a reference into the variant's payload, and
+// if the value's variant changes while it is used, the payload is read as the
+// wrong variant's. Jon's 2018 rule ("Interior References and Shared
+// Mutability"): for 'mut' references to shape-changing types, no interior
+// references. The compiler refuses the narrowing wherever it cannot see that
+// nothing will change the variant: through a reference of unseen origin -- a
+// parameter, a field reached through a reference, anything reached through a
+// shared owner, a reference a variable holds -- which may be one of several
+// references, any of which may change it. A borrow of a local, made where it
+// is matched, narrows with any permission: a local is a 'uni' source, and the
+// borrow freezes it until the binding's last use (enum_success, 'matching';
+// ref_flow_freeze, the change refused). So do 'uni', 'imm' and 'mut1'
+// references, which nothing else can change the variant under. 'case is',
+// which binds nothing, narrows through any.
 fn writeThroughMut(s &mut Shape) {
   match s {
-    case mut c &mut Circle {c.radius = c.radius + 10;}   //~ ErrorBadPerm:10 "A 'mut' reference to Shape may not be narrowed"
+    case mut c &mut Circle {c.radius = c.radius + 10;}   //~ ErrorBadPerm:10 "A 'mut' reference to Shape, not borrowed here"
     else {}
   }
 }
 
 fn readThroughRo(s &Shape) i32 {
-  if imm c &Circle = s {c.radius;} else {0;}   //~ ErrorBadPerm:6 "A 'ro' reference to Shape may not be narrowed"
+  if imm c &Circle = s {c.radius;} else {0;}   //~ ErrorBadPerm:6 "A 'ro' reference to Shape, not borrowed here"
 }
 
 typedef CircleMut &mut Circle;
 fn throughAnAlias(s &mut Shape) {
   match s {
-    case mut c CircleMut {c.radius = 1;}   //~ ErrorBadPerm:10 "A 'mut' reference to Shape may not be narrowed"
+    case mut c CircleMut {c.radius = 1;}   //~ ErrorBadPerm:10 "A 'mut' reference to Shape, not borrowed here"
     case is &mut Rect {}
   }
 }
 
 fn convertedByHand(s &mut Shape) i32 {
-  imm c = s into &mut Circle;   //~ ErrorBadPerm:13 "A 'mut' reference to Shape may not be narrowed"
+  imm c = s into &mut Circle;   //~ ErrorBadPerm:13 "A 'mut' reference to Shape, not borrowed here"
   c.radius;
 }
 
-// The two that may: through '&uni' the binding may even write, and '&imm'
-// never changes
+// Borrowed here, but not of a place reached as 'uni': a reborrow through a
+// '&mut' parameter, a field of a struct a '&mut' parameter points at, a field
+// of what a '+rc-mut' owner points at
+struct Held { pub s Shape; }
+
+fn reborrowOfParam(s &mut Shape) i32 {
+  match &mut *s {
+    case mut c &mut Circle {c.radius;}   //~ ErrorBadPerm:10 "A 'mut' reference to Shape, not borrowed here"
+    else {0;}
+  }
+}
+
+fn fieldThroughParam(h &mut Held) i32 {
+  match &h.s {
+    case imm c &Circle {c.radius;}   //~ ErrorBadPerm:10 "A 'ro' reference to Shape, not borrowed here"
+    else {0;}
+  }
+}
+
+fn throughSharedOwner(v Shape) i32 {
+  imm u = +rc-mut Held[v];
+  match &mut u.s {
+    case mut c &mut Circle {c.radius;}   //~ ErrorBadPerm:10 "A 'mut' reference to Shape, not borrowed here"
+    else {0;}
+  }
+}
+
+// A borrow of a local, but held in a variable the program names: a copy of it
+// would reach the local another way, which freezing does not follow
+fn heldInAVariable(v Shape) i32 {
+  mut s = v;
+  imm r = &mut s;
+  match r {
+    case mut c &mut Circle {c.radius;}   //~ ErrorBadPerm:10 "A 'mut' reference to Shape, not borrowed here"
+    else {0;}
+  }
+}
+
+// The ones that may: through '&uni' the binding may even write, and '&imm'
+// never changes; a borrow of a local, made here, is enum_success's
 fn writeThroughUni(s &uni Shape) {
   match s {
     case mut c &uni Circle {c.radius = c.radius + 10;}

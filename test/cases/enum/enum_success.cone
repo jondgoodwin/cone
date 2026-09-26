@@ -446,10 +446,13 @@ fn enumValues() {
 
 // -------- matching --------
 
-// A binding through a reference is a reference into the variant's payload, so
-// the reference matched is '&imm': a 'mut' or 'ro' reference may be one of
-// several, any of which may change the variant (enum_typecheck_narrow holds
-// that refusal). 'case is', which binds nothing, matches through any.
+// A binding through a reference is a reference into the variant's payload.
+// Matched through a parameter, the reference is '&imm': a 'mut' or 'ro'
+// parameter may be one of several references, any of which may change the
+// variant (enum_typecheck_narrow holds that refusal). A borrow of a local,
+// made where it is matched, may be any permission: the borrow freezes the
+// local, so nothing else changes its variant ('matching' below). 'case is',
+// which binds nothing, matches through any reference.
 
 // Matching every variant of a closed enum is exhaustive, so the match is a
 // value-producing expression with no 'else' clause
@@ -496,6 +499,37 @@ fn matching() {
   show("match-named-arm-taken", radiusOr(&imm c, 99));
   show("if-binding-taken", circleRadius(&imm c));
   show("if-binding-not-taken", circleRadius(&imm r));
+
+  // A bound variable may be 'mut', which writes through to the matched value.
+  // Matched through a '&mut' borrow of a local, made here: the local is frozen
+  // while the binding is used, so its variant cannot change underneath.
+  mut sc Shape = c;
+  mut sr Shape = r;
+  match &mut sc {
+    case mut cc &mut Circle {cc.radius = cc.radius + 10;}
+    case mut rr &mut Rect {rr.w = rr.w + 10;}
+  }
+  match &mut sr {
+    case mut cc &mut Circle {cc.radius = cc.radius + 10;}
+    case mut rr &mut Rect {rr.w = rr.w + 10;}
+  }
+  show("mut-binding-writes-through-circle", match &sc {case imm cc &Circle {cc.radius;} else {99;}});
+  show("mut-binding-writes-through-rect", match &sr {case imm rr &Rect {rr.w * rr.h;} else {99;}});
+
+  // Other places reached as 'uni', borrowed where they are matched: a field of
+  // a local held by value, and a parameter taken by value, with 'into'
+  mut fr = Framed[Circle[1, 7]];
+  match &mut fr.s {
+    case mut cc &mut Circle {cc.radius = cc.radius + 1;}
+    else {}
+  }
+  show("field-of-local-narrowed", if imm cc &Circle = &fr.s {cc.radius;} else {0;});
+  show("by-value-parameter-narrowed", radiusOfValue(Circle[1, 9]));
+}
+
+fn radiusOfValue(s Shape) i32 {
+  imm cc = &s into &Circle;
+  cc.radius;
 }
 
 // -------- matching through a type alias --------
@@ -513,6 +547,8 @@ fn matching() {
 typedef CircleRef &Circle;
 typedef RectRef &Rect;
 typedef CircleRefAgain CircleRef;
+typedef CircleMut &mut Circle;
+typedef RectMut &mut Rect;
 typedef CircleVal Circle;
 typedef RectVal Rect;
 
@@ -591,6 +627,21 @@ fn aliasMatching() {
   show("alias-if-binding-not-taken", circleRadiusAlias(&imm r));
   show("alias-else-arm-taken", radiusOrAlias(&imm r, 99));
   show("alias-named-arm-taken", radiusOrAlias(&imm c, 99));
+
+  // A 'mut' binding through an alias of '&mut Variant', which writes through,
+  // on a '&mut' borrow of a local
+  mut sc Shape = c;
+  mut sr Shape = r;
+  match &mut sc {
+    case mut cc CircleMut {cc.radius = cc.radius + 10;}
+    case mut rr RectMut {rr.w = rr.w + 10;}
+  }
+  match &mut sr {
+    case mut cc CircleMut {cc.radius = cc.radius + 10;}
+    case mut rr RectMut {rr.w = rr.w + 10;}
+  }
+  show("alias-mut-binding-writes-through-circle", match &sc {case imm cc CircleRef {cc.radius;} else {99;}});
+  show("alias-mut-binding-writes-through-rect", match &sr {case imm rr RectRef {rr.w * rr.h;} else {99;}});
 }
 
 // A match on a value rather than a variant compares with '=='
