@@ -36,7 +36,11 @@ Visual Studio projects stay at the root.
   the intrinsics declared with `@intrinsic`); `stdio` prints;
   `libc` and `posix` are C packages of raw bindings to the C library and the
   POSIX functions beyond it (Windows first), and `core` imports `libc` for its
-  allocator; `math3d` is 3D math (vectors, quaternions, matrices, colors,
+  allocator; `sdl` and `gl` are C packages of raw bindings to SDL2 (a
+  window with an OpenGL context, its events and clock) and to OpenGL (what a
+  renderer calls; the functions newer than OpenGL 1.1 are looked up at run
+  time by `gl.load`), linking `SDL2.lib`, which must be on `LIB`, and the
+  Windows SDK's `opengl32.lib`; `math3d` is 3D math (vectors, quaternions, matrices, colors,
   rectangles) ported from the Pegasus3D browser, its trigonometry from `libc`;
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
@@ -82,9 +86,10 @@ Visual Studio projects stay at the root.
   `python tools/congo/test_congo.py` checks it against a built `conec`.
 - `samples/`: sample Cone programs. `oslayer` tours the `libc` and `posix`
   packages and is built and run by `test_congo.py`, as is `math3d`'s example,
-  `packages/math3d/examples/tour.cone`. The OpenGL and WebGL ones,
-  from `conehome`, predate the current language and no longer compile (the
-  first error in each is the retired `include`); the test suite builds none.
+  `packages/math3d/examples/tour.cone`. `opengl` opens a window cleared to
+  a color through the `sdl` and `gl` packages; it links only with SDL2's
+  `lib` folder on `LIB`, and runs with `SDL2.dll` on `PATH`. The test suite
+  builds neither it nor `webgl`.
 - `workitems/`: the plan and backlog are kept by the project owner outside this
   repository; `workitems/_index.md` says so. `workitems/done/` holds completed
   items.

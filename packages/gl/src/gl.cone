@@ -1,0 +1,318 @@
+// The gl package: raw bindings to OpenGL, the part of it a renderer of lit,
+// textured meshes through shaders needs (the functions Pegasus3D's rendering
+// called, and a few to inspect a context).
+//
+// '@c("gl", system)' makes it a C-named module whose functions take the prefix
+// and then the name as written, so 'ClearColor' binds to glClearColor, and the
+// platform's system calling convention, which OpenGL's functions use on
+// Windows. The constants have no symbol and are named without GL_.
+//
+// OpenGL comes in two halves, and so does this package:
+//
+// - What OpenGL 1.1 defined (clearing, the viewport, tests and blending,
+//   textures, drawing) is exported by opengl32.dll itself, and is declared
+//   'extern' below as any C library's functions are.
+// - Everything newer (buffers, vertex arrays, shaders, uniforms, texture units,
+//   mipmaps) is not exported by anything: the driver hands out its address
+//   once a context exists. 'gl.load(&sdl.GL_GetProcAddress)' looks each one up
+//   and keeps its address, which is what GLEW's glewInit did for Pegasus. The
+//   function of the same name below then calls through that address. Calling
+//   one before 'load' has found it calls address 0 and crashes.
+//
+// The addresses are called as Cone function references, which use C's calling
+// convention, not the system one. On 64-bit Windows the two are the same;
+// a 32-bit build would need a function reference of the system convention,
+// which Cone does not have yet.
+//
+// Everything is as C has it: C types (GLuint is u32, GLint and GLsizei i32,
+// GLenum u32, GLboolean u8, GLsizeiptr isize, GLfloat f32), C strings, and
+// pointers where C has pointers ('&mut x' passes where a '*' is wanted).
+
+mod @c("gl", system) gl;
+
+// ---- OpenGL 1.1: exported by opengl32.dll ----
+
+pub extern {
+  fn ClearColor(r f32, g f32, b f32, a f32);
+  fn Clear(bits u32);
+  fn Viewport(x i32, y i32, width i32, height i32);
+  fn Scissor(x i32, y i32, width i32, height i32);
+  fn Enable(cap u32);
+  fn Disable(cap u32);
+  fn DepthFunc(func u32);
+  fn BlendFunc(sfactor u32, dfactor u32);
+  fn FrontFace(mode u32);
+  fn CullFace(mode u32);
+  fn GetError() u32;
+  fn GetString(name u32) *u8;
+  fn GetIntegerv(pname u32, data *i32);
+  fn Finish();
+  fn Flush();
+  fn PixelStorei(pname u32, param i32);
+  fn ReadPixels(x i32, y i32, width i32, height i32, format u32, kind u32, pixels *u8);
+
+  fn GenTextures(n i32, textures *u32);
+  fn BindTexture(target u32, texture u32);
+  fn DeleteTextures(n i32, textures *u32);
+  fn TexImage2D(target u32, level i32, internalformat i32, width i32, height i32, border i32,
+    format u32, kind u32, pixels *u8);
+  fn TexParameteri(target u32, pname u32, param i32);
+
+  fn DrawArrays(mode u32, first i32, count i32);
+  fn DrawElements(mode u32, count i32, kind u32, offset *u8);
+}
+
+// ---- Constants ----
+
+pub const FALSE = 0u8;
+pub const TRUE = 1u8;
+pub const NO_ERROR = 0u;
+
+// Clear's bits
+pub const COLOR_BUFFER_BIT = 0x00004000u;
+pub const DEPTH_BUFFER_BIT = 0x00000100u;
+
+// Enable and Disable's capabilities, and the tests' settings
+pub const DEPTH_TEST = 0x0B71u;
+pub const BLEND = 0x0BE2u;
+pub const SCISSOR_TEST = 0x0C11u;
+pub const CULL_FACE = 0x0B44u;
+pub const LESS = 0x0201u;
+pub const SRC_ALPHA = 0x0302u;
+pub const ONE_MINUS_SRC_ALPHA = 0x0303u;
+pub const CW = 0x0900u;
+pub const CCW = 0x0901u;
+pub const BACK = 0x0405u;
+
+// Primitives, for DrawArrays and DrawElements. (POLYGON is not in a core
+// profile context; TRIANGLE_FAN draws the same convex polygon.)
+pub const POINTS = 0u;
+pub const LINES = 1u;
+pub const LINE_LOOP = 2u;
+pub const LINE_STRIP = 3u;
+pub const TRIANGLES = 4u;
+pub const TRIANGLE_STRIP = 5u;
+pub const TRIANGLE_FAN = 6u;
+pub const POLYGON = 9u;
+pub const LINES_ADJACENCY = 0x000Au;
+pub const LINE_STRIP_ADJACENCY = 0x000Bu;
+pub const TRIANGLES_ADJACENCY = 0x000Cu;
+pub const TRIANGLE_STRIP_ADJACENCY = 0x000Du;
+pub const PATCHES = 0x000Eu;
+
+// Data types
+pub const UNSIGNED_BYTE = 0x1401u;
+pub const UNSIGNED_SHORT = 0x1403u;
+pub const INT = 0x1404u;
+pub const UNSIGNED_INT = 0x1405u;
+pub const FLOAT = 0x1406u;
+
+// Buffers
+pub const ARRAY_BUFFER = 0x8892u;
+pub const ELEMENT_ARRAY_BUFFER = 0x8893u;
+pub const STATIC_DRAW = 0x88E4u;
+
+// Shaders and programs
+pub const VERTEX_SHADER = 0x8B31u;
+pub const FRAGMENT_SHADER = 0x8B30u;
+pub const COMPILE_STATUS = 0x8B81u;
+pub const LINK_STATUS = 0x8B82u;
+pub const INFO_LOG_LENGTH = 0x8B84u;
+
+// Textures
+pub const TEXTURE_2D = 0x0DE1u;
+pub const TEXTURE_CUBE_MAP = 0x8513u;
+pub const TEXTURE_CUBE_MAP_POSITIVE_X = 0x8515u;   // then NEGATIVE_X, POSITIVE_Y, ... NEGATIVE_Z
+pub const TEXTURE0 = 0x84C0u;                      // TEXTURE0 + n is unit n
+pub const RGB = 0x1907u;
+pub const RGBA = 0x1908u;
+pub const TEXTURE_WRAP_S = 0x2802u;
+pub const TEXTURE_WRAP_T = 0x2803u;
+pub const TEXTURE_WRAP_R = 0x8072u;
+pub const TEXTURE_MAG_FILTER = 0x2800u;
+pub const TEXTURE_MIN_FILTER = 0x2801u;
+pub const CLAMP_TO_EDGE = 0x812F;
+pub const REPEAT = 0x2901;
+pub const MIRRORED_REPEAT = 0x8370;
+pub const NEAREST = 0x2600;
+pub const LINEAR = 0x2601;
+pub const NEAREST_MIPMAP_NEAREST = 0x2700;
+pub const LINEAR_MIPMAP_NEAREST = 0x2701;
+pub const NEAREST_MIPMAP_LINEAR = 0x2702;
+pub const LINEAR_MIPMAP_LINEAR = 0x2703;
+pub const UNPACK_ALIGNMENT = 0x0CF5u;
+pub const PACK_ALIGNMENT = 0x0D05u;
+
+// GetString's names
+pub const VENDOR = 0x1F00u;
+pub const RENDERER = 0x1F01u;
+pub const VERSION = 0x1F02u;
+pub const SHADING_LANGUAGE_VERSION = 0x8B8Cu;
+
+// ---- Newer than OpenGL 1.1: found at run time by 'load' ----
+
+// The addresses 'load' found, one per function, 0 until then
+mut pActiveTexture usize = 0usize;
+mut pGenerateMipmap usize = 0usize;
+mut pGenBuffers usize = 0usize;
+mut pBindBuffer usize = 0usize;
+mut pBufferData usize = 0usize;
+mut pDeleteBuffers usize = 0usize;
+mut pGenVertexArrays usize = 0usize;
+mut pBindVertexArray usize = 0usize;
+mut pDeleteVertexArrays usize = 0usize;
+mut pVertexAttribPointer usize = 0usize;
+mut pEnableVertexAttribArray usize = 0usize;
+mut pDisableVertexAttribArray usize = 0usize;
+mut pCreateShader usize = 0usize;
+mut pShaderSource usize = 0usize;
+mut pCompileShader usize = 0usize;
+mut pGetShaderiv usize = 0usize;
+mut pGetShaderInfoLog usize = 0usize;
+mut pDeleteShader usize = 0usize;
+mut pCreateProgram usize = 0usize;
+mut pAttachShader usize = 0usize;
+mut pDetachShader usize = 0usize;
+mut pBindAttribLocation usize = 0usize;
+mut pLinkProgram usize = 0usize;
+mut pGetProgramiv usize = 0usize;
+mut pGetProgramInfoLog usize = 0usize;
+mut pGetAttribLocation usize = 0usize;
+mut pDeleteProgram usize = 0usize;
+mut pUseProgram usize = 0usize;
+mut pGetUniformLocation usize = 0usize;
+mut pUniform1f usize = 0usize;
+mut pUniform1i usize = 0usize;
+mut pUniform1fv usize = 0usize;
+mut pUniform2fv usize = 0usize;
+mut pUniform3fv usize = 0usize;
+mut pUniform4fv usize = 0usize;
+mut pUniformMatrix2fv usize = 0usize;
+mut pUniformMatrix3fv usize = 0usize;
+mut pUniformMatrix4fv usize = 0usize;
+
+// Look up every function below through getProc (SDL's GL_GetProcAddress, or
+// wglGetProcAddress), with the context they are for current. It answers
+// false if any is missing, naming none; each one found is kept either way.
+pub fn load(getProc &fn(name *u8) *u8) Bool {
+  mut found = true;
+  pActiveTexture = getProc(&"glActiveTexture" as *u8) as usize;
+  if pActiveTexture == 0usize { found = false; }
+  pGenerateMipmap = getProc(&"glGenerateMipmap" as *u8) as usize;
+  if pGenerateMipmap == 0usize { found = false; }
+  pGenBuffers = getProc(&"glGenBuffers" as *u8) as usize;
+  if pGenBuffers == 0usize { found = false; }
+  pBindBuffer = getProc(&"glBindBuffer" as *u8) as usize;
+  if pBindBuffer == 0usize { found = false; }
+  pBufferData = getProc(&"glBufferData" as *u8) as usize;
+  if pBufferData == 0usize { found = false; }
+  pDeleteBuffers = getProc(&"glDeleteBuffers" as *u8) as usize;
+  if pDeleteBuffers == 0usize { found = false; }
+  pGenVertexArrays = getProc(&"glGenVertexArrays" as *u8) as usize;
+  if pGenVertexArrays == 0usize { found = false; }
+  pBindVertexArray = getProc(&"glBindVertexArray" as *u8) as usize;
+  if pBindVertexArray == 0usize { found = false; }
+  pDeleteVertexArrays = getProc(&"glDeleteVertexArrays" as *u8) as usize;
+  if pDeleteVertexArrays == 0usize { found = false; }
+  pVertexAttribPointer = getProc(&"glVertexAttribPointer" as *u8) as usize;
+  if pVertexAttribPointer == 0usize { found = false; }
+  pEnableVertexAttribArray = getProc(&"glEnableVertexAttribArray" as *u8) as usize;
+  if pEnableVertexAttribArray == 0usize { found = false; }
+  pDisableVertexAttribArray = getProc(&"glDisableVertexAttribArray" as *u8) as usize;
+  if pDisableVertexAttribArray == 0usize { found = false; }
+  pCreateShader = getProc(&"glCreateShader" as *u8) as usize;
+  if pCreateShader == 0usize { found = false; }
+  pShaderSource = getProc(&"glShaderSource" as *u8) as usize;
+  if pShaderSource == 0usize { found = false; }
+  pCompileShader = getProc(&"glCompileShader" as *u8) as usize;
+  if pCompileShader == 0usize { found = false; }
+  pGetShaderiv = getProc(&"glGetShaderiv" as *u8) as usize;
+  if pGetShaderiv == 0usize { found = false; }
+  pGetShaderInfoLog = getProc(&"glGetShaderInfoLog" as *u8) as usize;
+  if pGetShaderInfoLog == 0usize { found = false; }
+  pDeleteShader = getProc(&"glDeleteShader" as *u8) as usize;
+  if pDeleteShader == 0usize { found = false; }
+  pCreateProgram = getProc(&"glCreateProgram" as *u8) as usize;
+  if pCreateProgram == 0usize { found = false; }
+  pAttachShader = getProc(&"glAttachShader" as *u8) as usize;
+  if pAttachShader == 0usize { found = false; }
+  pDetachShader = getProc(&"glDetachShader" as *u8) as usize;
+  if pDetachShader == 0usize { found = false; }
+  pBindAttribLocation = getProc(&"glBindAttribLocation" as *u8) as usize;
+  if pBindAttribLocation == 0usize { found = false; }
+  pLinkProgram = getProc(&"glLinkProgram" as *u8) as usize;
+  if pLinkProgram == 0usize { found = false; }
+  pGetProgramiv = getProc(&"glGetProgramiv" as *u8) as usize;
+  if pGetProgramiv == 0usize { found = false; }
+  pGetProgramInfoLog = getProc(&"glGetProgramInfoLog" as *u8) as usize;
+  if pGetProgramInfoLog == 0usize { found = false; }
+  pGetAttribLocation = getProc(&"glGetAttribLocation" as *u8) as usize;
+  if pGetAttribLocation == 0usize { found = false; }
+  pDeleteProgram = getProc(&"glDeleteProgram" as *u8) as usize;
+  if pDeleteProgram == 0usize { found = false; }
+  pUseProgram = getProc(&"glUseProgram" as *u8) as usize;
+  if pUseProgram == 0usize { found = false; }
+  pGetUniformLocation = getProc(&"glGetUniformLocation" as *u8) as usize;
+  if pGetUniformLocation == 0usize { found = false; }
+  pUniform1f = getProc(&"glUniform1f" as *u8) as usize;
+  if pUniform1f == 0usize { found = false; }
+  pUniform1i = getProc(&"glUniform1i" as *u8) as usize;
+  if pUniform1i == 0usize { found = false; }
+  pUniform1fv = getProc(&"glUniform1fv" as *u8) as usize;
+  if pUniform1fv == 0usize { found = false; }
+  pUniform2fv = getProc(&"glUniform2fv" as *u8) as usize;
+  if pUniform2fv == 0usize { found = false; }
+  pUniform3fv = getProc(&"glUniform3fv" as *u8) as usize;
+  if pUniform3fv == 0usize { found = false; }
+  pUniform4fv = getProc(&"glUniform4fv" as *u8) as usize;
+  if pUniform4fv == 0usize { found = false; }
+  pUniformMatrix2fv = getProc(&"glUniformMatrix2fv" as *u8) as usize;
+  if pUniformMatrix2fv == 0usize { found = false; }
+  pUniformMatrix3fv = getProc(&"glUniformMatrix3fv" as *u8) as usize;
+  if pUniformMatrix3fv == 0usize { found = false; }
+  pUniformMatrix4fv = getProc(&"glUniformMatrix4fv" as *u8) as usize;
+  if pUniformMatrix4fv == 0usize { found = false; }
+  found;
+}
+
+// Whether 'load' has found them (checks one; load finds all or reports false)
+pub fn loaded() Bool { pCreateShader != 0usize; }
+
+pub fn ActiveTexture(texture u32) { ((pActiveTexture as *u8) as &fn(texture u32))(texture); }
+pub fn GenerateMipmap(target u32) { ((pGenerateMipmap as *u8) as &fn(target u32))(target); }
+pub fn GenBuffers(n i32, buffers *u32) { ((pGenBuffers as *u8) as &fn(n i32, buffers *u32))(n, buffers); }
+pub fn BindBuffer(target u32, buffer u32) { ((pBindBuffer as *u8) as &fn(target u32, buffer u32))(target, buffer); }
+pub fn BufferData(target u32, size isize, data *u8, usage u32) { ((pBufferData as *u8) as &fn(target u32, size isize, data *u8, usage u32))(target, size, data, usage); }
+pub fn DeleteBuffers(n i32, buffers *u32) { ((pDeleteBuffers as *u8) as &fn(n i32, buffers *u32))(n, buffers); }
+pub fn GenVertexArrays(n i32, arrays *u32) { ((pGenVertexArrays as *u8) as &fn(n i32, arrays *u32))(n, arrays); }
+pub fn BindVertexArray(array u32) { ((pBindVertexArray as *u8) as &fn(array u32))(array); }
+pub fn DeleteVertexArrays(n i32, arrays *u32) { ((pDeleteVertexArrays as *u8) as &fn(n i32, arrays *u32))(n, arrays); }
+pub fn VertexAttribPointer(index u32, size i32, kind u32, normalized u8, stride i32, offset *u8) { ((pVertexAttribPointer as *u8) as &fn(index u32, size i32, kind u32, normalized u8, stride i32, offset *u8))(index, size, kind, normalized, stride, offset); }
+pub fn EnableVertexAttribArray(index u32) { ((pEnableVertexAttribArray as *u8) as &fn(index u32))(index); }
+pub fn DisableVertexAttribArray(index u32) { ((pDisableVertexAttribArray as *u8) as &fn(index u32))(index); }
+pub fn CreateShader(kind u32) u32 { ((pCreateShader as *u8) as &fn(kind u32) u32)(kind); }
+pub fn ShaderSource(shader u32, count i32, strings **u8, lengths *i32) { ((pShaderSource as *u8) as &fn(shader u32, count i32, strings **u8, lengths *i32))(shader, count, strings, lengths); }
+pub fn CompileShader(shader u32) { ((pCompileShader as *u8) as &fn(shader u32))(shader); }
+pub fn GetShaderiv(shader u32, pname u32, params *i32) { ((pGetShaderiv as *u8) as &fn(shader u32, pname u32, params *i32))(shader, pname, params); }
+pub fn GetShaderInfoLog(shader u32, maxLength i32, length *i32, infoLog *u8) { ((pGetShaderInfoLog as *u8) as &fn(shader u32, maxLength i32, length *i32, infoLog *u8))(shader, maxLength, length, infoLog); }
+pub fn DeleteShader(shader u32) { ((pDeleteShader as *u8) as &fn(shader u32))(shader); }
+pub fn CreateProgram() u32 { ((pCreateProgram as *u8) as &fn() u32)(); }
+pub fn AttachShader(program u32, shader u32) { ((pAttachShader as *u8) as &fn(program u32, shader u32))(program, shader); }
+pub fn DetachShader(program u32, shader u32) { ((pDetachShader as *u8) as &fn(program u32, shader u32))(program, shader); }
+pub fn BindAttribLocation(program u32, index u32, name *u8) { ((pBindAttribLocation as *u8) as &fn(program u32, index u32, name *u8))(program, index, name); }
+pub fn LinkProgram(program u32) { ((pLinkProgram as *u8) as &fn(program u32))(program); }
+pub fn GetProgramiv(program u32, pname u32, params *i32) { ((pGetProgramiv as *u8) as &fn(program u32, pname u32, params *i32))(program, pname, params); }
+pub fn GetProgramInfoLog(program u32, maxLength i32, length *i32, infoLog *u8) { ((pGetProgramInfoLog as *u8) as &fn(program u32, maxLength i32, length *i32, infoLog *u8))(program, maxLength, length, infoLog); }
+pub fn GetAttribLocation(program u32, name *u8) i32 { ((pGetAttribLocation as *u8) as &fn(program u32, name *u8) i32)(program, name); }
+pub fn DeleteProgram(program u32) { ((pDeleteProgram as *u8) as &fn(program u32))(program); }
+pub fn UseProgram(program u32) { ((pUseProgram as *u8) as &fn(program u32))(program); }
+pub fn GetUniformLocation(program u32, name *u8) i32 { ((pGetUniformLocation as *u8) as &fn(program u32, name *u8) i32)(program, name); }
+pub fn Uniform1f(location i32, v0 f32) { ((pUniform1f as *u8) as &fn(location i32, v0 f32))(location, v0); }
+pub fn Uniform1i(location i32, v0 i32) { ((pUniform1i as *u8) as &fn(location i32, v0 i32))(location, v0); }
+pub fn Uniform1fv(location i32, count i32, value *f32) { ((pUniform1fv as *u8) as &fn(location i32, count i32, value *f32))(location, count, value); }
+pub fn Uniform2fv(location i32, count i32, value *f32) { ((pUniform2fv as *u8) as &fn(location i32, count i32, value *f32))(location, count, value); }
+pub fn Uniform3fv(location i32, count i32, value *f32) { ((pUniform3fv as *u8) as &fn(location i32, count i32, value *f32))(location, count, value); }
+pub fn Uniform4fv(location i32, count i32, value *f32) { ((pUniform4fv as *u8) as &fn(location i32, count i32, value *f32))(location, count, value); }
+pub fn UniformMatrix2fv(location i32, count i32, transpose u8, value *f32) { ((pUniformMatrix2fv as *u8) as &fn(location i32, count i32, transpose u8, value *f32))(location, count, transpose, value); }
+pub fn UniformMatrix3fv(location i32, count i32, transpose u8, value *f32) { ((pUniformMatrix3fv as *u8) as &fn(location i32, count i32, transpose u8, value *f32))(location, count, transpose, value); }
+pub fn UniformMatrix4fv(location i32, count i32, transpose u8, value *f32) { ((pUniformMatrix4fv as *u8) as &fn(location i32, count i32, transpose u8, value *f32))(location, count, transpose, value); }
