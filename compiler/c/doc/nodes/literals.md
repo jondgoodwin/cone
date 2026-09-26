@@ -257,7 +257,10 @@ lowers to a loop.
 Scalars are LLVM constants; `nil` is `undef` of the empty struct. An integer
 literal still carrying `FlagUnkType` is range-checked against its `i32` default
 first (see Type check). The constant is built from `uintlit`'s bits truncated to
-the type, which is the value itself once the range check has passed.
+the type, which is the value itself once the range check has passed. `genlExpr`
+truncates them itself before `LLVMConstInt`: LLVM takes only a value that fits
+the type, and a release build of it keeps the excess bits of a negative
+narrower literal unchecked, where folding a `zext` of the constant reads them.
 
 **An array literal is emitted as a constant when every element is constant**,
 and otherwise as an `undef` plus a chain of `insertvalue`. The constant form is

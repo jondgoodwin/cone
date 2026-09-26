@@ -297,9 +297,9 @@ none. Nothing checks a borrow stored in a field or captured.
 
 | Tag | LLVM |
 | --- | --- |
-| `RefTag` | `T*` — **identical for borrowed and owning** |
-| `VirtRefTag` | named `{ i8*, Vtable* }` |
-| `ArrayRefTag` | anonymous `{ T*, usize }`, count at index 1 |
+| `RefTag` | `ptr` — **identical for borrowed and owning** |
+| `VirtRefTag` | named `{ ptr, ptr }`: the object, then its vtable |
+| `ArrayRefTag` | anonymous `{ ptr, usize }`, count at index 1 |
 
 `genlRefTypeSetup` returns immediately for a borrow — a borrowed reference has
 no allocation header. Otherwise it builds `%refstruct = { region, perm, value }`.

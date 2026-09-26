@@ -4,7 +4,7 @@
 
 Cone is an in-development systems programming language. This repository
 contains its C compiler (`conec`) and a small standard-library component
-(`conestd`). The compiler targets LLVM and currently depends on LLVM 13.
+(`conestd`). The compiler targets LLVM and currently depends on LLVM 23.1.
 
 This file is a map and a set of working rules. What the compiler does, and why,
 lives in the design notes (`doc/design/` for the language, `compiler/c/doc/` for
@@ -161,9 +161,10 @@ the Cone smoke-test input.
 
 ### Windows
 
-The verified configuration uses a 64-bit LLVM 13 installation with the X86 and
-WebAssembly targets, the Ninja generator, and the VS 2022 x64 toolchain. Pass
-`-DLLVM_DIR=<llvm root>\lib\cmake\llvm` when LLVM is not on CMake's search path.
+The verified configuration uses a 64-bit LLVM 23.1 installation (Release, `/MD`)
+with the X86 and WebAssembly targets, the Ninja generator, and the VS 2022 x64
+toolchain. Pass `-DLLVM_DIR=<llvm root>\lib\cmake\llvm` when LLVM is not on
+CMake's search path.
 
 ```powershell
 cmake -S . -B build\x64-release -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -182,11 +183,13 @@ output; it does not affect the result.
 
 The checked-in Visual Studio projects use the Windows 10 SDK and the VS 2022
 `v143` toolset, but CMake is the verified path for the minimal
-X86/WebAssembly LLVM build.
+X86/WebAssembly LLVM build. `Cone.vcxproj` has only Win32 configurations, and
+its LLVM library list is the set the CMake build links, copied, looked for under
+`$(LLVMDIR)<Configuration>\lib`; nothing builds it.
 
 ### CMake, Linux, and WSL
 
-`CMakeLists.txt` uses `find_package(LLVM 13 REQUIRED CONFIG)` and defines the
+`CMakeLists.txt` uses `find_package(LLVM 23.1 REQUIRED CONFIG)` and defines the
 `conec` executable and `conestd` library. Configure and build with the
 repository's existing CMake setup; do not change the LLVM major version
 without updating source compatibility and both build systems.

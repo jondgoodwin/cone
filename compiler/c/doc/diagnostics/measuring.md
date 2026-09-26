@@ -89,8 +89,8 @@ The output directory must already exist and each run writes several files, so
 use a git-ignored directory such as `build/probe/`.
 
 Counting adjustments in `.preir` is how ownership questions get settled: an
-allocation that emits `call i8* @malloc` and no matching
-`getelementptr i64, i64* %n, i64 -1` leaks.
+allocation that emits `call ptr @malloc` and no matching `free`, or no count
+decrement (`sub i64 ..., 1`) for an `rc` one, leaks.
 
 ## Running the suite
 

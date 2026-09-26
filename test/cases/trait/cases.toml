@@ -120,18 +120,16 @@ contains = [
 ]
 
 # A vtable slot is filled from a method of the implementing type rather than
-# left null: the bitcast's operand is a function over that type's pointer.
-# The run's printed numbers say which method; the IR says the slot was wired
-# from a symbol at all.
+# left null. The run's printed numbers say which method; the IR says the slot
+# was wired from a symbol at all. LLVM's pointers carry no type, so the slot is
+# a bare 'ptr' to its method and the method's receiver type is not in the
+# vtable: what is asserted is that a Shape vtable's slot names a symbol and
+# none is null, and the check above names the three vtables it covers.
 [[scenario.trait_success.check]]
 name = "vtable-slot-holds-a-method-of-the-implementer"
 target = "llvmir"
-contains = [
-  'constant %"Shape:Vtable" { i32 (i8*)* bitcast (i32 (%Rect*)* @',
-  'constant %"Shape:Vtable" { i32 (i8*)* bitcast (i32 (%Circle*)* @',
-  'constant %"Shape:Vtable" { i32 (i8*)* bitcast (i32 (%Square*)* @',
-]
-excludes = ['constant %"Shape:Vtable" { i32 (i8*)* null']
+contains = ['internal constant %"Shape:Vtable" { ptr @']
+excludes = ['constant %"Shape:Vtable" { ptr null']
 
 # A trait's default method is not a symbol of its own: it is cloned into each
 # type that inherits it, and the clone is owned by that type, so its symbol
@@ -150,31 +148,41 @@ excludes = ["Meter.reading"]
 
 # A requirement's parameters reach the vtable slot's own type, which is the half
 # of "the signatures must match exactly" a run cannot observe: the printed
-# numbers would be the same whatever the slot was typed as. The reference
-# parameter lowers to a pointer, so a widening that let a value satisfy a
-# reference requirement would show here as a mismatched slot type. Each
-# implementer's slot must hold its own method rather than be left null.
+# numbers would be the same whatever the slot was typed as. LLVM's pointers
+# carry no type, so a slot is a bare 'ptr' and its function type is the one the
+# dispatch calls it with: scaledBy calls Scaler's slot with the receiver and an
+# i32, blendedBy calls Blender's first with two, and viaRefOf calls its second
+# with a pointer, since the reference parameter lowers to one. What an
+# implementer's own method takes is no longer in the vtable at all; the
+# conformance check refuses a mismatch (trait_typecheck_conform), and the run
+# would print a wrong number. Each slot must hold a method rather than be left
+# null. Read before optimization, where the dispatching functions still exist.
 [[scenario.trait_success.check]]
 name = "parameterized-requirement-types-its-vtable-slot"
-target = "llvmir"
+target = "preir"
 contains = [
-  '%"Scaler:Vtable" = type { i32 (i8*, i32)* }',
-  '%"Blender:Vtable" = type { i32 (i8*, i32, i32)*, i32 (i8*, i32*)* }',
-  'constant %"Scaler:Vtable" { i32 (i8*, i32)* bitcast (i32 (%Box*, i32)* @',
-  'constant %"Scaler:Vtable" { i32 (i8*, i32)* bitcast (i32 (%Cup*, i32)* @',
-  'bitcast (i32 (%Mix*, i32, i32)* @',
-  'bitcast (i32 (%Churn*, i32*)* @',
+  '%"Scaler:Vtable" = type { ptr }',
+  '%"Blender:Vtable" = type { ptr, ptr }',
+  'internal constant %"Scaler:Vtable" { ptr @',
+  'internal constant %"Blender:Vtable" { ptr @',
+  '%2 = extractvalue %"Scaler:Vtable.1" %s1, 1',
+  '%scaled = getelementptr inbounds nuw %"Scaler:Vtable", ptr %2, i32 0, i32 0',
+  '%5 = call i32 %4(ptr %3, i32 %factor2)',
+  '%4 = call i32 %3(ptr %2, i32 4, i32 5)',
+  '%4 = call i32 %3(ptr %2, ptr %n)',
 ]
-excludes = ['constant %"Scaler:Vtable" { i32 (i8*, i32)* null']
+excludes = ['constant %"Scaler:Vtable" { ptr null', 'constant %"Blender:Vtable" { ptr null']
 
 # A virtual reference is a fat pointer of value and vtable, and a trait's field
-# requirement is a vtable slot holding an offset rather than a function pointer
+# requirement is a vtable slot holding an offset rather than a function pointer.
+# Both pointers are a bare 'ptr', so which half is the vtable is not in the
+# type; the dispatch the check above names reads its slot through the second.
 [[scenario.trait_success.check]]
 name = "vtable-layout-carries-methods-then-field-offsets"
 target = "llvmir"
 contains = [
-  '%"Meter:Vtable" = type { i32 (i8*)*, %void (i8*)*, i32 }',
-  '%"Shape:Vtable.0" = type { i8*, %"Shape:Vtable"* }',
+  '%"Meter:Vtable" = type { ptr, ptr, i32 }',
+  '%"Shape:Vtable.0" = type { ptr, ptr }',
 ]
 
 # Each trait's list of vtables is a symbol named for that trait, so a module
@@ -192,14 +200,14 @@ contains = [
 ]
 excludes = ["(vtable list).1"]
 
-# The list holds one entry per implementer, which is its length to show.
+# The list holds one entry per implementer, which is its length to show. An
+# entry is a bare 'ptr', so a list's type no longer names its trait and only
+# its symbol does: Shape's, the one list of three, is asserted; Scaler's two
+# would be spelled as every other two-implementer trait's list is.
 [[scenario.trait_success.check]]
 name = "vtable-list-holds-every-implementer"
 target = "preir"
-contains = [
-  'internal constant [3 x %"Shape:Vtable"*] [',
-  'internal constant [2 x %"Scaler:Vtable"*] [',
-]
+contains = ['internal constant [3 x ptr] [']
 
 # A trait contributes nothing to the layout of a type that is-a it. Every field a
 # type holds is one it declared: Sensor's 'id' appears in Logger and in each
@@ -232,15 +240,19 @@ category = "run"
 description = "A trait method taking a virtual reference to its own trait, dispatched through the receiver and the argument"
 tags = ["typecheck", "genllvm", "runtime"]
 
-# The recursive slot is typed with the virtual reference to its own vtable,
-# which LLVM can only say through the vtable's name: the reference type is
-# declared before the vtable's body is filled in.
+# The recursive slot takes the virtual reference to its own vtable. LLVM's
+# pointers carry no type, so the vtable's slots are bare 'ptr's and the cycle
+# is not in the types at all; the slot's function type is the one gapOf calls
+# its second slot with, the receiver and the fat pointer '%"Meter:Vtable.0"'.
+# Read before optimization, where gapOf still dispatches.
 [[scenario.trait_self_vref.check]]
 name = "recursive-slot-takes-a-reference-to-its-own-vtable"
-target = "llvmir"
+target = "preir"
 contains = [
-  '%"Meter:Vtable" = type { i32 (i8*)*, i32 (i8*, %"Meter:Vtable.0")* }',
-  '%"Meter:Vtable.0" = type { i8*, %"Meter:Vtable"* }',
+  '%"Meter:Vtable" = type { ptr, ptr }',
+  '%"Meter:Vtable.0" = type { ptr, ptr }',
+  '%gap = getelementptr inbounds nuw %"Meter:Vtable", ptr %2, i32 0, i32 1',
+  '%5 = call i32 %4(ptr %3, %"Meter:Vtable.0" %b2)',
 ]
 
 [scenario.trait_inherited_defaults]
@@ -271,32 +283,39 @@ excludes = [
 # first named the pointee for every reference to '&ro Meter', because a cloned
 # reference node kept the original's interned type record and the LLVM type is
 # memoized on it. Beta's clone took a '%Alpha*' and would have read 'span' off
-# the end of an Alpha.
+# the end of an Alpha. LLVM's pointers carry no type, so a receiver is a bare
+# 'ptr' and its type shows where the clone's body reads 'level' through it: the
+# field address taken in the receiver's own struct, then doubled, which only
+# the 'reading' clones do. Read before optimization, which folds the address
+# away.
 [[scenario.trait_inherited_defaults.check]]
 name = "each-clone-takes-its-own-receiver"
-target = "llvmir"
+target = "preir"
 contains = [
-  "define internal i32 @_CNvNt5Alpha7reading(%Alpha* %0)",
-  "define internal i32 @_CNvNt4Beta7reading(%Beta* %0)",
+  "%level = getelementptr inbounds nuw %Alpha, ptr %self1, i32 0, i32 0\n  %1 = load i32, ptr %level, align 4\n  %2 = mul i32 %1, 2",
+  "%level = getelementptr inbounds nuw %Beta, ptr %self1, i32 0, i32 0\n  %1 = load i32, ptr %level, align 4\n  %2 = mul i32 %1, 2",
 ]
 
 # A plain reference to a trait is compiled with the trait's own layout, which is
 # the fields the trait declares and nothing else, and is a prefix of every
 # implementer. One function serves implementers of two different sizes, so any
 # implementer's type here would be wrong for the other -- and being the larger of
-# the two, '%Beta' would read past the end of an Alpha.
+# the two, '%Beta' would read past the end of an Alpha. The reference is a bare
+# 'ptr', so the layout shows where baseLevel reads 'level' through its 'm':
+# the field address is taken in '%Meter'. Read before optimization, which folds
+# the address away and with it the only use of '%Meter'.
 [[scenario.trait_inherited_defaults.check]]
 name = "a-trait-reference-takes-the-traits-own-layout"
-target = "llvmir"
+target = "preir"
 contains = [
   "%Meter = type { i32 }",
   "%Alpha = type { i32 }",
   "%Beta = type { i32, i32 }",
-  "define internal i32 @baseLevel(%Meter* %0)",
+  "%level = getelementptr inbounds nuw %Meter, ptr %m1, i32 0, i32 0",
 ]
 excludes = [
-  "define internal i32 @baseLevel(%Alpha* %0)",
-  "define internal i32 @baseLevel(%Beta* %0)",
+  "getelementptr inbounds nuw %Alpha, ptr %m1",
+  "getelementptr inbounds nuw %Beta, ptr %m1",
 ]
 
 # A trait in an imported module, named by a type in the root. The root is
@@ -347,13 +366,16 @@ contains = [
 # Tri satisfies Shape structurally and is declared after the function whose
 # signature builds Shape's vtable. That is invisible to a run: a vtable slot
 # holding a null function pointer is what the IR shows and what the printed
-# numbers cannot, and a bitcast of a Tri method is the proof the slot was
-# filled from a symbol rather than left empty.
+# numbers cannot. LLVM's pointers carry no type, so a slot is a bare 'ptr' and
+# only the method's symbol would say it is Tri's: what is asserted is that the
+# Shape vtables, Tri's among them by the check above, fill the slot from a
+# symbol and none leaves it null. Read where generation wrote them, as the
+# check above is.
 [[scenario.trait_variants.check]]
 name = "late-declared-structural-conformer-fills-its-vtable-slot"
-target = "llvmir"
-contains = ['constant %"Shape:Vtable" { i32 (i8*)* bitcast (i32 (%Tri*)* @']
-excludes = ['constant %"Shape:Vtable" { i32 (i8*)* null']
+target = "preir"
+contains = ['internal constant %"Shape:Vtable" { ptr @']
+excludes = ['constant %"Shape:Vtable" { ptr null']
 
 # A plain reference to an enum passed where a virtual reference to another trait
 # is expected. What it points at is one of the variants, so the fat pointer
