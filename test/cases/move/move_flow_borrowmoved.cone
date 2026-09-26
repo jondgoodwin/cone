@@ -1,0 +1,71 @@
+// A variable whose value was moved out may not be borrowed, any more than it may
+// be read: the borrow would point at storage that no longer holds the value, and
+// its new holder would finalize the value while the borrow still reached it.
+//
+// Every shape a borrow takes is refused the same way as a read: a borrow written
+// out, immutable or mutable; a field's borrow; a slice borrow, written out or
+// taken automatically for a slice parameter; an element's borrow; and the borrow
+// a method call takes of its receiver for a 'self &' or 'self &mut' method.
+// All once compiled clean, because the borrow's own flow step looked at nothing.
+//
+// A move in one arm of an 'if' deactivates the source for everything after, as
+// it does for a read (move_flow_deactivate). Flow diagnostics accumulate within a
+// function, so the cases share one; borrowing a value never given one is the
+// last of them. Reassignment re-enabling the borrow, and a borrow taken before
+// the move, are in move_success.
+
+mod move_flow_borrowmoved;
+
+struct Fin {
+  pub n i64;
+  pub arr [2; i64];
+  fn final(self &uni) {}
+  pub fn set(self &mut, v i64) { n = v; }
+  pub fn get(self &) i64 { n; }
+}
+
+fn takes(s &[]Fin) {}
+
+fn main() i32 {
+  mut a = Fin[0i64, [1i64, 2i64]];
+  imm ma = a;
+  imm ra = &mut a;              //~ ErrorMove:17 "moved out"
+
+  mut b = Fin[0i64, [1i64, 2i64]];
+  imm mb = b;
+  imm rb = &b;                  //~ ErrorMove:13 "moved out"
+
+  mut c = Fin[0i64, [1i64, 2i64]];
+  imm mc = c;
+  imm rc = &c.n;                //~ ErrorMove:13 "moved out"
+
+  mut d = Fin[0i64, [1i64, 2i64]];
+  imm md = d;
+  imm rd = &[]d.arr;            //~ ErrorMove:15 "moved out"
+
+  mut e = Fin[0i64, [1i64, 2i64]];
+  imm me = e;
+  imm re = &e.arr[1];           //~ ErrorMove:13 "moved out"
+
+  mut f = Fin[0i64, [1i64, 2i64]];
+  imm mf = f;
+  f.set(5i64);                  //~ ErrorMove:3 "moved out"
+
+  mut g = Fin[0i64, [1i64, 2i64]];
+  imm mg = g;
+  imm vg = g.get();             //~ ErrorMove:12 "moved out"
+
+  mut h [2; Fin] = [Fin[0i64, [1i64, 2i64]], Fin[1i64, [1i64, 2i64]]];
+  imm mh = h;
+  imm rh = &[]h;                //~ ErrorMove:15 "moved out"
+  takes(h);                     //~ ErrorMove:9 "moved out"
+
+  mut k = Fin[0i64, [1i64, 2i64]];
+  if vg > 0 { imm mk = k; }
+  imm rk = &mut k;              //~ ErrorMove:17 "moved out"
+
+  mut u Fin;
+  imm ru = &u;                  //~ ErrorMove:13 "has not been initialized"
+
+  0i32;
+}

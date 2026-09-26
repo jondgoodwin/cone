@@ -232,9 +232,12 @@ every owning reference moves.
 
 ## Flow
 
-`allocateFlow` loads and move-or-copies the initial value. `borrowFlow` is an
-**empty function body** with a comment describing deactivation that was never
-written — a borrow deactivates nothing and reads nothing.
+`allocateFlow` loads and move-or-copies the initial value. `borrowFlow` asks
+only that the borrowed place hold a value: it walks the place to the variable
+at its root, which `nameuseFlow` refuses if uninitialized, moved out or
+hollowed, exactly as for a read. A reference the place is reached through is
+loaded as a value, not read through, and an index is read. A borrow
+deactivates nothing and records nothing, so no aliasing of borrows is tracked.
 
 A reference's permission is enforced at the access, not at the borrow.
 `flowLoadThroughRef` asks it for `MayRead` wherever a value is read through a

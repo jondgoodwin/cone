@@ -1,0 +1,52 @@
+mod region_flow_borrowmoved;
+
+// A variable holding a sole owning reference -- any '+so', and '+rc', which is
+// '+rc-uni' -- whose reference was moved out may not be borrowed, as it may not
+// be read: the reference, its referent and a field of its referent are all gone
+// with the move. So is a variable hollowed by a move out through its reference.
+// Each once compiled clean, because the borrow's own flow step looked at nothing.
+//
+// A new reference makes the variable borrowable again, and a borrow taken
+// before the move is untouched; the unannotated lines assert both.
+// move_flow_borrowmoved is the same rule for a value held on the stack.
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) {}
+  pub fn set(self &mut, v i64) { n = v; }
+}
+
+fn main() i32 {
+  mut a = +so Fin[0i64];
+  imm before = &a.n;
+  imm ma = a;
+  imm ra = &a;                  //~ ErrorMove:13 "moved out"
+
+  mut b = +so Fin[0i64];
+  imm mb = b;
+  imm rb = &b.n;                //~ ErrorMove:13 "moved out"
+
+  mut c = +so Fin[0i64];
+  imm mc = c;
+  imm r3 = &mut *c;             //~ ErrorMove:18 "moved out"
+
+  mut d = +so Fin[0i64];
+  imm md = d;
+  d.set(5i64);                  //~ ErrorMove:3 "moved out"
+
+  mut e = +rc Fin[0i64];
+  imm me = e;
+  imm re = &e.n;                //~ ErrorMove:13 "moved out"
+
+  mut f = +so Fin[0i64];
+  imm mf = *f;
+  imm rf = &f.n;                //~ ErrorMove:13 "moved out"
+
+  mut g = +so Fin[0i64];
+  imm mg = g;
+  g = +so Fin[1i64];
+  g.set(3i64);
+  imm rg = &mut g.n;
+
+  0i32;
+}

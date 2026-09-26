@@ -189,7 +189,8 @@ that is asked where a value of it is held, not here.
 ## Flow
 
 `nameuseFlow` is where initialization and move state are **diagnosed** — the
-only place either produces a message:
+only place either produces a message, for a name read and for the variable at
+the root of a borrowed place (`borrowFlow`) alike:
 
 - not `VarInitialized` → `ErrorMove`, "has not been initialized"
 - `VarMoved` → `ErrorMove`, "value has been moved out"

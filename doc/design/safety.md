@@ -58,7 +58,7 @@ most consequential thing this note settles.
 | a borrow **laundered through a variable** | **no** | assignment does not carry scope onto the variable's declared type |
 | a borrow **captured or stored in a field** | **no** | — |
 | two parameter borrows with different lifetimes | **no** | there is no lifetime annotation syntax to express it; every borrow in a signature is taken to share one lifetime |
-| aliasing of borrows | **no** | `borrowFlow` is an empty function |
+| aliasing of borrows | **no** | `borrowFlow` checks only that the borrowed place holds a value |
 | freezing a borrow's source | **no** | documented; never implemented |
 | array and slice bounds | **yes** | `genlBoundsCheck`, per dimension |
 | **raw pointer** bounds | **no** | unchecked by construction |
@@ -127,8 +127,9 @@ If you want a short answer to "what does a clean compile buy me":
   an enum variant is real.
 - **Ordinary array and slice indexing is bounds-checked**, and allocation
   failure traps rather than returning null.
-- **A variable is not read before it holds something**, and not read after its
-  value moved away — on any path, because the check is conservative.
+- **A variable is not read or borrowed before it holds something**, and not
+  read or borrowed after its value moved away — on any path, because the check
+  is conservative.
 - **Nothing is freed twice by the ordinary paths.** The release machinery
   errs toward leaking.
 

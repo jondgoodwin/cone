@@ -283,9 +283,52 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     }
 }
 
-// Perform data flow analysis on addr node
+// Walk the place a borrow points at, checking that it holds a value.
+// The place itself is not read, so a reference the place is reached through is
+// loaded as a value (a pointer) rather than read through: the variable at the
+// root must be initialized and not moved out or hollowed, as for a read.
+static void borrowFlowPlace(FlowState *fstate, INode **placep) {
+    INode *place = *placep;
+    if (isNameUseNode(place) && isExpNode(place)) {
+        nameuseFlow(fstate, (NameUseNode**)placep);
+        return;
+    }
+    switch (place->tag) {
+    case DerefTag:
+        flowLoadValue(fstate, &((StarNode *)place)->vtexp);
+        break;
+    case FldAccessTag:
+    case ArrIndexTag:
+    {
+        FnCallNode *access = (FnCallNode *)place;
+        uint16_t objtag = iexpGetTypeDcl(access->objfn)->tag;
+        if (objtag == RefTag || objtag == ArrayRefTag || objtag == PtrTag || objtag == VirtRefTag)
+            flowLoadValue(fstate, &access->objfn);
+        else
+            borrowFlowPlace(fstate, &access->objfn);
+        if (place->tag == ArrIndexTag) {
+            INode **argsp;
+            uint32_t cnt;
+            for (nodesFor(access->args, cnt, argsp))
+                flowLoadValue(fstate, argsp);
+        }
+        break;
+    }
+    case CastTag:
+        if (!(place->flags & FlagConvert)) {
+            borrowFlowPlace(fstate, &((CastNode *)place)->exp);
+            break;
+        }
+        flowLoadValue(fstate, placep);
+        break;
+    default:
+        flowLoadValue(fstate, placep);
+        break;
+    }
+}
+
+// Perform data flow analysis on a borrow: what it borrows must hold a value.
+// No aliasing of borrows is tracked.
 void borrowFlow(FlowState *fstate, RefNode **nodep) {
-    RefNode *node = *nodep;
-    RefNode *reftype = (RefNode *)node->vtype;
-    // Borrowed reference:  Deactivate source variable if necessary
+    borrowFlowPlace(fstate, &(*nodep)->vtexp);
 }
