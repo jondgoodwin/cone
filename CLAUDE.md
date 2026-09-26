@@ -51,7 +51,10 @@ Visual Studio projects stay at the root.
   freed together when it dies, and which, held in a local, is the scratch
   arena; `rcweak` is `rcw`, a region ref counting strong owners and weak
   references, and `Weak[T]`, the weak reference, a struct reaching its value
-  only by making a counted owner; `render` draws 3D
+  only by making a counted owner; `pool` is a generational `Pool[T]`, its
+  values in one block of slots, each reached through a copyable `Ref[T]` (a
+  slot and a generation) that finds nothing once its value is removed;
+  `render` draws 3D
   shapes through OpenGL (`Shape` and its sphere, plane and cube, `Shader`,
   `Image` from BMP, `Texture`, `Camera`, `Light`), ported from Pegasus3D
   over `gl`, `math3d` and `collections`, needing no window to build or test;

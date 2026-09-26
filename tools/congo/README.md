@@ -150,7 +150,7 @@ An import names a module. Congo answers each one this way:
 searches, in order:
 
 1. the Cone repository's own `packages/` (`core`, `stdio`, `libc`, `posix`,
-   `sdl`, `gl`, `math3d`, `testing`, `collections`, `arena`, `render` and `window` are
+   `sdl`, `gl`, `math3d`, `testing`, `collections`, `arena`, `pool`, `render` and `window` are
    there), then
 2. each folder the **machine config** lists.
 

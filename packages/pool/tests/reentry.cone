@@ -1,0 +1,141 @@
+// A value's 'final' that reaches back into the pool it is dying in: removing
+// another value, adding new ones, asking after itself. Expected logs are
+// worked out by hand from the rules:
+// - a value being removed is gone from the moment its 'final' starts: its
+//   own reference is not alive, and removing it again does nothing;
+// - its slot is not free until its 'final' returns, so a value added
+//   meanwhile takes another slot (here, always a fresh one at the top);
+// - a value added while one is dying may grow the block: the dying value
+//   stays where it is until its 'final' returns, and the old block is freed
+//   after that;
+// - the pool's death walks the slots in order; a value its finalizers remove
+//   ahead of the walk is finalized then, once, and one they add is finalized
+//   too, before the blocks go.
+//
+// Each value reaches its pool through a raw pointer, typed '*u8' and cast
+// back in 'final'. The natural field, '*Pool[Killer]', is refused (1069,
+// "still being laid out"): a pointer to a generic instance whose fields hold
+// the type being laid out is refused, where the same through a non-generic
+// type compiles. That is a compiler defect of its own, not the pool's.
+
+mod reentry;
+
+import testing use *;
+import pool use *;
+
+mut log = 0i64;
+fn note(d i64) { log = log * 10i64 + d; }
+
+// Its death notes n, then removes its victim, if any
+struct Killer {
+  pub n i64;
+  pub home *u8;
+  pub me Ref[Killer];
+  pub victim Ref[Killer];
+  fn final(self &uni) {
+    note(n);
+    imm p = (home as *Pool[Killer]) as &mut Pool[Killer];
+    expect(!p.alive(me), "a dying value is not alive to its own final");
+    expect(!p.remove(me), "and cannot be removed again");
+    p.remove(victim);
+  }
+}
+
+fn killer(p &mut Pool[Killer], n i64) Ref[Killer] {
+  imm home = (p as *Pool[Killer]) as *u8;
+  imm r = p.add(Killer[n, home, Ref[Killer].none(), Ref[Killer].none()]);
+  (&mut p[r]).me = r;
+  r;
+}
+
+fn killsOnRemove() {
+  mut p = Pool[Killer].empty();
+  imm a = killer(&mut p, 1);
+  imm b = killer(&mut p, 2);
+  imm c = killer(&mut p, 3);
+  (&mut p[a]).victim = b;
+  (&mut p[b]).victim = c;
+  p.remove(a);
+  expectInt(log, 123, "1's death removes 2, whose death removes 3");
+  expectUInt(u64[p.len()], 0, "all gone");
+  log = 0;
+}
+
+// Slot order 1, 2, 3, 4: 1 removes 3 (ahead of the walk), 4 removes 2
+// (behind it, already dead)
+fn killsInTeardown() {
+  mut p = Pool[Killer].empty();
+  imm a = killer(&mut p, 1);
+  imm b = killer(&mut p, 2);
+  imm c = killer(&mut p, 3);
+  imm d = killer(&mut p, 4);
+  (&mut p[a]).victim = c;
+  (&mut p[d]).victim = b;
+}
+
+// How many of the spawned kind (n = 2) have died: too many for 'log'
+mut spawned = 0i64;
+
+// Its death notes n (or counts it, if it is of the spawned kind), then adds
+// 'count' of the spawned kind
+struct Spawner {
+  pub n i64;
+  pub home *u8;
+  pub count i64;
+  fn final(self &uni) {
+    if n == 2i64 { spawned = spawned + 1i64; } else { note(n); }
+    imm p = (home as *Pool[Spawner]) as &mut Pool[Spawner];
+    mut k = 0i64;
+    while k < count {
+      p.add(Spawner[2, home, 0]);
+      k = k + 1i64;
+    }
+  }
+}
+
+fn spawner(p &mut Pool[Spawner], n i64, count i64) Ref[Spawner] {
+  imm home = (p as *Pool[Spawner]) as *u8;
+  p.add(Spawner[n, home, count]);
+}
+
+// The block of 4 is full when 1 is removed; its final adds 20, growing the
+// block to 8, 16 and 32 while 1 is still dying in the first block. None
+// takes slot 0, which is free only once 1's final returns.
+fn growsWhileDying() {
+  mut p = Pool[Spawner].empty();
+  imm a = spawner(&mut p, 1, 20);
+  spawner(&mut p, 3, 0);
+  spawner(&mut p, 3, 0);
+  spawner(&mut p, 3, 0);
+  p.remove(a);
+  expectInt(log, 1, "one death");
+  expectUInt(u64[p.len()], 23, "three left and twenty added");
+  expectUInt(u64[p.capacity()], 32, "grown three times meanwhile");
+  imm next = spawner(&mut p, 4, 0);
+  expectUInt(u64[next.slot()], 0, "slot 0 is free once its final has returned");
+  log = 0;
+}
+
+// A value whose death, at the pool's, adds three: they die too, and the
+// third grows the block while 1 is still dying in it
+fn spawnsInTeardown() {
+  mut p = Pool[Spawner].empty();
+  spawner(&mut p, 1, 3);
+  spawner(&mut p, 3, 0);
+}
+
+fn main() i32 {
+  killsOnRemove();
+  killsInTeardown();
+  expectInt(log, 1324, "1 (removing 3), 3, 2, then 4, whose victim is gone");
+  log = 0;
+  growsWhileDying();
+  expectInt(log, 4333, "the rest at the pool's death, in slot order");
+  expectInt(spawned, 20, "and the twenty added");
+  log = 0;
+  spawned = 0;
+  spawnsInTeardown();
+  expectInt(log, 13, "1, then 3");
+  expectInt(spawned, 3, "and the three 1 added in its death, growing the block, in the same walk");
+  done();
+}

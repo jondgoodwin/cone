@@ -1,0 +1,67 @@
+// A borrow of a value in a generational pool may not outlive the pool by any
+// route the borrow rules check. The pool package's 'pool[r]' and
+// '&mut pool[r]' return a bare borrow no longer-lived than the borrow of the
+// pool they were called through, so the rules for any borrow of a local
+// apply to it: it may not be returned from the function holding the pool,
+// alone or through a variable, nor stored in a variable, a field or an
+// element that outlives the pool. The pool package's own tests
+// (packages/pool/tests/) run what a pool may do.
+//
+// What still compiles, and dangles, is not here: the borrow inside the Option
+// that 'pool.get(r)' and 'pool.getMut(r)' return carries no lifetime (a
+// borrow held inside another value is not checked), and nothing freezes the
+// pool while a borrow of one of its values lives, so 'remove', a growing
+// 'add', or moving the pool away all compile (doc/design/safety.md, the
+// scorecard; packages/pool/tests/gaps.cone).
+
+mod region_flow_pool_escape;
+
+import pool use *;
+
+struct Pt { pub x i64; pub y i64; }
+struct Holder { pub r &Pt; }
+
+fn returned() &Pt {
+  mut p = Pool[Pt].empty();
+  imm r = p.add(Pt[1, 2]);
+  p[r];                         //~ ErrorEscape:4 "outlives"
+}
+
+fn returnedMut() &mut Pt {
+  mut p = Pool[Pt].empty();
+  imm r = p.add(Pt[1, 2]);
+  &mut p[r];                    //~ ErrorEscape:9 "outlives"
+}
+
+fn returnedVar() &Pt {
+  mut p = Pool[Pt].empty();
+  imm r = p.add(Pt[1, 2]);
+  imm v = p[r];
+  v;                            //~ ErrorEscape:3 "outlives"
+}
+
+fn outerVariable() {
+  imm dummy = Pt[0, 0];
+  mut v = &dummy;
+  {
+    mut p = Pool[Pt].empty();
+    imm r = p.add(Pt[1, 2]);
+    v = p[r];                   //~ ErrorInvType:5 "outlives"
+  }
+}
+
+fn outerField() {
+  imm dummy = Pt[0, 0];
+  mut h = Holder[&dummy];
+  {
+    mut p = Pool[Pt].empty();
+    imm r = p.add(Pt[1, 2]);
+    h.r = p[r];                 //~ ErrorInvType:6 "outlives"
+  }
+}
+
+fn callersValue(h &mut Holder) {
+  mut p = Pool[Pt].empty();
+  imm r = p.add(Pt[1, 2]);
+  h.r = p[r];                   //~ ErrorInvType:4 "outlives"
+}
