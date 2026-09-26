@@ -269,6 +269,31 @@ static char *incLeadingComment(char *filestart, char *floor, char *start) {
     return cand ? cand : start;
 }
 
+// The blank line directly above the line 'at' begins, where there is one
+static char *incBlankAbove(char *filestart, char *at) {
+    if (at <= filestart)
+        return NULL;
+    char *q = at - 1;
+    while (q > filestart && incIsBlank(q[-1]))
+        --q;
+    return q == filestart || q[-1] == '\n' ? q : NULL;
+}
+
+// Where the declarations left out whole lines at a time directly above 'at'
+// begin: 'at' where none ends there
+static char *incDeletedAbove(IncGen *g, Lexer *lexer, char *at) {
+    for (uint32_t e = g->nedits; e-- > 0;) {
+        IncEdit *edit = &g->edits[e];
+        if (edit->lexer == lexer && edit->to == at && edit->from < at
+            && edit->text == NULL && edit->blocks == NULL
+            && (edit->from == lexer->source || edit->from[-1] == '\n')) {
+            at = edit->from;
+            e = g->nedits;
+        }
+    }
+    return at;
+}
+
 // Leave a declaration out: its text, the comments directly above it, and a
 // comment after it on its last line. Where it has its lines to itself, the
 // whole lines go, and one blank line after them where one is above them too, so
@@ -293,22 +318,24 @@ static void incDelete(IncGen *g, DclSpan *span, char *floor) {
         from = linefrom;
         to = *lineto == '\n' ? lineto + 1 : lineto;
         // The blank line above, where there is one: [above, from)
-        char *above = NULL;
-        if (from > filestart) {
-            char *q = from - 1;
-            while (q > filestart && incIsBlank(q[-1]))
-                --q;
-            if (q == filestart || q[-1] == '\n')
-                above = q;
-        }
+        char *above = incBlankAbove(filestart, from);
         char *next = to;
         while (incIsBlank(*next))
             ++next;
         if (above && *next == '\n')
             to = next + 1;
-        // Nor a blank line left above the brace closing a type
-        else if (above && *next == '}')
-            from = above;
+        // Nor a blank line left above the brace closing a type. Where the
+        // declarations directly above were left out too, the one just above
+        // took that blank line with it, as the blank line after it: what is
+        // left runs on from above them, so the blank line to take is the one
+        // above them, and this deletion then covers theirs
+        else if (above && *next == '}') {
+            char *top = incDeletedAbove(g, span->lexer, from);
+            if (top != from)
+                above = incBlankAbove(filestart, top);
+            if (above)
+                from = above;
+        }
     }
     // Sharing its line with other code, it goes with the space before it
     else
