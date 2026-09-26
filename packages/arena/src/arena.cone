@@ -19,16 +19,51 @@
 // '+' allocation should name a region VALUE rather than a region ref is an
 // open design question, so this package does not use '+' at all.
 //
-// THE HOLE. Nothing yet stops a reference into an arena from outliving the
-// arena. The design's answer is invariant lifetimes pairing an arena with the
-// references allocated from it (key and lock: the reference is usable only
-// through its own arena), and that is not built. What the compiler checks
-// today is what it checks of any borrow: 'a.alloc(v)' returns a borrow no
-// longer-lived than the borrow of 'a' it was called through, so returning it
-// from the function that holds 'a', or storing it where it would outlive 'a',
-// is refused. But nothing stops 'a' itself from dying or moving away while
-// such a borrow is still in use: 'consume(a); r.n' compiles, and reads freed
-// memory. Keep every reference into an arena within the arena's own life.
+// A SCRATCH ARENA is an Arena held in a local variable. Its values live as
+// long as that local does, until the function returns (or the block holding
+// it ends), and each reference to one is a borrow with that local's lifetime,
+// so it may be passed down to any function called while the scratch lives, or
+// stored in another value of the same scratch, and needs no count, no key and
+// no lock. A function called with the scratch ('&mut Arena') can allocate into
+// it for its caller. The compiler checks these references as it checks any
+// borrow: returning one from the function holding the scratch, or assigning
+// it to a variable, a field or an element that outlives the scratch, is
+// refused (test/cases/region/region_flow_arena_escape.cone pins each route).
+// tests/scratch.cone runs what a scratch does, and examples/scratch.cone is
+// one at work:
+//
+//   fn mostFrequent(text &[]u8) Answer {
+//     mut s = Arena.empty();                 // the scratch
+//     imm seen = s.alloc(List[&mut Tally].empty());
+//     ...count(&mut s, seen, word)...        // lent to the functions that work
+//     Answer[best.word.copy(), seen.len()];  // only values of its own leave
+//   }   // every value in 's' dies here, then its blocks are freed
+//
+// THE HOLES. The design's answer to a reference outliving its arena is
+// invariant lifetimes pairing the arena with the references allocated from it
+// (key and lock: a reference usable only through its own arena), and that is
+// not built. A scratch needs no such pairing, only the borrow rules, but some
+// of those are not built either, so a reference can still outlive its arena:
+// - Nothing freezes a borrow's source: 'a' may die or move away while a
+//   borrow from it is still used. 'consume(a); r.n', '{ imm b = a; } r.n',
+//   and 'a <=> other' all compile, and 'r.n' then reads freed memory.
+//   'a = Arena.empty()' compiles too, and what 'a' held is never finalized
+//   or freed at all: reassignment never finalizes the old value, a compiler
+//   gap of its own.
+// - A borrow held inside another value, rather than being the value, carries
+//   no lifetime: returning 'Holder[a.alloc(v)]', a '+rc Holder[...]' or an
+//   'Option' holding one, assigning 'outer = Holder[a.alloc(v)]', pushing one
+//   onto an outer 'List', a call storing one argument in a field of another
+//   ('stash(&mut outer, a.alloc(v))'), and reading one back out of a list
+//   ('*seen[0usize]', returned) all compile and dangle.
+// - Swapping is not checked as storing: 'outer <=> r' compiles and dangles.
+// Keep every reference into an arena within the arena's own life.
+//
+// Memory. A block is allocated with the C library's 'malloc'. If that fails,
+// or the room asked for cannot be counted in a usize, the program ends at once
+// through the C library's 'abort': the arena's panic, since Cone's own 'panic'
+// is not built. There is no fallible form of 'alloc' yet; it waits on how an
+// allocation names a region value.
 //
 // How a value is finalized. A value whose type needs finalizing
 // ('mem.needsFinal[T]()') gets a small header just before it, allocated in
@@ -101,9 +136,19 @@ pub struct Arena {
     Arena[0usize as *Block, 0usize, 0usize, 0usize as *FinalNode, 0usize, 0usize];
   }
 
+  // An arena holding nothing yet, whose first block is allocated now, with
+  // room for at least 'bytes' of values and their headers: a scratch whose
+  // need is known then makes one allocation rather than several
+  pub fn withRoom(bytes usize) Arena {
+    imm room = blockRoom(bytes);
+    imm blk = newBlock(0usize as *Block, room);
+    imm start = blk as usize + mem.sizeof[Block]();
+    Arena[blk, start, start + room, 0usize as *FinalNode, 0usize, 1usize];
+  }
+
   // Move value into the arena, and a reference to it there. The reference is
-  // good for as long as the arena lives, and nothing checks that it is not
-  // kept longer (see the top of this file). The placing is done by the two
+  // good for as long as the arena lives, and is checked as any borrow is, with
+  // the holes the top of this file lists. The placing is done by the two
   // methods below, which are not generic, so each instance of this one is
   // only the few lines that differ by T.
   pub fn alloc[T](self &mut, value T) &mut T {
@@ -163,10 +208,8 @@ pub struct Arena {
   // A new block with room for at least 'need' bytes, made the one allocation
   // bumps through. What was left of the one before is not used again.
   fn grow(self &mut, need usize) {
-    mut room = blockBytes;
-    if room < need { room = need; }
-    imm blk = libc.malloc(mem.sizeof[Block]() + room) as *Block;
-    mem.writeRaw(blk, Block[blocks]);
+    imm room = blockRoom(need);
+    imm blk = newBlock(blocks, room);
     blocks = blk;
     nblocks = nblocks + 1usize;
     top = blk as usize + mem.sizeof[Block]();
@@ -191,6 +234,29 @@ pub struct Arena {
       libc.free(blk as *u8);
     }
   }
+}
+
+// The room a new block gets: a block's worth, or 'need' if that is more
+fn blockRoom(need usize) usize {
+  if need > blockBytes {need;} else {blockBytes;};
+}
+
+// A new block with 'room' bytes after its header, the block before it 'prev'.
+// A block the C library cannot allocate, or whose size does not fit in a
+// usize, ends the program.
+fn newBlock(prev *Block, room usize) *Block {
+  if room > (0usize - 1usize) - mem.sizeof[Block]() { outOfMemory(); }
+  imm blk = libc.malloc(mem.sizeof[Block]() + room) as *Block;
+  if blk as usize == 0usize { outOfMemory(); }
+  mem.writeRaw(blk, Block[prev]);
+  blk;
+}
+
+// The arena's panic: the program ends at once, through the C library's
+// 'abort', and nothing more of it runs. Cone's 'panic' is not built yet;
+// when it is, this is where it goes.
+fn outOfMemory() {
+  libc.abort();
 }
 
 // n rounded up to a multiple of align, a power of two

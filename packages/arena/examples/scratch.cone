@@ -1,0 +1,80 @@
+// A scratch arena: the working state of one function, all of it gone when the
+// function returns. 'mostFrequent' tallies the words of a text in a scratch --
+// a record per distinct word, and a list of borrows to those records -- lends
+// the scratch and the borrows to the functions that do the work, and returns
+// only a copy of the answer. Nothing it made needs a count, a key or a lock,
+// and nothing is freed one by one: at its return every word's String frees its
+// bytes (its 'final'), the list frees its own, and the arena frees its blocks.
+// Run it with
+//   congo run packages/arena/examples/scratch.cone
+
+mod scratch;
+
+import stdio use *;
+import arena use *;
+import collections use *;
+
+// One distinct word and how often it was seen
+struct Tally {
+  pub word String;
+  pub count i64;
+}
+
+// Count a word: its record's count goes up, or it gets a record, allocated in
+// the caller's scratch, whose borrow the list keeps
+fn count(s &mut Arena, seen &mut List[&mut Tally], word &[]u8) {
+  mut i = 0usize;
+  while i < seen.len() {
+    imm t = *seen[i];
+    if t.word.equals(word) {
+      t.count = t.count + 1;
+      return;
+    }
+    i = i + 1usize;
+  }
+  seen.push(s.alloc(Tally[String.from(word), 1]));
+}
+
+// The record seen most often, the first of those tied
+fn most(seen &List[&mut Tally]) &mut Tally {
+  mut best = *seen[0usize];
+  mut i = 1usize;
+  while i < seen.len() {
+    imm t = *seen[i];
+    if t.count > best.count { best = t; }
+    i = i + 1usize;
+  }
+  best;
+}
+
+// What 'mostFrequent' answers: values of its own, owing nothing to the scratch
+struct Answer {
+  pub word String;
+  pub distinct usize;
+}
+
+// The text's most frequent word, and how many distinct words it has
+fn mostFrequent(text &[]u8) Answer {
+  mut s = Arena.empty();
+  imm seen = s.alloc(List[&mut Tally].empty());
+  imm whole = s.alloc(String.from(text));
+  imm words = s.alloc(whole.split(' '));
+  mut i = 0usize;
+  while i < words.len() {
+    count(&mut s, seen, words[i].view());
+    i = i + 1usize;
+  }
+  imm best = most(seen);
+  // Only a copy leaves: 'best' is a borrow into the scratch, and returning
+  // it would be refused
+  Answer[best.word.copy(), seen.len()];
+}
+
+fn main() {
+  imm answer = mostFrequent("the cat saw the dog and the dog saw the cat run");
+  printStr("most frequent: ");
+  printStr(answer.word.view());
+  printStr("\ndistinct words: ");
+  printUInt(u64[answer.distinct]);
+  printStr("\n");
+}

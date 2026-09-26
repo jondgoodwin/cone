@@ -26,7 +26,9 @@ tracing GC are unwritten, and the arena is written only as a library value: the
 value (`a.alloc(v)`), not by a `+` allocation through a region ref,
 which is handed neither the region value nor the value's type. It finalizes
 each value through `mem.finalize` when it dies, newest first; nothing yet
-pairs a reference with its arena's lifetime.
+pairs a reference with its arena's lifetime. Held in a local, an `Arena` is the
+**scratch arena**: `alloc` returns a borrow of that local, so the borrow rules
+are its whole safety, with their gaps (below, "Where each rule is enforced").
 
 The argument is in *Memory Managed Your Way* (`conesite/public/memory.html`) and
 `c:/src/progling/content/post/gradual-memory-management.md`. The origin is
