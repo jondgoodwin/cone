@@ -1,0 +1,85 @@
+// A reference to an instance of a generic function or generic method:
+// '&half[i64]', '&Holder.scale[f64]'. A borrow reaches the whole suffixed term,
+// and an index directly on the borrowed name is re-associated so the index
+// takes the borrow as its receiver ('&a[1]' borrows the element). A list of
+// type arguments is not an index: '&half[i64]' borrows the instance the type
+// arguments name. Each reference is taken for two type arguments and called,
+// and the two differ at run time -- integer and floating division -- so the
+// program shows which instance each reached. Inside a generic function the
+// type argument may be its own type parameter. Beside them, the borrows that
+// are indexes stay indexes: an array element, and an element of an array
+// field. Each printed value was checked by hand against the function it
+// reaches.
+
+mod generic_fn_reference;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn half[T](v T) T { v / 2; }
+
+struct Fin {
+  pub n i32;
+}
+struct Gin {
+  pub n i32;
+}
+
+// Instantiated for two struct types, each reading its own field
+fn nOf[T](p &T) i64 { i64[p.n] * 10; }
+
+struct Holder {
+  pub k i64;
+  pub fn scale[T](self &, v T) T { v / 4; }
+}
+
+struct Tray {
+  pub items [3; i32];
+}
+
+// The type argument is the caller's own type parameter
+fn halfVia[T](v T) T {
+  imm f = &half[T];
+  f(v);
+}
+
+fn main() {
+  imm hi = &half[i64];
+  imm hf = &half[f64];
+  show("fn-i64", hi(7));                   // 7 / 2 = 3
+  show("fn-f64-times-10", i64[hf(7.0d) * 10.0d]);  // 3.5 * 10 = 35
+
+  imm nf = &nOf[Fin];
+  imm ng = &nOf[Gin];
+  imm fin = Fin[4];
+  imm gin = Gin[9];
+  show("fn-struct-fin", nf(&fin));         // 4 * 10 = 40
+  show("fn-struct-gin", ng(&gin));         // 9 * 10 = 90
+
+  show("via-type-parameter-i64", halfVia(9i64));              // 9 / 2 = 4
+  show("via-type-parameter-f64", i64[halfVia(9.0d) * 10.0d]); // 4.5 * 10 = 45
+
+  imm h = Holder[1];
+  imm mi = &Holder.scale[i64];
+  imm mf = &Holder.scale[f64];
+  show("method-i64", mi(&h, 10));          // 10 / 4 = 2
+  show("method-f64-times-100", i64[mf(&h, 10.0d) * 100.0d]);  // 2.5 * 100 = 250
+
+  // Indexes, not type arguments: still borrows of an element
+  mut a [4; i32] = [5, 6, 7, 8];
+  imm r = &a[1];
+  show("array-element", i64[*r]);               // 6
+  imm i usize = 2;
+  imm ri = &a[i];
+  show("array-element-runtime-index", i64[*ri]);  // 7
+
+  imm t = Tray[[11, 12, 13]];
+  imm rf = &t.items[2];
+  show("field-element", i64[*rf]);              // 13
+}

@@ -146,11 +146,15 @@ static int borrowRefIndexDispatches(RefNode *node) {
 // node a type. '&Point[1, 2]' does arrive, and stays a literal of Point rather
 // than becoming an index of '&Point' -- a temporary, which the borrow refuses
 // below. It used to be a literal of the reference type, which nothing accepted.
+// Nor is a list of type arguments an index: '&half[i64]' and
+// '&Holder.pick[i32]' borrow the instance they name, which re-associating would
+// strip of its type arguments, leaving a type to index '&half' by.
 static int borrowReassocIndex(RefNode *node) {
     if (node->tag != BorrowTag || node->vtexp->tag != FnCallTag)
         return 0;
     FnCallNode *index = (FnCallNode*)node->vtexp;
-    return (index->flags & FlagIndex) && index->methfld == NULL && !isTypeNode(index->objfn);
+    return (index->flags & FlagIndex) && index->methfld == NULL && !isTypeNode(index->objfn)
+        && !fnCallHasTypeArgs(index);
 }
 
 // Analyze borrow node
