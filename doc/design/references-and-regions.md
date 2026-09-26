@@ -18,7 +18,7 @@ needed. Safety is preserved across all of it.
 `rc`, both written in Cone in the core package. A user can define a region the
 same way — a struct declaring `is RegionRef`, whose `alloc`, `init`, `alias`,
 `dealias` and `free` the compiler calls — but no more of the protocol below is
-built: no barriers, no weak references, no per-type record handed to a region,
+built: no barriers, no weak reference kind, no per-type record handed to a region,
 no region with global state, and no finalizing of a slice's elements when its
 region frees it. Of the strategies that motivate the whole design, pool and
 tracing GC are unwritten, and the arena is written only as a library value: the
@@ -29,6 +29,15 @@ each value through `mem.finalize` when it dies, newest first; nothing yet
 pairs a reference with its arena's lifetime. Held in a local, an `Arena` is the
 **scratch arena**: `alloc` returns a borrow of that local, so the borrow rules
 are its whole safety, with their gaps (below, "Where each rule is enforced").
+A third region ref is a library package too: `rcweak`'s `rcw`, reference
+counting whose header also counts weak references. A weak reference is no
+reference kind but an ordinary struct, `Weak[T]`, holding the header's address
+and reaching the value only by making a counted `+rcw-mut` owner, in an
+`Option` (`upgrade`) or checked first (`alive`, `strong`). Its value dies at
+its last strong owner, and its memory is freed at its last weak reference:
+death and freeing separate, with the compiler told nothing new. The owner an
+`upgrade` hands back in a `Some` is never released, because nothing held in an
+enum is.
 
 The argument is in *Memory Managed Your Way* (`conesite/public/memory.html`) and
 `c:/src/progling/content/post/gradual-memory-management.md`. The origin is
@@ -117,6 +126,7 @@ imm shared = +rc Person["Tako"]     // counted: freed at zero
 | `borrowRef` | a sentinel node, not a struct — the default for `&` | none; a borrow owns nothing |
 | `so` | `struct so is RegionRef, Move` in the core package, `packages/core/src/core.cone`: no fields, `alloc` and `free`, no `alias` | single owner frees |
 | `rc` | `struct rc is RegionRef { cnt usize }` in the core package, with `init`, `alias` and `dealias` too | reference counting |
+| `rcw` | `struct rcw is RegionRef { strong usize; weak usize }` in the `rcweak` package, `packages/rcweak/src/rcweak.cone`; its `free` gives back one weak count, and the last one frees | reference counting with weak references (`Weak[T]`, a struct) |
 | user-defined | any struct declaring `is RegionRef` | whatever its methods do |
 
 **`so` and `rc` are Cone source, not built into the compiler**, and nothing in

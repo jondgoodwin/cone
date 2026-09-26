@@ -49,7 +49,9 @@ Visual Studio projects stay at the root.
   allocator and moving them with core's `mem` intrinsics; `arena` is an
   `Arena`, a dynamic region whose values are finalized, newest first, and
   freed together when it dies, and which, held in a local, is the scratch
-  arena; `render` draws 3D
+  arena; `rcweak` is `rcw`, a region ref counting strong owners and weak
+  references, and `Weak[T]`, the weak reference, a struct reaching its value
+  only by making a counted owner; `render` draws 3D
   shapes through OpenGL (`Shape` and its sphere, plane and cube, `Shader`,
   `Image` from BMP, `Texture`, `Camera`, `Light`), ported from Pegasus3D
   over `gl`, `math3d` and `collections`, needing no window to build or test;
