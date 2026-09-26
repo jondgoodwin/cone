@@ -1,5 +1,6 @@
 // What a pattern is allowed to narrow to: a variant of the enum being matched,
-// and nothing else.
+// and nothing else; and, bound through a reference, only through one no other
+// reference may change the variant under.
 //
 // Type-check stage only: this file parses and resolves cleanly, so every
 // diagnostic below is reached. Both patterns below name a type that exists and
@@ -35,7 +36,7 @@ use Other;
 
 // A variant of a different enum is still a variant, and still unreachable from
 // this one
-fn foreignVariant(s &Shape) i32 {
+fn foreignVariant(s &imm Shape) i32 {
   match s {
     case imm a &Alpha {a.a;}   //~ ErrorInvType:10 "Types are not compatible for this downcast specialization"
     else {0;}
@@ -57,7 +58,7 @@ fn matchNonEnum(n i32) i32 {
 // storage that nothing gave it ownership of, and the two regions are laid out
 // differently besides -- an 'rc' allocation carries a count the borrow has no
 // room for. There is no recast between regions, so the regions must be the same.
-fn foreignRegion(s &Shape) i32 {
+fn foreignRegion(s &imm Shape) i32 {
   match s {
     case imm c +rc-mut Circle {c.radius;}   //~ ErrorInvType "won't downcast safely"
     else {0;}
@@ -111,4 +112,53 @@ enum Level {
       else {0;}
     }
   }
+}
+
+// -------- through a reference that may alias --------
+
+// A binding through a reference is a reference into the variant's payload.
+// Through a 'mut' or 'ro' reference, one of several, another may change which
+// variant the value holds while the binding is used, and the payload would be
+// read as the wrong variant's. Only 'uni', 'imm' and 'mut1' narrow (Jon's 2018
+// rule: no interior references into a shape-changing value through a shared
+// mutable reference). 'case is', which binds nothing, narrows through any.
+fn writeThroughMut(s &mut Shape) {
+  match s {
+    case mut c &mut Circle {c.radius = c.radius + 10;}   //~ ErrorBadPerm:10 "A 'mut' reference to Shape may not be narrowed"
+    else {}
+  }
+}
+
+fn readThroughRo(s &Shape) i32 {
+  if imm c &Circle = s {c.radius;} else {0;}   //~ ErrorBadPerm:6 "A 'ro' reference to Shape may not be narrowed"
+}
+
+typedef CircleMut &mut Circle;
+fn throughAnAlias(s &mut Shape) {
+  match s {
+    case mut c CircleMut {c.radius = 1;}   //~ ErrorBadPerm:10 "A 'mut' reference to Shape may not be narrowed"
+    case is &mut Rect {}
+  }
+}
+
+fn convertedByHand(s &mut Shape) i32 {
+  imm c = s into &mut Circle;   //~ ErrorBadPerm:13 "A 'mut' reference to Shape may not be narrowed"
+  c.radius;
+}
+
+// The two that may: through '&uni' the binding may even write, and '&imm'
+// never changes
+fn writeThroughUni(s &uni Shape) {
+  match s {
+    case mut c &uni Circle {c.radius = c.radius + 10;}
+    else {}
+  }
+}
+
+fn readThroughImm(s &imm Shape) i32 {
+  if imm c &Circle = s {c.radius;} else {0;}
+}
+
+fn testsThroughMut(s &mut Shape) Bool {
+  s is &mut Circle;
 }
