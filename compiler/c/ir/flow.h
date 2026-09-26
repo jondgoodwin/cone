@@ -21,7 +21,6 @@
 
 typedef struct VarDclNode VarDclNode;
 typedef struct FnSigNode FnSigNode;
-typedef struct FnCallNode FnCallNode;
 
 // Why a function would need a walk that follows borrows along each path: the
 // gate, set as the walk meets each trigger. Nothing reads it yet; -V 2 counts it.
@@ -48,18 +47,20 @@ typedef struct FlowState {
 // Start the flow state for a function with this signature
 void flowStateInit(FlowState *fstate, FnSigNode *fnsig);
 
-// Gate trigger: a local declared, assigned or swapped with this type
-void flowGateHolder(FlowState *fstate, INode *type);
+// The gate's triggers are inline tests in flowgate.h, which read node types
+// and so follow every node header; these are the questions they ask out of
+// line, once the quick test says the answer may matter
 
-// Gate trigger: a value a return, break or block end hands out
-void flowGateResult(FlowState *fstate, INode *exp);
+// Set for -V 2, to ask every trigger and count each; otherwise the first one
+// found settles the gate
+extern int flowGateCountAll;
 
-// Gate trigger: a call storing through a '&mut X' argument beside another borrow
-void flowGateCall(FlowState *fstate, FnCallNode *node);
-
-// An operand of a call or a literal was just walked: while the rest are, a
-// borrow it makes waits, and the variable it borrows is remembered
-void flowGateOperand(FlowState *fstate, INode *operand);
+// A value a return, break or block end hands out has this type
+void flowGateResultAsk(FlowState *fstate, INode *type);
+// A call of two or more arguments has one that is a borrowed reference
+void flowGateCallAsk(FlowState *fstate, Nodes *args);
+// An operand just walked may be a borrow
+void flowGateOperandAsk(FlowState *fstate, INode *operand);
 #define flowGateOperandsEnd(fstate, mark) ((fstate)->inflightcnt = (mark))
 
 // A variable is named while an operand's borrow waits: gate trigger when it is
@@ -69,10 +70,6 @@ void flowGateUse(FlowState *fstate, VarDclNode *var);
 // Tally a function's gate once its walk is done, and print the tallies (-V 2)
 void flowGateCount(FlowState *fstate);
 void flowGatePrint();
-
-// Set for -V 2, to ask every trigger and count each; otherwise the first one
-// found settles the gate
-extern int flowGateCountAll;
 
 // Perform data flow analysis on a node whose value we intend to load
 // At minimum, we check that it is a valid, readable value

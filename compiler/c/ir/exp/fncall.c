@@ -1928,7 +1928,7 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
         flowGateOperand(fstate, *argsp);
     }
     flowGateOperandsEnd(fstate, inflight);
-    flowGateCall(fstate, node);
+    flowGateCall(fstate, node->args);
     fnCallFlowStoredBorrow(node);
 }
 

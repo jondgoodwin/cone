@@ -361,12 +361,12 @@ void assignFlow(FlowState *fstate, AssignNode **nodep) {
         uint32_t cnt;
         for (nodesFor(((TupleNode*)node->lval)->elems, cnt, lvalp)) {
             assignFlowLvalReads(fstate, lvalp);
-            flowGateHolder(fstate, ((IExpNode*)*lvalp)->vtype);
+            flowGateAssigned(fstate, *lvalp);
         }
     }
     else {
         assignFlowLvalReads(fstate, &node->lval);
-        flowGateHolder(fstate, ((IExpNode*)node->lval)->vtype);
+        flowGateAssigned(fstate, node->lval);
     }
 
     // Handle tuple decomposition for parallel assignment

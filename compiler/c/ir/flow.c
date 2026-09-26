@@ -840,16 +840,17 @@ static uint32_t flowGateFns = 0;
 static uint32_t flowGateGated = 0;
 static uint32_t flowGateByTrigger[4] = { 0, 0, 0, 0 };
 
-// Is the gate still to decide this trigger? When counting every trigger, each
-// is asked until it fires; otherwise the first one found settles the gate.
-static inline int flowGateOpen(FlowState *fstate, uint16_t trigger) {
-    return flowGateCountAll ? !(fstate->gate & trigger) : !fstate->gate;
-}
-
 // Is this type (a declaration) a bare borrowed reference?
 static int flowGateIsBorrowRef(INode *typedcl) {
     return (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag || typedcl->tag == VirtRefTag)
         && itypeGetTypeDcl(((RefNode *)typedcl)->region) == borrowRef;
+}
+
+// A name standing for a type, resolved to what it names; any other type node
+// as it is
+static INode *flowGateTypeDcl(INode *type) {
+    return (type->tag == NameUseTag || type->tag == AliasDclTag) && isTypeNode(type)
+        ? itypeGetTypeDcl(type) : type;
 }
 
 void flowStateInit(FlowState *fstate, FnSigNode *fnsig) {
@@ -859,32 +860,23 @@ void flowStateInit(FlowState *fstate, FnSigNode *fnsig) {
     fstate->inflightcnt = 0;
 }
 
-void flowGateHolder(FlowState *fstate, INode *type) {
-    if (flowGateOpen(fstate, FlowGateHolder) && itypeCarriesBorrow(type))
-        fstate->gate |= FlowGateHolder;
-}
-
 // A bare borrowed reference handed out keeps its existing check (its scope
 // number); a borrow inside another value has none
-void flowGateResult(FlowState *fstate, INode *exp) {
-    if (!flowGateOpen(fstate, FlowGateResult) || !isExpNode(exp) || exp->tag == NilLitTag)
-        return;
-    INode *type = ((IExpNode *)exp)->vtype;
-    if (type == NULL || !isTypeNode(type))
-        return;
-    INode *typedcl = itypeGetTypeDcl(type);
+void flowGateResultAsk(FlowState *fstate, INode *type) {
+    INode *typedcl = flowGateTypeDcl(type);
     if (!flowGateIsBorrowRef(typedcl) && itypeCarriesBorrow(typedcl))
         fstate->gate |= FlowGateResult;
 }
 
-void flowGateCall(FlowState *fstate, FnCallNode *node) {
-    if (!flowGateOpen(fstate, FlowGateStore))
-        return;
+void flowGateCallAsk(FlowState *fstate, Nodes *args) {
     INode **argsp;
     uint32_t cnt;
     INode *storer = NULL;
-    for (nodesFor(node->args, cnt, argsp)) {
-        RefNode *argtype = (RefNode *)iexpGetTypeDcl(*argsp);
+    for (nodesFor(args, cnt, argsp)) {
+        INode *type = ((IExpNode *)*argsp)->vtype;
+        if (type->tag != RefTag && type->tag != NameUseTag && type->tag != AliasDclTag)
+            continue;
+        RefNode *argtype = (RefNode *)flowGateTypeDcl(type);
         if (argtype->tag == RefTag && itypeGetTypeDcl(argtype->region) == borrowRef
             && (permGetFlags(argtype->perm) & MayWrite) && itypeCarriesBorrow(argtype->vtexp)) {
             storer = *argsp;
@@ -893,7 +885,7 @@ void flowGateCall(FlowState *fstate, FnCallNode *node) {
     }
     if (storer == NULL)
         return;
-    for (nodesFor(node->args, cnt, argsp)) {
+    for (nodesFor(args, cnt, argsp)) {
         if (*argsp != storer && itypeCarriesBorrow(((IExpNode *)*argsp)->vtype)) {
             fstate->gate |= FlowGateStore;
             return;
@@ -926,9 +918,7 @@ static VarDclNode *flowGatePlaceRoot(INode *place) {
     }
 }
 
-void flowGateOperand(FlowState *fstate, INode *operand) {
-    if (!flowGateOpen(fstate, FlowGateInCall))
-        return;
+void flowGateOperandAsk(FlowState *fstate, INode *operand) {
     while (operand->tag == CastTag)
         operand = ((CastNode *)operand)->exp;
     if (operand->tag != BorrowTag && operand->tag != ArrayBorrowTag)

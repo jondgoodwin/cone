@@ -99,10 +99,15 @@ static int itypeStructCarriesBorrow(StructNode *type) {
 
 // May a value of this type hold a borrowed reference?
 int itypeCarriesBorrow(INode *type) {
-    if (type == NULL || !isTypeNode(type))
+    if (type == NULL)
         return 0;
-    type = itypeGetTypeDcl(type);
     switch (type->tag) {
+    // A name, or an alias, answers for the type it stands for. One that names
+    // no type -- a generic's parameter in its template -- answers nothing.
+    case NameUseTag:
+        return isTypeNode(type) ? itypeCarriesBorrow(itypeGetTypeDcl(type)) : 0;
+    case AliasDclTag:
+        return itypeCarriesBorrow(((AliasDclNode *)type)->target);
     case RefTag:
     case ArrayRefTag:
     case VirtRefTag:

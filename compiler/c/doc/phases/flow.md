@@ -135,7 +135,7 @@ that will read it can be budgeted. `FlowState.gate` gathers one bit per trigger:
 
 | Bit | Set by | When |
 | --- | --- | --- |
-| `FlowGateHolder` | `varDclFlow`, `assignFlow`, `swapFlow` | a local declared, or a place assigned or swapped, whose type carries a borrow |
+| `FlowGateHolder` | `varDclFlow`, `assignFlow`, `swapFlow` | a local declared, or a place assigned or swapped, whose type carries a borrow (a local assigned by name is not asked again: its declaration was) |
 | `FlowGateResult` | `blockFlow` | a `return`, `break` or block end hands out a value carrying a borrow that is not itself a bare borrowed reference (a bare one has its scope number checked already) |
 | `FlowGateStore` | `fnCallFlow` | a call with a `&mut X` argument, `X` carrying a borrow, beside another argument carrying one |
 | `FlowGateInCall` | `nameuseFlow`, `nameuseFlowBorrowed` | a variable named while a borrow of it made by an earlier operand of the same call, struct or array literal or value tuple is still waiting for it (`v.add(v.len())`) |
@@ -154,9 +154,17 @@ started. A name use checks the list only when it is not empty, so a function
 with nothing waiting pays one test per name use. More than `FlowInflightMax`
 waiting at once gates the function.
 
-Each trigger costs O(1) per node. An ordinary compile stops asking once any bit
-is set; `-V 2` asks every trigger to the end, so that it can count each, and
-prints `Flow gate: G of N functions (holder …, result …, store …, in-call …)`
+Each trigger costs O(1) per node, and must cost almost nothing where it does
+not fire, since it is asked of every function. So each is an inline test in
+`ir/flowgate.h` (included at the end of `ir.h`, after the node headers it reads)
+that looks through one name use to the declaration and dismisses a number, void,
+a struct already known to carry nothing, a call whose arguments are not
+references, an operand that is not a borrow; only then is the question asked out
+of line in `flow.c`. Asked through calls that resolved each type first, the same
+triggers cost flow 25–30% on code holding no borrow; inline, about 4%. An
+ordinary compile stops asking once any bit is set; `-V 2` asks every trigger to
+the end, so that it can count each, and prints
+`Flow gate: G of N functions (holder …, result …, store …, in-call …)`
 (`flowGatePrint`).
 
 **Flow computes no lifetimes of its own.** `VarDclNode.scope` is set during name
@@ -521,7 +529,8 @@ is what releases the old allocation.
 | | `flowIsRcRef`, `flowIsOwningType` | is this type counted; must a variable of this type be released |
 | | `flowScopePush`, `flowScopePop`, `flowAddVar` | the variable stack |
 | | `flowScopeDealias` | build a scope's release list; skip an uninitialized, moved-out or handed-back variable; release a hollowed one hollow |
-| | `flowStateInit`, `flowGateHolder`, `flowGateResult`, `flowGateCall`, `flowGateOperand`, `flowGateUse`, `flowGateCount`, `flowGatePrint` | the gate (§3, "The gate"): its triggers, the waiting operands' borrows, the `-V 2` tallies |
+| | `flowStateInit`, `flowGateResultAsk`, `flowGateCallAsk`, `flowGateOperandAsk`, `flowGateUse`, `flowGateCount`, `flowGatePrint` | the gate (§3, "The gate"): the questions its triggers ask out of line, the waiting operands' borrows, the `-V 2` tallies |
+| `ir/flowgate.h` | `flowGateHolder`, `flowGateAssigned`, `flowGateResult`, `flowGateCall`, `flowGateOperand` | the gate's triggers as inline tests, dismissing what cannot carry a borrow without a call |
 | `ir/itype.c` | `itypeCarriesBorrow` | may a value of this type hold a borrowed reference; a struct's answer remembered in `StructNode.carriesborrow` |
 | `ir/exp/block.c` | `blockFlow` | scope push/pop, `blockret` injection, result walk then dealias capture; a `return`'s move source |
 | `ir/exp/if.c` | `ifFlow` | both arms against one shared state |
