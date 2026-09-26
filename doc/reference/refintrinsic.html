@@ -35,11 +35,31 @@
 <pre>
 pub fn @intrinsic sizeof[T]() usize;
 </pre>
-	<p>Only the <span class="pre">core</span> package may declare one, in its own module
-		(not in a type or a submodule). Anywhere else, <span class="pre">@intrinsic</span>
-		is an error. Other packages call the intrinsics core declares <span class="pre">pub</span>,
-		which, core being every module's prelude, are names every module reaches.
-		A module may not declare a function of the same name as one of them.</p>
+	<p>Only the <span class="pre">core</span> package may declare one: as a function of
+		one of its modules, or as a function (taking no <span class="pre">self</span>) of
+		a plain struct one of them declares. Anywhere else, <span class="pre">@intrinsic</span>
+		is an error.</p>
+
+	<p>Core declares every intrinsic below inside <span class="pre">mem</span>, and
+		every module, core being its prelude, reaches them through that one name:</p>
+<pre>
+imm p = malloc(mem.sizeof[Point]() * 4usize) as *Point;
+mem.writeRaw[Point](p, Point[1., 2.]);
+</pre>
+	<p>So the intrinsics' own names are free: a module may declare its own
+		<span class="pre">finalize</span> or <span class="pre">sizeof</span>. Only
+		<span class="pre">mem</span> itself is a name every module has.</p>
+
+	<h3>Why mem is a struct</h3>
+
+	<p><span class="pre">mem</span> is meant to be a submodule of core,
+		<span class="pre">core.mem</span>. A submodule of core cannot yet be reached from
+		outside it: a compile that finds core by itself reads only core's one source
+		file, and the include file other packages compile against keeps a package's
+		submodules private. So <span class="pre">mem</span> is declared as an
+		<span class="pre">@opaque</span> struct, which holds no value, whose functions
+		are reached by the same path a submodule's would be. When it becomes a
+		submodule, no call changes.</p>
 
 	<p>The compiler keeps a registry of the intrinsics it defines. A declaration must
 		name one of them, and must say exactly what the registry says: the same type
@@ -72,7 +92,9 @@ pub fn @intrinsic readRaw[T](p *T) T {*p;}
 
 	<h2>The intrinsics</h2>
 
-	<p>Several intrinsics take a raw pointer and trust the caller's promise about it.
+	<p>Each is declared in core's <span class="pre">mem</span> and called as
+		<span class="pre">mem.<i>name</i>[T](...)</span>.
+		Several intrinsics take a raw pointer and trust the caller's promise about it.
 		Misused, they break memory safety in ways the compiler cannot see, so a call to
 		one belongs inside <span class="pre">trust</span>. That is marked below as
 		"needs trust" (not yet enforced).</p>
@@ -83,7 +105,7 @@ fn @intrinsic sizeof[T]() usize
 </pre>
 	<p>The number of bytes from one <span class="pre">T</span> to the next in an array:
 		its size, including the padding at its end that keeps the next one aligned.
-		<span class="pre">sizeof[T]() * n</span> is the memory <span class="pre">n</span>
+		<span class="pre">mem.sizeof[T]() * n</span> is the memory <span class="pre">n</span>
 		values need. A struct with no fields has size 0. The answer is a constant for
 		the target: no code runs to compute it. It is not yet usable where the compiler
 		itself needs a number, such as an array's length, because the compiler asks the

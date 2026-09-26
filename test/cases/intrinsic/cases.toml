@@ -6,13 +6,17 @@
 # The chapter is doc/reference/refintrinsic.html; each intrinsic's meaning and
 # edge cases are stated there, and intrinsic_success pins them.
 #
-# '@intrinsic' is allowed only in the core package's own module, so the
-# scenarios about the declaration itself -- intrinsic_parse_form and
-# intrinsic_nameres_registry -- are modules named 'core'. They are compiled
-# against intrinsicpkgs, a core package with nothing in it found through
-# '--path' ahead of the real one: as every module's prelude, the real core
-# already holds the registry's names, and a module may not declare a name its
-# prelude has (ErrorDupName).
+# Core declares its intrinsics in 'mem', so a program calls 'mem.sizeof[T]()',
+# and the intrinsics' own names are free for any module to declare
+# (intrinsic_success declares a 'sizeof' and a 'finalize' of its own).
+#
+# '@intrinsic' is allowed only in the core package, so the scenarios about the
+# declaration itself -- intrinsic_parse_form and intrinsic_nameres_registry --
+# are modules named 'core'. They are compiled against intrinsicpkgs, a core
+# package with nothing in it found through '--path' ahead of the real one, so
+# that nothing of the real core's stands in the way. intrinsic_nameres_submodule
+# is compiled against intrinsicsub, a core laid out as a folder whose submodule
+# declares an intrinsic.
 #
 # Left out deliberately:
 #
@@ -25,7 +29,7 @@
 # - A non-generic intrinsic. The registry has none, so a registry name declared
 #   without type parameters is only ever a signature mismatch.
 
-support = ["intrinsicpkgs"]
+support = ["intrinsicpkgs", "intrinsicsub"]
 
 # -------- success --------
 
@@ -92,7 +96,7 @@ options = ["--path=test/cases/intrinsic/intrinsicpkgs"]
 
 [scenario.intrinsic_nameres_registry]
 category = "reject"
-description = "An '@intrinsic' declaration the registry refuses: an unknown name, another signature, a default value, a body with no fallback, a type's method"
+description = "An '@intrinsic' declaration the registry refuses: an unknown name, another signature, a default value, a body with no fallback; one in a plain struct of core accepted, a method or a generic type's or a trait's refused"
 tags = ["nameres"]
 
 [[scenario.intrinsic_nameres_registry.run]]
@@ -101,8 +105,22 @@ options = ["--path=test/cases/intrinsic/intrinsicpkgs"]
 
 [scenario.intrinsic_nameres_place]
 category = "reject"
-description = "'@intrinsic' outside the core package's own module: in another module, and on a type's method"
+description = "'@intrinsic' outside the core package: in another module, and in a struct of that module"
 tags = ["nameres"]
+
+[scenario.intrinsic_nameres_submodule]
+category = "compile"
+description = "An intrinsic declared in a submodule of core is accepted, and called through the submodule's name"
+tags = ["nameres", "genllvm"]
+
+[[scenario.intrinsic_nameres_submodule.run]]
+name = "folder-core"
+options = ["--path=test/cases/intrinsic/intrinsicsub"]
+
+[[scenario.intrinsic_nameres_submodule.check]]
+name = "the-submodule-intrinsic-is-a-constant"
+target = "preir"
+contains = ["store i64 8, i64* %n"]
 
 # -------- type check stage --------
 

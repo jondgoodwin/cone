@@ -124,7 +124,7 @@ method such as integer `+` is **not** written in Cone text: `corenumber.c` calls
 `iNsTypeAddFn` with a `newIntrinsicNode`. Only the region and option types are
 Cone source, and they are not in `corelib/` at all but in the core package,
 `packages/core/src/core.cone`. So are the intrinsics declared with `@intrinsic`
-(`sizeof`, `finalize` …), whose meaning is the registry's in
+(`mem.sizeof`, `mem.finalize` …), whose meaning is the registry's in
 `ir/stmt/intrinsic.c`: [intrinsic](intrinsic.md).
 
 ## 2. The header every node carries

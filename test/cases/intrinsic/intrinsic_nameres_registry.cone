@@ -4,8 +4,8 @@
 // says something else -- other type parameters, other parameters, another
 // result, a default value, or a body where the registry gives it no fallback.
 // A correct declaration raises nothing, with or without the fallback body its
-// entry allows: packages/core declares every intrinsic, and every scenario that
-// does not stand in for core compiles those declarations.
+// entry allows: packages/core declares every intrinsic, in its 'mem', and every
+// scenario that does not stand in for core compiles those declarations.
 //
 // This module is named 'core', which is the one place '@intrinsic' is allowed,
 // and it is compiled against an empty core package (see cases.toml) so that the
@@ -38,7 +38,18 @@ fn @intrinsic sizeof[T]() usize {                    //~ ErrorIntrinsicBody "siz
   8usize;
 }
 
-// Not a function of the module: a type's method is refused wherever it is
+// A plain struct of core may hold intrinsics as its functions, as core's 'mem'
+// does, and its correct declarations raise nothing. A method, taking 'self', is
+// not one; nor is a function of a generic type or a trait, which would be
+// copied into each instance or implementer
 struct Holder {
-  fn @intrinsic sizeof[T]() usize;                   //~ ErrorIntrinsicPlace:3 "the core package's own module"
+  fn @intrinsic sizeof[T]() usize;
+  fn @intrinsic readRaw[T](p *T) T {*p;}
+  fn @intrinsic alignof[T](self &) usize;            //~ ErrorIntrinsicPlace:3 "a module of the core package"
+}
+struct Wrapped[U] {
+  fn @intrinsic sizeof[T]() usize;                   //~ ErrorIntrinsicPlace:3 "a module of the core package"
+}
+trait Sized {
+  fn @intrinsic sizeof[T]() usize;                   //~ ErrorIntrinsicPlace:3 "a module of the core package"
 }

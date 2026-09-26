@@ -1,4 +1,5 @@
-// Each intrinsic packages/core declares, run on a range of types, its results
+// Each intrinsic packages/core declares in its 'mem', run on a range of types,
+// called as 'mem.sizeof[T]()' and so on, its results
 // printed so the output is the assertion. The values were checked by hand
 // against the x86-64 layout: a struct's size includes the padding that makes
 // the next one in an array aligned (Pad: u8 at 0, i64 at 8, u8 at 16, padded
@@ -79,150 +80,160 @@ struct Holder {
 
 fn sizes() {
   printStr("-- sizeof and alignof\n");
-  show("sizeof u8 ", sizeof[u8]());
-  show("sizeof i64 ", sizeof[i64]());
-  show("sizeof Bool ", sizeof[Bool]());
-  show("sizeof Pad ", sizeof[Pad]());
-  show("sizeof Pair ", sizeof[Pair]());
-  show("sizeof Empty ", sizeof[Empty]());
-  show("sizeof *u8 ", sizeof[*u8]());
-  show("sizeof &[]u8 ", sizeof[&[]u8]());
-  show("sizeof +so Fin ", sizeof[+so Fin]());
-  show("alignof u8 ", alignof[u8]());
-  show("alignof i64 ", alignof[i64]());
-  show("alignof Pad ", alignof[Pad]());
-  show("alignof Pair ", alignof[Pair]());
-  show("alignof Empty ", alignof[Empty]());
+  show("sizeof u8 ", mem.sizeof[u8]());
+  show("sizeof i64 ", mem.sizeof[i64]());
+  show("sizeof Bool ", mem.sizeof[Bool]());
+  show("sizeof Pad ", mem.sizeof[Pad]());
+  show("sizeof Pair ", mem.sizeof[Pair]());
+  show("sizeof Empty ", mem.sizeof[Empty]());
+  show("sizeof *u8 ", mem.sizeof[*u8]());
+  show("sizeof &[]u8 ", mem.sizeof[&[]u8]());
+  show("sizeof +so Fin ", mem.sizeof[+so Fin]());
+  show("alignof u8 ", mem.alignof[u8]());
+  show("alignof i64 ", mem.alignof[i64]());
+  show("alignof Pad ", mem.alignof[Pad]());
+  show("alignof Pair ", mem.alignof[Pair]());
+  show("alignof Empty ", mem.alignof[Empty]());
   // What an array of n values needs, which is what sizeof is for
-  show("four Pads ", sizeof[Pad]() * 4usize);
+  show("four Pads ", mem.sizeof[Pad]() * 4usize);
 }
 
 fn needs() {
   printStr("-- needsFinal\n");
-  yes("i64", needsFinal[i64]());
-  yes("Pad", needsFinal[Pad]());
-  yes("*Fin", needsFinal[*Fin]());
-  yes("&Fin", needsFinal[&Fin]());
-  yes("Fin", needsFinal[Fin]());
-  yes("Plain", needsFinal[Plain]());
-  yes("Owns", needsFinal[Owns]());
-  yes("Holder", needsFinal[Holder]());
-  yes("+so Fin", needsFinal[+so Fin]());
+  yes("i64", mem.needsFinal[i64]());
+  yes("Pad", mem.needsFinal[Pad]());
+  yes("*Fin", mem.needsFinal[*Fin]());
+  yes("&Fin", mem.needsFinal[&Fin]());
+  yes("Fin", mem.needsFinal[Fin]());
+  yes("Plain", mem.needsFinal[Plain]());
+  yes("Owns", mem.needsFinal[Owns]());
+  yes("Holder", mem.needsFinal[Holder]());
+  yes("+so Fin", mem.needsFinal[+so Fin]());
 }
 
 fn finals() {
   printStr("-- finalize a value with a final\n");
-  imm p = malloc(sizeof[Fin]()) as *Fin;
-  writeRaw[Fin](p, Fin[1i32]);
-  finalize[Fin](p);
+  imm p = malloc(mem.sizeof[Fin]()) as *Fin;
+  mem.writeRaw[Fin](p, Fin[1i32]);
+  mem.finalize[Fin](p);
 
   printStr("-- finalize its own final, a finalizing field, an owning field\n");
-  imm h = malloc(sizeof[Holder]()) as *Holder;
-  writeRaw[Holder](h, Holder[Fin[2i32], +so Fin[3i32], 4i32]);
-  finalize[Holder](h);
+  imm h = malloc(mem.sizeof[Holder]()) as *Holder;
+  mem.writeRaw[Holder](h, Holder[Fin[2i32], +so Fin[3i32], 4i32]);
+  mem.finalize[Holder](h);
 
   printStr("-- finalize a drop with no final of its own\n");
-  imm q = malloc(sizeof[Plain]()) as *Plain;
-  writeRaw[Plain](q, Plain[Fin[5i32]]);
-  finalize[Plain](q);
+  imm q = malloc(mem.sizeof[Plain]()) as *Plain;
+  mem.writeRaw[Plain](q, Plain[Fin[5i32]]);
+  mem.finalize[Plain](q);
 
   printStr("-- finalize an owning reference: its value dies\n");
-  imm r = malloc(sizeof[+so Fin]()) as *(+so Fin);
-  writeRaw[+so Fin](r, +so Fin[6i32]);
-  finalize[+so Fin](r);
+  imm r = malloc(mem.sizeof[+so Fin]()) as *(+so Fin);
+  mem.writeRaw[+so Fin](r, +so Fin[6i32]);
+  mem.finalize[+so Fin](r);
 
   printStr("-- finalize one of two rc owners: nothing dies yet\n");
   {
     imm a = +rc-imm Fin[7i32];
-    imm c = malloc(sizeof[+rc-imm Fin]()) as *(+rc-imm Fin);
-    writeRaw[+rc-imm Fin](c, a);
-    finalize[+rc-imm Fin](c);
+    imm c = malloc(mem.sizeof[+rc-imm Fin]()) as *(+rc-imm Fin);
+    mem.writeRaw[+rc-imm Fin](c, a);
+    mem.finalize[+rc-imm Fin](c);
     printStr("the other owner is still here\n");
   }
 
   printStr("-- finalize a type with nothing to finalize\n");
-  imm z = malloc(sizeof[Pad]()) as *Pad;
-  writeRaw[Pad](z, Pad[1u8, 2i64, 3u8]);
-  finalize[Pad](z);
+  imm z = malloc(mem.sizeof[Pad]()) as *Pad;
+  mem.writeRaw[Pad](z, Pad[1u8, 2i64, 3u8]);
+  mem.finalize[Pad](z);
   printStr("nothing happened\n");
 }
 
 fn slices() {
   printStr("-- sliceFromParts\n");
-  imm p = malloc(sizeof[i64]() * 4usize) as *i64;
-  writeRaw[i64](p, 10i64);
-  writeRaw[i64](p + 1usize, 20i64);
-  writeRaw[i64](p + 2usize, 30i64);
-  writeRaw[i64](p + 3usize, 40i64);
-  imm s = sliceFromParts[i64](p, 4usize);
+  imm p = malloc(mem.sizeof[i64]() * 4usize) as *i64;
+  mem.writeRaw[i64](p, 10i64);
+  mem.writeRaw[i64](p + 1usize, 20i64);
+  mem.writeRaw[i64](p + 2usize, 30i64);
+  mem.writeRaw[i64](p + 3usize, 40i64);
+  imm s = mem.sliceFromParts[i64](p, 4usize);
   show("len ", s.len);
   printStr("third ");
   printInt(s[2]);
   printStr("\n");
-  imm empty = sliceFromParts[i64](p, 0usize);
+  imm empty = mem.sliceFromParts[i64](p, 0usize);
   show("empty len ", empty.len);
 
   printStr("-- sliceFromPartsMut writes through\n");
-  imm m = sliceFromPartsMut[i64](p, 4usize);
+  imm m = mem.sliceFromPartsMut[i64](p, 4usize);
   m[1] = 25i64;
   showAll("block", p, 4usize);
 }
 
 fn raws() {
   printStr("-- writeRaw over a live value finalizes nothing\n");
-  imm p = malloc(sizeof[Fin]() * 2usize) as *Fin;
-  writeRaw[Fin](p, Fin[21i32]);
-  writeRaw[Fin](p, Fin[22i32]);
+  imm p = malloc(mem.sizeof[Fin]() * 2usize) as *Fin;
+  mem.writeRaw[Fin](p, Fin[21i32]);
+  mem.writeRaw[Fin](p, Fin[22i32]);
   printStr("written twice\n");
 
   printStr("-- a local written raw is moved, not finalized at its scope's end\n");
   {
     imm held = Fin[23i32];
-    writeRaw[Fin](p + 1usize, held);
+    mem.writeRaw[Fin](p + 1usize, held);
     printStr("scope ends\n");
   }
 
   printStr("-- readRaw moves each out, and the pointer stays usable\n");
   {
-    imm first = readRaw[Fin](p);
-    imm second = readRaw[Fin](p + 1usize);
+    imm first = mem.readRaw[Fin](p);
+    imm second = mem.readRaw[Fin](p + 1usize);
     printInt(i64[first.v + second.v]);
     printStr("\n");
   }
 
   printStr("-- writeRaw into uninitialized memory releases nothing there\n");
-  imm r = malloc(sizeof[+so Fin]()) as *(+so Fin);
-  writeRaw[+so Fin](r, +so Fin[24i32]);
-  imm back = readRaw[+so Fin](r);
+  imm r = malloc(mem.sizeof[+so Fin]()) as *(+so Fin);
+  mem.writeRaw[+so Fin](r, +so Fin[24i32]);
+  imm back = mem.readRaw[+so Fin](r);
   printInt(i64[back.v]);
   printStr("\n");
 }
 
 fn moves() {
   printStr("-- moveRaw\n");
-  imm p = malloc(sizeof[i64]() * 5usize) as *i64;
+  imm p = malloc(mem.sizeof[i64]() * 5usize) as *i64;
   mut i = 0usize;
   while i < 5usize {
-    writeRaw[i64](p + i, i64[i] + 1i64);
+    mem.writeRaw[i64](p + i, i64[i] + 1i64);
     i = i + 1usize;
   }
   showAll("start", p, 5usize);
-  moveRaw[i64](p + 1usize, p, 4usize);
+  mem.moveRaw[i64](p + 1usize, p, 4usize);
   showAll("up one", p, 5usize);
-  moveRaw[i64](p, p + 1usize, 4usize);
+  mem.moveRaw[i64](p, p + 1usize, 4usize);
   showAll("down one", p, 5usize);
-  moveRaw[i64](p, p + 2usize, 0usize);
+  mem.moveRaw[i64](p, p + 2usize, 0usize);
   showAll("none moved", p, 5usize);
 
   printStr("-- moveRaw finalizes nothing, and each value dies once\n");
-  imm a = malloc(sizeof[Fin]() * 2usize) as *Fin;
-  imm b = malloc(sizeof[Fin]() * 2usize) as *Fin;
-  writeRaw[Fin](a, Fin[31i32]);
-  writeRaw[Fin](a + 1usize, Fin[32i32]);
-  moveRaw[Fin](b, a, 2usize);
+  imm a = malloc(mem.sizeof[Fin]() * 2usize) as *Fin;
+  imm b = malloc(mem.sizeof[Fin]() * 2usize) as *Fin;
+  mem.writeRaw[Fin](a, Fin[31i32]);
+  mem.writeRaw[Fin](a + 1usize, Fin[32i32]);
+  mem.moveRaw[Fin](b, a, 2usize);
   printStr("moved\n");
-  finalize[Fin](b);
-  finalize[Fin](b + 1usize);
+  mem.finalize[Fin](b);
+  mem.finalize[Fin](b + 1usize);
+}
+
+// The intrinsics' own names are this module's to use: core folds only 'mem'
+// into it, not each intrinsic in it
+fn sizeof(label &[]u8) usize {
+  printStr(label);
+  3usize;
+}
+fn finalize() {
+  printStr("my own finalize\n");
 }
 
 fn main() {
@@ -232,5 +243,8 @@ fn main() {
   slices();
   raws();
   moves();
+  printStr("-- names of this module's own\n");
+  show(" sizeof ", sizeof("mine,"));
+  finalize();
   printStr("-- end\n");
 }

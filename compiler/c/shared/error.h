@@ -150,7 +150,7 @@ enum ErrorCode {
     ErrorRegionRefUse = 1157,   // 'RegionRef' anywhere but a struct's 'is' list: the type a reference points at, or the 'is' of a trait, enum or variant
 
     // Intrinsics: '@intrinsic' declarations, checked against the compiler's registry (ir/stmt/intrinsic.c)
-    ErrorIntrinsicPlace = 1160, // '@intrinsic' on a function that is not declared directly in the core package's root module: another package, a submodule, a type's method
+    ErrorIntrinsicPlace = 1160, // '@intrinsic' on a function not of the core package -- of its root, a submodule, or a plain struct one declares: another package's, a method taking 'self', a generic type's or a trait's
     ErrorIntrinsicName = 1161,  // '@intrinsic' on a function whose name the compiler's registry does not define
     ErrorIntrinsicSig = 1162,   // An intrinsic declared with a signature other than the registry's: type parameters, parameters or return type
     ErrorIntrinsicBody = 1163,  // A body written for an intrinsic the registry gives no fallback, or none where it has no lowering to use instead

@@ -66,44 +66,54 @@ pub struct rc is RegionRef {
   fn free(self &uni rc) inline {libc.free(self as *u8);}
 }
 
-// The intrinsics: functions the compiler supplies. What each one means is
-// defined in Cone's terms by the compiler's registry, and stated with every edge
-// case in the reference manual's Intrinsics page; '@intrinsic' is allowed only
-// here, and each declaration must say what the registry says. None has a
-// symbol: every call is expanded where it is made. A body, where the registry
-// allows one, is the fallback a back end with no lowering of its own uses, and
-// what 'conec --intrinsic-fallback' runs in place of the lowering, so the two
-// can be tested against each other. They are pub, so every module reaches them
-// by these names.
-
-// The size and the alignment of a T, in bytes, for the target: constants
-pub fn @intrinsic sizeof[T]() usize;
-pub fn @intrinsic alignof[T]() usize;
-// Whether finalizing a T does anything
-pub fn @intrinsic needsFinal[T]() Bool;
-// Run the death of the T at p where it sits, without freeing its memory
-pub fn @intrinsic finalize[T](p *T);
-// A slice of the len values starting at p
-pub fn @intrinsic sliceFromParts[T](p *T, len usize) &[]T;
-pub fn @intrinsic sliceFromPartsMut[T](p *T, len usize) &[]mut T;
-// Move the T at p out, leaving the slot dead; nothing there is finalized
-pub fn @intrinsic readRaw[T](p *T) T {*p;}
-// Move value into the slot at p, which holds nothing live: nothing is finalized
-pub fn @intrinsic writeRaw[T](p *T, value T);
-// Move count values from 'from' to 'to'; the two ranges may overlap
-pub fn @intrinsic moveRaw[T](to *T, from *T, count usize) {
-  if to < from {
-    mut i = 0usize;
-    while i < count {
-      writeRaw[T](to + i, readRaw[T](from + i));
-      i = i + 1usize;
+// 'mem': what only the compiler knows about a type's memory, and the raw moves
+// in and out of it that a collection builds on, each named through it:
+// 'mem.sizeof[T]()'. Each function is an intrinsic: the compiler supplies it,
+// from what its registry defines the name to mean in Cone's terms, and the
+// reference manual's Intrinsics page states every edge case. '@intrinsic' is
+// allowed only in the core package, and each declaration must say what the
+// registry says. None has a symbol: every call is expanded where it is made.
+// A body, where the registry allows one, is the fallback a back end with no
+// lowering of its own uses, and what 'conec --intrinsic-fallback' runs in place
+// of the lowering, so the two can be tested against each other.
+//
+// It stands in for a submodule, 'core.mem', which is what it is meant to be:
+// one name, 'mem', is folded into every module, rather than each of its
+// functions', so a module may declare its own 'finalize' or 'sizeof'. A
+// submodule of core cannot be reached today -- a direct compile reads only
+// core/src/core.cone, and core's include file writes a submodule as a private
+// block -- so it is an opaque struct, which holds no value, whose functions are
+// reached by the same path a submodule's would be.
+pub struct @opaque mem {
+  // The size and the alignment of a T, in bytes, for the target: constants
+  pub fn @intrinsic sizeof[T]() usize;
+  pub fn @intrinsic alignof[T]() usize;
+  // Whether finalizing a T does anything
+  pub fn @intrinsic needsFinal[T]() Bool;
+  // Run the death of the T at p where it sits, without freeing its memory
+  pub fn @intrinsic finalize[T](p *T);
+  // A slice of the len values starting at p
+  pub fn @intrinsic sliceFromParts[T](p *T, len usize) &[]T;
+  pub fn @intrinsic sliceFromPartsMut[T](p *T, len usize) &[]mut T;
+  // Move the T at p out, leaving the slot dead; nothing there is finalized
+  pub fn @intrinsic readRaw[T](p *T) T {*p;}
+  // Move value into the slot at p, which holds nothing live: nothing is finalized
+  pub fn @intrinsic writeRaw[T](p *T, value T);
+  // Move count values from 'from' to 'to'; the two ranges may overlap
+  pub fn @intrinsic moveRaw[T](to *T, from *T, count usize) {
+    if to < from {
+      mut i = 0usize;
+      while i < count {
+        mem.writeRaw[T](to + i, mem.readRaw[T](from + i));
+        i = i + 1usize;
+      }
     }
-  }
-  else {
-    mut i = count;
-    while i > 0usize {
-      i = i - 1usize;
-      writeRaw[T](to + i, readRaw[T](from + i));
+    else {
+      mut i = count;
+      while i > 0usize {
+        i = i - 1usize;
+        mem.writeRaw[T](to + i, mem.readRaw[T](from + i));
+      }
     }
   }
 }

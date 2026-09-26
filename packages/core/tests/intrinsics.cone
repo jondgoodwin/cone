@@ -1,11 +1,12 @@
-// core's intrinsics as every program meets them: declared in core's generated
-// include file, which Congo compiles this test against, since core is the
-// prelude. The language suite (test/cases/intrinsic) compiles core straight
-// from its source; this is the other path, and it shows each '@intrinsic'
-// declaration, with its fallback body where it has one, comes through the
-// include file whole. Each value is worked out by hand: an i64 is 8 bytes and
-// aligned to 8, and Two is a u8 then a u32, so 3 bytes of padding make it 8
-// bytes aligned to 4.
+// core's intrinsics as every program meets them: declared in core's 'mem' in
+// core's generated include file, which Congo compiles this test against, since
+// core is the prelude. The language suite (test/cases/intrinsic) compiles core
+// straight from its source; this is the other path, and it shows each
+// '@intrinsic' declaration, with its fallback body where it has one, comes
+// through the include file whole, and that only the name 'mem' comes with it:
+// this test declares a 'sizeof' and a 'finalize' of its own. Each value is
+// worked out by hand: an i64 is 8 bytes and aligned to 8, and Two is a u8 then
+// a u32, so 3 bytes of padding make it 8 bytes aligned to 4.
 
 mod intrinsics;
 
@@ -21,25 +22,31 @@ struct Noisy {
   fn final(self &uni) { printStr("final "); printInt(i64[n]); printStr("\n"); }
 }
 
+// This module's own, beside core's mem.sizeof and mem.finalize
+fn sizeof() i64 { 5i64; }
+fn finalize() { printStr("own finalize\n"); }
+
 fn main() {
-  printInt(i64[sizeof[i64]()]); printStr(" ");
-  printInt(i64[alignof[i64]()]); printStr(" ");
-  printInt(i64[sizeof[Two]()]); printStr(" ");
-  printInt(i64[alignof[Two]()]); printStr("\n");
-  if needsFinal[Noisy]() and not needsFinal[Two]() {printStr("needsFinal\n");}
+  printInt(i64[mem.sizeof[i64]()]); printStr(" ");
+  printInt(i64[mem.alignof[i64]()]); printStr(" ");
+  printInt(i64[mem.sizeof[Two]()]); printStr(" ");
+  printInt(i64[mem.alignof[Two]()]); printStr(" ");
+  printInt(sizeof()); printStr("\n");
+  if mem.needsFinal[Noisy]() and not mem.needsFinal[Two]() {printStr("needsFinal\n");}
+  finalize();
 
   // Three values written raw, moved up one slot, the first read back out,
   // the rest finalized where they sit: each dies once
-  imm p = malloc(sizeof[Noisy]() * 4usize) as *Noisy;
-  writeRaw[Noisy](p, Noisy[1i32]);
-  writeRaw[Noisy](p + 1usize, Noisy[2i32]);
-  writeRaw[Noisy](p + 2usize, Noisy[3i32]);
-  moveRaw[Noisy](p + 1usize, p, 3usize);
-  imm s = sliceFromParts[Noisy](p + 1usize, 3usize);
+  imm p = malloc(mem.sizeof[Noisy]() * 4usize) as *Noisy;
+  mem.writeRaw[Noisy](p, Noisy[1i32]);
+  mem.writeRaw[Noisy](p + 1usize, Noisy[2i32]);
+  mem.writeRaw[Noisy](p + 2usize, Noisy[3i32]);
+  mem.moveRaw[Noisy](p + 1usize, p, 3usize);
+  imm s = mem.sliceFromParts[Noisy](p + 1usize, 3usize);
   printInt(i64[s[0].n + s[1].n + s[2].n]); printStr("\n");
   {
-    imm first = readRaw[Noisy](p + 1usize);
+    imm first = mem.readRaw[Noisy](p + 1usize);
   }
-  finalize[Noisy](p + 2usize);
-  finalize[Noisy](p + 3usize);
+  mem.finalize[Noisy](p + 2usize);
+  mem.finalize[Noisy](p + 3usize);
 }

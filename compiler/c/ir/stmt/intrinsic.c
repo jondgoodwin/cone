@@ -190,13 +190,26 @@ static int intrinsicSigMatches(FnDclNode *fndcl, IntrinsicSpec *spec) {
     return intrinsicShapeIs(sig->rettype, spec->result, tparm);
 }
 
-// Whether a declaration sits directly in the core package's root module. An
-// imported package's module, and the root of a compile, has no owner
+// Whether a declaration is a function of the core package: of its root module
+// or a submodule of it at any depth, or a function (not a method: it takes no
+// 'self') of a plain struct one of them declares. The struct is how core names
+// its intrinsics through one name, 'mem', while a submodule of core cannot be
+// reached from outside it (refintrinsic.html). A generic type's or a trait's is
+// refused: it would be cloned into each instance or implementer. The root is
+// the module with no owner, as an imported package's and a compile's root are
 static int intrinsicInCore(FnDclNode *fndcl) {
     INode *owner = fndcl->dclinfo.owner;
+    if (owner && owner->tag == StructTag) {
+        StructNode *type = (StructNode *)owner;
+        if (type->genericinfo || (type->flags & TraitType) || (fndcl->flags & FlagMethFld))
+            return 0;
+        owner = type->dclinfo.owner;
+    }
     if (owner == NULL || owner->tag != ModuleTag)
         return 0;
     ModuleNode *mod = (ModuleNode *)owner;
+    while (mod->dclinfo.owner && mod->dclinfo.owner->tag == ModuleTag)
+        mod = (ModuleNode *)mod->dclinfo.owner;
     return mod->dclinfo.owner == NULL && mod->namesym != NULL
         && strcmp(&mod->namesym->namestr, "core") == 0;
 }
@@ -215,7 +228,7 @@ void intrinsicDclNameRes(FnDclNode *fndcl) {
         return;     // parseFn reported the missing name
     if (!intrinsicInCore(fndcl)) {
         errorMsgNode((INode *)fndcl, ErrorIntrinsicPlace,
-            "'@intrinsic' is allowed only on a function declared directly in the core package's own module, which is where the compiler's intrinsics are declared.");
+            "'@intrinsic' is allowed only on a function of a module of the core package, which is where the compiler's intrinsics are declared.");
         return;
     }
     IntrinsicSpec *spec = intrinsicFind(name);
