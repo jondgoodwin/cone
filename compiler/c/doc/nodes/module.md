@@ -980,6 +980,12 @@ guide) is what makes a Congo build rely on nothing else here:
   `src/<name>.cone` first, then the files a folder sweep would have given it;
   each child module is written where a subfolder or a one-file module draws it.
   So the compiler's own designated-file rule is never asked about `src/`.
+- **Every module name is written bare**, a name token, with no quoting: so a
+  keyword, a reserved word or a permission cannot be one, as it cannot be on a
+  `mod` line. Congo refuses a package, file or folder that would name a module
+  so, naming it, before it writes a description. Written by hand, a keyword or
+  a permission there is `ErrorBuildDesc` at the description's line, and a
+  reserved word `ErrorReserved`.
 - **An import line names another package's generated include file**,
   `build/<mode>/<name>.cone`: every package of a Congo build is compiled into
   the one build folder of the package being built, each before what imports it,

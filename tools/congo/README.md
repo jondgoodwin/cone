@@ -406,6 +406,13 @@ beside the compiler's suite, `python test/run.py`, which tests the compiler.
    it; or, for `congo run file.cone`, the lone file, a program of one module
    named by its `mod` line or else by the file.
 2. **Scan**: walk `src/`, read each file's header, and make the module tree.
+   Each module's name comes from a name Congo can read without parsing: the
+   manifest's for the root, a one-file module's file, a module folder, and a
+   lone file's `mod` line, or else the file. Each must be a Cone name that is
+   not a keyword, a reserved word or a permission: the language refuses one on
+   a `mod` line, and the build description writes each name bare, where the
+   compiler's lexer would not read it as a name. So Congo refuses it, naming
+   the file.
 3. **Resolve**: answer each import through the registries, scan each package
    found the same way, and order them all, each after what it imports: `core`
    first, after what `core` itself imports (`libc`).

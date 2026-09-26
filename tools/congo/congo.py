@@ -67,6 +67,38 @@ NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 VERSION_RE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
 OUTPUTS = ("executable", "library")
 
+# The words the compiler's lexer never reads as a name: its keywords and the
+# words it reserves for features not built yet (compiler/c/parser/lexer.c,
+# keywordInit), and the permissions (compiler/c/corelib/corelib.c). None can
+# name a package or a module. The language refuses one on a 'mod' line, and a
+# build description writes each module's name bare, read by the compiler's
+# lexer, so one there makes the description malformed (ErrorBuildDesc) instead
+# of being reported against the file. test_congo.py checks these against the
+# compiler's own lists
+KEYWORDS = frozenset((
+    "include import extern pub static macro fn overload const typedef struct mod"
+    " actor trait extends mixin use but enum return with if elif else case match"
+    " while each in by break continue not or and as is into inline void nil true"
+    " false undef").split())
+RESERVED = frozenset((
+    "async baseurl context local new selfmethod using wait yield throw catch panic"
+    " assert spawn").split())
+PERMISSIONS = frozenset("uni mut imm ro mut1 opaq".split())
+
+
+def name_fault(name: str) -> str | None:
+    """Why a word cannot name a package or a module, or None where it can."""
+    if not NAME_RE.match(name):
+        return "is not a Cone name: a letter or '_', then letters, digits or '_'"
+    if name in KEYWORDS:
+        return "is a Cone keyword, and a keyword cannot name a package or a module"
+    if name in RESERVED:
+        return ("is reserved for a Cone feature not built yet, and cannot name a package"
+                " or a module")
+    if name in PERMISSIONS:
+        return "is a Cone permission, and a permission cannot name a package or a module"
+    return None
+
 
 class CongoError(Exception):
     """A failure Congo reports as one message and exit status 1."""
@@ -169,6 +201,8 @@ def read_manifest(path: Path) -> Package:
     name, version, output = table.get("name"), table.get("version"), table.get("output")
     if not isinstance(name, str) or not NAME_RE.match(name):
         raise CongoError(f"{path}: [package] name must be a Cone name, such as \"hello\"")
+    if name_fault(name):
+        raise CongoError(f"{path}: [package] name '{name}' {name_fault(name)}; choose another")
     if not isinstance(version, str) or not VERSION_RE.match(version):
         raise CongoError(f"{path}: [package] version must be MAJOR.MINOR.PATCH, such as"
                          " \"0.1.0\"")
@@ -408,6 +442,10 @@ def scan_folder_module(name: str, folder: Path, designated: Path) -> Module:
             continue
         header = scan_header(file)
         if header.mod is not None:
+            if name_fault(file.stem):
+                raise CongoError(f"{file}: a one-file module is named by its file:"
+                                 f" '{file.stem}' {name_fault(file.stem)}; rename the file"
+                                 f" and its 'mod' line")
             child = Module(file.stem, [file])
             child.add_imports(header)
             module.children.append(child)
@@ -420,6 +458,10 @@ def scan_folder_module(name: str, folder: Path, designated: Path) -> Module:
             continue
         inner = sub / f"{sub.name}.cone"
         if inner.is_file():
+            if name_fault(sub.name):
+                raise CongoError(f"{inner}: a module folder names its module:"
+                                 f" '{sub.name}' {name_fault(sub.name)}; rename the folder,"
+                                 f" its designated file and its 'mod' line")
             module.children.append(scan_folder_module(sub.name, sub, inner))
         else:
             scan_organisational(module, sub)
@@ -1113,8 +1155,12 @@ def lone_package(file: Path) -> Package:
         raise CongoError(f"no file {file}")
     header = scan_header(file)
     name = header.mod or file.stem
-    if not NAME_RE.match(name):
-        raise CongoError(f"{file}: '{name}' is not a Cone name; give the file a 'mod' line")
+    if header.mod is None and name_fault(name):
+        raise CongoError(f"{file}: with no 'mod' line it is named by its file:"
+                         f" '{name}' {name_fault(name)}; give the file a 'mod' line")
+    if name_fault(name):
+        raise CongoError(f"{file}: 'mod {name}': '{name}' {name_fault(name)}; rename the"
+                         f" module, and the file where it is named for it")
     return Package(name, None, "executable", file.parent, file, lone=True)
 
 
@@ -1162,9 +1208,8 @@ pub fn answer() i64 {{
 
 def cmd_new(args: argparse.Namespace) -> int:
     name = args.name
-    if not NAME_RE.match(name):
-        raise CongoError(f"'{name}' is not a Cone name: a letter or '_', then letters,"
-                         " digits or '_'")
+    if name_fault(name):
+        raise CongoError(f"'{name}' {name_fault(name)}")
     root = Path(args.path or name).resolve()
     if root.exists():
         raise CongoError(f"{root} already exists")

@@ -11,6 +11,7 @@ it prints from, not copied from a run.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -87,6 +88,24 @@ class HeaderScan(unittest.TestCase):
         header = self.scan("import stdio use *;\nimport q;\n\nfn main() {}")
         self.assertIsNone(header.mod)
         self.assertEqual([i.name for i in header.imports], ["stdio", "q"])
+
+
+class NotNames(unittest.TestCase):
+    def test_the_words_that_cannot_name_a_module_are_the_compilers(self):
+        # Every keyAdd in the lexer but an attribute's, which no file or folder
+        # name can spell; and every permission corelib makes
+        lexer = (congo.REPO / "compiler" / "c" / "parser" / "lexer.c").read_text()
+        added = re.findall(r'keyAdd\("([a-z0-9_]+)", *(\w+)\)', lexer)
+        self.assertEqual(congo.KEYWORDS, {w for w, tok in added if tok != "ReservedToken"})
+        self.assertEqual(congo.RESERVED, {w for w, tok in added if tok == "ReservedToken"})
+        corelib = (congo.REPO / "compiler" / "c" / "corelib" / "corelib.c").read_text()
+        self.assertEqual(congo.PERMISSIONS,
+                         set(re.findall(r'newPermNodeStr\("(\w+)"', corelib)))
+        self.assertIsNone(congo.name_fault("usecheck"))
+        self.assertIn("keyword", congo.name_fault("use"))
+        self.assertIn("reserved", congo.name_fault("yield"))
+        self.assertIn("permission", congo.name_fault("mut"))
+        self.assertIn("not a Cone name", congo.name_fault("two-words"))
 
 
 class Scenarios(unittest.TestCase):
@@ -941,6 +960,46 @@ class Scenarios(unittest.TestCase):
         write(pkg / "congo.toml", head + '[link]\nlibraries = ["SDL2"]\npaths = ["x"]\n')
         self.congo("build", cwd=pkg)     # a library links nothing, so names are only read
 
+    def test_a_keyword_cannot_name_a_module(self):
+        # Wherever Congo takes a module's name from a file or a folder, a word
+        # the compiler never reads as a name is refused, naming the file, before
+        # a build description is written that the compiler could not read
+        main = "fn main() i32 {\n  0i32;\n}\n"
+        write(self.root / "use.cone", main)
+        run = self.congo("run", "use.cone", cwd=self.root, ok=False)
+        self.assertIn("use.cone: with no 'mod' line it is named by its file: 'use' is a"
+                      " Cone keyword", run.stderr)
+        self.assertIn("give the file a 'mod' line", run.stderr)
+        # The language refuses the word on a 'mod' line too, and so does Congo
+        write(self.root / "use.cone", "mod use;\n\n" + main)
+        run = self.congo("run", "use.cone", cwd=self.root, ok=False)
+        self.assertIn("use.cone: 'mod use': 'use' is a Cone keyword", run.stderr)
+        self.assertNotIn("Error 1129", run.stdout + run.stderr)
+        # Named on its 'mod' line, the file's own name does not matter
+        write(self.root / "use.cone", "mod usecheck;\n\n" + main)
+        self.congo("run", "use.cone", cwd=self.root)
+
+        self.congo("new", "shelf", "--lib", cwd=self.root)
+        pkg = self.root / "shelf"
+        write(pkg / "src" / "mut.cone", "mod mut;\n")
+        run = self.congo("build", cwd=pkg, ok=False)
+        self.assertIn("mut.cone: a one-file module is named by its file: 'mut' is a Cone"
+                      " permission", run.stderr)
+        (pkg / "src" / "mut.cone").unlink()
+        write(pkg / "src" / "yield" / "yield.cone", "mod yield;\n")
+        run = self.congo("build", cwd=pkg, ok=False)
+        self.assertIn("yield.cone: a module folder names its module: 'yield' is reserved",
+                      run.stderr)
+        self.assertFalse((pkg / "build" / "debug" / "shelf.conebuild").exists())
+        shutil.rmtree(pkg / "src" / "yield")
+        write(pkg / "congo.toml", '[package]\nname = "match"\nversion = "0.1.0"\n'
+                                  'output = "library"\n')
+        run = self.congo("build", cwd=pkg, ok=False)
+        self.assertIn("[package] name 'match' is a Cone keyword", run.stderr)
+        run = self.congo("new", "if", cwd=self.root, ok=False)
+        self.assertIn("'if' is a Cone keyword", run.stderr)
+        self.assertFalse((self.root / "if").exists())
+
 
 class Testing(unittest.TestCase):
     """congo test: a package's tests/ programs built against its generated
@@ -1041,6 +1100,20 @@ class Testing(unittest.TestCase):
         self.assertNotIn("output differs", run.stdout)
         run = self.congo("test", "nosuch", cwd=pkg, ok=False)
         self.assertIn("no test or example has 'nosuch' in its name", run.stderr)
+
+    def test_a_test_named_for_a_keyword(self):
+        # Its 'mod' line names it for its file, as a test's does, and the word
+        # is a keyword: Congo says so, naming the file, and writes no build
+        # description the compiler could not read
+        pkg = self.counter(self.root)
+        write(pkg / "tests" / "use.cone", "mod use;\n\nfn main() i32 {\n  0i32;\n}\n")
+        write(pkg / "tests" / "use.out", "\n")
+        run = self.congo("test", "use", cwd=pkg, ok=False)
+        self.assertIn("test use ... FAILED", run.stdout)
+        self.assertIn("use.cone: 'mod use': 'use' is a Cone keyword, and a keyword cannot"
+                      " name a package or a module; rename the module", run.stdout)
+        self.assertNotIn("Error 1129", run.stdout)
+        self.assertFalse((pkg / "build" / "debug" / "tests" / "use" / "use.conebuild").exists())
 
     def test_bless_writes_only_what_is_missing(self):
         pkg = self.counter(self.root)
