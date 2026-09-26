@@ -23,8 +23,8 @@ VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *perm) {
     name->llvmvar = NULL;
     name->fold = NULL;
     dclInfoInit(&name->dclinfo);
-    name->flowflags = 0;
     name->flowtempflags = 0;
+    name->flowindex = 0;
     name->hollowed = NULL;
     return name;
 }
@@ -42,8 +42,8 @@ VarDclNode *newVarDclFull(Name *namesym, uint16_t tag, INode *type, INode *perm,
     name->llvmvar = NULL;
     name->fold = NULL;
     dclInfoInit(&name->dclinfo);
-    name->flowflags = 0;
     name->flowtempflags = 0;
+    name->flowindex = 0;
     name->hollowed = NULL;
     return name;
 }
@@ -181,7 +181,11 @@ void varDclFlow(FlowState *fstate, VarDclNode **vardclnode) {
     if ((*vardclnode)->flags & FlagStatic)
         return;
     flowAddVar(*vardclnode);
-    flowGateHolder(fstate, (*vardclnode)->vtype);
+    // The temporary an operator changing its operand in place borrows it
+    // through ('x += 1', 'v <- (a, b)') is the operator's own, as a method's
+    // receiver is, and holds nothing past it
+    if ((*vardclnode)->namesym != tempName)
+        flowGateHolder(fstate, (*vardclnode)->vtype);
     if ((*vardclnode)->value) {
         flowLoadValue(fstate, &((*vardclnode)->value));
         flowHandleMoveOrCopy(&((*vardclnode)->value));  // initialization copies/moves value

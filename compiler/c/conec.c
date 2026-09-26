@@ -217,7 +217,9 @@ int main(int argc, char **argv) {
     // Close up everything necessary
     if (coneopt.verbosity > 0)
         timerPrint();
-    if (coneopt.verbosity > 1)
+    if (coneopt.verbosity > 1) {
         flowGatePrint();
+        flowPathPrint();
+    }
     errorSummary();
 }

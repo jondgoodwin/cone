@@ -115,6 +115,10 @@ typedef struct DclSpans DclSpans;        // dclspan.h
 // Inline tests that read the node types above
 #include "flowgate.h"
 
+// The loan walk, which follows each path, and borrow freezing, its client
+#include "flowpath.h"
+#include "flowloan.h"
+
 #include "../corelib/corelib.h"
 
 #define TypeCheckLoopMax 256

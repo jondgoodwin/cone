@@ -22,7 +22,8 @@ and the measurements are on file.
 
 0. **No solvers, and no abstraction layers in semantic analysis.** Type
    inference and borrow checking use cascading conditionals; semantic analysis
-   traverses the full IR only three times, and none of it runs through core
+   traverses the full IR only three times — flow's loan walk goes over again only
+   the functions its gate marks, a few in a hundred — and none of it runs through core
    library templates or generics. ▸ **Forbids** a constraint solver, an immutable
    IR and generic-based analysis layers — each would contradict a written
    commitment, so make the case before making the change.
@@ -104,12 +105,14 @@ code generation, which usually dominate.
 
 **`FlowTimer` is carved out of `SemTimer`.** Flow runs per function, inside type
 check (and a type check can be nested in another function's), so
-`fnDclTypeCheck` starts the flow timer round `blockFlow` and then hands the time
-back to whichever timer was running. `-V 1`'s "Analysis" is therefore semantic
-analysis *without* flow, and Analysis + Flow is what an older compiler reported
-as Analysis. Being two clock reads per function, it runs only when `-V 1` or
-more asks (`timerFine`). `-V 2` adds the count of functions flow's gate marked
-([Flow](../phases/flow.md), "The gate").
+`fnDclTypeCheck` starts the flow timer round `blockFlow` and the loan walk, and
+then hands the time back to whichever timer was running. `-V 1`'s "Analysis" is
+therefore semantic analysis *without* flow, and Analysis + Flow is what an older
+compiler reported as Analysis. Being two clock reads per function, it runs only
+when `-V 1` or more asks (`timerFine`). `-V 2` adds the count of functions flow's
+gate marked ([Flow](../phases/flow.md), "The gate"), and the loan walk's: the
+functions it walked, their loops, how many loop bodies it walked again, and how
+many loops it had to widen to settle ("The loan walk").
 
 **`tools/flowbench/flowbench.py`** measures flow's cost before and after a
 change: `python tools/flowbench/flowbench.py --base <master's conec>`. It
@@ -140,6 +143,18 @@ place, and is how many functions borrow freezing's own walk would visit:
 
 Flow is linear (`big_1000` over `big_250`: 4× the code, 4× the flow time), and
 LLVM is almost all of every compile.
+
+**The loan walk's cost** ([Flow](../phases/flow.md), "The loan walk"), on master
+`427ef895` against the change that added it, 26 September 2026 (min of 10 runs
+per file for the packages and the stress files, 5 for the suite): flow +6.4% on
+the suite (264 of 7,868 functions walked), +11% on the packages (29 of 687),
+−1% on `plain_500`, 1.5× on `many_500`, where every function is walked;
+`big_1000` over `big_250` 4.05, `nest_3` over `flat_3` 1.02 (no loop needed a
+second walk). Total compile moved under 1% everywhere, and under 3% on
+`big_1000`. About half the packages' figure is a fixed cost of the first walk in
+a process — its code and buffers touched for the first time, some 5 µs, measured
+on a file of one small function — and the rest is the second traversal of each
+function walked.
 
 For anything finer, instrument and compile the corpus:
 [Measuring](../diagnostics/measuring.md).
