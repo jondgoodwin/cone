@@ -236,9 +236,20 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    type is `genericMemoize`'s `ErrorNotType`. A miss there asks
    `modInstantiate` for the instance, which clones, registers and checks it.
 3. Otherwise **infer**: build a call node of NULL slots, walk the arguments
-   against the template's parameter list, and where a parameter's type names a
-   generic parameter, capture the argument's type by `Name`. A slot filled twice
-   must agree by `itypeIsSame`. Any slot still NULL is "could not infer".
+   against the template's parameter list, and match each parameter's type
+   against its argument's type (`genericInferType`), capturing by `Name` the
+   argument's type wherever the parameter's names a generic parameter. The match
+   descends through a pointer, a reference and an array reference to what each
+   points at (`p *T` given a `*Fin` captures `Fin`), accepting both the type
+   tags and the template's dereference and borrow tags (Clone, above); an array
+   slice parameter also descends into the fixed-size array, or reference to one,
+   that the call converts to a slice. A generic type's instance, `List[T]`,
+   matches an argument that is an instance of the same generic, found in the
+   generic's memo, type argument by type argument; a variant passed for its
+   enum is matched as its enum's instance. Region and permission take no part:
+   the instance's own check of the call judges them. Any other shape captures
+   nothing. A slot filled twice must agree by `itypeIsSame`. Any slot still NULL
+   is "could not infer".
 
 `genericMemoize` validates arity and that every argument is a type, then looks
 up: **the memo key is the stored call's argument list, compared pairwise with

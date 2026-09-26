@@ -1,0 +1,136 @@
+// Type arguments inferred through the shape of a parameter's type, not only
+// from a parameter whose type is the type parameter itself. No call below
+// writes a type argument. Each parameter type is matched against its
+// argument's type: a pointer, a reference or a slice to T takes T from what
+// the argument points at; a generic type's instance takes each of its type
+// arguments from the argument's instance of the same generic; and a variant
+// passed for its enum is taken as its enum's instance.
+//
+// The intrinsics are the reason this was built: 'mem.finalize(p)' with 'p' a
+// '*Fin' had to be written 'mem.finalize[Fin](p)'. They are called here as a
+// collection calls them.
+//
+// Each printed value was checked by hand against the source: the value each
+// argument holds, reached through the pointer, reference or slice the call
+// passes.
+
+mod generic_infer_through;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct Fin {
+  pub v i32;
+  fn final(self &uni) { printStr("final "); printInt(i64[v]); printStr("\n"); }
+}
+
+struct Box[T] {
+  pub v T;
+}
+
+struct Pair[A, B] {
+  pub a A;
+  pub b B;
+}
+
+fn deref[T](p *T) T { *p; }
+fn derefTwice[T](p **T) T { **p; }
+fn peek[T](r &T) T { *r; }
+fn bump[T](r &mut T, amount T) { *r = *r + amount; }
+fn first[T](s &[]T) T { s[0]; }
+fn unbox[T](b Box[T]) T { b.v; }
+fn unboxRef[T](b &Box[T]) T { b.v; }
+fn second[A, B](p &Pair[A, B]) B { p.b; }
+fn inner[T](b Box[&T]) T { *b.v; }
+fn orZero[T](o Option[T], zero T) T {
+  match o {
+    case imm s Some {s.value;}
+    case is None {zero;}
+  }
+}
+fn isSome[T](o Option[T]) Bool {
+  match o {
+    case is Some {true;}
+    case is None {false;}
+  }
+}
+
+fn pointers() {
+  mut x = 5i64;
+  imm px = &mut x as *i64;
+  // T is i64, from '*i64'
+  show("pointer", deref(px));
+  imm ppx = &px as **i64;
+  // T is i64, two pointers down
+  show("pointer-to-pointer", derefTwice(ppx));
+}
+
+fn references() {
+  mut x = 7i64;
+  show("reference", peek(&x));
+  // T from the reference, and the second argument must agree with it
+  bump(&mut x, 3i64);
+  show("mutable-reference", x);
+}
+
+fn slices() {
+  imm arr = [11i64, 12i64];
+  imm s &[]i64 = &arr;
+  show("slice", first(s));
+  // A reference to a fixed-size array, which the call turns into the slice
+  show("array-to-slice", first(&arr));
+}
+
+fn instances() {
+  imm b = Box[i64][4i64];
+  show("instance", unbox(b));
+  show("reference-to-instance", unboxRef(&b));
+  // Two type arguments, each from its own position in the instance
+  imm p = Pair[i32, i64][1i32, 9i64];
+  show("two-type-arguments", second(&p));
+  // A reference nested inside the instance's type argument
+  mut y = 8i64;
+  show("reference-inside-instance", inner(Box[&i64][&y]));
+}
+
+fn variants() {
+  // Some[6i64] is passed where Option[T] is expected: T is i64
+  show("variant-for-its-enum", orZero(Some[6i64], 0i64));
+  if isSome(Some[2i64]) {printStr("variant-alone yes\n");}
+  imm none Option[i64] = None[i64][];
+  if isSome(none) {printStr("enum-value yes\n");} else {printStr("enum-value no\n");}
+}
+
+fn intrinsics() {
+  // The calls a collection makes, none naming its element type
+  imm p = malloc(mem.sizeof[i64]() * 3usize) as *i64;
+  mem.writeRaw(p, 10i64);
+  mem.writeRaw(p + 1usize, 20i64);
+  mem.writeRaw(p + 2usize, 30i64);
+  mem.moveRaw(p, p + 1usize, 2usize);
+  imm s = mem.sliceFromParts(p, 2usize);
+  show("sliceFromParts-sum", s[0] + s[1]);
+  imm m = mem.sliceFromPartsMut(p, 2usize);
+  m[0] = 21i64;
+  show("readRaw", mem.readRaw(p));
+
+  imm f = malloc(mem.sizeof[Fin]()) as *Fin;
+  mem.writeRaw(f, Fin[3i32]);
+  // T is Fin, from '*Fin': its final runs
+  mem.finalize(f);
+}
+
+fn main() {
+  pointers();
+  references();
+  slices();
+  instances();
+  variants();
+  intrinsics();
+}
