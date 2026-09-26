@@ -1,0 +1,228 @@
+// String: building, formatting integers, comparing, searching, and the copies
+// it hands out. Every expected value is worked out by hand:
+// - integers from their decimal spelling, the i64 and u64 extremes from
+//   2^63 = 9223372036854775808 and 2^64 - 1 = 18446744073709551615;
+// - hashes from FNV-1a's definition and its published test vectors: no bytes
+//   hash to the offset basis 14695981039346656037 (0xcbf29ce484222325), "a" to
+//   0xaf63dc4c8601ec8c = 12638187200555641996, "foobar" to 0x85944171f73967e8 =
+//   9625390261332436968;
+// - positions and pieces by counting bytes in the literals.
+
+mod strings;
+
+import testing use *;
+import collections use *;
+import libc;
+
+fn main() i32 {
+  // Empty
+  mut e = String.empty();
+  expectUInt(u64[e.len()], 0, "empty length");
+  expectBool(e.isEmpty(), true, "empty is empty");
+  expectBool(e.equals(""), true, "empty equals empty");
+  expectBool(e.equals("a"), false, "empty is not a");
+  expectUInt(u64[libc.strlen(e.cstr())], 0, "empty as a C string");
+  imm fromEmpty = String.from("");
+  expectUInt(u64[fromEmpty.len()], 0, "from an empty literal");
+
+  // One byte
+  imm one = String.from("x");
+  expectUInt(u64[one.len()], 1, "one byte");
+  expectUInt(u64[one[0usize]], 120, "the byte x");
+  expectBool(one.equals("x"), true, "x equals x");
+  expectBool(one.equals("y"), false, "x is not y");
+  expectBool(one.equals("xx"), false, "x is not xx");
+
+  // Long: "0123456789" a hundred times, 1000 bytes; byte 999 is '9' (57),
+  // byte 500 is '0' (48); "90" first spans bytes 9 and 10, next 19 and 20
+  mut long = String.empty();
+  mut i = 0;
+  while i < 100 { long.append("0123456789"); i = i + 1; }
+  expectUInt(u64[long.len()], 1000, "a thousand bytes");
+  expectUInt(u64[long[999usize]], 57, "the last is 9");
+  expectUInt(u64[long[500usize]], 48, "the middle is 0");
+  expectBool(long.startsWith("0123"), true, "long starts");
+  expectBool(long.endsWith("789"), true, "long ends");
+  expectOpt(long.find("90"), 9, "first 90");
+  expectOpt(long.findFrom("90", 10usize), 19, "next 90");
+
+  // An embedded NUL is one of its bytes, where C stops reading
+  mut nul = String.from("a");
+  nul.appendByte(0u8);
+  nul.append("b");
+  expectUInt(u64[nul.len()], 3, "a NUL b is three bytes");
+  expectUInt(u64[nul[1usize]], 0, "the NUL");
+  expectUInt(u64[libc.strlen(nul.cstr())], 1, "C reads up to the NUL");
+
+  // Integers
+  intText(0, "0", "zero");
+  intText(-1, "-1", "minus one");
+  intText(1234567890, "1234567890", "ten digits");
+  intText(9223372036854775807, "9223372036854775807", "largest i64");
+  intText(-9223372036854775807i64 - 1i64, "-9223372036854775808", "smallest i64");
+  mut u = String.empty();
+  u.appendUInt(18446744073709551615u64);
+  expectStr(u.view(), "18446744073709551615", "largest u64");
+  mut ops = String.empty();
+  ops <- "n=";
+  ops <- 42i64;
+  ops <- ", u=";
+  ops <- 7u64;
+  expectStr(ops.view(), "n=42, u=7", "the append operator for text and integers");
+
+  // Hex digits, leading zeros kept, low digits only
+  mut hx = String.empty();
+  hx.appendHex(255u64, 4usize);
+  expectStr(hx.view(), "00ff", "255 in four hex digits");
+  hx.clear();
+  hx.appendHex(hashBytes(""), 16usize);
+  expectStr(hx.view(), "cbf29ce484222325", "the offset basis in hex");
+  hx.clear();
+  hx.appendHex(hashBytes(""), 10usize);
+  expectStr(hx.view(), "e484222325", "its low ten digits");
+
+  // Hashes
+  expectUInt(hashBytes(""), 14695981039346656037u64, "no bytes hash to the basis");
+  expectUInt(hashBytes("a"), 12638187200555641996u64, "FNV-1a of a");
+  imm foobar = String.from("foobar");
+  expectUInt(foobar.hash(), 9625390261332436968u64, "FNV-1a of foobar");
+
+  // Comparing
+  imm abc = String.from("abc");
+  expectInt(i64[abc.compare("abd")], -1, "abc before abd");
+  expectInt(i64[abc.compare("abc")], 0, "abc with abc");
+  expectInt(i64[abc.compare("ab")], 1, "abc after its own start");
+  expectInt(i64[e.compare("a")], -1, "empty first");
+  imm b = String.from("b");
+  expectInt(i64[b.compare("abc")], 1, "b after abc");
+
+  // Starts, ends
+  imm imp = String.from("import stdio;");
+  expectBool(imp.startsWith("import"), true, "starts with import");
+  expectBool(imp.startsWith(""), true, "starts with nothing");
+  expectBool(imp.startsWith("import stdio; and more"), false, "not with something longer");
+  expectBool(imp.startsWith("mod"), false, "not with mod");
+  expectBool(imp.endsWith(";"), true, "ends with ;");
+  expectBool(imp.endsWith(""), true, "ends with nothing");
+  expectBool(imp.endsWith("stdio"), false, "not with stdio");
+
+  // Finding, in "a.b.c": dots at 1 and 3, c at 4
+  imm dots = String.from("a.b.c");
+  expectOpt(dots.find("."), 1, "first dot");
+  expectOpt(dots.find("c"), 4, "at the end");
+  expectOpt(dots.find(""), 0, "nothing is found at 0");
+  expectNone(dots.find("x"), "no x");
+  expectNone(dots.find("a.b.c.d"), "longer than it");
+  expectOpt(dots.findFrom(".", 2usize), 3, "second dot");
+  expectNone(dots.findFrom(".", 4usize), "no dot after 4");
+  expectBool(dots.contains("b.c"), true, "contains b.c");
+  expectBool(dots.contains("c.b"), false, "not c.b");
+
+  // Copies of parts
+  imm word = String.from("import");
+  imm por = word.sub(2usize, 5usize);
+  expectStr(por.view(), "por", "bytes 2 to 5");
+  trimmed("  mod x; \t\r\n", "mod x;", "trimmed");
+  trimmed(" \t ", "", "all space trims to nothing");
+  trimmed("", "", "nothing trims to nothing");
+  trimmed("a", "a", "nothing to trim");
+
+  // Lines
+  imm src = String.from("mod a;\nimport b;\r\nimport c;");
+  imm ls = src.lines();
+  expectUInt(u64[ls.len()], 3, "three lines");
+  expectStr(ls[0usize].view(), "mod a;", "line one");
+  expectStr(ls[1usize].view(), "import b;", "line two, its carriage return dropped");
+  expectStr(ls[2usize].view(), "import c;", "line three, unended");
+  expectUInt(u64[lineCount("a\n")], 1, "an ending line feed starts no line");
+  expectUInt(u64[lineCount("")], 0, "no text, no lines");
+  expectUInt(u64[lineCount("\n")], 1, "a lone line feed ends one empty line");
+  imm blankText = String.from("a\n\nb");
+  imm blank = blankText.lines();
+  expectUInt(u64[blank.len()], 3, "a blank line counts");
+  expectUInt(u64[blank[1usize].len()], 0, "the blank line");
+  imm crText = String.from("a\r");
+  imm cr = crText.lines();
+  expectStr(cr[0usize].view(), "a", "a last line's carriage return");
+
+  // Splitting
+  imm csv = String.from("a,b,,c");
+  imm parts = csv.split(',');
+  expectUInt(u64[parts.len()], 4, "four pieces");
+  expectStr(parts[0usize].view(), "a", "piece one");
+  expectStr(parts[2usize].view(), "", "piece three is empty");
+  expectStr(parts[3usize].view(), "c", "piece four");
+  expectUInt(u64[pieceCount("", ',')], 1, "nothing is one empty piece");
+  expectUInt(u64[pieceCount("a,", ',')], 2, "a trailing separator ends an empty piece");
+
+  // Changing bytes in place
+  mut path = String.from("C:\\src\\cone");
+  path.replaceByte('\\', '/');
+  expectStr(path.view(), "C:/src/cone", "backslashes made slashes");
+
+  // A C string: a NUL after the bytes, not counted among them, kept good
+  // across appends by asking again
+  mut cs = String.from("abc");
+  imm p = cs.cstr();
+  expectUInt(u64[libc.strlen(p)], 3, "three for C");
+  expectUInt(u64[p[3usize]], 0, "the NUL after them");
+  expectUInt(u64[cs.len()], 3, "the NUL is not one of its bytes");
+  cs.append("de");
+  expectUInt(u64[libc.strlen(cs.cstr())], 5, "five for C after appending");
+
+  // A copy is its own
+  mut orig = String.from("core");
+  imm dup = orig.copy();
+  orig.append("!");
+  expectStr(dup.view(), "core", "the copy is unchanged");
+  expectStr(orig.view(), "core!", "the original changed");
+
+  // The byte-slice functions under them
+  expectBool(bytesEqual("ab", "ab"), true, "bytesEqual");
+  expectInt(i64[bytesCompare("a", "b")], -1, "bytesCompare");
+  expectOpt(bytesFind("xyz", "z", 0usize), 2, "bytesFind");
+  expectBool(isSpace('\t'), true, "a tab is space");
+  expectBool(isSpace('x'), false, "x is not");
+
+  done();
+}
+
+// A method taking a borrowed self is not called on a temporary (the borrow
+// needs a place), so each of these holds the String it works on
+fn intText(n i64, want &[]u8, label &[]u8) {
+  mut s = String.empty();
+  s.appendInt(n);
+  expectStr(s.view(), want, label);
+}
+
+fn trimmed(text &[]u8, want &[]u8, label &[]u8) {
+  imm s = String.from(text);
+  imm t = s.trim();
+  expectStr(t.view(), want, label);
+}
+
+fn lineCount(text &[]u8) usize {
+  imm s = String.from(text);
+  imm ls = s.lines();
+  ls.len();
+}
+
+fn pieceCount(text &[]u8, sep u8) usize {
+  imm s = String.from(text);
+  imm ps = s.split(sep);
+  ps.len();
+}
+
+fn expectOpt(got Option[usize], want u64, label &[]u8) {
+  match got {
+    case imm s Some {expectUInt(u64[s.value], want, label);}
+    case is None {expect(false, label);}
+  }
+}
+
+fn expectNone(got Option[usize], label &[]u8) {
+  match got {
+    case is Some[usize] {expect(false, label);}
+    case is None[usize] {expect(true, label);}
+  }
+}

@@ -283,7 +283,7 @@ trivial effort to add the compiler the ability to ingest, preserve, and re-inges
 public interface information from source files."
 
 **To the compiler, packages are a search path, not a unit.** The search path —
-every `--path` folder, then the packages folder, where `core`, `stdio`, `libc`, `posix`, `math3d` and `testing` are —
+every `--path` folder, then the packages folder, where `core`, `stdio`, `libc`, `posix`, `math3d`, `testing` and `collections` are —
 finds files, and `--safe=package` appears in the option help, but the compiler
 knows no package: it reads no manifest and no version. The package as a unit is
 Congo's: a folder with a `congo.toml` (name, `MAJOR.MINOR.PATCH` version, and

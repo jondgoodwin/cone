@@ -150,7 +150,7 @@ An import names a module. Congo answers each one this way:
 searches, in order:
 
 1. the Cone repository's own `packages/` (`core`, `stdio`, `libc`, `posix`,
-   `math3d` and `testing` are there), then
+   `math3d`, `testing` and `collections` are there), then
 2. each folder the **machine config** lists.
 
 The machine config is `config.toml` in the Congo home, which is the folder

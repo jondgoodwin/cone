@@ -1,0 +1,608 @@
+// The collections package: a growable list, an owned string and a
+// string-keyed dictionary, each holding its elements in one block of memory
+// that it gets, grows and gives back through the C allocator ('libc.malloc',
+// 'realloc', 'free'). Built as Congo needs them, and no further.
+//
+//   mod names;
+//   import collections use *;
+//
+//   fn main() {
+//     mut seen = List[String].empty();
+//     seen.push(String.from("core"));
+//     mut counts = Dict[String, i64].empty();
+//     counts.insert(String.from("core"), 1);
+//     if counts.contains("core") { ... *counts["core"] ... }
+//   }
+//
+// Each collection is a region in the type sense: the value itself is small (a
+// pointer to its block, a count, a capacity) and lives wherever it is put --
+// on the stack, in a field, in another collection, or behind a '+so' or '+rc'
+// owner -- while its elements live inline in the block it owns. When the
+// collection dies, its 'final' finalizes each element still in it, first to
+// last, and then frees the block. Nothing here goes through 'so' or 'rc'.
+//
+// Moving values in and out of the block is done with core's 'mem' intrinsics:
+// 'mem.writeRaw' moves a value into a slot that holds nothing live,
+// 'mem.readRaw' moves one out and leaves the slot dead, and 'mem.finalize'
+// runs a value's death where it sits. That is why a slot beyond the count
+// never has its garbage released or finalized.
+//
+// Borrowed references, for now: a collection lends out borrows only for brief
+// reading. 'list[i]' and 'dict[key]' give a '&' to one element, and 'view()'
+// a slice of the whole, to read at once and let go of. Nothing here stores a
+// borrow, and nothing a collection returns should be kept across a change to
+// it: a push can move the whole block, and the compiler does not yet catch a
+// borrow held across one. Where a borrow would have been the natural return
+// (a trimmed piece of a string, the lines of a text, a dictionary's keys), the
+// collection returns owned copies instead.
+//
+// Methods take their receiver as '&' or '&mut'; calling one on a variable
+// borrows the variable for the call ('list.push(x)' is '(&mut list).push(x)').
+// A function a type offers without a receiver makes one: 'List[i64].empty()',
+// 'String.from("text")'. ('new' is reserved for a language feature.)
+//
+// Every method of a generic type is compiled for every instance, whether it is
+// called or not, so no method here may assume anything of an element type that
+// a move-only type such as String would fail: there is no 'get' copying an
+// element out. Read one through 'list[i]'; move one out with 'pop' or 'remove'.
+// Match what those return: a value typed as an enum is not yet finalized, so
+// an element left inside an Option that is kept whole is never finalized.
+//
+// An index out of range, or a key a dictionary does not hold, is a program
+// error: it prints what was wrong to stderr and ends the program with exit
+// status 1 through the C library's 'exit'.
+
+mod collections;
+
+import libc;
+
+// -------- List --------
+
+// A growable list of T, in one block of 'cap' slots of which the first 'used'
+// hold live values. Pushing grows it 4, 8, 16, ...; it never shrinks, and
+// gives its block back only when it dies.
+pub struct List[T] {
+  ptr *T;
+  used usize;
+  cap usize;
+
+  // An empty list: no block until the first value arrives
+  pub fn empty() List { List[0usize as *T, 0usize, 0usize]; }
+
+  // An empty list whose block already has room for n values
+  pub fn withCapacity(n usize) List {
+    mut l = List[0usize as *T, 0usize, 0usize];
+    l.reserve(n);
+    l;
+  }
+
+  // How many values it holds, and how many its block has room for
+  pub fn len(self &) usize { used; }
+  pub fn capacity(self &) usize { cap; }
+  pub fn isEmpty(self &) Bool { used == 0usize; }
+
+  // Make room for 'more' values beyond those it holds. A block too small is
+  // replaced by one twice its size, or exactly big enough if that is more,
+  // and never smaller than 4. The block may move: every borrow into it, and
+  // every slice from 'view', is then stale.
+  pub fn reserve(self &mut, more usize) {
+    if used + more <= cap { return; }
+    mut want = cap * 2usize;
+    if want < used + more { want = used + more; }
+    if want < 4usize { want = 4usize; }
+    ptr = libc.realloc(ptr as *u8, want * mem.sizeof[T]()) as *T;
+    cap = want;
+  }
+
+  // Move a value in at the end
+  pub fn push(self &mut, value T) {
+    self.reserve(1usize);
+    mem.writeRaw(ptr + used, value);
+    used = used + 1usize;
+  }
+
+  // 'list <- value' is 'list.push(value)'
+  pub fn append overload `<-`(self &mut, value T) { self.push(value); }
+
+  // Move the last value out, or None when it is empty
+  pub fn pop(self &mut) Option[T] {
+    if used == 0usize { return None[T][]; }
+    used = used - 1usize;
+    Some[T][mem.readRaw(ptr + used)];
+  }
+
+  // A borrow of the value at index, for reading it now
+  pub fn `[]`(self &, index usize) &T {
+    if index >= used { outOfRange(index, used); }
+    (ptr + index) as &T;
+  }
+
+  // Put value at index, finalizing the value it replaces
+  pub fn set(self &mut, index usize, value T) {
+    if index >= used { outOfRange(index, used); }
+    mem.finalize(ptr + index);
+    mem.writeRaw(ptr + index, value);
+  }
+
+  // Exchange the values at two indexes
+  pub fn swap(self &mut, a usize, b usize) {
+    if a >= used { outOfRange(a, used); }
+    if b >= used { outOfRange(b, used); }
+    if a == b { return; }
+    imm held = mem.readRaw(ptr + a);
+    mem.moveRaw(ptr + a, ptr + b, 1usize);
+    mem.writeRaw(ptr + b, held);
+  }
+
+  // Finalize every value, first to last, and keep the block for reuse
+  pub fn clear(self &mut) {
+    self.finalizeAll();
+    used = 0usize;
+  }
+
+  // A slice of every value it holds, for reading them now
+  pub fn view(self &) &[]T { mem.sliceFromParts(ptr, used); }
+
+  fn finalizeAll(self &mut) {
+    if mem.needsFinal[T]() {
+      mut i = 0usize;
+      while i < used { mem.finalize(ptr + i); i = i + 1usize; }
+    }
+  }
+
+  // Its death: each value it holds, first to last, then the block
+  // (It repeats finalizeAll's loop: calling a '&mut' method through 'self
+  // &uni' moves the unique borrow into the call rather than lending it, and
+  // 'self' is then gone for the free.)
+  fn final(self &uni) {
+    if mem.needsFinal[T]() {
+      mut i = 0usize;
+      while i < used { mem.finalize(ptr + i); i = i + 1usize; }
+    }
+    libc.free(ptr as *u8);
+  }
+}
+
+// -------- String --------
+
+// An owned, growable run of bytes: text, usually UTF-8, though nothing here
+// looks at more than bytes. It is a List[u8] and no more, so it lives, moves
+// and dies as a list does. A string literal is a '&[]u8', not a String; every
+// method that reads text takes a '&[]u8', which a literal is and which 'view()'
+// gives of a String, so 's.startsWith("import")' and 'a.equals(b.view())'.
+pub struct String {
+  bytes List[u8];
+
+  pub fn empty() String { String[List[u8].empty()]; }
+
+  pub fn withCapacity(n usize) String { String[List[u8].withCapacity(n)]; }
+
+  // A String holding a copy of the bytes of s
+  pub fn from(s &[]u8) String {
+    mut str = String.withCapacity(s.len);
+    str.append(s);
+    str;
+  }
+
+  // A copy of this one. (Not 'clone': a method of that name is the lifecycle
+  // method that makes a type's values copyable, which a String's are not.)
+  pub fn copy(self &) String { String.from(self.view()); }
+
+  pub fn len(self &) usize { bytes.len(); }
+  pub fn isEmpty(self &) Bool { bytes.len() == 0usize; }
+
+  // Its bytes, for reading them now
+  pub fn view(self &) &[]u8 { bytes.view(); }
+
+  // The byte at index
+  pub fn `[]`(self &, index usize) u8 { *bytes[index]; }
+
+  // -------- adding to the end --------
+
+  pub fn append overload `<-`(self &mut, s &[]u8) {
+    bytes.reserve(s.len);
+    mut i = 0usize;
+    while i < s.len { bytes.push(s[i]); i = i + 1usize; }
+  }
+
+  pub fn appendByte(self &mut, b u8) { bytes.push(b); }
+
+  // An integer in decimal, with a '-' before a negative one
+  pub fn appendInt overload `<-`(self &mut, n i64) {
+    if n < 0i64 {
+      bytes.push('-');
+      // The magnitude as a u64, which holds even the most negative i64's
+      self.appendUInt(0u64 - u64[n]);
+    }
+    else {
+      self.appendUInt(u64[n]);
+    }
+  }
+
+  pub fn appendUInt overload `<-`(self &mut, n u64) {
+    mut digits [20; u8] = [20; 0u8];
+    mut count = 0usize;
+    mut rest = n;
+    mut going = true;
+    while going {
+      digits[count] = u8[rest % 10u64] + '0';
+      count = count + 1usize;
+      rest = rest / 10u64;
+      going = rest > 0u64;
+    }
+    while count > 0usize {
+      count = count - 1usize;
+      bytes.push(digits[count]);
+    }
+  }
+
+  // The low 'width' hex digits of n, lowercase, leading zeros kept
+  pub fn appendHex(self &mut, n u64, width usize) {
+    mut d = width;
+    while d > 0usize {
+      d = d - 1usize;
+      imm nibble = u8[(n >> u64[d * 4usize]) & 15u64];
+      bytes.push(if nibble < 10u8 {'0' + nibble;} else {'a' + nibble - 10u8;});
+    }
+  }
+
+  // Every '\' made a '/', or any byte made another
+  pub fn replaceByte(self &mut, from u8, to u8) {
+    mut i = 0usize;
+    while i < bytes.len() {
+      if *bytes[i] == from { bytes.set(i, to); }
+      i = i + 1usize;
+    }
+  }
+
+  // Empty it, keeping its block
+  pub fn clear(self &mut) { bytes.clear(); }
+
+  // -------- reading --------
+
+  pub fn equals(self &, s &[]u8) Bool { bytesEqual(self.view(), s); }
+
+  // -1, 0 or 1 as it sorts before, with or after s, byte by byte, a shorter
+  // string before a longer one it begins
+  pub fn compare(self &, s &[]u8) i32 { bytesCompare(self.view(), s); }
+
+  pub fn startsWith(self &, s &[]u8) Bool {
+    imm v = self.view();
+    s.len <= v.len and bytesEqual(&v[..s.len], s);
+  }
+
+  pub fn endsWith(self &, s &[]u8) Bool {
+    imm v = self.view();
+    s.len <= v.len and bytesEqual(&v[v.len - s.len..], s);
+  }
+
+  // Where s first starts in it, or None. An empty s is found at 0.
+  pub fn find(self &, s &[]u8) Option[usize] { bytesFind(self.view(), s, 0usize); }
+
+  // Where s first starts at or after 'from'
+  pub fn findFrom(self &, s &[]u8, from usize) Option[usize] { bytesFind(self.view(), s, from); }
+
+  pub fn contains(self &, s &[]u8) Bool {
+    match bytesFind(self.view(), s, 0usize) {
+      case is Some[usize] {true;}
+      case is None[usize] {false;}
+    }
+  }
+
+  // FNV-1a, 64 bits, over its bytes
+  pub fn hash(self &) u64 { hashBytes(self.view()); }
+
+  // -------- copies of parts --------
+
+  // A copy of the bytes from 'start' up to, not including, 'end'
+  pub fn sub(self &, start usize, end usize) String {
+    imm v = self.view();
+    String.from(&v[start..end]);
+  }
+
+  // A copy without the spaces, tabs, carriage returns and line feeds at
+  // either end
+  pub fn trim(self &) String {
+    imm v = self.view();
+    mut a = 0usize;
+    mut b = v.len;
+    while a < b and isSpace(v[a]) { a = a + 1usize; }
+    while b > a and isSpace(v[b - 1usize]) { b = b - 1usize; }
+    String.from(&v[a..b]);
+  }
+
+  // Copies of its lines. A line ends at '\n', and a '\r' just before it is
+  // dropped; a last line need not end in '\n', and an ending '\n' does not
+  // begin another line, so "a\nb\n" and "a\r\nb" are both two lines, and ""
+  // is none.
+  pub fn lines(self &) List[String] {
+    imm v = self.view();
+    mut out = List[String].empty();
+    mut start = 0usize;
+    mut i = 0usize;
+    while i < v.len {
+      if v[i] == '\n' {
+        mut end = i;
+        if end > start and v[end - 1usize] == '\r' { end = end - 1usize; }
+        out.push(String.from(&v[start..end]));
+        start = i + 1usize;
+      }
+      i = i + 1usize;
+    }
+    if start < v.len {
+      mut end = v.len;
+      if v[end - 1usize] == '\r' { end = end - 1usize; }
+      out.push(String.from(&v[start..end]));
+    }
+    out;
+  }
+
+  // Copies of the pieces between each 'sep': "a,b,,c" is four pieces, the
+  // third empty; "" is one empty piece
+  pub fn split(self &, sep u8) List[String] {
+    imm v = self.view();
+    mut out = List[String].empty();
+    mut start = 0usize;
+    mut i = 0usize;
+    while i < v.len {
+      if v[i] == sep {
+        out.push(String.from(&v[start..i]));
+        start = i + 1usize;
+      }
+      i = i + 1usize;
+    }
+    out.push(String.from(&v[start..]));
+    out;
+  }
+
+  // A pointer to its bytes with a NUL after them, for a C function. It is
+  // good until the string next changes or dies; the NUL is not one of its
+  // bytes.
+  pub fn cstr(self &mut) *u8 {
+    bytes.push(0u8);
+    bytes.pop();
+    bytes.view();
+  }
+}
+
+// -------- Dict --------
+
+// One slot of a dictionary's block: empty (never used), full, or removed (a
+// key was there, so a search must go on past it). Only a full slot's key and
+// value are live.
+struct Slot[K, V] {
+  pub state u8;
+  pub hash u64;
+  pub key K;
+  pub value V;
+}
+
+const slotEmpty = 0u8;
+const slotFull = 1u8;
+const slotRemoved = 2u8;
+
+// A dictionary from strings to V, its entries in one block of slots found by
+// hashing the key (FNV-1a) and stepping on to the next slot past a collision
+// (open addressing, linear probing). The block starts at 8 slots, when the
+// first entry arrives, and doubles before the full and removed slots would
+// pass three quarters of it. The order of 'keys' is the block's, not the order
+// of insertion.
+//
+// K is String: keys are reached through a String's 'view()'. It is written as a
+// type parameter so the name survives keys of other types, which wait for
+// bounds on type parameters.
+pub struct Dict[K, V] {
+  slots *Slot[K, V];
+  used usize;
+  removed usize;
+  cap usize;
+
+  pub fn empty() Dict { Dict[0usize as *Slot[K, V], 0usize, 0usize, 0usize]; }
+
+  // How many entries it holds, and how many slots its block has
+  pub fn len(self &) usize { used; }
+  pub fn capacity(self &) usize { cap; }
+
+  // Move key and value in. A key it already holds has its entry replaced:
+  // the old key and value are finalized, and it answers true.
+  pub fn insert(self &mut, key K, value V) Bool {
+    if (used + removed + 1usize) * 4usize > cap * 3usize { self.grow(); }
+    imm h = hashBytes(key.view());
+    imm i = self.place(h, key.view());
+    imm state = ((slots + i) as &Slot[K, V]).state;
+    if state == slotFull {
+      mem.finalize(slots + i);
+    }
+    else {
+      if state == slotRemoved { removed = removed - 1usize; }
+      used = used + 1usize;
+    }
+    mem.writeRaw(slots + i, Slot[K, V][slotFull, h, key, value]);
+    state == slotFull;
+  }
+
+  // Whether it holds key
+  pub fn contains(self &, key &[]u8) Bool { self.find(key) != cap; }
+
+  // A borrow of key's value, for reading it now. A key it does not hold is a
+  // program error: ask 'contains' first.
+  pub fn `[]`(self &, key &[]u8) &V {
+    imm i = self.find(key);
+    if i == cap { missingKey(key); }
+    &slots[i].value;
+  }
+
+  // Move key's value out and forget the key, or None when it holds no such key
+  pub fn remove(self &mut, key &[]u8) Option[V] {
+    imm i = self.find(key);
+    if i == cap { return None[V][]; }
+    imm gone = mem.readRaw(slots + i);
+    imm slot = (slots + i) as &mut Slot[K, V];
+    slot.state = slotRemoved;
+    used = used - 1usize;
+    removed = removed + 1usize;
+    Some[V][gone.value];
+  }
+
+  // Copies of every key it holds, in the block's order
+  pub fn keys(self &) List[K] {
+    mut out = List[K].withCapacity(used);
+    mut i = 0usize;
+    while i < cap {
+      imm slot = (slots + i) as &Slot[K, V];
+      if slot.state == slotFull { out.push(slot.key.copy()); }
+      i = i + 1usize;
+    }
+    out;
+  }
+
+  // The slot holding key, or cap when none does
+  fn find(self &, key &[]u8) usize {
+    if used == 0usize { return cap; }
+    imm h = hashBytes(key);
+    imm mask = cap - 1usize;
+    mut i = usize[h] & mask;
+    while true {
+      imm slot = (slots + i) as &Slot[K, V];
+      if slot.state == slotEmpty { return cap; }
+      if slot.state == slotFull and slot.hash == h and bytesEqual(slot.key.view(), key) { return i; }
+      i = (i + 1usize) & mask;
+    }
+    cap;
+  }
+
+  // Where key, whose hash is h, goes: the full slot holding it, else the first
+  // removed slot passed on the way to an empty one, else that empty one. The
+  // block always has an empty slot, so the search ends.
+  fn place(self &, h u64, key &[]u8) usize {
+    imm mask = cap - 1usize;
+    mut i = usize[h] & mask;
+    mut spare = cap;
+    while true {
+      imm slot = (slots + i) as &Slot[K, V];
+      if slot.state == slotEmpty {
+        return if spare != cap {spare;} else {i;};
+      }
+      if slot.state == slotRemoved {
+        if spare == cap { spare = i; }
+      }
+      else if slot.hash == h and bytesEqual(slot.key.view(), key) {
+        return i;
+      }
+      i = (i + 1usize) & mask;
+    }
+    i;
+  }
+
+  // A new block, twice the size (or the same size, when removed slots are
+  // most of what fills it), every full slot moved into it by its hash
+  fn grow(self &mut) {
+    imm newcap = if cap == 0usize {8usize;} else if used * 2usize < cap {cap;} else {cap * 2usize;};
+    imm fresh = libc.calloc(newcap, mem.sizeof[Slot[K, V]]()) as *Slot[K, V];
+    imm mask = newcap - 1usize;
+    mut j = 0usize;
+    while j < cap {
+      imm old = (slots + j) as &Slot[K, V];
+      if old.state == slotFull {
+        mut i = usize[old.hash] & mask;
+        while ((fresh + i) as &Slot[K, V]).state != slotEmpty { i = (i + 1usize) & mask; }
+        mem.moveRaw(fresh + i, slots + j, 1usize);
+      }
+      j = j + 1usize;
+    }
+    libc.free(slots as *u8);
+    slots = fresh;
+    cap = newcap;
+    removed = 0usize;
+  }
+
+  // Its death: each entry's key and value, in the block's order, then the block
+  fn final(self &uni) {
+    if mem.needsFinal[Slot[K, V]]() {
+      mut i = 0usize;
+      while i < cap {
+        if ((slots + i) as &Slot[K, V]).state == slotFull { mem.finalize(slots + i); }
+        i = i + 1usize;
+      }
+    }
+    libc.free(slots as *u8);
+  }
+}
+
+// -------- byte slices --------
+
+// The functions the types above read text with, public for text that is
+// only a '&[]u8'.
+
+// Whether a and b hold the same bytes
+pub fn bytesEqual(a &[]u8, b &[]u8) Bool {
+  if a.len != b.len { return false; }
+  mut i = 0usize;
+  while i < a.len {
+    if a[i] != b[i] { return false; }
+    i = i + 1usize;
+  }
+  true;
+}
+
+// -1, 0 or 1 as a sorts before, with or after b
+pub fn bytesCompare(a &[]u8, b &[]u8) i32 {
+  mut i = 0usize;
+  while i < a.len and i < b.len {
+    if a[i] < b[i] { return -1i32; }
+    if a[i] > b[i] { return 1i32; }
+    i = i + 1usize;
+  }
+  if a.len < b.len { -1i32; } else if a.len > b.len { 1i32; } else { 0i32; }
+}
+
+// Where needle first starts in hay at or after 'from', or None
+pub fn bytesFind(hay &[]u8, needle &[]u8, from usize) Option[usize] {
+  mut i = from;
+  while i + needle.len <= hay.len {
+    if bytesEqual(&hay[i..i + needle.len], needle) { return Some[usize][i]; }
+    i = i + 1usize;
+  }
+  None[usize][];
+}
+
+// The 64-bit FNV-1a hash of the bytes: start from the offset basis, and for
+// each byte, exclusive-or it in and multiply by the FNV prime
+pub fn hashBytes(s &[]u8) u64 {
+  mut h = 14695981039346656037u64;
+  mut i = 0usize;
+  while i < s.len {
+    h = (h ^ u64[s[i]]) * 1099511628211u64;
+    i = i + 1usize;
+  }
+  h;
+}
+
+// A space, tab, carriage return or line feed
+pub fn isSpace(b u8) Bool { b == ' ' or b == '\t' or b == '\r' or b == '\n'; }
+
+// -------- program errors --------
+
+fn outOfRange(index usize, length usize) {
+  mut msg = String.from("collections: index ");
+  msg.appendUInt(u64[index]);
+  msg.append(" is out of range for a length of ");
+  msg.appendUInt(u64[length]);
+  die(msg);
+}
+
+fn missingKey(key &[]u8) {
+  mut msg = String.from("collections: no entry for the key \"");
+  msg.append(key);
+  msg.append("\"");
+  die(msg);
+}
+
+fn die(msg String) {
+  mut m = msg;
+  m.appendByte('\n');
+  imm v = m.view();
+  libc.fflush(libc.stdout());
+  libc.fwrite(v, 1usize, v.len, libc.stderr());
+  libc.exit(1i32);
+}
