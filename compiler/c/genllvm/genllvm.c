@@ -19,13 +19,11 @@
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
 #include <llvm-c/Comdat.h>
-#include <llvm-c/Transforms/Scalar.h>
-#include <llvm-c/Transforms/IPO.h>
-#if LLVM_VERSION_MAJOR >= 7
-#include "llvm-c/Transforms/Utils.h"
-#endif
+#include <llvm-c/Support.h>
+#include <llvm-c/Transforms/PassBuilder.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <assert.h>
 #include <string.h>
 
@@ -174,9 +172,10 @@ static int genlGloVarHasNul(VarDclNode *glovar) {
 }
 
 // The LLVM global itself behind a global variable's llvmvar, which is a
-// recast of it when the global carries a NUL
+// recast of it when the global carries a NUL. Under opaque pointers that
+// recast folds away, and llvmvar is the global.
 static LLVMValueRef genlGloVarGlobal(VarDclNode *glovar) {
-    return genlGloVarHasNul(glovar) ? LLVMGetOperand(glovar->llvmvar, 0) : glovar->llvmvar;
+    return LLVMIsAGlobalVariable(glovar->llvmvar) ? glovar->llvmvar : LLVMGetOperand(glovar->llvmvar, 0);
 }
 
 // Whether an immutable global's storage may be a constant, which LLVM may
@@ -846,7 +845,7 @@ static void genlStitch(GenState *gen, int which) {
             continue;
         if (lifefn->llvmvar == NULL)
             genlGloFnName(gen, lifefn);
-        LLVMBuildCall(builder, lifefn->llvmvar, NULL, 0, "");
+        LLVMBuildCall2(builder, genlType(gen, lifefn->vtype), lifefn->llvmvar, NULL, 0, "");
     }
     LLVMBuildRetVoid(builder);
     LLVMDisposeBuilder(builder);
@@ -1014,18 +1013,23 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
         LLVMDisposeMessage(err);
     }
 
-    // Optimize the generated LLVM IR
+    // Optimize the generated LLVM IR, through LLVM's new pass manager. Each
+    // function in turn: promote allocas to registers, reassociate expressions,
+    // eliminate common subexpressions, and simplify the control flow graph.
+    // Then, in a release build only, inline. No target machine is given, so the
+    // inliner's costs are the target-independent ones.
     timerBegin(OptTimer);
-    LLVMPassManagerRef passmgr = LLVMCreatePassManager();
-    LLVMAddPromoteMemoryToRegisterPass(passmgr);     // Demote allocas to registers.
-    //LLVMAddInstructionCombiningPass(passmgr);        // Do simple "peephole" and bit-twiddling optimizations
-    LLVMAddReassociatePass(passmgr);                 // Reassociate expressions.
-    LLVMAddGVNPass(passmgr);                         // Eliminate common subexpressions.
-    LLVMAddCFGSimplificationPass(passmgr);           // Simplify the control flow graph
-    if (gen->opt->release)
-        LLVMAddFunctionInliningPass(passmgr);        // Function inlining
-    LLVMRunPassManager(passmgr, gen->module);
-    LLVMDisposePassManager(passmgr);
+    const char *pipeline = gen->opt->release
+        ? "function(mem2reg,reassociate,gvn,simplifycfg),cgscc(inline)"
+        : "function(mem2reg,reassociate,gvn,simplifycfg)";
+    LLVMPassBuilderOptionsRef passopts = LLVMCreatePassBuilderOptions();
+    LLVMErrorRef passerr = LLVMRunPasses(gen->module, pipeline, NULL, passopts);
+    LLVMDisposePassBuilderOptions(passopts);
+    if (passerr) {
+        char *msg = LLVMGetErrorMessage(passerr);
+        errorMsg(ErrorGenErr, "Could not optimize: %s", msg);
+        LLVMDisposeErrorMessage(msg);
+    }
 
     // Serialize the LLVM IR, if requested
     if (gen->opt->print_llvmir && LLVMPrintModuleToFile(gen->module, fileMakePath(gen->opt->output, gen->opt->srcname, "ir"), &err) != 0) {
@@ -1059,9 +1063,30 @@ static int genlComdatSupport(char *triple) {
     return ComdatFull;
 }
 
+// Hand LLVM the command-line options named by the environment variable
+// CONE_LLVM_OPTIONS, separated by spaces, as a testing aid: for instance
+// '-force-opaque-pointers', which LLVM 13 reads when it creates its context.
+// So this runs before anything creates one.
+static void genlLLVMOptions() {
+    char *env = getenv("CONE_LLVM_OPTIONS");
+    if (env == NULL || *env == '\0')
+        return;
+    char *opts = memAllocStr(env, strlen(env));
+    const char *argv[64];
+    int argc = 0;
+    argv[argc++] = "conec";
+    char *next = strtok(opts, " ");
+    while (next && argc < 64) {
+        argv[argc++] = next;
+        next = strtok(NULL, " ");
+    }
+    LLVMParseCommandLineOptions(argc, argv, "");
+}
+
 void genSetup(GenState *gen, ConeOptions *opt) {
     gen->opt = opt;
     gen->libroot = NULL;
+    genlLLVMOptions();
 
     LLVMTargetMachineRef machine = genlCreateMachine(opt);
     if (!machine)

@@ -17,7 +17,6 @@
 #include <llvm-c/Target.h>
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
-#include <llvm-c/Transforms/Scalar.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -70,12 +69,12 @@ void genlDealiasFlds(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
 // region's 'free'. A type for which itypeNeedsFinal is false generates nothing.
 void genlFinalizeAt(GenState *gen, LLVMValueRef valptr, INode *vtype) {
     if (flowIsOwningType(vtype)) {
-        genlReleaseOwning(gen, LLVMBuildLoad(gen->builder, valptr, "finalref"), vtype);
+        genlReleaseOwning(gen, LLVMBuildLoad2(gen->builder, genlType(gen, vtype), valptr, "finalref"), vtype);
         return;
     }
     INode *dropfn = itypeGetDropFnDcl(vtype);
     if (dropfn)
-        genlFnCallInternal(gen, SimpleDispatch, dropfn, 1, &valptr);
+        genlFnCallInternal(gen, SimpleDispatch, dropfn, 1, &valptr, NULL);
     genlReleaseFlds(gen, valptr, vtype);
 }
 
@@ -95,8 +94,8 @@ void genlReleaseFlds(GenState *gen, LLVMValueRef ref, INode *vtype) {
             continue;
         // The GEP yields the field's address; the release routine wants the
         // reference the field holds, so load it.
-        LLVMValueRef fldptr = LLVMBuildStructGEP(gen->builder, ref, field->index, &field->namesym->namestr);
-        LLVMValueRef fldref = LLVMBuildLoad(gen->builder, fldptr, "fldref");
+        LLVMValueRef fldptr = LLVMBuildStructGEP2(gen->builder, genlType(gen, (INode*)strnode), ref, field->index, &field->namesym->namestr);
+        LLVMValueRef fldref = LLVMBuildLoad2(gen->builder, genlType(gen, (INode*)vartype), fldptr, "fldref");
         genlReleaseOwning(gen, fldref, (INode*)vartype);
     }
 }
@@ -113,15 +112,16 @@ static LLVMValueRef genlRegionHeader(GenState *gen, LLVMValueRef valptr, RefNode
     LLVMTypeRef hdrptrtype = LLVMPointerType(genlType(gen, refnode->region), 0);
     if (offset == 0)
         return LLVMBuildBitCast(gen->builder, valptr, hdrptrtype, "header");
-    LLVMValueRef bytep = LLVMBuildBitCast(gen->builder, valptr, LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0), "");
+    LLVMTypeRef bytetype = LLVMInt8TypeInContext(gen->context);
+    LLVMValueRef bytep = LLVMBuildBitCast(gen->builder, valptr, LLVMPointerType(bytetype, 0), "");
     LLVMValueRef back = LLVMConstInt(genlType(gen, (INode*)usizeType), -(long long)offset, 1);
-    bytep = LLVMBuildGEP(gen->builder, bytep, &back, 1, "");
+    bytep = LLVMBuildGEP2(gen->builder, bytetype, bytep, &back, 1, "");
     return LLVMBuildBitCast(gen->builder, bytep, hdrptrtype, "header");
 }
 
 // Call a region method that takes the header as 'self'
 static LLVMValueRef genlRegionCall(GenState *gen, FnDclNode *meth, LLVMValueRef header) {
-    return genlFnCallInternal(gen, SimpleDispatch, (INode*)meth, 1, &header);
+    return genlFnCallInternal(gen, SimpleDispatch, (INode*)meth, 1, &header, NULL);
 }
 
 // A path from a value inwards to a part of it that was moved out: each step is
@@ -149,7 +149,7 @@ static void genlRegionDeath(GenState *gen, LLVMValueRef valptr, RefNode *refnode
     if (refnode->tag == RefTag) {
         INode *dropfn = itypeGetDropFnDcl(refnode->vtexp);
         if (dropfn)
-            genlFnCallInternal(gen, SimpleDispatch, dropfn, 1, &valptr);
+            genlFnCallInternal(gen, SimpleDispatch, dropfn, 1, &valptr, NULL);
     }
     genlDealiasFlds(gen, valptr, refnode);
     FnDclNode *freemeth = regionMethod(refnode->region, freeMethodName);
@@ -205,7 +205,7 @@ static void genlReleasePart(GenState *gen, LLVMValueRef ptr, INode *type, MovedP
         RefNode *reftype = (RefNode *)typedcl;
         if (!regionIsOwning(reftype->region))
             return;
-        genlRegionDealiasPart(gen, LLVMBuildLoad(gen->builder, ptr, "partref"), reftype, paths, npaths, depth);
+        genlRegionDealiasPart(gen, LLVMBuildLoad2(gen->builder, genlType(gen, typedcl), ptr, "partref"), reftype, paths, npaths, depth);
     }
 }
 
@@ -266,7 +266,7 @@ void genlHollowRelease(GenState *gen, HollowNode *hnode) {
     MovedPath *paths = (MovedPath *)memAllocBlk(npaths * sizeof(MovedPath));
     for (int i = 0; i < npaths; ++i)
         paths[i] = genlMovedPath(nodesGet(hnode->moved, i), var);
-    LLVMValueRef ref = LLVMBuildLoad(gen->builder, var->llvmvar, "hollowref");
+    LLVMValueRef ref = LLVMBuildLoad2(gen->builder, genlType(gen, var->vtype), var->llvmvar, "hollowref");
     genlRegionDealiasPart(gen, ref, reftype, paths, npaths, 0);
 }
 
@@ -315,8 +315,8 @@ void genlRegionAlias(GenState *gen, LLVMValueRef ref, long long amount, RefNode 
     LLVMPositionBuilderAtEnd(gen->builder, doneblk);
 }
 
-// Generate repetitive array fill of a value
-void genlAllocFillArray(GenState *gen, LLVMValueRef nbrelems, ArrayNode *arraylit, LLVMValueRef valuep) {
+// Generate repetitive array fill of a value, each element of LLVM type 'elemtype'
+void genlAllocFillArray(GenState *gen, LLVMValueRef nbrelems, ArrayNode *arraylit, LLVMValueRef valuep, LLVMTypeRef elemtype) {
     LLVMValueRef ptrphis[2];
     LLVMValueRef cntphis[2];
     LLVMBasicBlockRef phiblks[2];
@@ -345,7 +345,7 @@ void genlAllocFillArray(GenState *gen, LLVMValueRef nbrelems, ArrayNode *arrayli
     LLVMPositionBuilderAtEnd(gen->builder, loopbody);
     LLVMBuildStore(gen->builder, fillval, loopptrphi);
     LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 1);
-    ptrphis[1] = LLVMBuildGEP(gen->builder, loopptrphi, &constone, 1, "");
+    ptrphis[1] = LLVMBuildGEP2(gen->builder, elemtype, loopptrphi, &constone, 1, "");
     cntphis[1] = LLVMBuildSub(gen->builder, loopcntphi, constone, "");
     phiblks[1] = loopbody;
     LLVMBuildBr(gen->builder, loopbeg);
@@ -394,7 +394,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     }
     INode *region = itypeGetTypeDcl(reftype->region);
     INode *perm = itypeGetTypeDcl(reftype->perm);
-    LLVMTypeRef valuetypllvm = LLVMStructGetTypeAtIndex(LLVMGetElementType(reftype->typeinfo->ptrstructype), ValueField);
+    LLVMTypeRef valuetypllvm = LLVMStructGetTypeAtIndex(reftype->typeinfo->structype, ValueField);
     LLVMTypeRef valueptrtyp = LLVMPointerType(valuetypllvm, 0);
 
     // Calculate how much memory space we need to allocate
@@ -420,7 +420,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
 
     // Do region allocation (using its alloc method) and then bitcast to multi-layered-struct ptr
     FnDclNode *allocmeth = (FnDclNode*)iTypeFindFnField(region, allocMethodName);
-    LLVMValueRef malloc = genlFnCallInternal(gen, SimpleDispatch, (INode*)allocmeth, 1, &sizeval);
+    LLVMValueRef malloc = genlFnCallInternal(gen, SimpleDispatch, (INode*)allocmeth, 1, &sizeval, NULL);
     LLVMValueRef ptrstructype = LLVMBuildBitCast(gen->builder, malloc, reftype->typeinfo->ptrstructype, "");
 
     // Handle when allocation fails (returns NULL pointer)
@@ -452,8 +452,8 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     // Initialize region using its 'init' method, if supplied
     INode *reginitmeth = iTypeFindFnField(region, initMethodName);
     if (reginitmeth) {
-        LLVMValueRef initval = genlFnCallInternal(gen, SimpleDispatch, (INode*)reginitmeth, 0, NULL);
-        LLVMValueRef regionp = LLVMBuildStructGEP(gen->builder, ptrstructype, 0, "region");
+        LLVMValueRef initval = genlFnCallInternal(gen, SimpleDispatch, (INode*)reginitmeth, 0, NULL, NULL);
+        LLVMValueRef regionp = LLVMBuildStructGEP2(gen->builder, reftype->typeinfo->structype, ptrstructype, 0, "region");
         LLVMBuildStore(gen->builder, initval, regionp);
     }
 
@@ -461,21 +461,21 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     if (perm->tag == StructTag) {
         INode *perminitmeth = iTypeFindFnField(perm, initMethodName);
         if (perminitmeth) {
-            LLVMValueRef initval = genlFnCallInternal(gen, SimpleDispatch, (INode*)perminitmeth, 0, NULL);
-            LLVMValueRef permp = LLVMBuildStructGEP(gen->builder, ptrstructype, 1, "perm");
+            LLVMValueRef initval = genlFnCallInternal(gen, SimpleDispatch, (INode*)perminitmeth, 0, NULL, NULL);
+            LLVMValueRef permp = LLVMBuildStructGEP2(gen->builder, reftype->typeinfo->structype, ptrstructype, 1, "perm");
             LLVMBuildStore(gen->builder, initval, permp);
         }
     }
 
     // Initialize value (via copy or init function) and return pointer to it
-    LLVMValueRef valuep = LLVMBuildStructGEP(gen->builder, ptrstructype, ValueField, ""); // Point to value
+    LLVMValueRef valuep = LLVMBuildStructGEP2(gen->builder, reftype->typeinfo->structype, ptrstructype, ValueField, ""); // Point to value
     if (reftype->tag == RefTag) {
         LLVMBuildStore(gen->builder, genlExpr(gen, allocatenode->vtexp), valuep); // Copy value
     }
     else {
         // Handle array fill via run-time generation
         if (allocatenode->vtexp->tag == ArrayLitTag && ((ArrayNode*)allocatenode->vtexp)->dimens->used > 0) {
-            genlAllocFillArray(gen, nbrelems, (ArrayNode*)allocatenode->vtexp, valuep);
+            genlAllocFillArray(gen, nbrelems, (ArrayNode*)allocatenode->vtexp, valuep, valuetypllvm);
         }
         else {
             // Copy initial value into allocated memory area for value
@@ -535,7 +535,7 @@ void genlDealiasNodes(GenState *gen, Nodes *nodes) {
         // Hack for dealias on local variables holding region-owning reference
         if ((*nodesp)->tag == VarDclTag) {
             VarDclNode *var = (VarDclNode *)*nodesp;
-            genlReleaseOwning(gen, LLVMBuildLoad(gen->builder, var->llvmvar, "allocref"), var->vtype);
+            genlReleaseOwning(gen, LLVMBuildLoad2(gen->builder, genlType(gen, var->vtype), var->llvmvar, "allocref"), var->vtype);
         }
         // Generate function calls that drop/dealias values
         else {

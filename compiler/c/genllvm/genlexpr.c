@@ -17,13 +17,25 @@
 #include <llvm-c/Target.h>
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
-#include <llvm-c/Transforms/Scalar.h>
 
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
 
 LLVMValueRef genlAddr(GenState *gen, INode *lval);
+
+// The Cone type of what genlAddr's address points at, which a load, store or
+// GEP through that address is typed by. Read as genlAddr reads its lval: a
+// variable's own type, and through a dereference what the reference points at,
+// since a dereference the compiler builds itself (a synthesized drop's)
+// carries no type of its own.
+static INode *genlAddrType(INode *lval) {
+    if (isNameUseNode(lval) && isExpNode(lval))
+        return ((IExpNode*)((NameUseNode *)lval)->dclnode)->vtype;
+    if (lval->tag == DerefTag)
+        return genlPointee(((IExpNode*)((StarNode *)lval)->vtexp)->vtype);
+    return ((IExpNode*)lval)->vtype;
+}
 
 // A global's symbol, asked for rather than assumed. genlProgram declares no
 // private name of a module this compile does not generate, yet a public inline
@@ -116,6 +128,12 @@ LLVMValueRef genlGetIntrinsicFn(GenState *gen, char *fnname, NameUseNode *fnuse)
     if (!fn)
         fn = LLVMAddFunction(gen->module, fnname, genlType(gen, iexpGetTypeDcl((INode*)fnuse->dclnode)));
     return fn;
+}
+
+// Call a specific named intrinsic function
+static LLVMValueRef genlCallIntrinsicFn(GenState *gen, char *fnname, NameUseNode *fnuse, LLVMValueRef *fnargs, uint32_t fnargcnt) {
+    LLVMValueRef fn = genlGetIntrinsicFn(gen, fnname, fnuse);
+    return LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(fn), fn, fnargs, fnargcnt, "");
 }
 
 // Generate a function call, including special intrinsics (Internal version)
@@ -229,7 +247,7 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
     // A load and a store that leave ownership to the caller: nothing at the
     // slot is finalized or released, and the value read is the caller's
     case ReadRawIntrinsic:
-        return LLVMBuildLoad(gen->builder, fnargs[0], "rawread");
+        return LLVMBuildLoad2(gen->builder, genlType(gen, type), fnargs[0], "rawread");
     case WriteRawIntrinsic:
         LLVMBuildStore(gen->builder, fnargs[1], fnargs[0]);
         return NULL;
@@ -248,30 +266,36 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
     }
 }
 
-LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint32_t fnargcnt, LLVMValueRef *fnargs) {
+LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint32_t fnargcnt, LLVMValueRef *fnargs, INode *selftype) {
 
     // Handle call when we have a derefed pointer to a function
     if (objfn->tag == DerefTag) {
-        return LLVMBuildCall(gen->builder, genlExpr(gen, ((StarNode*)objfn)->vtexp), fnargs, fnargcnt, "");
+        INode *fnptr = ((StarNode*)objfn)->vtexp;
+        return LLVMBuildCall2(gen->builder, genlPointeeType(gen, ((IExpNode*)fnptr)->vtype), genlExpr(gen, fnptr), fnargs, fnargcnt, "");
     }
     // Handle call when we have a ref or pointer to a function
     INode *fntype = iexpGetTypeDcl(objfn);
     if (fntype->tag == RefTag || fntype->tag == PtrTag) {
-        return LLVMBuildCall(gen->builder, genlExpr(gen, objfn), fnargs, fnargcnt, "");
+        return LLVMBuildCall2(gen->builder, genlPointeeType(gen, fntype), genlExpr(gen, objfn), fnargs, fnargcnt, "");
     }
 
     // We know at this point that objfn refers to some "named" function
     assert(fntype->tag == FnSigTag);
     // Handle call when first argument (object) is a virtual reference
     if (dispatch == VirtDispatch) {
-        // Build code to obtain method's address from object "fat pointer"'s vtable, then call it
+        // Build code to obtain method's address from object "fat pointer"'s vtable, then call it.
+        // The vtable is the one the virtual reference's own trait names.
+        if (selftype == NULL)
+            errorUnreachable(objfn, "a virtual dispatch not told its receiver's type");
+        Vtable *vtable = ((StructNode*)itypeGetTypeDcl(genlPointee(selftype)))->vtable;
         LLVMValueRef fatptr = fnargs[0];
-        LLVMValueRef vtable = LLVMBuildExtractValue(gen->builder, fatptr, 1, "");
+        LLVMValueRef vtablep = LLVMBuildExtractValue(gen->builder, fatptr, 1, "");
         fnargs[0] = LLVMBuildExtractValue(gen->builder, fatptr, 0, "");
         FnDclNode *methdcl = (FnDclNode*)((NameUseNode *)objfn)->dclnode;
-        LLVMValueRef vtblmethp = LLVMBuildStructGEP(gen->builder, vtable, methdcl->vtblidx, &methdcl->namesym->namestr); // **fn
-        LLVMValueRef vtblmeth = LLVMBuildLoad(gen->builder, vtblmethp, "");
-        return LLVMBuildCall(gen->builder, vtblmeth, fnargs, fnargcnt, "");
+        LLVMValueRef vtblmethp = LLVMBuildStructGEP2(gen->builder, vtable->llvmvtable, vtablep, methdcl->vtblidx, &methdcl->namesym->namestr); // **fn
+        LLVMValueRef vtblmeth = LLVMBuildLoad2(gen->builder, LLVMStructGetTypeAtIndex(vtable->llvmvtable, methdcl->vtblidx), vtblmethp, "");
+        FnDclNode *slot = (FnDclNode*)nodesGet(vtable->methfld, methdcl->vtblidx);
+        return LLVMBuildCall2(gen->builder, genlVtableSlotFnType(gen, slot), vtblmeth, fnargs, fnargcnt, "");
     }
 
     // A function call may be to an intrinsic, or to program-defined code
@@ -309,7 +333,7 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
     LLVMValueRef fncallret = NULL;
     switch (fndcl->value? fndcl->value->tag : BlockTag) {
     case BlockTag: {
-        fncallret = LLVMBuildCall(gen->builder, genlFnSym(gen, fndcl), fnargs, fnargcnt, "");
+        fncallret = LLVMBuildCall2(gen->builder, genlType(gen, fndcl->vtype), genlFnSym(gen, fndcl), fnargs, fnargcnt, "");
         if (fndcl->dclinfo.facts & DclSystemCC) {
             LLVMSetInstructionCallConv(fncallret, LLVMX86StdcallCallConv);
         }
@@ -326,7 +350,8 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
         // call to the function this object builds for it
         int16_t stitched = ((IntrinsicNode *)fndcl->value)->intrinsicFn;
         if (stitched == InitAllIntrinsic || stitched == FinalAllIntrinsic) {
-            fncallret = LLVMBuildCall(gen->builder, genlStitchFn(gen, stitched), NULL, 0, "");
+            LLVMValueRef stitchfn = genlStitchFn(gen, stitched);
+            fncallret = LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(stitchfn), stitchfn, NULL, 0, "");
             break;
         }
 
@@ -334,11 +359,26 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
         LLVMTypeRef selftyp = LLVMTypeOf(fnargs[0]);
         LLVMTypeKind selftypkind = LLVMGetTypeKind(selftyp);
 
-        // Pointer intrinsics
+        // Pointer intrinsics. What the pointer points at comes from its Cone
+        // type, as an LLVM pointer does not say: '++' through a reference to a
+        // number adds to it and through one to a pointer steps that pointer,
+        // and '+', '-' and a difference step by the size of the pointee.
         if (selftypkind == LLVMPointerTypeKind) {
-            LLVMTypeRef ptrToType = LLVMGetElementType(selftyp);
-            LLVMTypeKind ptrToKind = LLVMGetTypeKind(ptrToType);
-            switch (((IntrinsicNode *)fndcl->value)->intrinsicFn) {
+            int16_t op = ((IntrinsicNode *)fndcl->value)->intrinsicFn;
+            LLVMTypeRef ptrToType = NULL;   // The LLVM type the pointer points at
+            LLVMTypeKind ptrToKind = LLVMVoidTypeKind;
+            LLVMTypeRef stepType = NULL;    // Where that is a pointer, the type it steps over
+            if (op != IsTrueIntrinsic && op != EqIntrinsic && op != NeIntrinsic && op != LtIntrinsic
+                && op != LeIntrinsic && op != GtIntrinsic && op != GeIntrinsic) {
+                if (selftype == NULL)
+                    errorUnreachable(objfn, "a pointer intrinsic not told its receiver's type");
+                INode *pointee = genlPointee(selftype);
+                ptrToType = genlType(gen, pointee);
+                ptrToKind = LLVMGetTypeKind(ptrToType);
+                if (ptrToKind == LLVMPointerTypeKind)
+                    stepType = genlPointeeType(gen, pointee);
+            }
+            switch (op) {
                 // Comparison
             case IsTrueIntrinsic: fncallret = LLVMBuildIsNotNull(gen->builder, fnargs[0], "isnotnull"); break;
             case EqIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntEQ, fnargs[0], fnargs[1], ""); break;
@@ -349,10 +389,10 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
             case GeIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntUGE, fnargs[0], fnargs[1], ""); break;
             case IncrIntrinsic: // ++x
             {
-                LLVMValueRef val = LLVMBuildLoad(gen->builder, fnargs[0], "");
+                LLVMValueRef val = LLVMBuildLoad2(gen->builder, ptrToType, fnargs[0], "");
                 if (ptrToKind == LLVMPointerTypeKind) {
                     LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 0);
-                    fncallret = LLVMBuildGEP(gen->builder, val, &constone, 1, "");
+                    fncallret = LLVMBuildGEP2(gen->builder, stepType, val, &constone, 1, "");
                 }
                 else if (ptrToKind == LLVMFloatTypeKind)
                     fncallret = LLVMBuildFAdd(gen->builder, val, LLVMConstReal(ptrToType, 1.), "");
@@ -363,10 +403,10 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
             }
             case DecrIntrinsic: // --x
             {
-                LLVMValueRef val = LLVMBuildLoad(gen->builder, fnargs[0], "");
+                LLVMValueRef val = LLVMBuildLoad2(gen->builder, ptrToType, fnargs[0], "");
                 if (ptrToKind == LLVMPointerTypeKind) {
                     LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), -1, 1);
-                    fncallret = LLVMBuildGEP(gen->builder, val, &constone, 1, "");
+                    fncallret = LLVMBuildGEP2(gen->builder, stepType, val, &constone, 1, "");
                 }
                 else if (ptrToKind == LLVMFloatTypeKind)
                     fncallret = LLVMBuildFSub(gen->builder, val, LLVMConstReal(ptrToType, 1.), "");
@@ -377,11 +417,11 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
             }
             case IncrPostIntrinsic: // x++
             {
-                fncallret = LLVMBuildLoad(gen->builder, fnargs[0], "");
+                fncallret = LLVMBuildLoad2(gen->builder, ptrToType, fnargs[0], "");
                 LLVMValueRef val;
                 if (ptrToKind == LLVMPointerTypeKind) {
                     LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 0);
-                    val = LLVMBuildGEP(gen->builder, fncallret, &constone, 1, "");
+                    val = LLVMBuildGEP2(gen->builder, stepType, fncallret, &constone, 1, "");
                 }
                 else if (ptrToKind == LLVMFloatTypeKind)
                     val = LLVMBuildFAdd(gen->builder, fncallret, LLVMConstReal(ptrToType, 1.), "");
@@ -392,11 +432,11 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
             }
             case DecrPostIntrinsic: // x--
             {
-                fncallret = LLVMBuildLoad(gen->builder, fnargs[0], "");
+                fncallret = LLVMBuildLoad2(gen->builder, ptrToType, fnargs[0], "");
                 LLVMValueRef val;
                 if (ptrToKind == LLVMPointerTypeKind) {
                     LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), -1, 1);
-                    val = LLVMBuildGEP(gen->builder, fncallret, &constone, 1, "");
+                    val = LLVMBuildGEP2(gen->builder, stepType, fncallret, &constone, 1, "");
                 }
                 else if (ptrToKind == LLVMFloatTypeKind)
                     val = LLVMBuildFSub(gen->builder, fncallret, LLVMConstReal(ptrToType, 1.), "");
@@ -405,10 +445,10 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
                 LLVMBuildStore(gen->builder, val, fnargs[0]);
                 break;
             }
-            case AddIntrinsic: fncallret = LLVMBuildGEP(gen->builder, fnargs[0], &fnargs[1], 1, ""); break;
+            case AddIntrinsic: fncallret = LLVMBuildGEP2(gen->builder, ptrToType, fnargs[0], &fnargs[1], 1, ""); break;
             case SubIntrinsic: {
                 LLVMValueRef negval = LLVMBuildNeg(gen->builder, fnargs[1], "");
-                fncallret = LLVMBuildGEP(gen->builder, fnargs[0], &negval, 1, ""); 
+                fncallret = LLVMBuildGEP2(gen->builder, ptrToType, fnargs[0], &negval, 1, "");
                 break;
             }
             case DiffIntrinsic: {
@@ -421,16 +461,16 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
                 break;
             }
             case AddEqIntrinsic: {
-                LLVMValueRef val = LLVMBuildLoad(gen->builder, fnargs[0], "");
-                fncallret = LLVMBuildGEP(gen->builder, val, &fnargs[1], 1, "");
+                LLVMValueRef val = LLVMBuildLoad2(gen->builder, ptrToType, fnargs[0], "");
+                fncallret = LLVMBuildGEP2(gen->builder, stepType, val, &fnargs[1], 1, "");
                 LLVMBuildStore(gen->builder, fncallret, fnargs[0]);
                 break;
 
             }
             case SubEqIntrinsic: {
-                LLVMValueRef val = LLVMBuildLoad(gen->builder, fnargs[0], "");
+                LLVMValueRef val = LLVMBuildLoad2(gen->builder, ptrToType, fnargs[0], "");
                 LLVMValueRef negval = LLVMBuildNeg(gen->builder, fnargs[1], "");
-                fncallret = LLVMBuildGEP(gen->builder, val, &negval, 1, "");
+                fncallret = LLVMBuildGEP2(gen->builder, stepType, val, &negval, 1, "");
                 LLVMBuildStore(gen->builder, fncallret, fnargs[0]);
                 break;
 
@@ -506,19 +546,19 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
             case SqrtIntrinsic: 
             {
                 char *fnname = bitwidth == 32 ? "llvm.sqrt.f32" : "llvm.sqrt.f64";
-                fncallret = LLVMBuildCall(gen->builder, genlGetIntrinsicFn(gen, fnname, fnuse), fnargs, fnargcnt, "");
+                fncallret = genlCallIntrinsicFn(gen, fnname, fnuse, fnargs, fnargcnt);
                 break;
             }
             case SinIntrinsic:
             {
                 char *fnname = bitwidth == 32 ? "llvm.sin.f32" : "llvm.sin.f64";
-                fncallret = LLVMBuildCall(gen->builder, genlGetIntrinsicFn(gen, fnname, fnuse), fnargs, fnargcnt, "");
+                fncallret = genlCallIntrinsicFn(gen, fnname, fnuse, fnargs, fnargcnt);
                 break;
             }
             case CosIntrinsic:
             {
                 char *fnname = bitwidth == 32 ? "llvm.cos.f32" : "llvm.cos.f64";
-                fncallret = LLVMBuildCall(gen->builder, genlGetIntrinsicFn(gen, fnname, fnuse), fnargs, fnargcnt, "");
+                fncallret = genlCallIntrinsicFn(gen, fnname, fnuse, fnargs, fnargcnt);
                 break;
             }
             }
@@ -592,7 +632,8 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
         *fnarg++ = genlExpr(gen, *nodesp);
     }
 
-    return genlFnCallInternal(gen, dispatch, objfn, fnargcnt, fnargs);
+    INode *selftype = fnargcnt > 0 ? ((IExpNode*)nodesGet(fncall->args, 0))->vtype : NULL;
+    return genlFnCallInternal(gen, dispatch, objfn, fnargcnt, fnargs, selftype);
 }
 
 // Generate a value converted to another type
@@ -655,7 +696,7 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
         LLVMValueRef tempspaceptr = genlAlloca(gen, genlType(gen, fromtype), "");
         LLVMValueRef store = LLVMBuildStore(gen->builder, genexp, tempspaceptr);
         LLVMValueRef castptr = LLVMBuildBitCast(gen->builder, tempspaceptr, LLVMPointerType(genlType(gen, totype), 0), "");
-        return LLVMBuildLoad(gen->builder, castptr, "");
+        return LLVMBuildLoad2(gen->builder, genlType(gen, totype), castptr, "");
     }
 
     case RefTag:
@@ -743,8 +784,8 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
                 if (!((*nodesp)->flags & IsTagField))
                     continue;
                 FieldDclNode *tagnode = (FieldDclNode*)*nodesp;
-                LLVMValueRef val = LLVMBuildStructGEP(gen->builder, genexp, tagnode->index, "tagref");
-                val = LLVMBuildLoad(gen->builder, val, "tag");
+                LLVMValueRef val = LLVMBuildStructGEP2(gen->builder, genlType(gen, (INode*)strnode), genexp, tagnode->index, "tagref");
+                val = LLVMBuildLoad2(gen->builder, genlType(gen, tagnode->vtype), val, "tag");
                 // Only the enum's own vtable list is in 'derived' order. Another
                 // trait's lists implementations as coercions registered them,
                 // so there the variant's is found by comparison.
@@ -752,8 +793,8 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
                     LLVMValueRef indexes[2];
                     indexes[0] = LLVMConstInt(genlUsize(gen), 0, 0);
                     indexes[1] = val;
-                    vtablep = LLVMBuildGEP(gen->builder, vtable->llvmvtables, indexes, 2, "");
-                    vtablep = LLVMBuildLoad(gen->builder, vtablep, "");
+                    vtablep = LLVMBuildGEP2(gen->builder, LLVMGlobalGetValueType(vtable->llvmvtables), vtable->llvmvtables, indexes, 2, "");
+                    vtablep = LLVMBuildLoad2(gen->builder, LLVMPointerType(vtable->llvmvtable, 0), vtablep, "");
                 }
                 else
                     vtablep = genlVtableForTag(gen, vtable, strnode, val, tagnode);
@@ -808,7 +849,7 @@ LLVMValueRef genlRecast(GenState *gen, INode* exp, INode* to) {
         LLVMValueRef tempspaceptr = genlAlloca(gen, fromllvm, "");
         LLVMValueRef store = LLVMBuildStore(gen->builder, genexp, tempspaceptr);
         LLVMValueRef castptr = LLVMBuildBitCast(gen->builder, tempspaceptr, LLVMPointerType(tollvm, 0), "");
-        return LLVMBuildLoad(gen->builder, castptr, "");
+        return LLVMBuildLoad2(gen->builder, tollvm, castptr, "");
     }
     // A bitcast reinterprets a value of one first-class type as another, but
     // LLVM will not use it to move between the pointer and integer kinds: it
@@ -912,8 +953,14 @@ LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
         for (nodesFor(vtable->impl, cnt, nodesp)) {
             VtableImpl *impl = (VtableImpl*)*nodesp;
             if (impl->structdcl == (INode*)structtype) {
-                LLVMValueRef diff = LLVMBuildPtrDiff(gen->builder, vtablep, impl->llvmvtablep, "");
-                LLVMValueRef zero = LLVMConstInt(LLVMInt64TypeInContext(gen->context), 0, 0);
+                // The distance between the two vtables, in vtables: the
+                // pointer difference written out, as LLVM's own was
+                LLVMTypeRef i64 = LLVMInt64TypeInContext(gen->context);
+                LLVMValueRef lhs = LLVMBuildPtrToInt(gen->builder, vtablep, i64, "");
+                LLVMValueRef rhs = LLVMBuildPtrToInt(gen->builder, impl->llvmvtablep, i64, "");
+                LLVMValueRef diff = LLVMBuildSub(gen->builder, lhs, rhs, "");
+                diff = LLVMBuildExactSDiv(gen->builder, diff, LLVMSizeOf(vtable->llvmvtable), "");
+                LLVMValueRef zero = LLVMConstInt(i64, 0, 0);
                 return LLVMBuildICmp(gen->builder, LLVMIntEQ, diff, zero, "isvtable");
             }
         }
@@ -931,7 +978,7 @@ LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
         // load it before testing it against null -- the tagged path below reads
         // its tag field through the same kind of reference for the same reason.
         if (istype->tag == RefTag)
-            val = LLVMBuildLoad(gen->builder, val, "nullable");
+            val = LLVMBuildLoad2(gen->builder, genlPointeeType(gen, exptype), val, "nullable");
         if (LLVMGetTypeKind(ptrtype) != LLVMPointerTypeKind)
             val = LLVMBuildExtractValue(gen->builder, val, 0, "ptr"); // VirtRef & ArrayRef
         LLVMValueRef nullptr = LLVMConstPointerNull(ptrtype);
@@ -947,8 +994,8 @@ LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
         if ((*nodesp)->flags & IsTagField) {
             FieldDclNode *tagnode = (FieldDclNode*)*nodesp;
             if (istype->tag == RefTag) {
-                val = LLVMBuildStructGEP(gen->builder, val, tagnode->index, "tagref");
-                val = LLVMBuildLoad(gen->builder, val, "tag");
+                val = LLVMBuildStructGEP2(gen->builder, genlPointeeType(gen, exptype), val, tagnode->index, "tagref");
+                val = LLVMBuildLoad2(gen->builder, genlType(gen, tagnode->vtype), val, "tag");
             }
             else
                 val = LLVMBuildExtractValue(gen->builder, val, tagnode->index, "tag");
@@ -972,7 +1019,7 @@ void genlPanic(GenState *gen) {
         LLVMTypeRef fnsig = LLVMFunctionType(rettype, NULL, 0, 0);
         fn = LLVMAddFunction(gen->module, fnname, fnsig);
     }
-    LLVMBuildCall(gen->builder, fn, NULL, 0, "");
+    LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(fn), fn, NULL, 0, "");
 }
 
 void genlBoundsCheck(GenState *gen, LLVMValueRef index, LLVMValueRef count) {
@@ -996,12 +1043,15 @@ static LLVMValueRef genlSubslice(GenState *gen, FnCallNode *fncall) {
     INode *obj = fncall->objfn;
     INode *objtype = iexpGetTypeDcl(obj);
     LLVMValueRef base, count;
+    LLVMTypeRef elemtype;   // What 'base' points at
     if (objtype->tag == ArrayTag) {
         ULitNode *dimen = (ULitNode*)nodesGet(((ArrayNode*)objtype)->dimens, 0);
         assert(dimen->tag == ULitTag);
         count = LLVMConstInt(genlUsize(gen), dimen->uintlit, 0);
         LLVMValueRef zeros[2] = {LLVMConstInt(genlUsize(gen), 0, 0), LLVMConstInt(genlUsize(gen), 0, 0)};
-        base = LLVMBuildGEP(gen->builder, genlAddr(gen, obj), zeros, 2, "");
+        LLVMTypeRef arraytype = genlType(gen, genlAddrType(obj));
+        base = LLVMBuildGEP2(gen->builder, arraytype, genlAddr(gen, obj), zeros, 2, "");
+        elemtype = LLVMGetElementType(arraytype);   // an array's element, not a pointer's
     }
     else {
         // fnCallArrIndex accepts a range only on an array or a slice, and a
@@ -1010,6 +1060,7 @@ static LLVMValueRef genlSubslice(GenState *gen, FnCallNode *fncall) {
         LLVMValueRef arrref = genlExpr(gen, ((StarNode *)obj)->vtexp);
         count = LLVMBuildExtractValue(gen->builder, arrref, 1, "count");
         base = LLVMBuildExtractValue(gen->builder, arrref, 0, "sliceptr");
+        elemtype = genlPointeeType(gen, objtype);
     }
     LLVMValueRef start = genlExpr(gen, nodesGet(fncall->args, 0));
     LLVMValueRef end = fncall->args->used > 1 ? genlExpr(gen, nodesGet(fncall->args, 1)) : count;
@@ -1029,7 +1080,7 @@ static LLVMValueRef genlSubslice(GenState *gen, FnCallNode *fncall) {
 
     LLVMValueRef slice = LLVMGetUndef(genlType(gen, fncall->vtype));
     slice = LLVMBuildInsertValue(gen->builder, slice,
-        LLVMBuildGEP(gen->builder, base, &start, 1, ""), 0, "sliceptr");
+        LLVMBuildGEP2(gen->builder, elemtype, base, &start, 1, ""), 0, "sliceptr");
     return LLVMBuildInsertValue(gen->builder, slice,
         LLVMBuildSub(gen->builder, end, start, "slicelen"), 1, "slice");
 }
@@ -1056,7 +1107,7 @@ LLVMValueRef genlArrayIndex(GenState *gen, FnCallNode *fncall, ArrayNode *objtyp
         genlBoundsCheck(gen, index, count);
         indexp[arg+1] = index;
     }
-    return LLVMBuildGEP(gen->builder, arrayp, indexp, nindex+1, "");
+    return LLVMBuildGEP2(gen->builder, genlType(gen, (INode*)objtype), arrayp, indexp, nindex+1, "");
 }
 
 // Answer whether a field access reaches into a variant carrying the
@@ -1110,7 +1161,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
             LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
             genlBoundsCheck(gen, index, count);
             LLVMValueRef sliceptr = LLVMBuildExtractValue(gen->builder, arrref, 0, "sliceptr");
-            return LLVMBuildGEP(gen->builder, sliceptr, &index, 1, "");
+            return LLVMBuildGEP2(gen->builder, genlPointeeType(gen, objtype), sliceptr, &index, 1, "");
         }
         case ArrayDerefTag: {
             StarNode *deref = (StarNode *)fncall->objfn;
@@ -1120,11 +1171,11 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
             LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
             genlBoundsCheck(gen, index, count);
             LLVMValueRef sliceptr = LLVMBuildExtractValue(gen->builder, arrref, 0, "sliceptr");
-            return LLVMBuildGEP(gen->builder, sliceptr, &index, 1, "");
+            return LLVMBuildGEP2(gen->builder, genlPointeeType(gen, objtype), sliceptr, &index, 1, "");
         }
         case PtrTag: {
             LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
-            return LLVMBuildGEP(gen->builder, genlExpr(gen, fncall->objfn), &index, 1, "");
+            return LLVMBuildGEP2(gen->builder, genlPointeeType(gen, objtype), genlExpr(gen, fncall->objfn), &index, 1, "");
         }
         default:
             // fnCallArrIndex is the only thing that builds an ArrIndexTag, and
@@ -1143,17 +1194,19 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
             // field is anonymous, so no GEP is wanted or possible.
             if (genlIsNullablePtrField(fncall))
                 return genlAddr(gen, fncall->objfn);
-            if (iexpGetTypeDcl(fncall->objfn)->tag == VirtRefTag) {
+            INode *objtype = iexpGetTypeDcl(fncall->objfn);
+            if (objtype->tag == VirtRefTag) {
                 // Calculate address of virtual field pointed to by a virtual reference using vtable
                 LLVMValueRef objVRef = genlExpr(gen, fncall->objfn);
+                LLVMTypeRef vtabletype = ((StructNode*)itypeGetTypeDcl(genlPointee(objtype)))->vtable->llvmvtable;
                 LLVMValueRef objpRef = LLVMBuildExtractValue(gen->builder, objVRef, 0, ""); // *u8
                 LLVMValueRef vtable = LLVMBuildExtractValue(gen->builder, objVRef, 1, "");
-                LLVMValueRef vtblfldp = LLVMBuildStructGEP(gen->builder, vtable, flddcl->vtblidx, &flddcl->namesym->namestr); // *u32
-                LLVMValueRef vtblfld = LLVMBuildLoad(gen->builder, vtblfldp, "");
-                LLVMValueRef fldpRef = LLVMBuildGEP(gen->builder, objpRef, &vtblfld, 1, "");
+                LLVMValueRef vtblfldp = LLVMBuildStructGEP2(gen->builder, vtabletype, vtable, flddcl->vtblidx, &flddcl->namesym->namestr); // *u32
+                LLVMValueRef vtblfld = LLVMBuildLoad2(gen->builder, LLVMInt32TypeInContext(gen->context), vtblfldp, "");
+                LLVMValueRef fldpRef = LLVMBuildGEP2(gen->builder, LLVMInt8TypeInContext(gen->context), objpRef, &vtblfld, 1, "");
                 return LLVMBuildBitCast(gen->builder, fldpRef, LLVMPointerType(genlType(gen, flddcl->vtype), 0), "");
             }
-            return LLVMBuildStructGEP(gen->builder, genlAddr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
+            return LLVMBuildStructGEP2(gen->builder, genlType(gen, genlAddrType(fncall->objfn)), genlAddr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
         }
         // A tuple element is reached by index, which fnCallLowerIntField leaves
         // as the ULitNode the source wrote. UintNbrTag is that literal's *type*,
@@ -1161,7 +1214,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         // control fell into the next case and read this node as a string literal.
         else if (fncall->methfld->tag == ULitTag) {
             ULitNode *ulit = (ULitNode*)fncall->methfld;
-            return LLVMBuildStructGEP(gen->builder, genlAddr(gen, fncall->objfn), (unsigned int)ulit->uintlit, "");
+            return LLVMBuildStructGEP2(gen->builder, genlType(gen, genlAddrType(fncall->objfn)), genlAddr(gen, fncall->objfn), (unsigned int)ulit->uintlit, "");
         }
         // All three places that build a FldAccessTag set methfld to a member
         // name use or to the tuple index literal
@@ -1212,7 +1265,7 @@ void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
     // The previous value is released exactly as scope exit would release it,
     // unless the target held none (see FlagFirstAssign)
     if (!(lval->flags & FlagFirstAssign) && flowIsOwningType(lvaltype))
-        genlReleaseOwning(gen, LLVMBuildLoad(gen->builder, lvalptr, "dealiasref"), lvaltype);
+        genlReleaseOwning(gen, LLVMBuildLoad2(gen->builder, genlType(gen, genlAddrType(lval)), lvalptr, "dealiasref"), lvaltype);
     LLVMBuildStore(gen->builder, rval, lvalptr);
 }
 
@@ -1228,7 +1281,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     if (isNameUseNode(termnode) && isExpNode(termnode)) {
         VarDclNode *vardcl = (VarDclNode*)((NameUseNode *)termnode)->dclnode;
         if (vardcl->tag == VarDclTag)
-            return LLVMBuildLoad(gen->builder, genlVarSym(gen, vardcl), &vardcl->namesym->namestr);
+            return LLVMBuildLoad2(gen->builder, genlType(gen, vardcl->vtype), genlVarSym(gen, vardcl), &vardcl->namesym->namestr);
         else if (vardcl->tag == ConstDclTag) {
             ConstDclNode *constdcl = (ConstDclNode*)vardcl;
             return genlExpr(gen, constdcl->value);
@@ -1337,7 +1390,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         return genlExpr(gen, ((NamedValNode*)termnode)->val);
     case StringLitTag:
     {
-        return LLVMBuildLoad(gen->builder, genlAddr(gen, termnode), "");
+        return LLVMBuildLoad2(gen->builder, genlType(gen, ((SLitNode*)termnode)->vtype), genlAddr(gen, termnode), "");
     }
     case RefCountTag:
     {
@@ -1380,7 +1433,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     {
         // If no borrowing is involved, just get address of lval, then load value
         if (!(termnode->flags & FlagBorrow))
-            return LLVMBuildLoad(gen->builder, genlAddr(gen, termnode), "");
+            return LLVMBuildLoad2(gen->builder, genlType(gen, genlAddrType(termnode)), genlAddr(gen, termnode), "");
 
         // If borrowing, alter fncall to shortcut around the borrow node
         FnCallNode *fncall = (FnCallNode *)termnode;
@@ -1401,10 +1454,10 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
                 return (termnode->flags & FlagBorrow) ? genlAddr(gen, fncall->objfn) : genlExpr(gen, fncall->objfn);
             if (objtyp->tag == VirtRefTag) {
                 LLVMValueRef fldpRef = genlAddr(gen, termnode);
-                return (termnode->flags & FlagBorrow) ? fldpRef : LLVMBuildLoad(gen->builder, fldpRef, "");
+                return (termnode->flags & FlagBorrow) ? fldpRef : LLVMBuildLoad2(gen->builder, genlType(gen, flddcl->vtype), fldpRef, "");
             }
             else if (termnode->flags & FlagBorrow) {
-                return LLVMBuildStructGEP(gen->builder, genlAddr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
+                return LLVMBuildStructGEP2(gen->builder, genlType(gen, genlAddrType(fncall->objfn)), genlAddr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
             }
             // A field read through a reference loads the field alone, from the
             // address a write to it would store to, rather than loading the
@@ -1412,8 +1465,9 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             // a store to the field into a later read of it, as a region's
             // 'dealias' needs when it tests the count it just wrote
             else if (fncall->objfn->tag == DerefTag) {
-                LLVMValueRef fldp = LLVMBuildStructGEP(gen->builder, genlAddr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
-                return LLVMBuildLoad(gen->builder, fldp, "");
+                LLVMTypeRef structype = genlType(gen, genlAddrType(fncall->objfn));
+                LLVMValueRef fldp = LLVMBuildStructGEP2(gen->builder, structype, genlAddr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
+                return LLVMBuildLoad2(gen->builder, LLVMStructGetTypeAtIndex(structype, flddcl->index), fldp, "");
             }
             else {
                 return LLVMBuildExtractValue(gen->builder, genlExpr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
@@ -1422,7 +1476,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         else if (fncall->methfld->tag == ULitTag) {
             ULitNode *ulit = (ULitNode*)fncall->methfld;
             if (termnode->flags & FlagBorrow) {
-                return LLVMBuildStructGEP(gen->builder, genlAddr(gen, fncall->objfn), (unsigned int)ulit->uintlit, "");
+                return LLVMBuildStructGEP2(gen->builder, genlType(gen, genlAddrType(fncall->objfn)), genlAddr(gen, fncall->objfn), (unsigned int)ulit->uintlit, "");
             }
             else {
                 return LLVMBuildExtractValue(gen->builder, genlExpr(gen, fncall->objfn), (unsigned int)ulit->uintlit, "");
@@ -1439,8 +1493,8 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         INode *rval = node->rval;
         LLVMValueRef lvalptr = genlAddr(gen, lval);
         LLVMValueRef rvalptr = genlAddr(gen, rval);
-        LLVMValueRef rightval = LLVMBuildLoad(gen->builder, rvalptr, "");
-        LLVMValueRef leftval = LLVMBuildLoad(gen->builder, lvalptr, "");
+        LLVMValueRef rightval = LLVMBuildLoad2(gen->builder, genlType(gen, genlAddrType(rval)), rvalptr, "");
+        LLVMValueRef leftval = LLVMBuildLoad2(gen->builder, genlType(gen, genlAddrType(lval)), lvalptr, "");
         LLVMBuildStore(gen->builder, rightval, lvalptr);
         LLVMBuildStore(gen->builder, leftval, rvalptr);
         return leftval;
@@ -1454,7 +1508,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         if (node->assignType == LeftAssign) {
             // Normal assignment, except value of expression is contents of lval before mutation
             LLVMValueRef lvalptr = genlAddr(gen, lval);
-            LLVMValueRef leftval = LLVMBuildLoad(gen->builder, lvalptr, "");
+            LLVMValueRef leftval = LLVMBuildLoad2(gen->builder, genlType(gen, genlAddrType(lval)), lvalptr, "");
             LLVMBuildStore(gen->builder, valueref, lvalptr);
             return leftval;
         }
@@ -1539,7 +1593,10 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     case ArrayAllocTag:
         return genlallocref(gen, (RefNode*)termnode);
     case DerefTag:
-        return LLVMBuildLoad(gen->builder, genlExpr(gen, ((StarNode*)termnode)->vtexp), "deref");
+    {
+        INode *ref = ((StarNode*)termnode)->vtexp;
+        return LLVMBuildLoad2(gen->builder, genlPointeeType(gen, ((IExpNode*)ref)->vtype), genlExpr(gen, ref), "deref");
+    }
     case OrLogicTag: case AndLogicTag:
         return genlLogic(gen, (LogicNode*)termnode);
     case NotLogicTag:

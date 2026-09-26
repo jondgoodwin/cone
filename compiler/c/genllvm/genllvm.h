@@ -104,8 +104,10 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk);
 
 // genlexpr.c
 LLVMValueRef genlExpr(GenState *gen, INode *termnode);
-// Generate a function call, including special intrinsics (Internal version)
-LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint32_t fnargcnt, LLVMValueRef *fnargs);
+// Generate a function call, including special intrinsics (Internal version).
+// 'selftype' is the Cone type of the first argument, which a virtual dispatch
+// and the pointer intrinsics read; NULL for a call the compiler makes itself.
+LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint32_t fnargcnt, LLVMValueRef *fnargs, INode *selftype);
 // Generate a panic
 void genlPanic(GenState *gen);
 
@@ -135,6 +137,14 @@ LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name);
 // genltype.c
 // Generate a type value
 LLVMTypeRef genlType(GenState *gen, INode *typ);
+// The Cone type a reference, pointer or slice points at: what a load through it
+// reads and what a GEP over it steps by. An LLVM pointer does not know this
+// (opaque pointers), so a load, GEP or call is always typed from the Cone type.
+INode *genlPointee(INode *type);
+// The LLVM type of genlPointee
+LLVMTypeRef genlPointeeType(GenState *gen, INode *type);
+// The function type of a vtable slot holding a method, whose self is erased to *u8
+LLVMTypeRef genlVtableSlotFnType(GenState *gen, FnDclNode *meth);
 // Generate LLVM value corresponding to the size of a type
 LLVMValueRef genlSizeof(GenState *gen, INode *vtype);
 // Generate LLVM value corresponding to the alignment of a type

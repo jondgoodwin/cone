@@ -17,7 +17,6 @@
 #include <llvm-c/Target.h>
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
-#include <llvm-c/Transforms/Scalar.h>
 
 #include <stdio.h>
 #include <assert.h>
