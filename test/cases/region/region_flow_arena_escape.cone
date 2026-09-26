@@ -1,0 +1,86 @@
+// A reference into an arena held in a local -- a scratch arena -- may not
+// leave the arena's life by any route the borrow rules check. The arena
+// package's 'a.alloc(v)' returns a '&mut' borrow no longer-lived than the
+// borrow of 'a' it was called through, so the rules for any borrow of a local
+// apply to it: it may not be returned from the function holding the arena,
+// alone, through a variable, in a tuple, or back through a call that
+// allocated it; nor stored in a variable, a field or an element that outlives
+// the arena, whether that is an outer local, a caller's value reached through
+// a parameter, or a value of a longer-lived arena. The arena package's own
+// tests (packages/arena/tests/scratch.cone) run what a scratch may do.
+//
+// What still compiles, and dangles, is not here: nothing freezes the arena
+// while a borrow of it lives, and a borrow stored in a field of a value built
+// in place is not checked (doc/design/safety.md, the scorecard).
+
+mod region_flow_arena_escape;
+
+import arena use *;
+
+struct Pt { pub x i64; pub y i64; }
+struct Holder { pub r &mut Pt; }
+
+fn returned() &mut Pt {
+  mut a = Arena.empty();
+  a.alloc(Pt[1, 2]);            //~ ErrorEscape:4 "outlives"
+}
+
+fn returnedVar() &mut Pt {
+  mut a = Arena.empty();
+  imm p = a.alloc(Pt[1, 2]);
+  p;                            //~ ErrorEscape:3 "outlives"
+}
+
+fn returnedInTuple() (&mut Pt, i64) {
+  mut a = Arena.empty();
+  (a.alloc(Pt[1, 2]), 3i64);    //~ ErrorEscape:5 "outlives"
+}
+
+fn allocFor(a &mut Arena) &mut Pt { a.alloc(Pt[9, 9]); }
+
+fn returnedThroughCall() &mut Pt {
+  mut a = Arena.empty();
+  allocFor(&mut a);             //~ ErrorEscape:11 "outlives"
+}
+
+fn outerVariable() {
+  mut dummy = Pt[0, 0];
+  mut r = &mut dummy;
+  {
+    mut a = Arena.empty();
+    r = a.alloc(Pt[1, 2]);      //~ ErrorInvType:5 "outlives"
+  }
+}
+
+fn outerField() {
+  mut dummy = Pt[0, 0];
+  mut h = Holder[&mut dummy];
+  {
+    mut a = Arena.empty();
+    h.r = a.alloc(Pt[1, 2]);    //~ ErrorInvType:6 "outlives"
+  }
+}
+
+fn outerElement() {
+  mut dummy = Pt[0, 0];
+  mut arr = [&mut dummy, &mut dummy];
+  {
+    mut a = Arena.empty();
+    arr[0] = a.alloc(Pt[1, 2]); //~ ErrorInvType:8 "outlives"
+  }
+}
+
+fn callersValue(h &mut Holder) {
+  mut a = Arena.empty();
+  h.r = a.alloc(Pt[1, 2]);      //~ ErrorInvType:4 "outlives"
+}
+
+fn intoLongerArena() {
+  mut outer = Arena.empty();
+  mut dummy = Pt[0, 0];
+  imm h = outer.alloc(Holder[&mut dummy]);
+  {
+    mut inner = Arena.empty();
+    h.r = inner.alloc(Pt[1, 2]); //~ ErrorInvType:6 "outlives"
+  }
+}
