@@ -32,6 +32,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->spans = NULL;
     snode->carriesborrow = CarriesBorrowUnknown;
     snode->holdstraced = HoldsTracedUnknown;
+    snode->lends = LendsLoaned;
     return snode;
 }
 
@@ -2107,6 +2108,7 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     // asking before this one is laid out is answered
     if (structDeclaresTrait(node, moveTrait))
         node->flags |= MoveType;
+    structLendsDeclared(node);
     nametblHookPop();
     if (enclosing)
         nametblHookPop();
@@ -2115,8 +2117,26 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     node->flags = (node->flags & ~NameResolving) | NameResolved;
 }
 
-// Does this type's 'is' list name this trait? 'traits' records every
-// abstraction the list named, the first included, once name resolution (or,
+// What this type's element borrows cost it, as its 'is' list declares
+// (StructLends). A type says one of them at most: the three are different
+// promises about one thing.
+void structLendsDeclared(StructNode *node) {
+    StructNode *kinds[] = { shapeChangingTrait, noLoanMutTrait, noLoanReadTrait };
+    uint8_t lends[] = { LendsShapeChanging, LendsNoLoanMut, LendsNoLoanRead };
+    for (int i = 0; i < 3; ++i) {
+        if (!structDeclaresTrait(node, kinds[i]))
+            continue;
+        if (node->lends != LendsLoaned && node->lends != lends[i]) {
+            errorMsgNode((INode*)node, ErrorInvType,
+                "%s may declare only one of ShapeChanging, NoLoanMut and NoLoanRead: each says differently what a borrow of one of its elements costs it.",
+                &node->namesym->namestr);
+            return;
+        }
+        node->lends = lends[i];
+    }
+}
+
+// Does this type's 'is' list name this trait? 'traits' records every// abstraction the list named, the first included, once name resolution (or,
 // for an instance of a generic trait, type check) has taken it in.
 int structDeclaresTrait(StructNode *node, StructNode *trait) {
     if (node->traits == NULL)

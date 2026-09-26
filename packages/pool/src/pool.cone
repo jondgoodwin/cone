@@ -41,16 +41,18 @@
 // The borrows are ordinary borrows, good for as long as the pool is not
 // changed; nothing about the pool comes with them.
 //
-// THE HOLES. The design's answer to a borrow outliving its value is that
-// taking one borrows the pool, and a borrowed pool is frozen: nothing may
-// remove, add (which may move every value) or move the pool while the borrow
-// lives. That rule, freezing, is built for a borrow written with '&' and held
-// in a local, but not for one a method returns, which every borrow from a
-// pool is, so today:
-// - 'pool.remove(r)', an 'add' that grows the block, and moving or dropping
-//   the pool itself all compile while a borrow from 'pool[r]', 'get' or
-//   'getMut' is still used, and the borrow then reads a finalized value or
-//   freed memory.
+// Taking a borrow borrows the pool, and a borrowed pool is frozen: while a
+// borrow from 'pool[r]' held in a local is still used, a local pool may be
+// read but not changed -- no 'remove', no 'add' (which may move every value)
+// -- nor moved or ended; one from '&mut pool[r]' freezes it entirely. Pool
+// declares 'ShapeChanging' (a provisional name), which nothing reads yet.
+//
+// THE HOLES. That freezing reaches only so far, so today:
+// - A pool reached through a shared path -- a '&mut Pool' parameter, a field
+//   of 'self', a '+rc-mut' owner -- is not frozen by a borrow from it: a
+//   change through another reference to the same pool compiles while the
+//   borrow is used, and the borrow then reads a finalized value or freed
+//   memory. Jon's rule refuses such a borrow; it waits on 'uni' reborrowing.
 // - The borrow INSIDE the Option that 'get' and 'getMut' return carries no
 //   lifetime at all (a borrow held inside another value is not checked), so
 //   returning the Option, storing it, or matching the borrow out of it and
@@ -165,7 +167,7 @@ pub struct Ref[T] {
   }
 }
 
-pub struct Pool[T] {
+pub struct Pool[T] is ShapeChanging {
   slots *Slot[T];   // the block, or null before the first value
   cap u32;          // slots the block has room for
   high u32;         // slots ever used: each below it has a generation

@@ -816,7 +816,8 @@ members", is the mechanism.
    `clone`, so a copy is bitwise, and a copyable type holding a finalizer or an
    owner would be finalized once per copy. Then propagate up the base
    chain, one `structBaseTraitDcl` hop per iteration, stopping at a built-in
-   trait (`corelibIsBuiltinTrait`): `Move`, `Copy`, `RegionRef` and `Traced` describe the
+   trait (`corelibIsBuiltinTrait`): `Move`, `Copy`, `RegionRef`, `Traced` and the lending
+   markers (below) describe the
    types declaring them and never take on their flags.
 7. **`TypeChecked` is set here: laid out.** Fields are indexed, the type's own
    size is known, and the method set is complete. Just before it, a type that may
@@ -941,6 +942,24 @@ reaches down: a trait declaring `is Move` does not make its implementers move. N
 in the language asks the question yet: `where` and a compile-time `if` are not
 built, and the expression `v is Move` is the variant test, which refuses a value
 without a tag.
+
+### What a container's element borrows cost it
+
+Three more built-in marker traits [Jon 26 Sep; names provisional] say what a
+borrow one of a container's methods returns costs the container, recorded in
+`StructNode.lends` (`StructLends`) by `structLendsDeclared` at the end of name
+resolution; a type declaring two of them is `ErrorInvType`. The loan walk reads
+it ([flow](../phases/flow.md), "Calls"):
+
+- none declared (`LendsLoaned`): the returned borrow keeps the receiver loaned,
+  the Rust way;
+- `NoLoanMut` (the arena) and `NoLoanRead` (a read-only borrow): only a pin,
+  the container's life; a borrow of a `NoLoanMut` container itself only keeps
+  it alive;
+- `ShapeChanging` (`List`, `String`, `Dict`, `Pool`): its elements may move.
+  Nothing reads it yet: it marks the containers a check to come will refuse an
+  element borrow of through a shared path, Jon's 2018 rule, which waits on
+  `uni` reborrowing.
 
 ## Name folding
 

@@ -102,6 +102,9 @@ extern Name *tracedTraitName;  // "Traced", a region ref whose references are tr
 // The built-in marker traits every type has exactly one of (corelib.c)
 extern Name *moveTraitName;    // "Move"
 extern Name *copyTraitName;    // "Copy"
+extern Name *shapeChangingTraitName; // "ShapeChanging", a container that may move its elements
+extern Name *noLoanMutTraitName;     // "NoLoanMut", a container whose mutable element borrows loan nothing
+extern Name *noLoanReadTraitName;    // "NoLoanRead", a container whose read-only element borrows loan nothing
 
 typedef struct VarDclNode VarDclNode;
 

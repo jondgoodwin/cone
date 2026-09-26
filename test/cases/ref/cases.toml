@@ -36,23 +36,24 @@
 # - 'uni' and 'mut1' permissions on a borrow. They are named in the permission
 #   table but a borrow of a local variable can never obtain them, so there is
 #   nothing to establish here that is not region's move semantics.
-# - Freezing through a borrow a method returns ('list[0usize]', 'a.alloc(v)'),
-#   or one held inside another value (a struct field, an 'Option'). Only a
-#   borrow held in a local whose type is a borrowed reference freezes its
-#   source so far; the others compile, and the arena and pool packages' own
-#   notes say so. What is built is ref_flow_freeze, ref_flow_freeze_loop and
-#   ref_freeze_success: a source reached as 'uni' (a local) frozen against
-#   what the borrow forbids, one reached through a shared path ('&mut', '&ro',
-#   '+rc-mut') only against ending.
+# - Freezing through a borrow held inside another value (a struct field, an
+#   'Option'). Only a borrow held in a local whose type is a borrowed
+#   reference freezes its source so far. What is built is ref_flow_freeze,
+#   ref_flow_freeze_loop and ref_freeze_success: a source reached as 'uni' (a
+#   local) frozen against what the borrow forbids, one reached through a
+#   shared path ('&mut', '&ro', '+rc-mut') only against ending. A borrow a
+#   method returns ('list[0usize]', 'a.alloc(v)') is collection's
+#   (collection_flow_freeze, collection_freeze_success) and region's
+#   (region_flow_arena_freeze), since it needs a collection or an arena.
 # - An element of a resizable collection borrowed through a shared path
 #   ('imm e = l[0usize]' for 'l &mut List[T]' or '+rc-mut List[T]', then a push
 #   through another alias). Jon's rule refuses it, as it refuses a reference into
 #   an enum's variant through a 'mut' or 'ro' reference of unseen origin
-#   (enum_typecheck_narrow), but nothing
-#   marks a type as resizing today: an enum is told by its tag, a List is a
-#   struct like any other, and the arena, which a type-based guess (a raw
-#   buffer, a method handing back a borrow of it) would also catch, is ruled to
-#   lend its allocations with no loan on it.
+#   (enum_typecheck_narrow). The collections declare 'ShapeChanging' for it,
+#   but refusing it now would refuse ordinary code (a List[String] element
+#   read through a '&List' parameter) until 'uni' reborrowing exists, so it
+#   is a documented hole: collection_flow_freeze's header writes out each
+#   shape.
 #
 # Owning references, array references and slices, and virtual references belong
 # to region, collection and trait. The one place an owning reference and a raw

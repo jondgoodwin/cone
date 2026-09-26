@@ -1,0 +1,121 @@
+// What a borrow a method returns still allows. It keeps the receiver loaned
+// only until its last use, and only against what it forbids: while a
+// read-only element borrow is used, the list may still be read; after its last
+// use the list may be pushed onto again. A method receiver's mutable borrow is
+// two-phase, so 'v.push(v.len())' reads 'v' for its argument before the push
+// borrows it. An arena (it declares 'NoLoanMut') lends allocations with no loan
+// on itself: any number are live at once, a function it is lent to may
+// allocate for its caller twice, and a value allocated in it may hold a
+// '&mut' of it. An owning reference coerced to a borrow may be moved after the
+// borrow's last use. Each case prints what it read through the borrow.
+//
+// The refusals are collection_flow_freeze and region_flow_arena_freeze.
+
+mod collection_freeze_success;
+
+import stdio use *;
+import collections use *;
+import pool use *;
+import arena use *;
+
+struct Pt { pub x i64; pub y i64; }
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// Two-phase receivers: the argument reads the list the push then changes
+fn twoPhase() {
+  mut v = List[i64].empty();
+  v.push(i64[v.len()]);
+  v.push(i64[v.len()]);
+  v.push(*v[1usize] + 10);
+  show("two-phase-pushes", *v[0usize] + *v[1usize] * 10 + *v[2usize] * 100);
+}
+
+// A read-only element borrow: the list may be read while it is used, and
+// pushed onto after its last use
+fn readThenPush() {
+  mut list = List[Pt].empty();
+  list.push(Pt[1, 2]);
+  imm first = list[0usize];
+  show("list-read-under-element", i64[list.len()] * 100 + first.x);
+  list.push(Pt[3, 4]);
+  show("pushed-after-last-use", i64[list.len()]);
+}
+
+// A borrow returned through another: a String element of a local list, and
+// its bytes, read while the list is read
+fn elementChain() {
+  mut names = List[String].empty();
+  names.push(String.from("core"));
+  imm bytes = names[0usize].view();
+  show("element-view", i64[bytes.len] * 10 + i64[names.len()]);
+  names.push(String.from("stdio"));
+  show("pushed-after-view", i64[names.len()]);
+}
+
+// A borrow in a loop, dead before the push on every iteration
+fn loopThenPush() {
+  mut v = List[i64].empty();
+  v.push(1);
+  mut i = 0usize;
+  while i < 3usize {
+    imm last = v[v.len() - 1usize];
+    v.push(*last * 2);
+    i = i + 1usize;
+  }
+  show("doubled-in-loop", *v[3usize]);
+}
+
+// A pool's value read while the pool is read, then removed
+fn poolRead() {
+  mut p = Pool[Pt].empty();
+  imm id = p.add(Pt[7, 8]);
+  imm e = p[id];
+  show("pool-read-under-borrow", i64[p.len()] * 100 + e.x);
+  p.remove(id);
+  show("pool-after-remove", i64[p.len()]);
+}
+
+struct Node {
+  pub n i64;
+  pub home &mut Arena;
+}
+
+// A scratch function allocating for its caller
+fn make(s &mut Arena, n i64) &mut Pt { s.alloc(Pt[n, n]); }
+
+// Allocations live together, and one may hold a '&mut' of its arena
+fn arenaAllocations() {
+  mut a = Arena.empty();
+  imm r1 = a.alloc(Pt[1, 2]);
+  imm r2 = a.alloc(Pt[3, 4]);
+  imm x = make(&mut a, 5);
+  imm y = make(&mut a, 6);
+  imm node = a.alloc(Node[7, &mut a]);
+  show("arena-live-together", r1.x + r2.x * 10 + x.x * 100 + y.x * 1000 + node.n * 10000);
+}
+
+fn consumePt(p +so Pt) i64 { p.x; }
+
+// An owning reference coerced to a borrow, moved after the borrow's last use
+fn ownedLent() {
+  imm u = +so Pt[4, 5];
+  imm b &Pt = u;
+  show("owned-lent", b.y);
+  show("owner-moved-after", consumePt(u));
+}
+
+fn main() {
+  twoPhase();
+  readThenPush();
+  elementChain();
+  loopThenPush();
+  poolRead();
+  arenaAllocations();
+  ownedLent();
+}

@@ -49,7 +49,23 @@ typedef struct StructNode {
     DclSpans *spans;        // Where each member of its braces sits in its file, in the order parsed (dclspan.h); NULL for none
     uint8_t carriesborrow;  // itypeCarriesBorrow's remembered answer (CarriesBorrow*), once the type is checked
     uint8_t holdstraced;    // itypeHoldsTraced's remembered answer (HoldsTraced*), once the type is checked
+    uint8_t lends;          // What its element borrows cost it (StructLends), from its 'is' list at name resolution
 } StructNode;
+
+// What a borrow one of its methods returns costs a container (StructNode.lends),
+// as it declares it with a marker trait [Jon 26 Sep; names provisional]. A
+// type declaring none keeps its receiver loaned while the borrow is used, the
+// Rust way (the loan walk's pwCall). A no-loan kind keeps only its lifetime:
+// it may not be moved, replaced or ended while the borrow is used, and nothing
+// else is frozen. 'ShapeChanging' is read by nothing yet: it marks the
+// containers a later check will refuse an element borrow of through a shared
+// path (corelib.c says why it waits).
+enum StructLends {
+    LendsLoaned,            // declares none of them
+    LendsShapeChanging,     // 'ShapeChanging': its elements may move (no effect yet)
+    LendsNoLoanMut,         // 'NoLoanMut': any borrow it returns loans nothing (an arena)
+    LendsNoLoanRead         // 'NoLoanRead': a read-only borrow it returns loans nothing
+};
 
 // What StructNode.holdstraced remembers of whether a value of the type holds a
 // traced reference where it sits: not yet known, being asked, or the answer
@@ -79,6 +95,9 @@ enum CarriesBorrow {
 typedef struct FieldDclNode FieldDclNode;
 
 StructNode *newStructNode(Name *namesym);
+
+// Set what its element borrows cost it (StructNode.lends) from its 'is' list
+void structLendsDeclared(StructNode *node);
 
 // Clone struct
 INode *cloneStructNode(CloneState *cstate, StructNode *node);

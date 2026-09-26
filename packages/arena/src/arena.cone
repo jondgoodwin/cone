@@ -39,19 +39,23 @@
 //     Answer[best.word.copy(), seen.len()];  // only values of its own leave
 //   }   // every value in 's' dies here, then its blocks are freed
 //
+// An allocation loans nothing of the arena: Arena declares 'NoLoanMut' (a
+// provisional name), its promise that it never moves what it lent. So any
+// number of allocations may be live at once, and the arena may be allocated
+// from, read and borrowed while they are; a value allocated in it may even
+// hold a '&mut' of it. What an allocation held in a local keeps is the
+// arena's life: while one is still used, 'consume(a)', '{ imm b = a; }',
+// 'a <=> other' and 'a = Arena.empty()' are refused
+// (test/cases/region/region_flow_arena_freeze.cone).
+//
 // THE HOLES. The design's answer to a reference outliving its arena is
 // invariant lifetimes pairing the arena with the references allocated from it
 // (key and lock: a reference usable only through its own arena), and that is
 // not built. A scratch needs no such pairing, only the borrow rules, but some
 // of those are not built either, so a reference can still outlive its arena:
-// - A borrow a method returns does not freeze what the method was called on
-//   (one written with '&' and held in a local does): 'a' may die or move
-//   away while an allocation from it is still used. 'consume(a); r.n',
-//   '{ imm b = a; } r.n', and 'a <=> other' all compile, and 'r.n' then
-//   reads freed memory.
-//   'a = Arena.empty()' compiles too, and what 'a' held is never finalized
-//   or freed at all: reassignment never finalizes the old value, a compiler
-//   gap of its own.
+// - 'a = Arena.empty()' with no allocation still to be used compiles, and what
+//   'a' held is never finalized or freed at all: reassignment never finalizes
+//   the old value, a compiler gap of its own.
 // - A borrow held inside another value, rather than being the value, carries
 //   no lifetime: returning 'Holder[a.alloc(v)]', a '+rc Holder[...]' or an
 //   'Option' holding one, assigning 'outer = Holder[a.alloc(v)]', pushing one
@@ -116,7 +120,7 @@ struct Block {
 // Room a new block has for values, unless a value needs more
 const blockBytes = 4096usize;
 
-pub struct Arena {
+pub struct Arena is NoLoanMut {
   blocks *Block;       // the newest block, or null
   top usize;           // the address of its first unused byte
   limit usize;         // the address just past its end

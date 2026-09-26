@@ -55,11 +55,16 @@ extern FnDclNode *finalAllFn;
 // name itself, and none with members: 'RegionRef', which a region ref struct
 // declares with 'is'; 'Move' and 'Copy', one of which every type has, the
 // compiler granting it from what it infers and a type able to declare it; and
-// 'Traced', which a region ref struct declares to say its references are traced
+// 'Traced', which a region ref struct declares to say its references are traced;
+// and what a container's element borrows cost it: 'ShapeChanging' (it may move
+// its elements), 'NoLoanMut' and 'NoLoanRead' (its element borrows loan nothing)
 extern StructNode *regionRefTrait;
 extern StructNode *moveTrait;
 extern StructNode *copyTrait;
 extern StructNode *tracedTrait;
+extern StructNode *shapeChangingTrait;
+extern StructNode *noLoanMutTrait;
+extern StructNode *noLoanReadTrait;
 
 // Is this declaration one of the built-in traits?
 int corelibIsBuiltinTrait(INode *node);

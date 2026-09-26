@@ -27,6 +27,7 @@ enum LoanKind {
 
 typedef struct {
     INode *site;        // the borrow that made it
+    Name *by;           // the method whose returned borrow carries it, for the message, or NULL
     Place place;        // what it borrows
     uint32_t next;      // the next loan with the same root variable
     uint32_t mayhold;   // where in 'maypool' every holder that may hold it on some path is
@@ -58,6 +59,8 @@ static uint32_t nmaypool = 0;
 static uint32_t maypoolcap = 0;
 
 // Holders whose loans were widened to all of them, by a loop that would not settle
+static uint32_t nflights;
+
 static uint32_t *saturated = NULL;
 static uint32_t nsaturated = 0;
 static uint32_t saturatedcap = 0;
@@ -153,6 +156,7 @@ void loanWalkBegin() {
     npendings = 1;
     nmaypool = 0;
     nsaturated = 0;
+    nflights = 0;
 }
 
 // *********************
@@ -192,6 +196,7 @@ uint32_t loanMake(INode *site, Place *pl, INode *perm) {
     id = nloans++;
     Loan *loan = &loans[id];
     loan->site = site;
+    loan->by = NULL;
     loan->place = *pl;
     loan->mayhold = 0;
     loan->nmay = 0;
@@ -247,8 +252,7 @@ void loanHeldBy(uint32_t var, PathSet *holds) {
 // so it refuses only an '&uni' or '&imm' borrow of it besides moving,
 // replacing and ending it; an '&opaq' loan holds only the address, so only
 // moving, replacing or ending the source conflicts with it.
-static int loanConflicts(int access, Loan *loan, Place *pl) {
-    uint8_t kind = loan->kind;
+static int loanConflictsAs(int access, uint8_t kind, Loan *loan, Place *pl) {
     // A place on the way to the shared path -- the field holding a '+rc-mut'
     // owner the loan was reached through -- the loan reads: changing the
     // owner there would end what it borrows
@@ -272,6 +276,10 @@ static int loanConflicts(int access, Loan *loan, Place *pl) {
     default:    // AccessBorrowOpaq reads and writes nothing
         return 0;
     }
+}
+
+static int loanConflicts(int access, Loan *loan, Place *pl) {
+    return loanConflictsAs(access, loan->kind, loan, pl);
 }
 
 // Do two paths from one root overlap? Only two different fields are disjoint.
@@ -314,6 +322,8 @@ static void loanPend(INode *node, int access, uint32_t loan, uint32_t holder) {
 }
 
 void loanAccess(Place *pl, int access, INode *node) {
+    if (nflights)
+        loanFlightAccess(pl, access, node);
     for (uint32_t id = pathVars[pl->var].loans; id; id = loans[id].next) {
         Loan *loan = &loans[id];
         if (loan->place.deref != pl->deref || !loanConflicts(access, loan, pl)
@@ -341,36 +351,48 @@ static char *loanSourceName(Place *pl, char *buf, size_t size) {
     return buf;
 }
 
+// Where a loan was made, as the reader would find it: at the borrow, or, for
+// one a method's returned borrow carries, at the call ("by 'alloc' at 5:11")
+static char *loanWhere(Loan *loan, char *buf, size_t size) {
+    if (loan->by)
+        snprintf(buf, size, "by '%s' at %u:%u", &loan->by->namestr, loan->site->linenbr, loanColumn(loan->site));
+    else
+        snprintf(buf, size, "at %u:%u", loan->site->linenbr, loanColumn(loan->site));
+    return buf;
+}
+
+// What an access attempts, for the message
+static char *loanAttempt(int access) {
+    switch (access) {
+    case AccessRead: return "read";
+    case AccessBorrow: return "borrowed";
+    case AccessBorrowMut: return "borrowed mutably";
+    case AccessBorrowImm: return "borrowed as 'imm'";
+    case AccessBorrowUni: return "borrowed as 'uni'";
+    case AccessMove: return "moved";
+    default: return "changed";
+    }
+}
+
 static void loanReport(Pending *pend, INode *usenode) {
     Loan *loan = &loans[pend->loan];
     char srcname[128];
+    char where[160];
     loanSourceName(&loan->place, srcname, sizeof(srcname));
-    uint32_t bline = loan->site->linenbr;
-    uint32_t bcol = loanColumn(loan->site);
+    loanWhere(loan, where, sizeof(where));
     uint32_t uline = usenode->linenbr;
     uint32_t ucol = loanColumn(usenode);
     char *mutably = loan->writes ? " mutably" : "";
-    char *attempt;
-    switch (pend->kind) {
-    case AccessEnd:
-    {
+    if (pend->kind == AccessEnd) {
         VarDclNode *holder = pathVars[pend->holder].var;
         errorMsgNode(pend->access, ErrorFrozen,
-            "'%s', declared here, goes out of scope while '%s' still holds a borrow of it (made at %u:%u), used again at %u:%u.",
-            srcname, &holder->namesym->namestr, bline, bcol, uline, ucol);
+            "'%s', declared here, goes out of scope while '%s' still holds a borrow of it (made %s), used again at %u:%u.",
+            srcname, &holder->namesym->namestr, where, uline, ucol);
         return;
     }
-    case AccessRead: attempt = "read"; break;
-    case AccessBorrow: attempt = "borrowed"; break;
-    case AccessBorrowMut: attempt = "borrowed mutably"; break;
-    case AccessBorrowImm: attempt = "borrowed as 'imm'"; break;
-    case AccessBorrowUni: attempt = "borrowed as 'uni'"; break;
-    case AccessMove: attempt = "moved"; break;
-    default: attempt = "changed"; break;
-    }
     errorMsgNode(pend->access, ErrorFrozen,
-        "'%s' is borrowed%s (at %u:%u), and that borrow is used again at %u:%u. It may not be %s until after that last use.",
-        srcname, mutably, bline, bcol, uline, ucol, attempt);
+        "'%s' is borrowed%s (%s), and that borrow is used again at %u:%u. It may not be %s until after that last use.",
+        srcname, mutably, where, uline, ucol, loanAttempt(pend->kind));
 }
 
 void loanUse(uint32_t var, INode *usenode) {
@@ -387,5 +409,107 @@ void loanUse(uint32_t var, INode *usenode) {
             continue;
         mapPut(pend->access, 0, 1, 1);
         loanReport(pend, usenode);
+    }
+}
+
+void loanReturnedBy(uint32_t loan, Name *method) {
+    if (loans[loan].by == NULL)
+        loans[loan].by = method;
+}
+
+// *********************
+// Loans in flight: those an operand of a call or a literal carries, walked and
+// waiting for the call to be made or the value to be built. That value is
+// certainly used, so an access conflicting with one is reported at once
+// rather than left pending. A method receiver's mutable borrow is two-phase
+// (Rust's RFC 2025): reserved while the arguments are walked, it meets their
+// accesses as a read-only borrow would, so 'v.push(v.len())' compiles, and it
+// is activated at the call, where it must not conflict with what the other
+// arguments carry.
+// *********************
+
+typedef struct {
+    PathSet *loans;     // what one operand carries
+    uint32_t reserved;  // a two-phase receiver's own loan among them, or 0
+} Flight;
+
+static Flight *flights = NULL;
+static uint32_t flightcap = 0;
+
+uint32_t loanFlightMark() {
+    return nflights;
+}
+
+void loanFlightPush(PathSet *carried, uint32_t reserved) {
+    if (carried == NULL || carried == &pathSetAll)
+        return;
+    if (nflights == flightcap)
+        flights = (Flight *)pathGrow(flights, &flightcap, sizeof(Flight));
+    flights[nflights].loans = carried;
+    flights[nflights].reserved = reserved;
+    ++nflights;
+}
+
+void loanFlightPop(uint32_t mark) {
+    nflights = mark;
+}
+
+// Report once at 'node', unless something there is reported already
+static int loanReportOnce(INode *node) {
+    if (mapGet(node, 0, 1))
+        return 0;
+    mapPut(node, 0, 1, 1);
+    return 1;
+}
+
+void loanFlightAccess(Place *pl, int access, INode *node) {
+    for (uint32_t f = 0; f < nflights; ++f) {
+        PathSet *set = flights[f].loans;
+        for (uint32_t i = 0; i < set->cnt; ++i) {
+            uint32_t id = set->ids[i];
+            Loan *loan = &loans[id];
+            if (loan->place.var != pl->var || loan->place.deref != pl->deref)
+                continue;
+            // A reserved receiver meets them as a read-only borrow would, until the call
+            uint8_t kind = id == flights[f].reserved && loan->kind == LoanExcl ? LoanShared : loan->kind;
+            if (!loanConflictsAs(access, kind, loan, pl) || !placeOverlaps(&loan->place, pl))
+                continue;
+            if (!loanReportOnce(node))
+                return;
+            char srcname[128];
+            char where[160];
+            loanSourceName(&loan->place, srcname, sizeof(srcname));
+            loanWhere(loan, where, sizeof(where));
+            errorMsgNode(node, ErrorFrozen,
+                "'%s' is borrowed%s (%s) for a call or value still being made, which uses that borrow. It may not be %s before then.",
+                srcname, loan->writes ? " mutably" : "", where, loanAttempt(access));
+            return;
+        }
+    }
+}
+
+void loanFlightActivate(uint32_t mark, uint32_t receiver, int access, INode *node) {
+    Loan *recv = &loans[receiver];
+    for (uint32_t f = mark; f < nflights; ++f) {
+        if (flights[f].reserved == receiver)
+            continue;
+        PathSet *set = flights[f].loans;
+        for (uint32_t i = 0; i < set->cnt; ++i) {
+            Loan *loan = &loans[set->ids[i]];
+            if (set->ids[i] == receiver || loan->place.var != recv->place.var
+                || loan->place.deref != recv->place.deref
+                || !loanConflicts(access, loan, &recv->place) || !placeOverlaps(&loan->place, &recv->place))
+                continue;
+            if (!loanReportOnce(node))
+                return;
+            char srcname[128];
+            char where[160];
+            loanSourceName(&loan->place, srcname, sizeof(srcname));
+            loanWhere(loan, where, sizeof(where));
+            errorMsgNode(node, ErrorFrozen,
+                "'%s' is borrowed%s (%s) by another argument of this call, which the call uses. It may not be %s as the call's receiver too.",
+                srcname, loan->writes ? " mutably" : "", where, loanAttempt(access));
+            return;
+        }
     }
 }
