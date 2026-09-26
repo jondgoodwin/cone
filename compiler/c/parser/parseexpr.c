@@ -166,6 +166,49 @@ Nodes *parseArgs(ParseState *parse) {
     return args;
 }
 
+// Parse the arguments of an index, 'x[...]': a list of expressions, or one range
+// that a borrow makes a slice of part of an array (doc/reference/
+// refarrayref.html, "Subslices"). 'a..b' excludes b and 'a...b' includes it; a
+// missing start is 0, and a missing end, 'a..', is the array's end. A range is
+// held on the index as FlagRange, its arguments the start and, unless it runs
+// to the end, the end; FlagRangeIncl says the end was written with '...'.
+static Nodes *parseIndexArgs(ParseState *parse, FnCallNode *fncall) {
+    lexNextToken();
+    Nodes *args = newNodes(2);
+    INode *start = NULL;
+    if (!lexIsToken(DotDotToken) && !lexIsToken(EllipsisToken)) {
+        if (lexIsToken(RBracketToken)) {
+            lexNextToken();
+            return args;
+        }
+        start = parseArg(parse);
+        if (!lexIsToken(DotDotToken) && !lexIsToken(EllipsisToken)) {
+            nodesAdd(&args, start);
+            while (lexIsToken(CommaToken)) {
+                lexNextToken();
+                nodesAdd(&args, parseArg(parse));
+            }
+            parseCloseTok(RBracketToken);
+            return args;
+        }
+    }
+
+    // A range
+    fncall->flags |= FlagRange;
+    if (lexIsToken(EllipsisToken))
+        fncall->flags |= FlagRangeIncl;
+    lexNextToken();
+    if (start == NULL)
+        start = (INode*)newULitNode(0, (INode*)usizeType);
+    nodesAdd(&args, start);
+    if (!lexIsToken(RBracketToken))
+        nodesAdd(&args, parseSimpleExpr(parse));
+    else if (fncall->flags & FlagRangeIncl)
+        errorMsgLex(ErrorBadIndex, "A range that includes its end, '...', must say where it ends");
+    parseCloseTok(RBracketToken);
+    return args;
+}
+
 // Parse a '.'-based method call/field access
 INode *parseDotCall(ParseState *parse, INode *node, uint16_t flags) {
     FnCallNode *fncall = newFnCallNode(node, 0);
@@ -211,7 +254,7 @@ INode *parseSuffix(ParseState *parse, INode *node, uint16_t flags) {
         else if (lexIsToken(LBracketToken)) {
             FnCallNode *fncall = newFnCallNode(node, 0);
             fncall->flags |= flags | FlagIndex;
-            fncall->args = parseArgs(parse);
+            fncall->args = parseIndexArgs(parse, fncall);
             node = (INode*)fncall;
         }
 

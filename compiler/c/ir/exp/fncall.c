@@ -362,6 +362,16 @@ static void fnCallLowerAppendTuple(TypeCheckState *pstate, FnCallNode **nodep) {
     inodeTypeCheckAny(pstate, (INode**)nodep);
 }
 
+// Can a range index this receiver? A one-dimensional array, a slice, or a
+// reference to either -- which is what a borrow of one makes the receiver.
+static int fnCallRangeReceiver(INode *objtype) {
+    if (objtype->tag == RefTag)
+        objtype = itypeGetTypeDcl(((RefNode *)objtype)->vtexp);
+    if (objtype->tag == ArrayTag)
+        return ((ArrayNode *)objtype)->dimens->used == 1;
+    return objtype->tag == ArrayRefTag || objtype->tag == ArrayDerefTag;
+}
+
 // We have an object that is an array, arrayref, ptr, or reference to an array
 // We won't arrive here if a method or field was specified
 // We can indexing into array or borrow reference to the indexed element
@@ -371,10 +381,23 @@ void fnCallArrIndex(FnCallNode *node) {
         return;
     }
 
-    // Correct number of indices?
+    // A range, 'x[a..b]', is a slice of part of the array only when borrowed.
+    // Unborrowed it would copy or fill a segment (refarrayref.html, "Copy or
+    // Fill Elements"), which is not implemented.
+    if ((node->flags & FlagRange) && !(node->flags & FlagBorrow)) {
+        errorMsgNode((INode *)node, ErrorBadIndex,
+            "A range makes a slice when borrowed, as &x[a..b]; copying or filling a segment of an array is not implemented");
+        node->vtype = errorType;
+        return;
+    }
+
+    // Correct number of indices? A range has its start and, unless it runs to
+    // the end, its end
     INode *objtype = iexpGetTypeDcl(node->objfn);
     uint32_t nexpected = objtype->tag == ArrayTag ? ((ArrayNode*)objtype)->dimens->used : 1;
     uint32_t nargs = node->args? node->args->used : 0;
+    if (node->flags & FlagRange)
+        nexpected = nargs;
     if (nargs != nexpected) {
         errorMsgNode((INode *)node, ErrorBadIndex, "Incorrect number of indexing arguments");
         return;
@@ -441,10 +464,13 @@ void fnCallArrIndex(FnCallNode *node) {
         return;
     }
 
-    // If we are borrowing a reference to indexed element, fix up type
+    // If we are borrowing a reference to indexed element, fix up type. A range's
+    // borrow is a slice of the elements it spans, with the same permission and
+    // lifetime an element's borrow would have.
     if (node->flags & FlagBorrow) {
         assert(objtype->tag == RefTag || objtype->tag == ArrayRefTag);
-        RefNode *refnode = newRefNodeFull(RefTag, (INode*)node, borrowRef, ((RefNode*)objtype)->perm, node->vtype);
+        uint16_t reftag = (node->flags & FlagRange) ? ArrayRefTag : RefTag;
+        RefNode *refnode = newRefNodeFull(reftag, (INode*)node, borrowRef, ((RefNode*)objtype)->perm, node->vtype);
         // An element of what a borrow points at lives exactly as long as the borrow
         // does, so it inherits its lifetime. borrowTypeCheck sets the scope on the
         // receiver it built; newRefNode defaults to 0, which means global, so
@@ -1485,6 +1511,22 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         *((INode**)nodep) = (INode*)derivedne;
     }
 
+    // A range index slices an array or a slice, which fnCallArrIndex does. Any
+    // other receiver is refused here, before its '[]' method could be handed the
+    // range's two ends as though they were two indices.
+    if ((node->flags & FlagRange) && !fnCallRangeReceiver(objtype)) {
+        // Borrowed, the receiver is the borrow of what the pointer points at
+        INode *held = node->objfn;
+        if (held->tag == BorrowTag && ((RefNode *)held)->vtexp->tag == DerefTag)
+            held = ((StarNode *)((RefNode *)held)->vtexp)->vtexp;
+        errorMsgNode((INode*)node, ErrorBadIndex,
+            iexpGetTypeDcl(held)->tag == PtrTag
+                ? "A slice of part of what a pointer points at is not implemented; mem.sliceFromParts makes one"
+                : "A range may only index an array or a slice");
+        node->vtype = errorType;
+        return;
+    }
+
     // Dispatch for correct handling based on the type of the object
     switch (objtype->tag) {
     // Pure function call
@@ -1670,7 +1712,11 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
 // dereference being injected, so the element is read through the reference here
 void fnCallArrIndexFlow(FlowState *fstate, FnCallNode **node) {
     flowLoadThroughRef(fstate, &(*node)->objfn);
-    flowLoadValue(fstate, &nodesGet((*node)->args, 0));
+    // Every index is read: each dimension's, or a range's start and end
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor((*node)->args, cnt, argsp))
+        flowLoadValue(fstate, argsp);
 }
 
 // Perform data flow analysis on field access node

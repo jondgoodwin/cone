@@ -61,8 +61,11 @@ next statement after a missing `;`, which is still reported as the missing `;`.
 Only white space may come between the two words.
 
 **`..` and `...` are the range tokens** (`DotDotToken`, `EllipsisToken`), read
-today only by a match's range pattern. A number stops scanning at a `..`, so
-`0..3` is two integers and a range, not the float `0.`.
+by a match's range pattern and by an index (`parseIndexArgs`): `x[a..b]` is held
+as the index with `FlagRange`, its arguments the start (a `usize` 0 when none is
+written) and the end unless the range runs to it, `FlagRangeIncl` marking an end
+written with `...`; `x[a...]` is `ErrorBadIndex`. A number stops scanning at a
+`..`, so `0..3` is two integers and a range, not the float `0.`.
 
 **One `Lexer` per source, on a linked list.** `lexPush` pushes, `lexPop`
 restores. **Blocks are never recycled**, deliberately: every IR node stores the
