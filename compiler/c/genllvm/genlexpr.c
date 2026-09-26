@@ -367,6 +367,7 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
             LLVMTypeRef ptrToType = NULL;   // The LLVM type the pointer points at
             LLVMTypeKind ptrToKind = LLVMVoidTypeKind;
             LLVMTypeRef stepType = NULL;    // Where that is a pointer, the type it steps over
+            int ptrToFloat = 0;             // Whether it is a float of any width, which '++' adds 1.0 to
             if (op != IsTrueIntrinsic && op != EqIntrinsic && op != NeIntrinsic && op != LtIntrinsic
                 && op != LeIntrinsic && op != GtIntrinsic && op != GeIntrinsic) {
                 if (selftype == NULL)
@@ -374,6 +375,7 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
                 INode *pointee = genlPointee(selftype);
                 ptrToType = genlType(gen, pointee);
                 ptrToKind = LLVMGetTypeKind(ptrToType);
+                ptrToFloat = itypeGetTypeDcl(pointee)->tag == FloatNbrTag;
                 if (ptrToKind == LLVMPointerTypeKind)
                     stepType = genlPointeeType(gen, pointee);
             }
@@ -393,7 +395,7 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
                     LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 0);
                     fncallret = LLVMBuildGEP2(gen->builder, stepType, val, &constone, 1, "");
                 }
-                else if (ptrToKind == LLVMFloatTypeKind)
+                else if (ptrToFloat)
                     fncallret = LLVMBuildFAdd(gen->builder, val, LLVMConstReal(ptrToType, 1.), "");
                 else // LLVMIntegerTypeKind
                     fncallret = LLVMBuildAdd(gen->builder, val, LLVMConstInt(ptrToType, 1, 0), "");
@@ -407,7 +409,7 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
                     LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), -1, 1);
                     fncallret = LLVMBuildGEP2(gen->builder, stepType, val, &constone, 1, "");
                 }
-                else if (ptrToKind == LLVMFloatTypeKind)
+                else if (ptrToFloat)
                     fncallret = LLVMBuildFSub(gen->builder, val, LLVMConstReal(ptrToType, 1.), "");
                 else // LLVMIntegerTypeKind
                     fncallret = LLVMBuildSub(gen->builder, val, LLVMConstInt(ptrToType, 1, 0), "");
@@ -422,7 +424,7 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
                     LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 0);
                     val = LLVMBuildGEP2(gen->builder, stepType, fncallret, &constone, 1, "");
                 }
-                else if (ptrToKind == LLVMFloatTypeKind)
+                else if (ptrToFloat)
                     val = LLVMBuildFAdd(gen->builder, fncallret, LLVMConstReal(ptrToType, 1.), "");
                 else // LLVMIntegerTypeKind
                     val = LLVMBuildAdd(gen->builder, fncallret, LLVMConstInt(ptrToType, 1, 0), "");
@@ -437,7 +439,7 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
                     LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), -1, 1);
                     val = LLVMBuildGEP2(gen->builder, stepType, fncallret, &constone, 1, "");
                 }
-                else if (ptrToKind == LLVMFloatTypeKind)
+                else if (ptrToFloat)
                     val = LLVMBuildFSub(gen->builder, fncallret, LLVMConstReal(ptrToType, 1.), "");
                 else // LLVMIntegerTypeKind
                     val = LLVMBuildSub(gen->builder, fncallret, LLVMConstInt(ptrToType, 1, 0), "");
