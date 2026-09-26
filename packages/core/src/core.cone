@@ -68,6 +68,28 @@ pub struct rc is RegionRef {
   fn free(self &uni rc) inline {libc.free(self as *u8);}
 }
 
+// A type's record: what only the compiler knows about a value's type, for a
+// region that must act on values whose types it cannot name. The compiler
+// builds one constant record per type ('mem.typeRecord[T]()' is its address),
+// and hands it to a region ref whose 'alloc' asks for it by taking it after the
+// size: 'fn alloc(size usize, ty *TypeRecord) *u8'. It is declared here, and
+// the compiler fills in exactly these fields, in this order.
+pub struct TypeRecord {
+  // The value's size and alignment, in bytes, for the target
+  pub size usize;
+  pub align usize;
+  // The value's death where it sits, less any free, called with its address:
+  // what 'mem.finalize' runs. A function that does nothing where the type
+  // needs no finalizing, which bit 0 of 'flags' also says
+  pub finalize &fn(p *u8);
+  // For every traced reference the value holds, tell its region. None can be
+  // declared yet, so this is always a function that does nothing
+  pub trace &fn(p *u8);
+  // Bit 0: finalizing the value does something. Bit 1: the value holds a
+  // traced reference (never set yet)
+  pub flags u32;
+}
+
 // 'mem': what only the compiler knows about a type's memory, and the raw moves
 // in and out of it that a collection builds on, each named through it:
 // 'mem.sizeof[T]()'. Each function is an intrinsic: the compiler supplies it,
@@ -94,6 +116,8 @@ pub struct @opaque mem {
   pub fn @intrinsic needsFinal[T]() Bool;
   // Run the death of the T at p where it sits, without freeing its memory
   pub fn @intrinsic finalize[T](p *T);
+  // T's record: its size, its alignment, its finalizer. A constant
+  pub fn @intrinsic typeRecord[T]() *TypeRecord;
   // A slice of the len values starting at p
   pub fn @intrinsic sliceFromParts[T](p *T, len usize) &[]T;
   pub fn @intrinsic sliceFromPartsMut[T](p *T, len usize) &[]mut T;

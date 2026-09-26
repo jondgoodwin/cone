@@ -17,15 +17,18 @@ needed. Safety is preserved across all of it.
 **The distance** is large and worth stating plainly. Two regions ship, `so` and
 `rc`, both written in Cone in the core package. A user can define a region the
 same way — a struct declaring `is RegionRef`, whose `alloc`, `init`, `alias`,
-`dealias` and `free` the compiler calls — but no more of the protocol below is
-built: no barriers, no weak reference kind, no per-type record handed to a region,
-no region with global state, and no finalizing of a slice's elements when its
-region frees it. Of the strategies that motivate the whole design, tracing GC
+`dealias` and `free` the compiler calls, and whose `alloc` may ask for the
+value's **type record** (core's `TypeRecord`: its size, alignment and
+finalizer) by taking one after the size — but no more of the protocol below is
+built: no barriers, no traced references, no weak reference kind, no region
+with global state, and no finalizing of a slice's elements when its region
+frees it. Of the strategies that motivate the whole design, tracing GC
 is unwritten, and the arena and the pool are written only as library values: the
 `arena` package's `Arena`, a dynamic region allocated into by a call on the
 value (`a.alloc(v)`), not by a `+` allocation through a region ref,
-which is handed neither the region value nor the value's type. It finalizes
-each value through `mem.finalize` when it dies, newest first; nothing yet
+whose `alloc` is not handed the region value. It finalizes
+each value through the finalizer in its type's record
+(`mem.typeRecord[T]().finalize`) when it dies, newest first; nothing yet
 pairs a reference with its arena's lifetime. Held in a local, an `Arena` is the
 **scratch arena**: `alloc` returns a borrow of that local, so the borrow rules
 are its whole safety, with their gaps (below, "Where each rule is enforced").

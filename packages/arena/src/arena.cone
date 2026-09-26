@@ -72,8 +72,9 @@
 // the same bump: the next header in the arena's list, and a pointer to the
 // function that finalizes a T at a given address. The arena keeps the list
 // newest first, so teardown walks it in reverse order of allocation, as a
-// function's locals die in reverse order of declaration. That function, the
-// type's "thunk", is 'Finalizer[T].run', which runs 'mem.finalize[T]': the
+// function's locals die in reverse order of declaration. That function is the
+// finalizer in T's type record ('mem.typeRecord[T]().finalize'), which runs
+// what 'mem.finalize[T]' runs: the
 // same death the compiler runs for a T anywhere, the value's own 'final', then
 // each field's finalizer, recursively, then the owning references its fields
 // hold are released (a '+so' one finalized and freed, an '+rc' one counted
@@ -104,14 +105,6 @@ import libc;
 struct FinalNode {
   pub next *FinalNode;
   pub run &fn(p *u8);
-}
-
-// The thunk for T: the finalizer the compiler builds for T, as a plain function
-// whose address the arena keeps. It is a function of a generic type rather than
-// a generic function because Cone can borrow a reference to the one
-// ('&Finalizer[T].run') and not yet to the other ('&finalizeAs[T]' is refused).
-struct Finalizer[T] {
-  pub fn run(p *u8) { mem.finalize(p as *T); }
 }
 
 // The header before each block: the block allocated before it, which teardown
@@ -153,7 +146,7 @@ pub struct Arena {
   // only the few lines that differ by T.
   pub fn alloc[T](self &mut, value T) &mut T {
     imm at = if mem.needsFinal[T]() {
-      self.placeFinal(mem.sizeof[T](), mem.alignof[T](), &Finalizer[T].run);
+      self.placeFinal(mem.sizeof[T](), mem.alignof[T](), (mem.typeRecord[T]() as &TypeRecord).finalize);
     }
     else {
       self.place(mem.sizeof[T](), mem.alignof[T]());

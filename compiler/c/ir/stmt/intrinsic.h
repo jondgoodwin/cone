@@ -87,7 +87,8 @@ enum IntrinsicFn {
     SliceFromPartsMutIntrinsic, // sliceFromPartsMut[T](p *T, len usize) &[]mut T
     ReadRawIntrinsic,       // readRaw[T](p *T) T
     WriteRawIntrinsic,      // writeRaw[T](p *T, value T)
-    MoveRawIntrinsic        // moveRaw[T](to *T, from *T, count usize)
+    MoveRawIntrinsic,       // moveRaw[T](to *T, from *T, count usize)
+    TypeRecordIntrinsic     // typeRecord[T]() *TypeRecord
 };
 
 // The first kind declared in Cone rather than built in C
@@ -123,5 +124,11 @@ void intrinsicDclTypeCheck(TypeCheckState *pstate, FnDclNode *fndcl);
 // Whether a declared intrinsic's name use or instance is in play: a function
 // whose value is an IntrinsicNode of a kind declared in Cone
 int intrinsicIsDeclared(FnDclNode *fndcl);
+
+// Whether a type is '*TypeRecord', a pointer to core's type record: the struct
+// named TypeRecord that the core package declares, whose constants the
+// compiler builds (genlTypeRecord). A template may still hold the '*' as a
+// dereference, as it holds '*T' (cloneStarNode), so both are accepted.
+int typeRecordIsPtr(INode *type);
 
 #endif

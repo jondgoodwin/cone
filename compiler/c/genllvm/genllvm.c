@@ -887,6 +887,10 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
     gen->pgm = pgm;
     gen->stitch[0] = gen->stitch[1] = NULL;
     gen->symnodes = newNodes(64);
+    gen->tyrectypes = NULL;
+    gen->tyrecs = NULL;
+    gen->tyreccnt = gen->tyrecmax = 0;
+    gen->tyrecnothing = NULL;
 
     // First, generate global symbols for all modules, so that forward references succeed
     INode **nodesp;

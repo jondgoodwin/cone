@@ -1,0 +1,113 @@
+// 'mem.typeRecord[T]()' on a range of types: the address of T's record, a
+// constant the compiler builds once per type in an object. Each record's size
+// and alignment are what 'mem.sizeof' and 'mem.alignof' say, its flags' bit 0
+// is what 'mem.needsFinal' says, and its trace does nothing (no traced
+// reference can be declared yet).
+//
+// Its finalizer is the death 'mem.finalize' runs, as a function whose address
+// the record holds, so library code can finalize a value it cannot name the
+// type of. 'dies' moves a value into raw memory, where nothing finalizes it,
+// and runs the record's finalizer on it there, bracketed so the output shows
+// that death and nothing else: a type's own 'final', then its fields' deaths,
+// then the owners its fields hold ('F<n>' is a Fin's 'final', 'free' a '+one'
+// value's memory given back, 'dealias' an '+rc' owner going); a tuple element
+// by element, an array in element order; an enum as the variant it holds. A
+// type with nothing to finalize runs nothing: its finalizer is the do-nothing
+// function every record's trace also holds, so the two are the same address.
+//
+// A generic function asking for its type parameter's record gets the record of
+// each instance's type, the same one a direct call names.
+
+mod intrinsic_typerecord;
+
+import stdio use *;
+import libc;
+
+struct one is RegionRef, Move {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn free(self &uni one) inline { printStr("free "); libc.free(self as *u8); }
+}
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { printStr("F"); printInt(n); printStr(" "); }
+}
+
+struct Plain { pub a u8; pub b i64; }
+struct Holder {
+  pub id i64;
+  pub o +one Fin;
+  fn final(self &uni) { printStr("Holder "); }
+}
+struct Box[T] { pub v T; }
+
+enum Shape {
+  struct Round { pub f Fin; }
+  struct Flat { pub k i64; }
+}
+
+fn yes(b Bool) { if b {printStr("yes");} else {printStr("no");} }
+
+// T's record against what the other intrinsics say of T
+fn describe[T](label &[]u8) {
+  imm rec = mem.typeRecord[T]() as &TypeRecord;
+  printStr(label);
+  printStr(": size "); printInt(i64[rec.size]);
+  printStr(", align "); printInt(i64[rec.align]);
+  printStr(", flags "); printInt(i64[rec.flags]);
+  printStr(", agrees ");
+  yes(rec.size == mem.sizeof[T]() and rec.align == mem.alignof[T]()
+    and (rec.flags & 1u32 == 1u32) == mem.needsFinal[T]() and rec.flags & 2u32 == 0u32);
+  printStr(", finalizer is the do-nothing one ");
+  yes(rec.finalize as *u8 == rec.trace as *u8);
+  printStr("\n");
+}
+
+// Move v into raw memory, then run its record's finalizer on it there
+fn dies[T](label &[]u8, v T) {
+  imm p = malloc(mem.sizeof[T]());
+  mem.writeRaw(p as *T, v);
+  printStr(label); printStr(": ");
+  imm fin = (mem.typeRecord[T]() as &TypeRecord).finalize;
+  fin(p);
+  printStr("|\n");
+  libc.free(p);
+}
+
+fn main() i32 {
+  describe[i32]("i32");
+  describe[Plain]("Plain");
+  describe[Fin]("Fin");
+  describe[Holder]("Holder");
+  describe[(Fin, i64)]("tuple");
+  describe[(u8, u8, u8)]("plain tuple");
+  describe[[3; Fin]]("array");
+  describe[[5; u16]]("plain array");
+  describe[Box[Fin]]("Box[Fin]");
+  describe[Box[i64]]("Box[i64]");
+  describe[Shape]("Shape");
+  describe[Option[+one Fin]]("Option[+one Fin]");
+  describe[+rc-imm Fin]("+rc-imm Fin");
+  describe[&Fin]("&Fin");
+
+  dies("i32", 5i32);
+  dies("Fin", Fin[1]);
+  dies("Holder", Holder[2, +one Fin[3]]);
+  dies("tuple", (Fin[4], Fin[5]));
+  dies("array", [Fin[6], Fin[7], Fin[8]]);
+  dies("Box[Fin]", Box[Fin][Fin[9]]);
+  dies("Shape.Round", Shape.Round[Fin[10]]);
+  dies("Shape.Flat", Shape.Flat[11]);
+  dies("Some", Some[+one Fin][+one Fin[12]]);
+  dies("None", None[+one Fin][]);
+  imm shared = +rc-imm Fin[13];
+  dies("an +rc owner of two", shared);
+  printStr("the other owner still reads F"); printInt(shared.n); printStr("\n");
+
+  // The same record whichever way it is asked for
+  printStr("one record per type ");
+  yes(mem.typeRecord[Box[Fin]]() == mem.typeRecord[Box[Fin]]()
+    and mem.typeRecord[Fin]() != mem.typeRecord[Box[Fin]]());
+  printStr("\n");
+  0;
+}
