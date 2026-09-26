@@ -1295,8 +1295,19 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     case NilLitTag:
         return LLVMGetUndef(gen->emptyStructType);
     case ULitTag:
+    {
+        // A literal holds its value in 64 bits, a negative one sign-extended
+        // there even when its type is narrower. LLVMConstInt takes only a value
+        // that fits the type: handed more bits, it keeps them, unchecked in a
+        // release LLVM, and folding an extension of the constant reads them.
         litCheckDefaultRange((ULitNode*)termnode);
-        return LLVMConstInt(genlType(gen, ((ULitNode*)termnode)->vtype), ((ULitNode*)termnode)->uintlit, 0);
+        LLVMTypeRef littype = genlType(gen, ((ULitNode*)termnode)->vtype);
+        unsigned int width = LLVMGetIntTypeWidth(littype);
+        uint64_t val = ((ULitNode*)termnode)->uintlit;
+        if (width < 64)
+            val &= (1ull << width) - 1;
+        return LLVMConstInt(littype, val, 0);
+    }
     case FLitTag:
         return LLVMConstReal(genlType(gen, ((FLitNode*)termnode)->vtype), ((FLitNode*)termnode)->floatlit);
     case ArrayLitTag:
