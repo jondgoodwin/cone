@@ -3062,6 +3062,11 @@ static VtableImpl *structMapVtableImpl(StructNode *basenode, StructNode *strnode
             // Locate the corresponding method with matching name and vtype
             // Note, we need to be flexible in matching the self parameter
             FnDclNode *meth = (FnDclNode *)*nodesp;
+            // A generic method's slot is one no type can fill (structMakeVtable
+            // has reported it). Its signature is written in its type parameters,
+            // which are not types, so it is not compared.
+            if (meth->genericinfo)
+                return NULL;
             INode *strbinding = namespaceFind(&strnode->namespace, meth->namesym);
             FnDclNode *strmeth = iNsTypeFindVrefMethod(strbinding, meth);
             if (strmeth == NULL)
