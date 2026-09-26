@@ -47,11 +47,18 @@
 //                         runs a whole collection at every allocation
 //                         instead, which finds a missed root at once.
 //                         gc.stressed() says if either is on
+//   gc.setGenerational(on) generational running, or incremental, the default
+//                         (THE GENERATIONS, below); gc.generational() says
+//                         which. Setting the environment variable
+//                         CONE_GC_MODE to 'generational' or 'incremental'
+//                         chooses for a whole run
 //   gc.setLimit(bytes)    no more than this many bytes of '+gc' values (with
 //                         their headers) at once; 0, the default, is no limit.
 //                         What exhaustion looks like, on demand
 //   gc.liveObjects(), gc.liveBytes(), gc.collections(), gc.finalized(),
-//   gc.freed(), gc.steps(), gc.largestStep()
+//   gc.freed(), gc.steps(), gc.largestStep(), gc.minorCollections(),
+//   gc.markedObjects(), gc.sweptObjects(), gc.work(), gc.minorWork(),
+//   gc.promotedBytes(), gc.oldBytes()
 //                         the collector's counts, for tests and tuning
 //
 // HOW IT COLLECTS: Acorn's collector (acornvm, avm_gc.cpp), incremental, with
@@ -95,9 +102,61 @@
 // insertion barrier, Acorn's mem_markChk). It asks nothing of where the
 // reference went, which a store through a borrow could not tell it. Stores
 // into locals get none: the atomic step traces the stacks again. Outside
-// marking it does nothing. It is 'inline', so the compiler expands it at each
-// store, in the program's object: a test of the phase in line, and a call
-// only while marking.
+// marking it does nothing, unless the collector runs generationally (below).
+// It is 'inline', so the compiler expands it at each store, in the program's
+// object: a test of a flag in line, and a call only while it is on.
+//
+// THE GENERATIONS (Acorn's generational mode, which is Lua 5.2's). Most
+// objects die young. Run generationally, the collector keeps what survives a
+// collection black and marks it OLD, and the next collection is MINOR: it
+// does not trace the old generation, and its sweep stops at the first old
+// object it meets -- new objects are pushed at a list's head, so everything
+// after the first old one is older still, and old. A minor collection's work
+// is the young objects: those it marks, and those it sweeps, freed or
+// promoted. The old generation costs it nothing but the roots that point
+// into it.
+// - The barrier stays on between collections, since the old objects are
+//   black. It shades a young object stored into the heap, and that is how an
+//   old object's new young child is found: the shaded object is already
+//   gray when the next collection begins, which keeps the gray list (it
+//   would empty it before a full marking). The barrier cannot tell an old
+//   container from a young one -- it asks only about what was stored, which
+//   is all a store through a borrow can tell it -- so every young object
+//   stored into the heap survives the next minor collection, and is
+//   promoted. Objects born holding their values ('+gc T[a, b]') are stored
+//   by no barrier, and die young if they are dropped. (Acorn's barrier asks
+//   whether the container is black, so there a young object stored into a
+//   young one is not kept.)
+// - Once minor collections would have promoted as many bytes as were live
+//   after the last full marking (at least the least trigger, 256 KiB), that
+//   collection's sweep makes every survivor white and young again, and a
+//   full marking starts at once, frees old garbage, and promotes what is live
+//   (Acorn's GCOLDTRIGGER, counted in bytes, and only the minor collections'
+//   promotions). gc.collect() is always a full collection.
+// - A minor collection that finds more than half the young generation live
+//   is UNPRODUCTIVE -- a program building a structure, or storing all it
+//   makes -- and its sweep is full too. The collections after it are full
+//   ones, run incrementally, one of them after the first such collection,
+//   twice as many after the next in a row, up to 64; then generational
+//   running is tried again (Lua 5.4's backing off after a 'bad collection').
+//   Without it, a program storing everything it makes would promote it all,
+//   and the heap would grow without bound between full markings.
+// - Pacing: a minor collection starts when the young generation has grown by
+//   what the last full marking allowed the whole heap to grow, not by what
+//   its own estimate, which counts old garbage it cannot see, would allow.
+// - Finalizing: a minor collection separates the young unreachable objects
+//   that need finalizing; an old one is found only by a full marking. What
+//   is kept only for a finalizer, and the finalized objects themselves, are
+//   not promoted: made white and young again, they are freed by the next
+//   minor collection that finds them unreachable, a cycle late as ever.
+// Incremental running is the default. examples/generations.cone measures
+// both. Where the short-lived objects are born holding their values and die
+// at once, generational running does half the work, a minor collection a
+// quarter of a full one, in a heap no larger. Where some live long enough to
+// be promoted and die old (pauses.cone's grafts), it does a twentieth less,
+// in a heap two fifths larger. Where everything is built by storing it
+// (forest.cone), it does the same work in a heap two and a half times larger,
+// what its tries at generational running cost.
 //
 // WHEN IT WORKS, AND HOW MUCH (pacing in bytes, Lua's). Collection work runs
 // inside allocations (and gc.collect(), gc.step()): '+gc T[...]' evaluates
@@ -134,10 +193,14 @@ mod collector use gc;
 import libc;
 
 // The colour bits: two whites, whose meanings swap at each flip, black, and
-// finalized. Gray is neither white nor black.
+// finalized. Gray is neither white nor black. Two more: kept, black only
+// because finalizable garbage reaches it (the atomic step's last marking), and
+// old, a survivor promoted by a generational sweep.
 const whites = 3u32;
 const black = 4u32;
 const finalizedBit = 8u32;
+const keptBit = 16u32;
+const oldBit = 32u32;
 
 // The phases, gc.phase()'s answers
 const pausePhase = 0u32;      // no collection running
@@ -172,6 +235,21 @@ mut stressFull = false;    // CONE_GC_STRESS=full: a whole collection at every a
 mut envRead = false;
 mut maxBytes = 0usize;     // gc.setLimit; 0 is none
 
+// Generational running (see THE GENERATIONS)
+mut genOn = false;         // gc.setGenerational, or CONE_GC_MODE
+mut barrierOn = false;     // the barrier shades: while marking, and between generational collections
+mut oldGen = false;        // the last sweep left its survivors black and old: the next marking is minor
+mut minorMark = false;     // this collection's marking is minor: the old generation is not traced
+mut sweepGen = false;      // this collection's sweep promotes its survivors, and stops at the first old one
+mut keeping = false;       // the atomic step is marking what finalizable garbage reaches
+mut sinceFull = 0usize;    // bytes promoted by minor collections since the last full marking
+mut oldLimit = 262144usize; // when sinceFull reaches it, the next marking is full
+mut fullEstimate = 0usize; // the estimate after the last full marking: what was live
+mut markedBytes = 0usize;  // bytes this collection's marking made black (not those it keeps for finalizers)
+mut oldGenBytes = 0usize;  // bytes of old objects
+mut backoff = 0usize;      // full collections to run before the next generational sweep
+mut backoffNext = 1usize;  // the backoff an unproductive minor collection sets: doubled each time, to 64
+
 mut totalBytes = 0usize;   // bytes held by '+gc' objects, headers included
 mut trigger = 262144usize; // start a collection when an allocation would pass this
 mut nobjects = 0usize;
@@ -180,6 +258,12 @@ mut nfinalized = 0usize;
 mut nfreed = 0usize;
 mut nsteps = 0usize;
 mut maxStep = 0usize;      // the most work one automatic step did
+mut nminor = 0usize;       // minor collections: a minor marking, and a generational sweep
+mut nmarked = 0usize;      // objects made black
+mut nswept = 0usize;       // objects the sweep freed or kept
+mut npromoted = 0usize;    // bytes promoted by minor collections
+mut nwork = 0usize;        // bytes of work done, by every step and whole collection
+mut nminorWork = 0usize;   // of that, the work of minor collections
 
 // The header before every '+gc' value: the region ref. Its fields are public
 // because a private field is reached only through 'self', and the collector
@@ -230,17 +314,19 @@ pub struct gc is RegionRef, Traced {
   }
 
   // A '+gc' reference was stored into memory that is not a local. While
-  // marking, what it refers to is shaded, so no black object can come to
-  // hide a white one; otherwise nothing.
+  // marking, and between generational collections, what it refers to is
+  // shaded, so no black object -- one marked this collection, or an old one
+  // -- can come to hide a white one; otherwise nothing.
   fn writeBarrier(self &uni gc) inline {
-    if gcPhase == markPhase {
+    if barrierOn {
       shade(self as *gc as usize);
     }
   }
 
-  // Stress mode for the whole run, if CONE_GC_STRESS is set, read once:
-  // 'full' for a whole collection at every allocation, anything else for a
-  // step
+  // The environment, read once. CONE_GC_STRESS: stress mode for the whole
+  // run, 'full' for a whole collection at every allocation, anything else
+  // for a step. CONE_GC_MODE: 'generational' or 'incremental', the mode the
+  // run starts in
   fn readEnv() {
     if !envRead {
       envRead = true;
@@ -248,6 +334,11 @@ pub struct gc is RegionRef, Traced {
       if val as usize != 0usize {
         stressOn = true;
         stressFull = libc.strcmp(val, &[]"full") == 0i32;
+      }
+      imm mode = libc.getenv(&[]"CONE_GC_MODE");
+      if mode as usize != 0usize {
+        if libc.strcmp(mode, &[]"generational") == 0i32 { genOn = true; }
+        else if libc.strcmp(mode, &[]"incremental") == 0i32 { genOn = false; }
       }
     }
   }
@@ -324,18 +415,27 @@ pub struct gc is RegionRef, Traced {
   }
 
   // Take one gray object off the list, make it black, and mark what it
-  // holds. Its bytes are the work done.
+  // holds; kept too, if only finalizable garbage reaches it. Its bytes are
+  // the work done.
   fn propagateOne() usize {
     imm at = grays;
     imm h = header(at);
     grays = h.gray;
-    h.marked = h.marked | black;
+    imm bytes = objBytes(h.ty);
+    if keeping {
+      h.marked = h.marked | black | keptBit;
+    }
+    else {
+      h.marked = h.marked | black;
+      markedBytes = markedBytes + bytes;
+    }
+    nmarked = nmarked + 1usize;
     imm rec = h.ty as &TypeRecord;
     if rec.flags & 2u32 != 0u32 {
       imm tracefn = rec.trace;
       tracefn(valueOf(at), 0u32);
     }
-    objBytes(h.ty);
+    bytes;
   }
 
   // Until nothing is gray
@@ -347,15 +447,23 @@ pub struct gc is RegionRef, Traced {
     work;
   }
 
-  // A collection starts: every root is marked, and marking begins
+  // A collection starts: every root is marked, and marking begins. After a
+  // generational sweep the marking is minor: the old generation is black and
+  // stays so, and what the barrier shaded since is already gray, this
+  // collection's extra roots (Acorn's GCSbegin, which in generational mode
+  // neither empties the gray list nor marks the root)
   fn begin() {
-    grays = 0usize;
+    minorMark = oldGen;
+    if !minorMark { grays = 0usize; }
+    markedBytes = 0usize;
+    barrierOn = true;
     mem.traceRoots(0u32);
     gcPhase = markPhase;
   }
 
   // Move every object on finobj that marking did not reach to the end of
-  // tobefnz, keeping their order: newest first
+  // tobefnz, keeping their order: newest first. The first old object ends
+  // the search: everything after it is old, and so black
   fn separate() {
     mut tail = tobefnz;
     if tail != 0usize {
@@ -363,7 +471,7 @@ pub struct gc is RegionRef, Traced {
     }
     mut prev = 0usize;
     mut at = finobj;
-    while at != 0usize {
+    while at != 0usize and header(at).marked & oldBit == 0u32 {
       imm h = header(at);
       imm nxt = h.next;
       if h.marked & whites != 0u32 {
@@ -394,7 +502,39 @@ pub struct gc is RegionRef, Traced {
       shade(at);
       at = header(at).next;
     }
+    keeping = true;
     work = work + propagateAll();
+    keeping = false;
+    // The sweep's kind, Acorn's gcnextmode: generational, unless it must be
+    // full, making every survivor white again for a full marking, which then
+    // starts at once. After a minor marking it is full if minor collections,
+    // this one's sweep included, would have promoted the old limit's worth
+    // since the last full marking (what a minor marking made black is what
+    // its sweep would promote); or if this one was UNPRODUCTIVE, finding more
+    // than half the young generation live: then the next collections are
+    // full ones, incremental, for a while (see THE GENERATIONS). Only a
+    // generational sweep leaves black objects the barrier must guard between
+    // collections
+    mut full = false;
+    if minorMark {
+      full = sinceFull + markedBytes >= oldLimit;
+      if markedBytes * 2usize > totalBytes - oldGenBytes {
+        full = true;
+        backoff = backoffNext;
+        if backoffNext < 64usize { backoffNext = backoffNext * 2usize; }
+      }
+      else {
+        backoffNext = 1usize;
+      }
+    }
+    else if backoff > 0usize {
+      backoff = backoff - 1usize;
+      full = true;
+    }
+    sweepGen = genOn and !full;
+    barrierOn = sweepGen;
+    if minorMark and sweepGen { nminor = nminor + 1usize; }
+    if !minorMark { sinceFull = 0usize; }
     curWhite = whites ^ curWhite;
     ncollections = ncollections + 1usize;
     estimate = totalBytes;
@@ -411,25 +551,50 @@ pub struct gc is RegionRef, Traced {
     if which == 0u32 { allgc = at; } else if which == 1u32 { finobj = at; } else { tobefnz = at; }
   }
 
-  // Sweep the next object: freed if it carries the dead white, made the
-  // current white if not. Its bytes are the work done. Past the last list,
-  // the sweep ends: the trigger is set from what the collection found live,
-  // and finalizing begins, if anything was separated.
+  // Does the object at 'at' end a generational sweep of its list? The first
+  // old one does: new objects are pushed at a list's head, so everything
+  // after it is older, and old (Acorn's mem_sweeplist, 'tostop')
+  fn endsSweep(at usize) Bool {
+    at == 0usize or (sweepGen and header(at).marked & oldBit != 0u32);
+  }
+
+  // Sweep the next object: freed if it carries the dead white. A survivor is
+  // made the current white -- or, in a generational sweep, promoted: left
+  // black and made old. Its bytes are the work done. Past the last list, the
+  // sweep ends: the trigger is set from what the collection found live, and
+  // finalizing begins, if anything was separated.
   fn sweepOne() usize {
     mut at = if sweepAt == 0usize {listHead(sweepList);} else {header(sweepAt).next;};
-    while at == 0usize and sweepList < 2u32 {
+    while sweepList < 2u32 and endsSweep(at) {
       sweepList = sweepList + 1u32;
       sweepAt = 0usize;
       at = listHead(sweepList);
     }
     if at == 0usize {
-      trigger = estimate * 2usize;
-      if trigger < minTrigger { trigger = minTrigger; }
+      // After a full marking, the heap may grow by what it found live (at
+      // least to the least trigger), and the old generation by as much again
+      // before the next full marking. After a minor one, whose estimate
+      // counts old garbage it cannot see, the young generation may grow by
+      // what the last full marking allowed: pacing from it would double the
+      // trigger at each minor collection, however little is live
+      if !minorMark {
+        fullEstimate = estimate;
+        oldLimit = if estimate < minTrigger {minTrigger;} else {estimate;};
+      }
+      mut allowed = fullEstimate * 2usize;
+      if allowed < minTrigger { allowed = minTrigger; }
+      trigger = estimate + allowed - fullEstimate;
+      // A sweep that made the old generation white again did so for a full
+      // marking: it starts with the next allocation, before what the old
+      // generation holds of garbage grows further
+      if minorMark and !sweepGen { trigger = 0usize; }
+      oldGen = sweepGen;
       gcPhase = if tobefnz != 0usize {finalizePhase;} else {pausePhase;};
       return 1usize;
     }
     imm h = header(at);
     imm bytes = objBytes(h.ty);
+    nswept = nswept + 1usize;
     if h.marked & (whites ^ curWhite) != 0u32 {
       if sweepAt == 0usize { setListHead(sweepList, h.next); } else { header(sweepAt).next = h.next; }
       totalBytes = totalBytes - bytes;
@@ -443,7 +608,24 @@ pub struct gc is RegionRef, Traced {
       libc.free(at as *u8);
     }
     else {
-      h.marked = (h.marked & finalizedBit) | curWhite;
+      if !sweepGen or h.marked & keptBit != 0u32 {
+        // A full sweep's survivor, or one only finalizable garbage reaches
+        // (and the separated objects themselves): the new white, young. No
+        // live object can reach it, so no black one holds it
+        if h.marked & oldBit != 0u32 { oldGenBytes = oldGenBytes - bytes; }
+        h.marked = (h.marked & finalizedBit) | curWhite;
+      }
+      else if h.marked & black != 0u32 {
+        // Promoted: black, and old from now on
+        h.marked = h.marked | oldBit;
+        oldGenBytes = oldGenBytes + bytes;
+        if minorMark {
+          sinceFull = sinceFull + bytes;
+          npromoted = npromoted + bytes;
+        }
+      }
+      // Anything else was born after the flip, white, or gray from the
+      // barrier since: young, and left as it is
       sweepAt = at;
     }
     bytes;
@@ -490,55 +672,81 @@ pub struct gc is RegionRef, Traced {
     mut work = 0usize;
     mut going = true;
     while going {
-      work = work + stepOne();
+      imm piece = stepOne();
+      account(piece, minorMark and (gcPhase == markPhase or sweepGen));
+      work = work + piece;
       going = work < budget and gcPhase != pausePhase;
     }
     stepping = false;
     work;
   }
 
-  // Every mark of a collection given up while marking: each object the
-  // current white again, and nothing gray
-  fn unmark(list usize) {
+  // Work done, by a minor collection or a full one
+  fn account(work usize, minor Bool) {
+    nwork = nwork + work;
+    if minor { nminorWork = nminorWork + work; }
+  }
+
+  // Each object of a list the current white again, not old: its bytes
+  fn unmark(list usize) usize {
+    mut work = 0usize;
     mut at = list;
     while at != 0usize {
       imm h = header(at);
       h.marked = (h.marked & finalizedBit) | curWhite;
+      work = work + objBytes(h.ty);
       at = h.next;
     }
+    work;
+  }
+
+  // Every object white and young, and nothing gray: the marks of a
+  // collection given up while marking dropped, and the old generation's too,
+  // so that a whole marking can follow
+  fn unmarkAll() usize {
+    grays = 0usize;
+    oldGen = false;
+    oldGenBytes = 0usize;
+    unmark(allgc) + unmark(finobj) + unmark(tobefnz);
+  }
+
+  // The sweep and finalizing of the collection in progress, to their end;
+  // an emergency runs no finalizer
+  fn finishCollection(emergency Bool) usize {
+    mut work = 0usize;
+    while gcPhase == sweepPhase { work = work + sweepOne(); }
+    if gcPhase == finalizePhase {
+      if emergency { gcPhase = pausePhase; }
+      else { while gcPhase == finalizePhase { work = work + finalizeOne(); } }
+    }
+    work;
   }
 
   // A whole collection, stop-the-world. One in progress is finished first --
   // or, if it is still marking, given up, since what it has marked black may
-  // have died since -- and then a whole one runs. An emergency one, run
-  // because memory ran out, runs no finalizer: those wait for the next
-  // ordinary collection, their objects and what they reach kept alive until
-  // then.
+  // have died since -- and then a whole one runs, its marking full: after a
+  // generational sweep the old generation is made white first. An emergency
+  // one, run because memory ran out, runs no finalizer: those wait for the
+  // next ordinary collection, their objects and what they reach kept alive
+  // until then.
   fn fullCollect(emergency Bool) {
     if stepping {
       return;
     }
     stepping = true;
+    mut work = 0usize;
     if gcPhase == markPhase {
-      unmark(allgc);
-      unmark(finobj);
-      unmark(tobefnz);
-      grays = 0usize;
+      work = unmarkAll();
       gcPhase = pausePhase;
     }
-    mut round = 0u32;
-    while round < 2u32 {
-      if round == 1u32 {
-        begin();
-        atomic();
-      }
-      while gcPhase == sweepPhase { sweepOne(); }
-      if gcPhase == finalizePhase {
-        if emergency { gcPhase = pausePhase; }
-        else { while gcPhase == finalizePhase { finalizeOne(); } }
-      }
-      round = round + 1u32;
+    account(finishCollection(emergency), minorMark and sweepGen);
+    if oldGen {
+      work = work + unmarkAll();
     }
+    begin();
+    work = work + atomic();
+    work = work + finishCollection(emergency);
+    account(work, false);
     debt = 0usize;
     stepping = false;
   }
@@ -568,6 +776,10 @@ pub struct gc is RegionRef, Traced {
   // A step at every allocation, or not; and whether it does (either stress)
   pub fn setStress(on Bool) { readEnv(); stressOn = on; stressFull = false; }
   pub fn stressed() Bool { readEnv(); stressOn; }
+  // Generational running, or incremental: from the next sweep on (see THE
+  // GENERATIONS); and which is chosen
+  pub fn setGenerational(on Bool) { readEnv(); genOn = on; }
+  pub fn generational() Bool { readEnv(); genOn; }
   // No more than 'bytes' of objects at once, headers included; 0 is no limit
   pub fn setLimit(bytes usize) { maxBytes = bytes; }
 
@@ -584,4 +796,21 @@ pub struct gc is RegionRef, Traced {
   pub fn steps() usize { nsteps; }
   // The most work an allocation's step has done, in bytes: the longest pause
   pub fn largestStep() usize { maxStep; }
+  // Of the collections, the minor ones: a minor marking, and a sweep that
+  // stopped at the old generation
+  pub fn minorCollections() usize { nminor; }
+  // Objects made black, and objects the sweep freed or kept: the work,
+  // counted in objects
+  pub fn markedObjects() usize { nmarked; }
+  pub fn sweptObjects() usize { nswept; }
+  // Bytes of work done, by every step and whole collection: objects marked,
+  // swept or finalized, each costing its bytes
+  pub fn work() usize { nwork; }
+  // Of that, the work of minor collections (and the marking of one whose
+  // sweep turned out full, for a full marking after it)
+  pub fn minorWork() usize { nminorWork; }
+  // Bytes promoted to the old generation by minor collections
+  pub fn promotedBytes() usize { npromoted; }
+  // Bytes of the old generation now
+  pub fn oldBytes() usize { oldGenBytes; }
 }

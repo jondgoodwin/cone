@@ -15,6 +15,16 @@
 //   allocated, which it leaves; the next collection starts when the heap has
 //   grown by the other half: a collection per 256 KiB allocated, and 16.8 MB
 //   is at least 64 of them;
+// - run generationally (CONE_GC_MODE=generational), a minor collection
+//   promotes the tree in the making it marks, and that tree is garbage in the
+//   old generation, which minor collections do not free, until minor
+//   collections have promoted the old limit's worth: 256 KiB here, since what
+//   the full collections find live is at most a tree. Then a full marking
+//   frees it. So the heap may hold up to 256 KiB of old garbage beside the
+//   young generation's 256 KiB: at most 512 KiB (measured: 265,552 bytes,
+//   and 4,536 under the stress mode, whose minor collections, each finding
+//   the tree in the making live, are mostly unproductive, so that it
+//   collects in full);
 // - under a limit, an allocation that would pass it runs a full collection,
 //   and garbage that needs finalizing is finalized by one collection and
 //   freed by the next, so a
@@ -95,7 +105,12 @@ fn plain() {
     i = i + 1;
   }
   expectInt(total, rounds * 26, "every tree read back whole: 1*8 + 2*4 + 3*2 + 4*1 a tree");
-  expect(peak <= 262144usize, "the heap never passed the trigger, 256 KiB");
+  if gc.generational() {
+    expect(peak <= 524288usize, "the heap never passed the trigger and the old limit, 512 KiB");
+  }
+  else {
+    expect(peak <= 262144usize, "the heap never passed the trigger, 256 KiB");
+  }
   expect(gc.collections() - c0 >= 64usize, "at least 64 collections");
   settle();
   expectUInt(u64[gc.freed() - f0], 300000, "every node freed");
