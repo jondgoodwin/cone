@@ -181,6 +181,34 @@ int litAdoptNumberType(INode **nodep, INode *totype) {
     }
 }
 
+// Widen a float literal to a wider float type at compile time, in place of
+// wrapping it in a conversion. A float literal is not context-typed: '0.5' is
+// an f32 however it is wanted, and reaches an f64 by the implicit widening
+// every f32 value has. Left as a conversion node, the literal stopped being a
+// literal, so every position that requires one refused it -- 'imm g f64 = 0.5'
+// as a global, a static, a parameter default and 'const K f64 = 0.5' -- while
+// the same initializer was accepted in a function body and as a field default.
+// The value is the f32 widened, exactly what the conversion generated, so no
+// position's value changes. Returns 1 when *nodep is now a literal of the wider
+// type, 0 when it was not a float literal or the target is not a wider float.
+int litWidenFloat(INode **nodep, INode *totype) {
+    INode *node = *nodep;
+    if (node->tag != FLitTag)
+        return 0;
+    NbrNode *fromtype = (NbrNode*)itypeGetTypeDcl(((FLitNode*)node)->vtype);
+    NbrNode *nbrtype = (NbrNode*)itypeGetTypeDcl(totype);
+    if (fromtype->tag != FloatNbrTag || nbrtype->tag != FloatNbrTag || nbrtype->bits <= fromtype->bits)
+        return 0;
+    double value = ((FLitNode*)node)->floatlit;
+    FLitNode *flit;
+    newNode(flit, FLitNode, FLitTag);
+    flit->floatlit = fromtype->bits == 32 ? (double)(float)value : value;
+    flit->vtype = (INode*)nbrtype;
+    inodeLexCopy((INode*)flit, node);
+    *nodep = (INode*)flit;
+    return 1;
+}
+
 // Refuse an integer literal whose value does not fit the integer type it now
 // has, in place of materializing it at that width and silently dropping every
 // bit above it: '300u8' and 'mut n u8 = 300' stored 44. The digits written are

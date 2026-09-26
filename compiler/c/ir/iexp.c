@@ -134,6 +134,10 @@ int iexpCoerce(INode **from, INode *totype) {
         return 1;
     }
     case ConvSubtype: {
+        // A float literal widened stays a literal, which the positions that
+        // require one ask for
+        if (litWidenFloat(from, totypedcl))
+            return 1;
         INode *newfrom = (INode*)newConvCastNode(*from, iexpCoerceType(*from, totypedcl));
         inodeLexCopy(newfrom, *from);
         *from = newfrom;

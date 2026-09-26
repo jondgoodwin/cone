@@ -63,6 +63,10 @@ void litNameRes(NameResState* pstate, IExpNode *node);
 // Returns 1 when *nodep is now a literal of that type, 0 otherwise.
 int litAdoptNumberType(INode **nodep, INode *totype);
 
+// Widen a float literal to a wider float type at compile time, keeping it a
+// literal. Returns 1 when *nodep is now a literal of that type, 0 otherwise.
+int litWidenFloat(INode **nodep, INode *totype);
+
 // Refuse an untyped integer literal, reached by generation, whose value does
 // not fit the i32 it defaulted to
 void litCheckDefaultRange(ULitNode *lit);

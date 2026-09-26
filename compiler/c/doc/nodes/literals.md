@@ -101,6 +101,21 @@ bits first and widens what is left, which silently drops every bit above the low
 position a literal meets a type: initializer, assignment, argument, return value
 and struct field, for `i64`, `u64`, `f32` and `f64`.
 
+**A float literal widened to a wider float type is widened in place.** A float
+literal is not context-typed: `0.5` is an `f32` wherever it is written, and it
+reaches an `f64` by the implicit widening every `f32` value has. When
+`iexpCoerce` finds that widening (`ConvSubtype`) and the value is a float
+literal, `litWidenFloat` replaces it with an `FLitNode` of the wider type
+holding the `f32` value widened, rather than wrapping it in a conversion node.
+The value is exactly what the conversion generated, so no position's value
+moves; what moves is that the result is still a literal, which the global,
+static, parameter-default and typed-constant rules ask for ([vardcl](vardcl.md)),
+so `imm g f64 = 0.5` is accepted as it is in a function body. It is still the
+`f32` value: `imm g f64 = 0.1` holds `0.100000001490116…`, as a local, an
+argument, a return value and a field do. `typemgmt_success` pins the positions
+that require a literal, with values exact in `f32`, and pins that a global and a
+local given the same literal agree.
+
 **`FlagUnkType` is also read by `iexpMatches`**, which returns `ConvSubtype` for
 an untyped integer literal against any number type. `iexpCoerce` adopts before
 it asks, so this answers only the callers that ask without coercing: overload

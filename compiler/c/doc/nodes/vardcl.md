@@ -180,7 +180,13 @@ parameter names**.
    array and type literals, and a use resolved to a `ConstDclTag`, which is what
    makes `imm g i32 = K` legal. A static's value is its storage's initializer,
    written once before anything runs, which is why it is held to a global's rule
-   wherever it is declared.
+   wherever it is declared. The rule reads the value **after** coercion, so it
+   must still be a literal once coerced: an untyped integer literal adopts the
+   declared type and a float literal is widened in place (both in
+   [literals](literals.md)), but any other coercion wraps the value in a node
+   that is not a literal. So `imm g f64 = 0.5` is legal, and `const K = 5` then
+   `imm g i64 = K` is refused, since the constant's use reaches `i64` by a
+   conversion. `constDclTypeCheck` reads it after coercion too.
 5a. **A function's static joins the function.** `dclInfoJoin` with the function
    as owner, so its symbol is spelled after the function (`tick.calls`) and two
    functions' statics of one name stay apart. In an `inline` function the body
