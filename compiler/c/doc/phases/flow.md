@@ -159,13 +159,24 @@ sentence is why `+rc x` moves while `+rc-mut x` copies, on the same region.
 
 A tuple literal has no storage of its own, so `flowHandleMove` on one
 deactivates the source of each element that is itself a move value and leaves
-a copyable element's alone; it is the `VTupleTag` arm beside the field, index
-and dereference arms that walk inwards to the variable.
+a copyable element's alone; it is the `VTupleTag` arm beside the index and
+dereference arms that walk inwards to the variable.
+
+**Nothing moves out of a field.** The walk's field arm walks no further: a
+move-typed value that is a field — of a struct or a tuple, wherever the struct
+is — or that is reached through one (`*b.r`, what an owning field points at;
+`row.hs[0]`, an element of an array field) is refused (`ErrorMoveField`,
+`flowRefuseMoveField`), at the move, before any question of who owns it. The
+struct would be left with a hole in it: usable neither whole nor field by field,
+and with no answer to what its death finalizes. The refused move deactivates
+nothing. Swap and left-assignment take a value out of a field, and moving the
+whole struct takes every field with it. A copy-typed field is never walked, so it
+reads out freely.
 
 **Only a sole owner may be moved out of.** The same inward walk refuses three
-sources. A global has no scope in which a deactivated state could be recovered.
-A place reached through a **borrowed reference** — a dereference of one, or a
-field or element read straight through one, as a slice's element is — belongs
+more sources. A global has no scope in which a deactivated state could be recovered.
+A place reached through a **borrowed reference** — a dereference of one, or an
+element read straight through one, as a slice's element is — belongs
 to whatever was borrowed, which releases or finalizes it at the end of its own
 scope, so a move out of it would make a second owner (`ErrorMoveOut`). The
 borrow's permission does not matter: a `&uni` is the only path to its value
@@ -192,7 +203,7 @@ each `break` that leaves it (not a loop's final expression, which loops back),
 each branch of an `if` — checking every one of those values. Through
 `flowHandleMove` it deactivates the variables that *every* one of them moves
 out of: `imm y = {a;}`, `if c {a;} else {a;}` and a loop whose only exits all
-`break b.inner` leave their source moved exactly as `imm y = a` does, so it is
+`break a` leave their source moved exactly as `imm y = a` does, so it is
 finalized once, by the new holder. A variable moved out of by only some of
 them is a conditional move and is not deactivated, because `VarMoved` is per
 function: `if c {a;} else {Inner[0];}` bound to a variable still finalizes `a`
@@ -201,24 +212,23 @@ expression statement never reaches `flowHandleMove`, so a block whose value is
 thrown away moves nothing.
 
 **A move out through a sole owner.** When the inward walk reaches a local
-variable holding an owning reference through that reference — `*b`, `b.inner`
-(a field access through the injected dereference), `*b.r`, `**b`, a slice's
-element `s[0]` — the value, or a part of it, leaves the allocation, but the
-variable still owns the allocation, whose memory must go back
-(`flowOwningLocal`). Such a move **hollows** the variable rather than moving
-it: `VarHollow` is set and the move's outermost node, the expression naming the
-part (`top` in `flowMoveSource`), is added to `VarDclNode.hollowed`. A hollowed
-variable is refused for any further use as a moved one is (`nameuseFlow`), and
-where it is released — its scope's exits, or a reassignment — it is released
-**hollow** (`HollowNode`): generation walks each recorded move inwards to the
-variable to learn which part left, and releases the rest (`genlHollowRelease`;
-[Generation](generation.md), "The allocation header"). A variable reached only
-through a value's own field (`*h.r` with `h` a struct on the stack) is moved
-whole, as before: the part left `h`'s field's allocation, which `h`'s own
-release would have to reach.
+variable holding an owning reference through that reference — `*b`, `**b`
+(through an owning reference that is `b`'s value), a slice's element `s[0]` —
+the value, or an element of it, leaves the allocation, but the variable still
+owns the allocation, whose memory must go back (`flowOwningLocal`). Such a move
+**hollows** the variable rather than moving it: `VarHollow` is set and the
+move's outermost node, the expression naming what moved (`top` in
+`flowMoveSource`), is added to `VarDclNode.hollowed`. A hollowed variable is
+refused for any further use as a moved one is (`nameuseFlow`), and where it is
+released — its scope's exits, or a reassignment — it is released **hollow**
+(`HollowNode`): generation walks each recorded move inwards to the variable to
+learn what left, and frees the memory without finalizing it
+(`genlHollowRelease`; [Generation](generation.md), "The allocation header"). No
+field is ever on the chain: `b.inner`, a field through the injected
+dereference, is refused as a field.
 
 A hollowing on only some of the values a block or an `if` hands back hollows
-the variable anyway, unlike a whole conditional move: what did not move is then
+the variable anyway, unlike a whole conditional move: the value is then
 freed but not finalized on the paths that left it in place, rather than
 finalized a second time on the ones that moved it. A variable moved whole by
 the same move as well is left to that move (`MoveParts.wholes`).
@@ -301,23 +311,22 @@ order. Per variable: one that was never initialized or was moved out is
 skipped, whatever its type, because it owns nothing to release or finalize; so
 is one the scope hands back, which is the caller's to release or finalize, and
 `flowIsScopeResult` matches it against the result expression, walking a
-`VTupleTag` element by element and a recast to its operand. A move-typed field
-or element handed back matches the variable it is taken from
-(`flowIsScopeResultOwner`, the walk through fields, elements and owning
-dereferences that `flowMoveSource` takes), because moving a part out gives up
-the whole variable; releasing it would finalize the part again in the caller,
-and what else it held is not released. A part — or the whole value, `*b` —
-taken out through the variable's own owning reference does not exempt it:
-the variable still owns the allocation, and its entry is a `HollowNode` naming
-the part, so the memory goes back without it. A copied part matches nothing. A block
-or an `if` used as a move value matches what it hands back — its final
-expression, each `break` that leaves it, each branch — so a field handed back
-through one is exempt the same way. A local handed back on only some branches
-is exempt on all of them, and leaks on the others, as a conditional move does.
-The exemption is the result's own and is not deactivation, because each
-`return` builds its own list and `VarMoved` is not path-sensitive:
-`if c {return b.inner;}` exempts `b` on that way out only, and `b` is still
-usable and finalized on the path that goes on. The match is on the
+`VTupleTag` element by element and a recast to its operand. A move-typed
+array element handed back matches the variable it is taken from
+(`flowIsScopeResultOwner`, the walk through elements and owning dereferences
+that `flowMoveSource` takes), because moving an element out gives up the whole
+variable; releasing it would finalize the element again in the caller, and what
+else it held is not released. The whole value, `*b`, or an element taken out
+through the variable's own owning reference does not exempt it: the variable
+still owns the allocation, and its entry is a `HollowNode` naming what moved,
+so the memory goes back without it. A copied part matches nothing, and a field
+handed back was refused. A block or an `if` used as a move value matches what
+it hands back — its final expression, each `break` that leaves it, each branch.
+A local handed back on only some branches is exempt on all of them, and leaks
+on the others, as a conditional move does. The exemption is the result's own
+and is not deactivation, because each `return` builds its own list and
+`VarMoved` is not path-sensitive: `if c {return a;}` exempts `a` on that way
+out only, and `a` is still usable and finalized on the path that goes on. The match is on the
 declaration the result's name resolves to, not on the name: a `return` asks over the whole function's
 stack, where an inner block's `a` and an outer `a` both sit, and only the one
 handed back is exempt. What survives both is an owning reference into a
@@ -352,7 +361,7 @@ failed to resolve.
 
 | Analysis | In flow? | Enforced | Not enforced |
 | --- | --- | --- | --- |
-| **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable, and on a borrow of a moved-out one; move out of a global, or out through a borrowed or a shared owning reference, refused | field granularity — moving `p.x` deactivates all of `p`; conditional moves; loop-carried moves |
+| **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable, and on a borrow of a moved-out one; move out of a field, or of a global, or out through a borrowed or a shared owning reference, refused | element granularity — moving `a[0]` deactivates all of `a`; conditional moves; loop-carried moves |
 | **Escape / lifetime** | representation in type check, enforcement here | storing a borrow into a longer-lived lval; returning a borrow of a local; a borrow arriving through a call's result, singly or as one of several values destructured into lvals, each carrying the narrowest argument borrow's scope; a `&mut &T` argument whose pointee would outlive another borrow passed with it; a borrow coerced to another reference type, whether widened to a base trait's reference or made a virtual reference | a borrow laundered through a variable; a borrow stored in a field or captured; distinguishing parameter lifetimes — there is no lifetime annotation syntax; freezing a borrow's source |
 | **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs and slices, and of drop-fn structs, from a jump down to the block it names | arrays of owning references; a variable moved out, or initialized, on only one path — see Hazards |
 | **Permission** | `MayWrite` and `MayRead` | `ErrorNoMut` on assignment and swap; `ErrorNoRead` on a read through a reference — a dereference, an index, or a field of a virtual reference | `MayAliasWrite`, `RaceSafe`, `IsLockless` are populated and read nowhere |
@@ -368,6 +377,7 @@ Everything else about permissions is type check's: `permMatches` in
 | --- | --- | --- |
 | `ErrorInvType` | `flowHandleMove`, `flowResultMove` | move out of a global variable |
 | `ErrorMoveOut` | `flowHandleMove`, `flowResultMove` | move out through a borrowed reference, or through a shared (aliasable) owning one |
+| `ErrorMoveField` | `flowHandleMove`, `flowResultMove` (`flowRefuseMoveField`) | move out of a field — a struct's or a tuple's — or out of what is reached through one |
 | `ErrorInvType` | `assignlvalrtype` | lval outlives the borrowed reference stored into it |
 | `ErrorNoMut` | `assignlvalrtype`, `swapFlow` | no write permission |
 | `ErrorNoRead` | `flowLoadThroughRef` | no read permission on the reference a dereference, an index or a virtual-reference field reads through |
@@ -461,7 +471,7 @@ is what releases the old allocation.
 | `ir/flow.c` | `flowLoadValue` | the walk's spine — tag dispatch for a value being read |
 | | `flowLoadThroughRef` | `MayRead` on the reference a value is read through; called from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` |
 | | `flowHandleMoveOrCopy` | move vs. alias, for a value going to a new holder |
-| | `flowHandleMove` | deactivate the source — each move-typed element's, for a tuple literal; for a block or an `if`, what every value it hands back moves out of; hollow a local sole owner moved out through; refuse a move out of a global, or out through a borrowed or a shared owning reference |
+| | `flowHandleMove` | deactivate the source — each move-typed element's, for a tuple literal; for a block or an `if`, what every value it hands back moves out of; hollow a local sole owner moved out through; refuse a move out of a field (`flowRefuseMoveField`) or a global, or out through a borrowed or a shared owning reference |
 | | `flowOwningLocal`, `flowNewHollow` | the local owning reference a move reaches through; the `HollowNode` releasing a hollowed variable as it stands |
 | | `flowResultMove` | the same refusals for a returned value, deactivating nothing |
 | | `flowIsLvalRead` | the temporary-vs-lvalue test that makes counting correct |

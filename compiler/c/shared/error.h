@@ -317,6 +317,9 @@ enum ErrorCode {
     // 'mixin', retired: conformance is declared with 'is' on the declaration line
     ErrorMixin = 1151,          // A 'mixin' statement in a type's body: what it took in is named in the 'is' list of the type, the enum or the variant
 
+    // Moving out of a field
+    ErrorMoveField = 1166,      // A move-typed value moved out of a field -- a struct's or a tuple's, or what an owning reference held in one points at -- which would leave the struct with a hole in it
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

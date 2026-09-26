@@ -97,8 +97,9 @@ because only it knows the value's type: the value's finalizer (its `final`,
 then its finalizing fields'), then the owners its fields hold, then `free` —
 the order a value on the stack is finalized in. A value moved out through its
 sole owner leaves that owner **hollow**: its memory is still freed, but nothing
-that moved is finalized there, and what did not move is released as a death
-would release it. The compiler checks the methods' shapes where the struct is declared,
+that moved is finalized there. The whole value moves, never a field of it:
+nothing moves out of a field, so no value dies with a hole in it
+(`doc/reference/refmove.html`). The compiler checks the methods' shapes where the struct is declared,
 refusing only `@move` with `alias`, which contradicts itself; and the test corpus
 declares regions of its own that get every call `rc` and `so` get
 ([What a region is](../../compiler/c/doc/nodes/module.md)).

@@ -61,7 +61,7 @@ static void flowAddMoved(Nodes **moved, INode *vardcl) {
 
 // What one move does to the variables it reads, beside the list of variables it
 // leaves without their value: the ones whose whole value moved, and the moves
-// that took a part out of what a local owning reference points at. Neither is
+// that took what a local owning reference points at, or an element of it. Neither is
 // narrowed to what every value of a block or an 'if' moves (flowMoveExit).
 typedef struct {
     Nodes *wholes;    // variables whose own value moved
@@ -69,9 +69,9 @@ typedef struct {
 } MoveParts;
 
 // The local variable holding an owning reference that 'ref' names, or NULL.
-// Moving a part out through such a reference -- which flowRefuseMoveThrough
-// has let through only for a sole owner -- empties the part, not the variable:
-// the variable still owns the allocation, whose memory must go back.
+// Moving a value out through such a reference -- which flowRefuseMoveThrough
+// has let through only for a sole owner -- empties the allocation, not the
+// variable: the variable still owns the allocation, whose memory must go back.
 VarDclNode *flowOwningLocal(INode *ref) {
     if (!(isNameUseNode(ref) && isExpNode(ref)))
         return NULL;
@@ -85,6 +85,32 @@ VarDclNode *flowOwningLocal(INode *ref) {
 }
 
 static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *parts);
+
+// Refuse a move out of a field, 'fld' being the field access on the chain
+// walked inwards from 'top', the value moving. Whether the value is the
+// field's own or one reached through it -- an element of an array field, what
+// an owning reference field points at -- the struct or tuple holding the field
+// would be left with a hole in it, which it could neither be used with nor
+// finalized with. So nothing moves out of a field: '<->' swaps a value in and
+// out of it, and moving the whole struct takes every field with it.
+static void flowRefuseMoveField(FnCallNode *fld, INode *top) {
+    INode *methfld = fld->methfld;
+    INode *whole = top;
+    while (whole->tag == CastTag)
+        whole = ((CastNode *)whole)->exp;
+    if (methfld->tag == ULitTag) {
+        errorMsgNode(top, ErrorMoveField,
+            (INode *)fld == whole ? "May not move element %d out of the tuple that holds it. Swap a value in with '<->', or move the whole tuple."
+                : "May not move a value out through element %d of a tuple, which would be left with a hole in it. Swap a value in with '<->', or move the whole tuple.",
+            (int)((ULitNode *)methfld)->uintlit);
+        return;
+    }
+    char *name = isNameUseNode(methfld) ? &((NameUseNode *)methfld)->namesym->namestr : "?";
+    errorMsgNode(top, ErrorMoveField,
+        (INode *)fld == whole ? "May not move field '%s' out of the struct that holds it. Swap a value in with '<->', or move the whole struct."
+            : "May not move a value out through field '%s', which would leave a hole in the struct that holds it. Swap a value in with '<->', or move the whole struct.",
+        name);
+}
 
 // A move out through a local sole owner: the variable is in 'moved', so that a
 // block's or an 'if''s values still narrow it as any moved variable, and the
@@ -133,14 +159,15 @@ static void flowMoveExit(INode *exp, Nodes **moved, Nodes **common, int *first, 
 // source variable the move leaves without its value. A value reached through a
 // borrowed reference still belongs to what was borrowed, and one reached through
 // a shared owning reference still belongs to its other holders, so moving it out
-// would leave two owners of one value.
+// would leave two owners of one value. A chain that passes through a field is
+// refused whatever it reaches (flowRefuseMoveField).
 //
-// 'top' is the outermost node of the chain of fields, elements, dereferences
-// and recasts being walked -- the expression that names the part moving. A
-// chain that reaches a local owning reference through it (a dereference, or a
-// slice's element) moves a part out of the referent and leaves the variable
-// owning the allocation: 'parts' notes the move as hollowing the variable
-// rather than as moving it.
+// 'top' is the outermost node of the chain of elements, dereferences and
+// recasts being walked -- the expression that names the value moving. A chain
+// that reaches a local owning reference through it (a dereference, or a
+// slice's element) moves the referent, or an element of it, out and leaves the
+// variable owning the allocation: 'parts' notes the move as hollowing the
+// variable rather than as moving it.
 static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *parts) {
     // For a variable, its value is what moves
     if (isNameUseNode(node) && isExpNode(node)) {
@@ -155,10 +182,13 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
         return;
     }
     switch (node->tag) {
-    // Go inwards to find the variable to mark it as moved. A field or element
-    // read straight through a reference -- a slice or a virtual reference, which
-    // take no injected dereference -- is read through that reference.
     case FldAccessTag:
+        flowRefuseMoveField((FnCallNode *)node, top);
+        return;
+
+    // Go inwards to find the variable to mark it as moved. An element read
+    // straight through a reference -- a slice, which takes no injected
+    // dereference -- is read through that reference.
     case ArrIndexTag:
     {
         INode *objfn = ((FnCallNode*)node)->objfn;
@@ -283,7 +313,6 @@ static VarDclNode *flowHollowOwner(INode *exp) {
     while (1) {
         INode *inner;
         switch (exp->tag) {
-        case FldAccessTag:
         case ArrIndexTag:
             inner = ((FnCallNode *)exp)->objfn; break;
         case DerefTag:
@@ -305,9 +334,9 @@ static VarDclNode *flowHollowOwner(INode *exp) {
 //
 // A move out through a local sole owner hollows the variable instead: it may
 // not be used again, as if moved, but it still owns the allocation, which its
-// release gives back without the parts that moved (HollowNode). A variable
+// release gives back without finalizing what moved (HollowNode). A variable
 // hollowed on only some of the values a block or an 'if' hands back is
-// hollowed on all of them: what did not move is then left unfinalized on the
+// hollowed on all of them: its value is then left unfinalized on the
 // other paths, rather than finalized a second time on these. A variable whose
 // whole value also moved is left to that move.
 void flowHandleMove(INode *node) {
@@ -595,14 +624,14 @@ size_t flowScopePush() {
 }
 
 // Is this variable where a part handed back is taken from? The same walk
-// inwards, through fields, elements and owning dereferences, that
-// flowMoveSource takes to the variable it deactivates. 1 says the part is of
-// the variable's own value; 2 says it was taken out through the variable, a
-// local owning reference, which is then hollowed rather than handed back.
+// inwards, through elements and owning dereferences, that flowMoveSource
+// takes to the variable it deactivates; a field is never on it, since nothing
+// moves out of a field. 1 says the part is of the variable's own value; 2 says
+// it was taken out through the variable, a local owning reference, which is
+// then hollowed rather than handed back.
 static int flowIsScopeResultOwner(INode *exp, VarDclNode *varnode) {
     INode *inner;
     switch (exp->tag) {
-    case FldAccessTag:
     case ArrIndexTag:
         inner = ((FnCallNode *)exp)->objfn; break;
     case DerefTag:
@@ -644,12 +673,12 @@ static int flowIsScopeResult(INode *retexp, VarDclNode *varnode, Nodes **hollow)
     // A recast hands back its operand: a local returned as its enrichment or base
     if (retexp->tag == CastTag && !(retexp->flags & FlagConvert))
         return flowIsScopeResult(((CastNode *)retexp)->exp, varnode, hollow);
-    // A move-typed part handed back moves out of the variable that holds it,
-    // which as for any move out of a part no longer owns the whole: releasing
-    // it would finalize the part a second time, in the caller. A copied part
-    // leaves the variable owning everything it held.
-    if ((retexp->tag == FldAccessTag || retexp->tag == ArrIndexTag || retexp->tag == DerefTag)
-        && iexpIsMove(retexp)) {
+    // A move-typed element handed back moves out of the variable that holds
+    // it, which as for any move out of an element no longer owns the whole:
+    // releasing it would finalize the element a second time, in the caller. A
+    // copied element leaves the variable owning everything it held. A field
+    // handed back was refused (flowRefuseMoveField), so it exempts nothing.
+    if ((retexp->tag == ArrIndexTag || retexp->tag == DerefTag) && iexpIsMove(retexp)) {
         int owner = flowIsScopeResultOwner(retexp, varnode);
         if (owner == 2) {
             if (*hollow == NULL)
@@ -658,7 +687,7 @@ static int flowIsScopeResult(INode *retexp, VarDclNode *varnode, Nodes **hollow)
             return 0;
         }
         // A dereference handed back is exempt only as a hollowing: what a
-        // value's own field points at still belongs to that value's release
+        // value's own element points at still belongs to that value's release
         return retexp->tag == DerefTag ? 0 : owner;
     }
     // A block or an 'if' used as a move value hands back what its final

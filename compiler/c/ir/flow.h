@@ -60,9 +60,9 @@ typedef struct {
     int16_t amt;       // count nbr if not a tuple, # of counts if tuple
 } RefCountNode;
 
-// Hollow release: 'var' holds a sole owning reference out of whose referent a
-// part was moved, and this releases it without the parts that moved. 'moved'
-// holds each move-source expression that took one out; walked inwards, each
+// Hollow release: 'var' holds a sole owning reference whose referent, or an
+// element of it, was moved out, and this releases it without what moved.
+// 'moved' holds each move-source expression that took one out; walked inwards, each
 // reaches 'var'. Injected by flow analysis, never parsed: into a scope's
 // release list with 'exp' NULL, and around the value a reassignment stores into
 // such a variable, where the old value is released after 'exp' is evaluated,

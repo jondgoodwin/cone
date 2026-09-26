@@ -1,28 +1,26 @@
-// Moving a value, or a part of it, out through a sole owning reference leaves
-// the allocation behind, and the owner still gives its memory back: it dies
-// hollow. Nothing that moved is finalized there -- the new holder finalizes it,
-// once, at its own end -- and what did not move is released as a death would
-// release it.
+// Moving a value out through a sole owning reference leaves the allocation
+// behind, and the owner still gives its memory back: it dies hollow. Nothing
+// that moved is finalized there -- the new holder finalizes it, once, at its
+// own end.
 //
 // - The whole value moved out ('*b'): the memory is freed, and nothing else.
-// - A field moved out ('b.inner'): the struct is no longer whole, so its own
-//   'final' does not run; each other field is finalized or released as its
-//   type asks (finalizing fields first, then owning ones), and then the memory
-//   is freed.
-// - A part moved out through an owning field ('*b.r'): that field's allocation
-//   dies hollow in turn, before the struct's own memory is freed.
-// - An owning field moved out ('b.r'): its allocation is the new holder's.
+// - The value moved out through an owning reference that is the owner's value
+//   ('**b'): that allocation dies hollow in turn, before the outer one's
+//   memory is freed.
 // - An element moved out of an owning slice ('s[0]'): the memory is freed. A
 //   slice's elements are never finalized when it dies, moved out or not
 //   (Fin 25 below), which is the same element-by-element work an array of
 //   owning references is still waiting for.
+//
+// Nothing moves out of a field (move_flow_field), so no struct dies with a
+// hole in it.
 //
 // The regions here print when they free, and the counted one when it is
 // asked, so the output is the whole assertion: what was freed, what was
 // finalized, and in what order. A hollow owner is released where it would have
 // been released whole: at its scope's end, at a return, or when it is
 // reassigned. A variable is hollowed for the rest of the function once any
-// path moves a part out: on a path that did not, the memory is still freed,
+// path moves out through it: on a path that did not, the memory is still freed,
 // but what stayed is not finalized ('cond'), until variables carry a flag
 // saying at run time what they still hold.
 //
@@ -62,24 +60,6 @@ struct Fin {
   fn final(self &uni) { show("final ", v); }
 }
 
-struct Box {
-  pub inner Fin;
-  pub other Fin;
-}
-
-struct FinBox {
-  pub inner Fin;
-  pub other Fin;
-  fn final(self &uni) { printStr("finbox final\n"); }
-}
-
-struct Holder {
-  pub r +one Fin;
-  pub s Fin;
-  pub c +cnt-mut Fin;
-  fn final(self &uni) { printStr("holder final\n"); }
-}
-
 fn wholeOne() {
   printStr("-- whole value, single owner\n");
   imm c = { imm b = +one Fin[1i32]; *b; };
@@ -92,41 +72,19 @@ fn wholeCounted() {
   printStr("moved\n");
 }
 
-fn field() {
-  printStr("-- a field\n");
-  imm c = { imm b = +one Box[Fin[3i32], Fin[4i32]]; imm d = b.inner; d; };
-  printStr("moved\n");
-}
-
-fn fieldOfFinalizing() {
-  printStr("-- a field of a struct with a final\n");
-  imm c = { imm b = +one FinBox[Fin[5i32], Fin[6i32]]; imm d = b.inner; d; };
-  printStr("moved\n");
-}
-
-fn throughField() {
-  printStr("-- through an owning field\n");
-  imm c = { imm b = +one Holder[+one Fin[7i32], Fin[8i32], +cnt-mut Fin[9i32]]; imm d = *b.r; d; };
-  printStr("moved\n");
-}
-
-fn owningField() {
-  printStr("-- an owning field\n");
-  imm r = { imm b = +one Holder[+one Fin[10i32], Fin[11i32], +cnt-mut Fin[12i32]]; imm d = b.r; d; };
+fn throughOwned() {
+  printStr("-- through an owner it owns\n");
+  imm c = { imm b = +one +cnt Fin[3i32]; imm d = **b; d; };
   printStr("moved\n");
 }
 
 fn giveWhole() Fin { imm b = +one Fin[13i32]; *b; }
-fn giveField() Fin { imm b = +one Box[Fin[14i32], Fin[15i32]]; b.inner; }
 fn giveCounted() Fin { imm b = +cnt Fin[16i32]; return *b; }
-fn giveParm(b +one Box) Fin { b.inner; }
 
 fn returned() {
   printStr("-- returned\n");
   { imm a = giveWhole(); printStr("got it\n"); }
-  { imm a = giveField(); printStr("got it\n"); }
   { imm a = giveCounted(); printStr("got it\n"); }
-  { imm a = giveParm(+one Box[Fin[17i32], Fin[18i32]]); printStr("got it\n"); }
 }
 
 fn reassigned() {
@@ -159,10 +117,7 @@ fn sliced() {
 fn main() i32 {
   wholeOne();
   wholeCounted();
-  field();
-  fieldOfFinalizing();
-  throughField();
-  owningField();
+  throughOwned();
   returned();
   reassigned();
   printStr("-- returned before the move\n");

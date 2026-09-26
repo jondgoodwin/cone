@@ -457,20 +457,17 @@ The drop does not touch owning-reference fields and `genlDealiasFlds` touches
 nothing else, so nothing is released twice; a type with no drop emits exactly
 what it did before the finalizer was added.
 
-**A hollow death** (`genlHollowDeath`) is the death of a value a part of which
-was moved out through its sole owner (flow's `HollowNode`). `genlHollowRelease`
-turns each recorded move into a path of steps outward from the variable
-(`genlMovedPath`: dereferences, field accesses, element indexes), and the
-owner goes away through `genlRegionDealiasPart`, the same `dealias` question
-with the hollow death in place of the death. That runs no finalizer for the
-value and releases what did not move (`genlReleasePart`), then calls `free`.
-Of a struct with a field moved out: its own `final` does not run, since it is
-handed all of the struct; each untouched field is finalized by its drop, then
-each untouched owning field released; a field a path runs through is released
-in turn without its moved part, and an owning field a path runs through dies
-hollow itself. A path that ends at a value moved all of it out; a path through
-anything else — an array or tuple element, or a field the struct cannot be
-shown to own — leaves that value whole to what moved, so nothing is released
+**A hollow death** (`genlHollowDeath`) is the death of a value that, or an
+element of which, was moved out through its sole owner (flow's `HollowNode`).
+`genlHollowRelease` turns each recorded move into a path of steps outward from
+the variable (`genlMovedPath`: dereferences and element indexes — never a field
+access, since nothing moves out of a field), and the owner goes away through
+`genlRegionDealiasPart`, the same `dealias` question with the hollow death in
+place of the death. That runs no finalizer for the value, releases what is left
+(`genlReleasePart`), then calls `free`. A path that ends at a value moved all of
+it out, leaving nothing to release; one that runs on through an owning
+reference (`**b`) makes that reference's own death hollow in turn; one through
+an array element leaves the array whole to what moved, so nothing is released
 that might have moved. A slice's elements are never walked, as a death walks
 none.
 `genlRegionAlias` calls `alias` once per owner a `RefCountNode` adds — written
@@ -693,7 +690,7 @@ variables.
 | | `genlSubslice` | a borrowed range index, `&x[a..b]`: the slice `{&x[a], b - a}` once `a <= b <= count` is checked |
 | `genllvm/genlalloc.c` | `genlRefTypeSetup`, `genlallocref` | the `{region, perm, value}` header and its emission |
 | | `genlRegionHeader`, `genlRegionAlias`, `genlRegionDealias`, `genlRegionDeath` | the header a region method is handed; calling `alias`, `dealias` and `free` at each reference event; a death's finalizer, field releases and `free` |
-| | `genlHollowRelease`, `genlRegionDealiasPart`, `genlHollowDeath`, `genlReleasePart` | a hollowed variable's release: the death of a value with parts moved out, releasing only what stayed |
+| | `genlHollowRelease`, `genlRegionDealiasPart`, `genlHollowDeath`, `genlReleasePart` | a hollowed variable's release: the death of a value moved out, or an element of it, finalizing none of it and freeing the memory |
 | | `genlReleaseOwning`, `genlDealiasFlds`, `genlReleaseFlds`, `genlDealiasNodes` | releasing what a variable, a tuple's elements or a dead value's fields own, and replaying flow's lists |
 | | `genlFinalizeAt` | the `finalize` intrinsic: a death in place, less the `free` |
 | `ir/types/reference.h` | `enum ManagedRefFields` | `RegionField`, `PermField`, `ValueField` |

@@ -47,6 +47,7 @@ most consequential thing this note settles.
 | use after move | **yes** | `nameuseFlow`, same summary caveat |
 | move out of a global | **yes** | `flowHandleMove`, and `flowResultMove` for a returned value |
 | move out through a borrowed reference, any permission | **yes** | `flowHandleMove`, and `flowResultMove` for a returned value |
+| move out of a field, leaving a struct with a hole in it | **yes** | `flowRefuseMoveField`, from `flowHandleMove` and `flowResultMove` |
 | write through a read-only reference | **yes** | `assignlvalrtype`, `swapFlow` — `MayWrite` only |
 | write through an `imm` *field* | **yes** | `iexpGetLvalInfo`, taking the minimum of the field's permission and its container's |
 | read through a reference lacking `MayRead` | **yes** | `flowLoadThroughRef`, from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` — a pointer carries no permission and is not asked |
