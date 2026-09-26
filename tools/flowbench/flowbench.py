@@ -125,12 +125,12 @@ def lines_in(srcs: list[pathlib.Path]) -> int:
 
 
 def ms(value) -> str:
-    return "—" if value is None else f"{value * 1000:.2f}"
+    return "-" if value is None else f"{value * 1000:.2f}"
 
 
 def change(new, base) -> str:
     if new is None or base is None or base == 0:
-        return "—"
+        return "-"
     return f"{(new / base - 1) * 100:+.1f}%"
 
 
@@ -173,22 +173,22 @@ def main() -> None:
         print(f"  base:  {args.base}")
     print()
     if args.base:
-        print("| Input | Files | Lines | Gated fns | Flow (base) | Flow | Δ flow"
-              " | Front end (base) | Front end | Total (base) | Total | Δ total |")
+        print("| Input | Files | Lines | Gated fns | Flow (base) | Flow | Flow change"
+              " | Front end (base) | Front end | Total (base) | Total | Total change |")
         print("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     else:
         print("| Input | Files | Lines | Gated fns | Flow | Front end | Total | Flow share |")
         print("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     for name, (files, lines, sums, gates) in results.items():
         new = sums[0]
-        gated = f"{gates[0]} / {gates[1]}" if gates else "—"
+        gated = f"{gates[0]} / {gates[1]}" if gates else "-"
         if args.base:
             base = sums[1]
             print(f"| {name} | {files} | {lines:,} | {gated} | {ms(base['flow'])} | {ms(new['flow'])}"
                   f" | {change(new['flow'], base['flow'])} | {ms(base['front'])} | {ms(new['front'])}"
                   f" | {ms(base['total'])} | {ms(new['total'])} | {change(new['total'], base['total'])} |")
         else:
-            share = "—" if new["flow"] is None else f"{new['flow'] / new['total'] * 100:.1f}%"
+            share = "-" if new["flow"] is None else f"{new['flow'] / new['total'] * 100:.1f}%"
             print(f"| {name} | {files} | {lines:,} | {gated} | {ms(new['flow'])} | {ms(new['front'])}"
                   f" | {ms(new['total'])} | {share} |")
 
@@ -209,20 +209,20 @@ def budget(results, hasbase: bool) -> None:
         for name in ("suite", "packages", "plain_500"):
             new, base = flow(name), flow(name, 1)
             if new is not None and base is not None:
-                rows.append((f"B1 flow, {name}", f"{change(new, base)}", "≤ +10%", new <= base * 1.10))
+                rows.append((f"B1 flow, {name}", f"{change(new, base)}", "<= +10%", new <= base * 1.10))
         new, base = flow("many_500"), flow("many_500", 1)
         if new is not None and base is not None:
-            rows.append(("B2 flow, many_500", f"{new / base:.2f}×", "≤ 2.5×", new <= base * 2.5))
+            rows.append(("B2 flow, many_500", f"{new / base:.2f}x", "<= 2.5x", new <= base * 2.5))
         for name in ("suite", "packages"):
             new, base = total(name), total(name, 1)
             if new is not None and base is not None:
-                rows.append((f"B5 total, {name}", f"{change(new, base)}", "≤ +1%", new <= base * 1.01))
+                rows.append((f"B5 total, {name}", f"{change(new, base)}", "<= +1%", new <= base * 1.01))
     big, small = flow("big_1000"), flow("big_250")
     if big is not None and small:
-        rows.append(("B3 flow, big_1000 / big_250", f"{big / small:.2f}", "≤ 5", big / small <= 5))
+        rows.append(("B3 flow, big_1000 / big_250", f"{big / small:.2f}", "<= 5", big / small <= 5))
     nest, flat = flow("nest_3"), flow("flat_3")
     if nest is not None and flat:
-        rows.append(("B4 flow, nest_3 / flat_3", f"{nest / flat:.2f}", "≤ 8", nest / flat <= 8))
+        rows.append(("B4 flow, nest_3 / flat_3", f"{nest / flat:.2f}", "<= 8", nest / flat <= 8))
     if not rows:
         return
     print("| Budget | Measured | Limit | |")
