@@ -790,7 +790,7 @@ static PathSet *pwAssign(AssignNode *node) {
         }
     }
     else
-        pwStore(&node->lval, holds, node->rval->tag == VTupleTag ? &nodesGet(((TupleNode *)node->rval)->elems, 0) : &node->rval);
+        pwStore(&node->lval, holds, node->rval->tag == VTupleTag && !assignOneTakesTuple(node) ? &nodesGet(((TupleNode *)node->rval)->elems, 0) : &node->rval);
     return holds;
 }
 

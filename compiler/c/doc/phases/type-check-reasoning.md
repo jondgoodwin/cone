@@ -375,6 +375,19 @@ there are exactly four helpers — it is a two-by-two:
 | tuple | single | `assignMultRetCheck` — a call returning several values |
 | single | tuple | `assignToOneCheck` |
 
+The single-by-tuple cell splits once more, on the lval's type rather than on a
+tag: an lval whose type resolves to a tuple takes the value tuple whole
+(`assignOneTakesTuple`), through `assignSingleCheck`, as a declaration's
+initial value is. The parser cannot tell `p = 5, 6` for a tuple-typed `p` from
+`x = 7, 8`, which stores `7`, so flow and generation ask the same function.
+
+A value tuple is typed from its own values (`vtupleTypeCheck` takes no expected
+type), so where a tuple type is wanted `iexpCoerce`'s `NoMatch` arm coerces it
+element by element (`vtupleCoerce`), as it does an array literal
+(`arrayLitCoerce`): an unsuffixed `5` becomes the element's `i64`. The counts
+must agree. A return's value tuple was already coerced element by element, by
+`returnTypeCheck` itself.
+
 The assignment's own type is the rval's type, so an assignment is usable as an
 expression.
 

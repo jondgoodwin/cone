@@ -1,0 +1,139 @@
+// A value tuple assigned to one variable of a tuple type is that variable's
+// new value, whole, as it would be its initial value: each value is coerced to
+// its element's type, so an unsuffixed literal takes the element's number type.
+// Parentheses change nothing, since a tuple's values are simply its
+// comma-separated list. Before, one lval given a value tuple always received
+// the tuple's first value -- the rule for 'x = 7, 8' -- so 'p = 5, 6' compared
+// 'p's tuple type with the number 5 and was refused, and so was a declaration's
+// '(i64, i64) = 5, 6', whose tuple of i32 values matched no element.
+//
+// Parallel assignment -- several lvals, 'a, b = b, a' -- is another construct,
+// told apart by its lvals, and is unchanged: here it swaps two tuples whole.
+
+mod core_tuple_assign;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn showF(label &[]u8, n f64) {
+  printStr(label);
+  printStr(" = ");
+  printFloat(n);
+  printStr("\n");
+}
+
+typedef Pair (i32, i32);
+
+// A global tuple, given no initial value, and assigned by the module's init
+// and then in a function
+mut gp (i64, i64);
+
+fn @initpure init() {
+  gp = 1i64, 2i64;
+}
+
+fn globalTuple() {
+  show("global-suffixed-0", gp.0);
+  show("global-suffixed-1", gp.1);
+  gp = (9, 10);
+  show("global-unsuffixed-0", gp.0);
+  show("global-unsuffixed-1", gp.1);
+}
+
+fn readGlobal() i64 {
+  gp.0 * 100 + gp.1;
+}
+
+fn two() i64, i64 {
+  3i64, 4i64;
+}
+
+// A finalizing value in a tuple: the tuple a variable held dies as a new one
+// is stored over it, and the new one's value is moved in, not copied
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { printStr("F"); printInt(n); printStr(" "); }
+}
+
+fn finalizing() {
+  mut f (Fin, i64) = Fin[1], 10;
+  f = Fin[2], 20;
+  printStr("<- first replaced\n");
+  imm g = Fin[3];
+  f = g, 30;
+  printStr("<- second replaced\n");
+  show("finalizing-1", f.1);
+}
+
+fn main() {
+  initAll();
+
+  // Declared with unsuffixed literals
+  mut p (i64, i64) = 5, 6;
+  show("declared-0", p.0);
+  show("declared-1", p.1);
+
+  // Assigned, suffixed, with and without parentheses
+  p = (5i64, 6i64);
+  show("suffixed-paren", p.0 * 10 + p.1);
+  p = 7i64, 8i64;
+  show("suffixed-bare", p.0 * 10 + p.1);
+
+  // Assigned, unsuffixed, with and without parentheses
+  p = (1, 2);
+  show("unsuffixed-paren", p.0 * 10 + p.1);
+  p = 3, 4;
+  show("unsuffixed-bare", p.0 * 10 + p.1);
+
+  // Values that are expressions, one reading the variable being assigned
+  p = p.1, p.0 + 10;
+  show("reads-itself-0", p.0);
+  show("reads-itself-1", p.1);
+
+  // A call's tuple, as before
+  p = two();
+  show("from-call", p.0 * 10 + p.1);
+
+  // Elements of different types, an integer literal becoming a float
+  mut mixed (u8, f64) = 1, 2;
+  mixed = 200, 1;
+  show("mixed-0", i64[mixed.0]);
+  showF("mixed-1", mixed.1);
+
+  // Through a type alias, read back by destructuring
+  mut al Pair = 1, 2;
+  al = 30, 40;
+  mut lo i32;
+  mut hi i32;
+  lo, hi = al;
+  show("alias-0", i64[lo]);
+  show("alias-1", i64[hi]);
+
+  // The assignment's value is the tuple
+  imm whole = (p = 11, 12);
+  show("assignment-value", whole.0 * 100 + whole.1);
+
+  globalTuple();
+  show("global-read-elsewhere", readGlobal());
+
+  // Parallel assignment and a swap are unchanged: two tuple variables, each
+  // an lval, swapped whole
+  mut q (i64, i64) = 50, 60;
+  p, q = q, p;
+  show("swap-p", p.0 * 100 + p.1);
+  show("swap-q", q.0 * 100 + q.1);
+
+  // ... and one lval given more values than it takes still takes the first
+  mut one = 0;
+  one = 7, 8, 9;
+  show("extra-values-to-one", one);
+
+  finalizing();
+  printStr("<- end\n");
+}
