@@ -107,7 +107,10 @@ enum IntrinsicFn {
     // as a parameter's default value, where each call taking the default is
     // (fnCallFinalizeArgs), which is how 'panic' reports its caller
     SrcFileIntrinsic,       // srcFile() &[]u8
-    SrcLineIntrinsic        // srcLine() u32
+    SrcLineIntrinsic,       // srcLine() u32
+    // Whether this is a debug build ('conec --debug', or 'build: debug' in a
+    // build description): a constant, so a branch on it folds away
+    IsDebugBuildIntrinsic   // isDebugBuild() Bool
 };
 
 // A MemOrder, core's enum of the orderings an atomic operation promises, in the

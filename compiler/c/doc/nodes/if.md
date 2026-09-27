@@ -28,7 +28,12 @@ so `isExpNode(elseCond)` is true. It survives cloning by identity, because
 `cloneNode`'s `AbsenceTag` arm returns the node unchanged.
 
 `vtype` stays `unknownType` for a statement-position `if`, and that is exactly
-the signal generation uses to skip building a phi.
+the signal generation uses to skip building a phi. An `if` typed `void` builds
+none either: every arm is void, as in `if c {f();} else {}`, which is how the
+last expression of a macro's body is typed (a macro expands with no expected
+type, so its last `if` needs an `else`, and core's `assertDebug` writes an empty
+one). Before 27 Sep 2026 such an `if` built a phi of `void` with null operands,
+which failed module verification.
 
 ## Parse
 

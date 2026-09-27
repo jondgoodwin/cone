@@ -41,7 +41,7 @@ pub fn @intrinsic sizeof[T]() usize;
 		is an error.</p>
 
 	<p>Core declares every intrinsic below inside <span class="pre">mem</span>, but for
-		<a href="#srcloc">srcFile and srcLine</a>, and
+		<a href="#srcloc">srcFile and srcLine</a> and <a href="#debugbuild">isDebugBuild</a>, and
 		every module, core being its prelude, reaches them through that one name:</p>
 <pre>
 imm p = malloc(mem.sizeof[Point]() * 4usize) as *Point;
@@ -95,7 +95,7 @@ pub fn @intrinsic readRaw[T](p *T) T {*p;}
 
 	<h2>The intrinsics</h2>
 
-	<p>Each but <span class="pre">srcFile</span> and <span class="pre">srcLine</span> is declared in core's <span class="pre">mem</span> and called as
+	<p>Each but <span class="pre">srcFile</span>, <span class="pre">srcLine</span> and <span class="pre">isDebugBuild</span> is declared in core's <span class="pre">mem</span> and called as
 		<span class="pre">mem.<i>name</i>[T](...)</span> (<span class="pre">traceRoots</span>,
 		which takes no type, as <span class="pre">mem.traceRoots(...)</span>). Where an argument is a pointer to
 		<span class="pre">T</span> or a <span class="pre">T</span>, the type argument may be left
@@ -355,6 +355,33 @@ requirePositive(-5);    // panics naming this line
 		exception. An argument written for the parameter replaces the default, as for
 		any. Written in an inline function's body, the place is in that body. No
 		fallback: the place of a call is known only to the compiler.</p>
+	<p><b>Written in a <a href="refmacro.html">macro</a>'s body, each answers where the
+		macro is used</b>, as Rust's <span class="pre">file!()</span> and
+		<span class="pre">line!()</span> do. In a macro used inside another macro's body,
+		that is where the outermost macro is used. An argument keeps its own place: a
+		macro's argument is the source written at its use, and a call to either in it
+		answers there. This is how core's <span class="pre">assertDebug</span> macro
+		names its caller's line (<a href="refexcept.html#panic">Panics</a>).</p>
+
+	<h3 id="debugbuild">isDebugBuild</h3>
+<pre>
+pub fn @intrinsic isDebugBuild() Bool
+</pre>
+	<p>Whether this compile is a debug build: <span class="pre">conec --debug</span>, or
+		<span class="pre">build: debug</span> in a build description, which is what Congo
+		writes unless it is given <span class="pre">--release</span>. A constant, true or
+		false for the whole compile. The side of an <span class="pre">if</span> on it that
+		the build does not take is folded away by the optimizer, so it costs nothing and
+		none of it reaches the object:</p>
+<pre>
+if isDebugBuild() {checkEveryInvariant(&amp;table);}
+</pre>
+	<p>Like <span class="pre">srcFile</span>, it is declared at core's top level and called
+		bare. Both sides are type checked in every build. No fallback: the build is known
+		only to the compiler. It is the first, narrow case of a wider question Jon has
+		queued (27 Sep 2026): whether <span class="pre">conec</span> should accept
+		compile-time constants on its command line, as C's <span class="pre">-D</span> and
+		<span class="pre">#if</span> do.</p>
 
 	<h2>Atomic operations</h2>
 

@@ -59,6 +59,12 @@ INode *cloneFnCallNode(CloneState *cstate, FnCallNode *node) {
     FnCallNode *newnode;
     newnode = memAllocBlk(sizeof(FnCallNode));
     memcpy(newnode, node, sizeof(FnCallNode));
+    // Expanding a macro, 'srcFile()' and 'srcLine()' written in its body answer
+    // where the macro is used, as 'file!()' and 'line!()' do in a Rust macro:
+    // that is how 'assertDebug' reports its caller's line. The place is the
+    // outermost use (macroSrcSite); its arguments keep their own (cloneNode)
+    if (cstate->srcsite && intrinsicSrcKind((INode*)node))
+        copyNodeLex(newnode, cstate->srcsite);
     // Read before the receiver is cloned, since cloning is what substitutes the
     // use site's expression for 'self'
     if (cstate->selfparm && nameUseNames(node->objfn, GenVarDclTag)

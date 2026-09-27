@@ -70,7 +70,7 @@ typedef enum {
 // or expanded before a back end would need an instruction of its own for it,
 // except moveRaw, a block move, and the atomic operations
 typedef enum {
-    PhaseConstant,      // a constant for the target, from the type alone
+    PhaseConstant,      // a constant for the target, from the type alone or the build
     PhaseExpansion,     // expanded at the call into operations every back end has
     PhaseOperation      // an operation a back end may do with an instruction of its own
 } IntrinsicPhase;
@@ -146,6 +146,9 @@ static IntrinsicSpec intrinsicRegistry[] = {
         0, 0, {0}, ShapeSliceU8, 0, 0, PhaseExpansion, 1},
     {"srcLine", SrcLineIntrinsic, "srcLine() u32",
         0, 0, {0}, ShapeU32, 0, 0, PhaseExpansion, 1},
+    // Whether the compile is a debug build: a constant each compile
+    {"isDebugBuild", IsDebugBuildIntrinsic, "isDebugBuild() Bool",
+        0, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
 };
 
 #define IntrinsicCount (sizeof(intrinsicRegistry) / sizeof(IntrinsicSpec))
@@ -614,8 +617,10 @@ int intrinsicSrcKind(INode *node) {
     if (node == NULL || node->tag != FnCallTag)
         return 0;
     INode *callee = ((FnCallNode *)node)->objfn;
+    // Through an alias, as a name core's names are reached by is before type
+    // check has bound it: a macro's body is cloned then (cloneFnCallNode)
     if (callee && isNameUseNode(callee))
-        callee = ((NameUseNode *)callee)->dclnode;
+        callee = nameUseGetDcl((NameUseNode *)callee);
     if (callee == NULL || callee->tag != FnDclTag || !intrinsicIsDeclared((FnDclNode *)callee))
         return 0;
     int16_t kind = ((IntrinsicNode *)((FnDclNode *)callee)->value)->intrinsicFn;

@@ -96,7 +96,7 @@ static void blockContinueStep(NameResState *pstate, BlockNode *blk) {
     // checked twice, and lowering is not idempotent. Cloning is sound on
     // evaluation count because only one of the two copies runs per iteration.
     INode *origstep = nodesLast(target->stmts);
-    CloneState cstate;
+    CloneState cstate = {0};     // Every field the clone reads, the ones not set below NULL
     cstate.instnode = origstep->instnode;
     cstate.selftype = NULL;
     cstate.scope = (uint16_t)pstate->scope;

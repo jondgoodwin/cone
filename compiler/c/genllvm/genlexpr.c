@@ -71,11 +71,14 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
     INode **nodesp;
     uint32_t cnt;
 
-    // If we are returning a value in each block, set up space for phi info
+    // If we are returning a value in each block, set up space for phi info.
+    // An 'if' whose every branch is void -- 'if c {f();} else {}', which is
+    // what core's 'assertDebug' macro expands to -- has none to merge
     vtype = itypeGetTypeDcl(ifnode->vtype);
     count = ifnode->condblk->used / 2;
     i = phicnt = 0;
-    if (vtype != unknownType) {
+    int hasval = vtype != unknownType && vtype->tag != VoidTag;
+    if (hasval) {
         blkvals = memAllocBlk(count * sizeof(LLVMValueRef));
         blks = memAllocBlk(count * sizeof(LLVMBasicBlockRef));
     }
@@ -103,7 +106,7 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
         if (lastStmttype != ReturnTag && lastStmttype != BreakTag && lastStmttype != ContinueTag) {
             LLVMBuildBr(gen->builder, endif);
             // Remember value and block if needed for phi merge
-            if (vtype != unknownType) {
+            if (hasval) {
                 blkvals[phicnt] = blkval;
                 blks[phicnt++] = LLVMGetInsertBlock(gen->builder);
             }
@@ -246,6 +249,10 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
         return genlAlignof(gen, type);
     case NeedsFinalIntrinsic:
         return LLVMConstInt(genlType(gen, (INode*)boolType), itypeNeedsFinal(type), 0);
+    // A constant from the build, not the type: a branch on it is folded away
+    // (simplifycfg), and its dead side is never generated into the object
+    case IsDebugBuildIntrinsic:
+        return LLVMConstInt(genlType(gen, (INode*)boolType), !gen->opt->release, 0);
     // The address of T's record, a constant this object builds once
     case TypeRecordIntrinsic:
         return genlTypeRecord(gen, type, ((FnSigNode *)fndcl->vtype)->rettype);

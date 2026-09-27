@@ -37,8 +37,10 @@ Visual Studio projects stay at the root.
   per-type record the compiler builds, `mem`, holding the intrinsics
   declared with `@intrinsic`, and `MemOrder`, the orderings its atomic ones
   take; and `panic`, `assert`, `unreachable`, `todo` and `setPanicHook`, whose
-  work is conestd's, with `srcFile` and `srcLine`, the two intrinsics outside
-  `mem`, which as a parameter's default give a caller's location); `stdio` prints;
+  work is conestd's, with `srcFile` and `srcLine`, intrinsics outside `mem`,
+  which as a parameter's default give a caller's location; and the macros
+  `assertDebug` and `assertDebugMsg`, checked in a debug build only, through
+  `isDebugBuild()`, the third intrinsic outside `mem`); `stdio` prints;
   `libc` and `posix` are C packages of raw bindings to the C library and the
   POSIX functions beyond it (Windows first), and `core` imports `libc` for its
   allocator; `sdl` is a C package of raw bindings to SDL2 (a window for

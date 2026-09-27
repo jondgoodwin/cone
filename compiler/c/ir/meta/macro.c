@@ -103,6 +103,29 @@ void macroNameRes(NameResState *pstate, MacroDclNode *gennode) {
 void macroTypeCheck(TypeCheckState *pstate, MacroDclNode *gennode) {
 }
 
+// Is this a use of a macro: its name, bare or called, or a method call a macro
+// method answered? Read off the use after it expanded, which leaves it intact
+static int macroIsUse(INode *node) {
+    if (node->tag == FnCallTag) {
+        FnCallNode *call = (FnCallNode *)node;
+        return call->methfld ? nameUseNames(call->methfld, MacroDclTag) : nameUseNames(call->objfn, MacroDclTag);
+    }
+    return nameUseNames(node, MacroDclTag);
+}
+
+// Where 'srcFile()' and 'srcLine()' in a macro's body answer: at the use, or,
+// for a use another macro's body wrote, where that one is used, and so on out
+// to the outermost. A node an expansion cloned from a body is marked as
+// instantiated by the use it expanded (cloneNode), and an argument is not, so
+// the chain climbs through bodies alone: a macro passed as an argument answers
+// at its own place. So does one in a generic's instance, whose nodes are marked
+// as instantiated by the generic's use, which is not a macro's
+static INode *macroSrcSite(INode *use) {
+    while (use->instnode && use->instnode != use && macroIsUse(use->instnode))
+        use = use->instnode;
+    return use;
+}
+
 // Expand a macro in place of the node that used it, substituting 'args' for
 // its parameters, then type check what it expanded to. 'selfparm' is the
 // parameter a macro method's receiver stands in for, or NULL.
@@ -130,6 +153,8 @@ static void macroExpand(TypeCheckState *pstate, INode **nodep, MacroDclNode *mac
     CloneState cstate;
     clonePushState(&cstate, *nodep, NULL, pstate->scope, given ? macro->parms : NULL, args);
     cstate.selfparm = selfparm;
+    // 'srcFile()' and 'srcLine()' in the body answer where it is used
+    cstate.srcsite = macroSrcSite(*nodep);
     *nodep = cloneNode(&cstate, macro->body);
     clonePopState();
 

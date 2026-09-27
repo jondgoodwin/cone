@@ -71,11 +71,28 @@ pub extern {
   fn @c("cone_setPanicHook") setPanicHook(hook &fn(msg &[]u8, file &[]u8, line u32));
 }
 
-// Panic unless cond holds. Checked in every build: Cone has no build that
-// leaves it out
+// Whether this compile is a debug build: 'conec --debug', or 'build: debug' in
+// the build description Congo writes. A constant, so the side of an 'if' on it
+// that this build does not take is folded away and never reaches the object
+pub fn @intrinsic isDebugBuild() Bool;
+
+// Panic unless cond holds. Checked in every build, release included
 pub fn assert(cond Bool, msg &[]u8 = "assertion failed", file &[]u8 = srcFile(),
     line u32 = srcLine()) inline {
   if !cond {panic(msg, file, line);}
+}
+
+// Panic unless cond holds, in a debug build only [Jon 27 Sep]. A macro, so its
+// condition is substituted where it is used rather than evaluated first: in a
+// release build the whole use is folded away and the condition never runs,
+// whatever it would have done. 'srcFile()' and 'srcLine()' written in a macro's
+// body answer where the macro is used, so the panic names the caller's line.
+// A macro takes no default, so the form with a message has a name of its own
+pub macro assertDebug[cond] {
+  if isDebugBuild() {assert(cond, "assertion failed", srcFile(), srcLine());} else {}
+}
+pub macro assertDebugMsg[cond, msg] {
+  if isDebugBuild() {assert(cond, msg, srcFile(), srcLine());} else {}
 }
 
 // Code the author knows cannot be reached, reached

@@ -15,13 +15,13 @@
 
 		<p style="margin-left: 40px;"><i>Note: Panics are implemented, as described under
 			<a href="#panic">Panics</a> below: <span class="pre">panic</span>,
-			<span class="pre">assert</span>, <span class="pre">unreachable</span>,
+			<span class="pre">assert</span> (every build), <span class="pre">assertDebug</span>
+			and <span class="pre">assertDebugMsg</span> (debug builds only),
+			<span class="pre">unreachable</span>,
 			<span class="pre">todo</span>, the panic hook and the <span class="pre">Never</span>
 			return type. Throwing and catching exceptions, the <span class="pre">?</span> and
 			<span class="pre">||</span> operators on a throwing call, <span class="pre">requires</span>,
-			and contract conditions are not; nor is <span class="pre">assert</span>'s being
-			performed only in test builds, since there are no build modes: it is performed in
-			every build. Overflow and divide by zero do not panic.</i></p>
+			and contract conditions are not. Overflow and divide by zero do not panic.</i></p>
 
 	<p>An exception occurs whenever a program tries to do something and fails.
 		Sometimes, there is no graceful way to recover from certain exceptions.
@@ -228,11 +228,35 @@ fn area(sides i32, size i32) i32 {
 assert(idx &lt; bound);
 assert(idx &lt; bound, "the index is within the table");
 </pre>
-	<p><span class="pre">assert</span> is only performed in test builds.
-	To get the equivalent guarantee in production as well:</p>
+	<p><span class="pre">assert</span> is performed in every build, release builds included.
+	<span class="pre">assertDebug</span> is performed in debug builds only
+	(<span class="pre">conec --debug</span>, and Congo's default): in a release build the
+	whole use is dropped, and its condition is <b>not evaluated</b>, so a check may cost
+	what it likes, and a condition with a side effect has it only in a debug build.
+	<span class="pre">assertDebugMsg</span> is the same with a message of its own.
+	The panic names the line where either is used, as <span class="pre">assert</span>'s does,
+	and says the same: <span class="pre">assertion failed</span>, or the message given.</p>
+<pre>
+assertDebug(isSorted(table));
+assertDebugMsg(isSorted(table), "the table is kept sorted");
+</pre>
+	<p>Both are <a href="refmacro.html">macros</a> in the core library, so the condition
+	is substituted where they are used rather than evaluated before the call. Each expands to
+	an <span class="pre">if</span> on <span class="pre">isDebugBuild()</span>, a
+	<a href="refintrinsic.html#debugbuild">constant</a> that is true in a debug build, and
+	a program may branch on it the same way. A macro takes no default argument, which is why
+	the form with a message has a name of its own.
+	This split, and these names, are Jon's ruling of 27 Sep 2026; the camelCase spelling of
+	<span class="pre">assertDebug</span> is for now.</p>
+	<p>This page first had <span class="pre">assert</span> performed only in test builds,
+	and a <span class="pre">requires</span> statement as the equivalent guarantee in
+	production:</p>
 <pre>
 requires idx &lt; bound;
 </pre>
+	<p>That always-checked role is now <span class="pre">assert</span>'s.
+	<span class="pre">requires</span> and <span class="pre">ensures</span> are kept for the
+	contract conditions below, which are not built yet.</p>
 
 	<h3>Where it happened</h3>
 	<p>Each of these reports where it was <b>called</b>, not where it is written in the
@@ -248,6 +272,10 @@ fn at(list &amp;[]i32, i usize, file &amp;[]u8 = srcFile(), line u32 = srcLine()
   list[i];
 }
 </pre>
+	<p><span class="pre">assertDebug</span> and <span class="pre">assertDebugMsg</span> take
+	neither parameter. They are macros, and <span class="pre">srcFile()</span> and
+	<span class="pre">srcLine()</span> written in a macro's body answer where the macro is
+	used. In a macro used inside another macro's body, they answer where the outermost one is used.</p>
 
 	<h3>The panic hook</h3>
 	<p><span class="pre">setPanicHook</span> names a function a panic calls once its line

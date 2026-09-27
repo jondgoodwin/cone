@@ -48,9 +48,57 @@ program_exit = "abort"
 
 [scenario.exception_assert]
 category = "run"
-description = "'assert' does nothing when its condition holds, and panics with 'assertion failed', or its own message, at the line of its call when it does not"
+description = "'assert' does nothing when its condition holds, and panics with 'assertion failed', or its own message, at the line of its call when it does not, in a release and a debug build alike"
 tags = ["typecheck", "genllvm", "runtime"]
 program_exit = "abort"
+
+[[scenario.exception_assert.run]]
+name = "release"
+options = []
+
+[[scenario.exception_assert.run]]
+name = "debug"
+options = ["--debug"]
+
+# 'assertDebug' and 'assertDebugMsg' are checked in a debug build only [Jon 27
+# Sep]. A build's output differs from the other's, so each build is a scenario
+# of its own. The conditions print, so the .out files show whether each ran
+[scenario.exception_assertdebug_release]
+category = "run"
+description = "A release build: isDebugBuild() is false and a branch on it is folded away; assertDebug and assertDebugMsg are dropped whole, their conditions never run and failing ones do not panic; assert still panics"
+tags = ["typecheck", "genllvm", "runtime"]
+program_exit = "abort"
+
+# Once the pipeline has run, nothing of the dropped code is left in main: no
+# call to the function the debug-only branch calls, none to the one the
+# dropped conditions call, and no panic naming the lines of the two uses
+# (26 and 27), while assert's, naming line 29, is there. The string constants
+# the dropped code named are still defined: no pass removes an unused global
+[[scenario.exception_assertdebug_release.check]]
+name = "exception_assertdebug_release_folded"
+target = "llvmir"
+contains = ["@cone_panic(", "i32 29)"]
+excludes = ["call %void @debugBanner(", "call i1 @debugOnly(", "i32 26)", "i32 27)"]
+
+[scenario.exception_assertdebug_debug]
+category = "run"
+description = "A debug build: isDebugBuild() is true; assertDebug and assertDebugMsg run their conditions, do nothing when they hold, and panic with 'assertion failed' at the use's line when one does not"
+tags = ["typecheck", "genllvm", "runtime"]
+program_exit = "abort"
+
+[[scenario.exception_assertdebug_debug.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.exception_assertdebug_msg]
+category = "run"
+description = "A debug build: assertDebugMsg panics with its own message, and used inside a macro of the program's own, names the line where that macro is used"
+tags = ["typecheck", "genllvm", "runtime"]
+program_exit = "abort"
+
+[[scenario.exception_assertdebug_msg.run]]
+name = "debug"
+options = ["--debug"]
 
 [scenario.exception_caller]
 category = "run"
