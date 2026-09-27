@@ -150,7 +150,7 @@ An import names a module. Congo answers each one this way:
 searches, in order:
 
 1. the Cone repository's own `packages/` (`core`, `stdio`, `libc`, `posix`,
-   `sdl`, `gl`, `geomath`, `testing`, `collections`, `arena`, `pool`, `collector`, `thread`, `render` and `window` are
+   `sdl`, `gl`, `geomath`, `mesh`, `testing`, `collections`, `arena`, `pool`, `collector`, `thread`, `render` and `window` are
    there), then
 2. each folder the **machine config** lists.
 
@@ -288,7 +288,9 @@ allocator, so every build compiles `libc` first. `samples/oslayer` is a tour of
 both, and each package's source says what it binds and how. `geomath`, 2-D
 and 3-D math in Cone, is built on `libc` for its trigonometry and on
 `collections` for the lists its polygon functions return, and its example is
-`packages/geomath/examples/tour.cone`.
+`packages/geomath/examples/tour.cone`. `mesh`, over `geomath`, holds the
+surfaces: indexed triangles, the editable half-edge mesh, their generators
+and `.obj` export; its example is `packages/mesh/examples/cage.cone`.
 
 Two more bind libraries beyond the C runtime, and name them: `sdl` (SDL2: a
 window with an OpenGL context, its events and clock; `[link]` names `SDL2`,
@@ -299,7 +301,7 @@ library: the driver hands out their addresses once a context exists, so `gl`
 holds a Cone body for each, calling through the address `gl.load` found, beside
 the `extern` declarations of the rest. Neither has a test that needs its
 library at run time, so testing `packages/` needs no display. `render` draws
-over `gl` alone, so its tests run anywhere; `window` opens its window through
+over `gl` alone (and `mesh` for its shapes' geometry), so its tests run anywhere; `window` opens its window through
 `sdl`, so building its example, as `congo test` does, needs `SDL2.lib` on
 `LIB`, and running it needs a display.
 

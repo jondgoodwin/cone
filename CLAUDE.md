@@ -46,6 +46,11 @@ Visual Studio projects stay at the root.
   quaternions, matrices, transforms, boxes, rays, planes, frusta and their
   tests, Bezier curves, polygons, colors), begun as a port from the Pegasus3D
   browser, its trigonometry from `libc` through its own `sin`, `cos`, ...;
+  `mesh` is surfaces over `geomath`: `Mesh` (indexed triangles, 32-bit
+  indices, vertex data as separate lists, material groups), `PolyMesh` (the
+  editable half-edge mesh of n-gons, pmp-library conventions, attribute
+  channels, `validate`, `triangulate` into a `Mesh`), the sphere, plane,
+  cube and cube-cage generators, and `.obj` export;
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed
@@ -67,9 +72,10 @@ Visual Studio projects stay at the root.
   a value moved in, join, detach, a handle dropped unjoined joins, sleep,
   parking) and the futex the blocking layers are built on, Windows only,
   linking the Windows SDK's `Synchronization.lib`; `render` draws 3D
-  shapes through OpenGL (`Shape` and its sphere, plane and cube, `Shader`,
-  `Image` from BMP, `Texture`, `Camera`, `Light`), ported from Pegasus3D
-  over `gl`, `geomath` and `collections`, needing no window to build or test;
+  shapes through OpenGL (`Shape`, made from a `mesh.Mesh`, and its sphere,
+  plane and cube, `Shader`, `Image` from BMP, `Texture`, `Camera`, `Light`),
+  ported from Pegasus3D over `gl`, `geomath`, `mesh` and `collections`,
+  needing no window to build or test;
   `window` is a window with an OpenGL context through `sdl`, and the render
   loop's glue (frame time, quit, Escape, fullscreen, resize), and its
   example, `packages/window/examples/spin.cone`, draws a lit, textured,

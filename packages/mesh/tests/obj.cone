@@ -1,0 +1,134 @@
+// Wavefront .obj text and files, checked with the testing package against
+// text written out by hand; only a failure prints, so obj.out holds the
+// summary alone.
+//
+// Numbers have six decimal places, as C's '%f' writes them: 0.1 as an f32 is
+// 0.100000001490116..., which rounds to '0.100000'; -0 has no sign. Indices
+// count from 1, and a corner names its position, uv and normal by the same
+// number, since a Mesh's vertex carries all three.
+
+mod obj;
+
+import testing use *;
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use *;
+
+fn tri() Mesh {
+  mut m = Mesh.empty();
+  m.positions.push(Vec3[0., 0., 0.]);
+  m.positions.push(Vec3[1., 0., 0.]);
+  m.positions.push(Vec3[0., 1., 0.]);
+  m.indices.push(0u32);
+  m.indices.push(1u32);
+  m.indices.push(2u32);
+  m;
+}
+
+fn triangle() {
+  mut m = tri();
+  m.normals.push(Vec3[0., 0., 1.]);
+  m.normals.push(Vec3[0., 0., 1.]);
+  m.normals.push(Vec3[0., 0., 1.]);
+  m.uvs.push(Vec2[0., 0.]);
+  m.uvs.push(Vec2[1., 0.]);
+  m.uvs.push(Vec2[0., 1.]);
+  imm text = objText(&m);
+  expectStr(text.view(),
+    "v 0.000000 0.000000 0.000000\nv 1.000000 0.000000 0.000000\nv 0.000000 1.000000 0.000000\nvt 0.000000 0.000000\nvt 1.000000 0.000000\nvt 0.000000 1.000000\nvn 0.000000 0.000000 1.000000\nvn 0.000000 0.000000 1.000000\nvn 0.000000 0.000000 1.000000\nf 1/1/1 2/2/2 3/3/3\n",
+    "a triangle with uvs and normals");
+
+  // The same file, written and read back
+  expect(writeObj(&m, "triangle.obj"), "the file is written");
+  mut buf [1024; u8] = [1024; 0u8];
+  imm f = libc.fopen(&"triangle.obj" as *u8, &"rb" as *u8);
+  mut n = 0usize;
+  if f {
+    n = libc.fread(&mut buf[0], 1usize, 1024usize, f);
+    libc.fclose(f);
+  }
+  expectStr(&buf[0usize..n], text.view(), "the file holds the text");
+  expectBool(writeObj(&m, "no such folder/triangle.obj"), false, "a file that cannot be made");
+}
+
+fn numbers() {
+  mut m = Mesh.empty();
+  m.positions.push(Vec3[-0.5, 0.1, 1234.5]);
+  m.positions.push(Vec3[0.25, -0., 2.]);
+  m.positions.push(Vec3[0., 0.0000004, -3.0000006]);
+  m.indices.push(0u32);
+  m.indices.push(1u32);
+  m.indices.push(2u32);
+  imm text = objText(&m);
+  expectStr(text.view(),
+    "v -0.500000 0.100000 1234.500000\nv 0.250000 0.000000 2.000000\nv 0.000000 0.000000 -3.000001\nf 1 2 3\n",
+    "positions alone, and how numbers are written");
+}
+
+fn partial() {
+  mut n = tri();
+  n.normals.push(Vec3[0., 0., 1.]);
+  n.normals.push(Vec3[0., 0., 1.]);
+  n.normals.push(Vec3[0., 0., 1.]);
+  imm nt = objText(&n);
+  expectStr(nt.view(),
+    "v 0.000000 0.000000 0.000000\nv 1.000000 0.000000 0.000000\nv 0.000000 1.000000 0.000000\nvn 0.000000 0.000000 1.000000\nvn 0.000000 0.000000 1.000000\nvn 0.000000 0.000000 1.000000\nf 1//1 2//2 3//3\n",
+    "normals without uvs");
+  mut u = tri();
+  u.uvs.push(Vec2[0., 0.]);
+  u.uvs.push(Vec2[1., 0.]);
+  u.uvs.push(Vec2[0., 1.]);
+  imm ut = objText(&u);
+  expectStr(ut.view(),
+    "v 0.000000 0.000000 0.000000\nv 1.000000 0.000000 0.000000\nv 0.000000 1.000000 0.000000\nvt 0.000000 0.000000\nvt 1.000000 0.000000\nvt 0.000000 1.000000\nf 1/1 2/2 3/3\n",
+    "uvs without normals");
+}
+
+fn groups() {
+  mut m = Mesh.empty();
+  m.positions.push(Vec3[0., 0., 0.]);
+  m.positions.push(Vec3[1., 0., 0.]);
+  m.positions.push(Vec3[1., 1., 0.]);
+  m.positions.push(Vec3[0., 1., 0.]);
+  m.indices.push(0u32); m.indices.push(1u32); m.indices.push(2u32);
+  m.indices.push(0u32); m.indices.push(2u32); m.indices.push(3u32);
+  m.addGroup(0u32, 3u32, 2u32);
+  m.addGroup(3u32, 3u32, 5u32);
+  imm text = objText(&m);
+  expectStr(text.view(),
+    "v 0.000000 0.000000 0.000000\nv 1.000000 0.000000 0.000000\nv 1.000000 1.000000 0.000000\nv 0.000000 1.000000 0.000000\nusemtl material2\nf 1 2 3\nusemtl material5\nf 1 3 4\n",
+    "material groups");
+}
+
+fn polygons() {
+  // Two quads side by side, (0, 1, 4, 3) and (1, 2, 5, 4)
+  imm pts [6; Vec3] = [Vec3[0., 0., 0.], Vec3[1., 0., 0.], Vec3[2., 0., 0.], Vec3[0., 1., 0.],
+    Vec3[1., 1., 0.], Vec3[2., 1., 0.]];
+  imm counts [2; u32] = [4u32, 4u32];
+  imm idx [8; u32] = [0u32, 1u32, 4u32, 3u32, 1u32, 2u32, 5u32, 4u32];
+  mut built = List[String].empty();
+  mut p = PolyMesh.fromPolygons(&pts, &counts, &idx, &mut built);
+  imm plain = objText(&p);
+  expectStr(plain.view(),
+    "v 0.000000 0.000000 0.000000\nv 1.000000 0.000000 0.000000\nv 2.000000 0.000000 0.000000\nv 0.000000 1.000000 0.000000\nv 1.000000 1.000000 0.000000\nv 2.000000 1.000000 0.000000\nf 1 2 5 4\nf 2 3 6 5\n",
+    "polygons as n-gons");
+
+  imm ch = p.addVec2Channel(CornerDomain, "uv", Vec2[0., 0.]);
+  imm uvs [8; Vec2] = [Vec2[0., 0.], Vec2[0.5, 0.], Vec2[0.5, 1.], Vec2[0., 1.],
+    Vec2[0.5, 0.], Vec2[1., 0.], Vec2[1., 1.], Vec2[0.5, 1.]];
+  p.setCornerVec2s(ch, &uvs);
+  imm withUv = objText(&p);
+  expectStr(withUv.view(),
+    "v 0.000000 0.000000 0.000000\nv 1.000000 0.000000 0.000000\nv 2.000000 0.000000 0.000000\nv 0.000000 1.000000 0.000000\nv 1.000000 1.000000 0.000000\nv 2.000000 1.000000 0.000000\nvt 0.000000 0.000000\nvt 0.500000 0.000000\nvt 0.500000 1.000000\nvt 0.000000 1.000000\nvt 0.500000 0.000000\nvt 1.000000 0.000000\nvt 1.000000 1.000000\nvt 0.500000 1.000000\nf 1/1 2/2 5/3 4/4\nf 2/5 3/6 6/7 5/8\n",
+    "polygons with corner uvs");
+}
+
+fn main() i32 {
+  triangle();
+  numbers();
+  partial();
+  groups();
+  polygons();
+  done();
+}

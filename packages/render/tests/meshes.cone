@@ -13,22 +13,25 @@
 // 11 at (-sqrt 2, -sqrt 2, 0), and 5, circle 1's repeat, where 1 is.
 // Its triangles: 4 at each pole and 8 for each of the 2 bands between circles,
 // 24, so 72 indices: 6n(n - 1) for n segments. The first joins the top pole to
-// vertices 2 and 1; the first band's first two are (1, 7, 6) and (1, 2, 7)
-// from index 12; the bottom cap's first is (11, 12, 16) from index 60 and its
-// last (14, 15, 16). Every triangle winds clockwise seen from outside, so the
-// cross product of its edges points inwards, against the sum of its corners.
+// vertices 1 and 2; the first band's first two are (1, 6, 7) and (1, 7, 2)
+// from index 12; the bottom cap's first is (11, 16, 12) from index 60 and its
+// last (14, 16, 15). Every triangle winds counterclockwise seen from outside,
+// so the cross product of its edges points outwards, along the sum of its
+// corners.
 // With Pegasus's joining (5 vertices a circle taken as 4) the bottom cap met
 // vertex 13, not the pole, and vertex 16 was never used; here every vertex is.
 //
 // A plane in 2 segments has 3 by 3 vertices, x and z from -1 to 1 in steps of
 // 1, row by row along x, so vertex 4 is the middle and 8 the corner (1, 0, 1).
-// Its 8 triangles are 24 indices, the first square's (0, 4, 3) and (0, 1, 4),
-// the last square's (4, 8, 7) and (4, 5, 8). The uv (0, 0) is at (-1, 0, 1),
-// vertex 6, and a repeat of 15 puts vertex 2, (1, 0, -1), at uv (15, 15).
+// Its 8 triangles are 24 indices, the first square's (0, 3, 4) and (0, 4, 1),
+// the last square's (4, 7, 8) and (4, 8, 5), counterclockwise from above. The
+// uv (0, 0) is at (-1, 0, 1), vertex 6, and a repeat of 15 puts vertex 2,
+// (1, 0, -1), at uv (15, 15).
 //
 // Pegasus's cube of size 2: 24 corners, four to a face, the first (-2, 2, -2),
-// the front face's second (2, 2, 2), the last (2, -2, 2); 36 indices, the last
-// three 20, 22, 23; no normals or uvs.
+// the front face's second (2, 2, 2), the last (2, -2, 2); 36 indices, the first
+// three 0, 2, 1 (the top face counterclockwise from above) and the last three
+// 20, 22, 23; a normal and a uv at each corner, the top's normal (0, 1, 0).
 
 mod meshes;
 
@@ -86,11 +89,11 @@ fn sphere() {
   uv(*s.uvs[8usize], 0.5, 0.5, "circle 2, vertex 2 uv");
   uv(*s.uvs[16usize], 0., 0., "bottom pole uv");
 
-  triangle(&s, 0usize, 0, 2, 1, "top cap's first triangle");
-  triangle(&s, 12usize, 1, 7, 6, "first band's first triangle");
-  triangle(&s, 15usize, 1, 2, 7, "first band's second triangle");
-  triangle(&s, 60usize, 11, 12, 16, "bottom cap's first triangle");
-  triangle(&s, 69usize, 14, 15, 16, "bottom cap's last triangle");
+  triangle(&s, 0usize, 0, 1, 2, "top cap's first triangle");
+  triangle(&s, 12usize, 1, 6, 7, "first band's first triangle");
+  triangle(&s, 15usize, 1, 7, 2, "first band's second triangle");
+  triangle(&s, 60usize, 11, 16, 12, "bottom cap's first triangle");
+  triangle(&s, 69usize, 14, 16, 15, "bottom cap's last triangle");
 
   // Every normal is the position over the radius, of length 1
   mut v = 0usize;
@@ -106,10 +109,10 @@ fn sphere() {
   expect(normalsOk, "each normal is the unit position");
 
   // Every vertex is used, no index is past the end, and every triangle
-  // winds clockwise seen from outside
+  // winds counterclockwise seen from outside
   mut used [17; Bool] = [17; false];
   mut inRange = true;
-  mut clockwise = 0;
+  mut counterclockwise = 0;
   mut t = 0usize;
   while t < 72usize {
     imm ia = *s.indices[t];
@@ -124,7 +127,7 @@ fn sphere() {
       imm a = *s.positions[usize[ia]];
       imm b = *s.positions[usize[ib]];
       imm c = *s.positions[usize[ic]];
-      if (b - a).cross(c - a).dot(a + b + c) < 0. { clockwise = clockwise + 1; }
+      if (b - a).cross(c - a).dot(a + b + c) > 0. { counterclockwise = counterclockwise + 1; }
     }
     t = t + 3usize;
   }
@@ -136,7 +139,7 @@ fn sphere() {
     v = v + 1usize;
   }
   expect(allUsed, "every vertex is used");
-  expectInt(i64[clockwise], 24, "triangles winding clockwise from outside");
+  expectInt(i64[counterclockwise], 24, "triangles winding counterclockwise from outside");
 
   // Pegasus's default sphere, 15 segments: 14 circles of 16, and 2 poles
   imm d = Shape.sphere(1., 15);
@@ -164,10 +167,10 @@ fn plane() {
   uv(*s.uvs[0usize], 0., 1., "plane's first uv");
   uv(*s.uvs[6usize], 0., 0., "plane's uv origin");
   uv(*s.uvs[8usize], 1., 0., "plane's last uv");
-  triangle(&s, 0usize, 0, 4, 3, "plane's first triangle");
-  triangle(&s, 3usize, 0, 1, 4, "plane's second triangle");
-  triangle(&s, 18usize, 4, 8, 7, "plane's last square, first");
-  triangle(&s, 21usize, 4, 5, 8, "plane's last square, second");
+  triangle(&s, 0usize, 0, 3, 4, "plane's first triangle");
+  triangle(&s, 3usize, 0, 4, 1, "plane's second triangle");
+  triangle(&s, 18usize, 4, 7, 8, "plane's last square, first");
+  triangle(&s, 21usize, 4, 8, 5, "plane's last square, second");
 
   imm r = Shape.plane(2, 15.);
   uv(*r.uvs[2usize], 15., 15., "repeated uv");
@@ -180,12 +183,13 @@ fn cube() {
   imm s = Shape.cube(2.);
   requireInt(i64[s.positions.len()], 24, "cube vertices");
   expectInt(i64[s.indices.len()], 36, "cube indices");
-  expectInt(i64[s.normals.len()], 0, "cube normals");
-  expectInt(i64[s.uvs.len()], 0, "cube uvs");
+  expectInt(i64[s.normals.len()], 24, "cube normals");
+  expectInt(i64[s.uvs.len()], 24, "cube uvs");
+  point(*s.normals[0usize], 0., 1., 0., "cube top's normal");
   point(*s.positions[0usize], -2., 2., -2., "cube's first corner");
   point(*s.positions[13usize], 2., 2., 2., "front face's second corner");
   point(*s.positions[23usize], 2., -2., 2., "cube's last corner");
-  triangle(&s, 0usize, 0, 1, 2, "cube's first triangle");
+  triangle(&s, 0usize, 0, 2, 1, "cube's first triangle");
   triangle(&s, 33usize, 20, 22, 23, "cube's last triangle");
 }
 
