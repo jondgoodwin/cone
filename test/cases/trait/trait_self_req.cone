@@ -1,0 +1,123 @@
+// 'Self' in a trait's requirement stands for the type complying with it, as it
+// does in a default the type takes from the trait. So 'o &Self' in a
+// requirement is met by a method taking a reference to the complying type,
+// written '&Self' or with the type's own name, and a requirement returning
+// 'Self' by a method returning that type -- whether compliance is asked by a
+// generic constraint or declared with 'is'.
+//
+// A reference to the trait written with its own name is the trait, and a
+// virtual reference to 'Self' is to the trait, met by a method taking '&<' the
+// trait. Each printed value was checked by hand against the source.
+
+mod trait_self_req;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+// A reference to another value of the same type, and a default using it
+trait Same {
+  pub fn same(self &, o &Self) Bool;
+  pub fn differs(self &, o &Self) Bool {!self.same(o);}
+}
+
+// Declares it, and takes the default
+struct Coin is Same {
+  pub cents i64;
+  pub fn same(self &, o &Self) Bool {cents == o.cents;}
+}
+
+// Fits it without saying so, naming its own type rather than 'Self'
+struct Note {
+  pub value i64;
+  pub fn same(self &, o &Note) Bool {value == o.value;}
+  pub fn differs(self &, o &Note) Bool {value != o.value;}
+}
+
+fn tally[T Same](a &T, b &T) i64 {
+  mut r = 0;
+  if a.same(b) {r = 1;}
+  if a.differs(b) {r = r + 10;}
+  r;
+}
+
+// An operator, the manual's 'max'
+trait Comparable {
+  pub fn `>`(self &, b &Self) Bool;
+}
+
+fn max[T](a &T, b &T) &T where T is Comparable {
+  if a > b {a;} else {b;}
+}
+
+struct Money {
+  pub cents i64;
+  pub fn `>`(self &, b &Self) Bool {cents > b.cents;}
+}
+
+// Returning a value of the complying type
+trait Dup {
+  pub fn dup(self &) Self;
+}
+
+struct Cell is Dup {
+  pub v i64;
+  pub fn dup(self &) Self {Cell[v * 2];}
+}
+
+struct Pair {
+  pub a i64;
+  pub b i64;
+  pub fn dup(self &) Pair {Pair[b, a];}
+}
+
+fn twin[T Dup](x &T) T {
+  x.dup();
+}
+
+// A virtual reference to Self is to the trait itself
+trait Gauge {
+  pub fn level(self &) i64;
+  pub fn gap(self &, o &<Self) i64;
+}
+
+struct Tank is Gauge {
+  pub fill i64;
+  pub fn level(self &) i64 {fill;}
+  pub fn gap(self &, o &<Gauge) i64 {fill - o.level();}
+}
+
+fn gapOf[T Gauge](a &T, b &<Gauge) i64 {
+  a.gap(b);
+}
+
+fn main() {
+  imm c1 = Coin[5];
+  imm c2 = Coin[5];
+  imm c3 = Coin[25];
+  show("declared-same", tally(&c1, &c2));
+  show("declared-differs", tally(&c1, &c3));
+  imm n1 = Note[20];
+  imm n2 = Note[50];
+  show("fits-same", tally(&n1, &n1));
+  show("fits-differs", tally(&n1, &n2));
+
+  imm low = Money[250];
+  imm high = Money[475];
+  show("max", max(&low, &high).cents);
+  show("max-swapped", max(&high, &low).cents);
+
+  imm cell = Cell[21];
+  show("dup-declared", twin(&cell).v);
+  imm pair = Pair[3, 4];
+  show("dup-fits", twin(&pair).a);
+
+  imm full = Tank[90];
+  imm half = Tank[40];
+  show("gap", gapOf(&full, &half));
+}

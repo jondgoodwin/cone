@@ -916,7 +916,13 @@ Steps 9 to 11 are `structCheckMembers`, run from the members queue:
    `traits`, the type's binding for the name must have the one candidate of the
    trait's signature — an inherited default meets that by construction — and a
    requirement with no body, inherited as such, is unmet in a struct; a trait
-   may pass it on. An `extern` method is not such a requirement: it has no
+   may pass it on. **`Self` in the requirement is this type**, as it is in a
+   default cloned in: `fnSigVrefEqual` is given this type as its `selftype`, so
+   the trait's `o &Self` is met by this type's `o &Self`. Not for a closed
+   trait (`HasTagField` or `SameSize`, an enum among them), whose requirement a
+   variant meets exactly as written, since a call through a reference to it
+   dispatches by the tag with an argument of any variant; nor when a vtable is
+   filled (`structMapVtableImpl`), whose slot holds the trait's own signature. An `extern` method is not such a requirement: it has no
    body here because it is defined elsewhere, as an include file declares a
    package's methods, and it meets the trait's requirement. **`RegionRef`, the
    built-in trait, has no methods to verify**: a type declaring it is held

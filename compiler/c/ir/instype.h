@@ -70,7 +70,9 @@ FnDclNode *iNsTypeFindPtrMethod(INode *binding, Nodes *args, enum OverloadMatch 
 
 // Find method whose method signature matches exactly (except for self)
 // 'binding' is the namespace's binding for the method's name
-// return NULL if none, or if more than one candidate matches
-FnDclNode *iNsTypeFindVrefMethod(INode *binding, FnDclNode *matchmeth);
+// return NULL if none, or if more than one candidate matches.
+// 'selftype' is what 'Self' in 'matchmeth' stands for (see fnSigVrefEqual),
+// NULL where a vtable slot is filled and the match must be exact.
+FnDclNode *iNsTypeFindVrefMethod(INode *binding, FnDclNode *matchmeth, INode *selftype);
 
 #endif

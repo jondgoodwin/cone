@@ -32,8 +32,11 @@ int fnSigEqual(FnSigNode *node1, FnSigNode *node2);
 
 // For virtual reference structural matches on two methods,
 // compare two function signatures to see if they are equivalent,
-// ignoring the first 'self' parameter (we know their types differ)
-int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2);
+// ignoring the first 'self' parameter (we know their types differ).
+// 'node1' is the implementation and 'node2' the requirement. A non-NULL
+// 'selftype' is the type meeting the requirement, which 'Self' in it stands
+// for; NULL compares exactly, as a vtable slot must.
+int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2, INode *selftype);
 
 // Do two signatures declare the same parameter types (ignoring return type)?
 // Used to detect two overload candidates that would accept the same arguments.

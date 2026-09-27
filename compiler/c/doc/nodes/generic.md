@@ -401,7 +401,10 @@ instance.
   value — a method or a field. `structMatches` under `Monomorph` is the test, the
   one a trait's other uses are made by; `genericDemandMatch` first analyzes each
   requirement and each candidate the type has for it (`fnCallDemandCandidates`),
-  since signatures compare only once checked. A **marker** — a trait requiring
+  since signatures compare only once checked. Under `Monomorph` a requirement's
+  `Self` is the type asked about (`fnSigVrefEqual`'s `selftype`), since the
+  instance calls that type's own method: `o &Self` is met by its `o &Self`. The
+  match is otherwise exact, and a virtual reference's is exact throughout. A **marker** — a trait requiring
   nothing of a value, the compiler's own built-in traits among them — is never
   fitted: every type would fit it, so fitting it would say nothing.
 
@@ -555,9 +558,11 @@ are [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Sym
   names it, which `nameUseTemplateMember` reports as `ErrorWhereAbsent` when the
   use was copied into an instance of that generic.
 - **Only a struct fits a trait structurally.** A number type meets the markers
-  granted to it and no trait with members. And a requirement naming `Self` in a
-  parameter is met by nothing, since the trait's `Self` is the trait and an
-  implementer's is itself (`fnSigVrefEqual` compares them exactly).
+  granted to it and no trait with members.
+- **`Self` is read as the implementer only where it is written `Self`.** The
+  requirement's type is compared as written (`fnSigReqTypeSame`), through a
+  reference, pointer or slice, so a requirement naming its trait outright means
+  the trait, and a typedef of `Self` is not seen through.
 
 ## What lives elsewhere
 
