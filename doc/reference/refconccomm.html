@@ -16,7 +16,8 @@
 	<p style="margin-left: 40px;"><i>Note: Two things on this page are implemented, as the
 		<span class="pre">sync</span> library package, on Windows only: the
 		<a href="#channel">channel</a> of many senders and one receiver,
-		<span class="pre">Channel[T]</span>, unbounded or bounded; and the atomic primitives, as
+		<span class="pre">Channel[T]</span>, unbounded or bounded, or of one sender and one
+		receiver; and the atomic primitives, as
 		<a href="refconc.html#atomic">Atomic[T]</a>, over the raw atomic operations core declares,
 		which are <a href="refintrinsic.html">intrinsics</a>. Immutable data is shared between
 		threads through the same package's <span class="pre">arc</span> region
@@ -27,7 +28,7 @@
 		thread. What is sent is checked: <span class="pre">thread.start</span> and the
 		channel types take only a <span class="pre">Sendable</span> type, as
 		<a href="#race">Race condition safety</a> describes.
-		Single-sender channels, actors and <span class="pre">qfn</span>,
+		Actors and <span class="pre">qfn</span>,
 		the other concurrent data structures, and lock permissions are not implemented.</i></p>
 
 	<p>It can be a huge performance benefit that threads share memory and other resources,
@@ -51,7 +52,8 @@
 		<a href="refgeneric.html#constraints">constraint</a> on a generic:
 		<span class="pre">thread.start</span> and <span class="pre">thread.startWith</span> ask it of
 		the argument and of what the thread returns, and <span class="pre">Channel[T]</span>,
-		<span class="pre">Sender[T]</span> and <span class="pre">Receiver[T]</span> of
+		<span class="pre">Sender[T]</span>, <span class="pre">SoloSender[T]</span> and
+		<span class="pre">Receiver[T]</span> of
 		<span class="pre">T</span>. The compiler grants <span class="pre">Sendable</span> to a type
 		unless it holds, directly or in a field, an array element, a tuple element or an enum's
 		variant, one of these:</p>
@@ -117,6 +119,14 @@ thread.start(job, &amp;work);
 		<span class="pre">Sender[T]</span> takes either. Each end is a
 		move type: another sender is made only by <span class="pre">clone()</span>, and the
 		receiver has no clone, so exactly one thread takes from it.</p>
+	<p><span class="pre">Channel[T].spsc(n)</span> makes the third kind, bounded as the second
+		is, with one sender. Its sending end is a <span class="pre">SoloSender[T]</span>, which has
+		no <span class="pre">clone()</span>, and whose sends take it as
+		<span class="pre">&amp;mut</span>: there is exactly one, and one thread sends at a time.
+		Knowing that from the type, the channel needs no atomic read-modify-write on either side,
+		which makes it the fastest of the three where one thread feeds another: a pipeline's
+		stages, or a logging thread's own buffer. Its receiving end is the same
+		<span class="pre">Receiver[T]</span>, and its methods are the others'.</p>
 <pre>
 import sync use *;
 
@@ -129,6 +139,11 @@ match rx.recv() {               // waits while it is empty
   case imm j Some {run(j.value);}
   case is None[Job] {}          // closed, and every value taken
 }
+
+mut solo SoloSender[Job];
+mut rx2 Receiver[Job];
+solo, rx2 = Channel[Job].spsc(1024);  // one sender, no clone
+solo &lt;- job;
 </pre>
 	<ul>
 	<li><span class="pre">tx.send(v)</span>, or <span class="pre">tx &lt;- v</span>, puts a value
@@ -154,9 +169,11 @@ match rx.recv() {               // waits while it is empty
 	</ul>
 	<p>A send is one compare-and-swap, into blocks of 32 slots allocated a block at a time
 		(unbounded) or a ring of <span class="pre">n</span> slots allocated at the start (bounded);
-		the receiver takes a value with no read-modify-write at all. A thread sleeps, on the
-		<a href="refconc.html#futex">futex</a>, only when there is nothing to do: the receiver when
-		the channel is empty, a sender when a bounded channel is full.</p>
+		the receiver takes a value with no read-modify-write at all. A single-sender channel's
+		send is a plain store as well, into Lamport's ring, each side keeping a copy of the
+		other's index and reading the real one only when its copy says full or empty. A thread
+		sleeps, on the <a href="refconc.html#futex">futex</a>, only when there is nothing to do:
+		the receiver when the channel is empty, a sender when a bounded channel is full.</p>
 
 	<p>Any particular channel's messages are all the same type, but might very well be some sort of variant type,
 		allowing different kinds of messages to be sent. Cone makes it easier to support this kind of message-passing
