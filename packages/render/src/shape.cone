@@ -6,9 +6,12 @@
 // buffer that is empty is not given to the shader. The same vertex index
 // reaches the same place in every buffer.
 //
-// The generators wind their triangles clockwise as seen from the side the
-// normals point to (OpenGL's front faces are counterclockwise). Pegasus drew
-// with face culling off, as this package does, so the winding does not show.
+// The geometry itself is the mesh package's: 'fromMesh' copies a mesh.Mesh
+// into a shape, and the generators are mesh's, copied. Their triangles wind
+// counterclockwise seen from the side the normals point to (OpenGL's front
+// faces). Pegasus drew with face culling off, as this package does, so the
+// winding does not show. A shape's indices are 16 bits, so a mesh of more
+// than 65,536 vertices makes an empty shape.
 
 pub struct Shape {
   pub positions List[Vec3];
@@ -28,155 +31,68 @@ pub struct Shape {
   }
 
   // A sphere of 'radius' centered at the origin, by longitude and latitude:
-  // 'nsegments' slices around and as many from pole to pole. The normals point
-  // outwards. The top pole's uv is (0, 1), and u runs once around each circle
-  // of latitude, which ends in a repeat of its first vertex at u = 1, so the
-  // texture's edges meet. Fewer than 3 segments, or so many that an index
-  // would not fit in 16 bits, gives an empty shape. Pegasus's defaults were a
-  // radius of 1 and 15 segments.
+  // 'nsegments' slices around and as many from pole to pole: mesh's
+  // 'Mesh.sphere'. The normals point outwards. The top pole's uv is (0, 1),
+  // and u runs once around each circle of latitude, which ends in a repeat of
+  // its first vertex at u = 1, so the texture's edges meet. Fewer than 3
+  // segments, or so many that an index would not fit in 16 bits, gives an
+  // empty shape. Pegasus's defaults were a radius of 1 and 15 segments.
   pub fn sphere(radius f32, nsegments i32) Shape {
-    mut s = Shape.empty();
+    // A pole, n - 1 circles of n + 1 vertices, a pole
     imm n = nsegments;
-    // A pole, n - 1 circles of n + 1 vertices, a pole. (Pegasus counted
-    // (n + 1) * (n - 2) + 2, which let 256 segments overflow the indices.)
-    imm nverts = (n + 1) * (n - 1) + 2;
-    if n <= 2 or nverts >= 65536 { return s; }
-    s.positions.reserve(usize[nverts]);
-    s.normals.reserve(usize[nverts]);
-    s.uvs.reserve(usize[nverts]);
-    s.indices.reserve(usize[6 * n * (n - 1)]);
-
-    // Top pole vertex
-    s.positions.push(Vec3[0., radius, 0.]);
-    s.normals.push(Vec3[0., 1., 0.]);
-    s.uvs.push(Vec2[0., 1.]);
-
-    // Each circle of latitude, top to bottom, and each vertex around it.
-    // (Pegasus joined the circles as if each had n vertices, not n + 1, so
-    // every circle after the first was joined to the wrong vertices and the
-    // bottom cap to the wrong pole. 'stride' was n there.)
-    imm stride = n + 1;
-    mut i = 1;
-    while i < n {
-      imm mang = pi * f32[i] / f32[n];
-      mut j = 0;
-      while j < n {
-        imm nang = 2. * pi * f32[j] / f32[n];
-        imm x = -nang.cos() * mang.sin();
-        imm y = mang.cos();
-        imm z = nang.sin() * mang.sin();
-        s.normals.push(Vec3[x, y, z]);
-        s.positions.push(Vec3[x * radius, y * radius, z * radius]);
-        s.uvs.push(Vec2[f32[j] / f32[n], f32[n - i] / f32[n]]);
-
-        // Two triangles per segment; one where the circle meets the pole
-        if i == 1 {
-          s.indices.push(0u16);
-          s.indices.push(u16[j + 2]);
-          s.indices.push(u16[j + 1]);
-        } else {
-          imm v0 = (i - 2) * stride + j + 1;
-          imm v1 = (i - 2) * stride + j + 2;
-          imm v2 = (i - 1) * stride + j + 2;
-          imm v3 = (i - 1) * stride + j + 1;
-          s.indices.push(u16[v0]);
-          s.indices.push(u16[v2]);
-          s.indices.push(u16[v3]);
-          s.indices.push(u16[v0]);
-          s.indices.push(u16[v1]);
-          s.indices.push(u16[v2]);
-        }
-        j = j + 1;
-      }
-      // The circle's first vertex again, at u = 1
-      imm x = -mang.sin();
-      imm y = mang.cos();
-      s.normals.push(Vec3[x, y, 0.]);
-      s.positions.push(Vec3[x * radius, y * radius, 0.]);
-      s.uvs.push(Vec2[1., f32[n - i] / f32[n]]);
-      i = i + 1;
-    }
-
-    // Bottom pole vertex
-    s.uvs.push(Vec2[0., 0.]);
-    s.positions.push(Vec3[0., -radius, 0.]);
-    s.normals.push(Vec3[0., -1., 0.]);
-
-    // The bottom circle joined to it
-    mut j = 0;
-    while j < n {
-      s.indices.push(u16[(n - 2) * stride + j + 1]);
-      s.indices.push(u16[(n - 2) * stride + j + 2]);
-      s.indices.push(u16[(n - 1) * stride + 1]);
-      j = j + 1;
-    }
-    s;
+    if n > 2 and (n + 1) * (n - 1) + 2 >= 65536 { return Shape.empty(); }
+    imm m = Mesh.sphere(radius, nsegments);
+    Shape.fromMesh(&m);
   }
 
   // A flat square in y = 0 from -1 to 1 in x and z, facing up (+y), cut into
-  // 'nsegments' by 'nsegments' squares of two triangles. The uv (0, 0) is the
-  // corner at (-1, 0, 1), and 'uvrepeat' is how many times the texture repeats
-  // across it. Fewer than 1 segment, or too many, gives an empty shape.
-  // Pegasus's defaults were 1 segment and a repeat of 1.
+  // 'nsegments' by 'nsegments' squares of two triangles: mesh's 'Mesh.plane'.
+  // The uv (0, 0) is the corner at (-1, 0, 1), and 'uvrepeat' is how many
+  // times the texture repeats across it. Fewer than 1 segment, or too many,
+  // gives an empty shape. Pegasus's defaults were 1 segment and a repeat of 1.
   pub fn plane(nsegments i32, uvrepeat f32) Shape {
-    mut s = Shape.empty();
     imm n = nsegments;
-    imm nverts = (n + 1) * (n + 1);
-    if n < 1 or nverts >= 65536 { return s; }
-    s.positions.reserve(usize[nverts]);
-    s.normals.reserve(usize[nverts]);
-    s.uvs.reserve(usize[nverts]);
-    s.indices.reserve(usize[6 * n * n]);
-
-    mut segz = 0;
-    while segz <= n {
-      mut segx = 0;
-      while segx <= n {
-        imm x = 2. * f32[segx] / f32[n] - 1.;
-        imm z = 2. * f32[segz] / f32[n] - 1.;
-        s.positions.push(Vec3[x, 0., z]);
-        s.normals.push(Vec3[0., 1., 0.]);
-        s.uvs.push(Vec2[uvrepeat * f32[segx] / f32[n], uvrepeat * (1. - f32[segz] / f32[n])]);
-
-        // Two triangles per square
-        if segx > 0 and segz > 0 {
-          imm v0 = (segz - 1) * (n + 1) + segx - 1;
-          imm v1 = (segz - 1) * (n + 1) + segx;
-          imm v2 = segz * (n + 1) + segx;
-          imm v3 = segz * (n + 1) + segx - 1;
-          s.indices.push(u16[v0]);
-          s.indices.push(u16[v2]);
-          s.indices.push(u16[v3]);
-          s.indices.push(u16[v0]);
-          s.indices.push(u16[v1]);
-          s.indices.push(u16[v2]);
-        }
-        segx = segx + 1;
-      }
-      segz = segz + 1;
-    }
-    s;
+    if n >= 1 and (n + 1) * (n + 1) >= 65536 { return Shape.empty(); }
+    imm m = Mesh.plane(nsegments, uvrepeat);
+    Shape.fromMesh(&m);
   }
 
   // A cube centered at the origin, reaching 'size' along each axis each way:
-  // four vertices for each face, two triangles each. It has no normals or uvs,
-  // as Pegasus's had none (its use was a skybox, sampled by direction).
-  // Pegasus's default size was 1.
+  // mesh's 'Mesh.cube', four vertices for each face with its normal and uvs,
+  // two triangles each. (Pegasus's cube had no normals or uvs: its use was a
+  // skybox, sampled by direction, which a shader wanting only positions
+  // still is.) Pegasus's default size was 1.
   pub fn cube(size f32) Shape {
+    imm m = Mesh.cube(size);
+    Shape.fromMesh(&m);
+  }
+
+  // A shape of a mesh's positions, normals, uvs and colors, and its indices
+  // cut to 16 bits; an empty shape if an index does not fit. Its material
+  // groups and tangents are not carried: a shape is drawn with one shader
+  // and its uniforms.
+  pub fn fromMesh(m &Mesh) Shape {
     mut s = Shape.empty();
-    s.positions.reserve(24usize);
-    mut v = 0usize;
-    while v < 72usize {
-      s.positions.push(Vec3[size * cubePositions[v], size * cubePositions[v + 1usize],
-        size * cubePositions[v + 2usize]]);
-      v = v + 3usize;
-    }
-    s.indices.reserve(36usize);
     mut i = 0usize;
-    while i < 36usize {
-      s.indices.push(cubeIndices[i]);
+    while i < m.indices.len() {
+      if *m.indices[i] > 65535u32 { return s; }
       i = i + 1usize;
     }
+    s.positions.reserve(m.positions.len());
+    i = 0usize;
+    while i < m.positions.len() { s.positions.push(*m.positions[i]); i = i + 1usize; }
+    s.normals.reserve(m.normals.len());
+    i = 0usize;
+    while i < m.normals.len() { s.normals.push(*m.normals[i]); i = i + 1usize; }
+    s.uvs.reserve(m.uvs.len());
+    i = 0usize;
+    while i < m.uvs.len() { s.uvs.push(*m.uvs[i]); i = i + 1usize; }
+    s.colors.reserve(m.colors.len());
+    i = 0usize;
+    while i < m.colors.len() { s.colors.push(*m.colors[i]); i = i + 1usize; }
+    s.indices.reserve(m.indices.len());
+    i = 0usize;
+    while i < m.indices.len() { s.indices.push(u16[*m.indices[i]]); i = i + 1usize; }
     s;
   }
 
@@ -298,16 +214,3 @@ pub fn drawMode(name &[]u8) u32 {
   if bytesEqual(name, "Polygon") { return gl.TRIANGLE_FAN; }
   gl.TRIANGLES;
 }
-
-// Pegasus's cube: the four corners of each face (top, bottom, back, front,
-// left, right), and two triangles for each
-imm cubePositions [72; f32] = [
-  -1f, 1f, -1f,  1f, 1f, -1f,  1f, 1f, 1f,  -1f, 1f, 1f,
-  -1f, -1f, -1f,  1f, -1f, -1f,  1f, -1f, 1f,  -1f, -1f, 1f,
-  -1f, 1f, -1f,  1f, 1f, -1f,  1f, -1f, -1f,  -1f, -1f, -1f,
-  -1f, 1f, 1f,  1f, 1f, 1f,  1f, -1f, 1f,  -1f, -1f, 1f,
-  -1f, -1f, -1f,  -1f, 1f, -1f,  -1f, 1f, 1f,  -1f, -1f, 1f,
-  1f, -1f, -1f,  1f, 1f, -1f,  1f, 1f, 1f,  1f, -1f, 1f];
-imm cubeIndices [36; u16] = [0u16, 1u16, 2u16, 0u16, 2u16, 3u16, 4u16, 5u16, 6u16, 4u16, 6u16, 7u16,
-  8u16, 9u16, 10u16, 8u16, 10u16, 11u16, 12u16, 13u16, 14u16, 12u16, 14u16, 15u16,
-  16u16, 17u16, 18u16, 16u16, 18u16, 19u16, 20u16, 21u16, 22u16, 20u16, 22u16, 23u16];

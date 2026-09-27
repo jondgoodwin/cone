@@ -1,0 +1,163 @@
+// A Mesh's own operations, checked with the testing package against values
+// worked out by hand; only a failure prints, so meshops.out holds the summary
+// alone.
+//
+// T is the triangle (0,0,0) (1,0,0) (0,1,0), facing +z, with normals (0,0,1)
+// and uvs (0,0) (1,0) (0,1); P the same triangle lifted to z = 1 with
+// positions alone.
+// - Appending P to T: 6 vertices; P's indices move past T's 3, to 3, 4, 5;
+//   T's normals and uvs are kept and P's missing ones filled, normal
+//   (0,0,0), uv (0,0); neither has colors, so none are made.
+// - Groups: T with a group (0, 3, slot 1) and P with none gives (0, 3, 1),
+//   (3, 3, 0); T with none and P with (0, 3, slot 7) gives (0, 3, 0), (3, 3,
+//   7).
+// - Moving T by (1, 2, 3): its second corner to (2, 2, 3), its box (1, 2, 3)
+//   to (2, 3, 3), its normals unchanged.
+// - Mirroring T in x (scale -1, 1, 1): corners (0,0,0) (-1,0,0) (0,1,0), which
+//   in the old order would run clockwise about +z; the winding is reversed
+//   to (0, 2, 1), so the triangle still faces its normal, which the normal
+//   matrix diag(-1, 1, 1) leaves at (0, 0, 1).
+// - Turning T a quarter turn about +x takes y to z and z to -y: its third
+//   corner (0,1,0) to (0,0,1), its normal to (0,-1,0).
+// - Stretching x by 2: a surface along (1,-1,0) with normal (1,1,0)/sqrt 2
+//   becomes one along (2,-1,0), whose normal is (1,2,0)/sqrt 5 = (0.4472136,
+//   0.8944272, 0), which the inverse transpose diag(1/2, 1, 1) gives; the
+//   stretch itself would give (2,1,0)/sqrt 5, which leans.
+// - computeFlatNormals on T + P: 6 vertices still, 3 a triangle, each
+//   carrying its uv: vertex 1's (1, 0).
+
+mod meshops;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+
+imm near = 0.00001d;
+
+fn point(got Vec3, x f32, y f32, z f32, label &[]u8) {
+  expectFloat(got.x, x, near, label);
+  expectFloat(got.y, y, near, label);
+  expectFloat(got.z, z, near, label);
+}
+
+fn group(g Group, start u32, count u32, material u32, label &[]u8) {
+  expectInt(i64[g.start], i64[start], label);
+  expectInt(i64[g.count], i64[count], label);
+  expectInt(i64[g.material], i64[material], label);
+}
+
+fn tri() Mesh {
+  mut m = Mesh.empty();
+  m.positions.push(Vec3[0., 0., 0.]);
+  m.positions.push(Vec3[1., 0., 0.]);
+  m.positions.push(Vec3[0., 1., 0.]);
+  m.normals.push(Vec3[0., 0., 1.]);
+  m.normals.push(Vec3[0., 0., 1.]);
+  m.normals.push(Vec3[0., 0., 1.]);
+  m.uvs.push(Vec2[0., 0.]);
+  m.uvs.push(Vec2[1., 0.]);
+  m.uvs.push(Vec2[0., 1.]);
+  m.indices.push(0u32);
+  m.indices.push(1u32);
+  m.indices.push(2u32);
+  m;
+}
+
+fn lifted() Mesh {
+  mut m = Mesh.empty();
+  m.positions.push(Vec3[0., 0., 1.]);
+  m.positions.push(Vec3[1., 0., 1.]);
+  m.positions.push(Vec3[0., 1., 1.]);
+  m.indices.push(0u32);
+  m.indices.push(1u32);
+  m.indices.push(2u32);
+  m;
+}
+
+fn basics() {
+  imm t = tri();
+  expectInt(i64[t.vertexCount()], 3, "a triangle's vertices");
+  expectInt(i64[t.triangleCount()], 1, "one triangle");
+  imm b = t.bounds();
+  point(b.min, 0., 0., 0., "its box, min");
+  point(b.max, 1., 1., 0., "its box, max");
+  point(t.triangleNormal(0usize), 0., 0., 1., "it faces +z");
+  imm e = Mesh.empty();
+  imm eb = e.bounds();
+  expect(eb.isEmpty(), "an empty mesh's box is empty");
+}
+
+fn appending() {
+  mut m = tri();
+  imm p = lifted();
+  m.append(&p);
+  requireInt(i64[m.vertexCount()], 6, "appended: vertices");
+  expectInt(i64[m.triangleCount()], 2, "appended: triangles");
+  expectInt(i64[*m.indices[3usize]], 3, "appended: indices moved past the first");
+  expectInt(i64[*m.indices[5usize]], 5, "appended: the last index");
+  expectInt(i64[m.normals.len()], 6, "appended: a normal each");
+  expectInt(i64[m.uvs.len()], 6, "appended: a uv each");
+  expectInt(i64[m.colors.len()], 0, "appended: no colors when neither had them");
+  point(*m.normals[2usize], 0., 0., 1., "the first's normals kept");
+  point(*m.normals[3usize], 0., 0., 0., "the second's filled");
+  point(*m.positions[4usize], 1., 0., 1., "the second's positions");
+  expectInt(i64[m.groups.len()], 0, "no groups when neither had them");
+
+  mut g = tri();
+  g.addGroup(0u32, 3u32, 1u32);
+  g.append(&p);
+  requireInt(i64[g.groups.len()], 2, "groups: one each");
+  group(*g.groups[0usize], 0u32, 3u32, 1u32, "the first's group kept");
+  group(*g.groups[1usize], 3u32, 3u32, 0u32, "the second made a group in slot 0");
+
+  mut h = tri();
+  mut q = lifted();
+  q.addGroup(0u32, 3u32, 7u32);
+  h.append(&q);
+  requireInt(i64[h.groups.len()], 2, "groups the other way: one each");
+  group(*h.groups[0usize], 0u32, 3u32, 0u32, "the first made a group in slot 0");
+  group(*h.groups[1usize], 3u32, 3u32, 7u32, "the second's group moved");
+
+  m.computeFlatNormals();
+  expectInt(i64[m.vertexCount()], 6, "split: still 6");
+  expectFloat((*m.uvs[1usize]).x, 1., near, "split: uvs carried");
+  point(*m.normals[4usize], 0., 0., 1., "split: the second's normal");
+}
+
+fn transforms() {
+  mut m = tri();
+  m.transform(Mat4.fromTranslation(Vec3[1., 2., 3.]));
+  point(*m.positions[1usize], 2., 2., 3., "moved: second corner");
+  point(*m.normals[0usize], 0., 0., 1., "moved: normal unchanged");
+  imm b = m.bounds();
+  point(b.min, 1., 2., 3., "moved: box min");
+  point(b.max, 2., 3., 3., "moved: box max");
+
+  mut r = tri();
+  r.transform(Mat4.fromScale(Vec3[-1., 1., 1.]));
+  point(*r.positions[1usize], -1., 0., 0., "mirrored: second corner");
+  expectInt(i64[*r.indices[1usize]], 2, "mirrored: winding reversed");
+  expectInt(i64[*r.indices[2usize]], 1, "mirrored: winding reversed");
+  point(*r.normals[0usize], 0., 0., 1., "mirrored: normal");
+  point(r.triangleNormal(0usize), 0., 0., 1., "mirrored: still faces its normal");
+
+  mut q = tri();
+  q.transformBy(Transform3[Vec3[0., 0., 0.], Quat.angleAxis(pi / 2., Vec3[1., 0., 0.]), Vec3[1., 1., 1.]]);
+  point(*q.positions[2usize], 0., 0., 1., "turned: third corner");
+  point(*q.normals[1usize], 0., -1., 0., "turned: normal");
+
+  mut s = Mesh.empty();
+  s.positions.push(Vec3[0., 0., 0.]);
+  imm h f32 = 0.70710678;
+  s.normals.push(Vec3[h, h, 0.]);
+  s.transform(Mat4.fromScale(Vec3[2., 1., 1.]));
+  point(*s.normals[0usize], 0.4472136, 0.8944272, 0., "stretched: normal by the inverse transpose");
+}
+
+fn main() i32 {
+  basics();
+  appending();
+  transforms();
+  done();
+}

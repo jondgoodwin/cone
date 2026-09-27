@@ -1,0 +1,277 @@
+// The mesh package's half-edge PolyMesh, checked with the testing package
+// against values worked out by hand; only a failure prints, so polymesh.out
+// holds the summary alone.
+//
+// The cube cage of size 1: vertex x + 2y + 4z, faces back (0, 2, 3, 1),
+// front (4, 5, 7, 6), left (0, 4, 6, 2), right (1, 3, 7, 5), bottom (0, 1,
+// 5, 4), top (2, 6, 7, 3). Its half-edges are made in pairs as the faces meet
+// new edges, the first of each pair running the way its face does:
+//   back:   0->2 (0, 1), 2->3 (2, 3), 3->1 (4, 5), 1->0 (6, 7)
+//   front:  4->5 (8, 9), 5->7 (10, 11), 7->6 (12, 13), 6->4 (14, 15)
+//   left:   0->4 (16, 17), 4->6 is 15, 6->2 (18, 19), 2->0 is 1
+//   right:  1->3 is 5, 3->7 (20, 21), 7->5 is 11, 5->1 (22, 23)
+//   bottom: 0->1 is 7, 1->5 is 23, 5->4 is 9, 4->0 is 17
+//   top:    2->6 is 19, 6->7 is 13, 7->3 is 21, 3->2 is 3
+// so 24 half-edges, 12 edges, none on the boundary. The back face's
+// half-edge is the one ending at its first vertex, 1->0, half-edge 6, and its
+// half-edges from there are 6, 0, 2, 4. Vertex 0's half-edge is the first
+// leaving it, 0 (0->2); turning about it, each next is the twin of the one
+// before it in its face: before 0 in the back face is 6 (1->0), twin 7
+// (0->1); before 7 in the bottom face is 17 (4->0), twin 16 (0->4); before 16
+// in the left face is 1 (2->0), twin 0, where it began. So its one-ring is
+// 0, 7, 16, its neighbours 2, 1, 4. Vertex 7's is 11 (7->5), then before 11
+// in the right face 20 (3->7), twin 21 (7->3), then before 21 in the top
+// face 13 (6->7), twin 12 (7->6): neighbours 5, 3, 6.
+//
+// A single quad (0, 1, 2, 3), (0,0,0) (1,0,0) (1,1,0) (0,1,0): half-edges
+// 0->1 (0, 1), 1->2 (2, 3), 2->3 (4, 5), 3->0 (6, 7), the odd ones on the
+// boundary. Boundary half-edge 1 (1->0) ends at 0; from its twin 0, the one
+// before 0 in the face is 6 (3->0), whose twin 7 (0->3) has no face: so 1's
+// next is 7, and likewise 7's is 5, 5's is 3, 3's is 1, a loop the other way
+// round. Vertex 0's half-edge is the boundary one leaving it, 7; its one-ring
+// is 7, then the twin of 7's prev (1) is 0, then the twin of 0's prev (6) is
+// 7 again: neighbours 3, 1.
+//
+// Two triangles touching only at vertex 0, (0, 1, 2) and (0, 3, 4): four
+// half-edges leave vertex 0, but turning about it from its half-edge (the
+// first boundary one leaving it, 5, 0->2) meets only two before coming back,
+// so validate reports it not manifold, and nothing else.
+//
+// A cube cage with half-edge 0 given face 1: half-edge 0's next (2) is in
+// face 0, and half-edge 6, whose next is 0, is in face 0 while 0 is not;
+// validate reports those two, in half-edge order.
+
+mod polymesh;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+
+imm near = 0.00001d;
+
+fn point(got Vec3, x f32, y f32, z f32, label &[]u8) {
+  expectFloat(got.x, x, near, label);
+  expectFloat(got.y, y, near, label);
+  expectFloat(got.z, z, near, label);
+}
+
+// A list of 2, 3 or 4 numbers: the first 'n' of a, b, c, d
+fn ints(got &List[u32], n usize, a u32, b u32, c u32, d u32, label &[]u8) {
+  if expectInt(i64[got.len()], i64[n], label) {
+    expectInt(i64[*got[0usize]], i64[a], label);
+    expectInt(i64[*got[1usize]], i64[b], label);
+    if n > 2usize { expectInt(i64[*got[2usize]], i64[c], label); }
+    if n > 3usize { expectInt(i64[*got[3usize]], i64[d], label); }
+  }
+}
+
+// Problem line i, when there is one
+fn problem(got &List[String], i usize, want &[]u8, label &[]u8) {
+  if got.len() > i { expectStr(got[i].view(), want, label); } else { expectStr("", want, label); }
+}
+
+// No problems; the first, if there is one, shows as what was got
+fn clean(got &List[String], label &[]u8) {
+  if got.len() > 0usize { expectStr(got[0usize].view(), "", label); } else { expect(true, label); }
+}
+
+fn cage() {
+  imm m = PolyMesh.cube(1.);
+  requireInt(i64[m.vertexCount()], 8, "cage vertices");
+  expectInt(i64[m.halfedgeCount()], 24, "cage half-edges");
+  expectInt(i64[m.edgeCount()], 12, "cage edges");
+  expectInt(i64[m.faceCount()], 6, "cage faces");
+  imm found = m.validate();
+  clean(&found, "cage validates");
+
+  point(*m.positions[0usize], -1., -1., -1., "cage vertex 0");
+  point(*m.positions[6usize], -1., 1., 1., "cage vertex 6");
+  imm b = m.bounds();
+  point(b.min, -1., -1., -1., "cage bounds min");
+  point(b.max, 1., 1., 1., "cage bounds max");
+
+  expectInt(i64[m.faceHalfedge(0u32)], 6, "back face's half-edge");
+  imm fh = m.faceHalfedges(0u32);
+  ints(&fh, 4usize, 6u32, 0u32, 2u32, 4u32, "back face's half-edges");
+  imm fv = m.faceVertices(0u32);
+  ints(&fv, 4usize, 0u32, 2u32, 3u32, 1u32, "back face's vertices");
+  imm fv5 = m.faceVertices(5u32);
+  ints(&fv5, 4usize, 2u32, 6u32, 7u32, 3u32, "top face's vertices");
+  expectInt(i64[m.faceDegree(3u32)], 4, "a quad's degree");
+
+  expectInt(i64[m.twin(6u32)], 7, "twin of 6");
+  expectInt(i64[m.twin(7u32)], 6, "twin of 7");
+  expectInt(i64[m.toVertex(6u32)], 0, "6 ends at vertex 0");
+  expectInt(i64[m.fromVertex(6u32)], 1, "6 starts at vertex 1");
+  expectInt(i64[m.edge(7u32)], 3, "7 is on edge 3");
+  expectInt(i64[m.next(6u32)], 0, "next of 6");
+  expectInt(i64[m.prev(0u32)], 6, "prev of 0");
+  expectInt(i64[m.face(7u32)], 4, "7 is in the bottom face");
+  expectInt(i64[m.face(15u32)], 2, "15 is in the left face");
+
+  expectInt(i64[m.vertexHalfedge(0u32)], 0, "vertex 0's half-edge");
+  imm ring = m.vertexOutgoing(0u32);
+  ints(&ring, 3usize, 0u32, 7u32, 16u32, 0u32, "vertex 0's one-ring");
+  imm nb = m.vertexNeighbors(0u32);
+  ints(&nb, 3usize, 2u32, 1u32, 4u32, 0u32, "vertex 0's neighbours");
+  imm nb7 = m.vertexNeighbors(7u32);
+  ints(&nb7, 3usize, 5u32, 3u32, 6u32, 0u32, "vertex 7's neighbours");
+  expectInt(i64[m.valence(5u32)], 3, "vertex 5's valence");
+
+  expectBool(m.isBoundaryVertex(0u32), false, "a closed cage has no boundary vertex");
+  expectBool(m.isBoundaryEdge(0u32), false, "nor boundary edge");
+  expectBool(m.isBoundaryHalfedge(1u32), false, "nor boundary half-edge");
+
+  point(m.faceNormal(0u32), 0., 0., -1., "back face's normal");
+  point(m.faceNormal(5u32), 0., 1., 0., "top face's normal");
+  point(m.faceCentroid(5u32), 0., 1., 0., "top face's centre");
+  // Three square faces meet at each corner at right angles: equal weights
+  imm vn = m.vertexNormals();
+  imm d f32 = 0.5773503;
+  point(*vn[0usize], -d, -d, -d, "vertex 0's normal");
+  point(*vn[7usize], d, d, d, "vertex 7's normal");
+}
+
+fn quad() {
+  imm pts [4; Vec3] = [Vec3[0., 0., 0.], Vec3[1., 0., 0.], Vec3[1., 1., 0.], Vec3[0., 1., 0.]];
+  imm counts [1; u32] = [4u32];
+  imm idx [4; u32] = [0u32, 1u32, 2u32, 3u32];
+  mut built = List[String].empty();
+  imm m = PolyMesh.fromPolygons(&pts, &counts, &idx, &mut built);
+  clean(&built, "a quad builds");
+  requireInt(i64[m.faceCount()], 1, "quad faces");
+  expectInt(i64[m.halfedgeCount()], 8, "quad half-edges");
+  expectInt(i64[m.edgeCount()], 4, "quad edges");
+  imm found = m.validate();
+  clean(&found, "a quad validates");
+
+  expectBool(m.isBoundaryHalfedge(0u32), false, "0 is the face's");
+  expectBool(m.isBoundaryHalfedge(1u32), true, "1 is the boundary's");
+  expectInt(i64[m.face(1u32)], i64[NoIndex], "a boundary half-edge has no face");
+  mut e = 0u32;
+  mut allEdges = true;
+  mut allVerts = true;
+  while e < 4u32 {
+    if !m.isBoundaryEdge(e) { allEdges = false; }
+    if !m.isBoundaryVertex(e) { allVerts = false; }
+    e = e + 1u32;
+  }
+  expect(allEdges, "every edge is on the boundary");
+  expect(allVerts, "every vertex is on the boundary");
+
+  expectInt(i64[m.next(1u32)], 7, "boundary: next of 1");
+  expectInt(i64[m.next(7u32)], 5, "boundary: next of 7");
+  expectInt(i64[m.next(5u32)], 3, "boundary: next of 5");
+  expectInt(i64[m.next(3u32)], 1, "boundary: next of 3");
+  expectInt(i64[m.prev(1u32)], 3, "boundary: prev of 1");
+  expectInt(i64[m.next(6u32)], 0, "face: next of 6");
+
+  expectInt(i64[m.vertexHalfedge(0u32)], 7, "vertex 0's half-edge is its boundary one");
+  imm ring = m.vertexOutgoing(0u32);
+  ints(&ring, 2usize, 7u32, 0u32, 0u32, 0u32, "vertex 0's one-ring");
+  imm nb = m.vertexNeighbors(0u32);
+  ints(&nb, 2usize, 3u32, 1u32, 0u32, 0u32, "vertex 0's neighbours");
+  point(m.faceNormal(0u32), 0., 0., 1., "quad's normal");
+}
+
+fn refused() {
+  imm pts [5; Vec3] = [Vec3[0., 0., 0.], Vec3[1., 0., 0.], Vec3[0., 1., 0.], Vec3[0., -1., 0.], Vec3[0., 0., 1.]];
+  // (0,1,2) and (1,0,3) share an edge, each its own way; (0,1,4) runs 0->1
+  // as (0,1,2) does; (0,1) is too small; (0,9,1) names no vertex 9; (2,3,2)
+  // repeats vertex 2
+  imm counts [6; u32] = [3u32, 3u32, 3u32, 2u32, 3u32, 3u32];
+  imm idx [17; u32] = [0u32, 1u32, 2u32,  1u32, 0u32, 3u32,  0u32, 1u32, 4u32,  0u32, 1u32,
+    0u32, 9u32, 1u32,  2u32, 3u32, 2u32];
+  mut built = List[String].empty();
+  imm m = PolyMesh.fromPolygons(&pts, &counts, &idx, &mut built);
+  expectInt(i64[built.len()], 4, "faces refused");
+  problem(&built, 0usize, "face 2: runs from vertex 0 to 1, as another face already does", "a third face on an edge");
+  problem(&built, 1usize, "face 3: has fewer than 3 corners", "a face too small");
+  problem(&built, 2usize, "face 4: names vertex 9, which does not exist", "a vertex that is not there");
+  problem(&built, 3usize, "face 5: has vertex 2 twice", "a vertex twice in a face");
+  expectInt(i64[m.faceCount()], 2, "the two good faces are kept");
+  imm found = m.validate();
+  clean(&found, "what was kept validates");
+  expect(m.isBoundaryVertex(4u32) == false and m.isIsolated(4u32), "vertex 4 is on no edge");
+
+  // Sizes that do not add up
+  imm short [2; u32] = [0u32, 1u32];
+  mut built2 = List[String].empty();
+  imm three [1; u32] = [3u32];
+  imm m2 = PolyMesh.fromPolygons(&pts, &three, &short, &mut built2);
+  expectInt(i64[built2.len()], 1, "sizes that do not add up");
+  problem(&built2, 0usize, "the faces' sizes add up to 3 corners, but 2 vertex numbers were given", "sizes that do not add up");
+  expectInt(i64[m2.faceCount()], 0, "no faces when the sizes do not add up");
+}
+
+fn broken() {
+  // A bowtie: two triangles meeting only at vertex 0
+  imm pts [5; Vec3] = [Vec3[0., 0., 0.], Vec3[1., 0., 0.], Vec3[1., 1., 0.], Vec3[-1., 0., 0.], Vec3[-1., -1., 0.]];
+  imm idx [6; u32] = [0u32, 1u32, 2u32, 0u32, 3u32, 4u32];
+  mut built = List[String].empty();
+  imm threes [2; u32] = [3u32, 3u32];
+  imm m = PolyMesh.fromPolygons(&pts, &threes, &idx, &mut built);
+  clean(&built, "a bowtie builds");
+  expectInt(i64[m.vertexHalfedge(0u32)], 5, "the bowtie's centre's half-edge");
+  imm found = m.validate();
+  expectInt(i64[found.len()], 1, "a bowtie: one problem");
+  problem(&found, 0usize, "vertex 0: is not manifold (its faces are not one fan)", "a bowtie is not manifold");
+
+  // A cage with one half-edge given the wrong face
+  mut c = PolyMesh.cube(1.);
+  c.hFace.set(0usize, 1u32);
+  imm found2 = c.validate();
+  expectInt(i64[found2.len()], 2, "a half-edge in the wrong face: two problems");
+  problem(&found2, 0usize, "half-edge 0: its next is in another face", "the half-edge in the wrong face");
+  problem(&found2, 1usize, "half-edge 6: its next is in another face", "the half-edge before it");
+
+  // A link to nothing is reported before any link is followed
+  mut d = PolyMesh.cube(1.);
+  d.hNext.set(3usize, 99u32);
+  imm found3 = d.validate();
+  expectInt(i64[found3.len()], 1, "a next that does not exist: one problem");
+  problem(&found3, 0usize, "half-edge 3: its next does not exist", "a next that does not exist");
+}
+
+fn channels() {
+  mut m = PolyMesh.cube(1.);
+  expectInt(i64[m.domainSize(VertexDomain)], 8, "vertex domain");
+  expectInt(i64[m.domainSize(EdgeDomain)], 12, "edge domain");
+  expectInt(i64[m.domainSize(FaceDomain)], 6, "face domain");
+  expectInt(i64[m.domainSize(CornerDomain)], 24, "corner domain: one per half-edge");
+
+  imm crease = m.addFloatChannel(EdgeDomain, "crease", 0.);
+  expectInt(i64[crease], 0, "the first float channel");
+  m.setFloat(crease, 3u32, 2.5);
+  expectFloat(m.float(crease, 3u32), 2.5, near, "a crease set");
+  expectFloat(m.float(crease, 4u32), 0., near, "a crease left at its fill");
+  expectInt(i64[m.addFloatChannel(EdgeDomain, "crease", 1.)], 0, "adding it again finds it");
+  expectFloat(m.float(crease, 4u32), 0., near, "and keeps its values");
+  expectInt(i64[m.findFloatChannel(VertexDomain, "crease")], i64[NoIndex], "a name is per domain");
+  imm weight = m.addFloatChannel(VertexDomain, "weight", 1.);
+  expectInt(i64[weight], 1, "the second float channel");
+  expectFloat(m.float(weight, 7u32), 1., near, "a vertex weight at its fill");
+
+  imm uv = m.addVec2Channel(CornerDomain, "uv", Vec2[0., 0.]);
+  m.setVec2(uv, 6u32, Vec2[0.25, 0.75]);
+  imm got = m.vec2(uv, 6u32);
+  expectFloat(got.x, 0.25, near, "a corner uv, u");
+  expectFloat(got.y, 0.75, near, "a corner uv, v");
+  imm color = m.addVec3Channel(FaceDomain, "color", Vec3[1., 1., 1.]);
+  m.setVec3(color, 5u32, Vec3[1., 0., 0.]);
+  point(m.vec3(color, 5u32), 1., 0., 0., "a face color");
+  point(m.vec3(color, 4u32), 1., 1., 1., "a face color at its fill");
+
+  imm found = m.validate();
+  clean(&found, "channels of the right size validate");
+}
+
+fn main() i32 {
+  cage();
+  quad();
+  refused();
+  broken();
+  channels();
+  done();
+}

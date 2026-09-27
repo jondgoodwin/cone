@@ -1,0 +1,190 @@
+// The mesh package's generators, checked with the testing package against
+// values worked out by hand from the geometry; only a failure prints, so
+// generators.out holds the summary alone.
+//
+// A sphere of radius 2 in 4 segments has a pole, 3 circles of latitude of 5
+// vertices (4 around, then the first again at u = 1), and a pole: 17
+// vertices, top pole 0, circle 1 from 1 to 5, circle 2 from 6 to 10, circle
+// 3 from 11 to 15, bottom pole 16. Circle i is i * 45 degrees down from the
+// top, vertex j is j * 90 degrees around, at (-cos(around) sin(down),
+// cos(down), sin(around) sin(down)) times the radius: vertex 1 at (-sqrt 2,
+// sqrt 2, 0), 2 at (0, sqrt 2, sqrt 2), 6 at (-2, 0, 0), 8 at (2, 0, 0).
+// Its reach is 2 along every axis each way: the box (-2,-2,-2) to (2,2,2).
+// 4 triangles at each pole and 8 for each of the 2 bands: 24, 72 indices.
+// Each winds counterclockwise seen from outside, so the cross product of its
+// edges points outwards, along the sum of its corners: the top cap's first
+// is (0, 1, 2); the first band's first two, from index 12, (1, 6, 7) and
+// (1, 7, 2); the bottom cap's first, from index 60, (11, 16, 12), and its
+// last (14, 16, 15).
+//
+// With 32-bit indices a sphere may pass 65,536 vertices: 300 segments are
+// 301 * 299 + 2 = 90,001 vertices and 6 * 300 * 299 = 538,200 indices; the
+// last triangle's middle index, 538,198, is the bottom pole, vertex 90,000.
+//
+// A plane in 2 segments: 3 by 3 vertices, x and z from -1 to 1, row by row
+// along x from z = -1; 8 triangles, each counterclockwise seen from above
+// (+y): the first square's (0, 3, 4) and (0, 4, 1), the last's (4, 7, 8)
+// and (4, 8, 5). The uv (0, 0) is vertex 6, (-1, 0, 1); vertex 2, (1, 0,
+// -1), is (1, 1).
+//
+// A cube of size 2: the faces top, bottom, back, front, left, right, four
+// corners each, the first (-2, 2, -2), the front face's second (2, 2, 2),
+// the last (2, -2, 2). Each face's normal is its across-direction crossed
+// with its up-direction: top x cross -z = +y, front x cross y = +z, left z
+// cross y = -x. Each face's uv is (0, 0) at its lower left seen from outside:
+// top's first corner (-1, 1, -1) is at its upper left, (0, 1); front's
+// second (1, 1, 1) its upper right, (1, 1); left's first (-1, -1, -1) its
+// lower left, (0, 0). Triangles (0, 2, 1) first and (20, 22, 23) last, every
+// one counterclockwise from outside.
+
+mod generators;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+
+imm near = 0.00001d;
+
+fn point(got Vec3, x f32, y f32, z f32, label &[]u8) {
+  expectFloat(got.x, x, near, label);
+  expectFloat(got.y, y, near, label);
+  expectFloat(got.z, z, near, label);
+}
+
+fn uv(got Vec2, u f32, v f32, label &[]u8) {
+  expectFloat(got.x, u, near, label);
+  expectFloat(got.y, v, near, label);
+}
+
+fn triangle(m &Mesh, at usize, a u32, b u32, c u32, label &[]u8) {
+  expectInt(i64[*m.indices[at]], i64[a], label);
+  expectInt(i64[*m.indices[at + 1usize]], i64[b], label);
+  expectInt(i64[*m.indices[at + 2usize]], i64[c], label);
+}
+
+// How many triangles have their edges' cross product pointing along the sum
+// of their corners: outward, on a shape around the origin
+fn outward(m &Mesh) i64 {
+  mut count = 0;
+  mut t = 0usize;
+  while t + 2usize < m.indices.len() {
+    imm a = *m.positions[usize[*m.indices[t]]];
+    imm b = *m.positions[usize[*m.indices[t + 1usize]]];
+    imm c = *m.positions[usize[*m.indices[t + 2usize]]];
+    if (b - a).cross(c - a).dot(a + b + c) > 0. { count = count + 1; }
+    t = t + 3usize;
+  }
+  i64[count];
+}
+
+fn vertices(m &Mesh) i64 {i64[m.positions.len()];}
+
+fn sphere() {
+  imm s = Mesh.sphere(2., 4);
+  requireInt(vertices(&s), 17, "sphere vertices");
+  expectInt(i64[s.normals.len()], 17, "sphere normals");
+  expectInt(i64[s.uvs.len()], 17, "sphere uvs");
+  expectInt(i64[s.indices.len()], 72, "sphere indices");
+  expectInt(i64[s.triangleCount()], 24, "sphere triangles");
+  imm r2 f32 = 1.4142136;
+  point(*s.positions[0usize], 0., 2., 0., "top pole");
+  point(*s.positions[1usize], -r2, r2, 0., "circle 1, vertex 0");
+  point(*s.positions[2usize], 0., r2, r2, "circle 1, vertex 1");
+  point(*s.positions[6usize], -2., 0., 0., "circle 2, vertex 0");
+  point(*s.positions[8usize], 2., 0., 0., "circle 2, vertex 2");
+  point(*s.positions[16usize], 0., -2., 0., "bottom pole");
+  point(*s.normals[6usize], -1., 0., 0., "circle 2's normal");
+  uv(*s.uvs[5usize], 1., 0.75, "circle 1's repeat uv");
+  uv(*s.uvs[8usize], 0.5, 0.5, "circle 2, vertex 2 uv");
+  imm b = s.bounds();
+  point(b.min, -2., -2., -2., "sphere bounds, min");
+  point(b.max, 2., 2., 2., "sphere bounds, max");
+  triangle(&s, 0usize, 0u32, 1u32, 2u32, "top cap's first triangle");
+  triangle(&s, 12usize, 1u32, 6u32, 7u32, "first band's first triangle");
+  triangle(&s, 15usize, 1u32, 7u32, 2u32, "first band's second triangle");
+  triangle(&s, 60usize, 11u32, 16u32, 12u32, "bottom cap's first triangle");
+  triangle(&s, 69usize, 14u32, 16u32, 15u32, "bottom cap's last triangle");
+  expectInt(outward(&s), 24, "every triangle counterclockwise from outside");
+
+  imm d = Mesh.sphere(1., 15);
+  expectInt(vertices(&d), 226, "15-segment sphere vertices");
+  expectInt(i64[d.indices.len()], 1260, "15-segment sphere indices");
+  imm few = Mesh.sphere(1., 2);
+  expectInt(vertices(&few), 0, "2-segment sphere");
+
+  imm big = Mesh.sphere(1., 300);
+  expectInt(vertices(&big), 90001, "300-segment sphere vertices");
+  expectInt(i64[big.indices.len()], 538200, "300-segment sphere indices");
+  expectInt(i64[*big.indices[538198usize]], 90000, "an index past 16 bits");
+}
+
+fn plane() {
+  imm s = Mesh.plane(2, 1.);
+  requireInt(vertices(&s), 9, "plane vertices");
+  expectInt(i64[s.indices.len()], 24, "plane indices");
+  point(*s.positions[0usize], -1., 0., -1., "plane's first corner");
+  point(*s.positions[4usize], 0., 0., 0., "plane's middle");
+  point(*s.positions[8usize], 1., 0., 1., "plane's last corner");
+  point(*s.normals[8usize], 0., 1., 0., "plane's normal");
+  uv(*s.uvs[6usize], 0., 0., "plane's uv origin");
+  uv(*s.uvs[2usize], 1., 1., "plane's far uv");
+  triangle(&s, 0usize, 0u32, 3u32, 4u32, "plane's first triangle");
+  triangle(&s, 3usize, 0u32, 4u32, 1u32, "plane's second triangle");
+  triangle(&s, 18usize, 4u32, 7u32, 8u32, "plane's last square, first");
+  triangle(&s, 21usize, 4u32, 8u32, 5u32, "plane's last square, second");
+  mut up = 0;
+  mut t = 0usize;
+  while t < 24usize {
+    imm a = *s.positions[usize[*s.indices[t]]];
+    imm b = *s.positions[usize[*s.indices[t + 1usize]]];
+    imm c = *s.positions[usize[*s.indices[t + 2usize]]];
+    if (b - a).cross(c - a).y > 0. { up = up + 1; }
+    t = t + 3usize;
+  }
+  expectInt(i64[up], 8, "every triangle faces up");
+  imm bx = s.bounds();
+  point(bx.min, -1., 0., -1., "plane bounds, min");
+  point(bx.max, 1., 0., 1., "plane bounds, max");
+  imm none = Mesh.plane(0, 1.);
+  expectInt(vertices(&none), 0, "0-segment plane");
+}
+
+fn cube() {
+  imm s = Mesh.cube(2.);
+  requireInt(vertices(&s), 24, "cube vertices");
+  expectInt(i64[s.indices.len()], 36, "cube indices");
+  expectInt(i64[s.normals.len()], 24, "cube normals");
+  expectInt(i64[s.uvs.len()], 24, "cube uvs");
+  point(*s.positions[0usize], -2., 2., -2., "cube's first corner");
+  point(*s.positions[13usize], 2., 2., 2., "front face's second corner");
+  point(*s.positions[23usize], 2., -2., 2., "cube's last corner");
+  point(*s.normals[0usize], 0., 1., 0., "top's normal");
+  point(*s.normals[13usize], 0., 0., 1., "front's normal");
+  point(*s.normals[16usize], -1., 0., 0., "left's normal");
+  uv(*s.uvs[0usize], 0., 1., "top's first corner, upper left");
+  uv(*s.uvs[13usize], 1., 1., "front's second corner, upper right");
+  uv(*s.uvs[16usize], 0., 0., "left's first corner, lower left");
+  triangle(&s, 0usize, 0u32, 2u32, 1u32, "cube's first triangle");
+  triangle(&s, 33usize, 20u32, 22u32, 23u32, "cube's last triangle");
+  expectInt(outward(&s), 12, "every triangle counterclockwise from outside");
+  // Every vertex's normal agrees with its triangles'
+  mut agree = 0;
+  mut t = 0usize;
+  while t < 36usize {
+    imm n = s.triangleNormal(t / 3usize);
+    if n.dot(*s.normals[usize[*s.indices[t]]]) > 0.99 { agree = agree + 1; }
+    t = t + 1usize;
+  }
+  expectInt(i64[agree], 36, "every corner's normal is its face's");
+  imm b = s.bounds();
+  point(b.min, -2., -2., -2., "cube bounds, min");
+  point(b.max, 2., 2., 2., "cube bounds, max");
+}
+
+fn main() i32 {
+  sphere();
+  plane();
+  cube();
+  done();
+}
