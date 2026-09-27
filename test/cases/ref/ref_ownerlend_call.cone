@@ -1,0 +1,58 @@
+// An owner lent where a '&' or '&mut' is wanted, or as a 'self &' or 'self
+// &mut' receiver, is borrowed from, and each lend ends with its call: lent
+// mutably twice one call after another, lent twice to one call as '&', a
+// receiver lent mutably beside an argument that only reads it (the receiver's
+// borrow is two-phase, reserved while the arguments are walked), a receiver
+// and an argument both lent as '&', and two owners each lending to the other's
+// method in turn. None of these holds a written borrow, and none conflicts.
+// Two lends that do conflict in one call are ref_flow_ownerlend_call.
+
+mod ref_ownerlend_call;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct R {
+  pub n i64;
+
+  pub fn bumpBy(self &mut, k i64) { n = n + k; }
+  pub fn peek(self &, o &R) i64 { n + o.n; }
+  pub fn peekMut(self &mut, o &R) { n = n + o.n; }
+
+  fn final(self &uni) {
+    show("final", n);
+  }
+}
+
+fn bump(x &mut R) { x.n = x.n + 1; }
+fn sum(x &R, y &R) i64 { x.n + y.n; }
+
+fn main() {
+  {
+    imm a = +so R[1];
+    bump(a);
+    bump(a);
+    show("seq", a.n);
+    show("two-read", sum(a, a));
+    a.bumpBy(a.n);
+    show("two-phase", a.n);
+    show("peek", a.peek(a));
+    imm b = +so R[10];
+    a.peekMut(b);
+    b.peekMut(a);
+    show("a", a.n);
+    show("b", b.n);
+  }
+  {
+    imm c = +rc R[20];
+    bump(c);
+    show("rc", sum(c, c));
+  }
+  show("end", 0);
+}

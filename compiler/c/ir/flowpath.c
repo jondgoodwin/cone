@@ -654,6 +654,17 @@ static PathSet *pwReceiver(FnCallNode *call, FnDclNode *meth, Place *pl, uint32_
         *access = (call->flags & FlagLvalOp) ? AccessWrite : loanBorrowAccess(perm);
         return pwLend(recv, pl, perm, pwReserved(*access), loan);
     }
+    // An owner lent as the receiver ('a.bump()', 'a' a '+so R' or a '+<so
+    // App'): a borrow of what it owns, as pwOwnedLent reads any other lent
+    // owner, and not a borrowed reference read through, which would make the
+    // path shared
+    if (recv->tag == CastTag && pwIsOwnedLent((CastNode *)recv)) {
+        if (!pwThrough(&((CastNode *)recv)->exp, pl, &base))
+            return base;
+        INode *perm = ((RefNode *)iexpGetTypeDcl(recv))->perm;
+        *access = loanBorrowAccess(perm);
+        return pwLend(recv, pl, perm, pwReserved(*access), loan);
+    }
     INode *selftype = iexpGetTypeDcl(nodesGet(((FnSigNode *)meth->vtype)->parms, 0));
     if (!pwIsBorrowed(iexpGetTypeDcl(recv)) || selftype->tag != RefTag)
         return pwValue(recvp, 1);
