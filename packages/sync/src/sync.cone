@@ -4,9 +4,9 @@
 // the region whose owners of one value several threads may hold; the futex,
 // the one way a thread sleeps until another wakes it; the locks built on
 // the futex: Mutex, RwLock, Condvar and Once; and the channel, a pipe of
-// values from any number of threads to one. Windows only for now: the
-// futex's three functions, a yield and a clock are the package's only calls
-// to the OS.
+// values from any number of threads to one, unbounded or bounded. Windows
+// only for now: the futex's three functions, a yield and a clock are the
+// package's only calls to the OS.
 //
 //   Atomic[T]      a value changed only indivisibly             (below)
 //   arc            rc whose count is atomic: '+arc-imm T[...]'  (SHARED OWNERS)
@@ -233,13 +233,16 @@
 //
 // CHANNELS. A channel is a pipe between threads with two ends: whoever holds
 // a sending end puts values in, and whoever holds the receiving end takes
-// them out, oldest first. Channel[T] is unbounded, with any number of
-// senders and one receiver (MPSC): a send never waits, and the receiver
-// waits only while the channel is empty.
+// them out, oldest first. A Channel[T] has any number of senders and one
+// receiver (MPSC), and comes in two kinds, whose ends are the same types:
+// unbounded, whose sends never wait, and bounded, holding at most so many
+// values, whose sends wait while it is full -- backpressure: a sender
+// faster than its receiver is held to its pace, and the memory the channel
+// uses has a ceiling. The receiver waits only while the channel is empty.
 //
 //   mut tx Sender[u64];
 //   mut rx Receiver[u64];
-//   tx, rx = Channel[u64].make();      // the two ends
+//   tx, rx = Channel[u64].make();      // the two ends; or .bounded(1024)
 //   imm tx2 = tx.clone();              // a second sender, said out loud
 //   thread.start(tx2, &producer);      // an end moves to another thread
 //   tx <- 7u64;                        // send; or tx.send(7u64)
@@ -251,16 +254,26 @@
 //     }
 //   }
 //
-//   Channel[T].make()        a new channel: its Sender[T] and its Receiver[T],
-//                            a tuple assigned to two variables declared first
-//                            (a declaration cannot yet take a tuple apart)
-//   tx.send(v)               put v in; never waits. None once it is in, or
-//                            Some[v], the value handed back, when the
-//                            receiver has gone or closed the channel
+//   Channel[T].make()        a new unbounded channel: its Sender[T] and its
+//                            Receiver[T], a tuple assigned to two variables
+//                            declared first (a declaration cannot yet take a
+//                            tuple apart)
+//   Channel[T].bounded(n)    a new bounded channel, holding at most n values:
+//                            n rounded up to a power of two, and 0 taken as 1
+//   tx.send(v)               put v in, waiting while a bounded channel is
+//                            full. None once it is in, or Some[v], the value
+//                            handed back, when the receiver has gone or
+//                            closed the channel -- which wakes a send
+//                            waiting for room, to hand its value back too
 //   tx <- v                  the same: '<-', Cone's append, is send. It
 //                            borrows tx as 'mut', as '+=' does, so tx is a
 //                            'mut' variable or a reference to a Sender;
 //                            'tx <- (a, b)' sends each in turn
+//   tx.trySend(v)            send, but never waiting: Some[v] back when a
+//                            bounded channel is full, too
+//   tx.sendTimeout(v, ns)    send, waiting at most ns nanoseconds for room
+//                            (the futex's resolution: it may run over by a
+//                            tick): Some[v] back when none came
 //   tx.clone()               another Sender on the same channel
 //   rx.recv()                the next value, waiting while there is none;
 //                            None once the channel is closed and every value
@@ -278,23 +291,35 @@
 //   take values, and close, take it as '&mut'.
 // - The channel ends with its ends, and nothing panics. The last Sender's
 //   death closes it: the receiver takes what is left, then recv answers
-//   None. The Receiver's death closes it too: each later send gets its value
-//   back, and each value still in the channel is finalized there, once. The
-//   memory goes when both sides have.
+//   None. The Receiver's death closes it too: each send waiting for room
+//   wakes, each send then and later gets its value back, and each value
+//   still in the channel is finalized there, once. The memory goes when both
+//   sides have.
+// - A bounded channel's send waits for as long as the channel stays full:
+//   a receiver that stops taking without going leaves its senders waiting
+//   for good. Where that may happen -- two threads each sending to the
+//   other, say -- send with trySend or sendTimeout, or unbounded.
+// - The two kinds share their ends' types, so what takes a Sender[T] or a
+//   Receiver[T] takes either: the kind is the constructor's choice alone. An
+//   unbounded channel is never full, so its trySend and sendTimeout are its
+//   send.
 // - A value moves in and moves out: a number, a struct, a '+so' or 'uni'
 //   owner. A large value is best sent as an owner, since a slot holds the
-//   whole T. A value never taken is finalized exactly once.
+//   whole T, and a bounded channel has its n slots from the start. A value
+//   never taken is finalized exactly once.
 // - T must be Sendable, as the thread package's 'start' asks of what it is
 //   handed: a channel of a borrow, a 'mut' owner or an '+rc-imm' owner is
 //   refused where it is named. The ends declare Sendable, so they cross.
-// - Not here yet: a bounded channel, which makes a sender wait while it is
-//   full; a single-sender channel, whose sender has no clone; taking every
-//   value waiting at once ('drain'); and 'each v in rx', which needs the
+// - Not here yet: a single-sender channel, whose sender has no clone; a
+//   channel of no capacity, whose send waits for the receiver to take its
+//   value (Go's unbuffered, Rust's sync_channel(0)); taking every value
+//   waiting at once ('drain'); and 'each v in rx', which needs the
 //   iteration protocol. 'select' over several channels is left out for now.
 //
-// How it is built is at the channel's own section, below: linked blocks of
-// 32 slots, one compare-and-swap for a send, no read-modify-write for the
-// receiver, and the futex only when the receiver sleeps.
+// How it is built is at the channel's own section, below. Unbounded: linked
+// blocks of 32 slots. Bounded: a ring of n cells. Both: one compare-and-swap
+// for a send, no read-modify-write for the receiver, and the futex only when
+// the receiver sleeps, or, bounded, a sender waits for room.
 
 mod sync;
 
@@ -1153,25 +1178,42 @@ struct Block[T] {
   pub slots [32; Slot[T]];
 }
 
-// What every end of one channel shares, one allocation. The senders' index
-// and its block are written by every send, so they sit on a 64-byte cache
-// line of their own: Cone has no alignment attribute yet, so the padding
-// fields keep anything else at least a line away on each side (an address 64
-// or more past the start of the pair is on a later line, and the pair, 16
-// bytes at a 16-byte-aligned address, never straddles one). The receiver's
-// index is not here at all: only the receiver reads or writes it, so it lives
-// in the Receiver. 'sleeping' is read by every send and written only when the
-// receiver goes to sleep, so it shares a line with the two counts, which
-// change only when a sender is cloned or dropped.
+// What every end of one channel shares, one allocation, in three groups,
+// each on 64-byte cache lines of its own. Cone has no alignment attribute
+// yet, so padding fields keep every group 64 bytes or more from the next:
+// an address that far past another's last byte is on a later line.
+//
+// - The senders' group, written by every send: their index; the unbounded
+//   kind's block it falls in; the bounded kind's 'seen', the receiver's
+//   count as a sender last read it.
+// - The shared group, read by every send or take and written seldom:
+//   'sleeping', written when the receiver goes to sleep; the two counts,
+//   when a sender is cloned or dropped; the bounded kind's ring and mask, set
+//   once, and 'waiting' and 'space', written only by a sender about to sleep
+//   for want of room and by the receiver waking it.
+// - The receiver's group, the bounded kind's 'taken', written by every take
+//   and read by a sender only when 'seen' says the ring may be full. The
+//   unbounded kind's receiver publishes nothing: its index lives in the
+//   Receiver, which no other thread reads.
+//
+// The whole is 384 bytes, a multiple of 64, so a bounded channel's ring,
+// which follows it in the same allocation, begins as aligned as that.
 struct Chan[T] {
   pub before [64; u8];
   pub tail u64;                // the senders' index; bit 0, closed
-  pub tailBlock *Block[T];     // the block the senders' index falls in
-  pub between [48; u8];
+  pub tailBlock *Block[T];     // unbounded: the block the senders' index falls in
+  pub seen u64;                // bounded: 'taken', as a sender last read it
+  pub between [64; u8];
   pub sleeping u32;            // the futex word: 1 while the receiver sleeps
   pub sides u32;               // 2, less 1 as the receiver and as the last sender go
   pub senders u64;             // how many Senders there are
-  pub after [48; u8];
+  pub ring *Cell[T];           // bounded: its cells; unbounded: 0, which says which kind
+  pub mask u64;                // bounded: its cells less 1
+  pub waiting u32;             // bounded: 1 while a sender sleeps, or is about to, for room
+  pub space u32;               // bounded: the futex word they sleep on; changed to wake them
+  pub gap [64; u8];
+  pub taken u64;               // bounded: how many positions the receiver has taken
+  pub after [120; u8];
 }
 
 // A new block, every slot unwritten and no next block
@@ -1263,12 +1305,229 @@ fn nowNs() u64 {
   (c / f) * 1000000000u64 + (c % f) * 1000000000u64 / f;
 }
 
+// ---------------------------------------------------------------------------
+// The bounded kind: a ring of cells, a power of two of them, each holding a
+// value and a sequence stamp. Positions are counted in the same index as the
+// unbounded kind's, shifted left one bit for the closed bit, but with no
+// laps: position p's cell is p & mask, and p may be written once the
+// receiver has taken p less a ring.
+//
+// - A sender claims position p with one compare-and-swap on the senders'
+//   index, as the unbounded kind's does, when there is room for it: when
+//   the receiver's count of positions taken, 'taken', is more than p less a
+//   ring. It writes the value and sets the cell's stamp to p + 1, which says
+//   "p is written".
+// - The receiver's index is its own, as the unbounded kind's: it waits for
+//   its cell's stamp to say its position is written, moves the value out,
+//   and stores the new count in 'taken' -- a store, no read-modify-write.
+//
+// That is JCTools' MpscArrayQueue (a compare-and-swap on the producers'
+// index, checked against the consumer's index through a cached limit, the
+// consumer's index a plain ordered store), with the per-cell sequence stamp
+// of Vyukov's bounded queue (1024cores, "Bounded MPMC queue") and
+// crossbeam-channel's "array" flavour standing for "written", since a
+// Cone T has no null to mark an empty cell. Their stamps also carry the
+// room: the receiver sets each cell's stamp free as it takes, which senders
+// read before their claim. Measured, that runs 105 and 128 ns a value with
+// two and four senders into a ring of 1024, where this runs 78 and 81, since
+// the receiver then writes the very lines senders are writing: here it
+// writes only 'taken', on its own line, which senders read only when 'seen',
+// their copy of it on their own line, says the ring may be full.
+//
+// A sender that finds the ring full spins briefly, then sleeps on the
+// 'space' futex word, having set the 'waiting' flag; the receiver, having
+// stored 'taken', wakes them only if the flag is set. The ring follows the
+// shared part in its allocation and is freed with it, when both sides have
+// gone, since a sender may still be about to read 'taken' after the
+// receiver has gone.
+// ---------------------------------------------------------------------------
+
+// The most values a bounded channel may hold. The index counts positions to
+// 2^63, so this is no limit of its own; it keeps the ring's size from
+// overflowing, and asking for more is sure to be a mistake.
+const ringMaxCap = 0x100000000u64;
+
+// A bounded channel's place for one value
+struct Cell[T] {
+  pub stamp u64;
+  pub value T;
+}
+
+fn cellAt[T](ring *Cell[T], i u64) *Cell[T] {
+  ring + usize[i];
+}
+
+// Put v in a bounded channel's ring, waiting while it is full if mayWait,
+// for at most timeoutNs: None once it is there, or Some[v] back when the
+// channel is closed, or full and this may not wait longer
+fn ringSend[T](c *Chan[T], v T, mayWait Bool, timeoutNs u64) Option[T] {
+  imm tailp = &(*c).tail as *u64;
+  imm seenp = &(*c).seen as *u64;
+  imm takenp = &(*c).taken as *u64;
+  imm ring = (*c).ring;
+  imm mask = (*c).mask;
+  // Relaxed: the index only says which position to try for; the claim, a
+  // compare-and-swap on it, is what orders
+  mut tail = mem.atomicLoad[u64](tailp, MemOrder.Relaxed[]);
+  mut spins = 0u32;
+  mut started = false;
+  mut start = 0u64;
+  while true {
+    if (tail & chanClosed) != 0u64 {
+      return Some[T][v];
+    }
+    imm pos = chanPos(tail);
+    // Room for pos: its cell's last value, pos less a ring, is taken. 'seen'
+    // answers without reaching the receiver's line; only when it says no is
+    // 'taken' itself read, and 'seen' brought up to it. Acquire, both, and
+    // the store Release: the receiver's release of 'taken' comes after it
+    // moved that value out, which must be before this send writes the cell,
+    // however many senders' hands 'seen' has passed through.
+    mut room = pos <= mem.atomicLoad[u64](seenp, MemOrder.Acquire[]) + mask;
+    if !room {
+      imm taken = mem.atomicLoad[u64](takenp, MemOrder.Acquire[]);
+      mem.atomicStore[u64](seenp, taken, MemOrder.Release[]);
+      room = pos <= taken + mask;
+    }
+    if room {
+      // Claim it. SeqCst, as the unbounded kind's claim: this is what
+      // chanWake's Dekker pairing is made with. A failure only says where
+      // the index is now, so Relaxed. The room found stays: the count only
+      // grows.
+      mut now = 0u64;
+      mut claimed = false;
+      now, claimed = mem.atomicCompareSwap[u64](tailp, tail, tail + chanOne,
+        MemOrder.SeqCst[], MemOrder.Relaxed[]);
+      if claimed {
+        imm cell = cellAt[T](ring, pos & mask);
+        mem.writeRaw[T](&(*cell).value as *T, v);
+        // Release: the value, written above, is seen by the receiver that
+        // acquires this stamp
+        mem.atomicStore[u64](&(*cell).stamp as *u64, pos + 1u64, MemOrder.Release[]);
+        chanWake(&(*c).sleeping as *u32);
+        return None[T][];
+      }
+      tail = now;
+      continue;
+    }
+    // Full: the position a ring back is not yet taken
+    if !mayWait {
+      return Some[T][v];
+    }
+    if spins < spinLimit {
+      spins = spins + 1u32;
+      tail = mem.atomicLoad[u64](tailp, MemOrder.Relaxed[]);
+      continue;
+    }
+    mut left = forever;
+    if timeoutNs != forever {
+      if !started {
+        start = nowNs();
+        started = true;
+      }
+      imm waited = nowNs() - start;
+      if waited >= timeoutNs {
+        return Some[T][v];
+      }
+      left = timeoutNs - waited;
+    }
+    ringPark[T](c, left);
+    spins = 0u32;
+    tail = mem.atomicLoad[u64](tailp, MemOrder.Relaxed[]);
+  }
+  Some[T][v];
+}
+
+// A sender that found the ring full sleeps until the receiver takes a value
+// or closes the channel, or timeoutNs passes. It reads 'space', then sets
+// 'waiting', then rereads the senders' index and 'taken', all SeqCst: its
+// half of a Dekker pairing with the receiver's store of 'taken' and its load
+// of 'waiting' (ringFreed), and with a close and the same load (ringWake).
+// Either the reread sees the room or the close, and it does not sleep, or
+// the receiver sees the flag and changes 'space' and wakes, which the OS's
+// compare of 'space' does not miss.
+//
+// 'space' is read first, before the flag is set, so that the flag this
+// sender sleeps under is always its own: a receiver that clears it after it
+// is set changes 'space' after too, which the sleep then sees. Read after,
+// a receiver could clear the flag and change 'space' between the two, the
+// sender read the changed 'space', find the ring full again -- another
+// sender having taken the room -- and sleep with the flag clear, and no take
+// would wake it. That order hung 17 runs in 20 of 3000 rounds of four
+// senders of unequal lengths into a ring of 2, the last sender left asleep
+// once the others had finished; this one, none in 40.
+fn ringPark[T](c *Chan[T], timeoutNs u64) {
+  imm spacep = &(*c).space as *u32;
+  imm seq = mem.atomicLoad[u32](spacep, MemOrder.SeqCst[]);
+  mem.atomicStore[u32](&(*c).waiting as *u32, 1u32, MemOrder.SeqCst[]);
+  imm tail = mem.atomicLoad[u64](&(*c).tail as *u64, MemOrder.SeqCst[]);
+  imm taken = mem.atomicLoad[u64](&(*c).taken as *u64, MemOrder.SeqCst[]);
+  if (tail & chanClosed) == 0u64 and chanPos(tail) > taken + (*c).mask {
+    rawWait(spacep, seq, timeoutNs);
+  }
+}
+
+// The receiver has taken a value ('taken' stored SeqCst): wake the senders
+// asleep for room, if the flag says any may be. SeqCst, the receiver's half
+// of ringPark's pairing. This load, one a take, is the whole of what the
+// senders' sleeping costs the receiver while none sleeps.
+fn ringFreed[T](c *Chan[T]) {
+  if mem.atomicLoad[u32](&(*c).waiting as *u32, MemOrder.SeqCst[]) != 0u32 {
+    ringWake[T](c);
+  }
+}
+
+// Wake every sender asleep for room, if the flag says one may be, clearing
+// it: after a take, and after a close (the closed bit set SeqCst). The change
+// to 'space' is SeqCst and after the store of 'taken' or the close, so a
+// sender that reads the new 'space' rereads after them too. Clearing the flag
+// means the takes that follow, while the woken senders are still waking,
+// make no system call; a sender that finds the ring full again sets it again
+// before it sleeps. Every sleeper is woken, not one: by the time they run the
+// receiver has most often taken a good many more, and a sender woken and not
+// needed costs a failed try and a sleep, where one woken too few would be a
+// sender asleep with room for it. (A wake of one sender at every take while
+// the flag was set measured twenty and more wakes for every sleep, the
+// receiver waking again and again while the first woken was still waking.)
+fn ringWake[T](c *Chan[T]) {
+  if mem.atomicSwap[u32](&(*c).waiting as *u32, 0u32, MemOrder.SeqCst[]) != 0u32 {
+    imm spacep = &(*c).space as *u32;
+    mem.atomicAdd[u32](spacep, 1u32, MemOrder.SeqCst[]);
+    rawWakeAll(spacep);
+  }
+}
+
+// A bounded channel's receiver goes, its index at head: close the channel,
+// waking every sender asleep for room, which finds it closed and takes its
+// value back; finalize each value still in the ring, once, waiting out any
+// send that claimed its position before the close and has not written it;
+// and let go of the shared part, whose allocation holds the ring.
+fn ringFinal[T](c *Chan[T], head u64) {
+  imm tailp = &(*c).tail as *u64;
+  mem.atomicOr[u64](tailp, chanClosed, MemOrder.SeqCst[]);
+  ringWake[T](c);
+  // No claim follows the close, so the index is final
+  imm end = chanPos(mem.atomicLoad[u64](tailp, MemOrder.Acquire[]));
+  mut pos = chanPos(head);
+  while pos != end {
+    imm cell = cellAt[T]((*c).ring, pos & (*c).mask);
+    mut step = 0u32;
+    while mem.atomicLoad[u64](&(*cell).stamp as *u64, MemOrder.Acquire[]) != pos + 1u64 {
+      step = chanBackoff(step);
+    }
+    mem.finalize[T](&(*cell).value as *T);
+    pos = pos + 1u64;
+  }
+  chanRelease[T](c);
+}
+
 // What the receiver finds at its index
 const pollReady = 0u32;                // a value, written
 const pollEmpty = 1u32;                // nothing yet
 const pollClosed = 2u32;               // nothing, and nothing more will come
 
-// The constructor: 'Channel[T].make()', which answers the two ends
+// The constructors: 'Channel[T].make()' and 'Channel[T].bounded(n)', which
+// answer the two ends
 pub struct Channel[T Sendable] {
   // A new unbounded channel: its sending end and its receiving end
   pub fn make() Sender[T], Receiver[T] {
@@ -1277,13 +1536,45 @@ pub struct Channel[T Sendable] {
       die("sync: out of memory for a channel\n");
     }
     imm b = blockNew[T]();
-    (*c).tail = 0u64;
-    (*c).tailBlock = b;
-    (*c).sleeping = 0u32;
-    (*c).sides = 2u32;
-    (*c).senders = 1u64;
-    Sender[T].made(c), Receiver[T].made(c, b);
+    chanInit[T](c, b, 0usize as *Cell[T], 0u64);
+    Sender[T].made(c), Receiver[T].made(c, b, 0usize as *Cell[T], 0u64);
   }
+
+  // A new bounded channel holding at most n values -- n rounded up to a
+  // power of two, and 0 taken as 1 -- whose sends wait while it is full
+  pub fn bounded(n u64) Sender[T], Receiver[T] {
+    mut cap = 1u64;
+    while cap < n {
+      if cap >= ringMaxCap {
+        die("sync: a bounded channel of more than 2^32 values\n");
+      }
+      cap = cap << 1u64;
+    }
+    // Zeroed, so every cell's stamp says unwritten
+    imm head = mem.sizeof[Chan[T]]();
+    imm c = libc.calloc(1usize, head + usize[cap] * mem.sizeof[Cell[T]]()) as *Chan[T];
+    if c as usize == 0usize {
+      die("sync: out of memory for a channel\n");
+    }
+    imm ring = ((c as *u8) + head) as *Cell[T];
+    chanInit[T](c, 0usize as *Block[T], ring, cap - 1u64);
+    Sender[T].made(c), Receiver[T].made(c, 0usize as *Block[T], ring, cap - 1u64);
+  }
+}
+
+// The shared part's fields, before any thread can reach it
+fn chanInit[T](c *Chan[T], b *Block[T], ring *Cell[T], mask u64) {
+  (*c).tail = 0u64;
+  (*c).tailBlock = b;
+  (*c).sleeping = 0u32;
+  (*c).sides = 2u32;
+  (*c).senders = 1u64;
+  (*c).ring = ring;
+  (*c).mask = mask;
+  (*c).waiting = 0u32;
+  (*c).space = 0u32;
+  (*c).seen = 0u64;
+  (*c).taken = 0u64;
 }
 
 // The sending end of a channel. There may be any number: 'clone' makes
@@ -1293,10 +1584,37 @@ pub struct Sender[T Sendable] is Sendable {
 
   fn made(c *Chan[T]) Sender[T] {Sender[T][c];}
 
-  // Put v on the channel: None once it is there. Never waits (the channel is
-  // unbounded). If the receiver has gone or closed the channel, v is handed
-  // back: Some[v].
+  // Put v on the channel: None once it is there. A bounded channel's send
+  // waits while it is full; an unbounded one's never waits. If the receiver
+  // has gone or closed the channel, v is handed back: Some[v].
   pub fn send(self &, v T) Option[T] {
+    if (*chan).ring as usize == 0usize {
+      return self.listSend(v);
+    }
+    ringSend[T](chan, v, true, forever);
+  }
+
+  // Put v on the channel if there is room now, never waiting: None once it
+  // is there; Some[v], handed back, when a bounded channel is full, or the
+  // channel is closed
+  pub fn trySend(self &, v T) Option[T] {
+    if (*chan).ring as usize == 0usize {
+      return self.listSend(v);
+    }
+    ringSend[T](chan, v, false, 0u64);
+  }
+
+  // send, waiting at most ns nanoseconds for room: Some[v] back when there
+  // was none in that time, or the channel is closed
+  pub fn sendTimeout(self &, v T, ns u64) Option[T] {
+    if (*chan).ring as usize == 0usize {
+      return self.listSend(v);
+    }
+    ringSend[T](chan, v, true, ns);
+  }
+
+  // An unbounded channel's send
+  fn listSend(self &, v T) Option[T] {
     imm c = chan;
     imm tailp = &(*c).tail as *u64;
     imm blockp = &(*c).tailBlock as **Block[T];
@@ -1401,13 +1719,26 @@ pub struct Sender[T Sendable] is Sendable {
 pub struct Receiver[T Sendable] is Sendable {
   chan *Chan[T];
   head u64;                    // the next position to take
-  block *Block[T];             // the block it falls in
+  block *Block[T];             // unbounded: the block it falls in
+  ring *Cell[T];               // bounded: the ring; unbounded: 0
+  mask u64;                    // bounded: the ring's cells less 1
 
-  fn made(c *Chan[T], b *Block[T]) Receiver[T] {Receiver[T][c, 0u64, b];}
+  fn made(c *Chan[T], b *Block[T], ring *Cell[T], mask u64) Receiver[T] {
+    Receiver[T][c, 0u64, b, ring, mask];
+  }
+
+  // Each way of receiving asks which kind the channel is once, at the top,
+  // and runs that kind's loop: asking in poll and take instead, at every
+  // value, measured some 15 ns a value slower for the unbounded kind with
+  // one sender, where the receiver is what sets the pace (with two senders
+  // or four, the difference was lost in the noise).
 
   // The next value, waiting while there is none; None once the channel is
   // closed (every sender gone, or 'close') and everything sent is taken
   pub fn recv(self &mut) Option[T] {
+    if ring as usize != 0usize {
+      return self.ringRecv(forever);
+    }
     while true {
       imm found = self.poll();
       if found == pollReady {
@@ -1424,8 +1755,38 @@ pub struct Receiver[T Sendable] is Sendable {
   // The next value if one is there now, never waiting; None when there is
   // none, whether or not more may come ('isClosed' says which)
   pub fn tryRecv(self &mut) Option[T] {
+    if ring as usize != 0usize {
+      if self.ringPoll() == pollReady {
+        return Some[T][self.ringTake()];
+      }
+      return None[T][];
+    }
     if self.poll() == pollReady {
       return Some[T][self.take()];
+    }
+    None[T][];
+  }
+
+  // A bounded channel's recv and recvTimeout: timeoutNs is forever for recv
+  fn ringRecv(self &mut, timeoutNs u64) Option[T] {
+    imm start = if timeoutNs == forever {0u64;} else {nowNs();};
+    while true {
+      imm found = self.ringPoll();
+      if found == pollReady {
+        return Some[T][self.ringTake()];
+      }
+      if found == pollClosed {
+        return None[T][];
+      }
+      if timeoutNs == forever {
+        self.park(forever);
+      } else {
+        imm waited = nowNs() - start;
+        if waited >= timeoutNs {
+          return None[T][];
+        }
+        self.park(timeoutNs - waited);
+      }
     }
     None[T][];
   }
@@ -1434,6 +1795,9 @@ pub struct Receiver[T Sendable] is Sendable {
   // came in that time, or the channel is closed and empty. The sleep is the
   // futex's, so it may run over by up to the system's timer tick.
   pub fn recvTimeout(self &mut, ns u64) Option[T] {
+    if ring as usize != 0usize {
+      return self.ringRecv(ns);
+    }
     imm start = nowNs();
     while true {
       imm found = self.poll();
@@ -1453,10 +1817,17 @@ pub struct Receiver[T Sendable] is Sendable {
   }
 
   // Refuse any further send: each is handed its value back. What was sent
-  // before stays, to be taken. Relaxed: the close and every claim change one
-  // word, whose own order is all that decides which sends it refuses.
+  // before stays, to be taken. Unbounded, Relaxed: the close and every claim
+  // change one word, whose own order is all that decides which sends it
+  // refuses. Bounded, SeqCst, and the senders asleep while it is full are
+  // woken, to find it closed: ringPark's pairing.
   pub fn close(self &mut) {
-    mem.atomicOr[u64](&(*chan).tail as *u64, chanClosed, MemOrder.Relaxed[]);
+    if ring as usize == 0usize {
+      mem.atomicOr[u64](&(*chan).tail as *u64, chanClosed, MemOrder.Relaxed[]);
+    } else {
+      mem.atomicOr[u64](&(*chan).tail as *u64, chanClosed, MemOrder.SeqCst[]);
+      ringWake[T](chan);
+    }
   }
 
   // Whether the channel is closed, by the receiver or by its last sender
@@ -1489,6 +1860,45 @@ pub struct Receiver[T Sendable] is Sendable {
     pollReady;
   }
 
+  // A bounded channel's poll: the same three answers, from its cell's stamp
+  fn ringPoll(self &mut) u32 {
+    imm pos = chanPos(head);
+    imm stampp = &(*cellAt[T](ring, pos & mask)).stamp as *u64;
+    // Acquire: the sender's release store of the stamp brings its value
+    if mem.atomicLoad[u64](stampp, MemOrder.Acquire[]) == pos + 1u64 {
+      return pollReady;
+    }
+    // Acquire, as the unbounded kind's poll
+    imm tail = mem.atomicLoad[u64](&(*chan).tail as *u64, MemOrder.Acquire[]);
+    if chanPos(tail) == pos {
+      return if (tail & chanClosed) != 0u64 {pollClosed;} else {pollEmpty;};
+    }
+    // Claimed, and being written
+    mut step = 0u32;
+    while mem.atomicLoad[u64](stampp, MemOrder.Acquire[]) != pos + 1u64 {
+      step = chanBackoff(step);
+    }
+    pollReady;
+  }
+
+  // A bounded channel's take: move the written value out, step past it,
+  // and say so in 'taken', which frees its cell for the position a ring
+  // later. SeqCst: a release, for the acquiring load of a sender that then
+  // writes the cell; and the receiver's half of ringPark's pairing, with
+  // ringFreed's load. (x86 makes a SeqCst store an xchg, which waits for
+  // the store to leave the processor: the price of letting senders sleep,
+  // since without it the load after could be answered before the store is
+  // seen, and a sender go to sleep that nobody wakes. It is to the
+  // receiver's own line, which senders seldom read.)
+  fn ringTake(self &mut) T {
+    imm pos = chanPos(head);
+    imm v = mem.readRaw[T](&(*cellAt[T](ring, pos & mask)).value as *T);
+    head = head + chanOne;
+    mem.atomicStore[u64](&(*chan).taken as *u64, pos + 1u64, MemOrder.SeqCst[]);
+    ringFreed[T](chan);
+    v;
+  }
+
   // Move the written value at the index out, and step past it
   fn take(self &mut) T {
     imm offset = chanOffset(head);
@@ -1513,11 +1923,20 @@ pub struct Receiver[T Sendable] is Sendable {
   // timeoutNs passes. Spin first, since a send often comes within it.
   fn park(self &mut, timeoutNs u64) {
     mut n = 0u32;
-    while n < spinLimit {
-      if self.poll() != pollEmpty {
-        return;
+    if ring as usize != 0usize {
+      while n < spinLimit {
+        if self.ringPoll() != pollEmpty {
+          return;
+        }
+        n = n + 1u32;
       }
-      n = n + 1u32;
+    } else {
+      while n < spinLimit {
+        if self.poll() != pollEmpty {
+          return;
+        }
+        n = n + 1u32;
+      }
     }
     imm c = chan;
     imm sleeping = &(*c).sleeping as *u32;
@@ -1544,6 +1963,10 @@ pub struct Receiver[T Sendable] is Sendable {
   // &uni' moves the unique reference into the call rather than lending it.)
   fn final(self &uni) {
     imm c = chan;
+    if ring as usize != 0usize {
+      ringFinal[T](c, head);
+      return;
+    }
     imm tailp = &(*c).tail as *u64;
     mem.atomicOr[u64](tailp, chanClosed, MemOrder.Relaxed[]);
     // No claim follows the close; one that came before it may still be
