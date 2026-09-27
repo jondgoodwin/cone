@@ -4,10 +4,15 @@
 # The group directory supplies the feature tag, so tags carry pipeline phases.
 # The chapter is doc/reference/refconc.html, "Atomic values".
 #
-# What the compiler knows of concurrency today is atomic values: the built-in
-# marker 'AtomicValue', which sync's Atomic[T] declares, and the rules it
-# brings -- what may declare it (one field an atomic operation takes), that it
-# moves, that a value holding one is never a constant, in a global or a const.
+# What the compiler knows of concurrency today is atomic values and the thread
+# check. Atomic values: the built-in marker 'AtomicValue', which sync's
+# Atomic[T] declares, and the rules it brings -- what may declare it (one field
+# an atomic operation takes), that it moves, that a value holding one is never
+# a constant, in a global or a const. The thread check: the built-in marker
+# 'Sendable', asked by thread.start and sync's channel types, granted to what
+# holds nothing bound to its thread (concurrency_sendable) and refused, naming
+# the culprit, to what does (concurrency_typecheck_sendable); the chapter is
+# doc/reference/refconccomm.html, "Race condition safety".
 # The operations themselves are core's mem intrinsics, which the intrinsic
 # group owns; the sync package's own behaviour, threads included, is tested by
 # its tests/ folder under 'congo test'. The scenarios here import sync as a
@@ -24,7 +29,13 @@
 #   mark's reach through them is pinned by the const refusal instead.
 # - Threads: the thread package is library code, and sync's tests/threads.cone
 #   is where Atomic[T] is changed from several at once (flag.cone for an
-#   Atomic[Bool], treiber.cone for an Atomic[*Node]).
+#   Atomic[Bool], treiber.cone for an Atomic[*Node]). concurrency_sendable
+#   starts threads only to show that what the check lets through runs.
+# - Sendable through an 'or' or 'and' condition: it is evaluated as any
+#   marker is, and refused with ErrorWhereUnmet; the judging again after type
+#   check is only for a lone 'T is Sendable'.
+# - An open trait behind a reference, refused as bound (its implementers are
+#   not all known): no virtual reference is sent anywhere yet.
 
 # -------- success --------
 
@@ -116,7 +127,7 @@ tags = ["typecheck"]
 
 [scenario.concurrency_typecheck_sendable]
 category = "reject"
-description = "What may not cross threads, refused where a generic asks for Sendable and naming what binds it and where: a borrow of any permission, in a field, deeper down, behind a uni owner or an +arc-imm; +rc-mut and +arc-mut; +rc-imm; a traced reference; a raw pointer, in an enum's variant; a declared-Sendable type's bound argument; thread.start given a borrow of a local; a channel of borrows; and one judged after type check, a struct asking for a channel of itself while it is laid out"
+description = "What may not cross threads, refused where a generic asks for Sendable and naming what binds it and where: a borrow of any permission, in a field, deeper down, behind a uni owner or an +arc-imm; +rc-mut and +arc-mut; +rc-imm; a traced reference; a raw pointer, in an enum's variant, beside a struct's owner of itself; a borrow in Option's variant and in an array; a declared-Sendable type's bound argument; thread.start given a borrow of a local, and a thread returning +rc-imm; a channel of borrows; and one judged after type check, a struct asking for a channel of itself while it is laid out"
 tags = ["typecheck"]
 
 [scenario.concurrency_flow_atomic]

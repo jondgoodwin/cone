@@ -2611,10 +2611,11 @@ core's, so `arc` is a name only of the modules that fold it in), whose `alias` a
 run on different threads at once; `rc`, whose count is a plain number, does not
 declare it. It is a region ref's only (`ErrorThreadSafeUse`, from
 `regionThreadSafeUseCheck`), trusted — the compiler cannot check that the
-counts are atomic — and read by nothing yet: `regionIsThreadSafe` is the
-region's say in whether a reference may cross threads, beside its permission's
-`RaceSafe`, for the thread check to come. It changes no call the compiler
-makes.
+counts are atomic. `regionIsThreadSafe` is the region's say in whether a
+reference may cross threads, beside its permission's `RaceSafe`: the thread
+check (`refThreadBinds`, [References](references.md)) lets an owner that may be
+aliased cross only where its region declares it, so `+arc-imm` crosses and
+`+rc-imm` does not. It changes no call the compiler makes.
 
 The struct is held to the method shapes **at its declaration**, after its
 methods are type checked (`regionRefCheck`, from `structCheckMembers`):

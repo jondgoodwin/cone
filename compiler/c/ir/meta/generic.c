@@ -524,6 +524,12 @@ static void genericTypeNameCat(char *buf, size_t size, INode *type, int depth) {
         genericTypeNameCat(buf, size, ((StarNode*)dcl)->vtexp, depth + 1);
         return;
     }
+    // A reference or an array as it is written: '&mut Point', '+rc-imm Pt',
+    // '[3; u8]'
+    if (dcl->tag == RefTag || dcl->tag == ArrayRefTag || dcl->tag == VirtRefTag || dcl->tag == ArrayTag) {
+        itypeSpellCat(buf, size, dcl, depth);
+        return;
+    }
     snprintf(buf + used, size - used, "%s", itypeName(dcl));
     Nodes *args = dcl->tag == StructTag && depth < 4 ? itypeInstanceTypeArgs(dcl) : NULL;
     if (args == NULL)
@@ -601,11 +607,7 @@ static void genericBindingsCat(char *buf, size_t size, INode *cond, Nodes *parms
 // local's own 'mut' is not what is checked, so the message says so.
 static void genericNotSendableMsg(INode *errnode, Name *name, GenVarDclNode *parm, INode *arg) {
     char argname[256] = "";
-    INode *argdcl = itypeGetTypeDcl(arg);
-    if (argdcl->tag == RefTag || argdcl->tag == ArrayRefTag || argdcl->tag == VirtRefTag || argdcl->tag == PtrTag)
-        itypeSpellCat(argname, sizeof(argname), arg, 0);
-    else
-        genericTypeNameCat(argname, sizeof(argname), arg, 0);
+    genericTypeNameCat(argname, sizeof(argname), arg, 0);
     char path[256];
     INode *culprit = itypeThreadBoundWhy(arg, path, sizeof(path));
     char what[512] = "";
@@ -629,9 +631,9 @@ static void genericNotSendableMsg(INode *errnode, Name *name, GenVarDclNode *par
             "a trait, whose implementers are not all known here, so what a reference to one points at cannot be checked");
     else {
         RefNode *ref = (RefNode *)culpritdcl;
-        INode *region = isTypeNode(ref->region) ? itypeGetTypeDcl(ref->region) : NULL;
+        INode *region = ref->region && isTypeNode(ref->region) ? itypeGetTypeDcl(ref->region) : NULL;
         char *regname = region && region->tag == StructTag ? &((StructNode *)region)->namesym->namestr : "its region";
-        INode *perm = isTypeNode(ref->perm) ? itypeGetTypeDcl(ref->perm) : NULL;
+        INode *perm = ref->perm && isTypeNode(ref->perm) ? itypeGetTypeDcl(ref->perm) : NULL;
         Name *permname = perm ? inodeGetName(perm) : NULL;
         switch (refThreadBinds(ref)) {
         case RefBindsBorrow:

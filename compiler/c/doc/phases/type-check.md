@@ -192,9 +192,9 @@ the name is not yet in scope.
 ### Layout before members
 
 **Every type is laid out before any type's members are checked.** A type's
-layout — its fields, its own size, for an enum its variants, and the move and
-thread-bound properties that follow from them — is what a size question reads,
-and what a move or thread question reads. A member checked while some layout is
+layout — its fields, its own size, for an enum its variants, and the move property
+that follows from them — is what a size question reads, and what a move
+question reads. A member checked while some layout is
 still in flight could see a type with no size yet, or one that does not yet know
 it moves, and which of those it saw would follow the order the declarations are
 written in. So demanding a type lays it out and nothing more; its members wait.
@@ -256,8 +256,7 @@ variant with its enum closes both (`move_flow_infection`).
 
 **What it does not change.** A real by-value cycle is still refused, by the same
 size question (section 6): one of its types is always asked while in flight. And
-a reference still type checks its target, which lays it out (`refTypeCheck`, which
-also reads the target's thread-bound flag) — so a variant's field `&W`, where `W`
+a reference still type checks its target, which lays it out (`refTypeCheck`) — so a variant's field `&W`, where `W`
 holds the enum by value, lays `W` out while the variant is in flight, and `W`'s
 field is refused as though it closed a cycle. Written with `W` above the enum it
 compiles. That is the one source-order dependence measured to remain; see
@@ -454,8 +453,9 @@ Steps marked **→** are where a demand can leave and re-enter.
    invalidate the position. Then expand any fold clause name resolution left
    (a field whose type was an instance of a generic), and refresh every folded
    copy from the field it stands for, **→** demanding that field's check.
-5. Index the fields. Compute infectious flags from them: `ThreadBound`,
-   `MoveType`, `OpaqueType`, `ZeroSizeType`. Validate the tag field marked at
+5. Index the fields. Compute infectious flags from them: `MoveType`,
+   `OpaqueType`, `ZeroSizeType`. (Whether it may cross threads is asked of
+   the whole type when something crosses: `itypeThreadBound`.) Validate the tag field marked at
    parse; any other enum-typed field is refused.
 6. `final` forces `MoveType`; `clone` does not clear it, since no copy calls
    `clone` and a bitwise copy of a finalizing value is finalized twice. Propagate
@@ -653,8 +653,7 @@ Kept so that reopening one is a decision rather than a rediscovery.
   by value and is written below the enum, lays `W` out while the variant is in
   flight, and `W`'s field is `ErrorNoSize` "a variant still being laid out".
   Written above the enum, `W` is laid out first and it compiles. Closing it needs
-  a reference that does not demand its target's layout, or a thread-bound flag
-  settled after the layouts; measured, not built.
+  a reference that does not demand its target's layout; measured, not built.
 - **One declaration's error can silence another's body.** `fnDclTypeCheck` skips a
   body when the error count moved during its signature's check, and demand can
   run other declarations inside that check — a signature naming an enum lays the
@@ -672,7 +671,7 @@ Kept so that reopening one is a decision rather than a rediscovery.
 - **A node built during analysis takes the lexer's position**, which by then is
   the end of the file. `newNode` reads `lex->tokp`, so an injected node points at
   nothing unless `inodeLexCopy` is called on it.
-- **The eight type properties crowded into `flags`** — `MoveType`, `ThreadBound`,
+- **The seven type properties crowded into `flags`** — `MoveType`,
   `OpaqueType`, `ZeroSizeType`, `TraitType`, `SameSize`, `HasTagField`,
   `NullablePtr` — would be better in `ITypeNodeHdr`. Analysis neither needs that
   nor makes it worse.

@@ -95,14 +95,14 @@ void refAdoptInfections(RefNode *refnode) {
 // A permission that is not a built-in one (a struct in the permission slot,
 // the unbuilt lock permissions) is not taken as RaceSafe.
 RefBinds refThreadBinds(RefNode *ref) {
-    if (isTypeNode(ref->vtexp) && itypeGetTypeDcl(ref->vtexp)->tag == FnSigTag)
+    if (ref->vtexp && isTypeNode(ref->vtexp) && itypeGetTypeDcl(ref->vtexp)->tag == FnSigTag)
         return RefCrossesAll;
-    INode *region = isTypeNode(ref->region) ? itypeGetTypeDcl(ref->region) : ref->region;
+    INode *region = ref->region && isTypeNode(ref->region) ? itypeGetTypeDcl(ref->region) : ref->region;
     if (region == borrowRef)
         return RefBindsBorrow;
     if (regionIsTraced(ref->region))
         return RefBindsTraced;
-    INode *perm = isTypeNode(ref->perm) ? itypeGetTypeDcl(ref->perm) : NULL;
+    INode *perm = ref->perm && isTypeNode(ref->perm) ? itypeGetTypeDcl(ref->perm) : NULL;
     int permflags = perm && perm->tag == PermTag ? ((PermNode*)perm)->permflags : 0;
     if (perm && perm->tag == PermTag && (!(permflags & MayAlias) || regionIsMove(ref->region)))
         return RefCrosses;

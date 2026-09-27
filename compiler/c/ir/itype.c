@@ -294,10 +294,10 @@ void itypeSpellCat(char *buf, size_t size, INode *type, int depth) {
     INode *dcl = itypeGetTypeDcl(type);
     if (depth < 4 && (dcl->tag == RefTag || dcl->tag == ArrayRefTag || dcl->tag == VirtRefTag)) {
         RefNode *ref = (RefNode *)dcl;
-        INode *perm = isTypeNode(ref->perm) ? itypeGetTypeDcl(ref->perm) : NULL;
+        INode *perm = ref->perm && isTypeNode(ref->perm) ? itypeGetTypeDcl(ref->perm) : NULL;
         Name *permname = perm ? inodeGetName(perm) : NULL;
         char *pname = permname ? &permname->namestr : "?";
-        INode *region = isTypeNode(ref->region) ? itypeGetTypeDcl(ref->region) : ref->region;
+        INode *region = ref->region && isTypeNode(ref->region) ? itypeGetTypeDcl(ref->region) : ref->region;
         char *shape = dcl->tag == ArrayRefTag ? "[]" : dcl->tag == VirtRefTag ? "<" : "";
         if (region == borrowRef)
             snprintf(buf + used, size - used, "&%s %s", pname, shape);
@@ -313,10 +313,18 @@ void itypeSpellCat(char *buf, size_t size, INode *type, int depth) {
         itypeSpellCat(buf, size, ((StarNode *)dcl)->vtexp, depth + 1);
         return;
     }
+    if (depth < 4 && dcl->tag == ArrayTag) {
+        snprintf(buf + used, size - used, "[%llu; ", (unsigned long long)arrayDim1(dcl));
+        itypeSpellCat(buf, size, arrayElemType(dcl), depth + 1);
+        used = strlen(buf);
+        snprintf(buf + used, size - used, "]");
+        return;
+    }
     snprintf(buf + used, size - used, "%s", itypeName(dcl));
 }
 
 #define ThreadBoundPathMax 16
+#define ThreadBoundPathSize 256
 
 // The culprit walk: the first thread-bound part of 'type', following only
 // what itypeThreadBound says is bound, and never into a struct it has passed
@@ -345,7 +353,7 @@ static INode *itypeThreadBoundCulprit(INode *type, char *path, size_t size,
     case PtrTag:
         return type;
     case ArrayTag:
-        snprintf(path + used, size - used, "[]");
+        snprintf(path + used, size - used, used ? "[]" : "an element");
         return itypeThreadBoundCulprit(arrayElemType(type), path, size, seen, nseen);
     case TTupleTag: {
         INode **nodesp;
@@ -353,7 +361,7 @@ static INode *itypeThreadBoundCulprit(INode *type, char *path, size_t size,
         uint32_t index = 0;
         for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
             if (itypeThreadBound(*nodesp, NULL)) {
-                snprintf(path + used, size - used, ".%u", index);
+                snprintf(path + used, size - used, used ? ".%u" : "element %u", index);
                 return itypeThreadBoundCulprit(*nodesp, path, size, seen, nseen);
             }
             ++index;
@@ -371,20 +379,26 @@ static INode *itypeThreadBoundCulprit(INode *type, char *path, size_t size,
             return type;
         INode **nodesp;
         uint32_t cnt;
-        // Declared Sendable, and bound only by a type argument: the argument
-        // is named afresh
+        // What was said so far, restored where a type argument or a variant,
+        // each named afresh, turns out not to hold the culprit
+        char saved[ThreadBoundPathSize];
+        snprintf(saved, sizeof(saved), "%s", path);
+        // Declared Sendable, and bound only by a type argument
         if (structDeclaresTrait(strnode, sendableTrait)) {
             Nodes *args = itypeInstanceTypeArgs(type);
             if (args == NULL)
                 return NULL;
             for (nodesFor(args, cnt, nodesp)) {
-                if (itypeThreadBound(*nodesp, NULL)) {
-                    path[0] = '\0';
-                    INode *culprit = itypeThreadBoundCulprit(*nodesp, path, size, seen, nseen);
-                    if (culprit && path[0] == '\0')
+                if (!itypeThreadBound(*nodesp, NULL))
+                    continue;
+                path[0] = '\0';
+                INode *culprit = itypeThreadBoundCulprit(*nodesp, path, size, seen, nseen);
+                if (culprit) {
+                    if (path[0] == '\0')
                         snprintf(path, size, "its type argument");
                     return culprit;
                 }
+                snprintf(path, size, "%s", saved);
             }
             return NULL;
         }
@@ -411,6 +425,7 @@ static INode *itypeThreadBoundCulprit(INode *type, char *path, size_t size,
                 INode *culprit = itypeThreadBoundCulprit(*nodesp, path, size, seen, nseen);
                 if (culprit)
                     return culprit;
+                snprintf(path, size, "%s", saved);
             }
         }
         return NULL;
