@@ -45,12 +45,13 @@ typedef struct StructNode {
     NodeList fields;        // Ordered list of all fields
     Vtable *vtable;         // Pointer to vtable info (may be NULL)
     GenericInfo *genericinfo;     // Link to generic parms, etc (or NULL if not generic)
-    uint32_t tagnbr;        // If a tagged struct, this is the number in the tag field
+    int64_t tagnbr;         // If a tagged struct, the number in the tag field, read as 'tagstate' says
     DclSpans *spans;        // Where each member of its braces sits in its file, in the order parsed (dclspan.h); NULL for none
     uint8_t carriesborrow;  // itypeCarriesBorrow's remembered answer (CarriesBorrow*), once the type is checked
     uint8_t holdstraced;    // itypeHoldsTraced's remembered answer (HoldsTraced*), once the type is checked
     uint8_t lends;          // What its element borrows cost it (StructLends), from its 'is' list at name resolution
     uint8_t holdsatomic;    // itypeHoldsAtomic's remembered answer (HoldsTraced*, read as "holds an atomic value"), once the type is checked
+    uint8_t tagstate;       // Whether 'tagnbr' is settled yet, and whether it is below zero (TagState)
 } StructNode;
 
 // What a borrow one of its methods returns costs a container (StructNode.lends),
@@ -88,11 +89,32 @@ enum CarriesBorrow {
     CarriesBorrowYes
 };
 
-// A variant whose tag value has not been settled yet. The parser writes it before
-// looking for a value the author pinned, so that keeping a pinned value and
-// assigning the next number in sequence are one test rather than a flag: a type
-// has no spare flag bit, and nothing after parse needs to know which a value was.
-#define TagUnassigned 0xFFFFFFFFu
+// What StructNode.tagstate says of a variant's 'tagnbr'.
+//
+// A tag value may be anything the widest integer an enum declares can hold, u64's
+// or i64's, and 64 bits hold either but not both at once: 0xFFFFFFFFFFFFFFFF and
+// -1 are the same bits. Which one the value is gets kept here, so the check against
+// the enum's integer type and the check for a value already taken each read the
+// number the author meant.
+//
+// TagUnassigned is what the parser writes before looking for a value the author
+// pinned, so that keeping a pinned value and assigning the next number in sequence
+// are one test; nothing after that needs to know which a value was.
+enum TagState {
+    TagUnassigned,      // Not settled yet: 'tagnbr' means nothing
+    TagNonNeg,          // Zero or above: 'tagnbr's bits read unsigned
+    TagNegative         // Below zero: 'tagnbr' reads signed
+};
+
+// Give a variant the tag value after 'prior's, or zero when it is the first
+void structTagFollow(StructNode *variant, StructNode *prior);
+
+// Do two variants hold the same tag value? Never, while either is unsettled.
+int structTagSame(StructNode *a, StructNode *b);
+
+// A variant's tag value in decimal, as its author reads it, written into 'buf'
+// (at least 24 bytes), which is returned
+char *structTagText(StructNode *variant, char *buf);
 
 typedef struct FieldDclNode FieldDclNode;
 

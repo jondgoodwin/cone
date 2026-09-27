@@ -1,11 +1,12 @@
 // The discriminant: the integer type an enum lays its tag values out in, and the
 // one field that may carry it.
 //
-// Type-check stage only. The width follows the largest tag VALUE rather than the
-// variant count, so a pinned value is what can overflow a declared type; an enum
-// that declared no type simply widens, which enum_success pins from the other
-// side: Wide's 0x100 lays its tag out in two bytes, and Pinned's 256 is told
-// apart from its first variant's 0 in a generic enum.
+// Type-check stage only. The width follows the tag VALUES rather than the variant
+// count, so a pinned value is what can overflow a declared type; an enum that
+// declared no type simply widens, which enum_success pins from the other side:
+// Wide's 0x100 lays its tag out in two bytes, Pinned's 256 is told apart from its
+// first variant's 0 in a generic enum, Offset's -2 makes its one byte signed, and
+// Vast's 0x1FFFFFFFF takes eight.
 
 mod enum_typecheck_tag;
 
@@ -13,15 +14,47 @@ mod enum_typecheck_tag;
 // a value too large for it is refused rather than silently widening the tag away
 // from the layout the author asked for. Reported where the type is written,
 // because that is the half of the disagreement a reader has to choose between.
-enum TooNarrow u8 {       //~ ErrorTagWidth:16 "does not fit in this enum's 1-byte integer type"
+enum TooNarrow u8 {       //~ ErrorTagWidth:16 "Tag value 65536 of NarrowHuge does not fit u8, this enum's integer type, whose values run from 0 to 255"
   NarrowSmall = 1,
   NarrowHuge = 0x10000;
+}
+
+// The declared type's sign counts, as it does for any integer literal: a value
+// fits it or not by what it is, not by how many bytes its bits take. So the bit
+// pattern of -4 is not how a signed enum spells -4, 200 is past i8's largest, and
+// a negative value fits no unsigned type (it is not taken as its bits there).
+enum BitPattern i32 {     //~ ErrorTagWidth:17 "Tag value 4294967292 of PatternLost does not fit i32, this enum's integer type, whose values run from -2147483648 to 2147483647"
+  PatternOk = 0,
+  PatternLost = 0xFFFFFFFC;
+}
+
+enum PastSigned i8 {      //~ ErrorTagWidth:17 "Tag value 200 of SignedHigh does not fit i8, this enum's integer type, whose values run from -128 to 127"
+  SignedLow = 0,
+  SignedHigh = 200;
+}
+
+enum BelowSigned i8 {     //~ ErrorTagWidth:18 "Tag value -129 of SignedUnder does not fit i8"
+  SignedLeast = -128,
+  SignedUnder = -129;
+}
+
+enum NegUnsigned u32 {    //~ ErrorTagWidth:18 "Tag value -4 of UnsignedLost does not fit u32, this enum's integer type, whose values run from 0 to 4294967295"
+  UnsignedOk = 0,
+  UnsignedLost = -4;
+}
+
+// Declaring no type, a negative value asks for a signed discriminant and one past
+// i64's largest for an unsigned 64-bit one, so no integer holds both. Reported on
+// the value that needs the unsigned one.
+enum NoneHoldsBoth {
+  BothNegative = -1,
+  BothHuge = 0xFFFFFFFFFFFFFFFF;   //~ ErrorTagWidth:3 "needs an unsigned 64-bit discriminant"
 }
 
 // A generic enum is refused the same way, once an instance exists to be checked,
 // and once however many instances there are: the tag values and the declared type
 // are the template's, shared by every instance.
-enum GenNarrow[T] u8 {    //~ ErrorTagWidth:19 "does not fit in this enum's 1-byte integer type"
+enum GenNarrow[T] u8 {    //~ ErrorTagWidth:19 "Tag value 65536 of GenNarrowHuge does not fit u8"
   struct GenNarrowSmall {pub v T;}
   struct GenNarrowHuge = 0x10000 {}
 }

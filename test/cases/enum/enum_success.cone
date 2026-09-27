@@ -206,6 +206,106 @@ fn genericPinnedTag() {
   show("generic-pinned-tag-wide", whichPinned(&high));
 }
 
+// -------- negative and 64-bit tag values --------
+
+// A C library's constants include negative ones -- Vulkan's VkResult is 0 for
+// success and below zero for each error -- so a pinned value may be negative when
+// the enum's integer type is signed. Numbering resumes from a negative value as
+// from any other: NoMemory follows LowMemory's -2 with -1.
+enum Outcome i32 {
+  Success = 0,
+  NotReady,
+  LowMemory = -2,
+  NoMemory,
+  DeviceLost = -4,
+  SurfaceLost = -1000000000;
+}
+
+fn outcomeCode(o Outcome) i64 {
+  match o {
+    case is Outcome.Success {0;}
+    case is Outcome.NotReady {1;}
+    case is Outcome.LowMemory {-2;}
+    case is Outcome.NoMemory {-1;}
+    case is Outcome.DeviceLost {-4;}
+    case is Outcome.SurfaceLost {-1000000000;}
+  }
+}
+
+// The discriminant read as the integer the enum declared, which is what a C
+// function returning the constant hands back: the value's own bits, not a
+// variant's position.
+fn outcomeBits(o Outcome) i64 {
+  imm p = &o as *i32;
+  i64[*p];
+}
+
+// Declaring no type, a negative value makes the discriminant signed, as narrow as
+// holds every value: one byte here, asserted by a named check in cases.toml.
+enum Offset {
+  Behind = -2,
+  Even = 0,
+  Ahead;
+}
+
+fn offsetBits(o Offset) i64 {
+  imm p = &o as *i8;
+  i64[*p];
+}
+
+// A tag value keeps all 64 bits. Beyond's 0x100000000 was once cut to 32, so it
+// read as 0, Base's value; Far's 0x1FFFFFFFF was cut to 0xFFFFFFFF.
+enum Huge u64 {
+  Base = 0,
+  Beyond = 0x100000000;
+}
+
+enum Vast {
+  Near,
+  Far = 0x1FFFFFFFF;
+}
+
+fn hugeBits(h Huge) i64 {
+  imm p = &h as *u64;
+  i64[*p];
+}
+
+fn vastBits(v Vast) i64 {
+  imm p = &v as *u64;
+  i64[*p];
+}
+
+fn negativeTags() {
+  mut o Outcome = Outcome.DeviceLost[];
+  show("negative-tag-matches", outcomeCode(o));
+  show("negative-tag-bits", outcomeBits(o));
+  showB("negative-tag-equal", o == Outcome.DeviceLost[]);
+  showB("negative-tag-unequal", o == Outcome.NoMemory[]);
+  o = Outcome.NoMemory[];
+  show("negative-tag-numbering-resumed", outcomeCode(o));
+  show("negative-tag-numbering-resumed-bits", outcomeBits(o));
+  o = Outcome.SurfaceLost[];
+  show("negative-tag-far", outcomeCode(o));
+  show("negative-tag-far-bits", outcomeBits(o));
+  o = Outcome.NotReady[];
+  show("positive-tag-beside-negatives", outcomeCode(o));
+  show("positive-tag-beside-negatives-bits", outcomeBits(o));
+
+  mut f Offset = Offset.Behind[];
+  show("undeclared-negative-tag-bits", offsetBits(f));
+  showB("undeclared-negative-tag-equal", f == Offset.Behind[]);
+  f = Offset.Ahead[];
+  show("undeclared-negative-tag-next-bits", offsetBits(f));
+
+  imm h Huge = Huge.Beyond[];
+  show("wide-tag-bits", hugeBits(h));
+  showB("wide-tag-equal", h == Huge.Beyond[]);
+  showB("wide-tag-not-zero", h == Huge.Base[]);
+  imm v Vast = Vast.Far[];
+  show("undeclared-wide-tag-bits", vastBits(v));
+  showB("undeclared-wide-tag-not-first", v == Vast.Near[]);
+}
+
 // A static function of a generic enum is the enum's own, as a trait's is, so
 // each instance generates its copy. Generation once gave an instance's static
 // function a body and no symbol, and building any variant of the enum crashed
@@ -1663,6 +1763,7 @@ fn main() i32 {
   payloadFree();
   sparseTagDispatch();
   genericPinnedTag();
+  negativeTags();
   genericStaticFn();
   commonMembersAnywhere();
   placedDiscriminant();

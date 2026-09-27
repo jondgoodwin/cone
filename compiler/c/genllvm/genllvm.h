@@ -127,6 +127,8 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk);
 
 // genlexpr.c
 LLVMValueRef genlExpr(GenState *gen, INode *termnode);
+// A variant's tag value as a constant of its discriminant's LLVM type
+LLVMValueRef genlTagConst(LLVMTypeRef tagtype, StructNode *variant);
 // Generate a function call, including special intrinsics (Internal version).
 // 'selftype' is the Cone type of the first argument, which a virtual dispatch
 // and the pointer intrinsics read; NULL for a call the compiler makes itself.

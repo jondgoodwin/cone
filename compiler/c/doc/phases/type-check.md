@@ -531,14 +531,16 @@ written inside its body.
   [struct](../nodes/struct.md), "An enum extending an enum".
 - **Analysis never computes an enum's size.** `genlSameSizeTrait` sizes each
   variant and pads to the largest at *generation* time.
-- **Analysis does settle the discriminant's width**, because that follows the
-  largest tag value rather than the variant count and generation cannot see a
+- **Analysis does settle the discriminant's width and sign**, because those follow
+  the tag values rather than the variant count and generation cannot see a
   pinned value. `structSetTagWidth` is where, in step 5 of the struct sequence,
   after the variants' numbers are known and the enum's declared integer type is
   checked — or, for an instance of a generic enum, from `genericMemoize` instead,
-  once per generic, after the instance and its variants are checked. A value too large for a declared type is `ErrorTagWidth`, and so is one
-  too large for the width an extension's base already settled: they share the node
-  the width is written on.
+  once per generic, after the instance and its variants are checked. A value a
+  declared type cannot hold — past its range, a negative sign counting, as for any
+  integer literal — is `ErrorTagWidth`, and so is one the width and sign an
+  extension's base already settled cannot hold: they share the node the width is
+  written on.
 
 The rule that a derived type lives in the same module as its enum keeps the first
 two true.

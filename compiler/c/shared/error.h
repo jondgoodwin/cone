@@ -202,7 +202,7 @@ enum ErrorCode {
     ErrorOpenTrait = 1089,      // Variants declared inside a trait, which is open; a closed set is an enum
     ErrorVariantDcl = 1090,     // A variant restating what its enum decides: its base, or its type parameters
     ErrorDupTag = 1091,         // Two variants holding the same tag value
-    ErrorTagWidth = 1092,       // A tag value too large for the integer type the enum declared
+    ErrorTagWidth = 1092,       // A tag value its discriminant cannot hold: outside the integer type the enum declared or the one its base settled, or none holds it
     ErrorBadUnsized = 1093,     // '@unsized' where there is no variant padding to decline
     ErrorNoVariants = 1094,     // An enum declaring no variants
     ErrorEnumEquality = 1095,   // '==' on an enum whose variants carry payloads, which have no comparison

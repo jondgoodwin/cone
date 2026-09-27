@@ -156,6 +156,18 @@ static unsigned genlTagFieldIndex(FnDclNode *fndcl) {
     return 0;
 }
 
+// A variant's tag value as a constant of its discriminant's LLVM type. A negative
+// value is held sign-extended to 64 bits, and LLVMConstInt takes only a value that
+// fits the type, so the bits above its width are dropped first, as a literal's are.
+// structSetTagWidth has made sure the value fits that width.
+LLVMValueRef genlTagConst(LLVMTypeRef tagtype, StructNode *variant) {
+    unsigned int width = LLVMGetIntTypeWidth(tagtype);
+    uint64_t val = (uint64_t)variant->tagnbr;
+    if (width < 64)
+        val &= (1ull << width) - 1;
+    return LLVMConstInt(tagtype, val, 0);
+}
+
 // May the tag be used directly as an index into the vtable list?
 //
 // It may when every variant's tag value is its position in 'derived', which is
@@ -208,7 +220,7 @@ static LLVMValueRef genlVtableForTag(GenState *gen, Vtable *vtable, StructNode *
             continue;
         }
         LLVMValueRef iseq = LLVMBuildICmp(gen->builder, LLVMIntEQ, tagval,
-            LLVMConstInt(tagtype, variant->tagnbr, 0), "istag");
+            genlTagConst(tagtype, variant), "istag");
         chosen = LLVMBuildSelect(gen->builder, iseq, variantvtable, chosen, "vtablefortag");
     }
     return chosen;
@@ -1124,7 +1136,7 @@ LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
             }
             else
                 val = LLVMBuildExtractValue(gen->builder, val, tagnode->index, "tag");
-            LLVMValueRef tagval = LLVMConstInt(genlType(gen, tagnode->vtype), structtype->tagnbr, 0);
+            LLVMValueRef tagval = genlTagConst(genlType(gen, tagnode->vtype), structtype);
             return LLVMBuildICmp(gen->builder, LLVMIntEQ, val, tagval, "istag");
         }
     }
