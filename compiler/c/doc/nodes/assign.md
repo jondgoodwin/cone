@@ -110,7 +110,15 @@ return type was written as a name for the tuple carries that name as its type.
 ## Flow
 
 `assignFlow` mirrors the same two-by-two, and the work is in `assignlvalrtype`,
-which every path calls. Per assignment:
+which every path calls. `assignSingleFlow` first moves or copies the value out
+of its source (`flowHandleMoveOrCopy`: a move type deactivates its source, an
+lvalue read of a counted reference gets a `+1`), and only then asks about the
+target, as generation evaluates the value before it stores over the target: so
+`p = p`, or `p = if c {p;} else {q;}`, finds `p` empty where the value left
+it, and releases nothing the new value still is. A parallel assignment
+(`assignParaFlow`) takes every value before it stores over any target, as
+generation evaluates them all first: `a, b = b, a` swaps two values that move.
+Per target:
 
 1. **The `_` placeholder short-circuits.** An anonymous lval swallows the value
    and returns early.
@@ -120,14 +128,21 @@ which every path calls. Per assignment:
    `MayWrite`, `ErrorNoMut`. The exception is a variable that holds nothing yet,
    which is how an `imm` local gets initialized once.
 3. **Initialization tracking.** Set `VarInitialized`, clear `VarMoved` and
-   `VarHollow`.
+   `VarHollow` (`flowVarSetFlags`), and note a tracked variable stored over
+   deeper than it was declared, which sends the function's drops to the path
+   walk (`flowDropNote`).
 4. **`FlagFirstAssign`** on the lval's name-use node when the variable holds
-   nothing whole: never initialized, moved out, or hollowed. Generation reads
-   this to *skip* releasing a previous value that never existed or that another
-   owner now holds. It has to be a per-site flag because flow state is a running summary
-   over the whole function — only the assignment site itself can carry it. A
+   nothing whole: never initialized, moved out, or hollowed — or is a match's
+   binding, which owns nothing. Generation reads this to *skip* releasing a
+   previous value that never existed or that another owner now holds. It is a
+   per-site flag, from the state along the walk in source order; where that may
+   differ by path, the path walk's drop-flag client sets or clears it from
+   every path, or marks the site `FlagDropTest`, so the variable's drop flag
+   decides ([Flow Analysis](../phases/flow.md), "Drop flags"). A store over a
+   field or an element of a local's own value (`flowLvalRootVar`) is marked
+   `FlagPartNoPrior` the same way when the local holds nothing. A
    hollowed variable's old allocation still has to go back:
-   `assignlvalrtype` builds its `HollowNode` and `assignSingleFlow` wraps it
+   `assignlvalrtype` builds its `HollowNode` and `assignSingleTarget` wraps it
    round the rval, after the rval's own move-or-copy, so the old allocation is
    released once the new value is evaluated, as `genlStore` orders a whole
    release. `assignMultRetFlow` has no one value to wrap, and leaks it.
@@ -135,9 +150,6 @@ which every path calls. Per assignment:
    `lvalscope < rvaltype->scope` is `ErrorInvType`, "lval outlives the borrowed
    reference you are storing". A slice carries the same scope as a single
    reference, so both tags are subject to it.
-
-Then `assignSingleFlow` calls `flowHandleMoveOrCopy` on the rval: a move type
-deactivates its source; an lvalue read of a counted reference gets a `+1`.
 
 `assignMultRetFlow` runs `assignlvalrtype` per lval, then the same
 `flowHandleMoveOrCopy` on the one rval: a destructured call result is a
@@ -156,12 +168,17 @@ content first, that is the node's value) and tuple destructuring on either side
 via `extractvalue`, then `genlStore`.
 
 `genlStore` **skips a store to the anonymous name entirely**, and otherwise
-releases the lval's previous value before overwriting, through the
-`genlReleaseOwning` scope exit uses — an `so` reference or slice is freed, an
-`rc` one drops a holder, a tuple's owning elements each — unless
-`FlagFirstAssign` is present. The lval need not be a variable: a field or a
-dereference of owning type releases what it held just the same, and never
-carries the flag.
+releases the lval's previous value before overwriting, after the new value is
+evaluated: an owning reference through the `genlReleaseOwning` scope exit uses
+— an `so` reference or slice is freed, an `rc` one drops a holder, a tuple's
+owning elements each — and anything else with a death in place
+(`genlFinalizeAt`), unless `FlagFirstAssign` (a variable) or `FlagPartNoPrior`
+(a part of a local's own value) is present, and under `FlagDropTest` only when
+the variable's drop flag says the value is there. The lval need not be a
+variable: a field, an element, or a dereference releases what it held just the
+same; a finalizing value reached through a raw pointer does not, since the
+memory may never have held one. A flagged variable stored over whole has its
+flag set after the store.
 
 ## Hazards
 

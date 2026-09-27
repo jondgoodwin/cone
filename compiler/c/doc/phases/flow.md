@@ -116,17 +116,19 @@ Put these first, because every one of them is load-bearing.
    `mut r &i32; r = &local; return r` compiles clean: assignment does not carry
    the borrow's scope onto the variable's declared type. `ref_flow_return.cone`
    asserts this absence deliberately.
-4. **The main walk is path-insensitive and does not iterate.** No CFG, no
-   lattice, no join, no fixed point. `ifFlow` walks both arms against one shared
-   mutable state, so a move in the `then` arm marks the source moved for the
-   `else` arm and for everything after. A loop body is walked once. The loan
-   walk is the other kind: it keeps its state per path, joins the arms of an
-   `if` and the paths into a loop's head and out of a block, and walks a loop
-   body again until its head stops growing — but only for a function the gate
-   marked, and over the same block-structured IR. **Not building a CFG is a
-   deliberate design choice**, not a simplification to be outgrown — the
-   block-structured IR is held to be easy enough to follow directly, joins and
-   all.
+4. **The main walk joins an `if`'s arms but does not iterate.** No CFG, no
+   fixed point. `ifFlow` walks each arm from the state its conditions leave and
+   joins them after: a variable moved on any arm that did not return counts as
+   moved from there on, so a move in both arms compiles and a use after a move
+   in one is refused. A loop body is walked once. The path walk is the other
+   kind: it keeps its state per path, joins the arms of an `if` and the paths
+   into a loop's head and out of a block, and walks a loop body again until its
+   head stops growing — but only for a function one of its gates marked, and
+   over the same block-structured IR. It is what decides a function's drops
+   where a variable's state may differ by path ("Drop flags", below). **Not
+   building a CFG is a deliberate design choice**, not a simplification to be
+   outgrown — the block-structured IR is held to be easy enough to follow
+   directly, joins and all.
 5. **Ownership is not one model, and flow reads which one from the region
    ref.** One with `alias` (`rc`) is counted; one declaring `Move` (`so`) has a
    single owner, and a copy of a reference to it is a move; one with neither
@@ -147,6 +149,8 @@ Put these first, because every one of them is load-bearing.
 | `fnsig` | `blockFlow`, to `flowAddVar` each parameter on entering the function's main block |
 | `scope` | `blockFlow`, only as `if (++fstate->scope == 2)` — the test for "this is the main block" |
 | `gate` | `fnDclTypeCheck`, which runs the loan walk on a function it marks; `flowGateCount` tallies it for `-V 2` (below, "The gate") |
+| `dropgate` | `fnDclTypeCheck`, which runs the path walk's drop-flag client on a function it marks ("Drop flags", below) |
+| `jumped` | `ifFlow`, from `blockFlow`: every path through the arm just walked returned, so it takes no part in the join |
 | `inflight`, `inflightcnt` | the gate's `flowGateUse`, from `nameuseFlow` and `nameuseFlowBorrowed` |
 
 ### The gate
@@ -207,11 +211,22 @@ The live state is on the declarations, in `VarDclNode.flowtempflags`:
 | --- | --- | --- |
 | `VarInitialized` | `varDclFlow`, `assignlvalrtype`; pre-set at parse for globals, fields and parameters | only round a module's `init`: `modInitFlowBegin` clears it on each global of the module without a value, and `modInitFlowEnd` puts every such global's flags back |
 | `VarMoved` | `flowHandleMove` | `assignlvalrtype` on reassignment |
-| `VarHollow`, with the moves that did it in `VarDclNode.hollowed` | `flowHandleMove`, for a move out through a local sole owner | `assignlvalrtype` on reassignment |
+| `VarHollow`, with the moves that did it in `VarDclNode.hollowed` (and in `hollowall`, every one in the function) | `flowHandleMove`, for a move out through a local sole owner | `assignlvalrtype` on reassignment |
+| `VarDropFlag` | the drop-flag client (`dropWalkEnd`), for a variable whose state differs by path at a release | never: generation reads it |
 
-Because these live on the declaration and are never saved or restored, **they
-are a running summary over the whole function, not per-program-point state.**
-Every imprecision below follows from that one fact.
+**They are the state along the path being walked, in source order.** Every
+change goes through `flowVarSetFlags`, which logs the old flags while an `if` is
+being walked, for a variable declared outside its innermost conditional part
+(`VarDclNode.flowdepth`, below `flowDepth`); `ifFlow` walks each arm from the
+state its conditions leave, takes what each arm that did not return changed
+(`flowVarPathTake`), rolls it back, and joins them (`flowVarJoin`): each flag
+any of them set is set, an arm that did not change a variable contributing what
+it had at the fork, and a missing `else` is an arm. A flag set means "on some
+path": a variable moved on one arm may not be used after the `if`, and one
+given a value on one arm is taken as given one, for its use. A loop body is
+walked once, so what a later pass sees is not here: the path walk's. And whether
+a variable holds its value at each of its releases is not decided here where
+that may differ by path ("Drop flags").
 
 A file-static variable stack (`gVarFlowStackp`) records which declarations are
 in scope. It is global mutable state, safe only because flow never runs
@@ -277,15 +292,18 @@ block or an `if` used as a value has no source of its own either, so the walk
 goes on into what it hands back — a block's final expression and the value of
 each `break` that leaves it (not a loop's final expression, which loops back),
 each branch of an `if` — checking every one of those values. Through
-`flowHandleMove` it deactivates the variables that *every* one of them moves
-out of: `imm y = {a;}`, `if c {a;} else {a;}` and a loop whose only exits all
-`break a` leave their source moved exactly as `imm y = a` does, so it is
-finalized once, by the new holder. A variable moved out of by only some of
-them is a conditional move and is not deactivated, because `VarMoved` is per
-function: `if c {a;} else {Inner[0];}` bound to a variable still finalizes `a`
-twice on the path that moves it (and once, correctly, on the other). An
-expression statement never reaches `flowHandleMove`, so a block whose value is
-thrown away moves nothing.
+`flowHandleMove` it deactivates every variable any one of them moves out of,
+and marks each name use a value leaves by (`FlagMoveOut`): `imm y = {a;}`,
+`if c {a;} else {a;}` and a loop whose only exits all `break a` leave their
+source moved on every path, exactly as `imm y = a` does, so it is finalized
+once, by the new holder. A variable moved out of by only some of them is a
+conditional move: it may not be used again, and whether its scope's end
+releases it is its drop flag's to say, cleared where the value left — the
+function's drops go to the path walk (`dropgate`). A function handing back a
+block or an `if` — by `return`, or as its body's value — moves what each of its
+values hands back the same way (`blockResultMove`). An expression statement
+never reaches `flowHandleMove`, so a block whose value is thrown away moves
+nothing.
 
 **A move out through a sole owner.** When the inward walk reaches a local
 variable holding an owning reference through that reference — `*b`, `**b`
@@ -303,11 +321,11 @@ learn what left, and frees the memory without finalizing it
 field is ever on the chain: `b.inner`, a field through the injected
 dereference, is refused as a field.
 
-A hollowing on only some of the values a block or an `if` hands back hollows
-the variable anyway, unlike a whole conditional move: the value is then
-freed but not finalized on the paths that left it in place, rather than
-finalized a second time on the ones that moved it. A variable moved whole by
-the same move as well is left to that move (`MoveParts.wholes`).
+The owner's name use in the move is marked (`FlagHollowOut`), so that a
+variable hollowed on only some paths — in a branch, or by only some of the
+values a block or an `if` hands back — has a drop flag saying which: released
+hollow where it was hollowed, whole where it was not. A variable moved whole
+by the same move as well is left to that move (`MoveParts.wholes`).
 
 **A recast is its operand.** Type check hands a value between an enrichment and
 its base, in either direction, wrapped in a `CastTag` with no `FlagConvert`: the
@@ -326,10 +344,17 @@ a variable of its own. The binding is that value under the variant's name, not
 a second value: `flowMatchBound` answers the matched value's name for it, and
 the walks treat the two as one. `flowScopeDealias` never releases the binding,
 since the matched value's variable releases it, as the enum, whichever arm ran;
-`flowHandleMove` on the binding deactivates the matched value too; and
-`flowIsScopeResult` exempts the matched value when the binding is handed back.
-A guard's binding (`case imm c Circle if g`) is a second binding of the same
-value, and owns nothing either.
+`flowHandleMove` on the binding deactivates the matched value too, and the
+binding's name use is what is marked, the flag being the matched value's
+variable's (`flowDropOwner`), so a binding moved on one arm leaves the matched
+value to be finalized when another arm runs; and `flowIsScopeResult` exempts
+the matched value when the binding is handed back. A store over a binding, or
+over a part of one, releases nothing: the binding owns nothing of its own
+(`assignlvalrtype`). A guard's binding (`case imm c Circle if g`) is a second
+binding of the same value, and owns nothing either. The match's own variable
+(`_`) is named by one name use that every pattern and binding shares, so no
+move of it is marked: a binding's initializer that moves it (a `&uni`
+narrowed) deactivates it as before, and no drop flag follows it.
 
 **The count counts holders.** From the ownership work:
 
@@ -375,8 +400,8 @@ temporary.
 
 **Decrements are never reference-count nodes.** They come from generation: walking a
 `dealias` list at scope exit, and `genlStore` releasing an lval's previous value
-unless `FlagFirstAssign` says there was none, and a value's death releasing the
-owners it holds. Each goes through `genlReleaseOwning`: one owner goes away,
+unless `FlagFirstAssign` (or `FlagPartNoPrior`) says there was none, and a value's
+death releasing the owners it holds. Each goes through `genlReleaseOwning`: one owner goes away,
 through the region's `dealias` where it has one, as the value's death where the
 region is `Move`, and as nothing otherwise; a tuple's owning elements one by
 one. A hollowed variable's owner goes away the same way, through a
@@ -384,16 +409,21 @@ one. A hollowed variable's owner goes away the same way, through a
 
 ## 5. What it injects
 
-Flow is not a read-only analysis. Five mutations, all of which generation
+Flow is not a read-only analysis. These mutations, all of which generation
 depends on:
 
 | Injection | Where | Generation uses it for |
 | --- | --- | --- |
 | `BlockRetTag` | `blockFlow`, for any block not already ending in one | a loop block, **and** a regular block ending in an expression, both get theirs here — it is where the dealias list hangs |
 | `RefCountTag` | `flowInjectRefCountAmt` | `genlRegionAlias(val, amt)`: the region's `alias`, once per owner added |
-| `dealias` lists | `flowScopeDealias`, onto every `BreakRetNode` | `genlDealiasNodes` replays them |
-| `FlagFirstAssign` | `assignlvalrtype`, when the variable is uninitialized, moved out or hollowed | `genlStore` skips releasing a previous value the variable does not hold whole |
-| `HollowTag` | `flowScopeDealias`, in a `dealias` list, for a hollowed variable or one whose part the scope hands back; `assignSingleFlow`, wrapped round the value stored into a hollowed variable | `genlHollowRelease`: the owner goes, and a death frees without what moved — after the new value is evaluated, for the wrapper, as `genlStore` orders a whole release |
+| `dealias` lists | `flowScopeDealias`, onto every `BreakRetNode`; rebuilt by the drop-flag client (`dropApplyExit`) for each exit of a function it walked | `genlDealiasNodes` replays them |
+| `FlagFirstAssign` | `assignlvalrtype`, when the variable is uninitialized, moved out or hollowed, or is a match's binding; set or cleared by the drop-flag client from each path's state | `genlStore` skips releasing a previous value the variable does not hold whole |
+| `FlagPartNoPrior` | `assignlvalrtype`, on a field or element of a local's own value when the local holds nothing (or is a match's binding); the drop-flag client likewise | `genlStore` skips releasing the part's previous value |
+| `FlagDropTest` | the drop-flag client, on a store's target where whether its variable holds its value differs by path | `genlStore` releases the previous value only when the variable's drop flag says it is there |
+| `FlagMoveOut`, `FlagHollowOut` | `flowMoveSource`, on the name use a value moves out of, or out through | the path walk follows the move along each path; `genlDropFlagUse` clears, or sets hollow, the variable's drop flag there |
+| `HollowTag` | `flowScopeDealias`, in a `dealias` list, for a hollowed variable or one whose part the scope hands back; `assignSingleFlow`, wrapped round the value stored into a hollowed variable (and the drop-flag client, where a later pass of a loop reaches the store hollow) | `genlHollowRelease`: the owner goes, and a death frees without what moved — after the new value is evaluated, for the wrapper, as `genlStore` orders a whole release; with `test` set, only when the drop flag says hollow |
+| `DropFlagTag` | the drop-flag client, in a `dealias` list, round the release of a variable whose state differs by path there | the release runs only when the variable's drop flag holds the state it names |
+| `VarDropFlag` | the drop-flag client, on a variable given a flag | `genlDropFlagBegin` makes the flag where the variable begins; each store over it, and each marked move, updates it |
 
 **A reference-count node is built only for a counted reference, or a value
 holding one.** `flowInjectRefCountAmt` returns early unless the type is a
@@ -412,8 +442,11 @@ one. A reference into a region with neither is copied with no node at all.
 
 **Scope dealiasing.** `flowScopeDealias` walks the variable stack downward from
 the top to a start position, so release order is the reverse of declaration
-order. Per variable: one that was never initialized or was moved out is
-skipped, whatever its type, because it owns nothing to release or finalize; so
+order. Per variable: one that was never initialized or was moved out on the
+path being walked is skipped, whatever its type, because it owns nothing to
+release or finalize — in a function whose drops the path walk decides, its
+lists replace these, each variable released as every path to that exit
+says ("Drop flags"); so
 is a match's binding, which owns nothing (`flowMatchBound`); so
 is one the scope hands back, which is the caller's to release or finalize, and
 `flowIsScopeResult` matches it against the result expression, walking a
@@ -429,11 +462,12 @@ still owns the allocation, and its entry is a `HollowNode` naming what moved,
 so the memory goes back without it. A copied part matches nothing, and a field
 handed back was refused. A block or an `if` used as a move value matches what
 it hands back — its final expression, each `break` that leaves it, each branch.
-A local handed back on only some branches is exempt on all of them, and leaks
-on the others, as a conditional move does. The exemption is the result's own
-and is not deactivation, because each `return` builds its own list and
-`VarMoved` is not path-sensitive: `if c {return a;}` exempts `a` on that way
-out only, and `a` is still usable and finalized on the path that goes on. The match is on the
+A local it hands back on only some branches was moved there, and marked
+(`blockResultMove`), so the path walk releases it by its drop flag on the
+others, and does not exempt it. The exemption is the result's own and is not
+deactivation, because each `return` builds its own list: `if c {return a;}`
+exempts `a` on that way out only, and `a` is still usable and finalized on the
+path that goes on. The match is on the
 declaration the result's name resolves to, not on the name: a `return` asks over the whole function's
 stack, where an inner block's `a` and an outer `a` both sit, and only the one
 handed back is exempt. What survives both is released as its type dies: a
@@ -469,16 +503,18 @@ failed to resolve.
 
 ## 6. The loan walk
 
-A second walk, over a function the gate marked, once `blockFlow` has found no
-error in it (`fnDclTypeCheck` calls `flowPathWalk`, `ir/flowpath.c`). It
-enforces **freezing**: a borrow held in a local freezes its source until the
-borrow's last use. Borrow freezing is its one client (`ir/flowloan.c`); the path
-machinery — state per path, joins, loops walked to a fixed point — is meant to
-serve drop flags as well.
+A second walk, the path walk, over a function a gate marked, once `blockFlow`
+has found no error in it (`fnDclTypeCheck` calls `flowPathWalk`,
+`ir/flowpath.c`). It has two clients, each with its own gate, and a function
+either marks is walked once for both. The loan gate's client enforces
+**freezing**: a borrow held in a local freezes its source until the borrow's
+last use (`ir/flowloan.c`); walked for drop flags alone, it makes no loans. The
+drop gate's is **drop flags** (`ir/flowdrop.c`, "Drop flags", below).
 
-**It is read-only.** It injects nothing and changes no node, so it may walk a
+**It is read-only while it walks.** It injects nothing and changes no node, so it may walk a
 loop body more than once; that is its difference from the main walk, which
-mutates and visits each node once. It walks the tree as `blockFlow` left it,
+mutates and visits each node once. What the drop-flag client decides it applies
+once the walk is done. It walks the tree as `blockFlow` left it,
 through the `RefCountTag` and `HollowTag` wrappers, every block ending in a
 jump or a `BlockRetTag`, and fails with `errorUnreachable` on a value tag it has
 no case for, as `flowLoadValue` does.
@@ -629,7 +665,8 @@ nearly always on the first walk. An error fires on whichever walk first meets
 it, once. A loop still growing after four walks has each holder that changed
 around it widened to every loan (`pathSetAll`): conservative, and then it
 settles. The paths out are its `break`s. `-V 2` prints
-`Loan walk: F functions, L loops, W walked again, C widened` (`flowPathPrint`).
+`Path walk: F functions (L for loans), L loops, W walked again, C widened`
+(`flowPathPrint`).
 
 **Scope ends.** As a block ends, at its end or at a jump leaving it
 (`pwScopeEnd`), its holders die first, dropping what they were pending on; then
@@ -661,16 +698,85 @@ reason: flow never runs re-entrantly (`flowPathWalk` refuses to). The buffers
 come from the compiler's arena, small at first, and are kept from one walk to
 the next; a variable's index is `VarDclNode.flowindex` for the length of a walk.
 
+### Drop flags
+
+[Jon 26 Sep: runtime drop flags, and conditional handling as a general flow
+capability.] A value dies at the end of its scope, on the path that still holds
+it. Whether a variable holds its value at one of its releases — a scope's exit,
+or a store over it — may differ by path: moved on one branch, given a value on
+one, hollowed on one, moved in an earlier pass of a loop. Such a variable
+carries a hidden byte, its **drop flag**, which generation sets where its value
+arrives and clears where it leaves, and the release tests it. Where every path
+agrees, there is no flag, and the release is what it is, or nothing.
+
+**The gate** (`FlowState.dropgate`) is set by the main walk at O(1) per state
+change: a *tracked* variable — a local or a parameter whose value moves or has
+anything to do as it dies (`flowDropTracked`; a match's binding stands for the
+matched value's variable, `flowDropOwner`) — moved, hollowed or stored over
+deeper in the conditional structure than it was declared (`flowDepth`: an
+`if`'s arms and its later conditions, the right operand of `and` and `or`, a
+loop's body; `flowDropNote`), or moved or hollowed by only some of the values a
+block or an `if` hands on. A function the gate does not mark keeps the main
+walk's lists, which are right for it: every change to a tracked variable is
+on every path through its scope. That is what keeps the cost off a function
+with no such variable, and its code byte-identical.
+
+**What it follows.** Per tracked variable, on the current path, a set of what
+it may hold (`PathVar.state`, `DropState`): its whole value, a hollowed one,
+nothing because never given one, nothing because moved out. Its declaration
+makes it uninitialized, and its initializer, its parameter-hood or a store over
+it whole makes it whole; a name use the main walk marked (`FlagMoveOut`,
+`FlagHollowOut`) makes it moved or hollow where the walk meets it; its scope's
+end makes it nothing, so the paths leaving the scope agree. The state is logged
+and joined as the loans are — a union — so it costs what the paths changed.
+
+**What it records** (`dropExit`, `dropStore`, `dropPartStore`), at each release
+the walk meets, for each variable that has anything to do as it dies: at an
+exit — a `break`, `continue`, `return` or block end — what each variable the
+exit releases (the declarations from the scope it leaves down) may hold, after
+the exit's value is walked; at a store over a whole variable, what it held
+before; at a store over a field or an element of a local's own value, what the
+local held. Loop walks gather into one record (`DropSite`), the union.
+
+**Uses it refuses.** A move or a read of a tracked variable some path reaching
+it moved, hollowed or never gave a value (a borrow: moved or hollowed only) is
+`ErrorMove` "may have been moved out" / "may not have been given a value"
+(`dropRefuse`), once per site: a loop moving a variable declared outside it,
+a read in a pass after one that moved it. The main walk refuses what one walk
+in source order sees.
+
+**What it decides** (`dropWalkEnd`, once the walk reported no error). A
+variable whose recorded state at any release holds two of *whole*, *hollow*,
+*nothing* gets `VarDropFlag`. Then each exit's release list is rebuilt from the
+records (`dropApplyExit`), last declared first, through the same per-variable
+release the main walk uses (`flowVarRelease`): a variable holding nothing
+there has no entry; one certainly whole or hollow its release as before; one
+whose state is mixed its whole release, its hollow release or both, each in a
+`DropFlagNode` naming the state it runs in. A variable the exit hands back is
+exempt as before, unless a path to the exit moved it — a block or an `if`
+handing it on, whose move its flag records. Each store is marked
+(`dropApplyStore`, `dropApplyPart`): nothing held, `FlagFirstAssign` or
+`FlagPartNoPrior`; certainly held, neither; mixed, `FlagDropTest`. A store
+reaching a hollowed variable gets a `HollowNode` round its value, which a
+mixed state marks `test`; one wrapped where no path is hollow is unwrapped.
+
+**Generation** (`genlDropFlagBegin`, `genlDropFlagSet`, `genlDropFlagIf`,
+`genlDropFlagUse` in `genlalloc.c`; [Generation](generation.md), "Drop flags"):
+an `i8` slot named `<var>.held`, stored `1` (whole) where the variable begins
+with a value — its declaration, a parameter at function or inline-body entry —
+and `0` where it begins without one; `0` at each marked move, `2` at each
+marked hollowing, `1` after each store over it whole.
+
 ## 7. What it decides, and what it does not
 
 | Analysis | In flow? | Enforced | Not enforced |
 | --- | --- | --- | --- |
-| **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable, and on a borrow of a moved-out one; move out of a field, or of a global, or out through a borrowed or a shared owning reference, refused | element granularity — moving `a[0]` deactivates all of `a`; conditional moves; loop-carried moves |
+| **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable, and on a borrow of a moved-out one; move out of a field, or of a global, or out through a borrowed or a shared owning reference, refused; a use some path reaching it moved, hollowed or never gave a value (a loop's earlier pass included), by the path walk | element granularity — moving `a[0]` deactivates all of `a` |
 | **Escape / lifetime** | representation in type check, enforcement here | storing a borrow into a longer-lived lval, by assignment or by either direction of a swap; returning a borrow of a local; a borrow arriving through a call's result, singly or as one of several values destructured into lvals, each carrying the narrowest argument borrow's scope; a `&mut &T` argument whose pointee would outlive another borrow passed with it; a borrow coerced to another reference type, whether widened to a base trait's reference or made a virtual reference | a borrow laundered through a variable and returned (kept past its source's scope and used, it is refused by freezing, below); a borrow stored in a field or captured; distinguishing parameter lifetimes — there is no lifetime annotation syntax |
 | **Freezing** | the loan walk, on a gated function | a borrow held in a local whose type is a borrowed reference, and its copies, freeze the source until the last use, and so does a borrow a call returns, of every argument (from a `NoLoanMut` or `NoLoanRead` container, only its life): `ErrorFrozen` at a change, a move, a conflicting borrow, the source's end, and, under a mutable borrow, a read — for a source reached as `uni`; for one reached through a shared path, only its owner's move, replacement or end, a change or mutable borrow of the owner where it is held, and an `&uni` or `&imm` borrow | an element borrow through a shared path (Jon's rule refuses it for a `ShapeChanging` container; not built); a borrow held inside another value; two copies of one `&mut`; a global a callee changes |
-| **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs and slices, of drop-fn structs and enums, and of tuples and arrays holding what finalizes or owns, from a jump down to the block it names | an array an element was moved out of leaks the rest; a variable moved out, or initialized, on only one path — see Hazards |
+| **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs and slices, of drop-fn structs and enums, and of tuples and arrays holding what finalizes or owns, from a jump down to the block it names; the previous value's release at a store over a variable, a part of one, or a place reached through a reference; each on the paths that hold the value, by a drop flag where they differ | an array an element was moved out of leaks the rest; a value stored into a field of a variable holding nothing leaks — see Hazards |
 | **Permission** | `MayWrite` and `MayRead` | `ErrorNoMut` on assignment and swap; `ErrorNoRead` on a read through a reference — a dereference, an index, or a field of a virtual reference | `MayAliasWrite`, `RaceSafe`, `IsLockless` are populated and read nowhere |
-| **Initialization** | yes | `ErrorMove` "has not been initialized" | "initialized on one branch" reads as initialized everywhere; a variable never initialized may be borrowed, so a method taking it `&mut` can fill it, and nothing then stops a field it left unset being read through the borrow; the unused-variable warning in `flow.h`'s header does not exist |
+| **Initialization** | yes | `ErrorMove` "has not been initialized"; for a variable that moves or has anything to do as it dies, "may not have been given a value" where some path did not (the path walk) | for any other type, "initialized on one branch" reads as initialized everywhere; a variable never initialized may be borrowed, so a method taking it `&mut` can fill it, and nothing then stops a field it left unset being read through the borrow; the unused-variable warning in `flow.h`'s header does not exist |
 | **Array fill rules** | yes | `ErrorBadFill` for a repeated move value; `ErrorFillCount` for a non-constant count | — |
 
 Everything else about permissions is type check's: `permMatches` in
@@ -687,6 +793,7 @@ Everything else about permissions is type check's: `permMatches` in
 | `ErrorNoMut` | `assignlvalrtype`, `swapFlow` | no write permission |
 | `ErrorNoRead` | `flowLoadThroughRef` | no read permission on the reference a dereference, an index or a virtual-reference field reads through |
 | `ErrorMove` | `nameuseFlow`, `nameuseFlowBorrowed` | read: uninitialized, or moved out; borrowed: moved out only (`borrowFlow` walks the borrowed place to its variable) |
+| `ErrorMove` | `dropRefuse`, from the path walk | a tracked variable moved, read or borrowed where some path reaching it moved or hollowed it, or (not for a borrow) never gave it a value |
 | `ErrorBadFill` | `arrayLitFlow` | a fill may not repeat a move value |
 | `ErrorFillCount` | `arrayLitFlow` | fill count not constant, or too large |
 | `ErrorEscape` | `returnFlowEscape` | returned borrow outlives the local it points at |
@@ -708,7 +815,8 @@ parameters and fields already carry `VarInitialized`.
 **After flow, for a function that ran it:** every block ends in a node carrying
 a `dealias` list; every recognized counted acquisition has a `RefCountNode`; every
 first-assignment target carries `FlagFirstAssign`. The loan walk adds nothing to
-the tree.
+the tree; the drop-flag client, where it ran, rebuilt the lists of the exits it
+met and set the store marks from every path's state.
 
 **What generation relies on.** `genlBlock`, `genlBreak` and `genlReturn` call
 `genlDealiasNodes` and do no analysis of their own. If flow did not run, the
@@ -716,42 +824,32 @@ lists are NULL, `genlDealiasNodes` returns immediately, and **nothing is ever
 released** — there is no fallback. Likewise, without `FlagFirstAssign` every
 first assignment to an uninitialized owning variable releases garbage, and a
 reassignment after a move releases what the new owner holds: `genlStore`
-releases one owner of an owning lval's previous value — single, slice, or
-tuple element — whenever the flag is absent. `assignlvalrtype` sets it when the
+releases an lval's previous value — an owner, or a value that finalizes, dying
+in place — whenever the flag is absent. `assignlvalrtype` sets it when the
 variable is not `VarInitialized`, or is `VarMoved` or `VarHollow`, at the
-assignment; for a hollowed one, the `HollowNode` wrapped round the stored value
-is what releases the old allocation.
+assignment, or the drop-flag client from every path; for a hollowed one, the
+`HollowNode` wrapped round the stored value is what releases the old
+allocation. A variable with `VarDropFlag` needs each marked move of it
+(`FlagMoveOut`, `FlagHollowOut`) generated as a load of its name, where
+`genlDropFlagUse` updates the flag.
 
 ## 9. Hazards
 
-- **A moved-out variable is skipped at scope exit on every path**, because
-  `VarMoved` is a whole-function summary. That leaks rather than double-frees,
-  which is the deliberate choice; the in-code comment says so. A reassignment
-  reads the same summary at its own site: moved before the assignment in
-  source order, the variable is released there on no path. Moved only *after*
-  it in source order — by an earlier iteration of a loop both sit in — the
-  reassignment releases on every iteration, and from the second one frees what
-  the move handed over. That is the loop-carried move the table above lists as
-  unenforced, in the one place it double-frees rather than leaks; it is the
-  same in both regions.
-- **A variable moved out by only some of the values a block, an `if` or a loop
-  hands back is not deactivated at all**, so where that value goes to a new
-  holder the variable is finalized twice on the path that moved it:
-  `imm y = if c {a;} else {Inner[0];}` finalizes `a` in `y` and again at `a`'s
-  scope exit when `c` is true. Deactivating it would instead leak it on the
-  other path. Either way it needs the drop flag a conditional move needs.
-  Now that a region's death finalizes, the same holds for a sole owning
-  reference moved whole on only some paths (`imm y = if c {b;} else {+so
-  Fin[0];}`): it is freed, and finalized, a second time on the path that moved it.
-- **A variable hollowed on only one path is released hollow on every path.**
-  `if c { imm x = *b; }` frees `b`'s memory on both paths, and on the path that
-  did not move leaves what `b` points at unfinalized. That is the deliberate
-  side of the choice — a finalizer skipped rather than run twice — and it needs
-  the drop flag to be right.
-- **A match's binding moved on one arm moves the matched value on every arm.**
-  `match e { case imm a A { take(a); } else {...} }` deactivates the matched
-  value for the whole function, so when the `else` arm runs, what it holds is
-  never finalized. The same drop flag is the answer.
+- **The gate is what keeps the main walk's lists right.** They are built from
+  the state along one walk in source order, which is every path's only where
+  no tracked variable changes deeper than its declaration and no block or `if`
+  hands a value on from some of its paths. A new way for a variable's state to
+  change must note it (`flowDropNote`, or set `dropgate`), or its function's
+  drops are decided on one path's state.
+- **A move the main walk makes must be marked where the value leaves**
+  (`FlagMoveOut`, `FlagHollowOut`), or the path walk and the drop flag do not
+  see it. A name use shared by several places in the tree cannot be marked:
+  the match's own variable is the one known (flow.c, `flowMoveSource`).
+- **A value stored into a field of a variable that holds nothing leaks.**
+  `take(e); e.inner = Inner[2];` and `mut e Holder; e.inner = Inner[2];`
+  finalize nothing of the old field (there is none), and the variable is not
+  taken to hold a value by having one field given, so the new field is never
+  finalized either. Rust refuses both.
 - **A match's binding declared `mut` and assigned over holds its own copy.** The
   conversion copies the matched value into the binding's storage, so a value
   assigned into the binding is in neither the matched value nor anything that
@@ -761,16 +859,6 @@ is what releases the old allocation.
   (`b, x = pair()`) leaks its old allocation: `assignMultRetFlow` has no single
   value to wrap a `HollowNode` round, so it takes the moved variable's path
   (`FlagFirstAssign`, nothing released).
-- **A variable initialized on only one path is released on every path**, because
-  `VarInitialized` is the same kind of summary: once an assignment anywhere
-  before the scope exit has set it, the exit releases the variable whether or
-  not that assignment ran. On the path that skipped it, that frees storage that
-  never held a reference, and finalizes storage that never held a value — for
-  every type with a death: a struct with a `final` or an owning field, an enum,
-  a tuple or an array of any of them (`mut t (Fin, i64); if c { t = make(); }`
-  runs `Fin`'s `final` over garbage when `c` is false). Only a variable that is never assigned at all is
-  skipped. Releasing the right thing on each path needs a runtime drop flag per
-  variable — the same mechanism a conditional move needs — and belongs with it.
 - **`flowIsLvalRead` is not `iexpIsLval`.** They disagree on recursion into
   `objfn` and on string literals. Do not substitute one for the other.
 - **`fnCallFlow` does not flow `objfn`**, so a call through an uninitialized
@@ -785,18 +873,22 @@ is what releases the old allocation.
 
 | File | Function | Purpose |
 | --- | --- | --- |
-| `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the only entry point; the per-function error-delta gate; `FlowTimer` round `blockFlow` and the loan walk under `-V 1`; the loan walk on a gated function `blockFlow` found no error in; `flowGateCount` after it |
-| `ir/flowpath.c` | `flowPathWalk`, `flowPathPrint` | the loan walk (§6): its entry, and its `-V 2` tallies |
-| | `pathSetFacts`, `pathRollback`, `pathDelta`, `pathJoin` | the state per path: set a fact, recording the old one; undo to a fork; what a path changed; join paths |
+| `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the only entry point; the per-function error-delta gate; `FlowTimer` round `blockFlow` and the path walk under `-V 1`; the path walk on a function either gate marked, `blockFlow` having found no error in it; `flowGateCount` after it |
+| `ir/flowpath.c` | `flowPathWalk`, `flowPathPrint` | the path walk (§6): its entry, for loans, drops or both, and its `-V 2` tallies |
+| | `pathSetFacts`, `pathSetState`, `pathRollback`, `pathDelta`, `pathJoin` | the state per path: set a fact (loans, or a drop state), recording the old one; undo to a fork; what a path changed; join paths |
 | | `pwValue`, `pwPlace`, `pwThrough`, `pwBorrow`, `pwLend`, `pwOwnedLent`, `pwStore`, `pwSwap`, `pwVarDcl` | the walk's dispatch: what each node accesses, which holders it uses, what loans its value carries |
-| | `pwStmts`, `pwBlock`, `pwBlockExits`, `pwLoop`, `pwIf`, `pwJump`, `pwScopeEnd` | forks and joins, loops to a fixed point, jumps, and a scope's end as an access |
+| | `pwStmts`, `pwBlock`, `pwBlockExits`, `pwLoop`, `pwIf`, `pwJump`, `pwScopeEnd`, `pwExit` | forks and joins, loops to a fixed point, jumps, a scope's end as an access, and an exit's record for the drop-flag client |
+| | `pwDropUse` | a use of a place's root variable, checked by the drop-flag client |
+| `ir/flowdrop.c` | `dropMove`, `dropUse`, `dropRefuse` | a marked move's new state; a use some path left without its value, refused once |
+| | `dropStore`, `dropPartStore`, `dropExit` | what each variable a release releases may hold there, gathered over every walk |
+| | `dropWalkEnd`, `dropApplyExit`, `dropApplyStore`, `dropApplyPart`, `dropPrint` | a flag for each variable whose state differs at a release; each exit's list rebuilt, each store marked; the `-V 2` tally |
 | `ir/flowloan.c` | `loanMake`, `loanHeldBy` | a borrow's loan, and who may hold it |
 | | `loanAccess`, `loanUse` | a conflicting access records a pending conflict on each holder of the loan; a use of the holder fires it (`ErrorFrozen`) |
 | `ir/stmt/module.c` | `modInitOf`, `modInitFlowBegin`, `modInitFlowEnd` | round a module's `init` only: its module's globals without a value start the pass uninitialized, as locals, so `init` assigns each once and reads none first; one never assigned is `ErrorGlobalUninit`. [module](../nodes/module.md), "Init and final" |
 | `ir/flow.c` | `flowLoadValue` | the walk's spine — tag dispatch for a value being read |
 | | `flowLoadThroughRef` | `MayRead` on the reference a value is read through; called from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` |
 | | `flowHandleMoveOrCopy` | move vs. alias, for a value going to a new holder; a tuple literal's element by element |
-| | `flowHandleMove` | deactivate the source — each move-typed element's, for a tuple literal; for a block or an `if`, what every value it hands back moves out of; hollow a local sole owner moved out through; refuse a move out of a field (`flowRefuseMoveField`) or a global, or out through a borrowed or a shared owning reference |
+| | `flowHandleMove` | deactivate the source — each move-typed element's, for a tuple literal; for a block or an `if`, what any value it hands back moves out of, marking each move (`FlagMoveOut`, `FlagHollowOut`) and gating the drops where not every value does; hollow a local sole owner moved out through; refuse a move out of a field (`flowRefuseMoveField`) or a global, or out through a borrowed or a shared owning reference |
 | | `flowOwningLocal`, `flowNewHollow` | the local owning reference a move reaches through; the `HollowNode` releasing a hollowed variable as it stands |
 | | `flowResultMove` | the same refusals for a returned value, deactivating nothing |
 | | `flowIsLvalRead` | the temporary-vs-lvalue test that makes counting correct |
@@ -805,12 +897,14 @@ is what releases the old allocation.
 | | `flowHeldCounted`, `flowVariantHeldCounted` | does a copy of this struct, enum, tuple or array add a holder to a counted reference its death releases |
 | | `flowMatchBound` | the matched value a match's binding stands for, or NULL |
 | | `flowScopePush`, `flowScopePop`, `flowAddVar` | the variable stack |
-| | `flowScopeDealias` | build a scope's release list; skip an uninitialized, moved-out or handed-back variable; release a hollowed one hollow |
+| | `flowScopeDealias`, `flowVarRelease` | build a scope's release list; skip an uninitialized, moved-out or handed-back variable; release a hollowed one hollow; one variable's release, whole or hollow, in a `DropFlagNode` where asked |
+| | `flowVarSetFlags`, `flowVarLogMark`, `flowVarPathTake`, `flowVarRollback`, `flowVarJoin` | the main walk's variable flags, logged so that an `if`'s arms are walked from one state and joined |
+| | `flowDropTracked`, `flowDropNote`, `flowDropOwner`, `flowLvalRootVar` | the drop gate: a tracked variable changed deeper than its declaration; the variable owning a binding's value; the local a store's target is part of |
 | | `flowStateInit`, `flowGateResultAsk`, `flowGateCallAsk`, `flowGateOperandAsk`, `flowGateUse`, `flowGateCount`, `flowGatePrint` | the gate (§3, "The gate"): the questions its triggers ask out of line, the waiting operands' borrows, the `-V 2` tallies |
 | `ir/flowgate.h` | `flowGateHolder`, `flowGateAssigned`, `flowGateResult`, `flowGateCall`, `flowGateOperand` | the gate's triggers as inline tests, dismissing what cannot carry a borrow without a call |
 | `ir/itype.c` | `itypeCarriesBorrow` | may a value of this type hold a borrowed reference; a struct's answer remembered in `StructNode.carriesborrow` |
-| `ir/exp/block.c` | `blockFlow` | scope push/pop, `blockret` injection, result walk then dealias capture; a `return`'s move source |
-| `ir/exp/if.c` | `ifFlow` | both arms against one shared state |
+| `ir/exp/block.c` | `blockFlow`, `blockResultMove` | scope push/pop, `blockret` injection, result walk then dealias capture; a `return`'s move source, a returned block's or `if`'s values moved; a loop body one level deeper; whether every path returned (`jumped`) |
+| `ir/exp/if.c` | `ifFlow` | each arm from the state its conditions leave, the arms that did not return joined; later conditions and arms one level deeper |
 | `ir/exp/assign.c` | `assignlvalrtype`, `assignSingleFlow`, `assignBorrowLifetimeCheck` | `MayWrite`, `VarInitialized`/`VarMoved`/`VarHollow`, `FlagFirstAssign`, the `HollowNode` round a hollowed variable's new value, borrow lifetime |
 | `ir/stmt/swap.c` | `swapFlow` | `MayWrite` on both sides; borrow lifetime once in each direction |
 | `ir/exp/nameuse.c` | `nameuseFlow`, `nameuseFlowBorrowed` | the only place the flags are *diagnosed* on, a hollowed variable as a moved one; both `ErrorMove` messages, and for a borrowed variable only the moved-out one |
@@ -821,6 +915,7 @@ is what releases the old allocation.
 | `ir/types/reference.c` | `refAdoptInfections` | where a reference type acquires `MoveType` |
 | `ir/types/region.c` | `regionIsCounted`, `regionIsOwning`, `regionMethod` | which region methods a region declares, which is what flow asks of it |
 | `genllvm/genlalloc.c` | `genlRegionAlias`, `genlReleaseOwning`, `genlHollowRelease`, `genlDealiasNodes` | what consumes everything flow injected |
+| | `genlDropFlagBegin`, `genlDropFlagSet`, `genlDropFlagIf`, `genlDropFlagUse` | a variable's drop flag: made, updated where its value arrives or leaves, tested round a release |
 
 Test sources that pin behavior precisely: `test/cases/move/move-flow-*.cone`,
 `test/cases/region/region_flow*.cone`, `test/cases/ref/ref_flow.cone`,
@@ -829,7 +924,10 @@ for the loan walk `test/cases/ref/ref_flow_freeze.cone`,
 `test/cases/ref/ref_flow_freeze_loop.cone`, `test/cases/ref/ref_freeze_success.cone`, and for a borrow a call
 returns `test/cases/collection/collection_flow_freeze.cone`,
 `test/cases/region/region_flow_arena_freeze.cone` and
-`test/cases/collection/collection_freeze_success.cone`.
+`test/cases/collection/collection_freeze_success.cone`, and for drop flags
+`test/cases/move/move_drop_flags.cone`, `move_drop_flags_agree.cone`,
+`move_flow_paths.cone`, `test/cases/region/region_drop_flags.cone` and
+`test/cases/struct/struct_final_reassign.cone`.
 
 ## 11. What lives elsewhere
 

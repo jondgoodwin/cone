@@ -208,13 +208,25 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
         // its place.
         VarDclNode *var = (VarDclNode*)lvalvar;
         uint16_t flowflags = var->flowtempflags;
-        if (!(flowflags & VarInitialized) || (flowflags & (VarMoved | VarHollow)))
+        // A match's binding holds a copy of the matched value, which the
+        // matched value's variable releases: the binding has nothing of its own
+        // to release (flowMatchBound)
+        if (!(flowflags & VarInitialized) || (flowflags & (VarMoved | VarHollow))
+            || flowMatchBound((INode *)var))
             lval->flags |= FlagFirstAssign;
         if ((flowflags & VarHollow) && !(flowflags & VarMoved) && hollowrel)
             *hollowrel = flowNewHollow(var);
-        var->flowtempflags |= VarInitialized;
-        var->flowtempflags &= 0xFFFF - (VarMoved | VarHollow);
-        var->hollowed = NULL;
+        flowVarSetFlags(var, (flowflags | VarInitialized) & (0xFFFF - (VarMoved | VarHollow)), NULL);
+        flowDropNote(flowCurrent, var);
+    }
+    // A part of a local's own value -- a field, an element -- is stored over:
+    // its old value is released unless the variable holds none (never given a
+    // value, or moved out), whose part is garbage or another owner's
+    else if ((lval->tag == FldAccessTag || lval->tag == ArrIndexTag) && !flowNoDeath(((IExpNode *)lval)->vtype)) {
+        VarDclNode *root = flowLvalRootVar(lval);
+        if (root && (!(root->flowtempflags & VarInitialized) || (root->flowtempflags & (VarMoved | VarHollow))
+                || flowMatchBound((INode *)root)))
+            lval->flags |= FlagPartNoPrior;
     }
 
     assignBorrowLifetimeCheck(lval, lvalscope, rtype);
@@ -243,17 +255,14 @@ void assignBorrowLifetimeCheck(INode *lval, uint16_t lvalscope, INode *rtype) {
 // Perform data flow analysis between two single assignment nodes:
 // - Lval is mutable
 // - Borrowed reference lifetime is greater than its container
-void assignSingleFlow(INode *lval, INode **rval) {
-    // Handle lval-based data flow analysis
+static int assignIsAnon(INode *lval) {
+    return isNameUseNode(lval) && isExpNode(lval) && ((NameUseNode*)lval)->namesym == anonName;
+}
+
+// The target of an assignment, once the value it is given has left its source
+static void assignSingleTarget(INode *lval, INode **rval) {
     HollowNode *hollowrel = NULL;
-    if (assignlvalrtype(lval, ((IExpNode*)*rval)->vtype, &hollowrel))
-        return;
-
-    // Non-anonymous lval means assignment moves/copies rvalue
-    // - Enforce move semantics
-    // - Handle copy semantic aliasing
-    flowHandleMoveOrCopy(rval);
-
+    assignlvalrtype(lval, ((IExpNode*)*rval)->vtype, &hollowrel);
     // The old value of a hollowed variable is released once the new one is
     // evaluated, where genlStore releases a whole one
     if (hollowrel) {
@@ -263,17 +272,44 @@ void assignSingleFlow(INode *lval, INode **rval) {
     }
 }
 
-// Handle parallel assignment (multiple values on both sides)
+// The value is moved or copied out of its source first, then the target is
+// stored over: the value leaves before the old one goes, as generation orders
+// them. So 'p = p', or 'p = if c {p} else {q}', finds 'p' empty where it moved,
+// and releases nothing the new value still is.
+void assignSingleFlow(INode *lval, INode **rval) {
+    // '_' swallows the value: nothing moves or is counted into it
+    if (assignIsAnon(lval)) {
+        assignlvalrtype(lval, ((IExpNode*)*rval)->vtype, NULL);
+        return;
+    }
+    // Non-anonymous lval means assignment moves/copies rvalue
+    // - Enforce move semantics
+    // - Handle copy semantic aliasing
+    flowHandleMoveOrCopy(rval);
+    assignSingleTarget(lval, rval);
+}
+
+// Handle parallel assignment (multiple values on both sides): every value is
+// taken before any target is stored over, as generation evaluates them all
+// first, so 'a, b = b, a' swaps two values that move and releases neither
 void assignParaFlow(TupleNode *lval, TupleNode *rval) {
     Nodes *lnodes = lval->elems;
     Nodes *rnodes = rval->elems;
     uint32_t lcnt;
     INode **lnodesp;
     INode **rnodesp = &nodesGet(rnodes, 0);
-    uint32_t rcnt = rnodes->used;
     for (nodesFor(lnodes, lcnt, lnodesp)) {
-        assignSingleFlow(*lnodesp, rnodesp++);
-        rcnt--;
+        if (!assignIsAnon(*lnodesp))
+            flowHandleMoveOrCopy(rnodesp);
+        ++rnodesp;
+    }
+    rnodesp = &nodesGet(rnodes, 0);
+    for (nodesFor(lnodes, lcnt, lnodesp)) {
+        if (assignIsAnon(*lnodesp))
+            assignlvalrtype(*lnodesp, ((IExpNode*)*rnodesp)->vtype, NULL);
+        else
+            assignSingleTarget(*lnodesp, rnodesp);
+        ++rnodesp;
     }
 }
 

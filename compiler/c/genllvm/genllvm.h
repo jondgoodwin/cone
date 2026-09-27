@@ -141,6 +141,15 @@ void genlRefTypeSetup(GenState *gen, RefNode *reftype);
 LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode);
 // Progressively dealias or drop all declared variables in nodes list
 void genlDealiasNodes(GenState *gen, Nodes *nodes);
+void genlDealiasNode(GenState *gen, INode *node);
+// Drop flags (VarDropFlag): a variable's, made as it begins; its value
+// arriving or leaving; code run only when it holds 'state' (DropFlagState),
+// ended by genlDropFlagEnd; a marked name use's move
+void genlDropFlagBegin(GenState *gen, VarDclNode *var, int state);
+void genlDropFlagSet(GenState *gen, VarDclNode *var, int state);
+LLVMBasicBlockRef genlDropFlagIf(GenState *gen, VarDclNode *var, int state);
+void genlDropFlagEnd(GenState *gen, LLVMBasicBlockRef endblk);
+void genlDropFlagUse(GenState *gen, INode *nameuse);
 // Release an owning value: one owner of an owning reference goes away, through
 // the region's 'dealias', as the value's death for a 'Move' region, and as
 // nothing for any other; each element of a tuple

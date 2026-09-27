@@ -122,7 +122,10 @@ event, not an inference.
 **3. Ownership is declared, so release is static.** Because a region and a
 permission say who owns a value, the compiler can decide *at compile time*
 where each release goes and emit it as ordinary code. There is no runtime
-ownership metadata, no drop flags, no unwinding.
+ownership metadata and no unwinding. The one runtime fact is a drop flag: a
+byte beside a variable whose value moves out, or is given, on only some
+paths, which the release at its scope's end tests. A variable every path
+agrees about has none.
 
 **4. Generics are monomorphized.** A generic is a template; each distinct type
 argument produces a separate function with concrete types. No boxing, no vtable,

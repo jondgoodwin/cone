@@ -1,0 +1,82 @@
+// A value stored over is finalized as it is replaced, after the new value is
+// evaluated and before it is stored -- the death its holder's scope would
+// otherwise have given it, which it would never get. Where the holder may hold
+// nothing there, it depends on the path, and its drop flag decides
+// (move_drop_flags); where it certainly holds nothing -- never given a value,
+// or moved out -- nothing is finalized, rather than garbage or a value another
+// holder now owns.
+//
+// - A struct with its own 'final' and a finalizing field; a struct's field; a
+//   field through a '&mut'; an array element; a tuple; an enum; a 'mut'
+//   parameter; a fresh temporary; each pass of a loop; each side of a
+//   parallel assignment; the value a reference points at. A parallel
+//   assignment takes every value before it stores any, so one swapping two
+//   values finalizes neither (before, it was refused as a use after a move).
+// - Given a value on one branch, then stored over: finalized on that path
+//   only.
+// - A field stored into a variable that holds nothing -- moved out, or never
+//   given a value -- finalizes nothing there. The value stored is not
+//   finalized either: the variable is not taken to hold a value by having one
+//   field given, so it leaks.
+
+mod struct_final_reassign;
+
+import stdio use *;
+
+struct Inner {
+  pub v i32;
+  fn final(self &uni) { printInt(i64[v]); printStr(" "); }
+}
+struct Holder { pub inner Inner; }
+struct Own {
+  pub n i32;
+  pub inner Inner;
+  fn final(self &uni) { printStr("own"); printInt(i64[n]); printStr(" "); }
+}
+enum E {
+  struct A { pub f Inner; }
+  struct B { pub n i32; }
+}
+use E;
+
+fn cond(b Bool) Bool { b; }
+fn take(h Holder) { printStr("take "); }
+fn line(label &[]u8) { printStr("| "); printStr(label); printStr("\n"); }
+
+fn structWithFinal() { mut e = Own[1, Inner[2]]; imm h = Own[3, Inner[4]]; e = h; printStr("end "); }
+fn field() { mut e = Holder[Inner[1]]; e.inner = Inner[2]; printStr("end "); }
+fn throughRef() { mut e = Holder[Inner[1]]; imm r = &mut e; r.inner = Inner[2]; printStr("end "); }
+fn element() { mut a = [Inner[1], Inner[2]]; a[1] = Inner[3]; printStr("end "); }
+fn mkTuple(n i32) (Inner, i32) { (Inner[n], n); }
+fn tuple() { mut t = mkTuple(1); t = mkTuple(2); printStr("end "); }
+fn enumValue() { mut e E = A[Inner[1]]; e = B[2]; e = A[Inner[3]]; printStr("end "); }
+fn parameter(mut p Inner) { p = Inner[2]; printStr("end "); }
+fn temporary() { mut e = Holder[Inner[1]]; e = Holder[Inner[5]]; printStr("end "); }
+fn loop() { mut e = Inner[0]; mut i = 1; while i < 3 { e = Inner[i]; i = i + 1; } printStr("end "); }
+fn parallel() { mut x = Inner[1]; mut y = Inner[2]; x, y = Inner[3], Inner[4]; printStr("end "); }
+fn swapped() { mut x = Inner[1]; mut y = Inner[2]; x, y = y, x; printInt(i64[x.v]); printStr(" end "); }
+fn pointedAt(r &mut Inner) { *r = Inner[2]; printStr("stored "); }
+fn throughParam() { mut e = Inner[1]; pointedAt(&mut e); printStr("end "); }
+fn givenOnOne(c Bool) { mut e Inner; if cond(c) { e = Inner[1]; } e = Inner[2]; printStr("end "); }
+fn movedBase() { mut e = Holder[Inner[1]]; take(e); e.inner = Inner[2]; printStr("end "); }
+fn emptyBase() { mut e Holder; e.inner = Inner[2]; printStr("end "); }
+
+fn main() i32 {
+  structWithFinal(); line("a struct with its own final");
+  field(); line("a field");
+  throughRef(); line("a field through a &mut");
+  element(); line("an array element");
+  tuple(); line("a tuple");
+  enumValue(); line("an enum");
+  parameter(Inner[1]); line("a parameter");
+  temporary(); line("a fresh temporary");
+  loop(); line("each pass of a loop");
+  parallel(); line("a parallel assignment");
+  swapped(); line("a parallel assignment swapping two values");
+  throughParam(); line("through a reference");
+  givenOnOne(true); line("given a value on one branch, taken");
+  givenOnOne(false); line("given a value on one branch, not taken");
+  movedBase(); line("a field of a moved-out variable");
+  emptyBase(); line("a field of a variable never given a value");
+  0i32;
+}

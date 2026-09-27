@@ -168,6 +168,9 @@ static void checkNode(INode *node) {
             checkNode(((HollowNode*)node)->exp);
         break;
 
+    case DropFlagTag:
+        checkNode(((DropFlagNode*)node)->release); break;
+
     // Everything else is a leaf here: a literal, a name use whose declaration is
     // reached through the owning module anyway, or a type node
     default:

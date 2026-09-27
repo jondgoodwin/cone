@@ -225,14 +225,54 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
 }
 
 // Perform data flow analysis on an if expression
+//
+// Each branch is walked from the state its conditions leave, and the branches
+// join after it (flowVarJoin): a variable moved, hollowed or initialized on any
+// branch that did not jump away is so after the 'if' as far as its use goes. A
+// missing 'else' is a path of its own. The first condition runs on every path;
+// each later one, and each branch, on some only (flowDepth).
 void ifFlow(FlowState *fstate, IfNode **ifnodep) {
     IfNode *ifnode = *ifnodep;
     INode **nodesp;
     uint32_t cnt;
+    int first = 1;
+    int haselse = 0;
+    uint32_t mark = 0;
+    // Only a path that changed something is kept; the join counts the others
+    FlowVarPath *paths = NULL;
+    uint32_t live = 0;
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
-        if (*nodesp != elseCond)
+        if (*nodesp == elseCond)
+            haselse = 1;
+        else {
+            if (!first)
+                ++flowDepth;
             flowLoadValue(fstate, nodesp);
+            if (!first)
+                --flowDepth;
+        }
+        if (first) {
+            mark = flowVarLogMark();
+            first = 0;
+        }
         nodesp++; cnt--;
+        uint32_t condmark = flowVarLogPos();
+        ++flowDepth;
         blockFlow(fstate, (BlockNode**)nodesp);
+        --flowDepth;
+        if (!fstate->jumped) {
+            if (flowVarLogPos() > mark)
+                paths = flowVarPathTake(mark, paths);
+            ++live;
+        }
+        flowVarRollback(condmark);
     }
+    if (!haselse) {
+        if (flowVarLogPos() > mark)
+            paths = flowVarPathTake(mark, paths);
+        ++live;
+    }
+    flowVarRollback(mark);
+    flowVarJoin(paths, live);
+    fstate->jumped = live == 0;
 }

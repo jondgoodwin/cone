@@ -13,6 +13,7 @@ BreakRetNode *newContinueNode() {
     newNode(node, BreakRetNode, ContinueTag);
     node->life = NULL;
     node->dealias = NULL;
+    node->flowresult = NULL;
     return node;
 }
 

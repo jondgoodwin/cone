@@ -146,6 +146,7 @@ enum NodeTags {
     IfTag,          // if .. elif .. else statement
     RefCountTag,    // (injected) adds holders to a counted reference's count
     HollowTag,      // (injected) releases an owning reference whose referent, or an element of it, was moved out
+    DropFlagTag,    // (injected) a release that runs only when a variable's drop flag says it holds that value
     NamedValTag,    // Named value (e.g., for a struct literal)
     AbsenceTag,     // unique, unclonable node for absence of info
 
@@ -285,6 +286,18 @@ enum NodeTags {
 #define FlagLitNeg    0x0002        // ULit: value is the negation of the digits written
 
 #define FlagFirstAssign 0x0080      // VarNameUse: assignment target held no prior value
+// Flow's marks for drop flags (compiler/c/doc/phases/flow.md, "Drop flags"). A
+// name use a value moves out of, or out through, is marked where the move
+// happens, so that generation can record at run time that the variable no
+// longer holds its value there, and the path walk can follow the move along
+// each path. An assignment's target is marked when whether it holds an old
+// value to release differs by path, and its variable's drop flag decides. The
+// high bits because a name use's and a FnCall's own flags stop below 0x0800
+// and neither carries type check's progress marks (inodeTypeCheck).
+#define FlagMoveOut   0x1000        // NameUse: its variable's value moves out here
+#define FlagHollowOut 0x2000        // NameUse: a value moves out through this variable, a sole owner, hollowing it
+#define FlagDropTest  0x4000        // NameUse, FldAccess, ArrIndex as an assignment target: the drop flag says whether an old value is there
+#define FlagPartNoPrior 0x1000      // FldAccess, ArrIndex as an assignment target: the variable it is part of holds no value
 // A name reached through a namespace is written 'math3d.Point3', which parses as
 // a member access and is collapsed into a single bound name use by fnCallNameRes.
 // This flag is all that survives of the path, and it is all that is wanted: the

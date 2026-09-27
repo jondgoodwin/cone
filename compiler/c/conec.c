@@ -220,6 +220,7 @@ int main(int argc, char **argv) {
     if (coneopt.verbosity > 1) {
         flowGatePrint();
         flowPathPrint();
+        dropPrint();
     }
     errorSummary();
 }

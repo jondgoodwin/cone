@@ -1858,8 +1858,8 @@ manual's rule that `init` read no uninitialized global of its module, for `init`
 itself. `modInitFlowEnd` then reports each global still unassigned as
 `ErrorGlobalUninit` and puts back every global's flags, so to every other
 function each global holds a value, as the parser recorded. **Assigned anywhere
-in the body counts** — flow's `VarInitialized` is a whole-function summary —
-which is what the manual says: assigned "at some point" in `init`. A field
+in the body counts** — flow's `VarInitialized` is set after an `if` any of whose
+arms set it — which is what the manual says: assigned "at some point" in `init`. A field
 assignment does not assign the global. A global without a value in a module that
 declares no `init` is `ErrorGlobalUninit` too, reported by `modLifecycle`;
 where the module's `init` is malformed, only that is reported. Assigning such a

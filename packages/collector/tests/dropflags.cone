@@ -1,0 +1,75 @@
+// A value holding a '+gc' reference, moved on one path only, dies once on the
+// path that still holds it (its drop flag says which): its finalizing field is
+// finalized there, and the '+gc' reference in it is released as any '+gc'
+// reference is -- not at all. What it refers to dies by its own collection,
+// once nothing reaches it, whichever path ran. The same when such a value is
+// assigned over: the old one is finalized as it is replaced, and the object it
+// referred to is left to the collector. Each finalizer appends its digit to
+// 'log'; garbage is made in functions that have returned (garbage.cone).
+
+mod dropflags;
+
+import testing use *;
+import collector;
+
+mut log = 0i64;
+fn note(d i64) { log = log * 10 + d; }
+
+fn settle() {
+  gc.collect();
+  gc.collect();
+}
+fn live() u64 { u64[gc.liveObjects()]; }
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { note(n); }
+}
+struct Pair {
+  pub leaf +gc-mut Fin;
+  pub f Fin;
+}
+
+fn cond(b Bool) Bool { b; }
+fn sink(p Pair) { }
+
+// Moved away on one path: finalized by 'sink' there, at the scope's end on
+// the other; the object its '+gc' field refers to is the collector's
+fn movedOnOne(b Bool) {
+  imm p = Pair[+gc-mut Fin[1], Fin[2]];
+  if cond(b) { sink(p); }
+}
+
+// Assigned over on one path, after being given a value on one path only
+fn assignedOver(b Bool) {
+  mut p Pair;
+  if cond(b) { p = Pair[+gc-mut Fin[3], Fin[4]]; }
+  p = Pair[+gc-mut Fin[5], Fin[6]];
+}
+
+fn main() i32 {
+  settle();
+  movedOnOne(true);
+  expectInt(log, 2, "moved: its field finalized once, by the callee");
+  settle();
+  expectInt(log, 21, "then the collected object, once");
+  expectUInt(live(), 0, "and freed");
+  log = 0;
+  movedOnOne(false);
+  expectInt(log, 2, "kept: its field finalized once, at the scope's end");
+  settle();
+  expectInt(log, 21, "then the collected object, once");
+  expectUInt(live(), 0, "and freed");
+  log = 0;
+  assignedOver(true);
+  expectInt(log, 46, "the value assigned over, then its replacement");
+  settle();
+  expectUInt(live(), 0, "both collected objects freed");
+  log = 0;
+  assignedOver(false);
+  expectInt(log, 6, "only the replacement: nothing was there to finalize");
+  settle();
+  expectInt(log, 65, "then its collected object");
+  expectUInt(live(), 0, "and freed");
+  done();
+}

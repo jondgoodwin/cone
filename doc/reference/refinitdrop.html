@@ -19,7 +19,8 @@
 		freed. A value typed as an enum is finalized as the variant it holds, the enum's own final
 		after the variant's. A tuple, an array or an owning slice is finalized element by element,
 		and the owning references a value holds are released with it, however deep. A value
-		assigned over is not yet finalized, nor is one moved out on only some paths. A module's
+		assigned over is finalized as it is replaced, and one moved out, or given a value, on only
+		some paths is finalized on the paths that still hold it. A module's
 		global variable whose type is a struct or an enum that finalizes is finalized by its
 		module's finalizer when the program shuts down; one that is a tuple or an array is not
 		yet. Initializers are not
@@ -143,6 +144,26 @@ fn final(self &amp;uni) {
 		declared, then the owning references its fields hold are released, in the order they are
 		declared. A tuple's elements die in order, as fields do, and so do an array's, first element
 		first.</p>
+	<p>A value dies on the path that still holds it, and only there. Where a variable's value was
+		moved out, or given, on only some of the paths that reach the end of its scope
+		&mdash; in one branch of an <span class="pre">if</span> or a <span class="pre">match</span>,
+		in a loop that may not run, before an early <span class="pre">return</span> or
+		<span class="pre">break</span> &mdash; the compiler keeps a hidden flag beside the variable,
+		set where its value arrives and cleared where it leaves, and the end of its scope finalizes
+		it only when the flag says the value is still there. A variable whose every path agrees has
+		no flag, and costs nothing for it.</p>
+<pre>
+imm f = File.open(name);
+if verbose {
+  log.keep(f);      // f moves to the log on this path
+}
+                    // f is closed here only if verbose was false
+</pre>
+	<p>A value assigned over dies as it is replaced: the new value is evaluated first, then the
+		old one is finalized, then the new one is stored. This is so for a variable, a field or an
+		element of one, and a value reached through a reference (<span class="pre">*r = v</span>).
+		Where the variable holds nothing to replace &mdash; it was never given a value, or its value
+		moved out &mdash; nothing is finalized; where that depends on the path, its flag decides.</p>
 	<p>A value allocated in a region is finalized when the region lets it go: when its single
 		owner expires, or, for a counted region, its last owner. It dies as above, and only
 		then is its memory freed, so a finalizer may still use everything its value owns.

@@ -52,6 +52,30 @@ category = "run"
 description = "Moving a value between variables and calls, borrowing before a move, after reassignment and before any value is given, swap and left-assignment, a copy type, one declaring 'is Copy' (a generic's instance included), a clone method that leaves a finalizing type a move type, finalized once, and a value handed back or bound through a block, an if or a loop, finalized once"
 tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
 
+# Drop flags: a variable whose state at a release differs by path carries a
+# hidden flag the release tests. The run asserts each shape finalizes once, on
+# the path that still holds the value; the checks, that the flag is there, and
+# that where every path agrees there is none.
+[scenario.move_drop_flags]
+category = "run"
+description = "A value moved, handed on (by a block, an 'if', a loop's 'break', a 'match' or a returned 'if'), or given a value on some paths only -- branches, 'elif', early return, loops with 'break', 'continue' and a move in an earlier pass, the right operand of 'and', a match's binding, a destructuring -- is finalized once, on the path that still holds it"
+tags = ["flow", "genllvm", "runtime"]
+
+[[scenario.move_drop_flags.check]]
+name = "a-moved-on-one-branch-has-a-flag"
+target = "preir"
+contains = ["%a.held = alloca i8", "%f.held = alloca i8"]
+
+[scenario.move_drop_flags_agree]
+category = "compile"
+description = "Where every path agrees what a variable holds at each release -- moved or given a value on every branch, moved on a path that returns, declared in the loop body, reassigned in a loop and never moved -- it has no drop flag"
+tags = ["flow", "genllvm"]
+
+[[scenario.move_drop_flags_agree.check]]
+name = "no-flag-where-paths-agree"
+target = "preir"
+excludes = [".held"]
+
 # -------- type-check stage --------
 
 [scenario.move_typecheck_copy]
@@ -65,6 +89,11 @@ diagnostics = 9
 [scenario.move_flow_deactivate]
 category = "reject"
 description = "The operations that deactivate a move value's source, and use of a variable never initialized"
+tags = ["flow"]
+
+[scenario.move_flow_paths]
+category = "reject"
+description = "A value moved, or never given, on some path reaching a use is refused there: moved in each pass of a loop, read or borrowed in a pass after one that moved it, moved out through a sole owner in each pass, and a finalizing variable given a value on one branch only, then read"
 tags = ["flow"]
 
 [scenario.move_flow_infection]

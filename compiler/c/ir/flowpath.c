@@ -119,6 +119,7 @@ typedef struct {
     uint32_t var;
     PathSet *holds;
     PathSet *pending;
+    uint8_t state;
 } PathEntry;
 
 // What one path changed since a mark, and the value it hands its target
@@ -161,9 +162,12 @@ static uint32_t touchedcap = 0;
 
 static uint32_t stamp = 0;
 static int dead = 0;            // the current path has jumped away: nothing after it runs
+static int pathLoans = 1;       // borrow freezing is walking
+static int pathDrops = 0;       // drop flags are walking
 
 // -V 2 tallies
 static uint32_t statFns = 0;
+static uint32_t statLoanFns = 0;
 static uint32_t statLoops = 0;
 static uint32_t statRewalks = 0;
 static uint32_t statCapped = 0;
@@ -205,6 +209,10 @@ static uint32_t pathVar(VarDclNode *var) {
     pv->loans = 0;
     pv->xstamp = 0;
     pv->jstamp = 0;
+    pv->state = 0;
+    pv->flagged = 0;
+    pv->tracked = pathDrops && flowDropTracked(var) && !flowMatchBound((INode *)var);
+    pv->dies = pv->tracked && itypeNeedsFinal(var->vtype);
     // A holder is a local variable or a parameter whose type is a borrowed
     // reference. A borrow held inside another value -- a struct, a tuple, an
     // array, an 'Option' -- is not tracked yet. What a parameter holds, the
@@ -218,16 +226,29 @@ static uint32_t pathVar(VarDclNode *var) {
     return index;
 }
 
-void pathSetFacts(uint32_t var, PathSet *holds, PathSet *pending) {
+static void pathLogVar(uint32_t var) {
     PathVar *pv = &pathVars[var];
-    if (pv->holds == holds && pv->pending == pending)
-        return;
     if (nlog == logcap)
         pathLog = (PathEntry *)pathGrow(pathLog, &logcap, sizeof(PathEntry));
     PathEntry *entry = &pathLog[nlog++];
     entry->var = var;
     entry->holds = pv->holds;
     entry->pending = pv->pending;
+    entry->state = pv->state;
+}
+
+void pathSetState(uint32_t var, uint8_t state) {
+    if (pathVars[var].state == state)
+        return;
+    pathLogVar(var);
+    pathVars[var].state = state;
+}
+
+void pathSetFacts(uint32_t var, PathSet *holds, PathSet *pending) {
+    PathVar *pv = &pathVars[var];
+    if (pv->holds == holds && pv->pending == pending)
+        return;
+    pathLogVar(var);
     if (holds && holds != pv->holds)
         loanHeldBy(var, holds);
     pv->holds = holds;
@@ -240,6 +261,7 @@ static void pathRollback(uint32_t mark) {
         PathEntry *entry = &pathLog[--nlog];
         pathVars[entry->var].holds = entry->holds;
         pathVars[entry->var].pending = entry->pending;
+        pathVars[entry->var].state = entry->state;
     }
 }
 
@@ -268,6 +290,7 @@ static PathDelta *pathDelta(uint32_t mark, PathSet *value) {
             delta->ents[cnt].var = var;
             delta->ents[cnt].holds = pv->holds;
             delta->ents[cnt].pending = pv->pending;
+            delta->ents[cnt].state = pv->state;
             ++cnt;
         }
     }
@@ -292,6 +315,7 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
                 pv->jcnt = 0;
                 pv->jholds = NULL;
                 pv->jpending = NULL;
+                pv->jstate = 0;
                 if (ntouched == touchedcap)
                     touched = (uint32_t *)pathGrow(touched, &touchedcap, sizeof(uint32_t));
                 touched[ntouched++] = entry->var;
@@ -299,6 +323,7 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
             ++pv->jcnt;
             pv->jholds = pathSetUnion(pv->jholds, entry->holds);
             pv->jpending = pathSetUnion(pv->jpending, entry->pending);
+            pv->jstate |= entry->state;
         }
     }
     int changed = 0;
@@ -306,12 +331,18 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
         PathVar *pv = &pathVars[touched[i]];
         PathSet *holds = pv->jholds;
         PathSet *pending = pv->jpending;
+        uint8_t state = pv->jstate;
         if (withcurrent || pv->jcnt < npaths) {
             holds = pathSetUnion(holds, pv->holds);
             pending = pathSetUnion(pending, pv->pending);
+            state |= pv->state;
         }
         if (!pathSetEqual(holds, pv->holds) || !pathSetEqual(pending, pv->pending)) {
             pathSetFacts(touched[i], holds, pending);
+            changed = 1;
+        }
+        if (state != pv->state) {
+            pathSetState(touched[i], state);
             changed = 1;
         }
     }
@@ -364,6 +395,20 @@ static void pwStep(Place *pl, uintptr_t step) {
 
 static int pwPlace(INode **nodep, Place *pl, PathSet **base);
 
+// Set by pwPlace when the place's own variable was a marked move's: its use
+// was the move, checked there
+static int pwMoved = 0;
+
+// The drop-flag client's check of a use of a place's root variable, the
+// owner of the value for a match's binding
+static void pwDropUse(Place *pl, INode *node, int borrow) {
+    if (!pathDrops || pl->deref)
+        return;
+    VarDclNode *var = pathVars[pl->var].var;
+    VarDclNode *owner = flowDropOwner(var);
+    dropUse(owner == var ? pl->var : pathVar(owner), pl->use ? pl->use : node, borrow);
+}
+
 // May other references reach what this reference points at? Every permission
 // but 'uni' may alias.
 static int pwMayAlias(INode *reftype) {
@@ -389,6 +434,7 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         // The reference itself is read
         pwAccess(&refpl, AccessRead, *refp);
         pl->var = refpl.var;
+        pl->use = refpl.use;
         pl->deref = 1;
         pl->nsteps = 0;
         pl->shared = pwMayAlias(reftype);
@@ -420,11 +466,19 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         uint32_t index = pathVar(var);
         if (pathVars[index].holder)
             loanUse(index, node);
+        // A value moves out of it, or out through it, here (flowMoveSource
+        // marked where): the variable owning the value no longer holds it
+        if (pathDrops && (node->flags & (FlagMoveOut | FlagHollowOut))) {
+            VarDclNode *owner = flowDropOwner(var);
+            dropMove(owner == var ? index : pathVar(owner), node, (node->flags & FlagHollowOut) != 0);
+            pwMoved = 1;
+        }
         pl->var = index;
         pl->deref = 0;
         pl->nsteps = 0;
         pl->shared = 0;
         pl->sharedlen = 0;
+        pl->use = node;
         return 1;
     }
     switch (node->tag) {
@@ -475,8 +529,15 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
 static PathSet *pwPlaceValue(INode **nodep, int move) {
     Place pl;
     PathSet *base;
-    if (!pwPlace(nodep, &pl, &base))
+    int svmoved = pwMoved;
+    pwMoved = 0;
+    int found = pwPlace(nodep, &pl, &base);
+    int moved = pwMoved;
+    pwMoved = svmoved;
+    if (!found)
         return base && pwCarries(((IExpNode *)*nodep)->vtype) ? base : NULL;
+    if (!moved)
+        pwDropUse(&pl, *nodep, 0);
     pwAccess(&pl, move && iexpIsMove(*nodep) ? AccessMove : AccessRead, *nodep);
     return pwPlaceHolds(&pl, *nodep);
 }
@@ -500,6 +561,14 @@ static PathSet *pwBorrow(INode *node, int aswrite) {
 // the new one and whatever the holder at the place's root holds. 'loan'
 // returns the new loan's id, if asked.
 static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t *loan) {
+    // A borrow needs the value there, not moved out; a variable never given
+    // one may be borrowed, so that a method can fill it in
+    pwDropUse(pl, site, 1);
+    if (!pathLoans) {
+        if (loan)
+            *loan = 0;
+        return NULL;
+    }
     pwAccess(pl, access, site);
     // A container declaring 'NoLoanMut' (an arena) never moves what it lent,
     // whatever is done to it, so a borrow of the container itself needs it only
@@ -660,8 +729,9 @@ static PathSet *pwCall(FnCallNode *call) {
     return pathSetUnion(result, recvholds);
 }
 
-// Store a value carrying 'holds' into an lval
-static void pwStore(INode **lvalp, PathSet *holds) {
+// Store a value carrying 'holds' into an lval. 'rvalp' is the value's slot,
+// or NULL where the value is one element of another (a destructuring).
+static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
     VarDclNode *var = pwNamedVar(*lvalp);
     if (var) {
         if (var->namesym == anonName)
@@ -673,6 +743,11 @@ static void pwStore(INode **lvalp, PathSet *holds) {
         pwAccess(&pl, itypeNeedsFinal(var->vtype) ? AccessReplace : AccessWrite, *lvalp);
         if (pathVars[index].holder)
             pathSetFacts(index, holds, NULL);
+        // What it held is released here, if it held anything; now it holds its value
+        if (pathVars[index].tracked) {
+            dropStore(index, *lvalp, rvalp);
+            pathSetState(index, DropWhole);
+        }
         return;
     }
     Place pl;
@@ -680,6 +755,9 @@ static void pwStore(INode **lvalp, PathSet *holds) {
     if (!pwPlace(lvalp, &pl, &base))
         return;
     pwAccess(&pl, AccessWrite, *lvalp);
+    // Part of a local's own value: its old value is released if the local holds one
+    if (pathDrops && !pl.deref && pathVars[pl.var].tracked && flowLvalRootVar(*lvalp) == pathVars[pl.var].var)
+        dropPartStore(pl.var, *lvalp);
     // Part of a holder's own value: it holds what it did and the new loans
     PathVar *pv = &pathVars[pl.var];
     if (!pl.deref && pv->holder && holds)
@@ -691,11 +769,16 @@ static PathSet *pwAssign(AssignNode *node) {
     if (node->lval->tag == VTupleTag) {
         INode **lvalp;
         uint32_t cnt;
-        for (nodesFor(((TupleNode *)node->lval)->elems, cnt, lvalp))
-            pwStore(lvalp, holds);
+        uint32_t index = 0;
+        // A parallel assignment stores each value in its own slot
+        Nodes *rvals = node->rval->tag == VTupleTag ? ((TupleNode *)node->rval)->elems : NULL;
+        for (nodesFor(((TupleNode *)node->lval)->elems, cnt, lvalp)) {
+            pwStore(lvalp, holds, rvals && index < rvals->used ? &nodesGet(rvals, index) : NULL);
+            ++index;
+        }
     }
     else
-        pwStore(&node->lval, holds);
+        pwStore(&node->lval, holds, node->rval->tag == VTupleTag ? &nodesGet(((TupleNode *)node->rval)->elems, 0) : &node->rval);
     return holds;
 }
 
@@ -715,10 +798,13 @@ static void pwSwap(SwapNode *node) {
             pl.nsteps = 0;
             pl.shared = 0;
             pl.sharedlen = 0;
+            pl.use = *sides[i];
             holds[i] = pathVars[whole[i]].holds;
             pwAccess(&pl, itypeNeedsFinal(var->vtype) ? AccessReplace : AccessWrite, *sides[i]);
+            pwDropUse(&pl, *sides[i], 0);
         }
         else if (pwPlace(sides[i], &pl, &base)) {
+            pwDropUse(&pl, *sides[i], 0);
             holds[i] = pwPlaceHolds(&pl, *sides[i]);
             pwAccess(&pl, AccessWrite, *sides[i]);
         }
@@ -747,6 +833,9 @@ static void pwVarDcl(VarDclNode *var) {
     if (ndecls == declcap)
         decls = (uint32_t *)pathGrow(decls, &declcap, sizeof(uint32_t));
     decls[ndecls++] = index;
+    // It holds nothing until its value is stored, again on each pass of a loop
+    if (pathVars[index].tracked)
+        pathSetState(index, DropUninit);
     PathSet *holds = NULL;
     if (var->value) {
         // An operator changing a value in place through a borrow it keeps in a
@@ -759,6 +848,8 @@ static void pwVarDcl(VarDclNode *var) {
     }
     if (pathVars[index].holder)
         pathSetFacts(index, holds, NULL);
+    if (var->value && pathVars[index].tracked)
+        pathSetState(index, DropWhole);
 }
 
 // The variables declared since 'from' leave scope: each holder among them is
@@ -776,12 +867,23 @@ static void pwScopeEnd(uint32_t from) {
             Place pl = { index, 0, 0 };
             pwAccess(&pl, AccessEnd, (INode *)pathVars[index].var);
         }
+        // Out of scope, it holds nothing on any path, so the paths leaving it
+        // agree about it where they join
+        if (pathVars[index].state)
+            pathSetState(index, 0);
     }
+}
+
+// A scope's exit, which releases each variable declared since 'from': what
+// each may hold here is recorded for its release
+static void pwExit(INode *exit, uint32_t from) {
+    if (pathDrops && ndecls > from)
+        dropExit(exit, &decls[from], ndecls - from);
 }
 
 // A 'break' or 'continue' to 'target', handing it 'value': the blocks it
 // leaves end, and the state goes to the target
-static void pwJump(BlockNode *target, PathSet *value, int iscontinue) {
+static void pwJump(BlockNode *target, PathSet *value, int iscontinue, INode *exit) {
     uint32_t f = nframes;
     while (f > 0 && frames[f - 1].blk != target)
         --f;
@@ -790,6 +892,7 @@ static void pwJump(BlockNode *target, PathSet *value, int iscontinue) {
         return;
     }
     PathFrame *frame = &frames[f - 1];
+    pwExit(exit, frame->declstart);
     pwScopeEnd(frame->declstart);
     PathDelta *delta = pathDelta(frame->mark, value);
     if (iscontinue)
@@ -820,11 +923,11 @@ static PathSet *pwStmts(BlockNode *blk, int move) {
         {
             BreakRetNode *brk = (BreakRetNode *)*nodesp;
             PathSet *brkval = brk->exp->tag == NilLitTag ? NULL : pwValue(&brk->exp, 1);
-            pwJump(brk->block, brkval, 0);
+            pwJump(brk->block, brkval, 0, *nodesp);
             break;
         }
         case ContinueTag:
-            pwJump(((BreakRetNode *)*nodesp)->block, NULL, 1);
+            pwJump(((BreakRetNode *)*nodesp)->block, NULL, 1, *nodesp);
             break;
         case ReturnTag:
         {
@@ -832,6 +935,7 @@ static PathSet *pwStmts(BlockNode *blk, int move) {
             BreakRetNode *ret = (BreakRetNode *)*nodesp;
             if (ret->exp && ret->exp != unknownType && isExpNode(ret->exp))
                 pwValue(&ret->exp, 1);
+            pwExit(*nodesp, 0);
             dead = 1;
             break;
         }
@@ -844,6 +948,8 @@ static PathSet *pwStmts(BlockNode *blk, int move) {
                 if (loop)
                     value = NULL;
             }
+            if (!dead)
+                pwExit(*nodesp, frames[nframes - 1].declstart);
             break;
         }
         default:
@@ -883,9 +989,24 @@ static PathSet *pwBlockExits(PathFrame *frame, PathSet *value, int fallthrough) 
     return value;
 }
 
+// The parameters of the function being walked: variables of its block
+static Nodes *pwParms = NULL;
+
 static PathSet *pwBlock(BlockNode *blk, int fnblock, int move) {
     uint32_t f = nframes;
     pwFramePush(blk);
+    if (fnblock && pathDrops) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(pwParms, cnt, nodesp)) {
+            uint32_t index = pathVar((VarDclNode *)*nodesp);
+            if (ndecls == declcap)
+                decls = (uint32_t *)pathGrow(decls, &declcap, sizeof(uint32_t));
+            decls[ndecls++] = index;
+            if (pathVars[index].tracked)
+                pathSetState(index, DropWhole);
+        }
+    }
     PathSet *value = pwStmts(blk, move);
     if (!dead && !fnblock)
         pwScopeEnd(frames[f].declstart);
@@ -1091,7 +1212,7 @@ static PathSet *pwValue(INode **nodep, int move) {
     }
 }
 
-void flowPathWalk(FnDclNode *fndcl) {
+void flowPathWalk(FnDclNode *fndcl, int loans, int drops) {
     // The walk's state is file-static, as flow's variable stack is: safe
     // because flow never runs re-entrantly, which this holds it to
     static int walking = 0;
@@ -1101,7 +1222,14 @@ void flowPathWalk(FnDclNode *fndcl) {
     }
     walking = 1;
     ++statFns;
+    if (loans)
+        ++statLoanFns;
+    pathLoans = loans;
+    pathDrops = drops;
     loanWalkBegin();
+    if (drops)
+        dropWalkBegin();
+    int errorsOnEntry = errors;
     nvars = 1;          // index 0 is "not yet met"
     if (varcap == 0)
         pathVars = (PathVar *)pathGrow(pathVars, &varcap, sizeof(PathVar));
@@ -1114,9 +1242,12 @@ void flowPathWalk(FnDclNode *fndcl) {
     // through one is the caller's to freeze
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(((FnSigNode *)fndcl->vtype)->parms, cnt, nodesp))
+    pwParms = ((FnSigNode *)fndcl->vtype)->parms;
+    for (nodesFor(pwParms, cnt, nodesp))
         pathVar((VarDclNode *)*nodesp);
     pwBlock((BlockNode *)fndcl->value, 1, 1);
+    if (drops)
+        dropWalkEnd(errors == errorsOnEntry);
 
     // A variable's index is the walk's own
     for (uint32_t i = 1; i < nvars; ++i)
@@ -1125,6 +1256,6 @@ void flowPathWalk(FnDclNode *fndcl) {
 }
 
 void flowPathPrint() {
-    printf("Loan walk: %u functions, %u loops, %u walked again, %u widened\n\n",
-        statFns, statLoops, statRewalks, statCapped);
+    printf("Path walk: %u functions (%u for loans), %u loops, %u walked again, %u widened\n\n",
+        statFns, statLoanFns, statLoops, statRewalks, statCapped);
 }

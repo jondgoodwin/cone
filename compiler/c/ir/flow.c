@@ -67,6 +67,267 @@ static int flowRefuseMoveThrough(INode *node, INode *ref) {
     return 0;
 }
 
+// *********************
+// Variable state along each path, for the main walk
+//
+// The flags on a declaration (VarInitialized, VarMoved, VarHollow) are the walk's
+// state as it goes. An 'if' walks each arm from the state its conditions leave
+// and joins them after (ifFlow): a flag any live arm set is set, so a value moved
+// on some arm counts as moved -- it may not be used again -- while an arm that
+// jumped away contributes nothing. So every change goes through
+// flowVarSetFlags, which logs the old flags while an 'if' is being walked and the
+// variable was declared outside the innermost conditional part (a variable
+// declared inside an arm leaves scope with it). Whether a variable holds its
+// value at a scope's end on every path is the path walk's to say, when the flags
+// could differ by path (flowDropNote); this state only says what may be used.
+// *********************
+
+uint16_t flowDepth = 0;
+FlowState *flowCurrent = NULL;
+static uint32_t flowForks = 0;     // how many 'if's are being walked
+
+typedef struct {
+    VarDclNode *var;
+    Nodes *hollowed;
+    uint16_t flags;
+} FlowVarEnt;
+
+struct FlowVarPath {
+    struct FlowVarPath *next;
+    uint32_t cnt;
+    FlowVarEnt ents[];
+};
+
+static FlowVarEnt *flowVarLog = NULL;
+static uint32_t flowVarLogN = 0;
+static uint32_t flowVarLogCap = 0;
+
+void flowVarSetFlags(VarDclNode *var, uint16_t flags, Nodes *hollowed) {
+    if (var->flowtempflags == flags && var->hollowed == hollowed)
+        return;
+    if (flowForks > 0 && var->flowdepth < flowDepth) {
+        if (flowVarLogN == flowVarLogCap) {
+            uint32_t oldcap = flowVarLogCap;
+            flowVarLogCap = oldcap ? oldcap << 1 : 64;
+            FlowVarEnt *grown = (FlowVarEnt *)memAllocBlk(flowVarLogCap * sizeof(FlowVarEnt));
+            if (oldcap)
+                memcpy(grown, flowVarLog, oldcap * sizeof(FlowVarEnt));
+            flowVarLog = grown;
+        }
+        FlowVarEnt *ent = &flowVarLog[flowVarLogN++];
+        ent->var = var;
+        ent->flags = var->flowtempflags;
+        ent->hollowed = var->hollowed;
+    }
+    var->flowtempflags = flags;
+    var->hollowed = hollowed;
+}
+
+void flowFnBegin(FlowState *fstate) {
+    flowDepth = 0;
+    flowCurrent = fstate;
+    flowVarLogN = 0;
+    flowForks = 0;
+}
+
+uint32_t flowVarLogPos() {
+    return flowVarLogN;
+}
+
+uint32_t flowVarLogMark() {
+    ++flowForks;
+    return flowVarLogN;
+}
+
+FlowVarPath *flowVarPathTake(uint32_t mark, FlowVarPath *next) {
+    uint32_t cnt = flowVarLogN - mark;
+    FlowVarPath *path = (FlowVarPath *)memAllocBlk(sizeof(FlowVarPath) + cnt * sizeof(FlowVarEnt));
+    path->next = next;
+    path->cnt = 0;
+    for (uint32_t i = mark; i < flowVarLogN; ++i) {
+        VarDclNode *var = flowVarLog[i].var;
+        uint32_t k;
+        for (k = 0; k < path->cnt && path->ents[k].var != var; ++k)
+            ;
+        if (k < path->cnt)
+            continue;
+        FlowVarEnt *ent = &path->ents[path->cnt++];
+        ent->var = var;
+        ent->flags = var->flowtempflags;
+        ent->hollowed = var->hollowed;
+    }
+    return path;
+}
+
+void flowVarRollback(uint32_t mark) {
+    while (flowVarLogN > mark) {
+        FlowVarEnt *ent = &flowVarLog[--flowVarLogN];
+        ent->var->flowtempflags = ent->flags;
+        ent->var->hollowed = ent->hollowed;
+    }
+}
+
+static Nodes *flowNodesUnion(Nodes *a, Nodes *b);
+
+void flowVarJoin(FlowVarPath *paths, uint32_t npaths) {
+    --flowForks;
+    for (FlowVarPath *path = paths; path; path = path->next) {
+        for (uint32_t i = 0; i < path->cnt; ++i) {
+            VarDclNode *var = path->ents[i].var;
+            // Only once per variable: the first path that changed it gathers every path's
+            int seen = 0;
+            for (FlowVarPath *before = paths; before != path && !seen; before = before->next) {
+                for (uint32_t k = 0; k < before->cnt; ++k) {
+                    if (before->ents[k].var == var) {
+                        seen = 1;
+                        break;
+                    }
+                }
+            }
+            if (seen)
+                continue;
+            uint16_t flags = 0;
+            Nodes *hollowed = NULL;
+            uint32_t changed = 0;
+            for (FlowVarPath *other = paths; other; other = other->next) {
+                for (uint32_t k = 0; k < other->cnt; ++k) {
+                    if (other->ents[k].var == var) {
+                        flags |= other->ents[k].flags;
+                        hollowed = flowNodesUnion(hollowed, other->ents[k].hollowed);
+                        ++changed;
+                        break;
+                    }
+                }
+            }
+            // A path that did not change it has it as it was at the fork
+            if (changed < npaths) {
+                flags |= var->flowtempflags;
+                hollowed = flowNodesUnion(hollowed, var->hollowed);
+            }
+            // Moved or hollowed on some path, and the list of what hollowed it
+            // is only for a variable still hollow
+            if (!(flags & VarHollow))
+                hollowed = NULL;
+            flowVarSetFlags(var, flags, hollowed);
+        }
+    }
+}
+
+// The variable owning a variable's value: a match's binding stands for the
+// matched value, whose variable owns it
+VarDclNode *flowDropOwner(VarDclNode *var) {
+    INode *matched;
+    while ((matched = flowMatchBound((INode *)var)) != NULL) {
+        INode *dcl = ((NameUseNode *)matched)->dclnode;
+        if (dcl->tag != VarDclTag)
+            break;
+        var = (VarDclNode *)dcl;
+    }
+    return var;
+}
+
+int flowNoDeath(INode *type) {
+    INode *dcl = flowGateNamed(type);
+    switch (dcl->tag) {
+    case IntNbrTag:
+    case UintNbrTag:
+    case FloatNbrTag:
+    case VoidTag:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+// Asked once per variable, and remembered: at every store in a loop or a
+// branch the question would otherwise walk the type again
+int flowDropTracked(VarDclNode *var) {
+    if (var->flowtracked == 0) {
+        var->flowtracked = var->scope > 0 && !(var->flags & FlagStatic) && var->vtype
+            && !flowNoDeath(var->vtype)
+            && (itypeIsMove(var->vtype) || itypeNeedsFinal(var->vtype)) ? 2 : 1;
+    }
+    return var->flowtracked == 2;
+}
+
+void flowDropNote(FlowState *fstate, VarDclNode *var) {
+    if (fstate == NULL || fstate->dropgate)
+        return;
+    var = flowDropOwner(var);
+    if (flowDepth > var->flowdepth && flowDropTracked(var))
+        fstate->dropgate = 1;
+}
+
+VarDclNode *flowLvalRootVar(INode *lval) {
+    INode *node = lval;
+    while (1) {
+        if (isNameUseNode(node) && isExpNode(node)) {
+            if (node == lval)
+                return NULL;
+            INode *dcl = ((NameUseNode *)node)->dclnode;
+            if (dcl->tag != VarDclTag || ((VarDclNode *)dcl)->scope == 0 || (dcl->flags & FlagStatic))
+                return NULL;
+            return (VarDclNode *)dcl;
+        }
+        switch (node->tag) {
+        case FldAccessTag:
+        {
+            INode *objfn = ((FnCallNode *)node)->objfn;
+            if (iexpGetTypeDcl(objfn)->tag != StructTag && iexpGetTypeDcl(objfn)->tag != TTupleTag)
+                return NULL;
+            node = objfn;
+            break;
+        }
+        case ArrIndexTag:
+        {
+            INode *objfn = ((FnCallNode *)node)->objfn;
+            if (iexpGetTypeDcl(objfn)->tag != ArrayTag)
+                return NULL;
+            node = objfn;
+            break;
+        }
+        case CastTag:
+            if (node->flags & FlagConvert)
+                return NULL;
+            node = ((CastNode *)node)->exp;
+            break;
+        default:
+            return NULL;
+        }
+    }
+}
+
+// A copy of 'nodes' with 'node' added, so that a list an undo log remembers is
+// never changed under it
+static Nodes *flowNodesWith(Nodes *nodes, INode *node) {
+    Nodes *copy = newNodes(nodes ? nodes->used + 1 : 2);
+    INode **nodesp;
+    uint32_t cnt;
+    if (nodes) {
+        for (nodesFor(nodes, cnt, nodesp))
+            nodesAdd(&copy, *nodesp);
+    }
+    nodesAdd(&copy, node);
+    return copy;
+}
+
+static int flowNodesHas(Nodes *nodes, INode *node);
+
+static Nodes *flowNodesUnion(Nodes *a, Nodes *b) {
+    if (b == NULL || a == b)
+        return a;
+    if (a == NULL)
+        return b;
+    INode **nodesp;
+    uint32_t cnt;
+    Nodes *both = a;
+    for (nodesFor(b, cnt, nodesp)) {
+        if (!flowNodesHas(both, *nodesp))
+            both = flowNodesWith(both, *nodesp);
+    }
+    return both;
+}
+
 // Add a variable to a list of the variables a move leaves without their value
 static void flowAddMoved(Nodes **moved, INode *vardcl) {
     INode **nodesp;
@@ -87,6 +348,7 @@ static void flowAddMoved(Nodes **moved, INode *vardcl) {
 typedef struct {
     Nodes *wholes;    // variables whose own value moved
     Nodes *hollow;    // move sources, each reaching a local owning reference
+    int nomark;       // walking a match binding's matched value: the binding's use is the move site
 } MoveParts;
 
 // The local variable holding an owning reference that 'ref' names, or NULL.
@@ -136,9 +398,11 @@ static void flowRefuseMoveField(FnCallNode *fld, INode *top) {
 // A move out through a local sole owner: the variable is in 'moved', so that a
 // block's or an 'if''s values still narrow it as any moved variable, and the
 // move itself is noted, to become the variable's hollow release.
-static void flowMoveHollow(VarDclNode *owner, Nodes **moved, INode *top, MoveParts *parts) {
+static void flowMoveHollow(VarDclNode *owner, INode *owneruse, Nodes **moved, INode *top, MoveParts *parts) {
     if (moved == NULL)
         return;
+    // Where it happens, for a drop flag
+    owneruse->flags |= FlagHollowOut;
     flowAddMoved(moved, (INode *)owner);
     if (parts->hollow == NULL)
         parts->hollow = newNodes(2);
@@ -198,13 +462,27 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
         if (moved) {
             flowAddMoved(moved, (INode *)vardclnode);
             flowAddMoved(&parts->wholes, (INode *)vardclnode);
+            // Where the value leaves, for a drop flag. A match's binding is
+            // marked, not the matched value's name its declaration reads: the
+            // move happens here, and the flag is the matched value's variable's
+            // (flowDropOwner).
+            // The match's own variable ('_') is named by one name use every
+            // pattern and binding shares, so no one site can be marked on it.
+            if (!parts->nomark && vardclnode->namesym != anonName)
+                node->flags |= FlagMoveOut;
         }
         if (vardclnode->scope == 0) {
             errorMsgNode(node, ErrorInvType, "May not move a value out of a global variable.");
         }
         INode *matched = flowMatchBound((INode *)vardclnode);
-        if (matched)
+        if (matched) {
+            int nomark = parts ? parts->nomark : 0;
+            if (parts)
+                parts->nomark = 1;
             flowMoveSource(matched, moved, top, parts);
+            if (parts)
+                parts->nomark = nomark;
+        }
         return;
     }
     switch (node->tag) {
@@ -222,7 +500,7 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
             return;
         VarDclNode *owner = flowOwningLocal(objfn);
         if (owner) {
-            flowMoveHollow(owner, moved, top, parts);
+            flowMoveHollow(owner, objfn, moved, top, parts);
             return;
         }
         flowMoveSource(objfn, moved, top, parts);
@@ -235,7 +513,7 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
             return;
         VarDclNode *owner = flowOwningLocal(ref);
         if (owner) {
-            flowMoveHollow(owner, moved, top, parts);
+            flowMoveHollow(owner, ref, moved, top, parts);
             return;
         }
         flowMoveSource(ref, moved, top, parts);
@@ -361,20 +639,26 @@ static VarDclNode *flowHollowOwner(INode *exp) {
 // A move out through a local sole owner hollows the variable instead: it may
 // not be used again, as if moved, but it still owns the allocation, which its
 // release gives back without finalizing what moved (HollowNode). A variable
-// hollowed on only some of the values a block or an 'if' hands back is
-// hollowed on all of them: its value is then left unfinalized on the
-// other paths, rather than finalized a second time on these. A variable whose
-// whole value also moved is left to that move.
+// whose whole value also moved is left to that move.
+//
+// A variable moved or hollowed by only some of the values a block or an 'if'
+// hands back is moved or hollowed as far as its use goes: it may not be used
+// again, since on some path it holds nothing. Whether it is released at its
+// scope's end is a drop flag's to say, set where each value moves (the name
+// use flowMoveSource marked), so the function's drops go to the path walk.
 void flowHandleMove(INode *node) {
     Nodes *moved = NULL;
-    MoveParts parts = { NULL, NULL };
+    MoveParts parts = { NULL, NULL, 0 };
     INode **nodesp;
     uint32_t cnt;
     flowMoveSource(node, &moved, node, &parts);
-    if (moved) {
-        for (nodesFor(moved, cnt, nodesp)) {
-            if (flowNodesHas(parts.wholes, *nodesp))
-                ((VarDclNode *)*nodesp)->flowtempflags |= VarMoved;
+    if (parts.wholes) {
+        for (nodesFor(parts.wholes, cnt, nodesp)) {
+            VarDclNode *var = (VarDclNode *)*nodesp;
+            flowVarSetFlags(var, var->flowtempflags | VarMoved, var->hollowed);
+            flowDropNote(flowCurrent, var);
+            if (!flowNodesHas(moved, *nodesp) && flowCurrent && flowDropTracked(flowDropOwner(var)))
+                flowCurrent->dropgate = 1;
         }
     }
     if (parts.hollow) {
@@ -382,10 +666,12 @@ void flowHandleMove(INode *node) {
             VarDclNode *owner = flowHollowOwner(*nodesp);
             if (flowNodesHas(parts.wholes, (INode *)owner))
                 continue;
-            owner->flowtempflags |= VarHollow;
-            if (owner->hollowed == NULL)
-                owner->hollowed = newNodes(2);
-            nodesAdd(&owner->hollowed, *nodesp);
+            flowVarSetFlags(owner, owner->flowtempflags | VarHollow, flowNodesWith(owner->hollowed, *nodesp));
+            if (!flowNodesHas(owner->hollowall, *nodesp))
+                owner->hollowall = flowNodesWith(owner->hollowall, *nodesp);
+            flowDropNote(flowCurrent, owner);
+            if (!flowNodesHas(moved, (INode *)owner) && flowCurrent)
+                flowCurrent->dropgate = 1;
         }
     }
 }
@@ -649,7 +935,10 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
     {
         LogicNode *lnode = (LogicNode*)*nodep;
         flowLoadValue(fstate, &lnode->lexp);
+        // The right operand runs on one path only
+        ++flowDepth;
         flowLoadValue(fstate, &lnode->rexp);
+        --flowDepth;
         break;
     }
 
@@ -716,6 +1005,7 @@ void flowAddVar(VarDclNode *varnode) {
     VarFlowInfo *stackp = &gVarFlowStackp[gVarFlowStackPos++];
     stackp->node = varnode;
     stackp->flags = 0;
+    varnode->flowdepth = flowDepth;
 }
 
 // Start a new scope
@@ -849,6 +1139,7 @@ HollowNode *flowNewHollow(VarDclNode *var) {
     hnode->exp = NULL;
     hnode->var = var;
     hnode->moved = newNodes(2);
+    hnode->test = 0;
     if (var->flowtempflags & VarHollow) {
         INode **nodesp;
         uint32_t cnt;
@@ -856,6 +1147,70 @@ HollowNode *flowNewHollow(VarDclNode *var) {
             nodesAdd(&hnode->moved, *nodesp);
     }
     return hnode;
+}
+
+// A release that runs only when the variable's drop flag holds 'state'
+static INode *flowDropFlagTest(VarDclNode *var, INode *release, uint8_t state) {
+    DropFlagNode *test;
+    newNode(test, DropFlagNode, DropFlagTag);
+    test->vtype = (INode *)newVoidNode();
+    test->release = release;
+    test->var = var;
+    test->state = state;
+    return (INode *)test;
+}
+
+static void flowListAdd(Nodes **varlist, INode *node) {
+    if (*varlist == NULL)
+        *varlist = newNodes(4);
+    nodesAdd(varlist, node);
+}
+
+void flowVarRelease(VarDclNode *var, INode *dropat, int whole, int hollow, Nodes *hollowed, Nodes *extra,
+    int test, Nodes **varlist) {
+    INode **nodesp;
+    uint32_t cnt;
+    if (hollow) {
+        // A local owning reference out of whose referent a part was moved, or
+        // is handed back here, is released without what moved
+        HollowNode *hnode = flowNewHollow(var);
+        hnode->moved = newNodes(2);
+        if (hollowed) {
+            for (nodesFor(hollowed, cnt, nodesp))
+                nodesAdd(&hnode->moved, *nodesp);
+        }
+        if (extra) {
+            for (nodesFor(extra, cnt, nodesp))
+                nodesAdd(&hnode->moved, *nodesp);
+        }
+        flowListAdd(varlist, test ? flowDropFlagTest(var, (INode *)hnode, DropFlagHollow) : (INode *)hnode);
+    }
+    if (!whole)
+        return;
+    // A struct or an enum dies through its drop: a call to it is listed.
+    // Anything else with anything to do as it dies -- an owning reference,
+    // a tuple or an array of values that finalize or own -- is listed
+    // itself, and generation finalizes it in place (genlFinalizeAt).
+    INode *vartype = var->vtype;
+    INode *dropfn = itypeGetDropFnDcl(vartype);
+    INode *release = NULL;
+    if (dropfn == NULL) {
+        if (itypeNeedsFinal(vartype))
+            release = (INode *)var;
+    }
+    else {
+        FnCallNode *dropfncall = newFnCallLower(dropat, dropfn, 1);
+        INode *dropnameuse = (INode*)newNameUseFromDclNode((INode*)var, dropat);
+        INode *borrow = newBorrowMutRef(dropnameuse, ((IExpNode*)var)->vtype, (INode*)uniPerm);
+        nodesAdd(&dropfncall->args, borrow);
+        release = (INode *)dropfncall;
+    }
+    if (release)
+        flowListAdd(varlist, test ? flowDropFlagTest(var, release, DropFlagWhole) : release);
+}
+
+int flowIsScopeResultOf(INode *retexp, VarDclNode *varnode, Nodes **hollow) {
+    return flowIsScopeResult(retexp, varnode, hollow);
 }
 
 // Create de-alias list of all own/rc reference variables (except the retexp name(s))
@@ -867,7 +1222,6 @@ void flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp, INode *le
     size_t pos = gVarFlowStackPos;
     while (pos > startpos) {
         VarFlowInfo *avar = &gVarFlowStackp[--pos];
-        INode *vartype = avar->node->vtype;
         // A variable that was never given a value owns nothing, so there is
         // nothing to release or finalize: freeing its storage, or running a
         // drop fn over it, would act on garbage.
@@ -890,42 +1244,9 @@ void flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp, INode *le
         Nodes *hollow = NULL;
         if (flowIsScopeResult(retexp, avar->node, &hollow))
             continue;
-        // A local owning reference out of whose referent a part was moved, or
-        // is handed back here, is released without what moved
-        if ((avar->node->flowtempflags & VarHollow) || hollow) {
-            HollowNode *hnode = flowNewHollow(avar->node);
-            if (hollow) {
-                INode **nodesp;
-                uint32_t cnt;
-                for (nodesFor(hollow, cnt, nodesp))
-                    nodesAdd(&hnode->moved, *nodesp);
-            }
-            if (*varlist == NULL)
-                *varlist = newNodes(4);
-            nodesAdd(varlist, (INode*)hnode);
-            continue;
-        }
-        // A struct or an enum dies through its drop: a call to it is listed.
-        // Anything else with anything to do as it dies -- an owning reference,
-        // a tuple or an array of values that finalize or own -- is listed
-        // itself, and generation finalizes it in place (genlFinalizeAt).
-        INode *dropfn = itypeGetDropFnDcl(vartype);
-        if (dropfn == NULL) {
-            if (itypeNeedsFinal(vartype)) {
-                if (*varlist == NULL)
-                    *varlist = newNodes(4);
-                nodesAdd(varlist, (INode*)avar->node);
-            }
-        }
-        else {
-            FnCallNode *dropfncall = newFnCallLower(dropat, dropfn, 1);
-            INode *dropnameuse = (INode*)newNameUseFromDclNode((INode*)avar->node, dropat);
-            INode *borrow = newBorrowMutRef(dropnameuse, ((IExpNode*)avar->node)->vtype, (INode*)uniPerm);
-            nodesAdd(&dropfncall->args, borrow);
-            if (*varlist == NULL)
-                *varlist = newNodes(4);
-            nodesAdd(varlist, (INode*)dropfncall);
-        }
+        int hollowed = (avar->node->flowtempflags & VarHollow) || hollow;
+        flowVarRelease(avar->node, dropat, !hollowed, hollowed,
+            (avar->node->flowtempflags & VarHollow) ? avar->node->hollowed : NULL, hollow, 0, varlist);
     }
 }
 
@@ -965,6 +1286,8 @@ void flowStateInit(FlowState *fstate, FnSigNode *fnsig) {
     fstate->scope = 1;
     fstate->gate = 0;
     fstate->inflightcnt = 0;
+    fstate->dropgate = 0;
+    fstate->jumped = 0;
 }
 
 // A bare borrowed reference handed out keeps its existing check (its scope

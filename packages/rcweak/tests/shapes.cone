@@ -17,6 +17,26 @@ struct Fin { pub n i64; fn final(self &uni) { note(n); } }
 // A local struct holding a weak reference: its death is the field's
 struct Holds { pub w Weak[Fin]; pub k i64; }
 
+fn cond(b Bool) Bool { b; }
+fn sink(w Weak[Fin]) { }
+
+// A weak reference moved away on one path only is let go on the other, at
+// its scope's end: its drop flag says which path ran
+fn condMove(b Bool) {
+  imm r = +rcw-mut Fin[4];
+  imm w = Weak[Fin].of(r);
+  if cond(b) { sink(w); }
+}
+
+// A weak reference assigned over is let go as it is replaced
+fn reassigned() {
+  imm r = +rcw-mut Fin[5];
+  mut w = Weak[Fin].of(r);
+  w = Weak[Fin].none();
+  imm c = Weak[Fin].of(r);
+  expectUInt(u64[c.weakCount()], 1, "the one assigned over was let go: only this one");
+}
+
 fn inLocalStruct() {
   imm r = +rcw-mut Fin[1];
   {
@@ -106,6 +126,18 @@ fn main() i32 {
   log = 0;
   moves();
   expectInt(log, 4, "dies once");
+  log = 0;
+  condMove(true);
+  expectInt(log, 4, "moved away: dies once");
+  expectUInt(u64[liveBlocks()], 0, "the block freed with the moved weak reference");
+  log = 0;
+  condMove(false);
+  expectInt(log, 4, "kept: dies once");
+  expectUInt(u64[liveBlocks()], 0, "the kept weak reference let go at its scope's end, and the block");
+  log = 0;
+  reassigned();
+  expectInt(log, 5, "dies at its owner's going");
+  expectUInt(u64[liveBlocks()], 0, "and no weak reference holds its block");
   layouts();
   expectUInt(u64[liveBlocks()], 0, "every block given back");
   done();

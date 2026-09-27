@@ -59,6 +59,7 @@ add_executable(conec
 	compiler/c/ir/export.c
 	compiler/c/ir/incfile.c
 	compiler/c/ir/flow.c
+	compiler/c/ir/flowdrop.c
 	compiler/c/ir/flowloan.c
 	compiler/c/ir/flowpath.c
 	compiler/c/ir/iexp.c

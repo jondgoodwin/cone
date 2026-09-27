@@ -349,10 +349,13 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     if (timerFine)
         timerBegin(FlowTimer);
     blockFlow(&fstate, (BlockNode **)&fnnode->value);
+    flowCurrent = NULL;
     // A function the gate marked holds a borrow in a way only a walk following
-    // each path can check: it is walked again, once blockFlow found no error
-    if (fstate.gate && errors == errorsOnEntry)
-        flowPathWalk(fnnode);
+    // each path can check, or has a variable whose state may differ by path,
+    // whose drops only such a walk can decide: it is walked again, once
+    // blockFlow found no error, for either or both in one walk
+    if ((fstate.gate || fstate.dropgate) && errors == errorsOnEntry)
+        flowPathWalk(fnnode, fstate.gate != 0, fstate.dropgate);
     if (timerFine)
         timerBegin(svTimer);
     flowGateCount(&fstate);

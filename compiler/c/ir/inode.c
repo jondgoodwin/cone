@@ -198,6 +198,14 @@ void inodePrintNode(INode *node) {
         inodeFprint(")");
         break;
     }
+    case DropFlagTag:
+    {
+        DropFlagNode *test = (DropFlagNode *)node;
+        inodeFprint("(if-held %s %d ", &test->var->namesym->namestr, (int)test->state);
+        inodePrintNode(test->release);
+        inodeFprint(")");
+        break;
+    }
     case MacroDclTag:
         macroPrint((MacroDclNode *)node); break;
     case GenVarDclTag:
@@ -729,6 +737,7 @@ static NodeTagFacts nodeTagFacts[NodeTagCount] = {
     [IfTag] = {ExpGroup, 0, 0},
     [RefCountTag] = {ExpGroup, 0, 0},
     [HollowTag] = {ExpGroup, 0, 0},
+    [DropFlagTag] = {ExpGroup, 0, 0},
     [NamedValTag] = {ExpGroup, 0, 0},
     [AbsenceTag] = {ExpGroup, 0, 0},
 

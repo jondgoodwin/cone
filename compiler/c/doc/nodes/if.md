@@ -126,15 +126,16 @@ from each arm of `return if … { return a } else { b }`, recursively.
 
 ## Flow
 
-`ifFlow` walks each condition, then each arm block — **all against the same
-mutable `FlowState` and the same global variable stack, with no fork and no
-join.** A move in one arm is seen by the other and by everything after. Each
-arm's `blockFlow` does bracket its own locals correctly; what is shared is the
-move state of *outer* variables.
-
-This is the deliberate conservative approximation. `flowScopeDealias`'s own
-comment says a value moved on one branch is skipped on all of them — which
-leaks rather than double-frees.
+`ifFlow` walks the first condition, then each arm from the state the
+conditions before it leave, a later condition and each arm one level deeper
+(`flowDepth`). Each arm's changes to *outer* variables' flags are taken and
+rolled back (`flowVarPathTake`, `flowVarRollback`), and the arms that did not
+return, and a missing `else`, are joined (`flowVarJoin`): a flag any of them set
+is set after the `if`, so a value moved in both arms compiles, and one moved in
+one arm may not be used after it. Whether each variable holds its value at its
+releases, where that differs by arm, is the path walk's to decide, and a drop
+flag's at run time ([Flow Analysis](../phases/flow.md), "Drop flags").
+`ifFlow` leaves `FlowState.jumped` set when every arm returned.
 
 ## Generation
 
@@ -164,13 +165,16 @@ may have split the block. The phi is built only when something was recorded.
   coercion or a deref silently breaks detection — and it surfaces as
   `ErrorNoElse`, not as a defect.
 - **`ErrorNoElse` returns with `vtype` still `unknownType`.**
-- **`ifFlow` has no join**, so conditional moves are not tracked per path.
+- **An arm ending in `break` or `continue` is joined**: only a `return` counts
+  as leaving (`jumped`), since the main walk walks a loop once and has no state
+  to hand a jump. So a value moved on an arm that breaks counts as moved after
+  the `if`, as it did before the join.
 - **`ifRemoveReturns` calls `nodesLast` without an emptiness guard.**
 
 ## What lives elsewhere
 
 - Branch folding, the type in common, and the second pass: [Type Check Reasoning](../phases/type-check-reasoning.md), "Unifying branches"
 - Where `derived` and `HasTagField` come from: [struct](struct.md)
-- Why flow is path-insensitive: [Flow Analysis](../phases/flow.md)
+- How flow joins the arms, and follows each path for drops: [Flow Analysis](../phases/flow.md)
 - The `is` node itself: [cast](cast.md)
 - `match` de-sugaring: [Parse](../phases/parse.md)
