@@ -1,0 +1,273 @@
+// Actions: what a program asks of its input by name ("turn", "move",
+// "toggle camera"), each with a value type, bound to the devices that give
+// it a value. One Context holds the actions and their bindings; its 'update'
+// turns a frame's Input into every action's value.
+//
+// The model is Unreal's Enhanced Input and Godot's InputMap, as
+// leafwing-input-manager has it for Bevy: an action is a button (held,
+// pressed, released), one axis or two; bindings add into it; a program
+// reads the action, never the device. Contexts that stack by priority and
+// consume what they use, and modifiers and triggers beyond a drag's held
+// buttons, are not here yet: an action can be switched off instead.
+
+// An action's value type
+pub const BUTTON = 0;     // held or not, with this frame's press and release
+pub const AXIS1 = 1;      // one number: 'x'
+pub const AXIS2 = 2;      // two: 'x' and 'y'
+
+// A binding's source
+const SOURCE_KEY = 0;              // a key, by scancode
+const SOURCE_MOUSE_BUTTON = 1;     // a mouse button
+const SOURCE_POINTER_DELTA = 2;    // the pointer's movement
+const SOURCE_WHEEL = 3;            // the wheel
+
+// An action of a Context, as 'action' made it
+pub struct Action {
+  pub index usize;
+}
+
+// An action's value this frame
+pub struct ActionValue {
+  pub down Bool;          // a button, or any axis binding a key or button: held
+  pub pressed Bool;       // it went down this frame
+  pub released Bool;      // it went up this frame
+  pub x f32;              // an axis: the sum of what its bindings give
+  pub y f32;
+  pub timestamp u64;      // the latest event that fed it this frame; 0 if none
+
+  pub fn zero() ActionValue { ActionValue[false, false, false, 0., 0., 0u64]; }
+}
+
+// Where an action's value comes from, and how much of it
+pub struct Binding {
+  pub source i32;
+  pub code u32;     // a key's scancode, or a mouse button (sdl.BUTTON_...)
+  pub x f32;        // a key or button held gives an axis (x, y); the pointer
+  pub y f32;        // and the wheel are scaled by x (and y)
+  pub held u32;     // the pointer's movement counts only while these buttons are held
+
+  // The key at 'scancode' (sdl.SCANCODE_...): a button, or 1 on an axis
+  pub fn key(scancode u32) Binding { Binding[SOURCE_KEY, scancode, 1., 0., 0u]; }
+
+  // The key at 'scancode', held, giving ('x', 'y') to an axis: W as (0, 1)
+  // and S as (0, -1) on a two-axis 'move'
+  pub fn keyAxis(scancode u32, x f32, y f32) Binding { Binding[SOURCE_KEY, scancode, x, y, 0u]; }
+
+  // A mouse button (sdl.BUTTON_...): a button, or 1 on an axis
+  pub fn mouseButton(button u8) Binding { Binding[SOURCE_MOUSE_BUTTON, u32[button], 1., 0., 0u]; }
+
+  // The pointer's movement this frame, in window units times 'scale' (on
+  // one axis, its horizontal movement)
+  pub fn pointerDelta(scale f32) Binding { Binding[SOURCE_POINTER_DELTA, 0u, scale, scale, 0u]; }
+
+  // The wheel this frame, in notches times 'scale' (on one axis, its turn
+  // away from the user)
+  pub fn wheel(scale f32) Binding { Binding[SOURCE_WHEEL, 0u, scale, scale, 0u]; }
+
+  // The same, counting the pointer's movement only while every button of
+  // 'buttons' (sdl.BUTTON_MASK_...) is held: a drag
+  pub fn whileHeld(self, buttons u32) Binding { Binding[source, code, x, y, buttons]; }
+}
+
+// An action's state
+struct ActionSlot {
+  pub kind i32;
+  pub enabled Bool;
+  pub value ActionValue;
+}
+
+// A binding of an action
+struct BindingSlot {
+  pub action usize;
+  pub binding Binding;
+}
+
+// The actions, their bindings, and their values this frame
+pub struct Context {
+  names List[String];
+  actions List[ActionSlot];
+  bindings List[BindingSlot];
+  fedStamps List[u64];      // this frame: the timestamps of the events that fed an action
+
+  pub fn empty() Context {
+    Context[List[String].empty(), List[ActionSlot].empty(), List[BindingSlot].empty(), List[u64].empty()];
+  }
+
+  // A new action named 'name', of value type 'kind' (BUTTON, AXIS1, AXIS2),
+  // with no bindings yet
+  pub fn action(self &mut, name &[]u8, kind i32) Action {
+    assertDebug(kind == BUTTON or kind == AXIS1 or kind == AXIS2);
+    names.push(String.from(name));
+    actions.push(ActionSlot[kind, true, ActionValue.zero()]);
+    Action[actions.len() - 1usize];
+  }
+
+  // Bind 'action' to 'binding' as well as to what it is bound to already
+  pub fn bind(self &mut, action Action, binding Binding) {
+    assertDebug(action.index < actions.len());
+    bindings.push(BindingSlot[action.index, binding]);
+  }
+
+  // The action named 'name': one made by 'action', or it panics
+  pub fn named(self &, name &[]u8) Action {
+    mut i = 0usize;
+    while i < names.len() {
+      if names[i].equals(name) { return Action[i]; }
+      i = i + 1usize;
+    }
+    panic("no action of that name");
+  }
+
+  // The number of actions
+  pub fn len(self &) usize { actions.len(); }
+
+  // Switch 'action' on or off. One that is off has no value and feeds on
+  // nothing (a controller not in use, its keys left to another).
+  pub fn setEnabled(self &mut, action Action, on Bool) {
+    mut slot = &mut actions[action.index];
+    slot.enabled = on;
+    if !on { slot.value = ActionValue.zero(); }
+  }
+
+  pub fn isEnabled(self &, action Action) Bool { actions[action.index].enabled; }
+
+  // Every action's value from this frame of 'input'. The pointer's
+  // movement is taken event by event, each counted if the buttons its
+  // binding needs were held when it came, so a drag begun and ended within
+  // one frame still turns what it drags.
+  pub fn update(self &mut, input &Input) {
+    fedStamps.clear();
+    // What was held last frame, for the presses and releases
+    mut wasDownList = List[Bool].empty();
+    mut a = 0usize;
+    while a < actions.len() {
+      mut slot = &mut actions[a];
+      wasDownList.push(slot.value.down);
+      slot.value = ActionValue.zero();
+      a = a + 1usize;
+    }
+
+    // The events, in order: the pointer's movement and the wheel add in;
+    // every event a binding matches feeds its action
+    mut held = input.buttonsAtStart;
+    imm events = input.events();
+    mut e = 0usize;
+    while e < events.len {
+      imm ev = events[e];
+      mut feeds = false;
+      if ev.kind == EVENT_POINTER_BUTTON {
+        imm bit = buttonMask(ev.code);
+        if ev.down { held = held | bit; } elif (held & bit) != 0u { held = held ^ bit; }
+      }
+      mut b = 0usize;
+      while b < bindings.len() {
+        imm bs = *bindings[b];
+        mut slot = &mut actions[bs.action];
+        if slot.enabled {
+          imm bd = bs.binding;
+          mut matched = false;
+          if bd.source == SOURCE_KEY {
+            matched = ev.kind == EVENT_KEY and ev.code == bd.code and !ev.repeat;
+          } elif bd.source == SOURCE_MOUSE_BUTTON {
+            matched = ev.kind == EVENT_POINTER_BUTTON and ev.code == bd.code;
+          } elif bd.source == SOURCE_POINTER_DELTA {
+            if ev.kind == EVENT_POINTER_MOVE and (held & bd.held) == bd.held {
+              matched = true;
+              slot.value.x = slot.value.x + ev.dx * bd.x;
+              slot.value.y = slot.value.y + ev.dy * bd.y;
+            }
+          } elif bd.source == SOURCE_WHEEL {
+            if ev.kind == EVENT_WHEEL {
+              matched = true;
+              if slot.kind == AXIS1 {
+                slot.value.x = slot.value.x + ev.y * bd.x;
+              } else {
+                slot.value.x = slot.value.x + ev.x * bd.x;
+                slot.value.y = slot.value.y + ev.y * bd.y;
+              }
+            }
+          }
+          if matched {
+            feeds = true;
+            if ev.timestamp > slot.value.timestamp { slot.value.timestamp = ev.timestamp; }
+          }
+        }
+        b = b + 1usize;
+      }
+      if feeds { fedStamps.push(ev.timestamp); }
+      e = e + 1usize;
+    }
+
+    // What is held: keys and buttons. One pressed and let go within the
+    // frame counts as pressed (and released) this frame, not as held.
+    mut b = 0usize;
+    while b < bindings.len() {
+      imm bs = *bindings[b];
+      mut slot = &mut actions[bs.action];
+      imm bd = bs.binding;
+      if slot.enabled and (bd.source == SOURCE_KEY or bd.source == SOURCE_MOUSE_BUTTON) {
+        mut isDown = false;
+        mut wentDown = false;
+        if bd.source == SOURCE_KEY {
+          isDown = input.keyDown(bd.code);
+          wentDown = input.keyPressed(bd.code);
+        } else {
+          isDown = input.buttonDown(bd.code);
+          wentDown = (input.buttonsPressed & buttonMask(bd.code)) != 0u;
+        }
+        if isDown {
+          slot.value.down = true;
+          if slot.kind != BUTTON {
+            slot.value.x = slot.value.x + bd.x;
+            slot.value.y = slot.value.y + bd.y;
+          }
+        }
+        if wentDown { slot.value.pressed = true; }
+      }
+      b = b + 1usize;
+    }
+
+    // Presses and releases: a button that went down from up, or was pressed
+    // within the frame; one that was down and is not
+    a = 0usize;
+    while a < actions.len() {
+      imm wasDown = *wasDownList[a];
+      mut slot = &mut actions[a];
+      if slot.value.down {
+        slot.value.released = false;
+        if !wasDown { slot.value.pressed = true; }
+      } elif slot.value.pressed {
+        slot.value.released = true;     // pressed and let go within the frame
+      } else {
+        slot.value.released = wasDown;
+      }
+      a = a + 1usize;
+    }
+  }
+
+  // An action's value this frame
+  pub fn value(self &, action Action) ActionValue { actions[action.index].value; }
+
+  // A button: held now
+  pub fn down(self &, action Action) Bool { actions[action.index].value.down; }
+
+  // A button: pressed this frame
+  pub fn pressed(self &, action Action) Bool { actions[action.index].value.pressed; }
+
+  // A button: released this frame
+  pub fn released(self &, action Action) Bool { actions[action.index].value.released; }
+
+  // One axis
+  pub fn axis1(self &, action Action) f32 { actions[action.index].value.x; }
+
+  // Two axes
+  pub fn axis2(self &, action Action) Vec2 {
+    imm v = actions[action.index].value;
+    Vec2[v.x, v.y];
+  }
+
+  // The timestamps of this frame's events that fed an enabled action, in
+  // the order they came (each once, however many actions it fed): the
+  // events whose effect this frame shows
+  pub fn fed(self &) &[]u64 { fedStamps.view(); }
+}

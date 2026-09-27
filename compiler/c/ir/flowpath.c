@@ -1169,7 +1169,7 @@ static PathSet *pwValue(INode **nodep, int move) {
         return holds;
     }
     case CastTag:
-        if (node->flags & FlagConvert) {
+        if (!flowCastCarries(node)) {
             pwValue(&((CastNode *)node)->exp, 0);
             return NULL;
         }

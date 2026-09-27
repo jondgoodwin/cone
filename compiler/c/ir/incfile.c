@@ -872,7 +872,7 @@ static void incWant(IncGen *g, INode *node) {
 // module's finalizer drops, which an importer must see to derive that the
 // package's finalizer is its 'drop' (module.md, "Init and final")
 static int incGlobalDropped(VarDclNode *var) {
-    return !(var->dclinfo.facts & DclCName) && itypeGetDropFnDcl(var->vtype) != NULL;
+    return modGlobalFinalized(var);
 }
 
 static int incGlobalWanted(IncGen *g, VarDclNode *var) {

@@ -1,0 +1,346 @@
+// The controls package: cameras steered by input. A controller reads the
+// input package's actions, never a device, and gives back a Pose: where the
+// camera is and which way it faces. The program applies the pose to what it
+// draws with (render's Camera: 'camera.origin = pose.origin;
+// camera.orientation = pose.orientation'), so the controller owns no camera,
+// and a camera that is one day a part attached to another (through
+// someone's eyes, following someone) changes only who applies the pose, and
+// in whose coordinates: a pose is relative to whatever the program places it
+// in (render's Camera already follows a placement, from an eye).
+//
+// - Orbit: round a target. A drag with the left button turns it, the wheel
+//   zooms (each notch away from the user 10 % nearer), a drag with the
+//   right or middle button pans the target across the view.
+// - Fly: free. W, A, S, D move forward, left, back and right along the
+//   view (by scancode, so they are the same keys on AZERTY), Space rises,
+//   Ctrl sinks, and the mouse looks (in relative mode, which the program
+//   switches on: 'wantsRelativeMouse').
+// - CameraControls: both, and C toggles between them, the new one taking
+//   the view the old one left.
+//
+//   mut ctx = Context.empty();
+//   imm actions = CameraActions.bind(&mut ctx);       // the standard bindings
+//   mut controls = CameraControls.make(actions, Orbit.fromEye(eye, target), &mut ctx);
+//   ... each frame, the events drained into 'input' and 'ctx.update(&input)':
+//   controls.update(&mut ctx, dt);                      // just before the view is built
+//   imm pose = controls.pose();
+//   camera.origin = pose.origin;
+//   camera.orientation = pose.orientation;
+//
+// Look is applied as late as possible: 'update' is meant to be called just
+// before the view matrix is built, after everything else of the frame that
+// does not depend on the camera, so the newest input moves it.
+//
+// Conventions are geomath's: right-handed, y up, a camera looking down its
+// own -z; angles in radians. A yaw of 0 looks down -z (an orbit's eye is on
+// the target's +z side); a yaw turns about +y, counterclockwise seen from
+// above. An orbit's pitch is its eye's height above the target's horizon; a
+// fly camera's pitch is how far it looks up. Each is kept within
+// MAX_PITCH of level, short of straight up or down, where 'lookAt' has no
+// sideways.
+
+mod controls;
+
+import libc;
+import geomath use *;
+import input use *;
+import sdl;
+
+// How far from level a camera may look, short of a quarter turn
+pub const MAX_PITCH f32 = 1.55;
+
+fn clampPitch(p f32) f32 {
+  if p > MAX_PITCH { return MAX_PITCH; }
+  if p < -MAX_PITCH { return -MAX_PITCH; }
+  p;
+}
+
+// ---- The pose ----
+
+// Where a camera is, and which way it faces (its own -z forward, +y up)
+pub struct Pose {
+  pub origin Vec3;
+  pub orientation Quat;
+
+  // At 'origin', turned 'yaw' about +y and then tilted 'pitch' about its own
+  // +x: looking up by 'pitch', with no roll
+  pub fn look(origin Vec3, yaw f32, pitch f32) Pose {
+    Pose[origin, Quat.angleAxis(yaw, Vec3[0., 1., 0.]) * Quat.angleAxis(pitch, Vec3[1., 0., 0.])];
+  }
+
+  // The way it faces
+  pub fn forward(self) Vec3 { orientation * Vec3[0., 0., -1.]; }
+
+  // Its up
+  pub fn up(self) Vec3 { orientation * Vec3[0., 1., 0.]; }
+
+  // Its right
+  pub fn right(self) Vec3 { orientation * Vec3[1., 0., 0.]; }
+
+  // Its view matrix: world coordinates into the camera's, by geomath's
+  // Mat4.lookAt
+  pub fn viewMatrix(self) Mat4 {
+    Mat4.lookAt(origin, origin + self.forward(), self.up());
+  }
+
+  // Where it is placed: the inverse of its view
+  pub fn placement(self) Mat4 { Mat4.fromTrs(origin, orientation, Vec3[1., 1., 1.]); }
+}
+
+// The two poses are the same, exactly
+fn samePose(a Pose, b Pose) Bool {
+  a.origin.x == b.origin.x and a.origin.y == b.origin.y and a.origin.z == b.origin.z
+    and a.orientation.x == b.orientation.x and a.orientation.y == b.orientation.y
+    and a.orientation.z == b.orientation.z and a.orientation.w == b.orientation.w;
+}
+
+// ---- Orbit ----
+
+pub struct Orbit {
+  pub target Vec3;          // what it goes round
+  pub distance f32;         // how far its eye is from the target
+  pub yaw f32;              // radians: 0 has the eye on the target's +z side
+  pub pitch f32;            // radians: the eye's height above the target's horizon
+  pub turnRate f32;         // radians a window unit of the turn action
+  pub zoomRate f32;         // the share of the distance a notch of zoom takes off
+  pub panRate f32;          // the target's movement, a window unit of pan, per unit of distance
+  pub minDistance f32;
+  pub maxDistance f32;
+
+  // Round 'target', 'distance' away, at 'yaw' and 'pitch'; turning 0.005
+  // radians a window unit, 10 % nearer a notch, panning 0.0015 of the
+  // distance a unit (the program may fit that to the view: 'fitPan'),
+  // from 0.25 to 500 away
+  pub fn make(target Vec3, distance f32, yaw f32, pitch f32) Orbit {
+    Orbit[target, distance, yaw, clampPitch(pitch), 0.005, 0.1, 0.0015, 0.25, 500.];
+  }
+
+  // With its eye at 'eye', looking at 'target'
+  pub fn fromEye(eye Vec3, target Vec3) Orbit {
+    imm offset = eye - target;
+    imm d = offset.length();
+    assertDebug(d > 0.);
+    Orbit.make(target, d, atan2(offset.x, offset.z), asin(offset.y / d));
+  }
+
+  // Pan so that a point at the target's depth follows the pointer: a view
+  // of vertical field 'fov' (radians), 'height' window units high
+  pub fn fitPan(self &mut, fov f32, height f32) {
+    if height > 0. { panRate = 2. * tan(fov * 0.5) / height; }
+  }
+
+  // Put it at 'yaw', 'pitch' and 'distance' round 'target' (a view chosen
+  // by the program)
+  pub fn frame(self &mut, target Vec3, distance f32, yaw f32, pitch f32) {
+    self.target = target;
+    self.distance = distance;
+    self.yaw = yaw;
+    self.pitch = clampPitch(pitch);
+  }
+
+  // Turn by a drag of ('dx', 'dy') window units: right takes the eye left
+  // round the target (the target turns with the pointer), down takes it up
+  pub fn turn(self &mut, dx f32, dy f32) {
+    yaw = yaw - dx * turnRate;
+    pitch = clampPitch(pitch + dy * turnRate);
+  }
+
+  // Nearer by 'notches' (a notch away from the user is one)
+  pub fn zoom(self &mut, notches f32) {
+    distance = distance * libc.powf(1. - zoomRate, notches);
+    if distance < minDistance { distance = minDistance; }
+    if distance > maxDistance { distance = maxDistance; }
+  }
+
+  // Move the target by a drag of ('dx', 'dy') window units: the scene
+  // follows the pointer
+  pub fn pan(self &mut, dx f32, dy f32) {
+    imm p = self.pose();
+    imm scale = panRate * distance;
+    target = target + p.right() * (-dx * scale) + p.up() * (dy * scale);
+  }
+
+  // Where its eye is
+  pub fn eye(self &) Vec3 {
+    imm c = cos(pitch);
+    target + Vec3[sin(yaw) * c, sin(pitch), cos(yaw) * c] * distance;
+  }
+
+  // Its pose: at its eye, facing the target
+  pub fn pose(self &) Pose { Pose.look(self.eye(), yaw, -pitch); }
+
+  // Its view matrix: lookAt from its eye to its target, y up
+  pub fn viewMatrix(self &) Mat4 { Mat4.lookAt(self.eye(), target, Vec3[0., 1., 0.]); }
+}
+
+// ---- Fly ----
+
+pub struct Fly {
+  pub position Vec3;
+  pub yaw f32;              // radians: 0 looks down -z
+  pub pitch f32;            // radians: how far it looks up
+  pub speed f32;            // units a second
+  pub lookRate f32;         // radians a window unit of look
+
+  // At 'position', looking 'yaw' round and 'pitch' up; 4 units a second,
+  // looking 0.0025 radians a window unit
+  pub fn make(position Vec3, yaw f32, pitch f32) Fly {
+    Fly[position, yaw, clampPitch(pitch), 4., 0.0025];
+  }
+
+  // Look by a mouse movement of ('dx', 'dy') window units: right turns
+  // right, down looks down
+  pub fn look(self &mut, dx f32, dy f32) {
+    yaw = yaw - dx * lookRate;
+    pitch = clampPitch(pitch - dy * lookRate);
+  }
+
+  // Move for 'dt' seconds: 'strafe' right, 'ahead' forward (along the
+  // view, up or down as it looks), 'rise' up (along +y), each from -1 to
+  // 1; a diagonal no faster than straight
+  pub fn move(self &mut, strafe f32, ahead f32, rise f32, dt f32) {
+    imm p = self.pose();
+    mut dir = p.right() * strafe + p.forward() * ahead + Vec3[0., rise, 0.];
+    imm len = dir.length();
+    if len > 1. { dir = dir * (1. / len); }
+    position = position + dir * (speed * dt);
+  }
+
+  pub fn pose(self &) Pose { Pose.look(position, yaw, pitch); }
+
+  // Its view matrix: lookAt from its position along its view, y up
+  pub fn viewMatrix(self &) Mat4 {
+    imm p = self.pose();
+    Mat4.lookAt(position, position + p.forward(), Vec3[0., 1., 0.]);
+  }
+}
+
+// ---- Both, on actions ----
+
+// CameraControls' modes
+pub const ORBIT = 0;
+pub const FLY = 1;
+
+// The actions the cameras read
+pub struct CameraActions {
+  pub turn Action;      // orbit: two axes, window units
+  pub pan Action;       // orbit: two axes, window units
+  pub zoom Action;      // orbit: one axis, notches
+  pub move Action;      // fly: two axes, (right, forward), each -1 to 1
+  pub rise Action;      // fly: one axis, -1 to 1
+  pub look Action;      // fly: two axes, window units
+  pub toggle Action;    // a button: orbit to fly and back
+
+  // Make them in 'ctx', with the standard bindings: turn a left drag, pan a
+  // right or middle drag, zoom the wheel; move W, A, S, D, rise Space and
+  // sink left Ctrl, look the mouse; toggle C. Keys by scancode.
+  pub fn bind(ctx &mut Context) CameraActions {
+    imm turn = ctx.action("camera.turn", AXIS2);
+    ctx.bind(turn, Binding.pointerDelta(1.).whileHeld(sdl.BUTTON_MASK_LEFT));
+    imm pan = ctx.action("camera.pan", AXIS2);
+    ctx.bind(pan, Binding.pointerDelta(1.).whileHeld(sdl.BUTTON_MASK_RIGHT));
+    ctx.bind(pan, Binding.pointerDelta(1.).whileHeld(sdl.BUTTON_MASK_MIDDLE));
+    imm zoom = ctx.action("camera.zoom", AXIS1);
+    ctx.bind(zoom, Binding.wheel(1.));
+    imm move = ctx.action("camera.move", AXIS2);
+    ctx.bind(move, Binding.keyAxis(sdl.SCANCODE_W, 0., 1.));
+    ctx.bind(move, Binding.keyAxis(sdl.SCANCODE_S, 0., -1.));
+    ctx.bind(move, Binding.keyAxis(sdl.SCANCODE_A, -1., 0.));
+    ctx.bind(move, Binding.keyAxis(sdl.SCANCODE_D, 1., 0.));
+    imm rise = ctx.action("camera.rise", AXIS1);
+    ctx.bind(rise, Binding.keyAxis(sdl.SCANCODE_SPACE, 1., 0.));
+    ctx.bind(rise, Binding.keyAxis(sdl.SCANCODE_LCTRL, -1., 0.));
+    imm look = ctx.action("camera.look", AXIS2);
+    ctx.bind(look, Binding.pointerDelta(1.));
+    imm toggle = ctx.action("camera.toggle", BUTTON);
+    ctx.bind(toggle, Binding.key(sdl.SCANCODE_C));
+    CameraActions[turn, pan, zoom, move, rise, look, toggle];
+  }
+}
+
+// An orbit camera and a fly camera, one of them in use
+pub struct CameraControls {
+  pub mode i32;             // ORBIT or FLY
+  pub orbit Orbit;
+  pub fly Fly;
+  pub actions CameraActions;
+
+  // Orbiting as 'orbit' is, its actions made by 'CameraActions.bind' in
+  // 'ctx', the fly camera's switched off there
+  pub fn make(actions CameraActions, orbit Orbit, ctx &mut Context) CameraControls {
+    imm p = orbit.eye();
+    mut c = CameraControls[ORBIT, orbit, Fly.make(p, orbit.yaw, -orbit.pitch), actions];
+    c.enableFor(ctx);
+    c;
+  }
+
+  // Switch its actions in 'ctx' on for its mode, and off for the other's
+  fn enableFor(self &mut, ctx &mut Context) {
+    imm o = mode == ORBIT;
+    ctx.setEnabled(actions.turn, o);
+    ctx.setEnabled(actions.pan, o);
+    ctx.setEnabled(actions.zoom, o);
+    ctx.setEnabled(actions.move, !o);
+    ctx.setEnabled(actions.rise, !o);
+    ctx.setEnabled(actions.look, !o);
+    ctx.setEnabled(actions.toggle, true);
+  }
+
+  // Change to 'to' (ORBIT or FLY), keeping the view: flying from where the
+  // orbit's eye was, facing as it faced; or orbiting, at the orbit's last
+  // distance, a target that far ahead of where the fly camera was
+  pub fn setMode(self &mut, to i32, ctx &mut Context) {
+    assertDebug(to == ORBIT or to == FLY);
+    if to == mode { return; }
+    if to == FLY {
+      fly.position = orbit.eye();
+      fly.yaw = orbit.yaw;
+      fly.pitch = -orbit.pitch;
+    } else {
+      imm p = fly.pose();
+      orbit.target = fly.position + p.forward() * orbit.distance;
+      orbit.yaw = fly.yaw;
+      orbit.pitch = -fly.pitch;
+    }
+    mode = to;
+    self.enableFor(ctx);
+  }
+
+  // Whether the mouse should be in relative mode (the program asks SDL:
+  // sdl.SetWindowRelativeMouseMode): while flying
+  pub fn wantsRelativeMouse(self &) Bool { mode == FLY; }
+
+  // Move by this frame's actions, over 'dt' seconds; call it just before
+  // the view is built. Answers whether the pose changed.
+  pub fn update(self &mut, ctx &mut Context, dt f32) Bool {
+    imm before = self.pose();
+    if ctx.pressed(actions.toggle) {
+      if mode == ORBIT { self.setMode(FLY, ctx); } else { self.setMode(ORBIT, ctx); }
+    }
+    if mode == ORBIT {
+      imm t = ctx.axis2(actions.turn);
+      if t.x != 0. or t.y != 0. { orbit.turn(t.x, t.y); }
+      imm p = ctx.axis2(actions.pan);
+      if p.x != 0. or p.y != 0. { orbit.pan(p.x, p.y); }
+      imm z = ctx.axis1(actions.zoom);
+      if z != 0. { orbit.zoom(z); }
+    } else {
+      imm l = ctx.axis2(actions.look);
+      if l.x != 0. or l.y != 0. { fly.look(l.x, l.y); }
+      imm m = ctx.axis2(actions.move);
+      imm r = ctx.axis1(actions.rise);
+      if m.x != 0. or m.y != 0. or r != 0. { fly.move(m.x, m.y, r, dt); }
+    }
+    !samePose(self.pose(), before);
+  }
+
+  // The pose of the camera in use
+  pub fn pose(self &) Pose {
+    if mode == ORBIT { orbit.pose(); } else { fly.pose(); }
+  }
+
+  // The view matrix of the camera in use (geomath's Mat4.lookAt)
+  pub fn viewMatrix(self &) Mat4 {
+    if mode == ORBIT { orbit.viewMatrix(); } else { fly.viewMatrix(); }
+  }
+}

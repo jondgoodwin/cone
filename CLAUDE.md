@@ -83,7 +83,8 @@ Visual Studio projects stay at the root.
   cube and cube-cage generators, and `.obj` export; `sculpt` is procedural
   modelling over `mesh`: 2-D profiles (polygons, rounded rectangles, hulls,
   sampled Beziers), 3-D paths with rotation-minimizing frames, `extrude`,
-  `lathe` and `sweep` (twist and taper) into a `PolyMesh` of quads with
+  `lathe` and `sweep` (twist and taper; `sweepScaled`, the scale any
+  function of arc length) into a `PolyMesh` of quads with
   corner uvs, the deformers `bend`, `twist`, `taper` and `curveDeform`,
   and Catmull-Clark `subdivide` (boundary rules, semi-sharp creases,
   face-varying uvs) with `subdivisionLevels`, a cage's level-of-detail
@@ -97,17 +98,23 @@ Visual Studio projects stay at the root.
   functions for shaders in `src/noise.slang`, bit for bit the same on the
   GPU but for square roots and Phacelle, which its `parity` test checks on
   a real GPU; its README holds the determinism rules;
-  `sdf` is signed distance fields over `geomath`, `noise` and `sculpt`,
-  shapes as functions of a point: primitives, hard and smooth operators
+  `sdf` is signed distance fields over `geomath`, `noise`, `sculpt` and
+  `mesh`, shapes as functions of a point: primitives, hard and smooth operators
   (Quilez's), domain operators (translation, rotation, scale, mirrors,
   repetition, elongation), hg_sdf's fillets, repetition along a curve (an
   `Arc`, or a `sculpt.Path` as a `PathCurve`) in its rotation-minimizing
   frames as the exact union of every copy, `Horn` (the ribbed, tapering,
   curling horn), the gradient and normal, and noise detail; the same
   functions for shaders in `src/sdf.slang`, which its `parity` test checks
-  on a real GPU; its README holds what is exact, what is a bound, and what
-  was measured; its example, `hornmarch.cone`, sphere-traces the horn in
-  render's chitin under the dusk;
+  on a real GPU; and meshing on the CPU (`mesher.cone`): `surfaceNet`,
+  surface nets with a vertex per piece of surface in a cell (a manifold,
+  closed mesh), gradient normals and blocks far from the surface skipped,
+  into a `mesh.Mesh` or `PolyMesh`, `netLevels` (levels of detail) and
+  `meshHash` (a mesh's bits hashed, the same on every run and build); its
+  README holds what is exact, what is a bound, and what was measured; its
+  examples: `hornmarch.cone` sphere-traces the horn in render's chitin
+  under the dusk, and `hornmesh.cone` meshes it at four levels into
+  render's `LodChain` and draws the mesh the same way;
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed
@@ -160,7 +167,9 @@ Visual Studio projects stay at the root.
   and written); its tests need a GPU driver but no window, and its examples
   are `pipevk.cone`, the pipe demo: `sculpt`'s bent, subdivided pipe, the
   cage and three levels side by side, lit, on Vulkan, checked by pixels
-  read back, and `pipepbr.cone`, the lighting floor: the pipe in Blinn-Phong
+  read back, its camera steered by `controls` (orbit and fly), with a
+  scripted-input mode (`--script`, events pushed into SDL's own queue) and
+  an input-to-present latency readout, and `pipepbr.cone`, the lighting floor: the pipe in Blinn-Phong
   beside it in black chitin with a thin film, under the dusk, tone-mapped;
   `window` is a window for Vulkan (`openVulkan`, which the `gpu` package
   draws into), through `sdl`, its size in pixels and in its own units, and
@@ -177,7 +186,21 @@ Visual Studio projects stay at the root.
   `Arena`, and every phase timed (p50, p95, p99 and the maximum, printed at
   the end); its tests run headless, and its example,
   `packages/frame/examples/spin.cone`, draws a lit, textured, turning sphere
-  with `render` (building it needs SDL3's `lib` folder on `LIB`).
+  with `render` (building it needs SDL3's `lib` folder on `LIB`); `input` is the keyboard and the mouse over `sdl`, in
+  three layers: SDL's events normalised (`InputEvent`, each keeping its
+  nanosecond timestamp), device state (`Input`: keys held by scancode, the
+  pointer and its movement this frame, buttons, the wheel), and named
+  actions with a value type (button, one axis, two) bound by scancode,
+  mouse button, the pointer's movement (a drag while buttons are held) and
+  the wheel, in one `Context`, which also says which events fed an action;
+  and `LatencyLog`, p50, p95, p99 and the maximum of the times from events
+  to the presents that showed them; its tests need SDL3.dll but no
+  display; `controls` is cameras steered by `input`'s actions, never its
+  devices, over `geomath`: `Orbit` (turn, zoom, pan), `Fly` (move along the
+  view, rise, look), and `CameraControls`, both on the standard bindings
+  (`CameraActions.bind`), toggled by C; each gives a `Pose` (origin and
+  orientation, its view by `Mat4.lookAt`) that the program applies to
+  `render`'s `Camera`, so no controller owns a camera.
   A package's example programs live in its own `examples/` folder, each run
   with `congo run packages/<name>/examples/<file>.cone`, and its tests in its
   own `tests/` folder, one program each beside the output it must print;
@@ -352,7 +375,7 @@ python ../tools/congo/congo.py test
 ```
 
 `tools/congo/README.md`, "Testing a package", is how they work. `sdl`, and
-everything over it (`window`, `gpu`, `render`, `noise`'s `parity` and
+everything over it (`window`, `gpu`, `render`, `input`, `controls`, `noise`'s `parity` and
 `vulkan`'s `runtime` test), links `SDL3.lib` and runs with `SDL3.dll`: put
 the `lib\x64` folder of SDL3's development kit (`SDL3-devel-3.x-VC.zip`;
 here `C:\libs\SDL3-3.4.16\lib\x64`) on both `LIB` and `PATH` before

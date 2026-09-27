@@ -537,9 +537,10 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
     }
 
     // A recast is its operand under another type name -- an enrichment and its
-    // base, which share one representation -- so moving it moves the operand
+    // base, which share one representation -- so moving it moves the operand,
+    // and so does a conversion that carries its owner (flowCastCarries)
     case CastTag:
-        if (!(node->flags & FlagConvert))
+        if (flowCastCarries(node))
             flowMoveSource(((CastNode*)node)->exp, moved, top, parts);
         break;
 
@@ -703,18 +704,19 @@ void flowResultMove(INode *node) {
 
 // Is this type a counted reference: one into a region whose 'alias' is called
 // for each copy that becomes another owner? An owning slice (ArrayRefTag) is
-// counted exactly as a single reference is.
+// counted exactly as a single reference is, and so is a virtual one ('+<rc').
 int flowIsRcRef(INode *type) {
     RefNode *reftype = (RefNode *)itypeGetTypeDcl(type);
-    return (reftype->tag == RefTag || reftype->tag == ArrayRefTag) && regionIsCounted(reftype->region);
+    return (reftype->tag == RefTag || reftype->tag == ArrayRefTag || reftype->tag == VirtRefTag)
+        && regionIsCounted(reftype->region);
 }
 
-// Is this type an owning reference into a region, single or slice, or a tuple
-// carrying one: what a store releases before it overwrites (genlStore)? What a
-// scope's end does to a variable is itypeNeedsFinal's wider question.
+// Is this type an owning reference into a region, single, slice or virtual, or
+// a tuple carrying one: what a store releases before it overwrites (genlStore)?
+// What a scope's end does to a variable is itypeNeedsFinal's wider question.
 int flowIsOwningType(INode *type) {
     INode *typedcl = itypeGetTypeDcl(type);
-    if (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag) {
+    if (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag || typedcl->tag == VirtRefTag) {
         RefNode *reftype = (RefNode *)typedcl;
         return regionIsOwning(reftype->region);
     }
@@ -832,6 +834,18 @@ void flowInjectRefCount(INode **nodep) {
     flowInjectRefCountAmt(nodep, 1);
 }
 
+// Does this cast hand on what its operand holds? A recast is its operand under
+// another type name. A conversion makes a new value, except one into an owning
+// virtual reference ('+<so App' from a '+so Spinner', or from a '+<so' of a
+// trait it extends): that adds a vtable to the operand's one owner and keeps
+// it, so the operand is moved out of, or counted, as a recast's would be.
+int flowCastCarries(INode *cast) {
+    if (!(cast->flags & FlagConvert))
+        return 1;
+    RefNode *totype = (RefNode *)iexpGetTypeDcl(cast);
+    return totype->tag == VirtRefTag && regionIsOwning(totype->region);
+}
+
 // Handle when we know we are either copying or moving a value
 // (e.g., for assignment or function arguments).
 // Does this expression still hold its value after it is read?
@@ -846,7 +860,7 @@ int flowIsLvalRead(INode *node) {
         return 1;
     // A recast reads its operand, and holds only what the operand holds
     case CastTag:
-        return !(node->flags & FlagConvert) && flowIsLvalRead(((CastNode*)node)->exp);
+        return flowCastCarries(node) && flowIsLvalRead(((CastNode*)node)->exp);
     default:
         return 0;
     }
@@ -1043,7 +1057,7 @@ static int flowIsScopeResultOwner(INode *exp, VarDclNode *varnode) {
     case DerefTag:
         inner = ((StarNode *)exp)->vtexp; break;
     case CastTag:
-        return (exp->flags & FlagConvert) ? 0 : flowIsScopeResultOwner(((CastNode *)exp)->exp, varnode);
+        return flowCastCarries(exp) ? flowIsScopeResultOwner(((CastNode *)exp)->exp, varnode) : 0;
     default:
         return isNameUseNode(exp) && isExpNode(exp) && ((NameUseNode *)exp)->dclnode == (INode *)varnode;
     }
@@ -1076,8 +1090,9 @@ static int flowIsScopeResult(INode *retexp, VarDclNode *varnode, Nodes **hollow)
         }
         return 0;
     }
-    // A recast hands back its operand: a local returned as its enrichment or base
-    if (retexp->tag == CastTag && !(retexp->flags & FlagConvert))
+    // A recast hands back its operand: a local returned as its enrichment or
+    // base, and an owner returned as an owning virtual reference
+    if (retexp->tag == CastTag && flowCastCarries(retexp))
         return flowIsScopeResult(((CastNode *)retexp)->exp, varnode, hollow);
     // A move-typed element handed back moves out of the variable that holds
     // it, which as for any move out of an element no longer owns the whole:

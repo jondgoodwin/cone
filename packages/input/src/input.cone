@@ -1,0 +1,280 @@
+// The input package: the keyboard and the mouse as a program reads them,
+// in three layers, each over the one before:
+//
+// - Raw events: SDL's events normalised into one type, InputEvent (a key, the
+//   pointer moving, a pointer button, the wheel, focus lost), each keeping
+//   its platform timestamp, a u64 of nanoseconds on sdl.GetTicksNS's clock,
+//   so the time from an event to the frame that shows it can be measured.
+// - Device state, Input: the keys down by scancode (the key's place on the
+//   keyboard, whatever the layout), the keys pressed and released this
+//   frame, the pointer's place and this frame's movement, the buttons held,
+//   and this frame's wheel; and the frame's events, in order.
+// - Actions, in actions.cone: named, each with a value type (a button, one
+//   axis, two axes), bound to keys by scancode, to mouse buttons, to the
+//   pointer's movement (while buttons are held, for a drag) and to the
+//   wheel, all in one Context; the Context turns a frame's Input into each
+//   action's value, and says which events fed an action.
+//
+// And LatencyLog (latency.cone): the times from events to the frames that
+// showed them, as p50, p95, p99 and the observed maximum.
+//
+// A frame, with the window package's loop:
+//
+//   mut input = Input.empty();
+//   mut ctx = Context.empty();
+//   imm move = ctx.action("move", AXIS2);
+//   ctx.bind(move, Binding.keyAxis(sdl.SCANCODE_W, 0., 1.));   // W forward, wherever W is
+//   imm turn = ctx.action("turn", AXIS2);
+//   ctx.bind(turn, Binding.pointerDelta(1.).whileHeld(sdl.BUTTON_MASK_LEFT));   // a left drag
+//   ...
+//   input.beginFrame();
+//   mut event = sdl.Event.empty();
+//   while win.pollEvent(&mut event) { input.handle(&event); }
+//   ctx.update(&input);
+//   imm m = ctx.axis2(move);        // (strafe, forward), from -1 to 1
+//
+// A program reads actions, never devices, so a binding can change (a key
+// for another, a gamepad later) without its readers changing. Keys a
+// program uses as shortcuts ("press L for level of detail") are the layout's
+// key codes, read from the events (the window package's 'keyDown'); typed
+// text will come from SDL's text events, never from keys.
+//
+// Positions are in the window's units (window.windowSize), as SDL3 gives
+// them; the window's pixelDensity turns one into pixels.
+//
+// Not yet: touch, pen and gamepads (SDL3 has them; the sdl package binds
+// the touch structs only), pointers by id in the W3C model, contexts that
+// stack and consume, gestures, and rebinding saved between runs.
+
+mod input;
+
+import sdl;
+import stdio use *;
+import collections use *;
+import geomath use Vec2;
+
+// ---- Raw events ----
+
+// An InputEvent's 'kind'
+pub const EVENT_NONE = 0;             // not input: a window's event, a quit, ...
+pub const EVENT_KEY = 1;              // a key pressed or released
+pub const EVENT_POINTER_MOVE = 2;     // the pointer moved
+pub const EVENT_POINTER_BUTTON = 3;   // a pointer's button pressed or released
+pub const EVENT_WHEEL = 4;            // the wheel turned
+pub const EVENT_FOCUS_LOST = 5;       // the window lost the keyboard: every key and button lets go
+
+// SDL's scancodes go up to this (SDL_SCANCODE_COUNT)
+pub const SCANCODES = 512u;
+
+// One event of the keyboard or the mouse, whichever SDL event it came from
+pub struct InputEvent {
+  pub kind i32;          // EVENT_...
+  pub timestamp u64;     // nanoseconds, on sdl.GetTicksNS's clock
+  pub device u32;        // SDL's 'which': the keyboard or mouse, 0 if unknown
+  pub code u32;          // a key: its scancode (sdl.SCANCODE_...); a button: sdl.BUTTON_...
+  pub key u32;           // a key: the layout's key code (sdl.K_...), for shortcuts
+  pub down Bool;         // a key or button: pressed (true) or released
+  pub repeat Bool;       // a key: held down and repeating
+  pub x f32;             // the pointer: its place, in window units; the wheel: how far
+  pub y f32;             // it turned, right and away from the user (+), whole notches 1
+  pub dx f32;            // the pointer: how far it moved, in window units (in relative
+  pub dy f32;            // mode, the mouse's own movement)
+
+  // An event of no kind, at 'timestamp'
+  pub fn none(timestamp u64) InputEvent {
+    InputEvent[EVENT_NONE, timestamp, 0u, 0u, 0u, false, false, 0., 0., 0., 0.];
+  }
+
+  // A key: 'scancode' (and the layout's 'key') pressed or released
+  pub fn keyEvent(timestamp u64, scancode u32, key u32, down Bool) InputEvent {
+    InputEvent[EVENT_KEY, timestamp, 0u, scancode, key, down, false, 0., 0., 0., 0.];
+  }
+
+  // The pointer at ('x', 'y'), having moved ('dx', 'dy')
+  pub fn moveEvent(timestamp u64, x f32, y f32, dx f32, dy f32) InputEvent {
+    InputEvent[EVENT_POINTER_MOVE, timestamp, 0u, 0u, 0u, false, false, x, y, dx, dy];
+  }
+
+  // A pointer's 'button' (sdl.BUTTON_...) pressed or released at ('x', 'y')
+  pub fn buttonEvent(timestamp u64, button u8, down Bool, x f32, y f32) InputEvent {
+    InputEvent[EVENT_POINTER_BUTTON, timestamp, 0u, u32[button], 0u, down, false, x, y, 0., 0.];
+  }
+
+  // The wheel turned 'x' right and 'y' away from the user
+  pub fn wheelEvent(timestamp u64, x f32, y f32) InputEvent {
+    InputEvent[EVENT_WHEEL, timestamp, 0u, 0u, 0u, false, false, x, y, 0., 0.];
+  }
+
+  // SDL's event as an InputEvent: kind EVENT_NONE if it is not the
+  // keyboard's or the mouse's. A wheel flipped by the system
+  // (MOUSEWHEEL_FLIPPED) is turned back, so 'y' + is always away from the
+  // user.
+  pub fn fromSdl(e &sdl.Event) InputEvent {
+    mut ev = InputEvent.none(e.timestamp);
+    if e.type == sdl.EVENT_KEY_DOWN or e.type == sdl.EVENT_KEY_UP {
+      imm k = e as &sdl.KeyboardEvent;
+      ev.kind = EVENT_KEY;
+      ev.device = k.which;
+      ev.code = k.scancode;
+      ev.key = k.key;
+      ev.down = k.down != 0u8;
+      ev.repeat = k.repeat != 0u8;
+    } elif e.type == sdl.EVENT_MOUSE_MOTION {
+      imm m = e as &sdl.MouseMotionEvent;
+      ev.kind = EVENT_POINTER_MOVE;
+      ev.device = m.which;
+      ev.x = m.x;
+      ev.y = m.y;
+      ev.dx = m.xrel;
+      ev.dy = m.yrel;
+    } elif e.type == sdl.EVENT_MOUSE_BUTTON_DOWN or e.type == sdl.EVENT_MOUSE_BUTTON_UP {
+      imm b = e as &sdl.MouseButtonEvent;
+      ev.kind = EVENT_POINTER_BUTTON;
+      ev.device = b.which;
+      ev.code = u32[b.button];
+      ev.down = b.down != 0u8;
+      ev.x = b.x;
+      ev.y = b.y;
+    } elif e.type == sdl.EVENT_MOUSE_WHEEL {
+      imm w = e as &sdl.MouseWheelEvent;
+      ev.kind = EVENT_WHEEL;
+      ev.device = w.which;
+      ev.x = w.x;
+      ev.y = w.y;
+      if w.direction == sdl.MOUSEWHEEL_FLIPPED {
+        ev.x = -w.x;
+        ev.y = -w.y;
+      }
+    } elif e.type == sdl.EVENT_WINDOW_FOCUS_LOST {
+      ev.kind = EVENT_FOCUS_LOST;
+    }
+    ev;
+  }
+}
+
+// The bit of a button's mask: sdl.BUTTON_MASK_LEFT for sdl.BUTTON_LEFT
+pub fn buttonMask(button u32) u32 {
+  if button == 0u or button > 32u { return 0u; }
+  1u << (button - 1u);
+}
+
+// ---- Device state ----
+
+// A key's state bits
+const HELD = 1u8;
+const PRESSED = 2u8;       // this frame
+const RELEASED = 4u8;      // this frame
+
+// What the keyboard and the mouse are doing: what is held now, what changed
+// this frame, and this frame's events. 'beginFrame' starts a frame; 'handle'
+// (or 'apply') takes each event.
+pub struct Input {
+  keys [512; u8];              // by scancode: HELD, PRESSED, RELEASED
+  pub pointer Vec2;            // the pointer's place, in window units
+  pub pointerDelta Vec2;       // how far it moved this frame
+  pub wheel Vec2;              // how far the wheel turned this frame
+  pub buttons u32;             // the buttons held: sdl.BUTTON_MASK_...
+  pub buttonsAtStart u32;      // those held when the frame began
+  pub buttonsPressed u32;      // pressed this frame
+  pub buttonsReleased u32;     // released this frame
+  frameEvents List[InputEvent];   // this frame's, in the order they came
+
+  // Nothing held, no events
+  pub fn empty() Input {
+    Input[[512; 0u8], Vec2[0., 0.], Vec2[0., 0.], Vec2[0., 0.], 0u, 0u, 0u, 0u, List[InputEvent].empty()];
+  }
+
+  // Start a frame: forget the last frame's events, movement and changes,
+  // keeping what is held
+  pub fn beginFrame(self &mut) {
+    mut i = 0usize;
+    while i < usize[SCANCODES] {
+      keys[i] = keys[i] & HELD;
+      i = i + 1usize;
+    }
+    pointerDelta = Vec2[0., 0.];
+    wheel = Vec2[0., 0.];
+    buttonsAtStart = buttons;
+    buttonsPressed = 0u;
+    buttonsReleased = 0u;
+    frameEvents.clear();
+  }
+
+  // Take SDL's event, if it is the keyboard's or the mouse's. Answers
+  // whether it was.
+  pub fn handle(self &mut, e &sdl.Event) Bool {
+    imm ev = InputEvent.fromSdl(e);
+    if ev.kind == EVENT_NONE { return false; }
+    self.apply(ev);
+    true;
+  }
+
+  // Take an event: what it changes, and it kept among this frame's. A key's
+  // repeat changes nothing held, and is kept.
+  pub fn apply(self &mut, ev InputEvent) {
+    if ev.kind == EVENT_KEY {
+      if ev.code < SCANCODES and !ev.repeat {
+        imm i = usize[ev.code];
+        if ev.down {
+          if (keys[i] & HELD) == 0u8 { keys[i] = keys[i] | HELD | PRESSED; }
+        } elif (keys[i] & HELD) != 0u8 {
+          keys[i] = (keys[i] ^ HELD) | RELEASED;
+        }
+      }
+    } elif ev.kind == EVENT_POINTER_MOVE {
+      pointer = Vec2[ev.x, ev.y];
+      pointerDelta = pointerDelta + Vec2[ev.dx, ev.dy];
+    } elif ev.kind == EVENT_POINTER_BUTTON {
+      imm bit = buttonMask(ev.code);
+      pointer = Vec2[ev.x, ev.y];
+      if ev.down {
+        if (buttons & bit) == 0u { buttonsPressed = buttonsPressed | bit; }
+        buttons = buttons | bit;
+      } elif (buttons & bit) != 0u {
+        buttons = buttons ^ bit;
+        buttonsReleased = buttonsReleased | bit;
+      }
+    } elif ev.kind == EVENT_WHEEL {
+      wheel = wheel + Vec2[ev.x, ev.y];
+    } elif ev.kind == EVENT_FOCUS_LOST {
+      self.releaseAll();
+    }
+    frameEvents.push(ev);
+  }
+
+  // Let go of every key and button (the window lost focus, and will not
+  // see them released)
+  pub fn releaseAll(self &mut) {
+    mut i = 0usize;
+    while i < usize[SCANCODES] {
+      if (keys[i] & HELD) != 0u8 { keys[i] = (keys[i] ^ HELD) | RELEASED; }
+      i = i + 1usize;
+    }
+    buttonsReleased = buttonsReleased | buttons;
+    buttons = 0u;
+  }
+
+  // The key at 'scancode' is held
+  pub fn keyDown(self &, scancode u32) Bool {
+    if scancode >= SCANCODES { return false; }
+    (keys[usize[scancode]] & HELD) != 0u8;
+  }
+
+  // The key at 'scancode' was pressed this frame (it may be up again)
+  pub fn keyPressed(self &, scancode u32) Bool {
+    if scancode >= SCANCODES { return false; }
+    (keys[usize[scancode]] & PRESSED) != 0u8;
+  }
+
+  // The key at 'scancode' was released this frame
+  pub fn keyReleased(self &, scancode u32) Bool {
+    if scancode >= SCANCODES { return false; }
+    (keys[usize[scancode]] & RELEASED) != 0u8;
+  }
+
+  // The pointer's 'button' (sdl.BUTTON_...) is held
+  pub fn buttonDown(self &, button u32) Bool { (buttons & buttonMask(button)) != 0u; }
+
+  // This frame's events, in order
+  pub fn events(self &) &[]InputEvent { frameEvents.view(); }
+}

@@ -1,12 +1,15 @@
 // pipevk: the first sculpting demo, as Jon described it, drawn by Vulkan: a
 // 2-D convex profile extruded into a pipe, bent along a path, smoothed by
 // Catmull-Clark subdivision, and shown at three levels of detail beside its
-// cage, lit, the camera slowly swinging round them, in a window that may be
-// resized. It is sculpt's pipedemo.cone (which writes the levels as .obj
-// files) put on the GPU through the render package.
+// cage, lit, in a window that may be resized. The camera swings round them
+// on its own until it is steered: orbiting (drag, wheel, pan) or flying
+// (W, A, S, D and the mouse), through the input and controls packages. It
+// is sculpt's pipedemo.cone (which writes the levels as .obj files) put on
+// the GPU through the render package.
 //
 //   congo run packages/render/examples/pipevk.cone
-//   congo run packages/render/examples/pipevk.cone -- --frames 120 --screenshot pipe.bmp
+//   congo run packages/render/examples/pipevk.cone -- --frames 150 --screenshot pipe.bmp
+//   congo run packages/render/examples/pipevk.cone -- --script --screenshot pipe.bmp
 //
 // The pipe is pipedemo's: a hexagon of radius 0.25 swept along the x axis
 // from 0 to 4 in 16 pieces (17 rings of 6 vertices, 96 quads, open at both
@@ -17,14 +20,33 @@
 // 'triangulate(true)'); each is one GPU mesh the renderer keeps. They form
 // one LodChain, level 3 as LOD 0.
 //
-// Keys:
+// Keys and the mouse. The camera keys are actions of the input package,
+// bound by scancode (the same places on AZERTY); the view keys are
+// shortcuts, by the key the layout makes.
 //   Tab          the next view: side by side, the cage, level 1, 2, 3, auto
-//   0, 1, 2, 3   the cage, or that level, alone, the camera going round it
-//   4 or Space   the four side by side
-//   A            one pipe whose level of detail the LodChain chooses by its
-//                size on the screen, the camera moving in and out
-//   W            the wireframe (each level's quads' edges) on or off
+//   0, 1, 2, 3   the cage, or that level, alone
+//   4            the four side by side
+//   L            one pipe whose level of detail the LodChain chooses by its
+//                size on the screen
+//   E            the wireframe (each level's quads' edges) on or off
+//   C            orbit or fly
+//   orbiting:    a left drag turns round the target, the wheel zooms, a
+//                right (or middle) drag pans
+//   flying:      W, A, S, D move along the view, Space rises, left Ctrl
+//                sinks, the mouse looks (the cursor held in the window)
 //   Escape       quit; F11 fullscreen
+// A view key frames that view and sets the camera touring it on its own
+// again (swinging across the row; round one level; in and out for the
+// level of detail); any camera input takes it over from there.
+//
+// A frame: the swapchain's next texture (waiting, if the GPU is two frames
+// behind: 'gpu' keeps two in flight); then every waiting event drained into
+// the input package and the actions updated; the view keys; the camera
+// moved by its actions, just before its view is built; drawing, submitting,
+// presenting. Each event that fed an action is timed from its own timestamp
+// to the return of the present that showed its effect, both on SDL's
+// nanosecond clock, and the run ends with those latencies' p50, p95, p99
+// and maximum.
 //
 // '--frames N' (or the environment variable PIPEVK_FRAMES) draws N frames
 // and stops; otherwise it runs until quit. The camera moves by the frame, not
@@ -38,10 +60,24 @@
 // color and its brightest (ambient, all the light and the highlight) -- and
 // a pixel above them must be the background. '--screenshot FILE' writes
 // that frame to FILE as a BMP, and the next, with the wireframe on, beside
-// it ('pipe.bmp', then 'pipe-wireframe.bmp'). It prints the counts of each level, the size
-// of the program against the meshes it makes, the checks, and the frame
-// time, and exits 0 only if every check passed, no Vulkan call failed and
-// the validation layer said nothing.
+// it ('pipe.bmp', then 'pipe-wireframe.bmp'). It prints the counts of each
+// level, the size of the program against the meshes it makes, the checks,
+// and the frame time, and exits 0 only if every check passed, no Vulkan
+// call failed and the validation layer said nothing.
+//
+// '--script' steers the camera with no one at the keyboard: it pushes
+// mouse and key events into SDL's own queue (sdl.PushEvent), never into the
+// system's, so nothing reaches any other window. Each is pushed just after
+// a frame is presented, to be drained at the top of the next: the longest
+// a real event can wait. It drags the orbit round, zooms, pans, switches to
+// flying, flies forward looking round, rises and sinks, then presses 4,
+// and the side-by-side check follows, then the tour (180 frames unless
+// '--frames' says). It checks the orbit's yaw, pitch and distance and the
+// mode against what its events must give, and with '--screenshot' also
+// writes the orbit's and the fly camera's views ('pipe-orbit.bmp',
+// 'pipe-fly.bmp'). A run of either kind takes input only from its own
+// pushed events: the real keyboard and mouse are ignored, so it is the same
+// every time, and relative mouse mode is never switched on.
 //
 // It needs a display, a GPU driver with Vulkan 1.3, SDL3.lib on LIB to link
 // and SDL3.dll on PATH to run; with the Vulkan SDK, validation is on.
@@ -59,6 +95,8 @@ import sculpt use *;
 import gpu use *;
 import render use *;
 import window use *;
+import input use *;
+import controls use *;
 
 // The views
 const SIDE_BY_SIDE = 0;
@@ -68,6 +106,14 @@ const VIEWS = 6;
 
 const CHECK_FRAME = 90;
 const SPACING f32 = 3.6;        // between the pipes' middles, side by side
+
+// The scripted run: its length, the frame its events end with 4 pressed,
+// and the device its events claim (no real keyboard or mouse has it)
+const SCRIPT_FRAMES = 180;
+const SCRIPT_END = 122;
+const SCRIPT_DEVICE = 0x5C1u;
+const SCRIPT_ORBIT_SHOT = 66;
+const SCRIPT_FLY_SHOT = 120;
 
 // ---- Arguments ----
 
@@ -179,11 +225,176 @@ fn checkLit(name &[]u8, p *u8, w u32, h u32, x i32, y i32, bgra Bool, base Color
   ok;
 }
 
+// A value against the one wanted, printed, within 'within'
+fn checkNear(name &[]u8, got f32, want f32, within f32) Bool {
+  printStr(name); print <- ": "; print <- got; print <- " (want "; print <- want; print <- ")";
+  imm ok = got - want <= within and want - got <= within;
+  if ok { print <- "\n"; } else { print <- " WRONG\n"; }
+  ok;
+}
+
+// ---- The tour ----
+
+// Frame the orbit on 'view' at 't' seconds, as the camera tours it on its
+// own: swinging to and fro across the front of the row; going round one
+// level; or going round while moving in and out, from 3 to 40 away, for
+// the level of detail
+fn tour(orbit &mut Orbit, view i32, t f32) {
+  if view == SIDE_BY_SIDE {
+    // The eye at (10.5 sin yaw, 3, 10.5 cos yaw)
+    orbit.frame(Vec3[0., 0., 0.], (10.5 * 10.5 + 9.).sqrt(), 0.4 * sin(t * 0.35), atan2(3., 10.5));
+  } elif view == AUTO_LOD {
+    // The eye at (d sin yaw, 0.3 d, d cos yaw)
+    imm d = 21.5 - 18.5 * cos(t * 0.5);
+    orbit.frame(Vec3[0., 0., 0.], d * (1.09f).sqrt(), t * 0.3, atan2(0.3, 1.));
+  } else {
+    // The eye at (6 sin yaw, 2.5, 6 cos yaw)
+    orbit.frame(Vec3[0., 0., 0.], 6.5, t * 0.3, atan2(2.5, 6.));
+  }
+}
+
+// ---- The script ----
+
+// Push an event made by 'e' into SDL's queue, from the script's device, at
+// the time it is pushed
+fn pushed(e &mut sdl.Event) {
+  e.timestamp = 0u64;
+  sdl.PushEvent(e);
+}
+
+fn pushKey(scancode u32, key u32, down Bool) {
+  mut e = sdl.Event.empty();
+  e.type = if down {sdl.EVENT_KEY_DOWN;} else {sdl.EVENT_KEY_UP;};
+  imm k = &mut e as &mut sdl.KeyboardEvent;
+  k.which = SCRIPT_DEVICE;
+  k.scancode = scancode;
+  k.key = key;
+  k.down = if down {1u8;} else {0u8;};
+  pushed(&mut e);
+}
+
+fn pushButton(button u8, down Bool) {
+  mut e = sdl.Event.empty();
+  e.type = if down {sdl.EVENT_MOUSE_BUTTON_DOWN;} else {sdl.EVENT_MOUSE_BUTTON_UP;};
+  imm b = &mut e as &mut sdl.MouseButtonEvent;
+  b.which = SCRIPT_DEVICE;
+  b.button = button;
+  b.down = if down {1u8;} else {0u8;};
+  b.clicks = 1u8;
+  b.x = 400.;
+  b.y = 300.;
+  pushed(&mut e);
+}
+
+fn pushMove(dx f32, dy f32, state u32) {
+  mut e = sdl.Event.empty();
+  e.type = sdl.EVENT_MOUSE_MOTION;
+  imm m = &mut e as &mut sdl.MouseMotionEvent;
+  m.which = SCRIPT_DEVICE;
+  m.state = state;
+  m.x = 400.;
+  m.y = 300.;
+  m.xrel = dx;
+  m.yrel = dy;
+  pushed(&mut e);
+}
+
+fn pushWheel(y f32) {
+  mut e = sdl.Event.empty();
+  e.type = sdl.EVENT_MOUSE_WHEEL;
+  imm w = &mut e as &mut sdl.MouseWheelEvent;
+  w.which = SCRIPT_DEVICE;
+  w.y = y;
+  w.integer_y = i32[y];
+  pushed(&mut e);
+}
+
+// The script's events for frame 'f', pushed after frame f - 1 is presented
+fn pushScript(f i32) {
+  // Orbit: a left drag of (4.5, 1.5) a frame, three moves a frame, for 30
+  // frames; two notches of zoom; a right drag of (-6, 4) a frame for 10
+  if f == 10 { pushButton(sdl.BUTTON_LEFT, true); }
+  if f >= 11 and f <= 40 {
+    mut i = 0;
+    while i < 3 {
+      pushMove(1.5, 0.5, sdl.BUTTON_MASK_LEFT);
+      i = i + 1;
+    }
+  }
+  if f == 41 { pushButton(sdl.BUTTON_LEFT, false); }
+  if f >= 45 and f <= 46 { pushWheel(1.); }
+  if f == 52 { pushButton(sdl.BUTTON_RIGHT, true); }
+  if f >= 53 and f <= 62 {
+    pushMove(-3., 2., sdl.BUTTON_MASK_RIGHT);
+    pushMove(-3., 2., sdl.BUTTON_MASK_RIGHT);
+  }
+  if f == 63 { pushButton(sdl.BUTTON_RIGHT, false); }
+  // Fly: C; W held for 30 frames, looking round (three moves of (1, 0.2)
+  // a frame) for 26 of them; Space for 8, left Ctrl for 4
+  if f == 70 { pushKey(sdl.SCANCODE_C, sdl.K_c, true); }
+  if f == 71 { pushKey(sdl.SCANCODE_C, sdl.K_c, false); }
+  if f == 72 { pushKey(sdl.SCANCODE_W, sdl.K_w, true); }
+  if f >= 75 and f <= 100 {
+    mut i = 0;
+    while i < 3 {
+      pushMove(1., 0.2, 0u);
+      i = i + 1;
+    }
+  }
+  if f == 102 { pushKey(sdl.SCANCODE_W, sdl.K_w, false); }
+  if f == 104 { pushKey(sdl.SCANCODE_SPACE, sdl.K_SPACE, true); }
+  if f == 112 { pushKey(sdl.SCANCODE_SPACE, sdl.K_SPACE, false); }
+  if f == 114 { pushKey(sdl.SCANCODE_LCTRL, 0x400000E0u, true); }
+  if f == 118 { pushKey(sdl.SCANCODE_LCTRL, 0x400000E0u, false); }
+  // Back to the row, touring on its own
+  if f == SCRIPT_END {
+    pushKey(sdl.SCANCODE_4, sdl.K_4, true);
+    pushKey(sdl.SCANCODE_4, sdl.K_4, false);
+  }
+}
+
+// Whether an event may reach the camera and the view keys: any, when
+// someone is at the keyboard; only the script's own, in a run of a fixed
+// number of frames
+fn accepted(event &sdl.Event, automated Bool) Bool {
+  if !automated { return true; }
+  if event.type == sdl.EVENT_KEY_DOWN or event.type == sdl.EVENT_KEY_UP {
+    return (event as &sdl.KeyboardEvent).which == SCRIPT_DEVICE;
+  }
+  if event.type == sdl.EVENT_MOUSE_MOTION { return (event as &sdl.MouseMotionEvent).which == SCRIPT_DEVICE; }
+  if event.type == sdl.EVENT_MOUSE_BUTTON_DOWN or event.type == sdl.EVENT_MOUSE_BUTTON_UP {
+    return (event as &sdl.MouseButtonEvent).which == SCRIPT_DEVICE;
+  }
+  if event.type == sdl.EVENT_MOUSE_WHEEL { return (event as &sdl.MouseWheelEvent).which == SCRIPT_DEVICE; }
+  true;
+}
+
+// Present the frame, and time each event 'pending' holds (those that fed an
+// action since the last present) to it: the input this present shows.
+// Answers whether it was presented; if not, they wait for the next.
+// The time since the last present goes into 'intervals', from the eleventh
+// frame on, the first ten settling in.
+fn presentTimed(swapchain &mut SwapChain, device &mut Device, pending &mut List[u64], latency &mut LatencyLog,
+    intervals &mut LatencyLog, lastPresent &mut u64, frame i32) Bool {
+  if !swapchain.present(device) { return false; }
+  imm presentNs = sdl.GetTicksNS();
+  if frame >= 10 and *lastPresent != 0u64 { intervals.record(*lastPresent, presentNs); }
+  *lastPresent = presentNs;
+  mut p = 0usize;
+  while p < pending.len() {
+    latency.record(*pending[p], presentNs);
+    p = p + 1usize;
+  }
+  pending.clear();
+  true;
+}
+
 // ---- The demo ----
 
 fn main(argc i32, argv **u8) i32 {
   // The arguments
   mut maxFrames = 0;
+  mut scripted = false;
   mut screenshot = String.empty();
   imm env = libc.getenv(&"PIPEVK_FRAMES" as *u8);
   if (env as usize) != 0usize { maxFrames = parseCount(env); }
@@ -193,6 +404,8 @@ fn main(argc i32, argv **u8) i32 {
     if cstrEquals(arg, "--frames") and a + 1 < argc {
       maxFrames = parseCount(*(argv + usize[a + 1]));
       a = a + 1;
+    } elif cstrEquals(arg, "--script") {
+      scripted = true;
     } elif cstrEquals(arg, "--screenshot") and a + 1 < argc {
       imm s = *(argv + usize[a + 1]);
       mut i = 0usize;
@@ -202,7 +415,7 @@ fn main(argc i32, argv **u8) i32 {
       }
       a = a + 1;
     } else {
-      print <- "Unknown argument; use --frames N and --screenshot FILE\n";
+      print <- "Unknown argument; use --frames N, --script and --screenshot FILE\n";
       return 2;
     }
     a = a + 1;
@@ -211,19 +424,32 @@ fn main(argc i32, argv **u8) i32 {
     print <- "--frames wants a whole number\n";
     return 2;
   }
+  if scripted and maxFrames == 0 { maxFrames = SCRIPT_FRAMES; }
+  if scripted and maxFrames < SCRIPT_END + 4 {
+    print <- "--script wants at least "; print <- SCRIPT_END + 4; print <- " frames\n";
+    return 2;
+  }
+  imm automated = maxFrames > 0;
   mut checkFrame = CHECK_FRAME;
+  if scripted { checkFrame = SCRIPT_END + 2; }
   if maxFrames > 0 and maxFrames - 1 < checkFrame { checkFrame = maxFrames - 1; }
   // With a screenshot, the next frame is saved too, with the wireframe on,
-  // beside it: 'pipe.bmp' and 'pipe-wireframe.bmp'
-  mut wireShot = String.empty();
+  // beside it: 'pipe.bmp' and 'pipe-wireframe.bmp'; and a scripted run's
+  // orbit and flight, 'pipe-orbit.bmp' and 'pipe-fly.bmp'
+  mut shotStem = String.empty();
   if screenshot.len() > 0usize {
     if screenshot.endsWith(".bmp") {
-      wireShot = screenshot.sub(0usize, screenshot.len() - 4usize);
+      shotStem = screenshot.sub(0usize, screenshot.len() - 4usize);
     } else {
-      wireShot = screenshot.copy();
+      shotStem = screenshot.copy();
     }
-    wireShot <- "-wireframe.bmp";
   }
+  mut wireShot = shotStem.copy();
+  wireShot <- "-wireframe.bmp";
+  mut orbitShot = shotStem.copy();
+  orbitShot <- "-orbit.bmp";
+  mut flyShot = shotStem.copy();
+  flyShot <- "-fly.bmp";
 
   // The pipe, as pipedemo makes it
   imm hexagon = Profile.polygon(6u32, 0.25);
@@ -339,6 +565,25 @@ fn main(argc i32, argv **u8) i32 {
   imm bg [3; i32] = [srgbByte(camera.background.red), srgbByte(camera.background.green),
     srgbByte(camera.background.blue)];
 
+  // The input and the cameras: orbiting, touring the first view on its own
+  mut input = Input.empty();
+  mut ctx = Context.empty();
+  imm cameraActions = CameraActions.bind(&mut ctx);
+  mut startOrbit = Orbit.make(Vec3[0., 0., 0.], 10., 0., 0.);
+  tour(&mut startOrbit, SIDE_BY_SIDE, 0.);
+  mut controls = CameraControls.make(cameraActions, startOrbit, &mut ctx);
+  controls.orbit.fitPan(camera.fov, f32[win.windowSize().h]);
+  mut touring = true;
+  mut relativeMouse = false;
+  mut latency = LatencyLog.empty();
+  mut intervals = LatencyLog.empty();    // from present to present, frames read back aside
+  mut lastPresent = 0u64;
+  mut pending = List[u64].empty();       // events that fed an action, not yet presented
+  mut scriptOk = true;
+  mut scriptOrbitYaw = 0.;               // the orbit as the script's events must leave it
+  mut scriptOrbitPitch = 0.;
+  mut scriptOrbitDistance = 0.;
+
   // Each pipe placed with its bounds' middle at its spot: side by side, the
   // four along x
   mut places [4; Mat4] = [4; Mat4.identity()];
@@ -365,36 +610,58 @@ fn main(argc i32, argv **u8) i32 {
   mut timedFrames = 0;
   mut lastTimedFrame = 0;
   mut lastLod = 99usize;
+  if scripted { pushScript(0); }
+  win.nextFrame();
   while win.running and (maxFrames == 0 or frames < maxFrames) {
-    mut event = sdl.Event.empty();
-    while win.pollEvent(&mut event) {
-      imm key = keyDown(&event);
-      if key == sdl.K_TAB { view = (view + 1) % VIEWS; }
-      if key == sdl.K_0 { view = CAGE_ALONE; }
-      if key == sdl.K_1 { view = CAGE_ALONE + 1; }
-      if key == sdl.K_2 { view = CAGE_ALONE + 2; }
-      if key == sdl.K_3 { view = CAGE_ALONE + 3; }
-      if key == sdl.K_4 or key == sdl.K_SPACE { view = SIDE_BY_SIDE; }
-      if key == sdl.K_a { view = AUTO_LOD; }
-      if key == sdl.K_w { wireframe = !wireframe; }
+    if win.resized {
+      imm s = win.size();
+      swapchain.resize(u32[s.w], u32[s.h]);
+      controls.orbit.fitPan(camera.fov, f32[win.windowSize().h]);
+      win.resized = false;
+      resizes = resizes + 1;
     }
+    // The texture to draw into: the frame's wait for the GPU, before the
+    // events are drained, so none waits behind it
+    imm frame = swapchain.getCurrentTexture(&mut device);
+
+    // The top of the frame: every waiting event drained
+    input.beginFrame();
+    mut event = sdl.Event.empty();
+    mut viewKey = false;
+    while win.pollEvent(&mut event) {
+      if accepted(&event, automated) {
+        input.handle(&event);
+        imm key = keyDown(&event);
+        if key == sdl.K_TAB { view = (view + 1) % VIEWS; viewKey = true; }
+        if key == sdl.K_0 { view = CAGE_ALONE; viewKey = true; }
+        if key == sdl.K_1 { view = CAGE_ALONE + 1; viewKey = true; }
+        if key == sdl.K_2 { view = CAGE_ALONE + 2; viewKey = true; }
+        if key == sdl.K_3 { view = CAGE_ALONE + 3; viewKey = true; }
+        if key == sdl.K_4 { view = SIDE_BY_SIDE; viewKey = true; }
+        if key == sdl.K_l { view = AUTO_LOD; viewKey = true; }
+        if key == sdl.K_e { wireframe = !wireframe; }
+      }
+    }
+    ctx.update(&input);
+    imm dt = win.nextFrame();
     // A run of a fixed number of frames tours every view after the check,
     // eight frames each, the wireframe on in every other, and makes the
     // window smaller on the way, so that each is drawn under validation
     if maxFrames > 0 and frames >= checkFrame + 2 {
       imm step = (frames - checkFrame - 2) / 8;
-      imm tour [6; i32] = [CAGE_ALONE, CAGE_ALONE + 1, CAGE_ALONE + 2, CAGE_ALONE + 3, AUTO_LOD, SIDE_BY_SIDE];
-      view = tour[usize[step % 6]];
+      imm tourViews [6; i32] = [CAGE_ALONE, CAGE_ALONE + 1, CAGE_ALONE + 2, CAGE_ALONE + 3, AUTO_LOD, SIDE_BY_SIDE];
+      imm next = tourViews[usize[step % 6]];
+      if next != view { viewKey = true; }
+      view = next;
       wireframe = step % 2 == 1;
       if frames == checkFrame + 2 + 24 { win.setSize(size.w * 2 / 3, size.h * 2 / 3); }
     }
-    if win.resized {
-      imm s = win.size();
-      swapchain.resize(u32[s.w], u32[s.h]);
-      win.resized = false;
-      resizes = resizes + 1;
+    // A view chosen: the camera tours it on its own, orbiting
+    if viewKey {
+      touring = true;
+      controls.setMode(ORBIT, &mut ctx);
     }
-    imm frame = swapchain.getCurrentTexture(&mut device);
+
     if !frame.ok() {
       sdl.Delay(10u32);
     } else {
@@ -403,16 +670,17 @@ fn main(argc i32, argv **u8) i32 {
       imm h = frame.texture.height;
       imm t = f32[frames] / 60.;         // seconds, nominally: the camera moves by the frame
 
-      // The frame after the one checked is saved with the wireframe on
-      imm wireShotNow = wireShot.len() > 0usize and checked and frames == checkFrame + 1 and view == SIDE_BY_SIDE;
+      // What is read back this frame: the check, the wireframe after it, or
+      // a scripted run's views of the orbit and the flight
+      imm wireShotNow = shotStem.len() > 0usize and checked and frames == checkFrame + 1 and view == SIDE_BY_SIDE;
+      imm checkNow = frames == checkFrame and view == SIDE_BY_SIDE and !checked;
+      imm orbitShotNow = scripted and shotStem.len() > 0usize and frames == SCRIPT_ORBIT_SHOT;
+      imm flyShotNow = scripted and shotStem.len() > 0usize and frames == SCRIPT_FLY_SHOT;
       imm showWires = wireframe or wireShotNow;
 
-      // The camera and what it sees
+      // What it sees
       list.clear();
       if view == SIDE_BY_SIDE {
-        // Swinging to and fro across the front of the row
-        imm yaw = 0.4 * sin(t * 0.35);
-        camera.lookAt(Vec3[10.5 * sin(yaw), 3., 10.5 * cos(yaw)], Vec3[0., 0., 0.], Vec3[0., 1., 0.]);
         list.add(levels[0usize], cageM, places[0usize]);
         mut l = 1usize;
         while l < 4usize {
@@ -426,13 +694,29 @@ fn main(argc i32, argv **u8) i32 {
             l = l + 1usize;
           }
         }
-      } elif view == AUTO_LOD {
-        // Going round the pipe while moving in and out, from 3 to 40 away;
-        // the chain chooses the level by the pipe's size on the screen
-        imm distance = 21.5 - 18.5 * cos(t * 0.5);
-        imm yaw = t * 0.3;
-        camera.lookAt(Vec3[distance * sin(yaw), distance * 0.3, distance * cos(yaw)], Vec3[0., 0., 0.],
-          Vec3[0., 1., 0.]);
+      }
+
+      // The camera, just before its view is built: touring on its own, or
+      // taken over by the first input that moves it (the tour's place its
+      // start), then moved by this frame's actions
+      if touring { tour(&mut controls.orbit, view, t); }
+      if ctx.fed().len > 0usize { touring = false; }
+      controls.update(&mut ctx, if automated {1. / 60.;} else {dt;});
+      imm pose = controls.pose();
+      camera.origin = pose.origin;
+      camera.orientation = pose.orientation;
+      if !automated and controls.wantsRelativeMouse() != relativeMouse {
+        relativeMouse = controls.wantsRelativeMouse();
+        sdl.SetWindowRelativeMouseMode(win.sdlHandle(), if relativeMouse {1u8;} else {0u8;});
+      }
+      mut e = 0usize;
+      while e < ctx.fed().len {
+        pending.push(ctx.fed()[e]);
+        e = e + 1usize;
+      }
+
+      if view == AUTO_LOD {
+        // The chain chooses the level by the pipe's size on the screen
         imm radius = (bounds.max - bounds.min).length() * 0.5;
         imm sizePx = camera.projectedSize(Vec3[0., 0., 0.], radius, f32[h]);
         imm lod = chain.selectBySize(sizePx);
@@ -445,11 +729,9 @@ fn main(argc i32, argv **u8) i32 {
         imm chosen = chain.mesh();
         if lod == 3usize { list.add(chosen, cageM, alone); } else { list.add(chosen, pipeM, alone); }
         if showWires { list.addLines(wires[3usize - lod], alone, wireColor); }
-      } else {
-        // One level alone, the camera going round it
+      } elif view != SIDE_BY_SIDE {
+        // One level alone
         imm level = usize[view - CAGE_ALONE];
-        imm yaw = t * 0.3;
-        camera.lookAt(Vec3[6. * sin(yaw), 2.5, 6. * cos(yaw)], Vec3[0., 0., 0.], Vec3[0., 1., 0.]);
         if level == 0usize { list.add(levels[0usize], cageM, alone); } else { list.add(levels[level], pipeM, alone); }
         if showWires { list.addLines(wires[level], alone, wireColor); }
       }
@@ -462,68 +744,80 @@ fn main(argc i32, argv **u8) i32 {
       renderer.render(&mut device, &mut encoder, &frame.texture, &frame.depth, &camera, &light, &list);
       imm bgra = frame.texture.format == TEXTURE_FORMAT_BGRA8_UNORM_SRGB
         or frame.texture.format == TEXTURE_FORMAT_BGRA8_UNORM;
-      if wireShotNow {
-        // The wireframe screenshot
+      if wireShotNow or checkNow or orbitShotNow or flyShotNow {
         mut readback = device.createBuffer(u64[w] * u64[h] * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
         encoder.copyTextureToBuffer(&frame.texture, &readback);
         device.queue.submit(encoder.finish());
-        if !swapchain.present(&mut device) { unshown = unshown + 1; }
+        if !presentTimed(&mut swapchain, &mut device, &mut pending, &mut latency, &mut intervals, &mut lastPresent,
+            frames) {
+          unshown = unshown + 1;
+        }
         device.waitIdle();
-        imm shot = Image.fromTexels(readback.mappedRange(), i32[w], i32[h], bgra);
-        imm written = shot.save(wireShot.view());
-        print <- "Screenshot with the wireframe: "; printStr(wireShot.view());
-        if written { print <- "\n"; } else { print <- " could NOT be written\n"; }
-        if !written { shotWritten = false; }
-      } elif frames == checkFrame and view == SIDE_BY_SIDE and !checked {
-        // Read the frame back, check it, and save it if asked
-        mut readback = device.createBuffer(u64[w] * u64[h] * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
-        encoder.copyTextureToBuffer(&frame.texture, &readback);
-        device.queue.submit(encoder.finish());
-        if !swapchain.present(&mut device) { unshown = unshown + 1; }
-        device.waitIdle();
-        checked = true;
-        imm p = readback.mappedRange();
-        imm viewProjection = camera.projectionMatrix(f32[w] / f32[h]) * camera.viewMatrix();
-        print <- "Frame "; print <- frames; print <- " ("; print <- u64[w]; print <- " x "; print <- u64[h];
-        print <- "), side by side, "; print <- u64[renderer.drawCalls]; print <- " draws, ";
-        print <- renderer.triangles; print <- " triangles:\n";
-        imm names [4; &[]u8] = ["  the cage", "  level 1", "  level 2", "  level 3"];
-        mut l = 0usize;
-        while l < 4usize {
-          mut x = 0;
-          mut y = 0;
-          pixelOf(viewProjection, places[l] * centreLine, w, h, &mut x, &mut y);
-          mut ok = true;
-          if l == 0usize {
-            ok = checkLit(names[l], p, w, h, x, y, bgra, cageColor, 0., &light, &bg);
-          } else {
-            ok = checkLit(names[l], p, w, h, x, y, bgra, pipeColor, pipeSpecular, &light, &bg);
+        lastPresent = 0u64;      // the wait is not a frame interval
+        imm px = readback.mappedRange();
+        if wireShotNow {
+          imm shot = Image.fromTexels(px, i32[w], i32[h], bgra);
+          imm written = shot.save(wireShot.view());
+          print <- "Screenshot with the wireframe: "; printStr(wireShot.view());
+          if written { print <- "\n"; } else { print <- " could NOT be written\n"; }
+          if !written { shotWritten = false; }
+        }
+        if orbitShotNow or flyShotNow {
+          imm shot = Image.fromTexels(px, i32[w], i32[h], bgra);
+          imm name = if orbitShotNow {orbitShot.view();} else {flyShot.view();};
+          imm written = shot.save(name);
+          if orbitShotNow { print <- "Screenshot of the orbit: "; } else { print <- "Screenshot of the flight: "; }
+          printStr(name);
+          if written { print <- "\n"; } else { print <- " could NOT be written\n"; checksPassed = false; }
+        }
+        if checkNow {
+          // Check the frame, and save it if asked
+          checked = true;
+          imm viewProjection = camera.projectionMatrix(f32[w] / f32[h]) * camera.viewMatrix();
+          print <- "Frame "; print <- frames; print <- " ("; print <- u64[w]; print <- " x "; print <- u64[h];
+          print <- "), side by side, "; print <- u64[renderer.drawCalls]; print <- " draws, ";
+          print <- renderer.triangles; print <- " triangles:\n";
+          imm names [4; &[]u8] = ["  the cage", "  level 1", "  level 2", "  level 3"];
+          mut l = 0usize;
+          while l < 4usize {
+            mut x = 0;
+            mut y = 0;
+            pixelOf(viewProjection, places[l] * centreLine, w, h, &mut x, &mut y);
+            mut ok = true;
+            if l == 0usize {
+              ok = checkLit(names[l], px, w, h, x, y, bgra, cageColor, 0., &light, &bg);
+            } else {
+              ok = checkLit(names[l], px, w, h, x, y, bgra, pipeColor, pipeSpecular, &light, &bg);
+            }
+            if !ok { checksPassed = false; }
+            l = l + 1usize;
           }
-          if !ok { checksPassed = false; }
-          l = l + 1usize;
-        }
-        // Above the row: the sky
-        imm sx = i32[w / 2u32];
-        imm sy = i32[h / 20u32];
-        imm br = channel(p, w, sx, sy, 0usize, bgra);
-        imm bgn = channel(p, w, sx, sy, 1usize, bgra);
-        imm bb = channel(p, w, sx, sy, 2usize, bgra);
-        print <- "  the background at ("; print <- sx; print <- ", "; print <- sy; print <- "): ";
-        print <- br; print <- " "; print <- bgn; print <- " "; print <- bb;
-        print <- " (want "; print <- bg[0]; print <- " "; print <- bg[1]; print <- " "; print <- bg[2]; print <- ")\n";
-        if br - bg[0] > 1 or bg[0] - br > 1 or bgn - bg[1] > 1 or bg[1] - bgn > 1 or bb - bg[2] > 1 or bg[2] - bb > 1 {
-          checksPassed = false;
-        }
-        if screenshot.len() > 0usize {
-          imm shot = Image.fromTexels(p, i32[w], i32[h], bgra);
-          shotWritten = shot.save(screenshot.view());
-          print <- "Screenshot: "; printStr(screenshot.view());
-          if shotWritten { print <- "\n"; } else { print <- " could NOT be written\n"; }
+          // Above the row: the sky
+          imm sx = i32[w / 2u32];
+          imm sy = i32[h / 20u32];
+          imm br = channel(px, w, sx, sy, 0usize, bgra);
+          imm bgn = channel(px, w, sx, sy, 1usize, bgra);
+          imm bb = channel(px, w, sx, sy, 2usize, bgra);
+          print <- "  the background at ("; print <- sx; print <- ", "; print <- sy; print <- "): ";
+          print <- br; print <- " "; print <- bgn; print <- " "; print <- bb;
+          print <- " (want "; print <- bg[0]; print <- " "; print <- bg[1]; print <- " "; print <- bg[2]; print <- ")\n";
+          if br - bg[0] > 1 or bg[0] - br > 1 or bgn - bg[1] > 1 or bg[1] - bgn > 1 or bb - bg[2] > 1 or bg[2] - bb > 1 {
+            checksPassed = false;
+          }
+          if screenshot.len() > 0usize {
+            imm shot = Image.fromTexels(px, i32[w], i32[h], bgra);
+            shotWritten = shot.save(screenshot.view());
+            print <- "Screenshot: "; printStr(screenshot.view());
+            if shotWritten { print <- "\n"; } else { print <- " could NOT be written\n"; }
+          }
         }
       } else {
         device.queue.submit(encoder.finish());
         imm recorded = sdl.GetPerformanceCounter();
-        if !swapchain.present(&mut device) { unshown = unshown + 1; }
+        if !presentTimed(&mut swapchain, &mut device, &mut pending, &mut latency, &mut intervals, &mut lastPresent,
+            frames) {
+          unshown = unshown + 1;
+        }
         // Timed from the eleventh frame, the first ten settling in: the
         // frames' starts, and the CPU's time recording and submitting each
         // (not the frames read back)
@@ -535,7 +829,45 @@ fn main(argc i32, argv **u8) i32 {
           timedFrames = timedFrames + 1;
         }
       }
+
+      // The script: what its events must have done, checked as it goes
+      if scripted {
+        if frames == 10 {
+          // The drag's first events come next frame, from the tour's place then
+          mut o = controls.orbit;
+          tour(&mut o, SIDE_BY_SIDE, 11. / 60.);
+          scriptOrbitYaw = o.yaw - 135. * o.turnRate;
+          mut pitch = o.pitch + 45. * o.turnRate;
+          if pitch > MAX_PITCH { pitch = MAX_PITCH; }
+          scriptOrbitPitch = pitch;
+          scriptOrbitDistance = o.distance * libc.powf(1. - o.zoomRate, 2.);
+        }
+        if frames == 69 {
+          print <- "The script's orbit (a drag of (135, 45) units, two notches in, a pan):\n";
+          if !checkNear("  yaw", controls.orbit.yaw, scriptOrbitYaw, 0.0001) { scriptOk = false; }
+          if !checkNear("  pitch", controls.orbit.pitch, scriptOrbitPitch, 0.0001) { scriptOk = false; }
+          if !checkNear("  distance", controls.orbit.distance, scriptOrbitDistance, 0.0001) { scriptOk = false; }
+          imm moved = controls.orbit.target.length();
+          print <- "  the target panned "; print <- moved; print <- " from the origin\n";
+          if moved < 0.1 { scriptOk = false; }
+        }
+        if frames == 71 or frames == SCRIPT_END - 1 {
+          print <- "Frame "; print <- frames; print <- ": ";
+          if controls.mode == FLY { print <- "flying"; } else { print <- "orbiting"; }
+          if controls.mode != FLY { scriptOk = false; print <- " WRONG"; }
+          print <- "\n";
+        }
+        if frames == SCRIPT_END - 1 {
+          imm start = controls.orbit.eye();
+          print <- "  flown "; print <- controls.fly.position.distance(start); print <- " from where the orbit left off\n";
+        }
+        if frames == SCRIPT_END + 1 and (controls.mode != ORBIT or !touring) {
+          print <- "Frame "; print <- frames; print <- ": 4 did NOT set the camera touring the row\n";
+          scriptOk = false;
+        }
+      }
       frames = frames + 1;
+      if scripted { pushScript(frames); }
     }
   }
   device.waitIdle();
@@ -550,12 +882,14 @@ fn main(argc i32, argv **u8) i32 {
     print <- "Frame time: "; print <- frameMs; print <- " ms a frame (presented in step with the display);";
     print <- " recording and submitting: "; print <- cpuMs; print <- " ms\n";
   }
+  intervals.report("Frame interval, present to present");
+  latency.report("Input to present");
   print <- "Vulkan failures: "; print <- u64[failures()];
   print <- "; validation messages: "; print <- u64[validationMessages()]; print <- "\n";
   if !checked {
     print <- "The frame was not checked (it was not side by side at frame "; print <- checkFrame; print <- ")\n";
   }
-  if (checked and !checksPassed) or (screenshot.len() > 0usize and !shotWritten) {
+  if (checked and !checksPassed) or (screenshot.len() > 0usize and !shotWritten) or !scriptOk {
     print <- "FAILED\n";
     return 1;
   }
