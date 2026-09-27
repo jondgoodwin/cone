@@ -1,0 +1,284 @@
+// The geomath package in the plane, checked with the testing package against
+// values worked out by hand; only a failure prints, so plane.out holds the
+// summary alone.
+//
+// - Vec2: length, normalize, dot, the 2-D cross product (its sign is the
+//   turn's direction), perp, rotate, fromAngle, the angle between two and the
+//   signed angle, reflect, project, min, max, abs, clamp, lerp, distance.
+// - Transform2 and its Mat3: scaled, turned a quarter and moved; composed;
+//   inverted (with a scaling the same both ways, where the inverse is exact).
+// - Aabb2, Rect (which holds its left and bottom edges, not its right and
+//   top), IRect and Circle: contains, closest point, overlaps, and a box
+//   carried through a 2-D placement.
+// - Ray2 against segments (across, behind, past an end, touching an end,
+//   along) and a circle; segment against segment.
+// - Polygons: signed area of a square both ways round and of an L; point in
+//   polygon; the convex hull of seven points, one on an edge and two inside;
+//   triangulation by ear clipping of a square both ways round, an L, an
+//   arrowhead and a square with a fifth corner on an edge, each giving n - 2 triangles, all counterclockwise, whose areas
+//   sum to the polygon's, and none covering the polygon's notch.
+
+mod plane;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+
+imm near = 0.00001d;
+imm close = 0.0001d;
+
+fn pt(got Vec2, x f32, y f32, label &[]u8) {
+  expectFloat(got.x, x, close, label);
+  expectFloat(got.y, y, close, label);
+}
+
+fn hit(h Option[f32]) f32 {
+  match h {
+    case imm s Some {s.value;}
+    else {-1.;}
+  }
+}
+
+// Where two segments cross, or (-99, -99) when they do not
+fn crossing(h Option[Vec2]) Vec2 {
+  match h {
+    case imm s Some {s.value;}
+    else {Vec2[-99., -99.];}
+  }
+}
+
+fn vectors() {
+  expectFloat(Vec2[3., 4.].length(), 5., near, "Vec2 length");
+  pt(Vec2[3., 4.].normalize(), 0.6, 0.8, "Vec2 normalize");
+  pt(Vec2[0., 0.].normalize(), 1., 0., "Vec2 normalize zero");
+  expectFloat(Vec2[1., 2.].dot(Vec2[3., 4.]), 11., near, "Vec2 dot");
+  // y is counterclockwise of x: positive; x is clockwise of y: negative
+  expectFloat(Vec2[1., 0.].cross(Vec2[0., 1.]), 1., near, "Vec2 cross, counterclockwise");
+  expectFloat(Vec2[0., 1.].cross(Vec2[1., 0.]), -1., near, "Vec2 cross, clockwise");
+  pt(Vec2[1., 2.].perp(), -2., 1., "Vec2 perp");
+  pt(Vec2[1., 0.].rotate(pi / 2.), 0., 1., "Vec2 rotate a quarter");
+  pt(Vec2.fromAngle(pi), -1., 0., "Vec2 from a half turn");
+  expectFloat(Vec2[1., 0.].signedAngle(Vec2[0., 1.]), 1.570796, close, "signed angle counterclockwise");
+  expectFloat(Vec2[1., 0.].signedAngle(Vec2[0., -1.]), -1.570796, close, "signed angle clockwise");
+  expectFloat(Vec2[1., 0.].angle(Vec2[0., -1.]), 1.570796, close, "angle, either way round");
+  pt(Vec2[1., -1.].reflect(Vec2[0., 1.]), 1., 1., "Vec2 reflect");
+  pt(Vec2[3., 4.].project(Vec2[0., 2.]), 0., 4., "Vec2 project");
+  pt(Vec2[1., 5.].min(Vec2[3., 2.]), 1., 2., "Vec2 min");
+  pt(Vec2[1., 5.].max(Vec2[3., 2.]), 3., 5., "Vec2 max");
+  pt(Vec2[-1., 2.].abs(), 1., 2., "Vec2 abs");
+  pt(Vec2[5., -5.].clamp(Vec2[0., 0.], Vec2[1., 1.]), 1., 0., "Vec2 clamp");
+  pt(Vec2[0., 0.].lerp(Vec2[10., 20.], 0.25), 2.5, 5., "Vec2 lerp");
+  expectFloat(Vec2[1., 1.].distance(Vec2[4., 5.]), 5., near, "Vec2 distance");
+}
+
+fn placements() {
+  // (1, 1) scaled by (2, 3) is (2, 3), turned a quarter (-3, 2), moved by
+  // (1, 2) to (-2, 4)
+  imm t = Transform2[Vec2[1., 2.], pi / 2., Vec2[2., 3.]];
+  pt(t.transformPoint(Vec2[1., 1.]), -2., 4., "Transform2 point");
+  pt(t.transformVector(Vec2[1., 1.]), -3., 2., "Transform2 vector: not moved");
+  imm m = t.toMat3();
+  pt(m.transformPoint2(Vec2[1., 1.]), -2., 4., "Transform2 as a Mat3: point");
+  pt(m.transformVector2(Vec2[1., 1.]), -3., 2., "Transform2 as a Mat3: vector");
+  // Doubled both ways: (1, 1) goes to (2, 2), (-2, 2), (-1, 4). Its inverse
+  // turns (1, 2) back a quarter to (2, -1), halves it and negates it
+  imm u = Transform2[Vec2[1., 2.], pi / 2., Vec2[2., 2.]];
+  imm ui = u.inverse();
+  pt(ui.translation, -1., 0.5, "Transform2 inverse translation");
+  expectFloat(ui.angle, -1.570796, close, "Transform2 inverse angle");
+  pt(ui.scale, 0.5, 0.5, "Transform2 inverse scale");
+  pt(ui.transformPoint(Vec2[-1., 4.]), 1., 1., "Transform2 inverse undoes it");
+  // Composed with a move of (1, 0) that acts first: the origin goes to (1, 0),
+  // then to (2, 0), (0, 2), (1, 4)
+  imm c = u * Transform2[Vec2[1., 0.], 0., Vec2[1., 1.]];
+  pt(c.transformPoint(Vec2[0., 0.]), 1., 4., "Transform2 composed");
+  pt(Transform2.identity().transformPoint(Vec2[3., 4.]), 3., 4., "Transform2 identity");
+  // The Mat3 of the composed placement, multiplied, is the same
+  pt((u.toMat3() * Transform2[Vec2[1., 0.], 0., Vec2[1., 1.]].toMat3()).transformPoint2(Vec2[0., 0.]),
+    1., 4., "Mat3 product of two placements");
+}
+
+fn shapes() {
+  imm pts [3; Vec2] = [Vec2[1., 2.], Vec2[-3., 5.], Vec2[4., -1.]];
+  imm b = Aabb2.fromPoints(&pts);
+  pt(b.min, -3., -1., "Aabb2 from points: min");
+  pt(b.max, 4., 5., "Aabb2 from points: max");
+  pt(b.center(), 0.5, 2., "Aabb2 centre");
+  pt(b.size(), 7., 6., "Aabb2 size");
+  expect(b.contains(Vec2[0., 0.]), "Aabb2 contains a point");
+  expect(!b.contains(Vec2[5., 0.]), "Aabb2 does not contain a point");
+  pt(b.closestPoint(Vec2[10., 10.]), 4., 5., "Aabb2 nearest point");
+  pt(b.expand(1.).min, -4., -2., "Aabb2 expanded");
+  pt(b.enclose(Vec2[0., 9.]).max, 4., 9., "Aabb2 enclosing a point");
+  pt(b.union(Aabb2[Vec2[-5., 0.], Vec2[0., 1.]]).min, -5., -1., "Aabb2 union");
+  expect(b.overlaps(Aabb2[Vec2[4., 5.], Vec2[6., 6.]]), "Aabb2 touching at a corner overlaps");
+  expect(!b.overlaps(Aabb2[Vec2[4.5, 0.], Vec2[6., 6.]]), "Aabb2 apart");
+  expect(Aabb2.empty().isEmpty(), "Aabb2 empty");
+  // Turned a quarter, (x, y) to (-y, x), and moved 10 along x
+  imm moved = Aabb2[Vec2[0., 0.], Vec2[2., 1.]].transformed(Transform2[Vec2[10., 0.], pi / 2., Vec2[1., 1.]].toMat3());
+  pt(moved.min, 9., 0., "Aabb2 transformed: min");
+  pt(moved.max, 10., 2., "Aabb2 transformed: max");
+
+  imm r = Rect[1., 2., 3., 4.];
+  expect(r.contains(Vec2[1., 2.]), "Rect holds its corner");
+  expect(!r.contains(Vec2[4., 3.]), "Rect does not hold its right edge");
+  expect(!r.contains(Vec2[2., 6.]), "Rect does not hold its top edge");
+  expect(r.contains(Vec2[3.9, 5.9]), "Rect holds a point just inside its far corner");
+  pt(r.center(), 2.5, 4., "Rect centre");
+  pt(r.max(), 4., 6., "Rect far corner");
+  pt(r.toAabb().max, 4., 6., "Rect as a box");
+  imm ir = IRect[0, 0, 10, 5];
+  expect(ir.contains(9, 4), "IRect holds its last pixel");
+  expect(!ir.contains(10, 0), "IRect does not hold the pixel past it");
+  expect(!ir.contains(-1, 0), "IRect does not hold the pixel before it");
+  expectFloat(ir.toRect().w, 10., near, "IRect as a Rect");
+
+  imm circle = Circle[Vec2[0., 0.], 2.];
+  expect(circle.contains(Vec2[1., 1.]), "Circle contains a point");
+  expect(!circle.contains(Vec2[2., 1.]), "Circle does not contain a point");
+  pt(circle.closestPoint(Vec2[0., 10.]), 0., 2., "Circle nearest point");
+  expect(circle.overlaps(Circle[Vec2[3., 0.], 1.]), "touching circles overlap");
+  expect(!circle.overlaps(Circle[Vec2[4., 0.], 1.]), "circles apart");
+}
+
+fn intersections() {
+  imm r = Ray2[Vec2[0., 0.], Vec2[1., 0.]];
+  expectFloat(hit(r.intersectSegment(Vec2[3., -1.], Vec2[3., 1.])), 3., near, "Ray2 crosses a segment");
+  expectFloat(hit(Ray2[Vec2[0., 0.], Vec2[2., 0.]].intersectSegment(Vec2[3., -1.], Vec2[3., 1.])), 1.5, near,
+    "Ray2 t counts directions");
+  expectFloat(hit(r.intersectSegment(Vec2[-3., -1.], Vec2[-3., 1.])), -1., near, "Ray2 misses a segment behind");
+  expectFloat(hit(r.intersectSegment(Vec2[3., 1.], Vec2[3., 2.])), -1., near, "Ray2 passes a segment's end");
+  expectFloat(hit(r.intersectSegment(Vec2[3., 0.], Vec2[3., 2.])), 3., near, "Ray2 touches a segment's end");
+  expectFloat(hit(r.intersectSegment(Vec2[1., 0.], Vec2[5., 0.])), -1., near, "Ray2 along a segment misses it");
+  expectFloat(hit(r.intersectCircle(Circle[Vec2[5., 0.], 1.])), 4., near, "Ray2 enters a circle");
+  expectFloat(hit(r.intersectCircle(Circle[Vec2[0., 0.], 1.])), 0., near, "Ray2 starting in a circle");
+  expectFloat(hit(r.intersectCircle(Circle[Vec2[5., 3.], 1.])), -1., near, "Ray2 misses a circle");
+  pt(r.closestPoint(Vec2[3., 4.]), 3., 0., "Ray2 nearest point");
+  pt(r.at(2.), 2., 0., "Ray2 point at t");
+
+  // The diagonals of the square from (0, 0) to (4, 4) cross at its centre
+  pt(crossing(segmentIntersection(Vec2[0., 0.], Vec2[4., 4.], Vec2[0., 4.], Vec2[4., 0.])), 2., 2.,
+    "segments cross");
+  // y = x from (0, 0) to (1, 1), and y = 2 - x from (2, 0) to (3, -1): their
+  // lines meet at (1, 1), which is not on the second
+  pt(crossing(segmentIntersection(Vec2[0., 0.], Vec2[1., 1.], Vec2[2., 0.], Vec2[3., -1.])), -99., -99.,
+    "segments whose lines cross elsewhere");
+  pt(crossing(segmentIntersection(Vec2[0., 0.], Vec2[4., 0.], Vec2[0., 1.], Vec2[4., 1.])), -99., -99.,
+    "parallel segments");
+  pt(crossing(segmentIntersection(Vec2[0., 0.], Vec2[4., 0.], Vec2[2., 0.], Vec2[2., 3.])), 2., 0.,
+    "a segment ending on another");
+  pt(closestPointOnSegment(Vec2[3., 4.], Vec2[0., 0.], Vec2[10., 0.]), 3., 0., "nearest point of a 2-D segment");
+}
+
+// Twice the signed area of the triangle the indices at 'at' name
+fn triArea(pts &[]Vec2, tris &List[u32], at usize) f32 {
+  imm a = pts[usize[*tris[at]]];
+  imm b = pts[usize[*tris[at + 1usize]]];
+  imm c = pts[usize[*tris[at + 2usize]]];
+  (b - a).cross(c - a) * 0.5;
+}
+
+// Whether p lies strictly inside any of the triangles
+fn anyCovers(pts &[]Vec2, tris &List[u32], p Vec2) Bool {
+  mut i = 0usize;
+  while i < tris.len() {
+    imm a = pts[usize[*tris[i]]];
+    imm b = pts[usize[*tris[i + 1usize]]];
+    imm c = pts[usize[*tris[i + 2usize]]];
+    if (b - a).cross(p - a) > 0. and (c - b).cross(p - b) > 0. and (a - c).cross(p - c) > 0. {return true;}
+    i = i + 3usize;
+  }
+  false;
+}
+
+// n - 2 triangles, each counterclockwise, their areas summing to 'area'
+fn checkTriangles(pts &[]Vec2, tris &List[u32], area f32, label &[]u8) {
+  expectInt(i64[tris.len()], i64[3usize * (pts.len - 2usize)], label);
+  mut sum f32 = 0.;
+  mut allCcw = true;
+  mut i = 0usize;
+  while i < tris.len() {
+    imm t = triArea(pts, tris, i);
+    if t <= 0. {allCcw = false;}
+    sum = sum + t;
+    i = i + 3usize;
+  }
+  expect(allCcw, label);
+  expectFloat(sum, area, close, label);
+}
+
+fn polygons() {
+  imm square [4; Vec2] = [Vec2[0., 0.], Vec2[2., 0.], Vec2[2., 2.], Vec2[0., 2.]];
+  imm cw [4; Vec2] = [Vec2[0., 0.], Vec2[0., 2.], Vec2[2., 2.], Vec2[2., 0.]];
+  expectFloat(polygonSignedArea(&square), 4., near, "square's area, counterclockwise");
+  expectFloat(polygonSignedArea(&cw), -4., near, "square's area, clockwise");
+  expect(polygonIsCounterClockwise(&square), "square counterclockwise");
+  expect(!polygonIsCounterClockwise(&cw), "square clockwise");
+  // An L: the square 4 by 4 less the 3 by 3 above and right of (1, 1): 16 - 9
+  imm ell [6; Vec2] = [Vec2[0., 0.], Vec2[4., 0.], Vec2[4., 1.], Vec2[1., 1.], Vec2[1., 4.], Vec2[0., 4.]];
+  expectFloat(polygonSignedArea(&ell), 7., near, "the L's area");
+  expect(polygonContains(&square, Vec2[1., 1.]), "point in a square");
+  expect(!polygonContains(&square, Vec2[3., 1.]), "point beside a square");
+  expect(polygonContains(&ell, Vec2[0.5, 3.]), "point in the L's upright");
+  expect(polygonContains(&ell, Vec2[3., 0.5]), "point in the L's foot");
+  expect(!polygonContains(&ell, Vec2[2., 2.]), "point in the L's notch");
+
+  // Seven points: the corners (0, 0), (2, 0), (2, 2), (0, 2) and the apex
+  // (1, 3) make the hull; (1, 0) lies on its bottom edge, (1, 1) inside
+  imm cloud [7; Vec2] = [Vec2[0., 0.], Vec2[2., 0.], Vec2[1., 1.], Vec2[2., 2.], Vec2[0., 2.],
+    Vec2[1., 0.], Vec2[1., 3.]];
+  imm hull = convexHull(&cloud);
+  expectInt(i64[hull.len()], 5, "hull has five corners");
+  pt(*hull[0usize], 0., 0., "hull corner 0: the least x, then y");
+  pt(*hull[1usize], 2., 0., "hull corner 1");
+  pt(*hull[2usize], 2., 2., "hull corner 2");
+  pt(*hull[3usize], 1., 3., "hull corner 3");
+  pt(*hull[4usize], 0., 2., "hull corner 4");
+  expectFloat(polygonSignedArea(hull.view()), 5., near, "hull's area: the square and the roof");
+  imm two [2; Vec2] = [Vec2[3., 0.], Vec2[1., 0.]];
+  imm tiny = convexHull(&two);
+  expectInt(i64[tiny.len()], 2, "hull of two points is both");
+  pt(*tiny[0usize], 1., 0., "hull of two points, in order");
+
+  // The square's first ear is corner 0, between 3 and 1; then 3, 1, 2 remain
+  imm sq = triangulatePolygon(&square);
+  checkTriangles(&square, &sq, 4., "square triangulated");
+  expectInt(i64[*sq[0usize]], 3, "square's first triangle, a");
+  expectInt(i64[*sq[1usize]], 0, "square's first triangle, b");
+  expectInt(i64[*sq[2usize]], 1, "square's first triangle, c");
+  expectInt(i64[*sq[3usize]], 3, "square's second triangle, a");
+  expectInt(i64[*sq[4usize]], 1, "square's second triangle, b");
+  expectInt(i64[*sq[5usize]], 2, "square's second triangle, c");
+  imm sqcw = triangulatePolygon(&cw);
+  checkTriangles(&cw, &sqcw, 4., "clockwise square triangulated counterclockwise");
+  imm lt = triangulatePolygon(&ell);
+  checkTriangles(&ell, &lt, 7., "L triangulated");
+  expect(!anyCovers(&ell, &lt, Vec2[2., 2.]), "no triangle of the L covers its notch");
+  // An arrowhead, its back notched in to (1, 2): (4*4 - 1*4) / 2 = 6
+  imm arrow [4; Vec2] = [Vec2[0., 0.], Vec2[4., 2.], Vec2[0., 4.], Vec2[1., 2.]];
+  expectFloat(polygonSignedArea(&arrow), 6., near, "arrowhead's area");
+  imm at = triangulatePolygon(&arrow);
+  checkTriangles(&arrow, &at, 6., "arrowhead triangulated");
+  expect(!anyCovers(&arrow, &at, Vec2[0.5, 2.]), "no triangle of the arrowhead covers its notch");
+  // Its one inner diagonal runs from (4, 2) to the notch (1, 2), along y = 2,
+  // so a point below that line is inside a triangle, not on an edge
+  expect(anyCovers(&arrow, &at, Vec2[2., 1.5]), "the arrowhead's middle is covered");
+  // A square with a fifth corner halfway along its bottom edge, where it
+  // does not turn: that corner is never an ear, but its neighbours are
+  imm five [5; Vec2] = [Vec2[0., 0.], Vec2[1., 0.], Vec2[2., 0.], Vec2[2., 2.], Vec2[0., 2.]];
+  imm ft = triangulatePolygon(&five);
+  checkTriangles(&five, &ft, 4., "square with a corner on an edge triangulated");
+  imm line [2; Vec2] = [Vec2[0., 0.], Vec2[1., 0.]];
+  // (A local: a method on a returned List is refused, 1016)
+  imm lineTris = triangulatePolygon(&line);
+  expectInt(i64[lineTris.len()], 0, "two points make no triangle");
+}
+
+fn main() i32 {
+  vectors();
+  placements();
+  shapes();
+  intersections();
+  polygons();
+  done();
+}

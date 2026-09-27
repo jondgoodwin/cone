@@ -3,14 +3,14 @@
 // camera.out holds the summary alone. 'begin' calls OpenGL, so the view
 // matrix it would store is set here from 'viewMatrix' instead.
 //
-// - A new camera is Pegasus's: perspective, 50 degrees, 0.1 to 1000, at
-//   (0, 0, 5) facing -z; with no target its aspect is 1.
-// - Its perspective into 800 by 600 (aspect 4/3): with t = tan 25deg =
-//   0.4663077, m[0] = 1 / (t 4/3) = 1.6083856, m[5] = 1 / t = 2.1445069,
-//   m[10] = 1000.1 / -999.9 = -1.0002000, m[11] = -1, m[14] = 200 / -999.9 =
-//   -0.2000200.
-// - Its orthogonal projection into 100 by 100, 10 high: m[0] = m[5] = 1/10,
-//   m[10] = 2 / -999.9 = -0.0020002, m[14] = -1.0002000, m[15] = 1.
+// - A new camera is Pegasus's: perspective, 50 degrees (held in radians),
+//   0.1 to 1000, at (0, 0, 5) facing -z; with no target its aspect is 1.
+// - Its perspective into 800 by 600 (aspect 4/3), with OpenGL's depth from
+//   -1 to 1: with t = tan 25deg = 0.4663077, m[0] = 1 / (t 4/3) = 1.6083856,
+//   m[5] = 1 / t = 2.1445069, m[10] = 1000.1 / -999.9 = -1.0002000, m[11] =
+//   -1, m[14] = 200 / -999.9 = -0.2000200.
+// - Its orthogonal projection into 100 by 100, 10 high, OpenGL's too: m[0] =
+//   m[5] = 1/10, m[10] = 2 / -999.9 = -0.0020002, m[14] = -1.0002000, m[15] = 1.
 // - Its view at (0, 0, 5) facing -z moves the world by (0, 0, -5).
 // - Turned a quarter about y, a camera faces -x (its -z turned: z' = -x sin +
 //   z cos gives (-1, 0, 0)), so the world point (-3, 0, 5), 3 ahead of it, is
@@ -22,19 +22,19 @@
 //   at (15, 1, 0), facing -x: (15, 1, 0) is its origin and (13, 1, 0) is 2
 //   ahead, (0, 0, -2).
 // - A light at (-3.5, 5.5, 10) gives the camera three uniforms: its origin
-//   as an Xyz (kind 4), the ambient and its color as four floats (kind 5); a
+//   as a Vec3 (kind 4), the ambient and its color as four floats (kind 5); a
 //   second light replaces them.
 
 mod camera;
 
 import testing use *;
-import math3d use *;
+import geomath use *;
 import render use *;
 
 imm near = 0.00001d;
 imm close = 0.0001d;
 
-fn point(got Xyz, x f32, y f32, z f32, label &[]u8) {
+fn point(got Vec3, x f32, y f32, z f32, label &[]u8) {
   expectFloat(got.x, x, close, label);
   expectFloat(got.y, y, close, label);
   expectFloat(got.z, z, close, label);
@@ -43,7 +43,8 @@ fn point(got Xyz, x f32, y f32, z f32, label &[]u8) {
 fn defaults() {
   imm c = Camera.make();
   expectInt(i64[c.projection], i64[Perspective], "perspective");
-  expectFloat(c.fov, 50., near, "field of view");
+  // 50 degrees is 50 pi / 180 = 0.8726646 radians
+  expectFloat(c.fov, 0.8726646, near, "field of view");
   expectFloat(c.viewHeight, 10., near, "orthogonal height");
   expectFloat(c.near, 0.1, near, "near");
   expectFloat(c.far, 1000., near, "far");
@@ -57,7 +58,7 @@ fn defaults() {
 
 fn projections() {
   mut c = Camera.make();
-  c.targetRect = Rect[0, 0, 800, 600];
+  c.targetRect = IRect[0, 0, 800, 600];
   expectFloat(c.aspect(), 1.3333333, near, "aspect of 800 by 600");
   imm p = c.perspective();
   expectFloat(p.m[0], 1.6083856, close, "perspective m[0]");
@@ -71,7 +72,7 @@ fn projections() {
   imm pp = c.projectionMatrix();
   expectFloat(pp.m[5], 2.1445069, close, "projection, perspective");
 
-  c.targetRect = Rect[0, 0, 100, 100];
+  c.targetRect = IRect[0, 0, 100, 100];
   imm o = c.orthogonal();
   expectFloat(o.m[0], 0.1, near, "orthogonal m[0]");
   expectFloat(o.m[5], 0.1, near, "orthogonal m[5]");
@@ -88,32 +89,32 @@ fn views() {
   imm v = c.viewMatrix();
   expectFloat(v.m[0], 1., near, "view m[0]");
   expectFloat(v.m[10], 1., near, "view m[10]");
-  point(Xyz[v.m[12], v.m[13], v.m[14]], 0., 0., -5., "view's move");
+  point(Vec3[v.m[12], v.m[13], v.m[14]], 0., 0., -5., "view's move");
 
-  c.orientation = Quat.angleAxis(pi / 2., Xyz[0., 1., 0.]);
+  c.orientation = Quat.angleAxis(pi / 2., Vec3[0., 1., 0.]);
   c.vmatrix = c.viewMatrix();
-  point(c.cameraXyz(Xyz[-3., 0., 5.], Mat4.identity()), 0., 0., -3., "3 ahead of a turned camera");
-  point(c.cameraXyz(Xyz[0., 0., 5.], Mat4.identity()), 0., 0., 0., "a turned camera's origin");
+  point(c.cameraPoint(Vec3[-3., 0., 5.], Mat4.identity()), 0., 0., -3., "3 ahead of a turned camera");
+  point(c.cameraPoint(Vec3[0., 0., 5.], Mat4.identity()), 0., 0., 0., "a turned camera's origin");
   // A point in something placed at (-3, 0, 0): its origin is the point above
-  point(c.cameraXyz(Xyz[0., 0., 5.], Mat4.identity().withPos(Xyz[-3., 0., 0.])), 0., 0., -3.,
+  point(c.cameraPoint(Vec3[0., 0., 5.], Mat4.identity().withTranslation(Vec3[-3., 0., 0.])), 0., 0., -3.,
     "through a placement");
 
   mut f = Camera.make();
   f.following = true;
-  f.followMatrix = Mat4.identity().withPos(Xyz[10., 0., 0.]);
-  f.eye = Xyz[0., 1., 0.];
+  f.followMatrix = Mat4.identity().withTranslation(Vec3[10., 0., 0.]);
+  f.eye = Vec3[0., 1., 0.];
   imm fv = f.viewMatrix();
-  point(Xyz[fv.m[12], fv.m[13], fv.m[14]], -10., -1., -5., "following's move");
+  point(Vec3[fv.m[12], fv.m[13], fv.m[14]], -10., -1., -5., "following's move");
 
-  f.followMatrix = Mat4.place(Xyz[10., 0., 0.], Quat.angleAxis(pi / 2., Xyz[0., 1., 0.]), Xyz[1., 1., 1.]);
+  f.followMatrix = Mat4.fromTrs(Vec3[10., 0., 0.], Quat.angleAxis(pi / 2., Vec3[0., 1., 0.]), Vec3[1., 1., 1.]);
   f.vmatrix = f.viewMatrix();
-  point(f.cameraXyz(Xyz[15., 1., 0.], Mat4.identity()), 0., 0., 0., "following a turned thing: origin");
-  point(f.cameraXyz(Xyz[13., 1., 0.], Mat4.identity()), 0., 0., -2., "following a turned thing: ahead");
+  point(f.cameraPoint(Vec3[15., 1., 0.], Mat4.identity()), 0., 0., 0., "following a turned thing: origin");
+  point(f.cameraPoint(Vec3[13., 1., 0.], Mat4.identity()), 0., 0., -2., "following a turned thing: ahead");
 }
 
 fn lights() {
   mut c = Camera.make();
-  imm l = Light.at(Xyz[-3.5, 5.5, 10.], Color[0.52, 0.55, 0.60, 1.], Color[0.78, 0.70, 0.55, 1.]);
+  imm l = Light.at(Vec3[-3.5, 5.5, 10.], Color[0.52, 0.55, 0.60, 1.], Color[0.78, 0.70, 0.55, 1.]);
   point(l.origin(), -3.5, 5.5, 10., "light's origin");
   l.prepare(&mut c);
   expectInt(i64[c.uniforms.len()], 3, "three light uniforms");
@@ -122,7 +123,7 @@ fn lights() {
   expect(c.uniforms.has("lightColor"), "lightColor given");
   expect(!c.uniforms.has("diffuse"), "diffuse not given");
   imm o = *c.uniforms["lightOrigin"];
-  expectInt(i64[o.kind], i64[UniformXyz], "lightOrigin is an Xyz");
+  expectInt(i64[o.kind], i64[UniformVec3], "lightOrigin is a Vec3");
   expectFloat(o.f[0], -3.5, near, "lightOrigin x");
   expectFloat(o.f[2], 10., near, "lightOrigin z");
   imm a = *c.uniforms["ambient"];
@@ -130,7 +131,7 @@ fn lights() {
   expectFloat(a.f[1], 0.55, near, "ambient green");
   expectFloat((*c.uniforms["lightColor"]).f[0], 0.78, near, "light's red");
 
-  imm l2 = Light.at(Xyz[1., 2., 3.], Color.gray(0.1), Color.gray(0.9));
+  imm l2 = Light.at(Vec3[1., 2., 3.], Color.gray(0.1), Color.gray(0.9));
   l2.prepare(&mut c);
   expectInt(i64[c.uniforms.len()], 3, "still three after a second light");
   expectFloat((*c.uniforms["lightOrigin"]).f[1], 2., near, "the second light's origin");
@@ -148,7 +149,7 @@ fn uniforms() {
   imm q = Uniform.quat(Quat.identity());
   expectInt(i64[q.kind], i64[UniformVec4], "quat kind");
   expectFloat(q.f[3], 1., near, "quat w");
-  imm m = Uniform.mat4(Mat4.identity().withPos(Xyz[4., 5., 6.]));
+  imm m = Uniform.mat4(Mat4.identity().withTranslation(Vec3[4., 5., 6.]));
   expectInt(i64[m.kind], i64[UniformMat4], "matrix kind");
   expectFloat(m.f[5], 1., near, "matrix m[5]");
   expectFloat(m.f[4], 0., near, "matrix m[4]");

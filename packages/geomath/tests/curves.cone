@@ -1,0 +1,106 @@
+// The geomath package's curves, checked with the testing package against
+// values worked out by hand; only a failure prints, so curves.out holds the
+// summary alone.
+//
+// A quadratic Bezier at t is (1-t)^2 p0 + 2(1-t)t p1 + t^2 p2, its tangent
+// 2(1-t)(p1 - p0) + 2t(p2 - p1); a cubic's is (1-t)^3 p0 + 3(1-t)^2 t p1 +
+// 3(1-t)t^2 p2 + t^3 p3, its tangent 3(1-t)^2 (p1 - p0) + 6(1-t)t (p2 - p1) +
+// 3t^2 (p3 - p2). At the middle the quadratic's weights are 1/4, 1/2, 1/4 and
+// the cubic's 1/8, 3/8, 3/8, 1/8.
+//
+// - The quadratic arch (0, 0), (1, 2), (2, 0): its middle (1, 1), level there,
+//   its ends, and a quarter of the way.
+// - The cubic arch (0, 0), (0, 2), (2, 2), (2, 0): its middle (1, 1.5),
+//   level there; leaving straight up and arriving straight down, three times
+//   as fast as the control legs are long.
+// - In space, a quadratic and two cubics, one with its control points evenly
+//   along a line, which it then follows at an even speed.
+// - Sampling the quadratic arch into four segments.
+// - Polylines: length, and the point at a distance along, within a segment,
+//   at a corner, before the start and past the end; no points and one point.
+
+mod curves;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+
+imm close = 0.0001d;
+
+fn pt(got Vec2, x f32, y f32, label &[]u8) {
+  expectFloat(got.x, x, close, label);
+  expectFloat(got.y, y, close, label);
+}
+
+fn point(got Vec3, x f32, y f32, z f32, label &[]u8) {
+  expectFloat(got.x, x, close, label);
+  expectFloat(got.y, y, close, label);
+  expectFloat(got.z, z, close, label);
+}
+
+fn beziers() {
+  imm q = QuadraticBezier2[Vec2[0., 0.], Vec2[1., 2.], Vec2[2., 0.]];
+  pt(q.point(0.5), 1., 1., "quadratic's middle");
+  pt(q.tangent(0.5), 2., 0., "quadratic level at its middle");
+  pt(q.tangent(0.), 2., 4., "quadratic leaving towards p1, twice as fast");
+  pt(q.point(0.), 0., 0., "quadratic starts at p0");
+  pt(q.point(1.), 2., 0., "quadratic ends at p2");
+  // 2 (3/4)(1/4) (1, 2) + (1/16)(2, 0) = (3/8, 3/4) + (1/8, 0)
+  pt(q.point(0.25), 0.5, 0.75, "quadratic a quarter of the way");
+
+  imm c = CubicBezier2[Vec2[0., 0.], Vec2[0., 2.], Vec2[2., 2.], Vec2[2., 0.]];
+  // (3/8)(0, 2) + (3/8)(2, 2) + (1/8)(2, 0)
+  pt(c.point(0.5), 1., 1.5, "cubic's middle");
+  // 3/4 (0, 2) + 3/2 (2, 0) + 3/4 (0, -2)
+  pt(c.tangent(0.5), 3., 0., "cubic level at its middle");
+  pt(c.tangent(0.), 0., 6., "cubic leaving straight up");
+  pt(c.tangent(1.), 0., -6., "cubic arriving straight down");
+
+  imm q3 = QuadraticBezier3[Vec3[0., 0., 0.], Vec3[0., 0., 2.], Vec3[2., 0., 2.]];
+  point(q3.point(0.5), 0.5, 0., 1.5, "quadratic in space: middle");
+  point(q3.tangent(0.5), 2., 0., 2., "quadratic in space: tangent");
+  // Control points a third of the way apart along (1, 1, 1): the curve is
+  // the line, 3t (1, 1, 1), at an even speed
+  imm line = CubicBezier3[Vec3[0., 0., 0.], Vec3[1., 1., 1.], Vec3[2., 2., 2.], Vec3[3., 3., 3.]];
+  point(line.point(1. / 3.), 1., 1., 1., "straight cubic a third of the way");
+  point(line.tangent(0.8), 3., 3., 3., "straight cubic at an even speed");
+  imm bent = CubicBezier3[Vec3[0., 0., 0.], Vec3[0., 1., 0.], Vec3[1., 1., 1.], Vec3[1., 0., 1.]];
+  // (3/8)(0, 1, 0) + (3/8)(1, 1, 1) + (1/8)(1, 0, 1)
+  point(bent.point(0.5), 0.5, 0.75, 0.5, "cubic in space: middle");
+
+  // t = 0, 1/4, 1/2, 3/4, 1; the arch is symmetric about x = 1
+  imm samples = q.sample(4u32);
+  expectInt(i64[samples.len()], 5, "four segments, five points");
+  pt(*samples[1usize], 0.5, 0.75, "the second sample");
+  pt(*samples[3usize], 1.5, 0.75, "the fourth sample");
+  pt(*samples[4usize], 2., 0., "the last sample is the end");
+  // The straight cubic sampled: its length is 3 sqrt(3)
+  imm straight = line.sample(3u32);
+  expectFloat(polylineLength(straight.view()), 5.196152, close, "a straight curve's samples, end to end");
+}
+
+fn polylines() {
+  // 3 along x, then 4 up
+  imm path [3; Vec2] = [Vec2[0., 0.], Vec2[3., 0.], Vec2[3., 4.]];
+  expectFloat(polylineLength(&path), 7., close, "polyline length");
+  pt(polylinePointAt(&path, 1.5), 1.5, 0., "polyline: along the first segment");
+  pt(polylinePointAt(&path, 3.), 3., 0., "polyline: at the corner");
+  pt(polylinePointAt(&path, 5.), 3., 2., "polyline: along the second segment");
+  pt(polylinePointAt(&path, -1.), 0., 0., "polyline: before the start");
+  pt(polylinePointAt(&path, 10.), 3., 4., "polyline: past the end");
+  imm none = List[Vec2].empty();
+  pt(polylinePointAt(none.view(), 1.), 0., 0., "polyline of no points");
+  imm one [1; Vec2] = [Vec2[5., 5.]];
+  expectFloat(polylineLength(&one), 0., close, "polyline of one point: length");
+  pt(polylinePointAt(&one, 2.), 5., 5., "polyline of one point");
+  // 2 up z, then (0, 3, 4), 5 long: 4.5 along is halfway up the second
+  imm path3 [3; Vec3] = [Vec3[0., 0., 0.], Vec3[0., 0., 2.], Vec3[0., 3., 6.]];
+  expectFloat(polylineLength(&path3), 7., close, "polyline in space: length");
+  point(polylinePointAt(&path3, 4.5), 0., 1.5, 4., "polyline in space: halfway up the second");
+}
+
+fn main() i32 {
+  beziers();
+  polylines();
+  done();
+}
