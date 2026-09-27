@@ -1,0 +1,109 @@
+// Who a thread is, and its clock: names, ids, the core count, sleep and yield.
+//
+// A thread 'startWith' names carries that name on its handle and in its own
+// 'current()'; one started without a name, and the main thread, which 'start'
+// did not begin, have the empty name. Ids are the OS's thread ids: the same
+// seen from the handle and from inside the thread, different from main's.
+// 'sleep' is high resolution: a 1 ms sleep takes at least 1 ms, and the
+// quickest of five takes well under the 15.6 ms a plain Win32 'Sleep' can
+// round up to. 'testing' counts its checks in globals, so every check is
+// made on the main thread; a thread hands what it saw back as its result.
+
+mod identity;
+
+import testing use *;
+import thread;
+
+extern {
+  fn @c(system) QueryPerformanceCounter(count *i64) i32;
+  fn @c(system) QueryPerformanceFrequency(freq *i64) i32;
+  fn @c(system) GetCurrentThreadId() u32;
+}
+
+fn nowNs() i64 {
+  mut count = 0i64;
+  mut freq = 0i64;
+  QueryPerformanceCounter(&mut count as *i64);
+  QueryPerformanceFrequency(&mut freq as *i64);
+  i64[f64[count] * 1000000000.0d / f64[freq]];
+}
+
+// What a thread sees of itself
+struct Seen {
+  pub id u32;
+  pub osId u32;
+  pub named Bool;
+}
+
+fn look(want &[]u8) Seen {
+  imm me = thread.current();
+  imm name = me.name();
+  mut same = name.len == want.len;
+  mut i = 0usize;
+  while same and i < name.len {
+    same = name[i] == want[i];
+    i = i + 1usize;
+  }
+  Seen[me.id(), GetCurrentThreadId(), same];
+}
+
+fn lookUnnamed(x i64) Seen { look(""); }
+fn lookWorker(x i64) Seen { look("worker"); }
+
+fn main() i32 {
+  // Names
+  // A string literal is not taken as a '&[]u8' field of a struct literal, so
+  // the name is a typed local first
+  imm worker &[]u8 = "worker";
+  imm named = thread.startWith[i64, Seen](thread.Options[name: worker], 0, &lookWorker);
+  expectStr(named.name(), "worker", "the handle's name");
+  imm namedId = named.id();
+  imm namedRef = named.threadRef();
+  imm seen = named.join();
+  expectStr(namedRef.name(), "worker", "a ThreadRef from the handle, kept past the join");
+  expectUInt(u64[namedRef.id()], u64[namedId], "the ThreadRef's id is the handle's");
+  expect(seen.named, "the thread's own name, from current()");
+  expectUInt(u64[seen.id], u64[seen.osId], "current().id() is the OS thread id");
+  expectUInt(u64[namedId], u64[seen.id], "the handle's id is the thread's own");
+
+  imm plain = thread.start[i64, Seen](0, &lookUnnamed);
+  expectStr(plain.name(), "", "an unnamed thread's name");
+  imm plainSeen = plain.join();
+  expect(plainSeen.named, "an unnamed thread's own name is empty");
+
+  imm main = thread.current();
+  expectStr(main.name(), "", "the main thread's name");
+  expectUInt(u64[main.id()], u64[GetCurrentThreadId()], "the main thread's id");
+  expect(main.id() != seen.id, "a started thread's id is not main's");
+  expect(plainSeen.id != seen.id, "two threads' ids differ");
+
+  // A copy is the same thread
+  imm again = main.copy();
+  expectUInt(u64[again.id()], u64[main.id()], "a copy of a ThreadRef names the same thread");
+
+  // A named thread with its own stack size
+  imm big = thread.startWith[i64, Seen](thread.Options[name: worker, stackSize: 4194304usize], 0, &lookWorker);
+  expect(big.join().named, "a thread given a stack size runs");
+
+  // Cores
+  expect(thread.parallelism() > 0u32, "parallelism is at least 1");
+
+  // Sleep: never short, and far finer than a 15.6 ms clock tick
+  mut quickest = 1000000000i64;
+  mut n = 0;
+  while n < 5 {
+    imm before = nowNs();
+    thread.sleep(1000000u64);
+    imm took = nowNs() - before;
+    if took < quickest { quickest = took; }
+    n = n + 1;
+  }
+  expect(quickest >= 1000000i64, "a 1 ms sleep takes at least 1 ms");
+  expect(quickest < 8000000i64, "the quickest 1 ms sleep takes under 8 ms");
+
+  imm before0 = nowNs();
+  thread.sleep(0u64);
+  thread.yieldNow();
+  expect(nowNs() - before0 < 1000000000i64, "sleep(0) and yieldNow return");
+  done();
+}

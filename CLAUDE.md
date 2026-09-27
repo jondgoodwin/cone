@@ -61,7 +61,10 @@ Visual Studio projects stay at the root.
   Lua's separation of finalizers, and Acorn's generational mode as an
   option), which a
   bare `import collector;` brings in, since a package named `gc` could not
-  also declare a struct `gc`; `render` draws 3D
+  also declare a struct `gc`; `thread` is OS threads (start a function on
+  a value moved in, join, detach, a handle dropped unjoined joins, sleep,
+  parking) and the futex the blocking layers are built on, Windows only,
+  linking the Windows SDK's `Synchronization.lib`; `render` draws 3D
   shapes through OpenGL (`Shape` and its sphere, plane and cube, `Shader`,
   `Image` from BMP, `Texture`, `Camera`, `Light`), ported from Pegasus3D
   over `gl`, `math3d` and `collections`, needing no window to build or test;
