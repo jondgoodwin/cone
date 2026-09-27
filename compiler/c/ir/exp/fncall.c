@@ -1532,6 +1532,32 @@ static int fnCallMethodTypeArgs(TypeCheckState *pstate, FnCallNode **nodep) {
     return 1;
 }
 
+// The field a struct literal's argument gives a value to, as
+// typeLitStructReorder will match it: a named value by its name, a value by
+// position among the fields a literal writes (not a discriminant) when no named
+// value comes before it. NULL where no field is certain yet.
+static FieldDclNode *fnCallTypeLitField(StructNode *strnode, Nodes *args, uint32_t argi) {
+    INode *arg = nodesGet(args, argi);
+    Name *name = arg->tag == NamedValTag ? ((NameUseNode*)((NamedValNode*)arg)->name)->namesym : NULL;
+    if (name == NULL) {
+        for (uint32_t i = 0; i < argi; i++)
+            if (nodesGet(args, i)->tag == NamedValTag)
+                return NULL;
+    }
+    uint32_t pos = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode *)*nodesp;
+        if (field->flags & IsTagField)
+            continue;
+        if (name ? field->namesym == name : pos == argi)
+            return field;
+        ++pos;
+    }
+    return NULL;
+}
+
 // Perform type check on function/method call node
 // This should only be run once on a node, as it mutably lowers the node to another form:
 // - If a generic/macro, it instantiates, then type checks instantiated nodes
@@ -1600,6 +1626,11 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     // keeps the order the arguments always had. A member slot holding a tuple
     // index rather than a name is not a member access by name.
     int objfnChecked = 0;
+    // The signature whose parameter types the arguments are checked against,
+    // when one declaration is all the callee can be, and the parameter the
+    // first written argument fills
+    FnSigNode *argsig = NULL;
+    uint32_t firstparm = 0;
     if (node->methfld && isNameUseNode(node->methfld)
         && !(node->flags & FlagOperator) && !calleeIsOverload) {
         inodeTypeCheckAny(pstate, &node->objfn);
@@ -1642,16 +1673,67 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                     macroMethodTypeCheck(pstate, nodep, (MacroDclNode*)found);
                     return;
                 }
+                // One method, not generic: its parameters after 'self' are
+                // what the arguments are wanted as
+                if (found && found->tag == FnDclTag && (found->flags & FlagMethFld)
+                    && ((FnDclNode*)found)->genericinfo == NULL) {
+                    fnCallDemandCandidates(found);
+                    argsig = (FnSigNode*)((FnDclNode*)found)->vtype;
+                    firstparm = 1;
+                }
             }
         }
     }
+    // A function named directly, one declaration and not generic, is checked
+    // ahead of its arguments, so its parameters are what they are wanted as. A
+    // method's name written bare is 'self.method', whose 'self' is not written.
+    else if (node->methfld == NULL && !(node->flags & FlagIndex) && !calleeIsOverload
+        && nameUseNames(node->objfn, FnDclTag)) {
+        INode *dcl = nameUseGetDcl((NameUseNode*)node->objfn);
+        if (genericGetInfo(dcl) == NULL) {
+            inodeTypeCheckAny(pstate, &node->objfn);
+            objfnChecked = 1;
+            INode *sig = inodeIsError(node->objfn) ? NULL : iexpGetDerefTypeDcl(node->objfn);
+            if (sig && sig->tag == FnSigTag) {
+                argsig = (FnSigNode*)sig;
+                firstparm = (dcl->flags & FlagMethFld) && !(node->objfn->flags & FlagQualified) ? 1 : 0;
+            }
+        }
+    }
+    // A struct's literal, the struct named directly and not generic: its
+    // fields are what its values are wanted as
+    StructNode *litstruct = NULL;
+    if (node->methfld == NULL && (node->flags & FlagIndex) && isTypeNode(node->objfn)
+        && nameUseNames(node->objfn, StructTag)
+        && genericGetInfo(nameUseGetDcl((NameUseNode*)node->objfn)) == NULL) {
+        inodeTypeCheckAny(pstate, &node->objfn);
+        objfnChecked = 1;
+        INode *littype = itypeGetTypeDcl(node->objfn);
+        if (littype->tag == StructTag)
+            litstruct = (StructNode*)littype;
+    }
 
-    // Type check arguments (methfld is handled later)
+    // Type check arguments (methfld is handled later), each against the type of
+    // the parameter or field it fills when the callee is already known. That is
+    // what lets an 'if', a block or an array literal passed as an argument be
+    // coerced branch by branch, as it is when a variable of that type is
+    // initialized with it. Overload selection needs the arguments' own types
+    // to choose, so an overload set's arguments are checked with no expectation.
     INode **argsp;
     uint32_t cnt;
     if (node->args) {
+        uint32_t argi = 0;
         for (nodesFor(node->args, cnt, argsp)) {
-            inodeTypeCheckAny(pstate, argsp);
+            INode *expect = unknownType;
+            if (argsig && firstparm + argi < argsig->parms->used)
+                expect = ((IExpNode*)nodesGet(argsig->parms, firstparm + argi))->vtype;
+            else if (litstruct) {
+                FieldDclNode *field = fnCallTypeLitField(litstruct, node->args, argi);
+                if (field)
+                    expect = field->vtype;
+            }
+            inodeTypeCheck(pstate, argsp, expect);
+            ++argi;
         }
     }
 

@@ -2,14 +2,13 @@
 // not fit the i32 it defaults to.
 //
 // Such a literal takes the number type it is wanted as, wherever it meets it.
-// But a call type checks its arguments before it resolves its callee, so an
-// 'if' or a block passed as an argument never sees the parameter's type, and
-// the literals in its branches keep the i32 default. Each one was materialized
-// at 32 bits and widened afterward, silently dropping every bit above them:
-// 'wantI64(if v {5000000000;} else {1;})' passed 705032704. The same happens
-// wherever a literal's type comes from nothing but itself -- a variable, a
-// global or a constant declared without a type, an array literal's elements.
-// Each is now refused, pointed at the literal.
+// But an operator's candidates are chosen by its operands' types, so an 'if'
+// passed as an operand never sees a type, and the literals in its branches
+// keep the i32 default. Such a literal was materialized at 32 bits and widened
+// afterward, silently dropping every bit above them. The same happens wherever
+// a literal's type comes from nothing but itself -- a variable, a global or a
+// constant declared without a type, an array literal's elements. Each is
+// refused, pointed at the literal.
 //
 // LLVM generation stage only, and separate from the type-check scenarios for
 // that reason: the check runs where the literal is generated, which is the one
@@ -17,8 +16,9 @@
 // it has run, so a type-check error in this file would hide all of these.
 //
 // The unannotated lines are the neighbours that must still compile: the same
-// value given the parameter's type directly as an argument, an 'if' whose
-// expected type reaches its branches, and the two ends of i32's range.
+// value given the parameter's type directly as an argument, an 'if' or a block
+// whose expected type -- a variable's, a parameter's, a field's -- reaches its
+// branches, and the two ends of i32's range.
 
 mod typemgmt_genllvm_litrange;
 
@@ -34,11 +34,9 @@ const Huge = 5000000000;         //~ ErrorLitRange:14 "Integer literal '50000000
 imm global = 3000000000;         //~ ErrorLitRange:14 "Integer literal '3000000000' does not fit i32"
 
 fn positions(v Bool, x i64) i64 {
-  // An argument's 'if' and block, an operand's 'if', a struct field's 'if'
-  wantI64(if v {5000000000;} else {1;});  //~ ErrorLitRange:17 "does not fit i32, the type it defaults to"
-  wantI64({5000000000;});                 //~ ErrorLitRange:12 "Give it a suffix ('5000000000i64')"
-  imm sum = x + if v {5000000000;} else {1;};  //~ ErrorLitRange:23 "'5000000000'"
-  imm big = Big[if v {5000000000;} else {1;}]; //~ ErrorLitRange:23 "'5000000000'"
+  // An operand's 'if'
+  imm sum = x + if v {5000000000;} else {1;};  //~ ErrorLitRange:23 "does not fit i32, the type it defaults to"
+  imm diff = x - {5000000000;};                //~ ErrorLitRange:19 "Give it a suffix ('5000000000i64')"
 
   // A literal whose type comes from nothing but itself
   imm inferred = 4294967295;      //~ ErrorLitRange:18 "'4294967295'"
@@ -53,7 +51,10 @@ fn positions(v Bool, x i64) i64 {
   // Still compiled: each literal here gets a type, or fits the one it has
   wantI64(5000000000);
   imm typed i64 = if v {5000000000;} else {1;};
+  wantI64(if v {5000000000;} else {1;});
+  wantI64({5000000000;});
+  imm big = Big[if v {5000000000;} else {1;}];
   imm top = 2147483647;
   imm bottom = -2147483648;
-  sum + big.f + typed;
+  sum + diff + big.f + typed;
 }

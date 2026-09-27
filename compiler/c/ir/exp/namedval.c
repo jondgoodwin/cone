@@ -38,10 +38,14 @@ void namedValNameRes(NameResState *pstate, NamedValNode *node) {
     inodeNameRes(pstate, &node->val);
 }
 
-// Type check named value node
-void namedValTypeCheck(TypeCheckState *pstate, NamedValNode *node) {
-    if (iexpTypeCheckAny(pstate, &node->val) == 0)
+// Type check named value node. The value is wanted as what the named value is:
+// a type literal's field, once the field is known (fnCallTypeCheck).
+void namedValTypeCheck(TypeCheckState *pstate, NamedValNode *node, INode *expectType) {
+    inodeTypeCheck(pstate, &node->val, expectType);
+    if (!isExpNode(node->val)) {
+        errorMsgNode(node->val, ErrorNotTyped, "Expected a typed expression.");
         return;
+    }
     node->vtype = ((IExpNode*)node->val)->vtype;
 }
 
