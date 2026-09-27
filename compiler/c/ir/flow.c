@@ -1379,12 +1379,35 @@ static VarDclNode *flowGatePlaceRoot(INode *place) {
     }
 }
 
+// An owning reference recast to a borrowed one of the same kind: the lend a
+// coercion makes of an owner wanted as a '&' or '&mut' (or a '&<' or '&<mut'),
+// which the loan walk reads as a borrow of what the owner owns (pwIsOwnedLent)
+static int flowGateIsOwnedLent(CastNode *cast) {
+    if (cast->flags & FlagConvert)
+        return 0;
+    INode *to = iexpGetTypeDcl((INode *)cast);
+    INode *from = iexpGetTypeDcl(cast->exp);
+    return (to->tag == RefTag || to->tag == VirtRefTag) && from->tag == to->tag
+        && flowGateIsBorrowRef(to) && !flowGateIsBorrowRef(from);
+}
+
 void flowGateOperandAsk(FlowState *fstate, INode *operand) {
-    while (operand->tag == CastTag)
+    // A borrow written or built as if written ('&mut *o'), or an owner lent
+    // implicitly by a recast: either way a borrow waiting for its call
+    INode *place = NULL;
+    while (operand->tag == CastTag) {
+        if (flowGateIsOwnedLent((CastNode *)operand)) {
+            place = ((CastNode *)operand)->exp;
+            break;
+        }
         operand = ((CastNode *)operand)->exp;
-    if (operand->tag != BorrowTag && operand->tag != ArrayBorrowTag)
-        return;
-    VarDclNode *root = flowGatePlaceRoot(((RefNode *)operand)->vtexp);
+    }
+    if (place == NULL) {
+        if (operand->tag != BorrowTag && operand->tag != ArrayBorrowTag)
+            return;
+        place = ((RefNode *)operand)->vtexp;
+    }
+    VarDclNode *root = flowGatePlaceRoot(place);
     if (root == NULL)
         return;
     if (fstate->inflightcnt == FlowInflightMax) {

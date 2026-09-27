@@ -179,9 +179,13 @@ included) reaching one. A struct's answer is remembered on it
 is not a trigger: what a caller lent is frozen by the caller.
 
 For `FlowGateInCall`, each operand that is a borrow (`BorrowTag` or
-`ArrayBorrowTag`, through casts) pushes the variable at the root of its place
-onto `inflight` once it is walked, and the call or literal pops back to where it
-started. A name use checks the list only when it is not empty, so a function
+`ArrayBorrowTag`, through casts), or an owner lent by a recast to a borrowed
+reference of its kind (`flowGateIsOwnedLent`, the recast `pwOwnedLent` reads:
+`both(a, a)` for `a` a `+so R` or a `+<so App`, and a lent receiver), pushes
+the variable at the root of its place onto `inflight` once it is walked, and
+the call or literal pops back to where it started. A lend the compiler makes
+must trigger it exactly as a written borrow does: a function holding no other
+borrow is otherwise never walked, and its conflicts pass unseen. A name use checks the list only when it is not empty, so a function
 with nothing waiting pays one test per name use. More than `FlowInflightMax`
 waiting at once gates the function.
 
@@ -619,7 +623,10 @@ it is used, the Rust way — the loan is the receiver's own: `list[0usize]`'s
 taken by reference is a loan whether the call borrows it (`list.push(x)` is
 `(&mut list).push(x)`, the borrow injected) or it is handed a reference (`r.push(x)`
 for `r &uni List` reborrows `*r`, with the permission the method declares for
-`self`) (`pwReceiver`). A message names the method: "'list' is borrowed (by
+`self`), or is an owner type check lent to a `self &` or `self &mut` method (a
+`+so R`, or a `+<so App` dispatched through: the recast `pwOwnedLent` reads,
+a loan of `*a` reached as its owner reaches it, so `a.absorb(a)` moving `a`
+conflicts) (`pwReceiver`). A message names the method: "'list' is borrowed (by
 '[]' at 5:15)".
 
 A container may declare that its element borrows need no loan on it, with a
@@ -922,7 +929,7 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
 | | `flowScopeDealias`, `flowVarRelease` | build a scope's release list; skip an uninitialized, moved-out or handed-back variable; release a hollowed one hollow; one variable's release, whole or hollow, in a `DropFlagNode` where asked |
 | | `flowVarSetFlags`, `flowVarLogMark`, `flowVarPathTake`, `flowVarRollback`, `flowVarJoin` | the main walk's variable flags, logged so that an `if`'s arms are walked from one state and joined |
 | | `flowDropTracked`, `flowDropNote`, `flowDropOwner`, `flowLvalRootVar` | the drop gate: a tracked variable changed deeper than its declaration; the variable owning a binding's value; the local a store's target is part of |
-| | `flowStateInit`, `flowGateResultAsk`, `flowGateCallAsk`, `flowGateOperandAsk`, `flowGateUse`, `flowGateCount`, `flowGatePrint` | the gate (§3, "The gate"): the questions its triggers ask out of line, the waiting operands' borrows, the `-V 2` tallies |
+| | `flowStateInit`, `flowGateResultAsk`, `flowGateCallAsk`, `flowGateOperandAsk`, `flowGateIsOwnedLent`, `flowGateUse`, `flowGateCount`, `flowGatePrint` | the gate (§3, "The gate"): the questions its triggers ask out of line, the waiting operands' borrows, written or an owner's implicit lend, the `-V 2` tallies |
 | `ir/flowgate.h` | `flowGateHolder`, `flowGateAssigned`, `flowGateResult`, `flowGateCall`, `flowGateOperand` | the gate's triggers as inline tests, dismissing what cannot carry a borrow without a call |
 | `ir/itype.c` | `itypeCarriesBorrow` | may a value of this type hold a borrowed reference; a struct's answer remembered in `StructNode.carriesborrow` |
 | `ir/exp/block.c` | `blockFlow`, `blockResultMove` | scope push/pop, `blockret` injection, result walk then dealias capture; a `return`'s move source, a returned block's or `if`'s values moved; a loop body one level deeper; whether every path returned (`jumped`) |
@@ -943,7 +950,10 @@ Test sources that pin behavior precisely: `test/cases/move/move-flow-*.cone`,
 `test/cases/region/region_flow*.cone`, `test/cases/ref/ref_flow.cone`,
 `test/cases/ref/ref_flow_return.cone`, `test/cases/core/core_flow_gate.cone`, and
 for the loan walk `test/cases/ref/ref_flow_freeze.cone`,
-`test/cases/ref/ref_flow_freeze_loop.cone`, `test/cases/ref/ref_freeze_success.cone`, and for a borrow a call
+`test/cases/ref/ref_flow_freeze_loop.cone`, `test/cases/ref/ref_freeze_success.cone`, for an owner's
+implicit lends to one call with no written borrow to gate the function
+`test/cases/ref/ref_flow_ownerlend_call.cone` and
+`test/cases/trait/trait_flow_vref_owner_call.cone`, and for a borrow a call
 returns `test/cases/collection/collection_flow_freeze.cone`,
 `test/cases/region/region_flow_arena_freeze.cone` and
 `test/cases/collection/collection_freeze_success.cone`, and for drop flags

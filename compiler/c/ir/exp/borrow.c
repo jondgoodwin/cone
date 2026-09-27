@@ -245,8 +245,8 @@ static int borrowIsConstLit(INode *node) {
 
 // Retype a borrowed constant array literal to the reference type it is wanted
 // as, when their element types differ: '&[1, 2, 3]' wanted as a '&[]u32'. The
-// literal was typed from its elements alone, as a call's argument is before its
-// callee is resolved, so its untyped number literals settled on i32. Coercing
+// literal was typed from its elements alone, since a borrow passes no expected
+// type to what it borrows, so its untyped number literals settled on i32. Coercing
 // each element to the wanted element type is what arrayLitCoerce does for the
 // literal unborrowed. Return 0, having changed nothing, where the borrow is not
 // of a constant array literal or the wanted type is not a reference to an

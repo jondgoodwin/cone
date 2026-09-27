@@ -142,6 +142,19 @@ void assignToOneCheck(TypeCheckState *pstate, INode *lval, TupleNode *rval) {
     assignExtraRvalsCheck(pstate, rval, 1);
 }
 
+// Is this one tuple-typed lval given a value tuple? It receives the tuple
+// whole, as a declaration's initial value is received, and not its first
+// value: 'p = 5, 6' (or 'p = (5, 6)', the same) gives a '(i64, i64)' variable
+// both values, each coerced to its element's type. Where the counts differ the
+// tuple does not match the lval's type and is refused, rather than having its
+// extra values dropped. The parser cannot tell this from 'x = 7, 8', which
+// gives the one lval the first value (assignToOneCheck); only the lval's type
+// can, so every later phase asks this rather than the rval's tag alone.
+int assignOneTakesTuple(AssignNode *node) {
+    return node->lval->tag != VTupleTag && node->rval->tag == VTupleTag
+        && isExpNode(node->lval) && iexpGetTypeDcl(node->lval)->tag == TTupleTag;
+}
+
 // Type checking for assignment node
 void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
     if (iexpTypeCheckAny(pstate, &node->lval) == 0)
@@ -156,7 +169,9 @@ void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
             assignMultRetCheck(pstate, (TupleNode*)node->lval, &node->rval);
     }
     else {
-        if (node->rval->tag == VTupleTag)
+        if (assignOneTakesTuple(node))
+            assignSingleCheck(pstate, node->lval, &node->rval);
+        else if (node->rval->tag == VTupleTag)
             assignToOneCheck(pstate, node->lval, (TupleNode*)node->rval);
         else
             assignSingleCheck(pstate, node->lval, &node->rval);
@@ -416,7 +431,7 @@ void assignFlow(FlowState *fstate, AssignNode **nodep) {
             assignMultRetFlow((TupleNode*)node->lval, &node->rval);
     }
     else {
-        if (node->rval->tag == VTupleTag)
+        if (node->rval->tag == VTupleTag && !assignOneTakesTuple(node))
             assignToOneFlow(node->lval, (TupleNode*)node->rval);
         else {
             assignSingleFlow(node->lval, &node->rval);

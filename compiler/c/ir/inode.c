@@ -473,7 +473,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case IsTag:
         castIsTypeCheck(pstate, (CastNode *)*node); break;
     case NamedValTag:
-        namedValTypeCheck(pstate, (NamedValNode *)*node); break;
+        namedValTypeCheck(pstate, (NamedValNode *)*node, expectType); break;
     case NilLitTag:
     case ULitTag:
     case FLitTag:

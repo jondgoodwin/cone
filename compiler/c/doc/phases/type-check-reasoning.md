@@ -56,10 +56,18 @@ suppression mechanism.
 
 ## 3. How an expected type reaches an expression
 
-`inodeTypeCheck` takes `expectType`, but **only two node kinds consume it**:
+`inodeTypeCheck` takes `expectType`, but **few node kinds consume it**:
 `blockTypeCheck` and `ifTypeCheck`, the two nodes that unify several branches
-into one value. Everything else ignores the parameter and is coerced *after* it
-has been checked.
+into one value, an array literal's elements, an untyped integer literal (below),
+and a type literal's named value, which hands it to its value. Everything else
+ignores the parameter and is coerced *after* it has been checked.
+
+**Where the expectation comes from** is the receiver: a variable's declared
+type, the function's return type, and a call's parameter or a struct literal's
+field when the callee is already known (section 7, stage 1). An `if` or block
+given one coerces each branch to it, so `"orbit"` and `"flight"`, arrays of two
+lengths, meet as the `&[]u8` wanted; given none, they must meet on their own
+(section 6), and do not.
 
 So the normal path is `iexpTypeCheckCoerce`:
 
@@ -76,10 +84,10 @@ a number expected type and keeps it — an integer type by retyping, a float typ
 by becoming a float literal — so its constant is built at that width, and one
 whose value an integer type cannot hold is refused there (`ErrorLitRange`), as
 a suffixed literal is against its own type. `iexpCoerce` does the same for a literal that reaches it still untyped, because
-a call's argument is checked before its callee is resolved. Neither reaches the
-branches of an `if` or a block passed as an argument, whose literals keep the
-`i32` default; generation refuses one whose value does not fit it
-([literals](../nodes/literals.md)). **`Bool` is the one
+an overload set's, a generic's or an operator's argument is checked before its
+callee is chosen. Neither reaches the branches of an `if` or a block passed as
+such an argument, whose literals keep the `i32` default; generation refuses one
+whose value does not fit it ([literals](../nodes/literals.md)). **`Bool` is the one
 number type excluded** — `litAdoptNumberType` refuses it, so a literal meets
 `Bool` through section 5's `isTrue` branch as any other number does, rather than
 being built at `Bool`'s one bit and masked to it. Every other literal is typed by
@@ -236,6 +244,18 @@ tuple, argument type checking, generic substitution. `methfld` is what
 distinguishes a call from an operator or member access: `TWO + 1` is objfn
 `TWO`, methfld `+`, one argument.
 
+**An argument is checked against its parameter's type when one declaration is
+all the callee can be**: a function named directly that is not generic (its
+name checked ahead of the arguments), a method the receiver's type binds to one
+`FnDcl` that is not generic (after `self`), and a literal of a struct named
+directly that is not generic (each value against the field it will fill,
+`fnCallTypeLitField`: a named value by name, a value by position while no named
+value precedes it). Every other argument is checked with no expectation:
+an overload set's and an operator's, because their types are what selection
+filters on, and a generic's, because they are what it infers from. The
+coercion in `fnCallFinalizeArgs` still runs on every argument; one checked
+against its parameter already matches it.
+
 **Stage 2 — make the callee knowable.** Type check `objfn`, unless it names an
 overload set — that one path deliberately skips the name-use check, so the
 overload name stays rejected everywhere except here. Then rewrite the shapes
@@ -354,6 +374,19 @@ there are exactly four helpers — it is a two-by-two:
 | tuple | tuple | `assignParaCheck` — parallel assignment, element by element |
 | tuple | single | `assignMultRetCheck` — a call returning several values |
 | single | tuple | `assignToOneCheck` |
+
+The single-by-tuple cell splits once more, on the lval's type rather than on a
+tag: an lval whose type resolves to a tuple takes the value tuple whole
+(`assignOneTakesTuple`), through `assignSingleCheck`, as a declaration's
+initial value is. The parser cannot tell `p = 5, 6` for a tuple-typed `p` from
+`x = 7, 8`, which stores `7`, so flow and generation ask the same function.
+
+A value tuple is typed from its own values (`vtupleTypeCheck` takes no expected
+type), so where a tuple type is wanted `iexpCoerce`'s `NoMatch` arm coerces it
+element by element (`vtupleCoerce`), as it does an array literal
+(`arrayLitCoerce`): an unsuffixed `5` becomes the element's `i64`. The counts
+must agree. A return's value tuple was already coerced element by element, by
+`returnTypeCheck` itself.
 
 The assignment's own type is the rval's type, so an assignment is usable as an
 expression.

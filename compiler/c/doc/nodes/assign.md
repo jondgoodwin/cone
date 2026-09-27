@@ -80,11 +80,27 @@ into `parseAnyExpr` for the right-hand side, so assignment is
 | tuple | tuple | `assignParaCheck` | parallel assignment, element by element |
 | tuple | single | `assignMultRetCheck` | a call returning several values, destructured |
 | single | tuple | `assignToOneCheck` | one target, several values |
+| single, of a tuple type | tuple | `assignSingleCheck` | one target, one tuple value |
 
 Then `vtype` becomes the rval's type.
 
+**One lval of a tuple type takes a value tuple whole.** `p = 5, 6` (the
+parentheses in `p = (5, 6)` change nothing) gives a `(i64, i64)` variable both
+values, each coerced to its element's type by `vtupleCoerce`, exactly as its
+declaration's `mut p (i64, i64) = 5, 6` does. The parser builds the same nodes
+as for `x = 7, 8`, so only the lval's resolved type tells the two apart:
+`assignOneTakesTuple` asks it, and flow (`assignFlow`, `pwAssign`) and
+generation ask the same function rather than the rval's tag, so all three agree
+that the whole tuple is stored. Extra values are not dropped here: a tuple whose
+count differs from the lval's is refused (`ErrorInvType`), and so is
+`p = (3, 4), 5`, which until 27 September 2026 stored `(3, 4)` under the rule
+below. Before that date every other such assignment compared the lval's tuple
+type with the first value and was refused. `core_tuple_assign` and
+`core_typecheck` pin it.
+
 **More values than lvals is accepted, and the extras are still evaluated.** The
-lvals take the leading values; `x = a, b, c` stores `a`. That is the behaviour
+lvals take the leading values; `x = a, b, c` stores `a`, where `x` is not of a
+tuple type. That is the behaviour
 parallel assignment was written with in 2018 (`<=` on the counts, "treat as
 simple assignment with one lval on left"), and generation still extracts
 element 0. Fewer values than lvals is `ErrorBadTerm`. The manual shows only

@@ -114,9 +114,10 @@ int iexpCoerce(INode **from, INode *totype) {
 
     INode *totypedcl = itypeGetTypeDcl(totype);
 
-    // An untyped integer literal still on its i32 default -- a call's argument
-    // is type checked before its callee is resolved, so litTypeCheck had no
-    // expected type to give it -- takes the number type it is wanted as rather
+    // An untyped integer literal still on its i32 default -- an argument to an
+    // overload set, a generic or an operator is type checked before its callee
+    // is chosen, so litTypeCheck had no expected type to give it -- takes the
+    // number type it is wanted as rather
     // than being converted to it, which would build the constant at 32 bits
     // first. Bool is refused by litAdoptNumberType itself, so a literal meets it
     // as any number does, through isTrue.
@@ -130,6 +131,9 @@ int iexpCoerce(INode **from, INode *totype) {
         // the wanted array type by coercing each element to its element type
         if ((*from)->tag == ArrayLitTag)
             return arrayLitCoerce((ArrayNode*)*from, totypedcl);
+        // So may a value tuple, each value to its element's type
+        if ((*from)->tag == VTupleTag)
+            return vtupleCoerce((TupleNode*)*from, totypedcl);
         // So may a borrowed constant one, and the borrow then match as it is
         if (borrowConstLitCoerce(*from, totypedcl))
             return iexpMatches(from, totypedcl, Coercion) != NoMatch && iexpCoerce(from, totype);

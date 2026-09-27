@@ -2014,7 +2014,8 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         }
 
         if (lval->tag != VTupleTag) {
-            if (rval->tag != VTupleTag) {
+            // A tuple-typed lval receives a value tuple whole
+            if (rval->tag != VTupleTag || assignOneTakesTuple(node)) {
                 genlStore(gen, lval, valueref); // simple assignment
             }
             else {
