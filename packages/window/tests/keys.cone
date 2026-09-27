@@ -1,0 +1,47 @@
+// window's 'keyDown' over events through SDL3's own queue, with no window
+// and no display: a key pressed answers its key code, a key repeating, a
+// key released and a mouse event answer 0. Only a failure prints.
+//
+// It needs SDL3.dll, and no display.
+
+mod keys;
+
+import testing use *;
+import sdl;
+import window use *;
+
+fn pushKey(type u32, key u32, repeat u8) {
+  mut e = sdl.Event.empty();
+  e.type = type;
+  imm k = &mut e as &mut sdl.KeyboardEvent;
+  k.key = key;
+  k.down = if type == sdl.EVENT_KEY_DOWN {1u8;} else {0u8;};
+  k.repeat = repeat;
+  require(sdl.PushEvent(&mut e), "a key pushed");
+}
+
+fn main() i32 {
+  require(sdl.Init(sdl.INIT_EVENTS), "SDL's events start");
+  sdl.FlushEvents(0u, 0xFFFFu);
+  pushKey(sdl.EVENT_KEY_DOWN, sdl.K_a, 0u8);
+  pushKey(sdl.EVENT_KEY_DOWN, sdl.K_a, 1u8);
+  pushKey(sdl.EVENT_KEY_UP, sdl.K_a, 0u8);
+  pushKey(sdl.EVENT_KEY_DOWN, sdl.K_F11, 0u8);
+  mut m = sdl.Event.empty();
+  m.type = sdl.EVENT_MOUSE_BUTTON_DOWN;
+  require(sdl.PushEvent(&mut m), "a button pushed");
+
+  mut e = sdl.Event.empty();
+  require(sdl.PollEvent(&mut e), "first");
+  expectUInt(u64[keyDown(&e)], 97u64, "a pressed");
+  require(sdl.PollEvent(&mut e), "second");
+  expectUInt(u64[keyDown(&e)], 0u64, "a repeating counts once");
+  require(sdl.PollEvent(&mut e), "third");
+  expectUInt(u64[keyDown(&e)], 0u64, "a released");
+  require(sdl.PollEvent(&mut e), "fourth");
+  expectUInt(u64[keyDown(&e)], u64[sdl.K_F11], "F11 pressed");
+  require(sdl.PollEvent(&mut e), "fifth");
+  expectUInt(u64[keyDown(&e)], 0u64, "a mouse button is no key");
+  sdl.Quit();
+  done();
+}

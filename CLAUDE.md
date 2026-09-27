@@ -43,9 +43,12 @@ Visual Studio projects stay at the root.
   `isDebugBuild()`, the third intrinsic outside `mem`); `stdio` prints;
   `libc` and `posix` are C packages of raw bindings to the C library and the
   POSIX functions beyond it (Windows first), and `core` imports `libc` for its
-  allocator; `sdl` is a C package of raw bindings to SDL2 (a window for
-  Vulkan, its events and clocks, and loading Vulkan), linking `SDL2.lib`,
-  which must be on `LIB`; `vulkan` is raw bindings to Vulkan 1.3,
+  allocator; `sdl` is a C package of raw bindings to SDL3 (a window for
+  Vulkan and its size in pixels, its events, the keyboard's, the mouse's,
+  the wheel's and a window's, each with its nanosecond timestamp, the
+  mouse's relative mode, clocks, and loading Vulkan), linking `SDL3.lib`,
+  which must be on `LIB`, and its `layout` test checks every struct against
+  SDL3's headers; `vulkan` is raw bindings to Vulkan 1.3,
   written by hand from the specification (Vulkan's names without the prefix:
   `vulkan.createInstance`, `vulkan.InstanceCreateInfo`), linking nothing:
   every function is found at run time through the `vkGetInstanceProcAddr`
@@ -160,10 +163,11 @@ Visual Studio projects stay at the root.
   read back, and `pipepbr.cone`, the lighting floor: the pipe in Blinn-Phong
   beside it in black chitin with a thin film, under the dusk, tone-mapped;
   `window` is a window for Vulkan (`openVulkan`, which the `gpu` package
-  draws into), through `sdl`, and the render loop's glue (frame time, quit,
-  Escape, fullscreen, resize, `keyDown`), and its example,
-  `packages/window/examples/spin.cone`, draws a lit, textured, turning
-  sphere with `render` (building it needs SDL2's `lib` folder on `LIB`).
+  draws into), through `sdl`, its size in pixels and in its own units, and
+  the render loop's glue (frame time, quit, Escape, fullscreen, resize,
+  `keyDown`), and its example, `packages/window/examples/spin.cone`, draws a
+  lit, textured, turning sphere with `render` (building it needs SDL3's `lib`
+  folder on `LIB`).
   A package's example programs live in its own `examples/` folder, each run
   with `congo run packages/<name>/examples/<file>.cone`, and its tests in its
   own `tests/` folder, one program each beside the output it must print;
@@ -337,7 +341,12 @@ cd packages
 python ../tools/congo/congo.py test
 ```
 
-`tools/congo/README.md`, "Testing a package", is how they work.
+`tools/congo/README.md`, "Testing a package", is how they work. `sdl`, and
+everything over it (`window`, `gpu`, `render`, `noise`'s `parity` and
+`vulkan`'s `runtime` test), links `SDL3.lib` and runs with `SDL3.dll`: put
+the `lib\x64` folder of SDL3's development kit (`SDL3-devel-3.x-VC.zip`;
+here `C:\libs\SDL3-3.4.16\lib\x64`) on both `LIB` and `PATH` before
+`congo test` or `congo run`.
 
 It compiles every scenario under `test/cases/`, asserts what each one's category
 and inline `//~` annotations claim, links and runs the `run` scenarios, and

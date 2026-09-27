@@ -1,69 +1,120 @@
-// The sdl package: raw bindings to SDL2, the part of it a window drawn by
+// The sdl package: raw bindings to SDL3, the part of it a window drawn by
 // Vulkan needs: starting SDL's video, opening and sizing a window, loading
-// Vulkan, the instance extensions a surface needs, the surface, and the
-// drawable's size; the clocks; and the event queue. (Its OpenGL context
-// functions retired with the OpenGL renderer.)
+// Vulkan, the instance extensions a surface needs, and the surface; the
+// window's size and its size in pixels; the clocks; the event queue, and the
+// events of the keyboard, the mouse, windows and quitting; and the mouse's
+// relative mode, for mouse-look.
 //
 // '@c("SDL_")' makes it a C-named module: each function below takes its C name,
 // the prefix and then the name as written, so 'Init' binds to SDL_Init. The
-// types and constants have no symbol, and are named here without the prefix.
-// Everything is as C has it: C types, C strings ('*u8', ending in a zero), and
-// the SDL_ names shortened only by the prefix.
+// types and constants have no symbol, and are named here without the prefix
+// (SDL_EVENT_KEY_DOWN is EVENT_KEY_DOWN; SDLK_ESCAPE, whose prefix is SDLK_,
+// is K_ESCAPE). Everything is as C has it: C types, C strings ('*u8', ending
+// in a zero), and the SDL_ names shortened only by the prefix, but for one
+// field: a KeyboardEvent's 'mod', a word Cone keeps, is 'keymod'.
 //
-// Built for SDL 2.x (the development kit 2.32 was used). Linking needs
-// SDL2.lib on LIB, and running needs SDL2.dll on PATH.
+// C's 'bool', which SDL3 answers with and takes, is one byte holding 0 or 1.
+// An answer is bound as Bool. An argument, and a field of an event, is bound
+// as u8 (1 for true): Cone passes a Bool argument to C as a bare i1, not
+// widened to a whole byte as C's 'bool' is.
+//
+// Built for SDL 3.x (the development kit 3.4.16 was used). Linking needs
+// SDL3.lib on LIB, and running needs SDL3.dll on PATH. Nothing here passes
+// or answers a struct by value. The layout test, tests/layout.cone, checks
+// every struct here against SDL3's own headers.
 
 mod @c("SDL_") sdl;
 
 pub extern {
-  // Starting and stopping
-  fn Init(flags u32) i32;
+  // Starting and stopping. Init, InitSubSystem and ClearError answer true
+  // when they succeed; GetError holds the reason when one did not.
+  fn Init(flags u32) Bool;
   fn Quit();
   fn GetError() *u8;
-  fn ClearError();
+  fn ClearError() Bool;
 
-  // Windows
-  fn CreateWindow(title *u8, x u32, y u32, w i32, h i32, flags u32) *Window;
+  // Starting and stopping one subsystem at a time; each start is counted,
+  // and Quit stops them all
+  fn InitSubSystem(flags u32) Bool;
+  fn QuitSubSystem(flags u32);
+  fn WasInit(flags u32) u32;
+
+  // Windows. A window's size is in the window's units, which on a high-DPI
+  // display may be fewer than its pixels: GetWindowSizeInPixels is what a
+  // swapchain is sized by, and GetWindowPixelDensity the ratio of the two.
+  // GetWindowDisplayScale is the scale the user chose for the display (1.5
+  // at 150 %). CreateWindow's flags are WINDOW_...; SDL3 takes no position
+  // in it (SetWindowPosition does that).
+  fn CreateWindow(title *u8, w i32, h i32, flags u64) *Window;
   fn DestroyWindow(window *Window);
-  fn GetWindowSize(window *Window, w &mut i32, h &mut i32);
-  fn SetWindowFullscreen(window *Window, flags u32) i32;
-  fn SetWindowTitle(window *Window, title *u8);
-  fn SetWindowSize(window *Window, w i32, h i32);
-  fn MinimizeWindow(window *Window);
-  fn RestoreWindow(window *Window);
-  fn GetDisplayBounds(displayIndex i32, rect &mut Rect) i32;
+  fn GetWindowID(window *Window) u32;
+  fn GetWindowFlags(window *Window) u64;
+  fn GetWindowSize(window *Window, w &mut i32, h &mut i32) Bool;
+  fn GetWindowSizeInPixels(window *Window, w &mut i32, h &mut i32) Bool;
+  fn GetWindowPixelDensity(window *Window) f32;
+  fn GetWindowDisplayScale(window *Window) f32;
+  fn SetWindowTitle(window *Window, title *u8) Bool;
+  fn SetWindowPosition(window *Window, x i32, y i32) Bool;
+  fn SetWindowSize(window *Window, w i32, h i32) Bool;
+  fn MinimizeWindow(window *Window) Bool;
+  fn RestoreWindow(window *Window) Bool;
+  // 'fullscreen' 1 fills the display (borderless, at the desktop's mode),
+  // 0 goes back to a window
+  fn SetWindowFullscreen(window *Window, fullscreen u8) Bool;
+  // Wait until what was asked of the window (a size, fullscreen) is done
+  fn SyncWindow(window *Window) Bool;
+
+  // Displays: each is named by a display id, which is never 0
+  fn GetPrimaryDisplay() u32;
+  fn GetDisplayBounds(displayID u32, rect &mut Rect) Bool;
+  fn GetDisplayUsableBounds(displayID u32, rect &mut Rect) Bool;
 
   // Vulkan. A window made with WINDOW_VULKAN loads the Vulkan loader
   // (vulkan-1.dll); so does Vulkan_LoadLibrary(null), with no window, once
   // the video subsystem is started. Vulkan_GetVkGetInstanceProcAddr then
   // hands out vkGetInstanceProcAddr, through which every other Vulkan
-  // function is found (the vulkan package's 'load'). The window may be null
-  // for Vulkan_GetInstanceExtensions, which fills 'pNames' with the instance
-  // extensions a surface needs (null 'pNames': only the count). SDL's handles
-  // are the vulkan package's: 'instance' is a vulkan.Instance, and 'surface'
-  // receives a vulkan.SurfaceKHR's u64. SDL_bool is 1 for true.
-  fn Vulkan_LoadLibrary(path *u8) i32;
+  // function is found (the vulkan package's 'load').
+  // Vulkan_GetInstanceExtensions answers SDL's own list of the instance
+  // extensions a surface needs, 'count' of them, which stays SDL's (null if
+  // Vulkan is not loaded). SDL's handles are the vulkan package's:
+  // 'instance' is a vulkan.Instance, 'surface' a vulkan.SurfaceKHR's u64,
+  // and 'allocator' a *vulkan.AllocationCallbacks, null for Vulkan's own.
+  fn Vulkan_LoadLibrary(path *u8) Bool;
   fn Vulkan_GetVkGetInstanceProcAddr() *u8;
   fn Vulkan_UnloadLibrary();
-  fn Vulkan_GetInstanceExtensions(window *Window, pCount &mut u32, pNames **u8) u32;
-  fn Vulkan_CreateSurface(window *Window, instance *u8, surface &mut u64) u32;
-  fn Vulkan_GetDrawableSize(window *Window, w &mut i32, h &mut i32);
+  fn Vulkan_GetInstanceExtensions(count &mut u32) **u8;
+  fn Vulkan_CreateSurface(window *Window, instance *u8, allocator *u8, surface &mut u64) Bool;
+  fn Vulkan_DestroySurface(instance *u8, surface u64, allocator *u8);
 
-  // Starting and stopping one subsystem at a time; each start is counted,
-  // and Quit stops them all
-  fn InitSubSystem(flags u32) i32;
-  fn QuitSubSystem(flags u32);
-  fn WasInit(flags u32) u32;
-
-  // The clocks: milliseconds since SDL started, and a finer counter, which
+  // The clocks: milliseconds and nanoseconds since SDL started (an event's
+  // 'timestamp' is on the nanosecond clock), and a finer counter, which
   // counts GetPerformanceFrequency() a second
-  fn GetTicks() u32;
+  fn GetTicks() u64;
+  fn GetTicksNS() u64;
   fn Delay(ms u32);
+  fn DelayNS(ns u64);
   fn GetPerformanceCounter() u64;
   fn GetPerformanceFrequency() u64;
 
-  // Events: 1 while one was waiting (and is now in 'event'), else 0
-  fn PollEvent(event &mut Event) i32;
+  // Events. PollEvent answers true when one was waiting (and is now in
+  // 'event'). PushEvent adds one to the end of the queue, answering true if
+  // it did (a zero 'timestamp' is filled with the time it was pushed).
+  // PumpEvents gathers what the devices have to say without taking any;
+  // FlushEvents drops the waiting events whose types are from 'minType' to
+  // 'maxType'.
+  fn PollEvent(event &mut Event) Bool;
+  fn PushEvent(event &mut Event) Bool;
+  fn PumpEvents();
+  fn FlushEvents(minType u32, maxType u32);
+
+  // The mouse. In relative mode (for mouse-look) the cursor is hidden and
+  // held in the window, and motion events' 'xrel' and 'yrel' carry the
+  // mouse's own movement, unclamped by the screen's edges. GetMouseState
+  // answers the buttons held (BUTTON_MASK_...), and puts the cursor's place
+  // in the focused window in 'x' and 'y'.
+  fn SetWindowRelativeMouseMode(window *Window, enabled u8) Bool;
+  fn GetWindowRelativeMouseMode(window *Window) Bool;
+  fn GetMouseState(x &mut f32, y &mut f32) u32;
 }
 
 pub struct @opaque Window {}      // Opaque
@@ -76,72 +127,206 @@ pub struct Rect {
   pub h i32;
 }
 
-// SDL_Event, a union of every kind of event, 56 bytes in SDL 2. Read 'type',
+// SDL_Event, a union of every kind of event, 128 bytes in SDL 3. Read 'type',
 // then look at the event as the struct that kind has: '&event as &KeyboardEvent'.
-// The buffer is larger than SDL's union needs, which is harmless.
+// Every kind begins with these three fields.
 pub struct Event {
   pub type u32;
-  pub timestamp u32;   // In milliseconds
-  pub buffer [248; u8];
+  pub reserved u32;
+  pub timestamp u64;   // In nanoseconds, on GetTicksNS's clock
+  pub buffer [112; u8];
 
   // An event to fill: 'mut event = Event.empty(); while sdl.PollEvent(&mut event) ...'
-  pub fn empty() Event { Event[0u32, 0u32, [248; 0u8]]; }
+  pub fn empty() Event { Event[0u32, 0u32, 0u64, [112; 0u8]]; }
 }
 
-// SDL_WindowEvent: type is WINDOWEVENT
+// SDL_WindowEvent: type is one of EVENT_WINDOW_...
 pub struct WindowEvent {
   pub type u32;
-  pub timestamp u32;
+  pub reserved u32;
+  pub timestamp u64;   // In nanoseconds
   pub windowID u32;
-  pub event u8;        // WINDOWEVENT_RESIZED, ...
-  pub padding1 u8;
-  pub padding2 u8;
-  pub padding3 u8;
-  pub data1 i32;       // For RESIZED, the new width
-  pub data2 i32;       // and height
+  pub data1 i32;       // For EVENT_WINDOW_RESIZED the new width and height in
+  pub data2 i32;       // the window's units; for _PIXEL_SIZE_CHANGED, in pixels
 }
 
-// SDL_KeyboardEvent: type is KEYDOWN or KEYUP
+// SDL_KeyboardEvent: type is EVENT_KEY_DOWN or EVENT_KEY_UP
 pub struct KeyboardEvent {
-  pub type u32;        // ::SDL_KEYDOWN or ::SDL_KEYUP
-  pub timestamp u32;   // In milliseconds, populated using SDL_GetTicks()
+  pub type u32;
+  pub reserved u32;
+  pub timestamp u64;   // In nanoseconds
   pub windowID u32;    // The window with keyboard focus, if any
-  pub state u8;        // ::SDL_PRESSED or ::SDL_RELEASED
-  pub repeat u8;       // Non-zero if this is a key repeat
-  pub padding2 u8;
-  pub padding3 u8;
-  pub keysym Keysym;   // The key that was pressed or released
+  pub which u32;       // The keyboard, or 0 if unknown or virtual
+  pub scancode u32;    // The physical key, whatever the layout: SCANCODE_...
+  pub key u32;         // The key the layout makes of it: K_...
+  pub keymod u16;      // C's 'mod': the modifiers held, KMOD_...
+  pub raw u16;         // The platform's own scancode
+  pub down u8;         // 1 if the key is pressed
+  pub repeat u8;       // 1 if this is a key repeat
 }
 
-pub struct Keysym {
-  pub scancode u32;    // SDL_Scancode SDL physical key code - see ::SDL_Scancode for details
-  pub sym u32;         // SDL_Keycode SDL virtual key code - see ::SDL_Keycode for details
-  pub modifier u16;    // current key modifiers
-  pub unused u32;
+// SDL_MouseMotionEvent: type is EVENT_MOUSE_MOTION. Places are in the
+// window's units, from its top left.
+pub struct MouseMotionEvent {
+  pub type u32;
+  pub reserved u32;
+  pub timestamp u64;   // In nanoseconds
+  pub windowID u32;    // The window with mouse focus, if any
+  pub which u32;       // The mouse in relative mode, TOUCH_MOUSEID or PEN_MOUSEID, or 0
+  pub state u32;       // The buttons held: BUTTON_MASK_...
+  pub x f32;
+  pub y f32;
+  pub xrel f32;        // The movement since the last motion event
+  pub yrel f32;
 }
 
-// Init's subsystems
+// SDL_MouseButtonEvent: type is EVENT_MOUSE_BUTTON_DOWN or _UP
+pub struct MouseButtonEvent {
+  pub type u32;
+  pub reserved u32;
+  pub timestamp u64;   // In nanoseconds
+  pub windowID u32;
+  pub which u32;
+  pub button u8;       // BUTTON_LEFT, ...
+  pub down u8;         // 1 if the button is pressed
+  pub clicks u8;       // 1 for a single click, 2 for a double click, ...
+  pub padding u8;
+  pub x f32;
+  pub y f32;
+}
+
+// SDL_MouseWheelEvent: type is EVENT_MOUSE_WHEEL
+pub struct MouseWheelEvent {
+  pub type u32;
+  pub reserved u32;
+  pub timestamp u64;   // In nanoseconds
+  pub windowID u32;
+  pub which u32;
+  pub x f32;           // Scrolled right (+) or left (-)
+  pub y f32;           // Scrolled away from the user (+) or towards (-)
+  pub direction u32;   // MOUSEWHEEL_FLIPPED: x and y are the other way round
+  pub mouse_x f32;     // The cursor's place in the window
+  pub mouse_y f32;
+  pub integer_x i32;   // x and y summed into whole notches of the wheel
+  pub integer_y i32;
+}
+
+// SDL_TouchFingerEvent: type is EVENT_FINGER_DOWN, _UP, _MOTION or
+// _CANCELED. Places are 0 to 1 across the window.
+pub struct TouchFingerEvent {
+  pub type u32;
+  pub reserved u32;
+  pub timestamp u64;   // In nanoseconds
+  pub touchID u64;     // The touch device
+  pub fingerID u64;
+  pub x f32;
+  pub y f32;
+  pub dx f32;
+  pub dy f32;
+  pub pressure f32;    // 0 to 1
+  pub windowID u32;    // The window under the finger, if any
+}
+
+// SDL_TextInputEvent: type is EVENT_TEXT_INPUT, which comes only between
+// SDL_StartTextInput and SDL_StopTextInput (not bound yet)
+pub struct TextInputEvent {
+  pub type u32;
+  pub reserved u32;
+  pub timestamp u64;   // In nanoseconds
+  pub windowID u32;
+  pub text *u8;        // UTF-8, ending in a zero; SDL's, valid until the next poll
+}
+
+// Init's subsystems (VIDEO starts EVENTS too)
 pub const INIT_VIDEO = 0x20u32;
+pub const INIT_EVENTS = 0x4000u32;
 
-// CreateWindow's position, and its flags
-pub const WINDOWPOS_CENTERED = 0x2FFF0000u;
-pub const WINDOW_FULLSCREEN = 0x1u;
-pub const WINDOW_RESIZABLE = 0x20u;
-pub const WINDOW_VULKAN = 0x10000000u;
-pub const WINDOW_FULLSCREEN_DESKTOP = 0x1001u;
+// CreateWindow's flags, and SetWindowPosition's centre
+pub const WINDOW_FULLSCREEN = 0x1u64;
+pub const WINDOW_HIDDEN = 0x8u64;
+pub const WINDOW_RESIZABLE = 0x20u64;
+pub const WINDOW_HIGH_PIXEL_DENSITY = 0x2000u64;
+pub const WINDOW_VULKAN = 0x10000000u64;
+pub const WINDOWPOS_CENTERED = 0x2FFF0000i32;
 
-// Event types
-pub const QUIT = 256u;
-pub const WINDOWEVENT = 0x200u;
-pub const KEYDOWN = 768u;
-pub const KEYUP = 769u;
+// Event types: an Event's 'type'
+pub const EVENT_QUIT = 0x100u;
+pub const EVENT_WINDOW_SHOWN = 0x202u;
+pub const EVENT_WINDOW_HIDDEN = 0x203u;
+pub const EVENT_WINDOW_EXPOSED = 0x204u;
+pub const EVENT_WINDOW_MOVED = 0x205u;
+pub const EVENT_WINDOW_RESIZED = 0x206u;              // data1, data2: the size in the window's units
+pub const EVENT_WINDOW_PIXEL_SIZE_CHANGED = 0x207u;   // data1, data2: the size in pixels
+pub const EVENT_WINDOW_MINIMIZED = 0x209u;
+pub const EVENT_WINDOW_MAXIMIZED = 0x20Au;
+pub const EVENT_WINDOW_RESTORED = 0x20Bu;
+pub const EVENT_WINDOW_MOUSE_ENTER = 0x20Cu;
+pub const EVENT_WINDOW_MOUSE_LEAVE = 0x20Du;
+pub const EVENT_WINDOW_FOCUS_GAINED = 0x20Eu;
+pub const EVENT_WINDOW_FOCUS_LOST = 0x20Fu;
+pub const EVENT_WINDOW_CLOSE_REQUESTED = 0x210u;
+pub const EVENT_WINDOW_DISPLAY_SCALE_CHANGED = 0x213u;
+pub const EVENT_WINDOW_ENTER_FULLSCREEN = 0x216u;
+pub const EVENT_WINDOW_LEAVE_FULLSCREEN = 0x217u;
+pub const EVENT_KEY_DOWN = 0x300u;
+pub const EVENT_KEY_UP = 0x301u;
+pub const EVENT_TEXT_INPUT = 0x303u;
+pub const EVENT_MOUSE_MOTION = 0x400u;
+pub const EVENT_MOUSE_BUTTON_DOWN = 0x401u;
+pub const EVENT_MOUSE_BUTTON_UP = 0x402u;
+pub const EVENT_MOUSE_WHEEL = 0x403u;
+pub const EVENT_FINGER_DOWN = 0x700u;
+pub const EVENT_FINGER_UP = 0x701u;
+pub const EVENT_FINGER_MOTION = 0x702u;
+pub const EVENT_FINGER_CANCELED = 0x703u;
+pub const EVENT_USER = 0x8000u;
 
-// A WindowEvent's 'event'
-pub const WINDOWEVENT_RESIZED = 5u8;
-pub const WINDOWEVENT_SIZE_CHANGED = 6u8;
+// A MouseButtonEvent's 'button', and the bits of a MouseMotionEvent's
+// 'state' and of GetMouseState's answer (C's SDL_BUTTON_MASK(button))
+pub const BUTTON_LEFT = 1u8;
+pub const BUTTON_MIDDLE = 2u8;
+pub const BUTTON_RIGHT = 3u8;
+pub const BUTTON_X1 = 4u8;
+pub const BUTTON_X2 = 5u8;
+pub const BUTTON_MASK_LEFT = 0x1u;
+pub const BUTTON_MASK_MIDDLE = 0x2u;
+pub const BUTTON_MASK_RIGHT = 0x4u;
+pub const BUTTON_MASK_X1 = 0x8u;
+pub const BUTTON_MASK_X2 = 0x10u;
 
-// Key codes (a Keysym's 'sym') this package's users have needed: a key that
-// types a character has that character's code (lower case for a letter)
+// A MouseWheelEvent's 'direction'
+pub const MOUSEWHEEL_NORMAL = 0u;
+pub const MOUSEWHEEL_FLIPPED = 1u;
+
+// The 'which' of mouse events made from a touch or a pen
+pub const TOUCH_MOUSEID = 0xFFFFFFFFu;
+pub const PEN_MOUSEID = 0xFFFFFFFEu;
+
+// A KeyboardEvent's 'keymod'
+pub const KMOD_NONE = 0x0u16;
+pub const KMOD_LSHIFT = 0x1u16;
+pub const KMOD_RSHIFT = 0x2u16;
+pub const KMOD_LCTRL = 0x40u16;
+pub const KMOD_RCTRL = 0x80u16;
+pub const KMOD_LALT = 0x100u16;
+pub const KMOD_RALT = 0x200u16;
+pub const KMOD_SHIFT = 0x3u16;
+pub const KMOD_CTRL = 0xC0u16;
+pub const KMOD_ALT = 0x300u16;
+
+// Scancodes (a KeyboardEvent's 'scancode'): the key at a place on the
+// keyboard, named for what it types on a US layout, whatever the layout is
+pub const SCANCODE_A = 4u;
+pub const SCANCODE_D = 7u;
+pub const SCANCODE_S = 22u;
+pub const SCANCODE_W = 26u;
+pub const SCANCODE_ESCAPE = 41u;
+pub const SCANCODE_SPACE = 44u;
+pub const SCANCODE_F11 = 68u;
+
+// Key codes (a KeyboardEvent's 'key') this package's users have needed: a
+// key that types a character has that character's code (lower case for a
+// letter)
 pub const K_TAB = 9u;
 pub const K_ESCAPE = 27u;
 pub const K_SPACE = 32u;

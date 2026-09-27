@@ -18,6 +18,12 @@
 // 'resized' says when it changed. (Its OpenGL mode retired with the OpenGL
 // renderer: the render package draws through gpu.)
 //
+// It follows SDL3's model of a high-DPI display: the window has a size in
+// its own units ('windowSize'), which the mouse's places and 'setSize' are
+// in, and a size in pixels ('size'), which may be larger; 'pixelDensity' is
+// pixels per unit. The window asks for every pixel the display has
+// (SDL_WINDOW_HIGH_PIXEL_DENSITY).
+//
 // It is ported from the Pegasus3D browser: its window (window.cpp), the main
 // loop's frame timing (pegasus3d.cpp), and the part of its world's input
 // handling that belongs to the window rather than to a world (world.cpp): a
@@ -26,7 +32,7 @@
 // event on after that handling, and 'keyDown' says which key an event
 // pressed.
 //
-// It needs SDL2 (the sdl package): SDL2.lib on LIB to link, SDL2.dll on PATH
+// It needs SDL3 (the sdl package): SDL3.lib on LIB to link, SDL3.dll on PATH
 // to run, and a display.
 
 mod window;
@@ -41,7 +47,9 @@ pub struct Window {
   pub fullscreen Bool;      // filling the screen (F11 toggles it)
   pub running Bool;         // false once asked to quit
   pub resized Bool;         // set when the window's size changes; the caller clears it
-  lastTicks u32;            // SDL's clock at the last frame
+  lastTicks u64;            // SDL's clock at the last frame, in nanoseconds
+  pixelW i32;               // its size in pixels when 'resized' was last set
+  pixelH i32;               // (or when it opened)
 
   // Open a window for Vulkan to draw into: centered, three quarters of the
   // display each way, resizable, 'title' in its title bar. Making it loads
@@ -50,19 +58,22 @@ pub struct Window {
   pub fn openVulkan(title &[]u8) Window {
     // (Built from locals and made at the end: a function of the type that is
     // not a method may not set a private field of a value it holds.)
-    if sdl.Init(sdl.INIT_VIDEO) < 0 {
-      logSDLError("Failed to initialize SDL2's Video subsystem");
+    if !sdl.Init(sdl.INIT_VIDEO) {
+      logSDLError("Failed to initialize SDL's video subsystem");
       return Window.unopened();
     }
     imm window = createWindow(title, sdl.WINDOW_VULKAN);
     if !window { return Window.unopened(); }
-    Window[window, false, true, false, sdl.GetTicks()];
+    mut w = 0;
+    mut h = 0;
+    sdl.GetWindowSizeInPixels(window, &mut w, &mut h);
+    Window[window, false, true, false, sdl.GetTicksNS(), w, h];
   }
 
   // A window that did not open: 'isOpen' is false, and everything else does
   // nothing
   fn unopened() Window {
-    Window[0usize as *sdl.Window, false, false, false, 0u32];
+    Window[0usize as *sdl.Window, false, false, false, 0u64, 0, 0];
   }
 
   // Whether the window opened
@@ -74,14 +85,29 @@ pub struct Window {
   // SDL's window, for making a Vulkan surface of it (gpu's 'createSurface')
   pub fn sdlHandle(self &) *sdl.Window { sdlWindow; }
 
-  // Its drawable's size in pixels, as a rectangle at (0, 0): what a
-  // swapchain is sized by (it differs from the window's on a high-DPI
-  // display)
+  // Its size in pixels, as a rectangle at (0, 0): what a swapchain is
+  // sized by (it may be larger than 'windowSize' on a high-DPI display)
   pub fn size(self &) IRect {
     mut w = 0;
     mut h = 0;
-    if self.isOpen() { sdl.Vulkan_GetDrawableSize(sdlWindow, &mut w, &mut h); }
+    if self.isOpen() { sdl.GetWindowSizeInPixels(sdlWindow, &mut w, &mut h); }
     IRect[0, 0, w, h];
+  }
+
+  // Its size in the window's own units, as a rectangle at (0, 0): what the
+  // mouse's places and 'setSize' are in
+  pub fn windowSize(self &) IRect {
+    mut w = 0;
+    mut h = 0;
+    if self.isOpen() { sdl.GetWindowSize(sdlWindow, &mut w, &mut h); }
+    IRect[0, 0, w, h];
+  }
+
+  // Pixels per window unit (1 where the two are the same, 2 on a display
+  // drawing two pixels a unit): a mouse place times this is a pixel's
+  pub fn pixelDensity(self &) f32 {
+    if !self.isOpen() { return 1.; }
+    sdl.GetWindowPixelDensity(sdlWindow);
   }
 
   // Put 'title' in its title bar
@@ -108,15 +134,15 @@ pub struct Window {
   pub fn setFullscreen(self &mut, on Bool) {
     fullscreen = on;
     if self.isOpen() {
-      sdl.SetWindowFullscreen(sdlWindow, if on {sdl.WINDOW_FULLSCREEN_DESKTOP;} else {0u;});
+      sdl.SetWindowFullscreen(sdlWindow, if on {1u8;} else {0u8;});
     }
   }
 
   // The seconds since the last call (or since 'openVulkan'), for moving
   // things at a steady speed however fast frames come
   pub fn nextFrame(self &mut) f32 {
-    imm now = sdl.GetTicks();
-    imm dt = f32[now - lastTicks] / 1000.;
+    imm now = sdl.GetTicksNS();
+    imm dt = f32[f64[now - lastTicks] / 1.0e9];
     lastTicks = now;
     dt;
   }
@@ -124,21 +150,29 @@ pub struct Window {
   // Take the next waiting event into 'event', handling it as every window
   // does: a quit, or Escape, clears 'running'; F11 toggles fullscreen; a
   // resize sets 'resized'. Answers false when no event was waiting. The
-  // caller sees every event, handled or not.
+  // caller sees every event, handled or not, each with SDL's timestamp in
+  // nanoseconds; the keyboard's, the mouse's (motion, buttons, the wheel)
+  // and the rest are the caller's to act on. A resize is a change in the
+  // window's size in pixels, 'size': SDL reports one after every change in
+  // the window's size (and alone when the window moves to a display of
+  // another density), and once more, unchanged, as the window is first
+  // shown, which is not a resize.
   pub fn pollEvent(self &mut, event &mut sdl.Event) Bool {
-    if sdl.PollEvent(event) == 0 { return false; }
-    if event.type == sdl.QUIT {
+    if !sdl.PollEvent(event) { return false; }
+    if event.type == sdl.EVENT_QUIT {
       running = false;
-    } elif event.type == sdl.WINDOWEVENT {
+    } elif event.type == sdl.EVENT_WINDOW_PIXEL_SIZE_CHANGED {
       imm we = event as &sdl.WindowEvent;
-      if we.event == sdl.WINDOWEVENT_RESIZED or we.event == sdl.WINDOWEVENT_SIZE_CHANGED {
+      if we.data1 != pixelW or we.data2 != pixelH {
+        pixelW = we.data1;
+        pixelH = we.data2;
         resized = true;
       }
-    } elif event.type == sdl.KEYDOWN {
+    } elif event.type == sdl.EVENT_KEY_DOWN {
       imm ke = event as &sdl.KeyboardEvent;
-      if ke.keysym.sym == sdl.K_ESCAPE {
+      if ke.key == sdl.K_ESCAPE {
         running = false;
-      } elif ke.keysym.sym == sdl.K_F11 {
+      } elif ke.key == sdl.K_F11 {
         self.setFullscreen(!fullscreen);
       }
     }
@@ -161,22 +195,26 @@ pub struct Window {
 // The key (SDL's key code: sdl.K_...) an event pressed, or 0 if it is not
 // a key pressed (a key held down and repeating counts once)
 pub fn keyDown(event &sdl.Event) u32 {
-  if event.type != sdl.KEYDOWN { return 0u; }
+  if event.type != sdl.EVENT_KEY_DOWN { return 0u; }
   imm ke = event as &sdl.KeyboardEvent;
   if ke.repeat != 0u8 { return 0u; }
-  ke.keysym.sym;
+  ke.key;
 }
 
-// Make SDL's window: centered, three quarters of the display each way,
-// resizable, with 'flags' for how it is drawn. Null, with SDL's reason on
-// stderr, if it could not be made.
-fn createWindow(title &[]u8, flags u32) *sdl.Window {
+// Make SDL's window: centered, three quarters of the primary display each
+// way, resizable, with every pixel the display has, and with 'flags' for how
+// it is drawn. Null, with SDL's reason on stderr, if it could not be made.
+fn createWindow(title &[]u8, flags u64) *sdl.Window {
   mut bounds = sdl.Rect[0, 0, 1024, 768];
-  sdl.GetDisplayBounds(0, &mut bounds);
+  sdl.GetDisplayBounds(sdl.GetPrimaryDisplay(), &mut bounds);
   mut ctitle = String.from(title);
-  imm window = sdl.CreateWindow(ctitle.cstr(), sdl.WINDOWPOS_CENTERED, sdl.WINDOWPOS_CENTERED,
-    bounds.w * 3 / 4, bounds.h * 3 / 4, flags | sdl.WINDOW_RESIZABLE);
-  if !window { logSDLError("Unable to open window"); }
+  imm window = sdl.CreateWindow(ctitle.cstr(), bounds.w * 3 / 4, bounds.h * 3 / 4,
+    flags | sdl.WINDOW_RESIZABLE | sdl.WINDOW_HIGH_PIXEL_DENSITY);
+  if !window {
+    logSDLError("Unable to open window");
+    return window;
+  }
+  sdl.SetWindowPosition(window, sdl.WINDOWPOS_CENTERED, sdl.WINDOWPOS_CENTERED);
   window;
 }
 
