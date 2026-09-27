@@ -1,0 +1,1332 @@
+// The gpu package: Cone's own thin GPU layer, shaped like WebGPU's objects,
+// the common subset of Vulkan, Direct3D 12 and Metal, with Vulkan (the vulkan
+// package) as its first and only backend. Nothing of Vulkan's appears in what
+// it offers: a program uses these objects, and a later backend puts another
+// API under the same ones, as Godot's RenderingDevice puts Vulkan, Direct3D 12
+// and Metal under one interface.
+//
+//   mut win = Window.openVulkan("clear");             // the window package
+//   mut instance = Instance.create("clear");
+//   mut surface = instance.createSurface(win.sdlHandle());
+//   mut adapter = instance.requestAdapter(&surface, POWER_PREFERENCE_HIGH_PERFORMANCE);
+//   mut device = adapter.requestDevice();
+//   imm size = win.size();
+//   mut swapchain = device.createSwapChain(&surface, u32[size.w], u32[size.h]);
+//   while win.running {
+//     win.pollEvents();
+//     imm frame = swapchain.getCurrentTexture(&mut device);
+//     if frame.ok() {
+//       mut encoder = device.createCommandEncoder();
+//       imm attachment = RenderPassColorAttachment[view: frame.texture.createView(),
+//         clearValue: Color[0.1, 0.2, 0.4, 1.]];
+//       mut pass = encoder.beginRenderPass(&attachment);
+//       pass.end();
+//       device.queue.submit(encoder.finish());
+//       swapchain.present(&mut device);
+//     }
+//   }
+//
+// The objects are WebGPU's: an Instance finds Adapters (GPUs), an Adapter
+// makes a Device, which has a Queue; a Surface is a window's, and a SwapChain
+// hands out its Textures to draw into, one a frame. Commands are recorded with
+// a CommandEncoder, drawing inside a RenderPass that clears or keeps each
+// attachment, and finished into a CommandBuffer the Queue submits. Where
+// WebGPU's shape and Vulkan's differ, this follows WebGPU's names and says so:
+//
+// - The swapchain is its own object, made by the Device from a Surface
+//   (WebGPU's 'device.createSwapChain', before 2023 moved it onto the
+//   surface), so that it is made after the device and ends before it: each
+//   object here is ended by its finalizer, in the reverse of the order it was
+//   declared, which is the order Vulkan's objects must be destroyed in.
+// - 'getCurrentTexture' and 'present' are handed the Device, which owns the
+//   frames in flight their synchronization belongs to.
+//
+// Frames in flight. The CPU records frame N+1 while the GPU draws frame N:
+// there are FRAMES_IN_FLIGHT (2) sets of per-frame state, each a fence the
+// frame's last submission signals, the command pools its commands are
+// recorded from, and the semaphore its swapchain image is acquired with. A
+// frame begins (implicitly, with its first 'getCurrentTexture' or
+// 'createCommandEncoder') by waiting for the fence of the frame two back and
+// resetting that frame's pools, so nothing still in use is reused. 'present'
+// ends it: a submission that waits for the image to be acquired, if no
+// submission did yet, signals the image's render-finished semaphore and the
+// frame's fence, and the image is presented once the semaphore is. One
+// render-finished semaphore per swapchain image, not per frame, is what the
+// Vulkan guide recommends, since presentation holds it longer than a frame.
+// A program with no swapchain ends each frame with 'device.endFrame()'.
+//
+// A swapchain that is out of date or suboptimal (the window was resized) is
+// made again, after the device is idle; so is one after 'resize'. A window
+// with no area (minimized) gives no texture: its status is SKIPPED.
+//
+// Threads. Command recording is why this layer exists instead of WebGPU's
+// own: Vulkan, Direct3D 12 and Metal record commands on many threads at once,
+// each into buffers from its own command pool, and submit them together.
+// Cone has no threads yet, so there is one recording thread now; the design
+// is Vulkan's convention for more: each frame in flight holds one command
+// pool per recording thread (FrameState's pool is thread 0's), a thread
+// records only from its own pool of the current frame, so pools are never
+// shared and need no lock, and the Queue, which submits, belongs to one
+// thread. When threads come, 'createCommandEncoder' takes the thread's index
+// and each frame holds an array of pools; the objects' shapes do not change.
+//
+// Synchronization. Barriers are this layer's, not the caller's, as in WebGPU:
+// a swapchain texture is kept in the layout presentation wants between
+// commands, a render pass moves it to the attachment layout and back, and a
+// copy from it to the copy-source layout and back. A swapchain image is moved
+// out of 'undefined' the first time it is acquired. Vulkan 1.3's
+// synchronization2 barriers and dynamic rendering (no render-pass objects)
+// are used throughout.
+//
+// Errors. Every Vulkan call that answers a VkResult is checked; a failure is
+// written to stderr with the result's name ("gpu: vkQueuePresentKHR failed:
+// ERROR_DEVICE_LOST") and counted, and 'failures()' answers how many. When
+// the Khronos validation layer (VK_LAYER_KHRONOS_validation, from the Vulkan
+// SDK) is installed, the instance enables it; and when the loader offers
+// VK_EXT_debug_utils, its warnings and errors go to stderr and are counted
+// by 'validationMessages()'. Without them, both are off, and say so.
+//
+// The pieces the triangle needs next (shader modules, pipelines, bind
+// groups, vertex and index buffers) are bound in the vulkan package but not
+// yet offered here. Buffers are: made, mapped when the CPU reads or writes
+// them, and filled by copying a texture into them, which is how a program
+// checks what was drawn.
+
+mod gpu;
+
+import libc;
+import sdl;
+import vulkan;
+import geomath use Color;
+import collections use String;
+
+// ---- Constants ----
+
+// Frames the CPU may record ahead of the GPU
+pub const FRAMES_IN_FLIGHT = 2u32;
+
+const MAX_SWAPCHAIN_IMAGES = 8u32;
+const MAX_FRAME_COMMAND_BUFFERS = 16u32;
+const NO_TIMEOUT = 0xFFFFFFFFFFFFFFFFu64;
+
+// Texture formats (WebGPU's names)
+pub const TEXTURE_FORMAT_UNDEFINED = 0u32;
+pub const TEXTURE_FORMAT_RGBA8_UNORM = 1u32;
+pub const TEXTURE_FORMAT_RGBA8_UNORM_SRGB = 2u32;
+pub const TEXTURE_FORMAT_BGRA8_UNORM = 3u32;
+pub const TEXTURE_FORMAT_BGRA8_UNORM_SRGB = 4u32;
+pub const TEXTURE_FORMAT_DEPTH32_FLOAT = 5u32;
+
+// What a render pass does with an attachment at its start and its end
+pub const LOAD_OP_CLEAR = 1u32;
+pub const LOAD_OP_LOAD = 2u32;
+pub const STORE_OP_STORE = 1u32;
+pub const STORE_OP_DISCARD = 2u32;
+
+// Buffer usages (WebGPU's bits), OR-ed together
+pub const BUFFER_USAGE_MAP_READ = 0x1u32;
+pub const BUFFER_USAGE_MAP_WRITE = 0x2u32;
+pub const BUFFER_USAGE_COPY_SRC = 0x4u32;
+pub const BUFFER_USAGE_COPY_DST = 0x8u32;
+pub const BUFFER_USAGE_INDEX = 0x10u32;
+pub const BUFFER_USAGE_VERTEX = 0x20u32;
+pub const BUFFER_USAGE_UNIFORM = 0x40u32;
+pub const BUFFER_USAGE_STORAGE = 0x80u32;
+pub const BUFFER_USAGE_INDIRECT = 0x100u32;
+
+// Which GPU 'requestAdapter' prefers where there are several (WebGPU's)
+pub const POWER_PREFERENCE_HIGH_PERFORMANCE = 1u32;   // a discrete GPU first
+pub const POWER_PREFERENCE_LOW_POWER = 2u32;          // an integrated GPU first
+
+// Adapter types (WebGPU's)
+pub const ADAPTER_TYPE_DISCRETE_GPU = 1u32;
+pub const ADAPTER_TYPE_INTEGRATED_GPU = 2u32;
+pub const ADAPTER_TYPE_CPU = 3u32;
+pub const ADAPTER_TYPE_UNKNOWN = 4u32;
+
+// What 'getCurrentTexture' found
+pub const SURFACE_TEXTURE_SUCCESS_OPTIMAL = 1u32;     // a texture to draw into
+pub const SURFACE_TEXTURE_SUCCESS_SUBOPTIMAL = 2u32;  // a texture; the swapchain is made again after it
+pub const SURFACE_TEXTURE_SKIPPED = 3u32;             // the window has no area: draw nothing this frame
+pub const SURFACE_TEXTURE_OUTDATED = 4u32;            // out of date even when made again
+pub const SURFACE_TEXTURE_ERROR = 5u32;               // failed (on stderr)
+
+// ---- Failures ----
+
+mut failureCount = 0u32;
+mut messageCount = 0u32;
+
+// How many Vulkan calls have failed
+pub fn failures() u32 { failureCount; }
+
+// How many warnings and errors the validation layer has reported (the
+// loader's own, about its configuration, are printed and not counted)
+pub fn validationMessages() u32 { messageCount; }
+
+// Whether 'r' is success; if not, report it, naming 'what', and count it
+fn check(r i32, what &[]u8) Bool {
+  if r == vulkan.SUCCESS { return true; }
+  failureCount = failureCount + 1u32;
+  mut m = String.from("gpu: ");
+  m <- what;
+  m <- " failed: ";
+  m <- vulkan.resultName(r);
+  logLine(m.view());
+  false;
+}
+
+// Report a failure that is not a VkResult, and count it
+fn fail(msg &[]u8) {
+  failureCount = failureCount + 1u32;
+  mut m = String.from("gpu: ");
+  m <- msg;
+  logLine(m.view());
+}
+
+fn logLine(msg &[]u8) {
+  mut m = String.from(msg);
+  m.appendByte('\n');
+  imm v = m.view();
+  libc.fflush(libc.stdout());
+  libc.fwrite(v, 1usize, v.len, libc.stderr());
+}
+
+fn appendCStr(s &mut String, p *u8) {
+  mut i = 0usize;
+  while *(p + i) != 0u8 {
+    s.appendByte(*(p + i));
+    i = i + 1usize;
+  }
+}
+
+fn nullp() *u8 { 0usize as *u8; }
+
+// A value of T with every byte zero, for a C struct Vulkan fills in
+fn zeroed[T]() T {
+  imm p = libc.calloc(1usize, mem.sizeof[T]()) as *T;
+  imm v = mem.readRaw[T](p);
+  libc.free(p as *u8);
+  v;
+}
+
+// The debug messenger's callback: the loader or the validation layer calls
+// it with a warning or an error
+fn onDebugMessage(severity u32, types u32, data *vulkan.DebugUtilsMessengerCallbackDataEXT, user *u8) u32 {
+  if (types & vulkan.DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT) == 0u32 { messageCount = messageCount + 1u32; }
+  mut m = String.from("gpu: Vulkan ");
+  if severity >= vulkan.DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT {
+    m <- "error: ";
+  } else {
+    m <- "warning: ";
+  }
+  appendCStr(&mut m, data.pMessage);
+  logLine(m.view());
+  vulkan.FALSE;
+}
+
+// Whether the instance layer 'name' is installed
+fn hasInstanceLayer(name *u8) Bool {
+  mut n = 0u32;
+  if vulkan.enumerateInstanceLayerProperties(&mut n, 0usize as *vulkan.LayerProperties) != vulkan.SUCCESS { return false; }
+  if n == 0u32 { return false; }
+  imm size = mem.sizeof[vulkan.LayerProperties]();
+  imm props = libc.calloc(usize[n], size);
+  vulkan.enumerateInstanceLayerProperties(&mut n, props as *vulkan.LayerProperties);
+  mut found = false;
+  mut i = 0usize;
+  while i < usize[n] {
+    // layerName is the first field
+    if libc.strcmp(props + i * size, name) == 0i32 { found = true; }
+    i = i + 1usize;
+  }
+  libc.free(props);
+  found;
+}
+
+// Whether the instance extension 'name' is offered by the loader
+fn hasInstanceExtension(name *u8) Bool {
+  mut n = 0u32;
+  if vulkan.enumerateInstanceExtensionProperties(nullp(), &mut n, 0usize as *vulkan.ExtensionProperties) != vulkan.SUCCESS {
+    return false;
+  }
+  if n == 0u32 { return false; }
+  imm size = mem.sizeof[vulkan.ExtensionProperties]();
+  imm props = libc.calloc(usize[n], size);
+  vulkan.enumerateInstanceExtensionProperties(nullp(), &mut n, props as *vulkan.ExtensionProperties);
+  mut found = false;
+  mut i = 0usize;
+  while i < usize[n] {
+    if libc.strcmp(props + i * size, name) == 0i32 { found = true; }
+    i = i + 1usize;
+  }
+  libc.free(props);
+  found;
+}
+
+// Whether 'physical' offers the device extension 'name'
+fn hasDeviceExtension(physical vulkan.PhysicalDevice, name *u8) Bool {
+  mut n = 0u32;
+  if vulkan.enumerateDeviceExtensionProperties(physical, nullp(), &mut n, 0usize as *vulkan.ExtensionProperties)
+      != vulkan.SUCCESS {
+    return false;
+  }
+  if n == 0u32 { return false; }
+  imm size = mem.sizeof[vulkan.ExtensionProperties]();
+  imm props = libc.calloc(usize[n], size);
+  vulkan.enumerateDeviceExtensionProperties(physical, nullp(), &mut n, props as *vulkan.ExtensionProperties);
+  mut found = false;
+  mut i = 0usize;
+  while i < usize[n] {
+    if libc.strcmp(props + i * size, name) == 0i32 { found = true; }
+    i = i + 1usize;
+  }
+  libc.free(props);
+  found;
+}
+
+// ---- Instance ----
+
+struct InstanceBackend {
+  pub handle vulkan.Instance;
+  pub messenger vulkan.DebugUtilsMessengerEXT;
+  pub loaded Bool;             // SDL loaded the Vulkan loader for it
+}
+
+// The entry point: Vulkan loaded, an instance made with what a window's
+// surface needs, and validation and debug messages on where they are offered
+pub struct Instance {
+  pub backend InstanceBackend;
+  pub validation Bool;         // the Khronos validation layer is on
+  pub debugMessages Bool;      // the loader's and layers' warnings and errors are reported
+
+  // Load Vulkan (through SDL: no window is needed yet) and make an instance
+  // for 'appName'. Check 'isValid': without a Vulkan 1.3 loader it is not,
+  // and why has gone to stderr.
+  pub fn create(appName &[]u8) Instance {
+    mut result = Instance[InstanceBackend[0usize as vulkan.Instance, vulkan.DebugUtilsMessengerEXT[0u64], false],
+      false, false];
+    if sdl.InitSubSystem(sdl.INIT_VIDEO) != 0i32 {
+      fail("SDL's video subsystem did not start");
+      return result;
+    }
+    if sdl.Vulkan_LoadLibrary(nullp()) != 0i32 {
+      fail("no Vulkan loader (vulkan-1.dll) was found");
+      return result;
+    }
+    result.backend.loaded = true;
+    if !vulkan.load(sdl.Vulkan_GetVkGetInstanceProcAddr() as vulkan.PFN_GetInstanceProcAddr) {
+      fail("the Vulkan loader lacks its global functions");
+      return result;
+    }
+    mut version = 0u32;
+    if !check(vulkan.enumerateInstanceVersion(&mut version), "vkEnumerateInstanceVersion") { return result; }
+    if version < vulkan.API_VERSION_1_3 {
+      fail("the Vulkan loader is older than Vulkan 1.3");
+      return result;
+    }
+
+    // The extensions a surface needs (SDL's answer for this platform), and
+    // debug utils if the loader has them
+    mut exts [12; *u8] = [12; 0usize as *u8];
+    mut next = 10u32;
+    if sdl.Vulkan_GetInstanceExtensions(0usize as *sdl.Window, &mut next, &mut exts as **u8) != 1u32 {
+      fail("SDL could not name the surface extensions");
+      return result;
+    }
+    result.debugMessages = hasInstanceExtension(&"VK_EXT_debug_utils" as *u8);
+    if result.debugMessages {
+      exts[usize[next]] = &"VK_EXT_debug_utils" as *u8;
+      next = next + 1u32;
+    }
+    result.validation = hasInstanceLayer(&"VK_LAYER_KHRONOS_validation" as *u8);
+    imm layers [1; *u8] = [&"VK_LAYER_KHRONOS_validation" as *u8];
+
+    // The messenger's create-info, chained, catches instance creation's own messages
+    imm dbg = vulkan.DebugUtilsMessengerCreateInfoEXT[pNext: nullp(),
+      messageSeverity: vulkan.DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | vulkan.DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+      messageType: vulkan.DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | vulkan.DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
+        | vulkan.DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+      pfnUserCallback: &onDebugMessage, pUserData: nullp()];
+    mut chain = nullp();
+    if result.debugMessages { chain = &dbg as *u8; }
+    mut name = String.from(appName);
+    imm app = vulkan.ApplicationInfo[pNext: nullp(), pApplicationName: name.cstr(), pEngineName: &"Cone gpu" as *u8];
+    mut layerCount = 0u32;
+    if result.validation { layerCount = 1u32; }
+    imm ci = vulkan.InstanceCreateInfo[pNext: chain, pApplicationInfo: &app as *vulkan.ApplicationInfo,
+      enabledLayerCount: layerCount, ppEnabledLayerNames: &layers as **u8,
+      enabledExtensionCount: next, ppEnabledExtensionNames: &exts as **u8];
+    mut handle = 0usize as vulkan.Instance;
+    if !check(vulkan.createInstance(&ci, nullp(), &mut handle), "vkCreateInstance") { return result; }
+    result.backend.handle = handle;
+    if !vulkan.loadInstance(handle) {
+      fail("the Vulkan instance lacks some of its functions");
+      return result;
+    }
+    if result.debugMessages and vulkan.hasDebugUtils() {
+      mut messenger = vulkan.DebugUtilsMessengerEXT[0u64];
+      if check(vulkan.createDebugUtilsMessengerEXT(handle, &dbg, nullp(), &mut messenger), "vkCreateDebugUtilsMessengerEXT") {
+        result.backend.messenger = messenger;
+      }
+    }
+    result;
+  }
+
+  // Whether the instance was made
+  pub fn isValid(self &) Bool { (backend.handle as *u8 as usize) != 0usize; }
+
+  // The surface of a window made for Vulkan (window's 'openVulkan', whose
+  // 'sdlHandle' this takes). Check 'isValid'.
+  pub fn createSurface(self &, window *sdl.Window) Surface {
+    mut surface = vulkan.SurfaceKHR[0u64];
+    if self.isValid() {
+      if sdl.Vulkan_CreateSurface(window, backend.handle as *u8, &mut surface.h) != 1u32 {
+        fail("SDL could not make a Vulkan surface of the window");
+      }
+    }
+    Surface[SurfaceBackend[backend.handle, surface]];
+  }
+
+  // The GPU to draw to 'surface' with: one supporting Vulkan 1.3, dynamic
+  // rendering, synchronization2 and swapchains, with a queue that both draws
+  // and presents to the surface ('Surface.none()': that only draws). Where
+  // there are several, 'powerPreference'
+  // (WebGPU's) chooses: POWER_PREFERENCE_HIGH_PERFORMANCE a discrete GPU
+  // before an integrated one, POWER_PREFERENCE_LOW_POWER the other way round.
+  // Check 'isValid'.
+  pub fn requestAdapter(self &, surface &Surface, powerPreference u32) Adapter {
+    mut chosen = 0usize as vulkan.PhysicalDevice;
+    mut chosenFamily = 0u32;
+    mut chosenScore = 0;
+    if self.isValid() {
+      mut n = 16u32;
+      mut devices [16; vulkan.PhysicalDevice] = [16; 0usize as vulkan.PhysicalDevice];
+      if check(vulkan.enumeratePhysicalDevices(backend.handle, &mut n, &mut devices as *vulkan.PhysicalDevice),
+          "vkEnumeratePhysicalDevices") {
+        mut i = 0usize;
+        while i < usize[n] {
+          mut family = 0u32;
+          imm score = adapterScore(devices[i], surface.backend.surface, powerPreference, &mut family);
+          if score > chosenScore {
+            chosen = devices[i];
+            chosenFamily = family;
+            chosenScore = score;
+          }
+          i = i + 1usize;
+        }
+      }
+    }
+    if chosenScore == 0 {
+      fail("no GPU supports Vulkan 1.3 with dynamic rendering and synchronization2 (and presents to the surface)");
+      return Adapter[AdapterBackend[chosen, 0u32], String.from(""), ADAPTER_TYPE_UNKNOWN, String.from(""), 0u32, 0u32];
+    }
+    mut props = zeroed[vulkan.PhysicalDeviceProperties]();
+    vulkan.getPhysicalDeviceProperties(chosen, &mut props);
+    mut name = String.empty();
+    appendCStr(&mut name, &mut props.deviceName as *u8);
+    mut version = String.empty();
+    version <- u64[vulkan.apiVersionMajor(props.apiVersion)];
+    version.appendByte('.');
+    version <- u64[vulkan.apiVersionMinor(props.apiVersion)];
+    version.appendByte('.');
+    version <- u64[vulkan.apiVersionPatch(props.apiVersion)];
+    mut kind = ADAPTER_TYPE_UNKNOWN;
+    if props.deviceType == vulkan.PHYSICAL_DEVICE_TYPE_DISCRETE_GPU { kind = ADAPTER_TYPE_DISCRETE_GPU; }
+    if props.deviceType == vulkan.PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU { kind = ADAPTER_TYPE_INTEGRATED_GPU; }
+    if props.deviceType == vulkan.PHYSICAL_DEVICE_TYPE_CPU { kind = ADAPTER_TYPE_CPU; }
+    Adapter[AdapterBackend[chosen, chosenFamily], name, kind, version, props.vendorID, props.deviceID];
+  }
+
+  // Its end, after every object made from it
+  fn final(self &uni) {
+    // (A method called on 'self' here would move it: the checks are inline.)
+    if (backend.handle as *u8 as usize) != 0usize {
+      if backend.messenger.h != 0u64 { vulkan.destroyDebugUtilsMessengerEXT(backend.handle, backend.messenger, nullp()); }
+      vulkan.destroyInstance(backend.handle, nullp());
+    }
+    if backend.loaded { sdl.Vulkan_UnloadLibrary(); }
+    sdl.QuitSubSystem(sdl.INIT_VIDEO);
+  }
+}
+
+// How well 'physical' suits: 0 if it cannot be used, else higher for the
+// kind of GPU 'powerPreference' prefers; 'family' gets the queue family that
+// draws and presents
+fn adapterScore(physical vulkan.PhysicalDevice, surface vulkan.SurfaceKHR, powerPreference u32, family &mut u32) i32 {
+  mut discrete = 3;
+  mut integrated = 2;
+  if powerPreference == POWER_PREFERENCE_LOW_POWER {
+    discrete = 2;
+    integrated = 3;
+  }
+  mut props = zeroed[vulkan.PhysicalDeviceProperties]();
+  vulkan.getPhysicalDeviceProperties(physical, &mut props);
+  if props.apiVersion < vulkan.API_VERSION_1_3 { return 0; }
+  if !hasDeviceExtension(physical, &"VK_KHR_swapchain" as *u8) { return 0; }
+
+  mut f13 = vulkan.PhysicalDeviceVulkan13Features[pNext: nullp()];
+  mut f2 = vulkan.PhysicalDeviceFeatures2[pNext: &mut f13 as *u8, features: zeroed[vulkan.PhysicalDeviceFeatures]()];
+  vulkan.getPhysicalDeviceFeatures2(physical, &mut f2);
+  if f13.dynamicRendering != vulkan.TRUE or f13.synchronization2 != vulkan.TRUE { return 0; }
+
+  mut n = 16u32;
+  mut families [16; vulkan.QueueFamilyProperties] = [16; zeroed[vulkan.QueueFamilyProperties]()];
+  vulkan.getPhysicalDeviceQueueFamilyProperties(physical, &mut n, &mut families as *vulkan.QueueFamilyProperties);
+  mut i = 0u32;
+  while i < n {
+    mut presents = vulkan.TRUE;       // with no surface, any queue family that draws
+    if surface.h != 0u64 { vulkan.getPhysicalDeviceSurfaceSupportKHR(physical, i, surface, &mut presents); }
+    if (families[usize[i]].queueFlags & vulkan.QUEUE_GRAPHICS_BIT) != 0u32 and presents == vulkan.TRUE {
+      *family = i;
+      if props.deviceType == vulkan.PHYSICAL_DEVICE_TYPE_DISCRETE_GPU { return discrete; }
+      if props.deviceType == vulkan.PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU { return integrated; }
+      return 1;
+    }
+    i = i + 1u32;
+  }
+  0;
+}
+
+// ---- Surface ----
+
+struct SurfaceBackend {
+  pub instance vulkan.Instance;
+  pub surface vulkan.SurfaceKHR;
+}
+
+// A window's surface, which a SwapChain presents to
+pub struct Surface {
+  pub backend SurfaceBackend;
+
+  pub fn isValid(self &) Bool { backend.surface.h != 0u64; }
+
+  // No surface: for 'requestAdapter' when nothing is to be presented
+  // (WebGPU's compatibleSurface left out)
+  pub fn none() Surface { Surface[SurfaceBackend[0usize as vulkan.Instance, vulkan.SurfaceKHR[0u64]]]; }
+
+  fn final(self &uni) {
+    if backend.surface.h != 0u64 { vulkan.destroySurfaceKHR(backend.instance, backend.surface, nullp()); }
+  }
+}
+
+// ---- Adapter ----
+
+struct AdapterBackend {
+  pub physical vulkan.PhysicalDevice;
+  pub queueFamily u32;
+}
+
+// A GPU, and what it is
+pub struct Adapter {
+  pub backend AdapterBackend;
+  pub name String;             // "Intel(R) UHD Graphics 770"
+  pub adapterType u32;         // ADAPTER_TYPE_...
+  pub backendVersion String;   // the version of the API underneath: "1.3.290" (Vulkan)
+  pub vendorID u32;
+  pub deviceID u32;
+
+  pub fn isValid(self &) Bool { (backend.physical as *u8 as usize) != 0usize; }
+
+  // The API underneath
+  pub fn backendName(self &) &[]u8 { "Vulkan"; }
+
+  // A device on this GPU, with one queue that draws and presents. Check
+  // 'isValid'.
+  pub fn requestDevice(self &) Device {
+    mut result = Device[DeviceBackend[0usize as vulkan.Device, backend.physical, backend.queueFamily,
+      [2; FrameState[vulkan.Fence[0u64], vulkan.CommandPool[0u64], [16; 0usize as vulkan.CommandBuffer], 0u32, 0u32, false]],
+      0u32, false, zeroed[vulkan.PhysicalDeviceMemoryProperties]()],
+      Queue[QueueBackend[0usize as vulkan.Queue, vulkan.Semaphore[0u64], false]], 0u64];
+    if !self.isValid() { return result; }
+
+    imm priorities [1; f32] = [1.];
+    imm qci = vulkan.DeviceQueueCreateInfo[pNext: nullp(), queueFamilyIndex: backend.queueFamily, queueCount: 1u32,
+      pQueuePriorities: &priorities as *f32];
+    imm f13 = vulkan.PhysicalDeviceVulkan13Features[pNext: nullp(), synchronization2: vulkan.TRUE,
+      dynamicRendering: vulkan.TRUE];
+    imm exts [1; *u8] = [&"VK_KHR_swapchain" as *u8];
+    imm dci = vulkan.DeviceCreateInfo[pNext: &f13 as *u8, queueCreateInfoCount: 1u32,
+      pQueueCreateInfos: &qci as *vulkan.DeviceQueueCreateInfo, ppEnabledLayerNames: 0usize as **u8,
+      enabledExtensionCount: 1u32, ppEnabledExtensionNames: &exts as **u8,
+      pEnabledFeatures: 0usize as *vulkan.PhysicalDeviceFeatures];
+    mut device = 0usize as vulkan.Device;
+    if !check(vulkan.createDevice(backend.physical, &dci, nullp(), &mut device), "vkCreateDevice") { return result; }
+    result.backend.device = device;
+    if !vulkan.loadDevice(device) {
+      fail("the Vulkan device lacks some of its functions");
+      return result;
+    }
+    mut queue = 0usize as vulkan.Queue;
+    vulkan.getDeviceQueue(device, backend.queueFamily, 0u32, &mut queue);
+    result.queue.backend.handle = queue;
+    vulkan.getPhysicalDeviceMemoryProperties(backend.physical, &mut result.backend.memory);
+
+    // Each frame in flight: its fence, and thread 0's command pool
+    imm fci = vulkan.FenceCreateInfo[pNext: nullp()];
+    imm pci = vulkan.CommandPoolCreateInfo[pNext: nullp(), flags: vulkan.COMMAND_POOL_CREATE_TRANSIENT_BIT,
+      queueFamilyIndex: backend.queueFamily];
+    mut i = 0usize;
+    while i < 2usize {
+      mut fence = vulkan.Fence[0u64];
+      check(vulkan.createFence(device, &fci, nullp(), &mut fence), "vkCreateFence");
+      result.backend.frames[i].fence = fence;
+      mut pool = vulkan.CommandPool[0u64];
+      check(vulkan.createCommandPool(device, &pci, nullp(), &mut pool), "vkCreateCommandPool");
+      result.backend.frames[i].pool = pool;
+      i = i + 1usize;
+    }
+    result;
+  }
+}
+
+// ---- Device and Queue ----
+
+// One frame in flight's state
+struct FrameState {
+  pub fence vulkan.Fence;          // signalled by the frame's last submission
+  pub pool vulkan.CommandPool;     // recording thread 0's pool (one per thread, when there are threads)
+  pub buffers [16; vulkan.CommandBuffer];   // allocated from the pool, reused each time the frame comes round
+  pub allocated u32;
+  pub used u32;
+  pub pending Bool;                // its fence will be signalled
+}
+
+struct DeviceBackend {
+  pub device vulkan.Device;
+  pub physical vulkan.PhysicalDevice;
+  pub queueFamily u32;
+  pub frames [2; FrameState];
+  pub frameIndex u32;              // which of 'frames' is being recorded
+  pub inFrame Bool;
+  pub memory vulkan.PhysicalDeviceMemoryProperties;
+}
+
+struct QueueBackend {
+  pub handle vulkan.Queue;
+  pub acquired vulkan.Semaphore;   // the current swapchain image's acquire semaphore,
+  pub waiting Bool;                // until a submission waits for it
+}
+
+// The device's queue: what it submits runs in the order submitted
+pub struct Queue {
+  pub backend QueueBackend;
+
+  // Submit the commands 'cmd' holds. The first submission after a swapchain
+  // texture is acquired waits for it to be ready to draw into.
+  pub fn submit(self &mut, cmd CommandBuffer) Bool {
+    if (cmd.backend.cmd as *u8 as usize) == 0usize { return false; }
+    imm cbi = vulkan.CommandBufferSubmitInfo[pNext: nullp(), commandBuffer: cmd.backend.cmd];
+    submitWaiting(self, 1u32, &cbi as *vulkan.CommandBufferSubmitInfo);
+  }
+}
+
+// Submit 'count' command buffers, waiting for the acquired swapchain image
+// if no submission has yet
+fn submitWaiting(queue &mut Queue, count u32, cbis *vulkan.CommandBufferSubmitInfo) Bool {
+  imm waitInfo = vulkan.SemaphoreSubmitInfo[pNext: nullp(), semaphore: queue.backend.acquired,
+    stageMask: vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT];
+  mut waits = 0u32;
+  if queue.backend.waiting { waits = 1u32; }
+  imm submit = vulkan.SubmitInfo2[pNext: nullp(), waitSemaphoreInfoCount: waits,
+    pWaitSemaphoreInfos: &waitInfo as *vulkan.SemaphoreSubmitInfo, commandBufferInfoCount: count,
+    pCommandBufferInfos: cbis, pSignalSemaphoreInfos: 0usize as *vulkan.SemaphoreSubmitInfo];
+  queue.backend.waiting = false;
+  check(vulkan.queueSubmit2(queue.backend.handle, 1u32, &submit as *vulkan.SubmitInfo2, vulkan.Fence[0u64]),
+    "vkQueueSubmit2");
+}
+
+// A logical GPU: what makes buffers, command encoders and swapchains, and
+// keeps the frames in flight
+pub struct Device {
+  pub backend DeviceBackend;
+  pub queue Queue;
+  pub frameNumber u64;             // frames ended so far
+
+  pub fn isValid(self &) Bool { (backend.device as *u8 as usize) != 0usize; }
+
+  // Begin a frame, if one is not begun: wait until the GPU has finished the
+  // frame that last used this frame's state, and reset its command pools.
+  // 'getCurrentTexture' and 'createCommandEncoder' begin one themselves.
+  pub fn beginFrame(self &mut) {
+    if backend.inFrame or !self.isValid() { return; }
+    imm i = usize[backend.frameIndex];
+    if backend.frames[i].pending {
+      mut fence = backend.frames[i].fence;
+      check(vulkan.waitForFences(backend.device, 1u32, &mut fence as *vulkan.Fence, vulkan.TRUE, NO_TIMEOUT),
+        "vkWaitForFences");
+      check(vulkan.resetFences(backend.device, 1u32, &mut fence as *vulkan.Fence), "vkResetFences");
+      backend.frames[i].pending = false;
+    }
+    check(vulkan.resetCommandPool(backend.device, backend.frames[i].pool, 0u32), "vkResetCommandPool");
+    backend.frames[i].used = 0u32;
+    backend.inFrame = true;
+  }
+
+  // End a frame that presents nothing (a swapchain's 'present' ends its own):
+  // its fence is signalled once all it submitted is done
+  pub fn endFrame(self &mut) {
+    if !backend.inFrame { return; }
+    endFrameSignalling(self, 0u32, 0usize as *vulkan.SemaphoreSubmitInfo);
+  }
+
+  // Wait until the GPU has finished everything submitted
+  pub fn waitIdle(self &mut) {
+    if self.isValid() { check(vulkan.deviceWaitIdle(backend.device), "vkDeviceWaitIdle"); }
+  }
+
+  // A command encoder, recording into a command buffer of this frame's
+  pub fn createCommandEncoder(self &mut) CommandEncoder {
+    self.beginFrame();
+    imm cmd = nextCommandBuffer(self);
+    CommandEncoder[EncoderBackend[cmd]];
+  }
+
+  // A swapchain presenting to 'surface', its textures 'width' by 'height'
+  // (the window's drawable size, window's 'size'), in an sRGB format where
+  // the surface offers one, presented in step with the display's refresh
+  // (WebGPU's "fifo"). Check 'isValid'.
+  pub fn createSwapChain(self &mut, surface &Surface, width u32, height u32) SwapChain {
+    mut sc = SwapChain[SwapChainBackend[backend.device, backend.physical, surface.backend.surface,
+      vulkan.SwapchainKHR[0u64], vulkan.FORMAT_UNDEFINED, 0u32, 0u32, false,
+      [8; vulkan.Image[0u64]], [8; vulkan.ImageView[0u64]], [8; vulkan.Semaphore[0u64]], [8; false],
+      [2; vulkan.Semaphore[0u64]], 0u32, 0u32, false, true, width, height],
+      0u32, 0u32, TEXTURE_FORMAT_UNDEFINED, 0u64];
+    if !self.isValid() or !surface.isValid() { return sc; }
+    imm sci = vulkan.SemaphoreCreateInfo[pNext: nullp()];
+    mut i = 0usize;
+    while i < 2usize {
+      mut sem = vulkan.Semaphore[0u64];
+      check(vulkan.createSemaphore(backend.device, &sci, nullp(), &mut sem), "vkCreateSemaphore");
+      sc.backend.acquire[i] = sem;
+      i = i + 1usize;
+    }
+    sc.configure();
+    sc;
+  }
+
+  // A buffer of 'size' bytes, for 'usage' (BUFFER_USAGE_... OR-ed). One the
+  // CPU maps (MAP_READ or MAP_WRITE) is in memory the CPU sees, and mapped
+  // for as long as it lives; any other is in the GPU's own memory. Check
+  // 'isValid'.
+  pub fn createBuffer(self &mut, size u64, usage u32) Buffer {
+    mut result = Buffer[BufferBackend[backend.device, vulkan.Buffer[0u64], vulkan.DeviceMemory[0u64], nullp()],
+      size, usage];
+    if !self.isValid() { return result; }
+    mut vkUsage = 0u32;
+    if (usage & BUFFER_USAGE_COPY_SRC) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_TRANSFER_SRC_BIT; }
+    if (usage & BUFFER_USAGE_COPY_DST) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_TRANSFER_DST_BIT; }
+    if (usage & BUFFER_USAGE_INDEX) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_INDEX_BUFFER_BIT; }
+    if (usage & BUFFER_USAGE_VERTEX) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_VERTEX_BUFFER_BIT; }
+    if (usage & BUFFER_USAGE_UNIFORM) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_UNIFORM_BUFFER_BIT; }
+    if (usage & BUFFER_USAGE_STORAGE) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_STORAGE_BUFFER_BIT; }
+    if (usage & BUFFER_USAGE_INDIRECT) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_INDIRECT_BUFFER_BIT; }
+    imm bci = vulkan.BufferCreateInfo[pNext: nullp(), size: size, usage: vkUsage, pQueueFamilyIndices: 0usize as *u32];
+    mut buffer = vulkan.Buffer[0u64];
+    if !check(vulkan.createBuffer(backend.device, &bci, nullp(), &mut buffer), "vkCreateBuffer") { return result; }
+    result.backend.buffer = buffer;
+
+    mut req = zeroed[vulkan.MemoryRequirements]();
+    vulkan.getBufferMemoryRequirements(backend.device, buffer, &mut req);
+    imm mapped = (usage & (BUFFER_USAGE_MAP_READ | BUFFER_USAGE_MAP_WRITE)) != 0u32;
+    mut want = vulkan.MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    if mapped { want = vulkan.MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan.MEMORY_PROPERTY_HOST_COHERENT_BIT; }
+    imm typeIndex = memoryType(&backend.memory, req.memoryTypeBits, want);
+    if typeIndex == 0xFFFFFFFFu32 {
+      fail("no memory type suits the buffer");
+      return result;
+    }
+    imm mai = vulkan.MemoryAllocateInfo[pNext: nullp(), allocationSize: req.size, memoryTypeIndex: typeIndex];
+    mut memory = vulkan.DeviceMemory[0u64];
+    if !check(vulkan.allocateMemory(backend.device, &mai, nullp(), &mut memory), "vkAllocateMemory") { return result; }
+    result.backend.memory = memory;
+    check(vulkan.bindBufferMemory(backend.device, buffer, memory, 0u64), "vkBindBufferMemory");
+    if mapped {
+      mut p = nullp();
+      if check(vulkan.mapMemory(backend.device, memory, 0u64, vulkan.WHOLE_SIZE, 0u32, &mut p), "vkMapMemory") {
+        result.backend.mapped = p;
+      }
+    }
+    result;
+  }
+
+  // Its end, after its buffers and swapchains, once the GPU is idle
+  fn final(self &uni) {
+    if (backend.device as *u8 as usize) == 0usize { return; }
+    vulkan.deviceWaitIdle(backend.device);
+    mut i = 0usize;
+    while i < 2usize {
+      vulkan.destroyCommandPool(backend.device, backend.frames[i].pool, nullp());
+      vulkan.destroyFence(backend.device, backend.frames[i].fence, nullp());
+      i = i + 1usize;
+    }
+    vulkan.destroyDevice(backend.device, nullp());
+  }
+}
+
+// The first memory type of those in 'bits' that has all of 'want'
+fn memoryType(props &vulkan.PhysicalDeviceMemoryProperties, bits u32, want u32) u32 {
+  mut i = 0u32;
+  while i < props.memoryTypeCount {
+    if (bits & (1u32 << i)) != 0u32 and (props.memoryTypes[usize[i]].propertyFlags & want) == want { return i; }
+    i = i + 1u32;
+  }
+  0xFFFFFFFFu32;
+}
+
+// The next unused command buffer of the current frame's pool, begun
+fn nextCommandBuffer(device &mut Device) vulkan.CommandBuffer {
+  imm i = usize[device.backend.frameIndex];
+  if device.backend.frames[i].used == MAX_FRAME_COMMAND_BUFFERS {
+    fail("a frame recorded more than 16 command buffers");
+    return 0usize as vulkan.CommandBuffer;
+  }
+  if device.backend.frames[i].used == device.backend.frames[i].allocated {
+    imm ai = vulkan.CommandBufferAllocateInfo[pNext: nullp(), commandPool: device.backend.frames[i].pool,
+      commandBufferCount: 1u32];
+    mut cmd = 0usize as vulkan.CommandBuffer;
+    if !check(vulkan.allocateCommandBuffers(device.backend.device, &ai, &mut cmd as *vulkan.CommandBuffer),
+        "vkAllocateCommandBuffers") {
+      return 0usize as vulkan.CommandBuffer;
+    }
+    device.backend.frames[i].buffers[usize[device.backend.frames[i].allocated]] = cmd;
+    device.backend.frames[i].allocated = device.backend.frames[i].allocated + 1u32;
+  }
+  imm cmd = device.backend.frames[i].buffers[usize[device.backend.frames[i].used]];
+  device.backend.frames[i].used = device.backend.frames[i].used + 1u32;
+  imm bi = vulkan.CommandBufferBeginInfo[pNext: nullp(), flags: vulkan.COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    pInheritanceInfo: nullp()];
+  check(vulkan.beginCommandBuffer(cmd, &bi), "vkBeginCommandBuffer");
+  cmd;
+}
+
+// End the current frame: one submission with no commands, which waits for
+// the acquired swapchain image if nothing did, signals 'signalCount'
+// semaphores and the frame's fence (a signal covers every command submitted
+// before it), and moves on to the next frame
+fn endFrameSignalling(device &mut Device, signalCount u32, signals *vulkan.SemaphoreSubmitInfo) Bool {
+  imm i = usize[device.backend.frameIndex];
+  imm waitInfo = vulkan.SemaphoreSubmitInfo[pNext: nullp(), semaphore: device.queue.backend.acquired,
+    stageMask: vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT];
+  mut waits = 0u32;
+  if device.queue.backend.waiting { waits = 1u32; }
+  imm submit = vulkan.SubmitInfo2[pNext: nullp(), waitSemaphoreInfoCount: waits,
+    pWaitSemaphoreInfos: &waitInfo as *vulkan.SemaphoreSubmitInfo,
+    pCommandBufferInfos: 0usize as *vulkan.CommandBufferSubmitInfo,
+    signalSemaphoreInfoCount: signalCount, pSignalSemaphoreInfos: signals];
+  device.queue.backend.waiting = false;
+  imm ok = check(vulkan.queueSubmit2(device.queue.backend.handle, 1u32, &submit as *vulkan.SubmitInfo2,
+    device.backend.frames[i].fence), "vkQueueSubmit2");
+  device.backend.frames[i].pending = ok;
+  device.backend.frameIndex = (device.backend.frameIndex + 1u32) % FRAMES_IN_FLIGHT;
+  device.backend.inFrame = false;
+  device.frameNumber = device.frameNumber + 1u64;
+  ok;
+}
+
+// ---- Buffers ----
+
+struct BufferBackend {
+  pub device vulkan.Device;
+  pub buffer vulkan.Buffer;
+  pub memory vulkan.DeviceMemory;
+  pub mapped *u8;
+}
+
+// A buffer of bytes the GPU reads or writes
+pub struct Buffer {
+  pub backend BufferBackend;
+  pub size u64;
+  pub usage u32;
+
+  pub fn isValid(self &) Bool { backend.memory.h != 0u64; }
+
+  // Its bytes, for a buffer the CPU maps (MAP_READ or MAP_WRITE); null for
+  // any other. What the GPU wrote is there once the frame that wrote it is
+  // done ('device.waitIdle', or FRAMES_IN_FLIGHT frames later).
+  pub fn mappedRange(self &) *u8 { backend.mapped; }
+
+  fn final(self &uni) {
+    if backend.buffer.h != 0u64 { vulkan.destroyBuffer(backend.device, backend.buffer, nullp()); }
+    if backend.memory.h != 0u64 { vulkan.freeMemory(backend.device, backend.memory, nullp()); }
+  }
+}
+
+// ---- Textures ----
+
+struct TextureBackend {
+  pub image vulkan.Image;
+  pub view vulkan.ImageView;       // the view of the whole texture
+  pub surface Bool;                // a swapchain's, kept in the presentation layout
+}
+
+// A texture: for now, a swapchain's, which the swapchain owns
+pub struct Texture {
+  pub backend TextureBackend;
+  pub width u32;
+  pub height u32;
+  pub format u32;                  // TEXTURE_FORMAT_...
+
+  // A view of the whole texture (made with it)
+  pub fn createView(self &) TextureView {
+    TextureView[backend, width, height, format];
+  }
+}
+
+// A view of a texture, which a render pass draws into
+pub struct TextureView {
+  pub backend TextureBackend;
+  pub width u32;
+  pub height u32;
+  pub format u32;
+}
+
+// What 'getCurrentTexture' answers: a texture to draw into this frame, if
+// 'ok'
+pub struct SurfaceTexture {
+  pub texture Texture;
+  pub status u32;                  // SURFACE_TEXTURE_...
+
+  pub fn ok(self &) Bool {
+    status == SURFACE_TEXTURE_SUCCESS_OPTIMAL or status == SURFACE_TEXTURE_SUCCESS_SUBOPTIMAL;
+  }
+}
+
+fn textureFormat(vkFormat u32) u32 {
+  if vkFormat == vulkan.FORMAT_R8G8B8A8_UNORM { return TEXTURE_FORMAT_RGBA8_UNORM; }
+  if vkFormat == vulkan.FORMAT_R8G8B8A8_SRGB { return TEXTURE_FORMAT_RGBA8_UNORM_SRGB; }
+  if vkFormat == vulkan.FORMAT_B8G8R8A8_UNORM { return TEXTURE_FORMAT_BGRA8_UNORM; }
+  if vkFormat == vulkan.FORMAT_B8G8R8A8_SRGB { return TEXTURE_FORMAT_BGRA8_UNORM_SRGB; }
+  if vkFormat == vulkan.FORMAT_D32_SFLOAT { return TEXTURE_FORMAT_DEPTH32_FLOAT; }
+  TEXTURE_FORMAT_UNDEFINED;
+}
+
+// ---- Swapchains ----
+
+struct SwapChainBackend {
+  pub device vulkan.Device;
+  pub physical vulkan.PhysicalDevice;
+  pub surface vulkan.SurfaceKHR;
+  pub swapchain vulkan.SwapchainKHR;
+  pub format u32;                  // Vulkan's
+  pub colorSpace u32;
+  pub usage u32;
+  pub copyable Bool;               // its images may be copied from
+  pub images [8; vulkan.Image];
+  pub views [8; vulkan.ImageView];
+  pub renderDone [8; vulkan.Semaphore];     // one per image: presentation waits for it
+  pub initialized [8; Bool];                // moved out of 'undefined' once acquired
+  pub acquire [2; vulkan.Semaphore];        // one per frame in flight
+  pub count u32;
+  pub current u32;                 // the acquired image
+  pub hasImage Bool;
+  pub stale Bool;                  // to be made again before the next image
+  pub wantWidth u32;               // the size asked for, where the surface leaves it to the swapchain
+  pub wantHeight u32;
+}
+
+// The images a surface shows, one drawn while another is shown
+pub struct SwapChain {
+  pub backend SwapChainBackend;
+  pub width u32;
+  pub height u32;
+  pub format u32;                  // TEXTURE_FORMAT_...
+  pub presents u64;                // images presented so far
+
+  pub fn isValid(self &) Bool { backend.swapchain.h != 0u64; }
+
+  // Ask for textures of this size from the next frame on (the window was
+  // resized). A swapchain found out of date is made again anyway; this makes
+  // it so before the first failure, as a resize event can.
+  pub fn resize(self &mut, width u32, height u32) {
+    backend.wantWidth = width;
+    backend.wantHeight = height;
+    backend.stale = true;
+  }
+
+  // The texture to draw into this frame, beginning the device's frame if it
+  // is not begun. Check 'ok()' on what it answers: a minimized window has
+  // none (SKIPPED), and draws nothing.
+  pub fn getCurrentTexture(self &mut, device &mut Device) SurfaceTexture {
+    mut result = SurfaceTexture[Texture[TextureBackend[vulkan.Image[0u64], vulkan.ImageView[0u64], true],
+      0u32, 0u32, TEXTURE_FORMAT_UNDEFINED], SURFACE_TEXTURE_ERROR];
+    if (backend.device as *u8 as usize) == 0usize { return result; }
+    if backend.hasImage {
+      fail("getCurrentTexture called twice without a present between");
+      return result;
+    }
+    if backend.stale {
+      if !self.configure() {
+        result.status = SURFACE_TEXTURE_SKIPPED;
+        return result;
+      }
+    }
+    if !self.isValid() {
+      result.status = SURFACE_TEXTURE_SKIPPED;
+      return result;
+    }
+    device.beginFrame();
+    imm slot = usize[device.backend.frameIndex];
+    mut index = 0u32;
+    mut r = vulkan.acquireNextImageKHR(backend.device, backend.swapchain, NO_TIMEOUT, backend.acquire[slot],
+      vulkan.Fence[0u64], &mut index);
+    if r == vulkan.ERROR_OUT_OF_DATE_KHR {
+      backend.stale = true;
+      if !self.configure() {
+        result.status = SURFACE_TEXTURE_SKIPPED;
+        return result;
+      }
+      r = vulkan.acquireNextImageKHR(backend.device, backend.swapchain, NO_TIMEOUT, backend.acquire[slot],
+        vulkan.Fence[0u64], &mut index);
+      if r == vulkan.ERROR_OUT_OF_DATE_KHR {
+        result.status = SURFACE_TEXTURE_OUTDATED;
+        return result;
+      }
+    }
+    if r == vulkan.SUBOPTIMAL_KHR {
+      backend.stale = true;
+      result.status = SURFACE_TEXTURE_SUCCESS_SUBOPTIMAL;
+    } elif check(r, "vkAcquireNextImageKHR") {
+      result.status = SURFACE_TEXTURE_SUCCESS_OPTIMAL;
+    } else {
+      return result;
+    }
+    backend.current = index;
+    backend.hasImage = true;
+    device.queue.backend.acquired = backend.acquire[slot];
+    device.queue.backend.waiting = true;
+
+    // An image acquired for the first time is in no layout yet: move it to
+    // the one kept between commands (this submission waits for the acquire)
+    imm i = usize[index];
+    if !backend.initialized[i] {
+      imm cmd = nextCommandBuffer(device);
+      transition(cmd, backend.images[i], vulkan.IMAGE_LAYOUT_UNDEFINED, vulkan.IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_NONE,
+        vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_NONE);
+      check(vulkan.endCommandBuffer(cmd), "vkEndCommandBuffer");
+      imm cbi = vulkan.CommandBufferSubmitInfo[pNext: nullp(), commandBuffer: cmd];
+      submitWaiting(&mut device.queue, 1u32, &cbi as *vulkan.CommandBufferSubmitInfo);
+      backend.initialized[i] = true;
+    }
+    result.texture = Texture[TextureBackend[backend.images[i], backend.views[i], true], width, height, format];
+    result;
+  }
+
+  // Show the texture drawn this frame, ending the device's frame. Answers
+  // whether it was presented; one that is not is out of date, and the
+  // swapchain is made again before the next frame.
+  pub fn present(self &mut, device &mut Device) Bool {
+    if !backend.hasImage { return false; }
+    backend.hasImage = false;
+    imm i = usize[backend.current];
+    imm signal = vulkan.SemaphoreSubmitInfo[pNext: nullp(), semaphore: backend.renderDone[i],
+      stageMask: vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT];
+    if !endFrameSignalling(device, 1u32, &signal as *vulkan.SemaphoreSubmitInfo) { return false; }
+    mut sem = backend.renderDone[i];
+    mut sc = backend.swapchain;
+    mut index = backend.current;
+    imm pi = vulkan.PresentInfoKHR[pNext: nullp(), waitSemaphoreCount: 1u32, pWaitSemaphores: &mut sem as *vulkan.Semaphore,
+      swapchainCount: 1u32, pSwapchains: &mut sc as *vulkan.SwapchainKHR, pImageIndices: &mut index as *u32,
+      pResults: 0usize as *i32];
+    imm r = vulkan.queuePresentKHR(device.queue.backend.handle, &pi);
+    if r == vulkan.SUCCESS or r == vulkan.SUBOPTIMAL_KHR {
+      presents = presents + 1u64;
+      if r == vulkan.SUBOPTIMAL_KHR { backend.stale = true; }
+      return true;
+    }
+    if r == vulkan.ERROR_OUT_OF_DATE_KHR {
+      backend.stale = true;
+      return false;
+    }
+    check(r, "vkQueuePresentKHR");
+    false;
+  }
+
+  // Make the swapchain (again) now, at the surface's size, or at the size
+  // asked for where the surface leaves it to the swapchain, once the device
+  // is idle. Answers false when there is nothing to make: the window has no
+  // area, or it failed. 'getCurrentTexture' does this itself when the
+  // swapchain is out of date or was resized.
+  pub fn configure(self &mut) Bool {
+    imm device = backend.device;
+    mut caps = zeroed[vulkan.SurfaceCapabilitiesKHR]();
+    if !check(vulkan.getPhysicalDeviceSurfaceCapabilitiesKHR(backend.physical, backend.surface, &mut caps),
+        "vkGetPhysicalDeviceSurfaceCapabilitiesKHR") {
+      return false;
+    }
+    mut w = caps.currentExtent.width;
+    mut h = caps.currentExtent.height;
+    if w == 0xFFFFFFFFu32 {
+      w = clamp(backend.wantWidth, caps.minImageExtent.width, caps.maxImageExtent.width);
+      h = clamp(backend.wantHeight, caps.minImageExtent.height, caps.maxImageExtent.height);
+    }
+    if w == 0u32 or h == 0u32 { return false; }    // minimized: stays stale until it has an area
+
+    // The format: 8-bit BGRA or RGBA in sRGB, else whatever comes first
+    if backend.format == vulkan.FORMAT_UNDEFINED {
+      mut n = 32u32;
+      mut formats [32; vulkan.SurfaceFormatKHR] = [32; vulkan.SurfaceFormatKHR[0u32, 0u32]];
+      check(vulkan.getPhysicalDeviceSurfaceFormatsKHR(backend.physical, backend.surface, &mut n,
+        &mut formats as *vulkan.SurfaceFormatKHR), "vkGetPhysicalDeviceSurfaceFormatsKHR");
+      if n == 0u32 {
+        fail("the surface offers no formats");
+        return false;
+      }
+      backend.format = formats[0].format;
+      backend.colorSpace = formats[0].colorSpace;
+      mut i = 0usize;
+      while i < usize[n] {
+        imm f = formats[i].format;
+        if (f == vulkan.FORMAT_B8G8R8A8_SRGB or f == vulkan.FORMAT_R8G8B8A8_SRGB)
+            and formats[i].colorSpace == vulkan.COLOR_SPACE_SRGB_NONLINEAR_KHR {
+          backend.format = f;
+          backend.colorSpace = formats[i].colorSpace;
+          i = usize[n];
+        } else {
+          i = i + 1usize;
+        }
+      }
+      backend.usage = vulkan.IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+      if (caps.supportedUsageFlags & vulkan.IMAGE_USAGE_TRANSFER_SRC_BIT) != 0u32 {
+        backend.usage = backend.usage | vulkan.IMAGE_USAGE_TRANSFER_SRC_BIT;
+        backend.copyable = true;
+      }
+    }
+
+    // One image more than the least, to draw into while others wait to be shown
+    mut count = caps.minImageCount + 1u32;
+    if caps.maxImageCount != 0u32 and count > caps.maxImageCount { count = caps.maxImageCount; }
+    if count > MAX_SWAPCHAIN_IMAGES { count = MAX_SWAPCHAIN_IMAGES; }
+
+    vulkan.deviceWaitIdle(device);
+    imm old = backend.swapchain;
+    imm ci = vulkan.SwapchainCreateInfoKHR[pNext: nullp(), surface: backend.surface, minImageCount: count,
+      imageFormat: backend.format, imageColorSpace: backend.colorSpace, imageExtent: vulkan.Extent2D[w, h],
+      imageUsage: backend.usage, pQueueFamilyIndices: 0usize as *u32, preTransform: caps.currentTransform,
+      oldSwapchain: old];
+    mut sc = vulkan.SwapchainKHR[0u64];
+    imm made = check(vulkan.createSwapchainKHR(device, &ci, nullp(), &mut sc), "vkCreateSwapchainKHR");
+    self.release();
+    if old.h != 0u64 { vulkan.destroySwapchainKHR(device, old, nullp()); }
+    backend.swapchain = sc;
+    if !made { return false; }
+
+    mut n = MAX_SWAPCHAIN_IMAGES;
+    check(vulkan.getSwapchainImagesKHR(device, sc, &mut n, &mut backend.images as *vulkan.Image), "vkGetSwapchainImagesKHR");
+    backend.count = n;
+    imm sci = vulkan.SemaphoreCreateInfo[pNext: nullp()];
+    mut i = 0usize;
+    while i < usize[n] {
+      imm vci = vulkan.ImageViewCreateInfo[pNext: nullp(), image: backend.images[i], format: backend.format,
+        components: vulkan.ComponentMapping[], subresourceRange: vulkan.ImageSubresourceRange[]];
+      mut view = vulkan.ImageView[0u64];
+      check(vulkan.createImageView(device, &vci, nullp(), &mut view), "vkCreateImageView");
+      backend.views[i] = view;
+      mut sem = vulkan.Semaphore[0u64];
+      check(vulkan.createSemaphore(device, &sci, nullp(), &mut sem), "vkCreateSemaphore");
+      backend.renderDone[i] = sem;
+      backend.initialized[i] = false;
+      i = i + 1usize;
+    }
+    width = w;
+    height = h;
+    format = textureFormat(backend.format);
+    backend.stale = false;
+    true;
+  }
+
+  // Destroy the images' views and semaphores (the swapchain owns the images)
+  fn release(self &mut) {
+    mut i = 0usize;
+    while i < usize[backend.count] {
+      vulkan.destroyImageView(backend.device, backend.views[i], nullp());
+      vulkan.destroySemaphore(backend.device, backend.renderDone[i], nullp());
+      i = i + 1usize;
+    }
+    backend.count = 0u32;
+  }
+
+  fn final(self &uni) {
+    if (backend.device as *u8 as usize) == 0usize { return; }
+    vulkan.deviceWaitIdle(backend.device);
+    mut j = 0usize;
+    while j < usize[backend.count] {
+      vulkan.destroyImageView(backend.device, backend.views[j], nullp());
+      vulkan.destroySemaphore(backend.device, backend.renderDone[j], nullp());
+      j = j + 1usize;
+    }
+    if backend.swapchain.h != 0u64 { vulkan.destroySwapchainKHR(backend.device, backend.swapchain, nullp()); }
+    mut i = 0usize;
+    while i < 2usize {
+      if backend.acquire[i].h != 0u64 { vulkan.destroySemaphore(backend.device, backend.acquire[i], nullp()); }
+      i = i + 1usize;
+    }
+  }
+}
+
+fn clamp(v u32, lo u32, hi u32) u32 {
+  if v < lo { return lo; }
+  if v > hi { return hi; }
+  v;
+}
+
+// Record a layout transition of all of 'image' (its color aspect), with the
+// stages and accesses before and after it
+fn transition(cmd vulkan.CommandBuffer, image vulkan.Image, oldLayout u32, newLayout u32,
+    srcStage u64, srcAccess u64, dstStage u64, dstAccess u64) {
+  imm barrier = vulkan.ImageMemoryBarrier2[pNext: nullp(), srcStageMask: srcStage, srcAccessMask: srcAccess,
+    dstStageMask: dstStage, dstAccessMask: dstAccess, oldLayout: oldLayout, newLayout: newLayout, image: image,
+    subresourceRange: vulkan.ImageSubresourceRange[]];
+  imm dep = vulkan.DependencyInfo[pNext: nullp(), pMemoryBarriers: 0usize as *vulkan.MemoryBarrier2,
+    pBufferMemoryBarriers: 0usize as *vulkan.BufferMemoryBarrier2, imageMemoryBarrierCount: 1u32,
+    pImageMemoryBarriers: &barrier as *vulkan.ImageMemoryBarrier2];
+  vulkan.cmdPipelineBarrier2(cmd, &dep);
+}
+
+// ---- Commands ----
+
+struct EncoderBackend {
+  pub cmd vulkan.CommandBuffer;
+}
+
+// Records commands, finished into a CommandBuffer for the queue
+pub struct CommandEncoder {
+  pub backend EncoderBackend;
+
+  // Begin drawing into one color attachment, cleared or kept as 'attachment'
+  // says. (More attachments, and depth, come with the pipelines.)
+  pub fn beginRenderPass(self &mut, attachment &RenderPassColorAttachment) RenderPass {
+    imm view = attachment.view;
+    imm clear = attachment.loadOp == LOAD_OP_CLEAR;
+    if view.backend.surface {
+      // Kept for presentation between commands; cleared, what it held is not needed
+      mut oldLayout = vulkan.IMAGE_LAYOUT_PRESENT_SRC_KHR;
+      mut access = vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+      if clear {
+        oldLayout = vulkan.IMAGE_LAYOUT_UNDEFINED;
+      } else {
+        access = access | vulkan.ACCESS_2_COLOR_ATTACHMENT_READ_BIT;
+      }
+      transition(backend.cmd, view.backend.image, oldLayout, vulkan.IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_MEMORY_WRITE_BIT,
+        vulkan.PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, access);
+    }
+    imm c = attachment.clearValue;
+    mut loadOp = vulkan.ATTACHMENT_LOAD_OP_LOAD;
+    if clear { loadOp = vulkan.ATTACHMENT_LOAD_OP_CLEAR; }
+    mut storeOp = vulkan.ATTACHMENT_STORE_OP_STORE;
+    if attachment.storeOp == STORE_OP_DISCARD { storeOp = vulkan.ATTACHMENT_STORE_OP_DONT_CARE; }
+    imm color = vulkan.RenderingAttachmentInfo[pNext: nullp(), imageView: view.backend.view,
+      resolveImageView: vulkan.ImageView[0u64], loadOp: loadOp, storeOp: storeOp,
+      clearValue: vulkan.clearColor(c.red, c.green, c.blue, c.alpha)];
+    imm ri = vulkan.RenderingInfo[pNext: nullp(),
+      renderArea: vulkan.Rect2D[vulkan.Offset2D[0i32, 0i32], vulkan.Extent2D[view.width, view.height]],
+      colorAttachmentCount: 1u32, pColorAttachments: &color as *vulkan.RenderingAttachmentInfo,
+      pDepthAttachment: 0usize as *vulkan.RenderingAttachmentInfo,
+      pStencilAttachment: 0usize as *vulkan.RenderingAttachmentInfo];
+    vulkan.cmdBeginRendering(backend.cmd, &ri);
+    RenderPass[PassBackend[backend.cmd, view.backend.image, view.backend.surface, true]];
+  }
+
+  // Copy all of 'texture' into 'buffer', from its start, row after row with
+  // no gap between rows (4 bytes a pixel for the 8-bit formats)
+  pub fn copyTextureToBuffer(self &mut, texture &Texture, buffer &Buffer) {
+    imm image = texture.backend.image;
+    if texture.backend.surface {
+      transition(backend.cmd, image, vulkan.IMAGE_LAYOUT_PRESENT_SRC_KHR, vulkan.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_MEMORY_WRITE_BIT,
+        vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_READ_BIT);
+    }
+    imm region = vulkan.BufferImageCopy[imageSubresource: vulkan.ImageSubresourceLayers[],
+      imageOffset: vulkan.Offset3D[0i32, 0i32, 0i32], imageExtent: vulkan.Extent3D[texture.width, texture.height, 1u32]];
+    vulkan.cmdCopyImageToBuffer(backend.cmd, image, vulkan.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer.backend.buffer,
+      1u32, &region as *vulkan.BufferImageCopy);
+    if texture.backend.surface {
+      transition(backend.cmd, image, vulkan.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vulkan.IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_NONE,
+        vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_NONE);
+    }
+    // What was copied, visible to the CPU once the frame is done
+    imm bb = vulkan.BufferMemoryBarrier2[pNext: nullp(), srcStageMask: vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+      srcAccessMask: vulkan.ACCESS_2_TRANSFER_WRITE_BIT, dstStageMask: vulkan.PIPELINE_STAGE_2_HOST_BIT,
+      dstAccessMask: vulkan.ACCESS_2_HOST_READ_BIT, buffer: buffer.backend.buffer];
+    imm dep = vulkan.DependencyInfo[pNext: nullp(), pMemoryBarriers: 0usize as *vulkan.MemoryBarrier2,
+      bufferMemoryBarrierCount: 1u32, pBufferMemoryBarriers: &bb as *vulkan.BufferMemoryBarrier2,
+      pImageMemoryBarriers: 0usize as *vulkan.ImageMemoryBarrier2];
+    vulkan.cmdPipelineBarrier2(backend.cmd, &dep);
+  }
+
+  // Copy 'size' bytes of 'source', from 'sourceOffset', into 'destination'
+  // at 'destinationOffset'. What the CPU wrote to a mapped source before the
+  // submission is what is copied; a mapped destination holds the bytes once
+  // the frame is done.
+  pub fn copyBufferToBuffer(self &mut, source &Buffer, sourceOffset u64, destination &Buffer,
+      destinationOffset u64, size u64) {
+    imm region = vulkan.BufferCopy[sourceOffset, destinationOffset, size];
+    vulkan.cmdCopyBuffer(backend.cmd, source.backend.buffer, destination.backend.buffer, 1u32,
+      &region as *vulkan.BufferCopy);
+    // What was copied, visible to the CPU and to what the GPU does next
+    imm mb = vulkan.MemoryBarrier2[pNext: nullp(), srcStageMask: vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+      srcAccessMask: vulkan.ACCESS_2_TRANSFER_WRITE_BIT,
+      dstStageMask: vulkan.PIPELINE_STAGE_2_HOST_BIT | vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+      dstAccessMask: vulkan.ACCESS_2_HOST_READ_BIT | vulkan.ACCESS_2_MEMORY_READ_BIT];
+    imm dep = vulkan.DependencyInfo[pNext: nullp(), memoryBarrierCount: 1u32, pMemoryBarriers: &mb as *vulkan.MemoryBarrier2,
+      pBufferMemoryBarriers: 0usize as *vulkan.BufferMemoryBarrier2,
+      pImageMemoryBarriers: 0usize as *vulkan.ImageMemoryBarrier2];
+    vulkan.cmdPipelineBarrier2(backend.cmd, &dep);
+  }
+
+  // The commands recorded, for the queue to submit. The encoder records
+  // nothing more.
+  pub fn finish(self &mut) CommandBuffer {
+    imm cmd = backend.cmd;
+    backend.cmd = 0usize as vulkan.CommandBuffer;
+    if (cmd as *u8 as usize) != 0usize { check(vulkan.endCommandBuffer(cmd), "vkEndCommandBuffer"); }
+    CommandBuffer[CommandBufferBackend[cmd]];
+  }
+}
+
+// A color attachment of a render pass: the view drawn into, what is done
+// with what it holds at the start (cleared to 'clearValue', or kept) and at
+// the end (stored, or discarded)
+pub struct RenderPassColorAttachment {
+  pub view TextureView;
+  pub loadOp u32 = LOAD_OP_CLEAR;
+  pub storeOp u32 = STORE_OP_STORE;
+  pub clearValue Color;
+}
+
+struct PassBackend {
+  pub cmd vulkan.CommandBuffer;
+  pub image vulkan.Image;
+  pub surface Bool;
+  pub open Bool;
+}
+
+// Drawing into attachments, begun by 'beginRenderPass' and ended by 'end'
+pub struct RenderPass {
+  pub backend PassBackend;
+
+  // The end of the pass; a swapchain texture goes back to the layout kept
+  // between commands
+  pub fn end(self &mut) {
+    if !backend.open { return; }
+    backend.open = false;
+    vulkan.cmdEndRendering(backend.cmd);
+    if backend.surface {
+      transition(backend.cmd, backend.image, vulkan.IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        vulkan.IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        vulkan.PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_NONE);
+    }
+  }
+}
+
+struct CommandBufferBackend {
+  pub cmd vulkan.CommandBuffer;
+}
+
+// Recorded commands, to submit once ('device.queue.submit')
+pub struct CommandBuffer {
+  pub backend CommandBufferBackend;
+}
