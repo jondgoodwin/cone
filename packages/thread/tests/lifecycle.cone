@@ -16,27 +16,34 @@ mod lifecycle;
 
 import testing use *;
 import thread;
+import sync use *;
 
-// A value whose death is counted
-mut deaths u32 = 0u32;
+// A value whose death is counted, and the gate a detached thread waits at
+imm deaths Atomic[u32];
+imm gate Atomic[u32];
+
+fn @initpure init() {
+  deaths = Atomic[u32].of(0u32);
+  gate = Atomic[u32].of(0u32);
+}
 
 struct Counted {
   pub n i64;
   fn final(self &uni) {
-    mem.atomicAdd[u32](&mut deaths as *u32, 1u32, MemOrder.SeqCst[]);
-    thread.futexWakeAll(&mut deaths as *u32);
+    deaths.add(1u32);
+    sync.futexWakeAll(&deaths);
   }
 }
 
 fn deathCount() u32 {
-  mem.atomicLoad[u32](&mut deaths as *u32, MemOrder.SeqCst[]);
+  deaths.load();
 }
 
 // Wait until 'deaths' reaches n
 fn awaitDeaths(n u32) {
   mut seen = deathCount();
   while seen < n {
-    thread.futexWait(&mut deaths as *u32, seen);
+    sync.futexWait(&deaths, seen);
     seen = deathCount();
   }
 }
@@ -54,9 +61,9 @@ fn slowCounted(n i64) Counted {
 }
 
 // Waits until main opens the gate, then returns a value whose death is counted
-fn gatedCounted(gate *u32) Counted {
-  while mem.atomicLoad[u32](gate, MemOrder.SeqCst[]) == 0u32 {
-    thread.futexWait(gate, 0u32);
+fn gatedCounted(n i64) Counted {
+  while gate.load() == 0u32 {
+    sync.futexWait(&gate, 0u32);
   }
   Counted[5];
 }
@@ -73,6 +80,8 @@ fn consume(owned +so Counted) i64 {
 }
 
 fn main() i32 {
+  initAll();
+
   // join returns the result
   imm t = thread.start(100i64,&triangle);
   expectInt(t.join(), 5050, "join returns the sum from 1 to 100");
@@ -101,12 +110,11 @@ fn main() i32 {
   expectUInt(u64[deathCount()], 2u64, "a dropped handle's result died in its finalizer");
 
   // detach: the thread runs on, and finalizes its own result
-  mut gate = 0u32;
-  imm d = thread.start(&mut gate as *u32, &gatedCounted);
+  imm d = thread.start(0i64, &gatedCounted);
   d.detach();
   expectUInt(u64[deathCount()], 2u64, "detach does not wait");
-  mem.atomicStore[u32](&mut gate as *u32, 1u32, MemOrder.SeqCst[]);
-  thread.futexWake(&mut gate as *u32);
+  gate.store(1u32);
+  sync.futexWake(&gate);
   awaitDeaths(3u32);
   expectUInt(u64[deathCount()], 3u64, "the detached thread's result died in the thread");
 

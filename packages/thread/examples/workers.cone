@@ -1,7 +1,7 @@
 // A tour of the thread package: one worker per core, all running at once,
 // each summing its own slice of 0..n; a named thread that parks until main
-// unparks it, and whose result 'join' hands back; and a futex word main
-// waits on until a detached thread sets it. Run it with
+// unparks it, and whose result 'join' hands back; and a futex word (the sync
+// package's) main waits on until a detached thread sets it. Run it with
 //
 //   congo run packages/thread/examples/workers.cone
 //
@@ -16,6 +16,14 @@ mod workers;
 import stdio use *;
 import collections use *;
 import thread;
+import sync use *;
+
+// The word the detached thread sets
+imm signalled Atomic[u32];
+
+fn @initpure init() {
+  signalled = Atomic[u32].of(0u32);
+}
 
 struct Job {
   pub from u64;
@@ -43,13 +51,14 @@ fn napper(n u64) u64 {
   n * 6u64;
 }
 
-fn signal(word *u32) {
+fn signal(n u32) {
   thread.sleep(5000000u64);   // 5 ms
-  mem.atomicStore[u32](word, 1u32, MemOrder.Release[]);
-  thread.futexWake(word);
+  signalled.store(n);
+  sync.futexWake(&signalled);
 }
 
 fn main() {
+  initAll();
   imm n = 10000000u64;
   imm cores = thread.parallelism();
   printStr("cores: ");
@@ -90,10 +99,9 @@ fn main() {
   printStr(" came back from the napper\n");
 
   // Wait on a futex word a detached thread sets
-  mut word = 0u32;
-  thread.start(&mut word as *u32, &signal).detach();
-  while mem.atomicLoad[u32](&mut word as *u32, MemOrder.Acquire[]) == 0u32 {
-    thread.futexWait(&mut word as *u32, 0u32);
+  thread.start(1u32, &signal).detach();
+  while signalled.load() == 0u32 {
+    sync.futexWait(&signalled, 0u32);
   }
   printStr("the detached thread set the word\n");
 }

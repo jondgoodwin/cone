@@ -1,0 +1,114 @@
+// Once. Four threads, let through a starting gate together, each call
+// callOnce on one Once whose function counts its runs, sleeps 10 ms (so the
+// others arrive while it runs, and must wait) and then sets a plain global.
+// Each thread then reads the global: all four see what the function set, and
+// it ran exactly once. Run 25 times, each with a fresh Once. Then
+// callOnceWith hands its function a value, and a second call on the same
+// Once runs nothing; isCompleted says whether the function has run. An owned
+// value handed to a call that runs nothing is dropped there.
+
+mod once;
+
+import testing use *;
+import thread;
+import sync use *;
+
+// Remade for each run: nothing else touches them then
+mut setUpOnce Once;
+mut value u64 = 0u64;
+
+imm runs Atomic[u32];
+imm ready Atomic[u32];
+imm go Atomic[u32];
+
+fn @initpure init() {
+  setUpOnce = Once.make();
+  runs = Atomic[u32].of(0u32);
+  ready = Atomic[u32].of(0u32);
+  go = Atomic[u32].of(0u32);
+}
+
+fn setUp() {
+  runs.add(1u32);
+  thread.sleep(10000000u64);
+  value = 42u64;
+}
+
+// Call once, then answer what the function set
+fn racer(n u32) u64 {
+  ready.add(1u32);
+  while go.load() == 0u32 {
+    sync.futexWait(&go, 0u32);
+  }
+  setUpOnce.callOnce(&setUp);
+  value;
+}
+
+// One race: whether the function ran once and all four saw what it did
+fn race() Bool {
+  setUpOnce = Once.make();
+  value = 0u64;
+  runs.store(0u32);
+  ready.store(0u32);
+  go.store(0u32);
+  imm a = thread.start(0u32, &racer);
+  imm b = thread.start(0u32, &racer);
+  imm c = thread.start(0u32, &racer);
+  imm d = thread.start(0u32, &racer);
+  while ready.load() < 4u32 { thread.yieldNow(); }
+  go.store(1u32);
+  sync.futexWakeAll(&go);
+  imm seen = a.join() + b.join() + c.join() + d.join();
+  seen == 4u64 * 42u64 and runs.load() == 1u32 and setUpOnce.isCompleted();
+}
+
+fn addTo(n u64) {
+  value = value + n;
+}
+
+// An owned value whose death is counted
+mut deaths u32 = 0u32;
+
+struct Counted {
+  pub n u64;
+  fn final(self &uni) {
+    deaths = deaths + 1u32;
+  }
+}
+
+fn addCounted(c +so Counted) {
+  value = value + c.n;
+}
+
+fn main() i32 {
+  initAll();
+  mut good = 0u64;
+  mut run = 0;
+  while run < 25 {
+    if race() { good = good + 1u64; }
+    run = run + 1;
+  }
+  expectUInt(good, 25u64, "races where the function ran once and every caller saw it");
+
+  // callOnceWith, and the calls after the first
+  imm o = Once.make();
+  value = 0u64;
+  expect(!o.isCompleted(), "a new Once has not run");
+  o.callOnceWith(5u64, &addTo);
+  expectUInt(value, 5u64, "callOnceWith handed its function the value");
+  expect(o.isCompleted(), "and has run");
+  o.callOnceWith(7u64, &addTo);
+  o.callOnce(&setUp);
+  expectUInt(value, 5u64, "later calls on the same Once run nothing");
+
+  // An owned value is moved in: used and dropped by the call that runs the
+  // function, dropped unused by a call that does not
+  imm p = Once.make();
+  p.callOnceWith(+so Counted[3u64], &addCounted);
+  expectUInt(value, 8u64, "the owned value reached the function");
+  expectUInt(u64[deaths], 1u64, "and died there");
+  p.callOnceWith(+so Counted[4u64], &addCounted);
+  expectUInt(value, 8u64, "the second call ran nothing");
+  expectUInt(u64[deaths], 2u64, "and dropped its value unused");
+  done();
+}

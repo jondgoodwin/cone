@@ -1,0 +1,149 @@
+// The four locks together. Main puts 1000 jobs on a queue and closes it; four
+// worker threads take jobs off it until it is closed and empty, sleeping on a
+// Condvar while it is empty. Each job looks up a table of squares, which the
+// first worker to need it builds, through a Once, and a scale, which the
+// workers read under an RwLock's read lock while main may change it under
+// the write lock; each result goes on a List under a Mutex. Main prints the
+// totals, which are the same on every run:
+//
+//   congo run packages/sync/examples/workqueue.cone
+//
+//   jobs     1000
+//   results  1000
+//   sum      231060
+//   table built 1 time
+//
+// (Job j's result is (j % 16)^2 times the scale, 3: the squares of 0 to 15
+// sum to 1240, and 1000 jobs are 62 rounds of 16 and the first 8 again, so
+// 3 * (62 * 1240 + 140) = 231060.)
+//
+// Nothing checks that the plain globals below are touched only under their
+// locks: that is the program's discipline, until the compiler's lock
+// permissions are built.
+
+mod workqueue;
+
+import stdio use *;
+import collections use *;
+import thread;
+import sync use *;
+
+// The queue: jobs, the next one to take, and whether more will come, all
+// guarded by queueLock; 'queueReady' is notified when a job arrives or the
+// queue closes
+imm queueLock Mutex;
+imm queueReady Condvar;
+mut jobs List[u64];
+mut nextJob usize = 0usize;
+mut closed Bool = false;
+
+// The table of squares, built once
+imm tableOnce Once;
+mut table [16; u64] = [16; 0u64];
+imm builds Atomic[u32];
+
+// The scale, guarded by settings
+imm settings RwLock;
+mut scale u64 = 1u64;
+
+// The results, guarded by resultsLock
+imm resultsLock Mutex;
+mut results List[u64];
+
+fn @initpure init() {
+  queueLock = Mutex.make();
+  queueReady = Condvar.make();
+  jobs = List[u64].empty();
+  tableOnce = Once.make();
+  builds = Atomic[u32].of(0u32);
+  settings = RwLock.make();
+  resultsLock = Mutex.make();
+  results = List[u64].empty();
+}
+
+fn buildTable() {
+  builds.add(1u32);
+  mut i = 0u64;
+  while i < 16u64 {
+    table[i] = i * i;
+    i = i + 1u64;
+  }
+}
+
+// The next job, or false once the queue is closed and empty
+fn takeJob() u64, Bool {
+  queueLock.lock();
+  while nextJob == jobs.len() and !closed {
+    queueReady.condWait(&queueLock);
+  }
+  if nextJob == jobs.len() {
+    queueLock.unlock();
+    return 0u64, false;
+  }
+  imm j = *jobs[nextJob];
+  nextJob = nextJob + 1usize;
+  queueLock.unlock();
+  j, true;
+}
+
+// Take jobs until there are none: how many this worker did
+fn worker(id u32) u32 {
+  mut done = 0u32;
+  mut j = 0u64;
+  mut more = true;
+  j, more = takeJob();
+  while more {
+    tableOnce.callOnce(&buildTable);
+    settings.readLock();
+    imm r = table[j % 16u64] * scale;
+    settings.readUnlock();
+    resultsLock.lock();
+    results.push(r);
+    resultsLock.unlock();
+    done = done + 1u32;
+    j, more = takeJob();
+  }
+  done;
+}
+
+fn main() {
+  initAll();
+  settings.writeLock();
+  scale = 3u64;
+  settings.writeUnlock();
+
+  imm a = thread.start(0u32, &worker);
+  imm b = thread.start(1u32, &worker);
+  imm c = thread.start(2u32, &worker);
+  imm d = thread.start(3u32, &worker);
+
+  mut j = 0u64;
+  while j < 1000u64 {
+    queueLock.lock();
+    jobs.push(j);
+    queueReady.notifyOne();
+    queueLock.unlock();
+    j = j + 1u64;
+  }
+  queueLock.lock();
+  closed = true;
+  queueReady.notifyAll();
+  queueLock.unlock();
+
+  imm did = a.join() + b.join() + c.join() + d.join();
+  mut sum = 0u64;
+  mut i = 0usize;
+  while i < results.len() {
+    sum = sum + *results[i];
+    i = i + 1usize;
+  }
+  printStr("jobs     ");
+  printInt(i64[did]);
+  printStr("\nresults  ");
+  printInt(i64[results.len()]);
+  printStr("\nsum      ");
+  printInt(i64[sum]);
+  printStr("\ntable built ");
+  printInt(i64[builds.load()]);
+  printStr(" time\n");
+}

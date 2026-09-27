@@ -1,0 +1,168 @@
+// RwLock. First, readers share it: four threads each take a read lock and,
+// holding it, wait until all four are inside at once -- which could never
+// happen if a read lock shut out other readers (each gives up after two
+// seconds, and says so). Then a writer is alone: two writer threads each
+// raise a pair of plain globals, 'a' then 'b', 3000 times under the write
+// lock, so the pair differs only inside a write; three reader threads read
+// the pair 3000 times each under a read lock and count any time they see
+// a != b, and each side counts any time it finds the other inside with it.
+// Every count must be 0, and the pair must end at 6000 each. That race is run
+// 25 times. Last, the try forms, on one thread.
+
+mod rwlock;
+
+import testing use *;
+import thread;
+import sync use *;
+
+const rounds = 3000u64;
+
+imm rw RwLock;
+
+// Guarded by rw: written only under its write lock
+mut a u64 = 0u64;
+mut b u64 = 0u64;
+
+// Who is inside, and the times anything was seen that a working lock forbids
+imm readersInside Atomic[u32];
+imm writersInside Atomic[u32];
+imm violations Atomic[u32];
+
+// The starting gate, so the threads run at once
+imm ready Atomic[u32];
+imm go Atomic[u32];
+
+fn @initpure init() {
+  rw = RwLock.make();
+  readersInside = Atomic[u32].of(0u32);
+  writersInside = Atomic[u32].of(0u32);
+  violations = Atomic[u32].of(0u32);
+  ready = Atomic[u32].of(0u32);
+  go = Atomic[u32].of(0u32);
+}
+
+fn atGate() {
+  ready.add(1u32);
+  while go.load() == 0u32 {
+    sync.futexWait(&go, 0u32);
+  }
+}
+
+fn openGate(n u32) {
+  while ready.load() < n {
+    thread.yieldNow();
+  }
+  go.store(1u32);
+  sync.futexWakeAll(&go);
+}
+
+// Take a read lock, and hold it until n readers hold it: whether they did
+fn readTogether(n u32) Bool {
+  rw.readLock();
+  readersInside.add(1u32);
+  mut waited = 0;
+  while readersInside.load() < n and waited < 2000 {
+    thread.sleep(1000000u64);
+    waited = waited + 1;
+  }
+  imm all = readersInside.load() >= n;
+  rw.readUnlock();
+  all;
+}
+
+fn writer(n u64) u64 {
+  atGate();
+  mut i = 0u64;
+  while i < rounds {
+    rw.writeLock();
+    if writersInside.add(1u32) != 0u32 or readersInside.load() != 0u32 {
+      violations.add(1u32);
+    }
+    a = a + 1u64;
+    thread.yieldNow();     // widen the window in which a != b
+    b = b + 1u64;
+    writersInside.sub(1u32);
+    rw.writeUnlock();
+    i = i + 1u64;
+  }
+  i;
+}
+
+fn reader(n u64) u64 {
+  atGate();
+  mut i = 0u64;
+  while i < rounds {
+    rw.readLock();
+    readersInside.add(1u32);
+    if writersInside.load() != 0u32 or a != b {
+      violations.add(1u32);
+    }
+    readersInside.sub(1u32);
+    rw.readUnlock();
+    i = i + 1u64;
+  }
+  i;
+}
+
+// One race: whether it ended with the pair right and nothing forbidden seen
+fn race() Bool {
+  a = 0u64;
+  b = 0u64;
+  violations.store(0u32);
+  ready.store(0u32);
+  go.store(0u32);
+  imm w1 = thread.start(0u64, &writer);
+  imm w2 = thread.start(1u64, &writer);
+  imm r1 = thread.start(0u64, &reader);
+  imm r2 = thread.start(1u64, &reader);
+  imm r3 = thread.start(2u64, &reader);
+  openGate(5u32);
+  imm done = w1.join() + w2.join() + r1.join() + r2.join() + r3.join();
+  done == 5u64 * rounds and violations.load() == 0u32 and a == 2u64 * rounds and b == 2u64 * rounds;
+}
+
+fn main() i32 {
+  initAll();
+
+  // Readers share it
+  imm t1 = thread.start(4u32, &readTogether);
+  imm t2 = thread.start(4u32, &readTogether);
+  imm t3 = thread.start(4u32, &readTogether);
+  imm t4 = thread.start(4u32, &readTogether);
+  expect(t1.join() and t2.join() and t3.join() and t4.join(), "four readers held the read lock at once");
+  readersInside.store(0u32);
+
+  // A writer is alone
+  mut good = 0u64;
+  mut run = 0;
+  while run < 25 {
+    if race() { good = good + 1u64; }
+    run = run + 1;
+  }
+  expectUInt(good, 25u64, "races with no reader beside a writer, no two writers, and the pair whole");
+  expectUInt(a, 6000u64, "the last race's a");
+
+  // The try forms
+  imm l = RwLock.make();
+  expect(l.tryWriteLock(), "tryWriteLock takes an unlocked RwLock");
+  expect(!l.tryReadLock(), "tryReadLock fails while it is write-locked");
+  expect(!l.tryWriteLock(), "tryWriteLock fails while it is write-locked");
+  l.writeUnlock();
+  expect(l.tryReadLock(), "tryReadLock takes it once unlocked");
+  expect(l.tryReadLock(), "and a second reader shares it");
+  expect(!l.tryWriteLock(), "tryWriteLock fails while it is read-locked");
+  l.readUnlock();
+  l.readUnlock();
+  expect(l.tryWriteLock(), "tryWriteLock takes it once the readers are gone");
+  l.writeUnlock();
+  l.readLock();
+  l.readLock();
+  expect(l.tryReadLock(), "readLock shares it too");
+  l.readUnlock();
+  l.readUnlock();
+  l.readUnlock();
+  l.writeLock();
+  expect(!l.tryReadLock(), "tryReadLock fails while writeLock() holds it");
+  l.writeUnlock();
+  done();
+}

@@ -1508,9 +1508,15 @@ class Linker:
     def command(self, objs: list[Path], exe: Path) -> list[str]:
         """The program's object first, then any a scenario 'link's with it."""
         if IS_WINDOWS:
+            # synchronization.lib: the sync package's futex (WaitOnAddress and
+            # its wakes), which a scenario importing sync compiles in, as
+            # Congo links it from sync's congo.toml. An import library of the
+            # Windows SDK, beside the C runtime's; a program that calls none
+            # of it takes nothing from it.
             return [
                 self.tool, "/NOLOGO", *map(str, objs), str(self.conestd), f"/OUT:{exe}",
                 "/SUBSYSTEM:CONSOLE", "msvcrt.lib", "legacy_stdio_definitions.lib",
+                "synchronization.lib",
             ]
         return [self.tool, *map(str, objs), str(self.conestd), "-o", str(exe), "-lm"]
 
