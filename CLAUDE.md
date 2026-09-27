@@ -160,14 +160,30 @@ Visual Studio projects stay at the root.
   and written); its tests need a GPU driver but no window, and its examples
   are `pipevk.cone`, the pipe demo: `sculpt`'s bent, subdivided pipe, the
   cage and three levels side by side, lit, on Vulkan, checked by pixels
-  read back, and `pipepbr.cone`, the lighting floor: the pipe in Blinn-Phong
+  read back, its camera steered by `controls` (orbit and fly), with a
+  scripted-input mode (`--script`, events pushed into SDL's own queue) and
+  an input-to-present latency readout, and `pipepbr.cone`, the lighting floor: the pipe in Blinn-Phong
   beside it in black chitin with a thin film, under the dusk, tone-mapped;
   `window` is a window for Vulkan (`openVulkan`, which the `gpu` package
   draws into), through `sdl`, its size in pixels and in its own units, and
   the render loop's glue (frame time, quit, Escape, fullscreen, resize,
   `keyDown`), and its example, `packages/window/examples/spin.cone`, draws a
   lit, textured, turning sphere with `render` (building it needs SDL3's `lib`
-  folder on `LIB`).
+  folder on `LIB`); `input` is the keyboard and the mouse over `sdl`, in
+  three layers: SDL's events normalised (`InputEvent`, each keeping its
+  nanosecond timestamp), device state (`Input`: keys held by scancode, the
+  pointer and its movement this frame, buttons, the wheel), and named
+  actions with a value type (button, one axis, two) bound by scancode,
+  mouse button, the pointer's movement (a drag while buttons are held) and
+  the wheel, in one `Context`, which also says which events fed an action;
+  and `LatencyLog`, p50, p95, p99 and the maximum of the times from events
+  to the presents that showed them; its tests need SDL3.dll but no
+  display; `controls` is cameras steered by `input`'s actions, never its
+  devices, over `geomath`: `Orbit` (turn, zoom, pan), `Fly` (move along the
+  view, rise, look), and `CameraControls`, both on the standard bindings
+  (`CameraActions.bind`), toggled by C; each gives a `Pose` (origin and
+  orientation, its view by `Mat4.lookAt`) that the program applies to
+  `render`'s `Camera`, so no controller owns a camera.
   A package's example programs live in its own `examples/` folder, each run
   with `congo run packages/<name>/examples/<file>.cone`, and its tests in its
   own `tests/` folder, one program each beside the output it must print;
@@ -342,7 +358,7 @@ python ../tools/congo/congo.py test
 ```
 
 `tools/congo/README.md`, "Testing a package", is how they work. `sdl`, and
-everything over it (`window`, `gpu`, `render`, `noise`'s `parity` and
+everything over it (`window`, `gpu`, `render`, `input`, `controls`, `noise`'s `parity` and
 `vulkan`'s `runtime` test), links `SDL3.lib` and runs with `SDL3.dll`: put
 the `lib\x64` folder of SDL3's development kit (`SDL3-devel-3.x-VC.zip`;
 here `C:\libs\SDL3-3.4.16\lib\x64`) on both `LIB` and `PATH` before
