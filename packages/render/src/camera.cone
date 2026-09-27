@@ -14,19 +14,19 @@ pub const Orthogonal = 1;
 
 pub struct Camera {
   pub projection i32;       // Perspective (default) or Orthogonal
-  pub fov f32;              // perspective: the vertical field of view, in degrees
+  pub fov f32;              // perspective: the vertical field of view, in radians
   pub viewHeight f32;       // orthogonal: the height of what it sees
   pub near f32;             // nothing nearer than this is drawn
   pub far f32;              // nor further than this
-  pub origin Xyz;           // where it is
+  pub origin Vec3;          // where it is
   pub orientation Quat;     // which way it faces
-  pub scale Xyz;
-  pub targetRect Rect;      // what it draws into, in pixels ('begin' sets it)
-  pub viewport Rect;        // a part of that to draw in: none while its w is 0
+  pub scale Vec3;
+  pub targetRect IRect;     // what it draws into, in pixels ('begin' sets it)
+  pub viewport IRect;       // a part of that to draw in: none while its w is 0
   pub background Color;     // what it clears to
   pub following Bool;       // placed relative to 'followMatrix'?
   pub followMatrix Mat4;    // the placement of the thing it follows
-  pub eye Xyz;              // where on that thing it looks out from
+  pub eye Vec3;             // where on that thing it looks out from
   pub pmatrix Mat4;         // its projection, worked out by 'begin'
   pub vmatrix Mat4;         // its view, worked out by 'begin'
   pub uniforms Uniforms;    // values for the shaders: the lights' among them
@@ -35,9 +35,9 @@ pub struct Camera {
   // orthogonal view 10 high), drawing from 0.1 to 1000 away, at (0, 0, 5)
   // looking down -z at the origin, clearing to black
   pub fn make() Camera {
-    Camera[Perspective, 50., 10., 0.1, 1000., Xyz[0., 0., 5.], Quat.identity(), Xyz[1., 1., 1.],
-      Rect[0, 0, 0, 0], Rect[0, 0, 0, 0], Color[0., 0., 0., 1.], false, Mat4.identity(),
-      Xyz[0., 0., 0.], Mat4.identity(), Mat4.identity(), Uniforms.empty()];
+    Camera[Perspective, radians(50.), 10.,0.1, 1000., Vec3[0., 0., 5.], Quat.identity(), Vec3[1., 1., 1.],
+      IRect[0, 0, 0, 0], IRect[0, 0, 0, 0], Color[0., 0., 0., 1.], false, Mat4.identity(),
+      Vec3[0., 0., 0.], Mat4.identity(), Mat4.identity(), Uniforms.empty()];
   }
 
   // The width of what it draws into over the height. (Pegasus divided by a
@@ -47,12 +47,17 @@ pub struct Camera {
     f32[targetRect.w] / f32[targetRect.h];
   }
 
-  // Its perspective projection (Pegasus's Perspective)
-  pub fn perspective(self &) Mat4 { Mat4.perspective(fov, near, far, self.aspect()); }
+  // Its perspective projection (Pegasus's Perspective), with OpenGL's depth
+  // from -1 to 1
+  pub fn perspective(self &) Mat4 { Mat4.perspectiveGl(fov, self.aspect(), near, far); }
 
-  // Its orthogonal projection (Pegasus's Orthogonal). It looks down -z, as
-  // math3d's corrected Mat4.ortho does.
-  pub fn orthogonal(self &) Mat4 { Mat4.ortho(viewHeight, near, far, self.aspect()); }
+  // Its orthogonal projection (Pegasus's Orthogonal), with OpenGL's depth. It
+  // looks down -z, as Mat4.orthographicGl does, and sees 'viewHeight' above
+  // and below its middle, and that times the aspect to either side.
+  pub fn orthogonal(self &) Mat4 {
+    imm w = viewHeight * self.aspect();
+    Mat4.orthographicGl(-w, w, -viewHeight, viewHeight, near, far);
+  }
 
   // The projection its 'projection' names
   pub fn projectionMatrix(self &) Mat4 {
@@ -62,7 +67,7 @@ pub struct Camera {
   // Its view matrix: the inverse of where it is placed, which is relative to
   // the thing it follows, looking out from that thing's eye
   pub fn viewMatrix(self &) Mat4 {
-    imm cammat = Mat4.place(origin, orientation, scale);
+    imm cammat = Mat4.fromTrs(origin, orientation, scale);
     if following {
       mut follow = followMatrix;
       imm e = followMatrix * eye;
@@ -78,14 +83,14 @@ pub struct Camera {
   // A point in the local coordinates of something placed by 'mmatrix', in
   // the camera's (eye) coordinates, by the view matrix 'begin' worked out
   // (Pegasus's CameraXyz)
-  pub fn cameraXyz(self &, p Xyz, mmatrix Mat4) Xyz { (vmatrix * mmatrix) * p; }
+  pub fn cameraPoint(self &, p Vec3, mmatrix Mat4) Vec3 { (vmatrix * mmatrix) * p; }
 
   // Start a frame drawn into a target 'width' by 'height' pixels (a window's
   // size): the viewport, the clear to the background with depth testing on,
   // and the projection and view matrices. Then prepare the lights and draw
   // the shapes. (The part of Pegasus's Camera._Render before the scene.)
   pub fn begin(self &mut, width i32, height i32) {
-    targetRect = Rect[0, 0, width, height];
+    targetRect = IRect[0, 0, width, height];
     imm hasViewport = viewport.w > 0 and viewport.h > 0;
     if hasViewport {
       gl.Viewport(viewport.x, viewport.y, viewport.w, viewport.h);
@@ -119,19 +124,19 @@ pub struct Light {
   pub lightColor Color;
 
   // A light at 'origin'
-  pub fn at(origin Xyz, ambient Color, lightColor Color) Light {
-    Light[Mat4.identity().withPos(origin), ambient, lightColor];
+  pub fn at(origin Vec3, ambient Color, lightColor Color) Light {
+    Light[Mat4.identity().withTranslation(origin), ambient, lightColor];
   }
 
   // Where it is, in world coordinates
-  pub fn origin(self &) Xyz { Xyz[mmatrix.m[12], mmatrix.m[13], mmatrix.m[14]]; }
+  pub fn origin(self &) Vec3 { Vec3[mmatrix.m[12], mmatrix.m[13], mmatrix.m[14]]; }
 
   // Give the camera this light's uniforms, before its shapes are drawn.
   // (Pegasus's _RenderPrep. Its test for an existing 'lightOrigin' assigned
   // where it meant to compare, 'if (lightoriginv = aNull)'; a field has no
   // such question.)
   pub fn prepare(self &, camera &mut Camera) {
-    camera.uniforms.set("lightOrigin", Uniform.xyz(self.origin()));
+    camera.uniforms.set("lightOrigin", Uniform.vec3(self.origin()));
     camera.uniforms.set("ambient", Uniform.color(ambient));
     camera.uniforms.set("lightColor", Uniform.color(lightColor));
   }

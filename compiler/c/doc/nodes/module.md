@@ -808,7 +808,7 @@ full source, which is what an importer compiles the instance from
 
 ### The packages folder
 
-**`core`, `stdio`, `libc`, `posix`, `math3d`, `testing` and `collections` are
+**`core`, `stdio`, `libc`, `posix`, `geomath`, `testing` and `collections` are
 packages, laid out as Congo lays out every package.**
 The repository's root holds `packages/`, one folder per package, each holding
 a manifest, `congo.toml`, and the package's source, `src/<name>.cone`. None
@@ -823,8 +823,8 @@ takes its C name rather than `stdio`'s Cone one, and supplied by `conestd`.
 `libc` and `posix` are C packages ("How a C library becomes a Cone package",
 below): raw bindings to the ISO C library and to the POSIX functions beyond
 it, Windows first, `posix` built on `libc`, and supplied by the C runtime every
-link names. `math3d` is a Cone package over `libc`: 3D math as value types
-(`module_package_math3d`), with its example programs in its own `examples/`
+link names. `geomath` is a Cone package over `libc` and `collections`: 2-D and
+3-D math as value types (`module_package_geomath`), with its example programs in its own `examples/`
 folder and its tests in its own `tests/`, neither of which any compile of the
 package sweeps; `congo test` builds both (`tools/congo/README.md`, "Testing a
 package"). `testing` is a Cone package over `stdio` and `libc`: the checks a
@@ -2272,7 +2272,7 @@ it says, and a library's root named from it, so a package compiled on its own
 spells its symbols as its importers do and exports what they link against. What
 stands in for
 packages is the **packages folder**: `core`, `stdio`, `libc`, `posix`,
-`math3d`, `testing` and `collections` are there, found on the package search path and compiled into the importing object ("The
+`geomath`, `testing` and `collections` are there, found on the package search path and compiled into the importing object ("The
 packages folder" above).
 **A module conforms to a module trait**, `mod prog is Runner;`, checked where it
 is written, taking a copy of each default it does not declare ("Module traits"

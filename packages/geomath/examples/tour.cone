@@ -1,13 +1,15 @@
-// A tour of the math3d package: a camera for a scene, a turn applied to a
-// point, a smooth blend between two orientations, and a placement undone by
-// its inverse. Run it from the repository's root with
+// A tour of the geomath package: a camera for a scene and what it can see, a
+// turn applied to a point, a smooth blend between two orientations, a
+// placement undone by its inverse, a ray picking a box, a curve, and the hull
+// and triangles of a few points in the plane. Run it from the repository's
+// root with
 //
-//     python tools/congo/congo.py run packages/math3d/examples/tour.cone
+//     python tools/congo/congo.py run packages/geomath/examples/tour.cone
 
 mod tour;
 
 import stdio use *;
-import math3d use *;
+import geomath use *;
 
 // A number to four decimal places. printFloat keeps six significant digits,
 // which prints a rounding error such as -4.37114e-08 where 0 is meant
@@ -25,7 +27,14 @@ fn num(v f32) {
   printInt(frac);
 }
 
-fn xyz(label &[]u8, v Xyz) {
+fn vec2(label &[]u8, v Vec2) {
+  printStr(label);
+  printStr(" (");
+  num(v.x); printStr(", ");
+  num(v.y); printStr(")\n");
+}
+
+fn vec3(label &[]u8, v Vec3) {
   printStr(label);
   printStr(" (");
   num(v.x); printStr(", ");
@@ -63,49 +72,86 @@ fn mat(label &[]u8, m Mat4) {
   };
 }
 
+fn containment(label &[]u8, c i32) {
+  printStr(label);
+  if c == Inside {printStr(" inside\n");}
+  elif c == Outside {printStr(" outside\n");}
+  else {printStr(" partly inside\n");}
+}
+
 fn main() i32 {
   // The camera: a 60-degree lens on a 16:9 screen, seeing from 0.1 to 100
-  // units away, standing at (0, 2, 5) and looking at the origin
-  imm projection = Mat4.perspective(60., 0.1, 100., 16. / 9.);
+  // units away, standing at (0, 2, 5) and looking at the origin. Depth runs
+  // from 0 at the near plane to 1 at the far one
+  imm projection = Mat4.perspective(radians(60.), 16. / 9., 0.1, 100.);
   mat("perspective, 60 degrees, 16:9:", projection);
-  imm eye = Xyz[0., 2., 5.];
-  imm view = Mat4.inverseLookAt(eye, Xyz[0., 0., 0.], Xyz[0., 1., 0.]);
+  imm eye = Vec3[0., 2., 5.];
+  imm view = Mat4.lookAt(eye, Vec3[0., 0., 0.], Vec3[0., 1., 0.]);
   mat("view from (0, 2, 5) looking at the origin:", view);
   // What the camera looks at is straight ahead of it, down its -z, as far
   // away as the camera stands from it
-  xyz("the origin, seen by the camera:", view * Xyz[0., 0., 0.]);
+  vec3("the origin, seen by the camera:", view * Vec3[0., 0., 0.]);
   printStr("its distance from the eye: ");
   num(eye.length());
-  printStr("\n\n");
+  printStr("\n");
+  // What the camera can see: a box at the origin, a sphere behind it
+  imm frustum = Frustum.fromMatrix(projection * view);
+  containment("a unit box at the origin is", frustum.testAabb(Aabb3.fromCenter(Vec3[0., 0., 0.], Vec3[1., 1., 1.])));
+  containment("a ball behind the camera is", frustum.testSphere(Sphere[Vec3[0., 2., 8.], 1.]));
+  printStr("\n");
 
   // A quarter turn about z takes x to y
-  imm quarter = Quat.angleAxis(pi / 2., Xyz[0., 0., 1.]);
+  imm quarter = Quat.angleAxis(pi / 2., Vec3[0., 0., 1.]);
   quat("a quarter turn about z:", quarter);
-  xyz("x turned by it:", quarter.rotate(Xyz[1., 0., 0.]));
+  vec3("x turned by it:", quarter * Vec3[1., 0., 0.]);
 
   // Halfway from facing ahead to that quarter turn is an eighth of a turn
   imm half = Quat.identity().slerp(quarter, 0.5);
   quat("halfway there, by slerp:", half);
-  quat("an eighth turn, made directly:", Quat.angleAxis(pi / 4., Xyz[0., 0., 1.]));
-  xyz("x turned by the halfway orientation:", half.rotate(Xyz[1., 0., 0.]));
+  quat("an eighth turn, made directly:", Quat.angleAxis(pi / 4., Vec3[0., 0., 1.]));
+  vec3("x turned by the halfway orientation:", half * Vec3[1., 0., 0.]);
   printStr("\n");
 
   // Something placed at (1, 2, 3), turned a quarter about z and scaled by
-  // (2, 3, 4); its inverse undoes all three, so the two multiply to identity
-  imm placed = Mat4.place(Xyz[1., 2., 3.], quarter, Xyz[2., 3., 4.]);
-  mat("placed at (1, 2, 3), turned, scaled by (2, 3, 4):", placed);
-  imm corner = placed * Xyz[1., 1., 1.];
-  xyz("its corner (1, 1, 1), placed:", corner);
-  xyz("and brought back by the inverse:", placed.inverse() * corner);
-  mat("the inverse times the placement:", placed.inverse() * placed);
+  // 2; its inverse undoes all three
+  imm placed = Transform3[Vec3[1., 2., 3.], quarter, Vec3[2., 2., 2.]];
+  mat("placed at (1, 2, 3), turned, scaled by 2:", placed.toMat4());
+  imm corner = placed.transformPoint(Vec3[1., 1., 1.]);
+  vec3("its corner (1, 1, 1), placed:", corner);
+  vec3("and brought back by the inverse:", placed.inverse().transformPoint(corner));
   printStr("\n");
 
-  // A color and a rectangle are plain values
+  // A ray from the camera straight ahead picks the box it meets first
+  imm ray = Ray3[eye, (Vec3[0., 0., 0.] - eye).normalize()];
+  match ray.intersectAabb(Aabb3.fromCenter(Vec3[0., 0., 0.], Vec3[1., 1., 1.])) {
+    case imm h Some {
+      printStr("the ray from the eye meets the box after ");
+      num(h.value);
+      vec3(", at", ray.at(h.value));
+    }
+    else {printStr("the ray misses the box\n");}
+  }
+
+  // A cubic Bezier arch, and its middle
+  imm arch = CubicBezier2[Vec2[0., 0.], Vec2[0., 2.], Vec2[2., 2.], Vec2[2., 0.]];
+  vec2("the arch's middle:", arch.point(0.5));
+  vec2("which way it runs there:", arch.tangent(0.5));
+
+  // Seven points: the hull is five of them, and it cuts into three triangles
+  imm cloud [7; Vec2] = [Vec2[0., 0.], Vec2[2., 0.], Vec2[1., 1.], Vec2[2., 2.], Vec2[0., 2.],
+    Vec2[1., 0.], Vec2[1., 3.]];
+  imm hull = convexHull(&cloud);
+  printStr("the hull of seven points has "); printInt(i64[hull.len()]); printStr(" corners, area ");
+  num(polygonSignedArea(hull.view())); printStr("\n");
+  imm tris = triangulatePolygon(hull.view());
+  printStr("cut into "); printInt(i64[tris.len() / 3usize]); printStr(" triangles\n\n");
+
+  // A color and a rectangle of pixels are plain values
   imm orange = Color[1., 0.5, 0.];
   printStr("orange: ");
   num(orange.red); printStr(" "); num(orange.green); printStr(" ");
   num(orange.blue); printStr(" alpha "); num(orange.alpha); printStr("\n");
-  imm screen = Rect[0, 0, 1280, 720];
+  imm screen = IRect[0, 0, 1280, 720];
   printStr("screen: ");
   printInt(screen.w); printStr(" by "); printInt(screen.h); printStr("\n");
   0i32;

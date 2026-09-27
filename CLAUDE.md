@@ -42,8 +42,10 @@ Visual Studio projects stay at the root.
   window with an OpenGL context, its events and clock) and to OpenGL (what a
   renderer calls; the functions newer than OpenGL 1.1 are looked up at run
   time by `gl.load`), linking `SDL2.lib`, which must be on `LIB`, and the
-  Windows SDK's `opengl32.lib`; `math3d` is 3D math (vectors, quaternions, matrices, colors,
-  rectangles) ported from the Pegasus3D browser, its trigonometry from `libc`;
+  Windows SDK's `opengl32.lib`; `geomath` is 2-D and 3-D math (vectors,
+  quaternions, matrices, transforms, boxes, rays, planes, frusta and their
+  tests, Bezier curves, polygons, colors), begun as a port from the Pegasus3D
+  browser, its trigonometry from `libc` through its own `sin`, `cos`, ...;
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed
@@ -64,7 +66,7 @@ Visual Studio projects stay at the root.
   also declare a struct `gc`; `render` draws 3D
   shapes through OpenGL (`Shape` and its sphere, plane and cube, `Shader`,
   `Image` from BMP, `Texture`, `Camera`, `Light`), ported from Pegasus3D
-  over `gl`, `math3d` and `collections`, needing no window to build or test;
+  over `gl`, `geomath` and `collections`, needing no window to build or test;
   `window` is a window with an OpenGL context through `sdl`, and the render
   loop's glue (frame time, quit, Escape, fullscreen, resize), and its
   example, `packages/window/examples/spin.cone`, draws a lit, textured,
@@ -111,8 +113,8 @@ Visual Studio projects stay at the root.
   and the stress files `genstress.py` generates.
   `compiler/c/doc/compiler/performance.md`, "Measuring it", holds the baseline.
 - `samples/`: sample Cone programs. `oslayer` tours the `libc` and `posix`
-  packages and is built and run by `test_congo.py`, as is `math3d`'s example,
-  `packages/math3d/examples/tour.cone`. `opengl` opens a window cleared to
+  packages and is built and run by `test_congo.py`, as is `geomath`'s example,
+  `packages/geomath/examples/tour.cone`. `opengl` opens a window cleared to
   a color through the `sdl` and `gl` packages; it links only with SDL2's
   `lib` folder on `LIB`, and runs with `SDL2.dll` on `PATH`. The test suite
   builds neither it nor `webgl`.

@@ -1,21 +1,27 @@
-// The math3d package, imported by name as any program imports it, compiled on
-// its own over libc, whose functions it calls, and linked with this test. Each
-// line is one operation of one
-// of its types, with a value worked out by hand from the math, not taken from
-// a run:
+// The geomath package's vectors, quaternions and 4x4 matrices, imported by
+// name as any program imports it, compiled on its own over libc, whose
+// functions it calls, and linked with this test. Each line is one operation
+// of one of its types, with a value worked out by hand from the math, not
+// taken from a run:
 //
-// - Xyz: the operators, dot and cross products, lengths and distances, the
-//   unit vector (and the zero vector's), lerp, and the rounding-tolerant
+// - Vec3: the operators, dot and cross products, lengths and distances,
+//   normalize (and the zero vector's), lerp, component-wise min, max, abs and
+//   clamp, reflect, project, the angle between two, and the rounding-tolerant
 //   comparisons;
 // - Quat: quarter turns about each axis applied to the axes, products in both
-//   orders, conjugate, inverse, unit, dot, the two Euler constructors (which
-//   differ only in order), the turn between two directions (and between two
-//   opposite ones), and slerp, including across the double cover;
-// - Mat4: identity, both perspectives and the orthographic projection, the
-//   quaternion's matrix, look-at and its inverse, Euler angles in their order,
-//   placement, the product's order, the point transform, and the inverse
-//   multiplied back to identity;
-// - Color's default alpha and gray, Rect's fields, and pi.
+//   orders, conjugate, inverse, normalize, dot, the two Euler constructors
+//   (which differ only in order), the turn between two directions (and
+//   between two opposite ones), and slerp, including across the double cover,
+//   and lerp;
+// - Mat4: identity; the perspective and orthographic projections, each with
+//   the depth from 0 to 1 and OpenGL's from -1 to 1, and where each takes the
+//   near and far planes; the quaternion's matrix, lookAt (a camera's view) and
+//   targetTo (its inverse), placement from translation, rotation and scale,
+//   the product's order, points, directions and four-vectors carried through,
+//   transpose, determinant, and the inverse, of a placement and of a
+//   projection, multiplied back to identity;
+// - Color's default alpha and gray, IRect's fields, pi, and degrees and
+//   radians converted.
 //
 // A number is printed to four decimal places, rounded, so a rounding error in
 // the sixth or seventh digit of an f32 does not show; every value below is
@@ -25,7 +31,7 @@
 mod operations;
 
 import stdio use *;
-import math3d use *;
+import geomath use *;
 
 fn num(v f32) {
   imm scaled = f64[v] * 10000.;
@@ -53,12 +59,21 @@ fn b(label &[]u8, v Bool) {
   if v {printStr(" = 1\n");} else {printStr(" = 0\n");};
 }
 
-fn xyz(label &[]u8, v Xyz) {
+fn vec3(label &[]u8, v Vec3) {
   printStr(label);
   printStr(" = (");
   num(v.x); printStr(", ");
   num(v.y); printStr(", ");
   num(v.z); printStr(")\n");
+}
+
+fn vec4(label &[]u8, v Vec4) {
+  printStr(label);
+  printStr(" = (");
+  num(v.x); printStr(", ");
+  num(v.y); printStr(", ");
+  num(v.z); printStr(", ");
+  num(v.w); printStr(")\n");
 }
 
 fn quat(label &[]u8, q Quat) {
@@ -102,71 +117,85 @@ fn sameMat(a Mat4, c Mat4) Bool {
 }
 
 fn vectors() {
-  imm a = Xyz[1., 2., 3.];
-  imm c = Xyz[4., 5., 6.];
-  xyz("xyz-add", a + c);
-  xyz("xyz-sub", c - a);
-  xyz("xyz-neg", -a);
-  xyz("xyz-scale", a * 2.);
-  xyz("xyz-mult", a * c);
-  f("xyz-dot", a.dot(c));
+  imm a = Vec3[1., 2., 3.];
+  imm c = Vec3[4., 5., 6.];
+  vec3("vec3-add", a + c);
+  vec3("vec3-sub", c - a);
+  vec3("vec3-neg", -a);
+  vec3("vec3-scale", a * 2.);
+  vec3("vec3-mult", a * c);
+  f("vec3-dot", a.dot(c));
   // (2*6 - 3*5, 3*4 - 1*6, 1*5 - 2*4)
-  xyz("xyz-cross", a.cross(c));
+  vec3("vec3-cross", a.cross(c));
   // The right-hand rule: x cross y is z
-  xyz("xyz-cross-x-y", Xyz[1., 0., 0.].cross(Xyz[0., 1., 0.]));
+  vec3("vec3-cross-x-y", Vec3[1., 0., 0.].cross(Vec3[0., 1., 0.]));
   // 3, 4, 12 is a Pythagorean quadruple: 9 + 16 + 144 = 169
-  f("xyz-length", Xyz[3., 4., 12.].length());
-  f("xyz-length-squared", Xyz[3., 4., 12.].lengthSquared());
-  f("xyz-distance", Xyz[1., 1., 1.].distance(Xyz[4., 5., 1.]));
-  f("xyz-distance-squared", Xyz[1., 1., 1.].distanceSquared(Xyz[4., 5., 1.]));
-  xyz("xyz-unit", Xyz[0., 3., 4.].unit());
-  xyz("xyz-unit-of-zero", Xyz[0., 0., 0.].unit());
-  xyz("xyz-lerp-quarter", Xyz[0., 0., 0.].lerp(Xyz[10., 20., -4.], 0.25));
+  f("vec3-length", Vec3[3., 4., 12.].length());
+  f("vec3-length-squared", Vec3[3., 4., 12.].lengthSquared());
+  f("vec3-distance", Vec3[1., 1., 1.].distance(Vec3[4., 5., 1.]));
+  f("vec3-distance-squared", Vec3[1., 1., 1.].distanceSquared(Vec3[4., 5., 1.]));
+  vec3("vec3-normalize", Vec3[0., 3., 4.].normalize());
+  vec3("vec3-normalize-zero", Vec3[0., 0., 0.].normalize());
+  vec3("vec3-lerp-quarter", Vec3[0., 0., 0.].lerp(Vec3[10., 20., -4.], 0.25));
+  vec3("vec3-min", a.min(Vec3[2., 1., 5.]));
+  vec3("vec3-max", a.max(Vec3[2., 1., 5.]));
+  vec3("vec3-abs", Vec3[-1., 2., -3.].abs());
+  vec3("vec3-clamp", Vec3[5., -5., 0.5].clamp(Vec3[0., 0., 0.], Vec3[1., 1., 1.]));
+  // Bounced off the floor: its downward part turns upward
+  vec3("vec3-reflect", Vec3[1., -1., 0.].reflect(Vec3[0., 1., 0.]));
+  // (3, 4, 0) along (2, 0, 0): (2, 0, 0) * 6/4
+  vec3("vec3-project", Vec3[3., 4., 0.].project(Vec3[2., 0., 0.]));
+  // A right angle, an eighth of a turn, a half turn
+  f("vec3-angle-right", Vec3[1., 0., 0.].angle(Vec3[0., 1., 0.]));
+  f("vec3-angle-eighth", Vec3[1., 0., 0.].angle(Vec3[1., 1., 0.]));
+  f("vec3-angle-opposite", Vec3[1., 0., 0.].angle(Vec3[-2., 0., 0.]));
   // 0.1 + 0.2 is not exactly 0.3 in binary, but equal to within rounding
-  b("xyz-equals-rounding", Xyz[0.1 + 0.2, 0., 0.].equals(Xyz[0.3, 0., 0.]));
-  b("xyz-equals-differs", a.equals(Xyz[1., 2., 3.001]));
-  b("xyz-is-zero", Xyz[0., 0., 0.].isZero());
-  b("xyz-is-zero-tiny", Xyz[0.000000001, 0., 0.].isZero());
-  b("xyz-is-zero-not", Xyz[0., 0.001, 0.].isZero());
+  b("vec3-equals-rounding", Vec3[0.1 + 0.2, 0., 0.].equals(Vec3[0.3, 0., 0.]));
+  b("vec3-equals-differs", a.equals(Vec3[1., 2., 3.001]));
+  b("vec3-is-zero", Vec3[0., 0., 0.].isZero());
+  b("vec3-is-zero-tiny", Vec3[0.000000001, 0., 0.].isZero());
+  b("vec3-is-zero-not", Vec3[0., 0.001, 0.].isZero());
 }
 
 fn quaternions() {
-  imm qx = Quat.angleAxis(pi / 2., Xyz[1., 0., 0.]);
-  imm qy = Quat.angleAxis(pi / 2., Xyz[0., 1., 0.]);
-  imm qz = Quat.angleAxis(pi / 2., Xyz[0., 0., 1.]);
-  xyz("quat-identity-rotate", Quat.identity().rotate(Xyz[1., 2., 3.]));
+  imm qx = Quat.angleAxis(pi / 2., Vec3[1., 0., 0.]);
+  imm qy = Quat.angleAxis(pi / 2., Vec3[0., 1., 0.]);
+  imm qz = Quat.angleAxis(pi / 2., Vec3[0., 0., 1.]);
+  vec3("quat-identity-rotate", Quat.identity().rotate(Vec3[1., 2., 3.]));
   quat("quat-angle-axis-z", qz);
   // Counterclockwise seen from the axis's tip: x to y, y to z, z to x
-  xyz("quat-z-turns-x", qz.rotate(Xyz[1., 0., 0.]));
-  xyz("quat-x-turns-y", qx.rotate(Xyz[0., 1., 0.]));
-  xyz("quat-y-turns-z", qy.rotate(Xyz[0., 0., 1.]));
+  vec3("quat-z-turns-x", qz.rotate(Vec3[1., 0., 0.]));
+  vec3("quat-x-turns-y", qx.rotate(Vec3[0., 1., 0.]));
+  vec3("quat-y-turns-z", qy.rotate(Vec3[0., 0., 1.]));
+  // 'q * v' is q.rotate(v)
+  vec3("quat-times-vec3", qz * Vec3[1., 0., 0.]);
   // qz * qx turns about x first: z goes to -y, and -y about z to x.
   // qx * qz turns about z first, which leaves z alone, then about x: -y
   quat("quat-product", qz * qx);
-  xyz("quat-product-x-first", (qz * qx).rotate(Xyz[0., 0., 1.]));
-  xyz("quat-product-z-first", (qx * qz).rotate(Xyz[0., 0., 1.]));
+  vec3("quat-product-x-first", (qz * qx).rotate(Vec3[0., 0., 1.]));
+  vec3("quat-product-z-first", (qx * qz).rotate(Vec3[0., 0., 1.]));
   imm half = Quat[0.5, 0.5, 0.5, 0.5];
   quat("quat-conjugate", half.conjugate());
   quat("quat-times-conjugate", half * half.conjugate());
   quat("quat-inverse", Quat[1., 1., 1., 1.].inverse());
   quat("quat-inverse-scalar", Quat[0., 0., 0., 2.].inverse());
-  quat("quat-unit", Quat[0., 0., 3., 4.].unit());
-  quat("quat-unit-of-zero", Quat[0., 0., 0., 0.].unit());
+  quat("quat-normalize", Quat[0., 0., 3., 4.].normalize());
+  quat("quat-normalize-zero", Quat[0., 0., 0., 0.].normalize());
   f("quat-dot", Quat[1., 2., 3., 4.].dot(Quat[5., 6., 7., 8.]));
   // One axis alone is angleAxis about it
-  quat("quat-rotate-xyz-x", Quat.rotateXyz(Xyz[pi / 2., 0., 0.]));
+  quat("quat-euler-xyz-x", Quat.fromEulerXyz(Vec3[pi / 2., 0., 0.]));
   // Two axes: x then y is qx * qy = (1/2, 1/2, 1/2, 1/2); y then x is
   // qy * qx, which differs in the sign of z
-  quat("quat-rotate-xyz-xy", Quat.rotateXyz(Xyz[pi / 2., pi / 2., 0.]));
-  quat("quat-rotate-yxz-xy", Quat.rotateYxz(Xyz[pi / 2., pi / 2., 0.]));
+  quat("quat-euler-xyz-xy", Quat.fromEulerXyz(Vec3[pi / 2., pi / 2., 0.]));
+  quat("quat-euler-yxz-xy", Quat.fromEulerYxz(Vec3[pi / 2., pi / 2., 0.]));
   // From x to y is a quarter turn about z; the lengths do not matter
-  quat("quat-from-vectors", Quat.fromVectors(Xyz[1., 0., 0.], Xyz[0., 1., 0.]));
+  quat("quat-from-vectors", Quat.fromVectors(Vec3[1., 0., 0.], Vec3[0., 1., 0.]));
   // From x to z is a quarter turn about -y
-  quat("quat-from-vectors-scaled", Quat.fromVectors(Xyz[2., 0., 0.], Xyz[0., 0., 3.]));
+  quat("quat-from-vectors-scaled", Quat.fromVectors(Vec3[2., 0., 0.], Vec3[0., 0., 3.]));
   // Opposite directions: a half turn about y, which takes x to -x
-  imm opp = Quat.fromVectors(Xyz[1., 0., 0.], Xyz[-1., 0., 0.]);
+  imm opp = Quat.fromVectors(Vec3[1., 0., 0.], Vec3[-1., 0., 0.]);
   quat("quat-from-opposite-vectors", opp);
-  xyz("quat-from-opposite-turns-x", opp.rotate(Xyz[1., 0., 0.]));
+  vec3("quat-from-opposite-turns-x", opp.rotate(Vec3[1., 0., 0.]));
   // Halfway to a quarter turn about z is an eighth turn:
   // (0, 0, sin 22.5deg, cos 22.5deg) = (0, 0, 0.3827, 0.9239)
   quat("quat-slerp-start", Quat.identity().slerp(qz, 0.));
@@ -177,66 +206,104 @@ fn quaternions() {
   imm viaNeg = Quat.identity().slerp(negqz, 0.5);
   quat("quat-slerp-double-cover", viaNeg);
   // An eighth turn about z takes x to (cos 45deg, sin 45deg, 0)
-  xyz("quat-slerp-half-turns-x", viaNeg.rotate(Xyz[1., 0., 0.]));
+  vec3("quat-slerp-half-turns-x", viaNeg.rotate(Vec3[1., 0., 0.]));
+  // Halfway, lerp's straight blend (0, 0, 0.3536, 0.8536) normalized is the
+  // same eighth turn: the two agree at the middle, and at the ends
+  quat("quat-lerp-half", Quat.identity().lerp(qz, 0.5));
+  quat("quat-lerp-double-cover", Quat.identity().lerp(negqz, 0.5));
+}
+
+fn projections() {
+  // A quarter turn's field of view, square, near 1 and far 3: tan 45deg = 1.
+  // Depth 0 to 1: far/(near - far) = 3/-2, near far/(near - far) = 3/-2
+  imm p = Mat4.perspective(pi / 2., 1., 1., 3.);
+  mat("mat-perspective-90", p);
+  // The near plane goes to depth 0 and the far one to 1; halfway between them
+  // (z = -2) is 3/4 of the way in depth: (-1.5 * -2 - 1.5) / 2
+  vec3("mat-perspective-near", p.projectPoint(Vec3[0., 0., -1.]));
+  vec3("mat-perspective-far", p.projectPoint(Vec3[0., 0., -3.]));
+  vec3("mat-perspective-middle", p.projectPoint(Vec3[0., 0., -2.]));
+  // The top right corner of the near plane: 45 degrees up and across
+  vec3("mat-perspective-corner", p.projectPoint(Vec3[1., 1., -1.]));
+  // OpenGL's: (3 + 1)/(1 - 3) = -2, 2*3*1/(1 - 3) = -3; near to -1, far to 1,
+  // and the middle to (-2 * -2 - 3) / 2 = 1/2
+  imm pgl = Mat4.perspectiveGl(pi / 2., 1., 1., 3.);
+  mat("mat-perspective-gl-90", pgl);
+  vec3("mat-perspective-gl-near", pgl.projectPoint(Vec3[0., 0., -1.]));
+  vec3("mat-perspective-gl-far", pgl.projectPoint(Vec3[0., 0., -3.]));
+  vec3("mat-perspective-gl-middle", pgl.projectPoint(Vec3[0., 0., -2.]));
+  // 60 degrees, twice as wide as high, 0.5 to 10.5: tan 30deg = 1/sqrt(3),
+  // so sqrt(3)/2 = 0.8660 and sqrt(3) = 1.7321; 10.5/-10 = -1.05 and
+  // 0.5*10.5/-10 = -0.525 (OpenGL's: 11/-10 = -1.1, 2*10.5*0.5/-10 = -1.05)
+  mat("mat-perspective-60", Mat4.perspective(pi / 3., 2., 0.5, 10.5));
+  mat("mat-perspective-gl-60", Mat4.perspectiveGl(pi / 3., 2., 0.5, 10.5));
+  // The box from -4 to 4 across, -2 to 2 up, 1 to 3 away: 2/8, 2/4;
+  // depth 1/(1 - 3) = -0.5 and 1/(1 - 3) = -0.5, near to 0 and far to 1
+  imm o = Mat4.orthographic(-4., 4., -2., 2., 1., 3.);
+  mat("mat-orthographic", o);
+  vec3("mat-orthographic-near", o * Vec3[0., 0., -1.]);
+  vec3("mat-orthographic-far", o * Vec3[0., 0., -3.]);
+  // OpenGL's: 2/(1 - 3) = -1 and (3 + 1)/(1 - 3) = -2, near to -1, far to 1
+  imm ogl = Mat4.orthographicGl(-4., 4., -2., 2., 1., 3.);
+  mat("mat-orthographic-gl", ogl);
+  vec3("mat-orthographic-gl-near", ogl * Vec3[0., 0., -1.]);
+  vec3("mat-orthographic-gl-far", ogl * Vec3[0., 0., -3.]);
+  // Off centre, 0 to 8 across and 0 to 4 up: its corners go to -1 and 1
+  imm off = Mat4.orthographic(0., 8., 0., 4., 1., 3.);
+  vec3("mat-orthographic-corner-high", off * Vec3[8., 4., -1.]);
+  vec3("mat-orthographic-corner-low", off * Vec3[0., 0., -3.]);
+  // The inverse of a projection carries a depth back to its distance
+  imm unp = p.inverse();
+  mat("mat-perspective-inverse-times", unp * p);
+  vec3("mat-unproject-near", unp.projectPoint(Vec3[0., 0., 0.]));
+  vec3("mat-unproject-far", unp.projectPoint(Vec3[0., 0., 1.]));
 }
 
 fn matrices() {
   mat("mat-identity", Mat4.identity());
-  // tan 45deg = 1: 1/1, 1/1, (3+1)/(1-3), -1, 2*3*1/(1-3)
-  mat("mat-perspective-90", Mat4.perspective(90., 1., 3., 1.));
-  // tan 30deg = 1/sqrt(3): sqrt(3)/2 = 0.8660, sqrt(3) = 1.7321,
-  // 11/-10 = -1.1, 2*10.5*0.5/-10 = -1.05
-  mat("mat-perspective-60", Mat4.perspective(60., 0.5, 10.5, 2.));
-  // The near plane goes to -1 (w is 1 there)
-  xyz("mat-perspective-near", Mat4.perspective(90., 1., 3., 1.) * Xyz[0., 0., -1.]);
-  // 1/(0.5*2), 1/0.5, and the same depth as perspective-90
-  mat("mat-height-perspective", Mat4.heightPerspective(0.5, 1., 3., 2.));
-  // 1/(2*2), 1/2, 2/(1-3), (3+1)/(1-3): near goes to -1 and far to 1
-  imm ortho = Mat4.ortho(2., 1., 3., 2.);
-  mat("mat-ortho", ortho);
-  xyz("mat-ortho-near", ortho * Xyz[0., 0., -1.]);
-  xyz("mat-ortho-far", ortho * Xyz[0., 0., -3.]);
   // A quarter turn about z: x goes to y, y to -x
-  mat("mat-from-quat", Mat4.fromQuat(Quat.angleAxis(pi / 2., Xyz[0., 0., 1.])));
-  // At the origin looking along +x: local -z is +x, local x is +z
-  imm look = Mat4.lookAt(Xyz[0., 0., 0.], Xyz[1., 0., 0.], Xyz[0., 1., 0.]);
-  mat("mat-look-at", look);
-  xyz("mat-look-at-ahead", look * Xyz[0., 0., -2.]);
+  mat("mat-from-quat", Mat4.fromQuat(Quat.angleAxis(pi / 2., Vec3[0., 0., 1.])));
+  // Placed at the origin facing along +x: local -z is +x, local x is +z
+  imm facing = Mat4.targetTo(Vec3[0., 0., 0.], Vec3[1., 0., 0.], Vec3[0., 1., 0.]);
+  mat("mat-target-to", facing);
+  vec3("mat-target-to-ahead", facing * Vec3[0., 0., -2.]);
   // A camera at (3, 0, 0) looking at the origin: the origin is 3 ahead,
   // and (0, 0, -1) is 1 to the camera's right
-  imm view = Mat4.inverseLookAt(Xyz[3., 0., 0.], Xyz[0., 0., 0.], Xyz[0., 1., 0.]);
-  mat("mat-inverse-look-at", view);
-  xyz("mat-view-origin", view * Xyz[0., 0., 0.]);
-  xyz("mat-view-right", view * Xyz[0., 0., -1.]);
-  b("mat-view-is-look-at-inverse", sameMat(view,
-    Mat4.lookAt(Xyz[3., 0., 0.], Xyz[0., 0., 0.], Xyz[0., 1., 0.]).inverse()));
-  // A quarter turn about z, doubled, moved to (1, 2, 3): x goes to (0, 2, 0)
-  // and then to (1, 4, 3)
-  imm e = Mat4.euler(Xyz[1., 2., 3.], Xyz[0., 0., pi / 2.], Xyz[2., 2., 2.]);
-  mat("mat-euler", e);
-  xyz("mat-euler-x", e * Xyz[1., 0., 0.]);
-  // About x first: y goes to z, which about y goes to x. (About y first
-  // would leave y alone, and x would take it to z.)
-  imm exy = Mat4.euler(Xyz[0., 0., 0.], Xyz[pi / 2., pi / 2., 0.], Xyz[1., 1., 1.]);
-  xyz("mat-euler-order", exy * Xyz[0., 1., 0.]);
+  imm view = Mat4.lookAt(Vec3[3., 0., 0.], Vec3[0., 0., 0.], Vec3[0., 1., 0.]);
+  mat("mat-look-at", view);
+  vec3("mat-view-origin", view * Vec3[0., 0., 0.]);
+  vec3("mat-view-right", view * Vec3[0., 0., -1.]);
+  b("mat-view-is-target-to-inverse", sameMat(view,
+    Mat4.targetTo(Vec3[3., 0., 0.], Vec3[0., 0., 0.], Vec3[0., 1., 0.]).inverse()));
   // Scale (1,1,1) to (2,3,4), turn it to (-3,2,4), move it to (-2,4,7)
-  imm qz = Quat.angleAxis(pi / 2., Xyz[0., 0., 1.]);
-  imm placed = Mat4.place(Xyz[1., 2., 3.], qz, Xyz[2., 3., 4.]);
-  mat("mat-place", placed);
-  xyz("mat-place-point", placed * Xyz[1., 1., 1.]);
+  imm qz = Quat.angleAxis(pi / 2., Vec3[0., 0., 1.]);
+  imm placed = Mat4.fromTrs(Vec3[1., 2., 3.], qz, Vec3[2., 3., 4.]);
+  mat("mat-from-trs", placed);
+  vec3("mat-from-trs-point", placed * Vec3[1., 1., 1.]);
+  // A direction is turned and scaled, not moved
+  vec3("mat-from-trs-vector", placed.transformVector(Vec3[1., 1., 1.]));
+  vec3("mat-translation", placed.translation());
   f("mat-cell-translation", placed.cell(1usize, 3usize));
+  // A rotation keeps volume; the scaling multiplies it by 2 * 3 * 4
+  f("mat-determinant", placed.determinant());
   // Moving and turning: the right-hand matrix acts first
-  imm move = Mat4.identity().withPos(Xyz[5., 0., 0.]);
+  imm move = Mat4.fromTranslation(Vec3[5., 0., 0.]);
   imm turn = Mat4.fromQuat(qz);
-  xyz("mat-mult-turn-then-move", (move * turn) * Xyz[0., 0., 0.]);
-  xyz("mat-mult-move-then-turn", (turn * move) * Xyz[0., 0., 0.]);
+  vec3("mat-mult-turn-then-move", (move * turn) * Vec3[0., 0., 0.]);
+  vec3("mat-mult-move-then-turn", (turn * move) * Vec3[0., 0., 0.]);
+  // A four-vector: w 0 is a direction, which a move leaves alone; w 1 a point
+  imm shift = Mat4.fromTranslation(Vec3[1., 2., 3.]);
+  vec4("mat-times-direction", shift * Vec4[1., 1., 1., 0.]);
+  vec4("mat-times-point", shift * Vec4[1., 1., 1., 1.]);
+  // Transposed, the translation is the bottom row
+  mat("mat-transpose", shift.transpose());
   // Scale by (2, 4, 5) and move by (1, 2, 3): the inverse scales by
   // (1/2, 1/4, 1/5) and moves by -(1/2, 2/4, 3/5)
-  imm sm = Mat4.place(Xyz[1., 2., 3.], Quat.identity(), Xyz[2., 4., 5.]);
+  imm sm = Mat4.fromTrs(Vec3[1., 2., 3.], Quat.identity(), Vec3[2., 4., 5.]);
   mat("mat-inverse", sm.inverse());
   mat("mat-inverse-times", placed.inverse() * placed);
   mat("mat-times-inverse", placed * placed.inverse());
-  xyz("mat-inverse-point", placed.inverse() * Xyz[-2., 4., 7.]);
+  vec3("mat-inverse-point", placed.inverse() * Vec3[-2., 4., 7.]);
 }
 
 fn others() {
@@ -244,16 +311,19 @@ fn others() {
   quat("color-default-alpha", Quat[c.red, c.green, c.blue, c.alpha]);
   imm g = Color.gray(0.25);
   quat("color-gray", Quat[g.red, g.green, g.blue, g.alpha]);
-  imm r = Rect[10, 20, 640, 480];
-  printStr("rect = ");
+  imm r = IRect[10, 20, 640, 480];
+  printStr("irect = ");
   printInt(r.x); printStr(" "); printInt(r.y); printStr(" ");
   printInt(r.w); printStr(" "); printInt(r.h); printStr("\n");
   f("pi", pi);
+  f("radians-180", radians(180.));
+  f("degrees-quarter", degrees(pi / 2.));
 }
 
 fn main() i32 {
   vectors();
   quaternions();
+  projections();
   matrices();
   others();
   0i32;
