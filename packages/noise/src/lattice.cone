@@ -1,0 +1,232 @@
+// ======== Lattice noise: value and gradient (Perlin-style), 2-D and 3-D ========
+//
+// Each is evaluated with its analytic derivative (Inigo Quilez's
+// formulation): the value and its gradient with respect to the point, so a
+// caller shading a bump or displacing along a normal needs no finite
+// differences. The fade is Perlin's 2002 quintic, 6t^5 - 15t^4 + 10t^3, so
+// the second derivative is continuous too.
+//
+// The float arithmetic is additions, subtractions and multiplications only
+// (with floor), written in one order; noise.slang writes it in the same
+// order, which is what lets a GPU compiled without contraction give the same
+// bits.
+
+// A 2-D noise's value and its derivative with respect to the point
+pub struct Noise2 {
+  pub value f32;
+  pub d Vec2;
+}
+
+// A 3-D noise's value and its derivative with respect to the point
+pub struct Noise3 {
+  pub value f32;
+  pub d Vec3;
+}
+
+// The quintic fade and its derivative
+fn fade(t f32) f32 { t * t * t * (t * (t * 6. - 15.) + 10.); }
+fn fadeD(t f32) f32 { 30. * t * t * (t * (t - 2.) + 1.); }
+
+// A lattice coordinate wrapped into [0, period) when period > 0. Only
+// unsigned remainders of non-negative numbers: Vulkan leaves a signed
+// remainder with a negative operand undefined, and a GPU was measured
+// giving a different lattice for a period of 3 or 5
+fn wrap(i i32, period i32) i32 {
+  if period <= 0 { return i; }
+  if i >= 0 { return i32[u32[i] % u32[period]]; }
+  period - 1 - i32[u32[-(i + 1)] % u32[period]];
+}
+
+// Bilinear blend of corner values a (0,0), b (1,0), c (0,1), d (1,1) by the
+// faded u, v: a + (b - a) u + (c - a) v + (a - b - c + d) u v
+fn blend2(a f32, b f32, c f32, d f32, u f32, v f32) f32 {
+  a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+
+// Trilinear blend of corner values a (0,0,0), b (1,0,0), c (0,1,0),
+// d (1,1,0), e (0,0,1), f (1,0,1), g (0,1,1), h (1,1,1) by the faded u, v, w
+fn blend3(a f32, b f32, c f32, d f32, e f32, f f32, g f32, h f32, u f32, v f32, w f32) f32 {
+  a + (b - a) * u + (c - a) * v + (e - a) * w
+    + (a - b - c + d) * u * v + (a - c - e + g) * v * w + (a - b - e + f) * w * u
+    + (b - a + c - d + e - f - g + h) * u * v * w;
+}
+
+// -------- value noise --------
+
+// 2-D value noise at 'p': a random value in [-1, 1) at each lattice point,
+// blended; lattice coordinates wrap every 'period' cells when period > 0
+pub fn value2Periodic(p Vec2, period i32, seed u32) Noise2 {
+  imm fx = libc.floorf(p.x);
+  imm fy = libc.floorf(p.y);
+  imm ix = i32[fx];
+  imm iy = i32[fy];
+  imm x0 = wrap(ix, period);
+  imm y0 = wrap(iy, period);
+  imm x1 = wrap(ix + 1, period);
+  imm y1 = wrap(iy + 1, period);
+  imm tx = p.x - fx;
+  imm ty = p.y - fy;
+  imm u = fade(tx);
+  imm v = fade(ty);
+  imm du = fadeD(tx);
+  imm dv = fadeD(ty);
+  imm a = toSigned(hash2(x0, y0, seed).x);
+  imm b = toSigned(hash2(x1, y0, seed).x);
+  imm c = toSigned(hash2(x0, y1, seed).x);
+  imm d = toSigned(hash2(x1, y1, seed).x);
+  imm k = a - b - c + d;
+  Noise2[blend2(a, b, c, d, u, v), Vec2[du * ((b - a) + k * v), dv * ((c - a) + k * u)]];
+}
+
+// 2-D value noise at 'p', unbounded
+pub fn value2(p Vec2, seed u32) Noise2 { value2Periodic(p, 0, seed); }
+
+// 3-D value noise at 'p': a random value in [-1, 1) at each lattice point,
+// blended; lattice coordinates wrap every 'period' cells when period > 0
+pub fn value3Periodic(p Vec3, period i32, seed u32) Noise3 {
+  imm fx = libc.floorf(p.x);
+  imm fy = libc.floorf(p.y);
+  imm fz = libc.floorf(p.z);
+  imm ix = i32[fx];
+  imm iy = i32[fy];
+  imm iz = i32[fz];
+  imm x0 = wrap(ix, period);
+  imm y0 = wrap(iy, period);
+  imm z0 = wrap(iz, period);
+  imm x1 = wrap(ix + 1, period);
+  imm y1 = wrap(iy + 1, period);
+  imm z1 = wrap(iz + 1, period);
+  imm tx = p.x - fx;
+  imm ty = p.y - fy;
+  imm tz = p.z - fz;
+  imm u = fade(tx);
+  imm v = fade(ty);
+  imm w = fade(tz);
+  imm a = toSigned(hash3(x0, y0, z0, seed).x);
+  imm b = toSigned(hash3(x1, y0, z0, seed).x);
+  imm c = toSigned(hash3(x0, y1, z0, seed).x);
+  imm d = toSigned(hash3(x1, y1, z0, seed).x);
+  imm e = toSigned(hash3(x0, y0, z1, seed).x);
+  imm f = toSigned(hash3(x1, y0, z1, seed).x);
+  imm g = toSigned(hash3(x0, y1, z1, seed).x);
+  imm h = toSigned(hash3(x1, y1, z1, seed).x);
+  imm k4 = a - b - c + d;
+  imm k5 = a - c - e + g;
+  imm k6 = a - b - e + f;
+  imm k7 = b - a + c - d + e - f - g + h;
+  Noise3[blend3(a, b, c, d, e, f, g, h, u, v, w), Vec3[
+    fadeD(tx) * ((b - a) + k4 * v + k6 * w + k7 * v * w),
+    fadeD(ty) * ((c - a) + k4 * u + k5 * w + k7 * u * w),
+    fadeD(tz) * ((e - a) + k5 * v + k6 * u + k7 * u * v)]];
+}
+
+// 3-D value noise at 'p', unbounded
+pub fn value3(p Vec3, seed u32) Noise3 { value3Periodic(p, 0, seed); }
+
+// -------- gradient noise --------
+
+// 2-D gradient noise at 'p': a random gradient at each lattice point, its
+// two components each in [-1, 1) (not normalized: the lattice is hashed, not
+// a table of directions), and the blend of each corner's ramp along it;
+// zero at every lattice point. Lattice coordinates wrap every 'period' cells
+// when period > 0
+pub fn gradient2Periodic(p Vec2, period i32, seed u32) Noise2 {
+  imm fx = libc.floorf(p.x);
+  imm fy = libc.floorf(p.y);
+  imm ix = i32[fx];
+  imm iy = i32[fy];
+  imm x0 = wrap(ix, period);
+  imm y0 = wrap(iy, period);
+  imm x1 = wrap(ix + 1, period);
+  imm y1 = wrap(iy + 1, period);
+  imm tx = p.x - fx;
+  imm ty = p.y - fy;
+  imm u = fade(tx);
+  imm v = fade(ty);
+  imm ha = hash2(x0, y0, seed);
+  imm hb = hash2(x1, y0, seed);
+  imm hc = hash2(x0, y1, seed);
+  imm hd = hash2(x1, y1, seed);
+  imm gax = toSigned(ha.x);
+  imm gay = toSigned(ha.y);
+  imm gbx = toSigned(hb.x);
+  imm gby = toSigned(hb.y);
+  imm gcx = toSigned(hc.x);
+  imm gcy = toSigned(hc.y);
+  imm gdx = toSigned(hd.x);
+  imm gdy = toSigned(hd.y);
+  imm va = gax * tx + gay * ty;
+  imm vb = gbx * (tx - 1.) + gby * ty;
+  imm vc = gcx * tx + gcy * (ty - 1.);
+  imm vd = gdx * (tx - 1.) + gdy * (ty - 1.);
+  imm k = va - vb - vc + vd;
+  Noise2[blend2(va, vb, vc, vd, u, v), Vec2[
+    blend2(gax, gbx, gcx, gdx, u, v) + fadeD(tx) * ((vb - va) + k * v),
+    blend2(gay, gby, gcy, gdy, u, v) + fadeD(ty) * ((vc - va) + k * u)]];
+}
+
+// 2-D gradient noise at 'p', unbounded
+pub fn gradient2(p Vec2, seed u32) Noise2 { gradient2Periodic(p, 0, seed); }
+
+// 3-D gradient noise at 'p': as gradient2Periodic, one dimension up
+pub fn gradient3Periodic(p Vec3, period i32, seed u32) Noise3 {
+  imm fx = libc.floorf(p.x);
+  imm fy = libc.floorf(p.y);
+  imm fz = libc.floorf(p.z);
+  imm ix = i32[fx];
+  imm iy = i32[fy];
+  imm iz = i32[fz];
+  imm x0 = wrap(ix, period);
+  imm y0 = wrap(iy, period);
+  imm z0 = wrap(iz, period);
+  imm x1 = wrap(ix + 1, period);
+  imm y1 = wrap(iy + 1, period);
+  imm z1 = wrap(iz + 1, period);
+  imm tx = p.x - fx;
+  imm ty = p.y - fy;
+  imm tz = p.z - fz;
+  imm u = fade(tx);
+  imm v = fade(ty);
+  imm w = fade(tz);
+  imm sx = tx - 1.;
+  imm sy = ty - 1.;
+  imm sz = tz - 1.;
+  imm ha = hash3(x0, y0, z0, seed);
+  imm hb = hash3(x1, y0, z0, seed);
+  imm hc = hash3(x0, y1, z0, seed);
+  imm hd = hash3(x1, y1, z0, seed);
+  imm he = hash3(x0, y0, z1, seed);
+  imm hf = hash3(x1, y0, z1, seed);
+  imm hg = hash3(x0, y1, z1, seed);
+  imm hh = hash3(x1, y1, z1, seed);
+  imm ga = Vec3[toSigned(ha.x), toSigned(ha.y), toSigned(ha.z)];
+  imm gb = Vec3[toSigned(hb.x), toSigned(hb.y), toSigned(hb.z)];
+  imm gc = Vec3[toSigned(hc.x), toSigned(hc.y), toSigned(hc.z)];
+  imm gd = Vec3[toSigned(hd.x), toSigned(hd.y), toSigned(hd.z)];
+  imm ge = Vec3[toSigned(he.x), toSigned(he.y), toSigned(he.z)];
+  imm gf = Vec3[toSigned(hf.x), toSigned(hf.y), toSigned(hf.z)];
+  imm gg = Vec3[toSigned(hg.x), toSigned(hg.y), toSigned(hg.z)];
+  imm gh = Vec3[toSigned(hh.x), toSigned(hh.y), toSigned(hh.z)];
+  imm va = ga.x * tx + ga.y * ty + ga.z * tz;
+  imm vb = gb.x * sx + gb.y * ty + gb.z * tz;
+  imm vc = gc.x * tx + gc.y * sy + gc.z * tz;
+  imm vd = gd.x * sx + gd.y * sy + gd.z * tz;
+  imm ve = ge.x * tx + ge.y * ty + ge.z * sz;
+  imm vf = gf.x * sx + gf.y * ty + gf.z * sz;
+  imm vg = gg.x * tx + gg.y * sy + gg.z * sz;
+  imm vh = gh.x * sx + gh.y * sy + gh.z * sz;
+  imm k4 = va - vb - vc + vd;
+  imm k5 = va - vc - ve + vg;
+  imm k6 = va - vb - ve + vf;
+  imm k7 = vb - va + vc - vd + ve - vf - vg + vh;
+  Noise3[blend3(va, vb, vc, vd, ve, vf, vg, vh, u, v, w), Vec3[
+    blend3(ga.x, gb.x, gc.x, gd.x, ge.x, gf.x, gg.x, gh.x, u, v, w)
+      + fadeD(tx) * ((vb - va) + k4 * v + k6 * w + k7 * v * w),
+    blend3(ga.y, gb.y, gc.y, gd.y, ge.y, gf.y, gg.y, gh.y, u, v, w)
+      + fadeD(ty) * ((vc - va) + k4 * u + k5 * w + k7 * u * w),
+    blend3(ga.z, gb.z, gc.z, gd.z, ge.z, gf.z, gg.z, gh.z, u, v, w)
+      + fadeD(tz) * ((ve - va) + k5 * v + k6 * u + k7 * u * v)]];
+}
+
+// 3-D gradient noise at 'p', unbounded
+pub fn gradient3(p Vec3, seed u32) Noise3 { gradient3Periodic(p, 0, seed); }

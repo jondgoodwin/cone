@@ -1,0 +1,80 @@
+// ======== Phacelle noise: oriented stripes with a continuous phase ========
+//
+// Phacelle Noise function copyright (c) 2025 Rune Skovbo Johansen.
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Ported to Cone from the author's Simple Phacelle Noise function (his
+// Shadertoys t3KczR and wXcfWn; blog.runevision.com, "Phacelle - Cheap
+// Directional Noise", 22 Jan 2026). This file alone is under the MPL 2.0,
+// as the original is; the rest of the package is under the repository's
+// licence. Changed from the
+// original: each cell's random offset comes from the package's integer hash
+// (hash2) of the cell under a seed, not from the original's float hash; and
+// the result is a struct rather than a vec4.
+//
+// For each point it takes the direction the stripes run along there, and
+// gives a 2-D vector whose angle is the stripes' phase: the cosine and sine
+// of stripe waves from the 4 x 4 cells about the point, each cell's wave
+// starting at a random point in it, blended by a bell-shaped weight of the
+// distance. It is not bit-identical between machines: the weight is an
+// exponential and the waves are a cosine and a sine, which a GPU computes to
+// a looser precision than the CPU's C library (see the package README).
+
+// Phacelle noise's result: 'value' is (cos, sin) of the stripes' phase,
+// normalized to length 1 as far as 'normalization' asks; 'side' is the
+// direction across the stripes scaled by 2 pi times the frequency, which,
+// times -value.y, is the derivative of value.x
+pub struct Phacelle {
+  pub value Vec2;
+  pub side Vec2;
+}
+
+// Phacelle noise at 'p':
+// - 'dir', the direction the stripes run along at 'p', of length 1;
+// - 'freq', the stripes' frequency within each cell, best kept near 1;
+// - 'offset', the phase offset, 1 a whole cycle;
+// - 'normalization', from 0 to 1: how far a blended vector shorter than 1 is
+//   lengthened to 1 (0.4: one shorter than 0.6 is not fully lengthened).
+pub fn phacelle2(p Vec2, dir Vec2, freq f32, offset f32, normalization f32, seed u32) Phacelle {
+  imm tau f32 = 6.28318530717959;
+  imm sideX = -dir.y * freq * tau;
+  imm sideY = dir.x * freq * tau;
+  imm phase = offset * tau;
+  imm fx = libc.floorf(p.x);
+  imm fy = libc.floorf(p.y);
+  imm ix = i32[fx];
+  imm iy = i32[fy];
+  imm tx = p.x - fx;
+  imm ty = p.y - fy;
+  mut cx f32 = 0.;
+  mut cy f32 = 0.;
+  mut weightSum f32 = 0.;
+  mut i = -1;
+  while i <= 2 {
+    mut j = -1;
+    while j <= 2 {
+      // The cell's point: its lattice point moved by up to half a cell each way
+      imm h = hash2(ix + i, iy + j, seed);
+      imm vx = tx - f32[i] - toSigned(h.x) * 0.5;
+      imm vy = ty - f32[j] - toSigned(h.y) * 0.5;
+      // A bell of the distance, 1 at 0, lowered to reach 0 at 1.5, the
+      // nearest a point of a cell outside the 4 x 4 can be
+      imm sqrDist = vx * vx + vy * vy;
+      mut weight = libc.expf(-sqrDist * 2.) - 0.01111;
+      if weight < 0. { weight = 0.; }
+      weightSum = weightSum + weight;
+      imm wave = vx * sideX + vy * sideY + phase;
+      cx = cx + cos(wave) * weight;
+      cy = cy + sin(wave) * weight;
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  imm ax = cx / weightSum;
+  imm ay = cy / weightSum;
+  mut magnitude = (ax * ax + ay * ay).sqrt();
+  if magnitude < 1. - normalization { magnitude = 1. - normalization; }
+  Phacelle[Vec2[ax / magnitude, ay / magnitude], Vec2[sideX, sideY]];
+}

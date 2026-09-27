@@ -150,7 +150,7 @@ An import names a module. Congo answers each one this way:
 searches, in order:
 
 1. the Cone repository's own `packages/` (`core`, `stdio`, `libc`, `posix`,
-   `sdl`, `vulkan`, `gpu`, `geomath`, `mesh`, `sculpt`, `testing`, `collections`, `arena`, `pool`, `collector`, `thread`, `render` and `window` are
+   `sdl`, `vulkan`, `gpu`, `geomath`, `mesh`, `sculpt`, `noise`, `testing`, `collections`, `arena`, `pool`, `collector`, `thread`, `render` and `window` are
    there), then
 2. each folder the **machine config** lists.
 
@@ -295,7 +295,12 @@ and `.obj` export; its example is `packages/mesh/examples/cage.cone`.
 rotation-minimizing frames, extrude, lathe and sweep, and the bend, twist,
 taper and curve deformers, and Catmull-Clark subdivision; its examples are
 `packages/sculpt/examples/pipe.cone`, `pipedemo.cone` (the pipe smoothed at
-three levels of detail) and `creasedcube.cone`.
+three levels of detail) and `creasedcube.cone`. `noise`, over
+`geomath`, is coherent noise seeded by integer hashing (PCG hashes, value,
+gradient and cellular noise, fractal sums, domain warp, Phacelle stripes),
+with a Slang twin, `noise.slang`, for shaders; its example is
+`packages/noise/examples/images.cone`, which writes BMPs, and its README
+holds the determinism rules.
 
 One more binds a library beyond the C runtime, and names it: `sdl` (SDL2: a
 window for Vulkan, its events and clocks, and loading Vulkan; `[link]` names
@@ -310,7 +315,7 @@ needed. `gpu`, the thin WebGPU-shaped layer over it, draws into a window
 `window` opens for Vulkan, and `render` draws lit meshes through `gpu`.
 Their layout, constants, loader, camera, image and LOD tests run anywhere;
 `vulkan`'s `runtime` test, all of `gpu`'s (`headless`, `pipelines`,
-`offscreen`) and `render`'s `offscreen` run against the real Vulkan loader
+`offscreen`), `render`'s `offscreen` and `noise`'s `parity` run against the real Vulkan loader
 with no window, so testing `packages/` needs a GPU driver with Vulkan 1.3
 and `SDL2.dll` on `PATH`, but no display. The shaders of `gpu` and `render`
 are Slang compiled ahead of time to SPIR-V, committed and embedded in the

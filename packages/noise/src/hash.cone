@@ -1,0 +1,114 @@
+// ======== Integer hashes: the PCG family, and hash to float ========
+//
+// Every random number in the package comes from these: 32-bit unsigned
+// integer arithmetic (wrapping multiplies and adds, xors and shifts), which is
+// bit-exact on every CPU and every conforming GPU. noise.slang holds the same
+// functions, word for word.
+
+// Two, three and four 32-bit words, a hash's input and output
+pub struct UVec2 {
+  pub x u32;
+  pub y u32;
+}
+
+pub struct UVec3 {
+  pub x u32;
+  pub y u32;
+  pub z u32;
+}
+
+pub struct UVec4 {
+  pub x u32;
+  pub y u32;
+  pub z u32;
+  pub w u32;
+}
+
+// One word to one: the PCG hash (O'Neill's permuted congruential step, its
+// RXS-M-XS output permutation), as Jarzynski and Olano benchmark it and Reed
+// gives it
+pub fn pcg(v u32) u32 {
+  imm state = v * 747796405u32 + 2891336453u32;
+  imm word = ((state >> ((state >> 28u32) + 4u32)) ^ state) * 277803737u32;
+  (word >> 22u32) ^ word;
+}
+
+// Two words to two: Jarzynski and Olano's pcg2d
+pub fn pcg2d(v UVec2) UVec2 {
+  mut x = v.x * 1664525u32 + 1013904223u32;
+  mut y = v.y * 1664525u32 + 1013904223u32;
+  x = x + y * 1664525u32;
+  y = y + x * 1664525u32;
+  x = x ^ (x >> 16u32);
+  y = y ^ (y >> 16u32);
+  x = x + y * 1664525u32;
+  y = y + x * 1664525u32;
+  x = x ^ (x >> 16u32);
+  y = y ^ (y >> 16u32);
+  UVec2[x, y];
+}
+
+// Three words to three: Jarzynski and Olano's pcg3d, an unbalanced Feistel
+// network of multiply-adds with one high-to-low mix between its two rounds
+pub fn pcg3d(v UVec3) UVec3 {
+  mut x = v.x * 1664525u32 + 1013904223u32;
+  mut y = v.y * 1664525u32 + 1013904223u32;
+  mut z = v.z * 1664525u32 + 1013904223u32;
+  x = x + y * z;
+  y = y + z * x;
+  z = z + x * y;
+  x = x ^ (x >> 16u32);
+  y = y ^ (y >> 16u32);
+  z = z ^ (z >> 16u32);
+  x = x + y * z;
+  y = y + z * x;
+  z = z + x * y;
+  UVec3[x, y, z];
+}
+
+// Four words to four: Jarzynski and Olano's pcg4d
+pub fn pcg4d(v UVec4) UVec4 {
+  mut x = v.x * 1664525u32 + 1013904223u32;
+  mut y = v.y * 1664525u32 + 1013904223u32;
+  mut z = v.z * 1664525u32 + 1013904223u32;
+  mut w = v.w * 1664525u32 + 1013904223u32;
+  x = x + y * w;
+  y = y + z * x;
+  z = z + x * y;
+  w = w + y * z;
+  x = x ^ (x >> 16u32);
+  y = y ^ (y >> 16u32);
+  z = z ^ (z >> 16u32);
+  w = w ^ (w >> 16u32);
+  x = x + y * w;
+  y = y + z * x;
+  z = z + x * y;
+  w = w + y * z;
+  UVec4[x, y, z, w];
+}
+
+// -------- seeded hashes of lattice points --------
+//
+// The seed is one more coordinate, never a stream: a value is a pure function
+// of (seed, coordinates), so any cell of any tile hashes alone and matches
+// its neighbours. A signed coordinate hashes as its two's-complement word.
+
+// Coordinate 'x' under 'seed': one word
+pub fn hash1(x i32, seed u32) u32 { pcg2d(UVec2[u32[x], seed]).x; }
+
+// Lattice point ('x', 'y') under 'seed': three words
+pub fn hash2(x i32, y i32, seed u32) UVec3 { pcg3d(UVec3[u32[x], u32[y], seed]); }
+
+// Lattice point ('x', 'y', 'z') under 'seed': four words
+pub fn hash3(x i32, y i32, z i32, seed u32) UVec4 { pcg4d(UVec4[u32[x], u32[y], u32[z], seed]); }
+
+// -------- hash to float --------
+//
+// The top 24 bits of a word, which an f32 holds exactly, scaled by a power of
+// two, so the conversion is exact on every machine: no rounding, no division.
+
+// A word as a number in [0, 1): a multiple of 2^-24
+pub fn toUnit(h u32) f32 { f32[h >> 8u32] * 0.000000059604644775390625; }
+
+// A word as a number in [-1, 1): a multiple of 2^-23
+pub fn toSigned(h u32) f32 { f32[h >> 8u32] * 0.00000011920928955078125 - 1.; }

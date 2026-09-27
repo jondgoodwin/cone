@@ -1,0 +1,88 @@
+// The noise package's integer hashes, and hash to float. Known-answer
+// vectors: each expected word was computed by an independent Python
+// transcription of the published code (Jarzynski and Olano 2020, "Hash
+// Functions for GPU Rendering", JCGT 9(3), for pcg2d, pcg3d and pcg4d; the
+// pcg hash as Reed gives it), with Python's unbounded integers masked to 32
+// bits, not taken from a run of this package. A signed coordinate hashes as
+// its two's-complement word. Only a failure prints.
+//
+// The float conversions are exact by construction: toUnit keeps the top 24
+// bits and scales by 2^-24, toSigned by 2^-23 and subtracts 1, so the
+// extremes and the middle are known exactly.
+
+mod hashes;
+
+import testing use *;
+import noise use *;
+
+fn word(got u32, want u32, label &[]u8) { expectUInt(u64[got], u64[want], label); }
+
+fn main() i32 {
+  // pcg: one word to one
+  word(pcg(0u32), 129708002u32, "pcg(0)");
+  word(pcg(1u32), 2831084092u32, "pcg(1)");
+  word(pcg(2u32), 2055130248u32, "pcg(2)");
+  word(pcg(0xffffffffu32), 3861530882u32, "pcg(0xffffffff)");
+  word(pcg(123456789u32), 4272394698u32, "pcg(123456789)");
+  word(pcg(0xdeadbeefu32), 1730779506u32, "pcg(0xdeadbeef)");
+
+  // pcg2d
+  imm a = pcg2d(UVec2[0u32, 0u32]);
+  word(a.x, 417608103u32, "pcg2d(0, 0).x");
+  word(a.y, 90043601u32, "pcg2d(0, 0).y");
+  imm b = pcg2d(UVec2[1u32, 2u32]);
+  word(b.x, 45825804u32, "pcg2d(1, 2).x");
+  word(b.y, 214070181u32, "pcg2d(1, 2).y");
+  imm c = pcg2d(UVec2[0xffffffffu32, 7u32]);
+  word(c.x, 1216683889u32, "pcg2d(0xffffffff, 7).x");
+  word(c.y, 3974706342u32, "pcg2d(0xffffffff, 7).y");
+
+  // pcg3d
+  imm d = pcg3d(UVec3[0u32, 0u32, 0u32]);
+  word(d.x, 2611992518u32, "pcg3d(0, 0, 0).x");
+  word(d.y, 2833812075u32, "pcg3d(0, 0, 0).y");
+  word(d.z, 1058359340u32, "pcg3d(0, 0, 0).z");
+  imm e = pcg3d(UVec3[1u32, 2u32, 3u32]);
+  word(e.x, 4204755366u32, "pcg3d(1, 2, 3).x");
+  word(e.y, 1223881804u32, "pcg3d(1, 2, 3).y");
+  word(e.z, 1500469937u32, "pcg3d(1, 2, 3).z");
+
+  // pcg4d
+  imm f = pcg4d(UVec4[0u32, 0u32, 0u32, 0u32]);
+  word(f.x, 251852841u32, "pcg4d(0, 0, 0, 0).x");
+  word(f.y, 760645481u32, "pcg4d(0, 0, 0, 0).y");
+  word(f.z, 850445371u32, "pcg4d(0, 0, 0, 0).z");
+  word(f.w, 3542436074u32, "pcg4d(0, 0, 0, 0).w");
+  imm g = pcg4d(UVec4[1u32, 2u32, 3u32, 4u32]);
+  word(g.x, 908250390u32, "pcg4d(1, 2, 3, 4).x");
+  word(g.y, 4044648920u32, "pcg4d(1, 2, 3, 4).y");
+  word(g.z, 3775961919u32, "pcg4d(1, 2, 3, 4).z");
+  word(g.w, 45698095u32, "pcg4d(1, 2, 3, 4).w");
+
+  // The seeded lattice hashes: the seed is the last coordinate
+  word(hash1(5, 42u32), 2143355903u32, "hash1(5, 42) is pcg2d(5, 42).x");
+  word(hash1(-3, 42u32), 3094598621u32, "hash1(-3, 42): -3 as 0xfffffffd");
+  imm h2 = hash2(-2, 9, 42u32);
+  word(h2.x, 3424231864u32, "hash2(-2, 9, 42).x");
+  word(h2.y, 1126664629u32, "hash2(-2, 9, 42).y");
+  word(h2.z, 2105803023u32, "hash2(-2, 9, 42).z");
+  imm h3 = hash3(1, -1, 2, 42u32);
+  word(h3.x, 1190010999u32, "hash3(1, -1, 2, 42).x");
+  word(h3.y, 1950562044u32, "hash3(1, -1, 2, 42).y");
+  word(h3.z, 2919536075u32, "hash3(1, -1, 2, 42).z");
+  word(h3.w, 2058105507u32, "hash3(1, -1, 2, 42).w");
+
+  // Another seed, another lattice; the same seed, the same one
+  expect(hash2(-2, 9, 43u32).x != h2.x, "seed 43 hashes (-2, 9) differently from seed 42");
+  word(hash2(-2, 9, 42u32).x, h2.x, "the same seed and point, the same word");
+
+  // Hash to float, exactly
+  expectFloat(f64[toUnit(0u32)], 0d, 0d, "toUnit(0) = 0");
+  expectFloat(f64[toUnit(0x80000000u32)], 0.5d, 0d, "toUnit(2^31) = 0.5");
+  expectFloat(f64[toUnit(0xffffffffu32)], 0.999999940395355224609375d, 0d, "toUnit(0xffffffff) = 1 - 2^-24");
+  expectFloat(f64[toUnit(0x000000ffu32)], 0d, 0d, "toUnit ignores the low 8 bits");
+  expectFloat(f64[toSigned(0u32)], -1d, 0d, "toSigned(0) = -1");
+  expectFloat(f64[toSigned(0x80000000u32)], 0d, 0d, "toSigned(2^31) = 0");
+  expectFloat(f64[toSigned(0xffffffffu32)], 0.99999988079071044921875d, 0d, "toSigned(0xffffffff) = 1 - 2^-23");
+  done();
+}
