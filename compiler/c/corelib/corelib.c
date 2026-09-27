@@ -154,14 +154,15 @@ void stdlibInit(int ptrsize) {
     tracedTrait = newBuiltinTrait(tracedTraitName);
     // 'ThreadSafe', which a region ref declares beside 'RegionRef' to say that
     // owners of one value may be held by several threads at once: its 'alias'
-    // and 'dealias' may run on different threads together (core's 'arc',
-    // whose count is atomic; 'rc' does not declare it). The name is
-    // provisional. It is the region's say in whether a reference may cross
-    // threads, which the thread check reads beside the permission's RaceSafe:
-    // an owner that may be aliased crosses only where its region declares it
-    // (refThreadBinds, through regionIsThreadSafe). Declaring it on anything
-    // but a region ref is refused (regionThreadSafeUseCheck). Trusted: the
-    // compiler cannot check the promise.
+    // and 'dealias' may run on different threads together (the sync
+    // package's 'arc', whose count is atomic; core's 'rc' does not declare
+    // it). The name is provisional. It is the region's say in whether a
+    // reference may cross threads, which the thread check reads beside the
+    // permission's RaceSafe: an owner that may be aliased crosses only where
+    // its region declares it (refThreadBinds, through regionIsThreadSafe).
+    // Declaring it on anything but a region ref is refused
+    // (regionThreadSafeUseCheck). Trusted: the compiler cannot check the
+    // promise.
     threadSafeTrait = newBuiltinTrait(threadSafeTraitName);
     // What a container's element borrows cost it [Jon 26 Sep; names
     // provisional]. A borrow a method returns keeps its receiver loaned, the

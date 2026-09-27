@@ -2606,7 +2606,8 @@ judges none.
 
 **Whether several threads may hold owners of one value is declared too,** with
 the built-in trait `ThreadSafe` (a provisional name): `struct arc is RegionRef,
-ThreadSafe`, core's atomically counted region, whose `alias` and `dealias` may
+ThreadSafe`, the `sync` package's atomically counted region (a package's, not
+core's, so `arc` is a name only of the modules that fold it in), whose `alias` and `dealias` may
 run on different threads at once; `rc`, whose count is a plain number, does not
 declare it. It is a region ref's only (`ErrorThreadSafeUse`, from
 `regionThreadSafeUseCheck`), trusted — the compiler cannot check that the

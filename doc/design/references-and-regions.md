@@ -14,10 +14,13 @@ library package implementing one strategy, named at the allocation site, with
 borrowed references used to shed the overhead wherever region oversight is not
 needed. Safety is preserved across all of it.
 
-**The distance** is large and worth stating plainly. Three regions ship, `so`,
-`rc` and `arc` (`rc` with its count changed atomically, declaring the built-in
-marker **`ThreadSafe`**, which nothing reads yet: the thread check to come asks
-it of a reference's region), all written in Cone in the core package. A user can define a region the
+**The distance** is large and worth stating plainly. Two regions ship in the
+core package, `so` and `rc`, and a third, `arc`, in the `sync` package (`rc`
+with its count changed atomically, declaring the built-in marker
+**`ThreadSafe`**, which nothing reads yet: the thread check to come asks it of a
+reference's region; outside core, as Rust keeps `Arc` in `sync` and out of the
+prelude **[Jon 27 Sep]**, so `arc` is a name only of modules that fold it in,
+`import sync use arc`), all written in Cone. A user can define a region the
 same way — a struct declaring `is RegionRef`, whose `alloc`, `init`, `alias`,
 `dealias` and `free` the compiler calls, and whose `alloc` may ask for the
 value's **type record** (core's `TypeRecord`: its size, alignment, finalizer
