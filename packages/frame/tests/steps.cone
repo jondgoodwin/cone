@@ -1,0 +1,75 @@
+// The fixed step on scripted frame intervals, as a synthetic clock gives them:
+// the exact number of steps each frame runs, the interpolation factor left
+// over, the steps dropped past the catch-up limit, and simulated time as the
+// steps times the step, exact over a long run. Only a failure prints.
+
+mod steps;
+
+import testing use *;
+import frame use *;
+
+// One frame 'elapsed' ns after the last: its steps run, checked against
+// 'wantSteps', then its alpha against 'wantAlpha' and the dropped total
+fn frameOf(f &mut FixedStep, elapsed u64, wantSteps u32, wantAlpha f64, wantDropped u64, label &[]u8) {
+  expectUInt(u64[f.advance(elapsed)], u64[wantSteps], label);
+  mut n = 0u32;
+  while f.next() { n = n + 1u32; }
+  expectUInt(u64[n], u64[wantSteps], label);
+  // The accumulator is whole nanoseconds, so what is left is exact; alpha is
+  // its quotient by the step, rounded once. (An inexact alpha is written
+  // 'f64': an unsuffixed float literal is rounded through f32.)
+  expectUInt(f.accumulator, u64[wantAlpha * f64[f.stepNs] + 0.5], label);
+  expectFloat(f.alpha(), wantAlpha, 1.0e-12, label);
+  expectUInt(f.dropped, wantDropped, label);
+}
+
+fn main() i32 {
+  // Steps of 10 ms, at most 5 a frame
+  mut f = FixedStep.make(10000000u64, 5u32);
+  frameOf(&mut f, 0u64, 0u32, 0.0, 0u64, "the first frame: nothing elapsed");
+  frameOf(&mut f, 4000000u64, 0u32, 0.4f64, 0u64, "less than a step: none, alpha 0.4");
+  frameOf(&mut f, 6000000u64, 1u32, 0.0, 0u64, "the rest of a step: one, alpha 0");
+  frameOf(&mut f, 25000000u64, 2u32, 0.5, 0u64, "two and a half: two, alpha 0.5");
+  frameOf(&mut f, 45000000u64, 5u32, 0.0, 0u64, "five exactly: the limit, none dropped");
+  frameOf(&mut f, 72500000u64, 5u32, 0.25, 2u64, "seven and a quarter: five, two dropped");
+  frameOf(&mut f, 1000000000u64, 5u32, 0.25, 97u64, "a second's stall: five, 95 more dropped");
+  frameOf(&mut f, 7500000u64, 1u32, 0.0, 97u64, "the fraction carried over completes a step");
+  expectUInt(f.taken, 19u64, "steps taken");
+  expectUInt(f.simNs(), 190000000u64, "simulated time: steps times the step");
+
+  // The default step, 1/60 s to the nanosecond below (16666666 ns), over an
+  // hour of frames at 60 Hz: every frame exactly one step, none dropped, and
+  // simulated time the steps times the step, with no drift of a float's sum
+  mut s = FixedStep.make(1000000000u64 / 60u64, 5u32);
+  s.advance(0u64);
+  mut frames = 0u64;
+  mut wrong = 0u64;
+  while frames < 216000u64 {
+    s.advance(16666666u64);
+    mut n = 0u64;
+    while s.next() { n = n + 1u64; }
+    if n != 1u64 { wrong = wrong + 1u64; }
+    frames = frames + 1u64;
+  }
+  expectUInt(wrong, 0u64, "an hour at 60 Hz: one step every frame");
+  expectUInt(s.taken, 216000u64, "an hour's steps");
+  expectUInt(s.simNs(), 216000u64 * 16666666u64, "an hour of simulated time, exact");
+  expectUInt(s.accumulator, 0u64, "nothing left over");
+
+  // Frames faster than steps: a 144 Hz display over 60 Hz steps, 6944444 ns
+  // a frame, steps of 16666666: the pattern of 0s and 1s, and alpha exact
+  mut t = FixedStep.make(16666666u64, 5u32);
+  t.advance(0u64);
+  mut total = 0u64;
+  mut i = 0u64;
+  while i < 144u64 {
+    total = total + u64[t.advance(6944444u64)];
+    while t.next() {}
+    i = i + 1u64;
+  }
+  // 144 frames of 6944444 ns = 999999936 ns: 59 whole steps, and the rest
+  expectUInt(total, 59u64, "a second at 144 Hz: 59 steps");
+  expectUInt(t.accumulator, 999999936u64 - 59u64 * 16666666u64, "what is left over");
+  expectFloat(t.alpha(), 16666642.0f64 / 16666666.0f64, 1.0e-12, "its alpha");
+  done();
+}

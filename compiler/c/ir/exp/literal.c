@@ -419,7 +419,9 @@ static int litIsConstCast(CastNode *node) {
 // before anything runs. That is the auto-borrow a string literal gets when a
 // '&[]u8' wants it, as well as a written '&[]"text"' or '&"text"'. So is a
 // borrow of an array literal whose elements are all constants, '&[1, 2, 3]',
-// which generation places in a constant global the same way.
+// which generation places in a constant global the same way. A value tuple
+// whose values are all constants, '1, 2', is a constant as a struct literal of
+// constants is: generation folds its inserted values into a constant struct.
 int litIsLiteral(INode* node) {
     return (node->tag == FLitTag || node->tag == ULitTag || node->tag == StringLitTag || node->tag == NilLitTag
         || ((node->tag == BorrowTag || node->tag == ArrayBorrowTag)
@@ -428,6 +430,7 @@ int litIsLiteral(INode* node) {
                     && arrayLitIsLiteral((ArrayNode*)((RefNode*)node)->vtexp))))
         || (node->tag == ArrayLitTag && arrayLitIsLiteral((ArrayNode*)node))
         || (node->tag == TypeLitTag && typeLitIsLiteral((FnCallNode*)node))
+        || (node->tag == VTupleTag && vtupleIsLiteral((TupleNode*)node))
         || nameUseNames(node, ConstDclTag)
         || (node->tag == CastTag && litIsConstCast((CastNode*)node))
         );

@@ -240,7 +240,11 @@ anything runs. That is the borrow `borrowAuto` wraps a string literal in when a
 a field are literal initializers; generation's `genlExpr` builds the slice with
 instructions the builder folds to a constant aggregate. It accepts a borrow of
 an array literal whose elements all satisfy it (`arrayLitIsLiteral`) on the same
-terms, so `imm g = &[1, 2, 3]` is a literal initializer.
+terms, so `imm g = &[1, 2, 3]` is a literal initializer. It accepts a value
+tuple whose values all satisfy it (`vtupleIsLiteral`), so
+`mut g (i64, i64) = 1, 2` is one too: the `VTupleTag` arm of `genlExpr` builds
+it by `insertvalue` of constants, which the builder folds to a constant struct,
+as it does a struct literal of constants.
 
 **A reinterpretation of a constant is a constant** (`litIsConstCast`): a
 `CastTag` without `FlagConvert` (`as`, not `into`) whose target is a number or

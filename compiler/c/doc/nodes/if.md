@@ -49,19 +49,23 @@ returns the wrapping block, not the `IfNode`.**
 `parseMatch` lowers the whole construct into a block plus one `IfNode`:
 `case is T` → an `is` node, `case == v` (or any comparison operator) → that
 operator's call with the scrutinee on the left, `case a .. b` → `>= a and < b`
-(`<=` for `...`), `case imm x T` → a bound pattern, `case <expr>` → the
-expression, `else` → `elseCond`. Patterns joined by `or` → a logical `or` of
+(`<=` for `...`), `case imm x T` → a bound pattern, `case v` (a value alone) →
+an `is` node flagged `FlagMatchValue` that type check turns into `v`'s variant
+test or `== v` ([cast](cast.md)), `else` → `elseCond`. Patterns joined by `or` → a logical `or` of
 their conditions; an `if g` after them → `cond and g`. **Every arm shares one
 scrutinee node pointer**, a use of the variable the lowering declared to hold
 the matched value, so a range's two calls and every `or` alternative hold it too.
 
-**A case's first operand decides between a range and a condition.** A case
-beginning with neither `is` nor a comparison operator reads one operand
-(`parseOr`); a following `..` or `...` makes it a range, and otherwise the
-expression is finished (`parseSimpleExprFrom`) and is a condition, whose own
-`or` it has already taken. A value alone as an `or` alternative is refused,
-`ErrorPatBare`: read as a condition it would coerce to true, and whether it
-should mean `==` is not decided.
+**A pattern's first operand decides between a range, a value and a refusal.**
+A pattern beginning with neither `is` nor a comparison operator reads one
+operand (`parseOr`); a following `..` or `...` makes it a range. A comparison
+operator, `is` or `and` after it makes it a condition (`case n > 3`), and so does
+a leading `not` (`case not b`). A condition is refused, `ErrorPatBare`: as a
+value alone it would be compared with the matched value, and whether it should
+be is not decided. The refused expression is finished (`parseSimpleExprFrom`),
+its own `or` included, so it is reported once. Anything else is a value alone
+(`case 1`, `case true`, `case K`, `case Circle`), the same at the start of a
+case and after an `or`.
 
 **A bound pattern's guard binds the variable a second time.** The variable is
 declared at the head of the arm, which the condition is outside, so `case imm x
@@ -73,7 +77,10 @@ node (`FlagMatchBind`) — and the arm keeps its own `x` as before.
 condition, and an `or` of `is` tests, are logic nodes, so `ifExhaustCheck`
 never sees them. For a guard that is the rule: the guard may fail. For `or` it is
 a gap: `case is A or is B` accounts for neither variant, and a match that relies
-on it needs an `else`.
+on it needs an `else`. A variant named alone, `case A`, is its `is` test once
+checked and counts; any other value alone is an `==` call and counts for
+nothing, so `case true` and `case false` on a `Bool` need an `else` to be a
+value, as `case ==true` and `case ==false` do.
 
 ## Name resolution
 
@@ -120,9 +127,10 @@ form is what a clone of the match presents — a generic instance's or a macro
 expansion's — since cloning copies the shared node once per arm. If they all
 are, and one of the variant tests is the **last** condition, it **overwrites that
 condition with `elseCond`**. An arm after the one being checked may name its
-variant bare and not be bound to it yet (`castPatternPending`), so it counts as
-no match; the check runs again as each arm is checked, and the last one sees
-every pattern bound. An arm whose pattern named nothing to narrow to has been
+variant bare and not be bound to it yet (`castPatternPending`), or be a value
+alone not yet decided between a variant and `==` (`FlagMatchValue`), so it
+counts as no match; the check runs again as each arm is checked, and the last
+one sees every pattern bound. An arm whose pattern named nothing to narrow to has been
 reported and was left unchecked, so it may not be a type at all; it counts as no
 match too.
 

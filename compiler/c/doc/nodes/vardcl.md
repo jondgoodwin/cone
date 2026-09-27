@@ -184,7 +184,8 @@ parameter names**.
    it ([references](references.md)).
 5. **Literal rule.** `scope <= 1` — that is, a global or a parameter default —
    or `FlagStatic` requires `litIsLiteral(value)`. It admits literals, literal
-   array and type literals, a borrow of a string literal (so a slice of one) or
+   array and type literals, a value tuple of constants
+   (`mut g (i64, i64) = 1, 2`), a borrow of a string literal (so a slice of one) or
    of an array literal of constants (`imm g = &[1, 2, 3]`), a reinterpretation
    of a constant to a number or pointer (`imm g *u8 = 0usize as *u8`,
    [literals](literals.md)), and

@@ -17,4 +17,11 @@ void vtuplePrint(TupleNode *tuple);
 // - Infer type tuple from types of vtuple's values
 void vtupleTypeCheck(TypeCheckState *pstate, TupleNode *node);
 
+// Coerce a value tuple, typed from its own values, to the wanted tuple type by
+// coercing each value to its element's type. Return 1 if it now matches.
+int vtupleCoerce(TupleNode *tuple, INode *totypedcl);
+
+// Is every value of the value tuple a constant (litIsLiteral)?
+int vtupleIsLiteral(TupleNode *tuple);
+
 #endif

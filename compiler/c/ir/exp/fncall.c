@@ -674,7 +674,8 @@ Name *fnCallOpEqMethod(Name *opeqname) {
 int fnCallLowerIntField(FnCallNode *callnode) {
     if (callnode->methfld == NULL || callnode->methfld->tag != ULitTag || callnode->args != NULL)
         return 0;
-    TupleNode* ttuple = (TupleNode*)((IExpNode*)callnode->objfn)->vtype;
+    // Resolved, since the object's type may be a name standing for the tuple
+    TupleNode* ttuple = (TupleNode*)iexpGetTypeDcl(callnode->objfn);
     uint64_t index = ((ULitNode*)callnode->methfld)->uintlit;
     if (index >= (uint64_t)ttuple->elems->used)
         return 0;

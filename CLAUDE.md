@@ -181,9 +181,19 @@ Visual Studio projects stay at the root.
   `window` is a window for Vulkan (`openVulkan`, which the `gpu` package
   draws into), through `sdl`, its size in pixels and in its own units, and
   the render loop's glue (frame time, quit, Escape, fullscreen, resize,
-  `keyDown`), and its example, `packages/window/examples/spin.cone`, draws a
-  lit, textured, turning sphere with `render` (building it needs SDL3's `lib`
-  folder on `LIB`); `input` is the keyboard and the mouse over `sdl`, in
+  `keyDown`); `frame` is the loop a world runs in, turned inside out: a world
+  is a module conforming to the module trait `World` (`start`, `event`,
+  `simulate`, `network`, `publish`, `draw`, `present`, `quit`, and a default
+  `run` its `main` calls), driven over `window` and `sdl` through named
+  phases in a declared order, each fencing its writes, with a fixed step
+  from an accumulator (at most 5 catch-up steps, the rest dropped and
+  counted) and the picture interpolated, a world clock on SDL3's
+  nanosecond ticks or a synthetic one advanced by a script of intervals
+  (simulated time is steps times the step, exact), a per-frame scratch
+  `Arena`, and every phase timed (p50, p95, p99 and the maximum, printed at
+  the end); its tests run headless, and its example,
+  `packages/frame/examples/spin.cone`, draws a lit, textured, turning sphere
+  with `render` (building it needs SDL3's `lib` folder on `LIB`); `input` is the keyboard and the mouse over `sdl`, in
   three layers: SDL's events normalised (`InputEvent`, each keeping its
   nanosecond timestamp), device state (`Input`: keys held by scancode, the
   pointer and its movement this frame, buttons, the wheel), and named

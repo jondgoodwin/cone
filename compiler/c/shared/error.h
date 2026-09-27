@@ -257,8 +257,8 @@ enum ErrorCode {
     // One import of a module per module: a second is refused, identical or not [Jon 23 Sep]
     ErrorDupImport = 1116,      // A second import of one module: the same import again, or one that differs in what its 'use' clause folds or in its 'pub'; likewise a second standalone 'use' of one submodule
 
-    // A match's patterns: 'is', comparison and range patterns joined by 'or'
-    ErrorPatBare = 1117,        // A value alone where a match expects a pattern, after an 'or': whether a bare value means '==' is not decided
+    // A match's patterns: values alone, 'is', comparison and range patterns joined by 'or'
+    ErrorPatBare = 1117,        // A condition where a match expects a pattern, 'not b' or 'n > 3': a value alone is compared with the matched value, and whether a condition may stand for a pattern is not decided
 
     // A path through an abstraction: 'Trait.name', 'Enum.name'
     ErrorAbstractMeth = 1118,   // A trait's or enum's method named through it, which owns no code for it: each implementer or variant owns a copy
@@ -366,6 +366,9 @@ enum ErrorCode {
 
     // The 'Never' return type (ir/stmt/fndcl.c, ir/stmt/return.c)
     ErrorNeverReturns = 1195,   // A function returning 'Never' that can return: it does not end in a call that does not return, or it says 'return'
+
+    // A match's value alone (ir/exp/cast.c)
+    ErrorPatType = 1196,        // A type alone as a match pattern, other than a variant of the matched value's enum named bare: a value alone is compared with '==', and narrowing is written 'is'
 
     // Warnings
     WarnCode = 3000,

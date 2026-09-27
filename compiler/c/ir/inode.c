@@ -471,7 +471,11 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case OrLogicTag: case AndLogicTag:
         logicTypeCheck(pstate, (LogicNode *)*node); break;
     case IsTag:
-        castIsTypeCheck(pstate, (CastNode *)*node); break;
+        if ((*node)->flags & FlagMatchValue)
+            castMatchValueTypeCheck(pstate, node);
+        else
+            castIsTypeCheck(pstate, (CastNode *)*node);
+        break;
     case NamedValTag:
         namedValTypeCheck(pstate, (NamedValNode *)*node, expectType); break;
     case NilLitTag:

@@ -1,0 +1,44 @@
+// An owning virtual reference lent as a borrowed one, each lend ending with its
+// call: lent as '&<mut' twice one call after another, lent twice to one call
+// as '&<', and a 'self &' dispatch handed its own receiver as a '&<' argument,
+// two read-only lends. None of these holds a written borrow, and none
+// conflicts. Two lends that do conflict in one call are
+// trait_flow_vref_owner_call.
+
+mod trait_vref_owner_call;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+trait App {
+  pub fn frame(self &mut) Bool;
+  pub fn look(self &) i64;
+  pub fn see(self &, o &<App) i64;
+}
+
+struct Spinner {
+  pub n i64;
+  pub fn frame(self &mut) Bool {n = n + 1; n < 4;}
+  pub fn look(self &) i64 {n;}
+  pub fn see(self &, o &<App) i64 {n + o.look();}
+}
+
+fn nudge(x &<mut App) { x.frame(); }
+fn sum(x &<App, y &<App) i64 { x.look() + y.look(); }
+
+fn main() {
+  imm a +<so App = +so Spinner[1];
+  nudge(a);
+  nudge(a);
+  show("seq", a.look());
+  show("two-read", sum(a, a));
+  show("see", a.see(a));
+  a.frame();
+  show("after", a.look());
+}

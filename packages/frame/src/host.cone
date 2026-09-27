@@ -1,0 +1,210 @@
+// The loop's owner, natively: a window (unless headless), the world clock and
+// the fixed step, the network slot's queues, and the statistics. World's
+// default 'run' drives it; the world sees it as the host of every callback.
+
+// A message for or from a server: its bytes, and when it arrived or was queued
+pub struct Packet {
+  pub timeNs u64;
+  pub bytes List[u8];
+}
+
+// The network phase's slot: what arrived since the last frame, what to send,
+// and how many network ticks fell due this frame (at Config.netTickNs). Never
+// blocks. There is no transport yet, so nothing arrives, and what is queued
+// to send is counted and dropped after the phase.
+pub struct NetQueues {
+  pub inbound List[Packet];
+  pub outbound List[Packet];
+  pub ticks u32;
+
+  pub fn empty() NetQueues { NetQueues[List[Packet].empty(), List[Packet].empty(), 0u32]; }
+}
+
+pub struct Host {
+  pub config Config;
+  win Window;
+  pub running Bool;         // false once asked to stop
+  pub clock Clock;          // the world clock
+  pub fixed FixedStep;      // the accumulator and the steps
+  pub stats Stats;
+  pub frame u64;            // the frame under way (0 before the first)
+  net NetQueues;
+  netAccum u64;             // world time not yet spent in network ticks
+  pub sent u64;             // packets queued to send (and dropped: no transport)
+  lastReal u64;             // the real clock at the last frame's start
+  lastWorld u64;            // the world clock at the last frame's start
+  nextInterval usize;       // synthetic mode: the next scripted interval
+  phase u32;                // the phase under way, or PHASE_COUNT between phases
+  lastPhase u32;            // the last phase ended this frame, PHASE_COUNT before any
+  phaseStart u64;           // the real clock as it began
+
+  // Open what the config asks for: a window for Vulkan, or in a headless run
+  // SDL's events alone. Check 'isOpen'.
+  pub fn open(config Config) Host {
+    mut clock = if config.synthetic {Clock.synth();} else {Clock.real();};
+    imm fixed = FixedStep.make(config.stepNs, config.maxCatchUp);
+    // (Chosen, not assigned over: an unopened Window dying quits SDL)
+    mut title = config.title.view();
+    if title.len == 0usize { title = "Cone"; }
+    mut win = if config.headless {Window.unopened();} else {Window.openVulkan(title);};
+    mut running = true;
+    if config.headless {
+      if !sdl.Init(sdl.INIT_EVENTS) {
+        stdio.print <- "SDL's events could not be started\n";
+        running = false;
+      }
+    } elif !win.isOpen() {
+      stdio.print <- "No window could be opened\n";
+      running = false;
+    }
+    Host[config, win, running, clock, fixed, Stats.empty(), 0u64, NetQueues.empty(), 0u64, 0u64,
+      0u64, 0u64, 0usize, PHASE_COUNT, PHASE_COUNT, 0u64];
+  }
+
+  // Whether it opened
+  pub fn isOpen(self &) Bool { running; }
+
+  // The window: unopened in a headless run
+  pub fn window(self &mut) &mut Window { &mut win; }
+
+  // Whether the run has a window
+  pub fn hasWindow(self &) Bool { win.isOpen(); }
+
+  // Ask the loop to stop after this frame
+  pub fn stop(self &mut) { running = false; }
+
+  // Simulated time, in ns: the steps taken times a step's length, exact
+  pub fn simNs(self &) u64 { fixed.simNs(); }
+
+  // The world clock's time now, in ns (real or synthetic)
+  pub fn worldNs(self &) u64 { clock.now(); }
+
+  // The room the frame's scratch arena starts with
+  pub fn scratchBytes(self &) usize { config.scratchBytes; }
+
+  // Begin a frame, answering false when the run is over: asked to stop, or
+  // the frame count reached. The world clock is read (a synthetic one moved
+  // on by its next interval) and the steps due worked out.
+  pub fn beginFrame(self &mut) Bool {
+    assertDebugMsg(phase == PHASE_COUNT, "a frame begins between phases");
+    if !running { return false; }
+    if config.frames != 0u64 and frame >= config.frames { return false; }
+    imm real = sdl.GetTicksNS();
+    if frame > 0u64 {
+      stats.frame.add(real - lastReal, frame);
+      if clock.synthetic {
+        clock.advance(self.scriptedInterval());
+      }
+    } else {
+      lastWorld = clock.now();
+    }
+    lastReal = real;
+    frame = frame + 1u64;
+    stats.frames = frame;
+    imm world = clock.now();
+    imm elapsed = world - lastWorld;
+    lastWorld = world;
+    fixed.advance(elapsed);
+    stats.dropped = fixed.dropped;
+    netAccum = netAccum + elapsed;
+    lastPhase = PHASE_COUNT;
+    true;
+  }
+
+  // A synthetic frame's interval: the script's next, cycled, or one step
+  fn scriptedInterval(self &mut) u64 {
+    imm n = config.intervals.len();
+    if n == 0usize { return config.stepNs; }
+    imm ns = *config.intervals[nextInterval % n];
+    nextInterval = nextInterval + 1usize;
+    ns;
+  }
+
+  // End the frame
+  pub fn endFrame(self &mut) {
+    assertDebugMsg(lastPhase == PHASE_PRESENT, "a frame ends after its last phase");
+  }
+
+  // Begin phase 'p', which must come after the last one this frame: phases
+  // run in their declared order, each once, so each one's writes are done
+  // before the next reads them
+  pub fn beginPhase(self &mut, p u32) {
+    assertDebugMsg(phase == PHASE_COUNT, "a phase begins after the last one ended");
+    assertDebugMsg(lastPhase == PHASE_COUNT or p > lastPhase, "phases run in their declared order");
+    phase = p;
+    phaseStart = sdl.GetTicksNS();
+  }
+
+  // End phase 'p', adding its time to its series
+  pub fn endPhase(self &mut, p u32) {
+    assertDebugMsg(phase == p, "the phase ended is the one under way");
+    imm now = sdl.GetTicksNS();
+    stats.phase(p).add(now - phaseStart, frame);
+    lastPhase = p;
+    phase = PHASE_COUNT;
+  }
+
+  // The phase under way, or PHASE_COUNT between phases
+  pub fn currentPhase(self &) u32 { phase; }
+
+  // Take the next event waiting into 'e', handled first as every window
+  // handles it (a quit or Escape stops the run; F11, a resize). False when
+  // none is waiting.
+  pub fn nextEvent(self &mut, e &mut sdl.Event) Bool {
+    assertDebugMsg(phase == PHASE_INPUT, "events are taken in the input phase");
+    mut got = false;
+    if win.isOpen() {
+      got = win.pollEvent(e);
+      if got and !win.running { running = false; }
+    } else {
+      got = sdl.PollEvent(e);
+      if got and e.type == sdl.EVENT_QUIT { running = false; }
+    }
+    if got { stats.events = stats.events + 1u64; }
+    got;
+  }
+
+  // Take the next step due this frame, answering false when none is
+  pub fn nextStep(self &mut) Bool {
+    assertDebugMsg(phase == PHASE_SIMULATE, "steps are taken in the simulate phase");
+    if !fixed.next() { return false; }
+    stats.steps = fixed.taken;
+    true;
+  }
+
+  // The step just taken
+  pub fn step(self &) Step {
+    imm index = fixed.taken - 1u64;
+    Step[index, fixed.stepNs, f32[f64[fixed.stepNs] / 1.0e9], index * fixed.stepNs, config.substeps];
+  }
+
+  // The interpolation factor for this frame's picture, once its steps are
+  // taken: how far the present moment is from the last state to the next
+  pub fn alpha(self &) f32 {
+    assertDebugMsg(fixed.due == 0u32, "alpha is read after the frame's steps");
+    f32[fixed.alpha()];
+  }
+
+  // The network slot's queues, lent out for the network phase and given back
+  pub fn takeNet(self &mut) NetQueues {
+    mut out = NetQueues.empty();
+    out <=> net;
+    out.ticks = 0u32;
+    if config.netTickNs > 0u64 {
+      out.ticks = u32[netAccum / config.netTickNs];
+      netAccum = netAccum % config.netTickNs;
+    }
+    out;
+  }
+  pub fn giveNet(self &mut, q NetQueues) {
+    net = q;
+    net.inbound.clear();
+    sent = sent + u64[net.outbound.len()];
+    net.outbound.clear();
+  }
+
+  // The run's end: print the statistics if asked
+  pub fn finish(self &mut) {
+    if config.printStats { stats.print(); }
+  }
+}

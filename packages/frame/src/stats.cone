@@ -1,0 +1,167 @@
+// Frame statistics: every sample kept, so a percentile is exact, and the
+// maximum, with the frame it came in, kept as samples arrive.
+//
+// A percentile is the nearest rank: p's value is the smallest sample with at
+// least p percent of the samples at or below it, the sample at rank
+// ceil(p * n / 100) of n in ascending order. So p50 of 1..100 is 50, p99 is 99,
+// and p100 is the maximum; a series with no samples answers 0.
+//
+// Keeping every sample costs 8 bytes a series a frame: an hour at 144 frames a
+// second is about 4 MB a series, 29 MB for the seven. A long-running world
+// wants a fixed-size histogram instead, whose percentiles are then bounds.
+
+// One series of samples, in nanoseconds
+pub struct Series {
+  samples List[u64];
+  sorted Bool;          // 'samples' is in ascending order
+  pub max u64;          // the largest sample
+  pub maxFrame u64;     // the frame it came in
+  pub total u64;        // their sum
+
+  pub fn empty() Series { Series[List[u64].empty(), true, 0u64, 0u64, 0u64]; }
+
+  // Add a sample, taken in 'frame'
+  pub fn add(self &mut, ns u64, frame u64) {
+    if samples.len() == 0usize or ns > max {
+      max = ns;
+      maxFrame = frame;
+    }
+    samples.push(ns);
+    total = total + ns;
+    sorted = samples.len() < 2usize;
+  }
+
+  pub fn count(self &) usize { samples.len(); }
+
+  // The p-th percentile, 0 < p <= 100, by nearest rank
+  pub fn percentile(self &mut, p u32) u64 {
+    assertDebugMsg(p > 0u32 and p <= 100u32, "a percentile is from 1 to 100");
+    imm n = samples.len();
+    if n == 0usize { return 0u64; }
+    if !sorted {
+      heapSort(&mut samples);
+      sorted = true;
+    }
+    imm rank = (u64[p] * u64[n] + 99u64) / 100u64;     // ceil(p * n / 100)
+    *samples[usize[rank] - 1usize];
+  }
+
+  // The mean, for reference only: a budget is judged on the maximum
+  pub fn mean(self &) u64 {
+    if samples.len() == 0usize { return 0u64; }
+    total / u64[samples.len()];
+  }
+}
+
+// A run's statistics: each phase's time, the whole frame's, and the steps
+pub struct Stats {
+  pub phases List[Series];  // by PHASE_...
+  pub frame Series;         // start of one frame to the start of the next
+  pub frames u64;           // frames begun
+  pub steps u64;            // steps taken
+  pub dropped u64;          // catch-up steps dropped
+  pub events u64;           // events handed to the world
+
+  pub fn empty() Stats {
+    mut s = Stats[List[Series].empty(), Series.empty(), 0u64, 0u64, 0u64, 0u64];
+    mut i = 0u32;
+    while i < PHASE_COUNT {
+      s.phases.push(Series.empty());
+      i = i + 1u32;
+    }
+    s;
+  }
+
+  // A phase's series
+  pub fn phase(self &mut, p u32) &mut Series {
+    &mut phases[usize[p]];
+  }
+
+  // Print them: a line a phase, and the frame's, in milliseconds
+  pub fn print(self &mut) {
+    stdio.print <- "Frames "; stdio.print <- frames;
+    stdio.print <- ", steps "; stdio.print <- steps;
+    stdio.print <- ", catch-up steps dropped "; stdio.print <- dropped;
+    stdio.print <- ", events "; stdio.print <- events; stdio.print <- "\n";
+    stdio.print <- "phase (ms)       p50      p95      p99      max  (frame)\n";
+    mut p = 0u32;
+    while p < PHASE_COUNT {
+      printSeries(phaseName(p), &mut phases[usize[p]]);
+      p = p + 1u32;
+    }
+    printSeries("frame", &mut frame);
+  }
+}
+
+fn printSeries(name &[]u8, s &mut Series) {
+  printStr(name);
+  mut pad = name.len;
+  while pad < 10usize {
+    stdio.print <- " ";
+    pad = pad + 1usize;
+  }
+  printMs(s.percentile(50u32));
+  printMs(s.percentile(95u32));
+  printMs(s.percentile(99u32));
+  printMs(s.max);
+  stdio.print <- "  ("; stdio.print <- s.maxFrame; stdio.print <- ")\n";
+}
+
+// Nanoseconds as milliseconds to three places, right-aligned in nine columns
+fn printMs(ns u64) {
+  imm us = (ns + 500u64) / 1000u64;
+  imm whole = us / 1000u64;
+  imm frac = us % 1000u64;
+  mut width = 5usize;       // '.' and three places, and one digit
+  mut w = whole;
+  while w >= 10u64 {
+    width = width + 1usize;
+    w = w / 10u64;
+  }
+  while width < 9usize {
+    stdio.print <- " ";
+    width = width + 1usize;
+  }
+  stdio.print <- whole; stdio.print <- ".";
+  if frac < 100u64 { stdio.print <- "0"; }
+  if frac < 10u64 { stdio.print <- "0"; }
+  stdio.print <- frac;
+}
+
+// Sort 'v' ascending, in place: a heap sort, O(n log n) and no allocation
+fn heapSort(v &mut List[u64]) {
+  imm n = v.len();
+  if n < 2usize { return; }
+  mut start = n / 2usize;
+  while start > 0usize {
+    start = start - 1usize;
+    siftDown(v, start, n);
+  }
+  mut end = n - 1usize;
+  while end > 0usize {
+    v.swap(0usize, end);
+    siftDown(v, 0usize, end);
+    end = end - 1usize;
+  }
+}
+
+// Move v[root] down the heap of v[0..n] until both its children are no larger
+fn siftDown(v &mut List[u64], root usize, n usize) {
+  mut r = root;
+  mut going = true;
+  while going {
+    imm left = 2usize * r + 1usize;
+    if left >= n {
+      going = false;
+    } else {
+      mut big = left;
+      if left + 1usize < n and *v[left + 1usize] > *v[left] { big = left + 1usize; }
+      if *v[big] > *v[r] {
+        v.swap(r, big);
+        r = big;
+      } else {
+        going = false;
+      }
+    }
+  }
+}

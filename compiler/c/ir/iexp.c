@@ -131,6 +131,9 @@ int iexpCoerce(INode **from, INode *totype) {
         // the wanted array type by coercing each element to its element type
         if ((*from)->tag == ArrayLitTag)
             return arrayLitCoerce((ArrayNode*)*from, totypedcl);
+        // So may a value tuple, each value to its element's type
+        if ((*from)->tag == VTupleTag)
+            return vtupleCoerce((TupleNode*)*from, totypedcl);
         // So may a borrowed constant one, and the borrow then match as it is
         if (borrowConstLitCoerce(*from, totypedcl))
             return iexpMatches(from, totypedcl, Coercion) != NoMatch && iexpCoerce(from, totype);

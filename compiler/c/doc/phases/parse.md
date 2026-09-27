@@ -423,10 +423,12 @@ arguments, conditions and array elements use.
 
 **`parseSimpleExprFrom` resumes the cascade** above an operand already parsed
 by `parseOr`: the comparison, `and` and `or` levels each have a `...From` form
-taking their left operand. It exists for a match's case, which cannot tell a
-range pattern (`0 .. 3`) from a condition (`n > 3`) until it has read the first
-operand and seen whether `..` or `...` follows. With one token of lookahead,
-reading the operand and then continuing is the only way to decide.
+taking their left operand. It exists for a match's pattern, which cannot tell a
+range (`0 .. 3`) from a value alone (`3`) or a condition (`n > 3`, refused as
+`ErrorPatBare`) until it has read the first operand and seen what follows it.
+With one token of lookahead, reading the operand and then continuing is the
+only way to decide, and continuing lets the refused expression be reported
+once.
 
 ## 4. What the parser leaves undecided
 
@@ -460,7 +462,9 @@ one production each, and one retagging pass settles all of them.
 
 Also left undecided: **what a pattern's bare name means.** It may be a variant of
 the matched value's enum, which only type check knows, so the parser marks it
-(`FlagPattern`) and leaves it. And **which method an operator names** — every operator is an
+(`FlagPattern`) and leaves it. For a value alone as a pattern that also decides
+whether the pattern is a variant test or `==`, so the parser builds the test
+undecided (`FlagMatchValue`, [cast](../nodes/cast.md)). And **which method an operator names** — every operator is an
 `FnCallNode` with `methfld` set to the operator's interned name and
 `FlagOperator` set, and selection is type check's. And **whether `&fn` is a
 closure or a function-signature type** — `parseAmper` decides by whether a body
@@ -703,7 +707,7 @@ numbers.
 | | `parseGenericParms`, `parseWhere`, `parseMacro` | the type parameter list, shared by `fn`, `struct`, `mod` and `macro`: comma-separated names, each a generic's annotated with `+`-joined names whose meaning name resolution decides (`or` there is `ErrorGenParmOr`), and a macro's or module's refused an annotation as `ErrorGenParmConstr`; the `where` clause just before a function's or a type's block, `T is Name` clauses joined by `and` and `or`, `and` binding tighter, grouped by parentheses, any other form `ErrorWhereForm` ([generic](../nodes/generic.md), "Parse") |
 | | `parseExprBlock` | the statement-block loop — the parser's second dispatch table |
 | | `parseIf`, `parseMatch`, `parseBoundMatch` | `if`/`elif`/`else` and the `match`-to-`if` desugaring; every pattern's root name is marked (`castPatternMark`) to be looked up in the matched value's enum at type check, as `parseCmp` marks an `is` test's |
-| | `parseMatchPattern`, `parseMatchRange` | one pattern of a case — `is`, a comparison, a range — lowered to the condition that tests the captured value; a value alone is `ErrorPatBare`, since whether it means `==` is undecided |
+| | `parseMatchPattern`, `parseMatchRange` | one pattern of a case — `is`, a comparison, a range, a value alone — lowered to the condition that tests the captured value, a value alone to the undecided test `newMatchValueNode` builds; a condition (`not b`, `n > 3`), at the start of a case or after an `or`, is `ErrorPatBare` |
 | | `parseWhile`, `parseEach`, `parseWith`, `parseLifetime` | loop and scope desugaring |
 | `parser/parsehelper.c` | `parseSpan` | record the statement just parsed as a span (`ir/dclspan.c`, `dclSpanAdd`), taking a function's body or a global's value from where `parseFn` and `parseVarDcl` left it on `ParseState` (`bodyp`, `bodyendp`, `nameendp`, `typed`) |
 | `parser/parsemod.c` | `parseIncludeCheck` | the include-file generator's self-check: a generated include file's text parsed as the package's module, beside the root and outside the program's modules, its imports answered by the root's import lines |
