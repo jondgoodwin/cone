@@ -199,6 +199,8 @@ VarDclNode *flowOwningLocal(INode *ref);
 // The matched value a match binds this variable to, or NULL: such a variable
 // is the matched value under its variant's name, and owns nothing itself
 INode *flowMatchBound(INode *var);
+// Does a match's binding name the matched value's own storage (a binding by value)?
+int flowMatchInPlace(VarDclNode *var);
 
 // A hollow release of a hollowed variable, for the moves that hollowed it so far
 HollowNode *flowNewHollow(VarDclNode *var);

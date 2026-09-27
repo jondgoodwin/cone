@@ -348,10 +348,16 @@ since the matched value's variable releases it, as the enum, whichever arm ran;
 binding's name use is what is marked, the flag being the matched value's
 variable's (`flowDropOwner`), so a binding moved on one arm leaves the matched
 value to be finalized when another arm runs; and `flowIsScopeResult` exempts
-the matched value when the binding is handed back. A store over a binding, or
-over a part of one, releases nothing: the binding owns nothing of its own
-(`assignlvalrtype`). A guard's binding (`case imm c Circle if g`) is a second
-binding of the same value, and owns nothing either. The match's own variable
+the matched value when the binding is handed back. A binding by value (a
+variant struct of a matched enum, `flowMatchInPlace`) is the matched value's
+own storage: generation gives it the matched value's variable's slot
+(`genlLocalVar`), read through the variant's layout, so a swap with it or a
+store over it, or over a part of it, changes the value the matched value's
+variable releases, and the store releases what it replaces as any store does
+(`assignlvalrtype`). A binding by reference holds a copy of the matched
+reference, and a store over it releases nothing. A guard's binding
+(`case imm c Circle if g`) is a second binding of the same value, and owns
+nothing either. The match's own variable
 (`_`) is named by one name use that every pattern and binding shares, so no
 move of it is marked: a binding's initializer that moves it (a `&uni`
 narrowed) deactivates it as before, and no drop flag follows it.
@@ -417,8 +423,8 @@ depends on:
 | `BlockRetTag` | `blockFlow`, for any block not already ending in one | a loop block, **and** a regular block ending in an expression, both get theirs here — it is where the dealias list hangs |
 | `RefCountTag` | `flowInjectRefCountAmt` | `genlRegionAlias(val, amt)`: the region's `alias`, once per owner added |
 | `dealias` lists | `flowScopeDealias`, onto every `BreakRetNode`; rebuilt by the drop-flag client (`dropApplyExit`) for each exit of a function it walked | `genlDealiasNodes` replays them |
-| `FlagFirstAssign` | `assignlvalrtype`, when the variable is uninitialized, moved out or hollowed, or is a match's binding; set or cleared by the drop-flag client from each path's state | `genlStore` skips releasing a previous value the variable does not hold whole |
-| `FlagPartNoPrior` | `assignlvalrtype`, on a field or element of a local's own value when the local holds nothing (or is a match's binding); the drop-flag client likewise | `genlStore` skips releasing the part's previous value |
+| `FlagFirstAssign` | `assignlvalrtype`, when the variable is uninitialized, moved out or hollowed, or is a match's binding by reference; set or cleared by the drop-flag client from each path's state | `genlStore` skips releasing a previous value the variable does not hold whole |
+| `FlagPartNoPrior` | `assignlvalrtype`, on a field or element of a local's own value when the local holds nothing (or is a match's binding by reference); the drop-flag client likewise | `genlStore` skips releasing the part's previous value |
 | `FlagDropTest` | the drop-flag client, on a store's target where whether its variable holds its value differs by path | `genlStore` releases the previous value only when the variable's drop flag says it is there |
 | `FlagMoveOut`, `FlagHollowOut` | `flowMoveSource`, on the name use a value moves out of, or out through | the path walk follows the move along each path; `genlDropFlagUse` clears, or sets hollow, the variable's drop flag there |
 | `HollowTag` | `flowScopeDealias`, in a `dealias` list, for a hollowed variable or one whose part the scope hands back; `assignSingleFlow`, wrapped round the value stored into a hollowed variable (and the drop-flag client, where a later pass of a loop reaches the store hollow) | `genlHollowRelease`: the owner goes, and a death frees without what moved — after the new value is evaluated, for the wrapper, as `genlStore` orders a whole release; with `test` set, only when the drop flag says hollow |
@@ -850,11 +856,14 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
   finalize nothing of the old field (there is none), and the variable is not
   taken to hold a value by having one field given, so the new field is never
   finalized either. Rust refuses both.
-- **A match's binding declared `mut` and assigned over holds its own copy.** The
-  conversion copies the matched value into the binding's storage, so a value
-  assigned into the binding is in neither the matched value nor anything that
-  releases it: `case mut a A { a = A[Fin[2]]; }` finalizes the matched value's
-  original as the match ends and leaks `Fin[2]`.
+- **A match's binding moved out and then assigned over leaks.** The store reads
+  the binding's own state, which the move left moved, so it releases nothing,
+  and it does not give the matched value's variable its value back, so that
+  variable, moved too, never releases what was stored: `case mut a A {
+  takeA(a); a = A[Fin[2]]; }` leaks `Fin[2]`. Moved on some paths only, the
+  store still releases nothing, and the original leaks on the paths that kept
+  it. The binding is untracked by the path walk (`flowMatchBound`), so neither
+  the store nor the matched value's drop flag sees the other.
 - **A hollowed variable reassigned by a destructuring of one value**
   (`b, x = pair()`) leaks its old allocation: `assignMultRetFlow` has no single
   value to wrap a `HollowNode` round, so it takes the moved variable's path
@@ -895,7 +904,7 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
 | | `flowInjectRefCountAmt` | wrap a counted reference, or a struct, enum, tuple or array whose death releases one, in a `RefCountNode` |
 | | `flowIsRcRef`, `flowIsOwningType` | is this type counted; is it an owning reference, or a tuple of them, that a store releases |
 | | `flowHeldCounted`, `flowVariantHeldCounted` | does a copy of this struct, enum, tuple or array add a holder to a counted reference its death releases |
-| | `flowMatchBound` | the matched value a match's binding stands for, or NULL |
+| | `flowMatchBound`, `flowMatchInPlace` | the matched value a match's binding stands for, or NULL; whether the binding is by value, naming the matched value's own storage |
 | | `flowScopePush`, `flowScopePop`, `flowAddVar` | the variable stack |
 | | `flowScopeDealias`, `flowVarRelease` | build a scope's release list; skip an uninitialized, moved-out or handed-back variable; release a hollowed one hollow; one variable's release, whole or hollow, in a `DropFlagNode` where asked |
 | | `flowVarSetFlags`, `flowVarLogMark`, `flowVarPathTake`, `flowVarRollback`, `flowVarJoin` | the main walk's variable flags, logged so that an `if`'s arms are walked from one state and joined |
