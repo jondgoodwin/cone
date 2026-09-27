@@ -232,7 +232,13 @@ slice and leave an untyped number literal at its default type.
 
 `litIsLiteral` is the compile-time-constant predicate the global, parameter and
 field-default rules use. It accepts a use resolved to a `ConstDclTag`, which is
-what makes `imm g i32 = K` legal.
+what makes `imm g i32 = K` legal. It accepts a borrow (`BorrowTag` or
+`ArrayBorrowTag`) of a string literal too: the text is a constant global, so a
+reference to it, or a slice of it (its address and its length), is known before
+anything runs. That is the borrow `borrowAuto` wraps a string literal in when a
+`&[]u8` wants it, so `imm g &[]u8 = "text"` and a struct literal holding one as
+a field are literal initializers; generation's `genlExpr` builds the slice with
+instructions the builder folds to a constant aggregate.
 
 ## Flow
 
