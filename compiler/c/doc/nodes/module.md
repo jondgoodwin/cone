@@ -1907,24 +1907,26 @@ global in any other function does not count, and an `imm` one may not be
 assigned there at all.
 
 **The module's finalizer** mirrors a type's ([struct](struct.md), step 8).
-Where any global the module declares has a type with a drop function,
+Where any global the module declares has anything to do as it dies
+(`modGlobalFinalized`: `itypeNeedsFinal`, the question a local's death asks),
 `modGiveDrop` gives the module a `drop` — owned by it, so its symbol is spelled
 after it (`middle.drop`, `_CNvC6middle4drop`), appended to its `nodes` after name
 resolution, built pre-lowered and never type checked or flow analyzed — calling
-the module's own `final`, if it has one, and then each such global's drop
-function over `&uni` the global, **in declaration order**, as a type drops its
-fields. Its finalizer (`finalfn`) is that `drop`, else its own `final`. A
-C-named global is C's storage and is not finalized. Nor is a thread-local, whose
-copies are each thread's and which the module's `drop`, running on one thread,
-could not all reach: one whose type needs finalizing (`itypeNeedsFinal`, the
-wider question that owning references also answer) is `ErrorThreadLocalFinal`,
-asked in the same walk. A global's drop runs whether
-the global was given a literal or assigned by `init`, since either way it holds
-a value by then. A module that needs a `drop` and declares one of its own is
-`ErrorModLifecycle`: both would be one symbol. Only a struct's or an enum's
-drop counts, so a global that is an owning reference is not freed, and one that
-is a tuple or an array of values that finalize is not finalized, where a struct
-field of either type is.
+the module's own `final`, if it has one, and then finalizing each such global
+**in declaration order**, as a type drops its fields. The globals are its
+return's release list, built as flow builds a scope's for its locals
+(`flowVarRelease`): a struct or an enum listed as a call to its drop function
+over `&uni` the global, anything else — an owning reference, plain or virtual,
+single or counted, or a tuple or an array — listed as the global itself, which
+generation finalizes in place (`genlDealiasNode`, `genlFinalizeAt` on the
+global's storage). Its finalizer (`finalfn`) is that `drop`, else its own
+`final`. A C-named global is C's storage and is not finalized. Nor is a
+thread-local, whose copies are each thread's and which the module's `drop`,
+running on one thread, could not all reach: one whose type needs finalizing is
+`ErrorThreadLocalFinal`, asked in the same walk. A global is finalized whether
+it was given a literal or assigned by `init`, since either way it holds a value
+by then. A module that needs a `drop` and declares one
+of its own is `ErrorModLifecycle`: both would be one symbol.
 
 **The stitched pair** (`genlStitch`, `genllvm/genllvm.c`) is two functions of the
 object being generated: `cone.initAll`, calling `initfn` of each module in

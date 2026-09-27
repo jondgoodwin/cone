@@ -548,7 +548,8 @@ the region's `free` if it has one.
 **One routine is a value's death in place, whatever its type**
 (`genlFinalizeAt`), and every death reaches it: a local's at its scope's end
 (flow lists the variable, or for a struct or an enum a call to its drop), a
-region value's before its `free`, a field's inside its holder's drop, and the
+region value's before its `free`, a field's inside its holder's drop, a
+module's global in the module's `drop` (listed as a local is), and the
 `finalize` intrinsic. An owning reference is released (`genlReleaseOwning`). A
 struct or an enum calls its drop, which is the whole death, its owners' release
 included. A tuple finalizes each element that needs it, in order, each reached

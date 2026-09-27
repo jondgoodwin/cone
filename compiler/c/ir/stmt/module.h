@@ -56,6 +56,10 @@ void modAddFn(ModuleNode *mod, FnDclNode *fnnode);
 
 void modHook(ModuleNode *oldmod, ModuleNode *newmod);
 
+// Whether the module's finalizer finalizes this global (itypeNeedsFinal, and
+// not C's storage): what modGiveDrop builds and an include file keeps
+int modGlobalFinalized(struct VarDclNode *var);
+
 // Put every name each of the program's modules holds by FOLDING into its
 // namespace: what its 'extends' and its imports admit, what its globals' 'use'
 // clauses do, and the variants its 'use' statements fold in from enums. Ahead of
