@@ -90,6 +90,17 @@ Visual Studio projects stay at the root.
   functions for shaders in `src/noise.slang`, bit for bit the same on the
   GPU but for square roots and Phacelle, which its `parity` test checks on
   a real GPU; its README holds the determinism rules;
+  `sdf` is signed distance fields over `geomath`, `noise` and `sculpt`,
+  shapes as functions of a point: primitives, hard and smooth operators
+  (Quilez's), domain operators (translation, rotation, scale, mirrors,
+  repetition, elongation), hg_sdf's fillets, repetition along a curve (an
+  `Arc`, or a `sculpt.Path` as a `PathCurve`) in its rotation-minimizing
+  frames as the exact union of every copy, `Horn` (the ribbed, tapering,
+  curling horn), the gradient and normal, and noise detail; the same
+  functions for shaders in `src/sdf.slang`, which its `parity` test checks
+  on a real GPU; its README holds what is exact, what is a bound, and what
+  was measured; its example, `hornmarch.cone`, sphere-traces the horn in
+  render's chitin under the dusk;
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed

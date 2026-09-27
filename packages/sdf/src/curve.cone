@@ -1,0 +1,340 @@
+// ======== Curves, and repetition along them ========
+//
+// A shape repeated at even steps of arc length along a curve, each copy in
+// the curve's rotation-minimizing frame there, sized and turned by
+// functions of how far along it is: Latham's horn (FormSynth), Raup's
+// shells unwound, a spine of vertebrae (the survey's PL F3, F4; BE B5).
+//
+// A curve answers three questions (the Curve trait): its length, the arc
+// length of its point nearest p, and its frame at an arc length. 'Arc' is
+// a circular arc (a straight segment when it does not curl), analytic, the
+// same in sdf.slang; 'PathCurve' is any sculpt.Path, with sculpt's
+// rotation-minimizing frames, on the CPU only.
+//
+// The curve is cut into 'count' cells of equal length, copy k centred at
+// (k + 1/2) length / count, u = (k + 1/2) / count of the way along. The
+// repeated shape (the Repeated trait) gives a copy's distance in the copy's
+// own frame, and the radius of a ball about the frame's origin that holds
+// the copy. How the copy varies with u (its size, its twist about the
+// tangent) is the shape's to say.
+//
+// THE NEIGHBOURS. Quilez ("domain repetition",
+// iquilezles.org/articles/sdfrepetition) shows that when copies vary the
+// nearest copy need not be in the point's own cell, and asks the
+// neighbouring cells; Magniez and Zanni (I3D 2026, doi:10.1145/3804498)
+// interpolate instead. A fixed window of neighbours is not enough along a
+// curve: near the centre of curvature every copy is about as far away, and
+// the point's cell says nothing (measured: a three-cell window let the
+// horn's distance jump, its Lipschitz ratio reaching 2.2). So here every
+// copy is accounted for. The copy whose origin is nearest is asked first;
+// then each other copy is asked only if the ball holding it is nearer than
+// the distance found so far. The result is the minimum over every copy,
+// exactly: a union of exact distances is exact outside it and a bound
+// within, 1-Lipschitz, and continuous everywhere, whatever the curve and
+// however the copies vary. It costs one pass over the cells' origins, and a
+// full evaluation only of copies that might be nearest (for a point near
+// the surface, one to three).
+
+// A curve a shape can be repeated along
+pub trait Curve {
+  // Its length
+  fn length(self &) f32;
+  // The arc length, from 0 to the length, of its point nearest p
+  fn nearest(self &, p Vec3) f32;
+  // Its frame at arc length s
+  fn frameAt(self &, s f32) CurveFrame;
+}
+
+// A shape repeated along a curve
+pub trait Repeated {
+  // Copy 'index' at 'q' (the point in its frame: x along the normal, y the
+  // binormal, z the tangent), 'u' the way along the curve, from 0 to 1
+  fn repeatedDistance(self &, q Vec3, index i32, u f32) f32;
+  // The radius of a ball about the copy's origin that holds all of it
+  fn bound(self &, index i32, u f32) f32;
+}
+
+// Whether a copy whose ball of radius 'b' is 'dd' away (squared) from p
+// can be nearer than 'd'
+fn mayBeNearer(dd f32, b f32, d f32) Bool {
+  imm lim = d + b;
+  lim > 0. and dd < lim * lim;
+}
+
+// The shape repeated 'count' times along the curve, at the point p: the
+// exact union of the copies
+pub fn repeatAlong[C Curve, S Repeated](curve &C, shape &S, p Vec3, count i32) f32 {
+  imm n = if count < 1 { 1; } else { count; };
+  imm len = curve.length();
+  // The copy whose origin is nearest
+  mut best f32 = 3.4028235e38;
+  mut bestK = 0;
+  mut k = 0;
+  while k < n {
+    imm o = curve.frameAt((f32[k] + 0.5) / f32[n] * len).origin - p;
+    imm dd = dot3(o, o);
+    if dd < best {
+      best = dd;
+      bestK = k;
+    }
+    k = k + 1;
+  }
+  imm bu = (f32[bestK] + 0.5) / f32[n];
+  mut d = shape.repeatedDistance(curve.frameAt(bu * len).toLocal(p), bestK, bu);
+  // Every other copy whose ball is nearer than that
+  k = 0;
+  while k < n {
+    if k != bestK {
+      imm u = (f32[k] + 0.5) / f32[n];
+      imm frame = curve.frameAt(u * len);
+      imm o = frame.origin - p;
+      if mayBeNearer(dot3(o, o), shape.bound(k, u), d) {
+        d = minf(d, shape.repeatedDistance(frame.toLocal(p), k, u));
+      }
+    }
+    k = k + 1;
+  }
+  d;
+}
+
+// ---- Arc ----
+
+// Below this curl (radians) an arc is a straight segment
+const STRAIGHT f32 = 0.0001;
+
+// A circular arc in the plane z = 0, 'length' long, starting at the origin
+// heading up +y and turning towards +x through 'curl' radians in all (0
+// straight). Its radius of curvature is length / curl, about the centre
+// (radius, 0, 0). Its frames are rotation-minimizing (a plane curve's keep
+// the binormal fixed): the binormal is +z, the normal points away from the
+// centre (-x at the start), the tangent along the arc.
+pub struct Arc is Curve {
+  pub len f32;                 // its length
+  pub curl f32;
+  pub radius f32;              // len / curl, or 0 when straight
+
+  pub fn make(length f32, curl f32) Arc {
+    imm c = if curl < 0. { 0.; } else { curl; };
+    if c < STRAIGHT { return Arc[length, 0., 0.]; }
+    Arc[length, c, length / c];
+  }
+
+  pub fn length(self &) f32 { len; }
+
+  // Its point at arc length s (beyond the ends, along the end tangents)
+  pub fn point(self &, s f32) Vec3 { self.frameAt(s).origin; }
+
+  pub fn frameAt(self &, s f32) CurveFrame {
+    if radius == 0. {
+      return CurveFrame[Vec3[0., s, 0.], Vec3[-1., 0., 0.], Vec3[0., 0., 1.], Vec3[0., 1., 0.]];
+    }
+    imm t = clampf(s, 0., len);
+    imm a = t / radius;
+    imm c = cos(a);
+    imm sn = sin(a);
+    imm o = Vec3[radius - radius * c, radius * sn, 0.];
+    imm tangent = Vec3[sn, c, 0.];
+    imm beyond = s - t;
+    CurveFrame[Vec3[o.x + tangent.x * beyond, o.y + tangent.y * beyond, 0.], Vec3[0. - c, sn, 0.],
+      Vec3[0., 0., 1.], tangent];
+  }
+
+  pub fn nearest(self &, p Vec3) f32 { self.project(p).s; }
+
+  // The arc's point nearest p: its arc length s, and p's distance from it
+  // (computed without trigonometry while s is inside the arc)
+  pub fn project(self &, p Vec3) ArcProjection {
+    if radius == 0. {
+      imm s = clampf(p.y, 0., len);
+      return ArcProjection[s, len3(Vec3[p.x, p.y - s, p.z])];
+    }
+    // The angle round the centre, from the start, towards the end
+    imm vx = p.x - radius;
+    imm vy = p.y;
+    imm angle = atan2(vy, 0. - vx);
+    // Measured from the arc's middle, so the gap beyond the ends is split
+    // between them
+    imm middle = curl * 0.5;
+    mut delta = angle - middle;
+    if delta < 0. - pi { delta = delta + pi * 2.; }
+    imm a = middle + delta;
+    if a <= 0. { return ArcProjection[0., len3(p)]; }
+    if a >= curl { return ArcProjection[len, len3(p - self.point(len))]; }
+    ArcProjection[a * radius, len2(len2(vx, vy) - radius, p.z)];
+  }
+
+  // The arc cut into 'count' cells, for 'repeatAlongArc'
+  pub fn cells(self &, count i32) ArcCells {
+    imm n = if count < 1 { 1; } else { count; };
+    imm step = len / f32[n];
+    if radius == 0. { return ArcCells[n, step, 1., 0., 1., 0.]; }
+    imm turn = curl / f32[n];
+    ArcCells[n, step, cos(turn * 0.5), sin(turn * 0.5), cos(turn), sin(turn)];
+  }
+}
+
+// Where a point projects onto an arc
+pub struct ArcProjection {
+  pub s f32;                   // the arc length of the nearest point
+  pub distance f32;            // how far the point is from it
+}
+
+// An arc cut into cells: the cosine and sine of the first cell's angle
+// round the centre, and of the turn from one cell to the next, so that
+// stepping along the cells needs no trigonometry (each next angle's cosine
+// and sine by the sum formulas, the same arithmetic on every machine)
+pub struct ArcCells {
+  pub count i32;
+  pub step f32;                // each cell's length
+  pub firstCos f32;
+  pub firstSin f32;
+  pub turnCos f32;
+  pub turnSin f32;
+}
+
+// Cell k's frame on the arc, from the cosine c and sine s of its angle
+fn arcCellFrame(arc &Arc, cells &ArcCells, k i32, c f32, s f32) CurveFrame {
+  if arc.radius == 0. {
+    return CurveFrame[Vec3[0., (f32[k] + 0.5) * cells.step, 0.], Vec3[-1., 0., 0.], Vec3[0., 0., 1.],
+      Vec3[0., 1., 0.]];
+  }
+  CurveFrame[Vec3[arc.radius - arc.radius * c, arc.radius * s, 0.], Vec3[0. - c, s, 0.], Vec3[0., 0., 1.],
+    Vec3[s, c, 0.]];
+}
+
+// 'repeatAlong' on an arc, the same exact union, its cells' frames stepped
+// round by rotation instead of by trigonometry
+pub fn repeatAlongArc[S Repeated](arc &Arc, cells &ArcCells, shape &S, p Vec3) f32 {
+  imm n = cells.count;
+  // The copy whose origin is nearest
+  mut best f32 = 3.4028235e38;
+  mut bestK = 0;
+  mut bestC = cells.firstCos;
+  mut bestS = cells.firstSin;
+  mut c = cells.firstCos;
+  mut s = cells.firstSin;
+  mut k = 0;
+  while k < n {
+    imm o = arcCellFrame(arc, cells, k, c, s).origin - p;
+    imm dd = dot3(o, o);
+    if dd < best {
+      best = dd;
+      bestK = k;
+      bestC = c;
+      bestS = s;
+    }
+    imm nc = c * cells.turnCos - s * cells.turnSin;
+    s = s * cells.turnCos + c * cells.turnSin;
+    c = nc;
+    k = k + 1;
+  }
+  imm bu = (f32[bestK] + 0.5) / f32[n];
+  mut d = shape.repeatedDistance(arcCellFrame(arc, cells, bestK, bestC, bestS).toLocal(p), bestK, bu);
+  // Every other copy whose ball is nearer than that
+  c = cells.firstCos;
+  s = cells.firstSin;
+  k = 0;
+  while k < n {
+    if k != bestK {
+      imm u = (f32[k] + 0.5) / f32[n];
+      imm frame = arcCellFrame(arc, cells, k, c, s);
+      imm o = frame.origin - p;
+      if mayBeNearer(dot3(o, o), shape.bound(k, u), d) {
+        d = minf(d, shape.repeatedDistance(frame.toLocal(p), k, u));
+      }
+    }
+    imm nc = c * cells.turnCos - s * cells.turnSin;
+    s = s * cells.turnCos + c * cells.turnSin;
+    c = nc;
+    k = k + 1;
+  }
+  d;
+}
+
+// ---- PathCurve ----
+
+// A sculpt.Path as a curve: its points joined by straight pieces, its
+// frames sculpt's rotation-minimizing ones, blended along each piece as
+// sculpt's sweep blends them. The path is taken as open. The nearest point
+// and each frame are found by trying every piece: fine for tens of points,
+// on the CPU.
+pub struct PathCurve is Curve {
+  pub frames List[CurveFrame];
+  pub distances List[f32];
+  pub total f32;
+
+  pub fn fromPath(path &sculpt.Path) PathCurve {
+    imm fs = path.frames();
+    imm ds = path.distances();
+    mut frames = List[CurveFrame].withCapacity(fs.len());
+    mut i = 0usize;
+    while i < fs.len() {
+      imm f = *fs[i];
+      frames.push(CurveFrame[f.origin, f.normal, f.binormal, f.tangent]);
+      i = i + 1usize;
+    }
+    mut distances = List[f32].withCapacity(ds.len());
+    i = 0usize;
+    while i < ds.len() {
+      distances.push(*ds[i]);
+      i = i + 1usize;
+    }
+    imm total = if ds.len() > 0usize { *ds[ds.len() - 1usize]; } else { 0.; };
+    PathCurve[frames, distances, total];
+  }
+
+  pub fn length(self &) f32 { total; }
+
+  pub fn nearest(self &, p Vec3) f32 {
+    imm n = frames.len();
+    if n < 2usize { return 0.; }
+    mut best f32 = 3.4028235e38;
+    mut bestS f32 = 0.;
+    mut i = 0usize;
+    while i + 1usize < n {
+      imm a = frames[i].origin;
+      imm b = frames[i + 1usize].origin;
+      imm ab = b - a;
+      imm abab = dot3(ab, ab);
+      imm t = if abab > 0. { clampf(dot3(p - a, ab) / abab, 0., 1.); } else { 0.; };
+      imm q = a + ab * t;
+      imm dd = dot3(p - q, p - q);
+      if dd < best {
+        best = dd;
+        bestS = *distances[i] + (*distances[i + 1usize] - *distances[i]) * t;
+      }
+      i = i + 1usize;
+    }
+    bestS;
+  }
+
+  // The frame at arc length s, blended between the frames at the ends of
+  // the piece holding it (sculpt's frameAtDistance); beyond the ends, the
+  // end frames carried along their tangents
+  pub fn frameAt(self &, s f32) CurveFrame {
+    imm n = frames.len();
+    imm first = *frames[0usize];
+    if n == 1usize or total <= 0. {
+      return CurveFrame[first.origin + first.tangent * s, first.normal, first.binormal, first.tangent];
+    }
+    if s <= 0. {
+      return CurveFrame[first.origin + first.tangent * s, first.normal, first.binormal, first.tangent];
+    }
+    imm lastF = *frames[n - 1usize];
+    if s >= total {
+      return CurveFrame[lastF.origin + lastF.tangent * (s - total), lastF.normal, lastF.binormal, lastF.tangent];
+    }
+    mut i = 0usize;
+    while i + 2usize < n and *distances[i + 1usize] <= s {
+      i = i + 1usize;
+    }
+    imm a = *frames[i];
+    imm b = *frames[i + 1usize];
+    imm seg = *distances[i + 1usize] - *distances[i];
+    imm f = if seg > 0. { (s - *distances[i]) / seg; } else { 0.; };
+    imm t = a.tangent.lerp(b.tangent, f).normalize();
+    imm nl = a.normal.lerp(b.normal, f);
+    imm nr = (nl - t * dot3(t, nl)).normalize();
+    CurveFrame[a.origin.lerp(b.origin, f), nr, t.cross(nr), t];
+  }
+}

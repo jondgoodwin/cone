@@ -1,0 +1,214 @@
+// Repetition along a curve, and the horn. Only a failure prints.
+//
+// - The arc: length pi curled a quarter turn has radius 2 about (2, 0, 0);
+//   halfway, at 45 degrees, its point is (2 - sqrt 2, sqrt 2, 0), its
+//   tangent (1, 1, 0) / sqrt 2, its normal (-1, 1, 0) / sqrt 2 (away from
+//   the centre), its binormal +z; a point 1 further out projects there,
+//   arc length pi / 2, distance 1. Its end is (2, 2, 0).
+// - Its cells: the frames 'arc.cells' steps round by rotation are the
+//   frames 'frameAt' finds by trigonometry, to 1e-6.
+// - Exactness of the union: 'repeatAlong' prunes copies whose bounding
+//   ball is farther than the best so far; over 2048 hashed points it gives
+//   exactly the minimum over every copy (the same bits), for the horn and
+//   for twisted beads. 'repeatAlongArc' (rotation-stepped frames) agrees
+//   with it to 2e-6.
+// - Twist: a flat box turned a quarter turn about the tangent at u = 1/2
+//   lies across the other axis.
+// - A sculpt.Path through 97 points of the same arc, as a PathCurve, gives
+//   the arc's beads to 2e-3 (its pieces are chords).
+// - The horn: at its base point, minus the base radius; a straight horn
+//   with no ribs is a cone of balls, whose distance at radial distance x
+//   and height y is x sqrt(1 - s^2) - r(y), s the radius's fall per unit
+//   length (the union of balls of linearly falling radius); past the tip
+//   along the end tangent, the distance less the tip radius (to 2e-3: the
+//   last chord leaves the tangent by half a cell's turn).
+// - Continuity across cell boundaries: at each boundary of the horn's 14
+//   cells, points 1/1024 either side along the tangent, at offsets from
+//   0.05 to 1 in each direction across, differ by no more than they are
+//   apart (1 + 1/100).
+
+mod curves;
+
+import testing use *;
+import libc;
+import geomath use *;
+import collections use *;
+import noise;
+import sculpt;
+import sdf use *;
+
+fn near(got f32, want f64, within f64, label &[]u8) { expectFloat(f64[got], want, within, label); }
+
+// A box shrinking along the curve and turned 'twist' radians over its length
+struct Beads {
+  pub size f32;
+  pub twist f32;
+  pub fn repeatedDistance(self &, q Vec3, index i32, u f32) f32 {
+    imm s = size * (1. - 0.5 * u);
+    imm c = cos(twist * u);
+    imm sn = sin(twist * u);
+    box(Vec3[q.x * c + q.y * sn, q.y * c - q.x * sn, q.z], Vec3[s, s * 0.5, s * 0.25]);
+  }
+  pub fn bound(self &, index i32, u f32) f32 { size * (1. - 0.5 * u) * 1.25; }
+}
+
+fn samplePoint(i i32) Vec3 {
+  imm h = noise.pcg3d(noise.UVec3[u32[i], 4242u32, 17u32]);
+  Vec3[noise.toSigned(h.x) * 2.5, noise.toSigned(h.y) * 2.5 + 1.5, noise.toSigned(h.z) * 1.5];
+}
+
+// The minimum over every copy, no pruning
+fn everyCopy[S Repeated](arc &Arc, shape &S, p Vec3, n i32) f32 {
+  mut d f32 = 3.4028235e38;
+  mut k = 0;
+  while k < n {
+    imm u = (f32[k] + 0.5) / f32[n];
+    imm v = shape.repeatedDistance(arc.frameAt(u * arc.len).toLocal(p), k, u);
+    if v < d { d = v; }
+    k = k + 1;
+  }
+  d;
+}
+
+fn arcs() {
+  imm arc = Arc.make(pi, pi * 0.5);
+  near(arc.radius, 2d, 0.000001d, "radius");
+  imm f = arc.frameAt(pi * 0.5);
+  near(f.origin.x, 0.58578644d, 0.000002d, "halfway: x");
+  near(f.origin.y, 1.41421356d, 0.000002d, "halfway: y");
+  near(f.tangent.x, 0.70710678d, 0.000001d, "halfway: tangent x");
+  near(f.tangent.y, 0.70710678d, 0.000001d, "halfway: tangent y");
+  near(f.normal.x, -0.70710678d, 0.000001d, "halfway: normal x");
+  near(f.normal.y, 0.70710678d, 0.000001d, "halfway: normal y");
+  near(f.binormal.z, 1d, 0.d, "binormal +z");
+  imm right = f.normal.cross(f.binormal);
+  near(right.x - f.tangent.x, 0d, 0.000001d, "normal x binormal = tangent");
+  imm pr = arc.project(f.origin + f.normal);
+  near(pr.s, 1.57079633d, 0.000002d, "projected: arc length");
+  near(pr.distance, 1d, 0.000002d, "projected: distance");
+  imm end = arc.point(arc.len);
+  near(end.x, 2d, 0.000002d, "end: x");
+  near(end.y, 2d, 0.000002d, "end: y");
+  imm before = arc.project(Vec3[-1., -1., 0.]);
+  near(before.s, 0d, 0.d, "before the start: clamped");
+  near(before.distance, 1.41421356d, 0.000001d, "before the start: to the start");
+  imm straight = Arc.make(3., 0.);
+  near(straight.project(Vec3[1., 2., 0.]).distance, 1d, 0.d, "straight: distance");
+  near(straight.nearest(Vec3[1., 2., 0.]), 2d, 0.d, "straight: arc length");
+
+  // The cells' frames, stepped round, against trigonometry
+  imm cells = arc.cells(12);
+  mut c = cells.firstCos;
+  mut s = cells.firstSin;
+  mut worst = 0d;
+  mut k = 0;
+  while k < 12 {
+    imm want = arc.frameAt((f32[k] + 0.5) * cells.step);
+    imm o = Vec3[arc.radius - arc.radius * c, arc.radius * s, 0.] - want.origin;
+    imm e = f64[o.length()];
+    if e > worst { worst = e; }
+    imm nc = c * cells.turnCos - s * cells.turnSin;
+    s = s * cells.turnCos + c * cells.turnSin;
+    c = nc;
+    k = k + 1;
+  }
+  near(f32[worst], 0d, 0.000002d, "cells stepped round by rotation");
+}
+
+fn unions() {
+  imm arc = Arc.make(3., 2.);
+  imm cells = arc.cells(10);
+  imm beads = Beads[0.25, 1.5];
+  imm horn = Horn.make(3., 0.3, 0.9, 2., 14, 0.12);
+  mut prunedBeads = 0;
+  mut prunedHorn = 0;
+  mut worstArc = 0d;
+  mut i = 0;
+  while i < 2048 {
+    imm p = samplePoint(i);
+    if repeatAlong(&arc, &beads, p, 10) == everyCopy(&arc, &beads, p, 10) { prunedBeads = prunedBeads + 1; }
+    if repeatAlong(&horn.arc, &horn, p, 14) == everyCopy(&horn.arc, &horn, p, 14) { prunedHorn = prunedHorn + 1; }
+    imm e = f64[repeatAlongArc(&arc, &cells, &beads, p) - repeatAlong(&arc, &beads, p, 10)];
+    imm ae = if e < 0d { -e; } else { e; };
+    if ae > worstArc { worstArc = ae; }
+    i = i + 1;
+  }
+  expectInt(i64[prunedBeads], 2048, "beads: the pruned union is every copy's minimum");
+  expectInt(i64[prunedHorn], 2048, "horn: the pruned union is every copy's minimum");
+  near(f32[worstArc], 0d, 0.000002d, "repeatAlongArc agrees with repeatAlong");
+
+  // Twist: at u = 1/2 a quarter turn, so the flat box (long along the
+  // normal) lies along the binormal
+  imm line = Arc.make(2., 0.);
+  imm flat = Beads[0.5, pi];
+  // The copy's size at u = 1/2 is 0.375: 0.375 x 0.1875 x 0.09375
+  near(repeatAlong(&line, &flat, Vec3[0., 1., 0.5], 1), 0.5d - 0.375d, 0.000001d, "twisted: along the binormal");
+  near(repeatAlong(&line, &flat, Vec3[0.5, 1., 0.], 1), 0.5d - 0.1875d, 0.000001d, "twisted: across the normal");
+
+  // A sculpt.Path through the same arc
+  mut pts = List[Vec3].empty();
+  mut j = 0;
+  while j <= 96 {
+    pts.push(arc.point(3. * f32[j] / 96.));
+    j = j + 1;
+  }
+  imm path = sculpt.Path.fromPoints(pts.view(), false);
+  imm curve = PathCurve.fromPath(&path);
+  near(curve.length(), 3d, 0.001d, "path: its length");
+  imm plain = Beads[0.25, 0.];
+  mut worstPath = 0d;
+  i = 0;
+  while i < 512 {
+    imm p = samplePoint(i);
+    imm e = f64[repeatAlong(&curve, &plain, p, 10) - repeatAlong(&arc, &plain, p, 10)];
+    imm ae = if e < 0d { -e; } else { e; };
+    if ae > worstPath { worstPath = ae; }
+    i = i + 1;
+  }
+  near(f32[worstPath], 0d, 0.002d, "a PathCurve through the arc gives its beads");
+}
+
+fn horns() {
+  imm horn = Horn.make(3., 0.3, 0.9, 2., 14, 0.12);
+  near(horn.distance(Vec3[0., 0., 0.]), -0.3d, 0.000001d, "at the base point");
+  // A straight cone of balls: base 0.5 falling to 0.25 over 2
+  imm cone = Horn.make(2., 0.5, 0.5, 0., 0, 0.);
+  imm fall = 0.125d;
+  near(cone.distance(Vec3[2., 1., 0.]), 2d * libc.sqrt(1d - fall * fall) - 0.375d, 0.000002d, "straight: the side");
+  near(cone.distance(Vec3[0., 3., 0.]), 1d - 0.25d, 0.000002d, "straight: past the tip");
+  // Past a curled horn's tip along its tangent
+  imm tip = horn.arc.frameAt(3.);
+  near(horn.distance(tip.origin + tip.tangent), 1d - 0.03d, 0.002d, "curled: past the tip");
+  near(horn.distance(tip.origin), -0.03d, 0.002d, "curled: at the tip");
+
+  // Continuity across the cells' boundaries
+  mut worst = 0d;
+  mut k = 1;
+  while k < 14 {
+    imm f = horn.arc.frameAt(f32[k] * 3. / 14.);
+    mut j = 0;
+    while j < 20 {
+      imm off = 0.05 + f32[j] * 0.05;
+      imm dirs [4; Vec3] = [f.normal, f.binormal, f.normal * -1., f.binormal * -1.];
+      mut di = 0usize;
+      while di < 4usize {
+        imm at = f.origin + dirs[di] * off;
+        imm step = f.tangent * 0.0009765625;
+        imm e = f64[horn.distance(at + step) - horn.distance(at - step)];
+        imm r = (if e < 0d { -e; } else { e; }) / 0.001953125d;
+        if r > worst { worst = r; }
+        di = di + 1usize;
+      }
+      j = j + 1;
+    }
+    k = k + 1;
+  }
+  expect(worst <= 1.01d, "continuous across every cell boundary");
+}
+
+fn main() i32 {
+  arcs();
+  unions();
+  horns();
+  done();
+}
