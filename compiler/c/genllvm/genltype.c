@@ -131,6 +131,15 @@ void genlVtableImpl(GenState *gen, Vtable *vtable, VtableImpl *impl, LLVMTypeRef
         implRef = LLVMBuildInsertValue(gen->builder, implRef, val, pos++, "vtable entry");
     }
 
+    // The last slot: the implementer's type record (genlTypeRecordOf), what an
+    // owning virtual reference's death reads the value's finalizer and
+    // alignment from (genlVirtRecord). Null only in a compile whose core
+    // declares no TypeRecord, where no owner can reach it (genlVirtRecord).
+    StructNode *recnode = typeRecordStruct();
+    LLVMValueRef rec = recnode ? genlTypeRecordOf(gen, impl->structdcl, recnode)
+        : LLVMConstNull(LLVMStructGetTypeAtIndex(vtableRef, pos));
+    implRef = LLVMBuildInsertValue(gen->builder, implRef, rec, pos, "vtable record");
+
     // Create and initialize global variable to hold vtable info
     char symbol[2048];
     impl->llvmvtablep = LLVMAddGlobal(gen->module, vtableRef, nameVtableImpl(symbol, impl->structdcl, vtable->trait));
@@ -184,7 +193,8 @@ void genlVtable(GenState *gen, Vtable *vtable) {
     vtable->llvmvtable = vtableRef;
     vtable->llvmreftype = virtref;
 
-    uint32_t fieldcnt = vtable->methfld->used;
+    // The trait's methods and fields, then the type record: one slot more
+    uint32_t fieldcnt = vtable->methfld->used + 1;
     LLVMTypeRef *field_types = (LLVMTypeRef *)memAllocBlk(fieldcnt * sizeof(LLVMTypeRef));
     LLVMTypeRef *field_type_ptr = field_types;
 
@@ -199,10 +209,12 @@ void genlVtable(GenState *gen, Vtable *vtable) {
             // All virtual fields are 32-bit offsets into the object
             *field_type_ptr++ = LLVMInt32TypeInContext(gen->context);
     }
+    // A pointer to the implementer's type record, after every slot dispatch
+    // and field access index, so none of theirs moves (vtblidx)
+    *field_type_ptr++ = LLVMPointerTypeInContext(gen->context, 0);
 
     // Fill in the vtable type's body
-    if (fieldcnt > 0)
-        LLVMStructSetBody(vtableRef, field_types, fieldcnt, 0);
+    LLVMStructSetBody(vtableRef, field_types, fieldcnt, 0);
 
     // Build all the vtable globals that implement the vtable
     // as well as an array pointing to all these vtables

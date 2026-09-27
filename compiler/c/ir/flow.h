@@ -217,10 +217,14 @@ void flowResultMove(INode *node);
 // Does this expression still hold its value after it is read?
 int flowIsLvalRead(INode *node);
 
+// Does this cast hand on what its operand holds: a recast, or a conversion
+// into an owning virtual reference, which carries the operand's owner?
+int flowCastCarries(INode *cast);
+
 // If needed, inject a reference-count node for rc references, adjusting the count by amt
 void flowInjectRefCountAmt(INode **nodep, int16_t amt);
 
-// Is this type a counted (rc) reference, single or slice?
+// Is this type a counted (rc) reference, single, slice or virtual?
 int flowIsRcRef(INode *type);
 
 // Does a copy of a value of this type -- a struct, an enum, a tuple, an array --

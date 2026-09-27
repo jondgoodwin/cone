@@ -14,9 +14,9 @@
     <div class="text">
 
 	<p style="margin-left: 40px;"><i>Note: Borrowed virtual references are implemented.
-		An owning one (<span class="pre">+&lt;so Shape</span>) is built, dispatched through and lent
-		as a borrowed one, but a <span class="pre">&amp;&lt;uni</span> borrow still moves it,
-		and when it dies its value is neither finalized nor freed.
+		An owning one (<span class="pre">+&lt;so Shape</span>) is built, dispatched through, lent
+		as a borrowed one, and finalized and freed when its last owner goes,
+		but a <span class="pre">&amp;&lt;uni</span> borrow still moves it.
 		A method is dispatched only through a virtual reference whose permission grants
 		what its <span class="pre">self</span> declares, but dispatching through a
 		<span class="pre">&amp;&lt;uni</span> hands the method that reference itself, which moves it.</i></p>
@@ -92,7 +92,9 @@ fn tester();
 		as viewed from the perspective of the trait.
 		In particular, it captures reference addresses for the type's trait-declared methods
 		and location information for trait-declared fields,
-		as well as unique id identifying the concrete type.</p>
+		as well as unique id identifying the concrete type
+		and the type's size, alignment and finalizer, which an owning virtual reference
+		needs to release the object.</p>
 	<p>In this example, the vtable contains two references to the concrete type's
 		<span class="pre">area</span> and <span class="pre">perimeter</span> methods.
 		There are actually two different versions of this vtable,
@@ -141,6 +143,13 @@ app.area();                       // lends app to the method
 imm view &amp;&lt;Shape = app;          // borrows from app
 doMath(app);                      // and so does passing it
 </pre>
+	<p>An owning virtual reference owns its object exactly as the owning reference
+		it was coerced from did: that reference is moved into it
+		(or, for a counted region like <span class="pre">rc</span>, copied as one more owner),
+		and when its last owner goes away &mdash; out of scope, replaced, or inside a
+		struct that dies &mdash; the object is finalized as its concrete type
+		and its memory is given back to its region.
+		The vtable carries what that needs to know about the concrete type.</p>
 	<p>The primary use of virtual references lies with the dot operator.
 		This is how one dispatches trait-declared methods and accesses trait-declared fields.
 		A virtual reference's <a href="refperm.html">permission</a> governs what it may do
