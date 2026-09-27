@@ -164,6 +164,7 @@ ConstDclNode *parseConstDcl(ParseState *parse);
 INode *parseFnSig(ParseState *parse);
 INode *parseStruct(ParseState *parse, uint16_t flags);
 INode *parseType(ParseState *parse);
+INode *parseTypeReq(ParseState *parse, char *after);
 // A type's name: a name, a path through namespaces, or a generic's instance
 INode *parseTypeName(ParseState *parse);
 AliasDclNode *parseTypedef(ParseState *parse);

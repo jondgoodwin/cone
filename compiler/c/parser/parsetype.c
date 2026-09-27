@@ -182,10 +182,10 @@ INode *parseTypeName(ParseState *parse) {
         fncall->flags |= FlagIndex;
         lexNextToken();
         if (!lexIsToken(RBracketToken)) {
-            nodesAdd(&fncall->args, parseType(parse));
+            nodesAdd(&fncall->args, parseTypeReq(parse, "'['"));
             while (lexIsToken(CommaToken)) {
                 lexNextToken();
-                nodesAdd(&fncall->args, parseType(parse));
+                nodesAdd(&fncall->args, parseTypeReq(parse, "','"));
             }
         }
         parseCloseTok(RBracketToken);
@@ -1212,7 +1212,7 @@ INode *parseFnSig(ParseState *parse) {
             nodesAdd(&rettype->elems, fnsig->rettype);
             while (lexIsToken(CommaToken)) {
                 lexNextToken();
-                nodesAdd(&rettype->elems, parseType(parse));
+                nodesAdd(&rettype->elems, parseTypeReq(parse, "','"));
             }
             fnsig->rettype = (INode*)rettype;
         }
@@ -1241,7 +1241,7 @@ AliasDclNode *parseTypedef(ParseState *parse) {
     }
     AliasDclNode *newnode = newTypeAliasDclNode(lex->val.ident, NULL);
     lexNextToken();
-    newnode->target = parseType(parse);
+    newnode->target = parseTypeReq(parse, "the typedef's name");
     parseEndOfStatement();
     return newnode;
 }
@@ -1271,4 +1271,15 @@ INode* parseType(ParseState *parse) {
     default:
         return unknownType;
     }
+}
+
+// Parse a type expression where the grammar requires one, as after 'as' or
+// 'into'. No type there is reported just after the token that asked for it,
+// naming that token; the unknown type returned is never read, because a parse
+// error keeps analysis from running.
+INode *parseTypeReq(ParseState *parse, char *after) {
+    INode *type = parseType(parse);
+    if (type == unknownType)
+        errorMsgLexAfter(ErrorNoType, "Expected a type after %s", after);
+    return type;
 }
