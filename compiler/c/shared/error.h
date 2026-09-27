@@ -338,6 +338,12 @@ enum ErrorCode {
     ErrorAtomicConst = 1177,    // An ordering that is not a constant where the call is written: not a MemOrder variant's literal, nor a const holding one
     ErrorAtomicOrder = 1178,    // An ordering the operation forbids: a load's Release or AcqRel, a store's Acquire or AcqRel, a compareSwap failure's Release or AcqRel or one stronger than its success
 
+    // '@threadlocal' globals
+    ErrorThreadLocalPlace = 1179, // '@threadlocal' anywhere but after a module global's permission: on a local, a static, a parameter, a field, a module trait's global, a function or a type, or before the permission
+    ErrorThreadLocalImm = 1180, // '@threadlocal' on an 'imm' global: a copy per thread of a value no thread can change is the same as one copy
+    ErrorThreadLocalInit = 1181, // A '@threadlocal' global, not 'extern', with no initial value: every thread's copy starts from it, and a module's 'init' runs on one thread
+    ErrorThreadLocalFinal = 1182, // A '@threadlocal' global whose type needs finalizing: nothing yet runs a finalizer as a thread ends
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

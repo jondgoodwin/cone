@@ -1299,6 +1299,17 @@ static FnDclNode *modGiveDrop(ModuleNode *mod, FnDclNode *final) {
         if ((*nodesp)->tag != VarDclTag)
             continue;
         VarDclNode *var = (VarDclNode*)*nodesp;
+        // A thread-local is a copy per thread, and each copy would need
+        // finalizing as its thread ends, which nothing does yet. So its type
+        // may need none: the module's 'drop' runs on one thread and could
+        // reach only that thread's copy
+        if (var->dclinfo.facts & DclThreadLocal) {
+            if (itypeNeedsFinal(var->vtype))
+                errorMsgNode((INode*)var, ErrorThreadLocalFinal,
+                    "Thread-local %s's type needs finalizing, and nothing yet finalizes a thread's copy as its thread ends: a thread-local's type may not need finalizing.",
+                    &var->namesym->namestr);
+            continue;
+        }
         if (var->dclinfo.facts & DclCName)
             continue;
         INode *vardrop = itypeGetDropFnDcl(var->vtype);

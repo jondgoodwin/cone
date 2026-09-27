@@ -70,6 +70,7 @@ enum ParseFlags {
     ParseEmbedded = 0x0800,       // Is embedded in expression (no semi)
     ParseMayFold = 0x0400,        // The variable may carry a fold clause: a module's global
     ParseInList = 0x0200,         // A comma ends the value: a parameter, whose list the comma continues
+    ParseMayThreadLocal = 0x0100, // The variable may be '@threadlocal': a module's global
 };
 
 // parsebuild.c
@@ -143,6 +144,9 @@ INode *parsePerm();
 // Parse the permission a declaration carries, defaulting to 'defperm'
 INode *parseDclPerm(PermNode *defperm);
 VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags);
+// Consume a '@threadlocal', if the lexer is on one, returning whether it was
+// there and 'allowed' -- a module's global. Anywhere else it is reported
+int parseThreadLocalAttr(int allowed);
 // What a fold clause's site does with a 'pub': gives the clause a visibility of
 // its own (a module's global, an import), refuses it (a field), or reads it and
 // drops it with a clause the site has refused whole already

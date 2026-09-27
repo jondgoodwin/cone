@@ -1,0 +1,79 @@
+// Thread-local globals: '@threadlocal' after a module global's permission
+// gives every thread its own copy of it, each starting from the initial value.
+//
+// The first half reads and writes thread-locals on the one thread every
+// program has: a typed one, one whose type is inferred, a module 'static', one
+// holding a struct, and one lent out by '&mut'. The second half is the claim
+// itself. The program starts a second OS thread through Win32's CreateThread
+// (kernel32, which the C runtime's own startup links in), and the thread sees
+// its own copy: the initial value, not what main wrote, and a write of its own
+// that main never sees.
+
+mod core_threadlocal;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct Pair {
+  pub a i64;
+  pub b i64;
+}
+
+mut @threadlocal slot i64 = 0i64;
+mut @threadlocal inferred = 40i64;
+static mut @threadlocal counted i64 = 100i64;
+pub mut @threadlocal pair Pair = Pair[3i64, 4i64];
+mut plain i64 = 7i64;
+
+fn bump(n &mut i64) {
+  *n = *n + 1i64;
+}
+
+// A thread's entry, as CreateThread calls it: its argument, and the exit code
+typedef ThreadStart &fn(arg usize) u32;
+
+extern fn @c(system) CreateThread(attrs usize, stack usize, start ThreadStart, arg usize, flags u32, id usize) usize;
+extern fn @c(system) WaitForSingleObject(handle usize, ms u32) u32;
+extern fn @c(system) CloseHandle(handle usize) i32;
+
+fn worker(arg usize) u32 {
+  show("thread slot starts", slot);
+  show("thread counted starts", counted);
+  slot = 2i64;
+  counted = counted + 5i64;
+  show("thread slot", slot);
+  show("thread counted", counted);
+  plain = plain + 1i64;
+  0u32;
+}
+
+fn main() i32 {
+  show("slot", slot);
+  slot = 1i64;
+  show("slot written", slot);
+  inferred = inferred + 2i64;
+  show("inferred", inferred);
+  counted = counted + 1i64;
+  show("counted", counted);
+  pair.b = pair.a + pair.b;
+  show("pair.b", pair.b);
+  bump(&mut slot);
+  bump(&mut slot);
+  show("slot bumped", slot);
+
+  imm handle = CreateThread(0usize, 0usize, &worker, 0usize, 0u32, 0usize);
+  WaitForSingleObject(handle, 0xFFFFFFFFu32);
+  CloseHandle(handle);
+
+  // main's copies are as main left them; the ordinary global is shared
+  show("slot after join", slot);
+  show("counted after join", counted);
+  show("plain after join", plain);
+  0i32;
+}

@@ -59,10 +59,14 @@ enum DclFacts {
                               // can name the type -- and calls its public methods. A
                               // library compile exports them as it would a public
                               // type's (dclIsExported)
-    DclIntrinsic  = 0x0200    // Fn only: '@intrinsic', a function whose meaning the
+    DclIntrinsic  = 0x0200,   // Fn only: '@intrinsic', a function whose meaning the
                               // compiler's registry supplies (intrinsicDclNameRes). Written
                               // by the parser, kept by joining. It never has a symbol:
                               // every call is expanded where it is made
+    DclThreadLocal = 0x0400   // Global only: '@threadlocal', storage each thread has its
+                              // own copy of, every copy starting from the initial value.
+                              // Written by the parser, kept by joining; generation marks
+                              // the global thread_local, and never constant
 };
 
 #define dclInfoInit(dclinfo) ((dclinfo)->owner = NULL, (dclinfo)->facts = 0, (dclinfo)->cname = NULL)

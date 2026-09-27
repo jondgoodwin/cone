@@ -685,9 +685,17 @@ INode *parseFnOrVar(ParseState *parse, uint16_t flags) {
         // 'extern' global has, and 'extern' says only that the global is defined
         // in a differently compiled unit. It is how an include file passes on
         // what a folded global puts into its package's namespace.
-        VarDclNode *node = parseVarDcl(parse, immPerm,
-            (flags&FlagExtern) ? ParseMaySig | ParseMayFold : ParseMayImpl | ParseMaySig | ParseMayFold);
+        VarDclNode *node = parseVarDcl(parse, immPerm, ParseMayThreadLocal |
+            ((flags&FlagExtern) ? ParseMaySig | ParseMayFold : ParseMayImpl | ParseMaySig | ParseMayFold));
         node->flags |= flags;
+        // Every thread's copy of a thread-local starts from the value written
+        // here, which the object file holds. A global without one is assigned
+        // by its module's 'init', which runs on one thread and would leave every
+        // other thread's copy zero. An 'extern' one's value is its definition's.
+        if ((node->dclinfo.facts & DclThreadLocal) && !(flags & FlagExtern) && node->value == NULL)
+            errorMsgNode((INode*)node, ErrorThreadLocalInit,
+                "Thread-local %s needs an initial value, a literal: every thread's copy starts from it. A module's 'init' runs on one thread, so it could give a value to that thread's copy alone.",
+                &node->namesym->namestr);
         node->flowtempflags |= VarInitialized;   // Globals always hold a valid value
         parseEndOfStatement();
         modAddNode(parse->mod, node->namesym, (INode*)node);
@@ -1466,6 +1474,16 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             made = (INode*)constnode;
             break;
         }
+
+        // An attribute follows its declaration's keyword, and a global's is
+        // its permission
+        case ThreadLocalToken:
+            errorMsgLex(ErrorThreadLocalPlace,
+                "'@threadlocal' is written after the global's permission: 'mut @threadlocal name'.");
+            lexNextToken();
+            parseSkipToNextStmt();
+            spankind = SpanOther;
+            break;
 
         default:
             errorMsgLex(ErrorBadGloStmt, "Invalid global area statement");

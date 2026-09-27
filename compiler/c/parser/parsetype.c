@@ -52,10 +52,26 @@ INode *parseDclPerm(PermNode *defperm) {
     return perm;
 }
 
+// '@threadlocal' is written after a module global's permission: every thread
+// has its own copy of the global, each starting from its initial value. It is
+// read wherever a declaration's permission is, so that written on a local, a
+// static, a parameter, a field or a module trait's global it is refused by its
+// own diagnostic, and the declaration after it still parses.
+int parseThreadLocalAttr(int allowed) {
+    if (!lexIsToken(ThreadLocalToken))
+        return 0;
+    if (!allowed)
+        errorMsgLex(ErrorThreadLocalPlace,
+            "Only a global declared at module scope may be '@threadlocal', which gives it one copy per thread: 'mut @threadlocal name'.");
+    lexNextToken();
+    return allowed;
+}
+
 // Parse a variable declaration
 VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     VarDclNode *varnode;
     INode *perm = parseDclPerm(defperm);
+    int threadlocal = parseThreadLocalAttr(flags & ParseMayThreadLocal);
 
     // Obtain variable's name
     if (!lexIsToken(IdentToken)) {
@@ -66,6 +82,13 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     }
     varnode = newVarDclNode(lex->val.ident, VarDclTag, perm);
     lexNextToken();
+    if (threadlocal) {
+        varnode->dclinfo.facts |= DclThreadLocal;
+        // A copy per thread of a value no thread can change is one copy
+        if (itypeGetTypeDcl(perm) == (INode*)immPerm)
+            errorMsgNode((INode*)varnode, ErrorThreadLocalImm,
+                "A thread-local global is a copy per thread so that each thread may change its own. An 'imm' global never changes, so every copy would be the same: declare it 'mut', or drop '@threadlocal'.");
+    }
     char *nameendp = lex->prevend;
 
     // Get value type, if provided
@@ -625,6 +648,8 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
             dclInfoInit(&ignored);
             parseCAttr(&ignored, 0);
         }
+        else if (lex->toktype == ThreadLocalToken)
+            parseThreadLocalAttr(0);
         else
             break;
     }
@@ -921,6 +946,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
             }
             else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
                 INode *perm = parseDclPerm(mutPerm);
+                parseThreadLocalAttr(0);
                 if (!lexIsToken(IdentToken)) {
                     errorMsgLex(ErrorNoIdent, "Expected field name for declaration");
                     parseSkipToNextStmt();
