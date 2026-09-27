@@ -6,10 +6,12 @@
 //   congo run packages/thread/examples/workers.cone
 //
 // Each worker is handed a Job by value: a copy that is its own. What may
-// safely cross to a thread is a value like that, or a 'uni', 'imm' or 'opaq'
-// reference; nothing checks that yet. The Job's 'out' is a raw pointer to a
-// slot only that worker writes, and main reads it only after the worker is
-// joined.
+// cross to a thread is what the compiler's thread check calls Sendable: a
+// value like that, or a 'uni' owner, or an owner of an 'imm' value in a
+// region whose count is atomic. The Job's 'out' is a raw pointer to a slot
+// only that worker writes, and main reads it only after the worker is
+// joined; a raw pointer is not Sendable, since nothing checks what it points
+// at, so Job declares 'is Sendable', a promise taken on trust.
 
 mod workers;
 
@@ -25,7 +27,7 @@ fn @initpure init() {
   signalled = Atomic[u32].of(0u32);
 }
 
-struct Job {
+struct Job is Sendable {
   pub from u64;
   pub to u64;     // one past the last
   pub out *u64;

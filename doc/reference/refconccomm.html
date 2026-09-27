@@ -23,9 +23,9 @@
 		<span class="pre">+arc-imm T</span> owners may be copied and dropped on any thread, and
 		the value is freed once, after the last (<a href="refregionglo.html">regions</a>);
 		an <span class="pre">+rc</span> owner's count is not atomic, and it must stay on one
-		thread. Nothing checks yet that what is sent is sendable: neither the permission nor
-		the region is looked at, though arc already declares the
-		<span class="pre">ThreadSafe</span> marker that rc lacks, for the check to read.
+		thread. What is sent is checked: <span class="pre">thread.start</span> and the
+		channel types take only a <span class="pre">Sendable</span> type, as
+		<a href="#race">Race condition safety</a> describes.
 		Bounded and single-sender channels, actors and <span class="pre">qfn</span>,
 		the other concurrent data structures, and lock permissions are not implemented.</i></p>
 
@@ -35,15 +35,62 @@
 		properly synchronized.
 	<p>To mediate these risks, Cone offers several mechanisms that facilitate fast, convenient, safe communications between threads.</p>
 	
-	<h2>Race condition safety</h2>
+	<h2 id="race">Race condition safety</h2>
 	<p>Any data passed or shared between threads must be done so safely.
 		Cone ensures this by only allowing "sendable" data to be sent to another thread.
 		The only type of data that is not sendable is a reference that has the "mut" or "ro" permission,
 		or any aggregate type containing such a reference. Data of any other type is sendable,
-		including shared, immutable references, unique references (which are moved from one thread to another), 
+		including shared, immutable references, unique references (which are moved from one thread to another),
 		and any other move or copy type.</p>
 	<p>These restrictions apply to all mechanisms that support communications between threads,
 		such as thread creation, concurrent data structures, and more.</p>
+
+	<p><b>What the compiler checks today.</b> Library code marks what crosses threads with the
+		built-in marker trait <span class="pre">Sendable</span>, as a
+		<a href="refgeneric.html#constraints">constraint</a> on a generic:
+		<span class="pre">thread.start</span> and <span class="pre">thread.startWith</span> ask it of
+		the argument and of what the thread returns, and <span class="pre">Channel[T]</span>,
+		<span class="pre">Sender[T]</span> and <span class="pre">Receiver[T]</span> of
+		<span class="pre">T</span>. The compiler grants <span class="pre">Sendable</span> to a type
+		unless it holds, directly or in a field, an array element, a tuple element or an enum's
+		variant, one of these:</p>
+	<ul>
+	<li>a borrowed reference, of any permission, <span class="pre">&amp;imm</span> included: a
+		borrow's lifetime is checked in one thread alone, until scoped threads join inside it;</li>
+	<li>an owner that may be copied whose permission is not race-safe:
+		<span class="pre">+rc-mut</span>, <span class="pre">+arc-mut</span> (until lock permissions);</li>
+	<li>an owner that may be copied in a region that does not declare
+		<span class="pre">ThreadSafe</span>, whatever its permission: <span class="pre">+rc-imm</span>,
+		whose count is not atomic. <span class="pre">+arc-imm</span> and
+		<span class="pre">+arc-opaq</span> cross;</li>
+	<li>a traced reference, <span class="pre">+gc</span>, whatever its permission, until each thread
+		has its own collector;</li>
+	<li>a raw pointer, whose target nothing checks.</li>
+	</ul>
+	<p>An owner that moves takes its value with it: a <span class="pre">uni</span> owner of any
+		region, and any owner of <span class="pre">so</span>, crosses when what it points at may.
+		So does an <span class="pre">+arc-imm</span> owner: an <span class="pre">arc</span> of a
+		value holding a <span class="pre">mut</span> reference is refused. A reference to a function
+		crosses. A type holding raw pointers it shares safely declares
+		<span class="pre">is Sendable</span>, which the compiler takes on trust, as a channel's ends,
+		<span class="pre">ThreadRef</span>, and the <span class="pre">collections</span> package's
+		<span class="pre">List</span> and <span class="pre">Dict</span> do; an instance of a generic
+		type declaring it is <span class="pre">Sendable</span> only where its type arguments are.</p>
+	<p>What is checked is the type of the value, not how a variable was declared: a local declared
+		<span class="pre">mut x = 5</span> holds a number, which is sendable, while
+		<span class="pre">&amp;mut x</span> is a borrow, which is not. A refusal names the part of the
+		type that binds it to its thread:</p>
+<pre>
+struct Job {pub data &amp;mut Counter;}
+thread.start(job, &amp;work);
+// start requires A is Sendable, and Job is not Sendable: Job.data is &amp;mut Counter,
+// a borrowed reference, and no borrow may leave its thread ...
+</pre>
+	<p>Not checked yet: a <span class="pre">mut</span> global reached from several threads; a
+		value's own methods that change it through <span class="pre">&amp;</span> (sendable here also
+		means safe to read from several threads at once behind <span class="pre">+arc-imm</span>,
+		which a type declaring <span class="pre">Sendable</span> promises too); and actor messages,
+		which do not exist yet.</p>
 
 	<h2>Message-based Communications</h2>
 	<p>An efficient model for thread-based concurrency is independent actors (threads) that throw work to each

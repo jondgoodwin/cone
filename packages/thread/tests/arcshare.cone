@@ -15,15 +15,18 @@
 // count of owners goes 1 (allocated), 2 and 3 (each start), 2 (main's owner
 // gone), 1 and 0 as the readers return: one death.
 //
-// Nothing checks yet that what a thread is given is safe to share: the thread
-// check is to come, and will accept '+arc-imm' here and refuse '+rc-imm',
-// whose count is not atomic. Today both compile.
+// 'thread.start' takes only a Sendable argument, which '+arc-imm Message' is:
+// arc declares ThreadSafe, and a Message holds a String, which is Sendable
+// (collections' List declares it). A '+rc-imm' owner, whose count is not
+// atomic, is refused, and so is a Message holding the literal as a '&[]u8',
+// since a borrow may not leave its thread.
 
 mod arcshare;
 
 import testing use *;
 import thread;
 import sync use *;
+import collections use *;
 
 // How many messages have been finalized, and the gate the readers wait at
 imm finals Atomic[u32];
@@ -35,7 +38,7 @@ fn @initpure init() {
 }
 
 struct Message {
-  pub text &[]u8;
+  pub text String;
   fn final(self &uni) { finals.add(1u32); }
 }
 
@@ -43,12 +46,12 @@ struct Message {
 fn reader(m +arc-imm Message) u64 {
   mut es = 0u64;
   mut i = 0usize;
-  while i < m.text.len {
+  while i < m.text.len() {
     if m.text[i] == 101u8 { es = es + 1u64; }
     i = i + 1usize;
   }
   while !gate.load() { thread.yieldNow(); }
-  u64[m.text.len] * 100u64 + es;
+  u64[m.text.len()] * 100u64 + es;
 }   // this thread's owner of m goes here
 
 fn main() i32 {
@@ -56,7 +59,7 @@ fn main() i32 {
   mut a thread.Thread[u64];
   mut b thread.Thread[u64];
   {
-    imm m = +arc-imm Message["read by two threads"];
+    imm m = +arc-imm Message[String.from("read by two threads")];
     a = thread.start(m, &reader);
     b = thread.start(m, &reader);
   }   // main's owner goes: the readers hold the only two

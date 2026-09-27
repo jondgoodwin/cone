@@ -82,6 +82,7 @@ Name *noLoanReadTraitName;
 Name *atomicValueTraitName;
 Name *integerTraitName;
 Name *pointerTraitName;
+Name *sendableTraitName;
 
 // ---- Identifiers -----------------------------------------------------------
 //

@@ -52,6 +52,7 @@ typedef struct StructNode {
     uint8_t lends;          // What its element borrows cost it (StructLends), from its 'is' list at name resolution
     uint8_t holdsatomic;    // itypeHoldsAtomic's remembered answer (HoldsTraced*, read as "holds an atomic value"), once the type is checked
     uint8_t tagstate;       // Whether 'tagnbr' is settled yet, and whether it is below zero (TagState)
+    uint8_t threadbound;    // itypeThreadBound's remembered answer (CarriesBorrow*, read as "bound to its thread"), once the type is checked
 } StructNode;
 
 // What a borrow one of its methods returns costs a container (StructNode.lends),

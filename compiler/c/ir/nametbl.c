@@ -218,6 +218,7 @@ void nametblInit() {
     atomicValueTraitName = nametblFind("AtomicValue", 11);
     integerTraitName = nametblFind("Integer", 7);
     pointerTraitName = nametblFind("Pointer", 7);
+    sendableTraitName = nametblFind("Sendable", 8);
 }
 
 
