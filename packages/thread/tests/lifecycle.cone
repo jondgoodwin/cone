@@ -1,0 +1,125 @@
+// A thread's life through its handle: 'join' returns what the function
+// returned; a handle dropped unjoined joins; 'detach' lets the thread run on
+// alone. The argument is moved in, owned, and the thread finalizes it.
+//
+// What is observed is ordering. A thread sleeps before it writes, so without
+// the join a dropped handle does, main would read the word before the write.
+// A result that finalizes counts its deaths: exactly one each way -- in main
+// after a join, in the handle's finalizer after a drop, and in the thread
+// itself after a detach. The detached thread waits at a gate main opens only
+// after checking that 'detach' did not wait for it, and main then waits for
+// its count through the futex, since nothing else says when it is done. A
+// thread with a 'void' result is joined like any other. 'testing' counts its
+// checks in globals, so every check is made on the main thread.
+
+mod lifecycle;
+
+import testing use *;
+import thread;
+
+// A value whose death is counted
+mut deaths u32 = 0u32;
+
+struct Counted {
+  pub n i64;
+  fn final(self &uni) {
+    mem.atomicAdd[u32](&mut deaths as *u32, 1u32, MemOrder.SeqCst[]);
+    thread.futexWakeAll(&mut deaths as *u32);
+  }
+}
+
+fn deathCount() u32 {
+  mem.atomicLoad[u32](&mut deaths as *u32, MemOrder.SeqCst[]);
+}
+
+// Wait until 'deaths' reaches n
+fn awaitDeaths(n u32) {
+  mut seen = deathCount();
+  while seen < n {
+    thread.futexWait(&mut deaths as *u32, seen);
+    seen = deathCount();
+  }
+}
+
+fn triangle(n i64) i64 {
+  mut sum = 0i64;
+  mut i = 1i64;
+  while i <= n { sum = sum + i; i = i + 1i64; }
+  sum;
+}
+
+fn slowCounted(n i64) Counted {
+  thread.sleep(20000000u64);
+  Counted[n * 2];
+}
+
+// Waits until main opens the gate, then returns a value whose death is counted
+fn gatedCounted(gate *u32) Counted {
+  while mem.atomicLoad[u32](gate, MemOrder.SeqCst[]) == 0u32 {
+    thread.futexWait(gate, 0u32);
+  }
+  Counted[5];
+}
+
+// Sleeps, then writes the word it was given
+fn lateWrite(word *u32) {
+  thread.sleep(30000000u64);
+  mem.atomicStore[u32](word, 7u32, MemOrder.SeqCst[]);
+}
+
+// Takes an owned value: it dies in the thread, when the function ends
+fn consume(owned +so Counted) i64 {
+  owned.n + 1;
+}
+
+fn main() i32 {
+  // join returns the result
+  imm t = thread.start(100i64,&triangle);
+  expectInt(t.join(), 5050, "join returns the sum from 1 to 100");
+
+  // A result that finalizes dies once, in main, after a join
+  {
+    imm c = thread.start(21i64,&slowCounted);
+    imm got = c.join();
+    expectInt(got.n, 42, "a struct result");
+    expectUInt(u64[deathCount()], 0u64, "the joined result has not died yet");
+  }
+  expectUInt(u64[deathCount()], 1u64, "the joined result died once, at its scope's end");
+
+  // Dropping an unjoined handle joins it
+  mut word = 0u32;
+  {
+    imm w = thread.start(&mut word as *u32, &lateWrite);
+  }
+  expectUInt(u64[mem.atomicLoad[u32](&mut word as *u32, MemOrder.SeqCst[])], 7u64,
+    "a dropped handle joined: the thread's write is seen after the scope");
+
+  // ... and finalizes the result nobody took
+  {
+    imm c = thread.start(1i64,&slowCounted);
+  }
+  expectUInt(u64[deathCount()], 2u64, "a dropped handle's result died in its finalizer");
+
+  // detach: the thread runs on, and finalizes its own result
+  mut gate = 0u32;
+  imm d = thread.start(&mut gate as *u32, &gatedCounted);
+  d.detach();
+  expectUInt(u64[deathCount()], 2u64, "detach does not wait");
+  mem.atomicStore[u32](&mut gate as *u32, 1u32, MemOrder.SeqCst[]);
+  thread.futexWake(&mut gate as *u32);
+  awaitDeaths(3u32);
+  expectUInt(u64[deathCount()], 3u64, "the detached thread's result died in the thread");
+
+  // An owned argument moves in, and dies in the thread
+  imm o = thread.start(+so Counted[9], &consume);
+  expectInt(o.join(), 10, "an owned argument reached the thread");
+  expectUInt(u64[deathCount()], 4u64, "the owned argument died in the thread");
+
+  // A thread with nothing to return
+  mut again = 0u32;
+  imm v = thread.start(&mut again as *u32, &lateWrite);
+  v.join();
+  expectUInt(u64[mem.atomicLoad[u32](&mut again as *u32, MemOrder.SeqCst[])], 7u64,
+    "join waits for a thread returning nothing");
+  done();
+}

@@ -1,0 +1,575 @@
+// The thread package: operating-system threads, and the futex that
+// everything which blocks is built on. A deliberately small layer: the
+// scheduler, the locks and the channels are to be written in Cone above it,
+// and a program that wants an OS thread of its own uses it directly.
+//
+//   mod sums;
+//   import thread;
+//
+//   fn triangle(n i64) i64 { ... }
+//
+//   fn main() {
+//     imm t = thread.start(100i64, &triangle);  // runs triangle(100)
+//     ...                                       // main goes on
+//     imm total = t.join();                     // waits; 5050
+//   }
+//
+// What it has:
+//
+//   thread.start(arg, &f)              a new thread running f(arg): a Thread[R]
+//   thread.startWith(opts, arg, &f)    the same, with a name and a stack size
+//   t.join()                           wait for it; what f returned
+//   t.detach()                         let it run on alone
+//   t.id()  t.name()  t.unpark()  t.threadRef()
+//   thread.current()                   the running thread, as a ThreadRef
+//   r.id()  r.name()  r.unpark()  r.copy()
+//   thread.parallelism()               how many threads can run at once
+//   thread.sleep(ns)                   sleep, to within about a millisecond
+//   thread.yieldNow()                  let another thread run
+//   thread.park()                      sleep until this thread is unparked
+//   thread.futexWait(word, expected, timeoutNs)
+//   thread.futexWake(word)  thread.futexWakeAll(word)
+//
+// Deliberately not here: killing a thread, priorities, pinning a thread to a
+// processor, a flag asking a thread to stop, and scoped threads (a function
+// that joins every thread it starts before it returns, so they may borrow).
+// Windows only for now, with the posix side to come: every call the package
+// makes to the OS is in its own section below, beside nothing else.
+//
+// STARTING A THREAD. 'thread.start(arg, &f)' starts a new OS thread
+// running 'f(arg)', and returns its handle at once, a Thread[R]. f is a plain
+// function taking one A and returning an R, which may be 'void'; a closure
+// cannot capture anything yet, so a function and one value is the whole of
+// what a thread is given, and a struct carries more than one. 'arg' is MOVED
+// in: the thread owns it, and it dies there, when f is done with it (or in f,
+// if f moves it on).
+//
+// - The type arguments A and R are inferred from the argument and from f's
+//   signature. A number literal keeps its own type, i32 unless suffixed, and
+//   must agree with f's parameter: 'thread.start(100i64, &triangle)'.
+// - The function comes last, after the argument. A parameter typed as a
+//   function reference with a return type ('&fn(a A) R') swallows a comma
+//   after it as the start of a second return type, so it can only be the last
+//   parameter. And 'spawn', the name this was designed with, is reserved.
+// - What is passed is not checked for thread safety yet: the compiler's thread
+//   check comes later. What is safe to hand a thread is a value it owns
+//   outright (a number, a struct of them, a '+so' owner, a 'uni' reference) or
+//   an 'imm' or 'opaq' reference, which the permission rules already mark as
+//   safe to share. A 'mut' or 'ro' reference, an 'rc' owner (its count is not
+//   atomic), a borrowed reference to the starting thread's stack, or a raw
+//   pointer to memory another thread also writes, compiles, and is the
+//   program's to get right: with atomics, or with the futex.
+//
+// 'thread.startWith(thread.Options[name: "worker", stackSize: s], arg, &f)'
+// does the same with options, each of which has a default:
+//
+// - 'name' ("" by default) is copied when the thread starts, so the slice
+//   need only live through the call. It is Cone's: the thread and its
+//   handle see it through 'name()', and the OS and its debuggers do not.
+// - 'stackSize' (0 by default) is how many bytes of address space to reserve
+//   for the thread's stack. 0 is the executable's default (1 MB as the Visual
+//   C++ linker writes it); Windows rounds any other size up to its allocation
+//   granularity, and a size of 4 GB or more is taken as 4 GB less one byte.
+//   Running past the end of a stack is a trap.
+//
+// A thread that cannot be started, or a block the C library cannot allocate,
+// ends the program: what went wrong on stderr, then the C library's 'abort'.
+// A trap on any thread ends the whole process, the other threads with it.
+//
+// THE HANDLE. A Thread[R] is the one owner of its thread, a move type:
+//
+// - 't.join()' waits for the thread to finish and returns what f returned.
+//   It takes the handle, so a thread is joined once.
+// - 't.detach()' takes the handle and lets the thread run on alone. What f
+//   returns is then finalized on the thread when f is done, since nobody
+//   will read it.
+// - A handle that dies unjoined and undetached JOINS: its finalizer waits for
+//   the thread, and finalizes what f returned. A handle held in a local waits
+//   at the end of the local's block. That is tidiness, not safety: a handle
+//   can be kept where it never dies (a global, a leaked allocation), and a
+//   process ends without finalizing anything its threads still hold, so no
+//   program may depend on the join for its correctness. Join what must be
+//   finished.
+// - 't.id()', 't.name()' and 't.unpark()' are the thread's own, as below;
+//   't.threadRef()' is a ThreadRef to it, to hand to others.
+//
+// A handle's methods take it by value or borrow it, as any value's do; a
+// handle held in a field or in a collection cannot be moved out to join,
+// since Cone does not yet move a value out of a struct's field (or an
+// Option's), so such a handle is joined by its container's death.
+//
+// When 'main' returns, the process ends, and every thread still running ends
+// with it, detached or not. Handles in main's own locals have been joined by
+// then, as each died at the end of its block.
+//
+// WHO IS RUNNING. 'thread.current()' is a ThreadRef to the thread calling it.
+// A ThreadRef keeps its thread's identity alive, not the thread, and may be
+// sent to other threads; it is a move type, and 'r.copy()' makes another.
+//
+// - 'id()' is the OS's thread id, a u32, the same seen from the thread and
+//   from its handle. The OS may give an id to a new thread once the thread
+//   that had it has ended and its handle is gone.
+// - 'name()' is the name 'startWith' was given, or "". The main thread, and
+//   any thread this package did not start, has the empty name.
+// - A thread this package did not start (main, or one started through the OS
+//   directly) gets its identity the first time it asks, by 'current()' or
+//   'park()', and never gives it back, since nothing runs when such a thread
+//   ends: one small block per such thread.
+//
+// 'thread.parallelism()' is how many logical processors the machine has, in
+// all processor groups: how many threads can truly run at once, at least 1.
+// It is not the number this process may use, which an affinity mask or a job
+// object can make smaller.
+//
+// 'thread.sleep(ns)' sleeps at least ns nanoseconds, on Windows' high
+// resolution waitable timer: a 1 ms sleep takes 1 to 2 ms, where a plain
+// Win32 'Sleep' can take up to the 15.6 ms of the system's timer tick. Where
+// that timer is not available (before Windows 10 version 1803), it falls
+// back to 'Sleep', rounded up to whole milliseconds. 'sleep(0)' gives up the
+// rest of the thread's time slice to another thread of the same priority
+// that is ready to run. 'yieldNow()' gives it to any thread ready to run on
+// the same processor. Each returns at once if there is none.
+//
+// PARKING. Each thread has one parking token, which it starts without.
+// 'thread.park()' takes the token, sleeping until there is one to take;
+// 't.unpark()' (or 'r.unpark()', on its handle or a ThreadRef) makes it
+// available. So an unpark sent before the park is not lost: the park takes it
+// and returns at once. Unparks do not count: two before a park are one token,
+// and the park after next sleeps. 'park' returns only once it has a token,
+// never spuriously, but what it waits for should still be checked by the
+// thread after it returns, since an unpark may be meant for an earlier park.
+// It is built on the futex, over a word in the thread's identity.
+//
+// THE FUTEX. The foundation the rest is built on: a 32-bit word in memory
+// that threads sleep on while it holds a value, and are woken from.
+//
+// - 'thread.futexWait(word, expected, timeoutNs)': if '*word' still equals
+//   'expected' -- checked by the OS atomically with going to sleep, so a
+//   change and wake made between the caller's own check and this call is not
+//   missed -- sleep until woken or until the timeout. It returns false only
+//   when the timeout passed; true when it was woken, when the word already
+//   differed, or spuriously, which the OS permits. So a caller loops:
+//
+//     while mem.atomicLoad[u32](word, MemOrder.Acquire[]) == 0u32 {
+//       thread.futexWait(word, 0u32);
+//     }
+//
+// - 'timeoutNs' is nanoseconds, 'thread.forever' by default. It is rounded
+//   up to whole milliseconds, and its resolution is the system's timer tick,
+//   up to 15.6 ms: a 30 ms timeout may take 45. A timeout of 2^32 - 1 ms (49.7
+//   days) or more is that long, not forever. 0 checks the word and returns
+//   false at once if it still holds 'expected'.
+// - 'thread.futexWake(word)' wakes one thread waiting on the word, and
+//   'futexWakeAll(word)' every one. A wake is not remembered: with no thread
+//   waiting it does nothing, so store the new value first, then wake.
+// - The word is a raw '*u32', 4-byte aligned, and this is a trust-level API:
+//   nothing checks that the word is alive while any thread may wait on it or
+//   wake it, and the caller keeps that true. It will take '&Atomic[u32]' once
+//   the sync package's atomic type exists. The word is 32 bits because
+//   Linux's futex is. Waiting and waking reach only the threads of this
+//   process.
+//
+// NOT ON A STARTED THREAD, YET: '+gc'. The collector package's collector is
+// single threaded: its root chain is one C global and its heap is not
+// synchronized. A traced ('+gc') reference made, held, reached or dropped on
+// a thread this package started corrupts it. Nothing checks this, and
+// nothing guards it; a concurrent collector is a later design.
+//
+// Thread-local globals ('mut @threadlocal x T = literal;') give each thread its
+// own copy, which starts as the literal. Nothing finalizes a thread's copies
+// when it ends. The 'testing' package counts its checks in globals, so a
+// package's tests make their checks on the main thread.
+
+mod thread;
+
+import libc;
+
+// ---------------------------------------------------------------------------
+// Windows: the C runtime's thread start, and kernel32. A thread is started by
+// the C runtime's '_beginthreadex', not kernel32's 'CreateThread', so that
+// the runtime Cone programs link against sets up and tears down its own
+// per-thread state. WaitOnAddress and the two wakes are the api set
+// api-ms-win-core-synch-l1-2-0, linked through Synchronization.lib, which
+// this package's congo.toml names; the rest are kernel32's, on every link
+// line already.
+// ---------------------------------------------------------------------------
+
+// A thread's entry, as '_beginthreadex' calls it: its argument, and the exit code
+typedef Entry &fn(arg *u8) u32;
+
+extern fn @c _beginthreadex(security *u8, stack u32, entry Entry, arg *u8, flags u32, id *u32) usize;
+
+extern {
+  fn @c(system) WaitForSingleObject(handle usize, ms u32) u32;
+  fn @c(system) CloseHandle(handle usize) i32;
+  fn @c(system) GetCurrentThreadId() u32;
+  fn @c(system) GetLastError() u32;
+  fn @c(system) SwitchToThread() i32;
+  fn @c(system) Sleep(ms u32);
+  fn @c(system) GetActiveProcessorCount(group u16) u32;
+  fn @c(system) CreateWaitableTimerExW(attrs *u8, name *u16, flags u32, access u32) usize;
+  fn @c(system) SetWaitableTimer(timer usize, due *i64, period i32, routine *u8, arg *u8, resume i32) i32;
+  fn @c(system) WaitOnAddress(address *u32, compare *u32, size usize, ms u32) i32;
+  fn @c(system) WakeByAddressSingle(address *u32);
+  fn @c(system) WakeByAddressAll(address *u32);
+}
+
+const infinite = 0xFFFFFFFFu32;                // INFINITE
+const errorTimeout = 1460u32;                  // ERROR_TIMEOUT
+const stackIsReservation = 0x10000u32;         // STACK_SIZE_PARAM_IS_A_RESERVATION
+const timerHighResolution = 0x2u32;            // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+const timerAllAccess = 0x1F0003u32;            // TIMER_ALL_ACCESS
+const allProcessorGroups = 0xFFFFu16;          // ALL_PROCESSOR_GROUPS
+
+// ---------------------------------------------------------------------------
+// Program errors
+// ---------------------------------------------------------------------------
+
+// What went wrong on stderr, then the C library's 'abort': the package's
+// panic until Cone's own is built
+fn die(msg &[]u8) {
+  libc.fflush(libc.stdout());
+  libc.fwrite(msg, 1usize, msg.len, libc.stderr());
+  imm nl &[]u8 = "\n";
+  libc.fwrite(nl, 1usize, 1usize, libc.stderr());
+  libc.abort();
+}
+
+// ---------------------------------------------------------------------------
+// A thread's identity: its Info block
+// ---------------------------------------------------------------------------
+
+// One per thread, from its start (or, for a thread 'start' did not begin, from
+// the first time it asks for itself) until the last thing holding it lets go:
+// the thread itself while it runs, its handle until joined or detached, and
+// each ThreadRef. The name's bytes follow it in the same block.
+struct Info {
+  pub refs u32;       // atomic: how many hold it
+  pub id u32;         // atomic: the OS thread id
+  pub park u32;       // atomic: the parking state, a futex word
+  pub nameLen u32;
+}
+
+// The parking states: no token, a token, and a thread asleep waiting for one.
+// 'park' subtracts 1, so a token becomes none and none becomes parked.
+const parkEmpty = 0u32;
+const parkNotified = 1u32;
+const parkParked = 0xFFFFFFFFu32;
+
+fn infoNew(name &[]u8, refs u32, id u32) *Info {
+  imm size = mem.sizeof[Info]();
+  imm p = libc.malloc(size + name.len) as *Info;
+  if p as usize == 0usize {
+    die("thread: out of memory");
+  }
+  (*p).refs = refs;
+  (*p).id = id;
+  (*p).park = parkEmpty;
+  (*p).nameLen = u32[name.len];
+  if name.len > 0usize {
+    libc.memcpy((p as *u8) + size, name, name.len);
+  }
+  p;
+}
+
+fn infoHold(p *Info) {
+  mem.atomicAdd[u32](&(*p).refs as *u32, 1u32, MemOrder.Relaxed[]);
+}
+
+fn infoRelease(p *Info) {
+  if mem.atomicSub[u32](&(*p).refs as *u32, 1u32, MemOrder.AcqRel[]) == 1u32 {
+    libc.free(p as *u8);
+  }
+}
+
+fn infoId(p *Info) u32 {
+  mem.atomicLoad[u32](&(*p).id as *u32, MemOrder.Relaxed[]);
+}
+
+fn infoName(p *Info) &[]u8 {
+  mem.sliceFromParts[u8]((p as *u8) + mem.sizeof[Info](), usize[(*p).nameLen]);
+}
+
+// This thread's Info, or 0 before it has one
+mut @threadlocal me usize = 0usize;
+
+// This thread's Info, made the first time a thread 'start' did not begin asks
+// for it. The thread's own hold on it is never released, since nothing runs
+// when such a thread ends.
+fn mine() *Info {
+  if me == 0usize {
+    me = infoNew("", 1u32, GetCurrentThreadId()) as usize;
+  }
+  me as *Info;
+}
+
+// Make the thread's token available, waking it if it is parked
+fn unparkInfo(p *Info) {
+  if mem.atomicSwap[u32](&(*p).park as *u32, parkNotified, MemOrder.Release[]) == parkParked {
+    WakeByAddressSingle(&(*p).park as *u32);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Starting a thread
+// ---------------------------------------------------------------------------
+
+// What 'start' hands the new thread: one block, freed by whichever of the
+// thread and its handle lets go of it last ('refs', first, so the handle
+// reaches it without knowing A). 'result' holds a value once f returns, until
+// 'join' moves it out or the last holder finalizes it.
+struct Packet[A, R] {
+  pub refs u32;       // atomic: 2 while both thread and handle hold it
+  pub info *Info;
+  pub result R;
+  pub f &fn(a A) R;
+  pub arg A;
+}
+
+// Where a new thread begins: move the argument out, call f with it, store
+// what f returns. If the handle was detached, nobody will read the result,
+// and the thread finalizes it and frees the block.
+fn entry[A, R](p *u8) u32 {
+  imm pk = p as *Packet[A, R];
+  enter((*pk).info);
+  imm f = (*pk).f;
+  imm r = f(mem.readRaw[A](&(*pk).arg as *A));
+  mem.writeRaw[R](&(*pk).result as *R, r);
+  leave();
+  if mem.atomicSub[u32](p as *u32, 1u32, MemOrder.AcqRel[]) == 1u32 {
+    mem.finalize[R](&(*pk).result as *R);
+    libc.free(p);
+  }
+  0u32;
+}
+
+// The thread takes up its identity, and gives up its hold on it at the end
+fn enter(info *Info) {
+  me = info as usize;
+  mem.atomicStore[u32](&(*info).id as *u32, GetCurrentThreadId(), MemOrder.Relaxed[]);
+}
+
+fn leave() {
+  imm info = me as *Info;
+  me = 0usize;
+  infoRelease(info);
+}
+
+// Start the OS thread: its handle, or 0. The id is stored before the handle
+// is returned, so the handle's 'id()' is right from the first; the thread
+// stores the same id itself, for its own 'current()'.
+fn launch(entry Entry, pkt *u8, info *Info, stackSize usize) usize {
+  imm stack = if stackSize > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32[stackSize];};
+  mut id = 0u32;
+  imm handle = _beginthreadex(0usize as *u8, stack, entry, pkt, stackIsReservation, &mut id as *u32);
+  mem.atomicStore[u32](&(*info).id as *u32, id, MemOrder.Relaxed[]);
+  handle;
+}
+
+// How to start a thread, for 'startWith': its name, and the bytes to reserve
+// for its stack, 0 for the executable's default
+pub struct Options {
+  pub name &[]u8 = "";
+  pub stackSize usize = 0usize;
+}
+
+// A new thread running f(arg), with no name and the default stack. 'arg' is
+// moved in.
+pub fn start[A, R](arg A, f &fn(a A) R) Thread[R] {
+  startWith[A, R](Options[], arg, f);
+}
+
+// A new thread running f(arg), named and with the stack 'opts' says
+pub fn startWith[A, R](opts Options, arg A, f &fn(a A) R) Thread[R] {
+  imm pk = libc.malloc(mem.sizeof[Packet[A, R]]()) as *Packet[A, R];
+  if pk as usize == 0usize {
+    die("thread: out of memory");
+  }
+  imm info = infoNew(opts.name, 2u32, 0u32);
+  (*pk).refs = 2u32;
+  (*pk).info = info;
+  (*pk).f = f;
+  mem.writeRaw[A](&(*pk).arg as *A, arg);
+  imm handle = launch(&entry[A, R], pk as *u8, info, opts.stackSize);
+  if handle == 0usize {
+    die("thread: the thread could not be started");
+  }
+  Thread[R].made(pk as *u8, &(*pk).result as *R, info, handle);
+}
+
+// ---------------------------------------------------------------------------
+// The handle
+// ---------------------------------------------------------------------------
+
+// A started thread's one owner. 'handle' is the OS's handle to it, and 0 once
+// the handle has been joined or detached, which its finalizer checks.
+pub struct Thread[R] {
+  pkt *u8;
+  result *R;
+  info *Info;
+  handle usize;
+
+  fn made(pkt *u8, result *R, info *Info, handle usize) Thread[R] {
+    Thread[R][pkt, result, info, handle];
+  }
+
+  // Wait for the thread to finish, and answer what its function returned
+  pub fn join(mut self) R {
+    WaitForSingleObject(handle, infinite);
+    CloseHandle(handle);
+    handle = 0usize;
+    // The thread has ended, so the block is this handle's alone
+    imm r = mem.readRaw[R](result);
+    libc.free(pkt);
+    infoRelease(info);
+    r;
+  }
+
+  // Let the thread run on alone; it finalizes its own result
+  pub fn detach(mut self) {
+    CloseHandle(handle);
+    handle = 0usize;
+    if mem.atomicSub[u32](pkt as *u32, 1u32, MemOrder.AcqRel[]) == 1u32 {
+      // It had already finished
+      mem.finalize[R](result);
+      libc.free(pkt);
+    }
+    infoRelease(info);
+  }
+
+  // The thread's OS id, its name, and making its parking token available
+  pub fn id(self &) u32 { infoId(info); }
+  pub fn name(self &) &[]u8 { infoName(info); }
+  pub fn unpark(self &) { unparkInfo(info); }
+
+  // A ThreadRef to the thread, to hand to others
+  pub fn threadRef(self &) ThreadRef {
+    infoHold(info);
+    ThreadRef.of(info);
+  }
+
+  // Dying unjoined joins, and finalizes the result nobody took
+  fn final(self &uni) {
+    if handle != 0usize {
+      WaitForSingleObject(handle, infinite);
+      CloseHandle(handle);
+      mem.finalize[R](result);
+      libc.free(pkt);
+      infoRelease(info);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ThreadRef: a thread's identity, which may be sent to other threads
+// ---------------------------------------------------------------------------
+
+pub struct ThreadRef {
+  info *Info;
+
+  fn of(info *Info) ThreadRef { ThreadRef[info]; }
+
+  // The thread's OS id, its name, and making its parking token available
+  pub fn id(self &) u32 { infoId(info); }
+  pub fn name(self &) &[]u8 { infoName(info); }
+  pub fn unpark(self &) { unparkInfo(info); }
+
+  // Another ThreadRef to the same thread
+  pub fn copy(self &) ThreadRef {
+    infoHold(info);
+    ThreadRef[info];
+  }
+
+  fn final(self &uni) { infoRelease(info); }
+}
+
+// The thread calling it
+pub fn current() ThreadRef {
+  imm info = mine();
+  infoHold(info);
+  ThreadRef.of(info);
+}
+
+// ---------------------------------------------------------------------------
+// The running thread
+// ---------------------------------------------------------------------------
+
+// How many logical processors the machine has, at least 1
+pub fn parallelism() u32 {
+  imm n = GetActiveProcessorCount(allProcessorGroups);
+  if n == 0u32 {1u32;} else {n;};
+}
+
+// Let another thread ready to run on this processor have it
+pub fn yieldNow() {
+  SwitchToThread();
+}
+
+// Sleep at least ns nanoseconds, on the high resolution timer where there is one
+pub fn sleep(ns u64) {
+  if ns == 0u64 {
+    Sleep(0u32);
+    return;
+  }
+  imm timer = CreateWaitableTimerExW(0usize as *u8, 0usize as *u16, timerHighResolution, timerAllAccess);
+  if timer != 0usize {
+    // Relative (negative), in 100 ns units, rounded up
+    mut due = 0i64 - i64[(ns + 99u64) / 100u64];
+    if SetWaitableTimer(timer, &mut due as *i64, 0i32, 0usize as *u8, 0usize as *u8, 0i32) != 0i32 {
+      WaitForSingleObject(timer, infinite);
+      CloseHandle(timer);
+      return;
+    }
+    CloseHandle(timer);
+  }
+  Sleep(msCeil(ns));
+}
+
+// Nanoseconds as whole milliseconds, rounded up, and short of INFINITE
+fn msCeil(ns u64) u32 {
+  imm ms = ns / 1000000u64 + (if ns % 1000000u64 != 0u64 {1u64;} else {0u64;});
+  if ms >= u64[infinite] {infinite - 1u32;} else {u32[ms];};
+}
+
+// Take this thread's parking token, sleeping until there is one
+pub fn park() {
+  imm p = &(*mine()).park as *u32;
+  // A token becomes none, and this returns; none becomes parked, and it sleeps
+  if mem.atomicSub[u32](p, 1u32, MemOrder.Acquire[]) == parkNotified {
+    return;
+  }
+  mut old = 0u32;
+  mut taken = false;
+  while !taken {
+    futexWait(p, parkParked);
+    old, taken = mem.atomicCompareSwap[u32](p, parkNotified, parkEmpty, MemOrder.Acquire[], MemOrder.Acquire[]);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The futex
+// ---------------------------------------------------------------------------
+
+// A timeout that never passes
+pub const forever = 0xFFFFFFFFFFFFFFFFu64;
+
+// Sleep while *word holds expected, until woken or timeoutNs passes: false
+// only if the timeout passed
+pub fn futexWait(word *u32, expected u32, timeoutNs u64 = forever) Bool {
+  imm ms = if timeoutNs == forever {infinite;} else {msCeil(timeoutNs);};
+  mut compare = expected;
+  if WaitOnAddress(word, &mut compare as *u32, 4usize, ms) != 0i32 {
+    return true;
+  }
+  GetLastError() != errorTimeout;
+}
+
+// Wake one thread waiting on word
+pub fn futexWake(word *u32) {
+  WakeByAddressSingle(word);
+}
+
+// Wake every thread waiting on word
+pub fn futexWakeAll(word *u32) {
+  WakeByAddressAll(word);
+}

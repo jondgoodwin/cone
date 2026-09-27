@@ -252,7 +252,7 @@ design behind it.
 | **Safety and trust** | `refsafety` · `reftypesafe` · `reftrust` · `refintrinsic` | [Safety](safety.md) · [intrinsic](../../compiler/c/doc/nodes/intrinsic.md) |
 | **Error handling** | `refexcept` · `refoption` · `refresult` | ⚠ **no note** |
 | **Metaprogramming** | `refmacro` · `refmeta` | [generic](../../compiler/c/doc/nodes/generic.md) |
-| **Concurrency** | `refconc` · `refconccomm` · `refconcio` · `refcorout` | ⚠ **no note; no thread layer exists** |
+| **Concurrency** | `refconc` · `refconccomm` · `refconcio` · `refcorout` | ⚠ **no note; no thread layer in the language** (OS threads and the futex are library code, the `thread` package, described in `refconc`) |
 | **Collections** | `reftypecoll` | ⚠ **no note** |
 
 ⚠ **A reference page shows the language's *intended* shape, not only what is

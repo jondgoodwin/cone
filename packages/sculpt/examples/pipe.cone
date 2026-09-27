@@ -1,0 +1,69 @@
+// pipe: a hexagon swept along a straight path into a pipe, then bent through
+// a quarter turn, the first sculpted solid (3-D sculpting, stages 2 and 3).
+// It writes pipe.obj (triangles with smooth normals and uvs, for viewing in
+// Blender: File > Import > Wavefront (.obj)) and pipe-cage.obj (the quad
+// cage itself, which Catmull-Clark subdivision smooths: see pipedemo.cone),
+// in the current folder.
+//
+//   congo run packages/sculpt/examples/pipe.cone
+//
+// The hexagon, of radius 0.25, is swept along the x axis from 0 to 4 in 16
+// pieces: 17 rings of 6 vertices, 102 in all, and 16 x 6 = 96 quads, open at
+// both ends; 17 x 6 edges around the rings and 16 x 6 along, 198. The pipe is
+// then bent 90 degrees about z from its start, so its far end turns to point
+// up (+y): a bend of a span of length 4 through pi / 2 has radius 8 / pi,
+// about 2.546, and the centre line's end goes to (8 / pi, 8 / pi, 0).
+
+mod pipe;
+
+import stdio use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+fn main() i32 {
+  imm hexagon = Profile.polygon(6u32, 0.25);
+  imm path = Path.line(Vec3[0., 0., 0.], Vec3[4., 0., 0.], 16u32);
+  imm straight = sweep(&hexagon, &path, 0., 1., 1., false);
+  imm pipe = bend(&straight, pi / 2., Vec3[0., 0., 1.], Vec3[1., 0., 0.], Vec3[0., 0., 0.]);
+
+  print <- "Cage: "; print <- pipe.vertexCount(); print <- " vertices, ";
+  print <- pipe.edgeCount(); print <- " edges, "; print <- pipe.faceCount(); print <- " faces\n";
+
+  imm problems = pipe.validate();
+  if problems.len() == 0usize {
+    print <- "It validates\n";
+  } else {
+    mut i = 0usize;
+    while i < problems.len() {
+      printStr(problems[i].view());
+      print <- "\n";
+      i = i + 1usize;
+    }
+    return 1;
+  }
+
+  imm smooth = pipe.triangulate(true);
+  print <- "Triangulated smooth: "; print <- smooth.vertexCount(); print <- " vertices, ";
+  print <- smooth.triangleCount(); print <- " triangles\n";
+
+  imm b = smooth.bounds();
+  print <- "Bounds: ("; print <- b.min.x; print <- ", "; print <- b.min.y; print <- ", "; print <- b.min.z;
+  print <- ") to ("; print <- b.max.x; print <- ", "; print <- b.max.y; print <- ", "; print <- b.max.z;
+  print <- ")\n";
+
+  if writeObj(&smooth, "pipe.obj") {
+    print <- "Wrote pipe.obj\n";
+  } else {
+    print <- "Could not write pipe.obj\n";
+    return 1;
+  }
+  if writeObj(&pipe, "pipe-cage.obj") {
+    print <- "Wrote pipe-cage.obj\n";
+  } else {
+    print <- "Could not write pipe-cage.obj\n";
+    return 1;
+  }
+  0;
+}

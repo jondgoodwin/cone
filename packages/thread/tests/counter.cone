@@ -1,0 +1,38 @@
+// Two threads each add 1 to one shared counter a million times, with core's
+// atomic add, and main joins both and prints the total: exactly 2000000,
+// every time. Each thread returns how many adds it made, which 'join' hands
+// back. The counter is a module global reached through a raw pointer, which
+// is what the threads are given; nothing checks yet that what a thread is
+// given is safe to share, so the atomics are what make this correct.
+
+mod counter;
+
+import stdio use *;
+import testing use *;
+import thread;
+
+fn add(counter *u64) u64 {
+  mut i = 0u64;
+  while i < 1000000u64 {
+    mem.atomicAdd[u64](counter, 1u64, MemOrder.Relaxed[]);
+    i = i + 1u64;
+  }
+  i;
+}
+
+mut total u64 = 0u64;
+
+fn main() i32 {
+  imm p = &mut total as *u64;
+  imm a = thread.start(p, &add);
+  imm b = thread.start(p, &add);
+  imm na = a.join();
+  imm nb = b.join();
+  imm sum = mem.atomicLoad[u64](p, MemOrder.SeqCst[]);
+  printStr("total ");
+  printInt(i64[sum]);
+  printStr("\n");
+  expectUInt(na + nb, 2000000u64, "the adds the two threads made");
+  expectUInt(sum, 2000000u64, "the shared counter");
+  done();
+}

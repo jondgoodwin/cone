@@ -1,6 +1,6 @@
-// The window package: a window with an OpenGL context to render into, opened
-// and driven through SDL, and the glue of a render loop around it: the time
-// each frame takes, and the events every window handles the same way.
+// The window package: a window to render into, opened and driven through SDL,
+// and the glue of a render loop around it: the time each frame takes, and the
+// events every window handles the same way.
 //
 //   mut win = Window.open("Horse World");
 //   while win.running {
@@ -10,8 +10,16 @@
 //     win.swapBuffers();
 //   }
 //
-// Opening the window also finds OpenGL's functions ('gl.load'), so the render
-// package can draw as soon as 'open' returns.
+// A window is opened for one of two ways of drawing:
+//
+// - 'open' makes a window with an OpenGL context, and finds OpenGL's
+//   functions ('gl.load'), so the render package can draw as soon as 'open'
+//   returns; 'swapBuffers' shows each frame.
+// - 'openVulkan' makes a window for Vulkan (SDL_WINDOW_VULKAN), which loads the
+//   Vulkan loader and makes no context. The gpu package draws into it: it makes
+//   a surface from 'sdlHandle', and presents each frame itself, so
+//   'swapBuffers' does nothing. 'size' is the drawable's size in pixels, which
+//   is what a swapchain is sized by, and 'resized' says when it changed.
 //
 // It is ported from the Pegasus3D browser: its window (window.cpp), the main
 // loop's frame timing (pegasus3d.cpp), and the part of its world's input
@@ -28,14 +36,16 @@ mod window;
 import libc;
 import sdl;
 import gl;
-import math3d use Rect;
+import geomath use IRect;
 import collections use String;
 
 pub struct Window {
   sdlWindow *sdl.Window;
   sdlContext *sdl.GLContext;
+  vulkan Bool;              // opened for Vulkan: no OpenGL context
   pub fullscreen Bool;      // filling the screen (F11 toggles it)
   pub running Bool;         // false once asked to quit
+  pub resized Bool;         // set when the window's size changes; the caller clears it
   lastTicks u32;            // SDL's clock at the last frame
 
   // Open a window with an OpenGL context: centered, three quarters of the
@@ -63,16 +73,8 @@ pub struct Window {
     sdl.GL_SetAttribute(sdl.GL_MULTISAMPLEBUFFERS, 1);
     sdl.GL_SetAttribute(sdl.GL_MULTISAMPLESAMPLES, 4);
 
-    // Centered, three quarters of the display each way
-    mut bounds = sdl.Rect[0, 0, 1024, 768];
-    sdl.GetDisplayBounds(0, &mut bounds);
-    mut ctitle = String.from(title);
-    imm window = sdl.CreateWindow(ctitle.cstr(), sdl.WINDOWPOS_CENTERED, sdl.WINDOWPOS_CENTERED,
-      bounds.w * 3 / 4, bounds.h * 3 / 4, sdl.WINDOW_OPENGL | sdl.WINDOW_RESIZABLE);
-    if !window {
-      logSDLError("Unable to open window");
-      return Window.unopened();
-    }
+    imm window = createWindow(title, sdl.WINDOW_OPENGL);
+    if !window { return Window.unopened(); }
 
     // The OpenGL context, attached to the window; later contexts share with it
     imm glcontext = sdl.GL_CreateContext(window);
@@ -90,35 +92,76 @@ pub struct Window {
     if !gl.load(&sdl.GL_GetProcAddress) {
       logLine("Some OpenGL functions are missing: OpenGL 2.0 or later is needed");
     }
-    Window[window, glcontext, false, true, sdl.GetTicks()];
+    Window[window, glcontext, false, false, true, false, sdl.GetTicks()];
+  }
+
+  // Open a window for Vulkan to draw into, placed and sized as 'open' places
+  // its window, with no OpenGL context. Making it loads the Vulkan loader.
+  // Check 'isOpen': without a display, or without a Vulkan loader, it is not,
+  // and SDL's reason has gone to stderr.
+  pub fn openVulkan(title &[]u8) Window {
+    if sdl.Init(sdl.INIT_VIDEO) < 0 {
+      logSDLError("Failed to initialize SDL2's Video subsystem");
+      return Window.unopened();
+    }
+    imm window = createWindow(title, sdl.WINDOW_VULKAN);
+    if !window { return Window.unopened(); }
+    Window[window, 0usize as *sdl.GLContext, true, false, true, false, sdl.GetTicks()];
   }
 
   // A window that did not open: 'isOpen' is false, and everything else does
   // nothing
   fn unopened() Window {
-    Window[0usize as *sdl.Window, 0usize as *sdl.GLContext, false, false, 0u32];
+    Window[0usize as *sdl.Window, 0usize as *sdl.GLContext, false, false, false, false, 0u32];
   }
 
-  // Whether the window and its context opened
+  // Whether the window (and, for OpenGL, its context) opened
   pub fn isOpen(self &) Bool {
     if !sdlWindow { return false; }
-    if !sdlContext { return false; }
+    if !vulkan and !sdlContext { return false; }
     true;
   }
 
-  // Its size in pixels, as a rectangle at (0, 0)
-  pub fn size(self &) Rect {
+  // Whether it was opened for Vulkan
+  pub fn isVulkan(self &) Bool { vulkan; }
+
+  // SDL's window, for making a Vulkan surface of it (gpu's 'createSurface')
+  pub fn sdlHandle(self &) *sdl.Window { sdlWindow; }
+
+  // Its size in pixels, as a rectangle at (0, 0). For Vulkan, the drawable's
+  // size, which differs from the window's on a high-DPI display
+  pub fn size(self &) IRect {
     mut w = 0;
     mut h = 0;
-    if self.isOpen() { sdl.GetWindowSize(sdlWindow, &mut w, &mut h); }
-    Rect[0, 0, w, h];
+    if self.isOpen() {
+      if vulkan {
+        sdl.Vulkan_GetDrawableSize(sdlWindow, &mut w, &mut h);
+      } else {
+        sdl.GetWindowSize(sdlWindow, &mut w, &mut h);
+      }
+    }
+    IRect[0, 0, w, h];
   }
 
   // Draw into this window from now on (its context current), answering its
   // size (Pegasus's MakeCurrent)
-  pub fn makeCurrent(self &mut) Rect {
-    if self.isOpen() { sdl.GL_MakeCurrent(sdlWindow, sdlContext); }
+  pub fn makeCurrent(self &mut) IRect {
+    if self.isOpen() and !vulkan { sdl.GL_MakeCurrent(sdlWindow, sdlContext); }
     self.size();
+  }
+
+  // Make the window 'w' by 'h' (in the window's units, which 'size' gives
+  // for OpenGL); a resize event follows
+  pub fn setSize(self &mut, w i32, h i32) {
+    if self.isOpen() { sdl.SetWindowSize(sdlWindow, w, h); }
+  }
+
+  // Shrink the window to the taskbar, or bring it back
+  pub fn minimize(self &mut) {
+    if self.isOpen() { sdl.MinimizeWindow(sdlWindow); }
+  }
+  pub fn restore(self &mut) {
+    if self.isOpen() { sdl.RestoreWindow(sdlWindow); }
   }
 
   // Fill the screen, or go back to a window
@@ -129,9 +172,10 @@ pub struct Window {
     }
   }
 
-  // Show what has been drawn (Pegasus's SwapBuffers)
+  // Show what has been drawn (Pegasus's SwapBuffers). For Vulkan it does
+  // nothing: the gpu package presents.
   pub fn swapBuffers(self &mut) {
-    if self.isOpen() { sdl.GL_SwapWindow(sdlWindow); }
+    if self.isOpen() and !vulkan { sdl.GL_SwapWindow(sdlWindow); }
   }
 
   // The seconds since the last call (or since 'open'), for moving things at
@@ -145,15 +189,19 @@ pub struct Window {
 
   // Take the next waiting event into 'event', handling it as every window
   // does: a quit, or Escape, clears 'running'; F11 toggles fullscreen; a
-  // resize resets OpenGL's viewport to the whole window. Answers false when
-  // no event was waiting. The caller sees every event, handled or not.
+  // resize sets 'resized' and, for OpenGL, resets the viewport to the whole
+  // window. Answers false when no event was waiting. The caller sees every
+  // event, handled or not.
   pub fn pollEvent(self &mut, event &mut sdl.Event) Bool {
     if sdl.PollEvent(event) == 0 { return false; }
     if event.type == sdl.QUIT {
       running = false;
     } elif event.type == sdl.WINDOWEVENT {
       imm we = event as &sdl.WindowEvent;
-      if we.event == sdl.WINDOWEVENT_RESIZED { gl.Viewport(0, 0, we.data1, we.data2); }
+      if we.event == sdl.WINDOWEVENT_RESIZED or we.event == sdl.WINDOWEVENT_SIZE_CHANGED {
+        resized = true;
+        if !vulkan { gl.Viewport(0, 0, we.data1, we.data2); }
+      }
     } elif event.type == sdl.KEYDOWN {
       imm ke = event as &sdl.KeyboardEvent;
       if ke.keysym.sym == sdl.K_ESCAPE {
@@ -178,6 +226,19 @@ pub struct Window {
     if sdlWindow { sdl.DestroyWindow(sdlWindow); }
     sdl.Quit();
   }
+}
+
+// Make SDL's window: centered, three quarters of the display each way,
+// resizable, with 'flags' for how it is drawn. Null, with SDL's reason on
+// stderr, if it could not be made.
+fn createWindow(title &[]u8, flags u32) *sdl.Window {
+  mut bounds = sdl.Rect[0, 0, 1024, 768];
+  sdl.GetDisplayBounds(0, &mut bounds);
+  mut ctitle = String.from(title);
+  imm window = sdl.CreateWindow(ctitle.cstr(), sdl.WINDOWPOS_CENTERED, sdl.WINDOWPOS_CENTERED,
+    bounds.w * 3 / 4, bounds.h * 3 / 4, flags | sdl.WINDOW_RESIZABLE);
+  if !window { logSDLError("Unable to open window"); }
+  window;
 }
 
 // Report SDL's reason for a failure to stderr, after a message (Pegasus's

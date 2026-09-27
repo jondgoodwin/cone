@@ -1,0 +1,99 @@
+// A tour of the thread package: one worker per core, all running at once,
+// each summing its own slice of 0..n; a named thread that parks until main
+// unparks it, and whose result 'join' hands back; and a futex word main
+// waits on until a detached thread sets it. Run it with
+//
+//   congo run packages/thread/examples/workers.cone
+//
+// Each worker is handed a Job by value: a copy that is its own. What may
+// safely cross to a thread is a value like that, or a 'uni', 'imm' or 'opaq'
+// reference; nothing checks that yet. The Job's 'out' is a raw pointer to a
+// slot only that worker writes, and main reads it only after the worker is
+// joined.
+
+mod workers;
+
+import stdio use *;
+import collections use *;
+import thread;
+
+struct Job {
+  pub from u64;
+  pub to u64;     // one past the last
+  pub out *u64;
+}
+
+fn sum(job Job) {
+  mut s = 0u64;
+  mut i = job.from;
+  while i < job.to {
+    s = s + i;
+    i = i + 1u64;
+  }
+  *job.out = s;
+}
+
+fn napper(n u64) u64 {
+  imm me = thread.current();
+  printStr(me.name());
+  printStr(" parks\n");
+  thread.park();
+  printStr(me.name());
+  printStr(" was unparked\n");
+  n * 6u64;
+}
+
+fn signal(word *u32) {
+  thread.sleep(5000000u64);   // 5 ms
+  mem.atomicStore[u32](word, 1u32, MemOrder.Release[]);
+  thread.futexWake(word);
+}
+
+fn main() {
+  imm n = 10000000u64;
+  imm cores = thread.parallelism();
+  printStr("cores: ");
+  printInt(i64[cores]);
+  printStr("\n");
+
+  // One worker per core, up to 64, each writing its part to its own slot.
+  // The handles are kept in a List, and the List's death at the end of the
+  // block joins every one of them: a dropped handle joins.
+  imm count = if cores > 64u32 {64u64;} else {u64[cores];};
+  mut parts [64; u64] = [64; 0u64];
+  {
+    mut workers = List[thread.Thread[void]].empty();
+    mut k = 0u64;
+    while k < count {
+      imm job = Job[n * k / count, n * (k + 1u64) / count, &mut parts[k] as *u64];
+      workers.push(thread.start(job, &sum));
+      k = k + 1u64;
+    }
+  }
+  mut total = 0u64;
+  mut k = 0u64;
+  while k < count {
+    total = total + parts[k];
+    k = k + 1u64;
+  }
+  printStr("sum of 0..n-1: ");
+  printInt(i64[total]);
+  printStr(" (want ");
+  printInt(i64[n * (n - 1u64) / 2u64]);
+  printStr(")\n");
+
+  // A named thread that parks until main unparks it
+  imm t = thread.startWith(thread.Options[name: "napper"], 7u64, &napper);
+  thread.sleep(20000000u64);   // 20 ms: long enough that it is parked
+  t.unpark();
+  printInt(i64[t.join()]);
+  printStr(" came back from the napper\n");
+
+  // Wait on a futex word a detached thread sets
+  mut word = 0u32;
+  thread.start(&mut word as *u32, &signal).detach();
+  while mem.atomicLoad[u32](&mut word as *u32, MemOrder.Acquire[]) == 0u32 {
+    thread.futexWait(&mut word as *u32, 0u32);
+  }
+  printStr("the detached thread set the word\n");
+}

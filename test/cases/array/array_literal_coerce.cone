@@ -1,0 +1,82 @@
+// An array literal's elements are coerced to the element type of the array it
+// is wanted as, on the terms a struct literal's field value and a variable's
+// initializer are coerced: a string literal borrows as a '&[]u8' slice, an
+// untyped integer literal takes the declared number type -- so one too wide for
+// the i32 it would default to is not refused -- a float literal widens to f64,
+// and a narrower value widens. Before, the literal settled its type from its
+// elements alone and was then matched against the declared type, so
+// '[2; &[]u8]' refused '["one", "two"]' and '[2; i64]' refused '[5000000000, 1]'.
+//
+// Everything is printed, because a literal that compiles is not one whose
+// elements landed at the declared width. The globals are also checked to be
+// constants in cases.toml: a global's initializer must be one, and coercing its
+// elements must not turn it into code.
+//
+// The element count is not coerced: a literal of another length is still a
+// different array type, which array_reject_use holds.
+
+mod array_literal_coerce;
+
+import stdio use *;
+
+// -------- globals: constant initializers --------
+
+imm gnames [3; &[]u8] = ["one", "two", "three"];
+imm gwide [2; i64] = [5000000000, -7];
+imm gfloat [2; f64] = [0.5, 1.5];
+
+// -------- the other positions a literal is coerced in --------
+
+fn sum(x [2; i64]) i64 {
+  x[0] + x[1];
+}
+
+fn makeWide() [2; i64] {
+  [6000000000, 1];
+}
+
+struct Holder {
+  pub vals [2; i64];
+  pub names [2; &[]u8];
+}
+
+fn main() {
+  // Globals
+  printStr(gnames[0]); printStr(" "); printStr(gnames[1]); printStr(" "); printStr(gnames[2]); printStr("\n");
+  printInt(gwide[0]); printStr(" "); printInt(gwide[1]); printStr("\n");
+  printFloat(gfloat[0] + gfloat[1]); printStr("\n");
+
+  // Locals, strings of different lengths sharing the slice element type
+  imm names [2; &[]u8] = ["four", "fivefive"];
+  printStr(names[0]); printStr(" "); printStr(names[1]); printStr("\n");
+
+  // Locals, numbers taking the declared width
+  imm wide [2; i64] = [7000000000, 2];
+  printInt(wide[0] + wide[1]); printStr("\n");
+  imm bytes [3; u8] = [4, 200, 255];
+  printUInt(u64[bytes[0]] + u64[bytes[1]] + u64[bytes[2]]); printStr("\n");
+  imm floats [2; f64] = [0.25, 2];
+  printFloat(floats[0] + floats[1]); printStr("\n");
+
+  // A narrower value widens, as it does into an i64 variable
+  imm small i32 = 9;
+  imm widened [2; i64] = [small, 8000000000];
+  printInt(widened[0] + widened[1]); printStr("\n");
+
+  // A fill literal's value takes the element type too
+  imm filled [3; i64] = [3; 9000000000];
+  printInt(filled[2]); printStr("\n");
+
+  // Nested literals: each inner literal is wanted as the outer element type
+  imm grid [2; [2; &[]u8]] = [["a", "bb"], ["ccc", "d"]];
+  printStr(grid[0][1]); printStr(grid[1][0]); printStr("\n");
+
+  // Assignment, a call's argument, a return value and a struct literal's field
+  mut later [2; i64] = [1, 1];
+  later = [5000000001, 3];
+  printInt(later[0]); printStr("\n");
+  printInt(sum([5000000000, 5])); printStr("\n");
+  printInt(makeWide()[0]); printStr("\n");
+  imm h = Holder[[4000000000, 1], ["six", "sev"]];
+  printInt(h.vals[0]); printStr(" "); printStr(h.names[1]); printStr("\n");
+}

@@ -234,7 +234,7 @@ loop from the header scan, and the compiler again for a direct run
 | module, a fold not re-exported | not reachable from outside, and not folded on | `importFoldItem`, `fnCallNameResPath` |
 | module tree | a sister is reached by name, never by a path that walked to her file | `parseImport` |
 | modules and packages | no loop of dependencies — imports, `extends`, containment | `pgmModuleOrder`; Congo's `build_order` and `check_module_loops` |
-| type, member not `pub` | not reachable except through `self` — or, for an enum and its variants, from code inside the enum's braces or an extension's | `fnCallLowerMethod`, `structEnumSeesPrivate` |
+| type, member not `pub` | not reachable except from the type's own code, through any value of the type (a generic's instance, through a value of that instance) — or, for an enum and its variants, from code inside the enum's braces or an extension's | `fnCallLowerMethod`, `structSeesPrivate` |
 | type, field not `pub` | not settable from outside in a type literal — an enum's braces, and an extension's, being inside | `typeLitStructReorder`, `structEnumSeesPrivate` |
 | any namespace | no duplicate name, whatever the kind | `namespaceAdd`, `modAddNamedNode` |
 
@@ -283,7 +283,7 @@ trivial effort to add the compiler the ability to ingest, preserve, and re-inges
 public interface information from source files."
 
 **To the compiler, packages are a search path, not a unit.** The search path —
-every `--path` folder, then the packages folder, where `core`, `stdio`, `libc`, `posix`, `math3d`, `testing` and `collections` are —
+every `--path` folder, then the packages folder, where `core`, `stdio`, `libc`, `posix`, `geomath`, `testing` and `collections` are —
 finds files, and `--safe=package` appears in the option help, but the compiler
 knows no package: it reads no manifest and no version. The package as a unit is
 Congo's: a folder with a `congo.toml` (name, `MAJOR.MINOR.PATCH` version, and
@@ -296,7 +296,11 @@ beyond ([module](../../compiler/c/doc/nodes/module.md), "A described build").
 **There is no thread layer.** Which of async/await, gothreads or actors Cone
 adopts is an open question the author treats as unsettled across the field; the
 stated leaning is actors, and structured concurrency is named as the missing
-discipline — unstructured concurrency being "similar to GOTO."
+discipline — unstructured concurrency being "similar to GOTO." What exists
+below it is library code, the `thread` package: OS threads started on a
+function and one moved value, joined through an owning handle, and the futex
+the blocking layers are to be built on. It is ground a thread layer would be
+built on, not that layer.
 
 ## Hazards
 

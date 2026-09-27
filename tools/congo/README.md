@@ -78,7 +78,7 @@ There is no include file to write: a library's build generates it (below,
   build of the package reads. Each is a lone file, run with
   `congo run examples/<file>.cone`, and imports the package by name like any
   other program, so the package is found through the registries: the
-  examples of `packages/math3d` run as they stand, while a package in no
+  examples of `packages/geomath` run as they stand, while a package in no
   registry cannot yet run its own that way (`congo test` builds them, below,
   since it finds the package under test first). `congo new` does not make the
   folder.
@@ -150,7 +150,7 @@ An import names a module. Congo answers each one this way:
 searches, in order:
 
 1. the Cone repository's own `packages/` (`core`, `stdio`, `libc`, `posix`,
-   `sdl`, `gl`, `math3d`, `testing`, `collections`, `arena`, `pool`, `collector`, `render` and `window` are
+   `sdl`, `gl`, `vulkan`, `gpu`, `geomath`, `mesh`, `sculpt`, `testing`, `collections`, `arena`, `pool`, `collector`, `thread`, `render` and `window` are
    there), then
 2. each folder the **machine config** lists.
 
@@ -285,22 +285,44 @@ package named which library.
 C types and C strings, Windows first. They name no `[link]` library, since the C
 runtime they bind is on every link line already. `core` imports `libc` for its
 allocator, so every build compiles `libc` first. `samples/oslayer` is a tour of
-both, and each package's source says what it binds and how. `math3d`, 3D math
-in Cone, is built on `libc` for its trigonometry, and its example is
-`packages/math3d/examples/tour.cone`.
+both, and each package's source says what it binds and how. `geomath`, 2-D
+and 3-D math in Cone, is built on `libc` for its trigonometry and on
+`collections` for the lists its polygon functions return, and its example is
+`packages/geomath/examples/tour.cone`. `mesh`, over `geomath`, holds the
+surfaces: indexed triangles, the editable half-edge mesh, their generators
+and `.obj` export; its example is `packages/mesh/examples/cage.cone`.
+`sculpt`, over `mesh`, builds solids procedurally: profiles, paths with
+rotation-minimizing frames, extrude, lathe and sweep, and the bend, twist,
+taper and curve deformers, and Catmull-Clark subdivision; its examples are
+`packages/sculpt/examples/pipe.cone`, `pipedemo.cone` (the pipe smoothed at
+three levels of detail) and `creasedcube.cone`.
 
 Two more bind libraries beyond the C runtime, and name them: `sdl` (SDL2: a
-window with an OpenGL context, its events and clock; `[link]` names `SDL2`,
-which is not part of the Windows SDK, so SDL2's `lib` folder must be on `LIB`,
-and `SDL2.dll` on `PATH` to run) and `gl` (OpenGL; `[link]` names `opengl32`,
-from the Windows SDK). OpenGL's functions newer than 1.1 are exported by no
-library: the driver hands out their addresses once a context exists, so `gl`
-holds a Cone body for each, calling through the address `gl.load` found, beside
-the `extern` declarations of the rest. Neither has a test that needs its
-library at run time, so testing `packages/` needs no display. `render` draws
-over `gl` alone, so its tests run anywhere; `window` opens its window through
-`sdl`, so building its example, as `congo test` does, needs `SDL2.lib` on
-`LIB`, and running it needs a display.
+window with an OpenGL context or for Vulkan, its events and clock, and loading
+Vulkan; `[link]` names `SDL2`, which is not part of the Windows SDK, so SDL2's
+`lib` folder must be on `LIB`, and `SDL2.dll` on `PATH` to run) and `gl`
+(OpenGL; `[link]` names `opengl32`, from the Windows SDK). OpenGL's functions
+newer than 1.1 are exported by no library: the driver hands out their addresses
+once a context exists, so `gl` holds a Cone body for each, calling through the
+address `gl.load` found, beside the `extern` declarations of the rest. Neither
+has a test that needs its library at run time, so testing `packages/` needs no
+display. `render` draws over `gl` alone (and `mesh` for its shapes' geometry),
+so its tests run anywhere; `window` opens its window through `sdl`, so
+building its example, as `congo test` does, needs `SDL2.lib` on `LIB`, and
+running it needs a display.
+
+`vulkan` binds Vulkan 1.3 and links nothing: every function is found at run
+time through the `vkGetInstanceProcAddr` SDL hands out, so no Vulkan SDK is
+needed. `gpu`, the thin WebGPU-shaped layer over it, draws into a window
+`window` opens for Vulkan. Their layout, constants and loader tests run
+anywhere; one test of each (`vulkan`'s `runtime`, `gpu`'s `headless`) runs
+against the real Vulkan loader with no window, so testing `packages/` needs a
+GPU driver with Vulkan 1.3 and `SDL2.dll` on `PATH`, but no display.
+
+`thread`, OS threads and the futex, is Cone code over `extern` declarations
+of the C runtime and Windows, not a C package, and its `[link]` names
+`synchronization`: the Windows SDK's `Synchronization.lib`, which defines
+`WaitOnAddress` and its wakes and is not on the C runtime's default link line.
 
 ## Testing a package
 
@@ -309,8 +331,8 @@ enough to test a package through its interface today, deciding nothing about
 how tests will be scaffolded, mocked or asserted later.
 
 ```
-packages/math3d/
-    src/math3d.cone
+packages/geomath/
+    src/geomath.cone
     tests/operations.cone     one test: a program
     tests/operations.out      what it must print
     examples/tour.cone        built by congo test, not run
@@ -348,8 +370,8 @@ so, and still builds its examples.
   one that exists: to change an expected file, edit it, or delete it and bless
   again. **Blessed output is a claim that the package is right; check every
   line of it by hand against the source before committing it.** A value worked
-  out from the math catches what a copied run cannot (`math3d`'s test found two
-  errors in the code it was ported from that way).
+  out from the math catches what a copied run cannot (`geomath`'s first test
+  found two errors in the Pegasus code it was ported from that way).
 - **At a folder of packages**, such as the repository's `packages/`, `congo
   test` tests each package in it in turn, and ends with a summary of them all.
   Each package's builds go in its own `build/` folder, as a build of it would.
@@ -359,7 +381,7 @@ so, and still builds its examples.
 ### Writing checks with `testing`
 
 A test may print whatever it likes for its `.out` file to pin, as
-`math3d`'s `operations` test does. Or it may check values itself with the
+`geomath`'s `operations` test does. Or it may check values itself with the
 `testing` package, an ordinary library in `packages/`, and print only what
 fails:
 
@@ -367,13 +389,13 @@ fails:
 mod rotations;
 
 import testing use *;
-import math3d use *;
+import geomath use *;
 
 fn main() i32 {
-  imm q = Quat.angleAxis(pi / 2., Xyz[0., 0., 1.]);
+  imm q = Quat.angleAxis(pi / 2., Vec3[0., 0., 1.]);
   requireFloat(q.dot(q), 1., 0.00001d, "a unit quaternion");
-  expectFloat(q.rotate(Xyz[1., 0., 0.]).y, 1., 0.00001d, "x turns to y");
-  expectInt(Rect[10, 20, 640, 480].w, 640, "width");
+  expectFloat(q.rotate(Vec3[1., 0., 0.]).y, 1., 0.00001d, "x turns to y");
+  expectInt(IRect[10, 20, 640, 480].w, 640, "width");
   done();
 }
 ```
@@ -499,7 +521,7 @@ imports another package's, a library of submodules re-exported at its root whose
 include file holds nested blocks, a C package linking a Windows system library
 (shlwapi), a C library built in the test and found through `[link] paths`,
 `libc` built before `core` with no prelude line, the `samples/oslayer` tour of
-`libc` and `posix` (Windows), `math3d`'s example run where it stands (Windows),
+`libc` and `posix` (Windows), `geomath`'s example run where it stands (Windows),
 the loop refusals between packages and between
 modules, the manifest's checks, and `congo test` itself (a passing test, a
 failing output with its diff, an exit status, a filter, bless, an example that

@@ -1,0 +1,196 @@
+// The sculpt package's paths and their rotation-minimizing frames, checked
+// with the testing package against values worked out by hand; only a failure
+// prints, so frames.out holds the summary alone.
+//
+// A frame's binormal B is 'up' made perpendicular to the first tangent T, and
+// its normal N = B x T, so N x B = T. (y x v = (v.z, 0, -v.x).)
+// - A straight path along +z: B = +y, N = y x z = +x, at every point; its
+//   points 1 apart, distances 0, 1, 2, length 2.
+// - Along +x: B = +y, N = y x x = -z.
+// - Along +y (up would lie along it): B = +z, N = z x y = -x.
+// - Along +x with up +z: B = +z, N = z x x = +y. With up +x, along the path,
+//   the default again: N = -z.
+// - A quarter circle of radius 2 in the plane y = 0, points (2 cos a, 0,
+//   2 sin a) at a = k pi / 8, k = 0 to 4, tangents from the points (the
+//   bisectors, so the circle's own tangent inside; the chord's at the ends).
+//   The frames of a planar path keep B perpendicular to the plane: B = +y
+//   throughout, and N in the plane (N.y = 0). The first tangent is the
+//   chord's, (-sin(pi/16), 0, cos(pi/16)), so N0 = (cos(pi/16), 0,
+//   sin(pi/16)) = (0.980785, 0, 0.195090), pointing out from the centre. Each
+//   reflection step maps the circle onto itself, so inside N is the outward
+//   radius exactly: N1 = (cos 22.5, 0, sin 22.5) = (0.923880, 0, 0.382683),
+//   N2 = (0.707107, 0, 0.707107), N3 = (0.382683, 0, 0.923880); T1 =
+//   (-0.382683, 0, 0.923880). At the far end the tangent is the last chord's,
+//   at angle 7 pi / 16: N4 = (0.195090, 0, 0.980785).
+// - Path.circle(2, 8): point k at a = k pi / 4 is (2 cos a, 0, -2 sin a),
+//   tangent (-sin a, 0, -cos a). First frame: T = (0, 0, -1), B = +y, N = y
+//   x (0, 0, -1) = (-1, 0, 0), the inward radius; the steps keep it inward,
+//   (-cos a, 0, sin a), and a planar loop comes back unturned. Point 2 (a =
+//   90): (0, 0, -2), T (-1, 0, 0), N (0, 0, 1). Point 5 (a = 225): (-1.414214,
+//   0, 1.414214), N (0.707107, 0, -0.707107). Each chord 2 * 2 sin(22.5) =
+//   1.530734; four of them 6.122935, all eight 12.245870.
+// - A closed path that is not planar, (1,0,0) (0,1,1) (-1,0,0) (0,-1,1): at
+//   point 0 the chords in, (1,1,-1)/sqrt 3, and out, (-1,1,1)/sqrt 3, bisect
+//   to T = (0, 1, 0), so B = +z and N = z x y = (-1, 0, 0). The turn taken out
+//   to close the loop is spread from 0 at the first point, so the first
+//   frame is exactly that. Every frame is unit and perpendicular.
+// - A closed square (0,0,0) (1,0,0) (1,0,1) (0,0,1): distances 0, 1, 2, 3,
+//   length 4 with the closing side; at point 1 the bisector of +x and +z,
+//   (0.707107, 0, 0.707107).
+// - Beziers: the cubic (0,0,0) (1,0,0) (2,0,0) (3,0,0), evenly spaced, is 3t
+//   along x: in 3 pieces, 4 points, point 1 (1, 0, 0), tangent (1, 0, 0).
+//   The quadratic (0,0,0) (1,1,0) (2,0,0) at t = 0.5 is (1, 0.5, 0), tangent
+//   (1,1,0) + (1,-1,0) = (2, 0, 0), unit (1, 0, 0); at t = 0 the tangent
+//   2 (1,1,0), unit (0.707107, 0.707107, 0). Two cubics, that one and (3,0,0)
+//   (3,1,0) (3,2,0) (3,3,0), in 3 pieces each: 7 points, the shared (3,0,0)
+//   once as point 3 with the first's end tangent (1, 0, 0); point 4 (3, 1,
+//   0), point 6 (3, 3, 0).
+
+mod frames;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import sculpt use *;
+
+imm near = 0.00001d;
+
+fn point(got Vec3, x f32, y f32, z f32, label &[]u8) {
+  expectFloat(got.x, x, near, label);
+  expectFloat(got.y, y, near, label);
+  expectFloat(got.z, z, near, label);
+}
+
+fn straight() {
+  imm pz = Path.line(Vec3[0., 0., 0.], Vec3[0., 0., 2.], 2u32);
+  requireInt(i64[pz.pointCount()], 3, "line: 3 points");
+  imm d = pz.distances();
+  expectFloat(*d[1usize], 1., near, "line: distance 1");
+  expectFloat(*d[2usize], 2., near, "line: distance 2");
+  expectFloat(pz.length(), 2., near, "line: length");
+  imm fz = pz.frames();
+  requireInt(i64[fz.len()], 3, "line: a frame each");
+  point(fz[1usize].origin, 0., 0., 1., "along z: origin");
+  point(fz[1usize].tangent, 0., 0., 1., "along z: tangent");
+  point(fz[1usize].normal, 1., 0., 0., "along z: normal");
+  point(fz[2usize].binormal, 0., 1., 0., "along z: binormal");
+
+  imm px = Path.line(Vec3[0., 0., 0.], Vec3[3., 0., 0.], 3u32);
+  imm fx = px.frames();
+  point(fx[0usize].normal, 0., 0., -1., "along x: normal");
+  point(fx[3usize].binormal, 0., 1., 0., "along x: binormal");
+
+  imm py = Path.line(Vec3[0., 0., 0.], Vec3[0., 3., 0.], 3u32);
+  imm fy = py.frames();
+  point(fy[0usize].normal, -1., 0., 0., "along y: normal");
+  point(fy[2usize].binormal, 0., 0., 1., "along y: binormal");
+
+  mut pu = Path.line(Vec3[0., 0., 0.], Vec3[3., 0., 0.], 3u32);
+  pu.up = Vec3[0., 0., 1.];
+  imm fu = pu.frames();
+  point(fu[1usize].normal, 0., 1., 0., "up z: normal");
+  point(fu[1usize].binormal, 0., 0., 1., "up z: binormal");
+
+  mut pa = Path.line(Vec3[0., 0., 0.], Vec3[3., 0., 0.], 3u32);
+  pa.up = Vec3[1., 0., 0.];
+  imm fa = pa.frames();
+  point(fa[1usize].normal, 0., 0., -1., "up along the path: the default");
+}
+
+fn arc() {
+  mut pts = List[Vec3].empty();
+  mut k = 0;
+  while k <= 4 {
+    imm a = pi * f32[k] / 8.;
+    pts.push(Vec3[2. * cos(a), 0., 2. * sin(a)]);
+    k = k + 1;
+  }
+  imm p = Path.fromPoints(pts.view(), false);
+  imm f = p.frames();
+  requireInt(i64[f.len()], 5, "arc: 5 frames");
+  mut i = 0usize;
+  while i < 5usize {
+    point(f[i].binormal, 0., 1., 0., "arc: the binormal stays perpendicular to the plane");
+    expectFloat(f[i].normal.y, 0., near, "arc: the normal stays in the plane");
+    expectFloat(f[i].normal.dot(f[i].tangent), 0., near, "arc: normal across the tangent");
+    i = i + 1usize;
+  }
+  point(f[0usize].normal, 0.980785, 0., 0.195090, "arc: N0");
+  point(f[1usize].normal, 0.923880, 0., 0.382683, "arc: N1");
+  point(f[2usize].normal, 0.707107, 0., 0.707107, "arc: N2");
+  point(f[3usize].normal, 0.382683, 0., 0.923880, "arc: N3");
+  point(f[4usize].normal, 0.195090, 0., 0.980785, "arc: N4");
+  point(f[1usize].tangent, -0.382683, 0., 0.923880, "arc: T1");
+}
+
+fn loops() {
+  imm c = Path.circle(2., 8u32);
+  expect(c.closed, "circle: closed");
+  imm f = c.frames();
+  requireInt(i64[f.len()], 8, "circle: 8 frames");
+  point(f[0usize].normal, -1., 0., 0., "circle: N0 inward");
+  point(f[2usize].origin, 0., 0., -2., "circle: point 2");
+  point(f[2usize].tangent, -1., 0., 0., "circle: T2");
+  point(f[2usize].normal, 0., 0., 1., "circle: N2");
+  point(f[5usize].origin, -1.414214, 0., 1.414214, "circle: point 5");
+  point(f[5usize].normal, 0.707107, 0., -0.707107, "circle: N5");
+  point(f[7usize].binormal, 0., 1., 0., "circle: no twist");
+  imm d = c.distances();
+  expectFloat(*d[4usize], 6.122935, near, "circle: distance to point 4");
+  expectFloat(c.length(), 12.245870, near, "circle: length");
+
+  imm bent [4; Vec3] = [Vec3[1., 0., 0.], Vec3[0., 1., 1.], Vec3[-1., 0., 0.], Vec3[0., -1., 1.]];
+  imm q = Path.fromPoints(&bent, true);
+  imm g = q.frames();
+  requireInt(i64[g.len()], 4, "saddle: 4 frames");
+  point(g[0usize].tangent, 0., 1., 0., "saddle: T0");
+  point(g[0usize].normal, -1., 0., 0., "saddle: N0 untouched by the closing turn");
+  point(g[0usize].binormal, 0., 0., 1., "saddle: B0");
+  mut i = 0usize;
+  while i < 4usize {
+    imm fr = *g[i];
+    expectFloat(fr.normal.length(), 1., near, "saddle: unit normal");
+    expectFloat(fr.normal.dot(fr.tangent), 0., near, "saddle: normal across the tangent");
+    point(fr.tangent.cross(fr.normal), fr.binormal.x, fr.binormal.y, fr.binormal.z, "saddle: B = T x N");
+    i = i + 1usize;
+  }
+
+  imm sq [4; Vec3] = [Vec3[0., 0., 0.], Vec3[1., 0., 0.], Vec3[1., 0., 1.], Vec3[0., 0., 1.]];
+  imm s = Path.fromPoints(&sq, true);
+  imm sd = s.distances();
+  expectFloat(*sd[3usize], 3., near, "square: distance 3");
+  expectFloat(s.length(), 4., near, "square: length");
+  point(s.tangentAt(1usize), 0.707107, 0., 0.707107, "square: bisecting tangent");
+}
+
+fn beziers() {
+  imm cubic = CubicBezier3[Vec3[0., 0., 0.], Vec3[1., 0., 0.], Vec3[2., 0., 0.], Vec3[3., 0., 0.]];
+  imm pc = Path.fromCubic(cubic, 3u32);
+  requireInt(i64[pc.pointCount()], 4, "cubic: 4 points");
+  point(*pc.points[1usize], 1., 0., 0., "cubic: point 1");
+  point(*pc.tangents[1usize], 1., 0., 0., "cubic: tangent 1");
+
+  imm pq = Path.fromQuadratic(QuadraticBezier3[Vec3[0., 0., 0.], Vec3[1., 1., 0.], Vec3[2., 0., 0.]], 2u32);
+  requireInt(i64[pq.pointCount()], 3, "quadratic: 3 points");
+  point(*pq.points[1usize], 1., 0.5, 0., "quadratic: middle");
+  point(*pq.tangents[0usize], 0.707107, 0.707107, 0., "quadratic: tangent at the start");
+  imm fq = pq.frames();
+  point(fq[1usize].tangent, 1., 0., 0., "quadratic: the frame takes the curve's tangent");
+
+  imm two [2; CubicBezier3] = [cubic,
+    CubicBezier3[Vec3[3., 0., 0.], Vec3[3., 1., 0.], Vec3[3., 2., 0.], Vec3[3., 3., 0.]]];
+  imm pp = Path.fromCubics(&two, 3u32, false);
+  requireInt(i64[pp.pointCount()], 7, "two cubics: 7 points");
+  point(*pp.points[3usize], 3., 0., 0., "two cubics: the shared point");
+  point(*pp.tangents[3usize], 1., 0., 0., "two cubics: its tangent the first's");
+  point(*pp.points[4usize], 3., 1., 0., "two cubics: point 4");
+  point(*pp.points[6usize], 3., 3., 0., "two cubics: the end");
+}
+
+fn main() i32 {
+  straight();
+  arc();
+  loops();
+  beziers();
+  done();
+}

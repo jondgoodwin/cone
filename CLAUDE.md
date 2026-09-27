@@ -39,11 +39,38 @@ Visual Studio projects stay at the root.
   `libc` and `posix` are C packages of raw bindings to the C library and the
   POSIX functions beyond it (Windows first), and `core` imports `libc` for its
   allocator; `sdl` and `gl` are C packages of raw bindings to SDL2 (a
-  window with an OpenGL context, its events and clock) and to OpenGL (what a
+  window with an OpenGL context or for Vulkan, its events and clock, and
+  loading Vulkan) and to OpenGL (what a
   renderer calls; the functions newer than OpenGL 1.1 are looked up at run
   time by `gl.load`), linking `SDL2.lib`, which must be on `LIB`, and the
-  Windows SDK's `opengl32.lib`; `math3d` is 3D math (vectors, quaternions, matrices, colors,
-  rectangles) ported from the Pegasus3D browser, its trigonometry from `libc`;
+  Windows SDK's `opengl32.lib`; `vulkan` is raw bindings to Vulkan 1.3,
+  written by hand from the specification (Vulkan's names without the prefix:
+  `vulkan.createInstance`, `vulkan.InstanceCreateInfo`), linking nothing:
+  every function is found at run time through the `vkGetInstanceProcAddr`
+  SDL hands out, volk's way (`load`, `loadInstance`, `loadDevice`), and its
+  `layout` test checks every struct against `cl.exe`; `gpu` is Cone's own
+  thin GPU layer, shaped like WebGPU's objects (`Instance`, `Adapter`,
+  `Device` and its `Queue`, `Surface`, `SwapChain`, `CommandEncoder`,
+  `RenderPass`, `Texture`, `Buffer`), with Vulkan its only backend and
+  nothing of Vulkan's in its interface, keeping two frames in flight and
+  designed for a command pool per recording thread, and its example,
+  `packages/gpu/examples/clear.cone`, clears a window through a swapchain and
+  reads a pixel back; `geomath` is 2-D and 3-D math (vectors,
+  quaternions, matrices, transforms, boxes, rays, planes, frusta and their
+  tests, Bezier curves, polygons, colors), begun as a port from the Pegasus3D
+  browser, its trigonometry from `libc` through its own `sin`, `cos`, ...;
+  `mesh` is surfaces over `geomath`: `Mesh` (indexed triangles, 32-bit
+  indices, vertex data as separate lists, material groups), `PolyMesh` (the
+  editable half-edge mesh of n-gons, pmp-library conventions, attribute
+  channels, `validate`, `triangulate` into a `Mesh`), the sphere, plane,
+  cube and cube-cage generators, and `.obj` export; `sculpt` is procedural
+  modelling over `mesh`: 2-D profiles (polygons, rounded rectangles, hulls,
+  sampled Beziers), 3-D paths with rotation-minimizing frames, `extrude`,
+  `lathe` and `sweep` (twist and taper) into a `PolyMesh` of quads with
+  corner uvs, the deformers `bend`, `twist`, `taper` and `curveDeform`,
+  and Catmull-Clark `subdivide` (boundary rules, semi-sharp creases,
+  face-varying uvs) with `subdivisionLevels`, a cage's level-of-detail
+  chain;
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed
@@ -61,11 +88,16 @@ Visual Studio projects stay at the root.
   Lua's separation of finalizers, and Acorn's generational mode as an
   option), which a
   bare `import collector;` brings in, since a package named `gc` could not
-  also declare a struct `gc`; `render` draws 3D
-  shapes through OpenGL (`Shape` and its sphere, plane and cube, `Shader`,
-  `Image` from BMP, `Texture`, `Camera`, `Light`), ported from Pegasus3D
-  over `gl`, `math3d` and `collections`, needing no window to build or test;
-  `window` is a window with an OpenGL context through `sdl`, and the render
+  also declare a struct `gc`; `thread` is OS threads (start a function on
+  a value moved in, join, detach, a handle dropped unjoined joins, sleep,
+  parking) and the futex the blocking layers are built on, Windows only,
+  linking the Windows SDK's `Synchronization.lib`; `render` draws 3D
+  shapes through OpenGL (`Shape`, made from a `mesh.Mesh`, and its sphere,
+  plane and cube, `Shader`, `Image` from BMP, `Texture`, `Camera`, `Light`),
+  ported from Pegasus3D over `gl`, `geomath`, `mesh` and `collections`,
+  needing no window to build or test;
+  `window` is a window with an OpenGL context, or one for Vulkan
+  (`openVulkan`, which the `gpu` package draws into), through `sdl`, and the render
   loop's glue (frame time, quit, Escape, fullscreen, resize), and its
   example, `packages/window/examples/spin.cone`, draws a lit, textured,
   turning sphere (building it needs SDL2's `lib` folder on `LIB`).
@@ -111,8 +143,8 @@ Visual Studio projects stay at the root.
   and the stress files `genstress.py` generates.
   `compiler/c/doc/compiler/performance.md`, "Measuring it", holds the baseline.
 - `samples/`: sample Cone programs. `oslayer` tours the `libc` and `posix`
-  packages and is built and run by `test_congo.py`, as is `math3d`'s example,
-  `packages/math3d/examples/tour.cone`. `opengl` opens a window cleared to
+  packages and is built and run by `test_congo.py`, as is `geomath`'s example,
+  `packages/geomath/examples/tour.cone`. `opengl` opens a window cleared to
   a color through the `sdl` and `gl` packages; it links only with SDL2's
   `lib` folder on `LIB`, and runs with `SDL2.dll` on `PATH`. The test suite
   builds neither it nor `webgl`.

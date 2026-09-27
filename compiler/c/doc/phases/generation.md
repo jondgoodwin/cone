@@ -638,7 +638,8 @@ made (`genlRootNote`, on `gen->roots`):
 
 - a **local's or a parameter's** alloca (`genlLocalVar`, `genlParmVar`, and an
   inline function's parameters, which are its caller's slots and so in its
-  caller's frame);
+  caller's frame); a match's binding by value has no alloca of its own, and so
+  no root: it is the matched value's variable's slot (below);
 - a **birth's**: a slot of its own for each site that makes such a value
   outside a local, stored as soon as the value exists (`genlRootBirth`, from
   `genlExpr`, whose switch is `genlTerm`), so that no collection during a later
@@ -732,7 +733,7 @@ This is what the CLAUDE.md warning is about. The conventions:
 
 | Value | LLVM level |
 | --- | --- |
-| a local or parameter (`var->llvmvar`) | **pointer to** its type — always an alloca |
+| a local or parameter (`var->llvmvar`) | **pointer to** its type — always an alloca; a match's binding by value (`flowMatchInPlace`) shares the matched value's variable's, read through the variant's type, which every variant, padded to the enum's size, allows, as the conversion to the variant reads it (`genlLocalVar`) |
 | `genlExpr(nameuse)` | the loaded value |
 | `genlAddr(x)` | pointer to `x`'s type |
 | `&T` value | a `ptr` to the `T` |

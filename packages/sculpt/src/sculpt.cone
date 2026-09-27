@@ -1,0 +1,1757 @@
+// The sculpt package: procedural modelling, the operators that build a solid
+// from a few numbers rather than from a list of vertices. A program reaches it
+// with 'import sculpt', and gets:
+//
+// - Profile, a 2-D outline: a polyline, open or closed, with its generators:
+//   a regular polygon, a circle, a rectangle, a rounded rectangle, the convex
+//   hull of points, and a polyline sampled from a 2-D Bezier curve.
+// - Path, a 3-D polyline sampled from Bezier curves or given as points, and
+//   the frames along it: rotation-minimizing frames, by the double-reflection
+//   method.
+// - Profile to solid: 'extrude' (along a direction), 'lathe' (revolved about
+//   an axis) and 'sweep' (along a path, with twist and taper), each making a
+//   mesh.PolyMesh of quads, with a corner "uv" channel.
+// - Deformers, which move a PolyMesh's vertices and leave its topology and
+//   channels as they were: 'bend', 'twist' and 'taper' (Barr's global
+//   deformations, as Blender's Simple Deform modifier offers them), and
+//   'curveDeform' (a mesh laid along a path, as Blender's Curve modifier).
+// - Subdivision: 'subdivide', Catmull-Clark, with boundary rules, semi-sharp
+//   creases from a "crease" channel, face-varying uvs that keep their seams,
+//   and every other channel carried; 'subdivisionLevels', a cage's levels 0
+//   to n, a level-of-detail chain. OpenSubdiv keeps subdivision apart from
+//   the mesh it refines, and so does this package: a PolyMesh in, a new one
+//   out.
+//
+// Its conventions are geomath's and mesh's, which are the industry's:
+// right-handed space, y up, f32, angles in radians, a positive angle turning
+// counterclockwise seen from the tip of its axis. A face faces the side from
+// which its corners run counterclockwise, and every operator winds its faces
+// to face outward when its profile runs counterclockwise (see each one).
+// Operators make quads wherever the shape allows, since Catmull-Clark
+// subdivision smooths quads best; a cap is one n-gon, and a lathe's faces
+// that touch the axis are triangles.
+//
+// Texture coordinates: every operator gives each face corner a uv in a
+// corner channel named "uv", which mesh's 'triangulate' and .obj writer use.
+// u runs around (the profile of a sweep or an extrusion, the axis of a
+// lathe) and v along (the path, the extrusion, the profile of a lathe), each
+// from 0 to 1 in proportion to length. Where a closed loop comes back to its
+// start, the corners there get u (or v) = 1, not 0: that is the seam, and
+// 'triangulate' splits a vertex whose corners' uvs differ, so a texture wraps
+// once without smearing back across the last face.
+//
+// The algorithms are from the literature; parameters follow Blender's manual,
+// never its source:
+// - rotation-minimizing frames: Wang, Juttler, Zheng and Liu, "Computation of
+//   rotation minimizing frames", ACM Transactions on Graphics 27(1), 2008, the
+//   double-reflection method; a closed path's leftover turn is spread along it
+//   as twist, as that paper suggests;
+// - bend, twist and taper: Barr, "Global and local deformations of solid
+//   primitives", SIGGRAPH 1984;
+// - convex hull: geomath's, Andrew's monotone chain;
+// - subdivision: Catmull and Clark 1978; DeRose, Kass and Truong 1998;
+//   OpenSubdiv's documented rules (see "Subdivision" below).
+//
+// The package is one file, since a package a program finds on the search path
+// (rather than one Congo builds) is compiled from its src/<name>.cone alone.
+
+mod sculpt;
+
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use *;
+
+// ======== helpers ========
+
+// The vector made unit length, or (0, 0, 0) if it has none
+fn unit(v Vec3) Vec3 {
+  imm len = v.length();
+  if len > 0. { v * (1. / len); } else { Vec3[0., 0., 0.]; };
+}
+
+fn absf(a f32) f32 {if a < 0. {-a;} else {a;};}
+fn clampf(v f32, lo f32, hi f32) f32 {if v < lo {lo;} elif v > hi {hi;} else {v;};}
+
+// Two points within 'eps' of each other
+fn nearVec2(a Vec2, b Vec2, eps f32) Bool {absf(a.x - b.x) <= eps and absf(a.y - b.y) <= eps;}
+
+// A copy of a list
+fn copyList[T](src &List[T]) List[T] {
+  mut out = List[T].withCapacity(src.len());
+  mut i = 0usize;
+  while i < src.len() {
+    out.push(*src[i]);
+    i = i + 1usize;
+  }
+  out;
+}
+
+// ======== Profile: a 2-D outline ========
+
+// A 2-D outline to be swept, extruded or revolved: its points in order and
+// whether the last joins back to the first. A closed profile that runs
+// counterclockwise (as every generator here makes one) gives outward-facing
+// solids. A closed profile needs 3 points, an open one 2.
+pub struct Profile {
+  pub points List[Vec2];
+  pub closed Bool;
+
+  // The points as given
+  pub fn fromPoints(points &[]Vec2, closed Bool) Profile {
+    mut pts = List[Vec2].withCapacity(points.len);
+    mut i = 0usize;
+    while i < points.len {
+      pts.push(points[i]);
+      i = i + 1usize;
+    }
+    Profile[pts, closed];
+  }
+
+  // A regular polygon of 'sides' corners on a circle of 'radius' about the
+  // origin, closed, counterclockwise from its first corner at (radius, 0)
+  pub fn polygon(sides u32, radius f32) Profile {
+    mut pts = List[Vec2].withCapacity(usize[sides]);
+    mut i = 0u32;
+    while i < sides {
+      imm a = 2. * pi * f32[i] / f32[sides];
+      pts.push(Vec2[radius * cos(a), radius * sin(a)]);
+      i = i + 1u32;
+    }
+    Profile[pts, true];
+  }
+
+  // A circle of 'radius' about the origin, as 'segments' straight pieces: the
+  // regular polygon of that many sides
+  pub fn circle(segments u32, radius f32) Profile {Profile.polygon(segments, radius);}
+
+  // A rectangle 'width' across and 'height' high, centred on the origin,
+  // closed, counterclockwise from its lower left corner
+  pub fn rectangle(width f32, height f32) Profile {
+    imm hw = width * 0.5;
+    imm hh = height * 0.5;
+    mut pts = List[Vec2].withCapacity(4usize);
+    pts.push(Vec2[-hw, -hh]);
+    pts.push(Vec2[hw, -hh]);
+    pts.push(Vec2[hw, hh]);
+    pts.push(Vec2[-hw, hh]);
+    Profile[pts, true];
+  }
+
+  // A rectangle centred on the origin whose corners are quarter circles of
+  // 'radius', each drawn as 'segments' straight pieces (at least 1): closed,
+  // counterclockwise, starting where the lower right corner's arc leaves the
+  // bottom edge. Each arc has segments + 1 points, 4 (segments + 1) in all;
+  // when the radius is half the shorter side, the arcs meet and the point
+  // they share is kept once. The radius is held to half the shorter side, and
+  // a radius of 0 or less gives the plain rectangle.
+  pub fn roundedRectangle(width f32, height f32, radius f32, segments u32) Profile {
+    imm hw = width * 0.5;
+    imm hh = height * 0.5;
+    imm most = if hw < hh {hw;} else {hh;};
+    imm r = if radius > most {most;} else {radius;};
+    if r <= 0. { return Profile.rectangle(width, height); }
+    imm n = if segments < 1u32 {1u32;} else {segments;};
+    imm eps = r * 0.00001;
+    mut pts = List[Vec2].withCapacity(4usize * (usize[n] + 1usize));
+    mut c = 0u32;
+    while c < 4u32 {
+      // Corners lower right, upper right, upper left, lower left; each arc
+      // turns a quarter from where the one before it ended
+      imm cx = if c == 0u32 or c == 1u32 {hw - r;} else {r - hw;};
+      imm cy = if c == 0u32 or c == 3u32 {r - hh;} else {hh - r;};
+      imm a0 = (f32[c] - 1.) * (pi * 0.5);
+      mut k = 0u32;
+      while k <= n {
+        imm a = a0 + (pi * 0.5) * f32[k] / f32[n];
+        imm p = Vec2[cx + r * cos(a), cy + r * sin(a)];
+        if pts.len() == 0usize or !nearVec2(*pts[pts.len() - 1usize], p, eps) { pts.push(p); }
+        k = k + 1u32;
+      }
+      c = c + 1u32;
+    }
+    if pts.len() > 1usize and nearVec2(*pts[pts.len() - 1usize], *pts[0usize], eps) { pts.pop(); }
+    Profile[pts, true];
+  }
+
+  // The convex hull of the points (geomath's 'convexHull'): closed,
+  // counterclockwise from the point of least x
+  pub fn hull(points &[]Vec2) Profile {Profile[convexHull(points), true];}
+
+  // A cubic Bezier curve as an open polyline of 'segments' pieces, evenly
+  // spaced in the curve's parameter
+  pub fn fromCubic(curve CubicBezier2, segments u32) Profile {Profile[curve.sample(segments), false];}
+
+  // A quadratic Bezier curve the same way
+  pub fn fromQuadratic(curve QuadraticBezier2, segments u32) Profile {Profile[curve.sample(segments), false];}
+
+  pub fn pointCount(self &) usize {points.len();}
+
+  // The length of the outline, the closing edge included when it is closed
+  pub fn length(self &) f32 {
+    mut len = polylineLength(points.view());
+    if closed and points.len() > 1usize {
+      len = len + points[0usize].distance(*points[points.len() - 1usize]);
+    }
+    len;
+  }
+
+  // Whether it runs counterclockwise (by its signed area, closed or not)
+  pub fn isCounterClockwise(self &) Bool {polygonIsCounterClockwise(points.view());}
+}
+
+// Each profile point's u, its distance along the profile over the profile's
+// length, then one more: the u of the point after the last, which is 1 (the
+// seam, on a closed profile). A profile of no length gets evenly spaced u.
+fn profileUs(profile &Profile) List[f32] {
+  imm m = profile.points.len();
+  mut us = List[f32].withCapacity(m + 1usize);
+  imm total = profile.length();
+  imm pieces = if profile.closed {m;} else {m - 1usize;};
+  mut s f32 = 0.;
+  mut j = 0usize;
+  while j < m {
+    if total > 0. { us.push(s / total); }
+    elif pieces > 0usize { us.push(f32[j] / f32[pieces]); }
+    else { us.push(0.); }
+    if j + 1usize < m { s = s + profile.points[j + 1usize].distance(*profile.points[j]); }
+    j = j + 1usize;
+  }
+  us.push(1.);
+  us;
+}
+
+// Each profile point's uv on a cap: the profile's box scaled, keeping its
+// shape, so its longer side runs 0 to 1. The cap at the start of a sweep is
+// seen from behind, so its u runs the other way, and the texture reads the
+// right way round from outside on both.
+fn capUvs(profile &Profile, start Bool) List[Vec2] {
+  imm m = profile.points.len();
+  mut out = List[Vec2].withCapacity(m);
+  if m == 0usize { return out; }
+  mut lo = *profile.points[0usize];
+  mut hi = lo;
+  mut j = 1usize;
+  while j < m {
+    lo = lo.min(*profile.points[j]);
+    hi = hi.max(*profile.points[j]);
+    j = j + 1usize;
+  }
+  imm w = hi.x - lo.x;
+  imm h = hi.y - lo.y;
+  imm size = if w > h {w;} else {h;};
+  imm inv = if size > 0. {1. / size;} else {1.;};
+  j = 0usize;
+  while j < m {
+    imm p = *profile.points[j];
+    imm u = if start {(hi.x - p.x) * inv;} else {(p.x - lo.x) * inv;};
+    out.push(Vec2[u, (p.y - lo.y) * inv]);
+    j = j + 1usize;
+  }
+  out;
+}
+
+// ======== Path: a 3-D polyline and the frames along it ========
+
+// A frame along a path: its point, the unit tangent (the way the path runs),
+// and the unit normal and binormal across it. (normal, binormal, tangent) is
+// right-handed: normal x binormal = tangent. A profile is placed in a frame
+// with its x along the normal and its y along the binormal, so a profile that
+// runs counterclockwise is seen running counterclockwise from ahead.
+pub struct Frame {
+  pub origin Vec3;
+  pub tangent Vec3;
+  pub normal Vec3;
+  pub binormal Vec3;
+
+  // The profile point p placed in the frame
+  pub fn place(self, p Vec2) Vec3 {origin + normal * p.x + binormal * p.y;}
+}
+
+// A path in space: its points in order and whether the last joins back to the
+// first. 'tangents' is a unit tangent for each point, or empty; a Bezier's
+// sampling fills it from the curve, and otherwise each point's tangent is the
+// bisector of the pieces meeting there (the piece's direction at an end).
+// 'up' steers the first frame: its binormal (a profile's y) is the up vector
+// made perpendicular to the first tangent. An up of (0, 0, 0), as every
+// constructor leaves it, means +y, or +z when the path starts along y.
+pub struct Path {
+  pub points List[Vec3];
+  pub tangents List[Vec3];
+  pub closed Bool;
+  pub up Vec3;
+
+  // The points as given
+  pub fn fromPoints(points &[]Vec3, closed Bool) Path {
+    mut pts = List[Vec3].withCapacity(points.len);
+    mut i = 0usize;
+    while i < points.len {
+      pts.push(points[i]);
+      i = i + 1usize;
+    }
+    Path[pts, List[Vec3].empty(), closed, Vec3[0., 0., 0.]];
+  }
+
+  // A straight path from 'from' to 'to' in 'segments' equal pieces
+  pub fn line(from Vec3, to Vec3, segments u32) Path {
+    imm n = if segments < 1u32 {1u32;} else {segments;};
+    mut pts = List[Vec3].withCapacity(usize[n] + 1usize);
+    mut tans = List[Vec3].withCapacity(usize[n] + 1usize);
+    imm dir = unit(to - from);
+    mut i = 0u32;
+    while i <= n {
+      pts.push(from.lerp(to, f32[i] / f32[n]));
+      tans.push(dir);
+      i = i + 1u32;
+    }
+    Path[pts, tans, false, Vec3[0., 0., 0.]];
+  }
+
+  // A cubic Bezier curve sampled in 'segments' pieces, evenly spaced in the
+  // curve's parameter, with its tangents from the curve
+  pub fn fromCubic(curve CubicBezier3, segments u32) Path {
+    imm n = if segments < 1u32 {1u32;} else {segments;};
+    mut pts = List[Vec3].withCapacity(usize[n] + 1usize);
+    mut tans = List[Vec3].withCapacity(usize[n] + 1usize);
+    mut i = 0u32;
+    while i <= n {
+      imm t = f32[i] / f32[n];
+      pts.push(curve.point(t));
+      tans.push(unit(curve.tangent(t)));
+      i = i + 1u32;
+    }
+    Path[pts, tans, false, Vec3[0., 0., 0.]];
+  }
+
+  // A quadratic Bezier curve the same way
+  pub fn fromQuadratic(curve QuadraticBezier3, segments u32) Path {
+    imm n = if segments < 1u32 {1u32;} else {segments;};
+    mut pts = List[Vec3].withCapacity(usize[n] + 1usize);
+    mut tans = List[Vec3].withCapacity(usize[n] + 1usize);
+    mut i = 0u32;
+    while i <= n {
+      imm t = f32[i] / f32[n];
+      pts.push(curve.point(t));
+      tans.push(unit(curve.tangent(t)));
+      i = i + 1u32;
+    }
+    Path[pts, tans, false, Vec3[0., 0., 0.]];
+  }
+
+  // Cubic Bezier curves one after another, each ending where the next
+  // begins, each sampled in 'segments' pieces; the point two curves share is
+  // kept once, with the tangent the first of them ends with. When 'closed',
+  // the last curve ends where the first began, and that point too is kept
+  // once. Curves that join smoothly (a Blender spline's) give a smooth path.
+  pub fn fromCubics(curves &[]CubicBezier3, segments u32, closed Bool) Path {
+    imm n = if segments < 1u32 {1u32;} else {segments;};
+    mut pts = List[Vec3].empty();
+    mut tans = List[Vec3].empty();
+    mut c = 0usize;
+    while c < curves.len {
+      imm curve = curves[c];
+      mut i = if c == 0usize {0u32;} else {1u32;};
+      while i <= n {
+        imm t = f32[i] / f32[n];
+        pts.push(curve.point(t));
+        tans.push(unit(curve.tangent(t)));
+        i = i + 1u32;
+      }
+      c = c + 1usize;
+    }
+    if closed and pts.len() > 1usize {
+      pts.pop();
+      tans.pop();
+    }
+    Path[pts, tans, closed, Vec3[0., 0., 0.]];
+  }
+
+  // A circle of 'radius' about the origin in the plane y = 0, as 'segments'
+  // straight pieces, closed, running counterclockwise seen from above (+y):
+  // point k at angle 2 pi k / segments is (r cos a, 0, -r sin a), starting at
+  // (r, 0, 0). Its tangents are the circle's.
+  pub fn circle(radius f32, segments u32) Path {
+    imm n = if segments < 3u32 {3u32;} else {segments;};
+    mut pts = List[Vec3].withCapacity(usize[n]);
+    mut tans = List[Vec3].withCapacity(usize[n]);
+    mut i = 0u32;
+    while i < n {
+      imm a = 2. * pi * f32[i] / f32[n];
+      imm c = cos(a);
+      imm s = sin(a);
+      pts.push(Vec3[radius * c, 0., -radius * s]);
+      tans.push(Vec3[-s, 0., -c]);
+      i = i + 1u32;
+    }
+    Path[pts, tans, true, Vec3[0., 0., 0.]];
+  }
+
+  pub fn pointCount(self &) usize {points.len();}
+
+  // Each point's distance along the path from the first
+  pub fn distances(self &) List[f32] {
+    imm n = points.len();
+    mut out = List[f32].withCapacity(n);
+    mut s f32 = 0.;
+    mut i = 0usize;
+    while i < n {
+      if i > 0usize { s = s + points[i].distance(*points[i - 1usize]); }
+      out.push(s);
+      i = i + 1usize;
+    }
+    out;
+  }
+
+  // The path's length, the closing piece included when it is closed
+  pub fn length(self &) f32 {
+    mut len = polylineLength(points.view());
+    if closed and points.len() > 1usize {
+      len = len + points[0usize].distance(*points[points.len() - 1usize]);
+    }
+    len;
+  }
+
+  // The unit tangent at point i: the one given, or else the bisector of the
+  // pieces meeting there (the one piece's direction at an open path's end,
+  // and the piece coming in where the path turns straight back)
+  pub fn tangentAt(self &, i usize) Vec3 {
+    imm n = points.len();
+    if tangents.len() == n {
+      imm given = *tangents[i];
+      if given.lengthSquared() > 0. { return given; }
+    }
+    if n < 2usize { return Vec3[0., 0., 1.]; }
+    imm last = n - 1usize;
+    imm inDir = if i > 0usize {unit(*points[i] - *points[i - 1usize]);}
+      elif closed {unit(*points[0usize] - *points[last]);}
+      else {Vec3[0., 0., 0.];};
+    imm outDir = if i < last {unit(*points[i + 1usize] - *points[i]);}
+      elif closed {unit(*points[0usize] - *points[last]);}
+      else {Vec3[0., 0., 0.];};
+    imm both = unit(inDir + outDir);
+    if both.lengthSquared() > 0. { both; }
+    elif inDir.lengthSquared() > 0. { inDir; }
+    elif outDir.lengthSquared() > 0. { outDir; }
+    else { Vec3[0., 0., 1.]; };
+  }
+
+  // A frame at each point: rotation-minimizing frames, by the double-
+  // reflection method of Wang, Juttler, Zheng and Liu (2008). The first frame
+  // is set by 'up' (see Path); each next normal is the one before reflected
+  // twice, first in the plane that swaps the two points, then in the plane
+  // that takes the reflected tangent onto the next tangent. The frames turn
+  // about the tangent as little as the path allows, so they never flip where
+  // the path's curvature changes sign (as Frenet frames do) and a planar path
+  // keeps its binormal perpendicular to its plane. On a closed path the frame
+  // carried all the way round can come back turned about the tangent (when
+  // the path is not planar); that angle is taken out again gradually, in
+  // proportion to distance along the path, so the frames join where the path
+  // does.
+  pub fn frames(self &) List[Frame] {
+    imm n = points.len();
+    mut out = List[Frame].withCapacity(n);
+    if n == 0usize { return out; }
+    imm t0 = self.tangentAt(0usize);
+    mut r = initialNormal(t0, up);
+    out.push(Frame[*points[0usize], t0, r, t0.cross(r)]);
+    mut tPrev = t0;
+    mut i = 1usize;
+    while i < n {
+      imm ti = self.tangentAt(i);
+      r = reflectStep(*points[i - 1usize], *points[i], tPrev, ti, r);
+      out.push(Frame[*points[i], ti, r, ti.cross(r)]);
+      tPrev = ti;
+      i = i + 1usize;
+    }
+    if closed and n > 2usize {
+      // The normal carried back to the first point, and how far it turned
+      imm rn = reflectStep(*points[n - 1usize], *points[0usize], tPrev, t0, r);
+      imm r0 = out[0usize].normal;
+      imm alpha = atan2(r0.cross(rn).dot(t0), r0.dot(rn));
+      imm total = self.length();
+      if alpha != 0. and total > 0. {
+        imm dist = self.distances();
+        i = 0usize;
+        while i < n {
+          imm f = *out[i];
+          imm beta = -alpha * *dist[i] / total;
+          imm c = cos(beta);
+          imm s = sin(beta);
+          imm nn = f.normal * c + f.binormal * s;
+          out.set(i, Frame[f.origin, f.tangent, nn, f.tangent.cross(nn)]);
+          i = i + 1usize;
+        }
+      }
+    }
+    out;
+  }
+}
+
+// The first frame's normal for the tangent t: the binormal is 'up' made
+// perpendicular to t (+y when up is zero, +z when t runs along y, the same
+// when up runs along t), and the normal is binormal x tangent
+fn initialNormal(t Vec3, up Vec3) Vec3 {
+  mut b = unit(up - t * up.dot(t));
+  if b.lengthSquared() < 0.5 {
+    imm alt = if absf(t.y) < 0.999 {Vec3[0., 1., 0.];} else {Vec3[0., 0., 1.];};
+    b = unit(alt - t * alt.dot(t));
+  }
+  b.cross(t);
+}
+
+// One step of the double reflection: the normal r0 at x0 (tangent t0) carried
+// to x1 (tangent t1). Reflection 1 is in the plane bisecting x0 and x1, which
+// swaps them; reflection 2 is in the plane that takes the reflected tangent
+// onto t1. The result is made exactly perpendicular to t1 again, against
+// rounding.
+fn reflectStep(x0 Vec3, x1 Vec3, t0 Vec3, t1 Vec3, r0 Vec3) Vec3 {
+  imm v1 = x1 - x0;
+  imm c1 = v1.dot(v1);
+  mut rl = r0;
+  mut tl = t0;
+  if c1 > 0. {
+    rl = r0 - v1 * (2. / c1 * v1.dot(r0));
+    tl = t0 - v1 * (2. / c1 * v1.dot(t0));
+  }
+  imm v2 = t1 - tl;
+  imm c2 = v2.dot(v2);
+  imm r1 = if c2 > 0. {rl - v2 * (2. / c2 * v2.dot(rl));} else {rl;};
+  imm r = unit(r1 - t1 * t1.dot(r1));
+  if r.lengthSquared() > 0.5 { r; } else { initialNormal(t1, Vec3[0., 0., 0.]); };
+}
+
+// The frame at 'distance' along the path, from its frames and their
+// distances: within a piece, the point is between its ends and the frame is
+// blended between theirs, made unit and perpendicular again. An open path
+// carries on straight past its ends, along its end tangents; a closed path
+// wraps round.
+fn frameAtDistance(path &Path, frames &List[Frame], dist &List[f32], total f32, distance f32) Frame {
+  imm n = frames.len();
+  imm first = *frames[0usize];
+  if n == 1usize or total <= 0. {
+    return Frame[first.origin + first.tangent * distance, first.tangent, first.normal, first.binormal];
+  }
+  mut d = distance;
+  if path.closed {
+    d = d - total * libc.floorf(d / total);
+  } else {
+    if d <= 0. {
+      return Frame[first.origin + first.tangent * d, first.tangent, first.normal, first.binormal];
+    }
+    imm lastF = *frames[n - 1usize];
+    if d >= total {
+      return Frame[lastF.origin + lastF.tangent * (d - total), lastF.tangent, lastF.normal, lastF.binormal];
+    }
+  }
+  // The piece holding d: from point i to point i + 1 (to point 0 on the
+  // closing piece)
+  mut i = 0usize;
+  while i + 1usize < n and *dist[i + 1usize] <= d {
+    i = i + 1usize;
+  }
+  imm a = *frames[i];
+  imm b = *frames[(i + 1usize) % n];
+  imm start = *dist[i];
+  imm end = if i + 1usize < n {*dist[i + 1usize];} else {total;};
+  imm seg = end - start;
+  imm f = if seg > 0. {(d - start) / seg;} else {0.;};
+  imm t = unit(a.tangent.lerp(b.tangent, f));
+  imm nl = a.normal.lerp(b.normal, f);
+  imm nr = unit(nl - t * t.dot(nl));
+  Frame[a.origin.lerp(b.origin, f), t, nr, t.cross(nr)];
+}
+
+// ======== Profile to solid ========
+
+// Build a solid from rings of points: 'nr' rings of 'm' points each, ring by
+// ring, point k of ring i at pos[i * m + k]. Neighbouring rings are joined
+// by quads, and the first ring to the last when 'ringsClosed'; neighbouring
+// points of a ring are joined, and the last to the first when
+// 'profileClosed'. Quad (i, j) runs (i, j), (i, j + 1), (i + 1, j + 1),
+// (i + 1, j), which faces outward when the profile runs counterclockwise
+// about the direction the rings advance. With 'caps', and a closed profile
+// between open ends, the first ring is closed by an n-gon facing back and
+// the last by one facing forward. 'flip' reverses every face. us holds each
+// profile point's u and then 1; vs each ring's v and then 1.
+fn tube(pos &List[Vec3], m usize, nr usize, profileClosed Bool, ringsClosed Bool, caps Bool, flip Bool,
+    us &List[f32], vs &List[f32], capStart &List[Vec2], capEnd &List[Vec2]) PolyMesh {
+  mut counts = List[u32].empty();
+  mut idx = List[u32].empty();
+  mut uvs = List[Vec2].empty();
+  mut face = List[u32].empty();
+  mut fuv = List[Vec2].empty();
+  imm pClosed = profileClosed and m >= 3usize;
+  imm rClosed = ringsClosed and nr >= 3usize;
+  if m >= 2usize and nr >= 2usize {
+    imm nb = if rClosed {nr;} else {nr - 1usize;};
+    imm ns = if pClosed {m;} else {m - 1usize;};
+    mut i = 0usize;
+    while i < nb {
+      imm i1 = (i + 1usize) % nr;
+      imm v0 = *vs[i];
+      imm v1 = *vs[i + 1usize];
+      mut j = 0usize;
+      while j < ns {
+        imm j1 = (j + 1usize) % m;
+        imm u0 = *us[j];
+        imm u1 = *us[j + 1usize];
+        face.clear();
+        fuv.clear();
+        face.push(u32[i * m + j]);
+        fuv.push(Vec2[u0, v0]);
+        face.push(u32[i * m + j1]);
+        fuv.push(Vec2[u1, v0]);
+        face.push(u32[i1 * m + j1]);
+        fuv.push(Vec2[u1, v1]);
+        face.push(u32[i1 * m + j]);
+        fuv.push(Vec2[u0, v1]);
+        emitFace(&mut counts, &mut idx, &mut uvs, &face, &fuv, flip);
+        j = j + 1usize;
+      }
+      i = i + 1usize;
+    }
+  }
+  if caps and pClosed and !rClosed and nr >= 1usize {
+    // The first ring seen from behind: its points the other way round
+    face.clear();
+    fuv.clear();
+    mut j = m;
+    while j > 0usize {
+      j = j - 1usize;
+      face.push(u32[j]);
+      fuv.push(*capStart[j]);
+    }
+    emitFace(&mut counts, &mut idx, &mut uvs, &face, &fuv, flip);
+    face.clear();
+    fuv.clear();
+    j = 0usize;
+    while j < m {
+      face.push(u32[(nr - 1usize) * m + j]);
+      fuv.push(*capEnd[j]);
+      j = j + 1usize;
+    }
+    emitFace(&mut counts, &mut idx, &mut uvs, &face, &fuv, flip);
+  }
+  build(pos, &counts, &idx, &uvs);
+}
+
+// Add one face, its corners and their uvs, reversed when 'flip'
+fn emitFace(counts &mut List[u32], idx &mut List[u32], uvs &mut List[Vec2], face &List[u32], fuv &List[Vec2], flip Bool) {
+  imm n = face.len();
+  counts.push(u32[n]);
+  mut k = 0usize;
+  while k < n {
+    imm s = if flip {n - 1usize - k;} else {k;};
+    idx.push(*face[s]);
+    uvs.push(*fuv[s]);
+    k = k + 1usize;
+  }
+}
+
+// The PolyMesh of the faces, with their corner uvs as the "uv" channel
+fn build(pos &List[Vec3], counts &List[u32], idx &List[u32], uvs &List[Vec2]) PolyMesh {
+  mut problems = List[String].empty();
+  mut pm = PolyMesh.fromPolygons(pos.view(), counts.view(), idx.view(), &mut problems);
+  imm ch = pm.addVec2Channel(CornerDomain, "uv", Vec2[0., 0.]);
+  pm.setCornerVec2s(ch, uvs.view());
+  pm;
+}
+
+// The profile, lying in the plane z = 0 (its x on x, its y on y), extruded
+// along 'direction' in 'segments' equal steps (Blender's Extrude of a curve,
+// or its Screw with no turn): segments + 1 rings of the profile's points,
+// ring i moved by direction * i / segments, vertex i * m + j for ring i and
+// profile point j. Neighbouring rings are joined by quads. With 'caps', a
+// closed profile's two ends are closed by an n-gon each. Faces face outward
+// when a closed profile runs counterclockwise, whichever side of the plane
+// the direction points to. The v of ring i is i / segments.
+pub fn extrude(profile &Profile, direction Vec3, segments u32, caps Bool) PolyMesh {
+  imm n = usize[if segments < 1u32 {1u32;} else {segments;}];
+  imm m = profile.points.len();
+  mut pos = List[Vec3].withCapacity(m * (n + 1usize));
+  mut vs = List[f32].withCapacity(n + 2usize);
+  mut i = 0usize;
+  while i <= n {
+    imm f = f32[i] / f32[n];
+    imm shift = direction * f;
+    mut j = 0usize;
+    while j < m {
+      imm p = *profile.points[j];
+      pos.push(Vec3[p.x, p.y, 0.] + shift);
+      j = j + 1usize;
+    }
+    vs.push(f);
+    i = i + 1usize;
+  }
+  vs.push(1.);
+  imm us = profileUs(profile);
+  // Extruded towards -z, the profile is seen from behind: flip every face,
+  // and the caps swap which end reads the texture mirrored
+  imm flip = direction.z < 0.;
+  imm capA = capUvs(profile, !flip);
+  imm capB = capUvs(profile, flip);
+  tube(&pos, m, n + 1usize, profile.closed, false, caps, flip, &us, &vs, &capA, &capB);
+}
+
+// The profile swept along the path (Blender's curve Bevel with a profile
+// object, or Geometry Nodes' Curve to Mesh): at each path point the profile
+// is placed in that point's rotation-minimizing frame (Path.frames), its x
+// along the frame's normal and its y along its binormal, so vertex i * m + j
+// is profile point j at path point i. The profile at distance s along a path
+// of length L is first turned by twistAngle * s / L about the tangent
+// (counterclockwise seen from ahead) and scaled by startScale + (endScale -
+// startScale) * s / L, both in proportion to arc length. The profile is not
+// widened at the path's corners (no mitre): a path sampled finely from a
+// curve does not need it.
+//
+// Neighbouring rings are joined by quads; a closed path joins its last ring
+// to its first, so its twist should be a whole number of turns (or a
+// symmetry of the profile) and its scales equal, or the last band shears.
+// With 'caps', an open path's ends are closed by an n-gon each when the
+// profile is closed. Faces face outward when a closed profile runs
+// counterclockwise. The v of ring i is s / L, and the corners on a closed
+// path's closing band that are at its first ring have v = 1.
+pub fn sweep(profile &Profile, path &Path, twistAngle f32, startScale f32, endScale f32, caps Bool) PolyMesh {
+  imm frames = path.frames();
+  imm dist = path.distances();
+  imm total = path.length();
+  imm m = profile.points.len();
+  imm nr = frames.len();
+  mut pos = List[Vec3].withCapacity(m * nr);
+  mut vs = List[f32].withCapacity(nr + 1usize);
+  mut i = 0usize;
+  while i < nr {
+    imm f = if total > 0. {*dist[i] / total;} else {0.;};
+    imm scale = startScale + (endScale - startScale) * f;
+    imm turn = twistAngle * f;
+    imm fr = *frames[i];
+    mut j = 0usize;
+    while j < m {
+      imm p = *profile.points[j];
+      imm q = p.rotate(turn);
+      pos.push(fr.place(q * scale));
+      j = j + 1usize;
+    }
+    vs.push(f);
+    i = i + 1usize;
+  }
+  vs.push(1.);
+  imm us = profileUs(profile);
+  imm capA = capUvs(profile, true);
+  imm capB = capUvs(profile, false);
+  tube(&pos, m, nr, profile.closed, path.closed, caps, false, &us, &vs, &capA, &capB);
+}
+
+// The profile revolved about an axis through the origin (Blender's Screw
+// modifier with no screw offset; three.js's LatheGeometry): profile point
+// (x, y) is x out from the axis and y along it, placed at x e + y a, where a
+// is the unit axis and e the unit direction perpendicular to it nearest +x
+// (nearest +y when the axis is x); it is turned about the axis by 'angle' in
+// 'steps' equal steps. An angle of a whole turn (2 pi, within a
+// ten-thousandth) closes the solid, with 'steps' columns; any other leaves it
+// open, with steps + 1. A profile point on the axis (x = 0, within a
+// millionth of the profile's size) is one vertex, not one per column, and
+// the faces touching it are triangles; a profile edge along the axis makes
+// no face. Faces face outward when a closed profile runs counterclockwise,
+// or an open one runs up the axis on the +x side, and the angle is positive.
+//
+// Vertices are made profile point by profile point: an axis point's one
+// vertex, or each column of the others, in order. u runs around, column k at
+// k / steps, the closing corners of a whole turn at u = 1, and a corner on
+// the axis at the middle of its face's u; v runs along the profile in
+// proportion to its length.
+pub fn lathe(profile &Profile, axis Vec3, angle f32, steps u32) PolyMesh {
+  imm a = unit(axis);
+  mut e = unit(Vec3[1., 0., 0.] - a * a.x);
+  if e.lengthSquared() < 0.5 { e = unit(Vec3[0., 1., 0.] - a * a.y); }
+  imm m = profile.points.len();
+  imm nsteps = usize[if steps < 1u32 {1u32;} else {steps;}];
+  imm full = absf(angle) >= 2. * pi - 0.0001;
+  imm cols = if full {nsteps;} else {nsteps + 1usize;};
+  mut size f32 = 0.;
+  mut j = 0usize;
+  while j < m {
+    imm p = *profile.points[j];
+    if absf(p.x) > size { size = absf(p.x); }
+    if absf(p.y) > size { size = absf(p.y); }
+    j = j + 1usize;
+  }
+  imm eps = size * 0.000001;
+
+  // The vertices, and where each profile point's begin
+  mut pos = List[Vec3].empty();
+  mut base = List[u32].withCapacity(m);
+  mut onAxis = List[Bool].withCapacity(m);
+  j = 0usize;
+  while j < m {
+    imm p = *profile.points[j];
+    base.push(u32[pos.len()]);
+    if absf(p.x) <= eps {
+      onAxis.push(true);
+      pos.push(a * p.y);
+    } else {
+      onAxis.push(false);
+      imm start = e * p.x + a * p.y;
+      mut k = 0usize;
+      while k < cols {
+        imm q = Quat.angleAxis(angle * f32[k] / f32[nsteps], a);
+        pos.push(q * start);
+        k = k + 1usize;
+      }
+    }
+    j = j + 1usize;
+  }
+
+  imm vs = profileUs(profile);
+  mut counts = List[u32].empty();
+  mut idx = List[u32].empty();
+  mut uvs = List[Vec2].empty();
+  mut face = List[u32].empty();
+  mut fuv = List[Vec2].empty();
+  imm pClosed = profile.closed and m >= 3usize;
+  imm ns = if m < 2usize {0usize;} elif pClosed {m;} else {m - 1usize;};
+  imm flip = angle < 0.;
+  mut k = 0usize;
+  while k < nsteps {
+    imm k1 = (k + 1usize) % cols;
+    imm u0 = f32[k] / f32[nsteps];
+    imm u1 = f32[k + 1usize] / f32[nsteps];
+    imm um = (f32[k] + 0.5) / f32[nsteps];
+    j = 0usize;
+    while j < ns {
+      imm j1 = (j + 1usize) % m;
+      imm axisA = *onAxis[j];
+      imm axisB = *onAxis[j1];
+      if !(axisA and axisB) {
+        imm v0 = *vs[j];
+        imm v1 = *vs[j + 1usize];
+        imm ka = if axisA {0usize;} else {k;};
+        imm ka1 = if axisA {0usize;} else {k1;};
+        imm kb = if axisB {0usize;} else {k;};
+        imm kb1 = if axisB {0usize;} else {k1;};
+        face.clear();
+        fuv.clear();
+        // (k, j), (k + 1, j), (k + 1, j + 1), (k, j + 1), dropping the
+        // corner that repeats an axis vertex
+        face.push(*base[j] + u32[ka]);
+        fuv.push(Vec2[if axisA {um;} else {u0;}, v0]);
+        if !axisA {
+          face.push(*base[j] + u32[ka1]);
+          fuv.push(Vec2[u1, v0]);
+        }
+        face.push(*base[j1] + u32[kb1]);
+        fuv.push(Vec2[if axisB {um;} else {u1;}, v1]);
+        if !axisB {
+          face.push(*base[j1] + u32[kb]);
+          fuv.push(Vec2[u0, v1]);
+        }
+        emitFace(&mut counts, &mut idx, &mut uvs, &face, &fuv, flip);
+      }
+      j = j + 1usize;
+    }
+    k = k + 1usize;
+  }
+  build(&pos, &counts, &idx, &uvs);
+}
+
+// ======== Deformers ========
+//
+// Each moves the vertices of a PolyMesh and returns the result as a new
+// PolyMesh: the same vertices, half-edges and faces in the same order, and
+// every attribute channel carried over unchanged. Each works in a frame set
+// by an origin and a unit direction 'along' (made unit here): a vertex's
+// coordinate along it is t = (p - origin) . along, and the deformed span is
+// the mesh's extent in t, from its least to its greatest. As in Barr (1984),
+// the rate of bend, twist or taper is the amount over that span, and it acts
+// on t measured from the origin, held to the span (t clamped to it): so the
+// part of the mesh at the origin (t = 0) stays where it is, and a mesh whose
+// origin is at one end is deformed from that end. A mesh with no extent
+// along the direction, or an amount of 0, comes back unchanged.
+
+// The least and greatest t over the mesh's vertices, as (x, y)
+fn extentAlong(m &PolyMesh, origin Vec3, d Vec3) Vec2 {
+  if m.positions.len() == 0usize { return Vec2[0., 0.]; }
+  mut lo = (*m.positions[0usize] - origin).dot(d);
+  mut hi = lo;
+  mut i = 1usize;
+  while i < m.positions.len() {
+    imm t = (*m.positions[i] - origin).dot(d);
+    if t < lo { lo = t; }
+    if t > hi { hi = t; }
+    i = i + 1usize;
+  }
+  Vec2[lo, hi];
+}
+
+// A PolyMesh with m's topology and channels and the given positions
+fn withPositions(m &PolyMesh, positions List[Vec3]) PolyMesh {
+  mut floats = List[Channel[f32]].withCapacity(m.floats.len());
+  mut c = 0usize;
+  while c < m.floats.len() {
+    imm len = m.floats[c].values.len();
+    mut values = List[f32].withCapacity(len);
+    mut k = 0usize;
+    while k < len {
+      values.push(*m.floats[c].values[k]);
+      k = k + 1usize;
+    }
+    floats.push(Channel[f32][String.from(m.floats[c].name.view()), m.floats[c].domain, values]);
+    c = c + 1usize;
+  }
+  mut vec2s = List[Channel[Vec2]].withCapacity(m.vec2s.len());
+  c = 0usize;
+  while c < m.vec2s.len() {
+    imm len = m.vec2s[c].values.len();
+    mut values = List[Vec2].withCapacity(len);
+    mut k = 0usize;
+    while k < len {
+      values.push(*m.vec2s[c].values[k]);
+      k = k + 1usize;
+    }
+    vec2s.push(Channel[Vec2][String.from(m.vec2s[c].name.view()), m.vec2s[c].domain, values]);
+    c = c + 1usize;
+  }
+  mut vec3s = List[Channel[Vec3]].withCapacity(m.vec3s.len());
+  c = 0usize;
+  while c < m.vec3s.len() {
+    imm len = m.vec3s[c].values.len();
+    mut values = List[Vec3].withCapacity(len);
+    mut k = 0usize;
+    while k < len {
+      values.push(*m.vec3s[c].values[k]);
+      k = k + 1usize;
+    }
+    vec3s.push(Channel[Vec3][String.from(m.vec3s[c].name.view()), m.vec3s[c].domain, values]);
+    c = c + 1usize;
+  }
+  PolyMesh[positions, copyList[u32](&m.vHalfedge), copyList[u32](&m.hNext), copyList[u32](&m.hPrev),
+    copyList[u32](&m.hVertex), copyList[u32](&m.hFace), copyList[u32](&m.fHalfedge), floats, vec2s, vec3s];
+}
+
+// A bend (Blender's Simple Deform, Bend; Barr's bend): the mesh's span along
+// 'along' is curled through 'angle' about 'axis' (made perpendicular to
+// along), turning along towards c = axis x along, as a right-handed turn
+// about the axis does. With the span's length S, the bend's radius is
+// R = S / angle, and its centre line runs parallel to the axis through
+// origin + c R. A vertex at t along, c' across towards c and w along the
+// axis, with T = t clamped to the span and theta = T / R, goes to
+//     origin + along ((R - c') sin theta + (t - T) cos theta)
+//            + c (R - (R - c') cos theta + (t - T) sin theta) + axis w:
+// within the span, onto the arc of radius R - c' about the centre line at
+// angle theta from the origin, so a straight line along the span through the
+// origin becomes an arc of radius R, turning through 'angle', whose length
+// is unchanged; outside the span, carried on straight along the tangent at
+// the span's end. A negative angle bends towards -c.
+pub fn bend(m &PolyMesh, angle f32, axis Vec3, along Vec3, origin Vec3) PolyMesh {
+  imm d = unit(along);
+  imm ax = unit(axis - d * axis.dot(d));
+  imm c = ax.cross(d);
+  imm ext = extentAlong(m, origin, d);
+  imm span = ext.y - ext.x;
+  imm n = m.positions.len();
+  mut out = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    imm p = *m.positions[i];
+    if span <= 0. or angle == 0. {
+      out.push(p);
+    } else {
+      imm r = span / angle;
+      imm q = p - origin;
+      imm t = q.dot(d);
+      imm cc = q.dot(c);
+      imm w = q.dot(ax);
+      imm tc = clampf(t, ext.x, ext.y);
+      imm theta = tc / r;
+      imm rest = t - tc;
+      imm sn = sin(theta);
+      imm cs = cos(theta);
+      out.push(origin + d * ((r - cc) * sn + rest * cs) + c * (r - (r - cc) * cs + rest * sn) + ax * w);
+    }
+    i = i + 1usize;
+  }
+  withPositions(m, out);
+}
+
+// A twist (Blender's Simple Deform, Twist; Barr's twist): each vertex is
+// turned about the line through origin along 'along' by angle * T / S, T its
+// t clamped to the span and S the span's length, counterclockwise seen from
+// the tip of 'along'. Over the whole span the turn changes by 'angle'; the
+// cross-section at the origin does not turn.
+pub fn twist(m &PolyMesh, angle f32, along Vec3, origin Vec3) PolyMesh {
+  imm d = unit(along);
+  imm ext = extentAlong(m, origin, d);
+  imm span = ext.y - ext.x;
+  imm n = m.positions.len();
+  mut out = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    imm p = *m.positions[i];
+    if span <= 0. or angle == 0. {
+      out.push(p);
+    } else {
+      imm q = p - origin;
+      imm t = q.dot(d);
+      imm theta = angle * clampf(t, ext.x, ext.y) / span;
+      imm rot = Quat.angleAxis(theta, d);
+      out.push(origin + d * t + rot * (q - d * t));
+    }
+    i = i + 1usize;
+  }
+  withPositions(m, out);
+}
+
+// A taper (Blender's Simple Deform, Taper; Barr's taper): each vertex's
+// offset from the line through origin along 'along' is scaled by
+// 1 + factor * T / S, T its t clamped to the span and S the span's length;
+// its t is unchanged. Over the whole span the scale changes by 'factor': a
+// mesh along from its origin with factor 1 ends twice as wide, and with
+// factor -1 comes to a point.
+pub fn taper(m &PolyMesh, factor f32, along Vec3, origin Vec3) PolyMesh {
+  imm d = unit(along);
+  imm ext = extentAlong(m, origin, d);
+  imm span = ext.y - ext.x;
+  imm n = m.positions.len();
+  mut out = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    imm p = *m.positions[i];
+    if span <= 0. or factor == 0. {
+      out.push(p);
+    } else {
+      imm q = p - origin;
+      imm t = q.dot(d);
+      imm s = 1. + factor * clampf(t, ext.x, ext.y) / span;
+      out.push(origin + d * t + (q - d * t) * s);
+    }
+    i = i + 1usize;
+  }
+  withPositions(m, out);
+}
+
+// A curve deform (Blender's Curve modifier): the mesh laid along the path. A
+// vertex at t along 'along' from the origin, x across and y up (up made
+// perpendicular to along, and across = up x along, so across, up, along is
+// right-handed as a frame's normal, binormal, tangent are) goes to the
+// point at distance t along the path, placed in the frame there as a
+// profile point (x, y) is: frame origin + normal x + binormal y. The frames
+// are the path's rotation-minimizing ones (Path.frames), blended between
+// path points. The mesh is not stretched to the path's length: past an open
+// path's ends it carries on straight along the end tangents, and along a
+// closed path it wraps round. Put the origin at the end of the mesh that
+// should sit at the path's start.
+pub fn curveDeform(m &PolyMesh, path &Path, along Vec3, up Vec3, origin Vec3) PolyMesh {
+  imm d = unit(along);
+  imm u = unit(up - d * up.dot(d));
+  imm s = u.cross(d);
+  imm frames = path.frames();
+  imm dist = path.distances();
+  imm total = path.length();
+  imm n = m.positions.len();
+  mut out = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    imm p = *m.positions[i];
+    if frames.len() == 0usize {
+      out.push(p);
+    } else {
+      imm q = p - origin;
+      imm f = frameAtDistance(path, &frames, &dist, total, q.dot(d));
+      out.push(f.place(Vec2[q.dot(s), q.dot(u)]));
+    }
+    i = i + 1usize;
+  }
+  withPositions(m, out);
+}
+
+// ======== Subdivision: Catmull-Clark ========
+//
+// Catmull and Clark, "Recursively generated B-spline surfaces on arbitrary
+// topological meshes", CAD 10(6), 1978, with semi-sharp creases after DeRose,
+// Kass and Truong, "Subdivision surfaces in character animation", SIGGRAPH
+// 1998, and the boundary, crease and face-varying rules as Pixar's OpenSubdiv
+// documents them (its "Subdivision Surfaces" overview; the algorithm only, no
+// code). One level turns every face of n corners into n quads, so after the
+// first level the mesh is all quads, whatever mix of triangles, quads and
+// n-gons it began as.
+//
+// One level makes three kinds of new vertex:
+// - a face point for each face: the mean of its corners;
+// - an edge point for each edge: on a smooth edge, the mean of its two ends
+//   and the face points of its two faces, (a + b + F0 + F1) / 4; on a sharp
+//   edge (a boundary edge, or a crease of sharpness 1 or more), its midpoint
+//   (a + b) / 2; on a crease of sharpness s between 0 and 1, the smooth point
+//   and the midpoint blended, s of the midpoint;
+// - a vertex point for each vertex, by one of four rules chosen by how many
+//   sharp edges meet there (a crease of any sharpness above 0 counts):
+//   - smooth (none) and dart (one): (Q + 2R + (n - 3) S) / n, where n is its
+//     valence, S where it is, Q the mean of its faces' face points and R the
+//     mean of its edges' midpoints; that is
+//     ((n - 2) S + (sum of its neighbours) / n + (sum of its face points) / n) / n;
+//   - crease (two): (A + 6 S + B) / 8, A and B the far ends of the two sharp
+//     edges: a cubic B-spline along the crease;
+//   - corner (three or more, or a sharp vertex): S, it stays.
+//   When a semi-sharp crease wears out at this level (its sharpness is 1 or
+//   less, so its child is smooth), the rule its sharpness gives now and the
+//   one its children's gives are blended, by the mean sharpness of the edges
+//   (and vertex) that wear out, at most 1 (OpenSubdiv's fractional weight).
+//
+// Sharpness: an edge's is the edge channel of f32 named "crease", a vertex's
+// the vertex channel named "crease" (0 where there is none). Its values are
+// OpenSubdiv's (and USD's creaseSharpnesses): 0 is smooth, s is sharp for s
+// levels, and SharpnessInfinite (10) or more is sharp at every level. A
+// child edge of a parent edge gets the parent's sharpness less 1 (at least
+// 0; an infinite one stays), OpenSubdiv's uniform creasing; the edges made
+// inside a face get 0. A vertex point's vertex sharpness goes down the same
+// way.
+//
+// Boundaries: a boundary edge is infinitely sharp, so it subdivides as a cubic
+// B-spline curve, and a boundary vertex with more than one face takes the
+// crease rule along it. 'BoundaryEdgeAndCorner', the default (USD's
+// interpolateBoundary default, edgeAndCorner, and RenderMan's; Blender's
+// "Keep Corners"), also keeps a corner, a boundary vertex with one face, where
+// it is. 'BoundaryEdgeOnly' (OpenSubdiv's VTX_BOUNDARY_EDGE_ONLY; Blender's
+// Boundary Smooth "All", its modifier's default) smooths the corner along its
+// boundary curve instead.
+//
+// Face-varying data, every corner channel ("uv" among them), is subdivided by
+// the same rules on its own topology: where the values of the corners at an
+// edge's ends differ across it (a uv seam) the edge is a face-varying
+// boundary, so each uv island is subdivided as its own mesh with its own
+// boundary, and seams stay seams. The corners about a vertex are cut into
+// fans by those edges; a fan is subdivided as a boundary vertex is. How its
+// boundary is held is one of USD's faceVaryingLinearInterpolation choices
+// (OpenSubdiv's FVAR_LINEAR_*):
+// - 'FvarLinearNone': smooth everywhere, boundaries as B-spline curves;
+// - 'FvarLinearCornersOnly': the same, but a fan of one face keeps its value
+//   (a uv island's corner stays put);
+// - 'FvarLinearCornersPlus1', the default (USD's): also keeps the value where
+//   three or more fans meet at a vertex;
+// - 'FvarLinearBoundaries': every value on a face-varying boundary is kept,
+//   and its edges' values are midpoints (Blender's UV Smooth default, "Keep
+//   Boundaries");
+// - 'FvarLinearAll': linear everywhere (OpenSubdiv's Sdc default): corners
+//   keep their values, edge values are midpoints, face values means.
+//
+// Other channels: a vertex channel is subdivided with the vertex rules, as the
+// positions are (USD's "vertex" interpolation); a face channel's value passes
+// to each of the face's child faces; an edge channel's (other than "crease")
+// to each of the edge's two child edges, and the edges made inside a face get
+// 0. A mesh needs no channels at all.
+//
+// The new mesh's vertices are numbered: first the vertex points, vertex v of
+// the old mesh as vertex v; then the edge points, edge e as vertex V + e;
+// then the face points, face f as V + E + f, where V and E are the old mesh's
+// vertex and edge counts. So a cage's vertices keep their numbers at every
+// level. Face f of n corners becomes n faces, numbered on from the child
+// faces of the faces before it, one for each of its corners in order from its
+// first; the child at the corner of vertex v, with the half-edge h ending at
+// v, runs (v's vertex point, the edge point of next(h)'s edge, f's face point,
+// the edge point of h's edge), counterclockwise as its parent is.
+
+pub const BoundaryEdgeOnly = 0u32;
+pub const BoundaryEdgeAndCorner = 1u32;
+
+pub const FvarLinearNone = 0u32;
+pub const FvarLinearCornersOnly = 1u32;
+pub const FvarLinearCornersPlus1 = 2u32;
+pub const FvarLinearBoundaries = 3u32;
+pub const FvarLinearAll = 4u32;
+
+// A sharpness this great or more never wears out (OpenSubdiv's
+// SHARPNESS_INFINITE)
+pub const SharpnessInfinite = 10.;
+
+// The mesh subdivided 'levels' times by Catmull-Clark, with USD's defaults:
+// boundary corners kept, face-varying data kept at corners and at junctions
+// of three or more fans. 0 levels gives a copy.
+pub fn subdivide(m &PolyMesh, levels u32) PolyMesh {
+  subdivideWith(m, levels, BoundaryEdgeAndCorner, FvarLinearCornersPlus1);
+}
+
+// The same, with the boundary rule (BoundaryEdgeOnly or
+// BoundaryEdgeAndCorner) and the face-varying rule (FvarLinearNone to
+// FvarLinearAll) given
+pub fn subdivideWith(m &PolyMesh, levels u32, boundary u32, fvar u32) PolyMesh {
+  mut cur = copyPolyMesh(m);
+  mut i = 0u32;
+  while i < levels {
+    imm next = subdivideOnce(&cur, boundary, fvar);
+    cur = next;
+    i = i + 1u32;
+  }
+  cur;
+}
+
+// Levels of detail: the cage (a copy, level 0) and each level of its
+// subdivision up to 'levels', by 'subdivide''s defaults, each made from the
+// one before; entry i is level i
+pub fn subdivisionLevels(m &PolyMesh, levels u32) List[PolyMesh] {
+  mut out = List[PolyMesh].withCapacity(usize[levels] + 1usize);
+  out.push(copyPolyMesh(m));
+  mut i = 0u32;
+  while i < levels {
+    imm next = subdivideOnce(out[usize[i]], BoundaryEdgeAndCorner, FvarLinearCornersPlus1);
+    out.push(next);
+    i = i + 1u32;
+  }
+  out;
+}
+
+// A copy of a PolyMesh, channels and all
+fn copyPolyMesh(m &PolyMesh) PolyMesh {withPositions(m, copyList[Vec3](&m.positions));}
+
+// A sharpness one level on: less 1, at least 0; infinite stays infinite
+fn childSharpness(s f32) f32 {
+  if s >= SharpnessInfinite {s;} elif s > 1. {s - 1.;} else {0.;};
+}
+
+fn sameVec3(a Vec3, b Vec3) Bool {a.x == b.x and a.y == b.y and a.z == b.z;}
+
+// The vertex rules
+const RuleSmooth = 0u32;
+const RuleCrease = 2u32;
+const RuleCorner = 3u32;
+
+// Which rule a vertex of sharpness 'vs' takes with its edges' sharpness
+// 'sharp': a sharp vertex or three sharp edges or more a corner, two a crease,
+// fewer (smooth, or a dart) smooth
+fn ruleOf(vs f32, sharp &List[f32]) u32 {
+  if vs > 0. { return RuleCorner; }
+  mut n = 0usize;
+  mut i = 0usize;
+  while i < sharp.len() {
+    if *sharp[i] > 0. { n = n + 1usize; }
+    i = i + 1usize;
+  }
+  if n > 2usize {RuleCorner;} elif n == 2usize {RuleCrease;} else {RuleSmooth;};
+}
+
+// A vertex point by one rule. 'ends' holds each edge's far end, 'faces' each
+// face's face point, 'sharp' each edge's sharpness; 'closed' when the edges
+// go all the way round (ends and faces alike in number), otherwise the fan's
+// first and last edges are its boundary and there is one face fewer.
+fn applyRule(rule u32, own Vec3, ends &List[Vec3], faces &List[Vec3], sharp &List[f32], closed Bool) Vec3 {
+  if rule == RuleCorner { return own; }
+  if rule == RuleCrease {
+    mut sum = Vec3[0., 0., 0.];
+    mut i = 0usize;
+    while i < ends.len() {
+      if *sharp[i] > 0. { sum = sum + *ends[i]; }
+      i = i + 1usize;
+    }
+    return (sum + own * 6.) * 0.125;
+  }
+  imm n = ends.len();
+  if !closed or n == 0usize { return own; }
+  mut se = Vec3[0., 0., 0.];
+  mut sf = Vec3[0., 0., 0.];
+  mut i = 0usize;
+  while i < n {
+    se = se + *ends[i];
+    sf = sf + *faces[i];
+    i = i + 1usize;
+  }
+  imm nn = f32[n];
+  own * ((nn - 2.) / nn) + (se + sf) * (1. / (nn * nn));
+}
+
+// A vertex point: the rule its sharpness gives, blended with the rule its
+// children's gives when a crease wears out at this level
+fn fanPoint(own Vec3, ends &List[Vec3], faces &List[Vec3], sharp &List[f32], vs f32, closed Bool) Vec3 {
+  imm pRule = ruleOf(vs, sharp);
+  imm p = applyRule(pRule, own, ends, faces, sharp, closed);
+  if pRule == RuleSmooth { return p; }
+  mut cs = List[f32].withCapacity(sharp.len());
+  mut i = 0usize;
+  while i < sharp.len() {
+    cs.push(childSharpness(*sharp[i]));
+    i = i + 1usize;
+  }
+  imm cvs = childSharpness(vs);
+  imm cRule = ruleOf(cvs, &cs);
+  if cRule == pRule { return p; }
+  imm c = applyRule(cRule, own, ends, faces, &cs, closed);
+  // The fractional weight: the mean sharpness of what wears out, at most 1
+  mut sum f32 = 0.;
+  mut count = 0u32;
+  if vs > 0. and cvs <= 0. {
+    sum = vs;
+    count = 1u32;
+  }
+  i = 0usize;
+  while i < sharp.len() {
+    if *sharp[i] > 0. and *cs[i] <= 0. {
+      sum = sum + *sharp[i];
+      count = count + 1u32;
+    }
+    i = i + 1usize;
+  }
+  if count == 0u32 { return c; }
+  mut w = sum / f32[count];
+  if w > 1. { w = 1.; }
+  p * w + c * (1. - w);
+}
+
+// An edge point from its ends a and b and its faces' face points
+fn edgeValue(a Vec3, b Vec3, fa Vec3, fb Vec3, s f32, sharpEdge Bool) Vec3 {
+  imm mid = (a + b) * 0.5;
+  if sharpEdge or s >= 1. { return mid; }
+  imm smooth = (a + b + fa + fb) * 0.25;
+  if s <= 0. {smooth;} else {smooth * (1. - s) + mid * s;};
+}
+
+// One level's new values of one kind of data, seen corner by corner
+struct Refined {
+  pub vp List[Vec3];   // per half-edge in a face: the vertex point's value at its end, in its face
+  pub ep List[Vec3];   // per half-edge in a face: its edge's edge point's value, in its face
+  pub fp List[Vec3];   // per face
+}
+
+// Subdivide data held per corner, 'vals' (a value per half-edge, the value at
+// the vertex it ends at, in its face). 'cutOnValues': face-varying data, cut
+// into fans where values differ; otherwise only the boundary cuts. 'rule':
+// how a fan's boundary is held, FvarLinearNone to FvarLinearAll (the boundary
+// rules are the first two). 'eSharp' is each edge's sharpness, boundary
+// edges infinite; 'vSharp' each vertex's.
+fn refineValues(m &PolyMesh, vals &List[Vec3], cutOnValues Bool, rule u32, eSharp &List[f32],
+    vSharp &List[f32]) Refined {
+  imm nh = m.hVertex.len();
+  imm nf = m.fHalfedge.len();
+  imm nv = m.positions.len();
+  imm zero = Vec3[0., 0., 0.];
+
+  // Face points
+  mut fp = List[Vec3].withCapacity(nf);
+  mut f = 0usize;
+  while f < nf {
+    imm hs = m.faceHalfedges(u32[f]);
+    mut sum = zero;
+    mut i = 0usize;
+    while i < hs.len() {
+      sum = sum + *vals[usize[*hs[i]]];
+      i = i + 1usize;
+    }
+    fp.push(sum * (1. / f32[hs.len()]));
+    f = f + 1usize;
+  }
+
+  // Edge points, seen from each face
+  mut ep = List[Vec3].withCapacity(nh);
+  mut h = 0usize;
+  while h < nh {
+    imm hf = *m.hFace[h];
+    if hf == NoIndex {
+      ep.push(zero);
+    } else {
+      imm t = usize[u32[h] ^ 1u32];
+      imm a = *vals[usize[*m.hPrev[h]]];
+      imm b = *vals[h];
+      imm tf = *m.hFace[t];
+      if tf == NoIndex or rule == FvarLinearAll {
+        ep.push((a + b) * 0.5);
+      } else {
+        // Across the edge, the twin ends at a and its prev at b
+        imm cont = sameVec3(a, *vals[t]) and sameVec3(b, *vals[usize[*m.hPrev[t]]]);
+        // Summed in one order from both sides (the even half-edge's), so the
+        // two faces get the same bits and a continuous edge stays continuous
+        imm s = *eSharp[h / 2usize];
+        if !cont or h % 2usize == 0usize {
+          ep.push(edgeValue(a, b, *fp[usize[hf]], *fp[usize[tf]], s, !cont));
+        } else {
+          ep.push(edgeValue(*vals[usize[*m.hPrev[t]]], *vals[t], *fp[usize[tf]], *fp[usize[hf]], s, !cont));
+        }
+      }
+    }
+    h = h + 1usize;
+  }
+
+  // Vertex points, fan by fan
+  mut vp = List[Vec3].withCapacity(nh);
+  h = 0usize;
+  while h < nh {
+    vp.push(zero);
+    h = h + 1usize;
+  }
+  mut ends = List[Vec3].empty();
+  mut faces = List[Vec3].empty();
+  mut sharp = List[f32].empty();
+  mut cuts = List[usize].empty();
+  mut v = 0usize;
+  while v < nv {
+    imm ring = m.vertexOutgoing(u32[v]);
+    imm k = ring.len();
+    // Edge ring[i] lies between the faces of ring[i - 1] and ring[i]; it
+    // cuts when either is missing or, for face-varying data, when the values
+    // at the vertex differ across it
+    cuts.clear();
+    mut fans = 0usize;
+    mut i = 0usize;
+    while i < k {
+      imm hi = usize[*ring[i]];
+      imm hb = usize[*ring[(i + k - 1usize) % k]];
+      imm fi = *m.hFace[hi];
+      imm fb = *m.hFace[hb];
+      mut cut = fi == NoIndex or fb == NoIndex;
+      if !cut and cutOnValues {
+        cut = !sameVec3(*vals[usize[*m.hPrev[hi]]], *vals[usize[*m.hPrev[hb]]]);
+      }
+      if cut {
+        cuts.push(i);
+        if fi != NoIndex { fans = fans + 1usize; }
+      }
+      i = i + 1usize;
+    }
+    if rule == FvarLinearAll {
+      i = 0usize;
+      while i < k {
+        imm hi = usize[*ring[i]];
+        if *m.hFace[hi] != NoIndex {
+          imm c = usize[*m.hPrev[hi]];
+          vp.set(c, *vals[c]);
+        }
+        i = i + 1usize;
+      }
+    } elif k > 0usize and cuts.len() == 0usize {
+      // One fan all the way round
+      ends.clear();
+      faces.clear();
+      sharp.clear();
+      imm own = *vals[usize[*m.hPrev[usize[*ring[0usize]]]]];
+      i = 0usize;
+      while i < k {
+        imm hi = *ring[i];
+        ends.push(*vals[usize[hi]]);
+        faces.push(*fp[usize[*m.hFace[usize[hi]]]]);
+        sharp.push(fanEdgeSharpness(m, vals, eSharp, hi, cutOnValues));
+        i = i + 1usize;
+      }
+      imm p = fanPoint(own, &ends, &faces, &sharp, *vSharp[v], true);
+      i = 0usize;
+      while i < k {
+        vp.set(usize[*m.hPrev[usize[*ring[i]]]], p);
+        i = i + 1usize;
+      }
+    } else {
+      imm nc = cuts.len();
+      mut ci = 0usize;
+      while ci < nc {
+        imm c = *cuts[ci];
+        if *m.hFace[usize[*ring[c]]] != NoIndex {
+          // The fan from cut edge ring[c] to the next cut edge, unwrapped
+          imm cn = if ci + 1usize < nc {*cuts[ci + 1usize];} else {*cuts[0usize] + k;};
+          ends.clear();
+          faces.clear();
+          sharp.clear();
+          imm own = *vals[usize[*m.hPrev[usize[*ring[c]]]]];
+          mut j = c;
+          while j < cn {
+            imm hj = *ring[j % k];
+            ends.push(*vals[usize[hj]]);
+            faces.push(*fp[usize[*m.hFace[usize[hj]]]]);
+            if j == c { sharp.push(SharpnessInfinite); }
+            else { sharp.push(fanEdgeSharpness(m, vals, eSharp, hj, cutOnValues)); }
+            j = j + 1usize;
+          }
+          // The last edge's far end, seen from the fan's last face
+          imm hl = usize[*ring[(cn - 1usize) % k]];
+          ends.push(*vals[usize[*m.hPrev[usize[*m.hPrev[hl]]]]]);
+          sharp.push(SharpnessInfinite);
+          mut vs = *vSharp[v];
+          imm oneFace = cn - c == 1usize;
+          if (rule == FvarLinearCornersOnly or rule == FvarLinearCornersPlus1) and oneFace { vs = SharpnessInfinite; }
+          if rule == FvarLinearCornersPlus1 and fans >= 3usize { vs = SharpnessInfinite; }
+          if rule == FvarLinearBoundaries { vs = SharpnessInfinite; }
+          imm p = fanPoint(own, &ends, &faces, &sharp, vs, false);
+          j = c;
+          while j < cn {
+            vp.set(usize[*m.hPrev[usize[*ring[j % k]]]], p);
+            j = j + 1usize;
+          }
+        }
+        ci = ci + 1usize;
+      }
+    }
+    v = v + 1usize;
+  }
+  Refined[vp, ep, fp];
+}
+
+// The sharpness of the edge of half-edge h (leaving the vertex) inside a fan:
+// the edge's own, or infinite when face-varying values differ across its far
+// end
+fn fanEdgeSharpness(m &PolyMesh, vals &List[Vec3], eSharp &List[f32], h u32, cutOnValues Bool) f32 {
+  imm s = *eSharp[usize[h / 2u32]];
+  if !cutOnValues { return s; }
+  imm t = usize[h ^ 1u32];
+  if !sameVec3(*vals[usize[h]], *vals[usize[*m.hPrev[t]]]) { return SharpnessInfinite; }
+  s;
+}
+
+// Subdivide per-vertex values: returned per child vertex (vertex points, edge
+// points, face points)
+fn refineVertexData(m &PolyMesh, vvals &List[Vec3], boundary u32, eSharp &List[f32], vSharp &List[f32]) List[Vec3] {
+  imm nh = m.hVertex.len();
+  mut cv = List[Vec3].withCapacity(nh);
+  mut h = 0usize;
+  while h < nh {
+    cv.push(*vvals[usize[*m.hVertex[h]]]);
+    h = h + 1usize;
+  }
+  imm r = refineValues(m, &cv, false, boundary, eSharp, vSharp);
+  imm nv = m.positions.len();
+  imm ne = nh / 2usize;
+  imm nf = m.fHalfedge.len();
+  mut out = List[Vec3].withCapacity(nv + ne + nf);
+  mut v = 0usize;
+  while v < nv {
+    imm vh = *m.vHalfedge[v];
+    // The half-edge coming in to v along its own is in a face
+    if vh == NoIndex { out.push(*vvals[v]); } else { out.push(*r.vp[usize[vh ^ 1u32]]); }
+    v = v + 1usize;
+  }
+  mut e = 0usize;
+  while e < ne {
+    imm he = if *m.hFace[2usize * e] == NoIndex {2usize * e + 1usize;} else {2usize * e;};
+    out.push(*r.ep[he]);
+    e = e + 1usize;
+  }
+  mut f = 0usize;
+  while f < nf {
+    out.push(*r.fp[f]);
+    f = f + 1usize;
+  }
+  out;
+}
+
+// Subdivide per-corner (face-varying) values: returned per child half-edge.
+// Child face c came from the corner of parent half-edge parentHalf[c] in
+// parent face parentFace[c].
+fn refineCornerData(m &PolyMesh, cvals &List[Vec3], fvar u32, eSharp &List[f32], vSharp &List[f32],
+    child &PolyMesh, parentFace &List[u32], parentHalf &List[u32]) List[Vec3] {
+  imm r = refineValues(m, cvals, true, fvar, eSharp, vSharp);
+  imm nh = child.hVertex.len();
+  mut out = List[Vec3].withCapacity(nh);
+  mut h = 0usize;
+  while h < nh {
+    out.push(Vec3[0., 0., 0.]);
+    h = h + 1usize;
+  }
+  mut c = 0usize;
+  while c < child.fHalfedge.len() {
+    imm chs = child.faceHalfedges(u32[c]);
+    imm ph = usize[*parentHalf[c]];
+    imm pn = usize[*m.hNext[ph]];
+    out.set(usize[*chs[0usize]], *r.vp[ph]);
+    out.set(usize[*chs[1usize]], *r.ep[pn]);
+    out.set(usize[*chs[2usize]], *r.fp[usize[*parentFace[c]]]);
+    out.set(usize[*chs[3usize]], *r.ep[ph]);
+    c = c + 1usize;
+  }
+  out;
+}
+
+// A channel's f32, Vec2 or Vec3 values carried as Vec3 (from the mesh, by
+// channel number, since '&m.floats[c].values' is refused as a '&List'), and
+// back
+fn floatChannelVec3s(m &PolyMesh, c usize) List[Vec3] {
+  imm n = m.floats[c].values.len();
+  mut out = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    out.push(Vec3[*m.floats[c].values[i], 0., 0.]);
+    i = i + 1usize;
+  }
+  out;
+}
+fn vec2ChannelVec3s(m &PolyMesh, c usize) List[Vec3] {
+  imm n = m.vec2s[c].values.len();
+  mut out = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    imm p = *m.vec2s[c].values[i];
+    out.push(Vec3[p.x, p.y, 0.]);
+    i = i + 1usize;
+  }
+  out;
+}
+fn vec3ChannelVec3s(m &PolyMesh, c usize) List[Vec3] {
+  imm n = m.vec3s[c].values.len();
+  mut out = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    out.push(*m.vec3s[c].values[i]);
+    i = i + 1usize;
+  }
+  out;
+}
+fn vec3ToFloats(src &List[Vec3]) List[f32] {
+  mut out = List[f32].withCapacity(src.len());
+  mut i = 0usize;
+  while i < src.len() {
+    out.push(src[i].x);
+    i = i + 1usize;
+  }
+  out;
+}
+fn vec3ToVec2s(src &List[Vec3]) List[Vec2] {
+  mut out = List[Vec2].withCapacity(src.len());
+  mut i = 0usize;
+  while i < src.len() {
+    out.push(Vec2[src[i].x, src[i].y]);
+    i = i + 1usize;
+  }
+  out;
+}
+
+// A channel's values carried to the child's elements, by domain, as Vec3.
+// 'isCrease': the "crease" sharpness channel, which wears down instead.
+fn refineChannel(m &PolyMesh, child &PolyMesh, domain u32, vals &List[Vec3], isCrease Bool, boundary u32,
+    fvar u32, eSharp &List[f32], vSharp &List[f32], cEdgeParent &List[u32], parentFace &List[u32],
+    parentHalf &List[u32]) List[Vec3] {
+  imm zero = Vec3[0., 0., 0.];
+  if domain == VertexDomain {
+    if !isCrease { return refineVertexData(m, vals, boundary, eSharp, vSharp); }
+    mut out = List[Vec3].withCapacity(child.positions.len());
+    mut v = 0usize;
+    while v < child.positions.len() {
+      if v < m.positions.len() { out.push(Vec3[childSharpness(vals[v].x), 0., 0.]); } else { out.push(zero); }
+      v = v + 1usize;
+    }
+    return out;
+  }
+  if domain == EdgeDomain {
+    imm ne = child.hVertex.len() / 2usize;
+    mut out = List[Vec3].withCapacity(ne);
+    mut e = 0usize;
+    while e < ne {
+      imm pe = *cEdgeParent[e];
+      if pe == NoIndex { out.push(zero); }
+      elif isCrease { out.push(Vec3[childSharpness(vals[usize[pe]].x), 0., 0.]); }
+      else { out.push(*vals[usize[pe]]); }
+      e = e + 1usize;
+    }
+    return out;
+  }
+  if domain == FaceDomain {
+    mut out = List[Vec3].withCapacity(child.fHalfedge.len());
+    mut c = 0usize;
+    while c < child.fHalfedge.len() {
+      out.push(*vals[usize[*parentFace[c]]]);
+      c = c + 1usize;
+    }
+    return out;
+  }
+  refineCornerData(m, vals, fvar, eSharp, vSharp, child, parentFace, parentHalf);
+}
+
+// One level of Catmull-Clark
+fn subdivideOnce(m &PolyMesh, boundary u32, fvar u32) PolyMesh {
+  imm nv = m.positions.len();
+  imm nh = m.hVertex.len();
+  imm ne = nh / 2usize;
+  imm nf = m.fHalfedge.len();
+
+  // Sharpness: the crease channels, and boundary edges infinitely sharp
+  imm creaseE = m.findFloatChannel(EdgeDomain, "crease");
+  imm creaseV = m.findFloatChannel(VertexDomain, "crease");
+  mut eSharp = List[f32].withCapacity(ne);
+  mut e = 0usize;
+  while e < ne {
+    mut s f32 = 0.;
+    if creaseE != NoIndex { s = m.float(creaseE, u32[e]); }
+    if s < 0. { s = 0.; }
+    if m.isBoundaryEdge(u32[e]) { s = SharpnessInfinite; }
+    eSharp.push(s);
+    e = e + 1usize;
+  }
+  mut vSharp = List[f32].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv {
+    mut s f32 = 0.;
+    if creaseV != NoIndex { s = m.float(creaseV, u32[v]); }
+    if s < 0. { s = 0.; }
+    vSharp.push(s);
+    v = v + 1usize;
+  }
+
+  // The new positions and faces
+  imm pos = refineVertexData(m, &m.positions, boundary, &eSharp, &vSharp);
+  mut counts = List[u32].empty();
+  mut idx = List[u32].empty();
+  mut pEdgeA = List[u32].empty();
+  mut pEdgeB = List[u32].empty();
+  mut parentFace = List[u32].empty();
+  mut parentHalf = List[u32].empty();
+  mut f = 0usize;
+  while f < nf {
+    imm hs = m.faceHalfedges(u32[f]);
+    imm n = hs.len();
+    mut k = 0usize;
+    while k < n {
+      imm h = *hs[k];
+      imm hn = *hs[(k + 1usize) % n];
+      counts.push(4u32);
+      idx.push(*m.hVertex[usize[h]]);
+      idx.push(u32[nv] + hn / 2u32);
+      idx.push(u32[nv + ne + f]);
+      idx.push(u32[nv] + h / 2u32);
+      pEdgeA.push(h / 2u32);
+      pEdgeB.push(hn / 2u32);
+      parentFace.push(u32[f]);
+      parentHalf.push(h);
+      k = k + 1usize;
+    }
+    f = f + 1usize;
+  }
+  mut problems = List[String].empty();
+  mut child = PolyMesh.fromPolygons(pos.view(), counts.view(), idx.view(), &mut problems);
+
+  // Each child edge's parent edge: a child face's first half-edge runs along
+  // its parent corner's incoming edge, its second along the outgoing one
+  imm cne = child.hVertex.len() / 2usize;
+  mut cEdgeParent = List[u32].withCapacity(cne);
+  e = 0usize;
+  while e < cne {
+    cEdgeParent.push(NoIndex);
+    e = e + 1usize;
+  }
+  mut c = 0usize;
+  while c < child.fHalfedge.len() {
+    imm chs = child.faceHalfedges(u32[c]);
+    cEdgeParent.set(usize[*chs[0usize] / 2u32], *pEdgeA[c]);
+    cEdgeParent.set(usize[*chs[1usize] / 2u32], *pEdgeB[c]);
+    c = c + 1usize;
+  }
+
+  // The channels
+  mut i = 0usize;
+  while i < m.floats.len() {
+    imm domain = m.floats[i].domain;
+    imm isCrease = m.floats[i].name.equals("crease") and (domain == EdgeDomain or domain == VertexDomain);
+    imm vals = floatChannelVec3s(m, i);
+    imm out = refineChannel(m, &child, domain, &vals, isCrease, boundary, fvar, &eSharp, &vSharp,
+      &cEdgeParent, &parentFace, &parentHalf);
+    child.floats.push(Channel[f32][String.from(m.floats[i].name.view()), domain, vec3ToFloats(&out)]);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < m.vec2s.len() {
+    imm domain = m.vec2s[i].domain;
+    imm vals = vec2ChannelVec3s(m, i);
+    imm out = refineChannel(m, &child, domain, &vals, false, boundary, fvar, &eSharp, &vSharp,
+      &cEdgeParent, &parentFace, &parentHalf);
+    child.vec2s.push(Channel[Vec2][String.from(m.vec2s[i].name.view()), domain, vec3ToVec2s(&out)]);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < m.vec3s.len() {
+    imm domain = m.vec3s[i].domain;
+    imm vals = vec3ChannelVec3s(m, i);
+    imm out = refineChannel(m, &child, domain, &vals, false, boundary, fvar, &eSharp, &vSharp,
+      &cEdgeParent, &parentFace, &parentHalf);
+    child.vec3s.push(Channel[Vec3][String.from(m.vec3s[i].name.view()), domain, out]);
+    i = i + 1usize;
+  }
+  child;
+}

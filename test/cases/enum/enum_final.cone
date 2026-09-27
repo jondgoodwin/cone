@@ -21,15 +21,17 @@
 // finalized once, a guard's binding included -- before this, the guard's and
 // the arm's bindings were each finalized, and the matched value never was.
 // Moving the binding moves the matched value, and handing it back hands the
-// matched value back.
+// matched value back. A 'mut' binding is the matched value's own storage: one
+// assigned over, whole or a field, finalizes what it replaces, and a value
+// swapped out of it leaves what was swapped in to be finalized with the
+// matched value -- before this, the binding was a copy, so what it was given
+// leaked and the original, swapped out, was finalized twice.
 //
 // A value moved on one path only is finalized on the path that kept it, by
 // its drop flag: the same for a match whose arm that moves the binding does
 // not run. A value assigned over is finalized as it is replaced.
 //
-// Pinned as they are, each a gap belonging elsewhere:
-// - A binding declared 'mut' and assigned over holds its own copy: the matched
-//   value's original is finalized, and what the binding was given leaks.
+// Pinned as it is, a gap belonging elsewhere:
 // - A temporary discarded unbound is not finalized, as none is for a struct.
 
 mod enum_final;
@@ -236,6 +238,23 @@ fn matchMutAssigned() {
     else { }
   }
 }
+fn matchMutFieldAssigned() {
+  imm e E = A[Fin[42]];
+  match e {
+    case mut a A { a.f = Fin[43]; printStr("assigned "); }
+    else { }
+  }
+}
+fn mkResult() Result[Fin, i32] { Ok[Fin, i32][Fin[44]]; }
+fn matchSwapsOut() {
+  mut got = match mkResult() {
+    case mut r Ok { mut o = Fin[45]; o <=> r.value; o; }
+    else { Fin[0]; }
+  };
+  printStr("got");
+  printInt(i64[got.id]);
+  printStr(" ");
+}
 
 // -------- gaps belonging elsewhere --------
 
@@ -285,6 +304,8 @@ fn main() i32 {
   show("match-temporary"); matchTemporary(); end();
   show("match-through-ref"); matchThroughRef(); end();
   show("match-mut-assigned"); matchMutAssigned(); end();
+  show("match-mut-field-assigned"); matchMutFieldAssigned(); end();
+  show("match-swaps-out"); matchSwapsOut(); end();
   show("reassigned"); reassigned(); end();
   show("temporary"); temporary(); end();
   show("global"); finalAll(); end();

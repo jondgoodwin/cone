@@ -208,11 +208,13 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
         // its place.
         VarDclNode *var = (VarDclNode*)lvalvar;
         uint16_t flowflags = var->flowtempflags;
-        // A match's binding holds a copy of the matched value, which the
-        // matched value's variable releases: the binding has nothing of its own
-        // to release (flowMatchBound)
+        // A match's binding by value names the matched value's own storage
+        // (flowMatchInPlace), so a store over it releases the value it
+        // replaces, and the matched value's variable releases the new one. A
+        // binding by reference holds a copy of the matched reference, which the
+        // matched value's variable releases: it has nothing of its own to release
         if (!(flowflags & VarInitialized) || (flowflags & (VarMoved | VarHollow))
-            || flowMatchBound((INode *)var))
+            || (flowMatchBound((INode *)var) && !flowMatchInPlace(var)))
             lval->flags |= FlagFirstAssign;
         if ((flowflags & VarHollow) && !(flowflags & VarMoved) && hollowrel)
             *hollowrel = flowNewHollow(var);
@@ -225,7 +227,7 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
     else if ((lval->tag == FldAccessTag || lval->tag == ArrIndexTag) && !flowNoDeath(((IExpNode *)lval)->vtype)) {
         VarDclNode *root = flowLvalRootVar(lval);
         if (root && (!(root->flowtempflags & VarInitialized) || (root->flowtempflags & (VarMoved | VarHollow))
-                || flowMatchBound((INode *)root)))
+                || (flowMatchBound((INode *)root) && !flowMatchInPlace(root))))
             lval->flags |= FlagPartNoPrior;
     }
 

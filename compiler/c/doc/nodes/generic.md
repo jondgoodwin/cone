@@ -247,10 +247,15 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    that the call converts to a slice. A generic type's instance, `List[T]`,
    matches an argument that is an instance of the same generic, found in the
    generic's memo, type argument by type argument; a variant passed for its
-   enum is matched as its enum's instance. Region and permission take no part:
-   the instance's own check of the call judges them. Any other shape captures
-   nothing. A slot filled twice must agree by `itypeIsSame`. Any slot still NULL
-   is "could not infer". A generic method named bare inside its type's braces
+   enum is matched as its enum's instance. A function signature, reached
+   through a function reference parameter (`f &fn(a A) R`), matches the
+   signature of the function the argument references, each parameter type and
+   then the return type, provided both have as many parameters. An argument
+   type naming a generic's own type parameter — the signature of `&half`, a
+   generic function not instantiated — captures nothing. Region and permission
+   take no part: the instance's own check of the call judges them. Any other
+   shape captures nothing. A slot filled twice must agree by `itypeIsSame`.
+   Any slot still NULL is "could not infer". A generic method named bare inside its type's braces
    is called on an implicit `self` that is not among the arguments, so they are
    matched against the parameters after it; named through its type,
    `Holder.pick(&h, 6)`, the receiver is the first argument. The instance's name
@@ -350,8 +355,9 @@ method's parameter 0, and where no method encloses it — a static function of t
 type — it is `ErrorUnkName`, as a bare field is. A member access the body wrote
 on `self` carries `FlagSelfRecv` on its clone (set by `cloneFnCallNode` while
 `CloneState.selfparm` names the `self` parameter), which is what lets
-`fnCallLowerMethod` grant the expansion a private member exactly where the method
-could reach it: through `self`, and nowhere else. And the body may not name a
+`fnCallLowerMethod` grant the expansion a private member through the macro's
+`self` wherever it is expanded; any other receiver in the expansion is judged by
+the use site's function, as a receiver written there would be. And the body may not name a
 member bare — `nameUseNameRes` refuses it with `ErrorBareMbr` while
 `NameResState.macromethod` is set — because the expansion lands in another
 function whose `self`, if any, is not this type's. A macro without a `self`

@@ -1,0 +1,273 @@
+// The geomath package's shapes in space, checked with the testing package
+// against values worked out by hand; only a failure prints, so shapes.out
+// holds the summary alone.
+//
+// - Rays: against a plane (in front, behind, alongside), a sphere (a
+//   direction that is not a unit, a miss, a graze, a start inside, one
+//   behind), a box (straight in, at a slant into a corner, a miss, a start
+//   inside, alongside, behind) and a triangle (from each side, a miss,
+//   alongside); the point at t and the nearest point on a ray.
+// - Boxes: from points (and from none), centre, size, union, enclose, expand,
+//   contains, overlaps (touching counts), the nearest point, and a box carried
+//   through a turn and a move.
+// - Spheres: contains, the nearest point, against a sphere and a box.
+// - Planes: from three points (both windings), signed distance, the nearest
+//   point, normalize.
+// - The nearest point on a segment and on a triangle, from each of the
+//   triangle's regions; barycentric weights.
+// - Frusta from a quarter-turn perspective, 1 to 10 away: points, spheres
+//   and boxes Inside, Outside and Intersecting, the planes themselves, the
+//   same for OpenGL's depth, and a camera placed by lookAt.
+//
+// A quarter-turn field of view, square, sees |x| <= -z and |y| <= -z: its
+// side planes are at 45 degrees, so the left one's unit normal is
+// (1, 0, -1)/sqrt(2) = (0.7071, 0, -0.7071).
+
+mod shapes;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+
+imm near = 0.00001d;
+imm close = 0.0001d;
+
+fn point(got Vec3, x f32, y f32, z f32, label &[]u8) {
+  expectFloat(got.x, x, close, label);
+  expectFloat(got.y, y, close, label);
+  expectFloat(got.z, z, close, label);
+}
+
+// The hit's t, or -1 for a miss
+fn hit(h Option[f32]) f32 {
+  match h {
+    case imm s Some {s.value;}
+    else {-1.;}
+  }
+}
+
+fn rays() {
+  imm down = Ray3[Vec3[0., 0., 0.], Vec3[0., 0., -1.]];
+  imm wall = Plane.fromPointNormal(Vec3[0., 0., -5.], Vec3[0., 0., 1.]);
+  expectFloat(hit(down.intersectPlane(wall)), 5., near, "ray hits a plane 5 ahead");
+  expectFloat(hit(Ray3[Vec3[0., 0., 0.], Vec3[0., 0., 1.]].intersectPlane(wall)), -1., near,
+    "a plane behind is missed");
+  expectFloat(hit(Ray3[Vec3[0., 0., 0.], Vec3[1., 0., 0.]].intersectPlane(wall)), -1., near,
+    "a ray along a plane misses it");
+
+  imm ball = Sphere[Vec3[0., 0., -10.], 2.];
+  expectFloat(hit(down.intersectSphere(ball)), 8., near, "ray enters a sphere at 10 - 2");
+  // Twice as long a direction: half as many of them
+  expectFloat(hit(Ray3[Vec3[0., 0., 0.], Vec3[0., 0., -2.]].intersectSphere(ball)), 4., near,
+    "t counts directions, not distance");
+  expectFloat(hit(down.intersectSphere(Sphere[Vec3[0., 5., -10.], 2.])), -1., near, "a sphere to the side is missed");
+  // Its top at y = 0 just touches the ray's line, at z = -10
+  expectFloat(hit(down.intersectSphere(Sphere[Vec3[0., 2., -10.], 2.])), 10., close, "a grazing ray");
+  expectFloat(hit(Ray3[Vec3[0., 0., -10.], Vec3[0., 0., -1.]].intersectSphere(ball)), 0., near,
+    "a ray starting inside a sphere hits at 0");
+  expectFloat(hit(down.intersectSphere(Sphere[Vec3[0., 0., 10.], 2.])), -1., near, "a sphere behind is missed");
+
+  imm box = Aabb3[Vec3[-1., -1., -6.], Vec3[1., 1., -4.]];
+  expectFloat(hit(down.intersectAabb(box)), 4., near, "ray enters a box at its near face");
+  // From (-2, -2, 0) along (1, 1, 0): x enters [0, 1] at 2 and leaves at 3, y
+  // enters [0, 2] at 2 and leaves at 4, so it enters at 2, the corner (0, 0, 0)
+  imm slant = Ray3[Vec3[-2., -2., 0.], Vec3[1., 1., 0.]];
+  imm tall = Aabb3[Vec3[0., 0., -1.], Vec3[1., 2., 1.]];
+  expectFloat(hit(slant.intersectAabb(tall)), 2., near, "a slanting ray enters at a corner");
+  // From (-2, 3, 0): x is inside for t in [2, 3], y for [-3, -1]: no overlap
+  expectFloat(hit(Ray3[Vec3[-2., 3., 0.], Vec3[1., 1., 0.]].intersectAabb(tall)), -1., near,
+    "a slanting ray passes a box");
+  expectFloat(hit(Ray3[Vec3[0.5, 1., 0.], Vec3[1., 1., 0.]].intersectAabb(tall)), 0., near,
+    "a ray starting inside a box hits at 0");
+  expectFloat(hit(Ray3[Vec3[5., 0., 0.], Vec3[0., 0., -1.]].intersectAabb(box)), -1., near,
+    "a ray alongside a box, outside its x slab, misses");
+  expectFloat(hit(Ray3[Vec3[0., 0., 0.], Vec3[0., 0., 1.]].intersectAabb(box)), -1., near,
+    "a box behind is missed");
+
+  imm a = Vec3[-1., -1., -5.];
+  imm b = Vec3[1., -1., -5.];
+  imm c = Vec3[0., 1., -5.];
+  expectFloat(hit(down.intersectTriangle(a, b, c)), 5., near, "ray hits a triangle 5 ahead");
+  expectFloat(hit(Ray3[Vec3[0., 0., -10.], Vec3[0., 0., 1.]].intersectTriangle(a, b, c)), 5., near,
+    "and from behind");
+  expectFloat(hit(Ray3[Vec3[2., 0., 0.], Vec3[0., 0., -1.]].intersectTriangle(a, b, c)), -1., near,
+    "a ray beside a triangle misses it");
+  expectFloat(hit(Ray3[Vec3[0., 0., -5.], Vec3[1., 0., 0.]].intersectTriangle(a, b, c)), -1., near,
+    "a ray in a triangle's plane misses it");
+
+  point(Ray3[Vec3[1., 1., 1.], Vec3[0., 2., 0.]].at(2.5), 1., 6., 1., "the point 2.5 directions along");
+  imm xaxis = Ray3[Vec3[0., 0., 0.], Vec3[1., 0., 0.]];
+  point(xaxis.closestPoint(Vec3[3., 4., 0.]), 3., 0., 0., "nearest point on a ray");
+  point(xaxis.closestPoint(Vec3[-3., 4., 0.]), 0., 0., 0., "nearest point behind a ray's origin");
+}
+
+fn boxes() {
+  imm pts [3; Vec3] = [Vec3[1., 2., 3.], Vec3[-1., 5., 0.], Vec3[4., -2., 1.]];
+  imm b = Aabb3.fromPoints(&pts);
+  point(b.min, -1., -2., 0., "box from points: min");
+  point(b.max, 4., 5., 3., "box from points: max");
+  point(b.center(), 1.5, 1.5, 1.5, "box centre");
+  point(b.size(), 5., 7., 3., "box size");
+  point(b.halfExtents(), 2.5, 3.5, 1.5, "box half extents");
+  imm none = List[Vec3].empty();
+  expect(Aabb3.fromPoints(none.view()).isEmpty(), "box from no points is empty");
+  expect(Aabb3.empty().isEmpty(), "the empty box");
+  expect(!b.isEmpty(), "a box from points is not empty");
+  imm u = b.union(Aabb3[Vec3[10., 10., 10.], Vec3[11., 11., 11.]]);
+  point(u.min, -1., -2., 0., "union min");
+  point(u.max, 11., 11., 11., "union max");
+  point(b.enclose(Vec3[0., -5., 0.]).min, -1., -5., 0., "enclose a point below");
+  imm e = b.expand(1.);
+  point(e.min, -2., -3., -1., "expanded min");
+  point(e.max, 5., 6., 4., "expanded max");
+  imm fc = Aabb3.fromCenter(Vec3[1., 2., 3.], Vec3[1., 1., 1.]);
+  point(fc.min, 0., 1., 2., "box from a centre: min");
+  point(fc.max, 2., 3., 4., "box from a centre: max");
+  expect(b.contains(Vec3[0., 0., 0.]), "a point inside a box");
+  expect(b.contains(Vec3[4., 5., 3.]), "a box's corner is in it");
+  expect(!b.contains(Vec3[5., 0., 0.]), "a point outside a box");
+
+  imm cube = Aabb3[Vec3[0., 0., 0.], Vec3[2., 2., 2.]];
+  expect(cube.overlaps(Aabb3[Vec3[1., 1., 1.], Vec3[3., 3., 3.]]), "boxes overlap");
+  expect(cube.overlaps(Aabb3[Vec3[2., 0., 0.], Vec3[3., 1., 1.]]), "touching boxes overlap");
+  expect(!cube.overlaps(Aabb3[Vec3[2.1, 0., 0.], Vec3[3., 1., 1.]]), "boxes apart along x");
+  expect(!cube.overlaps(Aabb3[Vec3[0., 0., 5.], Vec3[1., 1., 6.]]), "boxes apart along z only");
+  point(cube.closestPoint(Vec3[5., 1., -3.]), 2., 1., 0., "nearest point of a box");
+  point(cube.closestPoint(Vec3[1., 1., 1.]), 1., 1., 1., "nearest point of a box, from inside");
+
+  // A quarter turn about z takes (x, y) to (-y, x): the box from (0, 0, 0)
+  // to (2, 1, 1) goes to x from -1 to 0 and y from 0 to 2
+  imm turned = Aabb3[Vec3[0., 0., 0.], Vec3[2., 1., 1.]].transformed(
+    Mat4.fromQuat(Quat.angleAxis(pi / 2., Vec3[0., 0., 1.])));
+  point(turned.min, -1., 0., 0., "box turned a quarter: min");
+  point(turned.max, 0., 2., 1., "box turned a quarter: max");
+  // An eighth turn: the unit cube's reach along x and y grows to
+  // cos 45deg + sin 45deg = sqrt(2); then moved 10 along x
+  imm eighth = Aabb3[Vec3[-1., -1., -1.], Vec3[1., 1., 1.]].transformed(
+    Mat4.fromTrs(Vec3[10., 0., 0.], Quat.angleAxis(pi / 4., Vec3[0., 0., 1.]), Vec3[1., 1., 1.]));
+  point(eighth.min, 8.585786, -1.414214, -1., "box turned an eighth and moved: min");
+  point(eighth.max, 11.414214, 1.414214, 1., "box turned an eighth and moved: max");
+}
+
+fn spheres() {
+  imm s = Sphere[Vec3[0., 0., 0.], 2.];
+  // 1 + 1 + 1 = 3 <= 4; 4 + 1 = 5 > 4
+  expect(s.contains(Vec3[1., 1., 1.]), "a point inside a sphere");
+  expect(!s.contains(Vec3[2., 1., 0.]), "a point outside a sphere");
+  point(s.closestPoint(Vec3[0., 0., 10.]), 0., 0., 2., "nearest point of a sphere");
+  point(s.closestPoint(Vec3[1., 0., 0.]), 1., 0., 0., "nearest point of a sphere, from inside");
+  expect(s.overlaps(Sphere[Vec3[3., 0., 0.], 1.]), "touching spheres overlap");
+  expect(!s.overlaps(Sphere[Vec3[3.5, 0., 0.], 1.]), "spheres apart");
+  // The box's nearest corner (1, 1, 1) is sqrt(3) away; (2, 2, 0) is sqrt(8)
+  expect(s.overlapsAabb(Aabb3[Vec3[1., 1., 1.], Vec3[2., 2., 2.]]), "a sphere and a box overlap");
+  expect(!s.overlapsAabb(Aabb3[Vec3[2., 2., 0.], Vec3[3., 3., 1.]]), "a sphere and a box apart");
+}
+
+fn planes() {
+  // Counterclockwise seen from +z: x cross y is z
+  imm floor = Plane.fromPoints(Vec3[0., 0., 0.], Vec3[1., 0., 0.], Vec3[0., 1., 0.]);
+  point(floor.normal, 0., 0., 1., "plane from points: normal");
+  expectFloat(floor.d, 0., near, "plane from points: d");
+  expectFloat(floor.signedDistance(Vec3[5., 5., 3.]), 3., near, "signed distance above");
+  expectFloat(floor.signedDistance(Vec3[5., 5., -3.]), -3., near, "signed distance below");
+  point(floor.closestPoint(Vec3[5., 5., 3.]), 5., 5., 0., "nearest point of a plane");
+  // The other winding, at z = 2: the normal points down, and the origin,
+  // below it, is 2 on its positive side
+  imm ceiling = Plane.fromPoints(Vec3[0., 0., 2.], Vec3[0., 1., 2.], Vec3[1., 0., 2.]);
+  point(ceiling.normal, 0., 0., -1., "plane wound the other way: normal");
+  expectFloat(ceiling.signedDistance(Vec3[0., 0., 0.]), 2., near, "signed distance to a plane facing down");
+  // 2z - 4 = 0 is z = 2
+  imm raw = Plane[Vec3[0., 0., 2.], -4.];
+  point(raw.closestPoint(Vec3[0., 0., 5.]), 0., 0., 2., "nearest point of a plane whose normal is not a unit");
+  imm unit = raw.normalize();
+  point(unit.normal, 0., 0., 1., "normalized plane: normal");
+  expectFloat(unit.d, -2., near, "normalized plane: d");
+  expectFloat(unit.signedDistance(Vec3[0., 0., 5.]), 3., near, "normalized plane: distance");
+}
+
+fn closest() {
+  imm a = Vec3[0., 0., 0.];
+  imm b = Vec3[10., 0., 0.];
+  point(closestPointOnSegment(Vec3[3., 4., 0.], a, b), 3., 0., 0., "nearest point of a segment");
+  point(closestPointOnSegment(Vec3[-5., 1., 0.], a, b), 0., 0., 0., "nearest point before a segment");
+  point(closestPointOnSegment(Vec3[12., -1., 0.], a, b), 10., 0., 0., "nearest point past a segment");
+  point(closestPointOnSegment(Vec3[3., 4., 0.], a, a), 0., 0., 0., "nearest point of a segment of no length");
+
+  imm c = Vec3[4., 0., 0.];
+  imm d = Vec3[0., 4., 0.];
+  point(closestPointOnTriangle(Vec3[1., 1., 5.], a, c, d), 1., 1., 0., "triangle: over its face");
+  point(closestPointOnTriangle(Vec3[-1., -1., 0.], a, c, d), 0., 0., 0., "triangle: past corner a");
+  point(closestPointOnTriangle(Vec3[5., -1., 0.], a, c, d), 4., 0., 0., "triangle: past corner b");
+  point(closestPointOnTriangle(Vec3[-1., 5., 1.], a, c, d), 0., 4., 0., "triangle: past corner c");
+  point(closestPointOnTriangle(Vec3[2., -3., 1.], a, c, d), 2., 0., 0., "triangle: beside edge ab");
+  point(closestPointOnTriangle(Vec3[-2., 2., 0.], a, c, d), 0., 2., 0., "triangle: beside edge ac");
+  // Beyond the long edge x + y = 4: (3, 3) comes back to (2, 2)
+  point(closestPointOnTriangle(Vec3[3., 3., 0.], a, c, d), 2., 2., 0., "triangle: beside edge bc");
+  // (1, 1) is a/2 + b/4 + c/4
+  point(barycentric(Vec3[1., 1., 0.], a, c, d), 0.5, 0.25, 0.25, "barycentric weights");
+}
+
+fn frusta() {
+  imm f = Frustum.fromMatrix(Mat4.perspective(pi / 2., 1., 1., 10.));
+  point(f.planes[0].normal, 0.707107, 0., -0.707107, "left plane's normal");
+  point(f.planes[4].normal, 0., 0., -1., "near plane's normal");
+  expectFloat(f.planes[4].d, -1., close, "near plane at 1");
+  point(f.planes[5].normal, 0., 0., 1., "far plane's normal");
+  expectFloat(f.planes[5].d, 10., close, "far plane at 10");
+
+  expect(f.containsPoint(Vec3[0., 0., -5.]), "a point ahead is in the frustum");
+  expect(f.containsPoint(Vec3[4., 0., -5.]), "a point to the side but within 45 degrees");
+  expect(!f.containsPoint(Vec3[6., 0., -5.]), "a point beyond 45 degrees");
+  expect(!f.containsPoint(Vec3[0., 0., -0.5]), "a point nearer than the near plane");
+  expect(!f.containsPoint(Vec3[0., 0., -11.]), "a point beyond the far plane");
+
+  expectInt(i64[f.testSphere(Sphere[Vec3[0., 0., -5.], 1.])], i64[Inside], "sphere inside");
+  expectInt(i64[f.testSphere(Sphere[Vec3[0., 0., -5.], 10.])], i64[Intersecting], "sphere larger than the view");
+  expectInt(i64[f.testSphere(Sphere[Vec3[0., 0., 5.], 1.])], i64[Outside], "sphere behind");
+  // The right plane, (-1, 0, -1)/sqrt(2): (7, 0, -5) is -2/sqrt(2) = -1.41
+  // from it, more than its radius; (5.5, 0, -5) is -0.35
+  expectInt(i64[f.testSphere(Sphere[Vec3[7., 0., -5.], 1.])], i64[Outside], "sphere off to the side");
+  expectInt(i64[f.testSphere(Sphere[Vec3[5.5, 0., -5.], 1.])], i64[Intersecting], "sphere across the side");
+  expectInt(i64[f.testSphere(Sphere[Vec3[0., 0., -10.5], 1.])], i64[Intersecting], "sphere across the far plane");
+  expectInt(i64[f.testSphere(Sphere[Vec3[0., 0., -12.], 1.])], i64[Outside], "sphere beyond the far plane");
+  expectInt(i64[f.testSphere(Sphere[Vec3[0., 0., -0.5], 0.25])], i64[Outside], "sphere before the near plane");
+  expect(f.intersectsSphere(Sphere[Vec3[5.5, 0., -5.], 1.]), "a sphere across the side may be seen");
+  expect(!f.intersectsSphere(Sphere[Vec3[0., 0., 5.], 1.]), "a sphere behind may not");
+
+  expectInt(i64[f.testAabb(Aabb3[Vec3[-1., -1., -6.], Vec3[1., 1., -4.]])], i64[Inside], "box inside");
+  expectInt(i64[f.testAabb(Aabb3[Vec3[-1., -1., -12.], Vec3[1., 1., -8.]])], i64[Intersecting], "box across the far plane");
+  expectInt(i64[f.testAabb(Aabb3[Vec3[20., -1., -6.], Vec3[22., 1., -4.]])], i64[Outside], "box off to the side");
+  expectInt(i64[f.testAabb(Aabb3[Vec3[-1., -1., 1.], Vec3[1., 1., 3.]])], i64[Outside], "box behind");
+  // Left plane, x >= z: the corner (-4, _, -6) is inside it, (-6, _, -4) not
+  expectInt(i64[f.testAabb(Aabb3[Vec3[-6., -1., -6.], Vec3[-4., 1., -4.]])], i64[Intersecting], "box across the left side");
+  expect(f.intersectsAabb(Aabb3[Vec3[-1., -1., -12.], Vec3[1., 1., -8.]]), "a box across the far plane may be seen");
+  expect(!f.intersectsAabb(Aabb3[Vec3[-1., -1., 1.], Vec3[1., 1., 3.]]), "a box behind may not");
+
+  // OpenGL's depth, extracted for it, gives the same planes
+  imm g = Frustum.fromMatrixGl(Mat4.perspectiveGl(pi / 2., 1., 1., 10.));
+  point(g.planes[4].normal, 0., 0., -1., "OpenGL: near plane's normal");
+  expectFloat(g.planes[4].d, -1., close, "OpenGL: near plane at 1");
+  expectFloat(g.planes[5].d, 10., close, "OpenGL: far plane at 10");
+  expect(g.containsPoint(Vec3[0., 0., -5.]), "OpenGL: a point ahead");
+  expect(!g.containsPoint(Vec3[0., 0., -0.5]), "OpenGL: a point nearer than the near plane");
+
+  // A camera at (0, 0, 10) looking at the origin, seeing 1 to 20 away: the
+  // origin is 10 ahead, (0, 0, 11) behind it, (0, 0, -15) 25 ahead, too far
+  imm vp = Mat4.perspective(pi / 2., 1., 1., 20.)
+    * Mat4.lookAt(Vec3[0., 0., 10.], Vec3[0., 0., 0.], Vec3[0., 1., 0.]);
+  imm cf = Frustum.fromMatrix(vp);
+  expect(cf.containsPoint(Vec3[0., 0., 0.]), "placed camera: the origin ahead");
+  expect(!cf.containsPoint(Vec3[0., 0., 11.]), "placed camera: a point behind");
+  expectInt(i64[cf.testSphere(Sphere[Vec3[0., 0., -15.], 1.])], i64[Outside], "placed camera: a sphere too far");
+  expectInt(i64[cf.testAabb(Aabb3[Vec3[-1., -1., -1.], Vec3[1., 1., 1.]])], i64[Inside], "placed camera: a box ahead");
+}
+
+fn main() i32 {
+  rays();
+  boxes();
+  spheres();
+  planes();
+  closest();
+  frusta();
+  done();
+}

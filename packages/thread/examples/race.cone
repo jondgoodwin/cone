@@ -1,0 +1,59 @@
+// Why the atomics matter. Two threads each add 1 to two shared counters a
+// million times: one counter with core's atomic add, one with a plain
+// read-then-write. The atomic total is always 2000000. The plain total is
+// usually less, by a different amount on each run, because the two threads'
+// read-then-writes interleave and one overwrites the other's add. Run it with
+//
+//   congo run packages/thread/examples/race.cone
+//
+// and it prints something like
+//
+//   atomic 2000000
+//   plain  1043217 (lost 956783)
+//
+// The plain count is a race: its value is not defined, and on another
+// machine, or with optimization, it may even come out right. That is why it
+// is an example and not a test. Nothing yet refuses handing a thread a
+// pointer to mutable memory that another thread also writes; the compiler's
+// thread check, which will, comes later.
+
+mod race;
+
+import stdio use *;
+import thread;
+
+struct Counters {
+  pub atomic *u64;
+  pub plain *u64;
+}
+
+fn add(c Counters) {
+  mut i = 0u64;
+  while i < 1000000u64 {
+    mem.atomicAdd[u64](c.atomic, 1u64, MemOrder.Relaxed[]);
+    // A plain read and a plain write: another thread may add between them.
+    // Through the relaxed atomic load and store, rather than '*c.plain', so
+    // the optimizer cannot fold the million adds into one.
+    imm seen = mem.atomicLoad[u64](c.plain, MemOrder.Relaxed[]);
+    mem.atomicStore[u64](c.plain, seen + 1u64, MemOrder.Relaxed[]);
+    i = i + 1u64;
+  }
+}
+
+mut atomicTotal u64 = 0u64;
+mut plainTotal u64 = 0u64;
+
+fn main() {
+  imm c = Counters[&mut atomicTotal as *u64, &mut plainTotal as *u64];
+  {
+    imm a = thread.start(c, &add);
+    imm b = thread.start(c, &add);
+  }   // both handles are dropped here, and a dropped handle joins
+  printStr("atomic ");
+  printInt(i64[atomicTotal]);
+  printStr("\nplain  ");
+  printInt(i64[plainTotal]);
+  printStr(" (lost ");
+  printInt(2000000i64 - i64[plainTotal]);
+  printStr(")\n");
+}

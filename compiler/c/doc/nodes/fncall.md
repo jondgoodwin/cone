@@ -334,8 +334,12 @@ generation and the permission read treat the last access as one to that field.
 A private member (one not declared `pub`) is granted to a receiver that is the enclosing
 method's own `self`, and to an access that a macro method's body wrote on *its*
 `self` — the clone carries `FlagSelfRecv`, stamped by `cloneFnCallNode` at
-expansion, since by then the receiver is the use site's expression. Every other
-receiver gets `ErrorNotPublic`.
+expansion, since by then the receiver is the use site's expression. Any other
+receiver is granted it when the function being checked is the receiver's type's
+own — its owner (`inodeGetOwner` of `pstate->fn`) is that type, so a generic's
+instance sees values of that instance only — or is inside the enum boundary
+(`structSeesPrivate`, `structEnumSeesPrivate`). Every other receiver gets
+`ErrorNotPublic`.
 
 Three adjustments, two of them asymmetric on purpose:
 
