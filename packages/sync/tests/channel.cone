@@ -1,0 +1,242 @@
+// Channel[T] on one thread: what each operation answers, and where each
+// value goes. Values come out in the order they went in, 'send' and '<-'
+// alike, across the channel's 32-slot blocks many times over; 'tryRecv' on an
+// empty channel answers None, and 'recvTimeout' too, having waited;
+// 'rx.close()' refuses later sends, handing each value back, while what was
+// sent before still comes out; the last sender's going closes it, so 'recv'
+// drains what is left and then answers None rather than waiting; a clone is
+// a second sender, and the channel closes only when both are gone. Values
+// whose deaths are counted, by value and as '+so' owners, show each value
+// dying exactly once: when the Option 'recv' answered dies, when a refused
+// send's handed-back value dies, or, for a value never received, when the
+// receiver dies.
+
+mod channel;
+
+import testing use *;
+import sync use *;
+
+extern {
+  fn @c(system) QueryPerformanceCounter(count *i64) i32;
+  fn @c(system) QueryPerformanceFrequency(freq *i64) i32;
+}
+
+fn nowNs() i64 {
+  mut count = 0i64;
+  mut freq = 0i64;
+  QueryPerformanceCounter(&mut count as *i64);
+  QueryPerformanceFrequency(&mut freq as *i64);
+  i64[f64[count] * 1000000000.0d / f64[freq]];
+}
+
+// A value whose deaths are counted
+mut deaths u64 = 0u64;
+
+struct Counted {
+  pub n u64;
+  fn final(self &uni) {
+    deaths = deaths + 1u64;
+  }
+}
+
+// The next value's number, or 0 for None
+fn got(o Option[u64]) u64 {
+  match o {
+    case imm s Some {s.value;}
+    case is None[u64] {0u64;}
+  }
+}
+
+fn gotCounted(o Option[Counted]) u64 {
+  match o {
+    case imm s Some {s.value.n;}
+    case is None[Counted] {0u64;}
+  }
+}
+
+fn gotOwned(o Option[+so Counted]) u64 {
+  match o {
+    case imm s Some {s.value.n;}
+    case is None[+so Counted] {0u64;}
+  }
+}
+
+// What a send answered: 0 when it was sent, else the value handed back
+fn refused(o Option[u64]) u64 {got(o);}
+
+// An end, dropped here
+fn dropSender(tx Sender[u64]) {}
+fn dropReceiver(rx Receiver[Counted]) {}
+
+fn order() {
+  mut tx Sender[u64];
+  mut rx Receiver[u64];
+  tx, rx = Channel[u64].make();
+  expectUInt(got(rx.tryRecv()), 0u64, "tryRecv on an empty channel is None");
+  expectBool(rx.isClosed(), false, "a new channel is open");
+  expectUInt(refused(tx.send(1u64)), 0u64, "send answers None");
+  tx <- 2u64;
+  expectUInt(refused((tx <- 3u64)), 0u64, "'<-' answers what send does");
+  tx <- (4u64, 5u64);
+  expectUInt(got(rx.recv()), 1u64, "first in, first out");
+  expectUInt(got(rx.recv()), 2u64, "second");
+  expectUInt(got(rx.tryRecv()), 3u64, "third, by tryRecv");
+  expectUInt(got(rx.recv()), 4u64, "a tuple's first");
+  expectUInt(got(rx.recv()), 5u64, "a tuple's second");
+  expectUInt(got(rx.tryRecv()), 0u64, "empty again");
+}
+
+// Rounds of 1 to 70 sends, each round received before the next: 2485
+// values, every block boundary met at a different point of a round. Then
+// 10000 sent before any is received: 313 blocks queued at once. Each value
+// is checked against the next number expected.
+fn blocks() {
+  mut tx Sender[u64];
+  mut rx Receiver[u64];
+  tx, rx = Channel[u64].make();
+  mut next = 1u64;
+  mut want = 1u64;
+  mut wrong = 0u64;
+  mut round = 1u64;
+  while round <= 70u64 {
+    mut i = 0u64;
+    while i < round {
+      tx.send(next);
+      next = next + 1u64;
+      i = i + 1u64;
+    }
+    i = 0u64;
+    while i < round {
+      if got(rx.tryRecv()) != want {
+        wrong = wrong + 1u64;
+      }
+      want = want + 1u64;
+      i = i + 1u64;
+    }
+    round = round + 1u64;
+  }
+  expectUInt(want - 1u64, 2485u64, "values through in rounds");
+  expectUInt(wrong, 0u64, "each in its place");
+  expectUInt(got(rx.tryRecv()), 0u64, "and none left");
+
+  mut sum = 0u64;
+  mut i = 0u64;
+  while i < 10000u64 {
+    tx <- next + i;
+    i = i + 1u64;
+  }
+  i = 0u64;
+  while i < 10000u64 {
+    imm v = got(rx.recv());
+    if v != want + i {
+      wrong = wrong + 1u64;
+    }
+    sum = sum + v;
+    i = i + 1u64;
+  }
+  // 10000 values from 2486: 10000 * 2486 + 10000 * 9999 / 2
+  expectUInt(sum, 74855000u64, "the sum of 10000 queued at once");
+  expectUInt(wrong, 0u64, "each in its place");
+}
+
+fn closing() {
+  mut tx Sender[u64];
+  mut rx Receiver[u64];
+  tx, rx = Channel[u64].make();
+  tx <- (7u64, 8u64);
+  rx.close();
+  expectBool(rx.isClosed(), true, "close closes it");
+  expectUInt(refused(tx.send(9u64)), 9u64, "a send after close gets its value back");
+  expectUInt(refused((tx <- 10u64)), 10u64, "and by '<-'");
+  expectUInt(got(rx.recv()), 7u64, "what came before the close still comes out");
+  expectUInt(got(rx.recv()), 8u64, "all of it");
+  expectUInt(got(rx.recv()), 0u64, "then recv answers None, without waiting");
+  expectUInt(got(rx.tryRecv()), 0u64, "and tryRecv");
+
+  // The last sender's going closes it; a clone is a second sender
+  mut tx1 Sender[u64];
+  mut rx1 Receiver[u64];
+  tx1, rx1 = Channel[u64].make();
+  imm tx2 = tx1.clone();
+  tx1 <- 11u64;
+  tx2.send(12u64);
+  dropSender(tx1);
+  expectBool(rx1.isClosed(), false, "open while a clone remains");
+  tx2.send(13u64);
+  dropSender(tx2);
+  expectBool(rx1.isClosed(), true, "closed when the last sender goes");
+  expectUInt(got(rx1.recv()), 11u64, "then drained: the first sender's");
+  expectUInt(got(rx1.recv()), 12u64, "the clone's");
+  expectUInt(got(rx1.recv()), 13u64, "the clone's after the first went");
+  expectUInt(got(rx1.recv()), 0u64, "and then None");
+}
+
+fn timeouts() {
+  mut tx Sender[u64];
+  mut rx Receiver[u64];
+  tx, rx = Channel[u64].make();
+  imm start = nowNs();
+  expectUInt(got(rx.recvTimeout(30000000u64)), 0u64, "recvTimeout on an empty channel is None");
+  imm waited = nowNs() - start;
+  expect(waited >= 30000000i64, "after waiting at least the 30 ms");
+  tx <- 14u64;
+  expectUInt(got(rx.recvTimeout(30000000u64)), 14u64, "a value there is answered at once");
+  dropSender(tx);
+  expectUInt(got(rx.recvTimeout(sync.forever)), 0u64, "a closed, empty channel answers None");
+}
+
+// Values that count their deaths, by value and owned
+fn finalizing() {
+  deaths = 0u64;
+  {
+    mut tx Sender[Counted];
+    mut rx Receiver[Counted];
+    tx, rx = Channel[Counted].make();
+    mut i = 1u64;
+    while i <= 100u64 {
+      tx <- Counted[i];
+      i = i + 1u64;
+    }
+    expectUInt(deaths, 0u64, "a value sent is not finalized");
+    mut sum = 0u64;
+    i = 0u64;
+    while i < 40u64 {
+      sum = sum + gotCounted(rx.recv());
+      i = i + 1u64;
+    }
+    expectUInt(sum, 820u64, "40 received, 1 to 40");
+    expectUInt(deaths, 40u64, "each dies with the Option it came in");
+    // The receiver goes with 60 still in it, across two blocks
+    dropReceiver(rx);
+    expectUInt(deaths, 100u64, "the receiver's death finalizes the 60 never received, once each");
+    expectUInt(gotCounted(tx.send(Counted[101u64])), 101u64, "a send after the receiver went gets its value back");
+    expectUInt(deaths, 101u64, "which died with the Option handing it back");
+  }
+  expectUInt(deaths, 101u64, "the sender's death finalizes nothing more");
+
+  deaths = 0u64;
+  {
+    mut tx Sender[+so Counted];
+    mut rx Receiver[+so Counted];
+    tx, rx = Channel[+so Counted].make();
+    mut i = 1u64;
+    while i <= 50u64 {
+      tx.send(+so Counted[i]);
+      i = i + 1u64;
+    }
+    expectUInt(gotOwned(rx.recv()), 1u64, "an owned value moves through");
+    expectUInt(gotOwned(rx.tryRecv()), 2u64, "and another");
+    expectUInt(deaths, 2u64, "each freed with its Option");
+  }
+  // Both ends died at the block's end, the receiver with 48 still in it
+  expectUInt(deaths, 50u64, "the 48 never received are finalized when the receiver goes");
+}
+
+fn main() i32 {
+  order();
+  blocks();
+  closing();
+  timeouts();
+  finalizing();
+  done();
+}
