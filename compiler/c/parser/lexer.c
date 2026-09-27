@@ -1389,6 +1389,39 @@ static char *lexSkipTrivia(char *srcp) {
     }
 }
 
+// With the lexer on a name in a function-reference type's parameter list, is
+// the name the start of a type -- a parameter written as its type alone -- rather
+// than a parameter's own name? It is when what follows could not begin a
+// parameter's type: a '.' (a path to a type, 'geomath.Vec3'), or a '[' opening
+// type arguments ('List[i32]'), told apart from an array type ('xs [4; i32]') by
+// the ';' an array type holds at its own level. Read off the text as
+// lexNextIsWord is, so nothing is lexed twice.
+int lexIdentOpensType() {
+    char *srcp = lexSkipTrivia(lex->srcp);
+    if (*srcp == '.')
+        return 1;
+    if (*srcp != '[')
+        return 0;
+    int depth = 0;
+    while (*srcp) {
+        switch (*srcp) {
+        case '[': case '(': case '{':
+            ++depth;
+            break;
+        case ']': case ')': case '}':
+            if (--depth == 0)
+                return 1;
+            break;
+        case ';':
+            if (depth == 1)
+                return 0;
+            break;
+        }
+        srcp = lexSkipTrivia(srcp + 1);
+    }
+    return 1;
+}
+
 // Does this source's first statement begin 'mod' or 'pub mod'? The folder sweep
 // asks it of every file it finds before any file is parsed, because the answer
 // decides which module the file is: one that opens with a 'mod' declaration is a

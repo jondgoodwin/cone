@@ -138,9 +138,10 @@ Because the retag happens here, the four constructor tags have **no arms in
 `errorType` shares the tag and means "already reported" — then raise
 `ErrorNoRefType` and assign `errorType` so nothing downstream reports it again.
 `parseAmper` leaves `vtexp` unknown on purpose, because a reference in a
-parameter position may have its pointee inferred, and `parseFnSig` is the only
-thing that ever fills one in. Every other spelling — `fn f(s &)`, `&&`, `*&`,
-`&[]`, `(&, i32)`, a non-`self` parameter inside a method — would otherwise
+parameter position may have its pointee inferred, and a method's `Self`
+inference (`parseFnSig`, or `parseFnSigSettle` for an anonymous function's) is
+the only thing that ever fills one in. Every other spelling — `fn f(s &)`, `&&`,
+`*&`, `&[]`, `(&, i32)`, `&fn(&) i32`, a non-`self` parameter inside a method — would otherwise
 reach `genlType` still unknown and hand `LLVMPointerType` a NULL element type.
 Every enclosing type reaches these two guards through `itypeTypeCheck` on its
 own pointee, which is what makes two checks cover all of them.

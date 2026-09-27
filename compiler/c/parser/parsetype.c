@@ -1153,8 +1153,34 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     return (INode*)strnode;
 }
 
-// Parse a function's type signature
-INode *parseFnSig(ParseState *parse) {
+// A method's parameter written without a type is Self, and so is what a
+// reference written without its pointee ('self &') points to. The inferred
+// name is placed where the lexer is, or, given 'at', there.
+static void parseParmInferSelf(ParseState *parse, VarDclNode *parm, INode *at) {
+    if (!parse->typenode)
+        return;
+    INode **typep = NULL;
+    if (parm->vtype == unknownType)
+        typep = &parm->vtype;
+    else if (parm->vtype->tag == RefTag && ((RefNode *)parm->vtype)->vtexp == unknownType)
+        typep = &((RefNode *)parm->vtype)->vtexp;
+    if (typep == NULL)
+        return;
+    *typep = (INode*)newNameUseNode(selfTypeName);
+    if (at)
+        inodeLexCopy(*typep, at);
+}
+
+// Parse a function's type signature.
+//
+// 'reftype' is set for the signature after '&fn', which is a function-reference
+// type unless a body follows it, when it is an anonymous function's. A
+// function-reference type's parameter may be written as its type alone, with no
+// name: '&fn(u32) u32'. A parameter that opens with a type rather than a name
+// is read that way here, and so is a name followed by '.' or by type arguments
+// ('geomath.Vec3', 'List[i32]'). A lone name ('&fn(Vec3) f32') reads as a name
+// until parseFnSigSettle knows whether a body follows.
+INode *parseFnSig(ParseState *parse, int reftype) {
     FnSigNode *fnsig;
     uint16_t parmnbr = 0;
     uint16_t parseflags = ParseMaySig | ParseMayImpl | ParseInList;
@@ -1170,22 +1196,21 @@ INode *parseFnSig(ParseState *parse) {
     // Process parameter declarations
     if (lexIsToken(LParenToken)) {
         lexNextToken();
-        while (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
-            VarDclNode *parm = parseVarDcl(parse, immPerm, parseflags);
-            parm->flowtempflags |= VarInitialized;   // parameter vars always start with a valid value
-            // Do special inference if function is a type's method
-            if (parse->typenode) {
-                // Infer value type of a parameter (or its reference) if unspecified
-                if (parm->vtype == unknownType) {
-                    parm->vtype = (INode*)newNameUseNode(selfTypeName);
-                }
-                else if (parm->vtype->tag == RefTag) {
-                    RefNode *refnode = (RefNode *)parm->vtype;
-                    if (refnode->vtexp == unknownType) {
-                        refnode->vtexp = (INode*)newNameUseNode(selfTypeName);
-                    }
-                }
+        while (lexIsToken(PermToken) || lexIsToken(IdentToken) || (reftype && parseIsTypeStart())) {
+            VarDclNode *parm;
+            if (reftype && !lexIsToken(PermToken) && (!lexIsToken(IdentToken) || lexIdentOpensType())) {
+                // An unnamed parameter: its type alone
+                parm = newVarDclNode(anonName, VarDclTag, (INode*)immPerm);
+                parm->vtype = parseType(parse);
             }
+            else
+                parm = parseVarDcl(parse, immPerm, parseflags);
+            parm->flowtempflags |= VarInitialized;   // parameter vars always start with a valid value
+            // Do special inference if function is a type's method. A '&fn'
+            // signature's waits for parseFnSigSettle, since a lone name there
+            // may turn out to be a type.
+            if (!reftype)
+                parseParmInferSelf(parse, parm, NULL);
             // Add parameter to function's parm list
             parm->scope = 1;
             parm->index = parmnbr++;
@@ -1226,6 +1251,34 @@ INode *parseFnSig(ParseState *parse) {
     return (INode*)fnsig;
 }
 
+// Settle the parameters of a signature parseFnSig read after '&fn', once it is
+// known whether a body follows. Without one, it is a function-reference type, and
+// a parameter written as a lone name with no default is an unnamed parameter of
+// the type that name names. With one, it is an anonymous function's, whose
+// parameters its body refers to by name: a lone name stays a parameter's name,
+// typed as any function's parameter is, and a parameter written as its type
+// alone is reported.
+void parseFnSigSettle(ParseState *parse, FnSigNode *sig, int istype) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(sig->parms, cnt, nodesp)) {
+        VarDclNode *parm = (VarDclNode*)*nodesp;
+        if (istype) {
+            if (parm->namesym != anonName && parm->vtype == unknownType && parm->value == NULL) {
+                NameUseNode *type = newNameUseNode(parm->namesym);
+                inodeLexCopy((INode*)type, (INode*)parm);
+                parm->vtype = (INode*)type;
+                parm->namesym = anonName;
+            }
+        }
+        else if (parm->namesym == anonName)
+            errorMsgNode(parm->vtype, ErrorNoIdent,
+                "A parameter of a function with a body needs a name before its type. Only a function-reference type, '&fn' with no body, may leave its parameters unnamed.");
+        else
+            parseParmInferSelf(parse, parm, (INode*)parm);
+    }
+}
+
 // Parse a typedef statement.
 //
 // A typedef is an alias: a name in the module's namespace standing for what
@@ -1248,7 +1301,12 @@ AliasDclNode *parseTypedef(ParseState *parse) {
 
 // Parse a type expression. Return unknownType if none found.
 INode* parseType(ParseState *parse) {
-    // This is a placeholder since parser converges type and value expression parsing
+    // The parsing logic for value expressions also works for types (although overkill)
+    return parseIsTypeStart() ? parsePrefix(parse) : unknownType;
+}
+
+// Is the lexer on a token that may begin a type expression?
+int parseIsTypeStart() {
     switch (lex->toktype) {
     case IdentToken:    // type identifier (or generic)
     case VoidToken:     // void
@@ -1264,12 +1322,9 @@ INode* parseType(ParseState *parse) {
     case PlusArrayRefToken:
     case PlusVirtRefToken:
     case StarToken:
-    {    
-        // The parsing logic for value expressions also works for types (although overkill)
-        return parsePrefix(parse);
-    }
+        return 1;
     default:
-        return unknownType;
+        return 0;
     }
 }
 

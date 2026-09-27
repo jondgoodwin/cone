@@ -53,12 +53,16 @@ is strictly LL(1) at the token level. What lookahead exists is character-level
 inside the scanner: a few characters for maximal-munch operators (`<=>`, `+[]`,
 `&[]`, `>>=`), and a rewind inside `lexScanChar`, which scans an alphanumeric
 run and then checks for a closing `'` to tell a lifetime (`'a`) from a character
-literal. One reaches past the current token, still at the character level and
-lexing nothing: `lexNextIsWord` reads the source after it for a keyword, which
+literal. Two reach past the current token, still at the character level and
+lexing nothing. `lexNextIsWord` reads the source after it for a keyword, which
 `parseIsFoldClause` asks of a `pub` written after a declaration. `pub` comes
 first, so a fold clause may begin `pub use`; any other `pub` there begins the
 next statement after a missing `;`, which is still reported as the missing `;`.
-Only white space may come between the two words.
+Only white space may come between the two words. The other is
+`lexIdentOpensType`, asked of a name in a `&fn` signature's parameter list,
+where a parameter may be written as its type alone: a name followed by `.` or
+by a `[` whose brackets hold no `;` of their own begins a type (`geomath.Vec3`,
+`List[i32]`) rather than naming a parameter (`xs [4; i32]`).
 
 **`..` and `...` are the range tokens** (`DotDotToken`, `EllipsisToken`), read
 by a match's range pattern and by an index (`parseIndexArgs`): `x[a..b]` is held
@@ -461,7 +465,12 @@ the matched value's enum, which only type check knows, so the parser marks it
 `FlagOperator` set, and selection is type check's. And **whether `&fn` is a
 closure or a function-signature type** — `parseAmper` decides by whether a body
 follows, except in a return type (`ParseState.inrettype`), where it is always a
-signature because the block that follows is the declared function's own.
+signature because the block that follows is the declared function's own. The
+signature's parameters are read before that is known, so `parseFnSigSettle`
+settles them once it is: in a type, a parameter written as a lone name is an
+unnamed parameter of the type the name names (`&fn(Vec3) f32`); in an anonymous
+function it stays a parameter's name, with a method's `Self` inference, and a
+parameter written as its type alone is `ErrorNoIdent`.
 
 ## 5. Adding an operator: the six edits
 
@@ -657,6 +666,7 @@ numbers.
 | | `lexScanNumber`, `lexScanString`, `lexScanChar`, `lexScanEscape` | literals; UTF-8 re-encoding of escapes; lifetime-vs-char disambiguation |
 | | `lexNewLine`, `lexBlockComment` | line counting for diagnostics, inside comments included |
 | | `lexOpensWithMod` | whether a source's first statement begins `mod` or `pub mod`, and not `mod trait`, read off its text past white space and comments with nothing lexed: the folder sweep's probe for a one-file module |
+| | `lexIdentOpensType` | whether the name the lexer is on, in a `&fn` signature's parameter list, begins a type (followed by `.`, or by type arguments told from an array type by the absence of a `;`), read off the text with nothing lexed (section 2) |
 | `parser/parsemod.c` | `parseInit`, `parsePgm`, `parseLoadCore` | **entry point** — `parseInit` sets up the name table and the lexer, ahead of generation's setup since a build description is read with them; `parsePgm` the type tables, program, main module (a source file's, or the one a build description names), the `core` package from the search path, main file |
 | `parser/parsebuild.c` | `parseIsBuildDesc`, `parseBuildDesc`, `parseBuildFindImport`, `parseBuildImportModule` | the build description: told apart by its `.conebuild` extension, read by the lexer into a tree of `BuildModule`s — settings, the package lines, each module's files, child modules and import lines, each malformed line `ErrorBuildDesc` — the import line a described module writes for a name, and the entry for an include file an import line loads, whose imports are the package lines |
 | `parser/parsemod.c` | `parseBuildModuleTree`, `parseBuildSubmoduleDraw`, `parseBuildFiles`, `parseLoadBuildImport` | a described build's module tree: each module named and filled as the description says, nothing swept, and the file an import line names loaded as a declared module under the import's name. `ParseState.build` is the current module's entry, which `parseModuleDcl` checks the `mod` line against (`ErrorBuildModName`) and `parseImport` answers names from (`ErrorBuildImport`) |
@@ -679,13 +689,13 @@ numbers.
 | | `parsePrefix`, `parseAmper`, `parsePlus` | prefix operators; borrowed and region-managed references |
 | | `parseSuffix`, `parseDotCall`, `parseArgs`, `parseArg` | postfix `.`, `()`, `[]`, `++`, `--`; named values. The `.` production serves a member of a value and a path through a namespace alike |
 | | `parseTerm`, `parseNameUse`, `parseArrayLit` | literals, parens, blocks-as-expressions, names |
-| `parser/parsetype.c` | `parseType` | the type dispatcher that delegates to `parsePrefix` — principle 1 |
+| `parser/parsetype.c` | `parseType`, `parseIsTypeStart` | the type dispatcher that delegates to `parsePrefix` — principle 1 — and the tokens that may begin a type |
 | | `parseTypeReq` | a type the grammar requires: after `as` and `into`, a typedef's name, `is` in an expression or a case, a `,` in a return list or generic argument list, and a `+` in a type parameter's annotation. None written is `ErrorNoType`, reported just after the token that asked for it; `parseType` alone is for the sites where a type may be left out |
 | | `parseStruct` | struct/trait/enum: the optional `trait` modifier on the kind, generics, the base clauses — the `is` list and the `extends` base, read in a loop so that a type may write both, each once, with `extends` refused on a trait and meaning *the enum whose variants join this one's set* on an enum — fields, methods, macros (a method when parameter 0 is `self`), `extern fn` methods and functions with no body (refused in a trait or a generic type, and before anything but `fn`: `ErrorBadExtern`), an enum's variants in both spellings, tag-field synthesis and the `IsTagField` mark on an enum's discriminant; `@c` on a type is `ErrorCAttr` |
 | | `parseAddVariant`, `parseVariantTagPin` | joining a variant to its enum: the closed flags, the synthesized base link, the tag value written (an integer literal, which may be negative, kept whole in 64 bits; whether it fits the enum's type is type check's question) or assigned in sequence, and its name, bound in the enum's namespace while the node joins the module's list. A variant of an enum that *extends* another stays unassigned unless a value was written, because that enum's numbering continues from its base's last and the base is not resolved yet |
 | | `parseEnumExtensionMember` | what an enum extending another may not declare — a member of any kind, since a field or method every variant carries would have to reach its copies of the base's variants too, and a requirement declared there would need every copy to implement it; such a member belongs on the base, and comes along with the copies. Nor a discriminant: none is synthesized for such an enum either, its base's arriving with the fields name resolution splices in |
 | | `parseIsTagType`, `parseTagType` | `tag` recognized where a field's type is written and nowhere else, so it is not a reserved word |
-| | `parseFnSig` | parameters, `Self` inference, single or tuple return type |
+| | `parseFnSig`, `parseFnSigSettle` | parameters, `Self` inference, single or tuple return type. A `&fn` signature's parameter may be its type alone (an `anonName` parameter), and its lone names and `Self` inference wait for `parseFnSigSettle`, called once `parseAmper` or `parseFn` knows whether a body follows (section 4) |
 | | `parseVarDcl`, `parseThreadLocalAttr`, `parseFieldDclBody`, `parseConstDcl`, `parsePerm` | the declaration forms; a field's or a global's trailing `use` clause goes to `parseFoldClause`, and one on a local, a parameter or a static is `ErrorBadFold`. `@threadlocal` after the permission is `DclThreadLocal` on a module's global, the one caller passing `ParseMayThreadLocal` (`parseFnOrVar`, which also refuses one with no initial value unless `extern`, `ErrorThreadLocalInit`); `imm` with it is `ErrorThreadLocalImm`; on a local, a static, a parameter, a field, a module trait's global, after `fn` or a type's keyword, or before a global's permission it is `ErrorThreadLocalPlace`, reported and dropped. A field's node is built while the lexer is still on its name, both so a diagnostic points there and so an enum's body can decide between a field and a bare-name variant afterwards |
 | | `parseFoldClause` | `use *` with an optional `but` list, or a list of names each with an optional `as`; builds the clause on the field and an alias per listed name, bound by name resolution |
 | | `parseUseSibling`, `parseModUse`, `parseUseAdmits` | a `use` standing as a statement: in a type body it folds a sibling in, and at module scope (`parseGlobalStmts`) it folds an enum's variants or a submodule's names in, held on a `ModUseNode` — which of the two is known only once the source resolves. Both name their source and then share what follows it — every member by default, `*` refused as saying nothing more, a list with `as`, a block, or `but` |

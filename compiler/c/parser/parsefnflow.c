@@ -944,7 +944,10 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
     }
 
     // Process the function's signature info.
-    fnnode->vtype = parseFnSig(parse);
+    // After '&fn' (ParseEmbedded), the signature is a function-reference type
+    // unless a body follows, and its parameters are settled once that is known
+    int reftype = (mayflags & ParseEmbedded) != 0;
+    fnnode->vtype = parseFnSig(parse, reftype);
 
     // Handle optional specification that we are declaring an inline function,
     // one whose implementation will be "inlined" into any function that calls it
@@ -979,6 +982,9 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
             fnnode->dclinfo.cname = NULL;
         }
     }
+
+    if (reftype)
+        parseFnSigSettle(parse, (FnSigNode*)fnnode->vtype, !parseHasBlock());
 
     // Process statements block that implements function, if provided
     char *bodyp = NULL, *bodyendp = NULL;

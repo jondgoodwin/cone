@@ -206,6 +206,9 @@ void lexPop();
 void lexNextToken();
 // Is the token after the current one the keyword 'word'? The lexer is left where it was.
 int lexNextIsWord(char *word);
+// In a function-reference type's parameter list, does the name the lexer is on
+// begin a type ('geomath.Vec3', 'List[i32]') rather than name a parameter?
+int lexIdentOpensType();
 // Does this source's first statement begin 'mod' or 'pub mod'? Read off the text
 // alone: nothing is lexed and nothing reported.
 int lexOpensWithMod(char *src);
