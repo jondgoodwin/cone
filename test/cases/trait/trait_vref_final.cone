@@ -1,0 +1,104 @@
+// An owning virtual reference releases what it owns exactly as a plain owner
+// does: when the last owner goes away, the concrete value is finalized and its
+// memory given back through the region's 'free'. Its concrete type is erased,
+// so the finalizer and the value's alignment come from the implementer's type
+// record, which every vtable carries in its last slot; the alignment says where
+// the region's header sits before the value. Before, nothing was ever
+// finalized or freed: out of scope, replaced, moved, returned or held in a
+// struct, the value leaked.
+//
+// 'one' is a single-owner region and 'tally' a counted one; both count their
+// allocations and frees, and print each free. 'tally' also prints each count
+// change: '+n' after an 'alias', '-n' after a 'dealias'. Its header is a u32,
+// so a Fin (an i64, aligned to 8) sits 8 bytes after it and a Small (an i32,
+// aligned to 4) 4 bytes after it: a count read from the wrong place would print
+// a wrong number, and a free of the wrong address would crash. 'F<n>' is a
+// Fin's 'final', 'S<n>' a Small's, 'H' a Holder's. A move leaves nothing for
+// its source to release, so each death appears once, and the counts at the
+// end say every allocation was freed.
+
+mod trait_vref_final;
+
+import stdio use *;
+import libc;
+
+mut allocs = 0i64;
+mut frees = 0i64;
+
+struct one is RegionRef, Move {
+  fn alloc(size usize) *u8 inline { allocs = allocs + 1; malloc(size); }
+  fn free(self &uni one) inline { frees = frees + 1; printStr("free "); libc.free(self as *u8); }
+}
+
+struct tally is RegionRef {
+  owners u32;
+  fn alloc(size usize) *u8 inline { allocs = allocs + 1; malloc(size); }
+  fn init() tally inline { tally[1u32]; }
+  fn alias(self &uni tally) inline { owners = owners + 1u32; printStr("+"); printInt(i64[owners]); printStr(" "); }
+  fn dealias(self &uni tally) Bool inline { owners = owners - 1u32; printStr("-"); printInt(i64[owners]); printStr(" "); owners == 0u32; }
+  fn free(self &uni tally) inline { frees = frees + 1; printStr("tfree "); libc.free(self as *u8); }
+}
+
+trait App {
+  pub fn look(self &) i64;
+}
+
+struct Fin {
+  pub n i64;
+  pub fn look(self &) i64 {n;}
+  fn final(self &uni) { printStr("F"); printInt(n); printStr(" "); }
+}
+
+// A second implementer, of another size and alignment
+struct Small {
+  pub n i32;
+  pub fn look(self &) i64 {i64[n];}
+  fn final(self &uni) { printStr("S"); printInt(i64[n]); printStr(" "); }
+}
+
+struct Holder {
+  pub app +<one App;
+  fn final(self &uni) { printStr("H "); }
+}
+
+// Its drop is all generated
+struct Bare { pub app +<one App; }
+
+fn show(label &[]u8) { printStr(label); printStr(": "); }
+fn end() { printStr("|\n"); }
+
+fn take(x +<one App) { printStr("took "); }
+fn make(n i64) +<one App { +one Fin[n]; }
+fn makeLocal() +<one App { imm f = +one Fin[3]; printStr("made "); f; }
+fn peek(x &<App) i64 { x.look(); }
+
+// A move on one path only: the drop flag decides
+fn maybeTake(b Bool) {
+  imm a +<one App = +one Fin[4];
+  if b { take(a); }
+  printStr("after ");
+}
+
+fn main() i32 {
+  show("scope"); { imm a +<one App = +one Fin[1]; printStr("in "); } end();
+  show("replaced"); { mut a +<one App = +one Fin[1]; a = +one Fin[2]; printStr("set "); } end();
+  show("moved-to-param"); { imm a +<one App = +one Fin[1]; take(a); printStr("back "); } end();
+  show("plain-to-param"); { imm p = +one Fin[1]; take(p); printStr("back "); } end();
+  show("returned"); { imm a = make(2); printInt(a.look()); printStr(" "); } end();
+  show("returned-local"); { imm a = makeLocal(); printInt(a.look()); printStr(" "); } end();
+  show("moved-on-one-path"); maybeTake(true); end();
+  show("kept-on-other-path"); maybeTake(false); end();
+  show("field"); { imm h = Holder[+one Fin[5]]; printStr("in "); } end();
+  show("field-from-local"); { imm a +<one App = +one Fin[5]; imm h = Holder[a]; printStr("in "); } end();
+  show("field-replaced"); { mut h = Holder[+one Fin[5]]; h.app = +one Fin[6]; printStr("set "); } end();
+  show("bare-field"); { imm b = Bare[+one Fin[6]]; printStr("in "); } end();
+  show("two-types"); { imm a +<one App = +one Fin[7]; imm b +<one App = +one Small[8]; printStr("in "); } end();
+  show("in-option"); { imm o Option[+<one App] = Some[+<one App][+one Fin[9]]; printStr("in "); } end();
+  show("counted-moved"); { imm c +<tally App = +tally Fin[10]; { imm d = c; printStr("moved "); } printStr("inner "); } end();
+  show("counted-two-aliases"); { imm c +<tally-mut App = +tally-mut Fin[11]; { imm d = c; printStr("copy "); } printStr("inner "); } end();
+  show("counted-small"); { imm c +<tally-mut App = +tally-mut Small[12]; { imm d = c; printInt(d.look()); printStr(" "); } printStr("inner "); } end();
+  show("counted-from-plain"); { imm p = +tally-mut Fin[13]; { imm v +<tally-mut App = p; printStr("view "); } printStr("inner "); } end();
+  show("borrowed"); { imm f = Fin[14]; { imm b &<App = &f; printInt(peek(b)); printStr(" "); } printStr("inner "); } end();
+  printStr("allocs="); printInt(allocs); printStr(" frees="); printInt(frees); printStr("\n");
+  0;
+}

@@ -1587,7 +1587,7 @@ static int genlStoreThroughPtr(INode *lval) {
 // that finalizes, which dies in place instead.
 static int genlOwnersOnly(INode *type) {
     INode *typedcl = itypeGetTypeDcl(type);
-    if (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag)
+    if (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag || typedcl->tag == VirtRefTag)
         return 1;
     if (typedcl->tag != TTupleTag)
         return 0;
@@ -1855,7 +1855,7 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         // Flow injects this node only for a counted reference (flowIsRcRef),
         // whose region's 'alias' is called once per owner added
         RefNode *reftype = (RefNode*)iexpGetTypeDcl(termnode);
-        if (reftype->tag == RefTag || reftype->tag == ArrayRefTag)
+        if (reftype->tag == RefTag || reftype->tag == ArrayRefTag || reftype->tag == VirtRefTag)
             genlRegionAlias(gen, val, anode->amt, reftype);
         else if (reftype->tag == TTupleTag) {
             TupleNode *tuple = (TupleNode*)reftype;

@@ -48,7 +48,16 @@ void genlRefTypeSetup(GenState *gen, RefNode *reftype) {
 static LLVMValueRef genlRefPtr(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
     if (refnode->tag == ArrayRefTag)
         return LLVMBuildExtractValue(gen->builder, ref, 0, "sliceptr");
+    // A virtual reference's object pointer: its fat pointer's first word
+    if (refnode->tag == VirtRefTag)
+        return LLVMBuildExtractValue(gen->builder, ref, 0, "objptr");
     return ref;
+}
+
+// Is this type an owning reference: single, slice or virtual, into a region?
+static int genlIsOwningRef(INode *typedcl) {
+    return (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag || typedcl->tag == VirtRefTag)
+        && regionIsOwning(((RefNode *)typedcl)->region);
 }
 
 static void genlEnumDrop(GenState *gen, FnDclNode *fnnode);
@@ -122,6 +131,7 @@ void genlFinalizeAt(GenState *gen, LLVMValueRef valptr, INode *vtype) {
     switch (typedcl->tag) {
     case RefTag:
     case ArrayRefTag:
+    case VirtRefTag:
         if (regionIsOwning(((RefNode *)typedcl)->region))
             genlReleaseOwning(gen, LLVMBuildLoad2(gen->builder, genlType(gen, typedcl), valptr, "finalref"), typedcl);
         return;
@@ -197,8 +207,7 @@ static void genlStructDrop(GenState *gen, FnDclNode *fnnode) {
             // Resolved, because a field's declared type may be a name standing
             // for the reference type rather than the reference type itself
             INode *fldtype = itypeGetTypeDcl(field->vtype);
-            int isowner = (fldtype->tag == RefTag || fldtype->tag == ArrayRefTag)
-                && regionIsOwning(((RefNode *)fldtype)->region);
+            int isowner = genlIsOwningRef(fldtype);
             if (isowner != owners || !itypeNeedsFinal(fldtype))
                 continue;
             genlFinalizeAt(gen, LLVMBuildStructGEP2(gen->builder, strtype, selfptr, field->index, &field->namesym->namestr), fldtype);
@@ -709,6 +718,7 @@ void genlAliasHeld(GenState *gen, LLVMValueRef valptr, INode *type, long long am
     switch (typedcl->tag) {
     case RefTag:
     case ArrayRefTag:
+    case VirtRefTag:
         if (flowIsRcRef(typedcl))
             genlRegionAlias(gen, LLVMBuildLoad2(gen->builder, genlType(gen, typedcl), valptr, "heldref"), amount, (RefNode *)typedcl);
         return;
@@ -877,6 +887,68 @@ static LLVMValueRef genlRegionHeader(GenState *gen, LLVMValueRef valptr, RefNode
     return LLVMBuildBitCast(gen->builder, bytep, hdrptrtype, "header");
 }
 
+// The type record of the value an owning virtual reference points at: its
+// vtable's last slot, after the methods and field offsets (genlVtable). Its
+// concrete type is erased, so its finalizer and its alignment are read from
+// here rather than known.
+static LLVMValueRef genlVirtRecord(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
+    genlType(gen, (INode*)refnode);    // Make sure the vtable is built
+    if (typeRecordStruct() == NULL)
+        errorExit(ExitGen, "Internal error: an owning virtual reference is released, and core declares no 'mem.typeRecord' whose TypeRecord its vtable could hold");
+    Vtable *vtable = ((StructNode *)itypeGetTypeDcl(refnode->vtexp))->vtable;
+    LLVMValueRef vtablep = LLVMBuildExtractValue(gen->builder, ref, 1, "vtable");
+    LLVMValueRef recp = LLVMBuildStructGEP2(gen->builder, vtable->llvmvtable, vtablep, vtable->methfld->used, "typerecordp");
+    return LLVMBuildLoad2(gen->builder, LLVMPointerTypeInContext(gen->context, 0), recp, "typerecord");
+}
+
+// The region's header for the value an owning virtual reference points at.
+// The allocation is laid out {region, permission, value} for the concrete
+// type, so the value sits at the region and permission's size rounded up to
+// its own alignment. The first part is the reference type's; the alignment is
+// the concrete type's, read from its record at run time, and only where the
+// header is not empty (a 'so' allocation's value is its start).
+static LLVMValueRef genlVirtHeader(GenState *gen, LLVMValueRef ref, LLVMValueRef valptr, RefNode *refnode) {
+    LLVMTypeRef hdrtypes[2];
+    hdrtypes[0] = genlType(gen, refnode->region);
+    hdrtypes[1] = genlType(gen, refnode->perm);
+    LLVMTypeRef hdrtype = LLVMStructTypeInContext(gen->context, hdrtypes, 2, 0);
+    unsigned long long prefix = LLVMOffsetOfElement(gen->datalayout, hdrtype, 1)
+        + LLVMABISizeOfType(gen->datalayout, hdrtypes[1]);
+    if (prefix == 0)
+        return valptr;
+    LLVMTypeRef usize = genlType(gen, (INode*)usizeType);
+    StructNode *recnode = typeRecordStruct();
+    LLVMValueRef rec = genlVirtRecord(gen, ref, refnode);
+    LLVMValueRef alignp = LLVMBuildStructGEP2(gen->builder, genlType(gen, (INode*)recnode), rec, TypeRecAlign, "alignp");
+    LLVMValueRef align = LLVMBuildLoad2(gen->builder, usize, alignp, "align");
+    // (prefix + align - 1) & -align: the prefix rounded up to the alignment
+    LLVMValueRef mask = LLVMBuildNeg(gen->builder, align, "alignmask");
+    LLVMValueRef up = LLVMBuildAdd(gen->builder, LLVMConstInt(usize, prefix, 0),
+        LLVMBuildSub(gen->builder, align, LLVMConstInt(usize, 1, 0), ""), "");
+    LLVMValueRef offset = LLVMBuildAnd(gen->builder, up, mask, "hdroffset");
+    LLVMValueRef back = LLVMBuildNeg(gen->builder, offset, "");
+    LLVMTypeRef bytetype = LLVMInt8TypeInContext(gen->context);
+    return LLVMBuildGEP2(gen->builder, bytetype, valptr, &back, 1, "header");
+}
+
+// The header of what an owning reference 'ref' points at ('valptr'), of any kind
+static LLVMValueRef genlOwnerHeader(GenState *gen, LLVMValueRef ref, LLVMValueRef valptr, RefNode *refnode) {
+    if (refnode->tag == VirtRefTag)
+        return genlVirtHeader(gen, ref, valptr, refnode);
+    return genlRegionHeader(gen, valptr, refnode);
+}
+
+// The value an owning virtual reference points at dies in place: its concrete
+// type's finalizer, called through its record (the value's death, less any
+// free, as genlFinalizeAt would generate it had the type been known)
+static void genlVirtFinalize(GenState *gen, LLVMValueRef ref, LLVMValueRef valptr, RefNode *refnode) {
+    StructNode *recnode = typeRecordStruct();
+    LLVMValueRef rec = genlVirtRecord(gen, ref, refnode);
+    LLVMValueRef finalp = LLVMBuildStructGEP2(gen->builder, genlType(gen, (INode*)recnode), rec, TypeRecFinalize, "finalizep");
+    LLVMValueRef final = LLVMBuildLoad2(gen->builder, LLVMPointerTypeInContext(gen->context, 0), finalp, "finalize");
+    LLVMBuildCall2(gen->builder, genlTypeRecSlotFnType(gen, recnode, TypeRecFinalize), final, &valptr, 1, "");
+}
+
 // Call a region method that takes the header as 'self'
 static LLVMValueRef genlRegionCall(GenState *gen, FnDclNode *meth, LLVMValueRef header) {
     return genlFnCallInternal(gen, SimpleDispatch, (INode*)meth, 1, &header, NULL);
@@ -905,11 +977,13 @@ static void genlRegionDeath(GenState *gen, LLVMValueRef ref, LLVMValueRef valptr
     }
     if (refnode->tag == RefTag)
         genlFinalizeAt(gen, valptr, refnode->vtexp);
+    else if (refnode->tag == VirtRefTag)
+        genlVirtFinalize(gen, ref, valptr, refnode);
     else if (itypeNeedsFinal(refnode->vtexp))
         genlEachElem(gen, valptr, LLVMBuildExtractValue(gen->builder, ref, 1, "slicelen"), refnode->vtexp, genlFinalizeElem, 0);
     FnDclNode *freemeth = regionMethod(refnode->region, freeMethodName);
     if (freemeth)
-        genlRegionCall(gen, freemeth, genlRegionHeader(gen, valptr, refnode));
+        genlRegionCall(gen, freemeth, genlOwnerHeader(gen, ref, valptr, refnode));
 }
 
 // One owner of an owning reference goes away. A region with 'dealias' is asked
@@ -928,7 +1002,7 @@ static void genlRegionDealiasPart(GenState *gen, LLVMValueRef ref, RefNode *refn
         genlRegionDeath(gen, ref, valptr, refnode, paths, npaths, depth);
         return;
     }
-    LLVMValueRef last = genlRegionCall(gen, dealiasmeth, genlRegionHeader(gen, valptr, refnode));
+    LLVMValueRef last = genlRegionCall(gen, dealiasmeth, genlOwnerHeader(gen, ref, valptr, refnode));
     LLVMBasicBlockRef nofree = genlInsertBlock(gen, "nofree");
     LLVMBasicBlockRef dofree = genlInsertBlock(gen, "free");
     LLVMBuildCondBr(gen->builder, last, dofree, nofree);
@@ -1045,7 +1119,7 @@ void genlRegionAlias(GenState *gen, LLVMValueRef ref, long long amount, RefNode 
     FnDclNode *aliasmeth = regionMethod(refnode->region, aliasMethodName);
     if (aliasmeth == NULL || amount == 0)
         return;
-    LLVMValueRef header = genlRegionHeader(gen, genlRefPtr(gen, ref, refnode), refnode);
+    LLVMValueRef header = genlOwnerHeader(gen, ref, genlRefPtr(gen, ref, refnode), refnode);
     if (amount <= RegionAliasUnroll) {
         for (long long i = 0; i < amount; ++i)
             genlRegionCall(gen, aliasmeth, header);
@@ -1285,15 +1359,14 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     return phi;
 }
 
-// Release what a variable holds: one owner of an owning reference, single or
-// slice, goes away. A tuple is one owner of each owning reference it carries,
-// so each is released.
+// Release what a variable holds: one owner of an owning reference, single,
+// slice or virtual, goes away. A tuple is one owner of each owning reference it
+// carries, so each is released.
 void genlReleaseOwning(GenState *gen, LLVMValueRef val, INode *type) {
     INode *typedcl = itypeGetTypeDcl(type);
-    if (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag) {
-        RefNode *reftype = (RefNode *)typedcl;
-        if (regionIsOwning(reftype->region))
-            genlRegionDealias(gen, val, reftype);
+    if (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag || typedcl->tag == VirtRefTag) {
+        if (genlIsOwningRef(typedcl))
+            genlRegionDealias(gen, val, (RefNode *)typedcl);
     }
     else if (typedcl->tag == TTupleTag) {
         INode **elemp;

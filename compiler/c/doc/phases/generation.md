@@ -445,7 +445,13 @@ both known. Generation reads `bytes` and does not adjust it.
 A named `"<Trait>:Vtable"` struct whose fields are, per slot, either a function
 pointer, called with the function type `genlVtableSlotFnType` gives it, **whose
 self parameter is erased to a plain pointer** so one slot type serves every
-implementer, or an `i32` **byte offset** for a virtual field. One `internal
+implementer, or an `i32` **byte offset** for a virtual field, **then one last
+`ptr`: the implementer's core `TypeRecord`** (`genlTypeRecordOf`, so its size,
+alignment and finalizer), which an owning virtual reference's death reads
+(`genlVirtRecord`; [references](../nodes/references.md), "Generation"). Last,
+so every slot's `vtblidx` is what it would be without it and a dispatch pays
+nothing for it; every vtable has it, a marker trait's too, so none is empty.
+One `internal
 constant` per implementing struct, plus one internal list per trait, prewired in
 `derived` order for the enum-to-virtref coercion. `nameVtable`, `nameVtableImpl`
 and `nameVtableList` spell the three from the trait and implementing type nodes.
@@ -518,6 +524,14 @@ What follows from that:
   every release site — scope exit, a `RefCountNode`, `genlStore` — hands over
   the value as generated. A death reads the length from word 1 and finalizes
   each element in place, in element order (`genlEachElem`).
+- **An owning virtual reference is the fat `{ptr, ptr}` value, and its concrete
+  type is read from the vtable's last slot.** `genlRefPtr` takes word 0, the
+  object. Its type has no `typeinfo`, so `genlOwnerHeader` steps back by the
+  region and permission's size rounded up to the `align` of the implementer's
+  `TypeRecord`, loaded through word 1 (`genlVirtHeader`; nothing is loaded for
+  a `so`, whose header is empty), and its death calls the record's `finalize`
+  on the object (`genlVirtFinalize`) where a plain reference's calls
+  `genlFinalizeAt`.
 
 **The release routines call the region's methods and know no region.**
 `genlReleaseOwning` is one owner going away: `genlRegionDealias` calls the
@@ -528,7 +542,8 @@ owner, whether its copies are counted or free. The death,
 `genlRegionDeath`, runs in two steps: the value dies in place
 (`genlFinalizeAt`), as a value on the stack does at its scope's end — for a
 single reference the value it points at, for an owning slice each element in
-element order — then the region's `free` if it has one.
+element order, for a virtual reference through its record's `finalize` — then
+the region's `free` if it has one.
 
 **One routine is a value's death in place, whatever its type**
 (`genlFinalizeAt`), and every death reaches it: a local's at its scope's end
@@ -619,8 +634,8 @@ the pipeline has no instruction combining after `GVN` to fold them.
 
 **A type record is a constant, one per type in each object**
 (`genlTypeRecord`), built the first time a region's `alloc` asks for one
-(`genlallocref`, where `regionAllocTakesRecord`) or `mem.typeRecord[T]()`
-names one, and found again by type (`itypeIsSame`) from a list on the
+(`genlallocref`, where `regionAllocTakesRecord`), `mem.typeRecord[T]()`
+names one, or a vtable is built for `T` (`genlVtableImpl`), and found again by type (`itypeIsSame`) from a list on the
 generator's state. It is a private global `cone.tyrec.<n>` of core's
 `TypeRecord`, whose layout the compiler checks as it builds the first — two
 `usize`, a function pointer of `fn(p *u8)` and one of `fn(p *u8, mode u32)`, a
@@ -791,6 +806,7 @@ This is what the CLAUDE.md warning is about. The conventions:
 | allocation base, the region's header | `ref` stepped back by the value's offset in `%refstruct` (`genlRegionHeader`) |
 | vtable field slot | an `i32` **byte offset**, applied to the object pointer as a GEP over `i8` |
 | vtable method slot | reached by `structgep` **then load** |
+| vtable record slot (last) | a `ptr` to the implementer's `TypeRecord`, `structgep` then load |
 
 **What a pointer points at is never asked of the LLVM pointer.** Every load,
 GEP and call names the type it reads, steps over or calls, and that type comes
@@ -1022,7 +1038,7 @@ variables.
 | | `genlPointee`, `genlPointeeType` | the Cone type a reference, pointer or slice points at, and its LLVM type: what every load, GEP and call through it is typed by |
 | | `genlVtableSlotFnType` | a vtable slot's function type, self erased to `*u8`: the slot's type, a thunk's, and a virtual call's |
 | | `genlSetupTaggedTrait`, `genlSameSizeTrait` | the three enum shapes |
-| | `genlVtable`, `genlVtableImpl` | vtable type, per-struct constants, the virtref fat pointer |
+| | `genlVtable`, `genlVtableImpl` | vtable type, per-struct constants (the implementer's type record last), the virtref fat pointer |
 | | `genlVtableThunk` | the function filling a slot a folded method satisfies: shift the receiver along the recorded field path, tail-call the method |
 | `genllvm/genlcabi.c` | `genlCAbiTarget`, `genlIsCAbiFn`, `genlCAbiPass` | which C ABI the target follows, which functions cross by it, and how one struct crosses |
 | | `genlCAbiExtend`, `genlCAbiMarkExtends` | the `zeroext` or `signext` a narrow integer crosses with, marked on a declaration or a call |
@@ -1041,6 +1057,7 @@ variables.
 | | `genlSubslice` | a borrowed range index, `&x[a..b]`: the slice `{&x[a], b - a}` once `a <= b <= count` is checked |
 | `genllvm/genlalloc.c` | `genlRefTypeSetup`, `genlallocref` | the `{region, perm, value}` header and its emission |
 | | `genlRegionHeader`, `genlRegionAlias`, `genlRegionDealias`, `genlRegionDeath` | the header a region method is handed; calling `alias`, `dealias` and `free` at each reference event; a death in place, then `free` |
+| | `genlOwnerHeader`, `genlVirtHeader`, `genlVirtRecord`, `genlVirtFinalize` | an owning virtual reference's header, from its vtable record's alignment; that record; its value's death through the record's `finalize` |
 | | `genlHollowRelease`, `genlRegionDealiasPart`, `genlHollowDeath`, `genlReleasePart` | a hollowed variable's release: the death of a value moved out, or an element of it, finalizing none of it and freeing the memory |
 | | `genlReleaseOwning`, `genlDealiasNodes` | releasing one owner of an owning reference or of each a tuple value carries, and replaying flow's lists |
 | | `genlFinalizeAt`, `genlCallDrop`, `genlEachElem` | a value's death in place, whatever its type: a local's, a field's, a region value's before its `free`, and the `finalize` intrinsic |
