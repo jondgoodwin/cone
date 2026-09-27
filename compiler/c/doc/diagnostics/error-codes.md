@@ -218,6 +218,20 @@ remedy is the same edit either way, to move it up next to the module's other
 imports, and the second message names the designated file they are in. A `mod` line in the wrong place stays `ErrorModDcl`: that is the
 declaration the module already has, or one a file may not make.
 
+A thread-local global takes four codes, one per rule, since each remedy is a
+different edit. `ErrorThreadLocalPlace` is `@threadlocal` anywhere but after a
+module global's permission — on a local, a function's or a type's static, a
+parameter, a field, a module trait's global, after `fn` or a type's keyword, or
+before the permission — one code for every position, because the remedy is the
+same for each: drop it, or move it to a global at module scope, after `mut`.
+`ErrorThreadLocalImm` is one on an `imm` global, where a copy per thread of a
+value no thread changes buys nothing; the remedy is `mut`, or no attribute.
+`ErrorThreadLocalInit` is one with no initial value and not `extern`, which a
+module's `init` would assign on its own thread alone; the remedy is a literal
+value. `ErrorThreadLocalFinal` is one whose type needs finalizing, since
+nothing yet finalizes a thread's copy as its thread ends. An initial value that
+is not a literal wears `ErrorNotLit`, as on any global.
+
 That is a narrow licence, and the tell that it has been stretched is the
 scenarios: **when a scenario needs a message substring to tell two uses of one
 code apart, the substring is doing the code's job.** Wrong arity, a non-type

@@ -339,10 +339,12 @@ static LLVMValueRef genlGloVarGlobal(VarDclNode *glovar) {
 // what the object file initializes itself: a global without an initial value
 // is assigned by its module's 'init', at run time, and an 'extern' one's value
 // is another object's. Nor one whose type finalizes: the module's 'drop' hands
-// it to that 'final' as '&uni', which may write it.
+// it to that 'final' as '&uni', which may write it. Nor a thread-local, whose
+// storage is each thread's own block, which no read-only section holds (the
+// parser refuses one 'imm', and this keeps the rule where the flag is set).
 static int genlGloVarIsConstant(VarDclNode *glovar) {
     return permIsSame(glovar->perm, (INode*)immPerm) && glovar->value != NULL
-        && !(glovar->dclinfo.facts & DclExternal)
+        && !(glovar->dclinfo.facts & (DclExternal | DclThreadLocal))
         && itypeGetDropFnDcl(glovar->vtype) == NULL;
 }
 
@@ -511,7 +513,8 @@ static INode *genlSymOwner(GenState *gen, LLVMValueRef global) {
 
 // Whether two declarations of one symbol declare the same thing, as the object
 // file sees it: two functions of one LLVM function type and one calling
-// convention, or two globals of one LLVM value type and one permission
+// convention, or two globals of one LLVM value type, one permission, and both
+// thread-local or neither
 static int genlSymAgree(GenState *gen, INode *a, INode *b) {
     if (a->tag != b->tag)
         return 0;
@@ -520,7 +523,8 @@ static int genlSymAgree(GenState *gen, INode *a, INode *b) {
             && (inodeGetDclInfo(a)->facts & DclSystemCC) == (inodeGetDclInfo(b)->facts & DclSystemCC);
     VarDclNode *va = (VarDclNode*)a;
     VarDclNode *vb = (VarDclNode*)b;
-    return genlType(gen, va->vtype) == genlType(gen, vb->vtype) && permIsSame(va->perm, vb->perm);
+    return genlType(gen, va->vtype) == genlType(gen, vb->vtype) && permIsSame(va->perm, vb->perm)
+        && (va->dclinfo.facts & DclThreadLocal) == (vb->dclinfo.facts & DclThreadLocal);
 }
 
 static void genlSymSetVar(INode *node, LLVMValueRef var) {
@@ -602,7 +606,7 @@ static void genlClaimSymbol(GenState *gen, INode *node, LLVMValueRef global, Gen
 
     if (!genlSymAgree(gen, owner, node)) {
         errorMsgNode(node, ErrorCNameConflict,
-            "The C name %s is declared differently at %s:%u. Every declaration of one C name must agree: a function in its signature, a global in its type and permission.",
+            "The C name %s is declared differently at %s:%u. Every declaration of one C name must agree: a function in its signature, a global in its type, its permission and whether it is '@threadlocal'.",
             symbol, owner->lexer->url, owner->linenbr);
         return;
     }
@@ -655,6 +659,15 @@ void genlGloVarName(GenState *gen, VarDclNode *glovar) {
     }
     else
         global = glovar->llvmvar = LLVMAddGlobal(gen->module, vartype, nameSymbol(symbol, (INode*)glovar));
+
+    // A thread-local's storage is each thread's own copy, its declarations
+    // elsewhere marked alike so every object reaches it the same way. The model
+    // is general-dynamic, LLVM's default, which is right whether the global ends
+    // up in the program or in a shared library: a linker building an executable
+    // relaxes it to the cheaper models itself, and Windows has one TLS access
+    // sequence (through the TEB and '_tls_index') whatever the model says.
+    if (glovar->dclinfo.facts & DclThreadLocal)
+        LLVMSetThreadLocal(global, 1);
 
     // Mark immutable global variables as 'constant', so they can appear in immutable blocks
     // This improves performance

@@ -183,6 +183,47 @@ contains = [
 ]
 excludes = ["weigh.1", "depth.1", "width.1", "core_shadowing."]
 
+# A thread-local global, read and written on the program's thread and seen
+# from a second OS thread the program starts itself. Two runs, as
+# core_success's: what each thread sees must not depend on the optimizer.
+[scenario.core_threadlocal]
+category = "run"
+description = "Thread-local globals: read and written, lent, and one copy per thread, seen from a second OS thread"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+[[scenario.core_threadlocal.run]]
+name = "release"
+options = []
+
+[[scenario.core_threadlocal.run]]
+name = "debug"
+options = ["--debug"]
+
+# Each '@threadlocal' global is thread_local in the object, whatever its type
+# and however its type was found; the ordinary global beside them is not.
+# None of them is a 'constant', which a thread's own copy never is.
+[[scenario.core_threadlocal.check]]
+name = "a-thread-local-global-is-thread-local"
+target = "symbols"
+contains = [
+  "global internal thread_local slot comdat nodeduplicate",
+  "global internal thread_local inferred comdat nodeduplicate",
+  "global internal thread_local counted comdat nodeduplicate",
+  "global internal thread_local pair comdat nodeduplicate",
+  "global internal plain comdat nodeduplicate",
+]
+excludes = ["thread_local plain", "constant internal thread_local"]
+
+# And what generation wrote for one: the storage and its initial value, which
+# each thread's copy starts from
+[[scenario.core_threadlocal.check]]
+name = "a-thread-local-holds-its-initial-value"
+target = "preir"
+contains = [
+  "@slot = internal thread_local global i64 0, comdat",
+  "@pair = internal thread_local global %Pair { i64 3, i64 4 }, comdat",
+]
+
 # -------- warnings --------
 
 [scenario.core_warn_loops]
@@ -228,6 +269,12 @@ category = "reject"
 description = "An overload name's candidates must agree with it about visibility"
 tags = ["parse"]
 diagnostics = 2
+
+[scenario.core_parse_threadlocal]
+category = "reject"
+description = "'@threadlocal' anywhere but after a module global's 'mut', and a thread-local with no initial value"
+tags = ["parse"]
+diagnostics = 12
 
 # ErrorNoRCurly needs the file to end with a block still open, so it is one per
 # file and it has to be last. That is why it has a file of its own. It is
@@ -302,6 +349,12 @@ diagnostics = 3
 [scenario.core_typecheck_blockend]
 category = "reject"
 description = "Statements that cannot end the block they finish"
+tags = ["typecheck"]
+diagnostics = 4
+
+[scenario.core_typecheck_threadlocal]
+category = "reject"
+description = "A thread-local global whose initial value is not a literal, or whose type needs finalizing"
 tags = ["typecheck"]
 diagnostics = 4
 

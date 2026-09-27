@@ -1211,7 +1211,10 @@ statement by statement, whether the text goes in whole, goes in cut to an
   (`dclIsExported`, the rule generation follows, so the object and the include
   file cannot disagree [Q5]): `extern` is written in before the keyword, and the
   body from its `{`, or the value from its `=`, is left out. A global's fold
-  clause stays [Q4], and a module-level `static` becomes `extern`.
+  clause stays [Q4], and a module-level `static` becomes `extern`. A global's
+  `@threadlocal`, between its permission and its name, stays with nothing done
+  for it, so the importer declares the global thread-local as its definition
+  is.
 - **Out**, anything else, with the comments directly above it, no blank line
   between. A private declaration nothing an importer expands names is not
   exported, and so not declared.
@@ -1874,7 +1877,11 @@ resolution, built pre-lowered and never type checked or flow analyzed — callin
 the module's own `final`, if it has one, and then each such global's drop
 function over `&uni` the global, **in declaration order**, as a type drops its
 fields. Its finalizer (`finalfn`) is that `drop`, else its own `final`. A
-C-named global is C's storage and is not finalized. A global's drop runs whether
+C-named global is C's storage and is not finalized. Nor is a thread-local, whose
+copies are each thread's and which the module's `drop`, running on one thread,
+could not all reach: one whose type needs finalizing (`itypeNeedsFinal`, the
+wider question that owning references also answer) is `ErrorThreadLocalFinal`,
+asked in the same walk. A global's drop runs whether
 the global was given a literal or assigned by `init`, since either way it holds
 a value by then. A module that needs a `drop` and declares one of its own is
 `ErrorModLifecycle`: both would be one symbol. Only a struct's or an enum's

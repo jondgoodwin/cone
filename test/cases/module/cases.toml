@@ -1472,6 +1472,19 @@ name = "calls-to-a-system-function-use-the-convention"
 target = "preir"
 contains = ["call x86_stdcallcc i32 @ConeTicks()", "call x86_stdcallcc i32 @GetTickCount()"]
 
+[scenario.module_c_threadlocal]
+category = "compile"
+description = "An 'extern' thread-local in a C-named module: a C thread-local, reached by its C name"
+tags = ["parse", "genllvm"]
+
+# The declaration is thread_local, as the C definition it names is, and spelled
+# as C spells it, with no module prefix
+[[scenario.module_c_threadlocal.check]]
+name = "a-c-thread-local-is-declared-thread-local-by-its-c-name"
+target = "symbols"
+contains = ["external global thread_local cone_frames"]
+excludes = ["cbind."]
+
 [scenario.module_c_name_shared]
 category = "run"
 description = "One C name declared by several modules is one symbol: two declarations share it, and a definition owns it whether generated before or after a declaration, for functions and for globals"
@@ -1543,7 +1556,7 @@ contains = [
 
 [scenario.module_c_name_reject]
 category = "reject"
-description = "One C name declared two ways in one compile: differing signatures, calling conventions or permissions, and two definitions"
+description = "One C name declared two ways in one compile: differing signatures, calling conventions, permissions or thread-locality, and two definitions"
 tags = ["genllvm"]
 
 [scenario.module_c_reject]
@@ -2090,6 +2103,38 @@ object = "q"
 contains = [
   "constant linkonce_odr q.Square as q.Shape (vtable) comdat any",
   "constant internal q.Shape (vtable list) comdat nodeduplicate",
+]
+
+# Thread-local globals across a package boundary: q defines them, its include
+# file declares them 'extern' with '@threadlocal' kept (include/q.cone is the
+# golden copy), and the program reads and writes them through those
+# declarations. What q's own code then reads is what the program wrote, since
+# both objects reach this thread's copy.
+[scenario.module_threadlocal_link]
+category = "run"
+description = "A package's thread-local globals, declared by its include file and used from the program's object"
+tags = ["genllvm", "runtime"]
+link = ["q/q.conebuild"]
+include = ["include/q.cone"]
+
+# Each object reaches a thread-local through its own thread-local access
+# sequence, so the declaration is thread_local as the definition is: a plain
+# 'external global' would read one address shared by every thread.
+[[scenario.module_threadlocal_link.check]]
+name = "the-program-declares-q-s-thread-locals-thread-local"
+target = "symbols"
+contains = [
+  "external global thread_local q.depth",
+  "external global thread_local q.hits",
+]
+
+[[scenario.module_threadlocal_link.check]]
+name = "the-library-defines-them-thread-local"
+target = "symbols"
+object = "q"
+contains = [
+  "global thread_local q.depth comdat nodeduplicate",
+  "global thread_local q.hits comdat nodeduplicate",
 ]
 
 # A private method meeting a trait's requirement is exported, because an

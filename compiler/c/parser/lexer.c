@@ -113,6 +113,7 @@ void keywordInit() {
     keyAdd("@c", CAttrToken);
     keyAdd("@initpure", InitPureToken);
     keyAdd("@intrinsic", IntrinsicAttrToken);
+    keyAdd("@threadlocal", ThreadLocalToken);
     keyAdd("extends", ExtendsToken);
     // Retired like 'include', and kept a keyword for the same reason: released
     // to an identifier, 'mixin Meter;' would read as a field named 'mixin' of

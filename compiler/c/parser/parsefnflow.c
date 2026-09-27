@@ -718,6 +718,8 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
         intrinsic = 1;
         lexNextToken();
     }
+    // A function has no storage to give each thread a copy of
+    parseThreadLocalAttr(0);
     if (initpure)
         fnnode->dclinfo.facts |= DclInitPure;
     // An intrinsic's meaning is the compiler's, so its body is optional: the
