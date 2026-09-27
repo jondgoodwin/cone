@@ -1,0 +1,101 @@
+// A world run by World's default 'run', headless, on the synthetic clock, with
+// every callback printing as it is called, with the frame and the phase the
+// host says is under way: the phases come in their declared order each frame
+// (input, simulate, network, publish, render, present), the events pushed
+// before the run arrive in the first frame's input phase, before any step,
+// each with its timestamp, and 'quit' comes once, last, its answer the run's.
+//
+// Steps of 10 ms, at most 5 a frame; frame intervals 0 (the first frame),
+// then 15, 5, 30 and 75 ms: 0, 1, 1, 3 and 5 steps (7 were due in the last:
+// 2 dropped), alphas 0, 0.5, 0, 0, 0.5. The key released among the first
+// frame's events asks the run to stop after the fifth ('host.stop()').
+//
+// It needs SDL3.dll, and no display.
+
+mod order is World;
+
+import stdio use *;
+import sdl;
+import arena use Arena;
+import frame use *;
+
+mut stopAfter = 0u64;
+
+// Where the host says the loop is
+fn at(host &mut Host, what &[]u8) {
+  print <- "frame "; print <- host.frame; print <- " ";
+  printStr(phaseName(host.currentPhase())); print <- ": "; printStr(what);
+}
+
+pub fn start(host &mut Host) Bool {
+  print <- "start: window "; print <- if host.hasWindow() {1;} else {0;}; print <- "\n";
+  true;
+}
+
+pub fn event(host &mut Host, e &imm sdl.Event) {
+  at(host, "event "); print <- u64[e.type];
+  print <- ", stamped "; print <- if e.timestamp > 0u64 {1;} else {0;}; print <- "\n";
+  if e.type == sdl.EVENT_KEY_UP { stopAfter = host.frame + 4u64; }
+}
+
+pub fn simulate(host &mut Host, step &imm Step, scratch &mut Arena) {
+  imm n = scratch.alloc(step.index);     // the frame's scratch, reset by the next frame
+  at(host, "step "); print <- *n; print <- " from "; print <- step.startNs;
+  print <- " ns, dt "; print <- f64[step.dt]; print <- ", substeps "; print <- u64[step.substeps]; print <- "\n";
+}
+
+pub fn network(host &mut Host, net &mut NetQueues) {
+  at(host, "network, "); print <- u64[net.inbound.len()]; print <- " in, ";
+  print <- u64[net.ticks]; print <- " ticks\n";
+}
+
+pub fn publish(host &mut Host) {
+  at(host, "publish, sim time "); print <- host.simNs(); print <- " ns\n";
+}
+
+pub fn draw(host &mut Host, alpha f32, scratch &mut Arena) {
+  at(host, "draw, alpha "); print <- f64[alpha];
+  print <- ", dropped "; print <- host.stats.dropped; print <- "\n";
+}
+
+pub fn present(host &mut Host) {
+  at(host, "present\n");
+  if stopAfter != 0u64 and host.frame >= stopAfter { host.stop(); }
+}
+
+pub fn quit(host &mut Host) i32 {
+  print <- "quit after frame "; print <- host.frame;
+  print <- ", steps "; print <- host.stats.steps;
+  print <- ", dropped "; print <- host.stats.dropped;
+  print <- ", events "; print <- host.stats.events;
+  print <- ", phase samples "; print <- u64[host.stats.phase(PHASE_RENDER).count()];
+  print <- ", frame intervals "; print <- u64[host.stats.frame.count()]; print <- "\n";
+  7i32;
+}
+
+fn push(type u32) {
+  mut e = sdl.Event.empty();
+  e.type = type;
+  e.timestamp = sdl.GetTicksNS();
+  sdl.PushEvent(&mut e);
+}
+
+fn main() i32 {
+  mut c = Config.defaults();
+  c.headless = true;
+  c.synthetic = true;
+  c.printStats = false;
+  c.stepNs = 10000000u64;
+  c.netTickNs = 20000000u64;
+  c.intervals.push(15000000u64);
+  c.intervals.push(5000000u64);
+  c.intervals.push(30000000u64);
+  c.intervals.push(75000000u64);
+  // The events wait in SDL's queue until the first frame drains it
+  sdl.Init(sdl.INIT_EVENTS);
+  push(sdl.EVENT_KEY_DOWN);
+  push(sdl.EVENT_KEY_UP);
+  imm code = run(c);
+  print <- "run answered "; print <- code; print <- "\n";
+  0;
+}

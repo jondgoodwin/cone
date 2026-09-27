@@ -1,0 +1,273 @@
+// The frame package: the loop a world runs in. The loop's owner (here a native
+// runner over the window and sdl packages; later a platform layer, or a
+// browser's requestAnimationFrame) calls the world, and the world never owns a
+// 'while running' of its own. The boundary between them is a module trait,
+// World: a world is a module that says it conforms,
+//
+//   mod myworld is World;
+//   import frame use World, Config;
+//
+//   mut angle f32 = 0.;                        // the world's state: module globals
+//   pub fn start(host &mut Host) Bool { ... }  // make what it draws with
+//   pub fn event(host &mut Host, e &imm sdl.Event) { ... }
+//   pub fn simulate(host &mut Host, step &imm Step, scratch &mut Arena) { ... }
+//   pub fn draw(host &mut Host, alpha f32, scratch &mut Arena) { ... }
+//   pub fn quit(host &mut Host) i32 { 0; }
+//
+//   fn main(argc i32, argv **u8) i32 {
+//     initAll();
+//     imm code = run(Config.fromArgs(argc, argv));   // World's default run, copied in
+//     finalAll();
+//     code;
+//   }
+//
+// The program keeps its own 'main', which calls 'run': how an executable is
+// entered is not decided, so nothing here takes 'main' away.
+//
+// A world is one module, so its state is the module's globals: the ones a
+// literal can start in, and the ones 'start' makes, held in an Option the
+// module's 'init' sets to None (which is why 'main' calls initAll). Such an
+// Option cannot be matched in place, since only a borrow of a local may be
+// narrowed, so a callback swaps it into a local, matches that, and puts it
+// back; examples/spin.cone does.
+//
+// ONE FRAME is a list of named phases in a declared order (PHASE_INPUT ...
+// PHASE_PRESENT), each timed:
+//
+//   input     every waiting event drained, each handed to 'event' with its
+//             nanosecond timestamp (sdl.Event.timestamp, on GetTicksNS's clock)
+//   simulate  0..n fixed steps from an accumulator of elapsed world time, at
+//             most Config.maxCatchUp; the rest are dropped and counted
+//   network   the server-communication slot: queues in and out, never blocking
+//             (no transport yet, so it is empty)
+//   publish   the world copies what render reads out of what simulate wrote
+//   render    'draw' records the frame, between the last two states by 'alpha'
+//   present   show it, and wait until the next can be drawn (the present wait)
+//
+// The GPU's own time for a frame is not measured yet: that wants timestamp
+// queries, which the vulkan and gpu packages do not bind.
+//
+// PHASES FENCE THEIR WRITES: each phase's outputs are complete before the next
+// phase reads them, and a phase reads only what the phases before it wrote.
+// On one thread that is just calling them in order; it is what lets a phase
+// move to a job or an actor later as a change of scheduler, not of the world.
+// A debug build checks the order ('Host.beginPhase').
+//
+// TIME. The world clock is SDL3's GetTicksNS (u64 nanoseconds, the clock every
+// event's timestamp is on), or, in synthetic mode, a clock advanced by a
+// script of frame intervals, which makes step counts and alpha exact and a run
+// reproducible. Simulated time is the number of steps taken times the step's
+// length, both integers, so it is exact and never drifts: 'Host.simNs()'.
+// Phase timings always use the real clock.
+//
+// STATISTICS from the first frame: every phase's time, and the whole frame's
+// (start to start), each as p50, p95, p99 and the MAXIMUM, with the frame the
+// maximum came in, and the catch-up steps dropped. A no-stall budget is judged
+// on the maximum, so maxima are recorded, never only means. They print when
+// the run ends (Config.printStats) and are 'host.stats' to the world.
+//
+// THE SCRATCH ARENA. Each frame the runner makes an arena (the arena package),
+// hands it to simulate and draw, and lets it die at the end of the frame:
+// that is its reset, and the borrow rules keep anything allocated in it from
+// outliving the frame. (An arena has no reset that keeps its blocks, so each
+// frame allocates its first block, Config.scratchBytes, and frees it.)
+//
+// THE FIRST FRAME runs no step: the clock is read as it begins, so nothing has
+// elapsed, and it draws the world as start left it. Time spent in start is
+// never owed.
+//
+// One thread for now; nothing a world writes assumes it: each phase is a
+// callback of its own, handed only what it may read or write.
+
+mod frame;
+
+import libc;
+import sdl;
+import stdio use *;
+import collections use List;
+import arena use Arena;
+import window use Window;
+
+// The phases of a frame, in the order they run
+pub const PHASE_INPUT = 0u32;
+pub const PHASE_SIMULATE = 1u32;
+pub const PHASE_NETWORK = 2u32;
+pub const PHASE_PUBLISH = 3u32;
+pub const PHASE_RENDER = 4u32;
+pub const PHASE_PRESENT = 5u32;
+pub const PHASE_COUNT = 6u32;
+
+// A phase's name, as the statistics print it
+pub fn phaseName(phase u32) &[]u8 {
+  if phase == PHASE_INPUT { return "input"; }
+  if phase == PHASE_SIMULATE { return "simulate"; }
+  if phase == PHASE_NETWORK { return "network"; }
+  if phase == PHASE_PUBLISH { return "publish"; }
+  if phase == PHASE_RENDER { return "render"; }
+  if phase == PHASE_PRESENT { return "present"; }
+  "?";
+}
+
+// What a world module declares to be run by a loop's owner. The five without
+// a body are required; the rest have defaults a world may replace.
+pub mod trait World {
+  // Once, before the first frame: make what the world draws with (the window
+  // is host.window(), unless the run is headless). False ends the run, with
+  // exit code 1 and no 'quit'.
+  pub fn start(host &mut Host) Bool;
+
+  // Each event waiting at the top of a frame, in order, before any step. The
+  // runner has already handled what every window handles (quit, Escape, F11,
+  // a resize, which sets host.window().resized).
+  pub fn event(host &mut Host, e &imm sdl.Event);
+
+  // One fixed step of 'step.dt' seconds: the world moves from its state at
+  // 'step.index' to the next. Called 0..Config.maxCatchUp times a frame.
+  pub fn simulate(host &mut Host, step &imm Step, scratch &mut Arena);
+
+  // The render phase: record the frame, the picture 'alpha' of the way from
+  // the state before the last step to the state after it (0 <= alpha < 1).
+  // (Named 'draw', not 'render', which a world drawing with the render
+  // package already has as the package's name.)
+  pub fn draw(host &mut Host, alpha f32, scratch &mut Arena);
+
+  // Once, after the last frame: the run's exit code, which 'run' returns.
+  pub fn quit(host &mut Host) i32;
+
+  // The server-communication slot, each frame after the steps: read
+  // 'net.inbound', add to 'net.outbound', never wait.
+  pub fn network(host &mut Host, net &mut NetQueues) {}
+
+  // Each frame after network: copy what render reads out of what simulate
+  // wrote, so render never reads the simulation's own state.
+  pub fn publish(host &mut Host) {}
+
+  // Each frame after render: show the frame, and wait until the next can be
+  // drawn. A world whose render presents leaves it out.
+  pub fn present(host &mut Host) {}
+
+  // The loop, run by the program's 'main'. Its answer is quit's, or 1 if the
+  // host could not open or 'start' failed.
+  pub fn run(config Config) i32 {
+    mut host = Host.open(config);
+    if !host.isOpen() { return 1i32; }
+    if !start(&mut host) { return 1i32; }
+    while host.beginFrame() {
+      mut scratch = Arena.withRoom(host.scratchBytes());
+
+      host.beginPhase(PHASE_INPUT);
+      mut e = sdl.Event.empty();
+      while host.nextEvent(&mut e) {
+        imm ev = e;           // an event is handed on immutable (&imm, so it can be matched)
+        event(&mut host, &imm ev);
+      }
+      host.endPhase(PHASE_INPUT);
+
+      host.beginPhase(PHASE_SIMULATE);
+      while host.nextStep() {
+        imm step = host.step();
+        simulate(&mut host, &imm step, &mut scratch);
+      }
+      host.endPhase(PHASE_SIMULATE);
+
+      host.beginPhase(PHASE_NETWORK);
+      mut net = host.takeNet();
+      network(&mut host, &mut net);
+      host.giveNet(net);
+      host.endPhase(PHASE_NETWORK);
+
+      host.beginPhase(PHASE_PUBLISH);
+      publish(&mut host);
+      host.endPhase(PHASE_PUBLISH);
+
+      host.beginPhase(PHASE_RENDER);
+      imm alpha = host.alpha();
+      draw(&mut host, alpha, &mut scratch);
+      host.endPhase(PHASE_RENDER);
+
+      host.beginPhase(PHASE_PRESENT);
+      present(&mut host);
+      host.endPhase(PHASE_PRESENT);
+
+      host.endFrame();
+    }
+    imm code = quit(&mut host);
+    host.finish();
+    code;
+  }
+}
+
+// How a run goes. 'Config.defaults()' is 60 steps a second, one physics
+// substep, rendering at the display's rate with vsync (the swapchain's), at
+// most 5 catch-up steps a frame, a 30 Hz network tick, until the window
+// closes, printing the statistics at the end.
+pub struct Config {
+  pub title List[u8];       // the window's title
+  pub stepNs u64;           // one simulation step, in nanoseconds
+  pub substeps u32;         // physics substeps a step (for the world's physics to divide by)
+  pub maxCatchUp u32;       // the most steps a frame runs; the rest are dropped and counted
+  pub netTickNs u64;        // the network tick, in nanoseconds
+  pub frames u64;           // stop after this many frames; 0: until asked to stop
+  pub headless Bool;        // no window, no display: SDL's events only
+  pub synthetic Bool;       // the world clock advances by 'intervals', not in real time
+  pub intervals List[u64];  // synthetic mode: each frame's interval in ns, cycled; empty: one step each
+  pub scratchBytes usize;   // the room the per-frame scratch arena starts with
+  pub printStats Bool;      // print the statistics when the run ends
+
+  pub fn defaults() Config {
+    Config[List[u8].empty(), 1000000000u64 / 60u64, 1u32, 5u32, 1000000000u64 / 30u64, 0u64,
+      false, false, List[u64].empty(), 65536usize, true];
+  }
+
+  // The defaults, and what the command line says: '--frames N' stops after N
+  // frames and runs on the synthetic clock, one step a frame, so the run is
+  // the same every time; '--headless' opens no window (and is synthetic too);
+  // '--quiet' prints no statistics. Anything else is the program's.
+  pub fn fromArgs(argc i32, argv **u8) Config {
+    mut c = Config.defaults();
+    mut a = 1i32;
+    while a < argc {
+      imm arg = *(argv + usize[a]);
+      if libc.strcmp(arg, &"--frames" as *u8) == 0i32 and a + 1i32 < argc {
+        c.frames = parseCount(*(argv + usize[a + 1i32]));
+        c.synthetic = true;
+        a = a + 1i32;
+      } elif libc.strcmp(arg, &"--headless" as *u8) == 0i32 {
+        c.headless = true;
+        c.synthetic = true;
+      } elif libc.strcmp(arg, &"--quiet" as *u8) == 0i32 {
+        c.printStats = false;
+      }
+      a = a + 1i32;
+    }
+    c;
+  }
+
+  // Steps of 1/hz seconds (to the nanosecond below)
+  pub fn setStepHz(self &mut, hz u32) {
+    stepNs = 1000000000u64 / u64[hz];
+  }
+
+  // The window's title
+  pub fn setTitle(self &mut, t &[]u8) {
+    title.clear();
+    mut i = 0usize;
+    while i < t.len {
+      title.push(t[i]);
+      i = i + 1usize;
+    }
+  }
+}
+
+// A whole number from a C string, 0 if it is not one
+fn parseCount(s *u8) u64 {
+  mut n = 0u64;
+  mut i = 0usize;
+  while *(s + i) != 0u8 {
+    imm c = *(s + i);
+    if c < '0' or c > '9' { return 0u64; }
+    n = n * 10u64 + u64[c - '0'];
+    i = i + 1usize;
+  }
+  n;
+}

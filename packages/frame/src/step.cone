@@ -1,0 +1,83 @@
+// The world clock and the fixed step ("Fix Your Timestep"): real time, or a
+// script of intervals, accumulated and spent in whole steps, with what is left
+// over the picture's interpolation factor.
+
+// One fixed step, as 'simulate' is handed it
+pub struct Step {
+  pub index u64;       // the steps taken before this one
+  pub ns u64;          // its length in nanoseconds
+  pub dt f32;          // its length in seconds
+  pub startNs u64;     // simulated time at its start: index * ns, exact
+  pub substeps u32;    // physics substeps it holds (Config.substeps)
+}
+
+// The clock the world's time is read from: SDL3's GetTicksNS, or a synthetic
+// clock that moves only when told to
+pub struct Clock {
+  pub synthetic Bool;
+  nowNs u64;
+
+  pub fn real() Clock { Clock[false, 0u64]; }
+  pub fn synth() Clock { Clock[true, 0u64]; }
+
+  // Now, in nanoseconds
+  pub fn now(self &) u64 {
+    if synthetic { return nowNs; }
+    sdl.GetTicksNS();
+  }
+
+  // Move a synthetic clock on by 'ns'
+  pub fn advance(self &mut, ns u64) {
+    assertDebugMsg(synthetic, "only a synthetic clock is advanced");
+    nowNs = nowNs + ns;
+  }
+}
+
+// The accumulator of world time, spent in whole steps
+pub struct FixedStep {
+  pub stepNs u64;       // one step
+  pub maxSteps u32;     // the most a frame runs
+  pub accumulator u64;  // world time not yet stepped, in ns
+  pub taken u64;        // steps taken since the start
+  pub dropped u64;      // steps dropped since the start (more were due than maxSteps)
+  pub due u32;          // steps still to run this frame
+
+  pub fn make(stepNs u64, maxSteps u32) FixedStep {
+    assertDebugMsg(stepNs > 0u64, "a step has a length");
+    FixedStep[stepNs, maxSteps, 0u64, 0u64, 0u64, 0u32];
+  }
+
+  // A frame began 'elapsedNs' after the last: add it, and work out the steps
+  // due. More than 'maxSteps' whole steps: the rest are dropped, counted, and
+  // taken out of the accumulator, which keeps its fraction of a step.
+  pub fn advance(self &mut, elapsedNs u64) u32 {
+    assertDebugMsg(due == 0u32, "every step of the last frame was run");
+    accumulator = accumulator + elapsedNs;
+    mut n = accumulator / stepNs;
+    if n > u64[maxSteps] {
+      imm drop = n - u64[maxSteps];
+      dropped = dropped + drop;
+      accumulator = accumulator - drop * stepNs;
+      n = u64[maxSteps];
+    }
+    due = u32[n];
+    due;
+  }
+
+  // Take the next step due, answering false when none is
+  pub fn next(self &mut) Bool {
+    if due == 0u32 { return false; }
+    due = due - 1u32;
+    accumulator = accumulator - stepNs;
+    taken = taken + 1u64;
+    true;
+  }
+
+  // Simulated time: the steps taken times a step's length, exact
+  pub fn simNs(self &) u64 { taken * stepNs; }
+
+  // How far from the last step to the next the present moment is, 0 <= alpha < 1
+  pub fn alpha(self &) f64 {
+    f64[accumulator] / f64[stepNs];
+  }
+}

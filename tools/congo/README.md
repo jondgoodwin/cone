@@ -150,7 +150,7 @@ An import names a module. Congo answers each one this way:
 searches, in order:
 
 1. the Cone repository's own `packages/` (`core`, `stdio`, `libc`, `posix`,
-   `sdl`, `vulkan`, `gpu`, `geomath`, `mesh`, `sculpt`, `noise`, `testing`, `collections`, `arena`, `pool`, `collector`, `thread`, `render` and `window` are
+   `sdl`, `vulkan`, `gpu`, `geomath`, `mesh`, `sculpt`, `noise`, `testing`, `collections`, `arena`, `pool`, `collector`, `thread`, `render`, `window` and `frame` are
    there), then
 2. each folder the **machine config** lists.
 
@@ -277,7 +277,7 @@ winstr/
   `LIB` environment variable lists, which Visual Studio's environment sets to
   the Windows SDK's (so `user32`, `shlwapi` or `synchronization` need no path).
 - **Any package may have `[link]`**, a program's too. A program importing a C
-  package names nothing itself: `window/examples/spin.cone` imports `sdl`
+  package names nothing itself: `frame/examples/spin.cone` imports `sdl`
   (through `window`), and its manifest names `SDL3`.
 
 A library that is not installed is the linker's to report, and Congo adds which
@@ -310,8 +310,9 @@ window for Vulkan, its events and clocks, and loading Vulkan; `[link]` names
 `SDL3`, which is not part of the Windows SDK, so the `lib\x64` folder of
 SDL3's development kit must be on `LIB`, and `SDL3.dll`, in the same folder,
 on `PATH` to run; Congo copies no DLL). `window` opens its window through
-`sdl`, so building its example, as `congo test` does, needs `SDL3.lib` on
-`LIB`, and running it needs a display. The tests of `sdl` and `window` push
+`sdl`, and `frame`, the loop a world runs in, drives it, so building
+`frame`'s example, as `congo test` does, needs `SDL3.lib` on `LIB`, and
+running it needs a display. The tests of `sdl`, `window` and `frame` push
 events through SDL's own queue and need `SDL3.dll` but no display.
 
 `vulkan` binds Vulkan 1.3 and links nothing: every function is found at run
