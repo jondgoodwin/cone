@@ -30,6 +30,9 @@ pub struct Horn {
   pub cells ArcCells;
   pub sag f32;                 // how far each chord's middle lies inside the arc
   pub halfChord f32;           // half each chord's length
+  pub flutes i32;              // how many flutes run along the tube; 0 for none ('fluted')
+  pub fluteDepth f32;          // a flute's depth, as a fraction of the radius there
+  pub fluteTwist f32;          // radians the flutes turn about the tube from base to tip
 
   // A horn rising from the origin along +y and curling towards +x
   pub fn make(length f32, baseRadius f32, taper f32, curl f32, ribs i32, ribDepth f32) Horn {
@@ -39,11 +42,30 @@ pub struct Horn {
     // cell's
     imm sag = if arc.radius == 0. { 0.; } else { arc.radius - arc.radius * cells.firstCos; };
     imm halfChord = if arc.radius == 0. { cells.step * 0.5; } else { arc.radius * cells.firstSin; };
-    Horn[length, baseRadius, taper, arc.curl, ribs, ribDepth, arc, cells, sag, halfChord];
+    Horn[length, baseRadius, taper, arc.curl, ribs, ribDepth, arc, cells, sag, halfChord, 0, 0., 0.];
+  }
+
+  // The same horn with 'count' flutes grooved along the tube between the
+  // ribs, each 'depth' of the radius deep, turning 'twist' radians about
+  // the tube from base to tip. A flute is |sin| of the angle about the
+  // chord, so the ridges between flutes are sharp creases and the grooves
+  // round. The groove is added to each cell's tube, and the horn's distance
+  // divided by 1 plus the groove's steepest slope ('fluteSlope'), so it
+  // stays a bound; inside the tube the groove shrinks towards the chord, so
+  // the slope stays bounded there too.
+  pub fn fluted(self &, count i32, depth f32, twist f32) Horn {
+    Horn[length, baseRadius, taper, curl, ribs, ribDepth, arc, cells, sag, halfChord, count, depth, twist];
   }
 
   // The tube's radius a fraction u of the way along
   pub fn radiusAt(self &, u f32) f32 { baseRadius * (1. - taper * u); }
+
+  // What the fluted tube's distance is divided by to stay a bound: 1 plus
+  // the groove's steepest slope, round the tube (depth times half the
+  // count, and the twist's share of it along), and out from the chord
+  fn fluteSlope(self &) f32 {
+    1. + fluteDepth * (0.5 * f32[flutes] * (1. + absf(fluteTwist) * baseRadius / length) + 1.);
+  }
 
   // Whether the horn has ribs
   fn ribbed(self &) Bool { ribs > 0 and ribDepth > 0.; }
@@ -56,7 +78,21 @@ pub struct Horn {
     imm r1 = self.radiusAt(u + halfU);
     // The chord runs along z, 'sag' in from the arc (towards -x)
     imm cx = q.x + sag;
-    imm segment = roundCone(Vec3[cx, q.z + halfChord, q.y], r0, r1, halfChord * 2.);
+    mut segment = roundCone(Vec3[cx, q.z + halfChord, q.y], r0, r1, halfChord * 2.);
+    if flutes > 0 and fluteDepth > 0. {
+      // How far along the point is, continuous across cells, and the
+      // flutes' angle there
+      imm along = u + q.z / length;
+      imm halfCount = 0.5 * f32[flutes];
+      imm angle = (atan2(q.y, cx) + fluteTwist * along) * halfCount;
+      // Scaled by the distance from the chord inside the tube, so the
+      // groove's slope stays bounded near the axis
+      imm reach = minf(len2(cx, q.y), maxf(self.radiusAt(along), 0.));
+      // Only ever added, so a cell's value never falls below its unfluted
+      // distance, and the union's pruning by bounding balls still holds;
+      // the whole horn is divided by the slope once ('distance')
+      segment = segment + fluteDepth * reach * absf(sin(angle));
+    }
     if !self.ribbed() { return segment; }
     imm r = self.radiusAt(u);
     imm m = r * ribDepth;
@@ -75,7 +111,11 @@ pub struct Horn {
     halfChord + sag + r + rib;
   }
 
-  pub fn distance(self &, p Vec3) f32 { repeatAlongArc(&arc, &cells, self, p); }
+  pub fn distance(self &, p Vec3) f32 {
+    imm d = repeatAlongArc(&arc, &cells, self, p);
+    if flutes > 0 and fluteDepth > 0. { return d / self.fluteSlope(); }
+    d;
+  }
 
   // A box holding the whole horn: the union of every cell's ball (its
   // 'bound' about its origin, the origins stepped round as the union steps

@@ -104,7 +104,8 @@ Visual Studio projects stay at the root.
   repetition, elongation), hg_sdf's fillets, repetition along a curve (an
   `Arc`, or a `sculpt.Path` as a `PathCurve`) in its rotation-minimizing
   frames as the exact union of every copy, `Horn` (the ribbed, tapering,
-  curling horn), the gradient and normal, and noise detail; the same
+  curling horn, and `fluted`, twisted flutes along it), the gradient and
+  normal, and noise detail; the same
   functions for shaders in `src/sdf.slang`, which its `parity` test checks
   on a real GPU; and meshing on the CPU (`mesher.cone`): `surfaceNet`,
   surface nets with a vertex per piece of surface in a cell (a manifold,
@@ -113,8 +114,12 @@ Visual Studio projects stay at the root.
   `meshHash` (a mesh's bits hashed, the same on every run and build); its
   README holds what is exact, what is a bound, and what was measured; its
   examples: `hornmarch.cone` sphere-traces the horn in render's chitin
-  under the dusk, and `hornmesh.cone` meshes it at four levels into
-  render's `LodChain` and draws the mesh the same way;
+  under the dusk, `hornmesh.cone` meshes it at four levels into
+  render's `LodChain` and draws the mesh the same way, and `horn.cone` is
+  the chitin horn's demo (the fluted horn turning under a blue-hour sky on
+  wet ground beside a Blinn-Phong twin, its mesh hashes pinned, its
+  distances compared with the GPU's by `hornparity.slang`, and `--dump`,
+  the video's frames);
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed
@@ -157,8 +162,10 @@ Visual Studio projects stay at the root.
   and Blinn-Phong, a base color times a texture) and flat lines, both in
   Slang (`src/lit.slang`, `src/lines.slang`), the physically based material
   (`PbrMaterial`, `src/pbr.slang` over the `brdf` module: GGX, a clear coat,
-  and a Belcour-Barla thin film whose thickness is `noise`'s warped fBm),
-  an analytic dusk `Sky` (`src/sky.slang`) drawn behind the scene and made
+  everywhere or in wet patches, and a Belcour-Barla thin film whose
+  thickness is `noise`'s warped fBm), an analytic dusk `Sky`
+  (`src/sky.slang`, with a horizon line and cloud streaks where asked)
+  drawn behind the scene and made
   by full-screen passes into image-based lighting (`Environment`,
   `src/ibl.slang`: prefiltered specular and diffuse cubes, the split sum's
   table), `Post` (`src/post.slang`: the half-float frame, bloom, and tone

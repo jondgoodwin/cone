@@ -1,0 +1,2279 @@
+// horn: the chitin horn, milestone 0 of the procedural reproduction plan.
+// The sdf package's ribbed horn, with fine twisted flutes between its ribs,
+// meshed on the CPU by surface nets at four levels of detail into render's
+// LodChain, turns slowly under a blue-hour sky (streaks of cloud, a bright
+// line along the horizon) in wet black chitin: a near-black base, a smooth
+// clear coat, and an oil film on the coat whose thickness is warped noise
+// drifting with time. Beside it, the same horn in the Blinn-Phong material,
+// for comparison. Alone (key S, and the video), it stands on wet ground: dark
+// mud under a coat that lies in patches, the same oil on it.
+//
+//   congo run --release packages/sdf/examples/horn.cone
+//   congo run --release packages/sdf/examples/horn.cone -- --frames 120 --screenshot horn.bmp
+//   congo run --release packages/sdf/examples/horn.cone -- --dump FOLDER
+//
+// Keys: F the film on or off; S the chitin horn alone on its ground, framed
+// as the video frames it; Escape quit; F11 fullscreen.
+//
+// EVERYTHING DRAWN IS A PURE FUNCTION OF THE FRAME'S NUMBER (determinism
+// rule 5): the world's time is the frame's number times a fixed step (1/60 s
+// in the window, 1/30 s in a dump), never a clock, and the horn's turn, the
+// camera and the film's drift are functions of that time and of constant
+// seeds.
+//
+// THE CHECKS. The horn's four levels are meshed and their hashes (meshHash)
+// compared with the hashes pinned below: meshing is on the CPU, so they are
+// the same on every machine and GPU. Then the GPU evaluates the same horn's
+// distance and normal at 4096 fixed points (hornparity.slang, the sdf parity
+// test's pattern), and the program compares the bits with the CPU's: the
+// distances within 2^-16 and the normals within 2^-12 (the sdf package's
+// parity bounds), and prints a hash of each table; HORN_PARITY_OUT=FILE
+// also writes the GPU's table there, so two GPUs' tables can be compared
+// value by value. With '--frames N' (or HORN_FRAMES) it draws N frames and
+// stops; at frame CHECK_FRAME (or the last) it reads the frame back: the sky
+// above is bluer than red, and each horn is drawn where the middle of its
+// arc falls, unlike the sky at the screen's edge on that row.
+// '--screenshot FILE' writes that frame as a BMP, and the chitin horn alone,
+// framed as the video frames it, as FILE-solo.bmp. After a run it draws
+// BENCH_FRAMES frames offscreen at 1920 x 1080 and prints their mean time.
+// It exits 0 only if every check passed, no Vulkan call failed and the
+// validation layer said nothing.
+//
+// THE DUMP. '--dump FOLDER' opens no window: it draws the video's frames,
+// 1920 x 1080 at 30 a second, VIDEO_FRAMES of them (14 s: one turn of the
+// horn), each drawn at SUPERSAMPLE times the size and averaged down in
+// linear light, into FOLDER/frame0000.bmp and on. '--start F', '--count N'
+// and '--step K' dump every Kth of N frames from F. Level 0 is drawn
+// throughout, so no level changes mid-shot. '--closeup' frames the horn
+// close, as the reference's nearest spire is framed, for a side-by-side.
+// Encode with ffmpeg: -framerate 30 -i frame%04d.bmp -c:v libx264 -crf 18
+// -preset slow -pix_fmt yuv420p.
+//
+// It needs a GPU driver with Vulkan 1.3, SDL3.lib on LIB to link and
+// SDL3.dll on PATH to run, and a display unless dumping; with the Vulkan SDK,
+// validation is on. GPU_POWER_PREFERENCE=low-power picks an integrated GPU
+// where there are two.
+
+mod horn;
+
+import stdio use *;
+import libc;
+import sdl;
+import collections use *;
+import geomath use *;
+import mesh;
+import noise;
+import gpu use *;
+import render use *;
+import window use *;
+import sdf use *;
+
+const CHECK_FRAME = 90;
+const BENCH_FRAMES = 120;
+const LEVELS = 4u32;
+const KEY_F = 102u32;
+const KEY_S = 115u32;
+
+// ---- The horn: hornmesh's, fluted; the pair turn about their middles ----
+
+const LENGTH f32 = 3.4;
+const BASE f32 = 0.34;
+const TAPER f32 = 0.97;
+const CURL f32 = 1.7;
+const RIBS = 22;
+const RIB_DEPTH f32 = 0.12;
+const FLUTES = 40;
+const FLUTE_DEPTH f32 = 0.018;
+const FLUTE_TWIST f32 = 0.8;
+const OFFSET f32 = 1.1;
+const FINEST f32 = 0.01;
+const RELAX = 1u32;
+
+// The four levels' meshHash, pinned: the same on every run, build, machine
+// and GPU, since meshing is on the CPU. (An 'imm', not a 'const': indexing
+// a const array crashes conec.)
+imm PINNED [4; u32] = [0x85bc619fu32, 0xe640004fu32, 0x8ec31f5eu32, 0x29123678u32];
+
+// ---- Time ----
+
+const WINDOW_STEP f32 = 0.016666668;      // 1/60 s a frame in the window
+const VIDEO_STEP f32 = 0.033333335;       // 1/30 s a frame in a dump
+const VIDEO_FRAMES = 420;                 // 14 s
+const VIDEO_WIDTH = 1920u32;
+const VIDEO_HEIGHT = 1080u32;
+const SUPERSAMPLE = 2u32;
+const REVOLUTION f32 = 14.;               // seconds for one turn of the horn
+
+// ---- The look, tuned by eye against the nearest spire of landscape 2 ----
+//
+// What the reference shows: a navy-black body, highlights near white and
+// cool, a faint film tint on the spire (vivid only in the puddles), dark
+// moody light from a bright sky above. What gets there: a dark sky overhead
+// with bright structure in it (cloud streaks, a line at the horizon, a cool
+// glow behind the camera) for the coat to reflect as highlights along the
+// ribs; a cool key light high at the front left for the coat's sharp lobe; a
+// film whose index is only a little above the coat's, so it tints rather
+// than brightens. The PR lists every constant and why.
+
+// The sky: blue hour. The sun (the key light) is high behind the camera, to
+// the left, so its glow is reflected on the horn's front and never seen
+fn sky() Sky {
+  mut s = Sky.dusk(radians(30.), radians(300.));
+  s.zenith = Color[0.020, 0.032, 0.090, 1.];
+  s.horizon = Color[0.11, 0.13, 0.25, 1.];
+  s.horizonSharpness = 4.;
+  s.glow = Color[0.30, 0.32, 0.50, 1.];
+  s.glowSharpness = 6.;
+  s.ground = Color[0.016, 0.018, 0.030, 1.];
+  s.groundFade = 6.;
+  s.line = Color[0.50, 0.56, 0.90, 1.];
+  s.lineWidth = 0.05;
+  s.cloud = Color[0.85, 0.95, 1.40, 1.];
+  s.cloudCover = 0.4;
+  s.cloudScale = 1.3;
+  s.cloudStretch = 5.;
+  s.cloudHeading = 0.4;
+  s.cloudSeed = 11u32;
+  s;
+}
+
+// The sun as the directional light: cool white, strong enough that the
+// coat's glints on the rib edges read white
+fn light(s &Sky) Light { s.sunLight(Color[3.2, 3.0, 3.6, 1.], Color[0.03, 0.035, 0.06, 1.]); }
+
+// The chitin: blue-black, a wet coat a little rougher than chitin's default
+// so the key light's glints spread along the ribs, and an oil film of index
+// 1.85 from 180 to 520 nm (second-order colours, magenta, teal, gold)
+fn chitin() PbrMaterial {
+  mut m = PbrMaterial.chitin(180., 520., 7u32);
+  m.baseColor = Color[0.004, 0.005, 0.009, 1.];
+  m.roughness = 0.35;
+  m.clearcoatRoughness = 0.07;
+  m.filmIor = 1.85;
+  m.filmScale = 1.2;
+  m.filmDrift = 0.25;
+  m.filmWarp = 1.5;
+  m;
+}
+
+fn phong() Material { Material.shiny(Color[0.012, 0.011, 0.014, 1.], 0.9, 90.); }
+
+// ---- The scene at time t ----
+
+fn ease(x f32) f32 {
+  imm c = if x < 0. { 0.; } elif x > 1. { 1.; } else { x; };
+  c * c * (3. - 2. * c);
+}
+
+// The horn's turn: one revolution in REVOLUTION seconds
+fn turnAt(t f32) Quat { Quat.angleAxis(0.6 + t * (2. * pi / REVOLUTION), Vec3[0., 1., 0.]); }
+
+// The horn's model matrix at 'at', turned about its middle (the pair,
+// floating)
+fn modelAt(at Vec3, turn Quat) Mat4 {
+  Mat4.fromTranslation(at) * Mat4.fromTrs(Vec3[0., 0., 0.], turn, Vec3[1., 1., 1.])
+    * Mat4.fromTranslation(Vec3[0. - OFFSET, 0., 0.]);
+}
+
+// The horn standing alone, its base sunk a little in the ground, turning
+// about its base as a spire on a turntable
+const SINK f32 = 0.12;
+fn soloModel(turn Quat) Mat4 {
+  Mat4.fromTrs(Vec3[0., 0. - SINK, 0.], turn, Vec3[1., 1., 1.]);
+}
+
+// The ground: a plane GROUND each way from the horn, its coordinates the
+// world's, so its noise is in world units
+const GROUND f32 = 150.;
+fn groundMesh() mesh.Mesh {
+  mut m = mesh.Mesh.plane(16, 1.);
+  mut i = 0usize;
+  while i < m.positions.len() {
+    imm p = *m.positions[i];
+    m.positions.set(i, Vec3[p.x * GROUND, 0., p.z * GROUND]);
+    i = i + 1usize;
+  }
+  m;
+}
+fn groundModel() Mat4 { Mat4.fromTranslation(Vec3[0., 0., 0.]); }
+
+// The pair's places, and the camera that holds both
+const SPACING f32 = 3.6;
+fn pairEye() Vec3 { Vec3[0., 1.5, 9.4]; }
+fn pairTarget() Vec3 { Vec3[0., 1.0, 0.]; }
+
+// The video's camera at time t: a slow push-in, the eye easing a little
+// round and down. 'closeup': at the video's start, but close, framed as the
+// reference's nearest spire is (for the side-by-side)
+fn soloCamera(camera &mut Camera, t f32, closeup Bool) {
+  imm k = ease(t / (f32[VIDEO_FRAMES] * VIDEO_STEP));
+  mut distance = 6.4 - 0.9 * k;
+  imm azimuth = -0.16 + 0.30 * k;
+  mut elevation = 0.30 - 0.06 * k;
+  mut target = Vec3[0., 1.0 + 0.05 * k, 0.];
+  if closeup {
+    distance = 4.1;
+    elevation = 0.24;
+    target = Vec3[0., 1.1, 0.];
+  }
+  imm eye = target + Vec3[sin(azimuth) * cos(elevation), sin(elevation), cos(azimuth) * cos(elevation)] * distance;
+  camera.lookAt(eye, target, Vec3[0., 1., 0.]);
+}
+
+// The wet ground: dark mud under a blurred wet coat and the same oil
+fn groundMaterial() PbrMaterial {
+  mut m = PbrMaterial.chitin(220., 720., 23u32);
+  m.baseColor = Color[0.007, 0.0065, 0.009, 1.];
+  m.roughness = 0.85;
+  m.clearcoat = 0.3;
+  m.clearcoatRoughness = 0.16;
+  m.filmMin = 90.;
+  m.filmMax = 420.;
+  m.filmIor = 2.2;
+  m.filmScale = 0.5;
+  m.filmDrift = 0.03;
+  m.filmWarp = 1.5;
+  m.wetScale = 0.3;
+  m.wetLevel = 0.0;
+  m.wetSoftness = 0.35;
+  m.wetSeed = 5u32;
+  m;
+}
+
+// ---- Arguments ----
+
+fn parseCount(s *u8) i32 {
+  if (s as usize) == 0usize or *s == 0u8 { return -1; }
+  mut n = 0;
+  mut i = 0usize;
+  while *(s + i) != 0u8 {
+    imm c = *(s + i);
+    if c < '0' or c > '9' { return -1; }
+    n = n * 10 + i32[c - '0'];
+    i = i + 1usize;
+  }
+  n;
+}
+
+fn cstrEquals(a *u8, b &[]u8) Bool {
+  mut i = 0usize;
+  while i < b.len {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len) == 0u8;
+}
+
+fn appendCstr(s &mut String, c *u8) {
+  mut i = 0usize;
+  while *(c + i) != 0u8 {
+    s.appendByte(*(c + i));
+    i = i + 1usize;
+  }
+}
+
+fn onOff(on Bool) &[]u8 {
+  if on { return "on"; }
+  "off";
+}
+
+// 'base' without its '.bmp', then 'suffix' and '.bmp'
+fn shotName(base &String, suffix &[]u8) String {
+  mut s = String.empty();
+  if base.endsWith(".bmp") { s = base.sub(0usize, base.len() - 4usize); } else { s = base.copy(); }
+  s <- suffix;
+  s <- ".bmp";
+  s;
+}
+
+// FOLDER/frame0000.bmp
+fn frameName(folder &String, n i32) String {
+  mut s = folder.copy();
+  s <- "/frame";
+  s.appendByte(u8['0'] + u8[(n / 1000) % 10]);
+  s.appendByte(u8['0'] + u8[(n / 100) % 10]);
+  s.appendByte(u8['0'] + u8[(n / 10) % 10]);
+  s.appendByte(u8['0'] + u8[n % 10]);
+  s <- ".bmp";
+  s;
+}
+
+// ---- The GPU's horn against the CPU's ----
+
+const PARITY_WIDTH = 64u32;
+const PARITY_HEIGHT = 256u32;
+
+// Point 'a' (0 to 4095), as hornparity.slang's 'parityPoint'
+fn parityPoint(a u32) Vec3 {
+  imm gx = a % 16u32;
+  imm gy = (a / 16u32) % 16u32;
+  imm gz = a / 256u32;
+  Vec3[f32[gx] * 0.1875 - 0.5, f32[gy] * 0.1875 - 0.5, f32[gz] * 0.0625 - 0.5];
+}
+
+fn parityQuantity(horn &Horn, q u32, p Vec3) f32 {
+  if q == 0u32 { return horn.distance(p); }
+  imm n = normal(horn, p, 0.015625);
+  if q == 1u32 { n.x; } elif q == 2u32 { n.y; } else { n.z; };
+}
+
+fn printHex(label &[]u8, h u32) {
+  mut s = String.empty();
+  s.appendHex(u64[h], 8usize);
+  printStr(label); printStr(s.view());
+}
+
+// Draw hornparity.slang's table on 'device' and compare it with the CPU's;
+// true if every quantity is within its bound
+fn gpuParity(device &mut Device, horn &Horn) Bool {
+  imm target = TextureDescriptor[PARITY_WIDTH, PARITY_HEIGHT, TEXTURE_FORMAT_RGBA8_UNORM,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC];
+  mut color = device.createTexture(&target);
+  mut readback = device.createBuffer(u64[PARITY_WIDTH * PARITY_HEIGHT * 4u32],
+    BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut shader = device.createShaderModule(&HORNPARITY_SPIRV);
+  mut layout = device.createEmptyPipelineLayout(0u32);
+  imm noBuffers = List[VertexBufferLayout].empty();
+  imm desc = RenderPipelineDescriptor[layout: &layout, vertexModule: &shader, buffers: noBuffers.view(),
+    fragmentModule: &shader, colorFormat: TEXTURE_FORMAT_RGBA8_UNORM];
+  mut pipeline = device.createRenderPipeline(&desc);
+  if !color.isValid() or !pipeline.isValid() {
+    print <- "GPU parity: the pipeline could not be made\n";
+    return false;
+  }
+  {
+    mut encoder = device.createCommandEncoder();
+    imm attachment = RenderPassColorAttachment[view: color.createView(), clearValue: Color[0., 0., 0., 0.]];
+    mut pass = encoder.beginRenderPass(&attachment);
+    pass.setPipeline(&pipeline);
+    pass.draw(3u32, 1u32, 0u32, 0u32);
+    pass.end();
+    encoder.copyTextureToBuffer(&color, &readback);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+  }
+  imm p = readback.mappedRange();
+  // HORN_PARITY_OUT names a file for the GPU's table, its raw bytes, so two
+  // GPUs' tables can be compared value by value
+  imm outPath = libc.getenv(&"HORN_PARITY_OUT" as *u8);
+  if (outPath as usize) != 0usize {
+    imm file = libc.fopen(outPath, &"wb" as *u8);
+    if (file as usize) != 0usize {
+      libc.fwrite(p, 1usize, usize[PARITY_WIDTH * PARITY_HEIGHT * 4u32], file);
+      libc.fclose(file);
+    }
+  }
+  mut exact [4; u32] = [0u32, 0u32, 0u32, 0u32];
+  mut worst [4; f64] = [0d, 0d, 0d, 0d];
+  mut signsAgree = 0u32;
+  mut nearSurface = 0u32;
+  mut cpuHash = noise.pcg(0x686f726eu32);
+  mut gpuHash = cpuHash;
+  mut i = 0u32;
+  while i < PARITY_WIDTH * PARITY_HEIGHT {
+    imm q = i % 4u32;
+    imm a = i / 4u32;
+    imm at = p + usize[i * 4u32];
+    imm gpuBits = u32[*at] | (u32[*(at + 1usize)] << 8u32) | (u32[*(at + 2usize)] << 16u32)
+      | (u32[*(at + 3usize)] << 24u32);
+    imm cpu = parityQuantity(horn, q, parityPoint(a));
+    imm cpuBits = cpu as u32;
+    cpuHash = noise.pcg(cpuHash ^ cpuBits);
+    gpuHash = noise.pcg(gpuHash ^ gpuBits);
+    if gpuBits == cpuBits {
+      exact[usize[q]] = exact[usize[q]] + 1u32;
+    } else {
+      imm d = f64[gpuBits as f32] - f64[cpu];
+      imm ad = if d < 0d { -d; } else { d; };
+      if ad > worst[usize[q]] or ad != ad { worst[usize[q]] = ad; }
+    }
+    if q == 0u32 {
+      imm g = gpuBits as f32;
+      if (g < 0.) == (cpu < 0.) { signsAgree = signsAgree + 1u32; }
+      if cpu < 0.02 and cpu > -0.02 { nearSurface = nearSurface + 1u32; }
+    }
+    i = i + 1u32;
+  }
+  imm samples = PARITY_WIDTH * PARITY_HEIGHT / 4u32;
+  print <- "GPU parity, the horn at "; print <- u64[samples]; print <- " points ("; print <- u64[nearSurface];
+  print <- " within 0.02 of its surface):\n";
+  imm names [4; &[]u8] = ["distance", "normal x", "normal y", "normal z"];
+  imm bounds [4; f64] = [0.0000152587890625d, 0.000244140625d, 0.000244140625d, 0.000244140625d];
+  mut ok = true;
+  mut q = 0usize;
+  while q < 4usize {
+    print <- "  "; printStr(names[q]); print <- ": "; print <- u64[exact[q]]; print <- " of "; print <- u64[samples];
+    print <- " bit for bit, the rest within "; print <- worst[q]; print <- " (bound "; print <- bounds[q]; print <- ")\n";
+    if worst[q] > bounds[q] or worst[q] != worst[q] { ok = false; }
+    q = q + 1usize;
+  }
+  print <- "  the distance's sign agrees at "; print <- u64[signsAgree]; print <- " of "; print <- u64[samples]; print <- "\n";
+  if signsAgree != samples { ok = false; }
+  printHex("  table hash: CPU ", cpuHash); printHex(", GPU ", gpuHash);
+  if cpuHash == gpuHash { print <- " (the same)\n"; } else { print <- " (they differ: see the counts above)\n"; }
+  ok;
+}
+
+// ---- Reading a frame back ----
+
+fn channel(p *u8, w u32, x i32, y i32, c usize, bgra Bool) i32 {
+  mut at = c;
+  if bgra { at = 2usize - c; }
+  i32[*(p + (usize[y] * usize[w] + usize[x]) * 4usize + at)];
+}
+
+fn luma(p *u8, w u32, x i32, y i32, bgra Bool) i32 {
+  channel(p, w, x, y, 0usize, bgra) + channel(p, w, x, y, 1usize, bgra) + channel(p, w, x, y, 2usize, bgra);
+}
+
+fn printPixel(name &[]u8, p *u8, w u32, x i32, y i32, bgra Bool) {
+  printStr(name); print <- " at ("; print <- x; print <- ", "; print <- y; print <- "): ";
+  print <- channel(p, w, x, y, 0usize, bgra); print <- " "; print <- channel(p, w, x, y, 1usize, bgra); print <- " ";
+  print <- channel(p, w, x, y, 2usize, bgra);
+}
+
+fn pixelOf(viewProjection Mat4, p Vec3, w u32, h u32, x &mut i32, y &mut i32) {
+  imm clip = viewProjection * Vec4[p.x, p.y, p.z, 1.];
+  *x = i32[(clip.x / clip.w + 1.) * 0.5 * f32[w]];
+  *y = i32[(1. - clip.y / clip.w) * 0.5 * f32[h]];
+}
+
+// Whether the horn modelled by 'model' is drawn where the middle of its arc
+// falls, unlike the sky at the screen's edge on that row
+fn checkHorn(name &[]u8, p *u8, w u32, h u32, bgra Bool, viewProjection Mat4, model Mat4, horn &Horn) Bool {
+  mut hx = 0;
+  mut hy = 0;
+  pixelOf(viewProjection, model * horn.arc.point(LENGTH * 0.5), w, h, &mut hx, &mut hy);
+  if hx < 0 or hy < 0 or hx >= i32[w] or hy >= i32[h] {
+    print <- "  "; printStr(name); print <- ": off the screen\n";
+    return false;
+  }
+  printStr("  "); printPixel(name, p, w, hx, hy, bgra);
+  imm sx = i32[w / 40u32];
+  imm d = luma(p, w, hx, hy, bgra) - luma(p, w, sx, hy, bgra);
+  if d > 30 or d < -30 { print <- ": drawn, unlike the sky at the edge\n"; return true; }
+  print <- ": NOT unlike the sky at the edge\n";
+  false;
+}
+
+// sRGB's encoding of linear 'v', 0 to 1, as a byte
+fn encodeSrgb(v f32) u8 {
+  imm c = if v <= 0. { 0.; } elif v >= 1. { 1.; } else { v; };
+  imm e = if c <= 0.0031308 { c * 12.92; } else { 1.055 * libc.powf(c, 1. / 2.4) - 0.055; };
+  u8[e * 255. + 0.5];
+}
+
+// The tables the downsampling reads: each sRGB byte's linear value, and the
+// sRGB byte of each linear value in 1/65535 steps (fine enough that the
+// darkest bytes, 1/3300 apart in linear light, are each reached)
+const ENCODE_STEPS = 65536usize;
+fn decodeTable() *f32 {
+  imm t = libc.malloc(256usize * 4usize) as *f32;
+  mut v = 0usize;
+  while v < 256usize {
+    imm c = f32[v] / 255.;
+    *(t + v) = if c <= 0.04045 { c / 12.92; } else { libc.powf((c + 0.055) / 1.055, 2.4); };
+    v = v + 1usize;
+  }
+  t;
+}
+fn encodeTable() *u8 {
+  imm t = libc.malloc(ENCODE_STEPS);
+  mut i = 0usize;
+  while i < ENCODE_STEPS {
+    *(t + i) = encodeSrgb(f32[i] / f32[ENCODE_STEPS - 1usize]);
+    i = i + 1usize;
+  }
+  t;
+}
+
+// 'src', 'k' times 'w' by 'h' sRGB texels (RGBA), averaged down k x k in
+// linear light into 'dst', w by h RGBA texels
+fn downsample(src *u8, dst *u8, w u32, h u32, k u32, decode *f32, encode *u8) {
+  imm sw = usize[w * k];
+  imm kk = usize[k];
+  imm scale = f32[ENCODE_STEPS - 1usize] / f32[k * k];
+  mut y = 0usize;
+  while y < usize[h] {
+    mut x = 0usize;
+    while x < usize[w] {
+      imm out = dst + (y * usize[w] + x) * 4usize;
+      mut c = 0usize;
+      while c < 3usize {
+        mut sum = 0.;
+        mut j = 0usize;
+        while j < kk {
+          mut s = src + ((y * kk + j) * sw + x * kk) * 4usize + c;
+          mut i = 0usize;
+          while i < kk {
+            sum = sum + *(decode + usize[*s]);
+            s = s + 4usize;
+            i = i + 1usize;
+          }
+          j = j + 1usize;
+        }
+        mut q = usize[sum * scale + 0.5];
+        if q >= ENCODE_STEPS { q = ENCODE_STEPS - 1usize; }
+        *(out + c) = *(encode + q);
+        c = c + 1usize;
+      }
+      *(out + 3usize) = 255u8;
+      x = x + 1usize;
+    }
+    y = y + 1usize;
+  }
+}
+
+// ---- The GPU ----
+
+fn powerPreference() u32 {
+  imm env = libc.getenv(&"GPU_POWER_PREFERENCE" as *u8);
+  if (env as usize) != 0usize {
+    if libc.strcmp(env, &"low-power" as *u8) == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
+  }
+  POWER_PREFERENCE_HIGH_PERFORMANCE;
+}
+
+fn printAdapter(instance &Instance, adapter &Adapter) {
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  print <- "Validation layer: "; printStr(onOff(instance.validation));
+  print <- "; synchronization validation: "; printStr(onOff(instance.syncValidation)); print <- "\n";
+}
+
+// The meshes into the renderer as a chain of levels, each drawn while the
+// horn is at least so many pixels across: level 0 above 500, 1 above 250,
+// 2 above 120, 3 below
+fn addLevels(renderer &mut Renderer, device &mut Device, meshes &List[mesh.Mesh]) LodChain {
+  mut chain = LodChain.empty(0.1);
+  imm minSizes [4; f32] = [500., 250., 120., 0.];
+  mut i = 0usize;
+  while i < meshes.len() {
+    chain.add(renderer.addMesh(device, meshes[i]), minSizes[i]);
+    i = i + 1usize;
+  }
+  chain;
+}
+
+// 'count' of the video's frames from 'start', 'step' apart, offscreen,
+// supersampled, into 'folder'; how many were written
+fn drawDump(device &mut Device, meshes &List[mesh.Mesh], folder &String, start i32, count i32, step i32,
+  closeup Bool, frequency f64) i32 {
+  mut renderer = Renderer.create(device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  imm theSky = sky();
+  renderer.setSky(device, &theSky);
+  imm theLight = light(&theSky);
+  mut chain = addLevels(&mut renderer, device, meshes);
+  chain.select(0usize);
+  imm coat = chitin();
+  imm chitinM = renderer.addPbrMaterial(device, &coat);
+  imm plane = groundMesh();
+  imm ground = renderer.addMesh(device, &plane);
+  imm mud = groundMaterial();
+  imm groundM = renderer.addPbrMaterial(device, &mud);
+  mut camera = Camera.make();
+  camera.fov = radians(35.);
+  camera.near = 0.3;
+  camera.far = 400.;
+  mut list = DrawList.empty();
+
+  imm w = VIDEO_WIDTH * SUPERSAMPLE;
+  imm h = VIDEO_HEIGHT * SUPERSAMPLE;
+  imm targetDesc = TextureDescriptor[w, h, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC];
+  mut target = device.createTexture(&targetDesc);
+  imm depthDesc = TextureDescriptor[w, h, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT];
+  mut depth = device.createTexture(&depthDesc);
+  mut post = Post.create(device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, w, h);
+  if !renderer.isValid() or !post.isValid() or !target.isValid() {
+    print <- "The offscreen renderer could not be made\n";
+    return 0;
+  }
+  mut readback = device.createBuffer(u64[w] * u64[h] * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  imm out = libc.malloc(usize[VIDEO_WIDTH] * usize[VIDEO_HEIGHT] * 4usize);
+  imm bigBytes = usize[w] * usize[h] * 4usize;
+  imm big = libc.malloc(bigBytes);
+  imm decode = decodeTable();
+  imm encode = encodeTable();
+  mut written = 0;
+  mut gpuMs = 0d;
+  mut downMs = 0d;
+  mut saveMs = 0d;
+  mut n = 0;
+  while n < count {
+    imm f = start + n * step;
+    imm t = f32[f] * VIDEO_STEP;
+    renderer.time = t;
+    soloCamera(&mut camera, t, closeup);
+    list.clear();
+    list.add(chain.mesh(), chitinM, soloModel(turnAt(t)));
+    list.add(ground, groundM, groundModel());
+    imm began = sdl.GetPerformanceCounter();
+    mut encoder = device.createCommandEncoder();
+    renderer.render(device, &mut encoder, &post.hdr, &depth, &camera, &theLight, &list);
+    post.apply(&mut encoder, &target);
+    encoder.copyTextureToBuffer(&target, &readback);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    imm drawn = sdl.GetPerformanceCounter();
+    gpuMs = gpuMs + f64[drawn - began] / frequency * 1000.;
+    // Copied out of the mapped buffer first: reading it texel by texel is
+    // many times slower (it is not cached)
+    libc.memcpy(big, readback.mappedRange(), bigBytes);
+    downsample(big, out, VIDEO_WIDTH, VIDEO_HEIGHT, SUPERSAMPLE, decode, encode);
+    imm averaged = sdl.GetPerformanceCounter();
+    downMs = downMs + f64[averaged - drawn] / frequency * 1000.;
+    imm shot = Image.fromTexels(out, i32[VIDEO_WIDTH], i32[VIDEO_HEIGHT], false);
+    imm name = frameName(folder, f);
+    if shot.save(name.view()) { written = written + 1; }
+    else { print <- "Could NOT write "; printStr(name.view()); print <- "\n"; }
+    saveMs = saveMs + f64[sdl.GetPerformanceCounter() - averaged] / frequency * 1000.;
+    n = n + 1;
+  }
+  device.waitIdle();
+  libc.free(out);
+  libc.free(big);
+  libc.free(decode as *u8);
+  libc.free(encode);
+  print <- "Frames written: "; print <- written; print <- " of "; print <- count; print <- " ("; print <- u64[w];
+  print <- " x "; print <- u64[h]; print <- " drawn, averaged down to "; print <- u64[VIDEO_WIDTH]; print <- " x ";
+  print <- u64[VIDEO_HEIGHT]; print <- " in linear light)\n";
+  if count > 0 {
+    print <- "Mean a frame: "; print <- gpuMs / f64[count]; print <- " ms drawing and reading back, ";
+    print <- downMs / f64[count]; print <- " ms averaging, "; print <- saveMs / f64[count]; print <- " ms writing\n";
+  }
+  written;
+}
+
+// ---- The demo ----
+
+fn main(argc i32, argv **u8) i32 {
+  mut maxFrames = 0;
+  mut screenshot = String.empty();
+  mut dump = String.empty();
+  mut start = 0;
+  mut count = VIDEO_FRAMES;
+  mut step = 1;
+  mut closeup = false;
+  imm env = libc.getenv(&"HORN_FRAMES" as *u8);
+  if (env as usize) != 0usize { maxFrames = parseCount(env); }
+  mut a = 1;
+  while a < argc {
+    imm arg = *(argv + usize[a]);
+    if cstrEquals(arg, "--frames") and a + 1 < argc {
+      maxFrames = parseCount(*(argv + usize[a + 1]));
+      a = a + 1;
+    } elif cstrEquals(arg, "--screenshot") and a + 1 < argc {
+      appendCstr(&mut screenshot, *(argv + usize[a + 1]));
+      a = a + 1;
+    } elif cstrEquals(arg, "--dump") and a + 1 < argc {
+      appendCstr(&mut dump, *(argv + usize[a + 1]));
+      a = a + 1;
+    } elif cstrEquals(arg, "--start") and a + 1 < argc {
+      start = parseCount(*(argv + usize[a + 1]));
+      a = a + 1;
+    } elif cstrEquals(arg, "--count") and a + 1 < argc {
+      count = parseCount(*(argv + usize[a + 1]));
+      a = a + 1;
+    } elif cstrEquals(arg, "--step") and a + 1 < argc {
+      step = parseCount(*(argv + usize[a + 1]));
+      a = a + 1;
+    } elif cstrEquals(arg, "--closeup") {
+      closeup = true;
+    } else {
+      print <- "Unknown argument; use --frames N, --screenshot FILE, --dump FOLDER, --start F, --count N, --step K";
+      print <- " and --closeup\n";
+      return 2;
+    }
+    a = a + 1;
+  }
+  if maxFrames < 0 or start < 0 or count < 0 or step < 1 {
+    print <- "--frames, --start, --count and --step want whole numbers (--step at least 1)\n";
+    return 2;
+  }
+  mut checkFrame = CHECK_FRAME;
+  if maxFrames > 0 and maxFrames - 1 < checkFrame { checkFrame = maxFrames - 1; }
+  imm dumping = dump.len() > 0usize;
+
+  // The horn, meshed, and its hashes against the pinned
+  imm frequency = f64[sdl.GetPerformanceFrequency()];
+  imm plain = Horn.make(LENGTH, BASE, TAPER, CURL, RIBS, RIB_DEPTH);
+  imm horn = plain.fluted(FLUTES, FLUTE_DEPTH, FLUTE_TWIST);
+  imm box = horn.bounds();
+  mut meshes = List[mesh.Mesh].empty();
+  mut hashesPinned = true;
+  mut cell = FINEST;
+  mut level = 0u32;
+  while level < LEVELS {
+    imm started = sdl.GetPerformanceCounter();
+    imm net = surfaceNet(&horn, box, cell, RELAX, true);
+    imm m = net.toMesh();
+    imm ms = f64[sdl.GetPerformanceCounter() - started] / frequency * 1000.;
+    imm h = meshHash(&m);
+    print <- "Level "; print <- u64[level]; print <- ": cells of "; print <- cell; print <- ", ";
+    print <- m.vertexCount(); print <- " vertices, "; print <- m.triangleCount(); print <- " triangles, ";
+    print <- ms; print <- " ms; "; printHex("hash ", h);
+    if h == PINNED[usize[level]] { print <- " (as pinned)\n"; }
+    else { printHex(" (NOT the pinned ", PINNED[usize[level]]); print <- ")\n"; hashesPinned = false; }
+    meshes.push(m);
+    cell = cell * 2.;
+    level = level + 1u32;
+  }
+
+  // Dumping: any GPU, no window
+  if dumping {
+    mut instance = Instance.create("horn");
+    if !instance.isValid() {
+      print <- "No Vulkan 1.3 instance could be made\n";
+      return 1;
+    }
+    mut none = Surface.none();
+    mut adapter = instance.requestAdapter(&none, powerPreference());
+    if !adapter.isValid() {
+      print <- "No GPU can draw\n";
+      return 1;
+    }
+    printAdapter(&instance, &adapter);
+    mut device = adapter.requestDevice();
+    imm parityOk = gpuParity(&mut device, &horn);
+    imm written = drawDump(&mut device, &meshes, &dump, start, count, step, closeup, frequency);
+    print <- "Vulkan failures: "; print <- u64[failures()];
+    print <- "; validation messages: "; print <- u64[validationMessages()]; print <- "\n";
+    if written != count or !hashesPinned or !parityOk or failures() != 0u32 or validationMessages() != 0u32 {
+      print <- "FAILED\n";
+      return 1;
+    }
+    print <- "OK\n";
+    return 0;
+  }
+
+  // The window's GPU
+  mut win = Window.openVulkan("Cone: the chitin horn");
+  if !win.isOpen() {
+    print <- "No window could be opened\n";
+    return 1;
+  }
+  mut instance = Instance.create("horn");
+  if !instance.isValid() {
+    print <- "No Vulkan 1.3 instance could be made\n";
+    return 1;
+  }
+  mut surface = instance.createSurface(win.sdlHandle());
+  mut adapter = instance.requestAdapter(&surface, powerPreference());
+  if !adapter.isValid() {
+    print <- "No GPU can draw to the window\n";
+    return 1;
+  }
+  printAdapter(&instance, &adapter);
+  mut device = adapter.requestDevice();
+  imm parityOk = gpuParity(&mut device, &horn);
+
+  // The renderer and the scene
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  if !renderer.isValid() {
+    print <- "The renderer could not be made\n";
+    return 1;
+  }
+  imm theSky = sky();
+  renderer.setSky(&mut device, &theSky);
+  imm theLight = light(&theSky);
+  mut chain = addLevels(&mut renderer, &mut device, &meshes);
+  mut coat = chitin();
+  imm chitinM = renderer.addPbrMaterial(&mut device, &coat);
+  imm phongMaterial = phong();
+  imm phongM = renderer.addMaterial(&mut device, &phongMaterial);
+  imm plane = groundMesh();
+  imm ground = renderer.addMesh(&mut device, &plane);
+  imm mud = groundMaterial();
+  imm groundM = renderer.addPbrMaterial(&mut device, &mud);
+  mut camera = Camera.make();
+  camera.fov = radians(35.);
+  camera.near = 0.3;
+  camera.far = 400.;
+  camera.background = Color[0., 0., 0., 1.];
+  imm boxCentre = box.center();
+  imm boxRadius = box.halfExtents().length();
+  mut list = DrawList.empty();
+
+  // The window
+  imm size = win.size();
+  mut swapchain = device.createSwapChain(&surface, u32[size.w], u32[size.h], TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut post = Post.create(&mut device, swapchain.format, u32[size.w], u32[size.h]);
+  if !post.isValid() {
+    print <- "The post-processing could not be made\n";
+    return 1;
+  }
+  imm leftAt = Vec3[0. - SPACING * 0.5, 0., 0.];
+  imm rightAt = Vec3[SPACING * 0.5, 0., 0.];
+  mut frames = 0;
+  mut unshown = 0;
+  mut checked = false;
+  mut checksPassed = true;
+  mut shotsWritten = true;
+  mut soloShot = false;
+  mut film = true;
+  mut solo = false;
+  mut firstTimed = 0u64;
+  mut lastTimed = 0u64;
+  mut lastTimedFrame = 0;
+  while win.running and (maxFrames == 0 or frames < maxFrames) {
+    mut event = sdl.Event.empty();
+    while win.pollEvent(&mut event) {
+      imm key = keyDown(&event);
+      if key == KEY_F { film = !film; }
+      if key == KEY_S { solo = !solo; }
+    }
+    imm shooting = screenshot.len() > 0usize and checked and !soloShot;
+    mut drawSolo = solo;
+    if maxFrames > 0 and frames == checkFrame and !checked { drawSolo = false; }
+    if shooting { drawSolo = true; }
+    if coat.film != film {
+      coat.film = film;
+      renderer.setPbrMaterial(&mut device, chitinM, &coat);
+    }
+    if maxFrames > 0 and frames == checkFrame + 8 { win.setSize(size.w * 2 / 3, size.h * 2 / 3); }
+    if win.resized {
+      imm s = win.size();
+      swapchain.resize(u32[s.w], u32[s.h]);
+      win.resized = false;
+    }
+    imm frame = swapchain.getCurrentTexture(&mut device);
+    if !frame.ok() {
+      sdl.Delay(10u32);
+    } else {
+      imm started = sdl.GetPerformanceCounter();
+      imm w = frame.texture.width;
+      imm h = frame.texture.height;
+      imm t = f32[frames] * WINDOW_STEP;
+      renderer.time = t;
+      post.resize(&mut device, w, h);
+      imm turn = turnAt(t);
+      list.clear();
+      mut chitinModel = modelAt(rightAt, turn);
+      imm phongModel = modelAt(leftAt, turn);
+      if drawSolo {
+        soloCamera(&mut camera, t, false);
+        chitinModel = soloModel(turn);
+        chain.selectBySize(camera.projectedSize(chitinModel * boxCentre, boxRadius, f32[h]));
+        list.add(chain.mesh(), chitinM, chitinModel);
+        list.add(ground, groundM, groundModel());
+      } else {
+        camera.lookAt(pairEye(), pairTarget(), Vec3[0., 1., 0.]);
+        chain.selectBySize(camera.projectedSize(chitinModel * boxCentre, boxRadius, f32[h]));
+        list.add(chain.mesh(), chitinM, chitinModel);
+        list.add(chain.mesh(), phongM, phongModel);
+      }
+
+      mut encoder = device.createCommandEncoder();
+      renderer.render(&mut device, &mut encoder, &post.hdr, &frame.depth, &camera, &theLight, &list);
+      post.apply(&mut encoder, &frame.texture);
+      imm bgra = frame.texture.format == TEXTURE_FORMAT_BGRA8_UNORM_SRGB
+        or frame.texture.format == TEXTURE_FORMAT_BGRA8_UNORM;
+      imm checkNow = frames == checkFrame and !checked;
+      if checkNow or shooting {
+        mut readback = device.createBuffer(u64[w] * u64[h] * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+        encoder.copyTextureToBuffer(&frame.texture, &readback);
+        device.queue.submit(encoder.finish());
+        if !swapchain.present(&mut device) { unshown = unshown + 1; }
+        device.waitIdle();
+        imm p = readback.mappedRange();
+        mut name = screenshot.copy();
+        if checkNow {
+          checked = true;
+          print <- "Frame "; print <- frames; print <- " ("; print <- u64[w]; print <- " x "; print <- u64[h];
+          print <- "), level "; print <- chain.current; print <- ", "; print <- renderer.triangles; print <- " triangles:\n";
+          imm tx = i32[w / 2u32];
+          imm ty = i32[h / 30u32];
+          printStr("  "); printPixel("the sky above", p, w, tx, ty, bgra);
+          if channel(p, w, tx, ty, 2usize, bgra) > channel(p, w, tx, ty, 0usize, bgra) { print <- ": bluer than red\n"; }
+          else { print <- ": NOT bluer than red\n"; checksPassed = false; }
+          imm viewProjection = camera.projectionMatrix(f32[w] / f32[h]) * camera.viewMatrix();
+          if !checkHorn("the chitin horn", p, w, h, bgra, viewProjection, chitinModel, &horn) { checksPassed = false; }
+          if !checkHorn("the Blinn-Phong horn", p, w, h, bgra, viewProjection, phongModel, &horn) { checksPassed = false; }
+        } else {
+          soloShot = true;
+          name = shotName(&screenshot, "-solo");
+        }
+        if screenshot.len() > 0usize {
+          imm shot = Image.fromTexels(p, i32[w], i32[h], bgra);
+          imm written = shot.save(name.view());
+          print <- "Screenshot: "; printStr(name.view());
+          if written { print <- "\n"; } else { print <- " could NOT be written\n"; shotsWritten = false; }
+        }
+      } else {
+        device.queue.submit(encoder.finish());
+        if !swapchain.present(&mut device) { unshown = unshown + 1; }
+        if frames >= 10 {
+          if firstTimed == 0u64 { firstTimed = started; }
+          lastTimed = started;
+          lastTimedFrame = frames;
+        }
+      }
+      frames = frames + 1;
+    }
+  }
+  device.waitIdle();
+
+  print <- "Frames drawn: "; print <- frames; print <- "; presented: "; print <- swapchain.presents;
+  print <- "; out of date when presented: "; print <- unshown; print <- "\n";
+  if lastTimedFrame > 12 and lastTimed > firstTimed {
+    imm frameMs = f64[lastTimed - firstTimed] / frequency * 1000. / f64[lastTimedFrame - 10];
+    print <- "Frame time: "; print <- frameMs; print <- " ms a frame (presented in step with the display)\n";
+  }
+
+  // The GPU's cost of a frame of the pair, level 0, at 1080p, offscreen
+  if frames > 0 {
+    imm w = 1920u32;
+    imm h = 1080u32;
+    imm targetDesc = TextureDescriptor[w, h, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT];
+    mut target = device.createTexture(&targetDesc);
+    imm depthDesc = TextureDescriptor[w, h, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT];
+    mut depth = device.createTexture(&depthDesc);
+    mut benchPost = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, w, h);
+    if !coat.film {
+      coat.film = true;
+      renderer.setPbrMaterial(&mut device, chitinM, &coat);
+    }
+    chain.select(0usize);
+    camera.lookAt(pairEye(), pairTarget(), Vec3[0., 1., 0.]);
+    device.waitIdle();
+    imm benchStart = sdl.GetPerformanceCounter();
+    mut b = 0;
+    while b < BENCH_FRAMES {
+      imm t = f32[frames + b] * WINDOW_STEP;
+      renderer.time = t;
+      list.clear();
+      list.add(chain.mesh(), chitinM, modelAt(rightAt, turnAt(t)));
+      list.add(chain.mesh(), phongM, modelAt(leftAt, turnAt(t)));
+      mut encoder = device.createCommandEncoder();
+      renderer.render(&mut device, &mut encoder, &benchPost.hdr, &depth, &camera, &theLight, &list);
+      benchPost.apply(&mut encoder, &target);
+      device.queue.submit(encoder.finish());
+      device.endFrame();
+      b = b + 1;
+    }
+    device.waitIdle();
+    imm benchMs = f64[sdl.GetPerformanceCounter() - benchStart] / frequency * 1000. / f64[BENCH_FRAMES];
+    print <- "GPU frame time, both horns at level 0, offscreen at 1920 x 1080: "; print <- benchMs;
+    print <- " ms a frame ("; print <- BENCH_FRAMES; print <- " frames, nothing presented)\n";
+  }
+
+  print <- "Vulkan failures: "; print <- u64[failures()];
+  print <- "; validation messages: "; print <- u64[validationMessages()]; print <- "\n";
+  if !checked { print <- "The frame was not checked\n"; }
+  if (checked and !checksPassed) or !shotsWritten or !hashesPinned or !parityOk {
+    print <- "FAILED\n";
+    return 1;
+  }
+  if failures() != 0u32 or validationMessages() != 0u32 { return 1; }
+  print <- "OK\n";
+  0;
+}
+
+// spirv-begin hornparity.spv HORNPARITY_SPIRV
+// Written by tools/shaders/shaders.py from hornparity.slang (sha256 44146a422f5095afb4f6dd8eae38dfad9fdfec6fd6d6a4680520de8447c44231): do not edit.
+imm HORNPARITY_SPIRV [7803; u32] = [
+  0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000b5fu32, 0x00000000u32, 0x00020011u32,
+  0x00000001u32, 0x0006000bu32, 0x000000eeu32, 0x4c534c47u32, 0x6474732eu32, 0x3035342eu32,
+  0x00000000u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x0008000fu32, 0x00000000u32,
+  0x00000002u32, 0x74726576u32, 0x614d7865u32, 0x00006e69u32, 0x00000029u32, 0x0000000du32,
+  0x0009000fu32, 0x00000004u32, 0x0000002cu32, 0x67617266u32, 0x746e656du32, 0x6e69614du32,
+  0x00000000u32, 0x0000041au32, 0x00000030u32, 0x00030010u32, 0x0000002cu32, 0x00000007u32,
+  0x00030003u32, 0x0000000bu32, 0x00000001u32, 0x00040005u32, 0x0000001au32, 0x6e726f63u32,
+  0x00007265u32, 0x00050005u32, 0x00000002u32, 0x74726576u32, 0x614d7865u32, 0x00006e69u32,
+  0x00030005u32, 0x00000032u32, 0x00000078u32, 0x00030005u32, 0x00000035u32, 0x00000079u32,
+  0x00030005u32, 0x0000005cu32, 0x00637241u32, 0x00040006u32, 0x0000005cu32, 0x00000000u32,
+  0x006e656cu32, 0x00050006u32, 0x0000005cu32, 0x00000001u32, 0x6c727563u32, 0x00000000u32,
+  0x00050006u32, 0x0000005cu32, 0x00000002u32, 0x69646172u32, 0x00007375u32, 0x00050005u32,
+  0x0000005du32, 0x43637241u32, 0x736c6c65u32, 0x00000000u32, 0x00050006u32, 0x0000005du32,
+  0x00000000u32, 0x6e756f63u32, 0x00000074u32, 0x00050006u32, 0x0000005du32, 0x00000001u32,
+  0x70657473u32, 0x00000000u32, 0x00060006u32, 0x0000005du32, 0x00000002u32, 0x73726966u32,
+  0x736f4374u32, 0x00000000u32, 0x00060006u32, 0x0000005du32, 0x00000003u32, 0x73726966u32,
+  0x6e695374u32, 0x00000000u32, 0x00050006u32, 0x0000005du32, 0x00000004u32, 0x6e727574u32,
+  0x00736f43u32, 0x00050006u32, 0x0000005du32, 0x00000005u32, 0x6e727574u32, 0x006e6953u32,
+  0x00040005u32, 0x0000005bu32, 0x6e726f48u32, 0x00000000u32, 0x00050006u32, 0x0000005bu32,
+  0x00000000u32, 0x676e656cu32, 0x00006874u32, 0x00060006u32, 0x0000005bu32, 0x00000001u32,
+  0x65736162u32, 0x69646152u32, 0x00007375u32, 0x00050006u32, 0x0000005bu32, 0x00000002u32,
+  0x65706174u32, 0x00000072u32, 0x00050006u32, 0x0000005bu32, 0x00000003u32, 0x6c727563u32,
+  0x00000000u32, 0x00050006u32, 0x0000005bu32, 0x00000004u32, 0x73626972u32, 0x00000000u32,
+  0x00060006u32, 0x0000005bu32, 0x00000005u32, 0x44626972u32, 0x68747065u32, 0x00000000u32,
+  0x00040006u32, 0x0000005bu32, 0x00000006u32, 0x00637261u32, 0x00050006u32, 0x0000005bu32,
+  0x00000007u32, 0x6c6c6563u32, 0x00000073u32, 0x00040006u32, 0x0000005bu32, 0x00000008u32,
+  0x00676173u32, 0x00060006u32, 0x0000005bu32, 0x00000009u32, 0x666c6168u32, 0x726f6843u32,
+  0x00000064u32, 0x00050006u32, 0x0000005bu32, 0x0000000au32, 0x74756c66u32, 0x00007365u32,
+  0x00060006u32, 0x0000005bu32, 0x0000000bu32, 0x74756c66u32, 0x70654465u32, 0x00006874u32,
+  0x00060006u32, 0x0000005bu32, 0x0000000cu32, 0x74756c66u32, 0x69775465u32, 0x00007473u32,
+  0x00030005u32, 0x0000016du32, 0x00637261u32, 0x00040005u32, 0x0000016eu32, 0x6c6c6563u32,
+  0x00000073u32, 0x00040005u32, 0x0000016fu32, 0x70616873u32, 0x00000065u32, 0x00030005u32,
+  0x00000170u32, 0x00000070u32, 0x00030005u32, 0x00000172u32, 0x00000063u32, 0x00030005u32,
+  0x00000172u32, 0x00000063u32, 0x00030005u32, 0x00000173u32, 0x00000073u32, 0x00030005u32,
+  0x00000173u32, 0x00000073u32, 0x00040005u32, 0x00000174u32, 0x74736562u32, 0x00000000u32,
+  0x00040005u32, 0x00000174u32, 0x74736562u32, 0x00000000u32, 0x00040005u32, 0x00000175u32,
+  0x74736562u32, 0x00000043u32, 0x00040005u32, 0x00000175u32, 0x74736562u32, 0x00000043u32,
+  0x00040005u32, 0x00000176u32, 0x74736562u32, 0x00000053u32, 0x00040005u32, 0x00000176u32,
+  0x74736562u32, 0x00000053u32, 0x00040005u32, 0x00000177u32, 0x74736562u32, 0x0000004bu32,
+  0x00040005u32, 0x00000177u32, 0x74736562u32, 0x0000004bu32, 0x00030005u32, 0x00000178u32,
+  0x0000006bu32, 0x00030005u32, 0x00000178u32, 0x0000006bu32, 0x00030005u32, 0x0000017cu32,
+  0x00000064u32, 0x00030005u32, 0x0000017cu32, 0x00000064u32, 0x00030005u32, 0x0000017du32,
+  0x00000064u32, 0x00030005u32, 0x0000017du32, 0x00000064u32, 0x00030005u32, 0x000001e4u32,
+  0x0000006fu32, 0x00030005u32, 0x0000020au32, 0x0000636eu32, 0x00030005u32, 0x0000021du32,
+  0x00007562u32, 0x00030005u32, 0x00000316u32, 0x00000075u32, 0x00030005u32, 0x0000031cu32,
+  0x0000006fu32, 0x00030005u32, 0x00000377u32, 0x0000636eu32, 0x00060005u32, 0x0000016bu32,
+  0x65706572u32, 0x6c417461u32, 0x41676e6fu32, 0x00006372u32, 0x000a0005u32, 0x0000041au32,
+  0x72746e65u32, 0x696f5079u32, 0x6150746eu32, 0x5f6d6172u32, 0x67617266u32, 0x746e656du32,
+  0x6e69614du32, 0x00000000u32, 0x00060005u32, 0x0000002cu32, 0x67617266u32, 0x746e656du32,
+  0x6e69614du32, 0x00000000u32, 0x00040047u32, 0x0000000du32, 0x0000000bu32, 0x0000002au32,
+  0x00030047u32, 0x0000001eu32, 0x0000002au32, 0x00030047u32, 0x00000022u32, 0x0000002au32,
+  0x00040047u32, 0x00000029u32, 0x0000000bu32, 0x00000000u32, 0x00040047u32, 0x00000030u32,
+  0x0000000bu32, 0x0000000fu32, 0x00030047u32, 0x000001e4u32, 0x0000002au32, 0x00030047u32,
+  0x00000205u32, 0x0000002au32, 0x00030047u32, 0x00000209u32, 0x0000002au32, 0x00030047u32,
+  0x0000020au32, 0x0000002au32, 0x00030047u32, 0x0000020cu32, 0x0000002au32, 0x00030047u32,
+  0x0000020eu32, 0x0000002au32, 0x00030047u32, 0x0000020fu32, 0x0000002au32, 0x00030047u32,
+  0x0000021bu32, 0x0000002au32, 0x00030047u32, 0x0000021du32, 0x0000002au32, 0x00030047u32,
+  0x00000315u32, 0x0000002au32, 0x00030047u32, 0x00000316u32, 0x0000002au32, 0x00030047u32,
+  0x0000031cu32, 0x0000002au32, 0x00030047u32, 0x00000372u32, 0x0000002au32, 0x00030047u32,
+  0x00000376u32, 0x0000002au32, 0x00030047u32, 0x00000377u32, 0x0000002au32, 0x00030047u32,
+  0x00000379u32, 0x0000002au32, 0x00030047u32, 0x0000037bu32, 0x0000002au32, 0x00030047u32,
+  0x0000037cu32, 0x0000002au32, 0x00030047u32, 0x00000419u32, 0x0000002au32, 0x00040047u32,
+  0x0000041au32, 0x0000001eu32, 0x00000000u32, 0x00030047u32, 0x0000044du32, 0x0000002au32,
+  0x00030047u32, 0x0000044eu32, 0x0000002au32, 0x00030047u32, 0x00000450u32, 0x0000002au32,
+  0x00030047u32, 0x00000451u32, 0x0000002au32, 0x00030047u32, 0x00000453u32, 0x0000002au32,
+  0x00030047u32, 0x00000454u32, 0x0000002au32, 0x00030047u32, 0x0000048fu32, 0x0000002au32,
+  0x00030047u32, 0x00000490u32, 0x0000002au32, 0x00030047u32, 0x00000497u32, 0x0000002au32,
+  0x00030047u32, 0x0000049au32, 0x0000002au32, 0x00030047u32, 0x000004b8u32, 0x0000002au32,
+  0x00030047u32, 0x000004ceu32, 0x0000002au32, 0x00030047u32, 0x000004dbu32, 0x0000002au32,
+  0x00030047u32, 0x000004ddu32, 0x0000002au32, 0x00030047u32, 0x00000509u32, 0x0000002au32,
+  0x00030047u32, 0x00000514u32, 0x0000002au32, 0x00030047u32, 0x0000051au32, 0x0000002au32,
+  0x00030047u32, 0x0000051du32, 0x0000002au32, 0x00030047u32, 0x0000051eu32, 0x0000002au32,
+  0x00030047u32, 0x0000051fu32, 0x0000002au32, 0x00030047u32, 0x00000520u32, 0x0000002au32,
+  0x00030047u32, 0x00000521u32, 0x0000002au32, 0x00030047u32, 0x00000522u32, 0x0000002au32,
+  0x00030047u32, 0x00000527u32, 0x0000002au32, 0x00030047u32, 0x00000529u32, 0x0000002au32,
+  0x00030047u32, 0x0000052bu32, 0x0000002au32, 0x00030047u32, 0x0000052eu32, 0x0000002au32,
+  0x00030047u32, 0x0000052fu32, 0x0000002au32, 0x00030047u32, 0x00000532u32, 0x0000002au32,
+  0x00030047u32, 0x00000537u32, 0x0000002au32, 0x00030047u32, 0x00000538u32, 0x0000002au32,
+  0x00030047u32, 0x00000539u32, 0x0000002au32, 0x00030047u32, 0x0000053au32, 0x0000002au32,
+  0x00030047u32, 0x0000053bu32, 0x0000002au32, 0x00030047u32, 0x0000053cu32, 0x0000002au32,
+  0x00030047u32, 0x0000053du32, 0x0000002au32, 0x00030047u32, 0x0000053eu32, 0x0000002au32,
+  0x00030047u32, 0x0000053fu32, 0x0000002au32, 0x00030047u32, 0x00000540u32, 0x0000002au32,
+  0x00030047u32, 0x00000546u32, 0x0000002au32, 0x00030047u32, 0x00000547u32, 0x0000002au32,
+  0x00030047u32, 0x00000563u32, 0x0000002au32, 0x00030047u32, 0x0000056eu32, 0x0000002au32,
+  0x00030047u32, 0x00000574u32, 0x0000002au32, 0x00030047u32, 0x00000577u32, 0x0000002au32,
+  0x00030047u32, 0x00000578u32, 0x0000002au32, 0x00030047u32, 0x00000579u32, 0x0000002au32,
+  0x00030047u32, 0x0000057au32, 0x0000002au32, 0x00030047u32, 0x0000057bu32, 0x0000002au32,
+  0x00030047u32, 0x0000057cu32, 0x0000002au32, 0x00030047u32, 0x00000596u32, 0x0000002au32,
+  0x00030047u32, 0x000005a1u32, 0x0000002au32, 0x00030047u32, 0x000005a7u32, 0x0000002au32,
+  0x00030047u32, 0x000005aau32, 0x0000002au32, 0x00030047u32, 0x000005abu32, 0x0000002au32,
+  0x00030047u32, 0x000005acu32, 0x0000002au32, 0x00030047u32, 0x000005adu32, 0x0000002au32,
+  0x00030047u32, 0x000005aeu32, 0x0000002au32, 0x00030047u32, 0x000005afu32, 0x0000002au32,
+  0x00030047u32, 0x000005c9u32, 0x0000002au32, 0x00030047u32, 0x000005d4u32, 0x0000002au32,
+  0x00030047u32, 0x000005dau32, 0x0000002au32, 0x00030047u32, 0x000005ddu32, 0x0000002au32,
+  0x00030047u32, 0x000005deu32, 0x0000002au32, 0x00030047u32, 0x000005dfu32, 0x0000002au32,
+  0x00030047u32, 0x000005e0u32, 0x0000002au32, 0x00030047u32, 0x000005e1u32, 0x0000002au32,
+  0x00030047u32, 0x000005e2u32, 0x0000002au32, 0x00030047u32, 0x000005fcu32, 0x0000002au32,
+  0x00030047u32, 0x00000607u32, 0x0000002au32, 0x00030047u32, 0x0000060du32, 0x0000002au32,
+  0x00030047u32, 0x00000610u32, 0x0000002au32, 0x00030047u32, 0x00000611u32, 0x0000002au32,
+  0x00030047u32, 0x00000612u32, 0x0000002au32, 0x00030047u32, 0x00000613u32, 0x0000002au32,
+  0x00030047u32, 0x00000614u32, 0x0000002au32, 0x00030047u32, 0x00000615u32, 0x0000002au32,
+  0x00030047u32, 0x00000619u32, 0x0000002au32, 0x00030047u32, 0x0000061bu32, 0x0000002au32,
+  0x00030047u32, 0x0000061cu32, 0x0000002au32, 0x00030047u32, 0x0000061eu32, 0x0000002au32,
+  0x00030047u32, 0x0000061fu32, 0x0000002au32, 0x00030047u32, 0x0000062eu32, 0x0000002au32,
+  0x00030047u32, 0x00000631u32, 0x0000002au32, 0x00030047u32, 0x00000638u32, 0x0000002au32,
+  0x00030047u32, 0x00000639u32, 0x0000002au32, 0x00030047u32, 0x0000063au32, 0x0000002au32,
+  0x00030047u32, 0x00000648u32, 0x0000002au32, 0x00030047u32, 0x0000064bu32, 0x0000002au32,
+  0x00030047u32, 0x0000064cu32, 0x0000002au32, 0x00030047u32, 0x0000064fu32, 0x0000002au32,
+  0x00030047u32, 0x00000650u32, 0x0000002au32, 0x00030047u32, 0x0000065eu32, 0x0000002au32,
+  0x00030047u32, 0x00000661u32, 0x0000002au32, 0x00030047u32, 0x00000668u32, 0x0000002au32,
+  0x00030047u32, 0x00000669u32, 0x0000002au32, 0x00030047u32, 0x0000066au32, 0x0000002au32,
+  0x00030047u32, 0x0000066du32, 0x0000002au32, 0x00030047u32, 0x00000678u32, 0x0000002au32,
+  0x00030047u32, 0x00000687u32, 0x0000002au32, 0x00030047u32, 0x0000068au32, 0x0000002au32,
+  0x00030047u32, 0x0000068bu32, 0x0000002au32, 0x00030047u32, 0x0000068eu32, 0x0000002au32,
+  0x00030047u32, 0x0000068fu32, 0x0000002au32, 0x00030047u32, 0x00000694u32, 0x0000002au32,
+  0x00030047u32, 0x00000697u32, 0x0000002au32, 0x00030047u32, 0x00000698u32, 0x0000002au32,
+  0x00030047u32, 0x0000069bu32, 0x0000002au32, 0x00030047u32, 0x0000069cu32, 0x0000002au32,
+  0x00030047u32, 0x000006a1u32, 0x0000002au32, 0x00030047u32, 0x000006a4u32, 0x0000002au32,
+  0x00030047u32, 0x000006a5u32, 0x0000002au32, 0x00030047u32, 0x000006a8u32, 0x0000002au32,
+  0x00030047u32, 0x000006a9u32, 0x0000002au32, 0x00030047u32, 0x000006b5u32, 0x0000002au32,
+  0x00030047u32, 0x000006b6u32, 0x0000002au32, 0x00030047u32, 0x000006b8u32, 0x0000002au32,
+  0x00030047u32, 0x000006bdu32, 0x0000002au32, 0x00030047u32, 0x000006c1u32, 0x0000002au32,
+  0x00030047u32, 0x000006c4u32, 0x0000002au32, 0x00030047u32, 0x000006d4u32, 0x0000002au32,
+  0x00030047u32, 0x000006d5u32, 0x0000002au32, 0x00030047u32, 0x000006d7u32, 0x0000002au32,
+  0x00030047u32, 0x000006dbu32, 0x0000002au32, 0x00030047u32, 0x000006dcu32, 0x0000002au32,
+  0x00030047u32, 0x000006ddu32, 0x0000002au32, 0x00030047u32, 0x000006e4u32, 0x0000002au32,
+  0x00030047u32, 0x000006e7u32, 0x0000002au32, 0x00030047u32, 0x000006e8u32, 0x0000002au32,
+  0x00030047u32, 0x000006f2u32, 0x0000002au32, 0x00030047u32, 0x000006f4u32, 0x0000002au32,
+  0x00030047u32, 0x000006f6u32, 0x0000002au32, 0x00030047u32, 0x000006f7u32, 0x0000002au32,
+  0x00030047u32, 0x00000702u32, 0x0000002au32, 0x00030047u32, 0x00000703u32, 0x0000002au32,
+  0x00030047u32, 0x00000704u32, 0x0000002au32, 0x00030047u32, 0x0000070bu32, 0x0000002au32,
+  0x00030047u32, 0x0000070cu32, 0x0000002au32, 0x00030047u32, 0x0000070du32, 0x0000002au32,
+  0x00030047u32, 0x00000713u32, 0x0000002au32, 0x00030047u32, 0x00000714u32, 0x0000002au32,
+  0x00030047u32, 0x00000715u32, 0x0000002au32, 0x00030047u32, 0x00000716u32, 0x0000002au32,
+  0x00030047u32, 0x0000071du32, 0x0000002au32, 0x00030047u32, 0x0000071eu32, 0x0000002au32,
+  0x00030047u32, 0x0000071fu32, 0x0000002au32, 0x00030047u32, 0x00000720u32, 0x0000002au32,
+  0x00030047u32, 0x00000724u32, 0x0000002au32, 0x00030047u32, 0x00000726u32, 0x0000002au32,
+  0x00030047u32, 0x00000729u32, 0x0000002au32, 0x00030047u32, 0x0000072bu32, 0x0000002au32,
+  0x00030047u32, 0x0000072du32, 0x0000002au32, 0x00030047u32, 0x0000072eu32, 0x0000002au32,
+  0x00030047u32, 0x0000072fu32, 0x0000002au32, 0x00030047u32, 0x00000730u32, 0x0000002au32,
+  0x00030047u32, 0x00000735u32, 0x0000002au32, 0x00030047u32, 0x00000736u32, 0x0000002au32,
+  0x00030047u32, 0x00000737u32, 0x0000002au32, 0x00030047u32, 0x0000073bu32, 0x0000002au32,
+  0x00030047u32, 0x0000073cu32, 0x0000002au32, 0x00030047u32, 0x0000073du32, 0x0000002au32,
+  0x00030047u32, 0x00000741u32, 0x0000002au32, 0x00030047u32, 0x00000742u32, 0x0000002au32,
+  0x00030047u32, 0x00000743u32, 0x0000002au32, 0x00030047u32, 0x00000747u32, 0x0000002au32,
+  0x00030047u32, 0x00000748u32, 0x0000002au32, 0x00030047u32, 0x00000749u32, 0x0000002au32,
+  0x00030047u32, 0x00000751u32, 0x0000002au32, 0x00030047u32, 0x00000752u32, 0x0000002au32,
+  0x00030047u32, 0x00000753u32, 0x0000002au32, 0x00030047u32, 0x00000767u32, 0x0000002au32,
+  0x00030047u32, 0x00000768u32, 0x0000002au32, 0x00030047u32, 0x00000769u32, 0x0000002au32,
+  0x00030047u32, 0x0000076cu32, 0x0000002au32, 0x00030047u32, 0x0000076du32, 0x0000002au32,
+  0x00030047u32, 0x0000076eu32, 0x0000002au32, 0x00030047u32, 0x00000772u32, 0x0000002au32,
+  0x00030047u32, 0x00000773u32, 0x0000002au32, 0x00030047u32, 0x00000774u32, 0x0000002au32,
+  0x00030047u32, 0x0000077fu32, 0x0000002au32, 0x00030047u32, 0x00000780u32, 0x0000002au32,
+  0x00030047u32, 0x00000782u32, 0x0000002au32, 0x00030047u32, 0x00000784u32, 0x0000002au32,
+  0x00030047u32, 0x00000786u32, 0x0000002au32, 0x00030047u32, 0x00000787u32, 0x0000002au32,
+  0x00030047u32, 0x00000788u32, 0x0000002au32, 0x00030047u32, 0x00000798u32, 0x0000002au32,
+  0x00030047u32, 0x0000079bu32, 0x0000002au32, 0x00030047u32, 0x000007a2u32, 0x0000002au32,
+  0x00030047u32, 0x000007a3u32, 0x0000002au32, 0x00030047u32, 0x000007a4u32, 0x0000002au32,
+  0x00030047u32, 0x000007a7u32, 0x0000002au32, 0x00030047u32, 0x000007b2u32, 0x0000002au32,
+  0x00030047u32, 0x000007b5u32, 0x0000002au32, 0x00030047u32, 0x000007b6u32, 0x0000002au32,
+  0x00030047u32, 0x000007b9u32, 0x0000002au32, 0x00030047u32, 0x000007bau32, 0x0000002au32,
+  0x00030047u32, 0x000007c2u32, 0x0000002au32, 0x00030047u32, 0x000007c3u32, 0x0000002au32,
+  0x00030047u32, 0x000007c5u32, 0x0000002au32, 0x00030047u32, 0x000007cdu32, 0x0000002au32,
+  0x00030047u32, 0x000007ceu32, 0x0000002au32, 0x00030047u32, 0x000007d4u32, 0x0000002au32,
+  0x00030047u32, 0x000007d5u32, 0x0000002au32, 0x00030047u32, 0x000007d7u32, 0x0000002au32,
+  0x00030047u32, 0x000007deu32, 0x0000002au32, 0x00030047u32, 0x000007dfu32, 0x0000002au32,
+  0x00030047u32, 0x000007e0u32, 0x0000002au32, 0x00030047u32, 0x000007e7u32, 0x0000002au32,
+  0x00030047u32, 0x000007e8u32, 0x0000002au32, 0x00030047u32, 0x000007e9u32, 0x0000002au32,
+  0x00030047u32, 0x000007fau32, 0x0000002au32, 0x00030047u32, 0x000007feu32, 0x0000002au32,
+  0x00030047u32, 0x00000806u32, 0x0000002au32, 0x00030047u32, 0x00000815u32, 0x0000002au32,
+  0x00030047u32, 0x00000818u32, 0x0000002au32, 0x00030047u32, 0x00000819u32, 0x0000002au32,
+  0x00030047u32, 0x0000081cu32, 0x0000002au32, 0x00030047u32, 0x0000081du32, 0x0000002au32,
+  0x00030047u32, 0x00000822u32, 0x0000002au32, 0x00030047u32, 0x00000825u32, 0x0000002au32,
+  0x00030047u32, 0x00000826u32, 0x0000002au32, 0x00030047u32, 0x00000829u32, 0x0000002au32,
+  0x00030047u32, 0x0000082au32, 0x0000002au32, 0x00030047u32, 0x0000082fu32, 0x0000002au32,
+  0x00030047u32, 0x00000832u32, 0x0000002au32, 0x00030047u32, 0x00000833u32, 0x0000002au32,
+  0x00030047u32, 0x00000836u32, 0x0000002au32, 0x00030047u32, 0x00000837u32, 0x0000002au32,
+  0x00030047u32, 0x00000843u32, 0x0000002au32, 0x00030047u32, 0x00000844u32, 0x0000002au32,
+  0x00030047u32, 0x00000846u32, 0x0000002au32, 0x00030047u32, 0x0000084bu32, 0x0000002au32,
+  0x00030047u32, 0x0000084fu32, 0x0000002au32, 0x00030047u32, 0x00000852u32, 0x0000002au32,
+  0x00030047u32, 0x00000862u32, 0x0000002au32, 0x00030047u32, 0x00000863u32, 0x0000002au32,
+  0x00030047u32, 0x00000865u32, 0x0000002au32, 0x00030047u32, 0x00000869u32, 0x0000002au32,
+  0x00030047u32, 0x0000086au32, 0x0000002au32, 0x00030047u32, 0x0000086bu32, 0x0000002au32,
+  0x00030047u32, 0x00000872u32, 0x0000002au32, 0x00030047u32, 0x00000875u32, 0x0000002au32,
+  0x00030047u32, 0x00000876u32, 0x0000002au32, 0x00030047u32, 0x00000880u32, 0x0000002au32,
+  0x00030047u32, 0x00000882u32, 0x0000002au32, 0x00030047u32, 0x00000884u32, 0x0000002au32,
+  0x00030047u32, 0x00000885u32, 0x0000002au32, 0x00030047u32, 0x00000890u32, 0x0000002au32,
+  0x00030047u32, 0x00000891u32, 0x0000002au32, 0x00030047u32, 0x00000892u32, 0x0000002au32,
+  0x00030047u32, 0x00000899u32, 0x0000002au32, 0x00030047u32, 0x0000089au32, 0x0000002au32,
+  0x00030047u32, 0x0000089bu32, 0x0000002au32, 0x00030047u32, 0x000008a1u32, 0x0000002au32,
+  0x00030047u32, 0x000008a2u32, 0x0000002au32, 0x00030047u32, 0x000008a3u32, 0x0000002au32,
+  0x00030047u32, 0x000008a4u32, 0x0000002au32, 0x00030047u32, 0x000008abu32, 0x0000002au32,
+  0x00030047u32, 0x000008acu32, 0x0000002au32, 0x00030047u32, 0x000008adu32, 0x0000002au32,
+  0x00030047u32, 0x000008aeu32, 0x0000002au32, 0x00030047u32, 0x000008b2u32, 0x0000002au32,
+  0x00030047u32, 0x000008b4u32, 0x0000002au32, 0x00030047u32, 0x000008b7u32, 0x0000002au32,
+  0x00030047u32, 0x000008b9u32, 0x0000002au32, 0x00030047u32, 0x000008bbu32, 0x0000002au32,
+  0x00030047u32, 0x000008bcu32, 0x0000002au32, 0x00030047u32, 0x000008bdu32, 0x0000002au32,
+  0x00030047u32, 0x000008beu32, 0x0000002au32, 0x00030047u32, 0x000008c3u32, 0x0000002au32,
+  0x00030047u32, 0x000008c4u32, 0x0000002au32, 0x00030047u32, 0x000008c5u32, 0x0000002au32,
+  0x00030047u32, 0x000008c9u32, 0x0000002au32, 0x00030047u32, 0x000008cau32, 0x0000002au32,
+  0x00030047u32, 0x000008cbu32, 0x0000002au32, 0x00030047u32, 0x000008cfu32, 0x0000002au32,
+  0x00030047u32, 0x000008d0u32, 0x0000002au32, 0x00030047u32, 0x000008d1u32, 0x0000002au32,
+  0x00030047u32, 0x000008d5u32, 0x0000002au32, 0x00030047u32, 0x000008d6u32, 0x0000002au32,
+  0x00030047u32, 0x000008d7u32, 0x0000002au32, 0x00030047u32, 0x000008dfu32, 0x0000002au32,
+  0x00030047u32, 0x000008e0u32, 0x0000002au32, 0x00030047u32, 0x000008e1u32, 0x0000002au32,
+  0x00030047u32, 0x000008f5u32, 0x0000002au32, 0x00030047u32, 0x000008f6u32, 0x0000002au32,
+  0x00030047u32, 0x000008f7u32, 0x0000002au32, 0x00030047u32, 0x000008fau32, 0x0000002au32,
+  0x00030047u32, 0x000008fbu32, 0x0000002au32, 0x00030047u32, 0x000008fcu32, 0x0000002au32,
+  0x00030047u32, 0x00000900u32, 0x0000002au32, 0x00030047u32, 0x00000901u32, 0x0000002au32,
+  0x00030047u32, 0x00000902u32, 0x0000002au32, 0x00030047u32, 0x0000090du32, 0x0000002au32,
+  0x00030047u32, 0x0000090eu32, 0x0000002au32, 0x00030047u32, 0x00000910u32, 0x0000002au32,
+  0x00030047u32, 0x00000912u32, 0x0000002au32, 0x00030047u32, 0x00000914u32, 0x0000002au32,
+  0x00030047u32, 0x00000915u32, 0x0000002au32, 0x00030047u32, 0x00000916u32, 0x0000002au32,
+  0x00020013u32, 0x00000001u32, 0x00030021u32, 0x00000003u32, 0x00000001u32, 0x00030016u32,
+  0x00000006u32, 0x00000020u32, 0x00040017u32, 0x00000007u32, 0x00000006u32, 0x00000004u32,
+  0x00040015u32, 0x0000000au32, 0x00000020u32, 0x00000001u32, 0x00040020u32, 0x0000000cu32,
+  0x00000001u32, 0x0000000au32, 0x00040015u32, 0x0000000eu32, 0x00000020u32, 0x00000000u32,
+  0x0004002bu32, 0x0000000eu32, 0x00000011u32, 0x00000001u32, 0x0004002bu32, 0x0000000eu32,
+  0x00000013u32, 0x00000002u32, 0x00040017u32, 0x00000019u32, 0x00000006u32, 0x00000002u32,
+  0x0004002bu32, 0x0000000au32, 0x0000001bu32, 0x00000000u32, 0x0004002bu32, 0x00000006u32,
+  0x0000001fu32, 0x40000000u32, 0x0004002bu32, 0x00000006u32, 0x00000021u32, 0x3f800000u32,
+  0x0004002bu32, 0x00000006u32, 0x00000024u32, 0x00000000u32, 0x00040020u32, 0x00000028u32,
+  0x00000003u32, 0x00000007u32, 0x00040020u32, 0x0000002fu32, 0x00000001u32, 0x00000007u32,
+  0x0004002bu32, 0x0000000eu32, 0x00000037u32, 0x00000004u32, 0x0004002bu32, 0x0000000eu32,
+  0x00000039u32, 0x00000010u32, 0x00040017u32, 0x0000003cu32, 0x00000006u32, 0x00000003u32,
+  0x0004002bu32, 0x0000000eu32, 0x00000046u32, 0x00000100u32, 0x0004002bu32, 0x00000006u32,
+  0x00000049u32, 0x3e400000u32, 0x0004002bu32, 0x00000006u32, 0x0000004bu32, 0x3f000000u32,
+  0x0004002bu32, 0x00000006u32, 0x00000051u32, 0x3d800000u32, 0x0005001eu32, 0x0000005cu32,
+  0x00000006u32, 0x00000006u32, 0x00000006u32, 0x0008001eu32, 0x0000005du32, 0x0000000au32,
+  0x00000006u32, 0x00000006u32, 0x00000006u32, 0x00000006u32, 0x00000006u32, 0x000f001eu32,
+  0x0000005bu32, 0x00000006u32, 0x00000006u32, 0x00000006u32, 0x00000006u32, 0x0000000au32,
+  0x00000006u32, 0x0000005cu32, 0x0000005du32, 0x00000006u32, 0x00000006u32, 0x0000000au32,
+  0x00000006u32, 0x00000006u32, 0x00040020u32, 0x0000005eu32, 0x00000007u32, 0x0000005bu32,
+  0x00040020u32, 0x00000062u32, 0x00000007u32, 0x00000006u32, 0x00040020u32, 0x00000077u32,
+  0x00000007u32, 0x0000000au32, 0x00040020u32, 0x00000079u32, 0x00000007u32, 0x0000005cu32,
+  0x00020014u32, 0x00000092u32, 0x0004002bu32, 0x00000006u32, 0x0000009du32, 0x38d1b717u32,
+  0x0004002bu32, 0x0000000au32, 0x0000009fu32, 0x00000001u32, 0x0004002bu32, 0x0000000au32,
+  0x000000a2u32, 0x00000002u32, 0x0004002bu32, 0x0000000au32, 0x000000b4u32, 0x00000010u32,
+  0x00040020u32, 0x000000bfu32, 0x00000007u32, 0x0000005du32, 0x0004002bu32, 0x0000000au32,
+  0x000000ddu32, 0x00000003u32, 0x0004002bu32, 0x0000000au32, 0x000000e0u32, 0x00000004u32,
+  0x0004002bu32, 0x0000000au32, 0x000000e3u32, 0x00000005u32, 0x0004002bu32, 0x0000000au32,
+  0x00000108u32, 0x00000006u32, 0x0004002bu32, 0x0000000au32, 0x0000010bu32, 0x00000007u32,
+  0x0004002bu32, 0x0000000au32, 0x0000010eu32, 0x00000008u32, 0x0004002bu32, 0x0000000au32,
+  0x0000011cu32, 0x00000009u32, 0x0004002bu32, 0x0000000au32, 0x00000129u32, 0x0000000au32,
+  0x0004002bu32, 0x0000000au32, 0x0000012cu32, 0x0000000bu32, 0x0004002bu32, 0x0000000au32,
+  0x0000012fu32, 0x0000000cu32, 0x0004002bu32, 0x00000006u32, 0x00000134u32, 0x4059999au32,
+  0x0004002bu32, 0x00000006u32, 0x00000135u32, 0x3eae147bu32, 0x0004002bu32, 0x00000006u32,
+  0x00000136u32, 0x3f7851ecu32, 0x0004002bu32, 0x00000006u32, 0x00000137u32, 0x3fd9999au32,
+  0x0004002bu32, 0x0000000au32, 0x00000138u32, 0x00000016u32, 0x0004002bu32, 0x00000006u32,
+  0x00000139u32, 0x3df5c28fu32, 0x0004002bu32, 0x0000000au32, 0x0000014eu32, 0x00000028u32,
+  0x0004002bu32, 0x00000006u32, 0x0000014fu32, 0x3c9374bcu32, 0x0004002bu32, 0x00000006u32,
+  0x00000150u32, 0x3f4ccccdu32, 0x0004002bu32, 0x0000000eu32, 0x00000152u32, 0x00000000u32,
+  0x00040020u32, 0x0000015du32, 0x00000007u32, 0x00000092u32, 0x00070021u32, 0x0000016cu32,
+  0x00000006u32, 0x00000079u32, 0x000000bfu32, 0x0000005eu32, 0x0000003cu32, 0x0004002bu32,
+  0x00000006u32, 0x000001a3u32, 0x7f7fffffu32, 0x00040020u32, 0x000001bbu32, 0x00000007u32,
+  0x0000003cu32, 0x0006002cu32, 0x0000003cu32, 0x000001bdu32, 0x00000024u32, 0x00000024u32,
+  0x00000021u32, 0x0004002bu32, 0x00000006u32, 0x000001cdu32, 0xbf800000u32, 0x0006002cu32,
+  0x0000003cu32, 0x000001ccu32, 0x000001cdu32, 0x00000024u32, 0x00000024u32, 0x0006002cu32,
+  0x0000003cu32, 0x000001d0u32, 0x00000024u32, 0x00000021u32, 0x00000024u32, 0x0003002au32,
+  0x00000092u32, 0x000002a9u32, 0x0004002bu32, 0x00000006u32, 0x000002ecu32, 0x3eb33333u32,
+  0x0004002bu32, 0x00000006u32, 0x000002fcu32, 0x40800000u32, 0x0004002bu32, 0x00000006u32,
+  0x0000033au32, 0x3faccccdu32, 0x0006002cu32, 0x0000003cu32, 0x000003f2u32, 0x00000021u32,
+  0x00000024u32, 0x00000024u32, 0x0004002bu32, 0x00000006u32, 0x000003f7u32, 0x3c800000u32,
+  0x0004002bu32, 0x0000000eu32, 0x0000040au32, 0x000000ffu32, 0x0004002bu32, 0x0000000eu32,
+  0x0000040du32, 0x00000008u32, 0x0004002bu32, 0x0000000eu32, 0x00000414u32, 0x00000018u32,
+  0x0004002bu32, 0x00000006u32, 0x00000418u32, 0x437f0000u32, 0x0004003bu32, 0x0000000cu32,
+  0x0000000du32, 0x00000001u32, 0x0004003bu32, 0x00000028u32, 0x00000029u32, 0x00000003u32,
+  0x0004003bu32, 0x0000002fu32, 0x00000030u32, 0x00000001u32, 0x0004003bu32, 0x00000028u32,
+  0x0000041au32, 0x00000003u32, 0x0005002cu32, 0x00000019u32, 0x00000b5cu32, 0x00000021u32,
+  0x00000021u32, 0x00030029u32, 0x00000092u32, 0x00000b5du32, 0x0007002cu32, 0x00000007u32,
+  0x00000b5eu32, 0x00000418u32, 0x00000418u32, 0x00000418u32, 0x00000418u32, 0x00050036u32,
+  0x00000001u32, 0x00000002u32, 0x00000000u32, 0x00000003u32, 0x000200f8u32, 0x00000004u32,
+  0x0004003du32, 0x0000000au32, 0x0000000bu32, 0x0000000du32, 0x0004007cu32, 0x0000000eu32,
+  0x0000000fu32, 0x0000000bu32, 0x000500c4u32, 0x0000000eu32, 0x00000010u32, 0x0000000fu32,
+  0x00000011u32, 0x000500c7u32, 0x0000000eu32, 0x00000012u32, 0x00000010u32, 0x00000013u32,
+  0x00040070u32, 0x00000006u32, 0x00000014u32, 0x00000012u32, 0x0004003du32, 0x0000000au32,
+  0x00000015u32, 0x0000000du32, 0x0004007cu32, 0x0000000eu32, 0x00000016u32, 0x00000015u32,
+  0x000500c7u32, 0x0000000eu32, 0x00000017u32, 0x00000016u32, 0x00000013u32, 0x00040070u32,
+  0x00000006u32, 0x00000018u32, 0x00000017u32, 0x00050050u32, 0x00000019u32, 0x0000001au32,
+  0x00000014u32, 0x00000018u32, 0x0005008eu32, 0x00000019u32, 0x0000001eu32, 0x0000001au32,
+  0x0000001fu32, 0x00050083u32, 0x00000019u32, 0x00000022u32, 0x0000001eu32, 0x00000b5cu32,
+  0x00060050u32, 0x00000007u32, 0x00000023u32, 0x00000022u32, 0x00000024u32, 0x00000021u32,
+  0x0003003eu32, 0x00000029u32, 0x00000023u32, 0x000100fdu32, 0x00010038u32, 0x00050036u32,
+  0x00000001u32, 0x0000002cu32, 0x00000000u32, 0x00000003u32, 0x000200f8u32, 0x0000002du32,
+  0x0004003bu32, 0x00000062u32, 0x00000a88u32, 0x00000007u32, 0x0004003bu32, 0x00000062u32,
+  0x00000a87u32, 0x00000007u32, 0x0004003bu32, 0x00000062u32, 0x00000a86u32, 0x00000007u32,
+  0x0004003bu32, 0x00000062u32, 0x00000a85u32, 0x00000007u32, 0x0004003bu32, 0x00000062u32,
+  0x00000a84u32, 0x00000007u32, 0x0004003bu32, 0x00000077u32, 0x00000a83u32, 0x00000007u32,
+  0x0004003bu32, 0x00000062u32, 0x00000a7bu32, 0x00000007u32, 0x0004003bu32, 0x00000062u32,
+  0x00000a7au32, 0x00000007u32, 0x0004003bu32, 0x00000062u32, 0x00000a79u32, 0x00000007u32,
+  0x0004003bu32, 0x00000062u32, 0x000009ebu32, 0x00000007u32, 0x0004003bu32, 0x00000062u32,
+  0x000009eau32, 0x00000007u32, 0x0004003bu32, 0x00000062u32, 0x000009e9u32, 0x00000007u32,
+  0x0004003bu32, 0x00000062u32, 0x000009d6u32, 0x00000007u32, 0x0004003bu32, 0x00000062u32,
+  0x000009d3u32, 0x00000007u32, 0x0004003bu32, 0x00000077u32, 0x000009d2u32, 0x00000007u32,
+  0x0004003bu32, 0x00000062u32, 0x000009d1u32, 0x00000007u32, 0x0004003bu32, 0x00000062u32,
+  0x000009d0u32, 0x00000007u32, 0x0004003bu32, 0x00000062u32, 0x000009cfu32, 0x00000007u32,
+  0x0004003bu32, 0x00000062u32, 0x000009ceu32, 0x00000007u32, 0x0004003bu32, 0x00000062u32,
+  0x000009b9u32, 0x00000007u32, 0x0004003bu32, 0x00000062u32, 0x000009aeu32, 0x00000007u32,
+  0x0004003bu32, 0x00000062u32, 0x000009adu32, 0x00000007u32, 0x0004003bu32, 0x00000062u32,
+  0x000009acu32, 0x00000007u32, 0x0004003bu32, 0x00000062u32, 0x00000986u32, 0x00000007u32,
+  0x0004003bu32, 0x00000077u32, 0x00000985u32, 0x00000007u32, 0x0004003bu32, 0x00000062u32,
+  0x00000971u32, 0x00000007u32, 0x0004003bu32, 0x00000062u32, 0x00000970u32, 0x00000007u32,
+  0x0004003bu32, 0x00000062u32, 0x0000096fu32, 0x00000007u32, 0x0004003bu32, 0x00000062u32,
+  0x0000096eu32, 0x00000007u32, 0x0004003bu32, 0x00000062u32, 0x0000096du32, 0x00000007u32,
+  0x0004003bu32, 0x00000077u32, 0x0000096cu32, 0x00000007u32, 0x0004003bu32, 0x00000062u32,
+  0x000005e4u32, 0x00000007u32, 0x0004003bu32, 0x00000079u32, 0x000005e5u32, 0x00000007u32,
+  0x0004003bu32, 0x000000bfu32, 0x000005e6u32, 0x00000007u32, 0x0004003bu32, 0x0000015du32,
+  0x000005e7u32, 0x00000007u32, 0x0004003bu32, 0x00000062u32, 0x000005b1u32, 0x00000007u32,
+  0x0004003bu32, 0x00000079u32, 0x000005b2u32, 0x00000007u32, 0x0004003bu32, 0x000000bfu32,
+  0x000005b3u32, 0x00000007u32, 0x0004003bu32, 0x0000015du32, 0x000005b4u32, 0x00000007u32,
+  0x0004003bu32, 0x00000062u32, 0x0000057eu32, 0x00000007u32, 0x0004003bu32, 0x00000079u32,
+  0x0000057fu32, 0x00000007u32, 0x0004003bu32, 0x000000bfu32, 0x00000580u32, 0x00000007u32,
+  0x0004003bu32, 0x0000015du32, 0x00000581u32, 0x00000007u32, 0x0004003bu32, 0x00000062u32,
+  0x0000054bu32, 0x00000007u32, 0x0004003bu32, 0x00000079u32, 0x0000054cu32, 0x00000007u32,
+  0x0004003bu32, 0x000000bfu32, 0x0000054du32, 0x00000007u32, 0x0004003bu32, 0x0000015du32,
+  0x0000054eu32, 0x00000007u32, 0x0004003bu32, 0x000001bbu32, 0x00000523u32, 0x00000007u32,
+  0x0004003bu32, 0x00000062u32, 0x000004f1u32, 0x00000007u32, 0x0004003bu32, 0x00000079u32,
+  0x000004f2u32, 0x00000007u32, 0x0004003bu32, 0x000000bfu32, 0x000004f3u32, 0x00000007u32,
+  0x0004003bu32, 0x0000015du32, 0x000004f4u32, 0x00000007u32, 0x0004003bu32, 0x00000077u32,
+  0x000004bfu32, 0x00000007u32, 0x0004003bu32, 0x00000062u32, 0x000004a4u32, 0x00000007u32,
+  0x0004003bu32, 0x00000077u32, 0x00000475u32, 0x00000007u32, 0x0004003bu32, 0x00000062u32,
+  0x00000477u32, 0x00000007u32, 0x0004003bu32, 0x00000062u32, 0x00000457u32, 0x00000007u32,
+  0x0004003bu32, 0x0000005eu32, 0x00000459u32, 0x00000007u32, 0x0004003bu32, 0x0000005eu32,
+  0x0000045au32, 0x00000007u32, 0x0004003bu32, 0x00000062u32, 0x0000045bu32, 0x00000007u32,
+  0x0004003du32, 0x00000007u32, 0x0000002eu32, 0x00000030u32, 0x00050051u32, 0x00000006u32,
+  0x00000031u32, 0x0000002eu32, 0x00000000u32, 0x0004006du32, 0x0000000eu32, 0x00000032u32,
+  0x00000031u32, 0x0004003du32, 0x00000007u32, 0x00000033u32, 0x00000030u32, 0x00050051u32,
+  0x00000006u32, 0x00000034u32, 0x00000033u32, 0x00000001u32, 0x0004006du32, 0x0000000eu32,
+  0x00000035u32, 0x00000034u32, 0x00050089u32, 0x0000000eu32, 0x00000036u32, 0x00000032u32,
+  0x00000037u32, 0x00050084u32, 0x0000000eu32, 0x00000038u32, 0x00000035u32, 0x00000039u32,
+  0x00050086u32, 0x0000000eu32, 0x0000003au32, 0x00000032u32, 0x00000037u32, 0x00050080u32,
+  0x0000000eu32, 0x0000003bu32, 0x00000038u32, 0x0000003au32, 0x00050089u32, 0x0000000eu32,
+  0x00000448u32, 0x0000003bu32, 0x00000039u32, 0x00050086u32, 0x0000000eu32, 0x00000449u32,
+  0x0000003bu32, 0x00000039u32, 0x00050089u32, 0x0000000eu32, 0x0000044au32, 0x00000449u32,
+  0x00000039u32, 0x00050086u32, 0x0000000eu32, 0x0000044bu32, 0x0000003bu32, 0x00000046u32,
+  0x00040070u32, 0x00000006u32, 0x0000044cu32, 0x00000448u32, 0x00050085u32, 0x00000006u32,
+  0x0000044du32, 0x0000044cu32, 0x00000049u32, 0x00050083u32, 0x00000006u32, 0x0000044eu32,
+  0x0000044du32, 0x0000004bu32, 0x00040070u32, 0x00000006u32, 0x0000044fu32, 0x0000044au32,
+  0x00050085u32, 0x00000006u32, 0x00000450u32, 0x0000044fu32, 0x00000049u32, 0x00050083u32,
+  0x00000006u32, 0x00000451u32, 0x00000450u32, 0x0000004bu32, 0x00040070u32, 0x00000006u32,
+  0x00000452u32, 0x0000044bu32, 0x00050085u32, 0x00000006u32, 0x00000453u32, 0x00000452u32,
+  0x00000051u32, 0x00050083u32, 0x00000006u32, 0x00000454u32, 0x00000453u32, 0x0000004bu32,
+  0x00060050u32, 0x0000003cu32, 0x00000455u32, 0x0000044eu32, 0x00000451u32, 0x00000454u32,
+  0x000300f7u32, 0x00000472u32, 0x00000000u32, 0x000300fbu32, 0x00000152u32, 0x0000045eu32,
+  0x000200f8u32, 0x0000045eu32, 0x000300f7u32, 0x000004bau32, 0x00000000u32, 0x000300fbu32,
+  0x00000152u32, 0x000004a7u32, 0x000200f8u32, 0x000004a7u32, 0x000300f7u32, 0x000004abu32,
+  0x00000000u32, 0x000400fau32, 0x000002a9u32, 0x000004aau32, 0x000004a9u32, 0x000200f8u32,
+  0x000004a9u32, 0x0003003eu32, 0x000004a4u32, 0x00000137u32, 0x000200f9u32, 0x000004abu32,
+  0x000200f8u32, 0x000004aau32, 0x0003003eu32, 0x000004a4u32, 0x00000024u32, 0x000200f9u32,
+  0x000004abu32, 0x000200f8u32, 0x000004abu32, 0x0003003eu32, 0x000009b9u32, 0x00000134u32,
+  0x0004003du32, 0x00000006u32, 0x000004adu32, 0x000004a4u32, 0x000500b8u32, 0x00000092u32,
+  0x000004aeu32, 0x000004adu32, 0x0000009du32, 0x000300f7u32, 0x000004b3u32, 0x00000000u32,
+  0x000400fau32, 0x000004aeu32, 0x000004afu32, 0x000004b3u32, 0x000200f8u32, 0x000004afu32,
+  0x0004003du32, 0x00000006u32, 0x000009bcu32, 0x000009b9u32, 0x0003003eu32, 0x000009acu32,
+  0x000009bcu32, 0x0003003eu32, 0x000009adu32, 0x00000024u32, 0x0003003eu32, 0x000009aeu32,
+  0x00000024u32, 0x000200f9u32, 0x000004bau32, 0x000200f8u32, 0x000004b3u32, 0x0004003du32,
+  0x00000006u32, 0x000004b5u32, 0x000004a4u32, 0x00050088u32, 0x00000006u32, 0x000004b8u32,
+  0x00000134u32, 0x000004b5u32, 0x0004003du32, 0x00000006u32, 0x000009c0u32, 0x000009b9u32,
+  0x0003003eu32, 0x000009acu32, 0x000009c0u32, 0x0003003eu32, 0x000009adu32, 0x000004b5u32,
+  0x0003003eu32, 0x000009aeu32, 0x000004b8u32, 0x000200f9u32, 0x000004bau32, 0x000200f8u32,
+  0x000004bau32, 0x0004003du32, 0x00000006u32, 0x000009b7u32, 0x000009aeu32, 0x0004003du32,
+  0x00000006u32, 0x000009b6u32, 0x000009adu32, 0x0004003du32, 0x00000006u32, 0x000009b5u32,
+  0x000009acu32, 0x000300f7u32, 0x0000047eu32, 0x00000000u32, 0x000400fau32, 0x00000b5du32,
+  0x0000047du32, 0x0000047cu32, 0x000200f8u32, 0x0000047cu32, 0x0003003eu32, 0x00000475u32,
+  0x000000b4u32, 0x000200f9u32, 0x0000047eu32, 0x000200f8u32, 0x0000047du32, 0x0003003eu32,
+  0x00000475u32, 0x00000138u32, 0x000200f9u32, 0x0000047eu32, 0x000200f8u32, 0x0000047eu32,
+  0x0003003eu32, 0x000009e9u32, 0x000009b5u32, 0x0003003eu32, 0x000009eau32, 0x000009b6u32,
+  0x0003003eu32, 0x000009ebu32, 0x000009b7u32, 0x0004003du32, 0x0000000au32, 0x0000047fu32,
+  0x00000475u32, 0x000300f7u32, 0x000004e6u32, 0x00000000u32, 0x000300fbu32, 0x00000152u32,
+  0x000004c2u32, 0x000200f8u32, 0x000004c2u32, 0x000500b1u32, 0x00000092u32, 0x000004c3u32,
+  0x0000047fu32, 0x0000009fu32, 0x000300f7u32, 0x000004c6u32, 0x00000000u32, 0x000400fau32,
+  0x000004c3u32, 0x000004c5u32, 0x000004c4u32, 0x000200f8u32, 0x000004c4u32, 0x0003003eu32,
+  0x000004bfu32, 0x0000047fu32, 0x000200f9u32, 0x000004c6u32, 0x000200f8u32, 0x000004c5u32,
+  0x0003003eu32, 0x000004bfu32, 0x0000009fu32, 0x000200f9u32, 0x000004c6u32, 0x000200f8u32,
+  0x000004c6u32, 0x0004003du32, 0x0000000au32, 0x000004c8u32, 0x000004bfu32, 0x0003003eu32,
+  0x00000985u32, 0x000004c8u32, 0x0004003du32, 0x00000006u32, 0x000004cbu32, 0x000009e9u32,
+  0x0004006fu32, 0x00000006u32, 0x000004cdu32, 0x000004c8u32, 0x00050088u32, 0x00000006u32,
+  0x000004ceu32, 0x000004cbu32, 0x000004cdu32, 0x0003003eu32, 0x00000986u32, 0x000004ceu32,
+  0x0004003du32, 0x00000006u32, 0x000004d0u32, 0x000009ebu32, 0x000500b4u32, 0x00000092u32,
+  0x000004d1u32, 0x000004d0u32, 0x00000024u32, 0x000300f7u32, 0x000004d8u32, 0x00000000u32,
+  0x000400fau32, 0x000004d1u32, 0x000004d2u32, 0x000004d8u32, 0x000200f8u32, 0x000004d2u32,
+  0x0004003du32, 0x00000006u32, 0x0000098cu32, 0x00000986u32, 0x0004003du32, 0x0000000au32,
+  0x0000098bu32, 0x00000985u32, 0x0003003eu32, 0x0000096cu32, 0x0000098bu32, 0x0003003eu32,
+  0x0000096du32, 0x0000098cu32, 0x0003003eu32, 0x0000096eu32, 0x00000021u32, 0x0003003eu32,
+  0x0000096fu32, 0x00000024u32, 0x0003003eu32, 0x00000970u32, 0x00000021u32, 0x0003003eu32,
+  0x00000971u32, 0x00000024u32, 0x000200f9u32, 0x000004e6u32, 0x000200f8u32, 0x000004d8u32,
+  0x0004003du32, 0x00000006u32, 0x000004dau32, 0x000009eau32, 0x00050088u32, 0x00000006u32,
+  0x000004dbu32, 0x000004dau32, 0x000004cdu32, 0x00050085u32, 0x00000006u32, 0x000004ddu32,
+  0x000004dbu32, 0x0000004bu32, 0x0006000cu32, 0x00000006u32, 0x000004deu32, 0x000000eeu32,
+  0x0000000eu32, 0x000004ddu32, 0x0006000cu32, 0x00000006u32, 0x000004e0u32, 0x000000eeu32,
+  0x0000000du32, 0x000004ddu32, 0x0006000cu32, 0x00000006u32, 0x000004e2u32, 0x000000eeu32,
+  0x0000000eu32, 0x000004dbu32, 0x0006000cu32, 0x00000006u32, 0x000004e4u32, 0x000000eeu32,
+  0x0000000du32, 0x000004dbu32, 0x0004003du32, 0x00000006u32, 0x00000993u32, 0x00000986u32,
+  0x0004003du32, 0x0000000au32, 0x00000992u32, 0x00000985u32, 0x0003003eu32, 0x0000096cu32,
+  0x00000992u32, 0x0003003eu32, 0x0000096du32, 0x00000993u32, 0x0003003eu32, 0x0000096eu32,
+  0x000004deu32, 0x0003003eu32, 0x0000096fu32, 0x000004e0u32, 0x0003003eu32, 0x00000970u32,
+  0x000004e2u32, 0x0003003eu32, 0x00000971u32, 0x000004e4u32, 0x000200f9u32, 0x000004e6u32,
+  0x000200f8u32, 0x000004e6u32, 0x0004003du32, 0x00000006u32, 0x00000983u32, 0x00000971u32,
+  0x0004003du32, 0x00000006u32, 0x00000982u32, 0x00000970u32, 0x0004003du32, 0x00000006u32,
+  0x00000981u32, 0x0000096fu32, 0x0004003du32, 0x00000006u32, 0x00000980u32, 0x0000096eu32,
+  0x0004003du32, 0x00000006u32, 0x0000097fu32, 0x0000096du32, 0x0004003du32, 0x0000000au32,
+  0x0000097eu32, 0x0000096cu32, 0x0003003eu32, 0x000009ceu32, 0x00000134u32, 0x0003003eu32,
+  0x000009cfu32, 0x00000135u32, 0x0003003eu32, 0x000009d0u32, 0x00000136u32, 0x0003003eu32,
+  0x000009d1u32, 0x000009b6u32, 0x0003003eu32, 0x000009d2u32, 0x00000138u32, 0x0003003eu32,
+  0x000009d3u32, 0x00000139u32, 0x0003003eu32, 0x00000a79u32, 0x000009b5u32, 0x0003003eu32,
+  0x00000a7au32, 0x000009b6u32, 0x0003003eu32, 0x00000a7bu32, 0x000009b7u32, 0x0003003eu32,
+  0x00000a83u32, 0x0000097eu32, 0x0003003eu32, 0x00000a84u32, 0x0000097fu32, 0x0003003eu32,
+  0x00000a85u32, 0x00000980u32, 0x0003003eu32, 0x00000a86u32, 0x00000981u32, 0x0003003eu32,
+  0x00000a87u32, 0x00000982u32, 0x0003003eu32, 0x00000a88u32, 0x00000983u32, 0x000500b4u32,
+  0x00000092u32, 0x0000048cu32, 0x000009b7u32, 0x00000024u32, 0x000300f7u32, 0x00000492u32,
+  0x00000000u32, 0x000400fau32, 0x0000048cu32, 0x00000491u32, 0x0000048du32, 0x000200f8u32,
+  0x0000048du32, 0x00050085u32, 0x00000006u32, 0x0000048fu32, 0x000009b7u32, 0x00000980u32,
+  0x00050083u32, 0x00000006u32, 0x00000490u32, 0x000009b7u32, 0x0000048fu32, 0x0003003eu32,
+  0x00000477u32, 0x00000490u32, 0x000200f9u32, 0x00000492u32, 0x000200f8u32, 0x00000491u32,
+  0x0003003eu32, 0x00000477u32, 0x00000024u32, 0x000200f9u32, 0x00000492u32, 0x000200f8u32,
+  0x00000492u32, 0x0004003du32, 0x00000006u32, 0x00000493u32, 0x00000477u32, 0x0003003eu32,
+  0x000009d6u32, 0x00000493u32, 0x000300f7u32, 0x0000049bu32, 0x00000000u32, 0x000400fau32,
+  0x0000048cu32, 0x00000498u32, 0x00000495u32, 0x000200f8u32, 0x00000495u32, 0x00050085u32,
+  0x00000006u32, 0x00000497u32, 0x000009b7u32, 0x00000981u32, 0x0003003eu32, 0x00000477u32,
+  0x00000497u32, 0x000200f9u32, 0x0000049bu32, 0x000200f8u32, 0x00000498u32, 0x00050085u32,
+  0x00000006u32, 0x0000049au32, 0x0000097fu32, 0x0000004bu32, 0x0003003eu32, 0x00000477u32,
+  0x0000049au32, 0x000200f9u32, 0x0000049bu32, 0x000200f8u32, 0x0000049bu32, 0x0004003du32,
+  0x00000006u32, 0x0000049cu32, 0x00000477u32, 0x0004003du32, 0x00000006u32, 0x000009e3u32,
+  0x000009d6u32, 0x0004003du32, 0x00000006u32, 0x00000a94u32, 0x00000a88u32, 0x0004003du32,
+  0x00000006u32, 0x00000a93u32, 0x00000a87u32, 0x0004003du32, 0x00000006u32, 0x00000a92u32,
+  0x00000a86u32, 0x0004003du32, 0x00000006u32, 0x00000a91u32, 0x00000a85u32, 0x0004003du32,
+  0x00000006u32, 0x00000a90u32, 0x00000a84u32, 0x0004003du32, 0x0000000au32, 0x00000a8fu32,
+  0x00000a83u32, 0x0004003du32, 0x00000006u32, 0x00000a81u32, 0x00000a7bu32, 0x0004003du32,
+  0x00000006u32, 0x00000a80u32, 0x00000a7au32, 0x0004003du32, 0x00000006u32, 0x00000a7fu32,
+  0x00000a79u32, 0x0004003du32, 0x00000006u32, 0x000009e0u32, 0x000009d3u32, 0x0004003du32,
+  0x0000000au32, 0x000009dfu32, 0x000009d2u32, 0x0004003du32, 0x00000006u32, 0x000009deu32,
+  0x000009d1u32, 0x0004003du32, 0x00000006u32, 0x000009ddu32, 0x000009d0u32, 0x0004003du32,
+  0x00000006u32, 0x000009dcu32, 0x000009cfu32, 0x0004003du32, 0x00000006u32, 0x000009dbu32,
+  0x000009ceu32, 0x00090050u32, 0x0000005du32, 0x00000a78u32, 0x00000a8fu32, 0x00000a90u32,
+  0x00000a91u32, 0x00000a92u32, 0x00000a93u32, 0x00000a94u32, 0x00060050u32, 0x0000005cu32,
+  0x00000a65u32, 0x00000a7fu32, 0x00000a80u32, 0x00000a81u32, 0x00100050u32, 0x0000005bu32,
+  0x0000096bu32, 0x000009dbu32, 0x000009dcu32, 0x000009ddu32, 0x000009deu32, 0x000009dfu32,
+  0x000009e0u32, 0x00000a65u32, 0x00000a78u32, 0x000009e3u32, 0x0000049cu32, 0x0000014eu32,
+  0x0000014fu32, 0x00000150u32, 0x000500aau32, 0x00000092u32, 0x00000461u32, 0x00000036u32,
+  0x00000152u32, 0x000300f7u32, 0x00000464u32, 0x00000000u32, 0x000400fau32, 0x00000461u32,
+  0x00000462u32, 0x00000464u32, 0x000200f8u32, 0x00000462u32, 0x0003003eu32, 0x00000459u32,
+  0x0000096bu32, 0x000300f7u32, 0x0000050bu32, 0x00000000u32, 0x000300fbu32, 0x00000152u32,
+  0x000004f7u32, 0x000200f8u32, 0x000004f7u32, 0x00050041u32, 0x00000079u32, 0x000004f8u32,
+  0x00000459u32, 0x00000108u32, 0x00050041u32, 0x000000bfu32, 0x000004f9u32, 0x00000459u32,
+  0x0000010bu32, 0x0004003du32, 0x0000005cu32, 0x000004fau32, 0x000004f8u32, 0x0003003eu32,
+  0x000004f2u32, 0x000004fau32, 0x0004003du32, 0x0000005du32, 0x000004fbu32, 0x000004f9u32,
+  0x0003003eu32, 0x000004f3u32, 0x000004fbu32, 0x00080039u32, 0x00000006u32, 0x000004fcu32,
+  0x0000016bu32, 0x000004f2u32, 0x000004f3u32, 0x00000459u32, 0x00000455u32, 0x00050041u32,
+  0x00000077u32, 0x000004fdu32, 0x00000459u32, 0x00000129u32, 0x0004003du32, 0x0000000au32,
+  0x000004feu32, 0x000004fdu32, 0x000500adu32, 0x00000092u32, 0x000004ffu32, 0x000004feu32,
+  0x0000001bu32, 0x000300f7u32, 0x00000505u32, 0x00000000u32, 0x000400fau32, 0x000004ffu32,
+  0x00000501u32, 0x00000500u32, 0x000200f8u32, 0x00000500u32, 0x0003003eu32, 0x000004f4u32,
+  0x000002a9u32, 0x000200f9u32, 0x00000505u32, 0x000200f8u32, 0x00000501u32, 0x00050041u32,
+  0x00000062u32, 0x00000502u32, 0x00000459u32, 0x0000012cu32, 0x0004003du32, 0x00000006u32,
+  0x00000503u32, 0x00000502u32, 0x000500bau32, 0x00000092u32, 0x00000504u32, 0x00000503u32,
+  0x00000024u32, 0x0003003eu32, 0x000004f4u32, 0x00000504u32, 0x000200f9u32, 0x00000505u32,
+  0x000200f8u32, 0x00000505u32, 0x0004003du32, 0x00000092u32, 0x00000506u32, 0x000004f4u32,
+  0x000300f7u32, 0x0000050au32, 0x00000000u32, 0x000400fau32, 0x00000506u32, 0x00000507u32,
+  0x0000050au32, 0x000200f8u32, 0x00000507u32, 0x00050041u32, 0x00000062u32, 0x0000050fu32,
+  0x00000459u32, 0x0000012cu32, 0x0004003du32, 0x00000006u32, 0x00000510u32, 0x0000050fu32,
+  0x00050041u32, 0x00000077u32, 0x00000511u32, 0x00000459u32, 0x00000129u32, 0x0004003du32,
+  0x0000000au32, 0x00000512u32, 0x00000511u32, 0x0004006fu32, 0x00000006u32, 0x00000513u32,
+  0x00000512u32, 0x00050085u32, 0x00000006u32, 0x00000514u32, 0x0000004bu32, 0x00000513u32,
+  0x00050041u32, 0x00000062u32, 0x00000515u32, 0x00000459u32, 0x0000012fu32, 0x0004003du32,
+  0x00000006u32, 0x00000516u32, 0x00000515u32, 0x0006000cu32, 0x00000006u32, 0x00000517u32,
+  0x000000eeu32, 0x00000004u32, 0x00000516u32, 0x00050041u32, 0x00000062u32, 0x00000518u32,
+  0x00000459u32, 0x0000009fu32, 0x0004003du32, 0x00000006u32, 0x00000519u32, 0x00000518u32,
+  0x00050085u32, 0x00000006u32, 0x0000051au32, 0x00000517u32, 0x00000519u32, 0x00050041u32,
+  0x00000062u32, 0x0000051bu32, 0x00000459u32, 0x0000001bu32, 0x0004003du32, 0x00000006u32,
+  0x0000051cu32, 0x0000051bu32, 0x00050088u32, 0x00000006u32, 0x0000051du32, 0x0000051au32,
+  0x0000051cu32, 0x00050081u32, 0x00000006u32, 0x0000051eu32, 0x00000021u32, 0x0000051du32,
+  0x00050085u32, 0x00000006u32, 0x0000051fu32, 0x00000514u32, 0x0000051eu32, 0x00050081u32,
+  0x00000006u32, 0x00000520u32, 0x0000051fu32, 0x00000021u32, 0x00050085u32, 0x00000006u32,
+  0x00000521u32, 0x00000510u32, 0x00000520u32, 0x00050081u32, 0x00000006u32, 0x00000522u32,
+  0x00000021u32, 0x00000521u32, 0x00050088u32, 0x00000006u32, 0x00000509u32, 0x000004fcu32,
+  0x00000522u32, 0x0003003eu32, 0x000004f1u32, 0x00000509u32, 0x000200f9u32, 0x0000050bu32,
+  0x000200f8u32, 0x0000050au32, 0x0003003eu32, 0x000004f1u32, 0x000004fcu32, 0x000200f9u32,
+  0x0000050bu32, 0x000200f8u32, 0x0000050bu32, 0x0004003du32, 0x00000006u32, 0x0000050cu32,
+  0x000004f1u32, 0x0003003eu32, 0x00000457u32, 0x0000050cu32, 0x000200f9u32, 0x00000472u32,
+  0x000200f8u32, 0x00000464u32, 0x0003003eu32, 0x0000045au32, 0x0000096bu32, 0x00050051u32,
+  0x00000006u32, 0x00000526u32, 0x00000455u32, 0x00000000u32, 0x00050081u32, 0x00000006u32,
+  0x00000527u32, 0x00000526u32, 0x000003f7u32, 0x00050051u32, 0x00000006u32, 0x00000528u32,
+  0x00000455u32, 0x00000001u32, 0x00050083u32, 0x00000006u32, 0x00000529u32, 0x00000528u32,
+  0x000003f7u32, 0x00050051u32, 0x00000006u32, 0x0000052au32, 0x00000455u32, 0x00000002u32,
+  0x00050083u32, 0x00000006u32, 0x0000052bu32, 0x0000052au32, 0x000003f7u32, 0x00060050u32,
+  0x0000003cu32, 0x0000052cu32, 0x00000527u32, 0x00000529u32, 0x0000052bu32, 0x000300f7u32,
+  0x00000565u32, 0x00000000u32, 0x000300fbu32, 0x00000152u32, 0x00000551u32, 0x000200f8u32,
+  0x00000551u32, 0x00050041u32, 0x00000079u32, 0x00000552u32, 0x0000045au32, 0x00000108u32,
+  0x00050041u32, 0x000000bfu32, 0x00000553u32, 0x0000045au32, 0x0000010bu32, 0x0004003du32,
+  0x0000005cu32, 0x00000554u32, 0x00000552u32, 0x0003003eu32, 0x0000054cu32, 0x00000554u32,
+  0x0004003du32, 0x0000005du32, 0x00000555u32, 0x00000553u32, 0x0003003eu32, 0x0000054du32,
+  0x00000555u32, 0x00080039u32, 0x00000006u32, 0x00000556u32, 0x0000016bu32, 0x0000054cu32,
+  0x0000054du32, 0x0000045au32, 0x0000052cu32, 0x00050041u32, 0x00000077u32, 0x00000557u32,
+  0x0000045au32, 0x00000129u32, 0x0004003du32, 0x0000000au32, 0x00000558u32, 0x00000557u32,
+  0x000500adu32, 0x00000092u32, 0x00000559u32, 0x00000558u32, 0x0000001bu32, 0x000300f7u32,
+  0x0000055fu32, 0x00000000u32, 0x000400fau32, 0x00000559u32, 0x0000055bu32, 0x0000055au32,
+  0x000200f8u32, 0x0000055au32, 0x0003003eu32, 0x0000054eu32, 0x000002a9u32, 0x000200f9u32,
+  0x0000055fu32, 0x000200f8u32, 0x0000055bu32, 0x00050041u32, 0x00000062u32, 0x0000055cu32,
+  0x0000045au32, 0x0000012cu32, 0x0004003du32, 0x00000006u32, 0x0000055du32, 0x0000055cu32,
+  0x000500bau32, 0x00000092u32, 0x0000055eu32, 0x0000055du32, 0x00000024u32, 0x0003003eu32,
+  0x0000054eu32, 0x0000055eu32, 0x000200f9u32, 0x0000055fu32, 0x000200f8u32, 0x0000055fu32,
+  0x0004003du32, 0x00000092u32, 0x00000560u32, 0x0000054eu32, 0x000300f7u32, 0x00000564u32,
+  0x00000000u32, 0x000400fau32, 0x00000560u32, 0x00000561u32, 0x00000564u32, 0x000200f8u32,
+  0x00000561u32, 0x00050041u32, 0x00000062u32, 0x00000569u32, 0x0000045au32, 0x0000012cu32,
+  0x0004003du32, 0x00000006u32, 0x0000056au32, 0x00000569u32, 0x00050041u32, 0x00000077u32,
+  0x0000056bu32, 0x0000045au32, 0x00000129u32, 0x0004003du32, 0x0000000au32, 0x0000056cu32,
+  0x0000056bu32, 0x0004006fu32, 0x00000006u32, 0x0000056du32, 0x0000056cu32, 0x00050085u32,
+  0x00000006u32, 0x0000056eu32, 0x0000004bu32, 0x0000056du32, 0x00050041u32, 0x00000062u32,
+  0x0000056fu32, 0x0000045au32, 0x0000012fu32, 0x0004003du32, 0x00000006u32, 0x00000570u32,
+  0x0000056fu32, 0x0006000cu32, 0x00000006u32, 0x00000571u32, 0x000000eeu32, 0x00000004u32,
+  0x00000570u32, 0x00050041u32, 0x00000062u32, 0x00000572u32, 0x0000045au32, 0x0000009fu32,
+  0x0004003du32, 0x00000006u32, 0x00000573u32, 0x00000572u32, 0x00050085u32, 0x00000006u32,
+  0x00000574u32, 0x00000571u32, 0x00000573u32, 0x00050041u32, 0x00000062u32, 0x00000575u32,
+  0x0000045au32, 0x0000001bu32, 0x0004003du32, 0x00000006u32, 0x00000576u32, 0x00000575u32,
+  0x00050088u32, 0x00000006u32, 0x00000577u32, 0x00000574u32, 0x00000576u32, 0x00050081u32,
+  0x00000006u32, 0x00000578u32, 0x00000021u32, 0x00000577u32, 0x00050085u32, 0x00000006u32,
+  0x00000579u32, 0x0000056eu32, 0x00000578u32, 0x00050081u32, 0x00000006u32, 0x0000057au32,
+  0x00000579u32, 0x00000021u32, 0x00050085u32, 0x00000006u32, 0x0000057bu32, 0x0000056au32,
+  0x0000057au32, 0x00050081u32, 0x00000006u32, 0x0000057cu32, 0x00000021u32, 0x0000057bu32,
+  0x00050088u32, 0x00000006u32, 0x00000563u32, 0x00000556u32, 0x0000057cu32, 0x0003003eu32,
+  0x0000054bu32, 0x00000563u32, 0x000200f9u32, 0x00000565u32, 0x000200f8u32, 0x00000564u32,
+  0x0003003eu32, 0x0000054bu32, 0x00000556u32, 0x000200f9u32, 0x00000565u32, 0x000200f8u32,
+  0x00000565u32, 0x0004003du32, 0x00000006u32, 0x00000566u32, 0x0000054bu32, 0x00050083u32,
+  0x00000006u32, 0x0000052eu32, 0x00000526u32, 0x000003f7u32, 0x00050081u32, 0x00000006u32,
+  0x0000052fu32, 0x0000052au32, 0x000003f7u32, 0x00060050u32, 0x0000003cu32, 0x00000530u32,
+  0x0000052eu32, 0x00000529u32, 0x0000052fu32, 0x000300f7u32, 0x00000598u32, 0x00000000u32,
+  0x000300fbu32, 0x00000152u32, 0x00000584u32, 0x000200f8u32, 0x00000584u32, 0x00050041u32,
+  0x00000079u32, 0x00000585u32, 0x0000045au32, 0x00000108u32, 0x00050041u32, 0x000000bfu32,
+  0x00000586u32, 0x0000045au32, 0x0000010bu32, 0x0004003du32, 0x0000005cu32, 0x00000587u32,
+  0x00000585u32, 0x0003003eu32, 0x0000057fu32, 0x00000587u32, 0x0004003du32, 0x0000005du32,
+  0x00000588u32, 0x00000586u32, 0x0003003eu32, 0x00000580u32, 0x00000588u32, 0x00080039u32,
+  0x00000006u32, 0x00000589u32, 0x0000016bu32, 0x0000057fu32, 0x00000580u32, 0x0000045au32,
+  0x00000530u32, 0x00050041u32, 0x00000077u32, 0x0000058au32, 0x0000045au32, 0x00000129u32,
+  0x0004003du32, 0x0000000au32, 0x0000058bu32, 0x0000058au32, 0x000500adu32, 0x00000092u32,
+  0x0000058cu32, 0x0000058bu32, 0x0000001bu32, 0x000300f7u32, 0x00000592u32, 0x00000000u32,
+  0x000400fau32, 0x0000058cu32, 0x0000058eu32, 0x0000058du32, 0x000200f8u32, 0x0000058du32,
+  0x0003003eu32, 0x00000581u32, 0x000002a9u32, 0x000200f9u32, 0x00000592u32, 0x000200f8u32,
+  0x0000058eu32, 0x00050041u32, 0x00000062u32, 0x0000058fu32, 0x0000045au32, 0x0000012cu32,
+  0x0004003du32, 0x00000006u32, 0x00000590u32, 0x0000058fu32, 0x000500bau32, 0x00000092u32,
+  0x00000591u32, 0x00000590u32, 0x00000024u32, 0x0003003eu32, 0x00000581u32, 0x00000591u32,
+  0x000200f9u32, 0x00000592u32, 0x000200f8u32, 0x00000592u32, 0x0004003du32, 0x00000092u32,
+  0x00000593u32, 0x00000581u32, 0x000300f7u32, 0x00000597u32, 0x00000000u32, 0x000400fau32,
+  0x00000593u32, 0x00000594u32, 0x00000597u32, 0x000200f8u32, 0x00000594u32, 0x00050041u32,
+  0x00000062u32, 0x0000059cu32, 0x0000045au32, 0x0000012cu32, 0x0004003du32, 0x00000006u32,
+  0x0000059du32, 0x0000059cu32, 0x00050041u32, 0x00000077u32, 0x0000059eu32, 0x0000045au32,
+  0x00000129u32, 0x0004003du32, 0x0000000au32, 0x0000059fu32, 0x0000059eu32, 0x0004006fu32,
+  0x00000006u32, 0x000005a0u32, 0x0000059fu32, 0x00050085u32, 0x00000006u32, 0x000005a1u32,
+  0x0000004bu32, 0x000005a0u32, 0x00050041u32, 0x00000062u32, 0x000005a2u32, 0x0000045au32,
+  0x0000012fu32, 0x0004003du32, 0x00000006u32, 0x000005a3u32, 0x000005a2u32, 0x0006000cu32,
+  0x00000006u32, 0x000005a4u32, 0x000000eeu32, 0x00000004u32, 0x000005a3u32, 0x00050041u32,
+  0x00000062u32, 0x000005a5u32, 0x0000045au32, 0x0000009fu32, 0x0004003du32, 0x00000006u32,
+  0x000005a6u32, 0x000005a5u32, 0x00050085u32, 0x00000006u32, 0x000005a7u32, 0x000005a4u32,
+  0x000005a6u32, 0x00050041u32, 0x00000062u32, 0x000005a8u32, 0x0000045au32, 0x0000001bu32,
+  0x0004003du32, 0x00000006u32, 0x000005a9u32, 0x000005a8u32, 0x00050088u32, 0x00000006u32,
+  0x000005aau32, 0x000005a7u32, 0x000005a9u32, 0x00050081u32, 0x00000006u32, 0x000005abu32,
+  0x00000021u32, 0x000005aau32, 0x00050085u32, 0x00000006u32, 0x000005acu32, 0x000005a1u32,
+  0x000005abu32, 0x00050081u32, 0x00000006u32, 0x000005adu32, 0x000005acu32, 0x00000021u32,
+  0x00050085u32, 0x00000006u32, 0x000005aeu32, 0x0000059du32, 0x000005adu32, 0x00050081u32,
+  0x00000006u32, 0x000005afu32, 0x00000021u32, 0x000005aeu32, 0x00050088u32, 0x00000006u32,
+  0x00000596u32, 0x00000589u32, 0x000005afu32, 0x0003003eu32, 0x0000057eu32, 0x00000596u32,
+  0x000200f9u32, 0x00000598u32, 0x000200f8u32, 0x00000597u32, 0x0003003eu32, 0x0000057eu32,
+  0x00000589u32, 0x000200f9u32, 0x00000598u32, 0x000200f8u32, 0x00000598u32, 0x0004003du32,
+  0x00000006u32, 0x00000599u32, 0x0000057eu32, 0x00050081u32, 0x00000006u32, 0x00000532u32,
+  0x00000528u32, 0x000003f7u32, 0x00060050u32, 0x0000003cu32, 0x00000533u32, 0x0000052eu32,
+  0x00000532u32, 0x0000052bu32, 0x000300f7u32, 0x000005cbu32, 0x00000000u32, 0x000300fbu32,
+  0x00000152u32, 0x000005b7u32, 0x000200f8u32, 0x000005b7u32, 0x00050041u32, 0x00000079u32,
+  0x000005b8u32, 0x0000045au32, 0x00000108u32, 0x00050041u32, 0x000000bfu32, 0x000005b9u32,
+  0x0000045au32, 0x0000010bu32, 0x0004003du32, 0x0000005cu32, 0x000005bau32, 0x000005b8u32,
+  0x0003003eu32, 0x000005b2u32, 0x000005bau32, 0x0004003du32, 0x0000005du32, 0x000005bbu32,
+  0x000005b9u32, 0x0003003eu32, 0x000005b3u32, 0x000005bbu32, 0x00080039u32, 0x00000006u32,
+  0x000005bcu32, 0x0000016bu32, 0x000005b2u32, 0x000005b3u32, 0x0000045au32, 0x00000533u32,
+  0x00050041u32, 0x00000077u32, 0x000005bdu32, 0x0000045au32, 0x00000129u32, 0x0004003du32,
+  0x0000000au32, 0x000005beu32, 0x000005bdu32, 0x000500adu32, 0x00000092u32, 0x000005bfu32,
+  0x000005beu32, 0x0000001bu32, 0x000300f7u32, 0x000005c5u32, 0x00000000u32, 0x000400fau32,
+  0x000005bfu32, 0x000005c1u32, 0x000005c0u32, 0x000200f8u32, 0x000005c0u32, 0x0003003eu32,
+  0x000005b4u32, 0x000002a9u32, 0x000200f9u32, 0x000005c5u32, 0x000200f8u32, 0x000005c1u32,
+  0x00050041u32, 0x00000062u32, 0x000005c2u32, 0x0000045au32, 0x0000012cu32, 0x0004003du32,
+  0x00000006u32, 0x000005c3u32, 0x000005c2u32, 0x000500bau32, 0x00000092u32, 0x000005c4u32,
+  0x000005c3u32, 0x00000024u32, 0x0003003eu32, 0x000005b4u32, 0x000005c4u32, 0x000200f9u32,
+  0x000005c5u32, 0x000200f8u32, 0x000005c5u32, 0x0004003du32, 0x00000092u32, 0x000005c6u32,
+  0x000005b4u32, 0x000300f7u32, 0x000005cau32, 0x00000000u32, 0x000400fau32, 0x000005c6u32,
+  0x000005c7u32, 0x000005cau32, 0x000200f8u32, 0x000005c7u32, 0x00050041u32, 0x00000062u32,
+  0x000005cfu32, 0x0000045au32, 0x0000012cu32, 0x0004003du32, 0x00000006u32, 0x000005d0u32,
+  0x000005cfu32, 0x00050041u32, 0x00000077u32, 0x000005d1u32, 0x0000045au32, 0x00000129u32,
+  0x0004003du32, 0x0000000au32, 0x000005d2u32, 0x000005d1u32, 0x0004006fu32, 0x00000006u32,
+  0x000005d3u32, 0x000005d2u32, 0x00050085u32, 0x00000006u32, 0x000005d4u32, 0x0000004bu32,
+  0x000005d3u32, 0x00050041u32, 0x00000062u32, 0x000005d5u32, 0x0000045au32, 0x0000012fu32,
+  0x0004003du32, 0x00000006u32, 0x000005d6u32, 0x000005d5u32, 0x0006000cu32, 0x00000006u32,
+  0x000005d7u32, 0x000000eeu32, 0x00000004u32, 0x000005d6u32, 0x00050041u32, 0x00000062u32,
+  0x000005d8u32, 0x0000045au32, 0x0000009fu32, 0x0004003du32, 0x00000006u32, 0x000005d9u32,
+  0x000005d8u32, 0x00050085u32, 0x00000006u32, 0x000005dau32, 0x000005d7u32, 0x000005d9u32,
+  0x00050041u32, 0x00000062u32, 0x000005dbu32, 0x0000045au32, 0x0000001bu32, 0x0004003du32,
+  0x00000006u32, 0x000005dcu32, 0x000005dbu32, 0x00050088u32, 0x00000006u32, 0x000005ddu32,
+  0x000005dau32, 0x000005dcu32, 0x00050081u32, 0x00000006u32, 0x000005deu32, 0x00000021u32,
+  0x000005ddu32, 0x00050085u32, 0x00000006u32, 0x000005dfu32, 0x000005d4u32, 0x000005deu32,
+  0x00050081u32, 0x00000006u32, 0x000005e0u32, 0x000005dfu32, 0x00000021u32, 0x00050085u32,
+  0x00000006u32, 0x000005e1u32, 0x000005d0u32, 0x000005e0u32, 0x00050081u32, 0x00000006u32,
+  0x000005e2u32, 0x00000021u32, 0x000005e1u32, 0x00050088u32, 0x00000006u32, 0x000005c9u32,
+  0x000005bcu32, 0x000005e2u32, 0x0003003eu32, 0x000005b1u32, 0x000005c9u32, 0x000200f9u32,
+  0x000005cbu32, 0x000200f8u32, 0x000005cau32, 0x0003003eu32, 0x000005b1u32, 0x000005bcu32,
+  0x000200f9u32, 0x000005cbu32, 0x000200f8u32, 0x000005cbu32, 0x0004003du32, 0x00000006u32,
+  0x000005ccu32, 0x000005b1u32, 0x00060050u32, 0x0000003cu32, 0x00000535u32, 0x00000527u32,
+  0x00000532u32, 0x0000052fu32, 0x000300f7u32, 0x000005feu32, 0x00000000u32, 0x000300fbu32,
+  0x00000152u32, 0x000005eau32, 0x000200f8u32, 0x000005eau32, 0x00050041u32, 0x00000079u32,
+  0x000005ebu32, 0x0000045au32, 0x00000108u32, 0x00050041u32, 0x000000bfu32, 0x000005ecu32,
+  0x0000045au32, 0x0000010bu32, 0x0004003du32, 0x0000005cu32, 0x000005edu32, 0x000005ebu32,
+  0x0003003eu32, 0x000005e5u32, 0x000005edu32, 0x0004003du32, 0x0000005du32, 0x000005eeu32,
+  0x000005ecu32, 0x0003003eu32, 0x000005e6u32, 0x000005eeu32, 0x00080039u32, 0x00000006u32,
+  0x000005efu32, 0x0000016bu32, 0x000005e5u32, 0x000005e6u32, 0x0000045au32, 0x00000535u32,
+  0x00050041u32, 0x00000077u32, 0x000005f0u32, 0x0000045au32, 0x00000129u32, 0x0004003du32,
+  0x0000000au32, 0x000005f1u32, 0x000005f0u32, 0x000500adu32, 0x00000092u32, 0x000005f2u32,
+  0x000005f1u32, 0x0000001bu32, 0x000300f7u32, 0x000005f8u32, 0x00000000u32, 0x000400fau32,
+  0x000005f2u32, 0x000005f4u32, 0x000005f3u32, 0x000200f8u32, 0x000005f3u32, 0x0003003eu32,
+  0x000005e7u32, 0x000002a9u32, 0x000200f9u32, 0x000005f8u32, 0x000200f8u32, 0x000005f4u32,
+  0x00050041u32, 0x00000062u32, 0x000005f5u32, 0x0000045au32, 0x0000012cu32, 0x0004003du32,
+  0x00000006u32, 0x000005f6u32, 0x000005f5u32, 0x000500bau32, 0x00000092u32, 0x000005f7u32,
+  0x000005f6u32, 0x00000024u32, 0x0003003eu32, 0x000005e7u32, 0x000005f7u32, 0x000200f9u32,
+  0x000005f8u32, 0x000200f8u32, 0x000005f8u32, 0x0004003du32, 0x00000092u32, 0x000005f9u32,
+  0x000005e7u32, 0x000300f7u32, 0x000005fdu32, 0x00000000u32, 0x000400fau32, 0x000005f9u32,
+  0x000005fau32, 0x000005fdu32, 0x000200f8u32, 0x000005fau32, 0x00050041u32, 0x00000062u32,
+  0x00000602u32, 0x0000045au32, 0x0000012cu32, 0x0004003du32, 0x00000006u32, 0x00000603u32,
+  0x00000602u32, 0x00050041u32, 0x00000077u32, 0x00000604u32, 0x0000045au32, 0x00000129u32,
+  0x0004003du32, 0x0000000au32, 0x00000605u32, 0x00000604u32, 0x0004006fu32, 0x00000006u32,
+  0x00000606u32, 0x00000605u32, 0x00050085u32, 0x00000006u32, 0x00000607u32, 0x0000004bu32,
+  0x00000606u32, 0x00050041u32, 0x00000062u32, 0x00000608u32, 0x0000045au32, 0x0000012fu32,
+  0x0004003du32, 0x00000006u32, 0x00000609u32, 0x00000608u32, 0x0006000cu32, 0x00000006u32,
+  0x0000060au32, 0x000000eeu32, 0x00000004u32, 0x00000609u32, 0x00050041u32, 0x00000062u32,
+  0x0000060bu32, 0x0000045au32, 0x0000009fu32, 0x0004003du32, 0x00000006u32, 0x0000060cu32,
+  0x0000060bu32, 0x00050085u32, 0x00000006u32, 0x0000060du32, 0x0000060au32, 0x0000060cu32,
+  0x00050041u32, 0x00000062u32, 0x0000060eu32, 0x0000045au32, 0x0000001bu32, 0x0004003du32,
+  0x00000006u32, 0x0000060fu32, 0x0000060eu32, 0x00050088u32, 0x00000006u32, 0x00000610u32,
+  0x0000060du32, 0x0000060fu32, 0x00050081u32, 0x00000006u32, 0x00000611u32, 0x00000021u32,
+  0x00000610u32, 0x00050085u32, 0x00000006u32, 0x00000612u32, 0x00000607u32, 0x00000611u32,
+  0x00050081u32, 0x00000006u32, 0x00000613u32, 0x00000612u32, 0x00000021u32, 0x00050085u32,
+  0x00000006u32, 0x00000614u32, 0x00000603u32, 0x00000613u32, 0x00050081u32, 0x00000006u32,
+  0x00000615u32, 0x00000021u32, 0x00000614u32, 0x00050088u32, 0x00000006u32, 0x000005fcu32,
+  0x000005efu32, 0x00000615u32, 0x0003003eu32, 0x000005e4u32, 0x000005fcu32, 0x000200f9u32,
+  0x000005feu32, 0x000200f8u32, 0x000005fdu32, 0x0003003eu32, 0x000005e4u32, 0x000005efu32,
+  0x000200f9u32, 0x000005feu32, 0x000200f8u32, 0x000005feu32, 0x0004003du32, 0x00000006u32,
+  0x000005ffu32, 0x000005e4u32, 0x00050083u32, 0x00000006u32, 0x00000537u32, 0x00000566u32,
+  0x00000599u32, 0x00050083u32, 0x00000006u32, 0x00000538u32, 0x00000537u32, 0x000005ccu32,
+  0x00050081u32, 0x00000006u32, 0x00000539u32, 0x00000538u32, 0x000005ffu32, 0x00050083u32,
+  0x00000006u32, 0x0000053au32, 0x00000024u32, 0x00000566u32, 0x00050083u32, 0x00000006u32,
+  0x0000053bu32, 0x0000053au32, 0x00000599u32, 0x00050081u32, 0x00000006u32, 0x0000053cu32,
+  0x0000053bu32, 0x000005ccu32, 0x00050081u32, 0x00000006u32, 0x0000053du32, 0x0000053cu32,
+  0x000005ffu32, 0x00050081u32, 0x00000006u32, 0x0000053eu32, 0x0000053au32, 0x00000599u32,
+  0x00050083u32, 0x00000006u32, 0x0000053fu32, 0x0000053eu32, 0x000005ccu32, 0x00050081u32,
+  0x00000006u32, 0x00000540u32, 0x0000053fu32, 0x000005ffu32, 0x00060050u32, 0x0000003cu32,
+  0x00000541u32, 0x00000539u32, 0x0000053du32, 0x00000540u32, 0x00050085u32, 0x00000006u32,
+  0x00000619u32, 0x00000539u32, 0x00000539u32, 0x00050085u32, 0x00000006u32, 0x0000061bu32,
+  0x0000053du32, 0x0000053du32, 0x00050081u32, 0x00000006u32, 0x0000061cu32, 0x00000619u32,
+  0x0000061bu32, 0x00050085u32, 0x00000006u32, 0x0000061eu32, 0x00000540u32, 0x00000540u32,
+  0x00050081u32, 0x00000006u32, 0x0000061fu32, 0x0000061cu32, 0x0000061eu32, 0x0006000cu32,
+  0x00000006u32, 0x00000620u32, 0x000000eeu32, 0x0000001fu32, 0x0000061fu32, 0x000500bau32,
+  0x00000092u32, 0x00000543u32, 0x00000620u32, 0x00000024u32, 0x000300f7u32, 0x00000548u32,
+  0x00000000u32, 0x000400fau32, 0x00000543u32, 0x00000545u32, 0x00000544u32, 0x000200f8u32,
+  0x00000544u32, 0x0003003eu32, 0x00000523u32, 0x000003f2u32, 0x000200f9u32, 0x00000548u32,
+  0x000200f8u32, 0x00000545u32, 0x00050088u32, 0x00000006u32, 0x00000546u32, 0x00000021u32,
+  0x00000620u32, 0x0005008eu32, 0x0000003cu32, 0x00000547u32, 0x00000541u32, 0x00000546u32,
+  0x0003003eu32, 0x00000523u32, 0x00000547u32, 0x000200f9u32, 0x00000548u32, 0x000200f8u32,
+  0x00000548u32, 0x0004003du32, 0x0000003cu32, 0x00000549u32, 0x00000523u32, 0x000500aau32,
+  0x00000092u32, 0x00000466u32, 0x00000036u32, 0x00000011u32, 0x000300f7u32, 0x00000470u32,
+  0x00000000u32, 0x000400fau32, 0x00000466u32, 0x0000046eu32, 0x00000467u32, 0x000200f8u32,
+  0x00000467u32, 0x000500aau32, 0x00000092u32, 0x00000468u32, 0x00000036u32, 0x00000013u32,
+  0x000300f7u32, 0x0000046du32, 0x00000000u32, 0x000400fau32, 0x00000468u32, 0x0000046bu32,
+  0x00000469u32, 0x000200f8u32, 0x00000469u32, 0x00050051u32, 0x00000006u32, 0x0000046au32,
+  0x00000549u32, 0x00000002u32, 0x0003003eu32, 0x0000045bu32, 0x0000046au32, 0x000200f9u32,
+  0x0000046du32, 0x000200f8u32, 0x0000046bu32, 0x00050051u32, 0x00000006u32, 0x0000046cu32,
+  0x00000549u32, 0x00000001u32, 0x0003003eu32, 0x0000045bu32, 0x0000046cu32, 0x000200f9u32,
+  0x0000046du32, 0x000200f8u32, 0x0000046du32, 0x000200f9u32, 0x00000470u32, 0x000200f8u32,
+  0x0000046eu32, 0x00050051u32, 0x00000006u32, 0x0000046fu32, 0x00000549u32, 0x00000000u32,
+  0x0003003eu32, 0x0000045bu32, 0x0000046fu32, 0x000200f9u32, 0x00000470u32, 0x000200f8u32,
+  0x00000470u32, 0x0004003du32, 0x00000006u32, 0x00000471u32, 0x0000045bu32, 0x0003003eu32,
+  0x00000457u32, 0x00000471u32, 0x000200f9u32, 0x00000472u32, 0x000200f8u32, 0x00000472u32,
+  0x0004003du32, 0x00000006u32, 0x00000473u32, 0x00000457u32, 0x0004007cu32, 0x0000000eu32,
+  0x00000408u32, 0x00000473u32, 0x000500c7u32, 0x0000000eu32, 0x00000409u32, 0x00000408u32,
+  0x0000040au32, 0x00040070u32, 0x00000006u32, 0x0000040bu32, 0x00000409u32, 0x000500c2u32,
+  0x0000000eu32, 0x0000040cu32, 0x00000408u32, 0x0000040du32, 0x000500c7u32, 0x0000000eu32,
+  0x0000040eu32, 0x0000040cu32, 0x0000040au32, 0x00040070u32, 0x00000006u32, 0x0000040fu32,
+  0x0000040eu32, 0x000500c2u32, 0x0000000eu32, 0x00000410u32, 0x00000408u32, 0x00000039u32,
+  0x000500c7u32, 0x0000000eu32, 0x00000411u32, 0x00000410u32, 0x0000040au32, 0x00040070u32,
+  0x00000006u32, 0x00000412u32, 0x00000411u32, 0x000500c2u32, 0x0000000eu32, 0x00000413u32,
+  0x00000408u32, 0x00000414u32, 0x00040070u32, 0x00000006u32, 0x00000415u32, 0x00000413u32,
+  0x00070050u32, 0x00000007u32, 0x00000416u32, 0x0000040bu32, 0x0000040fu32, 0x00000412u32,
+  0x00000415u32, 0x00050088u32, 0x00000007u32, 0x00000419u32, 0x00000416u32, 0x00000b5eu32,
+  0x0003003eu32, 0x0000041au32, 0x00000419u32, 0x000100fdu32, 0x00010038u32, 0x00050036u32,
+  0x00000006u32, 0x0000016bu32, 0x00000002u32, 0x0000016cu32, 0x00030037u32, 0x00000079u32,
+  0x0000016du32, 0x00030037u32, 0x000000bfu32, 0x0000016eu32, 0x00030037u32, 0x0000005eu32,
+  0x0000016fu32, 0x00030037u32, 0x0000003cu32, 0x00000170u32, 0x000200f8u32, 0x00000171u32,
+  0x0004003bu32, 0x000001bbu32, 0x00000b28u32, 0x00000007u32, 0x0004003bu32, 0x000001bbu32,
+  0x00000b0fu32, 0x00000007u32, 0x0004003bu32, 0x000001bbu32, 0x00000affu32, 0x00000007u32,
+  0x0004003bu32, 0x000001bbu32, 0x00000afeu32, 0x00000007u32, 0x0004003bu32, 0x000001bbu32,
+  0x00000afdu32, 0x00000007u32, 0x0004003bu32, 0x000001bbu32, 0x00000afcu32, 0x00000007u32,
+  0x0004003bu32, 0x000001bbu32, 0x00000ae3u32, 0x00000007u32, 0x0004003bu32, 0x000001bbu32,
+  0x00000ad3u32, 0x00000007u32, 0x0004003bu32, 0x000001bbu32, 0x00000ad2u32, 0x00000007u32,
+  0x0004003bu32, 0x000001bbu32, 0x00000ad1u32, 0x00000007u32, 0x0004003bu32, 0x000001bbu32,
+  0x00000ad0u32, 0x00000007u32, 0x0004003bu32, 0x00000062u32, 0x00000905u32, 0x00000007u32,
+  0x0004003bu32, 0x0000015du32, 0x000008e2u32, 0x00000007u32, 0x0004003bu32, 0x00000062u32,
+  0x0000089du32, 0x00000007u32, 0x0004003bu32, 0x00000062u32, 0x00000839u32, 0x00000007u32,
+  0x0004003bu32, 0x0000015du32, 0x0000083au32, 0x00000007u32, 0x0004003bu32, 0x00000062u32,
+  0x0000083bu32, 0x00000007u32, 0x0004003bu32, 0x0000015du32, 0x000007f7u32, 0x00000007u32,
+  0x0004003bu32, 0x0000015du32, 0x000007eau32, 0x00000007u32, 0x0004003bu32, 0x00000062u32,
+  0x000007bbu32, 0x00000007u32, 0x0004003bu32, 0x00000062u32, 0x00000777u32, 0x00000007u32,
+  0x0004003bu32, 0x0000015du32, 0x00000754u32, 0x00000007u32, 0x0004003bu32, 0x00000062u32,
+  0x0000070fu32, 0x00000007u32, 0x0004003bu32, 0x00000062u32, 0x000006abu32, 0x00000007u32,
+  0x0004003bu32, 0x0000015du32, 0x000006acu32, 0x00000007u32, 0x0004003bu32, 0x00000062u32,
+  0x000006adu32, 0x00000007u32, 0x0004003bu32, 0x00000062u32, 0x00000172u32, 0x00000007u32,
+  0x0004003bu32, 0x00000062u32, 0x00000173u32, 0x00000007u32, 0x0004003bu32, 0x00000062u32,
+  0x00000174u32, 0x00000007u32, 0x0004003bu32, 0x00000062u32, 0x00000175u32, 0x00000007u32,
+  0x0004003bu32, 0x00000062u32, 0x00000176u32, 0x00000007u32, 0x0004003bu32, 0x00000077u32,
+  0x00000177u32, 0x00000007u32, 0x0004003bu32, 0x00000077u32, 0x00000178u32, 0x00000007u32,
+  0x0004003bu32, 0x00000062u32, 0x0000017cu32, 0x00000007u32, 0x0004003bu32, 0x00000062u32,
+  0x0000017du32, 0x00000007u32, 0x00050041u32, 0x00000077u32, 0x0000019bu32, 0x0000016eu32,
+  0x0000001bu32, 0x0004003du32, 0x0000000au32, 0x0000019cu32, 0x0000019bu32, 0x00050041u32,
+  0x00000062u32, 0x0000019du32, 0x0000016eu32, 0x000000a2u32, 0x0004003du32, 0x00000006u32,
+  0x0000019eu32, 0x0000019du32, 0x00050041u32, 0x00000062u32, 0x0000019fu32, 0x0000016eu32,
+  0x000000ddu32, 0x0004003du32, 0x00000006u32, 0x000001a0u32, 0x0000019fu32, 0x0003003eu32,
+  0x00000172u32, 0x0000019eu32, 0x0003003eu32, 0x00000173u32, 0x000001a0u32, 0x0003003eu32,
+  0x00000174u32, 0x000001a3u32, 0x0003003eu32, 0x00000177u32, 0x0000001bu32, 0x0003003eu32,
+  0x00000175u32, 0x0000019eu32, 0x0003003eu32, 0x00000176u32, 0x000001a0u32, 0x0003003eu32,
+  0x00000178u32, 0x0000001bu32, 0x000200f9u32, 0x0000017fu32, 0x000200f8u32, 0x0000017fu32,
+  0x000400f6u32, 0x0000018au32, 0x00000188u32, 0x00000000u32, 0x000200f9u32, 0x00000180u32,
+  0x000200f8u32, 0x00000180u32, 0x000200f9u32, 0x00000181u32, 0x000200f8u32, 0x00000181u32,
+  0x000200f9u32, 0x00000182u32, 0x000200f8u32, 0x00000182u32, 0x0004003du32, 0x0000000au32,
+  0x000001a9u32, 0x00000178u32, 0x000500b1u32, 0x00000092u32, 0x000001aau32, 0x000001a9u32,
+  0x0000019cu32, 0x000300f7u32, 0x00000183u32, 0x00000000u32, 0x000400fau32, 0x000001aau32,
+  0x00000183u32, 0x00000189u32, 0x000200f8u32, 0x00000189u32, 0x000200f9u32, 0x0000018au32,
+  0x000200f8u32, 0x00000183u32, 0x0004003du32, 0x00000006u32, 0x000001acu32, 0x00000172u32,
+  0x0004003du32, 0x00000006u32, 0x000001adu32, 0x00000173u32, 0x0004003du32, 0x0000000au32,
+  0x000001aeu32, 0x00000178u32, 0x000300f7u32, 0x00000642u32, 0x00000000u32, 0x000300fbu32,
+  0x00000152u32, 0x00000626u32, 0x000200f8u32, 0x00000626u32, 0x00050041u32, 0x00000062u32,
+  0x00000628u32, 0x0000016du32, 0x000000a2u32, 0x0004003du32, 0x00000006u32, 0x00000629u32,
+  0x00000628u32, 0x000500b4u32, 0x00000092u32, 0x0000062au32, 0x00000629u32, 0x00000024u32,
+  0x000300f7u32, 0x00000636u32, 0x00000000u32, 0x000400fau32, 0x0000062au32, 0x0000062bu32,
+  0x00000636u32, 0x000200f8u32, 0x0000062bu32, 0x0004006fu32, 0x00000006u32, 0x0000062du32,
+  0x000001aeu32, 0x00050081u32, 0x00000006u32, 0x0000062eu32, 0x0000062du32, 0x0000004bu32,
+  0x00050041u32, 0x00000062u32, 0x0000062fu32, 0x0000016eu32, 0x0000009fu32, 0x0004003du32,
+  0x00000006u32, 0x00000630u32, 0x0000062fu32, 0x00050085u32, 0x00000006u32, 0x00000631u32,
+  0x0000062eu32, 0x00000630u32, 0x00060050u32, 0x0000003cu32, 0x00000632u32, 0x00000024u32,
+  0x00000631u32, 0x00000024u32, 0x0003003eu32, 0x00000b28u32, 0x00000632u32, 0x000200f9u32,
+  0x00000642u32, 0x000200f8u32, 0x00000636u32, 0x00050085u32, 0x00000006u32, 0x00000638u32,
+  0x00000629u32, 0x000001acu32, 0x00050083u32, 0x00000006u32, 0x00000639u32, 0x00000629u32,
+  0x00000638u32, 0x00050085u32, 0x00000006u32, 0x0000063au32, 0x00000629u32, 0x000001adu32,
+  0x00060050u32, 0x0000003cu32, 0x0000063bu32, 0x00000639u32, 0x0000063au32, 0x00000024u32,
+  0x0003003eu32, 0x00000b28u32, 0x0000063bu32, 0x000200f9u32, 0x00000642u32, 0x000200f8u32,
+  0x00000642u32, 0x0004003du32, 0x0000003cu32, 0x00000b34u32, 0x00000b28u32, 0x00050083u32,
+  0x0000003cu32, 0x000001e4u32, 0x00000b34u32, 0x00000170u32, 0x00050051u32, 0x00000006u32,
+  0x00000646u32, 0x000001e4u32, 0x00000000u32, 0x00050051u32, 0x00000006u32, 0x00000647u32,
+  0x000001e4u32, 0x00000000u32, 0x00050085u32, 0x00000006u32, 0x00000648u32, 0x00000646u32,
+  0x00000647u32, 0x00050051u32, 0x00000006u32, 0x00000649u32, 0x000001e4u32, 0x00000001u32,
+  0x00050051u32, 0x00000006u32, 0x0000064au32, 0x000001e4u32, 0x00000001u32, 0x00050085u32,
+  0x00000006u32, 0x0000064bu32, 0x00000649u32, 0x0000064au32, 0x00050081u32, 0x00000006u32,
+  0x0000064cu32, 0x00000648u32, 0x0000064bu32, 0x00050051u32, 0x00000006u32, 0x0000064du32,
+  0x000001e4u32, 0x00000002u32, 0x00050051u32, 0x00000006u32, 0x0000064eu32, 0x000001e4u32,
+  0x00000002u32, 0x00050085u32, 0x00000006u32, 0x0000064fu32, 0x0000064du32, 0x0000064eu32,
+  0x00050081u32, 0x00000006u32, 0x00000650u32, 0x0000064cu32, 0x0000064fu32, 0x0004003du32,
+  0x00000006u32, 0x000001f7u32, 0x00000174u32, 0x000500b8u32, 0x00000092u32, 0x000001f8u32,
+  0x00000650u32, 0x000001f7u32, 0x000300f7u32, 0x00000185u32, 0x00000000u32, 0x000400fau32,
+  0x000001f8u32, 0x00000184u32, 0x00000185u32, 0x000200f8u32, 0x00000184u32, 0x0004003du32,
+  0x00000006u32, 0x000001fau32, 0x00000172u32, 0x0004003du32, 0x00000006u32, 0x000001fbu32,
+  0x00000173u32, 0x0004003du32, 0x0000000au32, 0x000001fcu32, 0x00000178u32, 0x0003003eu32,
+  0x00000174u32, 0x00000650u32, 0x0003003eu32, 0x00000177u32, 0x000001fcu32, 0x0003003eu32,
+  0x00000175u32, 0x000001fau32, 0x0003003eu32, 0x00000176u32, 0x000001fbu32, 0x000200f9u32,
+  0x00000185u32, 0x000200f8u32, 0x00000185u32, 0x00050041u32, 0x00000062u32, 0x00000202u32,
+  0x0000016eu32, 0x000000e0u32, 0x0004003du32, 0x00000006u32, 0x00000203u32, 0x00000202u32,
+  0x0004003du32, 0x00000006u32, 0x00000204u32, 0x00000172u32, 0x00050085u32, 0x00000006u32,
+  0x00000205u32, 0x00000204u32, 0x00000203u32, 0x00050041u32, 0x00000062u32, 0x00000206u32,
+  0x0000016eu32, 0x000000e3u32, 0x0004003du32, 0x00000006u32, 0x00000207u32, 0x00000206u32,
+  0x0004003du32, 0x00000006u32, 0x00000208u32, 0x00000173u32, 0x00050085u32, 0x00000006u32,
+  0x00000209u32, 0x00000208u32, 0x00000207u32, 0x00050083u32, 0x00000006u32, 0x0000020au32,
+  0x00000205u32, 0x00000209u32, 0x00050085u32, 0x00000006u32, 0x0000020cu32, 0x00000208u32,
+  0x00000203u32, 0x00050085u32, 0x00000006u32, 0x0000020eu32, 0x00000204u32, 0x00000207u32,
+  0x00050081u32, 0x00000006u32, 0x0000020fu32, 0x0000020cu32, 0x0000020eu32, 0x000200f9u32,
+  0x00000186u32, 0x000200f8u32, 0x00000186u32, 0x000200f9u32, 0x00000187u32, 0x000200f8u32,
+  0x00000187u32, 0x0004003du32, 0x0000000au32, 0x00000212u32, 0x00000178u32, 0x00050080u32,
+  0x0000000au32, 0x00000213u32, 0x00000212u32, 0x0000009fu32, 0x0003003eu32, 0x00000172u32,
+  0x0000020au32, 0x0003003eu32, 0x00000173u32, 0x0000020fu32, 0x0003003eu32, 0x00000178u32,
+  0x00000213u32, 0x000200f9u32, 0x00000188u32, 0x000200f8u32, 0x00000188u32, 0x000200f9u32,
+  0x0000017fu32, 0x000200f8u32, 0x0000018au32, 0x0004003du32, 0x0000000au32, 0x00000219u32,
+  0x00000177u32, 0x0004006fu32, 0x00000006u32, 0x0000021au32, 0x00000219u32, 0x00050081u32,
+  0x00000006u32, 0x0000021bu32, 0x0000021au32, 0x0000004bu32, 0x0004006fu32, 0x00000006u32,
+  0x0000021cu32, 0x0000019cu32, 0x00050088u32, 0x00000006u32, 0x0000021du32, 0x0000021bu32,
+  0x0000021cu32, 0x0004003du32, 0x00000006u32, 0x0000021fu32, 0x00000175u32, 0x0004003du32,
+  0x00000006u32, 0x00000220u32, 0x00000176u32, 0x000300f7u32, 0x00000672u32, 0x00000000u32,
+  0x000300fbu32, 0x00000152u32, 0x00000656u32, 0x000200f8u32, 0x00000656u32, 0x0003003eu32,
+  0x00000b0fu32, 0x000001bdu32, 0x00050041u32, 0x00000062u32, 0x00000658u32, 0x0000016du32,
+  0x000000a2u32, 0x0004003du32, 0x00000006u32, 0x00000659u32, 0x00000658u32, 0x000500b4u32,
+  0x00000092u32, 0x0000065au32, 0x00000659u32, 0x00000024u32, 0x000300f7u32, 0x00000666u32,
+  0x00000000u32, 0x000400fau32, 0x0000065au32, 0x0000065bu32, 0x00000666u32, 0x000200f8u32,
+  0x0000065bu32, 0x0004006fu32, 0x00000006u32, 0x0000065du32, 0x00000219u32, 0x00050081u32,
+  0x00000006u32, 0x0000065eu32, 0x0000065du32, 0x0000004bu32, 0x00050041u32, 0x00000062u32,
+  0x0000065fu32, 0x0000016eu32, 0x0000009fu32, 0x0004003du32, 0x00000006u32, 0x00000660u32,
+  0x0000065fu32, 0x00050085u32, 0x00000006u32, 0x00000661u32, 0x0000065eu32, 0x00000660u32,
+  0x00060050u32, 0x0000003cu32, 0x00000662u32, 0x00000024u32, 0x00000661u32, 0x00000024u32,
+  0x0004003du32, 0x0000003cu32, 0x00000b13u32, 0x00000b0fu32, 0x0003003eu32, 0x00000afcu32,
+  0x00000662u32, 0x0003003eu32, 0x00000afdu32, 0x000001ccu32, 0x0003003eu32, 0x00000afeu32,
+  0x00000b13u32, 0x0003003eu32, 0x00000affu32, 0x000001d0u32, 0x000200f9u32, 0x00000672u32,
+  0x000200f8u32, 0x00000666u32, 0x00050085u32, 0x00000006u32, 0x00000668u32, 0x00000659u32,
+  0x0000021fu32, 0x00050083u32, 0x00000006u32, 0x00000669u32, 0x00000659u32, 0x00000668u32,
+  0x00050085u32, 0x00000006u32, 0x0000066au32, 0x00000659u32, 0x00000220u32, 0x00060050u32,
+  0x0000003cu32, 0x0000066bu32, 0x00000669u32, 0x0000066au32, 0x00000024u32, 0x00050083u32,
+  0x00000006u32, 0x0000066du32, 0x00000024u32, 0x0000021fu32, 0x00060050u32, 0x0000003cu32,
+  0x0000066eu32, 0x0000066du32, 0x00000220u32, 0x00000024u32, 0x00060050u32, 0x0000003cu32,
+  0x00000670u32, 0x00000220u32, 0x0000021fu32, 0x00000024u32, 0x0004003du32, 0x0000003cu32,
+  0x00000b18u32, 0x00000b0fu32, 0x0003003eu32, 0x00000afcu32, 0x0000066bu32, 0x0003003eu32,
+  0x00000afdu32, 0x0000066eu32, 0x0003003eu32, 0x00000afeu32, 0x00000b18u32, 0x0003003eu32,
+  0x00000affu32, 0x00000670u32, 0x000200f9u32, 0x00000672u32, 0x000200f8u32, 0x00000672u32,
+  0x0004003du32, 0x0000003cu32, 0x00000b0bu32, 0x00000affu32, 0x0004003du32, 0x0000003cu32,
+  0x00000b0au32, 0x00000afeu32, 0x0004003du32, 0x0000003cu32, 0x00000b09u32, 0x00000afdu32,
+  0x0004003du32, 0x0000003cu32, 0x00000b08u32, 0x00000afcu32, 0x00050083u32, 0x0000003cu32,
+  0x00000678u32, 0x00000170u32, 0x00000b08u32, 0x00050051u32, 0x00000006u32, 0x00000685u32,
+  0x00000678u32, 0x00000000u32, 0x00050051u32, 0x00000006u32, 0x00000686u32, 0x00000b09u32,
+  0x00000000u32, 0x00050085u32, 0x00000006u32, 0x00000687u32, 0x00000685u32, 0x00000686u32,
+  0x00050051u32, 0x00000006u32, 0x00000688u32, 0x00000678u32, 0x00000001u32, 0x00050051u32,
+  0x00000006u32, 0x00000689u32, 0x00000b09u32, 0x00000001u32, 0x00050085u32, 0x00000006u32,
+  0x0000068au32, 0x00000688u32, 0x00000689u32, 0x00050081u32, 0x00000006u32, 0x0000068bu32,
+  0x00000687u32, 0x0000068au32, 0x00050051u32, 0x00000006u32, 0x0000068cu32, 0x00000678u32,
+  0x00000002u32, 0x00050051u32, 0x00000006u32, 0x0000068du32, 0x00000b09u32, 0x00000002u32,
+  0x00050085u32, 0x00000006u32, 0x0000068eu32, 0x0000068cu32, 0x0000068du32, 0x00050081u32,
+  0x00000006u32, 0x0000068fu32, 0x0000068bu32, 0x0000068eu32, 0x00050051u32, 0x00000006u32,
+  0x00000692u32, 0x00000678u32, 0x00000000u32, 0x00050051u32, 0x00000006u32, 0x00000693u32,
+  0x00000b0au32, 0x00000000u32, 0x00050085u32, 0x00000006u32, 0x00000694u32, 0x00000692u32,
+  0x00000693u32, 0x00050051u32, 0x00000006u32, 0x00000695u32, 0x00000678u32, 0x00000001u32,
+  0x00050051u32, 0x00000006u32, 0x00000696u32, 0x00000b0au32, 0x00000001u32, 0x00050085u32,
+  0x00000006u32, 0x00000697u32, 0x00000695u32, 0x00000696u32, 0x00050081u32, 0x00000006u32,
+  0x00000698u32, 0x00000694u32, 0x00000697u32, 0x00050051u32, 0x00000006u32, 0x00000699u32,
+  0x00000678u32, 0x00000002u32, 0x00050051u32, 0x00000006u32, 0x0000069au32, 0x00000b0au32,
+  0x00000002u32, 0x00050085u32, 0x00000006u32, 0x0000069bu32, 0x00000699u32, 0x0000069au32,
+  0x00050081u32, 0x00000006u32, 0x0000069cu32, 0x00000698u32, 0x0000069bu32, 0x00050051u32,
+  0x00000006u32, 0x0000069fu32, 0x00000678u32, 0x00000000u32, 0x00050051u32, 0x00000006u32,
+  0x000006a0u32, 0x00000b0bu32, 0x00000000u32, 0x00050085u32, 0x00000006u32, 0x000006a1u32,
+  0x0000069fu32, 0x000006a0u32, 0x00050051u32, 0x00000006u32, 0x000006a2u32, 0x00000678u32,
+  0x00000001u32, 0x00050051u32, 0x00000006u32, 0x000006a3u32, 0x00000b0bu32, 0x00000001u32,
+  0x00050085u32, 0x00000006u32, 0x000006a4u32, 0x000006a2u32, 0x000006a3u32, 0x00050081u32,
+  0x00000006u32, 0x000006a5u32, 0x000006a1u32, 0x000006a4u32, 0x00050051u32, 0x00000006u32,
+  0x000006a6u32, 0x00000678u32, 0x00000002u32, 0x00050051u32, 0x00000006u32, 0x000006a7u32,
+  0x00000b0bu32, 0x00000002u32, 0x00050085u32, 0x00000006u32, 0x000006a8u32, 0x000006a6u32,
+  0x000006a7u32, 0x00050081u32, 0x00000006u32, 0x000006a9u32, 0x000006a5u32, 0x000006a8u32,
+  0x00060050u32, 0x0000003cu32, 0x00000682u32, 0x0000068fu32, 0x0000069cu32, 0x000006a9u32,
+  0x000300f7u32, 0x000006fau32, 0x00000000u32, 0x000300fbu32, 0x00000152u32, 0x000006b0u32,
+  0x000200f8u32, 0x000006b0u32, 0x00050041u32, 0x000000bfu32, 0x000006b1u32, 0x0000016fu32,
+  0x0000010bu32, 0x00050041u32, 0x00000077u32, 0x000006b2u32, 0x000006b1u32, 0x0000001bu32,
+  0x0004003du32, 0x0000000au32, 0x000006b3u32, 0x000006b2u32, 0x0004006fu32, 0x00000006u32,
+  0x000006b4u32, 0x000006b3u32, 0x00050088u32, 0x00000006u32, 0x000006b5u32, 0x0000004bu32,
+  0x000006b4u32, 0x00050083u32, 0x00000006u32, 0x000006b6u32, 0x0000021du32, 0x000006b5u32,
+  0x00050041u32, 0x00000062u32, 0x000006feu32, 0x0000016fu32, 0x0000009fu32, 0x0004003du32,
+  0x00000006u32, 0x000006ffu32, 0x000006feu32, 0x00050041u32, 0x00000062u32, 0x00000700u32,
+  0x0000016fu32, 0x000000a2u32, 0x0004003du32, 0x00000006u32, 0x00000701u32, 0x00000700u32,
+  0x00050085u32, 0x00000006u32, 0x00000702u32, 0x00000701u32, 0x000006b6u32, 0x00050083u32,
+  0x00000006u32, 0x00000703u32, 0x00000021u32, 0x00000702u32, 0x00050085u32, 0x00000006u32,
+  0x00000704u32, 0x000006ffu32, 0x00000703u32, 0x00050081u32, 0x00000006u32, 0x000006b8u32,
+  0x0000021du32, 0x000006b5u32, 0x00050041u32, 0x00000062u32, 0x00000707u32, 0x0000016fu32,
+  0x0000009fu32, 0x0004003du32, 0x00000006u32, 0x00000708u32, 0x00000707u32, 0x00050041u32,
+  0x00000062u32, 0x00000709u32, 0x0000016fu32, 0x000000a2u32, 0x0004003du32, 0x00000006u32,
+  0x0000070au32, 0x00000709u32, 0x00050085u32, 0x00000006u32, 0x0000070bu32, 0x0000070au32,
+  0x000006b8u32, 0x00050083u32, 0x00000006u32, 0x0000070cu32, 0x00000021u32, 0x0000070bu32,
+  0x00050085u32, 0x00000006u32, 0x0000070du32, 0x00000708u32, 0x0000070cu32, 0x00050051u32,
+  0x00000006u32, 0x000006bau32, 0x00000682u32, 0x00000000u32, 0x00050041u32, 0x00000062u32,
+  0x000006bbu32, 0x0000016fu32, 0x0000010eu32, 0x0004003du32, 0x00000006u32, 0x000006bcu32,
+  0x000006bbu32, 0x00050081u32, 0x00000006u32, 0x000006bdu32, 0x000006bau32, 0x000006bcu32,
+  0x00050051u32, 0x00000006u32, 0x000006beu32, 0x00000682u32, 0x00000002u32, 0x00050041u32,
+  0x00000062u32, 0x000006bfu32, 0x0000016fu32, 0x0000011cu32, 0x0004003du32, 0x00000006u32,
+  0x000006c0u32, 0x000006bfu32, 0x00050081u32, 0x00000006u32, 0x000006c1u32, 0x000006beu32,
+  0x000006c0u32, 0x00050051u32, 0x00000006u32, 0x000006c2u32, 0x00000682u32, 0x00000001u32,
+  0x00050085u32, 0x00000006u32, 0x000006c4u32, 0x000006c0u32, 0x0000001fu32, 0x000300f7u32,
+  0x00000731u32, 0x00000000u32, 0x000300fbu32, 0x00000152u32, 0x00000712u32, 0x000200f8u32,
+  0x00000712u32, 0x00050083u32, 0x00000006u32, 0x00000713u32, 0x00000704u32, 0x0000070du32,
+  0x00050088u32, 0x00000006u32, 0x00000714u32, 0x00000713u32, 0x000006c4u32, 0x00050085u32,
+  0x00000006u32, 0x00000715u32, 0x00000714u32, 0x00000714u32, 0x00050083u32, 0x00000006u32,
+  0x00000716u32, 0x00000021u32, 0x00000715u32, 0x0007000cu32, 0x00000006u32, 0x00000717u32,
+  0x000000eeu32, 0x00000028u32, 0x00000716u32, 0x00000024u32, 0x0006000cu32, 0x00000006u32,
+  0x00000718u32, 0x000000eeu32, 0x0000001fu32, 0x00000717u32, 0x00050085u32, 0x00000006u32,
+  0x00000735u32, 0x000006bdu32, 0x000006bdu32, 0x00050085u32, 0x00000006u32, 0x00000736u32,
+  0x000006c2u32, 0x000006c2u32, 0x00050081u32, 0x00000006u32, 0x00000737u32, 0x00000735u32,
+  0x00000736u32, 0x0006000cu32, 0x00000006u32, 0x00000738u32, 0x000000eeu32, 0x0000001fu32,
+  0x00000737u32, 0x00050083u32, 0x00000006u32, 0x0000071du32, 0x00000024u32, 0x00000714u32,
+  0x00050085u32, 0x00000006u32, 0x0000071eu32, 0x00000738u32, 0x0000071du32, 0x00050085u32,
+  0x00000006u32, 0x0000071fu32, 0x000006c1u32, 0x00000718u32, 0x00050081u32, 0x00000006u32,
+  0x00000720u32, 0x0000071eu32, 0x0000071fu32, 0x000500b8u32, 0x00000092u32, 0x00000721u32,
+  0x00000720u32, 0x00000024u32, 0x000300f7u32, 0x00000725u32, 0x00000000u32, 0x000400fau32,
+  0x00000721u32, 0x00000722u32, 0x00000725u32, 0x000200f8u32, 0x00000722u32, 0x00050085u32,
+  0x00000006u32, 0x0000073bu32, 0x00000738u32, 0x00000738u32, 0x00050085u32, 0x00000006u32,
+  0x0000073cu32, 0x000006c1u32, 0x000006c1u32, 0x00050081u32, 0x00000006u32, 0x0000073du32,
+  0x0000073bu32, 0x0000073cu32, 0x0006000cu32, 0x00000006u32, 0x0000073eu32, 0x000000eeu32,
+  0x0000001fu32, 0x0000073du32, 0x00050083u32, 0x00000006u32, 0x00000724u32, 0x0000073eu32,
+  0x00000704u32, 0x0003003eu32, 0x0000070fu32, 0x00000724u32, 0x000200f9u32, 0x00000731u32,
+  0x000200f8u32, 0x00000725u32, 0x00050085u32, 0x00000006u32, 0x00000726u32, 0x00000718u32,
+  0x000006c4u32, 0x000500bau32, 0x00000092u32, 0x00000727u32, 0x00000720u32, 0x00000726u32,
+  0x000300f7u32, 0x0000072cu32, 0x00000000u32, 0x000400fau32, 0x00000727u32, 0x00000728u32,
+  0x0000072cu32, 0x000200f8u32, 0x00000728u32, 0x00050083u32, 0x00000006u32, 0x00000729u32,
+  0x000006c1u32, 0x000006c4u32, 0x00050085u32, 0x00000006u32, 0x00000741u32, 0x00000738u32,
+  0x00000738u32, 0x00050085u32, 0x00000006u32, 0x00000742u32, 0x00000729u32, 0x00000729u32,
+  0x00050081u32, 0x00000006u32, 0x00000743u32, 0x00000741u32, 0x00000742u32, 0x0006000cu32,
+  0x00000006u32, 0x00000744u32, 0x000000eeu32, 0x0000001fu32, 0x00000743u32, 0x00050083u32,
+  0x00000006u32, 0x0000072bu32, 0x00000744u32, 0x0000070du32, 0x0003003eu32, 0x0000070fu32,
+  0x0000072bu32, 0x000200f9u32, 0x00000731u32, 0x000200f8u32, 0x0000072cu32, 0x00050085u32,
+  0x00000006u32, 0x0000072du32, 0x00000738u32, 0x00000718u32, 0x00050085u32, 0x00000006u32,
+  0x0000072eu32, 0x000006c1u32, 0x00000714u32, 0x00050081u32, 0x00000006u32, 0x0000072fu32,
+  0x0000072du32, 0x0000072eu32, 0x00050083u32, 0x00000006u32, 0x00000730u32, 0x0000072fu32,
+  0x00000704u32, 0x0003003eu32, 0x0000070fu32, 0x00000730u32, 0x000200f9u32, 0x00000731u32,
+  0x000200f8u32, 0x00000731u32, 0x0004003du32, 0x00000006u32, 0x00000732u32, 0x0000070fu32,
+  0x00050041u32, 0x00000077u32, 0x000006c6u32, 0x0000016fu32, 0x00000129u32, 0x0004003du32,
+  0x0000000au32, 0x000006c7u32, 0x000006c6u32, 0x000500adu32, 0x00000092u32, 0x000006c8u32,
+  0x000006c7u32, 0x0000001bu32, 0x000300f7u32, 0x000006ceu32, 0x00000000u32, 0x000400fau32,
+  0x000006c8u32, 0x000006cau32, 0x000006c9u32, 0x000200f8u32, 0x000006c9u32, 0x0003003eu32,
+  0x000006acu32, 0x000002a9u32, 0x000200f9u32, 0x000006ceu32, 0x000200f8u32, 0x000006cau32,
+  0x00050041u32, 0x00000062u32, 0x000006cbu32, 0x0000016fu32, 0x0000012cu32, 0x0004003du32,
+  0x00000006u32, 0x000006ccu32, 0x000006cbu32, 0x000500bau32, 0x00000092u32, 0x000006cdu32,
+  0x000006ccu32, 0x00000024u32, 0x0003003eu32, 0x000006acu32, 0x000006cdu32, 0x000200f9u32,
+  0x000006ceu32, 0x000200f8u32, 0x000006ceu32, 0x0004003du32, 0x00000092u32, 0x000006cfu32,
+  0x000006acu32, 0x000300f7u32, 0x000006e9u32, 0x00000000u32, 0x000400fau32, 0x000006cfu32,
+  0x000006d1u32, 0x000006d0u32, 0x000200f8u32, 0x000006d0u32, 0x0003003eu32, 0x000006adu32,
+  0x00000732u32, 0x000200f9u32, 0x000006e9u32, 0x000200f8u32, 0x000006d1u32, 0x00050041u32,
+  0x00000062u32, 0x000006d2u32, 0x0000016fu32, 0x0000001bu32, 0x0004003du32, 0x00000006u32,
+  0x000006d3u32, 0x000006d2u32, 0x00050088u32, 0x00000006u32, 0x000006d4u32, 0x000006beu32,
+  0x000006d3u32, 0x00050081u32, 0x00000006u32, 0x000006d5u32, 0x0000021du32, 0x000006d4u32,
+  0x0004006fu32, 0x00000006u32, 0x000006d6u32, 0x000006c7u32, 0x00050085u32, 0x00000006u32,
+  0x000006d7u32, 0x0000004bu32, 0x000006d6u32, 0x0007000cu32, 0x00000006u32, 0x000006d8u32,
+  0x000000eeu32, 0x00000019u32, 0x000006c2u32, 0x000006bdu32, 0x00050041u32, 0x00000062u32,
+  0x000006d9u32, 0x0000016fu32, 0x0000012fu32, 0x0004003du32, 0x00000006u32, 0x000006dau32,
+  0x000006d9u32, 0x00050085u32, 0x00000006u32, 0x000006dbu32, 0x000006dau32, 0x000006d5u32,
+  0x00050081u32, 0x00000006u32, 0x000006dcu32, 0x000006d8u32, 0x000006dbu32, 0x00050085u32,
+  0x00000006u32, 0x000006ddu32, 0x000006dcu32, 0x000006d7u32, 0x00050085u32, 0x00000006u32,
+  0x00000747u32, 0x000006bdu32, 0x000006bdu32, 0x00050085u32, 0x00000006u32, 0x00000748u32,
+  0x000006c2u32, 0x000006c2u32, 0x00050081u32, 0x00000006u32, 0x00000749u32, 0x00000747u32,
+  0x00000748u32, 0x0006000cu32, 0x00000006u32, 0x0000074au32, 0x000000eeu32, 0x0000001fu32,
+  0x00000749u32, 0x00050041u32, 0x00000062u32, 0x0000074du32, 0x0000016fu32, 0x0000009fu32,
+  0x0004003du32, 0x00000006u32, 0x0000074eu32, 0x0000074du32, 0x00050041u32, 0x00000062u32,
+  0x0000074fu32, 0x0000016fu32, 0x000000a2u32, 0x0004003du32, 0x00000006u32, 0x00000750u32,
+  0x0000074fu32, 0x00050085u32, 0x00000006u32, 0x00000751u32, 0x00000750u32, 0x000006d5u32,
+  0x00050083u32, 0x00000006u32, 0x00000752u32, 0x00000021u32, 0x00000751u32, 0x00050085u32,
+  0x00000006u32, 0x00000753u32, 0x0000074eu32, 0x00000752u32, 0x0007000cu32, 0x00000006u32,
+  0x000006e0u32, 0x000000eeu32, 0x00000028u32, 0x00000753u32, 0x00000024u32, 0x0007000cu32,
+  0x00000006u32, 0x000006e1u32, 0x000000eeu32, 0x00000025u32, 0x0000074au32, 0x000006e0u32,
+  0x00050041u32, 0x00000062u32, 0x000006e2u32, 0x0000016fu32, 0x0000012cu32, 0x0004003du32,
+  0x00000006u32, 0x000006e3u32, 0x000006e2u32, 0x00050085u32, 0x00000006u32, 0x000006e4u32,
+  0x000006e3u32, 0x000006e1u32, 0x0006000cu32, 0x00000006u32, 0x000006e5u32, 0x000000eeu32,
+  0x0000000du32, 0x000006ddu32, 0x0006000cu32, 0x00000006u32, 0x000006e6u32, 0x000000eeu32,
+  0x00000004u32, 0x000006e5u32, 0x00050085u32, 0x00000006u32, 0x000006e7u32, 0x000006e4u32,
+  0x000006e6u32, 0x00050081u32, 0x00000006u32, 0x000006e8u32, 0x00000732u32, 0x000006e7u32,
+  0x0003003eu32, 0x000006adu32, 0x000006e8u32, 0x000200f9u32, 0x000006e9u32, 0x000200f8u32,
+  0x000006e9u32, 0x00050041u32, 0x00000077u32, 0x00000757u32, 0x0000016fu32, 0x000000e0u32,
+  0x0004003du32, 0x0000000au32, 0x00000758u32, 0x00000757u32, 0x000500adu32, 0x00000092u32,
+  0x00000759u32, 0x00000758u32, 0x0000001bu32, 0x000300f7u32, 0x0000075fu32, 0x00000000u32,
+  0x000400fau32, 0x00000759u32, 0x0000075bu32, 0x0000075au32, 0x000200f8u32, 0x0000075au32,
+  0x0003003eu32, 0x00000754u32, 0x000002a9u32, 0x000200f9u32, 0x0000075fu32, 0x000200f8u32,
+  0x0000075bu32, 0x00050041u32, 0x00000062u32, 0x0000075cu32, 0x0000016fu32, 0x000000e3u32,
+  0x0004003du32, 0x00000006u32, 0x0000075du32, 0x0000075cu32, 0x000500bau32, 0x00000092u32,
+  0x0000075eu32, 0x0000075du32, 0x00000024u32, 0x0003003eu32, 0x00000754u32, 0x0000075eu32,
+  0x000200f9u32, 0x0000075fu32, 0x000200f8u32, 0x0000075fu32, 0x0004003du32, 0x00000092u32,
+  0x00000760u32, 0x00000754u32, 0x000400a8u32, 0x00000092u32, 0x000006ebu32, 0x00000760u32,
+  0x000300f7u32, 0x000006eeu32, 0x00000000u32, 0x000400fau32, 0x000006ebu32, 0x000006ecu32,
+  0x000006eeu32, 0x000200f8u32, 0x000006ecu32, 0x0004003du32, 0x00000006u32, 0x000006edu32,
+  0x000006adu32, 0x0003003eu32, 0x000006abu32, 0x000006edu32, 0x000200f9u32, 0x000006fau32,
+  0x000200f8u32, 0x000006eeu32, 0x00050041u32, 0x00000062u32, 0x00000763u32, 0x0000016fu32,
+  0x0000009fu32, 0x0004003du32, 0x00000006u32, 0x00000764u32, 0x00000763u32, 0x00050041u32,
+  0x00000062u32, 0x00000765u32, 0x0000016fu32, 0x000000a2u32, 0x0004003du32, 0x00000006u32,
+  0x00000766u32, 0x00000765u32, 0x00050085u32, 0x00000006u32, 0x00000767u32, 0x00000766u32,
+  0x0000021du32, 0x00050083u32, 0x00000006u32, 0x00000768u32, 0x00000021u32, 0x00000767u32,
+  0x00050085u32, 0x00000006u32, 0x00000769u32, 0x00000764u32, 0x00000768u32, 0x00050041u32,
+  0x00000062u32, 0x000006f0u32, 0x0000016fu32, 0x000000e3u32, 0x0004003du32, 0x00000006u32,
+  0x000006f1u32, 0x000006f0u32, 0x00050085u32, 0x00000006u32, 0x000006f2u32, 0x00000769u32,
+  0x000006f1u32, 0x00050085u32, 0x00000006u32, 0x0000076cu32, 0x000006bdu32, 0x000006bdu32,
+  0x00050085u32, 0x00000006u32, 0x0000076du32, 0x000006c2u32, 0x000006c2u32, 0x00050081u32,
+  0x00000006u32, 0x0000076eu32, 0x0000076cu32, 0x0000076du32, 0x0006000cu32, 0x00000006u32,
+  0x0000076fu32, 0x000000eeu32, 0x0000001fu32, 0x0000076eu32, 0x00050083u32, 0x00000006u32,
+  0x000006f4u32, 0x0000076fu32, 0x00000769u32, 0x00050085u32, 0x00000006u32, 0x00000772u32,
+  0x000006f4u32, 0x000006f4u32, 0x00050085u32, 0x00000006u32, 0x00000773u32, 0x000006beu32,
+  0x000006beu32, 0x00050081u32, 0x00000006u32, 0x00000774u32, 0x00000772u32, 0x00000773u32,
+  0x0006000cu32, 0x00000006u32, 0x00000775u32, 0x000000eeu32, 0x0000001fu32, 0x00000774u32,
+  0x00050083u32, 0x00000006u32, 0x000006f6u32, 0x00000775u32, 0x000006f2u32, 0x00050085u32,
+  0x00000006u32, 0x000006f7u32, 0x000006f2u32, 0x000002ecu32, 0x0004003du32, 0x00000006u32,
+  0x000006f8u32, 0x000006adu32, 0x000300f7u32, 0x00000789u32, 0x00000000u32, 0x000300fbu32,
+  0x00000152u32, 0x0000077au32, 0x000200f8u32, 0x0000077au32, 0x000500bcu32, 0x00000092u32,
+  0x0000077bu32, 0x000006f7u32, 0x00000024u32, 0x000300f7u32, 0x0000077eu32, 0x00000000u32,
+  0x000400fau32, 0x0000077bu32, 0x0000077cu32, 0x0000077eu32, 0x000200f8u32, 0x0000077cu32,
+  0x0007000cu32, 0x00000006u32, 0x0000077du32, 0x000000eeu32, 0x00000025u32, 0x000006f8u32,
+  0x000006f6u32, 0x0003003eu32, 0x00000777u32, 0x0000077du32, 0x000200f9u32, 0x00000789u32,
+  0x000200f8u32, 0x0000077eu32, 0x00050085u32, 0x00000006u32, 0x0000077fu32, 0x000006f7u32,
+  0x000002fcu32, 0x00050083u32, 0x00000006u32, 0x00000780u32, 0x000006f8u32, 0x000006f6u32,
+  0x0006000cu32, 0x00000006u32, 0x00000781u32, 0x000000eeu32, 0x00000004u32, 0x00000780u32,
+  0x00050083u32, 0x00000006u32, 0x00000782u32, 0x0000077fu32, 0x00000781u32, 0x0007000cu32,
+  0x00000006u32, 0x00000783u32, 0x000000eeu32, 0x00000028u32, 0x00000782u32, 0x00000024u32,
+  0x00050088u32, 0x00000006u32, 0x00000784u32, 0x00000783u32, 0x0000077fu32, 0x0007000cu32,
+  0x00000006u32, 0x00000785u32, 0x000000eeu32, 0x00000025u32, 0x000006f8u32, 0x000006f6u32,
+  0x00050085u32, 0x00000006u32, 0x00000786u32, 0x00000784u32, 0x00000784u32, 0x00050085u32,
+  0x00000006u32, 0x00000787u32, 0x00000786u32, 0x000006f7u32, 0x00050083u32, 0x00000006u32,
+  0x00000788u32, 0x00000785u32, 0x00000787u32, 0x0003003eu32, 0x00000777u32, 0x00000788u32,
+  0x000200f9u32, 0x00000789u32, 0x000200f8u32, 0x00000789u32, 0x0004003du32, 0x00000006u32,
+  0x0000078au32, 0x00000777u32, 0x0003003eu32, 0x000006abu32, 0x0000078au32, 0x000200f9u32,
+  0x000006fau32, 0x000200f8u32, 0x000006fau32, 0x0004003du32, 0x00000006u32, 0x000006fbu32,
+  0x000006abu32, 0x0003003eu32, 0x00000172u32, 0x0000019eu32, 0x0003003eu32, 0x00000173u32,
+  0x000001a0u32, 0x0003003eu32, 0x0000017cu32, 0x000006fbu32, 0x0003003eu32, 0x00000178u32,
+  0x0000001bu32, 0x000200f9u32, 0x0000018bu32, 0x000200f8u32, 0x0000018bu32, 0x000400f6u32,
+  0x0000019au32, 0x00000198u32, 0x00000000u32, 0x000200f9u32, 0x0000018cu32, 0x000200f8u32,
+  0x0000018cu32, 0x000200f9u32, 0x0000018du32, 0x000200f8u32, 0x0000018du32, 0x000200f9u32,
+  0x0000018eu32, 0x000200f8u32, 0x0000018eu32, 0x0004003du32, 0x0000000au32, 0x0000030cu32,
+  0x00000178u32, 0x000500b1u32, 0x00000092u32, 0x0000030du32, 0x0000030cu32, 0x0000019cu32,
+  0x000300f7u32, 0x0000018fu32, 0x00000000u32, 0x000400fau32, 0x0000030du32, 0x0000018fu32,
+  0x00000199u32, 0x000200f8u32, 0x00000199u32, 0x000200f9u32, 0x0000019au32, 0x000200f8u32,
+  0x0000018fu32, 0x0004003du32, 0x0000000au32, 0x0000030fu32, 0x00000177u32, 0x0004003du32,
+  0x0000000au32, 0x00000310u32, 0x00000178u32, 0x000500abu32, 0x00000092u32, 0x00000311u32,
+  0x00000310u32, 0x0000030fu32, 0x000300f7u32, 0x00000195u32, 0x00000000u32, 0x000400fau32,
+  0x00000311u32, 0x00000190u32, 0x00000194u32, 0x000200f8u32, 0x00000194u32, 0x0004003du32,
+  0x00000006u32, 0x0000036cu32, 0x0000017cu32, 0x0003003eu32, 0x0000017du32, 0x0000036cu32,
+  0x000200f9u32, 0x00000195u32, 0x000200f8u32, 0x00000190u32, 0x0004003du32, 0x0000000au32,
+  0x00000313u32, 0x00000178u32, 0x0004006fu32, 0x00000006u32, 0x00000314u32, 0x00000313u32,
+  0x00050081u32, 0x00000006u32, 0x00000315u32, 0x00000314u32, 0x0000004bu32, 0x00050088u32,
+  0x00000006u32, 0x00000316u32, 0x00000315u32, 0x0000021cu32, 0x0004003du32, 0x00000006u32,
+  0x00000317u32, 0x00000172u32, 0x0004003du32, 0x00000006u32, 0x00000318u32, 0x00000173u32,
+  0x000300f7u32, 0x000007acu32, 0x00000000u32, 0x000300fbu32, 0x00000152u32, 0x00000790u32,
+  0x000200f8u32, 0x00000790u32, 0x0003003eu32, 0x00000ae3u32, 0x000001bdu32, 0x00050041u32,
+  0x00000062u32, 0x00000792u32, 0x0000016du32, 0x000000a2u32, 0x0004003du32, 0x00000006u32,
+  0x00000793u32, 0x00000792u32, 0x000500b4u32, 0x00000092u32, 0x00000794u32, 0x00000793u32,
+  0x00000024u32, 0x000300f7u32, 0x000007a0u32, 0x00000000u32, 0x000400fau32, 0x00000794u32,
+  0x00000795u32, 0x000007a0u32, 0x000200f8u32, 0x00000795u32, 0x0004006fu32, 0x00000006u32,
+  0x00000797u32, 0x00000313u32, 0x00050081u32, 0x00000006u32, 0x00000798u32, 0x00000797u32,
+  0x0000004bu32, 0x00050041u32, 0x00000062u32, 0x00000799u32, 0x0000016eu32, 0x0000009fu32,
+  0x0004003du32, 0x00000006u32, 0x0000079au32, 0x00000799u32, 0x00050085u32, 0x00000006u32,
+  0x0000079bu32, 0x00000798u32, 0x0000079au32, 0x00060050u32, 0x0000003cu32, 0x0000079cu32,
+  0x00000024u32, 0x0000079bu32, 0x00000024u32, 0x0004003du32, 0x0000003cu32, 0x00000ae7u32,
+  0x00000ae3u32, 0x0003003eu32, 0x00000ad0u32, 0x0000079cu32, 0x0003003eu32, 0x00000ad1u32,
+  0x000001ccu32, 0x0003003eu32, 0x00000ad2u32, 0x00000ae7u32, 0x0003003eu32, 0x00000ad3u32,
+  0x000001d0u32, 0x000200f9u32, 0x000007acu32, 0x000200f8u32, 0x000007a0u32, 0x00050085u32,
+  0x00000006u32, 0x000007a2u32, 0x00000793u32, 0x00000317u32, 0x00050083u32, 0x00000006u32,
+  0x000007a3u32, 0x00000793u32, 0x000007a2u32, 0x00050085u32, 0x00000006u32, 0x000007a4u32,
+  0x00000793u32, 0x00000318u32, 0x00060050u32, 0x0000003cu32, 0x000007a5u32, 0x000007a3u32,
+  0x000007a4u32, 0x00000024u32, 0x00050083u32, 0x00000006u32, 0x000007a7u32, 0x00000024u32,
+  0x00000317u32, 0x00060050u32, 0x0000003cu32, 0x000007a8u32, 0x000007a7u32, 0x00000318u32,
+  0x00000024u32, 0x00060050u32, 0x0000003cu32, 0x000007aau32, 0x00000318u32, 0x00000317u32,
+  0x00000024u32, 0x0004003du32, 0x0000003cu32, 0x00000aecu32, 0x00000ae3u32, 0x0003003eu32,
+  0x00000ad0u32, 0x000007a5u32, 0x0003003eu32, 0x00000ad1u32, 0x000007a8u32, 0x0003003eu32,
+  0x00000ad2u32, 0x00000aecu32, 0x0003003eu32, 0x00000ad3u32, 0x000007aau32, 0x000200f9u32,
+  0x000007acu32, 0x000200f8u32, 0x000007acu32, 0x0004003du32, 0x0000003cu32, 0x00000adfu32,
+  0x00000ad3u32, 0x0004003du32, 0x0000003cu32, 0x00000adeu32, 0x00000ad2u32, 0x0004003du32,
+  0x0000003cu32, 0x00000addu32, 0x00000ad1u32, 0x0004003du32, 0x0000003cu32, 0x00000adcu32,
+  0x00000ad0u32, 0x00050083u32, 0x0000003cu32, 0x0000031cu32, 0x00000adcu32, 0x00000170u32,
+  0x00050051u32, 0x00000006u32, 0x000007b0u32, 0x0000031cu32, 0x00000000u32, 0x00050051u32,
+  0x00000006u32, 0x000007b1u32, 0x0000031cu32, 0x00000000u32, 0x00050085u32, 0x00000006u32,
+  0x000007b2u32, 0x000007b0u32, 0x000007b1u32, 0x00050051u32, 0x00000006u32, 0x000007b3u32,
+  0x0000031cu32, 0x00000001u32, 0x00050051u32, 0x00000006u32, 0x000007b4u32, 0x0000031cu32,
+  0x00000001u32, 0x00050085u32, 0x00000006u32, 0x000007b5u32, 0x000007b3u32, 0x000007b4u32,
+  0x00050081u32, 0x00000006u32, 0x000007b6u32, 0x000007b2u32, 0x000007b5u32, 0x00050051u32,
+  0x00000006u32, 0x000007b7u32, 0x0000031cu32, 0x00000002u32, 0x00050051u32, 0x00000006u32,
+  0x000007b8u32, 0x0000031cu32, 0x00000002u32, 0x00050085u32, 0x00000006u32, 0x000007b9u32,
+  0x000007b7u32, 0x000007b8u32, 0x00050081u32, 0x00000006u32, 0x000007bau32, 0x000007b6u32,
+  0x000007b9u32, 0x00050041u32, 0x000000bfu32, 0x000007beu32, 0x0000016fu32, 0x0000010bu32,
+  0x00050041u32, 0x00000077u32, 0x000007bfu32, 0x000007beu32, 0x0000001bu32, 0x0004003du32,
+  0x0000000au32, 0x000007c0u32, 0x000007bfu32, 0x0004006fu32, 0x00000006u32, 0x000007c1u32,
+  0x000007c0u32, 0x00050088u32, 0x00000006u32, 0x000007c2u32, 0x0000004bu32, 0x000007c1u32,
+  0x00050083u32, 0x00000006u32, 0x000007c3u32, 0x00000316u32, 0x000007c2u32, 0x00050041u32,
+  0x00000062u32, 0x000007dau32, 0x0000016fu32, 0x0000009fu32, 0x0004003du32, 0x00000006u32,
+  0x000007dbu32, 0x000007dau32, 0x00050041u32, 0x00000062u32, 0x000007dcu32, 0x0000016fu32,
+  0x000000a2u32, 0x0004003du32, 0x00000006u32, 0x000007ddu32, 0x000007dcu32, 0x00050085u32,
+  0x00000006u32, 0x000007deu32, 0x000007ddu32, 0x000007c3u32, 0x00050083u32, 0x00000006u32,
+  0x000007dfu32, 0x00000021u32, 0x000007deu32, 0x00050085u32, 0x00000006u32, 0x000007e0u32,
+  0x000007dbu32, 0x000007dfu32, 0x00050081u32, 0x00000006u32, 0x000007c5u32, 0x00000316u32,
+  0x000007c2u32, 0x00050041u32, 0x00000062u32, 0x000007e3u32, 0x0000016fu32, 0x0000009fu32,
+  0x0004003du32, 0x00000006u32, 0x000007e4u32, 0x000007e3u32, 0x00050041u32, 0x00000062u32,
+  0x000007e5u32, 0x0000016fu32, 0x000000a2u32, 0x0004003du32, 0x00000006u32, 0x000007e6u32,
+  0x000007e5u32, 0x00050085u32, 0x00000006u32, 0x000007e7u32, 0x000007e6u32, 0x000007c5u32,
+  0x00050083u32, 0x00000006u32, 0x000007e8u32, 0x00000021u32, 0x000007e7u32, 0x00050085u32,
+  0x00000006u32, 0x000007e9u32, 0x000007e4u32, 0x000007e8u32, 0x0007000cu32, 0x00000006u32,
+  0x000007c7u32, 0x000000eeu32, 0x00000028u32, 0x000007e0u32, 0x000007e9u32, 0x00050041u32,
+  0x00000077u32, 0x000007edu32, 0x0000016fu32, 0x000000e0u32, 0x0004003du32, 0x0000000au32,
+  0x000007eeu32, 0x000007edu32, 0x000500adu32, 0x00000092u32, 0x000007efu32, 0x000007eeu32,
+  0x0000001bu32, 0x000300f7u32, 0x000007f5u32, 0x00000000u32, 0x000400fau32, 0x000007efu32,
+  0x000007f1u32, 0x000007f0u32, 0x000200f8u32, 0x000007f0u32, 0x0003003eu32, 0x000007eau32,
+  0x000002a9u32, 0x000200f9u32, 0x000007f5u32, 0x000200f8u32, 0x000007f1u32, 0x00050041u32,
+  0x00000062u32, 0x000007f2u32, 0x0000016fu32, 0x000000e3u32, 0x0004003du32, 0x00000006u32,
+  0x000007f3u32, 0x000007f2u32, 0x000500bau32, 0x00000092u32, 0x000007f4u32, 0x000007f3u32,
+  0x00000024u32, 0x0003003eu32, 0x000007eau32, 0x000007f4u32, 0x000200f9u32, 0x000007f5u32,
+  0x000200f8u32, 0x000007f5u32, 0x0004003du32, 0x00000092u32, 0x000007f6u32, 0x000007eau32,
+  0x000300f7u32, 0x000007cfu32, 0x00000000u32, 0x000400fau32, 0x000007f6u32, 0x000007cau32,
+  0x000007c9u32, 0x000200f8u32, 0x000007c9u32, 0x0003003eu32, 0x000007bbu32, 0x00000024u32,
+  0x000200f9u32, 0x000007cfu32, 0x000200f8u32, 0x000007cau32, 0x00050041u32, 0x00000062u32,
+  0x000007cbu32, 0x0000016fu32, 0x000000e3u32, 0x0004003du32, 0x00000006u32, 0x000007ccu32,
+  0x000007cbu32, 0x00050085u32, 0x00000006u32, 0x000007cdu32, 0x000007c7u32, 0x000007ccu32,
+  0x00050085u32, 0x00000006u32, 0x000007ceu32, 0x000007cdu32, 0x0000033au32, 0x0003003eu32,
+  0x000007bbu32, 0x000007ceu32, 0x000200f9u32, 0x000007cfu32, 0x000200f8u32, 0x000007cfu32,
+  0x00050041u32, 0x00000062u32, 0x000007d0u32, 0x0000016fu32, 0x0000011cu32, 0x0004003du32,
+  0x00000006u32, 0x000007d1u32, 0x000007d0u32, 0x00050041u32, 0x00000062u32, 0x000007d2u32,
+  0x0000016fu32, 0x0000010eu32, 0x0004003du32, 0x00000006u32, 0x000007d3u32, 0x000007d2u32,
+  0x00050081u32, 0x00000006u32, 0x000007d4u32, 0x000007d1u32, 0x000007d3u32, 0x00050081u32,
+  0x00000006u32, 0x000007d5u32, 0x000007d4u32, 0x000007c7u32, 0x0004003du32, 0x00000006u32,
+  0x000007d6u32, 0x000007bbu32, 0x00050081u32, 0x00000006u32, 0x000007d7u32, 0x000007d5u32,
+  0x000007d6u32, 0x0004003du32, 0x00000006u32, 0x00000348u32, 0x0000017cu32, 0x00050081u32,
+  0x00000006u32, 0x000007fau32, 0x00000348u32, 0x000007d7u32, 0x000500bau32, 0x00000092u32,
+  0x000007fbu32, 0x000007fau32, 0x00000024u32, 0x000300f7u32, 0x00000800u32, 0x00000000u32,
+  0x000400fau32, 0x000007fbu32, 0x000007fdu32, 0x000007fcu32, 0x000200f8u32, 0x000007fcu32,
+  0x0003003eu32, 0x000007f7u32, 0x000002a9u32, 0x000200f9u32, 0x00000800u32, 0x000200f8u32,
+  0x000007fdu32, 0x00050085u32, 0x00000006u32, 0x000007feu32, 0x000007fau32, 0x000007fau32,
+  0x000500b8u32, 0x00000092u32, 0x000007ffu32, 0x000007bau32, 0x000007feu32, 0x0003003eu32,
+  0x000007f7u32, 0x000007ffu32, 0x000200f9u32, 0x00000800u32, 0x000200f8u32, 0x00000800u32,
+  0x0004003du32, 0x00000092u32, 0x00000801u32, 0x000007f7u32, 0x000300f7u32, 0x00000193u32,
+  0x00000000u32, 0x000400fau32, 0x00000801u32, 0x00000191u32, 0x00000192u32, 0x000200f8u32,
+  0x00000192u32, 0x0004003du32, 0x00000006u32, 0x00000368u32, 0x0000017cu32, 0x0003003eu32,
+  0x0000017du32, 0x00000368u32, 0x000200f9u32, 0x00000193u32, 0x000200f8u32, 0x00000191u32,
+  0x00050083u32, 0x0000003cu32, 0x00000806u32, 0x00000170u32, 0x00000adcu32, 0x00050051u32,
+  0x00000006u32, 0x00000813u32, 0x00000806u32, 0x00000000u32, 0x00050051u32, 0x00000006u32,
+  0x00000814u32, 0x00000addu32, 0x00000000u32, 0x00050085u32, 0x00000006u32, 0x00000815u32,
+  0x00000813u32, 0x00000814u32, 0x00050051u32, 0x00000006u32, 0x00000816u32, 0x00000806u32,
+  0x00000001u32, 0x00050051u32, 0x00000006u32, 0x00000817u32, 0x00000addu32, 0x00000001u32,
+  0x00050085u32, 0x00000006u32, 0x00000818u32, 0x00000816u32, 0x00000817u32, 0x00050081u32,
+  0x00000006u32, 0x00000819u32, 0x00000815u32, 0x00000818u32, 0x00050051u32, 0x00000006u32,
+  0x0000081au32, 0x00000806u32, 0x00000002u32, 0x00050051u32, 0x00000006u32, 0x0000081bu32,
+  0x00000addu32, 0x00000002u32, 0x00050085u32, 0x00000006u32, 0x0000081cu32, 0x0000081au32,
+  0x0000081bu32, 0x00050081u32, 0x00000006u32, 0x0000081du32, 0x00000819u32, 0x0000081cu32,
+  0x00050051u32, 0x00000006u32, 0x00000820u32, 0x00000806u32, 0x00000000u32, 0x00050051u32,
+  0x00000006u32, 0x00000821u32, 0x00000adeu32, 0x00000000u32, 0x00050085u32, 0x00000006u32,
+  0x00000822u32, 0x00000820u32, 0x00000821u32, 0x00050051u32, 0x00000006u32, 0x00000823u32,
+  0x00000806u32, 0x00000001u32, 0x00050051u32, 0x00000006u32, 0x00000824u32, 0x00000adeu32,
+  0x00000001u32, 0x00050085u32, 0x00000006u32, 0x00000825u32, 0x00000823u32, 0x00000824u32,
+  0x00050081u32, 0x00000006u32, 0x00000826u32, 0x00000822u32, 0x00000825u32, 0x00050051u32,
+  0x00000006u32, 0x00000827u32, 0x00000806u32, 0x00000002u32, 0x00050051u32, 0x00000006u32,
+  0x00000828u32, 0x00000adeu32, 0x00000002u32, 0x00050085u32, 0x00000006u32, 0x00000829u32,
+  0x00000827u32, 0x00000828u32, 0x00050081u32, 0x00000006u32, 0x0000082au32, 0x00000826u32,
+  0x00000829u32, 0x00050051u32, 0x00000006u32, 0x0000082du32, 0x00000806u32, 0x00000000u32,
+  0x00050051u32, 0x00000006u32, 0x0000082eu32, 0x00000adfu32, 0x00000000u32, 0x00050085u32,
+  0x00000006u32, 0x0000082fu32, 0x0000082du32, 0x0000082eu32, 0x00050051u32, 0x00000006u32,
+  0x00000830u32, 0x00000806u32, 0x00000001u32, 0x00050051u32, 0x00000006u32, 0x00000831u32,
+  0x00000adfu32, 0x00000001u32, 0x00050085u32, 0x00000006u32, 0x00000832u32, 0x00000830u32,
+  0x00000831u32, 0x00050081u32, 0x00000006u32, 0x00000833u32, 0x0000082fu32, 0x00000832u32,
+  0x00050051u32, 0x00000006u32, 0x00000834u32, 0x00000806u32, 0x00000002u32, 0x00050051u32,
+  0x00000006u32, 0x00000835u32, 0x00000adfu32, 0x00000002u32, 0x00050085u32, 0x00000006u32,
+  0x00000836u32, 0x00000834u32, 0x00000835u32, 0x00050081u32, 0x00000006u32, 0x00000837u32,
+  0x00000833u32, 0x00000836u32, 0x00060050u32, 0x0000003cu32, 0x00000810u32, 0x0000081du32,
+  0x0000082au32, 0x00000837u32, 0x000300f7u32, 0x00000888u32, 0x00000000u32, 0x000300fbu32,
+  0x00000152u32, 0x0000083eu32, 0x000200f8u32, 0x0000083eu32, 0x00050041u32, 0x000000bfu32,
+  0x0000083fu32, 0x0000016fu32, 0x0000010bu32, 0x00050041u32, 0x00000077u32, 0x00000840u32,
+  0x0000083fu32, 0x0000001bu32, 0x0004003du32, 0x0000000au32, 0x00000841u32, 0x00000840u32,
+  0x0004006fu32, 0x00000006u32, 0x00000842u32, 0x00000841u32, 0x00050088u32, 0x00000006u32,
+  0x00000843u32, 0x0000004bu32, 0x00000842u32, 0x00050083u32, 0x00000006u32, 0x00000844u32,
+  0x00000316u32, 0x00000843u32, 0x00050041u32, 0x00000062u32, 0x0000088cu32, 0x0000016fu32,
+  0x0000009fu32, 0x0004003du32, 0x00000006u32, 0x0000088du32, 0x0000088cu32, 0x00050041u32,
+  0x00000062u32, 0x0000088eu32, 0x0000016fu32, 0x000000a2u32, 0x0004003du32, 0x00000006u32,
+  0x0000088fu32, 0x0000088eu32, 0x00050085u32, 0x00000006u32, 0x00000890u32, 0x0000088fu32,
+  0x00000844u32, 0x00050083u32, 0x00000006u32, 0x00000891u32, 0x00000021u32, 0x00000890u32,
+  0x00050085u32, 0x00000006u32, 0x00000892u32, 0x0000088du32, 0x00000891u32, 0x00050081u32,
+  0x00000006u32, 0x00000846u32, 0x00000316u32, 0x00000843u32, 0x00050041u32, 0x00000062u32,
+  0x00000895u32, 0x0000016fu32, 0x0000009fu32, 0x0004003du32, 0x00000006u32, 0x00000896u32,
+  0x00000895u32, 0x00050041u32, 0x00000062u32, 0x00000897u32, 0x0000016fu32, 0x000000a2u32,
+  0x0004003du32, 0x00000006u32, 0x00000898u32, 0x00000897u32, 0x00050085u32, 0x00000006u32,
+  0x00000899u32, 0x00000898u32, 0x00000846u32, 0x00050083u32, 0x00000006u32, 0x0000089au32,
+  0x00000021u32, 0x00000899u32, 0x00050085u32, 0x00000006u32, 0x0000089bu32, 0x00000896u32,
+  0x0000089au32, 0x00050051u32, 0x00000006u32, 0x00000848u32, 0x00000810u32, 0x00000000u32,
+  0x00050041u32, 0x00000062u32, 0x00000849u32, 0x0000016fu32, 0x0000010eu32, 0x0004003du32,
+  0x00000006u32, 0x0000084au32, 0x00000849u32, 0x00050081u32, 0x00000006u32, 0x0000084bu32,
+  0x00000848u32, 0x0000084au32, 0x00050051u32, 0x00000006u32, 0x0000084cu32, 0x00000810u32,
+  0x00000002u32, 0x00050041u32, 0x00000062u32, 0x0000084du32, 0x0000016fu32, 0x0000011cu32,
+  0x0004003du32, 0x00000006u32, 0x0000084eu32, 0x0000084du32, 0x00050081u32, 0x00000006u32,
+  0x0000084fu32, 0x0000084cu32, 0x0000084eu32, 0x00050051u32, 0x00000006u32, 0x00000850u32,
+  0x00000810u32, 0x00000001u32, 0x00050085u32, 0x00000006u32, 0x00000852u32, 0x0000084eu32,
+  0x0000001fu32, 0x000300f7u32, 0x000008bfu32, 0x00000000u32, 0x000300fbu32, 0x00000152u32,
+  0x000008a0u32, 0x000200f8u32, 0x000008a0u32, 0x00050083u32, 0x00000006u32, 0x000008a1u32,
+  0x00000892u32, 0x0000089bu32, 0x00050088u32, 0x00000006u32, 0x000008a2u32, 0x000008a1u32,
+  0x00000852u32, 0x00050085u32, 0x00000006u32, 0x000008a3u32, 0x000008a2u32, 0x000008a2u32,
+  0x00050083u32, 0x00000006u32, 0x000008a4u32, 0x00000021u32, 0x000008a3u32, 0x0007000cu32,
+  0x00000006u32, 0x000008a5u32, 0x000000eeu32, 0x00000028u32, 0x000008a4u32, 0x00000024u32,
+  0x0006000cu32, 0x00000006u32, 0x000008a6u32, 0x000000eeu32, 0x0000001fu32, 0x000008a5u32,
+  0x00050085u32, 0x00000006u32, 0x000008c3u32, 0x0000084bu32, 0x0000084bu32, 0x00050085u32,
+  0x00000006u32, 0x000008c4u32, 0x00000850u32, 0x00000850u32, 0x00050081u32, 0x00000006u32,
+  0x000008c5u32, 0x000008c3u32, 0x000008c4u32, 0x0006000cu32, 0x00000006u32, 0x000008c6u32,
+  0x000000eeu32, 0x0000001fu32, 0x000008c5u32, 0x00050083u32, 0x00000006u32, 0x000008abu32,
+  0x00000024u32, 0x000008a2u32, 0x00050085u32, 0x00000006u32, 0x000008acu32, 0x000008c6u32,
+  0x000008abu32, 0x00050085u32, 0x00000006u32, 0x000008adu32, 0x0000084fu32, 0x000008a6u32,
+  0x00050081u32, 0x00000006u32, 0x000008aeu32, 0x000008acu32, 0x000008adu32, 0x000500b8u32,
+  0x00000092u32, 0x000008afu32, 0x000008aeu32, 0x00000024u32, 0x000300f7u32, 0x000008b3u32,
+  0x00000000u32, 0x000400fau32, 0x000008afu32, 0x000008b0u32, 0x000008b3u32, 0x000200f8u32,
+  0x000008b0u32, 0x00050085u32, 0x00000006u32, 0x000008c9u32, 0x000008c6u32, 0x000008c6u32,
+  0x00050085u32, 0x00000006u32, 0x000008cau32, 0x0000084fu32, 0x0000084fu32, 0x00050081u32,
+  0x00000006u32, 0x000008cbu32, 0x000008c9u32, 0x000008cau32, 0x0006000cu32, 0x00000006u32,
+  0x000008ccu32, 0x000000eeu32, 0x0000001fu32, 0x000008cbu32, 0x00050083u32, 0x00000006u32,
+  0x000008b2u32, 0x000008ccu32, 0x00000892u32, 0x0003003eu32, 0x0000089du32, 0x000008b2u32,
+  0x000200f9u32, 0x000008bfu32, 0x000200f8u32, 0x000008b3u32, 0x00050085u32, 0x00000006u32,
+  0x000008b4u32, 0x000008a6u32, 0x00000852u32, 0x000500bau32, 0x00000092u32, 0x000008b5u32,
+  0x000008aeu32, 0x000008b4u32, 0x000300f7u32, 0x000008bau32, 0x00000000u32, 0x000400fau32,
+  0x000008b5u32, 0x000008b6u32, 0x000008bau32, 0x000200f8u32, 0x000008b6u32, 0x00050083u32,
+  0x00000006u32, 0x000008b7u32, 0x0000084fu32, 0x00000852u32, 0x00050085u32, 0x00000006u32,
+  0x000008cfu32, 0x000008c6u32, 0x000008c6u32, 0x00050085u32, 0x00000006u32, 0x000008d0u32,
+  0x000008b7u32, 0x000008b7u32, 0x00050081u32, 0x00000006u32, 0x000008d1u32, 0x000008cfu32,
+  0x000008d0u32, 0x0006000cu32, 0x00000006u32, 0x000008d2u32, 0x000000eeu32, 0x0000001fu32,
+  0x000008d1u32, 0x00050083u32, 0x00000006u32, 0x000008b9u32, 0x000008d2u32, 0x0000089bu32,
+  0x0003003eu32, 0x0000089du32, 0x000008b9u32, 0x000200f9u32, 0x000008bfu32, 0x000200f8u32,
+  0x000008bau32, 0x00050085u32, 0x00000006u32, 0x000008bbu32, 0x000008c6u32, 0x000008a6u32,
+  0x00050085u32, 0x00000006u32, 0x000008bcu32, 0x0000084fu32, 0x000008a2u32, 0x00050081u32,
+  0x00000006u32, 0x000008bdu32, 0x000008bbu32, 0x000008bcu32, 0x00050083u32, 0x00000006u32,
+  0x000008beu32, 0x000008bdu32, 0x00000892u32, 0x0003003eu32, 0x0000089du32, 0x000008beu32,
+  0x000200f9u32, 0x000008bfu32, 0x000200f8u32, 0x000008bfu32, 0x0004003du32, 0x00000006u32,
+  0x000008c0u32, 0x0000089du32, 0x00050041u32, 0x00000077u32, 0x00000854u32, 0x0000016fu32,
+  0x00000129u32, 0x0004003du32, 0x0000000au32, 0x00000855u32, 0x00000854u32, 0x000500adu32,
+  0x00000092u32, 0x00000856u32, 0x00000855u32, 0x0000001bu32, 0x000300f7u32, 0x0000085cu32,
+  0x00000000u32, 0x000400fau32, 0x00000856u32, 0x00000858u32, 0x00000857u32, 0x000200f8u32,
+  0x00000857u32, 0x0003003eu32, 0x0000083au32, 0x000002a9u32, 0x000200f9u32, 0x0000085cu32,
+  0x000200f8u32, 0x00000858u32, 0x00050041u32, 0x00000062u32, 0x00000859u32, 0x0000016fu32,
+  0x0000012cu32, 0x0004003du32, 0x00000006u32, 0x0000085au32, 0x00000859u32, 0x000500bau32,
+  0x00000092u32, 0x0000085bu32, 0x0000085au32, 0x00000024u32, 0x0003003eu32, 0x0000083au32,
+  0x0000085bu32, 0x000200f9u32, 0x0000085cu32, 0x000200f8u32, 0x0000085cu32, 0x0004003du32,
+  0x00000092u32, 0x0000085du32, 0x0000083au32, 0x000300f7u32, 0x00000877u32, 0x00000000u32,
+  0x000400fau32, 0x0000085du32, 0x0000085fu32, 0x0000085eu32, 0x000200f8u32, 0x0000085eu32,
+  0x0003003eu32, 0x0000083bu32, 0x000008c0u32, 0x000200f9u32, 0x00000877u32, 0x000200f8u32,
+  0x0000085fu32, 0x00050041u32, 0x00000062u32, 0x00000860u32, 0x0000016fu32, 0x0000001bu32,
+  0x0004003du32, 0x00000006u32, 0x00000861u32, 0x00000860u32, 0x00050088u32, 0x00000006u32,
+  0x00000862u32, 0x0000084cu32, 0x00000861u32, 0x00050081u32, 0x00000006u32, 0x00000863u32,
+  0x00000316u32, 0x00000862u32, 0x0004006fu32, 0x00000006u32, 0x00000864u32, 0x00000855u32,
+  0x00050085u32, 0x00000006u32, 0x00000865u32, 0x0000004bu32, 0x00000864u32, 0x0007000cu32,
+  0x00000006u32, 0x00000866u32, 0x000000eeu32, 0x00000019u32, 0x00000850u32, 0x0000084bu32,
+  0x00050041u32, 0x00000062u32, 0x00000867u32, 0x0000016fu32, 0x0000012fu32, 0x0004003du32,
+  0x00000006u32, 0x00000868u32, 0x00000867u32, 0x00050085u32, 0x00000006u32, 0x00000869u32,
+  0x00000868u32, 0x00000863u32, 0x00050081u32, 0x00000006u32, 0x0000086au32, 0x00000866u32,
+  0x00000869u32, 0x00050085u32, 0x00000006u32, 0x0000086bu32, 0x0000086au32, 0x00000865u32,
+  0x00050085u32, 0x00000006u32, 0x000008d5u32, 0x0000084bu32, 0x0000084bu32, 0x00050085u32,
+  0x00000006u32, 0x000008d6u32, 0x00000850u32, 0x00000850u32, 0x00050081u32, 0x00000006u32,
+  0x000008d7u32, 0x000008d5u32, 0x000008d6u32, 0x0006000cu32, 0x00000006u32, 0x000008d8u32,
+  0x000000eeu32, 0x0000001fu32, 0x000008d7u32, 0x00050041u32, 0x00000062u32, 0x000008dbu32,
+  0x0000016fu32, 0x0000009fu32, 0x0004003du32, 0x00000006u32, 0x000008dcu32, 0x000008dbu32,
+  0x00050041u32, 0x00000062u32, 0x000008ddu32, 0x0000016fu32, 0x000000a2u32, 0x0004003du32,
+  0x00000006u32, 0x000008deu32, 0x000008ddu32, 0x00050085u32, 0x00000006u32, 0x000008dfu32,
+  0x000008deu32, 0x00000863u32, 0x00050083u32, 0x00000006u32, 0x000008e0u32, 0x00000021u32,
+  0x000008dfu32, 0x00050085u32, 0x00000006u32, 0x000008e1u32, 0x000008dcu32, 0x000008e0u32,
+  0x0007000cu32, 0x00000006u32, 0x0000086eu32, 0x000000eeu32, 0x00000028u32, 0x000008e1u32,
+  0x00000024u32, 0x0007000cu32, 0x00000006u32, 0x0000086fu32, 0x000000eeu32, 0x00000025u32,
+  0x000008d8u32, 0x0000086eu32, 0x00050041u32, 0x00000062u32, 0x00000870u32, 0x0000016fu32,
+  0x0000012cu32, 0x0004003du32, 0x00000006u32, 0x00000871u32, 0x00000870u32, 0x00050085u32,
+  0x00000006u32, 0x00000872u32, 0x00000871u32, 0x0000086fu32, 0x0006000cu32, 0x00000006u32,
+  0x00000873u32, 0x000000eeu32, 0x0000000du32, 0x0000086bu32, 0x0006000cu32, 0x00000006u32,
+  0x00000874u32, 0x000000eeu32, 0x00000004u32, 0x00000873u32, 0x00050085u32, 0x00000006u32,
+  0x00000875u32, 0x00000872u32, 0x00000874u32, 0x00050081u32, 0x00000006u32, 0x00000876u32,
+  0x000008c0u32, 0x00000875u32, 0x0003003eu32, 0x0000083bu32, 0x00000876u32, 0x000200f9u32,
+  0x00000877u32, 0x000200f8u32, 0x00000877u32, 0x00050041u32, 0x00000077u32, 0x000008e5u32,
+  0x0000016fu32, 0x000000e0u32, 0x0004003du32, 0x0000000au32, 0x000008e6u32, 0x000008e5u32,
+  0x000500adu32, 0x00000092u32, 0x000008e7u32, 0x000008e6u32, 0x0000001bu32, 0x000300f7u32,
+  0x000008edu32, 0x00000000u32, 0x000400fau32, 0x000008e7u32, 0x000008e9u32, 0x000008e8u32,
+  0x000200f8u32, 0x000008e8u32, 0x0003003eu32, 0x000008e2u32, 0x000002a9u32, 0x000200f9u32,
+  0x000008edu32, 0x000200f8u32, 0x000008e9u32, 0x00050041u32, 0x00000062u32, 0x000008eau32,
+  0x0000016fu32, 0x000000e3u32, 0x0004003du32, 0x00000006u32, 0x000008ebu32, 0x000008eau32,
+  0x000500bau32, 0x00000092u32, 0x000008ecu32, 0x000008ebu32, 0x00000024u32, 0x0003003eu32,
+  0x000008e2u32, 0x000008ecu32, 0x000200f9u32, 0x000008edu32, 0x000200f8u32, 0x000008edu32,
+  0x0004003du32, 0x00000092u32, 0x000008eeu32, 0x000008e2u32, 0x000400a8u32, 0x00000092u32,
+  0x00000879u32, 0x000008eeu32, 0x000300f7u32, 0x0000087cu32, 0x00000000u32, 0x000400fau32,
+  0x00000879u32, 0x0000087au32, 0x0000087cu32, 0x000200f8u32, 0x0000087au32, 0x0004003du32,
+  0x00000006u32, 0x0000087bu32, 0x0000083bu32, 0x0003003eu32, 0x00000839u32, 0x0000087bu32,
+  0x000200f9u32, 0x00000888u32, 0x000200f8u32, 0x0000087cu32, 0x00050041u32, 0x00000062u32,
+  0x000008f1u32, 0x0000016fu32, 0x0000009fu32, 0x0004003du32, 0x00000006u32, 0x000008f2u32,
+  0x000008f1u32, 0x00050041u32, 0x00000062u32, 0x000008f3u32, 0x0000016fu32, 0x000000a2u32,
+  0x0004003du32, 0x00000006u32, 0x000008f4u32, 0x000008f3u32, 0x00050085u32, 0x00000006u32,
+  0x000008f5u32, 0x000008f4u32, 0x00000316u32, 0x00050083u32, 0x00000006u32, 0x000008f6u32,
+  0x00000021u32, 0x000008f5u32, 0x00050085u32, 0x00000006u32, 0x000008f7u32, 0x000008f2u32,
+  0x000008f6u32, 0x00050041u32, 0x00000062u32, 0x0000087eu32, 0x0000016fu32, 0x000000e3u32,
+  0x0004003du32, 0x00000006u32, 0x0000087fu32, 0x0000087eu32, 0x00050085u32, 0x00000006u32,
+  0x00000880u32, 0x000008f7u32, 0x0000087fu32, 0x00050085u32, 0x00000006u32, 0x000008fau32,
+  0x0000084bu32, 0x0000084bu32, 0x00050085u32, 0x00000006u32, 0x000008fbu32, 0x00000850u32,
+  0x00000850u32, 0x00050081u32, 0x00000006u32, 0x000008fcu32, 0x000008fau32, 0x000008fbu32,
+  0x0006000cu32, 0x00000006u32, 0x000008fdu32, 0x000000eeu32, 0x0000001fu32, 0x000008fcu32,
+  0x00050083u32, 0x00000006u32, 0x00000882u32, 0x000008fdu32, 0x000008f7u32, 0x00050085u32,
+  0x00000006u32, 0x00000900u32, 0x00000882u32, 0x00000882u32, 0x00050085u32, 0x00000006u32,
+  0x00000901u32, 0x0000084cu32, 0x0000084cu32, 0x00050081u32, 0x00000006u32, 0x00000902u32,
+  0x00000900u32, 0x00000901u32, 0x0006000cu32, 0x00000006u32, 0x00000903u32, 0x000000eeu32,
+  0x0000001fu32, 0x00000902u32, 0x00050083u32, 0x00000006u32, 0x00000884u32, 0x00000903u32,
+  0x00000880u32, 0x00050085u32, 0x00000006u32, 0x00000885u32, 0x00000880u32, 0x000002ecu32,
+  0x0004003du32, 0x00000006u32, 0x00000886u32, 0x0000083bu32, 0x000300f7u32, 0x00000917u32,
+  0x00000000u32, 0x000300fbu32, 0x00000152u32, 0x00000908u32, 0x000200f8u32, 0x00000908u32,
+  0x000500bcu32, 0x00000092u32, 0x00000909u32, 0x00000885u32, 0x00000024u32, 0x000300f7u32,
+  0x0000090cu32, 0x00000000u32, 0x000400fau32, 0x00000909u32, 0x0000090au32, 0x0000090cu32,
+  0x000200f8u32, 0x0000090au32, 0x0007000cu32, 0x00000006u32, 0x0000090bu32, 0x000000eeu32,
+  0x00000025u32, 0x00000886u32, 0x00000884u32, 0x0003003eu32, 0x00000905u32, 0x0000090bu32,
+  0x000200f9u32, 0x00000917u32, 0x000200f8u32, 0x0000090cu32, 0x00050085u32, 0x00000006u32,
+  0x0000090du32, 0x00000885u32, 0x000002fcu32, 0x00050083u32, 0x00000006u32, 0x0000090eu32,
+  0x00000886u32, 0x00000884u32, 0x0006000cu32, 0x00000006u32, 0x0000090fu32, 0x000000eeu32,
+  0x00000004u32, 0x0000090eu32, 0x00050083u32, 0x00000006u32, 0x00000910u32, 0x0000090du32,
+  0x0000090fu32, 0x0007000cu32, 0x00000006u32, 0x00000911u32, 0x000000eeu32, 0x00000028u32,
+  0x00000910u32, 0x00000024u32, 0x00050088u32, 0x00000006u32, 0x00000912u32, 0x00000911u32,
+  0x0000090du32, 0x0007000cu32, 0x00000006u32, 0x00000913u32, 0x000000eeu32, 0x00000025u32,
+  0x00000886u32, 0x00000884u32, 0x00050085u32, 0x00000006u32, 0x00000914u32, 0x00000912u32,
+  0x00000912u32, 0x00050085u32, 0x00000006u32, 0x00000915u32, 0x00000914u32, 0x00000885u32,
+  0x00050083u32, 0x00000006u32, 0x00000916u32, 0x00000913u32, 0x00000915u32, 0x0003003eu32,
+  0x00000905u32, 0x00000916u32, 0x000200f9u32, 0x00000917u32, 0x000200f8u32, 0x00000917u32,
+  0x0004003du32, 0x00000006u32, 0x00000918u32, 0x00000905u32, 0x0003003eu32, 0x00000839u32,
+  0x00000918u32, 0x000200f9u32, 0x00000888u32, 0x000200f8u32, 0x00000888u32, 0x0004003du32,
+  0x00000006u32, 0x00000889u32, 0x00000839u32, 0x0004003du32, 0x00000006u32, 0x00000364u32,
+  0x0000017cu32, 0x0007000cu32, 0x00000006u32, 0x00000365u32, 0x000000eeu32, 0x00000025u32,
+  0x00000364u32, 0x00000889u32, 0x0003003eu32, 0x0000017du32, 0x00000365u32, 0x000200f9u32,
+  0x00000193u32, 0x000200f8u32, 0x00000193u32, 0x000200f9u32, 0x00000195u32, 0x000200f8u32,
+  0x00000195u32, 0x00050041u32, 0x00000062u32, 0x0000036fu32, 0x0000016eu32, 0x000000e0u32,
+  0x0004003du32, 0x00000006u32, 0x00000370u32, 0x0000036fu32, 0x0004003du32, 0x00000006u32,
+  0x00000371u32, 0x00000172u32, 0x00050085u32, 0x00000006u32, 0x00000372u32, 0x00000371u32,
+  0x00000370u32, 0x00050041u32, 0x00000062u32, 0x00000373u32, 0x0000016eu32, 0x000000e3u32,
+  0x0004003du32, 0x00000006u32, 0x00000374u32, 0x00000373u32, 0x0004003du32, 0x00000006u32,
+  0x00000375u32, 0x00000173u32, 0x00050085u32, 0x00000006u32, 0x00000376u32, 0x00000375u32,
+  0x00000374u32, 0x00050083u32, 0x00000006u32, 0x00000377u32, 0x00000372u32, 0x00000376u32,
+  0x00050085u32, 0x00000006u32, 0x00000379u32, 0x00000375u32, 0x00000370u32, 0x00050085u32,
+  0x00000006u32, 0x0000037bu32, 0x00000371u32, 0x00000374u32, 0x00050081u32, 0x00000006u32,
+  0x0000037cu32, 0x00000379u32, 0x0000037bu32, 0x000200f9u32, 0x00000196u32, 0x000200f8u32,
+  0x00000196u32, 0x000200f9u32, 0x00000197u32, 0x000200f8u32, 0x00000197u32, 0x0004003du32,
+  0x0000000au32, 0x0000037fu32, 0x00000178u32, 0x00050080u32, 0x0000000au32, 0x00000380u32,
+  0x0000037fu32, 0x0000009fu32, 0x0003003eu32, 0x00000172u32, 0x00000377u32, 0x0003003eu32,
+  0x00000173u32, 0x0000037cu32, 0x0004003du32, 0x00000006u32, 0x00000383u32, 0x0000017du32,
+  0x0003003eu32, 0x0000017cu32, 0x00000383u32, 0x0003003eu32, 0x00000178u32, 0x00000380u32,
+  0x000200f9u32, 0x00000198u32, 0x000200f8u32, 0x00000198u32, 0x000200f9u32, 0x0000018bu32,
+  0x000200f8u32, 0x0000019au32, 0x0004003du32, 0x00000006u32, 0x00000388u32, 0x0000017cu32,
+  0x000200feu32, 0x00000388u32, 0x00010038u32
+];
+// spirv-end

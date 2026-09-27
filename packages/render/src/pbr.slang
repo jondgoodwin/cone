@@ -16,7 +16,8 @@
 //   Filament does);
 // - a clear coat over it: a second, smoother GGX lobe of a dielectric of
 //   index 1.5 (Kelemen's visibility), the base under it dimmed by what the
-//   coat reflects;
+//   coat reflects; everywhere, or, for a wet ground, in patches where fBm
+//   of the model's coordinates rises above a level (the material's 'wet');
 // - a thin film over the coat (Belcour and Barla), which replaces the coat's
 //   Fresnel with the film's interference colours; its thickness in
 //   nanometres varies over the surface as domain-warped fractal noise of the
@@ -50,6 +51,7 @@ struct PbrParams {
     float4 surface;                // 16: metallic, roughness, clear coat (0 to 1), the coat's roughness
     float4 film;                   // 32: the film's least and greatest thickness (nm), its index, 1 if there is a film
     float4 filmNoise;              // 48: the noise's scale (a unit of model space), drift a second, warp, seed
+    float4 wet;                    // 64: where the coat lies: fBm's scale (0: everywhere), level, softness, seed
 };
 
 struct Immediates {
@@ -141,6 +143,11 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
     float roughness = clamp(material.surface.y, 0.045, 1.0);
     float a = roughness * roughness;
     float coat = material.surface.z;
+    if (material.wet.x > 0.0) {
+        // Wet in patches: where fBm of the model's coordinates rises above the level
+        float n = fbm3(input.local * material.wet.x, uint(material.wet.w), 4, 2.0, 0.5).value;
+        coat *= smoothstep(material.wet.y - material.wet.z, material.wet.y + material.wet.z, n);
+    }
     float coatRoughness = clamp(material.surface.w, 0.045, 1.0);
     float coatA = coatRoughness * coatRoughness;
     float3 diffuseColor = base.rgb * (1.0 - metallic);

@@ -14,6 +14,7 @@ fn scene(p Vec3) f32 {
 }
 
 imm horn = Horn.make(3.4, 0.34, 0.97, 1.7, 22, 0.12);   // length, base radius, taper, curl, ribs, rib depth
+imm fine = horn.fluted(40, 0.018, 0.8);                  // flutes, their depth, their twist
 imm d = horn.distance(p);
 imm n = normal(&horn, p, 0.001);
 ```
@@ -22,6 +23,7 @@ imm n = normal(&horn, p, 0.001);
 // slangc: -fp-mode precise
 import sdf;
 Horn horn = makeHorn(3.4, 0.34, 0.97, 1.7, 22, 0.12);
+Horn fine = fluted(horn, 40, 0.018, 0.8);
 float d = horn.distance(p);
 float3 n = normal(horn, p, 0.001);
 ```
@@ -29,7 +31,11 @@ float3 n = normal(horn, p, 0.001);
 `examples/hornmarch.cone` sphere-traces the horn on the GPU, in render's
 chitin under the dusk sky (a preview); `examples/hornmesh.cone` meshes it on
 the CPU at four levels of detail and draws the mesh in the same chitin, the
-same framing.
+same framing; `examples/horn.cone` is the chitin horn's demo: the fluted
+horn, meshed, turning under a blue-hour sky on wet ground beside the same
+horn in Blinn-Phong, its mesh hashes pinned, its distance and normal
+compared with the GPU's (`hornparity.slang`), and a mode that dumps the
+video's frames.
 
 ```cone
 imm net = surfaceNet(&horn, horn.bounds(), 0.01, 1u32, true);   // cells of 0.01, relaxed once, sparse
@@ -89,6 +95,16 @@ ribs, ribDepth)`, Latham's horn and Raup's unwound shell: an Arc cut into
 one cell per rib, each cell a round cone along its chord (radius falling
 linearly by `taper` of the base) smooth-unioned with a torus rib as thick as
 `ribDepth` of the radius. `distance(p)`, `radiusAt(u)`.
+`horn.fluted(count, depth, twist)` grooves `count` flutes along the tube
+between the ribs, each `depth` of the radius deep, turning `twist` radians
+about the tube from base to tip: the groove is `depth` times the distance
+from the chord (up to the radius) times |sin| of half `count` times the
+angle about the chord, so the ridges are sharp creases and the grooves
+round. It is only added to each cell's tube, so the union's pruning by
+bounding balls still holds, and the horn's distance is divided by 1 plus
+the groove's steepest slope, so it stays a bound (a conservative one: the
+fine flutes' ratio measures 0.75, so a tracer steps short there). Each
+evaluation of a fluted horn takes an atan2 and a sin per cell.
 
 **Gradient** (`shape.cone`): the `Shape` trait (`distance(p)`), `FnShape`
 (a `&fn(p Vec3) f32` as a Shape), `gradient(shape, p, h)` (central
@@ -101,7 +117,8 @@ distance; `fbmDetail(d, p, seed, octaves, size)` is Quilez's fBm of
 spheres, clipped to a band at the surface and smooth-unioned on, which stays
 a bound; `latticeSpheres(p, seed)`, its octave.
 
-In Slang the constructors are `makeArc`, `makeArcCells`, `makeHorn`; the
+In Slang the constructors are `makeArc`, `makeArcCells`, `makeHorn`,
+`fluted(horn, count, depth, twist)`; the
 traits are the interfaces `IShape`, `ICurve`, `IRepeated`.
 
 ## Distances: what holds, measured
@@ -114,6 +131,9 @@ shape and checks |d(p) - d(q)| / |p - q|:
   elongation: at most 0.99999.
 - **The horns** (curled 2 and 4.5 radians, and straight): at most 0.99991;
   the gradient's length at most 1.007 (central differences at the creases).
+- **Fluted horns** (40 fine flutes twisted 0.8, 12 deep ones twisted -2;
+  also sampled within the horn's bounds, 16384 pairs 1/256 apart): 0.73 to
+  0.75 and 0.55 to 0.64, the gradient 0.77.
 - **fBm detail**: 0.9994.
 - **Fillets**: 1 where the two surfaces meet at a right angle. In general
   the gradient with respect to (a, b) has length at most 1 but the two
@@ -209,7 +229,7 @@ piece (from memory, not checked against the paper).
 
 ## CPU and GPU agree
 
-`tests/parity.cone` draws 58 quantities at 256 points with `sdf.slang` on
+`tests/parity.cone` draws 59 quantities at 256 points with `sdf.slang` on
 the GPU and compares each with the Cone package (the pattern of `noise`'s
 parity test). Measured on the RTX 4060 and the UHD 770:
 
@@ -217,15 +237,30 @@ parity test). Measured on the RTX 4060 and the UHD 770:
 |---|---|
 | `plane`, `rotate`, `mirror` (add, subtract, multiply only) | bit for bit |
 | every other primitive, operator, domain operator and fillet, fBm detail, displacement (square roots, divisions) | within 7.2e-7 (the ellipsoid's); from half (the ellipsoid) to 95% of samples bit for bit |
-| the arc's projection, the horns, repetition along the arc (atan2, cos, sin) | within 4.8e-7 |
+| the arc's projection, the horns (fluted too), repetition along the arc (atan2, cos, sin) | within 4.8e-7 |
 | the horn's gradient and normal (differences over 2 h = 1/32) | within 1.5e-5 |
 
 The test holds them to 2^-19, 2^-16 and 2^-12: the measured differences
 with a margin, not Vulkan's bounds (which allow trigonometry 2^-11), so a
-change to the order of operations on one side shows. The horn itself uses
-no trigonometry per evaluation (its cells step round by rotation), only
-when it is made. The example's frames on the two GPUs differ by at most
-3/255 in any channel.
+change to the order of operations on one side shows. The unfluted horn
+uses no trigonometry per evaluation (its cells step round by rotation),
+only when it is made; flutes add an atan2 and a sin per cell. The example's
+frames on the two GPUs differ by at most 3/255 in any channel.
+
+`examples/horn.cone` checks the demo's own fluted horn the same way, at
+4096 points of a grid over its bounds (148 within 0.02 of its surface):
+distance and normal, the GPU's table against the CPU's and the two GPUs'
+against each other. Measured (27 Sep 2026):
+
+| | distance, bit for bit | distance, most apart | normal, bit for bit | normal, most apart |
+|---|---|---|---|---|
+| RTX 4060 against the CPU | 52% | 3.6e-7 | 10–11% | 1.2e-5 |
+| UHD 770 against the CPU | 62% | 2.4e-7 | 18–19% | 1.1e-5 |
+| RTX 4060 against the UHD 770 | 68% | 2.4e-7 | 20–21% | 1.1e-5 |
+
+The sign of the distance, what the mesher decides by, agrees at every
+point. The meshes are made on the CPU, so their hashes are the same
+whichever GPU draws them; the demo pins them.
 
 Shaders that import `sdf` need `// slangc: -fp-mode precise`, since it
 imports `noise` (whose README, "Determinism", says why).

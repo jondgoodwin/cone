@@ -16,7 +16,9 @@
 // point without 'scaleDistance'.
 //
 // Measured when written: every exact primitive and operator 0.9965 to
-// 0.99999; the horns 0.9995 to 0.99991 (gradient 1.0068); fBm detail
+// 0.99999; the horns 0.9995 to 0.99991 (gradient 1.0068); fluted horns
+// 0.55 to 0.75 (their bound is conservative), also sampled near the
+// surface, within the horn's bounds, 1/256 apart; fBm detail
 // 0.9994; the ellipsoid 1.204; fillets at 45 degrees up to 1.30, on the
 // sphere and box up to 1.36; noise displacement 2.27.
 
@@ -51,6 +53,24 @@ fn largestRatio[S Shape](shape &S) f64 {
   while i < PAIRS {
     imm p = samplePoint(i);
     imm q = p + sampleDirection(i) * STEP;
+    imm dd = f64[shape.distance(p)] - f64[shape.distance(q)];
+    imm r = (if dd < 0d { -dd; } else { dd; }) / f64[(q - p).length()];
+    if r > worst or r != r { worst = r; }
+    i = i + 1;
+  }
+  worst;
+}
+
+// The same, the points in 'box' (a horn's bounds, where fine detail is)
+fn largestRatioIn[S Shape](shape &S, box Aabb3) f64 {
+  imm c = box.center();
+  imm e = box.halfExtents();
+  mut worst = 0d;
+  mut i = 0;
+  while i < PAIRS * 4 {
+    imm h = noise.pcg3d(noise.UVec3[u32[i], 2468u32, 1357u32]);
+    imm p = c + Vec3[noise.toSigned(h.x) * e.x, noise.toSigned(h.y) * e.y, noise.toSigned(h.z) * e.z];
+    imm q = p + sampleDirection(i) * 0.00390625;
     imm dd = f64[shape.distance(p)] - f64[shape.distance(q)];
     imm r = (if dd < 0d { -dd; } else { dd; }) / f64[(q - p).length()];
     if r > worst or r != r { worst = r; }
@@ -183,6 +203,14 @@ fn main() i32 {
   check(largestRatio(&straight), 1d, "straight horn");
   imm curled = Horn.make(4., 0.35, 1., 4.5, 20, 0.15);
   check(largestRatio(&curled), 1d, "horn curled through 4.5 radians");
+  imm demo = Horn.make(3.4, 0.34, 0.97, 1.7, 22, 0.12);
+  imm fine = demo.fluted(40, 0.018, 0.8);
+  check(largestRatio(&fine), 1d, "horn with 40 fine flutes, twisted");
+  check(largestRatioIn(&fine, fine.bounds()), 1d, "horn with 40 fine flutes, near its surface");
+  check(largestGradient(&fine), 1d, "horn with 40 fine flutes, gradient length");
+  imm deep = horn.fluted(12, 0.15, -2.);
+  check(largestRatio(&deep), 1d, "horn with 12 deep flutes, twisted back");
+  check(largestRatioIn(&deep, deep.bounds()), 1d, "horn with 12 deep flutes, near its surface");
   imm detail = FnShape[&fDetail];
   check(largestRatio(&detail), 1d, "fBm detail");
   check(largestGradient(&detail), 1d, "fBm detail, gradient length");

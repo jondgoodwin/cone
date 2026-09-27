@@ -465,8 +465,15 @@ struct Horn : IShape, IRepeated {
     ArcCells cells;
     float sag;
     float halfChord;
+    int flutes;
+    float fluteDepth;
+    float fluteTwist;
 
     float radiusAt(float u) { return baseRadius * (1.0 - taper * u); }
+
+    float fluteSlope() {
+        return 1.0 + fluteDepth * (0.5 * float(flutes) * (1.0 + abs(fluteTwist) * baseRadius / length) + 1.0);
+    }
 
     bool ribbed() { return ribs > 0 && ribDepth > 0.0; }
 
@@ -476,6 +483,13 @@ struct Horn : IShape, IRepeated {
         float r1 = radiusAt(u + halfU);
         float cx = q.x + sag;
         float segment = roundCone(float3(cx, q.z + halfChord, q.y), r0, r1, halfChord * 2.0);
+        if (flutes > 0 && fluteDepth > 0.0) {
+            float along = u + q.z / length;
+            float halfCount = 0.5 * float(flutes);
+            float angle = (atan2(q.y, cx) + fluteTwist * along) * halfCount;
+            float reach = min(len2(cx, q.y), max(radiusAt(along), 0.0));
+            segment = segment + fluteDepth * reach * abs(sin(angle));
+        }
         if (!ribbed()) return segment;
         float r = radiusAt(u);
         float m = r * ribDepth;
@@ -492,7 +506,11 @@ struct Horn : IShape, IRepeated {
         return halfChord + sag + r + rib;
     }
 
-    float distance(float3 p) { return repeatAlongArc(arc, cells, this, p); }
+    float distance(float3 p) {
+        float d = repeatAlongArc(arc, cells, this, p);
+        if (flutes > 0 && fluteDepth > 0.0) return d / fluteSlope();
+        return d;
+    }
 };
 
 Horn makeHorn(float length, float baseRadius, float taper, float curl, int ribs, float ribDepth) {
@@ -509,7 +527,19 @@ Horn makeHorn(float length, float baseRadius, float taper, float curl, int ribs,
     h.cells = cells;
     h.sag = arc.radius == 0.0 ? 0.0 : arc.radius - arc.radius * cells.firstCos;
     h.halfChord = arc.radius == 0.0 ? cells.step * 0.5 : arc.radius * cells.firstSin;
+    h.flutes = 0;
+    h.fluteDepth = 0.0;
+    h.fluteTwist = 0.0;
     return h;
+}
+
+// The horn with flutes (horn.cone's 'fluted')
+Horn fluted(Horn h, int count, float depth, float twist) {
+    Horn f = h;
+    f.flutes = count;
+    f.fluteDepth = depth;
+    f.fluteTwist = twist;
+    return f;
 }
 
 // ======== Gradient and normal ========

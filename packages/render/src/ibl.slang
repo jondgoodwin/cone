@@ -28,6 +28,9 @@
 // and Colbert, "Real-time Shading with Filtered Importance Sampling", EGSR
 // 2008; Lagarde and de Rousiers, "Moving Frostbite to Physically Based
 // Rendering", SIGGRAPH 2014.
+//
+// The sky module imports noise (for its clouds), hence precise arithmetic:
+// slangc: -fp-mode precise
 
 import brdf;
 import sky;

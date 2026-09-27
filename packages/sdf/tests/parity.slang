@@ -121,6 +121,7 @@ float quantity(uint q, float3 p) {
         return repeatAlongArc(arc, makeArcCells(arc, 10), beads, p);
     }
     if (q == 57u) return makeHorn(4.0, 0.35, 1.0, 4.5, 20, 0.15).distance(p);
+    if (q == 58u) return fluted(makeHorn(3.0, 0.3, 0.9, 2.0, 14, 0.12), 12, 0.15, -2.0).distance(p);
     return 0.0;
 }
 
