@@ -449,10 +449,7 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
     LLVMValueRef fncallret = NULL;
     switch (fndcl->value? fndcl->value->tag : BlockTag) {
     case BlockTag: {
-        fncallret = LLVMBuildCall2(gen->builder, genlType(gen, fndcl->vtype), genlFnSym(gen, fndcl), fnargs, fnargcnt, "");
-        if (fndcl->dclinfo.facts & DclSystemCC) {
-            LLVMSetInstructionCallConv(fncallret, LLVMX86StdcallCallConv);
-        }
+        fncallret = genlFnDclCall(gen, fndcl, genlFnSym(gen, fndcl), fnargs, fnargcnt);
         break;
     }
     case IntrinsicTag: {
