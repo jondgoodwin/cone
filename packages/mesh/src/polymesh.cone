@@ -73,7 +73,7 @@ pub struct PolyMesh {
     f = 0usize;
     while f < counts.len {
       imm n = usize[counts[f]];
-      if faceFits(&m, f, &indices[start..start + n], nv, &outHead, &outNext, problems) {
+      if m.faceFits(f, &indices[start..start + n], nv, &outHead, &outNext, problems) {
         // Each corner's half-edge from it to the next corner, made with its
         // twin when the edge is new
         hs.clear();
@@ -116,8 +116,96 @@ pub struct PolyMesh {
       start = start + n;
       f = f + 1usize;
     }
-    linkBoundary(&mut m);
+    m.linkBoundary();
     m;
+  }
+
+  // Whether a face, the vertices 'vs', can be added to the mesh being built;
+  // if not, a line saying why goes to 'problems'
+  fn faceFits(self &, f usize, vs &[]u32, nv usize, outHead &List[u32], outNext &List[u32],
+      problems &mut List[String]) Bool {
+    imm n = vs.len;
+    if n < 3usize {
+      problems.push(faceProblem(f, "has fewer than 3 corners"));
+      return false;
+    }
+    mut i = 0usize;
+    while i < n {
+      if usize[vs[i]] >= nv {
+        mut s = faceProblem(f, "names vertex ");
+        s.appendUInt(u64[vs[i]]);
+        s.append(", which does not exist");
+        problems.push(s);
+        return false;
+      }
+      mut j = i + 1usize;
+      while j < n {
+        if vs[i] == vs[j] {
+          mut s = faceProblem(f, "has vertex ");
+          s.appendUInt(u64[vs[i]]);
+          s.append(" twice");
+          problems.push(s);
+          return false;
+        }
+        j = j + 1usize;
+      }
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < n {
+      imm a = vs[i];
+      imm b = vs[(i + 1usize) % n];
+      imm h = findHalfedge(&hVertex, outHead, outNext, a, b);
+      if h != NoIndex and *hFace[usize[h]] != NoIndex {
+        mut s = faceProblem(f, "runs from vertex ");
+        s.appendUInt(u64[a]);
+        s.append(" to ");
+        s.appendUInt(u64[b]);
+        s.append(", as another face already does");
+        problems.push(s);
+        return false;
+      }
+      i = i + 1usize;
+    }
+    true;
+  }
+
+  // Link the boundary half-edges into loops, and give each vertex its
+  // half-edge. A boundary half-edge ending at v is followed by the boundary
+  // half-edge leaving v that is reached by turning about v through faces from
+  // its twin, so each fan of faces about a vertex closes on itself.
+  fn linkBoundary(self &mut) {
+    imm nh = hVertex.len();
+    mut h = 0usize;
+    while h < nh {
+      if *hFace[h] == NoIndex {
+        mut g = twinOf(u32[h]);
+        mut steps = 0usize;
+        mut going = true;
+        while going and steps < nh {
+          imm t = twinOf(*hPrev[usize[g]]);
+          if *hFace[usize[t]] == NoIndex {
+            hNext.set(h, t);
+            hPrev.set(usize[t], u32[h]);
+            going = false;
+          } else {
+            g = t;
+          }
+          steps = steps + 1usize;
+        }
+      }
+      h = h + 1usize;
+    }
+    // Each vertex: the first half-edge leaving it, or a boundary one if any
+    h = 0usize;
+    while h < nh {
+      imm from = usize[*hVertex[usize[twinOf(u32[h])]]];
+      imm cur = *vHalfedge[from];
+      if cur == NoIndex or (*hFace[h] == NoIndex and *hFace[usize[cur]] != NoIndex) {
+        vHalfedge.set(from, u32[h]);
+      }
+      h = h + 1usize;
+    }
   }
 
   // -------- counts --------
