@@ -392,7 +392,10 @@ function-reference variable goes unreported. See Hazards.
 through a deref, an indirect call through a reference or pointer value, virtual
 dispatch (extract the object and vtable from the fat pointer, `structgep` the
 slot, load, call), generator-level inlining for `FlagInline`, an ordinary call,
-or an intrinsic.
+or an intrinsic. An atomic intrinsic is taken before that, by
+`genlAtomicIntrinsic`, which reads its orderings from the call's own arguments;
+`fnCallFinalizeArgs` has already held them to constants the operation allows
+([intrinsic](intrinsic.md)).
 
 **The switch for the intrinsics built in C dispatches on the LLVM type kind of
 argument 0**, not on the Cone type — so a mutating intrinsic's receiver, which
