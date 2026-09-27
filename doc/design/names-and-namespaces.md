@@ -597,7 +597,7 @@ visibility; linkage is the compiler's to derive.
 | visibility bit | whether a library compile exports it (L1); no export-table visibility is set in any compile |
 | supply: defined in this compile, or externally supplied | |
 | naming regime: C-style or Cone-style | |
-| calling convention, for C-style names | how a module's C-named function passes and returns a struct: as the platform's C ABI does, [generation](../../compiler/c/doc/phases/generation.md), "C-named functions and the C ABI" |
+| calling convention, for C-style names | how a module's C-named function passes and returns a struct, a Bool and a narrow integer: as the platform's C ABI does, [generation](../../compiler/c/doc/phases/generation.md), "C-named functions and the C ABI" |
 
 ### Spelling
 

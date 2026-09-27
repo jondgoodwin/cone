@@ -16,6 +16,11 @@
  * - SysV x86-64 and wasm32 are not built: a struct is still handed to LLVM
  *   whole, which is what either C ABI does only for a struct of one scalar.
  *
+ * An integer narrower than C's 'int' keeps its LLVM type but is marked, on the
+ * declaration and at each call, with the widening C gives it in its register:
+ * a Bool, C's 'bool', 'zeroext' on all three; an 8- or 16-bit integer
+ * 'signext' or 'zeroext' by its sign on SysV and wasm32, and nothing on Win64.
+ *
  * Only a struct is lowered. A slice, a virtual reference, a tuple or an array
  * has no C counterpart, and keeps Cone's own convention: a slice's pointer and
  * length arrive as two arguments, as conestd's 'printStr(char *, size_t)'
@@ -148,14 +153,70 @@ static LLVMAttributeRef genlCAbiSret(GenState *gen, INode *rettype) {
     return LLVMCreateTypeAttribute(gen->context, kind, genlType(gen, rettype));
 }
 
-// Mark a just-declared function's result slot, if it returns through one
+// The attribute widening an integer narrower than C's 'int' in its register,
+// as the C ABI widens it, or NULL. C's 'bool' is zero-extended on each C ABI
+// built. A char or a short is sign- or zero-extended as its type is signed on
+// SysV x86-64 and wasm32, and left as it is on Win64, where the callee widens
+// it. clang marks the same C declaration so for each target.
+static LLVMAttributeRef genlCAbiExtend(GenState *gen, INode *type) {
+    INode *dcl = itypeGetTypeDcl(type);
+    if (dcl->tag != IntNbrTag && dcl->tag != UintNbrTag)
+        return NULL;
+    unsigned bits = ((NbrNode*)dcl)->bits;
+    if (bits >= 32)
+        return NULL;
+    switch (gen->cabi) {
+    case CAbiWin64:
+        if (bits != 1)
+            return NULL;
+        break;
+    case CAbiSysV: case CAbiWasm32:
+        break;
+    default:
+        return NULL;
+    }
+    const char *name = dcl->tag == IntNbrTag ? "signext" : "zeroext";
+    unsigned kind = LLVMGetEnumAttributeKindForName(name, strlen(name));
+    return LLVMCreateEnumAttribute(gen->context, kind, 0);
+}
+
+// Mark a C-named function's scalars widened by the C ABI, on its declaration
+// ('fn') or on a call to it ('call'): the result at LLVM index 0, and each
+// parameter at its position, after the result slot if it has one
+static void genlCAbiMarkExtends(GenState *gen, FnSigNode *fnsig, LLVMValueRef fn, LLVMValueRef call) {
+    unsigned long long size;
+    unsigned index = genlCAbiPass(gen, fnsig->rettype, &size) == CAbiIndirect ? 2 : 1;
+    LLVMAttributeRef ext = genlCAbiExtend(gen, fnsig->rettype);
+    if (ext) {
+        if (call)
+            LLVMAddCallSiteAttribute(call, LLVMAttributeReturnIndex, ext);
+        else
+            LLVMAddAttributeAtIndex(fn, LLVMAttributeReturnIndex, ext);
+    }
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(fnsig->parms, cnt, nodesp)) {
+        ext = genlCAbiExtend(gen, ((IExpNode *)*nodesp)->vtype);
+        if (ext) {
+            if (call)
+                LLVMAddCallSiteAttribute(call, index, ext);
+            else
+                LLVMAddAttributeAtIndex(fn, index, ext);
+        }
+        ++index;
+    }
+}
+
+// Mark a just-declared function's result slot, if it returns through one, and
+// the scalars the C ABI widens
 void genlCAbiDeclare(GenState *gen, FnDclNode *fndcl, LLVMValueRef fn) {
     if (!genlIsCAbiFn(fndcl))
         return;
-    INode *rettype = ((FnSigNode*)itypeGetTypeDcl(fndcl->vtype))->rettype;
+    FnSigNode *fnsig = (FnSigNode*)itypeGetTypeDcl(fndcl->vtype);
     unsigned long long size;
-    if (genlCAbiPass(gen, rettype, &size) == CAbiIndirect)
-        LLVMAddAttributeAtIndex(fn, 1, genlCAbiSret(gen, rettype));
+    if (genlCAbiPass(gen, fnsig->rettype, &size) == CAbiIndirect)
+        LLVMAddAttributeAtIndex(fn, 1, genlCAbiSret(gen, fnsig->rettype));
+    genlCAbiMarkExtends(gen, fnsig, fn, NULL);
 }
 
 // Build the call instruction itself, in the function's calling convention
@@ -210,6 +271,7 @@ LLVMValueRef genlFnDclCall(GenState *gen, FnDclNode *fndcl, LLVMValueRef fn, LLV
     }
 
     LLVMValueRef call = genlFnDclCallInst(gen, fndcl, fntype, fn, cargs, cargcnt);
+    genlCAbiMarkExtends(gen, fnsig, NULL, call);
     switch (retpass) {
     case CAbiIndirect:
         LLVMAddCallSiteAttribute(call, 1, genlCAbiSret(gen, fnsig->rettype));

@@ -365,6 +365,18 @@ first parameter marked `sret(%T)`, the caller's result slot. **SysV x86-64 and
 wasm32 are not built**: their structs still cross whole, which matches their C
 ABI only for a struct of one scalar.
 
+An **integer narrower than C's `int`** keeps its LLVM type, but carries the
+widening C's convention gives it in its register (`genlCAbiExtend`), on the
+declaration or definition and at each direct call (`genlCAbiMarkExtends`), as
+an argument and as a result. A `Bool` is C's `bool`, `zeroext` on Win64, SysV
+and wasm32 alike; without it a Bool made by keeping one bit of a wider register
+reaches C, which trusts the whole byte, as that register's low byte. An 8- or
+16-bit integer is `signext` or `zeroext` by its sign on SysV and wasm32, and
+unmarked on Win64, where the callee widens it: the marks clang gives the same
+C declaration for each target. A C-named body's incoming Bool is then trusted
+to be 0 or 1. A `Bool` field is one byte holding 0 or 1, as a C `bool` field
+is, so a struct holding one needs nothing more.
+
 Only a Cone **struct** is lowered (`StructTag` whose LLVM type is a struct). A
 slice, a virtual reference, a tuple or an array has no C counterpart and keeps
 Cone's convention — a slice's pointer and length arrive as two arguments, which
@@ -381,7 +393,7 @@ result slot, and the Cone value rebuilt from what came back),
 passes through the same four with its Cone signature untouched.
 
 **Not lowered:** a call through a `&fn`, which is typed by its Cone signature
-(`genlPointeeType`). A C-named function's address handed to C is right, since
+(`genlPointeeType`) and carries no widening marks. A C-named function's address handed to C is right, since
 C calls it; Cone calling a C-named function with a struct parameter through a
 `&fn`, or C's function pointer with one, is not. A type's `fn @c` method keeps
 Cone's convention, since a vtable slot calls it by its Cone signature.
@@ -1013,7 +1025,8 @@ variables.
 | | `genlVtable`, `genlVtableImpl` | vtable type, per-struct constants, the virtref fat pointer |
 | | `genlVtableThunk` | the function filling a slot a folded method satisfies: shift the receiver along the recorded field path, tail-call the method |
 | `genllvm/genlcabi.c` | `genlCAbiTarget`, `genlIsCAbiFn`, `genlCAbiPass` | which C ABI the target follows, which functions cross by it, and how one struct crosses |
-| | `genlFnDclType`, `genlCAbiDeclare`, `genlFnDclCall`, `genlFnDclParm`, `genlFnDclReturn` | a declared function's LLVM type, its `sret` mark, a direct call to it, its prologue's parameters and its returns — lowered for a C-named one |
+| | `genlCAbiExtend`, `genlCAbiMarkExtends` | the `zeroext` or `signext` a narrow integer crosses with, marked on a declaration or a call |
+| | `genlFnDclType`, `genlCAbiDeclare`, `genlFnDclCall`, `genlFnDclParm`, `genlFnDclReturn` | a declared function's LLVM type, its `sret` and widening marks, a direct call to it, its prologue's parameters and its returns — lowered for a C-named one |
 | `genllvm/genlstmt.c` | `genlBlock` | block creation, phi state, terminator suppression |
 | | `genlBreak`, `genlReturn` | phi edges and dealias; inlined-return-as-break |
 | `genllvm/genlexpr.c` | `genlExpr`, `genlAddr`, `genlStore` | the value / address / store trio — section 4 |
