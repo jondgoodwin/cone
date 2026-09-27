@@ -31,6 +31,17 @@
 //   turned 45 and scaled 1.5, (1, 0) goes to 1.5 (0.707107, 0.707107) =
 //   (1.060660, 1.060660, 1), vertex 4; at z = 2, turned 90 and scaled 2,
 //   (1, 0) to (0, 2, 2), vertex 8, and (0, 1) to (-2, 0, 2), vertex 9.
+// - A ribbed sweep (sweepScaled): the diamond of radius 1
+//   (Profile.polygon(4, 1)) along z from 0 to 2 in 16 pieces, scaled by 1 +
+//   0.25 sin(8 pi u), u = s / L = k / 16 at ring k: scale 1 at k = 0, 1.25 at
+//   k = 1 (a crest), 1 at k = 2, 0.75 at k = 3 (a trough), 1.25 again at k =
+//   5. With N = +x and B = +y, profile (x, y) at ring k goes to (sx, sy,
+//   k / 8): vertex 4 (1.25, 0, 0.125), 5 (0, 1.25, 0.125), 8 (1, 0, 0.25),
+//   12 (0.75, 0, 0.375), 14 (-0.75, 0, 0.375), 20 (1.25, 0, 0.625), and the
+//   last, 67, (0, -1, 2). 17 rings of 4, 68 vertices; 64 quads and 2 caps,
+//   66 faces; 68 edges round and 64 along, 132: 68 - 132 + 66 = 2. Face 4's
+//   first corner is ring 1's, v = 1/16. A scale function that is always 1
+//   gives the plain sweep's positions bit for bit.
 // - A torus: the diamond of radius 0.5 (Profile.polygon(4, 0.5)) swept round
 //   Path.circle(2, 4), closed, so no caps: 4 rings of 4, 16 vertices; 16
 //   quads; 16 edges round the rings and 16 along, 32: 16 - 32 + 16 = 0. The
@@ -218,6 +229,41 @@ fn torus() {
   uv(cornerUv(&t, 15u32, 3usize), 0.75, 1., "torus: face 15 corner 3, the v seam");
 }
 
+// Four ribs along the sweep: 1 + 0.25 sin(8 pi u), a function of arc length
+fn fourRibs(u f32) f32 { 1. + 0.25 * sin(8. * pi * u); }
+
+fn unitScale(u f32) f32 { 1.; }
+
+fn ribbedSweep() {
+  imm d = Profile.polygon(4u32, 1.);
+  imm path = Path.line(Vec3[0., 0., 0.], Vec3[0., 0., 2.], 16u32);
+  imm r = sweepScaled(&d, &path, 0., true, &fourRibs);
+  counts(&r, 68, 132, 66, 2, "ribbed sweep: counts");
+  requireInt(i64[r.vertexCount()], 68, "ribbed sweep: vertices");
+  point(*r.positions[0usize], 1., 0., 0., "ribbed sweep: vertex 0, scale 1");
+  point(*r.positions[4usize], 1.25, 0., 0.125, "ribbed sweep: vertex 4, a crest");
+  point(*r.positions[5usize], 0., 1.25, 0.125, "ribbed sweep: vertex 5, a crest");
+  point(*r.positions[8usize], 1., 0., 0.25, "ribbed sweep: vertex 8, between");
+  point(*r.positions[12usize], 0.75, 0., 0.375, "ribbed sweep: vertex 12, a trough");
+  point(*r.positions[14usize], -0.75, 0., 0.375, "ribbed sweep: vertex 14, a trough");
+  point(*r.positions[20usize], 1.25, 0., 0.625, "ribbed sweep: vertex 20, the second crest");
+  point(*r.positions[67usize], 0., -1., 2., "ribbed sweep: vertex 67, the end");
+  uv(cornerUv(&r, 4u32, 0usize), 0., 0.0625, "ribbed sweep: v is still s / L");
+
+  // A constant scale function gives the linear sweep's positions, bit for bit
+  imm lin = sweep(&d, &path, 0., 1., 1., true);
+  imm one = sweepScaled(&d, &path, 0., true, &unitScale);
+  mut same = true;
+  mut i = 0usize;
+  while i < lin.positions.len() {
+    imm a = *lin.positions[i];
+    imm b = *one.positions[i];
+    if a.x != b.x or a.y != b.y or a.z != b.z { same = false; }
+    i = i + 1usize;
+  }
+  expectBool(same, true, "ribbed sweep: scale 1 is the plain sweep");
+}
+
 fn lathes() {
   imm seg [2; Vec2] = [Vec2[1., 0.], Vec2[1., 2.]];
   imm s = Profile.fromPoints(&seg, false);
@@ -266,6 +312,7 @@ fn main() i32 {
   extrusion();
   sweeps();
   torus();
+  ribbedSweep();
   lathes();
   done();
 }

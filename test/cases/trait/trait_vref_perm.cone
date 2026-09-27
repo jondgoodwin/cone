@@ -1,0 +1,76 @@
+// Every pairing of a virtual reference's permission with a method's 'self'
+// that the permission allows, run, so the numbers show each call reached the
+// value and each change stayed: '&<mut' calls a 'self &mut' method and a
+// 'self &' one, '&<' and '&<imm' a 'self &' one, '&<uni' any of the three, and
+// an owning virtual reference whatever its own permission lends ('+<so' and
+// '+<rc' are 'uni', '+<rc-mut' is shared and mutable, '+<rc-imm' and
+// '+<so-imm' only readable). trait_typecheck_vref_perm holds the refusals.
+//
+// A '&<uni' receiver is handed to the method as it is, which moves it, so each
+// function taking one dispatches through it once.
+
+mod trait_vref_perm;
+
+import stdio use *;
+
+trait App {
+  pub fn frame(self &mut) Bool;
+  pub fn look(self &) i64;
+  pub fn take(self &uni) i64;
+}
+
+struct Spinner {
+  pub n i64;
+  pub fn frame(self &mut) Bool {n = n + 1; n < 4;}
+  pub fn look(self &) i64 {n;}
+  pub fn take(self &uni) i64 {n * 100;}
+}
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn mutFrame(b &<mut App) i64 { b.frame(); b.frame(); b.look(); }
+fn roLook(b &<App) i64 { b.look(); }
+fn immLook(b &<imm App) i64 { b.look(); }
+fn uniFrame(b &<uni App) { b.frame(); }
+fn uniLook(b &<uni App) i64 { b.look(); }
+fn uniTake(b &<uni App) i64 { b.take(); }
+
+fn main() i32 {
+  // Borrowed, from a mutable local
+  mut s = Spinner[0];
+  show("mut-frame-twice", mutFrame(&mut s));
+  show("ro-look", roLook(&s));
+
+  // Borrowed, from an immutable local
+  imm i = Spinner[10];
+  show("imm-look", immLook(&imm i));
+
+  // Borrowed '&<uni', from a sole owner
+  mut u = +so Spinner[20];
+  uniFrame(&uni *u);
+  show("uni-look", uniLook(&uni *u));
+  show("uni-take", uniTake(&uni *u));
+
+  // Owning, each lent with the permission 'self' declares
+  mut o +<so App = +so Spinner[30];
+  o.frame();
+  show("so-frame-look", o.look());
+  mut c +<rc App = +rc Spinner[40];
+  c.frame();
+  show("rc-frame-look", c.look());
+  show("rc-take", c.take());
+  imm m +<rc-mut App = +rc-mut Spinner[50];
+  m.frame();
+  show("rc-mut-frame-look", m.look());
+  imm ri +<rc-imm App = +rc-imm Spinner[60];
+  show("rc-imm-look", ri.look());
+  imm si +<so-imm App = +so-imm Spinner[70];
+  show("so-imm-look", si.look());
+
+  0i32;
+}

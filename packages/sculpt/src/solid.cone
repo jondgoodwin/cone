@@ -137,7 +137,8 @@ pub fn extrude(profile &Profile, direction Vec3, segments u32, caps Bool) PolyMe
 // is profile point j at path point i. The profile at distance s along a path
 // of length L is first turned by twistAngle * s / L about the tangent
 // (counterclockwise seen from ahead) and scaled by startScale + (endScale -
-// startScale) * s / L, both in proportion to arc length. The profile is not
+// startScale) * s / L, both in proportion to arc length ('sweepScaled',
+// below, takes any function of arc length for the scale). The profile is not
 // widened at the path's corners (no mitre): a path sampled finely from a
 // curve does not need it.
 //
@@ -149,6 +150,41 @@ pub fn extrude(profile &Profile, direction Vec3, segments u32, caps Bool) PolyMe
 // counterclockwise. The v of ring i is s / L, and the corners on a closed
 // path's closing band that are at its first ring have v = 1.
 pub fn sweep(profile &Profile, path &Path, twistAngle f32, startScale f32, endScale f32, caps Bool) PolyMesh {
+  imm dist = path.distances();
+  imm total = path.length();
+  mut scales = List[f32].withCapacity(dist.len());
+  mut i = 0usize;
+  while i < dist.len() {
+    imm f = if total > 0. {*dist[i] / total;} else {0.;};
+    scales.push(startScale + (endScale - startScale) * f);
+    i = i + 1usize;
+  }
+  sweepRings(profile, path, twistAngle, caps, &scales);
+}
+
+// The same sweep with the profile's scale any function of arc length: the
+// profile at distance s along a path of length L is scaled by scale(s / L)
+// (as Blender's curve Taper object or Houdini's Sweep scale ramp does)
+// rather than linearly, and turned by twistAngle * s / L. The function is
+// asked once per path point, in order, so a rib or bulge finer than the
+// path's spacing is lost: sample the path as finely as the scale varies. A
+// closed path's closing band joins its last ring to its first, scale(0), so
+// scale(1) should equal scale(0).
+pub fn sweepScaled(profile &Profile, path &Path, twistAngle f32, caps Bool, scale &fn(u f32) f32) PolyMesh {
+  imm dist = path.distances();
+  imm total = path.length();
+  mut scales = List[f32].withCapacity(dist.len());
+  mut i = 0usize;
+  while i < dist.len() {
+    imm f = if total > 0. {*dist[i] / total;} else {0.;};
+    scales.push(scale(f));
+    i = i + 1usize;
+  }
+  sweepRings(profile, path, twistAngle, caps, &scales);
+}
+
+// Both sweeps: ring i scaled by scales[i]
+fn sweepRings(profile &Profile, path &Path, twistAngle f32, caps Bool, scales &List[f32]) PolyMesh {
   imm frames = path.frames();
   imm dist = path.distances();
   imm total = path.length();
@@ -159,7 +195,7 @@ pub fn sweep(profile &Profile, path &Path, twistAngle f32, startScale f32, endSc
   mut i = 0usize;
   while i < nr {
     imm f = if total > 0. {*dist[i] / total;} else {0.;};
-    imm scale = startScale + (endScale - startScale) * f;
+    imm scale = *scales[i];
     imm turn = twistAngle * f;
     imm fr = *frames[i];
     mut j = 0usize;

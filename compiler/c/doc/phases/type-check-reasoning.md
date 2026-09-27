@@ -250,7 +250,9 @@ method; a bare method name becomes `self.method`.
 
 `iNsTypeFindMethod` walks every candidate, tests each with `fnSigViableCall`,
 and **alters nothing**. Viability is: no more arguments than parameters, the
-receiver passable as parameter 0, every argument `iexpMatches`-compatible with
+receiver passable as parameter 0 (a virtual reference, which never coerces to
+the `&Trait` parameter 0 declares, where parameter 0 is a reference whose
+permission its own grants, as `permMatches` decides for a plain one), every argument `iexpMatches`-compatible with
 its parameter, and every unsupplied parameter carrying a default. Two viable
 candidates is `OverloadAmbiguous` and an error, not a tie-break.
 
