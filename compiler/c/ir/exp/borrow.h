@@ -26,6 +26,12 @@ int borrowAutoMatches(INode *from, RefNode *totype);
 // Retype a borrowed constant array literal to the reference type it is wanted as
 int borrowConstLitCoerce(INode *from, INode *totypedcl);
 
+// Is 'from' a '&uni' reference in a place, wanted as a shareable borrowed reference?
+int borrowUniReborrows(INode *from, INode *totypedcl);
+
+// Lend such a '&uni' reference by rewriting it to the reborrow '&mut *from'
+void borrowUniReborrow(INode **from, INode *totypedcl);
+
 void borrowPrint(RefNode *node);
 
 // Type check borrow node

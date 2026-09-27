@@ -989,7 +989,8 @@ it ([flow](../phases/flow.md), "Calls"):
 - `ShapeChanging` (`List`, `String`, `Dict`, `Pool`): its elements may move.
   Nothing reads it yet: it marks the containers a check to come will refuse an
   element borrow of through a shared path, Jon's 2018 rule, which waits on
-  `uni` reborrowing.
+  `uni` reborrowing: lending a `&uni` as a `&` or `&mut` is built, lending it
+  to another `&uni` is not.
 
 ### AtomicValue
 

@@ -292,7 +292,8 @@ values gets a `TupleNode` of its own on the same terms, each borrowed element
 carrying that scope, because a multi-value assignment checks every element
 against its own lval. A borrow the compiler
 injects records its lval's scope where it is built (`borrowMutRef`,
-`borrowAuto`), so it reaches a call as the written borrow would; and
+`borrowAuto`, and `borrowUniReborrow` for a `&uni` lent as a shareable
+borrow), so it reaches a call as the written borrow would; and
 `iexpGetLvalInfo` gives a dereferenced borrow expression or call result the
 scope on that reference's own type, since no variable holds it — a reference
 held in a variable keeps the variable's scope, because a declared type carries

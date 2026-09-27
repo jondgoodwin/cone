@@ -74,6 +74,46 @@ void borrowAuto(INode **from, INode *totypedcl) {
     *from = (INode*)borrownode;
 }
 
+// Is 'from' a '&uni' reference held in a place, wanted as a borrowed reference
+// that may be shared ('&', '&mut', '&imm' ...)? Handing it over lends it rather
+// than moving it: "a uni can be borrowed as mut or imm. After the borrowed
+// references' last use, you once again have the original uni reference"
+// (refperm.html, "Borrowed reference recovery"). A '&uni' wanted as a '&uni'
+// still moves. Note: totypedcl has already done GetTypeDcl
+int borrowUniReborrows(INode *from, INode *totypedcl) {
+    RefNode *fromtype = (RefNode*)iexpGetTypeDcl(from);
+    RefNode *totype = (RefNode*)totypedcl;
+    return fromtype->tag == RefTag && fromtype->region == borrowRef
+        && itypeGetTypeDcl(fromtype->perm) == (INode*)uniPerm
+        && totype->tag == RefTag && totype->region == borrowRef && !itypeIsMove(totypedcl)
+        && iexpIsLval(from);
+}
+
+// Lend a '&uni' reference as the borrowed reference 'totypedcl' wants, by
+// rewriting it to the reborrow '&mut *from' that borrowTypeCheck would build
+// if written out: the same permission check, and the lifetime of the variable
+// the reference is held in. Flow analysis then sees a borrow of '*from', which
+// freezes the reference while the borrow is used, and not a move of it.
+void borrowUniReborrow(INode **from, INode *totypedcl) {
+    RefNode *totype = (RefNode*)totypedcl;
+    StarNode *deref = newStarNode(DerefTag);
+    inodeLexCopy((INode*)deref, *from);
+    deref->vtexp = *from;
+    deref->vtype = ((RefNode*)iexpGetTypeDcl(*from))->vtexp;
+
+    INode *lvalperm = (INode*)immPerm;
+    uint16_t scope = 0;
+    INode *lvalvar = iexpGetLvalInfo((INode*)deref, &lvalperm, &scope);
+    if (lvalvar && lvalvar->tag == VarDclTag)
+        scope = ((VarDclNode*)lvalvar)->scope;
+
+    RefNode *reftype = newRefNodeFull(RefTag, *from, borrowRef, totype->perm, totype->vtexp);
+    reftype->scope = scope;
+    RefNode *borrownode = newRefNodeFull(BorrowTag, *from, borrowRef, totype->perm, (INode*)deref);
+    borrownode->vtype = (INode*)reftype;
+    *from = (INode*)borrownode;
+}
+
 // Can we safely auto-borrow to match expected type?
 // Note: totype has already done GetTypeDcl
 int borrowAutoMatches(INode *from, RefNode *totype) {

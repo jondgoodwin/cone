@@ -589,7 +589,8 @@ the holder; it does not access the source.
 **What holds what.** Each expression walked yields the loans its value may
 carry (a `PathSet`): a borrow, its new loan and whatever the holder at the root
 of the borrowed place holds (a reborrow `&mut *r`, or `&r`, keeps what `r`
-holds); a holder named, or a place read through it, what it holds; a recast, an
+holds; so does the reborrow type check builds for a `&uni` lent where a `&`
+or `&mut` is wanted, which is why `g(p); g(p)` is no move); a holder named, or a place read through it, what it holds; a recast, an
 `if`, a block, and a tuple, struct or array literal, the union of theirs; a
 call, below. An owning reference coerced to a borrowed one (`imm b &Pt = u`,
 `u` a `+so Pt`: a recast from an owning to a borrowed reference) is a borrow of
@@ -695,7 +696,8 @@ refuses such an element borrow of a container that changes shape (it declares
 `ShapeChanging`); the check is not built, because it would refuse ordinary
 code — reading a `List[String]` element through a `&List` parameter, a
 method reading its own `self` list field — until `uni` reborrowing makes the
-alternatives writable. `collection_flow_freeze`'s header and `refborref.html`
+alternatives writable (lending a `&uni` as a `&` or `&mut` is built; lending
+it to another `&uni` is not). `collection_flow_freeze`'s header and `refborref.html`
 pin each shape. Copies of one `&mut` reach one place two ways unchecked, and a
 global a callee changes is invisible.
 

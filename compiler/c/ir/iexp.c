@@ -133,6 +133,9 @@ int iexpCoerce(INode **from, INode *totype) {
             return iexpMatches(from, totypedcl, Coercion) != NoMatch && iexpCoerce(from, totype);
         return 0;
     case EqMatch:
+        // A '&uni' wanted as a shareable borrowed reference is lent, not moved
+        if (borrowUniReborrows(*from, totypedcl))
+            borrowUniReborrow(from, totypedcl);
         return 1;
     case CastSubtype: {
         INode *newfrom = (INode*)newRecastNode(*from, iexpCoerceType(*from, totypedcl));
