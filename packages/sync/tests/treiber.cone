@@ -1,0 +1,109 @@
+// Atomic[*Node], the head of a lock-free list: load, store, swap and
+// compareSwap on raw pointers, then a Treiber stack -- four threads each
+// pushing their own nodes onto one shared head at once, each push linking its
+// node to the head it saw and swinging the head to it with compareSwap, and
+// trying again from what it saw when another thread got there first. At the
+// end every node is on the list exactly once: the count and the sum of the
+// values are exact, every time. (An Atomic of a raw pointer has no add, sub or
+// bit operations: its methods say when they exist, and the compiler suite
+// pins the refusals.)
+
+mod treiber;
+
+import testing use *;
+import libc;
+import thread;
+import sync use *;
+
+struct Node {
+  pub next *Node;
+  pub val u64;
+}
+
+fn newNode(next *Node, val u64) *Node {
+  imm node = libc.malloc(mem.sizeof[Node]()) as *Node;
+  mem.writeRaw(node, Node[next, val]);
+  node;
+}
+
+fn valOf(p *Node) u64 {(p as &Node).val;}
+
+fn operations() {
+  imm none = 0usize as *Node;
+  imm a = newNode(none, 1u64);
+  imm b = newNode(none, 2u64);
+  imm h = Atomic[*Node].of(none);
+  expect(h.load() as usize == 0usize, "of then load: null");
+  h.store(a);
+  expectUInt(valOf(h.load()), 1u64, "store");
+  expectUInt(valOf(h.swap(b)), 1u64, "swap answers the pointer before");
+  expectUInt(valOf(h.load()), 2u64, "after swap");
+
+  mut seen = none;
+  mut ok = false;
+  seen, ok = h.compareSwap(b, a);
+  expectUInt(valOf(seen), 2u64, "compareSwap sees b");
+  expectBool(ok, true, "and stores a");
+  seen, ok = h.compareSwap(b, none);
+  expectUInt(valOf(seen), 1u64, "compareSwap sees a, not b");
+  expectBool(ok, false, "and does not store");
+  expectUInt(valOf(h.loadOrdered(MemOrder.Acquire[])), 1u64, "the failed compareSwap left it");
+  h.storeOrdered(none, MemOrder.Release[]);
+  expect(h.inner() as usize == 0usize, "storeOrdered, then inner: null");
+  libc.free(a as *u8);
+  libc.free(b as *u8);
+}
+
+// The stack's head, shared by every thread
+imm head Atomic[*Node];
+
+fn @initpure init() {
+  head = Atomic[*Node].of(0usize as *Node);
+}
+
+const perThread = 5000u64;
+
+// Push 'perThread' nodes, valued base + 1 upward
+fn pusher(base u64) u64 {
+  mut i = 0u64;
+  while i < perThread {
+    i = i + 1u64;
+    mut seen = head.load();
+    imm node = newNode(seen, base + i);
+    mut ok = false;
+    seen, ok = head.compareSwap(seen, node);
+    while !ok {
+      mem.writeRaw(node, Node[seen, base + i]);
+      seen, ok = head.compareSwap(seen, node);
+    }
+  }
+  i;
+}
+
+fn main() i32 {
+  initAll();
+  operations();
+  imm a = thread.start(0u64, &pusher);
+  imm b = thread.start(100000u64, &pusher);
+  imm c = thread.start(200000u64, &pusher);
+  imm d = thread.start(300000u64, &pusher);
+  imm pushed = a.join() + b.join() + c.join() + d.join();
+  expectUInt(pushed, 20000u64, "the pushes the four threads made");
+
+  // Walk the list: every node once
+  mut count = 0u64;
+  mut sum = 0u64;
+  mut p = head.load();
+  while p as usize != 0usize {
+    count = count + 1u64;
+    sum = sum + valOf(p);
+    imm next = (p as &Node).next;
+    libc.free(p as *u8);
+    p = next;
+  }
+  expectUInt(count, 20000u64, "the nodes on the stack");
+  // Each thread's values are base + 1 .. base + 5000: 4 * 12502500 plus
+  // 5000 * (0 + 100000 + 200000 + 300000)
+  expectUInt(sum, 3050010000u64, "the sum of their values");
+  done();
+}

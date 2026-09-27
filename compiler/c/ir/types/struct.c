@@ -2680,9 +2680,9 @@ static void structLayoutVariants(TypeCheckState *pstate, StructNode *node) {
 // pointer. Nothing else can be changed indivisibly in place: a float or a
 // struct has no atomic instruction, a traced reference stored atomically would
 // skip its write barrier, and an owning one would be duplicated or lost. Which
-// operations a type offers is its own business -- sync's 'Atomic[T]' takes
-// integers only for now -- so the marker admits every type any operation
-// takes. Asked as the type is laid out, and reported, when 'report' is set,
+// operations a type offers is its own business -- sync's 'Atomic[T]' gives
+// add and sub only where T is Integer -- so the marker admits every type any
+// operation takes. Asked as the type is laid out, and reported, when 'report' is set,
 // at the outermost place a generic's instance was asked for, where its type
 // argument was chosen. Answers 0 where the type is refused.
 static int structAtomicValueCheck(StructNode *node, int report) {

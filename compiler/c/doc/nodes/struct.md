@@ -998,9 +998,11 @@ and the compiler knows nothing else of that type. What it brings:
   (`Atomic[f64]` in the program, not the field in sync), and a refused
   instance's methods are not type checked (step 9), since each would refuse
   the same type again in terms of its body. Which operations a type offers is
-  its own affair: `Atomic[T]` takes an integer only, for now, by calling
-  `atomicAdd`, which refuses a `Bool` or a pointer at the instance
-  ([Intrinsic](intrinsic.md)).
+  its own affair: `Atomic[T]` requires `T is Integer or T is Bool or T is
+  Pointer`, just what the marker admits, so another `T` is refused as an unmet
+  requirement before the marker is asked; and its `add` and `sub` exist only
+  where `T is Integer`, its bit operations only where `T is Integer or T is
+  Bool` ([generic](generic.md), "Constraints").
 - **It moves**, as `Move` does, marked at the end of name resolution and at
   layout; `is Copy` beside it is `ErrorCopyMove` (step 11).
 - **It spreads outward** (`itypeHoldsAtomic`, below): a global whose type holds

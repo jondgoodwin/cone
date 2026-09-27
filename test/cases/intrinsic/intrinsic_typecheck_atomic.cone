@@ -12,6 +12,11 @@
 // scenario runs both ways (cases.toml) with the same expectations: a fallback
 // body is never checked at a type it was not written for.
 //
+// A generic that calls one for a type argument it does not constrain -- 'Bump'
+// below, whose 'add' has no 'where T is Integer', unlike sync's Atomic -- is
+// refused where the program made the instance, once, however many of its
+// methods call a refusing operation.
+//
 // Not here: a call outside 'trust'. Every atomic intrinsic is marked as one a
 // call can break memory safety with, but 'trust' does not exist yet.
 
@@ -43,6 +48,17 @@ fn classes() {
   imm x6 = mem.atomicLoad[&i32](rp, MemOrder.SeqCst[]);              //~ ErrorIntrinsicType "Bool or a raw pointer, and a reference"
   imm op = malloc(8usize) as *(+so i32);
   imm x7 = mem.atomicSwap[+so i32](op, +so 3i32, MemOrder.SeqCst[]); //~ ErrorIntrinsicType "Bool or a raw pointer, and a reference"
+}
+
+struct Bump[T] {
+  pub v T;
+  pub fn add(self &mut, n T) T {mem.atomicAdd[T](&mut v as *T, n, MemOrder.SeqCst[]);}
+  pub fn sub(self &mut, n T) T {mem.atomicSub[T](&mut v as *T, n, MemOrder.SeqCst[]);}
+}
+
+fn nested() {
+  mut bi = Bump[i32][1i32];
+  mut bb = Bump[Bool][true];                                         //~ ErrorIntrinsicType "and Bool is not one: the generic instance made here calls it"
 }
 
 fn constants(o MemOrder) {

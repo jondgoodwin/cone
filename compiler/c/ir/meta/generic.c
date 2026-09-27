@@ -244,12 +244,70 @@ static StructNode *genericNamedTrait(INode *node) {
     return (StructNode*)dcl;
 }
 
-// Append the clause 'subject is trait' to a where list
-static void genericAddClause(Nodes **wherep, INode *subject, INode *trait) {
+// The type a 'where' clause's name resolved to, where it names a type rather
+// than a trait: 'where T is Bool' [Jon 27 Sep], met by that type alone. NULL
+// for anything else; a generic type is not one until given its arguments.
+static INode *genericNamedType(INode *node) {
+    if (!isNameUseNode(node) || !isTypeNode(node))
+        return NULL;
+    INode *dcl = itypeGetTypeDcl(node);
+    if (dcl->tag == StructTag && ((dcl->flags & TraitType) || ((StructNode*)dcl)->genericinfo))
+        return NULL;
+    return node;
+}
+
+// Append the name a clause's subject 'is' to 'buf': a trait's or a type's
+static void genericTypeNameCat(char *buf, size_t size, INode *type, int depth);
+static void genericClauseNameCat(char *buf, size_t size, CastNode *clause) {
+    StructNode *trait = genericNamedTrait(clause->typ);
+    if (trait) {
+        size_t used = strlen(buf);
+        snprintf(buf + used, size - used, "%s", &trait->namesym->namestr);
+    }
+    else if (genericNamedType(clause->typ))
+        genericTypeNameCat(buf, size, clause->typ, 0);
+    else {
+        size_t used = strlen(buf);
+        snprintf(buf + used, size - used, "?");
+    }
+}
+
+// Append a condition to a where list
+static void genericAddCondition(Nodes **wherep, INode *cond) {
     if (*wherep == NULL)
         *wherep = newNodes(4);
-    nodesAdd(wherep, subject);
-    nodesAdd(wherep, trait);
+    nodesAdd(wherep, cond);
+}
+
+// Resolve and vet a condition's clauses: each subject a type parameter in
+// scope -- the generic's own, or the type's whose member this is -- that 'is'
+// a trait. Every clause is resolved and reported; 0 if any is refused.
+static int genericConditionNameRes(NameResState *pstate, INode *cond) {
+    if (cond->tag == OrLogicTag || cond->tag == AndLogicTag) {
+        int lok = genericConditionNameRes(pstate, ((LogicNode*)cond)->lexp);
+        int rok = genericConditionNameRes(pstate, ((LogicNode*)cond)->rexp);
+        return lok && rok;
+    }
+    CastNode *clause = (CastNode*)cond;
+    inodeNameRes(pstate, &clause->exp);
+    inodeNameRes(pstate, &clause->typ);
+    NameUseNode *subject = (NameUseNode*)clause->exp;
+    int ok = 1;
+    if (subject->dclnode == NULL)
+        ok = 0;   // reported as unknown where it was resolved
+    else if (subject->dclnode->tag != GenVarDclTag) {
+        errorMsgNode(clause->exp, ErrorWhereSubject,
+            "A 'where' clause constrains a type parameter of this generic, or of the generic type it is a member of, and %s is not one.",
+            &subject->namesym->namestr);
+        ok = 0;
+    }
+    if (genericNamedTrait(clause->typ) == NULL && genericNamedType(clause->typ) == NULL) {
+        if (!isNameUseNode(clause->typ) || ((NameUseNode*)clause->typ)->dclnode != NULL)
+            errorMsgNode(clause->typ, ErrorWhereTrait,
+                "What a type parameter 'is' in a 'where' clause is a trait or a type, and this is neither. (A generic trait's or type's instance is not built as a constraint yet.)");
+        ok = 0;
+    }
+    return ok;
 }
 
 void genericConstraintsNameRes(NameResState *pstate, Nodes *parms, Nodes **wherep) {
@@ -278,37 +336,19 @@ void genericConstraintsNameRes(NameResState *pstate, Nodes *parms, Nodes **where
                             &parm->namesym->namestr);
                     continue;
                 }
-                genericAddClause(&clauses, newNameUseFromDclNode((INode*)parm, *annotp), *annotp);
+                CastNode *clause = newIsNode(newNameUseFromDclNode((INode*)parm, *annotp), *annotp);
+                inodeLexCopy((INode*)clause, *annotp);
+                genericAddCondition(&clauses, (INode*)clause);
             }
         }
     }
 
-    // Each 'where' clause: its subject is a type parameter in scope -- the
-    // generic's own, or the type's whose member this is -- and it 'is' a trait
+    // Each written condition, kept whole or, where any of its clauses is
+    // refused, dropped whole: an 'or' missing one side would say something else
     if (*wherep) {
         for (nodesFor(*wherep, cnt, nodesp)) {
-            INode **subjectp = nodesp++;
-            --cnt;
-            inodeNameRes(pstate, subjectp);
-            inodeNameRes(pstate, nodesp);
-            NameUseNode *subject = (NameUseNode*)*subjectp;
-            int ok = 1;
-            if (subject->dclnode == NULL)
-                ok = 0;   // reported as unknown where it was resolved
-            else if (subject->dclnode->tag != GenVarDclTag) {
-                errorMsgNode(*subjectp, ErrorWhereSubject,
-                    "A 'where' clause constrains a type parameter of this generic, or of the generic type it is a member of, and %s is not one.",
-                    &subject->namesym->namestr);
-                ok = 0;
-            }
-            if (genericNamedTrait(*nodesp) == NULL) {
-                if (!isNameUseNode(*nodesp) || ((NameUseNode*)*nodesp)->dclnode != NULL)
-                    errorMsgNode(*nodesp, ErrorWhereTrait,
-                        "What a type parameter 'is' in a constraint is a trait, and this is not one. (A generic trait's instance is not built as a constraint yet.)");
-                ok = 0;
-            }
-            if (ok)
-                genericAddClause(&clauses, *subjectp, *nodesp);
+            if (genericConditionNameRes(pstate, *nodesp))
+                genericAddCondition(&clauses, *nodesp);
         }
     }
     *wherep = clauses;
@@ -372,14 +412,17 @@ static void genericDemandMatch(StructNode *trait, StructNode *type) {
 
 int genericTypeIs(INode *type, StructNode *trait) {
     INode *dcl = itypeGetTypeDcl(type);
-    // The compiler's grants: every type is exactly one of Move and Copy, and
-    // the integer types of 8 to 64 bits, signed and unsigned, are Integer
+    // The compiler's grants: every type is exactly one of Move and Copy, the
+    // integer types of 8 to 64 bits, signed and unsigned, are Integer, and the
+    // raw pointer types, '*T', are Pointer
     if (trait == moveTrait)
         return itypeIsMove(dcl);
     if (trait == copyTrait)
         return !itypeIsMove(dcl);
     if (trait == integerTrait
         && (dcl->tag == IntNbrTag || (dcl->tag == UintNbrTag && dcl != (INode*)boolType)))
+        return 1;
+    if (trait == pointerTrait && dcl->tag == PtrTag)
         return 1;
     if (dcl->tag != StructTag)
         return 0;
@@ -394,38 +437,88 @@ int genericTypeIs(INode *type, StructNode *trait) {
     return structMatches(trait, dcl, Monomorph) != NoMatch;
 }
 
-// The first clause of 'where' its arguments do not meet, as the index of its
-// pair, or -1 if every clause is met. A clause is evaluated where its subject
-// is one of 'parms', with that parameter's argument; any other clause's
-// subject was a parameter bound already, and the clause was evaluated then.
-static int genericUnmetClause(Nodes *where, Nodes *parms, Nodes *args, INode **argp, GenVarDclNode **parmp) {
-    if (where == NULL || parms == NULL || args == NULL)
-        return -1;
-    for (uint32_t i = 0; i + 1 < where->used; i += 2) {
-        INode *subject = nodesGet(where, i);
-        if (!isNameUseNode(subject))
-            continue;
+// What a condition comes to at an instance's arguments. Unknown is a
+// condition turning on a parameter not bound there.
+typedef enum {
+    WhereFalse,
+    WhereTrue,
+    WhereUnknown
+} WhereValue;
+
+// The type a clause asks about at these arguments: the argument, where its
+// subject is one of 'parms' (and '*parmp' is set to it); the subject itself,
+// where the clone that copied the clause substituted it; or NULL, where it is
+// another parameter, bound elsewhere
+static INode *genericClauseType(CastNode *clause, Nodes *parms, Nodes *args, GenVarDclNode **parmp) {
+    INode *subject = clause->exp;
+    *parmp = NULL;
+    if (isNameUseNode(subject)) {
         INode *dcl = ((NameUseNode*)subject)->dclnode;
-        for (uint32_t j = 0; j < parms->used && j < args->used; ++j) {
-            if (nodesGet(parms, j) != dcl)
-                continue;
-            INode *arg = nodesGet(args, j);
-            StructNode *trait = genericNamedTrait(nodesGet(where, i + 1));
-            if (arg && trait && !genericTypeIs(arg, trait)) {
-                *argp = arg;
-                *parmp = (GenVarDclNode*)dcl;
-                return (int)i;
+        if (dcl && dcl->tag == GenVarDclTag) {
+            for (uint32_t j = 0; parms && args && j < parms->used && j < args->used; ++j) {
+                if (nodesGet(parms, j) == dcl) {
+                    *parmp = (GenVarDclNode*)dcl;
+                    return nodesGet(args, j);
+                }
             }
-            break;
+            return NULL;
         }
     }
-    return -1;
+    return isTypeNode(subject) ? subject : NULL;
+}
+
+// Evaluate a condition at these arguments, 'or' and 'and' as in an expression,
+// the right side only where the left does not decide it. A lone clause is
+// decided only where its subject is one of 'parms': a clause over a parameter
+// bound already was decided then. Inside an 'or' or an 'and', a subject the
+// clone substituted is asked as it stands, since the whole is decided here.
+static WhereValue genericConditionValue(INode *cond, Nodes *parms, Nodes *args, int nested) {
+    if (cond->tag == OrLogicTag || cond->tag == AndLogicTag) {
+        WhereValue decides = cond->tag == OrLogicTag ? WhereTrue : WhereFalse;
+        WhereValue lval = genericConditionValue(((LogicNode*)cond)->lexp, parms, args, 1);
+        if (lval == decides)
+            return decides;
+        WhereValue rval = genericConditionValue(((LogicNode*)cond)->rexp, parms, args, 1);
+        if (rval == decides)
+            return decides;
+        return lval == WhereUnknown || rval == WhereUnknown ? WhereUnknown : rval;
+    }
+    GenVarDclNode *parm;
+    INode *type = genericClauseType((CastNode*)cond, parms, args, &parm);
+    StructNode *trait = genericNamedTrait(((CastNode*)cond)->typ);
+    INode *named = trait ? NULL : genericNamedType(((CastNode*)cond)->typ);
+    if (type == NULL || (trait == NULL && named == NULL) || (parm == NULL && !nested))
+        return WhereUnknown;
+    if (trait)
+        return genericTypeIs(type, trait) ? WhereTrue : WhereFalse;
+    // A type is met by itself alone
+    return itypeIsSame(type, named) ? WhereTrue : WhereFalse;
+}
+
+// The first condition of 'where' these arguments make false, or NULL if none
+// does. One left unknown is decided where the parameter it turns on is bound.
+static INode *genericUnmetCondition(Nodes *where, Nodes *parms, Nodes *args) {
+    if (where == NULL || parms == NULL || args == NULL)
+        return NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(where, cnt, nodesp)) {
+        if (genericConditionValue(*nodesp, parms, args, 0) == WhereFalse)
+            return *nodesp;
+    }
+    return NULL;
 }
 
 // Append a type's name, with an instance's type arguments, to 'buf'
 static void genericTypeNameCat(char *buf, size_t size, INode *type, int depth) {
     INode *dcl = itypeGetTypeDcl(type);
     size_t used = strlen(buf);
+    // A raw pointer by what it points at, as it is written: '*Node'
+    if (dcl->tag == PtrTag && depth < 4 && isTypeNode(((StarNode*)dcl)->vtexp)) {
+        snprintf(buf + used, size - used, "*");
+        genericTypeNameCat(buf, size, ((StarNode*)dcl)->vtexp, depth + 1);
+        return;
+    }
     snprintf(buf + used, size - used, "%s", itypeName(dcl));
     Nodes *args = dcl->tag == StructTag && depth < 4 ? itypeInstanceTypeArgs(dcl) : NULL;
     if (args == NULL)
@@ -439,6 +532,62 @@ static void genericTypeNameCat(char *buf, size_t size, INode *type, int depth) {
     }
     used = strlen(buf);
     snprintf(buf + used, size - used, "]");
+}
+
+// Append a condition to 'buf' as it reads: 'T is A or T is B', an 'or' inside
+// an 'and' in parentheses ('grouped'), a substituted subject by its type's name
+static void genericConditionCat(char *buf, size_t size, INode *cond, int grouped) {
+    size_t used = strlen(buf);
+    if (cond->tag == OrLogicTag || cond->tag == AndLogicTag) {
+        int paren = grouped && cond->tag == OrLogicTag;
+        int inand = cond->tag == AndLogicTag;
+        if (paren)
+            snprintf(buf + used, size - used, "(");
+        genericConditionCat(buf, size, ((LogicNode*)cond)->lexp, inand);
+        used = strlen(buf);
+        snprintf(buf + used, size - used, cond->tag == OrLogicTag ? " or " : " and ");
+        genericConditionCat(buf, size, ((LogicNode*)cond)->rexp, inand);
+        used = strlen(buf);
+        if (paren)
+            snprintf(buf + used, size - used, ")");
+        return;
+    }
+    INode *subject = ((CastNode*)cond)->exp;
+    if (isNameUseNode(subject) && ((NameUseNode*)subject)->dclnode
+        && ((NameUseNode*)subject)->dclnode->tag == GenVarDclTag)
+        snprintf(buf + used, size - used, "%s", &((NameUseNode*)subject)->namesym->namestr);
+    else if (isTypeNode(subject))
+        genericTypeNameCat(buf, size, subject, 0);
+    else
+        snprintf(buf + used, size - used, "?");
+    used = strlen(buf);
+    snprintf(buf + used, size - used, " is ");
+    genericClauseNameCat(buf, size, (CastNode*)cond);
+}
+
+// Does the condition ask about parameter 'parm'?
+static int genericConditionNames(INode *cond, INode *parm) {
+    if (cond->tag == OrLogicTag || cond->tag == AndLogicTag)
+        return genericConditionNames(((LogicNode*)cond)->lexp, parm)
+            || genericConditionNames(((LogicNode*)cond)->rexp, parm);
+    INode *subject = ((CastNode*)cond)->exp;
+    return isNameUseNode(subject) && ((NameUseNode*)subject)->dclnode == parm;
+}
+
+// Append each of 'parms' the condition asks about, with its argument: 'T = f64'
+static void genericBindingsCat(char *buf, size_t size, INode *cond, Nodes *parms, Nodes *args) {
+    int first = 1;
+    for (uint32_t j = 0; j < parms->used && j < args->used; ++j) {
+        if (!genericConditionNames(cond, nodesGet(parms, j)) || nodesGet(args, j) == NULL)
+            continue;
+        size_t used = strlen(buf);
+        snprintf(buf + used, size - used, "%s%s = ", first ? "" : ", ",
+            &((GenVarDclNode*)nodesGet(parms, j))->namesym->namestr);
+        genericTypeNameCat(buf, size, nodesGet(args, j), 0);
+        first = 0;
+    }
+    if (first)
+        snprintf(buf, size, "these arguments");
 }
 
 // A constraint on a generic function or type is a requirement: an instance
@@ -460,18 +609,30 @@ static int genericRequirementsMet(FnCallNode *srcgencall, INode *generic, Generi
             name = owner->namesym;
         }
     }
-    INode *arg;
-    GenVarDclNode *parm;
-    int clause = genericUnmetClause(where, parms, srcgencall->args, &arg, &parm);
-    if (clause < 0)
+    INode *cond = genericUnmetCondition(where, parms, srcgencall->args);
+    if (cond == NULL)
         return 1;
-    StructNode *trait = genericNamedTrait(nodesGet(where, clause + 1));
+    // A condition joined by 'or' or 'and' is false as a whole, and named whole
+    if (cond->tag != IsTag) {
+        char text[256] = "";
+        genericConditionCat(text, sizeof(text), cond, 0);
+        char bound[256] = "";
+        genericBindingsCat(bound, sizeof(bound), cond, parms, srcgencall->args);
+        errorMsgNode((INode*)srcgencall, ErrorWhereUnmet, "%s requires %s, and it is false for %s.",
+            &name->namestr, text, bound);
+        return 0;
+    }
+    GenVarDclNode *parm;
+    INode *arg = genericClauseType((CastNode*)cond, parms, srcgencall->args, &parm);
+    StructNode *trait = genericNamedTrait(((CastNode*)cond)->typ);
     char argname[256] = "";
     genericTypeNameCat(argname, sizeof(argname), arg, 0);
-    int usermarker = genericTraitIsMarker(trait) && !corelibIsBuiltinTrait((INode*)trait);
+    char isname[256] = "";
+    genericClauseNameCat(isname, sizeof(isname), (CastNode*)cond);
+    int usermarker = trait && genericTraitIsMarker(trait) && !corelibIsBuiltinTrait((INode*)trait);
     errorMsgNode((INode*)srcgencall, ErrorWhereUnmet,
         "%s requires %s is %s, and %s is not %s.%s",
-        &name->namestr, &parm->namesym->namestr, &trait->namesym->namestr, argname, &trait->namesym->namestr,
+        &name->namestr, &parm->namesym->namestr, isname, argname, isname,
         usermarker ? " A trait requiring nothing of a value is met only by a type declaring it with 'is'." : "");
     return 0;
 }
@@ -485,9 +646,7 @@ static Nodes *genericAbsentMembers(StructNode *generic, Nodes *args) {
     for (nodelistFor(&generic->nodelist, cnt, nodesp)) {
         if ((*nodesp)->tag != FnDclTag || ((FnDclNode*)*nodesp)->where == NULL)
             continue;
-        INode *arg;
-        GenVarDclNode *parm;
-        if (genericUnmetClause(((FnDclNode*)*nodesp)->where, generic->genericinfo->parms, args, &arg, &parm) < 0)
+        if (genericUnmetCondition(((FnDclNode*)*nodesp)->where, generic->genericinfo->parms, args) == NULL)
             continue;
         if (absent == NULL)
             absent = newNodes(4);
@@ -525,16 +684,28 @@ static StructNode *genericTemplateOf(StructNode *inst) {
     return NULL;
 }
 
-// Report a member absent because its clause is unmet
+// Report a member absent because its condition 'cond' is false at 'args'
 static void genericAbsentMsg(INode *errnode, char *what, Name *name, char *typename,
-        FnDclNode *fn, int clause, INode *arg, GenVarDclNode *parm) {
-    StructNode *trait = genericNamedTrait(nodesGet(fn->where, clause + 1));
+        INode *cond, Nodes *parms, Nodes *args) {
+    if (cond->tag != IsTag) {
+        char text[256] = "";
+        genericConditionCat(text, sizeof(text), cond, 0);
+        char bound[256] = "";
+        genericBindingsCat(bound, sizeof(bound), cond, parms, args);
+        errorMsgNode(errnode, ErrorWhereAbsent,
+            "No %s %s for %s: it exists only where %s, and that is false for %s.",
+            what, &name->namestr, typename, text, bound);
+        return;
+    }
+    GenVarDclNode *parm;
+    INode *arg = genericClauseType((CastNode*)cond, parms, args, &parm);
     char argname[256] = "";
     genericTypeNameCat(argname, sizeof(argname), arg, 0);
+    char isname[256] = "";
+    genericClauseNameCat(isname, sizeof(isname), (CastNode*)cond);
     errorMsgNode(errnode, ErrorWhereAbsent,
         "No %s %s for %s: it exists only where %s is %s, and %s is not %s.",
-        what, &name->namestr, typename, &parm->namesym->namestr, &trait->namesym->namestr,
-        argname, &trait->namesym->namestr);
+        what, &name->namestr, typename, &parm->namesym->namestr, isname, argname, isname);
 }
 
 int genericReportAbsent(INode *errnode, INode *typedcl, Name *name) {
@@ -561,15 +732,13 @@ int genericReportAbsent(INode *errnode, INode *typedcl, Name *name) {
     Nodes *args = itypeInstanceTypeArgs(typedcl);
     while (cnt--) {
         FnDclNode *fn = (FnDclNode*)*candp++;
-        INode *arg;
-        GenVarDclNode *parm;
-        int clause = genericUnmetClause(fn->where, generic->genericinfo->parms, args, &arg, &parm);
-        if (clause < 0)
+        INode *cond = genericUnmetCondition(fn->where, generic->genericinfo->parms, args);
+        if (cond == NULL)
             continue;
         char typename[256] = "";
         genericTypeNameCat(typename, sizeof(typename), typedcl, 0);
         genericAbsentMsg(errnode, (fn->flags & FlagMethFld) ? "method" : "function", name, typename,
-            fn, clause, arg, parm);
+            cond, generic->genericinfo->parms, args);
         return 1;
     }
     return 0;
@@ -599,13 +768,10 @@ int genericReportTemplateMember(INode *errnode, FnDclNode *fn) {
     // failed a clause, so the whole condition is named; the instantiation trace
     // says which instance it was
     char clauses[256] = "";
-    for (uint32_t i = 0; i + 1 < fn->where->used; i += 2) {
-        INode *subject = nodesGet(fn->where, i);
-        StructNode *trait = genericNamedTrait(nodesGet(fn->where, i + 1));
+    for (uint32_t i = 0; i < fn->where->used; ++i) {
         size_t used = strlen(clauses);
-        snprintf(clauses + used, sizeof(clauses) - used, "%s%s is %s", i ? " and " : "",
-            isNameUseNode(subject) ? &((NameUseNode*)subject)->namesym->namestr : "?",
-            trait ? &trait->namesym->namestr : "?");
+        snprintf(clauses + used, sizeof(clauses) - used, i ? " and " : "");
+        genericConditionCat(clauses, sizeof(clauses), nodesGet(fn->where, i), fn->where->used > 1);
     }
     errorMsgNode(errnode, ErrorWhereAbsent,
         "%s exists only where %s, and the instance of %s naming it here does not meet that.",

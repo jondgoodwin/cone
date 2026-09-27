@@ -1,11 +1,12 @@
 // The sync package: what threads share safely. It holds the atomic value
-// Atomic[T], a number that several threads may read and change at once
-// without a lock, each change indivisible; the futex, the one way a thread
-// sleeps until another wakes it; and the locks built on the futex: Mutex,
-// RwLock, Condvar and Once. Channels are to join them. Windows only for now:
-// the futex's three functions are the package's only calls to the OS.
+// Atomic[T], an integer, a Bool or a raw pointer that several threads may
+// read and change at once without a lock, each change indivisible; the futex,
+// the one way a thread sleeps until another wakes it; and the locks built on
+// the futex: Mutex, RwLock, Condvar and Once. Channels are to join them.
+// Windows only for now: the futex's three functions are the package's only
+// calls to the OS.
 //
-//   Atomic[T]      a number changed only indivisibly           (below)
+//   Atomic[T]      a value changed only indivisibly             (below)
 //   futexWait, futexWake, futexWakeAll                           (THE FUTEX)
 //   Mutex          one thread at a time                          (THE LOCKS)
 //   RwLock         many readers, or one writer
@@ -35,24 +36,32 @@
 // 'const'. The compiler knows this through the marker Atomic declares,
 // 'AtomicValue'; it knows nothing else of this package.
 //
-// T is an integer type of 8 to 64 bits, 'usize' and 'isize' among them.
-// Atomic[Bool] and an atomic raw pointer are to come as types of their own
-// with fewer operations (no add or sub); for now another T is refused where
-// the Atomic is named.
+// T is an integer type of 8 to 64 bits ('usize' and 'isize' among them), a
+// Bool, or a raw pointer, '*T': what the type's 'where' clause says, and just
+// what the AtomicValue marker admits. Any other T is refused where the Atomic
+// is named. Which operations an Atomic has depends on its T, each method's
+// own 'where' clause saying when it exists:
 //
 //   Atomic[T].of(v)          a new atomic value holding v
 //   a.load()                 the value
 //   a.store(v)               put v there
 //   a.swap(v)                put v there, answering the value before
-//   a.add(v), a.sub(v)       add or subtract v, answering the value before;
-//                            both wrap
-//   a.bitAnd(v), a.bitOr(v), a.bitXor(v)
-//                            the bitwise operation with v, answering the
-//                            value before ('and' and 'or' are keywords)
 //   a.compareSwap(e, d)      put d there if the value is e, answering the
 //                            value seen and whether d was stored
 //   a.inner()                the value, taken out of an Atomic the caller
 //                            holds by value: nobody else can be reaching it
+//                            -- these for every T; and
+//   a.bitAnd(v), a.bitOr(v), a.bitXor(v)
+//                            the bitwise operation with v, answering the
+//                            value before ('and' and 'or' are keywords):
+//                            for an integer or a Bool, as flags
+//   a.add(v), a.sub(v)       add or subtract v, answering the value before;
+//                            both wrap: for an integer only
+//
+// So 'Atomic[Bool]' is a flag, set with store or bitOr and tested with load,
+// and 'Atomic[*Node]' is the head of a lock-free list, moved on with
+// compareSwap. 'flag.add(true)' is refused where it is written, saying that
+// add exists only where T is Integer.
 //
 // Each operation above is sequentially consistent (MemOrder.SeqCst), the
 // strongest ordering: every thread sees all such operations in one order,
@@ -222,7 +231,7 @@ mod sync;
 
 import libc;
 
-pub struct Atomic[T] is AtomicValue, Move {
+pub struct Atomic[T] is AtomicValue, Move where T is Integer or T is Bool or T is Pointer {
   value T;
 
   // A new atomic value holding v
@@ -241,19 +250,19 @@ pub struct Atomic[T] is AtomicValue, Move {
   pub fn swap(self &opaq, v T) T {
     mem.atomicSwap[T](self as *T, v, MemOrder.SeqCst[]);
   }
-  pub fn add(self &opaq, v T) T {
+  pub fn add(self &opaq, v T) T where T is Integer {
     mem.atomicAdd[T](self as *T, v, MemOrder.SeqCst[]);
   }
-  pub fn sub(self &opaq, v T) T {
+  pub fn sub(self &opaq, v T) T where T is Integer {
     mem.atomicSub[T](self as *T, v, MemOrder.SeqCst[]);
   }
-  pub fn bitAnd(self &opaq, v T) T {
+  pub fn bitAnd(self &opaq, v T) T where T is Integer or T is Bool {
     mem.atomicAnd[T](self as *T, v, MemOrder.SeqCst[]);
   }
-  pub fn bitOr(self &opaq, v T) T {
+  pub fn bitOr(self &opaq, v T) T where T is Integer or T is Bool {
     mem.atomicOr[T](self as *T, v, MemOrder.SeqCst[]);
   }
-  pub fn bitXor(self &opaq, v T) T {
+  pub fn bitXor(self &opaq, v T) T where T is Integer or T is Bool {
     mem.atomicXor[T](self as *T, v, MemOrder.SeqCst[]);
   }
   pub fn compareSwap(self &opaq, expected T, desired T) T, Bool {
@@ -290,7 +299,7 @@ pub struct Atomic[T] is AtomicValue, Move {
       else {mem.atomicSwap[T](self as *T, v, MemOrder.SeqCst[]);}
     }
   }
-  pub fn addOrdered(self &opaq, v T, order MemOrder) T {
+  pub fn addOrdered(self &opaq, v T, order MemOrder) T where T is Integer {
     match order {
       case is MemOrder.Relaxed {mem.atomicAdd[T](self as *T, v, MemOrder.Relaxed[]);}
       case is MemOrder.Acquire {mem.atomicAdd[T](self as *T, v, MemOrder.Acquire[]);}
@@ -299,7 +308,7 @@ pub struct Atomic[T] is AtomicValue, Move {
       else {mem.atomicAdd[T](self as *T, v, MemOrder.SeqCst[]);}
     }
   }
-  pub fn subOrdered(self &opaq, v T, order MemOrder) T {
+  pub fn subOrdered(self &opaq, v T, order MemOrder) T where T is Integer {
     match order {
       case is MemOrder.Relaxed {mem.atomicSub[T](self as *T, v, MemOrder.Relaxed[]);}
       case is MemOrder.Acquire {mem.atomicSub[T](self as *T, v, MemOrder.Acquire[]);}
@@ -308,7 +317,7 @@ pub struct Atomic[T] is AtomicValue, Move {
       else {mem.atomicSub[T](self as *T, v, MemOrder.SeqCst[]);}
     }
   }
-  pub fn bitAndOrdered(self &opaq, v T, order MemOrder) T {
+  pub fn bitAndOrdered(self &opaq, v T, order MemOrder) T where T is Integer or T is Bool {
     match order {
       case is MemOrder.Relaxed {mem.atomicAnd[T](self as *T, v, MemOrder.Relaxed[]);}
       case is MemOrder.Acquire {mem.atomicAnd[T](self as *T, v, MemOrder.Acquire[]);}
@@ -317,7 +326,7 @@ pub struct Atomic[T] is AtomicValue, Move {
       else {mem.atomicAnd[T](self as *T, v, MemOrder.SeqCst[]);}
     }
   }
-  pub fn bitOrOrdered(self &opaq, v T, order MemOrder) T {
+  pub fn bitOrOrdered(self &opaq, v T, order MemOrder) T where T is Integer or T is Bool {
     match order {
       case is MemOrder.Relaxed {mem.atomicOr[T](self as *T, v, MemOrder.Relaxed[]);}
       case is MemOrder.Acquire {mem.atomicOr[T](self as *T, v, MemOrder.Acquire[]);}
@@ -326,7 +335,7 @@ pub struct Atomic[T] is AtomicValue, Move {
       else {mem.atomicOr[T](self as *T, v, MemOrder.SeqCst[]);}
     }
   }
-  pub fn bitXorOrdered(self &opaq, v T, order MemOrder) T {
+  pub fn bitXorOrdered(self &opaq, v T, order MemOrder) T where T is Integer or T is Bool {
     match order {
       case is MemOrder.Relaxed {mem.atomicXor[T](self as *T, v, MemOrder.Relaxed[]);}
       case is MemOrder.Acquire {mem.atomicXor[T](self as *T, v, MemOrder.Acquire[]);}

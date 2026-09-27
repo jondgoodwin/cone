@@ -10,7 +10,7 @@
 typedef struct GenericInfo {
     Nodes *parms;            // Declared parameter nodes w/ defaults (GenVarTag)
     Nodes *memonodes;        // Pairs of memoized generic calls and cloned bodies
-    Nodes *where;            // A generic type's constraints: pairs of a use of a parameter and the trait it 'is'
+    Nodes *where;            // A generic type's constraints: conditions, all required (below)
 } GenericInfo;
 
 // Create a new generic info block
@@ -52,19 +52,23 @@ FnDclNode *genericMethodInstance(TypeCheckState *pstate, FnCallNode *callnode, F
 // Is 'fn' one of the instances made of generic function or method 'generic'?
 int genericIsInstanceOf(INode *fn, FnDclNode *generic);
 
-// Constraints: 'where T is Name and ...', and the inline '[T Name + Name]'.
+// Constraints: 'where T is Name and ... or ...', and the inline '[T Name + Name]'.
 //
-// A constraint is held as a pair in a 'where' list: a use of the type
-// parameter it constrains, and a use of the trait that parameter 'is'. A
-// generic type's own list is its GenericInfo's; a function's -- a generic
-// function's requirements, a generic type's method's conditions -- is its
-// FnDcl's. Each clause is checked by evaluating it once the parameter's
-// argument is known, never solved and never used to infer.
+// A 'where' list holds conditions, every one of which must hold: the operands
+// of the 'and's at the top of what was written, each in its own element. A
+// condition is a clause, 'T is Name' -- an IsTag CastNode whose 'exp' is a use
+// of the type parameter it constrains and whose 'typ' is a use of the trait --
+// or an OrLogicTag or AndLogicTag LogicNode joining two conditions. A generic
+// type's own list is its GenericInfo's; a function's -- a generic function's
+// requirements, a generic type's method's conditions -- is its FnDcl's. Each
+// condition is checked by evaluating it once the parameters' arguments are
+// known, never solved and never used to infer.
 
 // Resolve a declaration's constraints, once its type parameters are hooked:
 // fold what each parameter's annotation names into 'where' as clauses of its
-// own, and resolve and vet every clause, dropping any that is not a type
-// parameter of this generic, or of the type it is a member of, and a trait
+// own, and resolve and vet every clause, dropping any condition with a clause
+// whose subject is not a type parameter of this generic, or of the type it is
+// a member of, or whose name is not a trait
 void genericConstraintsNameRes(NameResState *pstate, Nodes *parms, Nodes **wherep);
 
 // Is 'type' what 'trait' says, as a constraint asks it? A marker trait -- one

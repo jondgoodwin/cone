@@ -349,13 +349,14 @@ enum ErrorCode {
     ErrorAtomicValueType = 1184, // An atomic value's one field of a type no atomic operation acts on: not an integer of 8 to 64 bits, a Bool or a raw pointer
     ErrorAtomicValueConst = 1185, // A 'const' whose type holds an atomic value: each use of a const is a fresh copy, which no atomic operation could share
 
-    // Generic constraints: 'where T is Name and ...', and '[T Name + Name]' (parser/parsefnflow.c, parseWhere; ir/meta/generic.c)
+    // Generic constraints: 'where T is Name and ... or ...', and '[T Name + Name]' (parser/parsefnflow.c, parseWhere; ir/meta/generic.c)
     ErrorWhereUnmet = 1186,     // An instance of a generic function or type whose type arguments do not meet one of its constraints
     ErrorWhereAbsent = 1187,    // A method or function of a generic type's instance that does not exist there, its 'where' clause unmet
-    ErrorWhereForm = 1188,      // A 'where' clause not of the form built: 'T is Name', '+'-joined traits, clauses joined by 'and'
+    ErrorWhereForm = 1188,      // A 'where' clause not of the form built: 'T is Name', '+'-joined traits, clauses joined by 'and' and 'or', grouped by parentheses
     ErrorWhereSubject = 1189,   // A 'where' clause's subject that is not a type parameter of the generic or of the generic type it is a member of
     ErrorWhereTrait = 1190,     // What a 'where' clause's subject 'is' names no trait: a type, or a generic trait's instance
     ErrorWhereNoParms = 1191,   // A 'where' clause on a declaration with no type parameters to constrain: not generic, nor a member of a generic type
+    ErrorGenParmOr = 1192,      // 'or' after a type parameter's traits, '[T A or B]': those are all required, and a choice is written in a 'where' clause
 
     // Warnings
     WarnCode = 3000,
