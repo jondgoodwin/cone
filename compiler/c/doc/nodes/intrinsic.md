@@ -104,7 +104,7 @@ type while each call gives its own orderings.
    the outermost place that instantiated it, where the program chose the type,
    and once there: a generic type whose methods call `atomicAdd[T]` for a `T`
    it does not constrain is refused at the program's `Bump[Bool]`, by the first
-   of those methods, not in the generic's source once per method. (sync's
+   of those methods, not in the generic's source once per method. (core's
    `Atomic[T]` says with `where T is Integer` that its `add` exists only for
    an integer, so an `Atomic[Bool]` never reaches this.) Then `intrinsicDclTypeCheck`: a declared
    intrinsic's instance has no body to check; its `typearg` is type checked and

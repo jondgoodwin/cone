@@ -200,7 +200,7 @@ void stdlibInit(int ptrsize) {
     // never changes'. It is a struct of one field, an integer, a Bool or a raw
     // pointer (structAtomicValueCheck), and it moves. A value holding one
     // anywhere inline (itypeHoldsAtomic) is never placed in read-only memory,
-    // nor held in a 'const'. The sync package's 'Atomic[T]' declares it; the
+    // nor held in a 'const'. The core package's 'Atomic[T]' declares it; the
     // compiler knows nothing else of that type.
     atomicValueTrait = newBuiltinTrait(atomicValueTraitName);
     // 'Integer' [Jon 27 Sep]: the integer types, signed and unsigned, of 8 to

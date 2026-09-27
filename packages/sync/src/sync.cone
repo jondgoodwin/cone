@@ -1,15 +1,17 @@
-// The sync package: what threads share safely. It holds the atomic value
-// Atomic[T], an integer, a Bool or a raw pointer that several threads may
-// read and change at once without a lock, each change indivisible; 'arc',
-// the region whose owners of one value several threads may hold; the futex,
-// the one way a thread sleeps until another wakes it; the locks built on
-// the futex: Mutex, RwLock, Condvar and Once; and the channel, a pipe of
-// values from any number of threads to one, unbounded or bounded, or from
-// one thread to one. Windows only for now: the futex's three functions, a
-// yield, a clock and a flush of every processor's stores are the package's
-// only calls to the OS.
+// The sync package: what threads share safely, where it needs the OS. It
+// holds 'arc', the region whose owners of one value several threads may
+// hold; the futex, the one way a thread sleeps until another wakes it; the
+// locks built on the futex: Mutex, RwLock, Condvar and Once; and the
+// channel, a pipe of values from any number of threads to one, unbounded or
+// bounded, or from one thread to one. Windows only for now: the futex's
+// three functions, a yield, a clock and a flush of every processor's stores
+// are the package's only calls to the OS.
 //
-//   Atomic[T]      a value changed only indivisibly             (below)
+// The atomic value they are built on, Atomic[T], an integer, a Bool or a raw
+// pointer changed only indivisibly, is core's, in every module without an
+// import: it needs nothing of the OS (as Rust keeps its atomics in
+// 'core::sync::atomic'). core.cone's ATOMIC VALUES section is its guide.
+//
 //   arc            rc whose count is atomic: '+arc-imm T[...]'  (SHARED OWNERS)
 //   futexWait, futexWake, futexWakeAll                           (THE FUTEX)
 //   Mutex          one thread at a time                          (THE LOCKS)
@@ -18,88 +20,6 @@
 //   Once           a function run exactly once, however many threads ask
 //   Channel[T]     values sent by many threads, or one, taken by one
 //                                                                (CHANNELS)
-//
-// ATOMIC VALUES.
-//
-//   mod hits;
-//   import sync use *;
-//
-//   struct Stats {
-//     pub name u32;
-//     pub hits Atomic[u64];        // atomic because of its type
-//   }
-//
-//   fn count(stats &Stats) {
-//     stats.hits.add(1u64);        // one indivisible add
-//     imm n = stats.hits.load();   // the number itself
-//   }
-//
-// An Atomic is changed only by its own operations, and those work through any
-// reference to it, even an 'imm' one: 'imm' means that nothing changes except
-// inside the atomic values it holds [Jon 26 Sep]. So a value holding one --
-// in a field, an array, a tuple or an enum's variant, however deep -- is never
-// placed in read-only memory, even as an 'imm' global, and may not be a
-// 'const'. The compiler knows this through the marker Atomic declares,
-// 'AtomicValue'; it knows nothing else of this package.
-//
-// T is an integer type of 8 to 64 bits ('usize' and 'isize' among them), a
-// Bool, or a raw pointer, '*T': what the type's 'where' clause says, and just
-// what the AtomicValue marker admits. Any other T is refused where the Atomic
-// is named. Which operations an Atomic has depends on its T, each method's
-// own 'where' clause saying when it exists:
-//
-//   Atomic[T].of(v)          a new atomic value holding v
-//   a.load()                 the value
-//   a.store(v)               put v there
-//   a.swap(v)                put v there, answering the value before
-//   a.compareSwap(e, d)      put d there if the value is e, answering the
-//                            value seen and whether d was stored
-//   a.inner()                the value, taken out of an Atomic the caller
-//                            holds by value: nobody else can be reaching it
-//                            -- these for every T; and
-//   a.bitAnd(v), a.bitOr(v), a.bitXor(v)
-//                            the bitwise operation with v, answering the
-//                            value before ('and' and 'or' are keywords):
-//                            for an integer or a Bool, as flags
-//   a.add(v), a.sub(v)       add or subtract v, answering the value before;
-//                            both wrap: for an integer only
-//
-// So 'Atomic[Bool]' is a flag, set with store or bitOr and tested with load,
-// and 'Atomic[*Node]' is the head of a lock-free list, moved on with
-// compareSwap. 'flag.add(true)' is refused where it is written, saying that
-// add exists only where T is Integer.
-//
-// Each operation above is sequentially consistent (MemOrder.SeqCst), the
-// strongest ordering: every thread sees all such operations in one order,
-// and nothing before or after one moves across it. That is right for nearly
-// every use. An expert who needs a weaker ordering names it with the same
-// operation's 'Ordered' form, which takes a MemOrder after the other
-// arguments: a.loadOrdered(MemOrder.Acquire[]), a.addOrdered(1u64,
-// MemOrder.Relaxed[]), a.compareSwapOrdered(e, d, success, failure). An
-// ordering the operation cannot have -- a load's Release or AcqRel, a store's
-// Acquire or AcqRel, a compareSwap failure ordering of Release, AcqRel or one
-// stronger than its success ordering -- ends the program with a message on
-// stderr, through the C library's 'abort', since the ordering is only known
-// as the program runs (core's mem operations refuse it where it is written,
-// which these forms cannot, taking it as a parameter). Each form chooses its
-// instruction by a 'match' on the ordering as it runs. Inlining a call whose
-// ordering is a constant can fold that branch away, and the optimizer conec
-// runs today does so only sometimes, so where one branch less matters, core's
-// mem.atomicAdd and the rest take the ordering at the call and are always the
-// one instruction.
-//
-// THE HOLES, until the compiler's rules around atomics are built:
-// - The operations take their receiver as '&opaq', which any reference
-//   becomes, so nothing yet refuses a plain read or write of an atomic's
-//   whole value where another thread may reach it: '*r = s' through a
-//   '&mut Stats' replaces 'hits' plainly. The 'atomic' permission, and
-//   plain writes only through a unique path, are the rules to come.
-// - Nothing checks yet that what is handed to another thread is safe to
-//   share (the thread package says so too).
-//
-// How it is laid out. An Atomic[T] is its T, nothing more: the same size and
-// alignment. Each operation reaches the value through a raw pointer to it and
-// calls core's mem intrinsic for the operation, one atomic instruction.
 //
 // THE FUTEX. The foundation every lock here is built on, and what the thread
 // package's parking is built on: a 32-bit atomic word that threads sleep on
@@ -342,165 +262,7 @@ mod sync;
 
 import libc;
 
-pub struct Atomic[T] is AtomicValue, Move where T is Integer or T is Bool or T is Pointer {
-  value T;
-
-  // A new atomic value holding v
-  pub fn of(v T) Atomic[T] {Atomic[T][v];}
-
-  // The value, taken out of an Atomic held by value, which nobody else can be
-  // reaching: an ordinary read
-  pub fn inner(self) T {value;}
-
-  pub fn load(self &opaq) T {
-    mem.atomicLoad[T](self as *T, MemOrder.SeqCst[]);
-  }
-  pub fn store(self &opaq, v T) {
-    mem.atomicStore[T](self as *T, v, MemOrder.SeqCst[]);
-  }
-  pub fn swap(self &opaq, v T) T {
-    mem.atomicSwap[T](self as *T, v, MemOrder.SeqCst[]);
-  }
-  pub fn add(self &opaq, v T) T where T is Integer {
-    mem.atomicAdd[T](self as *T, v, MemOrder.SeqCst[]);
-  }
-  pub fn sub(self &opaq, v T) T where T is Integer {
-    mem.atomicSub[T](self as *T, v, MemOrder.SeqCst[]);
-  }
-  pub fn bitAnd(self &opaq, v T) T where T is Integer or T is Bool {
-    mem.atomicAnd[T](self as *T, v, MemOrder.SeqCst[]);
-  }
-  pub fn bitOr(self &opaq, v T) T where T is Integer or T is Bool {
-    mem.atomicOr[T](self as *T, v, MemOrder.SeqCst[]);
-  }
-  pub fn bitXor(self &opaq, v T) T where T is Integer or T is Bool {
-    mem.atomicXor[T](self as *T, v, MemOrder.SeqCst[]);
-  }
-  pub fn compareSwap(self &opaq, expected T, desired T) T, Bool {
-    mem.atomicCompareSwap[T](self as *T, expected, desired, MemOrder.SeqCst[], MemOrder.SeqCst[]);
-  }
-
-  // The same operations with the ordering named. Each arm passes its ordering
-  // as a constant, as core's operations require.
-  pub fn loadOrdered(self &opaq, order MemOrder) T {
-    match order {
-      case is MemOrder.Relaxed {mem.atomicLoad[T](self as *T, MemOrder.Relaxed[]);}
-      case is MemOrder.Acquire {mem.atomicLoad[T](self as *T, MemOrder.Acquire[]);}
-      case is MemOrder.SeqCst {mem.atomicLoad[T](self as *T, MemOrder.SeqCst[]);}
-      else {
-        die("sync: loadOrdered given Release or AcqRel, which a load cannot have\n");
-        mem.atomicLoad[T](self as *T, MemOrder.SeqCst[]);
-      }
-    }
-  }
-  pub fn storeOrdered(self &opaq, v T, order MemOrder) {
-    match order {
-      case is MemOrder.Relaxed {mem.atomicStore[T](self as *T, v, MemOrder.Relaxed[]);}
-      case is MemOrder.Release {mem.atomicStore[T](self as *T, v, MemOrder.Release[]);}
-      case is MemOrder.SeqCst {mem.atomicStore[T](self as *T, v, MemOrder.SeqCst[]);}
-      else {die("sync: storeOrdered given Acquire or AcqRel, which a store cannot have\n");}
-    }
-  }
-  pub fn swapOrdered(self &opaq, v T, order MemOrder) T {
-    match order {
-      case is MemOrder.Relaxed {mem.atomicSwap[T](self as *T, v, MemOrder.Relaxed[]);}
-      case is MemOrder.Acquire {mem.atomicSwap[T](self as *T, v, MemOrder.Acquire[]);}
-      case is MemOrder.Release {mem.atomicSwap[T](self as *T, v, MemOrder.Release[]);}
-      case is MemOrder.AcqRel {mem.atomicSwap[T](self as *T, v, MemOrder.AcqRel[]);}
-      else {mem.atomicSwap[T](self as *T, v, MemOrder.SeqCst[]);}
-    }
-  }
-  pub fn addOrdered(self &opaq, v T, order MemOrder) T where T is Integer {
-    match order {
-      case is MemOrder.Relaxed {mem.atomicAdd[T](self as *T, v, MemOrder.Relaxed[]);}
-      case is MemOrder.Acquire {mem.atomicAdd[T](self as *T, v, MemOrder.Acquire[]);}
-      case is MemOrder.Release {mem.atomicAdd[T](self as *T, v, MemOrder.Release[]);}
-      case is MemOrder.AcqRel {mem.atomicAdd[T](self as *T, v, MemOrder.AcqRel[]);}
-      else {mem.atomicAdd[T](self as *T, v, MemOrder.SeqCst[]);}
-    }
-  }
-  pub fn subOrdered(self &opaq, v T, order MemOrder) T where T is Integer {
-    match order {
-      case is MemOrder.Relaxed {mem.atomicSub[T](self as *T, v, MemOrder.Relaxed[]);}
-      case is MemOrder.Acquire {mem.atomicSub[T](self as *T, v, MemOrder.Acquire[]);}
-      case is MemOrder.Release {mem.atomicSub[T](self as *T, v, MemOrder.Release[]);}
-      case is MemOrder.AcqRel {mem.atomicSub[T](self as *T, v, MemOrder.AcqRel[]);}
-      else {mem.atomicSub[T](self as *T, v, MemOrder.SeqCst[]);}
-    }
-  }
-  pub fn bitAndOrdered(self &opaq, v T, order MemOrder) T where T is Integer or T is Bool {
-    match order {
-      case is MemOrder.Relaxed {mem.atomicAnd[T](self as *T, v, MemOrder.Relaxed[]);}
-      case is MemOrder.Acquire {mem.atomicAnd[T](self as *T, v, MemOrder.Acquire[]);}
-      case is MemOrder.Release {mem.atomicAnd[T](self as *T, v, MemOrder.Release[]);}
-      case is MemOrder.AcqRel {mem.atomicAnd[T](self as *T, v, MemOrder.AcqRel[]);}
-      else {mem.atomicAnd[T](self as *T, v, MemOrder.SeqCst[]);}
-    }
-  }
-  pub fn bitOrOrdered(self &opaq, v T, order MemOrder) T where T is Integer or T is Bool {
-    match order {
-      case is MemOrder.Relaxed {mem.atomicOr[T](self as *T, v, MemOrder.Relaxed[]);}
-      case is MemOrder.Acquire {mem.atomicOr[T](self as *T, v, MemOrder.Acquire[]);}
-      case is MemOrder.Release {mem.atomicOr[T](self as *T, v, MemOrder.Release[]);}
-      case is MemOrder.AcqRel {mem.atomicOr[T](self as *T, v, MemOrder.AcqRel[]);}
-      else {mem.atomicOr[T](self as *T, v, MemOrder.SeqCst[]);}
-    }
-  }
-  pub fn bitXorOrdered(self &opaq, v T, order MemOrder) T where T is Integer or T is Bool {
-    match order {
-      case is MemOrder.Relaxed {mem.atomicXor[T](self as *T, v, MemOrder.Relaxed[]);}
-      case is MemOrder.Acquire {mem.atomicXor[T](self as *T, v, MemOrder.Acquire[]);}
-      case is MemOrder.Release {mem.atomicXor[T](self as *T, v, MemOrder.Release[]);}
-      case is MemOrder.AcqRel {mem.atomicXor[T](self as *T, v, MemOrder.AcqRel[]);}
-      else {mem.atomicXor[T](self as *T, v, MemOrder.SeqCst[]);}
-    }
-  }
-
-  // 'failure' is the ordering when d is not stored, which is a load: it may
-  // be Relaxed, Acquire or SeqCst, and no stronger than 'success'
-  pub fn compareSwapOrdered(self &opaq, expected T, desired T,
-      success MemOrder, failure MemOrder) T, Bool {
-    imm p = self as *T;
-    match failure {
-      case is MemOrder.Relaxed {
-        match success {
-          case is MemOrder.Relaxed {mem.atomicCompareSwap[T](p, expected, desired, MemOrder.Relaxed[], MemOrder.Relaxed[]);}
-          case is MemOrder.Acquire {mem.atomicCompareSwap[T](p, expected, desired, MemOrder.Acquire[], MemOrder.Relaxed[]);}
-          case is MemOrder.Release {mem.atomicCompareSwap[T](p, expected, desired, MemOrder.Release[], MemOrder.Relaxed[]);}
-          case is MemOrder.AcqRel {mem.atomicCompareSwap[T](p, expected, desired, MemOrder.AcqRel[], MemOrder.Relaxed[]);}
-          else {mem.atomicCompareSwap[T](p, expected, desired, MemOrder.SeqCst[], MemOrder.Relaxed[]);}
-        }
-      }
-      case is MemOrder.Acquire {
-        match success {
-          case is MemOrder.Acquire {mem.atomicCompareSwap[T](p, expected, desired, MemOrder.Acquire[], MemOrder.Acquire[]);}
-          case is MemOrder.AcqRel {mem.atomicCompareSwap[T](p, expected, desired, MemOrder.AcqRel[], MemOrder.Acquire[]);}
-          case is MemOrder.SeqCst {mem.atomicCompareSwap[T](p, expected, desired, MemOrder.SeqCst[], MemOrder.Acquire[]);}
-          else {
-            die("sync: compareSwapOrdered given an Acquire failure ordering with a success ordering weaker than it\n");
-            mem.atomicCompareSwap[T](p, expected, desired, MemOrder.SeqCst[], MemOrder.SeqCst[]);
-          }
-        }
-      }
-      case is MemOrder.SeqCst {
-        match success {
-          case is MemOrder.SeqCst {mem.atomicCompareSwap[T](p, expected, desired, MemOrder.SeqCst[], MemOrder.SeqCst[]);}
-          else {
-            die("sync: compareSwapOrdered given a SeqCst failure ordering with a success ordering weaker than it\n");
-            mem.atomicCompareSwap[T](p, expected, desired, MemOrder.SeqCst[], MemOrder.SeqCst[]);
-          }
-        }
-      }
-      else {
-        die("sync: compareSwapOrdered given a Release or AcqRel failure ordering, which a compareSwap that stores nothing cannot have\n");
-        mem.atomicCompareSwap[T](p, expected, desired, MemOrder.SeqCst[], MemOrder.SeqCst[]);
-      }
-    }
-  }
-}
-
-// An ordering the operation cannot have, a lock misused, a channel's memory
-// exhausted: a panic, reported at the line calling 'die'. Each message ends in
+// A lock misused, a channel's memory exhausted: a panic, reported at the line calling 'die'. Each message ends in
 // a line end, which the panic's own line leaves off
 fn die(msg &[]u8, file &[]u8 = srcFile(), line u32 = srcLine()) Never {
   panic(&msg[0usize .. msg.len - 1usize], file, line);
@@ -2357,9 +2119,6 @@ pub struct Receiver[T Sendable] is Sendable {
   // value back; finalizes each value still in it, each once, waiting out any
   // send that claimed a slot before the close and has not written it; and
   // frees the blocks, the senders touching none once they see it closed.
-  // (It keeps its own copies of the index and the block, and steps them with
-  // the free functions advance uses: calling a '&mut' method through 'self
-  // &uni' moves the unique reference into the call rather than lending it.)
   fn final(self &uni) {
     imm c = chan;
     if ring as usize != 0usize {
@@ -2380,22 +2139,17 @@ pub struct Receiver[T Sendable] is Sendable {
       step = chanBackoff(step);
       tail = mem.atomicLoad[u64](tailp, MemOrder.Acquire[]);
     }
-    mut h = head;
-    mut b = block;
-    while chanPos(h) != chanPos(tail) {
-      imm offset = chanOffset(h);
-      imm slot = slotAt[T](b, offset);
+    while chanPos(head) != chanPos(tail) {
+      imm offset = chanOffset(head);
+      imm slot = slotAt[T](block, offset);
       step = 0u32;
       while mem.atomicLoad[u32](&(*slot).state as *u32, MemOrder.Acquire[]) == 0u32 {
         step = chanBackoff(step);
       }
       mem.finalize[T](&(*slot).value as *T);
-      if offset + 1u64 == blockCap {
-        b = chanPassBlock[T](b);
-      }
-      h = chanStep(h, offset);
+      self.advance(offset);
     }
-    libc.free(b as *u8);
+    libc.free(block as *u8);
     chanRelease[T](c);
   }
 }

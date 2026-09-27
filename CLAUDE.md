@@ -36,7 +36,10 @@ Visual Studio projects stay at the root.
   imports (`Option`, `Result`, the `so` and `rc` regions, `TypeRecord`, the
   per-type record the compiler builds, `mem`, holding the intrinsics
   declared with `@intrinsic`, and `MemOrder`, the orderings its atomic ones
-  take; and `panic`, `assert`, `unreachable`, `todo` and `setPanicHook`, whose
+  take; `Atomic[T]`, an integer, `Bool` or raw pointer changed only by
+  atomic operations over those intrinsics, which declares the built-in marker
+  `AtomicValue` (core's because it needs no OS, as Rust keeps its atomics in
+  `core::sync::atomic`); and `panic`, `assert`, `unreachable`, `todo` and `setPanicHook`, whose
   work is conestd's, with `srcFile` and `srcLine`, intrinsics outside `mem`,
   which as a parameter's default give a caller's location; and the macros
   `assertDebug` and `assertDebugMsg`, checked in a debug build only, through
@@ -136,9 +139,7 @@ Visual Studio projects stay at the root.
   a value moved in, join, detach, a handle dropped unjoined joins, sleep,
   parking; what it is handed and returns must be `Sendable`, the
   compiler's thread check), Windows only, over `sync`; `sync` is what threads share
-  safely: `Atomic[T]`, an integer, `Bool` or raw pointer changed only by
-  atomic operations over core's `mem` intrinsics, which declares the built-in marker
-  `AtomicValue`; `arc`, the region `rc` would be with its count atomic,
+  safely where it needs the OS, built on core's `Atomic[T]`: `arc`, the region `rc` would be with its count atomic,
   for owners several threads hold, declaring the built-in marker
   `ThreadSafe` (not in core, as Rust's `Arc` is not in its prelude, so a
   module names it only after `import sync use arc` or `use *`); the

@@ -311,42 +311,24 @@ pub struct Pool[T] is ShapeChanging {
 
   // Its death: every value it holds, first slot to last, each as remove
   // would; then its blocks. A value a finalizer adds meanwhile is finalized
-  // too, before the blocks go.
-  // (It repeats remove's and freeStale's work: calling a '&mut' method
-  // through 'self &uni' moves the unique borrow into the call rather than
-  // lending it, and 'self' is then gone for the rest.)
+  // too, before the blocks go. It counts itself as a finalizer running
+  // throughout, so no remove frees a replaced block before the sweep ends.
   fn final(self &uni) {
     if mem.needsFinal[T]() {
       dying = dying + 1u32;
       while live > 0u32 {
         mut i = 0u32;
         while i < high {
-          imm s = (slots + usize[i]) as &mut Slot[T];
-          if (s.gen & 1u32) == 1u32 {
-            imm retire = s.gen == lastGen;
-            s.gen = s.gen + 1u32;
-            live = live - 1u32;
-            mem.finalize(&mut s.value as *T);
-            if retire {
-              retired = retired + 1u32;
-            }
-            else {
-              imm now = (slots + usize[i]) as &mut Slot[T];
-              now.next = free;
-              free = i;
-            }
+          imm gen = ((slots + usize[i]) as &Slot[T]).gen;
+          if (gen & 1u32) == 1u32 {
+            self.remove(Ref[T].of(i, gen));
           }
           i = i + 1u32;
         }
       }
       dying = dying - 1u32;
     }
-    while stale as usize != 0usize {
-      imm node = stale;
-      stale = (node as &Stale).prev;
-      libc.free((node as &Stale).block);
-      libc.free(node as *u8);
-    }
+    self.freeStale();
     libc.free(slots as *u8);
   }
 }
