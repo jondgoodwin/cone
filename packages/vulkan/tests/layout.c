@@ -2,10 +2,12 @@
 
    The Vulkan declarations below are transcribed from the specification
    (registry.khronos.org/vulkan, Vulkan 1.3), as vulkan_core.h has them, for
-   the structs the package binds. No Vulkan SDK was installed when they were
-   written, so they are not vulkan_core.h itself: when the SDK is installed,
-   compiling this file with '#include <vulkan/vulkan_core.h>' in place of the
-   transcription (and nothing else changed) checks the transcription too.
+   the structs the package binds. They are not vulkan_core.h itself, so that
+   the test needs no Vulkan SDK. Compiling this file with
+   '#include <vulkan/vulkan_core.h>' in place of the transcription (and
+   nothing else changed, with /I naming the SDK's Include folder) checks the
+   transcription too: against SDK 1.4.357's header, every size, alignment and
+   offset printed is identical.
 
    main() prints the size and alignment of every struct, and the offset of
    each of its fields, in the order layout.cone prints them from the Cone
@@ -76,6 +78,13 @@ struct VkDebugUtilsMessengerCallbackDataEXT {
   const char* pMessage; uint32_t queueLabelCount; const void* pQueueLabels; uint32_t cmdBufLabelCount;
   const void* pCmdBufLabels; uint32_t objectCount; const void* pObjects;
 };
+
+typedef struct VkLayerSettingEXT {
+  const char* pLayerName; const char* pSettingName; int type; uint32_t valueCount; const void* pValues;
+} VkLayerSettingEXT;
+typedef struct VkLayerSettingsCreateInfoEXT {
+  VkStructureType sType; const void* pNext; uint32_t settingCount; const VkLayerSettingEXT* pSettings;
+} VkLayerSettingsCreateInfoEXT;
 
 typedef struct VkPhysicalDeviceLimits {
   uint32_t maxImageDimension1D; uint32_t maxImageDimension2D; uint32_t maxImageDimension3D;

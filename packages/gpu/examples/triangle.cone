@@ -1,0 +1,273 @@
+// triangle: the classic RGB triangle, drawn by Vulkan through the gpu
+// package: three vertices in a vertex buffer, each a position and a color,
+// the colors interpolated across the face by a Slang shader compiled ahead of
+// time to SPIR-V (triangle.slang, embedded below). 300 frames, five seconds
+// at 60 frames a second; F11 toggles fullscreen; Escape or closing the window
+// stops early. Resizing the window makes the swapchain again: on its own it
+// makes the window smaller on frame 150 and minimizes it on frame 200 for a
+// few passes of the loop, then restores it, as clear.cone does.
+//
+// On frames 100 and 250 (before and after the resize) it copies the frame
+// into a buffer and checks two pixels against the colors worked out by
+// hand:
+//
+// - The corners are at (0, 0.5) red, (-0.5, -0.5) green and (0.5, -0.5)
+//   blue, in clip space, y up. The middle of the window, (0, 0), is
+//   a/2 + b/4 + c/4 of the corners (b = c from x; 0.5a = 0.5(b + c) from y;
+//   a + b + c = 1), so its linear color is (0.5, 0.25, 0.25). The swapchain
+//   is sRGB, and stores 1.055 v^(1/2.4) - 0.055: 0.5 is 0.7354, 187.5 of
+//   255, so 188 (or 187); 0.25 is 0.5371, 137.0: so (188, 137, 137).
+// - The point (0, 0.4), 30% of the way down the window, is 0.9a + 0.05b +
+//   0.05c (y = 0.5a - 0.5(1 - a) = 0.4 gives a = 0.9): linear (0.9, 0.05,
+//   0.05), sRGB 0.9546 and 0.2478, so (243, 63, 63). Were clip space's y
+//   down, as Vulkan's is, that pixel would be near the bottom edge and
+//   mostly green and blue.
+//
+// The pixel sampled is at the middle of a pixel, a little off those points
+// (under 1/300 of the window), which moves each channel by under a step of
+// 255; the check allows 2.
+//
+// The pipeline culls back faces, and the triangle's corners go round
+// counterclockwise (red, green, blue), as mesh's generators wind them, so it
+// is drawn only if the front face is the counterclockwise one on the screen.
+//
+// It prints the GPU, the Vulkan version, whether validation and its
+// synchronization validation are on, and at the end the frames drawn and
+// the Vulkan failures and validation messages; it exits 0 only if every
+// frame was presented (or found its swapchain out of date as the window was
+// minimized), the pixels matched, no Vulkan call failed and the validation
+// layer said nothing.
+//
+//   congo run packages/gpu/examples/triangle.cone
+//
+// It needs a display, a GPU driver with Vulkan 1.3, SDL2.lib on LIB to link
+// and SDL2.dll on PATH to run. No Vulkan SDK is needed; with it, validation
+// is on.
+
+mod triangle;
+
+import stdio use *;
+import libc;
+import sdl;
+import geomath use Color;
+import window use *;
+import gpu use *;
+
+const FRAMES = 300;
+
+// The three vertices: a position in clip space (x, y) and a linear color
+// (r, g, b), counterclockwise
+imm VERTICES [15; f32] = [
+   0.0,  0.5,   1.0, 0.0, 0.0,
+  -0.5, -0.5,   0.0, 1.0, 0.0,
+   0.5, -0.5,   0.0, 0.0, 1.0];
+
+// What the pixels checked must be (worked out above), and the clear color
+const MIDDLE_R = 188;
+const MIDDLE_GB = 137;
+const UPPER_R = 243;
+const UPPER_GB = 63;
+
+fn onOff(on Bool) &[]u8 {
+  if on { return "on"; }
+  "off";
+}
+
+// Within 'd' of 'want'
+fn near(got i32, want i32, d i32) Bool { got - want <= d and want - got <= d; }
+
+// Channel 'c' (0 red, 1 green, 2 blue) of the pixel at ('x', 'y') of a
+// frame 'w' pixels wide copied to 'p', in 'format'
+fn channel(p *u8, w u32, x u32, y u32, c usize, format u32) i32 {
+  mut at = c;
+  if format == TEXTURE_FORMAT_BGRA8_UNORM_SRGB or format == TEXTURE_FORMAT_BGRA8_UNORM { at = 2usize - c; }
+  i32[*(p + (usize[y] * usize[w] + usize[x]) * 4usize + at)];
+}
+
+// Check the middle pixel and the one 30% of the way down against the
+// colors worked out by hand; print both
+fn checkPixels(frame i32, p *u8, w u32, h u32, format u32) Bool {
+  imm mx = w / 2u32;
+  imm my = h / 2u32;
+  imm uy = h * 3u32 / 10u32;
+  imm mr = channel(p, w, mx, my, 0usize, format);
+  imm mg = channel(p, w, mx, my, 1usize, format);
+  imm mb = channel(p, w, mx, my, 2usize, format);
+  imm ur = channel(p, w, mx, uy, 0usize, format);
+  imm ug = channel(p, w, mx, uy, 1usize, format);
+  imm ub = channel(p, w, mx, uy, 2usize, format);
+  print <- "Frame "; print <- frame; print <- " ("; print <- u64[w]; print <- " x "; print <- u64[h];
+  print <- "): middle "; print <- mr; print <- " "; print <- mg; print <- " "; print <- mb;
+  print <- " (want "; print <- MIDDLE_R; print <- " "; print <- MIDDLE_GB; print <- " "; print <- MIDDLE_GB;
+  print <- "); 30% down "; print <- ur; print <- " "; print <- ug; print <- " "; print <- ub;
+  print <- " (want "; print <- UPPER_R; print <- " "; print <- UPPER_GB; print <- " "; print <- UPPER_GB; print <- ")\n";
+  near(mr, MIDDLE_R, 2) and near(mg, MIDDLE_GB, 2) and near(mb, MIDDLE_GB, 2)
+    and near(ur, UPPER_R, 2) and near(ug, UPPER_GB, 2) and near(ub, UPPER_GB, 2);
+}
+
+fn main() i32 {
+  mut win = Window.openVulkan("Cone: a triangle drawn by Vulkan");
+  if !win.isOpen() {
+    print <- "No window could be opened\n";
+    return 1;
+  }
+  mut instance = Instance.create("triangle");
+  if !instance.isValid() {
+    print <- "No Vulkan 1.3 instance could be made\n";
+    return 1;
+  }
+  mut surface = instance.createSurface(win.sdlHandle());
+  // The discrete GPU, where there is one; GPU_POWER_PREFERENCE=low-power in
+  // the environment asks for the integrated one
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv(&"GPU_POWER_PREFERENCE" as *u8);
+  if (env as usize) != 0usize {
+    if libc.strcmp(env, &"low-power" as *u8) == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&surface, preference);
+  if !adapter.isValid() {
+    print <- "No GPU can draw to the window\n";
+    return 1;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  print <- "API: "; printStr(adapter.backendName()); print <- " "; printStr(adapter.backendVersion.view()); print <- "\n";
+  print <- "Validation layer: "; printStr(onOff(instance.validation));
+  print <- "; synchronization validation: "; printStr(onOff(instance.syncValidation)); print <- "\n";
+
+  mut device = adapter.requestDevice();
+  if !device.isValid() {
+    print <- "No device could be made\n";
+    return 1;
+  }
+  imm size = win.size();
+  mut swapchain = device.createSwapChain(&surface, u32[size.w], u32[size.h], TEXTURE_FORMAT_UNDEFINED);
+
+  // The pipeline: the shader's two stages, one vertex buffer of a float2
+  // position and a float3 color, back faces culled
+  mut shader = device.createShaderModule(&TRIANGLE_SPIRV);
+  mut layout = device.createEmptyPipelineLayout(0u32);
+  imm attributes = [VertexAttribute[VERTEX_FORMAT_FLOAT32X2, 0u64, 0u32], VertexAttribute[VERTEX_FORMAT_FLOAT32X3, 8u64, 1u32]];
+  imm buffers = [VertexBufferLayout[arrayStride: 20u64, attributes: &attributes]];
+  imm desc = RenderPipelineDescriptor[layout: &layout, vertexModule: &shader, buffers: &buffers,
+    fragmentModule: &shader, colorFormat: swapchain.format, cullMode: CULL_MODE_BACK];
+  mut pipeline = device.createRenderPipeline(&desc);
+
+  // The vertices, uploaded once into the GPU's own memory
+  mut vertices = device.createBuffer(60u64, BUFFER_USAGE_VERTEX | BUFFER_USAGE_COPY_DST);
+  device.queue.writeBuffer(&vertices, 0u64, &VERTICES as *u8, 60u64);
+  if !(shader.isValid() and layout.isValid() and pipeline.isValid() and vertices.isValid()) {
+    print <- "The pipeline or the vertex buffer could not be made\n";
+    return 1;
+  }
+
+  mut frames = 0;
+  mut unshown = 0;
+  mut resizes = 0;
+  mut checks = 0;
+  mut matched = 0;
+  mut minimizedFor = 0;
+  while win.running and frames < FRAMES {
+    if frames == 150 and resizes == 0 { win.setSize(size.w * 2 / 3, size.h * 2 / 3); }
+    if frames == 200 and minimizedFor == 0 {
+      win.minimize();
+      minimizedFor = 1;
+    }
+    if minimizedFor > 0 {
+      minimizedFor = minimizedFor + 1;
+      if minimizedFor == 10 { win.restore(); }
+    }
+    win.pollEvents();
+    if win.resized {
+      imm s = win.size();
+      swapchain.resize(u32[s.w], u32[s.h]);
+      win.resized = false;
+      resizes = resizes + 1;
+    }
+
+    imm frame = swapchain.getCurrentTexture(&mut device);
+    if !frame.ok() {
+      sdl.Delay(10u32);       // minimized: nothing to draw
+    } else {
+      mut encoder = device.createCommandEncoder();
+      imm attachment = RenderPassColorAttachment[view: frame.texture.createView(),
+        clearValue: Color[0.02, 0.02, 0.05, 1.]];
+      mut pass = encoder.beginRenderPass(&attachment);
+      pass.setPipeline(&pipeline);
+      pass.setVertexBuffer(0u32, &vertices, 0u64);
+      pass.draw(3u32, 1u32, 0u32, 0u32);
+      pass.end();
+      frames = frames + 1;
+      if frames == 100 or frames == 250 {
+        imm w = frame.texture.width;
+        imm h = frame.texture.height;
+        mut readback = device.createBuffer(u64[w] * u64[h] * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+        encoder.copyTextureToBuffer(&frame.texture, &readback);
+        device.queue.submit(encoder.finish());
+        if !swapchain.present(&mut device) { unshown = unshown + 1; }
+        device.waitIdle();
+        checks = checks + 1;
+        if checkPixels(frames, readback.mappedRange(), w, h, frame.texture.format) { matched = matched + 1; }
+      } else {
+        device.queue.submit(encoder.finish());
+        if !swapchain.present(&mut device) { unshown = unshown + 1; }
+      }
+    }
+  }
+  device.waitIdle();
+
+  print <- "Frames drawn: "; print <- frames; print <- "; presented: "; print <- swapchain.presents;
+  print <- "; out of date when presented: "; print <- unshown; print <- "; resizes: "; print <- resizes; print <- "\n";
+  print <- "Vulkan failures: "; print <- u64[failures()];
+  print <- "; validation messages: "; print <- u64[validationMessages()]; print <- "\n";
+  if checks != 2 or matched != 2 {
+    print <- "The pixels read back are not the colors worked out\n";
+    return 1;
+  }
+  if swapchain.presents + u64[unshown] != u64[frames] or failures() != 0u32 or validationMessages() != 0u32 { return 1; }
+  print <- "OK\n";
+  0;
+}
+
+// spirv-begin triangle.spv TRIANGLE_SPIRV
+// Written by tools/shaders/shaders.py from triangle.slang (sha256 93171130353cc50b96079be8955252183d92fc3a4dba39b62ad345baf90ddff8): do not edit.
+imm TRIANGLE_SPIRV [225; u32] = [
+  0x07230203u32, 0x00010500u32, 0x00280000u32, 0x0000002eu32, 0x00000000u32, 0x00020011u32,
+  0x00000001u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x000a000fu32, 0x00000000u32,
+  0x00000002u32, 0x74726576u32, 0x614d7865u32, 0x00006e69u32, 0x00000021u32, 0x00000025u32,
+  0x00000012u32, 0x0000001cu32, 0x0009000fu32, 0x00000004u32, 0x00000028u32, 0x67617266u32,
+  0x746e656du32, 0x6e69614du32, 0x00000000u32, 0x0000002du32, 0x0000002bu32, 0x00030010u32,
+  0x00000028u32, 0x00000007u32, 0x00030003u32, 0x0000000bu32, 0x00000001u32, 0x00060005u32,
+  0x00000012u32, 0x75706e69u32, 0x6f702e74u32, 0x69746973u32, 0x00006e6fu32, 0x00050005u32,
+  0x0000001cu32, 0x75706e69u32, 0x6f632e74u32, 0x00726f6cu32, 0x000b0005u32, 0x00000025u32,
+  0x72746e65u32, 0x696f5079u32, 0x6150746eu32, 0x5f6d6172u32, 0x74726576u32, 0x614d7865u32,
+  0x632e6e69u32, 0x726f6c6fu32, 0x00000000u32, 0x00050005u32, 0x00000002u32, 0x74726576u32,
+  0x614d7865u32, 0x00006e69u32, 0x00050005u32, 0x0000002bu32, 0x75706e69u32, 0x6f632e74u32,
+  0x00726f6cu32, 0x000a0005u32, 0x0000002du32, 0x72746e65u32, 0x696f5079u32, 0x6150746eu32,
+  0x5f6d6172u32, 0x67617266u32, 0x746e656du32, 0x6e69614du32, 0x00000000u32, 0x00060005u32,
+  0x00000028u32, 0x67617266u32, 0x746e656du32, 0x6e69614du32, 0x00000000u32, 0x00040047u32,
+  0x00000012u32, 0x0000001eu32, 0x00000000u32, 0x00040047u32, 0x0000001cu32, 0x0000001eu32,
+  0x00000001u32, 0x00040047u32, 0x00000021u32, 0x0000000bu32, 0x00000000u32, 0x00040047u32,
+  0x00000025u32, 0x0000001eu32, 0x00000000u32, 0x00040047u32, 0x0000002bu32, 0x0000001eu32,
+  0x00000000u32, 0x00040047u32, 0x0000002du32, 0x0000001eu32, 0x00000000u32, 0x00020013u32,
+  0x00000001u32, 0x00030021u32, 0x00000003u32, 0x00000001u32, 0x00030016u32, 0x00000006u32,
+  0x00000020u32, 0x00040017u32, 0x00000007u32, 0x00000006u32, 0x00000004u32, 0x00040017u32,
+  0x00000008u32, 0x00000006u32, 0x00000003u32, 0x00040017u32, 0x0000000fu32, 0x00000006u32,
+  0x00000002u32, 0x00040020u32, 0x00000011u32, 0x00000001u32, 0x0000000fu32, 0x0004002bu32,
+  0x00000006u32, 0x00000014u32, 0x00000000u32, 0x0004002bu32, 0x00000006u32, 0x00000015u32,
+  0x3f800000u32, 0x00040020u32, 0x0000001bu32, 0x00000001u32, 0x00000008u32, 0x00040020u32,
+  0x00000020u32, 0x00000003u32, 0x00000007u32, 0x00040020u32, 0x00000024u32, 0x00000003u32,
+  0x00000008u32, 0x0004003bu32, 0x00000011u32, 0x00000012u32, 0x00000001u32, 0x0004003bu32,
+  0x0000001bu32, 0x0000001cu32, 0x00000001u32, 0x0004003bu32, 0x00000020u32, 0x00000021u32,
+  0x00000003u32, 0x0004003bu32, 0x00000024u32, 0x00000025u32, 0x00000003u32, 0x0004003bu32,
+  0x0000001bu32, 0x0000002bu32, 0x00000001u32, 0x0004003bu32, 0x00000020u32, 0x0000002du32,
+  0x00000003u32, 0x00050036u32, 0x00000001u32, 0x00000002u32, 0x00000000u32, 0x00000003u32,
+  0x000200f8u32, 0x00000004u32, 0x0004003du32, 0x0000000fu32, 0x00000010u32, 0x00000012u32,
+  0x00060050u32, 0x00000007u32, 0x00000013u32, 0x00000010u32, 0x00000014u32, 0x00000015u32,
+  0x0004003du32, 0x00000008u32, 0x0000001au32, 0x0000001cu32, 0x0003003eu32, 0x00000021u32,
+  0x00000013u32, 0x0003003eu32, 0x00000025u32, 0x0000001au32, 0x000100fdu32, 0x00010038u32,
+  0x00050036u32, 0x00000001u32, 0x00000028u32, 0x00000000u32, 0x00000003u32, 0x000200f8u32,
+  0x00000029u32, 0x0004003du32, 0x00000008u32, 0x0000002au32, 0x0000002bu32, 0x00050050u32,
+  0x00000007u32, 0x0000002cu32, 0x0000002au32, 0x00000015u32, 0x0003003eu32, 0x0000002du32,
+  0x0000002cu32, 0x000100fdu32, 0x00010038u32
+];
+// spirv-end

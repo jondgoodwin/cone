@@ -315,9 +315,14 @@ running it needs a display.
 time through the `vkGetInstanceProcAddr` SDL hands out, so no Vulkan SDK is
 needed. `gpu`, the thin WebGPU-shaped layer over it, draws into a window
 `window` opens for Vulkan. Their layout, constants and loader tests run
-anywhere; one test of each (`vulkan`'s `runtime`, `gpu`'s `headless`) runs
-against the real Vulkan loader with no window, so testing `packages/` needs a
-GPU driver with Vulkan 1.3 and `SDL2.dll` on `PATH`, but no display.
+anywhere; `vulkan`'s `runtime` test and all of `gpu`'s (`headless`,
+`pipelines`, `offscreen`) run against the real Vulkan loader with no window,
+so testing `packages/` needs a GPU driver with Vulkan 1.3 and `SDL2.dll` on
+`PATH`, but no display. `gpu`'s shaders are Slang compiled ahead of time to
+SPIR-V, committed and embedded in the Cone source (`tools/shaders/`), so
+building and testing needs no Vulkan SDK either; where the SDK's validation
+layer is installed, the tests run under it, synchronization validation
+included, and fail on any message.
 
 `thread`, OS threads and the futex, is Cone code over `extern` declarations
 of the C runtime and Windows, not a C package, and its `[link]` names

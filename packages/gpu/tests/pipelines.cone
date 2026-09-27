@@ -1,0 +1,321 @@
+// The gpu package's pipelines and uploads on a real GPU, with no window:
+// shader modules and render pipelines made from the SPIR-V committed beside
+// the examples and this test (compiled ahead of time from Slang and embedded
+// below by tools/shaders/shaders.py); bind group layouts, pipeline layouts
+// with and without immediates, and a bind group; and buffers in the GPU's
+// own memory written by 'queue.writeBuffer' through staging memory and read
+// back by copying them into a buffer the CPU maps. Only a failure prints, and
+// nothing printed depends on which GPU is present.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL2.dll (which loads Vulkan);
+// no window, no display of its own, and no Vulkan SDK (with it, validation
+// and synchronization validation are on, and must say nothing).
+
+mod pipelines;
+
+import libc;
+import testing use *;
+import gpu use *;
+
+// The byte at 'i' of a pattern no two nearby bytes share
+fn pattern(i usize, seed usize) u8 { u8[(i * 31usize + seed) % 251usize]; }
+
+fn main() i32 {
+  mut instance = Instance.create("pipelines");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+
+  // ---- Shader modules and pipelines from the committed SPIR-V ----
+
+  mut triangleShader = device.createShaderModule(&TRIANGLE_SPIRV);
+  mut cubeShader = device.createShaderModule(&CUBE_SPIRV);
+  mut immediatesShader = device.createShaderModule(&IMMEDIATES_SPIRV);
+  expect(triangleShader.isValid(), "the triangle's shader module");
+  expect(cubeShader.isValid(), "the cube's shader module");
+  expect(immediatesShader.isValid(), "the immediates shader module");
+
+  // The triangle's: no bind groups, float2 position and float3 color
+  mut emptyLayout = device.createEmptyPipelineLayout(0u32);
+  expect(emptyLayout.isValid(), "a pipeline layout with nothing in it");
+  imm triangleAttributes = [VertexAttribute[VERTEX_FORMAT_FLOAT32X2, 0u64, 0u32],
+    VertexAttribute[VERTEX_FORMAT_FLOAT32X3, 8u64, 1u32]];
+  imm triangleBuffers = [VertexBufferLayout[arrayStride: 20u64, attributes: &triangleAttributes]];
+  imm triangleDesc = RenderPipelineDescriptor[layout: &emptyLayout, vertexModule: &triangleShader,
+    buffers: &triangleBuffers, fragmentModule: &triangleShader, colorFormat: TEXTURE_FORMAT_RGBA8_UNORM,
+    cullMode: CULL_MODE_BACK];
+  mut trianglePipeline = device.createRenderPipeline(&triangleDesc);
+  expect(trianglePipeline.isValid(), "the triangle's pipeline");
+
+  // The cube's: a uniform buffer at group 0, binding 0; float3 position and
+  // color; indexed, depth-tested, into an sRGB target
+  imm entries = [BindGroupLayoutEntry[binding: 0u32, visibility: SHADER_STAGE_VERTEX]];
+  mut groupLayout = device.createBindGroupLayout(&entries);
+  expect(groupLayout.isValid(), "a bind group layout of one uniform buffer");
+  imm groupLayouts = [&groupLayout];
+  mut cubeLayout = device.createPipelineLayout(&groupLayouts, 0u32);
+  expect(cubeLayout.isValid(), "a pipeline layout of one bind group");
+  imm cubeAttributes = [VertexAttribute[VERTEX_FORMAT_FLOAT32X3, 0u64, 0u32],
+    VertexAttribute[VERTEX_FORMAT_FLOAT32X3, 12u64, 1u32]];
+  imm cubeBuffers = [VertexBufferLayout[arrayStride: 24u64, attributes: &cubeAttributes]];
+  imm cubeDesc = RenderPipelineDescriptor[layout: &cubeLayout, vertexModule: &cubeShader, buffers: &cubeBuffers,
+    fragmentModule: &cubeShader, colorFormat: TEXTURE_FORMAT_BGRA8_UNORM_SRGB, cullMode: CULL_MODE_BACK,
+    depthFormat: TEXTURE_FORMAT_DEPTH32_FLOAT, depthWriteEnabled: true];
+  mut cubePipeline = device.createRenderPipeline(&cubeDesc);
+  expect(cubePipeline.isValid(), "the cube's pipeline");
+
+  // Immediates: 32 bytes, the most being 128
+  mut immediatesLayout = device.createEmptyPipelineLayout(32u32);
+  expect(immediatesLayout.isValid(), "a pipeline layout of 32 bytes of immediates");
+  expectUInt(u64[immediatesLayout.immediateSize], 32u64, "its immediates' size");
+  imm immediatesAttributes = [VertexAttribute[VERTEX_FORMAT_FLOAT32X2, 0u64, 0u32]];
+  imm immediatesBuffers = [VertexBufferLayout[arrayStride: 8u64, attributes: &immediatesAttributes]];
+  imm immediatesDesc = RenderPipelineDescriptor[layout: &immediatesLayout, vertexModule: &immediatesShader,
+    buffers: &immediatesBuffers, fragmentModule: &immediatesShader, colorFormat: TEXTURE_FORMAT_RGBA8_UNORM,
+    topology: PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, depthFormat: TEXTURE_FORMAT_DEPTH32_FLOAT,
+    depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS_EQUAL];
+  mut immediatesPipeline = device.createRenderPipeline(&immediatesDesc);
+  expect(immediatesPipeline.isValid(), "the immediates pipeline");
+
+  // A bind group of a uniform buffer
+  mut uniforms = device.createBuffer(64u64, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
+  imm groupEntries = [BindGroupEntry[binding: 0u32, buffer: &uniforms]];
+  mut group = device.createBindGroup(&groupLayout, &groupEntries);
+  expect(group.isValid(), "a bind group of the uniform buffer");
+  expectUInt(u64[failures()], 0u64, "nothing failed making them");
+
+  // ---- Uploads: writeBuffer through staging, read back ----
+
+  // Three writes in one frame into a buffer in the GPU's own memory: 256
+  // bytes at 0, 1000 at 4096, and 100,000 at 8192, which outgrows the
+  // frame's first staging block (64 KiB) so that a bigger one is taken
+  imm size = 8192u64 + 100000u64;
+  mut data = libc.malloc(100000usize);
+  mut i = 0usize;
+  while i < 100000usize {
+    *(data + i) = pattern(i, 7usize);
+    i = i + 1usize;
+  }
+  mut gpuBuffer = device.createBuffer(size, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_SRC | BUFFER_USAGE_COPY_DST);
+  mut readback = device.createBuffer(size, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  require(gpuBuffer.isValid() and readback.isValid(), "the buffers to write and read back");
+  expect((gpuBuffer.mappedRange() as usize) == 0usize, "the GPU's buffer is not mapped");
+  device.queue.writeBuffer(&gpuBuffer, 0u64, data, 256u64);
+  device.queue.writeBuffer(&gpuBuffer, 4096u64, data + 256usize, 1000u64);
+  device.queue.writeBuffer(&gpuBuffer, 8192u64, data, 100000u64);
+  mut encoder = device.createCommandEncoder();
+  encoder.copyBufferToBuffer(&gpuBuffer, 0u64, &readback, 0u64, size);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  imm got = readback.mappedRange();
+  mut wrong = 0;
+  i = 0usize;
+  while i < 256usize {
+    if *(got + i) != pattern(i, 7usize) { wrong = wrong + 1; }
+    i = i + 1usize;
+  }
+  expectInt(i64[wrong], 0, "the 256 bytes written at 0");
+  wrong = 0;
+  i = 0usize;
+  while i < 1000usize {
+    if *(got + 4096usize + i) != pattern(256usize + i, 7usize) { wrong = wrong + 1; }
+    i = i + 1usize;
+  }
+  expectInt(i64[wrong], 0, "the 1000 bytes written at 4096");
+  wrong = 0;
+  i = 0usize;
+  while i < 100000usize {
+    if *(got + 8192usize + i) != pattern(i, 7usize) { wrong = wrong + 1; }
+    i = i + 1usize;
+  }
+  expectInt(i64[wrong], 0, "the 100,000 bytes written at 8192, through a second staging block");
+
+  // Overwritten in the next frames, each read back after: a write waits for
+  // the copy before it that read the same bytes (a write after a read)
+  mut frame = 0usize;
+  while frame < 3usize {
+    i = 0usize;
+    while i < 256usize {
+      *(data + i) = pattern(i, 100usize + frame);
+      i = i + 1usize;
+    }
+    device.queue.writeBuffer(&gpuBuffer, 0u64, data, 256u64);
+    mut again = device.createCommandEncoder();
+    again.copyBufferToBuffer(&gpuBuffer, 0u64, &readback, 0u64, 256u64);
+    device.queue.submit(again.finish());
+    device.endFrame();
+    device.waitIdle();
+    wrong = 0;
+    i = 0usize;
+    while i < 256usize {
+      if *(got + i) != pattern(i, 100usize + frame) { wrong = wrong + 1; }
+      i = i + 1usize;
+    }
+    expectInt(i64[wrong], 0, "the bytes written again, a frame later");
+    frame = frame + 1usize;
+  }
+  libc.free(data);
+
+  expectUInt(u64[failures()], 0u64, "no Vulkan call failed");
+  expectUInt(u64[validationMessages()], 0u64, "no validation message");
+  done();
+}
+
+// spirv-begin ../examples/triangle.spv TRIANGLE_SPIRV
+// Written by tools/shaders/shaders.py from triangle.slang (sha256 93171130353cc50b96079be8955252183d92fc3a4dba39b62ad345baf90ddff8): do not edit.
+imm TRIANGLE_SPIRV [225; u32] = [
+  0x07230203u32, 0x00010500u32, 0x00280000u32, 0x0000002eu32, 0x00000000u32, 0x00020011u32,
+  0x00000001u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x000a000fu32, 0x00000000u32,
+  0x00000002u32, 0x74726576u32, 0x614d7865u32, 0x00006e69u32, 0x00000021u32, 0x00000025u32,
+  0x00000012u32, 0x0000001cu32, 0x0009000fu32, 0x00000004u32, 0x00000028u32, 0x67617266u32,
+  0x746e656du32, 0x6e69614du32, 0x00000000u32, 0x0000002du32, 0x0000002bu32, 0x00030010u32,
+  0x00000028u32, 0x00000007u32, 0x00030003u32, 0x0000000bu32, 0x00000001u32, 0x00060005u32,
+  0x00000012u32, 0x75706e69u32, 0x6f702e74u32, 0x69746973u32, 0x00006e6fu32, 0x00050005u32,
+  0x0000001cu32, 0x75706e69u32, 0x6f632e74u32, 0x00726f6cu32, 0x000b0005u32, 0x00000025u32,
+  0x72746e65u32, 0x696f5079u32, 0x6150746eu32, 0x5f6d6172u32, 0x74726576u32, 0x614d7865u32,
+  0x632e6e69u32, 0x726f6c6fu32, 0x00000000u32, 0x00050005u32, 0x00000002u32, 0x74726576u32,
+  0x614d7865u32, 0x00006e69u32, 0x00050005u32, 0x0000002bu32, 0x75706e69u32, 0x6f632e74u32,
+  0x00726f6cu32, 0x000a0005u32, 0x0000002du32, 0x72746e65u32, 0x696f5079u32, 0x6150746eu32,
+  0x5f6d6172u32, 0x67617266u32, 0x746e656du32, 0x6e69614du32, 0x00000000u32, 0x00060005u32,
+  0x00000028u32, 0x67617266u32, 0x746e656du32, 0x6e69614du32, 0x00000000u32, 0x00040047u32,
+  0x00000012u32, 0x0000001eu32, 0x00000000u32, 0x00040047u32, 0x0000001cu32, 0x0000001eu32,
+  0x00000001u32, 0x00040047u32, 0x00000021u32, 0x0000000bu32, 0x00000000u32, 0x00040047u32,
+  0x00000025u32, 0x0000001eu32, 0x00000000u32, 0x00040047u32, 0x0000002bu32, 0x0000001eu32,
+  0x00000000u32, 0x00040047u32, 0x0000002du32, 0x0000001eu32, 0x00000000u32, 0x00020013u32,
+  0x00000001u32, 0x00030021u32, 0x00000003u32, 0x00000001u32, 0x00030016u32, 0x00000006u32,
+  0x00000020u32, 0x00040017u32, 0x00000007u32, 0x00000006u32, 0x00000004u32, 0x00040017u32,
+  0x00000008u32, 0x00000006u32, 0x00000003u32, 0x00040017u32, 0x0000000fu32, 0x00000006u32,
+  0x00000002u32, 0x00040020u32, 0x00000011u32, 0x00000001u32, 0x0000000fu32, 0x0004002bu32,
+  0x00000006u32, 0x00000014u32, 0x00000000u32, 0x0004002bu32, 0x00000006u32, 0x00000015u32,
+  0x3f800000u32, 0x00040020u32, 0x0000001bu32, 0x00000001u32, 0x00000008u32, 0x00040020u32,
+  0x00000020u32, 0x00000003u32, 0x00000007u32, 0x00040020u32, 0x00000024u32, 0x00000003u32,
+  0x00000008u32, 0x0004003bu32, 0x00000011u32, 0x00000012u32, 0x00000001u32, 0x0004003bu32,
+  0x0000001bu32, 0x0000001cu32, 0x00000001u32, 0x0004003bu32, 0x00000020u32, 0x00000021u32,
+  0x00000003u32, 0x0004003bu32, 0x00000024u32, 0x00000025u32, 0x00000003u32, 0x0004003bu32,
+  0x0000001bu32, 0x0000002bu32, 0x00000001u32, 0x0004003bu32, 0x00000020u32, 0x0000002du32,
+  0x00000003u32, 0x00050036u32, 0x00000001u32, 0x00000002u32, 0x00000000u32, 0x00000003u32,
+  0x000200f8u32, 0x00000004u32, 0x0004003du32, 0x0000000fu32, 0x00000010u32, 0x00000012u32,
+  0x00060050u32, 0x00000007u32, 0x00000013u32, 0x00000010u32, 0x00000014u32, 0x00000015u32,
+  0x0004003du32, 0x00000008u32, 0x0000001au32, 0x0000001cu32, 0x0003003eu32, 0x00000021u32,
+  0x00000013u32, 0x0003003eu32, 0x00000025u32, 0x0000001au32, 0x000100fdu32, 0x00010038u32,
+  0x00050036u32, 0x00000001u32, 0x00000028u32, 0x00000000u32, 0x00000003u32, 0x000200f8u32,
+  0x00000029u32, 0x0004003du32, 0x00000008u32, 0x0000002au32, 0x0000002bu32, 0x00050050u32,
+  0x00000007u32, 0x0000002cu32, 0x0000002au32, 0x00000015u32, 0x0003003eu32, 0x0000002du32,
+  0x0000002cu32, 0x000100fdu32, 0x00010038u32
+];
+// spirv-end
+
+// spirv-begin ../examples/cube.spv CUBE_SPIRV
+// Written by tools/shaders/shaders.py from cube.slang (sha256 0844ce19d636256d061603d0d11d961fa464b4d761abdb517f2c182620b901fa): do not edit.
+imm CUBE_SPIRV [298; u32] = [
+  0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000033u32, 0x00000000u32, 0x00020011u32,
+  0x00000001u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x000b000fu32, 0x00000000u32,
+  0x00000002u32, 0x74726576u32, 0x614d7865u32, 0x00006e69u32, 0x00000012u32, 0x00000026u32,
+  0x0000002au32, 0x00000018u32, 0x00000021u32, 0x0009000fu32, 0x00000004u32, 0x0000002du32,
+  0x67617266u32, 0x746e656du32, 0x6e69614du32, 0x00000000u32, 0x00000032u32, 0x00000030u32,
+  0x00030010u32, 0x0000002du32, 0x00000007u32, 0x00030003u32, 0x0000000bu32, 0x00000001u32,
+  0x00060005u32, 0x0000000fu32, 0x66696e55u32, 0x736d726fu32, 0x6474735fu32, 0x00303431u32,
+  0x00080006u32, 0x0000000fu32, 0x00000000u32, 0x65646f6du32, 0x6569566cu32, 0x6f725077u32,
+  0x7463656au32, 0x006e6f69u32, 0x00050005u32, 0x00000012u32, 0x66696e75u32, 0x736d726fu32,
+  0x00000000u32, 0x00060005u32, 0x00000018u32, 0x75706e69u32, 0x6f702e74u32, 0x69746973u32,
+  0x00006e6fu32, 0x00050005u32, 0x00000021u32, 0x75706e69u32, 0x6f632e74u32, 0x00726f6cu32,
+  0x000b0005u32, 0x0000002au32, 0x72746e65u32, 0x696f5079u32, 0x6150746eu32, 0x5f6d6172u32,
+  0x74726576u32, 0x614d7865u32, 0x632e6e69u32, 0x726f6c6fu32, 0x00000000u32, 0x00050005u32,
+  0x00000002u32, 0x74726576u32, 0x614d7865u32, 0x00006e69u32, 0x00050005u32, 0x00000030u32,
+  0x75706e69u32, 0x6f632e74u32, 0x00726f6cu32, 0x000a0005u32, 0x00000032u32, 0x72746e65u32,
+  0x696f5079u32, 0x6150746eu32, 0x5f6d6172u32, 0x67617266u32, 0x746e656du32, 0x6e69614du32,
+  0x00000000u32, 0x00060005u32, 0x0000002du32, 0x67617266u32, 0x746e656du32, 0x6e69614du32,
+  0x00000000u32, 0x00030047u32, 0x0000000fu32, 0x00000002u32, 0x00050048u32, 0x0000000fu32,
+  0x00000000u32, 0x00000023u32, 0x00000000u32, 0x00040048u32, 0x0000000fu32, 0x00000000u32,
+  0x00000004u32, 0x00050048u32, 0x0000000fu32, 0x00000000u32, 0x00000007u32, 0x00000010u32,
+  0x00040047u32, 0x00000012u32, 0x00000021u32, 0x00000000u32, 0x00040047u32, 0x00000012u32,
+  0x00000022u32, 0x00000000u32, 0x00040047u32, 0x00000018u32, 0x0000001eu32, 0x00000000u32,
+  0x00040047u32, 0x00000021u32, 0x0000001eu32, 0x00000001u32, 0x00040047u32, 0x00000026u32,
+  0x0000000bu32, 0x00000000u32, 0x00040047u32, 0x0000002au32, 0x0000001eu32, 0x00000000u32,
+  0x00040047u32, 0x00000030u32, 0x0000001eu32, 0x00000000u32, 0x00040047u32, 0x00000032u32,
+  0x0000001eu32, 0x00000000u32, 0x00020013u32, 0x00000001u32, 0x00030021u32, 0x00000003u32,
+  0x00000001u32, 0x00030016u32, 0x00000006u32, 0x00000020u32, 0x00040017u32, 0x00000007u32,
+  0x00000006u32, 0x00000004u32, 0x00040017u32, 0x00000008u32, 0x00000006u32, 0x00000003u32,
+  0x00040015u32, 0x0000000bu32, 0x00000020u32, 0x00000001u32, 0x0004002bu32, 0x0000000bu32,
+  0x0000000cu32, 0x00000000u32, 0x00040018u32, 0x00000010u32, 0x00000007u32, 0x00000004u32,
+  0x0003001eu32, 0x0000000fu32, 0x00000010u32, 0x00040020u32, 0x00000011u32, 0x00000002u32,
+  0x0000000fu32, 0x00040020u32, 0x00000013u32, 0x00000002u32, 0x00000010u32, 0x00040020u32,
+  0x00000017u32, 0x00000001u32, 0x00000008u32, 0x0004002bu32, 0x00000006u32, 0x0000001au32,
+  0x3f800000u32, 0x00040020u32, 0x00000025u32, 0x00000003u32, 0x00000007u32, 0x00040020u32,
+  0x00000029u32, 0x00000003u32, 0x00000008u32, 0x0004003bu32, 0x00000011u32, 0x00000012u32,
+  0x00000002u32, 0x0004003bu32, 0x00000017u32, 0x00000018u32, 0x00000001u32, 0x0004003bu32,
+  0x00000017u32, 0x00000021u32, 0x00000001u32, 0x0004003bu32, 0x00000025u32, 0x00000026u32,
+  0x00000003u32, 0x0004003bu32, 0x00000029u32, 0x0000002au32, 0x00000003u32, 0x0004003bu32,
+  0x00000017u32, 0x00000030u32, 0x00000001u32, 0x0004003bu32, 0x00000025u32, 0x00000032u32,
+  0x00000003u32, 0x00050036u32, 0x00000001u32, 0x00000002u32, 0x00000000u32, 0x00000003u32,
+  0x000200f8u32, 0x00000004u32, 0x00050041u32, 0x00000013u32, 0x00000014u32, 0x00000012u32,
+  0x0000000cu32, 0x0004003du32, 0x00000010u32, 0x00000015u32, 0x00000014u32, 0x0004003du32,
+  0x00000008u32, 0x00000016u32, 0x00000018u32, 0x00050050u32, 0x00000007u32, 0x00000019u32,
+  0x00000016u32, 0x0000001au32, 0x00050090u32, 0x00000007u32, 0x0000001bu32, 0x00000019u32,
+  0x00000015u32, 0x0004003du32, 0x00000008u32, 0x00000020u32, 0x00000021u32, 0x0003003eu32,
+  0x00000026u32, 0x0000001bu32, 0x0003003eu32, 0x0000002au32, 0x00000020u32, 0x000100fdu32,
+  0x00010038u32, 0x00050036u32, 0x00000001u32, 0x0000002du32, 0x00000000u32, 0x00000003u32,
+  0x000200f8u32, 0x0000002eu32, 0x0004003du32, 0x00000008u32, 0x0000002fu32, 0x00000030u32,
+  0x00050050u32, 0x00000007u32, 0x00000031u32, 0x0000002fu32, 0x0000001au32, 0x0003003eu32,
+  0x00000032u32, 0x00000031u32, 0x000100fdu32, 0x00010038u32
+];
+// spirv-end
+
+// spirv-begin immediates.spv IMMEDIATES_SPIRV
+// Written by tools/shaders/shaders.py from immediates.slang (sha256 6594ea80f0dd087422fce0e36556279a269049c655fd91ef29543e0ec91c4f25): do not edit.
+imm IMMEDIATES_SPIRV [293; u32] = [
+  0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000031u32, 0x00000000u32, 0x00020011u32,
+  0x00000001u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x0009000fu32, 0x00000000u32,
+  0x00000002u32, 0x74726576u32, 0x614d7865u32, 0x00006e69u32, 0x00000011u32, 0x00000027u32,
+  0x00000018u32, 0x0009000fu32, 0x00000004u32, 0x0000002au32, 0x67617266u32, 0x746e656du32,
+  0x6e69614du32, 0x00000000u32, 0x00000011u32, 0x00000030u32, 0x00030010u32, 0x0000002au32,
+  0x00000007u32, 0x00030003u32, 0x0000000bu32, 0x00000001u32, 0x00070005u32, 0x0000000eu32,
+  0x656d6d49u32, 0x74616964u32, 0x735f7365u32, 0x33346474u32, 0x00000030u32, 0x00050006u32,
+  0x0000000eu32, 0x00000000u32, 0x7366666fu32, 0x00007465u32, 0x00050006u32, 0x0000000eu32,
+  0x00000001u32, 0x6c616373u32, 0x00000065u32, 0x00050006u32, 0x0000000eu32, 0x00000002u32,
+  0x74706564u32, 0x00000068u32, 0x00050006u32, 0x0000000eu32, 0x00000003u32, 0x6f6c6f63u32,
+  0x00000072u32, 0x00050005u32, 0x00000011u32, 0x656d6d69u32, 0x74616964u32, 0x00007365u32,
+  0x00050005u32, 0x00000018u32, 0x69736f70u32, 0x6e6f6974u32, 0x00000000u32, 0x00050005u32,
+  0x00000002u32, 0x74726576u32, 0x614d7865u32, 0x00006e69u32, 0x000a0005u32, 0x00000030u32,
+  0x72746e65u32, 0x696f5079u32, 0x6150746eu32, 0x5f6d6172u32, 0x67617266u32, 0x746e656du32,
+  0x6e69614du32, 0x00000000u32, 0x00060005u32, 0x0000002au32, 0x67617266u32, 0x746e656du32,
+  0x6e69614du32, 0x00000000u32, 0x00030047u32, 0x0000000eu32, 0x00000002u32, 0x00050048u32,
+  0x0000000eu32, 0x00000000u32, 0x00000023u32, 0x00000000u32, 0x00050048u32, 0x0000000eu32,
+  0x00000001u32, 0x00000023u32, 0x00000008u32, 0x00050048u32, 0x0000000eu32, 0x00000002u32,
+  0x00000023u32, 0x0000000cu32, 0x00050048u32, 0x0000000eu32, 0x00000003u32, 0x00000023u32,
+  0x00000010u32, 0x00040047u32, 0x00000018u32, 0x0000001eu32, 0x00000000u32, 0x00040047u32,
+  0x00000027u32, 0x0000000bu32, 0x00000000u32, 0x00040047u32, 0x00000030u32, 0x0000001eu32,
+  0x00000000u32, 0x00020013u32, 0x00000001u32, 0x00030021u32, 0x00000003u32, 0x00000001u32,
+  0x00030016u32, 0x00000006u32, 0x00000020u32, 0x00040017u32, 0x00000007u32, 0x00000006u32,
+  0x00000004u32, 0x00040015u32, 0x0000000au32, 0x00000020u32, 0x00000001u32, 0x0004002bu32,
+  0x0000000au32, 0x0000000bu32, 0x00000000u32, 0x00040017u32, 0x0000000fu32, 0x00000006u32,
+  0x00000002u32, 0x0006001eu32, 0x0000000eu32, 0x0000000fu32, 0x00000006u32, 0x00000006u32,
+  0x00000007u32, 0x00040020u32, 0x00000010u32, 0x00000009u32, 0x0000000eu32, 0x0004002bu32,
+  0x0000000au32, 0x00000012u32, 0x00000001u32, 0x00040020u32, 0x00000013u32, 0x00000009u32,
+  0x00000006u32, 0x00040020u32, 0x00000017u32, 0x00000001u32, 0x0000000fu32, 0x00040020u32,
+  0x0000001au32, 0x00000009u32, 0x0000000fu32, 0x0004002bu32, 0x0000000au32, 0x0000001eu32,
+  0x00000002u32, 0x0004002bu32, 0x00000006u32, 0x00000022u32, 0x3f800000u32, 0x00040020u32,
+  0x00000026u32, 0x00000003u32, 0x00000007u32, 0x0004002bu32, 0x0000000au32, 0x0000002cu32,
+  0x00000003u32, 0x00040020u32, 0x0000002du32, 0x00000009u32, 0x00000007u32, 0x0004003bu32,
+  0x00000010u32, 0x00000011u32, 0x00000009u32, 0x0004003bu32, 0x00000017u32, 0x00000018u32,
+  0x00000001u32, 0x0004003bu32, 0x00000026u32, 0x00000027u32, 0x00000003u32, 0x0004003bu32,
+  0x00000026u32, 0x00000030u32, 0x00000003u32, 0x00050036u32, 0x00000001u32, 0x00000002u32,
+  0x00000000u32, 0x00000003u32, 0x000200f8u32, 0x00000004u32, 0x00050041u32, 0x00000013u32,
+  0x00000014u32, 0x00000011u32, 0x00000012u32, 0x0004003du32, 0x00000006u32, 0x00000015u32,
+  0x00000014u32, 0x0004003du32, 0x0000000fu32, 0x00000016u32, 0x00000018u32, 0x0005008eu32,
+  0x0000000fu32, 0x00000019u32, 0x00000016u32, 0x00000015u32, 0x00050041u32, 0x0000001au32,
+  0x0000001bu32, 0x00000011u32, 0x0000000bu32, 0x0004003du32, 0x0000000fu32, 0x0000001cu32,
+  0x0000001bu32, 0x00050081u32, 0x0000000fu32, 0x0000001du32, 0x00000019u32, 0x0000001cu32,
+  0x00050041u32, 0x00000013u32, 0x0000001fu32, 0x00000011u32, 0x0000001eu32, 0x0004003du32,
+  0x00000006u32, 0x00000020u32, 0x0000001fu32, 0x00060050u32, 0x00000007u32, 0x00000021u32,
+  0x0000001du32, 0x00000020u32, 0x00000022u32, 0x0003003eu32, 0x00000027u32, 0x00000021u32,
+  0x000100fdu32, 0x00010038u32, 0x00050036u32, 0x00000001u32, 0x0000002au32, 0x00000000u32,
+  0x00000003u32, 0x000200f8u32, 0x0000002bu32, 0x00050041u32, 0x0000002du32, 0x0000002eu32,
+  0x00000011u32, 0x0000002cu32, 0x0004003du32, 0x00000007u32, 0x0000002fu32, 0x0000002eu32,
+  0x0003003eu32, 0x00000030u32, 0x0000002fu32, 0x000100fdu32, 0x00010038u32
+];
+// spirv-end

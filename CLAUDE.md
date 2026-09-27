@@ -51,11 +51,16 @@ Visual Studio projects stay at the root.
   `layout` test checks every struct against `cl.exe`; `gpu` is Cone's own
   thin GPU layer, shaped like WebGPU's objects (`Instance`, `Adapter`,
   `Device` and its `Queue`, `Surface`, `SwapChain`, `CommandEncoder`,
-  `RenderPass`, `Texture`, `Buffer`), with Vulkan its only backend and
-  nothing of Vulkan's in its interface, keeping two frames in flight and
-  designed for a command pool per recording thread, and its example,
-  `packages/gpu/examples/clear.cone`, clears a window through a swapchain and
-  reads a pixel back; `geomath` is 2-D and 3-D math (vectors,
+  `RenderPass`, `Texture`, `Buffer`, `ShaderModule`, `BindGroupLayout`,
+  `PipelineLayout` with immediates, `RenderPipeline`, `BindGroup`), with
+  Vulkan its only backend and nothing of Vulkan's in its interface, its
+  barriers its own and checked by the validation layer's synchronization
+  validation, keeping two frames in flight and designed for a command pool
+  per recording thread; its examples in `packages/gpu/examples/`: `clear`
+  clears a window through a swapchain, `triangle` draws the RGB triangle and
+  `cube` a spinning, depth-tested cube, each reading pixels back; its
+  shaders are Slang, compiled ahead of time to SPIR-V that is committed and
+  embedded in the Cone source by `tools/shaders/`; `geomath` is 2-D and 3-D math (vectors,
   quaternions, matrices, transforms, boxes, rays, planes, frusta and their
   tests, Bezier curves, polygons, colors), begun as a port from the Pegasus3D
   browser, its trigonometry from `libc` through its own `sin`, `cos`, ...;
@@ -141,6 +146,12 @@ Visual Studio projects stay at the root.
   build description per package, compiles each package on its own with `conec`,
   and links with `conestd`. `tools/congo/README.md` is its guide and design;
   `python tools/congo/test_congo.py` checks it against a built `conec`.
+- `tools/shaders/`: `shaders.py` compiles each package's Slang shaders
+  (`.slang`) ahead of time to SPIR-V (`.spv`, committed beside them) with the
+  Vulkan SDK's `slangc`, and embeds the words in the Cone file that draws
+  with them, between `// spirv-begin` and `// spirv-end` lines. Run it after
+  changing a shader; `shaders.py --check`, which needs no SDK, checks that
+  every `.spv` and every embedding is current (its header is the guide).
 - `tools/flowbench/`: measures what flow analysis costs, before and after a
   change (`flowbench.py --base <master's conec>`), over the packages, the suite
   and the stress files `genstress.py` generates.
@@ -291,7 +302,7 @@ For a compiler change:
 1. Build `conec` and run `python test/run.py`. A change to `tools/congo/`, to
    `packages/`, or to how `conec` reads a build description or finds a package
    also runs `python tools/congo/test_congo.py` and `congo test` in
-   `packages/`.
+   `packages/`, and one to a shader, `python tools/shaders/shaders.py --check`.
 2. Add coverage for the change: a scenario in the owning group under
    `test/cases/`, following `compiler/c/doc/diagnostics/test-suite.md`. A fix for a
    crash or a miscompile lands with the case that fails without it, and a new
