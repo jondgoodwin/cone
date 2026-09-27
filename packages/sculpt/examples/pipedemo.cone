@@ -1,0 +1,86 @@
+// pipedemo: the first sculpting demo, as Jon described it: a 2-D convex
+// profile extruded into a pipe, bent along a path, smoothed by Catmull-Clark
+// subdivision, and kept at three levels of detail (3-D sculpting, stage 4).
+//
+//   congo run packages/sculpt/examples/pipedemo.cone
+//
+// It writes, in the current folder, pipe-l0-cage.obj (the quad cage) and
+// pipe-l1.obj, pipe-l2.obj and pipe-l3.obj (each level triangulated, with
+// smooth normals and uvs), for viewing side by side in Blender (File >
+// Import > Wavefront (.obj)). It prints each level's counts, the size of
+// each file, and the size of the program's inputs, the few numbers the whole
+// mesh is made from: the sculpt program against the mesh it makes.
+//
+// The hexagon, of radius 0.25, is swept along the x axis from 0 to 4 in 16
+// pieces: 17 rings of 6 vertices, 102 in all, and 96 quads, open at both
+// ends. It is bent 90 degrees about z from its start, so its far end points
+// up (+y). Each level of subdivision quadruples the faces: 96, 384, 1536,
+// 6144 (tests/catmullclark.cone derives every count). Subdivision uses its
+// defaults: the open ends are boundary curves, and the uv seam stays a seam.
+
+mod pipedemo;
+
+import stdio use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+// Count, write and report one level; false if the file could not be written
+fn report(name &[]u8, pm &PolyMesh, level u32) Bool {
+  print <- "Level "; print <- level; print <- ": ";
+  print <- pm.vertexCount(); print <- " vertices, "; print <- pm.edgeCount(); print <- " edges, ";
+  print <- pm.faceCount(); print <- " faces";
+  imm problems = pm.validate();
+  if problems.len() != 0usize {
+    print <- ", does not validate:\n";
+    mut i = 0usize;
+    while i < problems.len() {
+      printStr(problems[i].view());
+      print <- "\n";
+      i = i + 1usize;
+    }
+    return false;
+  }
+  mut bytes = 0usize;
+  mut ok = true;
+  if level == 0u32 {
+    imm text = objText(pm);
+    bytes = text.len();
+    ok = writeObj(pm, name);
+  } else {
+    imm tri = pm.triangulate(true);
+    print <- "; "; print <- tri.vertexCount(); print <- " render vertices, ";
+    print <- tri.triangleCount(); print <- " triangles";
+    imm text = objText(&tri);
+    bytes = text.len();
+    ok = writeObj(&tri, name);
+  }
+  print <- "\n  "; printStr(name); print <- ": "; print <- bytes; print <- " bytes\n";
+  if !ok { print <- "  could not write it\n"; }
+  ok;
+}
+
+fn main() i32 {
+  imm hexagon = Profile.polygon(6u32, 0.25);
+  imm path = Path.line(Vec3[0., 0., 0.], Vec3[4., 0., 0.], 16u32);
+  imm straight = sweep(&hexagon, &path, 0., 1., 1., false);
+  imm cage = bend(&straight, pi / 2., Vec3[0., 0., 1.], Vec3[1., 0., 0.], Vec3[0., 0., 0.]);
+  imm lods = subdivisionLevels(&cage, 3u32);
+
+  // The program's inputs as text: every number the mesh is made from
+  imm program = String.from(
+    "polygon 6 0.25; line 0 0 0 4 0 0 16; sweep 0 1 1 open; bend 1.570796 0 0 1 1 0 0 0 0 0; subdivide 3");
+  print <- "The program: "; printStr(program.view()); print <- "\n";
+  print <- "  "; print <- program.len(); print <- " bytes as text; 24 numbers, 96 bytes as binary\n";
+  if !report("pipe-l0-cage.obj", lods[0usize], 0u32) { return 1; }
+  if !report("pipe-l1.obj", lods[1usize], 1u32) { return 1; }
+  if !report("pipe-l2.obj", lods[2usize], 2u32) { return 1; }
+  if !report("pipe-l3.obj", lods[3usize], 3u32) { return 1; }
+
+  imm b = lods[3usize].bounds();
+  print <- "Level 3 bounds: ("; print <- b.min.x; print <- ", "; print <- b.min.y; print <- ", "; print <- b.min.z;
+  print <- ") to ("; print <- b.max.x; print <- ", "; print <- b.max.y; print <- ", "; print <- b.max.z;
+  print <- ")\n";
+  0;
+}

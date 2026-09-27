@@ -1,0 +1,302 @@
+// Catmull-Clark subdivision's counts and positions on closed and open
+// meshes, checked with the testing package against values worked out by hand
+// before the test was run; only a failure prints, so catmullclark.out holds the
+// summary alone. The rules are those in sculpt.cone's "Subdivision" section.
+// A child vertex's number: vertex v keeps v, edge e's point is V + e, face
+// f's point V + E + f (V and E the parent's counts); the tests find edge e
+// by its two ends.
+//
+// - The cube cage of size 1, [-1, 1]^3, vertex x + 2y + 4z (mesh's cube):
+//   level 1 has V = 8 + 12 + 6 = 26 (a point per vertex, edge and face),
+//   E = 12 * 2 + 6 * 4 = 48 (each edge halved, and 4 new edges inside each
+//   quad), F = 6 * 4 = 24 quads: Euler V - E + F = 26 - 48 + 24 = 2, a
+//   sphere's. Level 2: F = 24 * 4 = 96, E = 48 * 2 + 24 * 4 = 192,
+//   V = 26 + 48 + 24 = 98; 98 - 192 + 96 = 2.
+//   - The right face (+x, vertices 1, 3, 7, 5): its face point is the mean
+//     of its corners, (1, 0, 0).
+//   - Edge 3-7, x = 1, y = 1, z from -1 to 1, between the right face (1, 0,
+//     0) and the top (0, 1, 0): ((1,1,-1) + (1,1,1) + (1,0,0) + (0,1,0)) / 4
+//     = (3, 3, 0) / 4 = (0.75, 0.75, 0).
+//   - Vertex 7 (1, 1, 1), valence n = 3: Q, the mean of its face points
+//     (1,0,0), (0,1,0), (0,0,1), is (1/3, 1/3, 1/3); R, the mean of its
+//     edges' midpoints (0,1,1), (1,0,1), (1,1,0), is (2/3, 2/3, 2/3); S =
+//     (1, 1, 1). (Q + 2R + (n - 3) S) / n = (1/3 + 4/3 + 0) / 3 = 5/9 =
+//     0.555556 in each coordinate. By symmetry vertex 0 goes to -5/9 in
+//     each.
+//   - Level 2 is all quads, and validates.
+// - A tetrahedron, (1,1,1), (1,-1,-1), (-1,1,-1), (-1,-1,1), four triangles:
+//   V = 4, E = 6, F = 4. Level 1: V = 4 + 6 + 4 = 14, E = 6 * 2 + 4 * 3 =
+//   24, F = 4 * 3 = 12, all quads; 14 - 24 + 12 = 2.
+//   - Vertex 0 (1,1,1), n = 3: its neighbours sum to (-1, -1, -1); its three
+//     faces' centroids are (v0 + the other two) / 3 each, summing to (3 v0 +
+//     2 (sum of the others)) / 3 = (3 - 2) / 3 = 1/3 each. The vertex point
+//     ((n - 2) S + (sum of neighbours) / n + (sum of face points) / n) / n
+//     = S / 3 + (-1) / 9 + (1/3) / 9 = 9/27 - 3/27 + 1/27 = 7/27 = 0.259259
+//     each.
+//   - Edge 0-1, (1,1,1) to (1,-1,-1): its faces are (0, 1, 2), centroid
+//     (1/3, 1/3, -1/3), and (0, 1, 3), (1/3, -1/3, 1/3). Its point is ((1,1,1)
+//     + (1,-1,-1) + (1/3, 1/3, -1/3) + (1/3, -1/3, 1/3)) / 4 = (8/3, 0, 0) / 4
+//     = (2/3, 0, 0) = (0.666667, 0, 0).
+// - A single quad (0,0,0) (2,0,0) (2,2,0) (0,2,0), open: V = 4, E = 4, F = 1,
+//   V - E + F = 1. Level 1: V = 4 + 4 + 1 = 9, E = 4 * 2 + 4 = 12, F = 4;
+//   9 - 12 + 4 = 1. Every edge is on the boundary, so its point is its
+//   midpoint: edge 0-1 at (1, 0, 0), 1-2 at (2, 1, 0). The face point is
+//   (1, 1, 0). Each vertex is a corner (a boundary vertex with one face):
+//   with the default boundary rule, edge and corner, it stays, vertex 0 at
+//   (0, 0, 0), vertex 2 at (2, 2, 0). With the edge-only rule, the corner
+//   takes the crease rule along the boundary: (A + 6S + B) / 8 for vertex 0,
+//   A = (2,0,0), B = (0,2,0): (2, 2, 0) / 8 = (0.25, 0.25, 0); vertex 2,
+//   A = (2,0,0), B = (0,2,0) again: ((2,0,0) + (12,12,0) + (0,2,0)) / 8 =
+//   (1.75, 1.75, 0).
+// - An open square tube: rings z = 0, 1, 2 of the square (1,1), (-1,1),
+//   (-1,-1), (1,-1), vertex 4i + j for ring i, point j; its sides joined by
+//   quads, 8 faces, ends open. V = 12, E = 4 * 3 + 4 * 2 = 20, F = 8:
+//   12 - 20 + 8 = 0, a tube's. Level 1: V = 12 + 20 + 8 = 40, E = 20 * 2 +
+//   8 * 4 = 72, F = 32; 40 - 72 + 32 = 0.
+//   - Boundary vertex 0 (1, 1, 0), valence 3, two faces: the boundary rule,
+//     (A + 6S + B) / 8 with A and B its boundary neighbours (-1, 1, 0) and
+//     (1, -1, 0): (-1 + 6 + 1, 1 + 6 - 1, 0) / 8 = (0.75, 0.75, 0).
+//   - Boundary edge 0-1, (1,1,0) to (-1,1,0): its midpoint (0, 1, 0).
+//   - Interior vertex 4 (1, 1, 1), valence 4: its neighbours (-1,1,1),
+//     (1,-1,1), (1,1,0), (1,1,2) sum to (2, 2, 4); its faces' points, the
+//     y = 1 side's (0, 1, 0.5) and (0, 1, 1.5) and the x = 1 side's (1, 0,
+//     0.5) and (1, 0, 1.5), also sum to (2, 2, 4). (n - 2) / n S + (sum of
+//     neighbours + sum of face points) / n^2 = (0.5, 0.5, 0.5) + (4, 4, 8) /
+//     16 = (0.75, 0.75, 1).
+//   - Interior edge 0-4, (1,1,0) to (1,1,1), between the two lower faces,
+//     face points (0, 1, 0.5) and (1, 0, 0.5): ((1,1,0) + (1,1,1) + (0,1,0.5)
+//     + (1,0,0.5)) / 4 = (3, 3, 2) / 4 = (0.75, 0.75, 0.5).
+// - A mixed mesh, a quad and a triangle sharing an edge, (0,0,0) (1,0,0)
+//   (1,1,0) (0,1,0) and (1,0,0) (2,0,0) (1,1,0): V = 5, E = 6, F = 2.
+//   Level 1: V = 5 + 6 + 2 = 13, E = 12 + 4 + 3 = 19, F = 4 + 3 = 7 quads;
+//   13 - 19 + 7 = 1.
+// - Levels of detail from the cube: subdivisionLevels(cube, 2) holds levels
+//   0, 1 and 2, with 6, 24 and 96 faces, level 0 a copy of the cage.
+// - The pipe demo's cage (examples/pipedemo.cone): a hexagon swept along a
+//   straight path in 16 pieces, open at both ends, bent 90 degrees: 17 rings
+//   of 6, V = 102; E = 17 * 6 around the rings + 16 * 6 along = 198; F = 96
+//   quads; V - E + F = 0, an open tube's. Each level, all quads, makes
+//   F' = 4F, E' = 2E + 4F (each edge halved, 4 new edges inside each quad),
+//   V' = V + E + F, and keeps V - E + F = 0:
+//     level 1: V = 102 + 198 + 96 = 396, E = 396 + 384 = 780, F = 384;
+//     level 2: V = 396 + 780 + 384 = 1560, E = 1560 + 1536 = 3096, F = 1536;
+//     level 3: V = 1560 + 3096 + 1536 = 6192, E = 6192 + 6144 = 12336,
+//              F = 6144.
+//   Its uv seam, where the hexagon's u comes back from 1 to 0, runs along
+//   the path through profile point 0: 16 edges in the cage, each halved per
+//   level, so 16 * 2^L + 1 vertices at level L, and each is split once when
+//   triangulated smooth (u = 0 on one side, 1 on the other), and no other:
+//   level 1 gives 396 + 33 = 429 render vertices, level 2 1560 + 65 = 1625,
+//   level 3 6192 + 129 = 6321. (A continuous uv edge must get the same edge
+//   point, to the bit, from both its faces, or the next level cuts it.)
+
+mod catmullclark;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+imm near = 0.00001d;
+
+fn point(got Vec3, x f32, y f32, z f32, label &[]u8) {
+  expectFloat(got.x, x, near, label);
+  expectFloat(got.y, y, near, label);
+  expectFloat(got.z, z, near, label);
+}
+
+fn clean(m &PolyMesh, label &[]u8) {
+  imm problems = m.validate();
+  expectInt(i64[problems.len()], 0, label);
+}
+
+// The edge from a to b (either way), or NoIndex
+fn edgeOf(m &PolyMesh, a u32, b u32) u32 {
+  mut e = 0u32;
+  while usize[e] < m.edgeCount() {
+    imm p = *m.hVertex[usize[2u32 * e]];
+    imm q = *m.hVertex[usize[2u32 * e + 1u32]];
+    if (p == a and q == b) or (p == b and q == a) { return e; }
+    e = e + 1u32;
+  }
+  NoIndex;
+}
+
+// Every face has 4 corners
+fn allQuads(m &PolyMesh) Bool {
+  mut f = 0u32;
+  while usize[f] < m.faceCount() {
+    if m.faceDegree(f) != 4usize { return false; }
+    f = f + 1u32;
+  }
+  true;
+}
+
+fn counts(m &PolyMesh, v i64, e i64, f i64, label &[]u8) {
+  expectInt(i64[m.vertexCount()], v, label);
+  expectInt(i64[m.edgeCount()], e, label);
+  expectInt(i64[m.faceCount()], f, label);
+  expectInt(i64[m.vertexCount()] - i64[m.edgeCount()] + i64[m.faceCount()], v - e + f, label);
+}
+
+fn cubes() {
+  imm cage = PolyMesh.cube(1.);
+  imm l1 = subdivide(&cage, 1u32);
+  counts(&l1, 26, 48, 24, "cube level 1: V, E, F and Euler");
+  clean(&l1, "cube level 1: validates");
+  expect(allQuads(&l1), "cube level 1: all quads");
+  imm nv = u32[cage.vertexCount()];
+  imm ne = u32[cage.edgeCount()];
+  // The right face is face 3
+  point(*l1.positions[usize[nv + ne + 3u32]], 1., 0., 0., "cube level 1: right face point");
+  imm e37 = edgeOf(&cage, 3u32, 7u32);
+  point(*l1.positions[usize[nv + e37]], 0.75, 0.75, 0., "cube level 1: edge 3-7 point");
+  point(*l1.positions[7usize], 0.555556, 0.555556, 0.555556, "cube level 1: vertex 7 point");
+  point(*l1.positions[0usize], -0.555556, -0.555556, -0.555556, "cube level 1: vertex 0 point");
+
+  imm l2 = subdivide(&cage, 2u32);
+  counts(&l2, 98, 192, 96, "cube level 2: V, E, F and Euler");
+  clean(&l2, "cube level 2: validates");
+  expect(allQuads(&l2), "cube level 2: all quads");
+
+  imm zero = subdivide(&cage, 0u32);
+  counts(&zero, 8, 12, 6, "cube level 0: a copy");
+}
+
+fn tetrahedron() {
+  imm pts [4; Vec3] = [Vec3[1., 1., 1.], Vec3[1., -1., -1.], Vec3[-1., 1., -1.], Vec3[-1., -1., 1.]];
+  imm cnt [4; u32] = [3u32, 3u32, 3u32, 3u32];
+  imm idx [12; u32] = [0u32, 1u32, 2u32,  0u32, 3u32, 1u32,  0u32, 2u32, 3u32,  1u32, 3u32, 2u32];
+  mut problems = List[String].empty();
+  imm tet = PolyMesh.fromPolygons(&pts, &cnt, &idx, &mut problems);
+  requireInt(i64[problems.len()], 0, "tetrahedron: builds");
+  clean(&tet, "tetrahedron: validates");
+  imm l1 = subdivide(&tet, 1u32);
+  counts(&l1, 14, 24, 12, "tetrahedron level 1: V, E, F and Euler");
+  clean(&l1, "tetrahedron level 1: validates");
+  expect(allQuads(&l1), "tetrahedron level 1: all quads");
+  point(*l1.positions[0usize], 0.259259, 0.259259, 0.259259, "tetrahedron level 1: vertex 0 point");
+  imm e01 = edgeOf(&tet, 0u32, 1u32);
+  point(*l1.positions[usize[4u32 + e01]], 0.666667, 0., 0., "tetrahedron level 1: edge 0-1 point");
+}
+
+fn quad() {
+  imm pts [4; Vec3] = [Vec3[0., 0., 0.], Vec3[2., 0., 0.], Vec3[2., 2., 0.], Vec3[0., 2., 0.]];
+  imm cnt [1; u32] = [4u32];
+  imm idx [4; u32] = [0u32, 1u32, 2u32, 3u32];
+  mut problems = List[String].empty();
+  imm q = PolyMesh.fromPolygons(&pts, &cnt, &idx, &mut problems);
+  imm l1 = subdivide(&q, 1u32);
+  counts(&l1, 9, 12, 4, "quad level 1: V, E, F and Euler");
+  clean(&l1, "quad level 1: validates");
+  point(*l1.positions[usize[4u32 + edgeOf(&q, 0u32, 1u32)]], 1., 0., 0., "quad level 1: edge 0-1 midpoint");
+  point(*l1.positions[usize[4u32 + edgeOf(&q, 1u32, 2u32)]], 2., 1., 0., "quad level 1: edge 1-2 midpoint");
+  point(*l1.positions[8usize], 1., 1., 0., "quad level 1: face point");
+  point(*l1.positions[0usize], 0., 0., 0., "quad level 1: corner 0 stays");
+  point(*l1.positions[2usize], 2., 2., 0., "quad level 1: corner 2 stays");
+
+  imm eo = subdivideWith(&q, 1u32, BoundaryEdgeOnly, FvarLinearCornersPlus1);
+  point(*eo.positions[0usize], 0.25, 0.25, 0., "quad edge-only: corner 0 on the boundary curve");
+  point(*eo.positions[2usize], 1.75, 1.75, 0., "quad edge-only: corner 2 on the boundary curve");
+  point(*eo.positions[usize[4u32 + edgeOf(&q, 0u32, 1u32)]], 1., 0., 0., "quad edge-only: edge 0-1 midpoint");
+}
+
+fn tube() {
+  mut pts = List[Vec3].empty();
+  imm sq [8; f32] = [1f, 1f, -1f, 1f, -1f, -1f, 1f, -1f];
+  mut i = 0usize;
+  while i < 3usize {
+    mut j = 0usize;
+    while j < 4usize {
+      pts.push(Vec3[sq[2usize * j], sq[2usize * j + 1usize], f32[i]]);
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  mut cnt = List[u32].empty();
+  mut idx = List[u32].empty();
+  i = 0usize;
+  while i < 2usize {
+    mut j = 0usize;
+    while j < 4usize {
+      imm j1 = (j + 1usize) % 4usize;
+      cnt.push(4u32);
+      idx.push(u32[4usize * i + j]);
+      idx.push(u32[4usize * i + j1]);
+      idx.push(u32[4usize * (i + 1usize) + j1]);
+      idx.push(u32[4usize * (i + 1usize) + j]);
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  mut problems = List[String].empty();
+  imm t = PolyMesh.fromPolygons(pts.view(), cnt.view(), idx.view(), &mut problems);
+  requireInt(i64[problems.len()], 0, "tube: builds");
+  counts(&t, 12, 20, 8, "tube: V, E, F and Euler");
+  imm l1 = subdivide(&t, 1u32);
+  counts(&l1, 40, 72, 32, "tube level 1: V, E, F and Euler");
+  clean(&l1, "tube level 1: validates");
+  point(*l1.positions[0usize], 0.75, 0.75, 0., "tube level 1: boundary vertex 0, the boundary rule");
+  point(*l1.positions[usize[12u32 + edgeOf(&t, 0u32, 1u32)]], 0., 1., 0., "tube level 1: boundary edge 0-1 midpoint");
+  point(*l1.positions[4usize], 0.75, 0.75, 1., "tube level 1: interior vertex 4");
+  point(*l1.positions[usize[12u32 + edgeOf(&t, 0u32, 4u32)]], 0.75, 0.75, 0.5, "tube level 1: interior edge 0-4");
+}
+
+fn mixed() {
+  imm pts [5; Vec3] = [Vec3[0., 0., 0.], Vec3[1., 0., 0.], Vec3[1., 1., 0.], Vec3[0., 1., 0.], Vec3[2., 0., 0.]];
+  imm cnt [2; u32] = [4u32, 3u32];
+  imm idx [7; u32] = [0u32, 1u32, 2u32, 3u32,  1u32, 4u32, 2u32];
+  mut problems = List[String].empty();
+  imm m = PolyMesh.fromPolygons(&pts, &cnt, &idx, &mut problems);
+  imm l1 = subdivide(&m, 1u32);
+  counts(&l1, 13, 19, 7, "quad and triangle level 1: V, E, F and Euler");
+  clean(&l1, "quad and triangle level 1: validates");
+  expect(allQuads(&l1), "quad and triangle level 1: all quads");
+}
+
+fn levels() {
+  imm cage = PolyMesh.cube(1.);
+  imm lods = subdivisionLevels(&cage, 2u32);
+  requireInt(i64[lods.len()], 3, "levels: 0, 1 and 2");
+  expectInt(i64[lods[0usize].faceCount()], 6, "levels: level 0 faces");
+  expectInt(i64[lods[1usize].faceCount()], 24, "levels: level 1 faces");
+  expectInt(i64[lods[2usize].faceCount()], 96, "levels: level 2 faces");
+  expectInt(i64[lods[2usize].vertexCount()], 98, "levels: level 2 vertices");
+  point(*lods[0usize].positions[7usize], 1., 1., 1., "levels: level 0 is the cage");
+  point(*lods[1usize].positions[7usize], 0.555556, 0.555556, 0.555556, "levels: level 1 vertex 7");
+}
+
+fn pipe() {
+  imm hexagon = Profile.polygon(6u32, 0.25);
+  imm path = Path.line(Vec3[0., 0., 0.], Vec3[4., 0., 0.], 16u32);
+  imm straight = sweep(&hexagon, &path, 0., 1., 1., false);
+  imm cage = bend(&straight, pi / 2., Vec3[0., 0., 1.], Vec3[1., 0., 0.], Vec3[0., 0., 0.]);
+  counts(&cage, 102, 198, 96, "pipe cage: V, E, F and Euler");
+  imm lods = subdivisionLevels(&cage, 3u32);
+  requireInt(i64[lods.len()], 4, "pipe: levels 0 to 3");
+  counts(lods[1usize], 396, 780, 384, "pipe level 1: V, E, F and Euler");
+  counts(lods[2usize], 1560, 3096, 1536, "pipe level 2: V, E, F and Euler");
+  counts(lods[3usize], 6192, 12336, 6144, "pipe level 3: V, E, F and Euler");
+  clean(lods[1usize], "pipe level 1: validates");
+  clean(lods[2usize], "pipe level 2: validates");
+  clean(lods[3usize], "pipe level 3: validates");
+  expect(allQuads(lods[3usize]), "pipe level 3: all quads");
+  imm t1 = lods[1usize].triangulate(true);
+  imm t2 = lods[2usize].triangulate(true);
+  imm t3 = lods[3usize].triangulate(true);
+  expectInt(i64[t1.vertexCount()], 429, "pipe level 1: only the seam split");
+  expectInt(i64[t2.vertexCount()], 1625, "pipe level 2: only the seam split");
+  expectInt(i64[t3.vertexCount()], 6321, "pipe level 3: only the seam split");
+}
+
+fn main() i32 {
+  pipe();
+  cubes();
+  tetrahedron();
+  quad();
+  tube();
+  mixed();
+  levels();
+  done();
+}

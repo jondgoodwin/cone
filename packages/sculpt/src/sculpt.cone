@@ -15,6 +15,12 @@
 //   channels as they were: 'bend', 'twist' and 'taper' (Barr's global
 //   deformations, as Blender's Simple Deform modifier offers them), and
 //   'curveDeform' (a mesh laid along a path, as Blender's Curve modifier).
+// - Subdivision: 'subdivide', Catmull-Clark, with boundary rules, semi-sharp
+//   creases from a "crease" channel, face-varying uvs that keep their seams,
+//   and every other channel carried; 'subdivisionLevels', a cage's levels 0
+//   to n, a level-of-detail chain. OpenSubdiv keeps subdivision apart from
+//   the mesh it refines, and so does this package: a PolyMesh in, a new one
+//   out.
 //
 // Its conventions are geomath's and mesh's, which are the industry's:
 // right-handed space, y up, f32, angles in radians, a positive angle turning
@@ -42,7 +48,9 @@
 //   as twist, as that paper suggests;
 // - bend, twist and taper: Barr, "Global and local deformations of solid
 //   primitives", SIGGRAPH 1984;
-// - convex hull: geomath's, Andrew's monotone chain.
+// - convex hull: geomath's, Andrew's monotone chain;
+// - subdivision: Catmull and Clark 1978; DeRose, Kass and Truong 1998;
+//   OpenSubdiv's documented rules (see "Subdivision" below).
 //
 // The package is one file, since a package a program finds on the search path
 // (rather than one Congo builds) is compiled from its src/<name>.cone alone.
@@ -1054,4 +1062,696 @@ pub fn curveDeform(m &PolyMesh, path &Path, along Vec3, up Vec3, origin Vec3) Po
     i = i + 1usize;
   }
   withPositions(m, out);
+}
+
+// ======== Subdivision: Catmull-Clark ========
+//
+// Catmull and Clark, "Recursively generated B-spline surfaces on arbitrary
+// topological meshes", CAD 10(6), 1978, with semi-sharp creases after DeRose,
+// Kass and Truong, "Subdivision surfaces in character animation", SIGGRAPH
+// 1998, and the boundary, crease and face-varying rules as Pixar's OpenSubdiv
+// documents them (its "Subdivision Surfaces" overview; the algorithm only, no
+// code). One level turns every face of n corners into n quads, so after the
+// first level the mesh is all quads, whatever mix of triangles, quads and
+// n-gons it began as.
+//
+// One level makes three kinds of new vertex:
+// - a face point for each face: the mean of its corners;
+// - an edge point for each edge: on a smooth edge, the mean of its two ends
+//   and the face points of its two faces, (a + b + F0 + F1) / 4; on a sharp
+//   edge (a boundary edge, or a crease of sharpness 1 or more), its midpoint
+//   (a + b) / 2; on a crease of sharpness s between 0 and 1, the smooth point
+//   and the midpoint blended, s of the midpoint;
+// - a vertex point for each vertex, by one of four rules chosen by how many
+//   sharp edges meet there (a crease of any sharpness above 0 counts):
+//   - smooth (none) and dart (one): (Q + 2R + (n - 3) S) / n, where n is its
+//     valence, S where it is, Q the mean of its faces' face points and R the
+//     mean of its edges' midpoints; that is
+//     ((n - 2) S + (sum of its neighbours) / n + (sum of its face points) / n) / n;
+//   - crease (two): (A + 6 S + B) / 8, A and B the far ends of the two sharp
+//     edges: a cubic B-spline along the crease;
+//   - corner (three or more, or a sharp vertex): S, it stays.
+//   When a semi-sharp crease wears out at this level (its sharpness is 1 or
+//   less, so its child is smooth), the rule its sharpness gives now and the
+//   one its children's gives are blended, by the mean sharpness of the edges
+//   (and vertex) that wear out, at most 1 (OpenSubdiv's fractional weight).
+//
+// Sharpness: an edge's is the edge channel of f32 named "crease", a vertex's
+// the vertex channel named "crease" (0 where there is none). Its values are
+// OpenSubdiv's (and USD's creaseSharpnesses): 0 is smooth, s is sharp for s
+// levels, and SharpnessInfinite (10) or more is sharp at every level. A
+// child edge of a parent edge gets the parent's sharpness less 1 (at least
+// 0; an infinite one stays), OpenSubdiv's uniform creasing; the edges made
+// inside a face get 0. A vertex point's vertex sharpness goes down the same
+// way.
+//
+// Boundaries: a boundary edge is infinitely sharp, so it subdivides as a cubic
+// B-spline curve, and a boundary vertex with more than one face takes the
+// crease rule along it. 'BoundaryEdgeAndCorner', the default (USD's
+// interpolateBoundary default, edgeAndCorner, and RenderMan's; Blender's
+// "Keep Corners"), also keeps a corner, a boundary vertex with one face, where
+// it is. 'BoundaryEdgeOnly' (OpenSubdiv's VTX_BOUNDARY_EDGE_ONLY; Blender's
+// Boundary Smooth "All", its modifier's default) smooths the corner along its
+// boundary curve instead.
+//
+// Face-varying data, every corner channel ("uv" among them), is subdivided by
+// the same rules on its own topology: where the values of the corners at an
+// edge's ends differ across it (a uv seam) the edge is a face-varying
+// boundary, so each uv island is subdivided as its own mesh with its own
+// boundary, and seams stay seams. The corners about a vertex are cut into
+// fans by those edges; a fan is subdivided as a boundary vertex is. How its
+// boundary is held is one of USD's faceVaryingLinearInterpolation choices
+// (OpenSubdiv's FVAR_LINEAR_*):
+// - 'FvarLinearNone': smooth everywhere, boundaries as B-spline curves;
+// - 'FvarLinearCornersOnly': the same, but a fan of one face keeps its value
+//   (a uv island's corner stays put);
+// - 'FvarLinearCornersPlus1', the default (USD's): also keeps the value where
+//   three or more fans meet at a vertex;
+// - 'FvarLinearBoundaries': every value on a face-varying boundary is kept,
+//   and its edges' values are midpoints (Blender's UV Smooth default, "Keep
+//   Boundaries");
+// - 'FvarLinearAll': linear everywhere (OpenSubdiv's Sdc default): corners
+//   keep their values, edge values are midpoints, face values means.
+//
+// Other channels: a vertex channel is subdivided with the vertex rules, as the
+// positions are (USD's "vertex" interpolation); a face channel's value passes
+// to each of the face's child faces; an edge channel's (other than "crease")
+// to each of the edge's two child edges, and the edges made inside a face get
+// 0. A mesh needs no channels at all.
+//
+// The new mesh's vertices are numbered: first the vertex points, vertex v of
+// the old mesh as vertex v; then the edge points, edge e as vertex V + e;
+// then the face points, face f as V + E + f, where V and E are the old mesh's
+// vertex and edge counts. So a cage's vertices keep their numbers at every
+// level. Face f of n corners becomes n faces, numbered on from the child
+// faces of the faces before it, one for each of its corners in order from its
+// first; the child at the corner of vertex v, with the half-edge h ending at
+// v, runs (v's vertex point, the edge point of next(h)'s edge, f's face point,
+// the edge point of h's edge), counterclockwise as its parent is.
+
+pub const BoundaryEdgeOnly = 0u32;
+pub const BoundaryEdgeAndCorner = 1u32;
+
+pub const FvarLinearNone = 0u32;
+pub const FvarLinearCornersOnly = 1u32;
+pub const FvarLinearCornersPlus1 = 2u32;
+pub const FvarLinearBoundaries = 3u32;
+pub const FvarLinearAll = 4u32;
+
+// A sharpness this great or more never wears out (OpenSubdiv's
+// SHARPNESS_INFINITE)
+pub const SharpnessInfinite = 10.;
+
+// The mesh subdivided 'levels' times by Catmull-Clark, with USD's defaults:
+// boundary corners kept, face-varying data kept at corners and at junctions
+// of three or more fans. 0 levels gives a copy.
+pub fn subdivide(m &PolyMesh, levels u32) PolyMesh {
+  subdivideWith(m, levels, BoundaryEdgeAndCorner, FvarLinearCornersPlus1);
+}
+
+// The same, with the boundary rule (BoundaryEdgeOnly or
+// BoundaryEdgeAndCorner) and the face-varying rule (FvarLinearNone to
+// FvarLinearAll) given
+pub fn subdivideWith(m &PolyMesh, levels u32, boundary u32, fvar u32) PolyMesh {
+  mut cur = copyPolyMesh(m);
+  mut i = 0u32;
+  while i < levels {
+    imm next = subdivideOnce(&cur, boundary, fvar);
+    cur = next;
+    i = i + 1u32;
+  }
+  cur;
+}
+
+// Levels of detail: the cage (a copy, level 0) and each level of its
+// subdivision up to 'levels', by 'subdivide''s defaults, each made from the
+// one before; entry i is level i
+pub fn subdivisionLevels(m &PolyMesh, levels u32) List[PolyMesh] {
+  mut out = List[PolyMesh].withCapacity(usize[levels] + 1usize);
+  out.push(copyPolyMesh(m));
+  mut i = 0u32;
+  while i < levels {
+    imm next = subdivideOnce(out[usize[i]], BoundaryEdgeAndCorner, FvarLinearCornersPlus1);
+    out.push(next);
+    i = i + 1u32;
+  }
+  out;
+}
+
+// A copy of a PolyMesh, channels and all
+fn copyPolyMesh(m &PolyMesh) PolyMesh {withPositions(m, copyList[Vec3](&m.positions));}
+
+// A sharpness one level on: less 1, at least 0; infinite stays infinite
+fn childSharpness(s f32) f32 {
+  if s >= SharpnessInfinite {s;} elif s > 1. {s - 1.;} else {0.;};
+}
+
+fn sameVec3(a Vec3, b Vec3) Bool {a.x == b.x and a.y == b.y and a.z == b.z;}
+
+// The vertex rules
+const RuleSmooth = 0u32;
+const RuleCrease = 2u32;
+const RuleCorner = 3u32;
+
+// Which rule a vertex of sharpness 'vs' takes with its edges' sharpness
+// 'sharp': a sharp vertex or three sharp edges or more a corner, two a crease,
+// fewer (smooth, or a dart) smooth
+fn ruleOf(vs f32, sharp &List[f32]) u32 {
+  if vs > 0. { return RuleCorner; }
+  mut n = 0usize;
+  mut i = 0usize;
+  while i < sharp.len() {
+    if *sharp[i] > 0. { n = n + 1usize; }
+    i = i + 1usize;
+  }
+  if n > 2usize {RuleCorner;} elif n == 2usize {RuleCrease;} else {RuleSmooth;};
+}
+
+// A vertex point by one rule. 'ends' holds each edge's far end, 'faces' each
+// face's face point, 'sharp' each edge's sharpness; 'closed' when the edges
+// go all the way round (ends and faces alike in number), otherwise the fan's
+// first and last edges are its boundary and there is one face fewer.
+fn applyRule(rule u32, own Vec3, ends &List[Vec3], faces &List[Vec3], sharp &List[f32], closed Bool) Vec3 {
+  if rule == RuleCorner { return own; }
+  if rule == RuleCrease {
+    mut sum = Vec3[0., 0., 0.];
+    mut i = 0usize;
+    while i < ends.len() {
+      if *sharp[i] > 0. { sum = sum + *ends[i]; }
+      i = i + 1usize;
+    }
+    return (sum + own * 6.) * 0.125;
+  }
+  imm n = ends.len();
+  if !closed or n == 0usize { return own; }
+  mut se = Vec3[0., 0., 0.];
+  mut sf = Vec3[0., 0., 0.];
+  mut i = 0usize;
+  while i < n {
+    se = se + *ends[i];
+    sf = sf + *faces[i];
+    i = i + 1usize;
+  }
+  imm nn = f32[n];
+  own * ((nn - 2.) / nn) + (se + sf) * (1. / (nn * nn));
+}
+
+// A vertex point: the rule its sharpness gives, blended with the rule its
+// children's gives when a crease wears out at this level
+fn fanPoint(own Vec3, ends &List[Vec3], faces &List[Vec3], sharp &List[f32], vs f32, closed Bool) Vec3 {
+  imm pRule = ruleOf(vs, sharp);
+  imm p = applyRule(pRule, own, ends, faces, sharp, closed);
+  if pRule == RuleSmooth { return p; }
+  mut cs = List[f32].withCapacity(sharp.len());
+  mut i = 0usize;
+  while i < sharp.len() {
+    cs.push(childSharpness(*sharp[i]));
+    i = i + 1usize;
+  }
+  imm cvs = childSharpness(vs);
+  imm cRule = ruleOf(cvs, &cs);
+  if cRule == pRule { return p; }
+  imm c = applyRule(cRule, own, ends, faces, &cs, closed);
+  // The fractional weight: the mean sharpness of what wears out, at most 1
+  mut sum f32 = 0.;
+  mut count = 0u32;
+  if vs > 0. and cvs <= 0. {
+    sum = vs;
+    count = 1u32;
+  }
+  i = 0usize;
+  while i < sharp.len() {
+    if *sharp[i] > 0. and *cs[i] <= 0. {
+      sum = sum + *sharp[i];
+      count = count + 1u32;
+    }
+    i = i + 1usize;
+  }
+  if count == 0u32 { return c; }
+  mut w = sum / f32[count];
+  if w > 1. { w = 1.; }
+  p * w + c * (1. - w);
+}
+
+// An edge point from its ends a and b and its faces' face points
+fn edgeValue(a Vec3, b Vec3, fa Vec3, fb Vec3, s f32, sharpEdge Bool) Vec3 {
+  imm mid = (a + b) * 0.5;
+  if sharpEdge or s >= 1. { return mid; }
+  imm smooth = (a + b + fa + fb) * 0.25;
+  if s <= 0. {smooth;} else {smooth * (1. - s) + mid * s;};
+}
+
+// One level's new values of one kind of data, seen corner by corner
+struct Refined {
+  pub vp List[Vec3];   // per half-edge in a face: the vertex point's value at its end, in its face
+  pub ep List[Vec3];   // per half-edge in a face: its edge's edge point's value, in its face
+  pub fp List[Vec3];   // per face
+}
+
+// Subdivide data held per corner, 'vals' (a value per half-edge, the value at
+// the vertex it ends at, in its face). 'cutOnValues': face-varying data, cut
+// into fans where values differ; otherwise only the boundary cuts. 'rule':
+// how a fan's boundary is held, FvarLinearNone to FvarLinearAll (the boundary
+// rules are the first two). 'eSharp' is each edge's sharpness, boundary
+// edges infinite; 'vSharp' each vertex's.
+fn refineValues(m &PolyMesh, vals &List[Vec3], cutOnValues Bool, rule u32, eSharp &List[f32],
+    vSharp &List[f32]) Refined {
+  imm nh = m.hVertex.len();
+  imm nf = m.fHalfedge.len();
+  imm nv = m.positions.len();
+  imm zero = Vec3[0., 0., 0.];
+
+  // Face points
+  mut fp = List[Vec3].withCapacity(nf);
+  mut f = 0usize;
+  while f < nf {
+    imm hs = m.faceHalfedges(u32[f]);
+    mut sum = zero;
+    mut i = 0usize;
+    while i < hs.len() {
+      sum = sum + *vals[usize[*hs[i]]];
+      i = i + 1usize;
+    }
+    fp.push(sum * (1. / f32[hs.len()]));
+    f = f + 1usize;
+  }
+
+  // Edge points, seen from each face
+  mut ep = List[Vec3].withCapacity(nh);
+  mut h = 0usize;
+  while h < nh {
+    imm hf = *m.hFace[h];
+    if hf == NoIndex {
+      ep.push(zero);
+    } else {
+      imm t = usize[u32[h] ^ 1u32];
+      imm a = *vals[usize[*m.hPrev[h]]];
+      imm b = *vals[h];
+      imm tf = *m.hFace[t];
+      if tf == NoIndex or rule == FvarLinearAll {
+        ep.push((a + b) * 0.5);
+      } else {
+        // Across the edge, the twin ends at a and its prev at b
+        imm cont = sameVec3(a, *vals[t]) and sameVec3(b, *vals[usize[*m.hPrev[t]]]);
+        // Summed in one order from both sides (the even half-edge's), so the
+        // two faces get the same bits and a continuous edge stays continuous
+        imm s = *eSharp[h / 2usize];
+        if !cont or h % 2usize == 0usize {
+          ep.push(edgeValue(a, b, *fp[usize[hf]], *fp[usize[tf]], s, !cont));
+        } else {
+          ep.push(edgeValue(*vals[usize[*m.hPrev[t]]], *vals[t], *fp[usize[tf]], *fp[usize[hf]], s, !cont));
+        }
+      }
+    }
+    h = h + 1usize;
+  }
+
+  // Vertex points, fan by fan
+  mut vp = List[Vec3].withCapacity(nh);
+  h = 0usize;
+  while h < nh {
+    vp.push(zero);
+    h = h + 1usize;
+  }
+  mut ends = List[Vec3].empty();
+  mut faces = List[Vec3].empty();
+  mut sharp = List[f32].empty();
+  mut cuts = List[usize].empty();
+  mut v = 0usize;
+  while v < nv {
+    imm ring = m.vertexOutgoing(u32[v]);
+    imm k = ring.len();
+    // Edge ring[i] lies between the faces of ring[i - 1] and ring[i]; it
+    // cuts when either is missing or, for face-varying data, when the values
+    // at the vertex differ across it
+    cuts.clear();
+    mut fans = 0usize;
+    mut i = 0usize;
+    while i < k {
+      imm hi = usize[*ring[i]];
+      imm hb = usize[*ring[(i + k - 1usize) % k]];
+      imm fi = *m.hFace[hi];
+      imm fb = *m.hFace[hb];
+      mut cut = fi == NoIndex or fb == NoIndex;
+      if !cut and cutOnValues {
+        cut = !sameVec3(*vals[usize[*m.hPrev[hi]]], *vals[usize[*m.hPrev[hb]]]);
+      }
+      if cut {
+        cuts.push(i);
+        if fi != NoIndex { fans = fans + 1usize; }
+      }
+      i = i + 1usize;
+    }
+    if rule == FvarLinearAll {
+      i = 0usize;
+      while i < k {
+        imm hi = usize[*ring[i]];
+        if *m.hFace[hi] != NoIndex {
+          imm c = usize[*m.hPrev[hi]];
+          vp.set(c, *vals[c]);
+        }
+        i = i + 1usize;
+      }
+    } elif k > 0usize and cuts.len() == 0usize {
+      // One fan all the way round
+      ends.clear();
+      faces.clear();
+      sharp.clear();
+      imm own = *vals[usize[*m.hPrev[usize[*ring[0usize]]]]];
+      i = 0usize;
+      while i < k {
+        imm hi = *ring[i];
+        ends.push(*vals[usize[hi]]);
+        faces.push(*fp[usize[*m.hFace[usize[hi]]]]);
+        sharp.push(fanEdgeSharpness(m, vals, eSharp, hi, cutOnValues));
+        i = i + 1usize;
+      }
+      imm p = fanPoint(own, &ends, &faces, &sharp, *vSharp[v], true);
+      i = 0usize;
+      while i < k {
+        vp.set(usize[*m.hPrev[usize[*ring[i]]]], p);
+        i = i + 1usize;
+      }
+    } else {
+      imm nc = cuts.len();
+      mut ci = 0usize;
+      while ci < nc {
+        imm c = *cuts[ci];
+        if *m.hFace[usize[*ring[c]]] != NoIndex {
+          // The fan from cut edge ring[c] to the next cut edge, unwrapped
+          imm cn = if ci + 1usize < nc {*cuts[ci + 1usize];} else {*cuts[0usize] + k;};
+          ends.clear();
+          faces.clear();
+          sharp.clear();
+          imm own = *vals[usize[*m.hPrev[usize[*ring[c]]]]];
+          mut j = c;
+          while j < cn {
+            imm hj = *ring[j % k];
+            ends.push(*vals[usize[hj]]);
+            faces.push(*fp[usize[*m.hFace[usize[hj]]]]);
+            if j == c { sharp.push(SharpnessInfinite); }
+            else { sharp.push(fanEdgeSharpness(m, vals, eSharp, hj, cutOnValues)); }
+            j = j + 1usize;
+          }
+          // The last edge's far end, seen from the fan's last face
+          imm hl = usize[*ring[(cn - 1usize) % k]];
+          ends.push(*vals[usize[*m.hPrev[usize[*m.hPrev[hl]]]]]);
+          sharp.push(SharpnessInfinite);
+          mut vs = *vSharp[v];
+          imm oneFace = cn - c == 1usize;
+          if (rule == FvarLinearCornersOnly or rule == FvarLinearCornersPlus1) and oneFace { vs = SharpnessInfinite; }
+          if rule == FvarLinearCornersPlus1 and fans >= 3usize { vs = SharpnessInfinite; }
+          if rule == FvarLinearBoundaries { vs = SharpnessInfinite; }
+          imm p = fanPoint(own, &ends, &faces, &sharp, vs, false);
+          j = c;
+          while j < cn {
+            vp.set(usize[*m.hPrev[usize[*ring[j % k]]]], p);
+            j = j + 1usize;
+          }
+        }
+        ci = ci + 1usize;
+      }
+    }
+    v = v + 1usize;
+  }
+  Refined[vp, ep, fp];
+}
+
+// The sharpness of the edge of half-edge h (leaving the vertex) inside a fan:
+// the edge's own, or infinite when face-varying values differ across its far
+// end
+fn fanEdgeSharpness(m &PolyMesh, vals &List[Vec3], eSharp &List[f32], h u32, cutOnValues Bool) f32 {
+  imm s = *eSharp[usize[h / 2u32]];
+  if !cutOnValues { return s; }
+  imm t = usize[h ^ 1u32];
+  if !sameVec3(*vals[usize[h]], *vals[usize[*m.hPrev[t]]]) { return SharpnessInfinite; }
+  s;
+}
+
+// Subdivide per-vertex values: returned per child vertex (vertex points, edge
+// points, face points)
+fn refineVertexData(m &PolyMesh, vvals &List[Vec3], boundary u32, eSharp &List[f32], vSharp &List[f32]) List[Vec3] {
+  imm nh = m.hVertex.len();
+  mut cv = List[Vec3].withCapacity(nh);
+  mut h = 0usize;
+  while h < nh {
+    cv.push(*vvals[usize[*m.hVertex[h]]]);
+    h = h + 1usize;
+  }
+  imm r = refineValues(m, &cv, false, boundary, eSharp, vSharp);
+  imm nv = m.positions.len();
+  imm ne = nh / 2usize;
+  imm nf = m.fHalfedge.len();
+  mut out = List[Vec3].withCapacity(nv + ne + nf);
+  mut v = 0usize;
+  while v < nv {
+    imm vh = *m.vHalfedge[v];
+    // The half-edge coming in to v along its own is in a face
+    if vh == NoIndex { out.push(*vvals[v]); } else { out.push(*r.vp[usize[vh ^ 1u32]]); }
+    v = v + 1usize;
+  }
+  mut e = 0usize;
+  while e < ne {
+    imm he = if *m.hFace[2usize * e] == NoIndex {2usize * e + 1usize;} else {2usize * e;};
+    out.push(*r.ep[he]);
+    e = e + 1usize;
+  }
+  mut f = 0usize;
+  while f < nf {
+    out.push(*r.fp[f]);
+    f = f + 1usize;
+  }
+  out;
+}
+
+// Subdivide per-corner (face-varying) values: returned per child half-edge.
+// Child face c came from the corner of parent half-edge parentHalf[c] in
+// parent face parentFace[c].
+fn refineCornerData(m &PolyMesh, cvals &List[Vec3], fvar u32, eSharp &List[f32], vSharp &List[f32],
+    child &PolyMesh, parentFace &List[u32], parentHalf &List[u32]) List[Vec3] {
+  imm r = refineValues(m, cvals, true, fvar, eSharp, vSharp);
+  imm nh = child.hVertex.len();
+  mut out = List[Vec3].withCapacity(nh);
+  mut h = 0usize;
+  while h < nh {
+    out.push(Vec3[0., 0., 0.]);
+    h = h + 1usize;
+  }
+  mut c = 0usize;
+  while c < child.fHalfedge.len() {
+    imm chs = child.faceHalfedges(u32[c]);
+    imm ph = usize[*parentHalf[c]];
+    imm pn = usize[*m.hNext[ph]];
+    out.set(usize[*chs[0usize]], *r.vp[ph]);
+    out.set(usize[*chs[1usize]], *r.ep[pn]);
+    out.set(usize[*chs[2usize]], *r.fp[usize[*parentFace[c]]]);
+    out.set(usize[*chs[3usize]], *r.ep[ph]);
+    c = c + 1usize;
+  }
+  out;
+}
+
+// A channel's f32, Vec2 or Vec3 values carried as Vec3 (from the mesh, by
+// channel number, since '&m.floats[c].values' is refused as a '&List'), and
+// back
+fn floatChannelVec3s(m &PolyMesh, c usize) List[Vec3] {
+  imm n = m.floats[c].values.len();
+  mut out = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    out.push(Vec3[*m.floats[c].values[i], 0., 0.]);
+    i = i + 1usize;
+  }
+  out;
+}
+fn vec2ChannelVec3s(m &PolyMesh, c usize) List[Vec3] {
+  imm n = m.vec2s[c].values.len();
+  mut out = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    imm p = *m.vec2s[c].values[i];
+    out.push(Vec3[p.x, p.y, 0.]);
+    i = i + 1usize;
+  }
+  out;
+}
+fn vec3ChannelVec3s(m &PolyMesh, c usize) List[Vec3] {
+  imm n = m.vec3s[c].values.len();
+  mut out = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    out.push(*m.vec3s[c].values[i]);
+    i = i + 1usize;
+  }
+  out;
+}
+fn vec3ToFloats(src &List[Vec3]) List[f32] {
+  mut out = List[f32].withCapacity(src.len());
+  mut i = 0usize;
+  while i < src.len() {
+    out.push(src[i].x);
+    i = i + 1usize;
+  }
+  out;
+}
+fn vec3ToVec2s(src &List[Vec3]) List[Vec2] {
+  mut out = List[Vec2].withCapacity(src.len());
+  mut i = 0usize;
+  while i < src.len() {
+    out.push(Vec2[src[i].x, src[i].y]);
+    i = i + 1usize;
+  }
+  out;
+}
+
+// A channel's values carried to the child's elements, by domain, as Vec3.
+// 'isCrease': the "crease" sharpness channel, which wears down instead.
+fn refineChannel(m &PolyMesh, child &PolyMesh, domain u32, vals &List[Vec3], isCrease Bool, boundary u32,
+    fvar u32, eSharp &List[f32], vSharp &List[f32], cEdgeParent &List[u32], parentFace &List[u32],
+    parentHalf &List[u32]) List[Vec3] {
+  imm zero = Vec3[0., 0., 0.];
+  if domain == VertexDomain {
+    if !isCrease { return refineVertexData(m, vals, boundary, eSharp, vSharp); }
+    mut out = List[Vec3].withCapacity(child.positions.len());
+    mut v = 0usize;
+    while v < child.positions.len() {
+      if v < m.positions.len() { out.push(Vec3[childSharpness(vals[v].x), 0., 0.]); } else { out.push(zero); }
+      v = v + 1usize;
+    }
+    return out;
+  }
+  if domain == EdgeDomain {
+    imm ne = child.hVertex.len() / 2usize;
+    mut out = List[Vec3].withCapacity(ne);
+    mut e = 0usize;
+    while e < ne {
+      imm pe = *cEdgeParent[e];
+      if pe == NoIndex { out.push(zero); }
+      elif isCrease { out.push(Vec3[childSharpness(vals[usize[pe]].x), 0., 0.]); }
+      else { out.push(*vals[usize[pe]]); }
+      e = e + 1usize;
+    }
+    return out;
+  }
+  if domain == FaceDomain {
+    mut out = List[Vec3].withCapacity(child.fHalfedge.len());
+    mut c = 0usize;
+    while c < child.fHalfedge.len() {
+      out.push(*vals[usize[*parentFace[c]]]);
+      c = c + 1usize;
+    }
+    return out;
+  }
+  refineCornerData(m, vals, fvar, eSharp, vSharp, child, parentFace, parentHalf);
+}
+
+// One level of Catmull-Clark
+fn subdivideOnce(m &PolyMesh, boundary u32, fvar u32) PolyMesh {
+  imm nv = m.positions.len();
+  imm nh = m.hVertex.len();
+  imm ne = nh / 2usize;
+  imm nf = m.fHalfedge.len();
+
+  // Sharpness: the crease channels, and boundary edges infinitely sharp
+  imm creaseE = m.findFloatChannel(EdgeDomain, "crease");
+  imm creaseV = m.findFloatChannel(VertexDomain, "crease");
+  mut eSharp = List[f32].withCapacity(ne);
+  mut e = 0usize;
+  while e < ne {
+    mut s f32 = 0.;
+    if creaseE != NoIndex { s = m.float(creaseE, u32[e]); }
+    if s < 0. { s = 0.; }
+    if m.isBoundaryEdge(u32[e]) { s = SharpnessInfinite; }
+    eSharp.push(s);
+    e = e + 1usize;
+  }
+  mut vSharp = List[f32].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv {
+    mut s f32 = 0.;
+    if creaseV != NoIndex { s = m.float(creaseV, u32[v]); }
+    if s < 0. { s = 0.; }
+    vSharp.push(s);
+    v = v + 1usize;
+  }
+
+  // The new positions and faces
+  imm pos = refineVertexData(m, &m.positions, boundary, &eSharp, &vSharp);
+  mut counts = List[u32].empty();
+  mut idx = List[u32].empty();
+  mut pEdgeA = List[u32].empty();
+  mut pEdgeB = List[u32].empty();
+  mut parentFace = List[u32].empty();
+  mut parentHalf = List[u32].empty();
+  mut f = 0usize;
+  while f < nf {
+    imm hs = m.faceHalfedges(u32[f]);
+    imm n = hs.len();
+    mut k = 0usize;
+    while k < n {
+      imm h = *hs[k];
+      imm hn = *hs[(k + 1usize) % n];
+      counts.push(4u32);
+      idx.push(*m.hVertex[usize[h]]);
+      idx.push(u32[nv] + hn / 2u32);
+      idx.push(u32[nv + ne + f]);
+      idx.push(u32[nv] + h / 2u32);
+      pEdgeA.push(h / 2u32);
+      pEdgeB.push(hn / 2u32);
+      parentFace.push(u32[f]);
+      parentHalf.push(h);
+      k = k + 1usize;
+    }
+    f = f + 1usize;
+  }
+  mut problems = List[String].empty();
+  mut child = PolyMesh.fromPolygons(pos.view(), counts.view(), idx.view(), &mut problems);
+
+  // Each child edge's parent edge: a child face's first half-edge runs along
+  // its parent corner's incoming edge, its second along the outgoing one
+  imm cne = child.hVertex.len() / 2usize;
+  mut cEdgeParent = List[u32].withCapacity(cne);
+  e = 0usize;
+  while e < cne {
+    cEdgeParent.push(NoIndex);
+    e = e + 1usize;
+  }
+  mut c = 0usize;
+  while c < child.fHalfedge.len() {
+    imm chs = child.faceHalfedges(u32[c]);
+    cEdgeParent.set(usize[*chs[0usize] / 2u32], *pEdgeA[c]);
+    cEdgeParent.set(usize[*chs[1usize] / 2u32], *pEdgeB[c]);
+    c = c + 1usize;
+  }
+
+  // The channels
+  mut i = 0usize;
+  while i < m.floats.len() {
+    imm domain = m.floats[i].domain;
+    imm isCrease = m.floats[i].name.equals("crease") and (domain == EdgeDomain or domain == VertexDomain);
+    imm vals = floatChannelVec3s(m, i);
+    imm out = refineChannel(m, &child, domain, &vals, isCrease, boundary, fvar, &eSharp, &vSharp,
+      &cEdgeParent, &parentFace, &parentHalf);
+    child.floats.push(Channel[f32][String.from(m.floats[i].name.view()), domain, vec3ToFloats(&out)]);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < m.vec2s.len() {
+    imm domain = m.vec2s[i].domain;
+    imm vals = vec2ChannelVec3s(m, i);
+    imm out = refineChannel(m, &child, domain, &vals, false, boundary, fvar, &eSharp, &vSharp,
+      &cEdgeParent, &parentFace, &parentHalf);
+    child.vec2s.push(Channel[Vec2][String.from(m.vec2s[i].name.view()), domain, vec3ToVec2s(&out)]);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < m.vec3s.len() {
+    imm domain = m.vec3s[i].domain;
+    imm vals = vec3ChannelVec3s(m, i);
+    imm out = refineChannel(m, &child, domain, &vals, false, boundary, fvar, &eSharp, &vSharp,
+      &cEdgeParent, &parentFace, &parentHalf);
+    child.vec3s.push(Channel[Vec3][String.from(m.vec3s[i].name.view()), domain, out]);
+    i = i + 1usize;
+  }
+  child;
 }

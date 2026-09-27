@@ -293,7 +293,9 @@ surfaces: indexed triangles, the editable half-edge mesh, their generators
 and `.obj` export; its example is `packages/mesh/examples/cage.cone`.
 `sculpt`, over `mesh`, builds solids procedurally: profiles, paths with
 rotation-minimizing frames, extrude, lathe and sweep, and the bend, twist,
-taper and curve deformers; its example is `packages/sculpt/examples/pipe.cone`.
+taper and curve deformers, and Catmull-Clark subdivision; its examples are
+`packages/sculpt/examples/pipe.cone`, `pipedemo.cone` (the pipe smoothed at
+three levels of detail) and `creasedcube.cone`.
 
 Two more bind libraries beyond the C runtime, and name them: `sdl` (SDL2: a
 window with an OpenGL context, its events and clock; `[link]` names `SDL2`,

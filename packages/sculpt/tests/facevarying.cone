@@ -1,0 +1,275 @@
+// Catmull-Clark's face-varying data (the corner "uv" channel) and its other
+// channels, checked with the testing package against values worked out by
+// hand before the test was run; only a failure prints, so facevarying.out
+// holds the summary alone.
+//
+// Child faces: parent face f's children follow those of the faces before it,
+// one per corner in order from its first; the child at the corner of vertex
+// v (half-edge h ending at v) has corners (v's point, the point of the edge
+// after v, f's point, the point of the edge before v), so corner 0's uv is
+// the vertex's, corner 1's and 3's the edges', corner 2's the face's.
+//
+// - Two quads side by side with a uv seam between them: vertices 0 (0,0,0),
+//   1 (1,0,0), 2 (2,0,0), 3 (0,1,0), 4 (1,1,0), 5 (2,1,0); face A (0, 1, 4,
+//   3) with uvs (0,0) (1,0) (1,1) (0,1), face B (1, 2, 5, 4) with uvs (2,0)
+//   (3,0) (3,1) (2,1): two islands, so edge 1-4 is a seam. Level 1: V = 6 +
+//   7 + 2 = 15, E = 14 + 8 = 22, F = 8. Every fan of corners has one face
+//   (each vertex of A is cut from B by the seam or the boundary), so every
+//   corner keeps its uv, and every edge is a face-varying boundary, so its
+//   uvs are midpoints.
+//   - A's child at vertex 1 (child 1): vertex 1 (1, 0); edge 1-4 (1, 0.5);
+//     A's face point (0.5, 0.5); edge 0-1 (0.5, 0).
+//   - B's child at vertex 4 (child 4 + 3 = 7): vertex 4 in B (2, 1); edge 4-1
+//     in B (2, 0.5); B's face point (2.5, 0.5); edge 5-4 (2.5, 1).
+//   - The seam stays: the child vertex of edge 1-4 has uv (1, 0.5) in A's
+//     child and (2, 0.5) in B's. Triangulated smooth, the 3 vertices on the
+//     seam (1, edge 1-4's, 4) are split, 15 + 3 = 18 vertices.
+// - A 2 x 2 grid: vertex j + 3i at (j, i, 0); faces F0 (0, 1, 4, 3), F1 (1,
+//   2, 5, 4), F2 (3, 4, 7, 6), F3 (4, 5, 8, 7). Each corner's uv is its
+//   position / 2, but the centre vertex 4's is (0.6, 0.5) in all four faces,
+//   and vertex 2's (a corner of the grid, in F1 only) is (1.2, 0). One
+//   island, no seam. Face uvs: F0 (0,0) (0.5,0) (0.6,0.5) (0,0.5), mean
+//   (0.275, 0.25); F1 (0.5,0) (1.2,0) (1,0.5) (0.6,0.5), (0.825, 0.25); F2
+//   (0,0.5) (0.6,0.5) (0.5,1) (0,1), (0.275, 0.75); F3 (0.6,0.5) (1,0.5)
+//   (1,1) (0.5,1), (0.775, 0.75).
+//   - The centre, smooth, n = 4: (n - 2) / n S + (neighbours + face points)
+//     / n^2, S = (0.6, 0.5); its neighbours 1, 5, 7, 3 have uvs (0.5,0)
+//     (1,0.5) (0.5,1) (0,0.5), sum (2, 2); face points sum (2.15, 2); so
+//     (0.3, 0.25) + (4.15, 4) / 16 = (0.559375, 0.5). It is F0's child 2,
+//     corner 0, and F3's child 12, corner 0.
+//   - Edge 3-4 (F0 and F2): ((0.6,0.5) + (0,0.5) + (0.275,0.25) + (0.275,
+//     0.75)) / 4 = (1.15, 2) / 4 = (0.2875, 0.5); F0's child 2, corner 1.
+//     Edge 1-4 (F0 and F1): ((0.5,0) + (0.6,0.5) + (0.275,0.25) + (0.825,
+//     0.25)) / 4 = (2.2, 1) / 4 = (0.55, 0.25); F0's child 2, corner 3.
+//   - Boundary vertex 1, two faces, the crease rule along the island's
+//     boundary: ((0,0) + 6 (0.5,0) + (1.2,0)) / 8 = (0.525, 0); F0's child 1,
+//     corner 0.
+//   - Grid corner 2, one face: with the default (corners plus 1) or corners
+//     only, it keeps (1.2, 0) (F1's child 1, child 5, corner 0). With none,
+//     it takes the crease rule along its two edges, whose far ends are
+//     vertex 5 (1, 0.5) and vertex 1 (0.5, 0): ((1,0.5) + 6 (1.2,0) +
+//     (0.5,0)) / 8 = (8.7, 0.5) / 8 = (1.0875, 0.0625).
+//   - Boundaries linear: vertex 1 keeps (0.5, 0); the centre is still
+//     (0.559375, 0.5).
+//   - Linear all: the centre keeps (0.6, 0.5), edge 3-4 is the midpoint
+//     (0.3, 0.5).
+// - The same grid where F2 and F3 are islands of their own (their uvs moved
+//   by (0, 10) and (10, 0)), and F0 and F1 share the centre's uv (0.6, 0.5),
+//   all else position / 2 (vertex 2 back at (1, 0)): three fans meet at the
+//   centre, {F0, F1}, {F3}, {F2}. The fan {F0, F1} is bounded by the seams
+//   4-3 and 4-5. Corners only: the crease rule along them, ((0,0.5) + 6
+//   (0.6,0.5) + (1,0.5)) / 8 = (4.6, 4) / 8 = (0.575, 0.5); corners plus 1
+//   (three fans): kept, (0.6, 0.5). F0's child 2, corner 0.
+// - Other channels, on the cube cage of size 1 (vertex x + 2y + 4z, 12
+//   edges, 6 faces):
+//   - a vertex Vec3 channel "rest" equal to the positions is subdivided by
+//     the vertex rules, so it equals the new positions: at vertex 7, 5/9 in
+//     each, and at every vertex the same as its position;
+//   - a face f32 channel "material", face f's value f, passes to each child:
+//     child c has c / 4 (face 5's children 20 to 23 have 5);
+//   - an edge f32 channel "weight", edge e's value e + 1, passes to both
+//     child edges, and the 24 edges inside faces get 0: the 48 values sum to
+//     2 (1 + ... + 12) = 156.
+
+mod facevarying;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+imm near = 0.00001d;
+
+fn uvAt(m &PolyMesh, face u32, corner usize, u f32, v f32, label &[]u8) {
+  imm ch = m.findVec2Channel(CornerDomain, "uv");
+  if !expect(ch != NoIndex, label) { return; }
+  imm hs = m.faceHalfedges(face);
+  imm got = m.vec2(ch, *hs[corner]);
+  expectFloat(got.x, u, near, label);
+  expectFloat(got.y, v, near, label);
+}
+
+fn clean(m &PolyMesh, label &[]u8) {
+  imm problems = m.validate();
+  expectInt(i64[problems.len()], 0, label);
+}
+
+fn seam() {
+  imm pts [6; Vec3] = [Vec3[0., 0., 0.], Vec3[1., 0., 0.], Vec3[2., 0., 0.],
+    Vec3[0., 1., 0.], Vec3[1., 1., 0.], Vec3[2., 1., 0.]];
+  imm cnt [2; u32] = [4u32, 4u32];
+  imm idx [8; u32] = [0u32, 1u32, 4u32, 3u32,  1u32, 2u32, 5u32, 4u32];
+  imm uvs [8; Vec2] = [Vec2[0., 0.], Vec2[1., 0.], Vec2[1., 1.], Vec2[0., 1.],
+    Vec2[2., 0.], Vec2[3., 0.], Vec2[3., 1.], Vec2[2., 1.]];
+  mut problems = List[String].empty();
+  mut m = PolyMesh.fromPolygons(&pts, &cnt, &idx, &mut problems);
+  imm ch = m.addVec2Channel(CornerDomain, "uv", Vec2[0., 0.]);
+  m.setCornerVec2s(ch, &uvs);
+  imm l1 = subdivide(&m, 1u32);
+  expectInt(i64[l1.vertexCount()], 15, "seam level 1: vertices");
+  expectInt(i64[l1.edgeCount()], 22, "seam level 1: edges");
+  expectInt(i64[l1.faceCount()], 8, "seam level 1: faces");
+  clean(&l1, "seam level 1: validates");
+  uvAt(&l1, 1u32, 0usize, 1., 0., "seam: A at vertex 1, the vertex");
+  uvAt(&l1, 1u32, 1usize, 1., 0.5, "seam: A at vertex 1, edge 1-4");
+  uvAt(&l1, 1u32, 2usize, 0.5, 0.5, "seam: A at vertex 1, the face");
+  uvAt(&l1, 1u32, 3usize, 0.5, 0., "seam: A at vertex 1, edge 0-1");
+  uvAt(&l1, 7u32, 0usize, 2., 1., "seam: B at vertex 4, the vertex");
+  uvAt(&l1, 7u32, 1usize, 2., 0.5, "seam: B at vertex 4, edge 4-1");
+  uvAt(&l1, 7u32, 2usize, 2.5, 0.5, "seam: B at vertex 4, the face");
+  uvAt(&l1, 7u32, 3usize, 2.5, 1., "seam: B at vertex 4, edge 5-4");
+  // The same child vertex on both sides
+  imm ha = l1.faceHalfedges(1u32);
+  imm hb = l1.faceHalfedges(7u32);
+  expectUInt(u64[*l1.hVertex[usize[*ha[1usize]]]], u64[*l1.hVertex[usize[*hb[1usize]]]], "seam: one vertex on the seam");
+  imm tri = l1.triangulate(true);
+  expectInt(i64[tri.vertexCount()], 18, "seam: triangulated, the seam split");
+}
+
+// The grid, with its uvs: position / 2, but the centre at 'centre' and
+// vertex 2 at 'corner2'
+fn grid(centre Vec2, corner2 Vec2, islands Bool) PolyMesh {
+  mut pts = List[Vec3].empty();
+  mut i = 0usize;
+  while i < 3usize {
+    mut j = 0usize;
+    while j < 3usize {
+      pts.push(Vec3[f32[j], f32[i], 0.]);
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  imm cnt [4; u32] = [4u32, 4u32, 4u32, 4u32];
+  imm idx [16; u32] = [0u32, 1u32, 4u32, 3u32,  1u32, 2u32, 5u32, 4u32,  3u32, 4u32, 7u32, 6u32,
+    4u32, 5u32, 8u32, 7u32];
+  mut uvs = List[Vec2].empty();
+  mut k = 0usize;
+  while k < 16usize {
+    imm v = idx[k];
+    imm p = *pts[usize[v]];
+    mut uv = Vec2[p.x * 0.5, p.y * 0.5];
+    if v == 4u32 { uv = centre; }
+    if v == 2u32 { uv = corner2; }
+    if islands and k >= 8usize and k < 12usize {
+      if v == 4u32 { uv = Vec2[0.5, 0.5]; }
+      uv = uv + Vec2[0., 10.];
+    }
+    if islands and k >= 12usize {
+      if v == 4u32 { uv = Vec2[0.5, 0.5]; }
+      uv = uv + Vec2[10., 0.];
+    }
+    uvs.push(uv);
+    k = k + 1usize;
+  }
+  mut problems = List[String].empty();
+  mut m = PolyMesh.fromPolygons(pts.view(), &cnt, &idx, &mut problems);
+  imm ch = m.addVec2Channel(CornerDomain, "uv", Vec2[0., 0.]);
+  m.setCornerVec2s(ch, uvs.view());
+  m;
+}
+
+fn smoothUvs() {
+  imm g = grid(Vec2[0.6, 0.5], Vec2[1.2, 0.], false);
+  imm l1 = subdivide(&g, 1u32);
+  clean(&l1, "grid level 1: validates");
+  uvAt(&l1, 2u32, 0usize, 0.559375, 0.5, "grid: the centre, smooth");
+  uvAt(&l1, 12u32, 0usize, 0.559375, 0.5, "grid: the centre, the same in F3");
+  uvAt(&l1, 2u32, 1usize, 0.2875, 0.5, "grid: edge 3-4, smooth");
+  uvAt(&l1, 2u32, 3usize, 0.55, 0.25, "grid: edge 1-4, smooth");
+  uvAt(&l1, 1u32, 0usize, 0.525, 0., "grid: boundary vertex 1, the crease rule");
+  uvAt(&l1, 5u32, 0usize, 1.2, 0., "grid: corner 2 kept (corners plus 1)");
+
+  imm co = subdivideWith(&g, 1u32, BoundaryEdgeAndCorner, FvarLinearCornersOnly);
+  uvAt(&co, 5u32, 0usize, 1.2, 0., "grid, corners only: corner 2 kept");
+  uvAt(&co, 2u32, 0usize, 0.559375, 0.5, "grid, corners only: the centre");
+
+  imm none = subdivideWith(&g, 1u32, BoundaryEdgeAndCorner, FvarLinearNone);
+  uvAt(&none, 5u32, 0usize, 1.0875, 0.0625, "grid, none: corner 2 on the boundary curve");
+
+  imm bd = subdivideWith(&g, 1u32, BoundaryEdgeAndCorner, FvarLinearBoundaries);
+  uvAt(&bd, 1u32, 0usize, 0.5, 0., "grid, boundaries: vertex 1 kept");
+  uvAt(&bd, 2u32, 0usize, 0.559375, 0.5, "grid, boundaries: the centre smooth");
+
+  imm all = subdivideWith(&g, 1u32, BoundaryEdgeAndCorner, FvarLinearAll);
+  uvAt(&all, 2u32, 0usize, 0.6, 0.5, "grid, all linear: the centre kept");
+  uvAt(&all, 2u32, 1usize, 0.3, 0.5, "grid, all linear: edge 3-4 midpoint");
+}
+
+fn junction() {
+  imm g = grid(Vec2[0.6, 0.5], Vec2[1., 0.], true);
+  imm co = subdivideWith(&g, 1u32, BoundaryEdgeAndCorner, FvarLinearCornersOnly);
+  clean(&co, "junction: validates");
+  uvAt(&co, 2u32, 0usize, 0.575, 0.5, "junction, corners only: the crease rule");
+  imm p1 = subdivide(&g, 1u32);
+  uvAt(&p1, 2u32, 0usize, 0.6, 0.5, "junction, corners plus 1: kept");
+}
+
+fn otherChannels() {
+  mut m = PolyMesh.cube(1.);
+  imm rest = m.addVec3Channel(VertexDomain, "rest", Vec3[0., 0., 0.]);
+  mut v = 0u32;
+  while v < 8u32 {
+    m.setVec3(rest, v, *m.positions[usize[v]]);
+    v = v + 1u32;
+  }
+  imm mat = m.addFloatChannel(FaceDomain, "material", 0.);
+  mut f = 0u32;
+  while f < 6u32 {
+    m.setFloat(mat, f, f32[f]);
+    f = f + 1u32;
+  }
+  imm wt = m.addFloatChannel(EdgeDomain, "weight", 0.);
+  mut e = 0u32;
+  while e < 12u32 {
+    m.setFloat(wt, e, f32[e + 1u32]);
+    e = e + 1u32;
+  }
+  imm l1 = subdivide(&m, 1u32);
+  clean(&l1, "channels: validates");
+  imm r1 = l1.findVec3Channel(VertexDomain, "rest");
+  require(r1 != NoIndex, "channels: rest carried");
+  imm r7 = l1.vec3(r1, 7u32);
+  expectFloat(r7.x, 0.555556, near, "channels: rest at vertex 7");
+  mut same = true;
+  v = 0u32;
+  while usize[v] < l1.vertexCount() {
+    imm a = l1.vec3(r1, v);
+    imm b = *l1.positions[usize[v]];
+    if (a - b).length() > 0.000001 { same = false; }
+    v = v + 1u32;
+  }
+  expect(same, "channels: rest equals the positions everywhere");
+  imm m1 = l1.findFloatChannel(FaceDomain, "material");
+  require(m1 != NoIndex, "channels: material carried");
+  expectFloat(l1.float(m1, 21u32), 5., near, "channels: child 21 of face 5");
+  expectFloat(l1.float(m1, 6u32), 1., near, "channels: child 6 of face 1");
+  mut okMat = true;
+  f = 0u32;
+  while usize[f] < l1.faceCount() {
+    if l1.float(m1, f) != f32[f / 4u32] { okMat = false; }
+    f = f + 1u32;
+  }
+  expect(okMat, "channels: every child face has its parent's material");
+  imm w1 = l1.findFloatChannel(EdgeDomain, "weight");
+  require(w1 != NoIndex, "channels: weight carried");
+  mut zeros = 0i64;
+  mut sum f32 = 0.;
+  e = 0u32;
+  while usize[e] < l1.edgeCount() {
+    imm w = l1.float(w1, e);
+    if w == 0. { zeros = zeros + 1; }
+    sum = sum + w;
+    e = e + 1u32;
+  }
+  expectInt(zeros, 24, "channels: 24 edges inside faces get 0");
+  expectFloat(sum, 156., near, "channels: each weight on two child edges");
+}
+
+fn main() i32 {
+  seam();
+  smoothUvs();
+  junction();
+  otherChannels();
+  done();
+}

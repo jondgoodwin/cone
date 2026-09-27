@@ -1,0 +1,222 @@
+// Catmull-Clark's semi-sharp creases (DeRose, Kass and Truong 1998, with
+// OpenSubdiv's uniform creasing and fractional blending), on the cube cage of
+// size 1, [-1, 1]^3, vertex x + 2y + 4z, faces back 0 (0, 2, 3, 1), front 1,
+// left 2, right 3 (1, 3, 7, 5), bottom 4, top 5 (2, 6, 7, 3). Checked with
+// the testing package against values worked out by hand before the test was
+// run; only a failure prints, so creases.out holds the summary alone. A child
+// vertex's number: vertex v keeps v, edge e's point is 8 + e, face f's
+// 8 + 12 + f.
+//
+// Uncreased (see catmullclark.cone), vertex 7 goes to 5/9 (0.555556) in each
+// coordinate, vertex 3 (1, 1, -1) to (5/9, 5/9, -5/9), vertex 1 (1, -1, -1)
+// to (5/9, -5/9, -5/9); edge 1-3, between the right face (point (1, 0, 0))
+// and the back (0, 0, -1), to ((1,-1,-1) + (1,1,-1) + (1,0,0) + (0,0,-1)) / 4
+// = (0.75, 0, -0.75); edge 2-3, between the top (0, 1, 0) and the back, to
+// ((-1,1,-1) + (1,1,-1) + (0,1,0) + (0,0,-1)) / 4 = (0, 0.75, -0.75).
+//
+// - The top face's four edges (2-6, 6-7, 7-3, 3-2) infinitely sharp (10):
+//   - Level 1: each top vertex has two sharp edges, the crease rule: vertex
+//     3 to (A + 6S + B) / 8, A = vertex 2 (-1, 1, -1), B = vertex 7 (1, 1,
+//     1): (-1 + 6 + 1, 1 + 6 + 1, -1 - 6 + 1) / 8 = (0.75, 1, -0.75). Edge
+//     2-3's point is its midpoint (0, 1, -1); the top's face point (0, 1, 0).
+//     The rest is as uncreased: vertex 1 at (5/9, -5/9, -5/9), edge 1-3 at
+//     (0.75, 0, -0.75), since a vertex point reads only old positions and
+//     face points.
+//   - Flat: every child of the top face is made from points with y = 1 (its
+//     corners by the crease rule along y = 1 points, its edge points as
+//     midpoints, its face point a mean), so the top stays the plane y = 1:
+//     at level 1 the 3 x 3 = 9 vertices with y = 1, at level 2 5 x 5 = 25;
+//     every other vertex is below (an edge point of a smooth edge from the
+//     top averages in points below it). The crease channel is carried with
+//     the 8 child edges of the top edges at 10, the rest 0.
+//   - Level 2: vertex 3 is still a crease vertex, its crease neighbours
+//     now the level-1 points of edges 2-3 (0, 1, -1) and 3-7 (1, 1, 0):
+//     ((0,1,-1) + 6 (0.75, 1, -0.75) + (1,1,0)) / 8 = (5.5, 8, -5.5) / 8 =
+//     (0.6875, 1, -0.6875).
+// - The same four edges of sharpness 1: sharp at level 1, smooth after.
+//   - Level 1: the parent rule is the crease, the child rule (sharpness 0)
+//     smooth; the edges wearing out have mean sharpness 1, so the weight is
+//     1, all crease: vertex 3 at (0.75, 1, -0.75) as before, and edge 2-3 at
+//     its midpoint (0, 1, -1) (sharpness 1 or more). The carried crease
+//     channel is 0 everywhere.
+//   - Level 2, all smooth: vertex 3 at level 1 is S = (0.75, 1, -0.75),
+//     valence 3, its neighbours the level-1 points of edges 2-3 (0, 1, -1),
+//     3-7 (1, 1, 0) and 1-3 (0.75, 0, -0.75), summing to (1.75, 2, -1.75).
+//     Its three level-1 faces: in the top, (S, (1,1,0), (0,1,0), (0,1,-1)),
+//     mean (0.4375, 1, -0.4375); in the right face, (S, (1,1,0), (1,0,0),
+//     (0.75,0,-0.75)), mean (0.875, 0.5, -0.375); in the back, (S, (0,1,-1),
+//     (0,0,-1), (0.75,0,-0.75)), mean (0.375, 0.5, -0.875); summing to
+//     (1.6875, 2, -1.6875). S / 3 + (1.75 + 1.6875, 4, -3.4375) / 9 =
+//     (0.25 + 0.381944, 0.333333 + 0.444444, -0.631944) = (0.631944,
+//     0.777778, -0.631944): below y = 1, smooth.
+// - The same four edges of sharpness 0.5: the weight is 0.5.
+//   - Vertex 3: half the crease point (0.75, 1, -0.75) and half the smooth
+//     one (5/9, 5/9, -5/9): (0.652778, 0.777778, -0.652778).
+//   - Edge 2-3: half its smooth point (0, 0.75, -0.75) and half its midpoint
+//     (0, 1, -1): (0, 0.875, -0.875).
+// - A corner: the three edges at vertex 7 (7-3, 7-5, 7-6) infinitely sharp:
+//   three sharp edges, the corner rule, vertex 7 stays at (1, 1, 1). Edge
+//   3-7's point is its midpoint (1, 1, 0). Vertex 3 has one sharp edge, a
+//   dart, which takes the smooth rule: (5/9, 5/9, -5/9).
+// - A dart alone: only edge 3-7 infinitely sharp: vertices 3 and 7 take the
+//   smooth rule, 7 at 5/9 each, and the edge's point is (1, 1, 0).
+// - A sharp vertex: the vertex channel "crease" at vertex 0 infinite: the
+//   corner rule, vertex 0 stays at (-1, -1, -1); vertex 7 is at 5/9. Of
+//   sharpness 1: at level 1 the parent rule is the corner and the child's
+//   smooth, the weight 1, so vertex 0 still stays, and the carried vertex
+//   channel is 0 there.
+
+mod creases;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+imm near = 0.00001d;
+
+fn point(got Vec3, x f32, y f32, z f32, label &[]u8) {
+  expectFloat(got.x, x, near, label);
+  expectFloat(got.y, y, near, label);
+  expectFloat(got.z, z, near, label);
+}
+
+fn clean(m &PolyMesh, label &[]u8) {
+  imm problems = m.validate();
+  expectInt(i64[problems.len()], 0, label);
+}
+
+fn edgeOf(m &PolyMesh, a u32, b u32) u32 {
+  mut e = 0u32;
+  while usize[e] < m.edgeCount() {
+    imm p = *m.hVertex[usize[2u32 * e]];
+    imm q = *m.hVertex[usize[2u32 * e + 1u32]];
+    if (p == a and q == b) or (p == b and q == a) { return e; }
+    e = e + 1u32;
+  }
+  NoIndex;
+}
+
+// The cube with the top face's edges given sharpness s
+fn topCreased(s f32) PolyMesh {
+  mut m = PolyMesh.cube(1.);
+  imm ch = m.addFloatChannel(EdgeDomain, "crease", 0.);
+  m.setFloat(ch, edgeOf(&m, 2u32, 6u32), s);
+  m.setFloat(ch, edgeOf(&m, 6u32, 7u32), s);
+  m.setFloat(ch, edgeOf(&m, 7u32, 3u32), s);
+  m.setFloat(ch, edgeOf(&m, 3u32, 2u32), s);
+  m;
+}
+
+// How many vertices have y above 0.99999, and whether all of those have y 1
+// within a millionth and none above
+fn topCount(m &PolyMesh, label &[]u8) i64 {
+  mut n = 0i64;
+  mut flat = true;
+  mut i = 0usize;
+  while i < m.positions.len() {
+    imm y = m.positions[i].y;
+    if y > 0.99999 {
+      n = n + 1;
+      if y > 1.000001 or y < 0.999999 { flat = false; }
+    }
+    i = i + 1usize;
+  }
+  expect(flat, label);
+  n;
+}
+
+// How many edges of a float edge channel hold 'value'
+fn countEdgesWith(m &PolyMesh, name &[]u8, value f32) i64 {
+  imm ch = m.findFloatChannel(EdgeDomain, name);
+  if ch == NoIndex { return -1; }
+  mut n = 0i64;
+  mut e = 0u32;
+  while usize[e] < m.edgeCount() {
+    if m.float(ch, e) == value { n = n + 1; }
+    e = e + 1u32;
+  }
+  n;
+}
+
+fn infinite() {
+  imm cage = topCreased(SharpnessInfinite);
+  imm l1 = subdivide(&cage, 1u32);
+  clean(&l1, "infinite level 1: validates");
+  point(*l1.positions[3usize], 0.75, 1., -0.75, "infinite level 1: vertex 3, the crease rule");
+  point(*l1.positions[usize[8u32 + edgeOf(&cage, 2u32, 3u32)]], 0., 1., -1., "infinite level 1: edge 2-3 midpoint");
+  point(*l1.positions[25usize], 0., 1., 0., "infinite level 1: top face point");
+  point(*l1.positions[1usize], 0.555556, -0.555556, -0.555556, "infinite level 1: vertex 1 as uncreased");
+  point(*l1.positions[usize[8u32 + edgeOf(&cage, 1u32, 3u32)]], 0.75, 0., -0.75, "infinite level 1: edge 1-3 as uncreased");
+  expectInt(topCount(&l1, "infinite level 1: the top is y = 1"), 9, "infinite level 1: 9 vertices on the top");
+  expectInt(countEdgesWith(&l1, "crease", SharpnessInfinite), 8, "infinite level 1: 8 sharp child edges");
+  expectInt(countEdgesWith(&l1, "crease", 0.), 40, "infinite level 1: 40 smooth edges");
+
+  imm l2 = subdivide(&cage, 2u32);
+  clean(&l2, "infinite level 2: validates");
+  expectInt(topCount(&l2, "infinite level 2: the top is y = 1"), 25, "infinite level 2: 25 vertices on the top");
+  point(*l2.positions[3usize], 0.6875, 1., -0.6875, "infinite level 2: vertex 3, still a crease");
+}
+
+fn sharpnessOne() {
+  imm cage = topCreased(1.);
+  imm l1 = subdivide(&cage, 1u32);
+  point(*l1.positions[3usize], 0.75, 1., -0.75, "sharpness 1 level 1: vertex 3, all crease");
+  point(*l1.positions[usize[8u32 + edgeOf(&cage, 2u32, 3u32)]], 0., 1., -1., "sharpness 1 level 1: edge 2-3 midpoint");
+  expectInt(countEdgesWith(&l1, "crease", 0.), 48, "sharpness 1 level 1: the crease worn out");
+  imm l2 = subdivide(&cage, 2u32);
+  clean(&l2, "sharpness 1 level 2: validates");
+  point(*l2.positions[3usize], 0.631944, 0.777778, -0.631944, "sharpness 1 level 2: vertex 3, smooth");
+}
+
+fn sharpnessHalf() {
+  imm cage = topCreased(0.5);
+  imm l1 = subdivide(&cage, 1u32);
+  point(*l1.positions[3usize], 0.652778, 0.777778, -0.652778, "sharpness 0.5: vertex 3, half and half");
+  point(*l1.positions[usize[8u32 + edgeOf(&cage, 2u32, 3u32)]], 0., 0.875, -0.875, "sharpness 0.5: edge 2-3, half and half");
+}
+
+fn cornerAndDart() {
+  mut m = PolyMesh.cube(1.);
+  imm ch = m.addFloatChannel(EdgeDomain, "crease", 0.);
+  m.setFloat(ch, edgeOf(&m, 7u32, 3u32), SharpnessInfinite);
+  imm dart = subdivide(&m, 1u32);
+  point(*dart.positions[7usize], 0.555556, 0.555556, 0.555556, "dart: vertex 7 smooth");
+  point(*dart.positions[3usize], 0.555556, 0.555556, -0.555556, "dart: vertex 3 smooth");
+  point(*dart.positions[usize[8u32 + edgeOf(&m, 3u32, 7u32)]], 1., 1., 0., "dart: edge 3-7 midpoint");
+
+  m.setFloat(ch, edgeOf(&m, 7u32, 5u32), SharpnessInfinite);
+  m.setFloat(ch, edgeOf(&m, 7u32, 6u32), SharpnessInfinite);
+  imm corner = subdivide(&m, 1u32);
+  clean(&corner, "corner: validates");
+  point(*corner.positions[7usize], 1., 1., 1., "corner: vertex 7 stays");
+  point(*corner.positions[usize[8u32 + edgeOf(&m, 3u32, 7u32)]], 1., 1., 0., "corner: edge 3-7 midpoint");
+  point(*corner.positions[3usize], 0.555556, 0.555556, -0.555556, "corner: vertex 3, a dart, smooth");
+}
+
+fn sharpVertex() {
+  mut m = PolyMesh.cube(1.);
+  imm ch = m.addFloatChannel(VertexDomain, "crease", 0.);
+  m.setFloat(ch, 0u32, SharpnessInfinite);
+  imm l1 = subdivide(&m, 1u32);
+  point(*l1.positions[0usize], -1., -1., -1., "sharp vertex: vertex 0 stays");
+  point(*l1.positions[7usize], 0.555556, 0.555556, 0.555556, "sharp vertex: vertex 7 smooth");
+
+  m.setFloat(ch, 0u32, 1.);
+  imm one = subdivide(&m, 1u32);
+  point(*one.positions[0usize], -1., -1., -1., "vertex sharpness 1: vertex 0 stays at level 1");
+  imm cch = one.findFloatChannel(VertexDomain, "crease");
+  require(cch != NoIndex, "vertex sharpness 1: the channel carried");
+  expectFloat(one.float(cch, 0u32), 0., near, "vertex sharpness 1: worn out at level 1");
+  clean(&one, "vertex sharpness 1: validates");
+}
+
+fn main() i32 {
+  infinite();
+  sharpnessOne();
+  sharpnessHalf();
+  cornerAndDart();
+  sharpVertex();
+  done();
+}
