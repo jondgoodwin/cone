@@ -221,9 +221,9 @@ fn die(msg &[]u8, file &[]u8 = srcFile(), line u32 = srcLine()) Never {
 // the thread itself while it runs, its handle until joined or detached, and
 // each ThreadRef. The name's bytes follow it in the same block.
 struct Info {
-  pub refs sync.Atomic[u32];    // how many hold it
-  pub id sync.Atomic[u32];      // the OS thread id
-  pub park sync.Atomic[u32];    // the parking state, a futex word
+  pub refs Atomic[u32];    // how many hold it
+  pub id Atomic[u32];      // the OS thread id
+  pub park Atomic[u32];    // the parking state, a futex word
   pub nameLen u32;
 }
 
@@ -239,9 +239,9 @@ fn infoNew(name &[]u8, refs u32, id u32) *Info {
   if p as usize == 0usize {
     die("thread: out of memory");
   }
-  (*p).refs = sync.Atomic[u32].of(refs);
-  (*p).id = sync.Atomic[u32].of(id);
-  (*p).park = sync.Atomic[u32].of(parkEmpty);
+  (*p).refs = Atomic[u32].of(refs);
+  (*p).id = Atomic[u32].of(id);
+  (*p).park = Atomic[u32].of(parkEmpty);
   (*p).nameLen = u32[name.len];
   if name.len > 0usize {
     libc.memcpy((p as *u8) + size, name, name.len);
@@ -264,8 +264,8 @@ fn infoId(p *Info) u32 {
 }
 
 // The thread's parking word, as the futex takes it
-fn parkWord(p *Info) &sync.Atomic[u32] {
-  &(*p).park as &sync.Atomic[u32];
+fn parkWord(p *Info) &Atomic[u32] {
+  &(*p).park as &Atomic[u32];
 }
 
 fn infoName(p *Info) &[]u8 {
@@ -301,7 +301,7 @@ fn unparkInfo(p *Info) {
 // reaches it without knowing A). 'result' holds a value once f returns, until
 // 'join' moves it out or the last holder finalizes it.
 struct Packet[A, R] {
-  pub refs sync.Atomic[u32];    // 2 while both thread and handle hold it
+  pub refs Atomic[u32];    // 2 while both thread and handle hold it
   pub info *Info;
   pub result R;
   pub f &fn(a A) R;
@@ -311,7 +311,7 @@ struct Packet[A, R] {
 // Let go of a packet, whatever its argument's type, since 'refs' is its first
 // field: whether this was the last hold on it
 fn packetRelease(pkt *u8) Bool {
-  (pkt as &sync.Atomic[u32]).subOrdered(1u32, MemOrder.AcqRel[]) == 1u32;
+  (pkt as &Atomic[u32]).subOrdered(1u32, MemOrder.AcqRel[]) == 1u32;
 }
 
 // Where a new thread begins: move the argument out, call f with it, store
@@ -374,7 +374,7 @@ pub fn startWith[A Sendable, R Sendable](opts Options, arg A, f &fn(a A) R) Thre
     die("thread: out of memory");
   }
   imm info = infoNew(opts.name, 2u32, 0u32);
-  (*pk).refs = sync.Atomic[u32].of(2u32);
+  (*pk).refs = Atomic[u32].of(2u32);
   (*pk).info = info;
   (*pk).f = f;
   mem.writeRaw[A](&(*pk).arg as *A, arg);

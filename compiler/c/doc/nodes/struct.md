@@ -998,7 +998,7 @@ it ([flow](../phases/flow.md), "Calls"):
 ### AtomicValue
 
 `AtomicValue` is the built-in marker of a value changed only by atomic
-operations, even through `imm` [Jon 26 Sep]; sync's `Atomic[T]` declares it,
+operations, even through `imm` [Jon 26 Sep]; core's `Atomic[T]` declares it,
 and the compiler knows nothing else of that type. What it brings:
 
 - **Its shape** (`structAtomicValueCheck`, at layout beside
@@ -1008,7 +1008,7 @@ and the compiler knows nothing else of that type. What it brings:
   Anything else declaring it is `ErrorAtomicValueShape` (a trait, an enum, a
   variant, no field or several) or `ErrorAtomicValueType` (the field). A
   generic's instance is reported at the outermost place the program named it
-  (`Atomic[f64]` in the program, not the field in sync), and a refused
+  (`Atomic[f64]` in the program, not the field in core), and a refused
   instance's methods are not type checked (step 9), since each would refuse
   the same type again in terms of its body. Which operations a type offers is
   its own affair: `Atomic[T]` requires `T is Integer or T is Bool or T is

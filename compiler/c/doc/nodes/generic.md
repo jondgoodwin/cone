@@ -426,7 +426,7 @@ is met by that type alone (`itypeIsSame`). Every other question a clause asks is
   `usize` — an `IntNbrTag`, or a `UintNbrTag` that is not `Bool`; and `Pointer`
   is every raw pointer type, `*T` whatever `T` and its permission — a `PtrTag`,
   never a reference. `Integer or Bool or Pointer` is exactly what an atomic
-  operation takes (`intrinsicIsAtomicType`), so sync's `Atomic[T]` requires just
+  operation takes (`intrinsicIsAtomicType`), so core's `Atomic[T]` requires just
   what its `AtomicValue` marker admits. `Sendable` is the thread check's, and is
   asked of the walk (`itypeThreadBound`) before anything else: it is granted to
   every type holding nothing bound to its thread, and a type declaring it is
