@@ -1,0 +1,135 @@
+// ---- Failures ----
+
+mut failureCount = 0u32;
+mut messageCount = 0u32;
+
+// How many Vulkan calls have failed
+pub fn failures() u32 { failureCount; }
+
+// How many warnings and errors the validation layer has reported (the
+// loader's own, about its configuration, are printed and not counted)
+pub fn validationMessages() u32 { messageCount; }
+
+// Whether 'r' is success; if not, report it, naming 'what', and count it
+fn check(r i32, what &[]u8) Bool {
+  if r == vulkan.SUCCESS { return true; }
+  failureCount = failureCount + 1u32;
+  mut m = String.from("gpu: ");
+  m <- what;
+  m <- " failed: ";
+  m <- vulkan.resultName(r);
+  logLine(m.view());
+  false;
+}
+
+// Report a failure that is not a VkResult, and count it
+fn fail(msg &[]u8) {
+  failureCount = failureCount + 1u32;
+  mut m = String.from("gpu: ");
+  m <- msg;
+  logLine(m.view());
+}
+
+fn logLine(msg &[]u8) {
+  mut m = String.from(msg);
+  m.appendByte('\n');
+  imm v = m.view();
+  libc.fflush(libc.stdout());
+  libc.fwrite(v, 1usize, v.len, libc.stderr());
+}
+
+fn appendCStr(s &mut String, p *u8) {
+  mut i = 0usize;
+  while *(p + i) != 0u8 {
+    s.appendByte(*(p + i));
+    i = i + 1usize;
+  }
+}
+
+fn nullp() *u8 { 0usize as *u8; }
+fn nullCommandBuffer() vulkan.CommandBuffer { 0usize as vulkan.CommandBuffer; }
+fn isNull(cmd vulkan.CommandBuffer) Bool { (cmd as *u8 as usize) == 0usize; }
+
+// A value of T with every byte zero, for a C struct Vulkan fills in
+fn zeroed[T]() T {
+  imm p = libc.calloc(1usize, mem.sizeof[T]()) as *T;
+  imm v = mem.readRaw[T](p);
+  libc.free(p as *u8);
+  v;
+}
+
+// The debug messenger's callback: the loader or the validation layer calls
+// it with a warning or an error
+fn onDebugMessage(severity u32, types u32, data *vulkan.DebugUtilsMessengerCallbackDataEXT, user *u8) u32 {
+  if (types & vulkan.DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT) == 0u32 { messageCount = messageCount + 1u32; }
+  mut m = String.from("gpu: Vulkan ");
+  if severity >= vulkan.DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT {
+    m <- "error: ";
+  } else {
+    m <- "warning: ";
+  }
+  appendCStr(&mut m, data.pMessage);
+  logLine(m.view());
+  vulkan.FALSE;
+}
+
+// Whether the instance layer 'name' is installed
+fn hasInstanceLayer(name *u8) Bool {
+  mut n = 0u32;
+  if vulkan.enumerateInstanceLayerProperties(&mut n, 0usize as *vulkan.LayerProperties) != vulkan.SUCCESS { return false; }
+  if n == 0u32 { return false; }
+  imm size = mem.sizeof[vulkan.LayerProperties]();
+  imm props = libc.calloc(usize[n], size);
+  vulkan.enumerateInstanceLayerProperties(&mut n, props as *vulkan.LayerProperties);
+  mut found = false;
+  mut i = 0usize;
+  while i < usize[n] {
+    // layerName is the first field
+    if libc.strcmp(props + i * size, name) == 0i32 { found = true; }
+    i = i + 1usize;
+  }
+  libc.free(props);
+  found;
+}
+
+// Whether the instance extension 'name' is offered by the loader (with
+// 'layer' null) or by the instance layer 'layer'
+fn hasInstanceExtension(layer *u8, name *u8) Bool {
+  mut n = 0u32;
+  if vulkan.enumerateInstanceExtensionProperties(layer, &mut n, 0usize as *vulkan.ExtensionProperties) != vulkan.SUCCESS {
+    return false;
+  }
+  if n == 0u32 { return false; }
+  imm size = mem.sizeof[vulkan.ExtensionProperties]();
+  imm props = libc.calloc(usize[n], size);
+  vulkan.enumerateInstanceExtensionProperties(layer, &mut n, props as *vulkan.ExtensionProperties);
+  mut found = false;
+  mut i = 0usize;
+  while i < usize[n] {
+    if libc.strcmp(props + i * size, name) == 0i32 { found = true; }
+    i = i + 1usize;
+  }
+  libc.free(props);
+  found;
+}
+
+// Whether 'physical' offers the device extension 'name'
+fn hasDeviceExtension(physical vulkan.PhysicalDevice, name *u8) Bool {
+  mut n = 0u32;
+  if vulkan.enumerateDeviceExtensionProperties(physical, nullp(), &mut n, 0usize as *vulkan.ExtensionProperties)
+      != vulkan.SUCCESS {
+    return false;
+  }
+  if n == 0u32 { return false; }
+  imm size = mem.sizeof[vulkan.ExtensionProperties]();
+  imm props = libc.calloc(usize[n], size);
+  vulkan.enumerateDeviceExtensionProperties(physical, nullp(), &mut n, props as *vulkan.ExtensionProperties);
+  mut found = false;
+  mut i = 0usize;
+  while i < usize[n] {
+    if libc.strcmp(props + i * size, name) == 0i32 { found = true; }
+    i = i + 1usize;
+  }
+  libc.free(props);
+  found;
+}

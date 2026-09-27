@@ -1,0 +1,177 @@
+// ======== Curves ========
+//
+// Bezier curves, quadratic and cubic, in the plane and in space; and
+// polylines, runs of points joined by straight segments.
+//
+// A Bezier curve runs from its first control point (t = 0) to its last
+// (t = 1), drawn towards the ones between. 'point' is where it is at t, and
+// 'tangent' which way and how fast it is going there: the derivative, not
+// normalized, so its length is the speed along the curve as t runs. 'sample'
+// makes it a polyline of 'segments' straight pieces, evenly spaced in t.
+
+// A quadratic Bezier curve in the plane: from p0 to p2, drawn towards p1
+pub struct QuadraticBezier2 {
+  pub p0 Vec2;
+  pub p1 Vec2;
+  pub p2 Vec2;
+
+  pub fn point(self, t f32) Vec2 {
+    imm u = 1. - t;
+    p0 * (u * u) + p1 * (2. * u * t) + p2 * (t * t);
+  }
+
+  pub fn tangent(self, t f32) Vec2 {(p1 - p0) * (2. * (1. - t)) + (p2 - p1) * (2. * t);}
+
+  pub fn sample(self, segments u32) List[Vec2] {
+    mut pts = List[Vec2].withCapacity(usize[segments] + 1usize);
+    mut i = 0u32;
+    while i <= segments {
+      pts.push(point(f32[i] / f32[segments]));
+      i = i + 1u32;
+    }
+    pts;
+  }
+}
+
+// A cubic Bezier curve in the plane: from p0 to p3, leaving p0 towards p1 and
+// arriving at p3 from p2
+pub struct CubicBezier2 {
+  pub p0 Vec2;
+  pub p1 Vec2;
+  pub p2 Vec2;
+  pub p3 Vec2;
+
+  pub fn point(self, t f32) Vec2 {
+    imm u = 1. - t;
+    p0 * (u * u * u) + p1 * (3. * u * u * t) + p2 * (3. * u * t * t) + p3 * (t * t * t);
+  }
+
+  pub fn tangent(self, t f32) Vec2 {
+    imm u = 1. - t;
+    (p1 - p0) * (3. * u * u) + (p2 - p1) * (6. * u * t) + (p3 - p2) * (3. * t * t);
+  }
+
+  pub fn sample(self, segments u32) List[Vec2] {
+    mut pts = List[Vec2].withCapacity(usize[segments] + 1usize);
+    mut i = 0u32;
+    while i <= segments {
+      pts.push(point(f32[i] / f32[segments]));
+      i = i + 1u32;
+    }
+    pts;
+  }
+}
+
+// A quadratic Bezier curve in space
+pub struct QuadraticBezier3 {
+  pub p0 Vec3;
+  pub p1 Vec3;
+  pub p2 Vec3;
+
+  pub fn point(self, t f32) Vec3 {
+    imm u = 1. - t;
+    p0 * (u * u) + p1 * (2. * u * t) + p2 * (t * t);
+  }
+
+  pub fn tangent(self, t f32) Vec3 {(p1 - p0) * (2. * (1. - t)) + (p2 - p1) * (2. * t);}
+
+  pub fn sample(self, segments u32) List[Vec3] {
+    mut pts = List[Vec3].withCapacity(usize[segments] + 1usize);
+    mut i = 0u32;
+    while i <= segments {
+      pts.push(point(f32[i] / f32[segments]));
+      i = i + 1u32;
+    }
+    pts;
+  }
+}
+
+// A cubic Bezier curve in space
+pub struct CubicBezier3 {
+  pub p0 Vec3;
+  pub p1 Vec3;
+  pub p2 Vec3;
+  pub p3 Vec3;
+
+  pub fn point(self, t f32) Vec3 {
+    imm u = 1. - t;
+    p0 * (u * u * u) + p1 * (3. * u * u * t) + p2 * (3. * u * t * t) + p3 * (t * t * t);
+  }
+
+  pub fn tangent(self, t f32) Vec3 {
+    imm u = 1. - t;
+    (p1 - p0) * (3. * u * u) + (p2 - p1) * (6. * u * t) + (p3 - p2) * (3. * t * t);
+  }
+
+  pub fn sample(self, segments u32) List[Vec3] {
+    mut pts = List[Vec3].withCapacity(usize[segments] + 1usize);
+    mut i = 0u32;
+    while i <= segments {
+      pts.push(point(f32[i] / f32[segments]));
+      i = i + 1u32;
+    }
+    pts;
+  }
+}
+
+// -------- polylines --------
+
+// The length of the polyline through the points, in order
+pub fn polylineLength2 overload polylineLength(points &[]Vec2) f32 {
+  mut len f32 = 0.;
+  mut i = 1usize;
+  while i < points.len {
+    len = len + points[i].distance(points[i - 1usize]);
+    i = i + 1usize;
+  }
+  len;
+}
+
+pub fn polylineLength3 overload polylineLength(points &[]Vec3) f32 {
+  mut len f32 = 0.;
+  mut i = 1usize;
+  while i < points.len {
+    len = len + points[i].distance(points[i - 1usize]);
+    i = i + 1usize;
+  }
+  len;
+}
+
+// The point 'distance' along the polyline from its first point, held to the
+// polyline: at or before 0 its first point, at or past its length its last.
+// No points at all give the origin
+pub fn polylinePointAt2 overload polylinePointAt(points &[]Vec2, distance f32) Vec2 {
+  if points.len == 0usize {return Vec2[0., 0.];}
+  mut left = distance;
+  mut i = 1usize;
+  while i < points.len {
+    imm a = points[i - 1usize];
+    imm b = points[i];
+    imm seg = a.distance(b);
+    if left <= seg {
+      if seg == 0. or left <= 0. {return a;}
+      return a.lerp(b, left / seg);
+    }
+    left = left - seg;
+    i = i + 1usize;
+  }
+  points[points.len - 1usize];
+}
+
+pub fn polylinePointAt3 overload polylinePointAt(points &[]Vec3, distance f32) Vec3 {
+  if points.len == 0usize {return Vec3[0., 0., 0.];}
+  mut left = distance;
+  mut i = 1usize;
+  while i < points.len {
+    imm a = points[i - 1usize];
+    imm b = points[i];
+    imm seg = a.distance(b);
+    if left <= seg {
+      if seg == 0. or left <= 0. {return a;}
+      return a.lerp(b, left / seg);
+    }
+    left = left - seg;
+    i = i + 1usize;
+  }
+  points[points.len - 1usize];
+}
