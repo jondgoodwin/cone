@@ -15,14 +15,18 @@
 
 	<p style="margin-left: 40px;"><i>Note: Of the models below, only OS threads are implemented, on
 		Windows only, as the <span class="pre">thread</span> library package: starting, joining
-		(a handle dropped unjoined joins) and detaching a thread, its identity, sleep, parking,
-		and the futex, all described <a href="#thread">near the end of this page</a>. So are
-		<a href="#atomic">atomic values</a>, the <span class="pre">sync</span> package's
+		(a handle dropped unjoined joins) and detaching a thread, its identity, sleep and parking,
+		all described <a href="#thread">near the end of this page</a>. So is the
+		<span class="pre">sync</span> package: <a href="#atomic">atomic values</a>,
 		<span class="pre">Atomic[T]</span> for integers, and the compiler's rules for the
-		<span class="pre">AtomicValue</span> marker it declares; the <span class="pre">atomic</span>
-		permission is not implemented. Nothing checks yet that what is handed to a thread is safe
-		to share. Co-routines, green threads, processes, distributed computing, and splitting work
-		across threads are not implemented.</i></p>
+		<span class="pre">AtomicValue</span> marker it declares; <a href="#futex">the futex</a>;
+		and <a href="#locks">the locks</a> built on it, <span class="pre">Mutex</span>,
+		<span class="pre">RwLock</span>, <span class="pre">Condvar</span> and
+		<span class="pre">Once</span>, which are unchecked: what a lock protects is the program's
+		to keep, until <a href="refpermlock.html">lock permissions</a> are implemented. The
+		<span class="pre">atomic</span> permission is not implemented. Nothing checks yet that
+		what is handed to a thread is safe to share. Co-routines, green threads, processes,
+		distributed computing, and splitting work across threads are not implemented.</i></p>
 	
 	<p>Concurrency and parallelism can sometimes improve program throughput, by:</p>
 	<ul>
@@ -58,8 +62,9 @@
 
 	<h2 id="thread">OS threads: the thread package</h2>
 	<p>The <span class="pre">thread</span> package is the operating-system layer every other
-		model is to be built on: starting and joining OS threads, and the <b>futex</b>, the one
-		blocking primitive the locks, the channels and the schedulers are to be written over. It is
+		model is to be built on: starting and joining OS threads. The one blocking primitive the
+		locks, the channels and the schedulers are written over, the <a href="#futex">futex</a>, is
+		the <span class="pre">sync</span> package's, which the thread package imports. It is
 		deliberately small, and it is ordinary library code, bound to the operating system through
 		<span class="pre">extern</span> functions; the compiler knows nothing of it.
 		Its source, <span class="pre">packages/thread/src/thread.cone</span>, documents the same
@@ -101,8 +106,8 @@ fn main() {
 		<span class="pre">ro</span> reference, an <span class="pre">rc</span> owner (its count is
 		not atomic), a borrowed reference into the starting thread's stack, or a raw pointer to
 		memory another thread also writes all compile today, and are the program's to get right,
-		with <a href="#atomic">atomic values</a> or the futex. The compiler's check comes
-		later.</li>
+		with <a href="#atomic">atomic values</a> or <a href="#locks">locks</a>. The compiler's
+		check comes later.</li>
 	</ul>
 	<p><span class="pre">thread.startWith(thread.Options[name: n, stackSize: s], arg, &amp;f)</span>
 		does the same with options, each of which has a default and may be left out:</p>
@@ -166,32 +171,7 @@ fn main() {
 		is therefore not lost, and the park returns at once. Unparks do not add up: two before a park
 		are one token. <span class="pre">park</span> never returns without a token, but a parked
 		thread still checks what it was waiting for, since a token may have been meant for an earlier
-		park.</p>
-
-	<h3>The futex</h3>
-	<p>A futex is a 32-bit word that threads sleep on while it holds a value.</p>
-	<ul>
-	<li><span class="pre">thread.futexWait(word, expected, timeoutNs)</span>: if
-		<span class="pre">*word</span> still equals <span class="pre">expected</span>, checked
-		atomically with going to sleep, sleep until woken or until the timeout passes. It returns
-		false only when the timeout passed, and true when woken, when the word already differed, or
-		spuriously, which the operating system permits. So a waiter loops, re-reading the word.</li>
-	<li><span class="pre">timeoutNs</span> is nanoseconds, <span class="pre">thread.forever</span>
-		by default, rounded up to whole milliseconds; its resolution is the system's timer tick, up to
-		15.6 ms. A timeout of 2<sup>32</sup> - 1 ms or more is that long, not forever. A timeout of 0
-		returns false at once if the word still holds <span class="pre">expected</span>.</li>
-	<li><span class="pre">thread.futexWake(word)</span> wakes one waiting thread, and
-		<span class="pre">thread.futexWakeAll(word)</span> every one. A wake with no thread waiting
-		does nothing and is not remembered, so a thread stores the new value first and wakes after.</li>
-	<li>The word is a raw <span class="pre">*u32</span>, 4-byte aligned, and the caller keeps it
-		alive while any thread may wait on it or wake it: nothing checks that. It is to become a
-		reference to an atomic type. Waits and wakes reach only the threads of one process.</li>
-	</ul>
-<pre>
-while mem.atomicLoad[u32](word, MemOrder.Acquire[]) == 0u32 {
-  thread.futexWait(word, 0u32);     // sleeps only while the word is still 0
-}
-</pre>
+		park. Parking is built on <a href="#futex">the futex</a>.</p>
 
 	<h3>What a started thread may not use yet</h3>
 	<p>The <span class="pre">collector</span> package's <span class="pre">+gc</span> collector is
@@ -293,6 +273,97 @@ fn count() {                   // called from any number of threads at once
 		reference (as <span class="pre">&amp;opaq</span>), and a plain assignment over an atomic
 		value &mdash; <span class="pre">*r = s</span> through a <span class="pre">&amp;mut
 		Stats</span> &mdash; compiles, and is the program's to get right.</p>
+
+	<h2 id="futex">The futex</h2>
+	<p>A futex is a 32-bit atomic word that threads sleep on while it holds a value, and are woken
+		from. It is the one way a thread waits for another, and everything that blocks &mdash; the
+		locks below, the thread package's parking, and the channels and schedulers to come &mdash;
+		is built on it. It is the <span class="pre">sync</span> package's, and its word is an
+		<span class="pre">Atomic[u32]</span>, taken by any reference, as that type's own operations
+		are.</p>
+	<ul>
+	<li><span class="pre">sync.futexWait(&amp;word, expected, timeoutNs)</span>: if the word still
+		holds <span class="pre">expected</span>, checked atomically with going to sleep, sleep until
+		woken or until the timeout passes. It returns false only when the timeout passed, and true
+		when woken, when the word already differed, or spuriously, which the operating system
+		permits. So a waiter loops, re-reading the word.</li>
+	<li><span class="pre">timeoutNs</span> is nanoseconds, <span class="pre">sync.forever</span>
+		by default, rounded up to whole milliseconds; its resolution is the system's timer tick, up to
+		15.6 ms. A timeout of 2<sup>32</sup> - 1 ms or more is that long, not forever. A timeout of 0
+		returns false at once if the word still holds <span class="pre">expected</span>.</li>
+	<li><span class="pre">sync.futexWake(&amp;word)</span> wakes one waiting thread, and
+		<span class="pre">sync.futexWakeAll(&amp;word)</span> every one. A wake with no thread waiting
+		does nothing and is not remembered, so a thread stores the new value first and wakes after.</li>
+	<li>The caller keeps the word alive while any thread may wait on it or wake it: nothing checks
+		that. Waits and wakes reach only the threads of one process.</li>
+	</ul>
+<pre>
+while word.load() == 0u32 {
+  sync.futexWait(&amp;word, 0u32);     // sleeps only while the word is still 0
+}
+</pre>
+
+	<h2 id="locks">Locks: Mutex, RwLock, Condvar and Once</h2>
+	<p>The <span class="pre">sync</span> package's locks are built on the futex alone, not on the
+		operating system's own locks, as Rust's standard library has built its own since 2022. Each
+		is one <span class="pre">Atomic[u32]</span> (an <span class="pre">RwLock</span>, two), holds
+		no operating-system handle, needs no finalizer, and may be moved while nobody holds it or
+		waits on it. Each is made by <span class="pre">make()</span>, and each operation takes it
+		by any reference, <span class="pre">imm</span> included, since a lock is shared by every
+		thread that uses it.</p>
+<pre>
+import sync use *;
+
+imm lock Mutex;             // both set by the module's init:
+mut names List[u64];        //   Mutex.make(), List[u64].empty()
+
+fn add(n u64) {             // called from any number of threads
+  lock.lock();
+  names.push(n);            // touched only while lock is held
+  lock.unlock();
+}
+</pre>
+	<ul>
+	<li><b><span class="pre">Mutex</span></b>: one thread at a time.
+		<span class="pre">m.lock()</span> takes it, sleeping while another thread holds it (after
+		a short spin); <span class="pre">m.unlock()</span> gives it up, waking a waiting thread;
+		<span class="pre">m.tryLock()</span> takes it only if nobody holds it, and says whether it
+		did.</li>
+	<li><b><span class="pre">RwLock</span></b>: any number of readers at once, or one writer
+		alone: <span class="pre">readLock()</span>, <span class="pre">readUnlock()</span>,
+		<span class="pre">tryReadLock()</span>, <span class="pre">writeLock()</span>,
+		<span class="pre">writeUnlock()</span> and <span class="pre">tryWriteLock()</span>. While a
+		writer waits, new readers wait too, so readers cannot starve it.</li>
+	<li><b><span class="pre">Condvar</span></b>: a thread sleeps, holding no lock, until another
+		says that what it waits for may have changed. <span class="pre">c.condWait(&amp;m)</span>
+		unlocks the <span class="pre">Mutex</span> the thread holds, sleeps until notified, and
+		locks it again; <span class="pre">c.condWaitTimeout(&amp;m, ns)</span> sleeps at most
+		<span class="pre">ns</span> nanoseconds, and returns false only if that passed;
+		<span class="pre">c.notifyOne()</span> and <span class="pre">c.notifyAll()</span> wake one
+		waiting thread or all of them. A wait may return spuriously, so a waiter loops, rechecking
+		what it waits for under the <span class="pre">Mutex</span>. (<span class="pre">wait</span>
+		is a reserved word.)</li>
+	<li><b><span class="pre">Once</span></b>: a function run exactly once, however many threads
+		ask at once. <span class="pre">o.callOnce(&amp;f)</span> runs <span class="pre">f()</span>
+		if no call on this <span class="pre">Once</span> has run one; every other caller sleeps
+		until it has returned, and then sees all it did.
+		<span class="pre">o.callOnceWith(arg, &amp;f)</span> runs <span class="pre">f(arg)</span>
+		likewise, <span class="pre">arg</span> moved in, and dropped unused by a call that runs
+		nothing. <span class="pre">o.isCompleted()</span> says whether the function has run. A
+		closure cannot capture yet, which is why the function is given at most one value.</li>
+	</ul>
+	<p><b>These locks are unchecked.</b> A lock is a plain lock with explicit
+		<span class="pre">lock()</span> and <span class="pre">unlock()</span>; it guards nothing
+		the compiler can see, and <b>protecting the data is the program's job</b>. Nothing stops a
+		thread reaching the data without the lock, keeping a reference to it past the unlock,
+		forgetting to unlock, or unlocking a lock another thread holds. A lock is not reentrant: a
+		thread that locks a <span class="pre">Mutex</span> it holds sleeps forever. Unlocking a lock
+		that nothing holds is caught, and ends the program with a message. A thread that ends while
+		holding a lock leaves it locked; there is no poisoning, since nothing unwinds. The
+		<a href="refpermlock.html">lock permissions</a>, where a lock sits in the permission slot of
+		a reference (<span class="pre">+arc-mutex T</span>), borrowing through it takes the lock and
+		the borrow's end releases it, are not implemented; when they are, they are to sit on these
+		types.</p>
 
 
 	<p style="text-align: right; margin-top: 2em;">

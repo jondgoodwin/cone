@@ -1,0 +1,73 @@
+// The futex. A waiter sleeps while its word holds what it expects, and
+// returns once main changes the word and wakes it; 'futexWakeAll' wakes every
+// waiter; a word that already differs returns at once; a timeout returns
+// false, and a timeout of 0 returns at once.
+//
+// A waiter always loops on the word, as every futex user must: a wait may
+// return spuriously, and a wake may come before the wait. So what is checked
+// is that each wait returns and sees the changed word, never how many times
+// it slept. 'testing' counts its checks in globals, so every check is made on
+// the main thread. The words are 'imm' globals, which change only inside
+// their atomic values, and each thread reaches them by name.
+
+mod futex;
+
+import testing use *;
+import thread;
+import sync use *;
+
+imm word Atomic[u32];
+imm shared Atomic[u32];
+imm ready Atomic[u32];
+
+fn @initpure init() {
+  word = Atomic[u32].of(0u32);
+  shared = Atomic[u32].of(0u32);
+  ready = Atomic[u32].of(0u32);
+}
+
+// Wait until the word is no longer 0; answer what it became
+fn waitChange(w &Atomic[u32]) u32 {
+  while w.load() == 0u32 {
+    sync.futexWait(w, 0u32);
+  }
+  w.load();
+}
+
+fn waitWord(n u32) u32 { waitChange(&word); }
+
+// Count this waiter in, then wait for the shared word to change
+fn countedWait(n u32) u32 {
+  ready.add(1u32);
+  waitChange(&shared);
+}
+
+fn main() i32 {
+  initAll();
+
+  // One waiter, woken
+  imm w = thread.start(0u32, &waitWord);
+  thread.sleep(20000000u64);
+  word.store(5u32);
+  sync.futexWake(&word);
+  expectUInt(u64[w.join()], 5u64, "the waiter returned with the new value");
+
+  // Three waiters, all woken at once
+  imm a = thread.start(0u32, &countedWait);
+  imm b = thread.start(0u32, &countedWait);
+  imm c = thread.start(0u32, &countedWait);
+  while ready.load() < 3u32 { thread.sleep(1000000u64); }
+  thread.sleep(10000000u64);
+  shared.store(9u32);
+  sync.futexWakeAll(&shared);
+  expectUInt(u64[a.join() + b.join() + c.join()], 27u64, "wakeAll woke all three waiters");
+
+  // A word that already differs does not sleep
+  mut other = Atomic[u32].of(3u32);
+  expect(sync.futexWait(&other, 4u32), "a wait on a changed word returns true");
+
+  // A timeout returns false, and 0 returns at once
+  expect(!sync.futexWait(&other, 3u32, 5000000u64), "a timed-out wait returns false");
+  expect(!sync.futexWait(&other, 3u32, 0u64), "a wait with no time returns false at once");
+  done();
+}

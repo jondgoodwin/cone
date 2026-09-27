@@ -1,0 +1,118 @@
+// Mutex. Four threads each push 2000 numbers into one collections.List,
+// taking a Mutex around every push, and main joins them and checks the List:
+// exactly 8000 long, every number there once, and each thread's numbers in
+// the order it pushed them. A List's push is a read-then-write of its length
+// (and, as it grows, a move to a bigger block), so without the lock pushes
+// are lost or the List is torn. The whole race is run 25 times, to give a
+// broken lock many chances to show itself. Then tryLock, on one thread:
+// it fails while the Mutex is held, by anyone, and succeeds once it is not.
+//
+// The Mutex is an 'imm' global, which changes only inside its atomic word;
+// the List is a 'mut' global, which nothing yet stops two threads writing at
+// once: the lock is the program's own discipline, unchecked.
+
+mod mutex;
+
+import testing use *;
+import thread;
+import collections use *;
+import sync use *;
+
+const perThread = 2000u64;
+const threads = 4u64;
+
+imm lock Mutex;
+mut items List[u64];
+
+// The starting gate: each thread counts itself ready, then waits for 'go',
+// so the four push at once rather than one after another as they start
+imm ready Atomic[u32];
+imm go Atomic[u32];
+
+fn @initpure init() {
+  lock = Mutex.make();
+  items = List[u64].empty();
+  ready = Atomic[u32].of(0u32);
+  go = Atomic[u32].of(0u32);
+}
+
+fn atGate() {
+  ready.add(1u32);
+  while go.load() == 0u32 {
+    sync.futexWait(&go, 0u32);
+  }
+}
+
+fn openGate(n u32) {
+  while ready.load() < n {
+    thread.yieldNow();
+  }
+  go.store(1u32);
+  sync.futexWakeAll(&go);
+}
+
+// Push perThread numbers, thread k's being k * 1000000 + i
+fn pushMany(k u64) u64 {
+  atGate();
+  mut i = 0u64;
+  while i < perThread {
+    lock.lock();
+    items.push(k * 1000000u64 + i);
+    lock.unlock();
+    i = i + 1u64;
+  }
+  i;
+}
+
+// One race: whether the List came out whole
+fn race() Bool {
+  items.clear();
+  ready.store(0u32);
+  go.store(0u32);
+  imm a = thread.start(0u64, &pushMany);
+  imm b = thread.start(1u64, &pushMany);
+  imm c = thread.start(2u64, &pushMany);
+  imm d = thread.start(3u64, &pushMany);
+  openGate(4u32);
+  imm made = a.join() + b.join() + c.join() + d.join();
+  if made != threads * perThread or items.len() != usize[threads * perThread] {
+    return false;
+  }
+  // Each thread's numbers appear in order, and all of them do
+  mut next [4; u64] = [4; 0u64];
+  mut i = 0usize;
+  while i < items.len() {
+    imm v = *items[i];
+    imm k = v / 1000000u64;
+    if k >= threads or v % 1000000u64 != next[k] {
+      return false;
+    }
+    next[k] = next[k] + 1u64;
+    i = i + 1usize;
+  }
+  next[0] == perThread and next[1] == perThread and next[2] == perThread and next[3] == perThread;
+}
+
+fn main() i32 {
+  initAll();
+  mut whole = 0u64;
+  mut run = 0;
+  while run < 25 {
+    if race() { whole = whole + 1u64; }
+    run = run + 1;
+  }
+  expectUInt(whole, 25u64, "races whose List came out exactly 8000 long, every push there");
+  expectUInt(u64[items.len()], 8000u64, "the last race's List");
+
+  // tryLock
+  imm m = Mutex.make();
+  expect(m.tryLock(), "tryLock takes an unlocked Mutex");
+  expect(!m.tryLock(), "tryLock fails while it is held");
+  m.unlock();
+  expect(m.tryLock(), "tryLock takes it again once unlocked");
+  m.unlock();
+  m.lock();
+  expect(!m.tryLock(), "tryLock fails while lock() holds it");
+  m.unlock();
+  done();
+}
