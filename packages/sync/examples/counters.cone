@@ -1,0 +1,77 @@
+// Shared statistics without a lock. Four worker threads each handle a run of
+// made-up requests and record them in one 'imm' Stats: a count of requests,
+// a total of bytes, and the largest request seen, which each thread raises
+// with a compareSwap loop (read the largest, and store the new one only if
+// nobody changed it in between; otherwise try again with what they stored).
+// The main thread waits for the workers and prints the totals, which are the
+// same on every run:
+//
+//   congo run packages/sync/examples/counters.cone
+//
+//   requests 4000
+//   bytes    8002000
+//   largest  4000
+//
+// Stats is 'imm', and its atomic fields change anyway: 'imm' means that
+// nothing changes except inside the atomic values it holds. Its name, a plain
+// field, never changes, and is read as any field is.
+
+mod counters;
+
+import stdio use *;
+import thread;
+import sync use *;
+
+struct Stats {
+  pub name u32;
+  pub requests Atomic[u64];
+  pub bytes Atomic[u64];
+  pub largest Atomic[u64];
+}
+
+imm stats Stats;
+
+fn @initpure init() {
+  stats = Stats[1u32, Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64)];
+}
+
+// Raise 'largest' to size, unless it is already larger
+fn noteLargest(size u64) {
+  mut seen = stats.largest.load();
+  mut stored = false;
+  while size > seen and not stored {
+    seen, stored = stats.largest.compareSwap(seen, size);
+  }
+}
+
+// One worker: requests numbered first to first + 999, request n being n + 1
+// bytes long, so every total is known ahead
+fn work(first u64) u64 {
+  mut n = first;
+  while n < first + 1000u64 {
+    stats.requests.add(1u64);
+    stats.bytes.add(n + 1u64);
+    noteLargest(n + 1u64);
+    n = n + 1u64;
+  }
+  n - first;
+}
+
+fn main() {
+  initAll();
+  imm a = thread.start(0u64, &work);
+  imm b = thread.start(1000u64, &work);
+  imm c = thread.start(2000u64, &work);
+  imm d = thread.start(3000u64, &work);
+  a.join();
+  b.join();
+  c.join();
+  d.join();
+  printStr("requests ");
+  printInt(i64[stats.requests.load()]);
+  printStr("\nbytes    ");
+  printInt(i64[stats.bytes.load()]);
+  printStr("\nlargest  ");
+  printInt(i64[stats.largest.load()]);
+  printStr("\n");
+}

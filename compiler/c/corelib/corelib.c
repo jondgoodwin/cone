@@ -83,6 +83,7 @@ StructNode *tracedTrait;
 StructNode *shapeChangingTrait;
 StructNode *noLoanMutTrait;
 StructNode *noLoanReadTrait;
+StructNode *atomicValueTrait;
 
 // A trait the compiler declares, with no members, bound as a name every module
 // reaches unless it declares the name itself
@@ -96,7 +97,8 @@ static StructNode *newBuiltinTrait(Name *name) {
 int corelibIsBuiltinTrait(INode *node) {
     return node == (INode*)regionRefTrait || node == (INode*)moveTrait || node == (INode*)copyTrait
         || node == (INode*)tracedTrait || node == (INode*)shapeChangingTrait
-        || node == (INode*)noLoanMutTrait || node == (INode*)noLoanReadTrait;
+        || node == (INode*)noLoanMutTrait || node == (INode*)noLoanReadTrait
+        || node == (INode*)atomicValueTrait;
 }
 
 // Set up the standard library, whose names are always shared by all modules
@@ -163,4 +165,12 @@ void stdlibInit(int ptrsize) {
     shapeChangingTrait = newBuiltinTrait(shapeChangingTraitName);
     noLoanMutTrait = newBuiltinTrait(noLoanMutTraitName);
     noLoanReadTrait = newBuiltinTrait(noLoanReadTraitName);
+    // 'AtomicValue' [Jon 26 Sep]: a struct declaring it is changed only by
+    // atomic operations, even where it is 'imm' -- the one exception to 'imm
+    // never changes'. It is a struct of one field, an integer, a Bool or a raw
+    // pointer (structAtomicValueCheck), and it moves. A value holding one
+    // anywhere inline (itypeHoldsAtomic) is never placed in read-only memory,
+    // nor held in a 'const'. The sync package's 'Atomic[T]' declares it; the
+    // compiler knows nothing else of that type.
+    atomicValueTrait = newBuiltinTrait(atomicValueTraitName);
 }

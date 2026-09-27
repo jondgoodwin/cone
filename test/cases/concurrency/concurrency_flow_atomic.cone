@@ -1,0 +1,40 @@
+// An atomic value moves, and is never copied: a copy would be a second value
+// that no atomic operation on the first could reach. So 'imm b = a' moves a,
+// after which a is gone, and an atomic field may not be moved out of the
+// struct holding it. The number inside is had by 'load', or, by the one
+// holding the atomic by value, 'inner'. The move group owns these refusals;
+// this pins them for a type that is Move only because it declares the
+// marker (Flag says nothing of Move).
+
+mod concurrency_flow_atomic;
+
+import sync use *;
+
+struct Flag is AtomicValue {pub v u32;}
+
+struct Stats {
+  pub name u32;
+  pub hits Atomic[u64];
+}
+
+fn copied() u64 {
+  imm a = Atomic[u64].of(1u64);
+  imm b = a;
+  a.load();                          //~ ErrorMove
+}
+
+fn copiedMarker() u32 {
+  imm f = Flag[1u32];
+  imm g = f;
+  f.v;                               //~ ErrorMove
+}
+
+fn fieldOut(s Stats) {
+  imm c = s.hits;                    //~ ErrorMoveField
+}
+
+fn takenOut() u64 {
+  imm a = Atomic[u64].of(1u64);
+  imm n = a.inner();
+  a.load();                          //~ ErrorMove
+}

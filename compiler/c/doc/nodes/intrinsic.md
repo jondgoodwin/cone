@@ -100,8 +100,11 @@ type while each call gives its own orderings.
 4. **Type check** (`fnDclTypeCheck`). First, for an entry with a type class,
    lowered or not, `intrinsicClassCheck` reads `T` as the pointee of the
    instance's first parameter, `*T`, and refuses one outside the class with
-   `ErrorIntrinsicType` at the call that instantiated it, before a fallback body
-   is checked. Then `intrinsicDclTypeCheck`: a declared
+   `ErrorIntrinsicType`, before a fallback body is checked. It is reported at
+   the outermost place that instantiated it, where the program chose the type,
+   and once there: sync's `Atomic[Bool]` is refused at the program's
+   `Atomic[Bool]`, by the first of its methods to call an operation refusing
+   `Bool` (`atomicAdd`), not in sync's source once per such method. Then `intrinsicDclTypeCheck`: a declared
    intrinsic's instance has no body to check; its `typearg` is type checked and
    must have a size (`itypeNoSizeCause`), else `ErrorIntrinsicType`, reported at
    the call that instantiated it (`instnode`), not in core. An instance of

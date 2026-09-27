@@ -59,6 +59,12 @@ void constDclTypeCheck(TypeCheckState *pstate, ConstDclNode *name) {
         errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match named constant's declared type");
     else if (name->vtype == unknownType)
         name->vtype = ((IExpNode *)name->value)->vtype;
+    // Every use of a const is a fresh copy of its literal, so an atomic value
+    // in one could never be shared by the operations meant to share it
+    if (name->vtype != unknownType && itypeHoldsAtomic(name->vtype))
+        errorMsgNode((INode*)name, ErrorAtomicValueConst,
+            "The const %s holds an atomic value (its type is %s), and each use of a const is a fresh copy no other use would see change. Use a global.",
+            &name->namesym->namestr, itypeName(name->vtype));
     // Constants must be literal
     if (!litIsLiteral(name->value))
         errorMsgNode(name->value, ErrorNotLit, "Named constants must be assigned to a constant value.");

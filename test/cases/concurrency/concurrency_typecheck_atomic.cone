@@ -1,0 +1,69 @@
+// What the built-in marker 'AtomicValue' refuses. A type declaring it is a
+// struct of exactly one field, which some atomic operation acts on: an
+// integer of 8 to 64 bits, a Bool or a raw pointer (ErrorAtomicValueShape,
+// ErrorAtomicValueType). It moves, so it is never Copy (ErrorCopyMove). A
+// const may not hold one anywhere inside -- in a field, a field's field, an
+// array, a tuple, an enum's variant -- since each use of a const is a fresh
+// copy (ErrorAtomicValueConst); the tuple and the enum consts are also not
+// literals yet (ErrorNotLit), which is a separate refusal.
+//
+// sync's Atomic[T] declares the marker and takes an integer T only, for now.
+// A T the marker refuses is reported at the program's own 'Atomic[...]', as
+// the marker's refusal; a Bool or a raw pointer, which the marker admits, is
+// refused by the first of Atomic's operations that does not take it (add),
+// reported at the same place, once.
+
+mod concurrency_typecheck_atomic;
+
+import sync use *;
+
+struct Pt {pub x i32; pub y i32;}
+
+struct Two is AtomicValue {pub a u32; pub b u32;}   //~ ErrorAtomicValueShape "it has 2"
+struct Empty is AtomicValue {}                       //~ ErrorAtomicValueShape "it has 0"
+struct Real is AtomicValue {pub v f32;}              //~ ErrorAtomicValueType "f32 is none of them"
+struct Whole is AtomicValue {pub p Pt;}              //~ ErrorAtomicValueType "Pt is none of them"
+struct Copied is AtomicValue, Copy {pub v u32;}      //~ ErrorCopyMove "declares AtomicValue, which moves"
+trait Marked is AtomicValue {}                       //~ ErrorAtomicValueShape "is a trait"
+enum Kind is AtomicValue {A; B;}                     //~ ErrorAtomicValueShape "is an enum"
+enum Either {
+  struct Plain {pub n u32;}
+  struct Flagged is AtomicValue {pub v u8;}          //~ ErrorAtomicValueShape "is a variant"
+}
+
+// Each of the types an atomic operation takes is admitted
+struct Byte is AtomicValue {pub v u8;}
+struct Signed is AtomicValue {pub v i64;}
+struct Size is AtomicValue {pub v usize;}
+struct Truth is AtomicValue {pub v Bool;}
+struct Address is AtomicValue {pub v *Pt;}
+
+struct Flag is AtomicValue {pub v u32;}
+struct Holder {pub f Flag;}
+struct Deep {pub h Holder;}
+enum Holding {
+  struct Without {pub n u32;}
+  struct With {pub f Flag;}
+}
+// A pointer to an atomic value holds no atomic value itself
+struct Pointing {pub p *Flag;}
+
+const k1 = Flag[1u32];                               //~ ErrorAtomicValueConst "its type is Flag"
+const k2 = Holder[Flag[2u32]];                       //~ ErrorAtomicValueConst "its type is Holder"
+const k3 = Deep[Holder[Flag[3u32]]];                 //~ ErrorAtomicValueConst "its type is Deep"
+const k4 = [Flag[4u32], Flag[5u32]];                 //~ ErrorAtomicValueConst "its type is an array"
+const k5 = (6u32, Flag[7u32]);                       //~ ErrorAtomicValueConst "its type is a tuple"
+                                                     //~^ ErrorNotLit
+const k6 Holding = Holding.Without[8u32];            //~ ErrorAtomicValueConst "its type is Holding"
+                                                     //~^ ErrorNotLit
+const fine = Pt[1i32, 2i32];
+
+fn main() {
+  imm b = Atomic[Bool].of(true);                     //~ ErrorIntrinsicType "atomicAdd acts on a T that is an integer type of 8 to 64 bits, and Bool is not one"
+  mut pt = Pt[1i32, 2i32];
+  imm p = Atomic[*Pt].of(&mut pt as *Pt);            //~ ErrorIntrinsicType "and a raw pointer is not one"
+  imm f = Atomic[f64].of(1.0);                       //~ ErrorAtomicValueType "f64 is none of them"
+  imm s = Atomic[Pt].of(Pt[1i32, 2i32]);             //~ ErrorAtomicValueType "Pt is none of them"
+  imm o = Atomic[+rc-mut Pt].of(+rc-mut Pt[1i32, 2i32]);   //~ ErrorAtomicValueType "a reference is none of them"
+  imm i = Atomic[i64].of(4i64);
+}

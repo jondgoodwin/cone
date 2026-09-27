@@ -164,8 +164,13 @@ StructNode *typeRecordStruct(void);
 // Type check what is left of a declared intrinsic's instance, lowered or not:
 // the type an atomic operation acts on must be of the class its entry names.
 // Answers 0, having reported it, when it is not, so its fallback body is not
-// checked at a type it was never written for.
+// checked at a type it was never written for. Reported at the outermost place
+// that instantiated it, once per place.
 int intrinsicClassCheck(FnDclNode *fndcl);
+
+// Is this a type some atomic operation acts on: an integer of 8 to 64 bits,
+// Bool or a raw pointer?
+int intrinsicIsAtomicType(INode *type);
 
 // Check a call to a declared intrinsic once its arguments are coerced and its
 // defaults appended: each ordering it takes must be a constant MemOrder, and

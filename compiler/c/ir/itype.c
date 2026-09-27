@@ -136,11 +136,16 @@ int itypeCarriesBorrow(INode *type) {
 }
 
 // Set when an answer reached a struct not yet type checked, whose fields may
-// not all be known: a "no" that depended on it is not remembered
+// not all be known: a "no" that depended on it is not remembered. Shared by
+// the walks for a traced reference and for an atomic value, neither of which
+// asks the other.
 static int itypeTracedProvisional = 0;
 
-static int itypeStructHoldsTraced(StructNode *type) {
-    switch (type->holdstraced) {
+// Does a value of this struct hold what 'holdsfn' looks for, in a field or,
+// for an enum or a closed trait, in a variant? Remembered in *memo
+// (HoldsTraced*) once the struct is type checked.
+static int itypeStructHolds(StructNode *type, uint8_t *memo, int (*holdsfn)(INode *)) {
+    switch (*memo) {
     case HoldsTracedYes:
         return 1;
     case HoldsTracedNo:
@@ -155,13 +160,13 @@ static int itypeStructHoldsTraced(StructNode *type) {
     }
     int svprovisional = itypeTracedProvisional;
     itypeTracedProvisional = 0;
-    type->holdstraced = HoldsTracedAsking;
+    *memo = HoldsTracedAsking;
 
     int holds = 0;
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&type->fields, cnt, nodesp)) {
-        if (itypeHoldsTraced(((IExpNode *)*nodesp)->vtype)) {
+        if (holdsfn(((IExpNode *)*nodesp)->vtype)) {
             holds = 1;
             break;
         }
@@ -169,7 +174,7 @@ static int itypeStructHoldsTraced(StructNode *type) {
     // An enum or a closed trait holds whichever of its variants the value is
     if (!holds && type->derived) {
         for (nodesFor(type->derived, cnt, nodesp)) {
-            if (itypeHoldsTraced(*nodesp)) {
+            if (holdsfn(*nodesp)) {
                 holds = 1;
                 break;
             }
@@ -179,13 +184,53 @@ static int itypeStructHoldsTraced(StructNode *type) {
     if (!(type->flags & TypeChecked))
         itypeTracedProvisional = 1;
     if (holds && (type->flags & TypeChecked))
-        type->holdstraced = HoldsTracedYes;
+        *memo = HoldsTracedYes;
     else if (!holds && !itypeTracedProvisional)
-        type->holdstraced = HoldsTracedNo;
+        *memo = HoldsTracedNo;
     else
-        type->holdstraced = HoldsTracedUnknown;
+        *memo = HoldsTracedUnknown;
     itypeTracedProvisional |= svprovisional;
     return holds;
+}
+
+static int itypeStructHoldsTraced(StructNode *type) {
+    return itypeStructHolds(type, &type->holdstraced, itypeHoldsTraced);
+}
+
+// Does a value of this type hold an atomic value where it sits: is it a struct
+// declaring 'AtomicValue', or a tuple, array, struct or enum holding one
+// inline? The walk stops at every reference and pointer: a value holding the
+// address of an atomic holds no atomic itself. Asked of a global, whose
+// storage may not be read-only when it does, and of a 'const', which may not
+// hold one; a struct's answer is remembered once it is checked.
+int itypeHoldsAtomic(INode *type) {
+    if (type == NULL)
+        return 0;
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? itypeHoldsAtomic(itypeGetTypeDcl(type)) : 0;
+    case AliasDclTag:
+        return itypeHoldsAtomic(((AliasDclNode *)type)->target);
+    case ArrayTag:
+        return itypeHoldsAtomic(arrayElemType(type));
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (itypeHoldsAtomic(*nodesp))
+                return 1;
+        }
+        return 0;
+    }
+    case StructTag: {
+        StructNode *strnode = (StructNode *)type;
+        if (structDeclaresTrait(strnode, atomicValueTrait))
+            return 1;
+        return itypeStructHolds(strnode, &strnode->holdsatomic, itypeHoldsAtomic);
+    }
+    default:
+        return 0;
+    }
 }
 
 // Does a value of this type hold a traced reference where it sits: is it a

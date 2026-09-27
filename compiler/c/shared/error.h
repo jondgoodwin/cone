@@ -344,6 +344,11 @@ enum ErrorCode {
     ErrorThreadLocalInit = 1181, // A '@threadlocal' global, not 'extern', with no initial value: every thread's copy starts from it, and a module's 'init' runs on one thread
     ErrorThreadLocalFinal = 1182, // A '@threadlocal' global whose type needs finalizing: nothing yet runs a finalizer as a thread ends
 
+    // The built-in marker 'AtomicValue' (ir/types/struct.c, structAtomicValueCheck; ir/stmt/const.c)
+    ErrorAtomicValueShape = 1183, // 'AtomicValue' declared by something other than a struct of exactly one field: a trait, an enum, a variant, or a struct of no fields or several
+    ErrorAtomicValueType = 1184, // An atomic value's one field of a type no atomic operation acts on: not an integer of 8 to 64 bits, a Bool or a raw pointer
+    ErrorAtomicValueConst = 1185, // A 'const' whose type holds an atomic value: each use of a const is a fresh copy, which no atomic operation could share
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

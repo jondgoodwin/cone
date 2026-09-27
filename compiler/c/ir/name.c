@@ -78,6 +78,7 @@ Name *copyTraitName;
 Name *shapeChangingTraitName;
 Name *noLoanMutTraitName;
 Name *noLoanReadTraitName;
+Name *atomicValueTraitName;
 
 // ---- Identifiers -----------------------------------------------------------
 //

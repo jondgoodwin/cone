@@ -342,10 +342,14 @@ static LLVMValueRef genlGloVarGlobal(VarDclNode *glovar) {
 // it to that 'final' as '&uni', which may write it. Nor a thread-local, whose
 // storage is each thread's own block, which no read-only section holds (the
 // parser refuses one 'imm', and this keeps the rule where the flag is set).
+// Nor one holding an atomic value, which atomic operations change even
+// through 'imm' [Jon 26 Sep]: a write to read-only memory would fault, and
+// every read of a constant could be folded to its initial value.
 static int genlGloVarIsConstant(VarDclNode *glovar) {
     return permIsSame(glovar->perm, (INode*)immPerm) && glovar->value != NULL
         && !(glovar->dclinfo.facts & (DclExternal | DclThreadLocal))
-        && itypeGetDropFnDcl(glovar->vtype) == NULL;
+        && itypeGetDropFnDcl(glovar->vtype) == NULL
+        && !itypeHoldsAtomic(glovar->vtype);
 }
 
 // Generate global variable

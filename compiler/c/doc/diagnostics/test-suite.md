@@ -83,10 +83,12 @@ intended for collections and `corelib/` has none, so covering it now would pin
 the operator to the one consumer it is not for. The group appears with the
 collections.
 
-Three of the rows above have no group directory, and the reasons differ. `exception` and
-`concurrency` are unimplemented down to the keyword table — real chapters, real
-features, nothing to test yet; their rows stay and the groups appear when the
-features do. `meta` is different: the `#` meta-language of `refmeta.html` is
+Two of the rows above have no group directory, and the reasons differ.
+`exception` is unimplemented down to the keyword table — a real chapter, a real
+feature, nothing to test yet; its row stays and the group appears when the
+feature does. `concurrency` has a group for what the compiler knows of it,
+atomic values (the `AtomicValue` marker's rules); the thread and sync packages
+are library code, tested by their own `tests/` folders. `meta` is different: the `#` meta-language of `refmeta.html` is
 unimplemented down to the token, and the only metaprogramming that *is*
 implemented — `macro`, and all of `ir/meta/` — belongs to `generic` by the row
 above, which the manual agrees with by nesting `refmacro.html` under

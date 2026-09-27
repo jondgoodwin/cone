@@ -1,0 +1,84 @@
+// An 'imm' global holding an atomic value changes, through its atomic parts
+// only [Jon 26 Sep], so it is never a constant: a constant is placed in
+// read-only memory, where an atomic add faults, and every read of one may be
+// folded to its initial value. Each global below is initialized with a
+// literal, which would make it a constant, and holds an atomic value
+// somewhere: in a field, in a field of a field, in an array's elements. Each
+// is changed atomically and read back, and the output is the assertion that
+// the change was made and was seen. Beside them, globals of the same shapes
+// holding no atomic value, which stay constants (cases.toml pins which is
+// which in the symbols). A global may be initialized only with a literal, and
+// neither a tuple nor an enum's variant is one yet, so the mark's spreading
+// through those is pinned by the refusal of a const
+// (concurrency_typecheck_const).
+//
+// Flag is the program's own atomic value, with a public field so that a
+// literal can fill it; sync's Atomic[T] keeps its field private, so a global
+// holding one is assigned in 'init' (stats, below), which no constant is.
+
+mod concurrency_atomic_global;
+
+import stdio use *;
+import sync use *;
+
+struct Flag is AtomicValue {
+  pub v u32;
+  pub fn bump(self &opaq) u32 {mem.atomicAdd[u32](self as *u32, 1u32, MemOrder.SeqCst[]);}
+  pub fn get(self &opaq) u32 {mem.atomicLoad[u32](self as *u32, MemOrder.SeqCst[]);}
+}
+
+struct Holder {
+  pub name u32;
+  pub flag Flag;
+}
+
+struct Deep {
+  pub h Holder;
+}
+
+struct Stats {
+  pub name u32;
+  pub hits Atomic[u64];
+}
+
+struct Point {
+  pub x u32;
+  pub y u32;
+}
+
+imm held = Holder[7u32, Flag[5u32]];
+imm deep = Deep[Holder[1u32, Flag[40u32]]];
+imm flags = [Flag[10u32], Flag[20u32]];
+imm stats Stats;
+
+// No atomic value in either of these: each stays a constant
+imm point = Point[1u32, 2u32];
+imm points = [Point[3u32, 4u32], Point[5u32, 6u32]];
+
+fn @initpure init() {
+  stats = Stats[9u32, Atomic[u64].of(100u64)];
+}
+
+fn show(label &[]u8, n u32) {
+  printStr(label);
+  printStr(" ");
+  printInt(i64[n]);
+  printStr("\n");
+}
+
+fn main() {
+  initAll();
+  held.flag.bump();
+  show("held", held.flag.get());
+  show("held name", held.name);
+  deep.h.flag.bump();
+  deep.h.flag.bump();
+  show("deep", deep.h.flag.get());
+  flags[1].bump();
+  show("flags[0]", flags[0].get());
+  show("flags[1]", flags[1].get());
+  stats.hits.add(5u64);
+  show("stats", u32[stats.hits.load()]);
+  show("point", point.x + point.y);
+  show("points", points[1].x);
+}

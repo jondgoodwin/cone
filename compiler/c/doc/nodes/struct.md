@@ -821,7 +821,9 @@ members", is the mechanism.
    list. And every abstraction past the first must require no fields at all
    (`ErrorIsaMulti`), since only one can hold position zero. An enum base is exempt
    both ways: it splices its fields in, so a variant declares none of them.
-6. `final` forces `MoveType`, and so does a declared `is Move`, which marked the
+   Then a type declaring `AtomicValue` is held to its shape
+   (`structAtomicValueCheck`, "AtomicValue" below).
+6. `final` forces `MoveType`, and so does a declared `is Move` or `AtomicValue`, which marked the
    type at name resolution and is counted again here so that it reaches as far as
    an inferred move does. `clone` does not clear it: no copy calls
    `clone`, so a copy is bitwise, and a copyable type holding a finalizer or an
@@ -907,6 +909,8 @@ Steps 9 to 11 are `structCheckMembers`, run from the members queue:
 
 9. Type check every member in `nodelist` — methods, static functions, statics —
    under a walk state of this type's own, then each overload set it declares.
+   An atomic value its layout refused has no member checked ("AtomicValue",
+   below).
 10. **Verify the traits' method requirements** (`structCheckTraitReqs`), now
    that every signature has its types: for each method of each trait in
    `traits`, the type's binding for the name must have the one candidate of the
@@ -971,6 +975,31 @@ it ([flow](../phases/flow.md), "Calls"):
   Nothing reads it yet: it marks the containers a check to come will refuse an
   element borrow of through a shared path, Jon's 2018 rule, which waits on
   `uni` reborrowing.
+
+### AtomicValue
+
+`AtomicValue` is the built-in marker of a value changed only by atomic
+operations, even through `imm` [Jon 26 Sep]; sync's `Atomic[T]` declares it,
+and the compiler knows nothing else of that type. What it brings:
+
+- **Its shape** (`structAtomicValueCheck`, at layout beside
+  `structCheckIsaFields`): a struct of exactly one field, which some atomic
+  operation acts on — an integer of 8 to 64 bits, `Bool` or a raw pointer
+  (`intrinsicIsAtomicType`, the widest of the atomic intrinsics' classes).
+  Anything else declaring it is `ErrorAtomicValueShape` (a trait, an enum, a
+  variant, no field or several) or `ErrorAtomicValueType` (the field). A
+  generic's instance is reported at the outermost place the program named it
+  (`Atomic[f64]` in the program, not the field in sync), and a refused
+  instance's methods are not type checked (step 9), since each would refuse
+  the same type again in terms of its body. Which operations a type offers is
+  its own affair: `Atomic[T]` takes an integer only, for now, by calling
+  `atomicAdd`, which refuses a `Bool` or a pointer at the instance
+  ([Intrinsic](intrinsic.md)).
+- **It moves**, as `Move` does, marked at the end of name resolution and at
+  layout; `is Copy` beside it is `ErrorCopyMove` (step 11).
+- **It spreads outward** (`itypeHoldsAtomic`, below): a global whose type holds
+  one is never an LLVM constant ([Generation](../phases/generation.md)), and a
+  `const` whose type holds one is `ErrorAtomicValueConst`.
 
 ## Name folding
 
@@ -1516,7 +1545,11 @@ asked afresh at every variable it cost flow 10–20%. Whether a value of the typ
 holds a traced reference inline (`itypeHoldsTraced`: its fields, an enum's
 variants, stopping at every reference but a traced one) is remembered the same
 way, in `holdstraced`, since the type record, the trace, and the placement
-rules of traced references all ask it ([What a region is](module.md)).
+rules of traced references all ask it ([What a region is](module.md)). Whether
+it holds an atomic value inline (`itypeHoldsAtomic`: a struct declaring
+`AtomicValue`, or its fields and an enum's variants, stopping at every
+reference and pointer) is remembered in `holdsatomic` by the same walk
+(`itypeStructHolds`), asked of every global and every `const`.
 
 ## Generation
 
