@@ -250,8 +250,11 @@ Fields and constants have no flow participation at all.
   [literals](literals.md)). A type's static never comes this way: it is in the type's
   `nodelist`, which `genlGlobalSyms` and `genlGlobalImpl` walk as they do for
   a method, so it is named and initialized with the module's globals.
-- **`genlParmVar`** — alloca **and store** `LLVMGetParam(fn, index)`, for every
-  parameter unconditionally. A parameter arrives as an SSA value but Cone lets
+- **`genlParmVar`** — alloca **and store** the parameter's value, for every
+  parameter unconditionally: `LLVMGetParam(fn, index)`, or for a C-named
+  function the struct its C ABI passed as an integer or through a pointer
+  (`genlFnDclParm`, [generation](../phases/generation.md), "C-named functions
+  and the C ABI"). A parameter arrives as an SSA value but Cone lets
   you assign to it and borrow from it, so it needs storage. `genlAlloca` hoists
   it to the entry block for mem2reg to undo.
 - **`genlGloVarName`** then **`genlGloVar`** — `LLVMAddGlobal` under the symbol

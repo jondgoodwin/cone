@@ -1,0 +1,49 @@
+// The shape a C-named function's struct values take for Win64, whatever the
+// host: the LLVM signatures clang gives the same C declarations for
+// x86_64-pc-windows-msvc. A struct of 1, 2, 4 or 8 bytes is one integer of its
+// size, floats and all; any other is a pointer to a copy the caller made; a
+// return of any other size comes back through a hidden 'sret' pointer, the
+// first parameter. Only a struct is lowered: a slice keeps Cone's pointer and
+// length, and a plain Cone function keeps Cone's own convention.
+mod module_c_byvalue_shape;
+
+struct Rgb { pub r u8; pub g u8; pub b u8; }         // 3 bytes
+struct Ext2 { pub a i32; pub b i32; }                // 8 bytes
+struct Vec2 { pub x f32; pub y f32; }                // 8 bytes, floats
+struct Vec4 { pub x f32; pub y f32; pub z f32; pub w f32; }  // 16 bytes
+
+extern {
+  fn @c ext_sum(e Ext2) i32;
+  fn @c vec2_len(v Vec2) f32;
+  fn @c v4_sum(v Vec4) f32;
+  fn @c rgb_code(c Rgb) i32;
+  fn @c mixed(k i32, e Ext2, s f64, v Vec4, last i8) i64;
+  fn @c ext_make(n i32) Ext2;
+  fn @c v4_make(f f32) Vec4;
+  fn @c text(s &[]u8, e Ext2);
+}
+
+pub fn @c cone_v4(v Vec4, k f32) Vec4 {
+  Vec4[v.x * k, v.y * k, v.z * k, v.w * k];
+}
+pub fn @c cone_ext(e Ext2) Ext2 {
+  Ext2[e.b, e.a];
+}
+
+// Not C-named: Cone's own convention, untouched
+fn plain(e Ext2) Ext2 {
+  Ext2[e.a + 1, e.b];
+}
+
+fn main() {
+  imm e = Ext2[3, 4];
+  imm v = Vec4[1., 2., 3., 4.];
+  imm a = ext_sum(e) + rgb_code(Rgb[1, 2, 3]);
+  imm f = v4_sum(v) + vec2_len(Vec2[1., 2.]);
+  imm m = mixed(1, e, 2., v, 3);
+  imm r = ext_make(a);
+  imm w = v4_make(f);
+  text("hi", plain(r));
+  imm c = cone_v4(w, 2.);
+  imm x = cone_ext(r);
+}
