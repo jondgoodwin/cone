@@ -124,6 +124,10 @@ int iexpCoerce(INode **from, INode *totype) {
     // Are types equivalent, or is 'to' a subtype of fromtypedcl?
     switch (iexpMatches(from, totypedcl, Coercion)) {
     case NoMatch:
+        // An array literal is typed from its elements, so it may still reach
+        // the wanted array type by coercing each element to its element type
+        if ((*from)->tag == ArrayLitTag)
+            return arrayLitCoerce((ArrayNode*)*from, totypedcl);
         return 0;
     case EqMatch:
         return 1;

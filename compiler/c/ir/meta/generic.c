@@ -85,6 +85,8 @@ int genericInferStructParms(TypeCheckState *pstate, Nodes *genparms, StructNode 
 // same kind, the type parameter taking what that argument points at, so
 // 'p *T' given a '*Fin' infers Fin; an array slice parameter also matches
 // the fixed-size array, or reference to one, that a call converts to a slice;
+// a function signature, 'f &fn(a A) R', matches the referenced function's,
+// each parameter type and then the return type, so '&triangle' infers both;
 // and 'List[T]' matches an instance of List, type argument by type argument.
 // In a template a type parameter is not yet
 // a type, so '*T' is held as a dereference, '&T' or '&[]T' as a borrow, and
@@ -95,6 +97,10 @@ int genericInferStructParms(TypeCheckState *pstate, Nodes *genparms, StructNode 
 // Returns 0 only when a type parameter is given two different types.
 static int genericInferType(FnCallNode *inferredgencall, Nodes *genparms, INode *parmtype, INode *argtype) {
     if (parmtype == NULL || argtype == NULL)
+        return 1;
+    // A reference to a generic function not instantiated, '&half', has a
+    // signature naming half's own type parameters, which are not types
+    if (nameUseNames(argtype, GenVarDclTag))
         return 1;
     if (nameUseNames(parmtype, GenVarDclTag))
         return genericCaptureType(inferredgencall, genparms, parmtype, argtype);
@@ -129,6 +135,26 @@ static int genericInferType(FnCallNode *inferredgencall, Nodes *genparms, INode 
         else
             return 1;
         return genericInferType(inferredgencall, genparms, ((RefNode *)parmtype)->vtexp, elemtype);
+    }
+    case FnSigTag: {
+        // A function signature, reached through a function reference, matches
+        // the signature of the function the argument references, parameter by
+        // parameter, then the return type
+        if (argtype->tag != FnSigTag)
+            return 1;
+        FnSigNode *parmsig = (FnSigNode *)parmtype;
+        FnSigNode *argsig = (FnSigNode *)argtype;
+        if (parmsig->parms->used != argsig->parms->used)
+            return 1;
+        INode **argparmp = &nodesGet(argsig->parms, 0);
+        INode **parmp;
+        uint32_t cnt;
+        for (nodesFor(parmsig->parms, cnt, parmp)) {
+            if (genericInferType(inferredgencall, genparms,
+                ((VarDclNode *)*parmp)->vtype, ((VarDclNode *)*argparmp++)->vtype) == 0)
+                return 0;
+        }
+        return genericInferType(inferredgencall, genparms, parmsig->rettype, argsig->rettype);
     }
     case FnCallTag: {
         // An instance of a generic type, 'List[T]', matches an argument that is an

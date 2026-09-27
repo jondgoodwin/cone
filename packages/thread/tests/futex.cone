@@ -58,7 +58,7 @@ fn parkAfterGo(go *u32) u32 {
 fn main() i32 {
   // One waiter, woken
   mut word = 0u32;
-  imm w = thread.start[*u32, u32](&mut word as *u32, &waitChange);
+  imm w = thread.start(&mut word as *u32, &waitChange);
   thread.sleep(20000000u64);
   mem.atomicStore[u32](&mut word as *u32, 5u32, MemOrder.SeqCst[]);
   thread.futexWake(&mut word as *u32);
@@ -68,9 +68,9 @@ fn main() i32 {
   mut shared = 0u32;
   mut ready = 0u32;
   imm waiter = Waiter[&mut shared as *u32, &mut ready as *u32];
-  imm a = thread.start[Waiter, u32](waiter, &countedWait);
-  imm b = thread.start[Waiter, u32](waiter, &countedWait);
-  imm c = thread.start[Waiter, u32](waiter, &countedWait);
+  imm a = thread.start(waiter, &countedWait);
+  imm b = thread.start(waiter, &countedWait);
+  imm c = thread.start(waiter, &countedWait);
   while load(&mut ready as *u32) < 3u32 { thread.sleep(1000000u64); }
   thread.sleep(10000000u64);
   mem.atomicStore[u32](&mut shared as *u32, 9u32, MemOrder.SeqCst[]);
@@ -85,7 +85,7 @@ fn main() i32 {
   expect(!thread.futexWait(&mut other as *u32, 3u32, 5000000u64), "a timed-out wait returns false");
 
   // park, then unpark from main
-  imm p = thread.start[i64, i64](41, &parkThenAnswer);
+  imm p = thread.start(41i64,&parkThenAnswer);
   thread.sleep(20000000u64);
   p.unpark();
   expectInt(p.join(), 42, "a parked thread returned after unpark");
@@ -98,14 +98,14 @@ fn main() i32 {
 
   // ... and on a thread unparked before it parks
   mut go = 0u32;
-  imm late = thread.start[*u32, u32](&mut go as *u32, &parkAfterGo);
+  imm late = thread.start(&mut go as *u32, &parkAfterGo);
   late.unpark();
   mem.atomicStore[u32](&mut go as *u32, 1u32, MemOrder.SeqCst[]);
   thread.futexWake(&mut go as *u32);
   expectUInt(u64[late.join()], 1u64, "a thread unparked before it parked did not sleep");
 
   // A thread unparks main, through the ThreadRef main handed it
-  imm back = thread.start[thread.ThreadRef, u32](thread.current(), &unparkBack);
+  imm back = thread.start(thread.current(), &unparkBack);
   thread.park();
   expectUInt(u64[back.join()], u64[me.id()], "a thread unparked main through its ThreadRef");
   done();

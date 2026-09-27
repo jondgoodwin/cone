@@ -389,8 +389,14 @@ void slitTypeCheck(TypeCheckState *pstate, SLitNode *node) {
     node->vtype = (INode*)newArrayNodeTyped((INode*)node, node->strlen, (INode*)u8Type);
 }
 
+// A borrow of a string literal is a constant too: the text is a constant
+// global, so its reference -- or, as a slice, its address and length -- is known
+// before anything runs. That is the auto-borrow a string literal gets when a
+// '&[]u8' wants it, as well as a written '&[]"text"' or '&"text"'.
 int litIsLiteral(INode* node) {
     return (node->tag == FLitTag || node->tag == ULitTag || node->tag == StringLitTag || node->tag == NilLitTag
+        || ((node->tag == BorrowTag || node->tag == ArrayBorrowTag)
+            && ((RefNode*)node)->vtexp->tag == StringLitTag)
         || (node->tag == ArrayLitTag && arrayLitIsLiteral((ArrayNode*)node))
         || (node->tag == TypeLitTag && typeLitIsLiteral((FnCallNode*)node))
         || nameUseNames(node, ConstDclTag)

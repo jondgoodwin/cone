@@ -3,8 +3,11 @@
 // writes a type argument. Each parameter type is matched against its
 // argument's type: a pointer, a reference or a slice to T takes T from what
 // the argument points at, and an owning reference, '+rc-mut T', is a reference; a generic type's instance takes each of its type
-// arguments from the argument's instance of the same generic; and a variant
-// passed for its enum is taken as its enum's instance.
+// arguments from the argument's instance of the same generic; a function
+// reference's signature, '&fn(a A) R', takes each type from the signature of
+// the function the argument references, parameter by parameter and then the
+// return type; and a variant passed for its enum is taken as its enum's
+// instance.
 //
 // The intrinsics are the reason this was built: 'mem.finalize(p)' with 'p' a
 // '*Fin' had to be written 'mem.finalize[Fin](p)'. They are called here as a
@@ -47,6 +50,8 @@ fn first[T](s &[]T) T { s[0]; }
 fn peekOwned[T](r &+rc-mut T) T { **r; }
 fn takeOwned[T](r +rc-mut T) T { *r; }
 fn firstOwned[T](s &+[]so T) T { (*s)[0]; }
+fn apply[A, R](arg A, f &fn(a A) R) R { f(arg); }
+fn twice[T](v T, f &fn(a T) T) T { f(f(v)); }
 fn unbox[T](b Box[T]) T { b.v; }
 fn unboxRef[T](b &Box[T]) T { b.v; }
 fn second[A, B](p &Pair[A, B]) B { p.b; }
@@ -113,6 +118,28 @@ fn instances() {
   show("reference-inside-instance", inner(Box[&i64][&y]));
 }
 
+fn triangle(n i32) i32 { n * (n + 1) / 2; }
+fn widen(n i32) i64 { i64[n] * 1000; }
+fn half[T](v T) T { v / 2; }
+fn doNothing(n i32) { }
+
+// Every call below was 'could not infer': a function reference's signature
+// was a shape the match did not descend through
+fn functionReferences() {
+  // A is i32 from 100 and from triangle's parameter, R i32 from its return
+  show("function-reference", i64[apply(100, &triangle)]);
+  // A and R differ, each from its own place in the signature
+  show("function-reference-two-types", apply(7, &widen));
+  // T from the value, and from both the parameter and return of the signature
+  show("function-reference-one-type", i64[twice(3, &triangle)]);
+  // A reference to a generic function's instance, and one held in a local
+  show("instance-reference", apply(9i64, &half[i64]));
+  imm fr = &triangle;
+  show("reference-in-a-local", i64[apply(4, fr)]);
+  // R is void, from a function returning nothing
+  apply(5, &doNothing);
+}
+
 fn variants() {
   // Some[6i64] is passed where Option[T] is expected: T is i64
   show("variant-for-its-enum", orZero(Some[6i64], 0i64));
@@ -146,6 +173,7 @@ fn main() {
   slices();
   owning();
   instances();
+  functionReferences();
   variants();
   intrinsics();
 }
