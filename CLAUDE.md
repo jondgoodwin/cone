@@ -83,7 +83,8 @@ Visual Studio projects stay at the root.
   cube and cube-cage generators, and `.obj` export; `sculpt` is procedural
   modelling over `mesh`: 2-D profiles (polygons, rounded rectangles, hulls,
   sampled Beziers), 3-D paths with rotation-minimizing frames, `extrude`,
-  `lathe` and `sweep` (twist and taper) into a `PolyMesh` of quads with
+  `lathe` and `sweep` (twist and taper; `sweepScaled`, the scale any
+  function of arc length) into a `PolyMesh` of quads with
   corner uvs, the deformers `bend`, `twist`, `taper` and `curveDeform`,
   and Catmull-Clark `subdivide` (boundary rules, semi-sharp creases,
   face-varying uvs) with `subdivisionLevels`, a cage's level-of-detail
@@ -97,17 +98,23 @@ Visual Studio projects stay at the root.
   functions for shaders in `src/noise.slang`, bit for bit the same on the
   GPU but for square roots and Phacelle, which its `parity` test checks on
   a real GPU; its README holds the determinism rules;
-  `sdf` is signed distance fields over `geomath`, `noise` and `sculpt`,
-  shapes as functions of a point: primitives, hard and smooth operators
+  `sdf` is signed distance fields over `geomath`, `noise`, `sculpt` and
+  `mesh`, shapes as functions of a point: primitives, hard and smooth operators
   (Quilez's), domain operators (translation, rotation, scale, mirrors,
   repetition, elongation), hg_sdf's fillets, repetition along a curve (an
   `Arc`, or a `sculpt.Path` as a `PathCurve`) in its rotation-minimizing
   frames as the exact union of every copy, `Horn` (the ribbed, tapering,
   curling horn), the gradient and normal, and noise detail; the same
   functions for shaders in `src/sdf.slang`, which its `parity` test checks
-  on a real GPU; its README holds what is exact, what is a bound, and what
-  was measured; its example, `hornmarch.cone`, sphere-traces the horn in
-  render's chitin under the dusk;
+  on a real GPU; and meshing on the CPU (`mesher.cone`): `surfaceNet`,
+  surface nets with a vertex per piece of surface in a cell (a manifold,
+  closed mesh), gradient normals and blocks far from the surface skipped,
+  into a `mesh.Mesh` or `PolyMesh`, `netLevels` (levels of detail) and
+  `meshHash` (a mesh's bits hashed, the same on every run and build); its
+  README holds what is exact, what is a bound, and what was measured; its
+  examples: `hornmarch.cone` sphere-traces the horn in render's chitin
+  under the dusk, and `hornmesh.cone` meshes it at four levels into
+  render's `LodChain` and draws the mesh the same way;
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed
