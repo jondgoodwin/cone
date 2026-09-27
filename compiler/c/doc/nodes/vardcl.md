@@ -96,7 +96,7 @@ owes both halves, the mark clearing above included; `const.c` carries that note.
 
 | Site | Flags | Stamps |
 | --- | --- | --- |
-| global (`parseFnOrVar`) | impl/sig, or sig alone for an `extern` | `VarInitialized`, then `modAddNode`, which records the module as owner and writes the declaration facts. `scope` stays 0. A `static` global carries `FlagStatic` and is otherwise the same: one copy per instantiation of the module, which is one copy today |
+| global (`parseFnOrVar`) | impl/sig, or sig alone for an `extern`; `ParseMayThreadLocal` | `VarInitialized`, then `modAddNode`, which records the module as owner and writes the declaration facts. `scope` stays 0. A `static` global carries `FlagStatic` and is otherwise the same: one copy per instantiation of the module, which is one copy today. `@threadlocal` after the permission stamps `DclThreadLocal`, which joining keeps; every other site refuses the attribute (`parseThreadLocalAttr`) |
 | local (`parseExprBlock`) | sig/impl | nothing — scope comes from name resolution |
 | static local (`parseExprBlock`, after `static`) | sig/impl | `FlagStatic`, `VarInitialized`. One copy shared by every call of the function; the function becomes its owner in type check, and its storage is a global |
 | type static (`parseStruct`, after `static`) | sig/impl | `FlagStatic`, then `iNsTypeAddStatic`, which records the type as owner, marks it initialized and binds it in the type's namespace beside the fields and methods. Not a field: no slot, no `index`, no receiver. Reached as `Type.name` from outside and by bare name from the type's own functions |
@@ -248,7 +248,8 @@ Fields and constants have no flow participation at all.
   you assign to it and borrow from it, so it needs storage. `genlAlloca` hoists
   it to the entry block for mem2reg to undo.
 - **`genlGloVarName`** then **`genlGloVar`** — `LLVMAddGlobal` under the symbol
-  `nameSymbol` spells, marked constant for `imm`, with `genlLinkage` making it
+  `nameSymbol` spells, marked constant for `imm`, `thread_local` for
+  `DclThreadLocal` (and then never constant), with `genlLinkage` making it
   internal when this object defines it (one byte longer, for a NUL, when the
   initializer is a string literal); then a null, string, or
   constant-expression initializer.

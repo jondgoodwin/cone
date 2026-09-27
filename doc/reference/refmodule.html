@@ -46,7 +46,8 @@
 		<a href="#dyninit">initializer and finalizer</a>, and every global
 		without an initial value must be assigned by its initializer; a program
 		runs every module's by calling <span class="pre">initAll()</span> and
-		<span class="pre">finalAll()</span>. The purity rules of
+		<span class="pre">finalAll()</span>. A global may be
+		<a href="#threadlocal">thread-local</a>, one copy per thread. The purity rules of
 		<span class="pre">initpure</span> are not checked. The
 		framework traits a program plugs into, and the entry they would supply,
 		which would call those two itself, are not implemented.</i></p>
@@ -849,6 +850,41 @@ mut config Config = Config[80i64, 24i64] use *;
 		address known when the program is compiled. See
 		<a href="refinherit.html#globals">Folding through a global</a> for the whole of the clause,
 		including what <span class="pre">pub use</span> lets another module see.</p>
+
+	<h3 id="threadlocal">Thread-local global variables</h3>
+	<p>A global variable written with <span class="pre">@threadlocal</span> after its permission is
+		<b>one copy per thread</b>: every thread that runs has its own, and a thread's code reads
+		and writes only its own.</p>
+<pre>
+mut @threadlocal depth i64 = 0i64;
+
+fn enter() {
+  depth = depth + 1i64;   // this thread's depth, whatever the others' are
+}
+</pre>
+	<p>Each thread's copy starts from the initial value written on the declaration, which is
+		why a thread-local global is constrained more than other globals:</p>
+	<ul>
+		<li><b>It must be written with an initial value</b>, a literal as every global's is. It
+			cannot be left for the <a href="#dyninit">module's initializer</a> to assign, since that
+			runs on one thread and would give a value to that thread's copy alone.</li>
+		<li><b>It must be <span class="pre">mut</span>.</b> A copy per thread of a value no thread
+			can change would be the same value in every copy.</li>
+		<li><b>Its type may not need finalizing</b>: not a struct with a
+			<a href="refinitdrop.html">finalizer</a>, nor anything holding one, nor an owning
+			reference whose region has work to do when it is dropped. Nothing finalizes a thread's
+			copy yet when its thread ends.</li>
+		<li><b>Only a global declared in a module may be thread-local</b>: not a local, a
+			function's or a type's static, a parameter, a field, or a module trait's global.</li>
+	</ul>
+	<p>A thread-local global is declared <span class="pre">extern</span> like any other, with
+		<span class="pre">@threadlocal</span> kept and no value, and a library's
+		<a href="refinclude.html">include file</a> declares its thread-local globals that way.
+		Every declaration of it must say <span class="pre">@threadlocal</span>, because a compiled
+		object reaches a thread's copy by a different route than it reaches ordinary storage. The
+		compiler checks this only among the declarations of one compile.</p>
+	<p><i>Implemented. Nothing in the language starts a thread yet; a program that starts one
+		through the operating system sees each thread's copy as described.</i></p>
 
 	<h3 id="useenum">Folding an enum's variants in</h3>
 	<p>An enum's variants are names of the enum, reached as <span class="pre">Colors.Red</span>. A

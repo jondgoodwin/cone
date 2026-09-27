@@ -551,7 +551,7 @@ Every node that declares a symbol carries a `DclInfo` by value — `FnDclNode`,
 `VarDclNode` (a global), `StructNode` and `ModuleNode` — and `inodeGetDclInfo`
 is the one switch that knows which kinds those are. It holds the **owner**, a
 pointer to the enclosing module or type node — the chain is walked, never
-stored as a string — eight bits, and `cname`, the string a `@c("...")` stated:
+stored as a string — the fact bits below, and `cname`, the string a `@c("...")` stated:
 on a module the prefix its C names carry, on a function its whole symbol.
 
 | Bit | Meaning | Written from |
@@ -566,6 +566,7 @@ on a module the prefix its C names carry, on a function its whole symbol.
 | `DclLifecycle` | function only: a module's `init`, its `final`, or the `drop` it is given — what the program's stitched init and final call | type check (`modLifecycle`); read only by a library compile, which exports it whatever its visibility |
 | `DclIncluded` | type only: declared by the package's generated include file, so an importer holds values of it — through a field or a signature — whether or not it can name it | the include-file generator (`incFileGenerate`), before code generation; read only by a library compile, which exports the type's functions as it would a public type's (L5) |
 | `DclIntrinsic` | function only: `@intrinsic`, one whose meaning the compiler's registry supplies; it never has a symbol, and the include file keeps it whole | the parser, from `fn @intrinsic`; kept when the declaration joins its owner; checked by name resolution (`intrinsicDclNameRes`) |
+| `DclThreadLocal` | global only: `@threadlocal`, storage each thread has its own copy of; its symbol is LLVM `thread_local`, on every declaration as on the definition, and never a constant | the parser, from `mut @threadlocal` on a module's global, which it refuses anywhere else; kept when the declaration joins its owner; the include file's `extern` declaration keeps the attribute as written |
 
 **Owner is set where a declaration joins a namespace**: `modAddNode` for a
 module's declarations and `iNsTypeAddFn` for a type's methods. That placement

@@ -334,6 +334,12 @@ enum ErrorCode {
     // The built-in traits 'Move' and 'Copy'
     ErrorCopyMove = 1167,       // 'is Copy' on a type that moves: it declares 'Move' too, or has a 'final', a field that moves, or a base that moves
 
+    // '@threadlocal' globals
+    ErrorThreadLocalPlace = 1179, // '@threadlocal' anywhere but after a module global's permission: on a local, a static, a parameter, a field, a module trait's global, a function or a type, or before the permission
+    ErrorThreadLocalImm = 1180, // '@threadlocal' on an 'imm' global: a copy per thread of a value no thread can change is the same as one copy
+    ErrorThreadLocalInit = 1181, // A '@threadlocal' global, not 'extern', with no initial value: every thread's copy starts from it, and a module's 'init' runs on one thread
+    ErrorThreadLocalFinal = 1182, // A '@threadlocal' global whose type needs finalizing: nothing yet runs a finalizer as a thread ends
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

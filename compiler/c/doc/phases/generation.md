@@ -90,11 +90,23 @@ that will call them is unbuilt. [module](../nodes/module.md), "Init and final".
 
 **An `imm` global is an LLVM constant only where this object gives it its value
 and nothing writes it** (`genlGloVarIsConstant`): it has an initial value, is
-not `extern`, and its type has no drop function. A global without a value is
-assigned by its module's `init` at run time, an `extern` one's value is another
-object's and may be assigned by that package's `init`, and a finalizing one is
-handed to its `final` as `&uni` by its module's `drop`. A constant's loads may
-be assumed never to change, and its storage may be read-only.
+not `extern`, not thread-local, and its type has no drop function. A global
+without a value is assigned by its module's `init` at run time, an `extern`
+one's value is another object's and may be assigned by that package's `init`,
+and a finalizing one is handed to its `final` as `&uni` by its module's `drop`.
+A constant's loads may be assumed never to change, and its storage may be
+read-only.
+
+**A `@threadlocal` global is LLVM `thread_local`** (`DclThreadLocal`, set in
+`genlGloVarName` on the definition and on every declaration alike, since each
+object reaches it through its own thread-local access sequence). The model is
+general-dynamic, LLVM's default: right whether the global ends up in a program
+or a shared library, relaxed by an ELF linker building an executable, and
+ignored on Windows, whose one access sequence goes through the TEB and
+`_tls_index`. Uses reach the global directly rather than through
+`llvm.threadlocal.address`, which LLVM reads as the current thread's copy. It
+is never a constant: the parser refuses one `imm`, and `genlGloVarIsConstant`
+excludes it besides.
 
 Both recurse into a type's method list, into a generic's
 `genericinfo->memonodes`, and into an enum extension's copies of its base's
@@ -151,7 +163,7 @@ every declaration given a global so far, and one of them gives way:
 | neither C-named | `errorUnreachable`: two of Cone's own spellings meeting is a compiler defect. Nothing in the suite or Congo's tests reaches it: a candidate reached twice, an instance named by the symbol pass and again by `genlImportedInstances`, a method a vtable declared while its signature was typed, a module's `init` the stitch names — each finds its `llvmvar` set and returns before adding anything |
 | the newcomer is local (internal or private) | it keeps the name LLVM gave it: nothing links against a local symbol's name. A private C-named definition beside an `extern` declaration of the same C name stays its module's own, and the declaration still reaches the C function |
 | the holder is local | it gives the name up, taking a suffix (and a COMDAT renamed to match), and the newcomer takes it |
-| both external, and they disagree — a function's LLVM function type or `DclSystemCC`, a global's LLVM value type or permission, or a function and a global | `ErrorCNameConflict`, at the newcomer, naming the holder's file and line |
+| both external, and they disagree — a function's LLVM function type or `DclSystemCC`, a global's LLVM value type, permission or `DclThreadLocal`, or a function and a global | `ErrorCNameConflict`, at the newcomer, naming the holder's file and line |
 | both external, both defined here | `ErrorCNameDefTwice` |
 | the newcomer only declares it | it shares the holder's global, and its own is deleted |
 | the newcomer defines it, the holder only declares it | the definition takes over: every use of the declaration and every node pointing at it is moved to the definition's global, the declaration is deleted, and the definition takes the name. So the linkage, calling convention, storage class and debug subprogram are the definition's whichever is generated first, and `genlFn` or `genlGloVar` attaches the body or the value to that one global |
