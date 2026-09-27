@@ -23,6 +23,9 @@ void borrowAuto(INode **from, INode *totypedcl);
 // Note: totype has already done GetTypeDcl
 int borrowAutoMatches(INode *from, RefNode *totype);
 
+// Retype a borrowed constant array literal to the reference type it is wanted as
+int borrowConstLitCoerce(INode *from, INode *totypedcl);
+
 void borrowPrint(RefNode *node);
 
 // Type check borrow node

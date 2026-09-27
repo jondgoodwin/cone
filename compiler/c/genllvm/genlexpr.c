@@ -1362,13 +1362,33 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         LLVMSetInitializer(sglobal, strconst);
         return LLVMConstBitCast(sglobal, LLVMPointerType(genlType(gen, strnode->vtype), 0));
     }
+    case ArrayLitTag:
+    {
+        // An array literal whose every element is a constant is a constant array,
+        // and its address is that of a constant global holding it, as a string
+        // literal's is. borrowTypeCheck borrows it as a global constant on that
+        // understanding. A constant one indexed at run time ('[1, 2, 5][n]') reads
+        // from the same global. One with a computed element cannot be borrowed, so
+        // it arrives only to be indexed, and is stored in an unnamed local for that.
+        LLVMValueRef arrval = genlExpr(gen, lval);
+        if (LLVMIsConstant(arrval)) {
+            LLVMValueRef aglobal = LLVMAddGlobal(gen->module, LLVMTypeOf(arrval), "arraylit");
+            LLVMSetLinkage(aglobal, LLVMInternalLinkage);
+            LLVMSetGlobalConstant(aglobal, 1);
+            genlComdat(gen, aglobal);
+            LLVMSetInitializer(aglobal, arrval);
+            return aglobal;
+        }
+        LLVMValueRef temparray = genlAlloca(gen, LLVMTypeOf(arrval), "temparray");
+        LLVMBuildStore(gen->builder, arrval, temparray);
+        return temparray;
+    }
     default: {
         INode *type = iexpGetTypeDcl(lval);
         if (type->tag == ArrayTag || type->tag == StructTag || type->tag == TTupleTag) {
-            // LLVM provides no useful way to get the address of an array not stored in memory
-            // For example, a literal array or an array returned by a function
+            // LLVM provides no useful way to get the address of an array not stored in memory,
+            // such as an array returned by a function (an array literal is handled above)
             // So we hack it by storing in an unnamed local variable and return that address
-            // This is particularly necessary when doing an array index ([1,2,5][n])  (LLVM fail at this too)
             // A struct or tuple returned by a call arrives here when an array
             // field of it is indexed (make().m[1]): the index needs the array's
             // address, and the field's address needs its container's.

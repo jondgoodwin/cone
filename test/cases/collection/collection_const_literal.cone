@@ -1,0 +1,78 @@
+// A borrowed array literal whose elements are all constants is a constant, as
+// a borrowed string literal is: '&[1, 2, 3]' beside '&"Padma"' --
+// doc/reference/refarrayref.html, "Slices". Generation places the array in a
+// constant global, so the borrow points there and lives as long as the program:
+// a function may return one, and a global may be initialized with one.
+//
+// Each printed value was checked by hand against the source. '&[1, 2, 3]' is a
+// reference to the array, '&[3; i32]', as '&"Padma"' is to its text; '&[]'
+// makes the slice, and either is taken where a slice is wanted. Its untyped
+// number literals take the element type the slice wants, as an unborrowed
+// literal's take the array's. A literal with a computed element is still a
+// temporary, which collection_typecheck_constlit refuses.
+
+mod collection_const_literal;
+
+import stdio use *;
+
+// Initialized with constant borrows, as a global may be with '&"text"'
+imm table = &[10, 20, 30, 40];
+imm bytes = &[][7u8, 8u8];
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn first(s &[]u32) u32 {
+  s[0];
+}
+
+fn sum(s &[]i64) i64 {
+  mut t = 0i64;
+  each i in 0usize < s.len {
+    t = t + s[i];
+  }
+  t;
+}
+
+fn second(w &[]&[]u8) {
+  printStr(w[1]);
+  printStr("\n");
+}
+
+// The borrow is of a constant global, so it outlives the call
+fn primes() &[]i64 {
+  &[2, 3, 5, 7];
+}
+
+fn main() {
+  // The manual's own spelling, indexed through the reference to the array
+  imm nbrSlice = &[1, 2, 3];
+  show("manual", i64[nbrSlice[1]]);
+
+  // A call's argument, typed and untyped: 3, and then 4 as a u32
+  show("argument", i64[first(&[3u32])]);
+  show("argument-untyped", i64[first(&[4, 5])]);
+
+  // A declared slice type: the literal's elements are u32 and there are three
+  imm s &[]u32 = &[6, 7, 8];
+  show("declared-index", i64[s[2]]);
+  show("declared-len", i64[s.len]);
+
+  // Iterated by index: 1 + 2 + 3 + 4, and 2 + 3 + 5 + 7 from a returned slice
+  show("sum", sum(&[1, 2, 3, 4]));
+  show("returned", sum(primes()));
+
+  // The slice spelling, a fill, and a list of string slices
+  imm sl = &[][11, 12, 13];
+  show("slice-len", i64[sl.len]);
+  show("fill", i64[first(&[3; 9u32])]);
+  second(&[&[]"zero", &[]"one"]);
+
+  // The globals: 30, and the second byte, 8
+  show("global", i64[table[2]]);
+  show("global-slice", i64[bytes[1]]);
+}

@@ -179,7 +179,8 @@ parameter names**.
    only when the type is still `unknownType`**.
 5. **Literal rule.** `scope <= 1` — that is, a global or a parameter default —
    or `FlagStatic` requires `litIsLiteral(value)`. It admits literals, literal
-   array and type literals, a borrow of a string literal (so a slice of one), and
+   array and type literals, a borrow of a string literal (so a slice of one) or
+   of an array literal of constants (`imm g = &[1, 2, 3]`), and
    a use resolved to a `ConstDclTag`, which is what makes `imm g i32 = K` legal.
    A static's value is its storage's initializer, written once before anything
    runs, which is why it is held to a global's rule wherever it is declared. The
