@@ -25,10 +25,11 @@ name the source qualified. *Which* namespace it came through is not kept,
 because nothing asks.
 
 `FlagPattern` marks a pattern's bare root — `Red` in `case is Red`, `Circle` in
-`case imm c &Circle` — which is looked up in the matched value's enum before its
-lexical meaning. The parser stamps it, `nameUseNameRes` leaves such a name
-unbound instead of reporting it when nothing lexical answers, and
-`castPatternBind` binds it at type check and clears it. See [cast](cast.md).
+`case imm c &Circle`, `K` in `case K` — which is looked up in the matched value's
+enum before its lexical meaning. The parser stamps it, `nameUseNameRes` leaves
+such a name unbound instead of reporting it when nothing lexical answers, and
+`castPatternBind` (or, for a value alone, `castMatchValueTypeCheck`) binds it at
+type check and clears it. See [cast](cast.md).
 
 One tag serves three situations, told apart by `dclnode` and by where the node
 sits:

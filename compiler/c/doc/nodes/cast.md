@@ -1,5 +1,6 @@
-`CastNode` serves three syntaxes and two injected forms. All five share the
-struct; the tag and one flag tell them apart.
+`CastNode` serves three syntaxes, two injected forms, and a match's value alone
+until type check decides what it is. All six share the struct; the tag and a
+flag tell them apart.
 
 **At a glance.** Built by `parseCast` from `as` and `into`, by `parseCmp` from
 `is`, by `parsefnflow.c` for patterns, and injected by `iexpCoerce` whenever a
@@ -18,7 +19,7 @@ kind**, not by Cone tag.
 | `typ` | the target type, or the type being tested against |
 | `vtype` | `typ` for a cast; `Bool` for `is` |
 
-Five forms:
+Six forms:
 
 | Source | Tag / flag | Built by | Means |
 | --- | --- | --- | --- |
@@ -27,6 +28,7 @@ Five forms:
 | `x is T` | `IsTag` | `newIsNode` | is this the runtime type? |
 | *(injected)* | `CastTag` | `newRecastNode` from `iexpCoerce` | a `CastSubtype` coercion |
 | *(injected)* | `CastTag` + `FlagConvert` | `newConvCastNode` from `iexpCoerce` | a `ConvSubtype` coercion |
+| `case v` | `IsTag` + `FlagMatchValue` | `newMatchValueNode` | a value alone as a pattern: `is v` for a variant of the matched enum, else `== v` |
 
 **`FlagConvert` is the whole distinction between `as` and `into`**, and type
 check may clear it: a reference-to-reference conversion drops the flag on the
@@ -61,6 +63,15 @@ bare name, the referent's under `&` or `&<`, or the callee's where type argument
 are written (`castPatternName` finds it). A path, `Shape.Circle`, has no root and
 is taken as written. The mark is what tells the later phases that the name is
 looked up in the matched value's enum first.
+
+**A value alone as a pattern is an undecided `is` test.** A value alone means
+equality with the matched value, but a bare name may be a variant of the
+matched value's enum, and only type check knows that enum. So `parseMatchPattern`
+builds `newMatchValueNode`: an `is` node flagged `FlagMatchValue`, the value in
+`typ`, positioned on the value. Only a value that is a bare name is marked
+`FlagPattern`: marking the root of `&x` would keep it a reference type where it
+must become a borrow. Name resolution walks `typ` as it would any `is` test's,
+which resolves a value just as well.
 
 **The same word declares nominal conformance**, in `parseStruct`: `struct Gauge is
 Meter` asserts of a type what `p is Mobile` asks of a value. The two cannot be
@@ -110,6 +121,22 @@ test, checked first, binds it for both and the conversion finds the mark
 cleared. A clone — a generic instance's body, a default method's copy — has
 copied `typ` once per node, and then the conversion binds its own copy to the
 same answer, quietly.
+
+### `castMatchValueTypeCheck`
+
+`inodeTypeCheck` sends an `is` node flagged `FlagMatchValue` here, with the slot
+that holds it, and the flag is cleared first. A value that is a bare name
+(`FlagPattern`) is asked of the matched value's enum, through a reference, as
+`castPatternBind` asks: a variant of that name makes the node the `is` test it
+already is, and `castIsTypeCheck` binds and checks it, so `case Circle` is
+`case is Circle` in every respect, exhaustiveness and a reference matched
+included. Otherwise the mark is cleared and the name keeps its lexical meaning,
+or, having none, is `ErrorUnkName`. A value that is then a type — a bare name
+bound to one, a path such as `Shape.Circle`, `i32`, `Some[i32]` — is no value
+to compare with, `ErrorPatType`, whose message says to write `is`; `typ`
+becomes `errorType`. Anything else replaces the node in its slot with
+`matched == value`, an operator call positioned on the value, and checks that
+call, so a value alone reports exactly what `case ==value` would.
 
 ### `castTypeCheck`
 
@@ -254,7 +281,9 @@ nullable-pointer enum (compare against null), and tagged (read the
   after checking does not tell you what the author wrote.
 - **A pattern's root may be unbound until its `is` test is checked.** Anything
   that reads a pattern's `typ` before then — `ifExhaustCheck` scanning the later
-  arms — must ask `castPatternPending` first. And a pattern whose name was
+  arms — must ask `castPatternPending` first, and must skip an `is` node still
+  flagged `FlagMatchValue`, whose `typ` is a value until it is checked and may
+  never be a type. And a pattern whose name was
   bound to nothing (`castPatternBind` reported it) is never type checked, so a
   pattern written with arguments is still the unchecked call node: ask
   `isTypeNode` before unwrapping one.

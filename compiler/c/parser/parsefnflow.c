@@ -238,9 +238,14 @@ static INode *parseMatchRange(ParseState *parse, INode *matchee, INode *lower) {
 // - a comparison operator and a value, '==v', '<v', '!=v' and the rest, compares
 //   the matched value, the operator's left operand, with the value
 // - 'a .. b' or 'a ... b' is a range (parseMatchRange)
-// A value on its own is not a pattern (ErrorPatBare): read as a condition it
-// would decide the case without looking at the matched value.
-#define PatBareMsg "A value alone is not a pattern. Write '==' before it to compare the matched value with it, or 'is' before a variant or type."
+// - a value alone, '2', '"s"', 'K', means equality with the matched value; a
+//   bare name is asked of the matched value's enum first, so the test waits for
+//   type check to become '==' or 'is' (newMatchValueNode)
+// A condition, 'not b' or 'n > 3', is refused (ErrorPatBare): as a value alone it
+// would be compared with the matched value, and whether it should be is not
+// decided. It is parsed to its end, its own 'or' included, so that it is
+// reported once.
+#define PatBareMsg "A condition is not a pattern: a value alone is compared with the matched value. Write the comparison with the matched value left out, as '>3', or put the condition in an 'if' guard."
 static INode *parseMatchPattern(ParseState *parse, INode *matchee) {
     if (lexIsToken(IsToken)) {
         CastNode *isnode = newIsNode(matchee, unknownType);
@@ -256,11 +261,19 @@ static INode *parseMatchPattern(ParseState *parse, INode *matchee) {
         nodesAdd(&callnode->args, parseOr(parse));
         return (INode *)callnode;
     }
+    if (lexIsToken(NotToken)) {
+        INode *cond = parseSimpleExpr(parse);
+        errorMsgNode(cond, ErrorPatBare, PatBareMsg);
+        return cond;
+    }
     INode *value = parseOr(parse);
     if (lexIsToken(DotDotToken) || lexIsToken(EllipsisToken))
         return parseMatchRange(parse, matchee, value);
-    errorMsgNode(value, ErrorPatBare, PatBareMsg);
-    return value;
+    if (parseCmpOp() != NULL || lexIsToken(IsToken) || lexIsToken(AndToken)) {
+        errorMsgNode(value, ErrorPatBare, PatBareMsg);
+        return parseSimpleExprFrom(parse, value);
+    }
+    return (INode *)newMatchValueNode(matchee, value);
 }
 
 // Parse match expression, which is sugar translated to an 'if' block
@@ -291,31 +304,9 @@ INode *parseMatch(ParseState *parse) {
             }
 
             // Anything else is one or more patterns joined by 'or', then an
-            // optional 'if' guard. A case that begins with neither 'is' nor a
-            // comparison operator is a range pattern when '..' or '...'
-            // follows its first operand. Otherwise it begins with a value
-            // alone, which is refused; the rest of that expression, its own
-            // 'or' included, is parsed so that the error is reported once.
-            INode *cond;
-            int patterns = 1;
-            if (lexIsToken(IsToken) || parseCmpOp() != NULL)
-                cond = parseMatchPattern(parse, (INode *)expnamenode);
-            else if (lexIsToken(NotToken)) {
-                cond = parseSimpleExpr(parse);
-                errorMsgNode(cond, ErrorPatBare, PatBareMsg);
-                patterns = 0;
-            }
-            else {
-                INode *first = parseOr(parse);
-                if (lexIsToken(DotDotToken) || lexIsToken(EllipsisToken))
-                    cond = parseMatchRange(parse, (INode *)expnamenode, first);
-                else {
-                    errorMsgNode(first, ErrorPatBare, PatBareMsg);
-                    cond = parseSimpleExprFrom(parse, first);
-                    patterns = 0;
-                }
-            }
-            while (patterns && lexIsToken(OrToken)) {
+            // optional 'if' guard
+            INode *cond = parseMatchPattern(parse, (INode *)expnamenode);
+            while (lexIsToken(OrToken)) {
                 LogicNode *ornode = newLogicNode(OrLogicTag);
                 lexNextToken();
                 ornode->lexp = cond;

@@ -21,6 +21,12 @@ struct NameUseNode;
 // The conversion a bound pattern desugars to shares its type node with the 'is'
 // test before it (parseBoundMatch), and that test name resolves the node for both.
 #define FlagMatchBind 0x0001  // Cast: binds a matched value; its type node is the 'is' test's
+// A value alone as a match pattern ('case 2', 'case K', 'case Circle') is built
+// as an 'is' test holding the value where its type would be, because only the
+// matched value's type says which it is: a bare name that is a variant of the
+// matched value's enum narrows to it, and anything else is compared with '=='
+// (castMatchValueTypeCheck, which clears the flag).
+#define FlagMatchValue 0x0002  // Is: a value alone as a pattern, not yet decided between 'is' and '=='
 
 // Create node for recasting to a new type without conversion
 CastNode *newRecastNode(INode *exp, INode *type);
@@ -62,5 +68,12 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node);
 
 // Analyze type comparison (is) node
 void castIsTypeCheck(TypeCheckState *pstate, CastNode *node);
+
+// Create the test for a value alone as a match pattern (FlagMatchValue)
+CastNode *newMatchValueNode(INode *matchee, INode *value);
+
+// Type check a value alone as a match pattern: the 'is' test of a variant of the
+// matched value's enum named bare, or else replaced by 'matched == value'
+void castMatchValueTypeCheck(TypeCheckState *pstate, INode **nodep);
 
 #endif
