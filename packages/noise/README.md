@@ -170,6 +170,30 @@ Measured 27 Sep 2026 (NVIDIA driver 592.82, Intel 101.6790):
 | Phacelle (cos, sin) | within 6.3e-7 | within 2.2e-5 |
 | Phacelle `side` | exact | exact |
 
+### The bake test: compute
+
+`tests/bake.cone` bakes fBm into a 3-D texture with a compute shader
+(`tests/bake.slang`): 64 x 64 x 64 voxels, each the point (-2.03125,
+0.53125, 1.25) plus a sixteenth per voxel, fBm of 4 octaves (lacunarity 2,
+gain 0.5, seed 7) into an r32float 3-D storage texture, the voxel's
+`hash3` into an r32uint one, and the derivative and value into a storage
+buffer. It compares every voxel with the Cone package. Set
+`NOISE_BAKE_REPORT=1` to print the table, and `GPU_POWER_PREFERENCE=low-power`
+for the integrated GPU. `examples/volume.cone` draws the same volume: a
+slice, and a sphere textured through it.
+
+Measured 27 Sep 2026 (same drivers), 262,144 voxels:
+
+| Quantity | RTX 4060 | UHD 770 |
+|---|---|---|
+| `hash3` | all exact | all exact |
+| fBm, in the texture and in the buffer | all exact | all exact |
+| its derivative, x, y and z | all exact | all exact |
+
+Compiled without `-fp-mode precise`, the same shader matched the CPU at
+only 18-27% of the voxels, on both GPUs (fBm off by up to 1.3e-6, its
+derivative by up to 2.7e-6).
+
 ## Sources
 
 - Mark Jarzynski and Marc Olano, "Hash Functions for GPU Rendering", Journal

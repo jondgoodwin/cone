@@ -24,7 +24,9 @@ examples/ or tests/, a package's own in src/). This tool compiles each
   is 'm * v' in Cone.
 - Every entry point in the file ('[shader("vertex")] vertexMain', say) is
   kept, under its own name, in one module: a pipeline names the entry point
-  of each stage.
+  of each stage. A compute entry point ('[shader("compute")]') is one more,
+  its workgroup given by '[numthreads(x, y, z)]'; slangc finds each entry
+  point's stage from its '[shader(...)]'.
 
 Both the .slang and the .spv are committed, so that a machine without the SDK
 builds and tests everything; only changing a shader needs slangc (found
@@ -64,6 +66,12 @@ EXTRA ARGUMENTS. A line '// slangc: <arguments>' in a shader adds those
 arguments to its compile (e.g. '-fp-mode precise', which marks every float
 operation NoContraction; the noise package's shaders need it).
 
+WORKGROUPS. Every '[numthreads(x, y, z)]' in a shader must be within
+WebGPU's default limits, so that the shader runs in a browser too: x and y
+at most 256, z at most 64, x y z at most 256. Both compiling and --check
+refuse one that is not (the gpu package refuses it again at run time, from
+the SPIR-V).
+
 Python 3.11 or later, standard library only.
 """
 
@@ -92,6 +100,11 @@ WORD = re.compile(r"0x([0-9A-Fa-f]{8})u32")
 IMPORT = re.compile(r"^[ \t]*import[ \t]+(\w+)[ \t]*;", re.M)
 ENTRY = re.compile(r"\[shader\(")
 EXTRA = re.compile(r"^// slangc:[ \t]*(.+?)[ \t]*\r?$", re.M)
+NUMTHREADS = re.compile(r"\[numthreads\(\s*(\d+)\s*(?:,\s*(\d+)\s*)?(?:,\s*(\d+)\s*)?\)\]")
+# WebGPU's default compute limits: maxComputeWorkgroupSizeX, Y and Z, and
+# maxComputeInvocationsPerWorkgroup
+WORKGROUP_LIMITS = (256, 256, 64)
+MAX_INVOCATIONS = 256
 
 
 class ShaderError(Exception):
@@ -156,6 +169,17 @@ def source_hash(slang: Path) -> str:
     for m in imports_of(slang):
         data += f"\n// import {m.name}\n".encode("utf-8") + lf_bytes(m)
     return hashlib.sha256(data).hexdigest()
+
+
+def workgroup_problems(slang: Path) -> list[str]:
+    """Each '[numthreads]' of 'slang' beyond WebGPU's default limits."""
+    out = []
+    for m in NUMTHREADS.finditer(lf_bytes(slang).decode("utf-8")):
+        size = [int(g) if g else 1 for g in m.groups()]
+        if any(s > lim for s, lim in zip(size, WORKGROUP_LIMITS)) or size[0] * size[1] * size[2] > MAX_INVOCATIONS:
+            out.append(f"{shown(slang)}: {m.group(0)} is beyond WebGPU's limits"
+                       f" ({' x '.join(map(str, WORKGROUP_LIMITS))}, {MAX_INVOCATIONS} invocations)")
+    return out
 
 
 def compile_slang(slangc: Path, slang: Path, spv: Path) -> None:
@@ -276,6 +300,7 @@ def main() -> int:
                 embedded.update(check_embedded(cone, problems))
             with tempfile.TemporaryDirectory() as tmp:
                 for slang in slangs:
+                    problems += workgroup_problems(slang)
                     spv = slang.with_suffix(".spv")
                     if not spv.is_file():
                         problems.append(f"{shown(slang)} has no {spv.name}; run tools/shaders/shaders.py")
@@ -296,6 +321,9 @@ def main() -> int:
 
         if slangs and not slangc:
             raise ShaderError("no slangc: install the Vulkan SDK (and set VULKAN_SDK) or put slangc on PATH")
+        beyond = [p for slang in slangs for p in workgroup_problems(slang)]
+        if beyond:
+            raise ShaderError("\n".join(beyond))
         for slang in slangs:
             spv = slang.with_suffix(".spv")
             old = spv.read_bytes() if spv.is_file() else None

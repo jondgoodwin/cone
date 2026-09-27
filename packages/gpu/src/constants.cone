@@ -20,12 +20,21 @@ pub const TEXTURE_FORMAT_BGRA8_UNORM = 3u32;
 pub const TEXTURE_FORMAT_BGRA8_UNORM_SRGB = 4u32;
 pub const TEXTURE_FORMAT_DEPTH32_FLOAT = 5u32;
 pub const TEXTURE_FORMAT_RGBA16_FLOAT = 6u32;    // half floats: HDR color
+pub const TEXTURE_FORMAT_R32_FLOAT = 7u32;       // one f32 a texel
+pub const TEXTURE_FORMAT_R32_UINT = 8u32;        // one u32 a texel
+
+// A texture's dimension (WebGPU's): a 2-D image (of layers, perhaps), or a
+// 3-D one, its depth 'depthOrArrayLayers'
+pub const TEXTURE_DIMENSION_2D = 2u32;
+pub const TEXTURE_DIMENSION_3D = 3u32;
 
 // A texture view's dimension (WebGPU's): one 2-D image, several (layers),
-// or six layers seen as the faces of a cube, sampled by direction
+// six layers seen as the faces of a cube, sampled by direction, or a 3-D
+// texture's volume
 pub const TEXTURE_VIEW_DIMENSION_2D = 1u32;
 pub const TEXTURE_VIEW_DIMENSION_2D_ARRAY = 2u32;
 pub const TEXTURE_VIEW_DIMENSION_CUBE = 3u32;
+pub const TEXTURE_VIEW_DIMENSION_3D = 4u32;
 
 // Texture usages (WebGPU's bits), OR-ed together
 pub const TEXTURE_USAGE_COPY_SRC = 0x1u32;
@@ -50,22 +59,44 @@ pub const BUFFER_USAGE_VERTEX = 0x20u32;
 pub const BUFFER_USAGE_UNIFORM = 0x40u32;
 pub const BUFFER_USAGE_STORAGE = 0x80u32;
 pub const BUFFER_USAGE_INDIRECT = 0x100u32;
+pub const BUFFER_USAGE_QUERY_RESOLVE = 0x200u32;
 
 // Shader stages (WebGPU's bits), OR-ed together: which see a binding
 pub const SHADER_STAGE_VERTEX = 0x1u32;
 pub const SHADER_STAGE_FRAGMENT = 0x2u32;
 pub const SHADER_STAGE_COMPUTE = 0x4u32;
 
-// What a bind group layout's binding is: a buffer, a sampler or a texture
-// (WebGPU's entry has a 'buffer', 'sampler' or 'texture' member)
+// What a bind group layout's binding is: a buffer, a sampler, a texture
+// shaders sample, or a storage texture they read and write texel by texel
+// (WebGPU's entry has a 'buffer', 'sampler', 'texture' or 'storageTexture'
+// member)
 pub const BINDING_KIND_BUFFER = 1u32;
 pub const BINDING_KIND_SAMPLER = 2u32;
 pub const BINDING_KIND_TEXTURE = 3u32;
+pub const BINDING_KIND_STORAGE_TEXTURE = 4u32;
 
 // What a bind group layout's buffer binding holds
 pub const BUFFER_BINDING_TYPE_UNIFORM = 1u32;
 pub const BUFFER_BINDING_TYPE_STORAGE = 2u32;
 pub const BUFFER_BINDING_TYPE_READ_ONLY_STORAGE = 3u32;
+
+// What shaders may do with a storage texture binding (WebGPU's)
+pub const STORAGE_TEXTURE_ACCESS_WRITE_ONLY = 1u32;
+pub const STORAGE_TEXTURE_ACCESS_READ_ONLY = 2u32;
+pub const STORAGE_TEXTURE_ACCESS_READ_WRITE = 3u32;
+
+// What a texture binding's texels are (WebGPU's sampleType): an r32float or
+// r32uint texture is not filtered, so it is UNFILTERABLE_FLOAT or UINT, and
+// sampled with a nearest sampler or read by 'Load'. Vulkan's layout does not
+// need it; a WebGPU backend's does.
+pub const TEXTURE_SAMPLE_TYPE_FLOAT = 1u32;
+pub const TEXTURE_SAMPLE_TYPE_UNFILTERABLE_FLOAT = 2u32;
+pub const TEXTURE_SAMPLE_TYPE_UINT = 3u32;
+
+// What a query set holds (WebGPU's): GPU timestamps
+pub const QUERY_TYPE_TIMESTAMP = 2u32;
+// The most queries a query set may hold (WebGPU's)
+pub const MAX_QUERY_COUNT = 4096u32;
 
 // How a sampler filters, and how it wraps coordinates outside 0 to 1
 // (WebGPU's names)
@@ -124,6 +155,30 @@ pub const MAX_VERTEX_BUFFERS = 8u32;
 pub const MAX_VERTEX_ATTRIBUTES = 16u32;
 pub const MAX_BINDINGS = 16u32;
 
+// Compute's limits: WebGPU's defaults, which every WebGPU implementation
+// offers, so a program within them runs in a browser too. Vulkan's are
+// higher on every desktop GPU; the layer holds programs to these. A compute
+// entry point's workgroup (Slang's [numthreads(x, y, z)]) is at most 256 by
+// 256 by 64 and 256 invocations in all ('createShaderModule' checks); a
+// dispatch is at most 65535 workgroups each way ('dispatchWorkgroups'
+// checks); a stage sees at most 8 storage buffers and 4 storage textures
+// ('createPipelineLayout' checks); a storage buffer binding is at most 128
+// MiB, from an offset a multiple of 256 ('createBindGroup' checks); a 3-D
+// texture is at most 2048 texels each way ('createTexture' checks); and a
+// workgroup's shared memory is at most 16 KiB (not checked: that needs the
+// shader's variables' sizes).
+pub const MAX_COMPUTE_WORKGROUP_SIZE_X = 256u32;
+pub const MAX_COMPUTE_WORKGROUP_SIZE_Y = 256u32;
+pub const MAX_COMPUTE_WORKGROUP_SIZE_Z = 64u32;
+pub const MAX_COMPUTE_INVOCATIONS_PER_WORKGROUP = 256u32;
+pub const MAX_COMPUTE_WORKGROUPS_PER_DIMENSION = 65535u32;
+pub const MAX_COMPUTE_WORKGROUP_STORAGE_SIZE = 16384u32;
+pub const MAX_STORAGE_BUFFERS_PER_SHADER_STAGE = 8u32;
+pub const MAX_STORAGE_TEXTURES_PER_SHADER_STAGE = 4u32;
+pub const MAX_STORAGE_BUFFER_BINDING_SIZE = 134217728u64;
+pub const MIN_STORAGE_BUFFER_OFFSET_ALIGNMENT = 256u64;
+pub const MAX_TEXTURE_DIMENSION_3D = 2048u32;
+
 // Which GPU 'requestAdapter' prefers where there are several (WebGPU's)
 pub const POWER_PREFERENCE_HIGH_PERFORMANCE = 1u32;   // a discrete GPU first
 pub const POWER_PREFERENCE_LOW_POWER = 2u32;          // an integrated GPU first
@@ -149,6 +204,8 @@ const KIND_DEPTH = 3u32;           // a depth attachment: its attachment layout
 const KIND_SAMPLED = 4u32;         // a texture shaders sample: the shader-read layout
 const KIND_RENDER_SAMPLED = 5u32;  // drawn into and sampled: the shader-read layout, but the
                                    // attachment layout for the part a pass draws into
+const KIND_STORAGE = 6u32;         // a storage texture (and perhaps sampled): the general layout,
+                                   // which storage reads and writes, sampling and copies all take
 
 // The most buffers a frame may release ('queue.releaseBuffer') before it
 // comes round again; more wait for the device to be idle

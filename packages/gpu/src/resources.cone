@@ -8,7 +8,22 @@ fn vkFormat(format u32) u32 {
   if format == TEXTURE_FORMAT_BGRA8_UNORM_SRGB { return vulkan.FORMAT_B8G8R8A8_SRGB; }
   if format == TEXTURE_FORMAT_DEPTH32_FLOAT { return vulkan.FORMAT_D32_SFLOAT; }
   if format == TEXTURE_FORMAT_RGBA16_FLOAT { return vulkan.FORMAT_R16G16B16A16_SFLOAT; }
+  if format == TEXTURE_FORMAT_R32_FLOAT { return vulkan.FORMAT_R32_SFLOAT; }
+  if format == TEXTURE_FORMAT_R32_UINT { return vulkan.FORMAT_R32_UINT; }
   vulkan.FORMAT_UNDEFINED;
+}
+
+// The bytes of one texel of a texture format
+fn bytesPerTexel(format u32) u32 {
+  if format == TEXTURE_FORMAT_RGBA16_FLOAT { return 8u32; }
+  4u32;
+}
+
+// Whether a format may be a storage texture's: WebGPU's storage formats that
+// the layer offers
+fn isStorageFormat(format u32) Bool {
+  format == TEXTURE_FORMAT_R32_FLOAT or format == TEXTURE_FORMAT_R32_UINT or format == TEXTURE_FORMAT_RGBA16_FLOAT
+    or format == TEXTURE_FORMAT_RGBA8_UNORM;
 }
 
 fn textureFormat(vkFormat u32) u32 {
@@ -18,6 +33,8 @@ fn textureFormat(vkFormat u32) u32 {
   if vkFormat == vulkan.FORMAT_B8G8R8A8_SRGB { return TEXTURE_FORMAT_BGRA8_UNORM_SRGB; }
   if vkFormat == vulkan.FORMAT_D32_SFLOAT { return TEXTURE_FORMAT_DEPTH32_FLOAT; }
   if vkFormat == vulkan.FORMAT_R16G16B16A16_SFLOAT { return TEXTURE_FORMAT_RGBA16_FLOAT; }
+  if vkFormat == vulkan.FORMAT_R32_SFLOAT { return TEXTURE_FORMAT_R32_FLOAT; }
+  if vkFormat == vulkan.FORMAT_R32_UINT { return TEXTURE_FORMAT_R32_UINT; }
   TEXTURE_FORMAT_UNDEFINED;
 }
 
@@ -55,6 +72,7 @@ fn shaderStages(visibility u32) u32 {
 fn descriptorType(kind u32, bufferType u32) u32 {
   if kind == BINDING_KIND_SAMPLER { return vulkan.DESCRIPTOR_TYPE_SAMPLER; }
   if kind == BINDING_KIND_TEXTURE { return vulkan.DESCRIPTOR_TYPE_SAMPLED_IMAGE; }
+  if kind == BINDING_KIND_STORAGE_TEXTURE { return vulkan.DESCRIPTOR_TYPE_STORAGE_IMAGE; }
   if bufferType == BUFFER_BINDING_TYPE_UNIFORM { return vulkan.DESCRIPTOR_TYPE_UNIFORM_BUFFER; }
   vulkan.DESCRIPTOR_TYPE_STORAGE_BUFFER;
 }
@@ -98,11 +116,12 @@ pub struct Buffer {
 
 // ---- Textures ----
 
-// What 'createTexture' makes. A texture of several layers
+// What 'createTexture' makes. A 2-D texture of several layers
 // ('depthOrArrayLayers'), square, six or a multiple of six of them, may be
 // seen as a cube ('createViewWith', TEXTURE_VIEW_DIMENSION_CUBE), as WebGPU's
 // may; 'mipLevelCount' levels of detail, each half the one before (at least
-// 1 x 1).
+// 1 x 1). A 3-D texture ('dimension' TEXTURE_DIMENSION_3D) is
+// 'depthOrArrayLayers' deep, and has no layers.
 pub struct TextureDescriptor {
   pub width u32;
   pub height u32;
@@ -110,6 +129,7 @@ pub struct TextureDescriptor {
   pub usage u32;                   // TEXTURE_USAGE_... OR-ed
   pub mipLevelCount u32 = 1u32;
   pub depthOrArrayLayers u32 = 1u32;
+  pub dimension u32 = TEXTURE_DIMENSION_2D;
 }
 
 // What 'createViewWith' makes: WebGPU's GPUTextureViewDescriptor. A count of
@@ -160,17 +180,19 @@ pub struct Texture {
   pub usage u32;                   // TEXTURE_USAGE_...
   pub mipLevelCount u32 = 1u32;
   pub depthOrArrayLayers u32 = 1u32;
+  pub dimension u32 = TEXTURE_DIMENSION_2D;
 
   pub fn isValid(self &) Bool { backend.view.h != 0u64; }
 
-  // A view of the whole texture (made with it): 2-D, or a 2-D array if it
-  // has several layers
+  // A view of the whole texture (made with it): 2-D, a 2-D array if it
+  // has several layers, or 3-D
   pub fn createView(self &) TextureView {
     TextureView[backend, width, height, format];
   }
 
   // A view of some of its levels and layers, as 'desc' says, seen as 2-D, a
-  // 2-D array or a cube; its width and height are its first level's. A
+  // 2-D array or a cube (or, of a 3-D texture, some of its levels, 3-D);
+  // its width and height are its first level's. A
   // render pass draws into a view of one level and one layer. The view is
   // made once, the first time it is asked for, and kept as long as the
   // texture (an invalid view if it cannot be made: check 'isValid').
@@ -178,22 +200,29 @@ pub struct Texture {
     mut result = TextureView[backend, width, height, format];
     result.backend.view = vulkan.ImageView[0u64];
     if backend.image.h == 0u64 or (backend.views as usize) == 0usize { return result; }
+    imm volume = dimension == TEXTURE_DIMENSION_3D;
+    if volume != (desc.dimension == TEXTURE_VIEW_DIMENSION_3D) {
+      fail("createViewWith: a 3-D texture is viewed 3-D, and only a 3-D texture is");
+      return result;
+    }
     imm baseMip = desc.baseMipLevel;
     imm baseLayer = desc.baseArrayLayer;
     mut mips = desc.mipLevelCount;
     if mips == 0u32 and baseMip < mipLevelCount { mips = mipLevelCount - baseMip; }
     mut layers = desc.arrayLayerCount;
+    // A 3-D texture's depth is not layers: it has one
+    imm textureLayers = if volume { 1u32; } else { depthOrArrayLayers; };
     if layers == 0u32 {
       if desc.dimension == TEXTURE_VIEW_DIMENSION_CUBE {
         layers = 6u32;
-      } elif desc.dimension == TEXTURE_VIEW_DIMENSION_2D {
+      } elif desc.dimension == TEXTURE_VIEW_DIMENSION_2D or volume {
         layers = 1u32;
-      } elif baseLayer < depthOrArrayLayers {
-        layers = depthOrArrayLayers - baseLayer;
+      } elif baseLayer < textureLayers {
+        layers = textureLayers - baseLayer;
       }
     }
-    if mips == 0u32 or baseMip + mips > mipLevelCount or layers == 0u32 or baseLayer + layers > depthOrArrayLayers
-        or (desc.dimension == TEXTURE_VIEW_DIMENSION_2D and layers != 1u32)
+    if mips == 0u32 or baseMip + mips > mipLevelCount or layers == 0u32 or baseLayer + layers > textureLayers
+        or ((desc.dimension == TEXTURE_VIEW_DIMENSION_2D or volume) and layers != 1u32)
         or (desc.dimension == TEXTURE_VIEW_DIMENSION_CUBE and layers != 6u32) {
       fail("createViewWith: the levels or layers are not the texture's, or not the dimension's");
       return result;
@@ -201,6 +230,7 @@ pub struct Texture {
     mut viewType = vulkan.IMAGE_VIEW_TYPE_2D;
     if desc.dimension == TEXTURE_VIEW_DIMENSION_2D_ARRAY { viewType = vulkan.IMAGE_VIEW_TYPE_2D_ARRAY; }
     if desc.dimension == TEXTURE_VIEW_DIMENSION_CUBE { viewType = vulkan.IMAGE_VIEW_TYPE_CUBE; }
+    if volume { viewType = vulkan.IMAGE_VIEW_TYPE_3D; }
     imm key = u64[desc.dimension] | (u64[baseMip] << 8u64) | (u64[mips] << 16u64) | (u64[baseLayer] << 24u64)
       | (u64[layers] << 40u64);
     imm cache = backend.views;

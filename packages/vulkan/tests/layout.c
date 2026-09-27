@@ -35,7 +35,8 @@ typedef struct VkInstance_T* VkInstance;
 typedef struct VkCommandBuffer_T* VkCommandBuffer;
 typedef uint64_t VkSurfaceKHR, VkSwapchainKHR, VkDebugUtilsMessengerEXT, VkImage, VkImageView, VkBuffer, VkDeviceMemory,
   VkCommandPool, VkFence, VkSemaphore, VkShaderModule, VkPipelineLayout, VkPipeline,
-  VkRenderPass, VkPipelineCache, VkDescriptorSetLayout, VkDescriptorPool, VkDescriptorSet, VkSampler;
+  VkRenderPass, VkPipelineCache, VkDescriptorSetLayout, VkDescriptorPool, VkDescriptorSet, VkSampler,
+  VkQueryPool;
 
 typedef struct VkExtent2D { uint32_t width; uint32_t height; } VkExtent2D;
 typedef struct VkExtent3D { uint32_t width; uint32_t height; uint32_t depth; } VkExtent3D;
@@ -395,6 +396,24 @@ typedef struct VkGraphicsPipelineCreateInfo {
   VkPipelineLayout layout; VkRenderPass renderPass; uint32_t subpass; VkPipeline basePipelineHandle;
   int32_t basePipelineIndex;
 } VkGraphicsPipelineCreateInfo;
+
+typedef struct VkComputePipelineCreateInfo {
+  VkStructureType sType; const void* pNext; VkFlags flags; VkPipelineShaderStageCreateInfo stage;
+  VkPipelineLayout layout; VkPipeline basePipelineHandle; int32_t basePipelineIndex;
+} VkComputePipelineCreateInfo;
+
+typedef struct VkDispatchIndirectCommand { uint32_t x; uint32_t y; uint32_t z; } VkDispatchIndirectCommand;
+typedef struct VkDrawIndirectCommand {
+  uint32_t vertexCount; uint32_t instanceCount; uint32_t firstVertex; uint32_t firstInstance;
+} VkDrawIndirectCommand;
+typedef struct VkDrawIndexedIndirectCommand {
+  uint32_t indexCount; uint32_t instanceCount; uint32_t firstIndex; int32_t vertexOffset; uint32_t firstInstance;
+} VkDrawIndexedIndirectCommand;
+
+typedef struct VkQueryPoolCreateInfo {
+  VkStructureType sType; const void* pNext; VkFlags flags; int queryType; uint32_t queryCount;
+  VkFlags pipelineStatistics;
+} VkQueryPoolCreateInfo;
 
 typedef struct VkPushConstantRange { VkFlags stageFlags; uint32_t offset; uint32_t size; } VkPushConstantRange;
 

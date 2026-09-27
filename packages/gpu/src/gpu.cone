@@ -42,13 +42,35 @@
 // makes a Device, which has a Queue; a Surface is a window's, and a SwapChain
 // hands out its Textures to draw into, one a frame. A Device makes Buffers,
 // Textures (to draw into, for shaders to sample, filled by
-// 'queue.writeTexture', or both; 8-bit or half-float colour, of mip levels
-// and layers) and their views (2-D, a 2-D array, a cube), Samplers, ShaderModules (from SPIR-V),
-// BindGroupLayouts, PipelineLayouts, RenderPipelines and BindGroups (of
-// buffers, textures and samplers). Commands are recorded with a
-// CommandEncoder, drawing inside a RenderPass that clears or keeps each
-// attachment, and finished into a CommandBuffer the Queue submits. Where
-// WebGPU's shape and Vulkan's differ, this follows WebGPU's names and says so:
+// 'queue.writeTexture', or both; storage textures compute shaders read and
+// write; 8-bit or half-float colour, r32float or r32uint, 2-D of mip levels
+// and layers or 3-D) and their views (2-D, a 2-D array, a cube, 3-D),
+// Samplers, ShaderModules (from SPIR-V), BindGroupLayouts, PipelineLayouts,
+// RenderPipelines, ComputePipelines, BindGroups (of uniform and storage
+// buffers, textures, storage textures and samplers) and QuerySets (GPU
+// timestamps). Commands are recorded with a CommandEncoder, drawing inside a
+// RenderPass that clears or keeps each attachment, computing inside a
+// ComputePassEncoder, and finished into a CommandBuffer the Queue submits.
+//
+// Compute, WebGPU's way:
+//
+//   mut pipeline = device.createComputePipeline(&ComputePipelineDescriptor[layout: &layout,
+//     module: &shader, entryPoint: "bakeMain"]);
+//   mut encoder = device.createCommandEncoder();
+//   mut pass = encoder.beginComputePass();
+//   pass.setPipeline(&pipeline);
+//   pass.setBindGroup(0u32, &group);            // storage buffers and textures
+//   pass.dispatchWorkgroups(16u32, 16u32, 16u32);
+//   pass.end();
+//   device.queue.submit(encoder.finish());
+//
+// The layer holds programs to WebGPU's default limits (constants.cone lists
+// them and what checks each), so that what runs here runs in a browser too:
+// a workgroup of at most 256 invocations, 8 storage buffers and 4 storage
+// textures a stage. 'dispatchWorkgroupsIndirect', 'drawIndirect' and
+// 'drawIndexedIndirect' read their arguments from a buffer the GPU wrote.
+//
+// Where WebGPU's shape and Vulkan's differ, this follows WebGPU's names and says so:
 //
 // - The swapchain is its own object, made by the Device from a Surface
 //   (WebGPU's 'device.createSwapChain', before 2023 moved it onto the
@@ -70,6 +92,14 @@
 //   asked for again, the same view is answered. A texture of six square
 //   layers (or a multiple of six) may be viewed as a cube, as WebGPU's may;
 //   Vulkan must be told when the texture is made, so it always is.
+// - Immediates are seen by the compute stage too: one layout serves a
+//   render or a compute pipeline.
+// - 'encoder.writeTimestamp' writes a timestamp between passes (WebGPU moved
+//   timestamps into a pass descriptor's 'timestampWrites'; a WebGPU backend
+//   would write them round an empty pass). A resolved timestamp is in ticks
+//   of 'device.timestampPeriod' nanoseconds; WebGPU's are nanoseconds.
+// - 'copyTextureToBuffer' packs rows with no gap; WebGPU pads each to 256
+//   bytes.
 //
 // Coordinates are WebGPU's, whatever the backend's: clip space has y up and
 // depth from 0 to 1, and a texture's first row is its top. On Vulkan, whose
@@ -124,10 +154,21 @@
 // held is not kept. 'queue.writeBuffer' copies from staging memory, in
 // commands submitted ahead of the next submission, between a barrier after
 // everything earlier (a write after a read) and one before everything later
-// (a read after the write). Vulkan 1.3's synchronization2 barriers and
+// (a read after the write). A storage texture rests in the general layout,
+// which storage reads and writes, sampling and copies all take, so it never
+// moves between passes; a compute pass opens with a barrier after
+// everything earlier (what it reads was written; what it writes was read),
+// puts one between each dispatch and the next (each sees what the one
+// before wrote, as WebGPU's dispatches do, indirect arguments included),
+// and ends with one making what it wrote visible to every later command:
+// draws that sample it, indirect draws, copies. The async compute queue
+// (compute overlapping drawing on a second queue) is for later. Vulkan
+// 1.3's synchronization2 barriers and
 // dynamic rendering (no render-pass objects) are used throughout. The
 // barriers are checked by the Khronos validation layer's synchronization
-// validation, which the instance turns on with the layer (below).
+// validation, which the instance turns on with the layer (below), with its
+// shader accesses heuristic, without which it does not see what shaders
+// write through storage buffers and textures.
 //
 // Memory. Every buffer and texture has a memory allocation of its own (a
 // dedicated allocation): a buffer the CPU maps (MAP_READ or MAP_WRITE) in
@@ -161,7 +202,9 @@
 //
 // Shaders are SPIR-V, compiled ahead of time from Slang by
 // tools/shaders/shaders.py and embedded in the Cone source that uses them as
-// arrays of 32-bit words; that tool's header is the guide.
+// arrays of 32-bit words; that tool's header is the guide. A storage
+// texture in Slang names its format ('[format("r32f")] WTexture3D<float>'),
+// as WGSL must, so no storage-without-format feature is needed.
 //
 // Its files are one module, and only this one, the root, imports:
 //
@@ -177,6 +220,8 @@
 //                   RenderPipeline and BindGroup
 //   swapchain.cone  SwapChain
 //   commands.cone   barriers, CommandEncoder, RenderPass and CommandBuffer
+//   compute.cone    ComputePassEncoder, QuerySet, and the checks of WebGPU's
+//                   limits
 
 mod gpu;
 

@@ -31,6 +31,7 @@ fn restLayout(kind u32) u32 {
   if kind == KIND_SURFACE { return vulkan.IMAGE_LAYOUT_PRESENT_SRC_KHR; }
   if kind == KIND_DEPTH { return vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL; }
   if kind == KIND_SAMPLED or kind == KIND_RENDER_SAMPLED { return vulkan.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; }
+  if kind == KIND_STORAGE { return vulkan.IMAGE_LAYOUT_GENERAL; }
   vulkan.IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 }
 
@@ -43,7 +44,9 @@ fn firstLayout(cmd vulkan.CommandBuffer, image vulkan.Image, kind u32) {
     aspect = vulkan.IMAGE_ASPECT_DEPTH_BIT;
     stages = vulkan.PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | vulkan.PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
   }
-  if kind == KIND_SAMPLED or kind == KIND_RENDER_SAMPLED { stages = vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT; }
+  if kind == KIND_SAMPLED or kind == KIND_RENDER_SAMPLED or kind == KIND_STORAGE {
+    stages = vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+  }
   imm all = vulkan.ImageSubresourceRange[aspectMask: aspect, levelCount: vulkan.REMAINING_MIP_LEVELS,
     layerCount: vulkan.REMAINING_ARRAY_LAYERS];
   transitionRange(cmd, image, all, vulkan.IMAGE_LAYOUT_UNDEFINED, restLayout(kind),
@@ -73,12 +76,64 @@ pub struct CommandEncoder {
     beginPass(backend.cmd, attachment, true, depth);
   }
 
-  // Copy all of 'texture' (an 8-bit color texture with COPY_SRC, or a
-  // swapchain's; its first level and layer) into 'buffer', from its start,
-  // row after row with no gap between rows (4 bytes a pixel)
+  // Begin dispatching compute shaders (WebGPU's 'beginComputePass'). What
+  // earlier commands wrote is visible to its shaders and its indirect
+  // dispatches.
+  pub fn beginComputePass(self &mut) ComputePassEncoder {
+    memoryBarrier(backend.cmd, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_MEMORY_WRITE_BIT,
+      vulkan.PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | vulkan.PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+      vulkan.ACCESS_2_MEMORY_READ_BIT | vulkan.ACCESS_2_MEMORY_WRITE_BIT);
+    ComputePassEncoder[ComputePassBackend[backend.cmd, true, vulkan.PipelineLayout[0u64], false]];
+  }
+
+  // Write the GPU's clock into query 'queryIndex' of 'querySet' (of
+  // timestamps) once every command before it is done. Outside a pass: the
+  // time between two is the time the commands between them took.
+  pub fn writeTimestamp(self &mut, querySet &QuerySet, queryIndex u32) {
+    if !querySet.isValid() or queryIndex >= querySet.count {
+      fail("writeTimestamp: no such query");
+      return;
+    }
+    vulkan.cmdResetQueryPool(backend.cmd, querySet.backend.pool, queryIndex, 1u32);
+    vulkan.cmdWriteTimestamp2(backend.cmd, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, querySet.backend.pool, queryIndex);
+  }
+
+  // Copy queries 'firstQuery' to 'firstQuery' + 'queryCount' of 'querySet'
+  // into 'destination' (made with BUFFER_USAGE_QUERY_RESOLVE) at
+  // 'destinationOffset' (a multiple of 256), each a u64: WebGPU's
+  // 'resolveQuerySet'. Each query must have been written in this encoder's
+  // submission or before. A timestamp is in ticks of 'device.timestampPeriod'
+  // nanoseconds, where WebGPU's are nanoseconds.
+  pub fn resolveQuerySet(self &mut, querySet &QuerySet, firstQuery u32, queryCount u32, destination &Buffer,
+      destinationOffset u64) {
+    if !querySet.isValid() or firstQuery + queryCount > querySet.count
+        or (destination.usage & BUFFER_USAGE_QUERY_RESOLVE) == 0u32 or (destinationOffset & 255u64) != 0u64
+        or destinationOffset + u64[queryCount] * 8u64 > destination.size {
+      fail("resolveQuerySet: no such queries, or the buffer has no BUFFER_USAGE_QUERY_RESOLVE, or no room at an offset a multiple of 256");
+      return;
+    }
+    memoryBarrier(backend.cmd, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_MEMORY_WRITE_BIT,
+      vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT);
+    vulkan.cmdCopyQueryPoolResults(backend.cmd, querySet.backend.pool, firstQuery, queryCount, destination.backend.buffer,
+      destinationOffset, 8u64, vulkan.QUERY_RESULT_64_BIT | vulkan.QUERY_RESULT_WAIT_BIT);
+    memoryBarrier(backend.cmd, vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT,
+      vulkan.PIPELINE_STAGE_2_HOST_BIT | vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+      vulkan.ACCESS_2_HOST_READ_BIT | vulkan.ACCESS_2_MEMORY_READ_BIT | vulkan.ACCESS_2_MEMORY_WRITE_BIT);
+  }
+
+  // Copy all of 'texture' (a color texture with COPY_SRC, or a swapchain's;
+  // its first level, and its first layer or, of a 3-D texture, every slice)
+  // into 'buffer', from its start, row after row and slice after slice with
+  // no gap between them (4 bytes a texel, 8 of rgba16float). WebGPU pads
+  // each row to 256 bytes; this does not.
   pub fn copyTextureToBuffer(self &mut, texture &Texture, buffer &Buffer) {
     imm image = texture.backend.image;
     imm rest = restLayout(texture.backend.kind);
+    imm depth = if texture.dimension == TEXTURE_DIMENSION_3D { texture.depthOrArrayLayers; } else { 1u32; };
+    if u64[texture.width] * u64[texture.height] * u64[depth] * u64[bytesPerTexel(texture.format)] > buffer.size {
+      fail("copyTextureToBuffer: the buffer is smaller than the texture");
+      return;
+    }
     // What wrote it (a render pass) before the copy reads it; presentation's
     // hand-off is the acquire semaphore's
     mut srcStage = vulkan.PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -89,10 +144,15 @@ pub struct CommandEncoder {
     }
     // One drawn into and sampled: after the shaders that sampled it too
     if texture.backend.kind == KIND_RENDER_SAMPLED { srcStage = vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT; }
+    // A storage texture, or one filled by 'writeTexture': after whatever wrote it
+    if texture.backend.kind == KIND_STORAGE or texture.backend.kind == KIND_SAMPLED {
+      srcStage = vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+      srcAccess = vulkan.ACCESS_2_MEMORY_WRITE_BIT;
+    }
     transition(backend.cmd, image, vulkan.IMAGE_ASPECT_COLOR_BIT, rest, vulkan.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
       srcStage, srcAccess, vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_READ_BIT);
     imm region = vulkan.BufferImageCopy[imageSubresource: vulkan.ImageSubresourceLayers[],
-      imageOffset: vulkan.Offset3D[0i32, 0i32, 0i32], imageExtent: vulkan.Extent3D[texture.width, texture.height, 1u32]];
+      imageOffset: vulkan.Offset3D[0i32, 0i32, 0i32], imageExtent: vulkan.Extent3D[texture.width, texture.height, depth]];
     vulkan.cmdCopyImageToBuffer(backend.cmd, image, vulkan.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer.backend.buffer,
       1u32, &region as *vulkan.BufferImageCopy);
     // Back to the layout it rests in, once the copy has read it
@@ -291,8 +351,7 @@ pub struct RenderPass {
       fail("setImmediates before setPipeline");
       return;
     }
-    vulkan.cmdPushConstants(backend.cmd, backend.layout, vulkan.SHADER_STAGE_VERTEX_BIT | vulkan.SHADER_STAGE_FRAGMENT_BIT,
-      offset, size, data);
+    vulkan.cmdPushConstants(backend.cmd, backend.layout, immediateStages(), offset, size, data);
   }
 
   // Draw into the rectangle from ('x', 'y'), 'width' by 'height' pixels, of
@@ -318,6 +377,29 @@ pub struct RenderPass {
   // 'instanceCount' times
   pub fn drawIndexed(self &mut, indexCount u32, instanceCount u32, firstIndex u32, baseVertex i32, firstInstance u32) {
     vulkan.cmdDrawIndexed(backend.cmd, indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
+  }
+
+  // Draw as 'draw' does, its four arguments (vertexCount, instanceCount,
+  // firstVertex, firstInstance: u32s) read by the GPU from 'buffer' at
+  // 'offset' (a multiple of 4): a buffer made with BUFFER_USAGE_INDIRECT,
+  // written by a compute pass before this pass, say
+  pub fn drawIndirect(self &mut, buffer &Buffer, offset u64) {
+    if (buffer.usage & BUFFER_USAGE_INDIRECT) == 0u32 or (offset & 3u64) != 0u64 or offset + 16u64 > buffer.size {
+      fail("drawIndirect: the buffer has no BUFFER_USAGE_INDIRECT, or the offset is not a multiple of 4 or leaves no room");
+      return;
+    }
+    vulkan.cmdDrawIndirect(backend.cmd, buffer.backend.buffer, offset, 1u32, 16u32);
+  }
+
+  // Draw as 'drawIndexed' does, its five arguments (indexCount,
+  // instanceCount, firstIndex, baseVertex an i32, firstInstance) read by the
+  // GPU from 'buffer' at 'offset', as 'drawIndirect' reads its four
+  pub fn drawIndexedIndirect(self &mut, buffer &Buffer, offset u64) {
+    if (buffer.usage & BUFFER_USAGE_INDIRECT) == 0u32 or (offset & 3u64) != 0u64 or offset + 20u64 > buffer.size {
+      fail("drawIndexedIndirect: the buffer has no BUFFER_USAGE_INDIRECT, or the offset is not a multiple of 4 or leaves no room");
+      return;
+    }
+    vulkan.cmdDrawIndexedIndirect(backend.cmd, buffer.backend.buffer, offset, 1u32, 20u32);
   }
 
   // The end of the pass; a swapchain texture goes back to the layout kept

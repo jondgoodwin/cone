@@ -51,27 +51,39 @@ Visual Studio projects stay at the root.
   the wheel's and a window's, each with its nanosecond timestamp, the
   mouse's relative mode, clocks, and loading Vulkan), linking `SDL3.lib`,
   which must be on `LIB`, and its `layout` test checks every struct against
-  SDL3's headers; `vulkan` is raw bindings to Vulkan 1.3,
-  written by hand from the specification (Vulkan's names without the prefix:
+  SDL3's headers; `vulkan` is raw bindings to Vulkan 1.3 (drawing,
+  compute, indirect commands and timestamp queries), written by hand from the specification (Vulkan's names without the prefix:
   `vulkan.createInstance`, `vulkan.InstanceCreateInfo`), linking nothing:
   every function is found at run time through the `vkGetInstanceProcAddr`
   SDL hands out, volk's way (`load`, `loadInstance`, `loadDevice`), and its
   `layout` test checks every struct against `cl.exe`; `gpu` is Cone's own
   thin GPU layer, shaped like WebGPU's objects (`Instance`, `Adapter`,
   `Device` and its `Queue`, `Surface`, `SwapChain`, `CommandEncoder`,
-  `RenderPass`, `Texture` (drawn into, sampled and filled by
-  `writeTexture`, or both; 8-bit or half-float colour, with mip levels and
-  layers, and views of some of them, 2-D, arrays or cubes, kept by the
-  texture), `Sampler`, `Buffer`, `ShaderModule`, `BindGroupLayout`,
-  `PipelineLayout` with immediates, `RenderPipeline`, `BindGroup`), with
+  `RenderPass` (indirect draws too), `ComputePassEncoder` (dispatch, and
+  indirect dispatch), `Texture` (drawn into, sampled and filled by
+  `writeTexture`, or both, or a storage texture compute reads and writes;
+  8-bit or half-float colour, r32float or r32uint, 2-D with mip levels and
+  layers or 3-D, and views of some of them, 2-D, arrays, cubes or 3-D, kept
+  by the texture), `Sampler`, `Buffer` (storage and indirect ones too),
+  `ShaderModule`, `BindGroupLayout` (uniform and storage buffers, textures,
+  storage textures, samplers), `PipelineLayout` with immediates,
+  `RenderPipeline`, `ComputePipeline`, `BindGroup`, `QuerySet` (GPU
+  timestamps)), holding programs to WebGPU's default limits (a workgroup of
+  at most 256 invocations, 8 storage buffers and 4 storage textures a
+  stage) so the browser path stays open, with
   Vulkan its only backend and nothing of Vulkan's in its interface, its
-  barriers its own and checked by the validation layer's synchronization
-  validation, keeping two frames in flight (a buffer released with
+  barriers its own (between compute and drawing too) and checked by the
+  validation layer's synchronization validation, which sees shaders'
+  storage accesses, keeping two frames in flight (a buffer released with
   `queue.releaseBuffer` is destroyed when its frame comes round) and
   designed for a command pool per recording thread; its examples in
   `packages/gpu/examples/`: `clear`
   clears a window through a swapchain, `triangle` draws the RGB triangle and
   `cube` a spinning, depth-tested cube, each reading pixels back; its
+  tests include `compute` (storage buffers, chained and indirect dispatch,
+  an indirect draw, timestamps, the limits refused) and `volume` (3-D
+  storage textures written, read and written, sampled by a render pass and
+  written again); its
   shaders are Slang, compiled ahead of time to SPIR-V that is committed and
   embedded in the Cone source by `tools/shaders/`; `geomath` is 2-D and 3-D math (vectors,
   quaternions, matrices, transforms, boxes, rays, planes, frusta and their
@@ -100,7 +112,10 @@ Visual Studio projects stay at the root.
   (`phacelle.cone` and `phacelle.slang`, under the MPL 2.0); the same
   functions for shaders in `src/noise.slang`, bit for bit the same on the
   GPU but for square roots and Phacelle, which its `parity` test checks on
-  a real GPU; its README holds the determinism rules;
+  a real GPU, and its `bake` test in compute (fBm baked into a 64^3 3-D
+  texture, every voxel compared); its example `volume.cone` bakes that
+  volume by compute and draws a slice and a sphere textured through it;
+  its README holds the determinism rules;
   `sdf` is signed distance fields over `geomath`, `noise`, `sculpt` and
   `mesh`, shapes as functions of a point: primitives, hard and smooth operators
   (Quilez's), domain operators (translation, rotation, scale, mirrors,
@@ -260,7 +275,25 @@ Visual Studio projects stay at the root.
   `// slangc: <arguments>` line in a shader adds compile arguments: a shader
   that imports `noise` needs `// slangc: -fp-mode precise`, since Slang's
   `precise` keyword emits no `NoContraction` and drivers otherwise fuse
-  multiply-adds.
+  multiply-adds. A compute entry point is `[shader("compute")]` with
+  `[numthreads(x, y, z)]` within WebGPU's limits (x and y at most 256, z at
+  most 64, 256 invocations in all), which the tool checks; a storage texture
+  names its format (`[format("r32f")] WTexture3D<float>`; `WTexture` when
+  it is only written, which WGSL requires of rgba16float).
+  **Determinism rules for compute.** Whatever a compute shader computes that
+  shapes the world (geometry, collision, anything a decision reads or
+  another machine must reproduce) keeps `noise`'s rules (its README,
+  "Determinism"): integer hashes, never a float hash or a GPU random number;
+  `-fp-mode precise`; add, subtract, multiply and `floor`, constants exact in
+  binary, no division or transcendental on the decision path; unsigned
+  remainders of non-negative values; and a fixed reduction order: a sum or a
+  minimum over invocations is reduced in an order fixed by the indices (a
+  tree whose shape does not depend on timing, or one invocation looping in a
+  fixed order), never by float atomics or by whichever invocation finishes
+  first (an integer atomic, a count or an or, is order-free and allowed).
+  Such a result has a parity test against the Cone package on a real GPU,
+  every element compared (`noise`'s `parity` and `bake`, `sdf`'s `parity`).
+  Visual-only work (particles, fog, lighting, post-processing) is exempt.
 - `tools/flowbench/`: measures what flow analysis costs, before and after a
   change (`flowbench.py --base <master's conec>`), over the packages, the suite
   and the stress files `genstress.py` generates.
@@ -383,7 +416,7 @@ python ../tools/congo/congo.py test
 ```
 
 `tools/congo/README.md`, "Testing a package", is how they work. `sdl`, and
-everything over it (`window`, `gpu`, `render`, `input`, `controls`, `noise`'s `parity` and
+everything over it (`window`, `gpu`, `render`, `input`, `controls`, `noise`'s `parity` and `bake` and
 `vulkan`'s `runtime` test), links `SDL3.lib` and runs with `SDL3.dll`: put
 the `lib\x64` folder of SDL3's development kit (`SDL3-devel-3.x-VC.zip`;
 here `C:\libs\SDL3-3.4.16\lib\x64`) on both `LIB` and `PATH` before

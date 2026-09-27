@@ -7,6 +7,7 @@ pub struct Device {
   pub backend DeviceBackend;
   pub queue Queue;
   pub frameNumber u64;             // frames ended so far
+  pub timestampPeriod f32 = 0.;    // nanoseconds a timestamp's tick; 0: its queue keeps no time
 
   pub fn isValid(self &) Bool { (backend.device as *u8 as usize) != 0usize; }
 
@@ -69,7 +70,9 @@ pub struct Device {
   pub fn createBuffer(self &mut, size u64, usage u32) Buffer {
     mut vkUsage = 0u32;
     if (usage & BUFFER_USAGE_COPY_SRC) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_TRANSFER_SRC_BIT; }
-    if (usage & BUFFER_USAGE_COPY_DST) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_TRANSFER_DST_BIT; }
+    if (usage & (BUFFER_USAGE_COPY_DST | BUFFER_USAGE_QUERY_RESOLVE)) != 0u32 {
+      vkUsage = vkUsage | vulkan.BUFFER_USAGE_TRANSFER_DST_BIT;
+    }
     if (usage & BUFFER_USAGE_INDEX) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_INDEX_BUFFER_BIT; }
     if (usage & BUFFER_USAGE_VERTEX) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_VERTEX_BUFFER_BIT; }
     if (usage & BUFFER_USAGE_UNIFORM) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_UNIFORM_BUFFER_BIT; }
@@ -86,19 +89,31 @@ pub struct Device {
   // read it back), its format a color format or TEXTURE_FORMAT_DEPTH32_FLOAT;
   // one shaders sample, its usage TEXTURE_USAGE_TEXTURE_BINDING (and
   // TEXTURE_USAGE_COPY_DST, for 'queue.writeTexture' to fill it), of a color
-  // format; or, with both usages, a color texture drawn into by some passes
+  // format; with both usages, a color texture drawn into by some passes
   // and sampled by later ones (an HDR frame, a bloom chain, a cube map drawn
-  // face by face and level by level). It is moved to the layout it rests in
-  // ahead of the next submission. Check 'isValid'.
+  // face by face and level by level); or a storage texture that compute
+  // shaders read and write texel by texel, its usage
+  // TEXTURE_USAGE_STORAGE_BINDING (with TEXTURE_BINDING too, if later passes
+  // sample it), of r32float, r32uint, rgba16float or rgba8unorm. A 3-D
+  // texture ('dimension' TEXTURE_DIMENSION_3D) is sampled or a storage
+  // texture, not drawn into, and at most MAX_TEXTURE_DIMENSION_3D each way.
+  // It is moved to the layout it rests in ahead of the next submission.
+  // Check 'isValid'.
   pub fn createTexture(self &mut, desc &TextureDescriptor) Texture {
     mut result = Texture[TextureBackend[vulkan.Image[0u64], vulkan.ImageView[0u64], KIND_NONE, true,
       backend.device, vulkan.DeviceMemory[0u64]], desc.width, desc.height, desc.format, desc.usage,
-      desc.mipLevelCount, desc.depthOrArrayLayers];
+      desc.mipLevelCount, desc.depthOrArrayLayers, desc.dimension];
     if !self.isValid() { return result; }
     imm attachment = (desc.usage & TEXTURE_USAGE_RENDER_ATTACHMENT) != 0u32;
     imm sampled = (desc.usage & TEXTURE_USAGE_TEXTURE_BINDING) != 0u32;
-    if !attachment and !sampled {
-      fail("createTexture: a texture is drawn into (TEXTURE_USAGE_RENDER_ATTACHMENT), sampled (TEXTURE_USAGE_TEXTURE_BINDING), or both");
+    imm storage = (desc.usage & TEXTURE_USAGE_STORAGE_BINDING) != 0u32;
+    imm volume = desc.dimension == TEXTURE_DIMENSION_3D;
+    if !attachment and !sampled and !storage {
+      fail("createTexture: a texture is drawn into (TEXTURE_USAGE_RENDER_ATTACHMENT), sampled (TEXTURE_USAGE_TEXTURE_BINDING), a storage texture (TEXTURE_USAGE_STORAGE_BINDING), or more than one");
+      return result;
+    }
+    if desc.dimension != TEXTURE_DIMENSION_2D and !volume {
+      fail("createTexture: a texture is 2-D or 3-D");
       return result;
     }
     imm format = vkFormat(desc.format);
@@ -106,14 +121,26 @@ pub struct Device {
       fail("createTexture: the format is not one offered");
       return result;
     }
+    // The levels halve all three sides of a 3-D texture, the width and
+    // height of a 2-D one
+    mut largest = umax(desc.width, desc.height);
+    if volume { largest = umax(largest, desc.depthOrArrayLayers); }
     if desc.mipLevelCount == 0u32 or desc.mipLevelCount > 16u32 or desc.depthOrArrayLayers == 0u32
-        or ((desc.width >> (desc.mipLevelCount - 1u32)) == 0u32 and (desc.height >> (desc.mipLevelCount - 1u32)) == 0u32) {
+        or (largest >> (desc.mipLevelCount - 1u32)) == 0u32 {
       fail("createTexture: no levels or layers, or more levels than halving its size allows");
       return result;
     }
     imm depth = desc.format == TEXTURE_FORMAT_DEPTH32_FLOAT;
     if sampled and depth {
       fail("createTexture: a depth texture is not sampled yet");
+      return result;
+    }
+    if storage and (attachment or !isStorageFormat(desc.format)) {
+      fail("createTexture: a storage texture is r32float, r32uint, rgba16float or rgba8unorm, and not drawn into (yet)");
+      return result;
+    }
+    if volume and (attachment or largest > MAX_TEXTURE_DIMENSION_3D) {
+      fail("createTexture: a 3-D texture is not drawn into (yet), and is at most 2048 texels each way");
       return result;
     }
     mut kind = KIND_COLOR;
@@ -130,20 +157,24 @@ pub struct Device {
         vkUsage = vulkan.IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
       }
     }
+    if storage {
+      kind = KIND_STORAGE;
+      vkUsage = vulkan.IMAGE_USAGE_STORAGE_BIT;
+    }
     if (desc.usage & TEXTURE_USAGE_COPY_SRC) != 0u32 { vkUsage = vkUsage | vulkan.IMAGE_USAGE_TRANSFER_SRC_BIT; }
     if (desc.usage & TEXTURE_USAGE_COPY_DST) != 0u32 { vkUsage = vkUsage | vulkan.IMAGE_USAGE_TRANSFER_DST_BIT; }
     if (desc.usage & TEXTURE_USAGE_TEXTURE_BINDING) != 0u32 { vkUsage = vkUsage | vulkan.IMAGE_USAGE_SAMPLED_BIT; }
     // Six square layers, or a multiple of six, may be seen as a cube (wgpu's
     // rule: WebGPU decides at the view)
     mut flags = 0u32;
-    if desc.depthOrArrayLayers % 6u32 == 0u32 and desc.width == desc.height {
+    if !volume and desc.depthOrArrayLayers % 6u32 == 0u32 and desc.width == desc.height {
       flags = vulkan.IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
     }
     mut image = vulkan.Image[0u64];
     mut memory = vulkan.DeviceMemory[0u64];
     mut view = vulkan.ImageView[0u64];
     if !makeImageLevels(backend.device, &queue.backend.memory, desc.width, desc.height, format, vkUsage,
-        desc.mipLevelCount, desc.depthOrArrayLayers, flags, &mut image, &mut memory, &mut view) {
+        desc.mipLevelCount, desc.depthOrArrayLayers, flags, volume, &mut image, &mut memory, &mut view) {
       return result;
     }
     result.backend.image = image;
@@ -151,7 +182,7 @@ pub struct Device {
     result.backend.view = view;
     result.backend.kind = kind;
     result.backend.mipCount = desc.mipLevelCount;
-    result.backend.layerCount = desc.depthOrArrayLayers;
+    result.backend.layerCount = if volume { 1u32; } else { desc.depthOrArrayLayers; };
     // Room for a view of each level of each layer, a cube and an array view
     // of each level, and a few more
     result.backend.views = newViews(desc.mipLevelCount * (desc.depthOrArrayLayers + 2u32) + 8u32);
@@ -161,10 +192,11 @@ pub struct Device {
   }
 
   // A shader module from SPIR-V: 32-bit words, as tools/shaders/shaders.py
-  // embeds them. Check 'isValid'.
+  // embeds them. A compute entry point's workgroup must be within WebGPU's
+  // limits (MAX_COMPUTE_WORKGROUP_SIZE_X and the rest). Check 'isValid'.
   pub fn createShaderModule(self &, spirv &[]u32) ShaderModule {
     mut module = vulkan.ShaderModule[0u64];
-    if self.isValid() and spirv.len > 0usize {
+    if self.isValid() and spirv.len > 0usize and workgroupsWithinLimits(spirv) {
       imm ci = vulkan.ShaderModuleCreateInfo[codeSize: spirv.len * 4usize, pCode: &spirv[0] as *u32];
       check(vulkan.createShaderModule(backend.device, &ci, nullp(), &mut module), "vkCreateShaderModule");
     }
@@ -172,12 +204,12 @@ pub struct Device {
   }
 
   // A bind group layout: the bindings a bind group of it has, each a
-  // uniform or storage buffer, a sampler or a texture, seen by the stages
-  // its 'visibility' names.
+  // uniform or storage buffer, a sampler, a texture or a storage texture,
+  // seen by the stages its 'visibility' names.
   // Bindings are numbered below MAX_BINDINGS. Check 'isValid'.
   pub fn createBindGroupLayout(self &, entries &[]BindGroupLayoutEntry) BindGroupLayout {
     mut result = BindGroupLayout[BindGroupLayoutBackend[backend.device, vulkan.DescriptorSetLayout[0u64],
-      [16; 0u32]]];
+      [16; 0u32], [3; 0u32], [3; 0u32]]];
     if !self.isValid() { return result; }
     if entries.len > usize[MAX_BINDINGS] {
       fail("createBindGroupLayout: more than 16 entries");
@@ -192,11 +224,23 @@ pub struct Device {
         fail("createBindGroupLayout: a binding numbered 16 or more");
         return result;
       }
+      imm storageBuffer = e.kind == BINDING_KIND_BUFFER and e.bufferType != BUFFER_BINDING_TYPE_UNIFORM;
+      imm storageTexture = e.kind == BINDING_KIND_STORAGE_TEXTURE;
+      if !bindingWithinWebGPU(&e) { return result; }
       imm type = descriptorType(e.kind, e.bufferType);
       bindings[i].binding = e.binding;
       bindings[i].descriptorType = type;
       bindings[i].stageFlags = shaderStages(e.visibility);
       result.backend.types[usize[e.binding]] = type;
+      // What each stage sees, counted for the pipeline layout's limits
+      mut s = 0usize;
+      while s < 3usize {
+        if (e.visibility & (1u32 << u32[s])) != 0u32 {
+          if storageBuffer { result.backend.storageBuffers[s] = result.backend.storageBuffers[s] + 1u32; }
+          if storageTexture { result.backend.storageTextures[s] = result.backend.storageTextures[s] + 1u32; }
+        }
+        s = s + 1usize;
+      }
       i = i + 1usize;
     }
     imm ci = vulkan.DescriptorSetLayoutCreateInfo[bindingCount: u32[entries.len],
@@ -210,17 +254,35 @@ pub struct Device {
   // A pipeline layout: the bind groups a pipeline of it binds, in order
   // (group 0 first, at most MAX_BIND_GROUPS), and 'immediateSize' bytes of
   // immediates (a multiple of 4, at most MAX_IMMEDIATE_SIZE; 0 for none).
-  // Check 'isValid'.
+  // No stage may see more than MAX_STORAGE_BUFFERS_PER_SHADER_STAGE storage
+  // buffers or MAX_STORAGE_TEXTURES_PER_SHADER_STAGE storage textures in all
+  // (WebGPU's limits). Check 'isValid'.
   pub fn createPipelineLayout(self &, bindGroupLayouts &[]&BindGroupLayout, immediateSize u32) PipelineLayout {
     if bindGroupLayouts.len > usize[MAX_BIND_GROUPS] {
       fail("createPipelineLayout: more than 4 bind groups");
       return PipelineLayout[PipelineLayoutBackend[backend.device, vulkan.PipelineLayout[0u64]], 0u32];
     }
     mut sets [4; vulkan.DescriptorSetLayout] = [4; vulkan.DescriptorSetLayout[0u64]];
+    mut buffers [3; u32] = [3; 0u32];
+    mut textures [3; u32] = [3; 0u32];
     mut i = 0usize;
     while i < bindGroupLayouts.len {
       sets[i] = bindGroupLayouts[i].backend.layout;
+      mut s = 0usize;
+      while s < 3usize {
+        buffers[s] = buffers[s] + bindGroupLayouts[i].backend.storageBuffers[s];
+        textures[s] = textures[s] + bindGroupLayouts[i].backend.storageTextures[s];
+        s = s + 1usize;
+      }
       i = i + 1usize;
+    }
+    mut s = 0usize;
+    while s < 3usize {
+      if buffers[s] > MAX_STORAGE_BUFFERS_PER_SHADER_STAGE or textures[s] > MAX_STORAGE_TEXTURES_PER_SHADER_STAGE {
+        fail("createPipelineLayout: a stage sees more than 8 storage buffers or 4 storage textures (WebGPU's limits)");
+        return PipelineLayout[PipelineLayoutBackend[backend.device, vulkan.PipelineLayout[0u64]], 0u32];
+      }
+      s = s + 1usize;
     }
     makePipelineLayout(backend.device, u32[bindGroupLayouts.len], &sets, immediateSize);
   }
@@ -345,6 +407,42 @@ pub struct Device {
     result;
   }
 
+  // A compute pipeline, as 'desc' describes it: its shader's entry point
+  // and the layout of what it binds. Check 'isValid'.
+  pub fn createComputePipeline(self &, desc &ComputePipelineDescriptor) ComputePipeline {
+    mut result = ComputePipeline[PipelineBackend[backend.device, vulkan.Pipeline[0u64], desc.layout.backend.layout]];
+    if !self.isValid() or !desc.module.isValid() or !desc.layout.isValid() { return result; }
+    mut name = String.from(desc.entryPoint);
+    imm stage = vulkan.PipelineShaderStageCreateInfo[stage: vulkan.SHADER_STAGE_COMPUTE_BIT,
+      module: desc.module.backend.module, pName: name.cstr(), pSpecializationInfo: nullp()];
+    imm ci = vulkan.ComputePipelineCreateInfo[stage: stage, layout: desc.layout.backend.layout,
+      basePipelineHandle: vulkan.Pipeline[0u64]];
+    mut pipeline = vulkan.Pipeline[0u64];
+    check(vulkan.createComputePipelines(backend.device, vulkan.PipelineCache[0u64], 1u32,
+      &ci as *vulkan.ComputePipelineCreateInfo, nullp(), &mut pipeline as *vulkan.Pipeline), "vkCreateComputePipelines");
+    result.backend.pipeline = pipeline;
+    result;
+  }
+
+  // A query set of 'count' queries (at most MAX_QUERY_COUNT) of 'type':
+  // QUERY_TYPE_TIMESTAMP, the GPU's clock, written by
+  // 'encoder.writeTimestamp' and copied into a buffer by
+  // 'encoder.resolveQuerySet'. The device must keep time
+  // ('timestampPeriod' above 0). Check 'isValid'.
+  pub fn createQuerySet(self &, type u32, count u32) QuerySet {
+    mut result = QuerySet[QuerySetBackend[backend.device, vulkan.QueryPool[0u64]], type, count];
+    if !self.isValid() { return result; }
+    if type != QUERY_TYPE_TIMESTAMP or count == 0u32 or count > MAX_QUERY_COUNT or timestampPeriod <= 0. {
+      fail("createQuerySet: timestamps only, 1 to 4096 of them, on a device that keeps time");
+      return result;
+    }
+    imm ci = vulkan.QueryPoolCreateInfo[queryType: vulkan.QUERY_TYPE_TIMESTAMP, queryCount: count];
+    mut pool = vulkan.QueryPool[0u64];
+    check(vulkan.createQueryPool(backend.device, &ci, nullp(), &mut pool), "vkCreateQueryPool");
+    result.backend.pool = pool;
+    result;
+  }
+
   // A sampler, filtering and wrapping as 'desc' says. Check 'isValid'.
   pub fn createSampler(self &, desc &SamplerDescriptor) Sampler {
     mut sampler = vulkan.Sampler[0u64];
@@ -372,25 +470,35 @@ pub struct Device {
     }
     // A pool of its own, holding just its set: destroying the pool frees it
     // How many of each descriptor type: uniform and storage buffers,
-    // samplers, sampled images
-    imm types [4; u32] = [vulkan.DESCRIPTOR_TYPE_UNIFORM_BUFFER, vulkan.DESCRIPTOR_TYPE_STORAGE_BUFFER,
-      vulkan.DESCRIPTOR_TYPE_SAMPLER, vulkan.DESCRIPTOR_TYPE_SAMPLED_IMAGE];
-    mut counts [4; u32] = [4; 0u32];
+    // samplers, sampled images, storage images
+    imm types [5; u32] = [vulkan.DESCRIPTOR_TYPE_UNIFORM_BUFFER, vulkan.DESCRIPTOR_TYPE_STORAGE_BUFFER,
+      vulkan.DESCRIPTOR_TYPE_SAMPLER, vulkan.DESCRIPTOR_TYPE_SAMPLED_IMAGE, vulkan.DESCRIPTOR_TYPE_STORAGE_IMAGE];
+    mut counts [5; u32] = [5; 0u32];
     mut i = 0usize;
     while i < entries.len {
       if entries[i].binding >= MAX_BINDINGS { return result; }
       imm type = layout.backend.types[usize[entries[i].binding]];
+      // A storage buffer's binding: WebGPU's alignment and size limits
+      if type == vulkan.DESCRIPTOR_TYPE_STORAGE_BUFFER {
+        imm b = entries[i].backend;
+        mut size = b.size;
+        if size == WHOLE_SIZE and b.bufferSize >= b.offset { size = b.bufferSize - b.offset; }
+        if b.offset % MIN_STORAGE_BUFFER_OFFSET_ALIGNMENT != 0u64 or size > MAX_STORAGE_BUFFER_BINDING_SIZE {
+          fail("createBindGroup: a storage buffer bound from an offset not a multiple of 256, or more than 128 MiB of it");
+          return result;
+        }
+      }
       mut t = 0usize;
-      while t < 4usize {
+      while t < 5usize {
         if types[t] == type { counts[t] = counts[t] + 1u32; }
         t = t + 1usize;
       }
       i = i + 1usize;
     }
-    mut sizes [4; vulkan.DescriptorPoolSize] = [4; vulkan.DescriptorPoolSize[vulkan.DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1u32]];
+    mut sizes [5; vulkan.DescriptorPoolSize] = [5; vulkan.DescriptorPoolSize[vulkan.DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1u32]];
     mut sizeCount = 0usize;
     mut t = 0usize;
-    while t < 4usize {
+    while t < 5usize {
       if counts[t] > 0u32 {
         sizes[sizeCount] = vulkan.DescriptorPoolSize[types[t], counts[t]];
         sizeCount = sizeCount + 1usize;
@@ -433,10 +541,9 @@ pub struct Device {
         infos[i] = vulkan.DescriptorBufferInfo[e.backend.buffer, e.backend.offset, range];
         writes[i].pBufferInfo = (&infos as *u8 + i * mem.sizeof[vulkan.DescriptorBufferInfo]()) as *vulkan.DescriptorBufferInfo;
       } else {
-        // A sampled texture rests in the shader-read layout; a sampler has none
-        mut imageLayout = vulkan.IMAGE_LAYOUT_UNDEFINED;
-        if e.backend.kind == BINDING_KIND_TEXTURE { imageLayout = vulkan.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; }
-        images[i] = vulkan.DescriptorImageInfo[e.backend.sampler, e.backend.view, imageLayout];
+        // A texture is bound in the layout it rests in (a sampled one the
+        // shader-read layout, a storage texture the general); a sampler has none
+        images[i] = vulkan.DescriptorImageInfo[e.backend.sampler, e.backend.view, e.backend.imageLayout];
         writes[i].pImageInfo = (&images as *u8 + i * mem.sizeof[vulkan.DescriptorImageInfo]()) as *vulkan.DescriptorImageInfo;
       }
       i = i + 1usize;
@@ -545,17 +652,25 @@ fn allocateBuffer(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProper
 // GPU's memory, of its own, and a view of all of it
 fn makeImage(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, width u32, height u32,
     format u32, usage u32, image &mut vulkan.Image, memory &mut vulkan.DeviceMemory, view &mut vulkan.ImageView) Bool {
-  makeImageLevels(device, props, width, height, format, usage, 1u32, 1u32, 0u32, image, memory, view);
+  makeImageLevels(device, props, width, height, format, usage, 1u32, 1u32, 0u32, false, image, memory, view);
 }
 
 // The same, of 'levels' mip levels and 'layers' layers, made with 'flags'
 // (cube-compatible, say); the view is of every level and layer, 2-D or, with
-// several layers, a 2-D array
+// several layers, a 2-D array. A 'volume' is 3-D, 'layers' deep, its view 3-D.
 fn makeImageLevels(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, width u32, height u32,
-    format u32, usage u32, levels u32, layers u32, flags u32, image &mut vulkan.Image, memory &mut vulkan.DeviceMemory,
-    view &mut vulkan.ImageView) Bool {
-  imm ici = vulkan.ImageCreateInfo[flags: flags, format: format,
-    extent: vulkan.Extent3D[width, height, 1u32], mipLevels: levels, arrayLayers: layers, usage: usage,
+    format u32, usage u32, levels u32, layers u32, flags u32, volume Bool, image &mut vulkan.Image,
+    memory &mut vulkan.DeviceMemory, view &mut vulkan.ImageView) Bool {
+  mut imageType = vulkan.IMAGE_TYPE_2D;
+  mut depth = 1u32;
+  mut arrayLayers = layers;
+  if volume {
+    imageType = vulkan.IMAGE_TYPE_3D;
+    depth = layers;
+    arrayLayers = 1u32;
+  }
+  imm ici = vulkan.ImageCreateInfo[flags: flags, imageType: imageType, format: format,
+    extent: vulkan.Extent3D[width, height, depth], mipLevels: levels, arrayLayers: arrayLayers, usage: usage,
     pQueueFamilyIndices: 0usize as *u32];
   if !check(vulkan.createImage(device, &ici, nullp(), image), "vkCreateImage") { return false; }
   mut req = zeroed[vulkan.MemoryRequirements]();
@@ -564,10 +679,11 @@ fn makeImageLevels(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryPrope
   if memory.h == 0u64 { return false; }
   if !check(vulkan.bindImageMemory(device, *image, *memory, 0u64), "vkBindImageMemory") { return false; }
   mut viewType = vulkan.IMAGE_VIEW_TYPE_2D;
-  if layers > 1u32 { viewType = vulkan.IMAGE_VIEW_TYPE_2D_ARRAY; }
+  if arrayLayers > 1u32 { viewType = vulkan.IMAGE_VIEW_TYPE_2D_ARRAY; }
+  if volume { viewType = vulkan.IMAGE_VIEW_TYPE_3D; }
   imm vci = vulkan.ImageViewCreateInfo[image: *image, viewType: viewType, format: format,
     components: vulkan.ComponentMapping[], subresourceRange: vulkan.ImageSubresourceRange[aspectMask: aspectOf(format),
-    levelCount: levels, layerCount: layers]];
+    levelCount: levels, layerCount: arrayLayers]];
   check(vulkan.createImageView(device, &vci, nullp(), view), "vkCreateImageView");
 }
 
@@ -579,8 +695,7 @@ fn makePipelineLayout(device vulkan.Device, setCount u32, sets &[4; vulkan.Descr
     fail("a pipeline layout's immediates are more than 128 bytes, or not a multiple of 4");
     return result;
   }
-  imm range = vulkan.PushConstantRange[vulkan.SHADER_STAGE_VERTEX_BIT | vulkan.SHADER_STAGE_FRAGMENT_BIT, 0u32,
-    immediateSize];
+  imm range = vulkan.PushConstantRange[immediateStages(), 0u32, immediateSize];
   mut ranges = 0u32;
   if immediateSize > 0u32 { ranges = 1u32; }
   imm ci = vulkan.PipelineLayoutCreateInfo[setLayoutCount: setCount,
