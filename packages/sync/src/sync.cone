@@ -2119,9 +2119,6 @@ pub struct Receiver[T Sendable] is Sendable {
   // value back; finalizes each value still in it, each once, waiting out any
   // send that claimed a slot before the close and has not written it; and
   // frees the blocks, the senders touching none once they see it closed.
-  // (It keeps its own copies of the index and the block, and steps them with
-  // the free functions advance uses: calling a '&mut' method through 'self
-  // &uni' moves the unique reference into the call rather than lending it.)
   fn final(self &uni) {
     imm c = chan;
     if ring as usize != 0usize {
@@ -2142,22 +2139,17 @@ pub struct Receiver[T Sendable] is Sendable {
       step = chanBackoff(step);
       tail = mem.atomicLoad[u64](tailp, MemOrder.Acquire[]);
     }
-    mut h = head;
-    mut b = block;
-    while chanPos(h) != chanPos(tail) {
-      imm offset = chanOffset(h);
-      imm slot = slotAt[T](b, offset);
+    while chanPos(head) != chanPos(tail) {
+      imm offset = chanOffset(head);
+      imm slot = slotAt[T](block, offset);
       step = 0u32;
       while mem.atomicLoad[u32](&(*slot).state as *u32, MemOrder.Acquire[]) == 0u32 {
         step = chanBackoff(step);
       }
       mem.finalize[T](&(*slot).value as *T);
-      if offset + 1u64 == blockCap {
-        b = chanPassBlock[T](b);
-      }
-      h = chanStep(h, offset);
+      self.advance(offset);
     }
-    libc.free(b as *u8);
+    libc.free(block as *u8);
     chanRelease[T](c);
   }
 }
