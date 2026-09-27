@@ -1,0 +1,182 @@
+// A bounded Channel[T] under contention. Four producer threads each send
+// 100000 items as fast as they can into a channel of 64, producer p's k-th
+// item being p * 2^32 + k, while main takes them: every item arrives, once,
+// and each producer's in the order it sent them.
+//
+//   items  400000
+//   sum    2577000377800000 = 2^32 * 100000 * (0 + 1 + 2 + 3)
+//                             + 4 * (100000 * 100001 / 2)
+//
+// Then two producers send 50000 each through a channel of 1, so nearly
+// every send finds it full, and waits for main to take the one value:
+//
+//   items  100000
+//   sum    214750864850000 = 2^32 * 50000 * (0 + 1) + 2 * (50000 * 50001 / 2)
+//
+// Then the receiver goes while three producers are still sending values
+// whose deaths are counted into a channel of 16, by send, which waits while
+// it is full: main takes 1000 and drops the receiver, and every sender
+// asleep for room wakes to find it closed. Every one of the 60000 values
+// dies exactly once -- taken and dropped by main, finalized by the
+// receiver's death, or handed back to its producer and dropped there -- and
+// at most 1016 are let in: the 1000 taken and the 16 a full ring holds,
+// since position p is let in only once p less 16 is taken. Run 5 times, as
+// the moment the receiver goes lands differently each time.
+
+mod channelboundedstress;
+
+import testing use *;
+import thread;
+import sync use *;
+
+struct Work {
+  pub tx Sender[u64];
+  pub id u64;
+  pub n u64;
+}
+
+fn produce(w Work) u64 {
+  mut k = 1u64;
+  while k <= w.n {
+    w.tx.send((w.id << 32u64) + k);
+    k = k + 1u64;
+  }
+  w.n;
+}
+
+// Take everything until the channel closes: how many, their sum, and how
+// many came out of their producer's order (producers 0 to 3)
+fn takeAll(rx &mut Receiver[u64]) u64, u64, u64 {
+  mut last [4; u64] = [4; 0u64];
+  mut items = 0u64;
+  mut sum = 0u64;
+  mut disorder = 0u64;
+  mut more = true;
+  while more {
+    match rx.recv() {
+      case imm s Some {
+        imm p = s.value >> 32u64;
+        imm k = s.value & 0xFFFFFFFFu64;
+        if p > 3u64 or k != last[p] + 1u64 {
+          disorder = disorder + 1u64;
+        }
+        if p <= 3u64 {
+          last[p] = k;
+        }
+        items = items + 1u64;
+        sum = sum + s.value;
+      }
+      case is None[u64] {more = false;}
+    }
+  }
+  items, sum, disorder;
+}
+
+// A value whose deaths are counted, from any thread
+imm deaths Atomic[u64];
+
+fn @initpure init() {
+  deaths = Atomic[u64].of(0u64);
+}
+
+struct Counted {
+  pub n u64;
+  fn final(self &uni) {
+    deaths.add(1u64);
+  }
+}
+
+struct CountedWork {
+  pub tx Sender[Counted];
+  pub id u64;
+}
+
+// Send 20000 counted values: how many were refused
+fn produceCounted(w CountedWork) u64 {
+  mut refused = 0u64;
+  mut k = 1u64;
+  while k <= 20000u64 {
+    match w.tx.send(Counted[w.id * 100000u64 + k]) {
+      case is Some[Counted] {refused = refused + 1u64;}
+      case is None[Counted] {}
+    }
+    k = k + 1u64;
+  }
+  refused;
+}
+
+fn dropReceiver(rx Receiver[Counted]) {}
+
+fn contended() {
+  mut tx Sender[u64];
+  mut rx Receiver[u64];
+  tx, rx = Channel[u64].bounded(64u64);
+  imm a = thread.start(Work[tx.clone(), 1u64, 100000u64], &produce);
+  imm b = thread.start(Work[tx.clone(), 2u64, 100000u64], &produce);
+  imm c = thread.start(Work[tx.clone(), 3u64, 100000u64], &produce);
+  imm d = thread.start(Work[tx, 0u64, 100000u64], &produce);
+  mut items = 0u64;
+  mut sum = 0u64;
+  mut disorder = 0u64;
+  items, sum, disorder = takeAll(&mut rx);
+  imm sent = a.join() + b.join() + c.join() + d.join();
+  expectUInt(sent, 400000u64, "the items four producers sent");
+  expectUInt(items, 400000u64, "the items taken");
+  expectUInt(sum, 2577000377800000u64, "their sum");
+  expectUInt(disorder, 0u64, "each producer's in its own order");
+}
+
+fn single() {
+  mut tx Sender[u64];
+  mut rx Receiver[u64];
+  tx, rx = Channel[u64].bounded(1u64);
+  imm a = thread.start(Work[tx.clone(), 1u64, 50000u64], &produce);
+  imm b = thread.start(Work[tx, 0u64, 50000u64], &produce);
+  mut items = 0u64;
+  mut sum = 0u64;
+  mut disorder = 0u64;
+  items, sum, disorder = takeAll(&mut rx);
+  imm sent = a.join() + b.join();
+  expectUInt(sent, 100000u64, "the items two producers sent through one slot");
+  expectUInt(items, 100000u64, "the items taken");
+  expectUInt(sum, 214750864850000u64, "their sum");
+  expectUInt(disorder, 0u64, "each producer's in its own order");
+}
+
+// The receiver goes mid-stream: every value dies once, and no more are let
+// in than were taken and a full ring holds
+fn receiverGoes() Bool {
+  deaths.store(0u64);
+  mut tx Sender[Counted];
+  mut rx Receiver[Counted];
+  tx, rx = Channel[Counted].bounded(16u64);
+  imm a = thread.start(CountedWork[tx.clone(), 1u64], &produceCounted);
+  imm b = thread.start(CountedWork[tx.clone(), 2u64], &produceCounted);
+  imm c = thread.start(CountedWork[tx, 3u64], &produceCounted);
+  mut taken = 0u64;
+  while taken < 1000u64 {
+    match rx.recv() {
+      case is Some[Counted] {taken = taken + 1u64;}
+      case is None[Counted] {}
+    }
+  }
+  dropReceiver(rx);
+  imm refused = a.join() + b.join() + c.join();
+  imm ok = deaths.load() == 60000u64 and refused >= 58984u64;
+  ok;
+}
+
+fn main() i32 {
+  contended();
+  single();
+  mut run = 0u32;
+  mut good = 0u32;
+  while run < 5u32 {
+    if receiverGoes() {
+      good = good + 1u32;
+    }
+    run = run + 1u32;
+  }
+  expectUInt(u64[good], 5u64, "every value died exactly once, in each of 5 runs");
+  done();
+}

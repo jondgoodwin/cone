@@ -1,0 +1,225 @@
+// A bounded Channel[T] between threads, small enough that senders really
+// wait. 'testing' counts its checks in globals, so every check is made on
+// the main thread, from what the threads return.
+//
+// 1. Three producer threads each send 10000 numbered items into a channel
+//    of 8, producer p's k-th item being p * 1000000 + k; one consumer thread
+//    takes them until recv answers None. It sums them, counts them per
+//    producer, and checks each producer's came in the order it sent them:
+//
+//      items  30000 (10000 from each)
+//      sum    30150015000 = 10000 * (0 + 1 + 2) * 1000000 + 3 * (10000 * 10001 / 2)
+//
+// 2. A slow consumer: two producers send 100 items each into a channel of
+//    2, one by send and one by sendTimeout with a 10-second limit, while
+//    the consumer sleeps a millisecond before each of its first 50 takes.
+//    A sender spins only briefly before it sleeps, so across those
+//    milliseconds the senders are asleep, and each take must wake them; a
+//    lost wake-up would leave one asleep with room, and the test would hang
+//    (and fail, at Congo's 60 seconds), or the timed send would time out.
+//
+//      items  200
+//      sum    310100 = 100 * (1 + 2) * 1000 + 2 * (100 * 101 / 2)
+//
+// 3. The receiver goes while senders wait: three producers each send 1000
+//    counted values into a channel of 4, by send, which waits while it is
+//    full; main takes 10, sleeps 20 ms, by which time the ring is full again
+//    and all three producers wait, then drops the receiver. Every sender
+//    wakes, and each later send is handed its value back. Of the 3000
+//    values exactly 14 were sent -- the 10 taken and the 4 filling the ring,
+//    since position p is let in only once p less 4 is taken -- and 2986
+//    refused; every one of the 3000 dies exactly once.
+
+mod channelboundedthreads;
+
+import testing use *;
+import thread;
+import sync use *;
+
+const perProducer = 10000u64;
+
+struct Work {
+  pub tx Sender[u64];
+  pub id u64;
+}
+
+fn produce(w Work) u64 {
+  mut k = 1u64;
+  while k <= perProducer {
+    w.tx.send(w.id * 1000000u64 + k);
+    k = k + 1u64;
+  }
+  perProducer;
+}
+
+struct Totals {
+  pub items u64;
+  pub sum u64;
+  pub from0 u64;
+  pub from1 u64;
+  pub from2 u64;
+  pub disorder u64;             // items not one more than their producer's last
+}
+
+// Take items until the channel closes, first sleeping slowMs milliseconds
+// before each of the first 'slow' takes; items are p * 1000000 + k, or,
+// when small is true, p * 1000 + k
+fn tally(r &mut Receiver[u64], slow u64, small Bool) Totals {
+  imm base = if small {1000u64;} else {1000000u64;};
+  mut t = Totals[0u64, 0u64, 0u64, 0u64, 0u64, 0u64];
+  mut last [3; u64] = [3; 0u64];
+  mut more = true;
+  while more {
+    if t.items < slow {
+      thread.sleep(1000000u64);
+    }
+    match r.recv() {
+      case imm s Some {
+        imm v = s.value;
+        imm p = v / base;
+        imm k = v % base;
+        if p > 2u64 or k != last[p] + 1u64 {
+          t.disorder = t.disorder + 1u64;
+        }
+        if p <= 2u64 {
+          last[p] = k;
+        }
+        if p == 0u64 {t.from0 = t.from0 + 1u64;}
+        if p == 1u64 {t.from1 = t.from1 + 1u64;}
+        if p == 2u64 {t.from2 = t.from2 + 1u64;}
+        t.items = t.items + 1u64;
+        t.sum = t.sum + v;
+      }
+      case is None[u64] {more = false;}
+    }
+  }
+  t;
+}
+
+fn consume(rx Receiver[u64]) Totals {
+  mut r = rx;
+  tally(&mut r, 0u64, false);
+}
+
+fn consumeSlowly(rx Receiver[u64]) Totals {
+  mut r = rx;
+  tally(&mut r, 50u64, true);
+}
+
+// 100 items by send: how many were handed back
+fn sendHundred(w Work) u64 {
+  mut back = 0u64;
+  mut k = 1u64;
+  while k <= 100u64 {
+    match w.tx.send(w.id * 1000u64 + k) {
+      case is Some[u64] {back = back + 1u64;}
+      case is None[u64] {}
+    }
+    k = k + 1u64;
+  }
+  back;
+}
+
+// 100 items by sendTimeout, 10 s each: how many were handed back
+fn sendHundredTimed(w Work) u64 {
+  mut back = 0u64;
+  mut k = 1u64;
+  while k <= 100u64 {
+    match w.tx.sendTimeout(w.id * 1000u64 + k, 10000000000u64) {
+      case is Some[u64] {back = back + 1u64;}
+      case is None[u64] {}
+    }
+    k = k + 1u64;
+  }
+  back;
+}
+
+// A value whose deaths are counted, from any thread
+imm deaths Atomic[u64];
+
+fn @initpure init() {
+  deaths = Atomic[u64].of(0u64);
+}
+
+struct Counted {
+  pub n u64;
+  fn final(self &uni) {
+    deaths.add(1u64);
+  }
+}
+
+struct CountedWork {
+  pub tx Sender[Counted];
+  pub id u64;
+}
+
+// Send 1000 counted values, waiting while the channel is full: how many
+// were refused
+fn produceCounted(w CountedWork) u64 {
+  mut refused = 0u64;
+  mut k = 1u64;
+  while k <= 1000u64 {
+    match w.tx.send(Counted[w.id * 10000u64 + k]) {
+      case is Some[Counted] {refused = refused + 1u64;}
+      case is None[Counted] {}
+    }
+    k = k + 1u64;
+  }
+  refused;
+}
+
+fn dropReceiver(rx Receiver[Counted]) {}
+
+fn main() i32 {
+  mut tx Sender[u64];
+  mut rx Receiver[u64];
+  tx, rx = Channel[u64].bounded(8u64);
+  imm consumer = thread.start(rx, &consume);
+  imm p1 = thread.start(Work[tx.clone(), 1u64], &produce);
+  imm p2 = thread.start(Work[tx.clone(), 2u64], &produce);
+  imm p0 = thread.start(Work[tx, 0u64], &produce);
+  imm sent = p0.join() + p1.join() + p2.join();
+  imm t = consumer.join();
+  expectUInt(sent, 30000u64, "the items the producers sent");
+  expectUInt(t.items, 30000u64, "the items the consumer took");
+  expectUInt(t.from0, 10000u64, "from producer 0");
+  expectUInt(t.from1, 10000u64, "from producer 1");
+  expectUInt(t.from2, 10000u64, "from producer 2");
+  expectUInt(t.sum, 30150015000u64, "their sum");
+  expectUInt(t.disorder, 0u64, "each producer's items in the order it sent them");
+
+  mut tx2 Sender[u64];
+  mut rx2 Receiver[u64];
+  tx2, rx2 = Channel[u64].bounded(2u64);
+  imm slow = thread.start(rx2, &consumeSlowly);
+  imm q1 = thread.start(Work[tx2.clone(), 1u64], &sendHundred);
+  imm q2 = thread.start(Work[tx2, 2u64], &sendHundredTimed);
+  expectUInt(q1.join(), 0u64, "every send got in, waiting for room");
+  expectUInt(q2.join(), 0u64, "every timed send got in, well inside its time");
+  imm st = slow.join();
+  expectUInt(st.items, 200u64, "the items the slow consumer took");
+  expectUInt(st.from1, 100u64, "from the sender");
+  expectUInt(st.from2, 100u64, "from the timed sender");
+  expectUInt(st.sum, 310100u64, "their sum");
+  expectUInt(st.disorder, 0u64, "each producer's in its own order");
+
+  mut tx3 Sender[Counted];
+  mut rx3 Receiver[Counted];
+  tx3, rx3 = Channel[Counted].bounded(4u64);
+  imm a = thread.start(CountedWork[tx3.clone(), 1u64], &produceCounted);
+  imm b = thread.start(CountedWork[tx3.clone(), 2u64], &produceCounted);
+  imm c = thread.start(CountedWork[tx3, 3u64], &produceCounted);
+  mut taken = 0u64;
+  while taken < 10u64 {
+    match rx3.recv() {
+      case is Some[Counted] {taken = taken + 1u64;}
+      case is None[Counted] {}
+    }
+  }
+  thread.sleep(20000000u64);
+  dropReceiver(rx3);
+  imm refused = a.join() + b.join() + c.join();
+  expectUInt(refused, 2986u64, "all but the 14 let in are refused");
+  expectUInt(deaths.load(), 3000u64, "and every one of the 3000 died once");
+  done();
+}
