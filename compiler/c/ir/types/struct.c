@@ -33,6 +33,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->carriesborrow = CarriesBorrowUnknown;
     snode->holdstraced = HoldsTracedUnknown;
     snode->lends = LendsLoaned;
+    snode->holdsatomic = HoldsTracedUnknown;
     return snode;
 }
 
@@ -48,10 +49,11 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     newnode->lifecycle = NULL;
     newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
     // An instance's fields are the generic's with its parameters bound, so
-    // whether they carry a borrow, or hold a traced reference, is the
-    // instance's own question
+    // whether they carry a borrow, or hold a traced reference or an atomic
+    // value, is the instance's own question
     newnode->carriesborrow = CarriesBorrowUnknown;
     newnode->holdstraced = HoldsTracedUnknown;
+    newnode->holdsatomic = HoldsTracedUnknown;
 
     // Within the copy, 'Self' is the copy. A method's self parameter is declared
     // as a use of 'Self' (parsetype.c), and name resolution has already pointed
@@ -2120,8 +2122,10 @@ void structNameRes(NameResState *pstate, StructNode *node) {
         structEnumCloneOwnMethods(node, ownmethods);
     // Every abstraction is taken in. A type declaring 'is Move' moves whatever
     // it holds [Jon 26 Sep], marked as soon as that is known, so that a type
-    // asking before this one is laid out is answered
-    if (structDeclaresTrait(node, moveTrait))
+    // asking before this one is laid out is answered. An atomic value moves
+    // too, never copied: a copy would be a second value no atomic operation on
+    // the first could reach.
+    if (structDeclaresTrait(node, moveTrait) || structDeclaresTrait(node, atomicValueTrait))
         node->flags |= MoveType;
     structLendsDeclared(node);
     nametblHookPop();
@@ -2642,6 +2646,59 @@ static void structLayoutVariants(TypeCheckState *pstate, StructNode *node) {
     structSetEnumDropFn(node);
 }
 
+// A type declaring 'AtomicValue' is a struct of exactly one field, which an
+// atomic operation acts on: an integer of 8 to 64 bits, a Bool or a raw
+// pointer. Nothing else can be changed indivisibly in place: a float or a
+// struct has no atomic instruction, a traced reference stored atomically would
+// skip its write barrier, and an owning one would be duplicated or lost. Which
+// operations a type offers is its own business -- sync's 'Atomic[T]' takes
+// integers only for now -- so the marker admits every type any operation
+// takes. Asked as the type is laid out, and reported, when 'report' is set,
+// at the outermost place a generic's instance was asked for, where its type
+// argument was chosen. Answers 0 where the type is refused.
+static int structAtomicValueCheck(StructNode *node, int report) {
+    if (!structDeclaresTrait(node, atomicValueTrait))
+        return 1;
+    INode *where = (INode*)node;
+    while (where->instnode != NULL && where->instnode != where)
+        where = where->instnode;
+    char *name = &node->namesym->namestr;
+    char *kind = NULL;
+    if (node->flags & EnumType)
+        kind = "an enum";
+    else if (node->flags & TraitType)
+        kind = "a trait";
+    else if (node->basetrait && (structBaseTraitDcl(node)->flags & EnumType)) {
+        // A variant reached through its enum's own 'is' is refused as the enum
+        if (structDeclaresTrait(structBaseTraitDcl(node), atomicValueTrait))
+            return 0;
+        kind = "a variant";
+    }
+    if (kind) {
+        if (report)
+            errorMsgNode(where, ErrorAtomicValueShape,
+                "%s is %s, and only a struct of one field may declare AtomicValue: an atomic value is one number, Bool or raw pointer, changed in place.",
+                name, kind);
+        return 0;
+    }
+    if (node->fields.used != 1) {
+        if (report)
+            errorMsgNode(where, ErrorAtomicValueShape,
+                "%s declares AtomicValue, so it holds exactly one field, the value its atomic operations change, and it has %d.",
+                name, (int)node->fields.used);
+        return 0;
+    }
+    FieldDclNode *field = (FieldDclNode*)nodelistGet(&node->fields, 0);
+    if (!intrinsicIsAtomicType(field->vtype)) {
+        if (report)
+            errorMsgNode(node->instnode ? where : (INode*)field, ErrorAtomicValueType,
+                "%s declares AtomicValue, so its field %s must be an integer of 8 to 64 bits, a Bool or a raw pointer, and %s is none of them.",
+                name, &field->namesym->namestr, itypeName(field->vtype));
+        return 0;
+    }
+    return 1;
+}
+
 // 'is Copy' is an assertion [Jon 26 Sep]: the type is refused where it moves
 // after all. Asked once every layout has finished, since an enum moves when
 // one of its variants does, and the variants are laid out after the enum.
@@ -2649,6 +2706,11 @@ static void structCheckCopy(StructNode *node) {
     if (!structDeclaresTrait(node, copyTrait) || !(node->flags & MoveType))
         return;
     char *name = &node->namesym->namestr;
+    if (structDeclaresTrait(node, atomicValueTrait)) {
+        errorMsgNode((INode*)node, ErrorCopyMove,
+            "%s declares AtomicValue, which moves, and Copy: a copy would be a second value no atomic operation on the first could reach. Remove Copy.", name);
+        return;
+    }
     if (structDeclaresTrait(node, moveTrait)) {
         errorMsgNode((INode*)node, ErrorCopyMove,
             "%s declares both Move and Copy, and a type is exactly one of them. Keep the one it is.", name);
@@ -2690,8 +2752,11 @@ static void structCheckMembers(StructNode *node) {
     tstate.fn = NULL;
     tstate.scope = 0;
 
-    // A generated drop fn carries its mark already, and is passed by
-    uint32_t methcnt = node->nodelist.used;
+    // A generated drop fn carries its mark already, and is passed by. An atomic
+    // value refused for what it holds has its methods passed by too: each
+    // would refuse the same type again, in words about its body rather than
+    // the type (structAtomicValueCheck).
+    uint32_t methcnt = structAtomicValueCheck(node, 0) ? node->nodelist.used : 0;
     uint32_t pos;
     for (pos = 0; pos < methcnt; ++pos)
         inodeTypeCheckAny(&tstate, &nodelistGet(&node->nodelist, pos));
@@ -3001,6 +3066,8 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     // The layout is settled, which is what an 'is' asserts about: the fields the
     // abstractions require are declared here, in order, at position 0
     structCheckIsaFields(node);
+    // And an atomic value is one field an atomic operation acts on
+    structAtomicValueCheck(node, 1);
 
     // Use inference rules to decide if struct is ThreadBound or a MoveType
     // based on whether its fields are, and whether it supports the .final method.
@@ -3012,8 +3079,8 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         infectFlag |= MoveType;           // Let's not make copies of finalized objects
     // A declared 'Move' reaches as far as an inferred one: a variant that moves
     // makes its enum move, however it came to [Jon 26 Sep]. The type itself was
-    // marked at name resolution.
-    if (structDeclaresTrait(node, moveTrait))
+    // marked at name resolution. So does an atomic value's.
+    if (structDeclaresTrait(node, moveTrait) || structDeclaresTrait(node, atomicValueTrait))
         infectFlag |= MoveType;
 
     // Populate infection flags in this struct/trait, and recursively to all

@@ -214,6 +214,7 @@ void nametblInit() {
     shapeChangingTraitName = nametblFind("ShapeChanging", 13);
     noLoanMutTraitName = nametblFind("NoLoanMut", 9);
     noLoanReadTraitName = nametblFind("NoLoanRead", 10);
+    atomicValueTraitName = nametblFind("AtomicValue", 11);
 }
 
 

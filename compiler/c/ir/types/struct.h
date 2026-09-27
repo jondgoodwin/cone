@@ -50,6 +50,7 @@ typedef struct StructNode {
     uint8_t carriesborrow;  // itypeCarriesBorrow's remembered answer (CarriesBorrow*), once the type is checked
     uint8_t holdstraced;    // itypeHoldsTraced's remembered answer (HoldsTraced*), once the type is checked
     uint8_t lends;          // What its element borrows cost it (StructLends), from its 'is' list at name resolution
+    uint8_t holdsatomic;    // itypeHoldsAtomic's remembered answer (HoldsTraced*, read as "holds an atomic value"), once the type is checked
 } StructNode;
 
 // What a borrow one of its methods returns costs a container (StructNode.lends),
@@ -68,7 +69,8 @@ enum StructLends {
 };
 
 // What StructNode.holdstraced remembers of whether a value of the type holds a
-// traced reference where it sits: not yet known, being asked, or the answer
+// traced reference where it sits: not yet known, being asked, or the answer.
+// StructNode.holdsatomic remembers the same of an atomic value.
 enum HoldsTraced {
     HoldsTracedUnknown,
     HoldsTracedAsking,

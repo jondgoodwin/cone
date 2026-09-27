@@ -1,0 +1,113 @@
+# concurrency - what threads share safely. Tier 2.
+#
+# Key reference: compiler/c/doc/diagnostics/test-suite.md, "cases.toml keys".
+# The group directory supplies the feature tag, so tags carry pipeline phases.
+# The chapter is doc/reference/refconc.html, "Atomic values".
+#
+# What the compiler knows of concurrency today is atomic values: the built-in
+# marker 'AtomicValue', which sync's Atomic[T] declares, and the rules it
+# brings -- what may declare it (one field an atomic operation takes), that it
+# moves, that a value holding one is never a constant, in a global or a const.
+# The operations themselves are core's mem intrinsics, which the intrinsic
+# group owns; the sync package's own behaviour, threads included, is tested by
+# its tests/ folder under 'congo test'. The scenarios here import sync as a
+# package found on the search path, so its instances are compiled into each.
+#
+# Not covered, with reasons:
+#
+# - The 'atomic' permission, and plain writes of an atomic value only through a
+#   unique path: not built (the next steps of the atomics design). Today a
+#   plain whole-value write through '&mut' compiles.
+# - An 'imm' global of a tuple or an enum holding an atomic value: a global
+#   may be initialized only with a literal, and neither is one yet, so the
+#   mark's reach through them is pinned by the const refusal instead.
+# - Threads: the thread package is library code, and sync's tests/threads.cone
+#   is where Atomic[T] is changed from several at once.
+
+# -------- success --------
+
+# One .out for two runs: the lowering and core's fallback bodies agree
+[scenario.concurrency_atomic_ops]
+category = "run"
+description = "Every operation of sync's Atomic[T], everyday and Ordered, through a local, a borrow, two +rc-imm owners of an imm struct, an array element; a loop count after optimization; lowered and through the fallback bodies"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_atomic_ops.run]]
+name = "lowered"
+options = []
+
+[[scenario.concurrency_atomic_ops.run]]
+name = "fallback"
+options = ["--intrinsic-fallback"]
+
+[scenario.concurrency_atomic_global]
+category = "run"
+description = "An imm global holding an atomic value in a field, a field's field or an array is never a constant: it is changed atomically and read back changed; the same shapes holding none stay constants"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.concurrency_atomic_global.check]]
+name = "a-global-holding-an-atomic-value-is-not-a-constant"
+target = "symbols"
+contains = [
+  "global internal held comdat nodeduplicate",
+  "global internal deep comdat nodeduplicate",
+  "global internal flags comdat nodeduplicate",
+  "global internal stats comdat nodeduplicate",
+  "constant internal point comdat nodeduplicate",
+  "constant internal points comdat nodeduplicate",
+]
+excludes = ["constant internal held ", "constant internal deep ", "constant internal flags "]
+
+# And the optimizer, which may fold a constant's loads, leaves it one
+[[scenario.concurrency_atomic_global.check]]
+name = "an-atomic-global-stays-writable-after-optimization"
+target = "llvmir"
+contains = ["@held = internal global %Holder { i32 7, %Flag { i32 5 } }"]
+
+# -------- generation --------
+
+[scenario.concurrency_genllvm_atomic]
+category = "run"
+description = "Atomic[T]'s everyday operations are one seq_cst instruction each, an Ordered form one arm per ordering it allows, and a local changed only atomically stays in memory, its add in the loop, after optimization"
+tags = ["genllvm", "runtime"]
+
+[[scenario.concurrency_genllvm_atomic.check]]
+name = "everyday-operations-are-sequentially-consistent"
+target = "preir"
+contains = [
+  "%atomicload = load atomic i16, ptr %self1 seq_cst, align 2",
+  "store atomic i16 %v2, ptr %self1 seq_cst, align 2",
+  "%4 = atomicrmw add ptr %self1, i16 %v2 seq_cst, align 2",
+  "%4 = atomicrmw xor ptr %self1, i16 %v2 seq_cst, align 2",
+]
+
+[[scenario.concurrency_genllvm_atomic.check]]
+name = "an-ordered-form-has-one-arm-per-ordering"
+target = "preir"
+contains = [
+  "%9 = atomicrmw add ptr %self3, i16 %v4 monotonic, align 2",
+  "%11 = atomicrmw add ptr %self10, i16 %v11 acquire, align 2",
+  "%13 = atomicrmw add ptr %self17, i16 %v18 release, align 2",
+  "%15 = atomicrmw add ptr %self24, i16 %v25 acq_rel, align 2",
+  "%17 = atomicrmw add ptr %self26, i16 %v27 seq_cst, align 2",
+  "%atomicload = load atomic i16, ptr %self3 monotonic, align 2",
+  "%atomicload10 = load atomic i16, ptr %self9 acquire, align 2",
+]
+excludes = ["load atomic i16, ptr %self9 release", "load atomic i16, ptr %self9 acq_rel"]
+
+[[scenario.concurrency_genllvm_atomic.check]]
+name = "an-atomic-local-keeps-its-address"
+target = "llvmir"
+contains = ["atomicrmw add ptr %c.i, i32 3 seq_cst, align 4"]
+
+# -------- rejects --------
+
+[scenario.concurrency_typecheck_atomic]
+category = "reject"
+description = "AtomicValue on anything but a struct of one integer, Bool or raw pointer field; with Copy; in a const, however deep; Atomic[T] of a type the marker refuses, and of a Bool or raw pointer, which its add refuses"
+tags = ["typecheck"]
+
+[scenario.concurrency_flow_atomic]
+category = "reject"
+description = "An atomic value moves: copying one, reading it after, taking its field out of a struct, and using it after inner are refused"
+tags = ["flow"]

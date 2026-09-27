@@ -462,12 +462,33 @@ int intrinsicClassCheck(FnDclNode *fndcl) {
     INode *type = ((StarNode *)ptr)->vtexp;
     if (intrinsicClassOf(type) & spec->tclass)
         return 1;
+    // Reported where the program's own source chose the type: an instance
+    // called from a generic's instance -- sync's 'Atomic[Bool]', whose 'add'
+    // calls atomicAdd[Bool] -- at the outermost place that asked, as a raw
+    // placement of a traced reference is (regionTracedRawNote), and once
+    // there however many of that instance's calls are refused
+    static INode *lastwhere = NULL;
     INode *where = fndcl->instnode ? fndcl->instnode : (INode *)fndcl;
+    int nested = 0;
+    while (where->instnode != NULL && where->instnode != where) {
+        where = where->instnode;
+        nested = 1;
+    }
+    if (where == lastwhere)
+        return 0;
+    lastwhere = where;
     errorMsgNode(where, ErrorIntrinsicType,
-        "The intrinsic %s acts on a T that is %s, and %s is not one.",
+        nested ? "The intrinsic %s acts on a T that is %s, and %s is not one: the generic instance made here calls it."
+            : "The intrinsic %s acts on a T that is %s, and %s is not one.",
         &fndcl->namesym->namestr, intrinsicClassWords(spec->tclass),
         itypeGetTypeDcl(type)->tag == PtrTag ? "a raw pointer" : itypeName(type));
     return 0;
+}
+
+// Is this a type some atomic operation acts on: an integer of 8 to 64 bits,
+// Bool or a raw pointer? What an atomic value may hold (structAtomicValueCheck)
+int intrinsicIsAtomicType(INode *type) {
+    return intrinsicClassOf(type) != 0;
 }
 
 static char *memOrderNames[] = {"Relaxed", "Acquire", "Release", "AcqRel", "SeqCst"};

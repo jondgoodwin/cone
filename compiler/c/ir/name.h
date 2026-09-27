@@ -105,6 +105,7 @@ extern Name *copyTraitName;    // "Copy"
 extern Name *shapeChangingTraitName; // "ShapeChanging", a container that may move its elements
 extern Name *noLoanMutTraitName;     // "NoLoanMut", a container whose mutable element borrows loan nothing
 extern Name *noLoanReadTraitName;    // "NoLoanRead", a container whose read-only element borrows loan nothing
+extern Name *atomicValueTraitName;   // "AtomicValue", a value changed only by atomic operations
 
 typedef struct VarDclNode VarDclNode;
 

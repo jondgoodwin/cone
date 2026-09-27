@@ -91,7 +91,10 @@ Visual Studio projects stay at the root.
   also declare a struct `gc`; `thread` is OS threads (start a function on
   a value moved in, join, detach, a handle dropped unjoined joins, sleep,
   parking) and the futex the blocking layers are built on, Windows only,
-  linking the Windows SDK's `Synchronization.lib`; `render` draws 3D
+  linking the Windows SDK's `Synchronization.lib`; `sync` is what threads
+  share safely, today `Atomic[T]`, an integer changed only by atomic
+  operations over core's `mem` intrinsics, which declares the built-in
+  marker `AtomicValue`; `render` draws 3D
   shapes through OpenGL (`Shape`, made from a `mesh.Mesh`, and its sphere,
   plane and cube, `Shader`, `Image` from BMP, `Texture`, `Camera`, `Light`),
   ported from Pegasus3D over `gl`, `geomath`, `mesh` and `collections`,

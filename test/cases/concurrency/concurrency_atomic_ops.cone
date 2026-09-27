@@ -1,0 +1,123 @@
+// sync's Atomic[T] as the compiler sees it: every operation, in its everyday
+// form (sequentially consistent) and its 'Ordered' form, reached through
+// each kind of path a program holds an atomic value by -- a local, an 'imm'
+// local, a field of an 'imm' struct shared by two '+rc-imm' owners, a borrow,
+// an array element -- and a local counter bumped in a loop, which keeps its
+// address through optimization. The output is the assertion that each
+// change was made and seen.
+//
+// The scenario runs twice (cases.toml): lowered, each operation one atomic
+// instruction, and with '--intrinsic-fallback', each the plain Cone body core
+// gives it, against one .out file. cases.toml also pins the instruction each
+// ordering of an 'Ordered' form becomes, and that a local operated on only
+// atomically stays in memory after optimization.
+
+mod concurrency_atomic_ops;
+
+import stdio use *;
+import sync use *;
+
+struct Stats {
+  pub name u32;
+  pub hits Atomic[u64];
+}
+
+struct Board {
+  pub slots [3; Atomic[u32]];
+}
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn everyday() {
+  imm a = Atomic[u64].of(10u64);
+  a.store(12u64);
+  show("load", i64[a.load()]);
+  show("swap was", i64[a.swap(20u64)]);
+  show("add was", i64[a.add(5u64)]);
+  show("sub was", i64[a.sub(3u64)]);
+  show("bitAnd was", i64[a.bitAnd(15u64)]);
+  show("bitOr was", i64[a.bitOr(48u64)]);
+  show("bitXor was", i64[a.bitXor(6u64)]);
+  mut seen = 0u64;
+  mut ok = false;
+  seen, ok = a.compareSwap(48u64, 49u64);
+  show("compareSwap saw", i64[seen]);
+  if ok {printStr("stored\n");}
+  seen, ok = a.compareSwap(48u64, 50u64);
+  show("compareSwap saw", i64[seen]);
+  if not ok {printStr("kept\n");}
+  show("now", i64[a.load()]);
+}
+
+fn ordered() {
+  imm a = Atomic[i32].of(0i32);
+  a.storeOrdered(3i32, MemOrder.Release[]);
+  show("loadOrdered", i64[a.loadOrdered(MemOrder.Acquire[])]);
+  show("addOrdered was", i64[a.addOrdered(1i32, MemOrder.Relaxed[])]);
+  show("subOrdered was", i64[a.subOrdered(10i32, MemOrder.AcqRel[])]);
+  show("swapOrdered was", i64[a.swapOrdered(12i32, MemOrder.Acquire[])]);
+  show("bitAndOrdered was", i64[a.bitAndOrdered(4i32, MemOrder.Release[])]);
+  show("bitOrOrdered was", i64[a.bitOrOrdered(3i32, MemOrder.Relaxed[])]);
+  show("bitXorOrdered was", i64[a.bitXorOrdered(1i32, MemOrder.SeqCst[])]);
+  mut seen = 0i32;
+  mut ok = false;
+  seen, ok = a.compareSwapOrdered(6i32, 9i32, MemOrder.AcqRel[], MemOrder.Acquire[]);
+  show("compareSwapOrdered saw", i64[seen]);
+  if ok {printStr("stored\n");}
+  show("now", i64[a.load()]);
+}
+
+// A field of an 'imm' struct changes through two '+rc-imm' owners and a
+// borrow, while the plain field beside it reads as always
+fn shared() {
+  imm s = +rc-imm Stats[7u32, Atomic[u64].of(0u64)];
+  imm t = s;
+  s.hits.add(1u64);
+  t.hits.add(2u64);
+  imm r = &s.hits;
+  r.add(4u64);
+  show("shared hits", i64[t.hits.load()]);
+  show("shared name", i64[s.name]);
+}
+
+fn board() {
+  imm b = Board[[Atomic[u32].of(0u32), Atomic[u32].of(0u32), Atomic[u32].of(0u32)]];
+  b.slots[1].add(5u32);
+  b.slots[2].sub(1u32);
+  show("slot 0", i64[b.slots[0].load()]);
+  show("slot 1", i64[b.slots[1].load()]);
+  show("slot 2", i64[b.slots[2].load()]);
+}
+
+// A local changed only atomically keeps its address, so the count is right
+// after optimization, and the one holding it takes the number out
+fn counted(n u32) u32 {
+  mut c = Atomic[u32].of(0u32);
+  mut i = 0u32;
+  while i < n {
+    c.add(2u32);
+    i = i + 1u32;
+  }
+  c.inner();
+}
+
+// An atomic value reached through a borrowed parameter
+fn relaxedAdd(a &Atomic[u64]) u64 {
+  a.addOrdered(1u64, MemOrder.Relaxed[]);
+}
+
+fn main() {
+  everyday();
+  ordered();
+  shared();
+  board();
+  show("counted", i64[counted(1000u32)]);
+  imm x = Atomic[u64].of(41u64);
+  relaxedAdd(&x);
+  show("relaxedAdd", i64[x.load()]);
+}

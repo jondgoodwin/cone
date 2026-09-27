@@ -66,6 +66,12 @@ int itypeCarriesBorrow(INode *type);
 // struct once the struct is type checked.
 int itypeHoldsTraced(INode *type);
 
+// Does a value of this type hold an atomic value where it sits: a struct
+// declaring 'AtomicValue', or a tuple, array, struct or enum holding one inline
+// (not through a reference or a pointer)? Remembered per struct once the
+// struct is type checked.
+int itypeHoldsAtomic(INode *type);
+
 // Does a value of this type hold a borrowed reference (not a function's) where
 // it sits, inline rather than through an owning reference or a pointer?
 int itypeHoldsBorrow(INode *type);

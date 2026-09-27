@@ -86,6 +86,7 @@ into a scan.
 | a reference type's LLVM type | the interned `typeinfo` | `genlType` |
 | whether a struct carries a borrow | the `carriesborrow` field, once the struct is type checked | `itypeCarriesBorrow` |
 | whether a struct holds a traced reference | the `holdstraced` field, once the struct is type checked | `itypeHoldsTraced` |
+| whether a struct holds an atomic value | the `holdsatomic` field, once the struct is type checked | `itypeHoldsAtomic` |
 
 **The `TypeChecked` mark is not primarily an optimization** — type check lowers
 and replaces nodes, so a second walk corrupts the declaration. It is a

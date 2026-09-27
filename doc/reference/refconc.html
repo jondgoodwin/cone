@@ -16,9 +16,13 @@
 	<p style="margin-left: 40px;"><i>Note: Of the models below, only OS threads are implemented, on
 		Windows only, as the <span class="pre">thread</span> library package: starting, joining
 		(a handle dropped unjoined joins) and detaching a thread, its identity, sleep, parking,
-		and the futex, all described <a href="#thread">at the end of this page</a>. Nothing
-		checks yet that what is handed to a thread is safe to share. Co-routines, green threads,
-		processes, distributed computing, and splitting work across threads are not implemented.</i></p>
+		and the futex, all described <a href="#thread">near the end of this page</a>. So are
+		<a href="#atomic">atomic values</a>, the <span class="pre">sync</span> package's
+		<span class="pre">Atomic[T]</span> for integers, and the compiler's rules for the
+		<span class="pre">AtomicValue</span> marker it declares; the <span class="pre">atomic</span>
+		permission is not implemented. Nothing checks yet that what is handed to a thread is safe
+		to share. Co-routines, green threads, processes, distributed computing, and splitting work
+		across threads are not implemented.</i></p>
 	
 	<p>Concurrency and parallelism can sometimes improve program throughput, by:</p>
 	<ul>
@@ -97,7 +101,7 @@ fn main() {
 		<span class="pre">ro</span> reference, an <span class="pre">rc</span> owner (its count is
 		not atomic), a borrowed reference into the starting thread's stack, or a raw pointer to
 		memory another thread also writes all compile today, and are the program's to get right,
-		with <a href="refintrinsic.html">atomics</a> or the futex. The compiler's check comes
+		with <a href="#atomic">atomic values</a> or the futex. The compiler's check comes
 		later.</li>
 	</ul>
 	<p><span class="pre">thread.startWith(thread.Options[name: n, stackSize: s], arg, &amp;f)</span>
@@ -198,6 +202,97 @@ while mem.atomicLoad[u32](word, MemOrder.Acquire[]) == 0u32 {
 	<p>Deliberately not provided: killing a thread, priorities, pinning a thread to a processor, a
 		flag asking a thread to stop, and scoped threads, which would join before a function returns
 		so that their threads could borrow. The package runs on Windows only.</p>
+
+	<h2 id="atomic">Atomic values: the sync package</h2>
+	<p>An <b>atomic value</b> is a number that several threads may read and change at once, with
+		no lock: each change is <b>indivisible</b>, so no thread ever sees one half done, and when
+		several threads change it together, each change happens whole, one after another. The
+		<span class="pre">sync</span> package provides it as <span class="pre">Atomic[T]</span>, for an
+		integer type <span class="pre">T</span> of 8 to 64 bits, <span class="pre">usize</span> and
+		<span class="pre">isize</span> among them.</p>
+<pre>
+import sync use *;
+
+struct Stats {
+  pub name u32;
+  pub hits Atomic[u64];        // atomic because of its type
+}
+
+imm stats Stats;
+
+fn @initpure init() {
+  stats = Stats[7u32, Atomic[u64].of(0u64)];
+}
+
+fn count() {                   // called from any number of threads at once
+  stats.hits.add(1u64);        // one indivisible add
+  imm n = stats.hits.load();   // the number itself
+}
+</pre>
+	<p><span class="pre">stats</span> is <span class="pre">imm</span>, and its
+		<span class="pre">hits</span> changes: <b><span class="pre">imm</span> means that nothing
+		changes, except inside the atomic values it holds.</b> Its other fields read as they
+		always did. An atomic value changes only through its own operations:</p>
+	<ul>
+	<li><span class="pre">Atomic[T].of(v)</span> makes one holding <span class="pre">v</span>.</li>
+	<li><span class="pre">load()</span> answers the value, and <span class="pre">store(v)</span>
+		puts <span class="pre">v</span> there.</li>
+	<li><span class="pre">swap(v)</span>, <span class="pre">add(v)</span>,
+		<span class="pre">sub(v)</span>, <span class="pre">bitAnd(v)</span>,
+		<span class="pre">bitOr(v)</span> and <span class="pre">bitXor(v)</span> change it and answer
+		the value it held before. Add and sub wrap. (<span class="pre">and</span> and
+		<span class="pre">or</span> are keywords, hence the <span class="pre">bit</span>.)</li>
+	<li><span class="pre">compareSwap(expected, desired)</span> stores
+		<span class="pre">desired</span> only if the value is <span class="pre">expected</span>, and
+		answers the value it saw and whether it stored: <span class="pre">seen, ok =
+		a.compareSwap(e, d);</span>. A loop around it makes any change indivisible: read, work out
+		the new value, and try again if another thread changed it in between.</li>
+	<li><span class="pre">inner()</span> takes the number out of an atomic value held by value,
+		which nobody else can be reaching.</li>
+	</ul>
+	<p><b>Each of them is sequentially consistent</b>, the strongest ordering: every thread sees all
+		such operations in one order, and nothing the thread does before or after one moves across
+		it. That is right for nearly every use. For an expert, each has an
+		<span class="pre">Ordered</span> form taking a <a href="refintrinsic.html">MemOrder</a> after
+		its other arguments: <span class="pre">a.addOrdered(1u64, MemOrder.Relaxed[])</span>,
+		<span class="pre">a.loadOrdered(MemOrder.Acquire[])</span>,
+		<span class="pre">a.compareSwapOrdered(e, d, success, failure)</span>. An ordering the
+		operation cannot have (a load's <span class="pre">Release</span>, for one; the rules are the
+		intrinsics') is known only as the program runs, so it ends the program with a message.
+		Core's <span class="pre">mem.atomicAdd</span> and the rest, which take the ordering as a
+		constant written at the call, refuse it where it is written instead.</p>
+
+	<h3>What the compiler knows: AtomicValue</h3>
+	<p><span class="pre">Atomic[T]</span> is ordinary library code. What the compiler knows is the
+		built-in marker trait it declares, <span class="pre">AtomicValue</span>, and a type may declare
+		it for itself: <span class="pre">struct Flag is AtomicValue { pub v u32; }</span>. The
+		compiler holds such a type to four rules:</p>
+	<ul>
+	<li><b>It is one number</b>: a struct of exactly one field, of a type some atomic operation
+		acts on &mdash; an integer of 8 to 64 bits, a <span class="pre">Bool</span> or a raw
+		pointer. A float, a struct, a reference or anything else is refused, as are a trait, an enum
+		or a variant declaring it. <span class="pre">Atomic[f64]</span> is refused where it is
+		written. So is <span class="pre">Atomic[Bool]</span>, since
+		<span class="pre">Atomic[T]</span> has an add, which a <span class="pre">Bool</span> does
+		not; an atomic <span class="pre">Bool</span> and an atomic raw pointer, with fewer
+		operations, are to come as types of their own.</li>
+	<li><b>It moves</b>, and is never copied (<a href="refmove.html">Move</a>): a copy would be a
+		second value that no atomic operation on the first could reach. Declaring
+		<span class="pre">Copy</span> beside it is refused.</li>
+	<li><b>A value holding one is never read-only.</b> A global holding an atomic value anywhere
+		inside it &mdash; in a field, a field's field, an array &mdash; is placed in writable memory
+		even when it is <span class="pre">imm</span>, and its reads are never assumed unchanged.</li>
+	<li><b>A <span class="pre">const</span> may not hold one</b>, however deep: each use of a
+		<span class="pre">const</span> is a fresh copy, which no other use would see change. Use a
+		global.</li>
+	</ul>
+	<p>Not implemented yet: the <span class="pre">atomic</span> permission, the reference that
+		allows only atomic operations on what it points at, which every reference to an atomic value
+		is to become; and the rule that a whole atomic value may be replaced plainly only through a
+		unique path. Until they are, <span class="pre">Atomic[T]</span>'s operations take any
+		reference (as <span class="pre">&amp;opaq</span>), and a plain assignment over an atomic
+		value &mdash; <span class="pre">*r = s</span> through a <span class="pre">&amp;mut
+		Stats</span> &mdash; compiles, and is the program's to get right.</p>
 
 
 	<p style="text-align: right; margin-top: 2em;">

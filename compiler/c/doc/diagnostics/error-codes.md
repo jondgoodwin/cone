@@ -232,6 +232,17 @@ value. `ErrorThreadLocalFinal` is one whose type needs finalizing, since
 nothing yet finalizes a thread's copy as its thread ends. An initial value that
 is not a literal wears `ErrorNotLit`, as on any global.
 
+The built-in marker `AtomicValue` takes three codes, again one per remedy.
+`ErrorAtomicValueShape` is the marker on something that is not a struct of
+exactly one field — a trait, an enum, a variant, a struct of none or several —
+whose remedy is to change what declares it. `ErrorAtomicValueType` is its one
+field of a type no atomic operation acts on, reported at the field, or, for a
+generic's instance such as `Atomic[f64]`, at the outermost place the program
+named it; the remedy is the type argument. `ErrorAtomicValueConst` is a `const`
+whose type holds an atomic value anywhere inline, whose remedy is a global.
+`is Copy` beside the marker is `ErrorCopyMove`, the code for every type that
+moves and says Copy.
+
 That is a narrow licence, and the tell that it has been stretched is the
 scenarios: **when a scenario needs a message substring to tell two uses of one
 code apart, the substring is doing the code's job.** Wrong arity, a non-type
