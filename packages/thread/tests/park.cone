@@ -1,0 +1,67 @@
+// Parking. 'park' sleeps until an 'unpark': one sent before the park is not
+// lost, on main itself or on a thread unparked before it parks, and a thread
+// can unpark main through the ThreadRef it was handed. (The futex parking is
+// built on is the sync package's, and its own test is there.) 'testing'
+// counts its checks in globals, so every check is made on the main thread.
+
+mod park;
+
+import testing use *;
+import thread;
+import sync use *;
+
+imm go Atomic[u32];
+
+fn @initpure init() {
+  go = Atomic[u32].of(0u32);
+}
+
+fn parkThenAnswer(n i64) i64 {
+  thread.park();
+  n + 1;
+}
+
+// Unpark whoever handed us their ThreadRef
+fn unparkBack(back thread.ThreadRef) u32 {
+  thread.sleep(10000000u64);
+  back.unpark();
+  back.id();
+}
+
+// Wait for main's go-ahead, then park: main's unpark came first
+fn parkAfterGo(n u32) u32 {
+  while go.load() == 0u32 {
+    sync.futexWait(&go, 0u32);
+  }
+  thread.park();
+  1u32;
+}
+
+fn main() i32 {
+  initAll();
+
+  // park, then unpark from main
+  imm p = thread.start(41i64, &parkThenAnswer);
+  thread.sleep(20000000u64);
+  p.unpark();
+  expectInt(p.join(), 42, "a parked thread returned after unpark");
+
+  // unpark before park is not lost: on main itself ...
+  imm me = thread.current();
+  me.unpark();
+  thread.park();
+  expect(true, "main's own unpark before its park was kept");
+
+  // ... and on a thread unparked before it parks
+  imm late = thread.start(0u32, &parkAfterGo);
+  late.unpark();
+  go.store(1u32);
+  sync.futexWake(&go);
+  expectUInt(u64[late.join()], 1u64, "a thread unparked before it parked did not sleep");
+
+  // A thread unparks main, through the ThreadRef main handed it
+  imm back = thread.start(thread.current(), &unparkBack);
+  thread.park();
+  expectUInt(u64[back.join()], u64[me.id()], "a thread unparked main through its ThreadRef");
+  done();
+}

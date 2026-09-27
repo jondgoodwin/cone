@@ -1,0 +1,160 @@
+// Condvar. A bounded buffer of 4 slots, guarded by a Mutex, with two
+// Condvars: 'notEmpty', which consumers wait on, and 'notFull', which
+// producers wait on. Two producers each put 2000 numbered items, two
+// consumers each take 2000, and the buffer being so small, every thread
+// waits often. A lost wakeup would leave a thread asleep for good and the
+// test would hang (and fail, at Congo's 60 seconds); a broken handoff would
+// lose, repeat or tear items, which the sums catch. Run 25 times. Then a
+// timed wait with nobody to notify returns false, having slept, with the
+// Mutex held again; and notifyAll wakes three waiters at once.
+
+mod condvar;
+
+import testing use *;
+import thread;
+import sync use *;
+
+extern {
+  fn @c(system) QueryPerformanceCounter(count *i64) i32;
+  fn @c(system) QueryPerformanceFrequency(freq *i64) i32;
+}
+
+fn nowNs() i64 {
+  mut count = 0i64;
+  mut freq = 0i64;
+  QueryPerformanceCounter(&mut count as *i64);
+  QueryPerformanceFrequency(&mut freq as *i64);
+  i64[f64[count] * 1000000000.0d / f64[freq]];
+}
+
+const perProducer = 2000u64;
+const slots = 4u64;
+
+imm m Mutex;
+imm notEmpty Condvar;
+imm notFull Condvar;
+
+// The buffer, guarded by m: a ring of slots, where the oldest is, and how many
+mut ring [4; u64] = [4; 0u64];
+mut head u64 = 0u64;
+mut count u64 = 0u64;
+
+// For notifyAll: a flag guarded by m, and how many are waiting on it
+mut flag Bool = false;
+imm waiting Atomic[u32];
+
+fn @initpure init() {
+  m = Mutex.make();
+  notEmpty = Condvar.make();
+  notFull = Condvar.make();
+  waiting = Atomic[u32].of(0u32);
+}
+
+fn put(v u64) {
+  m.lock();
+  while count == slots {
+    notFull.condWait(&m);
+  }
+  ring[(head + count) % slots] = v;
+  count = count + 1u64;
+  notEmpty.notifyOne();
+  m.unlock();
+}
+
+fn take() u64 {
+  m.lock();
+  while count == 0u64 {
+    notEmpty.condWait(&m);
+  }
+  imm v = ring[head];
+  head = (head + 1u64) % slots;
+  count = count - 1u64;
+  notFull.notifyOne();
+  m.unlock();
+  v;
+}
+
+// Producer k puts k * 1000000 + 1 .. k * 1000000 + perProducer
+fn produce(k u64) u64 {
+  mut i = 1u64;
+  while i <= perProducer {
+    put(k * 1000000u64 + i);
+    i = i + 1u64;
+  }
+  i - 1u64;
+}
+
+// A consumer takes perProducer items: their sum
+fn consume(k u64) u64 {
+  mut sum = 0u64;
+  mut i = 0u64;
+  while i < perProducer {
+    sum = sum + take();
+    i = i + 1u64;
+  }
+  sum;
+}
+
+// One handoff: whether every item arrived once
+fn handoff() Bool {
+  head = 0u64;
+  count = 0u64;
+  imm c1 = thread.start(0u64, &consume);
+  imm c2 = thread.start(1u64, &consume);
+  imm p1 = thread.start(1u64, &produce);
+  imm p2 = thread.start(2u64, &produce);
+  imm made = p1.join() + p2.join();
+  imm sum = c1.join() + c2.join();
+  // Producer k's items sum to k * 1000000 * n + n(n+1)/2
+  imm n = perProducer;
+  imm want = 3000000u64 * n + n * (n + 1u64);
+  made == 2u64 * n and sum == want and count == 0u64;
+}
+
+// Wait under m until the flag is set
+fn awaitFlag(n u32) u32 {
+  m.lock();
+  waiting.add(1u32);
+  while !flag {
+    notEmpty.condWait(&m);
+  }
+  m.unlock();
+  1u32;
+}
+
+fn main() i32 {
+  initAll();
+  mut good = 0u64;
+  mut run = 0;
+  while run < 25 {
+    if handoff() { good = good + 1u64; }
+    run = run + 1;
+  }
+  expectUInt(good, 25u64, "handoffs through a 4-slot buffer with every item there once");
+
+  // A timed wait with nobody to notify
+  m.lock();
+  imm before = nowNs();
+  imm woken = notFull.condWaitTimeout(&m, 20000000u64);
+  imm took = nowNs() - before;
+  expect(!woken, "a timed wait nobody notified returns false");
+  expect(took >= 19000000i64, "having slept its 20 ms (to the timer's rounding)");
+  expect(!m.tryLock(), "with the Mutex held again");
+  m.unlock();
+
+  // A notification with nobody waiting is harmless
+  notFull.notifyOne();
+  notFull.notifyAll();
+
+  // notifyAll wakes all three
+  imm w1 = thread.start(0u32, &awaitFlag);
+  imm w2 = thread.start(0u32, &awaitFlag);
+  imm w3 = thread.start(0u32, &awaitFlag);
+  while waiting.load() < 3u32 { thread.sleep(1000000u64); }
+  m.lock();
+  flag = true;
+  notEmpty.notifyAll();
+  m.unlock();
+  expectUInt(u64[w1.join() + w2.join() + w3.join()], 3u64, "notifyAll woke all three waiters");
+  done();
+}
