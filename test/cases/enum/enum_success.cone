@@ -1196,6 +1196,145 @@ fn barePatterns() {
   show("bare-matched-enum-other", lampCode(Lamp.Amber[]));
 }
 
+// -------- a value alone as a pattern --------
+
+// A value alone in a case means equality with the matched value: 'case 0' is
+// 'case ==0'. A literal, a negative one, a named constant, and values joined by
+// 'or' with a range and a comparison among them. The first case that holds is
+// taken, so 0, which the range below also holds, takes the first.
+const Limit = 10;
+
+fn aloneNumber(n i32) i32 {
+  match n {
+    case 0 {100;}
+    case 2 or 3 or 5 or 7 {2;}
+    case -6 or -1...1 or 6 {1;}
+    case Limit or >100 {10;}
+    else {0;}
+  }
+}
+
+// A Bool's two values alone. Each is an '==', which accounts for no variant, so
+// the match needs its 'else' to be a value, as 'case ==true' and 'case ==false'
+// would
+fn aloneBool(b Bool) i32 {
+  match b {
+    case true {1;}
+    case false {2;}
+    else {3;}
+  }
+}
+
+// A value alone takes an 'if' guard, as any pattern does
+fn aloneGuarded(n i32, g Bool) i32 {
+  match n {
+    case 2 if g {1;}
+    case 2 {2;}
+    else {3;}
+  }
+}
+
+// In a generic function each instance compares with its own type's '=='
+fn aloneEnds[T](x T, lo T, hi T) i32 {
+  match x {
+    case lo or hi {1;}
+    else {0;}
+  }
+}
+
+// In a method, a field named bare is the receiver's, compared like any value
+struct Threshold {
+  pub at i32;
+
+  pub fn hit(self, n i32) i32 {
+    match n {
+      case at {1;}
+      else {0;}
+    }
+  }
+}
+
+// A bare name is asked of the matched value's enum first, as an 'is' pattern's
+// root is: on a Shape, 'Circle' is the variant, and 'case Circle' is
+// 'case is Circle'. Naming every variant makes the match exhaustive, with no
+// 'else', and variants may be joined by 'or'.
+fn aloneVariant(s Shape) i32 {
+  match s {
+    case Circle {1;}
+    case Rect {2;}
+  }
+}
+
+fn aloneVariantOr(s Signal) i32 {
+  match s {
+    case Step or Drift {1;}
+    else {0;}
+  }
+}
+
+// On an Option in a generic function, each instance's own variants
+fn aloneOption[T](o Option[T]) i32 {
+  match o {
+    case Some {1;}
+    case None {0;}
+  }
+}
+
+// The matched enum wins over whatever the name means in the module: on a Lamp,
+// 'Red' is the Lamp's, though Colors.Red is folded in, and 'Amber' is the
+// Lamp's though a constant has the name. Where the matched value is no enum, the
+// constant is what the name means, compared with '=='.
+const Amber = 7;
+
+fn aloneLamp(l Lamp) i32 {
+  match l {
+    case Red {1;}
+    case Amber {2;}
+  }
+}
+
+fn aloneAmber(n i32) i32 {
+  match n {
+    case Amber {1;}
+    else {0;}
+  }
+}
+
+fn valuesAlone() {
+  show("alone-literal-first", aloneNumber(0));
+  show("alone-or-first", aloneNumber(2));
+  show("alone-or-last", aloneNumber(7));
+  show("alone-negative", aloneNumber(-6));
+  show("alone-or-range", aloneNumber(1));
+  show("alone-or-after-range", aloneNumber(6));
+  show("alone-constant", aloneNumber(10));
+  show("alone-or-comparison", aloneNumber(101));
+  show("alone-none-hold", aloneNumber(4));
+  show("alone-bool-true", aloneBool(true));
+  show("alone-bool-false", aloneBool(false));
+  show("alone-guard-holds", aloneGuarded(2, true));
+  show("alone-guard-fails-next-case", aloneGuarded(2, false));
+  show("alone-guard-pattern-fails", aloneGuarded(3, true));
+  show("alone-generic-low-end", aloneEnds(4, 4, 9));
+  show("alone-generic-high-end", aloneEnds(9, 4, 9));
+  show("alone-generic-between", aloneEnds(5, 4, 9));
+  show("alone-generic-float", aloneEnds(2.5, 2.5, 3.));
+  imm th = Threshold[7];
+  show("alone-field-equal", th.hit(7));
+  show("alone-field-unequal", th.hit(8));
+  show("alone-variant-circle", aloneVariant(Circle[0, 5]));
+  show("alone-variant-rect", aloneVariant(Rect[0, 3, 4]));
+  show("alone-variant-or-first", aloneVariantOr(Step[2]));
+  show("alone-variant-or-second", aloneVariantOr(Drift[1., 2.]));
+  show("alone-variant-or-neither", aloneVariantOr(Halt[]));
+  show("alone-option-some", aloneOption(Some[4]));
+  show("alone-option-none", aloneOption(None[f32][]));
+  show("alone-matched-enum-over-fold", aloneLamp(Lamp.Red[]));
+  show("alone-matched-enum-over-constant", aloneLamp(Lamp.Amber[]));
+  show("alone-constant-off-an-enum", aloneAmber(7));
+  show("alone-constant-off-an-enum-unequal", aloneAmber(8));
+}
+
 // -------- folding some of the variants --------
 
 // A 'use' may admit some of an enum's variants rather than all of them, rename
@@ -1785,6 +1924,7 @@ fn main() i32 {
   optionAndResult();
   namingVariants();
   barePatterns();
+  valuesAlone();
   foldingSome();
   variantBodies();
   interactions();
