@@ -596,7 +596,8 @@ holds; so does the reborrow type check builds for a `&uni` lent where a `&`
 or `&mut` is wanted, which is why `g(p); g(p)` is no move); a holder named, or a place read through it, what it holds; a recast, an
 `if`, a block, and a tuple, struct or array literal, the union of theirs; a
 call, below. An owning reference coerced to a borrowed one (`imm b &Pt = u`,
-`u` a `+so Pt`: a recast from an owning to a borrowed reference) is a borrow of
+`u` a `+so Pt`: a recast from an owning to a borrowed reference; or `imm b
+&<App = v`, `v` a `+<so App`, between virtual references) is a borrow of
 what it owns, `*u`, so `u` may not be moved while `b` is used
 (`pwOwnedLent`). One coerced to a `&uni` or `&mut1` arrives already rewritten
 by type check to the borrow `&uni *u`, since a recast to a move type would be a

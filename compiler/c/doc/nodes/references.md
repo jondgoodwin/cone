@@ -363,6 +363,15 @@ own ([What a region is](module.md)).
   path and the allocate path have different invariants for the same field.
   Anything reading `typeinfo` off an arbitrary reference type crashes on borrows
   only.
+- **An owning virtual reference is never released.** `itypeNeedsFinal`,
+  `flowIsOwningType` and `flowIsRcRef` answer for `RefTag` and `ArrayRefTag`
+  alone, so a `+<so Trait` or `+<rc Trait` dying, or a `+<rc-mut` copied, calls
+  no region method: the concrete type's finalizer never runs and the allocation
+  is never freed or counted. Nothing could: the vtable holds only the trait's
+  methods and field offsets, and a death needs the concrete type's finalizer
+  and the value's alignment, which places the region's header before it
+  (`genlRegionHeader` reads that offset from `typeinfo`, which a virtual
+  reference type does not have).
 - **Coming from Rust:** `&mut T` is invariant and `&ro T` covariant; `uni` is
   not `&mut` but the *unique* permission, which is what makes owning references
   move; lifetimes are a block-nesting integer that is not part of type identity

@@ -593,12 +593,13 @@ static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t
 }
 
 // An owning reference coerced to a borrowed one ('imm b &i32 = u', 'u' a
-// '+so i32'): a borrow of what it owns, so 'u' may not be moved, replaced or
-// ended while the borrow is used
+// '+so i32'; or 'imm b &<mut App = v', 'v' a '+<so App'): a borrow of what it
+// owns, so 'u' may not be moved, replaced or ended while the borrow is used
 static int pwIsOwnedLent(CastNode *cast) {
     INode *to = iexpGetTypeDcl((INode *)cast);
     INode *from = iexpGetTypeDcl(cast->exp);
-    return to->tag == RefTag && from->tag == RefTag && pwIsBorrowed(to) && !pwIsBorrowed(from);
+    return (to->tag == RefTag || to->tag == VirtRefTag) && from->tag == to->tag
+        && pwIsBorrowed(to) && !pwIsBorrowed(from);
 }
 
 static PathSet *pwOwnedLent(CastNode *cast) {

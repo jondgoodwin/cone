@@ -549,6 +549,24 @@ int fnCallIsNever(INode *node) {
     return node->tag == FnCallTag && itypeIsNever(((FnCallNode *)node)->vtype);
 }
 
+// A virtual dispatch's receiver that is an owning virtual reference ('+<so
+// Trait') is lent to the method as a borrowed one, with the permission the
+// method declares for 'self', as a plain owner is lent to a 'self &' or 'self
+// &mut' method: a recast that flow analysis reads as a borrow of what the owner
+// points at (pwOwnedLent), so the owner stays, frozen while the call uses it.
+// Passed as it is, the owner was moved into the call. A 'self &uni' method
+// is lent nothing: the recast to a move type would still move the owner.
+static void fnCallLendVirtOwner(INode **selfp, INode *parmtype) {
+    RefNode *owner = (RefNode*)iexpGetTypeDcl(*selfp);
+    RefNode *parm = (RefNode*)itypeGetTypeDcl(parmtype);
+    if (owner->tag != VirtRefTag || itypeGetTypeDcl(owner->region) == borrowRef || parm->tag != RefTag)
+        return;
+    RefNode *lent = newRefNodeFull(VirtRefTag, *selfp, borrowRef, parm->perm, owner->vtexp);
+    if (itypeIsMove((INode*)lent))
+        return;
+    iexpCoerce(selfp, (INode*)lent);
+}
+
 // At this point, we have a properly-lowered function call. objfn could be:
 // - nameuse to a function dcl
 // - an indirect ref/ptr to a function
@@ -577,6 +595,8 @@ void fnCallFinalizeArgs(FnCallNode *node) {
     uint32_t cnt;
     INode **parmp = &nodesGet(fnsig->parms, 0);
     for (nodesFor(node->args, cnt, argsp)) {
+        if (cnt == node->args->used && (node->flags & FlagVDisp))
+            fnCallLendVirtOwner(argsp, ((IExpNode*)*parmp)->vtype);
         // Make sure the type matches (and coerce as needed)
         // (but not for vref as self)
         if (!iexpCoerce(argsp, ((IExpNode*)*parmp)->vtype)

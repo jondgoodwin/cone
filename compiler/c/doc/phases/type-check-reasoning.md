@@ -166,6 +166,17 @@ where the wanted type is an enrichment's. An owner wanted as a `&` or `&mut` is
 left the recast flow analysis reads as a borrow (`pwOwnedLent`). A temporary
 owner is not a place, and is not rewritten.
 
+An owning virtual reference (`+<so Trait`) wanted as a borrowed one (`&<mut
+Trait`, `&<Trait`) is the same recast, read as the same borrow. A virtual
+dispatch's receiver is the one argument no coercion reaches — the selected
+method's `self` is a plain reference to the trait, which a virtual reference
+does not match — so `fnCallFinalizeArgs` first recasts an owning receiver to
+the borrowed virtual reference `&<perm Trait`, `perm` the method's own for
+`self` (`fnCallLendVirtOwner`); left alone, the owner was passed as itself and
+moved. Nothing builds `&uni *o` for a virtual reference, which may not be
+dereferenced: an owner wanted as a `&<uni` (a parameter, or a `self &uni`
+receiver, which is not recast) still moves.
+
 `fnSigMatches` is the one matcher whose variance is easy to get backwards:
 **parameters are contravariant** (it flips `to` and `from`), **the return type is
 covariant**, and the overall verdict is the most expensive of all the parts.
