@@ -130,7 +130,8 @@ Visual Studio projects stay at the root.
   folder: `conec` finds it by walking up from its own executable (and a CMake
   build also compiles its path in as the fallback), so the test runner and a
   direct run find both with no setup, and a compile that finds a package there
-  builds its `src/<name>.cone` into its own object; `CONE_PACKAGES` names
+  builds its `src` folder, `src/<name>.cone` its designated file, into its
+  own object; `CONE_PACKAGES` names
   another packages folder, and `--path` adds folders searched before it.
   `compiler/c/doc/nodes/module.md`, "The packages folder", is the rule.
 - `compiler/c/genllvm/`: LLVM type, statement, expression, and allocation

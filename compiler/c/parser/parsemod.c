@@ -1755,8 +1755,15 @@ void parseBuildModuleTree(ParseState *parse, ModuleNode *mod, SrcFiles *files, B
 //
 // The de-dup key is the file's PATH, because what must happen exactly once is
 // reading the file; neither the filename nor a 'mod' declaration's name decides
-// it, and either may be shared by files in different folders
-static ModuleNode *parseLoadModulePath(ParseState *parse, char *path, Name *filesym, uint16_t genflag, BuildModule *build) {
+// it, and either may be shared by files in different folders.
+//
+// 'pkgsrc' says the search path found the file as a package's source root,
+// 'name/src/name.cone'. That is the designated file of the package's 'src'
+// folder, the package's name standing in for the folder's, so the module is
+// named for the package and sweeps 'src' by the rules any module folder
+// follows -- the files Congo's scan of the package lists (refmodule.html,
+// "Packages and Congo")
+static ModuleNode *parseLoadModulePath(ParseState *parse, char *path, Name *filesym, uint16_t genflag, BuildModule *build, int pkgsrc) {
     Name *pathsym = nametblFind(path, strlen(path));
 
     // REGISTER. If a module holds this file already, that module is what the
@@ -1782,8 +1789,9 @@ static ModuleNode *parseLoadModulePath(ParseState *parse, char *path, Name *file
     // file drew the module out of a folder, and its file's otherwise. Filename
     // naming is transitional and is what a designated file replaces. A file a
     // build description's import line names is one file, swept for nothing, and
-    // the import's name is its name
-    mod->foldersym = build ? NULL : parseDesignatedFolder(path);
+    // the import's name is its name. A package's source root is named for its
+    // package, which is the name the search path found it by
+    mod->foldersym = build ? NULL : pkgsrc ? filesym : parseDesignatedFolder(path);
     mod->namesym = mod->foldersym ? mod->foldersym : filesym;
     // Every loaded module names itself in the owner chain; only the root does not
     dclInfoJoin((INode*)mod, NULL);
@@ -1826,7 +1834,7 @@ static ModuleNode *parseLoadModulePath(ParseState *parse, char *path, Name *file
 // include file [Jon 23 Sep]. What the include file itself imports is found where
 // the description's package lines say
 static ModuleNode *parseLoadBuildImport(ParseState *parse, BuildImport *import) {
-    return parseLoadModulePath(parse, import->path, import->name, 0, parseBuildImportModule(import));
+    return parseLoadModulePath(parse, import->path, import->name, 0, parseBuildImportModule(import), 0);
 }
 
 // Load the module a name reaches, unless a module holds its file already, then
@@ -1842,14 +1850,15 @@ static ModuleNode *parseLoadBuildImport(ParseState *parse, BuildImport *import) 
 // (compiler/c/doc/nodes/module.md)
 ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name *filesym) {
     uint16_t genflag = 0;
+    int pkgsrc = 0;
     char *path = fileFindLocal(lex ? lex->url : NULL, filename);
     if (path == NULL) {
-        path = fileFindPackage(filename);
+        path = fileFindPackage(filename, &pkgsrc);
         genflag = FlagGenMod;
     }
     if (path == NULL)
         errorExit(ExitNF, "Cannot find or read source file %s", filename);
-    return parseLoadModulePath(parse, path, filesym, genflag, NULL);
+    return parseLoadModulePath(parse, path, filesym, genflag, NULL, pkgsrc);
 }
 
 // Load the core package, the prelude every module imports.
@@ -1868,10 +1877,11 @@ static ModuleNode *parseLoadCore(ParseState *parse, BuildDesc *desc) {
         if (line)
             return parseLoadBuildImport(parse, line);
     }
-    char *path = fileFindPackage("core");
+    int pkgsrc;
+    char *path = fileFindPackage("core", &pkgsrc);
     if (path == NULL)
         errorExit(ExitNF, "Cannot find the core package, core/src/core.cone or core/core.cone, on the package search path. The packages folder is named by CONE_PACKAGES, else found at or above conec's own folder, else built into the compiler, and '--path' adds folders ahead of it.");
-    return parseLoadModulePath(parse, path, nametblFind("core", 4), FlagGenMod, NULL);
+    return parseLoadModulePath(parse, path, nametblFind("core", 4), FlagGenMod, NULL, pkgsrc);
 }
 
 // Add the import lines of a described module and of every module inside it,

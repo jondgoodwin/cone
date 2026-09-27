@@ -849,10 +849,19 @@ course."*).
 it builds the package into its own object (below), so `fileFindPackage` tries
 `name/src/name.cone` after `name.cone` and **before** the designated file
 `name/name.cone`, where a Congo package once kept a hand-written include file,
-and one left behind must not stand in for the source. The source is
-then a lone file, not a designated one — `src` is not `name` — so nothing
-beside it is swept: a package found this way is its one root file. Only a bare
-name is looked for there. This lookup is the compiler's side of the
+and one left behind must not stand in for the source. Only a bare name is
+looked for there. **The source root is the designated file of `src`**, the
+package's name standing in for the folder's, as the reference manual has it
+(`refmodule.html`, "Packages and Congo": under `src` the module rules apply
+unchanged). `fileFindPackage` says when that is what it found, and
+`parseLoadModulePath` then sets `foldersym` to the package's name rather than
+asking `parseDesignatedFolder`, which would see `src` and not `name`. So `src` is
+swept as any module folder is: its other files and those of its organisational
+subfolders join the package's root module, a file opening with `mod` or a
+subfolder with its own designated file is a submodule, only the root file may
+import, and its `mod` line may restate the package's name but not change it
+(`module_package_files`). These are the files Congo's scan of the package lists.
+`core`, loaded by `parseLoadCore`, is swept the same way. This lookup is the compiler's side of the
 **package folder**, and it lives only as long as the search path does; a Congo
 build names every file itself ("A described build", below).
 

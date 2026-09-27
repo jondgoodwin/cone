@@ -39,9 +39,11 @@ char *fileFindSrc(char *cururl, char *srcfn);
 
 // fileFindSrc's two halves apart: relative to cururl alone, and on the package
 // search path alone. A caller that must know which of the two found a file --
-// a module found on the search path is compiled into the object -- asks each
+// a module found on the search path is compiled into the object -- asks each.
+// 'pkgsrc', where not NULL, is set where the search path found a package's
+// source root, 'name/src/name.cone', and cleared otherwise
 char *fileFindLocal(char *cururl, char *srcfn);
-char *fileFindPackage(char *srcfn);
+char *fileFindPackage(char *srcfn, int *pkgsrc);
 
 // The one spelling of a path: separators as '/', a '.' segment dropped and a
 // '..' segment cancelled against the segment in front of it
