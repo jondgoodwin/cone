@@ -25,7 +25,21 @@
 // - Material, the standard lit one: a base color times a texture (the
 //   texture optional), Lambert diffuse and Blinn-Phong specular, in Slang
 //   (lit.slang); and lines in one flat color (lines.slang), for wireframes
-//   and edges. glTF 2.0's metallic-roughness PBR is its successor.
+//   and edges.
+// - PbrMaterial, the physically based one (pbr.slang, over the brdf
+//   module): glTF 2.0's metallic-roughness base (GGX, Smith, Schlick,
+//   Lambert), a clear coat over it, and over the coat a thin film (Belcour
+//   and Barla's iridescence) whose thickness is the noise package's warped
+//   fBm, drifting with 'renderer.time'; lit by the sun and by the
+//   Environment.
+// - Sky (sky.slang), an analytic dusk, drawn behind the scene once set
+//   ('setSky'); and Environment, the image-based lighting the renderer
+//   makes from it by full-screen passes (ibl.slang): the sky's cube and its
+//   levels, a specular cube prefiltered by roughness, a diffuse cube, and
+//   the split sum's table (lighting.cone).
+// - Post, from HDR light to the display (post.slang, post.cone): the
+//   half-float frame the renderer draws into, Jimenez's bloom chain, and
+//   tone mapping by AgX (or ACES's fit, Reinhard, none).
 // - DrawList: what is drawn this frame, each a mesh, a material and a model
 //   matrix (and a tint), drawn in one render pass.
 // - Image, pixels from BMP (or made: 'Image.checker'), written as BMP too;
@@ -47,10 +61,18 @@
 //   device.queue.submit(encoder.finish());
 //   swapchain.present(&mut device);
 //
+// Lit physically, in HDR: the renderer draws into a Post's half-float frame,
+// and the Post bloom and tone-map it into the swapchain's texture (post.cone
+// has the frame's shape).
+//
 // HOW IT IS BOUND. Group 0 is the frame's: one uniform buffer holding the
-// camera's view-projection matrix and position, and the light, written once
-// a frame ('queue.writeBuffer'). Group 1 is the material's: its parameters in
-// a uniform buffer of its own, its texture and the renderer's sampler. The
+// camera's view-projection matrix, its inverse and position, the light, the
+// target's size, the time and the environment's strength, written once a
+// frame ('queue.writeBuffer'). Group 1 is the material's: its parameters in
+// a uniform buffer of its own, its texture and the renderer's sampler.
+// Group 2, bound for the physically based material and the sky, is the
+// environment's: the sky's parameters, its cubes and table, their sampler.
+// The
 // draw's own data -- its model matrix and tint, 80 bytes -- goes in the
 // immediates (Vulkan's push constants), which every Vulkan device offers 128
 // bytes of: per-draw data that changes every draw and is small is what push
@@ -59,10 +81,25 @@
 // transforms indexed by instance is the step after (GPU-driven drawing).
 //
 // THE DRAW ORDER. Opaque draws (all there are yet) are sorted by pipeline,
-// lit before lines, and within one front to back by the distance from the
+// meshes (Blinn-Phong or physically based, by their material) before lines,
+// and within one front to back by the distance from the
 // camera to each model's origin, so nearer surfaces fill the depth buffer
 // first and hide what is behind them before it is shaded. Transparent draws,
-// back to front, come with blending.
+// back to front, come with blending. The sky comes last, where nothing was
+// drawn (depth tested at the far plane).
+//
+// Its files are one module, and only this one, the root, imports:
+//
+//   render.cone    Renderer and DrawList
+//   gpumesh.cone   GpuMesh, mesh slots and handles, LodChain
+//   material.cone  Material, material and texture slots and handles; lit.slang's and lines.slang's SPIR-V
+//   lighting.cone  Sky, PbrMaterial, Environment; pbr.slang's and ibl.slang's SPIR-V
+//   post.cone      Post: the HDR frame, bloom, tone mapping; post.slang's SPIR-V
+//   camera.cone    Camera, Light
+//   image.cone     Image
+//
+// and its shaders, Slang: lit, lines, pbr, ibl and post, and the modules
+// brdf and sky they import (pbr imports the noise package's too).
 //
 // Coordinates are geomath's and gpu's: right-handed, y up, the camera looking
 // down its -z, clip space's y up and depth from 0 to 1. Faces wind
@@ -108,10 +145,22 @@ fn readFile(path &[]u8, ok &mut Bool) String {
   text;
 }
 
-// The bytes of the frame uniforms (lit.slang's Frame) and of the immediates
-const FRAME_BYTES = 128u64;
+// The bytes of the frame uniforms (pbr.slang's Frame, whose first 128 are
+// lit.slang's) and of the immediates
+const FRAME_BYTES = 208u64;
 const IMMEDIATE_BYTES = 80u32;
 const MATERIAL_BYTES = 32u64;
+
+// What a material slot holds: the Blinn-Phong material, or the physically
+// based one
+const MATERIAL_BLINN_PHONG = 0u32;
+const MATERIAL_PBR = 1u32;
+
+// The pipelines a draw may be bound to
+const BOUND_NONE = 0u32;
+const BOUND_LIT = 1u32;
+const BOUND_LINES = 2u32;
+const BOUND_PBR = 3u32;
 
 // What each render pass draws with: the renderer's pipelines, bind groups and
 // the resources it hands out handles to
@@ -135,9 +184,20 @@ pub struct Renderer {
   pub pending List[MeshHandle];    // meshes replaced, to be swapped in at a frame's start
   pub drawCalls u32;               // how many draws the last render made
   pub triangles u64;               // and how many triangles (or lines) they drew
+  pub pbrShader ShaderModule;
+  pub environmentLayout BindGroupLayout;
+  pub pbrLayout PipelineLayout;    // the frame, a material, the environment; the immediates
+  pub pbrPipeline RenderPipeline;
+  pub skyPipeline RenderPipeline;  // the sky behind the scene
+  pub environment Environment;     // the image-based lighting made from the sky
+  pub drawSky Bool;                // draw the sky behind the scene ('setSky')
+  pub time f32;                    // seconds: what the physically based material's film drifts by
+  pub environmentStrength f32;     // how strongly the environment lights (1: as the sky is)
 
   // A renderer drawing into targets of 'colorFormat', with a depth texture
-  // of 'depthFormat' (TEXTURE_FORMAT_DEPTH32_FLOAT). Check 'isValid'.
+  // of 'depthFormat' (TEXTURE_FORMAT_DEPTH32_FLOAT). For physically based
+  // lighting, 'colorFormat' is TEXTURE_FORMAT_RGBA16_FLOAT and the target a
+  // Post's frame, which tone-maps it to the display. Check 'isValid'.
   pub fn create(device &mut Device, colorFormat u32, depthFormat u32) Renderer {
     mut litShader = device.createShaderModule(&LIT_SPIRV);
     mut linesShader = device.createShaderModule(&LINES_SPIRV);
@@ -149,6 +209,21 @@ pub struct Renderer {
     mut materialLayout = device.createBindGroupLayout(&materialEntries);
     imm groupLayouts = [&frameLayout, &materialLayout];
     mut layout = device.createPipelineLayout(&groupLayouts, IMMEDIATE_BYTES);
+
+    // The physically based material and the sky: a third group, the
+    // environment's (the sky's parameters, the diffuse and specular cubes,
+    // the split sum's table, their sampler)
+    mut pbrShader = device.createShaderModule(&PBR_SPIRV);
+    imm environmentEntries = [BindGroupLayoutEntry[binding: 0u32, visibility: SHADER_STAGE_FRAGMENT],
+      BindGroupLayoutEntry[binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
+        viewDimension: TEXTURE_VIEW_DIMENSION_CUBE],
+      BindGroupLayoutEntry[binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE,
+        viewDimension: TEXTURE_VIEW_DIMENSION_CUBE],
+      BindGroupLayoutEntry[binding: 3u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE],
+      BindGroupLayoutEntry[binding: 4u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER]];
+    mut environmentLayout = device.createBindGroupLayout(&environmentEntries);
+    imm pbrGroupLayouts = [&frameLayout, &materialLayout, &environmentLayout];
+    mut pbrLayout = device.createPipelineLayout(&pbrGroupLayouts, IMMEDIATE_BYTES);
 
     // Lit: three vertex buffers (position, normal, uv), back faces culled,
     // depth tested and written
@@ -170,16 +245,32 @@ pub struct Renderer {
       depthFormat: depthFormat, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS_EQUAL];
     mut linesPipeline = device.createRenderPipeline(&linesDesc);
 
+    // Physically based: the lit material's vertex buffers, culling and depth
+    imm pbrDesc = RenderPipelineDescriptor[layout: &pbrLayout, vertexModule: &pbrShader, buffers: &litBuffers,
+      fragmentModule: &pbrShader, colorFormat: colorFormat, cullMode: CULL_MODE_BACK,
+      depthFormat: depthFormat, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS];
+    mut pbrPipeline = device.createRenderPipeline(&pbrDesc);
+    // The sky: one triangle at the far plane, where nothing nearer was
+    // drawn (depth tested less or equal against the cleared 1, not written)
+    imm skyBuffers = [VertexBufferLayout[arrayStride: 12u64, attributes: &positionAttr]];
+    imm skyDesc = RenderPipelineDescriptor[layout: &pbrLayout, vertexModule: &pbrShader,
+      vertexEntryPoint: "backgroundVertex", buffers: &skyBuffers[..0], fragmentModule: &pbrShader,
+      fragmentEntryPoint: "backgroundFragment", colorFormat: colorFormat, depthFormat: depthFormat,
+      depthWriteEnabled: false, depthCompare: COMPARE_FUNCTION_LESS_EQUAL];
+    mut skyPipeline = device.createRenderPipeline(&skyDesc);
+
     mut frameUniforms = device.createBuffer(FRAME_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
     imm frameGroupEntries = [BindGroupEntry.buffer(0u32, &frameUniforms)];
     mut frameGroup = device.createBindGroup(&frameLayout, &frameGroupEntries);
     imm samplerDesc = SamplerDescriptor[];
     mut sampler = device.createSampler(&samplerDesc);
+    imm dusk = Sky.dusk(radians(4.), radians(180.));
+    mut environment = Environment.create(device, &environmentLayout, &dusk);
 
     mut r = Renderer[colorFormat, depthFormat, litShader, linesShader, frameLayout, materialLayout, layout,
       litPipeline, linesPipeline, frameUniforms, frameGroup, sampler, Pool[MeshSlot].empty(),
       Pool[TextureSlot].empty(), Pool[MaterialSlot].empty(), TextureHandle.none(), List[MeshHandle].empty(),
-      0u32, 0u64];
+      0u32, 0u64, pbrShader, environmentLayout, pbrLayout, pbrPipeline, skyPipeline, environment, false, 0., 1.];
     mut w = Image[1, 1, 3, List[u8].empty()];
     w.pixels.push(255u8);
     w.pixels.push(255u8);
@@ -191,7 +282,15 @@ pub struct Renderer {
   // Whether everything it draws with was made
   pub fn isValid(self &) Bool {
     litPipeline.isValid() and linesPipeline.isValid() and frameGroup.isValid() and sampler.isValid()
-      and frameUniforms.isValid();
+      and frameUniforms.isValid() and pbrPipeline.isValid() and skyPipeline.isValid() and environment.isValid();
+  }
+
+  // Draw 'sky' behind the scene from the next render on, and light the
+  // physically based material by it: its environment is made again, on the
+  // GPU, at the start of that render
+  pub fn setSky(self &mut, device &mut Device, sky &Sky) {
+    environment.setSky(device, sky);
+    drawSky = true;
   }
 
   // ---- Meshes ----
@@ -335,7 +434,36 @@ pub struct Renderer {
     imm entries = [BindGroupEntry.buffer(0u32, &uniforms), BindGroupEntry.texture(1u32, &view),
       BindGroupEntry.sampler(2u32, &sampler)];
     mut group = device.createBindGroup(&materialLayout, &entries);
-    MaterialHandle[materials.add(MaterialSlot[*material, uniforms, group])];
+    imm pbr = PbrMaterial.standard(material.baseColor, 0., 0.5);
+    MaterialHandle[materials.add(MaterialSlot[*material, uniforms, group, MATERIAL_BLINN_PHONG, pbr])];
+  }
+
+  // A physically based material to draw with (pbr.slang), lit by the
+  // directional light and the environment made from the sky
+  pub fn addPbrMaterial(self &mut, device &mut Device, material &PbrMaterial) MaterialHandle {
+    mut uniforms = device.createBuffer(PBR_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
+    imm params = pbrParams(material);
+    device.queue.writeBuffer(&uniforms, 0u64, &params as *u8, PBR_BYTES);
+    mut th = material.texture;
+    if !textures.alive(th.slot) { th = white; }
+    imm view = textures[th.slot].texture.createView();
+    imm entries = [BindGroupEntry.buffer(0u32, &uniforms), BindGroupEntry.texture(1u32, &view),
+      BindGroupEntry.sampler(2u32, &sampler)];
+    mut group = device.createBindGroup(&materialLayout, &entries);
+    imm plain = Material.plain(material.baseColor);
+    MaterialHandle[materials.add(MaterialSlot[plain, uniforms, group, MATERIAL_PBR, *material])];
+  }
+
+  // Change a physically based material's parameters (not its texture), from
+  // the next submission on
+  pub fn setPbrMaterial(self &mut, device &mut Device, h MaterialHandle, material &PbrMaterial) Bool {
+    if !materials.alive(h.slot) { return false; }
+    imm params = pbrParams(material);
+    mut slot = &mut materials[h.slot];
+    if slot.kind != MATERIAL_PBR { return false; }
+    device.queue.writeBuffer(&slot.uniforms, 0u64, &params as *u8, PBR_BYTES);
+    slot.pbr = *material;
+    true;
   }
 
   // Change a material's color and shine (not its texture), from the next
@@ -344,6 +472,7 @@ pub struct Renderer {
     if !materials.alive(h.slot) { return false; }
     imm params = materialParams(material);
     mut slot = &mut materials[h.slot];
+    if slot.kind != MATERIAL_BLINN_PHONG { return false; }
     device.queue.writeBuffer(&slot.uniforms, 0u64, &params as *u8, MATERIAL_BYTES);
     slot.params.baseColor = material.baseColor;
     slot.params.specular = material.specular;
@@ -354,27 +483,32 @@ pub struct Renderer {
   // ---- Drawing ----
 
   // Record one render pass drawing 'list' into 'target' (a texture of the
-  // renderer's color format: a swapchain's, or one the device made), with
-  // 'depth' (the renderer's depth format, of the target's size) cleared
-  // first, seen by 'camera' and lit by 'light'. The target is cleared to the
-  // camera's background. Replacements made in an earlier frame are swapped
-  // in first. A draw whose mesh has been removed is skipped. The frame's
-  // uniforms are one buffer, written by 'queue.writeBuffer' ahead of the
-  // frame's next submission, so the passes of one submission share one
-  // camera and light (a buffer a view is the step when there are views).
+  // renderer's color format: a swapchain's, one the device made, or a
+  // Post's frame), with 'depth' (the renderer's depth format, of the
+  // target's size) cleared first, seen by 'camera' and lit by 'light'. The
+  // target is cleared to the camera's background, and the sky drawn behind
+  // the scene if one is set ('setSky'). Replacements made in an earlier
+  // frame are swapped in first; the environment is made again first if the
+  // sky has changed and something needs it. A draw whose mesh has been
+  // removed is skipped. The frame's uniforms are one buffer, written by
+  // 'queue.writeBuffer' ahead of the frame's next submission, so the passes
+  // of one submission share one camera and light (a buffer a view is the
+  // step when there are views).
   pub fn render(self &mut, device &mut Device, encoder &mut CommandEncoder, target &Texture, depth &Texture,
       camera &Camera, light &Light, list &DrawList) {
     self.update(device);
     drawCalls = 0u32;
     triangles = 0u64;
     if target.width == 0u32 or target.height == 0u32 { return; }
+    if drawSky or self.drawsPbr(list) { environment.bake(encoder); }
 
     // The frame's uniforms: the camera and the light
     imm aspect = f32[target.width] / f32[target.height];
     imm viewProjection = camera.projectionMatrix(aspect) * camera.viewMatrix();
+    imm inverse = viewProjection.inverse();
     imm eye = camera.position();
     imm towards = Vec3[0., 0., 0.] - light.direction;
-    mut frame [32; f32] = [32; 0f];
+    mut frame [52; f32] = [52; 0f];
     mut k = 0usize;
     while k < 16usize {
       frame[k] = viewProjection.m[k];
@@ -395,6 +529,15 @@ pub struct Renderer {
     frame[29] = light.ambient.green;
     frame[30] = light.ambient.blue;
     frame[31] = 1.;
+    k = 0usize;
+    while k < 16usize {
+      frame[32usize + k] = inverse.m[k];
+      k = k + 1usize;
+    }
+    frame[48] = f32[target.width];
+    frame[49] = f32[target.height];
+    frame[50] = time;
+    frame[51] = environmentStrength;
     device.queue.writeBuffer(&frameUniforms, 0u64, &frame as *u8, FRAME_BYTES);
 
     // The order: lit before lines, each front to back
@@ -403,7 +546,7 @@ pub struct Renderer {
     imm color = RenderPassColorAttachment[view: target.createView(), clearValue: camera.background];
     imm depthAttachment = RenderPassDepthStencilAttachment[view: depth.createView(), depthStoreOp: STORE_OP_DISCARD];
     mut pass = encoder.beginRenderPassWithDepth(&color, &depthAttachment);
-    mut bound = 0u32;                    // 0 none, 1 lit, 2 lines
+    mut bound = BOUND_NONE;
     mut boundMaterial = Ref[MaterialSlot].none();
     mut i = 0usize;
     while i < order.len() {
@@ -415,22 +558,31 @@ pub struct Renderer {
           imm lines = m.topology == PRIMITIVE_TOPOLOGY_LINE_LIST;
           mut drawn = true;
           if lines {
-            if bound != 2u32 {
+            if bound != BOUND_LINES {
               pass.setPipeline(&linesPipeline);
               pass.setBindGroup(0u32, &frameGroup);
-              bound = 2u32;
+              bound = BOUND_LINES;
             }
+          } elif !materials.alive(item.material.slot) {
+            drawn = false;
           } else {
-            if bound != 1u32 {
+            // The material's kind chooses the pipeline
+            imm mslot = materials[item.material.slot];
+            if mslot.kind == MATERIAL_PBR {
+              if bound != BOUND_PBR {
+                pass.setPipeline(&pbrPipeline);
+                pass.setBindGroup(0u32, &frameGroup);
+                pass.setBindGroup(2u32, &environment.group);
+                bound = BOUND_PBR;
+                boundMaterial = Ref[MaterialSlot].none();
+              }
+            } elif bound != BOUND_LIT {
               pass.setPipeline(&litPipeline);
               pass.setBindGroup(0u32, &frameGroup);
-              bound = 1u32;
+              bound = BOUND_LIT;
               boundMaterial = Ref[MaterialSlot].none();
             }
-            if !materials.alive(item.material.slot) {
-              drawn = false;
-            } elif !(boundMaterial == item.material.slot) {
-              imm mslot = materials[item.material.slot];
+            if !(boundMaterial == item.material.slot) {
               pass.setBindGroup(1u32, &mslot.group);
               boundMaterial = item.material.slot;
             }
@@ -470,7 +622,28 @@ pub struct Renderer {
       }
       i = i + 1usize;
     }
+    // The sky, where nothing was drawn
+    if drawSky {
+      pass.setPipeline(&skyPipeline);
+      pass.setBindGroup(0u32, &frameGroup);
+      pass.setBindGroup(2u32, &environment.group);
+      pass.draw(3u32, 1u32, 0u32, 0u32);
+      drawCalls = drawCalls + 1u32;
+    }
     pass.end();
+  }
+
+  // Whether 'list' draws a mesh with a physically based material
+  fn drawsPbr(self &, list &DrawList) Bool {
+    mut i = 0usize;
+    while i < list.items.len() {
+      imm item = list.items[i];
+      if materials.alive(item.material.slot) {
+        if materials[item.material.slot].kind == MATERIAL_PBR { return true; }
+      }
+      i = i + 1usize;
+    }
+    false;
   }
 
   // The indices of 'list's items in the order they are drawn: lit meshes,
