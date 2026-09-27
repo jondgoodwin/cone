@@ -238,8 +238,9 @@ static INode *parseMatchRange(ParseState *parse, INode *matchee, INode *lower) {
 // - a comparison operator and a value, '==v', '<v', '!=v' and the rest, compares
 //   the matched value, the operator's left operand, with the value
 // - 'a .. b' or 'a ... b' is a range (parseMatchRange)
-// A value on its own is not a pattern: whether it means '==' is not decided,
-// and today a case that begins with one is a condition, not a comparison.
+// A value on its own is not a pattern (ErrorPatBare): read as a condition it
+// would decide the case without looking at the matched value.
+#define PatBareMsg "A value alone is not a pattern. Write '==' before it to compare the matched value with it, or 'is' before a variant or type."
 static INode *parseMatchPattern(ParseState *parse, INode *matchee) {
     if (lexIsToken(IsToken)) {
         CastNode *isnode = newIsNode(matchee, unknownType);
@@ -258,8 +259,7 @@ static INode *parseMatchPattern(ParseState *parse, INode *matchee) {
     INode *value = parseOr(parse);
     if (lexIsToken(DotDotToken) || lexIsToken(EllipsisToken))
         return parseMatchRange(parse, matchee, value);
-    errorMsgNode(value, ErrorPatBare,
-        "A value alone is not a pattern. Write '==' before it to compare the matched value with it.");
+    errorMsgNode(value, ErrorPatBare, PatBareMsg);
     return value;
 }
 
@@ -290,17 +290,19 @@ INode *parseMatch(ParseState *parse) {
                 continue;
             }
 
-            // Anything else is one or more patterns joined by 'or', or a
-            // condition, then an optional 'if' guard. A case that begins with
-            // neither 'is' nor a comparison operator is a range pattern when
-            // '..' or '...' follows its first operand, and otherwise a
-            // condition, whose own 'or' the condition has already taken.
+            // Anything else is one or more patterns joined by 'or', then an
+            // optional 'if' guard. A case that begins with neither 'is' nor a
+            // comparison operator is a range pattern when '..' or '...'
+            // follows its first operand. Otherwise it begins with a value
+            // alone, which is refused; the rest of that expression, its own
+            // 'or' included, is parsed so that the error is reported once.
             INode *cond;
             int patterns = 1;
             if (lexIsToken(IsToken) || parseCmpOp() != NULL)
                 cond = parseMatchPattern(parse, (INode *)expnamenode);
             else if (lexIsToken(NotToken)) {
                 cond = parseSimpleExpr(parse);
+                errorMsgNode(cond, ErrorPatBare, PatBareMsg);
                 patterns = 0;
             }
             else {
@@ -308,6 +310,7 @@ INode *parseMatch(ParseState *parse) {
                 if (lexIsToken(DotDotToken) || lexIsToken(EllipsisToken))
                     cond = parseMatchRange(parse, (INode *)expnamenode, first);
                 else {
+                    errorMsgNode(first, ErrorPatBare, PatBareMsg);
                     cond = parseSimpleExprFrom(parse, first);
                     patterns = 0;
                 }
