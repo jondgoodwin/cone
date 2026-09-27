@@ -1740,9 +1740,8 @@ static StructNode *structPrivacyEnum(INode *type) {
 // variant's methods -- sees the private members of the enum and of every
 // variant, through any value, not only through 'self'. An extension sees what
 // its base's code sees, the base's own variants included, and so on down a
-// chain; its copies are its own variants. Nothing else changes: a struct's
-// privates are still reached only through 'self', a sibling extension's are its
-// own, and a base does not see what an extension adds.
+// chain; its copies are its own variants. Nothing else widens: a sibling
+// extension's are its own, and a base does not see what an extension adds.
 //
 // The code is the function being checked, and its owner is the type it is
 // written in: a method cloned into a variant or a copy is owned by the clone's
@@ -1762,6 +1761,22 @@ int structEnumSeesPrivate(TypeCheckState *pstate, INode *type) {
         siteenum = structEnumBaseDcl(siteenum);
     }
     return 0;
+}
+
+// A member not 'pub' is private to its type, not to a value of it
+// (refstruct.html): the type's own methods and static functions reach it
+// through any value of the type -- a local, a parameter, a borrow written out
+// -- as they do through 'self'. The code is the function being checked and its
+// owner the type it is written in, found as structEnumSeesPrivate finds it: an
+// instance of a generic type owns its clones, so it sees the privates of that
+// instance's values and not another instance's. A function the module owns,
+// or another type's, sees none, save by the enum's boundary.
+int structSeesPrivate(TypeCheckState *pstate, INode *type) {
+    if (pstate == NULL || pstate->fn == NULL || type == NULL)
+        return 0;
+    if (inodeGetOwner((INode*)pstate->fn) == type)
+        return 1;
+    return structEnumSeesPrivate(pstate, type);
 }
 
 // Hook the names of the enum a variant is written inside, beneath the variant's

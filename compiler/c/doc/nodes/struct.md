@@ -128,6 +128,18 @@ type that may be extended has its representation in its contract. That is a
 documentation obligation and it is discharged in
 [refinherit](../../../../doc/reference/refinherit.html).
 
+**A type is the privacy boundary for its members, not a value of it.** A private
+member "can only be accessed by the struct's methods"
+([refstruct](../../../../doc/reference/refstruct.html)), so the type's own methods
+and static functions reach it through any value of the type — a local, a
+parameter, a borrow written out — as they do through `self`; another type's code,
+in the module or not, and a function the module owns do not. The code is judged
+by its owner, as the enum boundary below judges it, so a generic type's instance
+sees the privates of a value of that instance and not of another instance of the
+generic — ⚠ *the narrower reading, not a ruling*. The mechanism is
+`structSeesPrivate`, asked by `fnCallLowerMethod`; a type literal's private field
+is checked against `pstate->typenode` (`typeLitStructReorder`).
+
 **The enum is the privacy boundary for its variants** — Jon, 23 Sep 2026. A
 closed enum is one type written in one place, so code anywhere inside its braces
 — the enum's methods (and each variant's clone of them), its statics, every
@@ -136,9 +148,8 @@ through any value; an extension of it is inside the same boundary. ▸ **Settles
 that `pub` on a variant's member means "part of the enum's interface", where
 before it was the only way for the enum's own code to read it. It is the privacy
 half of the names rule (everything an enum declares is bare inside its braces).
-▸ **Forbids** nothing new, and widens nothing else: a struct's private members are
-still reached only through `self`, and a function the module owns is outside
-every enum, including one written or instantiated inside the braces. ⚠ *That
+▸ **Forbids** nothing new, and widens nothing else: a function the module owns is
+outside every enum, including one written or instantiated inside the braces. ⚠ *That
 last clause is Penny's reading of the ruling, not Jon's: an anonymous function
 written inside the braces, or a generic function instantiated from inside them,
 counts as the module's — her default, standing unless he objects* [Penny 23 Sep].
