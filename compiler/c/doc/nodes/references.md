@@ -296,8 +296,10 @@ injects records its lval's scope where it is built (`borrowMutRef`,
 borrow, and `borrowOwnerLend` for a sole owner lent as a `&uni`), so it reaches a call as the written borrow would; and
 `iexpGetLvalInfo` gives a dereferenced borrow expression or call result the
 scope on that reference's own type, since no variable holds it — a reference
-held in a variable keeps the variable's scope, because a declared type carries
-none. Nothing checks a borrow stored in a field or captured.
+held in a variable keeps the variable's scope, because the variable's type
+carries at most its initializer's lifetime (`varDclTypeCheck` scopes a declared
+borrowed-reference type as an inferred one is), not that of a borrow assigned
+to it later. Nothing checks a borrow stored in a field or captured.
 
 ## Generation
 

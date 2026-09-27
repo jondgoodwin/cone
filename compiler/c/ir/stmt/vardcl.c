@@ -158,6 +158,16 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
             errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
         else if (name->vtype == unknownType)
             name->vtype = ((IExpNode *)name->value)->vtype;
+        // A declared borrowed-reference type is a shared node carrying no
+        // lifetime, so the variable takes a copy of it scoped as its initializer
+        // is, as an undeclared one takes the initializer's own scoped type:
+        // returning or storing it is then judged by what it was borrowed from
+        else if (isExpNode(name->value)) {
+            INode *vtypedcl = itypeGetTypeDcl(name->vtype);
+            INode *scoped = iexpCoerceType(name->value, vtypedcl);
+            if (scoped != vtypedcl)
+                name->vtype = scoped;
+        }
         // Global variables, function parameters and statics require literal
         // initializers: the value is the storage's initializer, written once
         // before anything runs
