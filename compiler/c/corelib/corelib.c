@@ -153,8 +153,9 @@ void stdlibInit(int ptrsize) {
     tracedTrait = newBuiltinTrait(tracedTraitName);
     // 'ThreadSafe', which a region ref declares beside 'RegionRef' to say that
     // owners of one value may be held by several threads at once: its 'alias'
-    // and 'dealias' may run on different threads together (core's 'arc',
-    // whose count is atomic; 'rc' does not declare it). The name is
+    // and 'dealias' may run on different threads together (the sync
+    // package's 'arc', whose count is atomic; core's 'rc' does not declare
+    // it). The name is
     // provisional. It has NO EFFECT YET beyond being refused on anything but
     // a region ref (regionThreadSafeUseCheck): it is the region's say in
     // whether a reference may cross threads, which the thread check, when it

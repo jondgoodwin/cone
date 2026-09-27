@@ -66,7 +66,7 @@ most consequential thing this note settles.
 | **raw pointer** bounds | **no** | unchecked by construction |
 | raw pointer deref / arithmetic gated by `trust` | **no** | `trust` is not a keyword and has no parse rule |
 | allocation failure | **yes** | null test then `llvm.trap`, unless `?` asked for an `Option` |
-| thread-safety of a shared reference | **no** | `RaceSafe` is populated and read nowhere; `ThreadBound` is now infected correctly and nothing consumes it either; nor the region's say, the `ThreadSafe` marker core's `arc` declares and `rc` does not (`regionIsThreadSafe`) |
+| thread-safety of a shared reference | **no** | `RaceSafe` is populated and read nowhere; `ThreadBound` is now infected correctly and nothing consumes it either; nor the region's say, the `ThreadSafe` marker the `sync` package's `arc` declares and core's `rc` does not (`regionIsThreadSafe`) |
 | release of an owning reference at scope exit | **partly** | once, on the paths that still hold it: a variable moved, hollowed or given a value on only some paths carries a drop flag the release tests, as does one stored over. Leaks for the rest of an array one element was moved out of, for a global, and for a temporary left unbound. One a struct, an enum, a tuple or an array holds, however deep, is released with it |
 
 ## The four shapes the gaps take
