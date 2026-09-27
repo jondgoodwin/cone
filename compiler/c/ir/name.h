@@ -98,6 +98,7 @@ extern Name *markMethodName;   // "mark", which a traced region's trace calls
 extern Name *writeBarrierMethodName; // "writeBarrier", called after a traced reference is stored where no root is
 extern Name *regionRefName;    // "RegionRef"
 extern Name *tracedTraitName;  // "Traced", a region ref whose references are traced
+extern Name *threadSafeTraitName; // "ThreadSafe", a region ref whose owners several threads may hold
 
 // The built-in marker traits every type has exactly one of (corelib.c)
 extern Name *moveTraitName;    // "Move"
@@ -108,6 +109,7 @@ extern Name *noLoanReadTraitName;    // "NoLoanRead", a container whose read-onl
 extern Name *atomicValueTraitName;   // "AtomicValue", a value changed only by atomic operations
 extern Name *integerTraitName;   // "Integer", the integer types, which a constraint may ask for
 extern Name *pointerTraitName;   // "Pointer", the raw pointer types, which a constraint may ask for
+extern Name *sendableTraitName;  // "Sendable", a type whose values may cross to another thread, which a constraint may ask for
 
 typedef struct VarDclNode VarDclNode;
 

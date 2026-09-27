@@ -176,10 +176,16 @@ parameter names**.
    literal nor the size rule runs.
 3. No `value` and no declared type → `ErrorNoType`.
 4. With a `value`: coerce it to the declared type; **infer only on success and
-   only when the type is still `unknownType`**.
+   only when the type is still `unknownType`**. A declared borrowed-reference
+   type is a shared node with no lifetime, so on success the variable takes
+   instead a copy of it carrying the coerced value's scope (`iexpCoerceType`),
+   as an inferred one carries the value's own: the local keeps its
+   initializer's lifetime either way, and returning or storing it is judged by
+   it ([references](references.md)).
 5. **Literal rule.** `scope <= 1` — that is, a global or a parameter default —
    or `FlagStatic` requires `litIsLiteral(value)`. It admits literals, literal
-   array and type literals, a borrow of a string literal (so a slice of one), and
+   array and type literals, a borrow of a string literal (so a slice of one) or
+   of an array literal of constants (`imm g = &[1, 2, 3]`), and
    a use resolved to a `ConstDclTag`, which is what makes `imm g i32 = K` legal.
    A static's value is its storage's initializer, written once before anything
    runs, which is why it is held to a global's rule wherever it is declared. The
@@ -244,8 +250,11 @@ Fields and constants have no flow participation at all.
   [literals](literals.md)). A type's static never comes this way: it is in the type's
   `nodelist`, which `genlGlobalSyms` and `genlGlobalImpl` walk as they do for
   a method, so it is named and initialized with the module's globals.
-- **`genlParmVar`** — alloca **and store** `LLVMGetParam(fn, index)`, for every
-  parameter unconditionally. A parameter arrives as an SSA value but Cone lets
+- **`genlParmVar`** — alloca **and store** the parameter's value, for every
+  parameter unconditionally: `LLVMGetParam(fn, index)`, or for a C-named
+  function the struct its C ABI passed as an integer or through a pointer
+  (`genlFnDclParm`, [generation](../phases/generation.md), "C-named functions
+  and the C ABI"). A parameter arrives as an SSA value but Cone lets
   you assign to it and borrow from it, so it needs storage. `genlAlloca` hoists
   it to the entry block for mem2reg to undo.
 - **`genlGloVarName`** then **`genlGloVar`** — `LLVMAddGlobal` under the symbol

@@ -16,6 +16,11 @@
 	<p style="margin-left: 40px;"><i>Note: These are largely implemented.
 			A lifetime is enforced when a borrowed reference is stored, including into a
 			variable of a wider scope, and when it is returned or returned through a call.
+			A local initialized with a borrow carries its lifetime, whether or not the local's
+			type is written out. A borrow assigned to a variable after its initialization, or
+			stored in a struct's field, is not yet followed there, so returning that variable
+			or field is not refused (kept in a variable past what it borrows from and used,
+			it is refused by freezing).
 			Freezing is enforced for a borrow held in a local variable, including one a
 			method or function returns (an element taken with <span class="pre">list[0usize]</span>,
 			an allocation from an arena), and between the arguments of one call;
@@ -35,7 +40,9 @@
 			<span class="pre">imm l = a.alloc(List[Pt].empty()); imm l2 = l; imm e = l[0usize]; l2.push(p); e.x;</span>;
 			(E) a reference made from a pointer, <span class="pre">imm l = ptr as &amp;mut List[Pt]</span>, the same way.
 			Refusing them waits on <span class="pre">uni</span> reborrowing, which is to make the
-			alternatives writable; <span class="pre">List</span>, <span class="pre">String</span>,
+			alternatives writable: a <span class="pre">&amp;uni</span> reference is lent where a
+			<span class="pre">&amp;</span> or <span class="pre">&amp;mut</span> is wanted, but one handed
+			to another <span class="pre">&amp;uni</span> still moves; <span class="pre">List</span>, <span class="pre">String</span>,
 			<span class="pre">Dict</span> and <span class="pre">Pool</span> already declare
 			<span class="pre">ShapeChanging</span>, which that check will read and which does nothing yet.
 			Lifetimes struggle across method calls.</i></p>
@@ -124,6 +131,14 @@ fn main() {
   incr(allocref);         // Coerces the rc reference to a borrowed reference
 }
 </pre>
+	<p>The owning reference is borrowed from, not moved: it is frozen while the borrow is still
+		to be used, may be lent again after, and still ends its value at the end of its own scope.
+		That holds whatever permission the borrow asks for, <span class="pre">&amp;uni</span> included,
+		when the owner is its value's only holder (a <span class="pre">+so</span> reference,
+		or a <span class="pre">+rc</span> one not yet shared), so
+		<span class="pre">fn f(p &amp;uni Point)</span> may be called twice with one owner.
+		A shared owner, such as a <span class="pre">+rc-mut</span> reference, cannot lend a
+		<span class="pre">&amp;uni</span>.</p>
 	<p>Because <i>any</i> reference may be safely coerced to a borrowed reference,
 	functions and methods typically accept borrowed references as parameters.
 	This capability is what makes possible the benefits mentioned earlier:</p>
@@ -163,6 +178,10 @@ imm ref3 = &amp;vec[3].point.x;
 <pre>
 imm ref4 = &amp;mut list[key];  // passes &amp;mut list as self to list's `&amp;[]` method
 </pre>
+	<p>A plain <span class="pre">&amp;list[key]</span> passes the read-only
+		<span class="pre">&amp;list</span>, which a <span class="pre">`&amp;[]`</span> method
+		declared with <span class="pre">self &amp;mut</span> does not accept.
+		For such a type, <span class="pre">list[key]</span> is the read-only way to reach an element.</p>
 	<p>A method name after the dot operator is <i>not</i> such a case.
 		The ampersand applies to the whole term, so the method is called first
 		and the ampersand is then applied to what it returned &mdash; a temporary
@@ -433,6 +452,17 @@ if ref1 === &amp;a {    // true
 	<p>References are values. As such, they can be stored and passed around a program.
 		Whether such transfers are simple copies or moves depends on the reference's permission
 		(move semantics apply to all references having the <a href="refmove.html">uni</a> permission).
+		A borrowed <span class="pre">&amp;uni</span> reference handed where a borrowed reference
+		with a shareable permission is wanted (<span class="pre">&amp;</span>,
+		<span class="pre">&amp;imm</span>, <span class="pre">&amp;mut</span>) is lent rather than moved:
+		it is reborrowed, exactly as <span class="pre">&amp;mut *r</span> written out would be,
+		its source frozen as for any borrow, and it may be used again once that borrow's
+		last use is behind it (<a href="refperm.html">"Borrowed reference recovery"</a>).
+		So a function taking <span class="pre">r &amp;uni Point</span> may pass <span class="pre">r</span>
+		to a <span class="pre">&amp;mut Point</span> parameter twice,
+		and a method taking <span class="pre">self &amp;uni</span> may call the type's
+		<span class="pre">self &amp;</span> and <span class="pre">self &amp;mut</span> methods and then
+		read its fields.
 		Reference transfers also check reference type information to ensure everyone is in agreement
 		about what you can do with any passed-around reference.</p>
 	<p>Even though references are typed values,

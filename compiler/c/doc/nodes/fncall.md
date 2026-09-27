@@ -369,6 +369,13 @@ Three adjustments, two of them asymmetric on purpose:
   do because it dereferences only the receiver — `fnCallLowerRefCompare` does
   it before `fnCallLowerMethod` is reached.
 
+When nothing is selected, `fnCallNoCandidate` reports it. One case has a
+message of its own (`fnCallRefIndexWantsMut`, still `ErrorNoCandidate`): an
+indexed borrow `&x[i]` reaches `` `&[]` `` with the read-only receiver `&x`,
+and where a `&mut` receiver would have been accepted the message says the
+method takes `self &mut` and names `x[i]` and `&mut x[i]`. The probe changes
+nothing; the refusal is the same.
+
 ### What the node becomes
 
 `FnCallTag` (a real call), `FldAccessTag`, `ArrIndexTag`, `TypeLitTag`, a

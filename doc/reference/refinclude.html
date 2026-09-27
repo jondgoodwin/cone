@@ -36,7 +36,9 @@
 		build description, a module found on the
 		<a href="#packages">package search path</a> is compiled into the program
 		that imports it, and one found beside the importing file is only declared,
-		so a program importing one cannot be linked.</i></p>
+		so a program importing one cannot be linked. A C-named function passes a
+		struct by value as C does on 64-bit Windows only
+		(<a href="#cabi">below</a>).</i></p>
 	
 	<p>After a program's source code gets big enough,
 		it may become easier to work with when partitioned across multiple files.
@@ -85,8 +87,11 @@ import opengl;
 		searches the <b>package search path</b> for it: first each folder given to the
 		compiler with <span class="pre">--path</span>, in order, and then the
 		<b>packages folder</b>. The packages folder holds one folder per
-		<a href="refmodule.html#package">package</a>, whose source is
-		<span class="pre">src/<i>name</i>.cone</span> in it, and it is where the
+		<a href="refmodule.html#package">package</a>, whose source is its
+		<span class="pre">src</span> folder: <span class="pre">src/<i>name</i>.cone</span>
+		is the designated file of the package's module, and the folder's other
+		files and submodules are the package's by the
+		<a href="refmodule.html#dcl">module rules</a>. It is where the
 		packages that come with Cone live: <span class="pre">stdio</span>, which
 		<span class="pre">import stdio</span> reaches;
 		<span class="pre">core</span>, which every module imports without asking;
@@ -510,6 +515,32 @@ fn @c("main") start() i32 {    // the program's entry, under another Cone name
   0i32;
 }
 </pre>
+
+<h3 id="cabi">Structs by value: C's calling convention</h3>
+<p>A function a module gives a C name is called as C calls it, and calls C as
+	C expects. Where it takes or returns a struct by value, the struct is passed
+	the way the platform's C compiler passes the same C struct, so a Cone struct
+	laid out as C lays out the struct crosses either way unchanged: to an
+	<span class="pre">extern</span> function C defines, and into a Cone function
+	C calls, directly or through a pointer to it that Cone handed C.</p>
+<pre>
+struct Vec4 { pub x f32; pub y f32; pub z f32; pub w f32; }
+
+extern fn @c v4_sum(v Vec4) f32;       // float v4_sum(Vec4 v);
+pub fn @c scaled(v Vec4, k f32) Vec4 { // C calls it: Vec4 scaled(Vec4 v, float k);
+  Vec4[v.x * k, v.y * k, v.z * k, v.w * k];
+}
+</pre>
+<p style="margin-left: 40px;"><i>Note: This is implemented for 64-bit Windows,
+	where a struct of 1, 2, 4 or 8 bytes crosses as one integer and any other
+	through a pointer to a copy, and a larger one is returned through a
+	pointer the caller supplies. On other platforms (x86-64 Linux and macOS,
+	WebAssembly) a struct of more than one scalar still does not cross as C
+	passes it. A call made through a function reference
+	(<span class="pre">&amp;fn</span>) uses Cone's own convention, as does a
+	type's method named with <span class="pre">@c</span>; so C's function
+	pointer taking a struct by value cannot yet be called from Cone. A slice,
+	a tuple or an array is not a C type, and passes as Cone passes it.</i></p>
 
 <h3 id="onecname">One C name, one symbol</h3>
 <p>C has one namespace for its symbols, so a C name means the same thing

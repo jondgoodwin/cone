@@ -23,6 +23,21 @@ void borrowAuto(INode **from, INode *totypedcl);
 // Note: totype has already done GetTypeDcl
 int borrowAutoMatches(INode *from, RefNode *totype);
 
+// Retype a borrowed constant array literal to the reference type it is wanted as
+int borrowConstLitCoerce(INode *from, INode *totypedcl);
+
+// Is 'from' a '&uni' reference in a place, wanted as a shareable borrowed reference?
+int borrowUniReborrows(INode *from, INode *totypedcl);
+
+// Lend such a '&uni' reference by rewriting it to the reborrow '&mut *from'
+void borrowUniReborrow(INode **from, INode *totypedcl);
+
+// Is 'from' a sole owning reference in a place, wanted as a '&uni' borrowed reference?
+int borrowOwnerLendsUni(INode *from, INode *totypedcl);
+
+// Lend such an owning reference by rewriting it to the borrow '&uni *from'
+void borrowOwnerLend(INode **from, INode *totypedcl);
+
 void borrowPrint(RefNode *node);
 
 // Type check borrow node

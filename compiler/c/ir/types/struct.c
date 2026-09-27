@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
+#include <inttypes.h>
 
 // Create a new struct type whose info will be filled in afterwards
 StructNode *newStructNode(Name *namesym) {
@@ -29,11 +30,13 @@ StructNode *newStructNode(Name *namesym) {
     snode->vtable = NULL;
     snode->genericinfo = NULL;
     snode->tagnbr = 0;
+    snode->tagstate = TagNonNeg;
     snode->spans = NULL;
     snode->carriesborrow = CarriesBorrowUnknown;
     snode->holdstraced = HoldsTracedUnknown;
     snode->lends = LendsLoaned;
     snode->holdsatomic = HoldsTracedUnknown;
+    snode->threadbound = CarriesBorrowUnknown;
     return snode;
 }
 
@@ -67,11 +70,12 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     newnode->lifecycle = NULL;
     newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
     // An instance's fields are the generic's with its parameters bound, so
-    // whether they carry a borrow, or hold a traced reference or an atomic
-    // value, is the instance's own question
+    // whether they carry a borrow, hold a traced reference or an atomic value,
+    // or are bound to their thread, is the instance's own question
     newnode->carriesborrow = CarriesBorrowUnknown;
     newnode->holdstraced = HoldsTracedUnknown;
     newnode->holdsatomic = HoldsTracedUnknown;
+    newnode->threadbound = CarriesBorrowUnknown;
 
     // Within the copy, 'Self' is the copy. A method's self parameter is declared
     // as a use of 'Self' (parsetype.c), and name resolution has already pointed
@@ -1204,6 +1208,32 @@ static StructNode *structEnumCopyVariant(StructNode *node, StructNode *base, Str
     return copy;
 }
 
+// Give a variant the tag value after 'prior's, or zero when it is the first.
+// Counting up from a negative value stays negative only until it reaches zero.
+void structTagFollow(StructNode *variant, StructNode *prior) {
+    if (prior == NULL || prior->tagstate == TagUnassigned) {
+        variant->tagnbr = 0;
+        variant->tagstate = TagNonNeg;
+        return;
+    }
+    variant->tagnbr = (int64_t)((uint64_t)prior->tagnbr + 1);
+    variant->tagstate = prior->tagstate == TagNegative && variant->tagnbr < 0 ? TagNegative : TagNonNeg;
+}
+
+// Do two variants hold the same tag value? Never, while either is unsettled.
+int structTagSame(StructNode *a, StructNode *b) {
+    return a->tagstate != TagUnassigned && a->tagstate == b->tagstate && a->tagnbr == b->tagnbr;
+}
+
+// A variant's tag value in decimal, as its author reads it
+char *structTagText(StructNode *variant, char *buf) {
+    if (variant->tagstate == TagNegative)
+        sprintf(buf, "%" PRId64, variant->tagnbr);
+    else
+        sprintf(buf, "%" PRIu64, (uint64_t)variant->tagnbr);
+    return buf;
+}
+
 // Copy the base's variants into this enum's set, ahead of its own, and number its
 // own from there.
 //
@@ -1223,7 +1253,7 @@ static void structEnumSeedVariants(NameResState *pstate, StructNode *node, Struc
     node->derived = newNodes(basecnt + (own ? own->used : 0) + 2);
     INode **nodesp;
     uint32_t cnt;
-    uint32_t nexttag = 0;
+    StructNode *prior = NULL;   // The variant the next unpinned one numbers on from
     if (base->derived) {
         for (nodesFor(base->derived, cnt, nodesp)) {
             StructNode *variant = (StructNode*)*nodesp;
@@ -1235,7 +1265,7 @@ static void structEnumSeedVariants(NameResState *pstate, StructNode *node, Struc
             }
             StructNode *copy = structEnumCopyVariant(node, base, variant, basecall);
             nodesAdd(&node->derived, (INode*)copy);
-            nexttag = copy->tagnbr + 1;
+            prior = copy;
             // One namespace holds an enum's variants, fields and methods. What a copy
             // can meet here is a variant the extension declared under the same name
             // -- or, down a chain, another copy, where the base already reported its
@@ -1252,18 +1282,19 @@ static void structEnumSeedVariants(NameResState *pstate, StructNode *node, Struc
         return;
     for (nodesFor(own, cnt, nodesp)) {
         StructNode *variant = (StructNode*)*nodesp;
-        if (variant->tagnbr == TagUnassigned)
-            variant->tagnbr = nexttag;
+        if (variant->tagstate == TagUnassigned)
+            structTagFollow(variant, prior);
         INode **priorp;
         uint32_t priorcnt;
         for (nodesFor(node->derived, priorcnt, priorp)) {
-            if (((StructNode*)*priorp)->tagnbr == variant->tagnbr)
+            char buf[24];
+            if (structTagSame((StructNode*)*priorp, variant))
                 errorMsgNode((INode*)variant, ErrorDupTag,
-                    "Tag value %d is already taken by variant %s.",
-                    (int)variant->tagnbr, &((StructNode*)*priorp)->namesym->namestr);
+                    "Tag value %s is already taken by variant %s.",
+                    structTagText(variant, buf), &((StructNode*)*priorp)->namesym->namestr);
         }
         nodesAdd(&node->derived, *nodesp);
-        nexttag = variant->tagnbr + 1;
+        prior = variant;
     }
 }
 
@@ -2544,12 +2575,16 @@ int structIsGeneratedDropFn(INode *fn) {
 // Settle the discriminant's width, and refuse a tag value the enum's own integer
 // type cannot hold.
 //
-// The width follows the largest tag VALUE, not the variant count. A pinned value
-// is what lines an enum up with an external library's constants, so
-// 'Red = 0xFF0000' needs four bytes however few variants there are. An enum that
-// declared its integer type has the width fixed there instead, which is the point
-// of declaring it, so a value too large for it is the author's error rather than a
-// silent widening away from the layout they asked for.
+// The width follows the tag VALUES, not the variant count. A pinned value is what
+// lines an enum up with an external library's constants, so 'Red = 0xFF0000' needs
+// four bytes however few variants there are. A negative value makes the
+// discriminant signed, and the width is then the narrowest signed one holding
+// every value. An enum that declared its integer type has the width and the sign
+// fixed there instead, which is the point of declaring it, so a value that type
+// cannot hold is the author's error rather than a silent widening away from the
+// layout they asked for -- the literal rule, that a value must fit its type and a
+// negative sign counts, read against the value as written (enumTagFits). One
+// diagnostic per enum, naming the first value that does not fit.
 //
 // The discriminant's type node is shared rather than cloned (clone.c), so every
 // variant's copy of the tag field reads the width set here.
@@ -2565,17 +2600,28 @@ int structIsGeneratedDropFn(INode *fn) {
 // the generic's first instance: every instance shares the template's
 // discriminant node and tag values, so measuring each would report a declared
 // integer type's overflow once per instance (structTypeCheckEnumInstance).
-void structSetTagWidth(StructNode *node) {
-    if (node->derived == NULL || !(node->flags & HasTagField))
-        return;
-    uint32_t maxtag = 0;
+// The first of an enum's variants whose tag value does not fit an integer 'bits'
+// wide, signed or not, or NULL when every one does
+static StructNode *structTagMisfit(StructNode *node, unsigned int bits, int issigned) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(node->derived, cnt, nodesp)) {
-        if (((StructNode*)*nodesp)->tagnbr > maxtag)
-            maxtag = ((StructNode*)*nodesp)->tagnbr;
+        if (!enumTagFits((StructNode*)*nodesp, bits, issigned))
+            return (StructNode*)*nodesp;
     }
-    uint8_t needed = enumBytesFor(maxtag);
+    return NULL;
+}
+
+void structSetTagWidth(StructNode *node) {
+    if (node->derived == NULL || !(node->flags & HasTagField))
+        return;
+    INode **nodesp;
+    uint32_t cnt;
+    int hasneg = 0;
+    for (nodesFor(node->derived, cnt, nodesp)) {
+        if (((StructNode*)*nodesp)->tagstate == TagNegative)
+            hasneg = 1;
+    }
     StructNode *enumbase = structEnumBaseDcl(node);
     for (nodelistFor(&node->fields, cnt, nodesp)) {
         if (!((*nodesp)->flags & IsTagField))
@@ -2584,20 +2630,41 @@ void structSetTagWidth(StructNode *node) {
         if (tagtype->tag != EnumTag)
             continue;
         EnumNode *tagnode = (EnumNode*)tagtype;
-        if (tagnode->fixedwidth) {
-            if (tagnode->bytes < needed)
+        char valbuf[24];
+        char rangebuf[64];
+        if (tagnode->fixedwidth || enumbase) {
+            StructNode *misfit = structTagMisfit(node, tagnode->bytes * 8, tagnode->issigned);
+            if (misfit == NULL)
+                continue;
+            if (tagnode->fixedwidth)
                 errorMsgNode(tagnode->underlying, ErrorTagWidth,
-                    "Tag value %d does not fit in this enum's %d-byte integer type.",
-                    (int)maxtag, (int)tagnode->bytes);
-        }
-        else if (enumbase) {
-            if (tagnode->bytes < needed)
+                    "Tag value %s of %s does not fit %s, this enum's integer type, whose values run %s.",
+                    structTagText(misfit, valbuf), &misfit->namesym->namestr,
+                    &((NbrNode*)itypeGetTypeDcl(tagnode->underlying))->namesym->namestr,
+                    enumRangeText(tagnode->bytes * 8, tagnode->issigned, rangebuf));
+            else
                 errorMsgNode((INode*)node, ErrorTagWidth,
-                    "Tag value %d does not fit the %d-byte discriminant %s lays its variants out in, which %s shares.",
-                    (int)maxtag, (int)tagnode->bytes, &enumbase->namesym->namestr, &node->namesym->namestr);
+                    "Tag value %s of %s does not fit the %d-byte discriminant %s lays its variants out in, which %s shares, whose values run %s.",
+                    structTagText(misfit, valbuf), &misfit->namesym->namestr, (int)tagnode->bytes,
+                    &enumbase->namesym->namestr, &node->namesym->namestr,
+                    enumRangeText(tagnode->bytes * 8, tagnode->issigned, rangebuf));
+            continue;
         }
-        else if (tagnode->bytes < needed)
+        // Declaring no type: the narrowest width holding every value, signed
+        // when one is negative. Only a negative value beside one above i64's
+        // largest has no integer that holds both.
+        uint8_t needed = 1;
+        while (needed < 8 && structTagMisfit(node, needed * 8, hasneg))
+            needed *= 2;
+        StructNode *misfit = structTagMisfit(node, needed * 8, hasneg);
+        if (misfit)
+            errorMsgNode((INode*)misfit, ErrorTagWidth,
+                "Tag value %s of %s needs an unsigned 64-bit discriminant, and %s's negative values need a signed one.",
+                structTagText(misfit, valbuf), &misfit->namesym->namestr, &node->namesym->namestr);
+        if (tagnode->bytes < needed)
             tagnode->bytes = needed;
+        if (hasneg)
+            tagnode->issigned = 1;
     }
 }
 
@@ -2808,11 +2875,14 @@ static void structCheckMembers(StructNode *node) {
 
     // 'RegionRef' requires nothing an ordinary requirement can state: each region
     // method is optional, with a fixed shape where declared. 'Traced' says
-    // something only of a region ref, which regionRefCheck holds to its 'mark'.
+    // something only of a region ref, which regionRefCheck holds to its 'mark',
+    // and so does 'ThreadSafe'.
     if (regionIsRegionRef((INode*)node))
         regionRefCheck(node);
-    else
+    else {
         regionTracedUseCheck(node);
+        regionThreadSafeUseCheck(node);
+    }
 
     structCheckCopy(node);
 }
@@ -3049,7 +3119,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     }
     structFoldRefresh(pstate, node);
 
-    // Go through all fields to index them and calculate infection flags for ThreadBound/MoveType
+    // Go through all fields to index them and calculate the MoveType infection
     int isZeroSize = 1;  // Start with assumption it is zero size, unless proven otherwise
     int hasEnumFld = 0;
     uint16_t infectFlag = 0;
@@ -3057,12 +3127,11 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     for (nodelistFor(&node->fields, cnt, nodesp)) {
         // Number field indexes to reflect their possibly altered position
         ((FieldDclNode*)*nodesp)->index = index++;
-        // Notice if a field's threadbound or movetype infects the struct. Whether
+        // Notice if a field's movetype infects the struct. Whether
         // the field moves is asked of itypeIsMove rather than read off its flags,
         // since a tuple carries no flag of its own and moves when one of its
         // elements does.
         ITypeNode *fldtype = (ITypeNode*)itypeGetTypeDcl(((IExpNode*)(*nodesp))->vtype);
-        infectFlag |= fldtype->flags & ThreadBound;
         if (itypeIsMove((INode*)fldtype))
             infectFlag |= MoveType;
         // Handle impact of fields that are opaque or non-zero-size
@@ -3098,7 +3167,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     // And an atomic value is one field an atomic operation acts on
     structAtomicValueCheck(node, 1);
 
-    // Use inference rules to decide if struct is ThreadBound or a MoveType
+    // Use inference rules to decide if struct is a MoveType
     // based on whether its fields are, and whether it supports the .final method.
     //
     // A 'clone' method does not make a move type copyable. The manual's clone

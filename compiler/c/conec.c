@@ -80,6 +80,9 @@ void doAnalysis(ConeOptions *opt, ProgramNode **pgm) {
     // Where a traced reference may be held: judged over the places type check
     // noted, now that every type is laid out (ir/types/region.c)
     regionTracedCheckAll();
+    // What crosses threads, where a struct it reaches was not laid out when
+    // the instance asking was made (ir/meta/generic.c)
+    genericSendableCheckAll();
 
     if (opt->check_tree)
         inodeCheckTree((INode*)*pgm);

@@ -1,0 +1,369 @@
+// ======== Matrices: Mat3 and Mat4, each stored column by column ========
+
+// A 3x3 matrix, stored column by column: the cell in row r and column c is
+// m[3 * c + r].
+//     m[0] m[3] m[6]
+//     m[1] m[4] m[7]
+//     m[2] m[5] m[8]
+// It is a rotation and scale in space (and the normal matrix, which carries
+// normals as a Mat4 carries points), or a placement in the plane, whose
+// translation is m[6], m[7] (Transform2.toMat3).
+pub struct Mat3 {
+  pub m [9; f32];
+
+  pub fn identity() Mat3 {Mat3[[1f, 0f, 0f,  0f, 1f, 0f,  0f, 0f, 1f]];}
+
+  // Scaling by s.x, s.y and s.z along the axes
+  pub fn fromScale(s Vec3) Mat3 {Mat3[[s.x, 0f, 0f,  0f, s.y, 0f,  0f, 0f, s.z]];}
+
+  // The rotation a unit quaternion describes
+  pub fn fromQuat(q Quat) Mat3 {
+    imm x2 = q.x + q.x;
+    imm y2 = q.y + q.y;
+    imm z2 = q.z + q.z;
+    imm xx = q.x * x2;
+    imm xy = q.x * y2;
+    imm xz = q.x * z2;
+    imm yy = q.y * y2;
+    imm yz = q.y * z2;
+    imm zz = q.z * z2;
+    imm wx = q.w * x2;
+    imm wy = q.w * y2;
+    imm wz = q.w * z2;
+    Mat3[[1. - (yy + zz), xy + wz, xz - wy,
+      xy - wz, 1. - (xx + zz), yz + wx,
+      xz + wy, yz - wx, 1. - (xx + yy)]];
+  }
+
+  // The upper left 3x3 of a Mat4: its rotation and scale, without its
+  // translation
+  pub fn fromMat4(a Mat4) Mat3 {
+    Mat3[[a.m[0], a.m[1], a.m[2],  a.m[4], a.m[5], a.m[6],  a.m[8], a.m[9], a.m[10]]];
+  }
+
+  // The matrix that carries normals as 'a' carries points: the inverse of
+  // its 3x3, transposed. Under a scaling that is not the same along every
+  // axis, a normal is not carried as the points are, or it would lean
+  pub fn normalMatrix(a Mat4) Mat3 {fromMat4(a).inverse().transpose();}
+
+  // The cell in row 'row' and column 'col', each 0 to 2
+  pub fn cell(self, row usize, col usize) f32 {m[3usize * col + row];}
+
+  // The matrix product: o applied first, then self
+  pub fn mult overload `*`(self, o Mat3) Mat3 {
+    mut r = Mat3[[9; 0f]];
+    mut col = 0usize;
+    while col < 3usize {
+      imm c = 3usize * col;
+      mut row = 0usize;
+      while row < 3usize {
+        r.m[c + row] = m[row] * o.m[c] + m[3usize + row] * o.m[c + 1usize]
+          + m[6usize + row] * o.m[c + 2usize];
+        row = row + 1usize;
+      };
+      col = col + 1usize;
+    };
+    r;
+  }
+
+  // The vector v carried through the matrix
+  pub fn transform overload `*`(self, v Vec3) Vec3 {
+    Vec3[m[0] * v.x + m[3] * v.y + m[6] * v.z,
+      m[1] * v.x + m[4] * v.y + m[7] * v.z,
+      m[2] * v.x + m[5] * v.y + m[8] * v.z];
+  }
+
+  // A 2-D point carried through a 2-D placement (its third component taken as
+  // 1, so it is moved), and a 2-D direction (taken as 0, so it is not)
+  pub fn transformPoint2(self, p Vec2) Vec2 {
+    Vec2[m[0] * p.x + m[3] * p.y + m[6], m[1] * p.x + m[4] * p.y + m[7]];
+  }
+  pub fn transformVector2(self, v Vec2) Vec2 {
+    Vec2[m[0] * v.x + m[3] * v.y, m[1] * v.x + m[4] * v.y];
+  }
+
+  // Rows and columns exchanged
+  pub fn transpose(self) Mat3 {
+    Mat3[[m[0], m[3], m[6],  m[1], m[4], m[7],  m[2], m[5], m[8]]];
+  }
+
+  pub fn determinant(self) f32 {
+    m[0] * (m[4] * m[8] - m[7] * m[5]) - m[3] * (m[1] * m[8] - m[7] * m[2])
+      + m[6] * (m[1] * m[5] - m[4] * m[2]);
+  }
+
+  // The matrix that undoes this one: its adjugate over its determinant. A
+  // matrix that flattens space (determinant 0) has none, and gives all zeros
+  pub fn inverse(self) Mat3 {
+    // As written on paper: a b c / d e f / g h i
+    imm a = m[0];
+    imm b = m[3];
+    imm c = m[6];
+    imm d = m[1];
+    imm e = m[4];
+    imm f = m[7];
+    imm g = m[2];
+    imm h = m[5];
+    imm i = m[8];
+    imm det = determinant();
+    if det == 0. {return Mat3[[9; 0f]];}
+    imm inv = 1. / det;
+    Mat3[[(e * i - f * h) * inv, (f * g - d * i) * inv, (d * h - e * g) * inv,
+      (c * h - b * i) * inv, (a * i - c * g) * inv, (b * g - a * h) * inv,
+      (b * f - c * e) * inv, (c * d - a * f) * inv, (a * e - b * d) * inv]];
+  }
+}
+
+// A 4x4 transformation matrix, stored column by column: the cell in row r and
+// column c is m[4 * c + r].
+//     m[0] m[4] m[8]  m[12]
+//     m[1] m[5] m[9]  m[13]
+//     m[2] m[6] m[10] m[14]
+//     m[3] m[7] m[11] m[15]
+pub struct Mat4 {
+  pub m [16; f32];
+
+  pub fn identity() Mat4 {
+    Mat4[[1f, 0f, 0f, 0f,  0f, 1f, 0f, 0f,  0f, 0f, 1f, 0f,  0f, 0f, 0f, 1f]];
+  }
+
+  // A move by t
+  pub fn fromTranslation(t Vec3) Mat4 {identity().withTranslation(t);}
+
+  // Scaling by s.x, s.y and s.z along the axes
+  pub fn fromScale(s Vec3) Mat4 {identity().scale(s);}
+
+  // A perspective projection, right-handed, looking down -z: 'fovY' the
+  // vertical field of view in radians, 'aspect' the width over the height,
+  // 'near' and 'far' the distances to the clipping planes. Depth runs from 0
+  // at the near plane to 1 at the far one, as Vulkan, Direct3D, Metal and
+  // WebGPU want it
+  pub fn perspective(fovY f32, aspect f32, near f32, far f32) Mat4 {
+    imm f = 1. / tan(fovY * 0.5);
+    mut r = Mat4[[16; 0f]];
+    r.m[0] = f / aspect;
+    r.m[5] = f;
+    r.m[10] = far / (near - far);
+    r.m[11] = -1.;
+    r.m[14] = near * far / (near - far);
+    r;
+  }
+
+  // The same, with OpenGL's depth, from -1 at the near plane to 1 at the far
+  pub fn perspectiveGl(fovY f32, aspect f32, near f32, far f32) Mat4 {
+    imm f = 1. / tan(fovY * 0.5);
+    mut r = Mat4[[16; 0f]];
+    r.m[0] = f / aspect;
+    r.m[5] = f;
+    r.m[10] = (far + near) / (near - far);
+    r.m[11] = -1.;
+    r.m[14] = 2. * far * near / (near - far);
+    r;
+  }
+
+  // An orthographic projection, right-handed, looking down -z, of the box
+  // from 'left' to 'right', 'bottom' to 'top', and 'near' to 'far' away.
+  // Depth runs from 0 at the near plane to 1 at the far one
+  pub fn orthographic(left f32, right f32, bottom f32, top f32, near f32, far f32) Mat4 {
+    mut r = identity();
+    r.m[0] = 2. / (right - left);
+    r.m[5] = 2. / (top - bottom);
+    r.m[10] = 1. / (near - far);
+    r.m[12] = (right + left) / (left - right);
+    r.m[13] = (top + bottom) / (bottom - top);
+    r.m[14] = near / (near - far);
+    r;
+  }
+
+  // The same, with OpenGL's depth, from -1 at the near plane to 1 at the far
+  // (glOrtho's matrix)
+  pub fn orthographicGl(left f32, right f32, bottom f32, top f32, near f32, far f32) Mat4 {
+    mut r = identity();
+    r.m[0] = 2. / (right - left);
+    r.m[5] = 2. / (top - bottom);
+    r.m[10] = 2. / (near - far);
+    r.m[12] = (right + left) / (left - right);
+    r.m[13] = (top + bottom) / (bottom - top);
+    r.m[14] = (far + near) / (near - far);
+    r;
+  }
+
+  // The rotation a unit quaternion describes
+  pub fn fromQuat(q Quat) Mat4 {
+    imm r = Mat3.fromQuat(q);
+    Mat4[[r.m[0], r.m[1], r.m[2], 0f,
+      r.m[3], r.m[4], r.m[5], 0f,
+      r.m[6], r.m[7], r.m[8], 0f,
+      0f, 0f, 0f, 1f]];
+  }
+
+  // Scaled by 'scale', turned by 'rotation', then moved by 'translation': how
+  // a thing is placed in its parent
+  pub fn fromTrs(translation Vec3, rotation Quat, scale Vec3) Mat4 {
+    fromQuat(rotation).scale(scale).withTranslation(translation);
+  }
+
+  // The view matrix of a camera at 'eye' looking at 'target', 'up' saying
+  // which way is up: it carries world coordinates into the camera's, in which
+  // the camera looks down its own -z
+  pub fn lookAt(eye Vec3, target Vec3, up Vec3) Mat4 {
+    imm fwd = (target - eye).normalize();
+    imm side = fwd.cross(up).normalize();
+    imm nup = side.cross(fwd);
+    Mat4[[side.x, nup.x, -fwd.x, 0f,
+      side.y, nup.y, -fwd.y, 0f,
+      side.z, nup.z, -fwd.z, 0f,
+      -side.dot(eye), -nup.dot(eye), fwd.dot(eye), 1f]];
+  }
+
+  // The inverse of lookAt: something at 'eye' facing 'target', its own -z
+  // pointing at it. This one carries its local coordinates into the world's,
+  // to place a thing, where lookAt makes a camera's view
+  pub fn targetTo(eye Vec3, target Vec3, up Vec3) Mat4 {
+    imm fwd = (target - eye).normalize();
+    imm side = fwd.cross(up).normalize();
+    imm nup = side.cross(fwd);
+    Mat4[[side.x, side.y, side.z, 0f,
+      nup.x, nup.y, nup.z, 0f,
+      -fwd.x, -fwd.y, -fwd.z, 0f,
+      eye.x, eye.y, eye.z, 1f]];
+  }
+
+  // The cell in row 'row' and column 'col', each 0 to 3
+  pub fn cell(self, row usize, col usize) f32 {m[4usize * col + row];}
+
+  // Its translation: where it carries the origin
+  pub fn translation(self) Vec3 {Vec3[m[12], m[13], m[14]];}
+
+  // The matrix with its first three columns scaled by s.x, s.y and s.z: the
+  // scaling happens before what the matrix already does
+  pub fn scale(self, s Vec3) Mat4 {
+    mut r = self;
+    r.m[0] = m[0] * s.x;
+    r.m[1] = m[1] * s.x;
+    r.m[2] = m[2] * s.x;
+    r.m[4] = m[4] * s.y;
+    r.m[5] = m[5] * s.y;
+    r.m[6] = m[6] * s.y;
+    r.m[8] = m[8] * s.z;
+    r.m[9] = m[9] * s.z;
+    r.m[10] = m[10] * s.z;
+    r;
+  }
+
+  // The matrix with its translation replaced by t
+  pub fn withTranslation(self, t Vec3) Mat4 {
+    mut r = self;
+    r.m[12] = t.x;
+    r.m[13] = t.y;
+    r.m[14] = t.z;
+    r;
+  }
+
+  // The matrix product: o applied first, then self
+  pub fn mult overload `*`(self, o Mat4) Mat4 {
+    mut r = Mat4[[16; 0f]];
+    mut col = 0usize;
+    while col < 4usize {
+      imm c = 4usize * col;
+      mut row = 0usize;
+      while row < 4usize {
+        r.m[c + row] = m[row] * o.m[c] + m[4usize + row] * o.m[c + 1usize]
+          + m[8usize + row] * o.m[c + 2usize] + m[12usize + row] * o.m[c + 3usize];
+        row = row + 1usize;
+      };
+      col = col + 1usize;
+    };
+    r;
+  }
+
+  // The point p carried through the matrix, its w taken as 1 and the result's
+  // w dropped: right for every placement, but not for a projection (see
+  // projectPoint). 'm * p' is the same
+  pub fn transformPoint overload `*`(self, p Vec3) Vec3 {
+    Vec3[m[0] * p.x + m[4] * p.y + m[8] * p.z + m[12],
+      m[1] * p.x + m[5] * p.y + m[9] * p.z + m[13],
+      m[2] * p.x + m[6] * p.y + m[10] * p.z + m[14]];
+  }
+
+  // The four components carried through the matrix
+  pub fn transformVec4 overload `*`(self, v Vec4) Vec4 {
+    Vec4[m[0] * v.x + m[4] * v.y + m[8] * v.z + m[12] * v.w,
+      m[1] * v.x + m[5] * v.y + m[9] * v.z + m[13] * v.w,
+      m[2] * v.x + m[6] * v.y + m[10] * v.z + m[14] * v.w,
+      m[3] * v.x + m[7] * v.y + m[11] * v.z + m[15] * v.w];
+  }
+
+  // The direction v carried through the matrix: turned and scaled, not moved
+  pub fn transformVector(self, v Vec3) Vec3 {
+    Vec3[m[0] * v.x + m[4] * v.y + m[8] * v.z,
+      m[1] * v.x + m[5] * v.y + m[9] * v.z,
+      m[2] * v.x + m[6] * v.y + m[10] * v.z];
+  }
+
+  // The point p carried through the matrix and divided by the w that comes
+  // out: through a projection, where p lands on the screen, and its depth
+  pub fn projectPoint(self, p Vec3) Vec3 {
+    imm h = self * p.extend(1.);
+    h.xyz() * (1. / h.w);
+  }
+
+  // Rows and columns exchanged
+  pub fn transpose(self) Mat4 {
+    Mat4[[m[0], m[4], m[8], m[12],  m[1], m[5], m[9], m[13],
+      m[2], m[6], m[10], m[14],  m[3], m[7], m[11], m[15]]];
+  }
+
+  pub fn determinant(self) f32 {
+    imm b00 = m[0] * m[5] - m[1] * m[4];
+    imm b01 = m[0] * m[6] - m[2] * m[4];
+    imm b02 = m[0] * m[7] - m[3] * m[4];
+    imm b03 = m[1] * m[6] - m[2] * m[5];
+    imm b04 = m[1] * m[7] - m[3] * m[5];
+    imm b05 = m[2] * m[7] - m[3] * m[6];
+    imm b06 = m[8] * m[13] - m[9] * m[12];
+    imm b07 = m[8] * m[14] - m[10] * m[12];
+    imm b08 = m[8] * m[15] - m[11] * m[12];
+    imm b09 = m[9] * m[14] - m[10] * m[13];
+    imm b10 = m[9] * m[15] - m[11] * m[13];
+    imm b11 = m[10] * m[15] - m[11] * m[14];
+    b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+  }
+
+  // The matrix that undoes this one, for any matrix, a projection included
+  // (by cofactors, as gl-matrix has it). A matrix that flattens space
+  // (determinant 0) has none, and gives all zeros
+  pub fn inverse(self) Mat4 {
+    imm b00 = m[0] * m[5] - m[1] * m[4];
+    imm b01 = m[0] * m[6] - m[2] * m[4];
+    imm b02 = m[0] * m[7] - m[3] * m[4];
+    imm b03 = m[1] * m[6] - m[2] * m[5];
+    imm b04 = m[1] * m[7] - m[3] * m[5];
+    imm b05 = m[2] * m[7] - m[3] * m[6];
+    imm b06 = m[8] * m[13] - m[9] * m[12];
+    imm b07 = m[8] * m[14] - m[10] * m[12];
+    imm b08 = m[8] * m[15] - m[11] * m[12];
+    imm b09 = m[9] * m[14] - m[10] * m[13];
+    imm b10 = m[9] * m[15] - m[11] * m[13];
+    imm b11 = m[10] * m[15] - m[11] * m[14];
+    imm det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+    if det == 0. {return Mat4[[16; 0f]];}
+    imm inv = 1. / det;
+    Mat4[[(m[5] * b11 - m[6] * b10 + m[7] * b09) * inv,
+      (m[2] * b10 - m[1] * b11 - m[3] * b09) * inv,
+      (m[13] * b05 - m[14] * b04 + m[15] * b03) * inv,
+      (m[10] * b04 - m[9] * b05 - m[11] * b03) * inv,
+      (m[6] * b08 - m[4] * b11 - m[7] * b07) * inv,
+      (m[0] * b11 - m[2] * b08 + m[3] * b07) * inv,
+      (m[14] * b02 - m[12] * b05 - m[15] * b01) * inv,
+      (m[8] * b05 - m[10] * b02 + m[11] * b01) * inv,
+      (m[4] * b10 - m[5] * b08 + m[7] * b06) * inv,
+      (m[1] * b08 - m[0] * b10 - m[3] * b06) * inv,
+      (m[12] * b04 - m[13] * b02 + m[15] * b00) * inv,
+      (m[9] * b02 - m[8] * b04 - m[11] * b00) * inv,
+      (m[5] * b07 - m[4] * b09 - m[6] * b06) * inv,
+      (m[0] * b09 - m[1] * b07 + m[2] * b06) * inv,
+      (m[13] * b01 - m[12] * b03 - m[14] * b00) * inv,
+      (m[8] * b03 - m[9] * b01 + m[10] * b00) * inv]];
+  }
+}

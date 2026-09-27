@@ -85,7 +85,9 @@ static int iexpIsBorrowType(INode *type) {
 // The type coerced to is a declared node, normalized by typetblFind and shared
 // by everything written with it, so the scope goes on a copy belonging to this
 // coercion -- exactly as fnCallFinalizeArgs builds one for a call's result.
-static INode *iexpCoerceType(INode *from, INode *totypedcl) {
+// varDclTypeCheck gives a local declared with a borrowed-reference type the
+// same copy, so the local keeps its initializer's lifetime.
+INode *iexpCoerceType(INode *from, INode *totypedcl) {
     INode *fromtype = iexpGetTypeDcl(from);
     if (!iexpIsBorrowType(totypedcl) || !iexpIsBorrowType(fromtype)
         || ((RefNode*)fromtype)->scope == 0)
@@ -128,10 +130,22 @@ int iexpCoerce(INode **from, INode *totype) {
         // the wanted array type by coercing each element to its element type
         if ((*from)->tag == ArrayLitTag)
             return arrayLitCoerce((ArrayNode*)*from, totypedcl);
+        // So may a borrowed constant one, and the borrow then match as it is
+        if (borrowConstLitCoerce(*from, totypedcl))
+            return iexpMatches(from, totypedcl, Coercion) != NoMatch && iexpCoerce(from, totype);
         return 0;
     case EqMatch:
+        // A '&uni' wanted as a shareable borrowed reference is lent, not moved
+        if (borrowUniReborrows(*from, totypedcl))
+            borrowUniReborrow(from, totypedcl);
         return 1;
     case CastSubtype: {
+        // A sole owner wanted as a '&uni' borrowed reference is borrowed from,
+        // as it is when wanted as a '&' or '&mut', not moved into the borrow
+        if (borrowOwnerLendsUni(*from, totypedcl)) {
+            borrowOwnerLend(from, totypedcl);
+            return iexpCoerce(from, totype);
+        }
         INode *newfrom = (INode*)newRecastNode(*from, iexpCoerceType(*from, totypedcl));
         inodeLexCopy(newfrom, *from);
         *from = newfrom;

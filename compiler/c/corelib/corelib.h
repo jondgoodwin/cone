@@ -56,6 +56,7 @@ extern FnDclNode *finalAllFn;
 // declares with 'is'; 'Move' and 'Copy', one of which every type has, the
 // compiler granting it from what it infers and a type able to declare it; and
 // 'Traced', which a region ref struct declares to say its references are traced;
+// 'ThreadSafe', which one declares to say several threads may hold its owners;
 // and what a container's element borrows cost it: 'ShapeChanging' (it may move
 // its elements), 'NoLoanMut' and 'NoLoanRead' (its element borrows loan nothing);
 // and 'AtomicValue', a value changed only by atomic operations; and 'Integer'
@@ -65,12 +66,14 @@ extern StructNode *regionRefTrait;
 extern StructNode *moveTrait;
 extern StructNode *copyTrait;
 extern StructNode *tracedTrait;
+extern StructNode *threadSafeTrait;
 extern StructNode *shapeChangingTrait;
 extern StructNode *noLoanMutTrait;
 extern StructNode *noLoanReadTrait;
 extern StructNode *atomicValueTrait;
 extern StructNode *integerTrait;
 extern StructNode *pointerTrait;
+extern StructNode *sendableTrait;
 
 // Is this declaration one of the built-in traits?
 int corelibIsBuiltinTrait(INode *node);

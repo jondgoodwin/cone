@@ -112,6 +112,16 @@ name = "tag-width-follows-the-largest-value"
 target = "preir"
 contains = ["%PhoneType = type { i8 }", "%Colors = type { i32 }", "%Wide = type { i16 }"]
 
+# The same from the negative side and past 32 bits, which the run sees only as
+# values read back: Offset declared no type and holds -2, so its tag is one signed
+# byte; Outcome declared i32 and holds -1000000000; Huge declared u64, and Vast
+# declared nothing but pins 0x1FFFFFFFF, so both are eight bytes -- a tag cut to
+# 32 bits was the defect this pins.
+[[scenario.enum_success.check]]
+name = "negative-and-64-bit-tags-set-the-width"
+target = "preir"
+contains = ["%Offset = type { i8 }", "%Outcome = type { i32 }", "%Huge = type { i64 }", "%Vast = type { i64 }"]
+
 [[scenario.enum_success.check]]
 name = "unsized-enum-variants-are-not-padded"
 target = "preir"
@@ -266,9 +276,9 @@ tags = ["parse"]
 
 [scenario.enum_parse_blocks]
 category = "reject"
-description = "Declarations an enum body and arms a match body will not accept, a variant sharing a spelling with a member among them"
+description = "Declarations an enum body and arms a match body will not accept, a variant sharing a spelling with a member or a tag value with another variant among them, and a negative tag value past every integer type"
 tags = ["parse"]
-diagnostics = 6
+diagnostics = 8
 
 # A module's 'use' of an enum, as the parser reads it. What follows the enum is
 # the grammar a type body's sibling 'use' has, so only what is particular to the
@@ -366,7 +376,7 @@ diagnostics = 9
 
 [scenario.enum_typecheck_tag]
 category = "reject"
-description = "A tag value too large for the enum's integer type, a generic enum's included, an integer type that cannot hold a tag, and the one field that may carry the discriminant"
+description = "A tag value the enum's integer type cannot hold, past its largest or its smallest or negative in an unsigned one, a generic enum's included, a negative value beside one only u64 holds, an integer type that cannot hold a tag, and the one field that may carry the discriminant"
 tags = ["typecheck"]
 
 [scenario.enum_typecheck_unsized]
@@ -379,9 +389,9 @@ tags = ["typecheck"]
 # other in fact, whatever the manual says.
 [scenario.enum_typecheck_extends]
 category = "reject"
-description = "A base enum and an extension of it substituting for each other, a variant of either standing for the other enum, generic instances included, a tag value wider than the shared discriminant, and a base's variant or the base asked for a method only its extension declares"
+description = "A base enum and an extension of it substituting for each other, a variant of either standing for the other enum, generic instances included, a tag value wider than the shared discriminant or of the sign it does not hold, and a base's variant or the base asked for a method only its extension declares"
 tags = ["typecheck"]
-diagnostics = 23
+diagnostics = 24
 
 # The other side of enum_privacy: what the enum's boundary leaves outside. The
 # generic function is the case that tells the boundary is drawn by the code's

@@ -1,0 +1,703 @@
+// ======== PolyMesh: the editable half-edge mesh ========
+
+// A named list of values of one type, one per element of a domain
+pub struct Channel[T] {
+  pub name String;
+  pub domain u32;
+  pub values List[T];
+}
+
+// A mesh of polygons of any size, with the half-edge links between them (the
+// conventions are at the top of mesh.cone). Every list is public, for
+// reading; change it through the methods, or 'validate' after changing it
+// directly.
+pub struct PolyMesh {
+  pub positions List[Vec3];     // per vertex
+  pub vHalfedge List[u32];      // per vertex: a half-edge leaving it
+  pub hNext List[u32];          // per half-edge: the next around its face or hole
+  pub hPrev List[u32];          // per half-edge: the previous
+  pub hVertex List[u32];        // per half-edge: the vertex it points to
+  pub hFace List[u32];          // per half-edge: its face, NoIndex on the boundary
+  pub fHalfedge List[u32];      // per face: the half-edge ending at its first vertex
+  pub floats List[Channel[f32]];
+  pub vec2s List[Channel[Vec2]];
+  pub vec3s List[Channel[Vec3]];
+
+  // A mesh with nothing in it
+  pub fn empty() PolyMesh {
+    PolyMesh[List[Vec3].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(),
+      List[u32].empty(), List[u32].empty(), List[u32].empty(),
+      List[Channel[f32]].empty(), List[Channel[Vec2]].empty(), List[Channel[Vec3]].empty()];
+  }
+
+  // Build from polygons: the positions, and each face as its vertices' numbers
+  // in order, counterclockwise seen from the side it faces. The faces are
+  // given flat, as USD, Alembic and OpenSubdiv give them: 'counts' holds each
+  // face's number of corners, and 'indices' all the faces' vertex numbers one
+  // after another. A face that cannot be added is left out, with a line saying
+  // why added to 'problems': fewer than 3 corners, a vertex that does not
+  // exist or appears twice in it, or an edge another face already runs along
+  // the same way (a third face on an edge, or two faces facing opposite
+  // ways). Faces meeting at only a vertex are added; 'validate' reports that
+  // vertex as not manifold.
+  pub fn fromPolygons(positions &[]Vec3, counts &[]u32, indices &[]u32, problems &mut List[String]) PolyMesh {
+    mut m = PolyMesh.empty();
+    imm nv = positions.len;
+    mut outHead = List[u32].withCapacity(nv);    // per vertex: the last half-edge made leaving it
+    mut outNext = List[u32].empty();             // per half-edge: the one made before it leaving its vertex
+    mut v = 0usize;
+    while v < nv {
+      m.positions.push(positions[v]);
+      m.vHalfedge.push(NoIndex);
+      outHead.push(NoIndex);
+      v = v + 1usize;
+    }
+    mut need = 0usize;
+    mut f = 0usize;
+    while f < counts.len {
+      need = need + usize[counts[f]];
+      f = f + 1usize;
+    }
+    if need != indices.len {
+      mut s = String.from("the faces' sizes add up to ");
+      s.appendUInt(u64[need]);
+      s.append(" corners, but ");
+      s.appendUInt(u64[indices.len]);
+      s.append(" vertex numbers were given");
+      problems.push(s);
+      return m;
+    }
+
+    mut hs = List[u32].empty();
+    mut start = 0usize;
+    f = 0usize;
+    while f < counts.len {
+      imm n = usize[counts[f]];
+      if faceFits(&m, f, &indices[start..start + n], nv, &outHead, &outNext, problems) {
+        // Each corner's half-edge from it to the next corner, made with its
+        // twin when the edge is new
+        hs.clear();
+        mut i = 0usize;
+        while i < n {
+          imm a = indices[start + i];
+          imm b = indices[start + (i + 1usize) % n];
+          mut h = findHalfedge(&m.hVertex, &outHead, &outNext, a, b);
+          if h == NoIndex {
+            h = u32[m.hVertex.len()];
+            m.hVertex.push(b);
+            m.hVertex.push(a);
+            m.hFace.push(NoIndex);
+            m.hFace.push(NoIndex);
+            m.hNext.push(NoIndex);
+            m.hNext.push(NoIndex);
+            m.hPrev.push(NoIndex);
+            m.hPrev.push(NoIndex);
+            outNext.push(*outHead[usize[a]]);
+            outNext.push(*outHead[usize[b]]);
+            outHead.set(usize[a], h);
+            outHead.set(usize[b], h + 1u32);
+          }
+          hs.push(h);
+          i = i + 1usize;
+        }
+        imm face = u32[m.fHalfedge.len()];
+        i = 0usize;
+        while i < n {
+          imm h = *hs[i];
+          imm hn = *hs[(i + 1usize) % n];
+          m.hFace.set(usize[h], face);
+          m.hNext.set(usize[h], hn);
+          m.hPrev.set(usize[hn], h);
+          i = i + 1usize;
+        }
+        // The half-edge ending at the first vertex: the last corner's
+        m.fHalfedge.push(*hs[n - 1usize]);
+      }
+      start = start + n;
+      f = f + 1usize;
+    }
+    linkBoundary(&mut m);
+    m;
+  }
+
+  // -------- counts --------
+
+  pub fn vertexCount(self &) usize {positions.len();}
+  pub fn halfedgeCount(self &) usize {hVertex.len();}
+  pub fn edgeCount(self &) usize {hVertex.len() / 2usize;}
+  pub fn faceCount(self &) usize {fHalfedge.len();}
+
+  // -------- stepping between elements --------
+
+  pub fn next(self &, h u32) u32 {*hNext[usize[h]];}
+  pub fn prev(self &, h u32) u32 {*hPrev[usize[h]];}
+  pub fn twin(self &, h u32) u32 {twinOf(h);}
+  pub fn toVertex(self &, h u32) u32 {*hVertex[usize[h]];}
+  pub fn fromVertex(self &, h u32) u32 {*hVertex[usize[twinOf(h)]];}
+  pub fn face(self &, h u32) u32 {*hFace[usize[h]];}
+  pub fn edge(self &, h u32) u32 {h / 2u32;}
+  // Half-edge 0 or 1 of edge e
+  pub fn edgeHalfedge(self &, e u32, side u32) u32 {2u32 * e + side;}
+  pub fn faceHalfedge(self &, f u32) u32 {*fHalfedge[usize[f]];}
+  pub fn vertexHalfedge(self &, v u32) u32 {*vHalfedge[usize[v]];}
+
+  pub fn isBoundaryHalfedge(self &, h u32) Bool {*hFace[usize[h]] == NoIndex;}
+  pub fn isBoundaryEdge(self &, e u32) Bool {
+    *hFace[usize[2u32 * e]] == NoIndex or *hFace[usize[2u32 * e + 1u32]] == NoIndex;
+  }
+  // On the boundary: a vertex's half-edge is a boundary one when it can be
+  pub fn isBoundaryVertex(self &, v u32) Bool {
+    imm h = *vHalfedge[usize[v]];
+    h != NoIndex and *hFace[usize[h]] == NoIndex;
+  }
+  pub fn isIsolated(self &, v u32) Bool {*vHalfedge[usize[v]] == NoIndex;}
+
+  // A face's half-edges in order, starting with the one ending at its first
+  // vertex: its corners
+  pub fn faceHalfedges(self &, f u32) List[u32] {
+    mut out = List[u32].empty();
+    imm h0 = *fHalfedge[usize[f]];
+    mut h = h0;
+    mut going = true;
+    while going {
+      out.push(h);
+      h = *hNext[usize[h]];
+      going = h != h0 and out.len() <= hNext.len();
+    }
+    out;
+  }
+
+  // A face's vertices in order, from its first
+  pub fn faceVertices(self &, f u32) List[u32] {
+    imm hs = self.faceHalfedges(f);
+    mut out = List[u32].withCapacity(hs.len());
+    mut i = 0usize;
+    while i < hs.len() {
+      out.push(*hVertex[usize[*hs[i]]]);
+      i = i + 1usize;
+    }
+    out;
+  }
+
+  // How many corners a face has
+  pub fn faceDegree(self &, f u32) usize {
+    imm hs = self.faceHalfedges(f);
+    hs.len();
+  }
+
+  // The half-edges leaving a vertex, counterclockwise seen from outside,
+  // starting with its own (a boundary one when it is on the boundary): its
+  // one-ring. An isolated vertex has none.
+  pub fn vertexOutgoing(self &, v u32) List[u32] {
+    mut out = List[u32].empty();
+    imm h0 = *vHalfedge[usize[v]];
+    if h0 == NoIndex { return out; }
+    mut h = h0;
+    mut going = true;
+    while going {
+      out.push(h);
+      h = twinOf(*hPrev[usize[h]]);
+      going = h != h0 and out.len() <= hNext.len();
+    }
+    out;
+  }
+
+  // The vertices joined to a vertex by an edge, in the order of its one-ring
+  pub fn vertexNeighbors(self &, v u32) List[u32] {
+    imm hs = self.vertexOutgoing(v);
+    mut out = List[u32].withCapacity(hs.len());
+    mut i = 0usize;
+    while i < hs.len() {
+      out.push(*hVertex[usize[*hs[i]]]);
+      i = i + 1usize;
+    }
+    out;
+  }
+
+  // How many edges a vertex is on
+  pub fn valence(self &, v u32) usize {
+    imm hs = self.vertexOutgoing(v);
+    hs.len();
+  }
+
+  // -------- geometry --------
+
+  // A face's corner positions, in order
+  pub fn facePositions(self &, f u32) List[Vec3] {
+    imm hs = self.faceHalfedges(f);
+    mut out = List[Vec3].withCapacity(hs.len());
+    mut i = 0usize;
+    while i < hs.len() {
+      out.push(*positions[usize[*hVertex[usize[*hs[i]]]]]);
+      i = i + 1usize;
+    }
+    out;
+  }
+
+  // A face's unit normal, by Newell's method: the best-fit plane's, so a
+  // polygon that is not quite flat, or not convex, still gets the right one
+  pub fn faceNormal(self &, f u32) Vec3 {
+    imm pts = self.facePositions(f);
+    unitOrZero(newellNormal(&pts));
+  }
+
+  // The mean of a face's corners
+  pub fn faceCentroid(self &, f u32) Vec3 {
+    imm pts = self.facePositions(f);
+    mut sum = Vec3[0., 0., 0.];
+    mut i = 0usize;
+    while i < pts.len() {
+      sum = sum + *pts[i];
+      i = i + 1usize;
+    }
+    if pts.len() > 0usize { sum * (1. / f32[pts.len()]); } else { sum; };
+  }
+
+  // Every vertex's unit normal: its faces' normals, each weighted by the
+  // face's angle at the vertex (the angle of the polygon, not of any triangle
+  // cut from it). An isolated vertex gets (0, 0, 0).
+  pub fn vertexNormals(self &) List[Vec3] {
+    imm nv = positions.len();
+    mut acc = List[Vec3].withCapacity(nv);
+    mut v = 0usize;
+    while v < nv {
+      acc.push(Vec3[0., 0., 0.]);
+      v = v + 1usize;
+    }
+    mut f = 0usize;
+    while f < fHalfedge.len() {
+      imm fnormal = self.faceNormal(u32[f]);
+      imm hs = self.faceHalfedges(u32[f]);
+      mut i = 0usize;
+      while i < hs.len() {
+        imm h = *hs[i];
+        imm c = usize[*hVertex[usize[h]]];
+        imm after = *positions[usize[*hVertex[usize[*hNext[usize[h]]]]]];
+        imm before = *positions[usize[self.fromVertex(h)]];
+        imm w = cornerAngle(*positions[c], after, before);
+        acc.set(c, *acc[c] + fnormal * w);
+        i = i + 1usize;
+      }
+      f = f + 1usize;
+    }
+    mut out = List[Vec3].withCapacity(nv);
+    v = 0usize;
+    while v < nv {
+      out.push(unitOrZero(*acc[v]));
+      v = v + 1usize;
+    }
+    out;
+  }
+
+  // The smallest box holding every vertex
+  pub fn bounds(self &) Aabb3 {Aabb3.fromPoints(positions.view());}
+
+  // -------- attribute channels --------
+
+  // How many elements a domain has. A corner channel has a slot for every
+  // half-edge, boundary ones included.
+  pub fn domainSize(self &, domain u32) usize {
+    if domain == VertexDomain { positions.len(); }
+    elif domain == EdgeDomain { hVertex.len() / 2usize; }
+    elif domain == FaceDomain { fHalfedge.len(); }
+    else { hVertex.len(); };
+  }
+
+  // A channel of f32 values for a domain, found by name or else made with
+  // every value 'fill'; its number, for 'float' and 'setFloat'. Channels are
+  // sized to the mesh as it is when they are made.
+  pub fn addFloatChannel(self &mut, domain u32, name &[]u8, fill f32) u32 {
+    imm found = self.findFloatChannel(domain, name);
+    if found != NoIndex { return found; }
+    imm n = self.domainSize(domain);
+    mut values = List[f32].withCapacity(n);
+    mut i = 0usize;
+    while i < n { values.push(fill); i = i + 1usize; }
+    floats.push(Channel[f32][String.from(name), domain, values]);
+    u32[floats.len() - 1usize];
+  }
+  pub fn findFloatChannel(self &, domain u32, name &[]u8) u32 {
+    mut i = 0usize;
+    while i < floats.len() {
+      if floats[i].domain == domain and floats[i].name.equals(name) { return u32[i]; }
+      i = i + 1usize;
+    }
+    NoIndex;
+  }
+  pub fn float(self &, channel u32, element u32) f32 {*floats[usize[channel]].values[usize[element]];}
+  pub fn setFloat(self &mut, channel u32, element u32, value f32) {
+    imm c = &mut floats[usize[channel]];
+    c.values.set(usize[element], value);
+  }
+
+  // The same for Vec2 values (uvs)
+  pub fn addVec2Channel(self &mut, domain u32, name &[]u8, fill Vec2) u32 {
+    imm found = self.findVec2Channel(domain, name);
+    if found != NoIndex { return found; }
+    imm n = self.domainSize(domain);
+    mut values = List[Vec2].withCapacity(n);
+    mut i = 0usize;
+    while i < n { values.push(fill); i = i + 1usize; }
+    vec2s.push(Channel[Vec2][String.from(name), domain, values]);
+    u32[vec2s.len() - 1usize];
+  }
+  pub fn findVec2Channel(self &, domain u32, name &[]u8) u32 {
+    mut i = 0usize;
+    while i < vec2s.len() {
+      if vec2s[i].domain == domain and vec2s[i].name.equals(name) { return u32[i]; }
+      i = i + 1usize;
+    }
+    NoIndex;
+  }
+  pub fn vec2(self &, channel u32, element u32) Vec2 {*vec2s[usize[channel]].values[usize[element]];}
+  pub fn setVec2(self &mut, channel u32, element u32, value Vec2) {
+    imm c = &mut vec2s[usize[channel]];
+    c.values.set(usize[element], value);
+  }
+
+  // The same for Vec3 values (colors, rest positions, displacements)
+  pub fn addVec3Channel(self &mut, domain u32, name &[]u8, fill Vec3) u32 {
+    imm found = self.findVec3Channel(domain, name);
+    if found != NoIndex { return found; }
+    imm n = self.domainSize(domain);
+    mut values = List[Vec3].withCapacity(n);
+    mut i = 0usize;
+    while i < n { values.push(fill); i = i + 1usize; }
+    vec3s.push(Channel[Vec3][String.from(name), domain, values]);
+    u32[vec3s.len() - 1usize];
+  }
+  pub fn findVec3Channel(self &, domain u32, name &[]u8) u32 {
+    mut i = 0usize;
+    while i < vec3s.len() {
+      if vec3s[i].domain == domain and vec3s[i].name.equals(name) { return u32[i]; }
+      i = i + 1usize;
+    }
+    NoIndex;
+  }
+  pub fn vec3(self &, channel u32, element u32) Vec3 {*vec3s[usize[channel]].values[usize[element]];}
+  pub fn setVec3(self &mut, channel u32, element u32, value Vec3) {
+    imm c = &mut vec3s[usize[channel]];
+    c.values.set(usize[element], value);
+  }
+
+  // Set a corner channel of Vec2 values from values given face by face,
+  // corner by corner, in the order the faces' vertices were given (USD's
+  // "face-varying" order): how uvs arrive from a file
+  pub fn setCornerVec2s(self &mut, channel u32, values &[]Vec2) {
+    mut k = 0usize;
+    mut f = 0usize;
+    while f < fHalfedge.len() {
+      imm hs = self.faceHalfedges(u32[f]);
+      mut i = 0usize;
+      while i < hs.len() and k < values.len {
+        self.setVec2(channel, *hs[i], values[k]);
+        k = k + 1usize;
+        i = i + 1usize;
+      }
+      f = f + 1usize;
+    }
+  }
+
+  // -------- checking --------
+
+  // Check every invariant of the half-edge structure, and list what fails,
+  // one line each; an empty list means the mesh is sound. It checks: the
+  // lists' lengths agree; every link names an element that exists; next and
+  // prev undo each other; a half-edge's next stays in its face (or hole) and
+  // starts where it ends; no edge joins a vertex to itself; every face has at
+  // least 3 corners and its half-edge is its own; each vertex's half-edge
+  // leaves it, and is a boundary one if the vertex is on the boundary; each
+  // vertex is manifold (the faces about it make one fan, so turning about it
+  // from its half-edge meets every edge on it); every channel has a value per
+  // element.
+  pub fn validate(self &) List[String] {
+    mut out = List[String].empty();
+    imm nh = hVertex.len();
+    imm nv = positions.len();
+    imm nf = fHalfedge.len();
+    if hNext.len() != nh or hPrev.len() != nh or hFace.len() != nh or nh % 2usize != 0usize {
+      out.push(String.from("the half-edge lists differ in length, or are odd"));
+      return out;
+    }
+    if vHalfedge.len() != nv {
+      out.push(String.from("the vertex lists differ in length"));
+      return out;
+    }
+
+    // Every link in range, before any is followed
+    mut h = 0usize;
+    while h < nh {
+      if usize[*hNext[h]] >= nh { out.push(elementProblem("half-edge ", h, ": its next does not exist")); }
+      if usize[*hPrev[h]] >= nh { out.push(elementProblem("half-edge ", h, ": its prev does not exist")); }
+      if usize[*hVertex[h]] >= nv { out.push(elementProblem("half-edge ", h, ": its vertex does not exist")); }
+      if *hFace[h] != NoIndex and usize[*hFace[h]] >= nf {
+        out.push(elementProblem("half-edge ", h, ": its face does not exist"));
+      }
+      h = h + 1usize;
+    }
+    mut f = 0usize;
+    while f < nf {
+      if usize[*fHalfedge[f]] >= nh { out.push(elementProblem("face ", f, ": its half-edge does not exist")); }
+      f = f + 1usize;
+    }
+    mut v = 0usize;
+    while v < nv {
+      imm vh = *vHalfedge[v];
+      if vh != NoIndex and usize[vh] >= nh { out.push(elementProblem("vertex ", v, ": its half-edge does not exist")); }
+      v = v + 1usize;
+    }
+    if out.len() > 0usize { return out; }
+
+    // Each half-edge's links
+    mut leaving = List[u32].withCapacity(nv);      // per vertex: half-edges leaving it
+    mut onBoundary = List[Bool].withCapacity(nv);  // per vertex: a boundary one leaves it
+    v = 0usize;
+    while v < nv {
+      leaving.push(0u32);
+      onBoundary.push(false);
+      v = v + 1usize;
+    }
+    h = 0usize;
+    while h < nh {
+      imm hn = usize[*hNext[h]];
+      if usize[*hPrev[hn]] != h { out.push(elementProblem("half-edge ", h, ": its next's prev is not it")); }
+      if *hFace[hn] != *hFace[h] { out.push(elementProblem("half-edge ", h, ": its next is in another face")); }
+      if *hVertex[usize[twinOf(u32[hn])]] != *hVertex[h] {
+        out.push(elementProblem("half-edge ", h, ": its next does not start where it ends"));
+      }
+      imm from = usize[*hVertex[usize[twinOf(u32[h])]]];
+      if h % 2usize == 0usize and usize[*hVertex[h]] == from {
+        out.push(elementProblem("edge ", h / 2usize, ": joins a vertex to itself"));
+      }
+      leaving.set(from, *leaving[from] + 1u32);
+      if *hFace[h] == NoIndex { onBoundary.set(from, true); }
+      h = h + 1usize;
+    }
+
+    // Each face
+    f = 0usize;
+    while f < nf {
+      imm h0 = *fHalfedge[f];
+      if *hFace[usize[h0]] != u32[f] {
+        out.push(elementProblem("face ", f, ": its half-edge is another face's"));
+      } else {
+        mut count = 0usize;
+        mut hh = h0;
+        mut going = true;
+        while going {
+          count = count + 1usize;
+          hh = *hNext[usize[hh]];
+          going = hh != h0 and count <= nh;
+        }
+        if count > nh { out.push(elementProblem("face ", f, ": its half-edges do not come back around")); }
+        elif count < 3usize { out.push(elementProblem("face ", f, ": has fewer than 3 corners")); }
+      }
+      f = f + 1usize;
+    }
+
+    // Each vertex
+    v = 0usize;
+    while v < nv {
+      imm vh = *vHalfedge[v];
+      if vh == NoIndex {
+        if *leaving[v] > 0u32 { out.push(elementProblem("vertex ", v, ": is on edges but has no half-edge")); }
+      } elif usize[*hVertex[usize[twinOf(vh)]]] != v {
+        out.push(elementProblem("vertex ", v, ": its half-edge does not leave it"));
+      } else {
+        if *onBoundary[v] and *hFace[usize[vh]] != NoIndex {
+          out.push(elementProblem("vertex ", v, ": is on the boundary, but its half-edge is not"));
+        }
+        mut ring = 0u32;
+        mut hh = vh;
+        mut going = true;
+        while going {
+          ring = ring + 1u32;
+          hh = twinOf(*hPrev[usize[hh]]);
+          going = hh != vh and usize[ring] <= nh;
+        }
+        if ring != *leaving[v] {
+          out.push(elementProblem("vertex ", v, ": is not manifold (its faces are not one fan)"));
+        }
+      }
+      v = v + 1usize;
+    }
+
+    // Each channel
+    mut c = 0usize;
+    while c < floats.len() {
+      self.checkChannel(&mut out, floats[c].name.view(), floats[c].domain, floats[c].values.len());
+      c = c + 1usize;
+    }
+    c = 0usize;
+    while c < vec2s.len() {
+      self.checkChannel(&mut out, vec2s[c].name.view(), vec2s[c].domain, vec2s[c].values.len());
+      c = c + 1usize;
+    }
+    c = 0usize;
+    while c < vec3s.len() {
+      self.checkChannel(&mut out, vec3s[c].name.view(), vec3s[c].domain, vec3s[c].values.len());
+      c = c + 1usize;
+    }
+    out;
+  }
+
+  fn checkChannel(self &, out &mut List[String], name &[]u8, domain u32, len usize) {
+    imm want = self.domainSize(domain);
+    if len != want {
+      mut s = String.from("channel ");
+      s.append(name);
+      s.append(": has ");
+      s.appendUInt(u64[len]);
+      s.append(" values for ");
+      s.appendUInt(u64[want]);
+      s.append(" elements");
+      out.push(s);
+    }
+  }
+
+  // -------- to triangles --------
+
+  // The mesh as triangles, one way. Each face is cut into triangles: a
+  // triangle as it is; a convex polygon as a fan from its first corner (0, 1,
+  // 2), (0, 2, 3), ...; any other by ear clipping (geomath's
+  // 'triangulatePolygon') in its best-fit plane, the plane of its Newell
+  // normal. An n-cornered face gives n - 2 triangles, counterclockwise about
+  // the face's normal as the face is.
+  //
+  // With 'smooth' false, every corner is its own vertex with its face's
+  // normal (flat shading). With 'smooth' true, corners at one vertex share a
+  // vertex whose normal is 'vertexNormals''s, unless their uvs differ: a uv
+  // seam splits the vertex, one copy per distinct uv. The uvs are the corner
+  // channel of Vec2 named "uv", when there is one; without one, no uvs.
+  pub fn triangulate(self &, smooth Bool) Mesh {
+    mut out = Mesh.empty();
+    imm uvCh = self.findVec2Channel(CornerDomain, "uv");
+    imm hasUv = uvCh != NoIndex;
+    imm nv = positions.len();
+    // Smooth: the vertices made for each mesh vertex, chained
+    mut vFirst = List[u32].withCapacity(nv);
+    mut oNext = List[u32].empty();
+    mut vnormals = List[Vec3].empty();
+    if smooth {
+      vnormals = self.vertexNormals();
+      mut v = 0usize;
+      while v < nv { vFirst.push(NoIndex); v = v + 1usize; }
+    }
+    mut made = List[u32].empty();      // each corner of the face: its vertex in 'out'
+    mut tris = List[u32].empty();
+    mut f = 0usize;
+    while f < fHalfedge.len() {
+      imm hs = self.faceHalfedges(u32[f]);
+      imm fnormal = self.faceNormal(u32[f]);
+      made.clear();
+      mut i = 0usize;
+      while i < hs.len() {
+        imm h = *hs[i];
+        imm v = *hVertex[usize[h]];
+        imm uv = if hasUv {self.vec2(uvCh, h);} else {Vec2[0., 0.];};
+        mut found = NoIndex;
+        if smooth {
+          mut o = *vFirst[usize[v]];
+          while o != NoIndex and found == NoIndex {
+            if !hasUv or sameVec2(*out.uvs[usize[o]], uv) { found = o; }
+            o = *oNext[usize[o]];
+          }
+        }
+        if found == NoIndex {
+          found = u32[out.positions.len()];
+          out.positions.push(*positions[usize[v]]);
+          if smooth { out.normals.push(*vnormals[usize[v]]); } else { out.normals.push(fnormal); }
+          if hasUv { out.uvs.push(uv); }
+          if smooth {
+            oNext.push(*vFirst[usize[v]]);
+            vFirst.set(usize[v], found);
+          } else {
+            oNext.push(NoIndex);
+          }
+        }
+        made.push(found);
+        i = i + 1usize;
+      }
+      tris.clear();
+      self.cutFace(u32[f], &mut tris);
+      i = 0usize;
+      while i < tris.len() {
+        out.indices.push(*made[usize[*tris[i]]]);
+        i = i + 1usize;
+      }
+      f = f + 1usize;
+    }
+    out;
+  }
+
+  // Cut face f into triangles, as corner numbers of the face (0 its first),
+  // three to a triangle
+  pub fn cutFace(self &, f u32, tris &mut List[u32]) {
+    imm pts = self.facePositions(f);
+    imm n = pts.len();
+    if n < 3usize { return; }
+    if n == 3usize {
+      tris.push(0u32); tris.push(1u32); tris.push(2u32);
+      return;
+    }
+    // Into the best-fit plane: u and w across it, u x w its normal
+    imm nrm = unitOrZero(newellNormal(&pts));
+    imm u = if fabs32(nrm.x) > fabs32(nrm.z) {unitOrZero(Vec3[-nrm.y, nrm.x, 0.]);}
+      else {unitOrZero(Vec3[0., -nrm.z, nrm.y]);};
+    imm w = nrm.cross(u);
+    imm origin = *pts[0usize];
+    mut flat = List[Vec2].withCapacity(n);
+    mut i = 0usize;
+    while i < n {
+      imm d = *pts[i] - origin;
+      flat.push(Vec2[d.dot(u), d.dot(w)]);
+      i = i + 1usize;
+    }
+    // Convex: every corner turns left
+    mut convex = true;
+    i = 0usize;
+    while i < n {
+      imm a = *flat[(i + n - 1usize) % n];
+      imm b = *flat[i];
+      imm c = *flat[(i + 1usize) % n];
+      if (b - a).cross(c - b) <= 0. { convex = false; }
+      i = i + 1usize;
+    }
+    if convex {
+      i = 1usize;
+      while i + 1usize < n {
+        tris.push(0u32); tris.push(u32[i]); tris.push(u32[i + 1usize]);
+        i = i + 1usize;
+      }
+    } else {
+      imm cut = triangulatePolygon(flat.view());
+      i = 0usize;
+      while i < cut.len() {
+        tris.push(*cut[i]);
+        i = i + 1usize;
+      }
+    }
+  }
+
+  // A cube centred at the origin, reaching 'size' along each axis each way, as
+  // a cage of six quads: 8 vertices, 12 edges, 24 half-edges, closed. Vertex
+  // x + 2y + 4z, each of x, y, z 0 for -size and 1 for +size, so vertex 0 is
+  // (-size, -size, -size) and 7 (size, size, size). The faces, each
+  // counterclockwise seen from outside: back (0, 2, 3, 1), front (4, 5, 7,
+  // 6), left (0, 4, 6, 2), right (1, 3, 7, 5), bottom (0, 1, 5, 4), top (2,
+  // 6, 7, 3).
+  pub fn cube(size f32) PolyMesh {
+    mut pts = List[Vec3].withCapacity(8usize);
+    mut v = 0u32;
+    while v < 8u32 {
+      imm x = if (v & 1u32) != 0u32 {size;} else {-size;};
+      imm y = if (v & 2u32) != 0u32 {size;} else {-size;};
+      imm z = if (v & 4u32) != 0u32 {size;} else {-size;};
+      pts.push(Vec3[x, y, z]);
+      v = v + 1u32;
+    }
+    imm counts [6; u32] = [4u32, 4u32, 4u32, 4u32, 4u32, 4u32];
+    mut problems = List[String].empty();
+    PolyMesh.fromPolygons(pts.view(), &counts, &cageFaces, &mut problems);
+  }
+}

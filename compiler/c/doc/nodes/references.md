@@ -249,6 +249,34 @@ as `so` does ([struct](struct.md), "Move and Copy"). Since `+region` defaults to
 aliasable permission into a region ref declaring neither `Move` nor `alias`
 copies, and the copy calls nothing.
 
+It no longer sets a thread-bound flag. That flag was settled as a type was laid
+out, from the permission by identity with `mut` and `ro` and from the flags of
+the pointee node, which for a pointee written by name was the name use's, never
+the type's; the region had no say, and nothing read it.
+
+### `refThreadBinds`: the thread check's rule for one reference
+
+Whether a reference may cross to another thread, as far as the reference itself
+says; what it points at is asked separately by the walk (`itypeThreadBound`, in
+`itype.c`, beside `itypeCarriesBorrow`, whose fixed point it shares). In order:
+
+| The reference | Answer |
+| --- | --- |
+| to a function (`&fn`) | crosses, whatever it points at: code every thread shares |
+| a borrow, any permission | `RefBindsBorrow`: its lifetime is checked in one thread alone |
+| into a region declaring `Traced` | `RefBindsTraced`: the collector is single threaded |
+| an owner that cannot be aliased: `uni`, or any owner of a `Move` region (`so`) | crosses if what it points at does: it moves, taking its value |
+| any other owner whose permission is not `RaceSafe` (`mut`, `ro`, `mut1`, a struct in the permission slot) | `RefBindsPerm` |
+| any other owner whose region does not declare `ThreadSafe` (`rc`) | `RefBindsShared` |
+| otherwise (`+arc-imm`, `+arc-opaq`) | crosses if what it points at does |
+
+The walk adds a raw pointer (always bound: nothing checks its target), a
+reference to an open trait (its implementers are not all known), and a struct
+declaring `Sendable` (taken at its word, but bound where one of its type
+arguments is). `genericTypeIs` grants `Sendable` to what the walk finds unbound;
+an unmet `T is Sendable` is `ErrorNotSendable`, whose message names the culprit
+and its path (`itypeThreadBoundWhy`). See [Generics](generic.md), Constraints.
+
 ## Flow
 
 `allocateFlow` loads and move-or-copies the initial value. `borrowFlow` asks
@@ -292,11 +320,14 @@ values gets a `TupleNode` of its own on the same terms, each borrowed element
 carrying that scope, because a multi-value assignment checks every element
 against its own lval. A borrow the compiler
 injects records its lval's scope where it is built (`borrowMutRef`,
-`borrowAuto`), so it reaches a call as the written borrow would; and
+`borrowAuto`, `borrowUniReborrow` for a `&uni` lent as a shareable
+borrow, and `borrowOwnerLend` for a sole owner lent as a `&uni`), so it reaches a call as the written borrow would; and
 `iexpGetLvalInfo` gives a dereferenced borrow expression or call result the
 scope on that reference's own type, since no variable holds it — a reference
-held in a variable keeps the variable's scope, because a declared type carries
-none. Nothing checks a borrow stored in a field or captured.
+held in a variable keeps the variable's scope, because the variable's type
+carries at most its initializer's lifetime (`varDclTypeCheck` scopes a declared
+borrowed-reference type as an inferred one is), not that of a borrow assigned
+to it later. Nothing checks a borrow stored in a field or captured.
 
 ## Generation
 
@@ -322,9 +353,12 @@ own ([What a region is](module.md)).
 
 ## Hazards
 
-- **Nothing consumes `ThreadBound`.** `refAdoptInfections` sets it, and struct
-  and array types propagate it up from their fields and elements, but no check
-  anywhere reads it. The infection is computed and inert.
+- **Sendable is also safe to read from several threads.** An `+arc-imm` owner
+  crosses when its pointee does, so a type granted or declaring `Sendable` must
+  also bear being read through `&` from several threads at once. Nothing Cone
+  can write mutates through `imm` except an atomic value, so the grant holds; a
+  type declaring `Sendable` over raw pointers promises it too (Rust's `Send`
+  and `Sync` are one question here).
 - **A borrowed reference's inferred type has `typeinfo == NULL`.** The borrow
   path and the allocate path have different invariants for the same field.
   Anything reading `typeinfo` off an arbitrary reference type crashes on borrows

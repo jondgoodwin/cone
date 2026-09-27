@@ -58,7 +58,9 @@ typedef struct GenState {
     int comdats;            // enum ComdatSupport, from the target's object format
     Nodes *symnodes;        // Every declaration given a global, which genlClaimSymbol searches for a clash
     INode *fnblock;
+    FnDclNode *fndcl;       // The function being generated, whose returns genlFnDclReturn makes
     int exitzero;           // The function generated is a 'main' returning nothing, whose returns return i32 0
+    int cabi;               // enum CAbiTarget, the C ABI a C-named function's values cross by (genlcabi.c)
     GenBlockState *blockstack;
     uint32_t blockstackcnt;
 
@@ -81,6 +83,15 @@ enum ComdatSupport {
     ComdatNone,        // Mach-O has no COMDAT concept at all
     ComdatMergeOnly,   // WebAssembly lowers only the 'any' selection kind
     ComdatFull         // COFF and ELF lower both kinds
+};
+
+// The platform C ABI the target follows, which decides how a C-named
+// function's structs cross to C (genlcabi.c)
+enum CAbiTarget {
+    CAbiOther,      // None built: structs cross as LLVM's first-class values
+    CAbiWin64,      // x86_64 Windows
+    CAbiSysV,       // x86_64 elsewhere (not built)
+    CAbiWasm32      // wasm32 (not built)
 };
 
 // Different kinds of dispatch
@@ -127,6 +138,8 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk);
 
 // genlexpr.c
 LLVMValueRef genlExpr(GenState *gen, INode *termnode);
+// A variant's tag value as a constant of its discriminant's LLVM type
+LLVMValueRef genlTagConst(LLVMTypeRef tagtype, StructNode *variant);
 // Generate a function call, including special intrinsics (Internal version).
 // 'selftype' is the Cone type of the first argument, which a virtual dispatch
 // and the pointer intrinsics read; NULL for a call the compiler makes itself.
@@ -195,6 +208,24 @@ void genlRootsRestore(GenState *gen, GenRoots *saved);
 void genlRootFrame(GenState *gen);
 // The type record of 'vtype', from core's TypeRecord struct itself
 LLVMValueRef genlTypeRecordOf(GenState *gen, INode *vtype, StructNode *recnode);
+
+// genlcabi.c: a C-named function's values, as the platform's C ABI passes them
+// The CAbiTarget a target triple names
+int genlCAbiTarget(const char *triple);
+// Whether a function's values cross as C passes them: a C-named function a module owns
+int genlIsCAbiFn(FnDclNode *fndcl);
+// The LLVM function type of a declared function: its Cone signature, lowered
+// to the C ABI for one that crosses to C
+LLVMTypeRef genlFnDclType(GenState *gen, FnDclNode *fndcl);
+// Mark a just-declared function's hidden result slot ('sret'), if it has one
+void genlCAbiDeclare(GenState *gen, FnDclNode *fndcl, LLVMValueRef fn);
+// Call a declared function with Cone argument values, returning its Cone value
+LLVMValueRef genlFnDclCall(GenState *gen, FnDclNode *fndcl, LLVMValueRef fn, LLVMValueRef *args, uint32_t argcnt);
+// A parameter's Cone value, in the prologue of the function being generated
+LLVMValueRef genlFnDclParm(GenState *gen, FnDclNode *fndcl, VarDclNode *var);
+// Return a Cone value from the function being generated ('fndcl', or NULL for
+// one no declaration names)
+void genlFnDclReturn(GenState *gen, FnDclNode *fndcl, LLVMValueRef retval);
 
 // genltype.c
 // Generate a type value

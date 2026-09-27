@@ -95,9 +95,11 @@ int typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private) {
     for (nodelistFor(&strnode->fields, cnt, nodesp)) {
         FieldDclNode *field = (FieldDclNode *)*nodesp;
 
-        // If field represents a discriminated tag, inject struct's discriminant nbr
+        // If field represents a discriminated tag, inject struct's discriminant nbr.
+        // A negative one's 64 bits are cut to the discriminant's width where the
+        // literal is generated.
         if (field->flags & IsTagField) {
-            ULitNode *tagnbrnode = newULitNodeTC(strnode->tagnbr, field->vtype);
+            ULitNode *tagnbrnode = newULitNodeTC((uint64_t)strnode->tagnbr, field->vtype);
             nodesInsert(&arrlit->args, (INode*)tagnbrnode, argi++);
             continue;
         }

@@ -49,6 +49,19 @@ void refSetPermVtype(RefNode *refnode, INode *perm, INode *vtype);
 // Set type infection flags based on the reference's type parameters
 void refAdoptInfections(RefNode *refnode);
 
+// Whether a reference may cross to another thread, as far as the reference
+// itself says (refThreadBinds): what it points at is asked separately
+typedef enum {
+    RefCrosses,         // It may, if what it points at may
+    RefCrossesAll,      // It may, whatever it points at: a function's code
+    RefBindsBorrow,     // A borrowed reference
+    RefBindsTraced,     // A reference into a traced region
+    RefBindsPerm,       // An owner that may be aliased, whose permission is not RaceSafe
+    RefBindsShared      // An owner that may be aliased, in a region not declaring ThreadSafe
+} RefBinds;
+
+RefBinds refThreadBinds(RefNode *ref);
+
 // Create a new ArrayDerefNode from an ArrayRefNode
 RefNode *newArrayDerefNodeFrom(RefNode *refnode);
 

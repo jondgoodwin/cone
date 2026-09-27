@@ -849,10 +849,19 @@ course."*).
 it builds the package into its own object (below), so `fileFindPackage` tries
 `name/src/name.cone` after `name.cone` and **before** the designated file
 `name/name.cone`, where a Congo package once kept a hand-written include file,
-and one left behind must not stand in for the source. The source is
-then a lone file, not a designated one — `src` is not `name` — so nothing
-beside it is swept: a package found this way is its one root file. Only a bare
-name is looked for there. This lookup is the compiler's side of the
+and one left behind must not stand in for the source. Only a bare name is
+looked for there. **The source root is the designated file of `src`**, the
+package's name standing in for the folder's, as the reference manual has it
+(`refmodule.html`, "Packages and Congo": under `src` the module rules apply
+unchanged). `fileFindPackage` says when that is what it found, and
+`parseLoadModulePath` then sets `foldersym` to the package's name rather than
+asking `parseDesignatedFolder`, which would see `src` and not `name`. So `src` is
+swept as any module folder is: its other files and those of its organisational
+subfolders join the package's root module, a file opening with `mod` or a
+subfolder with its own designated file is a submodule, only the root file may
+import, and its `mod` line may restate the package's name but not change it
+(`module_package_files`). These are the files Congo's scan of the package lists.
+`core`, loaded by `parseLoadCore`, is swept the same way. This lookup is the compiler's side of the
 **package folder**, and it lives only as long as the search path does; a Congo
 build names every file itself ("A described build", below).
 
@@ -897,7 +906,9 @@ it**: then from that file, `core`'s generated include file, loaded as any file
 an import line names is, declared and not generated ("A described build").
 Missing from the search path, it ends the compile (`ExitNF`), naming where
 the packages folder comes from. Its name is `core`, its folder's, so an
-`import core` reaches the prelude module and binds that name; the IR dump reads
+`import core` reaches the prelude module and binds that name (in a C-named
+module, which has no prelude import; anywhere else it is a second import of
+core, "A module imports another once"); the IR dump reads
 `module core`. No symbol is spelled after it, since everything it defines is
 `inline` or `extern`.
 
@@ -2304,7 +2315,10 @@ be a public name of the module, checked at the `mod` line.
 
 **A module imports another once.** A second import is `ErrorDupImport`, naming
 both: an identical repeat [Jon 23 Sep] as much as one that differs in its clause
-or its `pub`. So is a second import of one name of the parent.
+or its `pub`. So is a second import of one name of the parent. The prelude's
+import is written nowhere, so an `import core` in a module that has it, with or
+without a clause, names no first line: its message says that core is imported
+automatically into every module (`module_import_use_parse`).
 
 **A name written twice is an error; one never written merges** [Jon 23 Sep].
 Every fold into a module's namespace binds through `modFoldBind`. The same
@@ -2594,6 +2608,19 @@ looks at (`regionTracedRefNote`, `regionTracedGlobalNote`,
 `regionTracedRawNote`) and judges them all once it has finished
 (`regionTracedCheckAll`, from `conec.c`); a compile declaring no traced region
 judges none.
+
+**Whether several threads may hold owners of one value is declared too,** with
+the built-in trait `ThreadSafe` (a provisional name): `struct arc is RegionRef,
+ThreadSafe`, the `sync` package's atomically counted region (a package's, not
+core's, so `arc` is a name only of the modules that fold it in), whose `alias` and `dealias` may
+run on different threads at once; `rc`, whose count is a plain number, does not
+declare it. It is a region ref's only (`ErrorThreadSafeUse`, from
+`regionThreadSafeUseCheck`), trusted — the compiler cannot check that the
+counts are atomic. `regionIsThreadSafe` is the region's say in whether a
+reference may cross threads, beside its permission's `RaceSafe`: the thread
+check (`refThreadBinds`, [References](references.md)) lets an owner that may be
+aliased cross only where its region declares it, so `+arc-imm` crosses and
+`+rc-imm` does not. It changes no call the compiler makes.
 
 The struct is held to the method shapes **at its declaration**, after its
 methods are type checked (`regionRefCheck`, from `structCheckMembers`):

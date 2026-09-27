@@ -6,6 +6,8 @@
 */
 
 #include "../ir.h"
+#include <stdio.h>
+#include <inttypes.h>
 
 // Create a new discriminant type node
 EnumNode *newEnumNode() {
@@ -13,6 +15,7 @@ EnumNode *newEnumNode() {
     newNode(node, EnumNode, EnumTag);
     node->bytes = 1;
     node->fixedwidth = 0;
+    node->issigned = 0;
     node->underlying = NULL;
     node->namesym = anonName;
     node->llvmtype = NULL;
@@ -25,13 +28,29 @@ void enumPrint(EnumNode *node) {
     inodeFprint("tag");
 }
 
-// The number of bytes needed to hold tag value 'maxtag'
-uint8_t enumBytesFor(uint32_t maxtag) {
-    if (maxtag <= 0xff)
-        return 1;
-    if (maxtag <= 0xffff)
-        return 2;
-    return 4;
+// Does a variant's tag value fit an integer 'bits' wide, signed or not? The
+// literal rule, that a value must fit its type and that a negative sign counts
+// (reftoken.html), read against the value as written. A negative value fits no
+// unsigned integer: a tag is a constant lined up with another library's, so -4
+// in a u32 enum is refused rather than taken as 0xFFFFFFFC.
+int enumTagFits(struct StructNode *variant, unsigned int bits, int issigned) {
+    if (variant->tagstate == TagNegative)
+        return issigned && (bits >= 64 || variant->tagnbr >= -((int64_t)1 << (bits - 1)));
+    uint64_t value = (uint64_t)variant->tagnbr;
+    if (issigned)
+        return value <= ((uint64_t)1 << (bits - 1)) - 1;
+    return bits >= 64 || value <= ((uint64_t)1 << bits) - 1;
+}
+
+// The values an integer 'bits' wide holds, "from A to B", written into 'buf'
+// (at least 64 bytes), which is returned. Worded as ErrorLitRange's.
+char *enumRangeText(unsigned int bits, int issigned, char *buf) {
+    if (issigned)
+        sprintf(buf, "from %" PRId64 " to %" PRId64,
+            (int64_t)(0 - ((uint64_t)1 << (bits - 1))), (int64_t)(((uint64_t)1 << (bits - 1)) - 1));
+    else
+        sprintf(buf, "from 0 to %" PRIu64, bits >= 64 ? UINT64_MAX : ((uint64_t)1 << bits) - 1);
+    return buf;
 }
 
 // Name resolution of a discriminant type
@@ -70,4 +89,5 @@ void enumTypeCheck(TypeCheckState *pstate, EnumNode *node) {
     }
     node->bytes = bits / 8;
     node->fixedwidth = 1;
+    node->issigned = dcl->tag == IntNbrTag;
 }

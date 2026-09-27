@@ -74,6 +74,81 @@ void borrowAuto(INode **from, INode *totypedcl) {
     *from = (INode*)borrownode;
 }
 
+// Is 'from' a '&uni' reference held in a place, wanted as a borrowed reference
+// that may be shared ('&', '&mut', '&imm' ...)? Handing it over lends it rather
+// than moving it: "a uni can be borrowed as mut or imm. After the borrowed
+// references' last use, you once again have the original uni reference"
+// (refperm.html, "Borrowed reference recovery"). A '&uni' wanted as a '&uni'
+// still moves. Note: totypedcl has already done GetTypeDcl
+int borrowUniReborrows(INode *from, INode *totypedcl) {
+    RefNode *fromtype = (RefNode*)iexpGetTypeDcl(from);
+    RefNode *totype = (RefNode*)totypedcl;
+    return fromtype->tag == RefTag && fromtype->region == borrowRef
+        && itypeGetTypeDcl(fromtype->perm) == (INode*)uniPerm
+        && totype->tag == RefTag && totype->region == borrowRef && !itypeIsMove(totypedcl)
+        && iexpIsLval(from);
+}
+
+// Rewrite the reference 'from' to the borrow '&perm *from', typed as a borrowed
+// reference to 'vtexp', as borrowTypeCheck would build it if written out: the
+// lifetime of the variable the reference is held in. The permission has already
+// been checked by the match that asked for it.
+static void borrowDerefOf(INode **from, INode *perm, INode *vtexp) {
+    StarNode *deref = newStarNode(DerefTag);
+    inodeLexCopy((INode*)deref, *from);
+    deref->vtexp = *from;
+    deref->vtype = ((RefNode*)iexpGetTypeDcl(*from))->vtexp;
+
+    INode *lvalperm = (INode*)immPerm;
+    uint16_t scope = 0;
+    INode *lvalvar = iexpGetLvalInfo((INode*)deref, &lvalperm, &scope);
+    if (lvalvar && lvalvar->tag == VarDclTag)
+        scope = ((VarDclNode*)lvalvar)->scope;
+
+    RefNode *reftype = newRefNodeFull(RefTag, *from, borrowRef, perm, vtexp);
+    reftype->scope = scope;
+    RefNode *borrownode = newRefNodeFull(BorrowTag, *from, borrowRef, perm, (INode*)deref);
+    borrownode->vtype = (INode*)reftype;
+    *from = (INode*)borrownode;
+}
+
+// Lend a '&uni' reference as the borrowed reference 'totypedcl' wants, by
+// rewriting it to the reborrow '&mut *from' that borrowTypeCheck would build
+// if written out: the same permission check, and the lifetime of the variable
+// the reference is held in. Flow analysis then sees a borrow of '*from', which
+// freezes the reference while the borrow is used, and not a move of it.
+void borrowUniReborrow(INode **from, INode *totypedcl) {
+    RefNode *totype = (RefNode*)totypedcl;
+    borrowDerefOf(from, totype->perm, totype->vtexp);
+}
+
+// Is 'from' an owning reference that is the only holder of its value (a '+so',
+// a '+rc' still 'uni'), held in a place, wanted as a borrowed reference that
+// may not be shared ('&uni')? An owning reference coerced to a borrowed one is
+// borrowed from, whatever the borrow's permission: the owner stays, frozen
+// while the borrow is used, and still ends its value at its own scope's end
+// (refborref.html, "Borrowing from another reference"; refperm.html, "From
+// 'uni'"). A coercion to '&' or '&mut' is a recast that flow analysis already
+// sees as that borrow (pwOwnedLent); one to a '&uni' is a move type, which would
+// move the owner into a reference that ends nothing. Note: totypedcl has
+// already done GetTypeDcl
+int borrowOwnerLendsUni(INode *from, INode *totypedcl) {
+    RefNode *fromtype = (RefNode*)iexpGetTypeDcl(from);
+    RefNode *totype = (RefNode*)totypedcl;
+    return fromtype->tag == RefTag && itypeGetTypeDcl(fromtype->region) != borrowRef
+        && itypeIsMove((INode*)fromtype)
+        && totype->tag == RefTag && totype->region == borrowRef && itypeIsMove(totypedcl)
+        && iexpIsLval(from);
+}
+
+// Lend such an owning reference by rewriting it to the borrow '&uni *from',
+// typed as a borrow of what the owner points at. The caller then coerces that
+// borrow to the type wanted, which may still be a recast (an enrichment's base).
+void borrowOwnerLend(INode **from, INode *totypedcl) {
+    RefNode *totype = (RefNode*)totypedcl;
+    borrowDerefOf(from, totype->perm, ((RefNode*)iexpGetTypeDcl(*from))->vtexp);
+}
+
 // Can we safely auto-borrow to match expected type?
 // Note: totype has already done GetTypeDcl
 int borrowAutoMatches(INode *from, RefNode *totype) {
@@ -158,6 +233,58 @@ static int borrowReassocIndex(RefNode *node) {
         && !fnCallHasTypeArgs(index);
 }
 
+// Answer whether a borrow's operand is a literal constant with storage of its
+// own: a string literal, or an array literal whose elements are all constants
+// ('&[1, 2, 3]'). Generation places either in a constant global, so it is
+// borrowed as a global constant is: for as long as the program runs, and
+// immutably. An array literal with a computed element has no such place.
+static int borrowIsConstLit(INode *node) {
+    return node->tag == StringLitTag
+        || (node->tag == ArrayLitTag && arrayLitIsLiteral((ArrayNode*)node));
+}
+
+// Retype a borrowed constant array literal to the reference type it is wanted
+// as, when their element types differ: '&[1, 2, 3]' wanted as a '&[]u32'. The
+// literal was typed from its elements alone, as a call's argument is before its
+// callee is resolved, so its untyped number literals settled on i32. Coercing
+// each element to the wanted element type is what arrayLitCoerce does for the
+// literal unborrowed. Return 0, having changed nothing, where the borrow is not
+// of a constant array literal or the wanted type is not a reference to an
+// array or a slice; arrayLitCoerce returns 0 where an element does not coerce.
+int borrowConstLitCoerce(INode *from, INode *totypedcl) {
+    if ((from->tag != BorrowTag && from->tag != ArrayBorrowTag)
+        || (totypedcl->tag != RefTag && totypedcl->tag != ArrayRefTag))
+        return 0;
+    RefNode *borrow = (RefNode*)from;
+    INode *lit = borrow->vtexp;
+    RefNode *fromtype = (RefNode*)borrow->vtype;
+    if (lit->tag != ArrayLitTag || !arrayLitIsLiteral((ArrayNode*)lit)
+        || fromtype->tag != (from->tag == BorrowTag ? RefTag : ArrayRefTag))
+        return 0;
+    INode *littype = ((IExpNode*)lit)->vtype;
+    if (littype->tag != ArrayTag)
+        return 0;
+
+    // The array type wanted: a reference's own, or one of the literal's count
+    // holding the slice's element type
+    INode *wanted;
+    if (totypedcl->tag == RefTag)
+        wanted = itypeGetTypeDcl(((RefNode*)totypedcl)->vtexp);
+    else
+        wanted = (INode*)newArrayNodeTyped(lit, (size_t)arrayDim1(littype), ((RefNode*)totypedcl)->vtexp);
+    if (wanted->tag != ArrayTag || !arrayLitCoerce((ArrayNode*)lit, wanted))
+        return 0;
+
+    // The borrow's type is rebuilt around the retyped literal, keeping its
+    // permission and its lifetime, as borrowTypeCheck built it
+    littype = ((IExpNode*)lit)->vtype;
+    RefNode *reftype = newRefNodeFull(fromtype->tag, from, borrowRef, fromtype->perm,
+        from->tag == BorrowTag ? littype : arrayElemType(littype));
+    reftype->scope = fromtype->scope;
+    borrow->vtype = (INode*)reftype;
+    return 1;
+}
+
 // Analyze borrow node
 void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     RefNode *node = *nodep;
@@ -180,8 +307,9 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     // that reason rather than iexpIsLvalError's "must be lval", which explains an
     // assignment target and not this. A borrow reaches the whole suffixed term, so
     // '&p.sum()' is the call's result -- a temporary -- and '(&p).sum()' is how a
-    // method is called on a borrowed receiver.
-    if (!iexpIsLval(node->vtexp)) {
+    // method is called on a borrowed receiver. A constant literal is not a
+    // temporary: it has a place in a constant global.
+    if (!iexpIsLval(node->vtexp) && !borrowIsConstLit(node->vtexp)) {
         errorMsgNode(node->vtexp, ErrorBadLval,
             "May not borrow a temporary value. A borrowed reference needs a place in memory to point at.");
         return;
@@ -234,7 +362,7 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     INode *lval = node->vtexp;
     INode *lvalperm = (INode*)immPerm;
     scope = 0;  // Global
-    if (lval->tag != StringLitTag) {
+    if (!borrowIsConstLit(lval)) {
         // lval is the variable or variable sub-structure we want to get a reference to
         // From it, obtain variable we are borrowing from and actual/calculated permission
         INode *lvalvar = iexpGetLvalInfo(lval, &lvalperm, &scope);

@@ -70,11 +70,49 @@ fn elementOfParamSlice(s &[]mut i32) &mut i32 {
   &mut s[0];
 }
 
+// A local initialized with a borrow keeps the borrow's lifetime, whether its
+// type is inferred or declared. A declared borrowed-reference type is a shared
+// node carrying no lifetime of its own, so varDclTypeCheck gives the local a
+// copy scoped as its initializer is -- borrowed from a local, borrowed through
+// an owner held in one, or an owner lent as a '&uni'. The parameter-derived
+// forms of the same locals return clean, and ref_success runs them.
+struct R { pub n i64; }
+
+fn escapesThroughDeclaredLocal() &mut R {
+  mut x = R[4];
+  imm p &mut R = &mut x;
+  p;                         //~ ErrorEscape:3 "Returned borrowed reference outlives the local value it points to"
+}
+
+fn escapesThroughDeclaredMutLocal() &mut R {
+  mut x = R[4];
+  mut p &mut R = &mut x;
+  p;                         //~ ErrorEscape:3 "Returned borrowed reference outlives the local value it points to"
+}
+
+fn escapesThroughOwnerBorrow() &mut R {
+  imm o = +so R[4];
+  imm p &mut R = &mut *o;
+  p;                         //~ ErrorEscape:3 "Returned borrowed reference outlives the local value it points to"
+}
+
+fn escapesThroughOwnerLent() &uni R {
+  imm o = +so R[4];
+  imm p &uni R = o;
+  p;                         //~ ErrorEscape:3 "Returned borrowed reference outlives the local value it points to"
+}
+
+fn declaredLocalOfParam(q &mut R) &mut R {
+  imm p &mut R = q;
+  p;
+}
+
 // What the check does not reach, established here rather than claimed: a borrow
-// laundered through a variable. The scope of a borrow lives on the type node the
-// borrow expression itself produced, and an assignment does not carry it onto
-// the variable's declared type, so by the time this returns 'chosen' the return
-// sees a plain '&i32' of global scope. assignlvalrtype does not catch it either,
+// laundered through a variable by assignment. The scope of a borrow lives on the
+// type node the borrow expression itself produced, and an assignment does not
+// carry it onto the variable's type, which keeps its initializer's lifetime or
+// none, so by the time this returns 'chosen' the return sees a plain '&i32' of
+// global scope. assignlvalrtype does not catch it either,
 // because 'chosen' and 'outer' share a scope and storing one in the other is
 // legal. Closing this needs lifetimes tracked through variables, which is what
 // doc/reference/reflifefn.html's unimplemented annotations are for.

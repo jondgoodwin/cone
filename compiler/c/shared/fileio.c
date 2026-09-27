@@ -253,16 +253,22 @@ static char *fileFindPackageSrc(char *folder, char *srcfn) {
 // designated-file spelling because a package laid out for Congo once kept a
 // hand-written include file there, and one left behind must not stand in for the
 // source: a compile that finds a package here builds the package's source into
-// its own object, so it wants the source
-char *fileFindPackage(char *srcfn) {
+// its own object, so it wants the source. 'pkgsrc' says which it found, since a
+// package's source root is the designated file of its 'src' folder and sweeps it
+char *fileFindPackage(char *srcfn, int *pkgsrc) {
+    if (pkgsrc)
+        *pkgsrc = 0;
     char **searchPaths = fileSearchPaths;
     if (searchPaths == NULL)
         return NULL;
     while (*searchPaths) {
         char *folder = *searchPaths++;
         char *fn = fileSrcUrl(folder, srcfn, 0);
-        if (!fileReadable(fn))
+        if (!fileReadable(fn)) {
             fn = fileFindPackageSrc(folder, srcfn);
+            if (fn && pkgsrc)
+                *pkgsrc = 1;
+        }
         if (fn == NULL) {
             fn = fileSrcUrl(folder, srcfn, 1);
             if (!fileReadable(fn))
@@ -278,7 +284,7 @@ char *fileFindPackage(char *srcfn) {
 // path, and hand back the one spelling of what it found
 char *fileFindSrc(char *cururl, char *srcfn) {
     char *fn = fileFindLocal(cururl, srcfn);
-    return fn ? fn : fileFindPackage(srcfn);
+    return fn ? fn : fileFindPackage(srcfn, NULL);
 }
 
 // The name of the current directory, or NULL where there is none to read. A file

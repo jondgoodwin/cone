@@ -16,6 +16,7 @@
 
 #include <stdio.h>
 #include <assert.h>
+#include <inttypes.h>
 
 // Parse a permission, return reference to defperm if not found
 INode *parsePerm() {
@@ -181,10 +182,10 @@ INode *parseTypeName(ParseState *parse) {
         fncall->flags |= FlagIndex;
         lexNextToken();
         if (!lexIsToken(RBracketToken)) {
-            nodesAdd(&fncall->args, parseType(parse));
+            nodesAdd(&fncall->args, parseTypeReq(parse, "'['"));
             while (lexIsToken(CommaToken)) {
                 lexNextToken();
-                nodesAdd(&fncall->args, parseType(parse));
+                nodesAdd(&fncall->args, parseTypeReq(parse, "','"));
             }
         }
         parseCloseTok(RBracketToken);
@@ -461,7 +462,7 @@ static int parseNamesType(INode *named, StructNode *type) {
 // assigned ascending from zero across the body unless the author pins one, after
 // which numbering continues from there -- which is what lines an enum up with an
 // external library's constants without renumbering the rest by hand.
-static void parseAddVariant(ParseState *parse, StructNode *strnode, StructNode *substruct, uint32_t *nexttag) {
+static void parseAddVariant(ParseState *parse, StructNode *strnode, StructNode *substruct, StructNode **prior) {
     substruct->flags |= HasTagField | (strnode->flags & SameSize);
 
     // An extension's numbering cannot be settled here. Its base's variants come
@@ -469,8 +470,8 @@ static void parseAddVariant(ParseState *parse, StructNode *strnode, StructNode *
     // so an unpinned variant keeps 'TagUnassigned' and name resolution numbers it
     // after the base's last -- structEnumSeedVariants, in ir/types/struct.c.
     int deferred = strnode->extendsbase != NULL;
-    if (substruct->tagnbr == TagUnassigned && !deferred)
-        substruct->tagnbr = *nexttag;
+    if (substruct->tagstate == TagUnassigned && !deferred)
+        structTagFollow(substruct, *prior);
 
     // The enum already says which enum a variant belongs to and what its type
     // parameters are, so a variant restating either is refused rather than ignored.
@@ -517,17 +518,18 @@ static void parseAddVariant(ParseState *parse, StructNode *strnode, StructNode *
         INode **nodesp;
         uint32_t cnt;
         for (nodesFor(strnode->derived, cnt, nodesp)) {
-            if (substruct->tagnbr != TagUnassigned && ((StructNode*)*nodesp)->tagnbr == substruct->tagnbr)
+            char buf[24];
+            if (structTagSame((StructNode*)*nodesp, substruct))
                 errorMsgNode((INode*)substruct, ErrorDupTag,
-                    "Tag value %d is already taken by variant %s.",
-                    (int)substruct->tagnbr, &((StructNode*)*nodesp)->namesym->namestr);
+                    "Tag value %s is already taken by variant %s.",
+                    structTagText(substruct, buf), &((StructNode*)*nodesp)->namesym->namestr);
         }
     }
     else
         strnode->derived = newNodes(4);
     nodesAdd(&strnode->derived, (INode*)substruct);
     if (!deferred)
-        *nexttag = substruct->tagnbr + 1;
+        *prior = substruct;
 
     // A MODULE NODE, BUT NOT A MODULE NAME. The variant stays on the module's
     // list, so the module's walks resolve, check and generate it as they always
@@ -573,16 +575,33 @@ static void parseEnumExtensionMember(int isenum, StructNode *strnode, char *what
 // Parse the '= value' pinning a variant's tag value, if one is written, leaving
 // the tag unassigned when none is. Written where the variant's name is, both for
 // a bare name and for a struct's.
+//
+// The value is kept whole, in 64 bits, with whether it is negative: whether it
+// fits the enum's integer type is asked at type check (structSetTagWidth), once
+// that type is known. Only a negative value past i64's smallest fits nothing.
 static void parseVariantTagPin(StructNode *substruct) {
-    substruct->tagnbr = TagUnassigned;
+    substruct->tagstate = TagUnassigned;
     if (!lexIsToken(AssgnToken))
         return;
     lexNextToken();
+    int negated = 0;
+    if (lexIsToken(DashToken)) {
+        negated = 1;
+        lexNextToken();
+    }
     if (!lexIsToken(IntLitToken)) {
-        errorMsgLex(ErrorNotLit, "A variant's tag value is an integer literal.");
+        errorMsgLex(ErrorNotLit, "A variant's tag value is an integer literal, which may be negative.");
         return;
     }
-    substruct->tagnbr = (uint32_t)lex->val.uintlit;
+    uint64_t magnitude = lex->val.uintlit;
+    if (negated && magnitude > ((uint64_t)1 << 63)) {
+        errorMsgLex(ErrorTagWidth,
+            "Tag value -%" PRIu64 " is below -9223372036854775808, the smallest value an enum's integer type holds.",
+            magnitude);
+        magnitude = 0;
+    }
+    substruct->tagnbr = (int64_t)(negated ? 0 - magnitude : magnitude);
+    substruct->tagstate = negated && magnitude != 0 ? TagNegative : TagNonNeg;
     lexNextToken();
 }
 
@@ -592,7 +611,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     INsTypeNode *svtype = parse->typenode;
     StructNode *strnode;
     uint16_t fieldnbr = 0;
-    uint32_t nexttag = 0;
+    StructNode *priortag = NULL;   // The variant the next unpinned one numbers on from
     int isenum = (strflags & EnumType) != 0;
 
     // Capture the kind of type, then get next token (name)
@@ -984,7 +1003,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                     substruct->tag = StructTag;
                     substruct->flags |= variantflags;
                     parseVariantTagPin(substruct);
-                    parseAddVariant(parse, strnode, substruct, &nexttag);
+                    parseAddVariant(parse, strnode, substruct, &priortag);
                     while (lexIsToken(CommaToken)) {
                         lexNextToken();
                         if (!lexIsToken(IdentToken)) {
@@ -997,7 +1016,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                         next->flags |= variantflags;
                         lexNextToken();
                         parseVariantTagPin(next);
-                        parseAddVariant(parse, strnode, next, &nexttag);
+                        parseAddVariant(parse, strnode, next, &priortag);
                     }
                     parseEndOfStatement();
                     parseSpan(parse, &strnode->spans, NULL, mstart, mkw, SpanMember);
@@ -1060,7 +1079,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                     // A variant is as visible as its enum: a use that can name
                     // the enum can match on it. It may also be declared 'pub' itself.
                     StructNode *substruct = (StructNode *)parseStruct(parse, pubflag | (strnode->flags & FlagPub));
-                    parseAddVariant(parse, strnode, substruct, &nexttag);
+                    parseAddVariant(parse, strnode, substruct, &priortag);
                     parseSpan(parse, &strnode->spans, (INode*)substruct, mstart, mkw, SpanDcl);
                 }
                 else if (strnode->flags & TraitType) {
@@ -1193,7 +1212,7 @@ INode *parseFnSig(ParseState *parse) {
             nodesAdd(&rettype->elems, fnsig->rettype);
             while (lexIsToken(CommaToken)) {
                 lexNextToken();
-                nodesAdd(&rettype->elems, parseType(parse));
+                nodesAdd(&rettype->elems, parseTypeReq(parse, "','"));
             }
             fnsig->rettype = (INode*)rettype;
         }
@@ -1222,7 +1241,7 @@ AliasDclNode *parseTypedef(ParseState *parse) {
     }
     AliasDclNode *newnode = newTypeAliasDclNode(lex->val.ident, NULL);
     lexNextToken();
-    newnode->target = parseType(parse);
+    newnode->target = parseTypeReq(parse, "the typedef's name");
     parseEndOfStatement();
     return newnode;
 }
@@ -1252,4 +1271,15 @@ INode* parseType(ParseState *parse) {
     default:
         return unknownType;
     }
+}
+
+// Parse a type expression where the grammar requires one, as after 'as' or
+// 'into'. No type there is reported just after the token that asked for it,
+// naming that token; the unknown type returned is never read, because a parse
+// error keeps analysis from running.
+INode *parseTypeReq(ParseState *parse, char *after) {
+    INode *type = parseType(parse);
+    if (type == unknownType)
+        errorMsgLexAfter(ErrorNoType, "Expected a type after %s", after);
+    return type;
 }

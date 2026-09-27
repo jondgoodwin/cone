@@ -1,0 +1,234 @@
+// ======== Vectors: Vec2, Vec3 and Vec4, and DVec3, a 64-bit position ========
+
+// A point or direction in the plane, or a texture coordinate (x across the
+// image, y up it)
+pub struct Vec2 {
+  pub x f32;
+  pub y f32;
+
+  // The unit vector at 'angle' radians from x, counterclockwise
+  pub fn fromAngle(angle f32) Vec2 {Vec2[cos(angle), sin(angle)];}
+
+  pub fn add overload `+`(self, o Vec2) Vec2 {Vec2[x + o.x, y + o.y];}
+  pub fn sub overload `-`(self, o Vec2) Vec2 {Vec2[x - o.x, y - o.y];}
+  pub fn neg overload `-`(self) Vec2 {Vec2[-x, -y];}
+  pub fn scale overload `*`(self, s f32) Vec2 {Vec2[x * s, y * s];}
+
+  // Component by component
+  pub fn mult overload `*`(self, o Vec2) Vec2 {Vec2[x * o.x, y * o.y];}
+
+  pub fn dot(self, o Vec2) f32 {x * o.x + y * o.y;}
+
+  // The 2-D cross product, a number: the z of the 3-D cross product of the
+  // two in the plane z = 0. Positive when o is counterclockwise of self
+  pub fn cross(self, o Vec2) f32 {x * o.y - y * o.x;}
+
+  // Self turned a quarter turn counterclockwise
+  pub fn perp(self) Vec2 {Vec2[-y, x];}
+
+  pub fn length(self) f32 {(x * x + y * y).sqrt();}
+  pub fn lengthSquared(self) f32 {x * x + y * y;}
+  pub fn distance(self, o Vec2) f32 {(self - o).length();}
+  pub fn distanceSquared(self, o Vec2) f32 {(self - o).lengthSquared();}
+
+  // The vector of length 1 in the same direction. The zero vector has no
+  // direction, and gives (1, 0)
+  pub fn normalize(self) Vec2 {
+    imm len = length();
+    if len > 0. {
+      imm inv = 1. / len;
+      Vec2[x * inv, y * inv];
+    } else {
+      Vec2[1., 0.];
+    };
+  }
+
+  // The point the fraction t of the way from self to 'to' (0 is self, 1 is 'to')
+  pub fn lerp(self, to Vec2, t f32) Vec2 {
+    imm s = 1. - t;
+    Vec2[s * x + t * to.x, s * y + t * to.y];
+  }
+
+  pub fn min(self, o Vec2) Vec2 {Vec2[fmin(x, o.x), fmin(y, o.y)];}
+  pub fn max(self, o Vec2) Vec2 {Vec2[fmax(x, o.x), fmax(y, o.y)];}
+  pub fn abs(self) Vec2 {Vec2[fabs(x), fabs(y)];}
+
+  // Each component held between lo's and hi's
+  pub fn clamp(self, lo Vec2, hi Vec2) Vec2 {Vec2[fclamp(x, lo.x, hi.x), fclamp(y, lo.y, hi.y)];}
+
+  // Self bounced off a surface whose unit normal is n
+  pub fn reflect(self, n Vec2) Vec2 {self - n * (2. * dot(n));}
+
+  // The part of self along 'onto', which need not be a unit vector
+  pub fn project(self, onto Vec2) Vec2 {
+    imm len2 = onto.lengthSquared();
+    if len2 > 0. {onto * (dot(onto) / len2);} else {Vec2[0., 0.];};
+  }
+
+  // The angle between the two, from 0 to pi, whichever way round
+  pub fn angle(self, o Vec2) f32 {
+    imm lens = (lengthSquared() * o.lengthSquared()).sqrt();
+    if lens > 0. {acos(fclamp(dot(o) / lens, -1., 1.));} else {0.;};
+  }
+
+  // The angle that turns self to o, from -pi to pi, counterclockwise positive
+  pub fn signedAngle(self, o Vec2) f32 {atan2(cross(o), dot(o));}
+
+  // Self turned 'angle' radians counterclockwise
+  pub fn rotate(self, angle f32) Vec2 {
+    imm c = cos(angle);
+    imm s = sin(angle);
+    Vec2[x * c - y * s, x * s + y * c];
+  }
+
+  // Equal but for rounding: see almostEqual
+  pub fn equals(self, o Vec2) Bool {almostEqual(x, o.x) and almostEqual(y, o.y);}
+}
+
+// A point or direction in space
+pub struct Vec3 {
+  pub x f32;
+  pub y f32;
+  pub z f32;
+
+  pub fn add overload `+`(self, o Vec3) Vec3 {Vec3[x + o.x, y + o.y, z + o.z];}
+  pub fn sub overload `-`(self, o Vec3) Vec3 {Vec3[x - o.x, y - o.y, z - o.z];}
+  pub fn neg overload `-`(self) Vec3 {Vec3[-x, -y, -z];}
+
+  // Each component multiplied by one number
+  pub fn scale overload `*`(self, s f32) Vec3 {Vec3[x * s, y * s, z * s];}
+
+  // Component by component: x by x, y by y, z by z
+  pub fn mult overload `*`(self, o Vec3) Vec3 {Vec3[x * o.x, y * o.y, z * o.z];}
+
+  // The dot product. It does not normalize either vector
+  pub fn dot(self, o Vec3) f32 {x * o.x + y * o.y + z * o.z;}
+
+  // The cross product: perpendicular to both, by the right-hand rule
+  pub fn cross(self, o Vec3) Vec3 {
+    Vec3[y * o.z - z * o.y, z * o.x - x * o.z, x * o.y - y * o.x];
+  }
+
+  pub fn length(self) f32 {(x * x + y * y + z * z).sqrt();}
+  pub fn lengthSquared(self) f32 {x * x + y * y + z * z;}
+  pub fn distance(self, o Vec3) f32 {(self - o).length();}
+  pub fn distanceSquared(self, o Vec3) f32 {(self - o).lengthSquared();}
+
+  // The vector of length 1 in the same direction. The zero vector has no
+  // direction, and gives (1, 0, 0), as Pegasus had it
+  pub fn normalize(self) Vec3 {
+    imm len = length();
+    if len > 0. {
+      imm inv = 1. / len;
+      Vec3[x * inv, y * inv, z * inv];
+    } else {
+      Vec3[1., 0., 0.];
+    };
+  }
+
+  // The point the fraction t of the way from self to 'to' (0 is self, 1 is 'to')
+  pub fn lerp(self, to Vec3, t f32) Vec3 {
+    imm s = 1. - t;
+    Vec3[s * x + t * to.x, s * y + t * to.y, s * z + t * to.z];
+  }
+
+  pub fn min(self, o Vec3) Vec3 {Vec3[fmin(x, o.x), fmin(y, o.y), fmin(z, o.z)];}
+  pub fn max(self, o Vec3) Vec3 {Vec3[fmax(x, o.x), fmax(y, o.y), fmax(z, o.z)];}
+  pub fn abs(self) Vec3 {Vec3[fabs(x), fabs(y), fabs(z)];}
+
+  // Each component held between lo's and hi's
+  pub fn clamp(self, lo Vec3, hi Vec3) Vec3 {
+    Vec3[fclamp(x, lo.x, hi.x), fclamp(y, lo.y, hi.y), fclamp(z, lo.z, hi.z)];
+  }
+
+  // Self bounced off a surface whose unit normal is n
+  pub fn reflect(self, n Vec3) Vec3 {self - n * (2. * dot(n));}
+
+  // The part of self along 'onto', which need not be a unit vector
+  pub fn project(self, onto Vec3) Vec3 {
+    imm len2 = onto.lengthSquared();
+    if len2 > 0. {onto * (dot(onto) / len2);} else {Vec3[0., 0., 0.];};
+  }
+
+  // The angle between the two, from 0 to pi
+  pub fn angle(self, o Vec3) f32 {
+    imm lens = (lengthSquared() * o.lengthSquared()).sqrt();
+    if lens > 0. {acos(fclamp(dot(o) / lens, -1., 1.));} else {0.;};
+  }
+
+  // x and y, dropping z
+  pub fn xy(self) Vec2 {Vec2[x, y];}
+
+  // With a fourth component: w 1 for a point, 0 for a direction
+  pub fn extend(self, w f32) Vec4 {Vec4[x, y, z, w];}
+
+  // Equal but for rounding: see almostEqual
+  pub fn equals(self, o Vec3) Bool {
+    almostEqual(x, o.x) and almostEqual(y, o.y) and almostEqual(z, o.z);
+  }
+
+  pub fn isZero(self) Bool {
+    almostEqual(x, 0.) and almostEqual(y, 0.) and almostEqual(z, 0.);
+  }
+}
+
+// A four-component vector: a point or direction in homogeneous coordinates,
+// or any four numbers taken together
+pub struct Vec4 {
+  pub x f32;
+  pub y f32;
+  pub z f32;
+  pub w f32;
+
+  pub fn add overload `+`(self, o Vec4) Vec4 {Vec4[x + o.x, y + o.y, z + o.z, w + o.w];}
+  pub fn sub overload `-`(self, o Vec4) Vec4 {Vec4[x - o.x, y - o.y, z - o.z, w - o.w];}
+  pub fn neg overload `-`(self) Vec4 {Vec4[-x, -y, -z, -w];}
+  pub fn scale overload `*`(self, s f32) Vec4 {Vec4[x * s, y * s, z * s, w * s];}
+  pub fn mult overload `*`(self, o Vec4) Vec4 {Vec4[x * o.x, y * o.y, z * o.z, w * o.w];}
+  pub fn dot(self, o Vec4) f32 {x * o.x + y * o.y + z * o.z + w * o.w;}
+  pub fn length(self) f32 {(x * x + y * y + z * z + w * w).sqrt();}
+  pub fn lengthSquared(self) f32 {x * x + y * y + z * z + w * w;}
+
+  // The vector of length 1 in the same direction; zero stays zero
+  pub fn normalize(self) Vec4 {
+    imm len = length();
+    if len > 0. {self * (1. / len);} else {self;};
+  }
+
+  pub fn lerp(self, to Vec4, t f32) Vec4 {self * (1. - t) + to * t;}
+
+  // x, y and z, dropping w
+  pub fn xyz(self) Vec3 {Vec3[x, y, z];}
+
+  pub fn equals(self, o Vec4) Bool {
+    almostEqual(x, o.x) and almostEqual(y, o.y) and almostEqual(z, o.z) and almostEqual(w, o.w);
+  }
+}
+
+// A position in 64 bits, for a world too large for f32 (whose step is about a
+// metre ten thousand kilometres out). Work near a place is done in f32 relative
+// to it: 'relativeTo' gives that, and adding a Vec3 comes back
+pub struct DVec3 {
+  pub x f64;
+  pub y f64;
+  pub z f64;
+
+  // The same point, widened
+  pub fn from(v Vec3) DVec3 {DVec3[f64[v.x], f64[v.y], f64[v.z]];}
+
+  // The same point, narrowed to f32
+  pub fn toVec3(self) Vec3 {Vec3[f32[x], f32[y], f32[z]];}
+
+  // Where self is seen from 'origin', in f32
+  pub fn relativeTo(self, origin DVec3) Vec3 {(self - origin).toVec3();}
+
+  pub fn add overload `+`(self, o DVec3) DVec3 {DVec3[x + o.x, y + o.y, z + o.z];}
+  pub fn addVec3 overload `+`(self, o Vec3) DVec3 {DVec3[x + f64[o.x], y + f64[o.y], z + f64[o.z]];}
+  pub fn sub overload `-`(self, o DVec3) DVec3 {DVec3[x - o.x, y - o.y, z - o.z];}
+  pub fn neg overload `-`(self) DVec3 {DVec3[-x, -y, -z];}
+  pub fn scale overload `*`(self, s f64) DVec3 {DVec3[x * s, y * s, z * s];}
+  pub fn dot(self, o DVec3) f64 {x * o.x + y * o.y + z * o.z;}
+  pub fn length(self) f64 {(x * x + y * y + z * z).sqrt();}
+  pub fn lengthSquared(self) f64 {x * x + y * y + z * z;}
+  pub fn distance(self, o DVec3) f64 {(self - o).length();}
+}

@@ -1,0 +1,209 @@
+// ======== Deformers ========
+//
+// Each moves the vertices of a PolyMesh and returns the result as a new
+// PolyMesh: the same vertices, half-edges and faces in the same order, and
+// every attribute channel carried over unchanged. Each works in a frame set
+// by an origin and a unit direction 'along' (made unit here): a vertex's
+// coordinate along it is t = (p - origin) . along, and the deformed span is
+// the mesh's extent in t, from its least to its greatest. As in Barr (1984),
+// the rate of bend, twist or taper is the amount over that span, and it acts
+// on t measured from the origin, held to the span (t clamped to it): so the
+// part of the mesh at the origin (t = 0) stays where it is, and a mesh whose
+// origin is at one end is deformed from that end. A mesh with no extent
+// along the direction, or an amount of 0, comes back unchanged.
+
+// The least and greatest t over the mesh's vertices, as (x, y)
+fn extentAlong(m &PolyMesh, origin Vec3, d Vec3) Vec2 {
+  if m.positions.len() == 0usize { return Vec2[0., 0.]; }
+  mut lo = (*m.positions[0usize] - origin).dot(d);
+  mut hi = lo;
+  mut i = 1usize;
+  while i < m.positions.len() {
+    imm t = (*m.positions[i] - origin).dot(d);
+    if t < lo { lo = t; }
+    if t > hi { hi = t; }
+    i = i + 1usize;
+  }
+  Vec2[lo, hi];
+}
+
+// A PolyMesh with m's topology and channels and the given positions
+fn withPositions(m &PolyMesh, positions List[Vec3]) PolyMesh {
+  mut floats = List[Channel[f32]].withCapacity(m.floats.len());
+  mut c = 0usize;
+  while c < m.floats.len() {
+    imm len = m.floats[c].values.len();
+    mut values = List[f32].withCapacity(len);
+    mut k = 0usize;
+    while k < len {
+      values.push(*m.floats[c].values[k]);
+      k = k + 1usize;
+    }
+    floats.push(Channel[f32][String.from(m.floats[c].name.view()), m.floats[c].domain, values]);
+    c = c + 1usize;
+  }
+  mut vec2s = List[Channel[Vec2]].withCapacity(m.vec2s.len());
+  c = 0usize;
+  while c < m.vec2s.len() {
+    imm len = m.vec2s[c].values.len();
+    mut values = List[Vec2].withCapacity(len);
+    mut k = 0usize;
+    while k < len {
+      values.push(*m.vec2s[c].values[k]);
+      k = k + 1usize;
+    }
+    vec2s.push(Channel[Vec2][String.from(m.vec2s[c].name.view()), m.vec2s[c].domain, values]);
+    c = c + 1usize;
+  }
+  mut vec3s = List[Channel[Vec3]].withCapacity(m.vec3s.len());
+  c = 0usize;
+  while c < m.vec3s.len() {
+    imm len = m.vec3s[c].values.len();
+    mut values = List[Vec3].withCapacity(len);
+    mut k = 0usize;
+    while k < len {
+      values.push(*m.vec3s[c].values[k]);
+      k = k + 1usize;
+    }
+    vec3s.push(Channel[Vec3][String.from(m.vec3s[c].name.view()), m.vec3s[c].domain, values]);
+    c = c + 1usize;
+  }
+  PolyMesh[positions, copyList[u32](&m.vHalfedge), copyList[u32](&m.hNext), copyList[u32](&m.hPrev),
+    copyList[u32](&m.hVertex), copyList[u32](&m.hFace), copyList[u32](&m.fHalfedge), floats, vec2s, vec3s];
+}
+
+// A bend (Blender's Simple Deform, Bend; Barr's bend): the mesh's span along
+// 'along' is curled through 'angle' about 'axis' (made perpendicular to
+// along), turning along towards c = axis x along, as a right-handed turn
+// about the axis does. With the span's length S, the bend's radius is
+// R = S / angle, and its centre line runs parallel to the axis through
+// origin + c R. A vertex at t along, c' across towards c and w along the
+// axis, with T = t clamped to the span and theta = T / R, goes to
+//     origin + along ((R - c') sin theta + (t - T) cos theta)
+//            + c (R - (R - c') cos theta + (t - T) sin theta) + axis w:
+// within the span, onto the arc of radius R - c' about the centre line at
+// angle theta from the origin, so a straight line along the span through the
+// origin becomes an arc of radius R, turning through 'angle', whose length
+// is unchanged; outside the span, carried on straight along the tangent at
+// the span's end. A negative angle bends towards -c.
+pub fn bend(m &PolyMesh, angle f32, axis Vec3, along Vec3, origin Vec3) PolyMesh {
+  imm d = unit(along);
+  imm ax = unit(axis - d * axis.dot(d));
+  imm c = ax.cross(d);
+  imm ext = extentAlong(m, origin, d);
+  imm span = ext.y - ext.x;
+  imm n = m.positions.len();
+  mut out = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    imm p = *m.positions[i];
+    if span <= 0. or angle == 0. {
+      out.push(p);
+    } else {
+      imm r = span / angle;
+      imm q = p - origin;
+      imm t = q.dot(d);
+      imm cc = q.dot(c);
+      imm w = q.dot(ax);
+      imm tc = clampf(t, ext.x, ext.y);
+      imm theta = tc / r;
+      imm rest = t - tc;
+      imm sn = sin(theta);
+      imm cs = cos(theta);
+      out.push(origin + d * ((r - cc) * sn + rest * cs) + c * (r - (r - cc) * cs + rest * sn) + ax * w);
+    }
+    i = i + 1usize;
+  }
+  withPositions(m, out);
+}
+
+// A twist (Blender's Simple Deform, Twist; Barr's twist): each vertex is
+// turned about the line through origin along 'along' by angle * T / S, T its
+// t clamped to the span and S the span's length, counterclockwise seen from
+// the tip of 'along'. Over the whole span the turn changes by 'angle'; the
+// cross-section at the origin does not turn.
+pub fn twist(m &PolyMesh, angle f32, along Vec3, origin Vec3) PolyMesh {
+  imm d = unit(along);
+  imm ext = extentAlong(m, origin, d);
+  imm span = ext.y - ext.x;
+  imm n = m.positions.len();
+  mut out = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    imm p = *m.positions[i];
+    if span <= 0. or angle == 0. {
+      out.push(p);
+    } else {
+      imm q = p - origin;
+      imm t = q.dot(d);
+      imm theta = angle * clampf(t, ext.x, ext.y) / span;
+      imm rot = Quat.angleAxis(theta, d);
+      out.push(origin + d * t + rot * (q - d * t));
+    }
+    i = i + 1usize;
+  }
+  withPositions(m, out);
+}
+
+// A taper (Blender's Simple Deform, Taper; Barr's taper): each vertex's
+// offset from the line through origin along 'along' is scaled by
+// 1 + factor * T / S, T its t clamped to the span and S the span's length;
+// its t is unchanged. Over the whole span the scale changes by 'factor': a
+// mesh along from its origin with factor 1 ends twice as wide, and with
+// factor -1 comes to a point.
+pub fn taper(m &PolyMesh, factor f32, along Vec3, origin Vec3) PolyMesh {
+  imm d = unit(along);
+  imm ext = extentAlong(m, origin, d);
+  imm span = ext.y - ext.x;
+  imm n = m.positions.len();
+  mut out = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    imm p = *m.positions[i];
+    if span <= 0. or factor == 0. {
+      out.push(p);
+    } else {
+      imm q = p - origin;
+      imm t = q.dot(d);
+      imm s = 1. + factor * clampf(t, ext.x, ext.y) / span;
+      out.push(origin + d * t + (q - d * t) * s);
+    }
+    i = i + 1usize;
+  }
+  withPositions(m, out);
+}
+
+// A curve deform (Blender's Curve modifier): the mesh laid along the path. A
+// vertex at t along 'along' from the origin, x across and y up (up made
+// perpendicular to along, and across = up x along, so across, up, along is
+// right-handed as a frame's normal, binormal, tangent are) goes to the
+// point at distance t along the path, placed in the frame there as a
+// profile point (x, y) is: frame origin + normal x + binormal y. The frames
+// are the path's rotation-minimizing ones (Path.frames), blended between
+// path points. The mesh is not stretched to the path's length: past an open
+// path's ends it carries on straight along the end tangents, and along a
+// closed path it wraps round. Put the origin at the end of the mesh that
+// should sit at the path's start.
+pub fn curveDeform(m &PolyMesh, path &Path, along Vec3, up Vec3, origin Vec3) PolyMesh {
+  imm d = unit(along);
+  imm u = unit(up - d * up.dot(d));
+  imm s = u.cross(d);
+  imm frames = path.frames();
+  imm dist = path.distances();
+  imm total = path.length();
+  imm n = m.positions.len();
+  mut out = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    imm p = *m.positions[i];
+    if frames.len() == 0usize {
+      out.push(p);
+    } else {
+      imm q = p - origin;
+      imm f = frameAtDistance(path, &frames, &dist, total, q.dot(d));
+      out.push(f.place(Vec2[q.dot(s), q.dot(u)]));
+    }
+    i = i + 1usize;
+  }
+  withPositions(m, out);
+}

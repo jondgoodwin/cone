@@ -93,7 +93,7 @@ expensive:
 | Verdict | Means | What `iexpCoerce` injects |
 | --- | --- | --- |
 | `NoMatch` | incompatible | nothing; returns 0 |
-| `EqMatch` | same type | nothing |
+| `EqMatch` | same type | nothing, except for a `&uni` lent as a shareable borrow (section 5) |
 | `CastSubtype` | compile-time upcast | `newRecastNode` |
 | `ConvSubtype` | runtime upcast | `newConvCastNode`, except that a float literal, or a named constant's use whose value is a number literal, is folded into a literal of the wider type (`litWidenFloat`, `litWidenConst`, [literals](../nodes/literals.md)) |
 | `ConvByMeth` | convertible by calling a method | an `isTrue()` call |
@@ -142,6 +142,29 @@ the author's text. A cast over a borrowed reference is typed with a copy of the
 target reference type carrying the source borrow's scope, since the declared
 type is interned and shared and cannot hold a lifetime — that is what keeps a
 `&<Trait` or a widening to a base trait's reference from reading as global.
+
+A `&uni` reference held in a place (`borrowUniReborrows`: a single borrowed
+reference, not a slice or a virtual reference), wanted as a borrowed reference
+whose permission may be shared (`&`, `&imm`, `&mut`, `&mut1`, `&opaq`), is an
+`EqMatch`, and handed over as it is it would move. `iexpCoerce` rewrites it to
+the reborrow `&mut *p` a programmer could write (`borrowUniReborrow`: the
+target's permission, and the holding variable's scope, as `borrowTypeCheck`
+gives a written one), so it is lent, and recovered after the borrow's last use
+(`refperm.html`, "Borrowed reference recovery"). Every coercion site gets it:
+an argument and a method's receiver (`fnCallFinalizeArgs`), a declaration or
+an assignment, a branch's value. A `&uni` wanted as a `&uni` is not rewritten,
+and still moves.
+
+An owning reference that is its value's only holder (`borrowOwnerLendsUni`: a
+move-typed owner, a `+so` or a `+rc` still `uni`, held in a place), wanted as a
+borrowed reference that may not be shared (`&uni`, `&mut1`), is a
+`CastSubtype`, and a recast to a move type would move the owner into a borrow
+that ends nothing. `iexpCoerce` rewrites it to the borrow `&uni *o`
+(`borrowOwnerLend`, built as `borrowUniReborrow` builds its reborrow, typed as a
+borrow of what the owner points at) and coerces that on, which is still a recast
+where the wanted type is an enrichment's. An owner wanted as a `&` or `&mut` is
+left the recast flow analysis reads as a borrow (`pwOwnedLent`). A temporary
+owner is not a place, and is not rewritten.
 
 `fnSigMatches` is the one matcher whose variance is easy to get backwards:
 **parameters are contravariant** (it flips `to` and `from`), **the return type is

@@ -87,6 +87,7 @@ into a scan.
 | whether a struct carries a borrow | the `carriesborrow` field, once the struct is type checked | `itypeCarriesBorrow` |
 | whether a struct holds a traced reference | the `holdstraced` field, once the struct is type checked | `itypeHoldsTraced` |
 | whether a struct holds an atomic value | the `holdsatomic` field, once the struct is type checked | `itypeHoldsAtomic` |
+| whether a struct is bound to its thread | the `threadbound` field, once the struct is type checked and the answer did not lean on one still being laid out | `itypeThreadBound` |
 
 **The `TypeChecked` mark is not primarily an optimization** — type check lowers
 and replaces nodes, so a second walk corrupts the declaration. It is a

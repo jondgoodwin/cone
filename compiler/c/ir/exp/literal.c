@@ -392,11 +392,15 @@ void slitTypeCheck(TypeCheckState *pstate, SLitNode *node) {
 // A borrow of a string literal is a constant too: the text is a constant
 // global, so its reference -- or, as a slice, its address and length -- is known
 // before anything runs. That is the auto-borrow a string literal gets when a
-// '&[]u8' wants it, as well as a written '&[]"text"' or '&"text"'.
+// '&[]u8' wants it, as well as a written '&[]"text"' or '&"text"'. So is a
+// borrow of an array literal whose elements are all constants, '&[1, 2, 3]',
+// which generation places in a constant global the same way.
 int litIsLiteral(INode* node) {
     return (node->tag == FLitTag || node->tag == ULitTag || node->tag == StringLitTag || node->tag == NilLitTag
         || ((node->tag == BorrowTag || node->tag == ArrayBorrowTag)
-            && ((RefNode*)node)->vtexp->tag == StringLitTag)
+            && (((RefNode*)node)->vtexp->tag == StringLitTag
+                || (((RefNode*)node)->vtexp->tag == ArrayLitTag
+                    && arrayLitIsLiteral((ArrayNode*)((RefNode*)node)->vtexp))))
         || (node->tag == ArrayLitTag && arrayLitIsLiteral((ArrayNode*)node))
         || (node->tag == TypeLitTag && typeLitIsLiteral((FnCallNode*)node))
         || nameUseNames(node, ConstDclTag)

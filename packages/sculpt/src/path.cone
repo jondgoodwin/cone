@@ -1,0 +1,309 @@
+// ======== Path: a 3-D polyline and the frames along it ========
+
+// A frame along a path: its point, the unit tangent (the way the path runs),
+// and the unit normal and binormal across it. (normal, binormal, tangent) is
+// right-handed: normal x binormal = tangent. A profile is placed in a frame
+// with its x along the normal and its y along the binormal, so a profile that
+// runs counterclockwise is seen running counterclockwise from ahead.
+pub struct Frame {
+  pub origin Vec3;
+  pub tangent Vec3;
+  pub normal Vec3;
+  pub binormal Vec3;
+
+  // The profile point p placed in the frame
+  pub fn place(self, p Vec2) Vec3 {origin + normal * p.x + binormal * p.y;}
+}
+
+// A path in space: its points in order and whether the last joins back to the
+// first. 'tangents' is a unit tangent for each point, or empty; a Bezier's
+// sampling fills it from the curve, and otherwise each point's tangent is the
+// bisector of the pieces meeting there (the piece's direction at an end).
+// 'up' steers the first frame: its binormal (a profile's y) is the up vector
+// made perpendicular to the first tangent. An up of (0, 0, 0), as every
+// constructor leaves it, means +y, or +z when the path starts along y.
+pub struct Path {
+  pub points List[Vec3];
+  pub tangents List[Vec3];
+  pub closed Bool;
+  pub up Vec3;
+
+  // The points as given
+  pub fn fromPoints(points &[]Vec3, closed Bool) Path {
+    mut pts = List[Vec3].withCapacity(points.len);
+    mut i = 0usize;
+    while i < points.len {
+      pts.push(points[i]);
+      i = i + 1usize;
+    }
+    Path[pts, List[Vec3].empty(), closed, Vec3[0., 0., 0.]];
+  }
+
+  // A straight path from 'from' to 'to' in 'segments' equal pieces
+  pub fn line(from Vec3, to Vec3, segments u32) Path {
+    imm n = if segments < 1u32 {1u32;} else {segments;};
+    mut pts = List[Vec3].withCapacity(usize[n] + 1usize);
+    mut tans = List[Vec3].withCapacity(usize[n] + 1usize);
+    imm dir = unit(to - from);
+    mut i = 0u32;
+    while i <= n {
+      pts.push(from.lerp(to, f32[i] / f32[n]));
+      tans.push(dir);
+      i = i + 1u32;
+    }
+    Path[pts, tans, false, Vec3[0., 0., 0.]];
+  }
+
+  // A cubic Bezier curve sampled in 'segments' pieces, evenly spaced in the
+  // curve's parameter, with its tangents from the curve
+  pub fn fromCubic(curve CubicBezier3, segments u32) Path {
+    imm n = if segments < 1u32 {1u32;} else {segments;};
+    mut pts = List[Vec3].withCapacity(usize[n] + 1usize);
+    mut tans = List[Vec3].withCapacity(usize[n] + 1usize);
+    mut i = 0u32;
+    while i <= n {
+      imm t = f32[i] / f32[n];
+      pts.push(curve.point(t));
+      tans.push(unit(curve.tangent(t)));
+      i = i + 1u32;
+    }
+    Path[pts, tans, false, Vec3[0., 0., 0.]];
+  }
+
+  // A quadratic Bezier curve the same way
+  pub fn fromQuadratic(curve QuadraticBezier3, segments u32) Path {
+    imm n = if segments < 1u32 {1u32;} else {segments;};
+    mut pts = List[Vec3].withCapacity(usize[n] + 1usize);
+    mut tans = List[Vec3].withCapacity(usize[n] + 1usize);
+    mut i = 0u32;
+    while i <= n {
+      imm t = f32[i] / f32[n];
+      pts.push(curve.point(t));
+      tans.push(unit(curve.tangent(t)));
+      i = i + 1u32;
+    }
+    Path[pts, tans, false, Vec3[0., 0., 0.]];
+  }
+
+  // Cubic Bezier curves one after another, each ending where the next
+  // begins, each sampled in 'segments' pieces; the point two curves share is
+  // kept once, with the tangent the first of them ends with. When 'closed',
+  // the last curve ends where the first began, and that point too is kept
+  // once. Curves that join smoothly (a Blender spline's) give a smooth path.
+  pub fn fromCubics(curves &[]CubicBezier3, segments u32, closed Bool) Path {
+    imm n = if segments < 1u32 {1u32;} else {segments;};
+    mut pts = List[Vec3].empty();
+    mut tans = List[Vec3].empty();
+    mut c = 0usize;
+    while c < curves.len {
+      imm curve = curves[c];
+      mut i = if c == 0usize {0u32;} else {1u32;};
+      while i <= n {
+        imm t = f32[i] / f32[n];
+        pts.push(curve.point(t));
+        tans.push(unit(curve.tangent(t)));
+        i = i + 1u32;
+      }
+      c = c + 1usize;
+    }
+    if closed and pts.len() > 1usize {
+      pts.pop();
+      tans.pop();
+    }
+    Path[pts, tans, closed, Vec3[0., 0., 0.]];
+  }
+
+  // A circle of 'radius' about the origin in the plane y = 0, as 'segments'
+  // straight pieces, closed, running counterclockwise seen from above (+y):
+  // point k at angle 2 pi k / segments is (r cos a, 0, -r sin a), starting at
+  // (r, 0, 0). Its tangents are the circle's.
+  pub fn circle(radius f32, segments u32) Path {
+    imm n = if segments < 3u32 {3u32;} else {segments;};
+    mut pts = List[Vec3].withCapacity(usize[n]);
+    mut tans = List[Vec3].withCapacity(usize[n]);
+    mut i = 0u32;
+    while i < n {
+      imm a = 2. * pi * f32[i] / f32[n];
+      imm c = cos(a);
+      imm s = sin(a);
+      pts.push(Vec3[radius * c, 0., -radius * s]);
+      tans.push(Vec3[-s, 0., -c]);
+      i = i + 1u32;
+    }
+    Path[pts, tans, true, Vec3[0., 0., 0.]];
+  }
+
+  pub fn pointCount(self &) usize {points.len();}
+
+  // Each point's distance along the path from the first
+  pub fn distances(self &) List[f32] {
+    imm n = points.len();
+    mut out = List[f32].withCapacity(n);
+    mut s f32 = 0.;
+    mut i = 0usize;
+    while i < n {
+      if i > 0usize { s = s + points[i].distance(*points[i - 1usize]); }
+      out.push(s);
+      i = i + 1usize;
+    }
+    out;
+  }
+
+  // The path's length, the closing piece included when it is closed
+  pub fn length(self &) f32 {
+    mut len = polylineLength(points.view());
+    if closed and points.len() > 1usize {
+      len = len + points[0usize].distance(*points[points.len() - 1usize]);
+    }
+    len;
+  }
+
+  // The unit tangent at point i: the one given, or else the bisector of the
+  // pieces meeting there (the one piece's direction at an open path's end,
+  // and the piece coming in where the path turns straight back)
+  pub fn tangentAt(self &, i usize) Vec3 {
+    imm n = points.len();
+    if tangents.len() == n {
+      imm given = *tangents[i];
+      if given.lengthSquared() > 0. { return given; }
+    }
+    if n < 2usize { return Vec3[0., 0., 1.]; }
+    imm last = n - 1usize;
+    imm inDir = if i > 0usize {unit(*points[i] - *points[i - 1usize]);}
+      elif closed {unit(*points[0usize] - *points[last]);}
+      else {Vec3[0., 0., 0.];};
+    imm outDir = if i < last {unit(*points[i + 1usize] - *points[i]);}
+      elif closed {unit(*points[0usize] - *points[last]);}
+      else {Vec3[0., 0., 0.];};
+    imm both = unit(inDir + outDir);
+    if both.lengthSquared() > 0. { both; }
+    elif inDir.lengthSquared() > 0. { inDir; }
+    elif outDir.lengthSquared() > 0. { outDir; }
+    else { Vec3[0., 0., 1.]; };
+  }
+
+  // A frame at each point: rotation-minimizing frames, by the double-
+  // reflection method of Wang, Juttler, Zheng and Liu (2008). The first frame
+  // is set by 'up' (see Path); each next normal is the one before reflected
+  // twice, first in the plane that swaps the two points, then in the plane
+  // that takes the reflected tangent onto the next tangent. The frames turn
+  // about the tangent as little as the path allows, so they never flip where
+  // the path's curvature changes sign (as Frenet frames do) and a planar path
+  // keeps its binormal perpendicular to its plane. On a closed path the frame
+  // carried all the way round can come back turned about the tangent (when
+  // the path is not planar); that angle is taken out again gradually, in
+  // proportion to distance along the path, so the frames join where the path
+  // does.
+  pub fn frames(self &) List[Frame] {
+    imm n = points.len();
+    mut out = List[Frame].withCapacity(n);
+    if n == 0usize { return out; }
+    imm t0 = self.tangentAt(0usize);
+    mut r = initialNormal(t0, up);
+    out.push(Frame[*points[0usize], t0, r, t0.cross(r)]);
+    mut tPrev = t0;
+    mut i = 1usize;
+    while i < n {
+      imm ti = self.tangentAt(i);
+      r = reflectStep(*points[i - 1usize], *points[i], tPrev, ti, r);
+      out.push(Frame[*points[i], ti, r, ti.cross(r)]);
+      tPrev = ti;
+      i = i + 1usize;
+    }
+    if closed and n > 2usize {
+      // The normal carried back to the first point, and how far it turned
+      imm rn = reflectStep(*points[n - 1usize], *points[0usize], tPrev, t0, r);
+      imm r0 = out[0usize].normal;
+      imm alpha = atan2(r0.cross(rn).dot(t0), r0.dot(rn));
+      imm total = self.length();
+      if alpha != 0. and total > 0. {
+        imm dist = self.distances();
+        i = 0usize;
+        while i < n {
+          imm f = *out[i];
+          imm beta = -alpha * *dist[i] / total;
+          imm c = cos(beta);
+          imm s = sin(beta);
+          imm nn = f.normal * c + f.binormal * s;
+          out.set(i, Frame[f.origin, f.tangent, nn, f.tangent.cross(nn)]);
+          i = i + 1usize;
+        }
+      }
+    }
+    out;
+  }
+}
+
+// The first frame's normal for the tangent t: the binormal is 'up' made
+// perpendicular to t (+y when up is zero, +z when t runs along y, the same
+// when up runs along t), and the normal is binormal x tangent
+fn initialNormal(t Vec3, up Vec3) Vec3 {
+  mut b = unit(up - t * up.dot(t));
+  if b.lengthSquared() < 0.5 {
+    imm alt = if absf(t.y) < 0.999 {Vec3[0., 1., 0.];} else {Vec3[0., 0., 1.];};
+    b = unit(alt - t * alt.dot(t));
+  }
+  b.cross(t);
+}
+
+// One step of the double reflection: the normal r0 at x0 (tangent t0) carried
+// to x1 (tangent t1). Reflection 1 is in the plane bisecting x0 and x1, which
+// swaps them; reflection 2 is in the plane that takes the reflected tangent
+// onto t1. The result is made exactly perpendicular to t1 again, against
+// rounding.
+fn reflectStep(x0 Vec3, x1 Vec3, t0 Vec3, t1 Vec3, r0 Vec3) Vec3 {
+  imm v1 = x1 - x0;
+  imm c1 = v1.dot(v1);
+  mut rl = r0;
+  mut tl = t0;
+  if c1 > 0. {
+    rl = r0 - v1 * (2. / c1 * v1.dot(r0));
+    tl = t0 - v1 * (2. / c1 * v1.dot(t0));
+  }
+  imm v2 = t1 - tl;
+  imm c2 = v2.dot(v2);
+  imm r1 = if c2 > 0. {rl - v2 * (2. / c2 * v2.dot(rl));} else {rl;};
+  imm r = unit(r1 - t1 * t1.dot(r1));
+  if r.lengthSquared() > 0.5 { r; } else { initialNormal(t1, Vec3[0., 0., 0.]); };
+}
+
+// The frame at 'distance' along the path, from its frames and their
+// distances: within a piece, the point is between its ends and the frame is
+// blended between theirs, made unit and perpendicular again. An open path
+// carries on straight past its ends, along its end tangents; a closed path
+// wraps round.
+fn frameAtDistance(path &Path, frames &List[Frame], dist &List[f32], total f32, distance f32) Frame {
+  imm n = frames.len();
+  imm first = *frames[0usize];
+  if n == 1usize or total <= 0. {
+    return Frame[first.origin + first.tangent * distance, first.tangent, first.normal, first.binormal];
+  }
+  mut d = distance;
+  if path.closed {
+    d = d - total * libc.floorf(d / total);
+  } else {
+    if d <= 0. {
+      return Frame[first.origin + first.tangent * d, first.tangent, first.normal, first.binormal];
+    }
+    imm lastF = *frames[n - 1usize];
+    if d >= total {
+      return Frame[lastF.origin + lastF.tangent * (d - total), lastF.tangent, lastF.normal, lastF.binormal];
+    }
+  }
+  // The piece holding d: from point i to point i + 1 (to point 0 on the
+  // closing piece)
+  mut i = 0usize;
+  while i + 1usize < n and *dist[i + 1usize] <= d {
+    i = i + 1usize;
+  }
+  imm a = *frames[i];
+  imm b = *frames[(i + 1usize) % n];
+  imm start = *dist[i];
+  imm end = if i + 1usize < n {*dist[i + 1usize];} else {total;};
+  imm seg = end - start;
+  imm f = if seg > 0. {(d - start) / seg;} else {0.;};
+  imm t = unit(a.tangent.lerp(b.tangent, f));
+  imm nl = a.normal.lerp(b.normal, f);
+  imm nr = unit(nl - t * t.dot(nl));
+  Frame[a.origin.lerp(b.origin, f), t, nr, t.cross(nr)];
+}

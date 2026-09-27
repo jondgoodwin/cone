@@ -1,6 +1,7 @@
 // The sync package: what threads share safely. It holds the atomic value
 // Atomic[T], an integer, a Bool or a raw pointer that several threads may
-// read and change at once without a lock, each change indivisible; the futex,
+// read and change at once without a lock, each change indivisible; 'arc',
+// the region whose owners of one value several threads may hold; the futex,
 // the one way a thread sleeps until another wakes it; the locks built on
 // the futex: Mutex, RwLock, Condvar and Once; and the channel, a pipe of
 // values from any number of threads to one, unbounded or bounded. Windows
@@ -8,6 +9,7 @@
 // package's only calls to the OS.
 //
 //   Atomic[T]      a value changed only indivisibly             (below)
+//   arc            rc whose count is atomic: '+arc-imm T[...]'  (SHARED OWNERS)
 //   futexWait, futexWake, futexWakeAll                           (THE FUTEX)
 //   Mutex          one thread at a time                          (THE LOCKS)
 //   RwLock         many readers, or one writer
@@ -305,9 +307,9 @@
 //   owner. A large value is best sent as an owner, since a slot holds the
 //   whole T, and a bounded channel has its n slots from the start. A value
 //   never taken is finalized exactly once.
-// - Nothing checks yet that what is sent is safe in another thread (a 'mut'
-//   or 'ro' reference is not): the thread package's rule, and the
-//   compiler's check to come, are the same.
+// - T must be Sendable, as the thread package's 'start' asks of what it is
+//   handed: a channel of a borrow, a 'mut' owner or an '+rc-imm' owner is
+//   refused where it is named. The ends declare Sendable, so they cross.
 // - Not here yet: a single-sender channel, whose sender has no clone; a
 //   channel of no capacity, whose send waits for the receiver to take its
 //   value (Go's unbuffered, Rust's sync_channel(0)); taking every value
@@ -487,6 +489,67 @@ fn die(msg &[]u8) {
   libc.fflush(libc.stdout());
   libc.fwrite(msg, 1usize, msg.len, libc.stderr());
   libc.abort();
+}
+
+// SHARED OWNERS: 'arc', the region whose owners several threads may hold.
+//
+//   import sync use arc;              // or 'use *'
+//
+//   imm m = +arc-imm Message["read by two threads"];
+//   imm a = thread.start(m, &reader); // start copies m: one owner more
+//
+// 'arc' is core's 'rc' whose count several threads may change at once: each
+// change is one atomic instruction, so owners of one value may be copied and
+// dropped on different threads and the value still dies exactly once, after
+// the last. It is spelled as 'rc' is -- '+arc-imm T[...]', '+arc T[...]',
+// '+arc-mut T[...]' -- once the name 'arc' is folded into the module: a
+// region is named bare in an allocation or a reference type, so a plain
+// 'import sync' does not reach it ('+sync.arc' is not a spelling). It lives
+// here rather than beside 'rc' in core, whose names are in every module, as
+// Rust keeps its Arc in 'sync' and out of the prelude [Jon 27 Sep]: a module
+// that does not fold it in keeps 'arc' for its own use, and one that folds
+// everything else in writes 'import sync use * but arc'.
+//
+// It declares the built-in marker 'ThreadSafe', which 'rc' does not: its
+// owners may be held by several threads at once. What threads may share
+// through it is an 'imm' or 'opaq' owner; a 'mut' or 'ro' one would let two
+// threads reach the value itself unsynchronized. Nothing checks either yet.
+//
+// The orderings are the standard ones for an atomic count (Rust's Arc,
+// Boost's intrusive_ptr):
+// - 'init' needs none: the count is set before any other thread can see it,
+//   and whatever hands an owner to another thread (a thread's start, a
+//   channel) orders that for itself.
+// - 'alias' adds Relaxed: a copy is made from an owner the thread already
+//   holds, so the count is at least one and cannot reach zero meanwhile, and
+//   nothing is read or written on the strength of the new count.
+// - 'dealias' subtracts Release: everything this owner did with the value
+//   (its reads, and any change inside an atomic value it holds) happens
+//   before the count goes down, so none of it can be moved after a decrement
+//   another thread may follow with the value's death.
+// - The owner that takes the count to zero then loads it with Acquire before
+//   answering true, and so before the value is finalized and freed: the load
+//   reads the end of the chain of every other owner's Release decrement, so
+//   all they did happens before the death. It stands in for an Acquire fence,
+//   which core has no intrinsic for, as Rust's Arc does under the thread
+//   sanitizer; only the last owner pays for it.
+//
+// Its methods call core's mem intrinsics directly rather than Atomic[T]'s: the
+// count is the allocation's header, which a region method reaches only as
+// the region itself.
+pub struct arc is RegionRef, ThreadSafe {
+  cnt usize;
+  fn alloc(size usize) *u8 inline {libc.malloc(size);}
+  fn init() arc inline {arc[1usize];}
+  fn alias(self &uni arc) inline {
+    mem.atomicAdd[usize](self as *usize, 1usize, MemOrder.Relaxed[]);
+  }
+  fn dealias(self &uni arc) Bool inline {
+    imm last = mem.atomicSub[usize](self as *usize, 1usize, MemOrder.Release[]) == 1usize;
+    if last {mem.atomicLoad[usize](self as *usize, MemOrder.Acquire[]);}
+    last;
+  }
+  fn free(self &uni arc) inline {libc.free(self as *u8);}
 }
 
 // ---------------------------------------------------------------------------
@@ -1457,7 +1520,7 @@ const pollClosed = 2u32;               // nothing, and nothing more will come
 
 // The constructors: 'Channel[T].make()' and 'Channel[T].bounded(n)', which
 // answer the two ends
-pub struct Channel[T] {
+pub struct Channel[T Sendable] {
   // A new unbounded channel: its sending end and its receiving end
   pub fn make() Sender[T], Receiver[T] {
     imm c = libc.malloc(mem.sizeof[Chan[T]]()) as *Chan[T];
@@ -1508,7 +1571,7 @@ fn chanInit[T](c *Chan[T], b *Block[T], ring *Cell[T], mask u64) {
 
 // The sending end of a channel. There may be any number: 'clone' makes
 // another, and the last one to die closes the channel.
-pub struct Sender[T] {
+pub struct Sender[T Sendable] is Sendable {
   chan *Chan[T];
 
   fn made(c *Chan[T]) Sender[T] {Sender[T][c];}
@@ -1645,7 +1708,7 @@ pub struct Sender[T] {
 // The receiving end of a channel: there is one, a move type with no clone,
 // so only one thread takes values from it. Its index and block are its own,
 // read and written by nobody else.
-pub struct Receiver[T] {
+pub struct Receiver[T Sendable] is Sendable {
   chan *Chan[T];
   head u64;                    // the next position to take
   block *Block[T];             // unbounded: the block it falls in

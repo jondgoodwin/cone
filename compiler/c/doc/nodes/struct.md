@@ -371,7 +371,8 @@ neither slots nor requirements and cost the trait nothing.
 | `traits` | every abstraction whose members were taken — the base, and each further name in the `is` list (every name, for an enum or a variant) — or NULL. Written where the members are taken (`structInheritTrait`) and read by type check's two requirement checks and by a library compile's export of the methods meeting a requirement (`fnIsTraitMethod`), the only things that still need to know which trait a requirement came from. **Which entry is the base is asked of `basetrait`, not of this list's order**, since the field walk that fills it runs backwards |
 | `fields` | all fields in layout order. A declared field may carry a fold clause (`FieldDclNode.fold`); a folded copy is never here |
 | `vtable` | NULL until `structMakeVtable` |
-| `tagnbr` | discriminant value, assigned at parse: the value the author pinned, or the next in sequence. `TagUnassigned` is the sentinel between reading a variant's name and settling its value, which is why no flag bit records whether one was written — a type has none to spare, and nothing after parse needs to know. **A variant of an extension keeps the sentinel until name resolution**, which is when the base's values are known and its own can continue from them |
+| `tagnbr` | discriminant value, assigned at parse: the value the author pinned, which may be negative, or the next in sequence (`structTagFollow`). **All 64 bits, read as `tagstate` says** |
+| `tagstate` | `TagUnassigned` between reading a variant's name and settling its value, so keeping a pinned value and assigning the next in sequence are one test; after that, **whether `tagnbr` is below zero** (`TagNegative`) or reads unsigned (`TagNonNeg`). A value may be anything `u64` or `i64` holds, and 64 bits hold either but not both — `0xFFFFFFFFFFFFFFFF` and `-1` are the same bits — so the duplicate check (`structTagSame`) and the fit check against a declared type (`enumTagFits`) each read the number the author meant. **A variant of an extension stays unassigned until name resolution**, which is when the base's values are known and its own can continue from them |
 | `llvmtype` | generation memoizes here; non-NULL means "already generated" |
 | `carriesborrow` | `itypeCarriesBorrow`'s answer to whether a value of the type may hold a borrowed reference: `CarriesBorrowUnknown` until asked, `CarriesBorrowAsking` while its own fields and variants are being asked (a cycle through an owning reference or pointer that reaches it again adds nothing), then `CarriesBorrowYes` or `CarriesBorrowNo`. It is remembered only once the struct is type checked, and a "no" that leaned on a struct still being asked is not remembered. `newStructNode` sets it unknown, and so does `cloneStructNode`: an instance's fields are its own question |
 
@@ -397,8 +398,11 @@ A variant is a plain struct with a `basetrait`, a `tagnbr`, and no `derived`.
 **A `struct X is Trait` is in no `derived` list** — `derived` means "an enum's
 variants", never "a trait's implementers".
 
-The infectious flags — `MoveType`, `ThreadBound`, `OpaqueType`, `ZeroSizeType` —
-are computed from the fields during type check. A field's move-ness is asked of
+The infectious flags — `MoveType`, `OpaqueType`, `ZeroSizeType` — are computed
+from the fields during type check. Whether a value may cross threads is not one
+of them: it follows owning references to types that may not be laid out yet, so
+it is asked of the whole type when something crosses (`itypeThreadBound`,
+remembered in `threadbound` as `carriesborrow` is). A field's move-ness is asked of
 `itypeIsMove`, not read off its type's flags, because a tuple-typed field carries
 no flag and moves when one of its elements does. `NullablePtr` is set only during
 generation.
@@ -796,18 +800,26 @@ members", is the mechanism.
    enum's — asking again would report the enum's mistake once more per variant, at
    the same position and in the same words, which no scenario could tell apart.
 5a. **Settle the discriminant's width** (`structSetTagWidth`). It follows the
-   largest tag **value**, not the variant count, since a pinned value is what lines
+   tag **values**, not the variant count, since a pinned value is what lines
    an enum up with another language's constants and `Red = 0xFF0000` needs four
-   bytes however few variants there are. An enum that named its integer type has
-   the width fixed there instead — that being the point of naming it — so a value
-   too large for it is `ErrorTagWidth` rather than a silent widening away from the
-   layout the author asked for. The discriminant's type node is **shared, not
+   bytes however few variants there are. A negative value makes the discriminant
+   signed (`EnumNode.issigned`), as narrow as holds every value; only a negative
+   value beside one past `i64`'s largest has no integer that holds both, which is
+   `ErrorTagWidth` at that value. An enum that named its integer type has the
+   width and the sign fixed there instead — that being the point of naming it — so
+   a value it cannot hold is `ErrorTagWidth` rather than a silent widening away
+   from the layout the author asked for. "Cannot hold" is the literal rule
+   (`enumTagFits`): the value as written must fit the type, a negative sign
+   counting, so `0xFFFFFFFC` does not fit `i32`, `200` does not fit `i8`, and a
+   negative value fits no unsigned type. The message names the first value that
+   does not fit and the type's range, worded as `ErrorLitRange`'s. The discriminant's type node is **shared, not
    cloned** (`clone.c`), so every variant's copy of the tag field reads the width
    set once here — **and so does every enum extending this one**, which is why an
    extension may not widen it: the node is the base's, and widening it would relay
    out the base's own values for the sake of a set the base knows nothing about. A
    value that does not fit is `ErrorTagWidth` at the extension, the same question a
-   declared integer type asks. **An instance of a generic enum skips this step** —
+   declared integer type asks, sign included: a negative value does not fit a base
+   whose values are all zero or above. **An instance of a generic enum skips this step** —
    `genericMemoize` checks it through `structTypeCheckEnumInstance`, with its
    `derived` already listing every variant — and `genericMemoize` settles the width
    once the instance and its variants are checked: once per generic, since the
@@ -980,7 +992,8 @@ it ([flow](../phases/flow.md), "Calls"):
 - `ShapeChanging` (`List`, `String`, `Dict`, `Pool`): its elements may move.
   Nothing reads it yet: it marks the containers a check to come will refuse an
   element borrow of through a shared path, Jon's 2018 rule, which waits on
-  `uni` reborrowing.
+  `uni` reborrowing: lending a `&uni` as a `&` or `&mut` is built, lending it
+  to another `&uni` is not.
 
 ### AtomicValue
 
@@ -1581,8 +1594,10 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
   `i64`s: `%Ping = { i8, i32 }` beside `%Payload = { i8, i32, i64, i64, i64 }`.
 
 **The discriminant's width is not generation's.** Type check settles it, because it
-follows the largest tag value rather than the variant count and generation cannot
-see a pinned value in `derived->used`.
+follows the tag values rather than the variant count and generation cannot
+see a pinned value in `derived->used`. Generation writes a tag value through
+`genlTagConst`, which cuts a negative value's 64 bits to the discriminant's width
+first, as a literal's are.
 
 **An enum's drop is built in each shape** (`genlEnumDrop`): a switch on the tag
 in the two tagged shapes, each case the variant finalized in place through a

@@ -1,0 +1,69 @@
+// A '&uni' reference handed where a '&', '&imm' or '&mut' reference is wanted
+// is lent, not moved: "a uni can be borrowed as mut or imm. After the borrowed
+// references' last use, you once again have the original uni reference"
+// (refperm.html, "Borrowed reference recovery"). The compiler builds the
+// reborrow '&mut *p' that could be written out, so the reference may be used
+// again after the call, or after the last use of a local holding the borrow.
+//
+// Each shape is here: a '&uni' parameter passed twice to a '&mut' parameter,
+// to a '&' and a '&imm' one, used as the receiver of a 'self &mut' method, and
+// bound to a '&mut' local; a method taking 'self &uni' calling 'self &' and
+// 'self &mut' methods through 'self', bare and written out, and reading a field
+// after; and a finalizer doing the same, the case the 'gpu' package met.
+// A '&uni' handed to a '&uni' still moves it, so each function does that
+// only as its last use of the reference. What the lent reference forbids while
+// the borrow lives is ref_flow_unireborrow.
+
+mod ref_unireborrow;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct Counter {
+  pub n i64;
+
+  pub fn get(self &) i64 { n; }
+  pub fn bump(self &mut) { n = n + 1; }
+
+  // Through 'self', bare and written out, then a field read after
+  pub fn twice(self &uni) i64 {
+    bump();
+    self.bump();
+    get() + self.get() + n;
+  }
+
+  fn final(self &uni) {
+    self.bump();
+    show("final-bumped", n);
+    show("passed-on", passOn(self));
+  }
+}
+
+fn addTen(q &mut Counter) { q.n = q.n + 10; }
+fn read(q &Counter) i64 { q.n; }
+fn readImm(q &imm Counter) i64 { q.n; }
+
+fn passOn(p &uni Counter) i64 {
+  addTen(p);
+  addTen(p);
+  imm x = read(p) + readImm(p);
+  show("read-twice", x);
+  p.bump();
+  imm b &mut Counter = p;
+  b.n = b.n + 100;
+  show("after-held", p.n);
+  p.twice() + x;
+}
+
+fn main() {
+  {
+    imm c = +so Counter[1];
+  }
+  show("end", 0);
+}

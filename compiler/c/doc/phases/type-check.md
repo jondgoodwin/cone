@@ -192,9 +192,9 @@ the name is not yet in scope.
 ### Layout before members
 
 **Every type is laid out before any type's members are checked.** A type's
-layout — its fields, its own size, for an enum its variants, and the move and
-thread-bound properties that follow from them — is what a size question reads,
-and what a move or thread question reads. A member checked while some layout is
+layout — its fields, its own size, for an enum its variants, and the move property
+that follows from them — is what a size question reads, and what a move
+question reads. A member checked while some layout is
 still in flight could see a type with no size yet, or one that does not yet know
 it moves, and which of those it saw would follow the order the declarations are
 written in. So demanding a type lays it out and nothing more; its members wait.
@@ -256,8 +256,7 @@ variant with its enum closes both (`move_flow_infection`).
 
 **What it does not change.** A real by-value cycle is still refused, by the same
 size question (section 6): one of its types is always asked while in flight. And
-a reference still type checks its target, which lays it out (`refTypeCheck`, which
-also reads the target's thread-bound flag) — so a variant's field `&W`, where `W`
+a reference still type checks its target, which lays it out (`refTypeCheck`) — so a variant's field `&W`, where `W`
 holds the enum by value, lays `W` out while the variant is in flight, and `W`'s
 field is refused as though it closed a cycle. Written with `W` above the enum it
 compiles. That is the one source-order dependence measured to remain; see
@@ -454,8 +453,9 @@ Steps marked **→** are where a demand can leave and re-enter.
    invalidate the position. Then expand any fold clause name resolution left
    (a field whose type was an instance of a generic), and refresh every folded
    copy from the field it stands for, **→** demanding that field's check.
-5. Index the fields. Compute infectious flags from them: `ThreadBound`,
-   `MoveType`, `OpaqueType`, `ZeroSizeType`. Validate the tag field marked at
+5. Index the fields. Compute infectious flags from them: `MoveType`,
+   `OpaqueType`, `ZeroSizeType`. (Whether it may cross threads is asked of
+   the whole type when something crosses: `itypeThreadBound`.) Validate the tag field marked at
    parse; any other enum-typed field is refused.
 6. `final` forces `MoveType`; `clone` does not clear it, since no copy calls
    `clone` and a bitwise copy of a finalizing value is finalized twice. Propagate
@@ -531,14 +531,16 @@ written inside its body.
   [struct](../nodes/struct.md), "An enum extending an enum".
 - **Analysis never computes an enum's size.** `genlSameSizeTrait` sizes each
   variant and pads to the largest at *generation* time.
-- **Analysis does settle the discriminant's width**, because that follows the
-  largest tag value rather than the variant count and generation cannot see a
+- **Analysis does settle the discriminant's width and sign**, because those follow
+  the tag values rather than the variant count and generation cannot see a
   pinned value. `structSetTagWidth` is where, in step 5 of the struct sequence,
   after the variants' numbers are known and the enum's declared integer type is
   checked — or, for an instance of a generic enum, from `genericMemoize` instead,
-  once per generic, after the instance and its variants are checked. A value too large for a declared type is `ErrorTagWidth`, and so is one
-  too large for the width an extension's base already settled: they share the node
-  the width is written on.
+  once per generic, after the instance and its variants are checked. A value a
+  declared type cannot hold — past its range, a negative sign counting, as for any
+  integer literal — is `ErrorTagWidth`, and so is one the width and sign an
+  extension's base already settled cannot hold: they share the node the width is
+  written on.
 
 The rule that a derived type lives in the same module as its enum keeps the first
 two true.
@@ -591,7 +593,8 @@ elsewhere, whichever walk arrived at it.
 1. **→** Analyze the permission, then the declared type.
 2. If there is no initializer, the type must have been declared.
 3. **→** Analyze the initializer, coercing it to the declared type; if no type was
-   declared, **the type becomes the initializer's**. For this shape, steps 1 and
+   declared, **the type becomes the initializer's**; a declared borrowed-reference
+   type is replaced by a copy carrying the initializer's lifetime. For this shape, steps 1 and
    3 are the same step, which is what section 7 is about.
 4. A global or parameter requires a literal initializer; so does a field default.
 5. The type must have a size — rule 4's report site.
@@ -651,8 +654,7 @@ Kept so that reopening one is a decision rather than a rediscovery.
   by value and is written below the enum, lays `W` out while the variant is in
   flight, and `W`'s field is `ErrorNoSize` "a variant still being laid out".
   Written above the enum, `W` is laid out first and it compiles. Closing it needs
-  a reference that does not demand its target's layout, or a thread-bound flag
-  settled after the layouts; measured, not built.
+  a reference that does not demand its target's layout; measured, not built.
 - **One declaration's error can silence another's body.** `fnDclTypeCheck` skips a
   body when the error count moved during its signature's check, and demand can
   run other declarations inside that check — a signature naming an enum lays the
@@ -670,7 +672,7 @@ Kept so that reopening one is a decision rather than a rediscovery.
 - **A node built during analysis takes the lexer's position**, which by then is
   the end of the file. `newNode` reads `lex->tokp`, so an injected node points at
   nothing unless `inodeLexCopy` is called on it.
-- **The eight type properties crowded into `flags`** — `MoveType`, `ThreadBound`,
+- **The seven type properties crowded into `flags`** — `MoveType`,
   `OpaqueType`, `ZeroSizeType`, `TraitType`, `SameSize`, `HasTagField`,
   `NullablePtr` — would be better in `ITypeNodeHdr`. Analysis neither needs that
   nor makes it worse.

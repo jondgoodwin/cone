@@ -411,7 +411,7 @@ static void genlTraceVariants(GenState *gen, LLVMValueRef valptr, StructNode *en
         if (!genlTraceWants((INode*)variant))
             continue;
         LLVMBasicBlockRef caseblk = genlInsertBlock(gen, "tracevariant");
-        LLVMAddCase(dispatch, LLVMConstInt(tagtype, variant->tagnbr, 0), caseblk);
+        LLVMAddCase(dispatch, genlTagConst(tagtype, variant), caseblk);
         LLVMPositionBuilderAtEnd(gen->builder, caseblk);
         genlTraceFields(gen, valptr, variant);
         LLVMBuildBr(gen->builder, doneblk);
@@ -782,7 +782,7 @@ void genlAliasHeld(GenState *gen, LLVMValueRef valptr, INode *type, long long am
         if (!flowVariantHeldCounted((INode*)variant))
             continue;
         LLVMBasicBlockRef caseblk = genlInsertBlock(gen, "aliasvariant");
-        LLVMAddCase(dispatch, LLVMConstInt(tagtype, variant->tagnbr, 0), caseblk);
+        LLVMAddCase(dispatch, genlTagConst(tagtype, variant), caseblk);
         LLVMPositionBuilderAtEnd(gen->builder, caseblk);
         LLVMTypeRef vartype = genlType(gen, (INode*)variant);
         LLVMValueRef varptr = LLVMBuildBitCast(gen->builder, valptr, LLVMPointerType(vartype, 0), "variant");
@@ -847,7 +847,7 @@ static void genlEnumDrop(GenState *gen, FnDclNode *fnnode) {
             if (!itypeNeedsFinal((INode*)variant))
                 continue;
             LLVMBasicBlockRef caseblk = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "dropvariant");
-            LLVMAddCase(dispatch, LLVMConstInt(tagtype, variant->tagnbr, 0), caseblk);
+            LLVMAddCase(dispatch, genlTagConst(tagtype, variant), caseblk);
             LLVMPositionBuilderAtEnd(gen->builder, caseblk);
             LLVMValueRef varptr = LLVMBuildBitCast(gen->builder, selfptr,
                 LLVMPointerType(genlType(gen, (INode*)variant), 0), "variant");

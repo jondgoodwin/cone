@@ -76,6 +76,24 @@ int itypeHoldsAtomic(INode *type);
 // it sits, inline rather than through an owning reference or a pointer?
 int itypeHoldsBorrow(INode *type);
 
+// Is a value of this type bound to its thread: does it hold, anywhere it
+// reaches through owning references, a reference refThreadBinds refuses, a raw
+// pointer, or a reference to an open trait, and not by way of a type declaring
+// 'Sendable'? What 'Sendable' is granted by (genericTypeIs). '*settled', if
+// given, says whether a "not bound" is final: it is not where the answer
+// leaned on a struct not yet type checked. Remembered per struct once final.
+int itypeThreadBound(INode *type, int *settled);
+
+// What binds a value of this type to its thread: the reference, raw pointer
+// or open trait found first, with 'path' set to where it sits in the type
+// ('Job.data', 'Pair.0', 'List.items[]'), empty where the type is the culprit
+// itself. NULL where the type is not bound.
+INode *itypeThreadBoundWhy(INode *type, char *path, size_t size);
+
+// Append a type to 'buf' as a diagnostic spells it: a reference as it is
+// written ('&mut Point', '+rc-imm Point', '*u64'), anything else by its name
+void itypeSpellCat(char *buf, size_t size, INode *type, int depth);
+
 // Look for named field/method in type
 INode *iTypeFindFnField(INode *type, Name *name);
 

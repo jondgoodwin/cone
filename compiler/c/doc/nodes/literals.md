@@ -205,8 +205,7 @@ requires the fill dimension to be a literal constant.
 
 Either form's type is built by `newArrayNodeTyped`, already checked, so it
 never passes through `arrayTypeCheck`. **The constructor gives it the element
-type's `ThreadBound` and move-ness itself**, as `arrayTypeCheck` does for a type
-written out, so `[Fin[1], Fin[2]]` moves exactly as `[2; Fin]` does. Move-ness
+type's move-ness itself**, as `arrayTypeCheck` does for a type written out, so `[Fin[1], Fin[2]]` moves exactly as `[2; Fin]` does. Move-ness
 is asked of `itypeIsMove`, not read off the element's flags, because a tuple
 element carries no flag and moves when one of its own elements does.
 
@@ -238,7 +237,23 @@ reference to it, or a slice of it (its address and its length), is known before
 anything runs. That is the borrow `borrowAuto` wraps a string literal in when a
 `&[]u8` wants it, so `imm g &[]u8 = "text"` and a struct literal holding one as
 a field are literal initializers; generation's `genlExpr` builds the slice with
-instructions the builder folds to a constant aggregate.
+instructions the builder folds to a constant aggregate. It accepts a borrow of
+an array literal whose elements all satisfy it (`arrayLitIsLiteral`) on the same
+terms, so `imm g = &[1, 2, 3]` is a literal initializer.
+
+**A borrowed constant array literal is a constant, as a borrowed string literal
+is.** Neither is an lval of a variable, so `borrowTypeCheck` asks
+`borrowIsConstLit` before refusing its operand as a temporary, and gives the
+borrow what a global constant has: `imm` and scope 0, the program's lifetime.
+So `&mut [1, 2, 3]` is refused (`ErrorBadPerm`) as `&mut "text"` is, and a
+function may return `&[2, 3, 5]`. An array literal with a computed element is
+still a temporary (`ErrorBadLval`). The literal was typed from its elements
+alone, the borrow expecting nothing of it, so `&[1, 2, 3]` wanted as a `&[]u32`
+would be a `&[3; i32]`: `iexpCoerce`'s `NoMatch` arm hands such a borrow to
+`borrowConstLitCoerce`, which coerces the elements to the wanted element type by
+`arrayLitCoerce`, rebuilds the borrow's type around the retyped literal, and
+lets the match run again. Only a borrow of a literal written in place is
+retyped; a named array is not coerced.
 
 ## Flow
 
@@ -274,7 +289,10 @@ narrower literal unchecked, where folding a `zext` of the constant reads them.
 **An array literal is emitted as a constant when every element is constant**,
 and otherwise as an `undef` plus a chain of `insertvalue`. The constant form is
 kept where possible because it is cheaper and it is **the only form usable
-outside a function body**.
+outside a function body**. Its address, which a borrow or a run-time index
+takes, is that of an internal constant global made for the occurrence (the
+`ArrayLitTag` case of `genlAddr`), as a string literal's is; one with a computed
+element, which only an index reaches, is stored into an unnamed local instead.
 
 A type literal is the same `insertvalue` chain, with one special case: a
 **nullable-pointer** enum has no struct at all, so the literal is either a null

@@ -156,6 +156,18 @@ static unsigned genlTagFieldIndex(FnDclNode *fndcl) {
     return 0;
 }
 
+// A variant's tag value as a constant of its discriminant's LLVM type. A negative
+// value is held sign-extended to 64 bits, and LLVMConstInt takes only a value that
+// fits the type, so the bits above its width are dropped first, as a literal's are.
+// structSetTagWidth has made sure the value fits that width.
+LLVMValueRef genlTagConst(LLVMTypeRef tagtype, StructNode *variant) {
+    unsigned int width = LLVMGetIntTypeWidth(tagtype);
+    uint64_t val = (uint64_t)variant->tagnbr;
+    if (width < 64)
+        val &= (1ull << width) - 1;
+    return LLVMConstInt(tagtype, val, 0);
+}
+
 // May the tag be used directly as an index into the vtable list?
 //
 // It may when every variant's tag value is its position in 'derived', which is
@@ -208,7 +220,7 @@ static LLVMValueRef genlVtableForTag(GenState *gen, Vtable *vtable, StructNode *
             continue;
         }
         LLVMValueRef iseq = LLVMBuildICmp(gen->builder, LLVMIntEQ, tagval,
-            LLVMConstInt(tagtype, variant->tagnbr, 0), "istag");
+            genlTagConst(tagtype, variant), "istag");
         chosen = LLVMBuildSelect(gen->builder, iseq, variantvtable, chosen, "vtablefortag");
     }
     return chosen;
@@ -437,10 +449,7 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
     LLVMValueRef fncallret = NULL;
     switch (fndcl->value? fndcl->value->tag : BlockTag) {
     case BlockTag: {
-        fncallret = LLVMBuildCall2(gen->builder, genlType(gen, fndcl->vtype), genlFnSym(gen, fndcl), fnargs, fnargcnt, "");
-        if (fndcl->dclinfo.facts & DclSystemCC) {
-            LLVMSetInstructionCallConv(fncallret, LLVMX86StdcallCallConv);
-        }
+        fncallret = genlFnDclCall(gen, fndcl, genlFnSym(gen, fndcl), fnargs, fnargcnt);
         break;
     }
     case IntrinsicTag: {
@@ -1124,7 +1133,7 @@ LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
             }
             else
                 val = LLVMBuildExtractValue(gen->builder, val, tagnode->index, "tag");
-            LLVMValueRef tagval = LLVMConstInt(genlType(gen, tagnode->vtype), structtype->tagnbr, 0);
+            LLVMValueRef tagval = genlTagConst(genlType(gen, tagnode->vtype), structtype);
             return LLVMBuildICmp(gen->builder, LLVMIntEQ, val, tagval, "istag");
         }
     }
@@ -1362,13 +1371,33 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         LLVMSetInitializer(sglobal, strconst);
         return LLVMConstBitCast(sglobal, LLVMPointerType(genlType(gen, strnode->vtype), 0));
     }
+    case ArrayLitTag:
+    {
+        // An array literal whose every element is a constant is a constant array,
+        // and its address is that of a constant global holding it, as a string
+        // literal's is. borrowTypeCheck borrows it as a global constant on that
+        // understanding. A constant one indexed at run time ('[1, 2, 5][n]') reads
+        // from the same global. One with a computed element cannot be borrowed, so
+        // it arrives only to be indexed, and is stored in an unnamed local for that.
+        LLVMValueRef arrval = genlExpr(gen, lval);
+        if (LLVMIsConstant(arrval)) {
+            LLVMValueRef aglobal = LLVMAddGlobal(gen->module, LLVMTypeOf(arrval), "arraylit");
+            LLVMSetLinkage(aglobal, LLVMInternalLinkage);
+            LLVMSetGlobalConstant(aglobal, 1);
+            genlComdat(gen, aglobal);
+            LLVMSetInitializer(aglobal, arrval);
+            return aglobal;
+        }
+        LLVMValueRef temparray = genlAlloca(gen, LLVMTypeOf(arrval), "temparray");
+        LLVMBuildStore(gen->builder, arrval, temparray);
+        return temparray;
+    }
     default: {
         INode *type = iexpGetTypeDcl(lval);
         if (type->tag == ArrayTag || type->tag == StructTag || type->tag == TTupleTag) {
-            // LLVM provides no useful way to get the address of an array not stored in memory
-            // For example, a literal array or an array returned by a function
+            // LLVM provides no useful way to get the address of an array not stored in memory,
+            // such as an array returned by a function (an array literal is handled above)
             // So we hack it by storing in an unnamed local variable and return that address
-            // This is particularly necessary when doing an array index ([1,2,5][n])  (LLVM fail at this too)
             // A struct or tuple returned by a call arrives here when an array
             // field of it is indexed (make().m[1]): the index needs the array's
             // address, and the field's address needs its container's.

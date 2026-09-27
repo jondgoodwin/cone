@@ -1,0 +1,48 @@
+// A '&uni' reference lent where a '&' or '&mut' reference is wanted is
+// reborrowed, '&mut *p' built as if written, so what the borrow forbids its
+// source is what any borrow of what a 'uni' reaches forbids (ref_flow_freeze):
+// held in a local, a '&mut' borrow lets the reference not even be read until
+// its last use, and a '&' borrow lets it be read but not changed; handed to
+// one call twice, a '&mut' borrow still being made meets the second borrow.
+// Two '&' borrows for one call, and a use after the borrow's last use, are
+// allowed (ref_unireborrow runs them).
+//
+// One function per case, so that one borrow's conflict cannot stand in for
+// another's.
+
+mod ref_flow_unireborrow;
+
+struct R {
+  pub n i64;
+  pub fn bumpBy(self &mut, o &R) { n = n + o.n; }
+}
+
+fn both(a &mut R, b &mut R) {}
+fn mutAndRead(a &mut R, b &R) {}
+
+fn heldMut(p &uni R) i64 {
+  imm b &mut R = p;
+  imm x = p.n;                     //~ ErrorFrozen:12 "may not be read"
+  b.n;
+}
+
+fn heldRead(p &uni R) i64 {
+  imm b &R = p;
+  p.n = 3;                         //~ ErrorFrozen:4 "may not be changed"
+  b.n;
+}
+
+fn twoMut(p &uni R) {
+  both(p, p);                      //~ ErrorFrozen:11 "may not be borrowed mutably"
+}
+
+fn mutThenRead(p &uni R) {
+  mutAndRead(p, p);                //~ ErrorFrozen:17 "may not be borrowed"
+}
+
+fn receiverAndArgument(p &uni R) {
+  p.bumpBy(p);                     //~ ErrorFrozen:3 "as the call's receiver"
+}
+
+fn main() {
+}
