@@ -1,0 +1,225 @@
+// A single-sender channel between two threads, small enough that each side
+// really waits for the other. 'testing' counts its checks in globals, so
+// every check is made on the main thread, from what the threads return.
+//
+// 1. Order and sum: a producer thread sends 1 to 100000 into a channel of 8
+//    while a consumer thread takes them until recv answers None, checking
+//    each is one more than the last:
+//
+//      items  100000
+//      sum    5000050000 = 100000 * 100001 / 2
+//
+// 2. A slow consumer: the producer sends 1 to 200 into a channel of 2, the
+//    odd ones by send and the even ones by sendTimeout with a 10-second
+//    limit, while the consumer sleeps a millisecond before each of its first
+//    50 takes. The sender spins only briefly before it sleeps for room, so
+//    across those milliseconds it is asleep, and each take must wake it; a
+//    lost wake-up would leave it asleep with room, and the test would hang
+//    (and fail, at Congo's 60 seconds), or a timed send would time out.
+//
+//      items  200, none handed back
+//      sum    20100 = 200 * 201 / 2
+//
+// 3. A slow producer: the producer sleeps a millisecond before each of its
+//    first 50 sends, of 1 to 200 into a channel of 2, so the consumer finds
+//    it empty and sleeps, and each send must wake it; the consumer takes by
+//    recv, and every other time by recvTimeout with a 10-second limit, which
+//    answers None only if no value came in that time.
+//
+//      items  200
+//      sum    20100
+//
+// 4. The receiver goes while the sender waits: the producer sends 1000
+//    counted values into a channel of 4, by send, which waits while it is
+//    full; main takes 10, sleeps 20 ms, by which time the ring is full again
+//    and the producer asleep for room, then drops the receiver. The sender
+//    wakes, and its send and each later one are handed their values back.
+//    Of the 1000, exactly 14 were sent -- the 10 taken and the 4 filling the
+//    ring, since position p is let in only once p less 4 is taken -- and
+//    986 handed back; every one of the 1000 dies exactly once.
+
+mod channelspscthreads;
+
+import testing use *;
+import thread;
+import sync use *;
+
+struct Totals {
+  pub items u64;
+  pub sum u64;
+  pub disorder u64;             // items not one more than the last
+  pub timedOut u64;             // recvTimeout answers of None
+}
+
+fn produce(tx SoloSender[u64]) u64 {
+  mut t = tx;
+  mut k = 1u64;
+  while k <= 100000u64 {
+    t.send(k);
+    k = k + 1u64;
+  }
+  k - 1u64;
+}
+
+// Take items until the channel closes, first sleeping a millisecond before
+// each of the first 'slow' takes; every other take by recvTimeout when timed
+fn tally(r &mut Receiver[u64], slow u64, timed Bool) Totals {
+  mut t = Totals[0u64, 0u64, 0u64, 0u64];
+  mut more = true;
+  mut n = 0u64;
+  while more {
+    if t.items < slow {
+      thread.sleep(1000000u64);
+    }
+    n = n + 1u64;
+    imm got = if timed and n % 2u64 == 0u64 {r.recvTimeout(10000000000u64);} else {r.recv();};
+    match got {
+      case imm s Some {
+        if s.value != t.items + 1u64 {
+          t.disorder = t.disorder + 1u64;
+        }
+        t.items = t.items + 1u64;
+        t.sum = t.sum + s.value;
+      }
+      case is None[u64] {
+        if r.isClosed() {
+          more = false;
+        } else {
+          t.timedOut = t.timedOut + 1u64;
+        }
+      }
+    }
+  }
+  t;
+}
+
+fn consume(rx Receiver[u64]) Totals {
+  mut r = rx;
+  tally(&mut r, 0u64, false);
+}
+
+fn consumeSlowly(rx Receiver[u64]) Totals {
+  mut r = rx;
+  tally(&mut r, 50u64, false);
+}
+
+fn consumeTimed(rx Receiver[u64]) Totals {
+  mut r = rx;
+  tally(&mut r, 0u64, true);
+}
+
+// 1 to 200, the odd by send and the even by sendTimeout (10 s): how many
+// were handed back
+fn sendTwoHundred(tx SoloSender[u64]) u64 {
+  mut t = tx;
+  mut back = 0u64;
+  mut k = 1u64;
+  while k <= 200u64 {
+    imm r = if k % 2u64 == 1u64 {t.send(k);} else {t.sendTimeout(k, 10000000000u64);};
+    match r {
+      case is Some[u64] {back = back + 1u64;}
+      case is None[u64] {}
+    }
+    k = k + 1u64;
+  }
+  back;
+}
+
+// 1 to 200, sleeping a millisecond before each of the first 50
+fn sendSlowly(tx SoloSender[u64]) u64 {
+  mut t = tx;
+  mut k = 1u64;
+  while k <= 200u64 {
+    if k <= 50u64 {
+      thread.sleep(1000000u64);
+    }
+    t <- k;
+    k = k + 1u64;
+  }
+  200u64;
+}
+
+// A value whose deaths are counted, from any thread
+imm deaths Atomic[u64];
+
+fn @initpure init() {
+  deaths = Atomic[u64].of(0u64);
+}
+
+struct Counted {
+  pub n u64;
+  fn final(self &uni) {
+    deaths.add(1u64);
+  }
+}
+
+// Send 1000 counted values, waiting while the channel is full: how many
+// were refused
+fn produceCounted(tx SoloSender[Counted]) u64 {
+  mut t = tx;
+  mut refused = 0u64;
+  mut k = 1u64;
+  while k <= 1000u64 {
+    match t.send(Counted[k]) {
+      case is Some[Counted] {refused = refused + 1u64;}
+      case is None[Counted] {}
+    }
+    k = k + 1u64;
+  }
+  refused;
+}
+
+fn dropReceiver(rx Receiver[Counted]) {}
+
+fn main() i32 {
+  mut tx SoloSender[u64];
+  mut rx Receiver[u64];
+  tx, rx = Channel[u64].spsc(8u64);
+  imm consumer = thread.start(rx, &consume);
+  imm producer = thread.start(tx, &produce);
+  expectUInt(producer.join(), 100000u64, "the items the producer sent");
+  imm t = consumer.join();
+  expectUInt(t.items, 100000u64, "the items the consumer took");
+  expectUInt(t.sum, 5000050000u64, "their sum");
+  expectUInt(t.disorder, 0u64, "in the order they were sent");
+
+  mut tx2 SoloSender[u64];
+  mut rx2 Receiver[u64];
+  tx2, rx2 = Channel[u64].spsc(2u64);
+  imm slow = thread.start(rx2, &consumeSlowly);
+  imm q = thread.start(tx2, &sendTwoHundred);
+  expectUInt(q.join(), 0u64, "every send and timed send got in, waiting for room");
+  imm st = slow.join();
+  expectUInt(st.items, 200u64, "the items the slow consumer took");
+  expectUInt(st.sum, 20100u64, "their sum");
+  expectUInt(st.disorder, 0u64, "in order");
+
+  mut tx3 SoloSender[u64];
+  mut rx3 Receiver[u64];
+  tx3, rx3 = Channel[u64].spsc(2u64);
+  imm waiter = thread.start(rx3, &consumeTimed);
+  imm s = thread.start(tx3, &sendSlowly);
+  expectUInt(s.join(), 200u64, "the slow producer sent its 200");
+  imm wt = waiter.join();
+  expectUInt(wt.items, 200u64, "the items the waiting consumer took");
+  expectUInt(wt.sum, 20100u64, "their sum");
+  expectUInt(wt.disorder, 0u64, "in order");
+  expectUInt(wt.timedOut, 0u64, "no timed receive ran out, woken by each send");
+
+  mut tx4 SoloSender[Counted];
+  mut rx4 Receiver[Counted];
+  tx4, rx4 = Channel[Counted].spsc(4u64);
+  imm a = thread.start(tx4, &produceCounted);
+  mut taken = 0u64;
+  while taken < 10u64 {
+    match rx4.recv() {
+      case is Some[Counted] {taken = taken + 1u64;}
+      case is None[Counted] {}
+    }
+  }
+  thread.sleep(20000000u64);
+  dropReceiver(rx4);
+  expectUInt(a.join(), 986u64, "all but the 14 let in are handed back");
+  expectUInt(deaths.load(), 1000u64, "and every one of the 1000 died once");
+  done();
+}
