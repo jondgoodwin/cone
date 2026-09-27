@@ -73,6 +73,7 @@ Name *markMethodName;
 Name *writeBarrierMethodName;
 Name *regionRefName;
 Name *tracedTraitName;
+Name *threadSafeTraitName;
 Name *moveTraitName;
 Name *copyTraitName;
 Name *shapeChangingTraitName;

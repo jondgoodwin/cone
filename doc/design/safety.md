@@ -66,7 +66,7 @@ most consequential thing this note settles.
 | **raw pointer** bounds | **no** | unchecked by construction |
 | raw pointer deref / arithmetic gated by `trust` | **no** | `trust` is not a keyword and has no parse rule |
 | allocation failure | **yes** | null test then `llvm.trap`, unless `?` asked for an `Option` |
-| thread-safety of a shared reference | **no** | `RaceSafe` is populated and read nowhere; `ThreadBound` is now infected correctly and nothing consumes it either |
+| thread-safety of a shared reference | **no** | `RaceSafe` is populated and read nowhere; `ThreadBound` is now infected correctly and nothing consumes it either; nor the region's say, the `ThreadSafe` marker core's `arc` declares and `rc` does not (`regionIsThreadSafe`) |
 | release of an owning reference at scope exit | **partly** | once, on the paths that still hold it: a variable moved, hollowed or given a value on only some paths carries a drop flag the release tests, as does one stored over. Leaks for the rest of an array one element was moved out of, for a global, and for a temporary left unbound. One a struct, an enum, a tuple or an array holds, however deep, is released with it |
 
 ## The four shapes the gaps take
@@ -76,7 +76,8 @@ way wherever it appears.
 
 **1. A rule with a representation but no consumer.** The data is computed and
 nothing reads it. `RaceSafe`, `MayAliasWrite`, `MayIntRefSum` and `IsLockless`
-are set on every permission and consulted nowhere. `lifeMatches` exists and is
+are set on every permission and consulted nowhere, and a region's `ThreadSafe`
+is refused off a region ref and otherwise consulted nowhere. `lifeMatches` exists and is
 called from nowhere. These look like working machinery in a grep and are inert.
 
 **2. A rule enforced at some sites and not others.** Borrow lifetime is the

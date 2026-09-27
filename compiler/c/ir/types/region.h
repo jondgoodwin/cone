@@ -61,6 +61,15 @@ int regionHasBarrier(INode *region);
 // A type declaring 'Traced' that is not a region ref is refused
 void regionTracedUseCheck(StructNode *node);
 
+// Is this region slot's type a region ref declaring 'ThreadSafe', whose owners
+// of one value several threads may hold at once, its counts changed
+// atomically? Nothing asks yet: it is for the thread check to come, which
+// judges a reference by its region as well as its permission.
+int regionIsThreadSafe(INode *region);
+
+// A type declaring 'ThreadSafe' that is not a region ref is refused
+void regionThreadSafeUseCheck(StructNode *node);
+
 // Note, as type check meets them, the places where a traced reference may not
 // be held: an owning reference type, a global or static, an instance of
 // mem.writeRaw or mem.moveRaw. Each is judged by regionTracedCheckAll.

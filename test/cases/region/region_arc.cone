@@ -1,0 +1,80 @@
+// '+arc', core's atomically counted region, on one thread: it counts and frees
+// exactly as '+rc' does, each change of the count one atomic instruction (the
+// threads themselves are the thread package's tests, tests/arc.cone and
+// tests/arcstress.cone). Every value below is worked out by hand from the
+// rules: a new value has one owner; each copy of an aliasable owner is one
+// more, a parameter's copy among them, gone when the call returns; each owner
+// going is one fewer; at none the value's 'final' runs, once, and then its
+// memory is freed. A unique '+arc' owner moves instead, as '+rc' does.
+
+mod region_arc;
+
+import stdio use *;
+
+// How many Notes have been finalized
+mut finals = 0i32;
+
+struct Note {
+  pub id i32;
+  fn final(self &uni) {
+    finals = finals + 1i32;
+    printStr("final ");
+    printInt(i64[id]);
+    printStr("\n");
+  }
+}
+
+fn line(label &[]u8, n i32) {
+  printStr(label);
+  printInt(i64[n]);
+  printStr("\n");
+}
+
+// An owner passed in is copied: one more owner, which goes as the call returns
+fn read(n +arc-imm Note) i32 { n.id; }
+
+// An owner handed back is the caller's: the local's owner moves out, no copy
+fn make(id i32) +arc-imm Note { imm n = +arc-imm Note[id]; n; }
+
+fn shared() {
+  imm a = +arc-imm Note[1i32];
+  {
+    imm b = a;
+    {
+      imm c = b;
+      line("read through three owners and a parameter: ", a.id + b.id + c.id + read(c));
+    }
+    line("two owners left, finals ", finals);
+  }
+  line("one owner left, finals ", finals);
+}
+
+fn unique() {
+  imm u = +arc Note[2i32];
+  imm v = u;          // moves: still one owner
+  line("moved, id ", v.id);
+}
+
+fn returned() {
+  imm n = make(3i32);
+  imm m = n;
+  line("returned and copied, id ", m.id + read(n));
+}
+
+fn main() {
+  shared();
+  line("after shared, finals ", finals);
+  unique();
+  line("after unique, finals ", finals);
+  returned();
+  line("after returned, finals ", finals);
+  {
+    // A mut owner on one thread is an rc-mut one; sharing it across threads
+    // is what the permission forbids, not the region
+    imm w = +arc-mut Note[4i32];
+    imm x = w;
+    x.id = 40i32;
+    line("changed through a copy, read through the first: ", w.id);
+  }
+  line("finals at the end ", finals);
+}

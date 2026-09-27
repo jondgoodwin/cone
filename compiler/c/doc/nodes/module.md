@@ -2604,6 +2604,17 @@ looks at (`regionTracedRefNote`, `regionTracedGlobalNote`,
 (`regionTracedCheckAll`, from `conec.c`); a compile declaring no traced region
 judges none.
 
+**Whether several threads may hold owners of one value is declared too,** with
+the built-in trait `ThreadSafe` (a provisional name): `struct arc is RegionRef,
+ThreadSafe`, core's atomically counted region, whose `alias` and `dealias` may
+run on different threads at once; `rc`, whose count is a plain number, does not
+declare it. It is a region ref's only (`ErrorThreadSafeUse`, from
+`regionThreadSafeUseCheck`), trusted — the compiler cannot check that the
+counts are atomic — and read by nothing yet: `regionIsThreadSafe` is the
+region's say in whether a reference may cross threads, beside its permission's
+`RaceSafe`, for the thread check to come. It changes no call the compiler
+makes.
+
 The struct is held to the method shapes **at its declaration**, after its
 methods are type checked (`regionRefCheck`, from `structCheckMembers`):
 `ErrorBadAlloc` for `alloc`/`init` (an `alloc` taking anything but the size

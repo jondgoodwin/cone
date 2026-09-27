@@ -4,9 +4,11 @@
 # Key reference: compiler/c/doc/diagnostics/test-suite.md, "cases.toml keys".
 # The group directory supplies the feature tag, so tags carry pipeline phases.
 #
-# Two regions exist, both declared in packages/core: 'rc', which counts its
-# owners and frees at the last, and 'so', which declares 'Move' and is freed by
-# its single owner. Neither is privileged: a region is a struct declaring 'is
+# Three regions exist, all declared in packages/core: 'rc', which counts its
+# owners and frees at the last; 'arc', which does the same with its count
+# changed atomically and declares 'ThreadSafe' (region_arc; its threads are the
+# thread package's tests); and 'so', which declares 'Move' and is freed by
+# its single owner. None is privileged: a region is a struct declaring 'is
 # RegionRef', whose methods the compiler calls at each reference event, so
 # region_regionref declares more, region_success another and region_collected
 # one declaring neither 'alias' nor 'Move', and that is what the type-check
@@ -31,6 +33,8 @@
 #   'mark'), and who may declare it.
 # - region_typecheck_traced_place asks where a traced reference may be held, and
 #   what a traced region may allocate: judged after type check, so apart.
+# - region_typecheck_threadsafe asks who may declare 'ThreadSafe': a region ref
+#   alone. Nothing reads it yet, so there is nothing more to refuse.
 # - region_typecheck_coerce asks which coercions between regions are allowed,
 #   which is a rule about reference types rather than about allocating.
 #
@@ -136,6 +140,25 @@ support = []
 category = "run"
 description = "A region written in Cone and named neither 'rc' nor 'so' has its alloc, init, alias, dealias and free called at each reference event, and one declaring 'Move' is a single owner"
 tags = ["nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+# core's 'arc', on one thread: counted and freed as 'rc' is, its count changed
+# by atomic instructions of the orderings its comment argues -- an alias's add
+# Relaxed ('monotonic'), a dealias's subtract Release, and an Acquire load of
+# the count by the owner that took it to zero, before the value's death
+[scenario.region_arc]
+category = "run"
+description = "core's +arc on one thread: +arc-imm owners copied, passed and returned, finalized once when the last goes; a unique +arc moves; +arc-mut changed through one owner and read through another; the count's add, subtract and load are atomic, Relaxed, Release and Acquire"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+# After optimization, which leaves every one of them, the Acquire load too
+[[scenario.region_arc.check]]
+name = "count-changes-are-atomic-with-their-orderings"
+target = "llvmir"
+contains = [
+  "i64 1 monotonic, align 8",
+  "i64 1 release, align 8",
+  " acquire, align 8",
+]
 
 # The other reading of a missing method [Jon 26 Sep]: a region ref declaring
 # neither 'alias' nor 'dealias' nor 'Move' -- a tracing collector's or an
@@ -844,6 +867,12 @@ category = "reject"
 description = "What a region ref declaring 'Traced' promises: a 'mark' of one of the two shapes a trace calls, a 'writeBarrier' (where it declares one) of the one shape a store calls, not 'Move'; and only a region ref may declare it. Both shapes of 'mark', a traced region with 'writeBarrier', and one with 'dealias', are accepted"
 tags = ["typecheck"]
 diagnostics = 10
+
+[scenario.region_typecheck_threadsafe]
+category = "reject"
+description = "Only a region ref may declare 'ThreadSafe': a plain struct, a trait, an enum and a variant declaring it are refused; a counted region ref and one with no alias declaring it are accepted"
+tags = ["typecheck"]
+diagnostics = 4
 
 [scenario.region_typecheck_traced_place]
 category = "reject"

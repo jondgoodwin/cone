@@ -1,0 +1,69 @@
+// An '+arc-imm' message read by two threads, freed exactly once, after both
+// have dropped it: core's 'arc' counts its owners atomically, so owners of
+// one value may be copied and dropped on different threads.
+//
+// main allocates the message and starts two readers, handing each an owner:
+// 'thread.start' takes its argument by value, so each call copies main's
+// owner (one more, counted by 'alias') and the copy moves into the thread,
+// where it dies when the reader returns. Each reader counts the message's
+// letters, then waits at a gate. main's own owner goes at the end of the
+// block that started them, so the message is still alive (both readers hold
+// it at the gate, and nothing has been finalized); main opens the gate, joins
+// both, and the message has died exactly once.
+//
+// Worked out by hand: "read by two threads" is 19 bytes, 2 of them 'e'. The
+// count of owners goes 1 (allocated), 2 and 3 (each start), 2 (main's owner
+// gone), 1 and 0 as the readers return: one death.
+//
+// Nothing checks yet that what a thread is given is safe to share: the thread
+// check is to come, and will accept '+arc-imm' here and refuse '+rc-imm',
+// whose count is not atomic. Today both compile.
+
+mod arcshare;
+
+import testing use *;
+import thread;
+import sync use *;
+
+// How many messages have been finalized, and the gate the readers wait at
+imm finals Atomic[u32];
+imm gate Atomic[Bool];
+
+fn @initpure init() {
+  finals = Atomic[u32].of(0u32);
+  gate = Atomic[Bool].of(false);
+}
+
+struct Message {
+  pub text &[]u8;
+  fn final(self &uni) { finals.add(1u32); }
+}
+
+// How many bytes of the message, and how many of them 'e', in one number
+fn reader(m +arc-imm Message) u64 {
+  mut es = 0u64;
+  mut i = 0usize;
+  while i < m.text.len {
+    if m.text[i] == 101u8 { es = es + 1u64; }
+    i = i + 1usize;
+  }
+  while !gate.load() { thread.yieldNow(); }
+  u64[m.text.len] * 100u64 + es;
+}   // this thread's owner of m goes here
+
+fn main() i32 {
+  initAll();
+  mut a thread.Thread[u64];
+  mut b thread.Thread[u64];
+  {
+    imm m = +arc-imm Message["read by two threads"];
+    a = thread.start(m, &reader);
+    b = thread.start(m, &reader);
+  }   // main's owner goes: the readers hold the only two
+  expectUInt(u64[finals.load()], 0u64, "alive while the readers hold it");
+  gate.store(true);
+  expectUInt(a.join(), 1902u64, "the first reader read 19 bytes, 2 of them 'e'");
+  expectUInt(b.join(), 1902u64, "and so did the second");
+  expectUInt(u64[finals.load()], 1u64, "finalized once, after both dropped it");
+  done();
+}

@@ -80,6 +80,7 @@ StructNode *regionRefTrait;
 StructNode *moveTrait;
 StructNode *copyTrait;
 StructNode *tracedTrait;
+StructNode *threadSafeTrait;
 StructNode *shapeChangingTrait;
 StructNode *noLoanMutTrait;
 StructNode *noLoanReadTrait;
@@ -98,7 +99,8 @@ static StructNode *newBuiltinTrait(Name *name) {
 
 int corelibIsBuiltinTrait(INode *node) {
     return node == (INode*)regionRefTrait || node == (INode*)moveTrait || node == (INode*)copyTrait
-        || node == (INode*)tracedTrait || node == (INode*)shapeChangingTrait
+        || node == (INode*)tracedTrait || node == (INode*)threadSafeTrait
+        || node == (INode*)shapeChangingTrait
         || node == (INode*)noLoanMutTrait || node == (INode*)noLoanReadTrait
         || node == (INode*)atomicValueTrait || node == (INode*)integerTrait
         || node == (INode*)pointerTrait;
@@ -149,6 +151,16 @@ void stdlibInit(int ptrsize) {
     // may be held is restricted to where a collector can find it
     // (regionTracedCheckAll). Held to 'mark' by regionRefCheck.
     tracedTrait = newBuiltinTrait(tracedTraitName);
+    // 'ThreadSafe', which a region ref declares beside 'RegionRef' to say that
+    // owners of one value may be held by several threads at once: its 'alias'
+    // and 'dealias' may run on different threads together (core's 'arc',
+    // whose count is atomic; 'rc' does not declare it). The name is
+    // provisional. It has NO EFFECT YET beyond being refused on anything but
+    // a region ref (regionThreadSafeUseCheck): it is the region's say in
+    // whether a reference may cross threads, which the thread check, when it
+    // is built, reads through regionIsThreadSafe beside the permission's
+    // RaceSafe. Trusted: the compiler cannot check the promise.
+    threadSafeTrait = newBuiltinTrait(threadSafeTraitName);
     // What a container's element borrows cost it [Jon 26 Sep; names
     // provisional]. A borrow a method returns keeps its receiver loaned, the
     // Rust way (the loan walk, flowpath.c's pwCall). 'NoLoanMut' and
