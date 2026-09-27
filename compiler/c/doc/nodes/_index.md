@@ -233,6 +233,11 @@ It does not descend into type declarations: a type may refer to itself through a
 reference, so that graph has cycles, and a type node's own `vtype` is not what
 these defects leave empty.
 
+A generic function's or type's template is never type checked, so its nodes
+carry no value type to check (a value tuple's is NULL until it is checked); the
+walk takes the instances its `memonodes` holds in its place, which are what
+analysis produced (`generic_tuple_return`).
+
 ## 6. Adding a node tag: every arm you must add
 
 A tag is dispatched from a dozen `switch (node->tag)` statements spread over

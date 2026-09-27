@@ -787,7 +787,9 @@ Concrete hazards, each of which has been gotten wrong here before:
   passes down as `selftype`. The intrinsics declared in core never reach that switch:
   `genlDeclaredIntrinsic` decides each by its kind and its instance's Cone type
   ([intrinsic](../nodes/intrinsic.md)), and a new intrinsic goes there, never
-  into the LLVM-type switch.
+  into the LLVM-type switch. An atomic one is taken before either, in
+  `genlFnCall`, by `genlAtomicIntrinsic`, since its orderings are the call's
+  arguments rather than its instance's.
 - **`genlRecast` picks by generated LLVM kinds, not Cone tags** — deliberately,
   because a reference is not always a plain pointer once fat pointers are in
   play.
@@ -958,6 +960,7 @@ variables.
 | | `genlAddrType` | the Cone type of what `genlAddr`'s address points at |
 | | `genlFnCallInternal` | indirect calls, virtual dispatch, generator-level inlining, the intrinsic switch |
 | | `genlDeclaredIntrinsic` | the LLVM implementation of each intrinsic declared in core, by kind and Cone type |
+| | `genlAtomicIntrinsic` | an atomic intrinsic, reached from `genlFnCall` with the call's constant orderings |
 | | `genlConvert`, `genlRecast`, `genlIsType` | the three cast forms |
 | | `genlArrayIndex`, `genlBoundsCheck` | multi-dimensional GEP and its checks |
 | | `genlSubslice` | a borrowed range index, `&x[a..b]`: the slice `{&x[a], b - a}` once `a <= b <= count` is checked |

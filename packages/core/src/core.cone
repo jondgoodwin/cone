@@ -93,6 +93,17 @@ pub struct TypeRecord {
   pub flags u32;
 }
 
+// The ordering an atomic operation of 'mem' promises for the memory around it,
+// on the C11 model: 'Relaxed' orders nothing but the operation itself;
+// 'Acquire' keeps what follows a load after it; 'Release' keeps what precedes
+// a store before it; 'AcqRel' is both, for a read-modify-write; 'SeqCst' is
+// both, and every 'SeqCst' operation of the program is also in one order that
+// all threads see. A call writes it as a constant, 'MemOrder.SeqCst[]', which
+// the compiler reads where the call is made.
+pub enum MemOrder u8 {
+  Relaxed, Acquire, Release, AcqRel, SeqCst;
+}
+
 // 'mem': what only the compiler knows about a type's memory, and the raw moves
 // in and out of it that a collection builds on, each named through it:
 // 'mem.sizeof[T]()'. Each function is an intrinsic: the compiler supplies it,
@@ -153,5 +164,43 @@ pub struct @opaque mem {
         mem.writeRaw[T](to + i, mem.readRaw[T](from + i));
       }
     }
+  }
+
+  // The atomic operations on the T at p, each indivisible: no other thread
+  // sees it half done. T is an integer type of 8 to 64 bits, Bool or a raw
+  // pointer (add and sub take an integer, and and, or and xor an integer or a
+  // Bool). The order is a constant MemOrder. A read-modify-write answers the
+  // value p held before it, and add and sub wrap. The fallback bodies are the
+  // plain operations, which are right only while one thread reaches p.
+  pub fn @intrinsic atomicLoad[T](p *T, order MemOrder) T {*p;}
+  pub fn @intrinsic atomicStore[T](p *T, value T, order MemOrder) {*p = value;}
+  pub fn @intrinsic atomicSwap[T](p *T, value T, order MemOrder) T {
+    imm old = *p; *p = value; old;
+  }
+  pub fn @intrinsic atomicAdd[T](p *T, value T, order MemOrder) T {
+    imm old = *p; *p = old + value; old;
+  }
+  pub fn @intrinsic atomicSub[T](p *T, value T, order MemOrder) T {
+    imm old = *p; *p = old - value; old;
+  }
+  pub fn @intrinsic atomicAnd[T](p *T, value T, order MemOrder) T {
+    imm old = *p; *p = old & value; old;
+  }
+  pub fn @intrinsic atomicOr[T](p *T, value T, order MemOrder) T {
+    imm old = *p; *p = old | value; old;
+  }
+  pub fn @intrinsic atomicXor[T](p *T, value T, order MemOrder) T {
+    imm old = *p; *p = old ^ value; old;
+  }
+  // Store desired at p if it holds expected: the value p held, and whether
+  // the store was made. 'failure' is the order when it was not
+  pub fn @intrinsic atomicCompareSwap[T](p *T, expected T, desired T,
+      success MemOrder, failure MemOrder) T, Bool {
+    imm old = *p;
+    if old == expected {
+      *p = desired;
+      return old, true;
+    }
+    old, false;
   }
 }

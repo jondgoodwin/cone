@@ -1,0 +1,81 @@
+// What an atomic intrinsic refuses, where it is called. The type it acts on is
+// an integer of 8 to 64 bits, Bool or a raw pointer -- add and sub an integer,
+// and, or and xor an integer or a Bool -- and anything else is refused where
+// the instance is asked for. Each ordering is a constant, read where the call
+// is written, so a MemOrder held in a variable or a parameter is refused; and
+// one the operation cannot promise is refused as LLVM would refuse it: a load
+// has nothing to release, a store nothing to acquire, and a compareSwap that
+// fails has only loaded, so its failure ordering releases nothing and is no
+// stronger than its success ordering.
+//
+// Both are asked whether the call is lowered or runs its fallback body, so the
+// scenario runs both ways (cases.toml) with the same expectations: a fallback
+// body is never checked at a type it was not written for.
+//
+// Not here: a call outside 'trust'. Every atomic intrinsic is marked as one a
+// call can break memory safety with, but 'trust' does not exist yet.
+
+mod intrinsic_typecheck_atomic;
+
+struct Pair {
+  pub a i32;
+  pub b i32;
+}
+
+fn classes() {
+  mut d = 1.5;
+  imm dp = &d as *f64;
+  mut s = Pair[1i32, 2i32];
+  imm sp = &s as *Pair;
+  mut b = false;
+  imm bp = &b as *Bool;
+  mut n = 1i32;
+  imm np = &n as *i32;
+  mut q = np;
+  imm qp = &q as **i32;
+  mut r = &n;
+  imm rp = &r as *&i32;
+  imm x1 = mem.atomicAdd[f64](dp, 1.0, MemOrder.SeqCst[]);           //~ ErrorIntrinsicType "an integer type of 8 to 64 bits, and f64"
+  imm x2 = mem.atomicLoad[Pair](sp, MemOrder.SeqCst[]);              //~ ErrorIntrinsicType "Bool or a raw pointer, and Pair"
+  imm x3 = mem.atomicSub[Bool](bp, true, MemOrder.SeqCst[]);         //~ ErrorIntrinsicType "an integer type of 8 to 64 bits, and Bool"
+  imm x4 = mem.atomicAdd[*i32](qp, np, MemOrder.SeqCst[]);           //~ ErrorIntrinsicType "an integer type of 8 to 64 bits, and a raw pointer"
+  imm x5 = mem.atomicXor[*i32](qp, np, MemOrder.SeqCst[]);           //~ ErrorIntrinsicType "8 to 64 bits or Bool, and a raw pointer"
+  imm x6 = mem.atomicLoad[&i32](rp, MemOrder.SeqCst[]);              //~ ErrorIntrinsicType "Bool or a raw pointer, and a reference"
+  imm op = malloc(8usize) as *(+so i32);
+  imm x7 = mem.atomicSwap[+so i32](op, +so 3i32, MemOrder.SeqCst[]); //~ ErrorIntrinsicType "Bool or a raw pointer, and a reference"
+}
+
+fn constants(o MemOrder) {
+  mut n = 1i32;
+  imm p = &n as *i32;
+  imm held = MemOrder.Acquire[];
+  imm x1 = mem.atomicLoad[i32](p, o);                                //~ ErrorAtomicConst "mem.atomicLoad is given must be a constant"
+  imm x2 = mem.atomicAdd[i32](p, 1i32, held);                        //~ ErrorAtomicConst "mem.atomicAdd is given must be a constant"
+  mut seen = 0i32;
+  mut ok = false;
+  seen, ok = mem.atomicCompareSwap[i32](p, 0i32, 1i32, MemOrder.SeqCst[], o); //~ ErrorAtomicConst "mem.atomicCompareSwap is given"
+}
+
+fn orderings() {
+  mut n = 1i32;
+  imm p = &n as *i32;
+  imm x1 = mem.atomicLoad[i32](p, MemOrder.Release[]);               //~ ErrorAtomicOrder "not Release"
+  imm x2 = mem.atomicLoad[i32](p, MemOrder.AcqRel[]);                //~ ErrorAtomicOrder "not AcqRel"
+  mem.atomicStore[i32](p, 2i32, MemOrder.Acquire[]);                 //~ ErrorAtomicOrder "not Acquire"
+  mem.atomicStore[i32](p, 2i32, MemOrder.AcqRel[]);                  //~ ErrorAtomicOrder "not AcqRel"
+  mut seen = 0i32;
+  mut ok = false;
+  seen, ok = mem.atomicCompareSwap[i32](p, 0i32, 1i32, MemOrder.SeqCst[], MemOrder.Release[]);  //~ ErrorAtomicOrder "not Release"
+  seen, ok = mem.atomicCompareSwap[i32](p, 0i32, 1i32, MemOrder.SeqCst[], MemOrder.AcqRel[]);   //~ ErrorAtomicOrder "not AcqRel"
+  seen, ok = mem.atomicCompareSwap[i32](p, 0i32, 1i32, MemOrder.Relaxed[], MemOrder.Acquire[]); //~ ErrorAtomicOrder "Acquire is stronger than Relaxed"
+  seen, ok = mem.atomicCompareSwap[i32](p, 0i32, 1i32, MemOrder.Release[], MemOrder.Acquire[]); //~ ErrorAtomicOrder "Acquire is stronger than Release"
+  seen, ok = mem.atomicCompareSwap[i32](p, 0i32, 1i32, MemOrder.AcqRel[], MemOrder.SeqCst[]);   //~ ErrorAtomicOrder "SeqCst is stronger than AcqRel"
+  // Every other pair is allowed, and so is every ordering of a read-modify-write
+  seen, ok = mem.atomicCompareSwap[i32](p, 0i32, 1i32, MemOrder.Release[], MemOrder.Relaxed[]);
+  seen, ok = mem.atomicCompareSwap[i32](p, 0i32, 1i32, MemOrder.AcqRel[], MemOrder.Acquire[]);
+  seen, ok = mem.atomicCompareSwap[i32](p, 0i32, 1i32, MemOrder.SeqCst[], MemOrder.SeqCst[]);
+  imm x3 = mem.atomicSwap[i32](p, 3i32, MemOrder.AcqRel[]);
+  imm x4 = mem.atomicOr[i32](p, 3i32, MemOrder.Release[]);
+  imm x5 = mem.atomicLoad[i32](p, MemOrder.Acquire[]);
+  mem.atomicStore[i32](p, 2i32, MemOrder.Release[]);
+}
