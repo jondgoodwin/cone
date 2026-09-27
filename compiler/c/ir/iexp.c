@@ -138,6 +138,12 @@ int iexpCoerce(INode **from, INode *totype) {
             borrowUniReborrow(from, totypedcl);
         return 1;
     case CastSubtype: {
+        // A sole owner wanted as a '&uni' borrowed reference is borrowed from,
+        // as it is when wanted as a '&' or '&mut', not moved into the borrow
+        if (borrowOwnerLendsUni(*from, totypedcl)) {
+            borrowOwnerLend(from, totypedcl);
+            return iexpCoerce(from, totype);
+        }
         INode *newfrom = (INode*)newRecastNode(*from, iexpCoerceType(*from, totypedcl));
         inodeLexCopy(newfrom, *from);
         *from = newfrom;

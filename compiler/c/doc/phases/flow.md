@@ -595,7 +595,9 @@ or `&mut` is wanted, which is why `g(p); g(p)` is no move); a holder named, or a
 call, below. An owning reference coerced to a borrowed one (`imm b &Pt = u`,
 `u` a `+so Pt`: a recast from an owning to a borrowed reference) is a borrow of
 what it owns, `*u`, so `u` may not be moved while `b` is used
-(`pwOwnedLent`). A holder's declaration, or an assignment to the whole of it,
+(`pwOwnedLent`). One coerced to a `&uni` or `&mut1` arrives already rewritten
+by type check to the borrow `&uni *u`, since a recast to a move type would be a
+move of `u`. A holder's declaration, or an assignment to the whole of it,
 *replaces* what it holds with what the value carries.
 
 **Calls** (`pwCall`). A borrow a call returns, or a value that may hold one,

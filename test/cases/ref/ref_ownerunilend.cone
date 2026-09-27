@@ -1,0 +1,68 @@
+// An owning reference handed where a '&uni' borrowed reference is wanted is
+// borrowed from, as it is where a '&' or '&mut' is wanted: "any reference may
+// be safely coerced to a borrowed reference" (refborref.html), and a 'uni'
+// source may lend a '&uni'. The owner stays: it may be lent again after the
+// borrow's last use, and its value is finalized at the owner's own scope end.
+// The compiler builds the borrow '&uni *o' that could be written out.
+//
+// Each shape is here: a '+so' owner passed twice to a '&uni' parameter, used
+// twice as the receiver of a 'self &uni' method, bound to a '&uni' local in a
+// block and read after it, and passed twice as a '&uni' to an enrichment of its
+// type; and a '+rc' owner, still 'uni', passed twice. Each 'final' line prints
+// when its owner's block ends, so a moved owner (leaked) would print none.
+// What the borrow forbids the owner while it lives is ref_flow_ownerunilend.
+
+mod ref_ownerunilend;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct R {
+  pub n i64;
+
+  pub fn get(self &uni) i64 { n; }
+
+  fn final(self &uni) {
+    show("final", n);
+  }
+}
+
+struct RichR extends R {
+  pub fn twice(self &) i64 { n * 2; }
+}
+
+fn bump(p &uni R) i64 {
+  p.n = p.n + 1;
+  p.n;
+}
+
+fn twiceOf(p &uni RichR) i64 { p.twice(); }
+
+fn main() {
+  {
+    imm o = +so R[1];
+    show("so", bump(o));
+    show("so", bump(o));
+    show("get", o.get());
+    show("get", o.get());
+    {
+      imm b &uni R = o;
+      b.n = b.n + 10;
+    }
+    show("after-held", o.n);
+    show("rich", twiceOf(o));
+    show("rich", twiceOf(o));
+  }
+  {
+    imm c = +rc R[20];
+    show("rc", bump(c));
+    show("rc", bump(c));
+  }
+  show("end", 0);
+}
