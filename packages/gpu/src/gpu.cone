@@ -41,8 +41,9 @@
 // The objects are WebGPU's: an Instance finds Adapters (GPUs), an Adapter
 // makes a Device, which has a Queue; a Surface is a window's, and a SwapChain
 // hands out its Textures to draw into, one a frame. A Device makes Buffers,
-// Textures (to draw into, or for shaders to sample, filled by
-// 'queue.writeTexture'), Samplers, ShaderModules (from SPIR-V),
+// Textures (to draw into, for shaders to sample, filled by
+// 'queue.writeTexture', or both; 8-bit or half-float colour, of mip levels
+// and layers) and their views (2-D, a 2-D array, a cube), Samplers, ShaderModules (from SPIR-V),
 // BindGroupLayouts, PipelineLayouts, RenderPipelines and BindGroups (of
 // buffers, textures and samplers). Commands are recorded with a
 // CommandEncoder, drawing inside a RenderPass that clears or keeps each
@@ -64,6 +65,11 @@
 // - Push constants are WebGPU's "immediates": a pipeline layout's
 //   'immediateSize' bytes (at most MAX_IMMEDIATE_SIZE, 128), seen by the
 //   vertex and the fragment stage, set by 'pass.setImmediates'.
+// - A view of some levels and layers of a texture ('createViewWith', WebGPU's
+//   'createView' with a descriptor) is kept by the texture and ends with it:
+//   asked for again, the same view is answered. A texture of six square
+//   layers (or a multiple of six) may be viewed as a cube, as WebGPU's may;
+//   Vulkan must be told when the texture is made, so it always is.
 //
 // Coordinates are WebGPU's, whatever the backend's: clip space has y up and
 // depth from 0 to 1, and a texture's first row is its top. On Vulkan, whose
@@ -107,8 +113,11 @@
 // one presentation wants, one the device made to draw into the attachment
 // layout of its format, one shaders sample the shader-read layout (it is
 // moved there when it is made, and back there after 'queue.writeTexture'
-// copies into it). A render pass moves a
-// swapchain texture to the attachment layout and back, and puts a barrier
+// copies into it), and so does one both drawn into and sampled (an HDR
+// frame, a bloom chain, a cube drawn face by face). A render pass moves a
+// swapchain texture to the attachment layout and back, and one drawn into
+// and sampled too, only the level and layer it draws into, what it wrote
+// made visible to the shaders that sample it next; it puts a barrier
 // before each attachment for what earlier commands did with it; a copy from
 // a texture moves it to the copy-source layout and back. An attachment
 // cleared at the start of a pass is moved from 'undefined', since what it

@@ -4,24 +4,38 @@
 // stages and accesses before and after it
 fn transition(cmd vulkan.CommandBuffer, image vulkan.Image, aspect u32, oldLayout u32, newLayout u32,
     srcStage u64, srcAccess u64, dstStage u64, dstAccess u64) {
+  transitionRange(cmd, image, vulkan.ImageSubresourceRange[aspectMask: aspect], oldLayout, newLayout,
+    srcStage, srcAccess, dstStage, dstAccess);
+}
+
+// The same, of the levels and layers 'range' names
+fn transitionRange(cmd vulkan.CommandBuffer, image vulkan.Image, range vulkan.ImageSubresourceRange, oldLayout u32,
+    newLayout u32, srcStage u64, srcAccess u64, dstStage u64, dstAccess u64) {
   imm barrier = vulkan.ImageMemoryBarrier2[pNext: nullp(), srcStageMask: srcStage, srcAccessMask: srcAccess,
     dstStageMask: dstStage, dstAccessMask: dstAccess, oldLayout: oldLayout, newLayout: newLayout, image: image,
-    subresourceRange: vulkan.ImageSubresourceRange[aspectMask: aspect]];
+    subresourceRange: range];
   imm dep = vulkan.DependencyInfo[pNext: nullp(), pMemoryBarriers: 0usize as *vulkan.MemoryBarrier2,
     pBufferMemoryBarriers: 0usize as *vulkan.BufferMemoryBarrier2, imageMemoryBarrierCount: 1u32,
     pImageMemoryBarriers: &barrier as *vulkan.ImageMemoryBarrier2];
   vulkan.cmdPipelineBarrier2(cmd, &dep);
 }
 
+// The level and layer a view names (a pass draws into one of each)
+fn viewRange(backend &TextureBackend) vulkan.ImageSubresourceRange {
+  vulkan.ImageSubresourceRange[aspectMask: vulkan.IMAGE_ASPECT_COLOR_BIT, baseMipLevel: backend.baseMip,
+    levelCount: 1u32, baseArrayLayer: backend.baseLayer, layerCount: 1u32];
+}
+
 // The layout a texture of 'kind' rests in between commands
 fn restLayout(kind u32) u32 {
   if kind == KIND_SURFACE { return vulkan.IMAGE_LAYOUT_PRESENT_SRC_KHR; }
   if kind == KIND_DEPTH { return vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL; }
-  if kind == KIND_SAMPLED { return vulkan.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; }
+  if kind == KIND_SAMPLED or kind == KIND_RENDER_SAMPLED { return vulkan.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; }
   vulkan.IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 }
 
-// Move a new texture of 'kind' from 'undefined' to the layout it rests in
+// Move a new texture of 'kind' from 'undefined' to the layout it rests in,
+// every level and layer of it
 fn firstLayout(cmd vulkan.CommandBuffer, image vulkan.Image, kind u32) {
   mut aspect = vulkan.IMAGE_ASPECT_COLOR_BIT;
   mut stages = vulkan.PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -29,8 +43,10 @@ fn firstLayout(cmd vulkan.CommandBuffer, image vulkan.Image, kind u32) {
     aspect = vulkan.IMAGE_ASPECT_DEPTH_BIT;
     stages = vulkan.PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | vulkan.PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
   }
-  if kind == KIND_SAMPLED { stages = vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT; }
-  transition(cmd, image, aspect, vulkan.IMAGE_LAYOUT_UNDEFINED, restLayout(kind),
+  if kind == KIND_SAMPLED or kind == KIND_RENDER_SAMPLED { stages = vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT; }
+  imm all = vulkan.ImageSubresourceRange[aspectMask: aspect, levelCount: vulkan.REMAINING_MIP_LEVELS,
+    layerCount: vulkan.REMAINING_ARRAY_LAYERS];
+  transitionRange(cmd, image, all, vulkan.IMAGE_LAYOUT_UNDEFINED, restLayout(kind),
     vulkan.PIPELINE_STAGE_2_NONE, vulkan.ACCESS_2_NONE, stages, vulkan.ACCESS_2_NONE);
 }
 
@@ -58,8 +74,8 @@ pub struct CommandEncoder {
   }
 
   // Copy all of 'texture' (an 8-bit color texture with COPY_SRC, or a
-  // swapchain's) into 'buffer', from its start, row after row with no gap
-  // between rows (4 bytes a pixel)
+  // swapchain's; its first level and layer) into 'buffer', from its start,
+  // row after row with no gap between rows (4 bytes a pixel)
   pub fn copyTextureToBuffer(self &mut, texture &Texture, buffer &Buffer) {
     imm image = texture.backend.image;
     imm rest = restLayout(texture.backend.kind);
@@ -71,6 +87,8 @@ pub struct CommandEncoder {
       srcStage = vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
       srcAccess = vulkan.ACCESS_2_NONE;
     }
+    // One drawn into and sampled: after the shaders that sampled it too
+    if texture.backend.kind == KIND_RENDER_SAMPLED { srcStage = vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT; }
     transition(backend.cmd, image, vulkan.IMAGE_ASPECT_COLOR_BIT, rest, vulkan.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
       srcStage, srcAccess, vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_READ_BIT);
     imm region = vulkan.BufferImageCopy[imageSubresource: vulkan.ImageSubresourceLayers[],
@@ -127,17 +145,23 @@ fn beginPass(cmd vulkan.CommandBuffer, color &RenderPassColorAttachment, hasDept
   imm view = color.view;
   imm kind = view.backend.kind;
   imm clear = color.loadOp == LOAD_OP_CLEAR;
+  if view.backend.mipCount != 1u32 or view.backend.layerCount != 1u32 {
+    fail("beginRenderPass: a pass draws into a view of one level and one layer");
+  }
   // What was there is not needed if it is cleared; what wrote it last (an
   // earlier pass) is done first. A swapchain texture comes from the layout
   // presentation wants, presentation's hand-off being the acquire
-  // semaphore's; a texture the device made rests in the attachment layout.
+  // semaphore's; a texture the device made to draw into rests in the
+  // attachment layout; one also sampled rests in the shader-read layout,
+  // what wrote it made visible at the end of that pass, and what sampled it
+  // done first. Only the level and layer the view names move.
   mut oldLayout = restLayout(kind);
   if clear { oldLayout = vulkan.IMAGE_LAYOUT_UNDEFINED; }
   mut srcAccess = vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-  if kind == KIND_SURFACE { srcAccess = vulkan.ACCESS_2_NONE; }
+  if kind == KIND_SURFACE or kind == KIND_RENDER_SAMPLED { srcAccess = vulkan.ACCESS_2_NONE; }
   mut dstAccess = vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
   if !clear { dstAccess = dstAccess | vulkan.ACCESS_2_COLOR_ATTACHMENT_READ_BIT; }
-  transition(cmd, view.backend.image, vulkan.IMAGE_ASPECT_COLOR_BIT, oldLayout,
+  transitionRange(cmd, view.backend.image, viewRange(&view.backend), oldLayout,
     vulkan.IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
     vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, srcAccess,
     vulkan.PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, dstAccess);
@@ -185,7 +209,7 @@ fn beginPass(cmd vulkan.CommandBuffer, color &RenderPassColorAttachment, hasDept
   setViewportFlipped(cmd, 0., 0., f32[view.width], f32[view.height], 0., 1.);
   imm scissor = vulkan.Rect2D[vulkan.Offset2D[0i32, 0i32], vulkan.Extent2D[view.width, view.height]];
   vulkan.cmdSetScissor(cmd, 0u32, 1u32, &scissor as *vulkan.Rect2D);
-  RenderPass[PassBackend[cmd, view.backend.image, kind, true, vulkan.PipelineLayout[0u64]]];
+  RenderPass[PassBackend[cmd, view.backend.image, kind, true, vulkan.PipelineLayout[0u64], viewRange(&view.backend)]];
 }
 
 // The viewport from ('x', 'y'), 'w' by 'h', with y down from the top of the
@@ -221,6 +245,7 @@ struct PassBackend {
   pub kind u32;
   pub open Bool;
   pub layout vulkan.PipelineLayout;    // the bound pipeline's
+  pub range vulkan.ImageSubresourceRange;  // the color attachment's level and layer
 }
 
 // Drawing into attachments, begun by 'beginRenderPass' and ended by 'end'
@@ -296,11 +321,18 @@ pub struct RenderPass {
   }
 
   // The end of the pass; a swapchain texture goes back to the layout kept
-  // between commands
+  // between commands, and so does one sampled by later passes, what the pass
+  // wrote visible to the shaders that sample it
   pub fn end(self &mut) {
     if !backend.open { return; }
     backend.open = false;
     vulkan.cmdEndRendering(backend.cmd);
+    if backend.kind == KIND_RENDER_SAMPLED {
+      transitionRange(backend.cmd, backend.image, backend.range, vulkan.IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        vulkan.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        vulkan.PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_SHADER_READ_BIT);
+    }
     if backend.kind == KIND_SURFACE {
       transition(backend.cmd, backend.image, vulkan.IMAGE_ASPECT_COLOR_BIT, vulkan.IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         vulkan.IMAGE_LAYOUT_PRESENT_SRC_KHR,

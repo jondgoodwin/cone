@@ -51,8 +51,10 @@ Visual Studio projects stay at the root.
   `layout` test checks every struct against `cl.exe`; `gpu` is Cone's own
   thin GPU layer, shaped like WebGPU's objects (`Instance`, `Adapter`,
   `Device` and its `Queue`, `Surface`, `SwapChain`, `CommandEncoder`,
-  `RenderPass`, `Texture` (drawn into, or sampled and filled by
-  `writeTexture`), `Sampler`, `Buffer`, `ShaderModule`, `BindGroupLayout`,
+  `RenderPass`, `Texture` (drawn into, sampled and filled by
+  `writeTexture`, or both; 8-bit or half-float colour, with mip levels and
+  layers, and views of some of them, 2-D, arrays or cubes, kept by the
+  texture), `Sampler`, `Buffer`, `ShaderModule`, `BindGroupLayout`,
   `PipelineLayout` with immediates, `RenderPipeline`, `BindGroup`), with
   Vulkan its only backend and nothing of Vulkan's in its interface, its
   barriers its own and checked by the validation layer's synchronization
@@ -130,11 +132,20 @@ Visual Studio projects stay at the root.
   projected size, with hysteresis), `Camera` (depth 0 to 1) and `Light`
   (one directional light and ambient), the standard lit material (Lambert
   and Blinn-Phong, a base color times a texture) and flat lines, both in
-  Slang (`src/lit.slang`, `src/lines.slang`), a `DrawList` drawn in one
+  Slang (`src/lit.slang`, `src/lines.slang`), the physically based material
+  (`PbrMaterial`, `src/pbr.slang` over the `brdf` module: GGX, a clear coat,
+  and a Belcour-Barla thin film whose thickness is `noise`'s warped fBm),
+  an analytic dusk `Sky` (`src/sky.slang`) drawn behind the scene and made
+  by full-screen passes into image-based lighting (`Environment`,
+  `src/ibl.slang`: prefiltered specular and diffuse cubes, the split sum's
+  table), `Post` (`src/post.slang`: the half-float frame, bloom, and tone
+  mapping by AgX, ACES's fit or Reinhard), a `DrawList` drawn in one
   render pass, the model matrix in the immediates, and `Image` (BMP read
-  and written); its tests need a GPU driver but no window, and its example
-  `pipevk.cone` is the pipe demo: `sculpt`'s bent, subdivided pipe, the cage
-  and three levels side by side, lit, on Vulkan, checked by pixels read back;
+  and written); its tests need a GPU driver but no window, and its examples
+  are `pipevk.cone`, the pipe demo: `sculpt`'s bent, subdivided pipe, the
+  cage and three levels side by side, lit, on Vulkan, checked by pixels
+  read back, and `pipepbr.cone`, the lighting floor: the pipe in Blinn-Phong
+  beside it in black chitin with a thin film, under the dusk, tone-mapped;
   `window` is a window for Vulkan (`openVulkan`, which the `gpu` package
   draws into), through `sdl`, and the render loop's glue (frame time, quit,
   Escape, fullscreen, resize, `keyDown`), and its example,
