@@ -1,0 +1,91 @@
+// A value with branches -- an 'if', a 'match', a block -- passed where a
+// parameter or a field of a known type wants it, is coerced branch by branch to
+// that type, as it is when a variable of that type is initialized with it.
+// Two string literals of different lengths are arrays of different types, and
+// meet only as the '&[]u8' slice they are wanted as; a literal too wide for
+// i32 is built at the i64 it is wanted as.
+//
+// The positions: a function's argument, including one before a defaulted
+// parameter; a method's argument, named on a receiver and bare inside a
+// method; a struct literal's field, by position and by name; an array literal
+// as an argument; and a return value, which already had the function's type
+// to give. Each value is printed, because a program that compiles is not one
+// whose branch took the right value at the right width.
+//
+// An overload set's arguments are still checked with no type expected of
+// them, since the argument types are what choose among the candidates:
+// typemgmt_typecheck_meet holds that refusal.
+
+mod typemgmt_branch_argument;
+
+import stdio use *;
+
+fn show(s &[]u8) {
+  printStr(s); printStr("\n");
+}
+
+fn showInt(n i64) {
+  printInt(n); printStr("\n");
+}
+
+fn wantI64(n i64) i64 {
+  n;
+}
+
+fn withDefault(s &[]u8, n i64 = 7) {
+  printStr(s); printStr(" "); printInt(n); printStr("\n");
+}
+
+fn sum(x [2; i64]) i64 {
+  x[0] + x[1];
+}
+
+fn pick(c Bool) &[]u8 {
+  return if c {"a";} else {"bc";};
+}
+
+struct Label {
+  pub name &[]u8;
+  pub n i64;
+
+  pub fn say(self &Label, s &[]u8) {
+    printStr(self.name); printStr(": "); printStr(s); printStr("\n");
+  }
+
+  // 'say' written bare is 'self.say', whose 'self' is not written
+  pub fn sayBare(self &Label, c Bool) {
+    say(if c {"bare-yes";} else {"bare-no";});
+  }
+}
+
+fn main() {
+  mut yes = true;
+  mut no = false;
+
+  // A function's argument
+  show(if yes {"orbit";} else {"flight";});
+  show(if no {"orbit";} else {"flight";});
+  show(match no {case ==true {"match-yes";} else {"match-no";}});
+  show({"block";});
+  withDefault(if yes {"default";} else {"no-default";});
+
+  // Literals built at the parameter's width
+  showInt(wantI64(if yes {5000000000;} else {1;}));
+  showInt(wantI64({6000000000;}));
+  showInt(sum([5000000000, 2]));
+
+  // A method's argument
+  imm lbl = Label[if yes {"lbl";} else {"label";}, 3];
+  lbl.say(if no {"method-yes";} else {"method-no";});
+  lbl.sayBare(yes);
+
+  // A struct literal's field, by position and by name
+  show(lbl.name);
+  imm named = Label[n: if yes {5000000000;} else {1;}, name: if no {"n1";} else {"name2";}];
+  show(named.name);
+  showInt(named.n);
+
+  // A return value
+  show(pick(yes));
+  show(pick(no));
+}

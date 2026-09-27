@@ -26,7 +26,7 @@ void namedValPrint(NamedValNode *node);
 void namedValNameRes(NameResState *pstate, NamedValNode *node);
 
 // Type check named value node
-void namedValTypeCheck(TypeCheckState *pstate, NamedValNode *node);
+void namedValTypeCheck(TypeCheckState *pstate, NamedValNode *node, INode *expectType);
 
 // Report each 'name: value' in args, where only a type literal may take one.
 // 'what' names the use for the message ("a call", "a macro use"). Answers

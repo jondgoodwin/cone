@@ -81,9 +81,9 @@ one rule: a `ULitTag` carrying `FlagUnkType` against an integer type takes that
 type and drops the flag; against a float type it is replaced by an `FLitNode`
 holding the full 64-bit magnitude written, negated when `FlagLitNeg` says so,
 rounded once at the target's own precision. `litTypeCheck` applies it when `expectType` is a number type, and
-`iexpCoerce` applies it to a literal that reaches coercion still untyped — a
-call's argument, which is type checked before its callee is resolved, and a
-struct literal's field. Every other literal is typed by
+`iexpCoerce` applies it to a literal that reaches coercion still untyped — an
+argument to an overload set, a generic or an operator, which is type checked
+before its callee is chosen. Every other literal is typed by
 `itypeTypeCheck(&node->vtype)` alone.
 
 **`Bool` is the one number type it refuses.** `Bool` is a 1-bit unsigned, so it
@@ -149,13 +149,14 @@ subtype direction "for user convenience".
 
 **A literal nothing typed keeps its `i32` default, and must fit it.** Some
 literals are reached by neither `litTypeCheck`'s `expectType` nor `iexpCoerce`:
-the branches of an `if` or a block passed as an argument, which the call checks
-before it knows the parameter's type, and every literal whose type comes from
-nothing but itself — a variable, global or constant declared without a type, an
-array literal's elements. Such a literal still carries `FlagUnkType` when it is
+the branches of an `if` or a block passed as an operand, or as an argument to
+an overload set or a generic, which get no type because theirs chooses the
+callee, and every literal whose type comes from nothing but itself — a
+variable, global or constant declared without a type, an array literal's
+elements. Such a literal still carries `FlagUnkType` when it is
 generated, so the `i32` is final, and `litCheckDefaultRange`, called from
 `genlExpr`, refuses one whose value does not fit it (`ErrorLitRange`) rather than
-materializing it at 32 bits — `wantI64(if v {5000000000;} else {1;})` passed
+materializing it at 32 bits — `x + if v {5000000000;} else {1;}` would add
 `705032704`. It is checked there because generation is the one place every such
 literal is reached, in a body, a global's initializer and a constant's value
 alike, after everything that could have typed it has run.

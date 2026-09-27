@@ -199,9 +199,9 @@ static void arrayLitSettle(ArrayNode *arrlit) {
 // element type on the same terms a struct literal's field value is coerced to
 // its field's type, so a string literal borrows as a slice, an untyped number
 // literal adopts the element's number type and a narrower value widens. It
-// reaches the literals checked with no type expected of them -- a call's
-// argument is checked before its callee is resolved, as is a struct literal's
-// field value -- which settled their type from their elements alone. The
+// reaches the literals checked with no type expected of them -- an argument to
+// an overload set, a generic or an operator is checked before its callee is
+// chosen -- which settled their type from their elements alone. The
 // element count is not coerced: a literal of another size still does not match.
 int arrayLitCoerce(ArrayNode *arrlit, INode *totypedcl) {
     INode *littype = arrlit->vtype;

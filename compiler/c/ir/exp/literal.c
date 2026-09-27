@@ -355,8 +355,9 @@ void litTypeCheck(TypeCheckState* pstate, INode **nodep, INode *expectType) {
         litCheckRange((ULitNode*)*nodep, 0);
 
     // An untyped integer literal takes the number type it is wanted as. One that
-    // arrives with no expected type -- a call's argument, checked before its
-    // callee is resolved -- is given it by iexpCoerce instead.
+    // arrives with no expected type -- an argument to an overload set, a generic
+    // or an operator, checked before its callee is chosen -- is given it by
+    // iexpCoerce instead.
     else if (expectType != NULL && expectType != unknownType && expectType != noCareType)
         litAdoptNumberType(nodep, expectType);
 }

@@ -154,8 +154,17 @@ checked ahead of the arguments** and its type asked what the name binds — an
 alias, for a macro method the type holds by folding, is resolved first, and the
 receiver shifted to the field it was folded through (`structFoldReceiver`): a
 macro method expands here, through `macroMethodTypeCheck`, with its arguments
-still unchecked, as a macro's must be. Then every argument is checked; then
-generic substitution, which may finish the node entirely.
+still unchecked, as a macro's must be. A name bound to one method `FnDcl`, not
+generic, gives its parameters after `self` as the arguments' expected types. So
+does a function named directly, one `FnDcl` and not generic, whose name is then
+checked ahead of the arguments too (a bare method name's first parameter is the
+unwritten `self`), and a literal of a struct named directly and not generic,
+each value expecting the field it will fill (`fnCallTypeLitField`). Then every
+argument is checked, against that type where there is one, so an `if`, a block
+or an array literal is coerced branch by branch as an initializer is; an
+overload set's, an operator's and a generic's arguments get none, because their
+types are what selects or infers the callee. Then generic substitution, which
+may finish the node entirely.
 
 **Stage 2 — make the callee knowable.**
 Check `objfn`, *unless* it names an overload set — that one path deliberately
