@@ -158,6 +158,36 @@ fn privateField() {
   return;
 }
 
+// Privacy is the type's, so Point's own code reaches the private members of any
+// Point (struct_privacy runs that), and no other type's code does, a method or
+// a static function, in the same module or not
+struct Other {
+  pub fn peek(self &, p &Point) i32 {
+    p.secret;          //~ ErrorNotPublic:6 "May not access the private method/field `secret`."
+  }
+  pub fn call(p Point) i32 {
+    p.fee();           //~ ErrorNotPublic:6 "May not access the private method/field `fee`."
+  }
+}
+
+// A generic type's instance owns its methods, so it reaches the private members
+// of a value of that instance and not of another instance: Box[i32]'s code does
+// not see into a Box[i64]. That is the narrower of the two readings; whether
+// every instance of one generic type should see into every other is not ruled.
+struct Box[T] {
+  v T;
+  pub fn make(v T) Box[T] { Box[T][v]; }
+  pub fn cross(self &, o &Box[i64]) i64 {
+    o.v;               //~ ErrorNotPublic:6 "May not access the private method/field `v`."
+  }
+}
+
+fn crossInstances() i64 {
+  imm a = Box[i32].make(1);
+  imm b = Box[i64].make(2);
+  a.cross(&b);
+}
+
 // An enrichment is inside its base's encapsulation boundary and its own clients
 // are not, so what comes across keeps the base's visibility. Enriched's own
 // method reads Point's private field, which struct_extends runs; a caller of

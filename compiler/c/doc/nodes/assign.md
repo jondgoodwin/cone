@@ -133,14 +133,17 @@ Per target:
    walk (`flowDropNote`).
 4. **`FlagFirstAssign`** on the lval's name-use node when the variable holds
    nothing whole: never initialized, moved out, or hollowed — or is a match's
-   binding, which owns nothing. Generation reads this to *skip* releasing a
+   binding by reference, a copy of the matched reference, which owns nothing (a
+   binding by value is the matched value's own storage, `flowMatchInPlace`, and
+   its store releases what it replaces). Generation reads this to *skip* releasing a
    previous value that never existed or that another owner now holds. It is a
    per-site flag, from the state along the walk in source order; where that may
    differ by path, the path walk's drop-flag client sets or clears it from
    every path, or marks the site `FlagDropTest`, so the variable's drop flag
    decides ([Flow Analysis](../phases/flow.md), "Drop flags"). A store over a
    field or an element of a local's own value (`flowLvalRootVar`) is marked
-   `FlagPartNoPrior` the same way when the local holds nothing. A
+   `FlagPartNoPrior` the same way when the local holds nothing (or is a
+   match's binding by reference). A
    hollowed variable's old allocation still has to go back:
    `assignlvalrtype` builds its `HollowNode` and `assignSingleTarget` wraps it
    round the rval, after the rval's own move-or-copy, so the old allocation is

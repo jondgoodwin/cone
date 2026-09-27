@@ -792,9 +792,10 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
     // that binds nothing has no visibility to refuse, and is reported missing.
     // A private member is reached through 'self': the method's own, or a macro
     // method's, which its expansion has already replaced with the use site's
-    // receiver (FlagSelfRecv). Inside an enum's braces it is reached through any
-    // value of the enum or its variants, because the enum is their privacy
-    // boundary (structEnumSeesPrivate).
+    // receiver (FlagSelfRecv). In the type's own functions it is reached through
+    // any value of the type; inside an enum's braces, through any value of the
+    // enum or its variants, because the enum is their privacy boundary
+    // (structSeesPrivate).
     INode *foundnode = iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym);
     // A type in the namespace -- an enum's variant, or 'Self' -- is a name of the
     // type and never a member of its values, so it is reported missing below and
@@ -805,7 +806,7 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
     if (isprivate && !(callnode->flags & FlagSelfRecv)
         && !(isNameUseNode(obj) && isExpNode(obj)
              && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)
-        && !structEnumSeesPrivate(pstate, objdereftype)) {
+        && !structSeesPrivate(pstate, objdereftype)) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/field `%s`.", &methsym->namestr);
     }
     // A method the type holds by folding is bound to an alias; the visibility

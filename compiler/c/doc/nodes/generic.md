@@ -355,8 +355,9 @@ method's parameter 0, and where no method encloses it — a static function of t
 type — it is `ErrorUnkName`, as a bare field is. A member access the body wrote
 on `self` carries `FlagSelfRecv` on its clone (set by `cloneFnCallNode` while
 `CloneState.selfparm` names the `self` parameter), which is what lets
-`fnCallLowerMethod` grant the expansion a private member exactly where the method
-could reach it: through `self`, and nowhere else. And the body may not name a
+`fnCallLowerMethod` grant the expansion a private member through the macro's
+`self` wherever it is expanded; any other receiver in the expansion is judged by
+the use site's function, as a receiver written there would be. And the body may not name a
 member bare — `nameUseNameRes` refuses it with `ErrorBareMbr` while
 `NameResState.macromethod` is set — because the expansion lands in another
 function whose `self`, if any, is not this type's. A macro without a `self`

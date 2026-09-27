@@ -167,6 +167,11 @@ int structEnumDemandSet(NameResState *pstate, StructNode *node);
 // an extension of that enum? 'self' is granted apart from this, for every type.
 int structEnumSeesPrivate(TypeCheckState *pstate, INode *type);
 
+// May the function being checked reach a private member of 'type' through any
+// value: because the function is the type's own, or by the enum's boundary
+// (structEnumSeesPrivate)?
+int structSeesPrivate(TypeCheckState *pstate, INode *type);
+
 // Get bottom-most base trait for some trait/struct, or NULL if there is not one
 StructNode *structGetBaseTrait(StructNode *node);
 

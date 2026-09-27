@@ -1028,6 +1028,18 @@ LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
         }
         return NULL;
     }
+    // A match's binding by value is the matched value under its variant's name
+    // (flow.c, flowMatchInPlace), so it names the matched value's own storage,
+    // which the variant's layout reads as the conversion does: a copy would
+    // take what a swap or store puts into the binding away from the variable
+    // that finalizes it, and leave that variable's original to die twice
+    if (flowMatchInPlace(var)) {
+        VarDclNode *matchvar = (VarDclNode *)((NameUseNode *)flowMatchBound((INode *)var))->dclnode;
+        assert(matchvar->llvmvar);
+        var->llvmvar = matchvar->llvmvar;
+        genlDropFlagBegin(gen, var, DropFlagWhole);
+        return LLVMBuildLoad2(gen->builder, genlType(gen, var->vtype), var->llvmvar, "");
+    }
     var->llvmvar = genlAlloca(gen, genlType(gen, var->vtype), &var->namesym->namestr);
     genlRootNote(gen, var->llvmvar, var->vtype);
     if (var->value) {

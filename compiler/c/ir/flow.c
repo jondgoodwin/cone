@@ -38,6 +38,22 @@ INode *flowMatchBound(INode *var) {
     return isNameUseNode(matched) && isExpNode(matched) ? matched : NULL;
 }
 
+// Does a match's binding name the matched value's own storage? A binding by
+// value (a variant struct of a matched enum) does: code generation gives it
+// the matched value's variable's storage, read through the variant's layout
+// as the conversion reads it, so a swap or a store into the binding changes
+// the value that variable releases. A binding by reference holds a copy of
+// the matched reference.
+int flowMatchInPlace(VarDclNode *var) {
+    INode *matched = flowMatchBound((INode *)var);
+    if (matched == NULL)
+        return 0;
+    INode *matchdcl = ((NameUseNode *)matched)->dclnode;
+    return matchdcl->tag == VarDclTag && !(matchdcl->flags & FlagStatic)
+        && iexpGetTypeDcl(matched)->tag == StructTag
+        && itypeGetTypeDcl(var->vtype)->tag == StructTag;
+}
+
 // Is this expression a shared owner -- an owning reference that other holders
 // may be sharing? An owning reference that may be aliased ('+rc-mut', '+rc-imm',
 // '+rc-ro', and every 'rc' form but '+rc-uni') is one of possibly many holders
