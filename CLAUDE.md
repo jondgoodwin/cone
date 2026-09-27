@@ -38,12 +38,9 @@ Visual Studio projects stay at the root.
   take); `stdio` prints;
   `libc` and `posix` are C packages of raw bindings to the C library and the
   POSIX functions beyond it (Windows first), and `core` imports `libc` for its
-  allocator; `sdl` and `gl` are C packages of raw bindings to SDL2 (a
-  window with an OpenGL context or for Vulkan, its events and clock, and
-  loading Vulkan) and to OpenGL (what a
-  renderer calls; the functions newer than OpenGL 1.1 are looked up at run
-  time by `gl.load`), linking `SDL2.lib`, which must be on `LIB`, and the
-  Windows SDK's `opengl32.lib`; `vulkan` is raw bindings to Vulkan 1.3,
+  allocator; `sdl` is a C package of raw bindings to SDL2 (a window for
+  Vulkan, its events and clocks, and loading Vulkan), linking `SDL2.lib`,
+  which must be on `LIB`; `vulkan` is raw bindings to Vulkan 1.3,
   written by hand from the specification (Vulkan's names without the prefix:
   `vulkan.createInstance`, `vulkan.InstanceCreateInfo`), linking nothing:
   every function is found at run time through the `vkGetInstanceProcAddr`
@@ -51,12 +48,15 @@ Visual Studio projects stay at the root.
   `layout` test checks every struct against `cl.exe`; `gpu` is Cone's own
   thin GPU layer, shaped like WebGPU's objects (`Instance`, `Adapter`,
   `Device` and its `Queue`, `Surface`, `SwapChain`, `CommandEncoder`,
-  `RenderPass`, `Texture`, `Buffer`, `ShaderModule`, `BindGroupLayout`,
+  `RenderPass`, `Texture` (drawn into, or sampled and filled by
+  `writeTexture`), `Sampler`, `Buffer`, `ShaderModule`, `BindGroupLayout`,
   `PipelineLayout` with immediates, `RenderPipeline`, `BindGroup`), with
   Vulkan its only backend and nothing of Vulkan's in its interface, its
   barriers its own and checked by the validation layer's synchronization
-  validation, keeping two frames in flight and designed for a command pool
-  per recording thread; its examples in `packages/gpu/examples/`: `clear`
+  validation, keeping two frames in flight (a buffer released with
+  `queue.releaseBuffer` is destroyed when its frame comes round) and
+  designed for a command pool per recording thread; its examples in
+  `packages/gpu/examples/`: `clear`
   clears a window through a swapchain, `triangle` draws the RGB triangle and
   `cube` a spinning, depth-tested cube, each reading pixels back; its
   shaders are Slang, compiled ahead of time to SPIR-V that is committed and
@@ -101,16 +101,26 @@ Visual Studio projects stay at the root.
   `AtomicValue`; the futex the blocking layers are built on (on an
   `Atomic[u32]`, linking the Windows SDK's `Synchronization.lib`); and,
   on the futex alone, Rust's way, the unchecked locks `Mutex`, `RwLock`,
-  `Condvar` and `Once`, with explicit lock and unlock; `render` draws 3D
-  shapes through OpenGL (`Shape`, made from a `mesh.Mesh`, and its sphere,
-  plane and cube, `Shader`, `Image` from BMP, `Texture`, `Camera`, `Light`),
-  ported from Pegasus3D over `gl`, `geomath`, `mesh` and `collections`,
-  needing no window to build or test;
-  `window` is a window with an OpenGL context, or one for Vulkan
-  (`openVulkan`, which the `gpu` package draws into), through `sdl`, and the render
-  loop's glue (frame time, quit, Escape, fullscreen, resize), and its
-  example, `packages/window/examples/spin.cone`, draws a lit, textured,
-  turning sphere (building it needs SDL2's `lib` folder on `LIB`).
+  `Condvar` and `Once`, with explicit lock and unlock; `render` draws lit
+  meshes through `gpu` (nothing of Vulkan's in it): a `Renderer` holding
+  GPU meshes made once from a `mesh.Mesh` (a vertex buffer a stream, 32-bit
+  indices, a draw a material group), textures and materials in `pool`s,
+  each named by a handle, a mesh's contents replaceable under its handle
+  (swapped in at the next frame, the old buffers released after the frames
+  that drew them), `LodChain` (levels of detail chosen by index or by
+  projected size, with hysteresis), `Camera` (depth 0 to 1) and `Light`
+  (one directional light and ambient), the standard lit material (Lambert
+  and Blinn-Phong, a base color times a texture) and flat lines, both in
+  Slang (`src/lit.slang`, `src/lines.slang`), a `DrawList` drawn in one
+  render pass, the model matrix in the immediates, and `Image` (BMP read
+  and written); its tests need a GPU driver but no window, and its example
+  `pipevk.cone` is the pipe demo: `sculpt`'s bent, subdivided pipe, the cage
+  and three levels side by side, lit, on Vulkan, checked by pixels read back;
+  `window` is a window for Vulkan (`openVulkan`, which the `gpu` package
+  draws into), through `sdl`, and the render loop's glue (frame time, quit,
+  Escape, fullscreen, resize, `keyDown`), and its example,
+  `packages/window/examples/spin.cone`, draws a lit, textured, turning
+  sphere with `render` (building it needs SDL2's `lib` folder on `LIB`).
   A package's example programs live in its own `examples/` folder, each run
   with `congo run packages/<name>/examples/<file>.cone`, and its tests in its
   own `tests/` folder, one program each beside the output it must print;
@@ -160,10 +170,8 @@ Visual Studio projects stay at the root.
   `compiler/c/doc/compiler/performance.md`, "Measuring it", holds the baseline.
 - `samples/`: sample Cone programs. `oslayer` tours the `libc` and `posix`
   packages and is built and run by `test_congo.py`, as is `geomath`'s example,
-  `packages/geomath/examples/tour.cone`. `opengl` opens a window cleared to
-  a color through the `sdl` and `gl` packages; it links only with SDL2's
-  `lib` folder on `LIB`, and runs with `SDL2.dll` on `PATH`. The test suite
-  builds neither it nor `webgl`.
+  `packages/geomath/examples/tour.cone`. `webgl` draws through WebGL from
+  WebAssembly, with its own bindings; the test suite does not build it.
 - `workitems/`: the plan and backlog are kept by the project owner outside this
   repository; `workitems/_index.md` says so. `workitems/done/` holds completed
   items.

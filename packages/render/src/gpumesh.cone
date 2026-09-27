@@ -1,0 +1,236 @@
+// GPU meshes, their handles, and level-of-detail chains.
+//
+// A GpuMesh is one version of a mesh on the GPU: a vertex buffer for each of
+// the Mesh's streams (positions, normals, uvs: the Mesh keeps each as its own
+// list, so each is copied up as it is, with no interleaving) and an index
+// buffer of 32-bit indices, made once and kept. Its groups are the Mesh's
+// material groups (one covering every index if it has none), each one draw.
+// A mesh of lines has positions and indices only, two indices a line.
+//
+// A MeshSlot, which a MeshHandle names in the renderer's pool, holds two
+// versions: the one drawn, and room for a replacement. 'replaceMesh' uploads
+// the new version into the other at once; the renderer swaps it in at the
+// start of the next frame's rendering (so every draw of one frame sees one
+// version), and releases the old version's buffers with 'queue.releaseBuffer',
+// which destroys them once the GPU has finished the frames that drew them.
+// The handle never changes: whatever holds it draws the new version.
+
+pub struct GpuMesh {
+  pub positions Buffer;
+  pub normals Buffer;              // none for lines
+  pub uvs Buffer;                  // none for lines
+  pub indices Buffer;
+  pub vertexCount u32;
+  pub indexCount u32;
+  pub groups List[Group];          // index ranges, one draw each
+  pub topology u32;                // PRIMITIVE_TOPOLOGY_TRIANGLE_LIST or _LINE_LIST
+  pub center Vec3;                 // its bounding sphere, in its own coordinates
+  pub radius f32;
+
+  // No mesh: what a slot's spare version holds (not valid)
+  pub fn none() GpuMesh {
+    GpuMesh[Buffer.none(), Buffer.none(), Buffer.none(), Buffer.none(), 0u32, 0u32, List[Group].empty(),
+      PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, Vec3[0., 0., 0.], 0.];
+  }
+
+  pub fn isValid(self &) Bool { positions.isValid() and indices.isValid() and indexCount > 0u32; }
+
+  // Give its buffers back: they are destroyed once the GPU has finished the
+  // frames that may use them, and it holds nothing
+  pub fn release(self &mut, queue &mut Queue) {
+    queue.releaseBuffer(&mut positions);
+    queue.releaseBuffer(&mut normals);
+    queue.releaseBuffer(&mut uvs);
+    queue.releaseBuffer(&mut indices);
+    vertexCount = 0u32;
+    indexCount = 0u32;
+    groups.clear();
+  }
+}
+
+// The bytes of a list, for 'writeBuffer'
+fn bytesOf[T](list &List[T]) *u8 {
+  imm v = list.view();
+  &v[0] as *u8;
+}
+
+// A buffer of 'size' bytes for 'usage', filled from 'data'; COPY_SRC too,
+// so what it holds can be read back
+fn filledBuffer(device &mut Device, data *u8, size u64, usage u32) Buffer {
+  mut b = device.createBuffer(size, usage | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC);
+  device.queue.writeBuffer(&b, 0u64, data, size);
+  b;
+}
+
+// The smallest sphere about the middle of its bounds holding every position
+fn boundingSphere(positions &[]Vec3, center &mut Vec3, radius &mut f32) {
+  if positions.len == 0usize {
+    *center = Vec3[0., 0., 0.];
+    *radius = 0.;
+    return;
+  }
+  imm box = Aabb3.fromPoints(positions);
+  imm c = (box.min + box.max) * 0.5;
+  mut r2 f32 = 0.;
+  mut i = 0usize;
+  while i < positions.len {
+    imm d = positions[i].distanceSquared(c);
+    if d > r2 { r2 = d; }
+    i = i + 1usize;
+  }
+  *center = c;
+  *radius = r2.sqrt();
+}
+
+// A mesh of triangles uploaded: normals made smooth if it has none, uvs of 0
+// if it has none
+fn uploadTriangles(device &mut Device, m &Mesh) GpuMesh {
+  mut g = GpuMesh.none();
+  imm n = m.positions.len();
+  if n == 0usize or m.indices.len() == 0usize { return g; }
+  g.vertexCount = u32[n];
+  g.indexCount = u32[m.indices.len()];
+  g.positions = filledBuffer(device, bytesOf[Vec3](&m.positions), u64[n] * 12u64, BUFFER_USAGE_VERTEX);
+  if m.normals.len() == n {
+    g.normals = filledBuffer(device, bytesOf[Vec3](&m.normals), u64[n] * 12u64, BUFFER_USAGE_VERTEX);
+  } else {
+    mut withNormals = Mesh.empty();
+    withNormals.append(m);
+    withNormals.computeSmoothNormals();
+    g.normals = filledBuffer(device, bytesOf[Vec3](&withNormals.normals), u64[n] * 12u64, BUFFER_USAGE_VERTEX);
+  }
+  if m.uvs.len() == n {
+    g.uvs = filledBuffer(device, bytesOf[Vec2](&m.uvs), u64[n] * 8u64, BUFFER_USAGE_VERTEX);
+  } else {
+    mut zeros = List[Vec2].withCapacity(n);
+    mut i = 0usize;
+    while i < n {
+      zeros.push(Vec2[0., 0.]);
+      i = i + 1usize;
+    }
+    g.uvs = filledBuffer(device, bytesOf[Vec2](&zeros), u64[n] * 8u64, BUFFER_USAGE_VERTEX);
+  }
+  g.indices = filledBuffer(device, bytesOf[u32](&m.indices), u64[g.indexCount] * 4u64, BUFFER_USAGE_INDEX);
+  if m.groups.len() == 0usize {
+    g.groups.push(Group[0u32, g.indexCount, 0u32]);
+  } else {
+    mut i = 0usize;
+    while i < m.groups.len() {
+      g.groups.push(*m.groups[i]);
+      i = i + 1usize;
+    }
+  }
+  boundingSphere(m.positions.view(), &mut g.center, &mut g.radius);
+  g;
+}
+
+// Lines uploaded: 'positions', and 'indices' two a line
+fn uploadLines(device &mut Device, positions &[]Vec3, indices &[]u32) GpuMesh {
+  mut g = GpuMesh.none();
+  g.topology = PRIMITIVE_TOPOLOGY_LINE_LIST;
+  if positions.len == 0usize or indices.len < 2usize { return g; }
+  g.vertexCount = u32[positions.len];
+  g.indexCount = u32[indices.len / 2usize * 2usize];
+  g.positions = filledBuffer(device, &positions[0] as *u8, u64[positions.len] * 12u64, BUFFER_USAGE_VERTEX);
+  g.indices = filledBuffer(device, &indices[0] as *u8, u64[g.indexCount] * 4u64, BUFFER_USAGE_INDEX);
+  g.groups.push(Group[0u32, g.indexCount, 0u32]);
+  boundingSphere(positions, &mut g.center, &mut g.radius);
+  g;
+}
+
+// The indices of a PolyMesh's edges, two an edge, into its positions: its
+// wireframe, as the faces are (quads stay quads), for 'addLines'
+pub fn polyEdges(pm &PolyMesh) List[u32] {
+  imm n = pm.edgeCount();
+  mut out = List[u32].withCapacity(n * 2usize);
+  mut e = 0usize;
+  while e < n {
+    imm h = u32[e] * 2u32;
+    out.push(pm.fromVertex(h));
+    out.push(pm.toVertex(h));
+    e = e + 1usize;
+  }
+  out;
+}
+
+// A mesh in the renderer: the version drawn, and a replacement waiting
+pub struct MeshSlot {
+  pub a GpuMesh;
+  pub b GpuMesh;
+  pub active u32;                  // 0: 'a' is drawn; 1: 'b'
+  pub pending Bool;                // the other holds a replacement,
+  pub pendingFrame u64;            // made in this frame, swapped in after it
+  pub version u32;                 // replacements swapped in so far
+
+  // The version drawn
+  pub fn current(self &) &GpuMesh {
+    if active == 0u32 { return &a; }
+    &b;
+  }
+}
+
+// A mesh the renderer holds (a slot and a generation: a handle to one
+// removed reaches nothing)
+pub struct MeshHandle {
+  pub slot Ref[MeshSlot];
+
+  pub fn none() MeshHandle { MeshHandle[Ref[MeshSlot].none()]; }
+  pub fn isNone(self) Bool { slot.isNone(); }
+}
+
+// The levels of detail of one object: meshes the renderer holds, LOD 0 the
+// most detailed first (as Unreal, Unity and Godot number them), each with the
+// least size, in pixels, its object must be drawn at to be chosen (its
+// projected diameter: Camera's 'projectedSize'). 'select' chooses by index;
+// 'selectBySize' by the size, moving to a finer level only once the size is
+// past its threshold by the fraction 'hysteresis', and to a coarser one only
+// once it is short of its own threshold by that fraction, so an object
+// resting near a threshold does not flicker between two.
+pub struct LodChain {
+  pub levels List[MeshHandle];
+  pub minSizes List[f32];
+  pub hysteresis f32;
+  pub current usize;
+
+  pub fn empty(hysteresis f32) LodChain {
+    LodChain[List[MeshHandle].empty(), List[f32].empty(), hysteresis, 0usize];
+  }
+
+  // Add the next, coarser, level: drawn while the object is at least
+  // 'minSize' pixels (the last level's is never consulted: it is drawn at
+  // any size below the one before)
+  pub fn add(self &mut, mesh MeshHandle, minSize f32) {
+    levels.push(mesh);
+    minSizes.push(minSize);
+  }
+
+  pub fn len(self &) usize { levels.len(); }
+
+  // Draw level 'index' (the last, if it is past the end)
+  pub fn select(self &mut, index usize) {
+    if levels.len() == 0usize { return; }
+    current = if index < levels.len() {index;} else {levels.len() - 1usize;};
+  }
+
+  // Choose the level for an object drawn 'size' pixels across, answering it
+  pub fn selectBySize(self &mut, size f32) usize {
+    imm n = levels.len();
+    if n == 0usize { return 0usize; }
+    if current >= n { current = n - 1usize; }
+    // Finer, while the size is well past the finer level's threshold
+    while current > 0usize and size >= *minSizes[current - 1usize] * (1. + hysteresis) {
+      current = current - 1usize;
+    }
+    // Coarser, while the size is well short of this level's own
+    while current + 1usize < n and size < *minSizes[current] * (1. - hysteresis) {
+      current = current + 1usize;
+    }
+    current;
+  }
+
+  // The mesh of the level chosen
+  pub fn mesh(self &) MeshHandle {
+    if levels.len() == 0usize { return MeshHandle.none(); }
+    *levels[current];
+  }
+}

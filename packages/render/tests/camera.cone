@@ -1,16 +1,18 @@
-// The render package's Camera, Light and Uniform, checked with the testing
-// package against values worked out by hand. Only a failure prints, so
-// camera.out holds the summary alone. 'begin' calls OpenGL, so the view
-// matrix it would store is set here from 'viewMatrix' instead.
+// The render package's Camera and Light, checked with the testing package
+// against values worked out by hand. Only a failure prints, so camera.out
+// holds the summary alone. Nothing here needs a GPU.
 //
 // - A new camera is Pegasus's: perspective, 50 degrees (held in radians),
-//   0.1 to 1000, at (0, 0, 5) facing -z; with no target its aspect is 1.
-// - Its perspective into 800 by 600 (aspect 4/3), with OpenGL's depth from
-//   -1 to 1: with t = tan 25deg = 0.4663077, m[0] = 1 / (t 4/3) = 1.6083856,
-//   m[5] = 1 / t = 2.1445069, m[10] = 1000.1 / -999.9 = -1.0002000, m[11] =
-//   -1, m[14] = 200 / -999.9 = -0.2000200.
-// - Its orthogonal projection into 100 by 100, 10 high, OpenGL's too: m[0] =
-//   m[5] = 1/10, m[10] = 2 / -999.9 = -0.0020002, m[14] = -1.0002000, m[15] = 1.
+//   0.1 to 1000, at (0, 0, 5) facing -z.
+// - Its perspective into 800 by 600 (aspect 4/3), depth from 0 to 1: with
+//   t = tan 25deg = 0.4663077, m[0] = 1 / (t 4/3) = 1.6083856, m[5] = 1 / t
+//   = 2.1445069, m[10] = far / (near - far) = 1000 / -999.9 = -1.0001000,
+//   m[11] = -1, m[14] = near far / (near - far) = 100 / -999.9 = -0.1000100.
+//   A point on the near plane, (0, 0, -0.1), goes to depth m[10] (-0.1) +
+//   m[14] = 0 (w = 0.1); one on the far plane to 1.
+// - Its orthogonal projection of aspect 1, 10 high: m[0] = m[5] = 2 / 20 =
+//   0.1, m[10] = 1 / (near - far) = -0.0010001, m[14] = near / (near - far) =
+//   -0.00010001, m[15] = 1.
 // - Its view at (0, 0, 5) facing -z moves the world by (0, 0, -5).
 // - Turned a quarter about y, a camera faces -x (its -z turned: z' = -x sin +
 //   z cos gives (-1, 0, 0)), so the world point (-3, 0, 5), 3 ahead of it, is
@@ -21,9 +23,19 @@
 //   still at (10, 1, 0), the camera's (0, 0, 5) turns to (5, 0, 0), so it is
 //   at (15, 1, 0), facing -x: (15, 1, 0) is its origin and (13, 1, 0) is 2
 //   ahead, (0, 0, -2).
-// - A light at (-3.5, 5.5, 10) gives the camera three uniforms: its origin
-//   as a Vec3 (kind 4), the ambient and its color as four floats (kind 5); a
-//   second light replaces them.
+// - lookAt from (5, 0, 0) at the origin, y up: forward is -x, right is
+//   forward x up = (0, 0, -1). So the origin is (0, 0, -5) to it, (0, 1, 0)
+//   is (0, 1, -5), and (0, 0, -1), to its right, (1, 0, -5); its position is
+//   (5, 0, 0). From (0, 0, -5), looking along +z: right is (-1, 0, 0), a
+//   half turn about y (the quaternion (0, 1, 0, 0), whose matrix has a
+//   negative trace, the other branch of the conversion), so (1, 0, 0) is
+//   (-1, 0, -5) to it.
+// - projectedSize: a sphere of radius 1 at the origin, from (0, 0, 5), into
+//   600 pixels: 1 / (5 t) x 600 = 257.34130. One around the camera: 600.
+//   Orthogonal, 10 high: 1 / 10 x 600 = 60.
+// - Light.directional((0, -2, 0)) travels (0, -1, 0). Light.from(-3.5, 5.5,
+//   10), 11.937336 from the origin, travels (0.2931975, -0.4607390,
+//   -0.8377073).
 
 mod camera;
 
@@ -52,35 +64,33 @@ fn defaults() {
   expectFloat(c.orientation.w, 1., near, "no turn");
   expectFloat(c.background.alpha, 1., near, "opaque black");
   expectBool(c.following, false, "following nothing");
-  expectFloat(c.aspect(), 1., near, "aspect with no target");
-  expectInt(i64[c.uniforms.len()], 0, "no uniforms yet");
 }
 
 fn projections() {
   mut c = Camera.make();
-  c.targetRect = IRect[0, 0, 800, 600];
-  expectFloat(c.aspect(), 1.3333333, near, "aspect of 800 by 600");
-  imm p = c.perspective();
+  imm p = c.perspective(800. / 600.);
   expectFloat(p.m[0], 1.6083856, close, "perspective m[0]");
   expectFloat(p.m[5], 2.1445069, close, "perspective m[5]");
-  expectFloat(p.m[10], -1.0002000, close, "perspective m[10]");
+  expectFloat(p.m[10], -1.0001000, close, "perspective m[10]");
   expectFloat(p.m[11], -1., near, "perspective m[11]");
-  expectFloat(p.m[14], -0.2000200, close, "perspective m[14]");
+  expectFloat(p.m[14], -0.1000100, close, "perspective m[14]");
   expectFloat(p.m[15], 0., near, "perspective m[15]");
-  // (A local: indexing a field of a returned struct, c.projectionMatrix().m[5],
-  // is a compiler defect, error 1075)
-  imm pp = c.projectionMatrix();
+  imm onNear = p * Vec4[0., 0., -0.1, 1.];
+  expectFloat(onNear.z / onNear.w, 0., near, "the near plane at depth 0");
+  imm onFar = p * Vec4[0., 0., -1000., 1.];
+  expectFloat(onFar.z / onFar.w, 1., near, "the far plane at depth 1");
+  // (A local: indexing a field of a returned struct is refused)
+  imm pp = c.projectionMatrix(800. / 600.);
   expectFloat(pp.m[5], 2.1445069, close, "projection, perspective");
 
-  c.targetRect = IRect[0, 0, 100, 100];
-  imm o = c.orthogonal();
+  imm o = c.orthogonal(1.);
   expectFloat(o.m[0], 0.1, near, "orthogonal m[0]");
   expectFloat(o.m[5], 0.1, near, "orthogonal m[5]");
-  expectFloat(o.m[10], -0.0020002, near, "orthogonal m[10]");
-  expectFloat(o.m[14], -1.0002000, close, "orthogonal m[14]");
+  expectFloat(o.m[10], -0.0010001, near, "orthogonal m[10]");
+  expectFloat(o.m[14], -0.00010001, near, "orthogonal m[14]");
   expectFloat(o.m[15], 1., near, "orthogonal m[15]");
   c.projection = Orthogonal;
-  imm po = c.projectionMatrix();
+  imm po = c.projectionMatrix(1.);
   expectFloat(po.m[0], 0.1, near, "projection, orthogonal");
 }
 
@@ -90,9 +100,9 @@ fn views() {
   expectFloat(v.m[0], 1., near, "view m[0]");
   expectFloat(v.m[10], 1., near, "view m[10]");
   point(Vec3[v.m[12], v.m[13], v.m[14]], 0., 0., -5., "view's move");
+  point(c.position(), 0., 0., 5., "its position");
 
   c.orientation = Quat.angleAxis(pi / 2., Vec3[0., 1., 0.]);
-  c.vmatrix = c.viewMatrix();
   point(c.cameraPoint(Vec3[-3., 0., 5.], Mat4.identity()), 0., 0., -3., "3 ahead of a turned camera");
   point(c.cameraPoint(Vec3[0., 0., 5.], Mat4.identity()), 0., 0., 0., "a turned camera's origin");
   // A point in something placed at (-3, 0, 0): its origin is the point above
@@ -107,68 +117,50 @@ fn views() {
   point(Vec3[fv.m[12], fv.m[13], fv.m[14]], -10., -1., -5., "following's move");
 
   f.followMatrix = Mat4.fromTrs(Vec3[10., 0., 0.], Quat.angleAxis(pi / 2., Vec3[0., 1., 0.]), Vec3[1., 1., 1.]);
-  f.vmatrix = f.viewMatrix();
   point(f.cameraPoint(Vec3[15., 1., 0.], Mat4.identity()), 0., 0., 0., "following a turned thing: origin");
   point(f.cameraPoint(Vec3[13., 1., 0.], Mat4.identity()), 0., 0., -2., "following a turned thing: ahead");
+  point(f.position(), 15., 1., 0., "following a turned thing: its position");
+}
+
+fn lookAts() {
+  mut c = Camera.make();
+  c.lookAt(Vec3[5., 0., 0.], Vec3[0., 0., 0.], Vec3[0., 1., 0.]);
+  point(c.cameraPoint(Vec3[0., 0., 0.], Mat4.identity()), 0., 0., -5., "lookAt: the target ahead");
+  point(c.cameraPoint(Vec3[0., 1., 0.], Mat4.identity()), 0., 1., -5., "lookAt: up is up");
+  point(c.cameraPoint(Vec3[0., 0., -1.], Mat4.identity()), 1., 0., -5., "lookAt: right is right");
+  point(c.position(), 5., 0., 0., "lookAt: where it is");
+
+  c.lookAt(Vec3[0., 0., -5.], Vec3[0., 0., 0.], Vec3[0., 1., 0.]);
+  expectFloat(c.orientation.y, 1., close, "a half turn about y");
+  expectFloat(c.orientation.w, 0., close, "a half turn about y: w");
+  point(c.cameraPoint(Vec3[0., 0., 0.], Mat4.identity()), 0., 0., -5., "turned round: the target ahead");
+  point(c.cameraPoint(Vec3[1., 0., 0.], Mat4.identity()), -1., 0., -5., "turned round: +x on its left");
+}
+
+fn sizes() {
+  mut c = Camera.make();
+  expectFloat(c.projectedSize(Vec3[0., 0., 0.], 1., 600.), 257.34130, 0.001d, "a sphere 5 away");
+  expectFloat(c.projectedSize(Vec3[0., 0., 4.5], 1., 600.), 600., near, "a sphere around the camera");
+  c.projection = Orthogonal;
+  expectFloat(c.projectedSize(Vec3[0., 0., 0.], 1., 600.), 60., near, "orthogonal");
 }
 
 fn lights() {
-  mut c = Camera.make();
-  imm l = Light.at(Vec3[-3.5, 5.5, 10.], Color[0.52, 0.55, 0.60, 1.], Color[0.78, 0.70, 0.55, 1.]);
-  point(l.origin(), -3.5, 5.5, 10., "light's origin");
-  l.prepare(&mut c);
-  expectInt(i64[c.uniforms.len()], 3, "three light uniforms");
-  expect(c.uniforms.has("lightOrigin"), "lightOrigin given");
-  expect(c.uniforms.has("ambient"), "ambient given");
-  expect(c.uniforms.has("lightColor"), "lightColor given");
-  expect(!c.uniforms.has("diffuse"), "diffuse not given");
-  imm o = *c.uniforms["lightOrigin"];
-  expectInt(i64[o.kind], i64[UniformVec3], "lightOrigin is a Vec3");
-  expectFloat(o.f[0], -3.5, near, "lightOrigin x");
-  expectFloat(o.f[2], 10., near, "lightOrigin z");
-  imm a = *c.uniforms["ambient"];
-  expectInt(i64[a.kind], i64[UniformVec4], "ambient is four floats");
-  expectFloat(a.f[1], 0.55, near, "ambient green");
-  expectFloat((*c.uniforms["lightColor"]).f[0], 0.78, near, "light's red");
-
-  imm l2 = Light.at(Vec3[1., 2., 3.], Color.gray(0.1), Color.gray(0.9));
-  l2.prepare(&mut c);
-  expectInt(i64[c.uniforms.len()], 3, "still three after a second light");
-  expectFloat((*c.uniforms["lightOrigin"]).f[1], 2., near, "the second light's origin");
-}
-
-fn uniforms() {
-  imm f = Uniform.float(2.5);
-  expectInt(i64[f.kind], i64[UniformFloat], "float kind");
-  expectFloat(f.f[0], 2.5, near, "float value");
-  imm i = Uniform.int(7);
-  expectInt(i64[i.kind], i64[UniformInt], "int kind");
-  expectInt(i64[i.i], 7, "int value");
-  imm v2 = Uniform.vec2(0.25, 0.75);
-  expectFloat(v2.f[1], 0.75, near, "vec2 v");
-  imm q = Uniform.quat(Quat.identity());
-  expectInt(i64[q.kind], i64[UniformVec4], "quat kind");
-  expectFloat(q.f[3], 1., near, "quat w");
-  imm m = Uniform.mat4(Mat4.identity().withTranslation(Vec3[4., 5., 6.]));
-  expectInt(i64[m.kind], i64[UniformMat4], "matrix kind");
-  expectFloat(m.f[5], 1., near, "matrix m[5]");
-  expectFloat(m.f[4], 0., near, "matrix m[4]");
-  expectFloat(m.f[13], 5., near, "matrix m[13]");
-
-  mut u = Uniforms.empty();
-  u.set("diffuse", Uniform.color(Color[0.5882, 0.5882, 0.5882, 1.]));
-  u.set("shine", Uniform.float(1.));
-  u.set("shine", Uniform.float(3.));
-  expectInt(i64[u.len()], 2, "a set name replaced");
-  expectFloat((*u["shine"]).f[0], 3., near, "the replacing value");
-  expectFloat((*u["diffuse"]).f[2], 0.5882, near, "diffuse blue");
+  imm d = Light.directional(Vec3[0., -2., 0.], Color[1., 1., 1., 1.], Color.gray(0.1));
+  point(d.direction, 0., -1., 0., "a directional light's direction, made unit");
+  expectFloat(d.ambient.red, 0.1, near, "its ambient");
+  imm l = Light.from(Vec3[-3.5, 5.5, 10.], Color[0.78, 0.70, 0.55, 1.], Color[0.52, 0.55, 0.60, 1.]);
+  point(l.direction, 0.2931975, -0.4607390, -0.8377073, "a light from a place, towards the origin");
+  expectFloat(l.color.red, 0.78, near, "its color");
+  expectFloat(l.ambient.green, 0.55, near, "its ambient");
 }
 
 fn main() i32 {
   defaults();
   projections();
   views();
+  lookAts();
+  sizes();
   lights();
-  uniforms();
   done();
 }

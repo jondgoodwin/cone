@@ -1,31 +1,56 @@
 // spin: a lit, textured sphere turning in a window -- Pegasus's horseworld
-// earth, in Cone. The render package draws it, the window package gives it a
-// window, and geomath places the sphere and the camera.
+// earth, in Cone, drawn by Vulkan. The render package draws it (through the
+// gpu package), the window package gives it a window, and geomath places the
+// sphere and the camera.
 //
 // It stops on Escape, when the window is closed, or after 600 frames (about
 // ten seconds at 60 frames a second), and then prints how many frames it drew
 // and the color it found at the middle of the window on the tenth, which is
-// the sphere's. F11 toggles fullscreen.
+// the sphere's. F11 toggles fullscreen; the window may be resized.
 //
 //   congo run packages/window/examples/spin.cone
 //
-// It needs a display, SDL2.lib on LIB to link and SDL2.dll on PATH to run.
+// It needs a display, a GPU driver with Vulkan 1.3, SDL2.lib on LIB to link
+// and SDL2.dll on PATH to run. With the Vulkan SDK, validation is on.
 
 mod spin;
 
 import stdio use *;
+import libc;
+import sdl;
 import geomath use *;
+import mesh use Mesh;
+import gpu use *;
 import render use *;
 import window use *;
-import gl;
 
 fn main() i32 {
-  mut win = Window.open("Cone: a lit, textured, turning sphere");
+  mut win = Window.openVulkan("Cone: a lit, textured, turning sphere");
   if !win.isOpen() {
     print <- "No window could be opened\n";
     return 1;
   }
-  print <- "OpenGL "; print <- gl.GetString(gl.VERSION); print <- "\n";
+  mut instance = Instance.create("spin");
+  mut surface = instance.createSurface(win.sdlHandle());
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv(&"GPU_POWER_PREFERENCE" as *u8);
+  if (env as usize) != 0usize {
+    if libc.strcmp(env, &"low-power" as *u8) == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&surface, preference);
+  if !adapter.isValid() {
+    print <- "No GPU can draw to the window\n";
+    return 1;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  mut device = adapter.requestDevice();
+  imm size = win.size();
+  mut swapchain = device.createSwapChain(&surface, u32[size.w], u32[size.h], TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut renderer = Renderer.create(&mut device, swapchain.format, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  if !renderer.isValid() {
+    print <- "The renderer could not be made\n";
+    return 1;
+  }
 
   // The camera at (0, 0, 3.5) looks down -z at the sphere, on a dark blue sky
   mut camera = Camera.make();
@@ -33,43 +58,72 @@ fn main() i32 {
   camera.background = Color[0.05, 0.05, 0.15, 1.];
 
   // horseworld's light: a low evening sun, up and to the left, behind the camera
-  imm light = Light.at(Vec3[-3.5, 5.5, 10.], Color[0.52, 0.55, 0.60, 1.], Color[0.78, 0.70, 0.55, 1.]);
+  imm light = Light.from(Vec3[-3.5, 5.5, 10.], Color[0.78, 0.70, 0.55, 1.], Color[0.52, 0.55, 0.60, 1.]);
 
   // A sphere with horseworld earth's diffuse color, and a checkerboard for a
   // texture: eight squares around, four from pole to pole
-  mut shader = Shader.diffuseTextured();
-  mut ball = Shape.sphere(1., 32);
-  mut tex = Texture.from(Image.checker(256, 128, 8, 4, Color[0.9, 0.3, 0.1, 1.], Color[0.95, 0.9, 0.8, 1.]));
-  ball.uniforms.set("diffuse", Uniform.color(Color[0.5882, 0.5882, 0.5882, 1.]));
-  ball.uniforms.set("tex", Uniform.texture(&mut tex));
+  imm sphere = Mesh.sphere(1., 32);
+  imm ball = renderer.addMesh(&mut device, &sphere);
+  imm checks = Image.checker(256, 128, 8, 4, Color[0.9, 0.3, 0.1, 1.], Color[0.95, 0.9, 0.8, 1.]);
+  imm tex = renderer.addTexture(&mut device, &checks);
+  imm earth = Material.textured(Color[0.5882, 0.5882, 0.5882, 1.], tex);
+  imm material = renderer.addMaterial(&mut device, &earth);
+  mut list = DrawList.empty();
 
   // Tilted towards the camera, turning about its own axis
   imm tilt = Quat.angleAxis(0.4, Vec3[1., 0., 0.]);
   imm spinrate f32 = 0.8;     // radians a second
   mut angle f32 = 0.;
   mut frames = 0;
-  mut centre [4; u8] = [4; 0u8];
+  mut centre [3; i32] = [3; 0];
   while win.running and frames < 600 {
     imm dt = win.nextFrame();
     win.pollEvents();
-    angle = angle + dt * spinrate;
-    ball.mmatrix = Mat4.fromTrs(Vec3[0., 0., 0.], tilt * Quat.angleAxis(angle, Vec3[0., 1., 0.]), Vec3[1., 1., 1.]);
-
-    imm size = win.size();
-    camera.begin(size.w, size.h);
-    light.prepare(&mut camera);
-    ball.render(&camera, &mut shader);
-    frames = frames + 1;
-
-    // What was drawn at the middle of the window, before it is shown
-    if frames == 10 {
-      gl.ReadPixels(size.w / 2, size.h / 2, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, &mut centre[0]);
+    if win.resized {
+      imm s = win.size();
+      swapchain.resize(u32[s.w], u32[s.h]);
+      win.resized = false;
     }
-    win.swapBuffers();
+    angle = angle + dt * spinrate;
+    imm frame = swapchain.getCurrentTexture(&mut device);
+    if !frame.ok() {
+      sdl.Delay(10u32);
+    } else {
+      list.clear();
+      list.add(ball, material, Mat4.fromTrs(Vec3[0., 0., 0.], tilt * Quat.angleAxis(angle, Vec3[0., 1., 0.]),
+        Vec3[1., 1., 1.]));
+      mut encoder = device.createCommandEncoder();
+      renderer.render(&mut device, &mut encoder, &frame.texture, &frame.depth, &camera, &light, &list);
+      frames = frames + 1;
+
+      // What was drawn at the middle of the window on the tenth frame
+      if frames == 10 {
+        imm w = frame.texture.width;
+        imm h = frame.texture.height;
+        mut readback = device.createBuffer(u64[w] * u64[h] * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+        encoder.copyTextureToBuffer(&frame.texture, &readback);
+        device.queue.submit(encoder.finish());
+        swapchain.present(&mut device);
+        device.waitIdle();
+        imm p = readback.mappedRange() + usize[(h / 2u32 * w + w / 2u32) * 4u32];
+        imm bgra = frame.texture.format == TEXTURE_FORMAT_BGRA8_UNORM_SRGB
+          or frame.texture.format == TEXTURE_FORMAT_BGRA8_UNORM;
+        centre[0] = i32[*(p + (if bgra {2usize;} else {0usize;}))];
+        centre[1] = i32[*(p + 1usize)];
+        centre[2] = i32[*(p + (if bgra {0usize;} else {2usize;}))];
+      } else {
+        device.queue.submit(encoder.finish());
+        swapchain.present(&mut device);
+      }
+    }
   }
+  device.waitIdle();
 
   print <- "Frames drawn: "; print <- frames; print <- "\n";
   print <- "Middle of the window on frame 10: ";
   print <- centre[0]; print <- " "; print <- centre[1]; print <- " "; print <- centre[2]; print <- "\n";
+  print <- "Vulkan failures: "; print <- u64[failures()];
+  print <- "; validation messages: "; print <- u64[validationMessages()]; print <- "\n";
+  if failures() != 0u32 or validationMessages() != 0u32 { return 1; }
   0;
 }

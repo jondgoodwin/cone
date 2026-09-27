@@ -1,58 +1,84 @@
-// The render package: drawing 3D shapes with OpenGL. A program reaches it with
-// 'import render', and gets:
+// The render package: drawing lit 3D meshes on the GPU, through the gpu
+// package (Vulkan underneath, and nothing of Vulkan's here). A program reaches
+// it with 'import render', and gets:
 //
-// - Shape, a mesh: positions, normals, texture coordinates, colors and the
-//   indices that join them into triangles, made from a mesh package Mesh
-//   ('Shape.fromMesh'), or by the mesh package's generators for a sphere, a
-//   plane and a cube; drawn through a Shader under a Camera.
-// - Shader, a GLSL program: vertex and fragment source, the names of its
-//   vertex attributes and its uniforms; compiled and linked the first time it
-//   is used, from strings or from files. 'Shader.diffuse()' and
-//   'Shader.diffuseTextured()' are Pegasus's horseworld shaders, lit by one
-//   light with ambient light.
-// - Image, pixels decoded from a BMP file (or made: 'Image.checker'), and
-//   Texture, an image handed to OpenGL, with how it is wrapped and filtered.
-// - Camera, which clears its target and works out the projection and view
-//   matrices (perspective or orthogonal, placed by origin and orientation, or
-//   following something), and Light, which gives the camera its light's
-//   position, color and the ambient light.
-// - Uniform and Uniforms: the values a shader's uniforms are given, found by
-//   name first among the shape's and then among the camera's.
+// - Renderer, which owns what drawing needs: the pipelines of its materials,
+//   the frame's uniforms, and the resources it hands out handles to --
+//   meshes, textures, materials -- each kept in a generational pool (the
+//   pool package), so a handle to something removed reaches nothing.
+// - GpuMesh, a mesh.Mesh's vertex streams (positions, normals, uvs, each its
+//   own vertex buffer, as the Mesh keeps them) and its 32-bit indices,
+//   uploaded once into GPU buffers and kept; each of the mesh's material
+//   groups is one draw. A MeshHandle names one, and its contents can be
+//   replaced under the same handle ('replaceMesh'): the new version is
+//   uploaded at once and drawn from the next frame on, and the old one's
+//   buffers are released to the frame that last drew it, destroyed when the
+//   GPU has finished it. That is the rendering plan's requirement for meshes
+//   that arrive at several levels of detail, sculpted at run time.
+// - LodChain, the levels of detail of one object, most detailed first
+//   (LOD 0, as Unreal, Unity and Godot number them), chosen by index or by
+//   the size the object is drawn at, with hysteresis so it does not flicker
+//   at a threshold.
+// - Camera (perspective or orthogonal, depth from 0 to 1, placed by origin
+//   and orientation or 'lookAt') and Light (one directional light and
+//   ambient light).
+// - Material, the standard lit one: a base color times a texture (the
+//   texture optional), Lambert diffuse and Blinn-Phong specular, in Slang
+//   (lit.slang); and lines in one flat color (lines.slang), for wireframes
+//   and edges. glTF 2.0's metallic-roughness PBR is its successor.
+// - DrawList: what is drawn this frame, each a mesh, a material and a model
+//   matrix (and a tint), drawn in one render pass.
+// - Image, pixels from BMP (or made: 'Image.checker'), written as BMP too;
+//   'addTexture' hands one to the GPU.
 //
-// It is ported from the Pegasus3D browser's world libraries (shape, shader,
-// texture, image, camera and light), with Pegasus's conventions, which are
-// geomath's and OpenGL's: right-handed space, a camera looking down its own -z,
-// column-major matrices, f32 everywhere. Its projections are geomath's Gl
-// ones, whose depth runs from -1 to 1 as OpenGL's does. What Pegasus did through Acorn's
-// dynamic objects (a shape found its shader, its uniforms and its buffers by
-// property name) is done here with fields and with the name lists Pegasus's
-// shaders already carried. Where Pegasus was wrong it is corrected, and each
-// correction is marked "(Pegasus ...)" where it stands.
+// A frame, once a window, a device and a swapchain are open (the window and
+// gpu packages):
 //
-// A frame, once a window with an OpenGL context is open and 'gl.load' has found
-// OpenGL's functions (the window package does both):
+//   mut renderer = Renderer.create(&mut device, swapchain.format, TEXTURE_FORMAT_DEPTH32_FLOAT);
+//   imm ball = renderer.addMesh(&mut device, &sphere);          // once
+//   imm redMaterial = Material.plain(Color[1., 0., 0., 1.]);
+//   imm red = renderer.addMaterial(&mut device, &redMaterial);
+//   ...
+//   imm frame = swapchain.getCurrentTexture(&mut device);
+//   list.clear();
+//   list.add(ball, red, Mat4.fromTranslation(Vec3[0., 1., 0.]));
+//   mut encoder = device.createCommandEncoder();
+//   renderer.render(&mut device, &mut encoder, &frame.texture, &frame.depth, &camera, &light, &list);
+//   device.queue.submit(encoder.finish());
+//   swapchain.present(&mut device);
 //
-//   camera.begin(width, height);       // viewport, clear, the matrices
-//   light.prepare(&mut camera);        // the light's uniforms, into the camera
-//   ball.render(&camera, &mut shader); // uniforms, buffers, draw
+// HOW IT IS BOUND. Group 0 is the frame's: one uniform buffer holding the
+// camera's view-projection matrix and position, and the light, written once
+// a frame ('queue.writeBuffer'). Group 1 is the material's: its parameters in
+// a uniform buffer of its own, its texture and the renderer's sampler. The
+// draw's own data -- its model matrix and tint, 80 bytes -- goes in the
+// immediates (Vulkan's push constants), which every Vulkan device offers 128
+// bytes of: per-draw data that changes every draw and is small is what push
+// constants are for, and it needs no buffer per object, no dynamic offsets
+// and no copy. When objects number in the thousands, a storage buffer of
+// transforms indexed by instance is the step after (GPU-driven drawing).
 //
-// Which shader draws which shape, where each shape is placed ('mmatrix'), and
-// which lights reach which camera is the scene's business (Pegasus's world,
-// group and placement), which this package does not have.
+// THE DRAW ORDER. Opaque draws (all there are yet) are sorted by pipeline,
+// lit before lines, and within one front to back by the distance from the
+// camera to each model's origin, so nearer surfaces fill the depth buffer
+// first and hide what is behind them before it is shaded. Transparent draws,
+// back to front, come with blending.
 //
-// Nothing here runs without an OpenGL context but the building of meshes,
-// images, shaders' name lists and cameras' matrices, which is what the tests
-// check. Of the graphics packages it needs only gl: no window, and no SDL.
+// Coordinates are geomath's and gpu's: right-handed, y up, the camera looking
+// down its -z, clip space's y up and depth from 0 to 1. Faces wind
+// counterclockwise seen from the front, as mesh's generators and sculpt's
+// operators make them, and back faces are culled.
 
 mod render;
 
 import libc;
-import gl;
+import gpu use *;
 import geomath use *;
 import collections use *;
-import mesh use Mesh;
+import pool use *;
+import mesh use Mesh, PolyMesh, Group;
 
-// Report a problem to stderr, as Pegasus's vmLog did to its log file
+// Report a problem to stderr
 fn logLine(msg &[]u8) {
   mut m = String.from(msg);
   m.appendByte('\n');
@@ -80,4 +106,441 @@ fn readFile(path &[]u8, ok &mut Bool) String {
   libc.fclose(f);
   *ok = true;
   text;
+}
+
+// The bytes of the frame uniforms (lit.slang's Frame) and of the immediates
+const FRAME_BYTES = 128u64;
+const IMMEDIATE_BYTES = 80u32;
+const MATERIAL_BYTES = 32u64;
+
+// What each render pass draws with: the renderer's pipelines, bind groups and
+// the resources it hands out handles to
+pub struct Renderer {
+  pub colorFormat u32;             // the targets it draws into (TEXTURE_FORMAT_...)
+  pub depthFormat u32;
+  pub litShader ShaderModule;
+  pub linesShader ShaderModule;
+  pub frameLayout BindGroupLayout;
+  pub materialLayout BindGroupLayout;
+  pub layout PipelineLayout;
+  pub litPipeline RenderPipeline;
+  pub linesPipeline RenderPipeline;
+  pub frameUniforms Buffer;
+  pub frameGroup BindGroup;
+  pub sampler Sampler;
+  pub meshes Pool[MeshSlot];
+  pub textures Pool[TextureSlot];
+  pub materials Pool[MaterialSlot];
+  pub white TextureHandle;         // 1 x 1, white: a material's texture when it has none
+  pub pending List[MeshHandle];    // meshes replaced, to be swapped in at a frame's start
+  pub drawCalls u32;               // how many draws the last render made
+  pub triangles u64;               // and how many triangles (or lines) they drew
+
+  // A renderer drawing into targets of 'colorFormat', with a depth texture
+  // of 'depthFormat' (TEXTURE_FORMAT_DEPTH32_FLOAT). Check 'isValid'.
+  pub fn create(device &mut Device, colorFormat u32, depthFormat u32) Renderer {
+    mut litShader = device.createShaderModule(&LIT_SPIRV);
+    mut linesShader = device.createShaderModule(&LINES_SPIRV);
+    imm frameEntries = [BindGroupLayoutEntry[binding: 0u32, visibility: SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT]];
+    mut frameLayout = device.createBindGroupLayout(&frameEntries);
+    imm materialEntries = [BindGroupLayoutEntry[binding: 0u32, visibility: SHADER_STAGE_FRAGMENT],
+      BindGroupLayoutEntry[binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE],
+      BindGroupLayoutEntry[binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER]];
+    mut materialLayout = device.createBindGroupLayout(&materialEntries);
+    imm groupLayouts = [&frameLayout, &materialLayout];
+    mut layout = device.createPipelineLayout(&groupLayouts, IMMEDIATE_BYTES);
+
+    // Lit: three vertex buffers (position, normal, uv), back faces culled,
+    // depth tested and written
+    imm positionAttr = [VertexAttribute[VERTEX_FORMAT_FLOAT32X3, 0u64, 0u32]];
+    imm normalAttr = [VertexAttribute[VERTEX_FORMAT_FLOAT32X3, 0u64, 1u32]];
+    imm uvAttr = [VertexAttribute[VERTEX_FORMAT_FLOAT32X2, 0u64, 2u32]];
+    imm litBuffers = [VertexBufferLayout[arrayStride: 12u64, attributes: &positionAttr],
+      VertexBufferLayout[arrayStride: 12u64, attributes: &normalAttr],
+      VertexBufferLayout[arrayStride: 8u64, attributes: &uvAttr]];
+    imm litDesc = RenderPipelineDescriptor[layout: &layout, vertexModule: &litShader, buffers: &litBuffers,
+      fragmentModule: &litShader, colorFormat: colorFormat, cullMode: CULL_MODE_BACK,
+      depthFormat: depthFormat, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS];
+    mut litPipeline = device.createRenderPipeline(&litDesc);
+
+    // Lines: positions only, depth tested (less or equal) and written
+    imm lineBuffers = [VertexBufferLayout[arrayStride: 12u64, attributes: &positionAttr]];
+    imm linesDesc = RenderPipelineDescriptor[layout: &layout, vertexModule: &linesShader, buffers: &lineBuffers,
+      fragmentModule: &linesShader, colorFormat: colorFormat, topology: PRIMITIVE_TOPOLOGY_LINE_LIST,
+      depthFormat: depthFormat, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS_EQUAL];
+    mut linesPipeline = device.createRenderPipeline(&linesDesc);
+
+    mut frameUniforms = device.createBuffer(FRAME_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
+    imm frameGroupEntries = [BindGroupEntry.buffer(0u32, &frameUniforms)];
+    mut frameGroup = device.createBindGroup(&frameLayout, &frameGroupEntries);
+    imm samplerDesc = SamplerDescriptor[];
+    mut sampler = device.createSampler(&samplerDesc);
+
+    mut r = Renderer[colorFormat, depthFormat, litShader, linesShader, frameLayout, materialLayout, layout,
+      litPipeline, linesPipeline, frameUniforms, frameGroup, sampler, Pool[MeshSlot].empty(),
+      Pool[TextureSlot].empty(), Pool[MaterialSlot].empty(), TextureHandle.none(), List[MeshHandle].empty(),
+      0u32, 0u64];
+    mut w = Image[1, 1, 3, List[u8].empty()];
+    w.pixels.push(255u8);
+    w.pixels.push(255u8);
+    w.pixels.push(255u8);
+    r.white = r.addTexture(device, &w);
+    r;
+  }
+
+  // Whether everything it draws with was made
+  pub fn isValid(self &) Bool {
+    litPipeline.isValid() and linesPipeline.isValid() and frameGroup.isValid() and sampler.isValid()
+      and frameUniforms.isValid();
+  }
+
+  // ---- Meshes ----
+
+  // A mesh of triangles to draw: its vertex streams and indices uploaded
+  // now, and kept. Normals it lacks are made smooth; uvs it lacks are 0.
+  pub fn addMesh(self &mut, device &mut Device, m &Mesh) MeshHandle {
+    imm version = uploadTriangles(device, m);
+    MeshHandle[meshes.add(MeshSlot[version, GpuMesh.none(), 0u32, false, 0u64, 0u32])];
+  }
+
+  // Lines to draw: 'positions', and 'indices' two to a line (a wireframe:
+  // 'polyEdges' makes them of a PolyMesh's edges)
+  pub fn addLines(self &mut, device &mut Device, positions &[]Vec3, indices &[]u32) MeshHandle {
+    imm version = uploadLines(device, positions, indices);
+    MeshHandle[meshes.add(MeshSlot[version, GpuMesh.none(), 0u32, false, 0u64, 0u32])];
+  }
+
+  // Replace what the mesh 'h' holds with 'm', under the same handle: 'm' is
+  // uploaded now, and drawn from the next frame on (a frame's draws all see
+  // one version); the old version's buffers are released then, and
+  // destroyed once the GPU has finished the frames that drew them. Answers
+  // false if 'h' names no mesh.
+  pub fn replaceMesh(self &mut, device &mut Device, h MeshHandle, m &Mesh) Bool {
+    if !meshes.alive(h.slot) { return false; }
+    imm version = uploadTriangles(device, m);
+    self.stage(device, h, version);
+    true;
+  }
+
+  // The same for lines
+  pub fn replaceLines(self &mut, device &mut Device, h MeshHandle, positions &[]Vec3, indices &[]u32) Bool {
+    if !meshes.alive(h.slot) { return false; }
+    imm version = uploadLines(device, positions, indices);
+    self.stage(device, h, version);
+    true;
+  }
+
+  // Put 'version' into the slot of 'h' not being drawn, to be swapped in
+  fn stage(self &mut, device &mut Device, h MeshHandle, version GpuMesh) {
+    mut slot = &mut meshes[h.slot];
+    // A replacement not yet swapped in is replaced itself: it was never drawn
+    if slot.active == 0u32 {
+      slot.b.release(&mut device.queue);
+      slot.b = version;
+    } else {
+      slot.a.release(&mut device.queue);
+      slot.a = version;
+    }
+    if !slot.pending { pending.push(h); }
+    slot.pending = true;
+    slot.pendingFrame = device.frameNumber;
+  }
+
+  // Take the mesh 'h' away: its buffers are released (destroyed once the
+  // GPU has finished with them), and the handle reaches nothing
+  pub fn removeMesh(self &mut, device &mut Device, h MeshHandle) Bool {
+    if !meshes.alive(h.slot) { return false; }
+    {
+      mut slot = &mut meshes[h.slot];
+      slot.a.release(&mut device.queue);
+      slot.b.release(&mut device.queue);
+    }
+    meshes.remove(h.slot);
+  }
+
+  // Whether 'h' names a mesh
+  pub fn hasMesh(self &, h MeshHandle) Bool { meshes.alive(h.slot); }
+
+  // How many times the mesh 'h' has had a replacement swapped in
+  pub fn meshVersion(self &, h MeshHandle) u32 {
+    if !meshes.alive(h.slot) { return 0u32; }
+    meshes[h.slot].version;
+  }
+
+  // Swap in the replacements made in an earlier frame, releasing what they
+  // replace. 'render' does this first; a program drawing no frame need not.
+  pub fn update(self &mut, device &mut Device) {
+    mut i = 0usize;
+    mut kept = List[MeshHandle].empty();
+    while i < pending.len() {
+      imm h = *pending[i];
+      if meshes.alive(h.slot) {
+        mut slot = &mut meshes[h.slot];
+        if slot.pending and device.frameNumber > slot.pendingFrame {
+          if slot.active == 0u32 {
+            slot.a.release(&mut device.queue);
+            slot.active = 1u32;
+          } else {
+            slot.b.release(&mut device.queue);
+            slot.active = 0u32;
+          }
+          slot.pending = false;
+          slot.version = slot.version + 1u32;
+        } elif slot.pending {
+          kept.push(h);
+        }
+      }
+      i = i + 1usize;
+    }
+    pending = kept;
+  }
+
+  // ---- Textures and materials ----
+
+  // An image for materials to sample, handed to the GPU now: sRGB, four
+  // channels (an RGB image's alpha opaque), its rows as the image has them,
+  // bottom first, so a uv's v of 0 is its bottom row (mesh's uvs, v up)
+  pub fn addTexture(self &mut, device &mut Device, img &Image) TextureHandle {
+    imm w = u32[img.width];
+    imm h = u32[img.height];
+    mut rgba = List[u8].withCapacity(usize[w * h * 4u32]);
+    mut p = 0usize;
+    imm n = usize[img.width * img.height];
+    while p < n {
+      imm at = p * usize[img.channels];
+      rgba.push(*img.pixels[at]);
+      rgba.push(*img.pixels[at + 1usize]);
+      rgba.push(*img.pixels[at + 2usize]);
+      rgba.push(if img.channels == 4 {*img.pixels[at + 3usize];} else {255u8;});
+      p = p + 1usize;
+    }
+    imm desc = TextureDescriptor[w, h, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_DST];
+    mut texture = device.createTexture(&desc);
+    if n > 0usize {
+      imm v = rgba.view();
+      device.queue.writeTexture(&texture, &v[0] as *u8, w * 4u32);
+    }
+    TextureHandle[textures.add(TextureSlot[texture])];
+  }
+
+  // A material to draw with: its parameters in a uniform buffer of its own,
+  // bound with its texture (the white one if it has none) and the sampler
+  pub fn addMaterial(self &mut, device &mut Device, material &Material) MaterialHandle {
+    mut uniforms = device.createBuffer(MATERIAL_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
+    imm params = materialParams(material);
+    device.queue.writeBuffer(&uniforms, 0u64, &params as *u8, MATERIAL_BYTES);
+    mut th = material.texture;
+    if !textures.alive(th.slot) { th = white; }
+    imm view = textures[th.slot].texture.createView();
+    imm entries = [BindGroupEntry.buffer(0u32, &uniforms), BindGroupEntry.texture(1u32, &view),
+      BindGroupEntry.sampler(2u32, &sampler)];
+    mut group = device.createBindGroup(&materialLayout, &entries);
+    MaterialHandle[materials.add(MaterialSlot[*material, uniforms, group])];
+  }
+
+  // Change a material's color and shine (not its texture), from the next
+  // submission on
+  pub fn setMaterial(self &mut, device &mut Device, h MaterialHandle, material &Material) Bool {
+    if !materials.alive(h.slot) { return false; }
+    imm params = materialParams(material);
+    mut slot = &mut materials[h.slot];
+    device.queue.writeBuffer(&slot.uniforms, 0u64, &params as *u8, MATERIAL_BYTES);
+    slot.params.baseColor = material.baseColor;
+    slot.params.specular = material.specular;
+    slot.params.shininess = material.shininess;
+    true;
+  }
+
+  // ---- Drawing ----
+
+  // Record one render pass drawing 'list' into 'target' (a texture of the
+  // renderer's color format: a swapchain's, or one the device made), with
+  // 'depth' (the renderer's depth format, of the target's size) cleared
+  // first, seen by 'camera' and lit by 'light'. The target is cleared to the
+  // camera's background. Replacements made in an earlier frame are swapped
+  // in first. A draw whose mesh has been removed is skipped. The frame's
+  // uniforms are one buffer, written by 'queue.writeBuffer' ahead of the
+  // frame's next submission, so the passes of one submission share one
+  // camera and light (a buffer a view is the step when there are views).
+  pub fn render(self &mut, device &mut Device, encoder &mut CommandEncoder, target &Texture, depth &Texture,
+      camera &Camera, light &Light, list &DrawList) {
+    self.update(device);
+    drawCalls = 0u32;
+    triangles = 0u64;
+    if target.width == 0u32 or target.height == 0u32 { return; }
+
+    // The frame's uniforms: the camera and the light
+    imm aspect = f32[target.width] / f32[target.height];
+    imm viewProjection = camera.projectionMatrix(aspect) * camera.viewMatrix();
+    imm eye = camera.position();
+    imm towards = Vec3[0., 0., 0.] - light.direction;
+    mut frame [32; f32] = [32; 0f];
+    mut k = 0usize;
+    while k < 16usize {
+      frame[k] = viewProjection.m[k];
+      k = k + 1usize;
+    }
+    frame[16] = eye.x;
+    frame[17] = eye.y;
+    frame[18] = eye.z;
+    frame[19] = 1.;
+    frame[20] = towards.x;
+    frame[21] = towards.y;
+    frame[22] = towards.z;
+    frame[24] = light.color.red;
+    frame[25] = light.color.green;
+    frame[26] = light.color.blue;
+    frame[27] = 1.;
+    frame[28] = light.ambient.red;
+    frame[29] = light.ambient.green;
+    frame[30] = light.ambient.blue;
+    frame[31] = 1.;
+    device.queue.writeBuffer(&frameUniforms, 0u64, &frame as *u8, FRAME_BYTES);
+
+    // The order: lit before lines, each front to back
+    imm order = self.drawOrder(list, eye);
+
+    imm color = RenderPassColorAttachment[view: target.createView(), clearValue: camera.background];
+    imm depthAttachment = RenderPassDepthStencilAttachment[view: depth.createView(), depthStoreOp: STORE_OP_DISCARD];
+    mut pass = encoder.beginRenderPassWithDepth(&color, &depthAttachment);
+    mut bound = 0u32;                    // 0 none, 1 lit, 2 lines
+    mut boundMaterial = Ref[MaterialSlot].none();
+    mut i = 0usize;
+    while i < order.len() {
+      imm item = list.items[usize[*order[i]]];
+      if meshes.alive(item.mesh.slot) {
+        imm slot = meshes[item.mesh.slot];
+        imm m = slot.current();
+        if m.isValid() {
+          imm lines = m.topology == PRIMITIVE_TOPOLOGY_LINE_LIST;
+          mut drawn = true;
+          if lines {
+            if bound != 2u32 {
+              pass.setPipeline(&linesPipeline);
+              pass.setBindGroup(0u32, &frameGroup);
+              bound = 2u32;
+            }
+          } else {
+            if bound != 1u32 {
+              pass.setPipeline(&litPipeline);
+              pass.setBindGroup(0u32, &frameGroup);
+              bound = 1u32;
+              boundMaterial = Ref[MaterialSlot].none();
+            }
+            if !materials.alive(item.material.slot) {
+              drawn = false;
+            } elif !(boundMaterial == item.material.slot) {
+              imm mslot = materials[item.material.slot];
+              pass.setBindGroup(1u32, &mslot.group);
+              boundMaterial = item.material.slot;
+            }
+          }
+          if drawn {
+            mut immediates [20; f32] = [20; 0f];
+            k = 0usize;
+            while k < 16usize {
+              immediates[k] = item.model.m[k];
+              k = k + 1usize;
+            }
+            immediates[16] = item.tint.red;
+            immediates[17] = item.tint.green;
+            immediates[18] = item.tint.blue;
+            immediates[19] = item.tint.alpha;
+            pass.setImmediates(0u32, &immediates as *u8, IMMEDIATE_BYTES);
+            pass.setVertexBuffer(0u32, &m.positions, 0u64);
+            if !lines {
+              pass.setVertexBuffer(1u32, &m.normals, 0u64);
+              pass.setVertexBuffer(2u32, &m.uvs, 0u64);
+            }
+            pass.setIndexBuffer(&m.indices, INDEX_FORMAT_UINT32, 0u64);
+            mut g = 0usize;
+            while g < m.groups.len() {
+              imm group = m.groups[g];
+              pass.drawIndexed(group.count, 1u32, group.start, 0i32, 0u32);
+              drawCalls = drawCalls + 1u32;
+              if lines {
+                triangles = triangles + u64[group.count / 2u32];
+              } else {
+                triangles = triangles + u64[group.count / 3u32];
+              }
+              g = g + 1usize;
+            }
+          }
+        }
+      }
+      i = i + 1usize;
+    }
+    pass.end();
+  }
+
+  // The indices of 'list's items in the order they are drawn: lit meshes,
+  // then lines, each nearest the camera at 'eye' first (by the distance to
+  // its model's origin)
+  fn drawOrder(self &, list &DrawList, eye Vec3) List[u32] {
+    imm n = list.items.len();
+    mut order = List[u32].withCapacity(n);
+    mut keys = List[f32].withCapacity(n);
+    mut i = 0usize;
+    while i < n {
+      imm item = list.items[i];
+      mut key = item.model.translation().distanceSquared(eye);
+      if meshes.alive(item.mesh.slot) {
+        if meshes[item.mesh.slot].current().topology == PRIMITIVE_TOPOLOGY_LINE_LIST { key = key + 1.0e30; }
+      }
+      // Insertion: stable, and the lists are short
+      mut at = order.len();
+      order.push(u32[i]);
+      keys.push(key);
+      while at > 0usize and *keys[at - 1usize] > key {
+        order.set(at, *order[at - 1usize]);
+        keys.set(at, *keys[at - 1usize]);
+        at = at - 1usize;
+      }
+      order.set(at, u32[i]);
+      keys.set(at, key);
+      i = i + 1usize;
+    }
+    order;
+  }
+}
+
+// A material's parameters as lit.slang's MaterialParams has them
+fn materialParams(material &Material) [8; f32] {
+  [material.baseColor.red, material.baseColor.green, material.baseColor.blue, material.baseColor.alpha,
+    material.specular.red, material.specular.green, material.specular.blue, material.shininess];
+}
+
+// What a draw list holds: a mesh, the material it is drawn with (not used
+// by lines), where it is ('model', its coordinates into the world's), and a
+// tint its color is multiplied by (the color of lines)
+pub struct DrawItem {
+  pub mesh MeshHandle;
+  pub material MaterialHandle;
+  pub model Mat4;
+  pub tint Color;
+}
+
+// What a render pass draws
+pub struct DrawList {
+  pub items List[DrawItem];
+
+  pub fn empty() DrawList { DrawList[List[DrawItem].empty()]; }
+
+  pub fn clear(self &mut) { items.clear(); }
+  pub fn len(self &) usize { items.len(); }
+
+  // Draw 'mesh' with 'material', placed by 'model'
+  pub fn add(self &mut, mesh MeshHandle, material MaterialHandle, model Mat4) {
+    items.push(DrawItem[mesh, material, model, Color[1., 1., 1., 1.]]);
+  }
+
+  // The same, its color multiplied by 'tint'
+  pub fn addTinted(self &mut, mesh MeshHandle, material MaterialHandle, model Mat4, tint Color) {
+    items.push(DrawItem[mesh, material, model, tint]);
+  }
+
+  // Draw the lines 'mesh' in 'color', placed by 'model'
+  pub fn addLines(self &mut, mesh MeshHandle, model Mat4, color Color) {
+    items.push(DrawItem[mesh, MaterialHandle.none(), model, color]);
+  }
 }

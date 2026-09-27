@@ -1,0 +1,565 @@
+// pipevk: the first sculpting demo, as Jon described it, drawn by Vulkan: a
+// 2-D convex profile extruded into a pipe, bent along a path, smoothed by
+// Catmull-Clark subdivision, and shown at three levels of detail beside its
+// cage, lit, the camera slowly swinging round them, in a window that may be
+// resized. It is sculpt's pipedemo.cone (which writes the levels as .obj
+// files) put on the GPU through the render package.
+//
+//   congo run packages/render/examples/pipevk.cone
+//   congo run packages/render/examples/pipevk.cone -- --frames 120 --screenshot pipe.bmp
+//
+// The pipe is pipedemo's: a hexagon of radius 0.25 swept along the x axis
+// from 0 to 4 in 16 pieces (17 rings of 6 vertices, 96 quads, open at both
+// ends), bent 90 degrees about z from its start, so its far end points up.
+// 'subdivisionLevels' makes the cage (level 0) and levels 1 to 3, each
+// quadrupling the faces: 96, 384, 1536, 6144 quads. The cage is drawn flat
+// (a normal a face), the levels smooth (a normal a vertex, from
+// 'triangulate(true)'); each is one GPU mesh the renderer keeps. They form
+// one LodChain, level 3 as LOD 0.
+//
+// Keys:
+//   Tab          the next view: side by side, the cage, level 1, 2, 3, auto
+//   0, 1, 2, 3   the cage, or that level, alone, the camera going round it
+//   4 or Space   the four side by side
+//   A            one pipe whose level of detail the LodChain chooses by its
+//                size on the screen, the camera moving in and out
+//   W            the wireframe (each level's quads' edges) on or off
+//   Escape       quit; F11 fullscreen
+//
+// '--frames N' (or the environment variable PIPEVK_FRAMES) draws N frames
+// and stops; otherwise it runs until quit. The camera moves by the frame, not
+// the clock, so a run of N frames is the same every time; after its check,
+// such a run tours every view, eight frames each, the wireframe on in every
+// other, and makes the window smaller on the way, so that everything is
+// drawn under validation (a run of 150 frames sees it all). At frame 90 (or
+// the last, if sooner), side by side, it reads the frame back and checks it:
+// the pixel where the middle of each pipe's centre line is drawn must be lit
+// -- not the background, each channel between that material's ambient-only
+// color and its brightest (ambient, all the light and the highlight) -- and
+// a pixel above them must be the background. '--screenshot FILE' writes
+// that frame to FILE as a BMP, and the next, with the wireframe on, beside
+// it ('pipe.bmp', then 'pipe-wireframe.bmp'). It prints the counts of each level, the size
+// of the program against the meshes it makes, the checks, and the frame
+// time, and exits 0 only if every check passed, no Vulkan call failed and
+// the validation layer said nothing.
+//
+// It needs a display, a GPU driver with Vulkan 1.3, SDL2.lib on LIB to link
+// and SDL2.dll on PATH to run; with the Vulkan SDK, validation is on.
+// GPU_POWER_PREFERENCE=low-power picks an integrated GPU where there are two.
+
+mod pipevk;
+
+import stdio use *;
+import libc;
+import sdl;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+import gpu use *;
+import render use *;
+import window use *;
+
+// The views
+const SIDE_BY_SIDE = 0;
+const CAGE_ALONE = 1;           // and 2, 3, 4: level 1, 2, 3 alone
+const AUTO_LOD = 5;
+const VIEWS = 6;
+
+const CHECK_FRAME = 90;
+const SPACING f32 = 3.6;        // between the pipes' middles, side by side
+
+// ---- Arguments ----
+
+// The number 's' spells, or -1 if it is not a whole number
+fn parseCount(s *u8) i32 {
+  if (s as usize) == 0usize or *s == 0u8 { return -1; }
+  mut n = 0;
+  mut i = 0usize;
+  while *(s + i) != 0u8 {
+    imm c = *(s + i);
+    if c < '0' or c > '9' { return -1; }
+    n = n * 10 + i32[c - '0'];
+    i = i + 1usize;
+  }
+  n;
+}
+
+fn cstrEquals(a *u8, b &[]u8) Bool {
+  mut i = 0usize;
+  while i < b.len {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len) == 0u8;
+}
+
+// ---- Colors ----
+
+// A linear color component as the byte an sRGB target stores
+fn srgbByte(linear f32) i32 {
+  mut c = linear;
+  if c <= 0. { return 0; }
+  if c >= 1. { return 255; }
+  if c <= 0.0031308 {
+    c = c * 12.92;
+  } else {
+    c = 1.055 * libc.powf(c, 1. / 2.4) - 0.055;
+  }
+  i32[c * 255. + 0.5];
+}
+
+fn onOff(on Bool) &[]u8 {
+  if on { return "on"; }
+  "off";
+}
+
+// ---- The counts ----
+
+// The bytes a GPU mesh of 'm' takes: positions, normals and uvs (32 bytes a
+// vertex) and 32-bit indices
+fn gpuBytes(m &Mesh) usize { m.vertexCount() * 32usize + m.indices.len() * 4usize; }
+
+fn report(pm &PolyMesh, tri &Mesh, level u32) {
+  print <- "Level "; print <- level; print <- ": ";
+  print <- pm.vertexCount(); print <- " vertices, "; print <- pm.edgeCount(); print <- " edges, ";
+  print <- pm.faceCount(); print <- " faces; ";
+  print <- tri.vertexCount(); print <- " render vertices, "; print <- tri.triangleCount(); print <- " triangles, ";
+  print <- gpuBytes(tri); print <- " bytes on the GPU\n";
+}
+
+// ---- The check ----
+
+// Where the point 'p' (world coordinates) is drawn, in pixels of a target
+// 'w' by 'h' (from its top left), by 'viewProjection'
+fn pixelOf(viewProjection Mat4, p Vec3, w u32, h u32, x &mut i32, y &mut i32) {
+  imm clip = viewProjection * Vec4[p.x, p.y, p.z, 1.];
+  imm nx = clip.x / clip.w;
+  imm ny = clip.y / clip.w;
+  *x = i32[(nx + 1.) * 0.5 * f32[w]];
+  *y = i32[(1. - ny) * 0.5 * f32[h]];
+}
+
+// Channel 'c' (0 red, 1 green, 2 blue) of pixel ('x', 'y') of a frame 'w'
+// wide read back to 'p', its bytes BGRA if 'bgra'
+fn channel(p *u8, w u32, x i32, y i32, c usize, bgra Bool) i32 {
+  mut at = c;
+  if bgra { at = 2usize - c; }
+  i32[*(p + (usize[y] * usize[w] + usize[x]) * 4usize + at)];
+}
+
+// Check that pixel ('x', 'y') is lit by a material of 'base' color with a
+// highlight of 'specular' under 'light': each channel between the
+// ambient-only color and the brightest, and not the background 'bg'
+fn checkLit(name &[]u8, p *u8, w u32, h u32, x i32, y i32, bgra Bool, base Color, specular f32, light &Light,
+    bg &[3; i32]) Bool {
+  printStr(name); print <- " at ("; print <- x; print <- ", "; print <- y; print <- "): ";
+  if x < 0 or y < 0 or x >= i32[w] or y >= i32[h] {
+    print <- "off the screen\n";
+    return false;
+  }
+  imm bases [3; f32] = [base.red, base.green, base.blue];
+  imm ambients [3; f32] = [light.ambient.red, light.ambient.green, light.ambient.blue];
+  imm lights [3; f32] = [light.color.red, light.color.green, light.color.blue];
+  mut ok = true;
+  mut differs = false;
+  mut c = 0usize;
+  while c < 3usize {
+    imm got = channel(p, w, x, y, c, bgra);
+    imm lo = srgbByte(bases[c] * ambients[c]) - 3;
+    imm hi = srgbByte(bases[c] * (ambients[c] + lights[c]) + specular * lights[c]) + 3;
+    print <- got;
+    if c < 2usize { print <- " "; }
+    if got < lo or got > hi { ok = false; }
+    if got - bg[c] > 10 or bg[c] - got > 10 { differs = true; }
+    c = c + 1usize;
+  }
+  if !differs { ok = false; }
+  if ok { print <- ": lit\n"; } else { print <- ": NOT as lit\n"; }
+  ok;
+}
+
+// ---- The demo ----
+
+fn main(argc i32, argv **u8) i32 {
+  // The arguments
+  mut maxFrames = 0;
+  mut screenshot = String.empty();
+  imm env = libc.getenv(&"PIPEVK_FRAMES" as *u8);
+  if (env as usize) != 0usize { maxFrames = parseCount(env); }
+  mut a = 1;
+  while a < argc {
+    imm arg = *(argv + usize[a]);
+    if cstrEquals(arg, "--frames") and a + 1 < argc {
+      maxFrames = parseCount(*(argv + usize[a + 1]));
+      a = a + 1;
+    } elif cstrEquals(arg, "--screenshot") and a + 1 < argc {
+      imm s = *(argv + usize[a + 1]);
+      mut i = 0usize;
+      while *(s + i) != 0u8 {
+        screenshot.appendByte(*(s + i));
+        i = i + 1usize;
+      }
+      a = a + 1;
+    } else {
+      print <- "Unknown argument; use --frames N and --screenshot FILE\n";
+      return 2;
+    }
+    a = a + 1;
+  }
+  if maxFrames < 0 {
+    print <- "--frames wants a whole number\n";
+    return 2;
+  }
+  mut checkFrame = CHECK_FRAME;
+  if maxFrames > 0 and maxFrames - 1 < checkFrame { checkFrame = maxFrames - 1; }
+  // With a screenshot, the next frame is saved too, with the wireframe on,
+  // beside it: 'pipe.bmp' and 'pipe-wireframe.bmp'
+  mut wireShot = String.empty();
+  if screenshot.len() > 0usize {
+    if screenshot.endsWith(".bmp") {
+      wireShot = screenshot.sub(0usize, screenshot.len() - 4usize);
+    } else {
+      wireShot = screenshot.copy();
+    }
+    wireShot <- "-wireframe.bmp";
+  }
+
+  // The pipe, as pipedemo makes it
+  imm hexagon = Profile.polygon(6u32, 0.25);
+  imm path = Path.line(Vec3[0., 0., 0.], Vec3[4., 0., 0.], 16u32);
+  imm straight = sweep(&hexagon, &path, 0., 1., 1., false);
+  imm cage = bend(&straight, pi / 2., Vec3[0., 0., 1.], Vec3[1., 0., 0.], Vec3[0., 0., 0.]);
+  imm lods = subdivisionLevels(&cage, 3u32);
+  imm program = String.from(
+    "polygon 6 0.25; line 0 0 0 4 0 0 16; sweep 0 1 1 open; bend 1.570796 0 0 1 1 0 0 0 0 0; subdivide 3");
+  print <- "The program: "; printStr(program.view()); print <- "\n";
+  print <- "  "; print <- program.len(); print <- " bytes as text; 24 numbers, 96 bytes as binary\n";
+  imm tri0 = lods[0usize].triangulate(false);
+  imm tri1 = lods[1usize].triangulate(true);
+  imm tri2 = lods[2usize].triangulate(true);
+  imm tri3 = lods[3usize].triangulate(true);
+  report(lods[0usize], &tri0, 0u32);
+  report(lods[1usize], &tri1, 1u32);
+  report(lods[2usize], &tri2, 2u32);
+  report(lods[3usize], &tri3, 3u32);
+  imm allBytes = gpuBytes(&tri0) + gpuBytes(&tri1) + gpuBytes(&tri2) + gpuBytes(&tri3);
+  print <- "The program, 96 bytes, against the meshes it makes: "; print <- allBytes;
+  print <- " bytes on the GPU for all four ("; print <- gpuBytes(&tri3) / 96usize; print <- " times over for level 3 alone)\n";
+
+  // Where its centre line's middle is: halfway between rings 7 and 8 of the
+  // cage (each ring's six vertices about its centre)
+  mut ringSum = Vec3[0., 0., 0.];
+  mut v = 42usize;
+  while v < 54usize {
+    ringSum = ringSum + *cage.positions[v];
+    v = v + 1usize;
+  }
+  imm centreLine = ringSum * (1. / 12.);
+  imm bounds = cage.bounds();
+  imm middle = (bounds.min + bounds.max) * 0.5;
+  print <- "The centre line's middle: ("; print <- centreLine.x; print <- ", "; print <- centreLine.y;
+  print <- ", "; print <- centreLine.z; print <- ")\n";
+
+  // The window and the GPU
+  mut win = Window.openVulkan("Cone: the pipe, sculpted, on Vulkan");
+  if !win.isOpen() {
+    print <- "No window could be opened\n";
+    return 1;
+  }
+  mut instance = Instance.create("pipevk");
+  if !instance.isValid() {
+    print <- "No Vulkan 1.3 instance could be made\n";
+    return 1;
+  }
+  mut surface = instance.createSurface(win.sdlHandle());
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm powerEnv = libc.getenv(&"GPU_POWER_PREFERENCE" as *u8);
+  if (powerEnv as usize) != 0usize {
+    if libc.strcmp(powerEnv, &"low-power" as *u8) == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&surface, preference);
+  if !adapter.isValid() {
+    print <- "No GPU can draw to the window\n";
+    return 1;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  print <- "API: "; printStr(adapter.backendName()); print <- " "; printStr(adapter.backendVersion.view()); print <- "\n";
+  print <- "Validation layer: "; printStr(onOff(instance.validation));
+  print <- "; synchronization validation: "; printStr(onOff(instance.syncValidation)); print <- "\n";
+  mut device = adapter.requestDevice();
+  imm size = win.size();
+  mut swapchain = device.createSwapChain(&surface, u32[size.w], u32[size.h], TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut renderer = Renderer.create(&mut device, swapchain.format, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  if !renderer.isValid() {
+    print <- "The renderer could not be made\n";
+    return 1;
+  }
+
+  // The meshes, uploaded once: each level, and each level's edges
+  imm m0 = renderer.addMesh(&mut device, &tri0);
+  imm m1 = renderer.addMesh(&mut device, &tri1);
+  imm m2 = renderer.addMesh(&mut device, &tri2);
+  imm m3 = renderer.addMesh(&mut device, &tri3);
+  imm levels [4; MeshHandle] = [m0, m1, m2, m3];
+  imm edges0 = polyEdges(lods[0usize]);
+  imm edges1 = polyEdges(lods[1usize]);
+  imm edges2 = polyEdges(lods[2usize]);
+  imm edges3 = polyEdges(lods[3usize]);
+  imm e0 = renderer.addLines(&mut device, lods[0usize].positions.view(), edges0.view());
+  imm e1 = renderer.addLines(&mut device, lods[1usize].positions.view(), edges1.view());
+  imm e2 = renderer.addLines(&mut device, lods[2usize].positions.view(), edges2.view());
+  imm e3 = renderer.addLines(&mut device, lods[3usize].positions.view(), edges3.view());
+  imm wires [4; MeshHandle] = [e0, e1, e2, e3];
+
+  // The LOD chain: level 3 as LOD 0, drawn while the pipe is 500 pixels
+  // across or more; level 2 from 250; level 1 from 120; the cage below
+  mut chain = LodChain.empty(0.1);
+  chain.add(m3, 500.);
+  chain.add(m2, 250.);
+  chain.add(m1, 120.);
+  chain.add(m0, 0.);
+
+  // The materials and the light: the cage a flat blue-grey, the levels
+  // copper with a highlight; the wireframe dark
+  imm cageColor = Color[0.30, 0.40, 0.55, 1.];
+  imm pipeColor = Color[0.80, 0.42, 0.20, 1.];
+  imm pipeSpecular f32 = 0.5;
+  imm cageMaterial = Material.plain(cageColor);
+  imm pipeMaterial = Material.shiny(pipeColor, pipeSpecular, 32.);
+  imm cageM = renderer.addMaterial(&mut device, &cageMaterial);
+  imm pipeM = renderer.addMaterial(&mut device, &pipeMaterial);
+  imm wireColor = Color[0.02, 0.02, 0.02, 1.];
+  imm light = Light.from(Vec3[-4., 8., 10.], Color.gray(0.85), Color.gray(0.15));
+  mut camera = Camera.make();
+  camera.fov = radians(45.);
+  camera.near = 0.5;
+  camera.far = 100.;
+  camera.background = Color[0.02, 0.025, 0.04, 1.];
+  imm bg [3; i32] = [srgbByte(camera.background.red), srgbByte(camera.background.green),
+    srgbByte(camera.background.blue)];
+
+  // Each pipe placed with its bounds' middle at its spot: side by side, the
+  // four along x
+  mut places [4; Mat4] = [4; Mat4.identity()];
+  mut i = 0usize;
+  while i < 4usize {
+    places[i] = Mat4.fromTranslation(Vec3[(f32[i] - 1.5) * SPACING, 0., 0.] - middle);
+    i = i + 1usize;
+  }
+  imm alone = Mat4.fromTranslation(Vec3[0., 0., 0.] - middle);
+
+  mut view = SIDE_BY_SIDE;
+  mut wireframe = false;
+  mut list = DrawList.empty();
+  mut frames = 0;
+  mut unshown = 0;
+  mut resizes = 0;
+  mut checked = false;
+  mut checksPassed = true;
+  mut shotWritten = false;
+  imm frequency = f64[sdl.GetPerformanceFrequency()];
+  mut firstTimed = 0u64;
+  mut lastTimed = 0u64;
+  mut recordTicks = 0u64;
+  mut timedFrames = 0;
+  mut lastTimedFrame = 0;
+  mut lastLod = 99usize;
+  while win.running and (maxFrames == 0 or frames < maxFrames) {
+    mut event = sdl.Event.empty();
+    while win.pollEvent(&mut event) {
+      imm key = keyDown(&event);
+      if key == sdl.K_TAB { view = (view + 1) % VIEWS; }
+      if key == sdl.K_0 { view = CAGE_ALONE; }
+      if key == sdl.K_1 { view = CAGE_ALONE + 1; }
+      if key == sdl.K_2 { view = CAGE_ALONE + 2; }
+      if key == sdl.K_3 { view = CAGE_ALONE + 3; }
+      if key == sdl.K_4 or key == sdl.K_SPACE { view = SIDE_BY_SIDE; }
+      if key == sdl.K_a { view = AUTO_LOD; }
+      if key == sdl.K_w { wireframe = !wireframe; }
+    }
+    // A run of a fixed number of frames tours every view after the check,
+    // eight frames each, the wireframe on in every other, and makes the
+    // window smaller on the way, so that each is drawn under validation
+    if maxFrames > 0 and frames >= checkFrame + 2 {
+      imm step = (frames - checkFrame - 2) / 8;
+      imm tour [6; i32] = [CAGE_ALONE, CAGE_ALONE + 1, CAGE_ALONE + 2, CAGE_ALONE + 3, AUTO_LOD, SIDE_BY_SIDE];
+      view = tour[usize[step % 6]];
+      wireframe = step % 2 == 1;
+      if frames == checkFrame + 2 + 24 { win.setSize(size.w * 2 / 3, size.h * 2 / 3); }
+    }
+    if win.resized {
+      imm s = win.size();
+      swapchain.resize(u32[s.w], u32[s.h]);
+      win.resized = false;
+      resizes = resizes + 1;
+    }
+    imm frame = swapchain.getCurrentTexture(&mut device);
+    if !frame.ok() {
+      sdl.Delay(10u32);
+    } else {
+      imm started = sdl.GetPerformanceCounter();
+      imm w = frame.texture.width;
+      imm h = frame.texture.height;
+      imm t = f32[frames] / 60.;         // seconds, nominally: the camera moves by the frame
+
+      // The frame after the one checked is saved with the wireframe on
+      imm wireShotNow = wireShot.len() > 0usize and checked and frames == checkFrame + 1 and view == SIDE_BY_SIDE;
+      imm showWires = wireframe or wireShotNow;
+
+      // The camera and what it sees
+      list.clear();
+      if view == SIDE_BY_SIDE {
+        // Swinging to and fro across the front of the row
+        imm yaw = 0.4 * sin(t * 0.35);
+        camera.lookAt(Vec3[10.5 * sin(yaw), 3., 10.5 * cos(yaw)], Vec3[0., 0., 0.], Vec3[0., 1., 0.]);
+        list.add(levels[0usize], cageM, places[0usize]);
+        mut l = 1usize;
+        while l < 4usize {
+          list.add(levels[l], pipeM, places[l]);
+          l = l + 1usize;
+        }
+        if showWires {
+          l = 0usize;
+          while l < 4usize {
+            list.addLines(wires[l], places[l], wireColor);
+            l = l + 1usize;
+          }
+        }
+      } elif view == AUTO_LOD {
+        // Going round the pipe while moving in and out, from 3 to 40 away;
+        // the chain chooses the level by the pipe's size on the screen
+        imm distance = 21.5 - 18.5 * cos(t * 0.5);
+        imm yaw = t * 0.3;
+        camera.lookAt(Vec3[distance * sin(yaw), distance * 0.3, distance * cos(yaw)], Vec3[0., 0., 0.],
+          Vec3[0., 1., 0.]);
+        imm radius = (bounds.max - bounds.min).length() * 0.5;
+        imm sizePx = camera.projectedSize(Vec3[0., 0., 0.], radius, f32[h]);
+        imm lod = chain.selectBySize(sizePx);
+        if lod != lastLod {
+          mut title = String.from("Cone: the pipe on Vulkan, auto LOD: level ");
+          title <- u64[3usize - lod];
+          win.setTitle(title.view());
+          lastLod = lod;
+        }
+        imm chosen = chain.mesh();
+        if lod == 3usize { list.add(chosen, cageM, alone); } else { list.add(chosen, pipeM, alone); }
+        if showWires { list.addLines(wires[3usize - lod], alone, wireColor); }
+      } else {
+        // One level alone, the camera going round it
+        imm level = usize[view - CAGE_ALONE];
+        imm yaw = t * 0.3;
+        camera.lookAt(Vec3[6. * sin(yaw), 2.5, 6. * cos(yaw)], Vec3[0., 0., 0.], Vec3[0., 1., 0.]);
+        if level == 0usize { list.add(levels[0usize], cageM, alone); } else { list.add(levels[level], pipeM, alone); }
+        if showWires { list.addLines(wires[level], alone, wireColor); }
+      }
+      if view != AUTO_LOD and lastLod != 99usize {
+        win.setTitle("Cone: the pipe, sculpted, on Vulkan");
+        lastLod = 99usize;
+      }
+
+      mut encoder = device.createCommandEncoder();
+      renderer.render(&mut device, &mut encoder, &frame.texture, &frame.depth, &camera, &light, &list);
+      imm bgra = frame.texture.format == TEXTURE_FORMAT_BGRA8_UNORM_SRGB
+        or frame.texture.format == TEXTURE_FORMAT_BGRA8_UNORM;
+      if wireShotNow {
+        // The wireframe screenshot
+        mut readback = device.createBuffer(u64[w] * u64[h] * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+        encoder.copyTextureToBuffer(&frame.texture, &readback);
+        device.queue.submit(encoder.finish());
+        if !swapchain.present(&mut device) { unshown = unshown + 1; }
+        device.waitIdle();
+        imm shot = Image.fromTexels(readback.mappedRange(), i32[w], i32[h], bgra);
+        imm written = shot.save(wireShot.view());
+        print <- "Screenshot with the wireframe: "; printStr(wireShot.view());
+        if written { print <- "\n"; } else { print <- " could NOT be written\n"; }
+        if !written { shotWritten = false; }
+      } elif frames == checkFrame and view == SIDE_BY_SIDE and !checked {
+        // Read the frame back, check it, and save it if asked
+        mut readback = device.createBuffer(u64[w] * u64[h] * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+        encoder.copyTextureToBuffer(&frame.texture, &readback);
+        device.queue.submit(encoder.finish());
+        if !swapchain.present(&mut device) { unshown = unshown + 1; }
+        device.waitIdle();
+        checked = true;
+        imm p = readback.mappedRange();
+        imm viewProjection = camera.projectionMatrix(f32[w] / f32[h]) * camera.viewMatrix();
+        print <- "Frame "; print <- frames; print <- " ("; print <- u64[w]; print <- " x "; print <- u64[h];
+        print <- "), side by side, "; print <- u64[renderer.drawCalls]; print <- " draws, ";
+        print <- renderer.triangles; print <- " triangles:\n";
+        imm names [4; &[]u8] = ["  the cage", "  level 1", "  level 2", "  level 3"];
+        mut l = 0usize;
+        while l < 4usize {
+          mut x = 0;
+          mut y = 0;
+          pixelOf(viewProjection, places[l] * centreLine, w, h, &mut x, &mut y);
+          mut ok = true;
+          if l == 0usize {
+            ok = checkLit(names[l], p, w, h, x, y, bgra, cageColor, 0., &light, &bg);
+          } else {
+            ok = checkLit(names[l], p, w, h, x, y, bgra, pipeColor, pipeSpecular, &light, &bg);
+          }
+          if !ok { checksPassed = false; }
+          l = l + 1usize;
+        }
+        // Above the row: the sky
+        imm sx = i32[w / 2u32];
+        imm sy = i32[h / 20u32];
+        imm br = channel(p, w, sx, sy, 0usize, bgra);
+        imm bgn = channel(p, w, sx, sy, 1usize, bgra);
+        imm bb = channel(p, w, sx, sy, 2usize, bgra);
+        print <- "  the background at ("; print <- sx; print <- ", "; print <- sy; print <- "): ";
+        print <- br; print <- " "; print <- bgn; print <- " "; print <- bb;
+        print <- " (want "; print <- bg[0]; print <- " "; print <- bg[1]; print <- " "; print <- bg[2]; print <- ")\n";
+        if br - bg[0] > 1 or bg[0] - br > 1 or bgn - bg[1] > 1 or bg[1] - bgn > 1 or bb - bg[2] > 1 or bg[2] - bb > 1 {
+          checksPassed = false;
+        }
+        if screenshot.len() > 0usize {
+          imm shot = Image.fromTexels(p, i32[w], i32[h], bgra);
+          shotWritten = shot.save(screenshot.view());
+          print <- "Screenshot: "; printStr(screenshot.view());
+          if shotWritten { print <- "\n"; } else { print <- " could NOT be written\n"; }
+        }
+      } else {
+        device.queue.submit(encoder.finish());
+        imm recorded = sdl.GetPerformanceCounter();
+        if !swapchain.present(&mut device) { unshown = unshown + 1; }
+        // Timed from the eleventh frame, the first ten settling in: the
+        // frames' starts, and the CPU's time recording and submitting each
+        // (not the frames read back)
+        if frames >= 10 {
+          if firstTimed == 0u64 { firstTimed = started; }
+          lastTimed = started;
+          lastTimedFrame = frames;
+          recordTicks = recordTicks + (recorded - started);
+          timedFrames = timedFrames + 1;
+        }
+      }
+      frames = frames + 1;
+    }
+  }
+  device.waitIdle();
+
+  print <- "Frames drawn: "; print <- frames; print <- "; presented: "; print <- swapchain.presents;
+  print <- "; out of date when presented: "; print <- unshown; print <- "; resizes: "; print <- resizes; print <- "\n";
+  if timedFrames > 2 and lastTimed > firstTimed {
+    // From the start of the first frame timed to the start of the last: the
+    // frames between, the one read back among them
+    imm frameMs = f64[lastTimed - firstTimed] / frequency * 1000. / f64[lastTimedFrame - 10];
+    imm cpuMs = f64[recordTicks] / frequency * 1000. / f64[timedFrames];
+    print <- "Frame time: "; print <- frameMs; print <- " ms a frame (presented in step with the display);";
+    print <- " recording and submitting: "; print <- cpuMs; print <- " ms\n";
+  }
+  print <- "Vulkan failures: "; print <- u64[failures()];
+  print <- "; validation messages: "; print <- u64[validationMessages()]; print <- "\n";
+  if !checked {
+    print <- "The frame was not checked (it was not side by side at frame "; print <- checkFrame; print <- ")\n";
+  }
+  if (checked and !checksPassed) or (screenshot.len() > 0usize and !shotWritten) {
+    print <- "FAILED\n";
+    return 1;
+  }
+  if failures() != 0u32 or validationMessages() != 0u32 { return 1; }
+  print <- "OK\n";
+  0;
+}
