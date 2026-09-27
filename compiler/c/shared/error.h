@@ -358,6 +358,9 @@ enum ErrorCode {
     ErrorWhereNoParms = 1191,   // A 'where' clause on a declaration with no type parameters to constrain: not generic, nor a member of a generic type
     ErrorGenParmOr = 1192,      // 'or' after a type parameter's traits, '[T A or B]': those are all required, and a choice is written in a 'where' clause
 
+    // The built-in marker 'ThreadSafe' (ir/types/region.c, regionThreadSafeUseCheck)
+    ErrorThreadSafeUse = 1193,  // 'ThreadSafe' declared by a type that is not a region ref: a struct not declaring 'RegionRef', a trait, an enum or a variant
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

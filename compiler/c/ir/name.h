@@ -98,6 +98,7 @@ extern Name *markMethodName;   // "mark", which a traced region's trace calls
 extern Name *writeBarrierMethodName; // "writeBarrier", called after a traced reference is stored where no root is
 extern Name *regionRefName;    // "RegionRef"
 extern Name *tracedTraitName;  // "Traced", a region ref whose references are traced
+extern Name *threadSafeTraitName; // "ThreadSafe", a region ref whose owners several threads may hold
 
 // The built-in marker traits every type has exactly one of (corelib.c)
 extern Name *moveTraitName;    // "Move"

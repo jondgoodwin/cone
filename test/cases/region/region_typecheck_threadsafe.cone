@@ -1,0 +1,52 @@
+// Who may declare 'ThreadSafe'.
+//
+// 'ThreadSafe' is a built-in trait beside 'RegionRef' and 'Traced'. A region
+// ref declares it to say that owners of one of its values may be held by
+// several threads at once, its 'alias' and 'dealias' safe to run together:
+// the sync package's 'arc' does, core's 'rc' does not. The compiler cannot check the promise and
+// nothing reads it yet; the thread check to come asks it of a reference's
+// region. So all there is to refuse is its being declared by something that
+// is no region ref, which is reported at the declaration.
+
+mod region_typecheck_threadsafe;
+
+struct Leaf { pub n i32; }
+
+// Accepted: a region ref declaring it, counted or not
+struct shared is RegionRef, ThreadSafe {
+  cnt usize;
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn init() shared inline { shared[1usize]; }
+  fn alias(self &uni shared) inline { mem.atomicAdd[usize](self as *usize, 1usize, MemOrder.Relaxed[]); }
+  fn dealias(self &uni shared) Bool inline {
+    mem.atomicSub[usize](self as *usize, 1usize, MemOrder.AcqRel[]) == 1usize;
+  }
+}
+
+struct kept is RegionRef, ThreadSafe {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+}
+
+// Only a region ref declares it
+struct notRegion is ThreadSafe {   //~ ErrorThreadSafeUse "Only a region ref may declare ThreadSafe"
+  pub n i32;
+}
+
+trait safeTrait is ThreadSafe {   //~ ErrorThreadSafeUse "Only a region ref may declare ThreadSafe"
+  fn f(self &) i32;
+}
+
+enum Picked is ThreadSafe {       //~ ErrorThreadSafeUse "Only a region ref may declare ThreadSafe"
+  One, Two;
+}
+
+enum Shape {
+  struct Round is ThreadSafe { r i32; }   //~ ErrorThreadSafeUse "Only a region ref may declare ThreadSafe"
+  struct Square { s i32; }
+}
+
+fn main() {
+  imm a = +shared-imm Leaf[1i32];
+  imm b = a;
+  imm c = +kept-imm Leaf[a.n + b.n];
+}

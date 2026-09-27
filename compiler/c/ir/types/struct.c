@@ -2873,11 +2873,14 @@ static void structCheckMembers(StructNode *node) {
 
     // 'RegionRef' requires nothing an ordinary requirement can state: each region
     // method is optional, with a fixed shape where declared. 'Traced' says
-    // something only of a region ref, which regionRefCheck holds to its 'mark'.
+    // something only of a region ref, which regionRefCheck holds to its 'mark',
+    // and so does 'ThreadSafe'.
     if (regionIsRegionRef((INode*)node))
         regionRefCheck(node);
-    else
+    else {
         regionTracedUseCheck(node);
+        regionThreadSafeUseCheck(node);
+    }
 
     structCheckCopy(node);
 }

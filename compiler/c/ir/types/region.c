@@ -284,6 +284,19 @@ void regionTracedUseCheck(StructNode *node) {
             &node->namesym->namestr);
 }
 
+int regionIsThreadSafe(INode *region) {
+    StructNode *strnode = regionDcl(region);
+    return strnode != NULL && structDeclaresTrait(strnode, threadSafeTrait) && regionStructIsRegionRef(strnode);
+}
+
+// 'ThreadSafe' says something only of a region ref
+void regionThreadSafeUseCheck(StructNode *node) {
+    if (structDeclaresTrait(node, threadSafeTrait) && !regionIsRegionRef((INode*)node))
+        errorMsgNode((INode*)node, ErrorThreadSafeUse,
+            "Only a region ref may declare ThreadSafe, a struct declaring 'is RegionRef, ThreadSafe': it says several threads may hold owners of one of the region's values at once, and %s is no region ref.",
+            &node->namesym->namestr);
+}
+
 // Does the region's 'alloc' take the value type's record as well as the size?
 // Only a region whose 'alloc' asks is handed one, so a region that does not
 // ask (so, rc) is called exactly as it would be if records did not exist

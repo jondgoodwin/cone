@@ -1,0 +1,92 @@
+// Four threads and main each copy and drop owners of one '+arc-imm' value
+// 200000 times at once, so its count is changed by five threads together:
+// every copy counted and every drop counted, the value finalized exactly
+// once, and only after the last owner has gone.
+//
+// main allocates the value and starts four workers, each handed an owner
+// (thread.start copies main's). Each worker, and main after them, makes a
+// copy of its owner and drops it, 200000 times, reading through each copy;
+// then each worker writes its own slot of a plain array -- no atomic
+// operation -- and returns, dropping its owner. main's owner goes at the end
+// of the block that started them. Whichever thread drops the last owner runs
+// the value's 'final', which reads the four slots: arc's Release decrements
+// and the last owner's Acquire load make every worker's write happen before
+// it, so it sees all four. A lost count would free the value early (a
+// finalizer count of 2, or one run before a slot was written) or never (0).
+//
+// Worked out by hand: each worker reads id 7 through 200000 copies, so
+// returns 1400000; each slot holds 1; the final sees 4 slots written and
+// runs once.
+
+mod arcstress;
+
+import testing use *;
+import thread;
+import sync use *;
+
+// How many times the value was finalized, and how many slots its final saw
+imm finals Atomic[u32];
+imm seen Atomic[u32];
+
+// Each worker's slot, written plainly as it finishes
+mut slots [4; u32] = [0u32, 0u32, 0u32, 0u32];
+
+fn @initpure init() {
+  finals = Atomic[u32].of(0u32);
+  seen = Atomic[u32].of(0u32);
+}
+
+struct Shared {
+  pub id u64;
+  fn final(self &uni) {
+    seen.store(slots[0] + slots[1] + slots[2] + slots[3]);
+    finals.add(1u32);
+  }
+}
+
+// Copy and drop an owner 200000 times, reading through each copy
+fn churn(s +arc-imm Shared) u64 {
+  mut sum = 0u64;
+  mut i = 0u32;
+  while i < 200000u32 {
+    imm c = s;
+    sum = sum + c.id;
+    i = i + 1u32;
+  }
+  sum;
+}
+
+// A worker's argument: its owner of the value, and its slot
+struct Job {
+  pub s +arc-imm Shared;
+  pub slot usize;
+}
+
+fn work(j Job) u64 {
+  imm sum = churn(j.s);
+  slots[j.slot] = 1u32;
+  sum;
+}   // this thread's owner goes here, with j
+
+fn main() i32 {
+  initAll();
+  mut a thread.Thread[u64];
+  mut b thread.Thread[u64];
+  mut c thread.Thread[u64];
+  mut d thread.Thread[u64];
+  {
+    imm s = +arc-imm Shared[7u64];
+    a = thread.start(Job[s, 0usize], &work);
+    b = thread.start(Job[s, 1usize], &work);
+    c = thread.start(Job[s, 2usize], &work);
+    d = thread.start(Job[s, 3usize], &work);
+    expectUInt(churn(s), 1400000u64, "main's own copies, among the workers'");
+  }   // main's owner goes
+  expectUInt(a.join(), 1400000u64, "worker 0 read through every copy");
+  expectUInt(b.join(), 1400000u64, "worker 1 read through every copy");
+  expectUInt(c.join(), 1400000u64, "worker 2 read through every copy");
+  expectUInt(d.join(), 1400000u64, "worker 3 read through every copy");
+  expectUInt(u64[finals.load()], 1u64, "finalized exactly once");
+  expectUInt(u64[seen.load()], 4u64, "after every worker had finished");
+  done();
+}
