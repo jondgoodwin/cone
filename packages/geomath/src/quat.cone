@@ -1,0 +1,164 @@
+// ======== Quat: an orientation, or a rotation, as a quaternion ========
+
+// Eberly's constants for the fast slerp below, as Pegasus had them
+imm slerpU [8; f32] = [0.333333333333333f, 0.100000000000000f, 0.047619047619048f,
+  0.027777777777778f, 0.018181818181818f, 0.012820512820513f, 0.009523809523810f,
+  0.013978731275863f];
+imm slerpV [8; f32] = [0.333333333333333f, 0.400000000000000f, 0.428571428571429f,
+  0.444444444444444f, 0.454545454545455f, 0.461538461538462f, 0.466666666666667f,
+  0.894638801655200f];
+
+// An orientation, or a rotation, as a quaternion: (x, y, z) the vector part
+// and w the scalar part. A rotation is a unit quaternion.
+pub struct Quat {
+  pub x f32;
+  pub y f32;
+  pub z f32;
+  pub w f32;
+
+  // No rotation at all
+  pub fn identity() Quat {Quat[0., 0., 0., 1.];}
+
+  // A turn of 'angle' radians about 'axis', which must be a unit vector
+  pub fn angleAxis(angle f32, axis Vec3) Quat {
+    imm s = sin(angle * 0.5);
+    Quat[axis.x * s, axis.y * s, axis.z * s, cos(angle * 0.5)];
+  }
+
+  // Turns of rot.x, rot.y and rot.z radians about the x, y and z axes: first
+  // about x, then about the turned y, then about the twice-turned z. It is the
+  // product of the three single turns, x * y * z
+  pub fn fromEulerXyz(rot Vec3) Quat {
+    imm cx = cos(rot.x * 0.5);
+    imm cy = cos(rot.y * 0.5);
+    imm cz = cos(rot.z * 0.5);
+    imm sx = sin(rot.x * 0.5);
+    imm sy = sin(rot.y * 0.5);
+    imm sz = sin(rot.z * 0.5);
+    Quat[sx * cy * cz + cx * sy * sz,
+      cx * sy * cz - sx * cy * sz,
+      cx * cy * sz + sx * sy * cz,
+      cx * cy * cz - sx * sy * sz];
+  }
+
+  // The same, taken in the order y, x, z: the product y * x * z
+  pub fn fromEulerYxz(rot Vec3) Quat {
+    imm cx = cos(rot.x * 0.5);
+    imm cy = cos(rot.y * 0.5);
+    imm cz = cos(rot.z * 0.5);
+    imm sx = sin(rot.x * 0.5);
+    imm sy = sin(rot.y * 0.5);
+    imm sz = sin(rot.z * 0.5);
+    Quat[sx * cy * cz + cx * sy * sz,
+      cx * sy * cz - sx * cy * sz,
+      cx * cy * sz - sx * sy * cz,
+      cx * cy * cz + sx * sy * sz];
+  }
+
+  // The shortest turn that takes the direction of u to the direction of v.
+  // When they point exactly opposite ways, any half turn will do, and this
+  // takes one about an axis perpendicular to u. (After lolengine.net's
+  // "quaternion from two vectors", as Pegasus had it.)
+  pub fn fromVectors(u Vec3, v Vec3) Quat {
+    imm normuv = (u.dot(u) * v.dot(v)).sqrt();
+    mut real = normuv + u.dot(v);
+    mut axis = u.cross(v);
+    if real < 0.000001 * normuv {
+      real = 0.;
+      axis = if fabs(u.x) > fabs(u.z) {Vec3[-u.y, u.x, 0.];} else {Vec3[0., -u.z, u.y];};
+    };
+    imm inv = 1. / (real * real + axis.dot(axis)).sqrt();
+    Quat[axis.x * inv, axis.y * inv, axis.z * inv, real * inv];
+  }
+
+  // The rotation o followed by the rotation self (the Hamilton product)
+  pub fn mult overload `*`(self, o Quat) Quat {
+    imm va = Vec3[x, y, z];
+    imm vb = Vec3[o.x, o.y, o.z];
+    imm vaxb = va.cross(vb);
+    Quat[w * vb.x + o.w * va.x + vaxb.x,
+      w * vb.y + o.w * va.y + vaxb.y,
+      w * vb.z + o.w * va.z + vaxb.z,
+      w * o.w - va.dot(vb)];
+  }
+
+  // The vector v turned by this rotation (self must be a unit quaternion);
+  // 'q * v' is the same
+  pub fn rotate overload `*`(self, v Vec3) Vec3 {
+    imm ix = w * v.x + y * v.z - z * v.y;
+    imm iy = w * v.y + z * v.x - x * v.z;
+    imm iz = w * v.z + x * v.y - y * v.x;
+    imm iw = -x * v.x - y * v.y - z * v.z;
+    Vec3[ix * w - iw * x - iy * z + iz * y,
+      iy * w - iw * y - iz * x + ix * z,
+      iz * w - iw * z - ix * y + iy * x];
+  }
+
+  pub fn dot(self, o Quat) f32 {x * o.x + y * o.y + z * o.z + w * o.w;}
+  pub fn length(self) f32 {(x * x + y * y + z * z + w * w).sqrt();}
+  pub fn lengthSquared(self) f32 {x * x + y * y + z * z + w * w;}
+
+  // The vector part negated: for a unit quaternion, the opposite rotation
+  pub fn conjugate(self) Quat {Quat[-x, -y, -z, w];}
+
+  // The quaternion of length 1 in the same direction; zero stays zero
+  pub fn normalize(self) Quat {
+    imm len = length();
+    if len == 0. {
+      Quat[0., 0., 0., 0.];
+    } else {
+      imm inv = 1. / len;
+      Quat[x * inv, y * inv, z * inv, w * inv];
+    };
+  }
+
+  // The quaternion that multiplied by self gives the identity: the conjugate
+  // divided by the length squared. Zero stays zero
+  pub fn inverse(self) Quat {
+    imm len2 = lengthSquared();
+    if len2 > 0. {
+      imm inv = 1. / len2;
+      Quat[-x * inv, -y * inv, -z * inv, w * inv];
+    } else {
+      self;
+    };
+  }
+
+  // The orientation the fraction t of the way from self to 'to', blended
+  // straight and normalized (nlerp), the short way round. Cheaper than slerp,
+  // it turns faster in the middle than at the ends
+  pub fn lerp(self, to Quat, t f32) Quat {
+    imm s = if dot(to) < 0. {-t;} else {t;};
+    imm u = 1. - t;
+    Quat[u * x + s * to.x, u * y + s * to.y, u * z + s * to.z, u * w + s * to.w].normalize();
+  }
+
+  // The orientation the fraction t of the way from self to 'to' along the
+  // shortest arc, turning at an even rate (spherical linear interpolation).
+  // It is David Eberly's fast approximation, accurate to about a millionth,
+  // which needs no trigonometry (adapted from Cesium.js, as Pegasus had it)
+  pub fn slerp(self, to Quat, t f32) Quat {
+    mut d = dot(to);
+    mut sign f32 = 1.;
+    if d < 0. {
+      sign = -1.;
+      d = -d;
+    };
+    imm dm1 = d - 1.;
+    imm topp = 1. - t;
+    imm sqrT = t * t;
+    imm sqrD = topp * topp;
+    // Each series is 1 + b0 (1 + b1 (1 + ... (1 + b7))), summed from the inside
+    mut ct f32 = 1.;
+    mut cd f32 = 1.;
+    mut i = 8usize;
+    while i > 0usize {
+      i = i - 1usize;
+      ct = 1. + (slerpU[i] * sqrT - slerpV[i]) * dm1 * ct;
+      cd = 1. + (slerpU[i] * sqrD - slerpV[i]) * dm1 * cd;
+    };
+    ct = sign * t * ct;
+    cd = topp * cd;
+    Quat[cd * x + ct * to.x, cd * y + ct * to.y, cd * z + ct * to.z, cd * w + ct * to.w];
+  }
+}

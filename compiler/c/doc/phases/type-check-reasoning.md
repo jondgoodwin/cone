@@ -155,6 +155,17 @@ an argument and a method's receiver (`fnCallFinalizeArgs`), a declaration or
 an assignment, a branch's value. A `&uni` wanted as a `&uni` is not rewritten,
 and still moves.
 
+An owning reference that is its value's only holder (`borrowOwnerLendsUni`: a
+move-typed owner, a `+so` or a `+rc` still `uni`, held in a place), wanted as a
+borrowed reference that may not be shared (`&uni`, `&mut1`), is a
+`CastSubtype`, and a recast to a move type would move the owner into a borrow
+that ends nothing. `iexpCoerce` rewrites it to the borrow `&uni *o`
+(`borrowOwnerLend`, built as `borrowUniReborrow` builds its reborrow, typed as a
+borrow of what the owner points at) and coerces that on, which is still a recast
+where the wanted type is an enrichment's. An owner wanted as a `&` or `&mut` is
+left the recast flow analysis reads as a borrow (`pwOwnedLent`). A temporary
+owner is not a place, and is not rewritten.
+
 `fnSigMatches` is the one matcher whose variance is easy to get backwards:
 **parameters are contravariant** (it flips `to` and `from`), **the return type is
 covariant**, and the overall verdict is the most expensive of all the parts.

@@ -131,7 +131,8 @@ globals in `clone.c`.
 ## Parse
 
 `parseGenericParms` is `[ Ident annot? (, Ident annot?)* ]`, where `annot` is a
-type (`parseType`) and more joined by `+`, beginning with a name. **No
+type (`parseType`) and more joined by `+`, beginning with a name; a `+` with
+no type after it is `ErrorNoType` (`parseTypeReq`). **No
 defaults.** An empty list is `ErrorNoGenParms`. `annotate` says whether the
 declaration takes annotations: a generic function or type does, and the name
 after the parameter's goes into `annot` (Shape, above); a parameter ends at its

@@ -420,8 +420,8 @@ gap:
   more permissive subtyping, this is backwards.
 - **A borrow's lifetime is checked at three sites only.** Storing (by
   assignment, or by a swap in either direction), returning, and passing one beside a `&mut &T` argument. Capturing it, storing it in a
-  field, or laundering it through a variable and returning it are all
-  unchecked — see [Safety](safety.md). A laundered borrow used past the end of
+  field, or laundering it through a variable by assignment and returning it
+  are all unchecked (a variable does keep its initializer's lifetime) — see [Safety](safety.md). A laundered borrow used past the end of
   its source's block is refused, but by freezing (the source's end conflicts
   with the borrow still held), not by its lifetime.
 - **The permission on a reference is not the permission on the binding.**

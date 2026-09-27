@@ -89,13 +89,11 @@ int borrowUniReborrows(INode *from, INode *totypedcl) {
         && iexpIsLval(from);
 }
 
-// Lend a '&uni' reference as the borrowed reference 'totypedcl' wants, by
-// rewriting it to the reborrow '&mut *from' that borrowTypeCheck would build
-// if written out: the same permission check, and the lifetime of the variable
-// the reference is held in. Flow analysis then sees a borrow of '*from', which
-// freezes the reference while the borrow is used, and not a move of it.
-void borrowUniReborrow(INode **from, INode *totypedcl) {
-    RefNode *totype = (RefNode*)totypedcl;
+// Rewrite the reference 'from' to the borrow '&perm *from', typed as a borrowed
+// reference to 'vtexp', as borrowTypeCheck would build it if written out: the
+// lifetime of the variable the reference is held in. The permission has already
+// been checked by the match that asked for it.
+static void borrowDerefOf(INode **from, INode *perm, INode *vtexp) {
     StarNode *deref = newStarNode(DerefTag);
     inodeLexCopy((INode*)deref, *from);
     deref->vtexp = *from;
@@ -107,11 +105,48 @@ void borrowUniReborrow(INode **from, INode *totypedcl) {
     if (lvalvar && lvalvar->tag == VarDclTag)
         scope = ((VarDclNode*)lvalvar)->scope;
 
-    RefNode *reftype = newRefNodeFull(RefTag, *from, borrowRef, totype->perm, totype->vtexp);
+    RefNode *reftype = newRefNodeFull(RefTag, *from, borrowRef, perm, vtexp);
     reftype->scope = scope;
-    RefNode *borrownode = newRefNodeFull(BorrowTag, *from, borrowRef, totype->perm, (INode*)deref);
+    RefNode *borrownode = newRefNodeFull(BorrowTag, *from, borrowRef, perm, (INode*)deref);
     borrownode->vtype = (INode*)reftype;
     *from = (INode*)borrownode;
+}
+
+// Lend a '&uni' reference as the borrowed reference 'totypedcl' wants, by
+// rewriting it to the reborrow '&mut *from' that borrowTypeCheck would build
+// if written out: the same permission check, and the lifetime of the variable
+// the reference is held in. Flow analysis then sees a borrow of '*from', which
+// freezes the reference while the borrow is used, and not a move of it.
+void borrowUniReborrow(INode **from, INode *totypedcl) {
+    RefNode *totype = (RefNode*)totypedcl;
+    borrowDerefOf(from, totype->perm, totype->vtexp);
+}
+
+// Is 'from' an owning reference that is the only holder of its value (a '+so',
+// a '+rc' still 'uni'), held in a place, wanted as a borrowed reference that
+// may not be shared ('&uni')? An owning reference coerced to a borrowed one is
+// borrowed from, whatever the borrow's permission: the owner stays, frozen
+// while the borrow is used, and still ends its value at its own scope's end
+// (refborref.html, "Borrowing from another reference"; refperm.html, "From
+// 'uni'"). A coercion to '&' or '&mut' is a recast that flow analysis already
+// sees as that borrow (pwOwnedLent); one to a '&uni' is a move type, which would
+// move the owner into a reference that ends nothing. Note: totypedcl has
+// already done GetTypeDcl
+int borrowOwnerLendsUni(INode *from, INode *totypedcl) {
+    RefNode *fromtype = (RefNode*)iexpGetTypeDcl(from);
+    RefNode *totype = (RefNode*)totypedcl;
+    return fromtype->tag == RefTag && itypeGetTypeDcl(fromtype->region) != borrowRef
+        && itypeIsMove((INode*)fromtype)
+        && totype->tag == RefTag && totype->region == borrowRef && itypeIsMove(totypedcl)
+        && iexpIsLval(from);
+}
+
+// Lend such an owning reference by rewriting it to the borrow '&uni *from',
+// typed as a borrow of what the owner points at. The caller then coerces that
+// borrow to the type wanted, which may still be a recast (an enrichment's base).
+void borrowOwnerLend(INode **from, INode *totypedcl) {
+    RefNode *totype = (RefNode*)totypedcl;
+    borrowDerefOf(from, totype->perm, ((RefNode*)iexpGetTypeDcl(*from))->vtexp);
 }
 
 // Can we safely auto-borrow to match expected type?

@@ -564,7 +564,11 @@ ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
     importnode->module = newmod;
     ImportNode *prior = parseImportPrior(parse->mod, newmod);
     if (prior != NULL) {
-        if (importSame(prior, importnode))
+        // The prelude's import is written nowhere, so there is no line to name
+        if (prior->iscore)
+            errorMsgNode((INode*)importnode, ErrorDupImport,
+                "Module core is imported automatically into every module, all its public names folded in, and a module imports another once: leave this import out.");
+        else if (importSame(prior, importnode))
             errorMsgNode((INode*)importnode, ErrorDupImport,
                 "Module %s is imported already, the same way, at %s:%u. A module imports another once: leave out the second.",
                 &newmod->namesym->namestr, prior->lexer->url, prior->linenbr);

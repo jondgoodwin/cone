@@ -32,6 +32,12 @@ int borrowUniReborrows(INode *from, INode *totypedcl);
 // Lend such a '&uni' reference by rewriting it to the reborrow '&mut *from'
 void borrowUniReborrow(INode **from, INode *totypedcl);
 
+// Is 'from' a sole owning reference in a place, wanted as a '&uni' borrowed reference?
+int borrowOwnerLendsUni(INode *from, INode *totypedcl);
+
+// Lend such an owning reference by rewriting it to the borrow '&uni *from'
+void borrowOwnerLend(INode **from, INode *totypedcl);
+
 void borrowPrint(RefNode *node);
 
 // Type check borrow node

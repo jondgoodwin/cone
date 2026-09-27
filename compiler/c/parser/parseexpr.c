@@ -517,14 +517,19 @@ INode *parseCast(ParseState *parse) {
     INode *lhnode = parsePrefix(parse);
     while (1) {
         CastNode *node;
-        if (lexIsToken(AsToken))
+        char *op;
+        if (lexIsToken(AsToken)) {
             node = newRecastNode(lhnode, unknownType);
-        else if (lexIsToken(IntoToken))
+            op = "'as'";
+        }
+        else if (lexIsToken(IntoToken)) {
             node = newConvCastNode(lhnode, unknownType);
+            op = "'into'";
+        }
         else
             return lhnode;
         lexNextToken();
-        node->typ = parseType(parse);
+        node->typ = parseTypeReq(parse, op);
         lhnode = (INode*)node;
     }
 }
@@ -670,7 +675,7 @@ static INode *parseCmpFrom(ParseState *parse, INode *lhnode) {
         if (lexIsToken(IsToken)) {
             CastNode *node = newIsNode(lhnode, unknownType);
             lexNextToken();
-            node->typ = parseType(parse);
+            node->typ = parseTypeReq(parse, "'is'");
             castPatternMark(node->typ);
             return (INode*)node;
         }

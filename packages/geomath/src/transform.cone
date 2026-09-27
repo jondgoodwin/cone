@@ -1,0 +1,78 @@
+// ======== Transforms: Transform3 in space, Transform2 in the plane ========
+//
+// Placements kept as their parts. A transform scales first, then turns, then moves, as Mat4.fromTrs does.
+// Composing two keeps that form, which is exact while the scaling is the
+// same along every axis (or the turns are about the scaled axes); a shear
+// that scaling along one axis then turning would make cannot be held, and a
+// Mat4 is then the placement to use. The inverse is exact on the same terms.
+
+// A placement in space: scaled by 'scale', turned by 'rotation', then moved by
+// 'translation'
+pub struct Transform3 {
+  pub translation Vec3;
+  pub rotation Quat;
+  pub scale Vec3;
+
+  // Leaving everything where it is
+  pub fn identity() Transform3 {Transform3[Vec3[0., 0., 0.], Quat.identity(), Vec3[1., 1., 1.]];}
+
+  // Where the point p, in the placed thing's coordinates, is in its parent's
+  pub fn transformPoint(self, p Vec3) Vec3 {rotation * (p * scale) + translation;}
+
+  // A direction in the placed thing's coordinates, in its parent's: turned
+  // and scaled, not moved
+  pub fn transformVector(self, v Vec3) Vec3 {rotation * (v * scale);}
+
+  // o placed within self: o applied first, then self
+  pub fn mult overload `*`(self, o Transform3) Transform3 {
+    Transform3[transformPoint(o.translation), rotation * o.rotation, scale * o.scale];
+  }
+
+  // The placement that undoes this one
+  pub fn inverse(self) Transform3 {
+    imm inv = Vec3[1. / scale.x, 1. / scale.y, 1. / scale.z];
+    imm back = rotation.conjugate();
+    Transform3[-((back * translation) * inv), back, inv];
+  }
+
+  // The same placement as a matrix
+  pub fn toMat4(self) Mat4 {Mat4.fromTrs(translation, rotation, scale);}
+}
+
+// A placement in the plane: scaled by 'scale', turned 'angle' radians
+// counterclockwise, then moved by 'translation'
+pub struct Transform2 {
+  pub translation Vec2;
+  pub angle f32;
+  pub scale Vec2;
+
+  // Leaving everything where it is
+  pub fn identity() Transform2 {Transform2[Vec2[0., 0.], 0., Vec2[1., 1.]];}
+
+  // Where the point p, in the placed thing's coordinates, is in its parent's
+  pub fn transformPoint(self, p Vec2) Vec2 {(p * scale).rotate(angle) + translation;}
+
+  // A direction, turned and scaled, not moved
+  pub fn transformVector(self, v Vec2) Vec2 {(v * scale).rotate(angle);}
+
+  // o placed within self: o applied first, then self
+  pub fn mult overload `*`(self, o Transform2) Transform2 {
+    Transform2[transformPoint(o.translation), angle + o.angle, scale * o.scale];
+  }
+
+  // The placement that undoes this one
+  pub fn inverse(self) Transform2 {
+    imm inv = Vec2[1. / scale.x, 1. / scale.y];
+    Transform2[-(translation.rotate(-angle) * inv), -angle, inv];
+  }
+
+  // The same placement as a 3x3 matrix, which carries a 2-D point p as
+  // (p.x, p.y, 1): see Mat3.transformPoint2
+  pub fn toMat3(self) Mat3 {
+    imm c = cos(angle);
+    imm s = sin(angle);
+    Mat3[[c * scale.x, s * scale.x, 0f,
+      -s * scale.y, c * scale.y, 0f,
+      translation.x, translation.y, 1f]];
+  }
+}
