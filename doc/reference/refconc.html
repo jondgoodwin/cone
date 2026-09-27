@@ -13,7 +13,12 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: None of this is implemented.</i></p>
+	<p style="margin-left: 40px;"><i>Note: Of the models below, only OS threads are implemented, on
+		Windows only, as the <span class="pre">thread</span> library package: starting, joining
+		(a handle dropped unjoined joins) and detaching a thread, its identity, sleep, parking,
+		and the futex, all described <a href="#thread">at the end of this page</a>. Nothing
+		checks yet that what is handed to a thread is safe to share. Co-routines, green threads,
+		processes, distributed computing, and splitting work across threads are not implemented.</i></p>
 	
 	<p>Concurrency and parallelism can sometimes improve program throughput, by:</p>
 	<ul>
@@ -46,7 +51,152 @@
 	</ul>
 	<p>Subsequent pages highlight Cone language features (e.g., permissions and queued methods)
 		that can be used to make synchronized, inter-thread communications easier and safer.</p>
-	
+
+	<h2 id="thread">OS threads: the thread package</h2>
+	<p>The <span class="pre">thread</span> package is the operating-system layer every other
+		model is to be built on: starting and joining OS threads, and the <b>futex</b>, the one
+		blocking primitive the locks, the channels and the schedulers are to be written over. It is
+		deliberately small, and it is ordinary library code, bound to the operating system through
+		<span class="pre">extern</span> functions; the compiler knows nothing of it.
+		Its source, <span class="pre">packages/thread/src/thread.cone</span>, documents the same
+		rules at greater length.</p>
+<pre>
+import thread;
+
+fn triangle(n i64) i64 { ... }
+
+fn main() {
+  imm t = thread.start[i64, i64](100, &amp;triangle);  // a new thread runs triangle(100)
+  ...                                              // while main goes on
+  imm total = t.join();                            // wait for it: 5050
+}
+</pre>
+
+	<h3>Starting a thread</h3>
+	<p><span class="pre">thread.start[A, R](arg, &amp;f)</span> starts a new OS thread running
+		<span class="pre">f(arg)</span> and returns its handle at once, a
+		<span class="pre">Thread[R]</span>. The thread is given a function and one value:</p>
+	<ul>
+	<li><b>The value is moved in.</b> The thread owns it, and it dies there when
+		<span class="pre">f</span> is done with it. A struct carries more than one value.</li>
+	<li><b><span class="pre">f</span> is a plain function</b> taking an <span class="pre">A</span>
+		and returning an <span class="pre">R</span>, which may be <span class="pre">void</span>.
+		A closure cannot capture yet, which is why a thread is given a value beside its function.</li>
+	<li><b>Both type arguments must be written</b>: the compiler does not yet infer a type
+		parameter from a function reference's signature.</li>
+	<li><b>The function comes after the value</b>, because a function-reference parameter with a
+		return type can only be a function's last parameter today (a comma after it is read as the
+		start of a second return type).</li>
+	<li><b>What is handed to a thread is not checked yet.</b> Safe to hand over is a value the
+		thread will own outright (a number, a struct of them, a <span class="pre">+so</span> owner,
+		a <span class="pre">uni</span> reference) or an <span class="pre">imm</span> or
+		<span class="pre">opaq</span> reference, which <a href="refconccomm.html">the permission
+		rules</a> already mark as safe to share. A <span class="pre">mut</span> or
+		<span class="pre">ro</span> reference, an <span class="pre">rc</span> owner (its count is
+		not atomic), a borrowed reference into the starting thread's stack, or a raw pointer to
+		memory another thread also writes all compile today, and are the program's to get right,
+		with <a href="refintrinsic.html">atomics</a> or the futex. The compiler's check comes
+		later.</li>
+	</ul>
+	<p><span class="pre">thread.startWith[A, R](thread.Options[name: n, stackSize: s], arg, &amp;f)</span>
+		does the same with options, each of which has a default and may be left out:</p>
+	<ul>
+	<li><span class="pre">name</span>, empty by default, is copied as the thread starts. It is
+		Cone's own, seen through <span class="pre">name()</span>; the operating system's debuggers do
+		not see it.</li>
+	<li><span class="pre">stackSize</span>, 0 by default, is how many bytes of address space to
+		reserve for the thread's stack; 0 is the executable's default. Windows rounds a size up to
+		its allocation granularity, and one of 4 GB or more is taken as 4 GB less one byte.</li>
+	</ul>
+	<p>A thread that cannot be started, or memory that cannot be allocated for it, ends the program
+		with a message on stderr. A trap on any thread ends the whole process.</p>
+
+	<h3>The handle: join, detach, and join on drop</h3>
+	<p>A <span class="pre">Thread[R]</span> is its thread's one owner, a move type.</p>
+	<ul>
+	<li><span class="pre">t.join()</span> waits for the thread to finish and returns what
+		<span class="pre">f</span> returned. It consumes the handle, so a thread is joined once.</li>
+	<li><span class="pre">t.detach()</span> consumes the handle and lets the thread run on alone.
+		What <span class="pre">f</span> returns is finalized on the thread, since nobody will read it.</li>
+	<li><b>A handle that dies unjoined joins</b>: its finalizer waits for the thread and finalizes
+		the result nobody took. This is tidiness, not safety. A handle can be kept where it never
+		dies, and a process ends without finalizing what its threads hold, so nothing a program
+		depends on may rest on that join. A thread whose work must be finished is joined.</li>
+	<li><span class="pre">t.id()</span>, <span class="pre">t.name()</span> and
+		<span class="pre">t.unpark()</span> are the thread's own, as below, and
+		<span class="pre">t.threadRef()</span> is a <span class="pre">ThreadRef</span> to it.</li>
+	</ul>
+	<p>A handle kept in a field or a collection cannot yet be moved out of it to be joined (Cone does
+		not move a value out of a struct's field), so such a handle is joined by its container's death.
+		When <span class="pre">main</span> returns, the process ends, and every thread still running
+		ends with it; handles in <span class="pre">main</span>'s locals have been joined by then.</p>
+
+	<h3>The running thread</h3>
+	<ul>
+	<li><span class="pre">thread.current()</span> is a <span class="pre">ThreadRef</span> to the
+		calling thread: its identity, kept alive while the ThreadRef lives, which may be sent to other
+		threads. It is a move type; <span class="pre">r.copy()</span> makes another.
+		<span class="pre">r.id()</span> is the operating system's thread id, which it may reuse once a
+		thread has ended and its handle is gone. <span class="pre">r.name()</span> is the name
+		<span class="pre">startWith</span> gave, and empty for any other thread, the main thread
+		included. A thread the package did not start takes up an identity the first time it asks
+		for one, and keeps it, since nothing runs when such a thread ends.</li>
+	<li><span class="pre">thread.parallelism()</span> is how many logical processors the machine
+		has, at least 1. It does not count what an affinity mask takes away.</li>
+	<li><span class="pre">thread.sleep(ns)</span> sleeps at least <span class="pre">ns</span>
+		nanoseconds on Windows' high-resolution timer, so a 1 ms sleep takes 1 to 2 ms rather than
+		the 15.6 ms of the system's timer tick. Where that timer is missing (before Windows 10 version
+		1803) it falls back to whole milliseconds, rounded up. <span class="pre">sleep(0)</span> gives
+		up the rest of the time slice to another ready thread of the same priority.</li>
+	<li><span class="pre">thread.yieldNow()</span> lets another thread ready to run on the same
+		processor have it, and returns at once if there is none.</li>
+	</ul>
+
+	<h3>Parking</h3>
+	<p>Each thread has one parking token, and starts without it.
+		<span class="pre">thread.park()</span> takes the token, sleeping until there is one;
+		<span class="pre">unpark()</span>, on the thread's handle or a
+		<span class="pre">ThreadRef</span> to it, makes it available. An unpark sent before the park
+		is therefore not lost, and the park returns at once. Unparks do not add up: two before a park
+		are one token. <span class="pre">park</span> never returns without a token, but a parked
+		thread still checks what it was waiting for, since a token may have been meant for an earlier
+		park.</p>
+
+	<h3>The futex</h3>
+	<p>A futex is a 32-bit word that threads sleep on while it holds a value.</p>
+	<ul>
+	<li><span class="pre">thread.futexWait(word, expected, timeoutNs)</span>: if
+		<span class="pre">*word</span> still equals <span class="pre">expected</span>, checked
+		atomically with going to sleep, sleep until woken or until the timeout passes. It returns
+		false only when the timeout passed, and true when woken, when the word already differed, or
+		spuriously, which the operating system permits. So a waiter loops, re-reading the word.</li>
+	<li><span class="pre">timeoutNs</span> is nanoseconds, <span class="pre">thread.forever</span>
+		by default, rounded up to whole milliseconds; its resolution is the system's timer tick, up to
+		15.6 ms. A timeout of 2<sup>32</sup> - 1 ms or more is that long, not forever. A timeout of 0
+		returns false at once if the word still holds <span class="pre">expected</span>.</li>
+	<li><span class="pre">thread.futexWake(word)</span> wakes one waiting thread, and
+		<span class="pre">thread.futexWakeAll(word)</span> every one. A wake with no thread waiting
+		does nothing and is not remembered, so a thread stores the new value first and wakes after.</li>
+	<li>The word is a raw <span class="pre">*u32</span>, 4-byte aligned, and the caller keeps it
+		alive while any thread may wait on it or wake it: nothing checks that. It is to become a
+		reference to an atomic type. Waits and wakes reach only the threads of one process.</li>
+	</ul>
+<pre>
+while mem.atomicLoad[u32](word, MemOrder.Acquire[]) == 0u32 {
+  thread.futexWait(word, 0u32);     // sleeps only while the word is still 0
+}
+</pre>
+
+	<h3>What a started thread may not use yet</h3>
+	<p>The <span class="pre">collector</span> package's <span class="pre">+gc</span> collector is
+		single threaded: its roots are one chain and its heap is not synchronized. A traced reference
+		made, held, reached or dropped on a thread the package started corrupts it. Nothing checks
+		this. A <a href="refmodule.html#threadlocal">thread-local global</a> gives each thread a copy
+		starting from its initial value, and nothing finalizes a thread's copies when it ends.</p>
+	<p>Deliberately not provided: killing a thread, priorities, pinning a thread to a processor, a
+		flag asking a thread to stop, and scoped threads, which would join before a function returns
+		so that their threads could borrow. The package runs on Windows only.</p>
+
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refconccomm.html"><img alt="_" src="next.png" /></a>

@@ -296,7 +296,11 @@ beyond ([module](../../compiler/c/doc/nodes/module.md), "A described build").
 **There is no thread layer.** Which of async/await, gothreads or actors Cone
 adopts is an open question the author treats as unsettled across the field; the
 stated leaning is actors, and structured concurrency is named as the missing
-discipline — unstructured concurrency being "similar to GOTO."
+discipline — unstructured concurrency being "similar to GOTO." What exists
+below it is library code, the `thread` package: OS threads started on a
+function and one moved value, joined through an owning handle, and the futex
+the blocking layers are to be built on. It is ground a thread layer would be
+built on, not that layer.
 
 ## Hazards
 
