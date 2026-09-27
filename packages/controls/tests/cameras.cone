@@ -1,0 +1,243 @@
+// The controls package's cameras against positions and view matrices worked
+// by hand, and CameraControls driven by actions from events made by hand.
+// Only a failure prints. Nothing here needs a window or a GPU.
+//
+// - An orbit round the origin, 10 away, at yaw 0 and pitch 0 has its eye at
+//   (0, 0, 10), and its view puts the target at (0, 0, -10).
+// - At yaw pi/2 its eye is at (10 sin, 0, 10 cos) = (10, 0, 0), facing -x:
+//   the target is (0, 0, -10) to it, (0, 1, 0) is (0, 1, -10), and (0, 0,
+//   -1), to its right (forward x up = (-1, 0, 0) x (0, 1, 0) = (0, 0, -1)),
+//   is (1, 0, -10).
+// - At pitch pi/6 (yaw 0) its eye is at (0, 10 sin 30deg, 10 cos 30deg) =
+//   (0, 5, 8.6602540), and the target is still (0, 0, -10) to it.
+// - A drag of 100 window units right at 0.005 radians a unit turns the yaw
+//   to -0.5: the eye at (10 sin -0.5, 0, 10 cos 0.5) = (-4.7942554, 0,
+//   8.7758256). A drag far down stops at MAX_PITCH, 1.55.
+// - Two notches of zoom at 10 % each: 10 x 0.9 x 0.9 = 8.1; one back: 9;
+//   a hundred more stop at the least distance, 0.25.
+// - fitPan for a 90-degree view 200 units high: 2 tan 45deg / 200 = 0.01
+//   of the distance a unit. At 10 away, a drag of 10 units right moves the
+//   target 1 left (the scene follows the pointer): (-1, 0, 0), the eye to
+//   (-1, 0, 10); 10 units down moves it 1 up: (-1, 1, 0).
+// - The pose's view (Mat4.lookAt from its origin along its forward), the
+//   orbit's own (Mat4.lookAt from its eye to its target) and the inverse
+//   of the pose's placement are one matrix, round (1, 2, 3) at yaw 0.7,
+//   pitch 0.3, 5 away; and a render.Camera given the pose has that view.
+// - A fly camera at the origin looking down -z, at 4 units a second, moves
+//   half a second forward to (0, 0, -2). Turned a quarter (yaw pi/2), it
+//   faces -x; a quarter second right moves it 1 along its right, (0, 0,
+//   -1); rising a quarter second moves it 1 up; forward and right together
+//   move it 1, not the square root of 2.
+// - Looking by (100, 40) units at 0.0025 radians a unit: yaw -0.25, pitch
+//   -0.1; forward (-cos p sin y, sin p, -cos p cos y) = (0.2461680,
+//   -0.0998334, -0.9640719).
+// - CameraControls, from events: the mouse moving with no button held
+//   feeds nothing while orbiting; a left drag of 100 turns the orbit to
+//   yaw -0.5; two notches zoom to 8.1; C switches to flying, the pose
+//   unchanged, the mouse wanted relative; W held for half a second moves 2
+//   along the view; the mouse moving 40 right looks 0.1 further round, to
+//   yaw -0.6; C back to orbiting keeps the view, the target 8.1 ahead.
+
+mod cameras;
+
+import testing use *;
+import sdl;
+import geomath use *;
+import input use *;
+import controls use *;
+import render use Camera;
+
+imm close = 0.0001d;
+
+fn point(got Vec3, x f32, y f32, z f32, label &[]u8) {
+  expectFloat(got.x, x, close, label);
+  expectFloat(got.y, y, close, label);
+  expectFloat(got.z, z, close, label);
+}
+
+fn sameMatrix(a Mat4, b Mat4, label &[]u8) {
+  mut i = 0usize;
+  mut worst = 0.;
+  while i < 16usize {
+    mut d = a.m[i] - b.m[i];
+    if d < 0. { d = -d; }
+    if d > worst { worst = d; }
+    i = i + 1usize;
+  }
+  expectFloat(worst, 0., close, label);
+}
+
+fn orbits() {
+  mut o = Orbit.make(Vec3[0., 0., 0.], 10., 0., 0.);
+  point(o.eye(), 0., 0., 10., "orbit: eye in front");
+  point(o.viewMatrix() * Vec3[0., 0., 0.], 0., 0., -10., "orbit: target ahead");
+  point(o.pose().viewMatrix() * Vec3[0., 0., 0.], 0., 0., -10., "orbit: pose's view");
+
+  o.yaw = pi / 2.;
+  point(o.eye(), 10., 0., 0., "yaw pi/2: eye on +x");
+  imm v = o.viewMatrix();
+  point(v * Vec3[0., 0., 0.], 0., 0., -10., "yaw pi/2: target");
+  point(v * Vec3[0., 1., 0.], 0., 1., -10., "yaw pi/2: up");
+  point(v * Vec3[0., 0., -1.], 1., 0., -10., "yaw pi/2: right");
+  sameMatrix(o.pose().viewMatrix(), v, "yaw pi/2: pose's view the same");
+
+  o.yaw = 0.;
+  o.pitch = pi / 6.;
+  point(o.eye(), 0., 5., 8.6602540, "pitch pi/6: eye");
+  point(o.viewMatrix() * Vec3[0., 0., 0.], 0., 0., -10., "pitch pi/6: target");
+
+  o.pitch = 0.;
+  o.turn(100., 0.);
+  expectFloat(o.yaw, -0.5, close, "turn: yaw");
+  point(o.eye(), -4.7942554, 0., 8.7758256, "turn: eye");
+  o.turn(0., 10000.);
+  expectFloat(o.pitch, 1.55, close, "turn: pitch stops short of the pole");
+
+  mut z = Orbit.make(Vec3[0., 0., 0.], 10., 0., 0.);
+  z.zoom(2.);
+  expectFloat(z.distance, 8.1, close, "zoom 2 notches");
+  z.zoom(-1.);
+  expectFloat(z.distance, 9., close, "zoom back 1");
+  z.zoom(100.);
+  expectFloat(z.distance, 0.25, close, "zoom stops at the least");
+
+  mut p = Orbit.make(Vec3[0., 0., 0.], 10., 0., 0.);
+  p.fitPan(pi / 2., 200.);
+  expectFloat(p.panRate, 0.01, close, "fitPan");
+  p.pan(10., 0.);
+  point(p.target, -1., 0., 0., "pan right: the target left");
+  point(p.eye(), -1., 0., 10., "pan right: the eye with it");
+  p.pan(0., 10.);
+  point(p.target, -1., 1., 0., "pan down: the target up");
+
+  // One view, three ways, and render's Camera given the pose
+  imm r = Orbit.make(Vec3[1., 2., 3.], 5., 0.7, 0.3);
+  imm pose = r.pose();
+  sameMatrix(pose.viewMatrix(), r.viewMatrix(), "pose's view is the orbit's lookAt");
+  sameMatrix(pose.placement().inverse(), r.viewMatrix(), "the inverse of its placement");
+  point(pose.origin, r.eye().x, r.eye().y, r.eye().z, "pose at the eye");
+  mut camera = Camera.make();
+  camera.origin = pose.origin;
+  camera.orientation = pose.orientation;
+  sameMatrix(camera.viewMatrix(), r.viewMatrix(), "render.Camera given the pose");
+
+  imm back = Orbit.fromEye(r.eye(), Vec3[1., 2., 3.]);
+  expectFloat(back.distance, 5., close, "fromEye: distance");
+  expectFloat(back.yaw, 0.7, close, "fromEye: yaw");
+  expectFloat(back.pitch, 0.3, close, "fromEye: pitch");
+}
+
+fn flies() {
+  mut f = Fly.make(Vec3[0., 0., 0.], 0., 0.);
+  point(f.pose().forward(), 0., 0., -1., "fly: forward is -z");
+  f.move(0., 1., 0., 0.5);
+  point(f.position, 0., 0., -2., "fly: half a second forward");
+
+  mut q = Fly.make(Vec3[0., 0., 0.], pi / 2., 0.);
+  point(q.pose().forward(), -1., 0., 0., "a quarter turn: forward is -x");
+  q.move(1., 0., 0., 0.25);
+  point(q.position, 0., 0., -1., "a quarter turn: right is -z");
+  q.move(0., 0., 1., 0.25);
+  point(q.position, 0., 1., -1., "rising");
+  imm before = q.position;
+  q.move(1., 1., 0., 0.25);
+  expectFloat(q.position.distance(before), 1., close, "diagonal: no faster");
+
+  mut l = Fly.make(Vec3[0., 0., 0.], 0., 0.);
+  l.look(100., 40.);
+  expectFloat(l.yaw, -0.25, close, "look: yaw");
+  expectFloat(l.pitch, -0.1, close, "look: pitch");
+  point(l.pose().forward(), 0.2461680, -0.0998334, -0.9640719, "look: forward");
+  sameMatrix(l.pose().viewMatrix(), l.viewMatrix(), "fly: pose's view is its lookAt");
+  sameMatrix(l.pose().placement().inverse(), l.viewMatrix(), "fly: the inverse of its placement");
+}
+
+fn key(input &mut Input, t u64, scancode u32, down Bool) {
+  input.apply(InputEvent.keyEvent(t, scancode, 0u, down));
+}
+
+fn controlled() {
+  mut input = Input.empty();
+  mut ctx = Context.empty();
+  imm actions = CameraActions.bind(&mut ctx);
+  mut c = CameraControls.make(actions, Orbit.make(Vec3[0., 0., 0.], 10., 0., 0.), &mut ctx);
+  expectInt(i64[c.mode], i64[ORBIT], "orbiting first");
+  expectBool(ctx.isEnabled(actions.look), false, "look off while orbiting");
+
+  // The mouse moving with no button: nothing
+  input.beginFrame();
+  input.apply(InputEvent.moveEvent(1u64, 5., 5., 30., 0.));
+  ctx.update(&input);
+  expectUInt(u64[ctx.fed().len], 0u64, "a move with no button feeds nothing");
+  expectBool(c.update(&mut ctx, 0.016), false, "and moves nothing");
+
+  // A left drag
+  input.beginFrame();
+  input.apply(InputEvent.buttonEvent(2u64, sdl.BUTTON_LEFT, true, 5., 5.));
+  input.apply(InputEvent.moveEvent(3u64, 105., 5., 100., 0.));
+  input.apply(InputEvent.buttonEvent(4u64, sdl.BUTTON_LEFT, false, 105., 5.));
+  ctx.update(&input);
+  expectBool(c.update(&mut ctx, 0.016), true, "the drag moves it");
+  expectFloat(c.orbit.yaw, -0.5, close, "the drag turns it");
+
+  // The wheel
+  input.beginFrame();
+  input.apply(InputEvent.wheelEvent(5u64, 0., 2.));
+  ctx.update(&input);
+  c.update(&mut ctx, 0.016);
+  expectFloat(c.orbit.distance, 8.1, close, "the wheel zooms");
+
+  // C: flying, from where the orbit was
+  imm orbitPose = c.pose();
+  input.beginFrame();
+  key(&mut input, 6u64, sdl.SCANCODE_C, true);
+  ctx.update(&input);
+  c.update(&mut ctx, 0.016);
+  expectInt(i64[c.mode], i64[FLY], "C: flying");
+  expectBool(c.wantsRelativeMouse(), true, "C: the mouse relative");
+  expectBool(ctx.isEnabled(actions.turn), false, "C: turn off");
+  imm flyPose = c.pose();
+  point(flyPose.origin, orbitPose.origin.x, orbitPose.origin.y, orbitPose.origin.z, "C: the same place");
+  imm of = orbitPose.forward();
+  point(flyPose.forward(), of.x, of.y, of.z, "C: facing the same way");
+
+  // W for half a second
+  imm start = c.fly.position;
+  imm ahead = flyPose.forward();
+  input.beginFrame();
+  key(&mut input, 7u64, sdl.SCANCODE_C, false);
+  key(&mut input, 8u64, sdl.SCANCODE_W, true);
+  ctx.update(&input);
+  c.update(&mut ctx, 0.5);
+  imm want = start + ahead * 2.;
+  point(c.fly.position, want.x, want.y, want.z, "W: 2 along the view");
+
+  // The mouse looks
+  input.beginFrame();
+  key(&mut input, 9u64, sdl.SCANCODE_W, false);
+  input.apply(InputEvent.moveEvent(10u64, 0., 0., 40., 0.));
+  ctx.update(&input);
+  c.update(&mut ctx, 0.016);
+  expectFloat(c.fly.yaw, -0.6, close, "the mouse looks");
+
+  // C back: orbiting, the view kept
+  imm lastFly = c.pose();
+  input.beginFrame();
+  key(&mut input, 11u64, sdl.SCANCODE_C, true);
+  ctx.update(&input);
+  c.update(&mut ctx, 0.016);
+  expectInt(i64[c.mode], i64[ORBIT], "C again: orbiting");
+  imm back = c.pose();
+  point(back.origin, lastFly.origin.x, lastFly.origin.y, lastFly.origin.z, "C again: the same place");
+  imm lf = lastFly.forward();
+  point(back.forward(), lf.x, lf.y, lf.z, "C again: facing the same way");
+  expectFloat(c.orbit.target.distance(lastFly.origin), 8.1, close, "C again: the target 8.1 ahead");
+  sameMatrix(c.viewMatrix(), back.viewMatrix(), "the controls' view is the pose's");
+}
+
+fn main() i32 {
+  orbits();
+  flies();
+  controlled();
+  done();
+}

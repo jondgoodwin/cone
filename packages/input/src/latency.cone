@@ -1,0 +1,121 @@
+// LatencyLog: how long input took to show. Each sample is the time from an
+// event's timestamp to the present of the frame that showed its effect, in
+// nanoseconds, both on sdl.GetTicksNS's clock. It reports p50, p95, p99 and
+// the observed maximum, never a mean alone: budget A of the 3-D web's
+// performance perspective passes on p99 <= 100 ms, and a maximum is what
+// catches a stall.
+//
+// Samples are counted in buckets of 10 microseconds up to 250 ms, so a log
+// of a long session stays the same size; a sample of 250 ms or more is kept
+// whole. A percentile is by nearest rank (the smallest sample with at least
+// that share of the samples at or below it), to the bucket's lower edge;
+// the maximum is exact.
+
+// A bucket's width, and how many there are
+pub const LATENCY_BUCKET_NS = 10000u64;
+const LATENCY_BUCKETS = 25000usize;
+
+pub struct LatencyLog {
+  buckets List[u32];
+  over List[u64];        // samples past the last bucket, whole
+  total u64;
+  maxNs u64;
+
+  pub fn empty() LatencyLog {
+    mut b = List[u32].withCapacity(LATENCY_BUCKETS);
+    mut i = 0usize;
+    while i < LATENCY_BUCKETS {
+      b.push(0u);
+      i = i + 1usize;
+    }
+    LatencyLog[b, List[u64].empty(), 0u64, 0u64];
+  }
+
+  // Add a sample: an event at 'eventNs' shown by a present at 'presentNs'.
+  // An event stamped after the present (which cannot be) counts as 0.
+  pub fn record(self &mut, eventNs u64, presentNs u64) {
+    mut ns = 0u64;
+    if presentNs > eventNs { ns = presentNs - eventNs; }
+    self.add(ns);
+  }
+
+  // Add a sample of 'ns' nanoseconds
+  pub fn add(self &mut, ns u64) {
+    imm b = ns / LATENCY_BUCKET_NS;
+    if b < u64[LATENCY_BUCKETS] {
+      mut slot = &mut buckets[usize[b]];
+      *slot = *slot + 1u;
+    } else {
+      over.push(ns);
+    }
+    total = total + 1u64;
+    if ns > maxNs { maxNs = ns; }
+  }
+
+  // The number of samples
+  pub fn count(self &) u64 { total; }
+
+  // The largest sample, in nanoseconds (0 if none)
+  pub fn max(self &) u64 { maxNs; }
+
+  // The 'p'th percentile (0 < p <= 100), in nanoseconds, by nearest rank;
+  // 0 if there are no samples
+  pub fn percentile(self &mut, p f64) u64 {
+    assertDebug(p > 0. and p <= 100.);
+    if total == 0u64 { return 0u64; }
+    mut rank = u64[p / 100. * f64[total]];
+    if f64[rank] < p / 100. * f64[total] { rank = rank + 1u64; }
+    if rank < 1u64 { rank = 1u64; }
+    mut seen = 0u64;
+    mut i = 0usize;
+    while i < LATENCY_BUCKETS {
+      seen = seen + u64[*buckets[i]];
+      if seen >= rank { return u64[i] * LATENCY_BUCKET_NS; }
+      i = i + 1usize;
+    }
+    // Among the samples kept whole: sorted, the (rank - seen)th
+    sortU64(&mut over);
+    *over[usize[rank - seen - 1u64]];
+  }
+
+  // Print 'label', then the count, p50, p95, p99 and the maximum in
+  // milliseconds: "label: 412 samples; p50 12.34 ms, p95 ..., max 20.01 ms"
+  pub fn report(self &mut, label &[]u8) {
+    printStr(label);
+    print <- ": "; print <- total; print <- " samples";
+    if total > 0u64 {
+      print <- "; p50 "; printMs(self.percentile(50.));
+      print <- " ms, p95 "; printMs(self.percentile(95.));
+      print <- " ms, p99 "; printMs(self.percentile(99.));
+      print <- " ms, max "; printMs(maxNs);
+      print <- " ms";
+    }
+    print <- "\n";
+  }
+}
+
+// 'ns' as milliseconds to two places
+fn printMs(ns u64) {
+  imm hundredths = (ns + 5000u64) / 10000u64;
+  print <- hundredths / 100u64;
+  print <- ".";
+  imm frac = hundredths % 100u64;
+  if frac < 10u64 { print <- "0"; }
+  print <- frac;
+}
+
+// Sort 'list' ascending, by insertion (it holds only the rare samples of a
+// quarter second or more)
+fn sortU64(list &mut List[u64]) {
+  mut i = 1usize;
+  while i < list.len() {
+    imm v = *list[i];
+    mut j = i;
+    while j > 0usize and *list[j - 1usize] > v {
+      list.set(j, *list[j - 1usize]);
+      j = j - 1usize;
+    }
+    list.set(j, v);
+    i = i + 1usize;
+  }
+}
