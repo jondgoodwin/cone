@@ -56,3 +56,14 @@ int vtupleCoerce(TupleNode *tuple, INode *totypedcl) {
     tuple->vtype = totypedcl;
     return 1;
 }
+
+// Is every value of the value tuple a constant (litIsLiteral)?
+int vtupleIsLiteral(TupleNode *tuple) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(tuple->elems, cnt, nodesp)) {
+        if (!litIsLiteral(*nodesp))
+            return 0;
+    }
+    return 1;
+}

@@ -1,0 +1,101 @@
+// A value tuple whose values are all constants -- literals, named constants,
+// constant casts, borrowed string literals -- is itself a constant, as a struct
+// literal of constants is. So it may be the initial value of a global or a
+// static, a named constant's value or a field's default, each written once
+// before anything runs; generation folds it into a constant struct. Suffixed or
+// not, parenthesized or not, each value is coerced to its element's type.
+//
+// A tuple named by a type alias is the tuple itself: '.0' reads and writes its
+// elements, and it is passed, returned and assigned whole. Before, element
+// access asked the alias's name, not the tuple it stands for, and was refused.
+
+mod core_tuple_const;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+typedef Pair (i32, i32);
+
+const K = 7;
+
+mut gp (i64, i64) = 1i64, 2i64;
+mut gq (i64, i64) = (3, 4);
+imm gi (u8, f64) = 5, 6;
+mut gk (i64, *u8) = K, 0usize as *u8;
+mut ga Pair = 8, 9;
+mut gs (&[]u8, i32) = "hi", 1;
+
+const KP (i64, i64) = 11, 12;
+
+struct S {
+  pub t (i64, i64) = (13, 14);
+}
+
+fn counter() i64 {
+  static mut s (i64, i64) = 20, 5;
+  s.0 = s.0 + s.1;
+  s.0;
+}
+
+fn mk() Pair {
+  10, 11;
+}
+
+fn first(a Pair) i32 {
+  a.0;
+}
+
+fn readGlobals() i64 {
+  gp.0 * 1000 + gp.1 * 100 + gq.0 * 10 + gq.1;
+}
+
+fn main() {
+  // Globals given tuples of constants, read in a function
+  show("globals", readGlobals());
+  show("imm-global-0", i64[gi.0]);
+  printStr("imm-global-1 = ");
+  printFloat(gi.1);
+  printStr("\n");
+  show("named-constant-in-tuple", gk.0);
+  show("null-pointer-in-tuple", i64[gk.1 == 0usize as *u8]);
+  printStr("string-in-tuple = ");
+  printStr(gs.0);
+  printStr("\n");
+
+  // ... and assigned afterwards, a global being mutable
+  gp = gp.1, gp.0;
+  show("global-swapped", gp.0 * 10 + gp.1);
+
+  // A named constant and a field default
+  show("constant", KP.0 * 100 + KP.1);
+  imm s = S[];
+  show("field-default", s.t.0 * 100 + s.t.1);
+
+  // A static, whose initial value is written once: 20 + 5, then + 5
+  show("static-first", counter());
+  show("static-second", counter());
+
+  // A global of an alias type, its elements read and written
+  show("alias-global", i64[ga.0] * 10 + i64[ga.1]);
+  ga.1 = 99;
+  show("alias-global-written", i64[ga.1]);
+
+  // A local of an alias type, element read and write, passed and returned
+  mut al Pair = 3, 4;
+  al.0 = 20;
+  show("alias-local-0", i64[al.0]);
+  show("alias-local-1", i64[al.1]);
+  show("alias-passed", i64[first(al)]);
+  show("alias-returned", i64[first(mk())]);
+  show("alias-returned-elem", i64[mk().1]);
+  al = mk();
+  show("alias-assigned-call", i64[al.0] * 100 + i64[al.1]);
+  al = 5, 6;
+  show("alias-assigned-tuple", i64[al.0] * 10 + i64[al.1]);
+}

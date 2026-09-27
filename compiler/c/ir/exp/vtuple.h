@@ -21,4 +21,7 @@ void vtupleTypeCheck(TypeCheckState *pstate, TupleNode *node);
 // coercing each value to its element's type. Return 1 if it now matches.
 int vtupleCoerce(TupleNode *tuple, INode *totypedcl);
 
+// Is every value of the value tuple a constant (litIsLiteral)?
+int vtupleIsLiteral(TupleNode *tuple);
+
 #endif

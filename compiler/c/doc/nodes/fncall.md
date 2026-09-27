@@ -226,7 +226,7 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
 | --- | --- |
 | `FnSigTag` | `fnCallFnSigTypeCheck` — a plain call |
 | struct, number | fill in `()`/`[]`/`&[]` as `methfld` if absent, then `fnCallLowerMethod` |
-| `TTupleTag` | `fnCallLowerIntField` — element by literal index |
+| `TTupleTag` | `fnCallLowerIntField` — element by literal index, its type read from the resolved tuple, since the receiver's `vtype` may be an alias naming it |
 | `ArrayTag` | `fnCallArrIndex`, only under `FlagIndex` |
 | `ArrayRefTag` | index; `==`, `!=` or an ordering is `ErrorRefNoCompare`; else `fnCallLowerPtrMethod` against `arrayRefType` |
 | `RefTag` | function-by-ref, array index, a comparison to `fnCallLowerRefCompare`, or `fnCallLowerPtrMethod`, then `fnCallLowerTraitMethod` and failing that `fnCallLowerMethod` |
