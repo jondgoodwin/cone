@@ -1,0 +1,73 @@
+// The statistics on known data: nearest-rank percentiles (p50, p95, p99) and
+// the maximum, with the frame the maximum came in, however the samples
+// arrive; a series of one sample; an empty series; and samples added after a
+// percentile was read. Only a failure prints.
+
+mod stats;
+
+import testing use *;
+import frame use *;
+
+fn main() i32 {
+  // 1..100, in a scrambled order: 37 is coprime with 100, so i * 37 mod 100
+  // visits every residue once as i runs from 1 to 100, and residue 0 stands
+  // for 100. The maximum, 100, is residue 0, at i = 100, added in frame 100.
+  mut s = Series.empty();
+  mut i = 1u64;
+  while i <= 100u64 {
+    imm r = (i * 37u64) % 100u64;
+    s.add(if r == 0u64 {100u64;} else {r;}, i);
+    i = i + 1u64;
+  }
+  expectUInt(u64[s.count()], 100u64, "a hundred samples");
+  expectUInt(s.percentile(50u32), 50u64, "p50 of 1..100");
+  expectUInt(s.percentile(95u32), 95u64, "p95 of 1..100");
+  expectUInt(s.percentile(99u32), 99u64, "p99 of 1..100");
+  expectUInt(s.percentile(100u32), 100u64, "p100 is the maximum");
+  expectUInt(s.max, 100u64, "the maximum");
+  expectUInt(s.maxFrame, 100u64, "the frame of the maximum");
+  expectUInt(s.total, 5050u64, "the sum");
+  expectUInt(s.mean(), 50u64, "the mean");
+
+  // Four samples: p50 is the 2nd (rank ceil(2)), p95 and p99 the 4th
+  mut q = Series.empty();
+  q.add(40u64, 1u64);
+  q.add(10u64, 2u64);
+  q.add(30u64, 3u64);
+  q.add(20u64, 4u64);
+  expectUInt(q.percentile(50u32), 20u64, "p50 of four");
+  expectUInt(q.percentile(95u32), 40u64, "p95 of four");
+  expectUInt(q.max, 40u64, "the maximum of four");
+  expectUInt(q.maxFrame, 1u64, "came first");
+
+  // A stall after reading: the order is restored, the new maximum kept
+  q.add(1000u64, 5u64);
+  q.add(5u64, 6u64);
+  expectUInt(q.percentile(50u32), 20u64, "p50 of six: rank 3");
+  expectUInt(q.percentile(99u32), 1000u64, "p99 of six: the stall");
+  expectUInt(q.max, 1000u64, "the stall is the maximum");
+  expectUInt(q.maxFrame, 5u64, "in frame 5");
+
+  // A tie for the maximum keeps the first frame it came in
+  q.add(1000u64, 7u64);
+  expectUInt(q.maxFrame, 5u64, "a tie keeps the first");
+
+  // One sample is every percentile
+  mut one = Series.empty();
+  one.add(7u64, 3u64);
+  expectUInt(one.percentile(50u32), 7u64, "p50 of one");
+  expectUInt(one.percentile(99u32), 7u64, "p99 of one");
+
+  // None answers 0
+  mut none = Series.empty();
+  expectUInt(none.percentile(50u32), 0u64, "p50 of none");
+  expectUInt(none.max, 0u64, "max of none");
+
+  // A run's statistics hold a series for every phase
+  mut st = Stats.empty();
+  expectUInt(u64[st.phases.len()], u64[PHASE_COUNT], "a series a phase");
+  st.phase(PHASE_RENDER).add(3u64, 1u64);
+  expectUInt(st.phase(PHASE_RENDER).max, 3u64, "a phase's series");
+  expectUInt(st.phase(PHASE_INPUT).max, 0u64, "each its own");
+  done();
+}
