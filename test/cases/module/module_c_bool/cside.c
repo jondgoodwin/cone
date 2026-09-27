@@ -35,6 +35,6 @@ bool cone_bool_of(int32_t n);
 int32_t cone_flags(Flags f);
 
 int32_t c_via_cone_not(void) { return cone_not(false) * 10 + cone_not(true); }
-/* The byte Cone's 'bool' came back as, for a value made by keeping one bit */
+/* The byte Cone's 'bool' came back as, for a value made from a wider one */
 int32_t c_via_cone_bool_of(int32_t n) { bool b = cone_bool_of(n); return *(volatile uint8_t *)&b; }
 int32_t c_via_cone_flags(void) { Flags f = { 7, true, false }; return cone_flags(f); }
