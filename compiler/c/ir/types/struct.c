@@ -37,6 +37,19 @@ StructNode *newStructNode(Name *namesym) {
     return snode;
 }
 
+// Is this member of a generic type one its instance is cloned without?
+static int structMemberAbsent(Nodes *absent, INode *member) {
+    if (absent == NULL)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(absent, cnt, nodesp)) {
+        if (*nodesp == member)
+            return 1;
+    }
+    return 0;
+}
+
 // Clone struct
 INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     // An instance of a generic type exists before it is cloned: genericMemoize
@@ -44,6 +57,11 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     // be mapped to it (cloneDclFix) as the clone reaches that use.
     StructNode *newnode = cstate->structshell ? (StructNode*)cstate->structshell : memAllocBlk(sizeof(StructNode));
     cstate->structshell = NULL;
+    // A member whose 'where' clause these arguments do not meet does not exist
+    // in this instance: it is not copied, so it is neither checked nor generated
+    // here, and a call to it finds nothing (genericReportAbsent)
+    Nodes *absent = cstate->absent;
+    cstate->absent = NULL;
     memcpy(newnode, node, sizeof(StructNode));
     newnode->genericinfo = NULL;
     newnode->lifecycle = NULL;
@@ -128,6 +146,8 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     uint32_t dclpos = cloneDclPush();
     nodelistInit(&newnode->nodelist, node->nodelist.avail);
     for (nodelistFor(&node->nodelist, cnt, nodesp)) {
+        if (structMemberAbsent(absent, *nodesp))
+            continue;
         switch ((*nodesp)->tag) {
         case MacroDclTag:
             iNsTypeAddMacro((INsTypeNode*)newnode, (MacroDclNode*)cloneNode(cstate, *nodesp));
@@ -142,6 +162,8 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     structCloneMapMembers(node, newnode);
     INode **copyp = newnode->nodelist.nodes;
     for (nodelistFor(&node->nodelist, cnt, nodesp)) {
+        if (structMemberAbsent(absent, *nodesp))
+            continue;
         if ((*nodesp)->tag == VarDclTag)
             cloneVarDclFill(cstate, (VarDclNode*)*copyp, (VarDclNode*)*nodesp);
         else if ((*nodesp)->tag != MacroDclTag)
@@ -1885,6 +1907,8 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     if (node->genericinfo) {
         for (nodesFor(node->genericinfo->parms, cnt, nodesp))
             inodeNameRes(pstate, nodesp);
+        // The type's requirements on its arguments
+        genericConstraintsNameRes(pstate, node->genericinfo->parms, &node->genericinfo->where);
     }
 
     // 'Self' first: a field's type may name it, and a type resolved by demand

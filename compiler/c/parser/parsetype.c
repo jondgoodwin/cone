@@ -678,7 +678,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     // Handle if generic parameters are found
     if (lexIsToken(LBracketToken)) {
         strnode->genericinfo = newGenericInfo();
-        strnode->genericinfo->parms = parseGenericParms(parse);
+        strnode->genericinfo->parms = parseGenericParms(parse, 1);
     }
 
     // A variant may pin its tag value, written where its name is so that the
@@ -815,6 +815,19 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
             "%s takes its base's discriminant, so the integer type its tag values are laid out in is declared on the enum it extends.",
             &strnode->namesym->namestr);
         underlying = NULL;
+    }
+
+    // A generic type's constraints, just before its block: requirements its
+    // arguments must meet for an instance to exist at all
+    if (lexIsToken(WhereToken)) {
+        if (strnode->genericinfo)
+            parseWhere(parse, &strnode->genericinfo->where);
+        else {
+            errorMsgLex(ErrorWhereNoParms, "%s has no type parameters, so a 'where' clause has nothing to constrain.",
+                &strnode->namesym->namestr);
+            Nodes *ignored = NULL;
+            parseWhere(parse, &ignored);
+        }
     }
 
     // If block has been provided, process field or method definitions

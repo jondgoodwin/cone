@@ -112,7 +112,9 @@ INode *parseFn(ParseState *parse, uint16_t mayflags);
 // Parse a macro declaration
 MacroDclNode *parseMacro(ParseState *parse);
 // Parse a list of generic variables and add to the genericnode
-Nodes *parseGenericParms(ParseState *parse);
+Nodes *parseGenericParms(ParseState *parse, int annotate);
+// Parse a 'where' clause, with the lexer on 'where', into '*wherep'
+void parseWhere(ParseState *parse, Nodes **wherep);
 INode *parseIf(ParseState *parse);
 INode *parseMatch(ParseState *parse);
 INode *parseWhile(ParseState *parse, Name *lifesym, int stmtflag);
@@ -162,6 +164,8 @@ ConstDclNode *parseConstDcl(ParseState *parse);
 INode *parseFnSig(ParseState *parse);
 INode *parseStruct(ParseState *parse, uint16_t flags);
 INode *parseType(ParseState *parse);
+// A type's name: a name, a path through namespaces, or a generic's instance
+INode *parseTypeName(ParseState *parse);
 AliasDclNode *parseTypedef(ParseState *parse);
 
 // parsehelper.c for statement/block start/end processing

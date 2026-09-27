@@ -106,6 +106,7 @@ extern Name *shapeChangingTraitName; // "ShapeChanging", a container that may mo
 extern Name *noLoanMutTraitName;     // "NoLoanMut", a container whose mutable element borrows loan nothing
 extern Name *noLoanReadTraitName;    // "NoLoanRead", a container whose read-only element borrows loan nothing
 extern Name *atomicValueTraitName;   // "AtomicValue", a value changed only by atomic operations
+extern Name *integerTraitName;   // "Integer", the integer types, which a constraint may ask for
 
 typedef struct VarDclNode VarDclNode;
 

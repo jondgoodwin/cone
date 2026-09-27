@@ -553,7 +553,8 @@ refused. What `is` does is "Module traits" below.
 
 **`mod stack[T];` declares a generic module** [Jon 23 Sep], its type parameters
 in square brackets straight after the name, read by `parseGenericParms` as a
-generic type's are, and recorded on `genericinfo` where the declaration is
+generic type's are, except that a parameter takes no annotation, no constraint
+among them (`ErrorGenParmConstr`), and recorded on `genericinfo` where the declaration is
 accepted. The clauses follow them: `mod stack[T] extends base is Counter;`.
 Type parameters only; an empty list is `ErrorNoGenParms`, as it is for a type.
 A generic module is not C-named: `@c` on its line is `ErrorCAttr`, since a C

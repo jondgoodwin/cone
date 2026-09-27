@@ -155,6 +155,7 @@ void clonePushState(CloneState *cstate, INode *instnode, INode *selftype, uint32
     cstate->selftype = selftype;
     cstate->selfparm = NULL;
     cstate->structshell = NULL;
+    cstate->absent = NULL;
     cstate->scope = scope;
     nametblHookPush();
 

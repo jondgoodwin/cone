@@ -10,6 +10,7 @@
 typedef struct GenericInfo {
     Nodes *parms;            // Declared parameter nodes w/ defaults (GenVarTag)
     Nodes *memonodes;        // Pairs of memoized generic calls and cloned bodies
+    Nodes *where;            // A generic type's constraints: pairs of a use of a parameter and the trait it 'is'
 } GenericInfo;
 
 // Create a new generic info block
@@ -50,5 +51,36 @@ FnDclNode *genericMethodInstance(TypeCheckState *pstate, FnCallNode *callnode, F
 
 // Is 'fn' one of the instances made of generic function or method 'generic'?
 int genericIsInstanceOf(INode *fn, FnDclNode *generic);
+
+// Constraints: 'where T is Name and ...', and the inline '[T Name + Name]'.
+//
+// A constraint is held as a pair in a 'where' list: a use of the type
+// parameter it constrains, and a use of the trait that parameter 'is'. A
+// generic type's own list is its GenericInfo's; a function's -- a generic
+// function's requirements, a generic type's method's conditions -- is its
+// FnDcl's. Each clause is checked by evaluating it once the parameter's
+// argument is known, never solved and never used to infer.
+
+// Resolve a declaration's constraints, once its type parameters are hooked:
+// fold what each parameter's annotation names into 'where' as clauses of its
+// own, and resolve and vet every clause, dropping any that is not a type
+// parameter of this generic, or of the type it is a member of, and a trait
+void genericConstraintsNameRes(NameResState *pstate, Nodes *parms, Nodes **wherep);
+
+// Is 'type' what 'trait' says, as a constraint asks it? A marker trait -- one
+// requiring nothing of a value, the compiler's own among them -- by the
+// compiler's grant or an 'is' declaration only; any other trait by a
+// declaration or by fitting it structurally
+int genericTypeIs(INode *type, StructNode *trait);
+
+// When the method or function 'name' is absent from the generic type instance
+// 'typedcl' because its 'where' clause is not met there, report so at
+// 'errnode', naming the clause, and return 1. Otherwise return 0.
+int genericReportAbsent(INode *errnode, INode *typedcl, Name *name);
+
+// Is this function a member of a generic type's template that exists only
+// where its clause holds? A use of one from an instance is a use of what that
+// instance does not have; report it at 'errnode' and return 1.
+int genericReportTemplateMember(INode *errnode, FnDclNode *fn);
 
 #endif

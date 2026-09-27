@@ -16,6 +16,7 @@ typedef struct FnDclNode {
     LLVMValueRef llvmvar;         // LLVM's handle for a declared variable (for generation)
     DclInfo dclinfo;              // Owner and the facts that decide the linker symbol (name.c spells it)
     GenericInfo *genericinfo;     // Link to generic parms, etc (or NULL if not generic)
+    Nodes *where;                 // Its constraints, pairs of a type parameter's use and a trait (generic.h), or NULL
     uint16_t vtblidx;             // Method ptr's index in the type's vtable
 } FnDclNode;
 

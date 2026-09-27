@@ -303,7 +303,11 @@ For a folded method the receiver is rewritten before any candidate is tried:
 `structFoldReceiver` makes it the access to the field the name was folded
 through, reborrowed with a reference receiver's permission, so selection,
 borrowing and the permission checks see the receiver the method was declared
-for. [struct](struct.md), "Name folding", has the rule.
+for. [struct](struct.md), "Name folding", has the rule. A name the receiver's
+type does not bind is `ErrorNoMbr`, unless the type is an instance of a generic
+type that has the member where its `where` clause holds: then it is
+`ErrorWhereAbsent`, naming the clause (`genericReportAbsent`;
+[generic](generic.md), "Constraints").
 
 **A generic method is selected as its instance.** A generic method may not
 declare an overload name, so a name binding one binds it alone, and the

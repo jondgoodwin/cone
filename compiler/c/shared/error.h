@@ -102,7 +102,7 @@ enum ErrorCode {
 
     // Generics
     ErrorNoGenParms = 1061,     // Type parameter list declares no parameters
-    ErrorGenParmConstr = 1086,  // Type parameter carries a constraint or a type, neither implemented
+    ErrorGenParmConstr = 1086,  // A parameter's annotation that is not built: on a generic's, one naming no trait (a value or kind parameter); on a macro's or generic module's, any
 
     // Iteration
     ErrorNotIterable = 1062,    // Value cannot be iterated over by 'each'
@@ -348,6 +348,14 @@ enum ErrorCode {
     ErrorAtomicValueShape = 1183, // 'AtomicValue' declared by something other than a struct of exactly one field: a trait, an enum, a variant, or a struct of no fields or several
     ErrorAtomicValueType = 1184, // An atomic value's one field of a type no atomic operation acts on: not an integer of 8 to 64 bits, a Bool or a raw pointer
     ErrorAtomicValueConst = 1185, // A 'const' whose type holds an atomic value: each use of a const is a fresh copy, which no atomic operation could share
+
+    // Generic constraints: 'where T is Name and ...', and '[T Name + Name]' (parser/parsefnflow.c, parseWhere; ir/meta/generic.c)
+    ErrorWhereUnmet = 1186,     // An instance of a generic function or type whose type arguments do not meet one of its constraints
+    ErrorWhereAbsent = 1187,    // A method or function of a generic type's instance that does not exist there, its 'where' clause unmet
+    ErrorWhereForm = 1188,      // A 'where' clause not of the form built: 'T is Name', '+'-joined traits, clauses joined by 'and'
+    ErrorWhereSubject = 1189,   // A 'where' clause's subject that is not a type parameter of the generic or of the generic type it is a member of
+    ErrorWhereTrait = 1190,     // What a 'where' clause's subject 'is' names no trait: a type, or a generic trait's instance
+    ErrorWhereNoParms = 1191,   // A 'where' clause on a declaration with no type parameters to constrain: not generic, nor a member of a generic type
 
     // Warnings
     WarnCode = 3000,

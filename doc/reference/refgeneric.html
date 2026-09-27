@@ -18,8 +18,14 @@
 			(including through a pointer, reference or slice parameter, a generic type's instance
 			and a function reference's signature),
 			and generic methods, and so are <a href="refmodule.html#generic">generic
-			modules</a>. Constraints are not: neither a supertype after a type
-			parameter, nor combining them with +, nor the where clause.</i></p>
+			modules</a>. Constraints are implemented as described under
+			<a href="#constraints">Generic Constraints</a>: a trait after a type
+			parameter, several joined with +, and the where clause of clauses
+			joined with and, on a generic function, a generic type and a generic
+			type's method. Not yet: a clause relating two parameters or constraining
+			a type expression, or and not, constraints on a generic module's or a
+			macro's parameters, and checking a generic's body against its constraints
+			where it is declared.</i></p>
 	
 		<p>Generics enable the creation of generic function or type logic 
 		that works across all types that conform to specified constraints.
@@ -238,52 +244,137 @@ mut i32OrBad Result[i32, BadArith];
 int openFile Result[FileHandle, IoError];
 </pre>
 
-	<h2>Generic Constraints</h2>
+	<h2 id="constraints">Generic Constraints</h2>
 	<p>Constraints act as a early-warning system, helping to determine
 		whether generic logic can be successfully applied to any given types.
-		For example, the <span class="pre">max</span> generic function cannot
-		be applied to a type that does not support the comparison operators.</p>
+		For example, a <span class="pre">twice</span> generic function adding a value to itself cannot
+		be applied to a type that does not support addition.</p>
 
 	<h3>Supertypes as constraints</h3>
 	<p>The simplest form of generic constraint is to specify a Supertype
 		when declaring the generic types:</p>
 <pre>
-trait Comparable {
-	fn `&gt;`(a Self, b Self) Bool;
+fn twice[T Integer](x T) T {
+  x + x;
 }
-	
-fn max[T Comparable](a T, b T) T {
-  if a > b {a} else {b}
+
+trait Sized {
+  pub fn size(self &amp;) i64;
+}
+
+fn total[T Sized](a &amp;T, b &amp;T) i64 {
+  a.size() + b.size();
 }
 </pre>
-	<p>The trait <span class="pre">Comparable</span> applies to
-		any type that implements the greater-than operator on two values of its type
-		and returns either true or false. 
-		By constraining <span class="pre">T</span> to comply with the
-		<span class="pre">Comparable</span> trait constraint,
-		we get a clearer error should we try to apply max to a
-		type that does not implement the greater than operator.</p>
+	<p>A constraint says what <span class="pre">T</span> <i>is</i>, the same question
+		<span class="pre">p is Mobile</span> asks of a value and
+		<span class="pre">struct Node is Id</span> answers for a type
+		(see <a href="reftrait.html#isa">Traits</a>). It is answered once the type
+		arguments are known, by asking it of them; it is never used to work out a type
+		argument the call did not supply.</p>
+	<ul>
+		<li><b>A trait with members</b> is met by any type that fits it, whether or not it
+			declares <span class="pre">is Sized</span>: a struct with a
+			<span class="pre">size</span> method of that signature is
+			<span class="pre">Sized</span>. A type declaring it is one too.</li>
+		<li><b>A marker trait</b>, one requiring nothing of a value, is met only by a type
+			that declares it with <span class="pre">is</span>, or that the compiler grants it
+			to: every type is exactly one of <span class="pre">Move</span> and
+			<span class="pre">Copy</span>, and <span class="pre">Integer</span> is granted to
+			the integer types, <span class="pre">i8</span> to <span class="pre">i64</span>,
+			<span class="pre">u8</span> to <span class="pre">u64</span>,
+			<span class="pre">isize</span> and <span class="pre">usize</span>. A struct
+			identical to one declaring a marker, but not declaring it, does not meet it.</li>
+	</ul>
+	<p>By constraining <span class="pre">T</span>, we get a clearer error should we
+		try to apply <span class="pre">twice</span> to a type that is not an integer:
+		<span class="pre">twice(2.5)</span> is refused where it is written,
+		&ldquo;twice requires T is Integer, and f32 is not Integer&rdquo;,
+		with nothing reported from inside <span class="pre">twice</span>. A generic type
+		is refused the same way, wherever an instance of it is named:
+		<span class="pre">Num[f32]</span> for a <span class="pre">struct Num[T Integer]</span>.</p>
+	<p>Only a struct fits a trait with members yet: a number type meets the markers
+		granted to it and no trait of your own. And a requirement whose signature
+		names <span class="pre">Self</span> in a parameter, as
+		<span class="pre">fn same(self &amp;, o &amp;Self) Bool</span> does, is not met by
+		any type's method, whose own <span class="pre">Self</span> is a different type.</p>
 
 	<h3>Combining supertypes</h3>
 	<p>Multiple supertypes may be specified as constraints for a single
 		generic variable using <span class="pre">+</span>.
 		This ensures the supertype complies with all of their requirements:</p>
 <pre>
-fn some[T Comparable + Float](a T) {
+fn fill[T Integer + Copy](dst &amp;[]mut T, v T) {
   ...
 }
 </pre>
-	
+
 	<h3>Where clause</h3>
-	<p>Some type constraints, such as relationships between two generic types,
-		cannot be expressed within the square brackets.
-		These constraints should be expressed as part of a
-		<span class="pre">where</span> clause just before the start of the block.</p>
+	<p>The same constraints may instead be written as a
+		<span class="pre">where</span> clause just before the start of the block,
+		after a function's signature or after a type's name and its
+		<span class="pre">is</span> list. Each clause is
+		<span class="pre">T is Name</span>, clauses are joined with
+		<span class="pre">and</span>, and a clause may join traits with
+		<span class="pre">+</span> as the square brackets do. These declarations say
+		exactly what their bracketed forms say:</p>
 <pre>
-struct Xyz[T, Y] where T &lt; Y &amp;&amp; Option[T] is Node;
+fn twice[T](x T) T where T is Integer {
+  x + x;
+}
+
+fn fill[T](dst &amp;[]mut T, v T) where T is Integer and T is Copy {
+  ...
+}
+
+struct Num[T] where T is Integer {
+  pub v T;
+}
 </pre>
-	<p>This expresses the criteria that T is a supertype of Y 
-		and that a nullable T is a valid Node.</p>
+
+	<h3 id="methodwhere">A method that exists only for some instances</h3>
+	<p>On a method of a generic type, a <span class="pre">where</span> clause over the
+		type's parameters is not a requirement but a condition for the method existing.
+		An instance whose type arguments do not meet it is a perfectly good type that
+		lacks the method: nothing of the method is checked or generated for it, and
+		calling it is the error.</p>
+<pre>
+struct Cell[T] {
+  pub v T;
+  pub fn load(self &amp;) T {v;}
+  pub fn add(self &amp;mut, n T) T where T is Integer {
+    v = v + n;
+    v;
+  }
+}
+
+mut ci = Cell[i32][3];
+mut cb = Cell[Bool][true];
+ci.add(4);       // 7
+cb.load();       // true
+cb.add(true);    // ERROR: no method add for Cell[Bool]: it exists only where T is Integer
+</pre>
+	<p>Because the method is absent, an instance fits only the traits it has the
+		members for: <span class="pre">Cell[i32]</span> fits a trait requiring
+		<span class="pre">add</span>, and <span class="pre">Cell[Bool]</span> does not,
+		whether the trait is asked for by a constraint or by a
+		<a href="refvirtref.html">virtual reference</a>. A generic method's own
+		<span class="pre">where</span> clause over its own type parameters is a requirement,
+		as a generic function's is.</p>
+
+	<h3>Constraints not built yet</h3>
+	<p>A <span class="pre">where</span> clause is meant to be able to say more than
+		<span class="pre">T is Name</span>: a relationship between two type parameters,
+		and a constraint on a type expression rather than a parameter.</p>
+<pre>
+struct Xyz[T, Y] where T &lt; Y and Option[T] is Node;
+</pre>
+	<p>This would express the criteria that T is a supertype of Y
+		and that a nullable T is a valid Node. Neither form is built, nor
+		<span class="pre">or</span> and <span class="pre">not</span> between clauses, nor
+		a constraint on a generic module's or a macro's parameters. A generic's body is
+		checked only in each instance, as it always has been, not against its constraints
+		where it is declared.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refmacro.html"><img alt="_" src="next.png" /></a>
