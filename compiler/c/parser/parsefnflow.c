@@ -727,11 +727,21 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
         mayflags |= ParseMaySig;
     }
 
-    // Process function name, if provided
-    if (lexIsToken(IdentToken)) {
-        if (!(mayflags&ParseMayName))
-            errorMsgLex(WarnName, "Unnecessary function name is ignored");
-        fnnode->namesym = lex->val.ident;
+    // Process function name, if provided. The lexer reads a permission's name
+    // ('mut', 'opaq', ...) as the permission wherever it is written, so it
+    // cannot name a function. It is reported once and read past, so the rest of
+    // the declaration parses as written instead of cascading from a missing
+    // name. The function is left unnamed, which keeps it out of every namespace:
+    // bound, it would also clash with the built-in permission
+    if (lexIsToken(IdentToken) || lexIsToken(PermToken)) {
+        if (lexIsToken(PermToken))
+            errorMsgLex(ErrorNoName, "'%s' is a permission, so it cannot name a function. Rename it.",
+                &lex->val.ident->namestr);
+        else {
+            if (!(mayflags&ParseMayName))
+                errorMsgLex(WarnName, "Unnecessary function name is ignored");
+            fnnode->namesym = lex->val.ident;
+        }
         lexNextToken();
         if (lexIsToken(LBracketToken)) {
             fnnode->genericinfo = newGenericInfo();

@@ -844,7 +844,9 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 FnDclNode *fn = (FnDclNode*)parseFn(parse, externflag ? ParseMayName | ParseMaySig : methflags);
                 fn->flags |= externflag;
                 parseExternFnCheck(fn);
-                if (fn && isNamedNode(fn)) {
+                // A function whose name was missing is reported and not added:
+                // the type's namespace binds names, and it has none
+                if (fn->namesym) {
                     Nodes *parms = ((FnSigNode *)fn->vtype)->parms;
                     if (parms->used > 0 && ((VarDclNode*)nodesGet(parms, 0))->namesym == selfName)
                         fn->flags |= FlagMethFld;  // function is a method if first parm is 'self'
