@@ -50,7 +50,7 @@ pub struct Device {
       queue.backend.memory],
       0u32, 0u32, TEXTURE_FORMAT_UNDEFINED, depthFormat, 0u64];
     if !self.isValid() or !surface.isValid() { return sc; }
-    imm sci = vulkan.SemaphoreCreateInfo[pNext: nullp()];
+    imm sci = vulkan.SemaphoreCreateInfo[];
     mut i = 0usize;
     while i < 2usize {
       mut sem = vulkan.Semaphore[0u64];
@@ -154,7 +154,7 @@ pub struct Device {
     result.backend.layerCount = desc.depthOrArrayLayers;
     // Room for a view of each level of each layer, a cube and an array view
     // of each level, and a few more
-    result.backend.views = newViews(desc.mipLevelCount * (desc.depthOrArrayLayers + 2u32) + 8u32) as usize;
+    result.backend.views = newViews(desc.mipLevelCount * (desc.depthOrArrayLayers + 2u32) + 8u32);
     imm cmd = uploadCommands(&mut queue);
     if !isNull(cmd) { firstLayout(cmd, image, kind); }
     result;
@@ -165,7 +165,7 @@ pub struct Device {
   pub fn createShaderModule(self &, spirv &[]u32) ShaderModule {
     mut module = vulkan.ShaderModule[0u64];
     if self.isValid() and spirv.len > 0usize {
-      imm ci = vulkan.ShaderModuleCreateInfo[pNext: nullp(), codeSize: spirv.len * 4usize, pCode: &spirv[0] as *u32];
+      imm ci = vulkan.ShaderModuleCreateInfo[codeSize: spirv.len * 4usize, pCode: &spirv[0] as *u32];
       check(vulkan.createShaderModule(backend.device, &ci, nullp(), &mut module), "vkCreateShaderModule");
     }
     ShaderModule[ShaderModuleBackend[backend.device, module]];
@@ -199,7 +199,7 @@ pub struct Device {
       result.backend.types[usize[e.binding]] = type;
       i = i + 1usize;
     }
-    imm ci = vulkan.DescriptorSetLayoutCreateInfo[pNext: nullp(), bindingCount: u32[entries.len],
+    imm ci = vulkan.DescriptorSetLayoutCreateInfo[bindingCount: u32[entries.len],
       pBindings: &bindings as *vulkan.DescriptorSetLayoutBinding];
     mut layout = vulkan.DescriptorSetLayout[0u64];
     check(vulkan.createDescriptorSetLayout(backend.device, &ci, nullp(), &mut layout), "vkCreateDescriptorSetLayout");
@@ -245,7 +245,7 @@ pub struct Device {
     // The two stages
     mut vertexName = String.from(desc.vertexEntryPoint);
     mut fragmentName = String.from(desc.fragmentEntryPoint);
-    mut stages [2; vulkan.PipelineShaderStageCreateInfo] = [2; vulkan.PipelineShaderStageCreateInfo[pNext: nullp(),
+    mut stages [2; vulkan.PipelineShaderStageCreateInfo] = [2; vulkan.PipelineShaderStageCreateInfo[
       module: vulkan.ShaderModule[0u64], pName: nullp(), pSpecializationInfo: nullp()]];
     stages[0].stage = vulkan.SHADER_STAGE_VERTEX_BIT;
     stages[0].module = desc.vertexModule.backend.module;
@@ -283,13 +283,13 @@ pub struct Device {
       }
       b = b + 1usize;
     }
-    imm vertexInput = vulkan.PipelineVertexInputStateCreateInfo[pNext: nullp(),
+    imm vertexInput = vulkan.PipelineVertexInputStateCreateInfo[
       vertexBindingDescriptionCount: u32[desc.buffers.len],
       pVertexBindingDescriptions: &bindings as *vulkan.VertexInputBindingDescription,
       vertexAttributeDescriptionCount: u32[attributeCount],
       pVertexAttributeDescriptions: &attributes as *vulkan.VertexInputAttributeDescription];
-    imm inputAssembly = vulkan.PipelineInputAssemblyStateCreateInfo[pNext: nullp(), topology: topology(desc.topology)];
-    imm viewport = vulkan.PipelineViewportStateCreateInfo[pNext: nullp(), viewportCount: 1u32,
+    imm inputAssembly = vulkan.PipelineInputAssemblyStateCreateInfo[topology: topology(desc.topology)];
+    imm viewport = vulkan.PipelineViewportStateCreateInfo[viewportCount: 1u32,
       pViewports: 0usize as *vulkan.Viewport, scissorCount: 1u32, pScissors: 0usize as *vulkan.Rect2D];
 
     // Rasterization: which faces are culled, and which way round a front
@@ -300,12 +300,12 @@ pub struct Device {
     if desc.cullMode == CULL_MODE_BACK { cull = vulkan.CULL_MODE_BACK_BIT; }
     mut front = vulkan.FRONT_FACE_COUNTER_CLOCKWISE;
     if desc.frontFace == FRONT_FACE_CW { front = vulkan.FRONT_FACE_CLOCKWISE; }
-    imm raster = vulkan.PipelineRasterizationStateCreateInfo[pNext: nullp(), cullMode: cull, frontFace: front];
-    imm multisample = vulkan.PipelineMultisampleStateCreateInfo[pNext: nullp(), pSampleMask: 0usize as *u32];
+    imm raster = vulkan.PipelineRasterizationStateCreateInfo[cullMode: cull, frontFace: front];
+    imm multisample = vulkan.PipelineMultisampleStateCreateInfo[pSampleMask: 0usize as *u32];
 
     // Depth
     imm hasDepth = desc.depthFormat != TEXTURE_FORMAT_UNDEFINED;
-    mut depthState = vulkan.PipelineDepthStencilStateCreateInfo[pNext: nullp(), front: vulkan.StencilOpState[],
+    mut depthState = vulkan.PipelineDepthStencilStateCreateInfo[front: vulkan.StencilOpState[],
       back: vulkan.StencilOpState[]];
     if hasDepth {
       depthState.depthTestEnable = vulkan.TRUE;
@@ -315,13 +315,13 @@ pub struct Device {
 
     // One color target, written whole, not blended
     imm blendAttachment = vulkan.PipelineColorBlendAttachmentState[];
-    imm blend = vulkan.PipelineColorBlendStateCreateInfo[pNext: nullp(), attachmentCount: 1u32,
+    imm blend = vulkan.PipelineColorBlendStateCreateInfo[attachmentCount: 1u32,
       pAttachments: &blendAttachment as *vulkan.PipelineColorBlendAttachmentState, blendConstants: [4; 0f]];
     imm dynamics [2; u32] = [vulkan.DYNAMIC_STATE_VIEWPORT, vulkan.DYNAMIC_STATE_SCISSOR];
-    imm dynamic = vulkan.PipelineDynamicStateCreateInfo[pNext: nullp(), dynamicStateCount: 2u32,
+    imm dynamic = vulkan.PipelineDynamicStateCreateInfo[dynamicStateCount: 2u32,
       pDynamicStates: &dynamics as *u32];
     imm colorFormats [1; u32] = [vkFormat(desc.colorFormat)];
-    mut rendering = vulkan.PipelineRenderingCreateInfo[pNext: nullp(), colorAttachmentCount: 1u32,
+    mut rendering = vulkan.PipelineRenderingCreateInfo[colorAttachmentCount: 1u32,
       pColorAttachmentFormats: &colorFormats as *u32];
     if hasDepth { rendering.depthAttachmentFormat = vkFormat(desc.depthFormat); }
 
@@ -351,7 +351,7 @@ pub struct Device {
     if self.isValid() {
       mut mipmapMode = vulkan.SAMPLER_MIPMAP_MODE_NEAREST;
       if desc.mipmapFilter == FILTER_MODE_LINEAR { mipmapMode = vulkan.SAMPLER_MIPMAP_MODE_LINEAR; }
-      imm ci = vulkan.SamplerCreateInfo[pNext: nullp(), magFilter: vkFilter(desc.magFilter),
+      imm ci = vulkan.SamplerCreateInfo[magFilter: vkFilter(desc.magFilter),
         minFilter: vkFilter(desc.minFilter), mipmapMode: mipmapMode, addressModeU: vkAddressMode(desc.addressModeU),
         addressModeV: vkAddressMode(desc.addressModeV), addressModeW: vkAddressMode(desc.addressModeW),
         minLod: desc.lodMinClamp, maxLod: desc.lodMaxClamp];
@@ -397,7 +397,7 @@ pub struct Device {
       }
       t = t + 1usize;
     }
-    imm pci = vulkan.DescriptorPoolCreateInfo[pNext: nullp(), maxSets: 1u32, poolSizeCount: u32[sizeCount],
+    imm pci = vulkan.DescriptorPoolCreateInfo[maxSets: 1u32, poolSizeCount: u32[sizeCount],
       pPoolSizes: &sizes as *vulkan.DescriptorPoolSize];
     mut pool = vulkan.DescriptorPool[0u64];
     if !check(vulkan.createDescriptorPool(backend.device, &pci, nullp(), &mut pool), "vkCreateDescriptorPool") {
@@ -405,7 +405,7 @@ pub struct Device {
     }
     result.backend.pool = pool;
     mut setLayout = layout.backend.layout;
-    imm ai = vulkan.DescriptorSetAllocateInfo[pNext: nullp(), descriptorPool: pool, descriptorSetCount: 1u32,
+    imm ai = vulkan.DescriptorSetAllocateInfo[descriptorPool: pool, descriptorSetCount: 1u32,
       pSetLayouts: &mut setLayout as *vulkan.DescriptorSetLayout];
     mut set = vulkan.DescriptorSet[0u64];
     if !check(vulkan.allocateDescriptorSets(backend.device, &ai, &mut set as *vulkan.DescriptorSet),
@@ -417,7 +417,7 @@ pub struct Device {
     mut infos [16; vulkan.DescriptorBufferInfo] = [16; vulkan.DescriptorBufferInfo[vulkan.Buffer[0u64], 0u64, 0u64]];
     mut images [16; vulkan.DescriptorImageInfo] = [16; vulkan.DescriptorImageInfo[vulkan.Sampler[0u64],
       vulkan.ImageView[0u64], vulkan.IMAGE_LAYOUT_UNDEFINED]];
-    mut writes [16; vulkan.WriteDescriptorSet] = [16; vulkan.WriteDescriptorSet[pNext: nullp(),
+    mut writes [16; vulkan.WriteDescriptorSet] = [16; vulkan.WriteDescriptorSet[
       dstSet: vulkan.DescriptorSet[0u64], pImageInfo: 0usize as *vulkan.DescriptorImageInfo,
       pBufferInfo: 0usize as *vulkan.DescriptorBufferInfo, pTexelBufferView: 0usize as *u64]];
     i = 0usize;
@@ -510,7 +510,7 @@ fn allocate(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, 
     fail("no memory type suits the buffer or texture");
     return memory;
   }
-  imm mai = vulkan.MemoryAllocateInfo[pNext: nullp(), allocationSize: req.size, memoryTypeIndex: typeIndex];
+  imm mai = vulkan.MemoryAllocateInfo[allocationSize: req.size, memoryTypeIndex: typeIndex];
   check(vulkan.allocateMemory(device, &mai, nullp(), &mut memory), "vkAllocateMemory");
   memory;
 }
@@ -520,7 +520,7 @@ fn allocate(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, 
 fn allocateBuffer(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, size u64, usage u32,
     mapped Bool) BufferBackend {
   mut result = BufferBackend[device, vulkan.Buffer[0u64], vulkan.DeviceMemory[0u64], nullp()];
-  imm bci = vulkan.BufferCreateInfo[pNext: nullp(), size: size, usage: usage, pQueueFamilyIndices: 0usize as *u32];
+  imm bci = vulkan.BufferCreateInfo[size: size, usage: usage, pQueueFamilyIndices: 0usize as *u32];
   mut buffer = vulkan.Buffer[0u64];
   if !check(vulkan.createBuffer(device, &bci, nullp(), &mut buffer), "vkCreateBuffer") { return result; }
   result.buffer = buffer;
@@ -554,7 +554,7 @@ fn makeImage(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties,
 fn makeImageLevels(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, width u32, height u32,
     format u32, usage u32, levels u32, layers u32, flags u32, image &mut vulkan.Image, memory &mut vulkan.DeviceMemory,
     view &mut vulkan.ImageView) Bool {
-  imm ici = vulkan.ImageCreateInfo[pNext: nullp(), flags: flags, format: format,
+  imm ici = vulkan.ImageCreateInfo[flags: flags, format: format,
     extent: vulkan.Extent3D[width, height, 1u32], mipLevels: levels, arrayLayers: layers, usage: usage,
     pQueueFamilyIndices: 0usize as *u32];
   if !check(vulkan.createImage(device, &ici, nullp(), image), "vkCreateImage") { return false; }
@@ -565,7 +565,7 @@ fn makeImageLevels(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryPrope
   if !check(vulkan.bindImageMemory(device, *image, *memory, 0u64), "vkBindImageMemory") { return false; }
   mut viewType = vulkan.IMAGE_VIEW_TYPE_2D;
   if layers > 1u32 { viewType = vulkan.IMAGE_VIEW_TYPE_2D_ARRAY; }
-  imm vci = vulkan.ImageViewCreateInfo[pNext: nullp(), image: *image, viewType: viewType, format: format,
+  imm vci = vulkan.ImageViewCreateInfo[image: *image, viewType: viewType, format: format,
     components: vulkan.ComponentMapping[], subresourceRange: vulkan.ImageSubresourceRange[aspectMask: aspectOf(format),
     levelCount: levels, layerCount: layers]];
   check(vulkan.createImageView(device, &vci, nullp(), view), "vkCreateImageView");
@@ -583,7 +583,7 @@ fn makePipelineLayout(device vulkan.Device, setCount u32, sets &[4; vulkan.Descr
     immediateSize];
   mut ranges = 0u32;
   if immediateSize > 0u32 { ranges = 1u32; }
-  imm ci = vulkan.PipelineLayoutCreateInfo[pNext: nullp(), setLayoutCount: setCount,
+  imm ci = vulkan.PipelineLayoutCreateInfo[setLayoutCount: setCount,
     pSetLayouts: sets as *vulkan.DescriptorSetLayout, pushConstantRangeCount: ranges,
     pPushConstantRanges: &range as *vulkan.PushConstantRange];
   mut layout = vulkan.PipelineLayout[0u64];

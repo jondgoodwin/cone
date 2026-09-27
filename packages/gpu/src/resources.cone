@@ -134,8 +134,7 @@ struct TextureBackend {
   pub mipCount u32 = 1u32;
   pub baseLayer u32 = 0u32;
   pub layerCount u32 = 1u32;
-  pub views usize = 0usize;        // its *ViewCache, a device-made texture's (a pointer field
-                                   // cannot default to null: a Cone gap)
+  pub views *ViewCache = 0usize as *ViewCache;  // a device-made texture's; null otherwise
 }
 
 // The views 'createViewWith' has made of a texture, each kept until the
@@ -178,7 +177,7 @@ pub struct Texture {
   pub fn createViewWith(self &, desc &TextureViewDescriptor) TextureView {
     mut result = TextureView[backend, width, height, format];
     result.backend.view = vulkan.ImageView[0u64];
-    if backend.image.h == 0u64 or backend.views == 0usize { return result; }
+    if backend.image.h == 0u64 or (backend.views as usize) == 0usize { return result; }
     imm baseMip = desc.baseMipLevel;
     imm baseLayer = desc.baseArrayLayer;
     mut mips = desc.mipLevelCount;
@@ -204,7 +203,7 @@ pub struct Texture {
     if desc.dimension == TEXTURE_VIEW_DIMENSION_CUBE { viewType = vulkan.IMAGE_VIEW_TYPE_CUBE; }
     imm key = u64[desc.dimension] | (u64[baseMip] << 8u64) | (u64[mips] << 16u64) | (u64[baseLayer] << 24u64)
       | (u64[layers] << 40u64);
-    imm cache = backend.views as *ViewCache;
+    imm cache = backend.views;
     mut found = vulkan.ImageView[0u64];
     mut i = 0usize;
     while i < usize[cache.count] {
@@ -218,7 +217,7 @@ pub struct Texture {
         return result;
       }
       imm vk = vkFormat(format);
-      imm vci = vulkan.ImageViewCreateInfo[pNext: nullp(), image: backend.image, viewType: viewType, format: vk,
+      imm vci = vulkan.ImageViewCreateInfo[image: backend.image, viewType: viewType, format: vk,
         components: vulkan.ComponentMapping[], subresourceRange: vulkan.ImageSubresourceRange[aspectMask: aspectOf(vk),
         baseMipLevel: baseMip, levelCount: mips, baseArrayLayer: baseLayer, layerCount: layers]];
       if !check(vulkan.createImageView(backend.device, &vci, nullp(), &mut found), "vkCreateImageView") {
@@ -243,7 +242,7 @@ pub struct Texture {
     if backend.owned and backend.image.h != 0u64 {
       vulkan.deviceWaitIdle(backend.device);
       if backend.view.h != 0u64 { vulkan.destroyImageView(backend.device, backend.view, nullp()); }
-      endViews(backend.device, backend.views as *ViewCache);
+      endViews(backend.device, backend.views);
       vulkan.destroyImage(backend.device, backend.image, nullp());
     }
     if backend.owned and backend.memory.h != 0u64 { vulkan.freeMemory(backend.device, backend.memory, nullp()); }
