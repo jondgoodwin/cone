@@ -217,9 +217,12 @@ Cone tags**, deliberately: a reference is not always a plain pointer once
 virtual references and fat pointers are in play.
 
 `genlConvert` (`FlagConvert`):
-- ref/ptr → `Bool` is tested **first**, as `LLVMBuildIsNotNull`. Without that
-  arm, `Bool` being a 1-bit unsigned would send it down the number path and
-  emit a truncation of a pointer.
+- anything → `Bool` is tested **first**, and asks what the `isTrue` intrinsic
+  asks of a condition: a ref/ptr `LLVMBuildIsNotNull`, an integer `icmp ne 0`,
+  a float `fcmp une 0.0` (0 and -0 false, NaN true). Without that arm, `Bool`
+  being a 1-bit unsigned would send it down the number path: an integer
+  truncated to its low bit (2 false), a float through `fptoui` (0.5 false, NaN
+  poison), a pointer truncated.
 - numbers: `fptoui`/`fptosi`/`trunc`/`sext`/`zext`/`uitofp`/`sitofp`/
   `fptrunc`/`fpext`.
 - struct: alloca-store-bitcast-load, because LLVM does not bitcast structs. The

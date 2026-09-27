@@ -369,8 +369,8 @@ An **integer narrower than C's `int`** keeps its LLVM type, but carries the
 widening C's convention gives it in its register (`genlCAbiExtend`), on the
 declaration or definition and at each direct call (`genlCAbiMarkExtends`), as
 an argument and as a result. A `Bool` is C's `bool`, `zeroext` on Win64, SysV
-and wasm32 alike; without it a Bool made by keeping one bit of a wider register
-reaches C, which trusts the whole byte, as that register's low byte. An 8- or
+and wasm32 alike; without it a Bool whose register's upper bits were never
+cleared reaches C, which trusts the whole byte, as that register's low byte. An 8- or
 16-bit integer is `signext` or `zeroext` by its sign on SysV and wasm32, and
 unmarked on Win64, where the callee widens it: the marks clang gives the same
 C declaration for each target. A C-named body's incoming Bool is then trusted
