@@ -120,13 +120,24 @@ static int arrayLitTypeCheckExpected(TypeCheckState *pstate, ArrayNode *arrlit, 
     return 1;
 }
 
+// Is an array literal's dimension a constant whose count type check can read? A
+// reinterpretation of a constant is a constant (litIsLiteral), but its count is
+// known only once generated, and the array type needs it now
+static int arrayLitDimIsConst(INode *dimnode) {
+    if (!litIsLiteral(dimnode))
+        return 0;
+    while (nameUseNames(dimnode, ConstDclTag))
+        dimnode = ((ConstDclNode*)((NameUseNode*)dimnode)->dclnode)->value;
+    return dimnode->tag != CastTag;
+}
+
 // The default type check
 void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit, INode *expectType) {
 
     // In the default scenario (not as part of region allocation),
     // we must insist that array literal's dimension is a constant unsigned integer
-    if (arrlit->dimens->used > 0 && !litIsLiteral(nodesGet(arrlit->dimens, 0))) {
-        errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal dimension value must be a constant");
+    if (arrlit->dimens->used > 0 && !arrayLitDimIsConst(nodesGet(arrlit->dimens, 0))) {
+        errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal dimension value must be a constant: an integer literal, or a named constant holding one");
     }
     if (arrayLitTypeCheckExpected(pstate, arrlit, expectType))
         return;

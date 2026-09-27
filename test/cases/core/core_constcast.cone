@@ -1,0 +1,79 @@
+// A reinterpretation of a constant is a constant, wherever a constant is
+// required: a field's default, a global's or a static's initial value, a
+// parameter's default and a named constant (refstruct.html, "The default value
+// must be a constant"; litIsLiteral). Cone has no null-pointer literal, so
+// '0usize as *T' is how a raw pointer starts out null.
+//
+// Each pointer is read back through 'as usize', which reinterprets its bits and
+// so prints the address the constant was written with. Refusing a
+// reinterpretation of a variable's value is core_typecheck's (a global) and
+// struct_typecheck_decl's (a field default).
+
+mod core_constcast;
+
+import stdio use *;
+
+fn show(label &[]u8, n usize) {
+  printStr(label);
+  printStr(" = ");
+  printUInt(n into u64);
+  printStr("\n");
+}
+
+// A C create-info shape: a chain pointer that starts null, a handle written as
+// a pointer-sized integer, and numbers given by their bits
+struct CreateInfo {
+  pub next *u8 = 0usize as *u8;
+  pub data *u32 = 4096usize as *u32;
+  pub bits u32 = 1065353216i32 as u32;
+  pub scale f32 = 1073741824u32 as f32;
+}
+
+imm nullGlobal *u8 = 0usize as *u8;
+mut sentinel *u32 = 64usize as *u32;
+const Marker *u8 = 32usize as *u8;
+// A named constant is itself a constant, and so is reinterpreting it again
+imm markerAddress usize = Marker as usize;
+imm chained usize = 48usize as *u8 as usize;
+// A struct literal whose values, given and defaulted, are all constants is one
+imm globalInfo CreateInfo = CreateInfo[data: 8usize as *u32];
+
+fn addressOf(p *u8 = 0usize as *u8) usize {
+  p as usize;
+}
+
+fn counter() usize {
+  static mut last *u8 = 8usize as *u8;
+  last = last + 1;
+  last as usize;
+}
+
+fn main() {
+  imm info = CreateInfo[];
+  show("field-null", info.next as usize);
+  if info.next == 0usize as *u8 {
+    printStr("field-null-compares = true\n");
+  }
+  show("field-nonzero", info.data as usize);
+  show("field-number", info.bits into usize);
+  // The bits 0x40000000 are the f32 2.0: exponent 128, mantissa zero
+  if info.scale == 2.0 {
+    printStr("field-float = 2.0\n");
+  }
+  imm given = CreateInfo[next: 16usize as *u8];
+  show("field-given", given.next as usize);
+
+  show("global-null", nullGlobal as usize);
+  show("global-nonzero", sentinel as usize);
+  sentinel = sentinel + 1;
+  show("global-changed", sentinel as usize);
+  show("const", Marker as usize);
+  show("const-reinterpreted", markerAddress);
+  show("chained", chained);
+  show("global-literal-default", globalInfo.next as usize);
+  show("global-literal-given", globalInfo.data as usize);
+  show("param-default", addressOf());
+  show("param-given", addressOf(24usize as *u8));
+  show("static-first", counter());
+  show("static-second", counter());
+}
