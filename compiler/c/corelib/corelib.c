@@ -87,6 +87,7 @@ StructNode *noLoanReadTrait;
 StructNode *atomicValueTrait;
 StructNode *integerTrait;
 StructNode *pointerTrait;
+StructNode *sendableTrait;
 
 // A trait the compiler declares, with no members, bound as a name every module
 // reaches unless it declares the name itself
@@ -103,7 +104,7 @@ int corelibIsBuiltinTrait(INode *node) {
         || node == (INode*)shapeChangingTrait
         || node == (INode*)noLoanMutTrait || node == (INode*)noLoanReadTrait
         || node == (INode*)atomicValueTrait || node == (INode*)integerTrait
-        || node == (INode*)pointerTrait;
+        || node == (INode*)pointerTrait || node == (INode*)sendableTrait;
 }
 
 // Set up the standard library, whose names are always shared by all modules
@@ -155,12 +156,13 @@ void stdlibInit(int ptrsize) {
     // owners of one value may be held by several threads at once: its 'alias'
     // and 'dealias' may run on different threads together (the sync
     // package's 'arc', whose count is atomic; core's 'rc' does not declare
-    // it). The name is
-    // provisional. It has NO EFFECT YET beyond being refused on anything but
-    // a region ref (regionThreadSafeUseCheck): it is the region's say in
-    // whether a reference may cross threads, which the thread check, when it
-    // is built, reads through regionIsThreadSafe beside the permission's
-    // RaceSafe. Trusted: the compiler cannot check the promise.
+    // it). The name is provisional. It is the region's say in whether a
+    // reference may cross threads, which the thread check reads beside the
+    // permission's RaceSafe: an owner that may be aliased crosses only where
+    // its region declares it (refThreadBinds, through regionIsThreadSafe).
+    // Declaring it on anything but a region ref is refused
+    // (regionThreadSafeUseCheck). Trusted: the compiler cannot check the
+    // promise.
     threadSafeTrait = newBuiltinTrait(threadSafeTraitName);
     // What a container's element borrows cost it [Jon 26 Sep; names
     // provisional]. A borrow a method returns keeps its receiver loaned, the
@@ -200,4 +202,18 @@ void stdlibInit(int ptrsize) {
     // asked only by a constraint, 'where T is Pointer'. A reference is not
     // one, nor an integer; any other type is one only by declaring it.
     pointerTrait = newBuiltinTrait(pointerTraitName);
+    // 'Sendable': a value of the type may cross to another thread -- be moved
+    // to one, or, behind a shared owner such as '+arc-imm', be read from
+    // several at once. Asked by a constraint, 'where T is Sendable', which
+    // is how library code marks what crosses (thread.start, sync's
+    // channels). Granted by the compiler (genericTypeIs, itypeThreadBound)
+    // to every type holding no reference that is bound to its thread: a
+    // borrowed one, a raw pointer, one whose permission is not RaceSafe, an
+    // owner that may be aliased in a region not declaring ThreadSafe, or a
+    // traced one. A type may also declare it, which is a promise the
+    // compiler takes on trust for what it cannot see -- raw pointers a
+    // library shares safely, as a channel's ends do -- except that an
+    // instance of a generic type declaring it is Sendable only where its
+    // type arguments are.
+    sendableTrait = newBuiltinTrait(sendableTraitName);
 }

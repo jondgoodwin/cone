@@ -284,9 +284,9 @@
 // - A value moves in and moves out: a number, a struct, a '+so' or 'uni'
 //   owner. A large value is best sent as an owner, since a slot holds the
 //   whole T. A value never taken is finalized exactly once.
-// - Nothing checks yet that what is sent is safe in another thread (a 'mut'
-//   or 'ro' reference is not): the thread package's rule, and the
-//   compiler's check to come, are the same.
+// - T must be Sendable, as the thread package's 'start' asks of what it is
+//   handed: a channel of a borrow, a 'mut' owner or an '+rc-imm' owner is
+//   refused where it is named. The ends declare Sendable, so they cross.
 // - Not here yet: a bounded channel, which makes a sender wait while it is
 //   full; a single-sender channel, whose sender has no clone; taking every
 //   value waiting at once ('drain'); and 'each v in rx', which needs the
@@ -1271,7 +1271,7 @@ const pollEmpty = 1u32;                // nothing yet
 const pollClosed = 2u32;               // nothing, and nothing more will come
 
 // The constructor: 'Channel[T].make()', which answers the two ends
-pub struct Channel[T] {
+pub struct Channel[T Sendable] {
   // A new unbounded channel: its sending end and its receiving end
   pub fn make() Sender[T], Receiver[T] {
     imm c = libc.malloc(mem.sizeof[Chan[T]]()) as *Chan[T];
@@ -1290,7 +1290,7 @@ pub struct Channel[T] {
 
 // The sending end of a channel. There may be any number: 'clone' makes
 // another, and the last one to die closes the channel.
-pub struct Sender[T] {
+pub struct Sender[T Sendable] is Sendable {
   chan *Chan[T];
 
   fn made(c *Chan[T]) Sender[T] {Sender[T][c];}
@@ -1400,7 +1400,7 @@ pub struct Sender[T] {
 // The receiving end of a channel: there is one, a move type with no clone,
 // so only one thread takes values from it. Its index and block are its own,
 // read and written by nobody else.
-pub struct Receiver[T] {
+pub struct Receiver[T Sendable] is Sendable {
   chan *Chan[T];
   head u64;                    // the next position to take
   block *Block[T];             // the block it falls in

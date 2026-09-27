@@ -73,6 +73,7 @@ extern StructNode *noLoanReadTrait;
 extern StructNode *atomicValueTrait;
 extern StructNode *integerTrait;
 extern StructNode *pointerTrait;
+extern StructNode *sendableTrait;
 
 // Is this declaration one of the built-in traits?
 int corelibIsBuiltinTrait(INode *node);

@@ -205,8 +205,7 @@ requires the fill dimension to be a literal constant.
 
 Either form's type is built by `newArrayNodeTyped`, already checked, so it
 never passes through `arrayTypeCheck`. **The constructor gives it the element
-type's `ThreadBound` and move-ness itself**, as `arrayTypeCheck` does for a type
-written out, so `[Fin[1], Fin[2]]` moves exactly as `[2; Fin]` does. Move-ness
+type's move-ness itself**, as `arrayTypeCheck` does for a type written out, so `[Fin[1], Fin[2]]` moves exactly as `[2; Fin]` does. Move-ness
 is asked of `itypeIsMove`, not read off the element's flags, because a tuple
 element carries no flag and moves when one of its own elements does.
 

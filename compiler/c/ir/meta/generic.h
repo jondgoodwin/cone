@@ -77,6 +77,11 @@ void genericConstraintsNameRes(NameResState *pstate, Nodes *parms, Nodes **where
 // declaration or by fitting it structurally
 int genericTypeIs(INode *type, StructNode *trait);
 
+// Judge again each instance whose 'T is Sendable' was met while a struct its
+// argument reaches was not yet laid out, and refuse one that is not after all.
+// Called once, when type check has finished.
+void genericSendableCheckAll();
+
 // When the method or function 'name' is absent from the generic type instance
 // 'typedcl' because its 'where' clause is not met there, report so at
 // 'errnode', naming the clause, and return 1. Otherwise return 0.

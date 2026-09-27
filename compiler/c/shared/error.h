@@ -361,6 +361,9 @@ enum ErrorCode {
     // The built-in marker 'ThreadSafe' (ir/types/region.c, regionThreadSafeUseCheck)
     ErrorThreadSafeUse = 1193,  // 'ThreadSafe' declared by a type that is not a region ref: a struct not declaring 'RegionRef', a trait, an enum or a variant
 
+    // The thread check: the built-in marker 'Sendable' (ir/meta/generic.c, ir/itype.c, ir/types/reference.c)
+    ErrorNotSendable = 1194,    // An instance whose 'T is Sendable' is unmet: the argument holds a borrow, a raw pointer, a non-race-safe owner, an owner of a region not declaring ThreadSafe, or a traced reference
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

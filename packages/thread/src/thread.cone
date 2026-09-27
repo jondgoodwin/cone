@@ -51,19 +51,21 @@
 //   function reference with a return type ('&fn(a A) R') swallows a comma
 //   after it as the start of a second return type, so it can only be the last
 //   parameter. And 'spawn', the name this was designed with, is reserved.
-// - What is passed is not checked for thread safety yet: the compiler's thread
-//   check comes later. What is safe to hand a thread is a value it owns
-//   outright (a number, a struct of them, a '+so' owner, a 'uni' reference) or
-//   an 'imm' or 'opaq' reference, which the permission rules already mark as
-//   safe to share, and whose region's count, if it has one, is atomic: an
-//   '+arc-imm' owner (the sync package's 'arc', after 'import sync use
-//   arc'), which 'start' copies (one owner more, going when the
-//   thread is done with it), so that the value dies once, after the last
-//   thread lets it go (tests/arcshare.cone). A 'mut' or 'ro' reference, an
-//   'rc' owner of any permission but 'uni' (its count is not atomic), a
-//   borrowed reference to the starting thread's stack, or a raw pointer to
-//   memory another thread also writes, compiles, and is the program's to get
-//   right: with the sync package's atomics or locks.
+// - A and R must be Sendable, which the compiler checks where 'start' is
+//   called: what may cross to another thread is a value the thread owns
+//   outright (a number, a struct of them, a '+so' owner, a 'uni' owner of
+//   what may cross itself) or an owner of an 'imm' or 'opaq' value whose
+//   region's count is atomic: an '+arc-imm' owner (the sync package's 'arc',
+//   after 'import sync use arc'), which 'start' copies (one owner more, going
+//   when the thread is done with it), so that the value dies once, after the
+//   last thread lets it go (tests/arcshare.cone). Refused, naming what is at
+//   fault: a borrowed reference of any permission (to the starting thread's
+//   stack or anywhere else), a 'mut' or 'ro' owner, an 'rc' owner of any
+//   permission but 'uni' (its count is not atomic), a '+gc' reference, and a
+//   raw pointer, since nothing checks what it points at. A struct carrying raw
+//   pointers the program shares safely, with the sync package's atomics or
+//   locks, declares 'is Sendable', a promise the compiler takes on trust
+//   (tests/counter.cone).
 //
 // 'thread.startWith(thread.Options[name: "worker", stackSize: s], arg, &f)'
 // does the same with options, each of which has a default:
@@ -156,8 +158,9 @@
 // NOT ON A STARTED THREAD, YET: '+gc'. The collector package's collector is
 // single threaded: its root chain is one C global and its heap is not
 // synchronized. A traced ('+gc') reference made, held, reached or dropped on
-// a thread this package started corrupts it. Nothing checks this, and
-// nothing guards it; a concurrent collector is a later design.
+// a thread this package started corrupts it. The thread check refuses one
+// handed to 'start' or returned from a thread, but nothing stops a started
+// thread from making one of its own; a concurrent collector is a later design.
 //
 // Thread-local globals ('mut @threadlocal x T = literal;') give each thread its
 // own copy, which starts as the literal. Nothing finalizes a thread's copies
@@ -364,12 +367,12 @@ pub struct Options {
 
 // A new thread running f(arg), with no name and the default stack. 'arg' is
 // moved in.
-pub fn start[A, R](arg A, f &fn(a A) R) Thread[R] {
+pub fn start[A Sendable, R Sendable](arg A, f &fn(a A) R) Thread[R] {
   startWith[A, R](Options[], arg, f);
 }
 
 // A new thread running f(arg), named and with the stack 'opts' says
-pub fn startWith[A, R](opts Options, arg A, f &fn(a A) R) Thread[R] {
+pub fn startWith[A Sendable, R Sendable](opts Options, arg A, f &fn(a A) R) Thread[R] {
   imm pk = libc.malloc(mem.sizeof[Packet[A, R]]()) as *Packet[A, R];
   if pk as usize == 0usize {
     die("thread: out of memory");
@@ -453,7 +456,7 @@ pub struct Thread[R] {
 // ThreadRef: a thread's identity, which may be sent to other threads
 // ---------------------------------------------------------------------------
 
-pub struct ThreadRef {
+pub struct ThreadRef is Sendable {
   info *Info;
 
   fn of(info *Info) ThreadRef { ThreadRef[info]; }

@@ -21,11 +21,10 @@ ArrayNode *newArrayNode() {
     return anode;
 }
 
-// An array is ThreadBound or a move type when its element type is. Whether the
-// element moves is asked of itypeIsMove rather than read off its flags, since a
-// tuple carries no flag of its own and moves when one of its elements does.
+// An array is a move type when its element type is. Whether the element
+// moves is asked of itypeIsMove rather than read off its flags, since a tuple
+// carries no flag of its own and moves when one of its elements does.
 static void arrayInfectFlags(ArrayNode *node, INode *elemtype) {
-    node->flags |= itypeGetTypeDcl(elemtype)->flags & ThreadBound;
     if (itypeIsMove(elemtype))
         node->flags |= MoveType;
 }
