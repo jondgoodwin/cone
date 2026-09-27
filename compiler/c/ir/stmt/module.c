@@ -44,7 +44,7 @@ ModuleNode *newModuleNode() {
 // What a name the compiler binds before any source is read stands for, in the
 // words a diagnostic names it with, or NULL for a declaration a source wrote.
 // These are the names stdlibInit binds and never hooks: no source declares a
-// number type or a permission
+// number type, a permission or a built-in trait ('Move', 'Integer', ...)
 static char *modBuiltinKind(INode *node) {
     switch (node->tag) {
     case PermTag: return "a built-in permission";
@@ -52,6 +52,8 @@ static char *modBuiltinKind(INode *node) {
     default:
         if (node == (INode*)initAllFn || node == (INode*)finalAllFn)
             return "a built-in function";
+        if (corelibIsBuiltinTrait(node))
+            return "a built-in trait";
         return NULL;
     }
 }

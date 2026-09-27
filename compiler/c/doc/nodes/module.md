@@ -906,7 +906,9 @@ it**: then from that file, `core`'s generated include file, loaded as any file
 an import line names is, declared and not generated ("A described build").
 Missing from the search path, it ends the compile (`ExitNF`), naming where
 the packages folder comes from. Its name is `core`, its folder's, so an
-`import core` reaches the prelude module and binds that name; the IR dump reads
+`import core` reaches the prelude module and binds that name (in a C-named
+module, which has no prelude import; anywhere else it is a second import of
+core, "A module imports another once"); the IR dump reads
 `module core`. No symbol is spelled after it, since everything it defines is
 `inline` or `extern`.
 
@@ -2313,7 +2315,10 @@ be a public name of the module, checked at the `mod` line.
 
 **A module imports another once.** A second import is `ErrorDupImport`, naming
 both: an identical repeat [Jon 23 Sep] as much as one that differs in its clause
-or its `pub`. So is a second import of one name of the parent.
+or its `pub`. So is a second import of one name of the parent. The prelude's
+import is written nowhere, so an `import core` in a module that has it, with or
+without a clause, names no first line: its message says that core is imported
+automatically into every module (`module_import_use_parse`).
 
 **A name written twice is an error; one never written merges** [Jon 23 Sep].
 Every fold into a module's namespace binds through `modFoldBind`. The same
