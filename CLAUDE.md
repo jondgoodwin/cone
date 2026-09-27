@@ -79,6 +79,15 @@ Visual Studio projects stay at the root.
   and Catmull-Clark `subdivide` (boundary rules, semi-sharp creases,
   face-varying uvs) with `subdivisionLevels`, a cage's level-of-detail
   chain;
+  `noise` is coherent noise over `geomath`, a pure function of a seed and a
+  point: the PCG integer hashes (`pcg`, `pcg2d`, `pcg3d`, `pcg4d`, seeded
+  lattice hashes, exact hash to float), value and gradient noise with
+  analytic derivatives (and periodic forms), cellular noise (F1, F2, cell
+  id), fBm, ridged and billowed sums, domain warp, and Phacelle stripes
+  (`phacelle.cone` and `phacelle.slang`, under the MPL 2.0); the same
+  functions for shaders in `src/noise.slang`, bit for bit the same on the
+  GPU but for square roots and Phacelle, which its `parity` test checks on
+  a real GPU; its README holds the determinism rules;
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed
@@ -173,6 +182,13 @@ Visual Studio projects stay at the root.
   with them, between `// spirv-begin` and `// spirv-end` lines. Run it after
   changing a shader; `shaders.py --check`, which needs no SDK, checks that
   every `.spv` and every embedding is current (its header is the guide).
+  A `.slang` with no entry point is a module, imported by name and not
+  compiled alone; every `packages/*/src` is on `slangc`'s include path, and
+  a shader's recorded hash covers the modules it imports. A
+  `// slangc: <arguments>` line in a shader adds compile arguments: a shader
+  that imports `noise` needs `// slangc: -fp-mode precise`, since Slang's
+  `precise` keyword emits no `NoContraction` and drivers otherwise fuse
+  multiply-adds.
 - `tools/flowbench/`: measures what flow analysis costs, before and after a
   change (`flowbench.py --base <master's conec>`), over the packages, the suite
   and the stress files `genstress.py` generates.
