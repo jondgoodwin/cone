@@ -1,0 +1,188 @@
+// The sdl package's events through SDL3's own queue, with no window and no
+// display: SDL's event subsystem alone is started, an event of each kind the
+// package binds is pushed (the mouse's motion, button and wheel, a key, a
+// window's size in pixels, a finger, a quit), and each is polled back and
+// read through its struct: every field, and its nanosecond timestamp, which
+// SDL keeps when one is given, all 64 bits of it, and fills with the time
+// it was pushed when it is 0. Only a failure prints.
+//
+// It needs SDL3.dll, and no display.
+
+mod events;
+
+import testing use *;
+import sdl;
+
+// An event with 'type' and 'timestamp', its other fields zero
+fn blank(type u32, timestamp u64) sdl.Event {
+  mut event = sdl.Event.empty();
+  event.type = type;
+  event.timestamp = timestamp;
+  event;
+}
+
+fn push(event &mut sdl.Event, label &[]u8) {
+  require(sdl.PushEvent(event), label);
+}
+
+// The next event, which must be of 'type'
+fn next(event &mut sdl.Event, type u32, label &[]u8) {
+  require(sdl.PollEvent(event), label);
+  requireUInt(u64[event.type], u64[type], label);
+}
+
+fn main() i32 {
+  require(sdl.Init(sdl.INIT_EVENTS), "SDL's events start");
+  sdl.FlushEvents(0u, 0xFFFFu);
+  imm big = 0x123456789ABCu64;   // more than 32 bits of nanoseconds
+
+  // Pushed: each is made in a whole Event (SDL copies all 128 bytes), and
+  // filled through the struct of its kind
+  {
+    mut e = blank(sdl.EVENT_MOUSE_MOTION, big);
+    imm m = &mut e as &mut sdl.MouseMotionEvent;
+    m.windowID = 7u;
+    m.which = 3u;
+    m.state = sdl.BUTTON_MASK_LEFT | sdl.BUTTON_MASK_RIGHT;
+    m.x = 100.5;
+    m.y = 200.25;
+    m.xrel = -3.5;
+    m.yrel = 4.;
+    push(&mut e, "motion pushed");
+  }
+  {
+    mut e = blank(sdl.EVENT_MOUSE_BUTTON_DOWN, big + 1u64);
+    imm b = &mut e as &mut sdl.MouseButtonEvent;
+    b.windowID = 7u;
+    b.which = 3u;
+    b.button = sdl.BUTTON_RIGHT;
+    b.down = 1u8;
+    b.clicks = 2u8;
+    b.x = 10.;
+    b.y = 20.;
+    push(&mut e, "button pushed");
+  }
+  {
+    mut e = blank(sdl.EVENT_MOUSE_WHEEL, big + 2u64);
+    imm w = &mut e as &mut sdl.MouseWheelEvent;
+    w.windowID = 7u;
+    w.x = 0.5;
+    w.y = -2.;
+    w.direction = sdl.MOUSEWHEEL_FLIPPED;
+    w.mouse_x = 33.;
+    w.mouse_y = 44.;
+    w.integer_x = 0;
+    w.integer_y = -2;
+    push(&mut e, "wheel pushed");
+  }
+  {
+    mut e = blank(sdl.EVENT_KEY_DOWN, big + 3u64);
+    imm k = &mut e as &mut sdl.KeyboardEvent;
+    k.windowID = 7u;
+    k.scancode = sdl.SCANCODE_W;
+    k.key = sdl.K_w;
+    k.keymod = sdl.KMOD_LSHIFT;
+    k.raw = 17u16;
+    k.down = 1u8;
+    k.repeat = 1u8;
+    push(&mut e, "key pushed");
+  }
+  {
+    mut e = blank(sdl.EVENT_WINDOW_PIXEL_SIZE_CHANGED, big + 4u64);
+    imm w = &mut e as &mut sdl.WindowEvent;
+    w.windowID = 7u;
+    w.data1 = 1920;
+    w.data2 = 1080;
+    push(&mut e, "window event pushed");
+  }
+  {
+    mut e = blank(sdl.EVENT_FINGER_DOWN, big + 5u64);
+    imm f = &mut e as &mut sdl.TouchFingerEvent;
+    f.touchID = 0x100000002u64;
+    f.fingerID = 0x300000004u64;
+    f.x = 0.25;
+    f.y = 0.75;
+    f.pressure = 0.5;
+    f.windowID = 7u;
+    push(&mut e, "finger pushed");
+  }
+  imm before = sdl.GetTicksNS();
+  {
+    mut e = blank(sdl.EVENT_QUIT, 0u64);
+    push(&mut e, "quit pushed");
+  }
+  imm after = sdl.GetTicksNS();
+
+  // Polled back, in the order pushed
+  mut e = sdl.Event.empty();
+  next(&mut e, sdl.EVENT_MOUSE_MOTION, "motion polled");
+  {
+    imm m = &e as &sdl.MouseMotionEvent;
+    expectUInt(m.timestamp, big, "motion: its timestamp, all 64 bits");
+    expectUInt(u64[m.windowID], 7u64, "motion: window");
+    expectUInt(u64[m.which], 3u64, "motion: mouse");
+    expectUInt(u64[m.state], 5u64, "motion: left and right held");
+    expectFloat(f64[m.x], 100.5, 0., "motion: x");
+    expectFloat(f64[m.y], 200.25, 0., "motion: y");
+    expectFloat(f64[m.xrel], -3.5, 0., "motion: xrel");
+    expectFloat(f64[m.yrel], 4., 0., "motion: yrel");
+  }
+  next(&mut e, sdl.EVENT_MOUSE_BUTTON_DOWN, "button polled");
+  {
+    imm b = &e as &sdl.MouseButtonEvent;
+    expectUInt(b.timestamp, big + 1u64, "button: timestamp");
+    expectUInt(u64[b.which], 3u64, "button: mouse");
+    expectUInt(u64[b.button], 3u64, "button: the right one");
+    expectUInt(u64[b.down], 1u64, "button: down");
+    expectUInt(u64[b.clicks], 2u64, "button: a double click");
+    expectFloat(f64[b.x], 10., 0., "button: x");
+    expectFloat(f64[b.y], 20., 0., "button: y");
+  }
+  next(&mut e, sdl.EVENT_MOUSE_WHEEL, "wheel polled");
+  {
+    imm w = &e as &sdl.MouseWheelEvent;
+    expectUInt(w.timestamp, big + 2u64, "wheel: timestamp");
+    expectFloat(f64[w.x], 0.5, 0., "wheel: x");
+    expectFloat(f64[w.y], -2., 0., "wheel: y");
+    expectUInt(u64[w.direction], 1u64, "wheel: flipped");
+    expectFloat(f64[w.mouse_x], 33., 0., "wheel: mouse_x");
+    expectFloat(f64[w.mouse_y], 44., 0., "wheel: mouse_y");
+    expectInt(i64[w.integer_y], -2, "wheel: whole notches");
+  }
+  next(&mut e, sdl.EVENT_KEY_DOWN, "key polled");
+  {
+    imm k = &e as &sdl.KeyboardEvent;
+    expectUInt(k.timestamp, big + 3u64, "key: timestamp");
+    expectUInt(u64[k.scancode], 26u64, "key: the scancode of W");
+    expectUInt(u64[k.key], 119u64, "key: w");
+    expectUInt(u64[k.keymod], 1u64, "key: left shift");
+    expectUInt(u64[k.raw], 17u64, "key: raw");
+    expectUInt(u64[k.down], 1u64, "key: down");
+    expectUInt(u64[k.repeat], 1u64, "key: a repeat");
+  }
+  next(&mut e, sdl.EVENT_WINDOW_PIXEL_SIZE_CHANGED, "window event polled");
+  {
+    imm w = &e as &sdl.WindowEvent;
+    expectUInt(w.timestamp, big + 4u64, "window: timestamp");
+    expectUInt(u64[w.windowID], 7u64, "window: its id");
+    expectInt(i64[w.data1], 1920, "window: width in pixels");
+    expectInt(i64[w.data2], 1080, "window: height in pixels");
+  }
+  next(&mut e, sdl.EVENT_FINGER_DOWN, "finger polled");
+  {
+    imm f = &e as &sdl.TouchFingerEvent;
+    expectUInt(f.timestamp, big + 5u64, "finger: timestamp");
+    expectUInt(f.touchID, 0x100000002u64, "finger: the touch device");
+    expectUInt(f.fingerID, 0x300000004u64, "finger: the finger");
+    expectFloat(f64[f.x], 0.25, 0., "finger: x");
+    expectFloat(f64[f.y], 0.75, 0., "finger: y");
+    expectFloat(f64[f.pressure], 0.5, 0., "finger: pressure");
+    expectUInt(u64[f.windowID], 7u64, "finger: window");
+  }
+  next(&mut e, sdl.EVENT_QUIT, "quit polled");
+  expect(e.timestamp >= before and e.timestamp <= after, "quit: stamped with the time it was pushed");
+  expectBool(sdl.PollEvent(&mut e), false, "nothing more");
+
+  sdl.Quit();
+  done();
+}

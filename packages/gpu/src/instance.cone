@@ -20,11 +20,11 @@ pub struct Instance {
   pub fn create(appName &[]u8) Instance {
     mut result = Instance[InstanceBackend[0usize as vulkan.Instance, vulkan.DebugUtilsMessengerEXT[0u64], false],
       false, false, false];
-    if sdl.InitSubSystem(sdl.INIT_VIDEO) != 0i32 {
+    if !sdl.InitSubSystem(sdl.INIT_VIDEO) {
       fail("SDL's video subsystem did not start");
       return result;
     }
-    if sdl.Vulkan_LoadLibrary(nullp()) != 0i32 {
+    if !sdl.Vulkan_LoadLibrary(nullp()) {
       fail("no Vulkan loader (vulkan-1.dll) was found");
       return result;
     }
@@ -43,10 +43,16 @@ pub struct Instance {
     // The extensions a surface needs (SDL's answer for this platform), and
     // debug utils if the loader has them
     mut exts [12; *u8] = [12; 0usize as *u8];
-    mut next = 10u32;
-    if sdl.Vulkan_GetInstanceExtensions(0usize as *sdl.Window, &mut next, &mut exts as **u8) != 1u32 {
+    mut count = 0u32;
+    imm surfaceExts = sdl.Vulkan_GetInstanceExtensions(&mut count);
+    if !surfaceExts or count > 10u32 {
       fail("SDL could not name the surface extensions");
       return result;
+    }
+    mut next = 0u32;
+    while next < count {
+      exts[usize[next]] = *(surfaceExts + usize[next]);
+      next = next + 1u32;
     }
     result.debugMessages = hasInstanceExtension(nullp(), &"VK_EXT_debug_utils" as *u8);
     if result.debugMessages {
@@ -113,7 +119,7 @@ pub struct Instance {
   pub fn createSurface(self &, window *sdl.Window) Surface {
     mut surface = vulkan.SurfaceKHR[0u64];
     if self.isValid() {
-      if sdl.Vulkan_CreateSurface(window, backend.handle as *u8, &mut surface.h) != 1u32 {
+      if !sdl.Vulkan_CreateSurface(window, backend.handle as *u8, nullp(), &mut surface.h) {
         fail("SDL could not make a Vulkan surface of the window");
       }
     }

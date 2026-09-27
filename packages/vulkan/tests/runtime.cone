@@ -6,7 +6,7 @@
 // failure prints, and nothing printed depends on which GPU is present.
 //
 // It needs the Vulkan loader of Vulkan 1.3 or later and one driver
-// supporting it (any GPU driver from 2022 on installs both), and SDL2.dll;
+// supporting it (any GPU driver from 2022 on installs both), and SDL3.dll;
 // it needs no window, no display of its own, and no Vulkan SDK.
 
 mod runtime;
@@ -16,8 +16,8 @@ import sdl;
 import vulkan;
 
 fn main() i32 {
-  require(sdl.Init(sdl.INIT_VIDEO) == 0i32, "SDL's video starts");
-  require(sdl.Vulkan_LoadLibrary(0usize as *u8) == 0i32, "SDL finds the Vulkan loader");
+  require(sdl.Init(sdl.INIT_VIDEO), "SDL's video starts");
+  require(sdl.Vulkan_LoadLibrary(0usize as *u8), "SDL finds the Vulkan loader");
   imm gipa = sdl.Vulkan_GetVkGetInstanceProcAddr() as vulkan.PFN_GetInstanceProcAddr;
   require(vulkan.load(gipa), "the global functions are found");
 
@@ -27,16 +27,14 @@ fn main() i32 {
 
   // The instance extensions a surface needs, asked of SDL with no window
   mut next = 0u32;
-  expectUInt(u64[sdl.Vulkan_GetInstanceExtensions(0usize as *sdl.Window, &mut next, 0usize as **u8)], 1u64,
-    "SDL counts the surface extensions");
+  imm names = sdl.Vulkan_GetInstanceExtensions(&mut next);
+  require(names as usize != 0usize, "SDL names the surface extensions");
   expect(next >= 2u32 and next <= 8u32, "a surface needs two or more extensions");
-  mut names [8; *u8] = [8; 0usize as *u8];
-  sdl.Vulkan_GetInstanceExtensions(0usize as *sdl.Window, &mut next, &mut names as **u8);
 
   imm app = vulkan.ApplicationInfo[pNext: 0usize as *u8, pApplicationName: &"runtime" as *u8,
     pEngineName: &"cone" as *u8];
   imm ci = vulkan.InstanceCreateInfo[pNext: 0usize as *u8, pApplicationInfo: &app as *vulkan.ApplicationInfo,
-    ppEnabledLayerNames: 0usize as **u8, enabledExtensionCount: next, ppEnabledExtensionNames: &names as **u8];
+    ppEnabledLayerNames: 0usize as **u8, enabledExtensionCount: next, ppEnabledExtensionNames: names];
   mut instance = 0usize as vulkan.Instance;
   imm res = vulkan.createInstance(&ci, 0usize as *u8, &mut instance);
   requireStr(vulkan.resultName(res), "SUCCESS", "vkCreateInstance");
