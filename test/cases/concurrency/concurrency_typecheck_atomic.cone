@@ -7,11 +7,12 @@
 // copy (ErrorAtomicValueConst); the tuple and the enum consts are also not
 // literals yet (ErrorNotLit), which is a separate refusal.
 //
-// sync's Atomic[T] declares the marker and takes an integer T only, for now.
-// A T the marker refuses is reported at the program's own 'Atomic[...]', as
-// the marker's refusal; a Bool or a raw pointer, which the marker admits, is
-// refused by the first of Atomic's operations that does not take it (add),
-// reported at the same place, once.
+// sync's Atomic[T] declares the marker, and its 'where' clause, 'T is Integer
+// or T is Bool or T is Pointer', admits just what the marker does: any other
+// T is refused at the program's own 'Atomic[...]', once, as the unmet
+// requirement (ErrorWhereUnmet), and nothing inside Atomic is reported. Which
+// operations an instance has is each method's own clause: an Atomic[Bool] has
+// no add, and an Atomic of a raw pointer no bit operation (ErrorWhereAbsent).
 
 mod concurrency_typecheck_atomic;
 
@@ -59,11 +60,17 @@ const k6 Holding = Holding.Without[8u32];            //~ ErrorAtomicValueConst "
 const fine = Pt[1i32, 2i32];
 
 fn main() {
-  imm b = Atomic[Bool].of(true);                     //~ ErrorIntrinsicType "atomicAdd acts on a T that is an integer type of 8 to 64 bits, and Bool is not one"
+  imm b = Atomic[Bool].of(true);
+  b.bitOr(false);
+  b.add(true);                                       //~ ErrorWhereAbsent "No method add for Atomic[Bool]: it exists only where T is Integer, and Bool is not Integer"
+  b.subOrdered(true, MemOrder.Relaxed[]);            //~ ErrorWhereAbsent "No method subOrdered for Atomic[Bool]"
   mut pt = Pt[1i32, 2i32];
-  imm p = Atomic[*Pt].of(&mut pt as *Pt);            //~ ErrorIntrinsicType "and a raw pointer is not one"
-  imm f = Atomic[f64].of(1.0);                       //~ ErrorAtomicValueType "f64 is none of them"
-  imm s = Atomic[Pt].of(Pt[1i32, 2i32]);             //~ ErrorAtomicValueType "Pt is none of them"
-  imm o = Atomic[+rc-mut Pt].of(+rc-mut Pt[1i32, 2i32]);   //~ ErrorAtomicValueType "a reference is none of them"
+  imm p = Atomic[*Pt].of(&mut pt as *Pt);
+  p.swap(&mut pt as *Pt);
+  p.add(&mut pt as *Pt);                             //~ ErrorWhereAbsent "No method add for Atomic[*Pt]: it exists only where T is Integer, and *Pt is not Integer"
+  p.bitXor(&mut pt as *Pt);                          //~ ErrorWhereAbsent "it exists only where T is Integer or T is Bool, and that is false for T = *Pt"
+  imm f = Atomic[f64].of(1.0);                       //~ ErrorWhereUnmet "Atomic requires T is Integer or T is Bool or T is Pointer, and it is false for T = f64"
+  imm s = Atomic[Pt].of(Pt[1i32, 2i32]);             //~ ErrorWhereUnmet "it is false for T = Pt"
+  imm o = Atomic[+rc-mut Pt].of(+rc-mut Pt[1i32, 2i32]);   //~ ErrorWhereUnmet "it is false for T = a reference"
   imm i = Atomic[i64].of(4i64);
 }

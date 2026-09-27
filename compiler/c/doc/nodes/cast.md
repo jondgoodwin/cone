@@ -51,7 +51,10 @@ cascade, so a cast binds tighter than any binary operator and looser than a
 prefix one. Casts chain left to right, `as` and `into` alike: `p as *T as usize`
 casts `p as *T`. `is` is **a keyword**, not an operator symbol, and `parseCmp`
 handles it at comparison precedence. `parsefnflow.c` also builds `IsTag` nodes
-when desugaring `match` arms and bound patterns.
+when desugaring `match` arms and bound patterns, and for each clause of a
+generic's `where` clause, `T is Integer`, which is never type checked or
+generated: it is a question asked of a type argument at compile time
+([generic](generic.md), "Shape").
 
 **Every pattern's root name is marked** (`castPatternMark`, `FlagPattern`): the
 bare name, the referent's under `&` or `&<`, or the callee's where type arguments

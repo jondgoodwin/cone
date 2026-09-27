@@ -637,56 +637,126 @@ static void parseWhereSkip() {
         lexNextToken();
 }
 
-// Parse a 'where' clause, with the lexer on 'where', appending each clause to
-// '*wherep' as the pair of a use of its subject and a use of its trait
-// (generic.h). The first cut [Jon 27 Sep]: 'T is Name', a trait joined to
-// another by '+' as in the inline form, clauses joined by 'and'. What else
-// the manual shows a clause saying -- a relation between two parameters, 'T <
-// Y', and a constraint on a type expression, 'Option[T] is Node' -- and 'or'
-// and 'not' are not built, and refused here.
+// 'not' is not built [Jon 27 Sep]: a clause says what a type is
+static void parseWhereNot() {
+    errorMsgLex(ErrorWhereForm, "'not' is not built: a 'where' clause says what a type parameter is, and clauses are joined by 'and' and 'or'.");
+}
+
+// Join two conditions with 'and' or 'or', positioned where the left one is
+static INode *parseWhereJoin(int16_t tag, INode *lhs, INode *rhs) {
+    LogicNode *join = newLogicNode(tag);
+    inodeLexCopy((INode*)join, lhs);
+    join->lexp = lhs;
+    join->rexp = rhs;
+    return (INode*)join;
+}
+
+static INode *parseWhereOr(ParseState *parse);
+
+// One term of a 'where' condition: 'T is Name', a trait joined to another by
+// '+' as in the inline form (the two clauses joined by 'and'), or a condition
+// in parentheses. NULL, reported, for anything else.
+static INode *parseWhereTerm(ParseState *parse) {
+    if (lexIsToken(LParenToken)) {
+        lexNextToken();
+        INode *inner = parseWhereOr(parse);
+        if (inner == NULL)
+            return NULL;
+        if (!lexIsToken(RParenToken)) {
+            errorMsgLex(ErrorWhereForm, "A '(' in a 'where' clause is closed by a ')' after the clauses it groups.");
+            return NULL;
+        }
+        lexNextToken();
+        return inner;
+    }
+    if (lexIsToken(NotToken)) {
+        parseWhereNot();
+        return NULL;
+    }
+    if (!lexIsToken(IdentToken)) {
+        errorMsgLex(ErrorWhereForm, "A 'where' clause is a type parameter's name, 'is', and a trait: 'where T is Integer'.");
+        return NULL;
+    }
+    INode *subject = (INode*)newNameUseNode(lex->val.ident);
+    lexNextToken();
+    if (!lexIsToken(IsToken)) {
+        errorMsgLex(ErrorWhereForm, "Only 'T is Name' is built: a relation between two parameters and a constraint on a type expression are not yet.");
+        return NULL;
+    }
+    lexNextToken();
+    INode *term = NULL;
+    while (1) {
+        if (lexIsToken(NotToken)) {
+            parseWhereNot();
+            return NULL;
+        }
+        if (!lexIsToken(IdentToken)) {
+            errorMsgLex(ErrorWhereForm, "What a type parameter 'is' in a 'where' clause is a trait, named.");
+            return NULL;
+        }
+        CastNode *clause = newIsNode(subject, parseTypeName(parse));
+        inodeLexCopy((INode*)clause, subject);
+        term = term ? parseWhereJoin(AndLogicTag, term, (INode*)clause) : (INode*)clause;
+        if (!lexIsToken(PlusToken))
+            return term;
+        lexNextToken();
+        // 'T is A + B' is two clauses, each with its own use of T
+        INode *again = (INode*)newNameUseNode(((NameUseNode*)subject)->namesym);
+        inodeLexCopy(again, subject);
+        subject = again;
+    }
+}
+
+// Terms joined by 'and', which binds tighter than 'or', as in an expression
+static INode *parseWhereAnd(ParseState *parse) {
+    INode *lhs = parseWhereTerm(parse);
+    while (lhs && lexIsToken(AndToken)) {
+        lexNextToken();
+        INode *rhs = parseWhereTerm(parse);
+        lhs = rhs ? parseWhereJoin(AndLogicTag, lhs, rhs) : NULL;
+    }
+    return lhs;
+}
+
+// A whole condition: 'and'-joined terms, joined by 'or'
+static INode *parseWhereOr(ParseState *parse) {
+    INode *lhs = parseWhereAnd(parse);
+    while (lhs && lexIsToken(OrToken)) {
+        lexNextToken();
+        INode *rhs = parseWhereAnd(parse);
+        lhs = rhs ? parseWhereJoin(OrLogicTag, lhs, rhs) : NULL;
+    }
+    return lhs;
+}
+
+// Append a condition to a 'where' list, each operand of an 'and' at its top
+// an element of its own, in the order written
+static void parseWhereAdd(Nodes **wherep, INode *cond) {
+    if (cond->tag == AndLogicTag) {
+        parseWhereAdd(wherep, ((LogicNode*)cond)->lexp);
+        parseWhereAdd(wherep, ((LogicNode*)cond)->rexp);
+    }
+    else
+        nodesAdd(wherep, cond);
+}
+
+// Parse a 'where' clause, with the lexer on 'where', appending its condition
+// to '*wherep' (generic.h): 'T is Name', a trait joined to another by '+' as
+// in the inline form, clauses joined by 'and' and 'or', 'and' binding tighter,
+// and parentheses grouping [Jon 27 Sep]. What else the manual shows a clause
+// saying -- a relation between two parameters, 'T < Y', and a constraint on a
+// type expression, 'Option[T] is Node' -- and 'not' are not built, and are
+// refused here: a refused clause adds nothing, and the rest of it is skipped.
 void parseWhere(ParseState *parse, Nodes **wherep) {
     lexNextToken();  // past 'where'
     if (*wherep == NULL)
         *wherep = newNodes(4);
-    while (1) {
-        if (!lexIsToken(IdentToken)) {
-            errorMsgLex(ErrorWhereForm, "A 'where' clause is a type parameter's name, 'is', and a trait: 'where T is Integer'.");
-            parseWhereSkip();
-            return;
-        }
-        INode *subject = (INode*)newNameUseNode(lex->val.ident);
-        lexNextToken();
-        if (!lexIsToken(IsToken)) {
-            errorMsgLex(ErrorWhereForm, "Only 'T is Name' is built: a relation between two parameters and a constraint on a type expression are not yet.");
-            parseWhereSkip();
-            return;
-        }
-        lexNextToken();
-        while (1) {
-            if (!lexIsToken(IdentToken)) {
-                errorMsgLex(ErrorWhereForm, "What a type parameter 'is' in a 'where' clause is a trait, named.");
-                parseWhereSkip();
-                return;
-            }
-            nodesAdd(wherep, subject);
-            nodesAdd(wherep, parseTypeName(parse));
-            if (!lexIsToken(PlusToken))
-                break;
-            lexNextToken();
-            // 'T is A + B' is two clauses, each with its own use of T
-            INode *again = (INode*)newNameUseNode(((NameUseNode*)subject)->namesym);
-            inodeLexCopy(again, subject);
-            subject = again;
-        }
-        if (lexIsToken(OrToken) || lexIsToken(NotToken)) {
-            errorMsgLex(ErrorWhereForm, "Clauses are joined by 'and'; 'or' and 'not' are not built.");
-            parseWhereSkip();
-            return;
-        }
-        if (!lexIsToken(AndToken))
-            return;
-        lexNextToken();
+    INode *cond = parseWhereOr(parse);
+    if (cond == NULL) {
+        parseWhereSkip();
+        return;
     }
+    parseWhereAdd(wherep, cond);
 }
 
 // Parse a list of generic variables and add to the genericnode.
@@ -716,6 +786,18 @@ Nodes *parseGenericParms(ParseState *parse, int annotate) {
             while (lexIsToken(PlusToken)) {
                 lexNextToken();
                 nodesAdd(&parm->annot, parseType(parse));
+            }
+            // Every trait named here is required; a choice between them is
+            // said in a 'where' clause [Jon 27 Sep]. The annotation is
+            // dropped, so nothing it only half says is asked of the arguments.
+            if (lexIsToken(OrToken)) {
+                errorMsgLex(ErrorGenParmOr, "The traits after a type parameter are joined with '+', each required. A choice between them is written in a 'where' clause: 'where T is A or T is B'.");
+                parm->annot = NULL;
+                while (!lexIsToken(CommaToken) && !lexIsToken(RBracketToken)) {
+                    if (lexIsToken(SemiToken) || lexIsToken(LCurlyToken) || lexIsToken(RCurlyToken) || lexIsToken(EofToken))
+                        break;
+                    lexNextToken();
+                }
             }
             // A parameter ends at its ',' or at the ']'
             if (!lexIsToken(CommaToken))

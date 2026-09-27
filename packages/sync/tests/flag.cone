@@ -1,0 +1,93 @@
+// Atomic[Bool], a flag: every operation it has -- load, store, swap,
+// compareSwap, the bit operations and their Ordered forms, inner -- each
+// answering what it should; then two threads handing a turn back and forth
+// through one flag, each taking its turn only when the flag says it is its
+// own, and adding to a plain counter only then. Every round is counted
+// exactly once, which only holds because each store of the flag is seen
+// after the count it guards. (An Atomic[Bool] has no add or sub: its methods
+// say so with 'where T is Integer', and the compiler suite pins the refusal.)
+
+mod flag;
+
+import testing use *;
+import thread;
+import sync use *;
+
+fn operations() {
+  imm f = Atomic[Bool].of(false);
+  expectBool(f.load(), false, "of then load");
+  f.store(true);
+  expectBool(f.load(), true, "store");
+  expectBool(f.swap(false), true, "swap answers the value before");
+  expectBool(f.load(), false, "after swap");
+
+  expectBool(f.bitOr(true), false, "bitOr answers the value before");
+  expectBool(f.load(), true, "false or true");
+  expectBool(f.bitOr(false), true, "bitOr with false");
+  expectBool(f.load(), true, "true or false");
+  expectBool(f.bitAnd(false), true, "bitAnd answers the value before");
+  expectBool(f.load(), false, "true and false");
+  expectBool(f.bitXor(true), false, "bitXor answers the value before");
+  expectBool(f.load(), true, "false xor true");
+  expectBool(f.bitXor(true), true, "bitXor again");
+  expectBool(f.load(), false, "true xor true");
+
+  mut seen = true;
+  mut ok = false;
+  seen, ok = f.compareSwap(false, true);
+  expectBool(seen, false, "compareSwap sees false");
+  expectBool(ok, true, "and stores");
+  seen, ok = f.compareSwap(false, true);
+  expectBool(seen, true, "compareSwap sees true");
+  expectBool(ok, false, "and does not store");
+  expectBool(f.load(), true, "the failed compareSwap left it");
+
+  // The Ordered forms, one ordering each
+  f.storeOrdered(false, MemOrder.Release[]);
+  expectBool(f.loadOrdered(MemOrder.Acquire[]), false, "storeOrdered then loadOrdered");
+  expectBool(f.bitOrOrdered(true, MemOrder.AcqRel[]), false, "bitOrOrdered");
+  expectBool(f.bitAndOrdered(true, MemOrder.Relaxed[]), true, "bitAndOrdered");
+  expectBool(f.bitXorOrdered(true, MemOrder.SeqCst[]), true, "bitXorOrdered");
+  expectBool(f.swapOrdered(true, MemOrder.Acquire[]), false, "swapOrdered");
+  seen, ok = f.compareSwapOrdered(true, false, MemOrder.AcqRel[], MemOrder.Acquire[]);
+  expectBool(ok, true, "compareSwapOrdered stores");
+  expectBool(f.inner(), false, "inner");
+}
+
+// Whose turn it is: false is the first thread's, true the second's
+imm turn Atomic[Bool];
+// Changed only by the thread whose turn it is
+mut count u64;
+
+fn @initpure init() {
+  turn = Atomic[Bool].of(false);
+  count = 0u64;
+}
+
+const rounds = 20000u64;
+
+// Take 'rounds' turns: wait for the flag to say 'mine', count, hand it over
+fn player(mine Bool) u64 {
+  mut i = 0u64;
+  while i < rounds {
+    while turn.load() != mine {
+      thread.yieldNow();
+    }
+    count = count + 1u64;
+    turn.store(!mine);
+    i = i + 1u64;
+  }
+  i;
+}
+
+fn main() i32 {
+  initAll();
+  operations();
+  imm a = thread.start(false, &player);
+  imm b = thread.start(true, &player);
+  imm taken = a.join() + b.join();
+  expectUInt(taken, 40000u64, "the turns the two threads took");
+  expectUInt(count, 40000u64, "the count only the flag guards");
+  expectBool(turn.load(), false, "the flag back with the first thread");
+  done();
+}

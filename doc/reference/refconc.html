@@ -18,7 +18,8 @@
 		(a handle dropped unjoined joins) and detaching a thread, its identity, sleep and parking,
 		all described <a href="#thread">near the end of this page</a>. So is the
 		<span class="pre">sync</span> package: <a href="#atomic">atomic values</a>,
-		<span class="pre">Atomic[T]</span> for integers, and the compiler's rules for the
+		<span class="pre">Atomic[T]</span> for integers, <span class="pre">Bool</span> and raw
+		pointers, and the compiler's rules for the
 		<span class="pre">AtomicValue</span> marker it declares; <a href="#futex">the futex</a>;
 		and <a href="#locks">the locks</a> built on it, <span class="pre">Mutex</span>,
 		<span class="pre">RwLock</span>, <span class="pre">Condvar</span> and
@@ -184,12 +185,16 @@ fn main() {
 		so that their threads could borrow. The package runs on Windows only.</p>
 
 	<h2 id="atomic">Atomic values: the sync package</h2>
-	<p>An <b>atomic value</b> is a number that several threads may read and change at once, with
-		no lock: each change is <b>indivisible</b>, so no thread ever sees one half done, and when
-		several threads change it together, each change happens whole, one after another. The
-		<span class="pre">sync</span> package provides it as <span class="pre">Atomic[T]</span>, for an
-		integer type <span class="pre">T</span> of 8 to 64 bits, <span class="pre">usize</span> and
-		<span class="pre">isize</span> among them.</p>
+	<p>An <b>atomic value</b> is a number, a flag or a pointer that several threads may read and
+		change at once, with no lock: each change is <b>indivisible</b>, so no thread ever sees one
+		half done, and when several threads change it together, each change happens whole, one after
+		another. The <span class="pre">sync</span> package provides it as
+		<span class="pre">Atomic[T]</span>, for a <span class="pre">T</span> that is an integer type
+		of 8 to 64 bits (<span class="pre">usize</span> and <span class="pre">isize</span> among them),
+		<span class="pre">Bool</span>, or a raw pointer, <span class="pre">*T</span>. Its declaration
+		says so: <span class="pre">struct Atomic[T] ... where T is Integer or T is Bool or T is
+		Pointer</span> (<a href="refgeneric.html#constraints">Generic constraints</a>), and any other
+		<span class="pre">T</span> is refused where it is written.</p>
 <pre>
 import sync use *;
 
@@ -227,9 +232,37 @@ fn count() {                   // called from any number of threads at once
 		answers the value it saw and whether it stored: <span class="pre">seen, ok =
 		a.compareSwap(e, d);</span>. A loop around it makes any change indivisible: read, work out
 		the new value, and try again if another thread changed it in between.</li>
-	<li><span class="pre">inner()</span> takes the number out of an atomic value held by value,
+	<li><span class="pre">inner()</span> takes the value out of an atomic value held by value,
 		which nobody else can be reaching.</li>
 	</ul>
+	<p><b>Which of these an atomic value has depends on its <span class="pre">T</span></b>, each
+		method saying with its own <span class="pre">where</span> clause when it
+		<a href="refgeneric.html#methodwhere">exists</a>: <span class="pre">add</span> and
+		<span class="pre">sub</span> only for an integer, the bit operations for an integer or a
+		<span class="pre">Bool</span>, and the rest for all three. So an
+		<span class="pre">Atomic[Bool]</span> is a flag, set by <span class="pre">store</span> or
+		<span class="pre">bitOr</span> and tested by <span class="pre">load</span>, and an
+		<span class="pre">Atomic[*Node]</span> is the head of a lock-free list, moved on with
+		<span class="pre">compareSwap</span>; <span class="pre">flag.add(true)</span> is refused where it
+		is written, since <span class="pre">add</span> exists only where <span class="pre">T</span> is
+		<span class="pre">Integer</span>.</p>
+<pre>
+struct Node {
+  pub next *Node;
+  pub val u64;
+}
+
+imm head Atomic[*Node];         // set by init: Atomic[*Node].of(0usize as *Node)
+
+fn push(node *Node) {           // called from any number of threads at once
+  mut seen = head.load();
+  mut ok = false;
+  while !ok {
+    mem.writeRaw(node, Node[seen, (node as &amp;Node).val]);   // link to what was seen
+    seen, ok = head.compareSwap(seen, node);                  // swing the head, or see anew
+  }
+}
+</pre>
 	<p><b>Each of them is sequentially consistent</b>, the strongest ordering: every thread sees all
 		such operations in one order, and nothing the thread does before or after one moves across
 		it. That is right for nearly every use. For an expert, each has an
@@ -251,11 +284,10 @@ fn count() {                   // called from any number of threads at once
 	<li><b>It is one number</b>: a struct of exactly one field, of a type some atomic operation
 		acts on &mdash; an integer of 8 to 64 bits, a <span class="pre">Bool</span> or a raw
 		pointer. A float, a struct, a reference or anything else is refused, as are a trait, an enum
-		or a variant declaring it. <span class="pre">Atomic[f64]</span> is refused where it is
-		written. So is <span class="pre">Atomic[Bool]</span>, since
-		<span class="pre">Atomic[T]</span> has an add, which a <span class="pre">Bool</span> does
-		not; an atomic <span class="pre">Bool</span> and an atomic raw pointer, with fewer
-		operations, are to come as types of their own.</li>
+		or a variant declaring it. <span class="pre">Atomic[T]</span>'s own
+		<span class="pre">where</span> clause admits exactly these, so
+		<span class="pre">Atomic[f64]</span> is refused where it is written, once, as a requirement
+		it does not meet.</li>
 	<li><b>It moves</b>, and is never copied (<a href="refmove.html">Move</a>): a copy would be a
 		second value that no atomic operation on the first could reach. Declaring
 		<span class="pre">Copy</span> beside it is refused.</li>

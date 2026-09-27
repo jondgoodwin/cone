@@ -463,8 +463,8 @@ int intrinsicClassCheck(FnDclNode *fndcl) {
     if (intrinsicClassOf(type) & spec->tclass)
         return 1;
     // Reported where the program's own source chose the type: an instance
-    // called from a generic's instance -- sync's 'Atomic[Bool]', whose 'add'
-    // calls atomicAdd[Bool] -- at the outermost place that asked, as a raw
+    // called from a generic's instance -- a 'Bump[Bool]' whose unconstrained
+    // 'add' calls atomicAdd[Bool] -- at the outermost place that asked, as a raw
     // placement of a traced reference is (regionTracedRawNote), and once
     // there however many of that instance's calls are refused
     static INode *lastwhere = NULL;
