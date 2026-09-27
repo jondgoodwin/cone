@@ -225,7 +225,10 @@ name; leaving it to its default is allowed, because the default is the type's ow
 value rather than one the literal gives. Then a
 positional pass runs each value through `iexpCoerce` against its field's type: **a
 field takes a value on the same terms a variable initializer does**, a variant
-standing in for its enum included.
+standing in for its enum included. A value given by name is coerced inside its
+`NamedValNode`, which then takes the value's type: the wrapper is neither an
+lval nor a literal, so coercing it would refuse a string literal's borrow to a
+slice and leave an untyped number literal at its default type.
 
 `litIsLiteral` is the compile-time-constant predicate the global, parameter and
 field-default rules use. It accepts a use resolved to a `ConstDclTag`, which is
