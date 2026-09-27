@@ -1,0 +1,163 @@
+// ======== Profile: a 2-D outline ========
+
+// A 2-D outline to be swept, extruded or revolved: its points in order and
+// whether the last joins back to the first. A closed profile that runs
+// counterclockwise (as every generator here makes one) gives outward-facing
+// solids. A closed profile needs 3 points, an open one 2.
+pub struct Profile {
+  pub points List[Vec2];
+  pub closed Bool;
+
+  // The points as given
+  pub fn fromPoints(points &[]Vec2, closed Bool) Profile {
+    mut pts = List[Vec2].withCapacity(points.len);
+    mut i = 0usize;
+    while i < points.len {
+      pts.push(points[i]);
+      i = i + 1usize;
+    }
+    Profile[pts, closed];
+  }
+
+  // A regular polygon of 'sides' corners on a circle of 'radius' about the
+  // origin, closed, counterclockwise from its first corner at (radius, 0)
+  pub fn polygon(sides u32, radius f32) Profile {
+    mut pts = List[Vec2].withCapacity(usize[sides]);
+    mut i = 0u32;
+    while i < sides {
+      imm a = 2. * pi * f32[i] / f32[sides];
+      pts.push(Vec2[radius * cos(a), radius * sin(a)]);
+      i = i + 1u32;
+    }
+    Profile[pts, true];
+  }
+
+  // A circle of 'radius' about the origin, as 'segments' straight pieces: the
+  // regular polygon of that many sides
+  pub fn circle(segments u32, radius f32) Profile {Profile.polygon(segments, radius);}
+
+  // A rectangle 'width' across and 'height' high, centred on the origin,
+  // closed, counterclockwise from its lower left corner
+  pub fn rectangle(width f32, height f32) Profile {
+    imm hw = width * 0.5;
+    imm hh = height * 0.5;
+    mut pts = List[Vec2].withCapacity(4usize);
+    pts.push(Vec2[-hw, -hh]);
+    pts.push(Vec2[hw, -hh]);
+    pts.push(Vec2[hw, hh]);
+    pts.push(Vec2[-hw, hh]);
+    Profile[pts, true];
+  }
+
+  // A rectangle centred on the origin whose corners are quarter circles of
+  // 'radius', each drawn as 'segments' straight pieces (at least 1): closed,
+  // counterclockwise, starting where the lower right corner's arc leaves the
+  // bottom edge. Each arc has segments + 1 points, 4 (segments + 1) in all;
+  // when the radius is half the shorter side, the arcs meet and the point
+  // they share is kept once. The radius is held to half the shorter side, and
+  // a radius of 0 or less gives the plain rectangle.
+  pub fn roundedRectangle(width f32, height f32, radius f32, segments u32) Profile {
+    imm hw = width * 0.5;
+    imm hh = height * 0.5;
+    imm most = if hw < hh {hw;} else {hh;};
+    imm r = if radius > most {most;} else {radius;};
+    if r <= 0. { return Profile.rectangle(width, height); }
+    imm n = if segments < 1u32 {1u32;} else {segments;};
+    imm eps = r * 0.00001;
+    mut pts = List[Vec2].withCapacity(4usize * (usize[n] + 1usize));
+    mut c = 0u32;
+    while c < 4u32 {
+      // Corners lower right, upper right, upper left, lower left; each arc
+      // turns a quarter from where the one before it ended
+      imm cx = if c == 0u32 or c == 1u32 {hw - r;} else {r - hw;};
+      imm cy = if c == 0u32 or c == 3u32 {r - hh;} else {hh - r;};
+      imm a0 = (f32[c] - 1.) * (pi * 0.5);
+      mut k = 0u32;
+      while k <= n {
+        imm a = a0 + (pi * 0.5) * f32[k] / f32[n];
+        imm p = Vec2[cx + r * cos(a), cy + r * sin(a)];
+        if pts.len() == 0usize or !nearVec2(*pts[pts.len() - 1usize], p, eps) { pts.push(p); }
+        k = k + 1u32;
+      }
+      c = c + 1u32;
+    }
+    if pts.len() > 1usize and nearVec2(*pts[pts.len() - 1usize], *pts[0usize], eps) { pts.pop(); }
+    Profile[pts, true];
+  }
+
+  // The convex hull of the points (geomath's 'convexHull'): closed,
+  // counterclockwise from the point of least x
+  pub fn hull(points &[]Vec2) Profile {Profile[convexHull(points), true];}
+
+  // A cubic Bezier curve as an open polyline of 'segments' pieces, evenly
+  // spaced in the curve's parameter
+  pub fn fromCubic(curve CubicBezier2, segments u32) Profile {Profile[curve.sample(segments), false];}
+
+  // A quadratic Bezier curve the same way
+  pub fn fromQuadratic(curve QuadraticBezier2, segments u32) Profile {Profile[curve.sample(segments), false];}
+
+  pub fn pointCount(self &) usize {points.len();}
+
+  // The length of the outline, the closing edge included when it is closed
+  pub fn length(self &) f32 {
+    mut len = polylineLength(points.view());
+    if closed and points.len() > 1usize {
+      len = len + points[0usize].distance(*points[points.len() - 1usize]);
+    }
+    len;
+  }
+
+  // Whether it runs counterclockwise (by its signed area, closed or not)
+  pub fn isCounterClockwise(self &) Bool {polygonIsCounterClockwise(points.view());}
+}
+
+// Each profile point's u, its distance along the profile over the profile's
+// length, then one more: the u of the point after the last, which is 1 (the
+// seam, on a closed profile). A profile of no length gets evenly spaced u.
+fn profileUs(profile &Profile) List[f32] {
+  imm m = profile.points.len();
+  mut us = List[f32].withCapacity(m + 1usize);
+  imm total = profile.length();
+  imm pieces = if profile.closed {m;} else {m - 1usize;};
+  mut s f32 = 0.;
+  mut j = 0usize;
+  while j < m {
+    if total > 0. { us.push(s / total); }
+    elif pieces > 0usize { us.push(f32[j] / f32[pieces]); }
+    else { us.push(0.); }
+    if j + 1usize < m { s = s + profile.points[j + 1usize].distance(*profile.points[j]); }
+    j = j + 1usize;
+  }
+  us.push(1.);
+  us;
+}
+
+// Each profile point's uv on a cap: the profile's box scaled, keeping its
+// shape, so its longer side runs 0 to 1. The cap at the start of a sweep is
+// seen from behind, so its u runs the other way, and the texture reads the
+// right way round from outside on both.
+fn capUvs(profile &Profile, start Bool) List[Vec2] {
+  imm m = profile.points.len();
+  mut out = List[Vec2].withCapacity(m);
+  if m == 0usize { return out; }
+  mut lo = *profile.points[0usize];
+  mut hi = lo;
+  mut j = 1usize;
+  while j < m {
+    lo = lo.min(*profile.points[j]);
+    hi = hi.max(*profile.points[j]);
+    j = j + 1usize;
+  }
+  imm w = hi.x - lo.x;
+  imm h = hi.y - lo.y;
+  imm size = if w > h {w;} else {h;};
+  imm inv = if size > 0. {1. / size;} else {1.;};
+  j = 0usize;
+  while j < m {
+    imm p = *profile.points[j];
+    imm u = if start {(hi.x - p.x) * inv;} else {(p.x - lo.x) * inv;};
+    out.push(Vec2[u, (p.y - lo.y) * inv]);
+    j = j + 1usize;
+  }
+  out;
+}

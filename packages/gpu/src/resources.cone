@@ -1,0 +1,165 @@
+// ---- Formats and the rest translated ----
+
+// A texture format's Vulkan format
+fn vkFormat(format u32) u32 {
+  if format == TEXTURE_FORMAT_RGBA8_UNORM { return vulkan.FORMAT_R8G8B8A8_UNORM; }
+  if format == TEXTURE_FORMAT_RGBA8_UNORM_SRGB { return vulkan.FORMAT_R8G8B8A8_SRGB; }
+  if format == TEXTURE_FORMAT_BGRA8_UNORM { return vulkan.FORMAT_B8G8R8A8_UNORM; }
+  if format == TEXTURE_FORMAT_BGRA8_UNORM_SRGB { return vulkan.FORMAT_B8G8R8A8_SRGB; }
+  if format == TEXTURE_FORMAT_DEPTH32_FLOAT { return vulkan.FORMAT_D32_SFLOAT; }
+  vulkan.FORMAT_UNDEFINED;
+}
+
+fn textureFormat(vkFormat u32) u32 {
+  if vkFormat == vulkan.FORMAT_R8G8B8A8_UNORM { return TEXTURE_FORMAT_RGBA8_UNORM; }
+  if vkFormat == vulkan.FORMAT_R8G8B8A8_SRGB { return TEXTURE_FORMAT_RGBA8_UNORM_SRGB; }
+  if vkFormat == vulkan.FORMAT_B8G8R8A8_UNORM { return TEXTURE_FORMAT_BGRA8_UNORM; }
+  if vkFormat == vulkan.FORMAT_B8G8R8A8_SRGB { return TEXTURE_FORMAT_BGRA8_UNORM_SRGB; }
+  if vkFormat == vulkan.FORMAT_D32_SFLOAT { return TEXTURE_FORMAT_DEPTH32_FLOAT; }
+  TEXTURE_FORMAT_UNDEFINED;
+}
+
+fn aspectOf(vkFormat u32) u32 {
+  if vkFormat == vulkan.FORMAT_D32_SFLOAT { return vulkan.IMAGE_ASPECT_DEPTH_BIT; }
+  vulkan.IMAGE_ASPECT_COLOR_BIT;
+}
+
+fn vertexFormat(format u32) u32 {
+  if format == VERTEX_FORMAT_FLOAT32 { return vulkan.FORMAT_R32_SFLOAT; }
+  if format == VERTEX_FORMAT_FLOAT32X2 { return vulkan.FORMAT_R32G32_SFLOAT; }
+  if format == VERTEX_FORMAT_FLOAT32X3 { return vulkan.FORMAT_R32G32B32_SFLOAT; }
+  if format == VERTEX_FORMAT_FLOAT32X4 { return vulkan.FORMAT_R32G32B32A32_SFLOAT; }
+  if format == VERTEX_FORMAT_UNORM8X4 { return vulkan.FORMAT_R8G8B8A8_UNORM; }
+  vulkan.FORMAT_UNDEFINED;
+}
+
+fn topology(t u32) u32 {
+  if t == PRIMITIVE_TOPOLOGY_POINT_LIST { return vulkan.PRIMITIVE_TOPOLOGY_POINT_LIST; }
+  if t == PRIMITIVE_TOPOLOGY_LINE_LIST { return vulkan.PRIMITIVE_TOPOLOGY_LINE_LIST; }
+  if t == PRIMITIVE_TOPOLOGY_LINE_STRIP { return vulkan.PRIMITIVE_TOPOLOGY_LINE_STRIP; }
+  if t == PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP { return vulkan.PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; }
+  vulkan.PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+}
+
+fn shaderStages(visibility u32) u32 {
+  mut stages = 0u32;
+  if (visibility & SHADER_STAGE_VERTEX) != 0u32 { stages = stages | vulkan.SHADER_STAGE_VERTEX_BIT; }
+  if (visibility & SHADER_STAGE_FRAGMENT) != 0u32 { stages = stages | vulkan.SHADER_STAGE_FRAGMENT_BIT; }
+  if (visibility & SHADER_STAGE_COMPUTE) != 0u32 { stages = stages | vulkan.SHADER_STAGE_COMPUTE_BIT; }
+  stages;
+}
+
+fn descriptorType(kind u32, bufferType u32) u32 {
+  if kind == BINDING_KIND_SAMPLER { return vulkan.DESCRIPTOR_TYPE_SAMPLER; }
+  if kind == BINDING_KIND_TEXTURE { return vulkan.DESCRIPTOR_TYPE_SAMPLED_IMAGE; }
+  if bufferType == BUFFER_BINDING_TYPE_UNIFORM { return vulkan.DESCRIPTOR_TYPE_UNIFORM_BUFFER; }
+  vulkan.DESCRIPTOR_TYPE_STORAGE_BUFFER;
+}
+
+// ---- Buffers ----
+
+struct BufferBackend {
+  pub device vulkan.Device;
+  pub buffer vulkan.Buffer;
+  pub memory vulkan.DeviceMemory;
+  pub mapped *u8;
+}
+
+// A buffer of bytes the GPU reads or writes
+pub struct Buffer {
+  pub backend BufferBackend;
+  pub size u64;
+  pub usage u32;
+
+  pub fn isValid(self &) Bool { backend.memory.h != 0u64; }
+
+  // No buffer: what a field holds before a buffer is made for it (not valid)
+  pub fn none() Buffer {
+    Buffer[BufferBackend[0usize as vulkan.Device, vulkan.Buffer[0u64], vulkan.DeviceMemory[0u64], nullp()], 0u64, 0u32];
+  }
+
+  // Its bytes, for a buffer the CPU maps (MAP_READ or MAP_WRITE); null for
+  // any other. What the GPU wrote is there once the frame that wrote it is
+  // done ('device.waitIdle', or FRAMES_IN_FLIGHT frames later).
+  pub fn mappedRange(self &) *u8 { backend.mapped; }
+
+  // Its end, once the GPU is idle
+  fn final(self &uni) {
+    if backend.buffer.h != 0u64 {
+      vulkan.deviceWaitIdle(backend.device);
+      vulkan.destroyBuffer(backend.device, backend.buffer, nullp());
+    }
+    if backend.memory.h != 0u64 { vulkan.freeMemory(backend.device, backend.memory, nullp()); }
+  }
+}
+
+// ---- Textures ----
+
+// What 'createTexture' makes
+pub struct TextureDescriptor {
+  pub width u32;
+  pub height u32;
+  pub format u32;                  // TEXTURE_FORMAT_...
+  pub usage u32;                   // TEXTURE_USAGE_... OR-ed
+}
+
+struct TextureBackend {
+  pub image vulkan.Image;
+  pub view vulkan.ImageView;       // the view of the whole texture
+  pub kind u32;                    // KIND_...: the layout it rests in
+  pub owned Bool;                  // made by the device, and ended with the Texture
+  pub device vulkan.Device;
+  pub memory vulkan.DeviceMemory;
+}
+
+// A texture: one the device made ('createTexture'), or a swapchain's, which
+// the swapchain owns (and its depth texture)
+pub struct Texture {
+  pub backend TextureBackend;
+  pub width u32;
+  pub height u32;
+  pub format u32;                  // TEXTURE_FORMAT_...
+  pub usage u32;                   // TEXTURE_USAGE_...
+
+  pub fn isValid(self &) Bool { backend.view.h != 0u64; }
+
+  // A view of the whole texture (made with it)
+  pub fn createView(self &) TextureView {
+    TextureView[backend, width, height, format];
+  }
+
+  // Its end, if the device made it, once the GPU is idle
+  fn final(self &uni) {
+    if backend.owned and backend.image.h != 0u64 {
+      vulkan.deviceWaitIdle(backend.device);
+      if backend.view.h != 0u64 { vulkan.destroyImageView(backend.device, backend.view, nullp()); }
+      vulkan.destroyImage(backend.device, backend.image, nullp());
+    }
+    if backend.owned and backend.memory.h != 0u64 { vulkan.freeMemory(backend.device, backend.memory, nullp()); }
+  }
+}
+
+// A view of a texture, which a render pass draws into
+pub struct TextureView {
+  pub backend TextureBackend;
+  pub width u32;
+  pub height u32;
+  pub format u32;
+}
+
+// What 'getCurrentTexture' answers: a texture to draw into this frame, if
+// 'ok', and the swapchain's depth texture, if it keeps one
+pub struct SurfaceTexture {
+  pub texture Texture;
+  pub depth Texture;
+  pub status u32;                  // SURFACE_TEXTURE_...
+
+  pub fn ok(self &) Bool {
+    status == SURFACE_TEXTURE_SUCCESS_OPTIMAL or status == SURFACE_TEXTURE_SUCCESS_SUBOPTIMAL;
+  }
+}
+
+fn noTexture() Texture {
+  Texture[TextureBackend[vulkan.Image[0u64], vulkan.ImageView[0u64], KIND_NONE, false, 0usize as vulkan.Device,
+    vulkan.DeviceMemory[0u64]], 0u32, 0u32, TEXTURE_FORMAT_UNDEFINED, 0u32];
+}

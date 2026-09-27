@@ -1,0 +1,320 @@
+// ---- Barriers ----
+
+// Record a layout transition of all of 'image' ('aspect' of it), with the
+// stages and accesses before and after it
+fn transition(cmd vulkan.CommandBuffer, image vulkan.Image, aspect u32, oldLayout u32, newLayout u32,
+    srcStage u64, srcAccess u64, dstStage u64, dstAccess u64) {
+  imm barrier = vulkan.ImageMemoryBarrier2[pNext: nullp(), srcStageMask: srcStage, srcAccessMask: srcAccess,
+    dstStageMask: dstStage, dstAccessMask: dstAccess, oldLayout: oldLayout, newLayout: newLayout, image: image,
+    subresourceRange: vulkan.ImageSubresourceRange[aspectMask: aspect]];
+  imm dep = vulkan.DependencyInfo[pNext: nullp(), pMemoryBarriers: 0usize as *vulkan.MemoryBarrier2,
+    pBufferMemoryBarriers: 0usize as *vulkan.BufferMemoryBarrier2, imageMemoryBarrierCount: 1u32,
+    pImageMemoryBarriers: &barrier as *vulkan.ImageMemoryBarrier2];
+  vulkan.cmdPipelineBarrier2(cmd, &dep);
+}
+
+// The layout a texture of 'kind' rests in between commands
+fn restLayout(kind u32) u32 {
+  if kind == KIND_SURFACE { return vulkan.IMAGE_LAYOUT_PRESENT_SRC_KHR; }
+  if kind == KIND_DEPTH { return vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL; }
+  if kind == KIND_SAMPLED { return vulkan.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; }
+  vulkan.IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+}
+
+// Move a new texture of 'kind' from 'undefined' to the layout it rests in
+fn firstLayout(cmd vulkan.CommandBuffer, image vulkan.Image, kind u32) {
+  mut aspect = vulkan.IMAGE_ASPECT_COLOR_BIT;
+  mut stages = vulkan.PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+  if kind == KIND_DEPTH {
+    aspect = vulkan.IMAGE_ASPECT_DEPTH_BIT;
+    stages = vulkan.PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | vulkan.PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+  }
+  if kind == KIND_SAMPLED { stages = vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT; }
+  transition(cmd, image, aspect, vulkan.IMAGE_LAYOUT_UNDEFINED, restLayout(kind),
+    vulkan.PIPELINE_STAGE_2_NONE, vulkan.ACCESS_2_NONE, stages, vulkan.ACCESS_2_NONE);
+}
+
+// ---- Commands ----
+
+struct EncoderBackend {
+  pub cmd vulkan.CommandBuffer;
+}
+
+// Records commands, finished into a CommandBuffer for the queue
+pub struct CommandEncoder {
+  pub backend EncoderBackend;
+
+  // Begin drawing into one color attachment, cleared or kept as 'attachment'
+  // says
+  pub fn beginRenderPass(self &mut, attachment &RenderPassColorAttachment) RenderPass {
+    imm none = zeroed[RenderPassDepthStencilAttachment]();
+    beginPass(backend.cmd, attachment, false, &none);
+  }
+
+  // Begin drawing into a color attachment and a depth attachment
+  pub fn beginRenderPassWithDepth(self &mut, attachment &RenderPassColorAttachment,
+      depth &RenderPassDepthStencilAttachment) RenderPass {
+    beginPass(backend.cmd, attachment, true, depth);
+  }
+
+  // Copy all of 'texture' (an 8-bit color texture with COPY_SRC, or a
+  // swapchain's) into 'buffer', from its start, row after row with no gap
+  // between rows (4 bytes a pixel)
+  pub fn copyTextureToBuffer(self &mut, texture &Texture, buffer &Buffer) {
+    imm image = texture.backend.image;
+    imm rest = restLayout(texture.backend.kind);
+    // What wrote it (a render pass) before the copy reads it; presentation's
+    // hand-off is the acquire semaphore's
+    mut srcStage = vulkan.PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    mut srcAccess = vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    if texture.backend.kind == KIND_SURFACE {
+      srcStage = vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+      srcAccess = vulkan.ACCESS_2_NONE;
+    }
+    transition(backend.cmd, image, vulkan.IMAGE_ASPECT_COLOR_BIT, rest, vulkan.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+      srcStage, srcAccess, vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_READ_BIT);
+    imm region = vulkan.BufferImageCopy[imageSubresource: vulkan.ImageSubresourceLayers[],
+      imageOffset: vulkan.Offset3D[0i32, 0i32, 0i32], imageExtent: vulkan.Extent3D[texture.width, texture.height, 1u32]];
+    vulkan.cmdCopyImageToBuffer(backend.cmd, image, vulkan.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer.backend.buffer,
+      1u32, &region as *vulkan.BufferImageCopy);
+    // Back to the layout it rests in, once the copy has read it
+    transition(backend.cmd, image, vulkan.IMAGE_ASPECT_COLOR_BIT, vulkan.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rest,
+      vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_NONE,
+      vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_NONE);
+    // What was copied, visible to the CPU once the frame is done
+    imm bb = vulkan.BufferMemoryBarrier2[pNext: nullp(), srcStageMask: vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+      srcAccessMask: vulkan.ACCESS_2_TRANSFER_WRITE_BIT, dstStageMask: vulkan.PIPELINE_STAGE_2_HOST_BIT,
+      dstAccessMask: vulkan.ACCESS_2_HOST_READ_BIT, buffer: buffer.backend.buffer];
+    imm dep = vulkan.DependencyInfo[pNext: nullp(), pMemoryBarriers: 0usize as *vulkan.MemoryBarrier2,
+      bufferMemoryBarrierCount: 1u32, pBufferMemoryBarriers: &bb as *vulkan.BufferMemoryBarrier2,
+      pImageMemoryBarriers: 0usize as *vulkan.ImageMemoryBarrier2];
+    vulkan.cmdPipelineBarrier2(backend.cmd, &dep);
+  }
+
+  // Copy 'size' bytes of 'source', from 'sourceOffset', into 'destination'
+  // at 'destinationOffset'. What the CPU wrote to a mapped source before the
+  // submission is what is copied; a mapped destination holds the bytes once
+  // the frame is done.
+  pub fn copyBufferToBuffer(self &mut, source &Buffer, sourceOffset u64, destination &Buffer,
+      destinationOffset u64, size u64) {
+    // After what earlier commands did with either buffer
+    memoryBarrier(backend.cmd, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_MEMORY_WRITE_BIT,
+      vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_READ_BIT | vulkan.ACCESS_2_TRANSFER_WRITE_BIT);
+    imm region = vulkan.BufferCopy[sourceOffset, destinationOffset, size];
+    vulkan.cmdCopyBuffer(backend.cmd, source.backend.buffer, destination.backend.buffer, 1u32,
+      &region as *vulkan.BufferCopy);
+    // What was copied, visible to the CPU and to what the GPU does next
+    memoryBarrier(backend.cmd, vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT,
+      vulkan.PIPELINE_STAGE_2_HOST_BIT | vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+      vulkan.ACCESS_2_HOST_READ_BIT | vulkan.ACCESS_2_MEMORY_READ_BIT | vulkan.ACCESS_2_MEMORY_WRITE_BIT);
+  }
+
+  // The commands recorded, for the queue to submit. The encoder records
+  // nothing more.
+  pub fn finish(self &mut) CommandBuffer {
+    imm cmd = backend.cmd;
+    backend.cmd = nullCommandBuffer();
+    if !isNull(cmd) { check(vulkan.endCommandBuffer(cmd), "vkEndCommandBuffer"); }
+    CommandBuffer[CommandBufferBackend[cmd]];
+  }
+}
+
+// Begin rendering into 'color' and, if 'hasDepth', 'depth': the barriers
+// each needs after what earlier commands did with it, then the whole
+// attachment as the viewport and the scissor rectangle
+fn beginPass(cmd vulkan.CommandBuffer, color &RenderPassColorAttachment, hasDepth Bool,
+    depth &RenderPassDepthStencilAttachment) RenderPass {
+  imm view = color.view;
+  imm kind = view.backend.kind;
+  imm clear = color.loadOp == LOAD_OP_CLEAR;
+  // What was there is not needed if it is cleared; what wrote it last (an
+  // earlier pass) is done first. A swapchain texture comes from the layout
+  // presentation wants, presentation's hand-off being the acquire
+  // semaphore's; a texture the device made rests in the attachment layout.
+  mut oldLayout = restLayout(kind);
+  if clear { oldLayout = vulkan.IMAGE_LAYOUT_UNDEFINED; }
+  mut srcAccess = vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+  if kind == KIND_SURFACE { srcAccess = vulkan.ACCESS_2_NONE; }
+  mut dstAccess = vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+  if !clear { dstAccess = dstAccess | vulkan.ACCESS_2_COLOR_ATTACHMENT_READ_BIT; }
+  transition(cmd, view.backend.image, vulkan.IMAGE_ASPECT_COLOR_BIT, oldLayout,
+    vulkan.IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, srcAccess,
+    vulkan.PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, dstAccess);
+  mut loadOp = vulkan.ATTACHMENT_LOAD_OP_LOAD;
+  if clear { loadOp = vulkan.ATTACHMENT_LOAD_OP_CLEAR; }
+  mut storeOp = vulkan.ATTACHMENT_STORE_OP_STORE;
+  if color.storeOp == STORE_OP_DISCARD { storeOp = vulkan.ATTACHMENT_STORE_OP_DONT_CARE; }
+  imm c = color.clearValue;
+  imm colorInfo = vulkan.RenderingAttachmentInfo[pNext: nullp(), imageView: view.backend.view,
+    resolveImageView: vulkan.ImageView[0u64], loadOp: loadOp, storeOp: storeOp,
+    clearValue: vulkan.clearColor(c.red, c.green, c.blue, c.alpha)];
+
+  // The depth attachment: after earlier passes' depth tests and writes
+  mut depthLoad = vulkan.ATTACHMENT_LOAD_OP_LOAD;
+  mut depthStore = vulkan.ATTACHMENT_STORE_OP_STORE;
+  mut depthClear = vulkan.ClearValue[[4; 0u32]];
+  if hasDepth {
+    imm depthClears = depth.depthLoadOp == LOAD_OP_CLEAR;
+    mut depthOld = vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    mut depthAccess = vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    if depthClears {
+      depthOld = vulkan.IMAGE_LAYOUT_UNDEFINED;
+      depthLoad = vulkan.ATTACHMENT_LOAD_OP_CLEAR;
+    } else {
+      depthAccess = depthAccess | vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    }
+    if depth.depthStoreOp == STORE_OP_DISCARD { depthStore = vulkan.ATTACHMENT_STORE_OP_DONT_CARE; }
+    imm tests = vulkan.PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | vulkan.PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    transition(cmd, depth.view.backend.image, vulkan.IMAGE_ASPECT_DEPTH_BIT, depthOld,
+      vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, tests, vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+      tests, depthAccess | vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT);
+    *(&mut depthClear as *f32) = depth.depthClearValue;
+  }
+  imm depthInfo = vulkan.RenderingAttachmentInfo[pNext: nullp(), imageView: depth.view.backend.view,
+    imageLayout: vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, resolveImageView: vulkan.ImageView[0u64],
+    loadOp: depthLoad, storeOp: depthStore, clearValue: depthClear];
+  mut depthPointer = 0usize as *vulkan.RenderingAttachmentInfo;
+  if hasDepth { depthPointer = &depthInfo as *vulkan.RenderingAttachmentInfo; }
+
+  imm ri = vulkan.RenderingInfo[pNext: nullp(),
+    renderArea: vulkan.Rect2D[vulkan.Offset2D[0i32, 0i32], vulkan.Extent2D[view.width, view.height]],
+    colorAttachmentCount: 1u32, pColorAttachments: &colorInfo as *vulkan.RenderingAttachmentInfo,
+    pDepthAttachment: depthPointer, pStencilAttachment: 0usize as *vulkan.RenderingAttachmentInfo];
+  vulkan.cmdBeginRendering(cmd, &ri);
+  setViewportFlipped(cmd, 0., 0., f32[view.width], f32[view.height], 0., 1.);
+  imm scissor = vulkan.Rect2D[vulkan.Offset2D[0i32, 0i32], vulkan.Extent2D[view.width, view.height]];
+  vulkan.cmdSetScissor(cmd, 0u32, 1u32, &scissor as *vulkan.Rect2D);
+  RenderPass[PassBackend[cmd, view.backend.image, kind, true, vulkan.PipelineLayout[0u64]]];
+}
+
+// The viewport from ('x', 'y'), 'w' by 'h', with y down from the top of the
+// attachment, flipped so that clip space's y is up, as WebGPU's is
+fn setViewportFlipped(cmd vulkan.CommandBuffer, x f32, y f32, w f32, h f32, minDepth f32, maxDepth f32) {
+  imm vp = vulkan.Viewport[x, y + h, w, 0. - h, minDepth, maxDepth];
+  vulkan.cmdSetViewport(cmd, 0u32, 1u32, &vp as *vulkan.Viewport);
+}
+
+// A color attachment of a render pass: the view drawn into, what is done
+// with what it holds at the start (cleared to 'clearValue', or kept) and at
+// the end (stored, or discarded)
+pub struct RenderPassColorAttachment {
+  pub view TextureView;
+  pub loadOp u32 = LOAD_OP_CLEAR;
+  pub storeOp u32 = STORE_OP_STORE;
+  pub clearValue Color;
+}
+
+// A depth attachment of a render pass: the depth texture's view, what is
+// done with its depths at the start (cleared to 'depthClearValue', or kept)
+// and at the end (stored, or discarded)
+pub struct RenderPassDepthStencilAttachment {
+  pub view TextureView;
+  pub depthLoadOp u32 = LOAD_OP_CLEAR;
+  pub depthStoreOp u32 = STORE_OP_STORE;
+  pub depthClearValue f32 = 1.;
+}
+
+struct PassBackend {
+  pub cmd vulkan.CommandBuffer;
+  pub image vulkan.Image;
+  pub kind u32;
+  pub open Bool;
+  pub layout vulkan.PipelineLayout;    // the bound pipeline's
+}
+
+// Drawing into attachments, begun by 'beginRenderPass' and ended by 'end'
+pub struct RenderPass {
+  pub backend PassBackend;
+
+  // Draw with 'pipeline' from here on
+  pub fn setPipeline(self &mut, pipeline &RenderPipeline) {
+    vulkan.cmdBindPipeline(backend.cmd, vulkan.PIPELINE_BIND_POINT_GRAPHICS, pipeline.backend.pipeline);
+    backend.layout = pipeline.backend.layout;
+  }
+
+  // Bind 'group' as the pipeline's bind group 'index'
+  pub fn setBindGroup(self &mut, index u32, group &BindGroup) {
+    if backend.layout.h == 0u64 {
+      fail("setBindGroup before setPipeline");
+      return;
+    }
+    mut set = group.backend.set;
+    vulkan.cmdBindDescriptorSets(backend.cmd, vulkan.PIPELINE_BIND_POINT_GRAPHICS, backend.layout, index, 1u32,
+      &mut set as *vulkan.DescriptorSet, 0u32, 0usize as *u32);
+  }
+
+  // Read vertex buffer 'slot' of the pipeline from 'buffer', from 'offset'
+  pub fn setVertexBuffer(self &mut, slot u32, buffer &Buffer, offset u64) {
+    mut b = buffer.backend.buffer;
+    mut o = offset;
+    vulkan.cmdBindVertexBuffers(backend.cmd, slot, 1u32, &mut b as *vulkan.Buffer, &mut o as *u64);
+  }
+
+  // Read indices ('format': INDEX_FORMAT_UINT16 or _UINT32) from 'buffer',
+  // from 'offset'
+  pub fn setIndexBuffer(self &mut, buffer &Buffer, format u32, offset u64) {
+    mut type = vulkan.INDEX_TYPE_UINT32;
+    if format == INDEX_FORMAT_UINT16 { type = vulkan.INDEX_TYPE_UINT16; }
+    vulkan.cmdBindIndexBuffer(backend.cmd, buffer.backend.buffer, offset, type);
+  }
+
+  // Set 'size' bytes of the immediates, from 'offset' (both multiples of
+  // 4), to the bytes at 'data', for the draws after
+  pub fn setImmediates(self &mut, offset u32, data *u8, size u32) {
+    if backend.layout.h == 0u64 {
+      fail("setImmediates before setPipeline");
+      return;
+    }
+    vulkan.cmdPushConstants(backend.cmd, backend.layout, vulkan.SHADER_STAGE_VERTEX_BIT | vulkan.SHADER_STAGE_FRAGMENT_BIT,
+      offset, size, data);
+  }
+
+  // Draw into the rectangle from ('x', 'y'), 'width' by 'height' pixels, of
+  // the attachments ('y' down from their top), with depths from 'minDepth'
+  // to 'maxDepth'
+  pub fn setViewport(self &mut, x f32, y f32, width f32, height f32, minDepth f32, maxDepth f32) {
+    setViewportFlipped(backend.cmd, x, y, width, height, minDepth, maxDepth);
+  }
+
+  // Draw nothing outside the rectangle from ('x', 'y'), 'width' by 'height'
+  // pixels ('y' down from the top)
+  pub fn setScissorRect(self &mut, x u32, y u32, width u32, height u32) {
+    imm r = vulkan.Rect2D[vulkan.Offset2D[i32[x], i32[y]], vulkan.Extent2D[width, height]];
+    vulkan.cmdSetScissor(backend.cmd, 0u32, 1u32, &r as *vulkan.Rect2D);
+  }
+
+  // Draw 'vertexCount' vertices from 'firstVertex', 'instanceCount' times
+  pub fn draw(self &mut, vertexCount u32, instanceCount u32, firstVertex u32, firstInstance u32) {
+    vulkan.cmdDraw(backend.cmd, vertexCount, instanceCount, firstVertex, firstInstance);
+  }
+
+  // Draw 'indexCount' indices from 'firstIndex', each 'baseVertex' added to,
+  // 'instanceCount' times
+  pub fn drawIndexed(self &mut, indexCount u32, instanceCount u32, firstIndex u32, baseVertex i32, firstInstance u32) {
+    vulkan.cmdDrawIndexed(backend.cmd, indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
+  }
+
+  // The end of the pass; a swapchain texture goes back to the layout kept
+  // between commands
+  pub fn end(self &mut) {
+    if !backend.open { return; }
+    backend.open = false;
+    vulkan.cmdEndRendering(backend.cmd);
+    if backend.kind == KIND_SURFACE {
+      transition(backend.cmd, backend.image, vulkan.IMAGE_ASPECT_COLOR_BIT, vulkan.IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        vulkan.IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        vulkan.PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_NONE);
+    }
+  }
+}
+
+struct CommandBufferBackend {
+  pub cmd vulkan.CommandBuffer;
+}
+
+// Recorded commands, to submit once ('device.queue.submit')
+pub struct CommandBuffer {
+  pub backend CommandBufferBackend;
+}

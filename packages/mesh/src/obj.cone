@@ -1,0 +1,208 @@
+// ======== Wavefront .obj ========
+
+// A mesh as .obj text: a 'v' line per position, a 'vt' per uv and a 'vn' per
+// normal when it has them, then an 'f' line per triangle naming each corner's
+// position, uv and normal, 'f 1/1/1 2/2/2 3/3/3' (numbered from 1; 'f 1//1'
+// without uvs, 'f 1/1' without normals, 'f 1' with neither). A mesh with
+// material groups gets a 'usemtl material<slot>' line before each group's
+// triangles. Numbers are written with six decimal places.
+pub fn meshObjText overload objText(m &Mesh) String {
+  mut s = String.empty();
+  imm n = m.positions.len();
+  imm hasUv = n > 0usize and m.uvs.len() == n;
+  imm hasNormal = n > 0usize and m.normals.len() == n;
+  mut i = 0usize;
+  while i < n {
+    imm p = *m.positions[i];
+    s.append("v ");
+    appendVec3(&mut s, p);
+    s.appendByte('\n');
+    i = i + 1usize;
+  }
+  if hasUv {
+    i = 0usize;
+    while i < n {
+      imm t = *m.uvs[i];
+      s.append("vt ");
+      appendFixed(&mut s, t.x);
+      s.appendByte(' ');
+      appendFixed(&mut s, t.y);
+      s.appendByte('\n');
+      i = i + 1usize;
+    }
+  }
+  if hasNormal {
+    i = 0usize;
+    while i < n {
+      s.append("vn ");
+      appendVec3(&mut s, *m.normals[i]);
+      s.appendByte('\n');
+      i = i + 1usize;
+    }
+  }
+  if m.groups.len() == 0usize {
+    objFaces(&mut s, m, 0usize, m.indices.len(), hasUv, hasNormal);
+  } else {
+    mut g = 0usize;
+    while g < m.groups.len() {
+      imm grp = *m.groups[g];
+      s.append("usemtl material");
+      s.appendUInt(u64[grp.material]);
+      s.appendByte('\n');
+      objFaces(&mut s, m, usize[grp.start], usize[grp.start] + usize[grp.count], hasUv, hasNormal);
+      g = g + 1usize;
+    }
+  }
+  s;
+}
+
+// The 'f' lines for the triangles among indices 'from' to 'to'
+fn objFaces(s &mut String, m &Mesh, from usize, to usize, hasUv Bool, hasNormal Bool) {
+  mut t = from;
+  while t + 3usize <= to and t + 3usize <= m.indices.len() {
+    s.append("f");
+    mut k = 0usize;
+    while k < 3usize {
+      imm idx = u64[*m.indices[t + k]] + 1u64;
+      s.appendByte(' ');
+      s.appendUInt(idx);
+      if hasUv or hasNormal {
+        s.appendByte('/');
+        if hasUv { s.appendUInt(idx); }
+        if hasNormal {
+          s.appendByte('/');
+          s.appendUInt(idx);
+        }
+      }
+      k = k + 1usize;
+    }
+    s.appendByte('\n');
+    t = t + 3usize;
+  }
+}
+
+// A polygon mesh as .obj text: a 'v' line per vertex, then an 'f' line per
+// face with all its corners, 'f 1 3 4 2'. With a corner "uv" channel, a 'vt'
+// line per corner of each face, in face order, and 'f 1/1 3/2 4/3 2/4'.
+pub fn polyObjText overload objText(m &PolyMesh) String {
+  mut s = String.empty();
+  mut i = 0usize;
+  while i < m.positions.len() {
+    s.append("v ");
+    appendVec3(&mut s, *m.positions[i]);
+    s.appendByte('\n');
+    i = i + 1usize;
+  }
+  imm uvCh = m.findVec2Channel(CornerDomain, "uv");
+  imm hasUv = uvCh != NoIndex;
+  if hasUv {
+    mut f = 0usize;
+    while f < m.fHalfedge.len() {
+      imm hs = m.faceHalfedges(u32[f]);
+      mut k = 0usize;
+      while k < hs.len() {
+        imm t = m.vec2(uvCh, *hs[k]);
+        s.append("vt ");
+        appendFixed(&mut s, t.x);
+        s.appendByte(' ');
+        appendFixed(&mut s, t.y);
+        s.appendByte('\n');
+        k = k + 1usize;
+      }
+      f = f + 1usize;
+    }
+  }
+  mut corner = 0u64;
+  mut f = 0usize;
+  while f < m.fHalfedge.len() {
+    imm vs = m.faceVertices(u32[f]);
+    s.append("f");
+    mut k = 0usize;
+    while k < vs.len() {
+      s.appendByte(' ');
+      s.appendUInt(u64[*vs[k]] + 1u64);
+      if hasUv {
+        corner = corner + 1u64;
+        s.appendByte('/');
+        s.appendUInt(corner);
+      }
+      k = k + 1usize;
+    }
+    s.appendByte('\n');
+    f = f + 1usize;
+  }
+  s;
+}
+
+// Write a mesh's .obj text to the file at 'path', replacing it; false if the
+// file could not be written
+pub fn meshWriteObj overload writeObj(m &Mesh, path &[]u8) Bool {
+  imm text = objText(m);
+  writeFile(path, text.view());
+}
+pub fn polyWriteObj overload writeObj(m &PolyMesh, path &[]u8) Bool {
+  imm text = objText(m);
+  writeFile(path, text.view());
+}
+
+// The whole of 'text' into the file at 'path'
+fn writeFile(path &[]u8, text &[]u8) Bool {
+  mut cpath = String.from(path);
+  imm f = libc.fopen(cpath.cstr(), &"wb" as *u8);
+  if !f { return false; }
+  mut wrote = 0usize;
+  if text.len > 0usize { wrote = libc.fwrite(&text[0], 1usize, text.len, f); }
+  imm closed = libc.fclose(f);
+  wrote == text.len and closed == 0;
+}
+
+// "x y z", each with six decimal places
+fn appendVec3(s &mut String, p Vec3) {
+  appendFixed(s, p.x);
+  s.appendByte(' ');
+  appendFixed(s, p.y);
+  s.appendByte(' ');
+  appendFixed(s, p.z);
+}
+
+// A number with six decimal places, rounded, as C's '%f' writes it: '0.100000',
+// '-2.500000'; a value that rounds to zero has no sign. NaN and infinity are
+// written 'nan', 'inf' and '-inf', which no .obj reader accepts.
+fn appendFixed(s &mut String, value f32) {
+  imm v = f64[value];
+  if v != v { s.append("nan"); return; }
+  imm mag = if v < 0d {-v;} else {v;};
+  if mag - mag != 0d {
+    if v < 0d { s.append("-inf"); } else { s.append("inf"); }
+    return;
+  }
+  if mag < 9000000000000d {
+    imm n = u64[mag * 1000000d + 0.5d];
+    if v < 0d and n > 0u64 { s.appendByte('-'); }
+    s.appendUInt(n / 1000000u64);
+    s.appendByte('.');
+    imm frac = n % 1000000u64;
+    mut pad = 100000u64;
+    while pad > 1u64 and frac < pad {
+      s.appendByte('0');
+      pad = pad / 10u64;
+    }
+    s.appendUInt(frac);
+  } else {
+    // Past what a u64 of millionths holds: the leading digits, then zeros
+    // (an f32 has no more than 8 significant digits)
+    mut m = mag;
+    mut zeros = 0usize;
+    while m >= 9000000000000d {
+      m = m / 10d;
+      zeros = zeros + 1usize;
+    }
+    if v < 0d { s.appendByte('-'); }
+    s.appendUInt(u64[m]);
+    while zeros > 0usize {
+      s.appendByte('0');
+      zeros = zeros - 1usize;
+    }
+    s.append(".000000");
+  }
+}
