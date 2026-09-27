@@ -44,6 +44,12 @@ defined and sees advantages in it.** ▸ **For whoever builds it: checking a
 template requires knowing what its parameters guarantee, which is what its
 constraints say.** Constraints are built, and checked at each instance only;
 checking the body against them where it is declared is the part still owed.
+**Under an `or`, the plan is Go's rule** [Jon 27 Sep, accepting Penny's
+proposal]: a body governed by `T is A or T is B` may rely only on what *every*
+alternative supports — what `A` and `B` both give — as Go's union constraints
+let a generic body use only the operations every type in the union has. So `or`
+does not stand in the way of declaration checking; `not`, which says nothing of
+what a type can do, would, and is not built.
 
 **A constraint is checked by evaluating it, once every argument is known**
 [Jon 27 Sep]. ▸ **Forbids** solving one, unifying through one, or using one to
@@ -64,15 +70,21 @@ every instance, so that a package's and its importers' copies merge
 | --- | --- |
 | `parms` | the declared type parameters. Every element is a `GenVarDclNode` |
 | `memonodes` | the memo table **and the only path to instances** |
-| `where` | a generic type's constraints, as clause pairs (below); NULL for a function, whose are its `FnDcl`'s |
+| `where` | a generic type's constraints, as conditions (below); NULL for a function, whose are its `FnDcl`'s |
 
-**A constraint is a pair in a `where` list**: a use of the type parameter it
-constrains, then a use of the trait it `is`. `T is A + B` and `[T A + B]` are two
-pairs. A generic type's list is its `GenericInfo`'s; every function's, generic or
-a generic type's method, is `FnDclNode.where`, so a method that is not generic
-still has one. Being name uses, the pairs are cloned like any other: in an
-instance's copy of a method, a clause over the type's parameter comes out naming
-the argument, and one over the method's own parameter stays a use of it.
+**A `where` list holds conditions, every one of which must hold.** Each element
+is one operand of the `and`s at the top of what was written. A condition is a
+**clause**, `T is Name` — an `IsTag` `CastNode`, the node `p is Mobile` makes,
+whose `exp` is a use of the type parameter it constrains and whose `typ` is a use
+of the trait or type it `is` — or an `OrLogicTag` or `AndLogicTag` `LogicNode`
+joining two conditions. `where T is A and T is B` is two elements; `where T is A
+or T is B` one, an `or`; `T is A + B` and `[T A + B]` are two clauses, and inside
+an `or` alternative an `and` of them. A generic type's list is its
+`GenericInfo`'s; every function's, generic or a generic type's method, is
+`FnDclNode.where`, so a method that is not generic still has one. Being ordinary
+nodes over name uses, the conditions are cloned like any other: in an instance's
+copy of a method, a clause over the type's parameter comes out naming the
+argument, and one over the method's own parameter stays a use of it.
 
 **`memonodes` is a flat list of pairs** — `[call₀, instance₀, call₁, instance₁, …]`.
 Every consumer walks it with `for (nodesFor(...)) { ++nodesp; --cnt; ... }`,
@@ -137,14 +149,24 @@ Anything else after a parameter name is still the unclosed-list `ErrorBadTok`.
 
 **`parseWhere`** reads the `where` clause, which stands just before the block:
 after a function's signature (and `inline`), and after a type's name, type
-parameters and `is`/`extends` clauses. It is `where Ident is Name (+ Name)* (and
-Ident is Name (+ Name)*)*`, each trait read by `parseTypeName`, appended as pairs
-to the function's `where` or the type's `GenericInfo.where`. Every other shape a
-clause might take is `ErrorWhereForm`, and the rest of the clause is skipped to
-the block: a subject that is not a name followed by `is` (a relation, `T < Y`; a
-constraint on a type expression, `Option[T] is Node`; `not`), `or` between
-clauses, and `is` with no name after it. A type with no type parameters writing
-one is `ErrorWhereNoParms` here; a function's is known only at name resolution.
+parameters and `is`/`extends` clauses. It is an expression over clauses, as an
+expression is over values: `or` of `and`s of terms (`parseWhereOr`,
+`parseWhereAnd`), so `and` binds tighter, and a term (`parseWhereTerm`) is `(`
+a whole condition `)` or `Ident is Name (+ Name)*`, each name read by
+`parseTypeName`. The condition's top-level `and`s are split into the list's
+elements (`parseWhereAdd`), appended to the function's `where` or the type's
+`GenericInfo.where`. Every other shape is `ErrorWhereForm`, the clause adds
+nothing, and the rest of it is skipped to the block: a subject that is not a
+name followed by `is` (a relation, `T < Y`; a constraint on a type expression,
+`Option[T] is Node`), `not` before a clause or after its `is`, `is` with no name
+after it, an `and` or `or` with no clause after it, and a `(` never closed. A type
+with no type parameters writing one is `ErrorWhereNoParms` here; a function's is
+known only at name resolution.
+
+**The inline form takes no `or`.** `[T A + B]` requires every trait it names, and
+`parseGenericParms` refuses `or` after them, `ErrorGenParmOr`, dropping that
+parameter's annotation and skipping to its `,` or `]`: a choice is written in a
+`where` clause [Jon 27 Sep].
 
 Attached by `parseFn` only in the named branch — so an anonymous function can
 never be generic — and by `parseStruct` after the type name. Nothing about the
@@ -172,14 +194,19 @@ enclosing scope and the matching pop would never remove it.
 **The constraints are resolved there too, once the parameters are hooked**, by
 `genericConstraintsNameRes`, from `structNameRes` for a generic type's and from
 `fnDclNameRes` for a function's. It first folds each parameter's annotation into
-the list, as pairs of a fresh use of the parameter and the annotation's name —
+the list, as clauses of a fresh use of the parameter and the annotation's name —
 refusing, `ErrorGenParmConstr`, a name that resolves to no trait — and then
-resolves every written clause, keeping one whose subject is a type parameter (the
-function's own, or its generic type's) and whose name is a trait that is not
-generic. A subject that is anything else is `ErrorWhereSubject`, and a name that
-is no trait `ErrorWhereTrait`; a name that bound nothing was reported as unknown
-where it was resolved, and is dropped quietly. What is left is the list, the
-annotations' clauses first. A function that is neither generic nor a member of a
+resolves every clause of every written condition (`genericConditionNameRes`),
+keeping a condition whose clauses each have a subject that is a type parameter
+(the function's own, or its generic type's) and a name that is a trait that is
+not generic, or a type that is neither a generic type nor a trait
+(`genericNamedType`): `where T is Bool` [Jon 27 Sep]. A subject that is anything
+else is `ErrorWhereSubject`, and a name that is neither `ErrorWhereTrait`; a name
+that bound nothing was reported as unknown where it was resolved. A condition
+with any clause refused is dropped whole, since an `or` missing a side would say
+something else. What is left is the list, the annotations' clauses first. Only
+the `where` clause may name a type; in the inline slot a type means a value
+parameter (Shape, above). A function that is neither generic nor a member of a
 generic type (the resolving `typenode`, which for a variant is the variant,
 carrying its enum's parameters) has nothing to constrain: `ErrorWhereNoParms`.
 
@@ -389,31 +416,50 @@ instance.
 
 ### Constraints
 
-**Evaluated, never solved** (Principles). Every question a clause asks is
+**Evaluated, never solved** (Principles). A clause naming a type, `T is Bool`,
+is met by that type alone (`itypeIsSame`). Every other question a clause asks is
 `genericTypeIs(type, trait)`, which is what `is` answers of a type:
 
 - **The compiler's grants.** Every type is exactly one of `Move` and `Copy`
-  (`itypeIsMove`), and `Integer` is `i8` … `i64`, `u8` … `u64`, `isize` and
-  `usize` — an `IntNbrTag`, or a `UintNbrTag` that is not `Bool`.
+  (`itypeIsMove`); `Integer` is `i8` … `i64`, `u8` … `u64`, `isize` and
+  `usize` — an `IntNbrTag`, or a `UintNbrTag` that is not `Bool`; and `Pointer`
+  is every raw pointer type, `*T` whatever `T` and its permission — a `PtrTag`,
+  never a reference. `Integer or Bool or Pointer` is exactly what an atomic
+  operation takes (`intrinsicIsAtomicType`), so sync's `Atomic[T]` requires just
+  what its `AtomicValue` marker admits.
 - **A declaration**: the type's `is` list names the trait, or names a trait whose
   own list does (`genericDeclares`).
 - **Fitting it structurally**, only for a trait that requires something of a
   value — a method or a field. `structMatches` under `Monomorph` is the test, the
   one a trait's other uses are made by; `genericDemandMatch` first analyzes each
   requirement and each candidate the type has for it (`fnCallDemandCandidates`),
-  since signatures compare only once checked. A **marker** — a trait requiring
+  since signatures compare only once checked. Under `Monomorph` a requirement's
+  `Self` is the type asked about (`fnSigVrefEqual`'s `selftype`), since the
+  instance calls that type's own method: `o &Self` is met by its `o &Self`. The
+  match is otherwise exact, and a virtual reference's is exact throughout. A **marker** — a trait requiring
   nothing of a value, the compiler's own built-in traits among them — is never
   fitted: every type would fit it, so fitting it would say nothing.
 
-A clause is evaluated where its subject is one of the parameters being bound, with
-that parameter's argument (`genericUnmetClause`); one whose subject is already an
-argument was bound, and evaluated, earlier.
+**A condition is evaluated whole** (`genericConditionValue`), `or` and `and` as
+in an expression, the right side asked only where the left does not decide it,
+to one of three values: true, false, or unknown — turning on a parameter not
+bound here. A lone clause is decided where its subject is one of the parameters
+being bound, with that parameter's argument; one over a parameter bound earlier
+(its subject substituted by the clone) was decided then, and is unknown here.
+Inside an `or` or an `and` a substituted subject is asked as it stands, since
+the whole is decided here. `genericUnmetCondition` finds the first condition
+that is false; an unknown one is left to where its parameter is bound. So a
+generic method's condition joining its type's parameter and its own, `where T is
+Integer or U is Bool`, is unknown when the type's instance is made — the method
+exists there — and decided, as a requirement, at the method's instance.
 
 **On a generic function or type, a constraint is a requirement.**
 `genericMemoize`, on a memo miss and before anything is cloned, asks
-`genericRequirementsMet`: an unmet clause is `ErrorWhereUnmet` at the use asking
-for the instance — the call, the type literal, the type named — naming the
-generic, the clause and the argument, and an error node stands for the instance,
+`genericRequirementsMet`: an unmet condition is `ErrorWhereUnmet` at the use
+asking for the instance — the call, the type literal, the type named — naming
+the generic, the clause and the argument, or, for a condition joined by `or` or
+`and`, the whole condition (`genericConditionCat`) and the arguments it turned on
+(`genericBindingsCat`), and an error node stands for the instance,
 so nothing inside the generic is checked against arguments it was never meant
 for. A variant answers to its enum's clauses. A type position holding the error
 node settles to `errorType` (`itypeTypeCheck`), so what uses it is quiet. A failed
@@ -431,8 +477,9 @@ virtual reference alike. Settled before the reservation and the clone, because a
 structural clause may analyze the argument's own methods. A call on the instance
 that finds nothing asks `genericReportAbsent`, from `fnCallLowerMethod`, which
 finds the template through the instance's memo entry and reports
-`ErrorWhereAbsent` naming the unmet clause. A generic method's own clauses over
-its own parameters stay uses in the copy and are requirements at its instance.
+`ErrorWhereAbsent` naming the unmet condition, as a requirement names it. A
+generic method's own clauses over its own parameters stay uses in the copy and
+are requirements at its instance.
 
 **Depth is the only cycle detector.** No mark can catch runaway expansion,
 because every expansion is a fresh node — nothing ever returns to the same node.
@@ -554,10 +601,18 @@ are [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Sym
   name resolution to the template's member and, with no copy to map it to, still
   names it, which `nameUseTemplateMember` reports as `ErrorWhereAbsent` when the
   use was copied into an instance of that generic.
+- **A `where` list's nodes are expression nodes that are never checked as
+  expressions.** Its clauses are the `IsTag` nodes a runtime `p is Mobile`
+  makes, and its joins the `LogicNode`s of `and` and `or`; only name resolution
+  (`genericConditionNameRes`) and the evaluator read them. A walk that type
+  checked or generated one would take a compile-time question for a runtime
+  test.
 - **Only a struct fits a trait structurally.** A number type meets the markers
-  granted to it and no trait with members. And a requirement naming `Self` in a
-  parameter is met by nothing, since the trait's `Self` is the trait and an
-  implementer's is itself (`fnSigVrefEqual` compares them exactly).
+  granted to it and no trait with members.
+- **`Self` is read as the implementer only where it is written `Self`.** The
+  requirement's type is compared as written (`fnSigReqTypeSame`), through a
+  reference, pointer or slice, so a requirement naming its trait outright means
+  the trait, and a typedef of `Self` is not seen through.
 
 ## What lives elsewhere
 

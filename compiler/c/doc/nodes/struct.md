@@ -916,7 +916,13 @@ Steps 9 to 11 are `structCheckMembers`, run from the members queue:
    `traits`, the type's binding for the name must have the one candidate of the
    trait's signature — an inherited default meets that by construction — and a
    requirement with no body, inherited as such, is unmet in a struct; a trait
-   may pass it on. An `extern` method is not such a requirement: it has no
+   may pass it on. **`Self` in the requirement is this type**, as it is in a
+   default cloned in: `fnSigVrefEqual` is given this type as its `selftype`, so
+   the trait's `o &Self` is met by this type's `o &Self`. Not for a closed
+   trait (`HasTagField` or `SameSize`, an enum among them), whose requirement a
+   variant meets exactly as written, since a call through a reference to it
+   dispatches by the tag with an argument of any variant; nor when a vtable is
+   filled (`structMapVtableImpl`), whose slot holds the trait's own signature. An `extern` method is not such a requirement: it has no
    body here because it is defined elsewhere, as an include file declares a
    package's methods, and it meets the trait's requirement. **`RegionRef`, the
    built-in trait, has no methods to verify**: a type declaring it is held
@@ -992,9 +998,11 @@ and the compiler knows nothing else of that type. What it brings:
   (`Atomic[f64]` in the program, not the field in sync), and a refused
   instance's methods are not type checked (step 9), since each would refuse
   the same type again in terms of its body. Which operations a type offers is
-  its own affair: `Atomic[T]` takes an integer only, for now, by calling
-  `atomicAdd`, which refuses a `Bool` or a pointer at the instance
-  ([Intrinsic](intrinsic.md)).
+  its own affair: `Atomic[T]` requires `T is Integer or T is Bool or T is
+  Pointer`, just what the marker admits, so another `T` is refused as an unmet
+  requirement before the marker is asked; and its `add` and `sub` exist only
+  where `T is Integer`, its bit operations only where `T is Integer or T is
+  Bool` ([generic](generic.md), "Constraints").
 - **It moves**, as `Move` does, marked at the end of name resolution and at
   layout; `is Copy` beside it is `ErrorCopyMove` (step 11).
 - **It spreads outward** (`itypeHoldsAtomic`, below): a global whose type holds

@@ -2279,7 +2279,12 @@ static void structCheckTraitReqs(StructNode *node) {
                 inodeTypeCheckAny(&tstate, nodesp);
                 traitmeth = (FnDclNode*)*nodesp;
             }
-            if (iNsTypeFindVrefMethod(binding, traitmeth) == NULL)
+            // 'Self' in the requirement is this type, as it is in a default
+            // cloned into it -- except in a closed trait's, which is reached
+            // through its tag's vtable from a reference to any of its variants,
+            // and so must be met by exactly its signature
+            INode *selftype = (trait->flags & (HasTagField | SameSize)) ? NULL : (INode*)node;
+            if (iNsTypeFindVrefMethod(binding, traitmeth, selftype) == NULL)
                 errorMsgNode((INode*)node, ErrorInvType,
                     "Type declares %s, but none of what it declares has the signature %s requires",
                     &traitmeth->namesym->namestr, &trait->namesym->namestr);
@@ -2675,9 +2680,9 @@ static void structLayoutVariants(TypeCheckState *pstate, StructNode *node) {
 // pointer. Nothing else can be changed indivisibly in place: a float or a
 // struct has no atomic instruction, a traced reference stored atomically would
 // skip its write barrier, and an owning one would be duplicated or lost. Which
-// operations a type offers is its own business -- sync's 'Atomic[T]' takes
-// integers only for now -- so the marker admits every type any operation
-// takes. Asked as the type is laid out, and reported, when 'report' is set,
+// operations a type offers is its own business -- sync's 'Atomic[T]' gives
+// add and sub only where T is Integer -- so the marker admits every type any
+// operation takes. Asked as the type is laid out, and reported, when 'report' is set,
 // at the outermost place a generic's instance was asked for, where its type
 // argument was chosen. Answers 0 where the type is refused.
 static int structAtomicValueCheck(StructNode *node, int report) {
@@ -3194,7 +3199,7 @@ static VtableImpl *structMapVtableImpl(StructNode *basenode, StructNode *strnode
             if (meth->genericinfo)
                 return NULL;
             INode *strbinding = namespaceFind(&strnode->namespace, meth->namesym);
-            FnDclNode *strmeth = iNsTypeFindVrefMethod(strbinding, meth);
+            FnDclNode *strmeth = iNsTypeFindVrefMethod(strbinding, meth, NULL);
             if (strmeth == NULL)
                 return 0;
             // it matches, add the method to the implementation. A method the
@@ -3455,7 +3460,10 @@ TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint cons
             continue;
         FnDclNode *meth = (FnDclNode *)*nodesp;
         INode *frombinding = namespaceFind(&from->namespace, meth->namesym);
-        if (iNsTypeFindVrefMethod(frombinding, meth) == NULL)
+        // Under a constraint, 'Self' in the requirement is the type asked
+        // about, since the instance calls that type's own method. A reference
+        // to the trait is a view of any implementer, so there it is the trait.
+        if (iNsTypeFindVrefMethod(frombinding, meth, constraint == Monomorph ? fromdcl : NULL) == NULL)
             return NoMatch;
     }
     // Technique for comparing fields varies ...

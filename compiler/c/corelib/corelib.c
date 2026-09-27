@@ -85,6 +85,7 @@ StructNode *noLoanMutTrait;
 StructNode *noLoanReadTrait;
 StructNode *atomicValueTrait;
 StructNode *integerTrait;
+StructNode *pointerTrait;
 
 // A trait the compiler declares, with no members, bound as a name every module
 // reaches unless it declares the name itself
@@ -99,7 +100,8 @@ int corelibIsBuiltinTrait(INode *node) {
     return node == (INode*)regionRefTrait || node == (INode*)moveTrait || node == (INode*)copyTrait
         || node == (INode*)tracedTrait || node == (INode*)shapeChangingTrait
         || node == (INode*)noLoanMutTrait || node == (INode*)noLoanReadTrait
-        || node == (INode*)atomicValueTrait || node == (INode*)integerTrait;
+        || node == (INode*)atomicValueTrait || node == (INode*)integerTrait
+        || node == (INode*)pointerTrait;
 }
 
 // Set up the standard library, whose names are always shared by all modules
@@ -180,4 +182,9 @@ void stdlibInit(int ptrsize) {
     // and asked only by a constraint, 'where T is Integer'; any other type
     // is one only by declaring it.
     integerTrait = newBuiltinTrait(integerTraitName);
+    // 'Pointer' [Jon 27 Sep]: the raw pointer types, '*T' whatever T is and
+    // whatever its permission, granted by the compiler (genericTypeIs) and
+    // asked only by a constraint, 'where T is Pointer'. A reference is not
+    // one, nor an integer; any other type is one only by declaring it.
+    pointerTrait = newBuiltinTrait(pointerTraitName);
 }

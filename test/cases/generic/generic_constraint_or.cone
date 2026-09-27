@@ -1,0 +1,75 @@
+// Constraints joined by 'or', and the built-in marker 'Pointer'. A 'where'
+// clause joins clauses with 'and' and 'or', 'and' binding tighter, as in an
+// expression, and parentheses group; '+' inside a clause is an 'and' of its
+// own. Each condition is evaluated whole once the instance's arguments are
+// known, and every instance made here meets its generic's. A clause may name
+// a type as well as a trait, 'T is Bool', met by that type alone.
+//
+// 'loose' is '(A and B) or C', so a type that is only C meets it, as does one
+// that is A and B; 'tight' is 'A and (B or C)', which a type that is A and C
+// meets. On a method of a generic type an 'or' is a condition for the method
+// existing: 'Cell[Bool]' has 'flip' and no 'twice', and 'Cell[*i32]' has
+// neither. 'Pointer' is granted to every raw pointer type. Each printed
+// value was checked by hand against the source.
+
+mod generic_constraint_or;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+trait A {}
+trait B {}
+trait C {}
+
+struct OnlyC is C {pub n i64;}
+struct AB is A, B {pub n i64;}
+struct AC is A, C {pub n i64;}
+
+fn loose[T](x &T) i64 where T is A and T is B or T is C {1;}
+fn tight[T](x &T) i64 where T is A and (T is B or T is C) {2;}
+fn plus[T](x &T) i64 where T is A + B or T is C {3;}
+
+fn intOrFlag[T](x T) T where T is Integer or T is Bool {x;}
+
+fn address[T](p T) usize where T is Pointer {p as usize;}
+
+struct Cell[T] where T is Integer or T is Bool or T is Pointer {
+  pub v T;
+  pub fn get(self &) T {v;}
+  pub fn twice(self &) T where T is Integer {v + v;}
+  pub fn flip(self &) T where T is Integer or T is Bool {v ^ v;}
+}
+
+fn main() {
+  imm c = OnlyC[1];
+  imm ab = AB[2];
+  imm ac = AC[3];
+  show("loose C", loose(&c));
+  show("loose AB", loose(&ab));
+  show("tight AB", tight(&ab));
+  show("tight AC", tight(&ac));
+  show("plus C", plus(&c));
+  show("plus AB", plus(&ab));
+
+  show("intOrFlag i32", i64[intOrFlag(7i32)]);
+  show("intOrFlag Bool", if intOrFlag(true) {1;} else {0;});
+
+  mut n = 5i32;
+  imm p = &mut n as *i32;
+  show("address nonzero", if address(p) != 0usize {1;} else {0;});
+
+  imm ci = Cell[i32][21i32];
+  show("Cell[i32].twice", i64[ci.twice()]);
+  show("Cell[i32].flip", i64[ci.flip()]);
+  imm cb = Cell[Bool][true];
+  show("Cell[Bool].get", if cb.get() {1;} else {0;});
+  show("Cell[Bool].flip", if cb.flip() {1;} else {0;});
+  imm cp = Cell[*i32][p];
+  show("Cell[*i32].get is p", if cp.get() as usize == p as usize {1;} else {0;});
+}

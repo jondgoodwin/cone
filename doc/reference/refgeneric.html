@@ -21,11 +21,11 @@
 			modules</a>. Constraints are implemented as described under
 			<a href="#constraints">Generic Constraints</a>: a trait after a type
 			parameter, several joined with +, and the where clause of clauses
-			joined with and, on a generic function, a generic type and a generic
-			type's method. Not yet: a clause relating two parameters or constraining
-			a type expression, or and not, constraints on a generic module's or a
-			macro's parameters, and checking a generic's body against its constraints
-			where it is declared.</i></p>
+			joined with and and or, grouped by parentheses, on a generic function, a
+			generic type and a generic type's method. Not yet: a clause relating two
+			parameters or constraining a type expression, not, constraints on a generic
+			module's or a macro's parameters, and checking a generic's body against its
+			constraints where it is declared.</i></p>
 	
 		<p>Generics enable the creation of generic function or type logic 
 		that works across all types that conform to specified constraints.
@@ -280,10 +280,12 @@ fn total[T Sized](a &amp;T, b &amp;T) i64 {
 		<li><b>A marker trait</b>, one requiring nothing of a value, is met only by a type
 			that declares it with <span class="pre">is</span>, or that the compiler grants it
 			to: every type is exactly one of <span class="pre">Move</span> and
-			<span class="pre">Copy</span>, and <span class="pre">Integer</span> is granted to
+			<span class="pre">Copy</span>; <span class="pre">Integer</span> is granted to
 			the integer types, <span class="pre">i8</span> to <span class="pre">i64</span>,
 			<span class="pre">u8</span> to <span class="pre">u64</span>,
-			<span class="pre">isize</span> and <span class="pre">usize</span>. A struct
+			<span class="pre">isize</span> and <span class="pre">usize</span>; and
+			<span class="pre">Pointer</span> to the raw pointer types, <span class="pre">*T</span>
+			whatever <span class="pre">T</span>, and not to a reference. A struct
 			identical to one declaring a marker, but not declaring it, does not meet it.</li>
 	</ul>
 	<p>By constraining <span class="pre">T</span>, we get a clearer error should we
@@ -293,11 +295,33 @@ fn total[T Sized](a &amp;T, b &amp;T) i64 {
 		with nothing reported from inside <span class="pre">twice</span>. A generic type
 		is refused the same way, wherever an instance of it is named:
 		<span class="pre">Num[f32]</span> for a <span class="pre">struct Num[T Integer]</span>.</p>
+	<p>In a trait's requirement, <span class="pre">Self</span> stands for the type
+		meeting it (see <a href="reftrait.html#self">Traits</a>), so a trait can ask
+		for a method taking another value of the same type:</p>
+<pre>
+trait Comparable {
+  pub fn `&gt;`(self &amp;, b &amp;Self) Bool;
+}
+
+fn max[T Comparable](a &amp;T, b &amp;T) &amp;T {
+  if a &gt; b {a;} else {b;}
+}
+
+struct Money {
+  pub cents i64;
+  pub fn `&gt;`(self &amp;, b &amp;Self) Bool {cents &gt; b.cents;}
+}
+
+imm low = Money[250];
+imm high = Money[475];
+max(&amp;low, &amp;high).cents;   // 475
+</pre>
+	<p><span class="pre">Money</span> is <span class="pre">Comparable</span>: its
+		<span class="pre">&gt;</span> takes a <span class="pre">&amp;Money</span> where the
+		trait's takes a <span class="pre">&amp;Self</span>.</p>
 	<p>Only a struct fits a trait with members yet: a number type meets the markers
-		granted to it and no trait of your own. And a requirement whose signature
-		names <span class="pre">Self</span> in a parameter, as
-		<span class="pre">fn same(self &amp;, o &amp;Self) Bool</span> does, is not met by
-		any type's method, whose own <span class="pre">Self</span> is a different type.</p>
+		granted to it and no trait of your own, so <span class="pre">max</span> above
+		cannot yet be called on two <span class="pre">i32</span> values.</p>
 
 	<h3>Combining supertypes</h3>
 	<p>Multiple supertypes may be specified as constraints for a single
@@ -331,6 +355,26 @@ struct Num[T] where T is Integer {
   pub v T;
 }
 </pre>
+	<p>A <span class="pre">where</span> clause may also offer a choice, which the square
+		brackets cannot: clauses joined with <span class="pre">or</span> are met when any of
+		them is. <span class="pre">and</span> binds tighter than <span class="pre">or</span>, as in
+		an expression, and parentheses group. A clause may name a type instead of a trait,
+		<span class="pre">T is Bool</span>, met by that type alone.</p>
+<pre>
+struct Atomic[T] where T is Integer or T is Bool or T is Pointer {
+  ...
+}
+
+fn loose[T](x &amp;T) where T is A and T is B or T is C {...}     // (A and B) or C
+fn tight[T](x &amp;T) where T is A and (T is B or T is C) {...}   // A and (B or C)
+</pre>
+	<p>The whole clause is evaluated once the type arguments are known, and a use whose
+		arguments make it false is refused, naming it whole:
+		&ldquo;Atomic requires T is Integer or T is Bool or T is Pointer, and it is false for
+		T = f64&rdquo;. <span class="pre">not</span> is not built, and neither is
+		<span class="pre">or</span> in the square brackets, where every trait named is
+		required: <span class="pre">[T A or B]</span> is refused, and is written
+		<span class="pre">[T] ... where T is A or T is B</span>.</p>
 
 	<h3 id="methodwhere">A method that exists only for some instances</h3>
 	<p>On a method of a generic type, a <span class="pre">where</span> clause over the
@@ -360,7 +404,17 @@ cb.add(true);    // ERROR: no method add for Cell[Bool]: it exists only where T 
 		whether the trait is asked for by a constraint or by a
 		<a href="refvirtref.html">virtual reference</a>. A generic method's own
 		<span class="pre">where</span> clause over its own type parameters is a requirement,
-		as a generic function's is.</p>
+		as a generic function's is. One joining the type's parameter and its own with
+		<span class="pre">or</span>, <span class="pre">where T is Integer or U is Bool</span>,
+		cannot be decided until both are known, so the method exists in every instance of the
+		type, and the whole clause is a requirement where the method's instance is made.</p>
+	<p>A condition joined by <span class="pre">or</span> works the same way. The
+		<span class="pre">sync</span> package's <span class="pre">Atomic[T]</span>
+		(<a href="refconc.html#atomic">Atomic values</a>) has an <span class="pre">add</span>
+		<span class="pre">where T is Integer</span> and a <span class="pre">bitOr</span>
+		<span class="pre">where T is Integer or T is Bool</span>, so an
+		<span class="pre">Atomic[Bool]</span> has <span class="pre">bitOr</span> and no
+		<span class="pre">add</span>, and an <span class="pre">Atomic[*Node]</span> has neither.</p>
 
 	<h3>Constraints not built yet</h3>
 	<p>A <span class="pre">where</span> clause is meant to be able to say more than
@@ -371,10 +425,15 @@ struct Xyz[T, Y] where T &lt; Y and Option[T] is Node;
 </pre>
 	<p>This would express the criteria that T is a supertype of Y
 		and that a nullable T is a valid Node. Neither form is built, nor
-		<span class="pre">or</span> and <span class="pre">not</span> between clauses, nor
-		a constraint on a generic module's or a macro's parameters. A generic's body is
-		checked only in each instance, as it always has been, not against its constraints
-		where it is declared.</p>
+		<span class="pre">not</span>, nor a constraint on a generic module's or a macro's
+		parameters. A generic's body is checked only in each instance, as it always has
+		been, not against its constraints where it is declared.</p>
+	<p>When it is, a body under an <span class="pre">or</span> will be held to what
+		<i>every</i> alternative supports, as Go holds a generic body to the operations every
+		type in a union constraint has: under <span class="pre">where T is Integer or T is
+		Bool</span>, a body may use what integers and <span class="pre">Bool</span> both
+		have, such as <span class="pre">^</span>, and not <span class="pre">+</span>, which only
+		one of them has.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refmacro.html"><img alt="_" src="next.png" /></a>

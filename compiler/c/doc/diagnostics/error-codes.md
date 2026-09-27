@@ -243,20 +243,22 @@ whose type holds an atomic value anywhere inline, whose remedy is a global.
 `is Copy` beside the marker is `ErrorCopyMove`, the code for every type that
 moves and says Copy.
 
-A generic's constraints take six codes. Two are what a clause refuses at an
+A generic's constraints take seven codes. Two are what a clause refuses at an
 instance, and their remedies differ in whose code changes: `ErrorWhereUnmet` is
 an instance of a generic function or type whose arguments do not meet a
 requirement, reported where the program asks for it, whose remedy is the
 argument; `ErrorWhereAbsent` is a method or function an instance of a generic
 type does not have, its `where` clause unmet there, whose remedy is not to call
-it on that instance. Four are the clause's own form: `ErrorWhereForm`, a shape
-not built (a relation, a type expression, `or`, `not`), refused by the parser;
-`ErrorWhereSubject`, a subject that is no type parameter in scope;
-`ErrorWhereTrait`, an `is` naming no trait; and `ErrorWhereNoParms`, a clause on a
-declaration with no type parameters to constrain. An annotation after a type
-parameter's name that names no trait stays `ErrorGenParmConstr`, the code for a
-parameter annotated in a way that is not built, as a macro's parameter given one
-is.
+it on that instance. A clause joined by `or` fails either way as a whole, under
+the same two codes. Four are the clause's own form: `ErrorWhereForm`, a shape
+not built (a relation, a type expression, `not`) or an unclosed parenthesis,
+refused by the parser; `ErrorWhereSubject`, a subject that is no type parameter
+in scope; `ErrorWhereTrait`, an `is` naming no trait; and `ErrorWhereNoParms`, a
+clause on a declaration with no type parameters to constrain. An annotation after
+a type parameter's name that names no trait stays `ErrorGenParmConstr`, the code
+for a parameter annotated in a way that is not built, as a macro's parameter
+given one is; `or` there, `[T A or B]`, is `ErrorGenParmOr`, whose remedy is to
+move the choice into a `where` clause.
 
 That is a narrow licence, and the tell that it has been stretched is the
 scenarios: **when a scenario needs a message substring to tell two uses of one

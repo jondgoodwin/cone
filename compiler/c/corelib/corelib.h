@@ -58,8 +58,9 @@ extern FnDclNode *finalAllFn;
 // 'Traced', which a region ref struct declares to say its references are traced;
 // and what a container's element borrows cost it: 'ShapeChanging' (it may move
 // its elements), 'NoLoanMut' and 'NoLoanRead' (its element borrows loan nothing);
-// and 'AtomicValue', a value changed only by atomic operations; and 'Integer',
-// which the compiler grants the integer types, for a constraint to ask of
+// and 'AtomicValue', a value changed only by atomic operations; and 'Integer'
+// and 'Pointer', which the compiler grants the integer types and the raw
+// pointer types, for a constraint to ask of
 extern StructNode *regionRefTrait;
 extern StructNode *moveTrait;
 extern StructNode *copyTrait;
@@ -69,6 +70,7 @@ extern StructNode *noLoanMutTrait;
 extern StructNode *noLoanReadTrait;
 extern StructNode *atomicValueTrait;
 extern StructNode *integerTrait;
+extern StructNode *pointerTrait;
 
 // Is this declaration one of the built-in traits?
 int corelibIsBuiltinTrait(INode *node);

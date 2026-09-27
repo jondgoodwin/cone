@@ -102,9 +102,11 @@ type while each call gives its own orderings.
    instance's first parameter, `*T`, and refuses one outside the class with
    `ErrorIntrinsicType`, before a fallback body is checked. It is reported at
    the outermost place that instantiated it, where the program chose the type,
-   and once there: sync's `Atomic[Bool]` is refused at the program's
-   `Atomic[Bool]`, by the first of its methods to call an operation refusing
-   `Bool` (`atomicAdd`), not in sync's source once per such method. Then `intrinsicDclTypeCheck`: a declared
+   and once there: a generic type whose methods call `atomicAdd[T]` for a `T`
+   it does not constrain is refused at the program's `Bump[Bool]`, by the first
+   of those methods, not in the generic's source once per method. (sync's
+   `Atomic[T]` says with `where T is Integer` that its `add` exists only for
+   an integer, so an `Atomic[Bool]` never reaches this.) Then `intrinsicDclTypeCheck`: a declared
    intrinsic's instance has no body to check; its `typearg` is type checked and
    must have a size (`itypeNoSizeCause`), else `ErrorIntrinsicType`, reported at
    the call that instantiated it (`instnode`), not in core. An instance of

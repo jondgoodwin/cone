@@ -96,8 +96,8 @@ Visual Studio projects stay at the root.
   also declare a struct `gc`; `thread` is OS threads (start a function on
   a value moved in, join, detach, a handle dropped unjoined joins, sleep,
   parking), Windows only, over `sync`; `sync` is what threads share
-  safely: `Atomic[T]`, an integer changed only by atomic operations over
-  core's `mem` intrinsics, which declares the built-in marker
+  safely: `Atomic[T]`, an integer, `Bool` or raw pointer changed only by
+  atomic operations over core's `mem` intrinsics, which declares the built-in marker
   `AtomicValue`; the futex the blocking layers are built on (on an
   `Atomic[u32]`, linking the Windows SDK's `Synchronization.lib`); and,
   on the futex alone, Rust's way, the unchecked locks `Mutex`, `RwLock`,

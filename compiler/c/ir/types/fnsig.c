@@ -111,15 +111,51 @@ int fnSigEqual(FnSigNode *node1, FnSigNode *node2) {
     return 1;
 }
 
+// Is an implementation's type 'impl' the type a trait requirement's 'req' names?
+// 'Self' in a requirement stands for the type meeting it, 'selftype', as it does
+// in a default cloned into that type (cloneNode repoints it there). Only the
+// name 'Self' is read that way, through a reference, a pointer or a slice to it:
+// a requirement naming its trait outright means the trait, and so does a virtual
+// reference to Self, '&<Self', which is a reference to the trait. With no
+// 'selftype' the match is exact.
+static int fnSigReqTypeSame(INode *req, INode *impl, INode *selftype) {
+    if (itypeIsSame(req, impl))
+        return 1;
+    if (selftype == NULL)
+        return 0;
+    if (isNameUseNode(req) && ((NameUseNode*)req)->namesym == selfTypeName)
+        return itypeGetTypeDcl(impl) == selftype;
+    INode *reqdcl = itypeGetTypeDcl(req);
+    INode *impldcl = itypeGetTypeDcl(impl);
+    if (reqdcl->tag != impldcl->tag)
+        return 0;
+    switch (reqdcl->tag) {
+    case RefTag:
+    case ArrayRefTag: {
+        RefNode *reqref = (RefNode*)reqdcl;
+        RefNode *implref = (RefNode*)impldcl;
+        return fnSigReqTypeSame(reqref->vtexp, implref->vtexp, selftype)
+            && permIsSame(reqref->perm, implref->perm)
+            && itypeIsSame(reqref->region, implref->region);
+    }
+    case PtrTag:
+        return fnSigReqTypeSame(((StarNode*)reqdcl)->vtexp, ((StarNode*)impldcl)->vtexp, selftype);
+    default:
+        return 0;
+    }
+}
+
 // For virtual reference structural matches on two methods,
 // compare two function signatures to see if they are equivalent,
-// ignoring the first 'self' parameter (we know their types differ)
-int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2) {
+// ignoring the first 'self' parameter (we know their types differ).
+// 'node1' is the implementation, 'node2' the requirement; see fnSigReqTypeSame
+// for 'selftype'.
+int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2, INode *selftype) {
     INode **nodes1p, **nodes2p;
     uint32_t cnt;
 
     // Return types and number of parameters must match
-    if (!itypeIsSame(node1->rettype, node2->rettype)
+    if (!fnSigReqTypeSame(node2->rettype, node1->rettype, selftype)
         || node1->parms->used != node2->parms->used)
         return 0;
 
@@ -133,11 +169,15 @@ int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2) {
     // call site, and belongs to type comparison only where subtyping is in play,
     // which it is not between a trait requirement and an implementation of it.
     // A virtual reference dispatches through a typed vtable slot, so the machine
-    // signatures have to line up.
+    // signatures have to line up. Reading 'Self' as the implementer is for a
+    // match no slot is filled by, a constraint or a declared 'is'.
+    //
+    // A parameter's declared type is read off it as written, not through
+    // iexpGetTypeDcl, so that a use of 'Self' is still one.
     nodes2p = &nodesGet(node2->parms, 0);
     for (nodesFor(node1->parms, cnt, nodes1p)) {
         if (cnt < node1->parms->used
-            && !itypeIsSame(iexpGetTypeDcl(*nodes1p), iexpGetTypeDcl(*nodes2p)))
+            && !fnSigReqTypeSame(((IExpNode*)*nodes2p)->vtype, ((IExpNode*)*nodes1p)->vtype, selftype))
             return 0;
         nodes2p++;
     }
