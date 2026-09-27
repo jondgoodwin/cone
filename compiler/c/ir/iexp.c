@@ -196,6 +196,12 @@ int iexpCoerce(INode **from, INode *totype) {
 // Return 1 if type "matches", 0 otherwise
 int iexpTypeCheckCoerce(TypeCheckState *pstate, INode *totype, INode **from) {
     inodeTypeCheck(pstate, from, totype);
+    return iexpCheckedCoerce(totype, from);
+}
+
+// iexpTypeCheckCoerce for a node already type checked: ensure it is an
+// expression, then coerce it to the expected type, if needed
+int iexpCheckedCoerce(INode *totype, INode **from) {
     if (totype == noCareType)
         return 1;
     if (!isExpNode(*from)) {
@@ -269,7 +275,13 @@ int iexpMultiInfer(INode *expectType, INode **maybeType, INode **from) {
 // - fromexp is the current expression node whose type is being examined
 // - oldMatch is the current match status on whether all branches match or not
 int iexpMultiCoerceInfer(TypeCheckState *pstate, INode *expectType, INode **inferredType, INode **fromexp, int oldMatch) {
-    if (!iexpTypeCheckCoerce(pstate, expectType, fromexp)) {
+    inodeTypeCheck(pstate, fromexp, expectType);
+    return iexpMultiCheckedCoerceInfer(expectType, inferredType, fromexp, oldMatch);
+}
+
+// iexpMultiCoerceInfer for an expression already type checked
+int iexpMultiCheckedCoerceInfer(INode *expectType, INode **inferredType, INode **fromexp, int oldMatch) {
+    if (!iexpCheckedCoerce(expectType, fromexp)) {
         errorMsgNode(*fromexp, ErrorInvType, "Expression does not match expected type.");
         return NoMatch;
     }

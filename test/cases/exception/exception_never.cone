@@ -1,0 +1,108 @@
+// A call to a function returning Never does not return, so it may end any
+// block, one that must produce a value included, in each place a block ends:
+// a function's body, a branch of an 'if' or a 'match' whose value is used, a
+// branch of one whose value is returned, an inline function's body and a
+// generic one's. A function of the program's own may return Never too, as
+// long as it ends in such a call, or in an 'if' each of whose paths does.
+// libc's 'abort' and 'exit' return Never.
+//
+// Nothing here panics: every path taken returns a value, which is printed, so
+// the run shows each value-producing path still produces the right one next to
+// a path that ends the program.
+
+mod exception_never;
+
+import stdio use *;
+import libc;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// The branch of an 'if' whose value is bound
+fn bound(n i32) i32 {
+  imm half = if n >= 0 {n / 2;} else {panic("negative");};
+  half + 1;
+}
+
+// A branch that ends in 'return' gives the 'if' no value either, so has no
+// say in its type, as a call that does not return has none
+fn early(n i32) i32 {
+  imm x = if n > 0 {n;} else {return 0;};
+  x * 2;
+}
+
+// A function's last expression, and a branch of the 'if' it returns
+fn last(n i32) i32 {
+  if n < 10 {return n;};
+  todo("ten and over");
+}
+
+fn returned(n i32) i32 {
+  if n > 0 {n * 3;} elif n < 0 {-n;} else {unreachable();}
+}
+
+// A 'match' arm
+fn named(n i32) i64 {
+  match n {
+    case ==1 {100i64;}
+    case ==2 {200i64;}
+    else {unreachable("only one and two are named");}
+  }
+}
+
+// An inline function, and a generic one
+fn halve(n i32) i32 inline {
+  if n % 2 == 1 {panic("odd");};
+  n / 2;
+}
+
+fn firstOf[T](a &[]T) T {
+  if a.len == 0usize {panic("empty");};
+  a[0usize];
+}
+
+// A function of the program's own returning Never, ending in a call that
+// does not return, and a caller that reports its own caller's location to it
+fn fail(why &[]u8, file &[]u8 = srcFile(), line u32 = srcLine()) Never {
+  panic(why, file, line);
+}
+
+fn checked(n i32) i32 {
+  if n == 13 {fail("unlucky");};
+  n;
+}
+
+// Ending in an 'if' each of whose paths does not return
+fn quit(code i32) Never {
+  if code == 0 {libc.exit(0i32);} else {libc.abort();}
+}
+
+// A loop's body ending in one: the loop goes round until it does not
+fn count(limit i32) i32 {
+  mut i = 0;
+  while i < 100 {
+    i = i + 1;
+    if i > limit {break;};
+    if i == 99 {panic("ran away");}
+  }
+  i;
+}
+
+fn main() {
+  show("bound", i64[bound(9)]);
+  show("early-positive", i64[early(4)]);
+  show("early-returned", i64[early(-1)]);
+  show("last", i64[last(7)]);
+  show("returned-positive", i64[returned(4)]);
+  show("returned-negative", i64[returned(-5)]);
+  show("named", named(2));
+  show("halve", i64[halve(12)]);
+  imm nums = [7, 8, 9];
+  show("firstOf", i64[firstOf[i32](&nums)]);
+  show("checked", i64[checked(12)]);
+  show("count", i64[count(5)]);
+}

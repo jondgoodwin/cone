@@ -241,6 +241,21 @@ instructions the builder folds to a constant aggregate. It accepts a borrow of
 an array literal whose elements all satisfy it (`arrayLitIsLiteral`) on the same
 terms, so `imm g = &[1, 2, 3]` is a literal initializer.
 
+**A reinterpretation of a constant is a constant** (`litIsConstCast`): a
+`CastTag` without `FlagConvert` (`as`, not `into`) whose target is a number or
+a raw pointer and whose operand is a number literal, a `ConstDclTag` use, or
+another such cast. `0usize as *T` is how a raw pointer starts out null, since
+there is no null literal. The predicate reads the tree as written, because
+`fieldDclTypeCheck` asks it before the default is type checked; the target is
+found through name resolution's binding. A struct target is left out:
+`genlRecast` reinterprets one through a stack slot, which a global's
+initializer has none of. Type check still applies the same-size rule, and
+`genlRecast`'s `bitcast`, `inttoptr` or `ptrtoint` of a constant operand is
+folded by the builder into a constant (`ptr null` for zero). An array literal's
+fill count is the one constant context that refuses it (`arrayLitDimIsConst`):
+type check reads the count from a `ULitTag`, and a cast has not been generated
+yet.
+
 **A borrowed constant array literal is a constant, as a borrowed string literal
 is.** Neither is an lval of a variable, so `borrowTypeCheck` asks
 `borrowIsConstLit` before refusing its operand as a temporary, and gives the

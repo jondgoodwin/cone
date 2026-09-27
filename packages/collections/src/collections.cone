@@ -61,8 +61,7 @@
 // An element left inside an Option one of them returns is finalized with it.
 //
 // An index out of range, or a key a dictionary does not hold, is a program
-// error: it prints what was wrong to stderr and ends the program with exit
-// status 1 through the C library's 'exit'.
+// error, and a panic.
 
 mod collections;
 
@@ -123,30 +122,32 @@ pub struct List[T] is ShapeChanging, Sendable {
     Some[T][mem.readRaw(ptr + used)];
   }
 
-  // A borrow of the value at index, for reading it now
-  pub fn `[]`(self &, index usize) &T {
-    if index >= used { outOfRange(index, used); }
+  // A borrow of the value at index, for reading it now. Each of these four
+  // reports an index out of range at the line of its caller, which its
+  // 'file' and 'line' default to
+  pub fn `[]`(self &, index usize, file &[]u8 = srcFile(), line u32 = srcLine()) &T {
+    if index >= used { outOfRange(index, used, file, line); }
     (ptr + index) as &T;
   }
 
   // A mutable borrow of the value at index, for changing it in place:
   // '&mut list[i]'
-  pub fn `&[]`(self &mut, index usize) &mut T {
-    if index >= used { outOfRange(index, used); }
+  pub fn `&[]`(self &mut, index usize, file &[]u8 = srcFile(), line u32 = srcLine()) &mut T {
+    if index >= used { outOfRange(index, used, file, line); }
     (ptr + index) as &mut T;
   }
 
   // Put value at index, finalizing the value it replaces
-  pub fn set(self &mut, index usize, value T) {
-    if index >= used { outOfRange(index, used); }
+  pub fn set(self &mut, index usize, value T, file &[]u8 = srcFile(), line u32 = srcLine()) {
+    if index >= used { outOfRange(index, used, file, line); }
     mem.finalize(ptr + index);
     mem.writeRaw(ptr + index, value);
   }
 
   // Exchange the values at two indexes
-  pub fn swap(self &mut, a usize, b usize) {
-    if a >= used { outOfRange(a, used); }
-    if b >= used { outOfRange(b, used); }
+  pub fn swap(self &mut, a usize, b usize, file &[]u8 = srcFile(), line u32 = srcLine()) {
+    if a >= used { outOfRange(a, used, file, line); }
+    if b >= used { outOfRange(b, used, file, line); }
     if a == b { return; }
     imm held = mem.readRaw(ptr + a);
     mem.moveRaw(ptr + a, ptr + b, 1usize);
@@ -444,10 +445,10 @@ pub struct Dict[K, V] is ShapeChanging, Sendable {
   pub fn contains(self &, key &[]u8) Bool { self.find(key) != cap; }
 
   // A borrow of key's value, for reading it now. A key it does not hold is a
-  // program error: ask 'contains' first.
-  pub fn `[]`(self &, key &[]u8) &V {
+  // program error, a panic at the line of the caller: ask 'contains' first.
+  pub fn `[]`(self &, key &[]u8, file &[]u8 = srcFile(), line u32 = srcLine()) &V {
     imm i = self.find(key);
-    if i == cap { missingKey(key); }
+    if i == cap { missingKey(key, file, line); }
     &slots[i].value;
   }
 
@@ -604,26 +605,19 @@ pub fn isSpace(b u8) Bool { b == ' ' or b == '\t' or b == '\r' or b == '\n'; }
 
 // -------- program errors --------
 
-fn outOfRange(index usize, length usize) {
+// Each a panic, reported where the method finding it was called
+
+fn outOfRange(index usize, length usize, file &[]u8, line u32) Never {
   mut msg = String.from("collections: index ");
   msg.appendUInt(u64[index]);
   msg.append(" is out of range for a length of ");
   msg.appendUInt(u64[length]);
-  die(msg);
+  panic(msg.view(), file, line);
 }
 
-fn missingKey(key &[]u8) {
+fn missingKey(key &[]u8, file &[]u8, line u32) Never {
   mut msg = String.from("collections: no entry for the key \"");
   msg.append(key);
   msg.append("\"");
-  die(msg);
-}
-
-fn die(msg String) {
-  mut m = msg;
-  m.appendByte('\n');
-  imm v = m.view();
-  libc.fflush(libc.stdout());
-  libc.fwrite(v, 1usize, v.len, libc.stderr());
-  libc.exit(1i32);
+  panic(msg.view(), file, line);
 }

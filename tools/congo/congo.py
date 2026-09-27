@@ -81,8 +81,8 @@ KEYWORDS = frozenset((
     " while each in by break continue not or and as is into inline where void nil"
     " true false undef").split())
 RESERVED = frozenset((
-    "async baseurl context local new selfmethod using wait yield throw catch panic"
-    " assert spawn").split())
+    "async baseurl context local new selfmethod using wait yield throw catch spawn"
+    ).split())
 PERMISSIONS = frozenset("uni mut imm ro mut1 opaq".split())
 
 
@@ -1478,7 +1478,19 @@ def run_test(session: Session, file: Path, bless: bool) -> tuple[bool, str]:
         diff = difflib.unified_diff(expected, actual, fromfile=shown(expected_path),
                                     tofile="actual", lineterm="", n=2)
         problems.append("output differs:\n" + indent("\n".join(diff), "  "))
-    if problems and stderr.strip():
+    # tests/<name>.err, written by hand, holds what the program must write to
+    # stderr, where it writes there on purpose: a panic's line. Without one,
+    # stderr is not compared
+    err_path = file.with_suffix(".err")
+    err_checked = err_path.is_file()
+    if err_checked:
+        expected_err = normalized_lines(err_path.read_text(encoding="utf-8"))
+        actual_err = normalized_lines(stderr)
+        if actual_err != expected_err:
+            diff = difflib.unified_diff(expected_err, actual_err, fromfile=shown(err_path),
+                                        tofile="actual", lineterm="", n=2)
+            problems.append("stderr differs:\n" + indent("\n".join(diff), "  "))
+    if problems and stderr.strip() and not err_checked:
         problems.append("stderr:\n" + indent(stderr, "  "))
     return not problems, "\n".join(problems)
 

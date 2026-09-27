@@ -247,10 +247,19 @@ void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
 // Syntactic sugar: Turn last statement implicit returns into explicit returns
 void fnImplicitReturn(INode *rettype, BlockNode *blk) {
     INode *laststmt;
-    if (blk->stmts->used == 0)
-        nodesAdd(&blk->stmts, (INode*)newReturnNodeExp((INode*)newNilLitNode()));
+    // An empty body returns where the body is, which is where a diagnostic
+    // about what it returns belongs
+    if (blk->stmts->used == 0) {
+        INode *nil = (INode*)newNilLitNode();
+        inodeLexCopy(nil, (INode*)blk);
+        nodesAdd(&blk->stmts, (INode*)newReturnNodeExp(nil));
+    }
     laststmt = nodesLast(blk->stmts);
-    if (rettype->tag == VoidTag) {
+    // A function returning 'Never' hands its last expression to a 'return' as
+    // one returning a value does, and returnTypeCheck holds it to a call that
+    // does not return either
+    int never = itypeIsNever(rettype);
+    if (rettype->tag == VoidTag && !never) {
         if (laststmt->tag != ReturnTag)
             nodesAdd(&blk->stmts, (INode*)newReturnNodeExp((INode*)newNilLitNode()));
     }
@@ -260,8 +269,13 @@ void fnImplicitReturn(INode *rettype, BlockNode *blk) {
             BreakRetNode *retnode = newReturnNodeExp(laststmt);
             nodesLast(blk->stmts) = (INode*)retnode;
         }
-        else if (laststmt->tag != ReturnTag)
-            errorMsgNode(laststmt, ErrorNoRet, "A return value is expected but this statement cannot give one.");
+        else if (laststmt->tag != ReturnTag) {
+            if (never)
+                errorMsgNode(laststmt, ErrorNeverReturns,
+                    "This function returns Never, so it must end in a call that does not return, such as 'panic(...)'. This statement is its last, and the function would return after it.");
+            else
+                errorMsgNode(laststmt, ErrorNoRet, "A return value is expected but this statement cannot give one.");
+        }
     }
 }
 

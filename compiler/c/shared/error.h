@@ -364,6 +364,9 @@ enum ErrorCode {
     // The thread check: the built-in marker 'Sendable' (ir/meta/generic.c, ir/itype.c, ir/types/reference.c)
     ErrorNotSendable = 1194,    // An instance whose 'T is Sendable' is unmet: the argument holds a borrow, a raw pointer, a non-race-safe owner, an owner of a region not declaring ThreadSafe, or a traced reference
 
+    // The 'Never' return type (ir/stmt/fndcl.c, ir/stmt/return.c)
+    ErrorNeverReturns = 1195,   // A function returning 'Never' that can return: it does not end in a call that does not return, or it says 'return'
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
