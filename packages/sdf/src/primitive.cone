@@ -1,0 +1,98 @@
+// ======== Primitives: the distance from a point to a shape at the origin ========
+//
+// Each is a plain function of the point and the shape's sizes, negative
+// inside. "Exact" means the true Euclidean distance, inside and out; a
+// "bound" never exceeds it, so a sphere tracer stays safe, but is smaller
+// away from the surface. The formulas are Inigo Quilez's catalogue
+// (iquilezles.org/articles/distfunctions), written here from the
+// mathematics. Round shapes about an axis have it along y.
+
+// A sphere of 'radius'. Exact
+pub fn sphere(p Vec3, radius f32) f32 { len3(p) - radius; }
+
+// A box reaching 'extent' either side of the origin on each axis. Exact
+pub fn box(p Vec3, extent Vec3) f32 {
+  imm qx = absf(p.x) - extent.x;
+  imm qy = absf(p.y) - extent.y;
+  imm qz = absf(p.z) - extent.z;
+  imm outside = len3(Vec3[maxf(qx, 0.), maxf(qy, 0.), maxf(qz, 0.)]);
+  outside + minf(maxf(qx, maxf(qy, qz)), 0.);
+}
+
+// A box of 'extent' whose edges and corners are rounded by 'radius' (its
+// outside still reaches 'extent'). Exact
+pub fn roundBox(p Vec3, extent Vec3, radius f32) f32 {
+  box(p, Vec3[extent.x - radius, extent.y - radius, extent.z - radius]) - radius;
+}
+
+// A capsule: the points within 'radius' of the segment from a to b. Exact
+pub fn capsule(p Vec3, a Vec3, b Vec3, radius f32) f32 {
+  imm pa = p - a;
+  imm ba = b - a;
+  imm bb = dot3(ba, ba);
+  imm h = if bb > 0. { clampf(dot3(pa, ba) / bb, 0., 1.); } else { 0.; };
+  len3(Vec3[pa.x - ba.x * h, pa.y - ba.y * h, pa.z - ba.z * h]) - radius;
+}
+
+// A torus about the y axis: a ring of radius 'major' in the plane y = 0,
+// thickened by 'minor'. Exact
+pub fn torus(p Vec3, major f32, minor f32) f32 {
+  len2(len2(p.x, p.z) - major, p.y) - minor;
+}
+
+// A cylinder about the y axis, 'radius' round, from y = -halfHeight to
+// halfHeight, capped flat. Exact
+pub fn cylinder(p Vec3, halfHeight f32, radius f32) f32 {
+  imm dx = len2(p.x, p.z) - radius;
+  imm dy = absf(p.y) - halfHeight;
+  minf(maxf(dx, dy), 0.) + len2(maxf(dx, 0.), maxf(dy, 0.));
+}
+
+// A cone about the y axis, cut flat at both ends: radius 'bottom' at
+// y = -halfHeight, 'top' at y = halfHeight (either may be 0). Exact
+pub fn cone(p Vec3, halfHeight f32, bottom f32, top f32) f32 {
+  // In the half-plane through the axis and p: (distance from the axis, height)
+  imm qx = len2(p.x, p.z);
+  imm qy = p.y;
+  // To the nearer cap's disc
+  imm capR = if qy < 0. { bottom; } else { top; };
+  imm ax = qx - minf(qx, capR);
+  imm ay = absf(qy) - halfHeight;
+  // To the slanted side, from (top, halfHeight) along (top - bottom, 2 halfHeight)
+  imm kx = top - bottom;
+  imm ky = 2. * halfHeight;
+  imm kk = kx * kx + ky * ky;
+  imm t = if kk > 0. { clampf(((top - qx) * kx + (halfHeight - qy) * ky) / kk, 0., 1.); } else { 0.; };
+  imm sx = qx - top + kx * t;
+  imm sy = qy - halfHeight + ky * t;
+  imm inside = sx < 0. and ay < 0.;
+  imm d = sqrtf(minf(ax * ax + ay * ay, sx * sx + sy * sy));
+  if inside { -d; } else { d; };
+}
+
+// A cone rounded at both ends: the hull of a sphere of radius 'bottom' at
+// the origin and one of radius 'top' at (0, height, 0). Exact
+pub fn roundCone(p Vec3, bottom f32, top f32, height f32) f32 {
+  imm b = (bottom - top) / height;
+  imm a = sqrtf(maxf(1. - b * b, 0.));
+  imm qx = len2(p.x, p.z);
+  imm qy = p.y;
+  imm k = qx * (0. - b) + qy * a;
+  if k < 0. { return len2(qx, qy) - bottom; }
+  if k > a * height { return len2(qx, qy - height) - top; }
+  qx * a + qy * b - bottom;
+}
+
+// The half-space below the plane through the points p with n.p + offset = 0,
+// 'n' unit length (the solid side is where n.p + offset < 0). Exact
+pub fn plane(p Vec3, n Vec3, offset f32) f32 { dot3(p, n) + offset; }
+
+// An ellipsoid of semi-axes 'radii'. Quilez's approximation: right on the
+// surface and near it, but NOT a bound: the tests measured its gradient at
+// up to 1.2 away from it (for semi-axes 1, 0.5, 0.75), so a sphere tracer
+// should shorten its steps by that
+pub fn ellipsoid(p Vec3, radii Vec3) f32 {
+  imm k0 = len3(Vec3[p.x / radii.x, p.y / radii.y, p.z / radii.z]);
+  imm k1 = len3(Vec3[p.x / (radii.x * radii.x), p.y / (radii.y * radii.y), p.z / (radii.z * radii.z)]);
+  if k1 > 0. { k0 * (k0 - 1.) / k1; } else { 0. - minf(radii.x, minf(radii.y, radii.z)); };
+}

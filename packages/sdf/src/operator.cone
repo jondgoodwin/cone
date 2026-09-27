@@ -1,0 +1,58 @@
+// ======== Operators: shapes combined, by their distances ========
+//
+// Each takes the distances of two shapes (or one) at the same point, and
+// returns the combined shape's. Hard union, subtraction and intersection
+// keep a bound a bound (and an exact union is exact outside both shapes).
+//
+// The smooth forms are Quilez's quadratic polynomial smooth minimum
+// (iquilezles.org/articles/smin), in its normalized form: 'k' is how far
+// the blend reaches, the most the union ever swells beyond the harder one
+// (at a point equally near both, the union is min(a, b) - k). Its gradient
+// is a convex combination of the two shapes' gradients, so it is
+// 1-Lipschitz whenever they are: a bound stays a bound. k <= 0 is the hard
+// operator.
+
+// Both shapes
+pub fn union(a f32, b f32) f32 { minf(a, b); }
+
+// Shape a with shape b taken out of it
+pub fn subtract(a f32, b f32) f32 { maxf(a, 0. - b); }
+
+// Where both shapes are
+pub fn intersect(a f32, b f32) f32 { maxf(a, b); }
+
+// Both shapes, joined by a fillet reaching 'k'
+pub fn smoothUnion(a f32, b f32, k f32) f32 {
+  if k <= 0. { return minf(a, b); }
+  imm h = maxf(k * 4. - absf(a - b), 0.) / (k * 4.);
+  minf(a, b) - h * h * k;
+}
+
+// The smooth union, and how much of each shape's material to use there:
+// 'blend' is the second shape's weight, from 0 to 1, 0.5 where the two are
+// equally near (Quilez's blend factor)
+pub fn smoothUnionBlend(a f32, b f32, k f32) Blend {
+  if k <= 0. { return if a < b { Blend[a, 0.]; } else { Blend[b, 1.]; }; }
+  imm h = maxf(k * 4. - absf(a - b), 0.) / (k * 4.);
+  imm m = h * h * 0.5;
+  imm s = h * h * k;
+  if a < b { Blend[a - s, m]; } else { Blend[b - s, 1. - m]; };
+}
+
+// Shape a with shape b taken out of it, the edge rounded by 'k'
+pub fn smoothSubtract(a f32, b f32, k f32) f32 { 0. - smoothUnion(0. - a, b, k); }
+
+// Where both shapes are, the edge rounded by 'k'
+pub fn smoothIntersect(a f32, b f32, k f32) f32 { 0. - smoothUnion(0. - a, 0. - b, k); }
+
+// A shell of 'thickness' either side of the shape's surface (onion
+// skinning; apply again for rings within rings). Keeps exactness outside
+// the shell
+pub fn onion(d f32, thickness f32) f32 { absf(d) - thickness; }
+
+// The shape grown by 'radius', which rounds its edges (a box grows round
+// corners). Exact where the shape is exact outside it
+pub fn round(d f32, radius f32) f32 { d - radius; }
+
+// Where exactly one of the shapes is
+pub fn exclusive(a f32, b f32) f32 { maxf(minf(a, b), 0. - maxf(a, b)); }

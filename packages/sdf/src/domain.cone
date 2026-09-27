@@ -1,0 +1,89 @@
+// ======== Domain operators: the point moved before a shape is asked ========
+//
+// A shape is placed by moving the point the other way: to draw a sphere at
+// c, ask the sphere at the origin for p - c. Translation, rotation and
+// mirroring move points rigidly, so an exact distance stays exact. Scaling
+// by s shrinks the point by s and the distance must be grown by s again
+// ('scaleDistance'), or the field is no longer a distance (it is
+// Lipschitz-s).
+
+// The point for a shape moved by 'offset'
+pub fn translate(p Vec3, offset Vec3) Vec3 { p - offset; }
+
+// The point for a shape turned by the unit quaternion 'q': p turned by q's
+// inverse (the conjugate), as v + w t + u x t, t = 2 (u x v), u the
+// conjugate's vector part
+pub fn rotate(p Vec3, q Quat) Vec3 {
+  imm ux = 0. - q.x;
+  imm uy = 0. - q.y;
+  imm uz = 0. - q.z;
+  imm tx = (uy * p.z - uz * p.y) * 2.;
+  imm ty = (uz * p.x - ux * p.z) * 2.;
+  imm tz = (ux * p.y - uy * p.x) * 2.;
+  Vec3[p.x + q.w * tx + (uy * tz - uz * ty), p.y + q.w * ty + (uz * tx - ux * tz),
+    p.z + q.w * tz + (ux * ty - uy * tx)];
+}
+
+// The point for a shape grown by 'scale' about the origin; the distance the
+// shape gives there must be passed through 'scaleDistance'
+pub fn scalePoint(p Vec3, scale f32) Vec3 { p * (1. / scale); }
+
+// A distance found at a scaled point, back in the unscaled space
+pub fn scaleDistance(d f32, scale f32) f32 { d * scale; }
+
+// A shape's placement: moved to 'position', turned by 'rotation' (unit),
+// grown by 'scale' (uniform: a non-uniform scale is not a distance). Ask
+// the shape for 'toLocal(p)' and pass what it says through 'distance'.
+pub struct Placement {
+  pub position Vec3;
+  pub rotation Quat;
+  pub scale f32;
+
+  pub fn at(position Vec3) Placement { Placement[position, Quat.identity(), 1.]; }
+
+  // The point in the shape's own space
+  pub fn toLocal(self, p Vec3) Vec3 { scalePoint(rotate(p - position, rotation), scale); }
+
+  // A distance from the shape's own space, in world units
+  pub fn distance(self, d f32) f32 { d * scale; }
+}
+
+// The point for a shape made symmetric across x = 0 (the half at x >= 0
+// seen in a mirror); likewise across y = 0 and z = 0
+pub fn mirrorX(p Vec3) Vec3 { Vec3[absf(p.x), p.y, p.z]; }
+pub fn mirrorY(p Vec3) Vec3 { Vec3[p.x, absf(p.y), p.z]; }
+pub fn mirrorZ(p Vec3) Vec3 { Vec3[p.x, p.y, absf(p.z)]; }
+
+// The point for a shape made symmetric across the plane n.p + offset = 0,
+// 'n' unit length: the side n points to is kept and seen in the mirror
+// (hg_sdf's pReflect)
+pub fn mirror(p Vec3, n Vec3, offset f32) Vec3 {
+  imm t = dot3(p, n) + offset;
+  if t < 0. { p - n * (t * 2.); } else { p; };
+}
+
+// The point for a shape repeated forever every 'period' along each axis,
+// in the cell nearest the origin. Exact only for a shape that stays within
+// its own cell and is symmetric in it (Quilez's "domain repetition": a
+// shape that is not needs its neighbours asked too)
+pub fn repeat(p Vec3, period Vec3) Vec3 {
+  Vec3[p.x - period.x * floorf(p.x / period.x + 0.5), p.y - period.y * floorf(p.y / period.y + 0.5),
+    p.z - period.z * floorf(p.z / period.z + 0.5)];
+}
+
+// The same, only the cells from -limit to limit along each axis (limit in
+// whole cells, 0 for none that way): 2 limit + 1 copies each way
+pub fn repeatLimited(p Vec3, period f32, limit Vec3) Vec3 {
+  imm cx = clampf(floorf(p.x / period + 0.5), 0. - limit.x, limit.x);
+  imm cy = clampf(floorf(p.y / period + 0.5), 0. - limit.y, limit.y);
+  imm cz = clampf(floorf(p.z / period + 0.5), 0. - limit.z, limit.z);
+  Vec3[p.x - period * cx, p.y - period * cy, p.z - period * cz];
+}
+
+// The point for a shape stretched by 'extent' along each axis: its middle
+// is cut and the two halves moved apart, each by 'extent' (Quilez's
+// elongation). Exact outside the shape
+pub fn elongate(p Vec3, extent Vec3) Vec3 {
+  Vec3[p.x - clampf(p.x, 0. - extent.x, extent.x), p.y - clampf(p.y, 0. - extent.y, extent.y),
+    p.z - clampf(p.z, 0. - extent.z, extent.z)];
+}

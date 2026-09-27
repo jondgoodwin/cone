@@ -1,0 +1,41 @@
+// ======== Shape: anything with a distance, and its gradient ========
+//
+// A shape here is any value with a 'distance' method (the Shape trait,
+// complied with structurally): a Horn, or an 'FnShape' wrapping a plain
+// function. The functions that must ask a shape several times (the
+// gradient, the normal, repetition along a curve) take one generically.
+
+pub trait Shape {
+  fn distance(self &, p Vec3) f32;
+}
+
+// A plain function of a point as a Shape
+pub struct FnShape is Shape {
+  pub f &fn(p Vec3) f32;
+
+  pub fn distance(self &, p Vec3) f32 { f(p); }
+}
+
+// The field's gradient at p by central differences, h either side on each
+// axis (six evaluations). A distance's gradient has length 1 wherever it is
+// exact and smooth, at most 1 where it is a bound
+pub fn gradient[S Shape](shape &S, p Vec3, h f32) Vec3 {
+  imm dx = shape.distance(Vec3[p.x + h, p.y, p.z]) - shape.distance(Vec3[p.x - h, p.y, p.z]);
+  imm dy = shape.distance(Vec3[p.x, p.y + h, p.z]) - shape.distance(Vec3[p.x, p.y - h, p.z]);
+  imm dz = shape.distance(Vec3[p.x, p.y, p.z + h]) - shape.distance(Vec3[p.x, p.y, p.z - h]);
+  imm inv = 0.5 / h;
+  Vec3[dx * inv, dy * inv, dz * inv];
+}
+
+// The surface normal at p: the gradient's direction, from four evaluations
+// at the corners of a tetrahedron h across (Quilez,
+// iquilezles.org/articles/normalsSDF); (1, 0, 0) where the field is flat
+pub fn normal[S Shape](shape &S, p Vec3, h f32) Vec3 {
+  imm a = shape.distance(Vec3[p.x + h, p.y - h, p.z - h]);
+  imm b = shape.distance(Vec3[p.x - h, p.y - h, p.z + h]);
+  imm c = shape.distance(Vec3[p.x - h, p.y + h, p.z - h]);
+  imm d = shape.distance(Vec3[p.x + h, p.y + h, p.z + h]);
+  imm g = Vec3[a - b - c + d, 0. - a - b + c + d, 0. - a + b - c + d];
+  imm len = len3(g);
+  if len > 0. { g * (1. / len); } else { Vec3[1., 0., 0.]; };
+}

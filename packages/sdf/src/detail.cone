@@ -1,0 +1,71 @@
+// ======== Detail from noise: displacement, and fBm made of spheres ========
+//
+// Two ways to roughen a shape with the noise package:
+//
+// - 'displace' adds fBm to the distance. The result is NOT a distance: its
+//   gradient can reach 1 + amplitude * frequency * (the fBm's slope), so a
+//   sphere tracer must shorten its steps by about that much, and a mesher
+//   sees the surface where the sum is 0, not where the noise was intended.
+// - 'fbmDetail' is Quilez's "FBM detail in SDFs"
+//   (iquilezles.org/articles/fbmsdf): each octave is a lattice of spheres of
+//   hashed radii, clipped by a smooth intersection to a thin band just
+//   outside the shape and smooth-unioned onto it, then the lattice is turned
+//   and halved for the next. Every step is a distance operator, so the
+//   result stays a bound (the lattice of spheres asks only the eight corners
+//   of the point's cell, which is exact while no radius reaches half a
+//   cell; it does not). It shadows, occludes and meshes as the shape does.
+//
+// Both are pure functions of the seed and the point; the hashes are the
+// noise package's PCG, never a float hash.
+
+// 'd' displaced by 'octaves' of gradient fBm (lacunarity 2, gain 1/2) at
+// p times 'frequency', times 'amplitude'. Not a distance: see above
+pub fn displace(d f32, p Vec3, seed u32, octaves i32, frequency f32, amplitude f32) f32 {
+  d + noise.fbm3(p * frequency, seed, octaves, 2., 0.5).value * amplitude;
+}
+
+// The distance to a lattice of spheres, one at each whole-number point,
+// each of radius 0.5 h^2, h in [0, 1) hashed from its point and 'seed'
+pub fn latticeSpheres(p Vec3, seed u32) f32 {
+  imm fx = floorf(p.x);
+  imm fy = floorf(p.y);
+  imm fz = floorf(p.z);
+  imm ix = i32[fx];
+  imm iy = i32[fy];
+  imm iz = i32[fz];
+  imm tx = p.x - fx;
+  imm ty = p.y - fy;
+  imm tz = p.z - fz;
+  mut d f32 = 3.4028235e38;
+  mut c = 0;
+  while c < 8 {
+    imm cx = c & 1;
+    imm cy = (c >> 1) & 1;
+    imm cz = (c >> 2) & 1;
+    imm h = noise.toUnit(noise.hash3(ix + cx, iy + cy, iz + cz, seed).x);
+    imm radius = h * h * 0.5;
+    d = minf(d, len3(Vec3[tx - f32[cx], ty - f32[cy], tz - f32[cz]]) - radius);
+    c = c + 1;
+  }
+  d;
+}
+
+// 'd', the distance to a shape at p, with 'octaves' of sphere fBm added to
+// its surface: the first octave's cells 'size' across, each next one half
+// the size and turned (Quilez's rotation, twice a rotation matrix)
+pub fn fbmDetail(d f32, p Vec3, seed u32, octaves i32, size f32) f32 {
+  mut q = p * (1. / size);
+  mut s = size;
+  mut out = d;
+  mut i = 0;
+  while i < octaves {
+    imm n = latticeSpheres(q, noise.hash1(i, seed)) * s;
+    // Clipped to a band just outside the shape, then joined on
+    imm clipped = smoothIntersect(n, out - s * 0.1, s * 0.075);
+    out = smoothUnion(clipped, out, s * 0.075);
+    q = Vec3[0. - q.y * 1.6 - q.z * 1.2, q.x * 1.6 + q.y * 0.72 - q.z * 0.96, q.x * 1.2 - q.y * 0.96 + q.z * 1.28];
+    s = s * 0.5;
+    i = i + 1;
+  }
+  out;
+}

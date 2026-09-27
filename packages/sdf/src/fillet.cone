@@ -1,0 +1,91 @@
+// ======== Fillets: hg_sdf's shaped seams where two shapes meet ========
+//
+// From Mercury's hg_sdf (mercury.sexy/hg_sdf, version 2021-07-28), used
+// under the MIT licence it is offered under (it is dual-licensed MIT or
+// CC BY-NC). Instead of a crease or a smooth fillet, the seam where two
+// shapes meet is filled with a quarter-round, a chamfer, a row of round
+// columns, a staircase, or cut with a groove; 'pipe' leaves only a tube along
+// the seam.
+//
+// DISTANCE. Each is a function of the two distances a and b. Its gradient
+// with respect to (a, b) has length at most 1, so where the two shapes'
+// gradients are perpendicular (surfaces meeting at a right angle) the result
+// is 1-Lipschitz, a bound. Where the surfaces meet at another angle the
+// gradients add less orthogonally, and the bound is up to sqrt(2) (two
+// parallel gradients): a sphere tracer should then shorten its steps, by
+// up to 1 / sqrt(2). The tests sample it. 'unionColumns' departs from
+// hg_sdf to stay continuous (see it).
+
+const SQRT_HALF f32 = 0.70710678118654752;
+const SQRT_TWO f32 = 1.41421356237309505;
+
+// The union with a quarter-circle fillet of radius r
+pub fn unionRound(a f32, b f32, r f32) f32 {
+  imm ux = maxf(r - a, 0.);
+  imm uy = maxf(r - b, 0.);
+  maxf(r, minf(a, b)) - len2(ux, uy);
+}
+
+// The intersection with its edge rounded by a quarter-circle of radius r
+pub fn intersectRound(a f32, b f32, r f32) f32 {
+  imm ux = maxf(r + a, 0.);
+  imm uy = maxf(r + b, 0.);
+  minf(0. - r, maxf(a, b)) + len2(ux, uy);
+}
+
+// Shape a with shape b taken out, the edge rounded by a quarter-circle
+pub fn subtractRound(a f32, b f32, r f32) f32 { intersectRound(a, 0. - b, r); }
+
+// The union with a 45-degree chamfer, the diagonal of a square of side r
+pub fn unionChamfer(a f32, b f32, r f32) f32 { minf(minf(a, b), (a - r + b) * SQRT_HALF); }
+
+// The union with n - 1 round columns filling the seam, within r of both
+// shapes, along the 45-degree diagonal: ribs along every edge.
+//
+// hg_sdf evaluates the columns only where a < r and b < r, and the plain
+// union elsewhere, which cuts the field (not the surface) where a column
+// crosses that band's edge: sampled, the distance jumped, its Lipschitz
+// ratio reaching 6.7. Here the columns are clipped to the band instead,
+// max(columns, a - r, b - r): the same surface, and a continuous field.
+pub fn unionColumns(a f32, b f32, r f32, n f32) f32 {
+  imm columnRadius = r * SQRT_TWO / ((n - 1.) * 2. + SQRT_TWO);
+  // (a, b) turned 45 degrees (hg_sdf's pR45)
+  mut px = (a + b) * SQRT_HALF;
+  mut py = (b - a) * SQRT_HALF;
+  px = px - SQRT_TWO / 2. * r;
+  px = px + columnRadius * SQRT_TWO;
+  if modf(n, 2.) == 1. { py = py + columnRadius; }
+  // Repeated along the diagonal (hg_sdf's pMod1)
+  imm size = columnRadius * 2.;
+  py = modf(py + columnRadius, size) - columnRadius;
+  imm columns = minf(len2(px, py) - columnRadius, px);
+  minf(minf(a, b), maxf(columns, maxf(a - r, b - r)));
+}
+
+// The union with a staircase of n - 1 steps filling the seam, within r of
+// both shapes (paniq's form, as hg_sdf has it)
+pub fn unionStairs(a f32, b f32, r f32, n f32) f32 {
+  imm s = r / n;
+  imm u = b - r;
+  minf(minf(a, b), 0.5 * (u + a + absf(modf(u - a + s, 2. * s) - s)));
+}
+
+// The intersection with a staircase edge
+pub fn intersectStairs(a f32, b f32, r f32, n f32) f32 { 0. - unionStairs(0. - a, 0. - b, r, n); }
+
+// Shape a with shape b taken out, the edge a staircase
+pub fn subtractStairs(a f32, b f32, r f32, n f32) f32 { 0. - unionStairs(0. - a, b, r, n); }
+
+// A tube of radius r along the seam where the two surfaces meet; neither
+// shape remains
+pub fn pipe(a f32, b f32, r f32) f32 { len2(a, b) - r; }
+
+// Shape a with a square groove cut where shape b's surface crosses it:
+// 'depth' deep and 'width' either side of b's surface
+pub fn groove(a f32, b f32, depth f32, width f32) f32 { maxf(a, minf(a + depth, width - absf(b))); }
+
+// Shape a with a tongue, the groove's opposite, raised along b's surface
+pub fn tongue(a f32, b f32, height f32, width f32) f32 { minf(a, maxf(a - height, absf(b) - width)); }
+
+// Shape a with a V-shaped cut of depth r where b's surface crosses it
+pub fn engrave(a f32, b f32, r f32) f32 { maxf(a, (a + r - absf(b)) * SQRT_HALF); }
