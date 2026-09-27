@@ -11,6 +11,11 @@
 typedef struct GenVarDclNode {
     IExpNodeHdr;             // 'vtype': type of this name's value
     Name *namesym;
+    // What is written after the parameter's name, '[T Integer + Copy]': each
+    // '+'-joined name, or NULL. Its meaning is what it resolves to: a trait
+    // makes it a constraint (genericConstraintsNameRes); a type or a kind, a
+    // value or kind parameter, which are not built.
+    Nodes *annot;
 } GenVarDclNode;
 
 // Create a new generic variable declaraction node

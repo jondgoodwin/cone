@@ -95,11 +95,13 @@ Visual Studio projects stay at the root.
   bare `import collector;` brings in, since a package named `gc` could not
   also declare a struct `gc`; `thread` is OS threads (start a function on
   a value moved in, join, detach, a handle dropped unjoined joins, sleep,
-  parking) and the futex the blocking layers are built on, Windows only,
-  linking the Windows SDK's `Synchronization.lib`; `sync` is what threads
-  share safely, today `Atomic[T]`, an integer changed only by atomic
-  operations over core's `mem` intrinsics, which declares the built-in
-  marker `AtomicValue`; `render` draws 3D
+  parking), Windows only, over `sync`; `sync` is what threads share
+  safely: `Atomic[T]`, an integer changed only by atomic operations over
+  core's `mem` intrinsics, which declares the built-in marker
+  `AtomicValue`; the futex the blocking layers are built on (on an
+  `Atomic[u32]`, linking the Windows SDK's `Synchronization.lib`); and,
+  on the futex alone, Rust's way, the unchecked locks `Mutex`, `RwLock`,
+  `Condvar` and `Once`, with explicit lock and unlock; `render` draws 3D
   shapes through OpenGL (`Shape`, made from a `mesh.Mesh`, and its sphere,
   plane and cube, `Shader`, `Image` from BMP, `Texture`, `Camera`, `Light`),
   ported from Pegasus3D over `gl`, `geomath`, `mesh` and `collections`,
@@ -316,6 +318,10 @@ link it against `conestd` and the C runtime from a VS environment:
 ```powershell
 link prog.obj build\x64-release\conestd.lib /OUT:prog.exe /SUBSYSTEM:CONSOLE msvcrt.lib legacy_stdio_definitions.lib
 ```
+
+A program that imports `sync` (or `thread`, which imports it) also needs
+`synchronization.lib`, the Windows SDK library its futex calls into; the test
+runner's link line has it.
 
 Or let Congo do it: `congo run prog.cone` (`tools/congo/`) compiles a lone file
 and every package it imports, each on its own, and links and runs the program.

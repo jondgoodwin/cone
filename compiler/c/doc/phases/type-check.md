@@ -379,7 +379,11 @@ A generic is not analyzed; it is a template. `structTypeCheck` and
 are analyzed — each a fresh clone that `genericInstantiate` checks as it builds,
 memoized on `genericinfo->memonodes`. Macros expand by the same clone-and-check
 path. So instantiation is demand-driven, and rules 1 to 6 apply to instances
-rather than templates.
+rather than templates. A generic's constraints are evaluated against the type
+arguments before an instance is cloned: an unmet requirement refuses the
+instance where it is asked for, and an unmet condition on a generic type's
+method leaves the method out of that instance, unchecked
+([generic](../nodes/generic.md), "Constraints").
 
 **The marks cannot police this.** They find a cycle by returning to the same
 node, and a generic instantiating itself at ever-larger arguments never does —

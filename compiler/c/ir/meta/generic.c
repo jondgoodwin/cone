@@ -8,6 +8,7 @@
 #include "../ir.h"
 
 #include <string.h>
+#include <stdio.h>
 #include <assert.h>
 
 // Create a new generic info block
@@ -15,6 +16,7 @@ GenericInfo *newGenericInfo() {
     GenericInfo *geninfo = (GenericInfo*)memAllocBlk(sizeof(GenericInfo));
     geninfo->parms = NULL;
     geninfo->memonodes = NULL;
+    geninfo->where = NULL;
     return geninfo;
 }
 
@@ -227,6 +229,390 @@ static int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNod
     return retcode;
 }
 
+// ---------------------------------------------------------------------------
+// Constraints. See generic.h.
+
+// The trait a constraint's name resolved to, or NULL if it names no trait a
+// constraint can take. An instance of a generic trait is not one yet.
+static StructNode *genericNamedTrait(INode *node) {
+    if (!isNameUseNode(node))
+        return NULL;
+    INode *dcl = nameUseGetDcl((NameUseNode*)node);
+    if (dcl == NULL || dcl->tag != StructTag || !(dcl->flags & TraitType)
+        || ((StructNode*)dcl)->genericinfo)
+        return NULL;
+    return (StructNode*)dcl;
+}
+
+// Append the clause 'subject is trait' to a where list
+static void genericAddClause(Nodes **wherep, INode *subject, INode *trait) {
+    if (*wherep == NULL)
+        *wherep = newNodes(4);
+    nodesAdd(wherep, subject);
+    nodesAdd(wherep, trait);
+}
+
+void genericConstraintsNameRes(NameResState *pstate, Nodes *parms, Nodes **wherep) {
+    INode **nodesp;
+    uint32_t cnt;
+    Nodes *clauses = NULL;
+
+    // What follows a parameter's name, in the order written: '[T A + B]' says
+    // what 'where T is A and T is B' says. The slot is one for everything a
+    // parameter may be annotated with, and what the name resolves to is what
+    // it means: a trait constrains a type parameter; a type would make a value
+    // parameter and a kind another kind of parameter, and neither is built.
+    if (parms) {
+        for (nodesFor(parms, cnt, nodesp)) {
+            GenVarDclNode *parm = (GenVarDclNode*)*nodesp;
+            if (parm->annot == NULL)
+                continue;
+            INode **annotp;
+            uint32_t annotcnt;
+            for (nodesFor(parm->annot, annotcnt, annotp)) {
+                if (genericNamedTrait(*annotp) == NULL) {
+                    // A name that bound nothing was reported where it was resolved
+                    if (!isNameUseNode(*annotp) || ((NameUseNode*)*annotp)->dclnode != NULL)
+                        errorMsgNode(*annotp, ErrorGenParmConstr,
+                            "What follows the type parameter %s constrains it, so it names a trait, and this is not one. A value parameter, typed, and a parameter of another kind are not built yet.",
+                            &parm->namesym->namestr);
+                    continue;
+                }
+                genericAddClause(&clauses, newNameUseFromDclNode((INode*)parm, *annotp), *annotp);
+            }
+        }
+    }
+
+    // Each 'where' clause: its subject is a type parameter in scope -- the
+    // generic's own, or the type's whose member this is -- and it 'is' a trait
+    if (*wherep) {
+        for (nodesFor(*wherep, cnt, nodesp)) {
+            INode **subjectp = nodesp++;
+            --cnt;
+            inodeNameRes(pstate, subjectp);
+            inodeNameRes(pstate, nodesp);
+            NameUseNode *subject = (NameUseNode*)*subjectp;
+            int ok = 1;
+            if (subject->dclnode == NULL)
+                ok = 0;   // reported as unknown where it was resolved
+            else if (subject->dclnode->tag != GenVarDclTag) {
+                errorMsgNode(*subjectp, ErrorWhereSubject,
+                    "A 'where' clause constrains a type parameter of this generic, or of the generic type it is a member of, and %s is not one.",
+                    &subject->namesym->namestr);
+                ok = 0;
+            }
+            if (genericNamedTrait(*nodesp) == NULL) {
+                if (!isNameUseNode(*nodesp) || ((NameUseNode*)*nodesp)->dclnode != NULL)
+                    errorMsgNode(*nodesp, ErrorWhereTrait,
+                        "What a type parameter 'is' in a constraint is a trait, and this is not one. (A generic trait's instance is not built as a constraint yet.)");
+                ok = 0;
+            }
+            if (ok)
+                genericAddClause(&clauses, *subjectp, *nodesp);
+        }
+    }
+    *wherep = clauses;
+}
+
+// Does this trait require nothing of a value -- no method, no field? Such a
+// trait is a marker: every type would fit it structurally, so fitting it says
+// nothing, and only a declaration or the compiler's grant makes a type one.
+// A static function says nothing about a value either, so it does not count.
+static int genericTraitIsMarker(StructNode *trait) {
+    if (corelibIsBuiltinTrait((INode*)trait))
+        return 1;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag == FnDclTag && ((*nodesp)->flags & FlagMethFld))
+            return 0;
+    }
+    for (nodelistFor(&trait->fields, cnt, nodesp)) {
+        if (!((*nodesp)->flags & IsMixin))
+            return 0;
+    }
+    return 1;
+}
+
+// Does this type's 'is' list name the trait, or name a trait that names it?
+static int genericDeclares(StructNode *type, StructNode *trait, int depth) {
+    if (type->traits == NULL || depth > 8)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(type->traits, cnt, nodesp)) {
+        if (*nodesp == (INode*)trait
+            || ((*nodesp)->tag == StructTag && genericDeclares((StructNode*)*nodesp, trait, depth + 1)))
+            return 1;
+    }
+    return 0;
+}
+
+// Fitting a trait structurally compares signatures, which have their types
+// only once checked. Each requirement of the trait, and each candidate of the
+// type's for it, is analyzed first, as a call reaching them would.
+static void genericDemandMatch(StructNode *trait, StructNode *type) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld))
+            continue;
+        if (!((*nodesp)->flags & (TypeChecked | TypeChecking))) {
+            TypeCheckState tstate;
+            tstate.typenode = (INode*)trait;
+            tstate.fn = NULL;
+            tstate.scope = 0;
+            inodeTypeCheckAny(&tstate, nodesp);
+        }
+        INode *binding = namespaceFind(&type->namespace, ((FnDclNode*)*nodesp)->namesym);
+        if (binding)
+            fnCallDemandCandidates(binding);
+    }
+}
+
+int genericTypeIs(INode *type, StructNode *trait) {
+    INode *dcl = itypeGetTypeDcl(type);
+    // The compiler's grants: every type is exactly one of Move and Copy, and
+    // the integer types of 8 to 64 bits, signed and unsigned, are Integer
+    if (trait == moveTrait)
+        return itypeIsMove(dcl);
+    if (trait == copyTrait)
+        return !itypeIsMove(dcl);
+    if (trait == integerTrait
+        && (dcl->tag == IntNbrTag || (dcl->tag == UintNbrTag && dcl != (INode*)boolType)))
+        return 1;
+    if (dcl->tag != StructTag)
+        return 0;
+    StructNode *strnode = (StructNode*)dcl;
+    if (strnode == trait || genericDeclares(strnode, trait, 0))
+        return 1;
+    if (genericTraitIsMarker(trait))
+        return 0;
+    // Fitting it: 'structMatches' is the structural subtype test a trait's
+    // uses are made by, under the constraint monomorphization asks for
+    genericDemandMatch(trait, strnode);
+    return structMatches(trait, dcl, Monomorph) != NoMatch;
+}
+
+// The first clause of 'where' its arguments do not meet, as the index of its
+// pair, or -1 if every clause is met. A clause is evaluated where its subject
+// is one of 'parms', with that parameter's argument; any other clause's
+// subject was a parameter bound already, and the clause was evaluated then.
+static int genericUnmetClause(Nodes *where, Nodes *parms, Nodes *args, INode **argp, GenVarDclNode **parmp) {
+    if (where == NULL || parms == NULL || args == NULL)
+        return -1;
+    for (uint32_t i = 0; i + 1 < where->used; i += 2) {
+        INode *subject = nodesGet(where, i);
+        if (!isNameUseNode(subject))
+            continue;
+        INode *dcl = ((NameUseNode*)subject)->dclnode;
+        for (uint32_t j = 0; j < parms->used && j < args->used; ++j) {
+            if (nodesGet(parms, j) != dcl)
+                continue;
+            INode *arg = nodesGet(args, j);
+            StructNode *trait = genericNamedTrait(nodesGet(where, i + 1));
+            if (arg && trait && !genericTypeIs(arg, trait)) {
+                *argp = arg;
+                *parmp = (GenVarDclNode*)dcl;
+                return (int)i;
+            }
+            break;
+        }
+    }
+    return -1;
+}
+
+// Append a type's name, with an instance's type arguments, to 'buf'
+static void genericTypeNameCat(char *buf, size_t size, INode *type, int depth) {
+    INode *dcl = itypeGetTypeDcl(type);
+    size_t used = strlen(buf);
+    snprintf(buf + used, size - used, "%s", itypeName(dcl));
+    Nodes *args = dcl->tag == StructTag && depth < 4 ? itypeInstanceTypeArgs(dcl) : NULL;
+    if (args == NULL)
+        return;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(args, cnt, nodesp)) {
+        used = strlen(buf);
+        snprintf(buf + used, size - used, cnt == args->used ? "[" : ", ");
+        genericTypeNameCat(buf, size, *nodesp, depth + 1);
+    }
+    used = strlen(buf);
+    snprintf(buf + used, size - used, "]");
+}
+
+// A constraint on a generic function or type is a requirement: an instance
+// whose arguments do not meet it is refused where it is asked for, naming the
+// clause, and nothing of it is made -- so nothing inside the generic is checked
+// against arguments it was never meant for. A variant answers to its enum's.
+static int genericRequirementsMet(FnCallNode *srcgencall, INode *generic, GenericInfo *genericinfo, Name *name) {
+    Nodes *where = NULL;
+    Nodes *parms = genericinfo->parms;
+    if (generic->tag == FnDclTag)
+        where = ((FnDclNode*)generic)->where;
+    else if (generic->tag == StructTag) {
+        StructNode *owner = (StructNode*)generic;
+        if (owner->flags & HasTagField)
+            owner = structGetBaseTrait(owner);
+        if (owner && owner->genericinfo) {
+            where = owner->genericinfo->where;
+            parms = owner->genericinfo->parms;
+            name = owner->namesym;
+        }
+    }
+    INode *arg;
+    GenVarDclNode *parm;
+    int clause = genericUnmetClause(where, parms, srcgencall->args, &arg, &parm);
+    if (clause < 0)
+        return 1;
+    StructNode *trait = genericNamedTrait(nodesGet(where, clause + 1));
+    char argname[256] = "";
+    genericTypeNameCat(argname, sizeof(argname), arg, 0);
+    int usermarker = genericTraitIsMarker(trait) && !corelibIsBuiltinTrait((INode*)trait);
+    errorMsgNode((INode*)srcgencall, ErrorWhereUnmet,
+        "%s requires %s is %s, and %s is not %s.%s",
+        &name->namestr, &parm->namesym->namestr, &trait->namesym->namestr, argname, &trait->namesym->namestr,
+        usermarker ? " A trait requiring nothing of a value is met only by a type declaring it with 'is'." : "");
+    return 0;
+}
+
+// The members of generic type 'generic' that do not exist at 'args': each
+// whose 'where' clause, over the type's parameters, they do not meet
+static Nodes *genericAbsentMembers(StructNode *generic, Nodes *args) {
+    Nodes *absent = NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&generic->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag || ((FnDclNode*)*nodesp)->where == NULL)
+            continue;
+        INode *arg;
+        GenVarDclNode *parm;
+        if (genericUnmetClause(((FnDclNode*)*nodesp)->where, generic->genericinfo->parms, args, &arg, &parm) < 0)
+            continue;
+        if (absent == NULL)
+            absent = newNodes(4);
+        nodesAdd(&absent, *nodesp);
+    }
+    return absent;
+}
+
+// The generic type 'inst' is an instance of: the one whose memo holds it. A
+// generic enum's variants are instantiated with the enum by one call, so the
+// call's generic may be the enum or any of its variants.
+static StructNode *genericTemplateOf(StructNode *inst) {
+    INode *instnode = inst->instnode;
+    if (itypeInstanceTypeArgs((INode*)inst) == NULL || !isNameUseNode(((FnCallNode*)instnode)->objfn))
+        return NULL;
+    INode *generic = nameUseGetDcl((NameUseNode*)((FnCallNode*)instnode)->objfn);
+    if (generic == NULL || generic->tag != StructTag || ((StructNode*)generic)->genericinfo == NULL)
+        return NULL;
+    StructNode *base = (generic->flags & HasTagField) ? structGetBaseTrait((StructNode*)generic) : (StructNode*)generic;
+    if (base == NULL)
+        return NULL;
+    uint32_t nvariants = base->derived ? base->derived->used : 0;
+    for (uint32_t i = 0; i <= nvariants; ++i) {
+        StructNode *cand = i == 0 ? base : (StructNode*)nodesGet(base->derived, i - 1);
+        if (cand->genericinfo == NULL || cand->genericinfo->memonodes == NULL)
+            continue;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(cand->genericinfo->memonodes, cnt, nodesp)) {
+            ++nodesp; --cnt;  // pairs: the call, then its instance
+            if (*nodesp == (INode*)inst)
+                return cand;
+        }
+    }
+    return NULL;
+}
+
+// Report a member absent because its clause is unmet
+static void genericAbsentMsg(INode *errnode, char *what, Name *name, char *typename,
+        FnDclNode *fn, int clause, INode *arg, GenVarDclNode *parm) {
+    StructNode *trait = genericNamedTrait(nodesGet(fn->where, clause + 1));
+    char argname[256] = "";
+    genericTypeNameCat(argname, sizeof(argname), arg, 0);
+    errorMsgNode(errnode, ErrorWhereAbsent,
+        "No %s %s for %s: it exists only where %s is %s, and %s is not %s.",
+        what, &name->namestr, typename, &parm->namesym->namestr, &trait->namesym->namestr,
+        argname, &trait->namesym->namestr);
+}
+
+int genericReportAbsent(INode *errnode, INode *typedcl, Name *name) {
+    if (typedcl == NULL || typedcl->tag != StructTag)
+        return 0;
+    StructNode *generic = genericTemplateOf((StructNode*)typedcl);
+    if (generic == NULL)
+        return 0;
+    INode *binding = namespaceFind(&generic->namespace, name);
+    if (binding == NULL)
+        return 0;
+    INode **candp;
+    uint32_t cnt;
+    if (binding->tag == FnDclTag) {
+        candp = &binding;
+        cnt = 1;
+    }
+    else if (binding->tag == FnOverloadDclTag) {
+        candp = &nodesGet(((FnOverloadDclNode*)binding)->overloads, 0);
+        cnt = ((FnOverloadDclNode*)binding)->overloads->used;
+    }
+    else
+        return 0;
+    Nodes *args = itypeInstanceTypeArgs(typedcl);
+    while (cnt--) {
+        FnDclNode *fn = (FnDclNode*)*candp++;
+        INode *arg;
+        GenVarDclNode *parm;
+        int clause = genericUnmetClause(fn->where, generic->genericinfo->parms, args, &arg, &parm);
+        if (clause < 0)
+            continue;
+        char typename[256] = "";
+        genericTypeNameCat(typename, sizeof(typename), typedcl, 0);
+        genericAbsentMsg(errnode, (fn->flags & FlagMethFld) ? "method" : "function", name, typename,
+            fn, clause, arg, parm);
+        return 1;
+    }
+    return 0;
+}
+
+int genericReportTemplateMember(INode *errnode, FnDclNode *fn) {
+    if (fn->where == NULL)
+        return 0;
+    INode *owner = inodeGetOwner((INode*)fn);
+    if (owner == NULL || owner->tag != StructTag || ((StructNode*)owner)->genericinfo == NULL)
+        return 0;
+    // Only a use copied into an instance of the same generic -- a use written
+    // anywhere else names the generic's member as such, and is told to name an
+    // instance instead
+    INode *instnode = errnode->instnode;
+    if (instnode == NULL || instnode->tag != FnCallTag || !isNameUseNode(((FnCallNode*)instnode)->objfn))
+        return 0;
+    INode *generic = nameUseGetDcl((NameUseNode*)((FnCallNode*)instnode)->objfn);
+    if (generic == NULL || generic->tag != StructTag)
+        return 0;
+    if (generic != owner) {
+        StructNode *base = structGetBaseTrait((StructNode*)generic);
+        if (base == NULL || base != structGetBaseTrait((StructNode*)owner))
+            return 0;
+    }
+    // Which instance's body names it is not known here, only that its arguments
+    // failed a clause, so the whole condition is named; the instantiation trace
+    // says which instance it was
+    char clauses[256] = "";
+    for (uint32_t i = 0; i + 1 < fn->where->used; i += 2) {
+        INode *subject = nodesGet(fn->where, i);
+        StructNode *trait = genericNamedTrait(nodesGet(fn->where, i + 1));
+        size_t used = strlen(clauses);
+        snprintf(clauses + used, sizeof(clauses) - used, "%s%s is %s", i ? " and " : "",
+            isNameUseNode(subject) ? &((NameUseNode*)subject)->namesym->namestr : "?",
+            trait ? &trait->namesym->namestr : "?");
+    }
+    errorMsgNode(errnode, ErrorWhereAbsent,
+        "%s exists only where %s, and the instance of %s naming it here does not meet that.",
+        &fn->namesym->namestr, clauses, &((StructNode*)owner)->namesym->namestr);
+    return 1;
+}
+
 // How deeply expansion is currently nested. See generic.h.
 static uint32_t instantiateDepth = 0;
 
@@ -261,11 +647,14 @@ static INode *genericReserve(INode *generic) {
 
 // Clone the generic's instance for parms and remember it, without type checking it.
 // 'shell' is the instance reserved for a generic type (genericReserve), else NULL.
+// 'absent' lists a generic type's members whose 'where' clause the arguments do
+// not meet (genericAbsentMembers), which its instance is cloned without.
 static INode *genericClone(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nodetoclone,
-        GenericInfo *genericinfo, INode *shell) {
+        GenericInfo *genericinfo, INode *shell, Nodes *absent) {
     CloneState cstate;
     clonePushState(&cstate, (INode*)srcgencall, NULL, pstate->scope, genericinfo->parms, srcgencall->args);
     cstate.structshell = shell;
+    cstate.absent = absent;
     INode *instance;
     // A generic function's instance is not generic itself, so its type
     // parameters are the ones substituted. A clone keeps a generic method
@@ -298,11 +687,16 @@ INode *genericInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, INode 
     if (nodetoclone->tag == ModuleTag)
         return (INode*)modInstantiate(pstate, srcgencall, (ModuleNode*)nodetoclone);
 
+    // Which members the instance lacks is settled before anything is cloned or
+    // mapped: evaluating a clause may analyze the argument's own methods.
+    Nodes *absent = nodetoclone->tag == StructTag
+        ? genericAbsentMembers((StructNode*)nodetoclone, srcgencall->args) : NULL;
+
     // A generic function's own name is not mapped: written bare in its body, it
     // is a call whose type arguments are inferred, as it is anywhere else
     uint32_t dclpos = cloneDclPush();
     INode *shell = nodetoclone->tag == StructTag ? genericReserve(nodetoclone) : NULL;
-    INode *instance = genericClone(pstate, srcgencall, nodetoclone, genericinfo, shell);
+    INode *instance = genericClone(pstate, srcgencall, nodetoclone, genericinfo, shell, absent);
     cloneDclPop(dclpos);
 
     // Type check the instanced declaration. A generic method's instance is
@@ -382,7 +776,12 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
         }
     }
 
-    // No match found, instantiate the dcl generic.
+    // No match found. A constraint the arguments do not meet refuses the instance
+    // here, before anything of it is made.
+    if (!genericRequirementsMet(srcgencall, nodetoclone, genericinfo, name))
+        return newErrorNode((INode*)srcgencall);
+
+    // Instantiate the dcl generic.
     // Instantiating analyzes the new instance, which may instantiate this same
     // generic again at larger type arguments, so this is where depth is counted.
     if (!genericInstantiateEnter((INode*)srcgencall))
@@ -409,12 +808,18 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
         StructNode *basetrait = structGetBaseTrait((StructNode*)nodetoclone);
         Nodes *basememo = basetrait->genericinfo->memonodes;
         int firstinstance = basememo == NULL || basememo->used == 0;
+        // What each of them lacks at these arguments, settled before any is
+        // cloned or mapped
+        Nodes *traitabsent = genericAbsentMembers(basetrait, srcgencall->args);
+        Nodes *absents = newNodes(basetrait->derived->used);
+        for (nodesFor(basetrait->derived, cnt, nodesp))
+            nodesAdd(&absents, (INode*)genericAbsentMembers((StructNode*)*nodesp, srcgencall->args));
         uint32_t dclpos = cloneDclPush();
         INode *traitshell = genericReserve((INode*)basetrait);
         Nodes *shells = newNodes(basetrait->derived->used);
         for (nodesFor(basetrait->derived, cnt, nodesp))
             nodesAdd(&shells, genericReserve(*nodesp));
-        INode *instrait = genericClone(pstate, srcgencall, (INode*)basetrait, basetrait->genericinfo, traitshell);
+        INode *instrait = genericClone(pstate, srcgencall, (INode*)basetrait, basetrait->genericinfo, traitshell, traitabsent);
         if (basetrait == (StructNode*)nodetoclone)
             retinstance = instrait;
 
@@ -425,8 +830,10 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
         structCloneMapMembers(basetrait, (StructNode*)instrait);
         Nodes *variants = newNodes(basetrait->derived->used);
         INode **shellp = &nodesGet(shells, 0);
+        INode **absentp = &nodesGet(absents, 0);
         for (nodesFor(basetrait->derived, cnt, nodesp))
-            nodesAdd(&variants, genericClone(pstate, srcgencall, *nodesp, ((StructNode*)*nodesp)->genericinfo, *shellp++));
+            nodesAdd(&variants, genericClone(pstate, srcgencall, *nodesp, ((StructNode*)*nodesp)->genericinfo,
+                *shellp++, (Nodes*)*absentp++));
         cloneDclPop(dclpos);
         // The instance's 'derived' lists its own variants, and lists all of them
         // before the enum or any variant is type checked: a variant's method body

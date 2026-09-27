@@ -69,6 +69,10 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype);
 // arguments, rewrite the call to that concrete function, then finalize its arguments.
 void fnCallLowerOverloadFn(FnCallNode *node);
 
+// Analyze each candidate a member name binds that is not analyzed yet, under its
+// own type's walk state, so that its signature can be compared
+void fnCallDemandCandidates(INode *binding);
+
 // Do data flow analysis for fncall node (only real function calls)
 void fnCallFlow(FlowState *fstate, FnCallNode **nodep);
 

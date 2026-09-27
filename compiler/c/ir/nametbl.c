@@ -215,6 +215,7 @@ void nametblInit() {
     noLoanMutTraitName = nametblFind("NoLoanMut", 9);
     noLoanReadTraitName = nametblFind("NoLoanRead", 10);
     atomicValueTraitName = nametblFind("AtomicValue", 11);
+    integerTraitName = nametblFind("Integer", 7);
 }
 
 

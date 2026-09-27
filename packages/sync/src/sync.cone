@@ -1,7 +1,18 @@
-// The sync package: what threads share safely. Today it holds one thing, the
-// atomic value Atomic[T], a number that several threads may read and change
-// at once without a lock, each change indivisible. Locks, condition variables
-// and channels are to join it.
+// The sync package: what threads share safely. It holds the atomic value
+// Atomic[T], a number that several threads may read and change at once
+// without a lock, each change indivisible; the futex, the one way a thread
+// sleeps until another wakes it; and the locks built on the futex: Mutex,
+// RwLock, Condvar and Once. Channels are to join them. Windows only for now:
+// the futex's three functions are the package's only calls to the OS.
+//
+//   Atomic[T]      a number changed only indivisibly           (below)
+//   futexWait, futexWake, futexWakeAll                           (THE FUTEX)
+//   Mutex          one thread at a time                          (THE LOCKS)
+//   RwLock         many readers, or one writer
+//   Condvar        sleep until another thread says something changed
+//   Once           a function run exactly once, however many threads ask
+//
+// ATOMIC VALUES.
 //
 //   mod hits;
 //   import sync use *;
@@ -74,6 +85,138 @@
 // How it is laid out. An Atomic[T] is its T, nothing more: the same size and
 // alignment. Each operation reaches the value through a raw pointer to it and
 // calls core's mem intrinsic for the operation, one atomic instruction.
+//
+// THE FUTEX. The foundation every lock here is built on, and what the thread
+// package's parking is built on: a 32-bit atomic word that threads sleep on
+// while it holds a value, and are woken from.
+//
+// - 'sync.futexWait(&word, expected, timeoutNs)': if the word still holds
+//   'expected' -- checked by the OS atomically with going to sleep, so a
+//   change and wake made between the caller's own check and this call is not
+//   missed -- sleep until woken or until the timeout. It returns false only
+//   when the timeout passed; true when it was woken, when the word already
+//   differed, or spuriously, which the OS permits. So a caller loops:
+//
+//     while word.load() == 0u32 {
+//       sync.futexWait(&word, 0u32);
+//     }
+//
+// - 'timeoutNs' is nanoseconds, 'sync.forever' by default. It is rounded up
+//   to whole milliseconds, and its resolution is the system's timer tick, up
+//   to 15.6 ms: a 30 ms timeout may take 45. A timeout of 2^32 - 1 ms (49.7
+//   days) or more is that long, not forever. 0 checks the word and returns
+//   false at once if it still holds 'expected'.
+// - 'sync.futexWake(&word)' wakes one thread waiting on the word, and
+//   'futexWakeAll(&word)' every one. A wake is not remembered: with no thread
+//   waiting it does nothing, so store the new value first, then wake.
+// - The word is an Atomic[u32], taken by any reference, as its own operations
+//   are. Nothing checks that it stays alive while any thread may wait on it or
+//   wake it: the caller keeps that true. It is 32 bits because Linux's futex
+//   is. Waiting and waking reach only the threads of this process.
+//
+// THE LOCKS: Mutex, RwLock, Condvar and Once. Each is built on the futex
+// alone, not on the OS's own locks, as Rust's standard library has built its
+// own since 2022: each is one Atomic[u32] (RwLock, two), holds no OS handle,
+// needs no finalizer, and may be moved while nobody holds or waits on it.
+// Their state machines are Rust's, cited at each below. Each is made unlocked
+// by 'make()', and every operation takes it by any reference, even 'imm', as
+// Atomic's do: a lock is shared by all the threads that use it.
+//
+//   imm lock Mutex;             // both set by the module's init:
+//   mut names List[u64];        //   Mutex.make(), List[u64].empty()
+//
+//   fn add(n u64) {             // called from any number of threads
+//     lock.lock();
+//     names.push(n);            // touched only while 'lock' is held
+//     lock.unlock();
+//   }
+//
+// THESE LOCKS ARE UNCHECKED. A lock here is a plain lock, with explicit
+// 'lock()' and 'unlock()', guarding nothing the compiler can see: WHAT IT
+// PROTECTS IS THE PROGRAM'S TO KEEP. Nothing stops a thread reaching the
+// data without taking the lock, or keeping a reference to it past the unlock,
+// or forgetting to unlock, or unlocking a lock another thread holds. The
+// compiler's lock permissions -- a lock in the permission slot, '+arc-mutex
+// T', where borrowing through it takes the lock and the borrow's end releases
+// it (the reference manual's lock-permission page) -- are to come, and will
+// sit on these types. Until then:
+//
+// - Every 'lock' is paired with one 'unlock' on the same thread, and the data
+//   is reached only between them.
+// - A lock is not reentrant: a thread that locks a Mutex it already holds
+//   sleeps forever.
+// - Unlocking a lock that is not locked is detected where it is cheap to --
+//   the unlock sees that nothing held it -- and ends the program with a
+//   message on stderr. Unlocking one another thread holds is not detected.
+// - A thread that ends while holding a lock leaves it locked forever: there is
+//   no poisoning, since Cone has no panics that unwind; a trap ends the whole
+//   process.
+// - Moving or dropping a lock while any thread holds it or waits on it is the
+//   program's error, and is not detected.
+//
+// Mutex: one thread at a time.
+//
+//   Mutex.make()        an unlocked Mutex
+//   m.lock()            take it, sleeping while another thread holds it
+//   m.unlock()          give it up, waking a thread waiting for it
+//   m.tryLock()         take it if nobody holds it: whether it was taken
+//
+// RwLock: any number of readers at once, or one writer alone. A reader and a
+// writer are only what the program calls them: a read lock is shared, and
+// the program keeps to reading while it holds one. A waiting writer is
+// preferred: while one waits, new readers wait too, so a stream of readers
+// cannot starve it. At most 2^30 - 2 readers may hold it at once; one more
+// ends the program.
+//
+//   RwLock.make()       an unlocked RwLock
+//   l.readLock()  l.readUnlock()  l.tryReadLock()
+//   l.writeLock()  l.writeUnlock()  l.tryWriteLock()
+//
+// Condvar: a thread sleeps, holding no lock, until another says that what it
+// waits for may have changed. It is always used with a Mutex that guards what
+// is waited for, and a waiter always loops, rechecking under the lock, since
+// a wait may return spuriously and another thread may get there first:
+//
+//     m.lock();
+//     while buffer.isEmpty() {
+//       ready.condWait(&m);   // unlocks m, sleeps, locks m again
+//     }
+//     ... take from the buffer ...
+//     m.unlock();
+//
+//   Condvar.make()               a Condvar
+//   c.condWait(&m)               unlock m, sleep until notified, lock m
+//                                again. m must be locked by this thread.
+//   c.condWaitTimeout(&m, ns)    the same, sleeping at most ns nanoseconds
+//                                (as futexWait rounds them): false only if
+//                                the timeout passed
+//   c.notifyOne()                wake one waiting thread
+//   c.notifyAll()                wake every waiting thread
+//
+// ('wait' is a reserved word, so the wait is 'condWait', as the futex's is
+// 'futexWait'.)
+//
+// A notification with nobody waiting is not remembered, which is why a waiter
+// checks what it waits for before it waits. Notifying with the Mutex held or
+// not are both correct.
+//
+// Once: a function run exactly once, however many threads ask at once. The
+// first caller runs it; every other caller sleeps until it has returned, and
+// then sees all it did. A closure cannot capture yet, so what is run is a
+// plain function, given nothing or one value:
+//
+//   Once.make()               a Once whose function has not run
+//   o.callOnce(&f)            run f() if no call on this Once has run one
+//   o.callOnceWith(arg, &f)   run f(arg) likewise. 'arg' is moved in, and
+//                             dropped unused when another call ran first.
+//   o.isCompleted()           whether a call has run its function to the end
+//
+// A function run by a Once that calls the same Once sleeps forever.
+//
+// Hand-rolled with Atomic[u32] and the futex, a lock takes its orderings from
+// core's mem operations directly (acquire on lock, release on unlock, as
+// Rust's), since each must be one instruction and Atomic's 'Ordered' forms
+// choose theirs as the program runs.
 
 mod sync;
 
@@ -243,4 +386,576 @@ fn die(msg &[]u8) {
   libc.fflush(libc.stdout());
   libc.fwrite(msg, 1usize, msg.len, libc.stderr());
   libc.abort();
+}
+
+// ---------------------------------------------------------------------------
+// Windows: WaitOnAddress and its two wakes, the api set
+// api-ms-win-core-synch-l1-2-0, linked through Synchronization.lib, which
+// this package's congo.toml names. They are the package's only calls to the
+// OS; a posix side (Linux's futex) is to come beside them.
+// ---------------------------------------------------------------------------
+
+extern {
+  fn @c(system) WaitOnAddress(address *u32, compare *u32, size usize, ms u32) i32;
+  fn @c(system) WakeByAddressSingle(address *u32);
+  fn @c(system) WakeByAddressAll(address *u32);
+  fn @c(system) GetLastError() u32;
+}
+
+const infinite = 0xFFFFFFFFu32;                // INFINITE
+const errorTimeout = 1460u32;                  // ERROR_TIMEOUT
+
+// ---------------------------------------------------------------------------
+// The futex
+// ---------------------------------------------------------------------------
+
+// A timeout that never passes
+pub const forever = 0xFFFFFFFFFFFFFFFFu64;
+
+// Nanoseconds as whole milliseconds, rounded up, and short of INFINITE
+fn msCeil(ns u64) u32 {
+  imm ms = ns / 1000000u64 + (if ns % 1000000u64 != 0u64 {1u64;} else {0u64;});
+  if ms >= u64[infinite] {infinite - 1u32;} else {u32[ms];};
+}
+
+// Sleep while the word holds expected, until woken or timeoutNs passes:
+// false only if the timeout passed
+pub fn futexWait(word &opaq Atomic[u32], expected u32, timeoutNs u64 = forever) Bool {
+  rawWait(word as *u32, expected, timeoutNs);
+}
+
+// Wake one thread waiting on the word
+pub fn futexWake(word &opaq Atomic[u32]) {
+  WakeByAddressSingle(word as *u32);
+}
+
+// Wake every thread waiting on the word
+pub fn futexWakeAll(word &opaq Atomic[u32]) {
+  WakeByAddressAll(word as *u32);
+}
+
+// The same three on the word's address, as the locks reach their own words
+fn rawWait(word *u32, expected u32, timeoutNs u64) Bool {
+  imm ms = if timeoutNs == forever {infinite;} else {msCeil(timeoutNs);};
+  mut compare = expected;
+  if WaitOnAddress(word, &mut compare as *u32, 4usize, ms) != 0i32 {
+    return true;
+  }
+  GetLastError() != errorTimeout;
+}
+
+fn rawWake(word *u32) {
+  WakeByAddressSingle(word);
+}
+
+fn rawWakeAll(word *u32) {
+  WakeByAddressAll(word);
+}
+
+// ---------------------------------------------------------------------------
+// The locks' shared pieces
+// ---------------------------------------------------------------------------
+
+// How many times a lock rereads its word before it sleeps, when it finds the
+// lock held: Rust's 100 ("chosen by fair dice roll"). A lock held only
+// briefly is often free again within that, and a sleep and a wake cost far
+// more than the reads. Rust's spin also tells the processor it is spinning
+// (x86's 'pause'); Cone has no way to say that yet, so these spins are plain
+// relaxed loads.
+const spinLimit = 100u32;
+
+// Put desired in *p if it holds expected, acquiring when it does: whether it
+// did, and the value seen
+fn casAcquire(p *u32, expected u32, desired u32) u32, Bool {
+  mem.atomicCompareSwap[u32](p, expected, desired, MemOrder.Acquire[], MemOrder.Relaxed[]);
+}
+
+fn casRelaxed(p *u32, expected u32, desired u32) u32, Bool {
+  mem.atomicCompareSwap[u32](p, expected, desired, MemOrder.Relaxed[], MemOrder.Relaxed[]);
+}
+
+fn loadRelaxed(p *u32) u32 {
+  mem.atomicLoad[u32](p, MemOrder.Relaxed[]);
+}
+
+// ---------------------------------------------------------------------------
+// Mutex: Rust's futex mutex (library/std/src/sys/sync/mutex/futex.rs).
+// ---------------------------------------------------------------------------
+
+// Its states. 'contended' means locked, and that some thread may be asleep
+// waiting for it, so the unlock must wake one.
+const mutexUnlocked = 0u32;
+const mutexLocked = 1u32;
+const mutexContended = 2u32;
+
+// One thread at a time: a plain, unchecked lock (see the package's header)
+pub struct Mutex is Move {
+  state Atomic[u32];
+
+  // An unlocked Mutex
+  pub fn make() Mutex {Mutex[Atomic[u32].of(mutexUnlocked)];}
+
+  // The state word, as core's mem operations reach it
+  fn word(self &opaq) *u32 {&(*(self as *Mutex)).state as *u32;}
+
+  // Take the lock if nobody holds it: whether it was taken
+  pub fn tryLock(self &opaq) Bool {
+    mut seen = 0u32;
+    mut taken = false;
+    seen, taken = casAcquire(self.word(), mutexUnlocked, mutexLocked);
+    taken;
+  }
+
+  // Take the lock, sleeping while another thread holds it
+  pub fn lock(self &opaq) {
+    if !self.tryLock() {
+      self.lockContended();
+    }
+  }
+
+  fn lockContended(self &opaq) {
+    imm p = self.word();
+    // Spin first, in case the lock is released quickly
+    mut state = self.spin();
+    mut taken = false;
+    // Unlocked now: take it without marking it contended
+    if state == mutexUnlocked {
+      state, taken = casAcquire(p, mutexUnlocked, mutexLocked);
+      if taken {
+        return;
+      }
+    }
+    while true {
+      // Mark it contended. Swapping from unlocked took it: this thread was
+      // not the only one wanting it, so it stays marked, and its unlock
+      // wakes the next. (No write when it is contended already.)
+      if state != mutexContended {
+        if mem.atomicSwap[u32](p, mutexContended, MemOrder.Acquire[]) == mutexUnlocked {
+          return;
+        }
+      }
+      // Sleep while it is still contended
+      rawWait(p, mutexContended, forever);
+      state = self.spin();
+    }
+  }
+
+  // Reread the word while another thread holds the lock uncontended, up to
+  // the spin limit: the state it stopped at
+  fn spin(self &opaq) u32 {
+    imm p = self.word();
+    mut n = spinLimit;
+    while true {
+      imm state = loadRelaxed(p);
+      if state != mutexLocked or n == 0u32 {
+        return state;
+      }
+      n = n - 1u32;
+    }
+    mutexLocked;
+  }
+
+  // Give up the lock, waking one waiting thread if any may be asleep. The one
+  // woken marks it contended again when it takes it, so every other sleeper
+  // is woken in its turn.
+  pub fn unlock(self &opaq) {
+    imm p = self.word();
+    imm was = mem.atomicSwap[u32](p, mutexUnlocked, MemOrder.Release[]);
+    if was == mutexContended {
+      rawWake(p);
+    } elif was == mutexUnlocked {
+      die("sync: Mutex.unlock of a Mutex that is not locked\n");
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// RwLock: Rust's futex read-write lock (library/std/src/sys/sync/rwlock/
+// futex.rs), without its 'downgrade', which this has not taken.
+// ---------------------------------------------------------------------------
+
+// The state word: a count of readers in its low 30 bits, where all ones is
+// write-locked; bit 30, readers may be asleep on the state word; bit 31,
+// writers may be asleep on the 'writerNotify' word.
+const rwReadLocked = 1u32;
+const rwMask = 0x3FFFFFFFu32;
+const rwWriteLocked = 0x3FFFFFFFu32;
+const rwMaxReaders = 0x3FFFFFFEu32;
+const rwReadersWaiting = 0x40000000u32;
+const rwWritersWaiting = 0x80000000u32;
+
+fn rwIsUnlocked(s u32) Bool {(s & rwMask) == 0u32;}
+fn rwIsWriteLocked(s u32) Bool {(s & rwMask) == rwWriteLocked;}
+fn rwHasReadersWaiting(s u32) Bool {(s & rwReadersWaiting) != 0u32;}
+fn rwHasWritersWaiting(s u32) Bool {(s & rwWritersWaiting) != 0u32;}
+
+// A reader may take it: not write-locked, room for another reader, and
+// nobody waiting (a waiting writer is preferred, and waiting readers mean
+// the unlocking thread is still deciding whom to wake)
+fn rwIsReadLockable(s u32) Bool {
+  (s & rwMask) < rwMaxReaders and !rwHasReadersWaiting(s) and !rwHasWritersWaiting(s);
+}
+
+// Many readers at once, or one writer alone: a plain, unchecked lock (see the
+// package's header). Two words: the state, which readers sleep on, and a
+// counter bumped for each wake of a writer, which writers sleep on.
+pub struct RwLock is Move {
+  state Atomic[u32];
+  writerNotify Atomic[u32];
+
+  // An unlocked RwLock
+  pub fn make() RwLock {RwLock[Atomic[u32].of(0u32), Atomic[u32].of(0u32)];}
+
+  fn word(self &opaq) *u32 {&(*(self as *RwLock)).state as *u32;}
+  fn notifyWord(self &opaq) *u32 {&(*(self as *RwLock)).writerNotify as *u32;}
+
+  // Take a read lock if a reader may now: whether it was taken
+  pub fn tryReadLock(self &opaq) Bool {
+    imm p = self.word();
+    mut s = loadRelaxed(p);
+    mut taken = false;
+    while rwIsReadLockable(s) {
+      s, taken = casAcquire(p, s, s + rwReadLocked);
+      if taken {
+        return true;
+      }
+    }
+    false;
+  }
+
+  // Take a read lock, sleeping while a writer holds it or waits for it
+  pub fn readLock(self &opaq) {
+    imm p = self.word();
+    imm s = loadRelaxed(p);
+    mut seen = 0u32;
+    mut taken = false;
+    if rwIsReadLockable(s) {
+      seen, taken = casAcquire(p, s, s + rwReadLocked);
+    }
+    if !taken {
+      self.readContended();
+    }
+  }
+
+  fn readContended(self &opaq) {
+    imm p = self.word();
+    mut s = self.spinRead();
+    mut done = false;
+    while true {
+      if rwIsReadLockable(s) {
+        s, done = casAcquire(p, s, s + rwReadLocked);
+        if done {
+          return;
+        }
+        continue;
+      }
+      if (s & rwMask) == rwMaxReaders {
+        die("sync: RwLock.readLock with too many readers holding it\n");
+      }
+      // Say that a reader sleeps before sleeping
+      if !rwHasReadersWaiting(s) {
+        s, done = casRelaxed(p, s, s | rwReadersWaiting);
+        if !done {
+          continue;
+        }
+      }
+      rawWait(p, s | rwReadersWaiting, forever);
+      s = self.spinRead();
+    }
+  }
+
+  // Give up a read lock; the last reader out wakes a waiting writer
+  pub fn readUnlock(self &opaq) {
+    imm was = mem.atomicSub[u32](self.word(), rwReadLocked, MemOrder.Release[]);
+    if rwIsUnlocked(was) or rwIsWriteLocked(was) {
+      die("sync: RwLock.readUnlock of a RwLock no reader holds\n");
+    }
+    imm s = was - rwReadLocked;
+    if rwIsUnlocked(s) and rwHasWritersWaiting(s) {
+      self.wakeWriterOrReaders(s);
+    }
+  }
+
+  // Take the write lock if nobody holds the lock: whether it was taken
+  pub fn tryWriteLock(self &opaq) Bool {
+    imm p = self.word();
+    mut s = loadRelaxed(p);
+    mut taken = false;
+    while rwIsUnlocked(s) {
+      s, taken = casAcquire(p, s, s + rwWriteLocked);
+      if taken {
+        return true;
+      }
+    }
+    false;
+  }
+
+  // Take the write lock, sleeping while any reader or writer holds it
+  pub fn writeLock(self &opaq) {
+    mut seen = 0u32;
+    mut taken = false;
+    seen, taken = casAcquire(self.word(), 0u32, rwWriteLocked);
+    if !taken {
+      self.writeContended();
+    }
+  }
+
+  fn writeContended(self &opaq) {
+    imm p = self.word();
+    mut s = self.spinWrite();
+    mut otherWritersWaiting = 0u32;
+    mut done = false;
+    while true {
+      if rwIsUnlocked(s) {
+        s, done = casAcquire(p, s, s | rwWriteLocked | otherWritersWaiting);
+        if done {
+          return;
+        }
+        continue;
+      }
+      // Say that a writer sleeps before sleeping
+      if !rwHasWritersWaiting(s) {
+        s, done = casRelaxed(p, s, s | rwWritersWaiting);
+        if !done {
+          continue;
+        }
+      }
+      // Other writers may be waiting too now, so keep the bit set when this
+      // one takes the lock
+      otherWritersWaiting = rwWritersWaiting;
+      // Read the wake counter before rechecking the state, so a wake between
+      // the two is not missed
+      imm seq = mem.atomicLoad[u32](self.notifyWord(), MemOrder.Acquire[]);
+      s = loadRelaxed(p);
+      if rwIsUnlocked(s) or !rwHasWritersWaiting(s) {
+        continue;
+      }
+      rawWait(self.notifyWord(), seq, forever);
+      s = self.spinWrite();
+    }
+  }
+
+  // Give up the write lock, waking a writer, or the readers, if any wait
+  pub fn writeUnlock(self &opaq) {
+    imm was = mem.atomicSub[u32](self.word(), rwWriteLocked, MemOrder.Release[]);
+    if !rwIsWriteLocked(was) {
+      die("sync: RwLock.writeUnlock of a RwLock no writer holds\n");
+    }
+    imm s = was - rwWriteLocked;
+    if rwHasWritersWaiting(s) or rwHasReadersWaiting(s) {
+      self.wakeWriterOrReaders(s);
+    }
+  }
+
+  // After an unlock left it unlocked with someone waiting: wake one writer if
+  // only writers wait; if readers wait too, wake one writer and then the
+  // readers as well (Windows' wake does not say whether it woke anyone, so
+  // this cannot tell that it reached a writer; a reader woken while the
+  // writer holds the lock sleeps again); if only readers wait, wake them all.
+  // If the lock is taken meanwhile, whoever took it wakes the rest at its
+  // unlock.
+  fn wakeWriterOrReaders(self &opaq, state u32) {
+    imm p = self.word();
+    mut s = state;
+    mut done = false;
+    if s == rwWritersWaiting {
+      s, done = casRelaxed(p, s, 0u32);
+      if done {
+        self.wakeWriter();
+        return;
+      }
+    }
+    if s == rwReadersWaiting | rwWritersWaiting {
+      s, done = casRelaxed(p, s, rwReadersWaiting);
+      if !done {
+        return;
+      }
+      self.wakeWriter();
+      s = rwReadersWaiting;
+    }
+    if s == rwReadersWaiting {
+      s, done = casRelaxed(p, s, 0u32);
+      if done {
+        rawWakeAll(p);
+      }
+    }
+  }
+
+  fn wakeWriter(self &opaq) {
+    imm n = self.notifyWord();
+    mem.atomicAdd[u32](n, 1u32, MemOrder.Release[]);
+    rawWake(n);
+  }
+
+  // Spin while write-locked with nobody waiting
+  fn spinRead(self &opaq) u32 {
+    imm p = self.word();
+    mut n = spinLimit;
+    while true {
+      imm s = loadRelaxed(p);
+      if !rwIsWriteLocked(s) or rwHasReadersWaiting(s) or rwHasWritersWaiting(s) or n == 0u32 {
+        return s;
+      }
+      n = n - 1u32;
+    }
+    0u32;
+  }
+
+  // Spin while locked with no writer waiting: a waiting writer stops the
+  // spin, to keep writers somewhat in order
+  fn spinWrite(self &opaq) u32 {
+    imm p = self.word();
+    mut n = spinLimit;
+    while true {
+      imm s = loadRelaxed(p);
+      if rwIsUnlocked(s) or rwHasWritersWaiting(s) or n == 0u32 {
+        return s;
+      }
+      n = n - 1u32;
+    }
+    0u32;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Condvar: Rust's futex condition variable (library/std/src/sys/sync/
+// condvar/futex.rs). The word counts notifications; a waiter reads it before
+// unlocking the Mutex and sleeps only while it is unchanged, so a
+// notification between the unlock and the sleep is not lost. Every ordering
+// is relaxed: the Mutex's lock and unlock order what it guards. (A waiter
+// that sleeps through exactly 2^32 notifications, and sees the count back
+// where it was, sleeps on; Rust accepts the same.)
+// ---------------------------------------------------------------------------
+
+pub struct Condvar is Move {
+  seq Atomic[u32];
+
+  pub fn make() Condvar {Condvar[Atomic[u32].of(0u32)];}
+
+  fn word(self &opaq) *u32 {&(*(self as *Condvar)).seq as *u32;}
+
+  // Wake one thread waiting
+  pub fn notifyOne(self &opaq) {
+    imm p = self.word();
+    mem.atomicAdd[u32](p, 1u32, MemOrder.Relaxed[]);
+    rawWake(p);
+  }
+
+  // Wake every thread waiting
+  pub fn notifyAll(self &opaq) {
+    imm p = self.word();
+    mem.atomicAdd[u32](p, 1u32, MemOrder.Relaxed[]);
+    rawWakeAll(p);
+  }
+
+  // Unlock the Mutex, which this thread holds, sleep until notified, and lock
+  // it again. It may return spuriously, so the caller loops.
+  pub fn condWait(self &opaq, mutex &opaq Mutex) {
+    self.condWaitTimeout(mutex, forever);
+  }
+
+  // The same, sleeping at most timeoutNs: false only if the timeout passed.
+  // The Mutex is locked again either way.
+  pub fn condWaitTimeout(self &opaq, mutex &opaq Mutex, timeoutNs u64) Bool {
+    imm p = self.word();
+    imm seen = loadRelaxed(p);
+    mutex.unlock();
+    imm woken = rawWait(p, seen, timeoutNs);
+    mutex.lock();
+    woken;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Once: Rust's futex Once (library/std/src/sys/sync/once/futex.rs), without
+// its poisoning, since Cone has no panic that unwinds out of the function.
+// Rust makes 'complete' the zero state; here 'incomplete' is, so that a Once
+// is all zeros when made, as each of the locks is.
+// ---------------------------------------------------------------------------
+
+const onceIncomplete = 0u32;
+const onceRunning = 1u32;
+const onceComplete = 2u32;
+const onceStateMask = 3u32;
+// Set beside 'running' when some thread may be asleep waiting for it
+const onceQueued = 4u32;
+
+pub struct Once is Move {
+  state Atomic[u32];
+
+  // A Once whose function has not run
+  pub fn make() Once {Once[Atomic[u32].of(onceIncomplete)];}
+
+  fn word(self &opaq) *u32 {&(*(self as *Once)).state as *u32;}
+
+  // Whether a call has run its function to the end; if so, all it did is
+  // seen by this thread
+  pub fn isCompleted(self &opaq) Bool {
+    mem.atomicLoad[u32](self.word(), MemOrder.Acquire[]) == onceComplete;
+  }
+
+  // Run f() if no call on this Once has run its function. Every call returns
+  // only once the function has run, by whichever thread ran it.
+  pub fn callOnce(self &opaq, f &fn()) {
+    if self.begin() {
+      f();
+      self.finish();
+    }
+  }
+
+  // Run f(arg) likewise; arg is moved in, and dropped when another call ran
+  // the function
+  pub fn callOnceWith[A](self &opaq, arg A, f &fn(a A)) {
+    if self.begin() {
+      f(arg);
+      self.finish();
+    }
+  }
+
+  // Whether this caller is to run the function: true once it has marked the
+  // Once running; false once the function has completed, waiting while
+  // another thread runs it
+  fn begin(self &opaq) Bool {
+    imm p = self.word();
+    mut s = mem.atomicLoad[u32](p, MemOrder.Acquire[]);
+    mut done = false;
+    while true {
+      imm state = s & onceStateMask;
+      if state == onceComplete {
+        return false;
+      }
+      if state == onceIncomplete {
+        s, done = mem.atomicCompareSwap[u32](p, s, onceRunning | (s & onceQueued),
+          MemOrder.Acquire[], MemOrder.Acquire[]);
+        if done {
+          return true;
+        }
+        continue;
+      }
+      // Running on another thread: say that this one sleeps, then sleep
+      if (s & onceQueued) == 0u32 {
+        imm queued = s | onceQueued;
+        // (Rust's success ordering here is Relaxed, with an Acquire failure;
+        // core's compareSwap refuses a failure ordering stronger than its
+        // success, so both are Acquire)
+        s, done = mem.atomicCompareSwap[u32](p, s, queued, MemOrder.Acquire[], MemOrder.Acquire[]);
+        if !done {
+          continue;
+        }
+        s = queued;
+      }
+      rawWait(p, s, forever);
+      s = mem.atomicLoad[u32](p, MemOrder.Acquire[]);
+    }
+    false;
+  }
+
+  // The function has returned: complete, and wake whoever waits
+  fn finish(self &opaq) {
+    imm p = self.word();
+    imm was = mem.atomicSwap[u32](p, onceComplete, MemOrder.Release[]);
+    if (was & onceQueued) != 0u32 {
+      rawWakeAll(p);
+    }
+  }
 }

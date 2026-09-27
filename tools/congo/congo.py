@@ -78,8 +78,8 @@ OUTPUTS = ("executable", "library")
 KEYWORDS = frozenset((
     "include import extern pub static macro fn overload const typedef struct mod"
     " actor trait extends mixin use but enum return with if elif else case match"
-    " while each in by break continue not or and as is into inline void nil true"
-    " false undef").split())
+    " while each in by break continue not or and as is into inline where void nil"
+    " true false undef").split())
 RESERVED = frozenset((
     "async baseurl context local new selfmethod using wait yield throw catch panic"
     " assert spawn").split())

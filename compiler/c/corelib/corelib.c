@@ -84,6 +84,7 @@ StructNode *shapeChangingTrait;
 StructNode *noLoanMutTrait;
 StructNode *noLoanReadTrait;
 StructNode *atomicValueTrait;
+StructNode *integerTrait;
 
 // A trait the compiler declares, with no members, bound as a name every module
 // reaches unless it declares the name itself
@@ -98,7 +99,7 @@ int corelibIsBuiltinTrait(INode *node) {
     return node == (INode*)regionRefTrait || node == (INode*)moveTrait || node == (INode*)copyTrait
         || node == (INode*)tracedTrait || node == (INode*)shapeChangingTrait
         || node == (INode*)noLoanMutTrait || node == (INode*)noLoanReadTrait
-        || node == (INode*)atomicValueTrait;
+        || node == (INode*)atomicValueTrait || node == (INode*)integerTrait;
 }
 
 // Set up the standard library, whose names are always shared by all modules
@@ -173,4 +174,10 @@ void stdlibInit(int ptrsize) {
     // nor held in a 'const'. The sync package's 'Atomic[T]' declares it; the
     // compiler knows nothing else of that type.
     atomicValueTrait = newBuiltinTrait(atomicValueTraitName);
+    // 'Integer' [Jon 27 Sep]: the integer types, signed and unsigned, of 8 to
+    // 64 bits and pointer width. Granted by the compiler to i8 ... i64, u8 ...
+    // u64, isize and usize while those are built here in C (genericTypeIs),
+    // and asked only by a constraint, 'where T is Integer'; any other type
+    // is one only by declaring it.
+    integerTrait = newBuiltinTrait(integerTraitName);
 }

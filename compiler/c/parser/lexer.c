@@ -142,6 +142,7 @@ void keywordInit() {
     keyAdd("is", IsToken);
     keyAdd("into", IntoToken);
     keyAdd("inline", InlineToken);
+    keyAdd("where", WhereToken);
 
     keyAdd("void", VoidToken);
     keyAdd("nil", nilToken);

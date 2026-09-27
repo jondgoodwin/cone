@@ -16,17 +16,34 @@ GenVarDclNode *newGVarDclNode(Name *namesym) {
     newNode(var, GenVarDclNode, GenVarDclTag);
     var->vtype = NULL;
     var->namesym = namesym;
+    var->annot = NULL;
     return var;
 }
 
 // Serialize a generic variable node
 void gVarDclPrint(GenVarDclNode *name) {
     inodeFprint("%s", &name->namesym->namestr);
+    if (name->annot) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(name->annot, cnt, nodesp)) {
+            inodeFprint(cnt == name->annot->used ? " " : " + ");
+            inodePrintNode(*nodesp);
+        }
+    }
 }
 
-// Perform name resolution
+// Perform name resolution. What the annotation names is resolved here, with
+// every parameter before it hooked; what it means is decided by the
+// declaration's genericConstraintsNameRes, once all of them are.
 void gVarDclNameRes(NameResState *pstate, GenVarDclNode *var) {
     nametblHookNode(var->namesym, (INode*)var);
+    if (var->annot) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(var->annot, cnt, nodesp))
+            inodeNameRes(pstate, nodesp);
+    }
 }
 
 // Type check 

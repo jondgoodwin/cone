@@ -233,7 +233,7 @@ The keyword was settled as `is` the same evening [Jon 22 Sep]. The reasoning
 recorded with it is Penny's [Penny 22 Sep; his own words for it were not found
 in the session transcripts, checked 25 Sep]: the `is` that asks
 a value's variant at run time (`p is Mobile`) asserts a type's relationship at its
-declaration, and a future `where T is Comparable` asks it a third time — one
+declaration, and a generic's `where T is Comparable` asks it a third time — one
 predicate over two kinds of operand, and a net deletion, since `is` was already a
 keyword. `mixin` retired into it on 25 Sep [Jon 25 Sep]. He refused the claim that `extends` had nothing left to assert — *"I think it is
 important. And I think it's important for two reasons."* **is-a is nominal**: *"we

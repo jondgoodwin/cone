@@ -1,6 +1,6 @@
 // What the parser has to say about a type parameter list and a macro
-// declaration: the list has to close, it has to declare something, no
-// parameter may carry a constraint or a type, and the macro has to be named.
+// declaration: the list has to close, it has to declare something, a macro's
+// parameter may carry no annotation, and the macro has to be named.
 //
 // parseGenericParms is shared by 'fn', 'struct' and 'macro', so one unclosed
 // list is written on a macro and one on a function, to establish that the same
@@ -31,49 +31,23 @@ macro emptyMacroParms[] {    //~ ErrorNoGenParms:25 "at least one parameter"
   1i32;
 }
 
-// Two names side by side is how a constraint on a type parameter and a type on
-// a macro parameter are both spelled, and the reference manual shows the first
-// of them. Neither is implemented. Reading the two names as two parameters is
-// what the parser used to do, which turned a declaration written in the
-// documented form into an arity or an inference complaint about its calls, at
-// the call rather than at the declaration. It is refused here instead, at the
-// second name, once per parameter, and the declaration keeps parsing.
-//
-// The same list is shared by all three declaration forms, so the supertype
-// constraint is written on a function and on a struct.
-fn constrainedFn[T Comparable](a T, b T) T {   //~ ErrorGenParmConstr:20 "constraint or a type"
-  a;
-}
-
-struct ConstrainedType[T Comparable] {         //~ ErrorGenParmConstr:26 "constraint or a type"
-  x T;
-}
-
-// Several supertypes combined with '+' are one constraint, not several errors:
-// recovery runs to the ',' or ']' that should have ended the parameter, so
-// whatever the constraint was written as is skipped whole.
-fn multiConstrainedFn[T Comparable + Float](a T) T {   //~ ErrorGenParmConstr:25 "constraint or a type"
-  a;
-}
-
-// Two bare names are the same shape and the same refusal: this is the spelling
-// that compiled clean while reading as two parameters, which is how the misparse
-// was found.
-fn twoParmNames[T U](x T) T {  //~ ErrorGenParmConstr:19 "constraint or a type"
-  x;
-}
-
-// A macro parameter given a type reaches the same rule through the third caller.
+// What follows a parameter's name is its annotation. On a generic function or
+// type it is read, and what it names decides what it means (a trait constrains
+// the parameter: generic_constraint, generic_nameres_where). A macro's
+// parameter takes none yet -- '[a i32]' would be a typed macro parameter -- and
+// reading the two names as two parameters is what the parser once did, which
+// turned the declaration into an arity complaint about its uses. It is refused
+// here instead, at the second name, and the declaration keeps parsing.
 macro typedMacroParm[a i32] {  //~ ErrorGenParmConstr:24 "constraint or a type"
   a;
 }
 
 // Once per parameter: recovery resumes at the comma, so the second parameter's
-// constraint is reported too rather than swallowed with the first. The list is
+// annotation is reported too rather than swallowed with the first. The list is
 // written across two lines because two diagnostics sharing a line, a code and a
 // quoted substring are what bless cannot place (test-suite.md, R4.4).
-fn eachParmReported[T Comparable,   //~ ErrorGenParmConstr:23 "constraint or a type"
-                    U Float](a T, b U) T {   //~ ErrorGenParmConstr:23 "constraint or a type"
+macro eachParmReported[a i32,     //~ ErrorGenParmConstr:26 "constraint or a type"
+                       b Float] {  //~ ErrorGenParmConstr:26 "constraint or a type"
   a;
 }
 

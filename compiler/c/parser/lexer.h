@@ -163,6 +163,7 @@ enum TokenTypes {
     AsToken,       // 'as'
     IntoToken,     // 'into'
     InlineToken,   // 'inline'
+    WhereToken,    // 'where', which opens a generic's constraints
     VoidToken,     // 'void'
     nilToken,      // 'nil'
     trueToken,     // 'true'
