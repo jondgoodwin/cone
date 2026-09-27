@@ -12,6 +12,8 @@
 // Note:  Creation, serialization and name checking are done with array type logic,
 // as we don't yet know whether [] is a type or an array literal
 
+static void arrayLitSettle(ArrayNode *arrlit);
+
 // Type check an array literal
 //
 // Every early return here follows a diagnostic, so each one marks the literal
@@ -65,19 +67,87 @@ void arrayLitTypeCheckDimExp(TypeCheckState *pstate, ArrayNode *arrlit) {
         arrlit->vtype = errorType;
         return;
     }
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(arrlit->elems, cnt, nodesp))
+        iexpTypeCheckAny(pstate, nodesp);
+    arrayLitSettle(arrlit);
+}
 
-    // Settle the element type: every element must agree, meeting at a common
-    // supertype where they differ. That is the same question 'if' asks across
-    // its branches, and itypeFindSuper is what answers it there too. Requiring
-    // each element to match the first one exactly made an array literal the one
-    // construct that refused a variant where its union was wanted -- a variable
-    // initializer, a struct literal's field and an 'if' all accept that.
+// Type an array literal wanted as an array type holding as many elements as it
+// lists, by coercing each element to that type's element type. That is what a
+// struct literal's field value and a variable's initializer get, so a string
+// literal borrows as a slice and an untyped number literal adopts the number
+// type -- which also lets strings of different lengths share an '&[]u8'
+// element, where settling the type among the elements alone finds no type in
+// common. When some element does not coerce, the literal settles its type from
+// its elements as it does when no type is expected, and the receiver reports
+// the mismatch as before. Return 0, having checked nothing, when no such type
+// is expected.
+static int arrayLitTypeCheckExpected(TypeCheckState *pstate, ArrayNode *arrlit, INode *expectType) {
+    if (expectType == NULL || expectType == unknownType || expectType == noCareType
+        || arrlit->dimens->used > 0 || arrlit->elems->used == 0)
+        return 0;
+    INode *totype = itypeGetTypeDcl(expectType);
+    if (totype->tag != ArrayTag || ((ArrayNode*)totype)->dimens->used != 1
+        || arrayDim1(totype) != arrlit->elems->used)
+        return 0;
+    INode *elemtype = arrayElemType(totype);
+    INode *elemtypedcl = itypeGetTypeDcl(elemtype);
+
+    int allmatch = 1;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(arrlit->elems, cnt, nodesp)) {
+        inodeTypeCheck(pstate, nodesp, elemtype);
+        if (!isExpNode(*nodesp)) {
+            errorMsgNode(*nodesp, ErrorNotTyped, "Expected a typed expression.");
+            allmatch = 0;
+        }
+        else if (iexpGetTypeDcl(*nodesp) == errorType
+            || iexpMatches(nodesp, elemtypedcl, Coercion) == NoMatch)
+            allmatch = 0;
+    }
+    if (!allmatch) {
+        arrayLitSettle(arrlit);
+        return 1;
+    }
+    for (nodesFor(arrlit->elems, cnt, nodesp)) {
+        if (!iexpCoerce(nodesp, elemtype))
+            errorMsgNode(*nodesp, ErrorBadArray, "Array literal value's type does not match the array's element type");
+    }
+    arrlit->vtype = (INode*)newArrayNodeTyped((INode*)arrlit, arrlit->elems->used, elemtype);
+    return 1;
+}
+
+// The default type check
+void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit, INode *expectType) {
+
+    // In the default scenario (not as part of region allocation),
+    // we must insist that array literal's dimension is a constant unsigned integer
+    if (arrlit->dimens->used > 0 && !litIsLiteral(nodesGet(arrlit->dimens, 0))) {
+        errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal dimension value must be a constant");
+    }
+    if (arrayLitTypeCheckExpected(pstate, arrlit, expectType))
+        return;
+    arrayLitTypeCheckDimExp(pstate, arrlit);
+}
+
+// Settle a list literal's element type from its elements, already type checked:
+// every element must agree, meeting at a common supertype where they differ.
+// That is the same question 'if' asks across its branches, and itypeFindSuper
+// is what answers it there too. Requiring each element to match the first one
+// exactly made an array literal the one construct that refused a variant where
+// its union was wanted -- a variable initializer, a struct literal's field and
+// an 'if' all accept that.
+static void arrayLitSettle(ArrayNode *arrlit) {
     INode *matchtype = unknownType;
     int metatsuper = 0;   // some element met at a supertype, so all must coerce
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(arrlit->elems, cnt, nodesp)) {
-        if (iexpTypeCheckAny(pstate, nodesp) == 0)
+        // An element that is not an expression was reported by its check
+        if (!isExpNode(*nodesp))
             continue;
         // An element already reported as bad contributes no type of its own,
         // and must not be compared against the ones that are still good
@@ -113,15 +183,30 @@ void arrayLitTypeCheckDimExp(TypeCheckState *pstate, ArrayNode *arrlit) {
     arrlit->vtype = (INode*)newArrayNodeTyped((INode*)arrlit, arrlit->elems->used, matchtype);
 }
 
-// The default type check
-void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit) {
-
-    // In the default scenario (not as part of region allocation),
-    // we must insist that array literal's dimension is a constant unsigned integer
-    if (arrlit->dimens->used > 0 && !litIsLiteral(nodesGet(arrlit->dimens, 0))) {
-        errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal dimension value must be a constant");
+// Coerce an array literal to the array type it is wanted as, when the element
+// types differ but the sizes do not. Each element is coerced to the wanted
+// element type on the same terms a struct literal's field value is coerced to
+// its field's type, so a string literal borrows as a slice, an untyped number
+// literal adopts the element's number type and a narrower value widens. It
+// reaches the literals checked with no type expected of them -- a call's
+// argument is checked before its callee is resolved, as is a struct literal's
+// field value -- which settled their type from their elements alone. The
+// element count is not coerced: a literal of another size still does not match.
+int arrayLitCoerce(ArrayNode *arrlit, INode *totypedcl) {
+    INode *littype = arrlit->vtype;
+    if (totypedcl->tag != ArrayTag || littype->tag != ArrayTag
+        || ((ArrayNode*)totypedcl)->dimens->used != 1 || ((ArrayNode*)littype)->dimens->used != 1
+        || arrayDim1(totypedcl) != arrayDim1(littype))
+        return 0;
+    INode *elemtype = arrayElemType(totypedcl);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(arrlit->elems, cnt, nodesp)) {
+        if (!iexpCoerce(nodesp, elemtype))
+            return 0;
     }
-    arrayLitTypeCheckDimExp(pstate, arrlit);
+    arrlit->vtype = (INode*)newArrayNodeTyped((INode*)arrlit, (size_t)arrayDim1(littype), elemtype);
+    return 1;
 }
 
 // Return a fill literal's element count, or -1 when it is not known until run time.

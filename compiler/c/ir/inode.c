@@ -428,7 +428,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case ImportTag:
         importTypeCheck(pstate, (ImportNode *)*node); break;
     case ArrayLitTag:
-        arrayLitTypeCheck(pstate, (ArrayNode *)*node); break;
+        arrayLitTypeCheck(pstate, (ArrayNode *)*node, expectType); break;
     case BlockTag:
         blockTypeCheck(pstate, (BlockNode *)*node, expectType); break;
     case IfTag:

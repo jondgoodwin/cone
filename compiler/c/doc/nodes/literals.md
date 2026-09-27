@@ -306,19 +306,24 @@ is its type exactly and has no terminator.
 
 ## Hazards
 
-- **Only an integer literal is context-typed.** Every other literal is still
+- **Only an integer literal and an array literal are context-typed.** Every other literal is still
   adapted by coercion afterward, so `expectType` reads as more general than it is.
 - **`uintlit` is not the value's number without `FlagLitNeg`.** Read alone, as
   a signed or an unsigned 64-bit value, it answers wrong for one class or the
   other: `18446744073709551615` read signed is `-1`, and `-1` read unsigned is
   u64's maximum. Anything new that reads a literal's value as a number must read
   the flag too.
-- **An array literal is not given the expected type.** `inodeTypeCheck`
-  dispatches `arrayLitTypeCheck` without `expectType`, where the `BlockTag` and
-  `IfTag` arms beside it pass it through. So the elements fold among themselves
-  and the result is matched against the declared type afterward rather than
-  coerced to it — which is why `imm a [4; u8] = [4, 10, 12, 40]` needs the `u8`
-  suffix on every element, and `imm a [3; i64] = [1, 2, 3]` is refused.
+- **An array literal's elements are coerced to the expected element type in
+  two places, and only one of them sees the element type while checking.**
+  Given an expected array type of its own length, `arrayLitTypeCheck` checks
+  each element against the element type and coerces it there, so strings of
+  different lengths share a `&[]u8` element and a nested literal is checked
+  against the inner array type. A call's argument and a struct literal's field
+  value are checked with no type expected, so the literal folds its elements
+  among themselves first, and `iexpCoerce`'s `NoMatch` arm (`arrayLitCoerce`)
+  coerces them afterward — which cannot rescue a fold that already failed:
+  `f(["a", "bb"])` for a `[2; &[]u8]` parameter is still refused (1046), where
+  `["a", "b"]` is accepted. A literal of another length is never coerced.
 - **`TypeLitTag` has no arm in `inodeTypeCheck`**, so it falls to the default,
   which reports `ErrorUnreachable` and stops. `typeLitNameRes` *is* dispatched,
   so an already-retagged literal in a cloned generic body can be name-resolved
