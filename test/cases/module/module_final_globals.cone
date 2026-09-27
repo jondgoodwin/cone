@@ -1,0 +1,91 @@
+// A module's finalizer finalizes every global whose value has anything to do as
+// it dies, the question a local's death asks: an owning reference is released
+// (its value finalized, then freed through its region), plain or virtual, single
+// or counted, and a tuple or an array is finalized element by element. Before,
+// only a global whose type is a struct or an enum was: an owner held in a
+// global leaked, and so did a tuple or an array of values that finalize.
+//
+// The module's own 'final' runs first, then each global in the order declared,
+// once each. 'one' is a single-owner region and 'tally' a counted one; both
+// count their allocations and frees and print each free, and 'tally' prints
+// each count change: '+n' after an 'alias', '-n' after a 'dealias'. 'F<n>' is a
+// Fin's 'final'. The counted global is copied into a local first, so its last
+// owner is the global, released only by 'finalAll()'. Replacing a global owner
+// releases what it held, as before; the counts at the end say every allocation
+// was freed, and freed once.
+
+mod module_final_globals;
+
+import stdio use *;
+import libc;
+
+mut allocs = 0i64;
+mut frees = 0i64;
+
+struct one is RegionRef, Move {
+  fn alloc(size usize) *u8 inline { allocs = allocs + 1; malloc(size); }
+  fn free(self &uni one) inline { frees = frees + 1; printStr("free "); libc.free(self as *u8); }
+}
+
+struct tally is RegionRef {
+  owners u32;
+  fn alloc(size usize) *u8 inline { allocs = allocs + 1; malloc(size); }
+  fn init() tally inline { tally[1u32]; }
+  fn alias(self &uni tally) inline { owners = owners + 1u32; printStr("+"); printInt(i64[owners]); printStr(" "); }
+  fn dealias(self &uni tally) Bool inline { owners = owners - 1u32; printStr("-"); printInt(i64[owners]); printStr(" "); owners == 0u32; }
+  fn free(self &uni tally) inline { frees = frees + 1; printStr("tfree "); libc.free(self as *u8); }
+}
+
+trait App {
+  pub fn look(self &) i64;
+}
+
+struct Fin {
+  pub n i64;
+  pub fn look(self &) i64 {n;}
+  fn final(self &uni) { printStr("F"); printInt(n); printStr(" "); }
+}
+
+mut own +one Fin;
+mut pair (Fin, i64);
+mut vown +<one App;
+mut row = [Fin[7], Fin[8]];
+mut shared +tally-mut Fin;
+mut sofin +so Fin;
+mut vso +<so App;
+
+fn pairOf(n i64) Fin, i64 { Fin[n], n; }
+
+fn @initpure init() {
+  own = +one Fin[1];
+  pair = pairOf(5);
+  vown = +one Fin[2];
+  shared = +tally-mut Fin[3];
+  sofin = +so Fin[4];
+  vso = +so Fin[6];
+}
+
+fn final() {
+  printStr("final ");
+}
+
+fn main() i32 {
+  initAll();
+  printStr("shared with a local: ");
+  {
+    imm loc = shared;
+    printInt(loc.look());
+    printStr(" ");
+  }
+  printStr("\nreplaced: ");
+  own = +one Fin[9];
+  vown = +one Fin[10];
+  printStr("\nfinalAll: ");
+  finalAll();
+  printStr("\nallocs ");
+  printInt(allocs);
+  printStr(" frees ");
+  printInt(frees);
+  printStr("\n");
+  0i32;
+}

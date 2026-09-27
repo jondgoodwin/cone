@@ -1284,17 +1284,29 @@ static FnDclNode *modLifecycleFn(ModuleNode *mod, Name *name) {
     return fn;
 }
 
-// Give the module a 'drop' where any global it declares needs finalizing: a
-// function owned by the module, so its symbol is spelled after it ('q.drop'),
-// that calls the module's own 'final' and then each such global's drop function,
-// in the order the globals are declared -- a type's 'drop' is its 'final' and
-// then its fields', and a module's globals are its fields. Built pre-lowered, as
-// a type's is, and never type checked or flow analyzed. A C-named global is C's
-// storage and not finalized. Where no global needs it, the module's finalizer is
-// its own 'final', or it has none.
+// Whether the module's finalizer finalizes this global: its type has anything
+// to do as it dies (itypeNeedsFinal), and it is not C's storage. A thread-local
+// needing it is refused (modGiveDrop)
+int modGlobalFinalized(VarDclNode *var) {
+    return !(var->dclinfo.facts & (DclCName | DclThreadLocal)) && itypeNeedsFinal(var->vtype);
+}
+
+// Give the module a 'drop' where any global it declares needs finalizing
+// (itypeNeedsFinal, the question a local's death asks): a function owned by the
+// module, so its symbol is spelled after it ('q.drop'), that calls the module's
+// own 'final' and then finalizes each such global, in the order the globals are
+// declared -- a type's 'drop' is its 'final' and then its fields', and a
+// module's globals are its fields. It is the return's release list, as a
+// function's locals are released: a struct or an enum listed as its drop's
+// call, anything else -- an owning reference, a tuple or an array -- listed as
+// the global itself, which generation finalizes in place (genlDealiasNode).
+// Built pre-lowered, as a type's is, and never type checked or flow analyzed.
+// A C-named global is C's storage and not finalized. Where no global needs it,
+// the module's finalizer is its own 'final', or it has none.
 static FnDclNode *modGiveDrop(ModuleNode *mod, FnDclNode *final) {
     BlockNode *block = NULL;
     FnDclNode *dropfn = NULL;
+    Nodes *releases = NULL;
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(mod->nodes, cnt, nodesp)) {
@@ -1312,10 +1324,7 @@ static FnDclNode *modGiveDrop(ModuleNode *mod, FnDclNode *final) {
                     &var->namesym->namestr);
             continue;
         }
-        if (var->dclinfo.facts & DclCName)
-            continue;
-        INode *vardrop = itypeGetDropFnDcl(var->vtype);
-        if (vardrop == NULL)
+        if (!modGlobalFinalized(var))
             continue;
 
         if (block == NULL) {
@@ -1339,12 +1348,18 @@ static FnDclNode *modGiveDrop(ModuleNode *mod, FnDclNode *final) {
                 FnCallNode *finalcall = newFnCallLower((INode*)var, (INode*)final, 1);
                 nodesAdd(&block->stmts, (INode*)finalcall);
             }
+            releases = newNodes(4);
         }
 
+        INode *vardrop = itypeGetDropFnDcl(var->vtype);
+        if (vardrop == NULL) {
+            nodesAdd(&releases, (INode*)var);
+            continue;
+        }
         FnCallNode *dropcall = newFnCallLower((INode*)var, vardrop, 1);
         INode *varuse = newNameUseFromDclNode((INode*)var, (INode*)var);
         nodesAdd(&dropcall->args, newBorrowMutRef(varuse, var->vtype, (INode*)uniPerm));
-        nodesAdd(&block->stmts, (INode*)dropcall);
+        nodesAdd(&releases, (INode*)dropcall);
     }
     if (block == NULL)
         return final;
@@ -1352,6 +1367,7 @@ static FnDclNode *modGiveDrop(ModuleNode *mod, FnDclNode *final) {
     BreakRetNode *retnode = newReturnNode();
     retnode->exp = (INode*)newNilLitNode();
     retnode->block = block;
+    retnode->dealias = releases;
     nodesAdd(&block->stmts, (INode*)retnode);
     // Among the module's nodes, so it is named and generated wherever the
     // module is; the module trait's copies were counted from the end of 'nodes'
