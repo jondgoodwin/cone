@@ -102,26 +102,30 @@ pub struct Queue {
       &region as *vulkan.BufferCopy);
   }
 
-  // Write all of 'texture' (one made with TEXTURE_USAGE_COPY_DST, of an
-  // 8-bit, four-channel format) from 'data': its rows from the top, each
-  // 'bytesPerRow' bytes apart (at least 4 times its width, a multiple of 4).
-  // The bytes are copied now, and into the texture by the GPU ahead of
-  // whatever is submitted next: WebGPU's 'queue.writeTexture', for the
-  // whole texture.
+  // Write all of 'texture' (one made with TEXTURE_USAGE_COPY_DST, a color
+  // texture shaders sample or a storage texture; its first level) from
+  // 'data': its rows from the top, each 'bytesPerRow' bytes apart (at least
+  // a row, a multiple of the texel's size and of 4), and a 3-D texture's
+  // slices from the front, each 'height' rows. The bytes are copied now,
+  // and into the texture by the GPU ahead of whatever is submitted next:
+  // WebGPU's 'queue.writeTexture', for the whole texture.
   pub fn writeTexture(self &mut, texture &Texture, data *u8, bytesPerRow u32) {
     if (texture.usage & TEXTURE_USAGE_COPY_DST) == 0u32 {
       fail("writeTexture: the texture was not made with TEXTURE_USAGE_COPY_DST");
       return;
     }
-    if texture.backend.kind != KIND_SAMPLED or texture.format == TEXTURE_FORMAT_DEPTH32_FLOAT {
-      fail("writeTexture: only a color texture shaders sample (TEXTURE_USAGE_TEXTURE_BINDING) is written");
+    if (texture.backend.kind != KIND_SAMPLED and texture.backend.kind != KIND_STORAGE)
+        or texture.format == TEXTURE_FORMAT_DEPTH32_FLOAT {
+      fail("writeTexture: only a color texture shaders sample (TEXTURE_USAGE_TEXTURE_BINDING), or a storage texture, is written");
       return;
     }
-    if bytesPerRow < texture.width * 4u32 or (bytesPerRow & 3u32) != 0u32 {
-      fail("writeTexture: bytesPerRow is less than a row, or not a multiple of 4");
+    imm texel = bytesPerTexel(texture.format);
+    if bytesPerRow < texture.width * texel or bytesPerRow % texel != 0u32 or (bytesPerRow & 3u32) != 0u32 {
+      fail("writeTexture: bytesPerRow is less than a row, or not a multiple of a texel and of 4");
       return;
     }
-    imm size = u64[bytesPerRow] * u64[texture.height];
+    imm depth = if texture.dimension == TEXTURE_DIMENSION_3D { texture.depthOrArrayLayers; } else { 1u32; };
+    imm size = u64[bytesPerRow] * u64[texture.height] * u64[depth];
     imm cmd = uploadCommands(self);
     if isNull(cmd) or !stagingRoom(self, size) { return; }
     imm i = usize[backend.frameIndex];
@@ -133,15 +137,17 @@ pub struct Queue {
     transition(cmd, texture.backend.image, vulkan.IMAGE_ASPECT_COLOR_BIT, vulkan.IMAGE_LAYOUT_UNDEFINED,
       vulkan.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_NONE,
       vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT);
-    imm region = vulkan.BufferImageCopy[bufferOffset: at, bufferRowLength: bytesPerRow / 4u32,
+    imm region = vulkan.BufferImageCopy[bufferOffset: at, bufferRowLength: bytesPerRow / texel,
       imageSubresource: vulkan.ImageSubresourceLayers[], imageOffset: vulkan.Offset3D[0i32, 0i32, 0i32],
-      imageExtent: vulkan.Extent3D[texture.width, texture.height, 1u32]];
+      imageExtent: vulkan.Extent3D[texture.width, texture.height, depth]];
     vulkan.cmdCopyBufferToImage(cmd, backend.frames[i].staging.buffer, texture.backend.image,
       vulkan.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1u32, &region as *vulkan.BufferImageCopy);
-    // Back to the layout it rests in, the copy visible to the shaders that sample it
+    // Back to the layout it rests in, the copy visible to the shaders that
+    // sample it (or read and write it, a storage texture)
     transition(cmd, texture.backend.image, vulkan.IMAGE_ASPECT_COLOR_BIT, vulkan.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-      vulkan.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
-      vulkan.ACCESS_2_TRANSFER_WRITE_BIT, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_SHADER_READ_BIT);
+      restLayout(texture.backend.kind), vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+      vulkan.ACCESS_2_TRANSFER_WRITE_BIT, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+      vulkan.ACCESS_2_MEMORY_READ_BIT | vulkan.ACCESS_2_MEMORY_WRITE_BIT);
   }
 
   // Take 'buffer' out of use: it is not valid from now on, and its memory

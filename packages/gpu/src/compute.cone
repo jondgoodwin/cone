@@ -1,0 +1,182 @@
+// ---- Compute: passes, dispatch, query sets, and WebGPU's limits ----
+
+// The stages that see a pipeline layout's immediates: all three, so that one
+// layout serves a render or a compute pipeline, and Vulkan's rule that
+// setting them names every stage the range has is kept by naming all three
+fn immediateStages() u32 {
+  vulkan.SHADER_STAGE_VERTEX_BIT | vulkan.SHADER_STAGE_FRAGMENT_BIT | vulkan.SHADER_STAGE_COMPUTE_BIT;
+}
+
+// Whether every compute entry point in 'spirv' has a workgroup within
+// WebGPU's limits: each OpExecutionMode LocalSize (Slang's [numthreads]) at
+// most 256 by 256 by 64, and 256 invocations in all. A workgroup sized by
+// specialization constants (LocalSizeId) is not checked.
+fn workgroupsWithinLimits(spirv &[]u32) Bool {
+  mut i = 5usize;                  // past the header
+  while i < spirv.len {
+    imm word = spirv[i];
+    imm count = usize[word >> 16u32];
+    if count == 0usize { return true; }      // not SPIR-V: the driver says so
+    // OpExecutionMode (16) %entry LocalSize (17) x y z
+    if (word & 0xFFFFu32) == 16u32 and count >= 6usize and i + 5usize < spirv.len and spirv[i + 2usize] == 17u32 {
+      imm x = spirv[i + 3usize];
+      imm y = spirv[i + 4usize];
+      imm z = spirv[i + 5usize];
+      if x > MAX_COMPUTE_WORKGROUP_SIZE_X or y > MAX_COMPUTE_WORKGROUP_SIZE_Y or z > MAX_COMPUTE_WORKGROUP_SIZE_Z
+          or u64[x] * u64[y] * u64[z] > u64[MAX_COMPUTE_INVOCATIONS_PER_WORKGROUP] {
+        fail("createShaderModule: a compute workgroup is larger than WebGPU's limits (256 x 256 x 64, 256 invocations)");
+        return false;
+      }
+    }
+    i = i + count;
+  }
+  true;
+}
+
+// Whether a bind group layout's entry is one WebGPU allows: a storage
+// texture of a storage format, read and written together only as r32float
+// or r32uint, and not a cube; and nothing the vertex stage writes
+fn bindingWithinWebGPU(e &BindGroupLayoutEntry) Bool {
+  imm vertex = (e.visibility & SHADER_STAGE_VERTEX) != 0u32;
+  if e.kind == BINDING_KIND_STORAGE_TEXTURE {
+    if !isStorageFormat(e.format) or e.viewDimension == TEXTURE_VIEW_DIMENSION_CUBE
+        or (e.storageAccess == STORAGE_TEXTURE_ACCESS_READ_WRITE and e.format != TEXTURE_FORMAT_R32_FLOAT
+          and e.format != TEXTURE_FORMAT_R32_UINT) {
+      fail("createBindGroupLayout: a storage texture's format is not a storage format, is read and written as other than r32float or r32uint, or is a cube");
+      return false;
+    }
+    if vertex and e.storageAccess != STORAGE_TEXTURE_ACCESS_READ_ONLY {
+      fail("createBindGroupLayout: the vertex stage writes no storage texture");
+      return false;
+    }
+  }
+  if e.kind == BINDING_KIND_BUFFER and e.bufferType == BUFFER_BINDING_TYPE_STORAGE and vertex {
+    fail("createBindGroupLayout: the vertex stage writes no storage buffer (make it read-only)");
+    return false;
+  }
+  true;
+}
+
+// A global barrier making what compute shaders wrote visible to everything
+// after (other dispatches, draws, indirect arguments, copies, the CPU once
+// the frame is done)
+fn afterCompute(cmd vulkan.CommandBuffer, dstStage u64) {
+  memoryBarrier(cmd, vulkan.PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, vulkan.ACCESS_2_SHADER_WRITE_BIT,
+    dstStage, vulkan.ACCESS_2_MEMORY_READ_BIT | vulkan.ACCESS_2_MEMORY_WRITE_BIT);
+}
+
+struct ComputePassBackend {
+  pub cmd vulkan.CommandBuffer;
+  pub open Bool;
+  pub layout vulkan.PipelineLayout;    // the bound pipeline's
+  pub dispatched Bool;                 // a dispatch since the last barrier
+}
+
+// Dispatching compute shaders, begun by 'encoder.beginComputePass' and ended
+// by 'end' (WebGPU's GPUComputePassEncoder). As in WebGPU, each dispatch
+// sees what the dispatches before it wrote, and what the pass wrote is seen
+// by every command after it: the barriers are the layer's.
+pub struct ComputePassEncoder {
+  pub backend ComputePassBackend;
+
+  // Dispatch 'pipeline' from here on
+  pub fn setPipeline(self &mut, pipeline &ComputePipeline) {
+    vulkan.cmdBindPipeline(backend.cmd, vulkan.PIPELINE_BIND_POINT_COMPUTE, pipeline.backend.pipeline);
+    backend.layout = pipeline.backend.layout;
+  }
+
+  // Bind 'group' as the pipeline's bind group 'index'
+  pub fn setBindGroup(self &mut, index u32, group &BindGroup) {
+    if backend.layout.h == 0u64 {
+      fail("setBindGroup before setPipeline");
+      return;
+    }
+    mut set = group.backend.set;
+    vulkan.cmdBindDescriptorSets(backend.cmd, vulkan.PIPELINE_BIND_POINT_COMPUTE, backend.layout, index, 1u32,
+      &mut set as *vulkan.DescriptorSet, 0u32, 0usize as *u32);
+  }
+
+  // Set 'size' bytes of the immediates, from 'offset' (both multiples of
+  // 4), to the bytes at 'data', for the dispatches after
+  pub fn setImmediates(self &mut, offset u32, data *u8, size u32) {
+    if backend.layout.h == 0u64 {
+      fail("setImmediates before setPipeline");
+      return;
+    }
+    vulkan.cmdPushConstants(backend.cmd, backend.layout, immediateStages(), offset, size, data);
+  }
+
+  // Run the pipeline's shader in 'x' by 'y' by 'z' workgroups, each at most
+  // MAX_COMPUTE_WORKGROUPS_PER_DIMENSION
+  pub fn dispatchWorkgroups(self &mut, x u32, y u32 = 1u32, z u32 = 1u32) {
+    if x > MAX_COMPUTE_WORKGROUPS_PER_DIMENSION or y > MAX_COMPUTE_WORKGROUPS_PER_DIMENSION
+        or z > MAX_COMPUTE_WORKGROUPS_PER_DIMENSION {
+      fail("dispatchWorkgroups: more than 65535 workgroups one way (WebGPU's limit)");
+      return;
+    }
+    beforeDispatch(&mut backend);
+    vulkan.cmdDispatch(backend.cmd, x, y, z);
+  }
+
+  // The same, the three counts read by the GPU from 'buffer' at 'offset' (a
+  // multiple of 4), three u32s: a buffer made with BUFFER_USAGE_INDIRECT,
+  // written by an earlier pass or dispatch. The counts are not checked
+  // against the limit.
+  pub fn dispatchWorkgroupsIndirect(self &mut, buffer &Buffer, offset u64) {
+    if (buffer.usage & BUFFER_USAGE_INDIRECT) == 0u32 or (offset & 3u64) != 0u64 or offset + 12u64 > buffer.size {
+      fail("dispatchWorkgroupsIndirect: the buffer has no BUFFER_USAGE_INDIRECT, or the offset is not a multiple of 4 or leaves no room");
+      return;
+    }
+    beforeDispatch(&mut backend);
+    vulkan.cmdDispatchIndirect(backend.cmd, buffer.backend.buffer, offset);
+  }
+
+  // The end of the pass: what it wrote, visible to every command after it
+  pub fn end(self &mut) {
+    if !backend.open { return; }
+    backend.open = false;
+    if backend.dispatched { afterCompute(backend.cmd, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT); }
+    backend.dispatched = false;
+  }
+}
+
+// Before a dispatch: what the dispatch before it wrote, visible to its
+// shaders and to its indirect arguments
+fn beforeDispatch(backend &mut ComputePassBackend) {
+  if backend.dispatched {
+    afterCompute(backend.cmd, vulkan.PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | vulkan.PIPELINE_STAGE_2_DRAW_INDIRECT_BIT);
+  }
+  backend.dispatched = true;
+}
+
+// ---- Query sets ----
+
+struct QuerySetBackend {
+  pub device vulkan.Device;
+  pub pool vulkan.QueryPool;
+}
+
+// Queries the GPU answers (WebGPU's GPUQuerySet): timestamps, each written by
+// 'encoder.writeTimestamp' and copied into a buffer by
+// 'encoder.resolveQuerySet' as a u64 count of ticks, 'device.timestampPeriod'
+// nanoseconds each
+pub struct QuerySet {
+  pub backend QuerySetBackend;
+  pub type u32;                    // QUERY_TYPE_...
+  pub count u32;
+
+  pub fn isValid(self &) Bool { backend.pool.h != 0u64; }
+
+  // No query set: what a variable holds on a device that keeps no time
+  // (not valid)
+  pub fn none() QuerySet {
+    QuerySet[QuerySetBackend[0usize as vulkan.Device, vulkan.QueryPool[0u64]], QUERY_TYPE_TIMESTAMP, 0u32];
+  }
+
+  fn final(self &uni) {
+    if self.isValid() {
+      vulkan.deviceWaitIdle(backend.device);
+      vulkan.destroyQueryPool(backend.device, backend.pool, nullp());
+    }
+  }
+}

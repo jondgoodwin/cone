@@ -18,6 +18,7 @@
   S(DescriptorPool);
   S(DescriptorSet);
   S(Sampler);
+  S(QueryPool);
   S(Extent2D); O(Extent2D, width); O(Extent2D, height);
   S(Extent3D); O(Extent3D, width); O(Extent3D, height); O(Extent3D, depth);
   S(Offset2D); O(Offset2D, x); O(Offset2D, y);
@@ -89,6 +90,11 @@
   S(PipelineDynamicStateCreateInfo); O(PipelineDynamicStateCreateInfo, sType); O(PipelineDynamicStateCreateInfo, pNext); O(PipelineDynamicStateCreateInfo, flags); O(PipelineDynamicStateCreateInfo, dynamicStateCount); O(PipelineDynamicStateCreateInfo, pDynamicStates);
   S(PipelineRenderingCreateInfo); O(PipelineRenderingCreateInfo, sType); O(PipelineRenderingCreateInfo, pNext); O(PipelineRenderingCreateInfo, viewMask); O(PipelineRenderingCreateInfo, colorAttachmentCount); O(PipelineRenderingCreateInfo, pColorAttachmentFormats); O(PipelineRenderingCreateInfo, depthAttachmentFormat); O(PipelineRenderingCreateInfo, stencilAttachmentFormat);
   S(GraphicsPipelineCreateInfo); O(GraphicsPipelineCreateInfo, sType); O(GraphicsPipelineCreateInfo, pNext); O(GraphicsPipelineCreateInfo, flags); O(GraphicsPipelineCreateInfo, stageCount); O(GraphicsPipelineCreateInfo, pStages); O(GraphicsPipelineCreateInfo, pVertexInputState); O(GraphicsPipelineCreateInfo, pInputAssemblyState); O(GraphicsPipelineCreateInfo, pTessellationState); O(GraphicsPipelineCreateInfo, pViewportState); O(GraphicsPipelineCreateInfo, pRasterizationState); O(GraphicsPipelineCreateInfo, pMultisampleState); O(GraphicsPipelineCreateInfo, pDepthStencilState); O(GraphicsPipelineCreateInfo, pColorBlendState); O(GraphicsPipelineCreateInfo, pDynamicState); O(GraphicsPipelineCreateInfo, layout); O(GraphicsPipelineCreateInfo, renderPass); O(GraphicsPipelineCreateInfo, subpass); O(GraphicsPipelineCreateInfo, basePipelineHandle); O(GraphicsPipelineCreateInfo, basePipelineIndex);
+  S(ComputePipelineCreateInfo); O(ComputePipelineCreateInfo, sType); O(ComputePipelineCreateInfo, pNext); O(ComputePipelineCreateInfo, flags); O(ComputePipelineCreateInfo, stage); O(ComputePipelineCreateInfo, layout); O(ComputePipelineCreateInfo, basePipelineHandle); O(ComputePipelineCreateInfo, basePipelineIndex);
+  S(DispatchIndirectCommand); O(DispatchIndirectCommand, x); O(DispatchIndirectCommand, y); O(DispatchIndirectCommand, z);
+  S(DrawIndirectCommand); O(DrawIndirectCommand, vertexCount); O(DrawIndirectCommand, instanceCount); O(DrawIndirectCommand, firstVertex); O(DrawIndirectCommand, firstInstance);
+  S(DrawIndexedIndirectCommand); O(DrawIndexedIndirectCommand, indexCount); O(DrawIndexedIndirectCommand, instanceCount); O(DrawIndexedIndirectCommand, firstIndex); O(DrawIndexedIndirectCommand, vertexOffset); O(DrawIndexedIndirectCommand, firstInstance);
+  S(QueryPoolCreateInfo); O(QueryPoolCreateInfo, sType); O(QueryPoolCreateInfo, pNext); O(QueryPoolCreateInfo, flags); O(QueryPoolCreateInfo, queryType); O(QueryPoolCreateInfo, queryCount); O(QueryPoolCreateInfo, pipelineStatistics);
   S(PushConstantRange); O(PushConstantRange, stageFlags); O(PushConstantRange, offset); O(PushConstantRange, size);
   S(PipelineLayoutCreateInfo); O(PipelineLayoutCreateInfo, sType); O(PipelineLayoutCreateInfo, pNext); O(PipelineLayoutCreateInfo, flags); O(PipelineLayoutCreateInfo, setLayoutCount); O(PipelineLayoutCreateInfo, pSetLayouts); O(PipelineLayoutCreateInfo, pushConstantRangeCount); O(PipelineLayoutCreateInfo, pPushConstantRanges);
   S(DescriptorSetLayoutBinding); O(DescriptorSetLayoutBinding, binding); O(DescriptorSetLayoutBinding, descriptorType); O(DescriptorSetLayoutBinding, descriptorCount); O(DescriptorSetLayoutBinding, stageFlags); O(DescriptorSetLayoutBinding, pImmutableSamplers);

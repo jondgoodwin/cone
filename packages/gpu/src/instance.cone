@@ -64,16 +64,21 @@ pub struct Instance {
     imm layers [1; *u8] = [layerName];
 
     // Synchronization validation, set through the layer's settings: it checks
-    // every barrier and semaphore for a hazard between commands
+    // every barrier and semaphore for a hazard between commands. Its shader
+    // accesses heuristic makes it see what shaders read and write through
+    // storage buffers and storage textures, from the SPIR-V: without it,
+    // a compute pass's writes are invisible to it.
     result.syncValidation = result.validation and hasInstanceExtension(layerName, &"VK_EXT_layer_settings" as *u8);
     if result.syncValidation {
       exts[usize[next]] = &"VK_EXT_layer_settings" as *u8;
       next = next + 1u32;
     }
     imm on [1; u32] = [vulkan.TRUE];
-    imm setting = vulkan.LayerSettingEXT[pLayerName: layerName, pSettingName: &"validate_sync" as *u8,
-      valueCount: 1u32, pValues: &on as *u8];
-    imm settings = vulkan.LayerSettingsCreateInfoEXT[settingCount: 1u32,
+    imm setting = [vulkan.LayerSettingEXT[pLayerName: layerName, pSettingName: &"validate_sync" as *u8,
+        valueCount: 1u32, pValues: &on as *u8],
+      vulkan.LayerSettingEXT[pLayerName: layerName, pSettingName: &"syncval_shader_accesses_heuristic" as *u8,
+        valueCount: 1u32, pValues: &on as *u8]];
+    imm settings = vulkan.LayerSettingsCreateInfoEXT[settingCount: 2u32,
       pSettings: &setting as *vulkan.LayerSettingEXT];
     mut chain = nullp();
     if result.syncValidation { chain = &settings as *u8; }
@@ -300,6 +305,18 @@ pub struct Adapter {
     result.queue.backend.handle = queue;
     result.queue.backend.device = device;
     vulkan.getPhysicalDeviceMemoryProperties(backend.physical, &mut result.queue.backend.memory);
+
+    // Timestamps, if the queue keeps time: a tick's length
+    mut props = zeroed[vulkan.PhysicalDeviceProperties]();
+    vulkan.getPhysicalDeviceProperties(backend.physical, &mut props);
+    mut n = 0u32;
+    vulkan.getPhysicalDeviceQueueFamilyProperties(backend.physical, &mut n, 0usize as *vulkan.QueueFamilyProperties);
+    if n > 16u32 { n = 16u32; }
+    mut families [16; vulkan.QueueFamilyProperties] = [16; zeroed[vulkan.QueueFamilyProperties]()];
+    vulkan.getPhysicalDeviceQueueFamilyProperties(backend.physical, &mut n, &mut families as *vulkan.QueueFamilyProperties);
+    if backend.queueFamily < n and families[usize[backend.queueFamily]].timestampValidBits > 0u32 {
+      result.timestampPeriod = props.limits.timestampPeriod;
+    }
 
     // Each frame in flight: its fence, and thread 0's command pool
     imm fci = vulkan.FenceCreateInfo[];
