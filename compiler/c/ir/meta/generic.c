@@ -424,6 +424,11 @@ int genericTypeIs(INode *type, StructNode *trait) {
         return 1;
     if (trait == pointerTrait && dcl->tag == PtrTag)
         return 1;
+    // Sendable is the thread check's: granted to every type holding nothing
+    // bound to its thread, and to a type declaring it, on its word, where its
+    // type arguments are Sendable
+    if (trait == sendableTrait)
+        return !itypeThreadBound(dcl, NULL);
     if (dcl->tag != StructTag)
         return 0;
     StructNode *strnode = (StructNode*)dcl;
@@ -519,6 +524,12 @@ static void genericTypeNameCat(char *buf, size_t size, INode *type, int depth) {
         genericTypeNameCat(buf, size, ((StarNode*)dcl)->vtexp, depth + 1);
         return;
     }
+    // A reference or an array as it is written: '&mut Point', '+rc-imm Pt',
+    // '[3; u8]'
+    if (dcl->tag == RefTag || dcl->tag == ArrayRefTag || dcl->tag == VirtRefTag || dcl->tag == ArrayTag) {
+        itypeSpellCat(buf, size, dcl, depth);
+        return;
+    }
     snprintf(buf + used, size - used, "%s", itypeName(dcl));
     Nodes *args = dcl->tag == StructTag && depth < 4 ? itypeInstanceTypeArgs(dcl) : NULL;
     if (args == NULL)
@@ -590,6 +601,127 @@ static void genericBindingsCat(char *buf, size_t size, INode *cond, Nodes *parms
         snprintf(buf, size, "these arguments");
 }
 
+// Refuse an instance whose argument 'arg', for parameter 'parm', is not
+// Sendable, saying what binds it to its thread and where that sits in it. A
+// borrow or a permission is the cause most often met through a local, and a
+// local's own 'mut' is not what is checked, so the message says so.
+static void genericNotSendableMsg(INode *errnode, Name *name, GenVarDclNode *parm, INode *arg) {
+    char argname[256] = "";
+    genericTypeNameCat(argname, sizeof(argname), arg, 0);
+    char path[256];
+    INode *culprit = itypeThreadBoundWhy(arg, path, sizeof(path));
+    char what[512] = "";
+    if (path[0] != '\0' && culprit) {
+        snprintf(what, sizeof(what), "%s is ", path);
+        itypeSpellCat(what, sizeof(what), culprit, 0);
+        strcat(what, ",");
+    }
+    else
+        snprintf(what, sizeof(what), "it is");
+    char reason[512] = "";
+    int local = 0;
+    INode *culpritdcl = culprit ? itypeGetTypeDcl(culprit) : NULL;
+    if (culpritdcl == NULL)
+        snprintf(reason, sizeof(reason), "a type bound to its thread");
+    else if (culpritdcl->tag == PtrTag)
+        snprintf(reason, sizeof(reason),
+            "a raw pointer, whose target the compiler cannot check. A type holding raw pointers it shares safely across threads says so by declaring 'is Sendable', a promise the compiler takes on trust");
+    else if (culpritdcl->tag == StructTag)
+        snprintf(reason, sizeof(reason),
+            "a trait, whose implementers are not all known here, so what a reference to one points at cannot be checked");
+    else {
+        RefNode *ref = (RefNode *)culpritdcl;
+        INode *region = ref->region && isTypeNode(ref->region) ? itypeGetTypeDcl(ref->region) : NULL;
+        char *regname = region && region->tag == StructTag ? &((StructNode *)region)->namesym->namestr : "its region";
+        INode *perm = ref->perm && isTypeNode(ref->perm) ? itypeGetTypeDcl(ref->perm) : NULL;
+        Name *permname = perm ? inodeGetName(perm) : NULL;
+        switch (refThreadBinds(ref)) {
+        case RefBindsBorrow:
+            local = 1;
+            snprintf(reason, sizeof(reason),
+                "a borrowed reference, and no borrow may leave its thread: its lifetime is checked in that thread alone");
+            break;
+        case RefBindsTraced:
+            snprintf(reason, sizeof(reason),
+                "a reference the %s collector traces, and a collector is single threaded, so a traced reference may not leave its thread",
+                regname);
+            break;
+        case RefBindsPerm:
+            local = 1;
+            snprintf(reason, sizeof(reason),
+                "an owner whose permission, %s, is not race-safe: only a uni, imm or opaq reference may be shared with or sent to another thread",
+                permname ? &permname->namestr : "?");
+            break;
+        case RefBindsShared:
+            snprintf(reason, sizeof(reason),
+                "an owner that may be copied, and %s does not declare ThreadSafe: its copies could not be made and dropped on several threads at once. It may cross as a uni owner, which moves it, or as an owner of a region declaring ThreadSafe, such as arc",
+                regname);
+            break;
+        default:
+            snprintf(reason, sizeof(reason), "a reference bound to its thread");
+            break;
+        }
+    }
+    errorMsgNode(errnode, ErrorNotSendable, "%s requires %s is Sendable, and %s is not Sendable: %s %s.%s",
+        &name->namestr, &parm->namesym->namestr, argname, what, reason,
+        local ? " What is checked is the types of the references a value holds, not how a variable was declared: a local declared 'mut x = 5' holds a number, which is Sendable." : "");
+}
+
+// An instance whose 'T is Sendable' was met while a struct it reaches was not
+// yet type checked, so not settled: judged again once type check has finished
+// (genericSendableCheckAll), when every struct is laid out
+typedef struct {
+    INode *where;           // The use asking for the instance
+    Name *name;             // The generic's name
+    GenVarDclNode *parm;    // The parameter the clause asks about
+    INode *arg;             // Its argument
+} SendableNote;
+
+static SendableNote *genericSendableNotes = NULL;
+static uint32_t genericSendableCnt = 0;
+static uint32_t genericSendableMax = 0;
+
+static void genericSendableNote(FnCallNode *srcgencall, Nodes *where, Nodes *parms, Name *name) {
+    if (where == NULL || parms == NULL || srcgencall->args == NULL)
+        return;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(where, cnt, nodesp)) {
+        if ((*nodesp)->tag != IsTag || genericNamedTrait(((CastNode*)*nodesp)->typ) != sendableTrait)
+            continue;
+        GenVarDclNode *parm;
+        INode *arg = genericClauseType((CastNode*)*nodesp, parms, srcgencall->args, &parm);
+        if (arg == NULL || parm == NULL)
+            continue;
+        int settled;
+        if (itypeThreadBound(arg, &settled) || settled)
+            continue;
+        if (genericSendableCnt == genericSendableMax) {
+            uint32_t newmax = genericSendableMax ? genericSendableMax * 2 : 16;
+            SendableNote *notes = (SendableNote *)memAllocBlk(newmax * sizeof(SendableNote));
+            if (genericSendableCnt)
+                memcpy(notes, genericSendableNotes, genericSendableCnt * sizeof(SendableNote));
+            genericSendableNotes = notes;
+            genericSendableMax = newmax;
+        }
+        SendableNote *note = &genericSendableNotes[genericSendableCnt++];
+        note->where = (INode*)srcgencall;
+        note->name = name;
+        note->parm = parm;
+        note->arg = arg;
+    }
+}
+
+void genericSendableCheckAll() {
+    uint32_t cnt = genericSendableCnt;
+    genericSendableCnt = 0;
+    for (uint32_t i = 0; i < cnt; ++i) {
+        SendableNote *note = &genericSendableNotes[i];
+        if (itypeThreadBound(note->arg, NULL))
+            genericNotSendableMsg(note->where, note->name, note->parm, note->arg);
+    }
+}
+
 // A constraint on a generic function or type is a requirement: an instance
 // whose arguments do not meet it is refused where it is asked for, naming the
 // clause, and nothing of it is made -- so nothing inside the generic is checked
@@ -610,8 +742,10 @@ static int genericRequirementsMet(FnCallNode *srcgencall, INode *generic, Generi
         }
     }
     INode *cond = genericUnmetCondition(where, parms, srcgencall->args);
-    if (cond == NULL)
+    if (cond == NULL) {
+        genericSendableNote(srcgencall, where, parms, name);
         return 1;
+    }
     // A condition joined by 'or' or 'and' is false as a whole, and named whole
     if (cond->tag != IsTag) {
         char text[256] = "";
@@ -625,6 +759,10 @@ static int genericRequirementsMet(FnCallNode *srcgencall, INode *generic, Generi
     GenVarDclNode *parm;
     INode *arg = genericClauseType((CastNode*)cond, parms, srcgencall->args, &parm);
     StructNode *trait = genericNamedTrait(((CastNode*)cond)->typ);
+    if (trait == sendableTrait) {
+        genericNotSendableMsg((INode*)srcgencall, name, parm, arg);
+        return 0;
+    }
     char argname[256] = "";
     genericTypeNameCat(argname, sizeof(argname), arg, 0);
     char isname[256] = "";

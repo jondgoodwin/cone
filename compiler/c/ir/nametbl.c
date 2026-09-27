@@ -209,6 +209,7 @@ void nametblInit() {
     writeBarrierMethodName = nametblFind("writeBarrier", 12);
     regionRefName = nametblFind("RegionRef", 9);
     tracedTraitName = nametblFind("Traced", 6);
+    threadSafeTraitName = nametblFind("ThreadSafe", 10);
     moveTraitName = nametblFind("Move", 4);
     copyTraitName = nametblFind("Copy", 4);
     shapeChangingTraitName = nametblFind("ShapeChanging", 13);
@@ -217,6 +218,7 @@ void nametblInit() {
     atomicValueTraitName = nametblFind("AtomicValue", 11);
     integerTraitName = nametblFind("Integer", 7);
     pointerTraitName = nametblFind("Pointer", 7);
+    sendableTraitName = nametblFind("Sendable", 8);
 }
 
 

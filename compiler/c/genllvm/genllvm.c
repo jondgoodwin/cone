@@ -34,13 +34,13 @@
 #define objext "o"
 #endif
 
-// Generate parameter variable
-void genlParmVar(GenState *gen, VarDclNode *var) {
+// Generate parameter variable of the function 'fndcl' being generated
+void genlParmVar(GenState *gen, FnDclNode *fndcl, VarDclNode *var) {
     assert(var->tag == VarDclTag);
     // We always alloca in case variable is mutable or we want to take address of its value
     var->llvmvar = genlAlloca(gen, genlType(gen, var->vtype), &var->namesym->namestr);
     genlRootNote(gen, var->llvmvar, var->vtype);
-    LLVMBuildStore(gen->builder, LLVMGetParam(gen->fn, var->index), var->llvmvar);
+    LLVMBuildStore(gen->builder, genlFnDclParm(gen, fndcl, var), var->llvmvar);
     genlDropFlagBegin(gen, var, DropFlagWhole);
 }
 
@@ -112,6 +112,7 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     LLVMBuilderRef svbuilder = gen->builder;
     LLVMValueRef svallocaPoint = gen->allocaPoint;
     INode *svfnblock = gen->fnblock;
+    FnDclNode *svfndcl = gen->fndcl;
     int svexitzero = gen->exitzero;
     GenRoots svroots;
     genlRootsSave(gen, &svroots);
@@ -120,6 +121,7 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     assert(fnnode->value->tag == BlockTag);
     gen->fn = fnnode->llvmvar;
     gen->fnblock = fnnode->value;
+    gen->fndcl = fnnode;
     size_t namelen;
     gen->exitzero = genlIsVoidMain(fnnode, LLVMGetValueName2(fnnode->llvmvar, &namelen));
 
@@ -137,7 +139,7 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     uint32_t cnt;
     INode **nodesp;
     for (nodesFor(fnsig->parms, cnt, nodesp))
-        genlParmVar(gen, (VarDclNode*)*nodesp);
+        genlParmVar(gen, fnnode, (VarDclNode*)*nodesp);
 
     // Generate the function's code (always a block). A drop the compiler gave
     // a type is built here, from the type's layout: an enum's block is empty,
@@ -160,6 +162,7 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     gen->fn = svfn;
     gen->allocaPoint = svallocaPoint;
     gen->fnblock = svfnblock;
+    gen->fndcl = svfndcl;
     gen->exitzero = svexitzero;
     genlRootsRestore(gen, &svroots);
 }
@@ -523,7 +526,7 @@ static int genlSymAgree(GenState *gen, INode *a, INode *b) {
     if (a->tag != b->tag)
         return 0;
     if (a->tag == FnDclTag)
-        return genlType(gen, ((FnDclNode*)a)->vtype) == genlType(gen, ((FnDclNode*)b)->vtype)
+        return genlFnDclType(gen, (FnDclNode*)a) == genlFnDclType(gen, (FnDclNode*)b)
             && (inodeGetDclInfo(a)->facts & DclSystemCC) == (inodeGetDclInfo(b)->facts & DclSystemCC);
     VarDclNode *va = (VarDclNode*)a;
     VarDclNode *vb = (VarDclNode*)b;
@@ -701,7 +704,7 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
         // builds the trait's vtable here, and the vtable asks for the symbol of
         // every method in its slots, this one included. Declaring it a second
         // time would leave that first declaration bodiless in the vtable.
-        LLVMTypeRef fntype = genlType(gen, glofn->vtype);
+        LLVMTypeRef fntype = genlFnDclType(gen, glofn);
         if (glofn->llvmvar)
             return;
         char symbol[2048];
@@ -713,6 +716,7 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
             fntype = LLVMFunctionType(LLVMInt32TypeInContext(gen->context), parmtypes, parmcnt, LLVMIsFunctionVarArg(fntype));
         }
         glofn->llvmvar = LLVMAddFunction(gen->module, symbol, fntype);
+        genlCAbiDeclare(gen, glofn, glofn->llvmvar);
         GenlDefinition defined = genlDefinition(gen, (INode*)glofn);
         genlLinkage(glofn->llvmvar, (INode*)glofn, defined);
         genlClaimSymbol(gen, (INode*)glofn, glofn->llvmvar, defined, symbol);
@@ -1281,12 +1285,14 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     gen->builder = LLVMCreateBuilderInContext(gen->context);
     gen->fn = NULL;
     gen->fnblock = NULL;
+    gen->fndcl = NULL;
     gen->exitzero = 0;
     gen->allocaPoint = NULL;
     gen->blockstack = memAllocBlk(sizeof(GenBlockState)*GenBlockStackMax);
     gen->blockstackcnt = 0;
 
     gen->comdats = genlComdatSupport(opt->triple);   // genlCreateMachine filled in the default
+    gen->cabi = genlCAbiTarget(opt->triple);
     gen->emptyStructType = genlEmptyStruct(gen);
 }
 

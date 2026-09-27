@@ -98,10 +98,15 @@ Visual Studio projects stay at the root.
   bare `import collector;` brings in, since a package named `gc` could not
   also declare a struct `gc`; `thread` is OS threads (start a function on
   a value moved in, join, detach, a handle dropped unjoined joins, sleep,
-  parking), Windows only, over `sync`; `sync` is what threads share
+  parking; what it is handed and returns must be `Sendable`, the
+  compiler's thread check), Windows only, over `sync`; `sync` is what threads share
   safely: `Atomic[T]`, an integer, `Bool` or raw pointer changed only by
   atomic operations over core's `mem` intrinsics, which declares the built-in marker
-  `AtomicValue`; the futex the blocking layers are built on (on an
+  `AtomicValue`; `arc`, the region `rc` would be with its count atomic,
+  for owners several threads hold, declaring the built-in marker
+  `ThreadSafe` (not in core, as Rust's `Arc` is not in its prelude, so a
+  module names it only after `import sync use arc` or `use *`); the
+  futex the blocking layers are built on (on an
   `Atomic[u32]`, linking the Windows SDK's `Synchronization.lib`); and,
   on the futex alone, Rust's way, the unchecked locks `Mutex`, `RwLock`,
   `Condvar` and `Once`, with explicit lock and unlock; `render` draws lit

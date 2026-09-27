@@ -73,6 +73,7 @@ Name *markMethodName;
 Name *writeBarrierMethodName;
 Name *regionRefName;
 Name *tracedTraitName;
+Name *threadSafeTraitName;
 Name *moveTraitName;
 Name *copyTraitName;
 Name *shapeChangingTraitName;
@@ -81,6 +82,7 @@ Name *noLoanReadTraitName;
 Name *atomicValueTraitName;
 Name *integerTraitName;
 Name *pointerTraitName;
+Name *sendableTraitName;
 
 // ---- Identifiers -----------------------------------------------------------
 //

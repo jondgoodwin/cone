@@ -140,6 +140,7 @@ add_executable(conec
 	compiler/c/genllvm/genlexpr.c
 	compiler/c/genllvm/genlalloc.c
 	compiler/c/genllvm/genltype.c
+	compiler/c/genllvm/genlcabi.c
 )
 
 target_link_libraries(conec ${llvm_libs})

@@ -27,8 +27,9 @@
 		to keep, until <a href="refpermlock.html">lock permissions</a> are implemented; and
 		an unbounded <a href="refconccomm.html#channel">channel</a> of many senders and one
 		receiver, <span class="pre">Channel[T]</span>, on the next page. The
-		<span class="pre">atomic</span> permission is not implemented. Nothing checks yet that
-		what is handed to a thread is safe to share. Co-routines, green threads, processes,
+		<span class="pre">atomic</span> permission is not implemented. What is handed to a thread,
+		returned from one or sent over a channel must be <span class="pre">Sendable</span>
+		(<a href="refconccomm.html#race">Race condition safety</a>). Co-routines, green threads, processes,
 		distributed computing, and splitting work across threads are not implemented.</i></p>
 	
 	<p>Concurrency and parallelism can sometimes improve program throughput, by:</p>
@@ -105,9 +106,13 @@ fn main() {
 		thread will own outright (a number, a struct of them, a <span class="pre">+so</span> owner,
 		a <span class="pre">uni</span> reference) or an <span class="pre">imm</span> or
 		<span class="pre">opaq</span> reference, which <a href="refconccomm.html">the permission
-		rules</a> already mark as safe to share. A <span class="pre">mut</span> or
-		<span class="pre">ro</span> reference, an <span class="pre">rc</span> owner (its count is
-		not atomic), a borrowed reference into the starting thread's stack, or a raw pointer to
+		rules</a> already mark as safe to share, where its region's count, if it keeps one,
+		is atomic: an <span class="pre">+arc-imm</span> owner (the <span class="pre">sync</span>
+		package's <span class="pre">arc</span>, folded in by <span class="pre">import sync use arc</span>), which
+		<span class="pre">thread.start</span> copies, so the value is freed once, after the last
+		thread lets it go (<a href="refregionglo.html">regions</a>). A <span class="pre">mut</span> or
+		<span class="pre">ro</span> reference, an <span class="pre">rc</span> owner that is not
+		<span class="pre">uni</span> (its count is not atomic), a borrowed reference into the starting thread's stack, or a raw pointer to
 		memory another thread also writes all compile today, and are the program's to get right,
 		with <a href="#atomic">atomic values</a> or <a href="#locks">locks</a>. The compiler's
 		check comes later.</li>
@@ -179,8 +184,9 @@ fn main() {
 	<h3>What a started thread may not use yet</h3>
 	<p>The <span class="pre">collector</span> package's <span class="pre">+gc</span> collector is
 		single threaded: its roots are one chain and its heap is not synchronized. A traced reference
-		made, held, reached or dropped on a thread the package started corrupts it. Nothing checks
-		this. A <a href="refmodule.html#threadlocal">thread-local global</a> gives each thread a copy
+		made, held, reached or dropped on a thread the package started corrupts it. One is not
+		<span class="pre">Sendable</span>, so it cannot be handed to a thread or returned from one,
+		but nothing stops a started thread from making one of its own. A <a href="refmodule.html#threadlocal">thread-local global</a> gives each thread a copy
 		starting from its initial value, and nothing finalizes a thread's copies when it ends.</p>
 	<p>Deliberately not provided: killing a thread, priorities, pinning a thread to a processor, a
 		flag asking a thread to stop, and scoped threads, which would join before a function returns

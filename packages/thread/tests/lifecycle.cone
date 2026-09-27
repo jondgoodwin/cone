@@ -68,10 +68,18 @@ fn gatedCounted(n i64) Counted {
   Counted[5];
 }
 
+// A word of main's, handed to a thread. A raw pointer is not Sendable, since
+// nothing checks what it points at; this declares it is, a promise taken on
+// trust: main reads the word only after the thread is joined, and the
+// thread writes it atomically.
+struct Word is Sendable {
+  pub p *u32;
+}
+
 // Sleeps, then writes the word it was given
-fn lateWrite(word *u32) {
+fn lateWrite(word Word) {
   thread.sleep(30000000u64);
-  mem.atomicStore[u32](word, 7u32, MemOrder.SeqCst[]);
+  mem.atomicStore[u32](word.p, 7u32, MemOrder.SeqCst[]);
 }
 
 // Takes an owned value: it dies in the thread, when the function ends
@@ -98,7 +106,7 @@ fn main() i32 {
   // Dropping an unjoined handle joins it
   mut word = 0u32;
   {
-    imm w = thread.start(&mut word as *u32, &lateWrite);
+    imm w = thread.start(Word[&mut word as *u32], &lateWrite);
   }
   expectUInt(u64[mem.atomicLoad[u32](&mut word as *u32, MemOrder.SeqCst[])], 7u64,
     "a dropped handle joined: the thread's write is seen after the scope");
@@ -125,7 +133,7 @@ fn main() i32 {
 
   // A thread with nothing to return
   mut again = 0u32;
-  imm v = thread.start(&mut again as *u32, &lateWrite);
+  imm v = thread.start(Word[&mut again as *u32], &lateWrite);
   v.join();
   expectUInt(u64[mem.atomicLoad[u32](&mut again as *u32, MemOrder.SeqCst[])], 7u64,
     "join waits for a thread returning nothing");

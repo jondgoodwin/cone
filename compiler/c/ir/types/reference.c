@@ -66,7 +66,9 @@ INode *cloneRefNode(CloneState *cstate, RefNode *node) {
     return (INode *)newnode;
 }
 
-// Set type infection flags based on the reference's type parameters
+// Set type infection flags based on the reference's type parameters. Whether
+// it is bound to its thread is not one of them: that is asked of the whole
+// type when something crosses (refThreadBinds, itypeThreadBound).
 void refAdoptInfections(RefNode *refnode) {
     if (refnode->perm == NULL || refnode->vtexp == unknownType)
         return;  // Wait until we have this info
@@ -75,12 +77,40 @@ void refAdoptInfections(RefNode *refnode) {
     if (!(permGetFlags(refnode->perm) & MayAlias)
         || (isTypeNode(refnode->region) && itypeIsMove(refnode->region)))
         refnode->flags |= MoveType;
-    // Unwrap the permission before comparing: a permission written in source is
-    // a name use wrapping the singleton, which is why the MayAlias test above
-    // goes through permGetFlags rather than comparing pointers.
-    if (itypeGetTypeDcl(refnode->perm) == (INode*)mutPerm || itypeGetTypeDcl(refnode->perm) == (INode*)roPerm
-        || (refnode->vtexp->flags & ThreadBound))
-        refnode->flags |= ThreadBound;
+}
+
+// Whether a reference may cross to another thread, as far as the reference
+// itself says: the thread check's rule, with what it points at asked
+// separately (itypeThreadBound). In order:
+// - A reference to a function points at code, which every thread shares.
+// - A borrow never crosses: its lifetime is checked in one thread alone,
+//   until scoped threads join inside it.
+// - A traced reference never crosses while the collector is single threaded,
+//   whatever its permission or its region declares.
+// - An owner that cannot be aliased moves, taking its value with it: a 'uni'
+//   owner of any region, and any owner of a 'Move' region ('+so').
+// - Any other owner may be shared: its permission must be RaceSafe ('imm',
+//   'opaq'), and its region must declare ThreadSafe, so that its alias and
+//   dealias may run on several threads at once ('arc' does; 'rc' does not).
+// A permission that is not a built-in one (a struct in the permission slot,
+// the unbuilt lock permissions) is not taken as RaceSafe.
+RefBinds refThreadBinds(RefNode *ref) {
+    if (ref->vtexp && isTypeNode(ref->vtexp) && itypeGetTypeDcl(ref->vtexp)->tag == FnSigTag)
+        return RefCrossesAll;
+    INode *region = ref->region && isTypeNode(ref->region) ? itypeGetTypeDcl(ref->region) : ref->region;
+    if (region == borrowRef)
+        return RefBindsBorrow;
+    if (regionIsTraced(ref->region))
+        return RefBindsTraced;
+    INode *perm = ref->perm && isTypeNode(ref->perm) ? itypeGetTypeDcl(ref->perm) : NULL;
+    int permflags = perm && perm->tag == PermTag ? ((PermNode*)perm)->permflags : 0;
+    if (perm && perm->tag == PermTag && (!(permflags & MayAlias) || regionIsMove(ref->region)))
+        return RefCrosses;
+    if (!(permflags & RaceSafe))
+        return RefBindsPerm;
+    if (!regionIsThreadSafe(ref->region))
+        return RefBindsShared;
+    return RefCrosses;
 }
 
 // Create a reference node based on fully-known type parameters

@@ -1,0 +1,104 @@
+// Structs passed and returned by value across the C boundary, checked against
+// C compiled by the platform's own C compiler (cside.c, which the scenario
+// links). A C-named function passes a struct as C does: on Win64 one of 1, 2,
+// 4 or 8 bytes as one integer, whatever its fields, any other size through a
+// pointer to a copy, and a larger return through a hidden result pointer.
+// Each is exercised both ways: Cone calling C, and C calling Cone's own
+// C-named functions, directly and through a pointer Cone hands it.
+mod module_c_byvalue;
+import stdio use *;
+
+struct Rgba { pub r u8; pub g u8; pub b u8; pub a u8; }   // 4 bytes
+struct Rgb { pub r u8; pub g u8; pub b u8; }             // 3 bytes
+struct Ext2 { pub a i32; pub b i32; }                    // 8 bytes
+struct Vec2 { pub x f32; pub y f32; }                    // 8 bytes, floats
+struct D1 { pub d f64; }                                 // 8 bytes, one double
+struct Vec3 { pub x f32; pub y f32; pub z f32; }         // 12 bytes
+struct Vec4 { pub x f32; pub y f32; pub z f32; pub w f32; }  // 16 bytes
+struct Big { pub lo i64; pub hi i64; }                   // 16 bytes
+
+extern {
+  fn @c rgba_code(c Rgba) i32;
+  fn @c rgb_code(c Rgb) i32;
+  fn @c ext_code(e Ext2) i32;
+  fn @c vec2_code(v Vec2) i32;
+  fn @c d1_code(v D1) i32;
+  fn @c vec3_code(v Vec3) i32;
+  fn @c vec4_code(v Vec4) i32;
+  fn @c big_code(b Big) i64;
+  fn @c mixed(k i32, e Ext2, s f64, v Vec3, last i8) i64;
+
+  fn @c rgba_make(n i32) Rgba;
+  fn @c rgb_make(n i32) Rgb;
+  fn @c ext_make(n i32) Ext2;
+  fn @c vec2_make(f f32) Vec2;
+  fn @c vec3_make(f f32) Vec3;
+  fn @c big_make(n i64) Big;
+
+  fn @c c_via_cone_ext() i32;
+  fn @c c_via_cone_vec3() i32;
+  fn @c c_via_cone_ext_make() i32;
+  fn @c c_apply(a i32, b i32, f &fn(e Ext2) i32) i32;
+}
+
+// Cone's own C-named functions, which C calls
+pub fn @c cone_ext(e Ext2) i32 {
+  e.a * 1000 + e.b;
+}
+pub fn @c cone_vec3(v Vec3, k f32) Vec3 {
+  Vec3[v.x * k, v.y * k, v.z * k];
+}
+pub fn @c cone_ext_make(n i32) Ext2 {
+  Ext2[n, n + 100];
+}
+
+fn show(label &[]u8, n i64) {
+  printStr(label); printStr(" "); printInt(n); printStr("\n");
+}
+fn showU(label &[]u8, n u64) {
+  printStr(label); printStr(" "); printUInt(n); printStr("\n");
+}
+fn showF(label &[]u8, a f64, b f64, c f64) {
+  printStr(label); printStr(" "); printFloat(a); printStr(" "); printFloat(b);
+  printStr(" "); printFloat(c); printStr("\n");
+}
+
+fn main() {
+  // Cone calls C, passing structs
+  show("rgba_code", rgba_code(Rgba[1, 2, 3, 4]));
+  show("rgb_code", rgb_code(Rgb[7, 8, 9]));
+  show("ext_code", ext_code(Ext2[3, 4]));
+  show("vec2_code", vec2_code(Vec2[1.5, 2.]));
+  show("d1_code", d1_code(D1[2.25]));
+  show("vec3_code", vec3_code(Vec3[1., 2., 3.]));
+  show("vec4_code", vec4_code(Vec4[1., 2., 3., 4.]));
+  show("big_code", big_code(Big[5, 6]));
+  show("mixed", mixed(1, Ext2[2, 3], 4., Vec3[5., 6., 7.], 8));
+
+  // Cone calls C, which returns structs
+  imm c = rgba_make(5);
+  showU("rgba_make.r", c.r); showU("rgba_make.a", c.a);
+  imm t = rgb_make(20);
+  showU("rgb_make.r", t.r); showU("rgb_make.b", t.b);
+  imm e = ext_make(5);
+  show("ext_make.a", e.a); show("ext_make.b", e.b);
+  imm v2 = vec2_make(1.5);
+  showF("vec2_make", v2.x, v2.y, 0.);
+  imm v3 = vec3_make(0.5);
+  showF("vec3_make", v3.x, v3.y, v3.z);
+  imm b = big_make(9);
+  show("big_make.lo", b.lo); show("big_make.hi", b.hi);
+
+  // C calls Cone's C-named functions
+  show("c_via_cone_ext", c_via_cone_ext());
+  show("c_via_cone_vec3", c_via_cone_vec3());
+  show("c_via_cone_ext_make", c_via_cone_ext_make());
+  show("c_apply", c_apply(5, 6, &cone_ext));
+
+  // Cone calls its own C-named functions
+  show("cone_ext", cone_ext(Ext2[8, 9]));
+  imm r = cone_vec3(Vec3[1., 2., 3.], 2.);
+  showF("cone_vec3", r.x, r.y, r.z);
+  imm m = cone_ext_make(1);
+  show("cone_ext_make.b", m.b);
+}

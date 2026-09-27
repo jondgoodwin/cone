@@ -1498,6 +1498,50 @@ name = "calls-to-a-system-function-use-the-convention"
 target = "preir"
 contains = ["call x86_stdcallcc i32 @ConeTicks()", "call x86_stdcallcc i32 @GetTickCount()"]
 
+[scenario.module_c_byvalue]
+category = "run"
+description = "Structs of 3, 4, 8, 12 and 16 bytes, integer and float, passed and returned by value between Cone's C-named functions and C compiled by the platform's C compiler, both ways and through a callback"
+tags = ["genllvm", "runtime"]
+link = ["cside.c"]
+
+[scenario.module_c_byvalue_shape]
+category = "compile"
+description = "A C-named function's structs take the Win64 C ABI's shape: 1/2/4/8 bytes as one integer, others by pointer to a caller's copy, a larger return through 'sret'; a slice and a plain Cone function are untouched"
+tags = ["genllvm"]
+
+[[scenario.module_c_byvalue_shape.run]]
+name = "win64"
+options = ["--triple=x86_64-pc-windows-msvc"]
+
+# The signatures clang gives the same C declarations for x86_64-pc-windows-msvc
+[[scenario.module_c_byvalue_shape.check]]
+name = "c-named-signatures-follow-the-win64-c-abi"
+target = "preir"
+contains = [
+  "declare i32 @ext_sum(i64)",
+  "declare float @vec2_len(i64)",
+  "declare float @v4_sum(ptr)",
+  "declare i32 @rgb_code(ptr)",
+  "declare i64 @mixed(i32, i64, double, ptr, i8)",
+  "declare i64 @ext_make(i32)",
+  "declare void @v4_make(ptr sret(%Vec4), float)",
+  "define void @cone_v4(ptr sret(%Vec4) %0, ptr %1, float %2)",
+  "define i64 @cone_ext(i64 %0)",
+]
+
+# The caller passes its own copy, and its own result slot marked 'sret'
+[[scenario.module_c_byvalue_shape.check]]
+name = "calls-pass-a-copy-and-a-result-slot"
+target = "preir"
+contains = ["call float @v4_sum(ptr %carg", "call void @v4_make(ptr sret(%Vec4) %cret"]
+
+# A slice crosses as Cone's pointer and length, as conestd's printStr takes it,
+# and a function that is not C-named keeps its first-class struct
+[[scenario.module_c_byvalue_shape.check]]
+name = "a-slice-and-a-plain-cone-function-are-untouched"
+target = "preir"
+contains = ["declare %void @text({ ptr, i64 }, i64)", "define internal %Ext2 @plain(%Ext2 %0)"]
+
 [scenario.module_c_threadlocal]
 category = "compile"
 description = "An 'extern' thread-local in a C-named module: a C thread-local, reached by its C name"

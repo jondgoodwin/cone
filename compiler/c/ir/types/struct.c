@@ -36,6 +36,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->holdstraced = HoldsTracedUnknown;
     snode->lends = LendsLoaned;
     snode->holdsatomic = HoldsTracedUnknown;
+    snode->threadbound = CarriesBorrowUnknown;
     return snode;
 }
 
@@ -69,11 +70,12 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     newnode->lifecycle = NULL;
     newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
     // An instance's fields are the generic's with its parameters bound, so
-    // whether they carry a borrow, or hold a traced reference or an atomic
-    // value, is the instance's own question
+    // whether they carry a borrow, hold a traced reference or an atomic value,
+    // or are bound to their thread, is the instance's own question
     newnode->carriesborrow = CarriesBorrowUnknown;
     newnode->holdstraced = HoldsTracedUnknown;
     newnode->holdsatomic = HoldsTracedUnknown;
+    newnode->threadbound = CarriesBorrowUnknown;
 
     // Within the copy, 'Self' is the copy. A method's self parameter is declared
     // as a use of 'Self' (parsetype.c), and name resolution has already pointed
@@ -2873,11 +2875,14 @@ static void structCheckMembers(StructNode *node) {
 
     // 'RegionRef' requires nothing an ordinary requirement can state: each region
     // method is optional, with a fixed shape where declared. 'Traced' says
-    // something only of a region ref, which regionRefCheck holds to its 'mark'.
+    // something only of a region ref, which regionRefCheck holds to its 'mark',
+    // and so does 'ThreadSafe'.
     if (regionIsRegionRef((INode*)node))
         regionRefCheck(node);
-    else
+    else {
         regionTracedUseCheck(node);
+        regionThreadSafeUseCheck(node);
+    }
 
     structCheckCopy(node);
 }
@@ -3114,7 +3119,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     }
     structFoldRefresh(pstate, node);
 
-    // Go through all fields to index them and calculate infection flags for ThreadBound/MoveType
+    // Go through all fields to index them and calculate the MoveType infection
     int isZeroSize = 1;  // Start with assumption it is zero size, unless proven otherwise
     int hasEnumFld = 0;
     uint16_t infectFlag = 0;
@@ -3122,12 +3127,11 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     for (nodelistFor(&node->fields, cnt, nodesp)) {
         // Number field indexes to reflect their possibly altered position
         ((FieldDclNode*)*nodesp)->index = index++;
-        // Notice if a field's threadbound or movetype infects the struct. Whether
+        // Notice if a field's movetype infects the struct. Whether
         // the field moves is asked of itypeIsMove rather than read off its flags,
         // since a tuple carries no flag of its own and moves when one of its
         // elements does.
         ITypeNode *fldtype = (ITypeNode*)itypeGetTypeDcl(((IExpNode*)(*nodesp))->vtype);
-        infectFlag |= fldtype->flags & ThreadBound;
         if (itypeIsMove((INode*)fldtype))
             infectFlag |= MoveType;
         // Handle impact of fields that are opaque or non-zero-size
@@ -3163,7 +3167,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     // And an atomic value is one field an atomic operation acts on
     structAtomicValueCheck(node, 1);
 
-    // Use inference rules to decide if struct is ThreadBound or a MoveType
+    // Use inference rules to decide if struct is a MoveType
     // based on whether its fields are, and whether it supports the .final method.
     //
     // A 'clone' method does not make a move type copyable. The manual's clone
