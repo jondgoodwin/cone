@@ -162,6 +162,58 @@ static int castPatternBind(CastNode *node, int report) {
     return name->dclnode != errorType;
 }
 
+// Create the test for a value alone as a match pattern, positioned on the value.
+// A bare name is marked as an 'is' pattern's root is, so that name resolution
+// leaves it unbound when it has no lexical meaning: it may be a variant of the
+// matched value's enum. Only a bare name: marking the root of '&x' would keep it
+// a reference type rather than a borrow.
+CastNode *newMatchValueNode(INode *matchee, INode *value) {
+    CastNode *node = newIsNode(matchee, value);
+    inodeLexCopy((INode*)node, value);
+    node->flags |= FlagMatchValue;
+    if (isNameUseNode(value))
+        value->flags |= FlagPattern;
+    return node;
+}
+
+// Type check a value alone as a match pattern ('case 2', 'case K', 'case Circle').
+// A value alone means equality with the matched value, but a bare name is asked
+// of the matched value's enum first, as an 'is' pattern's is: a variant of it
+// makes this the 'is' test the node already is, and castIsTypeCheck binds it.
+// Anything else is a value, and the node is replaced by 'matched == value',
+// positioned on the value and checked as any comparison is. A type is no value,
+// and the author is told to write 'is' if narrowing is what was meant.
+void castMatchValueTypeCheck(TypeCheckState *pstate, INode **nodep) {
+    CastNode *node = (CastNode*)*nodep;
+    node->flags &= 0xFFFF - FlagMatchValue;
+    iexpTypeCheckAny(pstate, &node->exp);
+    INode *value = node->typ;
+    if (isNameUseNode(value) && (value->flags & FlagPattern)) {
+        NameUseNode *name = (NameUseNode*)value;
+        if (castEnumVariant(castMatchedEnum(node->exp), name->namesym)) {
+            castIsTypeCheck(pstate, node);
+            return;
+        }
+        name->flags &= 0xFFFF - FlagPattern;
+        if (name->dclnode == NULL) {
+            errorMsgNode(value, ErrorUnkName, "The name %s does not refer to a declared name",
+                &name->namesym->namestr);
+            node->typ = errorType;
+            return;
+        }
+    }
+    if (isTypeNode(value)) {
+        errorMsgNode(value, ErrorPatType,
+            "A type alone is not a pattern: a value alone is compared with the matched value, as by '=='. Write 'is' before the type to narrow to it.");
+        node->typ = errorType;
+        return;
+    }
+    FnCallNode *eqnode = newFnCallOpnameLower(value, node->exp, eqName, 2);
+    nodesAdd(&eqnode->args, value);
+    *nodep = (INode*)eqnode;
+    inodeTypeCheckAny(pstate, nodep);
+}
+
 // Serialize cast
 void castPrint(CastNode *node) {
     inodeFprint(node->tag==CastTag? "(cast, " : "(is, ");
