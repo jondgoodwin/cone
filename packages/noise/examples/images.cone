@@ -1,0 +1,178 @@
+// images: the noise package's kinds of noise, each written as a 256 x 256
+// BMP (with the render package's Image) into the current folder, for a person
+// to look at:
+//
+//   congo run packages/noise/examples/images.cone
+//
+//   noise-value.bmp       value noise, 8 cells across
+//   noise-gradient.bmp    gradient noise, 8 cells across
+//   noise-fbm.bmp         fBm, 6 octaves
+//   noise-shaded.bmp      the same fBm lit from the upper left, its normal
+//                         from the analytic derivative (no finite differences)
+//   noise-ridged.bmp      ridged, 6 octaves
+//   noise-billow.bmp      billowed, 6 octaves
+//   noise-cells.bmp       cellular: each cell colored by its id, darkened
+//                         towards its edges (F2 - F1 small)
+//   noise-worley.bmp      cellular F1
+//   noise-warp.bmp        a two-level domain warp, in a palette
+//   noise-phacelle.bmp    Phacelle stripes steered round the middle
+//
+// Every image is a pure function of its seed: run it twice, or on another
+// machine, and the files are the same.
+
+mod images;
+
+import stdio use *;
+import libc;
+import geomath use *;
+import collections use *;
+import render use Image;
+import noise use *;
+
+const SIZE = 256;
+
+fn byte(v f32) u8 {
+  if v <= 0. { 0u8; } elif v >= 1. { 255u8; } else { u8[v * 255. + 0.5]; };
+}
+
+fn push(img &mut Image, r f32, g f32, b f32) {
+  img.pixels.push(byte(r));
+  img.pixels.push(byte(g));
+  img.pixels.push(byte(b));
+}
+
+fn blank() Image { Image[SIZE, SIZE, 3, List[u8].withCapacity(usize[SIZE * SIZE * 3])]; }
+
+fn save(img &Image, name &[]u8) {
+  if img.save(name) {
+    printStr("wrote ");
+  } else {
+    printStr("could not write ");
+  }
+  printStr(name);
+  printStr("\n");
+}
+
+// The point pixel (x, y) shows, 'cells' lattice cells across the image
+fn at(x i32, y i32, cells f32) Vec2 {
+  Vec2[(f32[x] + 0.5) * cells / f32[SIZE], (f32[y] + 0.5) * cells / f32[SIZE]];
+}
+
+// A gray image of 'kind' (0 value, 1 gradient, 2 fbm, 3 ridged, 4 billow,
+// 5 F1), its lowest value black and its highest white
+fn grayImage(kind i32, name &[]u8) {
+  mut values = List[f32].withCapacity(usize[SIZE * SIZE]);
+  mut lo f32 = 3.4028235e38;
+  mut hi f32 = -3.4028235e38;
+  mut y = 0;
+  while y < SIZE {
+    mut x = 0;
+    while x < SIZE {
+      imm p = at(x, y, 8.);
+      imm v = if kind == 0 { value2(p, 1u32).value; }
+        elif kind == 1 { gradient2(p, 1u32).value; }
+        elif kind == 2 { fbm2(p, 1u32, 6, 2., 0.5).value; }
+        elif kind == 3 { ridged2(p, 1u32, 6, 2., 0.5).value; }
+        elif kind == 4 { billow2(p, 1u32, 6, 2., 0.5).value; }
+        else { cellular2(p, 1., 1u32).f1; };
+      values.push(v);
+      if v < lo { lo = v; }
+      if v > hi { hi = v; }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  mut img = blank();
+  imm vs = values.view();
+  mut i = 0usize;
+  while i < vs.len {
+    imm g = (vs[i] - lo) / (hi - lo);
+    push(&mut img, g, g, g);
+    i = i + 1usize;
+  }
+  save(&img, name);
+}
+
+fn main() i32 {
+  grayImage(0, "noise-value.bmp");
+  grayImage(1, "noise-gradient.bmp");
+  grayImage(2, "noise-fbm.bmp");
+  grayImage(3, "noise-ridged.bmp");
+  grayImage(4, "noise-billow.bmp");
+  grayImage(5, "noise-worley.bmp");
+
+  // fBm as a height field, lit: its normal is (-dh/dx, -dh/dy, 1) with the
+  // height scaled by 0.15
+  {
+    mut img = blank();
+    imm light = Vec3[-0.5, 0.5, 0.7071].normalize();
+    mut y = 0;
+    while y < SIZE {
+      mut x = 0;
+      while x < SIZE {
+        imm n = fbm2(at(x, y, 8.), 1u32, 6, 2., 0.5);
+        imm normal = Vec3[-0.15 * n.d.x, -0.15 * n.d.y, 1.].normalize();
+        imm lit = normal.dot(light);
+        push(&mut img, 0.1 + 0.8 * lit, 0.1 + 0.75 * lit, 0.12 + 0.6 * lit);
+        x = x + 1;
+      }
+      y = y + 1;
+    }
+    save(&img, "noise-shaded.bmp");
+  }
+
+  // Cells by id, darkened near their edges
+  {
+    mut img = blank();
+    mut y = 0;
+    while y < SIZE {
+      mut x = 0;
+      while x < SIZE {
+        imm c = cellular2(at(x, y, 8.), 0.9, 1u32);
+        imm edge = fmin(1., (c.f2 - c.f1) * 6.);
+        push(&mut img, toUnit(c.id) * edge, toUnit(c.id << 8u32) * edge, toUnit(c.id << 16u32) * edge);
+        x = x + 1;
+      }
+      y = y + 1;
+    }
+    save(&img, "noise-cells.bmp");
+  }
+
+  // A domain warp, in a palette from deep blue through teal to cream
+  {
+    mut img = blank();
+    mut y = 0;
+    while y < SIZE {
+      mut x = 0;
+      while x < SIZE {
+        imm t = warp2(at(x, y, 3.), 1u32, 5, 4.) * 0.5 + 0.5;
+        push(&mut img, 0.1 + 0.9 * t * t, 0.15 + 0.7 * t, 0.3 + 0.5 * t);
+        x = x + 1;
+      }
+      y = y + 1;
+    }
+    save(&img, "noise-warp.bmp");
+  }
+
+  // Phacelle stripes running round the middle of the image
+  {
+    mut img = blank();
+    mut y = 0;
+    while y < SIZE {
+      mut x = 0;
+      while x < SIZE {
+        imm p = at(x, y, 12.);
+        imm fromMiddle = Vec2[p.x - 6., p.y - 6.];
+        imm dir = fromMiddle.perp().normalize();
+        imm s = phacelle2(p, dir, 1., 0., 0.8, 1u32).value.x * 0.5 + 0.5;
+        push(&mut img, s * 0.9, s * 0.6 + 0.1, 0.2 + s * 0.3);
+        x = x + 1;
+      }
+      y = y + 1;
+    }
+    save(&img, "noise-phacelle.bmp");
+  }
+  0;
+}
+
+fn fmin(a f32, b f32) f32 { if a < b { a; } else { b; }; }

@@ -51,8 +51,18 @@ ends made LF, as git may check it out either way) recorded in the block equal
 to that of the .slang as it is now, and the words in the block equal to the
 .spv's bytes. So a .slang edited and not recompiled, or a .spv recompiled and
 not embedded, fails. Where slangc is found, it also compiles each .slang
-again and checks the result is byte for byte the committed .spv. The hash
-covers the .slang file itself, not modules it imports; none do yet.
+again and checks the result is byte for byte the committed .spv.
+
+MODULES. A .slang with no entry point (no '[shader(...)]') is a module:
+shaders import it by name ('import noise;') and it is not compiled alone,
+so it has no .spv. Its name is found beside the importing file, then in
+each package's src/ folder (every one is passed to slangc with -I). A
+shader's hash covers the modules it imports, and theirs, as well as itself,
+so a module edited and its importers not recompiled fails --check.
+
+EXTRA ARGUMENTS. A line '// slangc: <arguments>' in a shader adds those
+arguments to its compile (e.g. '-fp-mode precise', which marks every float
+operation NoContraction; the noise package's shaders need it).
 
 Python 3.11 or later, standard library only.
 """
@@ -79,6 +89,9 @@ BEGIN = re.compile(r"^// spirv-begin (\S+) (\w+)[ \t]*\r?$", re.M)
 END = re.compile(r"^// spirv-end[ \t]*\r?$", re.M)
 HASH = re.compile(r"sha256 ([0-9a-f]{64})")
 WORD = re.compile(r"0x([0-9A-Fa-f]{8})u32")
+IMPORT = re.compile(r"^[ \t]*import[ \t]+(\w+)[ \t]*;", re.M)
+ENTRY = re.compile(r"\[shader\(")
+EXTRA = re.compile(r"^// slangc:[ \t]*(.+?)[ \t]*\r?$", re.M)
 
 
 class ShaderError(Exception):
@@ -104,13 +117,51 @@ def walk(root: Path, suffix: str) -> list[Path]:
     return out
 
 
+def lf_bytes(path: Path) -> bytes:
+    return path.read_bytes().replace(b"\r\n", b"\n")
+
+
+def module_dirs() -> list[Path]:
+    """The packages' src/ folders, where an imported module is looked for."""
+    return sorted(p for p in DEFAULT_ROOT.glob("*/src") if p.is_dir())
+
+
+def is_module(slang: Path) -> bool:
+    """Whether a .slang is a module (no entry point), compiled only by importers."""
+    return not ENTRY.search(lf_bytes(slang).decode("utf-8"))
+
+
+def imports_of(slang: Path) -> list[Path]:
+    """Every module 'slang' imports, directly or through another, in the
+    order first reached; a name found nowhere is left to slangc to report."""
+    out: list[Path] = []
+    todo = [slang]
+    while todo:
+        f = todo.pop(0)
+        for name in IMPORT.findall(lf_bytes(f).decode("utf-8")):
+            for d in [f.parent, *module_dirs()]:
+                m = (d / f"{name}.slang").resolve()
+                if m.is_file():
+                    if m not in out and m != slang.resolve():
+                        out.append(m)
+                        todo.append(m)
+                    break
+    return out
+
+
 def source_hash(slang: Path) -> str:
-    """The SHA-256 of a .slang, its line ends made LF."""
-    return hashlib.sha256(slang.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+    """The SHA-256 of a .slang, its line ends made LF, followed by those of
+    the modules it imports (a shader importing nothing hashes itself alone)."""
+    data = lf_bytes(slang)
+    for m in imports_of(slang):
+        data += f"\n// import {m.name}\n".encode("utf-8") + lf_bytes(m)
+    return hashlib.sha256(data).hexdigest()
 
 
 def compile_slang(slangc: Path, slang: Path, spv: Path) -> None:
-    result = subprocess.run([str(slangc), str(slang), *SLANGC_ARGS, "-o", str(spv)],
+    extra = [a for line in EXTRA.findall(lf_bytes(slang).decode("utf-8")) for a in line.split()]
+    includes = [a for d in module_dirs() for a in ("-I", str(d))]
+    result = subprocess.run([str(slangc), str(slang), *SLANGC_ARGS, *extra, *includes, "-o", str(spv)],
                             capture_output=True, text=True)
     if result.returncode != 0 or not spv.is_file():
         raise ShaderError(f"slangc failed on {shown(slang)}:\n{result.stdout}{result.stderr}")
@@ -192,7 +243,8 @@ def check_embedded(cone: Path, problems: list[str]) -> list[Path]:
         if not slang.is_file():
             problems.append(f"{where}: {shown(slang)}, its source, does not exist")
         elif not h or h.group(1) != source_hash(slang):
-            problems.append(f"{where}: {slang.name} has changed since it was compiled and embedded;"
+            imported = "" if not imports_of(slang) else " (or a module it imports)"
+            problems.append(f"{where}: {slang.name}{imported} has changed since it was compiled and embedded;"
                             " run tools/shaders/shaders.py")
         if [int(w, 16) for w in WORD.findall(body)] != words_of(spv):
             problems.append(f"{where}: the words embedded are not {shown(spv)}'s;"
@@ -213,7 +265,7 @@ def main() -> int:
     ap.add_argument("--check", action="store_true", help="check that every .spv and embedding is current")
     args = ap.parse_args()
     root = Path(args.folder).resolve()
-    slangs = walk(root, ".slang")
+    slangs = [s for s in walk(root, ".slang") if not is_module(s)]
     cones = walk(root, ".cone")
     slangc = find_slangc()
     try:

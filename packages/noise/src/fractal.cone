@@ -1,0 +1,126 @@
+// ======== Fractal sums: fBm, ridged and billowed; domain warp ========
+//
+// Each sums 'octaves' layers of gradient noise, the first at the point's own
+// scale with amplitude 1, each next at 'lacunarity' times the frequency and
+// 'gain' times the amplitude (2 and 0.5 are the usual). Octave i is seeded
+// by hash1(i, seed), so no two octaves, and no two seeds, share a lattice.
+// The sum is not divided by the total amplitude (a division is not exact on
+// a GPU); with gain g < 1 it is 1 + g + g^2 + ... < 1 / (1 - g) times one
+// octave's range. Each carries its derivative, by the chain rule through the
+// frequencies.
+
+// One octave's contribution to a fractal sum: the layer's value from the
+// noise value n, and its derivative with respect to n
+fn ridge(n f32) f32 { (1. - libc.fabsf(n)) * (1. - libc.fabsf(n)); }
+fn ridgeD(n f32) f32 { if n < 0. { 2. * (1. - libc.fabsf(n)); } else { -2. * (1. - libc.fabsf(n)); }; }
+fn billow(n f32) f32 { 2. * libc.fabsf(n) - 1.; }
+fn billowD(n f32) f32 { if n < 0. { -2.; } else { 2.; }; }
+
+// The kind of layer a fractal sum adds up
+const LAYER_PLAIN = 0;
+const LAYER_RIDGED = 1;
+const LAYER_BILLOW = 2;
+
+fn layer(kind i32, n f32) f32 {
+  if kind == LAYER_RIDGED { ridge(n); } elif kind == LAYER_BILLOW { billow(n); } else { n; };
+}
+fn layerD(kind i32, n f32) f32 {
+  if kind == LAYER_RIDGED { ridgeD(n); } elif kind == LAYER_BILLOW { billowD(n); } else { 1.; };
+}
+
+fn fractal2(kind i32, p Vec2, seed u32, octaves i32, lacunarity f32, gain f32) Noise2 {
+  mut sum f32 = 0.;
+  mut dx f32 = 0.;
+  mut dy f32 = 0.;
+  mut amp f32 = 1.;
+  mut freq f32 = 1.;
+  mut i = 0;
+  while i < octaves {
+    imm n = gradient2(Vec2[p.x * freq, p.y * freq], hash1(i, seed));
+    imm s = amp * layerD(kind, n.value) * freq;
+    sum = sum + amp * layer(kind, n.value);
+    dx = dx + s * n.d.x;
+    dy = dy + s * n.d.y;
+    amp = amp * gain;
+    freq = freq * lacunarity;
+    i = i + 1;
+  }
+  Noise2[sum, Vec2[dx, dy]];
+}
+
+fn fractal3(kind i32, p Vec3, seed u32, octaves i32, lacunarity f32, gain f32) Noise3 {
+  mut sum f32 = 0.;
+  mut dx f32 = 0.;
+  mut dy f32 = 0.;
+  mut dz f32 = 0.;
+  mut amp f32 = 1.;
+  mut freq f32 = 1.;
+  mut i = 0;
+  while i < octaves {
+    imm n = gradient3(Vec3[p.x * freq, p.y * freq, p.z * freq], hash1(i, seed));
+    imm s = amp * layerD(kind, n.value) * freq;
+    sum = sum + amp * layer(kind, n.value);
+    dx = dx + s * n.d.x;
+    dy = dy + s * n.d.y;
+    dz = dz + s * n.d.z;
+    amp = amp * gain;
+    freq = freq * lacunarity;
+    i = i + 1;
+  }
+  Noise3[sum, Vec3[dx, dy, dz]];
+}
+
+// Fractal Brownian motion: the plain sum of octaves of gradient noise
+pub fn fbm2(p Vec2, seed u32, octaves i32, lacunarity f32, gain f32) Noise2 {
+  fractal2(LAYER_PLAIN, p, seed, octaves, lacunarity, gain);
+}
+pub fn fbm3(p Vec3, seed u32, octaves i32, lacunarity f32, gain f32) Noise3 {
+  fractal3(LAYER_PLAIN, p, seed, octaves, lacunarity, gain);
+}
+
+// Ridged: each octave n becomes (1 - |n|)^2, sharp ridges where n crosses 0,
+// each layer in [0, 1]
+pub fn ridged2(p Vec2, seed u32, octaves i32, lacunarity f32, gain f32) Noise2 {
+  fractal2(LAYER_RIDGED, p, seed, octaves, lacunarity, gain);
+}
+pub fn ridged3(p Vec3, seed u32, octaves i32, lacunarity f32, gain f32) Noise3 {
+  fractal3(LAYER_RIDGED, p, seed, octaves, lacunarity, gain);
+}
+
+// Billowed: each octave n becomes 2|n| - 1, rounded puffs with creases
+// between them
+pub fn billow2(p Vec2, seed u32, octaves i32, lacunarity f32, gain f32) Noise2 {
+  fractal2(LAYER_BILLOW, p, seed, octaves, lacunarity, gain);
+}
+pub fn billow3(p Vec3, seed u32, octaves i32, lacunarity f32, gain f32) Noise3 {
+  fractal3(LAYER_BILLOW, p, seed, octaves, lacunarity, gain);
+}
+
+// -------- domain warp --------
+//
+// Inigo Quilez's two-level warp: f(p + s r), where r = (f(p + s q + c2),
+// f(p + s q + c3)) and q = (f(p), f(p + c1)), f an fBm of 'octaves' (lacunarity
+// 2, gain 0.5) and s the 'strength' (Quilez uses 4). The offsets c1..c3 only
+// decorrelate the channels; they are exact in binary (quarters), so every
+// machine reads the same numbers. The value only: no derivative.
+
+pub fn warp2(p Vec2, seed u32, octaves i32, strength f32) f32 {
+  imm qx = fbm2(p, seed, octaves, 2., 0.5).value;
+  imm qy = fbm2(Vec2[p.x + 5.25, p.y + 1.25], seed, octaves, 2., 0.5).value;
+  imm rx = fbm2(Vec2[p.x + strength * qx + 1.75, p.y + strength * qy + 9.25], seed, octaves, 2., 0.5).value;
+  imm ry = fbm2(Vec2[p.x + strength * qx + 8.25, p.y + strength * qy + 2.75], seed, octaves, 2., 0.5).value;
+  fbm2(Vec2[p.x + strength * rx, p.y + strength * ry], seed, octaves, 2., 0.5).value;
+}
+
+pub fn warp3(p Vec3, seed u32, octaves i32, strength f32) f32 {
+  imm qx = fbm3(p, seed, octaves, 2., 0.5).value;
+  imm qy = fbm3(Vec3[p.x + 5.25, p.y + 1.25, p.z + 3.5], seed, octaves, 2., 0.5).value;
+  imm qz = fbm3(Vec3[p.x + 2.5, p.y + 7.75, p.z + 4.25], seed, octaves, 2., 0.5).value;
+  imm sx = p.x + strength * qx;
+  imm sy = p.y + strength * qy;
+  imm sz = p.z + strength * qz;
+  imm rx = fbm3(Vec3[sx + 1.75, sy + 9.25, sz + 6.5], seed, octaves, 2., 0.5).value;
+  imm ry = fbm3(Vec3[sx + 8.25, sy + 2.75, sz + 0.75], seed, octaves, 2., 0.5).value;
+  imm rz = fbm3(Vec3[sx + 3.25, sy + 5.5, sz + 7.25], seed, octaves, 2., 0.5).value;
+  fbm3(Vec3[p.x + strength * rx, p.y + strength * ry, p.z + strength * rz], seed, octaves, 2., 0.5).value;
+}
