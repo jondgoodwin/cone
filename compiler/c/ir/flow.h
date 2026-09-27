@@ -41,8 +41,65 @@ typedef struct FlowState {
     int16_t scope;      // Current block scope (2 = main block)
     uint16_t gate;      // FlowGate bits found so far
     uint16_t inflightcnt;   // How many of 'inflight' are in use
+    uint8_t dropgate;   // 1: some variable's state may differ by path, so the path walk decides its drops
+    uint8_t jumped;     // Set by blockFlow and ifFlow: every path through the block or 'if' jumped away
     VarDclNode *inflight[FlowInflightMax];  // The variable each waiting operand's borrow is of
 } FlowState;
+
+// The walk's conditional depth: how many 'if' arms, later 'elif' conditions,
+// right operands of 'and' or 'or', and loop bodies enclose the node being
+// walked. A variable records it as it is declared (VarDclNode.flowdepth); a
+// tracked variable changed deeper than that may differ by path (flowDropNote).
+extern uint16_t flowDepth;
+
+// A function's walk begins: its depth, its state log
+void flowFnBegin(FlowState *fstate);
+
+// The main walk's variable flags change only through this, which logs the old
+// ones so that an 'if' can walk each arm from the same state and join them
+void flowVarSetFlags(VarDclNode *var, uint16_t flags, Nodes *hollowed);
+uint32_t flowVarLogMark();
+uint32_t flowVarLogPos();
+// What one path changed since 'mark', and undoing it
+typedef struct FlowVarPath FlowVarPath;
+FlowVarPath *flowVarPathTake(uint32_t mark, FlowVarPath *next);
+void flowVarRollback(uint32_t mark);
+// Join the paths that went on after the fork -- 'npaths' of them, those that
+// changed nothing left out of 'paths' -- into the state at the fork
+void flowVarJoin(FlowVarPath *paths, uint32_t npaths);
+
+// Is this variable one whose state the path walk follows for drop flags: a local
+// or a parameter whose value moves or has something to do as it dies?
+int flowDropTracked(VarDclNode *var);
+// Is this type certainly one whose value has nothing to do as it dies, by a
+// look at what it names: a number or void? Anything else is asked.
+int flowNoDeath(INode *type);
+// A tracked variable's state changed here: if deeper than its declaration, the
+// function's drops are the path walk's to decide
+void flowDropNote(FlowState *fstate, VarDclNode *var);
+extern FlowState *flowCurrent;
+
+// The variable at the root of an assignment target that is part of a local's
+// own value -- a field, a tuple element, an array element, however deep -- or
+// NULL when the target is reached through a reference or a pointer, or is the
+// variable itself
+VarDclNode *flowLvalRootVar(INode *lval);
+
+// The variable that owns a variable's value: itself, or for a match's binding,
+// the matched value's variable
+VarDclNode *flowDropOwner(VarDclNode *var);
+
+// Append to 'varlist' what the death of 'var' at a scope's end does, when it
+// holds its whole value ('whole'), or is hollowed ('hollow', listing the moves
+// that hollowed it beside 'extra'). 'dropat' positions a drop call. 'test' wraps
+// each release in a DropFlagNode, so that it runs only when the variable's drop
+// flag says it holds that.
+void flowVarRelease(VarDclNode *var, INode *dropat, int whole, int hollow, Nodes *hollowed, Nodes *extra,
+    int test, Nodes **varlist);
+
+// Is this variable's value the one a scope hands back (exempting it from the
+// scope's release)? 'hollow' gathers a part handed back out of what it owns.
+int flowIsScopeResultOf(INode *retexp, VarDclNode *varnode, Nodes **hollow);
 
 // Start the flow state for a function with this signature
 void flowStateInit(FlowState *fstate, FnSigNode *fnsig);
@@ -115,7 +172,26 @@ typedef struct {
     INode *exp;
     VarDclNode *var;
     Nodes *moved;
+    uint8_t test;       // 1: release only when the variable's drop flag says it is hollow
 } HollowNode;
+
+// A release that runs only when 'var''s drop flag holds 'state' (a
+// DropFlagState): a variable whose state differs by path, at a scope's end.
+// Injected into a release list by the path walk's drop-flag client
+// (flowdrop.c), never parsed.
+typedef struct {
+    IExpNodeHdr;
+    INode *release;
+    VarDclNode *var;
+    uint8_t state;
+} DropFlagNode;
+
+// What a drop flag holds at run time: which value, if any, its variable holds
+enum DropFlagState {
+    DropFlagEmpty = 0,  // nothing: never given a value, or moved out
+    DropFlagWhole = 1,  // its whole value
+    DropFlagHollow = 2, // a sole owner some of whose referent moved out
+};
 
 // The local variable holding an owning reference that 'ref' names, or NULL
 VarDclNode *flowOwningLocal(INode *ref);
@@ -129,6 +205,9 @@ HollowNode *flowNewHollow(VarDclNode *var);
 
 // Handle when moving or copying a value to a new destination
 void flowHandleMoveOrCopy(INode **nodep);
+
+// Deactivate the source of a value moved to a new holder (or say the move is illegal)
+void flowHandleMove(INode *node);
 
 // Refuse a move-typed result a scope hands back when its source does not own it
 void flowResultMove(INode *node);

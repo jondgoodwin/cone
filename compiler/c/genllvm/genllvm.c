@@ -41,6 +41,7 @@ void genlParmVar(GenState *gen, VarDclNode *var) {
     var->llvmvar = genlAlloca(gen, genlType(gen, var->vtype), &var->namesym->namestr);
     genlRootNote(gen, var->llvmvar, var->vtype);
     LLVMBuildStore(gen->builder, LLVMGetParam(gen->fn, var->index), var->llvmvar);
+    genlDropFlagBegin(gen, var, DropFlagWhole);
 }
 
 // Put a generated global in a COMDAT of its own, named for the symbol itself.

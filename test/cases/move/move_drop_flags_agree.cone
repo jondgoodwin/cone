@@ -1,0 +1,45 @@
+// Where every path agrees about what a variable holds at each release, it has
+// no drop flag: each release is what it is, or nothing, as it was before drop
+// flags. Each function here moves, initializes or reassigns a finalizing value
+// in a branch or a loop -- which sends the function's drops to the walk that
+// follows each path -- and on every path reaching each of its releases the
+// variable holds the same thing. The check is that no flag ('.held') is in
+// the generated code; move_drop_flags is the program that needs them.
+
+mod move_drop_flags_agree;
+
+struct Fin {
+  pub v i32;
+  fn final(self &uni) { }
+}
+
+fn take(f Fin) { }
+
+// Moved on every branch: gone after, on every path
+fn bothBranches(c Bool) { imm a = Fin[1]; if c { take(a); } else { take(a); } }
+
+// Moved, and the path that moved it returns: held wherever the end is reached
+fn movedThenReturned(c Bool) { imm a = Fin[2]; if c { take(a); return; } }
+
+// Given a value on every branch
+fn givenOnBoth(c Bool) { mut f Fin; if c { f = Fin[3]; } else { f = Fin[4]; } }
+
+// Handed on by every branch of an 'if' value
+fn ifValueBoth(c Bool) { imm a = Fin[5]; imm y = if c {a;} else {a;}; }
+
+// Declared in the loop body, and moved or not before each pass ends
+fn loopLocal(n i32) {
+  mut i = 0;
+  while i < n {
+    imm a = Fin[i];
+    if i == 1 { take(a); } else { take(a); }
+    i = i + 1;
+  }
+}
+
+// Reassigned in a loop, never moved: held at every store
+fn reassignedInLoop(n i32) {
+  mut a = Fin[0];
+  mut i = 0;
+  while i < n { a = Fin[i]; i = i + 1; }
+}

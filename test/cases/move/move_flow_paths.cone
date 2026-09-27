@@ -1,0 +1,71 @@
+// A value moved, or never given, on some path reaching a use may not be used
+// there: the walk that follows each path refuses it, where the running state
+// the main walk keeps in source order cannot see it -- a loop's earlier pass
+// comes after the use in source order. A branch that moved the value is seen
+// by both: after the 'if', a value moved on any branch is moved
+// (move_flow_deactivate); a variable given a value on some branches only may
+// not be read when it has something to do as it dies. And a value moved on
+// every branch, or on a branch that returns, is gone or kept on every path
+// alike, which compiles (move_drop_flags).
+
+mod move_flow_paths;
+
+struct Fin {
+  pub v i32;
+  fn final(self &uni) { }
+}
+
+fn take(f Fin) { }
+fn look(f &Fin) i32 { f.v; }
+
+// Moved in each pass of a loop: the second pass moves what the first did
+fn movedEachPass(n i32) {
+  imm a = Fin[1];
+  mut i = 0;
+  while i < n {
+    take(a);            //~ ErrorMove:10 "may have been moved out"
+    i = i + 1;
+  }
+}
+
+// Read before the move in source order, after it in the next pass; and the
+// move itself may meet the value an earlier pass moved
+fn readThenMoved(n i32) i32 {
+  imm a = Fin[2];
+  mut i = 0;
+  mut sum = 0;
+  while i < n {
+    sum = sum + a.v;    //~ ErrorMove:17 "may have been moved out"
+    if i == 1 { take(a); }  //~ ErrorMove:22 "may have been moved out"
+    i = i + 1;
+  }
+  sum;
+}
+
+// Borrowed in the next pass, after a move in this one
+fn borrowedAfter(n i32) {
+  imm a = Fin[3];
+  mut i = 0;
+  while i < n {
+    look(&a);           //~ ErrorMove:11 "may have been moved out"
+    if i == 1 { take(a); }  //~ ErrorMove:22 "may have been moved out"
+    i = i + 1;
+  }
+}
+
+// Given a value on one branch only, then read
+fn givenOnOne(c Bool) i32 {
+  mut f Fin;
+  if c { f = Fin[4]; }
+  f.v;                  //~ ErrorMove:3 "may not have been given a value"
+}
+
+// Moved out through a sole owner in one pass, then again in the next
+fn hollowedEachPass(n i32) {
+  imm b = +so Fin[5];
+  mut i = 0;
+  while i < n {
+    imm x = *b;         //~ ErrorMove:14 "may have been moved out"
+    i = i + 1;
+  }
+}

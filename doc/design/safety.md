@@ -43,8 +43,8 @@ most consequential thing this note settles.
 
 | Property | Checked? | Where, or why not |
 | --- | --- | --- |
-| use of an uninitialized variable | **yes** | `nameuseFlow`, but on a whole-function summary — "initialized on one branch" reads as initialized everywhere. An assignment's target is read only for the parts of it that are values — its index and its dereference — never for the base of a partial write |
-| use after move | **yes** | `nameuseFlow`, same summary caveat |
+| use of an uninitialized variable | **yes** | `nameuseFlow`, on the state along the walk in source order, the arms of an `if` joined: "initialized on one branch" reads as initialized after it, except for a variable that moves or has anything to do as it dies, which the path walk refuses where some path gave it no value. An assignment's target is read only for the parts of it that are values — its index and its dereference — never for the base of a partial write |
+| use after move | **yes** | `nameuseFlow`, a move on any arm of an `if` counting after it; a use some path reaching it moved out — a loop's earlier pass — by the path walk (`dropRefuse`) |
 | move out of a global | **yes** | `flowHandleMove`, and `flowResultMove` for a returned value |
 | move out through a borrowed reference, any permission | **yes** | `flowHandleMove`, and `flowResultMove` for a returned value |
 | move out of a field, leaving a struct with a hole in it | **yes** | `flowRefuseMoveField`, from `flowHandleMove` and `flowResultMove` |
@@ -67,7 +67,7 @@ most consequential thing this note settles.
 | raw pointer deref / arithmetic gated by `trust` | **no** | `trust` is not a keyword and has no parse rule |
 | allocation failure | **yes** | null test then `llvm.trap`, unless `?` asked for an `Option` |
 | thread-safety of a shared reference | **no** | `RaceSafe` is populated and read nowhere; `ThreadBound` is now infected correctly and nothing consumes it either |
-| release of an owning reference at scope exit | **partly** | leaks on a conditionally-moved variable, for the rest of an array one element was moved out of, for a global, and for a temporary left unbound; a value moved out of on only some paths is freed but not finalized on the others. One a struct, an enum, a tuple or an array holds, however deep, is released with it |
+| release of an owning reference at scope exit | **partly** | once, on the paths that still hold it: a variable moved, hollowed or given a value on only some paths carries a drop flag the release tests, as does one stored over. Leaks for the rest of an array one element was moved out of, for a global, and for a temporary left unbound. One a struct, an enum, a tuple or an array holds, however deep, is released with it |
 
 ## The four shapes the gaps take
 
@@ -84,14 +84,14 @@ worst case: the scope is recorded correctly on every borrow, and checked at
 three of the many places a reference can escape. The checks that exist are
 correct, which makes the absences harder to notice.
 
-**3. A rule enforced on a summary rather than a path.** Initialization and move
-state live on the declaration and are never saved or restored, so they describe
-the whole function rather than a program point. A move in one arm of an `if`
-marks the source moved for the other arm and everything after. This is a
-deliberate conservative approximation — it leaks rather than double-frees — but
-it means "the compiler accepted it" and "this program is correct" are further
-apart than usual. Freezing is the exception: the loan walk keeps its state per
-path, and joins the paths where they meet.
+**3. A rule enforced on one walk rather than every path.** Initialization and
+move state live on the declaration and follow the walk in source order, the
+arms of an `if` joined after it, and a loop walked once. So a move in one arm
+counts as a move after the `if`, conservatively, and what a loop's later pass
+sees is not there. Where a variable's state may differ by path, the path walk
+follows every path — for its drops (a drop flag where the paths disagree) and
+for the uses a loop's earlier pass leaves without a value — as it does for
+freezing; a function without such a variable is not walked twice.
 
 **4. A guard that does not exist yet.** `trust` is the whole of this. The
 compiler has no `trust` keyword, so a program using one fails as an unknown

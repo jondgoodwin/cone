@@ -485,6 +485,29 @@ nothing. The drop call recasts the value's pointer to the drop's parameter
 type (`genlCallDrop`), since a variant laid out as a nullable pointer is reached
 through a pointer to its enum.
 
+**A store releases what it replaces** (`genlStore`), after the new value is
+evaluated and before it is stored: an owning reference, or a tuple of owners
+only, through `genlReleaseOwning`, as always; anything else with a death dies
+in place (`genlFinalizeAt`). Not where flow found the target held nothing
+(`FlagFirstAssign` on a variable, `FlagPartNoPrior` on a part of a local's own
+value), and not a finalizing value reached through a raw pointer, which may be
+memory never given one (`genlStoreThroughPtr`; an owner there is released as it
+always was). A place reached through a reference always holds a value.
+
+**Drop flags.** A variable flow gave `VarDropFlag` has an `i8` slot of its own,
+`<name>.held` (`genlDropFlagBegin`), stored where the variable begins: `1` at a
+declaration with a value or a parameter's entry (a function's, an inline
+body's), `0` at a declaration without one. Where its value arrives or leaves
+the slot is stored again (`genlDropFlagSet`): `1` after a store over the whole
+variable (`genlStore`, a left assignment), `0` or `2` at a name use flow marked
+as a move out of it or out through it (`genlDropFlagUse`, from `genlTerm` and
+`genlAddr`; a match's binding's move clears the matched value's variable's
+flag). A release that depends on it — a `DropFlagNode` in a release list, a
+store's old value under `FlagDropTest`, a `HollowNode` with `test` — loads the
+slot, compares it with the state it runs in, and branches round the release
+(`genlDropFlagIf`, `genlDropFlagEnd`). The optimizer's mem2reg keeps the slot
+in a register and folds each test where one path's value is known.
+
 **A drop the compiler gives a type is built here, not lowered**
 (`genlTypeDrop`, reached from `genlFn` for a function `structIsGeneratedDropFn`
 recognizes). A struct's (`genlStructDrop`, for the function `structSetDropFn`

@@ -24,14 +24,19 @@ typedef struct VarDclNode {
     uint16_t scope;            // 0=global
     uint16_t index;            // index within this scope (e.g., parameter number)
     uint16_t flowtempflags;    // Data flow pass temporary flags
+    uint16_t flowdepth;        // Data flow: the conditional depth it was declared at (flowDepth)
+    uint8_t flowtracked;       // Data flow: 0 not yet asked, 1 its state is not followed for drops, 2 it is (flowDropTracked)
     uint32_t flowindex;        // Transient: this variable's index in the loan walk (flowpath.c), 0 outside one
     Nodes *hollowed;           // Data flow: each move that took what this owning reference points at, or an element of it, out
+    Nodes *hollowall;          // Data flow: every such move in the function, on any path (a drop flag's hollow release)
+    LLVMValueRef llvmflag;     // Generation: its drop flag, for a variable with VarDropFlag
 } VarDclNode;
 
 enum VarFlowTemp {
     VarInitialized = 0x0001,    // Variable has been initialized
     VarMoved = 0x0002,          // Variable has been moved
-    VarHollow = 0x0004          // What this owning reference points at, or an element of it, was moved out ('hollowed')
+    VarHollow = 0x0004,         // What this owning reference points at, or an element of it, was moved out ('hollowed')
+    VarDropFlag = 0x0008        // Whether it holds its value differs by path: a drop flag says so at run time
 };
 
 VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *perm);

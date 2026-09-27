@@ -15,6 +15,7 @@ BreakRetNode *newBreakNode() {
     node->block = NULL;
     node->exp = NULL;
     node->dealias = NULL;
+    node->flowresult = NULL;
     return node;
 }
 

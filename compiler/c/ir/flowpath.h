@@ -56,6 +56,7 @@ typedef struct {
     uint8_t shared;     // 1: reached through a shared path
     uint8_t sharedlen;  // then, how many steps lead to the first reference that may alias (0: the root's)
     uintptr_t steps[PlaceMaxSteps];
+    INode *use;         // the name use of the root variable, where a use of it is reported
 } Place;
 // A step is a field's name (a Name pointer, so even), a tuple element's index
 // ((n << 2) | 2), an element of an array (any index: all overlap), or a
@@ -77,6 +78,15 @@ enum PathAccess {
     AccessEnd,          // the root leaves its scope
 };
 
+// What a variable the drop-flag client tracks may hold on the paths reaching a
+// point: a set of these bits (flowdrop.c). 0 is a variable not in scope.
+enum DropState {
+    DropWhole = 0x1,    // its whole value
+    DropHollow = 0x2,   // a sole owner some of whose referent moved out
+    DropUninit = 0x4,   // nothing: never given a value
+    DropMoved = 0x8,    // nothing: moved out
+};
+
 // One variable the walk has met, and its facts on the current path
 typedef struct {
     VarDclNode *var;
@@ -89,6 +99,11 @@ typedef struct {
     PathSet *jholds;
     PathSet *jpending;
     uint8_t holder;     // its type carries a borrow, so it may hold a loan
+    uint8_t state;      // drop-flag client: what it may hold here (DropState bits)
+    uint8_t jstate;     // scratch: a join
+    uint8_t tracked;    // drop-flag client: its state is followed (flowDropTracked)
+    uint8_t dies;       // drop-flag client: it has something to do as it dies (itypeNeedsFinal)
+    uint8_t flagged;    // drop-flag client: its state differs by path at a release
 } PathVar;
 
 // The variables the current walk has met, by index; index 0 is unused
@@ -97,14 +112,18 @@ extern PathVar *pathVars;
 // Change a variable's facts on the current path, recording the old ones so a
 // fork can undo them
 void pathSetFacts(uint32_t var, PathSet *holds, PathSet *pending);
+// The same for its drop state
+void pathSetState(uint32_t var, uint8_t state);
 
 // Grow a buffer the walk keeps from one function to the next: twice the room,
 // from the compiler's arena (a buffer freshly grown from the system costs a
 // compile more, in first touches, than the walk does)
 void *pathGrow(void *buf, uint32_t *cap, size_t size);
 
-// Walk a function's body (after blockFlow), if the gate marked it
-void flowPathWalk(FnDclNode *fndcl);
+// Walk a function's body (after blockFlow), if the gate marked it: with borrow
+// freezing ('loans') for the loan gate, with drop flags ('drops') for the drop
+// gate (FlowState.dropgate), or both in one walk
+void flowPathWalk(FnDclNode *fndcl, int loans, int drops);
 
 // Print the walk's tallies for -V 2
 void flowPathPrint();

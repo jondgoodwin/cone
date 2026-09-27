@@ -346,6 +346,7 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
                 var->llvmvar = genlAlloca(gen, genlType(gen, var->vtype), &var->namesym->namestr);
                 genlRootNote(gen, var->llvmvar, var->vtype);
                 LLVMBuildStore(gen->builder, *fnargs++, var->llvmvar);
+                genlDropFlagBegin(gen, var, DropFlagWhole);
             }
         }
 
@@ -948,6 +949,7 @@ LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
         val = genlExprForLocal(gen, var->value);
         LLVMBuildStore(gen->builder, val, var->llvmvar);
     }
+    genlDropFlagBegin(gen, var, var->value ? DropFlagWhole : DropFlagEmpty);
     return val;
 }
 
@@ -1158,6 +1160,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         INode *dclnode = ((NameUseNode *)lval)->dclnode;
         if (dclnode->tag == FnDclTag)
             return genlFnSym(gen, (FnDclNode*)dclnode);
+        genlDropFlagUse(gen, lval);
         return genlVarSym(gen, (VarDclNode*)dclnode);
     }
     switch (lval->tag) {
@@ -1296,17 +1299,87 @@ static void genlStoreBarrier(GenState *gen, INode *lval, LLVMValueRef lvalptr) {
         genlBarrierAt(gen, lvalptr, ((IExpNode *)lval)->vtype);
 }
 
+// Did the target of a store hold a value to release? A variable, or a part of
+// a local's own value, did unless flow found it held none (FlagFirstAssign,
+// FlagPartNoPrior); where that differs by path, the variable's drop flag
+// decides (FlagDropTest). A place reached through a reference always holds one.
+static int genlStoreHeld(INode *lval) {
+    if (isNameUseNode(lval) && isExpNode(lval))
+        return !(lval->flags & FlagFirstAssign);
+    if (flowLvalRootVar(lval) != NULL)
+        return !(lval->flags & FlagPartNoPrior);
+    return 1;
+}
+
+// Is a store's target reached through a raw pointer? That may be memory never
+// given a value -- a buffer being filled -- so a value that finalizes is not
+// finalized there (an owning reference is released there as it always was).
+static int genlStoreThroughPtr(INode *lval) {
+    INode *node = lval;
+    while (1) {
+        INode *inner;
+        switch (node->tag) {
+        case DerefTag:
+            inner = ((StarNode *)node)->vtexp; break;
+        case FldAccessTag:
+        case ArrIndexTag:
+            inner = ((FnCallNode *)node)->objfn; break;
+        case CastTag:
+            node = ((CastNode *)node)->exp;
+            continue;
+        default:
+            return 0;
+        }
+        if (iexpGetTypeDcl(inner)->tag == PtrTag)
+            return 1;
+        node = inner;
+    }
+}
+
+// Does the release genlReleaseOwning makes of a value -- each owning reference
+// in it -- cover everything its death does? Not for a tuple holding a value
+// that finalizes, which dies in place instead.
+static int genlOwnersOnly(INode *type) {
+    INode *typedcl = itypeGetTypeDcl(type);
+    if (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag)
+        return 1;
+    if (typedcl->tag != TTupleTag)
+        return 0;
+    INode **elemp;
+    uint32_t cnt;
+    for (nodesFor(((TupleNode *)typedcl)->elems, cnt, elemp)) {
+        if (itypeNeedsFinal(*elemp) && !(flowIsOwningType(*elemp) && genlOwnersOnly(*elemp)))
+            return 0;
+    }
+    return 1;
+}
+
 void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
     if (isNameUseNode(lval) && isExpNode(lval) && ((NameUseNode*)lval)->namesym == anonName)
         return;
     LLVMValueRef lvalptr = genlAddr(gen, lval);
     INode *lvaltype = ((IExpNode*)lval)->vtype;
     // The previous value is released exactly as scope exit would release it,
-    // unless the target held none (see FlagFirstAssign)
-    if (!(lval->flags & FlagFirstAssign) && flowIsOwningType(lvaltype))
-        genlReleaseOwning(gen, LLVMBuildLoad2(gen->builder, genlType(gen, genlAddrType(lval)), lvalptr, "dealiasref"), lvaltype);
+    // unless the target held none (genlStoreHeld)
+    int owning = flowIsOwningType(lvaltype);
+    if (genlStoreHeld(lval) && (owning || (itypeNeedsFinal(lvaltype) && !genlStoreThroughPtr(lval)))) {
+        VarDclNode *flagvar = NULL;
+        if (lval->flags & FlagDropTest)
+            flagvar = isNameUseNode(lval) && isExpNode(lval)
+                ? (VarDclNode *)((NameUseNode *)lval)->dclnode : flowLvalRootVar(lval);
+        LLVMBasicBlockRef endblk = flagvar && flagvar->llvmflag ? genlDropFlagIf(gen, flagvar, DropFlagWhole) : NULL;
+        if (owning && genlOwnersOnly(lvaltype))
+            genlReleaseOwning(gen, LLVMBuildLoad2(gen->builder, genlType(gen, genlAddrType(lval)), lvalptr, "dealiasref"), lvaltype);
+        else
+            genlFinalizeAt(gen, lvalptr, lvaltype);
+        if (endblk)
+            genlDropFlagEnd(gen, endblk);
+    }
     LLVMBuildStore(gen->builder, rval, lvalptr);
     genlStoreBarrier(gen, lval, lvalptr);
+    // A flagged variable stored over whole holds its value now
+    if (isNameUseNode(lval) && isExpNode(lval) && ((NameUseNode *)lval)->dclnode->tag == VarDclTag)
+        genlDropFlagSet(gen, (VarDclNode *)((NameUseNode *)lval)->dclnode, DropFlagWhole);
 }
 
 // Whether the address genlAddr takes of 'lval' is reached through a reference
@@ -1403,8 +1476,11 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
     // A value name loads its variable, or recurses into its constant's value
     if (isNameUseNode(termnode) && isExpNode(termnode)) {
         VarDclNode *vardcl = (VarDclNode*)((NameUseNode *)termnode)->dclnode;
-        if (vardcl->tag == VarDclTag)
-            return LLVMBuildLoad2(gen->builder, genlType(gen, vardcl->vtype), genlVarSym(gen, vardcl), &vardcl->namesym->namestr);
+        if (vardcl->tag == VarDclTag) {
+            LLVMValueRef val = LLVMBuildLoad2(gen->builder, genlType(gen, vardcl->vtype), genlVarSym(gen, vardcl), &vardcl->namesym->namestr);
+            genlDropFlagUse(gen, termnode);
+            return val;
+        }
         else if (vardcl->tag == ConstDclTag) {
             ConstDclNode *constdcl = (ConstDclNode*)vardcl;
             return genlExpr(gen, constdcl->value);
@@ -1572,8 +1648,20 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         // genlStore orders it; in a release list there is no new value
         HollowNode *hnode = (HollowNode*)termnode;
         LLVMValueRef val = hnode->exp ? genlExpr(gen, hnode->exp) : NULL;
-        genlHollowRelease(gen, hnode);
+        // Hollow on some paths only: its drop flag says whether it is here
+        if (hnode->test && hnode->var->llvmflag) {
+            LLVMBasicBlockRef endblk = genlDropFlagIf(gen, hnode->var, DropFlagHollow);
+            genlHollowRelease(gen, hnode);
+            genlDropFlagEnd(gen, endblk);
+        }
+        else
+            genlHollowRelease(gen, hnode);
         return val;
+    }
+    case DropFlagTag:
+    {
+        genlDealiasNode(gen, termnode);
+        return NULL;
     }
     case FnCallTag:
         return genlFnCall(gen, (FnCallNode *)termnode);
@@ -1659,7 +1747,7 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         // run a finalizer, and so a collection, while the new one waits
         INode *lvaltype = ((IExpNode *)lval)->vtype;
         LLVMValueRef valueref = node->assignType != LeftAssign && genlIsLocalName(lval)
-            && !(flowIsOwningType(lvaltype) && itypeNeedsFinal(lvaltype))
+            && !itypeNeedsFinal(lvaltype)
             ? genlExprForLocal(gen, rval) : genlExpr(gen, rval);
         if (node->assignType == LeftAssign) {
             // Normal assignment, except value of expression is contents of lval before mutation
@@ -1667,6 +1755,8 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
             LLVMValueRef leftval = LLVMBuildLoad2(gen->builder, genlType(gen, genlAddrType(lval)), lvalptr, "");
             LLVMBuildStore(gen->builder, valueref, lvalptr);
             genlStoreBarrier(gen, lval, lvalptr);
+            if (genlIsLocalName(lval))
+                genlDropFlagSet(gen, (VarDclNode *)((NameUseNode *)lval)->dclnode, DropFlagWhole);
             return leftval;
         }
 

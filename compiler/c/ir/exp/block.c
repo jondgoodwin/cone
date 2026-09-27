@@ -312,6 +312,22 @@ static size_t blockJumpMark(BreakRetNode *brknode, size_t svpos) {
     return brknode->block ? brknode->block->flowmark : svpos;
 }
 
+// A value a function hands back is moved to the caller: one it reached through
+// a borrow is refused (flowResultMove). A block or an 'if' hands back what its
+// values do, and moves each as it would into a variable (flowHandleMove), so
+// that a local it hands back on only some paths is released on the others by
+// its drop flag, where exempting it on all of them would leak it. A local
+// handed back directly is exempt from the release instead (flowScopeDealias).
+static void blockResultMove(INode *result) {
+    INode *exp = result;
+    while (exp->tag == CastTag && !(exp->flags & FlagConvert))
+        exp = ((CastNode *)exp)->exp;
+    if ((exp->tag == IfTag || (exp->tag == BlockTag && !(exp->flags & FlagLoop))) && iexpIsMove(result))
+        flowHandleMove(result);
+    else
+        flowResultMove(result);
+}
+
 void blockFlow(FlowState *fstate, BlockNode **blknode) {
     BlockNode *blk = *blknode;
     size_t svpos = flowScopePush();
@@ -321,11 +337,16 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
 
     // If this is function's main block, include parameters in flow analysis
     if (++fstate->scope == 2) {
+        flowFnBegin(fstate);
         INode **nodesp;
         uint32_t cnt;
         for (nodesFor(fstate->fnsig->parms, cnt, nodesp))
             flowAddVar((VarDclNode*)*nodesp);
     }
+    // A loop's body runs on some paths only, and again after itself
+    int loop = (blk->flags & FlagLoop) != 0;
+    if (loop)
+        ++flowDepth;
 
     // Ensure last node is return, blockret, break or continue
     // Inject blockret, if not present
@@ -373,6 +394,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
             BreakRetNode *brknode = (BreakRetNode *)*nodesp;
             INode **brkexp = &brknode->exp;
             INode *result = *brkexp;
+            brknode->flowresult = result;
             flowGateResult(fstate, result);
             if (result->tag != NilLitTag)
                 flowLoadValue(fstate, brkexp);
@@ -382,6 +404,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         case ContinueTag: {
             // A continue node carries no expression, so it de-aliases against none
             BreakRetNode *brknode = (BreakRetNode *)*nodesp;
+            brknode->flowresult = NULL;
             flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, NULL, *nodesp);
             break;
         }
@@ -401,6 +424,12 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
     // before the list that would have released 'a' at scope exit is built.
     // The list is built against the result node as it stood before the walk,
     // which is the node whose name the release exemption is about.
+    // Whether every path through the block leaves the function: it ends in a
+    // return, or hands back an 'if' or a block every path through which does
+    // (ifFlow). A 'break' or 'continue' goes on inside it, to a place this walk
+    // reaches with one state (it walks a loop once), so a path ending in one is
+    // still joined, which counts what it moved as moved from there on.
+    int jumped = 0;
     switch ((*nodesp)->tag) {
     case ReturnTag:
     {
@@ -408,23 +437,34 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         // Check the borrow's lifetime before flowLoadValue can replace the node
         returnFlow((BreakRetNode *)*nodesp);
         INode *result = *retexp;
+        ((BreakRetNode *)*nodesp)->flowresult = result;
         if (result != unknownType) {
             flowGateResult(fstate, result);
             flowLoadValue(fstate, retexp);
             // A returned value is moved to the caller, so it must be one this
             // function may move: not a value it reached through a borrow
-            flowResultMove(*retexp);
+            blockResultMove(*retexp);
         }
         flowScopeDealias(0, &((BreakRetNode *)*nodesp)->dealias, result, *nodesp);
+        jumped = 1;
         break;
     }
     case BlockRetTag:
     {
         INode **retexp = &((BreakRetNode *)*nodesp)->exp;
         INode *result = *retexp;
+        ((BreakRetNode *)*nodesp)->flowresult = result;
         flowGateResult(fstate, result);
-        if (result->tag != NilLitTag)
+        if (result->tag != NilLitTag) {
+            fstate->jumped = 0;
             flowLoadValue(fstate, retexp);
+            jumped = (result->tag == IfTag || (result->tag == BlockTag && !(result->flags & FlagLoop)))
+                && fstate->jumped;
+            // The function's own block hands its value to the caller, as a return does
+            if (fstate->scope == 2 && !loop && (result->tag == IfTag || result->tag == BlockTag)
+                && itypeGetTypeDcl(fstate->fnsig->rettype)->tag != VoidTag && iexpIsMove(*retexp))
+                blockResultMove(*retexp);
+        }
         flowScopeDealias(svpos, &((BreakRetNode *)*nodesp)->dealias, result, *nodesp);
         break;
     }
@@ -432,6 +472,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         BreakRetNode *brknode = (BreakRetNode *)*nodesp;
         INode **brkexp = &brknode->exp;
         INode *result = *brkexp;
+        brknode->flowresult = result;
         flowGateResult(fstate, result);
         if (result->tag != NilLitTag)
             flowLoadValue(fstate, brkexp);
@@ -439,10 +480,16 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         break;
     }
     case ContinueTag:
+        ((BreakRetNode *)*nodesp)->flowresult = NULL;
         flowScopeDealias(blockJumpMark((BreakRetNode *)*nodesp, svpos), &((BreakRetNode *)*nodesp)->dealias, NULL, *nodesp);
         break;
     }
 
+    if (loop) {
+        --flowDepth;
+        jumped = 0;
+    }
+    fstate->jumped = jumped;
     --fstate->scope;
     flowScopePop(svpos);
 }

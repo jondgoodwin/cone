@@ -188,9 +188,9 @@ that is asked where a value of it is held, not here.
 
 ## Flow
 
-`nameuseFlow` is where initialization and move state are **diagnosed** — with
-`nameuseFlowBorrowed` beside it, the only place either produces a message.
-`nameuseFlow` checks a name read:
+`nameuseFlow` is where initialization and move state are **diagnosed** by the
+main walk — with `nameuseFlowBorrowed` beside it; the path walk diagnoses what
+only a path shows (`dropRefuse`, below). `nameuseFlow` checks a name read:
 
 - not `VarInitialized` → `ErrorMove`, "has not been initialized"
 - `VarMoved` → `ErrorMove`, "value has been moved out"
@@ -203,9 +203,18 @@ It returns immediately for anything that is not a `VarDclTag`, so a function or
 constant name passes through untouched. The flags themselves are read elsewhere
 too — `assignlvalrtype` and `flowScopeDealias` both consult them.
 
-Because the flags are a running summary over the whole function rather than
-per-program-point state, "initialized on one branch" reads as initialized
-everywhere, and a move in one arm of an `if` poisons both.
+The flags are the state along the walk in source order, the arms of an `if`
+joined after it: a move in one arm of an `if` is not seen by the other, and
+counts as a move after the `if`; "initialized on one branch" reads as
+initialized after it. What the walk in source order cannot see — a loop's
+earlier pass, and a variable given a value on one branch only — the path walk
+refuses for a variable that moves or has anything to do as it dies, where it
+runs ([Flow Analysis](../phases/flow.md), "Drop flags").
+
+A name use a value moves out of, or out through, carries `FlagMoveOut` or
+`FlagHollowOut`, set by `flowMoveSource`: generation updates the variable's
+drop flag there (`genlDropFlagUse`), whether the name is generated as a value
+or as an address.
 
 ## Generation
 

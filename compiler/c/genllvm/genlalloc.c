@@ -1301,23 +1301,91 @@ void genlReleaseOwning(GenState *gen, LLVMValueRef val, INode *type) {
     }
 }
 
+// A variable's drop flag (VarDropFlag), made as the variable begins -- its
+// declaration, or the function's (or an inline body's) start for a parameter --
+// holding what it begins with (DropFlagState). A byte the optimizer keeps in a
+// register wherever it can, and folds away where a path's value is known.
+void genlDropFlagBegin(GenState *gen, VarDclNode *var, int state) {
+    if (!(var->flowtempflags & VarDropFlag))
+        return;
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(gen->context);
+    char name[256];
+    snprintf(name, sizeof(name), "%s.held", &var->namesym->namestr);
+    var->llvmflag = genlAlloca(gen, i8, name);
+    LLVMBuildStore(gen->builder, LLVMConstInt(i8, state, 0), var->llvmflag);
+}
+
+// A flagged variable's value arrives, or leaves, here
+void genlDropFlagSet(GenState *gen, VarDclNode *var, int state) {
+    if (!(var->flowtempflags & VarDropFlag) || var->llvmflag == NULL)
+        return;
+    LLVMBuildStore(gen->builder, LLVMConstInt(LLVMInt8TypeInContext(gen->context), state, 0), var->llvmflag);
+}
+
+// Code that runs only when a flagged variable holds 'state': the block after
+// it, for genlDropFlagEnd
+LLVMBasicBlockRef genlDropFlagIf(GenState *gen, VarDclNode *var, int state) {
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(gen->context);
+    LLVMValueRef held = LLVMBuildLoad2(gen->builder, i8, var->llvmflag, "held");
+    LLVMValueRef is = LLVMBuildICmp(gen->builder, LLVMIntEQ, held, LLVMConstInt(i8, state, 0), "isheld");
+    LLVMBasicBlockRef doblk = genlInsertBlock(gen, "dropflag");
+    LLVMBasicBlockRef endblk = genlInsertBlock(gen, "dropflagdone");
+    // genlInsertBlock puts each right after the current block: the release first
+    LLVMMoveBasicBlockBefore(doblk, endblk);
+    LLVMBuildCondBr(gen->builder, is, doblk, endblk);
+    LLVMPositionBuilderAtEnd(gen->builder, doblk);
+    return endblk;
+}
+
+void genlDropFlagEnd(GenState *gen, LLVMBasicBlockRef endblk) {
+    LLVMBuildBr(gen->builder, endblk);
+    LLVMPositionBuilderAtEnd(gen->builder, endblk);
+}
+
+// One entry of a release list: a variable listed itself dies in place -- an
+// owning reference, or a tuple or an array whose elements have anything to do
+// as they die (flowVarRelease) -- and a struct or an enum is listed as its
+// drop's call, a hollowed owner as its HollowNode. A variable whose state
+// differs by path has each release wrapped in a DropFlagNode.
+void genlDealiasNode(GenState *gen, INode *node) {
+    if (node->tag == VarDclTag) {
+        VarDclNode *var = (VarDclNode *)node;
+        genlFinalizeAt(gen, var->llvmvar, var->vtype);
+    }
+    else if (node->tag == DropFlagTag) {
+        DropFlagNode *test = (DropFlagNode *)node;
+        if (test->var->llvmflag == NULL) {
+            errorUnreachable(node, "a release guarded by a drop flag its variable was never given");
+            return;
+        }
+        LLVMBasicBlockRef endblk = genlDropFlagIf(gen, test->var, test->state);
+        genlDealiasNode(gen, test->release);
+        genlDropFlagEnd(gen, endblk);
+    }
+    // Generate function calls that drop/dealias values
+    else {
+        genlExpr(gen, node);
+    }
+}
+
+// A name use a value moves out of, or out through (flowMoveSource marked it):
+// the drop flag of the variable owning the value, if it has one, says it no
+// longer holds it, or holds it hollow
+void genlDropFlagUse(GenState *gen, INode *nameuse) {
+    if (!(nameuse->flags & (FlagMoveOut | FlagHollowOut)))
+        return;
+    VarDclNode *var = (VarDclNode *)((NameUseNode *)nameuse)->dclnode;
+    if (var->tag != VarDclTag)
+        return;
+    genlDropFlagSet(gen, flowDropOwner(var), (nameuse->flags & FlagHollowOut) ? DropFlagHollow : DropFlagEmpty);
+}
+
 // Progressively dealias or drop all declared variables in nodes list
 void genlDealiasNodes(GenState *gen, Nodes *nodes) {
     if (nodes == NULL)
         return;
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(nodes, cnt, nodesp)) {
-        // A variable listed itself dies in place: an owning reference, or a
-        // tuple or an array whose elements have anything to do as they die
-        // (flowScopeDealias). A struct or an enum is listed as its drop's call.
-        if ((*nodesp)->tag == VarDclTag) {
-            VarDclNode *var = (VarDclNode *)*nodesp;
-            genlFinalizeAt(gen, var->llvmvar, var->vtype);
-        }
-        // Generate function calls that drop/dealias values
-        else {
-            genlExpr(gen, *nodesp);
-        }
-    }
+    for (nodesFor(nodes, cnt, nodesp))
+        genlDealiasNode(gen, *nodesp);
 }

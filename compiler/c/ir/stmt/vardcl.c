@@ -25,7 +25,11 @@ VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *perm) {
     dclInfoInit(&name->dclinfo);
     name->flowtempflags = 0;
     name->flowindex = 0;
+    name->flowdepth = 0;
+    name->flowtracked = 0;
     name->hollowed = NULL;
+    name->hollowall = NULL;
+    name->llvmflag = NULL;
     return name;
 }
 
@@ -44,7 +48,11 @@ VarDclNode *newVarDclFull(Name *namesym, uint16_t tag, INode *type, INode *perm,
     dclInfoInit(&name->dclinfo);
     name->flowtempflags = 0;
     name->flowindex = 0;
+    name->flowdepth = 0;
+    name->flowtracked = 0;
     name->hollowed = NULL;
+    name->hollowall = NULL;
+    name->llvmflag = NULL;
     return name;
 }
 

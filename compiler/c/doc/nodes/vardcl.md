@@ -27,8 +27,10 @@ copies the initializer, and marks it initialized. Generation allocas.
 | `hop` | none | on a **folded copy**, the field of the same type it is reached through; NULL on a declared field | none |
 | `dclinfo` | owner and the facts the linker symbol is spelled from, globals only — [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols" | none | none |
 | `llvmvar` | alloca or global | none | **none** |
-| `flowtempflags` | `VarInitialized`, `VarMoved`, `VarHollow` | none | none |
-| `hollowed` | on a local owning reference, each move that took what it points at, or an element of it, out ([Flow Analysis](../phases/flow.md), "A move out through a sole owner") | none | none |
+| `flowtempflags` | `VarInitialized`, `VarMoved`, `VarHollow`, `VarDropFlag` | none | none |
+| `flowdepth` | the conditional depth it was declared at, for the drop gate ([Flow Analysis](../phases/flow.md), "Drop flags") | none | none |
+| `hollowed` | on a local owning reference, each move that took what it points at, or an element of it, out ([Flow Analysis](../phases/flow.md), "A move out through a sole owner"); `hollowall`, every such move in the function, on any path | none | none |
+| `llvmflag` | its drop flag's `i8` slot, for a variable with `VarDropFlag` | none | none |
 | `flowflags` | **dead** — zeroed twice, never read | none | none |
 
 The absences are the point:
@@ -277,8 +279,10 @@ Fields and constants have no flow participation at all.
   `scope <= 1` literal rule silently reclassifies anything whose stamping was
   skipped — including the duplicate-name error path, which reports and falls
   through without setting it.
-- **`flowtempflags` is a whole-function running summary**, not per-program-point
-  state. Do not read it as if it described a point.
+- **`flowtempflags` is the main walk's state as it goes, in source order**, the
+  arms of an `if` joined after it; a loop's later passes are not in it. Do not
+  read it as what the variable holds on every path to a point: that is the path
+  walk's (`VarDropFlag` marks a variable for which it differs at a release).
 - **`undef` reads as initialized.** Deliberate, but easy to mistake for
   "initialized to something".
 

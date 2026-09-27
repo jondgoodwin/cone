@@ -19,6 +19,7 @@ typedef struct {
     INode *life;        // lifetime for block scope to escape/re-start (null if none specified)
     BlockNode *block;   // Block that this break/return applies to
     Nodes *dealias;     // Nodes used to de-alias/unwind current block scope-allocated values
+    INode *flowresult;  // Data flow: 'exp' as it stood before flow walked it, which the release list's exemption matches
 } BreakRetNode;
 
 BreakRetNode *newBreakNode();

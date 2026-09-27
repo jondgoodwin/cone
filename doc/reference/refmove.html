@@ -16,14 +16,14 @@
 	<p style="margin-left: 40px;"><i>Note: Most of this is implemented: the built-in Move and Copy traits
 		(declaring <span class="pre">is Move</span>, and <span class="pre">is Copy</span> refused on a type that moves),
 		a finalizer or a move-typed field inferring move semantics, source deactivation
-		on assignment and on a call, including through a block, an if or a loop value that moves it
-		on every branch (a deactivated source may be neither read nor borrowed), refusal of a move out through a borrowed reference or a shared owning reference,
+		on assignment and on a call, including through a block, an if or a loop value that moves it,
+		conditional moves (a deactivated source may be neither read nor borrowed; one moved on some
+		paths only is finalized on the others, by a drop flag), refusal of a move out through a borrowed reference or a shared owning reference,
 		refusal of a move out of a struct's field or a tuple's element, or of a value reached through one,
 		the swap operator and left-assignment. A clone method does not cancel move semantics:
 		no copy calls it yet, so a type declaring one keeps the semantics the other rules give it,
 		and a finalizer still makes it a move type. Assigning to the anonymous
-		variable '_' to destroy a value early is not, and nor is deactivating a source that
-		a block, an if or a loop value moves on only some branches (a conditional move). A move out of an indexed array element is
+		variable '_' to destroy a value early is not. A move out of an indexed array element is
 		permitted, and deactivates the whole array, rather than being prohibited.
 		Nothing yet asks whether a type is Move or Copy: there is no <span class="pre">where</span> clause
 		and no compile-time <span class="pre">if</span>, and <span class="pre">v is Move</span>
@@ -159,9 +159,25 @@ afunction(socket);     // the socket is moved to the called function
 anotherfunc(socket);   // **ERROR**: socket is deactivated and unusable
 </pre>
 	<p>Deactivation of the source happens even for <b>conditional moves</b>,
-	where one branch of conditional move the value but another does not.
+	where one branch moves the value but another does not.
 	When the branches join together again, the compiler can't know whether
-	the value is there or not, so conservatively, it assumes the value is gone.</p>
+	the value is there or not, so conservatively, it assumes the value is gone:
+	the variable may not be used again until it is given a new value.
+	The same holds for a move in a loop: a value moved in one pass is not there
+	in the next, so moving or using a variable declared outside the loop after it
+	may have moved is an error.</p>
+<pre>
+imm socket = Socket();
+if done {
+  afunction(socket);   // moved on this path only
+}
+socket.poll();         // **ERROR**: socket may have been moved
+</pre>
+	<p>The value itself is still destroyed exactly once. On the path that moved it,
+	its new holder destroys it; on the path that did not, it is destroyed at the end
+	of its scope, as any value is. The compiler keeps a hidden flag beside such a
+	variable, cleared where the value moves out, and the end of the scope tests it.
+	A variable moved on every path, or on none, needs no flag.</p>
 
 	<p>A non-copyable value may be returned by a called function.
 		There is no need to deactivate the value's source, since it is already gone.</p>
