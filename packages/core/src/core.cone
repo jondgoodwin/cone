@@ -12,7 +12,8 @@
 // The C runtime's allocator is libc's, whose package declares it once for the
 // whole program. core imports libc, which, being a C-named module, gets no
 // prelude of its own, so the import makes no loop; Congo builds libc before
-// core.
+// core. A panic's work is the C runtime's too, conestd's, which every program
+// links.
 
 mod core;
 
@@ -38,6 +39,73 @@ pub enum Result[T,E] {
 // every program
 pub use Option;
 pub use Result;
+
+// A panic ends the program where something that must not happen has: an index
+// out of bounds, memory exhausted, an invariant broken. It is a bug report, not
+// error handling, which is Option's and Result's. The C runtime does the work
+// (packages/conestd/panic.c): stdout is flushed, one line goes to stderr,
+// 'panic at <file>:<line>: <message>', the hook runs if one is set, and the
+// program aborts. Nothing unwinds, and no finalizer runs. Each function here
+// returns 'Never': a call to it does not return, so it may end any block,
+// one that must produce a value included.
+//
+// Each reports where it was CALLED. Its 'file' and 'line' default to
+// 'srcFile()' and 'srcLine()', which, written as a default, answer where each
+// call taking the default is. A helper of a program's own that panics
+// declares the same two parameters and passes them on, and so reports its
+// caller too.
+
+// Where this call is written: its source file's name, without the folders,
+// and its line. Written as a parameter's default value, where each call taking
+// the default is. Constants
+pub fn @intrinsic srcFile() &[]u8;
+pub fn @intrinsic srcLine() u32;
+
+pub extern {
+  // End the program, reporting msg and where
+  fn @c("cone_panic") panic(msg &[]u8, file &[]u8 = srcFile(), line u32 = srcLine()) Never;
+  // The function a panic calls once its line is written, before the program
+  // ends: to log it, say, or report it elsewhere. Setting it is atomic, from
+  // any thread and at any time, and the last one set is the one called. It
+  // runs on the panicking thread, and a panic inside it ends the program at once
+  fn @c("cone_setPanicHook") setPanicHook(hook &fn(msg &[]u8, file &[]u8, line u32));
+}
+
+// Whether this compile is a debug build: 'conec --debug', or 'build: debug' in
+// the build description Congo writes. A constant, so the side of an 'if' on it
+// that this build does not take is folded away and never reaches the object
+pub fn @intrinsic isDebugBuild() Bool;
+
+// Panic unless cond holds. Checked in every build, release included
+pub fn assert(cond Bool, msg &[]u8 = "assertion failed", file &[]u8 = srcFile(),
+    line u32 = srcLine()) inline {
+  if !cond {panic(msg, file, line);}
+}
+
+// Panic unless cond holds, in a debug build only [Jon 27 Sep]. A macro, so its
+// condition is substituted where it is used rather than evaluated first: in a
+// release build the whole use is folded away and the condition never runs,
+// whatever it would have done. 'srcFile()' and 'srcLine()' written in a macro's
+// body answer where the macro is used, so the panic names the caller's line.
+// A macro takes no default, so the form with a message has a name of its own
+pub macro assertDebug[cond] {
+  if isDebugBuild() {assert(cond, "assertion failed", srcFile(), srcLine());} else {}
+}
+pub macro assertDebugMsg[cond, msg] {
+  if isDebugBuild() {assert(cond, msg, srcFile(), srcLine());} else {}
+}
+
+// Code the author knows cannot be reached, reached
+pub fn unreachable(msg &[]u8 = "reached code marked unreachable", file &[]u8 = srcFile(),
+    line u32 = srcLine()) Never inline {
+  panic(msg, file, line);
+}
+
+// Code not written yet
+pub fn todo(msg &[]u8 = "not yet implemented", file &[]u8 = srcFile(),
+    line u32 = srcLine()) Never inline {
+  panic(msg, file, line);
+}
 
 // The two regions every module reaches. A region is a struct declaring the
 // built-in trait 'RegionRef', and the compiler knows neither of these by name:

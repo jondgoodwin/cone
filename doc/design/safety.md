@@ -62,10 +62,10 @@ most consequential thing this note settles.
 | two parameter borrows with different lifetimes | **no** | there is no lifetime annotation syntax to express it; every borrow in a signature is taken to share one lifetime |
 | aliasing of borrows | **partly** | a mutable borrow of a source reached as `uni` (a local) excludes every other borrow of it until its last use (the freezing row below); through a shared `mut` path aliasing is the design, and what it must not break is a shape: a reference into an enum's variant may be narrowed only through `uni`, `imm` or `mut1`, or through a borrow of a local made where it is matched, which freezes the local (`castSumInterior`). A borrow a call returns excludes as a borrow of each argument would (a receiver's mutable borrow two-phase), and a call's arguments exclude each other. Copies of one `&mut` borrow may still reach one place two ways, a borrow held inside another value excludes nothing, and an element of a resizable collection may still be borrowed through a shared path (the collections declare `ShapeChanging` for the check that will refuse it; not built) |
 | freezing a borrow's source | **partly** | the loan walk (`flowpath.c`, `flowloan.c`, `ErrorFrozen`): a borrow held in a local whose type is a borrowed reference freezes its source until the borrow's last use, on each path — for a source reached as `uni`, against a change, a move, a borrow that would conflict, the source's end, and, for a mutable borrow, a read; for one reached through a shared path (a `&mut`/`&ro` reference, a `+rc-mut` owner), only against what would end it and an `&uni`/`&imm` borrow. A borrow a call returns freezes every argument as that argument's borrow would (`list[0usize]` keeps `list` loaned read-only), except that a container declaring `NoLoanMut` or `NoLoanRead` (the arena) keeps only its life (`a.alloc(v)`); an owning reference coerced to a borrow freezes its owner (to a `&uni`, as the borrow `&uni *o` built by type check, not a move), and a `&uni` reference lent where a `&` or `&mut` is wanted is reborrowed (`&mut *r`, built by type check) and so frozen, not moved; a call's arguments are checked against each other, a method receiver's mutable borrow two-phase. Not yet: one held inside another value (`pool.get(id)`'s `Option`), and an element borrow through a shared path |
-| array and slice bounds | **yes** | `genlBoundsCheck`, per dimension |
+| array and slice bounds | **yes** | `genlBoundsCheck`, per dimension, and a range's start, end and count (`genlSubslice`): a failed check panics, naming the values it compared (`genlPanic`) |
 | **raw pointer** bounds | **no** | unchecked by construction |
 | raw pointer deref / arithmetic gated by `trust` | **no** | `trust` is not a keyword and has no parse rule |
-| allocation failure | **yes** | null test then `llvm.trap`, unless `?` asked for an `Option` |
+| allocation failure | **yes** | null test then a panic naming the size asked for, unless `?` asked for an `Option` |
 | what may cross threads | **partly** | the built-in marker `Sendable`, which `thread.start` and sync's channel types ask of what they carry (`ErrorNotSendable`): refused are a borrow of any permission, an owner that may be aliased without a `RaceSafe` permission or in a region not declaring `ThreadSafe` (`+rc-imm`, `+arc-mut`), a traced reference, and a raw pointer, anywhere a value holds them, through owning references too (`refThreadBinds`, `itypeThreadBound`). A type declaring `Sendable` is taken on trust. Not checked: a `mut` global reached from several threads, what a started thread makes for itself (`+gc` on a thread), and anything crossing by a route that does not ask (a raw pointer cast, an `extern` call) |
 | release of an owning reference at scope exit | **partly** | once, on the paths that still hold it: a variable moved, hollowed or given a value on only some paths carries a drop flag the release tests, as does one stored over. Leaks for the rest of an array one element was moved out of, for a global, and for a temporary left unbound. One a struct, an enum, a tuple or an array holds, however deep, is released with it |
 
@@ -129,7 +129,8 @@ If you want a short answer to "what does a clean compile buy me":
   that type's representation, coercions are explicit or checked, and the tag on
   an enum variant is real.
 - **Ordinary array and slice indexing is bounds-checked**, and allocation
-  failure traps rather than returning null.
+  failure panics rather than returning null: the program ends, saying what
+  failed and where, and nothing runs after it.
 - **A variable is not read before it holds something**, and not read or
   borrowed after its value moved away — on any path, because the check is
   conservative. A variable never given a value may be borrowed, so a method can
@@ -167,5 +168,5 @@ does not cross threads unsafely, or that memory is released.
 
 - The three axes and what each permits: [References and Regions](references-and-regions.md)
 - What flow actually does and does not analyze: [Flow Analysis](../../compiler/c/doc/phases/flow.md)
-- Bounds checks, traps and pointer levels: [Generation](../../compiler/c/doc/phases/generation.md)
+- Bounds checks, the panics they end in, and pointer levels: [Generation](../../compiler/c/doc/phases/generation.md)
 - Re-measuring any row: [Measuring](../../compiler/c/doc/diagnostics/measuring.md)

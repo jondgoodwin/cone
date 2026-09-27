@@ -455,7 +455,7 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
                 // what a 'continue' carries a copy of. The bound is cloned rather
                 // than shared with the guard: a node reachable twice in the tree
                 // is type checked twice.
-                CloneState cstate;
+                CloneState cstate = {0};     // Every field the clone reads, the ones not set below NULL
                 cstate.instnode = NULL;
                 cstate.selftype = NULL;
                 cstate.selfparm = NULL;

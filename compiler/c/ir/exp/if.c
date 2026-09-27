@@ -67,6 +67,30 @@ void ifRemoveReturns(IfNode *ifnode) {
     }
 }
 
+// Does a type-checked block end by jumping away, so give its 'if' no value?
+// Generation reads the same three tags (genlIf).
+int ifBlockJumps(BlockNode *blk) {
+    if (blk->tag != BlockTag || blk->stmts == NULL || blk->stmts->used == 0)
+        return 0;
+    uint16_t last = nodesLast(blk->stmts)->tag;
+    return last == ReturnTag || last == BreakTag || last == ContinueTag;
+}
+
+// Does every path through a type-checked 'if' jump away?
+int ifAllPathsJump(IfNode *ifnode) {
+    int hasElse = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+        if (*nodesp == elseCond)
+            hasElse = 1;
+        cnt--; nodesp++;
+        if (!ifBlockJumps((BlockNode *)*nodesp))
+            return 0;
+    }
+    return hasElse;
+}
+
 // if node name resolution
 void ifNameRes(NameResState *pstate, IfNode *ifnode) {
     INode **nodesp;
@@ -175,6 +199,10 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
         else if (!isExpNode(*nodesp)) {
             match = NoMatch;
         }
+        // A block that jumps away -- a 'return', or a call that does not
+        // return -- gives the 'if' no value, so has no say in its type
+        else if (ifBlockJumps((BlockNode *)*nodesp))
+            ;
         else {
             switch (iexpMultiInfer(expectType, &maybeType, nodesp)) {
             case NoMatch:
@@ -219,7 +247,8 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
             // Since generation requires this node to be a block,
             // perform coercion on the last statement
             BlockNode *blk = (BlockNode *)*nodesp;
-            iexpCoerce(&nodesLast(blk->stmts), maybeType);
+            if (!ifBlockJumps(blk))
+                iexpCoerce(&nodesLast(blk->stmts), maybeType);
         }
     }
 }

@@ -7,6 +7,7 @@ fn vkFormat(format u32) u32 {
   if format == TEXTURE_FORMAT_BGRA8_UNORM { return vulkan.FORMAT_B8G8R8A8_UNORM; }
   if format == TEXTURE_FORMAT_BGRA8_UNORM_SRGB { return vulkan.FORMAT_B8G8R8A8_SRGB; }
   if format == TEXTURE_FORMAT_DEPTH32_FLOAT { return vulkan.FORMAT_D32_SFLOAT; }
+  if format == TEXTURE_FORMAT_RGBA16_FLOAT { return vulkan.FORMAT_R16G16B16A16_SFLOAT; }
   vulkan.FORMAT_UNDEFINED;
 }
 
@@ -16,9 +17,11 @@ fn textureFormat(vkFormat u32) u32 {
   if vkFormat == vulkan.FORMAT_B8G8R8A8_UNORM { return TEXTURE_FORMAT_BGRA8_UNORM; }
   if vkFormat == vulkan.FORMAT_B8G8R8A8_SRGB { return TEXTURE_FORMAT_BGRA8_UNORM_SRGB; }
   if vkFormat == vulkan.FORMAT_D32_SFLOAT { return TEXTURE_FORMAT_DEPTH32_FLOAT; }
+  if vkFormat == vulkan.FORMAT_R16G16B16A16_SFLOAT { return TEXTURE_FORMAT_RGBA16_FLOAT; }
   TEXTURE_FORMAT_UNDEFINED;
 }
 
+// The aspect of a view of 'vkFormat': depth, or color
 fn aspectOf(vkFormat u32) u32 {
   if vkFormat == vulkan.FORMAT_D32_SFLOAT { return vulkan.IMAGE_ASPECT_DEPTH_BIT; }
   vulkan.IMAGE_ASPECT_COLOR_BIT;
@@ -95,21 +98,57 @@ pub struct Buffer {
 
 // ---- Textures ----
 
-// What 'createTexture' makes
+// What 'createTexture' makes. A texture of several layers
+// ('depthOrArrayLayers'), square, six or a multiple of six of them, may be
+// seen as a cube ('createViewWith', TEXTURE_VIEW_DIMENSION_CUBE), as WebGPU's
+// may; 'mipLevelCount' levels of detail, each half the one before (at least
+// 1 x 1).
 pub struct TextureDescriptor {
   pub width u32;
   pub height u32;
   pub format u32;                  // TEXTURE_FORMAT_...
   pub usage u32;                   // TEXTURE_USAGE_... OR-ed
+  pub mipLevelCount u32 = 1u32;
+  pub depthOrArrayLayers u32 = 1u32;
+}
+
+// What 'createViewWith' makes: WebGPU's GPUTextureViewDescriptor. A count of
+// 0 is WebGPU's count left out: the rest of the levels; the rest of the
+// layers for an array, six for a cube, one for 2-D.
+pub struct TextureViewDescriptor {
+  pub dimension u32 = TEXTURE_VIEW_DIMENSION_2D;
+  pub baseMipLevel u32 = 0u32;
+  pub mipLevelCount u32 = 0u32;
+  pub baseArrayLayer u32 = 0u32;
+  pub arrayLayerCount u32 = 0u32;
 }
 
 struct TextureBackend {
   pub image vulkan.Image;
-  pub view vulkan.ImageView;       // the view of the whole texture
+  pub view vulkan.ImageView;       // the view: of the whole texture, in a Texture
   pub kind u32;                    // KIND_...: the layout it rests in
   pub owned Bool;                  // made by the device, and ended with the Texture
   pub device vulkan.Device;
   pub memory vulkan.DeviceMemory;
+  pub baseMip u32 = 0u32;          // what the view sees: levels and layers
+  pub mipCount u32 = 1u32;
+  pub baseLayer u32 = 0u32;
+  pub layerCount u32 = 1u32;
+  pub views usize = 0usize;        // its *ViewCache, a device-made texture's (a pointer field
+                                   // cannot default to null: a Cone gap)
+}
+
+// The views 'createViewWith' has made of a texture, each kept until the
+// texture ends: WebGPU's views are the texture's, not destroyed on their own
+struct ViewCache {
+  pub count u32;
+  pub capacity u32;
+  pub entries *ViewEntry;
+}
+
+struct ViewEntry {
+  pub key u64;                     // the descriptor, packed
+  pub view vulkan.ImageView;
 }
 
 // A texture: one the device made ('createTexture'), or a swapchain's, which
@@ -120,12 +159,83 @@ pub struct Texture {
   pub height u32;
   pub format u32;                  // TEXTURE_FORMAT_...
   pub usage u32;                   // TEXTURE_USAGE_...
+  pub mipLevelCount u32 = 1u32;
+  pub depthOrArrayLayers u32 = 1u32;
 
   pub fn isValid(self &) Bool { backend.view.h != 0u64; }
 
-  // A view of the whole texture (made with it)
+  // A view of the whole texture (made with it): 2-D, or a 2-D array if it
+  // has several layers
   pub fn createView(self &) TextureView {
     TextureView[backend, width, height, format];
+  }
+
+  // A view of some of its levels and layers, as 'desc' says, seen as 2-D, a
+  // 2-D array or a cube; its width and height are its first level's. A
+  // render pass draws into a view of one level and one layer. The view is
+  // made once, the first time it is asked for, and kept as long as the
+  // texture (an invalid view if it cannot be made: check 'isValid').
+  pub fn createViewWith(self &, desc &TextureViewDescriptor) TextureView {
+    mut result = TextureView[backend, width, height, format];
+    result.backend.view = vulkan.ImageView[0u64];
+    if backend.image.h == 0u64 or backend.views == 0usize { return result; }
+    imm baseMip = desc.baseMipLevel;
+    imm baseLayer = desc.baseArrayLayer;
+    mut mips = desc.mipLevelCount;
+    if mips == 0u32 and baseMip < mipLevelCount { mips = mipLevelCount - baseMip; }
+    mut layers = desc.arrayLayerCount;
+    if layers == 0u32 {
+      if desc.dimension == TEXTURE_VIEW_DIMENSION_CUBE {
+        layers = 6u32;
+      } elif desc.dimension == TEXTURE_VIEW_DIMENSION_2D {
+        layers = 1u32;
+      } elif baseLayer < depthOrArrayLayers {
+        layers = depthOrArrayLayers - baseLayer;
+      }
+    }
+    if mips == 0u32 or baseMip + mips > mipLevelCount or layers == 0u32 or baseLayer + layers > depthOrArrayLayers
+        or (desc.dimension == TEXTURE_VIEW_DIMENSION_2D and layers != 1u32)
+        or (desc.dimension == TEXTURE_VIEW_DIMENSION_CUBE and layers != 6u32) {
+      fail("createViewWith: the levels or layers are not the texture's, or not the dimension's");
+      return result;
+    }
+    mut viewType = vulkan.IMAGE_VIEW_TYPE_2D;
+    if desc.dimension == TEXTURE_VIEW_DIMENSION_2D_ARRAY { viewType = vulkan.IMAGE_VIEW_TYPE_2D_ARRAY; }
+    if desc.dimension == TEXTURE_VIEW_DIMENSION_CUBE { viewType = vulkan.IMAGE_VIEW_TYPE_CUBE; }
+    imm key = u64[desc.dimension] | (u64[baseMip] << 8u64) | (u64[mips] << 16u64) | (u64[baseLayer] << 24u64)
+      | (u64[layers] << 40u64);
+    imm cache = backend.views as *ViewCache;
+    mut found = vulkan.ImageView[0u64];
+    mut i = 0usize;
+    while i < usize[cache.count] {
+      imm e = cache.entries + i;
+      if e.key == key { found = e.view; }
+      i = i + 1usize;
+    }
+    if found.h == 0u64 {
+      if cache.count == cache.capacity {
+        fail("createViewWith: more views of one texture than it keeps");
+        return result;
+      }
+      imm vk = vkFormat(format);
+      imm vci = vulkan.ImageViewCreateInfo[pNext: nullp(), image: backend.image, viewType: viewType, format: vk,
+        components: vulkan.ComponentMapping[], subresourceRange: vulkan.ImageSubresourceRange[aspectMask: aspectOf(vk),
+        baseMipLevel: baseMip, levelCount: mips, baseArrayLayer: baseLayer, layerCount: layers]];
+      if !check(vulkan.createImageView(backend.device, &vci, nullp(), &mut found), "vkCreateImageView") {
+        return result;
+      }
+      imm slot = cache.entries + usize[cache.count];
+      *slot = ViewEntry[key, found];
+      cache.count = cache.count + 1u32;
+    }
+    result.backend.view = found;
+    result.backend.baseMip = baseMip;
+    result.backend.mipCount = mips;
+    result.backend.baseLayer = baseLayer;
+    result.backend.layerCount = layers;
+    result.width = mipSize(width, baseMip);
+    result.height = mipSize(height, baseMip);
+    result;
   }
 
   // Its end, if the device made it, once the GPU is idle
@@ -133,18 +243,50 @@ pub struct Texture {
     if backend.owned and backend.image.h != 0u64 {
       vulkan.deviceWaitIdle(backend.device);
       if backend.view.h != 0u64 { vulkan.destroyImageView(backend.device, backend.view, nullp()); }
+      endViews(backend.device, backend.views as *ViewCache);
       vulkan.destroyImage(backend.device, backend.image, nullp());
     }
     if backend.owned and backend.memory.h != 0u64 { vulkan.freeMemory(backend.device, backend.memory, nullp()); }
   }
 }
 
-// A view of a texture, which a render pass draws into
+// A level's width or height: the texture's halved 'level' times, at least 1
+fn mipSize(size u32, level u32) u32 {
+  imm s = size >> level;
+  if s == 0u32 { return 1u32; }
+  s;
+}
+
+// A cache of room for 'capacity' views
+fn newViews(capacity u32) *ViewCache {
+  imm cache = libc.calloc(1usize, mem.sizeof[ViewCache]()) as *ViewCache;
+  cache.capacity = capacity;
+  cache.entries = libc.calloc(usize[capacity], mem.sizeof[ViewEntry]()) as *ViewEntry;
+  cache;
+}
+
+// Destroy the views in 'cache', and free it
+fn endViews(device vulkan.Device, cache *ViewCache) {
+  if (cache as usize) == 0usize { return; }
+  mut i = 0usize;
+  while i < usize[cache.count] {
+    imm e = cache.entries + i;
+    vulkan.destroyImageView(device, e.view, nullp());
+    i = i + 1usize;
+  }
+  libc.free(cache.entries as *u8);
+  libc.free(cache as *u8);
+}
+
+// A view of a texture, which a render pass draws into, or a bind group
+// hands shaders to sample
 pub struct TextureView {
   pub backend TextureBackend;
   pub width u32;
   pub height u32;
   pub format u32;
+
+  pub fn isValid(self &) Bool { backend.view.h != 0u64; }
 }
 
 // What 'getCurrentTexture' answers: a texture to draw into this frame, if

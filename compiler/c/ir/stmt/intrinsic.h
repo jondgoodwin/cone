@@ -102,7 +102,15 @@ enum IntrinsicFn {
     AtomicAndIntrinsic,     // atomicAnd[T](p *T, value T, order MemOrder) T
     AtomicOrIntrinsic,      // atomicOr[T](p *T, value T, order MemOrder) T
     AtomicXorIntrinsic,     // atomicXor[T](p *T, value T, order MemOrder) T
-    AtomicCompareSwapIntrinsic  // atomicCompareSwap[T](p *T, expected T, desired T, success MemOrder, failure MemOrder) T, Bool
+    AtomicCompareSwapIntrinsic, // atomicCompareSwap[T](p *T, expected T, desired T, success MemOrder, failure MemOrder) T, Bool
+    // Where the call is written: its source file's name, and its line. Written
+    // as a parameter's default value, where each call taking the default is
+    // (fnCallFinalizeArgs), which is how 'panic' reports its caller
+    SrcFileIntrinsic,       // srcFile() &[]u8
+    SrcLineIntrinsic,       // srcLine() u32
+    // Whether this is a debug build ('conec --debug', or 'build: debug' in a
+    // build description): a constant, so a branch on it folds away
+    IsDebugBuildIntrinsic   // isDebugBuild() Bool
 };
 
 // A MemOrder, core's enum of the orderings an atomic operation promises, in the
@@ -184,5 +192,16 @@ FnDclNode *intrinsicAtomicCallee(FnCallNode *call);
 // The orderings a checked call to an atomic intrinsic was given, in the order
 // of its parameters: one, or compareSwap's success and failure
 void intrinsicCallOrders(FnCallNode *call, FnDclNode *fndcl, MemOrderKind *orders);
+
+// Which of 'srcFile()' and 'srcLine()' a node calls, or 0: SrcFileIntrinsic or
+// SrcLineIntrinsic, each answering where the call is written
+int intrinsicSrcKind(INode *node);
+
+// Is this a call to 'srcFile()' or 'srcLine()'?
+#define intrinsicIsSrcCall(node) (intrinsicSrcKind(node) != 0)
+
+// A copy of a call to 'srcFile()' or 'srcLine()' placed at 'site': a
+// parameter's default value, taken by the call 'site', answers where that call is
+INode *intrinsicSrcCallAt(INode *call, INode *site);
 
 #endif

@@ -173,11 +173,10 @@ void keywordInit() {
     // reftoken.html has not caught up with: refexcept.html for error handling,
     // refcorout.html for coroutines, refconccomm.html for actors. 'actor' itself
     // is not here: it names a kind of declaration, so it is a token above and
-    // the parser reports it where the declaration is written.
+    // the parser reports it where the declaration is written. 'panic' and
+    // 'assert' are not here: they are core's functions, not syntax.
     keyAdd("throw", ReservedToken);
     keyAdd("catch", ReservedToken);
-    keyAdd("panic", ReservedToken);
-    keyAdd("assert", ReservedToken);
     keyAdd("spawn", ReservedToken);
 }
 

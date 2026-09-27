@@ -389,6 +389,30 @@ void slitTypeCheck(TypeCheckState *pstate, SLitNode *node) {
     node->vtype = (INode*)newArrayNodeTyped((INode*)node, node->strlen, (INode*)u8Type);
 }
 
+// A reinterpretation ('as') of a constant number to a number or pointer type is
+// a constant: '0usize as *u8' is the null pointer, known before anything runs.
+// The operand is a number literal, a named constant, or another such cast. This
+// is answered from the tree as written, since a field's default is asked before
+// it is type checked. The target is found through name resolution's binding and
+// must be a number or a pointer: a struct target is reinterpreted through memory
+// (genlRecast), which a global's initializer has none of. The same-size rule is
+// type check's to apply (castTypeCheck), and generation folds the bitcast,
+// 'inttoptr' or 'ptrtoint' of a constant operand into a constant. A conversion
+// ('into') is not asked here.
+static int litIsConstCast(CastNode *node) {
+    if ((node->flags & FlagConvert) || !isTypeNode(node->typ))
+        return 0;
+    switch (itypeGetTypeDcl(node->typ)->tag) {
+    case UintNbrTag: case IntNbrTag: case FloatNbrTag: case PtrTag:
+        break;
+    default:
+        return 0;
+    }
+    INode *exp = node->exp;
+    return exp->tag == ULitTag || exp->tag == FLitTag || nameUseNames(exp, ConstDclTag)
+        || (exp->tag == CastTag && litIsConstCast((CastNode*)exp));
+}
+
 // A borrow of a string literal is a constant too: the text is a constant
 // global, so its reference -- or, as a slice, its address and length -- is known
 // before anything runs. That is the auto-borrow a string literal gets when a
@@ -404,5 +428,6 @@ int litIsLiteral(INode* node) {
         || (node->tag == ArrayLitTag && arrayLitIsLiteral((ArrayNode*)node))
         || (node->tag == TypeLitTag && typeLitIsLiteral((FnCallNode*)node))
         || nameUseNames(node, ConstDclTag)
+        || (node->tag == CastTag && litIsConstCast((CastNode*)node))
         );
 }

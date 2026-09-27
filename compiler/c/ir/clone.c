@@ -30,8 +30,22 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     if (isNameUseNode(nodep) && ((NameUseNode*)nodep)->dclnode
         && ((NameUseNode*)nodep)->dclnode->tag == GenVarDclTag) {
         INode *hooked = ((NameUseNode*)nodep)->namesym->node;
-        if (!(hooked && hooked->tag == GenVarDclTag))
-            return cloneNode(cstate, hooked);
+        if (!(hooked && hooked->tag == GenVarDclTag)) {
+            if (cstate->srcsite == NULL)
+                return cloneNode(cstate, hooked);
+            // A macro's argument is the use's own source, not the macro's: it
+            // keeps its own place, where 'srcLine()' in it answers, and is not
+            // marked as instantiated by the use, so a macro used in it is known
+            // not to be one the body wrote (macroSrcSite)
+            INode *srcsite = cstate->srcsite;
+            INode *instnode = cstate->instnode;
+            cstate->srcsite = NULL;
+            cstate->instnode = NULL;
+            INode *arg = cloneNode(cstate, hooked);
+            cstate->srcsite = srcsite;
+            cstate->instnode = instnode;
+            return arg;
+        }
         node = cloneNameUseNode(cstate, (NameUseNode *)nodep);
         ((NameUseNode*)node)->dclnode = hooked;
     }
@@ -145,7 +159,9 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         // return and no diagnostic that would make the compile's output usable.
         errorExit(ExitError, "Internal error: cloning is not implemented for a node of tag %d", nodep->tag);
     }
-    node->instnode = cstate->instnode;
+    // With nothing instantiating it -- a macro's argument (above) -- a copy keeps
+    // what instantiated the original
+    node->instnode = cstate->instnode ? cstate->instnode : nodep->instnode;
     return node;
 }
 
@@ -154,6 +170,7 @@ void clonePushState(CloneState *cstate, INode *instnode, INode *selftype, uint32
     cstate->instnode = instnode;
     cstate->selftype = selftype;
     cstate->selfparm = NULL;
+    cstate->srcsite = NULL;
     cstate->structshell = NULL;
     cstate->absent = NULL;
     cstate->scope = scope;

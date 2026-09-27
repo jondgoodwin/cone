@@ -44,6 +44,9 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep);
 // Type check on fncall
 void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **node);
 
+// Does this type-checked expression call a function declared to return 'Never'?
+int fnCallIsNever(INode *node);
+
 // Find the one field or method that accepts the call's receiver and arguments,
 // then lower the node to a function call (objfn+args) or field access (objfn+methfld).
 // A receiver held through a reference or pointer is dereferenced where the selected

@@ -75,8 +75,8 @@ pub struct Queue {
   // Write 'size' bytes from 'data' into 'buffer' at 'offset', which must be
   // a buffer with BUFFER_USAGE_COPY_DST. The bytes are copied now (into
   // staging memory), and into the buffer by the GPU ahead of whatever is
-  // submitted next, after everything submitted before: WebGPU's
-  // 'queue.writeBuffer'.
+  // submitted next, after everything submitted before and after the writes
+  // made before it: WebGPU's 'queue.writeBuffer'.
   pub fn writeBuffer(self &mut, buffer &Buffer, offset u64, data *u8, size u64) {
     if size == 0u64 { return; }
     if (buffer.usage & BUFFER_USAGE_COPY_DST) == 0u32 {
@@ -93,6 +93,10 @@ pub struct Queue {
     imm at = backend.frames[i].stagingUsed;
     libc.memcpy(backend.frames[i].staging.mapped + usize[at], data, usize[size]);
     backend.frames[i].stagingUsed = at + size;
+    // After the frame's earlier copies, which may have written the same
+    // bytes (two writes to one buffer in a frame land in the order made)
+    memoryBarrier(cmd, vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT,
+      vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT);
     imm region = vulkan.BufferCopy[at, offset, size];
     vulkan.cmdCopyBuffer(cmd, backend.frames[i].staging.buffer, buffer.backend.buffer, 1u32,
       &region as *vulkan.BufferCopy);

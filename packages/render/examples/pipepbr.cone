@@ -1,0 +1,479 @@
+// pipepbr: the lighting floor on the sculpted pipe. Two copies of pipevk's
+// pipe (level 3, smooth) turn under a dusk sky: on the left in today's
+// Blinn-Phong material, black with a white highlight; on the right in the
+// physically based one, black chitin: a dark rough base under a smooth
+// clear coat, an oily thin film on the coat (Belcour and Barla's
+// iridescence) whose thickness is warped noise drifting with time. The
+// frame is drawn in HDR (RGBA16_FLOAT), lit by the sun and by the sky's
+// prefiltered environment, then bloomed and tone-mapped (AgX) to the
+// window.
+//
+//   congo run packages/render/examples/pipepbr.cone
+//   congo run packages/render/examples/pipepbr.cone -- --frames 150 --screenshot pbr.bmp
+//
+// Keys:
+//   T            the next tone mapper: AgX, ACES, Reinhard, none
+//   B            bloom on or off
+//   F            the film on or off
+//   Escape       quit; F11 fullscreen
+//
+// '--frames N' (or PIPEPBR_FRAMES) draws N frames and stops; otherwise it
+// runs until quit. Time is the frame's number over 60 (seconds), so a run
+// of N frames is the same every time; eight frames after the check such a
+// run makes the window smaller, so a run of 120 frames draws at two sizes
+// under validation. At frame CHECK_FRAME (or the last, if
+// sooner) it reads the frame back and checks it: the sky above is dusk
+// (bluer than red), the band low ahead along the horizon is pinker than it,
+// and both pipes are drawn where the middles of their centre lines fall,
+// each unlike the sky beside the row at that height. '--screenshot FILE' writes that frame to FILE as a BMP, and the
+// next few beside it: with ACES ('-aces'), with no film ('-nofilm'), with no
+// bloom ('-nobloom'). After the run, it draws BENCH_FRAMES frames more into
+// an offscreen target of 1920 x 1080 (the plan's frame target), as fast as the GPU goes (two
+// frames in flight, nothing presented), and prints their mean time: the
+// GPU's cost of a frame, with the recording. It prints the checks, the frame
+// times, and exits 0 only if every check passed, no Vulkan call failed and
+// the validation layer said nothing.
+//
+// It needs a display, a GPU driver with Vulkan 1.3, SDL2.lib on LIB to link
+// and SDL2.dll on PATH to run; with the Vulkan SDK, validation is on.
+// GPU_POWER_PREFERENCE=low-power picks an integrated GPU where there are two.
+
+mod pipepbr;
+
+import stdio use *;
+import libc;
+import sdl;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+import gpu use *;
+import render use *;
+import window use *;
+
+const CHECK_FRAME = 90;
+const BENCH_FRAMES = 120;
+const SPACING f32 = 3.2;         // between the two pipes' middles
+const RISE f32 = 1.45;           // their middles above the camera's ground (it is 0.6 up)
+
+// Keys (SDL's key codes are the characters)
+const KEY_B = 98u32;
+const KEY_F = 102u32;
+const KEY_T = 116u32;
+
+// ---- Arguments ----
+
+// The number 's' spells, or -1 if it is not a whole number
+fn parseCount(s *u8) i32 {
+  if (s as usize) == 0usize or *s == 0u8 { return -1; }
+  mut n = 0;
+  mut i = 0usize;
+  while *(s + i) != 0u8 {
+    imm c = *(s + i);
+    if c < '0' or c > '9' { return -1; }
+    n = n * 10 + i32[c - '0'];
+    i = i + 1usize;
+  }
+  n;
+}
+
+fn cstrEquals(a *u8, b &[]u8) Bool {
+  mut i = 0usize;
+  while i < b.len {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len) == 0u8;
+}
+
+fn onOff(on Bool) &[]u8 {
+  if on { return "on"; }
+  "off";
+}
+
+fn toneMapperName(t u32) &[]u8 {
+  if t == TONE_MAP_AGX { return "AgX"; }
+  if t == TONE_MAP_ACES { return "ACES"; }
+  if t == TONE_MAP_REINHARD { return "Reinhard"; }
+  "none";
+}
+
+// 'base' without its '.bmp', then 'suffix' and '.bmp'
+fn shotName(base &String, suffix &[]u8) String {
+  mut s = String.empty();
+  if base.endsWith(".bmp") { s = base.sub(0usize, base.len() - 4usize); } else { s = base.copy(); }
+  s <- suffix;
+  s <- ".bmp";
+  s;
+}
+
+// ---- The check ----
+
+// Where the point 'p' (world coordinates) is drawn, in pixels of a target
+// 'w' by 'h' (from its top left), by 'viewProjection'
+fn pixelOf(viewProjection Mat4, p Vec3, w u32, h u32, x &mut i32, y &mut i32) {
+  imm clip = viewProjection * Vec4[p.x, p.y, p.z, 1.];
+  *x = i32[(clip.x / clip.w + 1.) * 0.5 * f32[w]];
+  *y = i32[(1. - clip.y / clip.w) * 0.5 * f32[h]];
+}
+
+// Channel 'c' (0 red, 1 green, 2 blue) of pixel ('x', 'y') of a frame 'w'
+// wide read back to 'p', its bytes BGRA if 'bgra'
+fn channel(p *u8, w u32, x i32, y i32, c usize, bgra Bool) i32 {
+  mut at = c;
+  if bgra { at = 2usize - c; }
+  i32[*(p + (usize[y] * usize[w] + usize[x]) * 4usize + at)];
+}
+
+fn luma(p *u8, w u32, x i32, y i32, bgra Bool) i32 {
+  channel(p, w, x, y, 0usize, bgra) + channel(p, w, x, y, 1usize, bgra) + channel(p, w, x, y, 2usize, bgra);
+}
+
+fn printPixel(name &[]u8, p *u8, w u32, x i32, y i32, bgra Bool) {
+  printStr(name); print <- " at ("; print <- x; print <- ", "; print <- y; print <- "): ";
+  print <- channel(p, w, x, y, 0usize, bgra); print <- " "; print <- channel(p, w, x, y, 1usize, bgra); print <- " ";
+  print <- channel(p, w, x, y, 2usize, bgra);
+}
+
+// Check pixel ('x', 'y'), a pipe, is drawn: on the screen, and unlike the
+// sky at ('sx', 'y'), beside the row (the sum of its channels 30 away)
+fn checkPipe(name &[]u8, p *u8, w u32, h u32, x i32, y i32, sx i32, bgra Bool) Bool {
+  if x < 0 or y < 0 or x >= i32[w] or y >= i32[h] or sx < 0 or sx >= i32[w] {
+    printStr(name); print <- ": off the screen\n";
+    return false;
+  }
+  printPixel(name, p, w, x, y, bgra);
+  imm d = luma(p, w, x, y, bgra) - luma(p, w, sx, y, bgra);
+  imm ok = d > 30 or d < -30;
+  if ok { print <- ": drawn, unlike the sky beside it\n"; } else { print <- ": NOT unlike the sky beside it\n"; }
+  ok;
+}
+
+// ---- The demo ----
+
+fn main(argc i32, argv **u8) i32 {
+  // The arguments
+  mut maxFrames = 0;
+  mut screenshot = String.empty();
+  imm env = libc.getenv(&"PIPEPBR_FRAMES" as *u8);
+  if (env as usize) != 0usize { maxFrames = parseCount(env); }
+  mut a = 1;
+  while a < argc {
+    imm arg = *(argv + usize[a]);
+    if cstrEquals(arg, "--frames") and a + 1 < argc {
+      maxFrames = parseCount(*(argv + usize[a + 1]));
+      a = a + 1;
+    } elif cstrEquals(arg, "--screenshot") and a + 1 < argc {
+      imm s = *(argv + usize[a + 1]);
+      mut i = 0usize;
+      while *(s + i) != 0u8 {
+        screenshot.appendByte(*(s + i));
+        i = i + 1usize;
+      }
+      a = a + 1;
+    } else {
+      print <- "Unknown argument; use --frames N and --screenshot FILE\n";
+      return 2;
+    }
+    a = a + 1;
+  }
+  if maxFrames < 0 {
+    print <- "--frames wants a whole number\n";
+    return 2;
+  }
+  mut checkFrame = CHECK_FRAME;
+  if maxFrames > 0 and maxFrames - 1 < checkFrame { checkFrame = maxFrames - 1; }
+
+  // The pipe, as pipevk makes it: level 3, smooth
+  imm hexagon = Profile.polygon(6u32, 0.25);
+  imm path = Path.line(Vec3[0., 0., 0.], Vec3[4., 0., 0.], 16u32);
+  imm straight = sweep(&hexagon, &path, 0., 1., 1., false);
+  imm cage = bend(&straight, pi / 2., Vec3[0., 0., 1.], Vec3[1., 0., 0.], Vec3[0., 0., 0.]);
+  imm lods = subdivisionLevels(&cage, 3u32);
+  imm tri = lods[3usize].triangulate(true);
+  imm bounds = cage.bounds();
+  imm middle = (bounds.min + bounds.max) * 0.5;
+  // Where its centre line's middle is: halfway between rings 7 and 8 of the
+  // cage (each ring's six vertices about its centre), as pipevk finds it
+  mut ringSum = Vec3[0., 0., 0.];
+  mut v = 42usize;
+  while v < 54usize {
+    ringSum = ringSum + *cage.positions[v];
+    v = v + 1usize;
+  }
+  imm centreLine = ringSum * (1. / 12.);
+  print <- "The pipe: "; print <- tri.vertexCount(); print <- " vertices, "; print <- tri.triangleCount();
+  print <- " triangles\n";
+
+  // The window and the GPU
+  mut win = Window.openVulkan("Cone: the lighting floor, on the pipe");
+  if !win.isOpen() {
+    print <- "No window could be opened\n";
+    return 1;
+  }
+  mut instance = Instance.create("pipepbr");
+  if !instance.isValid() {
+    print <- "No Vulkan 1.3 instance could be made\n";
+    return 1;
+  }
+  mut surface = instance.createSurface(win.sdlHandle());
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm powerEnv = libc.getenv(&"GPU_POWER_PREFERENCE" as *u8);
+  if (powerEnv as usize) != 0usize {
+    if libc.strcmp(powerEnv, &"low-power" as *u8) == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&surface, preference);
+  if !adapter.isValid() {
+    print <- "No GPU can draw to the window\n";
+    return 1;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  print <- "API: "; printStr(adapter.backendName()); print <- " "; printStr(adapter.backendVersion.view()); print <- "\n";
+  print <- "Validation layer: "; printStr(onOff(instance.validation));
+  print <- "; synchronization validation: "; printStr(onOff(instance.syncValidation)); print <- "\n";
+  mut device = adapter.requestDevice();
+  imm size = win.size();
+  mut swapchain = device.createSwapChain(&surface, u32[size.w], u32[size.h], TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut post = Post.create(&mut device, swapchain.format, u32[size.w], u32[size.h]);
+  if !renderer.isValid() or !post.isValid() {
+    print <- "The renderer could not be made\n";
+    return 1;
+  }
+
+  // The sky: the sun 6 degrees up, behind the camera and a little right; the sun
+  // as the directional light, warm
+  imm sky = Sky.dusk(radians(6.), radians(25.));
+  renderer.setSky(&mut device, &sky);
+  imm light = sky.sunLight(Color[2.0, 0.95, 0.45, 1.], Color[0.05, 0.05, 0.08, 1.]);
+
+  // The materials: Blinn-Phong black with a white highlight; chitin
+  imm pipe = renderer.addMesh(&mut device, &tri);
+  imm phong = Material.shiny(Color[0.012, 0.011, 0.014, 1.], 0.9, 90.);
+  imm phongM = renderer.addMaterial(&mut device, &phong);
+  mut chitin = PbrMaterial.chitin(180., 520., 7u32);
+  imm chitinM = renderer.addPbrMaterial(&mut device, &chitin);
+
+  mut camera = Camera.make();
+  camera.fov = radians(40.);
+  camera.near = 0.3;
+  camera.far = 100.;
+  camera.background = Color[0., 0., 0., 1.];
+  camera.lookAt(Vec3[0., 0.6, 7.6], Vec3[0., 1.2, 0.], Vec3[0., 1., 0.]);
+
+  mut list = DrawList.empty();
+  mut frames = 0;
+  mut unshown = 0;
+  mut resizes = 0;
+  mut checked = false;
+  mut checksPassed = true;
+  mut shotsWritten = true;
+  mut extraShot = 0;             // the screenshots after the checked one: ACES, no film, no bloom
+  mut film = true;
+  mut bloomOn = true;
+  imm frequency = f64[sdl.GetPerformanceFrequency()];
+  mut firstTimed = 0u64;
+  mut lastTimed = 0u64;
+  mut recordTicks = 0u64;
+  mut timedFrames = 0;
+  mut lastTimedFrame = 0;
+  mut firstBakes = 0u32;
+  while win.running and (maxFrames == 0 or frames < maxFrames) {
+    mut event = sdl.Event.empty();
+    while win.pollEvent(&mut event) {
+      imm key = keyDown(&event);
+      if key == KEY_T { post.toneMapper = (post.toneMapper + 1u32) % 4u32; }
+      if key == KEY_B { bloomOn = !bloomOn; }
+      if key == KEY_F { film = !film; }
+    }
+    // The screenshots after the checked frame: ACES, no film, no bloom
+    if screenshot.len() > 0usize and checked and extraShot < 3 {
+      post.toneMapper = TONE_MAP_AGX;
+      film = true;
+      bloomOn = true;
+      if extraShot == 0 { post.toneMapper = TONE_MAP_ACES; }
+      if extraShot == 1 { film = false; }
+      if extraShot == 2 { bloomOn = false; }
+    } elif screenshot.len() > 0usize and checked and extraShot == 3 {
+      post.toneMapper = TONE_MAP_AGX;
+      film = true;
+      bloomOn = true;
+      extraShot = 4;
+    }
+    // A run of a fixed number of frames makes the window smaller after the
+    // screenshots, so the frame and the bloom chain are made again under
+    // validation
+    if maxFrames > 0 and frames == checkFrame + 8 { win.setSize(size.w * 2 / 3, size.h * 2 / 3); }
+    if chitin.film != film {
+      chitin.film = film;
+      renderer.setPbrMaterial(&mut device, chitinM, &chitin);
+    }
+    if bloomOn { post.bloom = 0.04; } else { post.bloom = 0.; }
+    if win.resized {
+      imm s = win.size();
+      swapchain.resize(u32[s.w], u32[s.h]);
+      win.resized = false;
+      resizes = resizes + 1;
+    }
+    imm frame = swapchain.getCurrentTexture(&mut device);
+    if !frame.ok() {
+      sdl.Delay(10u32);
+    } else {
+      imm started = sdl.GetPerformanceCounter();
+      imm w = frame.texture.width;
+      imm h = frame.texture.height;
+      imm t = f32[frames] / 60.;
+      renderer.time = t;
+      post.resize(&mut device, w, h);
+
+      // The two pipes, turning about the vertical, a quarter turn in 12 s
+      imm turn = Mat4.fromTrs(Vec3[0., 0., 0.], Quat.angleAxis(t * 0.13, Vec3[0., 1., 0.]), Vec3[1., 1., 1.])
+        * Mat4.fromTranslation(Vec3[0., 0., 0.] - middle);
+      imm left = Mat4.fromTranslation(Vec3[0. - SPACING * 0.5, RISE, 0.]) * turn;
+      imm right = Mat4.fromTranslation(Vec3[SPACING * 0.5, RISE, 0.]) * turn;
+      list.clear();
+      list.add(pipe, phongM, left);
+      list.add(pipe, chitinM, right);
+
+      mut encoder = device.createCommandEncoder();
+      renderer.render(&mut device, &mut encoder, &post.hdr, &frame.depth, &camera, &light, &list);
+      post.apply(&mut encoder, &frame.texture);
+      if frames == 0 { firstBakes = renderer.environment.bakes; }
+      imm bgra = frame.texture.format == TEXTURE_FORMAT_BGRA8_UNORM_SRGB
+        or frame.texture.format == TEXTURE_FORMAT_BGRA8_UNORM;
+      imm checkNow = frames == checkFrame and !checked;
+      imm extraNow = screenshot.len() > 0usize and checked and extraShot < 3;
+      if checkNow or extraNow {
+        mut readback = device.createBuffer(u64[w] * u64[h] * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+        encoder.copyTextureToBuffer(&frame.texture, &readback);
+        device.queue.submit(encoder.finish());
+        if !swapchain.present(&mut device) { unshown = unshown + 1; }
+        device.waitIdle();
+        imm p = readback.mappedRange();
+        if checkNow {
+          checked = true;
+          imm viewProjection = camera.projectionMatrix(f32[w] / f32[h]) * camera.viewMatrix();
+          print <- "Frame "; print <- frames; print <- " ("; print <- u64[w]; print <- " x "; print <- u64[h];
+          print <- "), "; print <- u64[renderer.drawCalls]; print <- " draws, "; print <- renderer.triangles;
+          print <- " triangles, tone mapped by "; printStr(toneMapperName(post.toneMapper));
+          print <- ", bloom "; print <- post.levels; print <- " levels:\n";
+          // The sky: blue-violet up high, the pink band low down ahead (away
+          // from the sun, which is behind the camera)
+          imm tx = i32[w / 2u32];
+          imm ty = i32[h / 30u32];
+          printPixel("  the sky above", p, w, tx, ty, bgra);
+          imm high = channel(p, w, tx, ty, 2usize, bgra) > channel(p, w, tx, ty, 0usize, bgra);
+          if high { print <- ": bluer than red\n"; } else { print <- ": NOT bluer than red\n"; }
+          mut hx = 0;
+          mut hy = 0;
+          pixelOf(viewProjection, camera.position() + Vec3[0., 0.10, -50.], w, h, &mut hx, &mut hy);
+          mut low = false;
+          if hx >= 0 and hy >= 0 and hx < i32[w] and hy < i32[h] {
+            printPixel("  the sky low ahead", p, w, hx, hy, bgra);
+            // Pinker than the sky above: its red less its blue greater
+            low = channel(p, w, hx, hy, 0usize, bgra) - channel(p, w, hx, hy, 2usize, bgra)
+              > channel(p, w, tx, ty, 0usize, bgra) - channel(p, w, tx, ty, 2usize, bgra) + 20;
+            if low { print <- ": pinker than the sky above\n"; } else { print <- ": NOT pinker than the sky above\n"; }
+          } else {
+            print <- "  the sky low ahead: off the screen\n";
+          }
+          if !high or !low { checksPassed = false; }
+          // The pipes, where the middles of their centre lines are drawn, against
+          // the sky at the same height, a pipe's width outside the pair
+          mut lx = 0;
+          mut ly = 0;
+          mut rx = 0;
+          mut ry = 0;
+          pixelOf(viewProjection, left * centreLine, w, h, &mut lx, &mut ly);
+          pixelOf(viewProjection, right * centreLine, w, h, &mut rx, &mut ry);
+          mut ox = 0;
+          mut oy = 0;
+          pixelOf(viewProjection, Vec3[SPACING * 1.3, RISE, 0.], w, h, &mut ox, &mut oy);
+          if !checkPipe("  the Blinn-Phong pipe", p, w, h, lx, ly, i32[w] - 1 - ox, bgra) { checksPassed = false; }
+          if !checkPipe("  the chitin pipe", p, w, h, rx, ry, ox, bgra) { checksPassed = false; }
+          if screenshot.len() > 0usize {
+            imm shot = Image.fromTexels(p, i32[w], i32[h], bgra);
+            imm written = shot.save(screenshot.view());
+            print <- "Screenshot: "; printStr(screenshot.view());
+            if written { print <- "\n"; } else { print <- " could NOT be written\n"; }
+            if !written { shotsWritten = false; }
+          }
+        } else {
+          imm suffixes [3; &[]u8] = ["-aces", "-nofilm", "-nobloom"];
+          imm name = shotName(&screenshot, suffixes[usize[extraShot]]);
+          imm shot = Image.fromTexels(p, i32[w], i32[h], bgra);
+          imm written = shot.save(name.view());
+          print <- "Screenshot: "; printStr(name.view());
+          if written { print <- "\n"; } else { print <- " could NOT be written\n"; }
+          if !written { shotsWritten = false; }
+          extraShot = extraShot + 1;
+        }
+      } else {
+        device.queue.submit(encoder.finish());
+        imm recorded = sdl.GetPerformanceCounter();
+        if !swapchain.present(&mut device) { unshown = unshown + 1; }
+        if frames >= 10 {
+          if firstTimed == 0u64 { firstTimed = started; }
+          lastTimed = started;
+          lastTimedFrame = frames;
+          recordTicks = recordTicks + (recorded - started);
+          timedFrames = timedFrames + 1;
+        }
+      }
+      frames = frames + 1;
+    }
+  }
+  device.waitIdle();
+
+  print <- "Frames drawn: "; print <- frames; print <- "; presented: "; print <- swapchain.presents;
+  print <- "; out of date when presented: "; print <- unshown; print <- "; resizes: "; print <- resizes; print <- "\n";
+  print <- "The environment was made "; print <- u64[renderer.environment.bakes]; print <- " time(s), the first in frame 0: ";
+  printStr(onOff(firstBakes == 1u32)); print <- "\n";
+  if timedFrames > 2 and lastTimed > firstTimed {
+    imm frameMs = f64[lastTimed - firstTimed] / frequency * 1000. / f64[lastTimedFrame - 10];
+    imm cpuMs = f64[recordTicks] / frequency * 1000. / f64[timedFrames];
+    print <- "Frame time: "; print <- frameMs; print <- " ms a frame (presented in step with the display);";
+    print <- " recording and submitting: "; print <- cpuMs; print <- " ms\n";
+  }
+
+  // The GPU's cost of a frame: drawn offscreen, nothing presented, as fast
+  // as two frames in flight allow
+  if frames > 0 {
+    imm w = 1920u32;
+    imm h = 1080u32;
+    imm targetDesc = TextureDescriptor[w, h, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT];
+    mut target = device.createTexture(&targetDesc);
+    imm depthDesc = TextureDescriptor[w, h, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT];
+    mut depth = device.createTexture(&depthDesc);
+    mut benchPost = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, w, h);
+    device.waitIdle();
+    imm benchStart = sdl.GetPerformanceCounter();
+    mut b = 0;
+    while b < BENCH_FRAMES {
+      renderer.time = f32[frames + b] / 60.;
+      mut encoder = device.createCommandEncoder();
+      renderer.render(&mut device, &mut encoder, &benchPost.hdr, &depth, &camera, &light, &list);
+      benchPost.apply(&mut encoder, &target);
+      device.queue.submit(encoder.finish());
+      device.endFrame();
+      b = b + 1;
+    }
+    device.waitIdle();
+    imm benchMs = f64[sdl.GetPerformanceCounter() - benchStart] / frequency * 1000. / f64[BENCH_FRAMES];
+    print <- "GPU frame time, offscreen at "; print <- u64[w]; print <- " x "; print <- u64[h]; print <- ": ";
+    print <- benchMs; print <- " ms a frame ("; print <- BENCH_FRAMES; print <- " frames, nothing presented)\n";
+  }
+
+  print <- "Vulkan failures: "; print <- u64[failures()];
+  print <- "; validation messages: "; print <- u64[validationMessages()]; print <- "\n";
+  if !checked {
+    print <- "The frame was not checked\n";
+  }
+  if (checked and !checksPassed) or !shotsWritten {
+    print <- "FAILED\n";
+    return 1;
+  }
+  if failures() != 0u32 or validationMessages() != 0u32 { return 1; }
+  print <- "OK\n";
+  0;
+}

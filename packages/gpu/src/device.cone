@@ -84,23 +84,31 @@ pub struct Device {
   // A texture 'desc' describes, in the GPU's own memory: one to draw into,
   // its usage TEXTURE_USAGE_RENDER_ATTACHMENT (and TEXTURE_USAGE_COPY_SRC to
   // read it back), its format a color format or TEXTURE_FORMAT_DEPTH32_FLOAT;
-  // or one shaders sample, its usage TEXTURE_USAGE_TEXTURE_BINDING (and
+  // one shaders sample, its usage TEXTURE_USAGE_TEXTURE_BINDING (and
   // TEXTURE_USAGE_COPY_DST, for 'queue.writeTexture' to fill it), of a color
-  // format. It is moved to the layout it rests in ahead of the next
-  // submission. Check 'isValid'.
+  // format; or, with both usages, a color texture drawn into by some passes
+  // and sampled by later ones (an HDR frame, a bloom chain, a cube map drawn
+  // face by face and level by level). It is moved to the layout it rests in
+  // ahead of the next submission. Check 'isValid'.
   pub fn createTexture(self &mut, desc &TextureDescriptor) Texture {
     mut result = Texture[TextureBackend[vulkan.Image[0u64], vulkan.ImageView[0u64], KIND_NONE, true,
-      backend.device, vulkan.DeviceMemory[0u64]], desc.width, desc.height, desc.format, desc.usage];
+      backend.device, vulkan.DeviceMemory[0u64]], desc.width, desc.height, desc.format, desc.usage,
+      desc.mipLevelCount, desc.depthOrArrayLayers];
     if !self.isValid() { return result; }
     imm attachment = (desc.usage & TEXTURE_USAGE_RENDER_ATTACHMENT) != 0u32;
     imm sampled = (desc.usage & TEXTURE_USAGE_TEXTURE_BINDING) != 0u32;
-    if attachment == sampled {
-      fail("createTexture: a texture is drawn into (TEXTURE_USAGE_RENDER_ATTACHMENT) or sampled (TEXTURE_USAGE_TEXTURE_BINDING), one of the two");
+    if !attachment and !sampled {
+      fail("createTexture: a texture is drawn into (TEXTURE_USAGE_RENDER_ATTACHMENT), sampled (TEXTURE_USAGE_TEXTURE_BINDING), or both");
       return result;
     }
     imm format = vkFormat(desc.format);
     if format == vulkan.FORMAT_UNDEFINED {
       fail("createTexture: the format is not one offered");
+      return result;
+    }
+    if desc.mipLevelCount == 0u32 or desc.mipLevelCount > 16u32 or desc.depthOrArrayLayers == 0u32
+        or ((desc.width >> (desc.mipLevelCount - 1u32)) == 0u32 and (desc.height >> (desc.mipLevelCount - 1u32)) == 0u32) {
+      fail("createTexture: no levels or layers, or more levels than halving its size allows");
       return result;
     }
     imm depth = desc.format == TEXTURE_FORMAT_DEPTH32_FLOAT;
@@ -117,21 +125,36 @@ pub struct Device {
     if sampled {
       kind = KIND_SAMPLED;
       vkUsage = 0u32;
+      if attachment {
+        kind = KIND_RENDER_SAMPLED;
+        vkUsage = vulkan.IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+      }
     }
     if (desc.usage & TEXTURE_USAGE_COPY_SRC) != 0u32 { vkUsage = vkUsage | vulkan.IMAGE_USAGE_TRANSFER_SRC_BIT; }
     if (desc.usage & TEXTURE_USAGE_COPY_DST) != 0u32 { vkUsage = vkUsage | vulkan.IMAGE_USAGE_TRANSFER_DST_BIT; }
     if (desc.usage & TEXTURE_USAGE_TEXTURE_BINDING) != 0u32 { vkUsage = vkUsage | vulkan.IMAGE_USAGE_SAMPLED_BIT; }
+    // Six square layers, or a multiple of six, may be seen as a cube (wgpu's
+    // rule: WebGPU decides at the view)
+    mut flags = 0u32;
+    if desc.depthOrArrayLayers % 6u32 == 0u32 and desc.width == desc.height {
+      flags = vulkan.IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    }
     mut image = vulkan.Image[0u64];
     mut memory = vulkan.DeviceMemory[0u64];
     mut view = vulkan.ImageView[0u64];
-    if !makeImage(backend.device, &queue.backend.memory, desc.width, desc.height, format, vkUsage,
-        &mut image, &mut memory, &mut view) {
+    if !makeImageLevels(backend.device, &queue.backend.memory, desc.width, desc.height, format, vkUsage,
+        desc.mipLevelCount, desc.depthOrArrayLayers, flags, &mut image, &mut memory, &mut view) {
       return result;
     }
     result.backend.image = image;
     result.backend.memory = memory;
     result.backend.view = view;
     result.backend.kind = kind;
+    result.backend.mipCount = desc.mipLevelCount;
+    result.backend.layerCount = desc.depthOrArrayLayers;
+    // Room for a view of each level of each layer, a cube and an array view
+    // of each level, and a few more
+    result.backend.views = newViews(desc.mipLevelCount * (desc.depthOrArrayLayers + 2u32) + 8u32) as usize;
     imm cmd = uploadCommands(&mut queue);
     if !isNull(cmd) { firstLayout(cmd, image, kind); }
     result;
@@ -326,9 +349,12 @@ pub struct Device {
   pub fn createSampler(self &, desc &SamplerDescriptor) Sampler {
     mut sampler = vulkan.Sampler[0u64];
     if self.isValid() {
+      mut mipmapMode = vulkan.SAMPLER_MIPMAP_MODE_NEAREST;
+      if desc.mipmapFilter == FILTER_MODE_LINEAR { mipmapMode = vulkan.SAMPLER_MIPMAP_MODE_LINEAR; }
       imm ci = vulkan.SamplerCreateInfo[pNext: nullp(), magFilter: vkFilter(desc.magFilter),
-        minFilter: vkFilter(desc.minFilter), addressModeU: vkAddressMode(desc.addressModeU),
-        addressModeV: vkAddressMode(desc.addressModeV), addressModeW: vkAddressMode(desc.addressModeW)];
+        minFilter: vkFilter(desc.minFilter), mipmapMode: mipmapMode, addressModeU: vkAddressMode(desc.addressModeU),
+        addressModeV: vkAddressMode(desc.addressModeV), addressModeW: vkAddressMode(desc.addressModeW),
+        minLod: desc.lodMinClamp, maxLod: desc.lodMaxClamp];
       check(vulkan.createSampler(backend.device, &ci, nullp(), &mut sampler), "vkCreateSampler");
     }
     Sampler[SamplerBackend[backend.device, sampler]];
@@ -519,16 +545,29 @@ fn allocateBuffer(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProper
 // GPU's memory, of its own, and a view of all of it
 fn makeImage(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, width u32, height u32,
     format u32, usage u32, image &mut vulkan.Image, memory &mut vulkan.DeviceMemory, view &mut vulkan.ImageView) Bool {
-  imm ici = vulkan.ImageCreateInfo[pNext: nullp(), format: format, extent: vulkan.Extent3D[width, height, 1u32],
-    usage: usage, pQueueFamilyIndices: 0usize as *u32];
+  makeImageLevels(device, props, width, height, format, usage, 1u32, 1u32, 0u32, image, memory, view);
+}
+
+// The same, of 'levels' mip levels and 'layers' layers, made with 'flags'
+// (cube-compatible, say); the view is of every level and layer, 2-D or, with
+// several layers, a 2-D array
+fn makeImageLevels(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, width u32, height u32,
+    format u32, usage u32, levels u32, layers u32, flags u32, image &mut vulkan.Image, memory &mut vulkan.DeviceMemory,
+    view &mut vulkan.ImageView) Bool {
+  imm ici = vulkan.ImageCreateInfo[pNext: nullp(), flags: flags, format: format,
+    extent: vulkan.Extent3D[width, height, 1u32], mipLevels: levels, arrayLayers: layers, usage: usage,
+    pQueueFamilyIndices: 0usize as *u32];
   if !check(vulkan.createImage(device, &ici, nullp(), image), "vkCreateImage") { return false; }
   mut req = zeroed[vulkan.MemoryRequirements]();
   vulkan.getImageMemoryRequirements(device, *image, &mut req);
   *memory = allocate(device, props, &req, vulkan.MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
   if memory.h == 0u64 { return false; }
   if !check(vulkan.bindImageMemory(device, *image, *memory, 0u64), "vkBindImageMemory") { return false; }
-  imm vci = vulkan.ImageViewCreateInfo[pNext: nullp(), image: *image, format: format,
-    components: vulkan.ComponentMapping[], subresourceRange: vulkan.ImageSubresourceRange[aspectMask: aspectOf(format)]];
+  mut viewType = vulkan.IMAGE_VIEW_TYPE_2D;
+  if layers > 1u32 { viewType = vulkan.IMAGE_VIEW_TYPE_2D_ARRAY; }
+  imm vci = vulkan.ImageViewCreateInfo[pNext: nullp(), image: *image, viewType: viewType, format: format,
+    components: vulkan.ComponentMapping[], subresourceRange: vulkan.ImageSubresourceRange[aspectMask: aspectOf(format),
+    levelCount: levels, layerCount: layers]];
   check(vulkan.createImageView(device, &vci, nullp(), view), "vkCreateImageView");
 }
 

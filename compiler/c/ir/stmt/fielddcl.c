@@ -122,9 +122,9 @@ void fieldDclTypeCheck(TypeCheckState *pstate, FieldDclNode *name) {
     }
     // Type check the initialization value
     else {
-        // Fields require literal default values
+        // Fields require constant default values (litIsLiteral)
         if (!litIsLiteral(name->value))
-            errorMsgNode(name->value, ErrorNotLit, "Field default must be a literal value.");
+            errorMsgNode(name->value, ErrorNotLit, "Field default must be a constant value.");
         // Otherwise, verify that declared type and initial value type matches
         else if (!iexpTypeCheckCoerce(pstate, name->vtype, &name->value))
             errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");

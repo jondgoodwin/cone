@@ -1,0 +1,158 @@
+// ======== Cellular (Worley) noise: F1, F2 and the nearest cell's id ========
+//
+// One feature point per lattice cell, at the cell's middle moved by up to
+// 'jitter' / 2 each way along each axis (jitter 1: anywhere in the cell;
+// 0: a regular grid). F1 is the distance to the nearest feature point, F2
+// to the second nearest, and the id is a hash of the nearest point's cell,
+// a whole word, for choosing per cell (a color, a height, whether a thorn
+// grows there) on integers.
+//
+// Which point is nearest is a decision, so it is taken on squared distances
+// (additions, subtractions and multiplications only), visiting cells in one
+// fixed order, a nearer point replacing only when strictly nearer: the same
+// cell wins on every machine that computes the squared distances alike.
+// Only the returned F1 and F2 take a square root.
+//
+// The search is exact: the 3 x 3 (or 3 x 3 x 3) cells about the point are
+// visited first, then the ring beyond them (5 x 5, 5 x 5 x 5), skipping any
+// cell whose jitter box is no nearer than the current F2. A point more than
+// two cells away is at least 2 from the point, and F2 is less than that in
+// 2-D, and in 3-D save in configurations of vanishing measure (the nearest
+// two points each at the far side of its cell), where F2 is then the
+// second nearest of those within the 5 x 5 x 5.
+
+// A 2-D cellular noise's distances and nearest cell
+pub struct Cell2 {
+  pub f1 f32;          // distance to the nearest feature point
+  pub f2 f32;          // distance to the second nearest
+  pub id u32;          // a hash of the nearest point's cell
+  pub toNearest Vec2;  // from the point to the nearest feature point
+}
+
+// A 3-D cellular noise's distances and nearest cell
+pub struct Cell3 {
+  pub f1 f32;
+  pub f2 f32;
+  pub id u32;
+  pub toNearest Vec3;
+}
+
+// The squared distance from 't' (in [0, 1)) to the span [lo, hi] along one
+// axis: 0 inside it
+fn gap(t f32, lo f32, hi f32) f32 {
+  if t < lo { (lo - t) * (lo - t); } elif t > hi { (t - hi) * (t - hi); } else { 0.; };
+}
+
+// 2-D cellular noise at 'p', feature points jittered by 'jitter' (0 to 1)
+pub fn cellular2(p Vec2, jitter f32, seed u32) Cell2 {
+  imm fx = libc.floorf(p.x);
+  imm fy = libc.floorf(p.y);
+  imm ix = i32[fx];
+  imm iy = i32[fy];
+  imm tx = p.x - fx;
+  imm ty = p.y - fy;
+  imm half = jitter * 0.5;
+  mut f1 f32 = 3.4028235e38;
+  mut f2 f32 = 3.4028235e38;
+  mut id = 0u32;
+  mut nx f32 = 0.;
+  mut ny f32 = 0.;
+  // Pass 0 the 3 x 3 about the point, pass 1 the ring of the 5 x 5 beyond it
+  mut pass = 0;
+  while pass < 2 {
+    mut j = -2;
+    while j <= 2 {
+      mut i = -2;
+      while i <= 2 {
+        imm ring = if i < -1 or i > 1 or j < -1 or j > 1 {1;} else {0;};
+        if ring == pass {
+          imm ci = f32[i];
+          imm cj = f32[j];
+          // Skip, in the ring, a cell whose every possible point is no nearer than F2
+          imm reach = gap(tx, ci + 0.5 - half, ci + 0.5 + half) + gap(ty, cj + 0.5 - half, cj + 0.5 + half);
+          if pass == 0 or reach < f2 {
+            imm h = hash2(ix + i, iy + j, seed);
+            imm dx = ci + 0.5 + jitter * (toUnit(h.x) - 0.5) - tx;
+            imm dy = cj + 0.5 + jitter * (toUnit(h.y) - 0.5) - ty;
+            imm d2 = dx * dx + dy * dy;
+            if d2 < f1 {
+              f2 = f1;
+              f1 = d2;
+              id = h.z;
+              nx = dx;
+              ny = dy;
+            } elif d2 < f2 {
+              f2 = d2;
+            }
+          }
+        }
+        i = i + 1;
+      }
+      j = j + 1;
+    }
+    pass = pass + 1;
+  }
+  Cell2[f1.sqrt(), f2.sqrt(), id, Vec2[nx, ny]];
+}
+
+// 3-D cellular noise at 'p', feature points jittered by 'jitter' (0 to 1)
+pub fn cellular3(p Vec3, jitter f32, seed u32) Cell3 {
+  imm fx = libc.floorf(p.x);
+  imm fy = libc.floorf(p.y);
+  imm fz = libc.floorf(p.z);
+  imm ix = i32[fx];
+  imm iy = i32[fy];
+  imm iz = i32[fz];
+  imm tx = p.x - fx;
+  imm ty = p.y - fy;
+  imm tz = p.z - fz;
+  imm half = jitter * 0.5;
+  mut f1 f32 = 3.4028235e38;
+  mut f2 f32 = 3.4028235e38;
+  mut id = 0u32;
+  mut nx f32 = 0.;
+  mut ny f32 = 0.;
+  mut nz f32 = 0.;
+  mut pass = 0;
+  while pass < 2 {
+    mut k = -2;
+    while k <= 2 {
+      mut j = -2;
+      while j <= 2 {
+        mut i = -2;
+        while i <= 2 {
+          imm ring = if i < -1 or i > 1 or j < -1 or j > 1 or k < -1 or k > 1 {1;} else {0;};
+          if ring == pass {
+            imm ci = f32[i];
+            imm cj = f32[j];
+            imm ck = f32[k];
+            imm reach = gap(tx, ci + 0.5 - half, ci + 0.5 + half) + gap(ty, cj + 0.5 - half, cj + 0.5 + half)
+              + gap(tz, ck + 0.5 - half, ck + 0.5 + half);
+            if pass == 0 or reach < f2 {
+              imm h = hash3(ix + i, iy + j, iz + k, seed);
+              imm dx = ci + 0.5 + jitter * (toUnit(h.x) - 0.5) - tx;
+              imm dy = cj + 0.5 + jitter * (toUnit(h.y) - 0.5) - ty;
+              imm dz = ck + 0.5 + jitter * (toUnit(h.z) - 0.5) - tz;
+              imm d2 = dx * dx + dy * dy + dz * dz;
+              if d2 < f1 {
+                f2 = f1;
+                f1 = d2;
+                id = h.w;
+                nx = dx;
+                ny = dy;
+                nz = dz;
+              } elif d2 < f2 {
+                f2 = d2;
+              }
+            }
+          }
+          i = i + 1;
+        }
+        j = j + 1;
+      }
+      k = k + 1;
+    }
+    pass = pass + 1;
+  }
+  Cell3[f1.sqrt(), f2.sqrt(), id, Vec3[nx, ny, nz]];
+}

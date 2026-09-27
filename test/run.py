@@ -54,6 +54,9 @@ ERROR_H = REPO / "compiler" / "c" / "shared" / "error.h"
 # The C sources the build compiles: the compiler, and the conestd runtime.
 C_SOURCE_DIRS = (Path("compiler") / "c", Path("packages") / "conestd")
 IS_WINDOWS = os.name == "nt"
+# The status a program ends with through the C library's 'abort', as a panic
+# does: the Microsoft C library's fail-fast, 0xC0000409, or death by SIGABRT
+ABORT_STATUS = 0xC0000409 if IS_WINDOWS else -6
 
 # Tier per group, from the group table in compiler/c/doc/diagnostics/test-suite.md section 1.
 # Results are reported tier 0 first, because tier 1 and 2 groups assume the
@@ -744,6 +747,14 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
         # asserted apart from it, and only a 'run' scenario runs a program
         if "program_exit" in table and category != "run":
             raise SuiteError(f"{where}: only a 'run' scenario runs a program, so 'program_exit' belongs to one")
+        # A program that panics ends through the C library's 'abort', whose
+        # status differs by platform, so it is written by name
+        program_exit = table.get("program_exit", 0)
+        if program_exit == "abort":
+            program_exit = ABORT_STATUS
+        elif not isinstance(program_exit, int):
+            raise SuiteError(f"{where}: 'program_exit' is an integer, or \"abort\" for a program"
+                             f" that panics")
 
         # R2.10 names the total diagnostic count as recover's file-level
         # expectation. It asserts the count rather than each diagnostic, so
@@ -802,7 +813,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             argv=argv,
             link=link,
             includes=includes,
-            program_exit=table.get("program_exit", 0),
+            program_exit=program_exit,
             xfail=bool(table.get("xfail", False)),
         )
         if source is not None:
@@ -2480,6 +2491,20 @@ class Runner:
                                    + expected_path.name + ":\n" + indent(delta(
                                        trimmed(expected), trimmed(ran.stdout),
                                        expected_path.name, "actual")))
+
+        # A program that writes to stderr on purpose -- a panic's report --
+        # pins it in a .err file beside the .out, compared the same way. Without
+        # one, stderr is not compared. Written by hand: bless leaves it alone.
+        err_path = scenario.source.with_suffix(".err")
+        if err_path.exists():
+            expected_err = normalize(err_path.read_text(encoding="utf-8"))
+            actual_err = normalize(ran.stderr)
+            if trimmed(actual_err) != trimmed(expected_err):
+                result.status = FAIL
+                result.problems.append("stderr does not match "
+                                       + err_path.name + ":\n" + indent(delta(
+                                           trimmed(expected_err), trimmed(actual_err),
+                                           err_path.name, "actual")))
 
     def check_artifacts(self, result: Result, scenario: Scenario,
                         out_dir: Path, target: str) -> None:
