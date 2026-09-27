@@ -1,0 +1,236 @@
+// ======== Subdivision: Catmull-Clark ========
+//
+// Catmull and Clark, "Recursively generated B-spline surfaces on arbitrary
+// topological meshes", CAD 10(6), 1978, with semi-sharp creases after DeRose,
+// Kass and Truong, "Subdivision surfaces in character animation", SIGGRAPH
+// 1998, and the boundary, crease and face-varying rules as Pixar's OpenSubdiv
+// documents them (its "Subdivision Surfaces" overview; the algorithm only, no
+// code). One level turns every face of n corners into n quads, so after the
+// first level the mesh is all quads, whatever mix of triangles, quads and
+// n-gons it began as.
+//
+// One level makes three kinds of new vertex:
+// - a face point for each face: the mean of its corners;
+// - an edge point for each edge: on a smooth edge, the mean of its two ends
+//   and the face points of its two faces, (a + b + F0 + F1) / 4; on a sharp
+//   edge (a boundary edge, or a crease of sharpness 1 or more), its midpoint
+//   (a + b) / 2; on a crease of sharpness s between 0 and 1, the smooth point
+//   and the midpoint blended, s of the midpoint;
+// - a vertex point for each vertex, by one of four rules chosen by how many
+//   sharp edges meet there (a crease of any sharpness above 0 counts):
+//   - smooth (none) and dart (one): (Q + 2R + (n - 3) S) / n, where n is its
+//     valence, S where it is, Q the mean of its faces' face points and R the
+//     mean of its edges' midpoints; that is
+//     ((n - 2) S + (sum of its neighbours) / n + (sum of its face points) / n) / n;
+//   - crease (two): (A + 6 S + B) / 8, A and B the far ends of the two sharp
+//     edges: a cubic B-spline along the crease;
+//   - corner (three or more, or a sharp vertex): S, it stays.
+//   When a semi-sharp crease wears out at this level (its sharpness is 1 or
+//   less, so its child is smooth), the rule its sharpness gives now and the
+//   one its children's gives are blended, by the mean sharpness of the edges
+//   (and vertex) that wear out, at most 1 (OpenSubdiv's fractional weight).
+//
+// Sharpness: an edge's is the edge channel of f32 named "crease", a vertex's
+// the vertex channel named "crease" (0 where there is none). Its values are
+// OpenSubdiv's (and USD's creaseSharpnesses): 0 is smooth, s is sharp for s
+// levels, and SharpnessInfinite (10) or more is sharp at every level. A
+// child edge of a parent edge gets the parent's sharpness less 1 (at least
+// 0; an infinite one stays), OpenSubdiv's uniform creasing; the edges made
+// inside a face get 0. A vertex point's vertex sharpness goes down the same
+// way.
+//
+// Boundaries: a boundary edge is infinitely sharp, so it subdivides as a cubic
+// B-spline curve, and a boundary vertex with more than one face takes the
+// crease rule along it. 'BoundaryEdgeAndCorner', the default (USD's
+// interpolateBoundary default, edgeAndCorner, and RenderMan's; Blender's
+// "Keep Corners"), also keeps a corner, a boundary vertex with one face, where
+// it is. 'BoundaryEdgeOnly' (OpenSubdiv's VTX_BOUNDARY_EDGE_ONLY; Blender's
+// Boundary Smooth "All", its modifier's default) smooths the corner along its
+// boundary curve instead.
+//
+// Face-varying data, every corner channel ("uv" among them), is subdivided by
+// the same rules on its own topology: where the values of the corners at an
+// edge's ends differ across it (a uv seam) the edge is a face-varying
+// boundary, so each uv island is subdivided as its own mesh with its own
+// boundary, and seams stay seams. The corners about a vertex are cut into
+// fans by those edges; a fan is subdivided as a boundary vertex is. How its
+// boundary is held is one of USD's faceVaryingLinearInterpolation choices
+// (OpenSubdiv's FVAR_LINEAR_*):
+// - 'FvarLinearNone': smooth everywhere, boundaries as B-spline curves;
+// - 'FvarLinearCornersOnly': the same, but a fan of one face keeps its value
+//   (a uv island's corner stays put);
+// - 'FvarLinearCornersPlus1', the default (USD's): also keeps the value where
+//   three or more fans meet at a vertex;
+// - 'FvarLinearBoundaries': every value on a face-varying boundary is kept,
+//   and its edges' values are midpoints (Blender's UV Smooth default, "Keep
+//   Boundaries");
+// - 'FvarLinearAll': linear everywhere (OpenSubdiv's Sdc default): corners
+//   keep their values, edge values are midpoints, face values means.
+//
+// Other channels: a vertex channel is subdivided with the vertex rules, as the
+// positions are (USD's "vertex" interpolation); a face channel's value passes
+// to each of the face's child faces; an edge channel's (other than "crease")
+// to each of the edge's two child edges, and the edges made inside a face get
+// 0. A mesh needs no channels at all.
+//
+// The new mesh's vertices are numbered: first the vertex points, vertex v of
+// the old mesh as vertex v; then the edge points, edge e as vertex V + e;
+// then the face points, face f as V + E + f, where V and E are the old mesh's
+// vertex and edge counts. So a cage's vertices keep their numbers at every
+// level. Face f of n corners becomes n faces, numbered on from the child
+// faces of the faces before it, one for each of its corners in order from its
+// first; the child at the corner of vertex v, with the half-edge h ending at
+// v, runs (v's vertex point, the edge point of next(h)'s edge, f's face point,
+// the edge point of h's edge), counterclockwise as its parent is.
+
+pub const BoundaryEdgeOnly = 0u32;
+pub const BoundaryEdgeAndCorner = 1u32;
+
+pub const FvarLinearNone = 0u32;
+pub const FvarLinearCornersOnly = 1u32;
+pub const FvarLinearCornersPlus1 = 2u32;
+pub const FvarLinearBoundaries = 3u32;
+pub const FvarLinearAll = 4u32;
+
+// A sharpness this great or more never wears out (OpenSubdiv's
+// SHARPNESS_INFINITE)
+pub const SharpnessInfinite = 10.;
+
+// The mesh subdivided 'levels' times by Catmull-Clark, with USD's defaults:
+// boundary corners kept, face-varying data kept at corners and at junctions
+// of three or more fans. 0 levels gives a copy.
+pub fn subdivide(m &PolyMesh, levels u32) PolyMesh {
+  subdivideWith(m, levels, BoundaryEdgeAndCorner, FvarLinearCornersPlus1);
+}
+
+// The same, with the boundary rule (BoundaryEdgeOnly or
+// BoundaryEdgeAndCorner) and the face-varying rule (FvarLinearNone to
+// FvarLinearAll) given
+pub fn subdivideWith(m &PolyMesh, levels u32, boundary u32, fvar u32) PolyMesh {
+  mut cur = copyPolyMesh(m);
+  mut i = 0u32;
+  while i < levels {
+    imm next = subdivideOnce(&cur, boundary, fvar);
+    cur = next;
+    i = i + 1u32;
+  }
+  cur;
+}
+
+// Levels of detail: the cage (a copy, level 0) and each level of its
+// subdivision up to 'levels', by 'subdivide''s defaults, each made from the
+// one before; entry i is level i
+pub fn subdivisionLevels(m &PolyMesh, levels u32) List[PolyMesh] {
+  mut out = List[PolyMesh].withCapacity(usize[levels] + 1usize);
+  out.push(copyPolyMesh(m));
+  mut i = 0u32;
+  while i < levels {
+    imm next = subdivideOnce(out[usize[i]], BoundaryEdgeAndCorner, FvarLinearCornersPlus1);
+    out.push(next);
+    i = i + 1u32;
+  }
+  out;
+}
+
+// A copy of a PolyMesh, channels and all
+fn copyPolyMesh(m &PolyMesh) PolyMesh {withPositions(m, copyList[Vec3](&m.positions));}
+
+// A sharpness one level on: less 1, at least 0; infinite stays infinite
+fn childSharpness(s f32) f32 {
+  if s >= SharpnessInfinite {s;} elif s > 1. {s - 1.;} else {0.;};
+}
+
+fn sameVec3(a Vec3, b Vec3) Bool {a.x == b.x and a.y == b.y and a.z == b.z;}
+
+// The vertex rules
+const RuleSmooth = 0u32;
+const RuleCrease = 2u32;
+const RuleCorner = 3u32;
+
+// Which rule a vertex of sharpness 'vs' takes with its edges' sharpness
+// 'sharp': a sharp vertex or three sharp edges or more a corner, two a crease,
+// fewer (smooth, or a dart) smooth
+fn ruleOf(vs f32, sharp &List[f32]) u32 {
+  if vs > 0. { return RuleCorner; }
+  mut n = 0usize;
+  mut i = 0usize;
+  while i < sharp.len() {
+    if *sharp[i] > 0. { n = n + 1usize; }
+    i = i + 1usize;
+  }
+  if n > 2usize {RuleCorner;} elif n == 2usize {RuleCrease;} else {RuleSmooth;};
+}
+
+// A vertex point by one rule. 'ends' holds each edge's far end, 'faces' each
+// face's face point, 'sharp' each edge's sharpness; 'closed' when the edges
+// go all the way round (ends and faces alike in number), otherwise the fan's
+// first and last edges are its boundary and there is one face fewer.
+fn applyRule(rule u32, own Vec3, ends &List[Vec3], faces &List[Vec3], sharp &List[f32], closed Bool) Vec3 {
+  if rule == RuleCorner { return own; }
+  if rule == RuleCrease {
+    mut sum = Vec3[0., 0., 0.];
+    mut i = 0usize;
+    while i < ends.len() {
+      if *sharp[i] > 0. { sum = sum + *ends[i]; }
+      i = i + 1usize;
+    }
+    return (sum + own * 6.) * 0.125;
+  }
+  imm n = ends.len();
+  if !closed or n == 0usize { return own; }
+  mut se = Vec3[0., 0., 0.];
+  mut sf = Vec3[0., 0., 0.];
+  mut i = 0usize;
+  while i < n {
+    se = se + *ends[i];
+    sf = sf + *faces[i];
+    i = i + 1usize;
+  }
+  imm nn = f32[n];
+  own * ((nn - 2.) / nn) + (se + sf) * (1. / (nn * nn));
+}
+
+// A vertex point: the rule its sharpness gives, blended with the rule its
+// children's gives when a crease wears out at this level
+fn fanPoint(own Vec3, ends &List[Vec3], faces &List[Vec3], sharp &List[f32], vs f32, closed Bool) Vec3 {
+  imm pRule = ruleOf(vs, sharp);
+  imm p = applyRule(pRule, own, ends, faces, sharp, closed);
+  if pRule == RuleSmooth { return p; }
+  mut cs = List[f32].withCapacity(sharp.len());
+  mut i = 0usize;
+  while i < sharp.len() {
+    cs.push(childSharpness(*sharp[i]));
+    i = i + 1usize;
+  }
+  imm cvs = childSharpness(vs);
+  imm cRule = ruleOf(cvs, &cs);
+  if cRule == pRule { return p; }
+  imm c = applyRule(cRule, own, ends, faces, &cs, closed);
+  // The fractional weight: the mean sharpness of what wears out, at most 1
+  mut sum f32 = 0.;
+  mut count = 0u32;
+  if vs > 0. and cvs <= 0. {
+    sum = vs;
+    count = 1u32;
+  }
+  i = 0usize;
+  while i < sharp.len() {
+    if *sharp[i] > 0. and *cs[i] <= 0. {
+      sum = sum + *sharp[i];
+      count = count + 1u32;
+    }
+    i = i + 1usize;
+  }
+  if count == 0u32 { return c; }
+  mut w = sum / f32[count];
+  if w > 1. { w = 1.; }
+  p * w + c * (1. - w);
+}
+
+// An edge point from its ends a and b and its faces' face points
+fn edgeValue(a Vec3, b Vec3, fa Vec3, fb Vec3, s f32, sharpEdge Bool) Vec3 {
+  imm mid = (a + b) * 0.5;
+  if sharpEdge or s >= 1. { return mid; }
+  imm smooth = (a + b + fa + fb) * 0.25;
+  if s <= 0. {smooth;} else {smooth * (1. - s) + mid * s;};
+}

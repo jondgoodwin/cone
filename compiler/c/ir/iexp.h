@@ -32,6 +32,10 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
 // Return 1 if type "matches", 0 otherwise
 int iexpCoerce(INode **from, INode *totypep);
 
+// The type a value coerced to 'totypedcl' carries: a borrowed reference keeps
+// the lifetime (scope) it was borrowed with, on a copy of the type coerced to
+INode *iexpCoerceType(INode *from, INode *totypedcl);
+
 // Perform full type check on from-node and ensure it is an expression.
 // Then coerce from-node's type to 'to' expected type, if needed
 // Return 1 if type "matches", 0 otherwise

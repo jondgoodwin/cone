@@ -176,7 +176,12 @@ parameter names**.
    literal nor the size rule runs.
 3. No `value` and no declared type → `ErrorNoType`.
 4. With a `value`: coerce it to the declared type; **infer only on success and
-   only when the type is still `unknownType`**.
+   only when the type is still `unknownType`**. A declared borrowed-reference
+   type is a shared node with no lifetime, so on success the variable takes
+   instead a copy of it carrying the coerced value's scope (`iexpCoerceType`),
+   as an inferred one carries the value's own: the local keeps its
+   initializer's lifetime either way, and returning or storing it is judged by
+   it ([references](references.md)).
 5. **Literal rule.** `scope <= 1` — that is, a global or a parameter default —
    or `FlagStatic` requires `litIsLiteral(value)`. It admits literals, literal
    array and type literals, a borrow of a string literal (so a slice of one) or

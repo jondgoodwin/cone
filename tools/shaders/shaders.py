@@ -8,8 +8,8 @@ embed the SPIR-V in the Cone source that draws with it.
 
 The default folder is the repository's packages/.
 
-THE SHADERS ARE WRITTEN IN SLANG AND COMPILED AHEAD OF TIME [ruled 26 Sep
-2026, in the 3D Web plan]. A shader's source is a .slang file in the package
+The packages' shaders are written in Slang and compiled ahead of time. A
+shader's source is a .slang file in the package
 that owns it, beside the Cone file that uses it (an example's or a test's in
 examples/ or tests/, a package's own in src/). This tool compiles each
 <name>.slang to <name>.spv beside it, with the Vulkan SDK's slangc:

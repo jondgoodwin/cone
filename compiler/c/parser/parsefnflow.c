@@ -244,7 +244,7 @@ static INode *parseMatchPattern(ParseState *parse, INode *matchee) {
     if (lexIsToken(IsToken)) {
         CastNode *isnode = newIsNode(matchee, unknownType);
         lexNextToken();
-        isnode->typ = parseType(parse);
+        isnode->typ = parseTypeReq(parse, "'is'");
         castPatternMark(isnode->typ);
         return (INode *)isnode;
     }
@@ -785,7 +785,7 @@ Nodes *parseGenericParms(ParseState *parse, int annotate) {
             nodesAdd(&parm->annot, parseType(parse));
             while (lexIsToken(PlusToken)) {
                 lexNextToken();
-                nodesAdd(&parm->annot, parseType(parse));
+                nodesAdd(&parm->annot, parseTypeReq(parse, "'+'"));
             }
             // Every trait named here is required; a choice between them is
             // said in a 'where' clause [Jon 27 Sep]. The annotation is

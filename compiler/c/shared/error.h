@@ -52,7 +52,7 @@ enum ErrorCode {
     ErrorNoMut = 1017,        // Mutation is not allowed
     // 1018 was ErrorNotFn; calling a non-callable value is ErrorNoMbr on '()'
     ErrorUnkName = 1019,    // Unknown name (no declaration exists)
-    ErrorNoType = 1020,    // No type specified (or inferrable)
+    ErrorNoType = 1020,    // No type specified (or inferrable); in the parser, a type the grammar requires left out
     ErrorNoInit = 1021,    // Parm didn't specify required default value
     ErrorFewArgs = 1022,    // Too few arguments specified
     ErrorManyArgs = 1023,    // Too many arguments specified

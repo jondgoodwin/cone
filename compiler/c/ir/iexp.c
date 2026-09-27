@@ -85,7 +85,9 @@ static int iexpIsBorrowType(INode *type) {
 // The type coerced to is a declared node, normalized by typetblFind and shared
 // by everything written with it, so the scope goes on a copy belonging to this
 // coercion -- exactly as fnCallFinalizeArgs builds one for a call's result.
-static INode *iexpCoerceType(INode *from, INode *totypedcl) {
+// varDclTypeCheck gives a local declared with a borrowed-reference type the
+// same copy, so the local keeps its initializer's lifetime.
+INode *iexpCoerceType(INode *from, INode *totypedcl) {
     INode *fromtype = iexpGetTypeDcl(from);
     if (!iexpIsBorrowType(totypedcl) || !iexpIsBorrowType(fromtype)
         || ((RefNode*)fromtype)->scope == 0)

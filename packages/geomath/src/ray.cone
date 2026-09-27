@@ -1,0 +1,211 @@
+// ======== Rays ========
+//
+// Rays and the hits they make; segments, triangles and the closest points on
+// them.
+//
+// A hit is the multiple t of the ray's direction at which it happens, so the
+// point hit is 'ray.at(t)', and with a unit direction t is the distance. Only
+// t >= 0 counts: what is behind the origin is missed.
+
+// A half-line in space: from 'origin', along 'direction'
+pub struct Ray3 {
+  pub origin Vec3;
+  pub direction Vec3;
+
+  // The point t directions along
+  pub fn at(self, t f32) Vec3 {origin + direction * t;}
+
+  // Where it crosses the plane; a ray running along the plane misses it
+  pub fn intersectPlane(self, p Plane) Option[f32] {
+    imm denom = p.normal.dot(direction);
+    if fabs(denom) < 0.000001 {return None[f32][];}
+    imm t = -p.signedDistance(origin) / denom;
+    if t >= 0. {Some[f32][t];} else {None[f32][];};
+  }
+
+  // Where it first enters the ball; 0 when it starts inside
+  // (Ericson, Real-Time Collision Detection, 5.3.2)
+  pub fn intersectSphere(self, s Sphere) Option[f32] {
+    imm m = origin - s.center;
+    imm a = direction.dot(direction);
+    imm b = m.dot(direction);
+    imm c = m.dot(m) - s.radius * s.radius;
+    if c <= 0. {return Some[f32][0.];}
+    // Outside and pointing away
+    if b > 0. {return None[f32][];}
+    imm disc = b * b - a * c;
+    if disc < 0. {return None[f32][];}
+    Some[f32][(-b - disc.sqrt()) / a];
+  }
+
+  // Where it first enters the box; 0 when it starts inside. Between the
+  // two planes of each axis, the ray is inside for a span of t (the slab
+  // test); it is in the box where the three spans overlap
+  pub fn intersectAabb(self, b Aabb3) Option[f32] {
+    mut enter f32 = 0.;
+    mut exit = huge;
+    imm sx = slab(origin.x, direction.x, b.min.x, b.max.x);
+    imm sy = slab(origin.y, direction.y, b.min.y, b.max.y);
+    imm sz = slab(origin.z, direction.z, b.min.z, b.max.z);
+    enter = fmax(enter, fmax(sx.x, fmax(sy.x, sz.x)));
+    exit = fmin(exit, fmin(sx.y, fmin(sy.y, sz.y)));
+    if enter <= exit {Some[f32][enter];} else {None[f32][];};
+  }
+
+  // Where it hits the triangle a, b, c, from either side
+  // (Moller and Trumbore's method)
+  pub fn intersectTriangle(self, a Vec3, b Vec3, c Vec3) Option[f32] {
+    imm e1 = b - a;
+    imm e2 = c - a;
+    imm p = direction.cross(e2);
+    imm det = e1.dot(p);
+    // Running along the triangle's plane
+    if fabs(det) < 0.0000001 {return None[f32][];}
+    imm inv = 1. / det;
+    imm s = origin - a;
+    imm u = s.dot(p) * inv;
+    if u < 0. or u > 1. {return None[f32][];}
+    imm q = s.cross(e1);
+    imm v = direction.dot(q) * inv;
+    if v < 0. or u + v > 1. {return None[f32][];}
+    imm t = e2.dot(q) * inv;
+    if t >= 0. {Some[f32][t];} else {None[f32][];};
+  }
+
+  // The point of the ray nearest p
+  pub fn closestPoint(self, p Vec3) Vec3 {
+    imm len2 = direction.lengthSquared();
+    if len2 == 0. {return origin;}
+    at(fmax(0., (p - origin).dot(direction) / len2));
+  }
+}
+
+// The span of t, as (enter, exit), in which o + t d lies between lo and hi.
+// A ray running parallel to the planes is inside for every t, or for none
+fn slab(o f32, d f32, lo f32, hi f32) Vec2 {
+  if d == 0. {
+    if o < lo or o > hi {return Vec2[huge, -huge];}
+    return Vec2[-huge, huge];
+  }
+  imm inv = 1. / d;
+  imm t1 = (lo - o) * inv;
+  imm t2 = (hi - o) * inv;
+  Vec2[fmin(t1, t2), fmax(t1, t2)];
+}
+
+// A half-line in the plane: from 'origin', along 'direction'
+pub struct Ray2 {
+  pub origin Vec2;
+  pub direction Vec2;
+
+  pub fn at(self, t f32) Vec2 {origin + direction * t;}
+
+  // Where it crosses the segment from a to b, ends included. A ray running
+  // along the segment's line misses it
+  pub fn intersectSegment(self, a Vec2, b Vec2) Option[f32] {
+    // origin + t direction = a + s (b - a): crossing both sides with (b - a)
+    // leaves t, and with direction leaves s
+    imm e = b - a;
+    imm denom = direction.cross(e);
+    if fabs(denom) < 0.0000001 {return None[f32][];}
+    imm w = a - origin;
+    imm t = w.cross(e) / denom;
+    imm s = w.cross(direction) / denom;
+    if t >= 0. and s >= 0. and s <= 1. {Some[f32][t];} else {None[f32][];};
+  }
+
+  // Where it first enters the disc; 0 when it starts inside
+  pub fn intersectCircle(self, c Circle) Option[f32] {
+    imm m = origin - c.center;
+    imm a = direction.dot(direction);
+    imm b = m.dot(direction);
+    imm cc = m.dot(m) - c.radius * c.radius;
+    if cc <= 0. {return Some[f32][0.];}
+    if b > 0. {return None[f32][];}
+    imm disc = b * b - a * cc;
+    if disc < 0. {return None[f32][];}
+    Some[f32][(-b - disc.sqrt()) / a];
+  }
+
+  // The point of the ray nearest p
+  pub fn closestPoint(self, p Vec2) Vec2 {
+    imm len2 = direction.lengthSquared();
+    if len2 == 0. {return origin;}
+    at(fmax(0., (p - origin).dot(direction) / len2));
+  }
+}
+
+// Where the segment from p1 to p2 crosses the one from q1 to q2, ends
+// included. Segments on one line are taken as not crossing
+pub fn segmentIntersection(p1 Vec2, p2 Vec2, q1 Vec2, q2 Vec2) Option[Vec2] {
+  imm r = p2 - p1;
+  imm e = q2 - q1;
+  imm denom = r.cross(e);
+  if fabs(denom) < 0.0000001 {return None[Vec2][];}
+  imm w = q1 - p1;
+  imm t = w.cross(e) / denom;
+  imm s = w.cross(r) / denom;
+  if t >= 0. and t <= 1. and s >= 0. and s <= 1. {Some[Vec2][p1 + r * t];} else {None[Vec2][];};
+}
+
+// The point of the segment from a to b nearest p
+pub fn closestPointOnSegment3 overload closestPointOnSegment(p Vec3, a Vec3, b Vec3) Vec3 {
+  imm ab = b - a;
+  imm len2 = ab.lengthSquared();
+  if len2 == 0. {return a;}
+  a + ab * fclamp((p - a).dot(ab) / len2, 0., 1.);
+}
+
+pub fn closestPointOnSegment2 overload closestPointOnSegment(p Vec2, a Vec2, b Vec2) Vec2 {
+  imm ab = b - a;
+  imm len2 = ab.lengthSquared();
+  if len2 == 0. {return a;}
+  a + ab * fclamp((p - a).dot(ab) / len2, 0., 1.);
+}
+
+// The point of the triangle a, b, c nearest p: which of its corners, edges or
+// face is nearest is found from where p lies against each (Ericson,
+// Real-Time Collision Detection, 5.1.5)
+pub fn closestPointOnTriangle(p Vec3, a Vec3, b Vec3, c Vec3) Vec3 {
+  imm ab = b - a;
+  imm ac = c - a;
+  imm ap = p - a;
+  imm d1 = ab.dot(ap);
+  imm d2 = ac.dot(ap);
+  if d1 <= 0. and d2 <= 0. {return a;}
+  imm bp = p - b;
+  imm d3 = ab.dot(bp);
+  imm d4 = ac.dot(bp);
+  if d3 >= 0. and d4 <= d3 {return b;}
+  imm vc = d1 * d4 - d3 * d2;
+  if vc <= 0. and d1 >= 0. and d3 <= 0. {return a + ab * (d1 / (d1 - d3));}
+  imm cp = p - c;
+  imm d5 = ab.dot(cp);
+  imm d6 = ac.dot(cp);
+  if d6 >= 0. and d5 <= d6 {return c;}
+  imm vb = d5 * d2 - d1 * d6;
+  if vb <= 0. and d2 >= 0. and d6 <= 0. {return a + ac * (d2 / (d2 - d6));}
+  imm va = d3 * d6 - d5 * d4;
+  if va <= 0. and d4 - d3 >= 0. and d5 - d6 >= 0. {
+    return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
+  }
+  imm denom = 1. / (va + vb + vc);
+  a + ab * (vb * denom) + ac * (vc * denom);
+}
+
+// The weights (u, v, w) of the corners a, b and c that make p, the point of
+// their plane nearest it: p = u a + v b + w c, and u + v + w = 1
+pub fn barycentric(p Vec3, a Vec3, b Vec3, c Vec3) Vec3 {
+  imm v0 = b - a;
+  imm v1 = c - a;
+  imm v2 = p - a;
+  imm d00 = v0.dot(v0);
+  imm d01 = v0.dot(v1);
+  imm d11 = v1.dot(v1);
+  imm d20 = v2.dot(v0);
+  imm d21 = v2.dot(v1);
+  imm denom = d00 * d11 - d01 * d01;
+  imm v = (d11 * d20 - d01 * d21) / denom;
+  imm w = (d00 * d21 - d01 * d20) / denom;
+  Vec3[1. - v - w, v, w];
+}

@@ -593,7 +593,8 @@ elsewhere, whichever walk arrived at it.
 1. **→** Analyze the permission, then the declared type.
 2. If there is no initializer, the type must have been declared.
 3. **→** Analyze the initializer, coercing it to the declared type; if no type was
-   declared, **the type becomes the initializer's**. For this shape, steps 1 and
+   declared, **the type becomes the initializer's**; a declared borrowed-reference
+   type is replaced by a copy carrying the initializer's lifetime. For this shape, steps 1 and
    3 are the same step, which is what section 7 is about.
 4. A global or parameter requires a literal initializer; so does a field default.
 5. The type must have a size — rule 4's report site.
