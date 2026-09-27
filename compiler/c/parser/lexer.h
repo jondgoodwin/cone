@@ -27,7 +27,9 @@ typedef struct Lexer {
     INode *langtype;
 
     // immutable info about source
-    char *url;        // The url where the source text came from
+    char *url;        // The url where the source text came from, as a location names it
+    char *path;       // The file the text was read from, where what it names is looked
+                      // for: url's, but where a line mark renamed the url (LexLineMarks)
     char *fname;    // The filename of the url (no extension)
     char *source;    // The source text (0-terminated)
 
@@ -50,6 +52,15 @@ typedef struct Lexer {
     char *prevlinep;
     uint32_t prevlinenbr;
 } Lexer;
+
+// Lexer flags
+// A generated include file: its line marks are read (lexLineMark)
+#define LexLineMarks 0x0001
+
+// How a line mark begins: '//#line 12 "q.cone"', a line of its own in a
+// generated include file, says the line after it is line 12 of the package's
+// source file q.cone. A comment to every other reader
+#define LexLineMark "//#line "
 
 // All the possible types for a token
 enum TokenTypes {

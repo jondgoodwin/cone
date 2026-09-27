@@ -74,7 +74,10 @@ outermost use, for a macro inside another's body), as Rust's `file!()` and
 `line!()` do: expanding a macro places its body's calls to them at the
 outermost use (`macroSrcSite`, `CloneState.srcsite`, `cloneFnCallNode`), while
 its arguments keep their own places. That is how `assertDebug` reports
-its caller with no parameters for it.
+its caller with no parameters for it. Code a program compiles from a package's
+include file — a generic type's method, an inline function — answers with the
+package's source file and line, which the include file's line marks give it
+(`compiler/c/doc/nodes/module.md`, "Generating the include file").
 
 **The report** (`packages/conestd/panic.c`): stdout is flushed; one line goes
 to stderr, `panic at <file>:<line>: <message>`, or `panic in thread <id> at
@@ -107,13 +110,6 @@ Everything above is built. Not built:
   debug-only one, and left `requires`/`ensures` for contracts, not built.
 - **`?` on a `None`**, which the manual says panics, is not built, and nor are
   `throw` and `catch`.
-- **A panic in code an importer expands from a package's include file** — a
-  generic type's method, an inline function — **reports the include file's
-  line** where it reports its own location rather than a caller's: the include
-  file drops the text it does not carry and adds a header, so its lines are
-  not the source's. The package functions that panic on a caller's behalf
-  report the caller instead, which is unaffected. An `assertDebug` used in
-  such code names the include file's line too, since its use is there.
 
 ## What lives elsewhere
 

@@ -217,7 +217,10 @@ an importer needs to see it, with a banner saying it is generated:
   function names, what an `inline` body calls, what a `pub use` re-exports — is
   declared in a private nested block, `mod vec { ... }`, holding only that, so
   a package laid out as a root re-exporting its submodules' API works as it is.
-  No importer can name the submodule itself.
+  No importer can name the submodule itself;
+- a comment such as `//#line 24 "loc.cone"` marks each line where the file's
+  lines stop being the source's, so an error or a panic in a body a program
+  compiles from the include file names the package's source file and line.
 
 **An include file is a module file like any other** [Jon 25 Sep]: it opens with
 its `mod` line, and its imports follow. So a package whose public functions

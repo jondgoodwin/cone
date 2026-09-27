@@ -6,7 +6,8 @@
  * body an importer does not expand, a declaration it cannot reach -- and
  * 'extern' written in where a body was; what the root reaches in one of its
  * submodules is written in a private, pruned nested module block holding just
- * that (compiler/c/doc/nodes/module.md, "Generating the include file").
+ * that; and line marks say which line of the package's source each of its
+ * lines is (compiler/c/doc/nodes/module.md, "Generating the include file").
  *
  * @file
  *
