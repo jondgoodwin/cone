@@ -114,7 +114,8 @@ capabilities are named together as serving performance and agility at once —
 systems."*
 
 **There is no thread layer at all today**, which [Modularity](modularity.md)
-records as the largest single hole in the layer table.
+records as the largest single hole in the layer table. The `thread` package's
+OS threads and futex are library ground for one, not the layer.
 
 ## The evidence offered that expressiveness pays
 

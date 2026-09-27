@@ -150,7 +150,7 @@ An import names a module. Congo answers each one this way:
 searches, in order:
 
 1. the Cone repository's own `packages/` (`core`, `stdio`, `libc`, `posix`,
-   `sdl`, `gl`, `geomath`, `testing`, `collections`, `arena`, `pool`, `collector`, `render` and `window` are
+   `sdl`, `gl`, `geomath`, `testing`, `collections`, `arena`, `pool`, `collector`, `thread`, `render` and `window` are
    there), then
 2. each folder the **machine config** lists.
 
@@ -302,6 +302,11 @@ library at run time, so testing `packages/` needs no display. `render` draws
 over `gl` alone, so its tests run anywhere; `window` opens its window through
 `sdl`, so building its example, as `congo test` does, needs `SDL2.lib` on
 `LIB`, and running it needs a display.
+
+`thread`, OS threads and the futex, is Cone code over `extern` declarations
+of the C runtime and Windows, not a C package, and its `[link]` names
+`synchronization`: the Windows SDK's `Synchronization.lib`, which defines
+`WaitOnAddress` and its wakes and is not on the C runtime's default link line.
 
 ## Testing a package
 
