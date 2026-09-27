@@ -1,0 +1,58 @@
+// creasedcube: the cube cage subdivided by Catmull-Clark at levels 1 to 3,
+// without creases (it rounds towards a sphere-like blob) and with the four
+// edges of its top face infinitely sharp (the top stays a flat square face,
+// its rim a sharp edge, the rest rounds off below it).
+//
+//   congo run packages/sculpt/examples/creasedcube.cone
+//
+// It writes cube-l1.obj to cube-l3.obj and cube-creased-l1.obj to
+// cube-creased-l3.obj in the current folder, triangulated with smooth
+// normals, and prints each one's counts and size.
+
+mod creasedcube;
+
+import stdio use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+fn edgeOf(m &PolyMesh, a u32, b u32) u32 {
+  mut e = 0u32;
+  while usize[e] < m.edgeCount() {
+    imm p = *m.hVertex[usize[2u32 * e]];
+    imm q = *m.hVertex[usize[2u32 * e + 1u32]];
+    if (p == a and q == b) or (p == b and q == a) { return e; }
+    e = e + 1u32;
+  }
+  NoIndex;
+}
+
+fn write(pm &PolyMesh, name &[]u8) Bool {
+  imm tri = pm.triangulate(true);
+  imm text = objText(&tri);
+  printStr(name); print <- ": "; print <- pm.faceCount(); print <- " quads, ";
+  print <- tri.triangleCount(); print <- " triangles, "; print <- text.len(); print <- " bytes\n";
+  writeObj(&tri, name);
+}
+
+fn main() i32 {
+  imm plain = PolyMesh.cube(1.);
+  mut creased = PolyMesh.cube(1.);
+  imm ch = creased.addFloatChannel(EdgeDomain, "crease", 0.);
+  // The top face is (2, 6, 7, 3)
+  creased.setFloat(ch, edgeOf(&creased, 2u32, 6u32), SharpnessInfinite);
+  creased.setFloat(ch, edgeOf(&creased, 6u32, 7u32), SharpnessInfinite);
+  creased.setFloat(ch, edgeOf(&creased, 7u32, 3u32), SharpnessInfinite);
+  creased.setFloat(ch, edgeOf(&creased, 3u32, 2u32), SharpnessInfinite);
+
+  imm a = subdivisionLevels(&plain, 3u32);
+  imm b = subdivisionLevels(&creased, 3u32);
+  mut ok = write(a[1usize], "cube-l1.obj") and write(a[2usize], "cube-l2.obj") and write(a[3usize], "cube-l3.obj");
+  ok = ok and write(b[1usize], "cube-creased-l1.obj") and write(b[2usize], "cube-creased-l2.obj")
+    and write(b[3usize], "cube-creased-l3.obj");
+  if ok {0;} else {
+    print <- "Could not write a file\n";
+    1;
+  };
+}

@@ -54,7 +54,10 @@ Visual Studio projects stay at the root.
   modelling over `mesh`: 2-D profiles (polygons, rounded rectangles, hulls,
   sampled Beziers), 3-D paths with rotation-minimizing frames, `extrude`,
   `lathe` and `sweep` (twist and taper) into a `PolyMesh` of quads with
-  corner uvs, and the deformers `bend`, `twist`, `taper` and `curveDeform`;
+  corner uvs, the deformers `bend`, `twist`, `taper` and `curveDeform`,
+  and Catmull-Clark `subdivide` (boundary rules, semi-sharp creases,
+  face-varying uvs) with `subdivisionLevels`, a cage's level-of-detail
+  chain;
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed
