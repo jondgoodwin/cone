@@ -133,8 +133,24 @@ LLVMValueRef genlTagConst(LLVMTypeRef tagtype, StructNode *variant);
 // 'selftype' is the Cone type of the first argument, which a virtual dispatch
 // and the pointer intrinsics read; NULL for a call the compiler makes itself.
 LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint32_t fnargcnt, LLVMValueRef *fnargs, INode *selftype);
-// Generate a panic
-void genlPanic(GenState *gen);
+// The failures the compiler checks for at run time, each ending the program
+// through the C runtime's entry for it (genlPanic)
+typedef enum {
+    PanicIndex,     // an index at or past the count: the index, the count
+    PanicSlice,     // a range not within the count: its start, its end, the count
+    PanicAlloc      // a region's 'alloc' answered null: the size asked for
+} GenlPanicKind;
+// End the program where a check the compiler inserted has failed, reporting
+// the values the kind names and the source location of 'site'. Leaves the
+// block terminated
+void genlPanic(GenState *gen, INode *site, GenlPanicKind kind, LLVMValueRef *vals);
+// Add an attribute that takes no value ('noreturn', 'cold') to a function
+void genlFnAttr(GenState *gen, LLVMValueRef fn, char *name);
+// The source file a node was written in, as a panic reports it: its name
+// without its folders
+char *genlSrcFileName(INode *node, size_t *len);
+// A constant '&[]u8' slice of a source file's name, as genlSrcFileName gives it
+LLVMValueRef genlSrcFileSlice(GenState *gen, char *text, size_t len);
 
 // genlalloc.c
 // Build usable metadata about a reference 

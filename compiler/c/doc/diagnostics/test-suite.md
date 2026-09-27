@@ -128,6 +128,9 @@ test/cases/core/
   cases.toml                    every scenario: category, tags, runs, file-level expectations
   core_success.cone             the group's success program
   core_success.out              expected stdout, for a run scenario
+  exception_panic.err           expected stderr, only where a run scenario's program
+                                writes it on purpose (a panic's report); otherwise
+                                stderr is not compared
   core_parse_delimiters.cone    parse-stage rejects, expectations annotated inline
   core_parse_decls.cone
   core_typecheck.cone
@@ -357,7 +360,7 @@ Never hand-assert what a category already covers.
 | Category | Runner does | Runner asserts |
 | --- | --- | --- |
 | `compile` | Compiles | Exit 0, no diagnostics, zero warnings, object emitted |
-| `run` | Compiles, links against `conestd`, executes | The above, plus the program exits 0 (or `program_exit`) and stdout matches the `.out` file |
+| `run` | Compiles, links against `conestd`, executes | The above, plus the program exits 0 (or `program_exit`) and stdout matches the `.out` file, and stderr the `.err` file where there is one |
 | `warn` | Compiles | Exit 0, every annotated warning matched, no unannotated ones, no errors |
 | `reject` | Compiles | Exit exactly 1, every annotated diagnostic matched by code and location, and no unannotated ones |
 | `recover` | Compiles | Exit exactly 1, the expected diagnostic count, no crash and no hang |
@@ -431,6 +434,9 @@ Some facts belong to the file rather than a line:
 - **The program's own exit status**, `program_exit = <n>`, for a `run`
   scenario whose program returns other than 0. `exit` is the compiler's
   status; a `run` program is expected to return 0 unless this says otherwise.
+  A program that panics ends through the C library's `abort`, whose status
+  differs by platform, so it writes `program_exit = "abort"`; its report on
+  stderr is pinned in its `.err` file.
 
 ### Two choices, for lowering and codegen defects
 

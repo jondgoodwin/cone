@@ -141,6 +141,9 @@ char *itypeName(INode *type);
 // Return true if type has zero size (e.g., void, empty struct)
 int itypeIsZeroSize(INode *type);
 
+// Is this 'Never', the return type of a function that does not return?
+int itypeIsNever(INode *type);
+
 // Return true if type implements move semantics
 int itypeIsMove(INode *type);
 

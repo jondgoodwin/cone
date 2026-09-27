@@ -807,6 +807,15 @@ int itypeIsZeroSize(INode *type) {
     return dcltype->flags & ZeroSizeType;
 }
 
+// Is this 'Never', the return type of a function that does not return? Asked
+// of a declared type before it is type checked too, so a name use is followed
+// only where name resolution bound it
+int itypeIsNever(INode *type) {
+    while (type && isNameUseNode(type) && ((NameUseNode *)type)->dclnode)
+        type = ((NameUseNode *)type)->dclnode;
+    return type != NULL && type == neverType;
+}
+
 // Return true if type implements move semantics
 int itypeIsMove(INode *type) {
     INode *dcltype = itypeGetTypeDcl(type);

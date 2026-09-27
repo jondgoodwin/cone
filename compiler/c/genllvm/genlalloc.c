@@ -1210,19 +1210,25 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     LLVMBasicBlockRef panicblk = genlInsertBlock(gen, "panicblk");
     LLVMBuildCondBr(gen->builder, isNull, panicblk, initblk);
     LLVMPositionBuilderAtEnd(gen->builder, panicblk);
+    // A plain allocation panics, reporting the size asked for; a fallible one
+    // ('?') answers the null, which is None
+    unsigned nulls = 0;
     if (!(allocatenode->flags & FlagQues))
-        genlPanic(gen);
-    blkvals[0] = LLVMBuildBitCast(gen->builder, ptrstructype, valueptrtyp, "");
-    if (reftype->tag == ArrayRefTag) {
-        LLVMValueRef tuplevalnull = LLVMGetUndef(reftypellvm);
-        tuplevalnull = LLVMBuildInsertValue(gen->builder, tuplevalnull, blkvals[0], 0, "fatptr");
-        blkvals[0] = LLVMBuildInsertValue(gen->builder, tuplevalnull, LLVMConstInt(genlType(gen, (INode*)usizeType), 0, 0), 1, "fatsize");
+        genlPanic(gen, (INode*)allocatenode, PanicAlloc, &sizeval);
+    else {
+        blkvals[0] = LLVMBuildBitCast(gen->builder, ptrstructype, valueptrtyp, "");
+        if (reftype->tag == ArrayRefTag) {
+            LLVMValueRef tuplevalnull = LLVMGetUndef(reftypellvm);
+            tuplevalnull = LLVMBuildInsertValue(gen->builder, tuplevalnull, blkvals[0], 0, "fatptr");
+            blkvals[0] = LLVMBuildInsertValue(gen->builder, tuplevalnull, LLVMConstInt(genlType(gen, (INode*)usizeType), 0, 0), 1, "fatsize");
+        }
+        // The phi's predecessor is whatever block the builder ended up in, which is not
+        // necessarily the block we positioned it in: generating the value above may have
+        // emitted branches of its own, splitting the block it started in.
+        blks[0] = LLVMGetInsertBlock(gen->builder);
+        LLVMBuildBr(gen->builder, endif);
+        nulls = 1;
     }
-    // The phi's predecessor is whatever block the builder ended up in, which is not
-    // necessarily the block we positioned it in: generating the value above may have
-    // emitted branches of its own, splitting the block it started in.
-    blks[0] = LLVMGetInsertBlock(gen->builder);
-    LLVMBuildBr(gen->builder, endif);
     LLVMPositionBuilderAtEnd(gen->builder, initblk);
 
     // Initialize region using its 'init' method, if supplied
@@ -1266,16 +1272,16 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
         tupleval = LLVMBuildInsertValue(gen->builder, tupleval, valuep, 0, "fatptr");
         valuep = LLVMBuildInsertValue(gen->builder, tupleval, nbrelems, 1, "fatsize");
     }
-    blkvals[1] = valuep;
+    blkvals[nulls] = valuep;
 
     // Finish up block, start new one, and return allocated. As above, an initial value
     // holding another allocation splits initblk, so the edge arrives from wherever the
     // builder now is rather than from initblk.
-    blks[1] = LLVMGetInsertBlock(gen->builder);
+    blks[nulls] = LLVMGetInsertBlock(gen->builder);
     LLVMBuildBr(gen->builder, endif);
     LLVMPositionBuilderAtEnd(gen->builder, endif);
     LLVMValueRef phi = LLVMBuildPhi(gen->builder, reftypellvm, "allocphi");
-    LLVMAddIncoming(phi, blkvals, blks, 2);
+    LLVMAddIncoming(phi, blkvals, blks, nulls + 1);
     return phi;
 }
 

@@ -227,8 +227,21 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     else {
         // Last statement of a regular block needs to be a break, continue, return or blockret
         if (laststmtp && isExpOrMacroNode(*laststmtp)) {
-            lastexp = laststmtp;
-            match = iexpMultiCoerceInfer(pstate, expectType, &inferredType, lastexp, match);
+            inodeTypeCheck(pstate, laststmtp, expectType);
+            // A call that does not return ends the block as a 'return' would,
+            // giving it no value to coerce, so it becomes one: returnTypeCheck
+            // accepts it whatever the function returns, and every later pass
+            // already knows a path ends at a 'return'. The call is checked
+            // already, so the return is joined to its function, not checked.
+            if (fnCallIsNever(*laststmtp)) {
+                BreakRetNode *retnode = newReturnNodeExp(*laststmtp);
+                *laststmtp = (INode*)retnode;
+                returnJoinFn(pstate, retnode);
+            }
+            else {
+                lastexp = laststmtp;
+                match = iexpMultiCheckedCoerceInfer(expectType, &inferredType, lastexp, match);
+            }
         }
         else if (laststmtp == NULL ||
             !((*laststmtp)->tag == BreakTag || (*laststmtp)->tag == ContinueTag || (*laststmtp)->tag == ReturnTag)) {

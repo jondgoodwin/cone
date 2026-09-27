@@ -53,7 +53,8 @@ typedef enum {
     ShapePtrTypeRecord, // *TypeRecord: core's type record (typeRecordIsPtr)
     ShapeU32,           // u32
     ShapeOrder,         // MemOrder: core's enum of atomic orderings, a constant at each call
-    ShapeTBool          // T, Bool: a tuple of the two
+    ShapeTBool,         // T, Bool: a tuple of the two
+    ShapeSliceU8        // &[]u8: a borrowed slice of bytes, read only
 } IntrinsicShape;
 
 // The types T may be, where an entry does not take every type with a size. A
@@ -139,6 +140,12 @@ static IntrinsicSpec intrinsicRegistry[] = {
         "atomicCompareSwap[T](p *T, expected T, desired T, success MemOrder, failure MemOrder) T, Bool",
         1, 5, {ShapePtrT, ShapeT, ShapeT, ShapeOrder, ShapeOrder}, ShapeTBool, 1, 1, PhaseOperation, 1,
         ClassInt | ClassBool | ClassPtr},
+    // Where the call is: a constant at each call, and for a default value at
+    // each call taking it (intrinsicSrcCallAt)
+    {"srcFile", SrcFileIntrinsic, "srcFile() &[]u8",
+        0, 0, {0}, ShapeSliceU8, 0, 0, PhaseExpansion, 1},
+    {"srcLine", SrcLineIntrinsic, "srcLine() u32",
+        0, 0, {0}, ShapeU32, 0, 0, PhaseExpansion, 1},
 };
 
 #define IntrinsicCount (sizeof(intrinsicRegistry) / sizeof(IntrinsicSpec))
@@ -203,6 +210,14 @@ static int intrinsicShapeIs(INode *type, IntrinsicShape shape, INode *tparm) {
         // An unwritten permission is a borrowed reference's default, 'ro'
         INode *perm = ref->perm == unknownType ? (INode *)roPerm : itypeGetTypeDcl(ref->perm);
         return perm == (INode *)(shape == ShapeSliceT ? roPerm : mutPerm);
+    }
+    case ShapeSliceU8: {
+        if (type->tag != ArrayRefTag && type->tag != ArrayBorrowTag)
+            return 0;
+        RefNode *ref = (RefNode *)type;
+        INode *perm = ref->perm == unknownType ? (INode *)roPerm : itypeGetTypeDcl(ref->perm);
+        return ref->region == borrowRef && perm == (INode *)roPerm
+            && isTypeNode(ref->vtexp) && itypeGetTypeDcl(ref->vtexp) == (INode *)u8Type;
     }
     case ShapePtrTypeRecord:
         return typeRecordIsPtr(type);
@@ -593,6 +608,27 @@ FnDclNode *intrinsicAtomicCallee(FnCallNode *call) {
         return NULL;
     int16_t kind = ((IntrinsicNode *)fndcl->value)->intrinsicFn;
     return kind >= AtomicLoadIntrinsic && kind <= AtomicCompareSwapIntrinsic ? fndcl : NULL;
+}
+
+int intrinsicSrcKind(INode *node) {
+    if (node == NULL || node->tag != FnCallTag)
+        return 0;
+    INode *callee = ((FnCallNode *)node)->objfn;
+    if (callee && isNameUseNode(callee))
+        callee = ((NameUseNode *)callee)->dclnode;
+    if (callee == NULL || callee->tag != FnDclTag || !intrinsicIsDeclared((FnDclNode *)callee))
+        return 0;
+    int16_t kind = ((IntrinsicNode *)((FnDclNode *)callee)->value)->intrinsicFn;
+    return kind == SrcFileIntrinsic || kind == SrcLineIntrinsic ? kind : 0;
+}
+
+// The copy shares the call's function and its (empty) arguments, and has
+// been type checked as the default was
+INode *intrinsicSrcCallAt(INode *call, INode *site) {
+    FnCallNode *copy = memAllocBlk(sizeof(FnCallNode));
+    memcpy(copy, call, sizeof(FnCallNode));
+    inodeLexCopy((INode *)copy, site);
+    return (INode *)copy;
 }
 
 void intrinsicCallOrders(FnCallNode *call, FnDclNode *fndcl, MemOrderKind *orders) {

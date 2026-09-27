@@ -63,10 +63,9 @@
 // Keep every reference into an arena within the arena's own life.
 //
 // Memory. A block is allocated with the C library's 'malloc'. If that fails,
-// or the room asked for cannot be counted in a usize, the program ends at once
-// through the C library's 'abort': the arena's panic, since Cone's own 'panic'
-// is not built. There is no fallible form of 'alloc' yet; it waits on how an
-// allocation names a region value.
+// or the room asked for cannot be counted in a usize, the arena panics. There
+// is no fallible form of 'alloc' yet; it waits on how an allocation names a
+// region value.
 //
 // How a value is finalized. A value whose type needs finalizing
 // ('mem.needsFinal[T]()') gets a small header just before it, allocated in
@@ -237,20 +236,15 @@ fn blockRoom(need usize) usize {
 
 // A new block with 'room' bytes after its header, the block before it 'prev'.
 // A block the C library cannot allocate, or whose size does not fit in a
-// usize, ends the program.
+// usize, is a panic.
 fn newBlock(prev *Block, room usize) *Block {
-  if room > (0usize - 1usize) - mem.sizeof[Block]() { outOfMemory(); }
+  if room > (0usize - 1usize) - mem.sizeof[Block]() {
+    panic("arena: a block that large cannot be counted in a usize");
+  }
   imm blk = libc.malloc(mem.sizeof[Block]() + room) as *Block;
-  if blk as usize == 0usize { outOfMemory(); }
+  if blk as usize == 0usize { panic("arena: out of memory for a block"); }
   mem.writeRaw(blk, Block[prev]);
   blk;
-}
-
-// The arena's panic: the program ends at once, through the C library's
-// 'abort', and nothing more of it runs. Cone's 'panic' is not built yet;
-// when it is, this is where it goes.
-fn outOfMemory() {
-  libc.abort();
 }
 
 // n rounded up to a multiple of align, a power of two

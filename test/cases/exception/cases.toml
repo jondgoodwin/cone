@@ -1,0 +1,115 @@
+# exception - exception handling: panics, and the Never type of a call that
+# does not return. Tier 2.
+#
+# Key reference: compiler/c/doc/diagnostics/test-suite.md, "cases.toml keys".
+# The group directory supplies the feature tag, so tags carry pipeline phases.
+# The chapter is doc/reference/refexcept.html. 'throw', 'catch' and '?' on a
+# throwing call are not built, so nothing here is about them.
+#
+# A program that panics ends through the C library's 'abort', so each such
+# scenario says 'program_exit = "abort"', and pins its report, the one line on
+# stderr, in its .err file beside the .out. One scenario per panic, since a
+# program panics once. What each .err says was worked out from the source by
+# hand: the file's name, the line of the call, the message.
+#
+# Left out deliberately:
+#
+# - A panic on a thread other than the one the program started on, whose line
+#   names the thread by an identity that differs from run to run. The thread
+#   package's own test, panic.cone, runs one and asserts the exit status.
+# - WebAssembly, where the compiler's checks trap: the suite runs no WebAssembly.
+
+support = []
+
+# -------- success --------
+
+# Every place a block can end in a call returning Never, each beside a path
+# that produces a value, so the run shows the values are still right
+[scenario.exception_never]
+category = "run"
+description = "A call returning Never ends a block that must produce a value: a bound 'if', a returned one, a function's body, a 'match' arm, an inline and a generic function; a function of the program's returning Never"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.exception_never.run]]
+name = "release"
+options = []
+
+[[scenario.exception_never.run]]
+name = "debug"
+options = ["--debug"]
+
+# -------- panics, each reported and ending the program --------
+
+[scenario.exception_panic]
+category = "run"
+description = "A panic flushes stdout, writes 'panic at <file>:<line>: <message>' to stderr and aborts: nothing after it runs, no finalizer either"
+tags = ["genllvm", "runtime"]
+program_exit = "abort"
+
+[scenario.exception_assert]
+category = "run"
+description = "'assert' does nothing when its condition holds, and panics with 'assertion failed', or its own message, at the line of its call when it does not"
+tags = ["typecheck", "genllvm", "runtime"]
+program_exit = "abort"
+
+[scenario.exception_caller]
+category = "run"
+description = "A helper's 'file' and 'line' parameters defaulting to 'srcFile()' and 'srcLine()' report its caller's location, handed on through a second helper to 'assert'"
+tags = ["typecheck", "genllvm", "runtime"]
+program_exit = "abort"
+
+[scenario.exception_unreachable]
+category = "run"
+description = "'unreachable()' ending a 'match' arm, taken, panics with its own message at its line"
+tags = ["typecheck", "genllvm", "runtime"]
+program_exit = "abort"
+
+[scenario.exception_todo]
+category = "run"
+description = "'todo(msg)' where a value is wanted, run, panics with the message"
+tags = ["typecheck", "genllvm", "runtime"]
+program_exit = "abort"
+
+[scenario.exception_hook]
+category = "run"
+description = "The last hook set is called with the message and the location, after the line on stderr and before the program ends"
+tags = ["genllvm", "runtime"]
+program_exit = "abort"
+
+[scenario.exception_double]
+category = "run"
+description = "A panic inside the hook ends the program at once, with a line of its own"
+tags = ["genllvm", "runtime"]
+program_exit = "abort"
+
+# The checks the compiler inserts report the values they compared
+[scenario.exception_bounds_index]
+category = "run"
+description = "An index past a slice's count panics, naming the index and the count"
+tags = ["genllvm", "runtime"]
+program_exit = "abort"
+
+[scenario.exception_bounds_range]
+category = "run"
+description = "A range past a slice's count panics, naming the half-open range and the count; an inclusive range is reported half-open"
+tags = ["genllvm", "runtime"]
+program_exit = "abort"
+
+[scenario.exception_bounds_order]
+category = "run"
+description = "A range that starts after it ends panics, saying so"
+tags = ["genllvm", "runtime"]
+program_exit = "abort"
+
+[scenario.exception_nomemory]
+category = "run"
+description = "An allocation whose region's 'alloc' answers null panics, naming the size asked for"
+tags = ["genllvm", "runtime"]
+program_exit = "abort"
+
+# -------- type check stage --------
+
+[scenario.exception_typecheck_never]
+category = "reject"
+description = "A function returning Never that can return: its last statement returns, an 'if' with a path that falls through, a 'return', an empty body"
+tags = ["typecheck"]

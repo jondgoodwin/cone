@@ -537,6 +537,12 @@ static void fnCallScopeRetTuple(FnCallNode *node, TupleNode *rettuple, uint16_t 
     node->vtype = (INode*)calltuple;
 }
 
+// Does this type-checked expression call a function declared to return 'Never'?
+// Such a call does not return, so it may end a block as a 'return' does.
+int fnCallIsNever(INode *node) {
+    return node->tag == FnCallTag && itypeIsNever(((FnCallNode *)node)->vtype);
+}
+
 // At this point, we have a properly-lowered function call. objfn could be:
 // - nameuse to a function dcl
 // - an indirect ref/ptr to a function
@@ -579,7 +585,14 @@ void fnCallFinalizeArgs(FnCallNode *node) {
             errorMsgNode((INode*)node, ErrorFewArgs, "Function call requires more arguments than specified");
         else {
             while (argsunder--) {
-                nodesAdd(&node->args, ((VarDclNode*)*parmp)->value);
+                // One default value node serves every call that takes it,
+                // except 'srcFile()' and 'srcLine()', which answer where the
+                // call taking them is: each such call gets a copy of its own,
+                // placed there
+                INode *dflt = ((VarDclNode*)*parmp)->value;
+                if (intrinsicIsSrcCall(dflt))
+                    dflt = intrinsicSrcCallAt(dflt, (INode*)node);
+                nodesAdd(&node->args, dflt);
                 parmp++;
             }
         }

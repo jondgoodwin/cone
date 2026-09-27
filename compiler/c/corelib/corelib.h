@@ -45,6 +45,10 @@ extern INsTypeNode *ptrType;
 extern INsTypeNode *refType;
 extern INsTypeNode *arrayRefType;
 
+// 'Never', the return type of a function that does not return (stdlibInit):
+// a void type, told apart from every other by identity (itypeIsNever)
+extern INode *neverType;
+
 // The two functions a program calls to run its stitched init and final
 // (genlStitch): 'initAll()' and 'finalAll()', names every module reaches as it
 // reaches 'i64', and which a declaration of its own hides

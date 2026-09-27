@@ -151,6 +151,7 @@ target_link_libraries(conec ${llvm_libs})
 target_compile_definitions(conec PRIVATE CONE_PACKAGES_DIR="${CMAKE_SOURCE_DIR}/packages/")
 
 add_library(conestd
+	packages/conestd/panic.c
 	packages/conestd/roots.c
 	packages/conestd/stdio.c
 )

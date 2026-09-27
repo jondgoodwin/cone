@@ -357,6 +357,7 @@ enum ErrorCode {
     ErrorWhereTrait = 1190,     // What a 'where' clause's subject 'is' names no trait: a type, or a generic trait's instance
     ErrorWhereNoParms = 1191,   // A 'where' clause on a declaration with no type parameters to constrain: not generic, nor a member of a generic type
     ErrorGenParmOr = 1192,      // 'or' after a type parameter's traits, '[T A or B]': those are all required, and a choice is written in a 'where' clause
+    ErrorNeverReturns = 1193,   // A function returning 'Never' that can return: it does not end in a call that does not return, or it says 'return'
 
     // Warnings
     WarnCode = 3000,
