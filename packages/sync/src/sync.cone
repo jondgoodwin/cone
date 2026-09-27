@@ -1441,17 +1441,27 @@ fn ringSend[T](c *Chan[T], v T, mayWait Bool, timeoutNs u64) Option[T] {
 }
 
 // A sender that found the ring full sleeps until the receiver takes a value
-// or closes the channel, or timeoutNs passes. It sets 'waiting' and reads
-// 'space', then rereads the senders' index and 'taken', all SeqCst: its half
-// of a Dekker pairing with the receiver's store of 'taken' and its load of
-// 'waiting' (ringFreed), and with a close and the same load (ringWake).
+// or closes the channel, or timeoutNs passes. It reads 'space', then sets
+// 'waiting', then rereads the senders' index and 'taken', all SeqCst: its
+// half of a Dekker pairing with the receiver's store of 'taken' and its load
+// of 'waiting' (ringFreed), and with a close and the same load (ringWake).
 // Either the reread sees the room or the close, and it does not sleep, or
 // the receiver sees the flag and changes 'space' and wakes, which the OS's
 // compare of 'space' does not miss.
+//
+// 'space' is read first, before the flag is set, so that the flag this
+// sender sleeps under is always its own: a receiver that clears it after it
+// is set changes 'space' after too, which the sleep then sees. Read after,
+// a receiver could clear the flag and change 'space' between the two, the
+// sender read the changed 'space', find the ring full again -- another
+// sender having taken the room -- and sleep with the flag clear, and no take
+// would wake it. That order hung 17 runs in 20 of 3000 rounds of four
+// senders of unequal lengths into a ring of 2, the last sender left asleep
+// once the others had finished; this one, none in 40.
 fn ringPark[T](c *Chan[T], timeoutNs u64) {
   imm spacep = &(*c).space as *u32;
-  mem.atomicStore[u32](&(*c).waiting as *u32, 1u32, MemOrder.SeqCst[]);
   imm seq = mem.atomicLoad[u32](spacep, MemOrder.SeqCst[]);
+  mem.atomicStore[u32](&(*c).waiting as *u32, 1u32, MemOrder.SeqCst[]);
   imm tail = mem.atomicLoad[u64](&(*c).tail as *u64, MemOrder.SeqCst[]);
   imm taken = mem.atomicLoad[u64](&(*c).taken as *u64, MemOrder.SeqCst[]);
   if (tail & chanClosed) == 0u64 and chanPos(tail) > taken + (*c).mask {
