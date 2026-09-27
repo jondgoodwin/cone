@@ -23,6 +23,10 @@ void borrowAuto(INode **from, INode *totypedcl);
 // Note: totype has already done GetTypeDcl
 int borrowAutoMatches(INode *from, RefNode *totype);
 
+// Is a borrow's operand a literal kept in a constant global: a string literal,
+// an array literal of constants, or a named constant holding either?
+int borrowIsConstLit(INode *node);
+
 // Retype a borrowed constant array literal to the reference type it is wanted as
 int borrowConstLitCoerce(INode *from, INode *totypedcl);
 

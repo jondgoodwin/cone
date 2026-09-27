@@ -223,7 +223,9 @@ or as an address.
 `genlExpr` recognizes a value name (`isNameUseNode` and `isExpNode`) ahead of
 its switch and loads `dclnode->llvmvar` — which is a **pointer to** the value,
 since every local and parameter is an alloca. A `ConstDclTag` recurses into the
-constant's value instead. `genlAddr` returns `llvmvar` itself without the load.
+constant's value instead. `genlAddr` returns `llvmvar` itself without the load,
+and for a `ConstDclTag`, which has none, the address of its value
+([vardcl](vardcl.md), "Shape").
 
 That one-level difference between `genlExpr` and `genlAddr` on the same node is
 the most common way to be off by an indirection here.

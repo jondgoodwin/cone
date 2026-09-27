@@ -1393,6 +1393,12 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         INode *dclnode = ((NameUseNode *)lval)->dclnode;
         if (dclnode->tag == FnDclTag)
             return genlFnSym(gen, (FnDclNode*)dclnode);
+        // A named constant has no storage of its own: each use is its literal
+        // value (refterm.html, "Named constants"), so its address is the one
+        // that literal gets. A constant array or string literal is placed in a
+        // constant global; a struct or tuple one, only read here, in a temporary.
+        if (dclnode->tag == ConstDclTag)
+            return genlAddr(gen, ((ConstDclNode*)dclnode)->value);
         genlDropFlagUse(gen, lval);
         return genlVarSym(gen, (VarDclNode*)dclnode);
     }

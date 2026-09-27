@@ -422,12 +422,12 @@ static int litIsConstCast(CastNode *node) {
 // which generation places in a constant global the same way. A value tuple
 // whose values are all constants, '1, 2', is a constant as a struct literal of
 // constants is: generation folds its inserted values into a constant struct.
+// A borrow of a named constant holding either literal is the borrow of that
+// literal, '&K' for 'const K = [1, 2, 3]' being '&[1, 2, 3]'.
 int litIsLiteral(INode* node) {
     return (node->tag == FLitTag || node->tag == ULitTag || node->tag == StringLitTag || node->tag == NilLitTag
         || ((node->tag == BorrowTag || node->tag == ArrayBorrowTag)
-            && (((RefNode*)node)->vtexp->tag == StringLitTag
-                || (((RefNode*)node)->vtexp->tag == ArrayLitTag
-                    && arrayLitIsLiteral((ArrayNode*)((RefNode*)node)->vtexp))))
+            && borrowIsConstLit(((RefNode*)node)->vtexp))
         || (node->tag == ArrayLitTag && arrayLitIsLiteral((ArrayNode*)node))
         || (node->tag == TypeLitTag && typeLitIsLiteral((FnCallNode*)node))
         || (node->tag == VTupleTag && vtupleIsLiteral((TupleNode*)node))

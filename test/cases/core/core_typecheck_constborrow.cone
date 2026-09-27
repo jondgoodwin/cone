@@ -1,0 +1,60 @@
+// What a named constant will not lend. A use of a constant is its literal
+// (doc/reference/refterm.html, "Named constants"), and only a constant array or
+// string literal is kept in a constant global a reference can point at
+// (core_const_aggregate borrows those). Any other constant, or a field or
+// element of one, is a fresh copy with no place in memory, as its literal is a
+// temporary: '&N' is '&5'. Each is refused once, and nothing follows from it.
+
+mod core_typecheck_constborrow;
+
+struct V {
+  pub x i32;
+  pub y i32;
+
+  pub fn get(self &) i32 {
+    self.y;
+  }
+}
+
+const N = 5;
+const K V = V[3, 4];
+const T (i32, i32) = 1, 2;
+const POINTS [2; V] = [V[1, 2], V[3, 4]];
+const PINNED [4; u32] = [1u32, 2u32, 3u32, 4u32];
+
+fn scalar() i32 {
+  imm r = &N;                //~ ErrorBadLval:12 "May not borrow from the named constant N"
+  *r;
+}
+
+fn structWhole() i32 {
+  imm r = &K;                //~ ErrorBadLval:12 "May not borrow from the named constant K"
+  r.x;
+}
+
+fn structField() i32 {
+  imm r = &K.x;              //~ ErrorBadLval:13 "May not borrow from the named constant K"
+  *r;
+}
+
+fn tupleElement() i32 {
+  imm r = &T.0;              //~ ErrorBadLval:13 "May not borrow from the named constant T"
+  *r;
+}
+
+// A field of an element: '&A[1]' borrows into the array's global, but the
+// field of that element is not what was borrowed
+fn elementField() i32 {
+  imm r = &POINTS[1].y;      //~ ErrorBadLval:21 "May not borrow from the named constant POINTS"
+  *r;
+}
+
+// A method taking a borrowed self borrows its receiver
+fn method() i32 {
+  K.get();                   //~ ErrorBadLval:3 "May not borrow from the named constant K"
+}
+
+// A constant array is read-only, as '&mut [1, 2, 3]' is
+fn mutable() {
+  imm r = &mut PINNED;       //~ ErrorBadPerm:11 "Borrowed reference cannot obtain this permission"
+}

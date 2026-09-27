@@ -1,0 +1,152 @@
+// A named constant holding an array, a struct or a tuple, used as its value is:
+// a use of a constant is its literal (doc/reference/refterm.html, "Named
+// constants"), so 'PINNED[i]' is '[1u32, 2u32, 3u32, 4u32][i]' and '&PINNED'
+// is '&[1u32, 2u32, 3u32, 4u32]'. An index needs its array's address, and
+// generation asked a constant for one as if it were a variable, which it has
+// none of, and crashed. A constant's address is now its literal's: a constant
+// array or string literal's is a constant global, as it is when the literal is
+// written out, and a struct or tuple literal's a temporary it is read from.
+//
+// So a constant array is indexed by a constant or a run-time index, borrowed as
+// a reference or a slice, passed where a slice is wanted, returned, and given
+// to a global, all as the literal is. What a borrow of any other constant, or
+// of a part of one, is refused as is core_typecheck_constborrow's.
+//
+// Each printed value was worked out by hand from the constants below.
+
+mod core_const_aggregate;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct V {
+  pub x i32;
+  pub y i32;
+
+  pub fn sum(self) i32 {
+    self.x + self.y;
+  }
+}
+
+struct W {
+  pub a [3; i32];
+}
+
+const PINNED [4; u32] = [1u32, 2u32, 3u32, 4u32];
+const UNTYPED = [10, 20, 30];
+const POINTS [2; V] = [V[1, 2], V[3, 4]];
+const GRID [2; [3; i32]] = [[1, 2, 3], [4, 5, 6]];
+const WORD = "cone";
+const K V = V[7, 8];
+const HOLDER W = W[[5, 6, 7]];
+const T ([2; i32], i32) = [11, 12], 13;
+const ALIAS = PINNED;
+
+// Constants that are borrows of one: an element reached through either is in
+// PINNED's global, where the reference points
+const REF = &PINNED;
+const SLICE &[]u32 = PINNED;
+
+// A global given a constant's borrow, as it may be given '&[1, 2, 3]'
+imm table = &PINNED;
+imm slice &[]u32 = PINNED;
+
+fn at(n usize) u32 {
+  PINNED[n];
+}
+
+fn second(s &[]u32) u32 {
+  s[1];
+}
+
+fn total(s &[]u32) u32 {
+  mut t = 0u32;
+  each i in 0usize < s.len {
+    t = t + s[i];
+  }
+  t;
+}
+
+// The borrow is of a constant global, so it outlives the call
+fn tab() &[]u32 {
+  &PINNED;
+}
+
+fn letter(s &[]u8, i usize) u8 {
+  s[i];
+}
+
+fn main() {
+  // Indexed by a constant and at run time: 2, 4, 3
+  show("constant-index", i64[PINNED[1usize]]);
+  show("untyped-index", i64[PINNED[3]]);
+  show("runtime-index", i64[at(2usize)]);
+
+  // 1 + 2 + 3 + 4
+  mut sum = 0u32;
+  each i in 0usize < 4usize {
+    sum = sum + PINNED[i];
+  }
+  show("loop", i64[sum]);
+
+  // Untyped elements are i32; the second row's third element is 6
+  show("untyped", i64[UNTYPED[2]]);
+  show("nested", i64[GRID[1][2]]);
+
+  // An array of structs: the second's y, and the first's x + y
+  show("struct-element", i64[POINTS[1usize].y]);
+  show("struct-element-method", i64[POINTS[0].sum()]);
+
+  // A string constant is an array of bytes: 'o' is 111
+  show("string", i64[WORD[1]]);
+
+  // A struct's field and a by-value method, 8 and 7 + 8
+  show("struct-field", i64[K.y]);
+  show("struct-method", i64[K.sum()]);
+
+  // An array inside a struct or a tuple: 7, 12, and the tuple's second, 13
+  show("array-field", i64[HOLDER.a[2]]);
+  show("tuple-array", i64[T.0[1]]);
+  show("tuple-element", i64[T.1]);
+
+  // A constant naming another: PINNED's first, 1
+  show("alias", i64[ALIAS[0]]);
+
+  // Borrowed: as a slice argument, 2; auto-borrowed to one, 10
+  show("slice-argument", i64[second(&PINNED)]);
+  show("auto-slice-argument", i64[total(PINNED)]);
+
+  // A reference to the array, 4; a slice of it, whose length is 4
+  imm r = &PINNED;
+  show("reference", i64[r[3]]);
+  imm s = &[]PINNED;
+  show("slice-len", i64[s.len]);
+
+  // A subslice of elements 1 and 2, [2, 3]: 2 * 10 + 2
+  imm sub = &PINNED[1usize..3usize];
+  show("subslice", i64[sub[0]] * 10 + i64[sub.len]);
+
+  // One element borrowed, 3; a returned borrow's last, 4
+  imm e = &PINNED[2];
+  show("element-borrow", i64[*e]);
+  show("returned", i64[tab()[3]]);
+
+  // The globals: 3, and 1
+  show("global-reference", i64[table[2]]);
+  show("global-slice", i64[slice[0]]);
+
+  // A string constant where a slice is wanted: 'e' is 101
+  show("string-slice", i64[letter(WORD, 3usize)]);
+
+  // Through a constant reference, 2; an element borrowed through a constant
+  // slice, 4, times 10, plus its length, 4
+  show("constant-reference", i64[REF[1]]);
+  imm through = &SLICE[3];
+  show("through-constant-slice", i64[*through] * 10 + i64[SLICE.len]);
+}

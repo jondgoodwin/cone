@@ -240,7 +240,8 @@ anything runs. That is the borrow `borrowAuto` wraps a string literal in when a
 a field are literal initializers; generation's `genlExpr` builds the slice with
 instructions the builder folds to a constant aggregate. It accepts a borrow of
 an array literal whose elements all satisfy it (`arrayLitIsLiteral`) on the same
-terms, so `imm g = &[1, 2, 3]` is a literal initializer. It accepts a value
+terms, so `imm g = &[1, 2, 3]` is a literal initializer, and a borrow of a named
+constant holding either (`borrowIsConstLit`), so `imm g = &K` is one too. It accepts a value
 tuple whose values all satisfy it (`vtupleIsLiteral`), so
 `mut g (i64, i64) = 1, 2` is one too: the `VTupleTag` arm of `genlExpr` builds
 it by `insertvalue` of constants, which the builder folds to a constant struct,
@@ -274,6 +275,21 @@ would be a `&[3; i32]`: `iexpCoerce`'s `NoMatch` arm hands such a borrow to
 `arrayLitCoerce`, rebuilds the borrow's type around the retyped literal, and
 lets the match run again. Only a borrow of a literal written in place is
 retyped; a named array is not coerced.
+
+**A named constant is borrowed as its literal would be.** A use of a constant is
+its value (refterm, "Named constants"), so `borrowIsConstLit` follows a
+`ConstDclTag` use to the literal it holds: `&K` for `const K = [1, 2, 3]` is
+`&[1, 2, 3]`, `imm`, the program's lifetime, and placed in a constant global
+(`genlAddr` recurses into the value, [vardcl](vardcl.md), "Shape"). Not
+retyped, as a named array is not: `const K [3; u32]` borrows as a `&[3; u32]`.
+Any other constant, or a field or element of one (`&K.x`, `&K[1].y`, and a
+method taking a borrowed `self` on one), is the borrow of a temporary, as its
+literal's would be: `borrowRefusesConst` reports it once (`ErrorBadLval`) and the
+reference is still typed, so nothing follows from it. An element of a constant
+array, `&K[i]`, is not a part of one in this sense: `borrowReassocIndex` makes it
+an index of `&K`. Nor is a place reached through a reference a constant holds
+(`const R = &K`, then `&R[i]`): it is where the reference points, and is
+borrowed on the reference's terms.
 
 ## Flow
 
@@ -313,6 +329,9 @@ outside a function body**. Its address, which a borrow or a run-time index
 takes, is that of an internal constant global made for the occurrence (the
 `ArrayLitTag` case of `genlAddr`), as a string literal's is; one with a computed
 element, which only an index reaches, is stored into an unnamed local instead.
+A named constant's literal is reached the same way at each use that takes its
+address, so each such use of a constant array makes a global of its own, as
+each occurrence of a written literal does.
 
 A type literal is the same `insertvalue` chain, with one special case: a
 **nullable-pointer** enum has no struct at all, so the literal is either a null

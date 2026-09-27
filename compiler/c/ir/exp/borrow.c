@@ -17,6 +17,30 @@ INode *newBorrowMutRef(INode *node, INode* type, INode *perm) {
     return (INode*)borrownode;
 }
 
+// Refuse a borrow of a place within a named constant's own value, reporting it
+// once, where the whole constant array or string (borrowIsConstLit) was not
+// what was borrowed. A constant is its literal wherever it is used (refterm.html,
+// "Named constants"), so '&K' for 'const K = 5' is '&5', a temporary, and so is
+// a borrow of a field or element of any constant. A place reached through a
+// reference the constant holds is where that reference points, and is not
+// refused here.
+static int borrowRefusesConst(INode *place) {
+    INode *node = place;
+    while (node->tag == FldAccessTag || node->tag == ArrIndexTag) {
+        INode *obj = ((FnCallNode*)node)->objfn;
+        uint16_t objtag = iexpGetTypeDcl(obj)->tag;
+        if (objtag == RefTag || objtag == ArrayRefTag || objtag == PtrTag || objtag == VirtRefTag)
+            return 0;
+        node = obj;
+    }
+    if (!nameUseNames(node, ConstDclTag))
+        return 0;
+    errorMsgNode(place, ErrorBadLval,
+        "May not borrow from the named constant %s here. Each use of a constant is a fresh copy of its value, with no place in memory to point at; only a whole constant array or string is kept in one, and borrowed there.",
+        &((ConstDclNode*)nameUseGetDcl((NameUseNode*)node))->namesym->namestr);
+    return 1;
+}
+
 // Inject a typed, borrowed node on some node (expected to be an lval)
 void borrowMutRef(INode **nodep, INode* type, INode *perm) {
     INode *node = *nodep;
@@ -35,7 +59,10 @@ void borrowMutRef(INode **nodep, INode* type, INode *perm) {
     INode *lvalperm = (INode*)immPerm;
     uint16_t scope = 0;
     INode *lvalvar = iexpGetLvalInfo(node, &lvalperm, &scope);
-    if (!permMatches(perm, lvalperm)) {
+    // A constant is refused as a temporary; only a mutable borrow of one is
+    // refused below, as a borrow of something not mutable
+    int refused = permMatches(perm, (INode*)immPerm) && borrowRefusesConst(node);
+    if (!refused && !permMatches(perm, lvalperm)) {
         if (lvalvar && lvalvar->tag == VarDclTag)
             errorMsgNode((INode *)node, ErrorBadPerm, "Cannot borrow a mutable reference to `%s`, which is not mutable",
                 &((VarDclNode *)lvalvar)->namesym->namestr);
@@ -237,8 +264,12 @@ static int borrowReassocIndex(RefNode *node) {
 // own: a string literal, or an array literal whose elements are all constants
 // ('&[1, 2, 3]'). Generation places either in a constant global, so it is
 // borrowed as a global constant is: for as long as the program runs, and
-// immutably. An array literal with a computed element has no such place.
-static int borrowIsConstLit(INode *node) {
+// immutably. An array literal with a computed element has no such place. A
+// named constant is its literal wherever it is used (refterm.html, "Named
+// constants"), so '&K' is borrowed as its literal would be.
+int borrowIsConstLit(INode *node) {
+    while (nameUseNames(node, ConstDclTag))
+        node = ((ConstDclNode*)nameUseGetDcl((NameUseNode*)node))->value;
     return node->tag == StringLitTag
         || (node->tag == ArrayLitTag && arrayLitIsLiteral((ArrayNode*)node));
 }
@@ -362,6 +393,7 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     INode *lval = node->vtexp;
     INode *lvalperm = (INode*)immPerm;
     scope = 0;  // Global
+    int refused = 0;
     if (!borrowIsConstLit(lval)) {
         // lval is the variable or variable sub-structure we want to get a reference to
         // From it, obtain variable we are borrowing from and actual/calculated permission
@@ -370,6 +402,8 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
             node->vtype = (INode*)newRefNodeFull(RefTag, (INode*)node, node->region, node->perm, (INode*)unknownType); // To avoid a crash later
             return;
         }
+        // Refused once; the reference is still typed, so its uses check quietly
+        refused = borrowRefusesConst(lval);
         // Set lifetime of reference to borrowed variable's lifetime
         if (lvalvar->tag == VarDclTag)
             scope = ((VarDclNode*)lvalvar)->scope;
@@ -400,7 +434,7 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     INode *refperm = node->perm;
     if (refperm == unknownType)
         refperm = newPermUseNode(itypeIsConcrete(refvtype) ? roPerm : opaqPerm);
-    if (!permMatches(refperm, lvalperm))
+    if (!refused && !permMatches(refperm, lvalperm))
         errorMsgNode((INode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
 
     RefNode *reftype = newRefNodeFull(tag, (INode*)node, borrowRef, refperm, refvtype);
