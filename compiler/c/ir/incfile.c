@@ -24,6 +24,10 @@
  *
  * Every comment in the text kept is kept [Jon 25 Sep, Q2].
  *
+ * Where the file's lines stop being the source's, a line mark says which line
+ * of which of the package's files the next one is (incMarkLines), so that a
+ * location in text a program compiles from the file names the package's source.
+ *
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -38,11 +42,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-// A growable text
+// Where a stretch of a text came from: its 'len' bytes at 'at' are a copy of
+// 'lexer''s source at 'src'
+typedef struct IncAnchor {
+    size_t at;
+    size_t len;
+    Lexer *lexer;
+    char *src;
+} IncAnchor;
+
+// A growable text, and where the stretches of it copied from source came from,
+// in order
 typedef struct IncBuf {
     char *text;
     size_t len;
     size_t avail;
+    IncAnchor *anchors;
+    uint32_t nanchors;
+    uint32_t availanchors;
 } IncBuf;
 
 static void incBufPutn(IncBuf *buf, const char *text, size_t n) {
@@ -64,6 +81,42 @@ static void incBufPutn(IncBuf *buf, const char *text, size_t n) {
 
 static void incBufPuts(IncBuf *buf, const char *text) {
     incBufPutn(buf, text, strlen(text));
+}
+
+static void incBufAnchor(IncBuf *buf, size_t at, size_t len, Lexer *lexer, char *src) {
+    if (len == 0)
+        return;
+    if (buf->nanchors == buf->availanchors) {
+        buf->availanchors = buf->availanchors ? buf->availanchors * 2 : 64;
+        IncAnchor *anchors = (IncAnchor*)memAllocBlk(buf->availanchors * sizeof(IncAnchor));
+        if (buf->nanchors)
+            memcpy(anchors, buf->anchors, buf->nanchors * sizeof(IncAnchor));
+        buf->anchors = anchors;
+    }
+    IncAnchor *anchor = &buf->anchors[buf->nanchors++];
+    anchor->at = at;
+    anchor->len = len;
+    anchor->lexer = lexer;
+    anchor->src = src;
+}
+
+// Put 'n' bytes of 'lexer''s source, from 'src'
+static void incBufPutSrc(IncBuf *buf, Lexer *lexer, char *src, size_t n) {
+    incBufAnchor(buf, buf->len, n, lexer, src);
+    incBufPutn(buf, src, n);
+}
+
+// Put the bytes [start, end) of another text, and where they came from
+static void incBufPutBuf(IncBuf *buf, IncBuf *from, size_t start, size_t end) {
+    size_t base = buf->len;
+    for (uint32_t i = 0; i < from->nanchors; ++i) {
+        IncAnchor *anchor = &from->anchors[i];
+        size_t s = anchor->at > start ? anchor->at : start;
+        size_t e = anchor->at + anchor->len < end ? anchor->at + anchor->len : end;
+        if (s < e)
+            incBufAnchor(buf, base + (s - start), e - s, anchor->lexer, anchor->src + (s - anchor->at));
+    }
+    incBufPutn(buf, from->text ? from->text + start : "", end - start);
 }
 
 // A map from a node to what the generator knows of it, open addressing on
@@ -138,12 +191,16 @@ typedef struct IncDcl {
 } IncDcl;
 
 // One change to one file's text: [from, to) is replaced by 'text', or removed
-// where 'text' is NULL; an insertion has 'from' and 'to' the same. 'blocks'
-// inserts the moved imports and the nested module blocks of that module
+// where 'text' is NULL; an insertion has 'from' and 'to' the same. The
+// replacement may begin with 'srclen' bytes of the source at 'src', which are
+// put before 'text'. 'blocks' inserts the moved imports and the nested module
+// blocks of that module
 typedef struct IncEdit {
     Lexer *lexer;
     char *from;
     char *to;
+    char *src;
+    size_t srclen;
     char *text;
     IncMod *blocks;
     uint32_t seq;
@@ -176,6 +233,8 @@ static IncEdit *incEdit(IncGen *g, Lexer *lexer, char *from, char *to, char *tex
     edit->lexer = lexer;
     edit->from = from;
     edit->to = to;
+    edit->src = NULL;
+    edit->srclen = 0;
     edit->text = text;
     edit->blocks = NULL;
     edit->seq = g->nedits++;
@@ -1190,8 +1249,9 @@ static int incImportKept(IncGen *g, DclSpan *span) {
 // block inside another keeps it, since there 'pub' opens it to its parent's
 // neighbours, all inside the package, and the root may reach through it as the
 // source does. Its default fold goes, which says what an import of it folds,
-// and nothing imports it
-static char *incBlockOpening(IncMod *m, DclSpan *span) {
+// and nothing imports it. The opening replaces the 'mod' line: the source's
+// text of it, then " {"
+static void incBlockOpening(IncGen *g, IncMod *m, DclSpan *span) {
     char *from = m->parent && m->parent->parent ? span->start : span->kw;
     char *to = span->end;
     FoldClause *deffold = m->mod->deffold;
@@ -1201,11 +1261,9 @@ static char *incBlockOpening(IncMod *m, DclSpan *span) {
         --to;
     while (to > from && (incIsBlank(to[-1]) || to[-1] == '\n'))
         --to;
-    IncBuf buf;
-    memset(&buf, 0, sizeof(buf));
-    incBufPutn(&buf, from, to - from);
-    incBufPuts(&buf, " {");
-    return buf.text;
+    IncEdit *edit = incEdit(g, span->lexer, span->start, span->end, " {");
+    edit->src = from;
+    edit->srclen = to - from;
 }
 
 // Whether any of a module's submodules has a block in the file
@@ -1243,7 +1301,7 @@ static void incEditModule(IncGen *g, IncMod *m) {
                     // The block's opening, and a blank line after it goes
                     // unless nested blocks follow it: a separate edit, so that
                     // the header's end, where those go, is not inside either
-                    incEdit(g, curlex, span->start, span->end, incBlockOpening(m, span));
+                    incBlockOpening(g, m, span);
                     int importnext = i + 1 < spans->count && spans->items[i + 1]->kind == SpanImport
                         && spans->items[i + 1]->lexer == curlex;
                     char *p = span->end;
@@ -1268,7 +1326,7 @@ static void incEditModule(IncGen *g, IncMod *m) {
             else {
                 if (incImportKept(g, span)) {
                     incBufPuts(&m->moved, "\n");
-                    incBufPutn(&m->moved, span->start, span->end - span->start);
+                    incBufPutSrc(&m->moved, span->lexer, span->start, span->end - span->start);
                 }
                 incDelete(g, span, floor);
             }
@@ -1357,7 +1415,7 @@ static void incAssemble(IncGen *g, IncMod *m, IncBuf *out);
 // A module's moved imports, then the block of each of its submodules the file
 // holds, in the program's module order: a sister a block imports is ahead of it
 static void incPutBlocks(IncGen *g, IncMod *m, IncBuf *out) {
-    incBufPutn(out, m->moved.text, m->moved.len);
+    incBufPutBuf(out, &m->moved, 0, m->moved.len);
     for (uint32_t k = 0; k < g->nmods; ++k) {
         IncMod *child = g->mods[k];
         if (child->parent != m || !child->emitted)
@@ -1365,14 +1423,14 @@ static void incPutBlocks(IncGen *g, IncMod *m, IncBuf *out) {
         IncBuf text;
         memset(&text, 0, sizeof(text));
         incAssemble(g, child, &text);
-        char *start = text.text ? text.text : "";
-        char *end = start + text.len;
-        while (start < end && (incIsBlank(*start) || *start == '\n'))
+        size_t start = 0;
+        size_t end = text.len;
+        while (start < end && (incIsBlank(text.text[start]) || text.text[start] == '\n'))
             ++start;
-        while (end > start && (incIsBlank(end[-1]) || end[-1] == '\n'))
+        while (end > start && (incIsBlank(text.text[end - 1]) || text.text[end - 1] == '\n'))
             --end;
         incBufPuts(out, "\n\n");
-        incBufPutn(out, start, end - start);
+        incBufPutBuf(out, &text, start, end);
         incBufPuts(out, "\n}");
     }
 }
@@ -1395,14 +1453,16 @@ static void incAssemble(IncGen *g, IncMod *m, IncBuf *out) {
             IncEdit *edit = &g->edits[e];
             if (edit->lexer != lexer || edit->from < p)
                 continue;
-            incBufPutn(out, p, edit->from - p);
+            incBufPutSrc(out, lexer, p, edit->from - p);
+            if (edit->src)
+                incBufPutSrc(out, lexer, edit->src, edit->srclen);
             if (edit->text)
                 incBufPuts(out, edit->text);
             if (edit->blocks)
                 incPutBlocks(g, edit->blocks, out);
             p = edit->to;
         }
-        incBufPuts(out, p);
+        incBufPutSrc(out, lexer, p, strlen(p));
     }
 }
 
@@ -1427,6 +1487,145 @@ static void incBanner(IncBuf *out, ModuleNode *root, Lexer **files, uint32_t nfi
     incBufPuts(out, "'s source and compile ");
     incBufPuts(out, name);
     incBufPuts(out, " again.\n\n");
+}
+
+// ---- Line marks -------------------------------------------------------------
+//
+// A location in the include file -- a compile error in a body an importer
+// expands, a panic's 'srcFile()' and 'srcLine()', a check the compiler inserts
+// there -- names the package's source file and line, not the include file's.
+// The file's lines stop being one source file's where the banner ends, where
+// text is left out, where one file follows another and where a block begins, so
+// a line mark goes before each line that is not the line the reader would take
+// it to be, naming the file and line it is (LexLineMark). The importer's lexer
+// reads each (lexLineMark). A line whose text is all the generator's -- a
+// block's closing brace, a blank line between blocks -- needs none.
+
+// Which line of its file a byte of source is on, counting on from the last one
+// asked about where that is before it
+typedef struct IncLineAt {
+    Lexer *lexer;
+    char *p;
+    uint32_t line;
+} IncLineAt;
+
+static uint32_t incLineOf(IncLineAt *cache, Lexer *lexer, char *p) {
+    if (cache->lexer != lexer || cache->p > p) {
+        cache->lexer = lexer;
+        cache->p = lexer->source;
+        cache->line = 1;
+    }
+    for (char *q = cache->p; q < p; ++q) {
+        if (*q == '\n')
+            ++cache->line;
+    }
+    cache->p = p;
+    return cache->line;
+}
+
+// Whether the text is inside a string literal or a block comment at a line's
+// end, where a line mark cannot go. A character literal's quote opens nothing
+typedef struct IncScan {
+    int instring;
+    int comments;   // nested block comments open
+} IncScan;
+
+static void incScanLine(IncScan *scan, char *p, char *end) {
+    while (p < end) {
+        if (scan->instring) {
+            if (*p == '\\' && p + 1 < end)
+                p += 2;
+            else if (*p++ == '"')
+                scan->instring = 0;
+        }
+        else if (p[0] == '/' && p + 1 < end && p[1] == '*') {
+            ++scan->comments;
+            p += 2;
+        }
+        else if (scan->comments) {
+            if (p[0] == '*' && p + 1 < end && p[1] == '/') {
+                --scan->comments;
+                p += 2;
+            }
+            else
+                ++p;
+        }
+        else if (p[0] == '/' && p + 1 < end && p[1] == '/')
+            return;
+        else if (*p == '"') {
+            scan->instring = 1;
+            ++p;
+        }
+        else if (*p == '\'' && p + 2 < end && p[1] != '\\' && p[2] == '\'')
+            p += 3;
+        else if (*p == '\'' && p + 3 < end && p[1] == '\\' && p[3] == '\'')
+            p += 4;
+        else
+            ++p;
+    }
+}
+
+// The name a line mark gives a file of the package: its path from the root's
+// folder, which is its name alone for a file beside the root's, with '/'
+// between folders, so that the file is the same wherever the package is built
+static char *incMarkName(Lexer *lexer, char *rooturl) {
+    char *url = lexer->url ? lexer->url : "";
+    size_t folder = rooturl ? fileFolder(rooturl) : 0;
+    char *name = folder && strncmp(url, rooturl, folder) == 0 ? url + folder : url + fileFolder(url);
+    char *copy = memAllocStr(name, strlen(name));
+    for (char *p = copy; *p; ++p) {
+        if (*p == '\\')
+            *p = '/';
+    }
+    return copy;
+}
+
+// The text with a line mark before each line whose file or line the reader
+// would take wrongly
+static void incMarkLines(IncBuf *in, IncBuf *out, char *rooturl) {
+    IncLineAt cache;
+    memset(&cache, 0, sizeof(cache));
+    IncScan scan;
+    memset(&scan, 0, sizeof(scan));
+    Lexer *file = NULL;     // The file the reader takes the line to be of: NULL, the include file's own
+    uint32_t line = 1;      // And which line of it
+    char *lastname = NULL;
+    Lexer *lastnamed = NULL;
+    uint32_t a = 0;
+    size_t pos = 0;
+    while (pos < in->len) {
+        size_t eol = pos;
+        while (eol < in->len && in->text[eol] != '\n')
+            ++eol;
+
+        // The line's first byte copied from source says which line it is
+        while (a < in->nanchors && in->anchors[a].at + in->anchors[a].len <= pos)
+            ++a;
+        IncAnchor *anchor = a < in->nanchors ? &in->anchors[a] : NULL;
+        size_t at = anchor && anchor->at > pos ? anchor->at : pos;
+        if (anchor && at < eol && !scan.instring && !scan.comments) {
+            uint32_t srcline = incLineOf(&cache, anchor->lexer, anchor->src + (at - anchor->at));
+            if (anchor->lexer != file || srcline != line) {
+                if (anchor->lexer != lastnamed) {
+                    lastnamed = anchor->lexer;
+                    lastname = incMarkName(anchor->lexer, rooturl);
+                }
+                char number[16];
+                snprintf(number, sizeof(number), "%u", srcline);
+                incBufPuts(out, LexLineMark);
+                incBufPuts(out, number);
+                incBufPuts(out, " \"");
+                incBufPuts(out, lastname);
+                incBufPuts(out, "\"\n");
+                file = anchor->lexer;
+                line = srcline;
+            }
+        }
+        incScanLine(&scan, in->text + pos, in->text + eol);
+        incBufPutn(out, in->text + pos, eol < in->len ? eol + 1 - pos : eol - pos);
+        ++line;
+        pos = eol + 1;
+    }
 }
 
 // Whether a file's text is a generated include file: it opens with the banner
@@ -1496,10 +1695,13 @@ char *incFileGenerate(ProgramNode *pgm, size_t *lenp) {
     DclSpans *spans = g->root->spans;
     Lexer **files = (Lexer**)memAllocBlk((spans ? spans->count : 0) * sizeof(Lexer*) + sizeof(Lexer*));
     uint32_t nfiles = incFiles(spans, files);
+    IncBuf text;
+    memset(&text, 0, sizeof(text));
+    incBanner(&text, g->root, files, nfiles);
+    incAssemble(g, rootm, &text);
     IncBuf out;
     memset(&out, 0, sizeof(out));
-    incBanner(&out, g->root, files, nfiles);
-    incAssemble(g, rootm, &out);
+    incMarkLines(&text, &out, nfiles ? files[0]->url : NULL);
     *lenp = out.len;
     return out.text;
 }

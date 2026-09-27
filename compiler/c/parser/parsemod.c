@@ -501,7 +501,7 @@ ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
     // parent's namespace is complete (importBindName). A package is a file the
     // name reaches, like any other
     if (newmod == NULL && buildimport == NULL && isname && parse->mod->dclinfo.owner != NULL
-        && fileFindSrc(lex ? lex->url : NULL, filename) == NULL)
+        && fileFindSrc(lex ? lex->path : NULL, filename) == NULL)
         return parseImportName(parse, importnode, filesym);
     if (newmod == NULL && isname && parse->mod->dclinfo.owner != NULL)
         importnode->isnamedfile = 1;
@@ -1788,6 +1788,10 @@ static ModuleNode *parseLoadModulePath(ParseState *parse, char *path, Name *file
     // generator wrote it. A hand-written include file, and every source file,
     // may not
     parse->generated = build && build->isimport && incFileIsGenerated(dsgfile->source);
+    // Its line marks say which lines of the package's source its text is, and
+    // what the file reports is where that text was written
+    if (parse->generated)
+        dsgfile->flags |= LexLineMarks;
     mod->filesym = filesym;
     // The module's name is a filesystem fact: its folder's, where a designated
     // file drew the module out of a folder, and its file's otherwise. Filename
@@ -1855,7 +1859,7 @@ static ModuleNode *parseLoadBuildImport(ParseState *parse, BuildImport *import) 
 ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name *filesym) {
     uint16_t genflag = 0;
     int pkgsrc = 0;
-    char *path = fileFindLocal(lex ? lex->url : NULL, filename);
+    char *path = fileFindLocal(lex ? lex->path : NULL, filename);
     if (path == NULL) {
         path = fileFindPackage(filename, &pkgsrc);
         genflag = FlagGenMod;

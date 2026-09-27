@@ -76,7 +76,13 @@ every node still pointing at it. A block can also exist before it is current:
 its designated file's first line as its position before that file is parsed,
 and the folder sweep can read a file's first statement to decide which module
 it is, and `lexPush` makes the same block current later — see
-`compiler/c/doc/nodes/module.md`, "Parse".
+`compiler/c/doc/nodes/module.md`, "Parse". A **line mark** in a generated
+include file (`lexLineMark`, read only where `LexLineMarks` is set) starts a
+block of its own over the same text, named for the package source the text
+after it was copied from and numbered from the mark, so a node built before it
+keeps its location and one built after it names the source's file and line;
+`Lexer.path` keeps the include file's own path for finding what it names
+(`compiler/c/doc/nodes/module.md`, "Generating the include file").
 
 **An identifier may be spelled in any letters UTF-8 can carry**, which is
 `utf8IsLetter`: ASCII letters, or the start of a well-formed multi-byte
