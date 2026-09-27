@@ -1,0 +1,137 @@
+// The noise package's fractal sums (fBm, ridged, billowed) and domain
+// warps. Only a failure prints.
+//
+// - One octave of fBm is gradient noise seeded by hash1(0, seed); two are
+//   that plus half of gradient noise at twice the frequency seeded by
+//   hash1(1, seed), whose derivative counts twice (the chain rule) times
+//   half: exactly, the same operations in the same order.
+// - Ranges, over a 32 x 32 grid, 5 octaves of gain 0.5: 2-D gradient noise
+//   is within [-1, 1], so fBm within 1 + 1/2 + ... + 1/16 = 1.9375 either
+//   way, a ridged layer (1 - |n|)^2 within [0, 1] so ridged within
+//   [0, 1.9375], and a billowed one 2|n| - 1 within [-1, 1].
+// - Derivatives against central differences (h = 2^-9), 3 octaves, at
+//   points where no octave's noise is within 0.02 of 0 (a ridged or
+//   billowed layer has a crease there, and no derivative).
+// - A warp of strength 0 is the fBm at the point itself; a warp moves it.
+
+mod fractal;
+
+import testing use *;
+import libc;
+import geomath use *;
+import noise use *;
+
+// Whether some octave of 'octaves' has its noise within 0.02 of 0 near 'p'
+fn nearCrease(p Vec2, seed u32, octaves i32) Bool {
+  mut freq f32 = 1.;
+  mut i = 0;
+  while i < octaves {
+    if libc.fabsf(gradient2(Vec2[p.x * freq, p.y * freq], hash1(i, seed)).value) < 0.02 { return true; }
+    freq = freq * 2.;
+    i = i + 1;
+  }
+  false;
+}
+
+fn sum2(kind i32, p Vec2, seed u32) Noise2 {
+  if kind == 0 { fbm2(p, seed, 3, 2., 0.5); } elif kind == 1 { ridged2(p, seed, 3, 2., 0.5); }
+  else { billow2(p, seed, 3, 2., 0.5); };
+}
+
+// The worst difference between the analytic derivative and central
+// differences, over the points of a 12 x 12 grid away from creases
+fn derivative2(kind i32, seed u32) f64 {
+  imm h f32 = 0.001953125;
+  mut worst = 0d;
+  mut j = 0;
+  while j < 12 {
+    mut i = 0;
+    while i < 12 {
+      imm p = Vec2[f32[i] * 0.37 - 2.1, f32[j] * 0.29 + 0.4];
+      if !nearCrease(p, seed, 3) {
+        imm n = sum2(kind, p, seed);
+        imm dx = (f64[sum2(kind, Vec2[p.x + h, p.y], seed).value] - f64[sum2(kind, Vec2[p.x - h, p.y], seed).value])
+          / (2d * f64[h]);
+        imm dy = (f64[sum2(kind, Vec2[p.x, p.y + h], seed).value] - f64[sum2(kind, Vec2[p.x, p.y - h], seed).value])
+          / (2d * f64[h]);
+        imm e = libc.fabs(dx - f64[n.d.x]) + libc.fabs(dy - f64[n.d.y]);
+        if e > worst { worst = e; }
+      }
+      i = i + 1;
+    }
+    j = j + 1;
+  }
+  worst;
+}
+
+fn main() i32 {
+  imm seed = 31u32;
+  imm p = Vec2[0.8125, -1.4375];
+
+  // ---- One and two octaves ----
+  imm one = fbm2(p, seed, 1, 2., 0.5);
+  imm g0 = gradient2(p, hash1(0, seed));
+  expectFloat(f64[one.value], f64[g0.value], 0d, "one octave of fbm2 is gradient2 under hash1(0, seed)");
+  expectFloat(f64[one.d.x], f64[g0.d.x], 0d, "and so is its derivative");
+  imm two = fbm2(p, seed, 2, 2., 0.5);
+  imm g1 = gradient2(Vec2[p.x * 2., p.y * 2.], hash1(1, seed));
+  expectFloat(f64[two.value], f64[g0.value + 0.5 * g1.value], 0d, "two octaves: plus half the next at twice the frequency");
+  expectFloat(f64[two.d.y], f64[g0.d.y + g1.d.y], 0d, "whose derivative counts 2 x 1/2 = 1 times");
+  imm p3 = Vec3[0.8125, -1.4375, 2.25];
+  imm one3 = fbm3(p3, seed, 1, 2., 0.5);
+  expectFloat(f64[one3.value], f64[gradient3(p3, hash1(0, seed)).value], 0d, "one octave of fbm3 is gradient3");
+  expectFloat(f64[fbm2(p, seed, 0, 2., 0.5).value], 0d, 0d, "no octaves: 0");
+
+  // ---- Ranges ----
+  mut fbmMax f32 = 0.;
+  mut ridgedLo f32 = 10.;
+  mut ridgedHi f32 = -10.;
+  mut billowMax f32 = 0.;
+  mut j = 0;
+  while j < 32 {
+    mut i = 0;
+    while i < 32 {
+      imm q = Vec2[f32[i] * 0.213 - 3.3, f32[j] * 0.187 + 1.9];
+      imm f = libc.fabsf(fbm2(q, seed, 5, 2., 0.5).value);
+      if f > fbmMax { fbmMax = f; }
+      imm r = ridged2(q, seed, 5, 2., 0.5).value;
+      if r < ridgedLo { ridgedLo = r; }
+      if r > ridgedHi { ridgedHi = r; }
+      imm b = libc.fabsf(billow2(q, seed, 5, 2., 0.5).value);
+      if b > billowMax { billowMax = b; }
+      i = i + 1;
+    }
+    j = j + 1;
+  }
+  expect(fbmMax <= 1.9375 and fbmMax > 0.3, "fbm2 within [-1.9375, 1.9375], and not flat");
+  expect(ridgedLo >= 0. and ridgedHi <= 1.9375, "ridged2 within [0, 1.9375]");
+  expect(ridgedHi - ridgedLo > 0.3, "ridged2 is not flat");
+  expect(billowMax <= 1.9375, "billow2 within [-1.9375, 1.9375]");
+
+  // ---- Derivatives ----
+  expectFloat(derivative2(0, seed), 0d, 0.01d, "fbm2's derivative");
+  expectFloat(derivative2(1, seed), 0d, 0.01d, "ridged2's derivative, away from its creases");
+  expectFloat(derivative2(2, seed), 0d, 0.01d, "billow2's derivative, away from its creases");
+  {
+    imm h f32 = 0.001953125;
+    imm q = Vec3[0.3, 1.7, -0.45];
+    imm n = ridged3(q, seed, 2, 2., 0.5);
+    imm dz = (f64[ridged3(Vec3[q.x, q.y, q.z + h], seed, 2, 2., 0.5).value]
+      - f64[ridged3(Vec3[q.x, q.y, q.z - h], seed, 2, 2., 0.5).value]) / (2d * f64[h]);
+    expectFloat(f64[n.d.z], dz, 0.01d, "ridged3's derivative along z");
+    imm b = billow3(q, seed, 2, 2., 0.5);
+    imm bx = (f64[billow3(Vec3[q.x + h, q.y, q.z], seed, 2, 2., 0.5).value]
+      - f64[billow3(Vec3[q.x - h, q.y, q.z], seed, 2, 2., 0.5).value]) / (2d * f64[h]);
+    expectFloat(f64[b.d.x], bx, 0.01d, "billow3's derivative along x");
+  }
+
+  // ---- Domain warp ----
+  expectFloat(f64[warp2(p, seed, 4, 0.)], f64[fbm2(p, seed, 4, 2., 0.5).value], 0d,
+    "warp2 of strength 0 is the fbm at the point");
+  expectFloat(f64[warp3(p3, seed, 3, 0.)], f64[fbm3(p3, seed, 3, 2., 0.5).value], 0d,
+    "warp3 of strength 0 is the fbm at the point");
+  expect(warp2(p, seed, 4, 4.) != fbm2(p, seed, 4, 2., 0.5).value, "strength 4 moves it");
+  expect(warp2(p, seed, 4, 4.) != warp2(p, seed + 1u32, 4, 4.), "another seed, another warp");
+  expectFloat(f64[warp3(p3, seed, 3, 4.)], f64[warp3(p3, seed, 3, 4.)], 0d, "the same seed and point, the same warp");
+  done();
+}

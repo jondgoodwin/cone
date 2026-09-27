@@ -115,7 +115,8 @@ More detailed instructions: https://github.com/git-yledu/cone-misc/blob/main/ins
 ## License
 
 The Cone programming language compiler is distributed under the terms of the MIT license. 
-See LICENSE and COPYRIGHT for details.
+See LICENSE and COPYRIGHT for details. The two Phacelle noise files in
+`packages/noise/src` (`phacelle.*`) are under the Mozilla Public License 2.0.
 
 [3dweb]: http://cone.jondgoodwin.com/web3d.html
 [gmm]: http://jondgoodwin.com/pling/gmm.pdf
