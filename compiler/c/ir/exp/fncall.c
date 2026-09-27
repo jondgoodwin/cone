@@ -695,7 +695,7 @@ INode *fnCallFieldAccess(INode *obj, FieldDclNode *fld, INode *lexnode) {
 // so with its signature checked, is left alone, and so is a method of a number
 // type: corenumber builds those typed, with intrinsic bodies, and nothing ever
 // type checks them.
-static void fnCallDemandCandidates(INode *binding) {
+void fnCallDemandCandidates(INode *binding) {
     INode **candp;
     uint32_t cnt;
     if (binding->tag == FnDclTag) {
@@ -818,6 +818,9 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
     if (!foundnode
         || !(foundnode->tag == FnDclTag || foundnode->tag == FnOverloadDclTag || foundnode->tag == FieldDclTag)
         || !(foundnode->flags & FlagMethFld)) {
+        // A generic type's method this instance lacks, its 'where' clause unmet
+        if (foundnode == NULL && genericReportAbsent((INode*)callnode, objdereftype, methsym))
+            return -1;
         errorMsgNode((INode*)callnode, ErrorNoMbr, "Method or field `%s` not found.", &methsym->namestr);
         return -1;
     }

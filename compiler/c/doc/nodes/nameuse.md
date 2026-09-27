@@ -153,9 +153,10 @@ Two entry points, because a type name and a value name want different things.
    argument list is written where one is required. The message names the path
    that works for a function, `Box[...].make`; a static global is not reached
    through an instance yet, and its message says so. A use inside the generic's own
-   body never arrives here bound to the template's member: the clone re-pointed
-   it at the instance's ([generic](generic.md), "How a cloned name gets
-   re-pointed"). `fnCallLowerOverloadFn` asks the same of an overload name's
+   body arrives here bound to the template's member only when the instance has no
+   copy of it to re-point it at ([generic](generic.md), "How a cloned name gets
+   re-pointed"): the member's `where` clause is unmet there, and the use is
+   `ErrorWhereAbsent` instead ([generic](generic.md), "Constraints"). `fnCallLowerOverloadFn` asks the same of an overload name's
    candidates before selecting one. **Nor does a bare name inside an enum
    extension's braces that names a generic base's member**: name resolution bound
    it to the base template's, since the instance the extension stands on exists

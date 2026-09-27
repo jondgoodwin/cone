@@ -629,8 +629,78 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
     return (INode*)blk;
 }
 
-// Parse a list of generic variables and add to the genericnode
-Nodes *parseGenericParms(ParseState *parse) {
+// Skip what is left of a 'where' clause the parser refused, to the block or
+// the end of the declaration
+static void parseWhereSkip() {
+    while (!lexIsToken(LCurlyToken) && !lexIsToken(SemiToken) && !lexIsToken(RCurlyToken)
+        && !lexIsToken(EofToken))
+        lexNextToken();
+}
+
+// Parse a 'where' clause, with the lexer on 'where', appending each clause to
+// '*wherep' as the pair of a use of its subject and a use of its trait
+// (generic.h). The first cut [Jon 27 Sep]: 'T is Name', a trait joined to
+// another by '+' as in the inline form, clauses joined by 'and'. What else
+// the manual shows a clause saying -- a relation between two parameters, 'T <
+// Y', and a constraint on a type expression, 'Option[T] is Node' -- and 'or'
+// and 'not' are not built, and refused here.
+void parseWhere(ParseState *parse, Nodes **wherep) {
+    lexNextToken();  // past 'where'
+    if (*wherep == NULL)
+        *wherep = newNodes(4);
+    while (1) {
+        if (!lexIsToken(IdentToken)) {
+            errorMsgLex(ErrorWhereForm, "A 'where' clause is a type parameter's name, 'is', and a trait: 'where T is Integer'.");
+            parseWhereSkip();
+            return;
+        }
+        INode *subject = (INode*)newNameUseNode(lex->val.ident);
+        lexNextToken();
+        if (!lexIsToken(IsToken)) {
+            errorMsgLex(ErrorWhereForm, "Only 'T is Name' is built: a relation between two parameters and a constraint on a type expression are not yet.");
+            parseWhereSkip();
+            return;
+        }
+        lexNextToken();
+        while (1) {
+            if (!lexIsToken(IdentToken)) {
+                errorMsgLex(ErrorWhereForm, "What a type parameter 'is' in a 'where' clause is a trait, named.");
+                parseWhereSkip();
+                return;
+            }
+            nodesAdd(wherep, subject);
+            nodesAdd(wherep, parseTypeName(parse));
+            if (!lexIsToken(PlusToken))
+                break;
+            lexNextToken();
+            // 'T is A + B' is two clauses, each with its own use of T
+            INode *again = (INode*)newNameUseNode(((NameUseNode*)subject)->namesym);
+            inodeLexCopy(again, subject);
+            subject = again;
+        }
+        if (lexIsToken(OrToken) || lexIsToken(NotToken)) {
+            errorMsgLex(ErrorWhereForm, "Clauses are joined by 'and'; 'or' and 'not' are not built.");
+            parseWhereSkip();
+            return;
+        }
+        if (!lexIsToken(AndToken))
+            return;
+        lexNextToken();
+    }
+}
+
+// Parse a list of generic variables and add to the genericnode.
+//
+// What follows a parameter's name, before its ',' or ']', is its annotation:
+// '[T Comparable]', '[T Comparable + Float]'. The slot is one, for whatever a
+// parameter will be annotated with, and it is read as '+'-joined types whose
+// meaning is what each resolves to (genericConstraintsNameRes): a trait
+// constrains a type parameter, which is built; a type would make a value
+// parameter, '[N usize]', and a kind another kind of parameter, '[e Expr]',
+// and neither is. 'annotate' is set for a generic function or type; a macro's
+// parameter and a generic module's take no annotation yet, and it is refused
+// here as it always was.
+Nodes *parseGenericParms(ParseState *parse, int annotate) {
     lexNextToken(); // Go past left square bracket
     Nodes *parms = newNodes(2);
     while (lexIsToken(IdentToken)) {
@@ -639,14 +709,26 @@ Nodes *parseGenericParms(ParseState *parse) {
         lexNextToken();
         if (lexIsToken(CommaToken))
             lexNextToken();
+        // An annotation begins with a name: a trait's, a type's, a kind's
+        else if (annotate && lexIsToken(IdentToken)) {
+            parm->annot = newNodes(2);
+            nodesAdd(&parm->annot, parseType(parse));
+            while (lexIsToken(PlusToken)) {
+                lexNextToken();
+                nodesAdd(&parm->annot, parseType(parse));
+            }
+            // A parameter ends at its ',' or at the ']'
+            if (!lexIsToken(CommaToken))
+                break;
+            lexNextToken();
+        }
         // A second name straight after the first is what a constraint or a
-        // parameter type is spelled as -- 'fn max[T Comparable]', which the
-        // reference manual shows. Neither is implemented, and reading the two
-        // names as two parameters instead turned that into an arity or
-        // inference complaint about a declaration written in the documented
-        // form. Refuse it here and resync to the next ',' or ']'.
+        // parameter type is spelled as -- '[a i32]' on a macro. Neither is
+        // implemented there, and reading the two names as two parameters
+        // instead turned that into an arity complaint about a declaration
+        // written in that form. Refuse it here and resync to the next ',' or ']'.
         else if (lexIsToken(IdentToken)) {
-            errorMsgLex(ErrorGenParmConstr, "A type parameter may not carry a constraint or a type: neither is implemented. Separate two parameters with a comma.");
+            errorMsgLex(ErrorGenParmConstr, "A macro's or a generic module's parameter may not carry a constraint or a type: neither is implemented. Separate two parameters with a comma.");
             while (!lexIsToken(CommaToken) && !lexIsToken(RBracketToken)) {
                 if (lexIsToken(SemiToken) || lexIsToken(LCurlyToken) || lexIsToken(RCurlyToken) || lexIsToken(EofToken))
                     break;
@@ -678,7 +760,7 @@ MacroDclNode *parseMacro(ParseState *parse) {
     MacroDclNode *macro = newMacroDclNode(lex->val.ident);
     lexNextToken();
     if (lexIsToken(LBracketToken)) {
-        macro->parms = parseGenericParms(parse);
+        macro->parms = parseGenericParms(parse, 0);
     }
     macro->body = parseExprBlock(parse, 0);
     return macro;
@@ -747,7 +829,7 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
         lexNextToken();
         if (lexIsToken(LBracketToken)) {
             fnnode->genericinfo = newGenericInfo();
-            fnnode->genericinfo->parms = parseGenericParms(parse);
+            fnnode->genericinfo->parms = parseGenericParms(parse, 1);
         }
     }
     else {
@@ -788,6 +870,11 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
         fnnode->flags |= FlagInline;
         lexNextToken();
     }
+
+    // Its constraints, just before the block: a generic function's
+    // requirements, or a generic type's method's conditions for existing
+    if (lexIsToken(WhereToken))
+        parseWhere(parse, &fnnode->where);
 
     // '@c' names a symbol, so it goes only where a function has one of its own
     if (hasc) {

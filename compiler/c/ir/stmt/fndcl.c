@@ -23,6 +23,7 @@ FnDclNode *newFnDclNode(Name *namesym, uint16_t flags, INode *type, INode *val) 
     node->llvmvar = NULL;
     dclInfoInit(&node->dclinfo);
     node->genericinfo = NULL;
+    node->where = NULL;
     return node;
 }
 
@@ -108,6 +109,10 @@ void cloneFnDclFill(CloneState *cstate, FnDclNode *newnode, FnDclNode *oldfn) {
     }
     newnode->vtype = cloneNode(cstate, oldfn->vtype);
     newnode->value = cloneNode(cstate, oldfn->value);
+    // A clause on an enclosing type's parameter is substituted, one on this
+    // function's own stays a use of it, for its instances to evaluate
+    if (oldfn->where)
+        newnode->where = cloneNodes(cstate, oldfn->where);
     if (generic)
         nametblHookPop();
     cloneDclPop(dclpos);
@@ -191,6 +196,21 @@ void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
     if (fndclnode->genericinfo) {
         for (nodesFor(fndclnode->genericinfo->parms, cnt, nodesp))
             inodeNameRes(nstate, nodesp);
+    }
+    // Its constraints: a generic function's are requirements on its own type
+    // parameters, and a generic type's method's are conditions on the type's,
+    // for the method to exist. A function that is neither has no parameter for
+    // a clause to name.
+    INode *owner = nstate->typenode;
+    if (fndclnode->genericinfo
+        || (owner && owner->tag == StructTag && ((StructNode*)owner)->genericinfo))
+        genericConstraintsNameRes(nstate, fndclnode->genericinfo ? fndclnode->genericinfo->parms : NULL,
+            &fndclnode->where);
+    else if (fndclnode->where) {
+        errorMsgNode(nodesGet(fndclnode->where, 0), ErrorWhereNoParms,
+            "%s has no type parameters, nor is it a member of a generic type, so a 'where' clause has nothing to constrain.",
+            fndclnode->namesym ? &fndclnode->namesym->namestr : "This function");
+        fndclnode->where = NULL;
     }
     // A parameter's default value is expanded where the function is called
     // (fnSigNameRes)

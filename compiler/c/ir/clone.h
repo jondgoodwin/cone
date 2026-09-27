@@ -18,6 +18,7 @@ typedef struct CloneState {
     INode *selftype;     // Self type (might be NULL)
     INode *selfparm;     // Expanding a macro method: the parameter standing for its receiver, else NULL
     INode *structshell;  // An instance of a generic type reserved in advance, which the struct cloned next fills
+    Nodes *absent;       // That instance's members whose 'where' its arguments do not meet, which it is cloned without
     uint16_t scope;     // Current block level
 } CloneState;
 

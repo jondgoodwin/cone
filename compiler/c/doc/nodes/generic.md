@@ -9,7 +9,9 @@ instantiated by the same memo and the same clone, one declaration at a time
 resolution resolves the **template once, in place**, with parameters hooked.
 Type check **never checks a template** — only clones. `genericSubstitute` from a
 call either memo-hits an existing instance or clones a new one. Flow and
-generation see only instances, reachable **only** through `memonodes`.
+generation see only instances, reachable **only** through `memonodes`. A
+generic's **constraints** are evaluated against the type arguments before the
+clone ("Constraints").
 
 *Provenance: read from source; the instance symbols were measured from emitted IR.*
 
@@ -39,8 +41,14 @@ Rust-trait-bound style checking of the template — which is an implementation
 state promoted to a rule, the hazard `_index.md` gives as the whole reason
 `[derived]` exists. **The author has since said he expects to check templates as
 defined and sees advantages in it.** ▸ **For whoever builds it: checking a
-template requires knowing what its parameters guarantee, so it arrives with
-parameter constraints rather than ahead of them.**
+template requires knowing what its parameters guarantee, which is what its
+constraints say.** Constraints are built, and checked at each instance only;
+checking the body against them where it is declared is the part still owed.
+
+**A constraint is checked by evaluating it, once every argument is known**
+[Jon 27 Sep]. ▸ **Forbids** solving one, unifying through one, or using one to
+infer a type argument the use did not supply: inference runs first, from the
+arguments alone, and a clause is only ever asked of the types that came out.
 
 **Instances are reachable only through `memonodes`.** ▸ **Settles** that
 deduplication happens in the IR rather than in the linker, which is why
@@ -50,12 +58,21 @@ every instance, so that a package's and its importers' copies merge
 
 ## Shape
 
-**`GenericInfo`** — two fields, hung off a declaration:
+**`GenericInfo`** — three fields, hung off a declaration:
 
 | Field | Meaning |
 | --- | --- |
 | `parms` | the declared type parameters. Every element is a `GenVarDclNode` |
 | `memonodes` | the memo table **and the only path to instances** |
+| `where` | a generic type's constraints, as clause pairs (below); NULL for a function, whose are its `FnDcl`'s |
+
+**A constraint is a pair in a `where` list**: a use of the type parameter it
+constrains, then a use of the trait it `is`. `T is A + B` and `[T A + B]` are two
+pairs. A generic type's list is its `GenericInfo`'s; every function's, generic or
+a generic type's method, is `FnDclNode.where`, so a method that is not generic
+still has one. Being name uses, the pairs are cloned like any other: in an
+instance's copy of a method, a clause over the type's parameter comes out naming
+the argument, and one over the method's own parameter stays a use of it.
 
 **`memonodes` is a flat list of pairs** — `[call₀, instance₀, call₁, instance₁, …]`.
 Every consumer walks it with `for (nodesFor(...)) { ++nodesp; --cnt; ... }`,
@@ -66,10 +83,23 @@ never instantiated.
 a generic that recurses at the *same* arguments terminate — the inner call
 memo-hits the half-built instance.
 
-**`GenVarDclNode`** is `{ IExpNodeHdr; Name *namesym; }` and nothing else. Its
+**`GenVarDclNode`** is `{ IExpNodeHdr; Name *namesym; Nodes *annot; }`. Its
 `vtype` is set NULL and never assigned; `gVarDclTypeCheck` is empty. `namesym`
 sits at the same offset as `VarDclNode.namesym` and `NameUseNode.namesym`, which
-is what makes the casts in the three `*NameRes` functions safe.
+is what makes the casts in the three `*NameRes` functions safe. `annot` is what
+was written after the parameter's name, each `+`-joined name, or NULL.
+
+**Why the annotation is one slot, of no fixed meaning.** `[T ___]` is where a
+parameter will be annotated with more than a constraint: a type, making a value
+parameter, `[N usize]`, and a kind, `[e Expr]`, `[b Block]`, `[M Module]` — Jon's
+direction that generic and macro parameters be typed like any parameter, by
+*"the kind of a parameter"* [Jon 26 Sep]. So
+the parser reads whatever names are there into `annot` without deciding, and
+what each **resolves to** decides what it means: a trait is a constraint, which
+is built; anything else is a value or kind parameter, refused at name
+resolution as not built (`ErrorGenParmConstr`). A macro's parameter and a
+generic module's are refused in the parser, as before, since neither kind of
+declaration takes a constraint yet.
 
 **`MacroDclNode`** carries `namesym`, `parms`, `body`, and a `memonodes` that is
 **dead** — macros are never memoized; every expansion is a fresh clone. Declared
@@ -88,20 +118,33 @@ globals in `clone.c`.
 
 ## Parse
 
-`parseGenericParms` is `[ Ident (, Ident)* ]`. **No bounds, no constraints, no
-defaults, no kinds.** An empty list is `ErrorNoGenParms`.
+`parseGenericParms` is `[ Ident annot? (, Ident annot?)* ]`, where `annot` is a
+type (`parseType`) and more joined by `+`, beginning with a name. **No
+defaults.** An empty list is `ErrorNoGenParms`. `annotate` says whether the
+declaration takes annotations: a generic function or type does, and the name
+after the parameter's goes into `annot` (Shape, above); a parameter ends at its
+`,` or the `]`, so `[T A B]` is the unclosed-list `ErrorBadTok` rather than a
+second parameter.
 
-**The comma is required, and a second name straight after the first is refused**
-with `ErrorGenParmConstr`, reported at that second name. Two names side by side
-is how both a supertype constraint (`[T Comparable]`, which the reference manual
-shows) and a typed macro parameter (`[a i32]`) are spelled, so the parser says
-the constraint or the type is unimplemented rather than reading the two names as
-two parameters — which is what it did, turning a declaration written in the
-documented form into an arity or inference complaint about its *calls*. Recovery
-skips to the next `,` or `]`, stopping at `;`, `{`, `}` or EOF, so a whole
-`+`-combined constraint costs one diagnostic and each parameter carrying one is
-reported. The parameter survives; whatever followed its name is dropped.
+**A macro and a generic module take none.** There the comma is required, and a
+second name straight after the first is refused with `ErrorGenParmConstr`,
+reported at that second name: `[a i32]` would be a typed macro parameter, and
+read as two parameters it would become an arity complaint about the macro's
+uses. Recovery skips to the next `,` or `]`, stopping at `;`, `{`, `}` or EOF, so
+a whole `+`-combined annotation costs one diagnostic and each parameter carrying
+one is reported. The parameter survives; whatever followed its name is dropped.
 Anything else after a parameter name is still the unclosed-list `ErrorBadTok`.
+
+**`parseWhere`** reads the `where` clause, which stands just before the block:
+after a function's signature (and `inline`), and after a type's name, type
+parameters and `is`/`extends` clauses. It is `where Ident is Name (+ Name)* (and
+Ident is Name (+ Name)*)*`, each trait read by `parseTypeName`, appended as pairs
+to the function's `where` or the type's `GenericInfo.where`. Every other shape a
+clause might take is `ErrorWhereForm`, and the rest of the clause is skipped to
+the block: a subject that is not a name followed by `is` (a relation, `T < Y`; a
+constraint on a type expression, `Option[T] is Node`; `not`), `or` between
+clauses, and `is` with no name after it. A type with no type parameters writing
+one is `ErrorWhereNoParms` here; a function's is known only at name resolution.
 
 Attached by `parseFn` only in the named branch — so an anonymous function can
 never be generic — and by `parseStruct` after the type name. Nothing about the
@@ -125,6 +168,20 @@ same functions that handle non-generic ones, with a `genericinfo` prologue. That
 prologue pushes the hook table *first* and resolves the parameters inside it,
 because resolving one hooks it: done beforehand, the parameter would bind in the
 enclosing scope and the matching pop would never remove it.
+
+**The constraints are resolved there too, once the parameters are hooked**, by
+`genericConstraintsNameRes`, from `structNameRes` for a generic type's and from
+`fnDclNameRes` for a function's. It first folds each parameter's annotation into
+the list, as pairs of a fresh use of the parameter and the annotation's name —
+refusing, `ErrorGenParmConstr`, a name that resolves to no trait — and then
+resolves every written clause, keeping one whose subject is a type parameter (the
+function's own, or its generic type's) and whose name is a trait that is not
+generic. A subject that is anything else is `ErrorWhereSubject`, and a name that
+is no trait `ErrorWhereTrait`; a name that bound nothing was reported as unknown
+where it was resolved, and is dropped quietly. What is left is the list, the
+annotations' clauses first. A function that is neither generic nor a member of a
+generic type (the resolving `typenode`, which for a variant is the variant,
+carrying its enum's parameters) has nothing to constrain: `ErrorWhereNoParms`.
 
 Two consequences that define the phase boundary:
 
@@ -330,6 +387,53 @@ only, since the discriminant node and the tag values are shared by every
 instance, and measuring each would report a declared type's overflow once per
 instance.
 
+### Constraints
+
+**Evaluated, never solved** (Principles). Every question a clause asks is
+`genericTypeIs(type, trait)`, which is what `is` answers of a type:
+
+- **The compiler's grants.** Every type is exactly one of `Move` and `Copy`
+  (`itypeIsMove`), and `Integer` is `i8` … `i64`, `u8` … `u64`, `isize` and
+  `usize` — an `IntNbrTag`, or a `UintNbrTag` that is not `Bool`.
+- **A declaration**: the type's `is` list names the trait, or names a trait whose
+  own list does (`genericDeclares`).
+- **Fitting it structurally**, only for a trait that requires something of a
+  value — a method or a field. `structMatches` under `Monomorph` is the test, the
+  one a trait's other uses are made by; `genericDemandMatch` first analyzes each
+  requirement and each candidate the type has for it (`fnCallDemandCandidates`),
+  since signatures compare only once checked. A **marker** — a trait requiring
+  nothing of a value, the compiler's own built-in traits among them — is never
+  fitted: every type would fit it, so fitting it would say nothing.
+
+A clause is evaluated where its subject is one of the parameters being bound, with
+that parameter's argument (`genericUnmetClause`); one whose subject is already an
+argument was bound, and evaluated, earlier.
+
+**On a generic function or type, a constraint is a requirement.**
+`genericMemoize`, on a memo miss and before anything is cloned, asks
+`genericRequirementsMet`: an unmet clause is `ErrorWhereUnmet` at the use asking
+for the instance — the call, the type literal, the type named — naming the
+generic, the clause and the argument, and an error node stands for the instance,
+so nothing inside the generic is checked against arguments it was never meant
+for. A variant answers to its enum's clauses. A type position holding the error
+node settles to `errorType` (`itypeTypeCheck`), so what uses it is quiet. A failed
+instance is never memoized, so each use asking for it is refused where it is.
+
+**On a method of a generic type, a clause over the type's parameters is a
+condition for the method existing.** Before an instance is cloned,
+`genericAbsentMembers` evaluates each member's clauses at the arguments, and
+`cloneStructNode` is handed the members that fail (`CloneState.absent`, taken by
+the one struct cloned next, as `structshell` is) and copies the instance without
+them: they are not in its namespace or its member list, so they are neither
+checked nor generated there, and what the instance fits structurally is what it
+has — `Cell[i32]` is an `Adder`, `Cell[Bool]` is not, to a constraint and to a
+virtual reference alike. Settled before the reservation and the clone, because a
+structural clause may analyze the argument's own methods. A call on the instance
+that finds nothing asks `genericReportAbsent`, from `fnCallLowerMethod`, which
+finds the template through the instance's memo entry and reports
+`ErrorWhereAbsent` naming the unmet clause. A generic method's own clauses over
+its own parameters stay uses in the copy and are requirements at its instance.
+
 **Depth is the only cycle detector.** No mark can catch runaway expansion,
 because every expansion is a fresh node — nothing ever returns to the same node.
 `genericInstantiateEnter` counts and refuses past `TypeCheckLoopMax` (256) with
@@ -442,6 +546,18 @@ are [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Sym
   as a literal of this instance.
 - **`CloneState.structshell` is taken by the next struct cloned**, whichever it
   is. It is set only for a generic type's own clone, whose root is that struct.
+  `CloneState.absent` is set and taken the same way.
+- **A member absent from an instance can still be named by a member present
+  there.** A present method naming an absent one bare is the generic's own
+  mistake. A method is rewritten to `self.name` and found missing on the
+  instance (`genericReportAbsent`); a static function's name use was bound by
+  name resolution to the template's member and, with no copy to map it to, still
+  names it, which `nameUseTemplateMember` reports as `ErrorWhereAbsent` when the
+  use was copied into an instance of that generic.
+- **Only a struct fits a trait structurally.** A number type meets the markers
+  granted to it and no trait with members. And a requirement naming `Self` in a
+  parameter is met by nothing, since the trait's `Self` is the trait and an
+  implementer's is itself (`fnSigVrefEqual` compares them exactly).
 
 ## What lives elsewhere
 

@@ -1,0 +1,86 @@
+// Constraints evaluated at an instance, and what each refuses.
+//
+// On a generic function or type a constraint is a requirement: an instance
+// whose arguments do not meet it is refused at the use asking for it, naming
+// the clause, with nothing reported from inside the generic -- its body is
+// never checked against those arguments. A type in a type position is refused
+// once, and whatever uses it is quiet.
+//
+// On a method of a generic type a 'where' clause is a condition for the method
+// existing: 'Cell[Bool]' is made, and has no 'add'. Calling it says so; an
+// instance without it does not fit a trait requiring it, so a generic
+// requiring that trait refuses it and no virtual reference is made from it.
+//
+// A marker trait, requiring nothing of a value, is met only by declaring it:
+// 'Shaped' is identical to 'Declares' in every field and is not 'Tagged'.
+
+mod generic_typecheck_where;
+
+trait Adder {
+  pub fn add(self &mut, v i32) i32;
+}
+
+trait Tagged {}
+
+struct Declares is Tagged {
+  pub n i32;
+}
+
+struct Shaped {
+  pub n i32;
+}
+
+struct Cell[T] {
+  pub v T;
+  pub fn load(self &) T {v;}
+  pub fn add(self &mut, n T) T where T is Integer {
+    v = v + n;
+    v;
+  }
+}
+
+struct Num[T Integer] {
+  pub v T;
+  pub fn dbl(self &) T {v + v;}
+}
+
+fn bump[T](c &mut T) i32 where T is Adder {
+  c.add(5);
+}
+
+fn tagged[T](x T) T where T is Tagged {x;}
+
+fn twice[T Integer](x T) T {x + x;}
+
+// A method present in every instance naming one that is not: the generic's
+// own mistake, reported inside it, with the instance that lacks the member
+struct Counter[T] {
+  pub v T;
+  pub fn add(self &mut, n T) T where T is Integer {
+    v = v + n;
+    v;
+  }
+  pub fn again(self &mut) T {
+    add(v);                      //~ ErrorWhereAbsent:5 "add exists only where T is Integer"
+  }
+}
+
+fn takesNum(n Num[f32]) {        //~ ErrorWhereUnmet:18 "Num requires T is Integer, and f32 is not Integer"
+}
+
+fn main() {
+  mut ci = Cell[i32][3];
+  mut cb = Cell[Bool][true];
+  cb.add(true);                  //~ ErrorWhereAbsent:5 "No method add for Cell[Bool]: it exists only where T is Integer"
+  bump(&mut ci);
+  bump(&mut cb);                 //~ ErrorWhereUnmet:7 "bump requires T is Adder, and Cell[Bool] is not Adder"
+  imm r &<Adder = &mut cb;       //~ ErrorInvType
+  tagged(Declares[1]);
+  tagged(Shaped[1]);             //~ ErrorWhereUnmet:9 "met only by a type declaring it"
+  imm n = Num[f32][1.5];         //~ ErrorWhereUnmet:14 "Num requires T is Integer"
+  imm m Num[Bool] = Num[Bool][true];  //~ ErrorWhereUnmet:12 "and Bool is not Integer"
+  imm v = m.v;
+  twice(2.5);                    //~ ErrorWhereUnmet:8 "twice requires T is Integer, and f32 is not Integer"
+  twice[Bool](true);             //~ ErrorWhereUnmet:8 "and Bool is not Integer"
+  mut counter = Counter[Bool][true];
+}

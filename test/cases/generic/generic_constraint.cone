@@ -1,0 +1,156 @@
+// Constraints on a generic's type parameters: 'where T is Name', joined with
+// 'and', and the inline '[T Name]', joined with '+', which says the same.
+// Each is checked by evaluating it once the instance's arguments are known.
+//
+// On a generic function or type a constraint is a requirement, met here by
+// every instance made. On a method of a generic type a 'where' clause is a
+// condition for the method existing: 'Cell[Bool]' is a type of its own with
+// 'load' and no 'add', and nothing of 'add' is checked or generated for it --
+// which is what lets 'Box[Box[i32]]' be made although 'Box' has a method using
+// '+'. What an instance conforms to structurally is what exists in it, so
+// 'Cell[i32]' is an 'Adder'.
+//
+// A trait with members is met by a type that fits it structurally, declared or
+// not; a marker, with none, only by the compiler's grant -- 'Integer' to the
+// integer types, 'Move' or 'Copy' to every type -- or a declaration. Each
+// printed value was checked by hand against the source.
+
+mod generic_constraint;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+// A user trait, and one type fitting it without saying so, and one saying so
+trait Sized2 {
+  pub fn size(self &) i64;
+}
+
+struct Rect {
+  pub w i64;
+  pub h i64;
+  pub fn size(self &) i64 {w * h;}
+}
+
+struct Square is Sized2 {
+  pub s i64;
+  pub fn size(self &) i64 {s * s;}
+}
+
+// A marker: requiring nothing of a value, it is met only by declaring it
+trait Tagged {}
+
+struct Labelled is Tagged {
+  pub n i64;
+}
+
+struct Handle is Move {
+  pub n i64;
+}
+
+// The two spellings of one constraint, and of two
+fn twiceInline[T Integer](x T) T {x + x;}
+fn twiceWhere[T](x T) T where T is Integer {x + x;}
+fn keepInline[T Integer + Copy](x T) T {x;}
+fn keepWhere[T](x T) T where T is Integer and T is Copy {x;}
+fn keepPlus[T](x T) T where T is Integer + Copy {x;}
+
+fn sizeOf[T Sized2](x &T) i64 {x.size();}
+fn tagOf[T](x &T) i64 where T is Tagged {x.n;}
+fn moved[T](x T) i64 where T is Move {x.n;}
+
+// An atomic-like cell: 'load' for every T, 'add' only where T is Integer
+trait Adder {
+  pub fn add(self &mut, v i32) i32;
+}
+
+struct Cell[T] {
+  pub v T;
+  pub fn load(self &) T {v;}
+  pub fn add(self &mut, n T) T where T is Integer {
+    v = v + n;
+    v;
+  }
+}
+
+fn bump[T](c &mut T) i32 where T is Adder {
+  c.add(5);
+}
+
+// 'sum' uses '+', which a Box[i32] held in a Box does not have
+struct Box[T] {
+  pub v T;
+  pub fn get(self &) T {v;}
+  pub fn sum(self &, o T) T where T is Integer {v + o;}
+}
+
+// A generic method's own clause is a requirement at its instance; one over
+// the type's parameter a condition on the method
+struct Holder[T] {
+  pub v T;
+  pub fn pick[U](self &, u U) U where U is Integer {u;}
+  pub fn both[U](self &, u U) U where T is Integer and U is Integer {u;}
+}
+
+// A generic enum's requirement, and a condition on a variant's method
+enum Maybe[T] where T is Copy {
+  struct Yes {
+    pub value T;
+    pub fn dbl(self &) T where T is Integer {value + value;}
+  }
+  struct No {}
+}
+
+fn main() {
+  show("twiceInline", twiceInline(4i32));
+  show("twiceWhere", twiceWhere(5i32));
+  show("keepInline", keepInline(6i64));
+  show("keepWhere", keepWhere(7isize));
+  show("keepPlus", keepPlus(8i16));
+
+  // Integer is granted to every integer type, signed and unsigned
+  show("i8", twiceWhere(1i8));
+  show("u8", twiceWhere(2u8) into i64);
+  show("u16", twiceWhere(3u16) into i64);
+  show("u32", twiceWhere(4u32) into i64);
+  if twiceWhere(5usize) == 10 {
+    show("usize", 10);
+  }
+  show("u64", twiceWhere(6u64) as i64);
+
+  imm rect = Rect[2, 3];
+  imm square = Square[4];
+  imm label = Labelled[9];
+  show("fits", sizeOf(&rect));
+  show("declares", sizeOf(&square));
+  show("marker", tagOf(&label));
+  show("move", moved(Handle[10]));
+
+  mut ci = Cell[i32][3];
+  mut cb = Cell[Bool][true];
+  show("add", ci.add(4));
+  show("bump", bump(&mut ci));
+  if cb.load() {
+    show("boolLoad", 1);
+  }
+  imm ar &<Adder = &mut ci;
+  show("virtual", ar.add(1));
+
+  imm bb = Box[Box[i32]][Box[i32][6]];
+  imm inner = bb.get();
+  show("boxSum", inner.sum(7));
+
+  imm h = Holder[f32][1.5];
+  show("pick", h.pick(11i64));
+  imm hi = Holder[i32][1];
+  show("both", hi.both(12i64));
+
+  imm y = Maybe.Yes[13i32];
+  show("dbl", y.dbl());
+  imm yf = Maybe.Yes[1.5];
+}

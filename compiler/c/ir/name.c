@@ -79,6 +79,7 @@ Name *shapeChangingTraitName;
 Name *noLoanMutTraitName;
 Name *noLoanReadTraitName;
 Name *atomicValueTraitName;
+Name *integerTraitName;
 
 // ---- Identifiers -----------------------------------------------------------
 //

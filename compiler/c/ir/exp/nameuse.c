@@ -248,6 +248,10 @@ int nameUseTemplateMember(NameUseNode *name, INode *dcl) {
     INode *owner = inodeGetOwner(dcl);
     if (owner == NULL || owner->tag != StructTag || ((StructNode*)owner)->genericinfo == NULL)
         return 0;
+    // A member the instance was cloned without, its 'where' clause unmet, is
+    // left naming the generic's own by a body that names it bare
+    if (dcl->tag == FnDclTag && genericReportTemplateMember((INode*)name, (FnDclNode*)dcl))
+        return 1;
     Name *ownername = ((StructNode*)owner)->namesym;
     // A function is reached through an instance (fnCallTypeInstancePath); any
     // other member is not yet
