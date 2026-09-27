@@ -5,13 +5,22 @@
 // API under the same ones, as Godot's RenderingDevice puts Vulkan, Direct3D 12
 // and Metal under one interface.
 //
-//   mut win = Window.openVulkan("clear");             // the window package
-//   mut instance = Instance.create("clear");
+//   mut win = Window.openVulkan("triangle");            // the window package
+//   mut instance = Instance.create("triangle");
 //   mut surface = instance.createSurface(win.sdlHandle());
 //   mut adapter = instance.requestAdapter(&surface, POWER_PREFERENCE_HIGH_PERFORMANCE);
 //   mut device = adapter.requestDevice();
 //   imm size = win.size();
-//   mut swapchain = device.createSwapChain(&surface, u32[size.w], u32[size.h]);
+//   mut swapchain = device.createSwapChain(&surface, u32[size.w], u32[size.h], TEXTURE_FORMAT_UNDEFINED);
+//   mut shader = device.createShaderModule(&TRIANGLE_SPIRV);   // SPIR-V, embedded
+//   mut layout = device.createEmptyPipelineLayout(0u32);
+//   imm attributes = [VertexAttribute[VERTEX_FORMAT_FLOAT32X2, 0u64, 0u32],
+//     VertexAttribute[VERTEX_FORMAT_FLOAT32X3, 8u64, 1u32]];
+//   imm buffers = [VertexBufferLayout[arrayStride: 20u64, attributes: &attributes]];
+//   mut pipeline = device.createRenderPipeline(&RenderPipelineDescriptor[layout: &layout,
+//     vertexModule: &shader, buffers: &buffers, fragmentModule: &shader, colorFormat: swapchain.format]);
+//   mut vertices = device.createBuffer(60u64, BUFFER_USAGE_VERTEX | BUFFER_USAGE_COPY_DST);
+//   device.queue.writeBuffer(&vertices, 0u64, &data as *u8, 60u64);
 //   while win.running {
 //     win.pollEvents();
 //     imm frame = swapchain.getCurrentTexture(&mut device);
@@ -20,6 +29,9 @@
 //       imm attachment = RenderPassColorAttachment[view: frame.texture.createView(),
 //         clearValue: Color[0.1, 0.2, 0.4, 1.]];
 //       mut pass = encoder.beginRenderPass(&attachment);
+//       pass.setPipeline(&pipeline);
+//       pass.setVertexBuffer(0u32, &vertices, 0u64);
+//       pass.draw(3u32, 1u32, 0u32, 0u32);
 //       pass.end();
 //       device.queue.submit(encoder.finish());
 //       swapchain.present(&mut device);
@@ -28,8 +40,10 @@
 //
 // The objects are WebGPU's: an Instance finds Adapters (GPUs), an Adapter
 // makes a Device, which has a Queue; a Surface is a window's, and a SwapChain
-// hands out its Textures to draw into, one a frame. Commands are recorded with
-// a CommandEncoder, drawing inside a RenderPass that clears or keeps each
+// hands out its Textures to draw into, one a frame. A Device makes Buffers,
+// Textures, ShaderModules (from SPIR-V), BindGroupLayouts, PipelineLayouts,
+// RenderPipelines and BindGroups. Commands are recorded with a
+// CommandEncoder, drawing inside a RenderPass that clears or keeps each
 // attachment, and finished into a CommandBuffer the Queue submits. Where
 // WebGPU's shape and Vulkan's differ, this follows WebGPU's names and says so:
 //
@@ -37,23 +51,39 @@
 //   (WebGPU's 'device.createSwapChain', before 2023 moved it onto the
 //   surface), so that it is made after the device and ends before it: each
 //   object here is ended by its finalizer, in the reverse of the order it was
-//   declared, which is the order Vulkan's objects must be destroyed in.
+//   declared, which is the order Vulkan's objects must be destroyed in. It
+//   also makes the depth texture drawing with depth needs, at its own size,
+//   made again with it.
 // - 'getCurrentTexture' and 'present' are handed the Device, which owns the
 //   frames in flight their synchronization belongs to.
+// - A render pipeline's descriptor is one flat struct, WebGPU's 'primitive',
+//   'depthStencil' and 'fragment' members' fields in it, since a Cone field
+//   cannot default to a struct literal; it has one color target.
+// - Push constants are WebGPU's "immediates": a pipeline layout's
+//   'immediateSize' bytes (at most MAX_IMMEDIATE_SIZE, 128), seen by the
+//   vertex and the fragment stage, set by 'pass.setImmediates'.
+//
+// Coordinates are WebGPU's, whatever the backend's: clip space has y up and
+// depth from 0 to 1, and a texture's first row is its top. On Vulkan, whose
+// clip space has y down, the viewport is flipped (a negative height, as wgpu
+// and most engines do), so a triangle counterclockwise in clip space is
+// counterclockwise on the screen, and FRONT_FACE_CCW means what it says.
 //
 // Frames in flight. The CPU records frame N+1 while the GPU draws frame N:
 // there are FRAMES_IN_FLIGHT (2) sets of per-frame state, each a fence the
 // frame's last submission signals, the command pools its commands are
-// recorded from, and the semaphore its swapchain image is acquired with. A
-// frame begins (implicitly, with its first 'getCurrentTexture' or
-// 'createCommandEncoder') by waiting for the fence of the frame two back and
-// resetting that frame's pools, so nothing still in use is reused. 'present'
-// ends it: a submission that waits for the image to be acquired, if no
-// submission did yet, signals the image's render-finished semaphore and the
-// frame's fence, and the image is presented once the semaphore is. One
-// render-finished semaphore per swapchain image, not per frame, is what the
-// Vulkan guide recommends, since presentation holds it longer than a frame.
-// A program with no swapchain ends each frame with 'device.endFrame()'.
+// recorded from, the staging memory its uploads are copied from, and the
+// semaphore its swapchain image is acquired with. A frame begins
+// (implicitly, with its first 'getCurrentTexture', 'createCommandEncoder',
+// 'writeBuffer' or 'createTexture') by waiting for the fence of the frame two
+// back and resetting that frame's pools and staging memory, so nothing still
+// in use is reused. 'present' ends it: a submission that waits for the image
+// to be acquired, if no submission did yet, signals the image's
+// render-finished semaphore and the frame's fence, and the image is
+// presented once the semaphore is. One render-finished semaphore per
+// swapchain image, not per frame, is what the Vulkan guide recommends, since
+// presentation holds it longer than a frame. A program with no swapchain
+// ends each frame with 'device.endFrame()'.
 //
 // A swapchain that is out of date or suboptimal (the window was resized) is
 // made again, after the device is idle; so is one after 'resize'. A window
@@ -70,27 +100,51 @@
 // thread. When threads come, 'createCommandEncoder' takes the thread's index
 // and each frame holds an array of pools; the objects' shapes do not change.
 //
-// Synchronization. Barriers are this layer's, not the caller's, as in WebGPU:
-// a swapchain texture is kept in the layout presentation wants between
-// commands, a render pass moves it to the attachment layout and back, and a
-// copy from it to the copy-source layout and back. A swapchain image is moved
-// out of 'undefined' the first time it is acquired. Vulkan 1.3's
-// synchronization2 barriers and dynamic rendering (no render-pass objects)
-// are used throughout.
+// Synchronization. Barriers are this layer's, not the caller's, as in WebGPU.
+// Each texture has a layout it rests in between commands: a swapchain's the
+// one presentation wants, one the device made the attachment layout of its
+// format (it is moved there when it is made). A render pass moves a
+// swapchain texture to the attachment layout and back, and puts a barrier
+// before each attachment for what earlier commands did with it; a copy from
+// a texture moves it to the copy-source layout and back. An attachment
+// cleared at the start of a pass is moved from 'undefined', since what it
+// held is not kept. 'queue.writeBuffer' copies from staging memory, in
+// commands submitted ahead of the next submission, between a barrier after
+// everything earlier (a write after a read) and one before everything later
+// (a read after the write). Vulkan 1.3's synchronization2 barriers and
+// dynamic rendering (no render-pass objects) are used throughout. The
+// barriers are checked by the Khronos validation layer's synchronization
+// validation, which the instance turns on with the layer (below).
+//
+// Memory. Every buffer and texture has a memory allocation of its own (a
+// dedicated allocation): a buffer the CPU maps (MAP_READ or MAP_WRITE) in
+// memory the CPU sees and keeps mapped, anything else in the GPU's own
+// memory, filled by 'queue.writeBuffer' through staging memory. Staging is a
+// block per frame in flight, handed out from its start (a bump allocator)
+// and reset when the frame comes round; a write too big for the block
+// retires it until then and takes a bigger one. Suballocating buffers and
+// textures from larger blocks, as the Vulkan Memory Allocator (VMA) does, is
+// the refinement for when there are hundreds of them: Vulkan guarantees only
+// 4096 allocations.
+//
+// Lifetimes. An object's finalizer destroys it once the device is idle, so
+// one dropped while a frame in flight may still use it is safe; this waits,
+// which dropping objects in a frame loop would feel. Retiring them to the
+// frame in flight, destroyed when it comes round, is the refinement.
 //
 // Errors. Every Vulkan call that answers a VkResult is checked; a failure is
 // written to stderr with the result's name ("gpu: vkQueuePresentKHR failed:
 // ERROR_DEVICE_LOST") and counted, and 'failures()' answers how many. When
 // the Khronos validation layer (VK_LAYER_KHRONOS_validation, from the Vulkan
-// SDK) is installed, the instance enables it; and when the loader offers
-// VK_EXT_debug_utils, its warnings and errors go to stderr and are counted
-// by 'validationMessages()'. Without them, both are off, and say so.
+// SDK) is installed, the instance enables it, with its synchronization
+// validation where the layer takes settings (VK_EXT_layer_settings); and when
+// the loader offers VK_EXT_debug_utils, the layer's warnings and errors go to
+// stderr and are counted by 'validationMessages()'. Without them, they are
+// off, and say so.
 //
-// The pieces the triangle needs next (shader modules, pipelines, bind
-// groups, vertex and index buffers) are bound in the vulkan package but not
-// yet offered here. Buffers are: made, mapped when the CPU reads or writes
-// them, and filled by copying a texture into them, which is how a program
-// checks what was drawn.
+// Shaders are SPIR-V, compiled ahead of time from Slang by
+// tools/shaders/shaders.py and embedded in the Cone source that uses them as
+// arrays of 32-bit words; that tool's header is the guide.
 
 mod gpu;
 
@@ -107,7 +161,12 @@ pub const FRAMES_IN_FLIGHT = 2u32;
 
 const MAX_SWAPCHAIN_IMAGES = 8u32;
 const MAX_FRAME_COMMAND_BUFFERS = 16u32;
+const MAX_RETIRED_STAGING = 8u32;
+const STAGING_BLOCK = 65536u64;           // the least staging block a frame takes
 const NO_TIMEOUT = 0xFFFFFFFFFFFFFFFFu64;
+
+// The rest of a buffer from an offset (WebGPU's size left out)
+pub const WHOLE_SIZE = 0xFFFFFFFFFFFFFFFFu64;
 
 // Texture formats (WebGPU's names)
 pub const TEXTURE_FORMAT_UNDEFINED = 0u32;
@@ -116,6 +175,13 @@ pub const TEXTURE_FORMAT_RGBA8_UNORM_SRGB = 2u32;
 pub const TEXTURE_FORMAT_BGRA8_UNORM = 3u32;
 pub const TEXTURE_FORMAT_BGRA8_UNORM_SRGB = 4u32;
 pub const TEXTURE_FORMAT_DEPTH32_FLOAT = 5u32;
+
+// Texture usages (WebGPU's bits), OR-ed together
+pub const TEXTURE_USAGE_COPY_SRC = 0x1u32;
+pub const TEXTURE_USAGE_COPY_DST = 0x2u32;
+pub const TEXTURE_USAGE_TEXTURE_BINDING = 0x4u32;
+pub const TEXTURE_USAGE_STORAGE_BINDING = 0x8u32;
+pub const TEXTURE_USAGE_RENDER_ATTACHMENT = 0x10u32;
 
 // What a render pass does with an attachment at its start and its end
 pub const LOAD_OP_CLEAR = 1u32;
@@ -134,6 +200,65 @@ pub const BUFFER_USAGE_UNIFORM = 0x40u32;
 pub const BUFFER_USAGE_STORAGE = 0x80u32;
 pub const BUFFER_USAGE_INDIRECT = 0x100u32;
 
+// Shader stages (WebGPU's bits), OR-ed together: which see a binding
+pub const SHADER_STAGE_VERTEX = 0x1u32;
+pub const SHADER_STAGE_FRAGMENT = 0x2u32;
+pub const SHADER_STAGE_COMPUTE = 0x4u32;
+
+// What a bind group layout's buffer binding holds
+pub const BUFFER_BINDING_TYPE_UNIFORM = 1u32;
+pub const BUFFER_BINDING_TYPE_STORAGE = 2u32;
+pub const BUFFER_BINDING_TYPE_READ_ONLY_STORAGE = 3u32;
+
+// A vertex attribute's format (WebGPU's names)
+pub const VERTEX_FORMAT_FLOAT32 = 1u32;
+pub const VERTEX_FORMAT_FLOAT32X2 = 2u32;
+pub const VERTEX_FORMAT_FLOAT32X3 = 3u32;
+pub const VERTEX_FORMAT_FLOAT32X4 = 4u32;
+pub const VERTEX_FORMAT_UNORM8X4 = 5u32;
+
+// Whether a vertex buffer steps once a vertex or once an instance
+pub const VERTEX_STEP_MODE_VERTEX = 1u32;
+pub const VERTEX_STEP_MODE_INSTANCE = 2u32;
+
+pub const INDEX_FORMAT_UINT16 = 1u32;
+pub const INDEX_FORMAT_UINT32 = 2u32;
+
+pub const PRIMITIVE_TOPOLOGY_POINT_LIST = 1u32;
+pub const PRIMITIVE_TOPOLOGY_LINE_LIST = 2u32;
+pub const PRIMITIVE_TOPOLOGY_LINE_STRIP = 3u32;
+pub const PRIMITIVE_TOPOLOGY_TRIANGLE_LIST = 4u32;
+pub const PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP = 5u32;
+
+// Which way round a front face's corners go, seen on the screen (clip
+// space's y up), and which faces are not drawn
+pub const FRONT_FACE_CCW = 1u32;
+pub const FRONT_FACE_CW = 2u32;
+pub const CULL_MODE_NONE = 1u32;
+pub const CULL_MODE_FRONT = 2u32;
+pub const CULL_MODE_BACK = 3u32;
+
+// A depth test's comparison of a fragment's depth with the one held
+pub const COMPARE_FUNCTION_NEVER = 1u32;
+pub const COMPARE_FUNCTION_LESS = 2u32;
+pub const COMPARE_FUNCTION_EQUAL = 3u32;
+pub const COMPARE_FUNCTION_LESS_EQUAL = 4u32;
+pub const COMPARE_FUNCTION_GREATER = 5u32;
+pub const COMPARE_FUNCTION_NOT_EQUAL = 6u32;
+pub const COMPARE_FUNCTION_GREATER_EQUAL = 7u32;
+pub const COMPARE_FUNCTION_ALWAYS = 8u32;
+
+// The most bytes of immediates a pipeline layout may have: what every
+// Vulkan device offers as push constants
+pub const MAX_IMMEDIATE_SIZE = 128u32;
+// The most bind groups a pipeline layout may have (WebGPU's default limit),
+// vertex buffers a pipeline may read, attributes in all, and the highest
+// binding number in a bind group layout, plus one
+pub const MAX_BIND_GROUPS = 4u32;
+pub const MAX_VERTEX_BUFFERS = 8u32;
+pub const MAX_VERTEX_ATTRIBUTES = 16u32;
+pub const MAX_BINDINGS = 16u32;
+
 // Which GPU 'requestAdapter' prefers where there are several (WebGPU's)
 pub const POWER_PREFERENCE_HIGH_PERFORMANCE = 1u32;   // a discrete GPU first
 pub const POWER_PREFERENCE_LOW_POWER = 2u32;          // an integrated GPU first
@@ -150,6 +275,12 @@ pub const SURFACE_TEXTURE_SUCCESS_SUBOPTIMAL = 2u32;  // a texture; the swapchai
 pub const SURFACE_TEXTURE_SKIPPED = 3u32;             // the window has no area: draw nothing this frame
 pub const SURFACE_TEXTURE_OUTDATED = 4u32;            // out of date even when made again
 pub const SURFACE_TEXTURE_ERROR = 5u32;               // failed (on stderr)
+
+// What a texture is, which decides the layout it rests in between commands
+const KIND_NONE = 0u32;
+const KIND_SURFACE = 1u32;         // a swapchain's: presentation's layout
+const KIND_COLOR = 2u32;           // a color attachment: its attachment layout
+const KIND_DEPTH = 3u32;           // a depth attachment: its attachment layout
 
 // ---- Failures ----
 
@@ -200,6 +331,8 @@ fn appendCStr(s &mut String, p *u8) {
 }
 
 fn nullp() *u8 { 0usize as *u8; }
+fn nullCommandBuffer() vulkan.CommandBuffer { 0usize as vulkan.CommandBuffer; }
+fn isNull(cmd vulkan.CommandBuffer) Bool { (cmd as *u8 as usize) == 0usize; }
 
 // A value of T with every byte zero, for a C struct Vulkan fills in
 fn zeroed[T]() T {
@@ -243,16 +376,17 @@ fn hasInstanceLayer(name *u8) Bool {
   found;
 }
 
-// Whether the instance extension 'name' is offered by the loader
-fn hasInstanceExtension(name *u8) Bool {
+// Whether the instance extension 'name' is offered by the loader (with
+// 'layer' null) or by the instance layer 'layer'
+fn hasInstanceExtension(layer *u8, name *u8) Bool {
   mut n = 0u32;
-  if vulkan.enumerateInstanceExtensionProperties(nullp(), &mut n, 0usize as *vulkan.ExtensionProperties) != vulkan.SUCCESS {
+  if vulkan.enumerateInstanceExtensionProperties(layer, &mut n, 0usize as *vulkan.ExtensionProperties) != vulkan.SUCCESS {
     return false;
   }
   if n == 0u32 { return false; }
   imm size = mem.sizeof[vulkan.ExtensionProperties]();
   imm props = libc.calloc(usize[n], size);
-  vulkan.enumerateInstanceExtensionProperties(nullp(), &mut n, props as *vulkan.ExtensionProperties);
+  vulkan.enumerateInstanceExtensionProperties(layer, &mut n, props as *vulkan.ExtensionProperties);
   mut found = false;
   mut i = 0usize;
   while i < usize[n] {
@@ -297,6 +431,7 @@ struct InstanceBackend {
 pub struct Instance {
   pub backend InstanceBackend;
   pub validation Bool;         // the Khronos validation layer is on
+  pub syncValidation Bool;     // and its synchronization validation
   pub debugMessages Bool;      // the loader's and layers' warnings and errors are reported
 
   // Load Vulkan (through SDL: no window is needed yet) and make an instance
@@ -304,7 +439,7 @@ pub struct Instance {
   // and why has gone to stderr.
   pub fn create(appName &[]u8) Instance {
     mut result = Instance[InstanceBackend[0usize as vulkan.Instance, vulkan.DebugUtilsMessengerEXT[0u64], false],
-      false, false];
+      false, false, false];
     if sdl.InitSubSystem(sdl.INIT_VIDEO) != 0i32 {
       fail("SDL's video subsystem did not start");
       return result;
@@ -333,22 +468,40 @@ pub struct Instance {
       fail("SDL could not name the surface extensions");
       return result;
     }
-    result.debugMessages = hasInstanceExtension(&"VK_EXT_debug_utils" as *u8);
+    result.debugMessages = hasInstanceExtension(nullp(), &"VK_EXT_debug_utils" as *u8);
     if result.debugMessages {
       exts[usize[next]] = &"VK_EXT_debug_utils" as *u8;
       next = next + 1u32;
     }
-    result.validation = hasInstanceLayer(&"VK_LAYER_KHRONOS_validation" as *u8);
-    imm layers [1; *u8] = [&"VK_LAYER_KHRONOS_validation" as *u8];
+    imm layerName = &"VK_LAYER_KHRONOS_validation" as *u8;
+    result.validation = hasInstanceLayer(layerName);
+    imm layers [1; *u8] = [layerName];
 
-    // The messenger's create-info, chained, catches instance creation's own messages
-    imm dbg = vulkan.DebugUtilsMessengerCreateInfoEXT[pNext: nullp(),
-      messageSeverity: vulkan.DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | vulkan.DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
-      messageType: vulkan.DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | vulkan.DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
-        | vulkan.DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
-      pfnUserCallback: &onDebugMessage, pUserData: nullp()];
+    // Synchronization validation, set through the layer's settings: it checks
+    // every barrier and semaphore for a hazard between commands
+    result.syncValidation = result.validation and hasInstanceExtension(layerName, &"VK_EXT_layer_settings" as *u8);
+    if result.syncValidation {
+      exts[usize[next]] = &"VK_EXT_layer_settings" as *u8;
+      next = next + 1u32;
+    }
+    imm on [1; u32] = [vulkan.TRUE];
+    imm setting = vulkan.LayerSettingEXT[pLayerName: layerName, pSettingName: &"validate_sync" as *u8,
+      valueCount: 1u32, pValues: &on as *u8];
+    imm settings = vulkan.LayerSettingsCreateInfoEXT[pNext: nullp(), settingCount: 1u32,
+      pSettings: &setting as *vulkan.LayerSettingEXT];
     mut chain = nullp();
-    if result.debugMessages { chain = &dbg as *u8; }
+    if result.syncValidation { chain = &settings as *u8; }
+
+    // The messenger's create-info, chained, catches instance creation's own
+    // messages; the messenger itself is made from one with nothing chained
+    imm severities = vulkan.DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | vulkan.DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    imm types = vulkan.DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | vulkan.DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
+      | vulkan.DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    imm dbg = vulkan.DebugUtilsMessengerCreateInfoEXT[pNext: nullp(), messageSeverity: severities,
+      messageType: types, pfnUserCallback: &onDebugMessage, pUserData: nullp()];
+    imm dbgChained = vulkan.DebugUtilsMessengerCreateInfoEXT[pNext: chain, messageSeverity: severities,
+      messageType: types, pfnUserCallback: &onDebugMessage, pUserData: nullp()];
+    if result.debugMessages { chain = &dbgChained as *u8; }
     mut name = String.from(appName);
     imm app = vulkan.ApplicationInfo[pNext: nullp(), pApplicationName: name.cstr(), pEngineName: &"Cone gpu" as *u8];
     mut layerCount = 0u32;
@@ -469,7 +622,10 @@ fn adapterScore(physical vulkan.PhysicalDevice, surface vulkan.SurfaceKHR, power
   vulkan.getPhysicalDeviceFeatures2(physical, &mut f2);
   if f13.dynamicRendering != vulkan.TRUE or f13.synchronization2 != vulkan.TRUE { return 0; }
 
-  mut n = 16u32;
+  // How many families, asked first, then at most 16 of them
+  mut n = 0u32;
+  vulkan.getPhysicalDeviceQueueFamilyProperties(physical, &mut n, 0usize as *vulkan.QueueFamilyProperties);
+  if n > 16u32 { n = 16u32; }
   mut families [16; vulkan.QueueFamilyProperties] = [16; zeroed[vulkan.QueueFamilyProperties]()];
   vulkan.getPhysicalDeviceQueueFamilyProperties(physical, &mut n, &mut families as *vulkan.QueueFamilyProperties);
   mut i = 0u32;
@@ -533,10 +689,8 @@ pub struct Adapter {
   // A device on this GPU, with one queue that draws and presents. Check
   // 'isValid'.
   pub fn requestDevice(self &) Device {
-    mut result = Device[DeviceBackend[0usize as vulkan.Device, backend.physical, backend.queueFamily,
-      [2; FrameState[vulkan.Fence[0u64], vulkan.CommandPool[0u64], [16; 0usize as vulkan.CommandBuffer], 0u32, 0u32, false]],
-      0u32, false, zeroed[vulkan.PhysicalDeviceMemoryProperties]()],
-      Queue[QueueBackend[0usize as vulkan.Queue, vulkan.Semaphore[0u64], false]], 0u64];
+    mut result = Device[DeviceBackend[0usize as vulkan.Device, backend.physical, backend.queueFamily],
+      Queue[zeroed[QueueBackend]()], 0u64];
     if !self.isValid() { return result; }
 
     imm priorities [1; f32] = [1.];
@@ -559,7 +713,8 @@ pub struct Adapter {
     mut queue = 0usize as vulkan.Queue;
     vulkan.getDeviceQueue(device, backend.queueFamily, 0u32, &mut queue);
     result.queue.backend.handle = queue;
-    vulkan.getPhysicalDeviceMemoryProperties(backend.physical, &mut result.backend.memory);
+    result.queue.backend.device = device;
+    vulkan.getPhysicalDeviceMemoryProperties(backend.physical, &mut result.queue.backend.memory);
 
     // Each frame in flight: its fence, and thread 0's command pool
     imm fci = vulkan.FenceCreateInfo[pNext: nullp()];
@@ -569,10 +724,10 @@ pub struct Adapter {
     while i < 2usize {
       mut fence = vulkan.Fence[0u64];
       check(vulkan.createFence(device, &fci, nullp(), &mut fence), "vkCreateFence");
-      result.backend.frames[i].fence = fence;
+      result.queue.backend.frames[i].fence = fence;
       mut pool = vulkan.CommandPool[0u64];
       check(vulkan.createCommandPool(device, &pci, nullp(), &mut pool), "vkCreateCommandPool");
-      result.backend.frames[i].pool = pool;
+      result.queue.backend.frames[i].pool = pool;
       i = i + 1usize;
     }
     result;
@@ -581,62 +736,234 @@ pub struct Adapter {
 
 // ---- Device and Queue ----
 
+// A block of staging memory, mapped
+struct StagingBlock {
+  pub buffer vulkan.Buffer;
+  pub memory vulkan.DeviceMemory;
+  pub mapped *u8;
+  pub size u64;
+}
+
 // One frame in flight's state
 struct FrameState {
   pub fence vulkan.Fence;          // signalled by the frame's last submission
+  pub pending Bool;                // its fence will be signalled
   pub pool vulkan.CommandPool;     // recording thread 0's pool (one per thread, when there are threads)
   pub buffers [16; vulkan.CommandBuffer];   // allocated from the pool, reused each time the frame comes round
   pub allocated u32;
   pub used u32;
-  pub pending Bool;                // its fence will be signalled
+  pub upload vulkan.CommandBuffer; // recording uploads and textures' first layouts, until the next submission
+  pub staging StagingBlock;        // where uploads are copied from, from its start
+  pub stagingUsed u64;
+  pub retired [8; StagingBlock];   // blocks outgrown this frame, freed when it comes round
+  pub retiredCount u32;
 }
 
 struct DeviceBackend {
   pub device vulkan.Device;
   pub physical vulkan.PhysicalDevice;
   pub queueFamily u32;
+}
+
+struct QueueBackend {
+  pub handle vulkan.Queue;
+  pub device vulkan.Device;
+  pub acquired vulkan.Semaphore;   // the current swapchain image's acquire semaphore,
+  pub waiting Bool;                // until a submission waits for it
   pub frames [2; FrameState];
   pub frameIndex u32;              // which of 'frames' is being recorded
   pub inFrame Bool;
   pub memory vulkan.PhysicalDeviceMemoryProperties;
 }
 
-struct QueueBackend {
-  pub handle vulkan.Queue;
-  pub acquired vulkan.Semaphore;   // the current swapchain image's acquire semaphore,
-  pub waiting Bool;                // until a submission waits for it
-}
-
-// The device's queue: what it submits runs in the order submitted
+// The device's queue: what it submits runs in the order submitted. It keeps
+// the frames in flight.
 pub struct Queue {
   pub backend QueueBackend;
 
-  // Submit the commands 'cmd' holds. The first submission after a swapchain
-  // texture is acquired waits for it to be ready to draw into.
+  // Submit the commands 'cmd' holds, after the uploads 'writeBuffer' asked
+  // for. The first submission after a swapchain texture is acquired waits
+  // for it to be ready to draw into.
   pub fn submit(self &mut, cmd CommandBuffer) Bool {
-    if (cmd.backend.cmd as *u8 as usize) == 0usize { return false; }
-    imm cbi = vulkan.CommandBufferSubmitInfo[pNext: nullp(), commandBuffer: cmd.backend.cmd];
-    submitWaiting(self, 1u32, &cbi as *vulkan.CommandBufferSubmitInfo);
+    if isNull(cmd.backend.cmd) { return false; }
+    submitCommands(self, cmd.backend.cmd, vulkan.Fence[0u64], 0u32, 0usize as *vulkan.SemaphoreSubmitInfo);
+  }
+
+  // Write 'size' bytes from 'data' into 'buffer' at 'offset', which must be
+  // a buffer with BUFFER_USAGE_COPY_DST. The bytes are copied now (into
+  // staging memory), and into the buffer by the GPU ahead of whatever is
+  // submitted next, after everything submitted before: WebGPU's
+  // 'queue.writeBuffer'.
+  pub fn writeBuffer(self &mut, buffer &Buffer, offset u64, data *u8, size u64) {
+    if size == 0u64 { return; }
+    if (buffer.usage & BUFFER_USAGE_COPY_DST) == 0u32 {
+      fail("writeBuffer: the buffer was not made with BUFFER_USAGE_COPY_DST");
+      return;
+    }
+    if offset + size > buffer.size {
+      fail("writeBuffer: the bytes run past the buffer's end");
+      return;
+    }
+    imm cmd = uploadCommands(self);
+    if isNull(cmd) or !stagingRoom(self, size) { return; }
+    imm i = usize[backend.frameIndex];
+    imm at = backend.frames[i].stagingUsed;
+    libc.memcpy(backend.frames[i].staging.mapped + usize[at], data, usize[size]);
+    backend.frames[i].stagingUsed = at + size;
+    imm region = vulkan.BufferCopy[at, offset, size];
+    vulkan.cmdCopyBuffer(cmd, backend.frames[i].staging.buffer, buffer.backend.buffer, 1u32,
+      &region as *vulkan.BufferCopy);
   }
 }
 
-// Submit 'count' command buffers, waiting for the acquired swapchain image
-// if no submission has yet
-fn submitWaiting(queue &mut Queue, count u32, cbis *vulkan.CommandBufferSubmitInfo) Bool {
+// Begin a frame, if one is not begun: wait until the GPU has finished the
+// frame that last used this frame's state, and reset its command pools and
+// staging memory
+fn beginQueueFrame(queue &mut Queue) {
+  if queue.backend.inFrame or (queue.backend.device as *u8 as usize) == 0usize { return; }
+  imm device = queue.backend.device;
+  imm i = usize[queue.backend.frameIndex];
+  if queue.backend.frames[i].pending {
+    mut fence = queue.backend.frames[i].fence;
+    check(vulkan.waitForFences(device, 1u32, &mut fence as *vulkan.Fence, vulkan.TRUE, NO_TIMEOUT),
+      "vkWaitForFences");
+    check(vulkan.resetFences(device, 1u32, &mut fence as *vulkan.Fence), "vkResetFences");
+    queue.backend.frames[i].pending = false;
+  }
+  check(vulkan.resetCommandPool(device, queue.backend.frames[i].pool, 0u32), "vkResetCommandPool");
+  queue.backend.frames[i].used = 0u32;
+  queue.backend.frames[i].upload = nullCommandBuffer();
+  mut r = 0usize;
+  while r < usize[queue.backend.frames[i].retiredCount] {
+    vulkan.destroyBuffer(device, queue.backend.frames[i].retired[r].buffer, nullp());
+    vulkan.freeMemory(device, queue.backend.frames[i].retired[r].memory, nullp());
+    r = r + 1usize;
+  }
+  queue.backend.frames[i].retiredCount = 0u32;
+  queue.backend.frames[i].stagingUsed = 0u64;
+  queue.backend.inFrame = true;
+}
+
+// The next unused command buffer of the current frame's pool, begun
+fn nextCommandBuffer(queue &mut Queue) vulkan.CommandBuffer {
+  imm i = usize[queue.backend.frameIndex];
+  if queue.backend.frames[i].used == MAX_FRAME_COMMAND_BUFFERS {
+    fail("a frame recorded more than 16 command buffers");
+    return nullCommandBuffer();
+  }
+  if queue.backend.frames[i].used == queue.backend.frames[i].allocated {
+    imm ai = vulkan.CommandBufferAllocateInfo[pNext: nullp(), commandPool: queue.backend.frames[i].pool,
+      commandBufferCount: 1u32];
+    mut cmd = nullCommandBuffer();
+    if !check(vulkan.allocateCommandBuffers(queue.backend.device, &ai, &mut cmd as *vulkan.CommandBuffer),
+        "vkAllocateCommandBuffers") {
+      return nullCommandBuffer();
+    }
+    queue.backend.frames[i].buffers[usize[queue.backend.frames[i].allocated]] = cmd;
+    queue.backend.frames[i].allocated = queue.backend.frames[i].allocated + 1u32;
+  }
+  imm cmd = queue.backend.frames[i].buffers[usize[queue.backend.frames[i].used]];
+  queue.backend.frames[i].used = queue.backend.frames[i].used + 1u32;
+  imm bi = vulkan.CommandBufferBeginInfo[pNext: nullp(), flags: vulkan.COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    pInheritanceInfo: nullp()];
+  check(vulkan.beginCommandBuffer(cmd, &bi), "vkBeginCommandBuffer");
+  cmd;
+}
+
+// A global memory barrier between everything before it and everything after
+fn memoryBarrier(cmd vulkan.CommandBuffer, srcStage u64, srcAccess u64, dstStage u64, dstAccess u64) {
+  imm mb = vulkan.MemoryBarrier2[pNext: nullp(), srcStageMask: srcStage, srcAccessMask: srcAccess,
+    dstStageMask: dstStage, dstAccessMask: dstAccess];
+  imm dep = vulkan.DependencyInfo[pNext: nullp(), memoryBarrierCount: 1u32, pMemoryBarriers: &mb as *vulkan.MemoryBarrier2,
+    pBufferMemoryBarriers: 0usize as *vulkan.BufferMemoryBarrier2,
+    pImageMemoryBarriers: 0usize as *vulkan.ImageMemoryBarrier2];
+  vulkan.cmdPipelineBarrier2(cmd, &dep);
+}
+
+// The frame's upload commands, begun if they are not: copies into buffers
+// from staging, and textures moved to their first layouts, submitted ahead
+// of the next submission. They start with a barrier after everything
+// submitted before them (their copies write what earlier commands may still
+// read or write).
+fn uploadCommands(queue &mut Queue) vulkan.CommandBuffer {
+  beginQueueFrame(queue);
+  imm i = usize[queue.backend.frameIndex];
+  if !isNull(queue.backend.frames[i].upload) { return queue.backend.frames[i].upload; }
+  imm cmd = nextCommandBuffer(queue);
+  if isNull(cmd) { return cmd; }
+  memoryBarrier(cmd, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_MEMORY_WRITE_BIT,
+    vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT);
+  queue.backend.frames[i].upload = cmd;
+  cmd;
+}
+
+// Room for 'size' bytes in the frame's staging block, from 'stagingUsed'
+// (made a multiple of 16): a bigger block if they do not fit, the old one
+// retired until the frame comes round again
+fn stagingRoom(queue &mut Queue, size u64) Bool {
+  imm i = usize[queue.backend.frameIndex];
+  imm at = (queue.backend.frames[i].stagingUsed + 15u64) & 0xFFFFFFFFFFFFFFF0u64;
+  if queue.backend.frames[i].staging.buffer.h != 0u64 and at + size <= queue.backend.frames[i].staging.size {
+    queue.backend.frames[i].stagingUsed = at;
+    return true;
+  }
+  if queue.backend.frames[i].staging.buffer.h != 0u64 {
+    if queue.backend.frames[i].retiredCount == MAX_RETIRED_STAGING {
+      fail("writeBuffer: a frame outgrew its staging memory 8 times");
+      return false;
+    }
+    queue.backend.frames[i].retired[usize[queue.backend.frames[i].retiredCount]] = queue.backend.frames[i].staging;
+    queue.backend.frames[i].retiredCount = queue.backend.frames[i].retiredCount + 1u32;
+  }
+  mut blockSize = STAGING_BLOCK;
+  if queue.backend.frames[i].staging.size * 2u64 > blockSize { blockSize = queue.backend.frames[i].staging.size * 2u64; }
+  while blockSize < size { blockSize = blockSize * 2u64; }
+  imm made = allocateBuffer(queue.backend.device, &queue.backend.memory, blockSize,
+    vulkan.BUFFER_USAGE_TRANSFER_SRC_BIT, true);
+  queue.backend.frames[i].staging = StagingBlock[made.buffer, made.memory, made.mapped, blockSize];
+  queue.backend.frames[i].stagingUsed = 0u64;
+  made.memory.h != 0u64 and (made.mapped as usize) != 0usize;
+}
+
+// Submit 'cmd' (if not null), after the frame's uploads (if any), waiting
+// for the acquired swapchain image if no submission has yet, signalling
+// 'fence' and 'signalCount' semaphores
+fn submitCommands(queue &mut Queue, cmd vulkan.CommandBuffer, fence vulkan.Fence, signalCount u32,
+    signals *vulkan.SemaphoreSubmitInfo) Bool {
+  mut cbis [2; vulkan.CommandBufferSubmitInfo] = [2; vulkan.CommandBufferSubmitInfo[pNext: nullp(),
+    commandBuffer: nullCommandBuffer()]];
+  mut count = 0usize;
+  if queue.backend.inFrame {
+    imm i = usize[queue.backend.frameIndex];
+    imm upload = queue.backend.frames[i].upload;
+    if !isNull(upload) {
+      // What was copied, visible to everything after
+      memoryBarrier(upload, vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT,
+        vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_MEMORY_READ_BIT | vulkan.ACCESS_2_MEMORY_WRITE_BIT);
+      check(vulkan.endCommandBuffer(upload), "vkEndCommandBuffer");
+      cbis[count].commandBuffer = upload;
+      count = count + 1usize;
+      queue.backend.frames[i].upload = nullCommandBuffer();
+    }
+  }
+  if !isNull(cmd) {
+    cbis[count].commandBuffer = cmd;
+    count = count + 1usize;
+  }
   imm waitInfo = vulkan.SemaphoreSubmitInfo[pNext: nullp(), semaphore: queue.backend.acquired,
     stageMask: vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT];
   mut waits = 0u32;
   if queue.backend.waiting { waits = 1u32; }
   imm submit = vulkan.SubmitInfo2[pNext: nullp(), waitSemaphoreInfoCount: waits,
-    pWaitSemaphoreInfos: &waitInfo as *vulkan.SemaphoreSubmitInfo, commandBufferInfoCount: count,
-    pCommandBufferInfos: cbis, pSignalSemaphoreInfos: 0usize as *vulkan.SemaphoreSubmitInfo];
+    pWaitSemaphoreInfos: &waitInfo as *vulkan.SemaphoreSubmitInfo, commandBufferInfoCount: u32[count],
+    pCommandBufferInfos: &cbis as *vulkan.CommandBufferSubmitInfo, signalSemaphoreInfoCount: signalCount,
+    pSignalSemaphoreInfos: signals];
   queue.backend.waiting = false;
-  check(vulkan.queueSubmit2(queue.backend.handle, 1u32, &submit as *vulkan.SubmitInfo2, vulkan.Fence[0u64]),
-    "vkQueueSubmit2");
+  check(vulkan.queueSubmit2(queue.backend.handle, 1u32, &submit as *vulkan.SubmitInfo2, fence), "vkQueueSubmit2");
 }
 
-// A logical GPU: what makes buffers, command encoders and swapchains, and
-// keeps the frames in flight
+// A logical GPU: what makes buffers, textures, shaders, pipelines, command
+// encoders and swapchains
 pub struct Device {
   pub backend DeviceBackend;
   pub queue Queue;
@@ -646,26 +973,14 @@ pub struct Device {
 
   // Begin a frame, if one is not begun: wait until the GPU has finished the
   // frame that last used this frame's state, and reset its command pools.
-  // 'getCurrentTexture' and 'createCommandEncoder' begin one themselves.
-  pub fn beginFrame(self &mut) {
-    if backend.inFrame or !self.isValid() { return; }
-    imm i = usize[backend.frameIndex];
-    if backend.frames[i].pending {
-      mut fence = backend.frames[i].fence;
-      check(vulkan.waitForFences(backend.device, 1u32, &mut fence as *vulkan.Fence, vulkan.TRUE, NO_TIMEOUT),
-        "vkWaitForFences");
-      check(vulkan.resetFences(backend.device, 1u32, &mut fence as *vulkan.Fence), "vkResetFences");
-      backend.frames[i].pending = false;
-    }
-    check(vulkan.resetCommandPool(backend.device, backend.frames[i].pool, 0u32), "vkResetCommandPool");
-    backend.frames[i].used = 0u32;
-    backend.inFrame = true;
-  }
+  // 'getCurrentTexture', 'createCommandEncoder', 'writeBuffer' and
+  // 'createTexture' begin one themselves.
+  pub fn beginFrame(self &mut) { beginQueueFrame(&mut queue); }
 
   // End a frame that presents nothing (a swapchain's 'present' ends its own):
   // its fence is signalled once all it submitted is done
   pub fn endFrame(self &mut) {
-    if !backend.inFrame { return; }
+    if !queue.backend.inFrame { return; }
     endFrameSignalling(self, 0u32, 0usize as *vulkan.SemaphoreSubmitInfo);
   }
 
@@ -676,21 +991,25 @@ pub struct Device {
 
   // A command encoder, recording into a command buffer of this frame's
   pub fn createCommandEncoder(self &mut) CommandEncoder {
-    self.beginFrame();
-    imm cmd = nextCommandBuffer(self);
+    beginQueueFrame(&mut queue);
+    imm cmd = nextCommandBuffer(&mut queue);
     CommandEncoder[EncoderBackend[cmd]];
   }
 
   // A swapchain presenting to 'surface', its textures 'width' by 'height'
   // (the window's drawable size, window's 'size'), in an sRGB format where
   // the surface offers one, presented in step with the display's refresh
-  // (WebGPU's "fifo"). Check 'isValid'.
-  pub fn createSwapChain(self &mut, surface &Surface, width u32, height u32) SwapChain {
+  // (WebGPU's "fifo"). With 'depthFormat' TEXTURE_FORMAT_DEPTH32_FLOAT, it
+  // also keeps a depth texture of its size, made again with it
+  // (TEXTURE_FORMAT_UNDEFINED: none). Check 'isValid'.
+  pub fn createSwapChain(self &mut, surface &Surface, width u32, height u32, depthFormat u32) SwapChain {
     mut sc = SwapChain[SwapChainBackend[backend.device, backend.physical, surface.backend.surface,
       vulkan.SwapchainKHR[0u64], vulkan.FORMAT_UNDEFINED, 0u32, 0u32, false,
       [8; vulkan.Image[0u64]], [8; vulkan.ImageView[0u64]], [8; vulkan.Semaphore[0u64]], [8; false],
-      [2; vulkan.Semaphore[0u64]], 0u32, 0u32, false, true, width, height],
-      0u32, 0u32, TEXTURE_FORMAT_UNDEFINED, 0u64];
+      [2; vulkan.Semaphore[0u64]], 0u32, 0u32, false, true, width, height,
+      vkFormat(depthFormat), vulkan.Image[0u64], vulkan.DeviceMemory[0u64], vulkan.ImageView[0u64], false,
+      queue.backend.memory],
+      0u32, 0u32, TEXTURE_FORMAT_UNDEFINED, depthFormat, 0u64];
     if !self.isValid() or !surface.isValid() { return sc; }
     imm sci = vulkan.SemaphoreCreateInfo[pNext: nullp()];
     mut i = 0usize;
@@ -706,12 +1025,9 @@ pub struct Device {
 
   // A buffer of 'size' bytes, for 'usage' (BUFFER_USAGE_... OR-ed). One the
   // CPU maps (MAP_READ or MAP_WRITE) is in memory the CPU sees, and mapped
-  // for as long as it lives; any other is in the GPU's own memory. Check
-  // 'isValid'.
+  // for as long as it lives; any other is in the GPU's own memory, written
+  // by 'queue.writeBuffer' (with COPY_DST). Check 'isValid'.
   pub fn createBuffer(self &mut, size u64, usage u32) Buffer {
-    mut result = Buffer[BufferBackend[backend.device, vulkan.Buffer[0u64], vulkan.DeviceMemory[0u64], nullp()],
-      size, usage];
-    if !self.isValid() { return result; }
     mut vkUsage = 0u32;
     if (usage & BUFFER_USAGE_COPY_SRC) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_TRANSFER_SRC_BIT; }
     if (usage & BUFFER_USAGE_COPY_DST) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_TRANSFER_DST_BIT; }
@@ -720,32 +1036,307 @@ pub struct Device {
     if (usage & BUFFER_USAGE_UNIFORM) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_UNIFORM_BUFFER_BIT; }
     if (usage & BUFFER_USAGE_STORAGE) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_STORAGE_BUFFER_BIT; }
     if (usage & BUFFER_USAGE_INDIRECT) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_INDIRECT_BUFFER_BIT; }
-    imm bci = vulkan.BufferCreateInfo[pNext: nullp(), size: size, usage: vkUsage, pQueueFamilyIndices: 0usize as *u32];
-    mut buffer = vulkan.Buffer[0u64];
-    if !check(vulkan.createBuffer(backend.device, &bci, nullp(), &mut buffer), "vkCreateBuffer") { return result; }
-    result.backend.buffer = buffer;
-
-    mut req = zeroed[vulkan.MemoryRequirements]();
-    vulkan.getBufferMemoryRequirements(backend.device, buffer, &mut req);
     imm mapped = (usage & (BUFFER_USAGE_MAP_READ | BUFFER_USAGE_MAP_WRITE)) != 0u32;
-    mut want = vulkan.MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-    if mapped { want = vulkan.MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan.MEMORY_PROPERTY_HOST_COHERENT_BIT; }
-    imm typeIndex = memoryType(&backend.memory, req.memoryTypeBits, want);
-    if typeIndex == 0xFFFFFFFFu32 {
-      fail("no memory type suits the buffer");
+    mut b = BufferBackend[backend.device, vulkan.Buffer[0u64], vulkan.DeviceMemory[0u64], nullp()];
+    if self.isValid() { b = allocateBuffer(backend.device, &queue.backend.memory, size, vkUsage, mapped); }
+    Buffer[b, size, usage];
+  }
+
+  // A texture 'desc' describes, in the GPU's own memory. For now, one to
+  // draw into: its usage has TEXTURE_USAGE_RENDER_ATTACHMENT (and
+  // TEXTURE_USAGE_COPY_SRC to read it back), its format a color format or
+  // TEXTURE_FORMAT_DEPTH32_FLOAT. It is moved to the layout it rests in
+  // ahead of the next submission. Check 'isValid'.
+  pub fn createTexture(self &mut, desc &TextureDescriptor) Texture {
+    mut result = Texture[TextureBackend[vulkan.Image[0u64], vulkan.ImageView[0u64], KIND_NONE, true,
+      backend.device, vulkan.DeviceMemory[0u64]], desc.width, desc.height, desc.format, desc.usage];
+    if !self.isValid() { return result; }
+    if (desc.usage & TEXTURE_USAGE_RENDER_ATTACHMENT) == 0u32 {
+      fail("createTexture: only textures drawn into (TEXTURE_USAGE_RENDER_ATTACHMENT) are offered yet");
       return result;
     }
-    imm mai = vulkan.MemoryAllocateInfo[pNext: nullp(), allocationSize: req.size, memoryTypeIndex: typeIndex];
-    mut memory = vulkan.DeviceMemory[0u64];
-    if !check(vulkan.allocateMemory(backend.device, &mai, nullp(), &mut memory), "vkAllocateMemory") { return result; }
-    result.backend.memory = memory;
-    check(vulkan.bindBufferMemory(backend.device, buffer, memory, 0u64), "vkBindBufferMemory");
-    if mapped {
-      mut p = nullp();
-      if check(vulkan.mapMemory(backend.device, memory, 0u64, vulkan.WHOLE_SIZE, 0u32, &mut p), "vkMapMemory") {
-        result.backend.mapped = p;
-      }
+    imm format = vkFormat(desc.format);
+    if format == vulkan.FORMAT_UNDEFINED {
+      fail("createTexture: the format is not one offered");
+      return result;
     }
+    imm depth = desc.format == TEXTURE_FORMAT_DEPTH32_FLOAT;
+    mut kind = KIND_COLOR;
+    mut vkUsage = vulkan.IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if depth {
+      kind = KIND_DEPTH;
+      vkUsage = vulkan.IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    }
+    if (desc.usage & TEXTURE_USAGE_COPY_SRC) != 0u32 { vkUsage = vkUsage | vulkan.IMAGE_USAGE_TRANSFER_SRC_BIT; }
+    if (desc.usage & TEXTURE_USAGE_COPY_DST) != 0u32 { vkUsage = vkUsage | vulkan.IMAGE_USAGE_TRANSFER_DST_BIT; }
+    if (desc.usage & TEXTURE_USAGE_TEXTURE_BINDING) != 0u32 { vkUsage = vkUsage | vulkan.IMAGE_USAGE_SAMPLED_BIT; }
+    mut image = vulkan.Image[0u64];
+    mut memory = vulkan.DeviceMemory[0u64];
+    mut view = vulkan.ImageView[0u64];
+    if !makeImage(backend.device, &queue.backend.memory, desc.width, desc.height, format, vkUsage,
+        &mut image, &mut memory, &mut view) {
+      return result;
+    }
+    result.backend.image = image;
+    result.backend.memory = memory;
+    result.backend.view = view;
+    result.backend.kind = kind;
+    imm cmd = uploadCommands(&mut queue);
+    if !isNull(cmd) { firstLayout(cmd, image, kind); }
+    result;
+  }
+
+  // A shader module from SPIR-V: 32-bit words, as tools/shaders/shaders.py
+  // embeds them. Check 'isValid'.
+  pub fn createShaderModule(self &, spirv &[]u32) ShaderModule {
+    mut module = vulkan.ShaderModule[0u64];
+    if self.isValid() and spirv.len > 0usize {
+      imm ci = vulkan.ShaderModuleCreateInfo[pNext: nullp(), codeSize: spirv.len * 4usize, pCode: &spirv[0] as *u32];
+      check(vulkan.createShaderModule(backend.device, &ci, nullp(), &mut module), "vkCreateShaderModule");
+    }
+    ShaderModule[ShaderModuleBackend[backend.device, module]];
+  }
+
+  // A bind group layout: the bindings a bind group of it has, each a
+  // uniform or storage buffer seen by the stages its 'visibility' names.
+  // Bindings are numbered below MAX_BINDINGS. Check 'isValid'.
+  pub fn createBindGroupLayout(self &, entries &[]BindGroupLayoutEntry) BindGroupLayout {
+    mut result = BindGroupLayout[BindGroupLayoutBackend[backend.device, vulkan.DescriptorSetLayout[0u64],
+      [16; 0u32]]];
+    if !self.isValid() { return result; }
+    if entries.len > usize[MAX_BINDINGS] {
+      fail("createBindGroupLayout: more than 16 entries");
+      return result;
+    }
+    mut bindings [16; vulkan.DescriptorSetLayoutBinding] = [16; vulkan.DescriptorSetLayoutBinding[
+      pImmutableSamplers: 0usize as *vulkan.Sampler]];
+    mut i = 0usize;
+    while i < entries.len {
+      imm e = entries[i];
+      if e.binding >= MAX_BINDINGS {
+        fail("createBindGroupLayout: a binding numbered 16 or more");
+        return result;
+      }
+      imm type = descriptorType(e.bufferType);
+      bindings[i].binding = e.binding;
+      bindings[i].descriptorType = type;
+      bindings[i].stageFlags = shaderStages(e.visibility);
+      result.backend.types[usize[e.binding]] = type;
+      i = i + 1usize;
+    }
+    imm ci = vulkan.DescriptorSetLayoutCreateInfo[pNext: nullp(), bindingCount: u32[entries.len],
+      pBindings: &bindings as *vulkan.DescriptorSetLayoutBinding];
+    mut layout = vulkan.DescriptorSetLayout[0u64];
+    check(vulkan.createDescriptorSetLayout(backend.device, &ci, nullp(), &mut layout), "vkCreateDescriptorSetLayout");
+    result.backend.layout = layout;
+    result;
+  }
+
+  // A pipeline layout: the bind groups a pipeline of it binds, in order
+  // (group 0 first, at most MAX_BIND_GROUPS), and 'immediateSize' bytes of
+  // immediates (a multiple of 4, at most MAX_IMMEDIATE_SIZE; 0 for none).
+  // Check 'isValid'.
+  pub fn createPipelineLayout(self &, bindGroupLayouts &[]&BindGroupLayout, immediateSize u32) PipelineLayout {
+    if bindGroupLayouts.len > usize[MAX_BIND_GROUPS] {
+      fail("createPipelineLayout: more than 4 bind groups");
+      return PipelineLayout[PipelineLayoutBackend[backend.device, vulkan.PipelineLayout[0u64]], 0u32];
+    }
+    mut sets [4; vulkan.DescriptorSetLayout] = [4; vulkan.DescriptorSetLayout[0u64]];
+    mut i = 0usize;
+    while i < bindGroupLayouts.len {
+      sets[i] = bindGroupLayouts[i].backend.layout;
+      i = i + 1usize;
+    }
+    makePipelineLayout(backend.device, u32[bindGroupLayouts.len], &sets, immediateSize);
+  }
+
+  // A pipeline layout with no bind groups, only 'immediateSize' bytes of
+  // immediates (0 for none)
+  pub fn createEmptyPipelineLayout(self &, immediateSize u32) PipelineLayout {
+    imm sets [4; vulkan.DescriptorSetLayout] = [4; vulkan.DescriptorSetLayout[0u64]];
+    makePipelineLayout(backend.device, 0u32, &sets, immediateSize);
+  }
+
+  // A render pipeline, as 'desc' describes it: what its shaders are, how
+  // vertices are read from vertex buffers, how triangles are rasterized, and
+  // the formats of the color target and (if any) the depth texture it draws
+  // into. The viewport and the scissor rectangle are set as it draws (a
+  // render pass sets them to the whole target when it begins). Check
+  // 'isValid'.
+  pub fn createRenderPipeline(self &, desc &RenderPipelineDescriptor) RenderPipeline {
+    mut result = RenderPipeline[PipelineBackend[backend.device, vulkan.Pipeline[0u64], desc.layout.backend.layout]];
+    if !self.isValid() { return result; }
+
+    // The two stages
+    mut vertexName = String.from(desc.vertexEntryPoint);
+    mut fragmentName = String.from(desc.fragmentEntryPoint);
+    mut stages [2; vulkan.PipelineShaderStageCreateInfo] = [2; vulkan.PipelineShaderStageCreateInfo[pNext: nullp(),
+      module: vulkan.ShaderModule[0u64], pName: nullp(), pSpecializationInfo: nullp()]];
+    stages[0].stage = vulkan.SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = desc.vertexModule.backend.module;
+    stages[0].pName = vertexName.cstr();
+    stages[1].stage = vulkan.SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = desc.fragmentModule.backend.module;
+    stages[1].pName = fragmentName.cstr();
+
+    // The vertex buffers, and their attributes
+    if desc.buffers.len > usize[MAX_VERTEX_BUFFERS] {
+      fail("createRenderPipeline: more than 8 vertex buffers");
+      return result;
+    }
+    mut bindings [8; vulkan.VertexInputBindingDescription] = [8; vulkan.VertexInputBindingDescription[0u32, 0u32]];
+    mut attributes [16; vulkan.VertexInputAttributeDescription] = [16; vulkan.VertexInputAttributeDescription[
+      0u32, 0u32, 0u32, 0u32]];
+    mut attributeCount = 0usize;
+    mut b = 0usize;
+    while b < desc.buffers.len {
+      imm layout = desc.buffers[b];
+      bindings[b].binding = u32[b];
+      bindings[b].stride = u32[layout.arrayStride];
+      if layout.stepMode == VERTEX_STEP_MODE_INSTANCE { bindings[b].inputRate = vulkan.VERTEX_INPUT_RATE_INSTANCE; }
+      mut a = 0usize;
+      while a < layout.attributes.len {
+        if attributeCount == usize[MAX_VERTEX_ATTRIBUTES] {
+          fail("createRenderPipeline: more than 16 vertex attributes");
+          return result;
+        }
+        imm attribute = layout.attributes[a];
+        attributes[attributeCount] = vulkan.VertexInputAttributeDescription[attribute.shaderLocation, u32[b],
+          vertexFormat(attribute.format), u32[attribute.offset]];
+        attributeCount = attributeCount + 1usize;
+        a = a + 1usize;
+      }
+      b = b + 1usize;
+    }
+    imm vertexInput = vulkan.PipelineVertexInputStateCreateInfo[pNext: nullp(),
+      vertexBindingDescriptionCount: u32[desc.buffers.len],
+      pVertexBindingDescriptions: &bindings as *vulkan.VertexInputBindingDescription,
+      vertexAttributeDescriptionCount: u32[attributeCount],
+      pVertexAttributeDescriptions: &attributes as *vulkan.VertexInputAttributeDescription];
+    imm inputAssembly = vulkan.PipelineInputAssemblyStateCreateInfo[pNext: nullp(), topology: topology(desc.topology)];
+    imm viewport = vulkan.PipelineViewportStateCreateInfo[pNext: nullp(), viewportCount: 1u32,
+      pViewports: 0usize as *vulkan.Viewport, scissorCount: 1u32, pScissors: 0usize as *vulkan.Rect2D];
+
+    // Rasterization: which faces are culled, and which way round a front
+    // face goes (the viewport is flipped, so the screen's way round is
+    // Vulkan's)
+    mut cull = vulkan.CULL_MODE_NONE;
+    if desc.cullMode == CULL_MODE_FRONT { cull = vulkan.CULL_MODE_FRONT_BIT; }
+    if desc.cullMode == CULL_MODE_BACK { cull = vulkan.CULL_MODE_BACK_BIT; }
+    mut front = vulkan.FRONT_FACE_COUNTER_CLOCKWISE;
+    if desc.frontFace == FRONT_FACE_CW { front = vulkan.FRONT_FACE_CLOCKWISE; }
+    imm raster = vulkan.PipelineRasterizationStateCreateInfo[pNext: nullp(), cullMode: cull, frontFace: front];
+    imm multisample = vulkan.PipelineMultisampleStateCreateInfo[pNext: nullp(), pSampleMask: 0usize as *u32];
+
+    // Depth
+    imm hasDepth = desc.depthFormat != TEXTURE_FORMAT_UNDEFINED;
+    mut depthState = vulkan.PipelineDepthStencilStateCreateInfo[pNext: nullp(), front: vulkan.StencilOpState[],
+      back: vulkan.StencilOpState[]];
+    if hasDepth {
+      depthState.depthTestEnable = vulkan.TRUE;
+      if desc.depthWriteEnabled { depthState.depthWriteEnable = vulkan.TRUE; }
+      depthState.depthCompareOp = desc.depthCompare - 1u32;    // Vulkan's order, from 0
+    }
+
+    // One color target, written whole, not blended
+    imm blendAttachment = vulkan.PipelineColorBlendAttachmentState[];
+    imm blend = vulkan.PipelineColorBlendStateCreateInfo[pNext: nullp(), attachmentCount: 1u32,
+      pAttachments: &blendAttachment as *vulkan.PipelineColorBlendAttachmentState, blendConstants: [4; 0f]];
+    imm dynamics [2; u32] = [vulkan.DYNAMIC_STATE_VIEWPORT, vulkan.DYNAMIC_STATE_SCISSOR];
+    imm dynamic = vulkan.PipelineDynamicStateCreateInfo[pNext: nullp(), dynamicStateCount: 2u32,
+      pDynamicStates: &dynamics as *u32];
+    imm colorFormats [1; u32] = [vkFormat(desc.colorFormat)];
+    mut rendering = vulkan.PipelineRenderingCreateInfo[pNext: nullp(), colorAttachmentCount: 1u32,
+      pColorAttachmentFormats: &colorFormats as *u32];
+    if hasDepth { rendering.depthAttachmentFormat = vkFormat(desc.depthFormat); }
+
+    imm ci = vulkan.GraphicsPipelineCreateInfo[pNext: &rendering as *u8, stageCount: 2u32,
+      pStages: &stages as *vulkan.PipelineShaderStageCreateInfo,
+      pVertexInputState: &vertexInput as *vulkan.PipelineVertexInputStateCreateInfo,
+      pInputAssemblyState: &inputAssembly as *vulkan.PipelineInputAssemblyStateCreateInfo,
+      pTessellationState: nullp(),
+      pViewportState: &viewport as *vulkan.PipelineViewportStateCreateInfo,
+      pRasterizationState: &raster as *vulkan.PipelineRasterizationStateCreateInfo,
+      pMultisampleState: &multisample as *vulkan.PipelineMultisampleStateCreateInfo,
+      pDepthStencilState: &depthState as *vulkan.PipelineDepthStencilStateCreateInfo,
+      pColorBlendState: &blend as *vulkan.PipelineColorBlendStateCreateInfo,
+      pDynamicState: &dynamic as *vulkan.PipelineDynamicStateCreateInfo,
+      layout: desc.layout.backend.layout, renderPass: vulkan.RenderPass[0u64],
+      basePipelineHandle: vulkan.Pipeline[0u64]];
+    mut pipeline = vulkan.Pipeline[0u64];
+    check(vulkan.createGraphicsPipelines(backend.device, vulkan.PipelineCache[0u64], 1u32,
+      &ci as *vulkan.GraphicsPipelineCreateInfo, nullp(), &mut pipeline as *vulkan.Pipeline), "vkCreateGraphicsPipelines");
+    result.backend.pipeline = pipeline;
+    result;
+  }
+
+  // A bind group of 'layout': the buffer each of its bindings is given
+  // ('entries', a buffer for each binding the layout has). Check 'isValid'.
+  pub fn createBindGroup(self &, layout &BindGroupLayout, entries &[]BindGroupEntry) BindGroup {
+    mut result = BindGroup[BindGroupBackend[backend.device, vulkan.DescriptorPool[0u64], vulkan.DescriptorSet[0u64]]];
+    if !self.isValid() { return result; }
+    if entries.len > usize[MAX_BINDINGS] {
+      fail("createBindGroup: more than 16 entries");
+      return result;
+    }
+    // A pool of its own, holding just its set: destroying the pool frees it
+    mut uniforms = 0u32;
+    mut storage = 0u32;
+    mut i = 0usize;
+    while i < entries.len {
+      if entries[i].binding >= MAX_BINDINGS { return result; }
+      if layout.backend.types[usize[entries[i].binding]] == vulkan.DESCRIPTOR_TYPE_STORAGE_BUFFER {
+        storage = storage + 1u32;
+      } else {
+        uniforms = uniforms + 1u32;
+      }
+      i = i + 1usize;
+    }
+    mut sizes [2; vulkan.DescriptorPoolSize] = [2; vulkan.DescriptorPoolSize[vulkan.DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1u32]];
+    mut sizeCount = 0usize;
+    if uniforms > 0u32 {
+      sizes[sizeCount] = vulkan.DescriptorPoolSize[vulkan.DESCRIPTOR_TYPE_UNIFORM_BUFFER, uniforms];
+      sizeCount = sizeCount + 1usize;
+    }
+    if storage > 0u32 {
+      sizes[sizeCount] = vulkan.DescriptorPoolSize[vulkan.DESCRIPTOR_TYPE_STORAGE_BUFFER, storage];
+      sizeCount = sizeCount + 1usize;
+    }
+    imm pci = vulkan.DescriptorPoolCreateInfo[pNext: nullp(), maxSets: 1u32, poolSizeCount: u32[sizeCount],
+      pPoolSizes: &sizes as *vulkan.DescriptorPoolSize];
+    mut pool = vulkan.DescriptorPool[0u64];
+    if !check(vulkan.createDescriptorPool(backend.device, &pci, nullp(), &mut pool), "vkCreateDescriptorPool") {
+      return result;
+    }
+    result.backend.pool = pool;
+    mut setLayout = layout.backend.layout;
+    imm ai = vulkan.DescriptorSetAllocateInfo[pNext: nullp(), descriptorPool: pool, descriptorSetCount: 1u32,
+      pSetLayouts: &mut setLayout as *vulkan.DescriptorSetLayout];
+    mut set = vulkan.DescriptorSet[0u64];
+    if !check(vulkan.allocateDescriptorSets(backend.device, &ai, &mut set as *vulkan.DescriptorSet),
+        "vkAllocateDescriptorSets") {
+      return result;
+    }
+    result.backend.set = set;
+
+    mut infos [16; vulkan.DescriptorBufferInfo] = [16; vulkan.DescriptorBufferInfo[vulkan.Buffer[0u64], 0u64, 0u64]];
+    mut writes [16; vulkan.WriteDescriptorSet] = [16; vulkan.WriteDescriptorSet[pNext: nullp(),
+      dstSet: vulkan.DescriptorSet[0u64], pImageInfo: 0usize as *vulkan.DescriptorImageInfo,
+      pBufferInfo: 0usize as *vulkan.DescriptorBufferInfo, pTexelBufferView: 0usize as *u64]];
+    i = 0usize;
+    while i < entries.len {
+      imm e = entries[i];
+      mut range = e.size;
+      if range == WHOLE_SIZE { range = vulkan.WHOLE_SIZE; }
+      infos[i] = vulkan.DescriptorBufferInfo[e.buffer.backend.buffer, e.offset, range];
+      writes[i].dstSet = set;
+      writes[i].dstBinding = e.binding;
+      writes[i].descriptorCount = 1u32;
+      writes[i].descriptorType = layout.backend.types[usize[e.binding]];
+      writes[i].pBufferInfo = (&infos as *u8 + i * mem.sizeof[vulkan.DescriptorBufferInfo]()) as *vulkan.DescriptorBufferInfo;
+      i = i + 1usize;
+    }
+    vulkan.updateDescriptorSets(backend.device, u32[entries.len], &writes as *vulkan.WriteDescriptorSet, 0u32, nullp());
     result;
   }
 
@@ -755,12 +1346,37 @@ pub struct Device {
     vulkan.deviceWaitIdle(backend.device);
     mut i = 0usize;
     while i < 2usize {
-      vulkan.destroyCommandPool(backend.device, backend.frames[i].pool, nullp());
-      vulkan.destroyFence(backend.device, backend.frames[i].fence, nullp());
+      vulkan.destroyCommandPool(backend.device, queue.backend.frames[i].pool, nullp());
+      vulkan.destroyFence(backend.device, queue.backend.frames[i].fence, nullp());
+      mut r = 0usize;
+      while r < usize[queue.backend.frames[i].retiredCount] {
+        vulkan.destroyBuffer(backend.device, queue.backend.frames[i].retired[r].buffer, nullp());
+        vulkan.freeMemory(backend.device, queue.backend.frames[i].retired[r].memory, nullp());
+        r = r + 1usize;
+      }
+      if queue.backend.frames[i].staging.buffer.h != 0u64 {
+        vulkan.destroyBuffer(backend.device, queue.backend.frames[i].staging.buffer, nullp());
+        vulkan.freeMemory(backend.device, queue.backend.frames[i].staging.memory, nullp());
+      }
       i = i + 1usize;
     }
     vulkan.destroyDevice(backend.device, nullp());
   }
+}
+
+// End the current frame: one submission, of the frame's uploads if there
+// are any, which waits for the acquired swapchain image if nothing did,
+// signals 'signalCount' semaphores and the frame's fence (a signal covers
+// every command submitted before it), and moves on to the next frame
+fn endFrameSignalling(device &mut Device, signalCount u32, signals *vulkan.SemaphoreSubmitInfo) Bool {
+  imm i = usize[device.queue.backend.frameIndex];
+  imm ok = submitCommands(&mut device.queue, nullCommandBuffer(), device.queue.backend.frames[i].fence,
+    signalCount, signals);
+  device.queue.backend.frames[i].pending = ok;
+  device.queue.backend.frameIndex = (device.queue.backend.frameIndex + 1u32) % FRAMES_IN_FLIGHT;
+  device.queue.backend.inFrame = false;
+  device.frameNumber = device.frameNumber + 1u64;
+  ok;
 }
 
 // The first memory type of those in 'bits' that has all of 'want'
@@ -773,54 +1389,139 @@ fn memoryType(props &vulkan.PhysicalDeviceMemoryProperties, bits u32, want u32) 
   0xFFFFFFFFu32;
 }
 
-// The next unused command buffer of the current frame's pool, begun
-fn nextCommandBuffer(device &mut Device) vulkan.CommandBuffer {
-  imm i = usize[device.backend.frameIndex];
-  if device.backend.frames[i].used == MAX_FRAME_COMMAND_BUFFERS {
-    fail("a frame recorded more than 16 command buffers");
-    return 0usize as vulkan.CommandBuffer;
+// Memory of a type in 'bits' with 'want', of 'size' bytes: its own
+// allocation
+fn allocate(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, req &vulkan.MemoryRequirements,
+    want u32) vulkan.DeviceMemory {
+  mut memory = vulkan.DeviceMemory[0u64];
+  imm typeIndex = memoryType(props, req.memoryTypeBits, want);
+  if typeIndex == 0xFFFFFFFFu32 {
+    fail("no memory type suits the buffer or texture");
+    return memory;
   }
-  if device.backend.frames[i].used == device.backend.frames[i].allocated {
-    imm ai = vulkan.CommandBufferAllocateInfo[pNext: nullp(), commandPool: device.backend.frames[i].pool,
-      commandBufferCount: 1u32];
-    mut cmd = 0usize as vulkan.CommandBuffer;
-    if !check(vulkan.allocateCommandBuffers(device.backend.device, &ai, &mut cmd as *vulkan.CommandBuffer),
-        "vkAllocateCommandBuffers") {
-      return 0usize as vulkan.CommandBuffer;
-    }
-    device.backend.frames[i].buffers[usize[device.backend.frames[i].allocated]] = cmd;
-    device.backend.frames[i].allocated = device.backend.frames[i].allocated + 1u32;
-  }
-  imm cmd = device.backend.frames[i].buffers[usize[device.backend.frames[i].used]];
-  device.backend.frames[i].used = device.backend.frames[i].used + 1u32;
-  imm bi = vulkan.CommandBufferBeginInfo[pNext: nullp(), flags: vulkan.COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-    pInheritanceInfo: nullp()];
-  check(vulkan.beginCommandBuffer(cmd, &bi), "vkBeginCommandBuffer");
-  cmd;
+  imm mai = vulkan.MemoryAllocateInfo[pNext: nullp(), allocationSize: req.size, memoryTypeIndex: typeIndex];
+  check(vulkan.allocateMemory(device, &mai, nullp(), &mut memory), "vkAllocateMemory");
+  memory;
 }
 
-// End the current frame: one submission with no commands, which waits for
-// the acquired swapchain image if nothing did, signals 'signalCount'
-// semaphores and the frame's fence (a signal covers every command submitted
-// before it), and moves on to the next frame
-fn endFrameSignalling(device &mut Device, signalCount u32, signals *vulkan.SemaphoreSubmitInfo) Bool {
-  imm i = usize[device.backend.frameIndex];
-  imm waitInfo = vulkan.SemaphoreSubmitInfo[pNext: nullp(), semaphore: device.queue.backend.acquired,
-    stageMask: vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT];
-  mut waits = 0u32;
-  if device.queue.backend.waiting { waits = 1u32; }
-  imm submit = vulkan.SubmitInfo2[pNext: nullp(), waitSemaphoreInfoCount: waits,
-    pWaitSemaphoreInfos: &waitInfo as *vulkan.SemaphoreSubmitInfo,
-    pCommandBufferInfos: 0usize as *vulkan.CommandBufferSubmitInfo,
-    signalSemaphoreInfoCount: signalCount, pSignalSemaphoreInfos: signals];
-  device.queue.backend.waiting = false;
-  imm ok = check(vulkan.queueSubmit2(device.queue.backend.handle, 1u32, &submit as *vulkan.SubmitInfo2,
-    device.backend.frames[i].fence), "vkQueueSubmit2");
-  device.backend.frames[i].pending = ok;
-  device.backend.frameIndex = (device.backend.frameIndex + 1u32) % FRAMES_IN_FLIGHT;
-  device.backend.inFrame = false;
-  device.frameNumber = device.frameNumber + 1u64;
-  ok;
+// A buffer of 'size' bytes with Vulkan's 'usage', in memory of its own: the
+// CPU's, and mapped, if 'mapped', else the GPU's
+fn allocateBuffer(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, size u64, usage u32,
+    mapped Bool) BufferBackend {
+  mut result = BufferBackend[device, vulkan.Buffer[0u64], vulkan.DeviceMemory[0u64], nullp()];
+  imm bci = vulkan.BufferCreateInfo[pNext: nullp(), size: size, usage: usage, pQueueFamilyIndices: 0usize as *u32];
+  mut buffer = vulkan.Buffer[0u64];
+  if !check(vulkan.createBuffer(device, &bci, nullp(), &mut buffer), "vkCreateBuffer") { return result; }
+  result.buffer = buffer;
+  mut req = zeroed[vulkan.MemoryRequirements]();
+  vulkan.getBufferMemoryRequirements(device, buffer, &mut req);
+  mut want = vulkan.MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+  if mapped { want = vulkan.MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan.MEMORY_PROPERTY_HOST_COHERENT_BIT; }
+  imm memory = allocate(device, props, &req, want);
+  if memory.h == 0u64 { return result; }
+  result.memory = memory;
+  check(vulkan.bindBufferMemory(device, buffer, memory, 0u64), "vkBindBufferMemory");
+  if mapped {
+    mut p = nullp();
+    if check(vulkan.mapMemory(device, memory, 0u64, vulkan.WHOLE_SIZE, 0u32, &mut p), "vkMapMemory") {
+      result.mapped = p;
+    }
+  }
+  result;
+}
+
+// A 2-D image 'width' by 'height' of 'format' and Vulkan's 'usage', in the
+// GPU's memory, of its own, and a view of all of it
+fn makeImage(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, width u32, height u32,
+    format u32, usage u32, image &mut vulkan.Image, memory &mut vulkan.DeviceMemory, view &mut vulkan.ImageView) Bool {
+  imm ici = vulkan.ImageCreateInfo[pNext: nullp(), format: format, extent: vulkan.Extent3D[width, height, 1u32],
+    usage: usage, pQueueFamilyIndices: 0usize as *u32];
+  if !check(vulkan.createImage(device, &ici, nullp(), image), "vkCreateImage") { return false; }
+  mut req = zeroed[vulkan.MemoryRequirements]();
+  vulkan.getImageMemoryRequirements(device, *image, &mut req);
+  *memory = allocate(device, props, &req, vulkan.MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  if memory.h == 0u64 { return false; }
+  if !check(vulkan.bindImageMemory(device, *image, *memory, 0u64), "vkBindImageMemory") { return false; }
+  imm vci = vulkan.ImageViewCreateInfo[pNext: nullp(), image: *image, format: format,
+    components: vulkan.ComponentMapping[], subresourceRange: vulkan.ImageSubresourceRange[aspectMask: aspectOf(format)]];
+  check(vulkan.createImageView(device, &vci, nullp(), view), "vkCreateImageView");
+}
+
+fn makePipelineLayout(device vulkan.Device, setCount u32, sets &[4; vulkan.DescriptorSetLayout],
+    immediateSize u32) PipelineLayout {
+  mut result = PipelineLayout[PipelineLayoutBackend[device, vulkan.PipelineLayout[0u64]], immediateSize];
+  if (device as *u8 as usize) == 0usize { return result; }
+  if immediateSize > MAX_IMMEDIATE_SIZE or (immediateSize & 3u32) != 0u32 {
+    fail("a pipeline layout's immediates are more than 128 bytes, or not a multiple of 4");
+    return result;
+  }
+  imm range = vulkan.PushConstantRange[vulkan.SHADER_STAGE_VERTEX_BIT | vulkan.SHADER_STAGE_FRAGMENT_BIT, 0u32,
+    immediateSize];
+  mut ranges = 0u32;
+  if immediateSize > 0u32 { ranges = 1u32; }
+  imm ci = vulkan.PipelineLayoutCreateInfo[pNext: nullp(), setLayoutCount: setCount,
+    pSetLayouts: sets as *vulkan.DescriptorSetLayout, pushConstantRangeCount: ranges,
+    pPushConstantRanges: &range as *vulkan.PushConstantRange];
+  mut layout = vulkan.PipelineLayout[0u64];
+  check(vulkan.createPipelineLayout(device, &ci, nullp(), &mut layout), "vkCreatePipelineLayout");
+  result.backend.layout = layout;
+  result;
+}
+
+// ---- Formats and the rest translated ----
+
+// A texture format's Vulkan format
+fn vkFormat(format u32) u32 {
+  if format == TEXTURE_FORMAT_RGBA8_UNORM { return vulkan.FORMAT_R8G8B8A8_UNORM; }
+  if format == TEXTURE_FORMAT_RGBA8_UNORM_SRGB { return vulkan.FORMAT_R8G8B8A8_SRGB; }
+  if format == TEXTURE_FORMAT_BGRA8_UNORM { return vulkan.FORMAT_B8G8R8A8_UNORM; }
+  if format == TEXTURE_FORMAT_BGRA8_UNORM_SRGB { return vulkan.FORMAT_B8G8R8A8_SRGB; }
+  if format == TEXTURE_FORMAT_DEPTH32_FLOAT { return vulkan.FORMAT_D32_SFLOAT; }
+  vulkan.FORMAT_UNDEFINED;
+}
+
+fn textureFormat(vkFormat u32) u32 {
+  if vkFormat == vulkan.FORMAT_R8G8B8A8_UNORM { return TEXTURE_FORMAT_RGBA8_UNORM; }
+  if vkFormat == vulkan.FORMAT_R8G8B8A8_SRGB { return TEXTURE_FORMAT_RGBA8_UNORM_SRGB; }
+  if vkFormat == vulkan.FORMAT_B8G8R8A8_UNORM { return TEXTURE_FORMAT_BGRA8_UNORM; }
+  if vkFormat == vulkan.FORMAT_B8G8R8A8_SRGB { return TEXTURE_FORMAT_BGRA8_UNORM_SRGB; }
+  if vkFormat == vulkan.FORMAT_D32_SFLOAT { return TEXTURE_FORMAT_DEPTH32_FLOAT; }
+  TEXTURE_FORMAT_UNDEFINED;
+}
+
+fn aspectOf(vkFormat u32) u32 {
+  if vkFormat == vulkan.FORMAT_D32_SFLOAT { return vulkan.IMAGE_ASPECT_DEPTH_BIT; }
+  vulkan.IMAGE_ASPECT_COLOR_BIT;
+}
+
+fn vertexFormat(format u32) u32 {
+  if format == VERTEX_FORMAT_FLOAT32 { return vulkan.FORMAT_R32_SFLOAT; }
+  if format == VERTEX_FORMAT_FLOAT32X2 { return vulkan.FORMAT_R32G32_SFLOAT; }
+  if format == VERTEX_FORMAT_FLOAT32X3 { return vulkan.FORMAT_R32G32B32_SFLOAT; }
+  if format == VERTEX_FORMAT_FLOAT32X4 { return vulkan.FORMAT_R32G32B32A32_SFLOAT; }
+  if format == VERTEX_FORMAT_UNORM8X4 { return vulkan.FORMAT_R8G8B8A8_UNORM; }
+  vulkan.FORMAT_UNDEFINED;
+}
+
+fn topology(t u32) u32 {
+  if t == PRIMITIVE_TOPOLOGY_POINT_LIST { return vulkan.PRIMITIVE_TOPOLOGY_POINT_LIST; }
+  if t == PRIMITIVE_TOPOLOGY_LINE_LIST { return vulkan.PRIMITIVE_TOPOLOGY_LINE_LIST; }
+  if t == PRIMITIVE_TOPOLOGY_LINE_STRIP { return vulkan.PRIMITIVE_TOPOLOGY_LINE_STRIP; }
+  if t == PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP { return vulkan.PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; }
+  vulkan.PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+}
+
+fn shaderStages(visibility u32) u32 {
+  mut stages = 0u32;
+  if (visibility & SHADER_STAGE_VERTEX) != 0u32 { stages = stages | vulkan.SHADER_STAGE_VERTEX_BIT; }
+  if (visibility & SHADER_STAGE_FRAGMENT) != 0u32 { stages = stages | vulkan.SHADER_STAGE_FRAGMENT_BIT; }
+  if (visibility & SHADER_STAGE_COMPUTE) != 0u32 { stages = stages | vulkan.SHADER_STAGE_COMPUTE_BIT; }
+  stages;
+}
+
+fn descriptorType(bufferType u32) u32 {
+  if bufferType == BUFFER_BINDING_TYPE_UNIFORM { return vulkan.DESCRIPTOR_TYPE_UNIFORM_BUFFER; }
+  vulkan.DESCRIPTOR_TYPE_STORAGE_BUFFER;
 }
 
 // ---- Buffers ----
@@ -845,30 +1546,59 @@ pub struct Buffer {
   // done ('device.waitIdle', or FRAMES_IN_FLIGHT frames later).
   pub fn mappedRange(self &) *u8 { backend.mapped; }
 
+  // Its end, once the GPU is idle
   fn final(self &uni) {
-    if backend.buffer.h != 0u64 { vulkan.destroyBuffer(backend.device, backend.buffer, nullp()); }
+    if backend.buffer.h != 0u64 {
+      vulkan.deviceWaitIdle(backend.device);
+      vulkan.destroyBuffer(backend.device, backend.buffer, nullp());
+    }
     if backend.memory.h != 0u64 { vulkan.freeMemory(backend.device, backend.memory, nullp()); }
   }
 }
 
 // ---- Textures ----
 
+// What 'createTexture' makes
+pub struct TextureDescriptor {
+  pub width u32;
+  pub height u32;
+  pub format u32;                  // TEXTURE_FORMAT_...
+  pub usage u32;                   // TEXTURE_USAGE_... OR-ed
+}
+
 struct TextureBackend {
   pub image vulkan.Image;
   pub view vulkan.ImageView;       // the view of the whole texture
-  pub surface Bool;                // a swapchain's, kept in the presentation layout
+  pub kind u32;                    // KIND_...: the layout it rests in
+  pub owned Bool;                  // made by the device, and ended with the Texture
+  pub device vulkan.Device;
+  pub memory vulkan.DeviceMemory;
 }
 
-// A texture: for now, a swapchain's, which the swapchain owns
+// A texture: one the device made ('createTexture'), or a swapchain's, which
+// the swapchain owns (and its depth texture)
 pub struct Texture {
   pub backend TextureBackend;
   pub width u32;
   pub height u32;
   pub format u32;                  // TEXTURE_FORMAT_...
+  pub usage u32;                   // TEXTURE_USAGE_...
+
+  pub fn isValid(self &) Bool { backend.view.h != 0u64; }
 
   // A view of the whole texture (made with it)
   pub fn createView(self &) TextureView {
     TextureView[backend, width, height, format];
+  }
+
+  // Its end, if the device made it, once the GPU is idle
+  fn final(self &uni) {
+    if backend.owned and backend.image.h != 0u64 {
+      vulkan.deviceWaitIdle(backend.device);
+      if backend.view.h != 0u64 { vulkan.destroyImageView(backend.device, backend.view, nullp()); }
+      vulkan.destroyImage(backend.device, backend.image, nullp());
+    }
+    if backend.owned and backend.memory.h != 0u64 { vulkan.freeMemory(backend.device, backend.memory, nullp()); }
   }
 }
 
@@ -881,9 +1611,10 @@ pub struct TextureView {
 }
 
 // What 'getCurrentTexture' answers: a texture to draw into this frame, if
-// 'ok'
+// 'ok', and the swapchain's depth texture, if it keeps one
 pub struct SurfaceTexture {
   pub texture Texture;
+  pub depth Texture;
   pub status u32;                  // SURFACE_TEXTURE_...
 
   pub fn ok(self &) Bool {
@@ -891,13 +1622,162 @@ pub struct SurfaceTexture {
   }
 }
 
-fn textureFormat(vkFormat u32) u32 {
-  if vkFormat == vulkan.FORMAT_R8G8B8A8_UNORM { return TEXTURE_FORMAT_RGBA8_UNORM; }
-  if vkFormat == vulkan.FORMAT_R8G8B8A8_SRGB { return TEXTURE_FORMAT_RGBA8_UNORM_SRGB; }
-  if vkFormat == vulkan.FORMAT_B8G8R8A8_UNORM { return TEXTURE_FORMAT_BGRA8_UNORM; }
-  if vkFormat == vulkan.FORMAT_B8G8R8A8_SRGB { return TEXTURE_FORMAT_BGRA8_UNORM_SRGB; }
-  if vkFormat == vulkan.FORMAT_D32_SFLOAT { return TEXTURE_FORMAT_DEPTH32_FLOAT; }
-  TEXTURE_FORMAT_UNDEFINED;
+fn noTexture() Texture {
+  Texture[TextureBackend[vulkan.Image[0u64], vulkan.ImageView[0u64], KIND_NONE, false, 0usize as vulkan.Device,
+    vulkan.DeviceMemory[0u64]], 0u32, 0u32, TEXTURE_FORMAT_UNDEFINED, 0u32];
+}
+
+// ---- Shaders, layouts, pipelines, bind groups ----
+
+struct ShaderModuleBackend {
+  pub device vulkan.Device;
+  pub module vulkan.ShaderModule;
+}
+
+// A shader module: SPIR-V, holding the entry points of one or more stages
+pub struct ShaderModule {
+  pub backend ShaderModuleBackend;
+
+  pub fn isValid(self &) Bool { backend.module.h != 0u64; }
+
+  // Its end: a pipeline made from it does not need it
+  fn final(self &uni) {
+    if backend.module.h != 0u64 { vulkan.destroyShaderModule(backend.device, backend.module, nullp()); }
+  }
+}
+
+// A binding of a bind group layout: a buffer, seen by the stages
+// 'visibility' names (SHADER_STAGE_... OR-ed)
+pub struct BindGroupLayoutEntry {
+  pub binding u32;
+  pub visibility u32;
+  pub bufferType u32 = BUFFER_BINDING_TYPE_UNIFORM;
+}
+
+struct BindGroupLayoutBackend {
+  pub device vulkan.Device;
+  pub layout vulkan.DescriptorSetLayout;
+  pub types [16; u32];             // each binding's descriptor type
+}
+
+// The bindings a bind group has
+pub struct BindGroupLayout {
+  pub backend BindGroupLayoutBackend;
+
+  pub fn isValid(self &) Bool { backend.layout.h != 0u64; }
+
+  fn final(self &uni) {
+    if backend.layout.h != 0u64 {
+      vulkan.deviceWaitIdle(backend.device);
+      vulkan.destroyDescriptorSetLayout(backend.device, backend.layout, nullp());
+    }
+  }
+}
+
+struct PipelineLayoutBackend {
+  pub device vulkan.Device;
+  pub layout vulkan.PipelineLayout;
+}
+
+// The bind groups a pipeline binds, and its immediates' size
+pub struct PipelineLayout {
+  pub backend PipelineLayoutBackend;
+  pub immediateSize u32;
+
+  pub fn isValid(self &) Bool { backend.layout.h != 0u64; }
+
+  fn final(self &uni) {
+    if backend.layout.h != 0u64 {
+      vulkan.deviceWaitIdle(backend.device);
+      vulkan.destroyPipelineLayout(backend.device, backend.layout, nullp());
+    }
+  }
+}
+
+// A vertex attribute: where in each vertex it is, its format, and the
+// shader's input location it goes to
+pub struct VertexAttribute {
+  pub format u32;                  // VERTEX_FORMAT_...
+  pub offset u64;
+  pub shaderLocation u32;
+}
+
+// A vertex buffer as a pipeline reads it: bytes from one vertex to the
+// next, whether it steps a vertex or an instance at a time, and the
+// attributes in each. The buffer in slot i of 'setVertexBuffer' is the
+// descriptor's buffers[i].
+pub struct VertexBufferLayout {
+  pub arrayStride u64;
+  pub stepMode u32 = VERTEX_STEP_MODE_VERTEX;
+  pub attributes &[]VertexAttribute;
+}
+
+// What 'createRenderPipeline' makes: WebGPU's GPURenderPipelineDescriptor,
+// its 'primitive', 'depthStencil' and 'fragment' fields flattened into it
+// (with one color target)
+pub struct RenderPipelineDescriptor {
+  pub layout &PipelineLayout;
+  pub vertexModule &ShaderModule;
+  pub vertexEntryPoint &[]u8 = "vertexMain";
+  pub buffers &[]VertexBufferLayout;
+  pub fragmentModule &ShaderModule;
+  pub fragmentEntryPoint &[]u8 = "fragmentMain";
+  pub colorFormat u32;                                 // the color target's TEXTURE_FORMAT_...
+  pub topology u32 = PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  pub frontFace u32 = FRONT_FACE_CCW;
+  pub cullMode u32 = CULL_MODE_NONE;
+  pub depthFormat u32 = TEXTURE_FORMAT_UNDEFINED;      // UNDEFINED: no depth test
+  pub depthWriteEnabled Bool = false;
+  pub depthCompare u32 = COMPARE_FUNCTION_LESS;
+}
+
+struct PipelineBackend {
+  pub device vulkan.Device;
+  pub pipeline vulkan.Pipeline;
+  pub layout vulkan.PipelineLayout;  // its layout's (the layout outlives it)
+}
+
+// A render pipeline: shaders and the fixed state around them
+pub struct RenderPipeline {
+  pub backend PipelineBackend;
+
+  pub fn isValid(self &) Bool { backend.pipeline.h != 0u64; }
+
+  fn final(self &uni) {
+    if backend.pipeline.h != 0u64 {
+      vulkan.deviceWaitIdle(backend.device);
+      vulkan.destroyPipeline(backend.device, backend.pipeline, nullp());
+    }
+  }
+}
+
+// A buffer given to a binding of a bind group: 'size' bytes of it from
+// 'offset' (WHOLE_SIZE: the rest of it)
+pub struct BindGroupEntry {
+  pub binding u32;
+  pub buffer &Buffer;
+  pub offset u64 = 0u64;
+  pub size u64 = WHOLE_SIZE;
+}
+
+struct BindGroupBackend {
+  pub device vulkan.Device;
+  pub pool vulkan.DescriptorPool;
+  pub set vulkan.DescriptorSet;
+}
+
+// The buffers a pipeline's bind group reads, bound together
+pub struct BindGroup {
+  pub backend BindGroupBackend;
+
+  pub fn isValid(self &) Bool { backend.set.h != 0u64; }
+
+  fn final(self &uni) {
+    if backend.pool.h != 0u64 {
+      vulkan.deviceWaitIdle(backend.device);
+      vulkan.destroyDescriptorPool(backend.device, backend.pool, nullp());
+    }
+  }
 }
 
 // ---- Swapchains ----
@@ -922,14 +1802,22 @@ struct SwapChainBackend {
   pub stale Bool;                  // to be made again before the next image
   pub wantWidth u32;               // the size asked for, where the surface leaves it to the swapchain
   pub wantHeight u32;
+  pub depthFormat u32;             // Vulkan's; UNDEFINED: no depth texture
+  pub depthImage vulkan.Image;     // one, shared by the frames in flight (a barrier orders them)
+  pub depthMemory vulkan.DeviceMemory;
+  pub depthView vulkan.ImageView;
+  pub depthReady Bool;             // moved out of 'undefined'
+  pub memory vulkan.PhysicalDeviceMemoryProperties;
 }
 
-// The images a surface shows, one drawn while another is shown
+// The images a surface shows, one drawn while another is shown, and a
+// depth texture of their size if asked for
 pub struct SwapChain {
   pub backend SwapChainBackend;
   pub width u32;
   pub height u32;
   pub format u32;                  // TEXTURE_FORMAT_...
+  pub depthFormat u32;             // TEXTURE_FORMAT_...: UNDEFINED if none
   pub presents u64;                // images presented so far
 
   pub fn isValid(self &) Bool { backend.swapchain.h != 0u64; }
@@ -943,12 +1831,11 @@ pub struct SwapChain {
     backend.stale = true;
   }
 
-  // The texture to draw into this frame, beginning the device's frame if it
-  // is not begun. Check 'ok()' on what it answers: a minimized window has
-  // none (SKIPPED), and draws nothing.
+  // The texture to draw into this frame, and the depth texture, beginning
+  // the device's frame if it is not begun. Check 'ok()' on what it answers:
+  // a minimized window has none (SKIPPED), and draws nothing.
   pub fn getCurrentTexture(self &mut, device &mut Device) SurfaceTexture {
-    mut result = SurfaceTexture[Texture[TextureBackend[vulkan.Image[0u64], vulkan.ImageView[0u64], true],
-      0u32, 0u32, TEXTURE_FORMAT_UNDEFINED], SURFACE_TEXTURE_ERROR];
+    mut result = SurfaceTexture[noTexture(), noTexture(), SURFACE_TEXTURE_ERROR];
     if (backend.device as *u8 as usize) == 0usize { return result; }
     if backend.hasImage {
       fail("getCurrentTexture called twice without a present between");
@@ -964,8 +1851,8 @@ pub struct SwapChain {
       result.status = SURFACE_TEXTURE_SKIPPED;
       return result;
     }
-    device.beginFrame();
-    imm slot = usize[device.backend.frameIndex];
+    beginQueueFrame(&mut device.queue);
+    imm slot = usize[device.queue.backend.frameIndex];
     mut index = 0u32;
     mut r = vulkan.acquireNextImageKHR(backend.device, backend.swapchain, NO_TIMEOUT, backend.acquire[slot],
       vulkan.Fence[0u64], &mut index);
@@ -999,16 +1886,28 @@ pub struct SwapChain {
     // the one kept between commands (this submission waits for the acquire)
     imm i = usize[index];
     if !backend.initialized[i] {
-      imm cmd = nextCommandBuffer(device);
-      transition(cmd, backend.images[i], vulkan.IMAGE_LAYOUT_UNDEFINED, vulkan.IMAGE_LAYOUT_PRESENT_SRC_KHR,
+      imm cmd = nextCommandBuffer(&mut device.queue);
+      transition(cmd, backend.images[i], vulkan.IMAGE_ASPECT_COLOR_BIT,
+        vulkan.IMAGE_LAYOUT_UNDEFINED, vulkan.IMAGE_LAYOUT_PRESENT_SRC_KHR,
         vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_NONE,
         vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_NONE);
       check(vulkan.endCommandBuffer(cmd), "vkEndCommandBuffer");
-      imm cbi = vulkan.CommandBufferSubmitInfo[pNext: nullp(), commandBuffer: cmd];
-      submitWaiting(&mut device.queue, 1u32, &cbi as *vulkan.CommandBufferSubmitInfo);
+      submitCommands(&mut device.queue, cmd, vulkan.Fence[0u64], 0u32, 0usize as *vulkan.SemaphoreSubmitInfo);
       backend.initialized[i] = true;
     }
-    result.texture = Texture[TextureBackend[backend.images[i], backend.views[i], true], width, height, format];
+    result.texture = Texture[TextureBackend[backend.images[i], backend.views[i], KIND_SURFACE, false,
+      backend.device, vulkan.DeviceMemory[0u64]], width, height, format, TEXTURE_USAGE_RENDER_ATTACHMENT];
+
+    // The depth texture, moved to its attachment layout when it is new
+    if backend.depthView.h != 0u64 {
+      if !backend.depthReady {
+        imm cmd = uploadCommands(&mut device.queue);
+        if !isNull(cmd) { firstLayout(cmd, backend.depthImage, KIND_DEPTH); }
+        backend.depthReady = true;
+      }
+      result.depth = Texture[TextureBackend[backend.depthImage, backend.depthView, KIND_DEPTH, false,
+        backend.device, vulkan.DeviceMemory[0u64]], width, height, depthFormat, TEXTURE_USAGE_RENDER_ATTACHMENT];
+    }
     result;
   }
 
@@ -1044,9 +1943,10 @@ pub struct SwapChain {
 
   // Make the swapchain (again) now, at the surface's size, or at the size
   // asked for where the surface leaves it to the swapchain, once the device
-  // is idle. Answers false when there is nothing to make: the window has no
-  // area, or it failed. 'getCurrentTexture' does this itself when the
-  // swapchain is out of date or was resized.
+  // is idle, and its depth texture with it. Answers false when there is
+  // nothing to make: the window has no area, or it failed.
+  // 'getCurrentTexture' does this itself when the swapchain is out of date
+  // or was resized.
   pub fn configure(self &mut) Bool {
     imm device = backend.device;
     mut caps = zeroed[vulkan.SurfaceCapabilitiesKHR]();
@@ -1064,10 +1964,15 @@ pub struct SwapChain {
 
     // The format: 8-bit BGRA or RGBA in sRGB, else whatever comes first
     if backend.format == vulkan.FORMAT_UNDEFINED {
-      mut n = 32u32;
-      mut formats [32; vulkan.SurfaceFormatKHR] = [32; vulkan.SurfaceFormatKHR[0u32, 0u32]];
+      // How many formats, asked first, then at most 32 of them
+      mut n = 0u32;
       check(vulkan.getPhysicalDeviceSurfaceFormatsKHR(backend.physical, backend.surface, &mut n,
-        &mut formats as *vulkan.SurfaceFormatKHR), "vkGetPhysicalDeviceSurfaceFormatsKHR");
+        0usize as *vulkan.SurfaceFormatKHR), "vkGetPhysicalDeviceSurfaceFormatsKHR");
+      if n > 32u32 { n = 32u32; }
+      mut formats [32; vulkan.SurfaceFormatKHR] = [32; vulkan.SurfaceFormatKHR[0u32, 0u32]];
+      imm r = vulkan.getPhysicalDeviceSurfaceFormatsKHR(backend.physical, backend.surface, &mut n,
+        &mut formats as *vulkan.SurfaceFormatKHR);
+      if r != vulkan.INCOMPLETE { check(r, "vkGetPhysicalDeviceSurfaceFormatsKHR"); }
       if n == 0u32 {
         fail("the surface offers no formats");
         return false;
@@ -1128,6 +2033,19 @@ pub struct SwapChain {
       backend.initialized[i] = false;
       i = i + 1usize;
     }
+
+    // The depth texture, at the new size
+    if backend.depthFormat != vulkan.FORMAT_UNDEFINED {
+      mut image = vulkan.Image[0u64];
+      mut memory = vulkan.DeviceMemory[0u64];
+      mut view = vulkan.ImageView[0u64];
+      makeImage(device, &backend.memory, w, h, backend.depthFormat, vulkan.IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        &mut image, &mut memory, &mut view);
+      backend.depthImage = image;
+      backend.depthMemory = memory;
+      backend.depthView = view;
+      backend.depthReady = false;
+    }
     width = w;
     height = h;
     format = textureFormat(backend.format);
@@ -1135,7 +2053,8 @@ pub struct SwapChain {
     true;
   }
 
-  // Destroy the images' views and semaphores (the swapchain owns the images)
+  // Destroy the images' views and semaphores (the swapchain owns the
+  // images), and the depth texture
   fn release(self &mut) {
     mut i = 0usize;
     while i < usize[backend.count] {
@@ -1144,6 +2063,12 @@ pub struct SwapChain {
       i = i + 1usize;
     }
     backend.count = 0u32;
+    if backend.depthView.h != 0u64 { vulkan.destroyImageView(backend.device, backend.depthView, nullp()); }
+    if backend.depthImage.h != 0u64 { vulkan.destroyImage(backend.device, backend.depthImage, nullp()); }
+    if backend.depthMemory.h != 0u64 { vulkan.freeMemory(backend.device, backend.depthMemory, nullp()); }
+    backend.depthView = vulkan.ImageView[0u64];
+    backend.depthImage = vulkan.Image[0u64];
+    backend.depthMemory = vulkan.DeviceMemory[0u64];
   }
 
   fn final(self &uni) {
@@ -1155,6 +2080,9 @@ pub struct SwapChain {
       vulkan.destroySemaphore(backend.device, backend.renderDone[j], nullp());
       j = j + 1usize;
     }
+    if backend.depthView.h != 0u64 { vulkan.destroyImageView(backend.device, backend.depthView, nullp()); }
+    if backend.depthImage.h != 0u64 { vulkan.destroyImage(backend.device, backend.depthImage, nullp()); }
+    if backend.depthMemory.h != 0u64 { vulkan.freeMemory(backend.device, backend.depthMemory, nullp()); }
     if backend.swapchain.h != 0u64 { vulkan.destroySwapchainKHR(backend.device, backend.swapchain, nullp()); }
     mut i = 0usize;
     while i < 2usize {
@@ -1170,17 +2098,38 @@ fn clamp(v u32, lo u32, hi u32) u32 {
   v;
 }
 
-// Record a layout transition of all of 'image' (its color aspect), with the
+// ---- Barriers ----
+
+// Record a layout transition of all of 'image' ('aspect' of it), with the
 // stages and accesses before and after it
-fn transition(cmd vulkan.CommandBuffer, image vulkan.Image, oldLayout u32, newLayout u32,
+fn transition(cmd vulkan.CommandBuffer, image vulkan.Image, aspect u32, oldLayout u32, newLayout u32,
     srcStage u64, srcAccess u64, dstStage u64, dstAccess u64) {
   imm barrier = vulkan.ImageMemoryBarrier2[pNext: nullp(), srcStageMask: srcStage, srcAccessMask: srcAccess,
     dstStageMask: dstStage, dstAccessMask: dstAccess, oldLayout: oldLayout, newLayout: newLayout, image: image,
-    subresourceRange: vulkan.ImageSubresourceRange[]];
+    subresourceRange: vulkan.ImageSubresourceRange[aspectMask: aspect]];
   imm dep = vulkan.DependencyInfo[pNext: nullp(), pMemoryBarriers: 0usize as *vulkan.MemoryBarrier2,
     pBufferMemoryBarriers: 0usize as *vulkan.BufferMemoryBarrier2, imageMemoryBarrierCount: 1u32,
     pImageMemoryBarriers: &barrier as *vulkan.ImageMemoryBarrier2];
   vulkan.cmdPipelineBarrier2(cmd, &dep);
+}
+
+// The layout a texture of 'kind' rests in between commands
+fn restLayout(kind u32) u32 {
+  if kind == KIND_SURFACE { return vulkan.IMAGE_LAYOUT_PRESENT_SRC_KHR; }
+  if kind == KIND_DEPTH { return vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL; }
+  vulkan.IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+}
+
+// Move a new texture of 'kind' from 'undefined' to the layout it rests in
+fn firstLayout(cmd vulkan.CommandBuffer, image vulkan.Image, kind u32) {
+  mut aspect = vulkan.IMAGE_ASPECT_COLOR_BIT;
+  mut stages = vulkan.PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+  if kind == KIND_DEPTH {
+    aspect = vulkan.IMAGE_ASPECT_DEPTH_BIT;
+    stages = vulkan.PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | vulkan.PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+  }
+  transition(cmd, image, aspect, vulkan.IMAGE_LAYOUT_UNDEFINED, restLayout(kind),
+    vulkan.PIPELINE_STAGE_2_NONE, vulkan.ACCESS_2_NONE, stages, vulkan.ACCESS_2_NONE);
 }
 
 // ---- Commands ----
@@ -1194,58 +2143,42 @@ pub struct CommandEncoder {
   pub backend EncoderBackend;
 
   // Begin drawing into one color attachment, cleared or kept as 'attachment'
-  // says. (More attachments, and depth, come with the pipelines.)
+  // says
   pub fn beginRenderPass(self &mut, attachment &RenderPassColorAttachment) RenderPass {
-    imm view = attachment.view;
-    imm clear = attachment.loadOp == LOAD_OP_CLEAR;
-    if view.backend.surface {
-      // Kept for presentation between commands; cleared, what it held is not needed
-      mut oldLayout = vulkan.IMAGE_LAYOUT_PRESENT_SRC_KHR;
-      mut access = vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-      if clear {
-        oldLayout = vulkan.IMAGE_LAYOUT_UNDEFINED;
-      } else {
-        access = access | vulkan.ACCESS_2_COLOR_ATTACHMENT_READ_BIT;
-      }
-      transition(backend.cmd, view.backend.image, oldLayout, vulkan.IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_MEMORY_WRITE_BIT,
-        vulkan.PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, access);
-    }
-    imm c = attachment.clearValue;
-    mut loadOp = vulkan.ATTACHMENT_LOAD_OP_LOAD;
-    if clear { loadOp = vulkan.ATTACHMENT_LOAD_OP_CLEAR; }
-    mut storeOp = vulkan.ATTACHMENT_STORE_OP_STORE;
-    if attachment.storeOp == STORE_OP_DISCARD { storeOp = vulkan.ATTACHMENT_STORE_OP_DONT_CARE; }
-    imm color = vulkan.RenderingAttachmentInfo[pNext: nullp(), imageView: view.backend.view,
-      resolveImageView: vulkan.ImageView[0u64], loadOp: loadOp, storeOp: storeOp,
-      clearValue: vulkan.clearColor(c.red, c.green, c.blue, c.alpha)];
-    imm ri = vulkan.RenderingInfo[pNext: nullp(),
-      renderArea: vulkan.Rect2D[vulkan.Offset2D[0i32, 0i32], vulkan.Extent2D[view.width, view.height]],
-      colorAttachmentCount: 1u32, pColorAttachments: &color as *vulkan.RenderingAttachmentInfo,
-      pDepthAttachment: 0usize as *vulkan.RenderingAttachmentInfo,
-      pStencilAttachment: 0usize as *vulkan.RenderingAttachmentInfo];
-    vulkan.cmdBeginRendering(backend.cmd, &ri);
-    RenderPass[PassBackend[backend.cmd, view.backend.image, view.backend.surface, true]];
+    imm none = zeroed[RenderPassDepthStencilAttachment]();
+    beginPass(backend.cmd, attachment, false, &none);
   }
 
-  // Copy all of 'texture' into 'buffer', from its start, row after row with
-  // no gap between rows (4 bytes a pixel for the 8-bit formats)
+  // Begin drawing into a color attachment and a depth attachment
+  pub fn beginRenderPassWithDepth(self &mut, attachment &RenderPassColorAttachment,
+      depth &RenderPassDepthStencilAttachment) RenderPass {
+    beginPass(backend.cmd, attachment, true, depth);
+  }
+
+  // Copy all of 'texture' (an 8-bit color texture with COPY_SRC, or a
+  // swapchain's) into 'buffer', from its start, row after row with no gap
+  // between rows (4 bytes a pixel)
   pub fn copyTextureToBuffer(self &mut, texture &Texture, buffer &Buffer) {
     imm image = texture.backend.image;
-    if texture.backend.surface {
-      transition(backend.cmd, image, vulkan.IMAGE_LAYOUT_PRESENT_SRC_KHR, vulkan.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_MEMORY_WRITE_BIT,
-        vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_READ_BIT);
+    imm rest = restLayout(texture.backend.kind);
+    // What wrote it (a render pass) before the copy reads it; presentation's
+    // hand-off is the acquire semaphore's
+    mut srcStage = vulkan.PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    mut srcAccess = vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    if texture.backend.kind == KIND_SURFACE {
+      srcStage = vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+      srcAccess = vulkan.ACCESS_2_NONE;
     }
+    transition(backend.cmd, image, vulkan.IMAGE_ASPECT_COLOR_BIT, rest, vulkan.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+      srcStage, srcAccess, vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_READ_BIT);
     imm region = vulkan.BufferImageCopy[imageSubresource: vulkan.ImageSubresourceLayers[],
       imageOffset: vulkan.Offset3D[0i32, 0i32, 0i32], imageExtent: vulkan.Extent3D[texture.width, texture.height, 1u32]];
     vulkan.cmdCopyImageToBuffer(backend.cmd, image, vulkan.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer.backend.buffer,
       1u32, &region as *vulkan.BufferImageCopy);
-    if texture.backend.surface {
-      transition(backend.cmd, image, vulkan.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vulkan.IMAGE_LAYOUT_PRESENT_SRC_KHR,
-        vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_NONE,
-        vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_NONE);
-    }
+    // Back to the layout it rests in, once the copy has read it
+    transition(backend.cmd, image, vulkan.IMAGE_ASPECT_COLOR_BIT, vulkan.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rest,
+      vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_NONE,
+      vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_NONE);
     // What was copied, visible to the CPU once the frame is done
     imm bb = vulkan.BufferMemoryBarrier2[pNext: nullp(), srcStageMask: vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
       srcAccessMask: vulkan.ACCESS_2_TRANSFER_WRITE_BIT, dstStageMask: vulkan.PIPELINE_STAGE_2_HOST_BIT,
@@ -1262,28 +2195,102 @@ pub struct CommandEncoder {
   // the frame is done.
   pub fn copyBufferToBuffer(self &mut, source &Buffer, sourceOffset u64, destination &Buffer,
       destinationOffset u64, size u64) {
+    // After what earlier commands did with either buffer
+    memoryBarrier(backend.cmd, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_MEMORY_WRITE_BIT,
+      vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_READ_BIT | vulkan.ACCESS_2_TRANSFER_WRITE_BIT);
     imm region = vulkan.BufferCopy[sourceOffset, destinationOffset, size];
     vulkan.cmdCopyBuffer(backend.cmd, source.backend.buffer, destination.backend.buffer, 1u32,
       &region as *vulkan.BufferCopy);
     // What was copied, visible to the CPU and to what the GPU does next
-    imm mb = vulkan.MemoryBarrier2[pNext: nullp(), srcStageMask: vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
-      srcAccessMask: vulkan.ACCESS_2_TRANSFER_WRITE_BIT,
-      dstStageMask: vulkan.PIPELINE_STAGE_2_HOST_BIT | vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-      dstAccessMask: vulkan.ACCESS_2_HOST_READ_BIT | vulkan.ACCESS_2_MEMORY_READ_BIT];
-    imm dep = vulkan.DependencyInfo[pNext: nullp(), memoryBarrierCount: 1u32, pMemoryBarriers: &mb as *vulkan.MemoryBarrier2,
-      pBufferMemoryBarriers: 0usize as *vulkan.BufferMemoryBarrier2,
-      pImageMemoryBarriers: 0usize as *vulkan.ImageMemoryBarrier2];
-    vulkan.cmdPipelineBarrier2(backend.cmd, &dep);
+    memoryBarrier(backend.cmd, vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT,
+      vulkan.PIPELINE_STAGE_2_HOST_BIT | vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+      vulkan.ACCESS_2_HOST_READ_BIT | vulkan.ACCESS_2_MEMORY_READ_BIT | vulkan.ACCESS_2_MEMORY_WRITE_BIT);
   }
 
   // The commands recorded, for the queue to submit. The encoder records
   // nothing more.
   pub fn finish(self &mut) CommandBuffer {
     imm cmd = backend.cmd;
-    backend.cmd = 0usize as vulkan.CommandBuffer;
-    if (cmd as *u8 as usize) != 0usize { check(vulkan.endCommandBuffer(cmd), "vkEndCommandBuffer"); }
+    backend.cmd = nullCommandBuffer();
+    if !isNull(cmd) { check(vulkan.endCommandBuffer(cmd), "vkEndCommandBuffer"); }
     CommandBuffer[CommandBufferBackend[cmd]];
   }
+}
+
+// Begin rendering into 'color' and, if 'hasDepth', 'depth': the barriers
+// each needs after what earlier commands did with it, then the whole
+// attachment as the viewport and the scissor rectangle
+fn beginPass(cmd vulkan.CommandBuffer, color &RenderPassColorAttachment, hasDepth Bool,
+    depth &RenderPassDepthStencilAttachment) RenderPass {
+  imm view = color.view;
+  imm kind = view.backend.kind;
+  imm clear = color.loadOp == LOAD_OP_CLEAR;
+  // What was there is not needed if it is cleared; what wrote it last (an
+  // earlier pass) is done first. A swapchain texture comes from the layout
+  // presentation wants, presentation's hand-off being the acquire
+  // semaphore's; a texture the device made rests in the attachment layout.
+  mut oldLayout = restLayout(kind);
+  if clear { oldLayout = vulkan.IMAGE_LAYOUT_UNDEFINED; }
+  mut srcAccess = vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+  if kind == KIND_SURFACE { srcAccess = vulkan.ACCESS_2_NONE; }
+  mut dstAccess = vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+  if !clear { dstAccess = dstAccess | vulkan.ACCESS_2_COLOR_ATTACHMENT_READ_BIT; }
+  transition(cmd, view.backend.image, vulkan.IMAGE_ASPECT_COLOR_BIT, oldLayout,
+    vulkan.IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, srcAccess,
+    vulkan.PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, dstAccess);
+  mut loadOp = vulkan.ATTACHMENT_LOAD_OP_LOAD;
+  if clear { loadOp = vulkan.ATTACHMENT_LOAD_OP_CLEAR; }
+  mut storeOp = vulkan.ATTACHMENT_STORE_OP_STORE;
+  if color.storeOp == STORE_OP_DISCARD { storeOp = vulkan.ATTACHMENT_STORE_OP_DONT_CARE; }
+  imm c = color.clearValue;
+  imm colorInfo = vulkan.RenderingAttachmentInfo[pNext: nullp(), imageView: view.backend.view,
+    resolveImageView: vulkan.ImageView[0u64], loadOp: loadOp, storeOp: storeOp,
+    clearValue: vulkan.clearColor(c.red, c.green, c.blue, c.alpha)];
+
+  // The depth attachment: after earlier passes' depth tests and writes
+  mut depthLoad = vulkan.ATTACHMENT_LOAD_OP_LOAD;
+  mut depthStore = vulkan.ATTACHMENT_STORE_OP_STORE;
+  mut depthClear = vulkan.ClearValue[[4; 0u32]];
+  if hasDepth {
+    imm depthClears = depth.depthLoadOp == LOAD_OP_CLEAR;
+    mut depthOld = vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    mut depthAccess = vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    if depthClears {
+      depthOld = vulkan.IMAGE_LAYOUT_UNDEFINED;
+      depthLoad = vulkan.ATTACHMENT_LOAD_OP_CLEAR;
+    } else {
+      depthAccess = depthAccess | vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    }
+    if depth.depthStoreOp == STORE_OP_DISCARD { depthStore = vulkan.ATTACHMENT_STORE_OP_DONT_CARE; }
+    imm tests = vulkan.PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | vulkan.PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    transition(cmd, depth.view.backend.image, vulkan.IMAGE_ASPECT_DEPTH_BIT, depthOld,
+      vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, tests, vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+      tests, depthAccess | vulkan.ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT);
+    *(&mut depthClear as *f32) = depth.depthClearValue;
+  }
+  imm depthInfo = vulkan.RenderingAttachmentInfo[pNext: nullp(), imageView: depth.view.backend.view,
+    imageLayout: vulkan.IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, resolveImageView: vulkan.ImageView[0u64],
+    loadOp: depthLoad, storeOp: depthStore, clearValue: depthClear];
+  mut depthPointer = 0usize as *vulkan.RenderingAttachmentInfo;
+  if hasDepth { depthPointer = &depthInfo as *vulkan.RenderingAttachmentInfo; }
+
+  imm ri = vulkan.RenderingInfo[pNext: nullp(),
+    renderArea: vulkan.Rect2D[vulkan.Offset2D[0i32, 0i32], vulkan.Extent2D[view.width, view.height]],
+    colorAttachmentCount: 1u32, pColorAttachments: &colorInfo as *vulkan.RenderingAttachmentInfo,
+    pDepthAttachment: depthPointer, pStencilAttachment: 0usize as *vulkan.RenderingAttachmentInfo];
+  vulkan.cmdBeginRendering(cmd, &ri);
+  setViewportFlipped(cmd, 0., 0., f32[view.width], f32[view.height], 0., 1.);
+  imm scissor = vulkan.Rect2D[vulkan.Offset2D[0i32, 0i32], vulkan.Extent2D[view.width, view.height]];
+  vulkan.cmdSetScissor(cmd, 0u32, 1u32, &scissor as *vulkan.Rect2D);
+  RenderPass[PassBackend[cmd, view.backend.image, kind, true, vulkan.PipelineLayout[0u64]]];
+}
+
+// The viewport from ('x', 'y'), 'w' by 'h', with y down from the top of the
+// attachment, flipped so that clip space's y is up, as WebGPU's is
+fn setViewportFlipped(cmd vulkan.CommandBuffer, x f32, y f32, w f32, h f32, minDepth f32, maxDepth f32) {
+  imm vp = vulkan.Viewport[x, y + h, w, 0. - h, minDepth, maxDepth];
+  vulkan.cmdSetViewport(cmd, 0u32, 1u32, &vp as *vulkan.Viewport);
 }
 
 // A color attachment of a render pass: the view drawn into, what is done
@@ -1296,16 +2303,95 @@ pub struct RenderPassColorAttachment {
   pub clearValue Color;
 }
 
+// A depth attachment of a render pass: the depth texture's view, what is
+// done with its depths at the start (cleared to 'depthClearValue', or kept)
+// and at the end (stored, or discarded)
+pub struct RenderPassDepthStencilAttachment {
+  pub view TextureView;
+  pub depthLoadOp u32 = LOAD_OP_CLEAR;
+  pub depthStoreOp u32 = STORE_OP_STORE;
+  pub depthClearValue f32 = 1.;
+}
+
 struct PassBackend {
   pub cmd vulkan.CommandBuffer;
   pub image vulkan.Image;
-  pub surface Bool;
+  pub kind u32;
   pub open Bool;
+  pub layout vulkan.PipelineLayout;    // the bound pipeline's
 }
 
 // Drawing into attachments, begun by 'beginRenderPass' and ended by 'end'
 pub struct RenderPass {
   pub backend PassBackend;
+
+  // Draw with 'pipeline' from here on
+  pub fn setPipeline(self &mut, pipeline &RenderPipeline) {
+    vulkan.cmdBindPipeline(backend.cmd, vulkan.PIPELINE_BIND_POINT_GRAPHICS, pipeline.backend.pipeline);
+    backend.layout = pipeline.backend.layout;
+  }
+
+  // Bind 'group' as the pipeline's bind group 'index'
+  pub fn setBindGroup(self &mut, index u32, group &BindGroup) {
+    if backend.layout.h == 0u64 {
+      fail("setBindGroup before setPipeline");
+      return;
+    }
+    mut set = group.backend.set;
+    vulkan.cmdBindDescriptorSets(backend.cmd, vulkan.PIPELINE_BIND_POINT_GRAPHICS, backend.layout, index, 1u32,
+      &mut set as *vulkan.DescriptorSet, 0u32, 0usize as *u32);
+  }
+
+  // Read vertex buffer 'slot' of the pipeline from 'buffer', from 'offset'
+  pub fn setVertexBuffer(self &mut, slot u32, buffer &Buffer, offset u64) {
+    mut b = buffer.backend.buffer;
+    mut o = offset;
+    vulkan.cmdBindVertexBuffers(backend.cmd, slot, 1u32, &mut b as *vulkan.Buffer, &mut o as *u64);
+  }
+
+  // Read indices ('format': INDEX_FORMAT_UINT16 or _UINT32) from 'buffer',
+  // from 'offset'
+  pub fn setIndexBuffer(self &mut, buffer &Buffer, format u32, offset u64) {
+    mut type = vulkan.INDEX_TYPE_UINT32;
+    if format == INDEX_FORMAT_UINT16 { type = vulkan.INDEX_TYPE_UINT16; }
+    vulkan.cmdBindIndexBuffer(backend.cmd, buffer.backend.buffer, offset, type);
+  }
+
+  // Set 'size' bytes of the immediates, from 'offset' (both multiples of
+  // 4), to the bytes at 'data', for the draws after
+  pub fn setImmediates(self &mut, offset u32, data *u8, size u32) {
+    if backend.layout.h == 0u64 {
+      fail("setImmediates before setPipeline");
+      return;
+    }
+    vulkan.cmdPushConstants(backend.cmd, backend.layout, vulkan.SHADER_STAGE_VERTEX_BIT | vulkan.SHADER_STAGE_FRAGMENT_BIT,
+      offset, size, data);
+  }
+
+  // Draw into the rectangle from ('x', 'y'), 'width' by 'height' pixels, of
+  // the attachments ('y' down from their top), with depths from 'minDepth'
+  // to 'maxDepth'
+  pub fn setViewport(self &mut, x f32, y f32, width f32, height f32, minDepth f32, maxDepth f32) {
+    setViewportFlipped(backend.cmd, x, y, width, height, minDepth, maxDepth);
+  }
+
+  // Draw nothing outside the rectangle from ('x', 'y'), 'width' by 'height'
+  // pixels ('y' down from the top)
+  pub fn setScissorRect(self &mut, x u32, y u32, width u32, height u32) {
+    imm r = vulkan.Rect2D[vulkan.Offset2D[i32[x], i32[y]], vulkan.Extent2D[width, height]];
+    vulkan.cmdSetScissor(backend.cmd, 0u32, 1u32, &r as *vulkan.Rect2D);
+  }
+
+  // Draw 'vertexCount' vertices from 'firstVertex', 'instanceCount' times
+  pub fn draw(self &mut, vertexCount u32, instanceCount u32, firstVertex u32, firstInstance u32) {
+    vulkan.cmdDraw(backend.cmd, vertexCount, instanceCount, firstVertex, firstInstance);
+  }
+
+  // Draw 'indexCount' indices from 'firstIndex', each 'baseVertex' added to,
+  // 'instanceCount' times
+  pub fn drawIndexed(self &mut, indexCount u32, instanceCount u32, firstIndex u32, baseVertex i32, firstInstance u32) {
+    vulkan.cmdDrawIndexed(backend.cmd, indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
+  }
 
   // The end of the pass; a swapchain texture goes back to the layout kept
   // between commands
@@ -1313,8 +2399,8 @@ pub struct RenderPass {
     if !backend.open { return; }
     backend.open = false;
     vulkan.cmdEndRendering(backend.cmd);
-    if backend.surface {
-      transition(backend.cmd, backend.image, vulkan.IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    if backend.kind == KIND_SURFACE {
+      transition(backend.cmd, backend.image, vulkan.IMAGE_ASPECT_COLOR_BIT, vulkan.IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         vulkan.IMAGE_LAYOUT_PRESENT_SRC_KHR,
         vulkan.PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, vulkan.ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
         vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_NONE);

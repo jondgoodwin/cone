@@ -1,0 +1,318 @@
+// cube: a spinning cube drawn by Vulkan through the gpu package, each face
+// its own color, depth-tested against the swapchain's depth texture, placed
+// by geomath's matrices in a uniform buffer: the parity of window's
+// spin.cone on Vulkan. The cube's 24 vertices (four a face, so each face is
+// flat) and 36 indices are uploaded once; the shader (cube.slang, compiled
+// ahead of time to SPIR-V, embedded below) multiplies each position by one
+// matrix, written each frame with 'queue.writeBuffer'. It turns once about
+// the y axis in 300 frames; resizing works as in triangle.cone (made smaller
+// on frame 150, minimized on 200 and restored).
+//
+// The camera is at (0, 1.5, 3) looking at the origin, y up, with a 45-degree
+// vertical field of view (Mat4.perspective's 0-to-1 depth, Mat4.lookAt's
+// view matrix). The line of sight through the middle of the window meets the
+// plane z = 0.5 at y = 0.25 (a sixth of the way from there to the eye is the
+// origin's side of it: (0, 1.5 - 1.25, 0.5)), inside the face, and meets
+// the top, y = 0.5, only at z = 1, outside the cube. So the middle pixel
+// shows whichever face the turn has brought to z = +0.5. A turn of a about y
+// carries (x, z) to (x cos a + z sin a, z cos a - x sin a), so:
+//
+// - frame 0, no turn: the +z face, red (255, 0, 0);
+// - frame 75, a quarter turn: -x goes to +z, the -x face, magenta (255, 0, 255);
+// - frame 225, three quarters: +x goes to +z, the +x face, green (0, 255, 0).
+//
+// Each is read back and checked; the colors are exact in sRGB (0 and 1 stay
+// 0 and 255). Back faces are culled, and the faces wind counterclockwise
+// seen from outside, so a face shows only if the winding and the viewport
+// flip are right; were the matrix transposed or the depth test off, other
+// colors would show.
+//
+// It exits 0 only if every frame was presented (or found its swapchain out
+// of date as the window was minimized), the three pixels matched, no Vulkan
+// call failed and the validation layer said nothing.
+//
+//   congo run packages/gpu/examples/cube.cone
+//
+// It needs a display, a GPU driver with Vulkan 1.3, SDL2.lib on LIB to link
+// and SDL2.dll on PATH to run. No Vulkan SDK is needed; with it, validation
+// is on.
+
+mod cube;
+
+import stdio use *;
+import libc;
+import sdl;
+import geomath use *;
+import window use *;
+import gpu use *;
+
+const FRAMES = 300;
+
+// Each face: its outward normal n and two edges u and v with u x v = n, so
+// that c - u - v, c + u - v, c + u + v, c - u + v go round counterclockwise
+// seen from outside; then its color
+imm FACES [72; f32] = [
+   0.,  0.,  1.,    1.,  0.,  0.,    0.,  1.,  0.,    1., 0., 0.,     // +z red
+   0.,  0., -1.,   -1.,  0.,  0.,    0.,  1.,  0.,    0., 1., 1.,     // -z cyan
+   1.,  0.,  0.,    0.,  0., -1.,    0.,  1.,  0.,    0., 1., 0.,     // +x green
+  -1.,  0.,  0.,    0.,  0.,  1.,    0.,  1.,  0.,    1., 0., 1.,     // -x magenta
+   0.,  1.,  0.,    1.,  0.,  0.,    0.,  0., -1.,    0., 0., 1.,     // +y blue
+   0., -1.,  0.,    1.,  0.,  0.,    0.,  0.,  1.,    1., 1., 0.];    // -y yellow
+
+fn onOff(on Bool) &[]u8 {
+  if on { return "on"; }
+  "off";
+}
+
+// Channel 'c' (0 red, 1 green, 2 blue) of the middle pixel of a frame 'w'
+// by 'h' copied to 'p', in 'format'
+fn middle(p *u8, w u32, h u32, c usize, format u32) i32 {
+  mut at = c;
+  if format == TEXTURE_FORMAT_BGRA8_UNORM_SRGB or format == TEXTURE_FORMAT_BGRA8_UNORM { at = 2usize - c; }
+  i32[*(p + (usize[h / 2u32] * usize[w] + usize[w / 2u32]) * 4usize + at)];
+}
+
+fn main() i32 {
+  mut win = Window.openVulkan("Cone: a cube drawn by Vulkan");
+  if !win.isOpen() {
+    print <- "No window could be opened\n";
+    return 1;
+  }
+  mut instance = Instance.create("cube");
+  if !instance.isValid() {
+    print <- "No Vulkan 1.3 instance could be made\n";
+    return 1;
+  }
+  mut surface = instance.createSurface(win.sdlHandle());
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv(&"GPU_POWER_PREFERENCE" as *u8);
+  if (env as usize) != 0usize {
+    if libc.strcmp(env, &"low-power" as *u8) == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&surface, preference);
+  if !adapter.isValid() {
+    print <- "No GPU can draw to the window\n";
+    return 1;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  print <- "API: "; printStr(adapter.backendName()); print <- " "; printStr(adapter.backendVersion.view()); print <- "\n";
+  print <- "Validation layer: "; printStr(onOff(instance.validation));
+  print <- "; synchronization validation: "; printStr(onOff(instance.syncValidation)); print <- "\n";
+
+  mut device = adapter.requestDevice();
+  if !device.isValid() {
+    print <- "No device could be made\n";
+    return 1;
+  }
+  imm size = win.size();
+  mut swapchain = device.createSwapChain(&surface, u32[size.w], u32[size.h], TEXTURE_FORMAT_DEPTH32_FLOAT);
+
+  // The cube: four vertices a face (position, color), two triangles a face
+  mut vertexData [144; f32] = [144; 0f];
+  mut indexData [36; u32] = [36; 0u32];
+  mut f = 0usize;
+  while f < 6usize {
+    imm n = Vec3[FACES[f * 12usize], FACES[f * 12usize + 1usize], FACES[f * 12usize + 2usize]];
+    imm u = Vec3[FACES[f * 12usize + 3usize], FACES[f * 12usize + 4usize], FACES[f * 12usize + 5usize]];
+    imm v = Vec3[FACES[f * 12usize + 6usize], FACES[f * 12usize + 7usize], FACES[f * 12usize + 8usize]];
+    mut k = 0usize;
+    while k < 4usize {
+      // The corners: -u -v, +u -v, +u +v, -u +v
+      mut su f32 = -0.5;
+      if k == 1usize or k == 2usize { su = 0.5; }
+      mut sv f32 = -0.5;
+      if k >= 2usize { sv = 0.5; }
+      imm p = n * 0.5 + u * su + v * sv;
+      imm at = (f * 4usize + k) * 6usize;
+      vertexData[at] = p.x;
+      vertexData[at + 1usize] = p.y;
+      vertexData[at + 2usize] = p.z;
+      vertexData[at + 3usize] = FACES[f * 12usize + 9usize];
+      vertexData[at + 4usize] = FACES[f * 12usize + 10usize];
+      vertexData[at + 5usize] = FACES[f * 12usize + 11usize];
+      k = k + 1usize;
+    }
+    imm first = u32[f * 4usize];
+    imm i = f * 6usize;
+    indexData[i] = first;
+    indexData[i + 1usize] = first + 1u32;
+    indexData[i + 2usize] = first + 2u32;
+    indexData[i + 3usize] = first;
+    indexData[i + 4usize] = first + 2u32;
+    indexData[i + 5usize] = first + 3u32;
+    f = f + 1usize;
+  }
+  mut vertices = device.createBuffer(576u64, BUFFER_USAGE_VERTEX | BUFFER_USAGE_COPY_DST);
+  mut indices = device.createBuffer(144u64, BUFFER_USAGE_INDEX | BUFFER_USAGE_COPY_DST);
+  mut uniforms = device.createBuffer(64u64, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
+  device.queue.writeBuffer(&vertices, 0u64, &vertexData as *u8, 576u64);
+  device.queue.writeBuffer(&indices, 0u64, &indexData as *u8, 144u64);
+
+  // The pipeline: a uniform buffer at group 0, binding 0; a vertex buffer of
+  // float3 position and float3 color; back faces culled; depth tested
+  mut shader = device.createShaderModule(&CUBE_SPIRV);
+  imm entries = [BindGroupLayoutEntry[binding: 0u32, visibility: SHADER_STAGE_VERTEX]];
+  mut groupLayout = device.createBindGroupLayout(&entries);
+  imm groupLayouts = [&groupLayout];
+  mut layout = device.createPipelineLayout(&groupLayouts, 0u32);
+  imm attributes = [VertexAttribute[VERTEX_FORMAT_FLOAT32X3, 0u64, 0u32], VertexAttribute[VERTEX_FORMAT_FLOAT32X3, 12u64, 1u32]];
+  imm buffers = [VertexBufferLayout[arrayStride: 24u64, attributes: &attributes]];
+  imm desc = RenderPipelineDescriptor[layout: &layout, vertexModule: &shader, buffers: &buffers,
+    fragmentModule: &shader, colorFormat: swapchain.format, cullMode: CULL_MODE_BACK,
+    depthFormat: TEXTURE_FORMAT_DEPTH32_FLOAT, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS];
+  mut pipeline = device.createRenderPipeline(&desc);
+  imm groupEntries = [BindGroupEntry[binding: 0u32, buffer: &uniforms]];
+  mut group = device.createBindGroup(&groupLayout, &groupEntries);
+  if !(pipeline.isValid() and group.isValid() and vertices.isValid() and indices.isValid() and uniforms.isValid()) {
+    print <- "The pipeline, bind group or buffers could not be made\n";
+    return 1;
+  }
+
+  imm view = Mat4.lookAt(Vec3[0., 1.5, 3.], Vec3[0., 0., 0.], Vec3[0., 1., 0.]);
+  mut frames = 0;
+  mut unshown = 0;
+  mut resizes = 0;
+  mut checks = 0;
+  mut matched = 0;
+  mut minimizedFor = 0;
+  while win.running and frames < FRAMES {
+    if frames == 150 and resizes == 0 { win.setSize(size.w * 2 / 3, size.h * 2 / 3); }
+    if frames == 200 and minimizedFor == 0 {
+      win.minimize();
+      minimizedFor = 1;
+    }
+    if minimizedFor > 0 {
+      minimizedFor = minimizedFor + 1;
+      if minimizedFor == 10 { win.restore(); }
+    }
+    win.pollEvents();
+    if win.resized {
+      imm s = win.size();
+      swapchain.resize(u32[s.w], u32[s.h]);
+      win.resized = false;
+      resizes = resizes + 1;
+    }
+
+    imm frame = swapchain.getCurrentTexture(&mut device);
+    if !frame.ok() {
+      sdl.Delay(10u32);
+    } else {
+      // A turn a frame of 1/300 of a full one
+      imm angle = f32[frames] * 6.2831853 / f32[FRAMES];
+      imm model = Mat4.fromQuat(Quat.angleAxis(angle, Vec3[0., 1., 0.]));
+      imm projection = Mat4.perspective(0.78539816, f32[swapchain.width] / f32[swapchain.height], 0.1, 100.);
+      imm mvp = projection * view * model;
+      device.queue.writeBuffer(&uniforms, 0u64, &mvp as *u8, 64u64);
+
+      mut encoder = device.createCommandEncoder();
+      imm color = RenderPassColorAttachment[view: frame.texture.createView(), clearValue: Color[0.02, 0.02, 0.05, 1.]];
+      imm depth = RenderPassDepthStencilAttachment[view: frame.depth.createView(), depthStoreOp: STORE_OP_DISCARD];
+      mut pass = encoder.beginRenderPassWithDepth(&color, &depth);
+      pass.setPipeline(&pipeline);
+      pass.setBindGroup(0u32, &group);
+      pass.setVertexBuffer(0u32, &vertices, 0u64);
+      pass.setIndexBuffer(&indices, INDEX_FORMAT_UINT32, 0u64);
+      pass.drawIndexed(36u32, 1u32, 0u32, 0i32, 0u32);
+      pass.end();
+      if frames == 0 or frames == 75 or frames == 225 {
+        imm w = frame.texture.width;
+        imm h = frame.texture.height;
+        mut readback = device.createBuffer(u64[w] * u64[h] * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+        encoder.copyTextureToBuffer(&frame.texture, &readback);
+        device.queue.submit(encoder.finish());
+        if !swapchain.present(&mut device) { unshown = unshown + 1; }
+        device.waitIdle();
+        imm p = readback.mappedRange();
+        imm r = middle(p, w, h, 0usize, frame.texture.format);
+        imm g = middle(p, w, h, 1usize, frame.texture.format);
+        imm b = middle(p, w, h, 2usize, frame.texture.format);
+        mut wr = 255;
+        mut wg = 0;
+        mut wb = 0;
+        if frames == 75 { wb = 255; }
+        if frames == 225 {
+          wr = 0;
+          wg = 255;
+        }
+        print <- "Frame "; print <- frames; print <- " ("; print <- u64[w]; print <- " x "; print <- u64[h];
+        print <- "): middle "; print <- r; print <- " "; print <- g; print <- " "; print <- b;
+        print <- " (want "; print <- wr; print <- " "; print <- wg; print <- " "; print <- wb; print <- ")\n";
+        checks = checks + 1;
+        if r == wr and g == wg and b == wb { matched = matched + 1; }
+      } else {
+        device.queue.submit(encoder.finish());
+        if !swapchain.present(&mut device) { unshown = unshown + 1; }
+      }
+      frames = frames + 1;
+    }
+  }
+  device.waitIdle();
+
+  print <- "Frames drawn: "; print <- frames; print <- "; presented: "; print <- swapchain.presents;
+  print <- "; out of date when presented: "; print <- unshown; print <- "; resizes: "; print <- resizes; print <- "\n";
+  print <- "Vulkan failures: "; print <- u64[failures()];
+  print <- "; validation messages: "; print <- u64[validationMessages()]; print <- "\n";
+  if checks != 3 or matched != 3 {
+    print <- "The pixels read back are not the faces' colors\n";
+    return 1;
+  }
+  if swapchain.presents + u64[unshown] != u64[frames] or failures() != 0u32 or validationMessages() != 0u32 { return 1; }
+  print <- "OK\n";
+  0;
+}
+
+// spirv-begin cube.spv CUBE_SPIRV
+// Written by tools/shaders/shaders.py from cube.slang (sha256 0844ce19d636256d061603d0d11d961fa464b4d761abdb517f2c182620b901fa): do not edit.
+imm CUBE_SPIRV [298; u32] = [
+  0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000033u32, 0x00000000u32, 0x00020011u32,
+  0x00000001u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x000b000fu32, 0x00000000u32,
+  0x00000002u32, 0x74726576u32, 0x614d7865u32, 0x00006e69u32, 0x00000012u32, 0x00000026u32,
+  0x0000002au32, 0x00000018u32, 0x00000021u32, 0x0009000fu32, 0x00000004u32, 0x0000002du32,
+  0x67617266u32, 0x746e656du32, 0x6e69614du32, 0x00000000u32, 0x00000032u32, 0x00000030u32,
+  0x00030010u32, 0x0000002du32, 0x00000007u32, 0x00030003u32, 0x0000000bu32, 0x00000001u32,
+  0x00060005u32, 0x0000000fu32, 0x66696e55u32, 0x736d726fu32, 0x6474735fu32, 0x00303431u32,
+  0x00080006u32, 0x0000000fu32, 0x00000000u32, 0x65646f6du32, 0x6569566cu32, 0x6f725077u32,
+  0x7463656au32, 0x006e6f69u32, 0x00050005u32, 0x00000012u32, 0x66696e75u32, 0x736d726fu32,
+  0x00000000u32, 0x00060005u32, 0x00000018u32, 0x75706e69u32, 0x6f702e74u32, 0x69746973u32,
+  0x00006e6fu32, 0x00050005u32, 0x00000021u32, 0x75706e69u32, 0x6f632e74u32, 0x00726f6cu32,
+  0x000b0005u32, 0x0000002au32, 0x72746e65u32, 0x696f5079u32, 0x6150746eu32, 0x5f6d6172u32,
+  0x74726576u32, 0x614d7865u32, 0x632e6e69u32, 0x726f6c6fu32, 0x00000000u32, 0x00050005u32,
+  0x00000002u32, 0x74726576u32, 0x614d7865u32, 0x00006e69u32, 0x00050005u32, 0x00000030u32,
+  0x75706e69u32, 0x6f632e74u32, 0x00726f6cu32, 0x000a0005u32, 0x00000032u32, 0x72746e65u32,
+  0x696f5079u32, 0x6150746eu32, 0x5f6d6172u32, 0x67617266u32, 0x746e656du32, 0x6e69614du32,
+  0x00000000u32, 0x00060005u32, 0x0000002du32, 0x67617266u32, 0x746e656du32, 0x6e69614du32,
+  0x00000000u32, 0x00030047u32, 0x0000000fu32, 0x00000002u32, 0x00050048u32, 0x0000000fu32,
+  0x00000000u32, 0x00000023u32, 0x00000000u32, 0x00040048u32, 0x0000000fu32, 0x00000000u32,
+  0x00000004u32, 0x00050048u32, 0x0000000fu32, 0x00000000u32, 0x00000007u32, 0x00000010u32,
+  0x00040047u32, 0x00000012u32, 0x00000021u32, 0x00000000u32, 0x00040047u32, 0x00000012u32,
+  0x00000022u32, 0x00000000u32, 0x00040047u32, 0x00000018u32, 0x0000001eu32, 0x00000000u32,
+  0x00040047u32, 0x00000021u32, 0x0000001eu32, 0x00000001u32, 0x00040047u32, 0x00000026u32,
+  0x0000000bu32, 0x00000000u32, 0x00040047u32, 0x0000002au32, 0x0000001eu32, 0x00000000u32,
+  0x00040047u32, 0x00000030u32, 0x0000001eu32, 0x00000000u32, 0x00040047u32, 0x00000032u32,
+  0x0000001eu32, 0x00000000u32, 0x00020013u32, 0x00000001u32, 0x00030021u32, 0x00000003u32,
+  0x00000001u32, 0x00030016u32, 0x00000006u32, 0x00000020u32, 0x00040017u32, 0x00000007u32,
+  0x00000006u32, 0x00000004u32, 0x00040017u32, 0x00000008u32, 0x00000006u32, 0x00000003u32,
+  0x00040015u32, 0x0000000bu32, 0x00000020u32, 0x00000001u32, 0x0004002bu32, 0x0000000bu32,
+  0x0000000cu32, 0x00000000u32, 0x00040018u32, 0x00000010u32, 0x00000007u32, 0x00000004u32,
+  0x0003001eu32, 0x0000000fu32, 0x00000010u32, 0x00040020u32, 0x00000011u32, 0x00000002u32,
+  0x0000000fu32, 0x00040020u32, 0x00000013u32, 0x00000002u32, 0x00000010u32, 0x00040020u32,
+  0x00000017u32, 0x00000001u32, 0x00000008u32, 0x0004002bu32, 0x00000006u32, 0x0000001au32,
+  0x3f800000u32, 0x00040020u32, 0x00000025u32, 0x00000003u32, 0x00000007u32, 0x00040020u32,
+  0x00000029u32, 0x00000003u32, 0x00000008u32, 0x0004003bu32, 0x00000011u32, 0x00000012u32,
+  0x00000002u32, 0x0004003bu32, 0x00000017u32, 0x00000018u32, 0x00000001u32, 0x0004003bu32,
+  0x00000017u32, 0x00000021u32, 0x00000001u32, 0x0004003bu32, 0x00000025u32, 0x00000026u32,
+  0x00000003u32, 0x0004003bu32, 0x00000029u32, 0x0000002au32, 0x00000003u32, 0x0004003bu32,
+  0x00000017u32, 0x00000030u32, 0x00000001u32, 0x0004003bu32, 0x00000025u32, 0x00000032u32,
+  0x00000003u32, 0x00050036u32, 0x00000001u32, 0x00000002u32, 0x00000000u32, 0x00000003u32,
+  0x000200f8u32, 0x00000004u32, 0x00050041u32, 0x00000013u32, 0x00000014u32, 0x00000012u32,
+  0x0000000cu32, 0x0004003du32, 0x00000010u32, 0x00000015u32, 0x00000014u32, 0x0004003du32,
+  0x00000008u32, 0x00000016u32, 0x00000018u32, 0x00050050u32, 0x00000007u32, 0x00000019u32,
+  0x00000016u32, 0x0000001au32, 0x00050090u32, 0x00000007u32, 0x0000001bu32, 0x00000019u32,
+  0x00000015u32, 0x0004003du32, 0x00000008u32, 0x00000020u32, 0x00000021u32, 0x0003003eu32,
+  0x00000026u32, 0x0000001bu32, 0x0003003eu32, 0x0000002au32, 0x00000020u32, 0x000100fdu32,
+  0x00010038u32, 0x00050036u32, 0x00000001u32, 0x0000002du32, 0x00000000u32, 0x00000003u32,
+  0x000200f8u32, 0x0000002eu32, 0x0004003du32, 0x00000008u32, 0x0000002fu32, 0x00000030u32,
+  0x00050050u32, 0x00000007u32, 0x00000031u32, 0x0000002fu32, 0x0000001au32, 0x0003003eu32,
+  0x00000032u32, 0x00000031u32, 0x000100fdu32, 0x00010038u32
+];
+// spirv-end
