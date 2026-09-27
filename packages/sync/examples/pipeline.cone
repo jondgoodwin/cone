@@ -1,0 +1,98 @@
+// Three producers, one consumer, one channel. Each producer thread sends
+// 1000 numbered jobs down its own clone of the sender; the consumer thread
+// takes them until 'recv' answers None, which it does once every producer
+// has finished and its sender has died, and every job sent has been taken.
+// It sums the jobs and checks that each producer's arrived in the order that
+// producer sent them (between producers, the order is whatever the threads
+// made it). Main prints the totals, which are the same on every run:
+//
+//   congo run packages/sync/examples/pipeline.cone
+//
+//   jobs      3000
+//   sum       3001501500
+//   in order  yes
+//
+// (Producer p, numbered 0 to 2, sends p * 1000000 + k for k from 1 to 1000,
+// so the sum is 1000 * (0 + 1 + 2) * 1000000 + 3 * (1000 * 1001 / 2) =
+// 3000000000 + 1501500 = 3001501500.)
+//
+// Nothing closes the channel by hand: the last sender to die closes it.
+
+mod pipeline;
+
+import stdio use *;
+import thread;
+import sync use *;
+
+const jobsEach = 1000u64;
+
+// What a producer is handed: its sender, and its number
+struct Producer {
+  pub tx Sender[u64];
+  pub id u64;
+}
+
+fn produce(p Producer) {
+  // '<-' borrows what it appends to as 'mut', as '+=' does, unless it is a
+  // reference already; 'p' is not 'mut', so it sends through one
+  imm tx = &p.tx;
+  mut k = 1u64;
+  while k <= jobsEach {
+    tx <- p.id * 1000000u64 + k;
+    k = k + 1u64;
+  }
+}
+
+// What the consumer found
+struct Tally {
+  pub jobs u64;
+  pub sum u64;
+  pub inOrder Bool;
+}
+
+fn consume(rx Receiver[u64]) Tally {
+  mut tally = Tally[0u64, 0u64, true];
+  mut last [3; u64] = [3; 0u64];
+  mut r = rx;
+  mut open = true;
+  while open {
+    match r.recv() {
+      case imm job Some {
+        imm p = job.value / 1000000u64;
+        imm k = job.value % 1000000u64;
+        if k != last[p] + 1u64 {
+          tally.inOrder = false;
+        }
+        last[p] = k;
+        tally.jobs = tally.jobs + 1u64;
+        tally.sum = tally.sum + job.value;
+      }
+      case is None[u64] {open = false;}
+    }
+  }
+  tally;
+}
+
+fn main() {
+  mut tx Sender[u64];
+  mut rx Receiver[u64];
+  tx, rx = Channel[u64].make();
+  imm consumer = thread.start(rx, &consume);
+  imm p1 = thread.start(Producer[tx.clone(), 1u64], &produce);
+  imm p2 = thread.start(Producer[tx.clone(), 2u64], &produce);
+  imm p0 = thread.start(Producer[tx, 0u64], &produce);
+  p0.join();
+  p1.join();
+  p2.join();
+  imm tally = consumer.join();
+  printStr("jobs      ");
+  printInt(i64[tally.jobs]);
+  printStr("\nsum       ");
+  printInt(i64[tally.sum]);
+  printStr("\nin order  ");
+  if tally.inOrder {
+    printStr("yes\n");
+  } else {
+    printStr("no\n");
+  }
+}

@@ -1,10 +1,11 @@
 // The sync package: what threads share safely. It holds the atomic value
 // Atomic[T], an integer, a Bool or a raw pointer that several threads may
 // read and change at once without a lock, each change indivisible; the futex,
-// the one way a thread sleeps until another wakes it; and the locks built on
-// the futex: Mutex, RwLock, Condvar and Once. Channels are to join them.
-// Windows only for now: the futex's three functions are the package's only
-// calls to the OS.
+// the one way a thread sleeps until another wakes it; the locks built on
+// the futex: Mutex, RwLock, Condvar and Once; and the channel, a pipe of
+// values from any number of threads to one. Windows only for now: the
+// futex's three functions, a yield and a clock are the package's only calls
+// to the OS.
 //
 //   Atomic[T]      a value changed only indivisibly             (below)
 //   futexWait, futexWake, futexWakeAll                           (THE FUTEX)
@@ -12,6 +13,7 @@
 //   RwLock         many readers, or one writer
 //   Condvar        sleep until another thread says something changed
 //   Once           a function run exactly once, however many threads ask
+//   Channel[T]     values sent by many threads, taken by one     (CHANNELS)
 //
 // ATOMIC VALUES.
 //
@@ -226,6 +228,71 @@
 // core's mem operations directly (acquire on lock, release on unlock, as
 // Rust's), since each must be one instruction and Atomic's 'Ordered' forms
 // choose theirs as the program runs.
+//
+// CHANNELS. A channel is a pipe between threads with two ends: whoever holds
+// a sending end puts values in, and whoever holds the receiving end takes
+// them out, oldest first. Channel[T] is unbounded, with any number of
+// senders and one receiver (MPSC): a send never waits, and the receiver
+// waits only while the channel is empty.
+//
+//   mut tx Sender[u64];
+//   mut rx Receiver[u64];
+//   tx, rx = Channel[u64].make();      // the two ends
+//   imm tx2 = tx.clone();              // a second sender, said out loud
+//   thread.start(tx2, &producer);      // an end moves to another thread
+//   tx <- 7u64;                        // send; or tx.send(7u64)
+//   mut more = true;
+//   while more {
+//     match rx.recv() {                // waits; None once closed and empty
+//       case imm v Some {total = total + v.value;}
+//       case is None[u64] {more = false;}
+//     }
+//   }
+//
+//   Channel[T].make()        a new channel: its Sender[T] and its Receiver[T],
+//                            a tuple assigned to two variables declared first
+//                            (a declaration cannot yet take a tuple apart)
+//   tx.send(v)               put v in; never waits. None once it is in, or
+//                            Some[v], the value handed back, when the
+//                            receiver has gone or closed the channel
+//   tx <- v                  the same: '<-', Cone's append, is send. It
+//                            borrows tx as 'mut', as '+=' does, so tx is a
+//                            'mut' variable or a reference to a Sender;
+//                            'tx <- (a, b)' sends each in turn
+//   tx.clone()               another Sender on the same channel
+//   rx.recv()                the next value, waiting while there is none;
+//                            None once the channel is closed and every value
+//                            sent has been taken
+//   rx.tryRecv()             the next value if one is there; never waits
+//   rx.recvTimeout(ns)       recv, waiting at most ns nanoseconds (the
+//                            futex's resolution: it may run over by a tick)
+//   rx.close()               refuse every later send, handing its value
+//                            back; what was sent before still comes out
+//   rx.isClosed()            whether it is closed: nothing more will arrive
+//
+// - The ends are move types. A Sender's 'clone' is the only way to another
+//   (a clone method does not make a type copyable); a Receiver has no clone,
+//   so there is exactly one, and one thread takes from it: the methods that
+//   take values, and close, take it as '&mut'.
+// - The channel ends with its ends, and nothing panics. The last Sender's
+//   death closes it: the receiver takes what is left, then recv answers
+//   None. The Receiver's death closes it too: each later send gets its value
+//   back, and each value still in the channel is finalized there, once. The
+//   memory goes when both sides have.
+// - A value moves in and moves out: a number, a struct, a '+so' or 'uni'
+//   owner. A large value is best sent as an owner, since a slot holds the
+//   whole T. A value never taken is finalized exactly once.
+// - Nothing checks yet that what is sent is safe in another thread (a 'mut'
+//   or 'ro' reference is not): the thread package's rule, and the
+//   compiler's check to come, are the same.
+// - Not here yet: a bounded channel, which makes a sender wait while it is
+//   full; a single-sender channel, whose sender has no clone; taking every
+//   value waiting at once ('drain'); and 'each v in rx', which needs the
+//   iteration protocol. 'select' over several channels is left out for now.
+//
+// How it is built is at the channel's own section, below: linked blocks of
+// 32 slots, one compare-and-swap for a send, no read-modify-write for the
+// receiver, and the futex only when the receiver sleeps.
 
 mod sync;
 
@@ -400,8 +467,10 @@ fn die(msg &[]u8) {
 // ---------------------------------------------------------------------------
 // Windows: WaitOnAddress and its two wakes, the api set
 // api-ms-win-core-synch-l1-2-0, linked through Synchronization.lib, which
-// this package's congo.toml names. They are the package's only calls to the
-// OS; a posix side (Linux's futex) is to come beside them.
+// this package's congo.toml names; and, for the channels, kernel32's yield
+// and its high resolution clock, on every link line already. They are the
+// package's only calls to the OS; a posix side (Linux's futex, sched_yield,
+// clock_gettime) is to come beside them.
 // ---------------------------------------------------------------------------
 
 extern {
@@ -409,6 +478,9 @@ extern {
   fn @c(system) WakeByAddressSingle(address *u32);
   fn @c(system) WakeByAddressAll(address *u32);
   fn @c(system) GetLastError() u32;
+  fn @c(system) SwitchToThread() i32;
+  fn @c(system) QueryPerformanceCounter(count *i64) i32;
+  fn @c(system) QueryPerformanceFrequency(freq *i64) i32;
 }
 
 const infinite = 0xFFFFFFFFu32;                // INFINITE
@@ -966,5 +1038,477 @@ pub struct Once is Move {
     if (was & onceQueued) != 0u32 {
       rawWakeAll(p);
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Channel: unbounded, many senders, one receiver (MPSC). The algorithm is
+// crossbeam-channel's "list" flavour (crossbeam-channel/src/flavors/list.rs,
+// which Rust's std::sync::mpsc has run on since 1.67), cut down to its one
+// receiver: values sit in linked blocks of 32 slots, so a block is allocated
+// once per 32 sends; a sender claims a slot with one compare-and-swap on the
+// senders' index, moves its value in and marks the slot written; the receiver
+// reads the slot at its own index, which no other thread touches, with no
+// read-modify-write at all. Vyukov's non-intrusive MPSC queue (1024cores) is
+// the same shape a value at a time, and the orderings below are its: a value
+// is published by a release store its reader acquires.
+//
+// Positions. The senders' index ('tail') counts positions, shifted left one
+// bit so that bit 0 can say the channel is closed (crossbeam's MARK_BIT): a
+// send's claim and a close are changes to one word, so that word's own order
+// puts every send either before the close, and delivered, or after it, and
+// refused. A block's 32 slots are offsets 0 to 31 of a lap of 64 positions.
+// Offset 32 means the block is full and the sender that claimed its last slot
+// is installing the next block; the other senders wait the moment that takes.
+// Offsets 33 to 63 are never used: the installer moves the index on to the
+// next lap, where the next block's offset 0 is. The receiver's index ('head')
+// counts the same way, never carrying the closed bit. The index wraps after
+// 2^62 values (a block spends 64 positions on 32 values): 146 years at a
+// thousand million sends a second. Nothing checks.
+// ---------------------------------------------------------------------------
+
+const chanShift = 1u64;
+const chanClosed = 1u64;
+const chanOne = 2u64;                  // one position: 1 << chanShift
+const blockCap = 32u64;                // slots in a block
+const chanLap = 64u64;                 // positions a block spans
+const chanOffsetMask = 63u64;          // chanLap - 1
+
+// Where a position falls in its block, and the position itself without the
+// closed bit
+fn chanOffset(index u64) u64 {(index >> chanShift) & chanOffsetMask;}
+fn chanPos(index u64) u64 {index >> chanShift;}
+
+// One value's place: 'state' is 0 until the value is written, then 1
+struct Slot[T] {
+  pub state u32;
+  pub value T;
+}
+
+// 32 slots and the block after them, which stays 0 until it is installed.
+// Allocated zeroed, so every slot starts unwritten.
+struct Block[T] {
+  pub next *Block[T];
+  pub slots [32; Slot[T]];
+}
+
+// What every end of one channel shares, one allocation. The senders' index
+// and its block are written by every send, so they sit on a 64-byte cache
+// line of their own: Cone has no alignment attribute yet, so the padding
+// fields keep anything else at least a line away on each side (an address 64
+// or more past the start of the pair is on a later line, and the pair, 16
+// bytes at a 16-byte-aligned address, never straddles one). The receiver's
+// index is not here at all: only the receiver reads or writes it, so it lives
+// in the Receiver. 'sleeping' is read by every send and written only when the
+// receiver goes to sleep, so it shares a line with the two counts, which
+// change only when a sender is cloned or dropped.
+struct Chan[T] {
+  pub before [64; u8];
+  pub tail u64;                // the senders' index; bit 0, closed
+  pub tailBlock *Block[T];     // the block the senders' index falls in
+  pub between [48; u8];
+  pub sleeping u32;            // the futex word: 1 while the receiver sleeps
+  pub sides u32;               // 2, less 1 as the receiver and as the last sender go
+  pub senders u64;             // how many Senders there are
+  pub after [48; u8];
+}
+
+// A new block, every slot unwritten and no next block
+fn blockNew[T]() *Block[T] {
+  imm b = libc.calloc(1usize, mem.sizeof[Block[T]]()) as *Block[T];
+  if b as usize == 0usize {
+    die("sync: out of memory for a channel's block\n");
+  }
+  b;
+}
+
+fn slotAt[T](b *Block[T], offset u64) *Slot[T] {
+  (&(*b).slots as *Slot[T]) + usize[offset];
+}
+
+// The receiver's index after taking the slot at offset: the next position,
+// or, past a block's last slot, the next lap's offset 0
+fn chanStep(head u64, offset u64) u64 {
+  if offset + 1u64 < blockCap {
+    return head + chanOne;
+  }
+  (chanPos(head) - offset + chanLap) << chanShift;
+}
+
+// The receiver has taken the last slot of block b: follow its link, and free
+// it. Every sender that claimed a slot in it has marked its slot written,
+// which is the last it does to the block; a sender that still holds it as
+// the senders' block from before it was replaced finds the index moved on,
+// and never touches it.
+fn chanPassBlock[T](b *Block[T]) *Block[T] {
+  // Acquire, for the installer's release, which came before the last slot
+  // was marked written: so the link is there already, and the wait is a guard
+  imm nextp = &(*b).next as **Block[T];
+  mut next = mem.atomicLoad[*Block[T]](nextp, MemOrder.Acquire[]);
+  mut step = 0u32;
+  while next as usize == 0usize {
+    step = chanBackoff(step);
+    next = mem.atomicLoad[*Block[T]](nextp, MemOrder.Acquire[]);
+  }
+  libc.free(b as *u8);
+  next;
+}
+
+// Wait a moment for another thread to finish a step it has begun (a send
+// writing the slot it claimed, a sender installing the next block): spin
+// for the first spinLimit rereads, then give the processor up on each. The
+// step is short, but the thread taking it may have been preempted in it.
+fn chanBackoff(step u32) u32 {
+  if step < spinLimit {
+    return step + 1u32;
+  }
+  SwitchToThread();
+  step;
+}
+
+// Wake the receiver if it sleeps or is about to. The load is sequentially
+// consistent, and so are the claim that preceded it and the receiver's
+// 'sleeping' store and its reread of the senders' index: that is Dekker's
+// pairing, and it means that either this load sees the receiver's 1, or the
+// receiver's reread sees the claim and it does not sleep. The swap only
+// decides which of several senders makes the call; the OS compares the word
+// again as the receiver goes to sleep, so it needs no ordering of its own.
+fn chanWake(sleeping *u32) {
+  if mem.atomicLoad[u32](sleeping, MemOrder.SeqCst[]) != 0u32 {
+    if mem.atomicSwap[u32](sleeping, 0u32, MemOrder.Relaxed[]) != 0u32 {
+      rawWake(sleeping);
+    }
+  }
+}
+
+// One side (the receiver, or the senders together, when the last one goes)
+// lets go; the second to go frees the channel. AcqRel, so the one that frees
+// it has seen everything the other side did to it.
+fn chanRelease[T](c *Chan[T]) {
+  if mem.atomicSub[u32](&(*c).sides as *u32, 1u32, MemOrder.AcqRel[]) == 1u32 {
+    libc.free(c as *u8);
+  }
+}
+
+// The clock recvTimeout measures by: nanoseconds from some fixed moment
+fn nowNs() u64 {
+  mut count = 0i64;
+  mut freq = 0i64;
+  QueryPerformanceCounter(&mut count as *i64);
+  QueryPerformanceFrequency(&mut freq as *i64);
+  imm c = u64[count];
+  imm f = u64[freq];
+  // Split, so that count * 10^9 cannot overflow
+  (c / f) * 1000000000u64 + (c % f) * 1000000000u64 / f;
+}
+
+// What the receiver finds at its index
+const pollReady = 0u32;                // a value, written
+const pollEmpty = 1u32;                // nothing yet
+const pollClosed = 2u32;               // nothing, and nothing more will come
+
+// The constructor: 'Channel[T].make()', which answers the two ends
+pub struct Channel[T] {
+  // A new unbounded channel: its sending end and its receiving end
+  pub fn make() Sender[T], Receiver[T] {
+    imm c = libc.malloc(mem.sizeof[Chan[T]]()) as *Chan[T];
+    if c as usize == 0usize {
+      die("sync: out of memory for a channel\n");
+    }
+    imm b = blockNew[T]();
+    (*c).tail = 0u64;
+    (*c).tailBlock = b;
+    (*c).sleeping = 0u32;
+    (*c).sides = 2u32;
+    (*c).senders = 1u64;
+    Sender[T].made(c), Receiver[T].made(c, b);
+  }
+}
+
+// The sending end of a channel. There may be any number: 'clone' makes
+// another, and the last one to die closes the channel.
+pub struct Sender[T] {
+  chan *Chan[T];
+
+  fn made(c *Chan[T]) Sender[T] {Sender[T][c];}
+
+  // Put v on the channel: None once it is there. Never waits (the channel is
+  // unbounded). If the receiver has gone or closed the channel, v is handed
+  // back: Some[v].
+  pub fn send(self &, v T) Option[T] {
+    imm c = chan;
+    imm tailp = &(*c).tail as *u64;
+    imm blockp = &(*c).tailBlock as **Block[T];
+    // Acquire: the installer of a block stores the block, then moves the
+    // index on to its lap, releasing; an index seen in that lap brings the
+    // block with it, and the zeroed memory under it
+    mut tail = mem.atomicLoad[u64](tailp, MemOrder.Acquire[]);
+    mut block = mem.atomicLoad[*Block[T]](blockp, MemOrder.Acquire[]);
+    // The next block, made before the claim of a block's last slot so the
+    // other senders wait on the installer as briefly as can be
+    mut spare = 0usize as *Block[T];
+    mut offset = 0u64;
+    mut claimed = false;
+    mut step = 0u32;
+    while !claimed {
+      if (tail & chanClosed) != 0u64 {
+        if spare as usize != 0usize {
+          libc.free(spare as *u8);
+        }
+        return Some[T][v];
+      }
+      offset = chanOffset(tail);
+      // Another sender is installing the next block: wait for it
+      if offset == blockCap {
+        step = chanBackoff(step);
+        tail = mem.atomicLoad[u64](tailp, MemOrder.Acquire[]);
+        block = mem.atomicLoad[*Block[T]](blockp, MemOrder.Acquire[]);
+        continue;
+      }
+      if offset + 1u64 == blockCap and spare as usize == 0usize {
+        spare = blockNew[T]();
+      }
+      // Claim the position. SeqCst: this is the claim chanWake's Dekker
+      // pairing is made with (the receiver rereads this word before it
+      // sleeps). On failure, Acquire, as the first load.
+      mut seen = 0u64;
+      seen, claimed = mem.atomicCompareSwap[u64](tailp, tail, tail + chanOne,
+        MemOrder.SeqCst[], MemOrder.Acquire[]);
+      if !claimed {
+        tail = seen;
+        block = mem.atomicLoad[*Block[T]](blockp, MemOrder.Acquire[]);
+      }
+    }
+    // The block is the one the claimed position falls in: the index never
+    // goes back, so it did not move between that load and the claim, and a
+    // block is replaced only while the index stands at offset 32
+    if offset + 1u64 == blockCap {
+      // This claimed the block's last slot: install the next one. The block
+      // first, then the index past offset 32 to the next lap (an add, not a
+      // store, so a close made meanwhile is kept), both releasing, for the
+      // senders' acquiring loads; then the link the receiver follows,
+      // releasing for its acquire. All three come before this slot is marked
+      // written, which the receiver waits for before it follows the link.
+      mem.atomicStore[*Block[T]](blockp, spare, MemOrder.Release[]);
+      mem.atomicAdd[u64](tailp, (chanLap - blockCap) << chanShift, MemOrder.Release[]);
+      mem.atomicStore[*Block[T]](&(*block).next as **Block[T], spare, MemOrder.Release[]);
+    } elif spare as usize != 0usize {
+      // Made for an earlier try that another sender won
+      libc.free(spare as *u8);
+    }
+    imm slot = slotAt[T](block, offset);
+    mem.writeRaw[T](&(*slot).value as *T, v);
+    // Release: the value, written above, is seen by the receiver that
+    // acquires this state
+    mem.atomicStore[u32](&(*slot).state as *u32, 1u32, MemOrder.Release[]);
+    chanWake(&(*c).sleeping as *u32);
+    None[T][];
+  }
+
+  // 'tx <- v' is send: what it answers is send's
+  pub fn `<-`(self &, v T) Option[T] {
+    self.send(v);
+  }
+
+  // Another sender on the same channel. Relaxed: this sender is alive, so
+  // the count cannot reach 0 meanwhile, and nothing is published by it.
+  pub fn clone(self &) Sender[T] {
+    mem.atomicAdd[u64](&(*chan).senders as *u64, 1u64, MemOrder.Relaxed[]);
+    Sender[T][chan];
+  }
+
+  // The last sender to go closes the channel, and wakes the receiver, which
+  // takes what is left and then sees it closed
+  fn final(self &uni) {
+    imm c = chan;
+    // AcqRel: each sender's release, and the last one's acquire, bring every
+    // sender's doings before the close, and so before the receiver's
+    // acquiring load that sees it
+    if mem.atomicSub[u64](&(*c).senders as *u64, 1u64, MemOrder.AcqRel[]) == 1u64 {
+      // SeqCst: the close is a change the receiver must not sleep through,
+      // paired with chanWake's load as a claim is
+      mem.atomicOr[u64](&(*c).tail as *u64, chanClosed, MemOrder.SeqCst[]);
+      chanWake(&(*c).sleeping as *u32);
+      chanRelease[T](c);
+    }
+  }
+}
+
+// The receiving end of a channel: there is one, a move type with no clone,
+// so only one thread takes values from it. Its index and block are its own,
+// read and written by nobody else.
+pub struct Receiver[T] {
+  chan *Chan[T];
+  head u64;                    // the next position to take
+  block *Block[T];             // the block it falls in
+
+  fn made(c *Chan[T], b *Block[T]) Receiver[T] {Receiver[T][c, 0u64, b];}
+
+  // The next value, waiting while there is none; None once the channel is
+  // closed (every sender gone, or 'close') and everything sent is taken
+  pub fn recv(self &mut) Option[T] {
+    while true {
+      imm found = self.poll();
+      if found == pollReady {
+        return Some[T][self.take()];
+      }
+      if found == pollClosed {
+        return None[T][];
+      }
+      self.park(forever);
+    }
+    None[T][];
+  }
+
+  // The next value if one is there now, never waiting; None when there is
+  // none, whether or not more may come ('isClosed' says which)
+  pub fn tryRecv(self &mut) Option[T] {
+    if self.poll() == pollReady {
+      return Some[T][self.take()];
+    }
+    None[T][];
+  }
+
+  // The next value, waiting at most ns nanoseconds for one; None when none
+  // came in that time, or the channel is closed and empty. The sleep is the
+  // futex's, so it may run over by up to the system's timer tick.
+  pub fn recvTimeout(self &mut, ns u64) Option[T] {
+    imm start = nowNs();
+    while true {
+      imm found = self.poll();
+      if found == pollReady {
+        return Some[T][self.take()];
+      }
+      if found == pollClosed {
+        return None[T][];
+      }
+      imm waited = nowNs() - start;
+      if waited >= ns {
+        return None[T][];
+      }
+      self.park(ns - waited);
+    }
+    None[T][];
+  }
+
+  // Refuse any further send: each is handed its value back. What was sent
+  // before stays, to be taken. Relaxed: the close and every claim change one
+  // word, whose own order is all that decides which sends it refuses.
+  pub fn close(self &mut) {
+    mem.atomicOr[u64](&(*chan).tail as *u64, chanClosed, MemOrder.Relaxed[]);
+  }
+
+  // Whether the channel is closed, by the receiver or by its last sender
+  // going: nothing more will arrive, though what came before may still be
+  // waiting to be taken. Acquire, as poll's load of the same word.
+  pub fn isClosed(self &) Bool {
+    (mem.atomicLoad[u64](&(*chan).tail as *u64, MemOrder.Acquire[]) & chanClosed) != 0u64;
+  }
+
+  // What is at the receiver's index, waiting out a send that has claimed
+  // it and not yet written it
+  fn poll(self &mut) u32 {
+    imm slot = slotAt[T](block, chanOffset(head));
+    imm statep = &(*slot).state as *u32;
+    // Acquire: the sender's release store of the state brings its value
+    if mem.atomicLoad[u32](statep, MemOrder.Acquire[]) != 0u32 {
+      return pollReady;
+    }
+    // Acquire: when this sees the channel closed, everything the senders
+    // did before it closed is seen too
+    imm tail = mem.atomicLoad[u64](&(*chan).tail as *u64, MemOrder.Acquire[]);
+    if chanPos(tail) == chanPos(head) {
+      return if (tail & chanClosed) != 0u64 {pollClosed;} else {pollEmpty;};
+    }
+    // Claimed, and being written
+    mut step = 0u32;
+    while mem.atomicLoad[u32](statep, MemOrder.Acquire[]) == 0u32 {
+      step = chanBackoff(step);
+    }
+    pollReady;
+  }
+
+  // Move the written value at the index out, and step past it
+  fn take(self &mut) T {
+    imm offset = chanOffset(head);
+    imm v = mem.readRaw[T](&(*slotAt[T](block, offset)).value as *T);
+    self.advance(offset);
+    v;
+  }
+
+  // Step past the slot at offset, which is taken. Past a block's last slot,
+  // follow its link and free it: every sender that claimed a slot in it has
+  // marked its slot written, which is the last it does to the block, and a
+  // sender holding it as the senders' block from before it was replaced
+  // finds the index moved on and never touches it.
+  fn advance(self &mut, offset u64) {
+    if offset + 1u64 == blockCap {
+      block = chanPassBlock[T](block);
+    }
+    head = chanStep(head, offset);
+  }
+
+  // Sleep until a send or a close may have changed what poll finds, or until
+  // timeoutNs passes. Spin first, since a send often comes within it.
+  fn park(self &mut, timeoutNs u64) {
+    mut n = 0u32;
+    while n < spinLimit {
+      if self.poll() != pollEmpty {
+        return;
+      }
+      n = n + 1u32;
+    }
+    imm c = chan;
+    imm sleeping = &(*c).sleeping as *u32;
+    // Say that the receiver sleeps, then reread the senders' index: both
+    // SeqCst, the receiver's half of the Dekker pairing chanWake describes.
+    // A claim or a close this reread does not see comes after it, and its
+    // sender's load then sees the 1 and wakes this thread.
+    mem.atomicStore[u32](sleeping, 1u32, MemOrder.SeqCst[]);
+    imm tail = mem.atomicLoad[u64](&(*c).tail as *u64, MemOrder.SeqCst[]);
+    if chanPos(tail) == chanPos(head) and (tail & chanClosed) == 0u64 {
+      rawWait(sleeping, 1u32, timeoutNs);
+    }
+    // Relaxed: only this thread sets it to 1, and its next sleep sets it
+    // again, SeqCst, before it rereads
+    mem.atomicStore[u32](sleeping, 0u32, MemOrder.Relaxed[]);
+  }
+
+  // The receiver's going closes the channel, so each later send gets its
+  // value back; finalizes each value still in it, each once, waiting out any
+  // send that claimed a slot before the close and has not written it; and
+  // frees the blocks, the senders touching none once they see it closed.
+  // (It keeps its own copies of the index and the block, and steps them with
+  // the free functions advance uses: calling a '&mut' method through 'self
+  // &uni' moves the unique reference into the call rather than lending it.)
+  fn final(self &uni) {
+    imm c = chan;
+    imm tailp = &(*c).tail as *u64;
+    mem.atomicOr[u64](tailp, chanClosed, MemOrder.Relaxed[]);
+    // No claim follows the close; one that came before it may still be
+    // installing the next block (offset 32), after which the index is final
+    mut tail = mem.atomicLoad[u64](tailp, MemOrder.Acquire[]);
+    mut step = 0u32;
+    while chanOffset(tail) == blockCap {
+      step = chanBackoff(step);
+      tail = mem.atomicLoad[u64](tailp, MemOrder.Acquire[]);
+    }
+    mut h = head;
+    mut b = block;
+    while chanPos(h) != chanPos(tail) {
+      imm offset = chanOffset(h);
+      imm slot = slotAt[T](b, offset);
+      step = 0u32;
+      while mem.atomicLoad[u32](&(*slot).state as *u32, MemOrder.Acquire[]) == 0u32 {
+        step = chanBackoff(step);
+      }
+      mem.finalize[T](&(*slot).value as *T);
+      if offset + 1u64 == blockCap {
+        b = chanPassBlock[T](b);
+      }
+      h = chanStep(h, offset);
+    }
+    libc.free(b as *u8);
+    chanRelease[T](c);
   }
 }

@@ -1,0 +1,132 @@
+// Channel[T] between threads. Three producer threads each send 10000
+// numbered items, producer p's k-th item being p * 1000000 + k; one consumer
+// thread takes them until recv answers None, which it does once all three
+// producers are done and their senders gone, and everything they sent is
+// taken. The consumer sums the items, counts them per producer, and checks
+// that each producer's items came in the order that producer sent them. The
+// totals are exact every run:
+//
+//   items  30000 (10000 from each)
+//   sum    30150015000 = 10000 * (0 + 1 + 2) * 1000000 + 3 * (10000 * 10001 / 2)
+//
+// Then a slow producer: 50 items, a millisecond apart, so the consumer finds
+// the channel empty each time and goes to sleep, and each send has to wake
+// it. A lost wake-up would leave it asleep and the test would hang (and fail,
+// at Congo's 60 seconds). 'testing' counts its checks in globals, so every
+// check is made on the main thread, from what the threads return.
+
+mod channelthreads;
+
+import testing use *;
+import thread;
+import sync use *;
+
+const perProducer = 10000u64;
+
+// What a producer is handed: its sender and its number
+struct Work {
+  pub tx Sender[u64];
+  pub id u64;
+}
+
+fn produce(w Work) u64 {
+  mut k = 1u64;
+  while k <= perProducer {
+    w.tx.send(w.id * 1000000u64 + k);
+    k = k + 1u64;
+  }
+  perProducer;
+}
+
+// What the consumer found
+struct Totals {
+  pub items u64;
+  pub sum u64;
+  pub from0 u64;
+  pub from1 u64;
+  pub from2 u64;
+  pub disorder u64;             // items not one more than their producer's last
+}
+
+fn consume(rx Receiver[u64]) Totals {
+  mut t = Totals[0u64, 0u64, 0u64, 0u64, 0u64, 0u64];
+  mut last [3; u64] = [3; 0u64];
+  mut more = true;
+  mut r = rx;
+  while more {
+    match r.recv() {
+      case imm s Some {
+        imm v = s.value;
+        imm p = v / 1000000u64;
+        imm k = v % 1000000u64;
+        if p > 2u64 or k != last[p] + 1u64 {
+          t.disorder = t.disorder + 1u64;
+        }
+        if p <= 2u64 {
+          last[p] = k;
+        }
+        if p == 0u64 {t.from0 = t.from0 + 1u64;}
+        if p == 1u64 {t.from1 = t.from1 + 1u64;}
+        if p == 2u64 {t.from2 = t.from2 + 1u64;}
+        t.items = t.items + 1u64;
+        t.sum = t.sum + v;
+      }
+      case is None[u64] {more = false;}
+    }
+  }
+  t;
+}
+
+// Send 1 to 50, sleeping a millisecond before each
+fn trickle(tx Sender[u64]) u64 {
+  mut k = 1u64;
+  while k <= 50u64 {
+    thread.sleep(1000000u64);
+    tx.send(k);
+    k = k + 1u64;
+  }
+  k - 1u64;
+}
+
+// Take items until the channel closes: their sum
+fn sumAll(rx Receiver[u64]) u64 {
+  mut sum = 0u64;
+  mut more = true;
+  mut r = rx;
+  while more {
+    match r.recv() {
+      case imm s Some {sum = sum + s.value;}
+      case is None[u64] {more = false;}
+    }
+  }
+  sum;
+}
+
+fn main() i32 {
+  mut tx Sender[u64];
+  mut rx Receiver[u64];
+  tx, rx = Channel[u64].make();
+  imm consumer = thread.start(rx, &consume);
+  imm p1 = thread.start(Work[tx.clone(), 1u64], &produce);
+  imm p2 = thread.start(Work[tx.clone(), 2u64], &produce);
+  imm p0 = thread.start(Work[tx, 0u64], &produce);
+  imm sent = p0.join() + p1.join() + p2.join();
+  imm t = consumer.join();
+  expectUInt(sent, 30000u64, "the items the producers sent");
+  expectUInt(t.items, 30000u64, "the items the consumer took");
+  expectUInt(t.from0, 10000u64, "from producer 0");
+  expectUInt(t.from1, 10000u64, "from producer 1");
+  expectUInt(t.from2, 10000u64, "from producer 2");
+  expectUInt(t.sum, 30150015000u64, "their sum");
+  expectUInt(t.disorder, 0u64, "each producer's items in the order it sent them");
+
+  mut tx2 Sender[u64];
+  mut rx2 Receiver[u64];
+  tx2, rx2 = Channel[u64].make();
+  imm slowConsumer = thread.start(rx2, &sumAll);
+  imm slow = thread.start(tx2, &trickle);
+  expectUInt(slow.join(), 50u64, "the slow producer's sends");
+  // 1 + 2 + ... + 50
+  expectUInt(slowConsumer.join(), 1275u64, "each woke the sleeping consumer");
+  done();
+}

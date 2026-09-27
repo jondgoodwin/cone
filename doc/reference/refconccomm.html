@@ -13,9 +13,14 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: None of this is implemented, except the raw
-		atomic operations the atomic primitives would be built on, which are
-		<a href="refintrinsic.html">intrinsics</a>.</i></p>
+	<p style="margin-left: 40px;"><i>Note: Two things on this page are implemented, as the
+		<span class="pre">sync</span> library package, on Windows only: an unbounded
+		<a href="#channel">channel</a> of many senders and one receiver,
+		<span class="pre">Channel[T]</span>; and the atomic primitives, as
+		<a href="refconc.html#atomic">Atomic[T]</a>, over the raw atomic operations core declares,
+		which are <a href="refintrinsic.html">intrinsics</a>. Nothing checks yet that what is sent
+		is sendable. Bounded and single-sender channels, actors and <span class="pre">qfn</span>,
+		the other concurrent data structures, and lock permissions are not implemented.</i></p>
 
 	<p>It can be a huge performance benefit that threads share memory and other resources,
 		particularly when the threads need to exchange or share large, complex data structures.
@@ -45,7 +50,45 @@
 		Any actor that wants some actor to perform work adds that work to the actor's queue
 		in the form of a message. As part of a continuous loop, the actor owning the queue 
 		pops a message off the queue and completely performs the non-blocking work it requests.</p>
-		
+
+	<h3 id="channel">Channels</h3>
+	<p>The <span class="pre">sync</span> package's <span class="pre">Channel[T]</span> is such a
+		queue, usable directly between threads: unbounded, with any number of sending ends and one
+		receiving end. <span class="pre">Channel[T].make()</span> answers both ends. Each is a
+		move type: another sender is made only by <span class="pre">clone()</span>, and the
+		receiver has no clone, so exactly one thread takes from it.</p>
+<pre>
+import sync use *;
+
+mut tx Sender[Job];
+mut rx Receiver[Job];
+tx, rx = Channel[Job].make();   // the two ends
+imm tx2 = tx.clone();           // a second sender, said out loud
+tx &lt;- job;                      // send: never waits
+match rx.recv() {               // waits while it is empty
+  case imm j Some {run(j.value);}
+  case is None[Job] {}          // closed, and every value taken
+}
+</pre>
+	<ul>
+	<li><span class="pre">tx.send(v)</span>, or <span class="pre">tx &lt;- v</span>, puts a value
+		in and never waits. It answers <span class="pre">None</span>, or, when the receiver has
+		gone or closed the channel, <span class="pre">Some</span> holding the value, handed back
+		rather than lost.</li>
+	<li><span class="pre">rx.recv()</span> waits for the next value, oldest first;
+		<span class="pre">rx.tryRecv()</span> never waits; <span class="pre">rx.recvTimeout(ns)</span>
+		waits at most <span class="pre">ns</span> nanoseconds. Each answers an
+		<span class="pre">Option</span>.</li>
+	<li>Nothing panics, and no one has to close the channel by hand. The last sender's death
+		closes it: the receiver takes what is left, and then <span class="pre">recv</span> answers
+		<span class="pre">None</span>. <span class="pre">rx.close()</span> refuses later sends while
+		what came before still drains. The receiver's death closes it too, and finalizes each value
+		still in it, once.</li>
+	</ul>
+	<p>A send is one compare-and-swap, into blocks of 32 slots allocated a block at a time; the
+		receiver takes a value with no read-modify-write at all, and sleeps, on the
+		<a href="refconc.html#futex">futex</a>, only when the channel is empty.</p>
+
 	<p>Any particular channel's messages are all the same type, but might very well be some sort of variant type,
 		allowing different kinds of messages to be sent. Cone makes it easier to support this kind of message-passing
 		by supporting the definition of queued-methods for the message type. For example:
