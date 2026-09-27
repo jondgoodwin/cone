@@ -49,19 +49,20 @@ returns the wrapping block, not the `IfNode`.**
 `parseMatch` lowers the whole construct into a block plus one `IfNode`:
 `case is T` → an `is` node, `case == v` (or any comparison operator) → that
 operator's call with the scrutinee on the left, `case a .. b` → `>= a and < b`
-(`<=` for `...`), `case imm x T` → a bound pattern, `case <expr>` → the
-expression, `else` → `elseCond`. Patterns joined by `or` → a logical `or` of
+(`<=` for `...`), `case imm x T` → a bound pattern, `else` → `elseCond`. Patterns joined by `or` → a logical `or` of
 their conditions; an `if g` after them → `cond and g`. **Every arm shares one
 scrutinee node pointer**, a use of the variable the lowering declared to hold
 the matched value, so a range's two calls and every `or` alternative hold it too.
 
-**A case's first operand decides between a range and a condition.** A case
+**A case's first operand decides between a range and a refusal.** A case
 beginning with neither `is` nor a comparison operator reads one operand
-(`parseOr`); a following `..` or `...` makes it a range, and otherwise the
-expression is finished (`parseSimpleExprFrom`) and is a condition, whose own
-`or` it has already taken. A value alone as an `or` alternative is refused,
-`ErrorPatBare`: read as a condition it would coerce to true, and whether it
-should mean `==` is not decided.
+(`parseOr`); a following `..` or `...` makes it a range. Otherwise the case
+begins with a value alone (`case true`, `case 1`, `case K`, `case not b`,
+`case n > 3`), which is refused, `ErrorPatBare`, as a value alone as an `or`
+alternative is: as a condition it would be coerced to `Bool` and decide the
+case without looking at the matched value (`case 1` true of every value). The
+refused expression is finished (`parseSimpleExprFrom`), its own `or` included,
+so it is reported once.
 
 **A bound pattern's guard binds the variable a second time.** The variable is
 declared at the head of the arm, which the condition is outside, so `case imm x

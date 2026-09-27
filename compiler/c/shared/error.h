@@ -258,7 +258,7 @@ enum ErrorCode {
     ErrorDupImport = 1116,      // A second import of one module: the same import again, or one that differs in what its 'use' clause folds or in its 'pub'; likewise a second standalone 'use' of one submodule
 
     // A match's patterns: 'is', comparison and range patterns joined by 'or'
-    ErrorPatBare = 1117,        // A value alone where a match expects a pattern, after an 'or': whether a bare value means '==' is not decided
+    ErrorPatBare = 1117,        // A value alone where a match expects a pattern, at the start of a case or after an 'or', rather than a condition that ignores the matched value
 
     // A path through an abstraction: 'Trait.name', 'Enum.name'
     ErrorAbstractMeth = 1118,   // A trait's or enum's method named through it, which owns no code for it: each implementer or variant owns a copy
