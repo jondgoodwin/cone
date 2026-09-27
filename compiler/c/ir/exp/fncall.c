@@ -656,6 +656,27 @@ static void fnCallNoCandidate(INode *callnode, enum OverloadMatch status, Name *
             "No %s declared by `%s` accepts the call's arguments.", kind, &namesym->namestr);
 }
 
+// '&x[i]' hands the type's '&[]' a read-only borrow of 'x' as its receiver,
+// which a '&[]' declaring 'self &mut' refuses. That refusal is the rule; what
+// this adds is the reason and the spellings that work, reported in place of the
+// bare no-candidate message where a '&mut' receiver would have been accepted.
+// The probe alters nothing. Answer whether it reported.
+static int fnCallRefIndexWantsMut(FnCallNode *callnode, INode *foundnode, Name *methsym, enum OverloadMatch status) {
+    if (status != OverloadNone || methsym != refIndexName || !(callnode->flags & FlagIndex))
+        return 0;
+    INode *recvtype = iexpGetTypeDcl(callnode->objfn);
+    if (recvtype->tag != RefTag || (permGetFlags(((RefNode*)recvtype)->perm) & MayWrite))
+        return 0;
+    INode *mutrecvr = newBorrowMutRef(callnode->objfn, ((RefNode*)recvtype)->vtexp, newPermUseNode(mutPerm));
+    enum OverloadMatch mutstatus;
+    if (iNsTypeFindMethod(foundnode, &mutrecvr, callnode->args, &mutstatus) == NULL)
+        return 0;
+    errorMsgNode((INode*)callnode, ErrorNoCandidate,
+        "`&x[i]` hands `&[]` a read-only receiver, and this type's `&[]` takes `self &mut`. "
+        "Write `x[i]` to read the element, or `&mut x[i]` to borrow it through a mutable receiver.");
+    return 1;
+}
+
 // Find the one field or method that accepts the call's receiver and arguments,
 // then lower the node to a function call (objfn+args) or field access (objfn+methfld).
 // A receiver held through a reference or pointer is dereferenced where the selected
@@ -904,7 +925,8 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
         selected = fnCallBorrowReceiver(callnode, foundnode, &status);
 
     if (selected == NULL) {
-        fnCallNoCandidate((INode*)callnode, status, methsym, "method");
+        if (!fnCallRefIndexWantsMut(callnode, foundnode, methsym, status))
+            fnCallNoCandidate((INode*)callnode, status, methsym, "method");
         return -1;
     }
 

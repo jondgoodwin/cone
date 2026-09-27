@@ -36,6 +36,29 @@ fn borrowMethodResult() {
   imm r = &c.doubled();  //~ ErrorBadLval:13 "May not borrow a temporary value"
 }
 
+// '&g[i]' hands the type's own '&[]' the read-only borrow '&g' as its receiver.
+// A '&[]' declaring 'self &mut' refuses it, as a read-only reference is refused
+// by any 'self &mut' method, whether 'g' is a mutable value or a read-only
+// parameter. The message names the spellings that work: 'g[i]' reads the
+// element, and '&mut g[i]' borrows it where 'g' is mutable.
+struct Grid {
+  pub mut cells [4; i32];
+  pub fn `[]`(self, index usize) i32 { cells[index]; }
+  pub fn `&[]`(self &mut, index usize) &mut i32 { &mut cells[index]; }
+}
+
+fn borrowIndexReadOnlyValue() {
+  mut g = Grid[cells: [1, 2, 3, 4]];
+  imm r = &g[1usize];    //~ ErrorNoCandidate:13 "`&x[i]` hands `&[]` a read-only receiver, and this type's `&[]` takes `self &mut`. Write `x[i]` to read the element, or `&mut x[i]`"
+  imm v = g[1usize];
+  imm w = &mut g[1usize];
+}
+
+fn borrowIndexReadOnlyParam(g &Grid, i usize) {
+  imm r = &g[i];         //~ ErrorNoCandidate:13 "hands `&[]` a read-only receiver"
+  imm v = g[i];
+}
+
 // A constructed literal is a temporary too, so a reference type's own literal
 // syntax is not a way to allocate one
 fn borrowConstructed() {
