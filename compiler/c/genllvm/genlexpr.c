@@ -288,6 +288,86 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
     }
 }
 
+// LLVM's name for a MemOrder: C11's, with 'relaxed' called monotonic
+static LLVMAtomicOrdering genlAtomicOrdering(MemOrderKind order) {
+    switch (order) {
+    case OrderRelaxed: return LLVMAtomicOrderingMonotonic;
+    case OrderAcquire: return LLVMAtomicOrderingAcquire;
+    case OrderRelease: return LLVMAtomicOrderingRelease;
+    case OrderAcqRel:  return LLVMAtomicOrderingAcquireRelease;
+    default:           return LLVMAtomicOrderingSequentiallyConsistent;
+    }
+}
+
+// Expand a call to an atomic intrinsic, the one kind of declared intrinsic
+// whose meaning depends on the call as well as the instance: its orderings are
+// the constants the call was given, which type check found allowed
+// (intrinsicCallCheck), so LLVM is never handed one it would refuse. Each is
+// one instruction, aligned as the type is, which a lock-free target does
+// indivisibly. A Bool is an i1 held in a byte: the instruction acts on the
+// byte, into which a Bool is written as 0 or 1 and out of which its low bit is
+// read, since LLVM's atomics take no i1.
+static LLVMValueRef genlAtomicIntrinsic(GenState *gen, FnDclNode *fndcl, FnCallNode *call, LLVMValueRef *fnargs) {
+    IntrinsicNode *intrinsic = (IntrinsicNode *)fndcl->value;
+    MemOrderKind orders[2];
+    intrinsicCallOrders(call, fndcl, orders);
+    LLVMAtomicOrdering order = genlAtomicOrdering(orders[0]);
+    int isbool = itypeGetTypeDcl(intrinsic->typearg) == (INode*)boolType;
+    LLVMTypeRef valtype = genlType(gen, intrinsic->typearg);
+    LLVMTypeRef memtype = isbool ? LLVMInt8TypeInContext(gen->context) : valtype;
+    unsigned align = LLVMABIAlignmentOfType(gen->datalayout, memtype);
+    LLVMValueRef ptr = fnargs[0];
+    LLVMValueRef value = NULL;      // the value operand, in memory's type
+    if (intrinsic->intrinsicFn != AtomicLoadIntrinsic)
+        value = isbool ? LLVMBuildZExt(gen->builder, fnargs[1], memtype, "") : fnargs[1];
+
+    LLVMValueRef result;
+    switch (intrinsic->intrinsicFn) {
+    case AtomicLoadIntrinsic:
+        result = LLVMBuildLoad2(gen->builder, memtype, ptr, "atomicload");
+        LLVMSetOrdering(result, order);
+        LLVMSetAlignment(result, align);
+        break;
+    case AtomicStoreIntrinsic: {
+        LLVMValueRef store = LLVMBuildStore(gen->builder, value, ptr);
+        LLVMSetOrdering(store, order);
+        LLVMSetAlignment(store, align);
+        return NULL;
+    }
+    case AtomicCompareSwapIntrinsic: {
+        LLVMValueRef desired = isbool ? LLVMBuildZExt(gen->builder, fnargs[2], memtype, "") : fnargs[2];
+        LLVMValueRef cmpxchg = LLVMBuildAtomicCmpXchg(gen->builder, ptr, value, desired,
+            order, genlAtomicOrdering(orders[1]), 0);
+        LLVMSetAlignment(cmpxchg, align);
+        LLVMValueRef seen = LLVMBuildExtractValue(gen->builder, cmpxchg, 0, "atomicseen");
+        if (isbool)
+            seen = LLVMBuildTrunc(gen->builder, seen, valtype, "");
+        LLVMValueRef swapped = LLVMBuildExtractValue(gen->builder, cmpxchg, 1, "atomicswapped");
+        LLVMValueRef tuple = LLVMGetUndef(genlType(gen, ((FnSigNode *)fndcl->vtype)->rettype));
+        tuple = LLVMBuildInsertValue(gen->builder, tuple, seen, 0, "");
+        return LLVMBuildInsertValue(gen->builder, tuple, swapped, 1, "compareswap");
+    }
+    default: {
+        LLVMAtomicRMWBinOp op;
+        switch (intrinsic->intrinsicFn) {
+        case AtomicSwapIntrinsic: op = LLVMAtomicRMWBinOpXchg; break;
+        case AtomicAddIntrinsic:  op = LLVMAtomicRMWBinOpAdd; break;
+        case AtomicSubIntrinsic:  op = LLVMAtomicRMWBinOpSub; break;
+        case AtomicAndIntrinsic:  op = LLVMAtomicRMWBinOpAnd; break;
+        case AtomicOrIntrinsic:   op = LLVMAtomicRMWBinOpOr; break;
+        case AtomicXorIntrinsic:  op = LLVMAtomicRMWBinOpXor; break;
+        default:
+            errorUnreachable((INode *)call, "an atomic intrinsic with no generation");
+            return NULL;
+        }
+        result = LLVMBuildAtomicRMW(gen->builder, op, ptr, value, order, 0);
+        LLVMSetAlignment(result, align);
+        break;
+    }
+    }
+    return isbool ? LLVMBuildTrunc(gen->builder, result, valtype, "") : result;
+}
+
 LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint32_t fnargcnt, LLVMValueRef *fnargs, INode *selftype) {
 
     // Handle call when we have a derefed pointer to a function
@@ -657,6 +737,11 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
     for (nodesFor(fncall->args, cnt, nodesp)) {
         *fnarg++ = genlExpr(gen, *nodesp);
     }
+
+    // An atomic intrinsic reads its orderings from the call's own arguments
+    FnDclNode *atomic = intrinsicAtomicCallee(fncall);
+    if (atomic)
+        return genlAtomicIntrinsic(gen, atomic, fncall, fnargs);
 
     INode *selftype = fnargcnt > 0 ? ((IExpNode*)nodesGet(fncall->args, 0))->vtype : NULL;
     return genlFnCallInternal(gen, dispatch, objfn, fnargcnt, fnargs, selftype);

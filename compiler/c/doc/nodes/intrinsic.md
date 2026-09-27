@@ -7,13 +7,16 @@ they differ in who declares them and in how their meaning is decided.
 | --- | --- | --- |
 | Declared by | `corenumber.c`, `corelib.c`, `struct.c` (an enum's `==`) | `packages/core/src/core.cone`, as functions of the opaque struct `mem` |
 | Named | as a method or operator of a type | through `mem`: `mem.sizeof[T]()` |
-| Kinds | `NegIntrinsic` … `FinalAllIntrinsic` | `SizeofIntrinsic` … `TraceRootsIntrinsic` (`FirstDeclaredIntrinsic` onward) |
+| Kinds | `NegIntrinsic` … `FinalAllIntrinsic` | `SizeofIntrinsic` … `AtomicCompareSwapIntrinsic` (`FirstDeclaredIntrinsic` onward) |
 | Meaning decided | at generation, by the LLVM type kind of argument 0 | by the registry, in Cone terms; the Cone type rides on the node (`typearg`) |
 | Reference page | none: the number and pointer methods | `doc/reference/refintrinsic.html` |
 
 The kinds built in C are left as they are until the number types are rebuilt
 over generics; nothing new is to be added to them. **A new intrinsic is declared
-in core, entered in the registry, and given an arm in `genlDeclaredIntrinsic`.**
+in core, entered in the registry, and given an arm in `genlDeclaredIntrinsic`**
+— or, for one whose meaning depends on its call as well as its instance, as the
+atomic operations' orderings do, in `genlAtomicIntrinsic`, which `genlFnCall`
+reaches with the call's own arguments.
 
 *Provenance: read from source and measured, September 2026.*
 
@@ -24,7 +27,10 @@ in core, entered in the registry, and given an arm in `genlDeclaredIntrinsic`.**
 over the one type parameter `T` (or over none: `traceRoots` is the one entry
 without it, and its instance carries no `typearg`), whether a call can break memory safety (and so
 belongs in `trust`), whether a Cone fallback body may be written, the phase that
-answers it, and whether this back end lowers it itself. No LLVM name appears in
+answers it, whether this back end lowers it itself, and the class of types `T`
+may be where that is narrower than every type with a size (`IntrinsicClass`: the
+atomic operations take an integer of 8 to 64 bits, `Bool` or a raw pointer, or
+part of that). No LLVM name appears in
 it. ▸ **Forbids** passing an LLVM intrinsic name through (`@intrinsic("llvm.…")`)
 and deciding a new intrinsic's meaning from an LLVM type: the LLVM instructions
 in `genlDeclaredIntrinsic` are one implementation of the entry, which a native
@@ -50,8 +56,18 @@ a submodule would give, so moving it changes no call.
 **A fallback body must mean what the entry means.** It is what a back end with no
 lowering runs, and `--intrinsic-fallback` runs it in place of the lowering, so
 the two are tested against each other by running one scenario both ways
-(`intrinsic_success`). An entry nothing in Cone can express (`sizeof`,
-`finalize`, `writeRaw`) refuses a body.
+(`intrinsic_success`, `intrinsic_atomic`). An entry nothing in Cone can express (`sizeof`,
+`finalize`, `writeRaw`) refuses a body. An atomic operation's body is the plain
+operation, which means what the entry means for one thread, all a back end with
+no atomic instructions can run.
+
+**What is refused is refused both ways.** A type outside an entry's class and an
+atomic ordering that is not a constant, or is one the operation forbids, are
+judged whether the call is lowered or runs its fallback body: the class on the
+instance before its body is checked (`intrinsicClassCheck`), so a fallback body
+is never type checked at a type it was not written for, and the orderings at the
+call (`intrinsicCallCheck`), since an instance is shared by every call at its
+type while each call gives its own orderings.
 
 ## The life of a declared intrinsic
 
@@ -70,7 +86,9 @@ the two are tested against each other by running one scenario both ways
    - its signature must match the entry's shapes, else `ErrorIntrinsicSig`. In a
      generic template `*T` is still a `DerefTag` and `&[]T` an `ArrayBorrowTag`,
      because a type parameter is not yet a type (`cloneStarNode`,
-     `cloneRefNode`), so both spellings are accepted;
+     `cloneRefNode`), so both spellings are accepted. An atomic ordering is
+     core's enum named `MemOrder` (`memOrderEnum`, known by name and package as
+     `TypeRecord` is), and compareSwap's result the tuple `T, Bool`;
    - a body the entry allows no fallback for, or no body where there is no
      lowering, is `ErrorIntrinsicBody`.
    A declaration that passes either keeps its body as an **inline** function
@@ -79,7 +97,11 @@ the two are tested against each other by running one scenario both ways
 3. **Instantiation.** Cloning a generic intrinsic clones the node
    (`cloneIntrinsicNode`), and the use of `T` is substituted like any other, so
    each instance carries the Cone type it is for.
-4. **Type check** (`fnDclTypeCheck` → `intrinsicDclTypeCheck`). A declared
+4. **Type check** (`fnDclTypeCheck`). First, for an entry with a type class,
+   lowered or not, `intrinsicClassCheck` reads `T` as the pointee of the
+   instance's first parameter, `*T`, and refuses one outside the class with
+   `ErrorIntrinsicType` at the call that instantiated it, before a fallback body
+   is checked. Then `intrinsicDclTypeCheck`: a declared
    intrinsic's instance has no body to check; its `typearg` is type checked and
    must have a size (`itypeNoSizeCause`), else `ErrorIntrinsicType`, reported at
    the call that instantiated it (`instnode`), not in core. An instance of
@@ -89,10 +111,22 @@ the two are tested against each other by running one scenario both ways
    — a collection's in the program's source, where it was reached through the
    collection's body ([What a region is](module.md)). Each instance is judged
    once, for its type, as an instance is made once.
-5. **Flow** sees an ordinary call: an argument passed by value is moved into it,
+5. **The call** (`fnCallFinalizeArgs` → `intrinsicCallCheck`), once its
+   arguments are coerced and its defaults appended: each argument an entry's
+   `ShapeOrder` parameter receives must be a constant `MemOrder`, a variant's
+   literal or a `const` holding one, seen through the coercion to the enum
+   (`intrinsicOrderOf`), else `ErrorAtomicConst`; and one the operation allows,
+   else `ErrorAtomicOrder`: a load's `Release` or `AcqRel`, a store's `Acquire`
+   or `AcqRel`, a compareSwap failure ordering of `Release` or `AcqRel` or
+   stronger than its success ordering. Every call to a function carrying
+   `DclIntrinsic` is asked, lowered or not.
+6. **Flow** sees an ordinary call: an argument passed by value is moved into it,
    as `writeRaw`'s value is.
-6. **Generation** (`genlDeclaredIntrinsic`), dispatched by kind before the C-built
-   kinds' LLVM-type switch.
+7. **Generation** (`genlDeclaredIntrinsic`), dispatched by kind before the C-built
+   kinds' LLVM-type switch. An atomic operation is caught earlier, in
+   `genlFnCall` (`intrinsicAtomicCallee`), where the call's arguments are still
+   at hand: `genlAtomicIntrinsic` reads its orderings from them
+   (`intrinsicCallOrders`), which type check has already found allowed.
 
 ## Each kind, and how LLVM implements it
 
@@ -110,6 +144,15 @@ the two are tested against each other by running one scenario both ways
 | `holdsTraced[T]` | constant | `itypeHoldsTraced`, a front-end question, emitted as an `i1` |
 | `trace[T]` | expansion | `genlTraceAt`: each traced reference the value holds, loaded and, where not null, handed to its region's `mark` with its permission and `mode` where `mark` takes them |
 | `traceRoots` | expansion | a call to conestd's `cone_traceRoots(mode)`, which walks the chain of frames each function holding traced references links ([Generation](../phases/generation.md), "Roots") and calls each root's record's trace |
+| `atomicLoad[T]`, `atomicStore[T]` | operation | a `load atomic` or `store atomic` with the call's ordering, `genlAtomicIntrinsic` |
+| `atomicSwap[T]`, `atomicAdd[T]` … `atomicXor[T]` | operation | an `atomicrmw` (`xchg`, `add`, `sub`, `and`, `or`, `xor`), answering the value before |
+| `atomicCompareSwap[T]` | operation | a strong `cmpxchg` with both orderings, its `{T, i1}` rebuilt as the result tuple |
+
+Each atomic instruction is aligned as `T` is (`LLVMABIAlignmentOfType`), and
+its ordering is LLVM's name for the `MemOrder` (`genlAtomicOrdering`: `Relaxed`
+is `monotonic`). A `Bool` is an `i1` in a byte, and LLVM's atomics take no
+`i1`, so it is operated on as that byte: the value zero-extended in, the result
+truncated out.
 
 `finalize` runs what a region-held value's death runs, less the region's `free`
 (`genlRegionDeath`), which is what a local's death at its scope's end runs: its
@@ -136,8 +179,15 @@ type.
   `alignof` are constants in the IR, but the type checker cannot fold them: Cone
   does not compute layout itself, so neither can be an array length yet.
 - **`trust` is recorded, not enforced.** The registry marks `finalize`, both
-  slice constructors and the three raw operations; `trust` does not exist
-  (`doc/design/safety.md`).
+  slice constructors, the three raw operations and the atomic operations;
+  `trust` does not exist (`doc/design/safety.md`).
+- **An ordering is read from the call's arguments, so it must stay a constant
+  there.** Type check and generation each look through the coercion to
+  `MemOrder` and any `const` to a variant's literal (`intrinsicOrderOf`); a
+  change that folded or hoisted the argument into something else would make
+  generation's `errorUnreachable` fire rather than a diagnostic. A default
+  ordering is not possible yet: a parameter's default must be a literal, and a
+  variant coerced to its enum is not one (`litIsLiteral`).
 - **`mem` is a struct because a submodule of core cannot be reached**, measured:
   a direct compile finds core on the package search path as the one file
   `core/src/core.cone`, and the sweep reads no file beside it (its folder is
@@ -157,9 +207,9 @@ type.
 | --- | --- |
 | lexer keyword | `lexer.c`, `IntrinsicAttrToken` |
 | parse | `parsefnflow.c` `parseFn`; `parsemod.c` `parseExternFnCheck` |
-| registry and checks | `ir/stmt/intrinsic.c`: `intrinsicRegistry`, `intrinsicDclNameRes`, `intrinsicDclTypeCheck` |
-| hooks | `fndcl.c` `fnDclNameRes`, `fnDclTypeCheck`, `fnDclIsExpanded` |
+| registry and checks | `ir/stmt/intrinsic.c`: `intrinsicRegistry`, `intrinsicDclNameRes`, `intrinsicDclTypeCheck`, `intrinsicClassCheck`, `intrinsicCallCheck` |
+| hooks | `fndcl.c` `fnDclNameRes`, `fnDclTypeCheck`, `fnDclIsExpanded`; `fncall.c` `fnCallFinalizeArgs` |
 | forced fallback | `--intrinsic-fallback` → `intrinsicForceFallback` (`conec.c`) |
-| generation | `genlexpr.c` `genlDeclaredIntrinsic`; `genlalloc.c` `genlFinalizeAt`, `genlTypeRecord`, `genlTraceAt`; `genltype.c` `genlAlignof` |
-| declarations | `packages/core/src/core.cone`, `struct @opaque mem` |
+| generation | `genlexpr.c` `genlDeclaredIntrinsic`, `genlAtomicIntrinsic` (from `genlFnCall`); `genlalloc.c` `genlFinalizeAt`, `genlTypeRecord`, `genlTraceAt`; `genltype.c` `genlAlignof` |
+| declarations | `packages/core/src/core.cone`, `struct @opaque mem` and `enum MemOrder` |
 | tests | `test/cases/intrinsic/` |

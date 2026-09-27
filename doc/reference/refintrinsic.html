@@ -70,7 +70,8 @@ mem.writeRaw[Point](p, Point[1., 2.]);
 
 	<p>A type argument must be of the kind the intrinsic accepts. Every intrinsic
 		below needs a type with a size: one declared <span class="pre">@opaque</span>,
-		for example, is refused where the intrinsic is instantiated for it.</p>
+		for example, is refused where the intrinsic is instantiated for it. The atomic
+		operations accept fewer types still, stated with them.</p>
 
 	<h3>Fallback bodies</h3>
 
@@ -88,7 +89,8 @@ pub fn @intrinsic readRaw[T](p *T) T {*p;}
 		agree.</p>
 
 	<p>Today's LLVM back end implements every intrinsic itself. Those with a fallback
-		body are <span class="pre">readRaw</span> and <span class="pre">moveRaw</span>.</p>
+		body are <span class="pre">readRaw</span>, <span class="pre">moveRaw</span> and
+		the atomic operations.</p>
 
 	<h2>The intrinsics</h2>
 
@@ -326,6 +328,180 @@ fn @intrinsic moveRaw[T](to *T, from *T, count usize)
 		<span class="pre">readRaw</span> and <span class="pre">writeRaw</span>, running
 		upward when <span class="pre">to</span> is below <span class="pre">from</span> and
 		downward otherwise. The LLVM back end does it as one block move.</p>
+
+	<h2>Atomic operations</h2>
+
+	<p>An atomic operation reads or changes the <span class="pre">T</span> at a pointer
+		<b>indivisibly</b>: no other thread sees it half done, and when several threads
+		operate on one location at once, each operation happens whole, one after
+		another. They are the parts a thread-safe counter, flag or lock is built from.
+		Each takes a raw pointer and so needs trust: <span class="pre">p</span> must point
+		at a live, initialized <span class="pre">T</span>, aligned for it, which every
+		thread reaches only through atomic operations while any of them may be
+		writing.</p>
+
+	<h3>Which types</h3>
+
+	<p><span class="pre">T</span> is one of the types a target operates on
+		indivisibly without a lock:</p>
+	<ul>
+		<li>an integer type of 8 to 64 bits, signed or unsigned, including
+			<span class="pre">usize</span> and <span class="pre">isize</span>;</li>
+		<li><span class="pre">Bool</span>;</li>
+		<li>a raw pointer, to anything.</li>
+	</ul>
+	<p>Each operation takes the part of that set it has a meaning for:
+		<span class="pre">atomicAdd</span> and <span class="pre">atomicSub</span> an
+		integer; <span class="pre">atomicAnd</span>, <span class="pre">atomicOr</span> and
+		<span class="pre">atomicXor</span> an integer or a <span class="pre">Bool</span>;
+		the load, the store, the swap and the compare-swap all three. Anything else is an
+		error where the operation is instantiated for it: a float, a struct, a tuple, an
+		array, and every kind of reference, borrowed, owning or managed. A
+		<span class="pre">Bool</span> is operated on as the byte that holds it, which
+		holds 0 or 1.</p>
+
+	<h3>Orderings</h3>
+
+	<p>An atomic operation is indivisible by itself; what it promises about the
+		memory around it is its <b>ordering</b>, on the C11 model. Core declares the
+		orderings as an enum, <span class="pre">MemOrder</span>, a name of every module
+		as <span class="pre">mem</span> is:</p>
+<pre>
+pub enum MemOrder u8 {
+  Relaxed, Acquire, Release, AcqRel, SeqCst;
+}
+</pre>
+	<ul>
+		<li><span class="pre">Relaxed</span>: the operation is indivisible, and
+			promises nothing about any other memory.</li>
+		<li><span class="pre">Acquire</span>, on an operation that loads: what this
+			thread does after it is not seen to happen before it, so a thread that loads
+			what another stored with <span class="pre">Release</span> sees everything the
+			other did before that store.</li>
+		<li><span class="pre">Release</span>, on an operation that stores: what this
+			thread did before it is not seen to happen after it.</li>
+		<li><span class="pre">AcqRel</span>, on a read-modify-write: both.</li>
+		<li><span class="pre">SeqCst</span>: both, as far as the operation loads and
+			stores, and every <span class="pre">SeqCst</span> operation of the program
+			also happens in one order that every thread sees. It is the one to use when
+			in doubt.</li>
+	</ul>
+	<p>The ordering is an ordinary argument, but the compiler requires it to be a
+		<b>constant</b>, because which instruction the call becomes depends on it: a
+		variant written where the call is, <span class="pre">MemOrder.SeqCst[]</span>, or
+		a <span class="pre">const</span> holding one. A <span class="pre">MemOrder</span>
+		held in a variable or passed as a parameter is an error at the call, even where
+		its value never changes.</p>
+<pre>
+const acquire = MemOrder.Acquire[];
+imm n = mem.atomicLoad[i32](p, acquire);    // allowed
+imm o = MemOrder.Acquire[];
+imm m = mem.atomicLoad[i32](p, o);          // ERROR: not a constant
+</pre>
+	<p>An ordering an operation cannot promise is an error at the call:</p>
+	<ul>
+		<li>a load (<span class="pre">atomicLoad</span>) has nothing to release, so it
+			takes <span class="pre">Relaxed</span>, <span class="pre">Acquire</span> or
+			<span class="pre">SeqCst</span>, not <span class="pre">Release</span> or
+			<span class="pre">AcqRel</span>;</li>
+		<li>a store (<span class="pre">atomicStore</span>) has nothing to acquire, so it
+			takes <span class="pre">Relaxed</span>, <span class="pre">Release</span> or
+			<span class="pre">SeqCst</span>, not <span class="pre">Acquire</span> or
+			<span class="pre">AcqRel</span>;</li>
+		<li>a read-modify-write, the swap included, takes all five;</li>
+		<li><span class="pre">atomicCompareSwap</span> takes two: the ordering when it
+			stores, which may be any of the five, and the ordering when it does not, when
+			it has only loaded. That failure ordering is <span class="pre">Relaxed</span>,
+			<span class="pre">Acquire</span> or <span class="pre">SeqCst</span>, and no
+			stronger than the success ordering: <span class="pre">Acquire</span> needs a
+			success ordering of <span class="pre">Acquire</span>,
+			<span class="pre">AcqRel</span> or <span class="pre">SeqCst</span>, and
+			<span class="pre">SeqCst</span> needs <span class="pre">SeqCst</span>.</li>
+	</ul>
+	<p>An ordering has no default: every call writes its own, since a parameter's
+		default value must be a literal and a <span class="pre">MemOrder</span> is not
+		one. The friendlier atomic type the library will build on these operations is
+		where everyday code gets <span class="pre">SeqCst</span> without writing it.
+		There is no standalone fence: each ordering belongs to an operation.</p>
+
+	<h3>atomicLoad and atomicStore</h3>
+<pre>
+fn @intrinsic atomicLoad[T](p *T, order MemOrder) T
+fn @intrinsic atomicStore[T](p *T, value T, order MemOrder)
+</pre>
+	<p><span class="pre">atomicLoad</span> answers the <span class="pre">T</span> at
+		<span class="pre">p</span>; <span class="pre">atomicStore</span> puts
+		<span class="pre">value</span> there. Neither finalizes or releases anything,
+		which none of these types needs. Fallback: <span class="pre">{*p;}</span> and
+		<span class="pre">{*p = value;}</span>.</p>
+
+	<h3>atomicSwap</h3>
+<pre>
+fn @intrinsic atomicSwap[T](p *T, value T, order MemOrder) T
+</pre>
+	<p>Puts <span class="pre">value</span> at <span class="pre">p</span> and answers
+		what was there before, as one indivisible step. Fallback: a load, then a
+		store.</p>
+
+	<h3>atomicAdd, atomicSub, atomicAnd, atomicOr and atomicXor</h3>
+<pre>
+fn @intrinsic atomicAdd[T](p *T, value T, order MemOrder) T
+fn @intrinsic atomicSub[T](p *T, value T, order MemOrder) T
+fn @intrinsic atomicAnd[T](p *T, value T, order MemOrder) T
+fn @intrinsic atomicOr[T](p *T, value T, order MemOrder) T
+fn @intrinsic atomicXor[T](p *T, value T, order MemOrder) T
+</pre>
+	<p>Each reads the <span class="pre">T</span> at <span class="pre">p</span>, combines
+		it with <span class="pre">value</span>, stores the result there, and answers the
+		value it read, <b>the one from before</b>, all as one indivisible step. Add and
+		subtract wrap: a <span class="pre">u8</span> holding 255 plus 1 holds 0, and an
+		<span class="pre">i32</span> holding its largest value plus 1 holds its
+		smallest; neither is an error. And, or and exclusive or act on every bit, and on
+		a <span class="pre">Bool</span> are the logical operations. Fallback: a load, the
+		operator (<span class="pre">+</span>, <span class="pre">-</span>,
+		<span class="pre">&amp;</span>, <span class="pre">|</span>,
+		<span class="pre">^</span>), then a store.</p>
+
+	<h3>atomicCompareSwap</h3>
+<pre>
+fn @intrinsic atomicCompareSwap[T](p *T, expected T, desired T,
+    success MemOrder, failure MemOrder) T, Bool
+</pre>
+	<p>If the <span class="pre">T</span> at <span class="pre">p</span> equals
+		<span class="pre">expected</span>, stores <span class="pre">desired</span> there;
+		either way, answers two values: the <span class="pre">T</span> it found at
+		<span class="pre">p</span>, and whether it stored. Equal means
+		<span class="pre">==</span>, which for these types is the same bits: two
+		pointers are equal when they hold the same address. It never fails spuriously:
+		when the value found equals <span class="pre">expected</span>, it stores. The two
+		results are a <a href="reftuple.html">tuple</a>, taken apart by assignment:</p>
+<pre>
+mut seen = 0i32;
+mut stored = false;
+seen, stored = mem.atomicCompareSwap[i32](p, 0i32, 1i32,
+    MemOrder.AcqRel[], MemOrder.Acquire[]);
+</pre>
+	<p>Fallback: a load, a comparison, and a store when they are equal.</p>
+
+	<h3>What a fallback promises</h3>
+
+	<p>An atomic operation's fallback body is the plain operation, which is right only
+		while one thread reaches <span class="pre">p</span>: it is what a back end with
+		no atomic instructions of its own runs, and is correct for a program with one
+		thread. The types and the orderings are checked the same way whichever
+		runs.</p>
+
+	<h3>How LLVM does it</h3>
+
+	<p>Each operation is one LLVM instruction, aligned as the type is: an atomic
+		<span class="pre">load</span> or <span class="pre">store</span>, an
+		<span class="pre">atomicrmw</span> (<span class="pre">xchg</span>,
+		<span class="pre">add</span>, <span class="pre">sub</span>,
+		<span class="pre">and</span>, <span class="pre">or</span>,
+		<span class="pre">xor</span>), or a strong <span class="pre">cmpxchg</span>
+		carrying both orderings. <span class="pre">Relaxed</span> is LLVM's
+		<span class="pre">monotonic</span>. A <span class="pre">Bool</span> is operated on
+		as an <span class="pre">i8</span>.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="reftoken.html"><img alt="_" src="next.png" /></a>

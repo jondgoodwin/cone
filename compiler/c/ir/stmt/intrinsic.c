@@ -51,12 +51,23 @@ typedef enum {
     ShapeSliceT,        // &[]T: a borrowed slice, read only
     ShapeSliceMutT,     // &[]mut T: a borrowed slice, writable
     ShapePtrTypeRecord, // *TypeRecord: core's type record (typeRecordIsPtr)
-    ShapeU32            // u32
+    ShapeU32,           // u32
+    ShapeOrder,         // MemOrder: core's enum of atomic orderings, a constant at each call
+    ShapeTBool          // T, Bool: a tuple of the two
 } IntrinsicShape;
+
+// The types T may be, where an entry does not take every type with a size. A
+// bit each, so an entry names the union it accepts
+typedef enum {
+    ClassSized = 0,     // any type with a size (intrinsicDclTypeCheck)
+    ClassInt = 1,       // an integer type of 8 to 64 bits, usize and isize among them
+    ClassBool = 2,      // Bool
+    ClassPtr = 4        // a raw pointer, to anything
+} IntrinsicClass;
 
 // Where the compiler answers an intrinsic: every one built so far is answered
 // or expanded before a back end would need an instruction of its own for it,
-// except moveRaw, a block move
+// except moveRaw, a block move, and the atomic operations
 typedef enum {
     PhaseConstant,      // a constant for the target, from the type alone
     PhaseExpansion,     // expanded at the call into operations every back end has
@@ -69,13 +80,14 @@ typedef struct IntrinsicSpec {
     char *signature;        // As written after 'fn @intrinsic', for diagnostics
     uint8_t ntypeparms;
     uint8_t nparms;
-    uint8_t parms[3];       // IntrinsicShape of each parameter
+    uint8_t parms[5];       // IntrinsicShape of each parameter
     uint8_t result;         // IntrinsicShape of the result
     uint8_t trust;          // A call can break memory safety, so belongs in 'trust'.
                             // Recorded, not enforced: 'trust' is not built (doc/design/safety.md)
     uint8_t fallback;       // A Cone body may be written, used where there is no lowering
     uint8_t phase;          // IntrinsicPhase
     uint8_t lowered;        // This back end implements it itself
+    uint8_t tclass;         // IntrinsicClass: the types T may be, beyond having a size
 } IntrinsicSpec;
 
 static IntrinsicSpec intrinsicRegistry[] = {
@@ -105,6 +117,28 @@ static IntrinsicSpec intrinsicRegistry[] = {
         1, 2, {ShapePtrT, ShapeU32}, ShapeVoid, 1, 0, PhaseExpansion, 1},
     {"traceRoots", TraceRootsIntrinsic, "traceRoots(mode u32)",
         0, 1, {ShapeU32}, ShapeVoid, 0, 0, PhaseExpansion, 1},
+    // The atomic operations, an instruction each: T is held to what a target
+    // does indivisibly without a lock
+    {"atomicLoad", AtomicLoadIntrinsic, "atomicLoad[T](p *T, order MemOrder) T",
+        1, 2, {ShapePtrT, ShapeOrder}, ShapeT, 1, 1, PhaseOperation, 1, ClassInt | ClassBool | ClassPtr},
+    {"atomicStore", AtomicStoreIntrinsic, "atomicStore[T](p *T, value T, order MemOrder)",
+        1, 3, {ShapePtrT, ShapeT, ShapeOrder}, ShapeVoid, 1, 1, PhaseOperation, 1, ClassInt | ClassBool | ClassPtr},
+    {"atomicSwap", AtomicSwapIntrinsic, "atomicSwap[T](p *T, value T, order MemOrder) T",
+        1, 3, {ShapePtrT, ShapeT, ShapeOrder}, ShapeT, 1, 1, PhaseOperation, 1, ClassInt | ClassBool | ClassPtr},
+    {"atomicAdd", AtomicAddIntrinsic, "atomicAdd[T](p *T, value T, order MemOrder) T",
+        1, 3, {ShapePtrT, ShapeT, ShapeOrder}, ShapeT, 1, 1, PhaseOperation, 1, ClassInt},
+    {"atomicSub", AtomicSubIntrinsic, "atomicSub[T](p *T, value T, order MemOrder) T",
+        1, 3, {ShapePtrT, ShapeT, ShapeOrder}, ShapeT, 1, 1, PhaseOperation, 1, ClassInt},
+    {"atomicAnd", AtomicAndIntrinsic, "atomicAnd[T](p *T, value T, order MemOrder) T",
+        1, 3, {ShapePtrT, ShapeT, ShapeOrder}, ShapeT, 1, 1, PhaseOperation, 1, ClassInt | ClassBool},
+    {"atomicOr", AtomicOrIntrinsic, "atomicOr[T](p *T, value T, order MemOrder) T",
+        1, 3, {ShapePtrT, ShapeT, ShapeOrder}, ShapeT, 1, 1, PhaseOperation, 1, ClassInt | ClassBool},
+    {"atomicXor", AtomicXorIntrinsic, "atomicXor[T](p *T, value T, order MemOrder) T",
+        1, 3, {ShapePtrT, ShapeT, ShapeOrder}, ShapeT, 1, 1, PhaseOperation, 1, ClassInt | ClassBool},
+    {"atomicCompareSwap", AtomicCompareSwapIntrinsic,
+        "atomicCompareSwap[T](p *T, expected T, desired T, success MemOrder, failure MemOrder) T, Bool",
+        1, 5, {ShapePtrT, ShapeT, ShapeT, ShapeOrder, ShapeOrder}, ShapeTBool, 1, 1, PhaseOperation, 1,
+        ClassInt | ClassBool | ClassPtr},
 };
 
 #define IntrinsicCount (sizeof(intrinsicRegistry) / sizeof(IntrinsicSpec))
@@ -144,6 +178,8 @@ static int intrinsicIsTParm(INode *type, INode *tparm) {
     return tparm != NULL && type != NULL && isNameUseNode(type) && ((NameUseNode *)type)->dclnode == tparm;
 }
 
+static int memOrderIs(INode *type);
+
 // Whether a name-resolved declared type has the registry's shape
 static int intrinsicShapeIs(INode *type, IntrinsicShape shape, INode *tparm) {
     if (type == NULL)
@@ -170,6 +206,15 @@ static int intrinsicShapeIs(INode *type, IntrinsicShape shape, INode *tparm) {
     }
     case ShapePtrTypeRecord:
         return typeRecordIsPtr(type);
+    case ShapeOrder:
+        return memOrderIs(type);
+    case ShapeTBool: {
+        if (type->tag != TTupleTag && type->tag != TupleTag)
+            return 0;
+        Nodes *elems = ((TupleNode *)type)->elems;
+        return elems->used == 2 && intrinsicShapeIs(nodesGet(elems, 0), ShapeT, tparm)
+            && intrinsicShapeIs(nodesGet(elems, 1), ShapeBool, tparm);
+    }
     default:
         break;
     }
@@ -257,6 +302,26 @@ static StructNode *typeRecordPointee(INode *type) {
 
 int typeRecordIsPtr(INode *type) {
     return typeRecordPointee(type) != NULL;
+}
+
+// Core's MemOrder, known by its name and its package as TypeRecord is: the
+// enum whose variants name the orderings (MemOrderKind), in that order
+static StructNode *memOrderEnum(INode *type) {
+    if (type == NULL)
+        return NULL;
+    INode *dcl = isNameUseNode(type) ? nameUseGetDcl((NameUseNode *)type) : type;
+    if (dcl == NULL || dcl->tag != StructTag)
+        return NULL;
+    StructNode *strnode = (StructNode *)dcl;
+    if (strnode->namesym != NULL && strcmp(&strnode->namesym->namestr, "MemOrder") == 0
+        && (strnode->flags & HasTagField) && strnode->genericinfo == NULL
+        && intrinsicModuleIsCore(strnode->dclinfo.owner))
+        return strnode;
+    return NULL;
+}
+
+static int memOrderIs(INode *type) {
+    return memOrderEnum(type) != NULL;
 }
 
 // Core's TypeRecord, remembered from the result of core's 'mem.typeRecord'
@@ -351,4 +416,168 @@ void intrinsicDclTypeCheck(TypeCheckState *pstate, FnDclNode *fndcl) {
 int intrinsicIsDeclared(FnDclNode *fndcl) {
     return fndcl->value != NULL && fndcl->value->tag == IntrinsicTag
         && ((IntrinsicNode *)fndcl->value)->intrinsicFn >= FirstDeclaredIntrinsic;
+}
+
+// ---- Type classes and orderings ---------------------------------------------
+//
+// Both are asked of a declared intrinsic whether it is lowered or runs its
+// fallback body, so '--intrinsic-fallback' refuses what the lowering refuses:
+// the class is checked on the instance before its body is (fnDclTypeCheck), and
+// the orderings where the call is made (fnCallFinalizeArgs).
+
+// The class bit a type is of, or 0 for none of them
+static int intrinsicClassOf(INode *type) {
+    INode *dcl = itypeGetTypeDcl(type);
+    if (dcl == (INode *)boolType)
+        return ClassBool;
+    if ((dcl->tag == IntNbrTag || dcl->tag == UintNbrTag)
+        && ((NbrNode *)dcl)->bits >= 8 && ((NbrNode *)dcl)->bits <= 64)
+        return ClassInt;
+    if (dcl->tag == PtrTag)
+        return ClassPtr;
+    return 0;
+}
+
+static char *intrinsicClassWords(int tclass) {
+    switch (tclass) {
+    case ClassInt:                          return "an integer type of 8 to 64 bits";
+    case ClassInt | ClassBool:              return "an integer type of 8 to 64 bits or Bool";
+    case ClassInt | ClassBool | ClassPtr:   return "an integer type of 8 to 64 bits, Bool or a raw pointer";
+    default:                                return "of another class";
+    }
+}
+
+int intrinsicClassCheck(FnDclNode *fndcl) {
+    IntrinsicSpec *spec = fndcl->namesym ? intrinsicFind(fndcl->namesym) : NULL;
+    if (spec == NULL || spec->tclass == ClassSized)
+        return 1;
+    // A template still holds '*T' as a dereference, and a declaration the
+    // registry refused may say anything: neither has an instance's type to judge
+    FnSigNode *sig = (FnSigNode *)fndcl->vtype;
+    if (sig == NULL || sig->tag != FnSigTag || sig->parms->used != spec->nparms || spec->parms[0] != ShapePtrT)
+        return 1;
+    INode *ptr = itypeGetTypeDcl(((VarDclNode *)nodesGet(sig->parms, 0))->vtype);
+    if (ptr->tag != PtrTag)
+        return 1;
+    INode *type = ((StarNode *)ptr)->vtexp;
+    if (intrinsicClassOf(type) & spec->tclass)
+        return 1;
+    INode *where = fndcl->instnode ? fndcl->instnode : (INode *)fndcl;
+    errorMsgNode(where, ErrorIntrinsicType,
+        "The intrinsic %s acts on a T that is %s, and %s is not one.",
+        &fndcl->namesym->namestr, intrinsicClassWords(spec->tclass),
+        itypeGetTypeDcl(type)->tag == PtrTag ? "a raw pointer" : itypeName(type));
+    return 0;
+}
+
+static char *memOrderNames[] = {"Relaxed", "Acquire", "Release", "AcqRel", "SeqCst"};
+
+// The ordering an argument passed as a MemOrder names, when it is a constant:
+// a variant's literal, 'MemOrder.SeqCst[]', or a const holding one, coerced to
+// the enum. Answers 0 for anything else, whose value is known only as it runs
+static int intrinsicOrderOf(INode *arg, MemOrderKind *order) {
+    for (;;) {
+        if (arg->tag == CastTag)
+            arg = ((CastNode *)arg)->exp;
+        else if (nameUseNames(arg, ConstDclTag))
+            arg = ((ConstDclNode *)((NameUseNode *)arg)->dclnode)->value;
+        else
+            break;
+    }
+    if (arg == NULL || arg->tag != TypeLitTag)
+        return 0;
+    INode *variant = itypeGetTypeDcl(((IExpNode *)arg)->vtype);
+    if (variant->tag != StructTag || memOrderEnum(((StructNode *)variant)->basetrait) == NULL)
+        return 0;
+    Name *name = ((StructNode *)variant)->namesym;
+    for (int i = OrderRelaxed; i <= OrderSeqCst; ++i) {
+        if (strcmp(&name->namestr, memOrderNames[i]) == 0) {
+            *order = (MemOrderKind)i;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// How strongly an ordering orders what follows a load: a compareSwap that fails
+// only loads, and what it promises there may not exceed what success promises
+static int memOrderLoadRank(MemOrderKind order) {
+    switch (order) {
+    case OrderAcquire: case OrderAcqRel: return 1;
+    case OrderSeqCst: return 2;
+    default: return 0;
+    }
+}
+
+void intrinsicCallCheck(FnCallNode *call, FnDclNode *fndcl) {
+    IntrinsicSpec *spec = fndcl->namesym ? intrinsicFind(fndcl->namesym) : NULL;
+    if (spec == NULL || call->args == NULL || call->args->used != spec->nparms)
+        return;
+    char *name = &fndcl->namesym->namestr;
+    MemOrderKind orders[2];
+    int norders = 0;
+    for (uint32_t i = 0; i < spec->nparms; ++i) {
+        if (spec->parms[i] != ShapeOrder)
+            continue;
+        INode *arg = nodesGet(call->args, i);
+        if (!intrinsicOrderOf(arg, &orders[norders])) {
+            errorMsgNode(arg, ErrorAtomicConst,
+                "The ordering mem.%s is given must be a constant, MemOrder.SeqCst[] or a const holding one: which instruction the call is depends on it.",
+                name);
+            return;
+        }
+        ++norders;
+    }
+    if (norders == 0)
+        return;
+    INode *orderarg = nodesGet(call->args, spec->nparms - norders);
+    switch (spec->intrinsicFn) {
+    case AtomicLoadIntrinsic:
+        if (orders[0] == OrderRelease || orders[0] == OrderAcqRel)
+            errorMsgNode(orderarg, ErrorAtomicOrder,
+                "A load has nothing to release, so mem.atomicLoad takes Relaxed, Acquire or SeqCst, not %s.",
+                memOrderNames[orders[0]]);
+        break;
+    case AtomicStoreIntrinsic:
+        if (orders[0] == OrderAcquire || orders[0] == OrderAcqRel)
+            errorMsgNode(orderarg, ErrorAtomicOrder,
+                "A store has nothing to acquire, so mem.atomicStore takes Relaxed, Release or SeqCst, not %s.",
+                memOrderNames[orders[0]]);
+        break;
+    case AtomicCompareSwapIntrinsic: {
+        INode *failarg = nodesGet(call->args, spec->nparms - 1);
+        if (orders[1] == OrderRelease || orders[1] == OrderAcqRel)
+            errorMsgNode(failarg, ErrorAtomicOrder,
+                "A compareSwap that fails only loads, which has nothing to release, so its failure ordering is Relaxed, Acquire or SeqCst, not %s.",
+                memOrderNames[orders[1]]);
+        else if (memOrderLoadRank(orders[1]) > memOrderLoadRank(orders[0]))
+            errorMsgNode(failarg, ErrorAtomicOrder,
+                "The failure ordering of mem.atomicCompareSwap may not be stronger than its success ordering, and %s is stronger than %s.",
+                memOrderNames[orders[1]], memOrderNames[orders[0]]);
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+FnDclNode *intrinsicAtomicCallee(FnCallNode *call) {
+    INode *callee = call->objfn;
+    if (isNameUseNode(callee))
+        callee = ((NameUseNode *)callee)->dclnode;
+    if (callee == NULL || callee->tag != FnDclTag || !(((FnDclNode *)callee)->dclinfo.facts & DclIntrinsic))
+        return NULL;
+    FnDclNode *fndcl = (FnDclNode *)callee;
+    if (!intrinsicIsDeclared(fndcl))
+        return NULL;
+    int16_t kind = ((IntrinsicNode *)fndcl->value)->intrinsicFn;
+    return kind >= AtomicLoadIntrinsic && kind <= AtomicCompareSwapIntrinsic ? fndcl : NULL;
+}
+
+void intrinsicCallOrders(FnCallNode *call, FnDclNode *fndcl, MemOrderKind *orders) {
+    IntrinsicSpec *spec = intrinsicFindKind(((IntrinsicNode *)fndcl->value)->intrinsicFn);
+    for (uint32_t i = 0; i < spec->nparms; ++i) {
+        if (spec->parms[i] == ShapeOrder && !intrinsicOrderOf(nodesGet(call->args, i), orders++))
+            errorUnreachable((INode *)call, "an atomic intrinsic's ordering that type check found constant is not");
+    }
 }

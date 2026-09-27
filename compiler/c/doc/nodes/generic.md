@@ -427,9 +427,6 @@ are [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Sym
 - **A clone must clear the type check marks**, or the instance silently skips
   its own check. Only four clone functions do; every other copies `flags`
   verbatim. A new declaration-bearing node kind inherits the bug.
-- **`--checktree` has the coverage exactly inverted.** It descends into
-  templates, which are never type checked, and never into instances, because
-  `memonodes` is not in its switch.
 - **`MacroDclNode.memonodes` is dead.**
 - **A generic type's own bare name is told from its instantiation by its
   arguments alone.** While an instance is cloned the template is mapped to the

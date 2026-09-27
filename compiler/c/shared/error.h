@@ -165,7 +165,7 @@ enum ErrorCode {
     ErrorIntrinsicName = 1161,  // '@intrinsic' on a function whose name the compiler's registry does not define
     ErrorIntrinsicSig = 1162,   // An intrinsic declared with a signature other than the registry's: type parameters, parameters or return type
     ErrorIntrinsicBody = 1163,  // A body written for an intrinsic the registry gives no fallback, or none where it has no lowering to use instead
-    ErrorIntrinsicType = 1164,  // An intrinsic instantiated at a type outside its type class: one with no size, for every intrinsic built so far
+    ErrorIntrinsicType = 1164,  // An intrinsic instantiated at a type outside its type class: one with no size, or for an atomic operation one that is not an integer of 8 to 64 bits, Bool or a raw pointer, as the operation allows
 
     // The compiler's own invariants. This is the one code no source is supposed
     // to be able to produce, and so the one code with no scenario: reaching it
@@ -333,6 +333,10 @@ enum ErrorCode {
 
     // The built-in traits 'Move' and 'Copy'
     ErrorCopyMove = 1167,       // 'is Copy' on a type that moves: it declares 'Move' too, or has a 'final', a field that moves, or a base that moves
+
+    // The orderings an atomic intrinsic of core's 'mem' is given (ir/stmt/intrinsic.c, intrinsicCallCheck)
+    ErrorAtomicConst = 1177,    // An ordering that is not a constant where the call is written: not a MemOrder variant's literal, nor a const holding one
+    ErrorAtomicOrder = 1178,    // An ordering the operation forbids: a load's Release or AcqRel, a store's Acquire or AcqRel, a compareSwap failure's Release or AcqRel or one stronger than its success
 
     // Warnings
     WarnCode = 3000,

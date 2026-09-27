@@ -585,6 +585,12 @@ void fnCallFinalizeArgs(FnCallNode *node) {
         }
     }
 
+    // An atomic intrinsic's orderings are read where it is called, so are
+    // checked there, lowered or not
+    INode *callee = isNameUseNode(node->objfn) ? ((NameUseNode*)node->objfn)->dclnode : node->objfn;
+    if (callee && callee->tag == FnDclTag && (((FnDclNode*)callee)->dclinfo.facts & DclIntrinsic))
+        intrinsicCallCheck(node, (FnDclNode*)callee);
+
     // A returned borrowed reference lives as long as the narrowest borrow the
     // call was handed. The declared return type is one node shared by every
     // call site, so the scope goes on a type node of the call's own, exactly as

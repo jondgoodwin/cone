@@ -284,6 +284,12 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
         return;
     errorsOnEntry = errors;
 
+    // An intrinsic's instance is judged for the type it acts on whether it is
+    // lowered or runs its fallback body, which is not checked at a type it was
+    // never written for
+    if ((fnnode->dclinfo.facts & DclIntrinsic) && !intrinsicClassCheck(fnnode))
+        return;
+
     // A declared intrinsic has no body to check: its meaning is the registry's,
     // and what is left to check is the type it was instantiated for
     if (intrinsicIsDeclared(fnnode)) {

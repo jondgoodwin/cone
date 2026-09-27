@@ -47,6 +47,21 @@ static void checkNodeList(NodeList *list) {
         checkNode(*nodesp);
 }
 
+// A generic's instances: 'memonodes' holds pairs, the call that asked for each
+// and the instance it made. An instance is not generic itself, so this does not
+// return to the template it came from
+static void checkInstances(GenericInfo *info, INode *template) {
+    if (info->memonodes == NULL)
+        return;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(info->memonodes, cnt, nodesp)) {
+        nodesp++; cnt--;
+        if (*nodesp != template)
+            checkNode(*nodesp);
+    }
+}
+
 static void checkNode(INode *node) {
     if (node == NULL)
         return;
@@ -69,8 +84,15 @@ static void checkNode(INode *node) {
     case ModuleTag:
         checkNodes(((ModuleNode*)node)->nodes); break;
 
+    // A generic's template is never analyzed, only its instances, so its body
+    // holds nodes no phase was meant to type (a value tuple, built with no value
+    // type, among them). Its instances, which were analyzed, are walked instead
     case FnDclTag:
-        checkNode(((FnDclNode*)node)->value); break;
+        if (((FnDclNode*)node)->genericinfo != NULL)
+            checkInstances(((FnDclNode*)node)->genericinfo, node);
+        else
+            checkNode(((FnDclNode*)node)->value);
+        break;
 
     case FnOverloadDclTag:
         checkNodes(((FnOverloadDclNode*)node)->overloads); break;
@@ -83,8 +105,13 @@ static void checkNode(INode *node) {
         checkNode(((FieldDclNode*)node)->value); break;
 
     // A struct is a type, but it owns declarations whose bodies are code, so its
-    // members are walked while the type graph below them is not
+    // members are walked while the type graph below them is not. A generic
+    // type's template, like a generic function's, gives way to its instances
     case StructTag:
+        if (((StructNode*)node)->genericinfo != NULL) {
+            checkInstances(((StructNode*)node)->genericinfo, node);
+            break;
+        }
         checkNodeList(&((StructNode*)node)->nodelist);
         checkNodeList(&((StructNode*)node)->fields);
         break;

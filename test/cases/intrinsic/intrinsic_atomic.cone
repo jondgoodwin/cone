@@ -1,0 +1,165 @@
+// The atomic intrinsics core declares in its 'mem', on each class of type they
+// take: integers of each width (u8, i32, u64, usize), Bool and a raw pointer.
+// Every read-modify-write answers the value the slot held before it, which is
+// printed beside what the slot holds after, so the output is the assertion:
+// add and sub wrap (a u8 at 255 plus 1 is 0, and 0 minus 1 is 255), and a
+// compareSwap reports the value it saw and whether it stored, both ways.
+//
+// Each ordering is used somewhere, the load's and the store's own among them,
+// and one through a const holding it: which instruction each call is does not
+// change what one thread sees, and intrinsic_genllvm_atomic pins which it is.
+//
+// The scenario runs twice (cases.toml): once with the compiler's lowering, one
+// atomic instruction per call, and once with '--intrinsic-fallback', where each
+// runs the plain Cone body core gives it. The one .out file is the assertion
+// that the two agree for a single thread, which is all a fallback promises.
+
+mod intrinsic_atomic;
+
+import stdio use *;
+
+const acquire = MemOrder.Acquire[];
+
+fn show(label &[]u8, before i64, after i64) {
+  printStr(label);
+  printStr(" was ");
+  printInt(before);
+  printStr(" now ");
+  printInt(after);
+  printStr("\n");
+}
+
+fn swapped(label &[]u8, seen i64, ok Bool, after i64) {
+  printStr(label);
+  printStr(" saw ");
+  printInt(seen);
+  if ok {printStr(" stored");} else {printStr(" kept");}
+  printStr(" now ");
+  printInt(after);
+  printStr("\n");
+}
+
+fn flag(b Bool) i64 {
+  if b {1i64;} else {0i64;}
+}
+
+fn bytes() {
+  printStr("-- u8\n");
+  mut v = 250u8;
+  imm p = &v as *u8;
+  show("load", i64[mem.atomicLoad[u8](p, MemOrder.Relaxed[])], i64[v]);
+  mem.atomicStore[u8](p, 255u8, MemOrder.Release[]);
+  show("store 255", 255i64, i64[v]);
+  show("add 1 wraps", i64[mem.atomicAdd[u8](p, 1u8, MemOrder.SeqCst[])], i64[v]);
+  show("sub 1 wraps", i64[mem.atomicSub[u8](p, 1u8, MemOrder.AcqRel[])], i64[v]);
+  show("and 15", i64[mem.atomicAnd[u8](p, 15u8, MemOrder.Acquire[])], i64[v]);
+  show("or 48", i64[mem.atomicOr[u8](p, 48u8, MemOrder.Release[])], i64[v]);
+  show("xor 255", i64[mem.atomicXor[u8](p, 255u8, MemOrder.Relaxed[])], i64[v]);
+  show("swap 7", i64[mem.atomicSwap[u8](p, 7u8, MemOrder.SeqCst[])], i64[v]);
+  mut seen = 0u8;
+  mut ok = false;
+  seen, ok = mem.atomicCompareSwap[u8](p, 7u8, 9u8, MemOrder.SeqCst[], MemOrder.SeqCst[]);
+  swapped("compareSwap 7 to 9", i64[seen], ok, i64[v]);
+  seen, ok = mem.atomicCompareSwap[u8](p, 7u8, 11u8, MemOrder.AcqRel[], MemOrder.Acquire[]);
+  swapped("compareSwap 7 to 11", i64[seen], ok, i64[v]);
+}
+
+fn ints() {
+  printStr("-- i32\n");
+  mut v = -5i32;
+  imm p = &v as *i32;
+  show("load", i64[mem.atomicLoad[i32](p, acquire)], i64[v]);
+  show("add 12", i64[mem.atomicAdd[i32](p, 12i32, MemOrder.SeqCst[])], i64[v]);
+  show("sub 20", i64[mem.atomicSub[i32](p, 20i32, MemOrder.Relaxed[])], i64[v]);
+  show("and 6", i64[mem.atomicAnd[i32](p, 6i32, MemOrder.SeqCst[])], i64[v]);
+  show("or 9", i64[mem.atomicOr[i32](p, 9i32, MemOrder.AcqRel[])], i64[v]);
+  show("xor 3", i64[mem.atomicXor[i32](p, 3i32, MemOrder.Release[])], i64[v]);
+  mem.atomicStore[i32](p, 2147483647i32, MemOrder.SeqCst[]);
+  show("add 1 wraps", i64[mem.atomicAdd[i32](p, 1i32, MemOrder.SeqCst[])], i64[v]);
+  mut seen = 0i32;
+  mut ok = false;
+  seen, ok = mem.atomicCompareSwap[i32](p, 0i32, 1i32, MemOrder.Release[], MemOrder.Relaxed[]);
+  swapped("compareSwap 0 to 1", i64[seen], ok, i64[v]);
+  seen, ok = mem.atomicCompareSwap[i32](p, -2147483648i32, 1i32, MemOrder.Acquire[], MemOrder.Acquire[]);
+  swapped("compareSwap min to 1", i64[seen], ok, i64[v]);
+}
+
+fn longs() {
+  printStr("-- u64\n");
+  mut v = 4294967296u64;
+  imm p = &v as *u64;
+  show("add 5", i64[mem.atomicAdd[u64](p, 5u64, MemOrder.SeqCst[])], i64[v]);
+  show("sub 1", i64[mem.atomicSub[u64](p, 1u64, MemOrder.SeqCst[])], i64[v]);
+  show("swap 3", i64[mem.atomicSwap[u64](p, 3u64, MemOrder.AcqRel[])], i64[v]);
+  show("load", i64[mem.atomicLoad[u64](p, MemOrder.SeqCst[])], i64[v]);
+  mut seen = 0u64;
+  mut ok = false;
+  seen, ok = mem.atomicCompareSwap[u64](p, 3u64, 4294967296u64, MemOrder.SeqCst[], MemOrder.Relaxed[]);
+  swapped("compareSwap 3 to 2^32", i64[seen], ok, i64[v]);
+
+  printStr("-- usize\n");
+  mut n = 0usize;
+  imm q = &n as *usize;
+  show("add 1", i64[mem.atomicAdd[usize](q, 1usize, MemOrder.Relaxed[])], i64[n]);
+  show("add 1", i64[mem.atomicAdd[usize](q, 1usize, MemOrder.Relaxed[])], i64[n]);
+  show("sub 2", i64[mem.atomicSub[usize](q, 2usize, MemOrder.AcqRel[])], i64[n]);
+  show("or 12", i64[mem.atomicOr[usize](q, 12usize, MemOrder.SeqCst[])], i64[n]);
+  show("xor 4", i64[mem.atomicXor[usize](q, 4usize, MemOrder.SeqCst[])], i64[n]);
+  show("and 24", i64[mem.atomicAnd[usize](q, 24usize, MemOrder.SeqCst[])], i64[n]);
+  mut seen2 = 0usize;
+  seen2, ok = mem.atomicCompareSwap[usize](q, 1usize, 2usize, MemOrder.SeqCst[], MemOrder.SeqCst[]);
+  swapped("compareSwap 1 to 2", i64[seen2], ok, i64[n]);
+}
+
+fn bools() {
+  printStr("-- Bool\n");
+  mut b = false;
+  imm p = &b as *Bool;
+  show("load", flag(mem.atomicLoad[Bool](p, MemOrder.SeqCst[])), flag(b));
+  show("or true", flag(mem.atomicOr[Bool](p, true, MemOrder.SeqCst[])), flag(b));
+  show("xor true", flag(mem.atomicXor[Bool](p, true, MemOrder.Relaxed[])), flag(b));
+  show("swap true", flag(mem.atomicSwap[Bool](p, true, MemOrder.Acquire[])), flag(b));
+  show("and false", flag(mem.atomicAnd[Bool](p, false, MemOrder.Release[])), flag(b));
+  mem.atomicStore[Bool](p, true, MemOrder.Relaxed[]);
+  show("store true", 1i64, flag(b));
+  mut seen = false;
+  mut ok = false;
+  seen, ok = mem.atomicCompareSwap[Bool](p, true, false, MemOrder.SeqCst[], MemOrder.Acquire[]);
+  swapped("compareSwap true to false", flag(seen), ok, flag(b));
+  seen, ok = mem.atomicCompareSwap[Bool](p, true, false, MemOrder.SeqCst[], MemOrder.Acquire[]);
+  swapped("compareSwap true to false", flag(seen), ok, flag(b));
+}
+
+fn pointers() {
+  printStr("-- *i64\n");
+  mut a = 1i64;
+  mut c = 2i64;
+  imm pa = &a as *i64;
+  imm pc = &c as *i64;
+  mut slot = pa;
+  imm p = &slot as **i64;
+  printStr("load reaches ");
+  printInt(*mem.atomicLoad[*i64](p, MemOrder.Acquire[]));
+  printStr("\n");
+  imm old = mem.atomicSwap[*i64](p, pc, MemOrder.SeqCst[]);
+  printStr("swap answered ");
+  printInt(*old);
+  printStr(", slot reaches ");
+  printInt(*slot);
+  printStr("\n");
+  mem.atomicStore[*i64](p, pa, MemOrder.Release[]);
+  mut seen = pc;
+  mut ok = false;
+  seen, ok = mem.atomicCompareSwap[*i64](p, pc, pc, MemOrder.SeqCst[], MemOrder.Relaxed[]);
+  swapped("compareSwap expecting c", *seen, ok, *slot);
+  seen, ok = mem.atomicCompareSwap[*i64](p, pa, pc, MemOrder.SeqCst[], MemOrder.Relaxed[]);
+  swapped("compareSwap expecting a", *seen, ok, *slot);
+}
+
+fn main() {
+  bytes();
+  ints();
+  longs();
+  bools();
+  pointers();
+}
