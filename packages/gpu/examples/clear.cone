@@ -1,0 +1,214 @@
+// clear: a window cleared by Vulkan, through the gpu package, to a color
+// that cycles through the hues, for 300 frames (five seconds at 60 frames a
+// second). Resizing the window makes the swapchain again; F11 toggles
+// fullscreen; Escape or closing the window stops early.
+//
+// On its own it does what a user does to a window: it makes the window
+// smaller on frame 150, so the swapchain is made again, and minimizes it on
+// frame 200 for a few passes of the loop, drawing nothing, then restores it.
+//
+// It prints the GPU, the Vulkan version, and whether validation is on; and at
+// the end, how many frames were presented, and what it read back: on frame
+// 100 it copies the frame it cleared into a buffer and compares the pixel in
+// the middle with the color it cleared to, encoded as the swapchain's format
+// stores it. It exits 0 only if every frame was presented (or found its
+// swapchain out of date as the window was minimized), no Vulkan call failed,
+// and the pixel matched.
+//
+//   congo run packages/gpu/examples/clear.cone
+//
+// It needs a display, a GPU driver with Vulkan 1.3, SDL2.lib on LIB to link
+// and SDL2.dll on PATH to run. No Vulkan SDK is needed.
+
+mod clear;
+
+import stdio use *;
+import libc;
+import sdl;
+import geomath use Color;
+import window use *;
+import gpu use *;
+
+const FRAMES = 300;
+const CHECK_FRAME = 100;
+
+// The color of frame 'n': the three channels half a turn of the color wheel
+// apart, cycling every 150 frames
+fn colorOf(n i32) Color {
+  imm t = f32[n] * 6.2831853 / 150.;
+  Color[0.5 + 0.5 * libc.sinf(t), 0.5 + 0.5 * libc.sinf(t + 2.0943951), 0.5 + 0.5 * libc.sinf(t + 4.1887902), 1.];
+}
+
+// A channel as an 8-bit texture of 'format' stores it: sRGB-encoded for the
+// sRGB formats (IEC 61966-2-1), linear for the others
+fn encode(c f32, format u32) i32 {
+  mut v = c;
+  if format == TEXTURE_FORMAT_BGRA8_UNORM_SRGB or format == TEXTURE_FORMAT_RGBA8_UNORM_SRGB {
+    if v <= 0.0031308 {
+      v = v * 12.92;
+    } else {
+      v = 1.055 * libc.powf(v, 1. / 2.4) - 0.055;
+    }
+  }
+  i32[libc.floorf(v * 255. + 0.5)];
+}
+
+// Within one step of 255, for the rounding of the GPU's conversion
+fn near(a i32, b i32) Bool { a - b <= 1 and b - a <= 1; }
+
+fn formatName(format u32) &[]u8 {
+  if format == TEXTURE_FORMAT_BGRA8_UNORM_SRGB { return "bgra8unorm-srgb"; }
+  if format == TEXTURE_FORMAT_RGBA8_UNORM_SRGB { return "rgba8unorm-srgb"; }
+  if format == TEXTURE_FORMAT_BGRA8_UNORM { return "bgra8unorm"; }
+  if format == TEXTURE_FORMAT_RGBA8_UNORM { return "rgba8unorm"; }
+  "another format";
+}
+
+fn onOff(on Bool) &[]u8 {
+  if on { return "on"; }
+  "off";
+}
+
+fn main() i32 {
+  mut win = Window.openVulkan("Cone: a swapchain cleared by Vulkan");
+  if !win.isOpen() {
+    print <- "No window could be opened\n";
+    return 1;
+  }
+  mut instance = Instance.create("clear");
+  if !instance.isValid() {
+    print <- "No Vulkan 1.3 instance could be made\n";
+    return 1;
+  }
+  mut surface = instance.createSurface(win.sdlHandle());
+  // The discrete GPU, where there is one; GPU_POWER_PREFERENCE=low-power in
+  // the environment asks for the integrated one
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv(&"GPU_POWER_PREFERENCE" as *u8);
+  if (env as usize) != 0usize {
+    if libc.strcmp(env, &"low-power" as *u8) == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&surface, preference);
+  if !adapter.isValid() {
+    print <- "No GPU can draw to the window\n";
+    return 1;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  print <- "API: "; printStr(adapter.backendName()); print <- " "; printStr(adapter.backendVersion.view()); print <- "\n";
+  print <- "Validation layer: "; printStr(onOff(instance.validation));
+  print <- "; debug messages: "; printStr(onOff(instance.debugMessages)); print <- "\n";
+
+  mut device = adapter.requestDevice();
+  if !device.isValid() {
+    print <- "No device could be made\n";
+    return 1;
+  }
+  imm size = win.size();
+  mut swapchain = device.createSwapChain(&surface, u32[size.w], u32[size.h]);
+  print <- "Swapchain: "; print <- u64[swapchain.width]; print <- " x "; print <- u64[swapchain.height];
+  print <- ", "; printStr(formatName(swapchain.format)); print <- "\n";
+
+  mut frames = 0;
+  mut skipped = 0;
+  mut unshown = 0;
+  mut resizes = 0;
+  mut checked = false;
+  mut matched = false;
+  mut minimizedFor = 0;
+  mut lastWidth = swapchain.width;
+  mut lastHeight = swapchain.height;
+  while win.running and frames < FRAMES {
+    // Exercising what a user does to a window: made smaller on frame 150
+    // (the swapchain is made again at the new size), and minimized on frame
+    // 200 for a few passes of the loop, drawing nothing, then restored
+    if frames == 150 and resizes == 0 { win.setSize(size.w * 2 / 3, size.h * 2 / 3); }
+    if frames == 200 and minimizedFor == 0 {
+      win.minimize();
+      minimizedFor = 1;
+    }
+    if minimizedFor > 0 {
+      minimizedFor = minimizedFor + 1;
+      if minimizedFor == 10 { win.restore(); }
+    }
+    win.pollEvents();
+    if win.resized {
+      imm s = win.size();
+      swapchain.resize(u32[s.w], u32[s.h]);
+      win.resized = false;
+      resizes = resizes + 1;
+    }
+
+    imm frame = swapchain.getCurrentTexture(&mut device);
+    if frame.ok() and (swapchain.width != lastWidth or swapchain.height != lastHeight) {
+      print <- "Frame "; print <- frames; print <- ", swapchain made again: ";
+      print <- u64[swapchain.width]; print <- " x "; print <- u64[swapchain.height]; print <- "\n";
+      lastWidth = swapchain.width;
+      lastHeight = swapchain.height;
+    }
+    if !frame.ok() {
+      // Minimized, or out of date and not yet made again: nothing to draw
+      skipped = skipped + 1;
+      sdl.Delay(10u32);
+    } else {
+      imm color = colorOf(frames);
+      mut encoder = device.createCommandEncoder();
+      imm attachment = RenderPassColorAttachment[view: frame.texture.createView(), clearValue: color];
+      mut pass = encoder.beginRenderPass(&attachment);
+      pass.end();
+      frames = frames + 1;
+      if frames == CHECK_FRAME {
+        // Read the frame back: copied into a buffer the CPU maps, read once the GPU is done
+        imm w = frame.texture.width;
+        imm h = frame.texture.height;
+        mut readback = device.createBuffer(u64[w] * u64[h] * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+        encoder.copyTextureToBuffer(&frame.texture, &readback);
+        device.queue.submit(encoder.finish());
+        if !swapchain.present(&mut device) { unshown = unshown + 1; }
+        device.waitIdle();
+        imm p = readback.mappedRange();
+        if (p as usize) != 0usize {
+          imm at = (usize[h / 2u32] * usize[w] + usize[w / 2u32]) * 4usize;
+          mut r = i32[*(p + at)];
+          imm g = i32[*(p + at + 1usize)];
+          mut b = i32[*(p + at + 2usize)];
+          if frame.texture.format == TEXTURE_FORMAT_BGRA8_UNORM_SRGB or frame.texture.format == TEXTURE_FORMAT_BGRA8_UNORM {
+            imm t = r;
+            r = b;
+            b = t;
+          }
+          imm er = encode(color.red, frame.texture.format);
+          imm eg = encode(color.green, frame.texture.format);
+          imm eb = encode(color.blue, frame.texture.format);
+          print <- "Frame "; print <- CHECK_FRAME; print <- ", middle pixel: read ";
+          print <- r; print <- " "; print <- g; print <- " "; print <- b;
+          print <- ", cleared to "; print <- er; print <- " "; print <- eg; print <- " "; print <- eb; print <- "\n";
+          checked = true;
+          matched = near(r, er) and near(g, eg) and near(b, eb);
+        }
+      } else {
+        device.queue.submit(encoder.finish());
+        if !swapchain.present(&mut device) { unshown = unshown + 1; }
+      }
+    }
+  }
+  device.waitIdle();
+
+  print <- "Frames cleared: "; print <- frames; print <- "; presented: "; print <- swapchain.presents;
+  print <- "; out of date when presented: "; print <- unshown; print <- "\n";
+  print <- "Passes with no texture (minimized): "; print <- skipped; print <- "; resizes: "; print <- resizes; print <- "\n";
+  print <- "Vulkan failures: "; print <- u64[failures()];
+  print <- "; validation messages: "; print <- u64[validationMessages()]; print <- "\n";
+  if !checked {
+    print <- "The frame was not read back\n";
+    return 1;
+  }
+  if !matched {
+    print <- "The pixel read back is not the color cleared to\n";
+    return 1;
+  }
+  // A frame drawn as the window is minimized can find its swapchain out of
+  // date when presented; every other frame is presented
+  if swapchain.presents + u64[unshown] != u64[frames] or failures() != 0u32 { return 1; }
+  print <- "OK\n";
+  0;
+}

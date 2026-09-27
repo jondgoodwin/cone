@@ -1,7 +1,9 @@
 // The sdl package: raw bindings to SDL2, the part of it a window with an
 // OpenGL context needs: starting SDL's video, opening and sizing a window,
 // making its OpenGL context, finding OpenGL's functions, swapping the frame,
-// the clock, and the event queue.
+// the clock, and the event queue; and the part a window drawn by Vulkan
+// needs: loading Vulkan, the instance extensions a surface needs, the
+// surface, and the drawable's size.
 //
 // '@c("SDL_")' makes it a C-named module: each function below takes its C name,
 // the prefix and then the name as written, so 'Init' binds to SDL_Init. The
@@ -27,6 +29,9 @@ pub extern {
   fn GetWindowSize(window *Window, w &mut i32, h &mut i32);
   fn SetWindowFullscreen(window *Window, flags u32) i32;
   fn SetWindowTitle(window *Window, title *u8);
+  fn SetWindowSize(window *Window, w i32, h i32);
+  fn MinimizeWindow(window *Window);
+  fn RestoreWindow(window *Window);
   fn GetDisplayBounds(displayIndex i32, rect &mut Rect) i32;
 
   // OpenGL contexts. Set the attributes before the window is created: they
@@ -38,6 +43,28 @@ pub extern {
   fn GL_SetSwapInterval(interval i32) i32;
   fn GL_SwapWindow(window *Window);
   fn GL_GetProcAddress(name *u8) *u8;
+
+  // Vulkan. A window made with WINDOW_VULKAN loads the Vulkan loader
+  // (vulkan-1.dll); so does Vulkan_LoadLibrary(null), with no window, once
+  // the video subsystem is started. Vulkan_GetVkGetInstanceProcAddr then
+  // hands out vkGetInstanceProcAddr, through which every other Vulkan
+  // function is found (the vulkan package's 'load'). The window may be null
+  // for Vulkan_GetInstanceExtensions, which fills 'pNames' with the instance
+  // extensions a surface needs (null 'pNames': only the count). SDL's handles
+  // are the vulkan package's: 'instance' is a vulkan.Instance, and 'surface'
+  // receives a vulkan.SurfaceKHR's u64. SDL_bool is 1 for true.
+  fn Vulkan_LoadLibrary(path *u8) i32;
+  fn Vulkan_GetVkGetInstanceProcAddr() *u8;
+  fn Vulkan_UnloadLibrary();
+  fn Vulkan_GetInstanceExtensions(window *Window, pCount &mut u32, pNames **u8) u32;
+  fn Vulkan_CreateSurface(window *Window, instance *u8, surface &mut u64) u32;
+  fn Vulkan_GetDrawableSize(window *Window, w &mut i32, h &mut i32);
+
+  // Starting and stopping one subsystem at a time; each start is counted,
+  // and Quit stops them all
+  fn InitSubSystem(flags u32) i32;
+  fn QuitSubSystem(flags u32);
+  fn WasInit(flags u32) u32;
 
   // The clock
   fn GetTicks() u32;
@@ -110,6 +137,7 @@ pub const WINDOWPOS_CENTERED = 0x2FFF0000u;
 pub const WINDOW_FULLSCREEN = 0x1u;
 pub const WINDOW_OPENGL = 2u;
 pub const WINDOW_RESIZABLE = 0x20u;
+pub const WINDOW_VULKAN = 0x10000000u;
 pub const WINDOW_FULLSCREEN_DESKTOP = 0x1001u;
 
 // SDL_GLattr, for GL_SetAttribute

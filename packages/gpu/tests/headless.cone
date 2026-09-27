@@ -1,0 +1,71 @@
+// The gpu package on a real GPU, with no window: an instance, an adapter
+// chosen with no surface, a device, five frames recorded, submitted and
+// ended (the third and later wait for the fence of the frame two back), and
+// a copy the GPU makes from one mapped buffer into another, read back by the
+// CPU. Only a failure prints, and nothing printed depends on which GPU is
+// present.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL2.dll (which loads Vulkan);
+// no window, no display of its own, and no Vulkan SDK.
+
+mod headless;
+
+import testing use *;
+import gpu use *;
+
+fn main() i32 {
+  mut instance = Instance.create("headless");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  require(adapter.isValid(), "an adapter");
+  expect(adapter.name.len() > 0usize, "the adapter has a name");
+  expectStr(adapter.backendName(), "Vulkan", "the API underneath");
+  expect(adapter.backendVersion.startsWith("1."), "Vulkan 1.x");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+
+  // Frames with no swapchain, each ended by endFrame
+  mut i = 0;
+  while i < 5 {
+    mut encoder = device.createCommandEncoder();
+    expectBool(device.queue.submit(encoder.finish()), true, "an empty command buffer submitted");
+    device.endFrame();
+    i = i + 1;
+  }
+  expectUInt(device.frameNumber, 5u64, "five frames ended");
+
+  // A copy made by the GPU: 256 bytes written by the CPU, copied into a
+  // second buffer at an offset, and read back
+  mut source = device.createBuffer(256u64, BUFFER_USAGE_MAP_WRITE | BUFFER_USAGE_COPY_SRC);
+  mut target = device.createBuffer(512u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut gpuOnly = device.createBuffer(256u64, BUFFER_USAGE_VERTEX | BUFFER_USAGE_COPY_DST);
+  require(source.isValid() and target.isValid() and gpuOnly.isValid(), "three buffers");
+  expect((gpuOnly.mappedRange() as usize) == 0usize, "a buffer the CPU does not map has no mapped range");
+  imm src = source.mappedRange();
+  imm dst = target.mappedRange();
+  require((src as usize) != 0usize and (dst as usize) != 0usize, "the CPU's buffers are mapped");
+  mut b = 0usize;
+  while b < 256usize {
+    *(src + b) = u8[(b * 7usize + 3usize) % 256usize];
+    b = b + 1usize;
+  }
+  mut encoder = device.createCommandEncoder();
+  encoder.copyBufferToBuffer(&source, 0u64, &target, 100u64, 256u64);
+  encoder.copyBufferToBuffer(&source, 0u64, &gpuOnly, 0u64, 256u64);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  mut wrong = 0;
+  b = 0usize;
+  while b < 256usize {
+    if *(dst + 100usize + b) != u8[(b * 7usize + 3usize) % 256usize] { wrong = wrong + 1; }
+    b = b + 1usize;
+  }
+  expectInt(i64[wrong], 0, "every byte copied");
+  expectUInt(device.frameNumber, 6u64, "six frames ended");
+
+  expectUInt(u64[failures()], 0u64, "no Vulkan call failed");
+  expectUInt(u64[validationMessages()], 0u64, "no validation message");
+  done();
+}

@@ -39,10 +39,23 @@ Visual Studio projects stay at the root.
   `libc` and `posix` are C packages of raw bindings to the C library and the
   POSIX functions beyond it (Windows first), and `core` imports `libc` for its
   allocator; `sdl` and `gl` are C packages of raw bindings to SDL2 (a
-  window with an OpenGL context, its events and clock) and to OpenGL (what a
+  window with an OpenGL context or for Vulkan, its events and clock, and
+  loading Vulkan) and to OpenGL (what a
   renderer calls; the functions newer than OpenGL 1.1 are looked up at run
   time by `gl.load`), linking `SDL2.lib`, which must be on `LIB`, and the
-  Windows SDK's `opengl32.lib`; `geomath` is 2-D and 3-D math (vectors,
+  Windows SDK's `opengl32.lib`; `vulkan` is raw bindings to Vulkan 1.3,
+  written by hand from the specification (Vulkan's names without the prefix:
+  `vulkan.createInstance`, `vulkan.InstanceCreateInfo`), linking nothing:
+  every function is found at run time through the `vkGetInstanceProcAddr`
+  SDL hands out, volk's way (`load`, `loadInstance`, `loadDevice`), and its
+  `layout` test checks every struct against `cl.exe`; `gpu` is Cone's own
+  thin GPU layer, shaped like WebGPU's objects (`Instance`, `Adapter`,
+  `Device` and its `Queue`, `Surface`, `SwapChain`, `CommandEncoder`,
+  `RenderPass`, `Texture`, `Buffer`), with Vulkan its only backend and
+  nothing of Vulkan's in its interface, keeping two frames in flight and
+  designed for a command pool per recording thread, and its example,
+  `packages/gpu/examples/clear.cone`, clears a window through a swapchain and
+  reads a pixel back; `geomath` is 2-D and 3-D math (vectors,
   quaternions, matrices, transforms, boxes, rays, planes, frusta and their
   tests, Bezier curves, polygons, colors), begun as a port from the Pegasus3D
   browser, its trigonometry from `libc` through its own `sin`, `cos`, ...;
@@ -83,7 +96,8 @@ Visual Studio projects stay at the root.
   plane and cube, `Shader`, `Image` from BMP, `Texture`, `Camera`, `Light`),
   ported from Pegasus3D over `gl`, `geomath`, `mesh` and `collections`,
   needing no window to build or test;
-  `window` is a window with an OpenGL context through `sdl`, and the render
+  `window` is a window with an OpenGL context, or one for Vulkan
+  (`openVulkan`, which the `gpu` package draws into), through `sdl`, and the render
   loop's glue (frame time, quit, Escape, fullscreen, resize), and its
   example, `packages/window/examples/spin.cone`, draws a lit, textured,
   turning sphere (building it needs SDL2's `lib` folder on `LIB`).

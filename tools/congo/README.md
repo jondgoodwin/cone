@@ -150,7 +150,7 @@ An import names a module. Congo answers each one this way:
 searches, in order:
 
 1. the Cone repository's own `packages/` (`core`, `stdio`, `libc`, `posix`,
-   `sdl`, `gl`, `geomath`, `mesh`, `sculpt`, `testing`, `collections`, `arena`, `pool`, `collector`, `thread`, `render` and `window` are
+   `sdl`, `gl`, `vulkan`, `gpu`, `geomath`, `mesh`, `sculpt`, `testing`, `collections`, `arena`, `pool`, `collector`, `thread`, `render` and `window` are
    there), then
 2. each folder the **machine config** lists.
 
@@ -298,17 +298,26 @@ taper and curve deformers, and Catmull-Clark subdivision; its examples are
 three levels of detail) and `creasedcube.cone`.
 
 Two more bind libraries beyond the C runtime, and name them: `sdl` (SDL2: a
-window with an OpenGL context, its events and clock; `[link]` names `SDL2`,
-which is not part of the Windows SDK, so SDL2's `lib` folder must be on `LIB`,
-and `SDL2.dll` on `PATH` to run) and `gl` (OpenGL; `[link]` names `opengl32`,
-from the Windows SDK). OpenGL's functions newer than 1.1 are exported by no
-library: the driver hands out their addresses once a context exists, so `gl`
-holds a Cone body for each, calling through the address `gl.load` found, beside
-the `extern` declarations of the rest. Neither has a test that needs its
-library at run time, so testing `packages/` needs no display. `render` draws
-over `gl` alone (and `mesh` for its shapes' geometry), so its tests run anywhere; `window` opens its window through
-`sdl`, so building its example, as `congo test` does, needs `SDL2.lib` on
-`LIB`, and running it needs a display.
+window with an OpenGL context or for Vulkan, its events and clock, and loading
+Vulkan; `[link]` names `SDL2`, which is not part of the Windows SDK, so SDL2's
+`lib` folder must be on `LIB`, and `SDL2.dll` on `PATH` to run) and `gl`
+(OpenGL; `[link]` names `opengl32`, from the Windows SDK). OpenGL's functions
+newer than 1.1 are exported by no library: the driver hands out their addresses
+once a context exists, so `gl` holds a Cone body for each, calling through the
+address `gl.load` found, beside the `extern` declarations of the rest. Neither
+has a test that needs its library at run time, so testing `packages/` needs no
+display. `render` draws over `gl` alone (and `mesh` for its shapes' geometry),
+so its tests run anywhere; `window` opens its window through `sdl`, so
+building its example, as `congo test` does, needs `SDL2.lib` on `LIB`, and
+running it needs a display.
+
+`vulkan` binds Vulkan 1.3 and links nothing: every function is found at run
+time through the `vkGetInstanceProcAddr` SDL hands out, so no Vulkan SDK is
+needed. `gpu`, the thin WebGPU-shaped layer over it, draws into a window
+`window` opens for Vulkan. Their layout, constants and loader tests run
+anywhere; one test of each (`vulkan`'s `runtime`, `gpu`'s `headless`) runs
+against the real Vulkan loader with no window, so testing `packages/` needs a
+GPU driver with Vulkan 1.3 and `SDL2.dll` on `PATH`, but no display.
 
 `thread`, OS threads and the futex, is Cone code over `extern` declarations
 of the C runtime and Windows, not a C package, and its `[link]` names
