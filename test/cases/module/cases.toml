@@ -877,6 +877,11 @@ contains = [
 ]
 excludes = ["top.drop", "top.init", "base.final", "constant internal base.mark"]
 
+[scenario.module_final_globals]
+category = "run"
+description = "A module's finalizer releases every global whose value has anything to do as it dies, after the module's 'final', in declaration order and once each: an owning reference, single or counted, plain or virtual (the counted one shared with a local first), a tuple and an array of values that finalize"
+tags = ["genllvm", "runtime"]
+
 [scenario.module_init_link]
 category = "run"
 description = "A package compiled on its own, whose 'init' and finalizer the program's stitched init and final call through the include file its compile generates, and whose type's private 'final' the program's drop of a value calls, linked and run"
@@ -1541,6 +1546,68 @@ contains = ["call float @v4_sum(ptr %carg", "call void @v4_make(ptr sret(%Vec4) 
 name = "a-slice-and-a-plain-cone-function-are-untouched"
 target = "preir"
 contains = ["declare %void @text({ ptr, i64 }, i64)", "define internal %Ext2 @plain(%Ext2 %0)"]
+
+[scenario.module_c_bool]
+category = "run"
+description = "Bool passed and returned between Cone's C-named functions and C compiled by the platform's C compiler, both ways, as C's 'bool': a Bool made from a wider register reaches C as 0 or 1; and a Bool field of a struct is C's one-byte 'bool', by value and through a pointer"
+tags = ["genllvm", "runtime"]
+link = ["cside.c"]
+
+[scenario.module_c_bool_shape]
+category = "compile"
+description = "A C-named function's Bool takes the Win64 C ABI's mark, 'zeroext' as argument and result, on the declaration, the definition and each call; an 8- or 16-bit integer and a plain Cone function are unmarked"
+tags = ["genllvm"]
+
+[[scenario.module_c_bool_shape.run]]
+name = "win64"
+options = ["--triple=x86_64-pc-windows-msvc"]
+
+# The signatures clang gives the same C declarations for x86_64-pc-windows-msvc
+[[scenario.module_c_bool_shape.check]]
+name = "a-bool-is-zero-extended-and-a-char-is-not"
+target = "preir"
+contains = [
+  "declare zeroext i1 @takes_bool(i1 zeroext)",
+  "declare i8 @narrow(i8, i8, i16, i16, i1 zeroext)",
+  "define zeroext i1 @cone_bool(i32 %0, i1 zeroext %1)",
+  "call zeroext i1 @takes_bool(i1 zeroext true)",
+  "call i8 @narrow(i8 1, i8 2, i16 3, i16 4, i1 zeroext",
+  "call zeroext i1 @cone_bool(i32 ",
+]
+
+[[scenario.module_c_bool_shape.check]]
+name = "a-plain-cone-function-is-unmarked"
+target = "preir"
+contains = ["define internal i1 @plain(i1 %0)", "call i1 @plain(i1 "]
+
+[scenario.module_c_bool_extend]
+category = "compile"
+description = "On SysV x86-64 and wasm32 a C-named function's integers narrower than 'int' are marked as clang marks them: 'signext' for i8 and i16, 'zeroext' for u8, u16 and Bool, as argument and result; an i32 and a plain Cone function are unmarked"
+tags = ["genllvm"]
+
+[[scenario.module_c_bool_extend.run]]
+name = "sysv"
+options = ["--triple=x86_64-unknown-linux-gnu"]
+
+[[scenario.module_c_bool_extend.run]]
+name = "wasm32"
+options = ["--wasm"]
+
+[[scenario.module_c_bool_extend.check]]
+name = "narrow-integers-are-extended-by-their-sign"
+target = "preir"
+contains = [
+  "declare signext i8 @narrow(i8 signext, i8 zeroext, i16 signext, i16 zeroext, i1 zeroext, i32)",
+  "declare zeroext i16 @narrow_u(i8 zeroext)",
+  "define zeroext i1 @cone_bool(i32 %0, i1 zeroext %1)",
+  "call signext i8 @narrow(i8 signext 1, i8 zeroext 2, i16 signext 3, i16 zeroext 4, i1 zeroext true, i32 5)",
+  "call zeroext i16 @narrow_u(i8 zeroext 6)",
+]
+
+[[scenario.module_c_bool_extend.check]]
+name = "a-plain-cone-function-is-unmarked"
+target = "preir"
+contains = ["define internal i1 @plain(i1 %0, i8 %1)", "call i1 @plain(i1 "]
 
 [scenario.module_c_threadlocal]
 category = "compile"
@@ -2345,6 +2412,30 @@ name = "h-exports-the-private-type's-method"
 target = "symbols"
 object = "h"
 contains = ["define h.Inner.get comdat nodeduplicate"]
+
+# A location in code the program compiles from a package's include file names
+# the package's source file and line, not the include file's: the include file
+# marks each line where its lines stop being the source's (after its banner,
+# after text left out or cut, where a second file or a block begins), and the
+# program's lexer reads the marks. Each program panics once, so one scenario
+# per panic: a generic type's method calling 'panic', whose location is its
+# own, below text the include file leaves out and cuts; and the index check the
+# compiler inserts in an inline function of the package's second file.
+[scenario.module_include_lines]
+category = "run"
+description = "A panic in a generic type's method, compiled by the program from the include file its package's compile generates, names the package's source file and the line of the call there, though the include file left out and cut text above it"
+tags = ["parse", "genllvm", "runtime"]
+link = ["loc/loc.conebuild"]
+include = ["include/loc.cone"]
+program_exit = "abort"
+
+[scenario.module_include_lines_file]
+category = "run"
+description = "An index check in an inline function of a package's second file, expanded by the program from the include file, names that file and the line of the index, not the root file's name nor the include file's line"
+tags = ["parse", "genllvm", "runtime"]
+link = ["idx/idx.conebuild"]
+include = ["include/idx.cone"]
+program_exit = "abort"
 
 # Private members the include file leaves out, arranged every way blank lines
 # and comments fall between them: two private methods last with a blank line

@@ -34,7 +34,9 @@ Lexer *lex = NULL;        // Current lexer
 // ->fname off the program node to name its output files. So re-using a popped
 // block rewrote the url out from under every node still pointing at it, and a
 // diagnostic against an earlier module named a later module's file while
-// echoing the earlier one's source line.
+// echoing the earlier one's source line. For the same reason a line mark in a
+// generated include file, which renames the file, starts a block of its own
+// over the same text (lexLineMark).
 Lexer *lexNew(char *src, char *url) {
     Lexer *newlex = (Lexer*) memAllocBlk(sizeof(Lexer));
     newlex->next = NULL;
@@ -46,6 +48,7 @@ Lexer *lexNew(char *src, char *url) {
 
     // Initialize lexer's source info
     newlex->url = url;
+    newlex->path = url;
     newlex->fname = fileName(url);
     newlex->source = src;
 
@@ -961,6 +964,37 @@ char *lexBlockComment(char *srcp) {
     return srcp;
 }
 
+// A line mark, where a generated include file has one at srcp (LexLineMark):
+// the line after it is line <n> of <file>, the package's source the text after
+// it was copied from. A block of its own takes over from the current one there,
+// the same text under the source's name and numbered from <n>, so that a node
+// built after the mark reports the source's file and line, and one built before
+// it keeps its own. Anything else is the comment it looks like
+static void lexLineMark(char *srcp) {
+    size_t marklen = strlen(LexLineMark);
+    if (strncmp(srcp, LexLineMark, marklen) != 0)
+        return;
+    char *p = srcp + marklen;
+    uint32_t line = 0;
+    while (*p >= '0' && *p <= '9')
+        line = line * 10 + (*p++ - '0');
+    if (line == 0 || *p++ != ' ' || *p++ != '"')
+        return;
+    char *name = p;
+    while (*p && *p != '"' && *p != '\n')
+        ++p;
+    if (*p != '"' || p == name)
+        return;
+    Lexer *marked = (Lexer*)memAllocBlk(sizeof(Lexer));
+    *marked = *lex;
+    marked->url = memAllocStr(name, p - name);
+    // The mark's own line end counts the line after it
+    marked->linenbr = line - 1;
+    if (marked->prev)
+        marked->prev->next = marked;
+    lex = marked;
+}
+
 // Shortcut macro for return a punctuation token
 #define lexReturnPuncTok(tok, skip) { \
     lex->toktype = tok; \
@@ -1219,8 +1253,11 @@ void lexNextTokenx() {
         
         // '/' or '//' or '/*'
         case '/':
-            // Line comment: '//'
+            // Line comment: '//'. One opening a line of a generated include
+            // file may be a line mark
             if (*(srcp+1)=='/') {
+                if ((lex->flags & LexLineMarks) && srcp == lex->linep)
+                    lexLineMark(srcp);
                 srcp += 2;
                 while (*srcp && *srcp!='\n')
                     srcp++;
@@ -1350,6 +1387,39 @@ static char *lexSkipTrivia(char *srcp) {
         else
             return srcp;
     }
+}
+
+// With the lexer on a name in a function-reference type's parameter list, is
+// the name the start of a type -- a parameter written as its type alone -- rather
+// than a parameter's own name? It is when what follows could not begin a
+// parameter's type: a '.' (a path to a type, 'geomath.Vec3'), or a '[' opening
+// type arguments ('List[i32]'), told apart from an array type ('xs [4; i32]') by
+// the ';' an array type holds at its own level. Read off the text as
+// lexNextIsWord is, so nothing is lexed twice.
+int lexIdentOpensType() {
+    char *srcp = lexSkipTrivia(lex->srcp);
+    if (*srcp == '.')
+        return 1;
+    if (*srcp != '[')
+        return 0;
+    int depth = 0;
+    while (*srcp) {
+        switch (*srcp) {
+        case '[': case '(': case '{':
+            ++depth;
+            break;
+        case ']': case ')': case '}':
+            if (--depth == 0)
+                return 1;
+            break;
+        case ';':
+            if (depth == 1)
+                return 0;
+            break;
+        }
+        srcp = lexSkipTrivia(srcp + 1);
+    }
+    return 1;
 }
 
 // Does this source's first statement begin 'mod' or 'pub mod'? The folder sweep

@@ -1,0 +1,76 @@
+// Bool across the C boundary, checked against C compiled by the platform's
+// own C compiler (cside.c, which the scenario links). A C-named function
+// passes and returns a Bool as C's 'bool': one byte holding 0 or 1, widened
+// as the platform's C compiler widens it ('zeroext' on the argument and the
+// result), so C, which trusts the byte, reads 0 or 1 and nothing else. A Bool
+// field of a struct is one byte holding 0 or 1, as a C 'bool' field is.
+mod module_c_bool;
+import stdio use *;
+
+struct Flags { pub n i32; pub a Bool; pub b Bool; }                // 8 bytes
+struct Flags3 { pub n i32; pub a Bool; pub m i32; pub b Bool; }    // 12 bytes
+
+extern {
+  fn @c c_int(n i32) i32;
+  fn @c bool_byte(b Bool) i32;
+  fn @c bool_mixed(n i32, a Bool, k i8, b Bool) i32;
+  fn @c bool_odd(n i32) Bool;
+
+  fn @c flags_code(f Flags) i32;
+  fn @c flags3_code(f Flags3) i32;
+  fn @c flags_make(n i32) Flags;
+  fn @c flags_fill(f &mut Flags3);
+
+  fn @c c_via_cone_not() i32;
+  fn @c c_via_cone_bool_of(n i32) i32;
+  fn @c c_via_cone_flags() i32;
+}
+
+// Cone's own C-named functions, which C calls
+pub fn @c cone_not(b Bool) Bool {
+  !b;
+}
+// Whether n's low two bits are not both 0: a Bool made from a wider register
+pub fn @c cone_bool_of(n i32) Bool {
+  (n & 3) into Bool;
+}
+pub fn @c cone_flags(f Flags) i32 {
+  f.n * 100 + (f.a into i32) * 10 + (f.b into i32);
+}
+
+fn show(label &[]u8, n i64) {
+  printStr(label); printStr(" "); printInt(n); printStr("\n");
+}
+fn showB(label &[]u8, b Bool) {
+  printStr(label);
+  if b {
+    printStr(" true\n");
+  } else {
+    printStr(" false\n");
+  }
+}
+
+fn main() {
+  // A Bool made from 3, whose register holds 3: C sees 1
+  imm three = c_int(3);
+  show("bool_byte", bool_byte((three & 3) into Bool));
+  show("bool_byte.false", bool_byte((three & 2) == 0));
+  show("bool_mixed", bool_mixed(4, (three & 3) into Bool, 5, three > 3));
+  showB("bool_odd(7)", bool_odd(7));
+  showB("bool_odd(8)", bool_odd(8));
+
+  // Structs holding bools
+  show("flags_code", flags_code(Flags[2, true, false]));
+  show("flags3_code", flags3_code(Flags3[3, false, 6, true]));
+  imm f = flags_make(1);
+  show("flags_make.n", f.n); showB("flags_make.a", f.a); showB("flags_make.b", f.b);
+  mut g = Flags3[0, false, 0, true];
+  flags_fill(&mut g);
+  show("flags_fill.n", g.n); showB("flags_fill.a", g.a);
+  show("flags_fill.m", g.m); showB("flags_fill.b", g.b);
+
+  // C calls Cone's C-named functions
+  show("c_via_cone_not", c_via_cone_not());
+  show("c_via_cone_bool_of", c_via_cone_bool_of(3));
+  show("c_via_cone_flags", c_via_cone_flags());
+}

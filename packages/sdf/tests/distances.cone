@@ -1,0 +1,145 @@
+// The sdf package's primitives, operators, domain operators and fillets at
+// points whose distances are known by hand. Only a failure prints.
+//
+// - Primitives: a point on an axis or a diagonal, outside, on and inside.
+//   A cone with its apex at y = 1 and a base of radius 1 at y = -1 has its
+//   side on the line from (1, -1) to (0, 1), whose outward normal is
+//   (2, 1) / sqrt 5: the origin is 1 / sqrt 5 inside it, (2, 0) is
+//   3 / sqrt 5 outside, its foot (0.8, -0.6) on the side.
+// - Smooth union, k = 1/4: two equal distances d give d - k; distances 1
+//   and 1.5 give h = 1/2 and 1 - h^2 k = 0.9375, blend h^2 / 2 = 0.125;
+//   distances 1 apart or more (4 k) give the hard union.
+// - Domain: a sphere asked at a translated, scaled or placed point gives the
+//   moved shape's exact distance; a quarter turn about z carries +y to +x
+//   in the shape's own space; repetition and mirroring by exact multiples.
+// - Fillets: hg_sdf's quarter-round with a = b = 1/4, r = 1/2 is r - the
+//   distance from (a, b) to (r, r): 0.5 - sqrt(0.125); far from both
+//   shapes each fillet is the plain union.
+
+mod distances;
+
+import testing use *;
+import geomath use *;
+import sdf use *;
+
+const EPS f64 = 0.000002d;
+
+fn near(got f32, want f64, label &[]u8) { expectFloat(f64[got], want, EPS, label); }
+
+fn primitives() {
+  near(sphere(Vec3[3., 4., 0.], 2.), 3d, "sphere outside");
+  near(sphere(Vec3[0., 0., 0.], 2.), -2d, "sphere centre");
+  near(box(Vec3[2., 0., 0.], Vec3[1., 1., 1.]), 1d, "box face");
+  near(box(Vec3[2., 2., 0.], Vec3[1., 1., 1.]), 1.41421356d, "box edge");
+  near(box(Vec3[0., 0., 0.], Vec3[1., 2., 3.]), -1d, "box centre");
+  near(box(Vec3[0.5, 0., 0.], Vec3[1., 1., 1.]), -0.5d, "box inside");
+  near(roundBox(Vec3[3., 0., 0.], Vec3[1., 1., 1.], 0.25), 2d, "round box face");
+  near(roundBox(Vec3[2., 2., 0.], Vec3[1., 1., 1.], 0.25), 1.76776695d - 0.25d, "round box edge");
+  near(capsule(Vec3[0., 1., 2.], Vec3[0., 0., 0.], Vec3[0., 3., 0.], 0.5), 1.5d, "capsule side");
+  near(capsule(Vec3[0., -2., 0.], Vec3[0., 0., 0.], Vec3[0., 3., 0.], 0.5), 1.5d, "capsule end");
+  near(capsule(Vec3[0., 1., 0.], Vec3[0., 0., 0.], Vec3[0., 3., 0.], 0.5), -0.5d, "capsule axis");
+  near(torus(Vec3[3., 0., 0.], 2., 0.5), 0.5d, "torus outside");
+  near(torus(Vec3[0., 0., 0.], 2., 0.5), 1.5d, "torus hole");
+  near(torus(Vec3[0., 1., 2.], 2., 0.5), 0.5d, "torus above");
+  near(torus(Vec3[2., 0., 0.], 2., 0.5), -0.5d, "torus ring");
+  near(cylinder(Vec3[2., 0., 0.], 1., 1.), 1d, "cylinder side");
+  near(cylinder(Vec3[0., 3., 0.], 1., 1.), 2d, "cylinder cap");
+  near(cylinder(Vec3[2., 3., 0.], 1., 1.), 2.23606798d, "cylinder rim");
+  near(cylinder(Vec3[0., 0., 0.], 1., 1.), -1d, "cylinder centre");
+  near(cone(Vec3[0., 3., 0.], 1., 1., 0.), 2d, "cone apex");
+  near(cone(Vec3[0., -3., 0.], 1., 1., 0.), 2d, "cone base");
+  near(cone(Vec3[0., 0., 0.], 1., 1., 0.), -0.44721360d, "cone inside");
+  near(cone(Vec3[2., 0., 0.], 1., 1., 0.), 1.34164079d, "cone side");
+  near(cone(Vec3[0., 0., 3.], 1., 1., 1.), 2d, "a cone of equal radii is a cylinder");
+  near(roundCone(Vec3[0., -1., 0.], 0.5, 0.25, 2.), 0.5d, "round cone bottom");
+  near(roundCone(Vec3[0., 4., 0.], 0.5, 0.25, 2.), 1.75d, "round cone top");
+  near(roundCone(Vec3[0., 1., 0.], 0.5, 0.25, 2.), -0.375d, "round cone axis");
+  near(plane(Vec3[1., 2., 3.], Vec3[0., 1., 0.], -1.), 1d, "plane");
+  near(ellipsoid(Vec3[2., 0., 0.], Vec3[1., 0.5, 0.5]), 1d, "ellipsoid on its long axis");
+  near(ellipsoid(Vec3[0., 1., 0.], Vec3[1., 0.5, 0.5]), 0.5d, "ellipsoid on a short axis");
+}
+
+fn operators() {
+  near(union(1., 2.), 1d, "union");
+  near(subtract(-1., -0.5), 0.5d, "subtract");
+  near(intersect(1., 2.), 2d, "intersect");
+  near(smoothUnion(1., 1., 0.25), 0.75d, "smooth union, equal");
+  near(smoothUnion(1., 1.5, 0.25), 0.9375d, "smooth union, 1/2 apart");
+  near(smoothUnion(1., 2., 0.25), 1d, "smooth union, 4 k apart");
+  near(smoothUnion(1., 1.5, 0.), 1d, "smooth union, k 0");
+  imm b1 = smoothUnionBlend(1., 1., 0.25);
+  near(b1.distance, 0.75d, "blend, equal: distance");
+  near(b1.blend, 0.5d, "blend, equal: half");
+  imm b2 = smoothUnionBlend(1., 1.5, 0.25);
+  near(b2.distance, 0.9375d, "blend: distance");
+  near(b2.blend, 0.125d, "blend: towards the nearer");
+  imm b3 = smoothUnionBlend(1.5, 1., 0.25);
+  near(b3.blend, 0.875d, "blend: the other way");
+  imm b4 = smoothUnionBlend(1., 3., 0.25);
+  near(b4.blend, 0d, "blend: far apart, all the first");
+  near(smoothSubtract(1., -1., 0.25), 1.25d, "smooth subtract");
+  near(smoothIntersect(1., 1., 0.25), 1.25d, "smooth intersect");
+  near(onion(-0.5, 0.25), 0.25d, "onion");
+  near(round(1., 0.25), 0.75d, "round");
+  near(exclusive(-1., 2.), -1d, "exclusive: in one");
+  near(exclusive(-1., -2.), 1d, "exclusive: in both");
+}
+
+fn domains() {
+  near(sphere(translate(Vec3[3., 0., 0.], Vec3[1., 0., 0.]), 1.), 1d, "translate");
+  imm quarter = Quat.angleAxis(pi * 0.5, Vec3[0., 0., 1.]);
+  imm r = rotate(Vec3[0., 1., 0.], quarter);
+  near(r.x, 1d, "a quarter turn: +y is the shape's +x");
+  near(r.y, 0d, "a quarter turn: y");
+  near(r.z, 0d, "a quarter turn: z");
+  near(scaleDistance(sphere(scalePoint(Vec3[6., 0., 0.], 2.), 1.), 2.), 4d, "scale");
+  imm pl = Placement[Vec3[5., 0., 0.], Quat.identity(), 2.];
+  near(pl.distance(box(pl.toLocal(Vec3[9., 0., 0.]), Vec3[1., 1., 1.])), 2d, "placement");
+  imm turned = Placement[Vec3[0., 0., 0.], quarter, 1.];
+  near(box(turned.toLocal(Vec3[0., 2.5, 0.]), Vec3[2., 1., 1.]), 0.5d, "a turned box's long side along y");
+  imm m = mirrorX(Vec3[-3., 1., 2.]);
+  near(m.x, 3d, "mirror x");
+  imm mp = mirror(Vec3[0., -2., 0.], Vec3[0., 1., 0.], 0.);
+  near(mp.y, 2d, "mirror in a plane: the other side");
+  imm keep = mirror(Vec3[0., 2., 0.], Vec3[0., 1., 0.], 0.);
+  near(keep.y, 2d, "mirror in a plane: this side");
+  near(repeat(Vec3[2.25, 0., 0.], Vec3[1., 1., 1.]).x, 0.25d, "repeat");
+  near(repeat(Vec3[-2.75, 0., 0.], Vec3[1., 1., 1.]).x, 0.25d, "repeat, negative");
+  near(repeatLimited(Vec3[5.25, 0., 0.], 1., Vec3[2., 0., 0.]).x, 3.25d, "repeat limited: past the last");
+  near(repeatLimited(Vec3[1.25, 0., 0.], 1., Vec3[2., 0., 0.]).x, 0.25d, "repeat limited: within");
+  near(elongate(Vec3[3., 0., 0.], Vec3[1., 0., 0.]).x, 2d, "elongate: outside");
+  near(elongate(Vec3[0.5, 0., 0.], Vec3[1., 0., 0.]).x, 0d, "elongate: the middle");
+}
+
+fn fillets() {
+  near(unionRound(1., 2., 0.5), 1d, "round: far");
+  near(unionRound(0.25, 0.25, 0.5), 0.5d - 0.35355339d, "round: in the fillet");
+  near(intersectRound(-1., -2., 0.5), -1d, "intersect round: deep");
+  near(subtractRound(-1., 2., 0.5), -1d, "subtract round: deep");
+  near(unionChamfer(0.5, 0.5, 0.5), 0.35355339d, "chamfer");
+  near(unionColumns(2., 1., 0.5, 4.), 1d, "columns: far");
+  near(unionStairs(3., 2., 0.5, 4.), 2d, "stairs: far");
+  near(intersectStairs(-3., -2., 0.5, 4.), -2d, "intersect stairs: deep");
+  near(pipe(0.3, 0.4, 0.1), 0.4d, "pipe");
+  near(groove(-1., 0., 0.2, 0.1), -0.8d, "groove");
+  near(tongue(1., 0., 0.2, 0.1), 0.8d, "tongue");
+  near(engrave(-1., 0., 0.2), -0.56568542d, "engrave");
+  // Columns in the seam: at a = b the columns' ribs, never outside the
+  // plain union or beyond the chamfer's diagonal
+  mut t f32 = 0.;
+  mut ok = true;
+  while t < 0.5 {
+    imm c = unionColumns(t, t, 0.5, 4.);
+    if c > t + 0.000001 { ok = false; }
+    t = t + 0.03125;
+  }
+  expect(ok, "columns never exceed the union");
+}
+
+fn main() i32 {
+  primitives();
+  operators();
+  domains();
+  fillets();
+  done();
+}

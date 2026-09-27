@@ -1,0 +1,100 @@
+// ======== The horn: a ribbed, tapering, curling horn ========
+//
+// Latham's horn operator (FormSynth: a primitive repeated along a path, each
+// copy scaled relative to the last) and Raup's shell sweep unwound, built
+// from this package's parts. An Arc 'length' long curls through 'curl'
+// radians; it is cut into cells, one per rib (16 when there are no ribs).
+// Each cell holds a segment of the tube, a round cone along the cell's chord
+// from the radius at its start to the radius at its end, the radius falling
+// linearly with arc length from 'baseRadius' by 'taper' of it; and a rib, a
+// torus round the chord's middle as thick as 'ribDepth' times the radius
+// there, smooth-unioned onto its segment. The segments share their end
+// spheres, so the tube is seamless, rounded at both ends, and a point at
+// the tip when taper is 1.
+//
+// The horn is the union of its cells, every cell accounted for
+// (repeatAlongArc): each is a smooth union of exact distances, so the horn
+// is a bound everywhere, 1-Lipschitz and continuous, for any curl (a horn
+// curled into itself is just its union). The chords sag from the arc by
+// radius (1 - cos(curl / 2 cells)), a thousandth of the length for 14
+// cells over 2 radians.
+
+pub struct Horn {
+  pub length f32;              // along the arc
+  pub baseRadius f32;          // the tube's radius at the base
+  pub taper f32;               // how much of it is lost by the tip, 0 (none) to 1 (a point)
+  pub curl f32;                // radians the arc turns through, towards +x
+  pub ribs i32;                // how many ribs, evenly spaced; 0 for none
+  pub ribDepth f32;            // a rib's thickness, as a fraction of the radius there
+  pub arc Arc;
+  pub cells ArcCells;
+  pub sag f32;                 // how far each chord's middle lies inside the arc
+  pub halfChord f32;           // half each chord's length
+
+  // A horn rising from the origin along +y and curling towards +x
+  pub fn make(length f32, baseRadius f32, taper f32, curl f32, ribs i32, ribDepth f32) Horn {
+    imm arc = Arc.make(length, curl);
+    imm cells = arc.cells(if ribs > 0 { ribs; } else { 16; });
+    // The chord of one cell: its half-angle's cosine and sine are the first
+    // cell's
+    imm sag = if arc.radius == 0. { 0.; } else { arc.radius - arc.radius * cells.firstCos; };
+    imm halfChord = if arc.radius == 0. { cells.step * 0.5; } else { arc.radius * cells.firstSin; };
+    Horn[length, baseRadius, taper, arc.curl, ribs, ribDepth, arc, cells, sag, halfChord];
+  }
+
+  // The tube's radius a fraction u of the way along
+  pub fn radiusAt(self &, u f32) f32 { baseRadius * (1. - taper * u); }
+
+  // Whether the horn has ribs
+  fn ribbed(self &) Bool { ribs > 0 and ribDepth > 0.; }
+
+  // Cell 'index', centred u of the way along, at 'q' (its frame's
+  // coordinates): its segment of the tube and its rib
+  pub fn repeatedDistance(self &, q Vec3, index i32, u f32) f32 {
+    imm halfU = 0.5 / f32[cells.count];
+    imm r0 = self.radiusAt(u - halfU);
+    imm r1 = self.radiusAt(u + halfU);
+    // The chord runs along z, 'sag' in from the arc (towards -x)
+    imm cx = q.x + sag;
+    imm segment = roundCone(Vec3[cx, q.z + halfChord, q.y], r0, r1, halfChord * 2.);
+    if !self.ribbed() { return segment; }
+    imm r = self.radiusAt(u);
+    imm m = r * ribDepth;
+    imm rib = len2(len2(cx, q.y) - r, q.z) - m;
+    smoothUnion(segment, rib, m * 0.35);
+  }
+
+  // A ball about the cell's origin that holds the cell: the chord's end
+  // from it, the larger end's radius, the rib, the fillet's swell
+  pub fn bound(self &, index i32, u f32) f32 {
+    imm halfU = 0.5 / f32[cells.count];
+    imm r0 = self.radiusAt(u - halfU);
+    imm r1 = self.radiusAt(u + halfU);
+    imm r = maxf(r0, r1);
+    imm rib = if self.ribbed() { r * ribDepth * 1.35; } else { 0.; };
+    halfChord + sag + r + rib;
+  }
+
+  pub fn distance(self &, p Vec3) f32 { repeatAlongArc(&arc, &cells, self, p); }
+
+  // A box holding the whole horn: the union of every cell's ball (its
+  // 'bound' about its origin, the origins stepped round as the union steps
+  // them), so a mesher's grid over it misses nothing
+  pub fn bounds(self &) Aabb3 {
+    mut box = Aabb3.empty();
+    mut c = cells.firstCos;
+    mut s = cells.firstSin;
+    mut k = 0;
+    while k < cells.count {
+      imm u = (f32[k] + 0.5) / f32[cells.count];
+      imm o = arcCellFrame(&arc, &cells, k, c, s).origin;
+      imm r = self.bound(k, u);
+      box = box.union(Aabb3.fromCenter(o, Vec3[r, r, r]));
+      imm nc = c * cells.turnCos - s * cells.turnSin;
+      s = s * cells.turnCos + c * cells.turnSin;
+      c = nc;
+      k = k + 1;
+    }
+    box;
+  }
+}

@@ -138,9 +138,10 @@ Because the retag happens here, the four constructor tags have **no arms in
 `errorType` shares the tag and means "already reported" — then raise
 `ErrorNoRefType` and assign `errorType` so nothing downstream reports it again.
 `parseAmper` leaves `vtexp` unknown on purpose, because a reference in a
-parameter position may have its pointee inferred, and `parseFnSig` is the only
-thing that ever fills one in. Every other spelling — `fn f(s &)`, `&&`, `*&`,
-`&[]`, `(&, i32)`, a non-`self` parameter inside a method — would otherwise
+parameter position may have its pointee inferred, and a method's `Self`
+inference (`parseFnSig`, or `parseFnSigSettle` for an anonymous function's) is
+the only thing that ever fills one in. Every other spelling — `fn f(s &)`, `&&`,
+`*&`, `&[]`, `(&, i32)`, `&fn(&) i32`, a non-`self` parameter inside a method — would otherwise
 reach `genlType` still unknown and hand `LLVMPointerType` a NULL element type.
 Every enclosing type reaches these two guards through `itypeTypeCheck` on its
 own pointee, which is what makes two checks cover all of them.
@@ -349,6 +350,23 @@ none for `so` — so nothing assumes a region's size. The region's `free`, where
 it has one, is what gives the memory back; the compiler calls no `free` of its
 own ([What a region is](module.md)).
 
+**An owning virtual reference is released as any owner is, through its
+vtable's type record.** `itypeNeedsFinal`, `flowIsOwningType` and `flowIsRcRef`
+answer for `VirtRefTag` as for `RefTag`, so flow schedules its death, its
+release before a store, and an `alias` for each counted copy. The concrete type
+is erased, so the two things a death needs are read at run time from the last
+slot of the vtable, a pointer to the implementer's core `TypeRecord`
+(`genlVirtRecord`): the value dies through the record's `finalize`
+(`genlVirtFinalize`), and the header sits before the value at the region and
+permission's size rounded up to the record's `align` (`genlVirtHeader`), which
+`genlOwnerHeader` hands to `alias`, `dealias` and `free` in place of
+`genlRegionHeader`'s static offset. A `so` header is empty, so no alignment is
+read for one. **A conversion into an owning virtual reference carries its
+operand's owner** (`flowCastCarries`): unlike any other conversion, which makes
+a new value, flow walks through it as through a recast, so a plain owner
+converted is moved into the virtual reference, or counted for a counted region,
+and a local returned converted is exempt from its scope's release.
+
 `BorrowTag` generates as nothing but `genlAddr(vtexp)`.
 
 ## Hazards
@@ -363,6 +381,10 @@ own ([What a region is](module.md)).
   path and the allocate path have different invariants for the same field.
   Anything reading `typeinfo` off an arbitrary reference type crashes on borrows
   only.
+- **A virtual reference type has no `typeinfo`.** `genlRegionHeader` reads the
+  header's offset from it, so anything reaching a region method through an
+  owning virtual reference goes through `genlOwnerHeader`, which reads the
+  alignment from the vtable's record instead.
 - **Coming from Rust:** `&mut T` is invariant and `&ro T` covariant; `uni` is
   not `&mut` but the *unique* permission, which is what makes owning references
   move; lifetimes are a block-nesting integer that is not part of type identity

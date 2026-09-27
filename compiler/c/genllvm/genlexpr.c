@@ -655,7 +655,8 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
             unsigned long long bitwidth = LLVMSizeOfTypeInBits(gen->datalayout, selftyp);
             switch (((IntrinsicNode *)fndcl->value)->intrinsicFn) {
             case NegIntrinsic: fncallret = LLVMBuildFNeg(gen->builder, fnargs[0], ""); break;
-            case IsTrueIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealONE, fnargs[0], LLVMConstNull(LLVMTypeOf(fnargs[0])), ""); break;
+            // Unordered: only 0 and -0 are false, so NaN, which is neither, is true
+            case IsTrueIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealUNE, fnargs[0], LLVMConstNull(LLVMTypeOf(fnargs[0])), ""); break;
             case AddIntrinsic: fncallret = LLVMBuildFAdd(gen->builder, fnargs[0], fnargs[1], ""); break;
             case SubIntrinsic: fncallret = LLVMBuildFSub(gen->builder, fnargs[0], fnargs[1], ""); break;
             case MulIntrinsic: fncallret = LLVMBuildFMul(gen->builder, fnargs[0], fnargs[1], ""); break;
@@ -789,13 +790,19 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
     INode *totype = itypeGetTypeDcl(to);
     LLVMValueRef genexp = genlExpr(gen, exp);
 
-    // A reference or pointer converts to Bool by asking whether it is non-null,
-    // which is what the 'isTrue' intrinsic already generates for the implicit
-    // coercion of a pointer. Bool is a 1-bit UintNbrTag, so without this the
-    // number cases below would read NbrNode fields off a RefNode/StarNode and
-    // emit a 'trunc' of a pointer.
-    if (totype == (INode*)boolType && (fromtype->tag == RefTag || fromtype->tag == PtrTag))
-        return LLVMBuildIsNotNull(gen->builder, genexp, "isnotnull");
+    // Converting to Bool asks what the 'isTrue' intrinsic asks of a condition:
+    // is a reference or pointer non-null, is an integer non-zero, is a float
+    // neither 0 nor -0 (NaN is true). Bool is a 1-bit UintNbrTag, so without
+    // this the number cases below would keep the low bit ('trunc': 2 was false)
+    // and turn a float into an integer first (0.5 was false), and would read
+    // NbrNode fields off a RefNode/StarNode and emit a 'trunc' of a pointer.
+    if (totype == (INode*)boolType) {
+        if (fromtype->tag == RefTag || fromtype->tag == PtrTag)
+            return LLVMBuildIsNotNull(gen->builder, genexp, "isnotnull");
+        if (fromtype->tag == FloatNbrTag)
+            return LLVMBuildFCmp(gen->builder, LLVMRealUNE, genexp, LLVMConstNull(LLVMTypeOf(genexp)), "istrue");
+        return LLVMBuildICmp(gen->builder, LLVMIntNE, genexp, LLVMConstNull(LLVMTypeOf(genexp)), "istrue");
+    }
 
     // Handle number to number casts, depending on relative size and encoding format
     switch (totype->tag) {
@@ -1587,7 +1594,7 @@ static int genlStoreThroughPtr(INode *lval) {
 // that finalizes, which dies in place instead.
 static int genlOwnersOnly(INode *type) {
     INode *typedcl = itypeGetTypeDcl(type);
-    if (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag)
+    if (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag || typedcl->tag == VirtRefTag)
         return 1;
     if (typedcl->tag != TTupleTag)
         return 0;
@@ -1855,7 +1862,7 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         // Flow injects this node only for a counted reference (flowIsRcRef),
         // whose region's 'alias' is called once per owner added
         RefNode *reftype = (RefNode*)iexpGetTypeDcl(termnode);
-        if (reftype->tag == RefTag || reftype->tag == ArrayRefTag)
+        if (reftype->tag == RefTag || reftype->tag == ArrayRefTag || reftype->tag == VirtRefTag)
             genlRegionAlias(gen, val, anode->amt, reftype);
         else if (reftype->tag == TTupleTag) {
             TupleNode *tuple = (TupleNode*)reftype;

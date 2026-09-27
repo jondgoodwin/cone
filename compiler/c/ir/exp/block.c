@@ -333,7 +333,7 @@ static size_t blockJumpMark(BreakRetNode *brknode, size_t svpos) {
 // handed back directly is exempt from the release instead (flowScopeDealias).
 static void blockResultMove(INode *result) {
     INode *exp = result;
-    while (exp->tag == CastTag && !(exp->flags & FlagConvert))
+    while (exp->tag == CastTag && flowCastCarries(exp))
         exp = ((CastNode *)exp)->exp;
     if ((exp->tag == IfTag || (exp->tag == BlockTag && !(exp->flags & FlagLoop))) && iexpIsMove(result))
         flowHandleMove(result);

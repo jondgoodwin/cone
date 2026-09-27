@@ -320,7 +320,8 @@ INode *parseAmper(ParseState *parse) {
                 errorMsgLex(WarnName, "Unnecessary function name is ignored");
                 lexNextToken();
             }
-            anode->vtexp = parseFnSig(parse);
+            anode->vtexp = parseFnSig(parse, 1);
+            parseFnSigSettle(parse, (FnSigNode*)anode->vtexp, 1);
             return (INode *)anode;
         }
         FnDclNode *fndcl = (FnDclNode*)parseFn(parse, ParseMayAnon | ParseMayImpl | ParseMaySig | ParseEmbedded);

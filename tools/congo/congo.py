@@ -143,8 +143,8 @@ class Package:
         return f"{self.name} v{self.version}" if self.version else self.name
 
 
-# A C library as the linker is told it, without its prefix or suffix: SDL2 is
-# SDL2.lib on Windows and -lSDL2 (libSDL2.a or .so) elsewhere
+# A C library as the linker is told it, without its prefix or suffix: SDL3 is
+# SDL3.lib on Windows and -lSDL3 (libSDL3.a or .so) elsewhere
 LIBRARY_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*\Z")
 LIBRARY_SUFFIXES = (".lib", ".a", ".so", ".dylib", ".dll")
 
@@ -165,7 +165,7 @@ def read_link(path: Path, table: object) -> tuple[list[str], list[Path]]:
     for lib in libraries:
         if not LIBRARY_RE.match(lib) or lib.lower().endswith(LIBRARY_SUFFIXES):
             raise CongoError(f"{path}: [link] library \"{lib}\" must be the library's bare"
-                             " name, such as \"SDL2\": no folder, prefix or suffix, which"
+                             " name, such as \"SDL3\": no folder, prefix or suffix, which"
                              " Congo adds for the linker (and paths says where to look)")
     folders = []
     for entry in paths:

@@ -276,10 +276,16 @@ int fnSigViableCall(FnSigNode *to, INode **self, Nodes *args) {
             if (iexpMatches(self, iexpGetTypeDcl(*parmp), Coercion) == NoMatch)
                 return 0;
         }
-        // A virtual reference receiver is not type checked here, beyond requiring
-        // that the candidate expects a reference it can be dispatched through
-        else if (iexpGetTypeDcl(*parmp)->tag != RefTag)
-            return 0;
+        // A virtual reference receiver is not type checked here as a whole, since
+        // '&<Trait' never coerces to the '&Trait' the method declares. The
+        // candidate must expect a reference it can be dispatched through, with a
+        // permission the receiver's grants, as a plain reference's must
+        else {
+            RefNode *parmref = (RefNode*)iexpGetTypeDcl(*parmp);
+            if (parmref->tag != RefTag
+                || permMatches(parmref->perm, ((RefNode*)selftype)->perm) == NoMatch)
+                return 0;
+        }
         ++parmp;
     }
 

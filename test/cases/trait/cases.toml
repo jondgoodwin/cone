@@ -156,13 +156,15 @@ excludes = ["Meter.reading"]
 # implementer's own method takes is no longer in the vtable at all; the
 # conformance check refuses a mismatch (trait_typecheck_conform), and the run
 # would print a wrong number. Each slot must hold a method rather than be left
-# null. Read before optimization, where the dispatching functions still exist.
+# null. The last 'ptr' of each vtable is the implementer's type record, not a
+# slot (the check below). Read before optimization, where the dispatching
+# functions still exist.
 [[scenario.trait_success.check]]
 name = "parameterized-requirement-types-its-vtable-slot"
 target = "preir"
 contains = [
-  '%"Scaler:Vtable" = type { ptr }',
-  '%"Blender:Vtable" = type { ptr, ptr }',
+  '%"Scaler:Vtable" = type { ptr, ptr }',
+  '%"Blender:Vtable" = type { ptr, ptr, ptr }',
   'internal constant %"Scaler:Vtable" { ptr @',
   'internal constant %"Blender:Vtable" { ptr @',
   '%2 = extractvalue %"Scaler:Vtable.1" %s1, 1',
@@ -177,13 +179,19 @@ excludes = ['constant %"Scaler:Vtable" { ptr null', 'constant %"Blender:Vtable" 
 # requirement is a vtable slot holding an offset rather than a function pointer.
 # Both pointers are a bare 'ptr', so which half is the vtable is not in the
 # type; the dispatch the check above names reads its slot through the second.
+# After the methods and the offsets, every vtable ends in a pointer to the
+# implementer's type record, which an owning virtual reference's death reads
+# its finalizer and alignment from (trait_vref_final): last, so no slot's
+# index moves, and filled for every implementer, a marker trait's too.
 [[scenario.trait_success.check]]
-name = "vtable-layout-carries-methods-then-field-offsets"
+name = "vtable-layout-carries-methods-then-field-offsets-then-the-record"
 target = "llvmir"
 contains = [
-  '%"Meter:Vtable" = type { ptr, ptr, i32 }',
+  '%"Meter:Vtable" = type { ptr, ptr, i32, ptr }',
   '%"Shape:Vtable.0" = type { ptr, ptr }',
+  'internal constant %"Meter:Vtable" { ptr @_CNvNt5Gauge7reading, ptr @_CNvNt5Gauge4step, i32 0, ptr @cone.tyrec.',
 ]
+excludes = ['i32 0, ptr null }']
 
 # Each trait's list of vtables is a symbol named for that trait, so a module
 # with several traits has several lists and LLVM never has to tell two apart
@@ -244,16 +252,51 @@ tags = ["typecheck", "genllvm", "runtime"]
 # pointers carry no type, so the vtable's slots are bare 'ptr's and the cycle
 # is not in the types at all; the slot's function type is the one gapOf calls
 # its second slot with, the receiver and the fat pointer '%"Meter:Vtable.0"'.
+# The vtable's third 'ptr' is the implementer's type record, after the slots.
 # Read before optimization, where gapOf still dispatches.
 [[scenario.trait_self_vref.check]]
 name = "recursive-slot-takes-a-reference-to-its-own-vtable"
 target = "preir"
 contains = [
-  '%"Meter:Vtable" = type { ptr, ptr }',
+  '%"Meter:Vtable" = type { ptr, ptr, ptr }',
   '%"Meter:Vtable.0" = type { ptr, ptr }',
   '%gap = getelementptr inbounds nuw %"Meter:Vtable", ptr %2, i32 0, i32 1',
   '%5 = call i32 %4(ptr %3, %"Meter:Vtable.0" %b2)',
 ]
+
+# An owning virtual reference lent, not moved, where a borrowed one is wanted:
+# a dispatch's receiver, a '&<mut' or '&<' parameter or local, from a local, a
+# field, a global and a counted owner. A run because the claim is that the
+# owner is still there to use, and that each call reached the implementer it
+# holds, which the printed numbers say. Its own file because its subject is
+# the owner rather than dispatch; trait_flow_vref_owner holds what the lend
+# forbids.
+[scenario.trait_vref_owner]
+category = "run"
+description = "An owning virtual reference lent as a borrowed one to a dispatch's receiver, a parameter and a local, from a local, a field, a global and a counted owner"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+# An owning virtual reference's death: the concrete value finalized once and
+# its memory freed, wherever the last owner goes -- out of scope, replaced,
+# moved into a call, returned, held in a struct or an Option, counted with two
+# owners -- for two implementers of different alignment, and nothing for a
+# borrowed one. A run because what is claimed is how many times each finalizer
+# and free runs and in what order, and that every allocation is given back;
+# its own file because trait_vref_owner's subject is the lend.
+[scenario.trait_vref_final]
+category = "run"
+description = "An owning virtual reference finalizes and frees its value once, as a plain owner does, through the implementer's type record in the vtable"
+tags = ["flow", "genllvm", "runtime"]
+
+# Every pairing of a virtual reference's permission, borrowed or owning, with
+# the permission a dispatched method's 'self' declares, that the permission
+# allows. A run because the claim is that a 'self &mut' call through each
+# changed the value the reference points at, which the printed numbers say.
+# trait_typecheck_vref_perm holds the pairings refused.
+[scenario.trait_vref_perm]
+category = "run"
+description = "Methods dispatched through borrowed and owning virtual references whose permission grants what 'self' declares"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 # 'Self' in an open trait's requirement is the type complying with it, for a
 # generic constraint and a declared 'is' alike; the trait's own default means
@@ -555,6 +598,17 @@ description = "Members and operations a virtual reference cannot reach, and comp
 tags = ["typecheck"]
 diagnostics = 8
 
+# A method dispatched through a virtual reference whose permission does not
+# grant what the method's 'self' declares, borrowed and owning, refused as a
+# plain reference's call is (the last diagnostic is that plain call). Apart from
+# trait_typecheck_dispatch because the subject is the receiver's permission,
+# not what the vtable reaches.
+[scenario.trait_typecheck_vref_perm]
+category = "reject"
+description = "Methods dispatched through a virtual reference whose permission does not grant what 'self' declares"
+tags = ["typecheck"]
+diagnostics = 8
+
 # trait_enum_vref's refusals: a plain reference to an open trait, or to an enum
 # that does not itself declare what the trait requires, converted to another
 # trait's virtual reference, and a virtual reference narrowed to a trait or an
@@ -573,6 +627,22 @@ category = "reject"
 description = "Writing a trait field through a virtual reference that grants no write, and reading one through a reference that grants no read"
 tags = ["flow"]
 diagnostics = 3
+
+# What lending an owning virtual reference forbids its owner while a local
+# holds the borrow: replaced, moved, or read past a mutable borrow.
+[scenario.trait_flow_vref_owner]
+category = "reject"
+description = "An owning virtual reference replaced, moved or read while a borrowed virtual reference lent from it is still to be used"
+tags = ["flow"]
+diagnostics = 3
+
+# A plain sole owner converted into an owning virtual reference is moved into
+# it, as into any owner; before, it stayed live and both released one value.
+[scenario.trait_flow_vref_convert]
+category = "reject"
+description = "A plain owner used after it was converted into an owning virtual reference, by a local and by a parameter"
+tags = ["flow"]
+diagnostics = 2
 
 # The other flow question a virtual reference raises: not what may be done
 # through it, but how long it lives. A virtual reference is built by coercion

@@ -105,13 +105,13 @@ packages"):
 
 ```toml
 [link]
-libraries = ["SDL2", "user32"]
+libraries = ["SDL3", "user32"]
 paths = ["clib"]
 ```
 
 | Key | Value |
 | --- | --- |
-| `libraries` | the C libraries to link, each by its bare name: `SDL2`, not `SDL2.lib` or `libSDL2.a` |
+| `libraries` | the C libraries to link, each by its bare name: `SDL3`, not `SDL3.lib` or `libSDL3.a` |
 | `paths` | folders the linker searches for them first; a relative one is relative to the package folder. Optional |
 
 That is the whole manifest; any other key or table is an error. **There is no
@@ -217,7 +217,10 @@ an importer needs to see it, with a banner saying it is generated:
   function names, what an `inline` body calls, what a `pub use` re-exports — is
   declared in a private nested block, `mod vec { ... }`, holding only that, so
   a package laid out as a root re-exporting its submodules' API works as it is.
-  No importer can name the submodule itself.
+  No importer can name the submodule itself;
+- a comment such as `//#line 24 "loc.cone"` marks each line where the file's
+  lines stop being the source's, so an error or a panic in a body a program
+  compiles from the include file names the package's source file and line.
 
 **An include file is a module file like any other** [Jon 25 Sep]: it opens with
 its `mod` line, and its imports follow. So a package whose public functions
@@ -268,14 +271,14 @@ winstr/
   body too.
 - **Every library a package of the build names is linked into the executable**,
   once each, after the objects and `conestd`, in the order the objects are:
-  the program's first, then what it imports. On Windows `SDL2` becomes `SDL2.lib`
-  and each path `/LIBPATH:`; elsewhere `-lSDL2` and `-L`. The linker looks in
+  the program's first, then what it imports. On Windows `SDL3` becomes `SDL3.lib`
+  and each path `/LIBPATH:`; elsewhere `-lSDL3` and `-L`. The linker looks in
   `[link] paths` first, then where it always looks: on Windows the folders the
   `LIB` environment variable lists, which Visual Studio's environment sets to
   the Windows SDK's (so `user32`, `shlwapi` or `synchronization` need no path).
 - **Any package may have `[link]`**, a program's too. A program importing a C
   package names nothing itself: `window/examples/spin.cone` imports `sdl`
-  (through `window`), and its manifest names `SDL2`.
+  (through `window`), and its manifest names `SDL3`.
 
 A library that is not installed is the linker's to report, and Congo adds which
 package named which library.
@@ -302,12 +305,14 @@ with a Slang twin, `noise.slang`, for shaders; its example is
 `packages/noise/examples/images.cone`, which writes BMPs, and its README
 holds the determinism rules.
 
-One more binds a library beyond the C runtime, and names it: `sdl` (SDL2: a
+One more binds a library beyond the C runtime, and names it: `sdl` (SDL3: a
 window for Vulkan, its events and clocks, and loading Vulkan; `[link]` names
-`SDL2`, which is not part of the Windows SDK, so SDL2's `lib` folder must be
-on `LIB`, and `SDL2.dll` on `PATH` to run). `window` opens its window through
-`sdl`, so building its example, as `congo test` does, needs `SDL2.lib` on
-`LIB`, and running it needs a display.
+`SDL3`, which is not part of the Windows SDK, so the `lib\x64` folder of
+SDL3's development kit must be on `LIB`, and `SDL3.dll`, in the same folder,
+on `PATH` to run; Congo copies no DLL). `window` opens its window through
+`sdl`, so building its example, as `congo test` does, needs `SDL3.lib` on
+`LIB`, and running it needs a display. The tests of `sdl` and `window` push
+events through SDL's own queue and need `SDL3.dll` but no display.
 
 `vulkan` binds Vulkan 1.3 and links nothing: every function is found at run
 time through the `vkGetInstanceProcAddr` SDL hands out, so no Vulkan SDK is
@@ -317,7 +322,7 @@ Their layout, constants, loader, camera, image and LOD tests run anywhere;
 `vulkan`'s `runtime` test, all of `gpu`'s (`headless`, `pipelines`,
 `offscreen`), `render`'s `offscreen` and `noise`'s `parity` run against the real Vulkan loader
 with no window, so testing `packages/` needs a GPU driver with Vulkan 1.3
-and `SDL2.dll` on `PATH`, but no display. The shaders of `gpu` and `render`
+and `SDL3.dll` on `PATH`, but no display. The shaders of `gpu` and `render`
 are Slang compiled ahead of time to SPIR-V, committed and embedded in the
 Cone source (`tools/shaders/`), so building and testing needs no Vulkan SDK
 either; where the SDK's validation layer is installed, the tests run under
@@ -497,7 +502,7 @@ Everything is rebuilt every time.
   `VSCMD_ARG_TGT_ARCH`. Visual Studio's default Developer Command Prompt links
   for x86: from there Congo, saying nothing, takes out of `LIB` the folders
   under the Visual Studio and Windows SDK folders that environment names,
-  keeping the rest (SDL2's `lib`, say), and runs `vcvars64.bat` over it, which
+  keeping the rest (SDL3's `lib`, say), and runs `vcvars64.bat` over it, which
   puts its x64 folders in front of what `LIB` still lists. When no Microsoft
   `link.exe` is found even so, the error names the `vcvars64.bat` run, the end
   of what it printed, and the folders searched. Elsewhere, `cc` or `gcc`.

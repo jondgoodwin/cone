@@ -1198,6 +1198,7 @@ int itypeNeedsFinal(INode *typenode) {
     switch (type->tag) {
     case RefTag:
     case ArrayRefTag:
+    case VirtRefTag:
         return regionReleaseActs(((RefNode *)type)->region);
     case TTupleTag:
         for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {

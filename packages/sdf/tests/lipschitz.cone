@@ -1,0 +1,198 @@
+// The Lipschitz bound, sampled: a distance (exact or a bound) never changes
+// faster than the point moves, |d(p) - d(q)| <= |p - q|, which is what lets
+// a sphere tracer step by it. For each shape that claims it, 4096 pairs of
+// points 1/64 apart, the first anywhere in a box round the shape, the
+// direction hashed (noise's PCG, so every run is the same), must keep the
+// ratio within 1 + 1/100 (f32 rounding of distances about 1, over 1/64,
+// is about 1e-5). Only a failure prints; LIPSCHITZ_REPORT prints each
+// shape's largest ratio.
+//
+// Also: the gradient 'gradient' finds has length at most 1 + 1/100 for the
+// horn and for fBm detail; hg_sdf's fillets keep 1 for two planes meeting
+// at a right angle and sqrt 2 for planes at 45 degrees and for the sphere
+// and box (fillet.cone's header says why); the ellipsoid, Quilez's
+// approximation, is held to the 1.2 it measured; and two things that are
+// not distances are shown not to be: noise displacement, and a scaled
+// point without 'scaleDistance'.
+//
+// Measured when written: every exact primitive and operator 0.9965 to
+// 0.99999; the horns 0.9995 to 0.99991 (gradient 1.0068); fBm detail
+// 0.9994; the ellipsoid 1.204; fillets at 45 degrees up to 1.30, on the
+// sphere and box up to 1.36; noise displacement 2.27.
+
+mod lipschitz;
+
+import testing use *;
+import stdio use *;
+import libc;
+import geomath use *;
+import noise;
+import sdf use *;
+
+const PAIRS = 4096;
+const STEP f32 = 0.015625;
+const SLACK f64 = 0.01d;
+
+// Sample i: a point in [-2.5, 2.5] x [-1, 4] x [-2.5, 2.5] and a unit
+// direction, from hashes
+fn samplePoint(i i32) Vec3 {
+  imm h = noise.pcg3d(noise.UVec3[u32[i], 12345u32, 777u32]);
+  Vec3[noise.toSigned(h.x) * 2.5, noise.toSigned(h.y) * 2.5 + 1.5, noise.toSigned(h.z) * 2.5];
+}
+fn sampleDirection(i i32) Vec3 {
+  imm h = noise.pcg3d(noise.UVec3[u32[i], 54321u32, 999u32]);
+  Vec3[noise.toSigned(h.x), noise.toSigned(h.y), noise.toSigned(h.z) + 0.001].normalize();
+}
+
+// The largest |d(p) - d(q)| / |p - q| over the pairs
+fn largestRatio[S Shape](shape &S) f64 {
+  mut worst = 0d;
+  mut i = 0;
+  while i < PAIRS {
+    imm p = samplePoint(i);
+    imm q = p + sampleDirection(i) * STEP;
+    imm dd = f64[shape.distance(p)] - f64[shape.distance(q)];
+    imm r = (if dd < 0d { -dd; } else { dd; }) / f64[(q - p).length()];
+    if r > worst or r != r { worst = r; }
+    i = i + 1;
+  }
+  worst;
+}
+
+// The largest length of the gradient by central differences
+fn largestGradient[S Shape](shape &S) f64 {
+  mut worst = 0d;
+  mut i = 0;
+  while i < PAIRS {
+    imm g = gradient(shape, samplePoint(i), 0.00390625);
+    imm len = f64[g.length()];
+    if len > worst or len != len { worst = len; }
+    i = i + 1;
+  }
+  worst;
+}
+
+// Whether to print each measurement
+fn reporting() Bool { (libc.getenv(&"LIPSCHITZ_REPORT" as *u8) as usize) != 0usize; }
+
+fn check(ratio f64, bound f64, label &[]u8) {
+  if reporting() {
+    printStr(label);
+    printStr(": ");
+    printFloat(ratio);
+    printStr("\n");
+  }
+  expect(ratio <= bound + SLACK, label);
+}
+
+// ---- The shapes, as functions ----
+
+fn a(p Vec3) f32 { sphere(p - Vec3[0.25, 1., 0.], 0.75); }
+fn b(p Vec3) f32 { box(p - Vec3[-0.25, 0.5, 0.], Vec3[0.5, 0.5, 0.5]); }
+fn turn() Quat { Quat[0.36, 0.48, 0., 0.8]; }
+
+fn fSphere(p Vec3) f32 { sphere(p, 1.25); }
+fn fBox(p Vec3) f32 { box(p, Vec3[0.75, 1., 0.5]); }
+fn fRoundBox(p Vec3) f32 { roundBox(p, Vec3[0.75, 1., 0.5], 0.25); }
+fn fCapsule(p Vec3) f32 { capsule(p, Vec3[-0.5, 0., 0.], Vec3[0.5, 1.5, 0.25], 0.375); }
+fn fTorus(p Vec3) f32 { torus(p, 1., 0.25); }
+fn fCylinder(p Vec3) f32 { cylinder(p, 1., 0.5); }
+fn fCone(p Vec3) f32 { cone(p, 1., 0.75, 0.25); }
+fn fRoundCone(p Vec3) f32 { roundCone(p, 0.5, 0.25, 1.5); }
+fn fEllipsoid(p Vec3) f32 { ellipsoid(p, Vec3[1., 0.5, 0.75]); }
+fn fUnion(p Vec3) f32 { union(a(p), b(p)); }
+fn fSubtract(p Vec3) f32 { subtract(a(p), b(p)); }
+fn fIntersect(p Vec3) f32 { intersect(a(p), b(p)); }
+fn fSmoothUnion(p Vec3) f32 { smoothUnion(a(p), b(p), 0.25); }
+fn fSmoothSubtract(p Vec3) f32 { smoothSubtract(a(p), b(p), 0.25); }
+fn fSmoothIntersect(p Vec3) f32 { smoothIntersect(a(p), b(p), 0.25); }
+fn fOnion(p Vec3) f32 { onion(a(p), 0.125); }
+fn fRound(p Vec3) f32 { round(b(p), 0.125); }
+fn fPlaced(p Vec3) f32 {
+  imm pl = Placement[Vec3[0.5, 1., 0.], turn(), 1.5];
+  pl.distance(box(pl.toLocal(p), Vec3[0.5, 0.25, 0.375]));
+}
+fn fMirror(p Vec3) f32 { torus(mirror(p, Vec3[0.6, 0.8, 0.], -1.), 1., 0.25); }
+fn fRepeat(p Vec3) f32 { sphere(repeatLimited(p, 0.75, Vec3[1., 2., 1.]), 0.25); }
+fn fElongate(p Vec3) f32 { torus(elongate(p, Vec3[0.5, 0., 0.25]), 0.75, 0.2); }
+fn fUnscaled(p Vec3) f32 { sphere(scalePoint(p, 0.5), 1.); }
+
+// Fillets on two planes, x = 0 and one through the y axis at 'angle' to it
+fn planesAt(p Vec3, c f32, s f32) Vec3 { Vec3[p.x, p.x * c + p.z * s, 0.]; }
+fn rightAngle(p Vec3) Vec3 { Vec3[p.x, p.z, 0.]; }
+fn at45(p Vec3) Vec3 { planesAt(p, 0.70710678, 0.70710678); }
+fn fRoundRight(p Vec3) f32 { imm d = rightAngle(p); unionRound(d.x, d.y, 0.5); }
+fn fChamferRight(p Vec3) f32 { imm d = rightAngle(p); unionChamfer(d.x, d.y, 0.5); }
+fn fColumnsRight(p Vec3) f32 { imm d = rightAngle(p); unionColumns(d.x, d.y, 0.5, 4.); }
+fn fStairsRight(p Vec3) f32 { imm d = rightAngle(p); unionStairs(d.x, d.y, 0.5, 4.); }
+fn fPipeRight(p Vec3) f32 { imm d = rightAngle(p); pipe(d.x, d.y, 0.1); }
+fn fGrooveRight(p Vec3) f32 { imm d = rightAngle(p); groove(d.x, d.y, 0.2, 0.1); }
+fn fRound45(p Vec3) f32 { imm d = at45(p); unionRound(d.x, d.y, 0.5); }
+fn fColumns45(p Vec3) f32 { imm d = at45(p); unionColumns(d.x, d.y, 0.5, 4.); }
+fn fStairs45(p Vec3) f32 { imm d = at45(p); unionStairs(d.x, d.y, 0.5, 4.); }
+// The same fillets on the test's two shapes
+fn fColumnsShapes(p Vec3) f32 { unionColumns(a(p), b(p), 0.5, 4.); }
+fn fStairsShapes(p Vec3) f32 { unionStairs(a(p), b(p), 0.5, 4.); }
+
+fn fDisplaced(p Vec3) f32 { displace(a(p), p, 7u32, 4, 4., 0.1); }
+fn fDetail(p Vec3) f32 { fbmDetail(sphere(p - Vec3[0., 1.5, 0.], 1.), p, 7u32, 5, 0.5); }
+
+fn ratio(f &fn(p Vec3) f32) f64 {
+  imm s = FnShape[f];
+  largestRatio(&s);
+}
+
+fn main() i32 {
+  check(ratio(&fSphere), 1d, "sphere");
+  check(ratio(&fBox), 1d, "box");
+  check(ratio(&fRoundBox), 1d, "round box");
+  check(ratio(&fCapsule), 1d, "capsule");
+  check(ratio(&fTorus), 1d, "torus");
+  check(ratio(&fCylinder), 1d, "cylinder");
+  check(ratio(&fCone), 1d, "cone");
+  check(ratio(&fRoundCone), 1d, "round cone");
+  check(ratio(&fEllipsoid), 1.25d, "ellipsoid (Quilez's approximation, not a bound)");
+  check(ratio(&fUnion), 1d, "union");
+  check(ratio(&fSubtract), 1d, "subtract");
+  check(ratio(&fIntersect), 1d, "intersect");
+  check(ratio(&fSmoothUnion), 1d, "smooth union");
+  check(ratio(&fSmoothSubtract), 1d, "smooth subtract");
+  check(ratio(&fSmoothIntersect), 1d, "smooth intersect");
+  check(ratio(&fOnion), 1d, "onion");
+  check(ratio(&fRound), 1d, "round");
+  check(ratio(&fPlaced), 1d, "placed (turned, moved, scaled 1.5)");
+  check(ratio(&fMirror), 1d, "mirrored");
+  check(ratio(&fRepeat), 1d, "limited repetition");
+  check(ratio(&fElongate), 1d, "elongated");
+  check(ratio(&fRoundRight), 1d, "round fillet, right angle");
+  check(ratio(&fChamferRight), 1d, "chamfer, right angle");
+  check(ratio(&fColumnsRight), 1d, "columns, right angle");
+  check(ratio(&fStairsRight), 1d, "stairs, right angle");
+  check(ratio(&fPipeRight), 1d, "pipe, right angle");
+  check(ratio(&fGrooveRight), 1d, "groove, right angle");
+  check(ratio(&fRound45), 1.41421356d, "round fillet, 45 degrees");
+  check(ratio(&fColumns45), 1.41421356d, "columns, 45 degrees");
+  check(ratio(&fStairs45), 1.41421356d, "stairs, 45 degrees");
+  check(ratio(&fColumnsShapes), 1.41421356d, "columns, sphere and box");
+  check(ratio(&fStairsShapes), 1.41421356d, "stairs, sphere and box");
+
+  imm horn = Horn.make(3., 0.3, 0.9, 2., 14, 0.12);
+  check(largestRatio(&horn), 1d, "horn");
+  check(largestGradient(&horn), 1d, "horn, gradient length");
+  imm straight = Horn.make(2.5, 0.4, 0.5, 0., 9, 0.2);
+  check(largestRatio(&straight), 1d, "straight horn");
+  imm curled = Horn.make(4., 0.35, 1., 4.5, 20, 0.15);
+  check(largestRatio(&curled), 1d, "horn curled through 4.5 radians");
+  imm detail = FnShape[&fDetail];
+  check(largestRatio(&detail), 1d, "fBm detail");
+  check(largestGradient(&detail), 1d, "fBm detail, gradient length");
+
+  // Not distances
+  imm displaced = ratio(&fDisplaced);
+  if reporting() { printStr("displaced (not a distance): "); printFloat(displaced); printStr("\n"); }
+  expect(displaced > 1.1d, "noise displacement is not 1-Lipschitz");
+  imm unscaled = ratio(&fUnscaled);
+  if reporting() { printStr("scaled point, distance not scaled back: "); printFloat(unscaled); printStr("\n"); }
+  expect(unscaled > 1.9d, "a scaled point without scaleDistance is 2-Lipschitz");
+  done();
+}

@@ -1269,6 +1269,31 @@ included, and a banner at the top says the file is generated, from which of
 the package's files, and not to edit it. A generic module's include file is its
 source whole, since every declaration of it is instantiated where it is used.
 
+**A location in the include file names the package's source, not the include
+file.** A program compiles the file's travelling bodies itself, so a compile
+error in a generic it instantiates, a panic's `srcFile()` and `srcLine()` in
+such a body, and a check the compiler inserts there all report where that text
+is. The file's lines stop being one source file's after the banner, where text
+is left out or a body cut, where one file follows another and where a block
+begins; so the generator puts a **line mark**, `//#line 24 "loc.cone"`, before
+each line that is not the line a reader would take it to be (`incMarkLines`):
+the line after it is line 24 of `loc.cone`. The generator keeps, for each stretch
+of the text, where in which source file it was copied from (`IncAnchor`), and a
+line's first copied byte decides which line it is; a line of the generator's
+own, a block's closing brace or a blank line, needs none, and none goes inside
+a string or block comment. A file is named by its path from the root's folder,
+`vec/vec.cone`, which is its name alone beside the root, so the file is the same
+wherever the package is built. The mark is a comment to every other reader;
+**the lexer reads it only in a generated include file** — the file
+`ParseState.generated` accepts, whose block `LexLineMarks` marks — where a
+block of its own takes over from the file's (`lexLineMark`): the same text
+under the source's name, numbered from the mark, so a node built after it
+reports the source's file and line (`module_include_lines`, and
+`module_include_lines_file` for a second file). The block keeps the include
+file's own path as `Lexer.path`, where what it names is looked for. The
+self-check parses the file with the marks as comments, so what it reports
+names the `.rejected` file's lines.
+
 **What the root reaches in one of its submodules goes in a nested module
 block** [Jon 25 Sep, Q1: *"Sure, we can go with B. The important part is we want
 stuff to work correctly."*]: `mod vec { ... }`, written after the root's header,
@@ -1882,24 +1907,26 @@ global in any other function does not count, and an `imm` one may not be
 assigned there at all.
 
 **The module's finalizer** mirrors a type's ([struct](struct.md), step 8).
-Where any global the module declares has a type with a drop function,
+Where any global the module declares has anything to do as it dies
+(`modGlobalFinalized`: `itypeNeedsFinal`, the question a local's death asks),
 `modGiveDrop` gives the module a `drop` — owned by it, so its symbol is spelled
 after it (`middle.drop`, `_CNvC6middle4drop`), appended to its `nodes` after name
 resolution, built pre-lowered and never type checked or flow analyzed — calling
-the module's own `final`, if it has one, and then each such global's drop
-function over `&uni` the global, **in declaration order**, as a type drops its
-fields. Its finalizer (`finalfn`) is that `drop`, else its own `final`. A
-C-named global is C's storage and is not finalized. Nor is a thread-local, whose
-copies are each thread's and which the module's `drop`, running on one thread,
-could not all reach: one whose type needs finalizing (`itypeNeedsFinal`, the
-wider question that owning references also answer) is `ErrorThreadLocalFinal`,
-asked in the same walk. A global's drop runs whether
-the global was given a literal or assigned by `init`, since either way it holds
-a value by then. A module that needs a `drop` and declares one of its own is
-`ErrorModLifecycle`: both would be one symbol. Only a struct's or an enum's
-drop counts, so a global that is an owning reference is not freed, and one that
-is a tuple or an array of values that finalize is not finalized, where a struct
-field of either type is.
+the module's own `final`, if it has one, and then finalizing each such global
+**in declaration order**, as a type drops its fields. The globals are its
+return's release list, built as flow builds a scope's for its locals
+(`flowVarRelease`): a struct or an enum listed as a call to its drop function
+over `&uni` the global, anything else — an owning reference, plain or virtual,
+single or counted, or a tuple or an array — listed as the global itself, which
+generation finalizes in place (`genlDealiasNode`, `genlFinalizeAt` on the
+global's storage). Its finalizer (`finalfn`) is that `drop`, else its own
+`final`. A C-named global is C's storage and is not finalized. Nor is a
+thread-local, whose copies are each thread's and which the module's `drop`,
+running on one thread, could not all reach: one whose type needs finalizing is
+`ErrorThreadLocalFinal`, asked in the same walk. A global is finalized whether
+it was given a literal or assigned by `init`, since either way it holds a value
+by then. A module that needs a `drop` and declares one
+of its own is `ErrorModLifecycle`: both would be one symbol.
 
 **The stitched pair** (`genlStitch`, `genllvm/genllvm.c`) is two functions of the
 object being generated: `cone.initAll`, calling `initfn` of each module in

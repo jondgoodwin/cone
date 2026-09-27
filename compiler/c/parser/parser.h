@@ -161,9 +161,16 @@ FoldClause *parseFoldClause(ParseState *parse, int maypub);
 // lexer on the 'use'. 'pubflag' is the 'pub' written before it.
 ModUseNode *parseModUse(ParseState *parse, uint16_t pubflag);
 ConstDclNode *parseConstDcl(ParseState *parse);
-INode *parseFnSig(ParseState *parse);
+// Parse a function's signature; 'reftype' for the one after '&fn', which may
+// be a function-reference type with unnamed parameters
+INode *parseFnSig(ParseState *parse, int reftype);
+// Settle a '&fn' signature's parameters once it is known whether it is a type
+// ('istype': no body follows) or an anonymous function's
+void parseFnSigSettle(ParseState *parse, FnSigNode *sig, int istype);
 INode *parseStruct(ParseState *parse, uint16_t flags);
 INode *parseType(ParseState *parse);
+// Is the lexer on a token that may begin a type expression?
+int parseIsTypeStart();
 INode *parseTypeReq(ParseState *parse, char *after);
 // A type's name: a name, a path through namespaces, or a generic's instance
 INode *parseTypeName(ParseState *parse);

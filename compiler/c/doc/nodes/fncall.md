@@ -221,7 +221,7 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
 | `ArrayTag` | `fnCallArrIndex`, only under `FlagIndex` |
 | `ArrayRefTag` | index; `==`, `!=` or an ordering is `ErrorRefNoCompare`; else `fnCallLowerPtrMethod` against `arrayRefType` |
 | `RefTag` | function-by-ref, array index, a comparison to `fnCallLowerRefCompare`, or `fnCallLowerPtrMethod`, then `fnCallLowerTraitMethod` and failing that `fnCallLowerMethod` |
-| `VirtRefTag` | `==`, `!=` or an ordering is `ErrorRefNoCompare`; else `fnCallLowerPtrMethod`, else set `FlagVDisp` and `fnCallLowerMethod` |
+| `VirtRefTag` | `==`, `!=` or an ordering is `ErrorRefNoCompare`; else `fnCallLowerPtrMethod`, else set `FlagVDisp` and `fnCallLowerMethod`, whose selection (`fnSigViableCall`) takes only a method whose `self` permission the receiver's grants, and where `fnCallFinalizeArgs` lends an owning receiver as a borrowed virtual reference (`fnCallLendVirtOwner`) |
 | `PtrTag` | the pointer's own operators first, then the value's fields and named methods |
 
 **A comparison on a reference compares what it refers to.** A reference reads

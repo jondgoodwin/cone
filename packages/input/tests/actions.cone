@@ -1,0 +1,361 @@
+// The input package with no window and no display: events made by hand (and,
+// for the normalising, pushed through SDL3's own queue) go in, and device
+// state and action values come out. Only a failure prints, and the latency
+// log's report line, worked by hand below.
+//
+// - SDL's events become InputEvents, each keeping its 64-bit nanosecond
+//   timestamp: a key keeps its scancode and the layout's key; the mouse's
+//   motion its place and movement; a button its number; a wheel that the
+//   system flipped is turned back; a lost focus is FOCUS_LOST; a quit is
+//   no input at all.
+// - Keys are bound by scancode: on AZERTY the key where a US keyboard has W
+//   types 'z', and still drives the action bound to SCANCODE_W; the key
+//   that types 'w' there (scancode 29, US Z) does not.
+// - Device state: held keys stay held across frames; presses and releases
+//   last one frame; the pointer's movement and the wheel sum within a frame
+//   and start again at zero.
+// - A button action: pressed the frame it goes down, down while held,
+//   released the frame it goes up; a tap within one frame is pressed and
+//   released, never down.
+// - WASD as one two-axis action: W and D give (1, 1); W and S cancel.
+// - A drag: the pointer's movement counts only while the left button is
+//   held, event by event, so a drag begun and ended within one frame counts
+//   and movement after the release does not: moves of (10, 0) before the
+//   press, (3, 4) and (5, -2) while held, (7, 7) after, give (8, 2), times
+//   the binding's scale of 0.5, (4, 1).
+// - The wheel on one axis, scaled by 2: notches of 1 and 0.5 give 3.
+// - 'fed' holds the timestamps of the events that fed an enabled action,
+//   in order, each once; an action switched off has no value and feeds on
+//   nothing.
+// - The latency log by nearest rank: 1 to 100 ms give p50 50, p95 95, p99
+//   99 ms. Then a 0 (an event stamped after its present), 300.000123 ms and
+//   400 ms make 103 samples: p50 is the 52nd, 51 ms; p95 the 98th (0.95 x
+//   103 = 97.85, up), 97 ms; p99 the 102nd, 300.000123 ms, kept whole past
+//   the buckets' 250 ms; the maximum 400 ms.
+
+mod actions;
+
+import testing use *;
+import sdl;
+import geomath use Vec2;
+import input use *;
+
+imm close = 0.0001d;
+
+fn blank(type u32, timestamp u64) sdl.Event {
+  mut e = sdl.Event.empty();
+  e.type = type;
+  e.timestamp = timestamp;
+  e;
+}
+
+// SDL's events, through its queue, normalised
+fn normalising() {
+  require(sdl.Init(sdl.INIT_EVENTS), "SDL's events start");
+  sdl.FlushEvents(0u, 0xFFFFu);
+  imm big = 0x123456789ABCu64;
+  {
+    // AZERTY: the key at W's place types 'z'
+    mut e = blank(sdl.EVENT_KEY_DOWN, big);
+    imm k = &mut e as &mut sdl.KeyboardEvent;
+    k.which = 2u;
+    k.scancode = sdl.SCANCODE_W;
+    k.key = 122u;
+    k.down = 1u8;
+    require(sdl.PushEvent(&mut e), "key pushed");
+  }
+  {
+    mut e = blank(sdl.EVENT_MOUSE_MOTION, big + 1u64);
+    imm m = &mut e as &mut sdl.MouseMotionEvent;
+    m.which = 3u;
+    m.x = 100.5;
+    m.y = 200.25;
+    m.xrel = -3.5;
+    m.yrel = 4.;
+    require(sdl.PushEvent(&mut e), "motion pushed");
+  }
+  {
+    mut e = blank(sdl.EVENT_MOUSE_BUTTON_UP, big + 2u64);
+    imm b = &mut e as &mut sdl.MouseButtonEvent;
+    b.button = sdl.BUTTON_RIGHT;
+    b.down = 0u8;
+    b.x = 10.;
+    b.y = 20.;
+    require(sdl.PushEvent(&mut e), "button pushed");
+  }
+  {
+    mut e = blank(sdl.EVENT_MOUSE_WHEEL, big + 3u64);
+    imm w = &mut e as &mut sdl.MouseWheelEvent;
+    w.x = 0.5;
+    w.y = -2.;
+    w.direction = sdl.MOUSEWHEEL_FLIPPED;
+    require(sdl.PushEvent(&mut e), "wheel pushed");
+  }
+  {
+    mut e = blank(sdl.EVENT_WINDOW_FOCUS_LOST, big + 4u64);
+    require(sdl.PushEvent(&mut e), "focus pushed");
+    mut q = blank(sdl.EVENT_QUIT, big + 5u64);
+    require(sdl.PushEvent(&mut q), "quit pushed");
+  }
+
+  mut input = Input.empty();
+  input.beginFrame();
+  mut e = sdl.Event.empty();
+  require(sdl.PollEvent(&mut e), "key polled");
+  imm key = InputEvent.fromSdl(&e);
+  expectInt(i64[key.kind], i64[EVENT_KEY], "key: kind");
+  expectUInt(key.timestamp, big, "key: all 64 bits of the timestamp");
+  expectUInt(u64[key.device], 2u64, "key: device");
+  expectUInt(u64[key.code], u64[sdl.SCANCODE_W], "key: scancode");
+  expectUInt(u64[key.key], 122u64, "key: the layout's key");
+  expectBool(key.down, true, "key: down");
+  expectBool(key.repeat, false, "key: not a repeat");
+  expectBool(input.handle(&e), true, "key: handled");
+  expectBool(input.keyDown(sdl.SCANCODE_W), true, "key: held by scancode");
+
+  require(sdl.PollEvent(&mut e), "motion polled");
+  imm move = InputEvent.fromSdl(&e);
+  expectInt(i64[move.kind], i64[EVENT_POINTER_MOVE], "motion: kind");
+  expectUInt(move.timestamp, big + 1u64, "motion: timestamp");
+  expectFloat(move.x, 100.5, close, "motion: x");
+  expectFloat(move.y, 200.25, close, "motion: y");
+  expectFloat(move.dx, -3.5, close, "motion: dx");
+  expectFloat(move.dy, 4., close, "motion: dy");
+  input.handle(&e);
+
+  require(sdl.PollEvent(&mut e), "button polled");
+  imm button = InputEvent.fromSdl(&e);
+  expectInt(i64[button.kind], i64[EVENT_POINTER_BUTTON], "button: kind");
+  expectUInt(u64[button.code], 3u64, "button: right");
+  expectBool(button.down, false, "button: up");
+  expectFloat(button.x, 10., close, "button: x");
+  input.handle(&e);
+
+  require(sdl.PollEvent(&mut e), "wheel polled");
+  imm wheel = InputEvent.fromSdl(&e);
+  expectInt(i64[wheel.kind], i64[EVENT_WHEEL], "wheel: kind");
+  expectFloat(wheel.x, -0.5, close, "wheel: flipped back, x");
+  expectFloat(wheel.y, 2., close, "wheel: flipped back, y");
+  input.handle(&e);
+  expectFloat(input.wheel.y, 2., close, "wheel: summed as the user turned it");
+
+  require(sdl.PollEvent(&mut e), "focus polled");
+  expectInt(i64[InputEvent.fromSdl(&e).kind], i64[EVENT_FOCUS_LOST], "focus lost");
+  input.handle(&e);
+  expectBool(input.keyDown(sdl.SCANCODE_W), false, "focus lost: keys let go");
+  expectBool(input.keyReleased(sdl.SCANCODE_W), true, "focus lost: released this frame");
+
+  require(sdl.PollEvent(&mut e), "quit polled");
+  expectInt(i64[InputEvent.fromSdl(&e).kind], i64[EVENT_NONE], "quit: not input");
+  expectBool(input.handle(&e), false, "quit: not handled");
+  expectUInt(u64[input.events().len], 5u64, "five input events kept");
+  sdl.Quit();
+}
+
+// Keys by scancode, whatever the layout
+fn azerty() {
+  mut input = Input.empty();
+  mut ctx = Context.empty();
+  imm forward = ctx.action("forward", BUTTON);
+  ctx.bind(forward, Binding.key(sdl.SCANCODE_W));
+  input.beginFrame();
+  input.apply(InputEvent.keyEvent(1u64, 29u, 119u, true));   // types 'w' on AZERTY; US Z's place
+  ctx.update(&input);
+  expectBool(ctx.down(forward), false, "AZERTY 'w' is not W's place");
+  input.beginFrame();
+  input.apply(InputEvent.keyEvent(2u64, sdl.SCANCODE_W, 122u, true));   // types 'z'; W's place
+  ctx.update(&input);
+  expectBool(ctx.down(forward), true, "AZERTY 'z' is W's place");
+  expectUInt(u64[ctx.named("forward").index], u64[forward.index], "named");
+}
+
+// Held, pressed, released, and sums, across frames
+fn deviceState() {
+  mut input = Input.empty();
+  input.beginFrame();
+  input.apply(InputEvent.keyEvent(1u64, sdl.SCANCODE_A, 97u, true));
+  input.apply(InputEvent.moveEvent(2u64, 5., 6., 1., 2.));
+  input.apply(InputEvent.moveEvent(3u64, 8., 9., 3., 3.));
+  input.apply(InputEvent.wheelEvent(4u64, 0., 1.));
+  input.apply(InputEvent.wheelEvent(5u64, 0., 1.5));
+  input.apply(InputEvent.buttonEvent(6u64, sdl.BUTTON_LEFT, true, 8., 9.));
+  expectBool(input.keyDown(sdl.SCANCODE_A), true, "A held");
+  expectBool(input.keyPressed(sdl.SCANCODE_A), true, "A pressed");
+  expectFloat(input.pointer.x, 8., close, "pointer x");
+  expectFloat(input.pointerDelta.x, 4., close, "delta x summed");
+  expectFloat(input.pointerDelta.y, 5., close, "delta y summed");
+  expectFloat(input.wheel.y, 2.5, close, "wheel summed");
+  expectBool(input.buttonDown(1u), true, "left held");
+  expectUInt(u64[input.buttonsPressed], u64[sdl.BUTTON_MASK_LEFT], "left pressed");
+
+  input.beginFrame();
+  expectBool(input.keyDown(sdl.SCANCODE_A), true, "A still held");
+  expectBool(input.keyPressed(sdl.SCANCODE_A), false, "A pressed last frame only");
+  expectFloat(input.pointerDelta.x, 0., close, "delta starts again");
+  expectFloat(input.wheel.y, 0., close, "wheel starts again");
+  expectUInt(u64[input.buttonsAtStart], u64[sdl.BUTTON_MASK_LEFT], "left held at the start");
+  expectUInt(u64[input.events().len], 0u64, "no events yet");
+  mut repeat = InputEvent.keyEvent(7u64, sdl.SCANCODE_A, 97u, true);
+  repeat.repeat = true;
+  input.apply(repeat);
+  expectBool(input.keyPressed(sdl.SCANCODE_A), false, "a repeat is no press");
+  input.apply(InputEvent.keyEvent(8u64, sdl.SCANCODE_A, 97u, false));
+  expectBool(input.keyDown(sdl.SCANCODE_A), false, "A let go");
+  expectBool(input.keyReleased(sdl.SCANCODE_A), true, "A released");
+  expectBool(input.keyDown(600u), false, "no scancode 600");
+}
+
+// A button action over four frames, and a tap within one
+fn buttons() {
+  mut input = Input.empty();
+  mut ctx = Context.empty();
+  imm jump = ctx.action("jump", BUTTON);
+  ctx.bind(jump, Binding.key(sdl.SCANCODE_SPACE));
+  ctx.bind(jump, Binding.mouseButton(sdl.BUTTON_RIGHT));
+
+  input.beginFrame();
+  input.apply(InputEvent.keyEvent(10u64, sdl.SCANCODE_SPACE, 32u, true));
+  ctx.update(&input);
+  expectBool(ctx.pressed(jump), true, "1: pressed");
+  expectBool(ctx.down(jump), true, "1: down");
+  expectBool(ctx.released(jump), false, "1: not released");
+  expectUInt(ctx.value(jump).timestamp, 10u64, "1: fed at 10");
+
+  input.beginFrame();
+  ctx.update(&input);
+  expectBool(ctx.pressed(jump), false, "2: pressed only once");
+  expectBool(ctx.down(jump), true, "2: still down");
+  expectUInt(ctx.value(jump).timestamp, 0u64, "2: fed by nothing");
+
+  input.beginFrame();
+  input.apply(InputEvent.keyEvent(30u64, sdl.SCANCODE_SPACE, 32u, false));
+  ctx.update(&input);
+  expectBool(ctx.down(jump), false, "3: up");
+  expectBool(ctx.released(jump), true, "3: released");
+
+  input.beginFrame();
+  ctx.update(&input);
+  expectBool(ctx.released(jump), false, "4: released only once");
+
+  // A tap of the right button within one frame
+  input.beginFrame();
+  input.apply(InputEvent.buttonEvent(50u64, sdl.BUTTON_RIGHT, true, 0., 0.));
+  input.apply(InputEvent.buttonEvent(51u64, sdl.BUTTON_RIGHT, false, 0., 0.));
+  ctx.update(&input);
+  expectBool(ctx.pressed(jump), true, "tap: pressed");
+  expectBool(ctx.released(jump), true, "tap: released");
+  expectBool(ctx.down(jump), false, "tap: never down");
+  expectUInt(ctx.value(jump).timestamp, 51u64, "tap: the latest event");
+}
+
+// WASD as one two-axis action
+fn wasd() {
+  mut input = Input.empty();
+  mut ctx = Context.empty();
+  imm move = ctx.action("move", AXIS2);
+  ctx.bind(move, Binding.keyAxis(sdl.SCANCODE_W, 0., 1.));
+  ctx.bind(move, Binding.keyAxis(sdl.SCANCODE_S, 0., -1.));
+  ctx.bind(move, Binding.keyAxis(sdl.SCANCODE_A, -1., 0.));
+  ctx.bind(move, Binding.keyAxis(sdl.SCANCODE_D, 1., 0.));
+  input.beginFrame();
+  input.apply(InputEvent.keyEvent(1u64, sdl.SCANCODE_W, 119u, true));
+  input.apply(InputEvent.keyEvent(2u64, sdl.SCANCODE_D, 100u, true));
+  ctx.update(&input);
+  imm wd = ctx.axis2(move);
+  expectFloat(wd.x, 1., close, "W D: right");
+  expectFloat(wd.y, 1., close, "W D: forward");
+  expectBool(ctx.down(move), true, "W D: held");
+  input.beginFrame();
+  input.apply(InputEvent.keyEvent(3u64, sdl.SCANCODE_D, 100u, false));
+  input.apply(InputEvent.keyEvent(4u64, sdl.SCANCODE_S, 115u, true));
+  ctx.update(&input);
+  imm ws = ctx.axis2(move);
+  expectFloat(ws.x, 0., close, "W S: no side");
+  expectFloat(ws.y, 0., close, "W S: cancel");
+}
+
+// A drag, event by event; the wheel; what fed; an action switched off
+fn dragWheelFed() {
+  mut input = Input.empty();
+  mut ctx = Context.empty();
+  imm turn = ctx.action("turn", AXIS2);
+  ctx.bind(turn, Binding.pointerDelta(0.5).whileHeld(sdl.BUTTON_MASK_LEFT));
+  imm zoom = ctx.action("zoom", AXIS1);
+  ctx.bind(zoom, Binding.wheel(2.));
+  imm look = ctx.action("look", AXIS2);
+  ctx.bind(look, Binding.pointerDelta(1.));
+  ctx.setEnabled(look, false);
+  expectBool(ctx.isEnabled(look), false, "look off");
+
+  input.beginFrame();
+  input.apply(InputEvent.moveEvent(100u64, 0., 0., 10., 0.));
+  input.apply(InputEvent.buttonEvent(101u64, sdl.BUTTON_LEFT, true, 0., 0.));
+  input.apply(InputEvent.moveEvent(102u64, 0., 0., 3., 4.));
+  input.apply(InputEvent.moveEvent(103u64, 0., 0., 5., -2.));
+  input.apply(InputEvent.buttonEvent(104u64, sdl.BUTTON_LEFT, false, 0., 0.));
+  input.apply(InputEvent.moveEvent(105u64, 0., 0., 7., 7.));
+  input.apply(InputEvent.wheelEvent(106u64, 0., 1.));
+  input.apply(InputEvent.wheelEvent(107u64, 0., 0.5));
+  ctx.update(&input);
+  imm t = ctx.axis2(turn);
+  expectFloat(t.x, 4., close, "drag: x");
+  expectFloat(t.y, 1., close, "drag: y");
+  expectUInt(ctx.value(turn).timestamp, 103u64, "drag: fed last at 103");
+  expectFloat(ctx.axis1(zoom), 3., close, "wheel: 1.5 notches times 2");
+  imm l = ctx.axis2(look);
+  expectFloat(l.x, 0., close, "look off: no value");
+  imm fed = ctx.fed();
+  expectUInt(u64[fed.len], 4u64, "fed: four events");
+  if fed.len == 4usize {
+    expectUInt(fed[0], 102u64, "fed: first move while held");
+    expectUInt(fed[1], 103u64, "fed: second");
+    expectUInt(fed[2], 106u64, "fed: wheel");
+    expectUInt(fed[3], 107u64, "fed: wheel again");
+  }
+
+  // Look switched on: every move feeds it, each event counted once
+  ctx.setEnabled(look, true);
+  input.beginFrame();
+  input.apply(InputEvent.buttonEvent(200u64, sdl.BUTTON_LEFT, true, 0., 0.));
+  input.apply(InputEvent.moveEvent(201u64, 0., 0., 2., 2.));
+  ctx.update(&input);
+  expectUInt(u64[ctx.fed().len], 1u64, "a move feeding two actions is one event");
+  expectFloat(ctx.axis2(look).x, 2., close, "look on");
+  expectFloat(ctx.axis2(turn).x, 1., close, "turn too");
+}
+
+// Percentiles by nearest rank, and the maximum
+fn latency() {
+  mut log = LatencyLog.empty();
+  expectUInt(log.percentile(99.), 0u64, "empty: 0");
+  mut i = 100u64;
+  while i >= 1u64 {
+    log.record(1000u64, 1000u64 + i * 1000000u64);     // 1 to 100 ms, in no order
+    i = i - 1u64;
+  }
+  expectUInt(log.count(), 100u64, "100 samples");
+  expectUInt(log.percentile(50.), 50000000u64, "p50 50 ms");
+  expectUInt(log.percentile(95.), 95000000u64, "p95 95 ms");
+  expectUInt(log.percentile(99.), 99000000u64, "p99 99 ms");
+  expectUInt(log.percentile(100.), 100000000u64, "p100 100 ms");
+  expectUInt(log.max(), 100000000u64, "max 100 ms");
+  log.record(5u64, 3u64);
+  expectUInt(log.percentile(0.5), 0u64, "an event after its present counts 0");
+  log.add(400000000u64);
+  log.add(300000123u64);
+  expectUInt(log.max(), 400000000u64, "max past the buckets, exact");
+  expectUInt(log.percentile(100.), 400000000u64, "the top, kept whole");
+  expectUInt(log.percentile(99.), 300000123u64, "p99 of 103: the 102nd, kept whole");
+  log.report("latency");
+}
+
+fn main() i32 {
+  normalising();
+  azerty();
+  deviceState();
+  buttons();
+  wasd();
+  dragWheelFed();
+  latency();
+  done();
+}

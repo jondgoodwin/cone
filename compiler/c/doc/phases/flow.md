@@ -338,7 +338,11 @@ looks for the variable behind a value looks through that node to its `exp` —
 lvalue still has a holder behind it) and `flowIsScopeResult` (a local returned
 as its enrichment or base is still the scope's result). Missing any one of them
 leaves one value under two names: finalized or freed twice, or counted once for
-two holders. A converting cast (`FlagConvert`) is not looked through.
+two holders. A converting cast (`FlagConvert`) makes a new value and is not
+looked through, but for one: **a conversion into an owning virtual reference
+carries its operand's owner** (`+<so App` from a `+so Spinner`), adding a vtable
+to the one owner, so these walks, and `blockResultMove` and the path walk's
+`pwValue`, look through it as through a recast (`flowCastCarries`).
 
 **A match's binding is the matched value.** `case imm c Circle` desugars to a
 variable initialized with the matched value converted to its variant (a
@@ -436,9 +440,9 @@ depends on:
 
 **A reference-count node is built only for a counted reference, or a value
 holding one.** `flowInjectRefCountAmt` returns early unless the type is a
-`RefTag` or `ArrayRefTag` into a region with `alias` (`flowIsRcRef`,
-`regionIsCounted` — an owning slice is counted exactly as a single reference
-is), or a struct, enum, tuple or array whose death releases one
+`RefTag`, `ArrayRefTag` or `VirtRefTag` into a region with `alias` (`flowIsRcRef`,
+`regionIsCounted` — an owning slice or virtual reference is counted exactly as
+a single reference is), or a struct, enum, tuple or array whose death releases one
 (`flowHeldCounted`); for a tuple it fills the node's `counts` array with `amt`
 per element that is or holds a counted reference and `0` per other element,
 `amt` then holding the element count, and generation's tuple arm adds the
@@ -484,8 +488,8 @@ struct or an enum has a drop (`itypeGetDropFnDcl`), and the list gets a call
 to it on a `&uni` borrow, positioned on the result expression, or on the jump
 that ends the scope where there is no result expression — a `continue` hands
 back no value; anything else with anything to do as it dies
-(`itypeNeedsFinal`) — an owning reference, single (`RefTag`) or slice
-(`ArrayRefTag`), into a region whose release does something (`dealias`, or
+(`itypeNeedsFinal`) — an owning reference, single (`RefTag`), slice
+(`ArrayRefTag`) or virtual (`VirtRefTag`), into a region whose release does something (`dealias`, or
 `Move`: `regionReleaseActs`), or a tuple or an array of values that finalize or
 own such a reference —
 is added to the list itself, and generation finalizes it in place
@@ -596,7 +600,8 @@ holds; so does the reborrow type check builds for a `&uni` lent where a `&`
 or `&mut` is wanted, which is why `g(p); g(p)` is no move); a holder named, or a place read through it, what it holds; a recast, an
 `if`, a block, and a tuple, struct or array literal, the union of theirs; a
 call, below. An owning reference coerced to a borrowed one (`imm b &Pt = u`,
-`u` a `+so Pt`: a recast from an owning to a borrowed reference) is a borrow of
+`u` a `+so Pt`: a recast from an owning to a borrowed reference; or `imm b
+&<App = v`, `v` a `+<so App`, between virtual references) is a borrow of
 what it owns, `*u`, so `u` may not be moved while `b` is used
 (`pwOwnedLent`). One coerced to a `&uni` or `&mut1` arrives already rewritten
 by type check to the borrow `&uni *u`, since a recast to a move type would be a

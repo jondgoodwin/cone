@@ -13,6 +13,14 @@
 
     <div class="text">
 
+	<p style="margin-left: 40px;"><i>Note: Borrowed virtual references are implemented.
+		An owning one (<span class="pre">+&lt;so Shape</span>) is built, dispatched through, lent
+		as a borrowed one, and finalized and freed when its last owner goes,
+		but a <span class="pre">&amp;&lt;uni</span> borrow still moves it.
+		A method is dispatched only through a virtual reference whose permission grants
+		what its <span class="pre">self</span> declares, but dispatching through a
+		<span class="pre">&amp;&lt;uni</span> hands the method that reference itself, which moves it.</i></p>
+
 	<p>Virtual references are distinct from simple references.
 		A virtual reference is used to access some of an object's fields or invoke some of its methods,
 		without actually knowing its specific, concrete type.
@@ -84,7 +92,9 @@ fn tester();
 		as viewed from the perspective of the trait.
 		In particular, it captures reference addresses for the type's trait-declared methods
 		and location information for trait-declared fields,
-		as well as unique id identifying the concrete type.</p>
+		as well as unique id identifying the concrete type
+		and the type's size, alignment and finalizer, which an owning virtual reference
+		needs to release the object.</p>
 	<p>In this example, the vtable contains two references to the concrete type's
 		<span class="pre">area</span> and <span class="pre">perimeter</span> methods.
 		There are actually two different versions of this vtable,
@@ -119,9 +129,47 @@ mut virtref = &amp;circle as &amp;&lt;Shape;
 		However, virtual references may not be de-referenced using the 
 		<span class="pre">*</span> operator, as a virtual reference can point to objects
 		of very different size and data composition.</p>
+	<p>An owning virtual reference is created by coercing an owning reference,
+		and it lends as any owning reference does
+		(see <a href="refborref.html">borrowed references</a>, "Borrowing from another reference"):
+		where a borrowed virtual reference is wanted, the owner is borrowed from, not moved.
+		Dispatching a method through it hands the method a borrowed virtual reference
+		with the permission its <span class="pre">self</span> declares,
+		so the owner may be used again after the call,
+		and the owner may not be replaced or moved while a borrow lent from it is still to be used:</p>
+<pre>
+mut app +&lt;so Shape = +so Circle[5];
+app.area();                       // lends app to the method
+imm view &amp;&lt;Shape = app;          // borrows from app
+doMath(app);                      // and so does passing it
+</pre>
+	<p>An owning virtual reference owns its object exactly as the owning reference
+		it was coerced from did: that reference is moved into it
+		(or, for a counted region like <span class="pre">rc</span>, copied as one more owner),
+		and when its last owner goes away &mdash; out of scope, replaced, or inside a
+		struct that dies &mdash; the object is finalized as its concrete type
+		and its memory is given back to its region.
+		The vtable carries what that needs to know about the concrete type.</p>
 	<p>The primary use of virtual references lies with the dot operator.
-		This is how one dispatches trait-declared methods and accesses trait-declared fields.</p>
-	
+		This is how one dispatches trait-declared methods and accesses trait-declared fields.
+		A virtual reference's <a href="refperm.html">permission</a> governs what it may do
+		exactly as a plain reference's does: a method is dispatched through it only when
+		the reference's permission grants what the method's <span class="pre">self</span> declares.
+		A method taking <span class="pre">self &amp;mut</span> needs a virtual reference that permits
+		mutation (<span class="pre">&amp;&lt;mut</span>, <span class="pre">&amp;&lt;uni</span>,
+		or an owner such as <span class="pre">+&lt;so</span>);
+		through a <span class="pre">&amp;&lt;</span> or <span class="pre">&amp;&lt;imm</span> one,
+		only methods taking <span class="pre">self &amp;</span> may be called.</p>
+<pre>
+trait Growable;
+  fn grow(self &amp;mut);
+
+fn enlarge(g &amp;&lt;mut Growable);
+  g.grow();                       // a mutable virtual reference may
+fn peek(g &amp;&lt;Growable);
+  g.grow();                       // ** ILLEGAL! g grants no mutation **
+</pre>
+
 	<h2>Pattern matching</h2>
 	<p>Sometimes we want to re-obtain the specific, concrete-type reference to an object
 		we have a virtual reference for. This is called downcasting.
