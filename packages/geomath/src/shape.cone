@@ -1,0 +1,327 @@
+// ======== Shapes ========
+//
+// Boxes, rectangles, circles, spheres, planes and frusta, and the tests of a
+// point, a box or a sphere against them.
+
+// What a test of a box or a sphere against a frustum answers
+pub const Outside = 0;         // wholly outside: nothing of it can be seen
+pub const Inside = 1;          // wholly inside
+pub const Intersecting = 2;    // partly inside, or too near a corner to tell
+
+// -------- boxes --------
+
+// An axis-aligned box in space: every point from 'min' to 'max'. A box with
+// min above max on any axis holds nothing: 'empty' makes one, to grow with
+// 'enclose' or 'union'
+pub struct Aabb3 {
+  pub min Vec3;
+  pub max Vec3;
+
+  // The box holding nothing, which any point or box added makes that point or box
+  pub fn empty() Aabb3 {Aabb3[Vec3[huge, huge, huge], Vec3[-huge, -huge, -huge]];}
+
+  // The box centred at 'center', reaching 'halfExtents' from it along each axis
+  pub fn fromCenter(center Vec3, halfExtents Vec3) Aabb3 {
+    Aabb3[center - halfExtents, center + halfExtents];
+  }
+
+  // The smallest box holding every point; empty if there are none
+  pub fn fromPoints(points &[]Vec3) Aabb3 {
+    mut b = empty();
+    mut i = 0usize;
+    while i < points.len {
+      b = b.enclose(points[i]);
+      i = i + 1usize;
+    }
+    b;
+  }
+
+  pub fn isEmpty(self) Bool {min.x > max.x or min.y > max.y or min.z > max.z;}
+  pub fn center(self) Vec3 {(min + max) * 0.5;}
+  pub fn size(self) Vec3 {max - min;}
+  pub fn halfExtents(self) Vec3 {(max - min) * 0.5;}
+
+  // The smallest box holding both
+  pub fn union(self, o Aabb3) Aabb3 {Aabb3[min.min(o.min), max.max(o.max)];}
+
+  // The smallest box holding self and the point p
+  pub fn enclose(self, p Vec3) Aabb3 {Aabb3[min.min(p), max.max(p)];}
+
+  // Grown by 'margin' on every side (shrunk, if it is negative)
+  pub fn expand(self, margin f32) Aabb3 {
+    imm m = Vec3[margin, margin, margin];
+    Aabb3[min - m, max + m];
+  }
+
+  // Whether p is in the box, its faces included
+  pub fn contains(self, p Vec3) Bool {
+    p.x >= min.x and p.x <= max.x and p.y >= min.y and p.y <= max.y
+      and p.z >= min.z and p.z <= max.z;
+  }
+
+  // Whether the two share any point, touching faces included
+  pub fn overlaps(self, o Aabb3) Bool {
+    min.x <= o.max.x and max.x >= o.min.x and min.y <= o.max.y and max.y >= o.min.y
+      and min.z <= o.max.z and max.z >= o.min.z;
+  }
+
+  // The point of the box nearest p: p itself when it is inside
+  pub fn closestPoint(self, p Vec3) Vec3 {p.clamp(min, max);}
+
+  // The smallest box holding this one carried through m, a placement (not a
+  // projection): its centre carried as a point, and its reach along each new
+  // axis the sum of the old reaches, each times how far m leans it that way
+  // (Arvo's method)
+  pub fn transformed(self, m Mat4) Aabb3 {
+    imm c = m * center();
+    imm h = halfExtents();
+    imm e = Vec3[fabs(m.m[0]) * h.x + fabs(m.m[4]) * h.y + fabs(m.m[8]) * h.z,
+      fabs(m.m[1]) * h.x + fabs(m.m[5]) * h.y + fabs(m.m[9]) * h.z,
+      fabs(m.m[2]) * h.x + fabs(m.m[6]) * h.y + fabs(m.m[10]) * h.z];
+    Aabb3[c - e, c + e];
+  }
+}
+
+// An axis-aligned box in the plane: every point from 'min' to 'max'
+pub struct Aabb2 {
+  pub min Vec2;
+  pub max Vec2;
+
+  pub fn empty() Aabb2 {Aabb2[Vec2[huge, huge], Vec2[-huge, -huge]];}
+
+  pub fn fromCenter(center Vec2, halfExtents Vec2) Aabb2 {
+    Aabb2[center - halfExtents, center + halfExtents];
+  }
+
+  pub fn fromPoints(points &[]Vec2) Aabb2 {
+    mut b = empty();
+    mut i = 0usize;
+    while i < points.len {
+      b = b.enclose(points[i]);
+      i = i + 1usize;
+    }
+    b;
+  }
+
+  pub fn isEmpty(self) Bool {min.x > max.x or min.y > max.y;}
+  pub fn center(self) Vec2 {(min + max) * 0.5;}
+  pub fn size(self) Vec2 {max - min;}
+  pub fn halfExtents(self) Vec2 {(max - min) * 0.5;}
+  pub fn union(self, o Aabb2) Aabb2 {Aabb2[min.min(o.min), max.max(o.max)];}
+  pub fn enclose(self, p Vec2) Aabb2 {Aabb2[min.min(p), max.max(p)];}
+
+  pub fn expand(self, margin f32) Aabb2 {
+    imm m = Vec2[margin, margin];
+    Aabb2[min - m, max + m];
+  }
+
+  pub fn contains(self, p Vec2) Bool {
+    p.x >= min.x and p.x <= max.x and p.y >= min.y and p.y <= max.y;
+  }
+
+  pub fn overlaps(self, o Aabb2) Bool {
+    min.x <= o.max.x and max.x >= o.min.x and min.y <= o.max.y and max.y >= o.min.y;
+  }
+
+  pub fn closestPoint(self, p Vec2) Vec2 {p.clamp(min, max);}
+
+  // The smallest box holding this one carried through a 2-D placement
+  pub fn transformed(self, m Mat3) Aabb2 {
+    imm c = m.transformPoint2(center());
+    imm h = halfExtents();
+    imm e = Vec2[fabs(m.m[0]) * h.x + fabs(m.m[3]) * h.y, fabs(m.m[1]) * h.x + fabs(m.m[4]) * h.y];
+    Aabb2[c - e, c + e];
+  }
+}
+
+// -------- rectangles --------
+
+// A rectangle in the plane: its corner at (x, y), 'w' wide and 'h' high. It
+// holds its left and bottom edges but not its right and top, so rectangles
+// laid side by side share no point
+pub struct Rect {
+  pub x f32;
+  pub y f32;
+  pub w f32;
+  pub h f32;
+
+  pub fn min(self) Vec2 {Vec2[x, y];}
+  pub fn max(self) Vec2 {Vec2[x + w, y + h];}
+  pub fn center(self) Vec2 {Vec2[x + w * 0.5, y + h * 0.5];}
+  pub fn size(self) Vec2 {Vec2[w, h];}
+  pub fn contains(self, p Vec2) Bool {p.x >= x and p.x < x + w and p.y >= y and p.y < y + h;}
+  pub fn toAabb(self) Aabb2 {Aabb2[min(), max()];}
+}
+
+// A rectangle of whole pixels: its corner at (x, y), 'w' wide and 'h' high,
+// holding the pixels from x to x + w - 1 and y to y + h - 1
+pub struct IRect {
+  pub x i32;
+  pub y i32;
+  pub w i32;
+  pub h i32;
+
+  pub fn contains(self, px i32, py i32) Bool {px >= x and px < x + w and py >= y and py < y + h;}
+  pub fn toRect(self) Rect {Rect[f32[x], f32[y], f32[w], f32[h]];}
+}
+
+// -------- round shapes --------
+
+// A disc in the plane: the points no further than 'radius' from 'center'
+pub struct Circle {
+  pub center Vec2;
+  pub radius f32;
+
+  pub fn contains(self, p Vec2) Bool {p.distanceSquared(center) <= radius * radius;}
+
+  // The point of the disc nearest p: p itself when it is inside
+  pub fn closestPoint(self, p Vec2) Vec2 {
+    imm d = p - center;
+    imm len2 = d.lengthSquared();
+    if len2 <= radius * radius {p;} else {center + d * (radius / len2.sqrt());};
+  }
+
+  pub fn overlaps(self, o Circle) Bool {
+    imm r = radius + o.radius;
+    center.distanceSquared(o.center) <= r * r;
+  }
+}
+
+// A ball in space: the points no further than 'radius' from 'center'
+pub struct Sphere {
+  pub center Vec3;
+  pub radius f32;
+
+  pub fn contains(self, p Vec3) Bool {p.distanceSquared(center) <= radius * radius;}
+
+  // The point of the ball nearest p: p itself when it is inside
+  pub fn closestPoint(self, p Vec3) Vec3 {
+    imm d = p - center;
+    imm len2 = d.lengthSquared();
+    if len2 <= radius * radius {p;} else {center + d * (radius / len2.sqrt());};
+  }
+
+  pub fn overlaps(self, o Sphere) Bool {
+    imm r = radius + o.radius;
+    center.distanceSquared(o.center) <= r * r;
+  }
+
+  // Whether the ball and the box share any point
+  pub fn overlapsAabb(self, b Aabb3) Bool {
+    b.closestPoint(center).distanceSquared(center) <= radius * radius;
+  }
+}
+
+// -------- planes --------
+
+// A plane: the points p where normal.dot(p) + d = 0. The normal points to its
+// positive side; with a unit normal, 'signedDistance' is a distance
+pub struct Plane {
+  pub normal Vec3;
+  pub d f32;
+
+  // The plane through 'point' facing 'normal', which is normalized here
+  pub fn fromPointNormal(point Vec3, normal Vec3) Plane {
+    imm n = normal.normalize();
+    Plane[n, -n.dot(point)];
+  }
+
+  // The plane through three points, facing the side from which they run
+  // counterclockwise
+  pub fn fromPoints(a Vec3, b Vec3, c Vec3) Plane {fromPointNormal(a, (b - a).cross(c - a));}
+
+  // The same plane with a unit normal
+  pub fn normalize(self) Plane {
+    imm len = normal.length();
+    if len > 0. {Plane[normal * (1. / len), d / len];} else {self;};
+  }
+
+  // How far p is from the plane, positive on the side the normal faces
+  // (in units of the normal's length)
+  pub fn signedDistance(self, p Vec3) f32 {normal.dot(p) + d;}
+
+  // The point of the plane nearest p
+  pub fn closestPoint(self, p Vec3) Vec3 {
+    p - normal * (signedDistance(p) / normal.lengthSquared());
+  }
+}
+
+// -------- frusta --------
+
+// What a camera can see: the space inside six planes, each facing inward,
+// in the order left, right, bottom, top, near, far
+pub struct Frustum {
+  pub planes [6; Plane];
+
+  // The frustum a view-projection matrix sees, for the depth from 0 to 1 that
+  // Mat4.perspective and Mat4.orthographic make (Gribb and Hartmann's method:
+  // each plane is a sum or difference of the matrix's rows)
+  pub fn fromMatrix(vp Mat4) Frustum {fromRows(vp, false);}
+
+  // The same, for OpenGL's depth from -1 to 1 (Mat4.perspectiveGl)
+  pub fn fromMatrixGl(vp Mat4) Frustum {fromRows(vp, true);}
+
+  fn fromRows(vp Mat4, gl Bool) Frustum {
+    imm m = vp.m;
+    // Row i of the matrix is (m[i], m[4 + i], m[8 + i], m[12 + i]); a point
+    // is inside when -w <= x <= w, -w <= y <= w and 0 <= z <= w (or -w <= z)
+    imm r0 = Vec4[m[0], m[4], m[8], m[12]];
+    imm r1 = Vec4[m[1], m[5], m[9], m[13]];
+    imm r2 = Vec4[m[2], m[6], m[10], m[14]];
+    imm r3 = Vec4[m[3], m[7], m[11], m[15]];
+    imm near = if gl {r3 + r2;} else {r2;};
+    Frustum[[plane(r3 + r0), plane(r3 - r0), plane(r3 + r1), plane(r3 - r1),
+      plane(near), plane(r3 - r2)]];
+  }
+
+  fn plane(v Vec4) Plane {Plane[Vec3[v.x, v.y, v.z], v.w].normalize();}
+
+  // Whether p is inside, on a plane counting as inside
+  pub fn containsPoint(self, p Vec3) Bool {
+    mut i = 0usize;
+    while i < 6usize {
+      if planes[i].signedDistance(p) < 0. {return false;}
+      i = i + 1usize;
+    }
+    true;
+  }
+
+  // Whether the sphere is Outside, Inside or Intersecting
+  pub fn testSphere(self, s Sphere) i32 {
+    mut result = Inside;
+    mut i = 0usize;
+    while i < 6usize {
+      imm dist = planes[i].signedDistance(s.center);
+      if dist < -s.radius {return Outside;}
+      if dist < s.radius {result = Intersecting;}
+      i = i + 1usize;
+    }
+    result;
+  }
+
+  // Whether the box is Outside, Inside or Intersecting. For each plane it
+  // takes the corner furthest along the plane's normal: if that is outside,
+  // so is the box. A box near a corner of the frustum, outside it but not
+  // wholly behind any one plane, is answered Intersecting
+  pub fn testAabb(self, b Aabb3) i32 {
+    mut result = Inside;
+    mut i = 0usize;
+    while i < 6usize {
+      imm n = planes[i].normal;
+      imm far = Vec3[if n.x >= 0. {b.max.x;} else {b.min.x;},
+        if n.y >= 0. {b.max.y;} else {b.min.y;},
+        if n.z >= 0. {b.max.z;} else {b.min.z;}];
+      imm near = Vec3[if n.x >= 0. {b.min.x;} else {b.max.x;},
+        if n.y >= 0. {b.min.y;} else {b.max.y;},
+        if n.z >= 0. {b.min.z;} else {b.max.z;}];
+      if planes[i].signedDistance(far) < 0. {return Outside;}
+      if planes[i].signedDistance(near) < 0. {result = Intersecting;}
+      i = i + 1usize;
+    }
+    result;
+  }
+
+  // Whether any of the sphere or box may be seen: not Outside
+  pub fn intersectsSphere(self, s Sphere) Bool {testSphere(s) != Outside;}
+  pub fn intersectsAabb(self, b Aabb3) Bool {testAabb(b) != Outside;}
+}

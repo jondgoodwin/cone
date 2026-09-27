@@ -52,7 +52,7 @@ enum ErrorCode {
     ErrorNoMut = 1017,        // Mutation is not allowed
     // 1018 was ErrorNotFn; calling a non-callable value is ErrorNoMbr on '()'
     ErrorUnkName = 1019,    // Unknown name (no declaration exists)
-    ErrorNoType = 1020,    // No type specified (or inferrable)
+    ErrorNoType = 1020,    // No type specified (or inferrable); in the parser, a type the grammar requires left out
     ErrorNoInit = 1021,    // Parm didn't specify required default value
     ErrorFewArgs = 1022,    // Too few arguments specified
     ErrorManyArgs = 1023,    // Too many arguments specified
@@ -357,7 +357,15 @@ enum ErrorCode {
     ErrorWhereTrait = 1190,     // What a 'where' clause's subject 'is' names no trait: a type, or a generic trait's instance
     ErrorWhereNoParms = 1191,   // A 'where' clause on a declaration with no type parameters to constrain: not generic, nor a member of a generic type
     ErrorGenParmOr = 1192,      // 'or' after a type parameter's traits, '[T A or B]': those are all required, and a choice is written in a 'where' clause
-    ErrorNeverReturns = 1193,   // A function returning 'Never' that can return: it does not end in a call that does not return, or it says 'return'
+
+    // The built-in marker 'ThreadSafe' (ir/types/region.c, regionThreadSafeUseCheck)
+    ErrorThreadSafeUse = 1193,  // 'ThreadSafe' declared by a type that is not a region ref: a struct not declaring 'RegionRef', a trait, an enum or a variant
+
+    // The thread check: the built-in marker 'Sendable' (ir/meta/generic.c, ir/itype.c, ir/types/reference.c)
+    ErrorNotSendable = 1194,    // An instance whose 'T is Sendable' is unmet: the argument holds a borrow, a raw pointer, a non-race-safe owner, an owner of a region not declaring ThreadSafe, or a traced reference
+
+    // The 'Never' return type (ir/stmt/fndcl.c, ir/stmt/return.c)
+    ErrorNeverReturns = 1195,   // A function returning 'Never' that can return: it does not end in a call that does not return, or it says 'return'
 
     // Warnings
     WarnCode = 3000,

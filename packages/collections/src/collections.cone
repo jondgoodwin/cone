@@ -42,6 +42,13 @@
 // (a trimmed piece of a string, the lines of a text, a dictionary's keys), the
 // collection returns owned copies instead.
 //
+// Threads: List and Dict declare 'Sendable', so a collection may be moved
+// to another thread, or shared as '+arc-imm', where its elements may. The
+// declaration is a promise the compiler takes on trust for the block's raw
+// pointer, which it cannot check; an instance is Sendable only where its type
+// arguments are, so a List[&mut Point] is not. A String is Sendable by its
+// List[u8]. Nothing here is safe to change from two threads at once.
+//
 // Methods take their receiver as '&' or '&mut'; calling one on a variable
 // borrows the variable for the call ('list.push(x)' is '(&mut list).push(x)').
 // A function a type offers without a receiver makes one: 'List[i64].empty()',
@@ -65,7 +72,7 @@ import libc;
 // A growable list of T, in one block of 'cap' slots of which the first 'used'
 // hold live values. Pushing grows it 4, 8, 16, ...; it never shrinks, and
 // gives its block back only when it dies.
-pub struct List[T] is ShapeChanging {
+pub struct List[T] is ShapeChanging, Sendable {
   ptr *T;
   used usize;
   cap usize;
@@ -404,7 +411,7 @@ const slotRemoved = 2u8;
 // K is String: keys are reached through a String's 'view()'. It is written as a
 // type parameter so the name survives keys of other types, which wait for
 // bounds on type parameters.
-pub struct Dict[K, V] is ShapeChanging {
+pub struct Dict[K, V] is ShapeChanging, Sendable {
   slots *Slot[K, V];
   used usize;
   removed usize;

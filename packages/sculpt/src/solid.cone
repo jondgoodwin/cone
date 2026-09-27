@@ -1,0 +1,292 @@
+// ======== Profile to solid ========
+
+// Build a solid from rings of points: 'nr' rings of 'm' points each, ring by
+// ring, point k of ring i at pos[i * m + k]. Neighbouring rings are joined
+// by quads, and the first ring to the last when 'ringsClosed'; neighbouring
+// points of a ring are joined, and the last to the first when
+// 'profileClosed'. Quad (i, j) runs (i, j), (i, j + 1), (i + 1, j + 1),
+// (i + 1, j), which faces outward when the profile runs counterclockwise
+// about the direction the rings advance. With 'caps', and a closed profile
+// between open ends, the first ring is closed by an n-gon facing back and
+// the last by one facing forward. 'flip' reverses every face. us holds each
+// profile point's u and then 1; vs each ring's v and then 1.
+fn tube(pos &List[Vec3], m usize, nr usize, profileClosed Bool, ringsClosed Bool, caps Bool, flip Bool,
+    us &List[f32], vs &List[f32], capStart &List[Vec2], capEnd &List[Vec2]) PolyMesh {
+  mut counts = List[u32].empty();
+  mut idx = List[u32].empty();
+  mut uvs = List[Vec2].empty();
+  mut face = List[u32].empty();
+  mut fuv = List[Vec2].empty();
+  imm pClosed = profileClosed and m >= 3usize;
+  imm rClosed = ringsClosed and nr >= 3usize;
+  if m >= 2usize and nr >= 2usize {
+    imm nb = if rClosed {nr;} else {nr - 1usize;};
+    imm ns = if pClosed {m;} else {m - 1usize;};
+    mut i = 0usize;
+    while i < nb {
+      imm i1 = (i + 1usize) % nr;
+      imm v0 = *vs[i];
+      imm v1 = *vs[i + 1usize];
+      mut j = 0usize;
+      while j < ns {
+        imm j1 = (j + 1usize) % m;
+        imm u0 = *us[j];
+        imm u1 = *us[j + 1usize];
+        face.clear();
+        fuv.clear();
+        face.push(u32[i * m + j]);
+        fuv.push(Vec2[u0, v0]);
+        face.push(u32[i * m + j1]);
+        fuv.push(Vec2[u1, v0]);
+        face.push(u32[i1 * m + j1]);
+        fuv.push(Vec2[u1, v1]);
+        face.push(u32[i1 * m + j]);
+        fuv.push(Vec2[u0, v1]);
+        emitFace(&mut counts, &mut idx, &mut uvs, &face, &fuv, flip);
+        j = j + 1usize;
+      }
+      i = i + 1usize;
+    }
+  }
+  if caps and pClosed and !rClosed and nr >= 1usize {
+    // The first ring seen from behind: its points the other way round
+    face.clear();
+    fuv.clear();
+    mut j = m;
+    while j > 0usize {
+      j = j - 1usize;
+      face.push(u32[j]);
+      fuv.push(*capStart[j]);
+    }
+    emitFace(&mut counts, &mut idx, &mut uvs, &face, &fuv, flip);
+    face.clear();
+    fuv.clear();
+    j = 0usize;
+    while j < m {
+      face.push(u32[(nr - 1usize) * m + j]);
+      fuv.push(*capEnd[j]);
+      j = j + 1usize;
+    }
+    emitFace(&mut counts, &mut idx, &mut uvs, &face, &fuv, flip);
+  }
+  build(pos, &counts, &idx, &uvs);
+}
+
+// Add one face, its corners and their uvs, reversed when 'flip'
+fn emitFace(counts &mut List[u32], idx &mut List[u32], uvs &mut List[Vec2], face &List[u32], fuv &List[Vec2], flip Bool) {
+  imm n = face.len();
+  counts.push(u32[n]);
+  mut k = 0usize;
+  while k < n {
+    imm s = if flip {n - 1usize - k;} else {k;};
+    idx.push(*face[s]);
+    uvs.push(*fuv[s]);
+    k = k + 1usize;
+  }
+}
+
+// The PolyMesh of the faces, with their corner uvs as the "uv" channel
+fn build(pos &List[Vec3], counts &List[u32], idx &List[u32], uvs &List[Vec2]) PolyMesh {
+  mut problems = List[String].empty();
+  mut pm = PolyMesh.fromPolygons(pos.view(), counts.view(), idx.view(), &mut problems);
+  imm ch = pm.addVec2Channel(CornerDomain, "uv", Vec2[0., 0.]);
+  pm.setCornerVec2s(ch, uvs.view());
+  pm;
+}
+
+// The profile, lying in the plane z = 0 (its x on x, its y on y), extruded
+// along 'direction' in 'segments' equal steps (Blender's Extrude of a curve,
+// or its Screw with no turn): segments + 1 rings of the profile's points,
+// ring i moved by direction * i / segments, vertex i * m + j for ring i and
+// profile point j. Neighbouring rings are joined by quads. With 'caps', a
+// closed profile's two ends are closed by an n-gon each. Faces face outward
+// when a closed profile runs counterclockwise, whichever side of the plane
+// the direction points to. The v of ring i is i / segments.
+pub fn extrude(profile &Profile, direction Vec3, segments u32, caps Bool) PolyMesh {
+  imm n = usize[if segments < 1u32 {1u32;} else {segments;}];
+  imm m = profile.points.len();
+  mut pos = List[Vec3].withCapacity(m * (n + 1usize));
+  mut vs = List[f32].withCapacity(n + 2usize);
+  mut i = 0usize;
+  while i <= n {
+    imm f = f32[i] / f32[n];
+    imm shift = direction * f;
+    mut j = 0usize;
+    while j < m {
+      imm p = *profile.points[j];
+      pos.push(Vec3[p.x, p.y, 0.] + shift);
+      j = j + 1usize;
+    }
+    vs.push(f);
+    i = i + 1usize;
+  }
+  vs.push(1.);
+  imm us = profileUs(profile);
+  // Extruded towards -z, the profile is seen from behind: flip every face,
+  // and the caps swap which end reads the texture mirrored
+  imm flip = direction.z < 0.;
+  imm capA = capUvs(profile, !flip);
+  imm capB = capUvs(profile, flip);
+  tube(&pos, m, n + 1usize, profile.closed, false, caps, flip, &us, &vs, &capA, &capB);
+}
+
+// The profile swept along the path (Blender's curve Bevel with a profile
+// object, or Geometry Nodes' Curve to Mesh): at each path point the profile
+// is placed in that point's rotation-minimizing frame (Path.frames), its x
+// along the frame's normal and its y along its binormal, so vertex i * m + j
+// is profile point j at path point i. The profile at distance s along a path
+// of length L is first turned by twistAngle * s / L about the tangent
+// (counterclockwise seen from ahead) and scaled by startScale + (endScale -
+// startScale) * s / L, both in proportion to arc length. The profile is not
+// widened at the path's corners (no mitre): a path sampled finely from a
+// curve does not need it.
+//
+// Neighbouring rings are joined by quads; a closed path joins its last ring
+// to its first, so its twist should be a whole number of turns (or a
+// symmetry of the profile) and its scales equal, or the last band shears.
+// With 'caps', an open path's ends are closed by an n-gon each when the
+// profile is closed. Faces face outward when a closed profile runs
+// counterclockwise. The v of ring i is s / L, and the corners on a closed
+// path's closing band that are at its first ring have v = 1.
+pub fn sweep(profile &Profile, path &Path, twistAngle f32, startScale f32, endScale f32, caps Bool) PolyMesh {
+  imm frames = path.frames();
+  imm dist = path.distances();
+  imm total = path.length();
+  imm m = profile.points.len();
+  imm nr = frames.len();
+  mut pos = List[Vec3].withCapacity(m * nr);
+  mut vs = List[f32].withCapacity(nr + 1usize);
+  mut i = 0usize;
+  while i < nr {
+    imm f = if total > 0. {*dist[i] / total;} else {0.;};
+    imm scale = startScale + (endScale - startScale) * f;
+    imm turn = twistAngle * f;
+    imm fr = *frames[i];
+    mut j = 0usize;
+    while j < m {
+      imm p = *profile.points[j];
+      imm q = p.rotate(turn);
+      pos.push(fr.place(q * scale));
+      j = j + 1usize;
+    }
+    vs.push(f);
+    i = i + 1usize;
+  }
+  vs.push(1.);
+  imm us = profileUs(profile);
+  imm capA = capUvs(profile, true);
+  imm capB = capUvs(profile, false);
+  tube(&pos, m, nr, profile.closed, path.closed, caps, false, &us, &vs, &capA, &capB);
+}
+
+// The profile revolved about an axis through the origin (Blender's Screw
+// modifier with no screw offset; three.js's LatheGeometry): profile point
+// (x, y) is x out from the axis and y along it, placed at x e + y a, where a
+// is the unit axis and e the unit direction perpendicular to it nearest +x
+// (nearest +y when the axis is x); it is turned about the axis by 'angle' in
+// 'steps' equal steps. An angle of a whole turn (2 pi, within a
+// ten-thousandth) closes the solid, with 'steps' columns; any other leaves it
+// open, with steps + 1. A profile point on the axis (x = 0, within a
+// millionth of the profile's size) is one vertex, not one per column, and
+// the faces touching it are triangles; a profile edge along the axis makes
+// no face. Faces face outward when a closed profile runs counterclockwise,
+// or an open one runs up the axis on the +x side, and the angle is positive.
+//
+// Vertices are made profile point by profile point: an axis point's one
+// vertex, or each column of the others, in order. u runs around, column k at
+// k / steps, the closing corners of a whole turn at u = 1, and a corner on
+// the axis at the middle of its face's u; v runs along the profile in
+// proportion to its length.
+pub fn lathe(profile &Profile, axis Vec3, angle f32, steps u32) PolyMesh {
+  imm a = unit(axis);
+  mut e = unit(Vec3[1., 0., 0.] - a * a.x);
+  if e.lengthSquared() < 0.5 { e = unit(Vec3[0., 1., 0.] - a * a.y); }
+  imm m = profile.points.len();
+  imm nsteps = usize[if steps < 1u32 {1u32;} else {steps;}];
+  imm full = absf(angle) >= 2. * pi - 0.0001;
+  imm cols = if full {nsteps;} else {nsteps + 1usize;};
+  mut size f32 = 0.;
+  mut j = 0usize;
+  while j < m {
+    imm p = *profile.points[j];
+    if absf(p.x) > size { size = absf(p.x); }
+    if absf(p.y) > size { size = absf(p.y); }
+    j = j + 1usize;
+  }
+  imm eps = size * 0.000001;
+
+  // The vertices, and where each profile point's begin
+  mut pos = List[Vec3].empty();
+  mut base = List[u32].withCapacity(m);
+  mut onAxis = List[Bool].withCapacity(m);
+  j = 0usize;
+  while j < m {
+    imm p = *profile.points[j];
+    base.push(u32[pos.len()]);
+    if absf(p.x) <= eps {
+      onAxis.push(true);
+      pos.push(a * p.y);
+    } else {
+      onAxis.push(false);
+      imm start = e * p.x + a * p.y;
+      mut k = 0usize;
+      while k < cols {
+        imm q = Quat.angleAxis(angle * f32[k] / f32[nsteps], a);
+        pos.push(q * start);
+        k = k + 1usize;
+      }
+    }
+    j = j + 1usize;
+  }
+
+  imm vs = profileUs(profile);
+  mut counts = List[u32].empty();
+  mut idx = List[u32].empty();
+  mut uvs = List[Vec2].empty();
+  mut face = List[u32].empty();
+  mut fuv = List[Vec2].empty();
+  imm pClosed = profile.closed and m >= 3usize;
+  imm ns = if m < 2usize {0usize;} elif pClosed {m;} else {m - 1usize;};
+  imm flip = angle < 0.;
+  mut k = 0usize;
+  while k < nsteps {
+    imm k1 = (k + 1usize) % cols;
+    imm u0 = f32[k] / f32[nsteps];
+    imm u1 = f32[k + 1usize] / f32[nsteps];
+    imm um = (f32[k] + 0.5) / f32[nsteps];
+    j = 0usize;
+    while j < ns {
+      imm j1 = (j + 1usize) % m;
+      imm axisA = *onAxis[j];
+      imm axisB = *onAxis[j1];
+      if !(axisA and axisB) {
+        imm v0 = *vs[j];
+        imm v1 = *vs[j + 1usize];
+        imm ka = if axisA {0usize;} else {k;};
+        imm ka1 = if axisA {0usize;} else {k1;};
+        imm kb = if axisB {0usize;} else {k;};
+        imm kb1 = if axisB {0usize;} else {k1;};
+        face.clear();
+        fuv.clear();
+        // (k, j), (k + 1, j), (k + 1, j + 1), (k, j + 1), dropping the
+        // corner that repeats an axis vertex
+        face.push(*base[j] + u32[ka]);
+        fuv.push(Vec2[if axisA {um;} else {u0;}, v0]);
+        if !axisA {
+          face.push(*base[j] + u32[ka1]);
+          fuv.push(Vec2[u1, v0]);
+        }
+        face.push(*base[j1] + u32[kb1]);
+        fuv.push(Vec2[if axisB {um;} else {u1;}, v1]);
+        if !axisB {
+          face.push(*base[j1] + u32[kb]);
+          fuv.push(Vec2[u0, v1]);
+        }
+        emitFace(&mut counts, &mut idx, &mut uvs, &face, &fuv, flip);
+      }
+      j = j + 1usize;
+    }
+    k = k + 1usize;
+  }
+  build(&pos, &counts, &idx, &uvs);
+}

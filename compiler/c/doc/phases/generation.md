@@ -163,7 +163,7 @@ every declaration given a global so far, and one of them gives way:
 | neither C-named | `errorUnreachable`: two of Cone's own spellings meeting is a compiler defect. Nothing in the suite or Congo's tests reaches it: a candidate reached twice, an instance named by the symbol pass and again by `genlImportedInstances`, a method a vtable declared while its signature was typed, a module's `init` the stitch names — each finds its `llvmvar` set and returns before adding anything |
 | the newcomer is local (internal or private) | it keeps the name LLVM gave it: nothing links against a local symbol's name. A private C-named definition beside an `extern` declaration of the same C name stays its module's own, and the declaration still reaches the C function |
 | the holder is local | it gives the name up, taking a suffix (and a COMDAT renamed to match), and the newcomer takes it |
-| both external, and they disagree — a function's LLVM function type or `DclSystemCC`, a global's LLVM value type, permission or `DclThreadLocal`, or a function and a global | `ErrorCNameConflict`, at the newcomer, naming the holder's file and line |
+| both external, and they disagree — a function's LLVM function type (`genlFnDclType`, so a C-named one's C ABI shape) or `DclSystemCC`, a global's LLVM value type, permission or `DclThreadLocal`, or a function and a global | `ErrorCNameConflict`, at the newcomer, naming the holder's file and line |
 | both external, both defined here | `ErrorCNameDefTwice` |
 | the newcomer only declares it | it shares the holder's global, and its own is deleted |
 | the newcomer defines it, the holder only declares it | the definition takes over: every use of the declaration and every node pointing at it is moved to the definition's global, the declaration is deleted, and the definition takes the name. So the linkage, calling convention, storage class and debug subprogram are the definition's whichever is generated first, and `genlFn` or `genlGloVar` attaches the body or the value to that one global |
@@ -334,7 +334,7 @@ DWARF.
 | **`&T`, `&mut T`, `+rc T`, `+so T`** | **`ptr`, identically.** Region and permission contribute nothing to the reference value |
 | **`&[]T`** | **anonymous `{ ptr, usize }`** — element pointer at 0, element **count** at 1 |
 | **`&<Trait`** | **named `{ ptr, ptr }`** — the object, then its vtable |
-| `fn` signature | `LLVMFunctionType`, never varargs; a `&fn` is a `ptr` to it |
+| `fn` signature | `LLVMFunctionType`, never varargs; a `&fn` is a `ptr` to it. A C-named function's structs are lowered to the C ABI's shape ("C-named functions and the C ABI", below) |
 | struct / trait | named struct, fields in declaration order. **A trait's body is its own fields**, which are a prefix of every implementer's, so `&Trait` points at the trait's layout and reaches the fields the trait declares. Only a type declared `@opaque` is left an opaque LLVM struct, and `DeclaredOpaque` — not `OpaqueType` — is what says so: a trait carries `OpaqueType` because it has no size as a *value*, which does not mean it has no fields |
 | enum | `i8`…`i64` by `EnumNode.bytes` |
 | tuple | anonymous struct |
@@ -349,6 +349,42 @@ Verified: `&[]i32` emits `{ ptr, i64 }`, with `extractvalue ..., 1` yielding a
 **Erased with no representation at all:** lifetimes (`LifetimeTag` has no
 lowering case and would assert), `QuesTag`, `BorrowRegTag`, move semantics,
 thread-binding.
+
+### C-named functions and the C ABI
+
+A struct handed to LLVM as a first-class value crosses a call one register per
+field, which no C ABI does. So a **C-named function a module owns**
+(`genlIsCAbiFn`: `DclCName`, its owner a module) — an `extern` one C defines,
+a body C calls — has its structs lowered in `genlcabi.c`, the one place that
+knows the platform's C ABI (`gen->cabi`, `genlCAbiTarget`, from the triple).
+For **Win64**, as clang lowers the same C declaration for
+`x86_64-pc-windows-msvc`: a struct of 1, 2, 4 or 8 bytes is one integer of its
+size, whatever its fields; any other size is a `ptr` to a copy the caller makes
+in its own frame; and a return of any other size is `void`, through a hidden
+first parameter marked `sret(%T)`, the caller's result slot. **SysV x86-64 and
+wasm32 are not built**: their structs still cross whole, which matches their C
+ABI only for a struct of one scalar.
+
+Only a Cone **struct** is lowered (`StructTag` whose LLVM type is a struct). A
+slice, a virtual reference, a tuple or an array has no C counterpart and keeps
+Cone's convention — a slice's pointer and length arrive as two arguments, which
+is how conestd's `printStr(char *, size_t)` takes them. A struct the
+nullable-pointer optimization made a bare pointer is a pointer.
+
+The lowering is applied at the four places a function's values cross:
+`genlFnDclType` (its LLVM function type, which `genlGloFnName` declares and
+`genlSymAgree` compares), `genlFnDclCall` (a direct call, from
+`genlFnCallInternal`: the integer made through a stack slot, the copy, the
+result slot, and the Cone value rebuilt from what came back),
+`genlFnDclParm` (each parameter's Cone value in `genlFn`'s prologue) and
+`genlFnDclReturn` (`genlReturn`, through `gen->fndcl`). Every other function
+passes through the same four with its Cone signature untouched.
+
+**Not lowered:** a call through a `&fn`, which is typed by its Cone signature
+(`genlPointeeType`). A C-named function's address handed to C is right, since
+C calls it; Cone calling a C-named function with a struct parameter through a
+`&fn`, or C's function pointer with one, is not. A type's `fn @c` method keeps
+Cone's convention, since a vtable slot calls it by its Cone signature.
 
 ### Enums
 
@@ -976,6 +1012,8 @@ variables.
 | | `genlSetupTaggedTrait`, `genlSameSizeTrait` | the three enum shapes |
 | | `genlVtable`, `genlVtableImpl` | vtable type, per-struct constants, the virtref fat pointer |
 | | `genlVtableThunk` | the function filling a slot a folded method satisfies: shift the receiver along the recorded field path, tail-call the method |
+| `genllvm/genlcabi.c` | `genlCAbiTarget`, `genlIsCAbiFn`, `genlCAbiPass` | which C ABI the target follows, which functions cross by it, and how one struct crosses |
+| | `genlFnDclType`, `genlCAbiDeclare`, `genlFnDclCall`, `genlFnDclParm`, `genlFnDclReturn` | a declared function's LLVM type, its `sret` mark, a direct call to it, its prologue's parameters and its returns — lowered for a C-named one |
 | `genllvm/genlstmt.c` | `genlBlock` | block creation, phi state, terminator suppression |
 | | `genlBreak`, `genlReturn` | phi edges and dealias; inlined-return-as-break |
 | `genllvm/genlexpr.c` | `genlExpr`, `genlAddr`, `genlStore` | the value / address / store trio — section 4 |

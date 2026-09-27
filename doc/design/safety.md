@@ -66,7 +66,7 @@ most consequential thing this note settles.
 | **raw pointer** bounds | **no** | unchecked by construction |
 | raw pointer deref / arithmetic gated by `trust` | **no** | `trust` is not a keyword and has no parse rule |
 | allocation failure | **yes** | null test then a panic naming the size asked for, unless `?` asked for an `Option` |
-| thread-safety of a shared reference | **no** | `RaceSafe` is populated and read nowhere; `ThreadBound` is now infected correctly and nothing consumes it either |
+| what may cross threads | **partly** | the built-in marker `Sendable`, which `thread.start` and sync's channel types ask of what they carry (`ErrorNotSendable`): refused are a borrow of any permission, an owner that may be aliased without a `RaceSafe` permission or in a region not declaring `ThreadSafe` (`+rc-imm`, `+arc-mut`), a traced reference, and a raw pointer, anywhere a value holds them, through owning references too (`refThreadBinds`, `itypeThreadBound`). A type declaring `Sendable` is taken on trust. Not checked: a `mut` global reached from several threads, what a started thread makes for itself (`+gc` on a thread), and anything crossing by a route that does not ask (a raw pointer cast, an `extern` call) |
 | release of an owning reference at scope exit | **partly** | once, on the paths that still hold it: a variable moved, hollowed or given a value on only some paths carries a drop flag the release tests, as does one stored over. Leaks for the rest of an array one element was moved out of, for a global, and for a temporary left unbound. One a struct, an enum, a tuple or an array holds, however deep, is released with it |
 
 ## The four shapes the gaps take
@@ -75,8 +75,9 @@ Grouping them is more useful than the list, because each shape fails the same
 way wherever it appears.
 
 **1. A rule with a representation but no consumer.** The data is computed and
-nothing reads it. `RaceSafe`, `MayAliasWrite`, `MayIntRefSum` and `IsLockless`
-are set on every permission and consulted nowhere. `lifeMatches` exists and is
+nothing reads it. `MayAliasWrite`, `MayIntRefSum` and `IsLockless` are set on
+every permission and consulted nowhere (`RaceSafe` and a region's `ThreadSafe`
+are the thread check's since it was built). `lifeMatches` exists and is
 called from nowhere. These look like working machinery in a grep and are inert.
 
 **2. A rule enforced at some sites and not others.** Borrow lifetime is the

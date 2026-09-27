@@ -1,0 +1,225 @@
+// ---- Shaders, layouts, pipelines, bind groups ----
+
+struct ShaderModuleBackend {
+  pub device vulkan.Device;
+  pub module vulkan.ShaderModule;
+}
+
+// A shader module: SPIR-V, holding the entry points of one or more stages
+pub struct ShaderModule {
+  pub backend ShaderModuleBackend;
+
+  pub fn isValid(self &) Bool { backend.module.h != 0u64; }
+
+  // Its end: a pipeline made from it does not need it
+  fn final(self &uni) {
+    if self.isValid() { vulkan.destroyShaderModule(backend.device, backend.module, nullp()); }
+  }
+}
+
+// A binding of a bind group layout: a buffer (of 'bufferType'), a sampler
+// or a (2-D, float) texture, as 'kind' says, seen by the stages
+// 'visibility' names (SHADER_STAGE_... OR-ed)
+pub struct BindGroupLayoutEntry {
+  pub binding u32;
+  pub visibility u32;
+  pub bufferType u32 = BUFFER_BINDING_TYPE_UNIFORM;
+  pub kind u32 = BINDING_KIND_BUFFER;
+}
+
+// What 'createSampler' makes: WebGPU's GPUSamplerDescriptor, without mip
+// levels, comparison or anisotropy yet
+pub struct SamplerDescriptor {
+  pub magFilter u32 = FILTER_MODE_LINEAR;
+  pub minFilter u32 = FILTER_MODE_LINEAR;
+  pub addressModeU u32 = ADDRESS_MODE_REPEAT;
+  pub addressModeV u32 = ADDRESS_MODE_REPEAT;
+  pub addressModeW u32 = ADDRESS_MODE_REPEAT;
+}
+
+struct SamplerBackend {
+  pub device vulkan.Device;
+  pub sampler vulkan.Sampler;
+}
+
+// How a shader reads a texture: filtering and wrapping
+pub struct Sampler {
+  pub backend SamplerBackend;
+
+  pub fn isValid(self &) Bool { backend.sampler.h != 0u64; }
+
+  fn final(self &uni) {
+    if self.isValid() {
+      vulkan.deviceWaitIdle(backend.device);
+      vulkan.destroySampler(backend.device, backend.sampler, nullp());
+    }
+  }
+}
+
+fn vkFilter(mode u32) u32 {
+  if mode == FILTER_MODE_LINEAR { return vulkan.FILTER_LINEAR; }
+  vulkan.FILTER_NEAREST;
+}
+
+fn vkAddressMode(mode u32) u32 {
+  if mode == ADDRESS_MODE_CLAMP_TO_EDGE { return vulkan.SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE; }
+  if mode == ADDRESS_MODE_MIRROR_REPEAT { return vulkan.SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT; }
+  vulkan.SAMPLER_ADDRESS_MODE_REPEAT;
+}
+
+struct BindGroupLayoutBackend {
+  pub device vulkan.Device;
+  pub layout vulkan.DescriptorSetLayout;
+  pub types [16; u32];             // each binding's descriptor type
+}
+
+// The bindings a bind group has
+pub struct BindGroupLayout {
+  pub backend BindGroupLayoutBackend;
+
+  pub fn isValid(self &) Bool { backend.layout.h != 0u64; }
+
+  fn final(self &uni) {
+    if self.isValid() {
+      vulkan.deviceWaitIdle(backend.device);
+      vulkan.destroyDescriptorSetLayout(backend.device, backend.layout, nullp());
+    }
+  }
+}
+
+struct PipelineLayoutBackend {
+  pub device vulkan.Device;
+  pub layout vulkan.PipelineLayout;
+}
+
+// The bind groups a pipeline binds, and its immediates' size
+pub struct PipelineLayout {
+  pub backend PipelineLayoutBackend;
+  pub immediateSize u32;
+
+  pub fn isValid(self &) Bool { backend.layout.h != 0u64; }
+
+  fn final(self &uni) {
+    if self.isValid() {
+      vulkan.deviceWaitIdle(backend.device);
+      vulkan.destroyPipelineLayout(backend.device, backend.layout, nullp());
+    }
+  }
+}
+
+// A vertex attribute: where in each vertex it is, its format, and the
+// shader's input location it goes to
+pub struct VertexAttribute {
+  pub format u32;                  // VERTEX_FORMAT_...
+  pub offset u64;
+  pub shaderLocation u32;
+}
+
+// A vertex buffer as a pipeline reads it: bytes from one vertex to the
+// next, whether it steps a vertex or an instance at a time, and the
+// attributes in each. The buffer in slot i of 'setVertexBuffer' is the
+// descriptor's buffers[i].
+pub struct VertexBufferLayout {
+  pub arrayStride u64;
+  pub stepMode u32 = VERTEX_STEP_MODE_VERTEX;
+  pub attributes &[]VertexAttribute;
+}
+
+// What 'createRenderPipeline' makes: WebGPU's GPURenderPipelineDescriptor,
+// its 'primitive', 'depthStencil' and 'fragment' fields flattened into it
+// (with one color target)
+pub struct RenderPipelineDescriptor {
+  pub layout &PipelineLayout;
+  pub vertexModule &ShaderModule;
+  pub vertexEntryPoint &[]u8 = "vertexMain";
+  pub buffers &[]VertexBufferLayout;
+  pub fragmentModule &ShaderModule;
+  pub fragmentEntryPoint &[]u8 = "fragmentMain";
+  pub colorFormat u32;                                 // the color target's TEXTURE_FORMAT_...
+  pub topology u32 = PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  pub frontFace u32 = FRONT_FACE_CCW;
+  pub cullMode u32 = CULL_MODE_NONE;
+  pub depthFormat u32 = TEXTURE_FORMAT_UNDEFINED;      // UNDEFINED: no depth test
+  pub depthWriteEnabled Bool = false;
+  pub depthCompare u32 = COMPARE_FUNCTION_LESS;
+}
+
+struct PipelineBackend {
+  pub device vulkan.Device;
+  pub pipeline vulkan.Pipeline;
+  pub layout vulkan.PipelineLayout;  // its layout's (the layout outlives it)
+}
+
+// A render pipeline: shaders and the fixed state around them
+pub struct RenderPipeline {
+  pub backend PipelineBackend;
+
+  pub fn isValid(self &) Bool { backend.pipeline.h != 0u64; }
+
+  fn final(self &uni) {
+    if self.isValid() {
+      vulkan.deviceWaitIdle(backend.device);
+      vulkan.destroyPipeline(backend.device, backend.pipeline, nullp());
+    }
+  }
+}
+
+struct BindingBackend {
+  pub kind u32;                        // BINDING_KIND_...
+  pub buffer vulkan.Buffer;
+  pub offset u64;
+  pub size u64;
+  pub view vulkan.ImageView;
+  pub sampler vulkan.Sampler;
+}
+
+// What a binding of a bind group is given: a buffer (or 'size' bytes of it
+// from 'offset'), a texture's view or a sampler (WebGPU's entry and its
+// 'resource'), made by the functions below
+pub struct BindGroupEntry {
+  pub binding u32;
+  pub backend BindingBackend;
+
+  // All of 'buffer'
+  pub fn buffer(binding u32, buffer &Buffer) BindGroupEntry {
+    BindGroupEntry[binding, BindingBackend[BINDING_KIND_BUFFER, buffer.backend.buffer, 0u64, WHOLE_SIZE,
+      vulkan.ImageView[0u64], vulkan.Sampler[0u64]]];
+  }
+
+  // 'size' bytes of 'buffer' from 'offset' (WHOLE_SIZE: the rest of it)
+  pub fn bufferRange(binding u32, buffer &Buffer, offset u64, size u64) BindGroupEntry {
+    BindGroupEntry[binding, BindingBackend[BINDING_KIND_BUFFER, buffer.backend.buffer, offset, size,
+      vulkan.ImageView[0u64], vulkan.Sampler[0u64]]];
+  }
+
+  // A texture shaders sample, by a view of it
+  pub fn texture(binding u32, view &TextureView) BindGroupEntry {
+    BindGroupEntry[binding, BindingBackend[BINDING_KIND_TEXTURE, vulkan.Buffer[0u64], 0u64, 0u64,
+      view.backend.view, vulkan.Sampler[0u64]]];
+  }
+
+  pub fn sampler(binding u32, sampler &Sampler) BindGroupEntry {
+    BindGroupEntry[binding, BindingBackend[BINDING_KIND_SAMPLER, vulkan.Buffer[0u64], 0u64, 0u64,
+      vulkan.ImageView[0u64], sampler.backend.sampler]];
+  }
+}
+
+struct BindGroupBackend {
+  pub device vulkan.Device;
+  pub pool vulkan.DescriptorPool;
+  pub set vulkan.DescriptorSet;
+}
+
+// The buffers a pipeline's bind group reads, bound together
+pub struct BindGroup {
+  pub backend BindGroupBackend;
+
+  pub fn isValid(self &) Bool { backend.set.h != 0u64; }
+
+  fn final(self &uni) {
+    if backend.pool.h != 0u64 {
+      vulkan.deviceWaitIdle(backend.device);
+      vulkan.destroyDescriptorPool(backend.device, backend.pool, nullp());
+    }
+  }
+}

@@ -318,7 +318,9 @@ enum NodeTags {
 
 // Flags used across all types
 #define MoveType           0x0001  // Type's values impose move semantics (vs. copy)
-#define ThreadBound        0x0002  // Type's value copies must stay in the same thread (vs. sendable)
+// 0x0002 was ThreadBound, set as a type was laid out. Whether a type's values
+// may cross threads is now asked of the whole type when something crosses
+// (itypeThreadBound), which follows references to types not yet laid out.
 #define OpaqueType         0x0004  // Type cannot be instantiated as a value (opaque struct, fn, abstract trait)
 #define ZeroSizeType       0x0008  // Type has no size in memory (void, empty struct)
 

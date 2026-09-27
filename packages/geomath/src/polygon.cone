@@ -1,0 +1,202 @@
+// ======== Polygons ========
+//
+// Polygons in the plane, each given as its corners in order, the last joined
+// back to the first: area and winding, point in polygon, convex hull and
+// triangulation.
+
+// Twice the area of the triangle o, a, b, signed: positive when the three run
+// counterclockwise, 0 when they are on one line
+fn turn(o Vec2, a Vec2, b Vec2) f32 {(a - o).cross(b - o);}
+
+// The polygon's area, positive when its corners run counterclockwise and
+// negative when they run clockwise (the shoelace formula)
+pub fn polygonSignedArea(points &[]Vec2) f32 {
+  mut sum f32 = 0.;
+  mut i = 0usize;
+  while i < points.len {
+    imm j = if i + 1usize == points.len {0usize;} else {i + 1usize;};
+    sum = sum + points[i].cross(points[j]);
+    i = i + 1usize;
+  }
+  sum * 0.5;
+}
+
+// Whether the corners run counterclockwise
+pub fn polygonIsCounterClockwise(points &[]Vec2) Bool {polygonSignedArea(points) > 0.;}
+
+// Whether p is inside the polygon, by the even-odd rule: a ray from p to the
+// right crosses its edges an odd number of times. A point exactly on an edge
+// may be answered either way
+pub fn polygonContains(points &[]Vec2, p Vec2) Bool {
+  mut inside = false;
+  if points.len == 0usize {return false;}
+  mut j = points.len - 1usize;
+  mut i = 0usize;
+  while i < points.len {
+    imm a = points[i];
+    imm b = points[j];
+    if (a.y > p.y) != (b.y > p.y) {
+      imm crossX = a.x + (b.x - a.x) * (p.y - a.y) / (b.y - a.y);
+      if p.x < crossX {inside = !inside;}
+    }
+    j = i;
+    i = i + 1usize;
+  }
+  inside;
+}
+
+// Whether a comes before b: by x, then by y
+fn before(a Vec2, b Vec2) Bool {a.x < b.x or (a.x == b.x and a.y < b.y);}
+
+// Sort the points by x, then by y (heapsort, in place)
+fn sortPoints(pts &mut List[Vec2]) {
+  imm n = pts.len();
+  if n < 2usize {return;}
+  mut start = n / 2usize;
+  while start > 0usize {
+    start = start - 1usize;
+    siftDown(pts, start, n);
+  }
+  mut end = n - 1usize;
+  while end > 0usize {
+    pts.swap(0usize, end);
+    siftDown(pts, 0usize, end);
+    end = end - 1usize;
+  }
+}
+
+fn siftDown(pts &mut List[Vec2], start usize, end usize) {
+  mut root = start;
+  while 2usize * root + 1usize < end {
+    mut child = 2usize * root + 1usize;
+    if child + 1usize < end and before(*pts[child], *pts[child + 1usize]) {child = child + 1usize;}
+    if !before(*pts[root], *pts[child]) {return;}
+    pts.swap(root, child);
+    root = child;
+  }
+}
+
+// The convex hull: the smallest convex polygon holding every point, its
+// corners counterclockwise from the one with the least x (and of those the
+// least y). Points on its edges are not corners. Andrew's monotone chain: the
+// points sorted by x, the lower hull is swept left to right and the upper
+// right to left, each dropping a corner that does not turn left
+pub fn convexHull(points &[]Vec2) List[Vec2] {
+  mut sorted = List[Vec2].withCapacity(points.len);
+  mut i = 0usize;
+  while i < points.len {
+    sorted.push(points[i]);
+    i = i + 1usize;
+  }
+  sortPoints(&mut sorted);
+  imm n = sorted.len();
+  if n < 3usize {return sorted;}
+  mut hull = List[Vec2].withCapacity(2usize * n);
+  i = 0usize;
+  while i < n {
+    imm p = *sorted[i];
+    while hull.len() >= 2usize and turn(*hull[hull.len() - 2usize], *hull[hull.len() - 1usize], p) <= 0. {
+      hull.pop();
+    }
+    hull.push(p);
+    i = i + 1usize;
+  }
+  imm lower = hull.len() + 1usize;
+  i = n - 1usize;
+  while i > 0usize {
+    i = i - 1usize;
+    imm p = *sorted[i];
+    while hull.len() >= lower and turn(*hull[hull.len() - 2usize], *hull[hull.len() - 1usize], p) <= 0. {
+      hull.pop();
+    }
+    hull.push(p);
+  }
+  // The last is the first again
+  hull.pop();
+  hull;
+}
+
+// Whether p is inside the triangle a, b, c or on its edges, the triangle
+// running the way 'sign' says (1 counterclockwise, -1 clockwise)
+fn inTriangle(p Vec2, a Vec2, b Vec2, c Vec2, sign f32) Bool {
+  sign * turn(a, b, p) >= 0. and sign * turn(b, c, p) >= 0. and sign * turn(c, a, p) >= 0.;
+}
+
+// The polygon cut into triangles, as indices into 'points', three to a
+// triangle, each running counterclockwise: n corners give n - 2 triangles.
+// The polygon must be simple (its edges do not cross), and may run either
+// way. Ear clipping: a corner that turns the polygon's way, with no other
+// corner inside the triangle it makes with its neighbours, is cut off with
+// that triangle, until three corners are left. O(n^2) for n corners, and
+// more for many reflex corners. A polygon that is not simple, or has three
+// corners on one line with no ear elsewhere, still gets n - 2 triangles, but
+// some may overlap or have no area
+pub fn triangulatePolygon(points &[]Vec2) List[u32] {
+  mut tris = List[u32].empty();
+  imm n = points.len;
+  if n < 3usize {return tris;}
+  imm sign f32 = if polygonSignedArea(points) < 0. {-1.;} else {1.;};
+  // The corners still in the polygon, as a ring: each one's neighbours
+  mut next = List[usize].withCapacity(n);
+  mut prev = List[usize].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    next.push(if i + 1usize == n {0usize;} else {i + 1usize;});
+    prev.push(if i == 0usize {n - 1usize;} else {i - 1usize;});
+    i = i + 1usize;
+  }
+  mut left = n;
+  mut cur = 0usize;
+  mut tried = 0usize;
+  while left > 3usize {
+    imm p = *prev[cur];
+    imm nx = *next[cur];
+    // After a whole round with no ear, cut the corner anyway
+    if tried > left or isEar(points, &next,p, cur, nx, sign) {
+      emitTriangle(&mut tris, p, cur, nx, sign);
+      next.set(p, nx);
+      prev.set(nx, p);
+      left = left - 1usize;
+      tried = 0usize;
+      cur = nx;
+    } else {
+      cur = nx;
+      tried = tried + 1usize;
+    }
+  }
+  emitTriangle(&mut tris, *prev[cur], cur, *next[cur], sign);
+  tris;
+}
+
+// Whether the corner c, between p and nx, is an ear: it turns the polygon's
+// way, and no other corner still in the polygon lies in its triangle
+fn isEar(points &[]Vec2, next &List[usize],p usize, c usize, nx usize, sign f32) Bool {
+  imm a = points[p];
+  imm b = points[c];
+  imm d = points[nx];
+  if sign * turn(a, b, d) <= 0. {return false;}
+  mut j = *next[nx];
+  while j != p {
+    imm q = points[j];
+    // A corner at the same place as one of the three (where a polygon touches
+    // itself) does not block the ear
+    if !(q.equals(a) or q.equals(b) or q.equals(d)) and inTriangle(q, a, b, d, sign) {
+      return false;
+    }
+    j = *next[j];
+  }
+  true;
+}
+
+// The triangle p, c, nx, counterclockwise
+fn emitTriangle(tris &mut List[u32], p usize, c usize, nx usize, sign f32) {
+  if sign > 0. {
+    tris.push(u32[p]);
+    tris.push(u32[c]);
+    tris.push(u32[nx]);
+  } else {
+    tris.push(u32[nx]);
+    tris.push(u32[c]);
+    tris.push(u32[p]);
+  }
+}

@@ -339,6 +339,13 @@ source may not share the scenario's own basename, since its object would take
 the same name (`module_build_link`). A named check with an `object` key reads
 what a linked compile generated (section 4, "`cases.toml` keys").
 
+A `link` entry ending `.c` is C, compiled by the platform's C compiler
+(`cl /O2 /MD` from the Visual Studio environment the linker uses; `cc -O2`
+elsewhere) and linked in the same way. It stands in for a C library, so a
+scenario checks a C-named function against the calling convention C really
+uses, in both directions (`module_c_byvalue`). With no C compiler the scenario
+is skipped, as a `run` scenario with no linker is.
+
 **The round trip** of a package's include file is the `include` key beside
 `link`. A linked package compiled as a library writes its include file,
 `<package>.cone`, beside its object; each golden file `include` names — named
@@ -700,7 +707,7 @@ accident — and update this list when you do.
 - **No WebAssembly tier** until there is a runtime to run against.
 - **No performance or memory regression tests.**
 - **Multi-object runtime scenarios only through `link`**, which compiles each
-  package alone and links its object in (section 3). Nothing else of separate
+  package or C file alone and links its object in (section 3). Nothing else of separate
   compilation is exercised: there is no Congo run in the suite. Congo is
   checked by its own script, `tools/congo/test_congo.py`, which builds and runs
   programs against the packages folder's `libc`, `core`, `stdio`, `posix` and

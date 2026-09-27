@@ -14,8 +14,14 @@ library package implementing one strategy, named at the allocation site, with
 borrowed references used to shed the overhead wherever region oversight is not
 needed. Safety is preserved across all of it.
 
-**The distance** is large and worth stating plainly. Two regions ship, `so` and
-`rc`, both written in Cone in the core package. A user can define a region the
+**The distance** is large and worth stating plainly. Two regions ship in the
+core package, `so` and `rc`, and a third, `arc`, in the `sync` package (`rc`
+with its count changed atomically, declaring the built-in marker
+**`ThreadSafe`**, which the thread check asks of a reference's region: an owner
+that may be aliased crosses threads only in a region declaring it, so
+`+arc-imm` crosses and `+rc-imm` does not; outside core, as Rust keeps `Arc` in `sync` and out of the
+prelude **[Jon 27 Sep]**, so `arc` is a name only of modules that fold it in,
+`import sync use arc`), all written in Cone. A user can define a region the
 same way — a struct declaring `is RegionRef`, whose `alloc`, `init`, `alias`,
 `dealias` and `free` the compiler calls, and whose `alloc` may ask for the
 value's **type record** (core's `TypeRecord`: its size, alignment, finalizer
@@ -199,8 +205,8 @@ keys off. ⚠ **[differs: of that protocol `alloc`, `init`, `alias`, `dealias`,
 `free` and `writeBarrier` are built, spelled without the underscore (the
 barrier a traced region's alone, handed only what was stored), and `mark`,
 which a traced region's trace calls; the annotation is a struct, not a module; and what the
-compiler keys off is a trait, not an attribute: `Move` and `Traced`, the two
-built so far]** A trait is a fact other code may ask about or
+compiler keys off is a trait, not an attribute: `Move`, `Traced` and
+`ThreadSafe`, the three built so far]** A trait is a fact other code may ask about or
 constrain on; an attribute is an instruction about representation or linkage
 that nothing asks about [Jon 26 Sep], and a region ref's capabilities are the
 first kind.
@@ -296,15 +302,17 @@ threads; `opaq` as the universal receiver. Transitions are irreversible under a
 move, but **temporary and reversible when done by borrowing** — which is how a
 `uni` reference is recovered after being lent out.
 
-**Only three of the seven bits are consulted today.** `MayWrite` gates assignment,
+**Only four of the seven bits are consulted today.** `MayWrite` gates assignment,
 swap and a field write; `MayRead` gates a read through a reference — a
 dereference, an index, or a field of a virtual reference — and feeds the
-variance rule below; `MayAlias` decides move-ness. `MayAliasWrite`,
-`RaceSafe`, `MayIntRefSum` and `IsLockless` are populated and read nowhere. That
-is not a judgement on the design — it is that the concurrency half is unbuilt,
-and those are the bits it would consult. One consequence is worth stating
-outright: **`imm` and `ro` are behaviourally identical today**, differing only in
-`RaceSafe` and `MayIntRefSum`. See [Safety](safety.md).
+variance rule below; `MayAlias` decides move-ness; `RaceSafe` decides, with the
+region's `ThreadSafe`, whether an owner that may be aliased crosses threads (the
+thread check, `Sendable`). `MayAliasWrite`, `MayIntRefSum` and `IsLockless` are
+populated and read nowhere. That is not a judgement on the design — it is that
+the rest of the concurrency half is unbuilt, and those are the bits it would
+consult. One consequence is worth stating outright: **`imm` and `ro` differ
+only in what may cross threads** (an `+arc-imm` owner may, an `+arc-ro` one may
+not; no borrow may) and in `MayIntRefSum`. See [Safety](safety.md).
 
 The coercion lattice (`permMatches`) is small: `uni` coerces down to `ro`,
 `mut`, `imm` or `mut1`; anything readable coerces up to `ro`; `opaq` accepts

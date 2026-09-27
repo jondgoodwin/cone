@@ -131,7 +131,8 @@ globals in `clone.c`.
 ## Parse
 
 `parseGenericParms` is `[ Ident annot? (, Ident annot?)* ]`, where `annot` is a
-type (`parseType`) and more joined by `+`, beginning with a name. **No
+type (`parseType`) and more joined by `+`, beginning with a name; a `+` with
+no type after it is `ErrorNoType` (`parseTypeReq`). **No
 defaults.** An empty list is `ErrorNoGenParms`. `annotate` says whether the
 declaration takes annotations: a generic function or type does, and the name
 after the parameter's goes into `annot` (Shape, above); a parameter ends at its
@@ -426,7 +427,16 @@ is met by that type alone (`itypeIsSame`). Every other question a clause asks is
   is every raw pointer type, `*T` whatever `T` and its permission — a `PtrTag`,
   never a reference. `Integer or Bool or Pointer` is exactly what an atomic
   operation takes (`intrinsicIsAtomicType`), so sync's `Atomic[T]` requires just
-  what its `AtomicValue` marker admits.
+  what its `AtomicValue` marker admits. `Sendable` is the thread check's, and is
+  asked of the walk (`itypeThreadBound`) before anything else: it is granted to
+  every type holding nothing bound to its thread, and a type declaring it is
+  taken at its word only where its type arguments are `Sendable` too
+  ([References](references.md), `refThreadBinds`). A lone `T is Sendable` that
+  is unmet is `ErrorNotSendable`, not `ErrorWhereUnmet`: its message names what
+  binds the argument and where it sits, and says that a local's `mut` is not
+  what is checked. One that was met while a struct the argument reaches was
+  still being laid out is noted (`genericSendableNote`) and judged again once
+  type check has finished (`genericSendableCheckAll`, from `conec.c`).
 - **A declaration**: the type's `is` list names the trait, or names a trait whose
   own list does (`genericDeclares`).
 - **Fitting it structurally**, only for a trait that requires something of a

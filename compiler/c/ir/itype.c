@@ -135,6 +135,312 @@ int itypeCarriesBorrow(INode *type) {
     }
 }
 
+// ---- The thread check: may a value of this type cross threads? ----------
+//
+// A type is bound to its thread when it holds, anywhere -- inline, through an
+// owning reference, in an array element, a tuple element or an enum's
+// variant -- a reference the rule refuses (refThreadBinds: a borrow, a traced
+// reference, an owner that may be aliased without a RaceSafe permission or a
+// ThreadSafe region), or a raw pointer, whose target nothing checks. Every
+// other type is Sendable (genericTypeIs). The walk goes through owning
+// references, because an owner that crosses takes what it points at with it:
+// a 'uni' owner of a struct holding a 'mut' reference is bound, and so is an
+// '+arc-imm' owner of one. A struct declaring 'Sendable' is taken at its word,
+// except that an instance of a generic one is bound where one of its type
+// arguments is. An open trait's implementers are not all known, so a
+// reference to one is bound.
+//
+// A type may reach itself through a reference ('next +so Node'), and a type
+// reached through a reference need not be laid out yet, so the walk is the
+// same fixed point as itypeCarriesBorrow's: a struct reached again while it is
+// being asked adds nothing (what it holds is found where it was first asked),
+// and a "not bound" that leaned on such a struct, or on one not yet type
+// checked, is not remembered, and is reported as not settled.
+
+static int itypeBoundProvisional = 0;
+
+static int itypeThreadBoundAt(INode *type);
+
+// Is one of this instance's type arguments bound to its thread?
+static int itypeArgsThreadBound(INode *type) {
+    Nodes *args = itypeInstanceTypeArgs(type);
+    if (args == NULL)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(args, cnt, nodesp)) {
+        if (itypeThreadBoundAt(*nodesp))
+            return 1;
+    }
+    return 0;
+}
+
+// A trait whose implementers are open-ended: not an enum or other closed one
+static int itypeIsOpenTrait(StructNode *type) {
+    return (type->flags & TraitType) && !(type->flags & HasTagField);
+}
+
+static int itypeStructThreadBound(StructNode *type) {
+    switch (type->threadbound) {
+    case CarriesBorrowYes:
+        return 1;
+    case CarriesBorrowNo:
+        return 0;
+    case CarriesBorrowAsking:
+        itypeBoundProvisional = 1;
+        return 0;
+    default:
+        break;
+    }
+    int svprovisional = itypeBoundProvisional;
+    itypeBoundProvisional = 0;
+    type->threadbound = CarriesBorrowAsking;
+
+    int bound = 0;
+    if (structDeclaresTrait(type, sendableTrait))
+        bound = itypeArgsThreadBound((INode *)type);
+    else if (itypeIsOpenTrait(type))
+        bound = 1;
+    else {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&type->fields, cnt, nodesp)) {
+            if (itypeThreadBoundAt(((IExpNode *)*nodesp)->vtype)) {
+                bound = 1;
+                break;
+            }
+        }
+        // An enum holds whichever of its variants the value is
+        if (!bound && type->derived) {
+            for (nodesFor(type->derived, cnt, nodesp)) {
+                if (itypeThreadBoundAt(*nodesp)) {
+                    bound = 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!(type->flags & TypeChecked))
+        itypeBoundProvisional = 1;
+    if (bound && (type->flags & TypeChecked))
+        type->threadbound = CarriesBorrowYes;
+    else if (!bound && !itypeBoundProvisional)
+        type->threadbound = CarriesBorrowNo;
+    else
+        type->threadbound = CarriesBorrowUnknown;
+    itypeBoundProvisional |= svprovisional;
+    return bound;
+}
+
+static int itypeThreadBoundAt(INode *type) {
+    if (type == NULL)
+        return 0;
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? itypeThreadBoundAt(itypeGetTypeDcl(type)) : 0;
+    case AliasDclTag:
+        return itypeThreadBoundAt(((AliasDclNode *)type)->target);
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+        switch (refThreadBinds((RefNode *)type)) {
+        case RefCrossesAll:
+            return 0;
+        case RefCrosses:
+            return itypeThreadBoundAt(((RefNode *)type)->vtexp);
+        default:
+            return 1;
+        }
+    case PtrTag:
+        return 1;
+    case ArrayTag:
+        return itypeThreadBoundAt(arrayElemType(type));
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (itypeThreadBoundAt(*nodesp))
+                return 1;
+        }
+        return 0;
+    }
+    case StructTag:
+        return itypeStructThreadBound((StructNode *)type);
+    default:
+        return 0;
+    }
+}
+
+int itypeThreadBound(INode *type, int *settled) {
+    int svprovisional = itypeBoundProvisional;
+    itypeBoundProvisional = 0;
+    int bound = itypeThreadBoundAt(type);
+    if (settled)
+        *settled = bound || !itypeBoundProvisional;
+    itypeBoundProvisional = svprovisional;
+    return bound;
+}
+
+// Append to 'buf' a type as the thread check's message spells it: a reference
+// as it is written ('&mut Point', '+rc-imm Point', '*u64'), anything else by
+// its name
+void itypeSpellCat(char *buf, size_t size, INode *type, int depth) {
+    size_t used = strlen(buf);
+    if (!isTypeNode(type)) {
+        snprintf(buf + used, size - used, "?");
+        return;
+    }
+    INode *dcl = itypeGetTypeDcl(type);
+    if (depth < 4 && (dcl->tag == RefTag || dcl->tag == ArrayRefTag || dcl->tag == VirtRefTag)) {
+        RefNode *ref = (RefNode *)dcl;
+        INode *perm = ref->perm && isTypeNode(ref->perm) ? itypeGetTypeDcl(ref->perm) : NULL;
+        Name *permname = perm ? inodeGetName(perm) : NULL;
+        char *pname = permname ? &permname->namestr : "?";
+        INode *region = ref->region && isTypeNode(ref->region) ? itypeGetTypeDcl(ref->region) : ref->region;
+        char *shape = dcl->tag == ArrayRefTag ? "[]" : dcl->tag == VirtRefTag ? "<" : "";
+        if (region == borrowRef)
+            snprintf(buf + used, size - used, "&%s %s", pname, shape);
+        else {
+            Name *regname = region && region->tag == StructTag ? ((StructNode *)region)->namesym : NULL;
+            snprintf(buf + used, size - used, "+%s-%s %s", regname ? &regname->namestr : "?", pname, shape);
+        }
+        itypeSpellCat(buf, size, ref->vtexp, depth + 1);
+        return;
+    }
+    if (depth < 4 && dcl->tag == PtrTag) {
+        snprintf(buf + used, size - used, "*");
+        itypeSpellCat(buf, size, ((StarNode *)dcl)->vtexp, depth + 1);
+        return;
+    }
+    if (depth < 4 && dcl->tag == ArrayTag) {
+        snprintf(buf + used, size - used, "[%llu; ", (unsigned long long)arrayDim1(dcl));
+        itypeSpellCat(buf, size, arrayElemType(dcl), depth + 1);
+        used = strlen(buf);
+        snprintf(buf + used, size - used, "]");
+        return;
+    }
+    snprintf(buf + used, size - used, "%s", itypeName(dcl));
+}
+
+#define ThreadBoundPathMax 16
+#define ThreadBoundPathSize 256
+
+// The culprit walk: the first thread-bound part of 'type', following only
+// what itypeThreadBound says is bound, and never into a struct it has passed
+// through already, so a cycle whose cause lies off it is left for the cause
+static INode *itypeThreadBoundCulprit(INode *type, char *path, size_t size,
+        StructNode **seen, uint32_t nseen) {
+    if (type == NULL || nseen >= ThreadBoundPathMax)
+        return NULL;
+    size_t used = strlen(path);
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? itypeThreadBoundCulprit(itypeGetTypeDcl(type), path, size, seen, nseen) : NULL;
+    case AliasDclTag:
+        return itypeThreadBoundCulprit(((AliasDclNode *)type)->target, path, size, seen, nseen);
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+        switch (refThreadBinds((RefNode *)type)) {
+        case RefCrossesAll:
+            return NULL;
+        case RefCrosses:
+            return itypeThreadBoundCulprit(((RefNode *)type)->vtexp, path, size, seen, nseen);
+        default:
+            return type;
+        }
+    case PtrTag:
+        return type;
+    case ArrayTag:
+        snprintf(path + used, size - used, used ? "[]" : "an element");
+        return itypeThreadBoundCulprit(arrayElemType(type), path, size, seen, nseen);
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        uint32_t index = 0;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (itypeThreadBound(*nodesp, NULL)) {
+                snprintf(path + used, size - used, used ? ".%u" : "element %u", index);
+                return itypeThreadBoundCulprit(*nodesp, path, size, seen, nseen);
+            }
+            ++index;
+        }
+        return NULL;
+    }
+    case StructTag: {
+        StructNode *strnode = (StructNode *)type;
+        for (uint32_t i = 0; i < nseen; ++i) {
+            if (seen[i] == strnode)
+                return NULL;
+        }
+        seen[nseen++] = strnode;
+        if (itypeIsOpenTrait(strnode) && !structDeclaresTrait(strnode, sendableTrait))
+            return type;
+        INode **nodesp;
+        uint32_t cnt;
+        // What was said so far, restored where a type argument or a variant,
+        // each named afresh, turns out not to hold the culprit
+        char saved[ThreadBoundPathSize];
+        snprintf(saved, sizeof(saved), "%s", path);
+        // Declared Sendable, and bound only by a type argument
+        if (structDeclaresTrait(strnode, sendableTrait)) {
+            Nodes *args = itypeInstanceTypeArgs(type);
+            if (args == NULL)
+                return NULL;
+            for (nodesFor(args, cnt, nodesp)) {
+                if (!itypeThreadBound(*nodesp, NULL))
+                    continue;
+                path[0] = '\0';
+                INode *culprit = itypeThreadBoundCulprit(*nodesp, path, size, seen, nseen);
+                if (culprit) {
+                    if (path[0] == '\0')
+                        snprintf(path, size, "its type argument");
+                    return culprit;
+                }
+                snprintf(path, size, "%s", saved);
+            }
+            return NULL;
+        }
+        if (path[0] == '\0') {
+            itypeSpellCat(path, size, type, 0);
+            used = strlen(path);
+        }
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            FieldDclNode *field = (FieldDclNode *)*nodesp;
+            if (!itypeThreadBound(field->vtype, NULL))
+                continue;
+            snprintf(path + used, size - used, ".%s", &field->namesym->namestr);
+            INode *culprit = itypeThreadBoundCulprit(field->vtype, path, size, seen, nseen);
+            if (culprit)
+                return culprit;
+            path[used] = '\0';
+        }
+        // An enum's variant is named by itself
+        if (strnode->derived) {
+            for (nodesFor(strnode->derived, cnt, nodesp)) {
+                if (!itypeThreadBound(*nodesp, NULL))
+                    continue;
+                path[0] = '\0';
+                INode *culprit = itypeThreadBoundCulprit(*nodesp, path, size, seen, nseen);
+                if (culprit)
+                    return culprit;
+                snprintf(path, size, "%s", saved);
+            }
+        }
+        return NULL;
+    }
+    default:
+        return NULL;
+    }
+}
+
+INode *itypeThreadBoundWhy(INode *type, char *path, size_t size) {
+    StructNode *seen[ThreadBoundPathMax];
+    path[0] = '\0';
+    return itypeThreadBoundCulprit(type, path, size, seen, 0);
+}
+
 // Set when an answer reached a struct not yet type checked, whose fields may
 // not all be known: a "no" that depended on it is not remembered. Shared by
 // the walks for a traced reference and for an atomic value, neither of which

@@ -1,0 +1,133 @@
+// ======== PolyMesh's helpers ========
+//
+// The cube cage's faces, and the module functions that building and
+// validating a PolyMesh use.
+
+imm cageFaces [24; u32] = [0u32, 2u32, 3u32, 1u32,  4u32, 5u32, 7u32, 6u32,  0u32, 4u32, 6u32, 2u32,
+  1u32, 3u32, 7u32, 5u32,  0u32, 1u32, 5u32, 4u32,  2u32, 6u32, 7u32, 3u32];
+
+// Whether a face, the vertices 'vs', can be added to the mesh being built;
+// if not, a line saying why goes to 'problems'. (A module function, not a
+// method: a private method is refused when called on another PolyMesh from
+// within PolyMesh's own methods.)
+fn faceFits(m &PolyMesh, f usize, vs &[]u32, nv usize, outHead &List[u32], outNext &List[u32],
+    problems &mut List[String]) Bool {
+  imm n = vs.len;
+  if n < 3usize {
+    problems.push(faceProblem(f, "has fewer than 3 corners"));
+    return false;
+  }
+  mut i = 0usize;
+  while i < n {
+    if usize[vs[i]] >= nv {
+      mut s = faceProblem(f, "names vertex ");
+      s.appendUInt(u64[vs[i]]);
+      s.append(", which does not exist");
+      problems.push(s);
+      return false;
+    }
+    mut j = i + 1usize;
+    while j < n {
+      if vs[i] == vs[j] {
+        mut s = faceProblem(f, "has vertex ");
+        s.appendUInt(u64[vs[i]]);
+        s.append(" twice");
+        problems.push(s);
+        return false;
+      }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < n {
+    imm a = vs[i];
+    imm b = vs[(i + 1usize) % n];
+    imm h = findHalfedge(&m.hVertex, outHead, outNext, a, b);
+    if h != NoIndex and *m.hFace[usize[h]] != NoIndex {
+      mut s = faceProblem(f, "runs from vertex ");
+      s.appendUInt(u64[a]);
+      s.append(" to ");
+      s.appendUInt(u64[b]);
+      s.append(", as another face already does");
+      problems.push(s);
+      return false;
+    }
+    i = i + 1usize;
+  }
+  true;
+}
+
+// Link the boundary half-edges into loops, and give each vertex its
+// half-edge. A boundary half-edge ending at v is followed by the boundary
+// half-edge leaving v that is reached by turning about v through faces from
+// its twin, so each fan of faces about a vertex closes on itself.
+fn linkBoundary(m &mut PolyMesh) {
+  imm nh = m.hVertex.len();
+  mut h = 0usize;
+  while h < nh {
+    if *m.hFace[h] == NoIndex {
+      mut g = twinOf(u32[h]);
+      mut steps = 0usize;
+      mut going = true;
+      while going and steps < nh {
+        imm t = twinOf(*m.hPrev[usize[g]]);
+        if *m.hFace[usize[t]] == NoIndex {
+          m.hNext.set(h, t);
+          m.hPrev.set(usize[t], u32[h]);
+          going = false;
+        } else {
+          g = t;
+        }
+        steps = steps + 1usize;
+      }
+    }
+    h = h + 1usize;
+  }
+  // Each vertex: the first half-edge leaving it, or a boundary one if any
+  h = 0usize;
+  while h < nh {
+    imm from = usize[*m.hVertex[usize[twinOf(u32[h])]]];
+    imm cur = *m.vHalfedge[from];
+    if cur == NoIndex or (*m.hFace[h] == NoIndex and *m.hFace[usize[cur]] != NoIndex) {
+      m.vHalfedge.set(from, u32[h]);
+    }
+    h = h + 1usize;
+  }
+}
+
+// A half-edge's twin: the other of its pair
+fn twinOf(h u32) u32 {h ^ 1u32;}
+
+fn fabs32(a f32) f32 {if a < 0. {-a;} else {a;};}
+
+// Two uvs exactly equal: a seam is where corners' uvs differ at all
+fn sameVec2(a Vec2, b Vec2) Bool {a.x == b.x and a.y == b.y;}
+
+// The half-edge from a to b, or NoIndex, while building: each vertex's
+// half-edges leaving it are chained through 'outNext' from 'outHead'
+fn findHalfedge(hVertex &List[u32], outHead &List[u32], outNext &List[u32], a u32, b u32) u32 {
+  mut h = *outHead[usize[a]];
+  while h != NoIndex {
+    if *hVertex[usize[h]] == b { return h; }
+    h = *outNext[usize[h]];
+  }
+  NoIndex;
+}
+
+// "face 3: ..." begun, for a problem line
+fn faceProblem(f usize, what &[]u8) String {
+  mut s = String.from("face ");
+  s.appendUInt(u64[f]);
+  s.append(": ");
+  s.append(what);
+  s;
+}
+
+// "half-edge 5: ...", "vertex 2: ...", and so on
+fn elementProblem(kind &[]u8, n usize, what &[]u8) String {
+  mut s = String.from(kind);
+  s.appendUInt(u64[n]);
+  s.append(what);
+  s;
+}

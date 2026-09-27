@@ -86,7 +86,7 @@ void genlReturn(GenState *gen, BreakRetNode *retnode) {
     genlDealiasNodes(gen, retnode->dealias);
     if (gen->exitzero)
         retval = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0);
-    LLVMBuildRet(gen->builder, retval);
+    genlFnDclReturn(gen, gen->fndcl, retval);
 }
 
 // Generate a block "return" retnode

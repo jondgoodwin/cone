@@ -1516,6 +1516,15 @@ class Linker:
             return False
         return "Microsoft" in (banner.stdout + banner.stderr)
 
+    def c_command(self, source: Path, obj: Path) -> list[str]:
+        """Compile a scenario's C file to an object, optimized, against the C
+        runtime the program links (/MD). Call only once prepare() succeeded."""
+        from shutil import which
+        if IS_WINDOWS:
+            cl = which("cl.exe", path=self.env.get("PATH", "")) or "cl.exe"
+            return [cl, "/nologo", "/c", "/O2", "/MD", f"/Fo{obj}", str(source)]
+        return [self.tool, "-c", "-O2", "-o", str(obj), str(source)]
+
     def command(self, objs: list[Path], exe: Path) -> list[str]:
         """The program's object first, then any a scenario 'link's with it."""
         if IS_WINDOWS:
@@ -2133,6 +2142,30 @@ class Runner:
         # an object beside the program's. A failure here is the scenario's.
         for lib in scenario.link:
             lib_rel = lib.relative_to(REPO).as_posix()
+            if lib.suffix == ".c":
+                # C code the program calls, or that calls it: compiled by the
+                # platform's C compiler, whose calling convention is the one
+                # a C-named function must meet
+                reason = self.linker.prepare()
+                if reason:
+                    result.status = SKIP
+                    result.note = f"not compiled: {reason}"
+                    result.seconds = time.monotonic() - started
+                    return result
+                lib_cmd = self.linker.c_command(
+                    lib, out_dir / f"{lib.stem}.{object_extension(spec.options)}")
+                result.commands.append(quote(lib_cmd))
+                built = execute(lib_cmd, REPO, out_dir, f"cc-{lib.stem}",
+                                self.args.timeout, self.args.max_output, env=self.linker.env)
+                if built.killed or built.code != 0:
+                    result.status = FAIL
+                    result.problems.append(
+                        f"compiling {lib_rel}, which the scenario links, "
+                        + (f"was {built.killed}" if built.killed else f"exited {built.code}")
+                        + "\n" + indent(built.stdout + built.stderr))
+                    result.seconds = time.monotonic() - started
+                    return result
+                continue
             lib_cmd = [str(self.conec), *spec.options, "--checktree", "--verify",
                        "-o", out_rel, lib_rel]
             if any(c.object == lib.stem for c in scenario.checks):

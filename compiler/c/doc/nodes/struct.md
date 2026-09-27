@@ -398,8 +398,11 @@ A variant is a plain struct with a `basetrait`, a `tagnbr`, and no `derived`.
 **A `struct X is Trait` is in no `derived` list** — `derived` means "an enum's
 variants", never "a trait's implementers".
 
-The infectious flags — `MoveType`, `ThreadBound`, `OpaqueType`, `ZeroSizeType` —
-are computed from the fields during type check. A field's move-ness is asked of
+The infectious flags — `MoveType`, `OpaqueType`, `ZeroSizeType` — are computed
+from the fields during type check. Whether a value may cross threads is not one
+of them: it follows owning references to types that may not be laid out yet, so
+it is asked of the whole type when something crosses (`itypeThreadBound`,
+remembered in `threadbound` as `carriesborrow` is). A field's move-ness is asked of
 `itypeIsMove`, not read off its type's flags, because a tuple-typed field carries
 no flag and moves when one of its elements does. `NullablePtr` is set only during
 generation.
