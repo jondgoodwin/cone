@@ -104,10 +104,13 @@ contains = ["internal constant [3 x i32] [i32 1, i32 2, i32 3]", "internal const
 # -------- generated code --------
 
 # A slice's length is a field of the value, not of its type, so the check
-# against it cannot be folded even for a constant index. Asserted here rather
-# than at run time because the check only announces itself by aborting. Both
+# against it cannot be folded even for a constant index. Asserted here, the
+# failure path's shape; what a failed check prints is panic_bounds's. Both
 # scenarios are read before optimization: nothing calls their one function,
-# and a program's definitions are internal, so the optimizer deletes it.
+# and a program's definitions are internal, so the optimizer deletes it. The
+# failure is a call to the C runtime's entry, handed the index, the count, the
+# file's name (28 bytes, 'collection_bounds_slice.cone') and the line, then
+# 'unreachable'; the entry is cold and does not return.
 [scenario.collection_bounds_slice]
 category = "compile"
 description = "Indexing a slice is bounds-checked against the length the slice carries"
@@ -116,7 +119,10 @@ tags = ["typecheck", "genllvm"]
 [[scenario.collection_bounds_slice.check]]
 name = "slice-index-emits-bounds-check"
 target = "preir"
-contains = ["%count = extractvalue { ptr, i64 } %s1, 1", "icmp ult i64 0, %count", "call void @llvm.trap()"]
+contains = ["%count = extractvalue { ptr, i64 } %s1, 1", "icmp ult i64 0, %count",
+  "call void @cone_panicIndex(i64 0, i64 %count, ptr @srcfile, i64 28, i32 22)\n  unreachable",
+  "declare void @cone_panicIndex(i64, i64, ptr, i64, i32) #1",
+  "attributes #1 = { cold noreturn nounwind }"]
 
 # The same constant index against an array whose length is in its type needs no
 # comparison at all: both operands are constants, so generation folds the test
@@ -134,7 +140,8 @@ excludes = ["icmp"]
 
 # A range's two comparisons, start against end and end against the length the
 # slice carries, both unsigned and inclusive, joined before one branch to the
-# trap; then the length the new slice carries is the difference.
+# panic, which is handed the start, the end and the count; then the length the
+# new slice carries is the difference.
 [scenario.collection_bounds_subslice]
 category = "compile"
 description = "A range index on a slice is bounds-checked: the start may not pass the end, nor the end the slice's length"
@@ -143,7 +150,9 @@ tags = ["typecheck", "genllvm"]
 [[scenario.collection_bounds_subslice.check]]
 name = "range-emits-bounds-check"
 target = "preir"
-contains = ["icmp ule i64", ", %count", "call void @llvm.trap()", "%slicelen = sub i64"]
+contains = ["icmp ule i64", ", %count",
+  "call void @cone_panicSlice(i64 %a2, i64 %b3, i64 %count, ptr @srcfile, i64 31, i32 14)\n  unreachable",
+  "%slicelen = sub i64"]
 
 # -------- type check stage --------
 

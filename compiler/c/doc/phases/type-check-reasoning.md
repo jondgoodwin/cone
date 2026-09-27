@@ -174,10 +174,15 @@ covariant**, and the overall verdict is the most expensive of all the parts.
 
 `blockTypeCheck` and `ifTypeCheck` fold one branch at a time: coerce the branch
 with `iexpTypeCheckCoerce`, then fold its type into the type in common with
-`iexpMultiInfer`. `blockTypeCheck` reaches both through the
-`iexpMultiCoerceInfer` wrapper; `ifTypeCheck` calls the two directly and is
-otherwise the same fold. A block folds its final expression *and* every `break`
-registered against it; an `if` folds one branch per condition.
+`iexpMultiInfer`. `blockTypeCheck` checks its final expression first, and then
+reaches both through `iexpMultiCheckedCoerceInfer`, the half of the
+`iexpMultiCoerceInfer` wrapper after the check; `ifTypeCheck` calls the two
+directly and is otherwise the same fold. A block folds its final expression
+*and* every `break` registered against it; an `if` folds one branch per
+condition. **A path that jumps away is not folded**: a block's final call
+returning `Never` becomes a `return` rather than a value (`fnCallIsNever`), and
+an `if` branch ending in a `return`, `break` or `continue` gives the `if` no
+value (`ifBlockJumps`), so neither has a say in the type in common.
 
 `ifTypeCheck` carries three obligations a block does not: each condition is
 coerced to `Bool` (which is where implicit `.isTrue` reaches a conditional), a

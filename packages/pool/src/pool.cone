@@ -31,7 +31,7 @@
 //   pool.get(r)     Some borrow of the value, or None if it has been removed
 //   pool.getMut(r)  the same, a mutable borrow
 //   pool.alive(r)   whether r's value is still there
-//   pool[r]         a borrow of it; the program ends if it has been removed
+//   pool[r]         a borrow of it; a panic if it has been removed
 //   &mut pool[r]    a mutable borrow of it, likewise
 //   pool.remove(r)  finalize it and free its slot, answering true; a Ref
 //                   whose value has already gone does nothing and answers
@@ -107,9 +107,7 @@
 // fixed-size array in element order.
 //
 // A block the C library cannot allocate, or a pool of more than 2^32 - 2
-// slots, ends the program, as 'pool[r]' of a removed value does: what went
-// wrong on stderr, then the C library's 'abort', the pool's panic until Cone's
-// own 'panic' is built.
+// slots, is a panic, as 'pool[r]' of a removed value is.
 
 mod pool;
 
@@ -232,17 +230,17 @@ pub struct Pool[T] is ShapeChanging {
     Some[&mut T][&mut slots[usize[r.slot()]].value];
   }
 
-  // 'pool[r]': a borrow of the value r names; the program ends if it has
-  // been removed
-  pub fn `[]`(self &, r Ref[T]) &T {
-    if !self.alive(r) { deadRef(); }
+  // 'pool[r]': a borrow of the value r names; a panic if it has been removed,
+  // reported at the line of the caller, which 'file' and 'line' default to
+  pub fn `[]`(self &, r Ref[T], file &[]u8 = srcFile(), line u32 = srcLine()) &T {
+    if !self.alive(r) { deadRef(file, line); }
     &slots[usize[r.slot()]].value;
   }
 
-  // '&mut pool[r]': a mutable borrow of the value r names; the program ends
-  // if it has been removed
-  pub fn `&[]`(self &mut, r Ref[T]) &mut T {
-    if !self.alive(r) { deadRef(); }
+  // '&mut pool[r]': a mutable borrow of the value r names; a panic if it has
+  // been removed, as for 'pool[r]'
+  pub fn `&[]`(self &mut, r Ref[T], file &[]u8 = srcFile(), line u32 = srcLine()) &mut T {
+    if !self.alive(r) { deadRef(file, line); }
     &mut slots[usize[r.slot()]].value;
   }
 
@@ -353,14 +351,11 @@ pub struct Pool[T] is ShapeChanging {
   }
 }
 
-// The pool's panics: what went wrong on stderr, and the program ends at once
-// through the C library's 'abort'. Cone's 'panic' is not built yet; when it
-// is, this is where it goes.
-fn deadRef() { die("pool: pool[r] of a reference whose value has been removed\n"); }
-fn outOfMemory() { die("pool: out of memory\n"); }
-
-fn die(msg &[]u8) {
-  libc.fflush(libc.stdout());
-  libc.fwrite(msg, 1usize, msg.len, libc.stderr());
-  libc.abort();
+// The pool's panics: a removed value indexed, reported where 'pool[r]' was;
+// and memory exhausted, reported where the pool found it
+fn deadRef(file &[]u8, line u32) Never {
+  panic("pool: pool[r] of a reference whose value has been removed", file, line);
+}
+fn outOfMemory() Never {
+  panic("pool: out of memory");
 }

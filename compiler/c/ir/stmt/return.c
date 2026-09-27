@@ -131,13 +131,38 @@ void returnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode) {
         // Establish the type of the tuple (from the expected return value types)
         ((TupleNode *)retnode->exp)->vtype = fnsig->rettype;
     }
-    else if (!iexpTypeCheckCoerce(tstate, fnsig->rettype, &retnode->exp)) {
-        errorMsgNode((INode*)retnode, ErrorInvType, "Return expression type does not match return type on function");
-        errorMsgNode((INode*)fnsig->rettype, ErrorInvType, "This is the declared function's return type");
+    else {
+        // What a function returning 'Never' hands to its 'return' gives no
+        // value, so it is checked as a statement: an 'if' there needs no 'else'
+        // to be well typed, only to pass the check below
+        int never = itypeIsNever(fnsig->rettype);
+        inodeTypeCheck(tstate, &retnode->exp, never ? noCareType : fnsig->rettype);
+        // A call that does not return hands back nothing to coerce: control
+        // leaves the function through it, whatever the function returns. This
+        // is also how a block ends in one (blockTypeCheck), and generation ends
+        // the path there (genlReturn).
+        if (fnCallIsNever(retnode->exp))
+            ;
+        // A function returning 'Never' may leave only through such a call, or
+        // an 'if' each of whose paths does
+        else if (never) {
+            if (!(retnode->exp->tag == IfTag && ifAllPathsJump((IfNode *)retnode->exp)))
+                errorMsgNode((INode*)retnode, ErrorNeverReturns,
+                    "This function returns Never, so it must not return: end it in a call that does not return, such as 'panic(...)'.");
+        }
+        else if (!iexpCheckedCoerce(fnsig->rettype, &retnode->exp)) {
+            errorMsgNode((INode*)retnode, ErrorInvType, "Return expression type does not match return type on function");
+            errorMsgNode((INode*)fnsig->rettype, ErrorInvType, "This is the declared function's return type");
+        }
     }
 
-    // Have return node point to function block that is "breaks" out of
-    // Also, add return node to that block's list of returns (generation needs this to help with inline functions)
+    returnJoinFn(tstate, retnode);
+}
+
+// Point a type-checked return at the function block it leaves, and add it to
+// that block's list of returns (generation needs this to help with inline
+// functions)
+void returnJoinFn(TypeCheckState *tstate, BreakRetNode *retnode) {
     BlockNode *fnblock = retnode->block = (BlockNode*)tstate->fn->value;
     if (tstate->fn->flags & FlagInline) {
         if (!fnblock->breaks)

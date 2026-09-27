@@ -499,7 +499,20 @@ because every expansion is a fresh node — nothing ever returns to the same nod
 **Macros differ from generics in three ways**: arguments are never checked for
 being types, never type checked before substitution, and never memoized. That is
 what makes `twice[bump()]` call `bump()` twice, and what lets a macro parameter
-be used in type position.
+be used in type position. It is also what lets an argument go unevaluated: core's
+`assertDebug[cond]` puts `cond` inside `if isDebugBuild() {...}`, so a release
+build never runs it.
+
+**`srcFile()` and `srcLine()` in a macro's body answer where it is used.**
+`macroExpand` sets `CloneState.srcsite` to the use before cloning the body, and
+`cloneFnCallNode` gives a call to either that place. The place is the outermost
+use (`macroSrcSite`): every node cloned from a body is marked as instantiated by
+the use it expands (`instnode`), so a macro used in a body climbs that chain
+while each link is a macro's use. An argument is cloned with `srcsite` and
+`instnode` cleared, so it keeps the place it was written at and the chain stops
+at it: a macro passed as an argument answers where it is written. Nothing else
+in the body moves: a diagnostic about the body, `ErrorInstDepth`'s included,
+still points into it. `intrinsic_srcloc_macro` pins each case.
 
 **A macro method expands the same way, with the receiver as the first
 argument.** `x.name(args)` reaches `macroMethodTypeCheck` from `fnCallTypeCheck`,

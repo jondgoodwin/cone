@@ -594,8 +594,9 @@ static void genlClaimSymbol(GenState *gen, INode *node, LLVMValueRef global, Gen
     }
 
     // An external symbol the compiler declared itself, which has no declaring
-    // node: an LLVM intrinsic it calls by name ('llvm.trap', genlPanic). A
-    // declaration meeting one shares it where it can
+    // node: an LLVM intrinsic or a C runtime entry it calls by name ('llvm.trap'
+    // and 'cone_panicIndex', genlPanic). A declaration meeting one shares it
+    // where it can
     if (owner == NULL) {
         if (node->tag == FnDclTag && defined == GenlDeclared
             && LLVMIsAFunction(existing) && LLVMIsDeclaration(existing)) {
@@ -720,6 +721,11 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
         GenlDefinition defined = genlDefinition(gen, (INode*)glofn);
         genlLinkage(glofn->llvmvar, (INode*)glofn, defined);
         genlClaimSymbol(gen, (INode*)glofn, glofn->llvmvar, defined, symbol);
+        // A function returning 'Never' does not return, which lets LLVM take
+        // every path into a call to it as cold and end the path there
+        if (glofn->vtype->tag == FnSigTag && itypeIsNever(((FnSigNode*)glofn->vtype)->rettype)
+            && LLVMIsAFunction(glofn->llvmvar))
+            genlFnAttr(gen, glofn->llvmvar, "noreturn");
 
         // Add metadata on implemented functions (debug mode only). Implemented
         // HERE: an imported module's function has a body in the IR and is only a

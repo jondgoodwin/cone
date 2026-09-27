@@ -26,6 +26,10 @@ void returnNameRes(NameResState *pstate, BreakRetNode *node);
 // - NameDcl turns fn block's final expression into an implicit return
 void returnTypeCheck(TypeCheckState *pstate, BreakRetNode *node);
 
+// Point a type-checked return at the function block it leaves, listing it
+// there for an inline function's generation
+void returnJoinFn(TypeCheckState *pstate, BreakRetNode *retnode);
+
 // Data flow for return: a returned borrowed reference may not point to a local
 void returnFlow(BreakRetNode *node);
 

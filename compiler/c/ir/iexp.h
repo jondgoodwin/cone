@@ -41,6 +41,9 @@ INode *iexpCoerceType(INode *from, INode *totypedcl);
 // Return 1 if type "matches", 0 otherwise
 int iexpTypeCheckCoerce(TypeCheckState *pstate, INode *to, INode **from);
 
+// iexpTypeCheckCoerce for a node already type checked
+int iexpCheckedCoerce(INode *to, INode **from);
+
 // Used by 'if' and 'loop' to infer the type in common across all branches,
 // one branch at a time. Errors on bad type match and returns Match condition.
 // - expectType is the final type expected by receiver
@@ -55,6 +58,9 @@ int iexpMultiInfer(INode *expectType, INode **maybeType, INode **from);
 // - fromexp is the current expression node whose type is being examined
 // - oldMatch is the current match status on whether all branches match or not
 int iexpMultiCoerceInfer(TypeCheckState *pstate, INode *expectType, INode **inferredType, INode **fromexp, int oldMatch);
+
+// iexpMultiCoerceInfer for an expression already type checked
+int iexpMultiCheckedCoerceInfer(INode *expectType, INode **inferredType, INode **fromexp, int oldMatch);
 
 // Return true if an lval, and 0 if not.
 int iexpIsLval(INode *lval);

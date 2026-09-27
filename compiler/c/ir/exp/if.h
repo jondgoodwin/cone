@@ -31,6 +31,15 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType);
 
 void ifRemoveReturns(IfNode *ifnode);
 
+// Does a type-checked block end by jumping away -- a 'return', 'break' or
+// 'continue', a call that does not return among them (blockTypeCheck) -- so
+// that it gives its 'if' no value?
+int ifBlockJumps(BlockNode *blk);
+
+// Does every path through a type-checked 'if' jump away: it has an 'else',
+// and each of its blocks does?
+int ifAllPathsJump(IfNode *ifnode);
+
 // Perform data flow analysis on an if expression
 void ifFlow(FlowState *fstate, IfNode **ifnodep);
 

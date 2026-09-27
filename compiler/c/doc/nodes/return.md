@@ -64,10 +64,18 @@ jump the reader wrote last.
    against a tuple return type is coerced element by element**, so each element
    gets its own conversion and diagnostic; the tuple's type is then taken from
    the signature. A mismatch reports twice — at the expression and at the
-   declared return type — so the reader sees both ends.
-3. Point `block` at the function's body block.
-4. **For an inline function only**, add this node to that block's `breaks` list,
-   which generation uses to splice the inlined body's exits.
+   declared return type — so the reader sees both ends. **A call returning
+   `Never` is not coerced**: control leaves through it, whatever the function
+   returns (`fnCallIsNever`). **A function returning `Never` may return
+   nothing else** — only such a call, or an `if` every path of which jumps
+   away (`ifAllPathsJump`), which it checks as a statement, so that `if` needs
+   no `else` to be well typed; anything else, `return;` and an empty body's
+   `return nil` among them, is `ErrorNeverReturns`.
+3. Point `block` at the function's body block, and, **for an inline function
+   only**, add this node to that block's `breaks` list, which generation uses to
+   splice the inlined body's exits (`returnJoinFn`). A `return` that
+   `blockTypeCheck` makes of a block ending in a call returning `Never` takes
+   this step alone: the call in it is checked already.
 
 `breakTypeCheck` does one thing: add itself to its target block's `breaks` list.
 It deliberately does **not** check its expression's type — `blockTypeCheck` does
@@ -117,8 +125,11 @@ reference — without deactivating anything. [Flow Analysis](../phases/flow.md),
 a real `ret`, unequal means this is a return inside an **inlined** function body
 and it becomes a break. Either way `dealias` is replayed by `genlDealiasNodes`,
 and the return value is computed **before** the release. `genlBreak` records the
-phi value and predecessor, releases, and branches. `genlBlockRet` is an empty
-stub — `BlockRetTag` is handled inline in `genlBlock`.
+phi value and predecessor, releases, and branches. A return or break whose value
+does not return — a call returning `Never`, or an `if` every path of which jumps
+away — is that value and then `unreachable`, releasing nothing and adding no phi
+edge (`genlNeverJump`). `genlBlockRet` is an empty stub — `BlockRetTag` is
+handled inline in `genlBlock`.
 
 ## Hazards
 

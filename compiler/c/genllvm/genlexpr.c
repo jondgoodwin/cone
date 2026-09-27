@@ -71,11 +71,14 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
     INode **nodesp;
     uint32_t cnt;
 
-    // If we are returning a value in each block, set up space for phi info
+    // If we are returning a value in each block, set up space for phi info.
+    // An 'if' whose every branch is void -- 'if c {f();} else {}', which is
+    // what core's 'assertDebug' macro expands to -- has none to merge
     vtype = itypeGetTypeDcl(ifnode->vtype);
     count = ifnode->condblk->used / 2;
     i = phicnt = 0;
-    if (vtype != unknownType) {
+    int hasval = vtype != unknownType && vtype->tag != VoidTag;
+    if (hasval) {
         blkvals = memAllocBlk(count * sizeof(LLVMValueRef));
         blks = memAllocBlk(count * sizeof(LLVMBasicBlockRef));
     }
@@ -103,7 +106,7 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
         if (lastStmttype != ReturnTag && lastStmttype != BreakTag && lastStmttype != ContinueTag) {
             LLVMBuildBr(gen->builder, endif);
             // Remember value and block if needed for phi merge
-            if (vtype != unknownType) {
+            if (hasval) {
                 blkvals[phicnt] = blkval;
                 blks[phicnt++] = LLVMGetInsertBlock(gen->builder);
             }
@@ -119,6 +122,10 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
         LLVMAddIncoming(phi, blkvals, blks, phicnt);
         return phi;
     }
+    // Every path jumped away -- each ended in a 'return' or a call that does
+    // not return -- so nothing reaches here, and what it is given is never used
+    if (vtype != unknownType && vtype->tag != VoidTag)
+        return LLVMGetUndef(genlType(gen, vtype));
 
     return NULL;
 }
@@ -242,6 +249,10 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
         return genlAlignof(gen, type);
     case NeedsFinalIntrinsic:
         return LLVMConstInt(genlType(gen, (INode*)boolType), itypeNeedsFinal(type), 0);
+    // A constant from the build, not the type: a branch on it is folded away
+    // (simplifycfg), and its dead side is never generated into the object
+    case IsDebugBuildIntrinsic:
+        return LLVMConstInt(genlType(gen, (INode*)boolType), !gen->opt->release, 0);
     // The address of T's record, a constant this object builds once
     case TypeRecordIntrinsic:
         return genlTypeRecord(gen, type, ((FnSigNode *)fndcl->vtype)->rettype);
@@ -737,6 +748,19 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 
     INode *objfn = fncall->objfn;
 
+    // 'srcFile()' and 'srcLine()' answer where the call is: a constant each
+    switch (intrinsicSrcKind((INode*)fncall)) {
+    case SrcFileIntrinsic: {
+        size_t len;
+        char *file = genlSrcFileName((INode*)fncall, &len);
+        return genlSrcFileSlice(gen, file, len);
+    }
+    case SrcLineIntrinsic:
+        return LLVMConstInt(LLVMInt32TypeInContext(gen->context), fncall->linenbr, 0);
+    default:
+        break;
+    }
+
     // Get count and Valuerefs for all the arguments to pass to the function
     uint32_t fnargcnt = fncall->args->used;
     LLVMValueRef *fnargs = (LLVMValueRef*)memAllocBlk(fnargcnt * sizeof(LLVMValueRef*));
@@ -1143,28 +1167,124 @@ LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
     return NULL;
 }
 
-// Generate a panic
-void genlPanic(GenState *gen) {
-    // Declare trap() external function
-    char *fnname = "llvm.trap";
-    LLVMValueRef fn = LLVMGetNamedFunction(gen->module, fnname);
-    if (!fn) {
-        LLVMTypeRef rettype = LLVMVoidTypeInContext(gen->context);
-        LLVMTypeRef fnsig = LLVMFunctionType(rettype, NULL, 0, 0);
-        fn = LLVMAddFunction(gen->module, fnname, fnsig);
-    }
-    LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(fn), fn, NULL, 0, "");
+// Add an attribute that takes no value ('noreturn', 'cold') to a function
+void genlFnAttr(GenState *gen, LLVMValueRef fn, char *name) {
+    unsigned kind = LLVMGetEnumAttributeKindForName(name, strlen(name));
+    LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, LLVMCreateEnumAttribute(gen->context, kind, 0));
 }
 
-void genlBoundsCheck(GenState *gen, LLVMValueRef index, LLVMValueRef count) {
-    // Do runtime bounds check and panic
+// The source file a node was written in, as a panic reports it: the file's
+// name without its folders, so that a program says the same wherever it was
+// built and carries no build path (Swift's '#fileID' lesson)
+char *genlSrcFileName(INode *node, size_t *len) {
+    char *url = node->lexer ? node->lexer->url : "";
+    char *name = url;
+    for (char *p = url; *p; ++p) {
+        if (*p == '/' || *p == '\\')
+            name = p + 1;
+    }
+    *len = strlen(name);
+    return name;
+}
+
+// The address of a constant copy of a source file's name: a private constant
+// global, made once per name in a module. The names already made are few (one
+// per file whose code this object holds), so a short list remembers them;
+// one found nowhere in it is made again, which costs bytes, not correctness
+#define GenlSrcFileMax 32
+static struct {
+    LLVMModuleRef module;
+    char *text;
+    LLVMValueRef global;
+} genlSrcFiles[GenlSrcFileMax];
+static int genlSrcFileCnt = 0;
+
+static LLVMValueRef genlSrcFileText(GenState *gen, char *text, size_t len) {
+    for (int i = 0; i < genlSrcFileCnt; ++i) {
+        if (genlSrcFiles[i].module == gen->module && genlSrcFiles[i].text == text)
+            return genlSrcFiles[i].global;
+    }
+    LLVMValueRef strconst = LLVMConstStringInContext2(gen->context, text, len, 0);
+    LLVMValueRef sglobal = LLVMAddGlobal(gen->module, LLVMTypeOf(strconst), "srcfile");
+    LLVMSetLinkage(sglobal, LLVMPrivateLinkage);
+    LLVMSetGlobalConstant(sglobal, 1);
+    LLVMSetUnnamedAddress(sglobal, LLVMGlobalUnnamedAddr);
+    LLVMSetInitializer(sglobal, strconst);
+    if (genlSrcFileCnt < GenlSrcFileMax) {
+        genlSrcFiles[genlSrcFileCnt].module = gen->module;
+        genlSrcFiles[genlSrcFileCnt].text = text;
+        genlSrcFiles[genlSrcFileCnt++].global = sglobal;
+    }
+    return sglobal;
+}
+
+// A constant '&[]u8' slice of a source file's name
+LLVMValueRef genlSrcFileSlice(GenState *gen, char *text, size_t len) {
+    LLVMValueRef parts[2] = {genlSrcFileText(gen, text, len), LLVMConstInt(genlUsize(gen), len, 0)};
+    return LLVMConstStructInContext(gen->context, parts, 2, 0);
+}
+
+// The C runtime's entry for each failure the compiler checks for
+// (packages/conestd/panic.c), and how many values it reports before the
+// location
+static char *genlPanicEntry[] = {"cone_panicIndex", "cone_panicSlice", "cone_panicAlloc"};
+static unsigned genlPanicValCnt[] = {2, 3, 1};
+
+// End the program where a check the compiler inserted has failed: a call to
+// the C runtime's entry for the failure, handed the values it reports (each a
+// usize) and the source location of 'site', then 'unreachable'. The entry is
+// declared 'noreturn' and 'cold', so the check costs the hot path a compare
+// and a branch LLVM expects never to take, and the call is placed out of line.
+// WebAssembly has no C runtime linked in, and traps.
+void genlPanic(GenState *gen, INode *site, GenlPanicKind kind, LLVMValueRef *vals) {
+    if (gen->opt->wasm) {
+        LLVMValueRef trap = LLVMGetNamedFunction(gen->module, "llvm.trap");
+        if (!trap)
+            trap = LLVMAddFunction(gen->module, "llvm.trap",
+                LLVMFunctionType(LLVMVoidTypeInContext(gen->context), NULL, 0, 0));
+        LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(trap), trap, NULL, 0, "");
+        LLVMBuildUnreachable(gen->builder);
+        return;
+    }
+
+    unsigned nvals = genlPanicValCnt[kind];
+    LLVMTypeRef usize = genlUsize(gen);
+    LLVMTypeRef parmtypes[6];
+    for (unsigned i = 0; i < nvals; ++i)
+        parmtypes[i] = usize;
+    parmtypes[nvals] = LLVMPointerTypeInContext(gen->context, 0);
+    parmtypes[nvals + 1] = usize;
+    parmtypes[nvals + 2] = LLVMInt32TypeInContext(gen->context);
+    LLVMTypeRef fntype = LLVMFunctionType(LLVMVoidTypeInContext(gen->context), parmtypes, nvals + 3, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(gen->module, genlPanicEntry[kind]);
+    if (!fn) {
+        fn = LLVMAddFunction(gen->module, genlPanicEntry[kind], fntype);
+        genlFnAttr(gen, fn, "noreturn");
+        genlFnAttr(gen, fn, "cold");
+        genlFnAttr(gen, fn, "nounwind");
+    }
+
+    LLVMValueRef args[6];
+    for (unsigned i = 0; i < nvals; ++i)
+        args[i] = vals[i];
+    size_t filelen;
+    char *file = genlSrcFileName(site, &filelen);
+    args[nvals] = genlSrcFileText(gen, file, filelen);
+    args[nvals + 1] = LLVMConstInt(usize, filelen, 0);
+    args[nvals + 2] = LLVMConstInt(LLVMInt32TypeInContext(gen->context), site->linenbr, 0);
+    LLVMBuildCall2(gen->builder, fntype, fn, args, nvals + 3, "");
+    LLVMBuildUnreachable(gen->builder);
+}
+
+// Panic unless index < count, reporting both at 'site'
+void genlBoundsCheck(GenState *gen, INode *site, LLVMValueRef index, LLVMValueRef count) {
     LLVMBasicBlockRef panicblk = genlInsertBlock(gen, "panic");
     LLVMBasicBlockRef boundsblk = genlInsertBlock(gen, "boundsok");
     LLVMValueRef compare = LLVMBuildICmp(gen->builder, LLVMIntULT, index, count, "");
     LLVMBuildCondBr(gen->builder, compare, boundsblk, panicblk);
     LLVMPositionBuilderAtEnd(gen->builder, panicblk);
-    genlPanic(gen);
-    LLVMBuildBr(gen->builder, boundsblk);
+    LLVMValueRef vals[2] = {index, count};
+    genlPanic(gen, site, PanicIndex, vals);
     LLVMPositionBuilderAtEnd(gen->builder, boundsblk);
 }
 
@@ -1208,8 +1328,8 @@ static LLVMValueRef genlSubslice(GenState *gen, FnCallNode *fncall) {
     LLVMValueRef within = LLVMBuildICmp(gen->builder, LLVMIntULE, end, count, "");
     LLVMBuildCondBr(gen->builder, LLVMBuildAnd(gen->builder, ordered, within, ""), boundsblk, panicblk);
     LLVMPositionBuilderAtEnd(gen->builder, panicblk);
-    genlPanic(gen);
-    LLVMBuildBr(gen->builder, boundsblk);
+    LLVMValueRef vals[3] = {start, end, count};
+    genlPanic(gen, (INode*)fncall, PanicSlice, vals);
     LLVMPositionBuilderAtEnd(gen->builder, boundsblk);
 
     LLVMValueRef slice = LLVMGetUndef(genlType(gen, fncall->vtype));
@@ -1238,7 +1358,7 @@ LLVMValueRef genlArrayIndex(GenState *gen, FnCallNode *fncall, ArrayNode *objtyp
         assert(dimen->tag == ULitTag);
         LLVMValueRef count = LLVMConstInt(genlUsize(gen), dimen->uintlit, 0);
         LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, arg));
-        genlBoundsCheck(gen, index, count);
+        genlBoundsCheck(gen, (INode*)fncall, index, count);
         indexp[arg+1] = index;
     }
     return LLVMBuildGEP2(gen->builder, genlType(gen, (INode*)objtype), arrayp, indexp, nindex+1, "");
@@ -1294,7 +1414,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
             LLVMValueRef arrref = genlExpr(gen, fncall->objfn);
             LLVMValueRef count = LLVMBuildExtractValue(gen->builder, arrref, 1, "count");
             LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
-            genlBoundsCheck(gen, index, count);
+            genlBoundsCheck(gen, (INode*)fncall, index, count);
             LLVMValueRef sliceptr = LLVMBuildExtractValue(gen->builder, arrref, 0, "sliceptr");
             return LLVMBuildGEP2(gen->builder, genlPointeeType(gen, objtype), sliceptr, &index, 1, "");
         }
@@ -1304,7 +1424,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
             LLVMValueRef arrref = genlExpr(gen, deref->vtexp);
             LLVMValueRef count = LLVMBuildExtractValue(gen->builder, arrref, 1, "count");
             LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
-            genlBoundsCheck(gen, index, count);
+            genlBoundsCheck(gen, (INode*)fncall, index, count);
             LLVMValueRef sliceptr = LLVMBuildExtractValue(gen->builder, arrref, 0, "sliceptr");
             return LLVMBuildGEP2(gen->builder, genlPointeeType(gen, objtype), sliceptr, &index, 1, "");
         }

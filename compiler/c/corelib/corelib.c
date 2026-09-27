@@ -16,6 +16,7 @@ INode *noCareType;
 INode *errorType;
 INode *elseCond;
 INode *borrowRef;
+INode *neverType;
 PermNode *uniPerm;
 PermNode *mutPerm;
 PermNode *immPerm;
@@ -133,6 +134,17 @@ void stdlibInit(int ptrsize) {
     // entry glue calls them itself
     initAllFn = newStitchFn("initAll", InitAllIntrinsic);
     finalAllFn = newStitchFn("finalAll", FinalAllIntrinsic);
+
+    // 'Never', the return type of a function that does not return: core's
+    // 'panic', libc's 'abort'. It is 'void' wherever a type is asked about --
+    // a node of VoidTag, generated as LLVM's void -- and known by identity
+    // where it matters: a call returning it may end any block, one that must
+    // produce a value included, as a 'return' does (blockTypeCheck,
+    // fnImplicitReturn), and a function returning it must end in such a call
+    // and is generated 'noreturn'. A name every module reaches, as 'i64' is,
+    // unless it declares the name itself.
+    neverType = (INode*)newVoidNode();
+    nametblFind("Never", 5)->node = neverType;
 
     // 'RegionRef', the trait a region ref struct declares with 'is' [Jon 25
     // Sep]. Each method a region may declare is optional, with a fixed shape

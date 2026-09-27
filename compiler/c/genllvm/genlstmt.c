@@ -39,8 +39,24 @@ GenBlockState *genFindBlockState(GenState *gen, BlockNode *block) {
     return NULL;  // Should never get here
 }
 
+// A 'return' or break whose value is a call that does not return
+// (blockTypeCheck makes one of a block ending in such a call): the call, and
+// the path ends there. Nothing is released and nothing is handed back, since
+// control never comes back from the call; 'unreachable' tells LLVM so. So too
+// an 'if' every path through which jumps away, which a function returning
+// 'Never' may end in: its end is reached by no path, and has no value.
+static int genlNeverJump(GenState *gen, INode *exp) {
+    if (!fnCallIsNever(exp) && !(exp->tag == IfTag && ifAllPathsJump((IfNode *)exp)))
+        return 0;
+    genlExpr(gen, exp);
+    LLVMBuildUnreachable(gen->builder);
+    return 1;
+}
+
 // Generate a block/loop break
 void genlBreak(GenState *gen, BlockNode* block, INode* exp, Nodes* dealias) {
+    if (genlNeverJump(gen, exp))
+        return;
     GenBlockState *blockstate = genFindBlockState(gen, block);
     if (exp->tag != NilLitTag) {
         // Generate the value for its effects either way; record it only where the
@@ -64,6 +80,8 @@ void genlReturn(GenState *gen, BreakRetNode *retnode) {
         return;
     }
 
+    if (genlNeverJump(gen, retnode->exp))
+        return;
     LLVMValueRef retval = genlExpr(gen, retnode->exp);
     genlDealiasNodes(gen, retnode->dealias);
     if (gen->exitzero)
