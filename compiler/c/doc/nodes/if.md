@@ -82,7 +82,11 @@ retagging happens inside the arms.
 `ifExhaustCheck`; if it is not `elseCond`, coerce it to `Bool` — which is where
 an implicit `.isTrue` reaches a conditional. An `elseCond` sets `hasElse`, and
 must be last. Then check the arm against `expectType` and fold its type into the
-type in common.
+type in common — **unless the arm jumps away** (`ifBlockJumps`: it ends in a
+`return`, `break` or `continue`, a call returning `Never` among them, since
+`blockTypeCheck` makes a `return` of one). Such an arm gives the `if` no value,
+so has no say in its type: `imm x = if c {1} else {return 7}` and
+`imm x = if c {1} else {panic("no")}` are both `i32`.
 
 **After the loop:** a `noCareType` expectation returns immediately, leaving
 `vtype` `unknownType` — the statement-position `if`. No `else` in a
@@ -92,7 +96,8 @@ directly, since every arm was already coerced.
 **Pass 2 — the re-coercion pass.** Only when a common *supertype* was inferred
 rather than an exact match, because the arms checked before it was known were
 coerced to the wrong target. It coerces **each arm block's last statement in
-place**, not the block — generation requires the arm to stay a block node and
+place**, an arm that jumps away excepted, not the block — generation requires
+the arm to stay a block node and
 cannot have a cast wrapped around it. This runs before flow, so the `blockret`
 flow later injects wraps the already-coerced node.
 
@@ -146,16 +151,15 @@ iteration left the builder at.
 
 After each arm, if its last statement is not a jump, branch to `endif` and
 record a phi incoming — using `LLVMGetInsertBlock`, not `ifblk`, because the arm
-may have split the block. The phi is built only when something was recorded.
+may have split the block. The phi is built only when something was recorded;
+where a value-producing `if` recorded nothing — every arm jumped away — its
+value is `undef`, which no path reaches.
 
 ## Hazards
 
 - **`endif` is created unconditionally**, so when every arm terminates it is
   left with no predecessors. The default build does not run the verifier, so it
   is emitted silently.
-- **A branch that ends in `return` cannot participate in a value-producing
-  `if`** — it fails earlier as "Branch's expression type inconsistent with other
-  branches", and the diagnostic does not say that is the reason.
 - **`ifExhaustCheck` rewrites `condblk` while `ifTypeCheck` is iterating it.**
   The target is fixed at the second-to-last slot, so today it can only be the
   condition currently being processed. Anything that made the target a non-final

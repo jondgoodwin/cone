@@ -40,7 +40,8 @@ pub fn @intrinsic sizeof[T]() usize;
 		a plain struct one of them declares. Anywhere else, <span class="pre">@intrinsic</span>
 		is an error.</p>
 
-	<p>Core declares every intrinsic below inside <span class="pre">mem</span>, and
+	<p>Core declares every intrinsic below inside <span class="pre">mem</span>, but for
+		<a href="#srcloc">srcFile and srcLine</a>, and
 		every module, core being its prelude, reaches them through that one name:</p>
 <pre>
 imm p = malloc(mem.sizeof[Point]() * 4usize) as *Point;
@@ -94,7 +95,7 @@ pub fn @intrinsic readRaw[T](p *T) T {*p;}
 
 	<h2>The intrinsics</h2>
 
-	<p>Each is declared in core's <span class="pre">mem</span> and called as
+	<p>Each but <span class="pre">srcFile</span> and <span class="pre">srcLine</span> is declared in core's <span class="pre">mem</span> and called as
 		<span class="pre">mem.<i>name</i>[T](...)</span> (<span class="pre">traceRoots</span>,
 		which takes no type, as <span class="pre">mem.traceRoots(...)</span>). Where an argument is a pointer to
 		<span class="pre">T</span> or a <span class="pre">T</span>, the type argument may be left
@@ -245,7 +246,7 @@ fn @intrinsic traceRoots(mode u32)
 	<p>Hands every traced reference the running functions hold on the stack to its
 		region's <span class="pre">mark</span>, as <span class="pre">trace</span> hands
 		those a value holds, with the same <span class="pre">mode</span>: what a collector
-		starts its marking from. The one intrinsic with no type parameter. The stack's traced
+		starts its marking from. It takes no type parameter. The stack's traced
 		references are every local and parameter whose type holds one (a reference into a
 		traced region, or a struct, tuple, array or enum holding one where it sits), in every
 		function that has not yet returned, and every temporary such a function is making:
@@ -328,6 +329,32 @@ fn @intrinsic moveRaw[T](to *T, from *T, count usize)
 		<span class="pre">readRaw</span> and <span class="pre">writeRaw</span>, running
 		upward when <span class="pre">to</span> is below <span class="pre">from</span> and
 		downward otherwise. The LLVM back end does it as one block move.</p>
+
+	<h3 id="srcloc">srcFile and srcLine</h3>
+<pre>
+pub fn @intrinsic srcFile() &amp;[]u8
+pub fn @intrinsic srcLine() u32
+</pre>
+	<p>Where the call is written: the name of its source file, without the folders
+		it is in, and its line, counting from 1. Each is a constant. Unlike the
+		intrinsics above, these are declared at core's top level, not in
+		<span class="pre">mem</span>, and every module calls them bare.</p>
+	<p><b>Written as a parameter's default value, each answers where the call taking
+		the default is</b>, each call its own place, not where the parameter is
+		declared. This is how a function reports its caller's location, as
+		<a href="refexcept.html#panic">panic</a> and <span class="pre">assert</span> do,
+		and any function may do the same, and hand the two on:</p>
+<pre>
+fn requirePositive(n i32, file &amp;[]u8 = srcFile(), line u32 = srcLine()) {
+  assert(n &gt; 0, "must be positive", file, line);
+}
+
+requirePositive(-5);    // panics naming this line
+</pre>
+	<p>A parameter's default value is otherwise a literal; these two are the
+		exception. An argument written for the parameter replaces the default, as for
+		any. Written in an inline function's body, the place is in that body. No
+		fallback: the place of a call is known only to the compiler.</p>
 
 	<h2>Atomic operations</h2>
 

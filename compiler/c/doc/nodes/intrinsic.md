@@ -24,8 +24,8 @@ reaches with the call's own arguments.
 
 **The registry is the definition of record, and it speaks Cone.** Each entry in
 `intrinsicRegistry` (`ir/stmt/intrinsic.c`) is a name, its signature as shapes
-over the one type parameter `T` (or over none: `traceRoots` is the one entry
-without it, and its instance carries no `typearg`), whether a call can break memory safety (and so
+over the one type parameter `T` (or over none: `traceRoots`, `srcFile` and
+`srcLine` are the entries without it, and their instances carry no `typearg`), whether a call can break memory safety (and so
 belongs in `trust`), whether a Cone fallback body may be written, the phase that
 answers it, whether this back end lowers it itself, and the class of types `T`
 may be where that is narrower than every type with a size (`IntrinsicClass`: the
@@ -152,6 +152,7 @@ type while each call gives its own orderings.
 | `atomicLoad[T]`, `atomicStore[T]` | operation | a `load atomic` or `store atomic` with the call's ordering, `genlAtomicIntrinsic` |
 | `atomicSwap[T]`, `atomicAdd[T]` … `atomicXor[T]` | operation | an `atomicrmw` (`xchg`, `add`, `sub`, `and`, `or`, `xor`), answering the value before |
 | `atomicCompareSwap[T]` | operation | a strong `cmpxchg` with both orderings, its `{T, i1}` rebuilt as the result tuple |
+| `srcFile`, `srcLine` | expansion | constants of where the call is, the source file's name without its folders (a private constant, one per file per module) and the line, `genlFnCall`. Declared at core's top level rather than in `mem`. Each may be a parameter's default value, the one default that is not a literal (`varDclTypeCheck`); `fnCallFinalizeArgs` appends a copy placed at the call taking the default (`intrinsicSrcCallAt`), so each call answers its own place |
 
 Each atomic instruction is aligned as `T` is (`LLVMABIAlignmentOfType`), and
 its ordering is LLVM's name for the `MemOrder` (`genlAtomicOrdering`: `Relaxed`

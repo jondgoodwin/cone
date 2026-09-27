@@ -35,7 +35,9 @@ Visual Studio projects stay at the root.
   imports (`Option`, `Result`, the `so` and `rc` regions, `TypeRecord`, the
   per-type record the compiler builds, `mem`, holding the intrinsics
   declared with `@intrinsic`, and `MemOrder`, the orderings its atomic ones
-  take); `stdio` prints;
+  take; and `panic`, `assert`, `unreachable`, `todo` and `setPanicHook`, whose
+  work is conestd's, with `srcFile` and `srcLine`, the two intrinsics outside
+  `mem`, which as a parameter's default give a caller's location); `stdio` prints;
   `libc` and `posix` are C packages of raw bindings to the C library and the
   POSIX functions beyond it (Windows first), and `core` imports `libc` for its
   allocator; `sdl` is a C package of raw bindings to SDL2 (a window for
@@ -142,7 +144,8 @@ Visual Studio projects stay at the root.
   `phases/` (one per compiler phase), `nodes/` (what is true of every IR node,
   plus per-node notes), `compiler/` (how `conec` itself is built and stays
   fast), and `diagnostics/` (measuring, error codes, test suite).
-- `packages/conestd/`: the C implementation of the standard-library component.
+- `packages/conestd/`: the C implementation of the standard-library component:
+  printing, the chain of traced roots, and what a panic does.
 - `doc/design/`: the language design notes — what Cone is aiming at and how far
   the compiler is, the notes that would survive a rewrite — plus the naming
   rules (`names-and-namespaces.md`). `doc/design/_index.md` is the entry point

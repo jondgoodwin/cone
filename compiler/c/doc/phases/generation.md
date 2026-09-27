@@ -167,7 +167,7 @@ every declaration given a global so far, and one of them gives way:
 | both external, both defined here | `ErrorCNameDefTwice` |
 | the newcomer only declares it | it shares the holder's global, and its own is deleted |
 | the newcomer defines it, the holder only declares it | the definition takes over: every use of the declaration and every node pointing at it is moved to the definition's global, the declaration is deleted, and the definition takes the name. So the linkage, calling convention, storage class and debug subprogram are the definition's whichever is generated first, and `genlFn` or `genlGloVar` attaches the body or the value to that one global |
-| the holder is an external symbol the compiler declared itself | an LLVM intrinsic it calls by name (`llvm.trap`, `genlPanic`): a function declaration shares it, cast to its own type where they differ. Anything else is `ErrorCNameConflict`. The compiler declares no C function of the C library: a region's memory goes back through the region's `free`, which calls `libc`'s. It declares two of conestd's, and only while generating bodies, after every declaration has its global: `cone_gcframes` and `cone_traceRoots` (roots, below), each looked up by name first and shared with any declaration already holding it |
+| the holder is an external symbol the compiler declared itself | an LLVM intrinsic or a conestd entry it calls by name (`llvm.trap` and the `cone_panic…` entries, `genlPanic`): a function declaration shares it, cast to its own type where they differ. Anything else is `ErrorCNameConflict`. The compiler declares no C function of the C library: a region's memory goes back through the region's `free`, which calls `libc`'s. It declares five of conestd's, and only while generating bodies, after every declaration has its global: `cone_gcframes` and `cone_traceRoots` (roots, below), and `cone_panicIndex`, `cone_panicSlice` and `cone_panicAlloc` (a failed check, section 6), each looked up by name first and shared with any declaration already holding it |
 
 "Defined here" is `genlDefinition`'s answer, not whether a body is written: an
 imported module's `fn @c` body is a declaration in this object. An error leaves
@@ -858,13 +858,36 @@ type, which type check stored as the body block's `vtype`. This is how the regio
 `borrowTypeCheck` refuses `&name` on an inline function (`ErrorInlineRef`), so
 `genlAddr`'s function arm never meets a declaration without an `llvmvar`.
 
-**`llvm.trap` is emitted as a call, not a terminator.** Both panic sites —
-allocation failure and bounds check — rely on the block falling through and
-branching to the join point.
+**A failed check is a cold call and `unreachable`** (`genlPanic`). The three
+checks the compiler inserts — an index against its count, a slice's range
+against its count, a region's `alloc` answering null — each branch to a block
+of their own that calls conestd's entry for the failure (`cone_panicIndex`,
+`cone_panicSlice`, `cone_panicAlloc`, in `packages/conestd/panic.c`), handing
+it the values compared (each a usize), the source file's name and the line,
+and ends in `unreachable`. The entries are declared `noreturn`, `cold` and
+`nounwind`, so the check costs the hot path a compare and a branch LLVM
+expects never to take, and the call is laid out of line. Nothing joins back
+from the failure block: the allocation's phi has one incoming edge, not two,
+unless a `?` allocation's null path is one. WebAssembly links no conestd, so
+there each failure is `llvm.trap` and `unreachable`.
+
+The file is the name without its folders (`genlSrcFileName`), a private
+constant made once per file per module; `srcFile()` and `srcLine()` generate
+the same constants where their call is, and a default value of either is a
+copy of the call placed at the call taking it (`intrinsicSrcCallAt`, in
+`fnCallFinalizeArgs`).
 
 Bounds checks are emitted for arrays and slices, per dimension, against the
 compile-time extent or the slice's count word. **A raw pointer index is not
 bounds checked.**
+
+**A call that does not return ends its path.** Type check makes a block that
+ends in a call returning `Never` end in a `return` of that call
+(blockTypeCheck), and `genlReturn` and `genlBreak` generate such a return, or
+one of an `if` every path of which jumps away, as the value and then
+`unreachable`: nothing is released and nothing handed back. `genlIf` leaves a
+branch that ends in a return out of its phi, and answers `undef` where no
+branch reaches the end. A function returning `Never` is declared `noreturn`.
 
 ## 7. Output, and what does not work
 

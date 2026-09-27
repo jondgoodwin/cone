@@ -76,8 +76,14 @@ The last statement splits:
 
 - **Loop block**: may not end in `break`/`continue`/`return`; checked with
   `noCareType`; no breaks at all is `WarnLoop`. **Nothing is injected.**
-- **Regular block ending in an expression**: that expression is a value path.
-  **Nothing is injected.**
+- **Regular block ending in an expression**: that expression is checked
+  against `expectType`, then is a value path. **Nothing is injected** —
+  unless it is a call returning `Never` (`fnCallIsNever`), which does not
+  return and so gives the block no value: it becomes the expression of a
+  `return` put in its place, joined to the function (`returnJoinFn`) without
+  being checked again, and the block ends in a jump. Every later pass already
+  knows a path ends at a `return`, and generation ends this one with
+  `unreachable` ([return](return.md)).
 - **Regular block ending in a jump**: checked, nothing injected.
 - **Anything else** (empty, or ending in a declaration): `blockret nil` is
   appended, and it is a value path.

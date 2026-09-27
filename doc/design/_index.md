@@ -157,6 +157,7 @@ summary here was thin; the note was not.**
 | [Performance](performance.md) | performance | Give knowledgeable programmers the levers for proven high-performance strategies | most levers unbuilt; what exists is the machinery making them cheap to add and free to skip |
 | [Modularity](modularity.md) | agility | Every layer — block, function, type, thread, module, program — surfacing the same six strategies | composition, namespace and encapsulation broadly present; substitution, generativity and extensibility thin out above the type layer; no thread layer; the program layer has no namespace at all |
 | [Safety](safety.md) | agility | Memory and type safety without a garbage collector, at no runtime cost | a scorecard: what is checked, what is not, and the four shapes the gaps take |
+| [Panics](panics.md) | agility | A failure that must not happen ends the program at once, saying what and where — the caller's where — at no cost to the path that does not fail | built: `panic`, `assert`, `unreachable`, `todo`, a hook, the `Never` return type and the compiler's checks reporting their values; no recovery, no unwinding, no backtraces, no build-mode checks |
 | [Expressiveness and Attention](expressiveness-and-attention.md) | **the scale, not an aim** | Programming as Lego assembly — small, uniform, opaque interfaces. Attention is the scarce resource both aims are priced in | the mechanisms meant to deliver it are the unbuilt ones: no thread layer so no actors, no module substitution, borrowing narrowed only by convention |
 
 **References and regions is where the two axes meet**, which is why it is the
@@ -250,14 +251,15 @@ design behind it.
 | **Lifetime and construction** | `refinitdrop` · `reftypemanage` | [Flow Analysis](../../compiler/c/doc/phases/flow.md) · [vardcl](../../compiler/c/doc/nodes/vardcl.md) |
 | **Modules and packages** | `refmodule` · `refinclude` | [module](../../compiler/c/doc/nodes/module.md) |
 | **Safety and trust** | `refsafety` · `reftypesafe` · `reftrust` · `refintrinsic` | [Safety](safety.md) · [intrinsic](../../compiler/c/doc/nodes/intrinsic.md) |
-| **Error handling** | `refexcept` · `refoption` · `refresult` | ⚠ **no note** |
+| **Error handling** | `refexcept` · `refoption` · `refresult` | [Panics](panics.md); ⚠ **no note for recoverable errors** |
 | **Metaprogramming** | `refmacro` · `refmeta` | [generic](../../compiler/c/doc/nodes/generic.md) |
 | **Concurrency** | `refconc` · `refconccomm` · `refconcio` · `refcorout` | ⚠ **no note; no thread layer in the language** (OS threads and the futex are library code, the `thread` package, described in `refconc`) |
 | **Collections** | `reftypecoll` | ⚠ **no note** |
 
 ⚠ **A reference page shows the language's *intended* shape, not only what is
-built** — see "The language reference" below. Three categories above have no
-design note at all, and the concurrency one has no implementation either.
+built** — see "The language reference" below. Two categories above have no
+design note at all, and error handling has one for panics only; the
+concurrency one has no implementation either.
 
 **Congo — the build tool — is documented with the tool**, not here: it is not
 `conec`, and a tool's design and user docs sit with the tool.

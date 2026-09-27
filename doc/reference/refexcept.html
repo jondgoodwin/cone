@@ -13,7 +13,15 @@
 
     <div class="text">
 
-		<p style="margin-left: 40px;"><i>Note: None of this has been implemented.</i></p>
+		<p style="margin-left: 40px;"><i>Note: Panics are implemented, as described under
+			<a href="#panic">Panics</a> below: <span class="pre">panic</span>,
+			<span class="pre">assert</span>, <span class="pre">unreachable</span>,
+			<span class="pre">todo</span>, the panic hook and the <span class="pre">Never</span>
+			return type. Throwing and catching exceptions, the <span class="pre">?</span> and
+			<span class="pre">||</span> operators on a throwing call, <span class="pre">requires</span>,
+			and contract conditions are not; nor is <span class="pre">assert</span>'s being
+			performed only in test builds, since there are no build modes: it is performed in
+			every build. Overflow and divide by zero do not panic.</i></p>
 
 	<p>An exception occurs whenever a program tries to do something and fails.
 		Sometimes, there is no graceful way to recover from certain exceptions.
@@ -141,7 +149,7 @@ fn calc(n i32) i32 throws i32 {
 
   catch err {
     if err {
-      panic;
+      panic("factorial failed");
     } else {
       throw 0;
     }
@@ -152,24 +160,106 @@ fn calc(n i32) i32 throws i32 {
 		if the thrown exception value is <span class="pre">false</span>.
 		Otherwise, it will throw a new exception value of 0.</p>
 
-	<h2>Intentional Panics</h2>
+	<h2 id="panic">Panics</h2>
 	<p>Recovering from a thrown exception may be possible and the right thing to do
 		in certain circumstances.
 		However, sometimes the right response to a bad condition
-		is to intentionally shut the program down.
-		As shown above, one way to do this is using the
-		<span class="pre">panic</span> statement.</p>
+		is to intentionally shut the program down: something that must not happen
+		has, and going on would only compound it. A panic is a bug report, not a way
+		to handle an error. The core library's <span class="pre">panic</span> does it:</p>
+<pre>
+fn half(n i32) i32 {
+  if n % 2 == 1 {panic("half of an odd number");}
+  n / 2;
+}
+</pre>
+	<p>A panic writes out whatever the program has printed to stdout, then one line to
+		stderr, naming the source file and the line where <span class="pre">panic</span>
+		was called, and the message:</p>
+<pre>
+panic at shapes.cone:2: half of an odd number
+</pre>
+	<p>and then ends the program at once, through the C library's
+		<span class="pre">abort</span>. Nothing unwinds: no finalizer runs, no caller
+		sees the panic, and the program's other threads end with it. A panic on a thread
+		other than the one the program started on names it:
+		<span class="pre">panic in thread 5828 at ...</span>.</p>
+	<p>The checks the compiler inserts panic the same way, naming what they found:
+		an index out of bounds (<span class="pre">index 5 is out of bounds for a count of
+		3</span>), a slice's range (<span class="pre">slice 2..7 is out of bounds for a
+		count of 5</span>), and an allocation whose region has no memory to give
+		(<span class="pre">out of memory allocating 24 bytes</span>).</p>
+
+	<h3>Never</h3>
+	<p><span class="pre">panic</span> returns <span class="pre">Never</span>, the type
+		that says a call does not return. So it may end a block that must produce a value,
+		as a <span class="pre">return</span> may, and gives that block no value on that
+		path:</p>
+<pre>
+imm half = if n &gt;= 0 {n / 2;} else {panic("negative");};
+</pre>
+	<p>A function of a program's own may return <span class="pre">Never</span>, and must
+		then end in a call that does not return, or in an <span class="pre">if</span> each
+		of whose paths does; it may not say <span class="pre">return</span>. The C library's
+		<span class="pre">abort</span> and <span class="pre">exit</span> return
+		<span class="pre">Never</span>.</p>
+
+	<h3>unreachable and todo</h3>
+	<p><span class="pre">unreachable()</span> marks code the author knows cannot be
+		reached, and <span class="pre">todo()</span> code not written yet. Each returns
+		<span class="pre">Never</span>, and panics if it runs, with a message of its own or
+		one given:</p>
+<pre>
+match n {
+  case ==1 {"one";}
+  case ==2 {"two";}
+  else {unreachable();}
+}
+fn area(sides i32, size i32) i32 {
+  if sides == 4 {size * size;} else {todo("areas of other shapes");}
+}
+</pre>
 
 	<h3>assert and requires</h3>
-	<p>The assert statement triggers a panic when its condition
-		evaluates to false.</p>
+	<p><span class="pre">assert</span> triggers a panic when its condition
+		evaluates to false, with the message given, or
+		<span class="pre">assertion failed</span>.</p>
 <pre>
-assert idx &lt; bound;
+assert(idx &lt; bound);
+assert(idx &lt; bound, "the index is within the table");
 </pre>
 	<p><span class="pre">assert</span> is only performed in test builds.
 	To get the equivalent guarantee in production as well:</p>
 <pre>
 requires idx &lt; bound;
+</pre>
+
+	<h3>Where it happened</h3>
+	<p>Each of these reports where it was <b>called</b>, not where it is written in the
+		core library. Each takes two more parameters,
+		<span class="pre">file &amp;[]u8 = srcFile()</span> and
+		<span class="pre">line u32 = srcLine()</span>, whose default values
+		<a href="refintrinsic.html#srcloc">answer where the call taking them is</a>. A
+		function that panics on its caller's behalf may declare the same two and hand them
+		on, and then reports its caller too:</p>
+<pre>
+fn at(list &amp;[]i32, i usize, file &amp;[]u8 = srcFile(), line u32 = srcLine()) i32 {
+  if i &gt;= list.len {panic("past the end", file, line);}
+  list[i];
+}
+</pre>
+
+	<h3>The panic hook</h3>
+	<p><span class="pre">setPanicHook</span> names a function a panic calls once its line
+		is written and before the program ends, with the message and the location: to log
+		the failure somewhere, or report it. The last one set is called, from whichever
+		thread panicked. A panic inside it ends the program at once.</p>
+<pre>
+fn logPanic(msg &amp;[]u8, file &amp;[]u8, line u32) {
+  // write it to the log
+}
+
+setPanicHook(&amp;logPanic);
 </pre>
 
 	<h3>Contract conditions</h3>
