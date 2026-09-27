@@ -1,0 +1,286 @@
+// The render package drawing on a real GPU with no window, into a 64 x 64
+// rgba8unorm texture (a channel v stored as v x 255, rounded, no sRGB curve)
+// with a depth texture, read back and checked against values worked out by
+// hand. Only a failure prints.
+//
+// The scene: mesh's cube reaching 0.5 each way (Mesh.cube(0.5)), at the
+// origin; the camera at (0, 0, 3) looking at it (Camera.lookAt), its field of
+// view 50 degrees (t = tan 25deg = 0.4663077). The cube's +z face is 2.5 from
+// the camera and faces it head on, and fills the middle of the target: a
+// pixel (px, py) is seen through x = ((px + 0.5) / 32 - 1) 2.5 t, y = (1 -
+// (py + 0.5) / 32) 2.5 t on the face, so the face's edges at +-0.5 are 13.7
+// pixels either side of the middle. The background is (0.2, 0.4, 0.6),
+// stored (51, 102, 153). Each lit value is base x (ambient + light x cos) +
+// specular x light x (cos to the half-way vector)^shininess:
+//
+// 1. Upload and read back: the cube's 24 positions, normals and uvs and its
+//    36 indices, copied back out of the GPU mesh's buffers, are the Mesh's
+//    own bytes; the mesh has one group of 36 indices, 24 vertices, and a
+//    bounding sphere about the origin of radius sqrt(0.75) = 0.8660254.
+// 2. Lit head on: the light travelling (0, 0, -1), color 0.6, ambient 0.2;
+//    the material (0.5, 0.25, 1), no specular. The middle pixel (32, 32) is
+//    on the face, its normal (0, 0, 1) straight at the light: (0.5, 0.25, 1)
+//    x 0.8 = (0.4, 0.2, 0.8), stored (102, 51, 204). The top middle, (32, 4),
+//    y = 1.0 on the face's plane, misses the cube (its top face is edge on):
+//    the background. One draw of 12 triangles.
+// 3. Specular: the same with a white highlight of strength 1 and shininess
+//    16. At the middle the direction to the camera is within 0.01 radians of
+//    the normal, so the half-way vector's cosine to the normal is 1 to within
+//    2e-5, and its 16th power 1 to within 4e-4: the highlight adds 0.6, to
+//    (1.0, 0.8, 1.4) clamped to 1, stored (255, 204, 255).
+// 4. Lambert at an angle: the light travelling (0, -0.6, -0.8), so the
+//    direction to it, (0, 0.6, 0.8), is at a cosine of 0.8 to the face's
+//    normal: (0.5, 0.25, 1) x (0.2 + 0.6 x 0.8 = 0.68) = (0.34, 0.17, 0.68),
+//    stored (86.7, 43.35, 173.4): (87, 43, 173).
+// 5. A texture, and which way up it is: a 4 x 4 image whose quarters are red
+//    (bottom left), green (bottom right), blue (top left) and white (top
+//    right), an Image being bottom row first, on a white material, lit head
+//    on (x 0.8). The face's uvs run from (0, 0) at its lower left to (1, 1)
+//    at its upper right seen from outside (mesh's cube), and v is up, so
+//    each quarter of the face shows that quarter of the image. The quarters'
+//    middles, (+-0.25, +-0.25) on the face, are pixels 25 and 38 across and
+//    down: (25, 38) red (204, 0, 0), (38, 38) green (0, 204, 0), (25, 25)
+//    blue (0, 0, 204), (38, 25) white (204, 204, 204). The sampler is linear,
+//    but each quarter is 2 x 2 texels of one color, so no other color is
+//    blended in there. (0 and 255 decode from sRGB to 0 and 1 exactly.)
+// 6. Lines: a green line across the face at z = 0.5, through the middle of
+//    pixel row 32 (y = -1/64 x 2.5 t = -0.0182150), from x = -0.4 to 0.4,
+//    drawn after the cube at the same depth: (32, 32) is green (0, 255, 0).
+//    Two draws; 12 triangles and 1 line.
+// 7. A replacement under the same handle: the cube's handle given a small
+//    cube (0.1 each way) moved to (0.8, 0.8, 0). Drawn in the frame it was
+//    replaced in, the old cube still shows: (32, 32) is (102, 51, 204). From
+//    the next frame, the new one: (32, 32) is the background, and the small
+//    cube's +z face, 2.9 from the camera, at x = y = 0.8, is around pixel
+//    (50.4, 13.1): (50, 13) is (102, 51, 204). The handle is unchanged, its
+//    version 1, and the old version's four buffers wait, released, until
+//    their frame comes round two frames on, then are gone.
+// 8. Removed: the handle then reaches nothing, a draw of it is skipped (no
+//    draws), and its buffers wait their two frames too.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL2.dll (which loads Vulkan);
+// no window, no display of its own, and no Vulkan SDK (with it, validation
+// and synchronization validation are on, and must say nothing).
+
+mod offscreen;
+
+import testing use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+
+// Channel 'c' of pixel ('x', 'y') of a 64 x 64 rgba8 image at 'p'
+fn px(p *u8, x usize, y usize, c usize) i64 { i64[*(p + (y * 64usize + x) * 4usize + c)]; }
+
+// Check pixel ('x', 'y') is ('r', 'g', 'b') to within 'd'
+fn expectPixel(p *u8, x usize, y usize, r i64, g i64, b i64, d f64, label &[]u8) {
+  expectFloat(f64[px(p, x, y, 0usize)], f64[r], d, label);
+  expectFloat(f64[px(p, x, y, 1usize)], f64[g], d, label);
+  expectFloat(f64[px(p, x, y, 2usize)], f64[b], d, label);
+}
+
+// One frame: draw 'list' into 'color' and read it back into 'readback'
+fn drawFrame(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
+    camera &Camera, light &Light, list &DrawList) {
+  mut encoder = device.createCommandEncoder();
+  renderer.render(device, &mut encoder, color, depth, camera, light, list);
+  encoder.copyTextureToBuffer(color, readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
+
+// Whether the 'size' bytes of 'buffer' (a GPU mesh's) are those at 'want'
+fn sameBytes(device &mut Device, buffer &Buffer, want *u8, size u64) Bool {
+  mut back = device.createBuffer(size, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut encoder = device.createCommandEncoder();
+  encoder.copyBufferToBuffer(buffer, 0u64, &back, 0u64, size);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+  imm got = back.mappedRange();
+  mut i = 0usize;
+  while i < usize[size] {
+    if *(got + i) != *(want + i) { return false; }
+    i = i + 1usize;
+  }
+  true;
+}
+
+// A 4 x 4 image, bottom row first, its quarters red (bottom left), green
+// (bottom right), blue (top left) and white (top right)
+fn quarters() Image {
+  mut img = Image[4, 4, 3, List[u8].empty()];
+  mut y = 0;
+  while y < 4 {
+    mut x = 0;
+    while x < 4 {
+      mut r = 0u8;
+      mut g = 0u8;
+      mut b = 0u8;
+      if y < 2 and x < 2 { r = 255u8; }
+      if y < 2 and x >= 2 { g = 255u8; }
+      if y >= 2 and x < 2 { b = 255u8; }
+      if y >= 2 and x >= 2 {
+        r = 255u8;
+        g = 255u8;
+        b = 255u8;
+      }
+      img.pixels.push(r);
+      img.pixels.push(g);
+      img.pixels.push(b);
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  img;
+}
+
+fn main() i32 {
+  mut instance = Instance.create("render offscreen");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  // GPU_POWER_PREFERENCE=low-power tests the integrated GPU where there are two
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv(&"GPU_POWER_PREFERENCE" as *u8);
+  if (env as usize) != 0usize {
+    if libc.strcmp(env, &"low-power" as *u8) == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+
+  imm target = TextureDescriptor[64u32, 64u32, TEXTURE_FORMAT_RGBA8_UNORM,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC];
+  mut color = device.createTexture(&target);
+  imm depthDesc = TextureDescriptor[64u32, 64u32, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT];
+  mut depth = device.createTexture(&depthDesc);
+  mut readback = device.createBuffer(16384u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  imm p = readback.mappedRange();
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  require(renderer.isValid(), "a renderer");
+
+  // ---- 1. Upload and read back ----
+  imm cube = Mesh.cube(0.5);
+  imm h = renderer.addMesh(&mut device, &cube);
+  expect(renderer.hasMesh(h), "the cube's handle names a mesh");
+  {
+    imm slot = renderer.meshes[h.slot];
+    imm gm = slot.current();
+    expectUInt(u64[gm.vertexCount], 24u64, "24 vertices");
+    expectUInt(u64[gm.indexCount], 36u64, "36 indices");
+    expectUInt(u64[gm.groups.len()], 1u64, "one group");
+    expectFloat(gm.radius, 0.8660254, 0.00001d, "the bounding sphere's radius");
+    expectFloat(gm.center.x, 0., 0.00001d, "the bounding sphere about the origin");
+  }
+  {
+    imm slot = renderer.meshes[h.slot];
+    imm gm = slot.current();
+    imm positions = cube.positions.view();
+    expect(sameBytes(&mut device, &gm.positions, &positions[0] as *u8, 288u64), "the positions read back");
+    imm normals = cube.normals.view();
+    expect(sameBytes(&mut device, &gm.normals, &normals[0] as *u8, 288u64), "the normals read back");
+    imm uvs = cube.uvs.view();
+    expect(sameBytes(&mut device, &gm.uvs, &uvs[0] as *u8, 192u64), "the uvs read back");
+    imm indices = cube.indices.view();
+    expect(sameBytes(&mut device, &gm.indices, &indices[0] as *u8, 144u64), "the indices read back");
+  }
+
+  // ---- 2. Lit head on ----
+  mut camera = Camera.make();
+  camera.lookAt(Vec3[0., 0., 3.], Vec3[0., 0., 0.], Vec3[0., 1., 0.]);
+  camera.background = Color[0.2, 0.4, 0.6, 1.];
+  imm headOn = Light.directional(Vec3[0., 0., -1.], Color.gray(0.6), Color.gray(0.2));
+  imm plainMaterial = Material.plain(Color[0.5, 0.25, 1., 1.]);
+  imm plain = renderer.addMaterial(&mut device, &plainMaterial);
+  mut list = DrawList.empty();
+  list.add(h, plain, Mat4.identity());
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  expectPixel(p, 32usize, 32usize, 102, 51, 204, 1d, "lit head on: ambient plus all the diffuse");
+  expectPixel(p, 32usize, 4usize, 51, 102, 153, 0d, "above the cube: the background");
+  expectUInt(u64[renderer.drawCalls], 1u64, "one draw");
+  expectUInt(renderer.triangles, 12u64, "12 triangles");
+
+  // ---- 3. Specular ----
+  imm shinyMaterial = Material.shiny(Color[0.5, 0.25, 1., 1.], 1., 16.);
+  imm shiny = renderer.addMaterial(&mut device, &shinyMaterial);
+  list.clear();
+  list.add(h, shiny, Mat4.identity());
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  expectPixel(p, 32usize, 32usize, 255, 204, 255, 1d, "a highlight head on: the light's color added");
+
+  // ---- 4. Lambert at an angle ----
+  imm slanted = Light.directional(Vec3[0., -0.6, -0.8], Color.gray(0.6), Color.gray(0.2));
+  list.clear();
+  list.add(h, plain, Mat4.identity());
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &slanted, &list);
+  expectPixel(p, 32usize, 32usize, 87, 43, 173, 1d, "the light at a cosine of 0.8");
+
+  // ---- 5. A texture ----
+  imm img = quarters();
+  imm tex = renderer.addTexture(&mut device, &img);
+  imm texturedMaterial = Material.textured(Color[1., 1., 1., 1.], tex);
+  imm textured = renderer.addMaterial(&mut device, &texturedMaterial);
+  list.clear();
+  list.add(h, textured, Mat4.identity());
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  expectPixel(p, 25usize, 38usize, 204, 0, 0, 1d, "the texture's bottom left, red, at the face's lower left");
+  expectPixel(p, 38usize, 38usize, 0, 204, 0, 1d, "its bottom right, green, lower right");
+  expectPixel(p, 25usize, 25usize, 0, 0, 204, 1d, "its top left, blue, upper left");
+  expectPixel(p, 38usize, 25usize, 204, 204, 204, 1d, "its top right, white, upper right");
+
+  // ---- 6. Lines ----
+  imm lineY f32 = -0.0182150;
+  imm linePoints = [Vec3[-0.4, lineY, 0.5], Vec3[0.4, lineY, 0.5]];
+  imm lineIndices [2; u32] = [0u32, 1u32];
+  imm line = renderer.addLines(&mut device, &linePoints, &lineIndices);
+  list.clear();
+  list.addLines(line, Mat4.identity(), Color[0., 1., 0., 1.]);
+  list.add(h, plain, Mat4.identity());
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  expectPixel(p, 32usize, 32usize, 0, 255, 0, 0d, "a line on the face, drawn over it");
+  expectPixel(p, 32usize, 40usize, 102, 51, 204, 1d, "the face beside the line");
+  expectUInt(u64[renderer.drawCalls], 2u64, "two draws");
+  expectUInt(renderer.triangles, 13u64, "12 triangles and a line");
+
+  // ---- 7. A replacement under the same handle ----
+  mut small = Mesh.cube(0.1);
+  small.transform(Mat4.fromTranslation(Vec3[0.8, 0.8, 0.]));
+  expect(renderer.replaceMesh(&mut device, h, &small), "replaced");
+  list.clear();
+  list.add(h, plain, Mat4.identity());
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  expectPixel(p, 32usize, 32usize, 102, 51, 204, 1d, "the frame it was replaced in: the old cube still");
+  expectUInt(u64[renderer.meshVersion(h)], 0u64, "not yet swapped in");
+  expectUInt(u64[device.queue.pendingReleases()], 0u64, "nothing released yet");
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  expectPixel(p, 32usize, 32usize, 51, 102, 153, 0d, "the next frame: the old cube gone");
+  expectPixel(p, 50usize, 13usize, 102, 51, 204, 1d, "and the new one drawn, up and to the right");
+  expectUInt(u64[renderer.meshVersion(h)], 1u64, "swapped in, under the same handle");
+  expectUInt(u64[device.queue.pendingReleases()], 4u64, "the old version's four buffers released");
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  expectUInt(u64[device.queue.pendingReleases()], 4u64, "one frame on: not yet destroyed");
+  device.beginFrame();
+  expectUInt(u64[device.queue.pendingReleases()], 0u64, "their frame come round: destroyed");
+  device.endFrame();
+
+  // ---- 8. Removed ----
+  expect(renderer.removeMesh(&mut device, h), "removed");
+  expectBool(renderer.hasMesh(h), false, "the handle reaches nothing");
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  expectUInt(u64[renderer.drawCalls], 0u64, "a removed mesh is not drawn");
+  expectPixel(p, 50usize, 13usize, 51, 102, 153, 0d, "nothing where it was");
+  expectUInt(u64[device.queue.pendingReleases()], 4u64, "its buffers released");
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  device.beginFrame();
+  expectUInt(u64[device.queue.pendingReleases()], 0u64, "and destroyed two frames on");
+  device.endFrame();
+
+  expectUInt(u64[failures()], 0u64, "no Vulkan call failed");
+  expectUInt(u64[validationMessages()], 0u64, "no validation message");
+  done();
+}

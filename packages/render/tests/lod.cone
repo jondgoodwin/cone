@@ -1,0 +1,60 @@
+// The render package's LodChain: choosing a level of detail by index and by
+// the size an object is drawn at, with hysteresis. Worked out by hand; only a
+// failure prints. It needs no GPU: the chain holds handles, made up here.
+//
+// Four levels, LOD 0 the most detailed, their least sizes 400, 200, 100 and
+// 0 pixels, and a hysteresis of 0.1: a level is left for a coarser one once
+// the size is below 0.9 of its own least size, and a finer one is taken once
+// the size is 1.1 times that one's least size or more.
+//
+// - From LOD 0: 500 keeps it; 370 keeps it too (not below 360); 350 goes to
+//   LOD 1 (below 360, not below 180).
+// - From LOD 1: 390 keeps it (not 440); 450 goes back to LOD 0.
+// - From LOD 0: 50 goes all the way to LOD 3 (below 360, 180 and 90).
+// - From LOD 3: 105 keeps it (not 110); 115 goes to LOD 2 (not 220).
+// - From LOD 2: 1000 goes to LOD 0.
+// - 'select(2)' chooses LOD 2 and its mesh; 'select(9)', past the end, the
+//   last. An empty chain chooses 0 and has no mesh.
+
+mod lod;
+
+import testing use *;
+import pool use *;
+import render use *;
+
+fn handle(slot u32) MeshHandle { MeshHandle[Ref[MeshSlot].of(slot, 1u32)]; }
+
+fn main() i32 {
+  mut chain = LodChain.empty(0.1);
+  chain.add(handle(10u32), 400.);
+  chain.add(handle(11u32), 200.);
+  chain.add(handle(12u32), 100.);
+  chain.add(handle(13u32), 0.);
+  expectUInt(u64[chain.len()], 4u64, "four levels");
+  expectUInt(u64[chain.current], 0u64, "LOD 0 at first");
+
+  expectUInt(u64[chain.selectBySize(500.)], 0u64, "500: LOD 0 kept");
+  expectUInt(u64[chain.selectBySize(370.)], 0u64, "370: LOD 0 kept, within the hysteresis");
+  expectUInt(u64[chain.selectBySize(350.)], 1u64, "350: LOD 1");
+  expectUInt(u64[chain.selectBySize(390.)], 1u64, "390: LOD 1 kept, within the hysteresis");
+  expectUInt(u64[chain.selectBySize(450.)], 0u64, "450: back to LOD 0");
+  expectUInt(u64[chain.selectBySize(50.)], 3u64, "50: all the way to LOD 3");
+  expectUInt(u64[chain.selectBySize(105.)], 3u64, "105: LOD 3 kept, within the hysteresis");
+  expectUInt(u64[chain.selectBySize(115.)], 2u64, "115: LOD 2");
+  expectUInt(u64[chain.selectBySize(1000.)], 0u64, "1000: LOD 0");
+  imm m0 = chain.mesh();
+  expectUInt(u64[m0.slot.slot()], 10u64, "LOD 0's mesh");
+
+  chain.select(2usize);
+  expectUInt(u64[chain.current], 2u64, "LOD 2 chosen by index");
+  imm m2 = chain.mesh();
+  expectUInt(u64[m2.slot.slot()], 12u64, "LOD 2's mesh");
+  chain.select(9usize);
+  expectUInt(u64[chain.current], 3u64, "past the end: the last");
+
+  mut none = LodChain.empty(0.1);
+  expectUInt(u64[none.selectBySize(100.)], 0u64, "an empty chain");
+  imm nm = none.mesh();
+  expectBool(nm.isNone(), true, "an empty chain has no mesh");
+  done();
+}

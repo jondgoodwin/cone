@@ -469,6 +469,16 @@ pub const COMPARE_OP_NOT_EQUAL = 5u32;
 pub const COMPARE_OP_GREATER_OR_EQUAL = 6u32;
 pub const COMPARE_OP_ALWAYS = 7u32;
 
+// VkFilter, VkSamplerMipmapMode, VkSamplerAddressMode
+pub const FILTER_NEAREST = 0u32;
+pub const FILTER_LINEAR = 1u32;
+pub const SAMPLER_MIPMAP_MODE_NEAREST = 0u32;
+pub const SAMPLER_MIPMAP_MODE_LINEAR = 1u32;
+pub const SAMPLER_ADDRESS_MODE_REPEAT = 0u32;
+pub const SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT = 1u32;
+pub const SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE = 2u32;
+pub const SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER = 3u32;
+
 // VkBlendFactor, VkBlendOp, VkColorComponentFlagBits
 pub const BLEND_FACTOR_ZERO = 0u32;
 pub const BLEND_FACTOR_ONE = 1u32;
@@ -1323,6 +1333,29 @@ pub struct DescriptorSetAllocateInfo {
   pub pSetLayouts *DescriptorSetLayout;
 }
 
+// How a sampler reads a texture: its filters, how coordinates outside 0 to 1
+// wrap, and the mip levels it may use
+pub struct SamplerCreateInfo {
+  pub sType u32 = STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+  pub pNext *u8;
+  pub flags u32 = 0u32;
+  pub magFilter u32 = FILTER_NEAREST;
+  pub minFilter u32 = FILTER_NEAREST;
+  pub mipmapMode u32 = SAMPLER_MIPMAP_MODE_NEAREST;
+  pub addressModeU u32 = SAMPLER_ADDRESS_MODE_REPEAT;
+  pub addressModeV u32 = SAMPLER_ADDRESS_MODE_REPEAT;
+  pub addressModeW u32 = SAMPLER_ADDRESS_MODE_REPEAT;
+  pub mipLodBias f32 = 0.;
+  pub anisotropyEnable u32 = 0u32;
+  pub maxAnisotropy f32 = 1.;
+  pub compareEnable u32 = 0u32;
+  pub compareOp u32 = 0u32;
+  pub minLod f32 = 0.;
+  pub maxLod f32 = 0.;
+  pub borderColor u32 = 0u32;
+  pub unnormalizedCoordinates u32 = 0u32;
+}
+
 pub struct DescriptorBufferInfo { pub buffer Buffer; pub offset u64; pub range u64; }
 pub struct DescriptorImageInfo { pub sampler Sampler; pub imageView ImageView; pub imageLayout u32; }
 
@@ -1442,6 +1475,9 @@ pub typedef PFN_CmdCopyBufferToImage &fn(commandBuffer CommandBuffer, srcBuffer 
 pub typedef PFN_CreateShaderModule &fn(device Device, pCreateInfo &ShaderModuleCreateInfo, pAllocator *u8,
   pShaderModule &mut ShaderModule) i32;
 pub typedef PFN_DestroyShaderModule &fn(device Device, shaderModule ShaderModule, pAllocator *u8);
+pub typedef PFN_CreateSampler &fn(device Device, pCreateInfo &SamplerCreateInfo, pAllocator *u8,
+  pSampler &mut Sampler) i32;
+pub typedef PFN_DestroySampler &fn(device Device, sampler Sampler, pAllocator *u8);
 pub typedef PFN_CreatePipelineLayout &fn(device Device, pCreateInfo &PipelineLayoutCreateInfo, pAllocator *u8,
   pPipelineLayout &mut PipelineLayout) i32;
 pub typedef PFN_DestroyPipelineLayout &fn(device Device, pipelineLayout PipelineLayout, pAllocator *u8);
@@ -1548,6 +1584,8 @@ mut pfnCmdCopyImageToBuffer usize = 0usize;
 mut pfnCmdCopyBufferToImage usize = 0usize;
 mut pfnCreateShaderModule usize = 0usize;
 mut pfnDestroyShaderModule usize = 0usize;
+mut pfnCreateSampler usize = 0usize;
+mut pfnDestroySampler usize = 0usize;
 mut pfnCreatePipelineLayout usize = 0usize;
 mut pfnDestroyPipelineLayout usize = 0usize;
 mut pfnCreateGraphicsPipelines usize = 0usize;
@@ -1684,6 +1722,8 @@ pub fn loadDevice(device Device) Bool {
   pfnCmdCopyBufferToImage = deviceProc(device, &"vkCmdCopyBufferToImage" as *u8);
   pfnCreateShaderModule = deviceProc(device, &"vkCreateShaderModule" as *u8);
   pfnDestroyShaderModule = deviceProc(device, &"vkDestroyShaderModule" as *u8);
+  pfnCreateSampler = deviceProc(device, &"vkCreateSampler" as *u8);
+  pfnDestroySampler = deviceProc(device, &"vkDestroySampler" as *u8);
   pfnCreatePipelineLayout = deviceProc(device, &"vkCreatePipelineLayout" as *u8);
   pfnDestroyPipelineLayout = deviceProc(device, &"vkDestroyPipelineLayout" as *u8);
   pfnCreateGraphicsPipelines = deviceProc(device, &"vkCreateGraphicsPipelines" as *u8);
@@ -1934,6 +1974,12 @@ pub fn createShaderModule(device Device, pCreateInfo &ShaderModuleCreateInfo, pA
 }
 pub fn destroyShaderModule(device Device, shaderModule ShaderModule, pAllocator *u8) {
   (pfnDestroyShaderModule as *u8 as PFN_DestroyShaderModule)(device, shaderModule, pAllocator);
+}
+pub fn createSampler(device Device, pCreateInfo &SamplerCreateInfo, pAllocator *u8, pSampler &mut Sampler) i32 {
+  (pfnCreateSampler as *u8 as PFN_CreateSampler)(device, pCreateInfo, pAllocator, pSampler);
+}
+pub fn destroySampler(device Device, sampler Sampler, pAllocator *u8) {
+  (pfnDestroySampler as *u8 as PFN_DestroySampler)(device, sampler, pAllocator);
 }
 pub fn createPipelineLayout(device Device, pCreateInfo &PipelineLayoutCreateInfo, pAllocator *u8,
     pPipelineLayout &mut PipelineLayout) i32 {

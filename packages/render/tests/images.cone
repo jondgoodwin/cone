@@ -1,7 +1,6 @@
-// The render package's Image and Texture, checked with the testing package.
-// Only a failure prints, so images.out holds the summary alone. Handing a
-// texture to OpenGL needs a context, so only what is known before that is
-// checked here.
+// The render package's Image, checked with the testing package. Only a
+// failure prints, so images.out holds the summary alone. Nothing here needs a
+// GPU (tests/offscreen.cone hands an image to one).
 //
 // The BMP files are built byte by byte: a 14-byte file header ('BM', the
 // file's size, where the pixels start), a 40-byte information header (its
@@ -25,6 +24,12 @@
 // - A checkerboard 4 by 2 of 2 by 1 squares is squares 2 pixels on a side:
 //   (0, 0) and (1, 1) the first color, red (255, 0, 0); (2, 0) and (3, 1) the
 //   second, (0, 0.5, 1) as (0, 128, 255), 0.5 rounding up from 127.5.
+// - Written ('toBmp'): the 2 by 2 is 54 bytes of headers and two rows of 8,
+//   70 bytes, 'BM', its size, the pixels at 54, 2 by 2 with a positive
+//   height (bottom row first), 24 bits; its first pixel, blue, stored blue
+//   byte first; and it reads back as it was, from bytes and from a file. A 3
+//   by 1 checker of three squares (red, blue, red) is 54 + 12 bytes, its
+//   middle pixel blue.
 
 mod images;
 
@@ -220,22 +225,53 @@ fn checker() {
   rgb(&img, 3, 1, 0, 128, 255, "checker (3, 1)");
 }
 
-fn textures() {
-  imm t = Texture.from(Image.checker(4, 4, 2, 2, Color.gray(0.), Color.gray(1.)));
-  expectInt(i64[t.mapping], 0x0DE1, "a flat texture");
-  expectInt(i64[t.wrapS], 0x812F, "clamped across");
-  expectInt(i64[t.wrapT], 0x812F, "clamped up");
-  expectBool(t.mipmap, true, "mipmapped");
-  expectInt(i64[t.magFilter], 0x2601, "linear when magnified");
-  expectInt(i64[t.minFilter], 0x2702, "nearest mipmap, linear between, when shrunk");
-  expectBool(t.isLoaded(), false, "not yet in OpenGL");
-  expectInt(i64[t.textureUnit()], -1, "no unit yet");
-  expectInt(i64[t.image.width], 4, "its image");
+fn le32(b &List[u8], at usize) i64 {
+  i64[*b[at]] + i64[*b[at + 1usize]] * 256 + i64[*b[at + 2usize]] * 65536 + i64[*b[at + 3usize]] * 16777216;
+}
 
-  imm cube = Texture.cubeMap(Image.empty(), Image.empty(), Image.empty(), Image.empty(), Image.empty(),
-    Image.empty());
-  expectInt(i64[cube.mapping], 0x8513, "a cube map");
-  expectInt(i64[cube.faces.len()], 6, "six faces");
+fn writing() {
+  imm up = twoByTwo(false);
+  imm a = Image.fromBmp(up.view());
+  imm bytes = a.toBmp();
+  expectInt(i64[bytes.len()], 70, "2x2 written: 54 bytes of headers, 2 rows of 8");
+  expectInt(i64[*bytes[0usize]], 66, "'B'");
+  expectInt(i64[*bytes[1usize]], 77, "'M'");
+  expectInt(le32(&bytes, 2usize), 70, "the file's size");
+  expectInt(le32(&bytes, 10usize), 54, "where the pixels start");
+  expectInt(le32(&bytes, 18usize), 2, "the width");
+  expectInt(le32(&bytes, 22usize), 2, "the height, positive: bottom row first");
+  expectInt(i64[*bytes[28usize]], 24, "24 bits a pixel");
+  expectInt(i64[*bytes[54usize]], 255, "the first pixel stored, blue: its blue byte first");
+  expectInt(i64[*bytes[56usize]], 0, "and its red byte last");
+  imm back = Image.fromBmp(bytes.view());
+  checkTwoByTwo(&back, "2x2 written and read back");
+
+  imm odd = Image.checker(3, 1, 3, 1, Color[1., 0., 0., 1.], Color[0., 0., 1., 1.]);
+  imm oddBytes = odd.toBmp();
+  expectInt(i64[oddBytes.len()], 66, "3x1 written: a row of 9 bytes padded to 12");
+  imm oddBack = Image.fromBmp(oddBytes.view());
+  rgb(&oddBack, 1, 0, 0, 0, 255, "3x1 read back: the middle pixel, blue");
+
+  expectBool(a.save("written.bmp"), true, "saved to a file");
+  imm loaded = Image.load("written.bmp");
+  checkTwoByTwo(&loaded, "2x2 saved and loaded");
+  libc.remove(&"written.bmp" as *u8);
+}
+
+// Pixels read back from a GPU: 2 by 2, 4 bytes each, rows from the top:
+// (1, 2, 3, 4) (5, 6, 7, 8) above (9, 10, 11, 12) (13, 14, 15, 16). An Image
+// is bottom row first, so its (0, 0) is the texels' bottom left, (9, 10, 11),
+// and its (1, 1) their top right, (5, 6, 7); read as BGRA, (11, 10, 9).
+imm TEXELS [16; u8] = [1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8, 10u8, 11u8, 12u8, 13u8, 14u8, 15u8, 16u8];
+
+fn texels() {
+  imm img = Image.fromTexels(&TEXELS as *u8, 2, 2, false);
+  expectInt(i64[img.channels], 3, "texels: RGB, the fourth byte dropped");
+  rgb(&img, 0, 0, 9, 10, 11, "texels: the bottom left");
+  rgb(&img, 1, 1, 5, 6, 7, "texels: the top right");
+  rgb(&img, 0, 1, 1, 2, 3, "texels: the top left");
+  imm swapped = Image.fromTexels(&TEXELS as *u8, 2, 2, true);
+  rgb(&swapped, 0, 0, 11, 10, 9, "texels as BGRA: the bottom left");
 }
 
 fn main() i32 {
@@ -243,6 +279,7 @@ fn main() i32 {
   refusals();
   files();
   checker();
-  textures();
+  writing();
+  texels();
   done();
 }

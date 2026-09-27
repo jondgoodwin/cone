@@ -38,6 +38,16 @@
 //    - (32, 32): outside it, the clear, black. Were the matrix read
 //      transposed, the move would land in w and leave the square in the
 //      middle, and this pixel would be white.
+// 4. A texture sampled: a 2 x 2 rgba8unorm texture written with
+//    'queue.writeTexture', rows from the top red, green; blue, white, drawn
+//    over the whole target with the textured shader, uv (0, 0) at the top
+//    left, through a nearest, clamped sampler. So each quarter of the target
+//    is one texel, exactly: (16, 16) red, (48, 16) green, (16, 48) blue,
+//    (48, 48) white. Written again (yellow, cyan; magenta, black) and drawn
+//    again, (16, 16) is yellow and (48, 48) black.
+// 5. A buffer released with 'queue.releaseBuffer' is invalid at once, and
+//    destroyed only when the frame it was released in comes round again,
+//    two frames on: pending in that frame and the next, gone after.
 //
 // It needs a GPU driver with Vulkan 1.3 and SDL2.dll (which loads Vulkan);
 // no window, no display of its own, and no Vulkan SDK (with it, validation
@@ -62,6 +72,34 @@ imm SQUARE [8; f32] = [-1., -1.,   1., -1.,   -1., 1.,   1., 1.];
 imm WHITE_SQUARE [36; f32] = [
   -0.25, -0.25, 0.,  1., 1., 1.,    0.25, -0.25, 0.,  1., 1., 1.,    0.25, 0.25, 0.,  1., 1., 1.,
   -0.25, -0.25, 0.,  1., 1., 1.,    0.25,  0.25, 0.,  1., 1., 1.,   -0.25, 0.25, 0.,  1., 1., 1.];
+
+// The whole target as a triangle strip: position, then uv (v down from the
+// texture's first row)
+imm TEXTURED_SQUARE [16; f32] = [-1., -1., 0., 1.,   1., -1., 1., 1.,   -1., 1., 0., 0.,   1., 1., 1., 0.];
+
+// A 2 x 2 rgba8 texture, rows from the top: red, green; blue, white. Then
+// written again: yellow, cyan; magenta, black.
+imm QUADRANTS [16; u8] = [255u8, 0u8, 0u8, 255u8,  0u8, 255u8, 0u8, 255u8,
+  0u8, 0u8, 255u8, 255u8,  255u8, 255u8, 255u8, 255u8];
+imm QUADRANTS_AGAIN [16; u8] = [255u8, 255u8, 0u8, 255u8,  0u8, 255u8, 255u8, 255u8,
+  255u8, 0u8, 255u8, 255u8,  0u8, 0u8, 0u8, 255u8];
+
+// Draw the textured square over all of 'color' and read it back
+fn drawTextured(device &mut Device, color &Texture, readback &Buffer, pipeline &RenderPipeline, group &BindGroup,
+    vertices &Buffer) {
+  mut encoder = device.createCommandEncoder();
+  imm attachment = RenderPassColorAttachment[view: color.createView(), clearValue: Color[0., 0., 0., 1.]];
+  mut pass = encoder.beginRenderPass(&attachment);
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0u32, group);
+  pass.setVertexBuffer(0u32, vertices, 0u64);
+  pass.draw(4u32, 1u32, 0u32, 0u32);
+  pass.end();
+  encoder.copyTextureToBuffer(color, readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
 
 // Channel 'c' of pixel ('x', 'y') of a 64 x 64 rgba8 image at 'p'
 fn px(p *u8, x usize, y usize, c usize) i64 { i64[*(p + (y * 64usize + x) * 4usize + c)]; }
@@ -178,7 +216,7 @@ fn main() i32 {
   mut uniforms = device.createBuffer(64u64, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
   imm move = Mat4.fromTranslation(Vec3[0.5, 0.25, 0.]);
   device.queue.writeBuffer(&uniforms, 0u64, &move as *u8, 64u64);
-  imm groupEntries = [BindGroupEntry[binding: 0u32, buffer: &uniforms]];
+  imm groupEntries = [BindGroupEntry.buffer(0u32, &uniforms)];
   mut group = device.createBindGroup(&groupLayout, &groupEntries);
   {
     mut encoder = device.createCommandEncoder();
@@ -196,6 +234,60 @@ fn main() i32 {
   }
   expectPixel(p, 48usize, 24usize, 255, 255, 255, 0d, "the square, moved up and to the right by the matrix");
   expectPixel(p, 32usize, 32usize, 0, 0, 0, 0d, "the middle, which the square has moved off");
+
+  // ---- 4. A texture sampled ----
+  imm textureDesc = TextureDescriptor[2u32, 2u32, TEXTURE_FORMAT_RGBA8_UNORM,
+    TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_DST];
+  mut texture = device.createTexture(&textureDesc);
+  imm samplerDesc = SamplerDescriptor[magFilter: FILTER_MODE_NEAREST, minFilter: FILTER_MODE_NEAREST,
+    addressModeU: ADDRESS_MODE_CLAMP_TO_EDGE, addressModeV: ADDRESS_MODE_CLAMP_TO_EDGE];
+  mut sampler = device.createSampler(&samplerDesc);
+  require(texture.isValid() and sampler.isValid(), "a sampled texture and a sampler");
+  device.queue.writeTexture(&texture, &QUADRANTS as *u8, 8u32);
+  mut texturedShader = device.createShaderModule(&TEXTURED_SPIRV);
+  imm textureEntries = [BindGroupLayoutEntry[binding: 0u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE],
+    BindGroupLayoutEntry[binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER]];
+  mut textureLayout = device.createBindGroupLayout(&textureEntries);
+  imm textureLayouts = [&textureLayout];
+  mut texturedLayout = device.createPipelineLayout(&textureLayouts, 0u32);
+  imm texturedAttributes = [VertexAttribute[VERTEX_FORMAT_FLOAT32X2, 0u64, 0u32],
+    VertexAttribute[VERTEX_FORMAT_FLOAT32X2, 8u64, 1u32]];
+  imm texturedBuffers = [VertexBufferLayout[arrayStride: 16u64, attributes: &texturedAttributes]];
+  imm texturedDesc = RenderPipelineDescriptor[layout: &texturedLayout, vertexModule: &texturedShader,
+    buffers: &texturedBuffers, fragmentModule: &texturedShader, colorFormat: TEXTURE_FORMAT_RGBA8_UNORM,
+    topology: PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, cullMode: CULL_MODE_BACK];
+  mut texturedPipeline = device.createRenderPipeline(&texturedDesc);
+  mut texturedVertices = device.createBuffer(64u64, BUFFER_USAGE_VERTEX | BUFFER_USAGE_COPY_DST);
+  device.queue.writeBuffer(&texturedVertices, 0u64, &TEXTURED_SQUARE as *u8, 64u64);
+  imm view = texture.createView();
+  imm textureGroupEntries = [BindGroupEntry.texture(0u32, &view), BindGroupEntry.sampler(1u32, &sampler)];
+  mut textureGroup = device.createBindGroup(&textureLayout, &textureGroupEntries);
+  require(texturedPipeline.isValid() and textureGroup.isValid(), "the textured pipeline and its bind group");
+  drawTextured(&mut device, &color, &readback, &texturedPipeline, &textureGroup, &texturedVertices);
+  expectPixel(p, 16usize, 16usize, 255, 0, 0, 0d, "the texture's top left texel, red, top left");
+  expectPixel(p, 48usize, 16usize, 0, 255, 0, 0d, "its top right, green, top right");
+  expectPixel(p, 16usize, 48usize, 0, 0, 255, 0d, "its bottom left, blue, bottom left");
+  expectPixel(p, 48usize, 48usize, 255, 255, 255, 0d, "its bottom right, white, bottom right");
+
+  // Written again: the new texels are what is sampled next
+  device.queue.writeTexture(&texture, &QUADRANTS_AGAIN as *u8, 8u32);
+  drawTextured(&mut device, &color, &readback, &texturedPipeline, &textureGroup, &texturedVertices);
+  expectPixel(p, 16usize, 16usize, 255, 255, 0, 0d, "written again: the top left is yellow");
+  expectPixel(p, 48usize, 48usize, 0, 0, 0, 0d, "and the bottom right black");
+
+  // ---- 5. A buffer released, destroyed when its frame comes round ----
+  mut spare = device.createBuffer(256u64, BUFFER_USAGE_VERTEX | BUFFER_USAGE_COPY_DST);
+  require(spare.isValid(), "a buffer to release");
+  device.queue.releaseBuffer(&mut spare);
+  expectBool(spare.isValid(), false, "a released buffer is not valid");
+  expectUInt(u64[device.queue.pendingReleases()], 1u64, "released in this frame: not yet destroyed");
+  device.endFrame();
+  device.beginFrame();
+  device.endFrame();
+  expectUInt(u64[device.queue.pendingReleases()], 1u64, "the next frame: still not destroyed");
+  device.beginFrame();
+  expectUInt(u64[device.queue.pendingReleases()], 0u64, "its frame come round again: destroyed");
+  device.endFrame();
 
   expectUInt(u64[failures()], 0u64, "no Vulkan call failed");
   expectUInt(u64[validationMessages()], 0u64, "no validation message");
@@ -299,6 +391,61 @@ imm CUBE_SPIRV [298; u32] = [
   0x000200f8u32, 0x0000002eu32, 0x0004003du32, 0x00000008u32, 0x0000002fu32, 0x00000030u32,
   0x00050050u32, 0x00000007u32, 0x00000031u32, 0x0000002fu32, 0x0000001au32, 0x0003003eu32,
   0x00000032u32, 0x00000031u32, 0x000100fdu32, 0x00010038u32
+];
+// spirv-end
+
+// spirv-begin textured.spv TEXTURED_SPIRV
+// Written by tools/shaders/shaders.py from textured.slang (sha256 11020999597b7879329dd13f184641e53230bf19d41514a9304f58ffef83ff78): do not edit.
+imm TEXTURED_SPIRV [292; u32] = [
+  0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000037u32, 0x00000000u32, 0x00020011u32,
+  0x00000001u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x000a000fu32, 0x00000000u32,
+  0x00000002u32, 0x74726576u32, 0x614d7865u32, 0x00006e69u32, 0x0000001fu32, 0x00000023u32,
+  0x00000011u32, 0x0000001au32, 0x000b000fu32, 0x00000004u32, 0x00000026u32, 0x67617266u32,
+  0x746e656du32, 0x6e69614du32, 0x00000000u32, 0x0000002du32, 0x00000031u32, 0x00000036u32,
+  0x00000029u32, 0x00030010u32, 0x00000026u32, 0x00000007u32, 0x00030003u32, 0x0000000bu32,
+  0x00000001u32, 0x00060005u32, 0x00000011u32, 0x75706e69u32, 0x6f702e74u32, 0x69746973u32,
+  0x00006e6fu32, 0x00050005u32, 0x0000001au32, 0x75706e69u32, 0x76752e74u32, 0x00000000u32,
+  0x000a0005u32, 0x00000023u32, 0x72746e65u32, 0x696f5079u32, 0x6150746eu32, 0x5f6d6172u32,
+  0x74726576u32, 0x614d7865u32, 0x752e6e69u32, 0x00000076u32, 0x00050005u32, 0x00000002u32,
+  0x74726576u32, 0x614d7865u32, 0x00006e69u32, 0x00050005u32, 0x00000029u32, 0x75706e69u32,
+  0x76752e74u32, 0x00000000u32, 0x00040005u32, 0x0000002du32, 0x6f6c6f63u32, 0x00007372u32,
+  0x00060005u32, 0x00000031u32, 0x6f6c6f63u32, 0x6d615372u32, 0x72656c70u32, 0x00000000u32,
+  0x00040005u32, 0x00000034u32, 0x706d6173u32, 0x0064656cu32, 0x000a0005u32, 0x00000036u32,
+  0x72746e65u32, 0x696f5079u32, 0x6150746eu32, 0x5f6d6172u32, 0x67617266u32, 0x746e656du32,
+  0x6e69614du32, 0x00000000u32, 0x00060005u32, 0x00000026u32, 0x67617266u32, 0x746e656du32,
+  0x6e69614du32, 0x00000000u32, 0x00040047u32, 0x00000011u32, 0x0000001eu32, 0x00000000u32,
+  0x00040047u32, 0x0000001au32, 0x0000001eu32, 0x00000001u32, 0x00040047u32, 0x0000001fu32,
+  0x0000000bu32, 0x00000000u32, 0x00040047u32, 0x00000023u32, 0x0000001eu32, 0x00000000u32,
+  0x00040047u32, 0x00000029u32, 0x0000001eu32, 0x00000000u32, 0x00040047u32, 0x0000002du32,
+  0x00000021u32, 0x00000000u32, 0x00040047u32, 0x0000002du32, 0x00000022u32, 0x00000000u32,
+  0x00040047u32, 0x00000031u32, 0x00000021u32, 0x00000001u32, 0x00040047u32, 0x00000031u32,
+  0x00000022u32, 0x00000000u32, 0x00040047u32, 0x00000036u32, 0x0000001eu32, 0x00000000u32,
+  0x00020013u32, 0x00000001u32, 0x00030021u32, 0x00000003u32, 0x00000001u32, 0x00030016u32,
+  0x00000006u32, 0x00000020u32, 0x00040017u32, 0x00000007u32, 0x00000006u32, 0x00000004u32,
+  0x00040017u32, 0x00000008u32, 0x00000006u32, 0x00000002u32, 0x00040020u32, 0x00000010u32,
+  0x00000001u32, 0x00000008u32, 0x0004002bu32, 0x00000006u32, 0x00000013u32, 0x00000000u32,
+  0x0004002bu32, 0x00000006u32, 0x00000014u32, 0x3f800000u32, 0x00040020u32, 0x0000001eu32,
+  0x00000003u32, 0x00000007u32, 0x00040020u32, 0x00000022u32, 0x00000003u32, 0x00000008u32,
+  0x00090019u32, 0x0000002au32, 0x00000006u32, 0x00000001u32, 0x00000002u32, 0x00000000u32,
+  0x00000000u32, 0x00000001u32, 0x00000000u32, 0x00040020u32, 0x0000002cu32, 0x00000000u32,
+  0x0000002au32, 0x0002001au32, 0x0000002eu32, 0x00040020u32, 0x00000030u32, 0x00000000u32,
+  0x0000002eu32, 0x0003001bu32, 0x00000032u32, 0x0000002au32, 0x0004003bu32, 0x00000010u32,
+  0x00000011u32, 0x00000001u32, 0x0004003bu32, 0x00000010u32, 0x0000001au32, 0x00000001u32,
+  0x0004003bu32, 0x0000001eu32, 0x0000001fu32, 0x00000003u32, 0x0004003bu32, 0x00000022u32,
+  0x00000023u32, 0x00000003u32, 0x0004003bu32, 0x00000010u32, 0x00000029u32, 0x00000001u32,
+  0x0004003bu32, 0x0000002cu32, 0x0000002du32, 0x00000000u32, 0x0004003bu32, 0x00000030u32,
+  0x00000031u32, 0x00000000u32, 0x0004003bu32, 0x0000001eu32, 0x00000036u32, 0x00000003u32,
+  0x00050036u32, 0x00000001u32, 0x00000002u32, 0x00000000u32, 0x00000003u32, 0x000200f8u32,
+  0x00000004u32, 0x0004003du32, 0x00000008u32, 0x0000000fu32, 0x00000011u32, 0x00060050u32,
+  0x00000007u32, 0x00000012u32, 0x0000000fu32, 0x00000013u32, 0x00000014u32, 0x0004003du32,
+  0x00000008u32, 0x00000019u32, 0x0000001au32, 0x0003003eu32, 0x0000001fu32, 0x00000012u32,
+  0x0003003eu32, 0x00000023u32, 0x00000019u32, 0x000100fdu32, 0x00010038u32, 0x00050036u32,
+  0x00000001u32, 0x00000026u32, 0x00000000u32, 0x00000003u32, 0x000200f8u32, 0x00000027u32,
+  0x0004003du32, 0x00000008u32, 0x00000028u32, 0x00000029u32, 0x0004003du32, 0x0000002au32,
+  0x0000002bu32, 0x0000002du32, 0x0004003du32, 0x0000002eu32, 0x0000002fu32, 0x00000031u32,
+  0x00050056u32, 0x00000032u32, 0x00000033u32, 0x0000002bu32, 0x0000002fu32, 0x00060057u32,
+  0x00000007u32, 0x00000034u32, 0x00000033u32, 0x00000028u32, 0x00000000u32, 0x0003003eu32,
+  0x00000036u32, 0x00000034u32, 0x000100fdu32, 0x00010038u32
 ];
 // spirv-end
 

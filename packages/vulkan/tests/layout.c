@@ -426,6 +426,13 @@ typedef struct VkDescriptorSetAllocateInfo {
   const VkDescriptorSetLayout* pSetLayouts;
 } VkDescriptorSetAllocateInfo;
 
+typedef struct VkSamplerCreateInfo {
+  VkStructureType sType; const void* pNext; VkFlags flags; int magFilter; int minFilter; int mipmapMode;
+  int addressModeU; int addressModeV; int addressModeW; float mipLodBias; VkBool32 anisotropyEnable;
+  float maxAnisotropy; VkBool32 compareEnable; int compareOp; float minLod; float maxLod; int borderColor;
+  VkBool32 unnormalizedCoordinates;
+} VkSamplerCreateInfo;
+
 typedef struct VkDescriptorBufferInfo { VkBuffer buffer; VkDeviceSize offset; VkDeviceSize range; } VkDescriptorBufferInfo;
 typedef struct VkDescriptorImageInfo { VkSampler sampler; VkImageView imageView; VkImageLayout imageLayout; } VkDescriptorImageInfo;
 
