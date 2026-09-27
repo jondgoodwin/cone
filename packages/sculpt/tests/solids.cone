@@ -1,0 +1,271 @@
+// The sculpt package's profile-to-solid operators, extrude, sweep and lathe,
+// checked with the testing package against values worked out by hand; only a
+// failure prints, so solids.out holds the summary alone. Every solid is also
+// checked by mesh's 'validate', and by Euler's formula, V - E + F: 2 for a
+// closed solid without holes, 0 for an open tube or a torus, 1 for a strip.
+//
+// - The unit square S = (0,0) (1,0) (1,1) (0,1), extruded along (0,0,1) in 2
+//   segments with caps: 3 rings of 4, 12 vertices; 2 x 4 quads and 2 caps,
+//   10 faces; 3 x 4 edges around and 2 x 4 along, 20: 12 - 20 + 10 = 2.
+//   Vertex 4i + j is S's point j at z = i / 2: vertex 5 (1, 0, 0.5), 10 (1,
+//   1, 1), 11 (0, 1, 1). Face 4i + j runs (i, j), (i, j+1), (i+1, j+1),
+//   (i+1, j): face 0 is vertices 0, 1, 5, 4, the side y = 0, facing (0, -1,
+//   0); face 5 faces +x. Face 8, the start cap, runs 3, 2, 1, 0, facing
+//   (0, 0, -1); face 9, the end cap, 8, 9, 10, 11, facing (0, 0, 1).
+//   Uvs: S's length is 4, so u = 0, 0.25, 0.5, 0.75 and 1 at the seam; v =
+//   0, 0.5, 1 by ring. Face 3 closes the ring, (0, 3), (0, 0), (1, 0), (1,
+//   3): uvs (0.75, 0), (1, 0), (1, 0.5), (0.75, 0.5), so vertex 0 has u = 1
+//   there and u = 0 in face 0. A cap's uvs are S's own box, (1,1) at the end
+//   cap's corner (1, 1); the start cap is seen from behind, so its u is
+//   mirrored: its first corner, S's (0, 1), is (1, 1), and its second, (1,
+//   1), is (0, 1). Without caps: 8 faces, 12 - 20 + 8 = 0.
+// - Extruded along (0, 0, -1) the square is seen from behind, so every face
+//   is reversed and still faces out: face 0 still (0, -1, 0), the start cap
+//   (at z = 0) now (0, 0, 1) and the end cap (0, 0, -1).
+// - A sweep of S along the straight path (0,0,0) to (0,0,1) in 2 pieces:
+//   its frames are N = +x, B = +y (see frames.cone), so profile (x, y) goes
+//   to (x, y, z) exactly as the extrusion puts it, with v = s / L = 0, 0.5,
+//   1: the same positions, faces and corner uvs.
+// - A twisted, tapered sweep of the diamond (1,0) (0,1) (-1,0) (0,-1) along
+//   z from 0 to 2 in 2 pieces, twist 90 degrees, scale 1 to 2: at z = 1,
+//   turned 45 and scaled 1.5, (1, 0) goes to 1.5 (0.707107, 0.707107) =
+//   (1.060660, 1.060660, 1), vertex 4; at z = 2, turned 90 and scaled 2,
+//   (1, 0) to (0, 2, 2), vertex 8, and (0, 1) to (-2, 0, 2), vertex 9.
+// - A torus: the diamond of radius 0.5 (Profile.polygon(4, 0.5)) swept round
+//   Path.circle(2, 4), closed, so no caps: 4 rings of 4, 16 vertices; 16
+//   quads; 16 edges round the rings and 16 along, 32: 16 - 32 + 16 = 0. The
+//   first frame is at (2, 0, 0) with T (0, 0, -1), B +y, N (-1, 0, 0): the
+//   diamond's (0.5, 0) goes to (1.5, 0, 0), vertex 0; (0, 0.5) to (2, 0.5,
+//   0), vertex 1; (-0.5, 0) to (2.5, 0, 0), vertex 2. The second frame is at
+//   (0, 0, -2) with N (0, 0, 1): vertex 4 is (0, 0, -1.5). Face 0 is (1.5, 0,
+//   0), (2, 0.5, 0), (0, 0.5, -2), (0, 0, -1.5), flat, on the plane -x + y +
+//   z = -1.5, and faces up and in, the outside there: (-0.577350, 0.577350,
+//   0.577350). Face 15 closes both loops, (3, 3), (3, 0), (0, 0), (0, 3):
+//   vertices 15, 12, 0, 3, uvs (0.75, 0.75), (1, 0.75), (1, 1), (0.75, 1).
+// - Lathe of the segment (1, 0) to (1, 2) about +y, a whole turn in 4 steps:
+//   column k is turned k 90 degrees about y, which takes x to -z, so (1, y)
+//   goes to (cos a, y, -sin a). Vertices point by point, 4 columns each:
+//   vertex 1 (0, 0, -1), 4 (1, 2, 0), 6 (-1, 2, 0). 4 quads, 8 edges round
+//   and 4 up, 12: 8 - 12 + 4 = 0, an open tube. Face 0 is 0, 1, 5, 4,
+//   facing out between columns 0 and 1, (0.707107, 0, -0.707107). Face 3
+//   closes the turn: 3, 0, 4, 7, uvs (0.75, 0), (1, 0), (1, 1), (0.75, 1).
+//   Turned the other way (-2 pi) the faces are reversed and still face out:
+//   face 0 is 4, 5, 1, 0, facing (0.707107, 0, 0.707107).
+// - The same segment through a half turn (pi) in 2 steps: 3 columns, 6
+//   vertices, 2 quads, 7 edges: 6 - 7 + 2 = 1, a strip. Vertex 2, column 2,
+//   is (-1, 0, 0).
+// - Lathe of (0, -1) (1, 0) (0, 1) about +y, a whole turn in 4 steps: the
+//   two ends are on the axis, a vertex each: vertex 0 (0, -1, 0), vertices 1
+//   to 4 the middle point's columns ((1,0,0), (0,0,-1), (-1,0,0), (0,0,1)),
+//   vertex 5 (0, 1, 0): an octahedron, 6 vertices, 8 triangles, 12 edges,
+//   6 - 12 + 8 = 2. Face 0 is 0, 2, 1 (the bottom point, then column 1,
+//   then column 0), 3 corners; face 1 is 1, 2, 5, facing (1, 1, -1) /
+//   sqrt 3 = (0.577350, 0.577350, -0.577350). The profile's two pieces are
+//   each sqrt 2 long, so v = 0, 0.5, 1; face 0's uvs are (0.125, 0) at the
+//   pole, the middle of its face's u, then (0.25, 0.5) and (0, 0.5).
+
+mod solids;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+imm near = 0.00001d;
+
+fn point(got Vec3, x f32, y f32, z f32, label &[]u8) {
+  expectFloat(got.x, x, near, label);
+  expectFloat(got.y, y, near, label);
+  expectFloat(got.z, z, near, label);
+}
+
+fn uv(got Vec2, u f32, v f32, label &[]u8) {
+  expectFloat(got.x, u, near, label);
+  expectFloat(got.y, v, near, label);
+}
+
+// V, E and F, Euler's V - E + F, and 'validate' clean
+fn counts(m &PolyMesh, v i64, e i64, f i64, euler i64, label &[]u8) {
+  expectInt(i64[m.vertexCount()], v, label);
+  expectInt(i64[m.edgeCount()], e, label);
+  expectInt(i64[m.faceCount()], f, label);
+  expectInt(i64[m.vertexCount()] - i64[m.edgeCount()] + i64[m.faceCount()], euler, label);
+  imm problems = m.validate();
+  if !expectInt(i64[problems.len()], 0, label) {
+    mut i = 0usize;
+    while i < problems.len() {
+      expectStr(problems[i].view(), "", label);
+      i = i + 1usize;
+    }
+  }
+}
+
+// A face's vertices: the first 'n' of a, b, c, d
+fn verts(m &PolyMesh, f u32, n usize, a u32, b u32, c u32, d u32, label &[]u8) {
+  imm vs = m.faceVertices(f);
+  if !expectInt(i64[vs.len()], i64[n], label) { return; }
+  expectInt(i64[*vs[0usize]], i64[a], label);
+  expectInt(i64[*vs[1usize]], i64[b], label);
+  expectInt(i64[*vs[2usize]], i64[c], label);
+  if n > 3usize { expectInt(i64[*vs[3usize]], i64[d], label); }
+}
+
+// The uv of a face's corner k
+fn cornerUv(m &PolyMesh, f u32, k usize) Vec2 {
+  imm ch = m.findVec2Channel(CornerDomain, "uv");
+  imm hs = m.faceHalfedges(f);
+  m.vec2(ch, *hs[k]);
+}
+
+fn unitSquare() Profile {
+  imm sq [4; Vec2] = [Vec2[0., 0.], Vec2[1., 0.], Vec2[1., 1.], Vec2[0., 1.]];
+  Profile.fromPoints(&sq, true);
+}
+
+fn extrusion() {
+  imm s = unitSquare();
+  imm m = extrude(&s, Vec3[0., 0., 1.], 2u32, true);
+  counts(&m, 12, 20, 10, 2, "extrude: counts");
+  requireInt(i64[m.vertexCount()], 12, "extrude: vertices");
+  requireInt(i64[m.faceCount()], 10, "extrude: faces");
+  point(*m.positions[0usize], 0., 0., 0., "extrude: vertex 0");
+  point(*m.positions[5usize], 1., 0., 0.5, "extrude: vertex 5");
+  point(*m.positions[10usize], 1., 1., 1., "extrude: vertex 10");
+  point(*m.positions[11usize], 0., 1., 1., "extrude: vertex 11");
+  verts(&m, 0u32, 4usize, 0u32, 1u32, 5u32, 4u32, "extrude: face 0");
+  point(m.faceNormal(0u32), 0., -1., 0., "extrude: face 0 faces out");
+  point(m.faceNormal(5u32), 1., 0., 0., "extrude: face 5 faces out");
+  verts(&m, 8u32, 4usize, 3u32, 2u32, 1u32, 0u32, "extrude: start cap");
+  point(m.faceNormal(8u32), 0., 0., -1., "extrude: start cap faces back");
+  verts(&m, 9u32, 4usize, 8u32, 9u32, 10u32, 11u32, "extrude: end cap");
+  point(m.faceNormal(9u32), 0., 0., 1., "extrude: end cap faces forward");
+  uv(cornerUv(&m, 0u32, 0usize), 0., 0., "extrude: vertex 0 in face 0");
+  uv(cornerUv(&m, 3u32, 0usize), 0.75, 0., "extrude: face 3 corner 0");
+  uv(cornerUv(&m, 3u32, 1usize), 1., 0., "extrude: face 3 corner 1, the seam");
+  uv(cornerUv(&m, 3u32, 2usize), 1., 0.5, "extrude: face 3 corner 2, the seam");
+  uv(cornerUv(&m, 3u32, 3usize), 0.75, 0.5, "extrude: face 3 corner 3");
+  uv(cornerUv(&m, 8u32, 0usize), 1., 1., "extrude: start cap corner 0, mirrored");
+  uv(cornerUv(&m, 8u32, 1usize), 0., 1., "extrude: start cap corner 1, mirrored");
+  uv(cornerUv(&m, 9u32, 2usize), 1., 1., "extrude: end cap corner 2");
+
+  imm open = extrude(&s, Vec3[0., 0., 1.], 2u32, false);
+  counts(&open, 12, 20, 8, 0, "extrude without caps: counts");
+
+  imm down = extrude(&s, Vec3[0., 0., -1.], 2u32, true);
+  counts(&down, 12, 20, 10, 2, "extrude down: counts");
+  point(down.faceNormal(0u32), 0., -1., 0., "extrude down: face 0 still faces out");
+  point(down.faceNormal(8u32), 0., 0., 1., "extrude down: start cap faces up");
+  point(down.faceNormal(9u32), 0., 0., -1., "extrude down: end cap faces down");
+}
+
+fn sweeps() {
+  imm s = unitSquare();
+  imm e = extrude(&s, Vec3[0., 0., 1.], 2u32, true);
+  imm path = Path.line(Vec3[0., 0., 0.], Vec3[0., 0., 1.], 2u32);
+  imm w = sweep(&s, &path, 0., 1., 1., true);
+  counts(&w, 12, 20, 10, 2, "sweep straight: counts");
+  requireInt(i64[w.vertexCount()], 12, "sweep straight: vertices");
+  requireInt(i64[w.faceCount()], 10, "sweep straight: faces");
+  mut i = 0usize;
+  while i < 12usize {
+    imm p = *e.positions[i];
+    point(*w.positions[i], p.x, p.y, p.z, "sweep straight: the extrusion's positions");
+    i = i + 1usize;
+  }
+  mut f = 0u32;
+  while f < 10u32 {
+    imm ev = e.faceVertices(f);
+    imm wv = w.faceVertices(f);
+    requireInt(i64[wv.len()], i64[ev.len()], "sweep straight: the extrusion's faces");
+    mut k = 0usize;
+    while k < ev.len() {
+      expectInt(i64[*wv[k]], i64[*ev[k]], "sweep straight: the extrusion's faces");
+      imm eu = cornerUv(&e, f, k);
+      uv(cornerUv(&w, f, k), eu.x, eu.y, "sweep straight: the extrusion's uvs");
+      k = k + 1usize;
+    }
+    f = f + 1u32;
+  }
+
+  imm dia [4; Vec2] = [Vec2[1., 0.], Vec2[0., 1.], Vec2[-1., 0.], Vec2[0., -1.]];
+  imm d = Profile.fromPoints(&dia, true);
+  imm zpath = Path.line(Vec3[0., 0., 0.], Vec3[0., 0., 2.], 2u32);
+  imm t = sweep(&d, &zpath, pi / 2., 1., 2., true);
+  counts(&t, 12, 20, 10, 2, "twisted sweep: counts");
+  point(*t.positions[0usize], 1., 0., 0., "twisted sweep: vertex 0");
+  point(*t.positions[4usize], 1.060660, 1.060660, 1., "twisted sweep: vertex 4");
+  point(*t.positions[8usize], 0., 2., 2., "twisted sweep: vertex 8");
+  point(*t.positions[9usize], -2., 0., 2., "twisted sweep: vertex 9");
+}
+
+fn torus() {
+  imm d = Profile.polygon(4u32, 0.5);
+  imm ring = Path.circle(2., 4u32);
+  imm t = sweep(&d, &ring, 0., 1., 1., true);
+  counts(&t, 16, 32, 16, 0, "torus: counts");
+  requireInt(i64[t.vertexCount()], 16, "torus: vertices");
+  requireInt(i64[t.faceCount()], 16, "torus: faces");
+  point(*t.positions[0usize], 1.5, 0., 0., "torus: vertex 0");
+  point(*t.positions[1usize], 2., 0.5, 0., "torus: vertex 1");
+  point(*t.positions[2usize], 2.5, 0., 0., "torus: vertex 2");
+  point(*t.positions[4usize], 0., 0., -1.5, "torus: vertex 4");
+  point(t.faceNormal(0u32), -0.577350, 0.577350, 0.577350, "torus: face 0 faces out");
+  verts(&t, 15u32, 4usize, 15u32, 12u32, 0u32, 3u32, "torus: face 15");
+  uv(cornerUv(&t, 15u32, 0usize), 0.75, 0.75, "torus: face 15 corner 0");
+  uv(cornerUv(&t, 15u32, 1usize), 1., 0.75, "torus: face 15 corner 1, the u seam");
+  uv(cornerUv(&t, 15u32, 2usize), 1., 1., "torus: face 15 corner 2, both seams");
+  uv(cornerUv(&t, 15u32, 3usize), 0.75, 1., "torus: face 15 corner 3, the v seam");
+}
+
+fn lathes() {
+  imm seg [2; Vec2] = [Vec2[1., 0.], Vec2[1., 2.]];
+  imm s = Profile.fromPoints(&seg, false);
+  imm c = lathe(&s, Vec3[0., 1., 0.], 2. * pi, 4u32);
+  counts(&c, 8, 12, 4, 0, "cylinder: counts");
+  requireInt(i64[c.vertexCount()], 8, "cylinder: vertices");
+  requireInt(i64[c.faceCount()], 4, "cylinder: faces");
+  point(*c.positions[1usize], 0., 0., -1., "cylinder: vertex 1");
+  point(*c.positions[4usize], 1., 2., 0., "cylinder: vertex 4");
+  point(*c.positions[6usize], -1., 2., 0., "cylinder: vertex 6");
+  verts(&c, 0u32, 4usize, 0u32, 1u32, 5u32, 4u32, "cylinder: face 0");
+  point(c.faceNormal(0u32), 0.707107, 0., -0.707107, "cylinder: face 0 faces out");
+  verts(&c, 3u32, 4usize, 3u32, 0u32, 4u32, 7u32, "cylinder: face 3");
+  uv(cornerUv(&c, 3u32, 0usize), 0.75, 0., "cylinder: face 3 corner 0");
+  uv(cornerUv(&c, 3u32, 1usize), 1., 0., "cylinder: face 3 corner 1, the seam");
+  uv(cornerUv(&c, 3u32, 2usize), 1., 1., "cylinder: face 3 corner 2, the seam");
+  uv(cornerUv(&c, 3u32, 3usize), 0.75, 1., "cylinder: face 3 corner 3");
+
+  imm back = lathe(&s, Vec3[0., 1., 0.], -2. * pi, 4u32);
+  counts(&back, 8, 12, 4, 0, "cylinder turned back: counts");
+  verts(&back, 0u32, 4usize, 4u32, 5u32, 1u32, 0u32, "cylinder turned back: face 0 reversed");
+  point(back.faceNormal(0u32), 0.707107, 0., 0.707107, "cylinder turned back: face 0 faces out");
+
+  imm half = lathe(&s, Vec3[0., 1., 0.], pi, 2u32);
+  counts(&half, 6, 7, 2, 1, "half turn: counts");
+  point(*half.positions[2usize], -1., 0., 0., "half turn: vertex 2");
+
+  imm arc [3; Vec2] = [Vec2[0., -1.], Vec2[1., 0.], Vec2[0., 1.]];
+  imm a = Profile.fromPoints(&arc, false);
+  imm o = lathe(&a, Vec3[0., 1., 0.], 2. * pi, 4u32);
+  counts(&o, 6, 12, 8, 2, "octahedron: counts");
+  requireInt(i64[o.vertexCount()], 6, "octahedron: vertices");
+  requireInt(i64[o.faceCount()], 8, "octahedron: faces");
+  point(*o.positions[0usize], 0., -1., 0., "octahedron: vertex 0");
+  point(*o.positions[2usize], 0., 0., -1., "octahedron: vertex 2");
+  point(*o.positions[5usize], 0., 1., 0., "octahedron: vertex 5");
+  verts(&o, 0u32, 3usize, 0u32, 2u32, 1u32, 0u32, "octahedron: face 0");
+  verts(&o, 1u32, 3usize, 1u32, 2u32, 5u32, 0u32, "octahedron: face 1");
+  point(o.faceNormal(1u32), 0.577350, 0.577350, -0.577350, "octahedron: face 1 faces out");
+  uv(cornerUv(&o, 0u32, 0usize), 0.125, 0., "octahedron: the pole's uv");
+  uv(cornerUv(&o, 0u32, 1usize), 0.25, 0.5, "octahedron: face 0 corner 1");
+  uv(cornerUv(&o, 0u32, 2usize), 0., 0.5, "octahedron: face 0 corner 2");
+}
+
+fn main() i32 {
+  extrusion();
+  sweeps();
+  torus();
+  lathes();
+  done();
+}

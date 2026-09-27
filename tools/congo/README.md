@@ -150,7 +150,7 @@ An import names a module. Congo answers each one this way:
 searches, in order:
 
 1. the Cone repository's own `packages/` (`core`, `stdio`, `libc`, `posix`,
-   `sdl`, `gl`, `geomath`, `mesh`, `testing`, `collections`, `arena`, `pool`, `collector`, `thread`, `render` and `window` are
+   `sdl`, `gl`, `geomath`, `mesh`, `sculpt`, `testing`, `collections`, `arena`, `pool`, `collector`, `thread`, `render` and `window` are
    there), then
 2. each folder the **machine config** lists.
 
@@ -291,6 +291,9 @@ and 3-D math in Cone, is built on `libc` for its trigonometry and on
 `packages/geomath/examples/tour.cone`. `mesh`, over `geomath`, holds the
 surfaces: indexed triangles, the editable half-edge mesh, their generators
 and `.obj` export; its example is `packages/mesh/examples/cage.cone`.
+`sculpt`, over `mesh`, builds solids procedurally: profiles, paths with
+rotation-minimizing frames, extrude, lathe and sweep, and the bend, twist,
+taper and curve deformers; its example is `packages/sculpt/examples/pipe.cone`.
 
 Two more bind libraries beyond the C runtime, and name them: `sdl` (SDL2: a
 window with an OpenGL context, its events and clock; `[link]` names `SDL2`,
