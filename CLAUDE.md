@@ -50,7 +50,11 @@ Visual Studio projects stay at the root.
   indices, vertex data as separate lists, material groups), `PolyMesh` (the
   editable half-edge mesh of n-gons, pmp-library conventions, attribute
   channels, `validate`, `triangulate` into a `Mesh`), the sphere, plane,
-  cube and cube-cage generators, and `.obj` export;
+  cube and cube-cage generators, and `.obj` export; `sculpt` is procedural
+  modelling over `mesh`: 2-D profiles (polygons, rounded rectangles, hulls,
+  sampled Beziers), 3-D paths with rotation-minimizing frames, `extrude`,
+  `lathe` and `sweep` (twist and taper) into a `PolyMesh` of quads with
+  corner uvs, and the deformers `bend`, `twist`, `taper` and `curveDeform`;
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed

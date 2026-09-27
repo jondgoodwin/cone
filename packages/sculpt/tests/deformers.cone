@@ -1,0 +1,186 @@
+// The sculpt package's deformers, bend, twist, taper and curve deform,
+// checked with the testing package against values worked out by hand; only a
+// failure prints, so deformers.out holds the summary alone.
+//
+// - The strip: vertices 0 (0,0,0), 1 (pi/2,0,0), 2 (pi,0,0), 3 (0,1,0),
+//   4 (pi/2,1,0), 5 (pi,1,0); faces 0, 1, 4, 3 and 1, 2, 5, 4. A float
+//   channel "weight" on the vertices, 0.5 but 7 at vertex 2.
+// - Bent 90 degrees about +z, along +x, from the origin: c = z x x = +y, the
+//   span is 0 to pi, so R = pi / (pi/2) = 2 = 2L / pi. The line y = 0 lies on
+//   the arc of radius 2 about (0, 2, 0): vertex 2 (t = pi, theta = 90) goes
+//   to (R sin 90, R - R cos 90, 0) = (2, 2, 0); vertex 1 (theta = 45) to
+//   (2 sin 45, 2 - 2 cos 45, 0) = (1.414214, 0.585786, 0), 2 from the
+//   centre. The line y = 1 is 1 nearer the centre, radius 1: vertex 5 to
+//   (1 sin 90, 2 - 1 cos 90, 0) = (1, 2, 0), vertex 4 to (0.707107, 2 -
+//   0.707107, 0) = (0.707107, 1.292893, 0). Vertices 0 and 3 stay. The
+//   topology is the same (6 vertices, 7 edges, 2 faces, valid) and the
+//   channel comes through: 7 at vertex 2, 0.5 at vertex 0.
+// - Bent from the middle, origin (pi/2, 0, 0): the span is -pi/2 to pi/2,
+//   still pi, so R = 2, and the two halves bend each way: vertex 2 (t =
+//   pi/2, theta 45) to origin + (1.414214, 0.585786, 0) = (2.985010,
+//   0.585786, 0); vertex 0 (theta -45) to origin + (-1.414214, 0.585786, 0)
+//   = (0.156583, 0.585786, 0); vertex 1 stays at (1.570796, 0, 0).
+// - Bent -90: R = -2, towards -y: vertex 2 to (-2 sin(-90), -2 (1 - cos),
+//   0) = (2, -2, 0); vertex 5 (c' = 1) to ((R - 1) sin theta, R - (R - 1)
+//   cos theta, 0) = (-3 * -1, -2, 0) = (3, -2, 0), outside the bend now.
+//   Bent 0: unchanged, vertex 2 at (pi, 0, 0).
+// - The box: the square (-1,-1) (1,-1) (1,1) (-1,1) extruded along (0,0,2)
+//   in 2 segments, vertex 4i + j at z = i.
+//   Twisted 90 degrees about +z from the origin: the span is 0 to 2, so z = 1
+//   turns 45 and z = 2 turns 90. Vertex 1 (1,-1,0) stays; vertex 5 (1,-1,1)
+//   goes to (cos 45 + sin 45, sin 45 - cos 45, 1) = (1.414214, 0, 1);
+//   vertex 9 (1,-1,2) to (1, 1, 2); vertex 11 (-1,1,2) to (-1, -1, 2).
+//   Tapered by 1: the scale is 1 + z / 2: vertex 2 (1,1,0) stays, vertex 5
+//   to (1.5, -1.5, 1), vertex 10 (1,1,2) to (2, 2, 2). Tapered by -1: vertex
+//   10 to (0, 0, 2), the point.
+// - Curve deform: the path is three points on the circle of radius 2 in the
+//   plane y = 0, (2 cos a, 0, 2 sin a) at a = 0, 45, 90: (2,0,0),
+//   (1.414214, 0, 1.414214), (0,0,2), with the circle's tangents (-sin a,
+//   0, cos a). Its frames: T0 = +z, B +y, N0 = y x z = +x, the outward
+//   radius, which each step keeps (see frames.cone): N1 (0.707107, 0,
+//   0.707107), N2 (0, 0, 1). Each chord is 2 * 2 sin(22.5) = 1.530734, the
+//   length 3.061467. The strip laid along +z, up +y, so across = y x z = +x:
+//   vertices 0 (0,0,0), 1 (0.5,0,0), 2 (0,0,1.530734), 3 (0.5,0,1.530734),
+//   4 (0,0,4.061467), 5 (0.5,0,4.061467), faces 0, 1, 3, 2 and 2, 3, 5, 4.
+//   Vertex 0 goes to the path's start (2,0,0); 1 to (2,0,0) + 0.5 N0 =
+//   (2.5,0,0); 2 to (1.414214, 0, 1.414214); 3 to 2.5 (0.707107, 0,
+//   0.707107) = (1.767767, 0, 1.767767). Vertex 4 is 1 past the end, so
+//   carried on along T2 = (-1, 0, 0): (-1, 0, 2); vertex 5 also 0.5 along N2:
+//   (-1, 0, 2.5).
+// - Curve deform round Path.circle(2, 4), closed, 4 chords of 2 sqrt 2 =
+//   2.828427, length 11.313708: t wraps, so a vertex at t = 11.313708 + 2.828427
+//   = 14.142136 lands where t = 2.828427 does, at the path's point 1 (0, 0,
+//   -2), and one 0.5 across, along N1 = the inward radius (0, 0, 1), at (0, 0,
+//   -1.5).
+
+mod deformers;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+imm near = 0.00001d;
+
+fn point(got Vec3, x f32, y f32, z f32, label &[]u8) {
+  expectFloat(got.x, x, near, label);
+  expectFloat(got.y, y, near, label);
+  expectFloat(got.z, z, near, label);
+}
+
+fn clean(m &PolyMesh, label &[]u8) {
+  imm problems = m.validate();
+  expectInt(i64[problems.len()], 0, label);
+}
+
+fn strip() PolyMesh {
+  imm pts [6; Vec3] = [Vec3[0., 0., 0.], Vec3[pi / 2., 0., 0.], Vec3[pi, 0., 0.],
+    Vec3[0., 1., 0.], Vec3[pi / 2., 1., 0.], Vec3[pi, 1., 0.]];
+  imm counts [2; u32] = [4u32, 4u32];
+  imm idx [8; u32] = [0u32, 1u32, 4u32, 3u32, 1u32, 2u32, 5u32, 4u32];
+  mut problems = List[String].empty();
+  mut m = PolyMesh.fromPolygons(&pts, &counts, &idx, &mut problems);
+  imm ch = m.addFloatChannel(VertexDomain, "weight", 0.5);
+  m.setFloat(ch, 2u32, 7.);
+  m;
+}
+
+fn box() PolyMesh {
+  imm sq = Profile.rectangle(2., 2.);
+  extrude(&sq, Vec3[0., 0., 2.], 2u32, true);
+}
+
+fn bends() {
+  imm s = strip();
+  imm b = bend(&s, pi / 2., Vec3[0., 0., 1.], Vec3[1., 0., 0.], Vec3[0., 0., 0.]);
+  requireInt(i64[b.vertexCount()], 6, "bend: vertices");
+  expectInt(i64[b.edgeCount()], 7, "bend: edges");
+  expectInt(i64[b.faceCount()], 2, "bend: faces");
+  clean(&b, "bend: validates");
+  point(*b.positions[0usize], 0., 0., 0., "bend: vertex 0 stays");
+  point(*b.positions[1usize], 1.414214, 0.585786, 0., "bend: vertex 1 on the arc");
+  point(*b.positions[2usize], 2., 2., 0., "bend: vertex 2 at the arc's end");
+  point(*b.positions[3usize], 0., 1., 0., "bend: vertex 3 stays");
+  point(*b.positions[4usize], 0.707107, 1.292893, 0., "bend: vertex 4 on the inner arc");
+  point(*b.positions[5usize], 1., 2., 0., "bend: vertex 5 on the inner arc");
+  expectFloat((*b.positions[1usize] - Vec3[0., 2., 0.]).length(), 2., near, "bend: radius 2L / pi");
+  imm ch = b.findFloatChannel(VertexDomain, "weight");
+  require(ch != NoIndex, "bend: the channel carried");
+  expectFloat(b.float(ch, 2u32), 7., near, "bend: channel value at vertex 2");
+  expectFloat(b.float(ch, 0u32), 0.5, near, "bend: channel value at vertex 0");
+
+  imm mid = bend(&s, pi / 2., Vec3[0., 0., 1.], Vec3[1., 0., 0.], Vec3[pi / 2., 0., 0.]);
+  point(*mid.positions[2usize], 2.985010, 0.585786, 0., "bend from the middle: vertex 2");
+  point(*mid.positions[0usize], 0.156583, 0.585786, 0., "bend from the middle: vertex 0");
+  point(*mid.positions[1usize], 1.570796, 0., 0., "bend from the middle: vertex 1 stays");
+
+  imm neg = bend(&s, -pi / 2., Vec3[0., 0., 1.], Vec3[1., 0., 0.], Vec3[0., 0., 0.]);
+  point(*neg.positions[2usize], 2., -2., 0., "bend back: vertex 2");
+  point(*neg.positions[5usize], 3., -2., 0., "bend back: vertex 5 outside");
+
+  imm none = bend(&s, 0., Vec3[0., 0., 1.], Vec3[1., 0., 0.], Vec3[0., 0., 0.]);
+  point(*none.positions[2usize], pi, 0., 0., "no bend: unchanged");
+}
+
+fn twistsAndTapers() {
+  imm bx = box();
+  imm t = twist(&bx, pi / 2., Vec3[0., 0., 1.], Vec3[0., 0., 0.]);
+  requireInt(i64[t.vertexCount()], 12, "twist: vertices");
+  expectInt(i64[t.faceCount()], 10, "twist: faces");
+  clean(&t, "twist: validates");
+  point(*t.positions[1usize], 1., -1., 0., "twist: vertex 1 stays");
+  point(*t.positions[5usize], 1.414214, 0., 1., "twist: vertex 5, the middle, 45 degrees");
+  point(*t.positions[9usize], 1., 1., 2., "twist: vertex 9, the end, 90 degrees");
+  point(*t.positions[11usize], -1., -1., 2., "twist: vertex 11");
+
+  imm w = taper(&bx, 1., Vec3[0., 0., 1.], Vec3[0., 0., 0.]);
+  clean(&w, "taper: validates");
+  point(*w.positions[2usize], 1., 1., 0., "taper: vertex 2 stays");
+  point(*w.positions[5usize], 1.5, -1.5, 1., "taper: vertex 5, the middle, 1.5");
+  point(*w.positions[10usize], 2., 2., 2., "taper: vertex 10, the end, 2");
+  imm p = taper(&bx, -1., Vec3[0., 0., 1.], Vec3[0., 0., 0.]);
+  point(*p.positions[10usize], 0., 0., 2., "taper to a point");
+}
+
+fn curves() {
+  imm pts [3; Vec3] = [Vec3[2., 0., 0.], Vec3[1.4142136, 0., 1.4142136], Vec3[0., 0., 2.]];
+  mut path = Path.fromPoints(&pts, false);
+  path.tangents.push(Vec3[0., 0., 1.]);
+  path.tangents.push(Vec3[-0.70710678, 0., 0.70710678]);
+  path.tangents.push(Vec3[-1., 0., 0.]);
+  expectFloat(path.length(), 3.061467, near, "arc path: length");
+
+  imm sp [6; Vec3] = [Vec3[0., 0., 0.], Vec3[0.5, 0., 0.], Vec3[0., 0., 1.5307337],
+    Vec3[0.5, 0., 1.5307337], Vec3[0., 0., 4.0614675], Vec3[0.5, 0., 4.0614675]];
+  imm counts [2; u32] = [4u32, 4u32];
+  imm idx [8; u32] = [0u32, 1u32, 3u32, 2u32, 2u32, 3u32, 5u32, 4u32];
+  mut problems = List[String].empty();
+  imm s = PolyMesh.fromPolygons(&sp, &counts, &idx, &mut problems);
+  imm c = curveDeform(&s, &path, Vec3[0., 0., 1.], Vec3[0., 1., 0.], Vec3[0., 0., 0.]);
+  requireInt(i64[c.vertexCount()], 6, "curve deform: vertices");
+  clean(&c, "curve deform: validates");
+  point(*c.positions[0usize], 2., 0., 0., "curve deform: vertex 0 at the start");
+  point(*c.positions[1usize], 2.5, 0., 0., "curve deform: vertex 1 along N0");
+  point(*c.positions[2usize], 1.414214, 0., 1.414214, "curve deform: vertex 2 at point 1");
+  point(*c.positions[3usize], 1.767767, 0., 1.767767, "curve deform: vertex 3 along N1");
+  point(*c.positions[4usize], -1., 0., 2., "curve deform: vertex 4 past the end");
+  point(*c.positions[5usize], -1., 0., 2.5, "curve deform: vertex 5 past the end, along N2");
+
+  imm ring = Path.circle(2., 4u32);
+  expectFloat(ring.length(), 11.313708, near, "ring path: length");
+  imm wp [6; Vec3] = [Vec3[0., 0., 0.], Vec3[0.5, 0., 0.], Vec3[0., 0., 1.],
+    Vec3[0.5, 0., 1.], Vec3[0., 0., 14.142136], Vec3[0.5, 0., 14.142136]];
+  mut more = List[String].empty();
+  imm ws = PolyMesh.fromPolygons(&wp, &counts, &idx, &mut more);
+  imm wr = curveDeform(&ws, &ring, Vec3[0., 0., 1.], Vec3[0., 1., 0.], Vec3[0., 0., 0.]);
+  point(*wr.positions[4usize], 0., 0., -2., "closed path: wraps round to point 1");
+  point(*wr.positions[5usize], 0., 0., -1.5, "closed path: along N1, inward");
+}
+
+fn main() i32 {
+  bends();
+  twistsAndTapers();
+  curves();
+  done();
+}
