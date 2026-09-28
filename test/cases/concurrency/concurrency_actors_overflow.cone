@@ -1,0 +1,147 @@
+// A run queue that fills. With one worker, so that nothing is stolen, a
+// 'Spreader' actor is handed 3000 'Target' actors and sends each one message
+// asking for a moment's work. A message sent from a running actor makes its
+// target runnable on the sending worker's own run queue, which holds 1024:
+// each time it fills, the worker moves half of it to the inject queue, and
+// all 3000 still run, each once. Main waits for the count, then reads the
+// run's counts from actors.stats(): one worker, no steals, and every target's
+// turn and message counted. A target's state is empty: an actor need have no
+// fields.
+//
+// The actors are written by hand in the shape the compiler is to generate
+// (concurrency_actors_pingpong.cone describes it).
+
+mod concurrency_actors_overflow;
+
+import stdio use *;
+import sync use arc;
+import collections use List;
+import thread;
+import actors;
+
+const many = 3000u64;
+const moment = 1000u64;
+
+struct Results {
+  pub done Atomic[u64];
+  pub check Atomic[u64];
+}
+
+imm results Results;
+
+fn @initpure init() {
+  results = Results[Atomic[u64].of(0u64), Atomic[u64].of(0u64)];
+}
+
+// ---- the messages, declared first (the actors package header says why) ----
+
+enum Target_msg {
+  struct Work {pub n u64;}
+}
+
+enum Spreader_msg {
+  struct Add {pub t Target;}
+  struct Go {pub n u64;}
+}
+
+// ---- Target: does some work when asked ----
+
+struct Target_state {
+  pub fn made() Target_state {
+    Target_state[];
+  }
+
+  fn work(self &mut, n u64) {
+    mut x = 1u64;
+    mut i = 0u64;
+    while i < n {
+      x = x * 6364136223846793005u64 + i;
+      i = i + 1u64;
+    }
+    results.check.add(x & 1u64);
+    results.done.add(1u64);
+  }
+}
+
+fn Target_dispatch(self &mut Target_state, msg Target_msg) {
+  match msg {
+    case imm m Target_msg.Work {self.work(m.n);}
+  }
+}
+
+struct Target {
+  mb +arc-opaq actors.Mailbox[Target_msg];
+
+  pub fn start() Target {
+    Target[actors.startActor[Target_state, Target_msg](Target_state.made(), &Target_dispatch)];
+  }
+  pub fn work(self &, n u64) {
+    actors.send[Target_msg](mb, Target_msg.Work[n]);
+  }
+}
+
+// ---- Spreader: sends every target it holds one message ----
+
+struct Spreader_state {
+  held List[Target];
+
+  pub fn made() Spreader_state {
+    Spreader_state[List[Target].empty()];
+  }
+
+  fn add(self &mut, t Target) {
+    held.push(t);
+  }
+
+  fn go(self &mut, n u64) {
+    mut i = 0usize;
+    while i < held.len() {
+      held[i].work(n);
+      i = i + 1usize;
+    }
+  }
+}
+
+fn Spreader_dispatch(self &mut Spreader_state, msg Spreader_msg) {
+  match msg {
+    case imm m Spreader_msg.Add {self.add(m.t);}
+    case imm m Spreader_msg.Go {self.go(m.n);}
+  }
+}
+
+struct Spreader {
+  mb +arc-opaq actors.Mailbox[Spreader_msg];
+
+  pub fn start() Spreader {
+    Spreader[actors.startActor[Spreader_state, Spreader_msg](Spreader_state.made(), &Spreader_dispatch)];
+  }
+  pub fn add(self &, t Target) {
+    actors.send[Spreader_msg](mb, Spreader_msg.Add[t]);
+  }
+  pub fn go(self &, n u64) {
+    actors.send[Spreader_msg](mb, Spreader_msg.Go[n]);
+  }
+}
+
+fn main() {
+  initAll();
+  actors.configure(actors.Options[workers: 1u32]);
+  {
+    imm s = Spreader.start();
+    mut i = 0u64;
+    while i < many {
+      s.add(Target.start());
+      i = i + 1u64;
+    }
+    s.go(moment);
+  }
+  while results.done.load() < many {
+    thread.sleep(1000000u64);
+  }
+  finalAll();
+  imm st = actors.stats();
+  printStr("more targets than a run queue holds, run "); printUInt(results.done.load()); printStr("\n");
+  printStr("workers "); printUInt(u64[st.workers]); printStr("\n");
+  printStr("steals "); printUInt(st.steals); printStr("\n");
+  printStr("messages handled "); printUInt(st.messages); printStr("\n");
+}

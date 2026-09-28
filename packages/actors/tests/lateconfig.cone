@@ -1,0 +1,56 @@
+// configure after the first actor has started the workers is a program
+// error: the workers already run as they were first set, so it panics rather
+// than be ignored. Its .exit is a panic's (0xC0000409); its stderr, unchecked
+// here since it names a line of actors.cone, says: panic at
+// actors.cone:<line>: actors: configure called after the workers started.
+
+mod lateconfig;
+
+import stdio use *;
+import sync use arc;
+import actors;
+
+enum Echo_msg {
+  struct Hear {pub n u64;}
+}
+
+struct Echo_state {
+  heard u64;
+
+  pub fn made() Echo_state {
+    Echo_state[0u64];
+  }
+
+  fn hear(self &mut, n u64) {
+    heard = heard + n;
+  }
+}
+
+fn Echo_dispatch(self &mut Echo_state, msg Echo_msg) {
+  match msg {
+    case imm m Echo_msg.Hear {self.hear(m.n);}
+  }
+}
+
+struct Echo {
+  mb +arc-opaq actors.Mailbox[Echo_msg];
+
+  pub fn start() Echo {
+    Echo[actors.startActor[Echo_state, Echo_msg](Echo_state.made(), &Echo_dispatch)];
+  }
+  pub fn hear(self &, n u64) {
+    actors.send[Echo_msg](mb, Echo_msg.Hear[n]);
+  }
+}
+
+fn main() {
+  initAll();
+  actors.configure(actors.Options[workers: 2u32]);
+  {
+    imm e = Echo.start();
+    e.hear(1u64);
+  }
+  printStr("configured before the first actor\n");
+  actors.configure(actors.Options[workers: 4u32]);
+  printStr("not reached\n");
+}

@@ -1,0 +1,136 @@
+// Ping-pong, timed: two actors pass a ball back and forth a million times
+// (a million messages), and the program prints how long the runtime took,
+// from before the first actor started the workers to the end of finalAll(),
+// which waits for quiescence and stops them, and so how many messages a
+// second. Build it optimised to measure:
+//
+//   congo run --release packages/actors/examples/pingpong.cone
+//
+// An argument, the number of workers, overrides the default of one per
+// logical processor: '-- 1' runs everything on one worker.
+//
+// The actor is written by hand in the shape the compiler is to generate for
+// an 'actor' declaration (the reference manual's "Actors" section).
+
+mod pingpong;
+
+import stdio use *;
+import sync use arc;
+import actors;
+
+extern {
+  fn @c(system) QueryPerformanceCounter(count *i64) i32;
+  fn @c(system) QueryPerformanceFrequency(freq *i64) i32;
+}
+
+const balls = 1000000u64;
+
+fn nowNs() u64 {
+  mut count = 0i64;
+  mut freq = 0i64;
+  QueryPerformanceCounter(&mut count as *i64);
+  QueryPerformanceFrequency(&mut freq as *i64);
+  imm c = u64[count];
+  imm f = u64[freq];
+  (c / f) * 1000000000u64 + (c % f) * 1000000000u64 / f;
+}
+
+// A decimal number's value, from its digits
+fn digits(p *u8) u32 {
+  mut n = 0u32;
+  mut q = p;
+  while *q >= 48u8 and *q <= 57u8 {
+    n = n * 10u32 + u32[*q - 48u8];
+    q = q + 1usize;
+  }
+  n;
+}
+
+// The messages, declared first (the actors package header says why)
+enum Player_msg {
+  struct Meet {pub p Player;}
+  struct Ball {pub n u64;}
+  struct Leave {}
+}
+
+struct Player_state {
+  peer Option[Player];
+
+  pub fn made() Player_state {
+    Player_state[None[Player][]];
+  }
+
+  fn meet(self &mut, p Player) {
+    peer = Some[Player][p];
+  }
+
+  fn ball(self &mut, n u64) {
+    if n + 1u64 < balls {
+      match peer {
+        case imm p Some {p.value.ball(n + 1u64);}
+        case is None[Player] {}
+      }
+    } else {
+      match peer {
+        case imm p Some {p.value.leave();}
+        case is None[Player] {}
+      }
+      peer = None[Player][];
+    }
+  }
+
+  fn leave(self &mut) {
+    peer = None[Player][];
+  }
+}
+
+fn Player_dispatch(self &mut Player_state, msg Player_msg) {
+  match msg {
+    case imm m Player_msg.Meet {self.meet(m.p);}
+    case imm m Player_msg.Ball {self.ball(m.n);}
+    case is Player_msg.Leave {self.leave();}
+  }
+}
+
+struct Player {
+  mb +arc-opaq actors.Mailbox[Player_msg];
+
+  pub fn start() Player {
+    Player[actors.startActor[Player_state, Player_msg](Player_state.made(), &Player_dispatch)];
+  }
+  pub fn meet(self &, p Player) {
+    actors.send[Player_msg](mb, Player_msg.Meet[p]);
+  }
+  pub fn ball(self &, n u64) {
+    actors.send[Player_msg](mb, Player_msg.Ball[n]);
+  }
+  pub fn leave(self &) {
+    actors.send[Player_msg](mb, Player_msg.Leave[]);
+  }
+}
+
+fn main(argc i32, argv **u8) {
+  initAll();
+  mut workers = 0u32;
+  if argc > 1i32 {
+    workers = digits(*(argv + 1usize));
+  }
+  actors.configure(actors.Options[workers: workers]);
+  imm t0 = nowNs();
+  {
+    imm ping = Player.start();
+    imm pong = Player.start();
+    ping.meet(pong);
+    pong.meet(ping);
+    ping.ball(0u64);
+  }
+  finalAll();
+  imm ns = nowNs() - t0;
+  imm st = actors.stats();
+  printStr("workers "); printUInt(u64[st.workers]); printStr("\n");
+  printStr("messages "); printUInt(st.messages); printStr("\n");
+  printStr("elapsed "); printUInt(ns / 1000000u64); printStr(" ms\n");
+  printStr("per message "); printUInt(ns / st.messages); printStr(" ns\n");
+  printStr("messages a second "); printUInt(st.messages * 1000000000u64 / ns); printStr("\n");
+  printStr("turns "); printUInt(st.activations); printStr(", steals "); printUInt(st.steals); printStr("\n");
+}

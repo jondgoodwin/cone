@@ -1,0 +1,210 @@
+// An actor's life is counted: each handle to it is one owner of an '+arc'
+// allocation, and while the actor is queued or running the scheduler holds
+// one more. Its finalizer runs exactly once: when the last handle has gone
+// and its mailbox is empty, on whichever thread let go last.
+//
+// 1. Never sent anything: the actor is idle, so the last handle's going is
+//    its death, there and then, on main.
+// 2. Copies: a handle copied twice, into a local and into a function's
+//    parameter; the actor dies only when the last of the three goes.
+// 3. Dropped with work queued: main sends 2000 messages, each some work, and
+//    lets go of its only handle at once. The scheduler's hold keeps the
+//    actor alive until its mailbox is drained; its finalizer then records
+//    how many it had handled, which must be all 2000.
+// 4. Many: 500 actors, each sent 20 messages by main and each also held by
+//    a 'Holder' actor that lets go of its handles only when told; all 500
+//    finalizers run once, and none before the holder let go.
+//
+// Main waits for the deaths of 3 and 4 by watching the finalizers' count;
+// the runtime is not asked. finalAll() stops it at the end.
+//
+// The actors are written by hand in the shape the compiler is to generate
+// (concurrency_actors_pingpong.cone describes it).
+
+mod concurrency_actors_lifetime;
+
+import stdio use *;
+import sync use arc;
+import collections use List;
+import thread;
+import actors;
+
+struct Results {
+  pub finals Atomic[u64];
+  pub handledAtDeath Atomic[u64];
+  pub diedEarly Atomic[u64];
+  pub released Atomic[u64];    // set once the holder has let go
+}
+
+imm results Results;
+
+fn @initpure init() {
+  results = Results[Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64)];
+}
+
+// Wait until n actors have been finalized in all
+fn waitFinals(n u64) {
+  while results.finals.load() < n {
+    thread.sleep(1000000u64);
+  }
+}
+
+// ---- the messages, declared first (the actors package header says why) ----
+
+enum Worked_msg {
+  struct Work {pub n u64;}
+}
+
+enum Holder_msg {
+  struct Keep {pub w Worked;}
+  struct LetGo {}
+}
+
+// ---- Worked: handles messages that each do a little work ----
+
+struct Worked_state {
+  handled u64;
+  checkEarly Bool;
+  spin u64;
+
+  pub fn made(checkEarly Bool) Worked_state {
+    Worked_state[0u64, checkEarly, 0u64];
+  }
+
+  fn work(self &mut, n u64) {
+    mut i = 0u64;
+    while i < n {
+      spin = spin * 31u64 + i;
+      i = i + 1u64;
+    }
+    handled = handled + 1u64;
+  }
+
+  fn final(self &uni) {
+    results.handledAtDeath.add(handled);
+    if checkEarly and results.released.load() == 0u64 {
+      results.diedEarly.add(1u64);
+    }
+    results.finals.add(1u64);
+  }
+}
+
+fn Worked_dispatch(self &mut Worked_state, msg Worked_msg) {
+  match msg {
+    case imm m Worked_msg.Work {self.work(m.n);}
+  }
+}
+
+struct Worked {
+  mb +arc-opaq actors.Mailbox[Worked_msg];
+
+  pub fn start(checkEarly Bool) Worked {
+    Worked[actors.startActor[Worked_state, Worked_msg](Worked_state.made(actors.sendable(checkEarly)), &Worked_dispatch)];
+  }
+  pub fn work(self &, n u64) {
+    actors.send[Worked_msg](mb, Worked_msg.Work[n]);
+  }
+}
+
+// ---- Holder: keeps handles to Worked actors until told to let go ----
+
+struct Holder_state {
+  held List[Worked];
+
+  pub fn made() Holder_state {
+    Holder_state[List[Worked].empty()];
+  }
+
+  fn keep(self &mut, w Worked) {
+    held.push(w);
+  }
+
+  fn letGo(self &mut) {
+    results.released.store(1u64);
+    held.clear();
+  }
+}
+
+fn Holder_dispatch(self &mut Holder_state, msg Holder_msg) {
+  match msg {
+    case imm m Holder_msg.Keep {self.keep(m.w);}
+    case is Holder_msg.LetGo {self.letGo();}
+  }
+}
+
+struct Holder {
+  mb +arc-opaq actors.Mailbox[Holder_msg];
+
+  pub fn start() Holder {
+    Holder[actors.startActor[Holder_state, Holder_msg](Holder_state.made(), &Holder_dispatch)];
+  }
+  pub fn keep(self &, w Worked) {
+    actors.send[Holder_msg](mb, Holder_msg.Keep[w]);
+  }
+  pub fn letGo(self &) {
+    actors.send[Holder_msg](mb, Holder_msg.LetGo[]);
+  }
+}
+
+// Keeps a handle for as long as it runs
+fn keepFor(w Worked) u64 {
+  results.finals.load();
+}
+
+fn main() {
+  initAll();
+  actors.configure(actors.Options[workers: 4u32]);
+
+  // 1. Never sent anything
+  {
+    imm a = Worked.start(false);
+  }
+  printStr("1. idle, last handle gone: finalized "); printUInt(results.finals.load()); printStr("\n");
+
+  // 2. Copies
+  {
+    imm b = Worked.start(false);
+    {
+      imm b2 = b;
+      imm seen = keepFor(b2);
+      printStr("2. the parameter's copy gone: finalized "); printUInt(results.finals.load() - 1u64); printStr("\n");
+    }
+    printStr("2. both copies gone, the first handle held: finalized "); printUInt(results.finals.load() - 1u64); printStr("\n");
+  }
+  printStr("2. all three gone: finalized "); printUInt(results.finals.load() - 1u64); printStr("\n");
+
+  // 3. Dropped with work queued
+  {
+    imm c = Worked.start(false);
+    mut i = 0u64;
+    while i < 2000u64 {
+      c.work(2000u64);
+      i = i + 1u64;
+    }
+  }
+  waitFinals(3u64);
+  printStr("3. dropped with 2000 queued: finalized "); printUInt(results.finals.load() - 2u64);
+  printStr(", having handled "); printUInt(results.handledAtDeath.load()); printStr("\n");
+
+  // 4. Many, held by another actor
+  {
+    imm h = Holder.start();
+    mut i = 0u64;
+    while i < 500u64 {
+      imm w = Worked.start(true);
+      mut k = 0u64;
+      while k < 20u64 {
+        w.work(100u64);
+        k = k + 1u64;
+      }
+      h.keep(w);
+      i = i + 1u64;
+    }
+    h.letGo();
+  }
+  waitFinals(503u64);
+  finalAll();
+  printStr("4. 500 held by a holder: finalized "); printUInt(results.finals.load() - 3u64);
+  printStr(", having handled "); printUInt(results.handledAtDeath.load() - 2000u64);
+  printStr(", before the holder let go "); printUInt(results.diedEarly.load()); printStr("\n");
+}

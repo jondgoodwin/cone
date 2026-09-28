@@ -5,7 +5,8 @@ cognitive load, and why the balance falls where it does.
 **The aim** is that programming feels like plugging together Lego blocks — a
 simple assembly operation rather than a complex algorithmic calculation. **The
 distance** is that the mechanisms meant to deliver it are the ones not yet built:
-no thread layer, so no actors; module substitution and generativity absent; and
+no thread layer, so no actor declaration (only a library runtime its actors are
+written by hand for); module substitution and generativity absent; and
 borrowing not yet narrowed by anything but convention.
 
 The framing is the author's, from a conversation of 7 September 2026. It is a
@@ -115,7 +116,10 @@ systems."*
 
 **There is no thread layer at all today**, which [Modularity](modularity.md)
 records as the largest single hole in the layer table. The `thread` package's
-OS threads and futex are library ground for one, not the layer.
+OS threads and futex are library ground for one, not the layer; so is the
+`actors` package, the runtime actors are to run on (mailboxes, a work-stealing
+scheduler, quiescence), which runs only actors written by hand in the shape an
+`actor` declaration is to generate.
 
 ## The evidence offered that expressiveness pays
 
