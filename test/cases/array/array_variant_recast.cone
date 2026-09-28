@@ -1,0 +1,82 @@
+// An array of an enum's variants is a subtype of an array of the enum, so
+// '[4; None[W][]]', whose type is '[4; None[W]]', may be wanted as a
+// '[4; Option[W]]': a struct's field, a variable's declared type, or another
+// array. That coercion reinterprets the whole array, which code generation
+// built as an LLVM bitcast -- and LLVM bitcasts no aggregate. A constant fill
+// was folded into an invalid constant expression and a computed one into an
+// invalid instruction, and conec died with no diagnostic whenever the value
+// survived to code generation: always for an element type that finalizes
+// (its drop reads the array), and for any element type once the array was
+// read. Listing the elements never met it, since each element is coerced to
+// the enum on its own.
+//
+// Every element is inspected and every finalizer counted: a None finalizes
+// nothing, so only the one Some stored over an element is finalized.
+
+mod array_variant_recast;
+
+import stdio use *;
+
+struct W {
+  pub n u64;
+  fn final(self &uni) {
+    printStr("fin");
+    printUInt(n);
+    printStr(" ");
+  }
+}
+
+// No finalizer: the bug also reached an element type with nothing to drop
+struct P { pub n u64; }
+
+struct H { pub held [4; Option[W]]; }
+
+fn show(o &Option[W]) {
+  match o {
+    case is &Some[W] { printStr("some "); }
+    case is &None[W] { printStr("none "); }
+  }
+}
+
+fn showAll(a &[4; Option[W]]) {
+  show(&a[0]); show(&a[1]); show(&a[2]); show(&a[3]);
+  printStr("\n");
+}
+
+fn fieldFill() {
+  mut h = H[[4; None[W][]]];
+  h.held[2] = Some[W][W[7]];
+  showAll(&h.held);
+}
+
+fn fieldFromLocal() {
+  imm a = [4; None[W][]];
+  imm h = H[a];
+  showAll(&h.held);
+}
+
+fn declaredLocal() {
+  mut b [4; Option[W]] = [4; None[W][]];
+  b[0] = Some[W][W[8]];
+  showAll(&b);
+}
+
+fn plainElement() {
+  imm a = [3; None[P][]];
+  mut b [3; Option[P]] = a;
+  b[1] = Some[P][P[5]];
+  match b[1] {
+    case imm s Some[P] { printStr("some"); printUInt(s.value.n); printStr("\n"); }
+    else { printStr("none\n"); }
+  }
+}
+
+fn main() {
+  fieldFill();
+  printStr("|\n");
+  fieldFromLocal();
+  printStr("|\n");
+  declaredLocal();
+  printStr("|\n");
+  plainElement();
+}

@@ -263,10 +263,14 @@ virtual references and fat pointers are in play.
   `{object pointer, vtablep}`. Every pointer is LLVM's `ptr`, so the bitcasts
   here and above fold away as they are built.
 
-`genlRecast` (no flag): **re-checks size for a struct target** with
+`genlRecast` (no flag): **re-checks size for a struct or array target** with
 `LLVMABISizeOfType` and reports `ErrorRecastSize` — this is the check
-`castTypeCheck` could not do. Otherwise pointer→int is `ptrtoint`, int→pointer
-is `inttoptr`, everything else is `bitcast`.
+`castTypeCheck` could not do — then goes through a stack slot, since LLVM
+bitcasts no aggregate. An array target reaches it as an array of variants
+wanted as an array of their enum (`[4; None[T]]` as `[4; Option[T]]`); where
+the two arrays are one LLVM type the value passes unchanged. Otherwise
+pointer→int is `ptrtoint`, int→pointer is `inttoptr`, everything else is
+`bitcast`.
 
 `genlIsType` has three paths: virtual reference (compare vtable pointers),
 nullable-pointer enum (compare against null), and tagged (read the

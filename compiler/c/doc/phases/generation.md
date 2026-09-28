@@ -343,6 +343,17 @@ DWARF.
 Every pointer is LLVM's opaque `ptr`, whatever it points at: the table's pointee
 lives in the Cone type, never in the LLVM one (section 4).
 
+**A pointee is generated after the type that reached it, not inside it.**
+Lowering a `*T`, `&T` or `&[]T` queues `T`, and `genlType` generates the queue
+when the outermost type it was asked for is done, before returning to anything
+but type generation. Generated in place, a struct reaching itself through a
+reference is reached again while its own body is still empty: with `A` holding
+`+so AState` and `AState` holding `Option[A]`, sizing `Some[A]` there measured
+`A` as nothing, and `Option[A]` came out one byte. Nothing outside type
+generation sees the difference, since every pointee is generated before
+`genlType` returns to it — which the nullable-pointer flag (below), set when an
+enum is generated and read by expression generation, needs.
+
 Verified: `&[]i32` emits `{ ptr, i64 }`, with `extractvalue ..., 1` yielding a
 *count* of 3 for a 3-element array — not a byte length.
 
@@ -490,7 +501,9 @@ fills is the bitcast it always was, and a folded field fills no slot.
 
 ### The allocation header
 
-`genlRefTypeSetup` builds, per interned reference type:
+`genlRefTypeSetup` builds, per interned reference type, the first time an
+allocation or a region header asks for it (generating the reference's own type
+does not, since that would generate the pointee inside whatever holds it):
 
 ```
 %refstruct = type { <region>, <perm>, <value> }   ; RegionField, PermField, ValueField
@@ -1035,7 +1048,7 @@ variables.
 | | `genlOut` | emit object and asm |
 | `ir/export.c` | `dclIsInstance` | whether a declaration is a generic's instance or a member of one — every function and global of a generic module's instance among them |
 | | `dclIsExported`, `typeHoldsExpanded` | whether a library compile exports a definition to its importers; the include-file generator asks the same |
-| `genllvm/genltype.c` | `genlType`, `_genlType` | the memoizing entry and the per-tag lowering switch |
+| `genllvm/genltype.c` | `genlType`, `_genlType` | the memoizing entry, which generates the queued pointees once the outermost type is done, and the per-tag lowering switch |
 | | `genlPointee`, `genlPointeeType` | the Cone type a reference, pointer or slice points at, and its LLVM type: what every load, GEP and call through it is typed by |
 | | `genlVtableSlotFnType` | a vtable slot's function type, self erased to `*u8`: the slot's type, a thunk's, and a virtual call's |
 | | `genlSetupTaggedTrait`, `genlSameSizeTrait` | the three enum shapes |
