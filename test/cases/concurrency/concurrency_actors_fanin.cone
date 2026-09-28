@@ -9,13 +9,13 @@
 // The consumer is held only by the producers once main lets go of its handle:
 // it dies, and its finalizer reports, once every producer has died and it has
 // taken every message in its mailbox. Nobody tells the runtime anything:
-// 'finish' waits for quiescence.
+// finalAll() runs the actors module's finalizer, which waits for quiescence.
 //
 // The actors are written by hand in the shape the compiler is to generate
-// (concurrency_actors_pingpong.cone describes it): a state struct beginning
-// with the runtime's Header, a message enum named <Actor>_msg, a dispatch
-// function, and a handle holding the '+arc-opaq' owner, with a send function
-// per method.
+// (concurrency_actors_pingpong.cone describes it): a message enum named
+// <Actor>_msg, declared first; a state struct; a dispatch function; and a
+// handle holding the '+arc-opaq' owner of the actor's actors.Mailbox, with a
+// send function per method.
 
 mod concurrency_actors_fanin;
 
@@ -47,10 +47,19 @@ fn @initpure init() {
     Atomic[u64].of(0u64), Atomic[u64].of(0u64)];
 }
 
+// ---- the messages, declared first (the actors package header says why) ----
+
+enum Consumer_msg {
+  struct Take {pub from u64; pub k u64;}
+}
+
+enum Producer_msg {
+  struct Burst {pub n u64;}
+}
+
 // ---- the consumer ----
 
-struct Consumer_state is Sendable {
-  hdr actors.Header;
+struct Consumer_state {
   last [4; u64];               // the last number taken from each producer
   count [4; u64];
   taken u64;
@@ -58,7 +67,7 @@ struct Consumer_state is Sendable {
   sum u64;
 
   pub fn made() Consumer_state {
-    Consumer_state[actors.Header.make(), [0u64, 0u64, 0u64, 0u64], [0u64, 0u64, 0u64, 0u64], 0u64, 0u64, 0u64];
+    Consumer_state[[0u64, 0u64, 0u64, 0u64], [0u64, 0u64, 0u64, 0u64], 0u64, 0u64, 0u64];
   }
 
   fn take(self &mut, from u64, k u64) {
@@ -83,10 +92,6 @@ struct Consumer_state is Sendable {
   }
 }
 
-enum Consumer_msg {
-  struct Take {pub from u64; pub k u64;}
-}
-
 fn Consumer_dispatch(self &mut Consumer_state, msg Consumer_msg) {
   match msg {
     case imm m Consumer_msg.Take {self.take(m.from, m.k);}
@@ -94,26 +99,25 @@ fn Consumer_dispatch(self &mut Consumer_state, msg Consumer_msg) {
 }
 
 struct Consumer {
-  st +arc-opaq Consumer_state;
+  mb +arc-opaq actors.Mailbox[Consumer_msg];
 
   pub fn start() Consumer {
     Consumer[actors.startActor[Consumer_state, Consumer_msg](Consumer_state.made(), &Consumer_dispatch)];
   }
   pub fn take(self &, from u64, k u64) {
-    actors.send[Consumer_state, Consumer_msg](st, Consumer_msg.Take[from, k]);
+    actors.send[Consumer_msg](mb, Consumer_msg.Take[from, k]);
   }
 }
 
 // ---- the producers ----
 
-struct Producer_state is Sendable {
-  hdr actors.Header;
+struct Producer_state {
   id u64;
   next u64;                    // the next number to send
   to Consumer;
 
   pub fn made(id u64, to Consumer) Producer_state {
-    Producer_state[actors.Header.make(), id, 1u64, to];
+    Producer_state[id, 1u64, to];
   }
 
   fn burst(self &mut, n u64) {
@@ -130,10 +134,6 @@ struct Producer_state is Sendable {
   }
 }
 
-enum Producer_msg {
-  struct Burst {pub n u64;}
-}
-
 fn Producer_dispatch(self &mut Producer_state, msg Producer_msg) {
   match msg {
     case imm m Producer_msg.Burst {self.burst(m.n);}
@@ -141,20 +141,20 @@ fn Producer_dispatch(self &mut Producer_state, msg Producer_msg) {
 }
 
 struct Producer {
-  st +arc-opaq Producer_state;
+  mb +arc-opaq actors.Mailbox[Producer_msg];
 
   pub fn start(id u64, to Consumer) Producer {
     Producer[actors.startActor[Producer_state, Producer_msg](
       Producer_state.made(actors.sendable(id), actors.sendable(to)), &Producer_dispatch)];
   }
   pub fn burst(self &, n u64) {
-    actors.send[Producer_state, Producer_msg](st, Producer_msg.Burst[n]);
+    actors.send[Producer_msg](mb, Producer_msg.Burst[n]);
   }
 }
 
 fn main() {
   initAll();
-  imm rt = actors.startWith(actors.Options[workers: 4u32]);
+  actors.configure(actors.Options[workers: 4u32]);
   {
     imm c = Consumer.start();
     imm p0 = Producer.start(0u64, c);
@@ -170,7 +170,8 @@ fn main() {
       b = b + 1u64;
     }
   }
-  imm st = rt.finish();
+  finalAll();
+  imm st = actors.stats();
   printStr("taken "); printUInt(results.taken.load()); printStr("\n");
   printStr("from each "); printUInt(results.from0.load()); printStr(" ");
   printUInt(results.from1.load()); printStr(" "); printUInt(results.from2.load()); printStr(" ");
@@ -180,4 +181,5 @@ fn main() {
   printStr("producers finalized "); printUInt(results.producerFinals.load()); printStr("\n");
   printStr("consumer finalized "); printUInt(results.consumerFinals.load()); printStr("\n");
   printStr("messages handled "); printUInt(st.messages); printStr("\n");
+  printStr("workers "); printUInt(u64[st.workers]); printStr("\n");
 }

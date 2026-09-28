@@ -1,0 +1,78 @@
+// Unconfigured, the first actor starts one worker per logical processor.
+// Two threads start their first actors at once, both racing for the start:
+// the workers start once (sync's Once), and each thread's actor runs.
+
+mod defaults;
+
+import testing use *;
+import sync use arc;
+import thread;
+import actors;
+
+struct Results {
+  pub heard Atomic[u64];
+}
+
+imm results Results;
+
+fn @initpure init() {
+  results = Results[Atomic[u64].of(0u64)];
+}
+
+enum Echo_msg {
+  struct Hear {pub n u64;}
+}
+
+struct Echo_state {
+  heard u64;
+
+  pub fn made() Echo_state {
+    Echo_state[0u64];
+  }
+
+  fn hear(self &mut, n u64) {
+    heard = heard + n;
+  }
+
+  fn final(self &uni) {
+    results.heard.add(heard);
+  }
+}
+
+fn Echo_dispatch(self &mut Echo_state, msg Echo_msg) {
+  match msg {
+    case imm m Echo_msg.Hear {self.hear(m.n);}
+  }
+}
+
+struct Echo {
+  mb +arc-opaq actors.Mailbox[Echo_msg];
+
+  pub fn start() Echo {
+    Echo[actors.startActor[Echo_state, Echo_msg](Echo_state.made(), &Echo_dispatch)];
+  }
+  pub fn hear(self &, n u64) {
+    actors.send[Echo_msg](mb, Echo_msg.Hear[n]);
+  }
+}
+
+// A thread's first actor, sent n
+fn startOne(n u64) u32 {
+  imm e = Echo.start();
+  e.hear(n);
+  actors.stats().workers;
+}
+
+fn main() i32 {
+  initAll();
+  imm a = thread.start(1u64, &startOne);
+  imm b = thread.start(2u64, &startOne);
+  imm wa = a.join();
+  imm wb = b.join();
+  expectUInt(u64[wa], u64[thread.parallelism()], "one worker per logical processor, seen from one thread");
+  expectUInt(u64[wb], u64[thread.parallelism()], "the same workers, seen from the other");
+  finalAll();
+  expectUInt(u64[actors.stats().workers], u64[thread.parallelism()], "one worker per logical processor by default");
+  expectUInt(results.heard.load(), 3u64, "both actors ran");
+  done();
+}

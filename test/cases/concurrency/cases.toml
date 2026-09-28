@@ -28,7 +28,11 @@
 # doc/reference/refconccomm.html, "Actors"). They are here, not in the
 # package's tests/ folder, because that shape is the compiler's contract: the
 # 'actor' declaration's scenarios will sit beside them and must behave the
-# same. Each runs threads and prints only what is the same every run.
+# same. Each runs threads and prints only what is the same every run; each
+# calls initAll() and finalAll(), which start nothing and stop the workers.
+# Each declares its message enums first, before any state or handle: the
+# other orders meet the order-dependent refusal ErrorNoSize (1069) of a cycle
+# through an owning reference (the package header, "THE SHAPE OF AN ACTOR").
 #
 # Not covered, with reasons:
 #
@@ -97,7 +101,7 @@ tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.concurrency_actors_pingpong]
 category = "run"
-description = "Two hand-written actors ping-pong a million messages, each seeing its own in send order; the program ends by itself at quiescence, both finalized once"
+description = "Two hand-written actors ping-pong a million messages, each seeing its own in send order; the workers start with the first actor, and finalAll ends the program at quiescence, both finalized once"
 tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.concurrency_actors_fanin]
@@ -112,13 +116,28 @@ tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.concurrency_actors_stealing]
 category = "run"
-description = "Sixty-four actors made runnable on one worker's queue are run on other workers too: stealing observed through actors.workerIndex and the run's steal count; then 3000 made runnable at once on one worker, more than its queue holds, all run (the overflow to the inject queue)"
+description = "Sixty-four actors made runnable on one worker's queue are run on other workers too: stealing observed through actors.workerIndex and the steal count actors.stats reads while the workers run"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.concurrency_actors_overflow]
+category = "run"
+description = "On one worker, 3000 actors with empty states made runnable at once, more than its run queue holds, all run once (half the queue moved to the inject queue each time it fills); no steals"
 tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.concurrency_actors_stress]
 category = "run"
-description = "A hundred rounds of start, a ring of 8 actors passing 4 tokens 2000 times each (with '+rc-mut' state inside the actors), and finish at quiescence, with 1 to 8 workers: every round exact"
+description = "A hundred rounds on one runtime, each a ring of 8 actors passing 4 tokens 2000 times each (with '+rc-mut' state inside the actors) and its collector, main waiting for the round's last death: every round exact; finalAll at quiescence"
 tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.concurrency_actors_rcstate]
+category = "run"
+description = "An actor whose state holds '+rc-mut' data, a '+so' owner and borrows in its methods, and declares nothing about Sendable: its handle is sent in a message to another actor, kept in that actor's state and used there, and handed to a thread that sends through it; every note arrives and both rc owners agree"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.concurrency_actors_state_unsendable]
+category = "reject"
+description = "An actor's state holding '+rc-mut' is not Sendable: refused over a Channel and by thread.start, while its handle, an +arc-opaq Mailbox, crosses both"
+tags = ["typecheck"]
 
 # -------- generation --------
 

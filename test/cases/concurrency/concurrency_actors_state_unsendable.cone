@@ -1,0 +1,59 @@
+// An actor's state is not Sendable when it holds what may not cross threads,
+// and it declares nothing to say otherwise: Keeper_state holds an '+rc-mut'
+// owner, so it is refused wherever it would cross as a value -- sent over a
+// channel, handed to a thread -- as any struct holding one is
+// (concurrency_typecheck_sendable). Only the runtime moves it, as part of the
+// actor, behind the Mailbox, which declares Sendable on its own account.
+// Keeper, the handle, owns that Mailbox and nothing of the state, so it
+// crosses both ways the state may not: the lines without annotations compile.
+// (concurrency_actors_rcstate runs such an actor.)
+
+mod concurrency_actors_state_unsendable;
+
+import sync use *;
+import thread;
+import actors;
+
+struct Log {pub n u64;}
+
+enum Keeper_msg {
+  struct Note {pub n u64;}
+}
+
+struct Keeper_state {
+  log +rc-mut Log;
+
+  pub fn made() Keeper_state {Keeper_state[+rc-mut Log[0u64]];}
+
+  fn note(self &mut, n u64) {log.n = log.n + n;}
+}
+
+fn Keeper_dispatch(self &mut Keeper_state, msg Keeper_msg) {
+  match msg {
+    case imm m Keeper_msg.Note {self.note(m.n);}
+  }
+}
+
+struct Keeper {
+  mb +arc-opaq actors.Mailbox[Keeper_msg];
+
+  pub fn start() Keeper {
+    Keeper[actors.startActor[Keeper_state, Keeper_msg](Keeper_state.made(), &Keeper_dispatch)];
+  }
+  pub fn note(self &, n u64) {
+    actors.send[Keeper_msg](mb, Keeper_msg.Note[n]);
+  }
+}
+
+fn keepState(s Keeper_state) u64 {0u64;}
+fn keepHandle(k Keeper) u64 {0u64;}
+
+fn main() {
+  // The state may not cross
+  mut tx Sender[Keeper_state];   //~ ErrorNotSendable "Keeper_state.log is +rc-mut Log, an owner whose permission, mut, is not race-safe"
+  imm t = thread.start(Keeper_state.made(), &keepState);   //~ ErrorNotSendable "start requires A is Sendable, and Keeper_state is not Sendable"
+
+  // Its handle may
+  mut htx Sender[Keeper];
+  imm h = thread.start(Keeper.start(), &keepHandle);
+}

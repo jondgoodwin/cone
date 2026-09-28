@@ -1,7 +1,8 @@
 // Ping-pong, timed: two actors pass a ball back and forth a million times
 // (a million messages), and the program prints how long the runtime took,
-// from its start to the end of 'finish', and so how many messages a second.
-// Build it optimised to measure:
+// from before the first actor started the workers to the end of finalAll(),
+// which waits for quiescence and stops them, and so how many messages a
+// second. Build it optimised to measure:
 //
 //   congo run --release packages/actors/examples/pingpong.cone
 //
@@ -45,12 +46,18 @@ fn digits(p *u8) u32 {
   n;
 }
 
-struct Player_state is Sendable {
-  hdr actors.Header;
+// The messages, declared first (the actors package header says why)
+enum Player_msg {
+  struct Meet {pub p Player;}
+  struct Ball {pub n u64;}
+  struct Leave {}
+}
+
+struct Player_state {
   peer Option[Player];
 
   pub fn made() Player_state {
-    Player_state[actors.Header.make(), None[Player][]];
+    Player_state[None[Player][]];
   }
 
   fn meet(self &mut, p Player) {
@@ -77,12 +84,6 @@ struct Player_state is Sendable {
   }
 }
 
-enum Player_msg {
-  struct Meet {pub p Player;}
-  struct Ball {pub n u64;}
-  struct Leave {}
-}
-
 fn Player_dispatch(self &mut Player_state, msg Player_msg) {
   match msg {
     case imm m Player_msg.Meet {self.meet(m.p);}
@@ -92,29 +93,30 @@ fn Player_dispatch(self &mut Player_state, msg Player_msg) {
 }
 
 struct Player {
-  st +arc-opaq Player_state;
+  mb +arc-opaq actors.Mailbox[Player_msg];
 
   pub fn start() Player {
     Player[actors.startActor[Player_state, Player_msg](Player_state.made(), &Player_dispatch)];
   }
   pub fn meet(self &, p Player) {
-    actors.send[Player_state, Player_msg](st, Player_msg.Meet[p]);
+    actors.send[Player_msg](mb, Player_msg.Meet[p]);
   }
   pub fn ball(self &, n u64) {
-    actors.send[Player_state, Player_msg](st, Player_msg.Ball[n]);
+    actors.send[Player_msg](mb, Player_msg.Ball[n]);
   }
   pub fn leave(self &) {
-    actors.send[Player_state, Player_msg](st, Player_msg.Leave[]);
+    actors.send[Player_msg](mb, Player_msg.Leave[]);
   }
 }
 
 fn main(argc i32, argv **u8) {
+  initAll();
   mut workers = 0u32;
   if argc > 1i32 {
     workers = digits(*(argv + 1usize));
   }
+  actors.configure(actors.Options[workers: workers]);
   imm t0 = nowNs();
-  imm rt = actors.startWith(actors.Options[workers: workers]);
   {
     imm ping = Player.start();
     imm pong = Player.start();
@@ -122,8 +124,9 @@ fn main(argc i32, argv **u8) {
     pong.meet(ping);
     ping.ball(0u64);
   }
-  imm st = rt.finish();
+  finalAll();
   imm ns = nowNs() - t0;
+  imm st = actors.stats();
   printStr("workers "); printUInt(u64[st.workers]); printStr("\n");
   printStr("messages "); printUInt(st.messages); printStr("\n");
   printStr("elapsed "); printUInt(ns / 1000000u64); printStr(" ms\n");

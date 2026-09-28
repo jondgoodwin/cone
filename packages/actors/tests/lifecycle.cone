@@ -1,0 +1,71 @@
+// The runtime's life, from the program's side. Before any actor, nothing
+// runs: stats() answers no workers, and main is no worker. configure sets 3
+// workers and a batch of 10, and the first actor starts them; stats(), read
+// while they run, answers 3. An actor is sent 25 messages, which it handles
+// at most 10 a turn, so in at least 3 turns. finalAll() waits for
+// quiescence, stops the workers and keeps their totals, which stats() then
+// answers: 3 workers, 25 messages, 3 turns or more.
+
+mod lifecycle;
+
+import testing use *;
+import sync use arc;
+import actors;
+
+enum Echo_msg {
+  struct Hear {pub n u64;}
+}
+
+struct Echo_state {
+  heard u64;
+
+  pub fn made() Echo_state {
+    Echo_state[0u64];
+  }
+
+  fn hear(self &mut, n u64) {
+    heard = heard + n;
+  }
+}
+
+fn Echo_dispatch(self &mut Echo_state, msg Echo_msg) {
+  match msg {
+    case imm m Echo_msg.Hear {self.hear(m.n);}
+  }
+}
+
+struct Echo {
+  mb +arc-opaq actors.Mailbox[Echo_msg];
+
+  pub fn start() Echo {
+    Echo[actors.startActor[Echo_state, Echo_msg](Echo_state.made(), &Echo_dispatch)];
+  }
+  pub fn hear(self &, n u64) {
+    actors.send[Echo_msg](mb, Echo_msg.Hear[n]);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  expectUInt(u64[actors.stats().workers], 0u64, "no workers before the first actor");
+  expectUInt(u64[actors.workerIndex()], u64[actors.noWorker], "main is no worker, before any actor");
+
+  actors.configure(actors.Options[workers: 3u32, batch: 10u32]);
+  expectUInt(u64[actors.stats().workers], 0u64, "configure starts nothing");
+  {
+    imm e = Echo.start();
+    expectUInt(u64[actors.stats().workers], 3u64, "the first actor started the three workers");
+    expectUInt(u64[actors.workerIndex()], u64[actors.noWorker], "main is no worker, with workers running");
+    mut i = 0u64;
+    while i < 25u64 {
+      e.hear(i);
+      i = i + 1u64;
+    }
+  }
+  finalAll();
+  imm st = actors.stats();
+  expectUInt(u64[st.workers], 3u64, "three workers in the totals");
+  expectUInt(st.messages, 25u64, "every message handled");
+  expect(st.activations >= 3u64, "25 messages at most 10 a turn: three turns or more");
+  done();
+}

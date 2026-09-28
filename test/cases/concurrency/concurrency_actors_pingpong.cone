@@ -3,9 +3,10 @@
 // odd, so each player sees every second number, in the order they were sent,
 // and checks it. The player that receives the last ball tells the other to
 // leave; each then lets go of its handle to the other, so both die once main
-// has let go of its own. Nothing tells the runtime the game is over: 'finish'
-// waits until no actor is active and no message is in flight, then stops the
-// workers, and main prints what the players' finalizers recorded.
+// has let go of its own. Nothing tells the runtime the game is over:
+// finalAll() runs the actors module's finalizer, which waits until no actor
+// is active and no message is in flight, then stops the workers; main then
+// prints what the players' finalizers recorded.
 //
 // The actor is written by hand in the shape the compiler is to generate for
 //
@@ -17,16 +18,16 @@
 //     fn leave(self &mut) {...}
 //   }
 //
-// (a) Player_state, the state: the runtime's Header first, then the fields,
-//     and the methods, which run one message at a time with the state 'mut',
-//     and 'made', its constructor; it declares Sendable, since the whole
-//     state moves between workers and only the worker running it reaches it
+// (a) Player_state, the state: the fields, and the methods, which run one
+//     message at a time with the state 'mut', and 'made', its constructor;
+//     it declares nothing about Sendable, since only the runtime reaches it
 // (b) Player_msg, the message enum: one variant per method, its fields the
 //     method's parameters
-// (c) Player, the handle: an '+arc-opaq' owner of the state, with one send
-//     function per method, which builds the variant and sends it, and
-//     'start' ('spawn' is reserved), which makes the state from its
-//     arguments, each passed through actors.sendable, and answers a handle
+// (c) Player, the handle: an '+arc-opaq' owner of the actor's
+//     actors.Mailbox[Player_msg], with one send function per method, which
+//     builds the variant and sends it, and 'start' ('spawn' is reserved),
+//     which makes the state from its arguments, each passed through
+//     actors.sendable, and answers a handle
 // (d) Player_dispatch: one function matching on the enum and calling the
 //     method
 //
@@ -54,16 +55,22 @@ fn @initpure init() {
   results = Results[Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64)];
 }
 
+// (b) The messages, declared first (the package header says why)
+enum Player_msg {
+  struct Meet {pub p Player;}
+  struct Ball {pub n u64;}
+  struct Leave {}
+}
+
 // (a) The state
-struct Player_state is Sendable {
-  hdr actors.Header;
+struct Player_state {
   peer Option[Player];
   seen u64;
   expect u64;
   disorder u64;
 
   pub fn made(first u64) Player_state {
-    Player_state[actors.Header.make(), None[Player][], 0u64, first, 0u64];
+    Player_state[None[Player][], 0u64, first, 0u64];
   }
 
   fn meet(self &mut, p Player) {
@@ -102,13 +109,6 @@ struct Player_state is Sendable {
   }
 }
 
-// (b) The messages
-enum Player_msg {
-  struct Meet {pub p Player;}
-  struct Ball {pub n u64;}
-  struct Leave {}
-}
-
 // (d) Dispatch
 fn Player_dispatch(self &mut Player_state, msg Player_msg) {
   match msg {
@@ -118,9 +118,9 @@ fn Player_dispatch(self &mut Player_state, msg Player_msg) {
   }
 }
 
-// (c) The handle, its send functions, and spawn
+// (c) The handle, its send functions, and start
 struct Player {
-  st +arc-opaq Player_state;
+  mb +arc-opaq actors.Mailbox[Player_msg];
 
   pub fn start(first u64) Player {
     Player[actors.startActor[Player_state, Player_msg](
@@ -129,19 +129,18 @@ struct Player {
   }
 
   pub fn meet(self &, p Player) {
-    actors.send[Player_state, Player_msg](st, Player_msg.Meet[p]);
+    actors.send[Player_msg](mb, Player_msg.Meet[p]);
   }
   pub fn ball(self &, n u64) {
-    actors.send[Player_state, Player_msg](st, Player_msg.Ball[n]);
+    actors.send[Player_msg](mb, Player_msg.Ball[n]);
   }
   pub fn leave(self &) {
-    actors.send[Player_state, Player_msg](st, Player_msg.Leave[]);
+    actors.send[Player_msg](mb, Player_msg.Leave[]);
   }
 }
 
 fn main() {
   initAll();
-  imm rt = actors.start();
   {
     imm ping = Player.start(0u64);
     imm pong = Player.start(1u64);
@@ -149,9 +148,9 @@ fn main() {
     pong.meet(ping);
     ping.ball(0u64);
   }
-  imm st = rt.finish();
+  finalAll();
   printStr("balls seen "); printUInt(results.seen.load()); printStr("\n");
   printStr("out of order "); printUInt(results.disorder.load()); printStr("\n");
   printStr("players finalized "); printUInt(results.finals.load()); printStr("\n");
-  printStr("messages handled "); printUInt(st.messages); printStr("\n");
+  printStr("messages handled "); printUInt(actors.stats().messages); printStr("\n");
 }

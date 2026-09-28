@@ -1,0 +1,195 @@
+// An actor whose state holds what may not cross threads, and whose handle
+// crosses anyway. Keeper_state holds an '+rc-mut' log it has two owners of,
+// and a '+so' owner of a note count, and its method changes both through
+// borrows; it declares nothing about Sendable, and is not Sendable
+// (concurrency_actors_state_unsendable). Its handle, Keeper, owns the
+// actor's Mailbox and nothing of the state, so it crosses:
+//
+// - main sends it, in a message, to an Auditor actor, which keeps it in its
+//   own state and, on a worker, sends the keeper 100 notes through it;
+// - main hands a copy of it to a thread, which sends 50 notes through it and
+//   is joined.
+//
+// Every note arrives, both of the log's owners see the same sum, and the
+// keeper is finalized once, on whichever thread let go last, after the
+// auditor lets go of it. finalAll() waits for quiescence and stops the
+// workers.
+//
+// The actors are written by hand in the shape the compiler is to generate
+// (concurrency_actors_pingpong.cone describes it).
+
+mod concurrency_actors_rcstate;
+
+import stdio use *;
+import sync use arc;
+import collections use List;
+import thread;
+import actors;
+
+struct Results {
+  pub sum Atomic[u64];
+  pub notes Atomic[u64];
+  pub agree Atomic[u64];
+  pub finals Atomic[u64];
+}
+
+imm results Results;
+
+fn @initpure init() {
+  results = Results[Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64)];
+}
+
+struct Log {
+  pub sum u64;
+}
+
+struct Count {
+  pub n u64;
+}
+
+// ---- the messages, declared first (the actors package header says why) ----
+
+enum Keeper_msg {
+  struct Note {pub n u64;}
+}
+
+enum Auditor_msg {
+  struct Watch {pub k Keeper;}
+  struct Drive {pub times u64;}
+  struct Forget {}
+}
+
+// ---- Keeper: its state holds rc and so owners ----
+
+struct Keeper_state {
+  log +rc-mut Log;
+  logToo +rc-mut Log;
+  count +so Count;
+
+  pub fn made() Keeper_state {
+    imm l = +rc-mut Log[0u64];
+    Keeper_state[l, l, +so Count[0u64]];
+  }
+
+  fn note(self &mut, n u64) {
+    imm c = &mut count.n;
+    *c = *c + 1u64;
+    add(&mut logToo.sum, n);
+  }
+
+  fn final(self &uni) {
+    results.sum.add(log.sum);
+    results.notes.add(count.n);
+    if log.sum == logToo.sum {
+      results.agree.add(1u64);
+    }
+    results.finals.add(1u64);
+  }
+}
+
+// Add to a log's sum through a borrow of it
+fn add(s &mut u64, n u64) {
+  *s = *s + n;
+}
+
+fn Keeper_dispatch(self &mut Keeper_state, msg Keeper_msg) {
+  match msg {
+    case imm m Keeper_msg.Note {self.note(m.n);}
+  }
+}
+
+struct Keeper {
+  mb +arc-opaq actors.Mailbox[Keeper_msg];
+
+  pub fn start() Keeper {
+    Keeper[actors.startActor[Keeper_state, Keeper_msg](Keeper_state.made(), &Keeper_dispatch)];
+  }
+  pub fn note(self &, n u64) {
+    actors.send[Keeper_msg](mb, Keeper_msg.Note[n]);
+  }
+}
+
+// ---- Auditor: keeps keepers' handles in its state and uses them ----
+
+struct Auditor_state {
+  watched List[Keeper];
+
+  pub fn made() Auditor_state {
+    Auditor_state[List[Keeper].empty()];
+  }
+
+  fn watch(self &mut, k Keeper) {
+    watched.push(k);
+  }
+
+  fn drive(self &mut, times u64) {
+    mut i = 0usize;
+    while i < watched.len() {
+      mut t = 1u64;
+      while t <= times {
+        watched[i].note(t);
+        t = t + 1u64;
+      }
+      i = i + 1usize;
+    }
+  }
+
+  fn forget(self &mut) {
+    watched.clear();
+  }
+}
+
+fn Auditor_dispatch(self &mut Auditor_state, msg Auditor_msg) {
+  match msg {
+    case imm m Auditor_msg.Watch {self.watch(m.k);}
+    case imm m Auditor_msg.Drive {self.drive(m.times);}
+    case is Auditor_msg.Forget {self.forget();}
+  }
+}
+
+struct Auditor {
+  mb +arc-opaq actors.Mailbox[Auditor_msg];
+
+  pub fn start() Auditor {
+    Auditor[actors.startActor[Auditor_state, Auditor_msg](Auditor_state.made(), &Auditor_dispatch)];
+  }
+  pub fn watch(self &, k Keeper) {
+    actors.send[Auditor_msg](mb, Auditor_msg.Watch[k]);
+  }
+  pub fn drive(self &, times u64) {
+    actors.send[Auditor_msg](mb, Auditor_msg.Drive[times]);
+  }
+  pub fn forget(self &) {
+    actors.send[Auditor_msg](mb, Auditor_msg.Forget[]);
+  }
+}
+
+// A thread's work: 50 notes, 1000 each, through the handle it was handed
+fn fromThread(k Keeper) u64 {
+  mut i = 0u64;
+  while i < 50u64 {
+    k.note(1000u64);
+    i = i + 1u64;
+  }
+  i;
+}
+
+fn main() {
+  initAll();
+  actors.configure(actors.Options[workers: 4u32]);
+  {
+    imm k = Keeper.start();
+    imm a = Auditor.start();
+    a.watch(k);
+    a.drive(100u64);
+    a.forget();
+    imm t = thread.start(k, &fromThread);
+    imm sent = t.join();
+    printStr("the thread sent "); printUInt(sent); printStr("\n");
+  }
+  finalAll();
+  printStr("notes "); printUInt(results.notes.load()); printStr("\n");
+  printStr("sum "); printUInt(results.sum.load()); printStr("\n");
+  printStr("both owners agree "); printUInt(results.agree.load()); printStr("\n");
+  printStr("keeper finalized "); printUInt(results.finals.load()); printStr("\n");
+}

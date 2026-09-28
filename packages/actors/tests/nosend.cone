@@ -1,11 +1,12 @@
-// A message sent with no runtime running is a program error: nothing would
-// ever run it, so the send panics rather than let it sit. Here the runtime
-// has finished, and main still holds a handle and sends through it. Its
-// .exit is a panic's, the status the Microsoft C library's 'abort' ends a
-// program with, 0xC0000409. Its stderr, unchecked here since it names a line
-// of actors.cone, says: panic at actors.cone:<line>: actors: a message sent
-// with no runtime running. What the program printed before is kept: a panic
-// flushes stdout first.
+// A message sent once the runtime has stopped is a program error: nothing
+// would ever run it, so the send panics rather than let it sit. Here
+// finalAll() has run the actors module's finalizer, which stopped the
+// workers, and main still holds a handle and sends through it. Its .exit is
+// a panic's, the status the Microsoft C library's 'abort' ends a program
+// with, 0xC0000409. Its stderr, unchecked here since it names a line of
+// actors.cone, says: panic at actors.cone:<line>: actors: a message sent
+// after the runtime stopped. What the program printed before is kept: a
+// panic flushes stdout first.
 
 mod nosend;
 
@@ -13,21 +14,20 @@ import stdio use *;
 import sync use arc;
 import actors;
 
-struct Echo_state is Sendable {
-  hdr actors.Header;
+enum Echo_msg {
+  struct Hear {pub n u64;}
+}
+
+struct Echo_state {
   heard u64;
 
   pub fn made() Echo_state {
-    Echo_state[actors.Header.make(), 0u64];
+    Echo_state[0u64];
   }
 
   fn hear(self &mut, n u64) {
     heard = heard + n;
   }
-}
-
-enum Echo_msg {
-  struct Hear {pub n u64;}
 }
 
 fn Echo_dispatch(self &mut Echo_state, msg Echo_msg) {
@@ -37,22 +37,23 @@ fn Echo_dispatch(self &mut Echo_state, msg Echo_msg) {
 }
 
 struct Echo {
-  st +arc-opaq Echo_state;
+  mb +arc-opaq actors.Mailbox[Echo_msg];
 
   pub fn start() Echo {
     Echo[actors.startActor[Echo_state, Echo_msg](Echo_state.made(), &Echo_dispatch)];
   }
   pub fn hear(self &, n u64) {
-    actors.send[Echo_state, Echo_msg](st, Echo_msg.Hear[n]);
+    actors.send[Echo_msg](mb, Echo_msg.Hear[n]);
   }
 }
 
 fn main() {
+  initAll();
+  actors.configure(actors.Options[workers: 2u32]);
   imm e = Echo.start();
-  imm rt = actors.startWith(actors.Options[workers: 2u32]);
   e.hear(1u64);
-  rt.finish();
-  printStr("sent while running, and finished\n");
+  finalAll();
+  printStr("sent while running, and stopped\n");
   e.hear(2u64);
   printStr("not reached\n");
 }
