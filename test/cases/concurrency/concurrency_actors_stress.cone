@@ -1,0 +1,235 @@
+// A stress run, repeated to catch a race: 100 rounds, each starting the
+// runtime afresh with 1 to 8 workers (the round number's choice), running a
+// ring, and finishing. Each round builds a ring of 8 'Node' actors, each
+// holding a handle to the next, and a 'Collector' holding the first; main
+// sends 4 tokens into the ring, each to be passed on 2000 times. Each node
+// counts the tokens it passes in an '+rc-mut' tally it holds two owners of
+// (an 'rc' count is not atomic, and needs none: one worker at a time runs
+// an actor, and each hand-off of an actor between workers orders what the
+// last did before what the next does). The last pass of each token reports
+// to the collector; when all 4 have reported, it sends an 'unlink' round the
+// ring, each node passing it on and letting go of its next node, and lets
+// go of the first itself, so that each node, and then the collector, dies
+// once main has let go of its own handles.
+//
+// Every round must see exactly 4 * 2001 passes, every tally agree with its
+// node's own count, and all 9 actors finalized, each once; a round that does
+// not is counted, and the count printed at the end is 0. Nothing tells the
+// runtime a round is over: 'finish' waits for quiescence each time.
+//
+// The actors are written by hand in the shape the compiler is to generate
+// (concurrency_actors_pingpong.cone describes it).
+
+mod concurrency_actors_stress;
+
+import stdio use *;
+import sync use arc;
+import collections use List;
+import actors;
+
+const rounds = 100u64;
+const ringSize = 8u64;
+const tokens = 4u64;
+const hops = 2000u64;
+
+struct Results {
+  pub passes Atomic[u64];
+  pub mismatches Atomic[u64];
+  pub finals Atomic[u64];
+}
+
+imm results Results;
+
+fn @initpure init() {
+  results = Results[Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64)];
+}
+
+struct Tally {
+  pub n u64;
+}
+
+// ---- Node: passes tokens on to the next ----
+
+struct Node_state is Sendable {
+  hdr actors.Header;
+  next Option[Node];
+  collector Collector;
+  passes u64;
+  tally +rc-mut Tally;
+  tallyToo +rc-mut Tally;
+
+  pub fn made(collector Collector) Node_state {
+    imm t = +rc-mut Tally[0u64];
+    Node_state[actors.Header.make(), None[Node][], collector, 0u64, t, t];
+  }
+
+  fn link(self &mut, n Node) {
+    next = Some[Node][n];
+  }
+
+  fn token(self &mut, left u64) {
+    passes = passes + 1u64;
+    tally.n = tally.n + 1u64;
+    if left == 0u64 {
+      collector.done();
+      return;
+    }
+    match next {
+      case imm n Some {n.value.token(left - 1u64);}
+      case is None[Node] {results.mismatches.add(1u64);}
+    }
+  }
+
+  // Pass the unlink on while it has further to go, and let go of the next
+  fn unlink(self &mut, left u64) {
+    if left > 1u64 {
+      match next {
+        case imm n Some {n.value.unlink(left - 1u64);}
+        case is None[Node] {results.mismatches.add(1u64);}
+      }
+    }
+    next = None[Node][];
+  }
+
+  fn final(self &uni) {
+    results.passes.add(passes);
+    if tallyToo.n != passes {
+      results.mismatches.add(1u64);
+    }
+    results.finals.add(1u64);
+  }
+}
+
+enum Node_msg {
+  struct Link {pub n Node;}
+  struct Token {pub left u64;}
+  struct Unlink {pub left u64;}
+}
+
+fn Node_dispatch(self &mut Node_state, msg Node_msg) {
+  match msg {
+    case imm m Node_msg.Link {self.link(m.n);}
+    case imm m Node_msg.Token {self.token(m.left);}
+    case imm m Node_msg.Unlink {self.unlink(m.left);}
+  }
+}
+
+struct Node {
+  st +arc-opaq Node_state;
+
+  pub fn start(collector Collector) Node {
+    Node[actors.startActor[Node_state, Node_msg](Node_state.made(actors.sendable(collector)), &Node_dispatch)];
+  }
+  pub fn link(self &, n Node) {
+    actors.send[Node_state, Node_msg](st, Node_msg.Link[n]);
+  }
+  pub fn token(self &, left u64) {
+    actors.send[Node_state, Node_msg](st, Node_msg.Token[left]);
+  }
+  pub fn unlink(self &, left u64) {
+    actors.send[Node_state, Node_msg](st, Node_msg.Unlink[left]);
+  }
+}
+
+// ---- Collector: hears each token's end, then unlinks the ring ----
+
+struct Collector_state is Sendable {
+  hdr actors.Header;
+  first Option[Node];
+  finished u64;
+
+  pub fn made() Collector_state {
+    Collector_state[actors.Header.make(), None[Node][], 0u64];
+  }
+
+  fn join(self &mut, n Node) {
+    first = Some[Node][n];
+  }
+
+  fn done(self &mut) {
+    finished = finished + 1u64;
+    if finished == tokens {
+      match first {
+        case imm n Some {n.value.unlink(ringSize);}
+        case is None[Node] {results.mismatches.add(1u64);}
+      }
+      first = None[Node][];
+    }
+  }
+
+  fn final(self &uni) {
+    results.finals.add(1u64);
+  }
+}
+
+enum Collector_msg {
+  struct Join {pub n Node;}
+  struct Done {}
+}
+
+fn Collector_dispatch(self &mut Collector_state, msg Collector_msg) {
+  match msg {
+    case imm m Collector_msg.Join {self.join(m.n);}
+    case is Collector_msg.Done {self.done();}
+  }
+}
+
+struct Collector {
+  st +arc-opaq Collector_state;
+
+  pub fn start() Collector {
+    Collector[actors.startActor[Collector_state, Collector_msg](Collector_state.made(), &Collector_dispatch)];
+  }
+  pub fn join(self &, n Node) {
+    actors.send[Collector_state, Collector_msg](st, Collector_msg.Join[n]);
+  }
+  pub fn done(self &) {
+    actors.send[Collector_state, Collector_msg](st, Collector_msg.Done[]);
+  }
+}
+
+// One round: whether everything came out exact
+fn round(workers u32) Bool {
+  results.passes.store(0u64);
+  results.mismatches.store(0u64);
+  results.finals.store(0u64);
+  imm rt = actors.startWith(actors.Options[workers: workers]);
+  {
+    imm c = Collector.start();
+    mut nodes = List[Node].empty();
+    mut i = 0u64;
+    while i < ringSize {
+      nodes.push(Node.start(c));
+      i = i + 1u64;
+    }
+    mut k = 0usize;
+    while k < nodes.len() {
+      nodes[k].link(*nodes[(k + 1usize) % nodes.len()]);
+      k = k + 1usize;
+    }
+    c.join(*nodes[0usize]);
+    k = 0usize;
+    while k < usize[tokens] {
+      nodes[k * 2usize].token(hops);
+      k = k + 1usize;
+    }
+  }
+  rt.finish();
+  results.passes.load() == tokens * (hops + 1u64)
+    and results.mismatches.load() == 0u64
+    and results.finals.load() == ringSize + 1u64;
+}
+
+fn main() {
+  initAll();
+  mut bad = 0u64;
+  mut r = 0u64;
+  while r < rounds {
+    if !round(u32[r % 8u64] + 1u32) {
+      bad = bad + 1u64;
+    }
+    r = r + 1u64;
+  }
+  printStr("rounds "); printUInt(rounds); printStr("\n");
+  printStr("rounds not exact "); printUInt(bad); printStr("\n");
+}

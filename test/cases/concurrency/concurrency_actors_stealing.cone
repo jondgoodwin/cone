@@ -1,0 +1,184 @@
+// Work stealing, observed. A 'Spreader' actor is handed 64 'Target' actors;
+// when told to go, it sends each target one message asking for some work
+// (a loop of arithmetic, milliseconds long). A message sent from a running
+// actor makes its target runnable on the sending worker's own run queue, so
+// all 64 targets start out queued on the one worker running the spreader;
+// that worker's pushes wake a sleeping worker, which steals half of its
+// queue, and so on. A target run on any other worker was stolen.
+//
+// Each target records, in a bitmask, the index of the worker that ran it
+// (actors.workerIndex), and the spreader records its own. The run's counts,
+// from 'finish', include the steals. The test prints only whether stealing
+// happened, since how much varies from run to run.
+//
+// Then, with one worker, so that nothing is stolen, a second spreader with
+// 3000 targets each asked for a moment's work: more than a worker's run
+// queue holds (1024), so the worker moves half its queue to the inject queue
+// each time it fills, and all 3000 still run.
+//
+// The actors are written by hand in the shape the compiler is to generate
+// (concurrency_actors_pingpong.cone describes it).
+
+mod concurrency_actors_stealing;
+
+import stdio use *;
+import sync use arc;
+import collections use List;
+import actors;
+
+const targets = 64u64;
+const spin = 2000000u64;
+const many = 3000u64;
+const moment = 1000u64;
+
+struct Results {
+  pub ranOn Atomic[u64];       // bit i: some target ran on worker i
+  pub spreaderOn Atomic[u64];  // the spreader's worker, as a bit
+  pub done Atomic[u64];
+  pub check Atomic[u64];
+}
+
+imm results Results;
+
+fn @initpure init() {
+  results = Results[Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64)];
+}
+
+// ---- Target: does some work when asked ----
+
+struct Target_state is Sendable {
+  hdr actors.Header;
+
+  pub fn made() Target_state {
+    Target_state[actors.Header.make()];
+  }
+
+  fn work(self &mut, n u64) {
+    mut x = 1u64;
+    mut i = 0u64;
+    while i < n {
+      x = x * 6364136223846793005u64 + i;
+      i = i + 1u64;
+    }
+    results.ranOn.bitOr(1u64 << u64[actors.workerIndex()]);
+    results.check.add(x & 1u64);
+    results.done.add(1u64);
+  }
+}
+
+enum Target_msg {
+  struct Work {pub n u64;}
+}
+
+fn Target_dispatch(self &mut Target_state, msg Target_msg) {
+  match msg {
+    case imm m Target_msg.Work {self.work(m.n);}
+  }
+}
+
+struct Target {
+  st +arc-opaq Target_state;
+
+  pub fn start() Target {
+    Target[actors.startActor[Target_state, Target_msg](Target_state.made(), &Target_dispatch)];
+  }
+  pub fn work(self &, n u64) {
+    actors.send[Target_state, Target_msg](st, Target_msg.Work[n]);
+  }
+}
+
+// ---- Spreader: sends every target it holds one message ----
+
+struct Spreader_state is Sendable {
+  hdr actors.Header;
+  held List[Target];
+
+  pub fn made() Spreader_state {
+    Spreader_state[actors.Header.make(), List[Target].empty()];
+  }
+
+  fn add(self &mut, t Target) {
+    held.push(t);
+  }
+
+  fn go(self &mut, n u64) {
+    results.spreaderOn.bitOr(1u64 << u64[actors.workerIndex()]);
+    mut i = 0usize;
+    while i < held.len() {
+      held[i].work(n);
+      i = i + 1usize;
+    }
+  }
+}
+
+enum Spreader_msg {
+  struct Add {pub t Target;}
+  struct Go {pub n u64;}
+}
+
+fn Spreader_dispatch(self &mut Spreader_state, msg Spreader_msg) {
+  match msg {
+    case imm m Spreader_msg.Add {self.add(m.t);}
+    case imm m Spreader_msg.Go {self.go(m.n);}
+  }
+}
+
+struct Spreader {
+  st +arc-opaq Spreader_state;
+
+  pub fn start() Spreader {
+    Spreader[actors.startActor[Spreader_state, Spreader_msg](Spreader_state.made(), &Spreader_dispatch)];
+  }
+  pub fn add(self &, t Target) {
+    actors.send[Spreader_state, Spreader_msg](st, Spreader_msg.Add[t]);
+  }
+  pub fn go(self &, n u64) {
+    actors.send[Spreader_state, Spreader_msg](st, Spreader_msg.Go[n]);
+  }
+}
+
+// How many bits are set
+fn bits(v u64) u64 {
+  mut n = 0u64;
+  mut x = v;
+  while x != 0u64 {
+    n = n + (x & 1u64);
+    x = x >> 1u64;
+  }
+  n;
+}
+
+fn main() {
+  initAll();
+  imm rt = actors.startWith(actors.Options[workers: 4u32]);
+  {
+    imm s = Spreader.start();
+    mut i = 0u64;
+    while i < targets {
+      s.add(Target.start());
+      i = i + 1u64;
+    }
+    s.go(spin);
+  }
+  imm st = rt.finish();
+  imm ranOn = results.ranOn.load();
+  imm elsewhere = ranOn & ~results.spreaderOn.load();
+  printStr("targets run "); printUInt(results.done.load()); printStr("\n");
+  printStr("run on more than one worker "); printStr(if bits(ranOn) > 1u64 {"true";} else {"false";}); printStr("\n");
+  printStr("run on a worker other than the spreader's "); printStr(if elsewhere != 0u64 {"true";} else {"false";}); printStr("\n");
+  printStr("steals counted "); printStr(if st.steals > 0u64 {"true";} else {"false";}); printStr("\n");
+
+  results.done.store(0u64);
+  imm rt2 = actors.startWith(actors.Options[workers: 1u32]);
+  {
+    imm s = Spreader.start();
+    mut i = 0u64;
+    while i < many {
+      s.add(Target.start());
+      i = i + 1u64;
+    }
+    s.go(moment);
+  }
+  rt2.finish();
+  printStr("more targets than a run queue holds, run "); printUInt(results.done.load()); printStr("\n");
+}

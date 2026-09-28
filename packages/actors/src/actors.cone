@@ -1,0 +1,1073 @@
+// The actors package: the runtime Cone's actors run on. An actor is state
+// that lives on, reached by nothing but messages: each message is a call of
+// one of its methods, queued in its mailbox and run later, one at a time, on
+// whichever worker thread takes the actor up. A method runs to completion on
+// that worker's own stack; nothing is suspended or resumed. The package has
+// the mailbox, the work-stealing scheduler that runs mailboxes on a pool of
+// OS threads, the counting that decides when an actor dies, and the
+// quiescence the program ends at.
+//
+//   import sync use arc;
+//   import actors;
+//
+//   fn main() {
+//     imm rt = actors.start();           // one worker per logical processor
+//     imm c = Counter.start(0u64);       // an actor, and a handle to it
+//     c.add(5u64);                       // a message: queued, run later
+//     c.add(7u64);                       // run after the first
+//   }                                    // rt's death waits for quiescence
+//
+// What it has:
+//
+//   actors.start()                  start the runtime: a Runtime
+//   actors.startWith(opts)          the same, with actors.Options[workers:,
+//                                   batch:]
+//   rt.finish()                     wait until quiescent, stop the workers:
+//                                   the run's Stats
+//   actors.workerIndex()            the worker running the caller, or
+//                                   actors.noWorker
+//   actors.Header                   what every actor's state begins with
+//   actors.startActor[S, M](state, &dispatch)
+//                                   a new actor: its '+arc-opaq S' owner
+//   actors.send[S, M](st, msg)      queue msg for the actor whose state is st
+//   actors.sendable(v)              v, if it may cross threads (the check)
+//
+// The last four are what an actor's own code calls, and that code has one
+// shape, which the compiler is to generate from an 'actor' declaration. Until
+// it does, the shape is written by hand, as the test suite's
+// concurrency_actors_* scenarios write it. The package is 'actors' because
+// 'actor' (the declaration's keyword) is reserved, as are 'spawn', 'async',
+// 'wait' and 'yield'; and it is a package of its own, not a module of sync,
+// because it starts threads, and the thread package imports sync, so sync
+// cannot import thread. It is all Cone, over the thread package's threads
+// and sync's futex, Mutex and 'arc': nothing it does needed C.
+//
+// THE SHAPE OF AN ACTOR. For
+//
+//   actor Counter {
+//     count u64;
+//     fn add(self &mut, n u64) {count = count + n;}
+//     fn report(self &mut, to Printer) {to.show(count);}
+//   }
+//
+// four things are written:
+//
+//   (a) The state: a struct of the actor's fields, the runtime's Header
+//       first, and the actor's methods, unchanged, taking the state 'mut'.
+//       It declares Sendable, taken on trust: an actor's state moves between
+//       workers as a whole, and is reached only by the one running it. Its
+//       constructor, 'made', is the one place its fields are set.
+//
+//         struct Counter_state is Sendable {
+//           hdr actors.Header;
+//           count u64;
+//           pub fn made(count u64) Counter_state {
+//             Counter_state[actors.Header.make(), count];
+//           }
+//           fn add(self &mut, n u64) {count = count + n;}
+//           fn report(self &mut, to Printer) {to.show(count);}
+//         }
+//
+//   (b) The message enum, named for the actor with '_msg': one variant per
+//       method, named for it, whose fields are the method's parameters.
+//
+//         enum Counter_msg {
+//           struct Add {pub n u64;}
+//           struct Report {pub to Printer;}
+//         }
+//
+//   (c) The handle, named for the actor: the one field, the '+arc-opaq'
+//       owner of the state that startActor answers, and one send function
+//       per method, of the method's name and parameters, taking the handle by
+//       any reference, which builds the variant and sends it; and 'start',
+//       which makes the state from its arguments, each passed through
+//       actors.sendable, and starts the actor.
+//
+//         struct Counter {
+//           st +arc-opaq Counter_state;
+//           pub fn start(count u64) Counter {
+//             Counter[actors.startActor[Counter_state, Counter_msg](
+//               Counter_state.made(actors.sendable(count)), &Counter_dispatch)];
+//           }
+//           pub fn add(self &, n u64) {
+//             actors.send[Counter_state, Counter_msg](st, Counter_msg.Add[n]);
+//           }
+//           pub fn report(self &, to Printer) {
+//             actors.send[Counter_state, Counter_msg](st, Counter_msg.Report[to]);
+//           }
+//         }
+//
+//   (d) The dispatch function, named for the actor with '_dispatch': one
+//       'match' on the message, each arm calling its method.
+//
+//         fn Counter_dispatch(self &mut Counter_state, msg Counter_msg) {
+//           match msg {
+//             case imm m Counter_msg.Add {self.add(m.n);}
+//             case imm m Counter_msg.Report {self.report(m.to);}
+//           }
+//         }
+//
+// Creation is named 'start', as the thread package's is, since 'spawn' is
+// reserved; the declaration may spell it 'spawn' once the keyword is its.
+// Written by hand, the shape has three awkward corners the compiler will
+// take over: a state's fields are private, so the state's own 'made' sets
+// them; a handle's field is named 'st', since 'actor' is reserved; and the
+// order of declarations can matter today where two actors' states hold each
+// other's handles: one order may be refused as a type that would contain
+// itself (concurrency_actors_stress declares its Node before its Collector
+// for that reason).
+//
+// THE HANDLE is an actor's name to the rest of the program: a struct over
+// one '+arc-opaq' owner of the state, so the sync package's 'arc' counts
+// handles. Copying a handle (passing it, storing it, putting it in a
+// message) makes another owner; each going drops one. 'opaq' lets nothing
+// through a handle read or write the state: a handle's only use is to send.
+// A handle is Sendable (an '+arc-opaq' owner of a type declaring Sendable),
+// so it may be put in a message, handed to a thread, or held in another
+// actor's state. No type of the runtime's own is needed for it: 'arc' is
+// exactly an atomically counted owner, and the scheduler's own count, below,
+// is one more of the same owners, taken and dropped by the runtime.
+//
+// AN ACTOR'S LIFE. An actor lives while anything holds a handle to it or it
+// has a message to handle. While it is queued to run, or running, the
+// scheduler holds one owner of it too, taken by the send that found it idle
+// and dropped when the worker running it finds its mailbox empty and marks
+// it idle. So its death, the last owner's going, comes only when its last
+// handle has gone AND its mailbox is empty: a handle dropped with messages
+// queued leaves the scheduler's owner to keep it alive until they are
+// handled. Its death runs its state's finalizer ('final', then its fields',
+// its handles to other actors among them), exactly once, on whichever thread
+// let go last: the thread dropping the last handle to an idle actor, or the
+// worker that ran its last message. A cycle of actors holding handles to
+// each other never dies by counting, as a cycle of 'arc' owners never does;
+// actors break such a cycle by letting go (concurrency_actors_pingpong).
+// An actor still alive when the program ends is never finalized.
+//
+// MESSAGES. A send is one-way: it queues the message and returns; nothing
+// waits for the method to run, and a method returns nothing to its sender
+// (an answer is a message sent back, to a handle passed along). Each sender's
+// messages to one actor are handled in the order sent, and a message is
+// never overtaken by one it caused: the mailbox is one FIFO queue in the
+// order the sends took their places, and a send has taken its place before
+// it returns. What a message carries must be Sendable, which 'send' and
+// 'startActor' ask of the message enum, so of every method's parameters:
+// numbers, 'uni' and 'so' owners (which move), '+arc-imm' owners, handles;
+// never a borrow, a 'mut' owner, an 'rc' owner or a '+gc' reference. The
+// arguments 'start' passes to 'made' are asked the same by actors.sendable.
+//
+// INSIDE AN ACTOR. A method has its state 'mut' and runs alone: no other
+// method of the same actor runs until it returns. It may use anything a
+// single thread may, borrows and 'so' and 'rc' owners included, however the
+// actor moves between workers:
+//
+// - 'rc' needs no atomic count inside an actor, since one worker at a time
+//   runs it, and every hand-off of an actor from one worker to the next
+//   orders all the first did before anything the next does. The hand-offs,
+//   and where each is ordered: an actor queued again after its turn is
+//   pushed to a run queue with a Release store and taken with an Acquire
+//   compare-and-swap (or stolen with one); an actor marked idle is marked by
+//   an AcqRel compare-and-swap on its mailbox's head, which the next send's
+//   AcqRel exchange on the same word reads, and that sender queues it
+//   (Release) for a worker to take (Acquire); and its death follows 'arc's
+//   Release decrement and Acquire load. Each chain is release to acquire, so
+//   what one method did happens before the next method runs, wherever.
+// - '+gc' is NOT supported inside an actor. The collector package's
+//   collector is single-threaded, its root chain one C global, and an actor
+//   runs on every worker in turn: a traced reference made, held, reached or
+//   dropped by an actor corrupts it. Nothing refuses one yet (the thread
+//   check refuses '+gc' in a message); a concurrent collector is a later
+//   design.
+// - A thread-local global ('mut @threadlocal x T') seen from an actor's
+//   method is the current WORKER's copy, not the actor's: its next message
+//   may run on another worker, with another copy. An actor keeps its own
+//   state in its fields.
+// - A method that blocks (a lock held long, a sleep, a channel's recv) holds
+//   its worker for as long, and the others take up its queue by stealing; a
+//   method that never returns keeps its actor, and one worker, forever.
+//   Actors wait by being sent a message.
+//
+// THE RUNTIME. 'actors.start()' starts it with one worker per logical
+// processor (thread.parallelism()); 'actors.startWith(actors.Options[workers:
+// n, batch: b])' with n workers (0 is the default) and a batch limit b
+// (actors.defaultBatch, 100, by default; 0 is taken as 1). It answers a
+// Runtime, a move type, of which there is one at a time: starting a second
+// while one runs is a panic. 'rt.finish()' waits until the runtime is
+// QUIESCENT -- no actor is queued or running, so no message is in any
+// mailbox -- then stops the workers, joins them, and answers the run's
+// Stats (workers; messages handled; turns, an actor taken from a queue and
+// run; steals). A Runtime that dies unfinished finishes as it dies, so
+//
+//   fn main() {
+//     imm rt = actors.start();
+//     ... start actors, send them messages ...
+//   }
+//
+// ends, when main's block does, once the actors have gone quiet, with no
+// signal from any of them: the handles main holds die first (they were
+// declared after rt), and then rt's death waits. Afterwards the runtime may
+// be started again. Actors are made (startActor) with or without a runtime;
+// sending needs one running, and a send with none is a panic, since nothing
+// would ever run the message. finish from one of the workers, which would
+// wait for itself, is a panic too.
+//
+// Quiescence is judged on the assumption that, once finish has begun, every
+// message is sent by an actor: a thread other than main that goes on
+// sending must be joined first, or its message may be the one that arrives
+// after the workers have stopped. Main sends nothing while it waits.
+//
+// 'actors.workerIndex()' is the index of the worker running the caller, 0 up
+// to the number of workers less 1, or actors.noWorker on any other thread:
+// for tests, and for per-worker tallies.
+//
+// HOW IT WORKS. The mailbox is Vyukov's intrusive MPSC queue, as Pony's
+// runtime has it (messageq.c): a singly linked list of nodes, each a
+// message behind its link, with the producers' end ('head') and the
+// consumer's ('tail', which points at a stub node whose message is gone).
+// A send allocates a node, writes the message into it and pushes it with ONE
+// atomic exchange on 'head' (AcqRel), then links the old head to it with a
+// Release store; the worker running the actor pops with an Acquire load of
+// the stub's link and no read-modify-write, and frees the stub it leaves.
+// Bit 0 of 'head' is the idle mark: set, the actor is not queued. A worker
+// that finds the mailbox empty marks it with one compare-and-swap of 'head'
+// from the stub to the stub with the bit set, which fails if a push is under
+// way (the actor is then queued again). A send whose exchange finds the bit
+// set knows the actor was idle and is now its to schedule: it takes the
+// scheduler's owner and queues the actor. So a send to a busy actor is one
+// exchange and one store; one to an idle actor also queues it.
+//
+// The scheduler has one worker thread per 'workers', each with its own run
+// queue, a ring of 1024 actors, plus one shared inject queue, a list under a
+// Mutex. An actor made runnable by a send from a worker goes on that
+// worker's own queue (so a reply is handled where its sender's data is
+// warm); one made runnable by any other thread goes on the inject queue. A
+// worker takes from the front of its own queue, and every 61st turn from
+// the inject queue first, so that the inject queue is not starved; with
+// nothing in its own, it takes a share of the inject queue's (as many as
+// the queue holds per worker, at most 32 more), then tries to steal HALF of
+// another worker's queue, starting at one chosen at random. A full queue
+// moves half of itself to the inject queue. The owner pushes with a Release
+// store of its tail; the owner and stealers alike take with a
+// compare-and-swap on the head (tokio's local queue, without its
+// separate steal index). The ring holds pointers, the Header's 'link' field
+// chains the inject queue, and an actor is on at most one queue at a time.
+//
+// A turn runs at most 'batch' messages of one actor (Pony's 100): then the
+// actor, if it has more, goes to the back of its worker's queue, so an actor
+// with a flood of messages cannot keep a worker from the others.
+//
+// IDLE WORKERS park on the futex. A worker that finds no work looks again,
+// yielding its processor between looks, 64 times; then it counts itself
+// among the sleepers, looks once more, and sleeps on the 'epoch' word. A
+// push to the inject queue, and a push to a worker's own queue that already
+// held another, wakes one sleeper by bumping 'epoch', unless a worker woken
+// earlier is still looking (the 'searching' flag): the one woken takes a
+// share and, if more waits, wakes the next, so that a burst of work spreads
+// across the workers a worker at a time rather than waking them all. A push
+// to an empty queue of one's own wakes nobody, so two actors passing
+// messages back and forth stay on one worker. That a queue's work is never
+// left while every worker sleeps is kept by two Dekker pairings on
+// sequentially consistent operations: a sleeper counts itself and clears
+// 'searching', then looks; an inject push adds to the queue's length, then
+// reads the sleepers and swaps 'searching'. A worker's own queue needs no
+// such pairing: only its owner pushes to it, and the owner is awake.
+//
+// QUIESCENCE is found by counting activations: an actor's time from the send
+// that made it runnable to the worker's marking it idle. Each worker counts,
+// on its own cache line, the activations it began (its sends that found an
+// actor idle) and those it ended; activations begun off the workers are
+// counted in one shared count. finish reads every worker's 'ended', then
+// every 'begun' and the shared count, all sequentially consistent: since
+// the counts only grow, sums that agree agreed at the moment between the two
+// passes, when no actor was active and so no mailbox held a message --
+// Mattern's four-counter method. A worker ends an activation only after
+// letting go of the scheduler's owner, so an actor's finalizer, which may
+// send, runs inside the activation that ends it. Workers going to sleep wake
+// finish when the last of them does, and finish reads the counts again.
+// Pony finds quiescence with rounds of messages between its schedulers; the
+// counts here cost each activation two sequentially consistent stores (an
+// exchange each, on x86) to a line of the worker's own, and nothing shared.
+//
+// ROOM LEFT. Four things the runtime will want are designed around, and
+// none built:
+//
+// - Run classes (frame and background work at a fixed ratio): a second ring
+//   per worker, and a class in the Header that says which ring an actor is
+//   pushed to; the turn counter that already interleaves the inject queue
+//   chooses between the rings.
+// - A control lane: a second mailbox (head and tail) in the Header, drained
+//   first by runBatch; the idle mark stays on the first, and a push to
+//   either finds or sets it through the same exchange.
+// - tokio's LIFO slot: one pointer per worker, holding the actor the running
+//   actor made runnable most recently, taken before the worker's own queue;
+//   'schedule' is the one place it would be filled, and the ring is where
+//   the slot's previous occupant would go.
+// - Muting a sender to an overloaded actor: a mark in the Header that runActor
+//   checks before queueing the sender again, with a list of muted actors
+//   per receiver to queue when it catches up.
+//
+// Windows only, for now: the package's own call to the OS is a yield; the
+// rest is the thread package's and sync's, whose posix sides are to come.
+
+mod actors;
+
+import libc;
+import sync use arc;
+import thread;
+
+// ---------------------------------------------------------------------------
+// Windows: a yield, for the idle spin, and the one call the package makes to
+// the OS directly. Everything else is the thread package's and sync's.
+// ---------------------------------------------------------------------------
+
+extern {
+  fn @c(system) SwitchToThread() i32;
+}
+
+// A panic, reported at the line calling 'die'
+fn die(msg &[]u8, file &[]u8 = srcFile(), line u32 = srcLine()) Never {
+  panic(msg, file, line);
+}
+
+// ---------------------------------------------------------------------------
+// The mailbox: Vyukov's intrusive MPSC queue, as Pony's messageq.c has it
+// ---------------------------------------------------------------------------
+
+// A node's link, the first thing in every node. The first node of a mailbox
+// (the stub) is a Link alone; every later one is a Node[M].
+struct Link {
+  pub next *Link;
+}
+
+// One message in a mailbox: its link, then the message
+struct Node[M] {
+  pub next *Link;
+  pub msg M;
+}
+
+const idleBit = 1usize;
+const pointerBits = 0xFFFFFFFFFFFFFFFEusize;
+
+fn nullLink() *Link {0usize as *Link;}
+fn nullHeader() *Header {0usize as *Header;}
+
+// Put node n at the end of h's mailbox: whether the mailbox was idle, which
+// makes this sender the one to schedule the actor
+fn mailPush(h *Header, n *Link) Bool {
+  mem.atomicStore[*Link](&(*n).next as **Link, nullLink(), MemOrder.Relaxed[]);
+  imm prev = mem.atomicSwap[*Link](&(*h).head as **Link, n, MemOrder.AcqRel[]);
+  imm bits = prev as usize;
+  imm p = (bits & pointerBits) as *Link;
+  mem.atomicStore[*Link](&(*p).next as **Link, n, MemOrder.Release[]);
+  (bits & idleBit) != 0usize;
+}
+
+// The node holding h's next message, which becomes the mailbox's stub, or 0
+// when there is none yet. The stub before it, whose message was taken, is
+// freed. Only the worker running the actor calls this.
+fn mailPop(h *Header) *Link {
+  imm t = (*h).tail;
+  imm next = mem.atomicLoad[*Link](&(*t).next as **Link, MemOrder.Acquire[]);
+  if next as usize != 0usize {
+    (*h).tail = next;
+    libc.free(t as *u8);
+  }
+  next;
+}
+
+// Mark h's mailbox idle, if it is empty and no push is under way: whether it
+// was marked. A later push then finds the mark and schedules the actor.
+fn mailMarkIdle(h *Header) Bool {
+  imm t = (*h).tail;
+  imm headp = &(*h).head as **Link;
+  imm hd = mem.atomicLoad[*Link](headp, MemOrder.Relaxed[]);
+  if hd as usize != t as usize {
+    return false;
+  }
+  mut seen = nullLink();
+  mut marked = false;
+  seen, marked = mem.atomicCompareSwap[*Link](headp, t, ((t as usize) | idleBit) as *Link,
+    MemOrder.AcqRel[], MemOrder.Relaxed[]);
+  marked;
+}
+
+// ---------------------------------------------------------------------------
+// The header every actor's state begins with
+// ---------------------------------------------------------------------------
+
+// The runtime's part of an actor, the first field of its state, so that the
+// state's address is its header's. Its fields are the runtime's alone: they
+// are public only because the runtime's functions, not the Header's methods,
+// reach them, and an actor's methods never touch them. It holds raw
+// pointers, which the thread check refuses, and declares Sendable: the
+// runtime orders every hand-off of them itself.
+pub struct Header is Sendable {
+  pub head *Link;                        // senders': the newest node; bit 0, idle
+  pub tail *Link;                        // the running worker's: the stub
+  pub link *Header;                      // the next actor on the inject queue
+  pub run &fn(h *Header, limit u32) u32; // runBatch[S, M]
+  pub release &fn(h *Header);            // releaseHold[S]
+  pub dispatch *u8;                      // the actor's dispatch function
+
+  // A header for a state value about to be started: startActor fills it in
+  pub fn make() Header {
+    Header[nullLink(), nullLink(), nullHeader(), &noRun, &noRelease, 0usize as *u8];
+  }
+
+  // The actor's death frees its mailbox's last node
+  fn final(self &uni) {
+    if tail as usize != 0usize {
+      libc.free(tail as *u8);
+    }
+  }
+}
+
+fn noRun(h *Header, limit u32) u32 {0u32;}
+fn noRelease(h *Header) {}
+
+// ---------------------------------------------------------------------------
+// What an actor's code calls: startActor, send, and the thread check. Each
+// generic function is compiled into the module that uses it, for its state
+// S and message enum M; the rest of the runtime is compiled here once, and
+// reaches an actor only through its Header.
+// ---------------------------------------------------------------------------
+
+// A new actor from its state, whose first field is a Header.make(), and its
+// dispatch function: the '+arc-opaq' owner its handle holds. The state is
+// moved into an 'arc' allocation, and its mailbox made: one stub node, idle.
+// Nothing else can reach the actor until this returns, so the header's fields
+// are written plainly; whatever hands the handle on orders them.
+pub fn startActor[S, M Sendable](state S, dispatch &fn(s &mut S, m M)) +arc-opaq S {
+  imm a = +arc-opaq state;
+  imm h = a as *Header;
+  imm stub = libc.malloc(mem.sizeof[Link]()) as *Link;
+  if stub as usize == 0usize {
+    die("actors: out of memory for a mailbox");
+  }
+  (*stub).next = nullLink();
+  (*h).head = ((stub as usize) | idleBit) as *Link;
+  (*h).tail = stub;
+  (*h).link = nullHeader();
+  (*h).run = &runBatch[S, M];
+  (*h).release = &releaseHold[S];
+  mut f = dispatch;
+  (*h).dispatch = *(&mut f as **u8);
+  a;
+}
+
+// Send msg to the actor whose state is st: push it, and, if the push found
+// the actor idle, take the scheduler's owner of it and queue it. The caller
+// holds a handle, so the actor cannot die meanwhile.
+pub fn send[S, M Sendable](st &opaq S, msg M) {
+  if running == 0usize {
+    die("actors: a message sent with no runtime running");
+  }
+  imm n = libc.malloc(mem.sizeof[Node[M]]()) as *Node[M];
+  if n as usize == 0usize {
+    die("actors: out of memory for a message");
+  }
+  mem.writeRaw[M](&(*n).msg as *M, msg);
+  imm h = st as *Header;
+  if mailPush(h, n as *Link) {
+    holdArc[S](st as *S);
+    schedule(h);
+  }
+}
+
+// The thread check, asked of an argument of an actor's 'start': v,
+// unchanged, if its type may cross threads; refused where it is written if not
+pub fn sendable[T Sendable](v T) T {v;}
+
+// Run up to limit of the actor's messages, each moved out of its node and
+// handed to the dispatch function: how many ran. Only the worker that took
+// the actor from a queue calls this.
+fn runBatch[S, M](h *Header, limit u32) u32 {
+  mut slot = (*h).dispatch;
+  imm f = mem.readRaw[&fn(s &mut S, m M)](&mut slot as *(&fn(s &mut S, m M)));
+  imm st = h as *S;
+  mut n = 0u32;
+  while n < limit {
+    imm node = mailPop(h);
+    if node as usize == 0usize {
+      return n;
+    }
+    imm m = mem.readRaw[M](&(*(node as *Node[M])).msg as *M);
+    f(&mut *st, m);
+    n = n + 1u32;
+  }
+  n;
+}
+
+// The scheduler takes its owner: an owner remade from the address, uncounted,
+// then copied, which counts one more, and both put away uncounted, so that
+// the count is one more and nothing will drop either. It is arc's own copy,
+// so the count is arc's (a Relaxed add), whatever arc's layout.
+fn holdArc[S](p *S) {
+  mut slot = p;
+  imm o = mem.readRaw[+arc-opaq S](&mut slot as *(+arc-opaq S));
+  imm held = o;
+  mut gone1 = p;
+  mut gone2 = p;
+  mem.writeRaw[+arc-opaq S](&mut gone1 as *(+arc-opaq S), o);
+  mem.writeRaw[+arc-opaq S](&mut gone2 as *(+arc-opaq S), held);
+}
+
+// The scheduler lets go of its owner: remade from the address and dropped,
+// arc's own drop (a Release subtract; an Acquire load and the state's
+// death, finalizer and free, if it was the last).
+fn releaseHold[S](h *Header) {
+  mut slot = h as *S;
+  imm o = mem.readRaw[+arc-opaq S](&mut slot as *(+arc-opaq S));
+}
+
+// ---------------------------------------------------------------------------
+// The scheduler
+// ---------------------------------------------------------------------------
+
+// Each worker's run queue: a ring of this many actors
+const queueCap = 1024u64;
+const queueMask = 1023u64;
+
+// How often a worker looks in the inject queue before its own: every 61st
+// turn, tokio's number, so actors there are not starved by a busy local queue
+const injectEvery = 61u32;
+
+// How many times an idle worker looks again for work before it sleeps
+const idleSpins = 64u32;
+
+// A worker index for a thread that is not a worker
+pub const noWorker = 0xFFFFFFFFu32;
+
+pub const defaultBatch = 100u32;
+
+// One worker: an OS thread with its run queue
+struct Worker {
+  pub before [64; u8];
+  pub head u64;                // stealers' and owner's: the next position to take
+  pub gap [56; u8];
+  pub tail u64;                // owner's: the next position to fill
+  pub started u64;             // activations this worker began (SeqCst stores)
+  pub ended u64;               // activations this worker ended (SeqCst stores)
+  pub gap2 [40; u8];
+  pub sched *Sched;
+  pub index u32;
+  pub tick u32;
+  pub rng u32;
+  pub messages u64;
+  pub activations u64;
+  pub steals u64;
+  pub gap3 [64; u8];
+  pub ring [1024; *Header];
+}
+
+// The runtime: its workers, the inject queue, and how workers sleep
+struct Sched {
+  pub before [64; u8];
+  pub sleepers Atomic[u32];    // workers in the idle path, asleep or about to be
+  pub searching Atomic[u32];   // 1 while a woken worker looks for work
+  pub epoch Atomic[u32];       // the futex word idle workers sleep on
+  pub quiet Atomic[u32];       // the futex word 'finish' sleeps on
+  pub done Atomic[u32];        // 1 once 'finish' has begun
+  pub stopping Atomic[u32];    // 1 once the workers are to stop
+  pub gap [40; u8];
+  pub lock sync.Mutex;         // guards the inject queue's list
+  pub injectHead *Header;
+  pub injectTail *Header;
+  pub injectLen u64;           // how many are in it (atomic)
+  pub extStarted u64;          // activations begun off the workers (atomic)
+  pub gap2 [32; u8];
+  pub nworkers u32;
+  pub batch u32;
+  pub workers *Worker;
+  pub threads *thread.Thread[u32];
+}
+
+// The running runtime, or 0
+mut running = 0usize;
+
+// The worker this thread is, or 0
+mut @threadlocal me usize = 0usize;
+
+fn workerAt(s *Sched, i u32) *Worker {
+  (*s).workers + usize[i];
+}
+
+fn ringAt(w *Worker, pos u64) **Header {
+  (&(*w).ring as **Header) + usize[pos & queueMask];
+}
+
+fn ld32(p *u32) u32 {mem.atomicLoad[u32](p, MemOrder.SeqCst[]);}
+fn ld64(p *u64) u64 {mem.atomicLoad[u64](p, MemOrder.SeqCst[]);}
+
+// An actor has become runnable, its mailbox having left idle: count the
+// activation begun, and queue it: on this worker's own queue when a worker
+// sends, else on the inject queue
+fn schedule(h *Header) {
+  imm s = running as *Sched;
+  imm w = me as *Worker;
+  if w as usize != 0usize and (*w).sched as usize == s as usize {
+    imm startedp = &(*w).started as *u64;
+    mem.atomicStore[u64](startedp, mem.atomicLoad[u64](startedp, MemOrder.Relaxed[]) + 1u64, MemOrder.SeqCst[]);
+    localPush(w, h);
+  } else {
+    mem.atomicAdd[u64](&(*s).extStarted as *u64, 1u64, MemOrder.SeqCst[]);
+    (*h).link = nullHeader();
+    injectPush(s, h, h, 1u64);
+  }
+}
+
+// Put h on w's own queue; half of it goes to the inject queue when it is
+// full. Wake a sleeping worker to steal when the queue held another already.
+fn localPush(w *Worker, h *Header) {
+  imm headp = &(*w).head as *u64;
+  imm tailp = &(*w).tail as *u64;
+  while true {
+    imm t = mem.atomicLoad[u64](tailp, MemOrder.Relaxed[]);
+    imm hd = mem.atomicLoad[u64](headp, MemOrder.Acquire[]);
+    if t - hd < queueCap {
+      mem.atomicStore[*Header](ringAt(w, t), h, MemOrder.Relaxed[]);
+      mem.atomicStore[u64](tailp, t + 1u64, MemOrder.Release[]);
+      if t != hd {
+        notify((*w).sched);
+      }
+      return;
+    }
+    if overflow(w, h, hd, t) {
+      return;
+    }
+  }
+}
+
+// w's queue is full: move half of it, and h, to the inject queue. False when
+// a stealer took from it meanwhile, and there is room again.
+fn overflow(w *Worker, h *Header, hd u64, t u64) Bool {
+  imm n = (t - hd) / 2u64;
+  // Claim them first, as a stealer would; then they are this thread's alone,
+  // and only this thread, their queue's owner, writes their slots
+  mut seen = 0u64;
+  mut taken = false;
+  seen, taken = mem.atomicCompareSwap[u64](&(*w).head as *u64, hd, hd + n,
+    MemOrder.AcqRel[], MemOrder.Relaxed[]);
+  if !taken {
+    return false;
+  }
+  imm first = mem.atomicLoad[*Header](ringAt(w, hd), MemOrder.Relaxed[]);
+  mut last = first;
+  mut i = 1u64;
+  while i < n {
+    imm next = mem.atomicLoad[*Header](ringAt(w, hd + i), MemOrder.Relaxed[]);
+    (*last).link = next;
+    last = next;
+    i = i + 1u64;
+  }
+  (*last).link = h;
+  (*h).link = nullHeader();
+  injectPush((*w).sched, first, h, n + 1u64);
+  true;
+}
+
+// Take the actor at the front of w's queue, by its owner or a stealer, or 0
+fn queuePop(w *Worker) *Header {
+  imm headp = &(*w).head as *u64;
+  imm tailp = &(*w).tail as *u64;
+  while true {
+    imm hd = mem.atomicLoad[u64](headp, MemOrder.Acquire[]);
+    imm t = mem.atomicLoad[u64](tailp, MemOrder.Acquire[]);
+    if hd >= t {
+      return nullHeader();
+    }
+    imm h = mem.atomicLoad[*Header](ringAt(w, hd), MemOrder.Relaxed[]);
+    mut seen = 0u64;
+    mut taken = false;
+    seen, taken = mem.atomicCompareSwap[u64](headp, hd, hd + 1u64,
+      MemOrder.AcqRel[], MemOrder.Relaxed[]);
+    if taken {
+      return h;
+    }
+  }
+  nullHeader();
+}
+
+// Steal half of v's queue into w's own, which is empty: one of them to run,
+// or 0
+fn stealFrom(w *Worker, v *Worker) *Header {
+  imm headp = &(*v).head as *u64;
+  imm tailp = &(*v).tail as *u64;
+  imm ot = mem.atomicLoad[u64](&(*w).tail as *u64, MemOrder.Relaxed[]);
+  while true {
+    imm hd = mem.atomicLoad[u64](headp, MemOrder.Acquire[]);
+    imm t = mem.atomicLoad[u64](tailp, MemOrder.Acquire[]);
+    if hd >= t {
+      return nullHeader();
+    }
+    imm n = t - hd;
+    imm k = n - n / 2u64;
+    mut i = 0u64;
+    while i < k {
+      imm h = mem.atomicLoad[*Header](ringAt(v, hd + i), MemOrder.Relaxed[]);
+      mem.atomicStore[*Header](ringAt(w, ot + i), h, MemOrder.Relaxed[]);
+      i = i + 1u64;
+    }
+    mut seen = 0u64;
+    mut taken = false;
+    seen, taken = mem.atomicCompareSwap[u64](headp, hd, hd + k,
+      MemOrder.AcqRel[], MemOrder.Relaxed[]);
+    if taken {
+      imm run = mem.atomicLoad[*Header](ringAt(w, ot + k - 1u64), MemOrder.Relaxed[]);
+      if k > 1u64 {
+        mem.atomicStore[u64](&(*w).tail as *u64, ot + k - 1u64, MemOrder.Release[]);
+      }
+      (*w).steals = (*w).steals + 1u64;
+      return run;
+    }
+  }
+  nullHeader();
+}
+
+// Put the list first..last, count actors linked through their headers, on
+// the inject queue, and wake a sleeping worker
+fn injectPush(s *Sched, first *Header, last *Header, count u64) {
+  (*s).lock.lock();
+  if (*s).injectTail as usize == 0usize {
+    (*s).injectHead = first;
+  } else {
+    (*(*s).injectTail).link = first;
+  }
+  (*s).injectTail = last;
+  (*s).lock.unlock();
+  mem.atomicAdd[u64](&(*s).injectLen as *u64, count, MemOrder.SeqCst[]);
+  notify(s);
+}
+
+// Take an actor from the inject queue, and move a few more onto w's own
+// queue: the one to run, or 0
+fn injectPop(s *Sched, w *Worker) *Header {
+  imm lenp = &(*s).injectLen as *u64;
+  if mem.atomicLoad[u64](lenp, MemOrder.SeqCst[]) == 0u64 {
+    return nullHeader();
+  }
+  (*s).lock.lock();
+  imm first = (*s).injectHead;
+  if first as usize == 0usize {
+    (*s).lock.unlock();
+    return nullHeader();
+  }
+  // Take the first, and up to a share of the rest for this worker's queue
+  imm len = mem.atomicLoad[u64](lenp, MemOrder.Relaxed[]);
+  mut extra = len / u64[(*s).nworkers];
+  if extra > 32u64 {
+    extra = 32u64;
+  }
+  mut last = first;
+  mut k = 1u64;
+  while k <= extra and (*last).link as usize != 0usize {
+    last = (*last).link;
+    k = k + 1u64;
+  }
+  (*s).injectHead = (*last).link;
+  if (*s).injectHead as usize == 0usize {
+    (*s).injectTail = nullHeader();
+  }
+  (*last).link = nullHeader();
+  mem.atomicSub[u64](lenp, k, MemOrder.SeqCst[]);
+  (*s).lock.unlock();
+  // The rest to this worker's own queue
+  mut next = (*first).link;
+  while next as usize != 0usize {
+    imm after = (*next).link;
+    (*next).link = nullHeader();
+    localPush(w, next);
+    next = after;
+  }
+  (*first).link = nullHeader();
+  first;
+}
+
+// Wake one sleeping worker to look for work, unless one is looking already
+fn notify(s *Sched) {
+  if ld32(&(*s).sleepers as *u32) == 0u32 {
+    return;
+  }
+  if mem.atomicSwap[u32](&(*s).searching as *u32, 1u32, MemOrder.SeqCst[]) != 0u32 {
+    return;
+  }
+  mem.atomicAdd[u32](&(*s).epoch as *u32, 1u32, MemOrder.SeqCst[]);
+  sync.futexWake(&(*s).epoch);
+}
+
+// A worker found work away from its own queue: it is no longer the one
+// looking, and if more work is waiting, another is woken to look
+fn foundAway(w *Worker) {
+  imm s = (*w).sched;
+  mem.atomicStore[u32](&(*s).searching as *u32, 0u32, MemOrder.SeqCst[]);
+  if ld64(&(*s).injectLen as *u64) != 0u64 or ld64(&(*w).tail as *u64) != ld64(&(*w).head as *u64) {
+    notify(s);
+  }
+}
+
+// The next actor for w to run, or 0
+fn findWork(w *Worker) *Header {
+  imm s = (*w).sched;
+  (*w).tick = (*w).tick + 1u32;
+  if (*w).tick % injectEvery == 0u32 {
+    imm a = injectPop(s, w);
+    if a as usize != 0usize {
+      return a;
+    }
+  }
+  imm mine = queuePop(w);
+  if mine as usize != 0usize {
+    return mine;
+  }
+  imm fromInject = injectPop(s, w);
+  if fromInject as usize != 0usize {
+    foundAway(w);
+    return fromInject;
+  }
+  // Steal, starting at a worker chosen at random
+  imm n = (*s).nworkers;
+  mut r = (*w).rng;
+  r = r ^ (r << 13u32);
+  r = r ^ (r >> 17u32);
+  r = r ^ (r << 5u32);
+  (*w).rng = r;
+  mut i = 0u32;
+  while i < n {
+    imm v = workerAt(s, (r % n + i) % n);
+    if v as usize != w as usize {
+      imm got = stealFrom(w, v);
+      if got as usize != 0usize {
+        foundAway(w);
+        return got;
+      }
+    }
+    i = i + 1u32;
+  }
+  nullHeader();
+}
+
+// Whether any queue holds an actor, looked at without taking one
+fn anyWork(s *Sched) Bool {
+  if ld64(&(*s).injectLen as *u64) != 0u64 {
+    return true;
+  }
+  mut i = 0u32;
+  while i < (*s).nworkers {
+    imm v = workerAt(s, i);
+    if ld64(&(*v).tail as *u64) != ld64(&(*v).head as *u64) {
+      return true;
+    }
+    i = i + 1u32;
+  }
+  false;
+}
+
+// Run actor h's batch, then queue it again, or mark it idle and let go of
+// the hold taken when it became runnable
+fn runActor(w *Worker, h *Header) {
+  imm s = (*w).sched;
+  imm run = (*h).run;
+  imm n = run(h, (*s).batch);
+  (*w).messages = (*w).messages + u64[n];
+  (*w).activations = (*w).activations + 1u64;
+  if n < (*s).batch and mailMarkIdle(h) {
+    imm release = (*h).release;
+    release(h);
+    imm endedp = &(*w).ended as *u64;
+    mem.atomicStore[u64](endedp, mem.atomicLoad[u64](endedp, MemOrder.Relaxed[]) + 1u64, MemOrder.SeqCst[]);
+    return;
+  }
+  localPush(w, h);
+}
+
+// No work was found: spin a little, then sleep until woken. False once the
+// runtime is stopping.
+fn idle(w *Worker) Bool {
+  imm s = (*w).sched;
+  mut spins = 0u32;
+  while spins < idleSpins {
+    if anyWork(s) {
+      return true;
+    }
+    SwitchToThread();
+    spins = spins + 1u32;
+  }
+  imm epochp = &(*s).epoch as *u32;
+  imm e = ld32(epochp);
+  imm asleep = mem.atomicAdd[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst[]) + 1u32;
+  mem.atomicStore[u32](&(*s).searching as *u32, 0u32, MemOrder.SeqCst[]);
+  if anyWork(s) {
+    mem.atomicSub[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst[]);
+    return true;
+  }
+  if ld32(&(*s).stopping as *u32) != 0u32 {
+    mem.atomicSub[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst[]);
+    return false;
+  }
+  if asleep == (*s).nworkers and ld32(&(*s).done as *u32) != 0u32 {
+    mem.atomicAdd[u32](&(*s).quiet as *u32, 1u32, MemOrder.SeqCst[]);
+    sync.futexWake(&(*s).quiet);
+  }
+  sync.futexWait(&(*s).epoch, e);
+  mem.atomicSub[u32](&(*s).sleepers as *u32, 1u32, MemOrder.SeqCst[]);
+  ld32(&(*s).stopping as *u32) == 0u32;
+}
+
+// What a worker thread is handed
+struct WorkerArg is Sendable {
+  pub w *Worker;
+}
+
+fn workerMain(arg WorkerArg) u32 {
+  imm w = arg.w;
+  me = w as usize;
+  while true {
+    imm h = findWork(w);
+    if h as usize != 0usize {
+      runActor(w, h);
+      continue;
+    }
+    if !idle(w) {
+      break;
+    }
+  }
+  me = 0usize;
+  0u32;
+}
+
+// Whether no actor is active: every activation begun has ended. The ended
+// counts are read first, then the begun: each count only grows, so if the
+// sums agree they agreed at the moment between the two reads.
+fn quiescent(s *Sched) Bool {
+  mut ended = 0u64;
+  mut i = 0u32;
+  while i < (*s).nworkers {
+    ended = ended + ld64(&(*workerAt(s, i)).ended as *u64);
+    i = i + 1u32;
+  }
+  mut started = ld64(&(*s).extStarted as *u64);
+  i = 0u32;
+  while i < (*s).nworkers {
+    started = started + ld64(&(*workerAt(s, i)).started as *u64);
+    i = i + 1u32;
+  }
+  started == ended;
+}
+
+// ---------------------------------------------------------------------------
+// Starting and finishing
+// ---------------------------------------------------------------------------
+
+// How to start the runtime: how many workers (0, one per logical processor)
+// and how many messages an actor may handle at a turn
+pub struct Options {
+  pub workers u32 = 0u32;
+  pub batch u32 = defaultBatch;
+}
+
+// What a run did, counted by the workers: answered by 'finish'
+pub struct Stats {
+  pub workers u32;
+  pub messages u64;            // messages handled
+  pub activations u64;         // turns: an actor taken from a queue and run
+  pub steals u64;              // times a worker took actors from another's queue
+}
+
+// The running runtime's one handle: finishing it, or its death, waits for
+// quiescence and stops the workers
+pub struct Runtime {
+  sched *Sched;
+
+  fn made(s *Sched) Runtime {Runtime[s];}
+
+  // Wait until every actor is idle and no message is in flight, then stop
+  // the workers: what they did
+  pub fn finish(mut self) Stats {
+    imm st = finishSched(sched);
+    sched = 0usize as *Sched;
+    st;
+  }
+
+  fn final(self &uni) {
+    if sched as usize != 0usize {
+      finishSched(sched);
+    }
+  }
+}
+
+// Start the runtime with one worker per logical processor
+pub fn start() Runtime {
+  startWith(Options[]);
+}
+
+// Start the runtime as opts says
+pub fn startWith(opts Options) Runtime {
+  if running != 0usize {
+    die("actors: the runtime is already running");
+  }
+  imm n = if opts.workers == 0u32 {thread.parallelism();} else {opts.workers;};
+  imm s = libc.calloc(1usize, mem.sizeof[Sched]()) as *Sched;
+  imm ws = libc.calloc(usize[n], mem.sizeof[Worker]()) as *Worker;
+  imm ts = libc.malloc(usize[n] * mem.sizeof[thread.Thread[u32]]()) as *thread.Thread[u32];
+  if s as usize == 0usize or ws as usize == 0usize or ts as usize == 0usize {
+    die("actors: out of memory for the runtime");
+  }
+  (*s).nworkers = n;
+  (*s).batch = if opts.batch == 0u32 {1u32;} else {opts.batch;};
+  (*s).workers = ws;
+  (*s).threads = ts;
+  running = s as usize;
+  mut i = 0u32;
+  while i < n {
+    imm w = workerAt(s, i);
+    (*w).sched = s;
+    (*w).index = i;
+    (*w).rng = (2463534242u32 ^ ((i + 1u32) * 7919u32)) | 1u32;
+    mem.writeRaw[thread.Thread[u32]](ts + usize[i],
+      thread.startWith(thread.Options[name: "actors worker"], WorkerArg[w], &workerMain));
+    i = i + 1u32;
+  }
+  Runtime.made(s);
+}
+
+fn finishSched(s *Sched) Stats {
+  if me != 0usize {
+    die("actors: the runtime finished from one of its own workers, which would wait for itself");
+  }
+  mem.atomicStore[u32](&(*s).done as *u32, 1u32, MemOrder.SeqCst[]);
+  while true {
+    imm q = ld32(&(*s).quiet as *u32);
+    if quiescent(s) {
+      break;
+    }
+    sync.futexWait(&(*s).quiet, q);
+  }
+  mem.atomicStore[u32](&(*s).stopping as *u32, 1u32, MemOrder.SeqCst[]);
+  mem.atomicAdd[u32](&(*s).epoch as *u32, 1u32, MemOrder.SeqCst[]);
+  sync.futexWakeAll(&(*s).epoch);
+  mut st = Stats[(*s).nworkers, 0u64, 0u64, 0u64];
+  mut i = 0u32;
+  while i < (*s).nworkers {
+    imm t = mem.readRaw[thread.Thread[u32]]((*s).threads + usize[i]);
+    t.join();
+    imm w = workerAt(s, i);
+    st.messages = st.messages + (*w).messages;
+    st.activations = st.activations + (*w).activations;
+    st.steals = st.steals + (*w).steals;
+    i = i + 1u32;
+  }
+  running = 0usize;
+  libc.free((*s).threads as *u8);
+  libc.free((*s).workers as *u8);
+  libc.free(s as *u8);
+  st;
+}
+
+// The index of the worker running the caller, 0 up to the number of workers
+// less 1; noWorker on any other thread
+pub fn workerIndex() u32 {
+  imm w = me as *Worker;
+  if w as usize == 0usize {
+    return noWorker;
+  }
+  (*w).index;
+}

@@ -21,6 +21,15 @@
 # compiled into each, and with them its futex, which is why the runner links
 # synchronization.lib.
 #
+# Actors: the actors package's runtime (mailbox, work-stealing scheduler,
+# quiescence, handles counted through 'arc') driven by actors written by hand
+# in exactly the shape the compiler is to generate for an 'actor' declaration
+# (concurrency_actors_pingpong.cone's header describes it; the chapter is
+# doc/reference/refconccomm.html, "Actors"). They are here, not in the
+# package's tests/ folder, because that shape is the compiler's contract: the
+# 'actor' declaration's scenarios will sit beside them and must behave the
+# same. Each runs threads and prints only what is the same every run.
+#
 # Not covered, with reasons:
 #
 # - The 'atomic' permission, and plain writes of an atomic value only through a
@@ -82,6 +91,33 @@ contains = ["@held = internal global %Holder { i32 7, %Flag { i32 5 } }"]
 [scenario.concurrency_sendable]
 category = "run"
 description = "The thread check's step-6 program: a uni owner sent over a channel to a consumer thread, an +arc-imm String read by a thread and by main, a number in a mut local handed to a thread; and the types granted Sendable without running: numbers, structs, arrays, enums, a struct reaching itself through +so, owners that move, +arc-imm and +arc-opaq, a function reference, a struct declaring Sendable, List, Dict, String, a channel's ends, a ThreadRef"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# -------- actors --------
+
+[scenario.concurrency_actors_pingpong]
+category = "run"
+description = "Two hand-written actors ping-pong a million messages, each seeing its own in send order; the program ends by itself at quiescence, both finalized once"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.concurrency_actors_fanin]
+category = "run"
+description = "Four producer actors, driven from main through the inject queue, send 20000 numbered messages each to one consumer; each producer's order holds, the sum is exact, and every actor dies once its handles and mailbox are gone"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.concurrency_actors_lifetime]
+category = "run"
+description = "An actor's finalizer runs exactly once, when its last handle goes and its mailbox is empty: at once for an idle one, after the third of three copies, after 2000 queued messages drain, and for 500 held by another actor only once it lets go"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.concurrency_actors_stealing]
+category = "run"
+description = "Sixty-four actors made runnable on one worker's queue are run on other workers too: stealing observed through actors.workerIndex and the run's steal count; then 3000 made runnable at once on one worker, more than its queue holds, all run (the overflow to the inject queue)"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.concurrency_actors_stress]
+category = "run"
+description = "A hundred rounds of start, a ring of 8 actors passing 4 tokens 2000 times each (with '+rc-mut' state inside the actors), and finish at quiescence, with 1 to 8 workers: every round exact"
 tags = ["typecheck", "genllvm", "runtime"]
 
 # -------- generation --------

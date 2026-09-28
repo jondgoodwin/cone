@@ -13,7 +13,7 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: Two things on this page are implemented: the
+	<p style="margin-left: 40px;"><i>Note: Three things on this page are implemented: the
 		<a href="#channel">channel</a> of many senders and one receiver,
 		<span class="pre">Channel[T]</span>, unbounded or bounded, or of one sender and one
 		receiver, as the <span class="pre">sync</span> library package, on Windows only; and the
@@ -27,8 +27,12 @@
 		an <span class="pre">+rc</span> owner's count is not atomic, and it must stay on one
 		thread. What is sent is checked: <span class="pre">thread.start</span> and the
 		channel types take only a <span class="pre">Sendable</span> type, as
-		<a href="#race">Race condition safety</a> describes.
-		Actors and <span class="pre">qfn</span>,
+		<a href="#race">Race condition safety</a> describes. And the runtime
+		<a href="#actors">actors</a> run on, as the <span class="pre">actors</span> library
+		package, on Windows only: mailboxes, a work-stealing scheduler, quiescence, and handles
+		counted through <span class="pre">arc</span>, running actors written by hand in the
+		shape the <span class="pre">actor</span> declaration is to generate. The
+		<span class="pre">actor</span> declaration itself, <span class="pre">qfn</span>,
 		the other concurrent data structures, and lock permissions are not implemented.</i></p>
 
 	<p>It can be a huge performance benefit that threads share memory and other resources,
@@ -92,8 +96,11 @@ thread.start(job, &amp;work);
 	<p>Not checked yet: a <span class="pre">mut</span> global reached from several threads; a
 		value's own methods that change it through <span class="pre">&amp;</span> (sendable here also
 		means safe to read from several threads at once behind <span class="pre">+arc-imm</span>,
-		which a type declaring <span class="pre">Sendable</span> promises too); and actor messages,
-		which do not exist yet.</p>
+		which a type declaring <span class="pre">Sendable</span> promises too). Actor messages are
+		checked as a channel's values are: the <span class="pre">actors</span> package's
+		<span class="pre">send</span> and <span class="pre">startActor</span> ask
+		<span class="pre">Sendable</span> of an actor's message enum, and so of every method's
+		parameters (<a href="#actors">Actors</a>).</p>
 
 	<h2>Message-based Communications</h2>
 	<p>An efficient model for thread-based concurrency is independent actors (threads) that throw work to each
@@ -174,6 +181,130 @@ solo &lt;- job;
 		other's index and reading the real one only when its copy says full or empty. A thread
 		sleeps, on the <a href="refconc.html#futex">futex</a>, only when there is nothing to do:
 		the receiver when the channel is empty, a sender when a bounded channel is full.</p>
+
+	<h3 id="actors">Actors</h3>
+	<p>An actor is state that lives on, reached by nothing but messages. Each message is a call
+		of one of the actor's methods, queued in its mailbox and run later, one at a time, on
+		whichever of a pool of worker threads takes the actor up. A method runs to completion, on
+		that worker's own stack, with the actor's state <span class="pre">mut</span>; nothing is
+		suspended or resumed, and no other method of the same actor runs until it returns. The
+		<span class="pre">actors</span> package is the runtime: the mailbox, the work-stealing
+		scheduler, the counting that decides when an actor dies, and the quiescence a program ends
+		at. Its source, <span class="pre">packages/actors/src/actors.cone</span>, documents the
+		same rules at greater length, and how each works.</p>
+<pre>
+import sync use arc;
+import actors;
+
+fn main() {
+  imm rt = actors.start();       // workers: one per logical processor
+  imm c = Counter.start(0u64);   // an actor, and a handle to it
+  c.add(5u64);                   // a message: queued, and run later
+  c.add(7u64);                   // run after the first
+}                                // rt's death waits until all is quiet
+</pre>
+	<p><b>The shape of an actor.</b> The <span class="pre">actor</span> declaration is to generate
+		four things; until it does, they are written by hand, and the runtime is driven by them.
+		For an actor <span class="pre">Counter</span> with a field <span class="pre">count</span>
+		and a method <span class="pre">add</span>:</p>
+<pre>
+// (a) The state: the runtime's Header first, the fields, the methods unchanged
+struct Counter_state is Sendable {
+  hdr actors.Header;
+  count u64;
+  pub fn made(count u64) Counter_state {Counter_state[actors.Header.make(), count];}
+  fn add(self &amp;mut, n u64) {count = count + n;}
+}
+
+// (b) The messages: one variant per method, its fields the method's parameters
+enum Counter_msg {
+  struct Add {pub n u64;}
+}
+
+// (c) The handle: an +arc-opaq owner of the state, a send function per method, and start
+struct Counter {
+  st +arc-opaq Counter_state;
+  pub fn start(count u64) Counter {
+    Counter[actors.startActor[Counter_state, Counter_msg](
+      Counter_state.made(actors.sendable(count)), &amp;Counter_dispatch)];
+  }
+  pub fn add(self &amp;, n u64) {
+    actors.send[Counter_state, Counter_msg](st, Counter_msg.Add[n]);
+  }
+}
+
+// (d) Dispatch: one match on the message, each arm calling its method
+fn Counter_dispatch(self &amp;mut Counter_state, msg Counter_msg) {
+  match msg {
+    case imm m Counter_msg.Add {self.add(m.n);}
+  }
+}
+</pre>
+	<p>The state declares <span class="pre">Sendable</span>, taken on trust: it moves between
+		workers as a whole, and only the worker running the actor reaches it. The message enum is
+		named for the actor with <span class="pre">_msg</span>, the dispatch function with
+		<span class="pre">_dispatch</span>. Creation is <span class="pre">start</span>, as a
+		thread's is, since <span class="pre">spawn</span> is reserved.</p>
+	<p><b>Handles, and an actor's life.</b> A handle is a struct over one
+		<span class="pre">+arc-opaq</span> owner of the state, so the <span class="pre">arc</span>
+		region counts an actor's handles: copying a handle (passing it, storing it, putting it in a
+		message) makes another owner, and each going drops one. <span class="pre">opaq</span> lets
+		nothing read or write the state through a handle; its only use is to send. A handle is
+		<span class="pre">Sendable</span>. While an actor is queued to run, or running, the
+		scheduler holds one owner more, taken by the send that found it idle and dropped when its
+		mailbox is found empty. So an actor dies, and its state's finalizer runs, exactly once,
+		when its last handle has gone <i>and</i> its mailbox is empty: a handle dropped with
+		messages still queued leaves the actor alive until they are handled. The finalizer runs on
+		whichever thread let go last. Actors that hold handles to each other in a cycle never die
+		by counting, as a cycle of <span class="pre">arc</span> owners never does, until one of
+		them lets go.</p>
+	<p><b>Messages.</b> A send is one-way: it queues the message and returns, and a method
+		returns nothing to its sender; an answer is a message sent back to a handle passed along.
+		Each sender's messages to one actor are handled in the order sent, and a message is never
+		overtaken by one it caused. What a message carries must be
+		<span class="pre">Sendable</span>, which <span class="pre">actors.send</span> and
+		<span class="pre">actors.startActor</span> ask of the message enum, so of every method's
+		parameters, and <span class="pre">actors.sendable</span> asks of each argument
+		<span class="pre">start</span> hands to the state.</p>
+	<p><b>Inside an actor</b> a method may use what a single thread may: borrows, and
+		<span class="pre">so</span> and <span class="pre">rc</span> owners, whose count need not be
+		atomic, since one worker at a time runs an actor and every hand-off of an actor between
+		workers orders what the first did before anything the next does. Three things differ from a
+		plain thread:</p>
+	<ul>
+	<li><span class="pre">+gc</span> is <b>not supported</b> inside an actor. The collector is
+		single-threaded, and an actor runs on every worker in turn; a traced reference made, held,
+		reached or dropped by an actor corrupts it. Nothing refuses one yet.</li>
+	<li>A thread-local global seen from an actor's method is the current <i>worker's</i> copy,
+		not the actor's: its next message may run on another worker.</li>
+	<li>A method that blocks holds its worker while it does. Actors wait by being sent a
+		message.</li>
+	</ul>
+	<p><b>The runtime.</b> <span class="pre">actors.start()</span> starts the workers, one per
+		logical processor; <span class="pre">actors.startWith(actors.Options[workers: n, batch:
+		b])</span> starts <span class="pre">n</span>, each running at most
+		<span class="pre">b</span> of an actor's messages at a turn (100 by default) before the
+		actor goes to the back of the queue. Either answers the one <span class="pre">Runtime</span>.
+		<span class="pre">rt.finish()</span> waits until the runtime is <i>quiescent</i> &mdash; no
+		actor queued or running, so no message in any mailbox &mdash; then stops the workers and
+		answers the run's counts (<span class="pre">Stats</span>: workers, messages handled, turns,
+		steals). A <span class="pre">Runtime</span> that dies unfinished finishes as it dies, so a
+		program whose <span class="pre">main</span> starts the runtime and some actors ends by
+		itself when they have gone quiet. Sending with no runtime running is a panic, since nothing
+		would run the message. Quiescence assumes that once <span class="pre">finish</span> has
+		begun every message comes from an actor: another thread that goes on sending is joined
+		first. <span class="pre">actors.workerIndex()</span> is the index of the worker running the
+		caller, or <span class="pre">actors.noWorker</span>.</p>
+	<p><b>How it works.</b> A mailbox is Vyukov's intrusive queue of many senders and one
+		receiver, as Pony's runtime has it: a send is one atomic exchange and one store; the worker
+		running the actor takes messages with no read-modify-write; a mark on the mailbox says the
+		actor is idle, and the send that finds it queues the actor. Each worker has a run queue of
+		its own, and there is one shared inject queue: an actor made runnable by a send from a
+		worker is queued on that worker, one made runnable by any other thread on the inject queue.
+		A worker with nothing of its own takes a share of the inject queue, then steals half of
+		another worker's queue. An idle worker parks on the <a href="refconc.html#futex">futex</a>,
+		and is woken, one at a time, as work arrives. Quiescence is found by counting the
+		activations each worker begins and ends, and reading the counts twice.</p>
 
 	<p>Any particular channel's messages are all the same type, but might very well be some sort of variant type,
 		allowing different kinds of messages to be sent. Cone makes it easier to support this kind of message-passing
