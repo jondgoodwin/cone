@@ -164,7 +164,7 @@ char *genlSrcFileName(INode *node, size_t *len);
 LLVMValueRef genlSrcFileSlice(GenState *gen, char *text, size_t len);
 
 // genlalloc.c
-// Build usable metadata about a reference 
+// Build an owning reference's allocation layout, once
 void genlRefTypeSetup(GenState *gen, RefNode *reftype);
 // Generate code that creates an allocated ref by allocating and initializing
 LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode);

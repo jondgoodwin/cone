@@ -339,7 +339,8 @@ to it later. Nothing checks a borrow stored in a field or captured.
 | `ArrayRefTag` | anonymous `{ ptr, usize }`, count at index 1 |
 
 `genlRefTypeSetup` returns immediately for a borrow — a borrowed reference has
-no allocation header. Otherwise it builds `%refstruct = { region, perm, value }`.
+no allocation header. Otherwise it builds `%refstruct = { region, perm, value }`,
+once, when an allocation or a region header first asks for it.
 Measured: `{ %rc, %void, i32 }` where `%rc = { i64 }` and `%void = {}`.
 
 **`genlallocref` returns the pointer to `ValueField`**, so an owning reference

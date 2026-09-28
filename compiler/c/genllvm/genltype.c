@@ -419,6 +419,17 @@ LLVMTypeRef genlEmptyStruct(GenState* gen) {
     return structype;
 }
 
+// How deeply type generation is nested, and the pointees it reached, which
+// genlType generates when the outermost type is done
+static uint32_t genlTypeDepth = 0;
+static Nodes *genlPointees = NULL;
+
+static void genlPointeeLater(INode *pointee) {
+    if (genlPointees == NULL)
+        genlPointees = newNodes(16);
+    nodesAdd(&genlPointees, pointee);
+}
+
 // Generate a LLVMTypeRef from a basic type definition node
 LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
     switch (typ->tag) {
@@ -443,18 +454,15 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
     case VoidTag:
         return gen->emptyStructType;
 
+    // A pointer is 'ptr' whatever it points at, so its pointee is generated
+    // later rather than here (genlType)
     case PtrTag:
-    {
-        LLVMTypeRef vtexp = genlType(gen, ((StarNode *)typ)->vtexp);
-        return LLVMPointerType(vtexp, 0);
-    }
+        genlPointeeLater(((StarNode *)typ)->vtexp);
+        return LLVMPointerTypeInContext(gen->context, 0);
 
     case RefTag:
-    {
-        RefNode *refnode = (RefNode*)typ;
-        LLVMTypeRef vtexp = genlType(gen, refnode->vtexp);
-        return LLVMPointerType(vtexp, 0);
-    }
+        genlPointeeLater(((RefNode *)typ)->vtexp);
+        return LLVMPointerTypeInContext(gen->context, 0);
 
     case VirtRefTag:
     {
@@ -467,10 +475,9 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
 
     case ArrayRefTag:
     {
-        RefNode *refnode = (RefNode*)typ;
         LLVMTypeRef elemtypes[2];
-        LLVMTypeRef vtexp = genlType(gen, refnode->vtexp);
-        elemtypes[0] = LLVMPointerType(vtexp, 0);
+        genlPointeeLater(((RefNode *)typ)->vtexp);
+        elemtypes[0] = LLVMPointerTypeInContext(gen->context, 0);
         elemtypes[1] = _genlType(gen, "", (INode*)usizeType);
         return LLVMStructTypeInContext(gen->context, elemtypes, 2, 0);
     }
@@ -575,8 +582,7 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
     }
 }
 
-// Generate a type value
-LLVMTypeRef genlType(GenState *gen, INode *typ) {
+static LLVMTypeRef genlTypeNow(GenState *gen, INode *typ) {
     char *name = "";
     INode *dcltype = itypeGetTypeDcl(typ);
     if (isNamedNode(dcltype)) {
@@ -595,11 +601,33 @@ LLVMTypeRef genlType(GenState *gen, INode *typ) {
             return _genlType(gen, "", dcltype);
         if (reftype->typeinfo->llvmtyperef)
             return reftype->typeinfo->llvmtyperef;
-        genlRefTypeSetup(gen, reftype);
         return reftype->typeinfo->llvmtyperef = _genlType(gen, "", dcltype);
     }
     else
         return _genlType(gen, "", dcltype);
+}
+
+// Generate a type value.
+//
+// A pointer's pointee is generated once the outermost type asked for is done,
+// not in the middle of it. Generated there, a type that reaches itself through a
+// reference -- A holds '+so AState', AState holds 'Option[A]' -- would reach
+// A's struct while its body is still empty, and the enum sized there would
+// measure its variant holding A as holding nothing. Every pointee is still
+// generated before this returns to anything but type generation, which is what
+// the enum layout's flags, read by expression generation, rely on.
+LLVMTypeRef genlType(GenState *gen, INode *typ) {
+    ++genlTypeDepth;
+    LLVMTypeRef typeref = genlTypeNow(gen, typ);
+    if (genlTypeDepth == 1 && genlPointees) {
+        // Still counted as generating, so a pointee reached from these is
+        // appended and taken by this same loop
+        for (uint32_t i = 0; i < genlPointees->used; ++i)
+            genlTypeNow(gen, nodesGet(genlPointees, i));
+        genlPointees->used = 0;
+    }
+    --genlTypeDepth;
+    return typeref;
 }
 
 // The Cone type a reference, pointer or slice points at

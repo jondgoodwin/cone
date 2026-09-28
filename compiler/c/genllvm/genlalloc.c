@@ -21,12 +21,16 @@
 #include <string.h>
 #include <assert.h>
 
-// Build usable metadata about a reference 
+// Build an owning reference's allocation layout, the first time it is asked
+// for. Only an allocation and a region header read it; generating the
+// reference's own type does not, since that would generate its pointee there.
 void genlRefTypeSetup(GenState *gen, RefNode *reftype) {
     if (reftype->region->tag == BorrowRegTag)
         return;
 
     RefTypeInfo *refinfo = reftype->typeinfo;
+    if (refinfo->structype)
+        return;
 
     // Build composite struct, with "fields" for region, perm, and vtype
     LLVMTypeRef field_types[3];
@@ -875,7 +879,7 @@ static void genlEnumDrop(GenState *gen, FnDclNode *fnnode) {
 // region's or permission's size. This is the 'self' every region method but
 // 'alloc' and 'init' is handed.
 static LLVMValueRef genlRegionHeader(GenState *gen, LLVMValueRef valptr, RefNode *refnode) {
-    genlType(gen, (INode*)refnode);    // Make sure typeinfo is populated
+    genlRefTypeSetup(gen, refnode);
     unsigned long long offset = LLVMOffsetOfElement(gen->datalayout, refnode->typeinfo->structype, ValueField);
     LLVMTypeRef hdrptrtype = LLVMPointerType(genlType(gen, refnode->region), 0);
     if (offset == 0)
@@ -1222,6 +1226,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
         }
         assert(reftype->tag == RefTag && "Option type did not have reftype");
     }
+    genlRefTypeSetup(gen, reftype);
     INode *region = itypeGetTypeDcl(reftype->region);
     INode *perm = itypeGetTypeDcl(reftype->perm);
     LLVMTypeRef valuetypllvm = LLVMStructGetTypeAtIndex(reftype->typeinfo->structype, ValueField);

@@ -1,0 +1,58 @@
+// An enum instance whose variant holds, by value, a struct that reaches the
+// enum back through an owning reference: A holds '+so AState', AState holds
+// 'Option[A]'. Every cycle goes through a pointer, so every type has a size --
+// and 'Option[A]' is its tag and A's one pointer, 16 bytes.
+//
+// Code generation followed a reference to its target type while generating the
+// struct holding it, so it reached A while A's own body was still empty, sized
+// 'Some[A]' against that empty body and laid 'Option[A]' out as its tag alone:
+// one byte. An allocation of 'AState' sized from that layout was too short for
+// the value then written into it. Which type generation happened to reach first
+// decided it, so B, holding 'List[A]', and AState's static function building a
+// 'None[A]' are both part of the shape that measured it; this is exactly how two
+// actors hold each other's handles.
+//
+// So the sizes are printed, and a value is allocated, written through and read
+// back, the 'Some' holding an A that owns a second allocation.
+
+mod enum_layout_cycle;
+
+import stdio use *;
+import collections use List;
+
+struct AState {
+  pub next Option[A];
+  pub b B;
+  pub fn made(b B) AState { AState[None[A][], b]; }
+}
+struct A { pub st +so AState; }
+struct BState { pub ring List[A]; }
+struct B { pub st +so BState; }
+
+fn show(label &[]u8, n u64) {
+  printStr(label);
+  printStr(" = ");
+  printUInt(n);
+  printStr("\n");
+}
+
+fn newB() B { B[+so BState[List[A].empty()]]; }
+
+// How many A's follow this one through 'next'
+fn chain(a &imm A) u64 {
+  match &imm a.st.next {
+    case imm s &imm Some[A] {1u64 + chain(&imm s.value);}
+    else {0u64;}
+  }
+}
+
+fn main() {
+  show("sizeof Option[A]", u64[mem.sizeof[Option[A]]()]);
+  show("sizeof Some[A]", u64[mem.sizeof[Some[A]]()]);
+  show("sizeof AState", u64[mem.sizeof[AState]()]);
+
+  imm last = A[+so AState.made(newB())];
+  imm middle = A[+so AState[Some[last], newB()]];
+  imm first = A[+so AState[Some[middle], newB()]];
+  show("chain", chain(&imm first));
+}
