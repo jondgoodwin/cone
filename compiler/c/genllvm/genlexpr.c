@@ -977,7 +977,13 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
 LLVMValueRef genlRecast(GenState *gen, INode* exp, INode* to) {
     INode *totype = itypeGetTypeDcl(to);
     LLVMValueRef genexp = genlExpr(gen, exp);
-    if (totype->tag == StructTag) {
+    // An array is an aggregate too: an array of variants wanted as an array of
+    // their enum ('[4; None[T]]' as '[4; Option[T]]') is a subtype reinterpreted
+    // here, and LLVM bitcasts no array. Where the two arrays are one LLVM type
+    // the value is already what is wanted.
+    if (totype->tag == ArrayTag && LLVMTypeOf(genexp) == genlType(gen, totype))
+        return genexp;
+    if (totype->tag == StructTag || totype->tag == ArrayTag) {
         // refrust.html: a reinterpretation re-casts a value "as if it were a
         // value of a different, but same-sized type". castTypeCheck enforces
         // that by comparing castBitsize, which has no answer for a struct --
@@ -996,7 +1002,7 @@ LLVMValueRef genlRecast(GenState *gen, INode* exp, INode* to) {
                 fromsize, tosize);
             return LLVMGetUndef(tollvm);
         }
-        // LLVM does not bitcast structs, so this store/load hack gets around that problem
+        // LLVM does not bitcast structs or arrays, so this store/load hack gets around that problem
         LLVMValueRef tempspaceptr = genlAlloca(gen, fromllvm, "");
         LLVMValueRef store = LLVMBuildStore(gen->builder, genexp, tempspaceptr);
         LLVMValueRef castptr = LLVMBuildBitCast(gen->builder, tempspaceptr, LLVMPointerType(tollvm, 0), "");
