@@ -202,8 +202,8 @@ void nametblInit() {
 
     allocMethodName = nametblFind("alloc", 5);
     initMethodName = nametblFind("init", 4);
-    aliasMethodName = nametblFind("alias", 5);
-    dealiasMethodName = nametblFind("dealias", 7);
+    aliasRefMethodName = nametblFind("aliasRef", 8);
+    dealiasRefMethodName = nametblFind("dealiasRef", 10);
     freeMethodName = nametblFind("free", 4);
     markMethodName = nametblFind("mark", 4);
     writeBarrierMethodName = nametblFind("writeBarrier", 12);

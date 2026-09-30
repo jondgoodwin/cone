@@ -9,16 +9,16 @@
 // sixteen bytes past where 'alloc' returned rather than eight: 'free' printing
 // the serial 'init' stored proves each method was handed the header, found from
 // the layout rather than from a guess at its size. 'solo' declares 'Move' and
-// no 'alias', so a copy of a reference to it is a move and its one owner's
+// no 'aliasRef', so a copy of a reference to it is a move and its one owner's
 // going is the death.
 //
 // Two more leave out what 'rc' has, and an absent method's operation simply
-// does not happen: 'kept' has 'alias' and no 'dealias', so copies are counted
+// does not happen: 'kept' has 'aliasRef' and no 'dealiasRef', so copies are counted
 // but an owner's going reports nothing, the value never dies by count, and its
 // 'free' is never called -- it leaks, as such a region's values do until a
-// collector frees them. 'asked' declares 'Move', has 'dealias' and no 'alias',
-// so it is a single owner whose going still asks 'dealias', and dies on its
-// answer. A region declaring neither 'Move' nor 'alias' is region_collected's.
+// collector frees them. 'asked' declares 'Move', has 'dealiasRef' and no 'aliasRef',
+// so it is a single owner whose going still asks 'dealiasRef', and dies on its
+// answer. A region declaring neither 'Move' nor 'aliasRef' is region_collected's.
 
 mod region_regionref;
 
@@ -36,8 +36,8 @@ struct tally is RegionRef {
   serial u32;
   fn alloc(size usize) *u8 inline { line("alloc ", size); malloc(size); }
   fn init() tally inline { printStr("init\n"); tally[1usize, 42u32]; }
-  fn alias(self &uni tally) inline { owners = owners + 1usize; line("alias, owners ", owners); }
-  fn dealias(self &uni tally) Bool inline { owners = owners - 1usize; line("dealias, owners ", owners); owners == 0usize; }
+  fn aliasRef(self &uni tally) inline { owners = owners + 1usize; line("alias, owners ", owners); }
+  fn dealiasRef(self &uni tally) Bool inline { owners = owners - 1usize; line("dealias, owners ", owners); owners == 0usize; }
   // A bare 'free' here is this method; C's is reached through its package
   fn free(self &uni tally) inline { line("free, serial ", usize[serial]); libc.free(self as *u8); }
 }
@@ -51,13 +51,13 @@ struct kept is RegionRef {
   owners usize;
   fn alloc(size usize) *u8 inline { line("kept alloc ", size); malloc(size); }
   fn init() kept inline { kept[1usize]; }
-  fn alias(self &uni kept) inline { owners = owners + 1usize; line("kept alias, owners ", owners); }
+  fn aliasRef(self &uni kept) inline { owners = owners + 1usize; line("kept alias, owners ", owners); }
   fn free(self &uni kept) inline { printStr("kept free\n"); libc.free(self as *u8); }
 }
 
 struct asked is RegionRef, Move {
   fn alloc(size usize) *u8 inline { line("asked alloc ", size); malloc(size); }
-  fn dealias(self &uni asked) Bool inline { printStr("asked dealias\n"); true; }
+  fn dealiasRef(self &uni asked) Bool inline { printStr("asked dealias\n"); true; }
   fn free(self &uni asked) inline { printStr("asked free\n"); libc.free(self as *u8); }
 }
 
@@ -125,7 +125,7 @@ fn finalized() {
   imm h = +solo Logged[+tally-imm 8i32];
 }
 
-// Counted up and never down: no dealias, no death, no free
+// Counted up and never down: no dealiasRef, no death, no free
 fn neverDies() {
   printStr("-- never dies\n");
   imm a = +kept-imm 3i32;
@@ -137,7 +137,7 @@ fn neverDies() {
 }
 
 // A single owner that is still asked: the copy is a move, and the one going
-// calls dealias, whose true is the death
+// calls dealiasRef, whose true is the death
 fn askedOnce() {
   printStr("-- asked\n");
   imm s = +asked-mut 4i32;

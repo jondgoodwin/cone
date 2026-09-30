@@ -316,12 +316,12 @@ finished one does, and the diagnostic belongs to the field that needed one, whic
 is also the better error: it names what to change.
 
 "Unfinished" is read only of a type whose size depends on what it holds. A
-reference, pointer or array reference can itself be in flight — `typedef QRef
+reference, pointer or array reference can itself be in flight — `alias QRef =
 &Quad` written above `Quad` checks the reference first, which demands `Quad`
 from inside it, and `fn get(self QRef)` in `Quad` then reaches the same
 reference mid-check. `itypeNoSizeOwnCause` answers a reference before the
-in-flight test, as the rule above says it must; reading the mark first made a
-typedef above its type refused as a cycle and the same typedef below it accepted,
+in-flight test, as the rule above says it must; reading the mark first made an
+alias above its type refused as a cycle and the same alias below it accepted,
 which is the source-order dependence section 2 forbids.
 
 **An enum has a size only when every variant does.** Its own mark says only that

@@ -50,7 +50,7 @@ There is a fourth declaration node beside these three, in the same family:
 binding record — spelling, visibility bit, target — and it is what a type's
 namespace holds for a folded method, overload set or macro method, what a
 module's namespace holds for every name a global's `use` clause folded in, with
-`through` naming the global, and what a `typedef` is, with a type expression as
+`through` naming the global, and what an `alias` statement is, with a type expression as
 its target; `aliasDclResolve` follows a chain of them to the declaration. It
 carries no `vtype`, no marks and no storage, so nothing here about type check,
 flow or generation applies to it. The name is Jon's [Jon 19 Sep]: it joins the

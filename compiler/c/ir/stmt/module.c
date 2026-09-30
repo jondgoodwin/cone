@@ -162,7 +162,7 @@ void modAddFn(ModuleNode *mod, FnDclNode *fnnode) {
 
 // What a binding of a module's namespace stands for: the declaration at the end
 // of a chain of fold aliases, or the binding itself where it is a declaration.
-// A typedef is a declaration of its own, and the chain stops there: its target
+// An 'alias' statement is a declaration of its own, and the chain stops there: its target
 // is resolved with the module's other nodes, after every fold has run
 static INode *modBindingDcl(INode *node) {
     while (node && node->tag == AliasDclTag && !(node->flags & FlagTypeAlias)) {
@@ -180,7 +180,7 @@ int modFoldSameBinding(INode *a, INode *b) {
 }
 
 // Did the module's own source write this binding under its name? Everything but
-// what a star clause made: a declaration, a typedef, the name an import binds to
+// what a star clause made: a declaration, an 'alias', the name an import binds to
 // its module, a listed item of a clause, and an enum's 'use'
 static int modBindingWritten(INode *node) {
     return !(node->tag == AliasDclTag && (node->flags & FlagUnlisted));
@@ -1110,7 +1110,7 @@ void modNameRes(NameResState *pstate, ModuleNode *mod) {
 
     // A type alias names a type expression, and a use of the alias asks what is
     // at the end of that chain. Resolved ahead of the walk for the same reason a
-    // fold is: a forward reference to a typedef is ordinary, so the target has to
+    // fold is: a forward reference to an alias is ordinary, so the target has to
     // be bound before anything asks whether the name is a type at all.
     for (nodesFor(mod->nodes, cnt, nodesp)) {
         if ((*nodesp)->tag == AliasDclTag && ((*nodesp)->flags & FlagTypeAlias))

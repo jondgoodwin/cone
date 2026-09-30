@@ -69,7 +69,7 @@ as that group's own subject requires.
 | 2 | `trait` | Traits, virtual references and the dispatch through them, closure references |
 | 2 | `collection` | Collection types, array references and slices |
 | 2 | `each` | `each` and iteration |
-| 2 | `typemgmt` | Conversion and coercion, typedef and extend |
+| 2 | `typemgmt` | Conversion and coercion, alias and extend |
 | 2 | `generic` | Generics, macros |
 | 2 | `module` | Modules, namespaces, `import`/`extern` |
 | 2 | `exception` | Exception handling |
@@ -493,7 +493,7 @@ Matches against the **pre-optimization** dump, `<name>.preir` — what
 generation wrote, before the optimizer deletes or folds it. Use it for an
 instruction, a type or a signature that is the claim: the `icmp` a slice index
 emits against its runtime count, the trip count of the loop calling a region's
-`alias` once per owner a fill literal adds, `%Node = type { i64, ptr }`,
+`aliasRef` once per owner a fill literal adds, `%Node = type { i64, ptr }`,
 `%some = alloca ptr`. LLVM's pointers carry no type, so a signature shows only
 `ptr` for every reference: what a reference points at is asserted where a body
 uses it — the struct a field address is taken in, the value a local holds.

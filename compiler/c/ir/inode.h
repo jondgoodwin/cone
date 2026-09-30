@@ -194,7 +194,7 @@ enum NodeTags {
 #define FlagInline    0x0008        // FnDcl: "inline" fn/method
 // A declaration written 'pub' is visible from outside the namespace that owns
 // it; unmarked, it is private to that namespace. Set by the parser on whatever
-// declaration the keyword precedes -- fn, variable, field, type, typedef, const
+// declaration the keyword precedes -- fn, variable, field, type, alias, const
 // or macro -- and on an overload name by its candidates (fnOverloadDclAdd).
 // 0x0200 is free of every block here: the declaration flags above stop at
 // 0x0020 and the type flags skip it.
@@ -209,7 +209,7 @@ enum NodeTags {
 #define FlagGenMod    0x0001        // Module: Generate code for the module, if true
 #define FlagModDcl    0x0002        // Module: a 'mod' declaration named it, rather than its filename
 
-// An alias whose target is a type expression -- what 'typedef' declares -- as
+// An alias whose target is a type expression -- what 'alias' declares -- as
 // against one a fold made, whose target is a member name the fold itself binds.
 // It is the one alias with something of its own to name resolve and type check.
 // 0x0002 because an alias already reads 0x0001 as FlagMethFld and 0x0200 as

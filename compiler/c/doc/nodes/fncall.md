@@ -468,7 +468,7 @@ when the range runs to the end, and one past what was written for `...`).
   It is reached only from the array, slice, reference and pointer arms above,
   and its own switch has to agree with that decision. Reading a reference's
   pointee tag raw rather than through `itypeGetTypeDcl` was the bug: `&Alias` to
-  a typedef of an array matched neither the array nor the slice arm, so a valid
+  an alias of an array matched neither the array nor the slice arm, so a valid
   index kept `unknownType` and surfaced as a return-type mismatch elsewhere.
 
 ## What lives elsewhere

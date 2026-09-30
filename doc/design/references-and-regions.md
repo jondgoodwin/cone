@@ -22,8 +22,8 @@ that may be aliased crosses threads only in a region declaring it, so
 `+arc-imm` crosses and `+rc-imm` does not; outside core, as Rust keeps `Arc` in `sync` and out of the
 prelude **[Jon 27 Sep]**, so `arc` is a name only of modules that fold it in,
 `import sync use arc`), all written in Cone. A user can define a region the
-same way — a struct declaring `is RegionRef`, whose `alloc`, `init`, `alias`,
-`dealias` and `free` the compiler calls, and whose `alloc` may ask for the
+same way — a struct declaring `is RegionRef`, whose `alloc`, `init`, `aliasRef`,
+`dealiasRef` and `free` the compiler calls, and whose `alloc` may ask for the
 value's **type record** (core's `TypeRecord`: its size, alignment, finalizer
 and trace) by taking one after the size. A region may declare itself
 **`Traced`** beside `RegionRef`: every type's record then carries a trace that
@@ -166,20 +166,20 @@ imm shared = +rc Person["Tako"]     // counted: freed at zero
 | Region | Is | Strategy |
 | --- | --- | --- |
 | `borrowRef` | a sentinel node, not a struct — the default for `&` | none; a borrow owns nothing |
-| `so` | `struct so is RegionRef, Move` in the core package, `packages/core/src/core.cone`: no fields, `alloc` and `free`, no `alias` | single owner frees |
-| `rc` | `struct rc is RegionRef { cnt usize }` in the core package, with `init`, `alias` and `dealias` too | reference counting |
+| `so` | `struct so is RegionRef, Move` in the core package, `packages/core/src/core.cone`: no fields, `alloc` and `free`, no `aliasRef` | single owner frees |
+| `rc` | `struct rc is RegionRef { cnt usize }` in the core package, with `init`, `aliasRef` and `dealiasRef` too | reference counting |
 | `rcw` | `struct rcw is RegionRef { strong usize; weak usize }` in the `rcweak` package, `packages/rcweak/src/rcweak.cone`; its `free` gives back one weak count, and the last one frees | reference counting with weak references (`Weak[T]`, a struct) |
 | user-defined | any struct declaring `is RegionRef` | whatever its methods do |
 
 **`so` and `rc` are Cone source, not built into the compiler**, and nothing in
 the compiler names either. Each method is optional, and an absent one's
-operation does not happen: without `alias` a copy of a reference calls nothing;
-`dealias` answers whether the owner that went was the last, and without it an
+operation does not happen: without `aliasRef` a copy of a reference calls nothing;
+`dealiasRef` answers whether the owner that went was the last, and without it an
 owner's going asks nothing; `free` gives the memory back. **One owner per value
 is declared, not read off a missing method** [Jon 26 Sep]: a region ref
 declaring the built-in trait `Move`, as `so` does, has its copies moved and
 every owner's going is the value's death. One declaring neither `Move` nor
-`alias` shares its references for nothing, and with no `dealias` either its
+`aliasRef` shares its references for nothing, and with no `dealiasRef` either its
 owners' going does nothing at all — the compiler never frees such a value, the
 region owning death in its own loop: a tracing collector's or an arena's shape. **The region decides when a value dies; the compiler runs the death**,
 because only it knows the value's type: the value's finalizer (its `final`,
@@ -189,7 +189,7 @@ sole owner leaves that owner **hollow**: its memory is still freed, but nothing
 that moved is finalized there. The whole value moves, never a field of it:
 nothing moves out of a field, so no value dies with a hole in it
 (`doc/reference/refmove.html`). The compiler checks the methods' shapes where the struct is declared,
-refusing only contradictions — `Move` with `alias`, `Move` with `Traced` — and
+refusing only contradictions — `Move` with `aliasRef`, `Move` with `Traced` — and
 a `Traced` region without its `mark` (or with a `writeBarrier` of another
 shape); and the test corpus
 declares regions of its own that get every call `rc` and `so` get
@@ -201,7 +201,7 @@ its API — where the annotation is "effectively a special-purpose trait"
 declaring bookkeeping fields plus a protocol of methods: `alloc`, `init`,
 `_alias`, `_dealias`, `_free`, `_readBarrier`/`_writeBarrier`, `isAlive`,
 `weak`, `drop` — and attributes such as `@move` and `traced` that the compiler
-keys off. ⚠ **[differs: of that protocol `alloc`, `init`, `alias`, `dealias`,
+keys off. ⚠ **[differs: of that protocol `alloc`, `init`, `aliasRef`, `dealiasRef`,
 `free` and `writeBarrier` are built, spelled without the underscore (the
 barrier a traced region's alone, handed only what was stored), and `mark`,
 which a traced region's trace calls; the annotation is a struct, not a module; and what the
@@ -396,7 +396,7 @@ gap:
 | Rule | Enforced by | Phase |
 | --- | --- | --- |
 | region must be a struct declaring `is RegionRef` | `refRegionCheck` | type check |
-| a region's methods have the shapes the compiler calls, and `Move` is not contradicted by an `alias` or `Traced`; a `Traced` region has `mark` | `regionRefCheck`, at the declaration | type check |
+| a region's methods have the shapes the compiler calls, and `Move` is not contradicted by an `aliasRef` or `Traced`; a `Traced` region has `mark` | `regionRefCheck`, at the declaration | type check |
 | a traced reference is held only where a collector finds it: not behind an untraced region's owner, in a global, or in raw memory; and a traced value holds no borrow, is reached by a single reference, and sits behind no permission taking room | `regionTracedCheckAll`, over what `regionTracedRefNote`, `regionTracedGlobalNote` and `regionTracedRawNote` noted | after type check |
 | a region allocated from has `alloc` | `regionAllocTypeCheck` | type check |
 | requested permission vs. the source's | `permMatches` in `borrowTypeCheck` | type check |

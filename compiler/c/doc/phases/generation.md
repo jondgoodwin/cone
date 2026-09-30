@@ -232,7 +232,7 @@ answering both is what keeps the object and the include file from disagreeing:
   calls wherever it drops or copies a value of the type, naming neither
   (`module_init_link` drops a package's type whose `final` is private), or,
   in a region ref, one of the methods the compiler calls at a reference's
-  events — `alloc`, `init`, `alias`, `dealias`, `free`, `mark` — which an
+  events — `alloc`, `init`, `aliasRef`, `dealiasRef`, `free`, `mark` — which an
   importer's object calls wherever it allocates, copies, drops or traces a
   reference into the region (`fnIsTypeLifecycle` too; `region_traced_link`
   allocates from and traces into a package's region whose methods are all
@@ -527,7 +527,7 @@ What follows from that:
   `genlRegionHeader` steps back from the value pointer, a GEP over `i8`, by
   `LLVMOffsetOfElement(structype, ValueField)` bytes — 8 for `rc`, 0 for `so`,
   16 for a region with a `{usize, u32}` header; for `so` the header is the
-  value pointer itself, and no instruction is emitted. Every call of `alias`, `dealias` and `free` goes through it, so a
+  value pointer itself, and no instruction is emitted. Every call of `aliasRef`, `dealiasRef` and `free` goes through it, so a
   wider header or a permission with state moves the value and the header with
   it. The optimizer folds the byte step and the region's field GEP into one
   constant offset: for `rc` the same address the count has always had.
@@ -548,8 +548,8 @@ What follows from that:
 
 **The release routines call the region's methods and know no region.**
 `genlReleaseOwning` is one owner going away: `genlRegionDealias` calls the
-region's `dealias` and branches on its `Bool` to the death. A region without
-`dealias` goes straight to the death when it is `Move` (single owner,
+region's `dealiasRef` and branches on its `Bool` to the death. A region without
+`dealiasRef` goes straight to the death when it is `Move` (single owner,
 `regionIsMove`), and emits nothing at all otherwise: that value never dies by an
 owner, whether its copies are counted or free. The death,
 `genlRegionDeath`, runs in two steps: the value dies in place
@@ -620,7 +620,7 @@ at the type, where a call without a location would fail verification.
 deep) reaches `genlAliasHeld` from the `RefCountNode`: the copied value is
 stored to a slot and walked as its death would walk it — each field of a
 struct, the variant an enum's tag picks, each element of a tuple, each element
-of an array in a loop — calling `alias` on each counted reference there. A
+of an array in a loop — calling `aliasRef` on each counted reference there. A
 tuple's `RefCountNode` counts per element, and an element holding counted
 references rather than being one is stored to a slot and walked the same way.
 
@@ -629,7 +629,7 @@ element of which, was moved out through its sole owner (flow's `HollowNode`).
 `genlHollowRelease` turns each recorded move into a path of steps outward from
 the variable (`genlMovedPath`: dereferences and element indexes — never a field
 access, since nothing moves out of a field), and the owner goes away through
-`genlRegionDealiasPart`, the same `dealias` question with the hollow death in
+`genlRegionDealiasPart`, the same `dealiasRef` question with the hollow death in
 place of the death. That runs no finalizer for the value, releases what is left
 (`genlReleasePart`), then calls `free`. A path that ends at a value moved all of
 it out, leaving nothing to release; one that runs on through an owning
@@ -637,7 +637,7 @@ reference (`**b`) makes that reference's own death hollow in turn; one through
 an array element finalizes none of the array, since which elements are left is
 not tracked: the ones that did not move leak rather than one being finalized
 twice. A slice's elements are not walked, for the same reason.
-`genlRegionAlias` calls `alias` once per owner a `RefCountNode` adds — written
+`genlRegionAlias` calls `aliasRef` once per owner a `RefCountNode` adds — written
 out in line up to `RegionAliasUnroll` (16), a loop beyond, since the optimizer
 pipeline runs no loop pass and folds only calls written out. Core's methods are
 `inline`, so each call is the method's body pasted at the site
@@ -662,7 +662,7 @@ function `cone.tyrec.trace.<n>` whose body is `genlTraceAt` on its two
 parameters; each is generated on the spot by `genlTypeRecFn`, with the
 generator's per-function state set aside around it, as `genlFn` does, and in a
 debug build has a subprogram and a location at the type, since the calls it
-makes (an `rc` owner's inline `dealias`, a region's inline `mark`) need one.
+makes (an `rc` owner's inline `dealiasRef`, a region's inline `mark`) need one.
 The finalizer of a type with nothing to finalize points at one private
 do-nothing function, `cone.tyrec.nothing`, and the trace of a type holding no
 traced reference at another, `cone.tyrec.untraced`, so no slot is null. The
@@ -1070,13 +1070,13 @@ variables.
 | | `genlArrayIndex`, `genlBoundsCheck` | multi-dimensional GEP and its checks |
 | | `genlSubslice` | a borrowed range index, `&x[a..b]`: the slice `{&x[a], b - a}` once `a <= b <= count` is checked |
 | `genllvm/genlalloc.c` | `genlRefTypeSetup`, `genlallocref` | the `{region, perm, value}` header and its emission |
-| | `genlRegionHeader`, `genlRegionAlias`, `genlRegionDealias`, `genlRegionDeath` | the header a region method is handed; calling `alias`, `dealias` and `free` at each reference event; a death in place, then `free` |
+| | `genlRegionHeader`, `genlRegionAlias`, `genlRegionDealias`, `genlRegionDeath` | the header a region method is handed; calling `aliasRef`, `dealiasRef` and `free` at each reference event; a death in place, then `free` |
 | | `genlOwnerHeader`, `genlVirtHeader`, `genlVirtRecord`, `genlVirtFinalize` | an owning virtual reference's header, from its vtable record's alignment; that record; its value's death through the record's `finalize` |
 | | `genlHollowRelease`, `genlRegionDealiasPart`, `genlHollowDeath`, `genlReleasePart` | a hollowed variable's release: the death of a value moved out, or an element of it, finalizing none of it and freeing the memory |
 | | `genlReleaseOwning`, `genlDealiasNodes` | releasing one owner of an owning reference or of each a tuple value carries, and replaying flow's lists |
 | | `genlFinalizeAt`, `genlCallDrop`, `genlEachElem` | a value's death in place, whatever its type: a local's, a field's, a region value's before its `free`, and the `finalize` intrinsic |
 | | `genlTypeDrop`, `genlStructDrop`, `genlEnumDrop` | the body of a drop the compiler gave a type: a struct's `final` calls, its fields' deaths, its owners' release; an enum's tag dispatching to its variant's |
-| | `genlAliasHeld` | a copied struct, enum, tuple or array: `alias` on each counted reference its death releases |
+| | `genlAliasHeld` | a copied struct, enum, tuple or array: `aliasRef` on each counted reference its death releases |
 | | `genlTypeRecord`, `genlTypeRecordOf`, `genlTypeRecFn`, `genlTypeRecNothing` | a type's record, once per object: its size, alignment, finalizer function, trace function and flags; what an `alloc` that asks is handed, `mem.typeRecord`, and a root map's entries |
 | | `genlTraceAt`, `genlTraceWalk`, `genlTraceRef`, `genlTraceVariants` | a value's traced references, each handed to its region's `mark`: a record's trace, and `mem.trace` |
 | | `genlBarrierAt`, `genlHoldsBarriered` | the write barrier: the same walk over a value just stored, each reference into a region with a `writeBarrier` handed to it |

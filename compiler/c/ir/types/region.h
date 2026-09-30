@@ -12,12 +12,12 @@
 // reference's region answers no.
 int regionIsRegionRef(INode *region);
 
-// The region method of this name (alloc, init, alias, dealias, free), or NULL
+// The region method of this name (alloc, init, aliasRef, dealiasRef, free), or NULL
 // where the region declares none, or declares something else under the name
 FnDclNode *regionMethod(INode *region, Name *name);
 
 // Is a copy of a reference into this region another owner, counted by its
-// 'alias'? Without one, a copy is a move where the region is 'Move', and costs
+// 'aliasRef'? Without one, a copy is a move where the region is 'Move', and costs
 // nothing where it is not.
 int regionIsCounted(INode *region);
 
@@ -26,12 +26,12 @@ int regionIsCounted(INode *region);
 int regionIsMove(INode *region);
 
 // Is a reference into this region an owner, whose going is the region's to
-// hear of: through 'dealias' where it has one, as the value's death where it is
+// hear of: through 'dealiasRef' where it has one, as the value's death where it is
 // 'Move', and not at all where it has neither? Every RegionRef is.
 int regionIsOwning(INode *region);
 
 // Does an owner of a reference into this region going away do anything: ask
-// the region's 'dealias', or, for a 'Move' region, the value's death? For
+// the region's 'dealiasRef', or, for a 'Move' region, the value's death? For
 // every other region ref it is nothing at all, and releasing such an owner
 // generates nothing.
 int regionReleaseActs(INode *region);

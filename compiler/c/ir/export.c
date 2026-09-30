@@ -50,7 +50,7 @@ int typeHoldsExpanded(INode *type) {
 
 // Whether a function is a type's 'final' or 'clone' -- by its own name or by the
 // overload name it answers to -- or one of the methods the compiler calls on a
-// region ref: 'alloc', 'init', 'alias', 'dealias', 'free', and a traced
+// region ref: 'alloc', 'init', 'aliasRef', 'dealiasRef', 'free', and a traced
 // region's 'mark' and 'writeBarrier'. A value of the type calls the first two
 // wherever it is dropped or copied, and a reference into the region calls the
 // others wherever it is allocated, copied, dropped, traced or stored, which
@@ -67,8 +67,8 @@ int fnIsTypeLifecycle(INode *dclnode) {
         return 1;
     Name *name = fn->namesym;
     return regionIsRegionRef(owner)
-        && (name == allocMethodName || name == initMethodName || name == aliasMethodName
-            || name == dealiasMethodName || name == freeMethodName || name == markMethodName
+        && (name == allocMethodName || name == initMethodName || name == aliasRefMethodName
+            || name == dealiasRefMethodName || name == freeMethodName || name == markMethodName
             || name == writeBarrierMethodName);
 }
 

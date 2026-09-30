@@ -35,7 +35,7 @@ AliasDclNode *newNameAliasDclNode(Name *namesym, INode *target) {
     return node;
 }
 
-// Create an alias for a type expression, which is what 'typedef' declares.
+// Create an alias for a type expression, which is what 'alias' declares.
 // Neither flag the folded case sets applies: it stands for a type rather than
 // for a member reached through a receiver, and its visibility is its own, so
 // it starts private and the 'pub' the parser saw is what sets the bit.

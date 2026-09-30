@@ -88,7 +88,7 @@ static void dclSpanPrintWhat(DclSpan *span) {
     case VarDclTag: word = "global"; break;
     case FieldDclTag: word = "field"; break;   // an 'is' list's placeholders have no span
     case StructTag: word = (node->flags & EnumType) ? "enum" : (node->flags & TraitType) ? "trait" : "struct"; break;
-    case AliasDclTag: word = "typedef"; break;
+    case AliasDclTag: word = "alias"; break;
     case ConstDclTag: word = "const"; break;
     case MacroDclTag: word = "macro"; break;
     case ModTraitTag: word = "mod-trait"; break;

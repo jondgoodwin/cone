@@ -338,6 +338,30 @@ static void parseRetiredInclude() {
         parseSkipToNextStmt();
 }
 
+// 'typedef' is retired: an alias is declared 'alias Name = type;'. The word
+// stays a keyword so that it can be refused. Released to an identifier,
+// 'typedef Count i64;' would be two names and a type at module scale, and the
+// report would be about none of what the author wrote.
+//
+// Reported once, at the keyword, and read through as the statement it was --
+// a name, an '=' if one was written, and a type -- so that what follows it
+// parses as written. Nothing is built for it: a parse diagnostic ends the
+// compile before name resolution.
+static void parseRetiredTypedef(ParseState *parse) {
+    errorMsgLex(ErrorTypedef,
+        "'typedef' is retired: an alias is declared 'alias Name = type;'.");
+    lexNextToken();
+    if (lexIsToken(IdentToken))
+        lexNextToken();
+    if (lexIsToken(AssgnToken))
+        lexNextToken();
+    parseType(parse);
+    if (lexIsToken(SemiToken))
+        lexNextToken();
+    else
+        parseSkipToNextStmt();
+}
+
 // The module a name reaches in the REGISTRY this module's imports resolve
 // against, or NULL where the registry holds no module under that name.
 //
@@ -1330,11 +1354,11 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             break;
         }
 
-        // 'typedef' declares an alias: the same binding record a fold makes,
+        // 'alias' declares an alias: the same binding record a fold makes,
         // with a type expression as its target. 'pub' is its own bit on that
         // binding, as it is on any declaration.
-        case TypedefToken: {
-            AliasDclNode *newnode = parseTypedef(parse);
+        case AliasToken: {
+            AliasDclNode *newnode = parseAlias(parse);
             if (newnode == NULL)
                 break;
             newnode->flags |= pubflag;
@@ -1342,6 +1366,11 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             made = (INode*)newnode;
             break;
         }
+
+        case TypedefToken:
+            parseRetiredTypedef(parse);
+            spankind = SpanOther;
+            break;
 
         // 'struct'-style type definition, optionally modified by 'trait'
         case StructToken: {

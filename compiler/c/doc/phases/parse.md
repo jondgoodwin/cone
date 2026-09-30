@@ -330,7 +330,9 @@ hazards: holding a word takes it away from every program.
 retired — the folder brings a module's files in — and it stays a keyword with an
 arm of its own that reports `ErrorInclude` and skips the statement. Released to an
 identifier as a reserved word is, `include name;` would be two identifiers at
-global scope and a cascade behind the one diagnostic that matters.
+global scope and a cascade behind the one diagnostic that matters. `typedef` is
+retired the same way: an alias is `alias Name = type;`, and `typedef` has an arm
+that reports `ErrorTypedef` and reads the statement through.
 
 ### Blocks and statement ends
 
@@ -613,7 +615,7 @@ diagnostics.
   no method or overload selection, no coercion, no generic instantiation, no
   macro expansion, no `BlockRetTag`, no alias or drop nodes.
 - The tree may contain `NULL` children where recovery gave up — `parseTerm`,
-  `parseTypedef` and `parseLifetime` each return `NULL` on a bad input.
+  `parseAlias` and `parseLifetime` each return `NULL` on a bad input.
 
 ## 8. Errors and recovery
 
@@ -629,6 +631,8 @@ never be analyzed.
 | `parseSkipToNextStmt` | the main resync; consumes through the next `;`, or stops short of a `}` or EOF for the enclosing block to handle |
 | an unbuilt form's body | `parseSkipDclBody` skips a following `{ … }` whole, counting depth, so nothing inside is read as a global statement and reported again, and resyncs at the next `;` where there is no block. `actor` and the refused in-file `mod name { … }` block use it, and so does a member a module trait refuses (`parseModTraitSkipMember`), so each is reported once, where it is written |
 | the retired `include` | `parseRetiredInclude` reports `ErrorInclude` at the word, then reads what the statement took — names or quoted paths, comma-separated — and its `;`, so a statement naming one file, a path or a list is one diagnostic and a `pub` before it adds none. A missing `;` ends the statement at its last name rather than swallowing the next declaration; only where no name follows does it resync with `parseSkipToNextStmt` |
+| the retired `typedef` | `parseRetiredTypedef` reports `ErrorTypedef` at the word, then reads the statement it was — a name, an `=` if one was written, and a type, however many lines it runs over — and its `;`, so each is one diagnostic and a `pub` before it adds none; without the `;` it resyncs with `parseSkipToNextStmt` |
+| an `alias` with no `=` | `parseAlias` reports `ErrorAliasEq` just after the name, and still reads the type that follows, so the statement ends where it was written |
 | `parseCloseTok` | reports `ErrorNoRParen`, scans for the closer, gives up at `;`, `}`, EOF |
 | `parseBlockStart` | on `:`, reports `ErrorColonBlock` and reads what follows as the block; on anything else that is not `{`, reports `ErrorNoLCurly` and scans forward for one |
 | `parseTerm` default | reports `ErrorBadTerm`, consumes one token to avoid an infinite loop, returns `NULL` |
@@ -686,6 +690,7 @@ numbers.
 | | `parseRegisterModuleFiles` | the file registry entries for a module's files, and the two collisions that stop a file joining |
 | `shared/fileio.c` | `fileFindSrc`, `fileFindLocal`, `fileFindPackage`, `fileFolderScan`, `fileDesignatedFile` | locate a source file without reading it — beside a file, on the package search path (saying when it found a package's source root), or the one then the other; list a folder's `.cone` files and subfolders, sorted; probe a folder for the designated file that makes it a module folder |
 | | `parseImport`, `parseRetiredInclude` | the one source-composition form, and the retired one reported |
+| | `parseRetiredTypedef` | the retired `typedef` reported, pointed at `alias` |
 | `parser/parsehelper.c` | `parseBlockStart`, `parseBlockEnd` | `{` and `}`, with recovery |
 | | `parseEndOfStatement`, `parseSkipToNextStmt`, `parseCloseTok` | the required `;`, and the two resyncs |
 | `parser/parseexpr.c` | `parseAnyExpr`, `parseSimpleExpr` | the two expression entry points |
@@ -694,7 +699,8 @@ numbers.
 | | `parseSuffix`, `parseDotCall`, `parseArgs`, `parseArg` | postfix `.`, `()`, `[]`, `++`, `--`; named values. The `.` production serves a member of a value and a path through a namespace alike |
 | | `parseTerm`, `parseNameUse`, `parseArrayLit` | literals, parens, blocks-as-expressions, names |
 | `parser/parsetype.c` | `parseType`, `parseIsTypeStart` | the type dispatcher that delegates to `parsePrefix` — principle 1 — and the tokens that may begin a type |
-| | `parseTypeReq` | a type the grammar requires: after `as` and `into`, a typedef's name, `is` in an expression or a case, a `,` in a return list or generic argument list, and a `+` in a type parameter's annotation. None written is `ErrorNoType`, reported just after the token that asked for it; `parseType` alone is for the sites where a type may be left out |
+| | `parseTypeReq` | a type the grammar requires: after `as` and `into`, an alias's `=`, `is` in an expression or a case, a `,` in a return list or generic argument list, and a `+` in a type parameter's annotation. None written is `ErrorNoType`, reported just after the token that asked for it; `parseType` alone is for the sites where a type may be left out |
+| | `parseAlias` | `alias Name = target;`: an `AliasDclNode` with `FlagTypeAlias`, its target read as a type expression, the one target built. The statement's shape — a name, `=`, and an expression resolved at compile time — is the one every target takes |
 | | `parseStruct` | struct/trait/enum: the optional `trait` modifier on the kind, generics, the base clauses — the `is` list and the `extends` base, read in a loop so that a type may write both, each once, with `extends` refused on a trait and meaning *the enum whose variants join this one's set* on an enum — fields, methods, macros (a method when parameter 0 is `self`), `extern fn` methods and functions with no body (refused in a trait or a generic type, and before anything but `fn`: `ErrorBadExtern`), an enum's variants in both spellings, tag-field synthesis and the `IsTagField` mark on an enum's discriminant; `@c` on a type is `ErrorCAttr` |
 | | `parseAddVariant`, `parseVariantTagPin` | joining a variant to its enum: the closed flags, the synthesized base link, the tag value written (an integer literal, which may be negative, kept whole in 64 bits; whether it fits the enum's type is type check's question) or assigned in sequence, and its name, bound in the enum's namespace while the node joins the module's list. A variant of an enum that *extends* another stays unassigned unless a value was written, because that enum's numbering continues from its base's last and the base is not resolved yet |
 | | `parseEnumExtensionMember` | what an enum extending another may not declare — a member of any kind, since a field or method every variant carries would have to reach its copies of the base's variants too, and a requirement declared there would need every copy to implement it; such a member belongs on the base, and comes along with the copies. Nor a discriminant: none is synthesized for such an enum either, its base's arriving with the fields name resolution splices in |

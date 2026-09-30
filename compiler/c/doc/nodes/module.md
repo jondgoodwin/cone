@@ -1247,7 +1247,7 @@ type out; each member is decided by the rules above, and an enum's variants
 likewise. **As written**: the `mod` line (its `extends`, `is` and default fold
 with it), every import [Q7: all of them for now; pruning is later] — all in the
 first file's header, since a module's other files have none [Jon 23 Sep] — and
-each typedef, const, macro and module trait, which
+each alias, const, macro and module trait, which
 declare no symbol and whose uses nothing records, so a private one stays in too.
 A standalone `use` stays where what it names is in the file or another
 package's, and goes where it privately folds a submodule's names.
@@ -1313,7 +1313,7 @@ private to its package. What is reached, transitively:
 - **What a body the file copies names.** Name resolution records, for each
   expanded body — inline, generic, macro, trait default — each declaration it
   names (`exportReachAdd`, `exportReachesOf`): a function, global or type, and a
-  macro, typedef or const too, which have no symbol and so no
+  macro, alias or const too, which have no symbol and so no
   `DclExpandReached`. It records **a parameter's default value** the same way,
   against its function, since an importer evaluates the default where it calls
   (`NameResState.sigfn`). The generator follows the record from every function,
@@ -1598,7 +1598,7 @@ then every global carrying a `use` clause, then every standalone `use` on
 in. What it extends goes first so that a name the base has and something of the
 module's own also brings in is reported at what the module wrote. `modNameRes` then hooks the namespace, runs the type
 alias pass and the everything-else pass, and unhooks. **The folds go first
-for one reason** — a name folded in, and a name a `typedef` binds, must be in
+for one reason** — a name folded in, and a name an `alias` statement binds, must be in
 place before any declaration that uses it is resolved, and a module's names do
 not depend on the order they were written in. Each leaves its own nodes out
 of the last pass, so nothing is resolved twice: a global's fold and an enum's
@@ -1675,7 +1675,7 @@ enum included. The rules are in
 variants into a module" and "Folding a submodule's names into a module".
 
 **A type alias's target is resolved in a pass of its own, and then checked for a
-cycle.** A forward reference to a `typedef` is ordinary, so the target has to be
+cycle.** A forward reference to an `alias` is ordinary, so the target has to be
 bound before anything asks whether the name is a type at all; `aliasDclCheckCycle`
 then reports a chain that comes back to itself and cuts it, so no later walk
 loops.
@@ -1739,7 +1739,7 @@ is the one fold that takes private names too, above.)
 [Jon 23 Sep]. Every fold into a module's namespace — an import's clause, star or
 listed, an `extends`, a global's clause, a standalone `use` — binds through
 `modFoldBind`, which, where the name is taken, compares what the two bindings stand
-for: the declaration at the end of each chain of fold aliases (a `typedef` counts
+for: the declaration at the end of each chain of fold aliases (an `alias` statement counts
 as a declaration and stops the chain, since its target is resolved only after the
 folds), and the global each is reached through. Then it asks whether each binding
 was **written** by the module's own source. Everything is, except what a star
@@ -2520,8 +2520,8 @@ which it instantiates with the module as a generic type's methods are.
 
 **Substitution was wanted before generativity, and was built first.** An entry
 kind — a shell executable, a web request's receiver — is an interface a module
-plugs into, and so is a region protocol, a module supplying alloc, free, alias
-and dealias; module traits are that interface ("Module traits" above). A generic
+plugs into, and so is a region protocol, a module supplying alloc, free, aliasRef
+and dealiasRef; module traits are that interface ("Module traits" above). A generic
 module is a separate axis, and conforms to a module trait as any module does.
 
 Also unsettled: whether folding into a module and folding into a type are
@@ -2549,8 +2549,8 @@ region promises), and calls them at the reference events only it can see
 |---|---|---|
 | `fn alloc(size usize) *u8`, or `fn alloc(size usize, ty *TypeRecord) *u8`, static | `+R value` allocates; `size` is the whole allocation, header included; `ty`, where it is declared, is the value type's record; null fails | the allocation is refused (`ErrorBadAlloc`) |
 | `fn init() R`, static | after `alloc`; the result is stored as the header | the header is left as allocated |
-| `fn alias(self &uni R)` | a copy of an owning reference becomes another owner | a copy calls nothing: it is a **move** where the region is `Move`, and free where it is not |
-| `fn dealias(self &uni R) Bool` | an owner goes away; answers whether it was the last | an owner's going asks nothing: where the region is `Move` it is the value's death; where it is not, it does nothing — the value never dies by an owner and the compiler never frees it, left to the region's own loop (a collector's, an arena's) |
+| `fn aliasRef(self &uni R)` | a copy of an owning reference becomes another owner | a copy calls nothing: it is a **move** where the region is `Move`, and free where it is not |
+| `fn dealiasRef(self &uni R) Bool` | an owner goes away; answers whether it was the last | an owner's going asks nothing: where the region is `Move` it is the value's death; where it is not, it does nothing — the value never dies by an owner and the compiler never frees it, left to the region's own loop (a collector's, an arena's) |
 | `fn free(self &uni R)` | the value is dead, after it is finalized and its fields' owners are released | the memory is not given back a value at a time |
 | `fn mark(self &uni R)`, or `fn mark(self &uni R, perm u32, mode u32)`, on a region declaring `Traced` | a trace finds a reference into the region: a record's trace, or `mem.trace`; `perm` is the reference's permission, a constant, and `mode` what the trace was called with | refused where the region declares `Traced` (`ErrorTracedMark`); never called where it does not |
 | `fn writeBarrier(self &uni R)`, on a region declaring `Traced` | a reference into the region was just stored into memory that is not a local: a field, element or dereference reached through any reference or pointer, a borrow's included, a swap's either half, `:=`, and each such reference inside a whole value so stored; the header is what was stored | no store calls anything; never called where the region does not declare `Traced` |
@@ -2585,8 +2585,8 @@ but **declared**, with the built-in trait `Move` [Jon 26 Sep]: `struct so is
 RegionRef, Move`. It marks the struct `MoveType` like any type declaring it
 (`structNameRes`), which every reference type into the region asks
 (`refAdoptInfections`), and `regionIsMove` is what a release asks. A missing
-method always means "nothing to do", so a region ref declaring neither `alias`
-nor `Move` shares its references freely, and one with no `dealias` either does
+method always means "nothing to do", so a region ref declaring neither `aliasRef`
+nor `Move` shares its references freely, and one with no `dealiasRef` either does
 nothing when an owner goes: the shape of a tracing collector or an arena, whose
 region owns death in its own loop (`region_collected`).
 
@@ -2600,11 +2600,11 @@ reference's permission and the trace's mode — which a collector that ignores
 them (Acorn's) need not declare, and one that sorts references by them (ORCA's)
 can: the shape is the request, as `alloc`'s is for the record. `Traced` is a
 region ref's only (`ErrorTracedUse`), promises a `mark` (`ErrorTracedMark`), and
-contradicts `Move` (`ErrorRegionSet`); with `dealias` it is accepted. Where a
+contradicts `Move` (`ErrorRegionSet`); with `dealiasRef` it is accepted. Where a
 collector starts is the **roots**: every function holding a traced reference on
 its stack links a frame of them, and `mem.traceRoots` hands each to its region's
 `mark` ([Generation](../phases/generation.md), "Roots"). Releasing an owner of a
-traced region with no `dealias` does nothing, so its references need no
+traced region with no `dealiasRef` does nothing, so its references need no
 finalizing (`regionReleaseActs`, `itypeNeedsFinal`). A traced region that
 marks while the program runs declares a `writeBarrier`, which a store hands the
 header of the reference it stored and nothing of the container: a store
@@ -2639,7 +2639,7 @@ judges none.
 **Whether several threads may hold owners of one value is declared too,** with
 the built-in trait `ThreadSafe` (a provisional name): `struct arc is RegionRef,
 ThreadSafe`, the `sync` package's atomically counted region (a package's, not
-core's, so `arc` is a name only of the modules that fold it in), whose `alias` and `dealias` may
+core's, so `arc` is a name only of the modules that fold it in), whose `aliasRef` and `dealiasRef` may
 run on different threads at once; `rc`, whose count is a plain number, does not
 declare it. It is a region ref's only (`ErrorThreadSafeUse`, from
 `regionThreadSafeUseCheck`), trusted — the compiler cannot check that the
@@ -2654,10 +2654,10 @@ methods are type checked (`regionRefCheck`, from `structCheckMembers`):
 `ErrorBadAlloc` for `alloc`/`init` (an `alloc` taking anything but the size
 and, after it, the type record), `ErrorRegionMeth` for the other five. No
 combination is refused for what it leaves out, since an absent method's
-operation simply does not happen [Jon 25 Sep]: `dealias` without `alias` on a
-`Move` region is a single owner whose going still asks `dealias`, and `init`
+operation simply does not happen [Jon 25 Sep]: `dealiasRef` without `aliasRef` on a
+`Move` region is a single owner whose going still asks `dealiasRef`, and `init`
 without `alloc` is never called. The refusals are contradictions, `Move` with
-`alias` or with `Traced` (`ErrorRegionSet`), and a `Traced` region without the
+`aliasRef` or with `Traced` (`ErrorRegionSet`), and a `Traced` region without the
 `mark` it promises (`ErrorTracedMark`).
 
 A region declared in a package compiled on its own is called from its
@@ -2853,7 +2853,7 @@ a reference names is a type, and that is what is built.
   the first version did, though what an expanded body names of them is now
   recorded (`exportReachesOf`): a const may size an array in a signature, which
   the generator does not walk, so pruning them is left alone. A submodule's are
-  pruned to what is reached. A private typedef of the root goes where it names a
+  pruned to what is reached. A private alias of the root goes where it names a
   type of the package the file leaves out and nothing the file holds reaches it.
 - **What a generic submodule's text reaches in a sister is not recorded** — its
   functions are resolved once in place, not as expanded bodies — so a sister it

@@ -247,7 +247,7 @@ Where a reference type acquires `MoveType`: **when its permission lacks
 `uni` lacks `MayAlias`, and a region ref is a move type by declaring `is Move`,
 as `so` does ([struct](struct.md), "Move and Copy"). Since `+region` defaults to
 `uni`, every owning reference written without a permission moves; one with an
-aliasable permission into a region ref declaring neither `Move` nor `alias`
+aliasable permission into a region ref declaring neither `Move` nor `aliasRef`
 copies, and the copy calls nothing.
 
 It no longer sets a thread-bound flag. That flag was settled as a type was laid
@@ -354,13 +354,13 @@ own ([What a region is](module.md)).
 **An owning virtual reference is released as any owner is, through its
 vtable's type record.** `itypeNeedsFinal`, `flowIsOwningType` and `flowIsRcRef`
 answer for `VirtRefTag` as for `RefTag`, so flow schedules its death, its
-release before a store, and an `alias` for each counted copy. The concrete type
+release before a store, and an `aliasRef` for each counted copy. The concrete type
 is erased, so the two things a death needs are read at run time from the last
 slot of the vtable, a pointer to the implementer's core `TypeRecord`
 (`genlVirtRecord`): the value dies through the record's `finalize`
 (`genlVirtFinalize`), and the header sits before the value at the region and
 permission's size rounded up to the record's `align` (`genlVirtHeader`), which
-`genlOwnerHeader` hands to `alias`, `dealias` and `free` in place of
+`genlOwnerHeader` hands to `aliasRef`, `dealiasRef` and `free` in place of
 `genlRegionHeader`'s static offset. A `so` header is empty, so no alignment is
 read for one. **A conversion into an owning virtual reference carries its
 operand's owner** (`flowCastCarries`): unlike any other conversion, which makes
