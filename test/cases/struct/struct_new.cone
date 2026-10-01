@@ -6,8 +6,10 @@
 // struct may declare inits of its own, 'fn init(self &new, ...)', overloaded
 // under the name 'init'; each fills its value in place through 'self', a
 // reference to memory that holds no value until '*self = value' writes one,
-// and after that reaches it as any method does. Each value printed here was
-// computed by the init named beside it, which is invisible in the source.
+// and after that reaches it as any method does. Where a declared init and the
+// implicit one both take the arguments by position, the declared one runs;
+// the implicit one is reached by the fields' names. Each value printed here
+// was computed by the init named beside it, which is invisible in the source.
 //
 // Where the value goes decides where it is built: a local's declaration hands
 // the init the local's own memory, and an allocation the memory it obtained;
@@ -130,6 +132,58 @@ fn declaredInit() {
   show("implicit-beside-declared", i64.from(f.x * 10 + f.y));
 }
 
+// -------- a declared init and the implicit one, both taking the arguments --------
+
+// An init shaped like the fields, taking them in the other order. By
+// position the declared init is preferred; by the fields' names the implicit
+// one is reached, as the declared init itself reaches it to fill self.
+struct Twin {
+  pub a i32;
+  pub b i32;
+
+  pub fn init(self &new, a i32, b i32) { *self = new Twin(a: b, b: a); }
+}
+
+// One that computes: whichever order the bounds come in, low is the lower
+struct Span {
+  pub lo i32;
+  pub hi i32;
+
+  pub fn init(self &new, lo i32, hi i32) {
+    if lo <= hi {
+      *self = new Span(lo: lo, hi: hi);
+    }
+    else {
+      *self = new Span(lo: hi, hi: lo);
+    }
+  }
+}
+
+// A generic struct ties the same way in its instance
+struct Pair[T] {
+  pub first T;
+  pub second T;
+
+  pub fn init(self &new, first T, second T) { *self = new Pair[T](first: second, second: first); }
+}
+
+fn preferred() {
+  imm t = new Twin(1, 2);
+  show("declared-by-position", i64.from(t.a * 10 + t.b));
+  imm u = new Twin(a: 1, b: 2);
+  show("implicit-by-name", i64.from(u.a * 10 + u.b));
+  imm s = new Span(9, 4);
+  show("declared-computes", i64.from(s.lo * 10 + s.hi));
+  imm r = new Span(hi: 4, lo: 9);
+  show("implicit-takes-as-given", i64.from(r.lo * 10 + r.hi));
+  imm p = new Pair[i32](3, 4);
+  show("generic-declared-by-position", i64.from(p.first * 10 + p.second));
+  imm q = new Pair(5i64, 6i64);
+  show("generic-inferred-declared", q.first * 10 + q.second);
+  imm n = new Pair[i32](first: 3, second: 4);
+  show("generic-implicit-by-name", i64.from(n.first * 10 + n.second));
+}
+
 // The memory a construction fills
 fn inPlace() {
   mut here = new Vec2(6);
@@ -172,6 +226,7 @@ fn generics() {
 fn main() {
   implicitInit();
   declaredInit();
+  preferred();
   inPlace();
   generics();
 }

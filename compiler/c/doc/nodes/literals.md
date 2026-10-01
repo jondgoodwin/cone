@@ -252,12 +252,15 @@ values, as its literal's were (`genericSubstitute`). Its inits are the implicit
 field-wise one and those it declares under the name `init`, one or an overload
 set, each `fn init(self &new, ...)`. With none declared, the arguments are
 checked against the fields they fill, as a literal's are; otherwise with no
-expectation, as an overload set's are. Exactly one init must take them:
-viability is counted as `fnSigViableCall` counts it -- the count, the defaults,
-each argument passable -- for a declared one its parameters after `self`, for
-the implicit one the fields in order, and neither is preferred, so none or
-several is `ErrorInitNone`. Named arguments are the implicit init's alone; a
-name no field has is `ErrorNamedArg`. The implicit init is lowered to the
+expectation, as an overload set's are. Viability is counted as
+`fnSigViableCall` counts it -- the count, the defaults, each argument passable
+-- for a declared one its parameters after `self`, for the implicit one the
+fields in order. **A viable declared init is preferred to the implicit one**,
+which is then not asked; among the declared ones exactly one must be viable,
+and the implicit one is the choice only when none is. So none viable, or
+several declared ones, is `ErrorInitNone`. Named arguments are the implicit
+init's alone, which is how it is reached whatever the struct declares; a name
+no field has is `ErrorNamedArg`. The implicit init is lowered to the
 struct's literal, retagged `TypeLitTag` with `FlagNew` kept, and checked as
 below; a declared one stays an `FnCallTag` with `FlagNew`, its `objfn` the
 init's name use, its arguments coerced to the parameters after `self` and the

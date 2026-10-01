@@ -5,10 +5,12 @@
 // parentheses; the bracket form, and the type called like a function, are
 // both refused, naming what to write. 'new' builds a struct's value only: a
 // number converts with its 'from', an enum's variant keeps its brackets, and
-// an allocation keeps its '+' spelling. Exactly one init -- the implicit
-// field-wise one, or one the struct declares -- must take the arguments. An
-// init fills its value in place, 'fn init(self &new, ...)', and is run only by
-// a construction; '&new' marks nothing else.
+// an allocation keeps its '+' spelling. An init must take the arguments: one
+// the struct declares, preferred to the implicit field-wise one, and only one
+// of those it declares. Inside an init, filling self by position with the init
+// itself is refused. An init fills its value in place,
+// 'fn init(self &new, ...)', and is run only by a construction; '&new' marks
+// nothing else.
 //
 // Type-check stage only. What 'self &new' may do inside an init is flow
 // analysis's, in struct_flow_new.
@@ -28,14 +30,33 @@ struct Vec2 {
   pub fn diagonal overload init(self &new, d i32, flip Bool, scale i32) { *self = new Vec2(d, d); }
 }
 
-// An init with the same parameters as the fields: neither it nor the
-// field-wise init is preferred, so a construction both take is refused
-struct Twin {
+// Two declared inits that take the same arguments: a declared init is
+// preferred only to the implicit one, so a construction both take is refused
+struct Rival {
   pub a i32;
   pub b i32;
 
-  // Itself built by name, which only the field-wise init takes
-  pub fn init(self &new, a i32, b i32) { *self = new Twin(a: b, b: a); }
+  pub fn narrow overload init(self &new, a i32, b i32) { *self = new Rival(a: b, b: a); }
+  pub fn wide overload init(self &new, a i64, b i64) { *self = new Rival(a: 0, b: 0); }
+}
+
+// An init filling self by position, where the declared init is preferred:
+// the construction runs the init it is in, which only the fields' names avoid
+struct Seeded {
+  pub seed i32;
+
+  pub fn init(self &new, n i32) { *self = new Seeded(n); }           //~ ErrorInitRecurse:43 "'new Seeded(field: value)'"
+}
+
+struct Mirror[T] {
+  pub a T;
+  pub b T;
+
+  pub fn init(self &new, a T, b T) { *self = new Mirror[T](b, a); }  //~ ErrorInitRecurse:46 "'new Mirror(field: value)'"
+}
+
+fn mirrored() {
+  imm m = new Mirror[i32](1, 2);
 }
 
 struct Sealed {
@@ -64,7 +85,7 @@ fn notStructs() {
 
 fn noInit() {
   imm a = new Vec2(1, 2, 3, 4);    //~ ErrorInitNone:11 "No init of Vec2"
-  imm b = new Twin(1, 2);          //~ ErrorInitNone:11 "More than one init of Twin"
+  imm b = new Rival(1, 2);         //~ ErrorInitNone:11 "More than one init Rival declares"
   imm c = new Sealed(1, 2);        //~ ErrorNotPublic:11 "private init"
 }
 

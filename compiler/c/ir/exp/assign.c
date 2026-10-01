@@ -155,6 +155,28 @@ int assignOneTakesTuple(AssignNode *node) {
         && isExpNode(node->lval) && iexpGetTypeDcl(node->lval)->tag == TTupleTag;
 }
 
+// '*self = new T(...)' in an init, where the construction selected that same
+// init (typeLitNewCheck prefers a declared init to the implicit one): filling
+// self would run the init again before it ever filled it. The field-wise fill
+// names the fields, which only the implicit init takes.
+static void assignInitRecurse(TypeCheckState *pstate, INode *lval, INode *rval) {
+    if (pstate->fn == NULL || lval->tag != DerefTag || rval->tag != FnCallTag || !(rval->flags & FlagNew))
+        return;
+    INode *objfn = ((FnCallNode *)rval)->objfn;
+    if (!isNameUseNode(objfn) || ((NameUseNode *)objfn)->dclnode != (INode *)pstate->fn)
+        return;
+    INode *self = ((StarNode *)lval)->vtexp;
+    while (self->tag == CastTag)
+        self = ((CastNode *)self)->exp;
+    Nodes *parms = ((FnSigNode *)pstate->fn->vtype)->parms;
+    if (!isNameUseNode(self) || parms->used == 0 || ((NameUseNode *)self)->dclnode != nodesGet(parms, 0))
+        return;
+    INode *owner = inodeGetOwner((INode *)pstate->fn);
+    errorMsgNode(rval, ErrorInitRecurse,
+        "Filling self with a construction that runs this same init again: an init fills its value by the fields' names, 'new %s(field: value)'.",
+        owner && owner->tag == StructTag ? &((StructNode *)owner)->namesym->namestr : "T");
+}
+
 // Type checking for assignment node
 void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
     if (iexpTypeCheckAny(pstate, &node->lval) == 0)
@@ -173,8 +195,10 @@ void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
             assignSingleCheck(pstate, node->lval, &node->rval);
         else if (node->rval->tag == VTupleTag)
             assignToOneCheck(pstate, node->lval, (TupleNode*)node->rval);
-        else
+        else {
             assignSingleCheck(pstate, node->lval, &node->rval);
+            assignInitRecurse(pstate, node->lval, node->rval);
+        }
     }
     node->vtype = ((IExpNode*)node->rval)->vtype;
 }

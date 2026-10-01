@@ -964,15 +964,24 @@ parameter alone, and `refTypeCheck` refuses the permission without it, putting
 `uni` in its place. `fnDclIsInit` is the test the rest of the compiler asks:
 a method whose `self` is `&new`.
 
-**The implicit init is always a candidate, beside the declared ones, and none
-is preferred.** A construction both take is `ErrorInitNone`, as an overload
-set's ambiguity is. So a declared init with the fields' own shape -- or any
-whose arguments an untyped literal also passes to the fields, since such a
-literal passes to any number type and an integer one to `Bool` -- is reached
-by no positional construction, and neither is the implicit init it shadows;
-named arguments reach the implicit one still. Which init a construction calls
-is decided at the construction (`typeLitNewCheck`), so an init is never called
-by name (`fnCallFinalizeArgs`, `ErrorInitCall`).
+**The implicit init always exists, and a declared init is preferred to it.**
+A construction whose positional arguments a declared init and the implicit
+one both take runs the declared one; two declared ones taking them is
+`ErrorInitNone`, as an overload set's ambiguity is. "Take" is viability as a
+call counts it, coercions of untyped literals included, so a declared init
+with the fields' own shape -- or any whose arguments an untyped literal also
+passes to the fields, since such a literal passes to any number type and an
+integer one to `Bool` -- takes every positional construction it is viable
+for. The implicit init is reached by the fields' names, which only it takes:
+inside a declared init, `*self = new T(field: value)` fills the value
+field-wise, and `*self = new T(...)` whose positional arguments select the
+init it is in is `ErrorInitRecurse` (`assignInitRecurse`), since filling self
+would run that init again. Only that form is refused: a construction of the
+same init elsewhere in its body -- a child value, or an allocation such as a
+tree's node making its children -- is ordinary recursion, as a function's is.
+Which init a construction calls is decided at the construction
+(`typeLitNewCheck`), so an init is never called by name
+(`fnCallFinalizeArgs`, `ErrorInitCall`).
 
 A **region's** `init` and a lock **permission's** are declared inits of the
 same shape taking nothing but `self`, run by an allocation on their parts of

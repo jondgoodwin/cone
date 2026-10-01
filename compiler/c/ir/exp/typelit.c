@@ -400,9 +400,10 @@ static void typeLitNewAllocate(TypeCheckState *pstate, FnCallNode **nodep, RefNo
 // arguments select. Every struct has an implicit init taking its fields in
 // declaration order (by name too, 'new Point(y: 2, x: 1)', and a field left out
 // taking its default), and it may declare others, 'fn init(self &new, ...)',
-// overloaded under the name 'init'. Exactly one of them must take the
-// arguments; named ones are the implicit init's alone, since no call takes
-// them. The implicit init is lowered to the struct's literal, whose fields are
+// overloaded under the name 'init'. A declared init that takes the arguments
+// is preferred to the implicit one, and exactly one declared init may take
+// them; named ones are the implicit init's alone, since no call takes them,
+// so the fields' names reach it whatever the struct declares. The implicit init is lowered to the struct's literal, whose fields are
 // stored straight into wherever the value goes; a declared one to a call of it,
 // which generation hands the memory the value goes into (genlNew).
 void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep) {
@@ -562,12 +563,14 @@ void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             }
         }
     }
-    int implicit = inits == NULL || named || typeLitImplicitViable(strnode, node->args);
+    // A declared init the arguments select is preferred to the implicit one,
+    // which is reached by its fields' names when both would take them
+    int implicit = viable == 0 && (inits == NULL || named || typeLitImplicitViable(strnode, node->args));
     viable += implicit;
     if (viable != 1) {
         errorMsgNode((INode*)node, ErrorInitNone, viable == 0
             ? "No init of %s takes these arguments: neither its fields, in the order they are declared, nor an init it declares."
-            : "More than one init of %s takes these arguments, so the construction cannot choose between them.",
+            : "More than one init %s declares takes these arguments, so the construction cannot choose between them.",
             &strnode->namesym->namestr);
         return;
     }
