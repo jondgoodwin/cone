@@ -1873,10 +1873,14 @@ class Demangler:
             return f"{base}[{','.join(args)}]"
         raise DemangleError(f"path cannot start with {ch!r} at {self.pos - 1}")
 
-    def region_perm(self) -> str:
+    # A reference after its letter, read as the source writes it: a borrowed
+    # one, which names no region, as its sigil, the permission and the value
+    # ('&mut i32'); a managed one as its region's type, 'Rc[mut, i32]'
+    def reference(self, sigil: str, value) -> str:
         region = self.ident()
         perm = self.ident()
-        return f"{region} {perm} " if region else f"{perm} "
+        target = value()
+        return f"{region}[{perm}, {target}]" if region else f"{sigil}{perm} {target}"
 
     # An array after its 'A': its element type and its sizes, outermost first,
     # so a nested array reads as the one type it is, 'Array[i64, 2, 3]'
@@ -1915,11 +1919,11 @@ class Demangler:
             elem, sizes = self.array_parts()
             return f"Array[{elem}, {', '.join(str(size) for size in sizes)}]"
         if ch == "R":
-            return "&" + self.region_perm() + self.type()
+            return self.reference("&", self.type)
         if ch == "S":
-            return "&[]" + self.region_perm() + self.type()
+            return self.reference("&[]", self.type)
         if ch == "V":
-            return "&<" + self.region_perm() + self.path()
+            return self.reference("&<", self.path)
         if ch == "P":
             return "*" + self.type()
         raise DemangleError(f"type cannot start with {ch!r} at {self.pos - 1}")
@@ -1992,7 +1996,7 @@ DEMANGLE_EXAMPLES = [
     ("_CYNt5GaugeNt5Meter", "Gauge as Meter (vtable)"),
     ("_CYNt3CarNt7Powered6thrust", "Car as Powered.thrust (thunk)"),
     ("_CLNt5Meter", "Meter (vtable list)"),
-    ("_CINv4pickR2So3mutlE", "pick[&So mut i32]"),
+    ("_CINv4pickR2So3mutlE", "pick[So[mut, i32]]"),
     ("_CINv4pickR02roNt6HolderE", "pick[&ro Holder]"),
     ("_CINv4pickS03mutlE", "pick[&[]mut i32]"),
     ("_CINv4pickV02roNt5MeterE", "pick[&<ro Meter]"),

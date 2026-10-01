@@ -44,7 +44,7 @@ var ConeHighlightRules = function() {
             regex: /\b(?:self|this)\b/
         }, {
             token: "constant.language.cone",
-            regex: /\b(?:true|false)\b/
+            regex: /\b(?:true|false|nil|void|undef)\b/
         }, {
             token: "constant.numeric.cone",
             regex: /\b(?:0b[0-1_]*|0x[0-9a-fA-F_]*|[0-9][0-9_]*(?:\.[0-9][0-9_]*)?(?:(?:e|E)(?:\+|-)?[0-9_]+)?)\b/
@@ -55,17 +55,15 @@ var ConeHighlightRules = function() {
                 "text",
                 "function.cone"
             ],
-            regex: /\b(new|be|fn)(\s+)([_a-z][_a-zA-Z0-9]*)/
+            regex: /\b(fn|macro)(\s+)([_a-z][_a-zA-Z0-9]*)/
         }],
         "#typedeclarations": [{
             token: [
                 "keyword.declaration.cone",
                 "text",
-                "entity.permission.cone",
-                "text",
                 "type.cone"
             ],
-            regex: /\b(type|interface|trait|primitive|struct|class|actor)(\s+)((?:mut|imm|mmut|ro|mutx|id)?)(\s*)([_A-Z][_a-zA-Z0-9]*)/
+            regex: /\b(struct|trait|enum|alias|actor)(\s+)([_A-Z][_a-zA-Z0-9]*)/
         }],
         "#vardeclarations": [{
             token: [
@@ -73,7 +71,7 @@ var ConeHighlightRules = function() {
                 "text",
                 "var.cone"
             ],
-            regex: /\b(mut|imm|mmut|ro|mutx|id)(\s+)([_a-z][_a-zA-Z0-9]*)/
+            regex: /\b(mut|imm)(\s+)([_a-z][_a-zA-Z0-9]*)/
         }],
         "#identifiers": [{
             token: ["support.function.cone", "text"],
@@ -94,32 +92,35 @@ var ConeHighlightRules = function() {
             regex: /\b_*[A-Z][_a-zA-Z0-9]*\b/
         }, {
             token: "entity.type.cone",
-            regex: /\b(?:i8|i16|i32|i64|u8|u16|u32|u64|f32|f64)\b/
+            regex: /\b(?:i8|i16|i32|i64|isize|u8|u16|u32|u64|usize|f32|f64)\b/
         }, {
             token: "text",
             regex: /\b_*[a-z][_a-zA-Z0-9']*/
         }],
         "#keywords": [{
-            token: "keyword.other.intrinsic.cone",
-            regex: /\b(?:compile_intrinsic|compile_error)\b/
-        }, {
             token: "keyword.other.import.cone",
-            regex: /\buse\b/
+            regex: /\b(?:mod|import|use|but|pub|extern)\b/
         }, {
             token: "keyword.other.declaration.cone",
-            regex: /\b(?:var|let|embed|delegate)\b/
+            regex: /\b(?:fn|struct|trait|enum|alias|macro|const|static|overload|extends|actor)\b/
+        }, {
+            token: "keyword.other.new.cone",
+            regex: /\b(?:new|trynew)\b/
         }, {
             token: "entity.permission.cone",
-            regex: /\b(?:mut|imm|mmut|ro|mutx|id)\b/
+            regex: /\b(?:uni|mut|imm|ro|mut1|opaq)\b/
         }, {
             token: "keyword.control.jump.cone",
             regex: /\b(?:break|continue|return)\b/
         }, {
             token: "keyword.control.cone",
-            regex: /\b(?:if|ifdef|then|elseif|else|end|match|where|try|with|as|recover|consume|object|digestof)\b/
+            regex: /\b(?:if|elif|else|match|case|where|with|using|as|into|inline)\b/
         }, {
             token: "keyword.control.loop.cone",
-            regex: /\b(?:while|do|repeat|until|for|in)\b/
+            regex: /\b(?:while|each|in|by)\b/
+        }, {
+            token: "keyword.other.reserved.cone",
+            regex: /\b(?:async|baseurl|context|local|selfmethod|wait|yield|throw|catch|spawn)\b/
         }, {
             token: "text",
             regex: /\-|\+|\*|\/(?![\/*])|%|<<|>>/
