@@ -421,6 +421,7 @@ enum ErrorCode {
     // Allocation, continued (ir/exp/typelit.c)
     ErrorAllocValue = 1226,     // An allocation of a type no init constructs (a number, an array, a tuple, an enum or its variant, a reference) given other than one value of it: 'new Rc[i32](5)'
     ErrorNewFinished = 1227,    // 'new Point(p)', p already a Point: a finished value needs no construction; an allocation takes one as its value, 'new Rc[Point](p)'
+    ErrorTryNewContents = 1228, // Contents after '<-' on a 'trynew' that is not an array's allocation: allocate, then append on Some (ir/exp/contents.c)
 
     // Warnings
     WarnCode = 3000,

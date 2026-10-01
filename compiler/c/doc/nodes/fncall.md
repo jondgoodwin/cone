@@ -474,7 +474,16 @@ value. Its `first` is an expression resolved like any other, which a
   `<-` to call, so the contents become an `ArrayLitTag` node typed as the
   array (`contentsLowerArray`). Every count is a constant, `fill` given what
   is left, and they add to the size exactly (`ErrorArrayContents`; a pair is
-  `ErrorPairAppend`). For an array type written with several sizes (its
+  `ErrorPairAppend`). A repeated value is copied, unchecked, once per element
+  (`contentsCopy`) and each copy checked against the element type, so it is
+  evaluated once per element and the move rule applies to each. Past
+  `ArrayRepeatUnroll` (16) copies there are two, the second standing for every
+  element after the first (the literal's `repeats`), which generation fills in
+  a loop evaluating it once for each: a later copy would be checked and walked
+  by flow exactly as the second is, so the second asks all of them would. One
+  entry repeating a constant becomes the literal's fill form, one value stored
+  into every element. Refused contents leave an error node.
+  For an array type written with several sizes (its
   outermost node's `nsizes`, `arrayTypeLower`) the entries are its scalars,
   row-major: the size is the product of the sizes (at most 4294967295,
   `ErrorArrayContents`), each value is checked against the element type
@@ -493,18 +502,13 @@ value. Its `first` is an expression resolved like any other, which a
   `FlagAllocFill`: generation fills it in place after the region's and the
   permission's inits rather than evaluating it before `alloc`
   ([references](references.md), "Allocation"). `trynew` is taken the same way,
-  so the contents are evaluated only on `Some`. `trynew` of anything else is
-  not lowered as a construction: its contents would be appended through an
-  `Option`, which nothing settles, so the `<-` is left to the path for a
-  value, which refuses it. A repeated value is copied, unchecked, once per element
-  (`contentsCopy`) and each copy checked against the element type, so it is
-  evaluated once per element and the move rule applies to each. Past
-  `ArrayRepeatUnroll` (16) copies there are two, the second standing for every
-  element after the first (the literal's `repeats`), which generation fills in
-  a loop evaluating it once for each: a later copy would be checked and walked
-  by flow exactly as the second is, so the second asks all of them would. One
-  entry repeating a constant becomes the literal's fill form, one value stored
-  into every element. Refused contents leave an error node.
+  so the contents are evaluated only on `Some`.
+- **After any other `trynew`**, the contents would be appended through the
+  `Option` it gives, which is not built: the construction is checked (so a
+  `trynew` of a value type is its own `ErrorTryNewValue`), then the `<-` is
+  refused once, `ErrorTryNewContents`, naming the spelling that works,
+  `trynew` alone and an append on `Some`, and left an error node
+  (`contentsRefuseTryNew`).
 
 An `EntryNode` reached by `entryTypeCheck` sat where no `<-` took it apart,
 only possible inside a tuple used as a value: `ErrorEntryPlace`.

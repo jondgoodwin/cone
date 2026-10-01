@@ -644,6 +644,22 @@ static INode *contentsBuiltType(TypeCheckState *pstate, FnCallNode *ctor) {
     return itypeGetTypeDcl(ctor->objfn);
 }
 
+// Contents after a 'trynew' that is not an array's allocation are refused:
+// they would be appended through the Option it gives, and are built only for
+// an array, filled inside its allocation (contentsLowerAlloc). The
+// construction is checked first, so one it refuses itself (a 'trynew' of a
+// value type, ErrorTryNewValue) is reported once, by it; the whole then
+// stands as an error node, so nothing reports the '<-' again.
+static void contentsRefuseTryNew(TypeCheckState *pstate, FnCallNode **nodep, INode *built) {
+    FnCallNode *node = *nodep;
+    inodeTypeCheckAny(pstate, &node->objfn);
+    if (isExpNode(node->objfn) && !inodeIsError(node->objfn) && iexpGetTypeDcl(node->objfn) != errorType)
+        errorMsgNode((INode*)node, ErrorTryNewContents,
+            "Contents after '<-' on a 'trynew' are built only for an array's allocation, and not yet for %s. Allocate it with 'trynew' alone, then append on Some: 'imm maybe = trynew R[perm, T](...); match maybe { case imm s Some[R[perm, T]] { s.value <- ...; } else {...} }'.",
+            built && built->tag == RefTag ? itypeName(((RefNode*)built)->vtexp) : "this value");
+    *((INode**)nodep) = newErrorNode((INode*)node);
+}
+
 // Lower a '<-' that contentsIsAppend accepts into the appends it stands for,
 // and type check them
 void contentsLower(TypeCheckState *pstate, FnCallNode **nodep) {
@@ -656,10 +672,8 @@ void contentsLower(TypeCheckState *pstate, FnCallNode **nodep) {
             *((INode**)nodep) = newErrorNode((INode*)node);
         else if (built && built->tag == RefTag && itypeGetTypeDcl(((RefNode*)built)->vtexp)->tag == ArrayTag)
             contentsLowerAlloc(pstate, nodep, (RefNode*)built);
-        // 'trynew' of anything else is not lowered as a construction: the
-        // contents of an allocation reached through an Option are not settled
         else if (trynew)
-            contentsLowerEntries(pstate, nodep);
+            contentsRefuseTryNew(pstate, nodep, built);
         else if (built && built->tag == ArrayTag)
             contentsLowerArray(pstate, nodep);
         else
