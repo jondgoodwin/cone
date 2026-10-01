@@ -140,6 +140,9 @@ Visual Studio projects stay at the root.
   the video's frames);
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
+  `textdiff` is the line diff of two lists of lines or two texts: the edit
+  as spans (a minimal one, by Myers' algorithm) and the unified diff that
+  shows it, in `difflib.unified_diff`'s format and `diff -u`'s;
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed
   `Dict[K, V]`, each holding its elements in one block from `libc`'s
   allocator and moving them with core's `mem` intrinsics; `arena` is an
