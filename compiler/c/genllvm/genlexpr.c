@@ -1872,7 +1872,7 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         RefCountNode *anode = (RefCountNode*)termnode;
         LLVMValueRef val = genlExpr(gen, anode->exp);
         // Flow injects this node only for a counted reference (flowIsRcRef),
-        // whose region's 'alias' is called once per owner added
+        // whose region's 'aliasRef' is called once per owner added
         RefNode *reftype = (RefNode*)iexpGetTypeDcl(termnode);
         if (reftype->tag == RefTag || reftype->tag == ArrayRefTag || reftype->tag == VirtRefTag)
             genlRegionAlias(gen, val, anode->amt, reftype);
@@ -1964,7 +1964,7 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
             // address a write to it would store to, rather than loading the
             // whole value to extract one field: the optimizer can then forward
             // a store to the field into a later read of it, as a region's
-            // 'dealias' needs when it tests the count it just wrote
+            // 'dealiasRef' needs when it tests the count it just wrote
             else if (fncall->objfn->tag == DerefTag) {
                 LLVMTypeRef structype = genlType(gen, genlAddrType(fncall->objfn));
                 LLVMValueRef fldp = LLVMBuildStructGEP2(gen->builder, structype, genlAddr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);

@@ -146,8 +146,8 @@ enum ErrorCode {
 
     // Regions: the annotation struct after '+', and the 'RegionRef' methods the compiler calls on it
     ErrorNotRegion = 1154,      // A reference's region names a struct that does not declare 'is RegionRef'
-    ErrorRegionMeth = 1155,     // A region's 'alias', 'dealias', 'free' or 'mark' not of the shape the compiler calls it with
-    ErrorRegionSet = 1156,      // A region whose declaration contradicts itself: 'is Move' (one owner per value) with an 'alias' method (another owner), or with 'Traced' (a collector for a value one owner frees)
+    ErrorRegionMeth = 1155,     // A region's 'aliasRef', 'dealiasRef', 'free' or 'mark' not of the shape the compiler calls it with
+    ErrorRegionSet = 1156,      // A region whose declaration contradicts itself: 'is Move' (one owner per value) with an 'aliasRef' method (another owner), or with 'Traced' (a collector for a value one owner frees)
     ErrorRegionRefUse = 1157,   // 'RegionRef' anywhere but a struct's 'is' list: the type a reference points at, or the 'is' of a trait, enum or variant
 
     // Traced regions: a region ref declaring 'Traced', and where its references may be held (ir/types/region.c)
@@ -249,7 +249,7 @@ enum ErrorCode {
     ErrorInclude = 1126,        // An 'include' statement: a file joins a module by being in its folder, so nothing brings one in
 
     // A module's standalone 'use': folding an enum's variants, or a submodule's names, in as names of the module
-    ErrorUseEnum = 1114,        // A module's standalone 'use' naming neither an enum declaration nor a module: another kind of name, a typedef, or an instance of a generic enum
+    ErrorUseEnum = 1114,        // A module's standalone 'use' naming neither an enum declaration nor a module: another kind of name, an 'alias' of a type, or an instance of a generic enum
 
     // A pattern's bare variant, looked up in the matched value's enum
     ErrorPatArgs = 1115,        // A pattern's variant found only in the matched value's enum, written with type arguments that value supplies
@@ -369,6 +369,10 @@ enum ErrorCode {
 
     // A match's value alone (ir/exp/cast.c)
     ErrorPatType = 1196,        // A type alone as a match pattern, other than a variant of the matched value's enum named bare: a value alone is compared with '==', and narrowing is written 'is'
+
+    // The alias statement (parser/parsemod.c, parser/parsetype.c)
+    ErrorTypedef = 1197,        // A 'typedef' statement: an alias is declared 'alias Name = type;'
+    ErrorAliasEq = 1198,        // An 'alias' statement with no '=' between its name and its target
 
     // Warnings
     WarnCode = 3000,

@@ -91,8 +91,8 @@ extern Name *optionName;   // "Option"
 // that checks them
 extern Name *allocMethodName;  // "alloc"
 extern Name *initMethodName;   // "init"
-extern Name *aliasMethodName;  // "alias"
-extern Name *dealiasMethodName; // "dealias"
+extern Name *aliasRefMethodName;  // "aliasRef"
+extern Name *dealiasRefMethodName; // "dealiasRef"
 extern Name *freeMethodName;   // "free"
 extern Name *markMethodName;   // "mark", which a traced region's trace calls
 extern Name *writeBarrierMethodName; // "writeBarrier", called after a traced reference is stored where no root is

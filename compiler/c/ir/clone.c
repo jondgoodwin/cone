@@ -23,7 +23,7 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     // that copy rather than substituted.
     //
     // The use must name the parameter itself. A use of a type alias whose
-    // target is a parameter -- 'typedef Item T' in a generic module, used as
+    // target is a parameter -- 'alias Item = T' in a generic module, used as
     // 'Item' -- is a use of the alias, whose own copy substitutes the
     // parameter; its name is hooked to nothing, and reading it as the
     // parameter cloned nothing at all

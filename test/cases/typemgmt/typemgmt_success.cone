@@ -15,7 +15,7 @@
 // 'core' owns the number types themselves, so nothing here exists to show that
 // i32 has a range.
 //
-// The fourth capability, 'typedef', is the absence of a change of type: the
+// The fourth capability, 'alias', is the absence of a change of type: the
 // alias and the type it names are one type, so a value crosses between them
 // with nothing generated for the crossing. It is established last, because what
 // makes it an alias rather than a new type is that the coercions and
@@ -574,13 +574,13 @@ fn disambiguate() {
   showF("conversion-picks-float", pick(f64[3]));
 }
 
-// -------- typedef, an alias rather than a change of type --------
+// -------- 'alias', a second name rather than a change of type --------
 
-typedef Count i64;
+alias Count = i64;
 // An alias of an alias, so that resolution has to follow the whole chain rather
 // than one link of it
-typedef Tally Count;
-typedef Ratio f64;
+alias Tally = Count;
+alias Ratio = f64;
 
 struct Reading {
   pub level i64;
@@ -594,13 +594,13 @@ struct Reading {
 
 // An alias of a type that is not a number, named where a reference wants its
 // referent
-typedef ReadingRef &Reading;
+alias ReadingRef = &Reading;
 
 // An alias of the struct itself, to be named as a type, to build a value in a
 // literal, and to qualify the struct's own members. An alias is a binding rather
 // than a type of its own, so a path's base is asked of the declaration at the
 // end of the chain and 'Sample.make' walks Reading's namespace.
-typedef Sample Reading;
+alias Sample = Reading;
 
 // An alias of an array, to be indexed through a reference to it. This is the
 // one position where the alias used not to be transparent: the index resolved
@@ -609,7 +609,7 @@ typedef Sample Reading;
 // and came out as a return-type mismatch on a function that is correct. 'array'
 // owns arrays; what is established here is that naming one through an alias
 // changes nothing about indexing it.
-typedef Cells [3; i64];
+alias Cells = [3; i64];
 
 // Each of the four positions below is a use of the alias as a type: a global, a
 // parameter, a return type, and a local in the function further down.
@@ -639,7 +639,7 @@ fn cellAt(c &Cells, i usize) i64 {
 // reference is still in flight. A reference is one pointer whatever it points
 // at, so there is no cycle; it was once refused as one, and only in this order
 // -- written below the struct, the same alias always compiled.
-typedef MarkRef &Mark;
+alias MarkRef = &Mark;
 
 struct Mark {
   pub at i64;
@@ -647,54 +647,72 @@ struct Mark {
   pub fn position(self MarkRef) i64 {at;}
 }
 
-fn typedefs() {
+// An alias of an owning reference. Its region and permission are part of the
+// type it names, so a value allocated under the reference's own spelling is a
+// Part, a copy of one is counted as the region counts it, and a write through
+// either is seen through the other.
+struct PartValue {
+  pub size i64;
+}
+alias Part = +rc-mut PartValue;
+
+fn partSize(p Part) i64 {
+  p.size;
+}
+
+fn aliases() {
   mut running Count = 40i64;
   running = bumped(running);
-  show("typedef-local", running);
-  show("typedef-global", recorded);
+  show("alias-local", running);
+  show("alias-global", recorded);
 
   // Transparent in both directions: an i64 parameter takes a Count argument
   // with no conversion written, and the coercion rules above are the alias's
   // rules too, so a narrower number still widens into it
-  show("typedef-passes-as-aliased-type", wantI64(running));
+  show("alias-passes-as-aliased-type", wantI64(running));
   mut narrow i16 = 12;
   mut widened Count = narrow;
-  show("typedef-receives-coercion", widened);
+  show("alias-receives-coercion", widened);
 
   // A reference to the alias is a reference to the struct it names
   imm sample = Reading[9i64];
-  show("typedef-struct-ref", levelOf(&sample));
+  show("alias-struct-ref", levelOf(&sample));
 
   // An alias of a struct builds a value in a literal, and the value is the
   // struct's: a reference to it is a reference to the struct, and a parameter
   // declared with the alias takes a value built under the struct's own name
   imm viaAlias = Sample[4i64];
-  show("typedef-struct-literal", levelOfSample(viaAlias));
-  show("typedef-struct-literal-is-the-struct", levelOf(&viaAlias));
-  show("typedef-struct-parameter-takes-struct", levelOfSample(sample));
+  show("alias-struct-literal", levelOfSample(viaAlias));
+  show("alias-struct-literal-is-the-struct", levelOf(&viaAlias));
+  show("alias-struct-parameter-takes-struct", levelOfSample(sample));
 
   // An alias qualifies what it names: 'Sample.make' reaches the static function
   // 'Reading.make' declares, and the value it returns is the struct's
   imm made = Sample.make(7i64);
-  show("typedef-alias-qualifies", levelOfSample(made));
+  show("alias-qualifies", levelOfSample(made));
 
   // An alias of a number converts in the constructor form as the number does,
   // truncating toward zero as i64 would
-  show("typedef-number-literal", Count[3.7]);
+  show("alias-number-literal", Count[3.7]);
 
   // And a reference to an aliased array indexes as the array it names. The
   // second index is what shows the element reached is the one meant rather than
   // a constant that happens to be right.
   mut cells Cells = [11i64, 22i64, 33i64];
-  show("typedef-array-ref-index-first", cellAt(&cells, 0));
-  show("typedef-array-ref-index-last", cellAt(&cells, 2));
+  show("alias-array-ref-index-first", cellAt(&cells, 0));
+  show("alias-array-ref-index-last", cellAt(&cells, 2));
 
   // Conversion targets the aliased type through the alias, and reads it back
   mut scaled Ratio = f64[running] / 2.0d;
-  showF("typedef-in-conversion", scaled);
+  showF("alias-in-conversion", scaled);
 
   imm mark = Mark[8i64];
-  show("typedef-above-struct-self", (&mark).position());
+  show("alias-above-struct-self", (&mark).position());
+
+  imm part Part = +rc-mut PartValue[6i64];
+  imm copied Part = part;
+  copied.size = 13i64;
+  show("alias-owning-ref", partSize(part));
 }
 
 fn main() i32 {
@@ -707,6 +725,6 @@ fn main() i32 {
   literalToBool();
   branches();
   disambiguate();
-  typedefs();
+  aliases();
   0i32;
 }

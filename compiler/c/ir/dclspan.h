@@ -22,7 +22,7 @@ enum DclSpanKind {
     SpanModLine,      // The module's 'mod' line
     SpanImport,       // An 'import'
     SpanUse,          // A standalone 'use'
-    SpanDcl,          // A declaration: fn, global, type, typedef, const, macro, module trait
+    SpanDcl,          // A declaration: fn, global, type, alias, const, macro, module trait
     SpanExternBlock,  // 'extern { ... }': its items are its members, each a SpanDcl
     SpanMember,       // A member of a type's braces that is not a declaration of its own:
                       // a field, a line of variants, a sibling 'use'

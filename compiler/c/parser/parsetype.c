@@ -1279,22 +1279,33 @@ void parseFnSigSettle(ParseState *parse, FnSigNode *sig, int istype) {
     }
 }
 
-// Parse a typedef statement.
+// Parse an alias statement: 'alias Name = target;'.
 //
-// A typedef is an alias: a name in the module's namespace standing for what
-// another expression names, with a local spelling and a visibility of its own.
-// It is the same binding record a fold makes, with a type expression as the
-// target instead of a member name -- which is what it is here to prove.
-AliasDclNode *parseTypedef(ParseState *parse) {
+// An alias is a name in the module's namespace standing for what another
+// expression names, with a local spelling and a visibility of its own. It is
+// the same binding record a fold makes, with a type expression as the target
+// instead of a member name. The target is read as a type expression, the only
+// target built; the statement's shape, a name, '=' and an expression resolved
+// at compile time, is the one every target takes.
+//
+// A missing '=' is reported where it belongs, after the name, and the target
+// is still read when one follows, so the statement ends where it was written.
+AliasDclNode *parseAlias(ParseState *parse) {
     lexNextToken();
-    // Process struct type name, if provided
     if (!lexIsToken(IdentToken)) {
-        errorMsgLex(ErrorNoIdent, "Expected a name for the type");
+        errorMsgLex(ErrorNoIdent, "Expected a name for the alias");
         return NULL;
     }
     AliasDclNode *newnode = newTypeAliasDclNode(lex->val.ident, NULL);
     lexNextToken();
-    newnode->target = parseTypeReq(parse, "the typedef's name");
+    if (lexIsToken(AssgnToken)) {
+        lexNextToken();
+        newnode->target = parseTypeReq(parse, "'='");
+    }
+    else {
+        errorMsgLexAfter(ErrorAliasEq, "Expected '=' after the alias's name: an alias is written 'alias Name = type;'");
+        newnode->target = parseType(parse);
+    }
     parseEndOfStatement();
     return newnode;
 }

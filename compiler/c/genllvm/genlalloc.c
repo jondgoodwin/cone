@@ -990,7 +990,7 @@ static void genlRegionDeath(GenState *gen, LLVMValueRef ref, LLVMValueRef valptr
         genlRegionCall(gen, freemeth, genlOwnerHeader(gen, ref, valptr, refnode));
 }
 
-// One owner of an owning reference goes away. A region with 'dealias' is asked
+// One owner of an owning reference goes away. A region with 'dealiasRef' is asked
 // whether it was the last, and the value dies only if so. Without one, a 'Move'
 // region's owner is the only one, and its going is the value's death; any
 // other region's owner going is nothing at all [Jon 26 Sep]: such a value never
@@ -1000,7 +1000,7 @@ static void genlRegionDeath(GenState *gen, LLVMValueRef ref, LLVMValueRef valptr
 static void genlRegionDealiasPart(GenState *gen, LLVMValueRef ref, RefNode *refnode, MovedPath *paths, int npaths, int depth) {
     if (!regionReleaseActs(refnode->region))
         return;
-    FnDclNode *dealiasmeth = regionMethod(refnode->region, dealiasMethodName);
+    FnDclNode *dealiasmeth = regionMethod(refnode->region, dealiasRefMethodName);
     LLVMValueRef valptr = genlRefPtr(gen, ref, refnode);
     if (dealiasmeth == NULL) {
         genlRegionDeath(gen, ref, valptr, refnode, paths, npaths, depth);
@@ -1104,12 +1104,12 @@ void genlHollowRelease(GenState *gen, HollowNode *hnode) {
     genlRegionDealiasPart(gen, ref, reftype, paths, npaths, 0);
 }
 
-// Up to this many owners gained at once, 'alias' is called in line, once for
+// Up to this many owners gained at once, 'aliasRef' is called in line, once for
 // each: the optimizer pipeline (genllvm.c) runs no loop pass, so only calls
-// written out fold, for an 'alias' that adds to a count, into one addition
+// written out fold, for an 'aliasRef' that adds to a count, into one addition
 #define RegionAliasUnroll 16
 
-// A counted reference gains 'amount' owners: its region's 'alias' is called
+// A counted reference gains 'amount' owners: its region's 'aliasRef' is called
 // once for each. Only an array fill literal makes more than one at once, up to
 // INT16_MAX (arraylit.c); beyond RegionAliasUnroll that is a loop. A negative
 // amount is owners going away: a fill literal of no elements drops the
@@ -1120,7 +1120,7 @@ void genlRegionAlias(GenState *gen, LLVMValueRef ref, long long amount, RefNode 
             genlRegionDealias(gen, ref, refnode);
         return;
     }
-    FnDclNode *aliasmeth = regionMethod(refnode->region, aliasMethodName);
+    FnDclNode *aliasmeth = regionMethod(refnode->region, aliasRefMethodName);
     if (aliasmeth == NULL || amount == 0)
         return;
     LLVMValueRef header = genlOwnerHeader(gen, ref, genlRefPtr(gen, ref, refnode), refnode);

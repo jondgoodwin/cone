@@ -1,4 +1,4 @@
-# typemgmt - conversion and coercion, typedef and extend. Tier 2.
+# typemgmt - conversion and coercion, alias and extend. Tier 2.
 #
 # Key reference: compiler/c/doc/diagnostics/test-suite.md, "cases.toml keys".
 # The group directory supplies the feature tag, so tags carry pipeline phases.
@@ -20,20 +20,22 @@
 #   -coerce    implicit coercion into a declared type, reported at the receiver
 #   -meet      contexts that must find one type for several values
 #
-# 'typedef' is covered in typemgmt_success rather than in a scenario of its own.
-# An alias is the type it names, so nearly every way of misusing one is a
-# misuse of that type, already covered by the reject scenarios above. The one
-# failure it has of its own -- a chain of aliases that comes back to itself,
-# which names no type -- is typemgmt_nameres_alias; and an alias of a reference
+# 'alias' is covered in typemgmt_success, and its statement's own spelling in
+# typemgmt_parse_alias. An alias is the type it names, so nearly every way of
+# misusing one is a misuse of that type, already covered by the reject
+# scenarios above. The one failure it has of its own -- a chain of aliases that
+# comes back to itself, which names no type -- is typemgmt_nameres_alias; and an
+# alias of a reference
 # in a literal, the one way to put a reference type before '[', is in
 # typemgmt_typecheck_convert. Until itypeGetTypeDcl was fixed to resolve an alias
 # rather than return its unresolved target, any use of an alias as a type crashed
 # LLVM generation, which is why this group excluded the feature entirely; the
 # success scenario now uses an alias as a global, a parameter, a return type, a
 # local, a reference's referent, a qualifier, and in a struct literal and a
-# number conversion.
+# number conversion; and an alias of an owning reference, copied and written
+# through.
 #
-# A typedef is an AliasDclNode -- the binding a fold makes, with a type
+# An alias is an AliasDclNode -- the binding a fold makes, with a type
 # expression as its target -- rather than a node kind of its own. What that
 # changed, visibly: an alias may now qualify what it names, because a path's base
 # is asked of the declaration at the end of the chain. The scenario that pinned
@@ -103,15 +105,26 @@ tags = ["typecheck", "genllvm", "runtime"]
 # -------- parse stage --------
 
 # A type the grammar requires and the source leaves out: after 'as' and 'into',
-# and at every other site that reads one through parseTypeReq -- a typedef's
+# and at every other site that reads one through parseTypeReq -- an alias's
 # target, 'is' in an expression and in a case, a second return type, a
 # parameter's trait after '+', a generic argument after ','. One diagnostic's
 # whole story, so the sites sit side by side here rather than in their groups.
 [scenario.typemgmt_parse_type]
 category = "reject"
-description = "A cast, typedef, 'is', return list, trait list or argument list with its type left out"
+description = "A cast, alias, 'is', return list, trait list or argument list with its type left out"
 tags = ["parse"]
 diagnostics = 9
+
+# The alias statement's spelling, 'alias Name = type;'. 'typedef', its retired
+# spelling, is kept a keyword only to be refused, once per statement, at the
+# keyword, and read through so that what follows parses: with 'pub', with an
+# '=' written, and with a type running over lines. And an 'alias' with its '='
+# left out, reported after the name.
+[scenario.typemgmt_parse_alias]
+category = "reject"
+description = "The retired 'typedef', pointed at 'alias Name = type;', and an 'alias' with no '='"
+tags = ["parse"]
+diagnostics = 5
 
 # -------- name resolution stage --------
 

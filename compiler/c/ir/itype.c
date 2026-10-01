@@ -644,8 +644,8 @@ INode *iTypeFindFnField(INode *type, Name *name) {
 // Refuse a name that names a generic type bare -- 'Box' for a 'struct Box[T]' --
 // and return 1 if it is one. A generic is a template, not a type: only its
 // instances are types, so a name that stops at the generic names no type at all.
-// A folded name answers for what it folds; a typedef does not, because its own
-// target is checked, and refused, where the typedef is.
+// A folded name answers for what it folds; an 'alias' statement does not,
+// because its own target is checked, and refused, where the statement is.
 int itypeRefuseBareGeneric(INode *type) {
     if (!isNameUseNode(type))
         return 0;
@@ -661,7 +661,7 @@ int itypeRefuseBareGeneric(INode *type) {
         "%s is generic, so it is not a type: each of its instances is, written with its type arguments as %s[...].",
         &generic->namestr, &generic->namestr);
     // Bound to the error type from here on, so that nothing reached through this
-    // name -- a typedef's uses, a parameter's arguments -- reports it again
+    // name -- an alias's uses, a parameter's arguments -- reports it again
     ((NameUseNode*)type)->dclnode = errorType;
     return 1;
 }
@@ -999,9 +999,9 @@ char *itypeName(INode *type) {
 static char *itypeNoSizeOwnCause(INode *dcltype, uint32_t depth) {
     // A reference of any kind is one or two pointers wide whatever it points at,
     // so it has a size from the moment it exists, even while its own check is in
-    // flight. That happens without any cycle: a typedef of '&Quad' written above
+    // flight. That happens without any cycle: an alias of '&Quad' written above
     // Quad demands Quad from inside the reference, and a method of Quad taking
-    // the typedef reaches the same reference again before it finishes.
+    // the alias reaches the same reference again before it finishes.
     if (dcltype->tag == RefTag || dcltype->tag == VirtRefTag
         || dcltype->tag == ArrayRefTag || dcltype->tag == PtrTag)
         return NULL;
@@ -1177,7 +1177,7 @@ INode *itypeGetDropFnDcl(INode *typenode) {
 }
 
 // Whether a value of this type has anything to do when it dies in place: it is
-// an owning reference whose release does something (its region's 'dealias',
+// an owning reference whose release does something (its region's 'dealiasRef',
 // or a 'Move' region's death), or its type has a drop function (a struct's or
 // an enum's: its 'final', then each field's death, then its owners' release),
 // or it is a tuple or an array holding any such value. This is what the

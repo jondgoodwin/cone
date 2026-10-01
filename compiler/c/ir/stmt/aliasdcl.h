@@ -25,7 +25,7 @@
 // instance at a fixed address: a use of the name is lowered to 'global.name',
 // and everything the hand-written path would do happens from there.
 //
-// It holds one for a 'typedef' too: there the target is a type expression, which
+// It holds one for an 'alias' statement too: there the target is a type expression, which
 // name resolution has to reach (FlagTypeAlias), rather than a member name that
 // a fold binds.
 typedef struct AliasDclNode {
@@ -45,7 +45,7 @@ AliasDclNode *newAliasDclNode(Name *namesym, INode *target);
 // and a re-export is what sets the bit.
 AliasDclNode *newNameAliasDclNode(Name *namesym, INode *target);
 
-// Create an alias for a type expression, which is what 'typedef' declares. Its
+// Create an alias for a type expression, which is what 'alias' declares. Its
 // visibility is its own, so it starts private and 'pub' is what sets the bit,
 // and it stands for a type rather than for a member reached through a receiver.
 AliasDclNode *newTypeAliasDclNode(Name *namesym, INode *typeexp);

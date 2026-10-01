@@ -90,8 +90,8 @@ void refAdoptInfections(RefNode *refnode) {
 // - An owner that cannot be aliased moves, taking its value with it: a 'uni'
 //   owner of any region, and any owner of a 'Move' region ('+so').
 // - Any other owner may be shared: its permission must be RaceSafe ('imm',
-//   'opaq'), and its region must declare ThreadSafe, so that its alias and
-//   dealias may run on several threads at once ('arc' does; 'rc' does not).
+//   'opaq'), and its region must declare ThreadSafe, so that its aliasRef and
+//   dealiasRef may run on several threads at once ('arc' does; 'rc' does not).
 // A permission that is not a built-in one (a struct in the permission slot,
 // the unbuilt lock permissions) is not taken as RaceSafe.
 RefBinds refThreadBinds(RefNode *ref) {

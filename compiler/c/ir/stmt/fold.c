@@ -455,15 +455,15 @@ void foldModUseExpand(NameResState *pstate, ModuleNode *mod, ModUseNode *use) {
     NameUseNode *srcname = (NameUseNode*)use->source;
     if (srcname->dclnode == NULL)
         return;     // reported where the name is written
-    // A typedef's target is resolved with the module's other nodes, after every
-    // fold, so what it names is not known here. Refused rather than resolved out
-    // of turn: the enum is named by its own name.
+    // An 'alias' statement's target is resolved with the module's other nodes,
+    // after every fold, so what it names is not known here. Refused rather than
+    // resolved out of turn: the enum is named by its own name.
     INode *binding = srcname->dclnode;
     while (binding && binding->tag == AliasDclTag && !(binding->flags & FlagTypeAlias))
         binding = ((NameUseNode*)((AliasDclNode*)binding)->target)->dclnode;
     if (binding && binding->tag == AliasDclTag) {
         errorMsgNode(use->source, ErrorUseEnum,
-            "%s is a typedef. A module's 'use' names the enum declaration itself.",
+            "%s is an alias of a type. A module's 'use' names the enum declaration itself.",
             &srcname->namesym->namestr);
         return;
     }

@@ -5,8 +5,8 @@
  * declares the built-in trait 'RegionRef'. The compiler knows no region by
  * name. What it knows is the methods a region may declare, each found by name
  * and each optional, and it calls them at the reference events it alone can
- * see: 'alloc' and 'init' when '+R value' allocates, 'alias' when a copy of an
- * owning reference becomes another owner, 'dealias' when an owner goes away,
+ * see: 'alloc' and 'init' when '+R value' allocates, 'aliasRef' when a copy of an
+ * owning reference becomes another owner, 'dealiasRef' when an owner goes away,
  * and 'free' once the value is dead. What a region leaves out says what it
  * does, and whether it declares 'Move' says whether a copy is a move and an
  * owner's going a death. A region that also declares 'Traced' has its
@@ -54,7 +54,7 @@ FnDclNode *regionMethod(INode *region, Name *name) {
 }
 
 int regionIsCounted(INode *region) {
-    return regionIsRegionRef(region) && regionMethod(region, aliasMethodName) != NULL;
+    return regionIsRegionRef(region) && regionMethod(region, aliasRefMethodName) != NULL;
 }
 
 // The region ref's own move-ness: 'is Move' marks the struct MoveType, which is
@@ -69,7 +69,7 @@ int regionIsOwning(INode *region) {
 
 int regionReleaseActs(INode *region) {
     return regionIsOwning(region)
-        && (regionMethod(region, dealiasMethodName) != NULL || regionIsMove(region));
+        && (regionMethod(region, dealiasRefMethodName) != NULL || regionIsMove(region));
 }
 
 // Whether any struct of this compile declared 'is RegionRef, Traced', set as
@@ -111,8 +111,9 @@ static int regionMethReturnsNothing(FnDclNode *meth) {
     return itypeGetTypeDcl(((FnSigNode*)itypeGetTypeDcl(meth->vtype))->rettype)->tag == VoidTag;
 }
 
-// Check the shape of 'alias', 'dealias' or 'free' where the region declares it:
-// '(self &uni R)', returning Bool for 'dealias' and nothing for the others
+// Check the shape of 'aliasRef', 'dealiasRef' or 'free' where the region
+// declares it: '(self &uni R)', returning Bool for 'dealiasRef' and nothing for
+// the others
 static void regionCheckSelfMeth(StructNode *region, Name *name, int retbool) {
     INode *member = iNsTypeFindFnField((INsTypeNode*)region, name);
     if (member == NULL)
@@ -126,7 +127,7 @@ static void regionCheckSelfMeth(StructNode *region, Name *name, int retbool) {
         return;
     if (retbool)
         errorMsgNode(member, ErrorRegionMeth,
-            "A region's dealias must be declared 'fn dealias(self &uni %s) Bool': it is handed the header, and answers whether the owner that went was the last.",
+            "A region's dealiasRef must be declared 'fn dealiasRef(self &uni %s) Bool': it is handed the header, and answers whether the owner that went was the last.",
             &region->namesym->namestr);
     else
         errorMsgNode(member, ErrorRegionMeth,
@@ -229,17 +230,17 @@ static void regionCheckInit(FnDclNode *initmeth, StructNode *region) {
 // Every method is optional, and an absent one means its operation does not
 // happen [Jon 25 Sep, 26 Sep]; no combination is refused for what it leaves
 // out. One owner per value is said explicitly, by 'is Move' [Jon 26 Sep]:
-// - no 'alias': a copy of a reference calls nothing. It is a move where the
+// - no 'aliasRef': a copy of a reference calls nothing. It is a move where the
 //   region is 'Move' ('so'), and free where it is not (a collector's shape).
-// - no 'dealias': an owner going away asks nothing. Where the region is
+// - no 'dealiasRef': an owner going away asks nothing. Where the region is
 //   'Move', every owner's going is the value's death. Where it is not, the
 //   going does nothing: the value never dies by an owner, and the compiler
 //   never frees it -- the region owns death, in its own loop.
-// - 'dealias': every owner's going asks it, and its true is the death.
+// - 'dealiasRef': every owner's going asks it, and its true is the death.
 // - no 'free': the memory is not given back a value at a time.
 // - no 'alloc': nothing allocates from the region (refused at '+R value',
 //   regionAllocTypeCheck), and an 'init' it has is never called.
-// The refusals are contradictions: 'Move' says one owner, 'alias' another,
+// The refusals are contradictions: 'Move' says one owner, 'aliasRef' another,
 // and 'Traced' a collector; and 'Traced' without the 'mark' it promises.
 void regionRefCheck(StructNode *node) {
     StructNode *base = structBaseTraitDcl(node);
@@ -261,15 +262,15 @@ void regionRefCheck(StructNode *node) {
     else if (initmember)
         regionCheckInit((FnDclNode*)initmember, node);
 
-    regionCheckSelfMeth(node, aliasMethodName, 0);
-    regionCheckSelfMeth(node, dealiasMethodName, 1);
+    regionCheckSelfMeth(node, aliasRefMethodName, 0);
+    regionCheckSelfMeth(node, dealiasRefMethodName, 1);
     regionCheckSelfMeth(node, freeMethodName, 0);
 
     // Judged by the method: a member of the name that is not one was reported
     // above, and is no operation the compiler calls
-    if (regionMethod((INode*)node, aliasMethodName) && (node->flags & MoveType))
+    if (regionMethod((INode*)node, aliasRefMethodName) && (node->flags & MoveType))
         errorMsgNode((INode*)node, ErrorRegionSet,
-            "Region %s is Move, one owner per value, but declares alias, which makes another. A counted region is not Move; a single-owner one declares no alias.",
+            "Region %s is Move, one owner per value, but declares aliasRef, which makes another. A counted region is not Move; a single-owner one declares no aliasRef.",
             &node->namesym->namestr);
 
     if (structDeclaresTrait(node, tracedTrait))

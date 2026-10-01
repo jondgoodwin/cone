@@ -174,7 +174,8 @@ int parseIsTypeStart();
 INode *parseTypeReq(ParseState *parse, char *after);
 // A type's name: a name, a path through namespaces, or a generic's instance
 INode *parseTypeName(ParseState *parse);
-AliasDclNode *parseTypedef(ParseState *parse);
+// 'alias Name = target;'
+AliasDclNode *parseAlias(ParseState *parse);
 
 // parsehelper.c for statement/block start/end processing
 // Skip to next statement for error recovery

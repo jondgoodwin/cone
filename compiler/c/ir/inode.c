@@ -637,7 +637,7 @@ int inodeIsDcl(INode *node) {
 // Determine whether a named node is private: not declared 'pub'. A declaration
 // that carries DclInfo answers from its DclPrivate bit, written from the flag
 // once when it joined its namespace. A node that carries none (a field, const,
-// macro, typedef, overload name or generic parameter) answers from the flag.
+// macro, alias, overload name or generic parameter) answers from the flag.
 int inodeIsPrivate(INode *node) {
     DclInfo *dclinfo = inodeGetDclInfo(node);
     if (dclinfo)

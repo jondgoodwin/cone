@@ -142,7 +142,7 @@ void nameUsePrint(NameUseNode *name) {
 // by fnCallNameResPath, which binds it.
 //
 // Each declaration the use reaches is also recorded against the body
-// (exportReachAdd): a typedef it names on the way, and a macro or a const,
+// (exportReachAdd): an alias it names on the way, and a macro or a const,
 // which have no symbol to mark. The include-file generator follows those
 // records, so that what a body it copies names is declared beside it.
 static void nameUseMarkOne(NameResState *pstate, INode *dcl) {
@@ -156,7 +156,7 @@ static void nameUseMarkOne(NameResState *pstate, INode *dcl) {
 void nameUseMarkExpandReached(NameResState *pstate, NameUseNode *name) {
     if (pstate->expander == NULL)
         return;
-    // Every declaration on the way to what the name means: a typedef, then
+    // Every declaration on the way to what the name means: an 'alias', then
     // what it stands for. A fold's alias is the fold's, not a declaration
     INode *dcl = name->dclnode;
     while (dcl) {
@@ -416,7 +416,7 @@ void nameUseTypeCheckType(TypeCheckState *pstate, NameUseNode **namep) {
     // A type a fold brought in -- a variant a module's 'use' of its enum folded,
     // or a type an import folded -- is named through an alias, which has nothing
     // of its own to check. The type it stands for is what has to be analyzed, as
-    // it is when the type is named directly. A typedef's alias checks its own
+    // it is when the type is named directly. An 'alias' statement checks its own
     // target, which is a type expression and reaches here by itself.
     if (name->dclnode->tag == AliasDclTag && !(name->dclnode->flags & FlagTypeAlias)) {
         INode *dcl = aliasDclResolve(name->dclnode);

@@ -180,7 +180,7 @@ LLVMBasicBlockRef genlDropFlagIf(GenState *gen, VarDclNode *var, int state);
 void genlDropFlagEnd(GenState *gen, LLVMBasicBlockRef endblk);
 void genlDropFlagUse(GenState *gen, INode *nameuse);
 // Release an owning value: one owner of an owning reference goes away, through
-// the region's 'dealias', as the value's death for a 'Move' region, and as
+// the region's 'dealiasRef', as the value's death for a 'Move' region, and as
 // nothing for any other; each element of a tuple
 void genlReleaseOwning(GenState *gen, LLVMValueRef val, INode *type);
 // Finalize the value at 'valptr' where it sits, as its death would, without
@@ -194,7 +194,7 @@ void genlTypeDrop(GenState *gen, FnDclNode *fnnode);
 void genlAliasHeld(GenState *gen, LLVMValueRef valptr, INode *type, long long amount);
 // Release a hollowed variable's owning reference without the parts moved out
 void genlHollowRelease(GenState *gen, HollowNode *hnode);
-// A counted reference gains 'amount' owners, through its region's 'alias'
+// A counted reference gains 'amount' owners, through its region's 'aliasRef'
 void genlRegionAlias(GenState *gen, LLVMValueRef ref, long long amount, RefNode *refnode);
 // The type record of 'vtype': a constant core's TypeRecord (the pointee of
 // 'recptrtype', the '*TypeRecord' the caller was declared with) holding its size,

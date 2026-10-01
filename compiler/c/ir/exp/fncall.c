@@ -441,7 +441,7 @@ void fnCallArrIndex(FnCallNode *node) {
     case RefTag: {
         // Resolve the pointee, exactly as fnCallTypeCheck did when it decided
         // this call was an index at all. Reading the tag off the unresolved
-        // node instead made '&Alias' -- a reference to a typedef of an array --
+        // node instead made '&Alias' -- a reference to an alias of an array --
         // match neither arm, so a valid index was left with no element type and
         // reported as a return-type mismatch two lines later.
         INode *vtype = itypeGetTypeDcl(((RefNode *)objtype)->vtexp);

@@ -279,7 +279,7 @@ is the contract; there is never a second name resolution pass.
   reached through a receiver is bound at type check and so is never marked;
   the type it belongs to is, where the body names that type.
 - **What each expanded body names is recorded against it** (`exportReachAdd`):
-  every declaration on the way to what a use means — a typedef it names, then
+  every declaration on the way to what a use means — an alias it names, then
   the function, global or type — and a macro or a const, which carry no
   `DclInfo` to mark. **A parameter's default value counts as an expanded body of
   its function** (`NameResState.sigfn`, set by `fnDclNameRes` round the

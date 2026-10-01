@@ -702,7 +702,7 @@ void flowResultMove(INode *node) {
         flowMoveSource(node, NULL, node, NULL);
 }
 
-// Is this type a counted reference: one into a region whose 'alias' is called
+// Is this type a counted reference: one into a region whose 'aliasRef' is called
 // for each copy that becomes another owner? An owning slice (ArrayRefTag) is
 // counted exactly as a single reference is, and so is a virtual one ('+<rc').
 int flowIsRcRef(INode *type) {

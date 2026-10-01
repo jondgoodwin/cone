@@ -39,7 +39,7 @@ int dclIsExported(ModuleNode *libroot, INode *dclnode);
 // What each body an importer expands names. Name resolution records one reach
 // as it binds a name inside such a body (NameResState.expander): 'from' is the
 // expanded function, macro or default, 'to' the declaration named -- a function,
-// global or type, and a macro, typedef or const too, which have no symbol and
+// global or type, and a macro, alias or const too, which have no symbol and
 // so no DclExpandReached. The include-file generator follows them, so that
 // whatever a body it copies names is in the file beside it
 void exportReachAdd(INode *from, INode *to);

@@ -100,7 +100,10 @@ void keywordInit() {
     keyAdd("fn", FnToken);
     keyAdd("overload", OverloadToken);
     keyAdd("const", ConstToken);
-    keyAdd("typedef", TypedefToken),
+    keyAdd("alias", AliasToken);
+    // Retired like 'include': 'alias Name = type;' says what it said, and the
+    // parser points it there
+    keyAdd("typedef", TypedefToken);
     // The kinds a type declaration may be, and the modifier that makes one
     // abstract. 'trait' is not a kind of its own: written by itself it means
     // 'struct trait'. 'mod' is a built kind and 'mod trait' its abstraction;

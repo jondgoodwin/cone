@@ -12,7 +12,7 @@
  * - One the package's object defines and exports -- dclIsExported, the rule
  *   generation follows too -- goes in as 'extern', its body or value left out.
  * - A type goes in with every field, and its members by the same two rules.
- * - The 'mod' line, the imports and the declarations with no symbol (typedef,
+ * - The 'mod' line, the imports and the declarations with no symbol (alias,
  *   const, macro, module trait) go in as written.
  * - Everything else stays out, with the comments directly above it.
  *
@@ -213,7 +213,7 @@ typedef struct IncGen {
     uint32_t nmods;
     IncMap dcls;            // Each declaration of the package with a span -> its IncDcl
     IncMap wanted;          // What goes in beyond the root's own rules: every type the file
-                            // declares, each submodule declaration, a typedef reached
+                            // declares, each submodule declaration, an alias reached
     IncEdit *edits;
     uint32_t nedits, availedits;
     int probing;            // Walking only to learn whether a type reaches a submodule
@@ -588,7 +588,7 @@ static void incEmit(IncGen *g, IncMod *m);
 // Want what a declaration the file holds reaches (exportReachesOf): everything
 // a body it copies whole names, and what a parameter's default value names,
 // which an importer evaluates where it calls -- a function, global or type, a
-// macro, typedef or const, in whichever of the package's modules
+// macro, alias or const, in whichever of the package's modules
 static void incFollow(IncGen *g, INode *from) {
     Nodes *reached = exportReachesOf(from);
     if (reached == NULL)
@@ -599,7 +599,7 @@ static void incFollow(IncGen *g, INode *from) {
         incWant(g, *nodesp);
 }
 
-// Want the declaration a binding stands for, and a typedef on the way to it:
+// Want the declaration a binding stands for, and an alias on the way to it:
 // a fold's alias is followed to its target
 static void incWantChain(IncGen *g, INode *node) {
     while (node) {
@@ -695,7 +695,7 @@ static void incWalkType(IncGen *g, INode *type) {
         incReachStruct(g, (StructNode*)type);
         break;
     case AliasDclTag:
-        // A typedef of the package goes in, and with it what it names
+        // An alias of the package goes in, and with it what it names
         if ((type->flags & FlagTypeAlias) && !g->probing && incMapGet(&g->dcls, type))
             incWant(g, type);
         else
@@ -1171,7 +1171,7 @@ static void incEditRootDcl(IncGen *g, IncMod *m, DclSpan *span, char *floor) {
             incEditType(g, m, (StructNode*)node, span->kw);
         break;
     case AliasDclTag:
-        // A typedef declares no symbol. One goes in unless it is private,
+        // An alias declares no symbol. One goes in unless it is private,
         // nothing the file holds reaches it, and it names a type of the
         // package's that the file leaves out
         if ((node->flags & FlagTypeAlias) && !(node->flags & FlagPub) && !incWanted(g, node)) {

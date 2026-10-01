@@ -240,7 +240,7 @@ parameter's `Name` directly to the **argument node**. `cloneNode`, meeting a
 use bound to a generic parameter itself, then reads `namesym->node` and clones
 it. So substitution is by *name*, through a global, at clone time — and the
 argument is **deep-copied at every use site**. The use must be bound to the
-parameter, not to a type alias of it: `typedef Item T` in a generic module,
+parameter, not to a type alias of it: `alias Item = T` in a generic module,
 used as `Item`, is a use of the alias, whose own copy substitutes `T`, and
 the name `Item` is hooked to nothing.
 
@@ -380,8 +380,8 @@ checking — `fnCallTypeCheck` has the matching `inodeIsError` guard.
 is a type, so `Box` for a `struct Box[T]` — a generic enum or trait likewise, or a
 folded name for one — is refused with `ErrorArgCount` by `itypeRefuseBareGeneric`,
 which `itypeTypeCheck` asks of every type it checks: a parameter, a local, a
-field, a return type, a referent, a typedef's target, a cast's target. The use is
-then bound to `errorType`, so a typedef's uses and a parameter's arguments do not
+field, a return type, a referent, an alias's target, a cast's target. The use is
+then bound to `errorType`, so an alias's uses and a parameter's arguments do not
 report it again. `genericMemoize` asks the same of each type argument, so
 `id[Box]` is refused once, at the argument, rather than at every use the instance
 makes of its parameter. Inside its own braces a generic's bare name arrives here
@@ -635,7 +635,7 @@ are [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Sym
 - **`Self` is read as the implementer only where it is written `Self`.** The
   requirement's type is compared as written (`fnSigReqTypeSame`), through a
   reference, pointer or slice, so a requirement naming its trait outright means
-  the trait, and a typedef of `Self` is not seen through.
+  the trait, and an alias of `Self` is not seen through.
 
 ## What lives elsewhere
 

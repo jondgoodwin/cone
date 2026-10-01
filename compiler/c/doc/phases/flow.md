@@ -133,7 +133,7 @@ Put these first, because every one of them is load-bearing.
    outgrown — the block-structured IR is held to be easy enough to follow
    directly, joins and all.
 5. **Ownership is not one model, and flow reads which one from the region
-   ref.** One with `alias` (`rc`) is counted; one declaring `Move` (`so`) has a
+   ref.** One with `aliasRef` (`rc`) is counted; one declaring `Move` (`so`) has a
    single owner, and a copy of a reference to it is a move; one with neither
    (a collector's shape) shares its references for nothing; `borrowRef` is a
    sentinel node, not a struct, and is a reference's default region. No region
@@ -252,7 +252,7 @@ array element, a move-typed tuple element, and — for references —
 `MayAlias` or its region ref is itself a move type**, which a region ref is by
 declaring `is Move`, as `so` does. That sentence is why `+rc x` moves while
 `+rc-mut x` copies, on the same region, and why a reference into a region ref
-declaring neither `Move` nor `alias` copies freely under any aliasable
+declaring neither `Move` nor `aliasRef` copies freely under any aliasable
 permission.
 
 A tuple literal has no storage of its own, so `flowHandleMove` on one
@@ -419,7 +419,7 @@ temporary.
 `dealias` list at scope exit, and `genlStore` releasing an lval's previous value
 unless `FlagFirstAssign` (or `FlagPartNoPrior`) says there was none, and a value's
 death releasing the owners it holds. Each goes through `genlReleaseOwning`: one owner goes away,
-through the region's `dealias` where it has one, as the value's death where the
+through the region's `dealiasRef` where it has one, as the value's death where the
 region is `Move`, and as nothing otherwise; a tuple's owning elements one by
 one. A hollowed variable's owner goes away the same way, through a
 `HollowNode` instead, and its death is hollow.
@@ -432,7 +432,7 @@ depends on:
 | Injection | Where | Generation uses it for |
 | --- | --- | --- |
 | `BlockRetTag` | `blockFlow`, for any block not already ending in one | a loop block, **and** a regular block ending in an expression, both get theirs here — it is where the dealias list hangs |
-| `RefCountTag` | `flowInjectRefCountAmt` | `genlRegionAlias(val, amt)`: the region's `alias`, once per owner added |
+| `RefCountTag` | `flowInjectRefCountAmt` | `genlRegionAlias(val, amt)`: the region's `aliasRef`, once per owner added |
 | `dealias` lists | `flowScopeDealias`, onto every `BreakRetNode`; rebuilt by the drop-flag client (`dropApplyExit`) for each exit of a function it walked | `genlDealiasNodes` replays them |
 | `FlagFirstAssign` | `assignlvalrtype`, when the variable is uninitialized, moved out or hollowed, or is a match's binding by reference; set or cleared by the drop-flag client from each path's state | `genlStore` skips releasing a previous value the variable does not hold whole |
 | `FlagPartNoPrior` | `assignlvalrtype`, on a field or element of a local's own value when the local holds nothing (or is a match's binding by reference); the drop-flag client likewise | `genlStore` skips releasing the part's previous value |
@@ -444,7 +444,7 @@ depends on:
 
 **A reference-count node is built only for a counted reference, or a value
 holding one.** `flowInjectRefCountAmt` returns early unless the type is a
-`RefTag`, `ArrayRefTag` or `VirtRefTag` into a region with `alias` (`flowIsRcRef`,
+`RefTag`, `ArrayRefTag` or `VirtRefTag` into a region with `aliasRef` (`flowIsRcRef`,
 `regionIsCounted` — an owning slice or virtual reference is counted exactly as
 a single reference is), or a struct, enum, tuple or array whose death releases one
 (`flowHeldCounted`); for a tuple it fills the node's `counts` array with `amt`
@@ -453,7 +453,7 @@ per element that is or holds a counted reference and `0` per other element,
 owners to each such element after an `extractvalue`. The struct, enum and array
 arm (`genlAliasHeld`) mirrors the death: through each field of a struct, the
 variant an enum's tag picks, and each element of an array. A reference into a
-`Move` region (`so`) and a `uni`-permissioned reference into one with `alias`
+`Move` region (`so`) and a `uni`-permissioned reference into one with `aliasRef`
 are both move types and take the move path instead, as does a tuple carrying
 one. A reference into a region with neither is copied with no node at all.
 
@@ -493,7 +493,7 @@ to it on a `&uni` borrow, positioned on the result expression, or on the jump
 that ends the scope where there is no result expression — a `continue` hands
 back no value; anything else with anything to do as it dies
 (`itypeNeedsFinal`) — an owning reference, single (`RefTag`), slice
-(`ArrayRefTag`) or virtual (`VirtRefTag`), into a region whose release does something (`dealias`, or
+(`ArrayRefTag`) or virtual (`VirtRefTag`), into a region whose release does something (`dealiasRef`, or
 `Move`: `regionReleaseActs`), or a tuple or an array of values that finalize or
 own such a reference —
 is added to the list itself, and generation finalizes it in place
