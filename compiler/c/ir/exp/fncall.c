@@ -654,6 +654,44 @@ int fnCallLowerIntField(FnCallNode *callnode) {
     return 1;
 }
 
+// A number after '.' is not a name, so it must not reach the method and field
+// lookups, which take one. A reference or pointer to a tuple reaches the element
+// through what it points at, as a field is reached through a reference to a
+// struct; a receiver whose dispatch would look the number up as a name is told
+// it has no numbered elements. Answer 0 to leave the node to the dispatch: a
+// member that is a name, a tuple itself, or a receiver the dispatch refuses
+// on its own.
+static int fnCallLowerRefIntField(FnCallNode *callnode, INode *objtype) {
+    if (callnode->methfld == NULL || callnode->methfld->tag != ULitTag)
+        return 0;
+    switch (objtype->tag) {
+    case RefTag:
+    case PtrTag: {
+        INode *held = itypeGetTypeDcl(objtype->tag == RefTag
+            ? ((RefNode*)objtype)->vtexp : ((StarNode*)objtype)->vtexp);
+        if (held->tag != TTupleTag)
+            break;
+        derefInject(&callnode->objfn);
+        if (fnCallLowerIntField(callnode) == 0)
+            errorMsgNode((INode*)callnode, ErrorNoMeth, "Invalid expression on a tuple");
+        return 1;
+    }
+    case StructTag:
+    case IntNbrTag:
+    case UintNbrTag:
+    case FloatNbrTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+        break;
+    default:
+        return 0;
+    }
+    errorMsgNode((INode*)callnode, ErrorNoMbr,
+        "A number after '.' names a tuple's element, and this is not a tuple or a reference to one.");
+    callnode->vtype = errorType;
+    return 1;
+}
+
 // Report why the name the caller used selected no single candidate.
 // 'kind' names what the name declares, for a call ("function") or a method call ("method").
 static void fnCallNoCandidate(INode *callnode, enum OverloadMatch status, Name *namesym, char *kind) {
@@ -2041,6 +2079,10 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         node->vtype = errorType;
         return;
     }
+
+    // A tuple's element numbered through a reference or pointer
+    if (fnCallLowerRefIntField(node, objtype))
+        return;
 
     // Dispatch for correct handling based on the type of the object
     switch (objtype->tag) {

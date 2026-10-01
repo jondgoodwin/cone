@@ -1,0 +1,98 @@
+// A tuple's element named through a reference: 'r.0' reads and writes what
+// '(*r).0' does, as 'r.x' reaches a struct's field through a reference. The
+// reference manual's tuple page (reftuple.html) gives element access "similar
+// to structs", and reftypesafe.html's "Implicit Coercion of 'self'" has a
+// reference dereferenced for a field access.
+//
+// What each case shows, the printed value checked by hand against the source:
+// a borrowed reference's first and second elements; a write through '&mut'
+// seen in the tuple itself; a parameter; a reference held in a struct's field
+// ('s.t.0'); a reference returned by a call; a nested tuple's element
+// ('(r.1).0', since '.1.0' lexes as a float); a counted reference, read and
+// written; a tuple named by an alias; a raw pointer, read and written; and an
+// element borrowed through a reference ('&r.1'), which is '&(*r).1'.
+//
+// Before this, a number after '.' on anything but a tuple held by value was
+// looked up as though it were a name, and the compiler crashed. The rejects --
+// an element past the end through a reference, and a number on a receiver
+// with no numbered elements -- are in core_typecheck_tuple_member.
+
+mod core_tuple_ref;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+alias Pair = (i32, i32);
+
+struct Holder {
+  pub t &(i64, i64);
+}
+
+fn sum(r &(i64, i64)) i64 {
+  r.0 + r.1;
+}
+
+fn pick(r &(i64, i64)) &(i64, i64) {
+  r;
+}
+
+fn firstOf(r &Pair) i32 {
+  r.0;
+}
+
+fn main() {
+  // A borrowed reference's elements
+  imm t = (12i64, 13i64);
+  imm r = &t;
+  show("ref-0", r.0);
+  show("ref-1", r.1);
+
+  // A write through a mutable reference, seen in the tuple
+  mut m = (1i64, 2i64);
+  {
+    imm mr = &mut m;
+    mr.0 = 5;
+    mr.1 = mr.1 + 40;
+  }
+  show("mut-written", m.0 * 100 + m.1);
+
+  // A parameter, and a reference held in a struct's field
+  show("param", sum(&t));
+  imm h = new Holder(&t);
+  show("field-ref-0", h.t.0);
+
+  // A reference returned by a call
+  show("returned-1", pick(&t).1);
+
+  // A nested tuple's element through a reference
+  imm n = (7i64, (8i64, 9i64));
+  imm nr = &n;
+  show("nested-1-0", (nr.1).0);
+  show("nested-1-1", (nr.1).1);
+
+  // A counted reference, read and written
+  imm rc = new Rc[mut, (i64, i64)]((21, 22));
+  show("rc-0", rc.0);
+  rc.1 = 23;
+  show("rc-written-1", rc.1);
+
+  // A tuple named by an alias, through a reference
+  imm a Pair = 30, 31;
+  show("alias-ref", i64.from(firstOf(&a)));
+
+  // A raw pointer, read and written
+  mut pt = (40i64, 41i64);
+  imm p = (&mut pt) as *(i64, i64);
+  p.0 = p.0 + p.1;
+  show("ptr-written-0", pt.0);
+
+  // An element borrowed through a reference
+  imm e = &r.1;
+  show("borrowed-elem", *e);
+}

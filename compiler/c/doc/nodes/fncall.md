@@ -277,6 +277,14 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
 
 **Stage 3 — dispatch on the receiver's type tag.**
 
+A `ULitTag` member is a number, not a name, and never reaches the lookups
+below, which take one. `fnCallLowerRefIntField` takes it first: on a reference
+or a pointer to a tuple it dereferences the receiver (`derefInject`) and lowers
+the element with `fnCallLowerIntField`, so `r.0` is `(*r).0`, as `r.x` is
+`(*r).x` for a struct; on a struct, a number, a slice, a virtual reference, or
+a reference or pointer to anything but a tuple it is `ErrorNoMbr`. A tuple held
+by value, an array and a function go on to the table's own rows.
+
 | Receiver type | Goes to |
 | --- | --- |
 | `FnSigTag` | `fnCallFnSigTypeCheck` — a plain call |

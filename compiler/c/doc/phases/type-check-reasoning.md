@@ -263,7 +263,8 @@ overload name stays rejected everywhere except here. Then rewrite the shapes
 that are not yet calls: a type becomes a constructor (`FlagIndex`) or its `init`
 method; a bare method name becomes `self.method`.
 
-**Stage 3 — dispatch on the receiver's type tag** to `fnCallFnSigTypeCheck`,
+**Stage 3 — dispatch on the receiver's type tag**, after a tuple element
+numbered through a reference or pointer (`fnCallLowerRefIntField`), to `fnCallFnSigTypeCheck`,
 `fnCallLowerMethod`, `fnCallLowerPtrMethod`, `fnCallArrIndex` or
 `fnCallLowerIntField`.
 
