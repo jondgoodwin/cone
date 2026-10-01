@@ -1,0 +1,221 @@
+// String's text work beyond building and searching: a String from a C string,
+// joining, padding, ASCII case, replacing, and reading an integer from text.
+// Every expected value is worked out by hand:
+// - lengths and pieces by counting bytes in the literals;
+// - the i64 and u64 limits from 2^63 = 9223372036854775808 and
+//   2^64 - 1 = 18446744073709551615, one past each by adding 1 to its last
+//   digit; 3221226505 is 0xC0000409, abort's status on Windows, which Congo
+//   reads back from a test's '.exit' file;
+// - case by the ASCII table: A to Z are 65 to 90, a to z 97 to 122, and
+//   '@' (64), '[' (91), '`' (96) and '{' (123) sit just outside them; "é" is
+//   the two bytes 0xC3 0xA9 and "É" 0xC3 0x89, which ASCII case leaves alone.
+
+mod text;
+
+import testing use *;
+import collections use *;
+import libc;
+
+fn main() i32 {
+  // From a C string: the bytes up to its NUL, the NUL not among them
+  imm c = String.fromCStr(&[]"collections");
+  expectStr(c.view(), "collections", "from a C string");
+  imm ce = String.fromCStr(&[]"");
+  expectUInt(u64.from(ce.len()), 0, "from an empty C string");
+  imm cnul = String.fromCStr(&[]"ab\x00cd");
+  expectStr(cnul.view(), "ab", "a C string ends at its first NUL");
+  mut round = String.from("there and back");
+  imm back = String.fromCStr(round.cstr());
+  expectStr(back.view(), "there and back", "a String's own C string, back");
+  imm path = String.fromCStr(libc.getenv(&[]"PATH"));
+  expect(path.len() > 0usize, "a C string a C function answered");
+
+  // Joining
+  mut parts = List[String].empty();
+  imm none = String.join(parts.view(), ", ");
+  expectUInt(u64.from(none.len()), 0, "no parts join to nothing");
+  parts.push(String.from("core"));
+  imm single = String.join(parts.view(), ", ");
+  expectStr(single.view(), "core", "one part has no separator");
+  parts.push(String.from("stdio"));
+  parts.push(String.from(""));
+  parts.push(String.from("libc"));
+  imm joined = String.join(parts.view(), ", ");
+  expectStr(joined.view(), "core, stdio, , libc", "four parts, one empty");
+  imm tight = String.join(parts.view(), "");
+  expectStr(tight.view(), "corestdiolibc", "an empty separator");
+  expectStr(parts[0usize].view(), "core", "the parts are left as they were");
+
+  // Padding: right-aligning a verb in 12, as Congo's progress lines do
+  mut verb = String.from("Compiling");
+  verb.padStart(12usize);
+  expectStr(verb.view(), "   Compiling", "Compiling right-aligned in 12");
+  mut num = String.from("7");
+  num.padStart(3usize, '0');
+  expectStr(num.view(), "007", "zero-filled");
+  mut wide = String.from("Finished");
+  wide.padStart(4usize);
+  expectStr(wide.view(), "Finished", "longer than the width, unchanged");
+  mut exact = String.from("abcd");
+  exact.padStart(4usize);
+  exact.padEnd(4usize);
+  expectStr(exact.view(), "abcd", "exactly the width, unchanged");
+  mut left = String.from("ab");
+  left.padEnd(4usize);
+  expectStr(left.view(), "ab  ", "left-aligned in 4");
+  mut dots = String.empty();
+  dots.padEnd(3usize, '.');
+  expectStr(dots.view(), "...", "an empty string padded");
+  mut nothing = String.empty();
+  nothing.padStart(0usize);
+  expectUInt(u64.from(nothing.len()), 0, "padded to 0, still empty");
+  // "é" is two bytes, so one more space makes it 4 bytes, not 3 characters
+  mut accent = String.from("\xC3\xA9");
+  accent.padStart(3usize);
+  expectStr(accent.view(), " \xC3\xA9", "width counts bytes");
+
+  // ASCII case: only A to Z and a to z change
+  mut mixed = String.from("Path=C:\\Windows @[`{ 09");
+  mixed.lowerAscii();
+  expectStr(mixed.view(), "path=c:\\windows @[`{ 09", "lowered");
+  mixed.upperAscii();
+  expectStr(mixed.view(), "PATH=C:\\WINDOWS @[`{ 09", "raised");
+  mut accented = String.from("caf\xC3\xA9 \xC3\x89T\xC3\x89");
+  accented.upperAscii();
+  expectStr(accented.view(), "CAF\xC3\xA9 \xC3\x89T\xC3\x89", "bytes beyond ASCII left as they are, raised");
+  accented.lowerAscii();
+  expectStr(accented.view(), "caf\xC3\xA9 \xC3\x89t\xC3\x89", "and lowered");
+  mut empty = String.empty();
+  empty.lowerAscii();
+  expectUInt(u64.from(empty.len()), 0, "an empty string lowered");
+  expectUInt(u64.from(asciiLower('A')), 97, "A lowered");
+  expectUInt(u64.from(asciiLower('Z')), 122, "Z lowered");
+  expectUInt(u64.from(asciiLower('@')), 64, "@ unchanged");
+  expectUInt(u64.from(asciiLower('[')), 91, "[ unchanged");
+  expectUInt(u64.from(asciiLower(0xC9u8)), 201, "a byte beyond ASCII unchanged");
+  expectUInt(u64.from(asciiUpper('a')), 65, "a raised");
+  expectUInt(u64.from(asciiUpper('z')), 90, "z raised");
+  expectUInt(u64.from(asciiUpper('`')), 96, "backquote unchanged");
+  expectUInt(u64.from(asciiUpper('{')), 123, "brace unchanged");
+  expectUInt(u64.from(asciiUpper(0xE9u8)), 233, "another byte beyond ASCII unchanged");
+
+  // Equal but for ASCII case
+  imm envName = String.from("Path");
+  expectBool(envName.equalsIgnoreAsciiCase("PATH"), true, "Path is PATH");
+  expectBool(envName.equalsIgnoreAsciiCase("path"), true, "Path is path");
+  expectBool(envName.equalsIgnoreAsciiCase("Paths"), false, "not Paths");
+  expectBool(envName.equalsIgnoreAsciiCase("Pat"), false, "not Pat");
+  expectBool(envName.equalsIgnoreAsciiCase("Pbth"), false, "not Pbth");
+  imm accentLow = String.from("\xC3\xA9");
+  expectBool(accentLow.equalsIgnoreAsciiCase("\xC3\xA9"), true, "the same bytes beyond ASCII");
+  expectBool(accentLow.equalsIgnoreAsciiCase("\xC3\x89"), false, "no case beyond ASCII");
+  expectBool(empty.equalsIgnoreAsciiCase(""), true, "empty is empty");
+  // '@' and '`' differ by 32, as a letter's two cases do, but are not letters
+  imm at = String.from("@");
+  expectBool(at.equalsIgnoreAsciiCase("`"), false, "@ is not backquote");
+
+  // Replacing
+  mut r = String.from("a.b.c");
+  r.replace(".", "::");
+  expectStr(r.view(), "a::b::c", "each dot made two colons");
+  r.replace("::", "");
+  expectStr(r.view(), "abc", "each made nothing");
+  r.replace("x", "y");
+  expectStr(r.view(), "abc", "nothing found, nothing changed");
+  r.replace("abc", "whole");
+  expectStr(r.view(), "whole", "the whole of it");
+  r.replace("wholer", "x");
+  expectStr(r.view(), "whole", "longer than it, not found");
+  mut over = String.from("aaa");
+  over.replace("aa", "b");
+  expectStr(over.view(), "ba", "left to right, never overlapping");
+  mut grow = String.from("aa");
+  grow.replace("a", "aa");
+  expectStr(grow.view(), "aaaa", "what is put in is not searched again");
+  mut gaps = String.from("ab");
+  gaps.replace("", "-");
+  expectStr(gaps.view(), "-a-b-", "an empty from: before each byte and at the end");
+  mut blank = String.empty();
+  blank.replace("", "x");
+  expectStr(blank.view(), "x", "an empty from in an empty string");
+  blank.clear();
+  blank.replace("a", "b");
+  expectUInt(u64.from(blank.len()), 0, "nothing to find in nothing");
+  mut paths = String.from("C:\\src\\cone");
+  paths.replace("\\", "/");
+  expectStr(paths.view(), "C:/src/cone", "backslashes made slashes");
+
+  // Integers from text
+  isInt("0", 0, "zero");
+  isInt("42", 42, "forty-two");
+  isInt("-42", -42, "minus forty-two");
+  isInt("+42", 42, "a plus sign");
+  isInt("-0", 0, "minus zero is zero");
+  isInt("007", 7, "leading zeros");
+  isInt("3221226505", 3221226505, "abort's status");
+  isInt("9223372036854775807", 9223372036854775807, "the largest i64");
+  isInt("-9223372036854775808", -9223372036854775807i64 - 1i64, "the smallest i64");
+  isInt("00000000000000000000000000009223372036854775807", 9223372036854775807, "the largest, many zeros first");
+  notInt("9223372036854775808", "one past the largest");
+  notInt("-9223372036854775809", "one past the smallest");
+  notInt("99999999999999999999", "twenty nines");
+  notInt("", "nothing");
+  notInt("-", "a sign alone");
+  notInt("+", "a plus alone");
+  notInt("--1", "two signs");
+  notInt("+-1", "a plus then a minus");
+  notInt(" 1", "a space first");
+  notInt("1 ", "a space after");
+  notInt("1a", "a letter after");
+  notInt("0x10", "hex is not decimal");
+  notInt("1_000", "no separators");
+  notInt("1.5", "no fraction");
+  notInt("\xD9\xA1", "Arabic-Indic one is not an ASCII digit");
+  // Through a String, trimmed, as Congo reads an '.exit' file
+  imm exitFile = String.from("3221226505\r\n");
+  imm exitText = exitFile.trim();
+  isInt(exitText.view(), 3221226505, "a trimmed line");
+
+  isUInt("0", 0, "u zero");
+  isUInt("+7", 7, "u a plus sign");
+  isUInt("18446744073709551615", 18446744073709551615u64, "the largest u64");
+  isUInt("9223372036854775808", 9223372036854775808u64, "past the largest i64");
+  notUInt("18446744073709551616", "one past the largest u64");
+  notUInt("18446744073709551620", "past it in the last digit by more");
+  notUInt("184467440737095516150", "ten times it");
+  notUInt("-1", "a minus");
+  notUInt("-0", "a minus even before 0");
+  notUInt("", "u nothing");
+  notUInt("+", "u a plus alone");
+  notUInt("12x", "u a letter after");
+
+  done();
+}
+
+fn isInt(text &[]u8, want i64, label &[]u8) {
+  match parseInt(text) {
+    case imm s Some {expectInt(s.value, want, label);}
+    case is None {expect(false, label);}
+  }
+}
+
+fn notInt(text &[]u8, label &[]u8) {
+  match parseInt(text) {
+    case is Some[i64] {expect(false, label);}
+    case is None[i64] {expect(true, label);}
+  }
+}
+
+fn isUInt(text &[]u8, want u64, label &[]u8) {
+  match parseUInt(text) {
+    case imm s Some {expectUInt(s.value, want, label);}
+    case is None {expect(false, label);}
+  }
+}
+
+fn notUInt(text &[]u8, label &[]u8) {
+  match parseUInt(text) {
+    case is Some[u64] {expect(false, label);}
+    case is None[u64] {expect(true, label);}
+  }
+}

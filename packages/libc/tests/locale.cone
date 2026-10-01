@@ -1,0 +1,84 @@
+// setlocale, from locale.h, and what it does to file names on Windows. Each
+// line is one fact the C library established, printed as a number:
+//
+// - a program starts in the "C" locale, and a null name only asks;
+// - a locale the library does not know is refused with null, and the one in
+//   force stays;
+// - ".UTF-8" is set, and the name it answers is the system language's with
+//   ".utf8" after it ("English_United States.utf8"), so only that ending is
+//   compared; asking one category, LC_CTYPE, answers the same;
+// - under it, the narrow file functions read a name as UTF-8: a file named
+//   with "é" (0xC3 0xA9) and "日" (0xE6 0x97 0xA5) is written, read back and
+//   removed, and a name holding 0xE9 alone, which is not UTF-8, is refused
+//   ('fopen' answers null): the name is decoded as UTF-8, and that byte
+//   cannot be;
+// - setting "C" again answers "C".
+//
+// The file is 'module_package_libc_é日.tmp' in the folder TEMP names.
+
+mod locale;
+
+import stdio use *;
+import libc use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn yes(b Bool) i64 {if b {1i64;} else {0i64;};}
+
+fn isNull(p *u8) i64 {yes(p == 0usize as *u8);}
+
+// Whether the C string p ends with the C string end
+fn endsWith(p *u8, end *u8) Bool {
+  imm n = strlen(p);
+  imm m = strlen(end);
+  m <= n and strcmp(p + (n - m), end) == 0i32;
+}
+
+// TEMP, a '\', and the name, NUL included, into buf
+fn tempPath(buf *u8, name *u8) {
+  imm temp = getenv(&[]"TEMP");
+  imm templen = strlen(temp);
+  memcpy(buf, temp, templen);
+  buf[templen] = '\\';
+  memcpy(buf + templen + 1usize, name, strlen(name) + 1usize);
+}
+
+fn main() i32 {
+  imm asking = 0usize as *u8;
+  show("starts-as-C", yes(strcmp(setlocale(LC_ALL, asking), &[]"C") == 0i32));
+  show("unknown-null", isNull(setlocale(LC_ALL, &[]"no-such-locale")));
+  show("still-C", yes(strcmp(setlocale(LC_ALL, asking), &[]"C") == 0i32));
+
+  imm utf8 = setlocale(LC_ALL, &[]".UTF-8");
+  show("utf8-null", isNull(utf8));
+  show("utf8-ends-utf8", yes(endsWith(utf8, &[]".utf8")));
+  show("ctype-ends-utf8", yes(endsWith(setlocale(LC_CTYPE, asking), &[]".utf8")));
+
+  mut path = new Array[u8, 512] <- fill 0u8;
+  imm name *u8 = &[]path;
+  tempPath(name, &[]"module_package_libc_\xC3\xA9\xE6\x97\xA5.tmp");
+  imm out = fopen(name, &[]"wb");
+  show("utf8-name-fopen-null", isNull(out as *u8));
+  show("fwrite-count", i64.from(fwrite(&[]"caf\xC3\xA9", 1usize, 5usize, out)));
+  show("fclose", i64.from(fclose(out)));
+  mut buf = new Array[u8, 16] <- fill 0u8;
+  imm back = fopen(name, &[]"rb");
+  show("read-back-count", i64.from(fread(&[]buf, 1usize, 16usize, back)));
+  fclose(back);
+  show("read-back-equal", yes(strcmp(&[]buf, &[]"caf\xC3\xA9") == 0i32));
+  show("remove", i64.from(remove(name)));
+  show("fopen-after-remove-null", isNull(fopen(name, &[]"rb") as *u8));
+
+  mut bad = new Array[u8, 512] <- fill 0u8;
+  imm badName *u8 = &[]bad;
+  tempPath(badName, &[]"module_package_libc_\xE9.tmp");
+  show("not-utf8-name-fopen-null", isNull(fopen(badName, &[]"wb") as *u8));
+
+  show("back-to-C", yes(strcmp(setlocale(LC_ALL, &[]"C"), &[]"C") == 0i32));
+  0i32;
+}

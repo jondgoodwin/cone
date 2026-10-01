@@ -1,16 +1,27 @@
-// The stdio package: printing to standard output. A program reaches it with
-// 'import stdio'. Built by Congo, the package is compiled on its own into an
-// object, and that compile generates its include file from this source, which
-// a program is compiled against; the object is where 'print' and IOStream's
-// methods are defined. Found by a compile on the package search path instead,
-// this source is compiled into the program's own object.
+// The stdio package: printing to standard output and standard error. A
+// program reaches it with 'import stdio'. Built by Congo, the package is
+// compiled on its own into an object, and that compile generates its include
+// file from this source, which a program is compiled against; the object is
+// where 'print' and IOStream's methods are defined. Found by a compile on the
+// package search path instead, this source is compiled into the program's own
+// object.
 //
 // The printing itself is C, in packages/conestd/stdio.c, declared here with
 // 'extern' (defined elsewhere) and '@c' (spelled as C spells it: stdio is a
 // Cone-named module, so without '@c' each would take stdio's Cone name).
+//
+// Two streams, each a variable and a set of functions: 'print <- x' and the
+// 'print' functions write to standard output, 'eprint <- x' and the 'eprint'
+// functions to standard error, the same text either way. Both go through the
+// C library's streams. Standard output is buffered, so what was printed may
+// not have reached its file or pipe yet: before a program runs another that
+// writes to the same place, or where the order of the two streams matters,
+// it flushes first ('print.flush()'). Standard error is not buffered on
+// the Windows C runtime, so its flush has nothing to do there.
 
 mod stdio;
 
+// Standard output
 pub extern {
   fn @c printStr(str &[]u8);
   fn @c printCStr(str *u8);
@@ -18,15 +29,33 @@ pub extern {
   fn @c printInt(a i64);
   fn @c printUInt(a u64);
   fn @c printChar(code u64);
+  // Write out what the C library holds for standard output
+  fn @c printFlush();
 }
 
+// Standard error
+pub extern {
+  fn @c eprintStr(str &[]u8);
+  fn @c eprintCStr(str *u8);
+  fn @c eprintFloat(a f64);
+  fn @c eprintInt(a i64);
+  fn @c eprintUInt(a u64);
+  fn @c eprintChar(code u64);
+  fn @c eprintFlush();
+}
+
+// A stream to print to: 'fd' is its POSIX number, 1 for standard output and
+// 2 for standard error
 pub struct IOStream {
   pub fd i32;
-  pub fn appendStr overload `<-`(self &mut, str &[]u8) {printStr(str);}
-  pub fn appendCStr overload `<-`(self &mut, str *u8) {printCStr(str);}
-  pub fn appendInt overload `<-`(self &mut, i i64) {printInt(i);}
-  pub fn appendFloat overload `<-`(self &mut, n f64) {printFloat(n);}
-  pub fn appendUInt overload `<-`(self &mut, i u64) {printUInt(i);}
+  pub fn appendStr overload `<-`(self &mut, str &[]u8) {if fd == 2i32 {eprintStr(str);} else {printStr(str);}}
+  pub fn appendCStr overload `<-`(self &mut, str *u8) {if fd == 2i32 {eprintCStr(str);} else {printCStr(str);}}
+  pub fn appendInt overload `<-`(self &mut, i i64) {if fd == 2i32 {eprintInt(i);} else {printInt(i);}}
+  pub fn appendFloat overload `<-`(self &mut, n f64) {if fd == 2i32 {eprintFloat(n);} else {printFloat(n);}}
+  pub fn appendUInt overload `<-`(self &mut, i u64) {if fd == 2i32 {eprintUInt(i);} else {printUInt(i);}}
+  // Write out what the C library holds for it
+  pub fn flush(self &mut) {if fd == 2i32 {eprintFlush();} else {printFlush();}}
 }
 
-pub mut print = new IOStream(0);
+pub mut print = new IOStream(1i32);
+pub mut eprint = new IOStream(2i32);

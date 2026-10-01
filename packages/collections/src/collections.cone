@@ -181,6 +181,52 @@ pub struct List[T] is ShapeChanging, Sendable {
   // A slice of every value it holds, for reading them now
   pub fn view(self &) &[]T { mem.sliceFromParts(ptr, used); }
 
+  // Put its values in order: 'order(a, b)' is negative when a goes before b,
+  // positive when after, and 0 when either may go first, as 'compare' and
+  // 'bytesCompare' answer. The sort is stable: values that order calls equal
+  // keep the order they had. A merge sort, n log n comparisons, through a
+  // second block as big as the list's, given back before it returns.
+  // 'names.sortBy(&byName)', with 'fn byName(a &String, b &String) i32'.
+  pub fn sortBy(self &mut, order &fn(a &T, b &T) i32) {
+    if used < 2usize { return; }
+    imm spare = libc.malloc(used * mem.sizeof[T]()) as *T;
+    // Each pass merges runs of 'width' values from one block into the other
+    mut from = ptr;
+    mut to = spare;
+    mut width = 1usize;
+    while width < used {
+      mut lo = 0usize;
+      while lo < used {
+        imm mid = if lo + width < used {lo + width;} else {used;};
+        imm hi = if mid + width < used {mid + width;} else {used;};
+        mut a = lo;
+        mut b = mid;
+        mut k = lo;
+        // The right run's value goes first only when it is strictly before
+        while a < mid and b < hi {
+          if order((from + b) as &T, (from + a) as &T) < 0i32 {
+            mem.moveRaw(to + k, from + b, 1usize);
+            b = b + 1usize;
+          }
+          else {
+            mem.moveRaw(to + k, from + a, 1usize);
+            a = a + 1usize;
+          }
+          k = k + 1usize;
+        }
+        mem.moveRaw(to + k, from + a, mid - a);
+        mem.moveRaw(to + k + (mid - a), from + b, hi - b);
+        lo = hi;
+      }
+      imm was = from;
+      from = to;
+      to = was;
+      width = width * 2usize;
+    }
+    if from != ptr { mem.moveRaw(ptr, from, used); }
+    libc.free(spare as *u8);
+  }
+
   fn finalizeAll(self &mut) {
     if mem.needsFinal[T]() {
       mut i = 0usize;
@@ -214,6 +260,27 @@ pub struct String is ShapeChanging {
     mut str = String.withCapacity(s.len);
     str.append(s);
     str;
+  }
+
+  // A String holding a copy of the bytes of a C string, up to its NUL: what
+  // a C function answers, or one of main's 'argv'. A null pointer is a
+  // program error, a panic at the line of the caller.
+  pub fn fromCStr(p *u8, file &[]u8 = srcFile(), line u32 = srcLine()) String {
+    if p == 0usize as *u8 { panic("collections: a null pointer is not a C string", file, line); }
+    String.from(mem.sliceFromParts(p, libc.strlen(p)));
+  }
+
+  // The views of 'parts' one after another, with 'sep' between each two:
+  // 'String.join(names.view(), ", ")'. No parts make an empty String.
+  pub fn join(parts &[]String, sep &[]u8) String {
+    mut out = String.empty();
+    mut i = 0usize;
+    while i < parts.len {
+      if i > 0usize { out.append(sep); }
+      out.append(parts[i].view());
+      i = i + 1usize;
+    }
+    out;
   }
 
   // A copy of this one. (Not 'clone': a method of that name is the lifecycle
@@ -287,12 +354,91 @@ pub struct String is ShapeChanging {
     }
   }
 
+  // Every 'from' made 'to', left to right, the pieces never overlapping:
+  // "aaa" with "aa" made "b" is "ba". An empty 'from' is found before each
+  // byte and at the end, so "ab" with "" made "-" is "-a-b-".
+  pub fn replace(self &mut, from &[]u8, to &[]u8) {
+    imm v = self.view();
+    mut out = String.withCapacity(v.len);
+    mut i = 0usize;
+    if from.len == 0usize {
+      while i < v.len { out.append(to); out.appendByte(v[i]); i = i + 1usize; }
+      out.append(to);
+    }
+    else {
+      while i < v.len {
+        if i + from.len <= v.len and &v[i..i + from.len] == from {
+          out.append(to);
+          i = i + from.len;
+        }
+        else {
+          out.appendByte(v[i]);
+          i = i + 1usize;
+        }
+      }
+    }
+    *self = out;
+  }
+
+  // 'fill' bytes, spaces unless another is given, put before its bytes until
+  // it is 'width' bytes long: "7" padded to 3 is "  7", which right-aligns
+  // it. One that long already, or longer, is left as it is. Width counts
+  // bytes, so a character beyond ASCII counts each of its UTF-8 bytes.
+  pub fn padStart(self &mut, width usize, fill u8 = ' ') {
+    if bytes.len() >= width { return; }
+    mut out = String.withCapacity(width);
+    mut n = width - bytes.len();
+    while n > 0usize { out.appendByte(fill); n = n - 1usize; }
+    out.append(self.view());
+    *self = out;
+  }
+
+  // The same, put after its bytes: "ab" padded to 4 is "ab  ", which
+  // left-aligns it
+  pub fn padEnd(self &mut, width usize, fill u8 = ' ') {
+    while bytes.len() < width { bytes.push(fill); }
+  }
+
+  // Each ASCII capital letter, A to Z, made small; every other byte, those
+  // of characters beyond ASCII included, left as it is
+  pub fn lowerAscii(self &mut) {
+    mut i = 0usize;
+    while i < bytes.len() {
+      imm b = *bytes[i];
+      bytes.set(i, asciiLower(b));
+      i = i + 1usize;
+    }
+  }
+
+  // Each ASCII small letter, a to z, made a capital; every other byte left
+  pub fn upperAscii(self &mut) {
+    mut i = 0usize;
+    while i < bytes.len() {
+      imm b = *bytes[i];
+      bytes.set(i, asciiUpper(b));
+      i = i + 1usize;
+    }
+  }
+
   // Empty it, keeping its block
   pub fn clear(self &mut) { bytes.clear(); }
 
   // -------- reading --------
 
   pub fn equals(self &, s &[]u8) Bool { self.view() == s; }
+
+  // Whether it holds the same bytes as s once ASCII letters are made one
+  // case: "Path" equals "PATH" this way. Bytes beyond ASCII must match exactly.
+  pub fn equalsIgnoreAsciiCase(self &, s &[]u8) Bool {
+    imm v = self.view();
+    if v.len != s.len { return false; }
+    mut i = 0usize;
+    while i < v.len {
+      if asciiLower(v[i]) != asciiLower(s[i]) { return false; }
+      i = i + 1usize;
+    }
+    true;
+  }
 
   // -1, 0 or 1 as it sorts before, with or after s, byte by byte, a shorter
   // string before a longer one it begins
@@ -615,6 +761,61 @@ pub fn hashBytes(s &[]u8) u64 {
 
 // A space, tab, carriage return or line feed
 pub fn isSpace(b u8) Bool { b == ' ' or b == '\t' or b == '\r' or b == '\n'; }
+
+// The byte, made small if it is an ASCII capital letter, A to Z
+pub fn asciiLower(b u8) u8 { if b >= 'A' and b <= 'Z' {b + 32u8;} else {b;}; }
+
+// The byte, made a capital if it is an ASCII small letter, a to z
+pub fn asciiUpper(b u8) u8 { if b >= 'a' and b <= 'z' {b - 32u8;} else {b;}; }
+
+// The integer the text spells in decimal: a '-' or a '+' or neither, then one
+// or more digits, 0 to 9, and nothing else, no spaces either ('trim' first).
+// None for any other text, and for a number beyond i64's range, which is
+// -9223372036854775808 to 9223372036854775807.
+pub fn parseInt(text &[]u8) Option[i64] {
+  mut start = 0usize;
+  mut negative = false;
+  if text.len > 0usize and (text[0usize] == '-' or text[0usize] == '+') {
+    negative = text[0usize] == '-';
+    start = 1usize;
+  }
+  // A negative number's magnitude reaches one past the largest i64
+  imm limit = if negative {9223372036854775808u64;} else {9223372036854775807u64;};
+  match digitsValue(&text[start..], limit) {
+    case imm m Some {
+      if not negative {Some[i64][i64.from(m.value)];}
+      else if m.value == 0u64 {Some[i64][0i64];}
+      else {Some[i64][-1i64 - i64.from(m.value - 1u64)];}
+    }
+    case is None {None[i64][];}
+  }
+}
+
+// The same for a u64, 0 to 18446744073709551615: a '+' or nothing, then the
+// digits. A '-' is None, even before 0.
+pub fn parseUInt(text &[]u8) Option[u64] {
+  mut start = 0usize;
+  if text.len > 0usize and text[0usize] == '+' { start = 1usize; }
+  digitsValue(&text[start..], 18446744073709551615u64);
+}
+
+// The value of one or more decimal digits and nothing else, or None when
+// there are none, when anything else is there, or when it is beyond limit
+fn digitsValue(digits &[]u8, limit u64) Option[u64] {
+  if digits.len == 0usize { return None[u64][]; }
+  mut n = 0u64;
+  mut i = 0usize;
+  while i < digits.len {
+    imm c = digits[i];
+    if c < '0' or c > '9' { return None[u64][]; }
+    imm d = u64.from(c - '0');
+    // Whether n * 10 + d would pass limit, asked without overflowing
+    if n > (limit - d) / 10u64 { return None[u64][]; }
+    n = n * 10u64 + d;
+    i = i + 1usize;
+  }
+  Some[u64][n];
+}
 
 // -------- program errors --------
 
