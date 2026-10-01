@@ -529,7 +529,7 @@ Each line is, in order, separated by single spaces:
    `linkonce_odr` — `define linkonce_odr q.larger[i64] comdat any`;
 3. the **demangled name**: the symbol read back through the scheme in
    `doc/design/names-and-namespaces.md`, "Symbols" — `sub.SubPt.get`,
-   `Holder[i64].tally`, `pick[&So mut i32]`, `Vec.+`, a vtable as
+   `Holder[i64].tally`, `pick[So[mut, i32]]`, `Vec.+`, a vtable as
    `Gauge as Meter (vtable)`, a vtable list as `Meter (vtable list)`, a name
    Cone source could only write in backticks in its backticks. A symbol the
    scheme does not spell — `main`, a root `fn`, a C name, `string`, `anon` — is
