@@ -371,6 +371,17 @@ is still `unknownType` while under analysis". `ErrorCircular` is its code, and i
 is not a variant of `ErrorNoSize`: "this type cannot tell you its size, hold it by
 reference" and "this definition depends on itself" are not the same advice.
 
+**A constant with a declared type has its type, but not yet its value.**
+`const A u32 = B` then `const B u32 = A | 1u32` passes the type question, and
+it is the value that recurses. A constant's value is folded into its literal
+before its check ends (`litFoldConst`, [literals](../nodes/literals.md),
+"Folding a constant expression"), so a chain of constant uses reaching a
+constant still under check (`TypeChecking` without `TypeChecked`) has come
+back round. The fold reports it, `ErrorCircular` again, at the use that closes
+the chain, and replaces that use with a zero of its type, so nothing folded
+from it reports a second time and no later walk of the chain loops.
+`litWidenConst` declines such a chain rather than following it.
+
 ## 8. Generics and macros
 
 A generic is not analyzed; it is a template. `structTypeCheck` and

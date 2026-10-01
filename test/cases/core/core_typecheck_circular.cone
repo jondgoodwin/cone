@@ -1,4 +1,4 @@
-// Declarations whose type comes from a value that names them back.
+// Declarations whose type or value comes from a value that names them back.
 //
 // Its own file rather than a line in core_typecheck, because the sub-family is
 // distinct and core_typecheck already carries eight diagnostics.
@@ -11,6 +11,11 @@
 //
 // Both shapes compiled clean before the check existed. The only complaint came
 // from the use site, as a type mismatch naming neither declaration.
+//
+// A named constant with a declared type has its type, but its value is folded
+// from the constants it names (litFoldConst), and one whose chain of constants
+// comes back round to itself has none to give. That ended the compile with a
+// stack overflow before the check existed.
 
 mod core_typecheck_circular;
 
@@ -25,8 +30,19 @@ fn usesConstant() i64 {
 }
 
 // The same shape in one declaration: a global whose type is inferred from an
-// initial value that reads the global. The literal check fires as well, because
-// a name is not a literal, and it is written here rather than left out so that
-// the file's count is what the compiler actually produces.
+// initial value that reads the global. Reported once: a value with no type is
+// not reported again as not a literal.
 mut selfNamed = selfNamed;  //~ ErrorCircular:17 "defined in terms of itself"
-                           //~^ ErrorNotLit:5 "may only be initialized with a literal value" follow-on
+
+// Typed constants: the type is declared, the value circular. Reported once,
+// at the use that closes the chain, and what folds from it reports nothing
+// more.
+const C u32 = D;
+const D u32 = C;           //~ ErrorCircular:15 "C is defined in terms of itself"
+const E u32 = F | 1u32;
+const F u32 = E | 2u32;    //~ ErrorCircular:15 "E is defined in terms of itself"
+const G u32 = G + 1u32;    //~ ErrorCircular:15 "G is defined in terms of itself"
+
+// An untyped pair under an operator: the type check reports it, once
+const H = I | 1u32;
+const I = H | 2u32;        //~ ErrorCircular:11 "defined in terms of itself"

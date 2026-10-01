@@ -271,6 +271,17 @@ A `name: value` argument anywhere but a type literal is `ErrorNamedArg`, one
 code for a call, an index and a macro use, because the remedy is the same for
 each: pass the value by position.
 
+A constant expression with no value takes three codes, one per remedy
+(`litFoldConst`). `ErrorConstOverflow` is a result its type cannot hold,
+whichever operation produced it — an integer operation past its range, a float
+one past its finite range, a float converted to an integer that cannot hold it
+or to an `f32` past its range — since the remedy is the same: a wider type or
+smaller operands. `ErrorConstDivZero` is a division or remainder by zero, and
+`ErrorConstShift` a shift by the width or more. None is `ErrorLitRange`, which
+is a literal as written that does not fit; a constant whose chain of named
+constants comes back to itself is `ErrorCircular`, the code every definition
+in terms of itself wears.
+
 ## The one code with no scenario
 
 `ErrorUnreachable` is reported by `errorUnreachable` and by nothing else. It
@@ -307,7 +318,9 @@ One mistake should produce one diagnostic. Two mechanisms:
   [IR Nodes](../nodes/_index.md).
 - **An error-count delta.** `fnDclTypeCheck` records `errors` on entry and
   compares, so "did *this* declaration fail?" is answerable without knowing what
-  failed elsewhere. That is what gates the body check and flow analysis.
+  failed elsewhere. That is what gates the body check and flow analysis, and
+  `litFoldConst` uses it the same way: a constant expression whose fold
+  reported why it has no value is not reported again as not a constant.
 
 `iexpTypeCheckCoerce` returning success on an untyped operand is the same idea
 by a third route: a deliberate lie so one bad subexpression does not provoke a

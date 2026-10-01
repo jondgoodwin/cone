@@ -11,8 +11,10 @@ brackets, `Some[x]`; a struct's in brackets is refused. An allocation,
 resolves each literal's type name, decides that `[…]` is an array literal, and
 refuses it where it spells an array type. Type check types an integer literal and checks it fits, sizes
 a string, checks array elements against each other, selects a construction's
-init, and reorders a type literal's fields. Flow accounts for the values a
-composite literal takes ownership of. Generation emits constants where it can.
+init, and reorders a type literal's fields; where a constant is required, it
+folds an expression of constants into the literal it computes. Flow accounts
+for the values a composite literal takes ownership of. Generation emits
+constants where it can.
 
 *Provenance: read from source.*
 
@@ -338,7 +340,10 @@ as it does a struct literal of constants.
 **A reinterpretation of a constant is a constant** (`litIsConstCast`): a
 `CastTag` without `FlagConvert` (an `as`) whose target is a number or
 a raw pointer and whose operand is a number literal, a `ConstDclTag` use, or
-another such cast. `0usize as *T` is how a raw pointer starts out null, since
+another such cast. One to a number of a constant number is folded into a
+literal where a constant is required (below), so what reaches this test there
+is the one to a pointer, whose operand may itself have been folded:
+`(BASE + 16usize) as *u8`. `0usize as *T` is how a raw pointer starts out null, since
 there is no null literal. A struct target is left out:
 `genlRecast` reinterprets one through a stack slot, which a global's
 initializer has none of. Type check still applies the same-size rule, and
@@ -353,7 +358,10 @@ is.** Neither is an lval of a variable, so `borrowTypeCheck` asks
 `borrowIsConstLit` before refusing its operand as a temporary, and gives the
 borrow what a global constant has: `imm` and scope 0, the program's lifetime.
 So `&mut [1, 2, 3]` is refused (`ErrorBadPerm`) as `&mut "text"` is, and a
-function may return `&[2, 3, 5]`. An array literal with a computed element is
+function may return `&[2, 3, 5]`. Before it asks, the borrow folds the array
+literal's elements (`litFoldConst`, below), so an element computed from
+constants alone, `&[R | G, B]`, is a constant too, in a function body as
+anywhere else. An array literal with any other computed element is
 still a temporary (`ErrorBadLval`). The literal was typed from its elements
 alone, the borrow expecting nothing of it, so `&[1, 2, 3]` wanted as a `&[]u32`
 would be an `&Array[i32, 3]`: `iexpCoerce`'s `NoMatch` arm hands such a borrow to
@@ -376,6 +384,75 @@ array, `&K[i]`, is not a part of one in this sense: `borrowReassocIndex` makes i
 an index of `&K`. Nor is a place reached through a reference a constant holds
 (`const R = &K`, then `&R[i]`): it is where the reference points, and is
 borrowed on the reference's terms.
+
+### Folding a constant expression
+
+**Where a constant is required, an expression of constants is folded into the
+literal it computes** (`litFoldConst`, `literal.c`), once the value is type
+checked and coerced, and before `litIsLiteral` is asked: a named constant's
+value (`constDclTypeCheck`), a global's, a static's and a parameter's default
+(`varDclTypeCheck`), a field's default (`fieldDclTypeCheck`), and the elements
+of an array literal a borrow takes (`borrowTypeCheck`). The result is an
+ordinary `ULitNode` or `FLitNode` placed where the expression was, so
+generation, `--ir`, the uses of the constant and every `litIsLiteral` caller
+see a literal and nothing else changes for them. Nowhere else folds: an
+expression in a function body is generated as written, and LLVM folds it.
+
+**What folds**, from the leaves up, each over number literals and named
+constants (followed through any constant naming another):
+- a call of a number type's operator method whose body is an intrinsic
+  (`litFoldOp`): `+ - * / %`, `& | ^ << >>`, unary `-` and `~`, the six
+  comparisons (a `Bool`), and the `isTrue` a coercion to `Bool` injects; the
+  operators on `Bool` itself among them;
+- `not`, `and` and `or` over `Bool` constants;
+- a number's conversion, `T.from(x)` (a `TypeLitTag` of a number type) and the
+  `FlagConvert` cast a coercion's widening injects, by `litFoldConvert`, which
+  does what `genlConvert` generates;
+- a reinterpretation with `as` to a number of the same size, by
+  `litFoldRecast`: the same bits read as the other type. One whose bits read as
+  a float are a NaN or an infinity is left a cast, which `litIsConstCast` still
+  accepts and generation folds, since no float literal holds either;
+- inside an array literal, a struct's or a variant's literal (through its
+  `NamedValNode`s), a value tuple, and a borrow of an array literal, each
+  element on its own.
+
+Anything else is left as it is: a call of a function, a method like `sqrt`, a
+variable. The caller then reports the value as not a constant, as it did before
+any folding, unless the fold reported why part of it has no value, or its type
+is `errorType` (its type check reported it); `litFoldConst` answers 1 for both,
+so one cause is reported once.
+
+**A fold has the run-time meaning of the operator on its type.** Integers are
+read through `FlagLitNeg`'s rule (`litExtend`: the low bits of the type,
+sign-extended for a signed type), so `-1u8` is 255 and `-128i8` is -128.
+Division and remainder truncate toward zero, `>>` is arithmetic on a signed
+type and logical on an unsigned one, and `<<` discards the bits shifted out, as
+`LLVMBuildShl`'s result does. A float operation is computed at its own width,
+an `f32` as a C `float`, never as a double rounded afterward, and an `f32`
+literal is first rounded to the `f32` it is generated as (its `floatlit` holds
+the double written: `0.1f32` is the `f32` nearest 0.1). An untyped integer
+operand is the `i32` it defaults to, and is checked against it then
+(`litCheckDefaultRange`).
+
+**What the run time gives no value is refused**, each at the operator and once,
+the node then left a zero of its type (`litFoldNoValue`, as `litCheckRange`
+leaves an out-of-range literal) so nothing folded from it reports again:
+- `ErrorConstOverflow`: an add, subtract, multiply, divide or negation whose
+  exact result the integer type cannot hold, the smallest value divided by or
+  taken the remainder of by -1 (LLVM's `sdiv` and `srem` both have no value
+  there), a float result past the type's finite range, a float converted to an
+  integer that cannot hold its truncated value (`fptosi`/`fptoui` poison), and
+  an `f64` converted to an `f32` past its range. The bitwise operators cannot
+  overflow, and `-` on an unsigned constant is negation in its own width, as on
+  an unsigned literal;
+- `ErrorConstDivZero`: a division or remainder by zero, integer or float;
+- `ErrorConstShift`: a shift by the width or more, or by a negative amount of a
+  signed type, which LLVM makes poison.
+
+**A constant defined in terms of itself.** A use of a named constant is checked
+(`litConstUnsettled`): a chain of constants reaching one still under type check
+has come back round, and is reported `ErrorCircular` at the use and replaced by
+a zero of its type ([Type check](../phases/type-check.md), "Circularity").
 
 ## Flow
 
@@ -485,6 +562,18 @@ is its type exactly and has no terminator.
   other: `18446744073709551615` read signed is `-1`, and `-1` read unsigned is
   u64's maximum. Anything new that reads a literal's value as a number must read
   the flag too.
+- **An `f32` literal's `floatlit` is the double written, not the `f32`.** It is
+  rounded when generated, so anything that computes with it rounds it first
+  (`(double)(float)`), as `litWidenFloat` and the fold's `litNbrRead` do; read
+  raw, `f64.from(0.1f32)` folded to the double 0.1.
+- **The fold computes floats with the host's C arithmetic.** That is the
+  target's IEEE result only where the host rounds each `float` and `double`
+  operation once, as x64's SSE does; a `conec` built for x87's extended
+  precision would round twice.
+- **A fill decides its form before the fold.** `contentsLowerArray` makes the
+  fill form only of a value that is already a literal, so `<- fill R | B` in a
+  constant is a list of copies, or a run with `repeats`, each copy folded on its
+  own: still a literal, but one element per copy rather than one value.
 - **An array literal's elements are coerced to the expected element type in
   two places, and only one of them sees the element type while checking.**
   Given an expected array type of its own length, `arrayLitTypeCheck` checks

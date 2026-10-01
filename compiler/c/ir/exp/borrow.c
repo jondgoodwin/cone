@@ -340,7 +340,11 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     // assignment target and not this. A borrow reaches the whole suffixed term, so
     // '&p.sum()' is the call's result -- a temporary -- and '(&p).sum()' is how a
     // method is called on a borrowed receiver. A constant literal is not a
-    // temporary: it has a place in a constant global.
+    // temporary: it has a place in a constant global. An array literal's
+    // elements computed from constants alone are constants too, folded here
+    // into the literals they compute (litFoldConst), so '&[R | G, B]' is one.
+    if (node->vtexp->tag == ArrayLitTag)
+        litFoldConst(&node->vtexp);
     if (!iexpIsLval(node->vtexp) && !borrowIsConstLit(node->vtexp)) {
         errorMsgNode(node->vtexp, ErrorBadLval,
             "May not borrow a temporary value. A borrowed reference needs a place in memory to point at.");
