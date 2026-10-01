@@ -1,0 +1,278 @@
+// The path package: file paths taken apart and put together, as text. It
+// never asks the file system anything: whether a path names a file, what is
+// there, and where the current folder is are the 'fs' package's questions.
+//
+//   mod tidy;
+//   import collections use *;
+//   import path;
+//
+//   fn main() {
+//     imm p = path.join("C:\\work", "src/main.cone");   // "C:\work/src/main.cone"
+//     imm n = path.normalize(p.view());                  // "C:/work/src/main.cone"
+//     imm dir = path.parent(n.view());                   // "C:/work/src"
+//     imm stem = path.stem(n.view());                    // "main"
+//     imm ext = path.extension(n.view());                // ".cone"
+//   }
+//
+// A path is bytes, a '&[]u8' in and a collections 'String' out, and a name in
+// it is whatever bytes the file system was given, UTF-8 by Cone's convention.
+// Nothing here looks beyond ASCII: a separator, a dot and a drive letter are
+// all ASCII, and no UTF-8 byte of another character can be mistaken for one.
+//
+// **Windows' rules.** The paths read here are Windows' paths, as the rest of
+// the OS layer is Windows' for now; a POSIX version of this package would
+// read only '/' as a separator and have no drive letters or shares.
+// - Both '/' and '\' separate names, and either may be written anywhere.
+// - A path may start with a volume: a drive, 'C:', or a share, '\\server\share'
+//   (or '//server/share'), which needs both its server and its share; '\\'
+//   followed by anything less is read as a root and a name.
+// - After its volume a path may have a root, a separator. A path is absolute
+//   when it has both, 'C:\x' or '\\server\share\x'. A share always has its
+//   root. 'C:x' (a drive's own current folder) and '\x' (the current drive's
+//   root) are not absolute, as Windows reads them.
+// - Windows' extended prefixes ('\\?\C:\x', '\\.\device') are not
+//   understood: '\\?\C:\x' reads as the share '\\?\C:' and the name 'x'.
+//
+// **Separators out.** Every function that takes a path apart keeps its
+// bytes as written. Two functions write separators: 'join' puts '/' between
+// the two paths it joins, and 'normalize' writes every separator as '/'.
+// Windows takes '/' everywhere a path goes (the C runtime, the system's
+// calls, a UNC share), and a normalized path is spelled one way, so two of
+// them compare as bytes. A program handing a path to something that reads
+// only '\' (some of cmd.exe's commands) turns it round with the String's
+// 'replaceByte('/', '\\')'.
+//
+// **Names.** The last name of 'C:/a/b.tar.gz' is 'b.tar.gz'; its extension is
+// '.gz', from its last dot, the dot included; its stem is 'b.tar', the name
+// without its extension, so stem and extension together are always the
+// name. A name starting with its only dot ('.profile') has no extension,
+// and neither have '.' and '..'.
+
+mod path;
+
+import collections use String, List;
+
+// Whether a byte separates names: '/' or '\'
+pub fn isSeparator(b u8) Bool { b == '/' or b == '\\'; }
+
+// How a path starts: the length of its volume ('C:' is 2, '\\server\share'
+// its whole length), and the length of the volume and the root together,
+// which is one more when a separator follows the volume
+struct Prefix {
+  pub volume usize;
+  pub whole usize;
+}
+
+fn isLetter(b u8) Bool { (b >= 'a' and b <= 'z') or (b >= 'A' and b <= 'Z'); }
+
+fn prefixOf(p &[]u8) Prefix {
+  // A share: two separators, a server, a separator, a share
+  if p.len >= 2usize and isSeparator(p[0usize]) and isSeparator(p[1usize]) {
+    mut i = 2usize;
+    while i < p.len and not isSeparator(p[i]) { i = i + 1usize; }
+    imm serverEnd = i;
+    if serverEnd > 2usize and serverEnd < p.len {
+      i = serverEnd + 1usize;
+      while i < p.len and not isSeparator(p[i]) { i = i + 1usize; }
+      if i > serverEnd + 1usize {
+        // A share always has its root, written or not
+        imm whole = if i < p.len {i + 1usize;} else {i;};
+        return new Prefix(i, whole);
+      }
+    }
+  }
+  // A drive
+  if p.len >= 2usize and isLetter(p[0usize]) and p[1usize] == ':' {
+    imm whole = if p.len > 2usize and isSeparator(p[2usize]) {3usize;} else {2usize;};
+    return new Prefix(2usize, whole);
+  }
+  // A root alone
+  if p.len >= 1usize and isSeparator(p[0usize]) { return new Prefix(0usize, 1usize); }
+  new Prefix(0usize, 0usize);
+}
+
+// Whether the prefix is a share's: a share has its root even when no
+// separator is written after it
+fn isShare(p &[]u8, pre &Prefix) Bool { pre.volume > 2usize; }
+
+// Whether a path is absolute: a drive and a root ('C:\x'), or a share
+// ('\\server\share\x')
+pub fn isAbsolute(p &[]u8) Bool {
+  imm pre = prefixOf(p);
+  isShare(p, &pre) or (pre.volume == 2usize and pre.whole == 3usize);
+}
+
+// The volume a path starts with, 'C:' or '\\server\share' as written, or ""
+pub fn volume(p &[]u8) String {
+  imm pre = prefixOf(p);
+  String.from(&p[..pre.volume]);
+}
+
+// Where a path's names end once the separators after its last are left
+// off, never cutting into its volume and root
+fn trimmedEnd(p &[]u8, pre &Prefix) usize {
+  mut end = p.len;
+  while end > pre.whole and isSeparator(p[end - 1usize]) { end = end - 1usize; }
+  end;
+}
+
+// Where its last name starts, at or after the prefix
+fn lastNameStart(p &[]u8, pre &Prefix, end usize) usize {
+  mut i = end;
+  while i > pre.whole and not isSeparator(p[i - 1usize]) { i = i - 1usize; }
+  i;
+}
+
+// The path a then the path b, with a '/' between them unless a already ends
+// in a separator or is a drive alone ('C:'). When b cannot be read from
+// where a is, b wins: b with a volume ('D:\x', 'D:x', '\\server\share') is
+// b itself, and b with a root but no volume ('\x') is a's volume and then b.
+// An empty a gives b, and an empty b gives a. Nothing is normalized: 'a/'
+// and '../b' join to 'a/../b'.
+pub fn join(a &[]u8, b &[]u8) String {
+  if b.len == 0usize { return String.from(a); }
+  imm bpre = prefixOf(b);
+  if a.len == 0usize or bpre.volume > 0usize { return String.from(b); }
+  if bpre.whole > 0usize {
+    imm apre = prefixOf(a);
+    mut out = String.from(&a[..apre.volume]);
+    out.append(b);
+    return out;
+  }
+  mut out = String.from(a);
+  imm apre = prefixOf(a);
+  imm driveAlone = apre.volume == 2usize and apre.whole == 2usize and a.len == 2usize;
+  if not isSeparator(a[a.len - 1usize]) and not driveAlone { out.appendByte('/'); }
+  out.append(b);
+  out;
+}
+
+// The folder a path is in: the path without its last name and the
+// separators before it. 'a/b/c.txt' is in 'a/b', 'C:/x' in 'C:/', and 'x' in
+// "", the current folder. A path that is only a volume and a root is its own
+// parent: 'C:/' is in 'C:/'. Separators after the last name are left off
+// first, so 'a/b/' is in 'a'. Nothing is normalized: 'a/..' is in 'a'.
+pub fn parent(p &[]u8) String {
+  imm pre = prefixOf(p);
+  imm end = trimmedEnd(p, &pre);
+  mut i = lastNameStart(p, &pre, end);
+  while i > pre.whole and isSeparator(p[i - 1usize]) { i = i - 1usize; }
+  String.from(&p[..i]);
+}
+
+// A path's last name: 'c.txt' of 'a/b/c.txt', 'b' of 'a/b/', and "" of a
+// path that is only a volume and a root ('C:/', '/')
+pub fn name(p &[]u8) String {
+  imm pre = prefixOf(p);
+  imm end = trimmedEnd(p, &pre);
+  String.from(&p[lastNameStart(p, &pre, end)..end]);
+}
+
+// Where the extension of a name starts: at its last dot, unless that is its
+// first byte; at its end when it has none, as '..' has none
+fn extensionStart(n &[]u8) usize {
+  if n == ".." { return n.len; }
+  mut i = n.len;
+  while i > 1usize {
+    i = i - 1usize;
+    if n[i] == '.' { return i; }
+  }
+  n.len;
+}
+
+// A path's last name without its extension: 'b.tar' of 'a/b.tar.gz'
+pub fn stem(p &[]u8) String {
+  imm n = name(p);
+  imm v = n.view();
+  String.from(&v[..extensionStart(v)]);
+}
+
+// The extension of a path's last name, from its last dot, the dot included:
+// '.gz' of 'a/b.tar.gz', '.' of 'b.', and "" of 'b' and '.profile'
+pub fn extension(p &[]u8) String {
+  imm n = name(p);
+  imm v = n.view();
+  String.from(&v[extensionStart(v)..]);
+}
+
+// A path's pieces: its volume and root, as written, when it has either
+// ('C:\', '/', '\\server\share\', 'C:'), then each name, as written, '.' and
+// '..' included, with no separators. Empty names, between two separators
+// or after the last, are left out. "" has no pieces.
+pub fn parts(p &[]u8) List[String] {
+  imm pre = prefixOf(p);
+  mut out = List[String].empty();
+  if pre.whole > 0usize { out.push(String.from(&p[..pre.whole])); }
+  mut start = pre.whole;
+  mut i = pre.whole;
+  while i <= p.len {
+    if i == p.len or isSeparator(p[i]) {
+      if i > start { out.push(String.from(&p[start..i])); }
+      start = i + 1usize;
+    }
+    i = i + 1usize;
+  }
+  out;
+}
+
+// The same path, spelled one way, read from its text alone:
+// - every separator is '/', and two or more together are one ('a//b' is
+//   'a/b'), but for the two that start a share;
+// - each '.' name is dropped ('a/./b' is 'a/b');
+// - each '..' name drops the name before it ('a/b/../c' is 'a/c'); a '..' at
+//   the start of a relative path is kept ('../a' stays), and one just after
+//   a root is dropped, since nothing is above a root ('/../a' is '/a');
+// - separators after the last name are dropped ('a/b/' is 'a/b'), but a
+//   root is kept ('C:\' is 'C:/');
+// - a path that comes to nothing is '.', the current folder ("" and 'a/..'
+//   are both '.'), but a volume alone stays ('C:' stays 'C:').
+// The drive letter is kept as written. A '..' after a symbolic link is
+// dropped with the link, which on the disk may not be where the link's
+// folder is: this reads text, not the file system.
+pub fn normalize(p &[]u8) String {
+  imm pre = prefixOf(p);
+  mut out = String.from(&p[..pre.whole]);
+  out.replaceByte('\\', '/');
+  if isShare(p, &pre) and pre.whole == pre.volume { out.appendByte('/'); }
+  imm rooted = isShare(p, &pre) or (pre.whole > pre.volume);
+  imm base = out.len();
+  // The names kept so far are out's bytes after base; 'kept' counts them,
+  // and 'ups' how many of the first are '..'
+  mut kept = 0usize;
+  mut ups = 0usize;
+  mut start = pre.whole;
+  mut i = pre.whole;
+  while i <= p.len {
+    if i == p.len or isSeparator(p[i]) {
+      imm part = &p[start..i];
+      if part.len == 0usize or part == "." {
+        // nothing to keep
+      }
+      elif part == ".." {
+        if kept > ups {
+          // Drop the last name kept, and the '/' before it
+          mut cut = out.len();
+          while cut > base and out[cut - 1usize] != '/' { cut = cut - 1usize; }
+          if cut > base { cut = cut - 1usize; }
+          out = out.sub(0usize, cut);
+          kept = kept - 1usize;
+        }
+        elif not rooted {
+          if kept > 0usize { out.appendByte('/'); }
+          out.append("..");
+          kept = kept + 1usize;
+          ups = ups + 1usize;
+        }
+      }
+      else {
+        if kept > 0usize { out.appendByte('/'); }
+        out.append(part);
+        kept = kept + 1usize;
+      }
+      start = i + 1usize;
+    }
+    i = i + 1usize;
+  }
+  if out.len() == 0usize { out.appendByte('.'); }
+  out;
+}
