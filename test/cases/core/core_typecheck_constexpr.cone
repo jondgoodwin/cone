@@ -1,0 +1,64 @@
+// What a constant expression may not fold to (litFoldConst): a value the run
+// time does not give one. A result its type cannot hold, a division or
+// remainder by zero, and a shift by the width or more are refused where a
+// constant is required, each once, the constant left a zero of its type so
+// that nothing folded from it reports again. An operand that is not a
+// constant -- a global variable, a call -- leaves the expression a computation,
+// refused as not a constant, as before.
+//
+// Folded values, and the edges that do fit, are core_const_expr's.
+
+mod core_typecheck_constexpr;
+
+// A result past the range of its type, on every width
+const AddI8 = 0x7Fi8 + 1i8;                    //~ ErrorConstOverflow:22 "does not fit i8"
+const AddU8 = 255u8 + 1u8;                     //~ ErrorConstOverflow:21 "does not fit u8"
+const SubI32 = -2147483648i32 - 1i32;          //~ ErrorConstOverflow:31 "does not fit i32"
+const SubU32 = 0u32 - 1u32;                    //~ ErrorConstOverflow:21 "does not fit u32"
+const MulI64 = 0x4000000000000000i64 * 2i64;   //~ ErrorConstOverflow:38 "does not fit i64"
+const MulU64 = 0x100000000u64 * 0x100000000u64;    //~ ErrorConstOverflow:31 "does not fit u64"
+const DivI8 = -128i8 / -1i8;                   //~ ErrorConstOverflow:22 "quotient does not fit i8"
+const RemI32 = -2147483648i32 % -1i32;         //~ ErrorConstOverflow:31 "remainder"
+const MinI64 i64 = -9223372036854775808i64;
+const NegI64 = -MinI64;                        //~ ErrorConstOverflow:16 "negation does not fit i64"
+const Untyped = 2147483647 + 1;                //~ ErrorConstOverflow:28 "does not fit i32"
+const MulF32 = 3.0e38f32 * 2.0f32;             //~ ErrorConstOverflow:26 "does not fit f32"
+const MulF64 = 1.0e300f64 * 1.0e300f64;        //~ ErrorConstOverflow:27 "does not fit f64"
+const NarrowF = f32.from(1.0e300f64);          //~ ErrorConstOverflow:20 "does not fit f32"
+const FloatToU8 = u8.from(-1.5f32);            //~ ErrorConstOverflow:21 "converted from a float"
+const FloatToI8 = i8.from(128.0f64);           //~ ErrorConstOverflow:21 "converted from a float"
+
+// A division or remainder by zero
+const DivU32 = 1u32 / 0u32;                    //~ ErrorConstDivZero:21 "division by zero"
+const RemI64 = 7i64 % 0i64;                    //~ ErrorConstDivZero:21 "remainder"
+const DivF64 = 1.0f64 / 0.0f64;                //~ ErrorConstDivZero:23 "division by zero"
+const RemF32 = 1.0f32 % 0.0f32;                //~ ErrorConstDivZero:23 "remainder"
+
+// A shift by the width or more, or by a negative amount
+const ShlU32 = 1u32 << 32u32;                  //~ ErrorConstShift:21 "by 32"
+const ShrU64 = 1u64 >> 64u64;                  //~ ErrorConstShift:21 "by 64"
+const ShrI8 = 1i8 >> -1i8;                     //~ ErrorConstShift:19 "by -1"
+const Width i32 = 32i32;
+const ShlI32 = 1i32 << Width;                  //~ ErrorConstShift:21 "by 32"
+
+// Reported once: what is folded from a refused constant is a zero, not a
+// second complaint
+const FromRefused = AddU8 | 1u8;
+
+// Where else a constant is required: a field's default, a global, an array
+// literal's element in one, and a parameter's default
+struct Flags {
+  pub bits u8 = 0x80u8 << 1u8 | 0x80u8 + 0x80u8;    //~ ErrorConstOverflow:40 "does not fit u8"
+}
+imm table = [1u8, 255u8 + 2u8];                //~ ErrorConstOverflow:25 "does not fit u8"
+fn scaled(n u32, step u32 = 1u32 / 0u32) u32 { //~ ErrorConstDivZero:34 "division by zero"
+  n * step;
+}
+
+// An operand that is not a constant
+mut counter = 3u32;
+fn three() u32 {
+  3u32;
+}
+const FromGlobal = counter + 1u32;             //~ ErrorNotLit:28 "must be assigned to a constant value"
+const FromCall = three() | 1u32;               //~ ErrorNotLit:26 "must be assigned to a constant value"

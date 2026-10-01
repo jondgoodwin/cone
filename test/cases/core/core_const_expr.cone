@@ -1,0 +1,506 @@
+// A constant may be an expression over constants: wherever a constant is
+// required -- a named constant, a field's default, a global, a static, a
+// parameter's default, and the array, struct and tuple literals inside them --
+// the built-in operators, comparisons, 'not', 'and', 'or', conversions and
+// reinterpretations over constants are folded into the literal they compute
+// (refterm.html, "Named constants"; litFoldConst).
+//
+// Each folded value is printed beside the same expression computed at run
+// time from variables, and the two must be the same: a fold has exactly the
+// run-time meaning of each operator on its type. A float is compared by its
+// bits. Refusing what has no value at run time (overflow, division by zero, a
+// shift too far) is core_typecheck_constexpr's, and a constant defined in
+// terms of itself core_typecheck_circular's.
+
+mod core_const_expr;
+
+import stdio use *;
+
+fn mark(same Bool) {
+  if same {
+    printStr(" same\n");
+  }
+  else {
+    printStr(" DIFFERENT\n");
+  }
+}
+
+fn showInt(label &[]u8, folded i64, run i64) {
+  printStr(label); printStr(" "); printInt(folded); printStr(" "); printInt(run);
+  mark(folded == run);
+}
+
+fn showUInt(label &[]u8, folded u64, run u64) {
+  printStr(label); printStr(" "); printUInt(folded); printStr(" "); printUInt(run);
+  mark(folded == run);
+}
+
+fn showBool(label &[]u8, folded Bool, run Bool) {
+  printStr(label); printStr(" "); printUInt(u64.from(folded)); printStr(" "); printUInt(u64.from(run));
+  mark(folded == run);
+}
+
+fn showF32(label &[]u8, folded f32, run f32) {
+  printStr(label); printStr(" "); printFloat(f64.from(folded));
+  printStr(" bits "); printUInt(u64.from(folded as u32)); printStr(" "); printUInt(u64.from(run as u32));
+  mark((folded as u32) == (run as u32));
+}
+
+fn showF64(label &[]u8, folded f64, run f64) {
+  printStr(label); printStr(" "); printFloat(folded);
+  printStr(" bits "); printUInt(folded as u64); printStr(" "); printUInt(run as u64);
+  mark((folded as u64) == (run as u64));
+}
+
+// Every operator on every width, at the edges of its range
+// i8
+const I8_ADD = 0x7Fi8 + 0i8;
+const I8_SUB = -100i8 - 28i8;
+const I8_MUL = -16i8 * 8i8;
+const I8_DIV = -7i8 / 2i8;
+const I8_REM = -7i8 % 2i8;
+const I8_AND = 0x3Ci8 & 0x0Fi8;
+const I8_OR = 0x30i8 | 0x0Fi8;
+const I8_XOR = 0x3Ci8 ^ 0x0Fi8;
+const I8_SHL = 1i8 << 7i8;
+const I8_SHR = -128i8 >> 7i8;
+const I8_NEG_OF = 0x7Fi8;
+const I8_NEG = -I8_NEG_OF;
+const I8_NOT = ~0x0Fi8;
+const I8_LT = -128i8 < 127i8;
+const I8_EQ = -128i8 == 127i8;
+// u8
+const U8_ADD = 200u8 + 55u8;
+const U8_SUB = 255u8 - 255u8;
+const U8_MUL = 15u8 * 17u8;
+const U8_DIV = 255u8 / 16u8;
+const U8_REM = 255u8 % 16u8;
+const U8_AND = 0xF0u8 & 0x3Cu8;
+const U8_OR = 0xF0u8 | 0x0Fu8;
+const U8_XOR = 0xF0u8 ^ 0x3Cu8;
+const U8_SHL = 0xFFu8 << 4u8;
+const U8_SHR = 0x80u8 >> 7u8;
+const U8_NEG_OF = 1u8;
+const U8_NEG = -U8_NEG_OF;
+const U8_NOT = ~0x0Fu8;
+const U8_LT = 0u8 < 255u8;
+const U8_EQ = 7u8 == 7u8;
+// i32
+const I32_ADD = 0x7FFFFFFFi32 + 0i32;
+const I32_SUB = -2147483647i32 - 1i32;
+const I32_MUL = -65536i32 * 32768i32;
+const I32_DIV = -2147483648i32 / 2i32;
+const I32_REM = -7i32 % 3i32;
+const I32_AND = 0x0FF0i32 & 0x00FFi32;
+const I32_OR = 0x0F00i32 | 0x00F0i32;
+const I32_XOR = 0x0FF0i32 ^ 0x00FFi32;
+const I32_SHL = 1i32 << 31i32;
+const I32_SHR = -2147483648i32 >> 31i32;
+const I32_NEG_OF = -2147483647i32;
+const I32_NEG = -I32_NEG_OF;
+const I32_NOT = ~0i32;
+const I32_LT = -1i32 < 0i32;
+const I32_EQ = 5i32 == 6i32;
+// u32
+const U32_ADD = 0xFFFFFFFEu32 + 1u32;
+const U32_SUB = 10u32 - 10u32;
+const U32_MUL = 65535u32 * 65537u32;
+const U32_DIV = 0xFFFFFFFFu32 / 3u32;
+const U32_REM = 0xFFFFFFFFu32 % 10u32;
+const U32_AND = 0xFF00FF00u32 & 0x0FF00FF0u32;
+const U32_OR = 0x1u32 | 0x2u32;
+const U32_XOR = 0xFFFFFFFFu32 ^ 0x0F0F0F0Fu32;
+const U32_SHL = 1u32 << 31u32;
+const U32_SHR = 0x80000000u32 >> 31u32;
+const U32_NEG_OF = 1u32;
+const U32_NEG = -U32_NEG_OF;
+const U32_NOT = ~0u32;
+const U32_LT = 4294967295u32 < 0u32;
+const U32_EQ = 0x8u32 == 8u32;
+// i64
+const I64_ADD = 0x7FFFFFFFFFFFFFFFi64 + 0i64;
+const I64_SUB = -9223372036854775807i64 - 1i64;
+const I64_MUL = -4294967296i64 * 2147483648i64;
+const I64_DIV = -9223372036854775808i64 / -2i64;
+const I64_REM = -9223372036854775807i64 % 10i64;
+const I64_AND = -1i64 & 0x7FFFFFFFFFFFFFFFi64;
+const I64_OR = 0x100000000i64 | 1i64;
+const I64_XOR = -1i64 ^ 1i64;
+const I64_SHL = 1i64 << 63i64;
+const I64_SHR = -9223372036854775808i64 >> 63i64;
+const I64_NEG_OF = 9223372036854775807i64;
+const I64_NEG = -I64_NEG_OF;
+const I64_NOT = ~-1i64;
+const I64_LT = -9223372036854775808i64 < 9223372036854775807i64;
+const I64_EQ = -1i64 == -1i64;
+// u64
+const U64_ADD = 0xFFFFFFFFFFFFFFFEu64 + 1u64;
+const U64_SUB = 0xFFFFFFFFFFFFFFFFu64 - 1u64;
+const U64_MUL = 4294967295u64 * 4294967297u64;
+const U64_DIV = 0xFFFFFFFFFFFFFFFFu64 / 7u64;
+const U64_REM = 0xFFFFFFFFFFFFFFFFu64 % 7u64;
+const U64_AND = 0xFFFF0000FFFF0000u64 & 0x0000FFFFFFFF0000u64;
+const U64_OR = 0x8000000000000000u64 | 1u64;
+const U64_XOR = 0xFFFFFFFFFFFFFFFFu64 ^ 0xFFu64;
+const U64_SHL = 1u64 << 63u64;
+const U64_SHR = 0x8000000000000000u64 >> 63u64;
+const U64_NEG_OF = 1u64;
+const U64_NEG = -U64_NEG_OF;
+const U64_NOT = ~0u64;
+const U64_LT = 0u64 < 0xFFFFFFFFFFFFFFFFu64;
+const U64_EQ = 3u64 == 4u64;
+// f32
+const F32_ADD = 16777216.0f32 + 1.0f32;
+const F32_SUB = 0.5f32 - 0.25f32;
+const F32_MUL = 3.0e38f32 * 1.125f32;
+const F32_DIV = 1.0f32 / 3.0f32;
+const F32_REM = -7.5f32 % 2.0f32;
+const F32_NEG_OF = 1.5f32;
+const F32_NEG = -F32_NEG_OF;
+const F32_LT = 0.1f32 < 0.2f32;
+const F32_EQ = 0.5f32 == 0.5f32;
+// f64
+const F64_ADD = 0.1f64 + 0.2f64;
+const F64_SUB = 1.0f64 - 1.0e-17f64;
+const F64_MUL = 1.0e300f64 * 1.0e8f64;
+const F64_DIV = 1.0f64 / 3.0f64;
+const F64_REM = 7.5f64 % -2.0f64;
+const F64_NEG_OF = 0.1f64;
+const F64_NEG = -F64_NEG_OF;
+const F64_LT = -1.5f64 < 0.0f64;
+const F64_EQ = -0.0f64 == 0.0f64;
+
+// Flags combined as a binding writes them: a chain of '|', and a constant
+// naming one declared after it
+const COLOR_R = 0x1u32;
+const COLOR_G = 0x2u32;
+const COLOR_B = 0x4u32;
+const COLOR_ALL = COLOR_R | COLOR_G | COLOR_B | COLOR_A;
+const COLOR_A = 0x8u32;
+const COLOR_RGB = COLOR_ALL & ~COLOR_A;
+
+// Parentheses and precedence, on untyped literals at their i32 default
+const GROUPED = (3 + 4) * 2 - 10 % 4;
+
+// Conversions, as the run time does them (reftypesafe.html, "Explicit Conversion")
+const CONV_NARROW = u8.from(300);
+const CONV_ZEXT = u64.from(-1i8);
+const CONV_SAME = i8.from(200u8);
+const CONV_SEXT = i64.from(-5i32);
+const CONV_TRUNC = i32.from(-2.75f64);
+const CONV_NEAREST = f32.from(16777217i64);
+const CONV_WIDEN = f64.from(0.1f32);
+const CONV_BOOL = Bool.from(2);
+const CONV_FROM_BOOL = u32.from(COLOR_R < COLOR_G);
+// A folded value widened where its constant's type is declared wider
+const WIDE i64 = -2147483648i32 / 2i32;
+const WIDE_U u64 = COLOR_ALL << 28u32;
+
+// Reinterpretation with 'as'
+const AS_BITS = 1.0f32 as u32;
+const AS_FLOAT = (0x3F000000u32 | 0x00800000u32) as f32;
+const AS_SIGN = ~0u32 as i32;
+const AS_PTR *u8 = (0x1000usize + 0x10usize) as *u8;
+
+// Bool: 'not', 'and', 'or', and the bitwise operators on Bool
+const BOTH = COLOR_R < COLOR_G and not (COLOR_A == 0u32);
+const EITHER = COLOR_R > COLOR_G or false;
+const BOOL_BITS = ((true | false) & ~false) ^ true;
+
+// Where a constant is required: a field's default, a global, a slice of a
+// constant array, a tuple, a filled array, a struct constant, a parameter's
+// default and a static
+struct Blend {
+  pub mask u32 = COLOR_R | COLOR_G | COLOR_B | COLOR_A;
+  pub shift u32 = 1u32 << 4u32;
+  pub scale f32 = 0.5f32 * 3.0f32;
+  pub weights Array[u32, 2] = [COLOR_R | COLOR_G, COLOR_ALL + 1u32];
+}
+
+imm table = [COLOR_R | COLOR_G, COLOR_B << 1u32, COLOR_ALL];
+imm view = &[COLOR_ALL - 1u32, COLOR_ALL * 2u32];
+mut pair (u32, i64) = COLOR_ALL >> 2u32, -(9i64 * 3i64);
+const FILLED = new Array[u32, 4] <- fill COLOR_R | COLOR_B;
+const FILLED_LONG = new Array[u32, 20] <- fill COLOR_ALL ^ COLOR_A;
+const SHAPE = new Blend(mask: COLOR_RGB);
+
+fn masked(value u32, mask u32 = COLOR_ALL & ~COLOR_R) u32 {
+  value & mask;
+}
+
+fn counter() u32 {
+  static mut n u32 = COLOR_ALL * 10u32;
+  n = n + 1u32;
+  n;
+}
+
+fn main() {
+  mut i8a = 0i8; mut i8b = 0i8;
+  mut u8a = 0u8; mut u8b = 0u8;
+  mut i32a = 0i32; mut i32b = 0i32;
+  mut u32a = 0u32; mut u32b = 0u32;
+  mut i64a = 0i64; mut i64b = 0i64;
+  mut u64a = 0u64; mut u64b = 0u64;
+  mut f32a = 0.0f32; mut f32b = 0.0f32;
+  mut f64a = 0.0f64; mut f64b = 0.0f64;
+  // i8
+  i8a = 0x7Fi8; i8b = 0i8;
+  showInt("i8 add", i64.from(I8_ADD), i64.from(i8a + i8b));
+  i8a = -100i8; i8b = 28i8;
+  showInt("i8 sub", i64.from(I8_SUB), i64.from(i8a - i8b));
+  i8a = -16i8; i8b = 8i8;
+  showInt("i8 mul", i64.from(I8_MUL), i64.from(i8a * i8b));
+  i8a = -7i8; i8b = 2i8;
+  showInt("i8 div", i64.from(I8_DIV), i64.from(i8a / i8b));
+  i8a = -7i8; i8b = 2i8;
+  showInt("i8 rem", i64.from(I8_REM), i64.from(i8a % i8b));
+  i8a = 0x3Ci8; i8b = 0x0Fi8;
+  showInt("i8 and", i64.from(I8_AND), i64.from(i8a & i8b));
+  i8a = 0x30i8; i8b = 0x0Fi8;
+  showInt("i8 or", i64.from(I8_OR), i64.from(i8a | i8b));
+  i8a = 0x3Ci8; i8b = 0x0Fi8;
+  showInt("i8 xor", i64.from(I8_XOR), i64.from(i8a ^ i8b));
+  i8a = 1i8; i8b = 7i8;
+  showInt("i8 shl", i64.from(I8_SHL), i64.from(i8a << i8b));
+  i8a = -128i8; i8b = 7i8;
+  showInt("i8 shr", i64.from(I8_SHR), i64.from(i8a >> i8b));
+  i8a = 0x7Fi8;
+  showInt("i8 neg", i64.from(I8_NEG), i64.from(-i8a));
+  i8a = 0x0Fi8;
+  showInt("i8 not", i64.from(I8_NOT), i64.from(~i8a));
+  i8a = -128i8; i8b = 127i8;
+  showBool("i8 lt", I8_LT, i8a < i8b);
+  i8a = -128i8; i8b = 127i8;
+  showBool("i8 eq", I8_EQ, i8a == i8b);
+  // u8
+  u8a = 200u8; u8b = 55u8;
+  showUInt("u8 add", u64.from(U8_ADD), u64.from(u8a + u8b));
+  u8a = 255u8; u8b = 255u8;
+  showUInt("u8 sub", u64.from(U8_SUB), u64.from(u8a - u8b));
+  u8a = 15u8; u8b = 17u8;
+  showUInt("u8 mul", u64.from(U8_MUL), u64.from(u8a * u8b));
+  u8a = 255u8; u8b = 16u8;
+  showUInt("u8 div", u64.from(U8_DIV), u64.from(u8a / u8b));
+  u8a = 255u8; u8b = 16u8;
+  showUInt("u8 rem", u64.from(U8_REM), u64.from(u8a % u8b));
+  u8a = 0xF0u8; u8b = 0x3Cu8;
+  showUInt("u8 and", u64.from(U8_AND), u64.from(u8a & u8b));
+  u8a = 0xF0u8; u8b = 0x0Fu8;
+  showUInt("u8 or", u64.from(U8_OR), u64.from(u8a | u8b));
+  u8a = 0xF0u8; u8b = 0x3Cu8;
+  showUInt("u8 xor", u64.from(U8_XOR), u64.from(u8a ^ u8b));
+  u8a = 0xFFu8; u8b = 4u8;
+  showUInt("u8 shl", u64.from(U8_SHL), u64.from(u8a << u8b));
+  u8a = 0x80u8; u8b = 7u8;
+  showUInt("u8 shr", u64.from(U8_SHR), u64.from(u8a >> u8b));
+  u8a = 1u8;
+  showUInt("u8 neg", u64.from(U8_NEG), u64.from(-u8a));
+  u8a = 0x0Fu8;
+  showUInt("u8 not", u64.from(U8_NOT), u64.from(~u8a));
+  u8a = 0u8; u8b = 255u8;
+  showBool("u8 lt", U8_LT, u8a < u8b);
+  u8a = 7u8; u8b = 7u8;
+  showBool("u8 eq", U8_EQ, u8a == u8b);
+  // i32
+  i32a = 0x7FFFFFFFi32; i32b = 0i32;
+  showInt("i32 add", i64.from(I32_ADD), i64.from(i32a + i32b));
+  i32a = -2147483647i32; i32b = 1i32;
+  showInt("i32 sub", i64.from(I32_SUB), i64.from(i32a - i32b));
+  i32a = -65536i32; i32b = 32768i32;
+  showInt("i32 mul", i64.from(I32_MUL), i64.from(i32a * i32b));
+  i32a = -2147483648i32; i32b = 2i32;
+  showInt("i32 div", i64.from(I32_DIV), i64.from(i32a / i32b));
+  i32a = -7i32; i32b = 3i32;
+  showInt("i32 rem", i64.from(I32_REM), i64.from(i32a % i32b));
+  i32a = 0x0FF0i32; i32b = 0x00FFi32;
+  showInt("i32 and", i64.from(I32_AND), i64.from(i32a & i32b));
+  i32a = 0x0F00i32; i32b = 0x00F0i32;
+  showInt("i32 or", i64.from(I32_OR), i64.from(i32a | i32b));
+  i32a = 0x0FF0i32; i32b = 0x00FFi32;
+  showInt("i32 xor", i64.from(I32_XOR), i64.from(i32a ^ i32b));
+  i32a = 1i32; i32b = 31i32;
+  showInt("i32 shl", i64.from(I32_SHL), i64.from(i32a << i32b));
+  i32a = -2147483648i32; i32b = 31i32;
+  showInt("i32 shr", i64.from(I32_SHR), i64.from(i32a >> i32b));
+  i32a = -2147483647i32;
+  showInt("i32 neg", i64.from(I32_NEG), i64.from(-i32a));
+  i32a = 0i32;
+  showInt("i32 not", i64.from(I32_NOT), i64.from(~i32a));
+  i32a = -1i32; i32b = 0i32;
+  showBool("i32 lt", I32_LT, i32a < i32b);
+  i32a = 5i32; i32b = 6i32;
+  showBool("i32 eq", I32_EQ, i32a == i32b);
+  // u32
+  u32a = 0xFFFFFFFEu32; u32b = 1u32;
+  showUInt("u32 add", u64.from(U32_ADD), u64.from(u32a + u32b));
+  u32a = 10u32; u32b = 10u32;
+  showUInt("u32 sub", u64.from(U32_SUB), u64.from(u32a - u32b));
+  u32a = 65535u32; u32b = 65537u32;
+  showUInt("u32 mul", u64.from(U32_MUL), u64.from(u32a * u32b));
+  u32a = 0xFFFFFFFFu32; u32b = 3u32;
+  showUInt("u32 div", u64.from(U32_DIV), u64.from(u32a / u32b));
+  u32a = 0xFFFFFFFFu32; u32b = 10u32;
+  showUInt("u32 rem", u64.from(U32_REM), u64.from(u32a % u32b));
+  u32a = 0xFF00FF00u32; u32b = 0x0FF00FF0u32;
+  showUInt("u32 and", u64.from(U32_AND), u64.from(u32a & u32b));
+  u32a = 0x1u32; u32b = 0x2u32;
+  showUInt("u32 or", u64.from(U32_OR), u64.from(u32a | u32b));
+  u32a = 0xFFFFFFFFu32; u32b = 0x0F0F0F0Fu32;
+  showUInt("u32 xor", u64.from(U32_XOR), u64.from(u32a ^ u32b));
+  u32a = 1u32; u32b = 31u32;
+  showUInt("u32 shl", u64.from(U32_SHL), u64.from(u32a << u32b));
+  u32a = 0x80000000u32; u32b = 31u32;
+  showUInt("u32 shr", u64.from(U32_SHR), u64.from(u32a >> u32b));
+  u32a = 1u32;
+  showUInt("u32 neg", u64.from(U32_NEG), u64.from(-u32a));
+  u32a = 0u32;
+  showUInt("u32 not", u64.from(U32_NOT), u64.from(~u32a));
+  u32a = 4294967295u32; u32b = 0u32;
+  showBool("u32 lt", U32_LT, u32a < u32b);
+  u32a = 0x8u32; u32b = 8u32;
+  showBool("u32 eq", U32_EQ, u32a == u32b);
+  // i64
+  i64a = 0x7FFFFFFFFFFFFFFFi64; i64b = 0i64;
+  showInt("i64 add", i64.from(I64_ADD), i64.from(i64a + i64b));
+  i64a = -9223372036854775807i64; i64b = 1i64;
+  showInt("i64 sub", i64.from(I64_SUB), i64.from(i64a - i64b));
+  i64a = -4294967296i64; i64b = 2147483648i64;
+  showInt("i64 mul", i64.from(I64_MUL), i64.from(i64a * i64b));
+  i64a = -9223372036854775808i64; i64b = -2i64;
+  showInt("i64 div", i64.from(I64_DIV), i64.from(i64a / i64b));
+  i64a = -9223372036854775807i64; i64b = 10i64;
+  showInt("i64 rem", i64.from(I64_REM), i64.from(i64a % i64b));
+  i64a = -1i64; i64b = 0x7FFFFFFFFFFFFFFFi64;
+  showInt("i64 and", i64.from(I64_AND), i64.from(i64a & i64b));
+  i64a = 0x100000000i64; i64b = 1i64;
+  showInt("i64 or", i64.from(I64_OR), i64.from(i64a | i64b));
+  i64a = -1i64; i64b = 1i64;
+  showInt("i64 xor", i64.from(I64_XOR), i64.from(i64a ^ i64b));
+  i64a = 1i64; i64b = 63i64;
+  showInt("i64 shl", i64.from(I64_SHL), i64.from(i64a << i64b));
+  i64a = -9223372036854775808i64; i64b = 63i64;
+  showInt("i64 shr", i64.from(I64_SHR), i64.from(i64a >> i64b));
+  i64a = 9223372036854775807i64;
+  showInt("i64 neg", i64.from(I64_NEG), i64.from(-i64a));
+  i64a = -1i64;
+  showInt("i64 not", i64.from(I64_NOT), i64.from(~i64a));
+  i64a = -9223372036854775808i64; i64b = 9223372036854775807i64;
+  showBool("i64 lt", I64_LT, i64a < i64b);
+  i64a = -1i64; i64b = -1i64;
+  showBool("i64 eq", I64_EQ, i64a == i64b);
+  // u64
+  u64a = 0xFFFFFFFFFFFFFFFEu64; u64b = 1u64;
+  showUInt("u64 add", u64.from(U64_ADD), u64.from(u64a + u64b));
+  u64a = 0xFFFFFFFFFFFFFFFFu64; u64b = 1u64;
+  showUInt("u64 sub", u64.from(U64_SUB), u64.from(u64a - u64b));
+  u64a = 4294967295u64; u64b = 4294967297u64;
+  showUInt("u64 mul", u64.from(U64_MUL), u64.from(u64a * u64b));
+  u64a = 0xFFFFFFFFFFFFFFFFu64; u64b = 7u64;
+  showUInt("u64 div", u64.from(U64_DIV), u64.from(u64a / u64b));
+  u64a = 0xFFFFFFFFFFFFFFFFu64; u64b = 7u64;
+  showUInt("u64 rem", u64.from(U64_REM), u64.from(u64a % u64b));
+  u64a = 0xFFFF0000FFFF0000u64; u64b = 0x0000FFFFFFFF0000u64;
+  showUInt("u64 and", u64.from(U64_AND), u64.from(u64a & u64b));
+  u64a = 0x8000000000000000u64; u64b = 1u64;
+  showUInt("u64 or", u64.from(U64_OR), u64.from(u64a | u64b));
+  u64a = 0xFFFFFFFFFFFFFFFFu64; u64b = 0xFFu64;
+  showUInt("u64 xor", u64.from(U64_XOR), u64.from(u64a ^ u64b));
+  u64a = 1u64; u64b = 63u64;
+  showUInt("u64 shl", u64.from(U64_SHL), u64.from(u64a << u64b));
+  u64a = 0x8000000000000000u64; u64b = 63u64;
+  showUInt("u64 shr", u64.from(U64_SHR), u64.from(u64a >> u64b));
+  u64a = 1u64;
+  showUInt("u64 neg", u64.from(U64_NEG), u64.from(-u64a));
+  u64a = 0u64;
+  showUInt("u64 not", u64.from(U64_NOT), u64.from(~u64a));
+  u64a = 0u64; u64b = 0xFFFFFFFFFFFFFFFFu64;
+  showBool("u64 lt", U64_LT, u64a < u64b);
+  u64a = 3u64; u64b = 4u64;
+  showBool("u64 eq", U64_EQ, u64a == u64b);
+  // f32
+  f32a = 16777216.0f32; f32b = 1.0f32;
+  showF32("f32 add", F32_ADD, f32a + f32b);
+  f32a = 0.5f32; f32b = 0.25f32;
+  showF32("f32 sub", F32_SUB, f32a - f32b);
+  f32a = 3.0e38f32; f32b = 1.125f32;
+  showF32("f32 mul", F32_MUL, f32a * f32b);
+  f32a = 1.0f32; f32b = 3.0f32;
+  showF32("f32 div", F32_DIV, f32a / f32b);
+  f32a = -7.5f32; f32b = 2.0f32;
+  showF32("f32 rem", F32_REM, f32a % f32b);
+  f32a = 1.5f32;
+  showF32("f32 neg", F32_NEG, -f32a);
+  f32a = 0.1f32; f32b = 0.2f32;
+  showBool("f32 lt", F32_LT, f32a < f32b);
+  f32a = 0.5f32; f32b = 0.5f32;
+  showBool("f32 eq", F32_EQ, f32a == f32b);
+  // f64
+  f64a = 0.1f64; f64b = 0.2f64;
+  showF64("f64 add", F64_ADD, f64a + f64b);
+  f64a = 1.0f64; f64b = 1.0e-17f64;
+  showF64("f64 sub", F64_SUB, f64a - f64b);
+  f64a = 1.0e300f64; f64b = 1.0e8f64;
+  showF64("f64 mul", F64_MUL, f64a * f64b);
+  f64a = 1.0f64; f64b = 3.0f64;
+  showF64("f64 div", F64_DIV, f64a / f64b);
+  f64a = 7.5f64; f64b = -2.0f64;
+  showF64("f64 rem", F64_REM, f64a % f64b);
+  f64a = 0.1f64;
+  showF64("f64 neg", F64_NEG, -f64a);
+  f64a = -1.5f64; f64b = 0.0f64;
+  showBool("f64 lt", F64_LT, f64a < f64b);
+  f64a = -0.0f64; f64b = 0.0f64;
+  showBool("f64 eq", F64_EQ, f64a == f64b);
+
+  // Flags
+  mut r = 0x1u32; mut g = 0x2u32; mut b = 0x4u32; mut a = 0x8u32;
+  showUInt("flags all", u64.from(COLOR_ALL), u64.from(r | g | b | a));
+  showUInt("flags rgb", u64.from(COLOR_RGB), u64.from((r | g | b | a) & ~a));
+  i32a = 3; i32b = 4;
+  showInt("grouped", i64.from(GROUPED), i64.from((i32a + i32b) * 2 - 10 % 4));
+
+  // Conversions
+  mut big = 300; mut minus1 = -1i8; mut u200 = 200u8; mut minus5 = -5i32;
+  mut f = -2.75f64; mut n = 16777217i64; mut tenth = 0.1f32; mut two = 2;
+  showUInt("conv narrow", u64.from(CONV_NARROW), u64.from(u8.from(big)));
+  showUInt("conv zext", CONV_ZEXT, u64.from(minus1));
+  showInt("conv same", i64.from(CONV_SAME), i64.from(i8.from(u200)));
+  showInt("conv sext", CONV_SEXT, i64.from(minus5));
+  showInt("conv trunc", i64.from(CONV_TRUNC), i64.from(i32.from(f)));
+  showF32("conv nearest", CONV_NEAREST, f32.from(n));
+  showF64("conv widen", CONV_WIDEN, f64.from(tenth));
+  showBool("conv bool", CONV_BOOL, Bool.from(two));
+  showUInt("conv from bool", u64.from(CONV_FROM_BOOL), u64.from(u32.from(r < g)));
+  i32a = -2147483648i32; i32b = 2i32;
+  showInt("widened", WIDE, i64.from(i32a / i32b));
+  showUInt("widened unsigned", WIDE_U, u64.from((r | g | b | a) << 28u32));
+
+  // Reinterpretation
+  mut one = 1.0f32; mut half = 0x3F000000u32; mut zero = 0u32;
+  showUInt("as bits", u64.from(AS_BITS), u64.from(one as u32));
+  showF32("as float", AS_FLOAT, (half | 0x00800000u32) as f32);
+  showInt("as sign", i64.from(AS_SIGN), i64.from(~zero as i32));
+  showUInt("as pointer", u64.from(AS_PTR as usize), 4112u64);
+
+  // Bool
+  mut t = true; mut fl = false;
+  showBool("both", BOTH, r < g and not (a == 0u32));
+  showBool("either", EITHER, r > g or fl);
+  showBool("bool bits", BOOL_BITS, ((t | fl) & ~fl) ^ t);
+
+  // Where a constant is required
+  imm blend = new Blend();
+  showUInt("field mask", u64.from(blend.mask), u64.from(r | g | b | a));
+  showUInt("field shift", u64.from(blend.shift), 16u64);
+  showF32("field scale", blend.scale, 1.5f32);
+  showUInt("field array", u64.from(blend.weights[0] + blend.weights[1]), 19u64);
+  showUInt("global array", u64.from(table[0] + table[1] + table[2]), 26u64);
+  showUInt("global borrowed array", u64.from(view[0] + view[1]), 44u64);
+  showUInt("global tuple", u64.from(pair.0), 3u64);
+  showInt("global tuple neg", pair.1, -27i64);
+  showUInt("filled", u64.from(FILLED[0] + FILLED[3]), 10u64);
+  showUInt("filled long", u64.from(FILLED_LONG[0] + FILLED_LONG[19]), 14u64);
+  showUInt("struct constant", u64.from(SHAPE.mask + SHAPE.shift), 23u64);
+  showUInt("parameter default", u64.from(masked(0xFFu32)), 14u64);
+  showUInt("static", u64.from(counter()), 151u64);
+}

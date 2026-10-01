@@ -90,4 +90,12 @@ void slitTypeCheck(TypeCheckState *pstate, SLitNode *node);
 
 int litIsLiteral(INode* node);
 
+// Fold a type-checked value where a constant is required -- an expression of
+// number literals and named constants under the built-in operators,
+// comparisons, 'not', 'and', 'or', conversions and reinterpretations -- into
+// the literal it computes. Returns 1 when the value is now a constant, or when
+// folding it reported why part of it has none; 0 when it is not a constant and
+// nothing was reported, which the caller reports.
+int litFoldConst(INode **nodep);
+
 #endif

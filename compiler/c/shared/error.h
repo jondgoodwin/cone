@@ -125,6 +125,7 @@ enum ErrorCode {
 
     // Demand-driven analysis
     ErrorCircular = 1068,       // A declaration whose type comes from a value that names it back,
+                                // a constant whose value reaches itself through named constants,
                                 // or two types that each extend or name the other in an 'is'
 
     // Layout
@@ -422,6 +423,11 @@ enum ErrorCode {
     ErrorAllocValue = 1226,     // An allocation of a type no init constructs (a number, an array, a tuple, an enum or its variant, a reference) given other than one value of it: 'new Rc[i32](5)'
     ErrorNewFinished = 1227,    // 'new Point(p)', p already a Point: a finished value needs no construction; an allocation takes one as its value, 'new Rc[Point](p)'
     ErrorTryNewContents = 1228, // Contents after '<-' on a 'trynew' that is not an array's allocation: allocate, then append on Some (ir/exp/contents.c)
+
+    // Constant expressions, folded where a constant is required (ir/exp/literal.c, litFoldConst)
+    ErrorConstOverflow = 1229,  // An operation on constants whose result its type cannot hold: '255u8 + 1u8', a float past its range, a float converted to an integer that cannot hold it
+    ErrorConstDivZero = 1230,   // A division or remainder of constants by zero
+    ErrorConstShift = 1231,     // A shift of a constant by its type's width or more, or by a negative amount
 
     // Warnings
     WarnCode = 3000,

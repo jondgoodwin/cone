@@ -188,7 +188,10 @@ parameter names**.
    initializer's lifetime either way, and returning or storing it is judged by
    it ([references](references.md)).
 5. **Literal rule.** `scope <= 1` — that is, a global or a parameter default —
-   or `FlagStatic` requires `litIsLiteral(value)`. It admits literals, literal
+   or `FlagStatic` folds the value (`litFoldConst`: an expression of constants
+   becomes the literal it computes, [literals](literals.md), "Folding a
+   constant expression") and then requires `litIsLiteral(value)`, unless the
+   fold reported why part of it has no value. It admits literals, literal
    array and type literals, a value tuple of constants
    (`mut g (i64, i64) = 1, 2`), a borrow of a string literal (so a slice of one) or
    of an array literal of constants (`imm g = &[1, 2, 3]`) or of a named
@@ -202,8 +205,10 @@ parameter names**.
    coerced: an untyped integer literal adopts the declared type, a float literal
    or a constant's use widened to a wider number of its kind is folded into a
    literal of that type, and a string literal borrowed to a slice is a borrow of
-   a literal (all in [literals](literals.md)), but any other coercion wraps the
-   value in a node that is not a literal. So `imm g f64 = 0.5`,
+   a literal (all in [literals](literals.md)); a number conversion a coercion
+   wraps around a constant expression is folded with it (`imm g i64 = K + 1`),
+   but any other coercion wraps the value in a node that is not a literal. So
+   `imm g f64 = 0.5`,
    `imm s &[]u8 = "text"` and `const K = 5` then `imm g i64 = K` are legal. A constant is typed as its value is, an untyped
    integer one as `i32`, so `imm b u8 = K` is refused as a type mismatch, since
    `i32` does not coerce to `u8`. `constDclTypeCheck` reads the value after
@@ -222,20 +227,23 @@ permission rather than demanding a type, which would let an unset one through �
 every construction site supplies a real one today, the placeholder an `is` list's
 name becomes and
 `cloneFieldDclNode`'s `memcpy` included, so nothing reaches that laxity; a
-default is always required to be a literal, judged after coercion as a global's
-or a constant's is, since it is type check that makes a construction
-(`new E(1, 2)`) or an array's fill the literal `litIsLiteral` accepts, but a
+default is always required to be a literal, folded and judged after coercion
+as a global's or a constant's is, since it is type check that makes a
+construction (`new E(1, 2)`) or an array's fill the literal `litIsLiteral`
+accepts, and the fold that makes `R | G` one, but a
 default that is a sibling field's bare name is refused as non-literal before
 type check, which with no `self` around a default could only report there is
 nothing to reach it through (`nameUseTypeCheck`); and its size check is the
 recursive-struct catch.
 
-`constDclTypeCheck` has no permission, coerces, infers, then requires a literal.
+`constDclTypeCheck` has no permission, coerces, infers, then folds and
+requires a literal.
 
 **Circularity is not detected here.** It is in `nameUseTypeCheck`, which tests a
 re-entered declaration whose type is *still* `unknownType`. That catches exactly
 the three kinds that take their type from a value that might name them back — a
-constant, and a variable or field with an inferred type. See
+constant, and a variable or field with an inferred type. A constant with a
+declared type whose value names it back is caught by the fold instead. See
 [Type Check Phase](../phases/type-check.md), "Circularity".
 
 ## Flow

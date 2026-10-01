@@ -172,8 +172,9 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
         // initializers: the value is the storage's initializer, written once
         // before anything runs. A parameter may default to 'srcFile()' or
         // 'srcLine()' too, each a constant where each call taking it is
-        // (fnCallFinalizeArgs)
-        if ((name->scope <= 1 || (name->flags & FlagStatic)) && !litIsLiteral(name->value)
+        // (fnCallFinalizeArgs). An expression of constants is folded into the
+        // one it computes (litFoldConst).
+        if ((name->scope <= 1 || (name->flags & FlagStatic)) && !litFoldConst(&name->value)
             && !(name->scope == 1 && !(name->flags & FlagStatic) && intrinsicIsSrcCall(name->value)))
             errorMsgNode((INode*)name, ErrorNotLit, "Variable may only be initialized with a literal value.");
     }

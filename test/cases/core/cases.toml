@@ -246,6 +246,31 @@ category = "run"
 description = "A reinterpretation of a constant as a field default, global, static, parameter default and const"
 tags = ["typecheck", "genllvm", "runtime"]
 
+# A constant may be an expression over constants: every operator on every
+# width folded and compared with the same expression computed at run time,
+# conversions, reinterpretations, Bool logic, flags chained through a constant
+# declared later, and each place a constant is required. Two runs, as
+# core_success's: the run-time half must not depend on the optimizer.
+[scenario.core_const_expr]
+category = "run"
+description = "Constant expressions folded where a constant is required, each equal to its run-time value"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.core_const_expr.run]]
+name = "release"
+options = []
+
+[[scenario.core_const_expr.run]]
+name = "debug"
+options = ["--debug"]
+
+# The folded value is a literal, so a global's initializer is a constant
+# aggregate, computed by nothing at run time
+[[scenario.core_const_expr.check]]
+name = "folded-global-is-a-constant-initializer"
+target = "preir"
+contains = ["[3 x i32] [i32 3, i32 8, i32 15]"]
+
 # A thread-local global, read and written on the program's thread and seen
 # from a second OS thread the program starts itself. Two runs, as
 # core_success's: what each thread sees must not depend on the optimizer.
@@ -405,9 +430,19 @@ diagnostics = 5
 
 [scenario.core_typecheck_circular]
 category = "reject"
-description = "A constant, and an inferred global, defined in terms of themselves"
+description = "A constant, typed or not, and an inferred global, defined in terms of themselves"
 tags = ["typecheck"]
-diagnostics = 3
+diagnostics = 6
+
+# Beside core_const_expr, which folds what has a value: what has none at run
+# time -- overflow, division by zero, a shift too far -- is refused where a
+# constant is required, once each, and an operand that is no constant leaves
+# the expression not one
+[scenario.core_typecheck_constexpr]
+category = "reject"
+description = "Constant expressions that overflow, divide by zero, shift too far, or read a variable or a call"
+tags = ["typecheck"]
+diagnostics = 28
 
 # Beside core_const_aggregate, which borrows a constant array and string: a
 # constant is its literal at each use, so any other constant, or a part of one,

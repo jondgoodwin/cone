@@ -65,7 +65,8 @@ void constDclTypeCheck(TypeCheckState *pstate, ConstDclNode *name) {
         errorMsgNode((INode*)name, ErrorAtomicValueConst,
             "The const %s holds an atomic value (its type is %s), and each use of a const is a fresh copy no other use would see change. Use a global.",
             &name->namesym->namestr, itypeName(name->vtype));
-    // Constants must be literal
-    if (!litIsLiteral(name->value))
+    // Constants must be literal: an expression of constants is folded into the
+    // one it computes (litFoldConst)
+    if (!litFoldConst(&name->value))
         errorMsgNode(name->value, ErrorNotLit, "Named constants must be assigned to a constant value.");
 }
