@@ -394,7 +394,7 @@ enum ErrorCode {
     // Construction, 'new Point(1, 2)', and the 'init' that fills a value in place (ir/exp/typelit.c, ir/exp/fncall.c, ir/stmt/fndcl.c, ir/flow.c)
     ErrorStructBracket = 1209,  // 'Point[1, 2]': a struct's value is constructed 'new Point(1, 2)'; an enum's variant keeps the brackets
     ErrorNewType = 1210,        // 'new' given what it cannot construct: not a struct (a number converts with 'from'), an enum's variant, a trait or an enum
-    ErrorInitNone = 1211,       // No 'init' takes a construction's arguments, or several do: the struct's implicit field-wise one and those it declares
+    ErrorInitNone = 1211,       // No 'init' takes a construction's arguments, or several the struct declares do: one it declares is preferred to the implicit field-wise one
     ErrorInitCall = 1212,       // A type called without 'new', 'Point(1, 2)', or an 'init' called by name: a value is constructed 'new Point(1, 2)'
     ErrorPermNew = 1213,        // '&new' other than as the 'self' of a method that returns nothing: it is an initializer's reference to memory not yet filled
     ErrorInitDcl = 1214,        // A struct's method named 'init' that does not take 'self &new' first, or returns a value: an init fills its value in place
@@ -414,6 +414,9 @@ enum ErrorCode {
 
     // The retired 'into' operator (parser/parseexpr.c)
     ErrorInto = 1224,           // 'x into T': a value converts with 'T.from(x)'; a reference narrows to a variant with a check, by a 'match' or 'if imm x &Variant = &value'
+
+    // Construction, continued (ir/exp/assign.c)
+    ErrorInitRecurse = 1225,    // In a declared init, '*self = new T(...)' whose construction selects that same init: self is filled by the fields' names, 'new Point(x: 1, y: 2)'
 
     // Warnings
     WarnCode = 3000,

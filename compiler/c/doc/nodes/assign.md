@@ -84,6 +84,17 @@ into `parseAnyExpr` for the right-hand side, so assignment is
 
 Then `vtype` becomes the rval's type.
 
+**An init's `*self = new T(...)` may not run the init it is in.** After an
+ordinary single assignment, `assignInitRecurse` asks whether the lval is
+`*self` of the function being checked and the rval a construction lowered to
+a call of that same function: a declared init is preferred to the implicit
+one ([struct](struct.md), "Initializers"), so positional arguments shaped like
+the fields select the init itself, and filling self would run it again
+(`ErrorInitRecurse`, naming the fields' form, which only the implicit init
+takes). It is asked here, not at the construction, because only this form is
+refused: the same construction as a child value or an allocation's value is
+ordinary recursion.
+
 **One lval of a tuple type takes a value tuple whole.** `p = 5, 6` (the
 parentheses in `p = (5, 6)` change nothing) gives a `(i64, i64)` variable both
 values, each coerced to its element's type by `vtupleCoerce`, exactly as its
