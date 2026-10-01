@@ -1625,10 +1625,23 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return args
 
 
+def utf8_streams() -> None:
+    """Congo writes UTF-8, as Cone programs and their expected output are.
+    Python's own choice for a stream that is not a console is the locale's code
+    page (1252 on most Windows machines), which cannot hold most of Unicode: a
+    test's failure diff with a character outside it raised UnicodeEncodeError
+    when stdout was a pipe. A console is unaffected, as Python already writes
+    it UTF-8; 'replace' covers what UTF-8 cannot encode, a lone surrogate."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
     if sys.version_info < (3, 11):
         print("congo: needs Python 3.11 or later", file=sys.stderr)
         return 1
+    utf8_streams()
     args = parse_args(sys.argv[1:] if argv is None else argv)
     try:
         return args.func(args)

@@ -1150,6 +1150,37 @@ class Testing(unittest.TestCase):
         self.assertTrue((build / "tests" / "doubles" / f"doubles{congo.EXE_EXT}").is_file())
         self.assertFalse((build / "examples" / "broken" / f"broken{congo.EXE_EXT}").exists())
 
+    def test_a_non_ascii_diff_to_a_pipe(self):
+        # Congo's stdout here is a pipe, which Python would write in the
+        # locale's code page (1252 on Windows) unless told otherwise: a diff
+        # holding a character outside it raised UnicodeEncodeError. Congo
+        # writes UTF-8 whatever the locale, so the diff arrives whole
+        pkg = self.counter(self.root)
+        write(pkg / "tests" / "accent.cone", """
+            mod accent;
+
+            import stdio use *;
+            import counter;
+
+            fn main() i32 {
+              printStr("caf\\u00e9 \\u65e5\\u672c\\n");
+              0i32;
+            }
+            """)
+        write(pkg / "tests" / "accent.out", "cafe 日本\n")
+        env = dict(self.env)
+        for name in ("PYTHONIOENCODING", "PYTHONUTF8"):
+            env.pop(name, None)
+        run = subprocess.run([*CONGO, "test", "accent"], cwd=pkg, env=env,
+                             capture_output=True)
+        out = run.stdout.decode("utf-8").replace("\r\n", "\n")
+        err = run.stderr.decode("utf-8").replace("\r\n", "\n")
+        self.assertEqual(run.returncode, 1, out + err)
+        self.assertNotIn("Traceback", err)
+        self.assertIn("test accent ... FAILED", out)
+        self.assertRegex(out, "\n\\s*-cafe 日本\n\\s*\\+café 日本\n")
+        self.assertIn("counter: test accent", err)
+
     def test_a_filter_and_an_exit_status(self):
         pkg = self.counter(self.root)
         run = self.congo("test", "doubles", cwd=pkg)
