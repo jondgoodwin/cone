@@ -20,52 +20,54 @@ fn settle() {
 fn live() u64 { u64[Gc.liveObjects()]; }
 
 // A ring whose members note their deaths
-struct Ring {
+struct RingValue {
   pub n i64;
-  pub next Option[+Gc-mut Ring];
+  pub next Option[Ring];
   fn final(self &uni) { note(n); }
 }
+alias Ring = +Gc-mut RingValue;
 
 // A plain node, with nothing to finalize
-struct Node {
+struct NodeValue {
   pub n i64;
-  pub next Option[+Gc-mut Node];
+  pub next Option[Node];
 }
+alias Node = +Gc-mut NodeValue;
 
 // Matched by value: a reference into an Option held in a 'mut' variable could
 // see it changed while in use
-fn nextOf(r Option[+Gc-mut Node]) Option[+Gc-mut Node] {
+fn nextOf(r Option[Node]) Option[Node] {
   match r {
-    case imm s Some[+Gc-mut Node] { s.value.next; }
-    else { None[+Gc-mut Node][]; }
+    case imm s Some[Node] { s.value.next; }
+    else { None[Node][]; }
   }
 }
 
 // Two objects each holding the other
 fn dropPair() {
-  imm a = +Gc-mut Ring[1, None[+Gc-mut Ring][]];
-  imm b = +Gc-mut Ring[2, Some[+Gc-mut Ring][a]];
-  a.next = Some[+Gc-mut Ring][b];
+  imm a = +Gc-mut RingValue[1, None[Ring][]];
+  imm b = +Gc-mut RingValue[2, Some[Ring][a]];
+  a.next = Some[Ring][b];
 }
 
 // One object holding itself
 fn dropSelf() {
-  imm a = +Gc-mut Ring[3, None[+Gc-mut Ring][]];
-  a.next = Some[+Gc-mut Ring][a];
+  imm a = +Gc-mut RingValue[3, None[Ring][]];
+  a.next = Some[Ring][a];
 }
 
 // A ring of n plain nodes, numbered 1 to n; the first returned
-fn ring(n i64) +Gc-mut Node {
-  imm first = +Gc-mut Node[1, None[+Gc-mut Node][]];
+fn ring(n i64) Node {
+  imm first = +Gc-mut NodeValue[1, None[Node][]];
   mut last = first;
   mut i = 2i64;
   while i <= n {
-    imm node = +Gc-mut Node[i, None[+Gc-mut Node][]];
-    last.next = Some[+Gc-mut Node][node];
+    imm node = +Gc-mut NodeValue[i, None[Node][]];
+    last.next = Some[Node][node];
     last = node;
     i = i + 1;
   }
-  last.next = Some[+Gc-mut Node][first];
+  last.next = Some[Node][first];
   first;
 }
 
@@ -74,13 +76,13 @@ fn dropRing() {
 }
 
 // Walk k steps round the ring from 'start', summing the numbers
-fn walk(start +Gc-mut Node, k i64) i64 {
-  mut at Option[+Gc-mut Node] = Some[+Gc-mut Node][start];
+fn walk(start Node, k i64) i64 {
+  mut at Option[Node] = Some[Node][start];
   mut total = 0i64;
   mut i = 0i64;
   while i < k {
     match &at {
-      case imm s &Some[+Gc-mut Node] { total = total + s.value.n; }
+      case imm s &Some[Node] { total = total + s.value.n; }
       else { }
     }
     at = nextOf(at);

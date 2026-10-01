@@ -16,11 +16,12 @@
 // count of owners goes 1 (allocated), 2 and 3 (each start), 2 (main's owner
 // gone), 1 and 0 as the readers return: one death.
 //
-// 'thread.start' takes only a Sendable argument, which '+Arc-imm Message' is:
-// Arc declares ThreadSafe, and a Message holds a String, which is Sendable
-// (collections' List declares it). A '+Rc-imm' owner, whose count is not
-// atomic, is refused, and so is a Message holding the literal as a '&[]u8',
-// since a borrow may not leave its thread.
+// 'thread.start' takes only a Sendable argument, which a Message, an
+// '+Arc-imm MessageValue', is: Arc declares ThreadSafe, and a MessageValue
+// holds a String, which is Sendable (collections' List declares it). A
+// '+Rc-imm' owner, whose count is not atomic, is refused, and so is a
+// MessageValue holding the literal as a '&[]u8', since a borrow may not leave
+// its thread.
 
 mod arcshare;
 
@@ -38,13 +39,14 @@ fn @initpure init() {
   gate = Atomic[Bool].of(false);
 }
 
-struct Message {
+struct MessageValue {
   pub text String;
   fn final(self &uni) { finals.add(1u32); }
 }
+alias Message = +Arc-imm MessageValue;
 
 // How many bytes of the message, and how many of them 'e', in one number
-fn reader(m +Arc-imm Message) u64 {
+fn reader(m Message) u64 {
   mut es = 0u64;
   mut i = 0usize;
   while i < m.text.len() {
@@ -60,7 +62,7 @@ fn main() i32 {
   mut a thread.Thread[u64];
   mut b thread.Thread[u64];
   {
-    imm m = +Arc-imm Message[String.from("read by two threads")];
+    imm m = +Arc-imm MessageValue[String.from("read by two threads")];
     a = thread.start(m, &reader);
     b = thread.start(m, &reader);
   }   // main's owner goes: the readers hold the only two
