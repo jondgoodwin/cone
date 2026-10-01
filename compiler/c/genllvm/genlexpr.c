@@ -738,8 +738,47 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
     return fncallret;
 }
 
+// A construction by a declared 'init', 'new Point(1, 2)': its arguments are
+// evaluated, then the init is called with 'dest' as its self, the memory it
+// fills in place -- a local's own, an allocation's value, or, where the value
+// has no place yet, a temporary, whose value is then the construction's. A
+// value holding traced references starts zeroed and rooted, so a collection
+// its init's allocations run finds nulls where nothing is written yet.
+static LLVMValueRef genlNew(GenState *gen, FnCallNode *fncall, LLVMValueRef dest) {
+    LLVMTypeRef valtype = genlType(gen, fncall->vtype);
+    uint32_t fnargcnt = fncall->args->used + 1;
+    LLVMValueRef *fnargs = (LLVMValueRef*)memAllocBlk(fnargcnt * sizeof(LLVMValueRef*));
+    LLVMValueRef *fnarg = fnargs + 1;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(fncall->args, cnt, nodesp))
+        *fnarg++ = genlExpr(gen, *nodesp);
+
+    int temp = dest == NULL;
+    if (temp) {
+        dest = genlAlloca(gen, valtype, "new");
+        genlRootNote(gen, dest, fncall->vtype);
+    }
+    if (itypeHoldsTraced(fncall->vtype))
+        LLVMBuildStore(gen->builder, LLVMConstNull(valtype), dest);
+    fnargs[0] = dest;
+    genlFnCallInternal(gen, SimpleDispatch, fncall->objfn, fnargcnt, fnargs, NULL);
+    return temp ? LLVMBuildLoad2(gen->builder, valtype, dest, "") : NULL;
+}
+
+// Fill 'dest' with 'exp' in place when it is a construction by a declared
+// 'init', returning 1; otherwise 0, and the caller stores the value
+int genlNewInto(GenState *gen, INode *exp, LLVMValueRef dest) {
+    if (exp->tag != FnCallTag || !(exp->flags & FlagNew))
+        return 0;
+    genlNew(gen, (FnCallNode*)exp, dest);
+    return 1;
+}
+
 // Generate a function call, including special intrinsics
 LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
+    if (fncall->flags & FlagNew)
+        return genlNew(gen, fncall, NULL);
 
     int dispatch;
     if (fncall->flags & FlagVDisp)
@@ -1088,7 +1127,10 @@ LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
     }
     var->llvmvar = genlAlloca(gen, genlType(gen, var->vtype), &var->namesym->namestr);
     genlRootNote(gen, var->llvmvar, var->vtype);
-    if (var->value) {
+    // A construction by a declared 'init' fills the variable in place
+    if (var->value && genlNewInto(gen, var->value, var->llvmvar))
+        val = LLVMBuildLoad2(gen->builder, genlType(gen, var->vtype), var->llvmvar, "");
+    else if (var->value) {
         val = genlExprForLocal(gen, var->value);
         LLVMBuildStore(gen->builder, val, var->llvmvar);
     }
@@ -1570,6 +1612,9 @@ static void genlStoreBarrier(GenState *gen, INode *lval, LLVMValueRef lvalptr) {
 // decides (FlagDropTest). A place reached through a reference always holds one.
 static int genlStoreHeld(INode *lval) {
     if (isNameUseNode(lval) && isExpNode(lval))
+        return !(lval->flags & FlagFirstAssign);
+    // '*self = value' filling an init's self (flowNewSelfFill)
+    if (lval->tag == DerefTag)
         return !(lval->flags & FlagFirstAssign);
     if (flowLvalRootVar(lval) != NULL)
         return !(lval->flags & FlagPartNoPrior);

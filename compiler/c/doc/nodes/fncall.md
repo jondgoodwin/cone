@@ -1,7 +1,8 @@
 `FnCallNode` is the compiler's busiest node. One shape — `objfn`, `methfld`,
 `args` — serves function calls, method calls, operator applications, field
-access, array indexing, type constructors, number conversions, initializers,
-generic instantiation and macro calls. Type check is where they separate.
+access, array indexing, constructions (`new Point(1, 2)`), variants' literals,
+number conversions, generic instantiation and macro calls. Type check is where
+they separate.
 
 **At a glance.** Built by `parseexpr.c` from several unrelated syntaxes. Name
 resolution binds `objfn` and the arguments and **deliberately leaves `methfld`
@@ -37,6 +38,8 @@ flags carry the rest of what the source said:
 | `FlagLvalOp` | the operator needs an lval receiver (`++`, `--`, `<-`, op-assign) |
 | `FlagOpAssgn` | an operator-assignment such as `+=` |
 | `FlagOperator` | **the source wrote an operator, not a named member access** |
+| `FlagNew` | a construction, `new Point(1, 2)`; kept on what type check lowers it to |
+| `FlagAllocValue` | a struct's bracketed literal that an allocation takes as its value, which alone keeps that spelling |
 
 `FlagOperator` exists solely because the two are otherwise indistinguishable
 after parsing, and one dispatch decision depends on knowing which — see Hazards.
@@ -59,8 +62,13 @@ end of file.
 
 Built from: a call `f(a)`, an index `a[i]`, a member access `a.b`, every binary
 and unary operator, a generic instantiation `Box[i64]`, a managed reference
-type `Rc[mut, Node]`, `?T` for `Option[T]`, a type constructor `Point[1,2]`, and
-a number's conversion `u64.from(count)`, a member access like any other. `parseDotCall`, `parseSuffix`, `parseArgs`
+type `Rc[mut, Node]`, `?T` for `Option[T]`, a variant's literal `Some[x]` (or a
+struct's, refused but at an allocation's value), a number's conversion
+`u64.from(count)`, a member access like any other, and a construction,
+`new Point(1, 2)`: `parseNew`, a term, takes `new`, the type (a name, `.`
+paths and bracketed type arguments) and the parenthesized arguments, left off
+when there are none, into one node flagged `FlagNew`; suffixes after the
+parentheses apply to the value. `parseDotCall`, `parseSuffix`, `parseArgs`
 and the whole precedence cascade all build this node.
 
 Nothing about which of those it is has been decided yet.
@@ -138,6 +146,11 @@ base, is refused by stage 2's type receiver.
 
 `fnCallTypeCheck` in three stages. This is the map worth carrying.
 
+**A construction (`FlagNew`) is handed whole to `typeLitNewCheck`** before any
+stage ([literals](literals.md), "Construction"), which selects the init its
+arguments call for and lowers it to the struct's literal or to a call of a
+declared init (below, "Construction").
+
 **Stage 1 — syntax, before the callee is known.**
 A generic method given type arguments on a receiver, `h.pick[i32](6)` or
 `h.pick[i32]`, first (`fnCallMethodTypeArgs`). It parses as the member access
@@ -192,15 +205,18 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
 `errorType`. Then rewrite the shapes that are not yet calls:
 
 - **A type**, with `FlagIndex` → retag `TypeLitTag` and hand to
-  `typeLitTypeCheck`, which builds a struct's literal and refuses a number
-  type, `u64[count]`, with `ErrorNbrBracket` naming `u64.from(...)`: its
-  conversion is the method. Refused there, at type check, so a number reached
-  through an alias or a type parameter is refused as one named directly.
+  `typeLitTypeCheck`, which builds a variant's literal, refuses a struct's
+  (`ErrorStructBracket`, naming `new Point(...)`) but where an allocation
+  takes it as its value, and refuses a number type, `u64[count]`, with
+  `ErrorNbrBracket` naming `u64.from(...)`: its conversion is the method.
+  Refused there, at type check, so a type reached through an alias or a type
+  parameter is refused as one named directly.
 - **A type**, with a member name → a path the collapse could not take, because
   the base is not a namespace until later: an alias, a number type's member
   other than `from`, a generic instance, a generic parameter. `ErrorUnkName`,
   naming what a path may pass through.
-- **A type**, with neither → rewrite the name to the type's `init` method.
+- **A type**, with neither, called `Point(1, 2)` → `ErrorInitCall`: a type is
+  not called, its value is constructed with `new`.
 - **A bare method or field name** (`FlagMethFld`, not `FlagQualified`) →
   rewrite to `self.method`, synthesizing a resolved `self` from parameter 0.
 - **An overload set** → `fnCallLowerOverloadFn` picks the concrete candidate.
@@ -407,9 +423,23 @@ and where a `&mut` receiver would have been accepted the message says the
 method takes `self &mut` and names `x[i]` and `&mut x[i]`. The probe changes
 nothing; the refusal is the same.
 
+### Construction
+
+A construction by a declared init stays an `FnCallTag` flagged `FlagNew`: its
+`objfn` the init's name use, its `args` the arguments after `self` (no node
+stands for `self`), coerced and with the defaults appended by
+`typeLitNewCheck`'s own pass rather than `fnCallFinalizeArgs`, which counts
+from the first parameter, and its `vtype` the struct, which is the value the
+construction has, though the init returns nothing. **An init is called by no
+other path**: `fnCallFinalizeArgs` refuses every call whose callee is one
+(`ErrorInitCall`), since called on a value it would write over one without
+finalizing it. A value receiver never reaches it anyway -- nothing but an
+init's own `self` has the `new` permission its `self` takes -- so what is
+refused there is an init called on `self` inside another init.
+
 ### What the node becomes
 
-`FnCallTag` (a real call), `FldAccessTag`, `ArrIndexTag`, `TypeLitTag`, a
+`FnCallTag` (a real call, or a construction by a declared init), `FldAccessTag`, `ArrIndexTag`, `TypeLitTag`, a
 generic instance, a macro expansion, a block of applications, or — for a
 derived `!=` — a call wrapped in a `not` that replaces it in the tree. Anything after
 type check that still sees an un-lowered `FnCallTag` with `methfld` set is
@@ -420,7 +450,11 @@ looking at a bug.
 Three entry points, by what the node became:
 
 - `fnCallFlow` — for each argument: `flowLoadValue`, then
-  `flowHandleMoveOrCopy`. Arguments are moved or copied into the callee.
+  `flowHandleMoveOrCopy`. Arguments are moved or copied into the callee. A
+  method's receiver that is an init's `self &new` is walked as a use through
+  it (`flowNewSelfThrough`; [Flow](../phases/flow.md), "An init's self"). A
+  construction by a declared init is walked as any call: its arguments; the
+  value it yields is the call's.
 - `fnCallArrIndexFlow` — the receiver, through `flowLoadThroughRef` because a
   reference to a fixed-size array and a slice are indexed with no dereference
   injected, and the index.
@@ -433,6 +467,13 @@ Three entry points, by what the node became:
 function-reference variable goes unreported. See Hazards.
 
 ## Generation
+
+**A construction by a declared init is `genlNew`**: its arguments evaluated,
+then the init called with the memory to fill as its first argument -- the
+variable a declaration gives it (`genlLocalVar`), the allocation's value
+(`genlallocref`), both through `genlNewInto`, or else a temporary alloca,
+loaded afterward as the construction's value. A value holding traced
+references is zeroed there before the init runs, and a temporary is a root.
 
 `genlFnCall` evaluates every argument, then `genlFnCallInternal` picks: a call
 through a deref, an indirect call through a reference or pointer value, virtual

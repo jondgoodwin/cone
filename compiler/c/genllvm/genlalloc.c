@@ -1240,27 +1240,31 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     }
     LLVMPositionBuilderAtEnd(gen->builder, initblk);
 
-    // Initialize region using its 'init' method, if supplied
+    // The region's 'init', if it has one, fills the header in place: its self
+    // is the header's address
     INode *reginitmeth = iTypeFindFnField(region, initMethodName);
     if (reginitmeth) {
-        LLVMValueRef initval = genlFnCallInternal(gen, SimpleDispatch, (INode*)reginitmeth, 0, NULL, NULL);
         LLVMValueRef regionp = LLVMBuildStructGEP2(gen->builder, reftype->typeinfo->structype, ptrstructype, 0, "region");
-        LLVMBuildStore(gen->builder, initval, regionp);
+        genlFnCallInternal(gen, SimpleDispatch, (INode*)reginitmeth, 1, &regionp, NULL);
     }
 
-    // Initialize permission, if it is a locked permission with an init method
+    // Then a locked permission's 'init', the same way, on its part of the block
     if (perm->tag == StructTag) {
         INode *perminitmeth = iTypeFindFnField(perm, initMethodName);
         if (perminitmeth) {
-            LLVMValueRef initval = genlFnCallInternal(gen, SimpleDispatch, (INode*)perminitmeth, 0, NULL, NULL);
             LLVMValueRef permp = LLVMBuildStructGEP2(gen->builder, reftype->typeinfo->structype, ptrstructype, 1, "perm");
-            LLVMBuildStore(gen->builder, initval, permp);
+            genlFnCallInternal(gen, SimpleDispatch, (INode*)perminitmeth, 1, &permp, NULL);
         }
     }
 
-    // Initialize value (via copy or init function) and return pointer to it
+    // Then the value: copied in, or, a construction by a declared 'init'
+    // evaluated here, filled in place (genlNewInto). A traced region's value was
+    // evaluated before 'alloc'.
     LLVMValueRef valuep = LLVMBuildStructGEP2(gen->builder, reftype->typeinfo->structype, ptrstructype, ValueField, ""); // Point to value
-    LLVMBuildStore(gen->builder, tracedval ? tracedval : genlExpr(gen, allocatenode->vtexp), valuep); // Copy value
+    if (tracedval)
+        LLVMBuildStore(gen->builder, tracedval, valuep);
+    else if (!genlNewInto(gen, allocatenode->vtexp, valuep))
+        LLVMBuildStore(gen->builder, genlExpr(gen, allocatenode->vtexp), valuep); // Copy value
     blkvals[nulls] = valuep;
 
     // Finish up block, start new one, and return allocated. As above, an initial value

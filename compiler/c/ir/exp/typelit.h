@@ -21,6 +21,11 @@ int typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private);
 // Check the type literal node
 void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *lit);
 
+// 'new Point(1, 2)': select the init the arguments call for, and lower the
+// construction to the struct's literal (its implicit init) or to a call of a
+// declared init, which fills the value in place
+void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep);
+
 // Check the value a number's 'from' converts; 0 when it does not convert
 int typeLitNbrFromCheck(FnCallNode *conv, INode *type);
 

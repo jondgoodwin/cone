@@ -392,6 +392,15 @@ enum ErrorCode {
     ErrorNbrBracket = 1207,     // 'u64[count]': a number type takes no '[...]'; a conversion is the method 'u64.from(count)'
     ErrorNbrFrom = 1208,        // A number type's 'from' named without a call, given other than one value, or given a value that does not convert: Bool's takes a number, reference or pointer, every other's a number
 
+    // Construction, 'new Point(1, 2)', and the 'init' that fills a value in place (ir/exp/typelit.c, ir/exp/fncall.c, ir/stmt/fndcl.c, ir/flow.c)
+    ErrorStructBracket = 1209,  // 'Point[1, 2]': a struct's value is constructed 'new Point(1, 2)'; an enum's variant and an allocation's value keep the brackets
+    ErrorNewType = 1210,        // 'new' given what it cannot construct: not a struct (a number converts with 'from'), an enum's variant, a trait or an enum
+    ErrorInitNone = 1211,       // No 'init' takes a construction's arguments, or several do: the struct's implicit field-wise one and those it declares
+    ErrorInitCall = 1212,       // A type called without 'new', 'Point(1, 2)', or an 'init' called by name: a value is constructed 'new Point(1, 2)'
+    ErrorPermNew = 1213,        // '&new' other than as the 'self' of a method that returns nothing: it is an initializer's reference to memory not yet filled
+    ErrorInitDcl = 1214,        // A struct's method named 'init' that does not take 'self &new' first, or returns a value: an init fills its value in place
+    ErrorInitSelf = 1215,       // In an init, 'self' used before '*self = value' fills it on every path, used other than through '*self', a field or a method call, or not filled when it returns
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

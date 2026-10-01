@@ -251,7 +251,9 @@ Fields and constants have no flow participation at all.
 
 ## Generation
 
-- **`genlLocalVar`** — alloca, then store the initializer if there is one.
+- **`genlLocalVar`** — alloca, then store the initializer if there is one;
+  a construction by a declared init is instead handed the alloca, which its
+  init fills in place (`genlNewInto`), so no temporary is built and copied.
   A static instead goes through `genlGloVarName` and `genlGloVar` the first
   time its declaration is reached, and the statement itself emits nothing:
   every use loads or stores `llvmvar` as it would an alloca, and `llvmvar` is

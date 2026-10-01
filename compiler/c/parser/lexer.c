@@ -149,6 +149,9 @@ void keywordInit() {
     keyAdd("into", IntoToken);
     keyAdd("inline", InlineToken);
     keyAdd("where", WhereToken);
+    // A construction, 'new Point(1, 2)', and the permission of an
+    // initializer's 'self', '&new'
+    keyAdd("new", NewToken);
 
     keyAdd("void", VoidToken);
     keyAdd("nil", nilToken);
@@ -169,7 +172,6 @@ void keywordInit() {
     keyAdd("baseurl", ReservedToken);
     keyAdd("context", ReservedToken);
     keyAdd("local", ReservedToken);
-    keyAdd("new", ReservedToken);
     keyAdd("selfmethod", ReservedToken);
     keyAdd("using", ReservedToken);
     keyAdd("wait", ReservedToken);

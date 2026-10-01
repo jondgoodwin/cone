@@ -50,7 +50,8 @@ void namedValTypeCheck(TypeCheckState *pstate, NamedValNode *node, INode *expect
 }
 
 // The parser wraps 'name: value' wherever an argument list is written, because
-// it cannot tell 'Point[x: 1]' from 'f(x: 1)'. Only a type literal matches the
+// it cannot tell 'new Point(x: 1)' from 'f(x: 1)'. Only a struct's literal --
+// its implicit init's construction, or a variant's brackets -- matches the
 // name to anything (typelit.c), so every other use is refused here rather than
 // left to reach flow analysis and generation, which know the node only there.
 int namedValRefuseArgs(Nodes *args, char *what) {
@@ -66,11 +67,11 @@ int namedValRefuseArgs(Nodes *args, char *what) {
         found = 1;
         if (arg->name->tag == NameUseTag)
             errorMsgNode((INode*)arg, ErrorNamedArg,
-                "Named arguments are not supported in %s; pass `%s` by position. Only a type literal, such as `Point[x: 1]`, takes values by name.",
+                "Named arguments are not supported in %s; pass `%s` by position. Only a struct's implicit init, such as `new Point(x: 1)`, takes values by name.",
                 what, &((NameUseNode*)arg->name)->namesym->namestr);
         else
             errorMsgNode((INode*)arg, ErrorNamedArg,
-                "Named arguments are not supported in %s. Only a type literal, such as `Point[x: 1]`, takes values by name.", what);
+                "Named arguments are not supported in %s. Only a struct's implicit init, such as `new Point(x: 1)`, takes values by name.", what);
     }
     return found;
 }

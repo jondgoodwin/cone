@@ -1,0 +1,84 @@
+// What an init's 'self &new' may do, which flow analysis decides.
+//
+// 'self' is a reference to memory that holds no value until '*self = value'
+// writes one (doc/reference/refinitdrop.html): before that on every path,
+// nothing is read or written through it -- no field, no method -- and the init
+// may not return. Once filled, it is reached only through itself: '*self', a
+// field of it, a method called on it. Passed, stored, copied or returned, it
+// would outlive the init, so each of those is refused, filled or not. Its
+// fields are not filled one at a time: flow tracks the whole value, as it does
+// a variable's (struct_success).
+//
+// Each init is in a struct of its own. A construction inside an init checks
+// the struct's other inits first, and flow does not run on a function during
+// whose check another reported an error, so two failing inits of one struct
+// would hide each other.
+//
+// Flow stage only: every function here type checks.
+
+mod struct_flow_new;
+
+struct ReadFirst {
+  pub x i32;
+  pub y i32;
+
+  pub fn init(self &new, a i32) {
+    imm v = self.x;                          //~ ErrorInitSelf:13 "holds no value until"
+    *self = new ReadFirst(v, a);
+  }
+}
+
+struct WriteFirst {
+  pub x i32;
+  pub y i32;
+
+  pub fn init(self &new, a i32) {
+    self.x = a;                              //~ ErrorInitSelf:5 "holds no value until"
+    *self = new WriteFirst(a, a);
+  }
+}
+
+struct CallFirst {
+  pub x i32;
+  pub y i32;
+
+  pub fn sum(self &) i32 { x + y; }
+
+  pub fn init(self &new, a i32) {
+    imm s = self.sum();                      //~ ErrorInitSelf:13 "holds no value until"
+    *self = new CallFirst(s, a);
+  }
+}
+
+struct OnePath {
+  pub x i32;
+  pub y i32;
+
+  pub fn init(self &new, a i32) {           //~ ErrorInitSelf:15 "can return before"
+    if a > 0 {
+      *self = new OnePath(a, a);
+    }
+  }
+}
+
+struct Escapes {
+  pub x i32;
+  pub y i32;
+
+  pub fn init(self &new, a i32) {
+    *self = new Escapes(a, a);
+    keep(self);                              //~ ErrorInitSelf:10 "reached only through itself"
+  }
+}
+
+struct Copied {
+  pub x i32;
+  pub y i32;
+
+  pub fn init(self &new, a i32) {
+    *self = new Copied(a, a);
+    imm other = self;                        //~ ErrorInitSelf:17 "reached only through itself"
+  }
+}
+
+fn keep(p &Escapes) { }

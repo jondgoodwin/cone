@@ -441,6 +441,16 @@ void nameuseFlow(FlowState *fstate, NameUseNode **nodep) {
         return;
     if (fstate->inflightcnt)
         flowGateUse(fstate, vardclnode);
+    // An init's 'self &new' is reached only through itself, once filled
+    if (flowNewSelf((INode*)node)) {
+        if (!flowThroughSelf)
+            errorMsgNode((INode*)node, ErrorInitSelf,
+                "In an init, self is reached only through itself: '*self', a field of it, or a method called on it. Passed, stored or returned, it would outlive the init.");
+        else if (vardclnode->flowtempflags & VarUnfilled)
+            errorMsgNode((INode*)node, ErrorInitSelf,
+                "self holds no value until '*self = value' fills it, on every path before this use.");
+        return;
+    }
     if (!(vardclnode->flowtempflags & VarInitialized))
         errorMsgNode((INode*)node, ErrorMove, "This variable has not been initialized. There is no value to use.");
     else if (vardclnode->flowtempflags & (VarMoved | VarHollow))
@@ -457,6 +467,10 @@ void nameuseFlowBorrowed(FlowState *fstate, NameUseNode **nodep) {
         return;
     if (fstate->inflightcnt)
         flowGateUse(fstate, vardclnode);
+    // A place reached through an init's 'self' holds nothing until it is filled
+    if ((vardclnode->flowtempflags & VarUnfilled) && flowNewSelf((INode*)node))
+        errorMsgNode((INode*)node, ErrorInitSelf,
+            "self holds no value until '*self = value' fills it, on every path before this borrow.");
     if (vardclnode->flowtempflags & (VarMoved | VarHollow))
         errorMsgNode((INode*)node, ErrorMove, "This variable's value has been moved out. It is no longer there to use.");
 }

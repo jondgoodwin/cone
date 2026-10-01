@@ -273,7 +273,12 @@ never coerce to each other.
 
 `permMatches` returns only `EqMatch` or `NoMatch`: `uni` coerces down to `ro`,
 `mut`, `imm`, `mut1`; anything readable coerces up to `ro`; `opaq` accepts
-everything.
+everything. `new`, the permission of an init's `self` and of nothing else
+(`refTypeCheck` refuses it anywhere else, `ErrorPermNew`), coerces as `uni`
+does, to `uni` too, so a method called on a filled `self` borrows it; nothing
+coerces to it. Its flags are `uni`'s: that nothing reads through it before it
+is filled, and that it does not escape, is flow's to check
+([Flow](../phases/flow.md), "An init's self").
 
 **`refMatches` keys value-type variance on the target's permission flags** —
 this is the part most worth internalizing:
@@ -417,9 +422,10 @@ Measured: `{ %rc, %void, i32 }` where `%rc = { i64 }` and `%void = {}`.
 
 **`genlallocref` returns the pointer to `ValueField`**, so an owning reference
 points into the *middle* of its allocation. The region's methods other than
-`alloc` and `init` are handed the header instead, which `genlRegionHeader`
-reaches by stepping back the value's offset in `%refstruct` — 8 bytes for `Rc`,
-none for `So` — so nothing assumes a region's size. The region's `free`, where
+`alloc` are handed the header instead: `init` the one `genlallocref` reaches
+from the new block, which it fills in place, and the others the one
+`genlRegionHeader` reaches by stepping back the value's offset in `%refstruct`
+— 8 bytes for `Rc`, none for `So` — so nothing assumes a region's size. The region's `free`, where
 it has one, is what gives the memory back; the compiler calls no `free` of its
 own ([What a region is](module.md)).
 

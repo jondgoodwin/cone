@@ -389,7 +389,7 @@ node, and a generic instantiating itself at ever-larger arguments never does —
 every instance is a new node with new arguments:
 
 ```cone
-fn recur[T](x T) T { recur[Box[T]](Box[T][x]).v }
+fn recur[T](x T) T { recur[Box[T]](new Box[T](x)).v }
 ```
 
 Depth is the only thing that distinguishes an expansion that terminates from one

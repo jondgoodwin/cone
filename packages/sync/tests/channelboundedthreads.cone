@@ -66,7 +66,7 @@ struct Totals {
 // when small is true, p * 1000 + k
 fn tally(r &mut Receiver[u64], slow u64, small Bool) Totals {
   imm base = if small {1000u64;} else {1000000u64;};
-  mut t = Totals[0u64, 0u64, 0u64, 0u64, 0u64, 0u64];
+  mut t = new Totals(0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
   mut last Array[u64, 3] = [3; 0u64];
   mut more = true;
   while more {
@@ -159,7 +159,7 @@ fn produceCounted(w CountedWork) u64 {
   mut refused = 0u64;
   mut k = 1u64;
   while k <= 1000u64 {
-    match w.tx.send(Counted[w.id * 10000u64 + k]) {
+    match w.tx.send(new Counted(w.id * 10000u64 + k)) {
       case is Some[Counted] {refused = refused + 1u64;}
       case is None[Counted] {}
     }
@@ -175,9 +175,9 @@ fn main() i32 {
   mut rx Receiver[u64];
   tx, rx = Channel[u64].bounded(8u64);
   imm consumer = thread.start(rx, &consume);
-  imm p1 = thread.start(Work[tx.clone(), 1u64], &produce);
-  imm p2 = thread.start(Work[tx.clone(), 2u64], &produce);
-  imm p0 = thread.start(Work[tx, 0u64], &produce);
+  imm p1 = thread.start(new Work(tx.clone(), 1u64), &produce);
+  imm p2 = thread.start(new Work(tx.clone(), 2u64), &produce);
+  imm p0 = thread.start(new Work(tx, 0u64), &produce);
   imm sent = p0.join() + p1.join() + p2.join();
   imm t = consumer.join();
   expectUInt(sent, 30000u64, "the items the producers sent");
@@ -192,8 +192,8 @@ fn main() i32 {
   mut rx2 Receiver[u64];
   tx2, rx2 = Channel[u64].bounded(2u64);
   imm slow = thread.start(rx2, &consumeSlowly);
-  imm q1 = thread.start(Work[tx2.clone(), 1u64], &sendHundred);
-  imm q2 = thread.start(Work[tx2, 2u64], &sendHundredTimed);
+  imm q1 = thread.start(new Work(tx2.clone(), 1u64), &sendHundred);
+  imm q2 = thread.start(new Work(tx2, 2u64), &sendHundredTimed);
   expectUInt(q1.join(), 0u64, "every send got in, waiting for room");
   expectUInt(q2.join(), 0u64, "every timed send got in, well inside its time");
   imm st = slow.join();
@@ -206,9 +206,9 @@ fn main() i32 {
   mut tx3 Sender[Counted];
   mut rx3 Receiver[Counted];
   tx3, rx3 = Channel[Counted].bounded(4u64);
-  imm a = thread.start(CountedWork[tx3.clone(), 1u64], &produceCounted);
-  imm b = thread.start(CountedWork[tx3.clone(), 2u64], &produceCounted);
-  imm c = thread.start(CountedWork[tx3, 3u64], &produceCounted);
+  imm a = thread.start(new CountedWork(tx3.clone(), 1u64), &produceCounted);
+  imm b = thread.start(new CountedWork(tx3.clone(), 2u64), &produceCounted);
+  imm c = thread.start(new CountedWork(tx3, 3u64), &produceCounted);
   mut taken = 0u64;
   while taken < 10u64 {
     match rx3.recv() {

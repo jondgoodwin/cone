@@ -418,11 +418,11 @@ class Scenarios(unittest.TestCase):
             import b;
 
             pub fn start(n i64) b.Counter {
-              b.Counter[n, 5i64];
+              new b.Counter(n, 5i64);
             }
 
             pub fn advance(c b.Counter) b.Counter {
-              b.Counter[c.next(), c.step];
+              new b.Counter(c.next(), c.step);
             }
             """)
         write(self.root / "app.cone", """
@@ -444,8 +444,8 @@ class Scenarios(unittest.TestCase):
             }
             """)
         run = self.congo("run", "app.cone", cwd=self.root)
-        # start(30) is Counter[30, 5], whose next() is 30+5 = 35, from b's
-        # object. Advanced twice: [35, 5], then [40, 5], built in a's object
+        # start(30) is new Counter(30, 5), whose next() is 30+5 = 35, from b's
+        # object. Advanced twice: (35, 5), then (40, 5), built in a's object
         self.assertEqual(self.program_output(run), "35\n40\n5\n")
         compiled = [line.split()[1] for line in run.stdout.splitlines()
                     if line.strip().startswith("Compiling")]
@@ -637,7 +637,7 @@ class Scenarios(unittest.TestCase):
               pub b i64;
 
               pub fn swap(self) Stack {
-                Stack[b, a];
+                new Stack(b, a);
               }
             }
 
@@ -671,7 +671,7 @@ class Scenarios(unittest.TestCase):
             import coll;
 
             fn main() i32 {
-              imm s = coll.Stack[3i64, 4i64].swap();
+              imm s = new coll.Stack(3i64, 4i64).swap();
               stdio.print <- s.a;
               stdio.print <- "\\n";
               stdio.print <- coll.total(s);
@@ -682,7 +682,7 @@ class Scenarios(unittest.TestCase):
             }
             """)
         run = self.congo("run", "app.cone", cwd=self.root)
-        # Stack[3, 4] swapped is [4, 3]: a is 4; total is 4 + 3 from vec's
+        # new Stack(3, 4) swapped is (4, 3): a is 4; total is 4 + 3 from vec's
         # object, plus 100 from vec.cell's; 20 is Large, whose code is 2
         self.assertEqual(self.program_output(run), "4\n107\n2\n")
         out = next((self.root / "home" / "lone").glob("app-*")) / "debug"

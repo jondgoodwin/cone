@@ -1,0 +1,177 @@
+// Construction: 'new T(...)' builds a value of a struct by one of its inits,
+// which the arguments select.
+//
+// Every struct has an implicit init taking its fields in the order they are
+// declared, by position or by name, a field left out taking its default. A
+// struct may declare inits of its own, 'fn init(self &new, ...)', overloaded
+// under the name 'init'; each fills its value in place through 'self', a
+// reference to memory that holds no value until '*self = value' writes one,
+// and after that reaches it as any method does. Each value printed here was
+// computed by the init named beside it, which is invisible in the source.
+//
+// Where the value goes decides where it is built: a local's declaration hands
+// the init the local's own memory, and an allocation the memory it obtained;
+// anywhere else the value has no place yet -- an argument, a returned value, a
+// field or element of another construction -- and a temporary is filled and
+// copied on. 'filled-in-place' compares the address an init was given with the
+// local it was declared into.
+//
+// What 'self &new' may and may not do is struct_flow_new's; what a
+// construction may not ask for is struct_typecheck_new's.
+
+mod struct_new;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// -------- the implicit init --------
+
+struct Point {
+  pub x i32;
+  pub y i32;
+
+  pub fn sum(self) i32 { x + y; }
+}
+
+struct Color {
+  pub r i32;
+  pub g i32;
+  pub b i32;
+  pub alpha i32 = 255;
+}
+
+struct Line {
+  pub from Point;
+  pub to Point;
+}
+
+// A struct holding a reference is built the same way
+struct View {
+  pub at &i32;
+}
+
+// A global takes a construction by the implicit init, whose values are
+// literals: one constant
+imm origin = new Point(3, 4);
+
+fn implicitInit() {
+  imm p = new Point(1, 2);
+  show("positional", i64.from(p.x * 10 + p.y));
+  imm q = new Point(y: 6, x: 5);
+  show("named", i64.from(q.x * 10 + q.y));
+  imm c = new Color(1, 2, 3);
+  show("default", i64.from(c.alpha));
+  imm l = new Line(new Point(0, 1), new Point(2, 3));
+  show("nested", i64.from(l.from.y * 10 + l.to.x));
+  show("suffix-on-value", i64.from(new Point(7, 8).sum()));
+  show("global", i64.from(origin.sum()));
+  imm n = 42;
+  imm v = new View(&n);
+  show("holds-reference", i64.from(*v.at));
+  imm pts = [new Point(1, 1), new Point(2, 2)];
+  show("array-elements", i64.from(pts[1].sum()));
+}
+
+// -------- declared inits --------
+
+mut lastSelf = 0usize;
+
+struct Vec2 {
+  pub x i32;
+  pub y i32;
+
+  // A length along x
+  pub fn ofLength overload init(self &new, len i32) {
+    *self = new Vec2(len, 0);
+    self.note();
+  }
+
+  // The diagonal, scaled, and moved when asked: a value the field-wise init
+  // could not be given directly, filled on either path of an 'if', then
+  // changed through self, which by then holds it
+  pub fn diagonal overload init(self &new, d i32, flip Bool, scale i32, shift i32 = 0) {
+    if flip {
+      *self = new Vec2(0 - d, 0 - d);
+    }
+    else {
+      *self = new Vec2(d, d);
+    }
+    self.x = self.x * scale + shift;
+  }
+
+  // Once filled, self is reached as any method's is: here, where it is
+  fn note(self &) {
+    lastSelf = self as *Vec2 as usize;
+  }
+
+  pub fn len(self) i32 { x + y; }
+}
+
+fn twice(v Vec2) i32 { v.len() * 2; }
+fn longOne() Vec2 { new Vec2(9); }
+
+fn declaredInit() {
+  imm a = new Vec2(5);
+  show("overload-length", i64.from(a.x * 10 + a.y));
+  imm d = new Vec2(4, false, 2);
+  show("overload-diagonal-default", i64.from(d.x * 10 + d.y));
+  imm b = new Vec2(4, false, 2, 1);
+  show("overload-diagonal-given", i64.from(b.x * 10 + b.y));
+  imm e = new Vec2(4, true, 1);
+  show("filled-on-either-path", i64.from(e.x * 10 + e.y));
+  // The field-wise init is a candidate too, beside those declared
+  imm f = new Vec2(1, 2);
+  show("implicit-beside-declared", i64.from(f.x * 10 + f.y));
+}
+
+// The memory a construction fills
+fn inPlace() {
+  mut here = new Vec2(6);
+  show("filled-in-place", if lastSelf == &mut here as *Vec2 as usize {1;} else {0;});
+  show("argument-through-temporary", i64.from(twice(new Vec2(3))));
+  show("returned-through-temporary", i64.from(longOne().x));
+  imm l = new Line(new Point(1, 2), new Point(3, 4));
+  show("field-of-construction", i64.from(l.to.sum()));
+  imm arr = [new Vec2(1), new Vec2(2)];
+  show("array-element", i64.from(arr[0].x + arr[1].x));
+  mut slot = [new Vec2(0), new Vec2(0)];
+  slot[1] = new Vec2(7);
+  show("element-assigned", i64.from(slot[1].x));
+  imm boxed = +Rc new Vec2(8);
+  show("allocation-filled", if lastSelf == &*boxed as *Vec2 as usize {1;} else {0;});
+  show("allocation-value", i64.from(boxed.x));
+}
+
+// -------- generics --------
+
+fn build[T](a i32, b i32) T {
+  new T(a, b);
+}
+
+struct Box[T] {
+  pub v T;
+}
+
+fn generics() {
+  imm p = build[Point](2, 5);
+  show("type-parameter", i64.from(p.sum()));
+  imm v = build[Vec2](3, 4);
+  show("type-parameter-declared-beside", i64.from(v.len()));
+  imm b = new Box(11i64);
+  show("inferred-type-argument", b.v);
+  imm c = new Box[i32](12);
+  show("written-type-argument", i64.from(c.v));
+}
+
+fn main() {
+  implicitInit();
+  declaredInit();
+  inPlace();
+  generics();
+}

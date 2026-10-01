@@ -83,23 +83,22 @@
 #
 # Left out, with reasons:
 #
-# - Initializers -- a 'fn init(self &new)' method. There is no 'new'
-#   permission: it does not resolve as a name, so the method cannot be written
-#   at all. doc/reference/refinitdrop.html says as much. Finalizers,
-#   which that same page also calls unimplemented, do work and are in
-#   struct_methods.
-#
-# - A 'clone' method, for the same reason: its first parameter is 'self &new'.
-#   The name 'clone' is recognized far enough to turn off the move-type
-#   inference a finalizer causes, but the method it refers to cannot be
-#   declared as the reference describes it. A method of another shape may take
-#   the name, and struct_extends_lifecycle declares one to show what an
+# - A 'clone' method as the reference describes it: its first parameter is
+#   'self &new', which only an init may take. The name 'clone' is recognized
+#   far enough to turn off the move-type inference a finalizer causes, but the
+#   method it refers to cannot be declared that way. A method of another shape
+#   may take the name, and struct_extends_lifecycle declares one to show what an
 #   enrichment's copy of it returns; nothing calls it implicitly.
 #
-# - Field-by-field initialization of a struct declared without a value. Flow
-#   analysis tracks the whole value, so assigning every field one at a time
-#   still leaves the variable uninitialized. struct_success covers the whole
-#   value assignment that does work, and says so.
+# - Field-by-field initialization of a struct declared without a value, or of
+#   an init's self. Flow analysis tracks the whole value, so assigning every
+#   field one at a time still leaves the variable uninitialized.
+#   struct_success covers the whole value assignment that does work, and says
+#   so; struct_flow_new refuses a field written before an init's self is
+#   filled.
+#
+# Initializers -- construction, 'new T(...)', and the inits it runs -- are
+# struct_new, struct_typecheck_new and struct_flow_new.
 
 support = ["structmeter.cone"]
 
@@ -480,6 +479,23 @@ category = "run"
 description = "A type's own methods and static functions reaching a private method or field through any value of the type -- a local, a parameter, a borrow written out, a by-value call, a field written -- and a generic instance through another value of itself"
 tags = ["typecheck", "runtime"]
 
+# Construction, 'new T(...)', and the inits it runs: the implicit field-wise
+# one and those a struct declares, which fill the value in place. Its own file
+# because its claims are which init the arguments selected and where the value
+# was built, which no other success file asks.
+[scenario.struct_new]
+category = "run"
+description = "Construction by the implicit init (by position, by name, with a default, nested, of a struct holding a reference, in a global, an array and a generic) and by declared inits overloaded beside it, filling a local or an allocation in place and a temporary where the value has no place yet"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+# A local's declaration hands a declared init the local's own memory: the
+# call's self is the local's alloca, and no temporary is made for it. The run
+# compares the addresses; this is the same claim read off the code.
+[[scenario.struct_new.check]]
+name = "declared-init-fills-the-local"
+target = "preir"
+contains = ["call %void @_CNvNt4Vec28ofLength(ptr %here, i32 6)"]
+
 # -------- parse stage --------
 
 [scenario.struct_parse]
@@ -542,6 +558,14 @@ diagnostics = 2
 
 # -------- flow stage --------
 
+# What an init's 'self &new' may do: nothing before '*self = value' fills it
+# on every path, no return before then, and nothing but reach through it after
+[scenario.struct_flow_new]
+category = "reject"
+description = "An init's self read, written or called on before it is filled, an init that can return unfilled, and self passed or copied, which would let it outlive the init"
+tags = ["flow"]
+diagnostics = 6
+
 # Separate from the type-check scenarios because ErrorNoMut on an assignment is
 # a data-flow diagnostic, and separate from struct_parse because that one is
 # about which permissions may be written at all rather than what a legal one
@@ -569,6 +593,12 @@ category = "reject"
 description = "Struct constructors that do not agree with the type's fields"
 tags = ["typecheck"]
 diagnostics = 6
+
+[scenario.struct_typecheck_new]
+category = "reject"
+description = "Constructions refused: the bracket form, a type called, 'new' on what is not a struct, arguments no init or several inits take, a private init, an init called by name, a declared init in a global; and inits declared in a shape a construction cannot run, and '&new' anywhere but an init's self"
+tags = ["typecheck"]
+diagnostics = 17
 
 [scenario.struct_typecheck_methods]
 category = "reject"

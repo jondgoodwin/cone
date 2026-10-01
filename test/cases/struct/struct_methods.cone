@@ -63,29 +63,29 @@ struct Counter {
 
   // 'Self' names the type being declared
   pub fn twin(self) Self {
-    Self[n * 2];
+    new Self(n * 2);
   }
 }
 
 fn receivers() {
-  mut c = Counter[10];
+  mut c = new Counter(10);
   show("value-receiver", c.peek());
   show("ref-receiver", (&c).read());
   (&mut c).bump();
   show("mut-ref-receiver", c.peek());
-  show("self-and-other", c.compare(Counter[4]));
+  show("self-and-other", c.compare(new Counter(4)));
   show("default-parm-omitted", c.scaled());
   show("default-parm-given", c.scaled(10));
   show("Self-return", c.twin().n);
 
   // A value receiver really did get a copy
-  mut d = Counter[1];
+  mut d = new Counter(1);
   imm ignored = d.peek();
   show("value-receiver-copies", d.n);
 
   // A value receiver is reachable through a reference too: the receiver is
   // dereferenced, so the method is handed a copy of what the reference points at
-  mut e = Counter[20];
+  mut e = new Counter(20);
   show("value-receiver-through-ref", (&e).peek());
   show("value-receiver-through-mut-ref", (&mut e).peek());
 
@@ -119,7 +119,7 @@ struct Account {
 
   // Only a method may give a private field a value in a constructor
   fn opened(who i32, start i32) Account {
-    Account[start, who];
+    new Account(start, who);
   }
 }
 
@@ -144,14 +144,14 @@ fn privacy() {
   // Code outside the type may leave a private field to its default: the
   // default is the type's own value, not one the constructor gives. Named
   // with the private field first, and named and positional with it last.
-  imm b = Account[owner: 9];
+  imm b = new Account(owner: 9);
   show("private-default-named-first", b.balance());
   show("private-default-named-first-owner", b.owner);
-  imm c = Badge[size: 2, id: 1];
+  imm c = new Badge(size: 2, id: 1);
   show("private-default-named-last", c.marked());
   show("private-default-named-last-id", c.id);
   show("private-default-named-last-size", c.size);
-  imm d = Badge[4, 5];
+  imm d = new Badge(4, 5);
   show("private-default-positional", d.marked());
   show("private-default-positional-id", d.id);
   show("private-default-positional-size", d.size);
@@ -166,22 +166,23 @@ struct Maker {
   pub seed i32;
 
   fn fromInt overload make(n i32) Maker {
-    Maker[n];
+    new Maker(n);
   }
 
   fn fromFloat overload make(n f32) Maker {
-    Maker[i32.from(n) + 100];
+    new Maker(i32.from(n) + 100);
   }
 }
 
-// Calling the type itself, 'Seeded(5)', calls its static function named
-// 'init'. It is one of the functions above, reached without writing its name,
-// and unlike a literal it may compute the value it builds.
+// A construction, 'new Seeded(5, 10)', runs the init its arguments select:
+// here the one Seeded declares, reached without writing its name, which unlike
+// the implicit field-wise one may compute the value it builds. It fills its
+// value in place, with the field-wise init.
 struct Seeded {
   pub seed i32;
 
-  fn init(n i32) Seeded {
-    Seeded[n * 10 + 1];
+  pub fn init(self &new, n i32, scale i32) {
+    *self = new Seeded(n * scale + 1);
   }
 }
 
@@ -189,8 +190,8 @@ fn statics() {
   show("static-overload-int", Maker.make(3i32).seed);
   show("static-overload-float", Maker.make(4.5f).seed);
   show("static-concrete-name", Maker.fromInt(6i32).seed);
-  imm seeded = Seeded(5);
-  show("type-call-reaches-init", seeded.seed);
+  imm seeded = new Seeded(5, 10);
+  show("new-runs-declared-init", seeded.seed);
 }
 
 // -------- types that name each other --------
@@ -223,12 +224,12 @@ struct Outside {
 }
 
 fn nameEachOther() {
-  imm inner = Inner[5];
-  imm outer = Outer[Inner[3]];
+  imm inner = new Inner(5);
+  imm outer = new Outer(new Inner(3));
   show("holder-written-first-by-reference-self", (&inner).sum(outer));
   show("holder-written-first-by-value-self", inner.product(outer));
-  imm inside = Inside[6];
-  imm outside = Outside[Inside[4]];
+  imm inside = new Inside(6);
+  imm outside = new Outside(new Inside(4));
   show("holder-written-second-by-reference-self", (&inside).sum(outside));
   show("holder-written-second-by-value-self", inside.product(outside));
 }
@@ -313,14 +314,14 @@ struct Scaler {
 }
 
 fn overloads() {
-  mut p = Pair[10, 3];
+  mut p = new Pair(10, 3);
   show("overload-value-receiver", p.sum());
   show("overload-ref-receiver", (&p).sum());
-  show("overload-extra-parm", p.sum(Pair[5, 0]));
+  show("overload-extra-parm", p.sum(new Pair(5, 0)));
   // A reference receiver is only dereferenced when no candidate accepts it as
   // it stands, so the '&' candidate above still wins and this one -- which no
   // candidate takes a reference for -- reaches the value candidate instead
-  show("overload-deref-to-value-candidate", (&p).sum(Pair[5, 0]));
+  show("overload-deref-to-value-candidate", (&p).sum(new Pair(5, 0)));
   // A candidate keeps its own name and may be called without any selection
   show("overload-concrete-name", p.sumValue());
   // A field and a method, each named on its own inside a method, both reach
@@ -341,7 +342,7 @@ fn overloads() {
   show("overload-through-type-name", Pair.sum(p));
   show("overload-through-type-name-ref", Pair.sum(&p));
 
-  imm s = Scaler[7];
+  imm s = new Scaler(7);
   // f32 widens to the f64 parameter, and no other candidate takes a float
   show("overload-widened-arg", i64.from(s.scale(2.5f)));
   // Only the i32 candidate takes an integer, and it supplies its own default
@@ -358,15 +359,15 @@ struct Vec {
   pub y i32;
 
   pub fn addVec overload `+`(self, other Vec) Vec {
-    Vec[x + other.x, y + other.y];
+    new Vec(x + other.x, y + other.y);
   }
 
   pub fn addScalar overload `+`(self, amount i32) Vec {
-    Vec[x + amount, y + amount];
+    new Vec(x + amount, y + amount);
   }
 
   pub fn `-`(self) Vec {
-    Vec[-x, -y];
+    new Vec(-x, -y);
   }
 
   pub fn `+=`(self &mut, other Vec) Vec {
@@ -403,7 +404,7 @@ struct Tally {
   pub n i32;
 
   pub fn `+`(self, other Tally) Tally {
-    Tally[n + other.n];
+    new Tally(n + other.n);
   }
 }
 
@@ -433,8 +434,8 @@ struct Signed {
 }
 
 fn operators() {
-  mut v = Vec[1, 2];
-  imm w = Vec[10, 20];
+  mut v = new Vec(1, 2);
+  imm w = new Vec(10, 20);
 
   imm sum = v + w;
   show("operator-add-struct", sum.x);
@@ -448,22 +449,22 @@ fn operators() {
   v += w;
   show("operator-plus-equals", v.x);
 
-  if w == Vec[10, 20] {
+  if w == new Vec(10, 20) {
     show("operator-equals", 1);
   }
   show("operator-derived-not-equals-differ", if w != v {1;} else {0;});
-  show("operator-derived-not-equals-same", if w != Vec[10, 20] {1;} else {0;});
-  imm unequal = Vec[1, 2] != Vec[1, 3];
+  show("operator-derived-not-equals-same", if w != new Vec(10, 20) {1;} else {0;});
+  imm unequal = new Vec(1, 2) != new Vec(1, 3);
   show("operator-derived-not-equals-bound", if unequal {1;} else {0;});
-  show("operator-own-not-equals", if Loose[5] != Loose[6] {1;} else {0;});
-  show("operator-derived-not-equals-through-istrue", if Signed[5] != Signed[6] {1;} else {0;});
+  show("operator-own-not-equals", if new Loose(5) != new Loose(6) {1;} else {0;});
+  show("operator-derived-not-equals-through-istrue", if new Signed(5) != new Signed(6) {1;} else {0;});
 
   show("operator-call", v());
   show("operator-index-0", v[0usize]);
   show("operator-index-1", v[1usize]);
 
   // '<-' with one value on the right is an ordinary operator method call
-  mut acc = Vec[0, 0];
+  mut acc = new Vec(0, 0);
   acc <- 3;
   show("operator-append-one-x", acc.x);
   show("operator-append-one-count", acc.y);
@@ -472,7 +473,7 @@ fn operators() {
   // one borrow of the receiver rather than re-evaluating it each time. The
   // count is what proves the tuple was taken apart rather than passed whole,
   // and the sum is what proves the order and that every element arrived.
-  mut many = Vec[0, 0];
+  mut many = new Vec(0, 0);
   many <- (4, 5, 6);
   show("operator-append-tuple-x", many.x);
   show("operator-append-tuple-count", many.y);
@@ -484,7 +485,7 @@ fn operators() {
   // form inside 'with' all reach the receiver through the same reference, and
   // it is read back through that reference too, since the variable is frozen
   // while the borrow is still to be used.
-  mut viaRef = Vec[0, 0];
+  mut viaRef = new Vec(0, 0);
   imm r = &mut viaRef;
   r <- 7;
   r <- 8, 9;
@@ -496,17 +497,17 @@ fn operators() {
 
   // Every operator needing an lval receiver takes a reference the same way,
   // so an operator-assign through one reaches the declared '+=' too.
-  r += Vec[100, 100];
+  r += new Vec(100, 100);
   show("operator-plus-equals-through-ref", viaRef.x);
 
   // A type declaring no '+=' has it derived from its '+', and the derivation
   // is the same whether the receiver is the value or a reference to it: the
   // reference is taken as it is, and the rewrite dereferences it.
-  mut t = Tally[5];
-  t += Tally[3];
+  mut t = new Tally(5);
+  t += new Tally(3);
   show("operator-derived-plus-equals", t.n);
   imm tr = &mut t;
-  tr += Tally[100];
+  tr += new Tally(100);
   show("operator-derived-plus-equals-through-ref", t.n);
 }
 
@@ -537,7 +538,7 @@ struct Buffer {
 }
 
 fn indexing() {
-  mut list = List[items: [1, 5, 2, 8]];
+  mut list = new List(items: [1, 5, 2, 8]);
   show("index-method", list[3usize]);
   imm slot = &mut list[1usize];
   *slot = 50;
@@ -546,7 +547,7 @@ fn indexing() {
   // The whole-value form dispatches to the method. The length is what says so:
   // the method's slice spans the array field, three elements long, where a
   // borrow deciding for itself would produce one element of the struct.
-  mut buffer = Buffer[cells: [7, 8, 9]];
+  mut buffer = new Buffer(cells: [7, 8, 9]);
   imm all &[]mut i32 = &[]mut buffer;
   show("whole-value-method-len", i64.from(all.len));
   show("whole-value-method-elem", all[0]);
@@ -584,7 +585,7 @@ struct Umlaut {
 }
 
 fn names() {
-  imm u = Umlaut[10];
+  imm u = new Umlaut(10);
   show("unicode-method-name", (&u).größe());
   show("backticked-method-name", (&u).`a b`());
   show("backticked-punctuation-method-name", (&u).`+ -`());
@@ -616,12 +617,12 @@ struct Bundle {
 }
 
 fn scoped() {
-  mut r = Resource[1];
+  mut r = new Resource(1);
   return;
 }
 
 fn nested() {
-  mut b = Bundle[Resource[2], 3];
+  mut b = new Bundle(new Resource(2), 3);
   return;
 }
 
@@ -645,7 +646,7 @@ struct Gauge is Meter {
 }
 
 fn extended() {
-  mut g = Gauge[7, 2];
+  mut g = new Gauge(7, 2);
   return;
 }
 

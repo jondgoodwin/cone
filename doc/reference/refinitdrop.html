@@ -23,10 +23,15 @@
 		some paths is finalized on the paths that still hold it. A module's
 		global variable is finalized by its module's finalizer when the program shuts down,
 		whatever it holds: a value whose type finalizes, a tuple or an array of them, or an
-		owning reference, which is released. Initializers are not
-		implemented, nor is the new permission they are declared with, nor a clone method written
-		against it. A method named clone may be declared and called, but no copy calls it, and it does
-		not make a type copyable. A module's own initializer and finalizer are, and are described with
+		owning reference, which is released. Initializers are implemented: every struct's
+		implicit one, and those a struct declares with the <span class="pre">new</span> permission,
+		named <span class="pre">init</span> or joining the overload name <span class="pre">init</span>.
+		An initializer of any other name is not, nor is a clone method written against the
+		<span class="pre">new</span> permission: a method named clone may be declared and called,
+		but no copy calls it, and it does not make a type copyable. An enum's variant is still
+		constructed with its brackets, <span class="pre">Some[x]</span>, and an allocation's value
+		may be too, <span class="pre">+Rc-mut Node[1]</span>. A module's own initializer and
+		finalizer are implemented, and are described with
 		<a href="refmodule.html#dyninit">modules</a>.</i></p>
 	
 	<p>Initializers and finalizers are specialized methods a type may optionally define.
@@ -37,63 +42,84 @@
 	</p>
 
 	<h2 id="initializer">Initializers</h2>
-	<p>Initializer methods offer an alternative to type constructors for creating new values of some type.
-		Type constructors have the limitation that they can only specify initial values 
-		for public fields of a new object.
-		Initializers offer more flexibility, as they can use any sort of logic for initializing
-		a new object's fields, even private fields.</p>
-	<p>Initializers are useful when the use of a type constructor would be:</p>
+	<p>Every new value of a struct is constructed by one of its initializers,
+		written <span class="pre">new</span>, the type, and the initializer's arguments in parentheses:</p>
+<pre>
+imm pt = new Point(1., 2., 3.);
+</pre>
+	<p>Every struct has an <b>implicit initializer</b>, which takes the values of its fields,
+		in the order they are declared or by name, a field left out taking its default value
+		(see <a href="refstruct.html">structs</a>). A struct may also declare initializer methods
+		of its own, which can use any sort of logic for initializing a new value,
+		even of private fields. They are useful when the implicit initializer would be:</p>
 	<ul>
 		<li><b>Insufficient</b>, because initialization needs to perform some logic that
 		 is more than simply assigning value(s).</li>
-		<li><b>Impossible</b>, because parts of the type are private and can only be accessed by methods of the type.</li>
-		<li><b>Inconvenient</b>, because the literal would be unnecessarily verbose in comparison to using an initializer.</li>
+		<li><b>Impossible</b>, because parts of the type are private and can only be set by methods of the type.</li>
+		<li><b>Inconvenient</b>, because listing every field would be unnecessarily verbose in comparison to using an initializer.</li>
 	</ul>
 	<p>Here is a simple initializer:</p>
 <pre>
 fn init(self &amp;new) {
-  *self = Self[x: 1., y: 1., z: 1.];
+  *self = new Self(x: 1., y: 1., z: 1.);
 }
 </pre>
 	<p>An initializer is a method, but it has a few differences from typical methods:</p>
 	<ul>
-		<li><b>The default name is <span class="pre">init</span></b>.
-			Initializers can have any name, but the benefit of the default name is that you need not
+		<li><b>Its name is <span class="pre">init</span></b>, so you need not
 			specify the initializer's name when using it to create a new value.
-			As with any method, a type may define more than one initializer; each has its own name.
+			A type may declare more than one initializer as an overload set: each has
+			its own name and joins the overload name <span class="pre">init</span>
+			(<span class="pre">fn polar overload init(self &amp;new, r f32, theta f32)</span>).
+			A construction's arguments select the one initializer, declared or implicit,
+			that takes them; if none does, or several do, the construction is an error.
+			Only the implicit initializer takes values by name.
 		</li>
 		<li><b><span class="pre">self</span> is a borrowed reference using the
 			<span class="pre">new</span> permission</b>.
-			Here's why:  An initializer is called when memory has been allocated for the new object,
+			Here's why:  An initializer is called when memory has been set aside for the new value,
 			but it does not yet hold a valid value.
 			The borrowed reference effectively points to this location.
 			It uses the <span class="pre">new</span> permission to signal that the reference
 			does not yet point to a valid value. This prevents the initializer
-			from accessing any of the fields until after they have been initialized.</li>
+			from accessing any of the fields until after they have been initialized.
+			The permission is written only on an initializer's <span class="pre">self</span>.</li>
 		<li><b>Initializers don't return a value.</b>
-			After the initializer has finished running, the code that invoked the initializer
-			will automatically be given an owning reference pointing to the same location
-			as <span class="pre">self</span>.
+			After the initializer has finished running, the construction that invoked it
+			holds the value it wrote through <span class="pre">self</span>.
 			Thus, having the initializer return a value would be superfluous and confusing.</li>
-		<li><b>The initializer's logic uses a type constructor.</b>
+		<li><b>The initializer's logic uses another initializer to fill self.</b>
 			Essentially, an initializer's logic performs these steps in order:
 			<ol>
 				<li>Figure out what the values should be for every field
 					(if needed). The fields of self are inaccessible at this point,
 					as self is not pointing to a valid value.
 					This means it is also impossible to call any other methods on self.</li>
-				<li>Use a type constructor to initialize the entire value of
-					self at one time (as the above example does).</li>
+				<li>Initialize the entire value of self at one time,
+					<span class="pre">*self = new Self(...)</span>, with an initializer
+					other than this one: typically the implicit one (as the above example does).
+					It must be done on every path before the initializer returns.</li>
 				<li>Perform any additional work on the value that the logic requires,
 					if needed. At this point, the initializer may access the value's
 					fields or call any other method on the value.</li>
 			</ol>
 		</li>
+		<li><b><span class="pre">self</span> does not escape.</b>
+			It is used only through itself: <span class="pre">*self</span>,
+			a field of it, or a method called on it. It may not be passed to a function,
+			stored, copied or returned.</li>
+		<li><b>An initializer runs only in a construction.</b>
+			It is never called by name on a value, which it would overwrite.</li>
 	</ul>
 	<p>The following code invokes the initializer defined above:</p>
 <pre>
-imm gcref = +Gc-mut Point();  // x,y,z of the new Point value are 1.0
+imm pt = new Point();  // x,y,z of the new Point value are 1.0
 </pre>
+	<p>A construction fills its value in place, where the value goes.
+		Declaring a variable with a construction hands the initializer the variable's own memory,
+		and allocating one hands it the memory the region obtained;
+		a value constructed where it has no place yet, as an argument to a function, or a field
+		of another construction, is built in a temporary and copied there.</p>
 
 <h3 id="clone">Clone method</h3>
 <p>As discussed <a href="refmove.html">earlier</a>, it is not always obvious
@@ -105,7 +131,7 @@ imm gcref = +Gc-mut Point();  // x,y,z of the new Point value are 1.0
 	is a value or another borrowed reference to the value we want to copy:</p>
 <pre>
 fn clone(self &amp;new, from &amp;) {
-  *self = Self[x: from.x, y: from.y, z: from.z];
+  *self = new Self(x: from.x, y: from.y, z: from.z);
 }
 </pre>
 	<p>Whenever copies are automatically made (e.g., assignment or function calls),

@@ -57,6 +57,11 @@ void fnOverloadDclPrint(FnOverloadDclNode *fn);
 // resolution asks it, and so does the include-file generator
 int fnDclIsExpanded(FnDclNode *fndclnode, INode *typenode);
 
+// Is this an initializer: a method whose 'self' is '&new', a reference to the
+// memory its value is to be written into? A construction runs one, and so does
+// an allocation, on a region's header and a permission's.
+int fnDclIsInit(FnDclNode *fn);
+
 /// Resolve all names in a function
 void fnDclNameRes(NameResState *pstate, FnDclNode *name);
 

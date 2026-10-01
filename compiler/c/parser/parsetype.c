@@ -1312,8 +1312,16 @@ AliasDclNode *parseAlias(ParseState *parse) {
 
 // Parse a type expression. Return unknownType if none found.
 INode* parseType(ParseState *parse) {
-    // The parsing logic for value expressions also works for types (although overkill)
-    return parseIsTypeStart() ? parsePrefix(parse) : unknownType;
+    // The parsing logic for value expressions also works for types (although overkill).
+    // Inside a type, '&new' is the initializer's permission rather than a borrow
+    // of a construction (parseAmper).
+    if (!parseIsTypeStart())
+        return unknownType;
+    int svintype = parse->intype;
+    parse->intype = 1;
+    INode *type = parsePrefix(parse);
+    parse->intype = svintype;
+    return type;
 }
 
 // Is the lexer on a token that may begin a type expression?

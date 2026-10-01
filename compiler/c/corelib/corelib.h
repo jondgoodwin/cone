@@ -22,6 +22,10 @@ extern PermNode *immPerm;
 extern PermNode *roPerm;
 extern PermNode *mut1Perm;
 extern PermNode *opaqPerm;
+// 'new': an initializer's 'self', a reference to memory that does not hold its
+// value yet. Written '&new', after the keyword, so its name is not a permission
+// token.
+extern PermNode *newPerm;
 
 // Built-in lifetimes
 extern LifetimeNode *staticLifetimeNode;

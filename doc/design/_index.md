@@ -286,7 +286,7 @@ and carries the manifest for the per-node notes beside it.
 | `BreakRetNode` — `return`, `break`, `continue`, `blockret` | [return](../../compiler/c/doc/nodes/return.md) |
 | `BlockNode` — blocks and loops | [block](../../compiler/c/doc/nodes/block.md) |
 | `IfNode` — `if`, `elif`, `else`, and `match` | [if](../../compiler/c/doc/nodes/if.md) |
-| literals — `nil`, numbers, strings, arrays, type literals | [literals](../../compiler/c/doc/nodes/literals.md) |
+| literals — `nil`, numbers, strings, arrays, type literals; construction, `new T(...)`, and the init it selects | [literals](../../compiler/c/doc/nodes/literals.md) |
 | `GenericInfo`, `GenVarDclNode`, `MacroDclNode`, cloning | [generic](../../compiler/c/doc/nodes/generic.md) |
 
 ## Diagnostics

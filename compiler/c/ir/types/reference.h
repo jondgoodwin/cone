@@ -40,6 +40,9 @@ typedef struct {
 // Create a new reference type whose info will be filled in afterwards
 RefNode *newRefNode(uint16_t tag);
 
+// Set while a signature's 'self' is checked: the one place '&new' is written
+extern int refAllowNewPerm;
+
 // Allocate normalized reference type info
 void *refTypeInfoAlloc();
 

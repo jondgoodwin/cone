@@ -14,8 +14,8 @@
 //
 //   fn play() {
 //     mut world = Pool[Npc].empty();
-//     imm orc = world.add(Npc[10, Ref[Npc].none()]);
-//     imm elf = world.add(Npc[8, orc]);         // the elf targets the orc
+//     imm orc = world.add(new Npc(10, Ref[Npc].none()));
+//     imm elf = world.add(new Npc(8, orc));     // the elf targets the orc
 //     world.remove(orc);                        // the orc dies
 //     match world.get(world[elf].target) {
 //       case imm s Some { ...s.value.hp... }
@@ -142,13 +142,13 @@ pub struct Ref[T] {
   gen u32;
 
   // A reference to nothing: never alive in any pool
-  pub fn none() Ref[T] { Ref[T][noSlot, 0u32]; }
+  pub fn none() Ref[T] { new Ref[T](noSlot, 0u32); }
 
   // A reference naming a slot and a generation directly, as 'slot()' and
   // 'generation()' gave them. A value's generation is always odd, and an even
   // one is taken as the odd one after it, so a Ref made up this way can only
   // ever name a value a pool holds, never a free slot.
-  pub fn of(slot u32, generation u32) Ref[T] { Ref[T][slot, generation | 1u32]; }
+  pub fn of(slot u32, generation u32) Ref[T] { new Ref[T](slot, generation | 1u32); }
 
   // Whether it is none()
   pub fn isNone(self) Bool { gen == 0u32; }
@@ -176,7 +176,7 @@ pub struct Pool[T] is ShapeChanging {
 
   // An empty pool: no block until the first value arrives
   pub fn empty() Pool[T] {
-    Pool[T][0usize as *Slot[T], 0u32, 0u32, noSlot, 0u32, 0u32, 4294967295u32, 0u32, 0usize as *Stale];
+    new Pool[T](0usize as *Slot[T], 0u32, 0u32, noSlot, 0u32, 0u32, 4294967295u32, 0u32, 0usize as *Stale);
   }
 
   // An empty pool whose slots are retired after generation 'last' rather
@@ -185,7 +185,7 @@ pub struct Pool[T] is ShapeChanging {
   // and 0 as 1.
   pub fn withLastGeneration(last u32) Pool[T] {
     imm odd = if last == 0u32 {1u32;} else if (last & 1u32) == 0u32 {last - 1u32;} else {last;};
-    Pool[T][0usize as *Slot[T], 0u32, 0u32, noSlot, 0u32, 0u32, odd, 0u32, 0usize as *Stale];
+    new Pool[T](0usize as *Slot[T], 0u32, 0u32, noSlot, 0u32, 0u32, odd, 0u32, 0usize as *Stale);
   }
 
   // How many values it holds, how many slots its block has room for, and how
@@ -292,7 +292,7 @@ pub struct Pool[T] is ShapeChanging {
       imm node = libc.malloc(mem.sizeof[Stale]()) as *Stale;
       if fresh as usize == 0usize or node as usize == 0usize { outOfMemory(); }
       libc.memcpy(fresh, slots as *u8, usize.from(cap) * size);
-      mem.writeRaw(node, Stale[stale, slots as *u8]);
+      mem.writeRaw(node, new Stale(stale, slots as *u8));
       stale = node;
       slots = fresh as *Slot[T];
     }

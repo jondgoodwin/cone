@@ -115,8 +115,8 @@ pub struct Arc is Curve {
 
   pub fn make(length f32, curl f32) Arc {
     imm c = if curl < 0. { 0.; } else { curl; };
-    if c < STRAIGHT { return Arc[length, 0., 0.]; }
-    Arc[length, c, length / c];
+    if c < STRAIGHT { return new Arc(length, 0., 0.); }
+    new Arc(length, c, length / c);
   }
 
   pub fn length(self &) f32 { len; }
@@ -126,17 +126,17 @@ pub struct Arc is Curve {
 
   pub fn frameAt(self &, s f32) CurveFrame {
     if radius == 0. {
-      return CurveFrame[Vec3[0., s, 0.], Vec3[-1., 0., 0.], Vec3[0., 0., 1.], Vec3[0., 1., 0.]];
+      return new CurveFrame(new Vec3(0., s, 0.), new Vec3(-1., 0., 0.), new Vec3(0., 0., 1.), new Vec3(0., 1., 0.));
     }
     imm t = clampf(s, 0., len);
     imm a = t / radius;
     imm c = cos(a);
     imm sn = sin(a);
-    imm o = Vec3[radius - radius * c, radius * sn, 0.];
-    imm tangent = Vec3[sn, c, 0.];
+    imm o = new Vec3(radius - radius * c, radius * sn, 0.);
+    imm tangent = new Vec3(sn, c, 0.);
     imm beyond = s - t;
-    CurveFrame[Vec3[o.x + tangent.x * beyond, o.y + tangent.y * beyond, 0.], Vec3[0. - c, sn, 0.],
-      Vec3[0., 0., 1.], tangent];
+    new CurveFrame(new Vec3(o.x + tangent.x * beyond, o.y + tangent.y * beyond, 0.), new Vec3(0. - c, sn, 0.),
+      new Vec3(0., 0., 1.), tangent);
   }
 
   pub fn nearest(self &, p Vec3) f32 { self.project(p).s; }
@@ -146,7 +146,7 @@ pub struct Arc is Curve {
   pub fn project(self &, p Vec3) ArcProjection {
     if radius == 0. {
       imm s = clampf(p.y, 0., len);
-      return ArcProjection[s, len3(Vec3[p.x, p.y - s, p.z])];
+      return new ArcProjection(s, len3(new Vec3(p.x, p.y - s, p.z)));
     }
     // The angle round the centre, from the start, towards the end
     imm vx = p.x - radius;
@@ -158,18 +158,18 @@ pub struct Arc is Curve {
     mut delta = angle - middle;
     if delta < 0. - pi { delta = delta + pi * 2.; }
     imm a = middle + delta;
-    if a <= 0. { return ArcProjection[0., len3(p)]; }
-    if a >= curl { return ArcProjection[len, len3(p - self.point(len))]; }
-    ArcProjection[a * radius, len2(len2(vx, vy) - radius, p.z)];
+    if a <= 0. { return new ArcProjection(0., len3(p)); }
+    if a >= curl { return new ArcProjection(len, len3(p - self.point(len))); }
+    new ArcProjection(a * radius, len2(len2(vx, vy) - radius, p.z));
   }
 
   // The arc cut into 'count' cells, for 'repeatAlongArc'
   pub fn cells(self &, count i32) ArcCells {
     imm n = if count < 1 { 1; } else { count; };
     imm step = len / f32.from(n);
-    if radius == 0. { return ArcCells[n, step, 1., 0., 1., 0.]; }
+    if radius == 0. { return new ArcCells(n, step, 1., 0., 1., 0.); }
     imm turn = curl / f32.from(n);
-    ArcCells[n, step, cos(turn * 0.5), sin(turn * 0.5), cos(turn), sin(turn)];
+    new ArcCells(n, step, cos(turn * 0.5), sin(turn * 0.5), cos(turn), sin(turn));
   }
 }
 
@@ -195,11 +195,11 @@ pub struct ArcCells {
 // Cell k's frame on the arc, from the cosine c and sine s of its angle
 fn arcCellFrame(arc &Arc, cells &ArcCells, k i32, c f32, s f32) CurveFrame {
   if arc.radius == 0. {
-    return CurveFrame[Vec3[0., (f32.from(k) + 0.5) * cells.step, 0.], Vec3[-1., 0., 0.], Vec3[0., 0., 1.],
-      Vec3[0., 1., 0.]];
+    return new CurveFrame(new Vec3(0., (f32.from(k) + 0.5) * cells.step, 0.), new Vec3(-1., 0., 0.), new Vec3(0., 0., 1.),
+      new Vec3(0., 1., 0.));
   }
-  CurveFrame[Vec3[arc.radius - arc.radius * c, arc.radius * s, 0.], Vec3[0. - c, s, 0.], Vec3[0., 0., 1.],
-    Vec3[s, c, 0.]];
+  new CurveFrame(new Vec3(arc.radius - arc.radius * c, arc.radius * s, 0.), new Vec3(0. - c, s, 0.), new Vec3(0., 0., 1.),
+    new Vec3(s, c, 0.));
 }
 
 // 'repeatAlong' on an arc, the same exact union, its cells' frames stepped
@@ -270,7 +270,7 @@ pub struct PathCurve is Curve {
     mut i = 0usize;
     while i < fs.len() {
       imm f = *fs[i];
-      frames.push(CurveFrame[f.origin, f.normal, f.binormal, f.tangent]);
+      frames.push(new CurveFrame(f.origin, f.normal, f.binormal, f.tangent));
       i = i + 1usize;
     }
     mut distances = List[f32].withCapacity(ds.len());
@@ -280,7 +280,7 @@ pub struct PathCurve is Curve {
       i = i + 1usize;
     }
     imm total = if ds.len() > 0usize { *ds[ds.len() - 1usize]; } else { 0.; };
-    PathCurve[frames, distances, total];
+    new PathCurve(frames, distances, total);
   }
 
   pub fn length(self &) f32 { total; }
@@ -315,14 +315,14 @@ pub struct PathCurve is Curve {
     imm n = frames.len();
     imm first = *frames[0usize];
     if n == 1usize or total <= 0. {
-      return CurveFrame[first.origin + first.tangent * s, first.normal, first.binormal, first.tangent];
+      return new CurveFrame(first.origin + first.tangent * s, first.normal, first.binormal, first.tangent);
     }
     if s <= 0. {
-      return CurveFrame[first.origin + first.tangent * s, first.normal, first.binormal, first.tangent];
+      return new CurveFrame(first.origin + first.tangent * s, first.normal, first.binormal, first.tangent);
     }
     imm lastF = *frames[n - 1usize];
     if s >= total {
-      return CurveFrame[lastF.origin + lastF.tangent * (s - total), lastF.normal, lastF.binormal, lastF.tangent];
+      return new CurveFrame(lastF.origin + lastF.tangent * (s - total), lastF.normal, lastF.binormal, lastF.tangent);
     }
     mut i = 0usize;
     while i + 2usize < n and *distances[i + 1usize] <= s {
@@ -335,6 +335,6 @@ pub struct PathCurve is Curve {
     imm t = a.tangent.lerp(b.tangent, f).normalize();
     imm nl = a.normal.lerp(b.normal, f);
     imm nr = (nl - t * dot3(t, nl)).normalize();
-    CurveFrame[a.origin.lerp(b.origin, f), nr, t.cross(nr), t];
+    new CurveFrame(a.origin.lerp(b.origin, f), nr, t.cross(nr), t);
   }
 }

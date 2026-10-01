@@ -1954,6 +1954,7 @@ Nodes *parseIncludeCheck(ProgramNode *pgm, BuildDesc *desc, char *text, char *ur
     parse.mod = NULL;
     parse.typenode = NULL;
     parse.inrettype = 0;
+    parse.intype = 0;
     parse.core = NULL;
     parse.build = NULL;
     parse.generated = incFileIsGenerated(text);
@@ -2028,6 +2029,7 @@ ProgramNode *parsePgm(ConeOptions *opt, BuildDesc *desc) {
     parse.mod = NULL;
     parse.typenode = NULL;
     parse.inrettype = 0;
+    parse.intype = 0;
     parse.core = NULL;
     parse.build = NULL;
     parse.generated = 0;

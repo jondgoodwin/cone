@@ -8,8 +8,8 @@
 //
 //   fn build() {
 //     mut a = Arena.empty();
-//     imm root = a.alloc(Node[0, 0usize as *Node]);
-//     imm leaf = a.alloc(Node[1, root as *Node]);
+//     imm root = a.alloc(new Node(0, 0usize as *Node));
+//     imm leaf = a.alloc(new Node(1, root as *Node));
 //     ...
 //   }   // 'a' dies here: leaf's death, then root's, then the blocks
 //
@@ -36,7 +36,7 @@
 //     mut s = Arena.empty();                 // the scratch
 //     imm seen = s.alloc(List[&mut Tally].empty());
 //     ...count(&mut s, seen, word)...        // lent to the functions that work
-//     Answer[best.word.copy(), seen.len()];  // only values of its own leave
+//     new Answer(best.word.copy(), seen.len());  // only values of its own leave
 //   }   // every value in 's' dies here, then its blocks are freed
 //
 // An allocation loans nothing of the arena: Arena declares 'NoLoanMut' (a
@@ -54,8 +54,8 @@
 // not built. A scratch needs no such pairing, only the borrow rules, but some
 // of those are not built either, so a reference can still outlive its arena:
 // - A borrow held inside another value, rather than being the value, carries
-//   no lifetime: returning 'Holder[a.alloc(v)]', a '+Rc Holder[...]' or an
-//   'Option' holding one, assigning 'outer = Holder[a.alloc(v)]', pushing one
+//   no lifetime: returning 'new Holder(a.alloc(v))', a '+Rc Holder[...]' or an
+//   'Option' holding one, assigning 'outer = new Holder(a.alloc(v))', pushing one
 //   onto an outer 'List', a call storing one argument in a field of another
 //   ('stash(&mut outer, a.alloc(v))'), and reading one back out of a list
 //   ('*seen[0usize]', returned) all compile and dangle.
@@ -125,7 +125,7 @@ pub struct Arena is NoLoanMut {
 
   // An arena holding nothing, with no block until the first value arrives
   pub fn empty() Arena {
-    Arena[0usize as *Block, 0usize, 0usize, 0usize as *FinalNode, 0usize, 0usize];
+    new Arena(0usize as *Block, 0usize, 0usize, 0usize as *FinalNode, 0usize, 0usize);
   }
 
   // An arena holding nothing yet, whose first block is allocated now, with
@@ -135,7 +135,7 @@ pub struct Arena is NoLoanMut {
     imm room = blockRoom(bytes);
     imm blk = newBlock(0usize as *Block, room);
     imm start = blk as usize + mem.sizeof[Block]();
-    Arena[blk, start, start + room, 0usize as *FinalNode, 0usize, 1usize];
+    new Arena(blk, start, start + room, 0usize as *FinalNode, 0usize, 1usize);
   }
 
   // Move value into the arena, and a reference to it there. The reference is
@@ -176,7 +176,7 @@ pub struct Arena is NoLoanMut {
     imm at = self.bump(hdr, al, size);
     // The newest header goes at the front of the list: it is finalized first
     imm node = (at - hdr) as *FinalNode;
-    mem.writeRaw(node, FinalNode[finals, run]);
+    mem.writeRaw(node, new FinalNode(finals, run));
     finals = node;
     nfinals = nfinals + 1usize;
     at as *u8;
@@ -242,7 +242,7 @@ fn newBlock(prev *Block, room usize) *Block {
   }
   imm blk = libc.malloc(mem.sizeof[Block]() + room) as *Block;
   if blk as usize == 0usize { panic("arena: out of memory for a block"); }
-  mem.writeRaw(blk, Block[prev]);
+  mem.writeRaw(blk, new Block(prev));
   blk;
 }
 

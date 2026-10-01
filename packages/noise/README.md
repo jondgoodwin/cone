@@ -8,7 +8,7 @@ functions for shaders in `src/noise.slang` and `src/phacelle.slang`.
 ```cone
 import noise use *;
 
-imm n = fbm2(Vec2[x, y], seed, 6, 2., 0.5);   // n.value, and n.d, its derivative
+imm n = fbm2(new Vec2(x, y), seed, 6, 2., 0.5);   // n.value, and n.d, its derivative
 imm c = cellular3(p, 1., seed);                // c.f1, c.f2, c.id
 ```
 

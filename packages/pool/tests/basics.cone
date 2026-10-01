@@ -20,8 +20,8 @@ struct Pt { pub x i64; pub y i64; }
 
 fn addGetRemove() {
   mut p = Pool[Pt].empty();
-  imm a = p.add(Pt[1, 2]);
-  imm b = p.add(Pt[3, 4]);
+  imm a = p.add(new Pt(1, 2));
+  imm b = p.add(new Pt(3, 4));
   expectUInt(u64.from(a.slot()), 0, "first value in slot 0");
   expectUInt(u64.from(a.generation()), 1, "as its first occupant");
   expectUInt(u64.from(b.slot()), 1, "second value in slot 1");
@@ -40,7 +40,7 @@ fn addGetRemove() {
 
 fn stale() {
   mut p = Pool[Pt].empty();
-  imm a = p.add(Pt[1, 2]);
+  imm a = p.add(new Pt(1, 2));
   p.remove(a);
   expect(!p.alive(a), "a removed value's reference is not alive");
   match p.get(a) {
@@ -58,16 +58,16 @@ fn stale() {
   imm madeUp = Ref[Pt].of(0u32, 2u32);
   expectUInt(u64.from(madeUp.generation()), 3, "an even generation is made odd");
   expect(!p.alive(madeUp), "so a made-up Ref never reaches a free slot");
-  imm b = p.add(Pt[5, 6]);
+  imm b = p.add(new Pt(5, 6));
   expect(p.alive(madeUp) and madeUp == b, "but does reach the next occupant");
 }
 
 fn reuse() {
   mut p = Pool[Pt].empty();
-  imm a = p.add(Pt[1, 2]);
-  imm b = p.add(Pt[3, 4]);
+  imm a = p.add(new Pt(1, 2));
+  imm b = p.add(new Pt(3, 4));
   p.remove(a);
-  imm c = p.add(Pt[5, 6]);
+  imm c = p.add(new Pt(5, 6));
   expectUInt(u64.from(c.slot()), 0, "the removed slot is taken again");
   expectUInt(u64.from(c.generation()), 3, "by its second occupant");
   expect(!p.alive(a), "the first occupant's reference stays dead");
@@ -75,7 +75,7 @@ fn reuse() {
   expect(!(a == c), "the two references differ");
   expectInt(p[c].x, 5, "and reaches the new value");
   p.remove(c);
-  imm d = p.add(Pt[7, 8]);
+  imm d = p.add(new Pt(7, 8));
   expectUInt(u64.from(d.generation()), 5, "a third occupant");
   expect(!p.alive(a) and !p.alive(c), "neither earlier reference is alive");
   expect(!p.remove(a) and !p.remove(c), "nor can remove the third");
@@ -85,7 +85,7 @@ fn reuse() {
 
 fn mutate() {
   mut p = Pool[Pt].empty();
-  imm a = p.add(Pt[1, 2]);
+  imm a = p.add(new Pt(1, 2));
   match p.getMut(a) {
     case imm s Some { s.value.x = 10; }
     case is None { expect(false, "getMut gives Some"); }
@@ -103,10 +103,10 @@ fn none() {
   imm n = Ref[Pt].none();
   expect(n.isNone(), "none() is none");
   expect(!p.alive(n), "and never alive in an empty pool");
-  p.add(Pt[0, 0]);
+  p.add(new Pt(0, 0));
   expect(!p.alive(n), "nor in a pool holding a value");
   expect(!p.remove(n), "and removes nothing");
-  expect(!p.add(Pt[1, 1]).isNone(), "a real reference is not none");
+  expect(!p.add(new Pt(1, 1)).isNone(), "a real reference is not none");
 }
 
 // Growth moves the block, 4 -> 8 -> 16 -> 32 -> 64 -> 128 for 100 values;
@@ -163,10 +163,10 @@ fn stash(l &mut List[Ref[Pt]], r Ref[Pt]) { l.push(r); }
 
 fn copies() {
   mut p = Pool[Pt].empty();
-  imm a = p.add(Pt[1, 2]);
+  imm a = p.add(new Pt(1, 2));
   imm b = a;
   imm c = pass(a);
-  imm h = Holder[a, 5];
+  imm h = new Holder(a, 5);
   mut l = List[Ref[Pt]].empty();
   stash(&mut l, a);
   expect(a == b and a == c and a == h.r and a == *l[0usize], "all name the same value");
@@ -183,9 +183,9 @@ struct Node { pub n i64; pub next Ref[Node]; }
 
 fn graph() {
   mut p = Pool[Node].empty();
-  imm a = p.add(Node[1, Ref[Node].none()]);
-  imm b = p.add(Node[2, a]);
-  imm c = p.add(Node[3, b]);
+  imm a = p.add(new Node(1, Ref[Node].none()));
+  imm b = p.add(new Node(2, a));
+  imm c = p.add(new Node(3, b));
   (&mut p[a]).next = c;
   mut walk = 0i64;
   mut at = a;

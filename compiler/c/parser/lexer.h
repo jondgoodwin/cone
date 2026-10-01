@@ -176,6 +176,7 @@ enum TokenTypes {
     IntoToken,     // 'into'
     InlineToken,   // 'inline'
     WhereToken,    // 'where', which opens a generic's constraints
+    NewToken,      // 'new': a construction, 'new Point(1, 2)', and an initializer's permission, '&new'
     VoidToken,     // 'void'
     nilToken,      // 'nil'
     trueToken,     // 'true'

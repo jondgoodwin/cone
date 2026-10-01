@@ -28,11 +28,11 @@
 //   struct Holder { pub r &mut Pt; }
 //   fn field() Holder {
 //     mut a = Arena.empty();
-//     Holder[a.alloc(Pt[1, 2])];   // a borrow in a field of a returned value:
-//   }                              // a field's borrow is not checked
+//     new Holder(a.alloc(new Pt(1, 2)));   // a borrow in a field of a returned value:
+//   }                                      // a field's borrow is not checked
 //
 // It is a borrow held inside another value, which carries no lifetime; returning a '+Rc Holder[...]' or an
-// 'Option' holding the borrow, assigning 'outer = Holder[a.alloc(..)]',
+// 'Option' holding the borrow, assigning 'outer = new Holder(a.alloc(..))',
 // pushing it onto an outer List, a call storing one argument in a field of
 // another, and returning one read back out of a list ('*seen[0usize]') are the
 // same hole. Another: swapping a borrow into an outer variable ('outer <=> r')
@@ -63,8 +63,8 @@ struct Watches {
 // Values that are made and read in a scratch, and never leave it
 fn readBack() i64 {
   mut s = Arena.empty();
-  imm p = s.alloc(Pt[3, 4]);
-  imm q = s.alloc(Pt[p.x + 1, p.y + 1]);
+  imm p = s.alloc(new Pt(3, 4));
+  imm q = s.alloc(new Pt(p.x + 1, p.y + 1));
   p.x + q.y;
 }
 
@@ -74,7 +74,7 @@ fn getX(p &Pt) i64 { p.x; }
 // Borrows passed down to functions that write and read through them
 fn passDown() i64 {
   mut s = Arena.empty();
-  imm p = s.alloc(Pt[1, 2]);
+  imm p = s.alloc(new Pt(1, 2));
   bump(p);
   bump(p);
   getX(p);
@@ -84,9 +84,9 @@ fn passDown() i64 {
 // and then pointed at another by assignment
 fn siblings() i64 {
   mut s = Arena.empty();
-  imm x = s.alloc(Fin[1]);
-  imm w = s.alloc(Watches[2, x]);
-  imm y = s.alloc(Fin[3]);
+  imm x = s.alloc(new Fin(1));
+  imm w = s.alloc(new Watches(2, x));
+  imm y = s.alloc(new Fin(3));
   w.r = y;
   w.r.n;
 }
@@ -94,11 +94,11 @@ fn siblings() i64 {
 // A shorter-lived scratch's value refers into a longer-lived one's
 fn innerRefersOuter() i64 {
   mut outer = Arena.empty();
-  imm keep = outer.alloc(Fin[1]);
+  imm keep = outer.alloc(new Fin(1));
   mut seen = 0i64;
   {
     mut inner = Arena.empty();
-    imm w = inner.alloc(Watches[3, keep]);
+    imm w = inner.alloc(new Watches(3, keep));
     seen = w.r.n;
   }
   expectInt(log, 3, "the inner scratch's value died at its block's end");
@@ -108,20 +108,20 @@ fn innerRefersOuter() i64 {
 // A callee with a scratch of its own, handed a borrow into its caller's
 fn helper(up &mut Fin) i64 {
   mut mine = Arena.empty();
-  imm w = mine.alloc(Watches[2, up]);
-  imm f = mine.alloc(Fin[3]);
+  imm w = mine.alloc(new Watches(2, up));
+  imm f = mine.alloc(new Fin(3));
   w.r.n + f.n;
 }
 
 fn nestedCalls() i64 {
   mut s = Arena.empty();
-  imm f = s.alloc(Fin[1]);
+  imm f = s.alloc(new Fin(1));
   helper(f) * 10 + f.n;
 }
 
 // The scratch lent to a function that allocates into it for its caller: what
 // it returns lives as long as the caller's scratch
-fn make(s &mut Arena, n i64) &mut Fin { s.alloc(Fin[n]); }
+fn make(s &mut Arena, n i64) &mut Fin { s.alloc(new Fin(n)); }
 
 fn allocForCaller() i64 {
   mut s = Arena.empty();
@@ -133,9 +133,9 @@ fn allocForCaller() i64 {
 // An early return ends the scratch too, with what it held so far
 fn earlyReturn(stop Bool) i64 {
   mut s = Arena.empty();
-  s.alloc(Fin[1]);
+  s.alloc(new Fin(1));
   if stop { return 7; }
-  s.alloc(Fin[2]);
+  s.alloc(new Fin(2));
   8;
 }
 
@@ -145,8 +145,8 @@ fn perPass() {
   mut i = 1i64;
   while i <= 3i64 {
     mut s = Arena.empty();
-    s.alloc(Fin[i]);
-    s.alloc(Fin[i + 4i64]);
+    s.alloc(new Fin(i));
+    s.alloc(new Fin(i + 4i64));
     i = i + 1i64;
   }
 }
@@ -165,16 +165,16 @@ fn roomUpFront() {
   mut s = Arena.withRoom(24000usize);
   expectUInt(u64.from(s.blockCount()), 1, "the first block is there before any value");
   mut i = 0i64;
-  while i < 1000i64 { s.alloc(Counted[i]); i = i + 1i64; }
+  while i < 1000i64 { s.alloc(new Counted(i)); i = i + 1i64; }
   expectUInt(u64.from(s.blockCount()), 1, "1000 values fit in the room asked for");
-  s.alloc(Counted[1000]);
+  s.alloc(new Counted(1000));
   expectUInt(u64.from(s.blockCount()), 2, "the 1001st needs another block");
 }
 
 // Less room than a block asks for a block's worth
 fn smallRoom() {
   mut s = Arena.withRoom(16usize);
-  imm p = s.alloc(Pt[5, 6]);
+  imm p = s.alloc(new Pt(5, 6));
   s.alloc([100; 1i64]);
   expectInt(p.x + p.y, 11, "values read back");
   expectUInt(u64.from(s.blockCount()), 1, "16 bytes of room is a 4096-byte block");

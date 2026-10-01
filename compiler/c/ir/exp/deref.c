@@ -45,5 +45,14 @@ void derefTypeCheck(TypeCheckState *pstate, StarNode *node) {
 
 // Perform data flow analysis on deref node
 void derefFlow(FlowState *fstate, StarNode **node) {
+    // '*self' and 'self.x' in an init reach through self, which is allowed
+    // once it is filled (flowNewSelf)
+    if (flowNewSelf((*node)->vtexp)) {
+        int svthrough = flowThroughSelf;
+        flowThroughSelf = 1;
+        flowLoadThroughRef(fstate, &(*node)->vtexp);
+        flowThroughSelf = svthrough;
+        return;
+    }
     flowLoadThroughRef(fstate, &(*node)->vtexp);
 }

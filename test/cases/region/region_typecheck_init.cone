@@ -1,15 +1,18 @@
 // The 'init' method a region or a permission may declare, and the shape it has
 // to have when it does.
 //
-// 'init' is optional on both. Where it exists, allocation calls it and stores
-// what it returns into the allocation's header -- core's 'Rc' uses it to set
-// the reference count to one -- so it may take no arguments and must return its
-// own type. The region check is ir/types/region.c, run where the region is
-// declared, and the permission check is ir/types/permission.c, run where an
-// allocation names the permission, which is why the permissions are allocated
-// from below and the regions need not be; they are separated from the
-// scenario for the other region methods, region_typecheck_region, because the
-// permission half is reached by a different call.
+// 'init' is optional on both. Where it exists, allocation calls it on the
+// allocation's header, right after 'alloc', and it fills the header in place
+// -- core's 'Rc' uses it to set the reference count to one -- so it is
+// 'fn init(self &new)', taking nothing else. That it fills in place and
+// returns nothing is every struct's init's rule, checked where the method is
+// (ir/stmt/fndcl.c); that it takes nothing but self is the region's rule,
+// checked in ir/types/region.c where the region is declared, and the
+// permission's, checked in ir/types/permission.c where an allocation names the
+// permission, which is why the permissions are allocated from below and the
+// regions need not be; they are separated from the scenario for the other
+// region methods, region_typecheck_region, because the permission half is
+// reached by a different call.
 //
 // The permission cases are the only part of this group that touches a lock
 // permission. There are no lock permission types: the six permissions are
@@ -22,22 +25,23 @@ mod region_typecheck_init;
 
 struct RegionParms is RegionRef {
   fn alloc(size usize) *u8 inline { malloc(size); }
-  fn init(x usize) RegionParms inline { RegionParms[]; }            //~ ErrorBadAlloc "Region init method may not have parameters"
+  fn init(self &new, x usize) inline { *self = new RegionParms(); }       //~ ErrorBadAlloc "Region init method may not have parameters but self"
 }
 
 struct RegionReturn is RegionRef {
+  cnt usize;
   fn alloc(size usize) *u8 inline { malloc(size); }
-  fn init() usize inline { 1usize; }                                //~ ErrorBadAlloc "Region init method must return initial value"
+  fn init() RegionReturn inline { new RegionReturn(1usize); }              //~ ErrorInitDcl "An init fills its value in place"
 }
 
 struct permParms {
   held usize;
-  fn init(x usize) permParms inline { permParms[0usize]; }          //~ ErrorInvType "Permission init method may not have parameters"
+  fn init(self &new, x Bool) inline { *self = new permParms(0usize); }     //~ ErrorInvType "Permission init method may not have parameters but self"
 }
 
 struct permReturn {
   held usize;
-  fn init() usize inline { 0usize; }                                //~ ErrorInvType "Permission init method must return initial value"
+  fn init(self &new) usize inline { *self = new permReturn(0usize); 0usize; }  //~ ErrorInitDcl "An init returns nothing"
 }
 
 fn f() {

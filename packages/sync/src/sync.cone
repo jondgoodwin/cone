@@ -317,7 +317,7 @@ fn die(msg &[]u8, file &[]u8 = srcFile(), line u32 = srcLine()) Never {
 pub struct Arc is RegionRef, ThreadSafe {
   cnt usize;
   fn alloc(size usize) *u8 inline {libc.malloc(size);}
-  fn init() Arc inline {Arc[1usize];}
+  fn init(self &new) inline {*self = new Arc(1usize);}
   fn aliasRef(self &uni Arc) inline {
     mem.atomicAdd[usize](self as *usize, 1usize, MemOrder.Relaxed[]);
   }
@@ -441,7 +441,7 @@ pub struct Mutex is Move {
   state Atomic[u32];
 
   // An unlocked Mutex
-  pub fn make() Mutex {Mutex[Atomic[u32].of(mutexUnlocked)];}
+  pub fn make() Mutex {new Mutex(Atomic[u32].of(mutexUnlocked));}
 
   // The state word, as core's mem operations reach it
   fn word(self &opaq) *u32 {&(*(self as *Mutex)).state as *u32;}
@@ -552,7 +552,7 @@ pub struct RwLock is Move {
   writerNotify Atomic[u32];
 
   // An unlocked RwLock
-  pub fn make() RwLock {RwLock[Atomic[u32].of(0u32), Atomic[u32].of(0u32)];}
+  pub fn make() RwLock {new RwLock(Atomic[u32].of(0u32), Atomic[u32].of(0u32));}
 
   fn word(self &opaq) *u32 {&(*(self as *RwLock)).state as *u32;}
   fn notifyWord(self &opaq) *u32 {&(*(self as *RwLock)).writerNotify as *u32;}
@@ -778,7 +778,7 @@ pub struct RwLock is Move {
 pub struct Condvar is Move {
   seq Atomic[u32];
 
-  pub fn make() Condvar {Condvar[Atomic[u32].of(0u32)];}
+  pub fn make() Condvar {new Condvar(Atomic[u32].of(0u32));}
 
   fn word(self &opaq) *u32 {&(*(self as *Condvar)).seq as *u32;}
 
@@ -832,7 +832,7 @@ pub struct Once is Move {
   state Atomic[u32];
 
   // A Once whose function has not run
-  pub fn make() Once {Once[Atomic[u32].of(onceIncomplete)];}
+  pub fn make() Once {new Once(Atomic[u32].of(onceIncomplete));}
 
   fn word(self &opaq) *u32 {&(*(self as *Once)).state as *u32;}
 
@@ -1506,7 +1506,7 @@ fn chanInit[T](c *Chan[T], b *Block[T], ring *Cell[T], mask u64) {
 pub struct Sender[T Sendable] is Sendable {
   chan *Chan[T];
 
-  fn made(c *Chan[T]) Sender[T] {Sender[T][c];}
+  fn made(c *Chan[T]) Sender[T] {new Sender[T](c);}
 
   // Put v on the channel: None once it is there. A bounded channel's send
   // waits while it is full; an unbounded one's never waits. If the receiver
@@ -1617,7 +1617,7 @@ pub struct Sender[T Sendable] is Sendable {
   // the count cannot reach 0 meanwhile, and nothing is published by it.
   pub fn clone(self &) Sender[T] {
     mem.atomicAdd[u64](&(*chan).senders as *u64, 1u64, MemOrder.Relaxed[]);
-    Sender[T][chan];
+    new Sender[T](chan);
   }
 
   // The last sender to go closes the channel, and wakes the receiver, which
@@ -1650,7 +1650,7 @@ pub struct SoloSender[T Sendable] is Sendable {
   room u64;                    // the position at which the ring was last seen full
 
   fn made(c *Chan[T], ring *T, mask u64) SoloSender[T] {
-    SoloSender[T][c, ring, mask, 0u64, mask + 1u64];
+    new SoloSender[T](c, ring, mask, 0u64, mask + 1u64);
   }
 
   // Put v on the channel, waiting while it is full: None once it is there,
@@ -1780,7 +1780,7 @@ pub struct Receiver[T Sendable] is Sendable {
   limit u64;                   // single-sender: the senders' index as last read
 
   fn made(c *Chan[T], b *Block[T], ring *Cell[T], mask u64, solo Bool) Receiver[T] {
-    Receiver[T][c, 0u64, b, ring, mask, solo, 0u64];
+    new Receiver[T](c, 0u64, b, ring, mask, solo, 0u64);
   }
 
   // Each way of receiving asks which kind the channel is once, at the top,

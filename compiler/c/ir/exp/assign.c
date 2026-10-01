@@ -394,7 +394,11 @@ static void assignFlowLvalReads(FlowState *fstate, INode **lvalp) {
         break;
     }
     case DerefTag:
-        flowLoadValue(fstate, &((StarNode *)*lvalp)->vtexp);
+        // Through an init's 'self', once filled (flowNewSelf)
+        if (flowNewSelf(((StarNode *)*lvalp)->vtexp))
+            flowNewSelfThrough(fstate, &((StarNode *)*lvalp)->vtexp);
+        else
+            flowLoadValue(fstate, &((StarNode *)*lvalp)->vtexp);
         break;
     case FldAccessTag:
         assignFlowLvalReads(fstate, &((FnCallNode *)*lvalp)->objfn);
@@ -418,7 +422,10 @@ void assignFlow(FlowState *fstate, AssignNode **nodep) {
         }
     }
     else {
-        assignFlowLvalReads(fstate, &node->lval);
+        // '*self = value' in an init fills self: no value is there to read,
+        // nor to finalize as it is replaced
+        if (!flowNewSelfFill(node->lval))
+            assignFlowLvalReads(fstate, &node->lval);
         flowGateAssigned(fstate, node->lval);
     }
 
