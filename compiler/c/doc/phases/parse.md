@@ -483,7 +483,7 @@ away the ones that were paths.
 | --- | --- | --- |
 | `TupleTag` | `TTupleTag` (all types) or `VTupleTag` (all values); mixed is `ErrorBadElems` | `ttupleNameRes` |
 | `StarTag` | `PtrTag` if the operand is a type, else `DerefTag` | `ptrNameRes` |
-| `ArrayTag` | `ArrayLitTag`; a type as its element, `[3; i32]`, is refused (`ErrorArrayTypeOld`) | `arrayNameRes` |
+| `ArrayTag` | `ArrayLitTag`; `[n; x]` is refused, a type for x the old array type (`ErrorArrayTypeOld`), a value the retired fill literal (`ErrorFillLiteral`) | `arrayNameRes` |
 | `RefTag` | stays a ref type, or becomes `BorrowTag`/`AllocateTag` by region | `refNameRes` |
 | `ArrayRefTag` | stays a ref type, or becomes `ArrayBorrowTag` | `arrayRefNameRes` |
 | `QuesTag` | `FnCallTag` for `Option[T]`, or folds into an `AllocateTag` with `FlagQues` | `allocateQuesNameRes` |
