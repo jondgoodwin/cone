@@ -688,16 +688,21 @@ itself, moved); then `alloc`, and its null check; then the region's `init` and a
 permission's fill their parts of the header in place, each called with its
 part's address as its `self`; then a declared init fills the value's part in
 place (`genlNewFill`), or the value made or finished is stored there, no
-value init running; then the reference
-goes to its destination. A traced region's `alloc` may collect, so the
+value init running, or an array's contents (`FlagAllocFill`, the literal
+not evaluated before `alloc`) fill it in place, element by element and run by
+run (`genlArrayLitInto`), each value evaluated then; then the reference
+goes to its destination. A `trynew`'s contents are therefore evaluated only
+on the path where the memory was had. A traced region's `alloc` may collect, so the
 arguments' traced parts are births ("Roots", below), rooted while it runs.
 And `alloc` links the new block into the collector's heap, where an `init`
-that allocates may run a collection step around it: so before anything else
-runs, the value's part is zeroed when its type holds a traced reference
-(`itypeHoldsTraced`), and the block is rooted in a slot of its own
+or a value of the contents that allocates may run a collection step around
+it: so before anything else runs, the value's part is zeroed when its type
+holds a traced reference (`itypeHoldsTraced`; an array by a `memset`, never
+one aggregate store), and the block is rooted in a slot of its own
 (`filling`), which a step finds it through, its fields null or filled. The
 init's stores into it take the write barrier, as any store through a
-reference does. A value made before `alloc` and stored whole takes the
+reference does, and so does each element the contents store, since the next
+element's value may run a step. A value made before `alloc` and stored whole takes the
 barrier only where a region's or permission's `init` ran in between, since
 otherwise nothing can have marked the block yet. Once filled, the slot is
 nulled and the reference becomes the allocation's birth, or the local it is
@@ -1085,7 +1090,8 @@ variables.
 | | `genlAtomicIntrinsic` | an atomic intrinsic, reached from `genlFnCall` with the call's constant orderings |
 | | `genlConvert`, `genlRecast`, `genlIsType` | the three cast forms |
 | | `genlArrayIndex`, `genlBoundsCheck` | multi-dimensional GEP and its checks |
-| | `genlArrayLitInto`, `genlArrayRun` | an array's contents repeating a value, filled in place element by element: a `memset` for a null constant, a loop for any other repeated value, never one aggregate ([literals](../nodes/literals.md), "Generation") |
+| | `genlArrayLitInto`, `genlArrayRun` | an array's contents repeating a value, or the scalars of one written with several sizes, filled in place element by element, into a variable or an allocation: a `memset` for a null constant, a loop for any other repeated value, never one aggregate ([literals](../nodes/literals.md), "Generation") |
+| | `genlArrayLitScalars`, `genlArrayConstRows` | a literal of scalars wanted as a value: the nested constant, rows cut from the scalars, or filled into a local and loaded |
 | | `genlSubslice` | a borrowed range index, `&x[a..b]`: the slice `{&x[a], b - a}` once `a <= b <= count` is checked |
 | `genllvm/genlalloc.c` | `genlRefTypeSetup`, `genlallocref` | the `{region, perm, value}` header and an allocation's emission, in its order (section 3) |
 | | `genlRegionHeader`, `genlRegionAlias`, `genlRegionDealias`, `genlRegionDeath` | the header a region method is handed; calling `aliasRef`, `dealiasRef` and `free` at each reference event; a death in place, then `free` |

@@ -202,7 +202,8 @@ type: `Array[T, n, …]`, its head bound to `arrayTypeDcl` (`Array`, a name ever
 module reaches unless it declares the name), is built into the array type node
 once its arguments are resolved, nested for several sizes with the first the
 outermost ([literals](../nodes/literals.md), "Shape"), so nothing later sees
-how it was written. Fewer than two arguments is `ErrorArrayTypeArgs`; a first
+how it was written but a construction's contents, which read the count of
+sizes kept on the outermost node (`nsizes`). Fewer than two arguments is `ErrorArrayTypeArgs`; a first
 argument that is not a type, nor a generic parameter standing for one,
 `ErrorArrayTypeElem`; the sizes are type check's (`arrayTypeCheck`: an integer
 literal). `Array` alone, with no brackets, is refused at type check

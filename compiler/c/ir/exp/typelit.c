@@ -437,10 +437,13 @@ static INode *typeLitAllocValue(TypeCheckState *pstate, FnCallNode *node, INode 
 // value's is, or a finished value, 'new Rc[i32](5)'. The allocation node holds
 // that value, so that generation runs an allocation's order: the init's
 // arguments or the value, 'alloc', the region's init, the permission's, the
-// value's init in place or the value's store, the destination (genlallocref).
+// value's init in place or the value's store (or an array's contents filled
+// in place, typeLitNewFilled), the destination (genlallocref).
 // 'trynew' types the allocation as an Option of the reference, None when
 // memory runs out.
-static void typeLitNewAllocate(TypeCheckState *pstate, FnCallNode **nodep, RefNode *reftype, INode *option) {
+// 'value' is the value already made when the construction's contents give it
+// (typeLitNewFilled), and NULL when the parentheses do.
+static void typeLitNewAllocate(TypeCheckState *pstate, FnCallNode **nodep, RefNode *reftype, INode *option, INode *value) {
     FnCallNode *node = *nodep;
     if (reftype->region == borrowRef) {
         errorMsgNode((INode*)node, ErrorNewType,
@@ -453,7 +456,8 @@ static void typeLitNewAllocate(TypeCheckState *pstate, FnCallNode **nodep, RefNo
         return;
     }
 
-    INode *value = typeLitAllocValue(pstate, node, reftype->vtexp);
+    if (value == NULL)
+        value = typeLitAllocValue(pstate, node, reftype->vtexp);
     if (value == NULL)
         return;
 
@@ -487,6 +491,26 @@ static void typeLitNewAllocate(TypeCheckState *pstate, FnCallNode **nodep, RefNo
 // which generation hands the memory the value goes into (genlNew).
 void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     typeLitNewChecked(pstate, nodep, 0);
+}
+
+// 'new Rc[mut, Array[i32, 4]] <- fill 0': the allocation, of the reference
+// type 'reftype' the construction names (already checked), whose value is the
+// array literal of its contents, 'lit' (contentsLowerAlloc). The allocation
+// fills it in place once the memory is had (FlagAllocFill, genlallocref), so
+// with 'trynew' it is filled only when the memory was had. Answers the
+// allocation, or NULL when it was refused, reported.
+INode *typeLitNewFilled(TypeCheckState *pstate, FnCallNode **nodep, RefNode *reftype, INode *lit) {
+    FnCallNode *node = *nodep;
+    INode *option = NULL;
+    if (node->flags & FlagTryNew) {
+        option = node->methfld;
+        node->methfld = NULL;
+    }
+    typeLitNewAllocate(pstate, nodep, reftype, option, lit);
+    if ((*nodep)->tag != AllocateTag)
+        return NULL;
+    (*nodep)->flags |= FlagAllocFill;
+    return (INode*)*nodep;
 }
 
 // typeLitNewCheck, its arguments already checked when 'argschecked' (an
@@ -536,7 +560,7 @@ static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int ar
     INode *typedcl = itypeGetTypeDcl(node->objfn);
     Name *written = isNameUseNode(node->objfn) ? ((NameUseNode*)node->objfn)->namesym : NULL;
     if (typedcl->tag == RefTag || typedcl->tag == VirtRefTag) {
-        typeLitNewAllocate(pstate, nodep, (RefNode*)typedcl, option);
+        typeLitNewAllocate(pstate, nodep, (RefNode*)typedcl, option, NULL);
         return;
     }
     if (option) {

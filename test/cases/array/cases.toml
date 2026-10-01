@@ -17,7 +17,9 @@
 # the result of an instruction and the group did not notice until a counted
 # reference had to be filled into one. array_contents is the construction with
 # contents in depth: each entry form, a value evaluated for each element, rows,
-# and the positions a construction is written in.
+# and the positions a construction is written in; array_contents_scalars the
+# contents of an array written with several sizes, its scalars row by row,
+# beside the nested spelling's rows.
 #
 # The array syntax gives the parser nothing of its own to reject. Name
 # resolution lowers 'Array[T, n]' into the array type and refuses what it
@@ -28,7 +30,9 @@
 # alone, array_typecheck_range the range a size may take (0 through
 # 4294967295), array_reject_shape covers bracket forms that never become a
 # well-formed array literal, array_typecheck_contents contents that do not fill
-# an array exactly, array_typecheck_counts what an entry of them may give, and
+# an array exactly, array_typecheck_counts what an entry of them may give,
+# array_typecheck_scalars what the contents of one written with several sizes
+# may give, and
 # array_reject_use covers an array value that is well formed being
 # initialized, indexed or accessed wrongly. Together they would exceed the
 # three-to-six diagnostics one scenario should carry.
@@ -114,6 +118,29 @@ target = "preir"
 contains = ["%fillindex = phi i64 [ 1, %entry ], [ %fillnext, %fillloop ]",
             "%fillmore = icmp ult i64 %fillnext, 100000"]
 excludes = ["insertvalue [100000 x i8]"]
+
+# An array written with several sizes is filled with its scalars, row by row,
+# and the nested spelling with its rows; the two are one type. A 'run'
+# because the claim is which scalar lands at which indices, which only reading
+# each one back shows, and how often a computed value is evaluated, which a
+# counter shows. The checks hold that the scalars are stored into the array
+# seen as one run of them, a null fill one memset over all 24 bytes, and that a
+# global's contents are a constant of the nested type.
+[scenario.array_contents_scalars]
+category = "run"
+description = "The contents of an array written with several sizes are its scalars, row-major: listed, 'n of x' and 'fill' across rows, a value evaluated for each scalar, a global; the nested spelling takes rows; the spellings one type; an alias keeps its spelling, a type parameter's argument gives rows"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.array_contents_scalars.check]]
+name = "a-null-fill-of-every-scalar-is-one-memset"
+target = "preir"
+contains = ["call void @llvm.memset.p0.i64(ptr align 1 %fillat, i8 0, i64 24, i1 false)"]
+excludes = ["store [2 x [3 x [4 x i8]]]"]
+
+[[scenario.array_contents_scalars.check]]
+name = "global-contents-of-several-sizes-are-a-nested-constant"
+target = "preir"
+contains = ["@board = internal global [2 x [3 x i32]] [[3 x i32] [i32 1, i32 2, i32 3], [3 x i32] [i32 4, i32 5, i32 6]]"]
 
 # The scenario a code generation fix landed with: an index takes its array's
 # address, and a field's address is taken from its container's, so an array
@@ -225,6 +252,12 @@ diagnostics = 5
 [scenario.array_typecheck_counts]
 category = "reject"
 description = "An array's contents: a count of 'n of x' not constant, negative or past 4294967295, a value not the element type, and a pair"
+tags = ["typecheck"]
+diagnostics = 5
+
+[scenario.array_typecheck_scalars]
+category = "reject"
+description = "The contents of an array written with several sizes: too few scalars or too many, a row where a scalar is wanted, a product of sizes past 4294967295, and an element type that is itself an array"
 tags = ["typecheck"]
 diagnostics = 5
 

@@ -1,0 +1,140 @@
+// An allocation takes contents after '<-' as a construction does, and fills
+// its value in place: 'new Rc[mut, Array[i32, 4]] <- fill 0' allocates the
+// block and fills the array inside the region's memory, an element at a
+// time, with no array built elsewhere and copied in. Every entry form is
+// taken, and an array written with several sizes is filled with its scalars,
+// row by row. The order is printed: the region's 'alloc', its 'init', then
+// each value, evaluated as its element is filled. 'trynew' fills the array
+// only when the memory was had: from a failing region no value is evaluated.
+//
+// A million scalars are filled in place in the allocation, with no aggregate
+// the size of the array anywhere in the IR (the checks in cases.toml).
+//
+// A growable collection's allocation with contents appends them through the
+// reference, as its value construction appends to the value.
+//
+// The finished-value form, 'new Rc[mut, Array[i32, 4]](new Array[i32, 4] <-
+// fill 0)', is region_new_value's; a traced region's, under a collector
+// stepping at every allocation, is the collector package's 'contents' test.
+
+mod region_new_contents;
+
+import stdio use *;
+import libc;
+import collections use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// A region that says when it is called
+struct Loud is RegionRef {
+  pub count usize;
+  fn alloc(size usize) *u8 { printStr("alloc\n"); libc.malloc(size); }
+  fn init(self &new) { printStr("region init\n"); *self = new Loud(1usize); }
+  fn aliasRef(self &uni Loud) inline { count = count + 1usize; }
+  fn dealiasRef(self &uni Loud) Bool inline { count = count - 1usize; count == 0usize; }
+  fn free(self &uni Loud) { printStr("free\n"); libc.free(self as *u8); }
+}
+
+// A region whose every allocation fails
+struct NeverAllocs is RegionRef {
+  fn alloc(size usize) *u8 inline { 0usize as *u8; }
+}
+
+mut calls = 0;
+fn counter() i32 {
+  calls = calls + 1;
+  calls;
+}
+
+fn loudValue(n i32) i32 {
+  printStr("value ");
+  printInt(i64.from(n));
+  printStr("\n");
+  n;
+}
+
+fn regions() {
+  imm rc = new Rc[mut, Array[i32, 4]] <- fill 5;
+  show("rc", i64.from(rc[0] + rc[3]));
+  imm so = new So[Array[i32, 4]] <- 1, 2, fill 3;
+  show("so", i64.from(so[0] * 100 + so[1] * 10 + so[3]));
+  imm sole = new Rc[Array[i64, 3]] <- 2 of 4, 6;
+  show("rc-uni", sole[0] * 100 + sole[1] * 10 + sole[2]);
+  // Each element its own allocation, each evaluated in turn
+  imm owners = new Rc[mut, Array[Rc[mut, i32], 3]] <- fill new Rc[mut, i32](counter());
+  show("owners", i64.from(*owners[0] * 100 + *owners[1] * 10 + *owners[2]));
+}
+
+fn scalars() {
+  // Several sizes: the scalars, row by row
+  imm grid = new Rc[mut, Array[i32, 2, 3]] <- 1, 2, 3, 4, 5, 6;
+  show("grid-row-0", i64.from(grid[0][0] * 100 + grid[0][1] * 10 + grid[0][2]));
+  show("grid-row-1", i64.from(grid[1][0] * 100 + grid[1][1] * 10 + grid[1][2]));
+  imm cube = new So[Array[u8, 2, 3, 4]] <- 5 of 1u8, fill 2u8;
+  show("cube", i64.from(cube[0][1][0]) * 10 + i64.from(cube[0][1][1]));
+  // Nested, the rows
+  imm rows = new Rc[mut, Array[Array[i32, 2], 2]] <- new Array[i32, 2] <- (7, 8), [9, 10];
+  show("nested-rows", i64.from(rows[0][1] * 100 + rows[1][1]));
+  // Through a written alias of the reference type
+  imm aliased = new GridRef <- fill 3;
+  show("alias", i64.from(aliased[1][2]));
+}
+alias GridRef = Rc[mut, Array[i32, 2, 3]];
+
+fn large() {
+  // A million scalars, null and not, filled in the region's memory
+  imm zeros = new Rc[mut, Array[i32, 1000, 1000]] <- fill 0;
+  show("million-zeros", i64.from(zeros[0][0] + zeros[999][999]));
+  imm sevens = new Rc[mut, Array[i32, 1000, 1000]] <- 1, fill 7;
+  show("million-sevens", i64.from(sevens[0][0]) * 10 + i64.from(sevens[999][999]));
+  imm counted = new So[Array[i32, 1000000]] <- fill counter();
+  show("million-counted-first", i64.from(counted[0]));
+  show("million-counted-last", i64.from(counted[999999]));
+}
+
+fn order() {
+  printStr("-- order\n");
+  imm loud = new Loud[mut, Array[i32, 3]] <- loudValue(1), 2 of loudValue(2);
+  show("loud", i64.from(loud[0] * 100 + loud[1] * 10 + loud[2]));
+}
+
+fn fallible() {
+  calls = 0;
+  imm some = trynew Rc[mut, Array[i32, 4]] <- fill counter();
+  match some {
+    case imm x Some[Rc[mut, Array[i32, 4]]] { show("trynew-some", i64.from(x.value[0] * 1000 + x.value[3])); }
+    else { show("trynew-none", 0); }
+  }
+  calls = 0;
+  imm none = trynew NeverAllocs[mut, Array[i32, 4]] <- fill counter();
+  match none {
+    case imm x Some[NeverAllocs[mut, Array[i32, 4]]] { show("trynew-failing", 1); }
+    else { show("trynew-failing-none", 0); }
+  }
+  show("trynew-failing-evaluated", i64.from(calls));
+}
+
+fn collection() {
+  // A List's allocation with contents appends them through the reference
+  imm list = new Rc[mut, List[i32]](10) <- 1, 2, 3;
+  show("list-len", i64.from(list.len()));
+  show("list-items", i64.from(*list[0] * 100 + *list[1] * 10 + *list[2]));
+  imm full = new Rc[mut, List[i32]](4) <- 9, fill 8;
+  show("list-fill-len", i64.from(full.len()));
+  show("list-fill-last", i64.from(*full[3]));
+}
+
+fn main() i32 {
+  regions();
+  scalars();
+  large();
+  order();
+  fallible();
+  collection();
+  0i32;
+}

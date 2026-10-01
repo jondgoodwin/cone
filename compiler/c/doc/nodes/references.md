@@ -258,7 +258,11 @@ one-element slice.
 parameter whose argument is one, allocates. `typeLitNewCheck` checks the
 type, and finding a `RefTag` hands it to `typeLitNewAllocate`, which builds
 the `AllocateTag` node: its region and permission the reference type's, its
-`vtexp` the value `typeLitAllocValue` makes of the parentheses; and its `vtype`
+`vtexp` the value `typeLitAllocValue` makes of the parentheses, or, for an
+array allocated with contents after `<-`, the literal of those contents,
+which `contentsLower` hands it (`typeLitNewFilled`, `FlagAllocFill`: filled in
+place by generation, not evaluated first; [fncall](fncall.md), "The list
+after `<-`"); and its `vtype`
 the reference type as written, so that a rule judged of
 that type (a traced value behind an `Rc`, say) is reported once, where it was
 written. `trynew` adds `FlagQues` and types the node `Option[R[perm, T]]`

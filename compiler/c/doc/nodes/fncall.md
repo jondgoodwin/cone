@@ -443,8 +443,11 @@ nothing; the refusal is the same.
 ### The list after `<-`
 
 `contentsLower` (`ir/exp/contents.c`) takes apart a `<-` whose argument is a
-tuple of entries or an `EntryNode`, or whose receiver is a construction
-(`contentsIsAppend`). `EntryNode` is one struct for the three entry forms, the
+tuple of entries or an `EntryNode`, or whose receiver is a construction,
+`new` or `trynew` (`contentsIsAppend`). A construction's type is checked
+first, unless it is a generic struct named bare, whose arguments infer it
+(`contentsBuiltType`), since an array, an allocation of one, or anything else
+lowers differently. `EntryNode` is one struct for the three entry forms, the
 tag telling them apart: `first` holds `n` or `k` (NULL for `fill`), `val` the
 value. Its `first` is an expression resolved like any other, which a
 `NamedValNode`'s name is not, so it is not that node.
@@ -464,7 +467,9 @@ value. Its `first` is an expression resolved like any other, which a
   path, so a tuple is never one value of a `<-` list.
 - **After a construction**, the construction becomes a variable the contents
   are appended to, and the block's value: `{ mut built = new T(...); built <-
-  contents; built }`, so the construction fills the variable in place.
+  contents; built }`, so the construction fills the variable in place. An
+  allocation of a collection is this form too, the variable its reference and
+  the contents appended through it.
 - **After an array's construction**, `new Array[T, n] <- ...`, there is no
   `<-` to call, so the contents become an `ArrayLitTag` node typed as the
   array (`contentsLowerArray`). Every count is a constant, `fill` given what
@@ -478,6 +483,32 @@ value. Its `first` is an expression resolved like any other, which a
   by flow exactly as the second is, so the second asks all of them would. One
   entry repeating a constant becomes the literal's fill form, one value stored
   into every element. Refused contents leave an error node.
+  For an array type written with several sizes (its
+  outermost node's `nsizes`, `arrayTypeLower`) the entries are its scalars,
+  row-major: the size is the product of the sizes (at most 4294967295,
+  `ErrorArrayContents`), each value is checked against the element type
+  written first (a row given is `ErrorInvType`), and the literal records the
+  levels its elements fill (its own `nsizes`), so generation stores them into
+  the array seen as one run of scalars (`contentsArrayShape`). The nested
+  spelling has no `nsizes`, so its entries are its rows. Several sizes over an
+  element type that is itself an array, `Array[Array[u8, 4], 2, 3]`, mix the
+  spellings, and take no contents (`ErrorArrayContents`). A generic's type
+  argument reaches its instance without its shape (`arrayTypeUnshaped`, at
+  the clone's substitution), since one instance serves both spellings of a
+  type: through a parameter the entries are rows.
+- **After an allocation of an array**, `new Rc[mut, Array[T, n]] <- ...`, the
+  contents become the same literal, typed as the value type, and the
+  allocation's value (`contentsLowerAlloc`, `typeLitNewFilled`), flagged
+  `FlagAllocFill`: generation fills it in place after the region's and the
+  permission's inits rather than evaluating it before `alloc`
+  ([references](references.md), "Allocation"). `trynew` is taken the same way,
+  so the contents are evaluated only on `Some`.
+- **After any other `trynew`**, the contents would be appended through the
+  `Option` it gives, which is not built: the construction is checked (so a
+  `trynew` of a value type is its own `ErrorTryNewValue`), then the `<-` is
+  refused once, `ErrorTryNewContents`, naming the spelling that works,
+  `trynew` alone and an append on `Some`, and left an error node
+  (`contentsRefuseTryNew`).
 
 An `EntryNode` reached by `entryTypeCheck` sat where no `<-` took it apart,
 only possible inside a tuple used as a value: `ErrorEntryPlace`.
