@@ -415,9 +415,11 @@ static INode *contentsCopy(TypeCheckState *pstate, INode *val) {
 // must give exactly that many values, every count known at compile time. They
 // lower to an array literal of the array's type, which fills the destination
 // in place. An entry repeating a value has that value evaluated once for each
-// element, so each element is its own copy of the expression; one entry
-// repeating a constant is kept as one value stored into every element (the
-// literal's fill form), since evaluating a constant again gives nothing new.
+// element, so each element is its own copy of the expression, up to
+// ArrayRepeatUnroll of them; beyond that, two copies, the second repeated
+// (the literal's repeats). One entry repeating a constant is kept as one value
+// stored into every element (the literal's fill form), since evaluating a
+// constant again gives nothing new.
 // An array of several dimensions, 'Array[f32, 2, 3]', is an array of arrays,
 // and its contents are its rows.
 // Answers NULL when it reported why it could not.
@@ -485,6 +487,8 @@ static INode *contentsArrayLit(TypeCheckState *pstate, FnCallNode *node) {
     lit->tag = ArrayLitTag;
     inodeLexCopy((INode*)lit, (INode*)node);
     lit->vtype = arraytype;
+    uint32_t *runs = NULL;   // each run's element and how many more it fills
+    uint32_t nruns = 0;
     for (uint32_t i = 0; i < nentries; ++i) {
         INode *entry = entries[i];
         INode **valp = &entry;
@@ -512,6 +516,24 @@ static INode *contentsArrayLit(TypeCheckState *pstate, FnCallNode *node) {
             break;
         }
         nodesAdd(&lit->elems, *valp);
+        // Past ArrayRepeatUnroll copies, the second stands for every element
+        // after the first, which generation fills in a loop evaluating it once
+        // for each (genlArrayLitInto). A later copy is checked and walked by
+        // flow as the second is, so the second asks all a later one would: a
+        // variable moved into the first is gone for it, a counted reference
+        // gains the holder each pass of the loop adds.
+        if (count > ArrayRepeatUnroll) {
+            if (contentsArrayElem(pstate, &pristine, elemtype)) {
+                if (runs == NULL)
+                    runs = (uint32_t *)memAllocBlk(nentries * 2 * sizeof(uint32_t));
+                runs[nruns * 2] = lit->elems->used;
+                runs[nruns++ * 2 + 1] = (uint32_t)(count - 1);
+                nodesAdd(&lit->elems, pristine);
+            }
+            else
+                bad = 1;
+            continue;
+        }
         for (uint64_t copy = 1; copy < count; ++copy) {
             INode *val = copy == count - 1 ? pristine : contentsCopy(pstate, pristine);
             if (contentsArrayElem(pstate, &val, elemtype))
@@ -520,7 +542,16 @@ static INode *contentsArrayLit(TypeCheckState *pstate, FnCallNode *node) {
                 bad = 1;
         }
     }
-    return bad ? NULL : (INode*)lit;
+    if (bad)
+        return NULL;
+    if (nruns) {
+        lit->repeats = (uint32_t *)memAllocBlk(lit->elems->used * sizeof(uint32_t));
+        for (uint32_t i = 0; i < lit->elems->used; ++i)
+            lit->repeats[i] = 1;
+        for (uint32_t run = 0; run < nruns; ++run)
+            lit->repeats[runs[run * 2]] = runs[run * 2 + 1];
+    }
+    return (INode*)lit;
 }
 
 // An array's construction becomes the array literal of its contents, or, when

@@ -1112,6 +1112,82 @@ LLVMValueRef genlLogic(GenState *gen, LogicNode* node) {
     return phi;
 }
 
+// Store 'count' elements of the array at 'dest' from 'start', each the value
+// 'val': a constant generated once and stored by a loop, or by a memset when
+// null; anything else generated in the loop, so evaluated once for each
+// element. A run of one is a store.
+static void genlArrayRun(GenState *gen, LLVMTypeRef arraytype, LLVMValueRef dest,
+                         uint64_t start, uint64_t count, INode *val) {
+    if (count == 0)
+        return;
+    LLVMTypeRef usize = genlUsize(gen);
+    LLVMTypeRef elemtype = LLVMGetElementType(arraytype);
+    LLVMValueRef index[2] = { LLVMConstInt(usize, 0, 0), LLVMConstInt(usize, start, 0) };
+    LLVMValueRef constval = litIsLiteral(val) ? genlExpr(gen, val) : NULL;
+    if (count == 1) {
+        LLVMValueRef elemval = constval ? constval : genlExpr(gen, val);
+        LLVMBuildStore(gen->builder, elemval, LLVMBuildInBoundsGEP2(gen->builder, arraytype, dest, index, 2, "elem"));
+        return;
+    }
+    if (constval && LLVMIsConstant(constval) && LLVMIsNull(constval)) {
+        LLVMValueRef at = LLVMBuildInBoundsGEP2(gen->builder, arraytype, dest, index, 2, "fillat");
+        LLVMBuildMemSet(gen->builder, at, LLVMConstInt(LLVMInt8TypeInContext(gen->context), 0, 0),
+            LLVMConstInt(usize, count * LLVMABISizeOfType(gen->datalayout, elemtype), 0),
+            LLVMABIAlignmentOfType(gen->datalayout, elemtype));
+        return;
+    }
+    LLVMBasicBlockRef entryblk = LLVMGetInsertBlock(gen->builder);
+    LLVMBasicBlockRef doneblk = genlInsertBlock(gen, "filldone");
+    LLVMBasicBlockRef loopblk = genlInsertBlock(gen, "fillloop");
+    LLVMBuildBr(gen->builder, loopblk);
+    LLVMPositionBuilderAtEnd(gen->builder, loopblk);
+    LLVMValueRef counter = LLVMBuildPhi(gen->builder, usize, "fillindex");
+    LLVMValueRef elemval = constval ? constval : genlExpr(gen, val);
+    index[1] = counter;
+    LLVMBuildStore(gen->builder, elemval, LLVMBuildInBoundsGEP2(gen->builder, arraytype, dest, index, 2, "fillelem"));
+    LLVMValueRef next = LLVMBuildAdd(gen->builder, counter, LLVMConstInt(usize, 1, 0), "fillnext");
+    LLVMValueRef more = LLVMBuildICmp(gen->builder, LLVMIntULT, next, LLVMConstInt(usize, start + count, 0), "fillmore");
+    // Evaluating the value may have split the loop's block, so the back edge
+    // leaves from wherever the builder is now
+    LLVMBasicBlockRef loopend = LLVMGetInsertBlock(gen->builder);
+    LLVMBuildCondBr(gen->builder, more, loopblk, doneblk);
+    LLVMValueRef incoming[2] = { LLVMConstInt(usize, start, 0), next };
+    LLVMBasicBlockRef fromblks[2] = { entryblk, loopend };
+    LLVMAddIncoming(counter, incoming, fromblks, 2);
+    LLVMPositionBuilderAtEnd(gen->builder, doneblk);
+}
+
+// Fill the array at 'dest' in place from the literal of its contents
+// (contentsArrayLit), element by element: a value listed is stored into its
+// element, a value repeated in a loop (the literal's repeats) and a fill
+// form's one constant are each a run (genlArrayRun). Nothing is stored as one
+// aggregate, which LLVM's instruction selection takes apart element by
+// element, and at a hundred thousand of them crashes doing so.
+static void genlArrayLitInto(GenState *gen, ArrayNode *lit, LLVMValueRef dest) {
+    LLVMTypeRef arraytype = genlType(gen, lit->vtype);
+    if (lit->dimens->used > 0) {
+        genlArrayRun(gen, arraytype, dest, 0, LLVMGetArrayLength2(arraytype), nodesGet(lit->elems, 0));
+        return;
+    }
+    uint64_t start = 0;
+    for (uint32_t index = 0; index < lit->elems->used; ++index) {
+        uint64_t count = lit->repeats ? lit->repeats[index] : 1;
+        genlArrayRun(gen, arraytype, dest, start, count, nodesGet(lit->elems, index));
+        start += count;
+    }
+}
+
+// Does a variable's initializer fill it in place (genlArrayLitInto): an
+// array's contents repeating a value in a loop, or a fill form of more than
+// ArrayRepeatUnroll elements
+static int genlArrayLitFillsInPlace(INode *value) {
+    if (value->tag != ArrayLitTag)
+        return 0;
+    ArrayNode *lit = (ArrayNode *)value;
+    return lit->repeats != NULL
+        || (lit->dimens->used > 0 && arrayDim1(itypeGetTypeDcl(lit->vtype)) > ArrayRepeatUnroll);
+}
+
 // Generate local variable
 LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
     assert(var->tag == VarDclTag);
@@ -1144,6 +1220,9 @@ LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
     // A construction by a declared 'init' fills the variable in place
     if (var->value && genlNewInto(gen, var->value, var->llvmvar))
         val = LLVMBuildLoad2(gen->builder, genlType(gen, var->vtype), var->llvmvar, "");
+    // So do an array's contents with a value repeated many times
+    else if (var->value && genlArrayLitFillsInPlace(var->value))
+        genlArrayLitInto(gen, (ArrayNode *)var->value, var->llvmvar);
     else if (var->value) {
         val = genlExprForLocal(gen, var->value);
         LLVMBuildStore(gen->builder, val, var->llvmvar);
@@ -1837,6 +1916,16 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
     case ArrayLitTag:
     {
         ArrayNode *lit = (ArrayNode *)termnode;
+        INode *elemtype = nodesGet(((ArrayNode *)itypeGetTypeDcl(lit->vtype))->elems, 0);
+        LLVMTypeRef elemtypellvm = genlType(gen, elemtype);
+        // An array's contents repeating a computed value in a loop are built in
+        // memory, the value evaluated there once for each element
+        if (lit->repeats && !arrayLitIsLiteral(lit)) {
+            LLVMTypeRef arraytype = genlType(gen, lit->vtype);
+            LLVMValueRef temp = genlAlloca(gen, arraytype, "arraylit");
+            genlArrayLitInto(gen, lit, temp);
+            return LLVMBuildLoad2(gen->builder, arraytype, temp, "");
+        }
         uint32_t size = lit->elems->used;
         if (lit->dimens->used > 0) {
             // When array size specified for fill, use that
@@ -1846,22 +1935,29 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
             assert(dimnode->tag == ULitTag);
             size = (uint32_t)((ULitNode*)dimnode)->uintlit;
         }
+        else if (lit->repeats) {
+            size = 0;
+            for (uint32_t index = 0; index < lit->elems->used; ++index)
+                size += lit->repeats[index];
+        }
+        // Each listed value once; a fill form's one value, or a constant an
+        // array's contents repeat, stands for each element it fills
+        LLVMValueRef *listed = (LLVMValueRef *)memAllocBlk(lit->elems->used * sizeof(LLVMValueRef *));
+        int allnull = 1;
+        for (uint32_t index = 0; index < lit->elems->used; ++index) {
+            listed[index] = genlExpr(gen, nodesGet(lit->elems, index));
+            allnull = allnull && LLVMIsConstant(listed[index]) && LLVMIsNull(listed[index]);
+        }
+        // Every element null is zeroinitializer, with no value for each element
+        if (allnull && lit->elems->used > 0)
+            return LLVMConstNull(LLVMArrayType(elemtypellvm, size));
         LLVMValueRef *values = (LLVMValueRef *)memAllocBlk(size * sizeof(LLVMValueRef *));
         LLVMValueRef *valuep = values;
-        if (lit->dimens->used > 0) {
-            LLVMValueRef fillval = genlExpr(gen, nodesGet(lit->elems, 0));
-            uint32_t cnt = size;
+        for (uint32_t index = 0; index < lit->elems->used; ++index) {
+            uint32_t cnt = lit->dimens->used > 0 ? size : lit->repeats ? lit->repeats[index] : 1;
             while (cnt--)
-                *valuep++ = fillval;
+                *valuep++ = listed[index];
         }
-        else {
-            INode **nodesp;
-            uint32_t cnt;
-            for (nodesFor(lit->elems, cnt, nodesp))
-                *valuep++ = genlExpr(gen, *nodesp);
-        }
-        INode *elemtype = nodesGet(((ArrayNode *)itypeGetTypeDcl(lit->vtype))->elems, 0);
-        LLVMTypeRef elemtypellvm = genlType(gen, elemtype);
         // A constant aggregate's operands must themselves be constants, so an element
         // that is the result of an instruction -- a variable read, a call, an
         // allocation -- cannot go into LLVMConstArray. Build the array up with

@@ -18,6 +18,7 @@ ArrayNode *newArrayNode() {
     anode->llvmtype = NULL;
     anode->dimens = newNodes(1);
     anode->elems = newNodes(1);
+    anode->repeats = NULL;
     return anode;
 }
 
@@ -124,6 +125,10 @@ void arrayPrint(ArrayNode *node) {
         inodeFprint("; ");
     }
     for (nodesFor(node->elems, cnt, nodesp)) {
+        // An element an array's contents repeat in a loop, as they spell it
+        uint32_t repeat = node->repeats ? node->repeats[node->elems->used - cnt] : 1;
+        if (repeat > 1)
+            inodeFprint("%u of ", (unsigned)repeat);
         inodePrintNode(*nodesp);
         if (cnt > 1)
             inodeFprint(", ");

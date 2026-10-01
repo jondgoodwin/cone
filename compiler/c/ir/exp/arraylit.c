@@ -226,7 +226,9 @@ int arrayLitCoerce(ArrayNode *arrlit, INode *totypedcl) {
 // contents that repeat a value, 'new Array[Handle, 2] <- fill new Handle(9)',
 // are this form, the value's expression copied into each element
 // (contentsLowerArray), so a move value is moved once per element, and a
-// variable moved by one is gone for the next, by the ordinary move rule.
+// variable moved by one is gone for the next, by the ordinary move rule. An
+// element the literal's repeats generate in a loop is walked once, as the
+// copy it is; what it holds is added on each pass of the loop.
 //
 // The fill form, one value stored into every element, is built only for
 // contents repeating a constant, which moves nothing and holds no counted

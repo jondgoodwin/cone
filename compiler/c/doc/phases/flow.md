@@ -413,7 +413,9 @@ destructuring takes apart), `fnCallFlow` (per argument), `allocateFlow` (the
 allocated value), `typeLitFlow` (per field) and `arrayLitFlow` (per element in
 the list form). Every holder is counted one at a time: an array's contents
 repeating a value copy the expression into each element, so each copy is one
-more holder, and the fill form holds only a constant.
+more holder, and the fill form holds only a constant. Past 16 copies the second
+stands for every later element and is generated in a loop, so the holder
+injected around it is added once per pass.
 
 **Decrements are never reference-count nodes.** They come from generation: walking a
 `dealias` list at scope exit, and `genlStore` releasing an lval's previous value
@@ -857,7 +859,10 @@ Everything else about permissions is type check's: `permMatches` in
 A value an array's contents or `n of x` repeat is evaluated once per element,
 so the ordinary move rule judges it: the loop `n of x` lowers to is walked as
 any loop, and an array's contents copy the expression into each element
-([fncall](../nodes/fncall.md), "The list after `<-`").
+([fncall](../nodes/fncall.md), "The list after `<-`"). Past 16 elements they
+copy it twice, the second copy filling the rest in a loop, so a variable moved
+into the first element is refused once, at the second, and not again for each
+later one.
 
 ## 8. Contract
 

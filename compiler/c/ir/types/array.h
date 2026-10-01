@@ -13,6 +13,7 @@ typedef struct {
     ITypeNodeHdr;
     Nodes *dimens;    // Dimensions of the array
     Nodes *elems;     // Either a list of elements, or the element type
+    uint32_t *repeats; // An array's contents: how many elements each of elems fills; NULL, one each
 } ArrayNode;
 
 // Create a new array node

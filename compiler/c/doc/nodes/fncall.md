@@ -471,9 +471,13 @@ value. Its `first` is an expression resolved like any other, which a
   is left, and they add to the size exactly (`ErrorArrayContents`; a pair is
   `ErrorPairAppend`). A repeated value is copied, unchecked, once per element
   (`contentsCopy`) and each copy checked against the element type, so it is
-  evaluated once per element and the move rule applies to each; one entry
-  repeating a constant becomes the literal's fill form, one value stored into
-  every element. Refused contents leave an error node.
+  evaluated once per element and the move rule applies to each. Past
+  `ArrayRepeatUnroll` (16) copies there are two, the second standing for every
+  element after the first (the literal's `repeats`), which generation fills in
+  a loop evaluating it once for each: a later copy would be checked and walked
+  by flow exactly as the second is, so the second asks all of them would. One
+  entry repeating a constant becomes the literal's fill form, one value stored
+  into every element. Refused contents leave an error node.
 
 An `EntryNode` reached by `entryTypeCheck` sat where no `<-` took it apart,
 only possible inside a tuple used as a value: `ErrorEntryPlace`.

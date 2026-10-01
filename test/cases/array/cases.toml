@@ -87,6 +87,34 @@ name = "global-contents-repeating-a-constant-is-a-constant"
 target = "preir"
 contains = ["@table = internal global [8 x i64] [i64 3, i64 3, i64 3, i64 3, i64 3, i64 3, i64 3, i64 3]"]
 
+# The scenario a code generation fix landed with: contents repeating a value a
+# hundred thousand times. A constant repeated was stored as one aggregate,
+# which LLVM's instruction selection takes apart element by element and
+# crashed on; a computed value was copied into each element, and the chain of
+# a hundred thousand inserted values exhausted memory. A 'run' because the
+# claim is that each element holds its value, and a computed one was
+# evaluated once for each element in order, which the first, middle and last
+# elements and a counter show. The checks hold that neither form is an
+# aggregate the size of the array: a constant null is one memset, and a
+# computed value is generated once, in a loop.
+[scenario.array_contents_large]
+category = "run"
+description = "An array's contents repeating a constant or a computed value a hundred thousand times, alone and among listed values"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.array_contents_large.check]]
+name = "a-constant-null-repeated-is-one-memset"
+target = "preir"
+contains = ["call void @llvm.memset.p0.i64(ptr align 1 %fillat, i8 0, i64 100000, i1 false)"]
+excludes = ["store [100000 x i8]"]
+
+[[scenario.array_contents_large.check]]
+name = "a-computed-value-repeated-is-evaluated-in-a-loop"
+target = "preir"
+contains = ["%fillindex = phi i64 [ 1, %entry ], [ %fillnext, %fillloop ]",
+            "%fillmore = icmp ult i64 %fillnext, 100000"]
+excludes = ["insertvalue [100000 x i8]"]
+
 # The scenario a code generation fix landed with: an index takes its array's
 # address, and a field's address is taken from its container's, so an array
 # field of a struct or tuple returned by a call had no address at all and

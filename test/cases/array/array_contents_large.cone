@@ -1,0 +1,68 @@
+// An array's contents repeating a value a hundred thousand times. Past a
+// handful of copies, the repeated value is generated once and stored by a
+// loop, evaluated once for each element, and a constant repeated is stored by
+// one memset or loop: never as one aggregate value, which LLVM takes apart
+// element by element. That crashed LLVM at a hundred thousand elements of a
+// constant, and with a computed value, a copy of its expression for each
+// element, exhausted memory.
+//
+// Each array is checked at its first, middle and last elements, and a
+// computed value at how many times it was evaluated. Every array is a local
+// of its own function, so no stack frame holds more than one.
+
+mod array_contents_large;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+mut calls = 0u32;
+fn next() u8 {
+  calls = calls + 1;
+  calls into u8;
+}
+
+// A constant repeated: zero, then another constant
+fn zeros() {
+  imm a = new Array[i8, 100000] <- fill 0i8;
+  show("zeros", i64.from(a[0usize]) + i64.from(a[50000usize]) + i64.from(a[99999usize]));
+}
+
+fn sevens() {
+  imm a = new Array[i8, 100000] <- fill 7i8;
+  show("sevens", i64.from(a[0usize]) * 100 + i64.from(a[50000usize]) * 10 + i64.from(a[99999usize]));
+}
+
+// A computed value repeated, evaluated in order once for each element
+fn computed() {
+  calls = 0;
+  imm a = new Array[u8, 100000] <- fill next();
+  show("computed-calls", i64.from(calls));
+  show("computed-first", i64.from(a[0usize]));
+  show("computed-middle", i64.from(a[50000usize]));
+  show("computed-last", i64.from(a[99999usize]));
+}
+
+// Listed values, a long 'n of x' and a long 'fill x' together, each in its place
+fn mixed() {
+  calls = 0;
+  imm a = new Array[u8, 100000] <- 1u8, 49999 of 2u8, next(), fill next();
+  show("mixed-calls", i64.from(calls));
+  show("mixed-listed", i64.from(a[0usize]));
+  show("mixed-of", i64.from(a[1usize]) * 10 + i64.from(a[49999usize]));
+  show("mixed-fill", i64.from(a[50000usize]) * 1000 + i64.from(a[50001usize]));
+  show("mixed-last", i64.from(a[99999usize]));
+}
+
+fn main() i32 {
+  zeros();
+  sevens();
+  computed();
+  mixed();
+  0i32;
+}

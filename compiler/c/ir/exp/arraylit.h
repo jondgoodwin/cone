@@ -8,6 +8,12 @@
 #ifndef arraylit_h
 #define arraylit_h
 
+// An array's contents repeating a value write out a copy of it for each
+// element up to this many; beyond, one copy is generated in a loop
+// (contentsArrayLit), and a fill form's constant is stored by a loop or a
+// memset rather than as one aggregate (genlArrayLitInto)
+#define ArrayRepeatUnroll 16
+
 // Type check an array literal, against the type expected of it if any
 void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit, INode *expectType);
 

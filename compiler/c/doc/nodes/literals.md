@@ -24,7 +24,7 @@ composite literal takes ownership of. Generation emits constants where it can.
 | `ULitNode` | `ULitTag` | `uintlit` — also carries `true`/`false` and tuple element indices |
 | `FLitNode` | `FLitTag` | `floatlit` |
 | `SLitNode` | `StringLitTag` | `strlit` pointer into the lexer's arena, plus `strlen` |
-| `ArrayNode` | `ArrayTag` **or** `ArrayLitTag` | `dimens`, `elems` |
+| `ArrayNode` | `ArrayTag` **or** `ArrayLitTag` | `dimens`, `elems`; `repeats`, how many elements each of `elems` fills, NULL for one each |
 | type literal | `TypeLitTag` | an `FnCallNode` — `args` are the field values, or a number conversion's one value; `FlagNew` when it came of a construction, `FlagAllocValue` when it is a `+` allocation's bracketed value, which is refused |
 
 **`FlagUnkType`** is set only by `newULitNode`, only when the lexer gave no type
@@ -40,7 +40,11 @@ clears it.
 has empty `dimens`; the fill form, one value stored into every element, has
 `dimens` `[3]` and `elems` `[7]`, and is built only by an array's contents
 repeating a constant, `new Array[i32, 3] <- fill 7` ([fncall](fncall.md), "The
-list after `<-`"): the source spelling `[3; 7]` is retired. The array type,
+list after `<-`"): the source spelling `[3; 7]` is retired. A list form an
+array's contents build may carry `repeats`, the one place an element stands
+for several: `new Array[i32, 100] <- fill f()` is `elems` `[f(), f()]` with
+`repeats` `[1, 99]`, the second copy filling every element after the first.
+`elems` then counts fewer than the array's size, which is its type's. The array type,
 written `Array[i32, 3]`, is the same node tagged
 `ArrayTag`, `dimens` `[3]` and `elems` `[i32]`: name resolution builds it from
 the bracketed call (`arrayTypeLower`; [Name resolution](../phases/name-resolution.md)).
@@ -365,7 +369,9 @@ a field initialization is accounted exactly as a call argument would be.
   An array's contents repeating a value are this form, the value's expression
   copied into each element, so a variable repeated is moved by the first and
   gone for the second, and a counted reference copied in gains a holder per
-  element, by the ordinary rules.
+  element, by the ordinary rules. A copy the literal's `repeats` repeat is
+  walked once, as the second element, and the holder flow injects around it
+  is added on each pass of the loop that fills its elements.
 - **Fill form**: one constant, which moves nothing and counts nothing; it is
   only read.
 
@@ -388,7 +394,21 @@ takes, is that of an internal constant global made for the occurrence (the
 element, which only an index reaches, is stored into an unnamed local instead.
 A named constant's literal is reached the same way at each use that takes its
 address, so each such use of a constant array makes a global of its own, as
-each occurrence of a written literal does.
+each occurrence of a written literal does. Every element null is
+`zeroinitializer`, built without a value for each element.
+
+**An array's contents that repeat a value fill a variable in place**
+(`genlArrayLitInto`, from `genlLocalVar`), never as one aggregate value:
+LLVM's instruction selection takes an aggregate store apart element by
+element, and at a hundred thousand elements crashes doing so. A literal with
+`repeats`, or a fill form of more than `ArrayRepeatUnroll` (16) elements, is
+stored element by element and run by run (`genlArrayRun`): a listed value is
+one store; a constant repeated is generated once and stored by one `memset`
+when it is null, or a loop otherwise; a computed value is generated inside the
+loop, so evaluated once for each element. Anywhere else, a literal with
+`repeats` and a computed element is filled the same way into an unnamed local,
+and its value loaded from there; with only constants it is the constant
+array, each repeated value standing for each element it fills.
 
 A type literal is the same `insertvalue` chain, with one special case: a
 **nullable-pointer** enum has no struct at all, so the literal is either a null

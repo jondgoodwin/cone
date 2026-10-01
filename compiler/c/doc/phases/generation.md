@@ -1033,6 +1033,12 @@ variables.
   manager's inliner deletes only a function whose last call it inlined; the
   linker's `/OPT:REF` drops the rest, each being in a COMDAT of its own.
 - **The block stack is a fixed 256 entries** and overflow is a hard exit.
+- **An array copied, assigned, passed or returned is one aggregate value**, and
+  LLVM's instruction selection takes an aggregate load or store apart element
+  by element: `imm c = a` of an `Array[i8, 100000]`, or contents assigned over a
+  variable of that type, crashes it. Only a local's initializer from an
+  array's contents is filled in place ([literals](../nodes/literals.md),
+  "Generation").
 
 ## 9. Code pointer map
 
@@ -1078,6 +1084,7 @@ variables.
 | | `genlAtomicIntrinsic` | an atomic intrinsic, reached from `genlFnCall` with the call's constant orderings |
 | | `genlConvert`, `genlRecast`, `genlIsType` | the three cast forms |
 | | `genlArrayIndex`, `genlBoundsCheck` | multi-dimensional GEP and its checks |
+| | `genlArrayLitInto`, `genlArrayRun` | an array's contents repeating a value, filled in place element by element: a `memset` for a null constant, a loop for any other repeated value, never one aggregate ([literals](../nodes/literals.md), "Generation") |
 | | `genlSubslice` | a borrowed range index, `&x[a..b]`: the slice `{&x[a], b - a}` once `a <= b <= count` is checked |
 | `genllvm/genlalloc.c` | `genlRefTypeSetup`, `genlallocref` | the `{region, perm, value}` header and an allocation's emission, in its order (section 3) |
 | | `genlRegionHeader`, `genlRegionAlias`, `genlRegionDealias`, `genlRegionDeath` | the header a region method is handed; calling `aliasRef`, `dealiasRef` and `free` at each reference event; a death in place, then `free` |
