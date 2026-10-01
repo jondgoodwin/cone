@@ -937,9 +937,8 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
             return aref;
         }
         else {
-            // castTypeCheck has no slice arm at all, so every 'into &[]T' is
-            // already refused as an unsupported conversion; the only thing
-            // that builds a slice here is the coercion from a ref-to-array
+            // The only thing that builds a conversion to a slice is the
+            // coercion from a ref-to-array
             errorUnreachable(exp, "a conversion to a slice reference from something that is not a reference");
             return NULL;
         }

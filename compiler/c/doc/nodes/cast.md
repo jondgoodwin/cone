@@ -1,8 +1,8 @@
-`CastNode` serves three syntaxes, two injected forms, and a match's value alone
-until type check decides what it is. All six share the struct; the tag and a
-flag tell them apart.
+`CastNode` serves two syntaxes, a bound pattern's conversion, two injected
+forms, and a match's value alone until type check decides what it is. All six
+share the struct; the tag and a flag tell them apart.
 
-**At a glance.** Built by `parseCast` from `as` and `into`, by `parseCmp` from
+**At a glance.** Built by `parseCast` from `as`, by `parseCmp` from
 `is`, by `parsefnflow.c` for patterns, and injected by `iexpCoerce` whenever a
 coercion needs a node. Name resolution walks both children. Type check binds a
 pattern's bare name against the matched value, then decides whether the
@@ -24,15 +24,19 @@ Six forms:
 | Source | Tag / flag | Built by | Means |
 | --- | --- | --- | --- |
 | `x as T` | `CastTag` | `newRecastNode` | reinterpret the bits |
-| `x into T` | `CastTag` + `FlagConvert` | `newConvCastNode` | convert the value |
 | `x is T` | `IsTag` | `newIsNode` | is this the runtime type? |
+| `case imm c &Circle` | `CastTag` + `FlagConvert` + `FlagMatchBind` | `newConvCastNode` from `parseBoundMatch` | the matched value, narrowed, that initializes `c` |
 | *(injected)* | `CastTag` | `newRecastNode` from `iexpCoerce` | a `CastSubtype` coercion |
 | *(injected)* | `CastTag` + `FlagConvert` | `newConvCastNode` from `iexpCoerce` | a `ConvSubtype` coercion |
 | `case v` | `IsTag` + `FlagMatchValue` | `newMatchValueNode` | a value alone as a pattern: `is v` for a variant of the matched enum, else `== v` |
 
-**`FlagConvert` is the whole distinction between `as` and `into`**, and type
-check may clear it: a reference-to-reference conversion drops the flag on the
-spot, because it is a bitcast after all.
+**`FlagConvert` is the whole distinction between a reinterpretation and a
+conversion**, and type check may clear it: a reference-to-reference conversion
+drops the flag on the spot, because it is a bitcast after all. No operator
+builds a conversion. A number converts with its type's `from`, which type check
+lowers to a type literal that generation hands to the same `genlConvert`
+([literals](literals.md)), and a reference narrows to a variant only through a
+pattern, whose `is` test checks the variant first.
 
 **A bound pattern desugars to two of these sharing one `typ`**: `case imm c
 &Circle` is an `is` test and a conversion (`FlagMatchBind`) that initializes
@@ -50,8 +54,12 @@ against the value it was borrowed from.
 
 `parseCast` sits between `parseMult` and `parsePrefix` in the precedence
 cascade, so a cast binds tighter than any binary operator and looser than a
-prefix one. Casts chain left to right, `as` and `into` alike: `p as *T as usize`
-casts `p as *T`. `is` is **a keyword**, not an operator symbol, and `parseCmp`
+prefix one. Casts chain left to right: `p as *T as usize` casts `p as *T`.
+**`into` is retired**, and stays a keyword only to be refused: `parseCast`
+reports `ErrorInto` at the word (`parseRetiredInto`), naming `T.from(x)` for a
+value and a `match` or bound `if` for a reference, and reads the type after it,
+if one is written, so the rest of the expression parses; nothing is built for
+it. `is` is **a keyword**, not an operator symbol, and `parseCmp`
 handles it at comparison precedence. `parsefnflow.c` also builds `IsTag` nodes
 when desugaring `match` arms and bound patterns, and for each clause of a
 generic's `where` clause, `T is Integer`, which is never type checked or
@@ -147,16 +155,18 @@ to a struct, which is not checked here at all, because `castBitsize` knows
 nothing of field layout, padding or alignment. That check is deferred to
 generation, where the data layout exists.
 
-**Convert** (`into`) permits, and nothing else:
+**Convert** is a bound pattern's conversion (`FlagMatchBind`), the only one
+type check sees: an injected conversion is built already typed. It permits,
+and nothing else:
 
 | To | From |
 | --- | --- |
-| `Bool` | anything `castConvertsToBool` allows — numbers, refs, pointers |
-| number | number |
 | `RefTag` | `VirtRefTag`, or another `RefTag` |
-| `PtrTag` | `RefTag` or `PtrTag` |
-| `VirtRefTag` | — accepted unconditionally here; generation does the work |
 | struct | a struct carrying `SameSize` |
+
+Anything else is `ErrorInvType`, "Unsupported built-in type conversion",
+usually a follow-on to the pattern's `is` test, checked first, refusing the
+narrowing, as `enum_typecheck_narrow` pins.
 
 **A reference narrowed from a sum type to a variant** (`RefTag` to `RefTag`,
 the from-type's referent a trait with `HasTagField` or `SameSize` — an enum, a
@@ -168,8 +178,8 @@ the variant while the narrowed reference is used, and refuses it
 (`ErrorBadPerm`) otherwise:
 - the from-reference's permission has `MayIntRefSum` — `uni`, `imm`, `mut1`; or
 - it is a borrow made here of a place reached as `uni` (`castBorrowsUni`): the
-  `BorrowTag` itself (`&s into &Circle`) or the value of the hidden `_` variable
-  a `match` or bound `if` captures its scrutinee in, whose place
+  value of the hidden `_` variable a `match` or bound `if` captures its
+  scrutinee in is a `BorrowTag` whose place
   (`castUniPlace`) is a non-static variable of this function held by value, a
   field or array element of one (not reached through a reference, slice or
   pointer), or a dereference of a `uni` reference such a place holds. The loan
@@ -179,20 +189,8 @@ the variant while the narrowed reference is used, and refuses it
 Everything else — a parameter of reference type, a reborrow through a shared
 path, a field reached through a `mut` reference or a `Rc[mut, T]` owner, a variable
 the program names holding a borrow (a copy of it would reach the local another
-way, which freezing does not follow) — is refused. This is a bound pattern's
-conversion, and `into` written out; the `is` test binds nothing and is not
-asked. A narrowing from a virtual reference is not asked either.
-
-A slice deliberately does **not** convert to an integer: the length and the data
-address are both candidates and both are spelled better already, as `s.len` and
-`p into usize`. Everything else is `ErrorInvType`.
-
-**A pointer does not convert to a reference**, and the table above is what the
-code does rather than what it means to do. A reference carries a region, a
-permission and a lifetime and a raw pointer supplies none of them, so there is
-no value to construct. `genlConvert` has no arm for it either, so anything the
-table let through would reach generation with nothing to emit. `p as &i32` is
-the spelling that keeps the bits.
+way, which freezing does not follow) — is refused. The `is` test binds nothing
+and is not asked. A narrowing from a virtual reference is not asked either.
 
 ### `castIsTypeCheck`
 
@@ -261,7 +259,8 @@ which is lowered to a type literal, [literals](literals.md)):
 - struct: alloca-store-bitcast-load, because LLVM does not bitcast structs. The
   alloca is `genlAlloca`, so it lands in the entry block — a mid-block one inside
   a loop is a fresh frame slot per iteration, which mem2reg does not promote, and
-  `x into <struct>` in a long loop ran the stack out.
+  a variant assigned to its enum's variable in a long loop would run the stack
+  out (`typemgmt_success`).
 - `RefTag` from `VirtRefTag`: `extractvalue 0`, then bitcast.
 - `ArrayRefTag` from a ref-to-array: bitcast the pointer, then `insertvalue`
   the pointer and the compile-time dimension into the fat pointer.
@@ -284,9 +283,9 @@ nullable-pointer enum (compare against null), and tagged (read the
 
 ## Hazards
 
-- **`as` and `into` are not interchangeable.** `as` reinterprets and demands
-  equal size; `into` converts values. A reader who assumes C's single cast will
-  reach for the wrong one.
+- **`as` and `from` are not interchangeable.** `as` reinterprets and demands
+  equal size; a type's `from` converts the value. A reader who assumes C's
+  single cast will reach for the wrong one.
 - **`FlagConvert` can be cleared during type check**, so the flag on a node
   after checking does not tell you what the author wrote.
 - **A pattern's root may be unbound until its `is` test is checked.** Anything
@@ -300,11 +299,11 @@ nullable-pointer enum (compare against null), and tagged (read the
 - **A struct reinterpret is checked in generation, not type check.** A size
   mismatch surfaces late, as `ErrorRecastSize`.
 - **`genlConvert`'s two "unknown source" arms report `ErrorUnreachable` and
-  exit.** Reaching either means the conversion table above accepted something
-  generation has no arm for.
+  exit.** Reaching either means a conversion was built, by a pattern or a
+  coercion, that generation has no arm for.
 
 ## What lives elsewhere
 
 - Which verdict makes `iexpCoerce` inject which of these: [Type Check Reasoning](../phases/type-check-reasoning.md), "Coercion"
-- What `as`/`into`/`is` permit, in one table: [Type Check Reasoning](../phases/type-check-reasoning.md), "Casts and `is`"
+- What `as`, a pattern's conversion and `is` permit, in one table: [Type Check Reasoning](../phases/type-check-reasoning.md), "Casts and `is`"
 - Pointer levels and why generation picks by LLVM kind: [Generation](../phases/generation.md), "Pointer levels"

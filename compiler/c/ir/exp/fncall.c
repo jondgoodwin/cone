@@ -1413,7 +1413,7 @@ static int fnCallTypeInstancePath(TypeCheckState *pstate, FnCallNode **nodep) {
 
 // 'u64.from(count)': a number type's conversion, the method of the type that
 // takes the value to convert. Every number type has one, taking any number
-// (Bool's also a reference or a pointer, as 'into Bool' does). Lowered here,
+// (Bool's also a reference or a pointer). Lowered here,
 // once the receiver is known to be a number type -- named directly, through an
 // alias, or as the argument a type parameter has in an instance, since name
 // resolution sees only the parameter -- into the conversion node: a type

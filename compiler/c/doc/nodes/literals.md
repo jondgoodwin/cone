@@ -208,9 +208,9 @@ so a literal checked again, or a constant generated at each use, does not
 repeat it. `typemgmt_typecheck_litrange` pins each position and the edges;
 `typemgmt_success` and `lexical_literals` print the edges that fit.
 
-An explicit conversion is not a literal meeting a type: `u8.from(300)` and
-`300 into u8` convert the `i32` literal `300`, and keep its low bits as any
-conversion does.
+An explicit conversion is not a literal meeting a type: `u8.from(300)`
+converts the `i32` literal `300`, and keeps its low bits as any conversion
+does.
 
 `slitTypeCheck` sets a string's type to an array of `u8` sized from `strlen`. A
 string literal is also an lval.
@@ -277,7 +277,7 @@ number type written with brackets, `u64[count]`, is
 `ErrorNbrBracket`, because a number's conversion is its method,
 `u64.from(count)`. That call reaches this node another way: `fnCallNumberFrom`
 ([fncall](fncall.md)) checks its one value, has `typeLitNbrFromCheck` accept a
-number (and for `Bool` a reference or pointer, as `castConvertsToBool` says),
+number (and for `Bool` a reference or pointer, as `typeLitConvertsToBool` says),
 and retags the call `TypeLitTag` with the number as its type, so it never passes
 through `typeLitTypeCheck`. `typeLitStructReorder` walks the struct's fields
 in declaration order and rewrites `args` to match: a `NamedValNode` is moved
@@ -313,7 +313,7 @@ it by `insertvalue` of constants, which the builder folds to a constant struct,
 as it does a struct literal of constants.
 
 **A reinterpretation of a constant is a constant** (`litIsConstCast`): a
-`CastTag` without `FlagConvert` (`as`, not `into`) whose target is a number or
+`CastTag` without `FlagConvert` (an `as`) whose target is a number or
 a raw pointer and whose operand is a number literal, a `ConstDclTag` use, or
 another such cast. `0usize as *T` is how a raw pointer starts out null, since
 there is no null literal. The predicate reads the tree as written, because
@@ -413,10 +413,9 @@ array, each repeated value standing for each element it fills.
 A type literal is the same `insertvalue` chain, with one special case: a
 **nullable-pointer** enum has no struct at all, so the literal is either a null
 pointer or the payload alone, with the tag discarded. A number's conversion is
-`genlConvert` of its one value to the number type, the instruction `into`
-emits ([cast](cast.md)), so `u64.from(x)` and `x into u64` are one conversion;
-its value a literal, it is a literal too (`typeLitIsLiteral`), which a global
-may take.
+`genlConvert` of its one value to the number type, the instruction a
+coercion's conversion emits ([cast](cast.md)); its value a literal, it is a
+literal too (`typeLitIsLiteral`), which a global may take.
 
 **A string literal emits a fresh global on every occurrence** — there is no
 interning, and constant merging is not in the pass list.
