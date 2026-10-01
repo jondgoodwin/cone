@@ -350,6 +350,31 @@ StructNode *typeRecordStruct(void) {
     return typeRecordCore;
 }
 
+// Core's 'mem.sliceEq', what '==' on two slices calls (fnCallLowerSliceCompare).
+// It is no intrinsic -- its body is the implementation -- but it is known as
+// they are, by its name and its package, and held to its one signature so that
+// the call the compiler builds is sure to fit it
+static FnDclNode *sliceEqCore = NULL;
+static IntrinsicSpec sliceEqSpec = {"sliceEq", 0, "sliceEq[T](a &[]T, b &[]T) Bool",
+    1, 2, {ShapeSliceT, ShapeSliceT}, ShapeBool, 0, 1, PhaseExpansion, 0};
+
+void sliceEqDclNameRes(FnDclNode *fndcl) {
+    if (fndcl->namesym == NULL || strcmp(&fndcl->namesym->namestr, sliceEqSpec.name) != 0
+        || (fndcl->dclinfo.facts & DclIntrinsic) || !intrinsicInCore(fndcl))
+        return;
+    if (fndcl->value == NULL || !intrinsicSigMatches(fndcl, &sliceEqSpec)) {
+        errorMsgNode((INode *)fndcl, ErrorIntrinsicSig,
+            "'==' on two slices calls core's 'fn %s', with a body, and this declaration says something else.",
+            sliceEqSpec.signature);
+        return;
+    }
+    sliceEqCore = fndcl;
+}
+
+FnDclNode *sliceEqFn(void) {
+    return sliceEqCore;
+}
+
 // Check an '@intrinsic' declaration against the registry, once its signature
 // and any body are name resolved. A declaration that passes gets its meaning:
 // its value becomes the IntrinsicNode that generation expands at each call,

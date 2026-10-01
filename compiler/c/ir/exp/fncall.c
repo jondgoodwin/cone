@@ -9,6 +9,7 @@
 
 #include <assert.h>
 #include <string.h>
+#include <stdio.h>
 
 // Create a function call node
 FnCallNode *newFnCallNode(INode *fn, int nnodes) {
@@ -1126,6 +1127,135 @@ static void fnCallDerefOperand(INode **operandp, FnCallNode *node) {
     inodeLexCopy(*operandp, (INode*)node);
 }
 
+// Why two elements of this type cannot be compared with '==', or NULL when
+// they can. It asks what fnCallLowerRefCompare would of the '&a[i] == &b[i]'
+// that core's mem.sliceEq compares each pair with, so a refusal is reported
+// where the slices are compared rather than inside core: a number, Bool or
+// pointer compares by its own '==', a reference and a slice by what they
+// refer to, and a struct or a payload-free enum by the '==' it declares.
+static char *fnCallSliceElemNoEq(INode *elemtype, char *buf, size_t size) {
+    INode *type = itypeGetTypeDcl(elemtype);
+    switch (type->tag) {
+    case PtrTag:
+        return NULL;
+    case RefTag:
+    case ArrayRefTag:
+        return fnCallSliceElemNoEq(((RefNode*)type)->vtexp, buf, size);
+    case VirtRefTag:
+        return "comparing what two virtual references refer to is not built";
+    case ArrayTag:
+        return "comparing two arrays is not built";
+    default:
+        break;
+    }
+    if (!isMethodType(type))
+        return "their element type has no `==`";
+    if ((type->flags & TraitType) && !(type->flags & EnumType))
+        return "comparing what a reference to a trait refers to is not built";
+    INode *found = iNsTypeFindFnField((INsTypeNode*)type, eqName);
+    if (found && found->tag == AliasDclTag)
+        found = aliasDclResolve(found);
+    Name *typename = isNamedNode(type) ? inodeGetName(type) : NULL;
+    if (!found || !(found->tag == FnDclTag || found->tag == FnOverloadDclTag) || !(found->flags & FlagMethFld)) {
+        if (typename == NULL)
+            return "their element type declares no `==`";
+        snprintf(buf, size, "%s declares no `==`", &typename->namestr);
+        return buf;
+    }
+    FnDclNode *eqdcl = (FnDclNode*)found;
+    if (found->tag == FnDclTag && eqdcl->value && eqdcl->value->tag == IntrinsicTag
+        && ((IntrinsicNode*)eqdcl->value)->intrinsicFn == NoEqIntrinsic) {
+        snprintf(buf, size, "%s, an enum whose variants carry fields, has no `==`",
+            typename ? &typename->namestr : "their element type");
+        return buf;
+    }
+    return NULL;
+}
+
+// '==' on two slices compares their elements (doc/reference/refarrayref.html,
+// "Comparison"): equal when the counts are and each element is '==' to its
+// partner. '!=' arrives here as '==' under a 'not' (fnCallNeFromEq) unless the
+// elements have no '==', which is reported under the '!=' that was written. A
+// slice has no order, so an ordering is refused.
+//
+// The comparison is core's 'mem.sliceEq' (sliceEqFn), a generic function whose
+// body is the loop, instantiated at the receiver's element type and called
+// with the two slices; the call is then checked as any call is, so the other
+// side is converted to that slice as any slice argument is: a slice, a
+// reference to an array, an array, or a string literal. A body in Cone rather
+// than a lowering of its own gets every element type's '==' -- a number's, a
+// pointer's, one a struct declares by value or on references, a nested
+// slice's -- from the comparison of references that already selects it.
+static void fnCallLowerSliceCompare(TypeCheckState *pstate, FnCallNode *node) {
+    Name *op = ((NameUseNode*)node->methfld)->namesym;
+    if (op != eqName && op != neName) {
+        errorMsgNode((INode*)node, ErrorRefNoCompare,
+            "`%s` on two slices is refused: a slice has no order. Compare their elements one by one.",
+            &op->namestr);
+        node->vtype = errorType;
+        return;
+    }
+    RefNode *slicetype = (RefNode*)iexpGetTypeDcl(node->objfn);
+    char buf[256];
+    char *why = fnCallSliceElemNoEq(slicetype->vtexp, buf, sizeof(buf));
+    if (why) {
+        errorMsgNode((INode*)node, ErrorRefNoCompare,
+            "`%s` on two slices compares their elements, and %s. Use `===` to ask whether two slices view the same elements.",
+            &op->namestr, why);
+        node->vtype = errorType;
+        return;
+    }
+    if (op == neName) {
+        errorUnreachable((INode*)node, "a slice's '!=' not derived from its '=='");
+        node->vtype = errorType;
+        return;
+    }
+    // Found as the core package itself is: a compile without it cannot go on
+    FnDclNode *sliceeq = sliceEqFn();
+    if (sliceeq == NULL)
+        errorExit(ExitNF, "'==' on two slices calls the core package's 'mem.sliceEq', and the core package found declares none.");
+
+    // mem.sliceEq[T], T the receiver's element type
+    Nodes *typeargs = newNodes(1);
+    nodesAdd(&typeargs, slicetype->vtexp);
+    FnDclNode *instance = genericMethodInstance(pstate, node, sliceeq, typeargs);
+    if (instance == NULL) {
+        node->vtype = errorType;
+        return;
+    }
+
+    // The receiver becomes the first argument, as for any method
+    if (node->args == NULL)
+        node->args = newNodes(1);
+    nodesInsert(&node->args, node->objfn, 0);
+    node->objfn = (INode*)newNameUseFromDclNode((INode*)instance, (INode*)node);
+    node->methfld = NULL;
+    node->vtype = ((FnSigNode*)instance->vtype)->rettype;
+    fnCallFinalizeArgs(node);
+}
+
+// An array, or a reference to one, compared with a slice is taken as the
+// slice it converts to, as the other side of a slice's comparison already is:
+// '"box" == s' means what 's == "box"' does. Answers 0, changing nothing,
+// where the other side is not a slice.
+static int fnCallArrayAsSlice(TypeCheckState *pstate, FnCallNode *node) {
+    if (node->args == NULL || node->args->used != 1)
+        return 0;
+    INode *argtype = iexpGetTypeDcl(nodesGet(node->args, 0));
+    if (argtype->tag != ArrayRefTag)
+        return 0;
+    INode *slicetype = (INode*)newRefNodeFull(ArrayRefTag, (INode*)node, borrowRef,
+        newPermUseNode(roPerm), ((RefNode*)argtype)->vtexp);
+    if (!iexpCoerce(&node->objfn, slicetype)) {
+        errorMsgNode(node->objfn, ErrorInvType,
+            "An array compared with a slice is compared as a slice of the same element type, and this one's elements differ.");
+        node->vtype = errorType;
+        return 1;
+    }
+    fnCallLowerSliceCompare(pstate, node);
+    return 1;
+}
+
 // '==', '!=' or an ordering written on a reference compares what it refers to.
 // A reference reads as its value everywhere else -- 'r.x', 'r.method()' -- so a
 // comparison does too; '===' is what asks whether two references are the same
@@ -1138,13 +1268,16 @@ static void fnCallDerefOperand(INode **operandp, FnCallNode *node) {
 //
 // A referent type that declares the operator for references ('self &', 'other &T')
 // takes the operands as they are. Otherwise both are dereferenced and the value's
-// operator selected, exactly as for '*a == *b'. A reference to a pointer or to
-// another reference reads through to that, which then compares as it would by value.
+// operator selected, exactly as for '*a == *b'. A reference to a pointer, to
+// another reference or to a slice reads through to that, which then compares as
+// it would by value.
 static void fnCallLowerRefCompare(TypeCheckState *pstate, FnCallNode *node) {
     Name *op = ((NameUseNode*)node->methfld)->namesym;
     RefNode *reftype = (RefNode*)iexpGetTypeDcl(node->objfn);
     INode **argp = &nodesGet(node->args, 0);
     if (iexpGetTypeDcl(*argp)->tag != RefTag) {
+        if (itypeGetTypeDcl(reftype->vtexp)->tag == ArrayTag && fnCallArrayAsSlice(pstate, node))
+            return;
         errorMsgNode((INode*)node, ErrorRefCompareMixed,
             "`%s` on a reference compares the value it refers to, so the other side must be a reference too. Dereference the reference (`*r`) to compare it with a value.",
             &op->namestr);
@@ -1153,11 +1286,13 @@ static void fnCallLowerRefCompare(TypeCheckState *pstate, FnCallNode *node) {
     }
 
     INode *referent = itypeGetTypeDcl(reftype->vtexp);
-    if (referent->tag == PtrTag || referent->tag == RefTag) {
+    if (referent->tag == PtrTag || referent->tag == RefTag || referent->tag == ArrayRefTag) {
         fnCallDerefOperand(&node->objfn, node);
         fnCallDerefOperand(argp, node);
         if (referent->tag == RefTag)
             fnCallLowerRefCompare(pstate, node);
+        else if (referent->tag == ArrayRefTag)
+            fnCallLowerSliceCompare(pstate, node);
         else
             fnCallLowerPtrMethod(node, ptrType);
         return;
@@ -1352,21 +1487,32 @@ void fnCallOpAssgn(TypeCheckState *pstate, FnCallNode **nodep) {
 // number of references, since '!=' on references compares the values
 // (fnCallLowerRefCompare). A type that declares its own '!=' keeps it, an
 // enum's intrinsic pair is declared together, a number declares both, and a
-// type declaring neither is left to be reported missing its '!='. A pointer
+// type declaring neither is left to be reported missing its '!='. A slice's
+// '!=', directly or through references, is derived the same way, since its
+// '==' is the only comparison of elements (fnCallLowerSliceCompare), where
+// the elements have a '==' to compare with; so is that of an array, or a
+// reference to one, compared with a slice (fnCallArrayAsSlice). A pointer
 // declares its own '!=', which is on the pointer and never asks the referent;
-// a slice and a virtual reference refuse '!=' on what they refer to, and
-// '!==', identity, is never derived.
+// a virtual reference refuses '!=' on what it refers to, and '!==', identity,
+// is never derived.
 static int fnCallNeFromEq(FnCallNode *node, INode *objtype) {
     if (!(node->flags & FlagOperator) || node->methfld == NULL || !isNameUseNode(node->methfld)
         || ((NameUseNode*)node->methfld)->namesym != neName)
         return 0;
+    INode *argtype = node->args && node->args->used > 0 ? iexpGetTypeDcl(nodesGet(node->args, 0)) : NULL;
+    INode *held = objtype->tag == RefTag ? itypeGetTypeDcl(((RefNode*)objtype)->vtexp) : objtype;
+    if (held->tag == ArrayTag && argtype && argtype->tag == ArrayRefTag)
+        objtype = argtype;
     // A reference against a value is refused under the '!=' that was written,
     // not under a derived '=='
-    if (objtype->tag == RefTag && node->args && node->args->used > 0
-        && iexpGetTypeDcl(nodesGet(node->args, 0))->tag != RefTag)
+    if (objtype->tag == RefTag && argtype && argtype->tag != RefTag)
         return 0;
     while (objtype->tag == RefTag)
         objtype = itypeGetTypeDcl(((RefNode*)objtype)->vtexp);
+    if (objtype->tag == ArrayRefTag) {
+        char buf[256];
+        return fnCallSliceElemNoEq(((RefNode*)objtype)->vtexp, buf, sizeof(buf)) == NULL;
+    }
     return objtype->tag == StructTag
         && iNsTypeFindFnField((INsTypeNode*)objtype, neName) == NULL
         && iNsTypeFindFnField((INsTypeNode*)objtype, eqName) != NULL;
@@ -2117,6 +2263,8 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     case ArrayTag:
         if (node->flags & FlagIndex)
             fnCallArrIndex(node);  // indexing or borrowed ref to index
+        else if (fnCallIsValueCompare(opname) && fnCallArrayAsSlice(pstate, node))
+            ;
         else
             errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on an array.");
         break;
@@ -2126,7 +2274,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         if (node->flags & FlagIndex)
             fnCallArrIndex(node);
         else if (fnCallIsValueCompare(opname))
-            fnCallRefNoCompare(node, opname, "comparing two slices element by element is not built");
+            fnCallLowerSliceCompare(pstate, node);
         else if (node->methfld && fnCallLowerPtrMethod(node, arrayRefType))
             ;
         else

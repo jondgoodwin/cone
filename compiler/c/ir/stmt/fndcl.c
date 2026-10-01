@@ -239,6 +239,8 @@ void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
     // and given its meaning or its fallback body
     if (fndclnode->dclinfo.facts & DclIntrinsic)
         intrinsicDclNameRes(fndclnode);
+    else
+        sliceEqDclNameRes(fndclnode);
 
     nametblHookPop();
     nstate->expander = svexpander;
