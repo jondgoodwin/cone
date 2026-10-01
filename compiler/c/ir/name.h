@@ -86,6 +86,8 @@ extern Name *refIndexName; // "&[]"
 
 extern Name *optionName;   // "Option"
 
+extern Name *fromName;     // "from", a number type's conversion: 'u64.from(count)'
+
 // The methods a region's annotation struct may declare, which the compiler
 // calls at each reference event (ir/types/region.c), and the built-in trait
 // that checks them

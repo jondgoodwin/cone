@@ -27,14 +27,14 @@ pub struct Image {
   // Channel c (0 red, 1 green, 2 blue, 3 alpha) of the pixel x from the left
   // and y from the bottom
   pub fn at(self &, x i32, y i32, c i32) u8 {
-    *pixels[usize[(y * width + x) * channels + c]];
+    *pixels[usize.from((y * width + x) * channels + c)];
   }
 
   // A checkerboard 'width' by 'height' pixels, of 'across' squares by 'down',
   // the bottom-left one colored a and its neighbours b. (Not Pegasus's: it
   // gives the example a texture without a file.)
   pub fn checker(width i32, height i32, across i32, down i32, a Color, b Color) Image {
-    mut img = Image[width, height, 3, List[u8].withCapacity(usize[width * height * 3])];
+    mut img = Image[width, height, 3, List[u8].withCapacity(usize.from(width * height * 3))];
     imm cw = if width / across > 0 {width / across;} else {1;};
     imm ch = if height / down > 0 {height / down;} else {1;};
     mut y = 0;
@@ -57,14 +57,14 @@ pub struct Image {
   // red, green, blue order, or blue, green, red if 'bgra' (a swapchain's
   // BGRA formats). The fourth byte is dropped.
   pub fn fromTexels(data *u8, width i32, height i32, bgra Bool) Image {
-    mut img = Image[width, height, 3, List[u8].withCapacity(usize[width * height * 3])];
+    mut img = Image[width, height, 3, List[u8].withCapacity(usize.from(width * height * 3))];
     mut y = 0;
     while y < height {
       // The image's row y from the bottom is the texels' row height - 1 - y
-      imm row = data + usize[(height - 1 - y) * width * 4];
+      imm row = data + usize.from((height - 1 - y) * width * 4);
       mut x = 0;
       while x < width {
-        imm p = row + usize[x * 4];
+        imm p = row + usize.from(x * 4);
         if bgra {
           img.pixels.push(*(p + 2usize));
           img.pixels.push(*(p + 1usize));
@@ -96,10 +96,10 @@ pub struct Image {
   pub fn fromBmp(data &[]u8) Image {
     if data.len < 54usize { return Image.empty(); }
     if data[0] != 'B' or data[1] != 'M' { return Image.empty(); }
-    imm offset = usize[le32(data, 10usize)];
+    imm offset = usize.from(le32(data, 10usize));
     imm headerSize = le32(data, 14usize);
-    imm width = i32[le32(data, 18usize)];
-    mut height = i32[le32(data, 22usize)];
+    imm width = i32.from(le32(data, 18usize));
+    mut height = i32.from(le32(data, 22usize));
     imm bpp = le16(data, 28usize);
     imm compression = le32(data, 30usize);
 
@@ -120,23 +120,23 @@ pub struct Image {
     } elif compression != 0u32 {
       return Image.empty();
     }
-    imm channels = i32[bpp] / 8;
+    imm channels = i32.from(bpp) / 8;
 
     // Each stored row is padded to a multiple of four bytes
-    imm rowSize = usize[(width * i32[bpp] + 31) / 32 * 4];
-    if offset + rowSize * usize[height] > data.len { return Image.empty(); }
+    imm rowSize = usize.from((width * i32.from(bpp) + 31) / 32 * 4);
+    if offset + rowSize * usize.from(height) > data.len { return Image.empty(); }
 
     // A 32-bit BMP without masks leaves its fourth byte unused: opaque
     imm alphaStored = channels == 4 and compression == 3u32 and headerSize >= 56u32;
 
-    mut img = Image[width, height, channels, List[u8].withCapacity(usize[width * height * channels])];
+    mut img = Image[width, height, channels, List[u8].withCapacity(usize.from(width * height * channels))];
     mut row = 0;
     while row < height {
       imm stored = if topDown {height - 1 - row;} else {row;};
-      imm base = offset + usize[stored] * rowSize;
+      imm base = offset + usize.from(stored) * rowSize;
       mut x = 0;
       while x < width {
-        imm p = base + usize[x * channels];
+        imm p = base + usize.from(x * channels);
         // Stored blue, green, red (alpha)
         img.pixels.push(data[p + 2usize]);
         img.pixels.push(data[p + 1usize]);
@@ -156,25 +156,25 @@ pub struct Image {
   pub fn toBmp(self &) List[u8] {
     imm rowSize = (width * 3 + 3) / 4 * 4;
     imm pixelBytes = rowSize * height;
-    mut out = List[u8].withCapacity(usize[54 + pixelBytes]);
+    mut out = List[u8].withCapacity(usize.from(54 + pixelBytes));
     // The file header: 'BM', the file's size, 0, where the pixels start
     out.push('B');
     out.push('M');
-    put32(&mut out, u32[54 + pixelBytes]);
+    put32(&mut out, u32.from(54 + pixelBytes));
     put32(&mut out, 0u32);
     put32(&mut out, 54u32);
     // The information header: its size, width, height, 1 plane, 24 bits a
     // pixel, no compression, the pixels' size, 2835 pixels a meter (72 dpi)
     // each way, no palette
     put32(&mut out, 40u32);
-    put32(&mut out, u32[width]);
-    put32(&mut out, u32[height]);
+    put32(&mut out, u32.from(width));
+    put32(&mut out, u32.from(height));
     out.push(1u8);
     out.push(0u8);
     out.push(24u8);
     out.push(0u8);
     put32(&mut out, 0u32);
-    put32(&mut out, u32[pixelBytes]);
+    put32(&mut out, u32.from(pixelBytes));
     put32(&mut out, 2835u32);
     put32(&mut out, 2835u32);
     put32(&mut out, 0u32);
@@ -184,7 +184,7 @@ pub struct Image {
       mut x = 0;
       while x < width {
         // Stored blue, green, red
-        imm p = usize[(y * width + x) * channels];
+        imm p = usize.from((y * width + x) * channels);
         out.push(*pixels[p + 2usize]);
         out.push(*pixels[p + 1usize]);
         out.push(*pixels[p]);
@@ -218,17 +218,17 @@ pub struct Image {
 fn colorByte(c f32) u8 {
   if c <= 0. { return 0u8; }
   if c >= 1. { return 255u8; }
-  u8[c * 255. + 0.5];
+  u8.from(c * 255. + 0.5);
 }
 
 // Little-endian numbers in a byte slice, and appended to a list
-fn le16(d &[]u8, at usize) u16 { u16[d[at]] | (u16[d[at + 1usize]] << 8u16); }
+fn le16(d &[]u8, at usize) u16 { u16.from(d[at]) | (u16.from(d[at + 1usize]) << 8u16); }
 fn le32(d &[]u8, at usize) u32 {
-  u32[d[at]] | (u32[d[at + 1usize]] << 8u32) | (u32[d[at + 2usize]] << 16u32) | (u32[d[at + 3usize]] << 24u32);
+  u32.from(d[at]) | (u32.from(d[at + 1usize]) << 8u32) | (u32.from(d[at + 2usize]) << 16u32) | (u32.from(d[at + 3usize]) << 24u32);
 }
 fn put32(out &mut List[u8], v u32) {
-  out.push(u8[v & 0xFFu32]);
-  out.push(u8[(v >> 8u32) & 0xFFu32]);
-  out.push(u8[(v >> 16u32) & 0xFFu32]);
-  out.push(u8[(v >> 24u32) & 0xFFu32]);
+  out.push(u8.from(v & 0xFFu32));
+  out.push(u8.from((v >> 8u32) & 0xFFu32));
+  out.push(u8.from((v >> 16u32) & 0xFFu32));
+  out.push(u8.from((v >> 24u32) & 0xFFu32));
 }

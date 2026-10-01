@@ -71,20 +71,20 @@ fn main() i32 {
   }
 
   // ---- The buffers, the pipelines and the bind group ----
-  mut input = device.createBuffer(u64[COUNT] * 4u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
-  mut squares = device.createBuffer(u64[COUNT] * 4u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_SRC);
-  mut chained = device.createBuffer(u64[COUNT] * 4u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_SRC);
+  mut input = device.createBuffer(u64.from(COUNT) * 4u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
+  mut squares = device.createBuffer(u64.from(COUNT) * 4u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_SRC);
+  mut chained = device.createBuffer(u64.from(COUNT) * 4u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_SRC);
   mut arguments = device.createBuffer(32u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_INDIRECT | BUFFER_USAGE_COPY_SRC);
   mut counter = device.createBuffer(4u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_SRC);
   mut readback = device.createBuffer(4096u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
   imm r = readback.mappedRange();
   mut data Array[u32, 200] = [200; 0u32];
   mut i = 0usize;
-  while i < usize[COUNT] {
-    data[i] = u32[i] + 7u32;
+  while i < usize.from(COUNT) {
+    data[i] = u32.from(i) + 7u32;
     i = i + 1usize;
   }
-  device.queue.writeBuffer(&input, 0u64, &data as *u8, u64[COUNT] * 4u64);
+  device.queue.writeBuffer(&input, 0u64, &data as *u8, u64.from(COUNT) * 4u64);
 
   imm entries = [
     BindGroupLayoutEntry[binding: 0u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE],
@@ -161,8 +161,8 @@ fn main() i32 {
     pass.drawIndirect(&arguments, 16u64);
     pass.end();
   }
-  encoder.copyBufferToBuffer(&squares, 0u64, &readback, 0u64, u64[COUNT] * 4u64);
-  encoder.copyBufferToBuffer(&chained, 0u64, &readback, 1024u64, u64[COUNT] * 4u64);
+  encoder.copyBufferToBuffer(&squares, 0u64, &readback, 0u64, u64.from(COUNT) * 4u64);
+  encoder.copyBufferToBuffer(&chained, 0u64, &readback, 1024u64, u64.from(COUNT) * 4u64);
   encoder.copyBufferToBuffer(&arguments, 0u64, &readback, 2048u64, 32u64);
   encoder.copyBufferToBuffer(&counter, 0u64, &readback, 2112u64, 4u64);
   encoder.copyTextureToBuffer(&target, &pixels);
@@ -178,22 +178,22 @@ fn main() i32 {
   mut badSquares = 0u32;
   mut badChained = 0u32;
   i = 0usize;
-  while i < usize[COUNT] {
-    imm v = u32[i] + 7u32;
+  while i < usize.from(COUNT) {
+    imm v = u32.from(i) + 7u32;
     imm square = v * v + 12u32;
     if word(r, i * 4usize) != square { badSquares = badSquares + 1u32; }
-    if word(r, 1024usize + i * 4usize) != square + u32[i] { badChained = badChained + 1u32; }
+    if word(r, 1024usize + i * 4usize) != square + u32.from(i) { badChained = badChained + 1u32; }
     i = i + 1usize;
   }
-  expectUInt(u64[badSquares], 0u64, "every square, from a read-only storage buffer and the immediates");
-  expectUInt(u64[badChained], 0u64, "every chained value, from what the dispatch before wrote");
+  expectUInt(u64.from(badSquares), 0u64, "every square, from a read-only storage buffer and the immediates");
+  expectUInt(u64.from(badChained), 0u64, "every chained value, from what the dispatch before wrote");
   imm wantArguments Array[u32, 8] = [4u32, 1u32, 1u32, 0u32, 3u32, 1u32, 0u32, 0u32];
   i = 0usize;
   while i < 8usize {
-    expectUInt(u64[word(r, 2048usize + i * 4usize)], u64[wantArguments[i]], "an indirect argument the GPU wrote");
+    expectUInt(u64.from(word(r, 2048usize + i * 4usize)), u64.from(wantArguments[i]), "an indirect argument the GPU wrote");
     i = i + 1usize;
   }
-  expectUInt(u64[word(r, 2112usize)], 256u64, "the indirect dispatch's 4 x 64 invocations, counted");
+  expectUInt(u64.from(word(r, 2112usize)), 256u64, "the indirect dispatch's 4 x 64 invocations, counted");
 
   // ---- 2. The indirect draw ----
   imm px = pixels.mappedRange();
@@ -206,7 +206,7 @@ fn main() i32 {
     }
     i = i + 1usize;
   }
-  expectUInt(u64[badPixels], 0u64, "every pixel drawn by the indirect draw");
+  expectUInt(u64.from(badPixels), 0u64, "every pixel drawn by the indirect draw");
 
   // ---- 3. Timestamps ----
   if timing {
@@ -216,7 +216,7 @@ fn main() i32 {
     expect(t1 >= t0, "the second timestamp not before the first");
     if report {
       printStr("compute pass: ");
-      printFloat(f64[t1 - t0] * f64[device.timestampPeriod] / 1000d);
+      printFloat(f64.from(t1 - t0) * f64.from(device.timestampPeriod) / 1000d);
       printStr(" microseconds\n");
     }
   } elif report {
@@ -247,8 +247,8 @@ fn main() i32 {
     BindGroupEntry.buffer(4u32, &counter)];
   mut misalignedGroup = device.createBindGroup(&groupLayout, &misaligned);
   expectBool(misalignedGroup.isValid(), false, "a storage buffer bound from byte 4 refused");
-  expectUInt(u64[failures()], 6u64, "six refusals, and no Vulkan call failed");
-  expectUInt(u64[validationMessages()], 0u64, "no validation message");
+  expectUInt(u64.from(failures()), 6u64, "six refusals, and no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
   done();
 }
 

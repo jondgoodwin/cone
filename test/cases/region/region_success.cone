@@ -63,21 +63,21 @@ fn allocates() {
   // '+region-perm value' allocates a copy of the value in the region and yields
   // an owning reference to it, which '*' reads and writes like any reference
   mut r = +Rc-mut 32u32;
-  show("rc-allocated", i64[*r]);
+  show("rc-allocated", i64.from(*r));
   *r = *r + 1u;
-  show("rc-written-through", i64[*r]);
+  show("rc-written-through", i64.from(*r));
 
   // 'So' is the single-owner region: no counter, freed when its owner dies
   imm s = +So 21;
-  show("so-allocated", i64[*s]);
+  show("so-allocated", i64.from(*s));
 
   // A region is not a fixed set of two. This one is declared above.
   imm a = +Arena-mut 12;
-  show("custom-region-allocated", i64[*a]);
+  show("custom-region-allocated", i64.from(*a));
 
   // The value allocated may be a struct as easily as a number
   imm w = +So Plain[41];
-  show("allocated-struct-field", i64[w.n]);
+  show("allocated-struct-field", i64.from(w.n));
 }
 
 // An allocation may begin a line, which is where a returned one usually is.
@@ -100,9 +100,9 @@ fn counts() {
   mut first = +Rc-mut 50;
   mut second = first;
   *second = 51;
-  show("alias-sees-write", i64[*first]);
+  show("alias-sees-write", i64.from(*first));
   *first = 52;
-  show("original-sees-write", i64[*second]);
+  show("original-sees-write", i64.from(*second));
 
   // The count is what keeps the allocation alive: an alias made and dropped in
   // an inner block releases its share, and the outer reference still reads
@@ -110,7 +110,7 @@ fn counts() {
     mut inner = first;
     *inner = 53;
   }
-  show("alive-after-alias-released", i64[*first]);
+  show("alive-after-alias-released", i64.from(*first));
 }
 
 // -------- permissions --------
@@ -119,19 +119,19 @@ fn permissions() {
   // Without an explicit permission an allocation is 'uni' -- one reference, no
   // aliases -- which is what makes an owning reference a move type by default
   imm sole = +Rc 60;
-  show("default-perm-uni", i64[*sole]);
+  show("default-perm-uni", i64.from(*sole));
 
   // The aliasable permissions an allocation may carry instead
   imm shared = +Rc-imm 61;
   imm readonly = +Rc-ro 62;
-  show("imm-perm", i64[*shared]);
-  show("ro-perm", i64[*readonly]);
+  show("imm-perm", i64.from(*shared));
+  show("ro-perm", i64.from(*readonly));
 
   // 'mut' is the one that may be written through, and the permission belongs to
   // the reference rather than to the variable holding it
   imm writable = +Rc-mut 63;
   *writable = 64;
-  show("mut-perm-writes", i64[*writable]);
+  show("mut-perm-writes", i64.from(*writable));
 }
 
 // -------- owning references in a struct --------
@@ -140,22 +140,22 @@ fn fields() {
   // A struct field may hold an owning reference. Its value is reached through
   // the field exactly as through a variable.
   mut h = Held[r: +Rc-mut 70, n: 71];
-  show("rc-field", i64[*h.r]);
+  show("rc-field", i64.from(*h.r));
   *h.r = 72;
-  show("rc-field-written", i64[*h.r]);
-  show("plain-field-beside-it", i64[h.n]);
+  show("rc-field-written", i64.from(*h.r));
+  show("plain-field-beside-it", i64.from(h.n));
 
   // ... and a 'So' field, which the struct then solely owns
   mut o = Owned[r: +So 73, n: 74];
-  show("so-field", i64[*o.r]);
-  show("plain-field-beside-so", i64[o.n]);
+  show("so-field", i64.from(*o.r));
+  show("plain-field-beside-so", i64.from(o.n));
 
   // An owning field is an lval like any other, and a tuple assignment reaches
   // two of them at once. The 'Rc' field's previous allocation loses a count on
   // the way; the 'So' one's is only leaked, because genlStore counts 'Rc' alone.
   h.r, o.r = +Rc-mut 75, +So 76;
-  show("rc-field-reassigned", i64[*h.r]);
-  show("so-field-reassigned", i64[*o.r]);
+  show("rc-field-reassigned", i64.from(*h.r));
+  show("so-field-reassigned", i64.from(*o.r));
 }
 
 // -------- owning references through calls --------
@@ -180,22 +180,22 @@ fn pairOut() u32, Rc[mut, i32] {
 }
 
 fn calls() {
-  show("returned-from-call", i64[*makeRc()]);
+  show("returned-from-call", i64.from(*makeRc()));
   imm r = +Rc-mut 81;
-  show("passed-into-call", i64[takeRc(r)]);
-  show("passed-out-and-back", i64[*passRc(r)]);
-  show("branch-kept-argument", i64[*chooseRc(r)]);
-  show("branch-allocated-instead", i64[*chooseRc(+Rc-mut 9)]);
+  show("passed-into-call", i64.from(takeRc(r)));
+  show("passed-out-and-back", i64.from(*passRc(r)));
+  show("branch-kept-argument", i64.from(*chooseRc(r)));
+  show("branch-allocated-instead", i64.from(*chooseRc(+Rc-mut 9)));
 
   // 'So' travels into and out of a call the same way, so long as it lands in
   // no more than one variable on the way
-  show("so-into-call", i64[takeSo(+So 84)]);
-  show("so-out-of-call", i64[*makeSo()]);
+  show("so-into-call", i64.from(takeSo(+So 84)));
+  show("so-out-of-call", i64.from(*makeSo()));
 
   // A tuple return carries an owning reference alongside a plain value
   imm pair = pairOut();
-  show("tuple-plain-element", i64[pair.0]);
-  show("tuple-owning-element", i64[*pair.1]);
+  show("tuple-plain-element", i64.from(pair.0));
+  show("tuple-owning-element", i64.from(*pair.1));
 }
 
 // -------- owning and borrowed references together --------
@@ -207,8 +207,8 @@ fn withBorrows() {
   // an ordinary borrowed reference: it passes to a function asking for '&i32'
   imm r = +Rc-mut 90;
   imm b = &*r;
-  show("borrowed-from-owning", i64[*b]);
-  show("borrow-passed-to-reader", i64[onlyReads(b)]);
+  show("borrowed-from-owning", i64.from(*b));
+  show("borrow-passed-to-reader", i64.from(onlyReads(b)));
 
   // Owning references compare the values they refer to, like borrowed ones,
   // and '===' asks whether they are the same allocation. 'r' and 'other' are
@@ -222,13 +222,13 @@ fn withBorrows() {
   if r == aliased { bits = bits + 1; }
   if r != other { bits = bits + 2; }
   if r == other { bits = bits + 4; }
-  show("owning-ref-equality-bits", i64[bits]);
+  show("owning-ref-equality-bits", i64.from(bits));
 
   mut same = 0;
   if r === aliased { same = same + 1; }
   if r !== other { same = same + 2; }
   if r === other { same = same + 4; }
-  show("owning-ref-identity-bits", i64[same]);
+  show("owning-ref-identity-bits", i64.from(same));
 }
 
 // -------- assignment and exchange --------
@@ -238,15 +238,15 @@ fn assigns() {
   mut a = +Rc-mut 100;
   mut b = +Rc-mut 200;
   a = b = makeRc();
-  show("chained-assign-left", i64[*a]);
-  show("chained-assign-right", i64[*b]);
+  show("chained-assign-left", i64.from(*a));
+  show("chained-assign-right", i64.from(*b));
 
   // Swap exchanges two owning references without either being released
   mut c = +Rc-mut 110;
   mut d = +Rc-mut 120;
   c <=> d;
-  show("swap-left", i64[*c]);
-  show("swap-right", i64[*d]);
+  show("swap-left", i64.from(*c));
+  show("swap-right", i64.from(*d));
 }
 
 // -------- allocating in a loop --------
@@ -260,7 +260,7 @@ fn repeats() {
     total = total + *r;
     i++;
   }
-  show("loop-allocation-total", i64[total]);
+  show("loop-allocation-total", i64.from(total));
 }
 
 // -------- function references --------
@@ -286,12 +286,12 @@ fn fnrefCompares() {
   if &one === &two { bits = bits + 4; }
   if &one !== &alsoOne { bits = bits + 8; }
   if &one === &alsoOne { bits = bits + 16; }
-  show("fnref-identity-bits", i64[bits]);
+  show("fnref-identity-bits", i64.from(bits));
 }
 
 fn main() i32 {
   allocates();
-  show("allocation-starting-a-line", i64[*allocationStartsALine()]);
+  show("allocation-starting-a-line", i64.from(*allocationStartsALine()));
   counts();
   permissions();
   fields();

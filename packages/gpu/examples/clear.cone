@@ -35,7 +35,7 @@ const CHECK_FRAME = 100;
 // The color of frame 'n': the three channels half a turn of the color wheel
 // apart, cycling every 150 frames
 fn colorOf(n i32) Color {
-  imm t = f32[n] * 6.2831853 / 150.;
+  imm t = f32.from(n) * 6.2831853 / 150.;
   Color[0.5 + 0.5 * libc.sinf(t), 0.5 + 0.5 * libc.sinf(t + 2.0943951), 0.5 + 0.5 * libc.sinf(t + 4.1887902), 1.];
 }
 
@@ -50,7 +50,7 @@ fn encode(c f32, format u32) i32 {
       v = 1.055 * libc.powf(v, 1. / 2.4) - 0.055;
     }
   }
-  i32[libc.floorf(v * 255. + 0.5)];
+  i32.from(libc.floorf(v * 255. + 0.5));
 }
 
 // Within one step of 255, for the rounding of the GPU's conversion
@@ -105,8 +105,8 @@ fn main() i32 {
     return 1;
   }
   imm size = win.size();
-  mut swapchain = device.createSwapChain(&surface, u32[size.w], u32[size.h], TEXTURE_FORMAT_UNDEFINED);
-  print <- "Swapchain: "; print <- u64[swapchain.width]; print <- " x "; print <- u64[swapchain.height];
+  mut swapchain = device.createSwapChain(&surface, u32.from(size.w), u32.from(size.h), TEXTURE_FORMAT_UNDEFINED);
+  print <- "Swapchain: "; print <- u64.from(swapchain.width); print <- " x "; print <- u64.from(swapchain.height);
   print <- ", "; printStr(formatName(swapchain.format)); print <- "\n";
 
   mut frames = 0;
@@ -134,7 +134,7 @@ fn main() i32 {
     win.pollEvents();
     if win.resized {
       imm s = win.size();
-      swapchain.resize(u32[s.w], u32[s.h]);
+      swapchain.resize(u32.from(s.w), u32.from(s.h));
       win.resized = false;
       resizes = resizes + 1;
     }
@@ -142,7 +142,7 @@ fn main() i32 {
     imm frame = swapchain.getCurrentTexture(&mut device);
     if frame.ok() and (swapchain.width != lastWidth or swapchain.height != lastHeight) {
       print <- "Frame "; print <- frames; print <- ", swapchain made again: ";
-      print <- u64[swapchain.width]; print <- " x "; print <- u64[swapchain.height]; print <- "\n";
+      print <- u64.from(swapchain.width); print <- " x "; print <- u64.from(swapchain.height); print <- "\n";
       lastWidth = swapchain.width;
       lastHeight = swapchain.height;
     }
@@ -161,17 +161,17 @@ fn main() i32 {
         // Read the frame back: copied into a buffer the CPU maps, read once the GPU is done
         imm w = frame.texture.width;
         imm h = frame.texture.height;
-        mut readback = device.createBuffer(u64[w] * u64[h] * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+        mut readback = device.createBuffer(u64.from(w) * u64.from(h) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
         encoder.copyTextureToBuffer(&frame.texture, &readback);
         device.queue.submit(encoder.finish());
         if !swapchain.present(&mut device) { unshown = unshown + 1; }
         device.waitIdle();
         imm p = readback.mappedRange();
         if (p as usize) != 0usize {
-          imm at = (usize[h / 2u32] * usize[w] + usize[w / 2u32]) * 4usize;
-          mut r = i32[*(p + at)];
-          imm g = i32[*(p + at + 1usize)];
-          mut b = i32[*(p + at + 2usize)];
+          imm at = (usize.from(h / 2u32) * usize.from(w) + usize.from(w / 2u32)) * 4usize;
+          mut r = i32.from(*(p + at));
+          imm g = i32.from(*(p + at + 1usize));
+          mut b = i32.from(*(p + at + 2usize));
           if frame.texture.format == TEXTURE_FORMAT_BGRA8_UNORM_SRGB or frame.texture.format == TEXTURE_FORMAT_BGRA8_UNORM {
             imm t = r;
             r = b;
@@ -197,8 +197,8 @@ fn main() i32 {
   print <- "Frames cleared: "; print <- frames; print <- "; presented: "; print <- swapchain.presents;
   print <- "; out of date when presented: "; print <- unshown; print <- "\n";
   print <- "Passes with no texture (minimized): "; print <- skipped; print <- "; resizes: "; print <- resizes; print <- "\n";
-  print <- "Vulkan failures: "; print <- u64[failures()];
-  print <- "; validation messages: "; print <- u64[validationMessages()]; print <- "\n";
+  print <- "Vulkan failures: "; print <- u64.from(failures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
   if !checked {
     print <- "The frame was not read back\n";
     return 1;
@@ -209,7 +209,7 @@ fn main() i32 {
   }
   // A frame drawn as the window is minimized can find its swapchain out of
   // date when presented; every other frame is presented
-  if swapchain.presents + u64[unshown] != u64[frames] or failures() != 0u32 { return 1; }
+  if swapchain.presents + u64.from(unshown) != u64.from(frames) or failures() != 0u32 { return 1; }
   print <- "OK\n";
   0;
 }

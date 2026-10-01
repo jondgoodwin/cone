@@ -270,8 +270,8 @@ uint32_t castBitsize(INode *type) {
 }
 
 // Answer whether a value of fromtype may be converted to Bool.
-// 'value into Bool' and the constructor form 'Bool[value]' are the same
-// conversion, so typeLitNbrCheck asks here rather than keeping a second list
+// 'value into Bool' and the method 'Bool.from(value)' are the same
+// conversion, so typeLitNbrFromCheck asks here rather than keeping a second list
 // that would have to be maintained alongside this one.
 int castConvertsToBool(INode *fromtype) {
     switch (fromtype->tag) {

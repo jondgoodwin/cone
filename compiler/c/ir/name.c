@@ -64,6 +64,7 @@ Name *parensName;
 Name *indexName;
 Name *refIndexName;
 Name *optionName;
+Name *fromName;
 Name *allocMethodName;
 Name *initMethodName;
 Name *aliasRefMethodName;

@@ -211,7 +211,7 @@ pub struct Device {
     mut result = BindGroupLayout[BindGroupLayoutBackend[backend.device, vulkan.DescriptorSetLayout[0u64],
       [16; 0u32], [3; 0u32], [3; 0u32]]];
     if !self.isValid() { return result; }
-    if entries.len > usize[MAX_BINDINGS] {
+    if entries.len > usize.from(MAX_BINDINGS) {
       fail("createBindGroupLayout: more than 16 entries");
       return result;
     }
@@ -231,11 +231,11 @@ pub struct Device {
       bindings[i].binding = e.binding;
       bindings[i].descriptorType = type;
       bindings[i].stageFlags = shaderStages(e.visibility);
-      result.backend.types[usize[e.binding]] = type;
+      result.backend.types[usize.from(e.binding)] = type;
       // What each stage sees, counted for the pipeline layout's limits
       mut s = 0usize;
       while s < 3usize {
-        if (e.visibility & (1u32 << u32[s])) != 0u32 {
+        if (e.visibility & (1u32 << u32.from(s))) != 0u32 {
           if storageBuffer { result.backend.storageBuffers[s] = result.backend.storageBuffers[s] + 1u32; }
           if storageTexture { result.backend.storageTextures[s] = result.backend.storageTextures[s] + 1u32; }
         }
@@ -243,7 +243,7 @@ pub struct Device {
       }
       i = i + 1usize;
     }
-    imm ci = vulkan.DescriptorSetLayoutCreateInfo[bindingCount: u32[entries.len],
+    imm ci = vulkan.DescriptorSetLayoutCreateInfo[bindingCount: u32.from(entries.len),
       pBindings: &bindings as *vulkan.DescriptorSetLayoutBinding];
     mut layout = vulkan.DescriptorSetLayout[0u64];
     check(vulkan.createDescriptorSetLayout(backend.device, &ci, nullp(), &mut layout), "vkCreateDescriptorSetLayout");
@@ -258,7 +258,7 @@ pub struct Device {
   // buffers or MAX_STORAGE_TEXTURES_PER_SHADER_STAGE storage textures in all
   // (WebGPU's limits). Check 'isValid'.
   pub fn createPipelineLayout(self &, bindGroupLayouts &[]&BindGroupLayout, immediateSize u32) PipelineLayout {
-    if bindGroupLayouts.len > usize[MAX_BIND_GROUPS] {
+    if bindGroupLayouts.len > usize.from(MAX_BIND_GROUPS) {
       fail("createPipelineLayout: more than 4 bind groups");
       return PipelineLayout[PipelineLayoutBackend[backend.device, vulkan.PipelineLayout[0u64]], 0u32];
     }
@@ -284,7 +284,7 @@ pub struct Device {
       }
       s = s + 1usize;
     }
-    makePipelineLayout(backend.device, u32[bindGroupLayouts.len], &sets, immediateSize);
+    makePipelineLayout(backend.device, u32.from(bindGroupLayouts.len), &sets, immediateSize);
   }
 
   // A pipeline layout with no bind groups, only 'immediateSize' bytes of
@@ -317,7 +317,7 @@ pub struct Device {
     stages[1].pName = fragmentName.cstr();
 
     // The vertex buffers, and their attributes
-    if desc.buffers.len > usize[MAX_VERTEX_BUFFERS] {
+    if desc.buffers.len > usize.from(MAX_VERTEX_BUFFERS) {
       fail("createRenderPipeline: more than 8 vertex buffers");
       return result;
     }
@@ -328,27 +328,27 @@ pub struct Device {
     mut b = 0usize;
     while b < desc.buffers.len {
       imm layout = desc.buffers[b];
-      bindings[b].binding = u32[b];
-      bindings[b].stride = u32[layout.arrayStride];
+      bindings[b].binding = u32.from(b);
+      bindings[b].stride = u32.from(layout.arrayStride);
       if layout.stepMode == VERTEX_STEP_MODE_INSTANCE { bindings[b].inputRate = vulkan.VERTEX_INPUT_RATE_INSTANCE; }
       mut a = 0usize;
       while a < layout.attributes.len {
-        if attributeCount == usize[MAX_VERTEX_ATTRIBUTES] {
+        if attributeCount == usize.from(MAX_VERTEX_ATTRIBUTES) {
           fail("createRenderPipeline: more than 16 vertex attributes");
           return result;
         }
         imm attribute = layout.attributes[a];
-        attributes[attributeCount] = vulkan.VertexInputAttributeDescription[attribute.shaderLocation, u32[b],
-          vertexFormat(attribute.format), u32[attribute.offset]];
+        attributes[attributeCount] = vulkan.VertexInputAttributeDescription[attribute.shaderLocation, u32.from(b),
+          vertexFormat(attribute.format), u32.from(attribute.offset)];
         attributeCount = attributeCount + 1usize;
         a = a + 1usize;
       }
       b = b + 1usize;
     }
     imm vertexInput = vulkan.PipelineVertexInputStateCreateInfo[
-      vertexBindingDescriptionCount: u32[desc.buffers.len],
+      vertexBindingDescriptionCount: u32.from(desc.buffers.len),
       pVertexBindingDescriptions: &bindings as *vulkan.VertexInputBindingDescription,
-      vertexAttributeDescriptionCount: u32[attributeCount],
+      vertexAttributeDescriptionCount: u32.from(attributeCount),
       pVertexAttributeDescriptions: &attributes as *vulkan.VertexInputAttributeDescription];
     imm inputAssembly = vulkan.PipelineInputAssemblyStateCreateInfo[topology: topology(desc.topology)];
     imm viewport = vulkan.PipelineViewportStateCreateInfo[viewportCount: 1u32,
@@ -464,7 +464,7 @@ pub struct Device {
   pub fn createBindGroup(self &, layout &BindGroupLayout, entries &[]BindGroupEntry) BindGroup {
     mut result = BindGroup[BindGroupBackend[backend.device, vulkan.DescriptorPool[0u64], vulkan.DescriptorSet[0u64]]];
     if !self.isValid() { return result; }
-    if entries.len > usize[MAX_BINDINGS] {
+    if entries.len > usize.from(MAX_BINDINGS) {
       fail("createBindGroup: more than 16 entries");
       return result;
     }
@@ -477,7 +477,7 @@ pub struct Device {
     mut i = 0usize;
     while i < entries.len {
       if entries[i].binding >= MAX_BINDINGS { return result; }
-      imm type = layout.backend.types[usize[entries[i].binding]];
+      imm type = layout.backend.types[usize.from(entries[i].binding)];
       // A storage buffer's binding: WebGPU's alignment and size limits
       if type == vulkan.DESCRIPTOR_TYPE_STORAGE_BUFFER {
         imm b = entries[i].backend;
@@ -505,7 +505,7 @@ pub struct Device {
       }
       t = t + 1usize;
     }
-    imm pci = vulkan.DescriptorPoolCreateInfo[maxSets: 1u32, poolSizeCount: u32[sizeCount],
+    imm pci = vulkan.DescriptorPoolCreateInfo[maxSets: 1u32, poolSizeCount: u32.from(sizeCount),
       pPoolSizes: &sizes as *vulkan.DescriptorPoolSize];
     mut pool = vulkan.DescriptorPool[0u64];
     if !check(vulkan.createDescriptorPool(backend.device, &pci, nullp(), &mut pool), "vkCreateDescriptorPool") {
@@ -534,7 +534,7 @@ pub struct Device {
       writes[i].dstSet = set;
       writes[i].dstBinding = e.binding;
       writes[i].descriptorCount = 1u32;
-      writes[i].descriptorType = layout.backend.types[usize[e.binding]];
+      writes[i].descriptorType = layout.backend.types[usize.from(e.binding)];
       if e.backend.kind == BINDING_KIND_BUFFER {
         mut range = e.backend.size;
         if range == WHOLE_SIZE { range = vulkan.WHOLE_SIZE; }
@@ -548,7 +548,7 @@ pub struct Device {
       }
       i = i + 1usize;
     }
-    vulkan.updateDescriptorSets(backend.device, u32[entries.len], &writes as *vulkan.WriteDescriptorSet, 0u32, nullp());
+    vulkan.updateDescriptorSets(backend.device, u32.from(entries.len), &writes as *vulkan.WriteDescriptorSet, 0u32, nullp());
     result;
   }
 
@@ -559,7 +559,7 @@ pub struct Device {
     mut i = 0usize;
     while i < 2usize {
       mut d = 0usize;
-      while d < usize[queue.backend.frames[i].releasedCount] {
+      while d < usize.from(queue.backend.frames[i].releasedCount) {
         vulkan.destroyBuffer(backend.device, queue.backend.frames[i].released[d].buffer, nullp());
         vulkan.freeMemory(backend.device, queue.backend.frames[i].released[d].memory, nullp());
         d = d + 1usize;
@@ -567,7 +567,7 @@ pub struct Device {
       vulkan.destroyCommandPool(backend.device, queue.backend.frames[i].pool, nullp());
       vulkan.destroyFence(backend.device, queue.backend.frames[i].fence, nullp());
       mut r = 0usize;
-      while r < usize[queue.backend.frames[i].retiredCount] {
+      while r < usize.from(queue.backend.frames[i].retiredCount) {
         vulkan.destroyBuffer(backend.device, queue.backend.frames[i].retired[r].buffer, nullp());
         vulkan.freeMemory(backend.device, queue.backend.frames[i].retired[r].memory, nullp());
         r = r + 1usize;
@@ -587,7 +587,7 @@ pub struct Device {
 // signals 'signalCount' semaphores and the frame's fence (a signal covers
 // every command submitted before it), and moves on to the next frame
 fn endFrameSignalling(device &mut Device, signalCount u32, signals *vulkan.SemaphoreSubmitInfo) Bool {
-  imm i = usize[device.queue.backend.frameIndex];
+  imm i = usize.from(device.queue.backend.frameIndex);
   imm ok = submitCommands(&mut device.queue, nullCommandBuffer(), device.queue.backend.frames[i].fence,
     signalCount, signals);
   device.queue.backend.frames[i].pending = ok;
@@ -601,7 +601,7 @@ fn endFrameSignalling(device &mut Device, signalCount u32, signals *vulkan.Semap
 fn memoryType(props &vulkan.PhysicalDeviceMemoryProperties, bits u32, want u32) u32 {
   mut i = 0u32;
   while i < props.memoryTypeCount {
-    if (bits & (1u32 << i)) != 0u32 and (props.memoryTypes[usize[i]].propertyFlags & want) == want { return i; }
+    if (bits & (1u32 << i)) != 0u32 and (props.memoryTypes[usize.from(i)].propertyFlags & want) == want { return i; }
     i = i + 1u32;
   }
   0xFFFFFFFFu32;

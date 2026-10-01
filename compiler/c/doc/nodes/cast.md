@@ -243,7 +243,8 @@ Two functions, and both **pick by the generated LLVM type kinds rather than the
 Cone tags**, deliberately: a reference is not always a plain pointer once
 virtual references and fat pointers are in play.
 
-`genlConvert` (`FlagConvert`):
+`genlConvert` (`FlagConvert`, and a number's conversion method, `u64.from(x)`,
+which is lowered to a type literal, [literals](literals.md)):
 - anything → `Bool` is tested **first**, and asks what the `isTrue` intrinsic
   asks of a condition: a ref/ptr `LLVMBuildIsNotNull`, an integer `icmp ne 0`,
   a float `fcmp une 0.0` (0 and -0 false, NaN true). Without that arm, `Bool`
@@ -251,7 +252,12 @@ virtual references and fat pointers are in play.
   truncated to its low bit (2 false), a float through `fptoui` (0.5 false, NaN
   poison), a pointer truncated.
 - numbers: `fptoui`/`fptosi`/`trunc`/`sext`/`zext`/`uitofp`/`sitofp`/
-  `fptrunc`/`fpext`.
+  `fptrunc`/`fpext`. A float whose truncated value the integer type cannot hold
+  (a negative float to an unsigned type, 300.0 to a `u8`) is LLVM's poison: the
+  value differs between an optimized and an unoptimized build (`u32` from
+  -3.7 printed 4294967293 unoptimized and a value past `u32`'s range
+  optimized). The checked and saturating conversions that would define it are
+  not built.
 - struct: alloca-store-bitcast-load, because LLVM does not bitcast structs. The
   alloca is `genlAlloca`, so it lands in the entry block — a mid-block one inside
   a loop is a fresh frame slot per iteration, which mem2reg does not promote, and

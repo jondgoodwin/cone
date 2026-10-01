@@ -1,7 +1,8 @@
 Six literal forms across three source pairs: `nil`, integer, float and string in
 `literal.c`; the array literal in `arraylit.c`, which **shares its node with the
 array type**; and the type literal in `typelit.c`, which **shares its node with
-a call**.
+a call**, and is also the node a number's conversion, `u64.from(count)`, is
+lowered into.
 
 **At a glance.** The parser builds them without deciding types. Name resolution
 resolves each literal's type name, decides that `[…]` is an array literal, and
@@ -20,7 +21,7 @@ composite literal takes ownership of. Generation emits constants where it can.
 | `FLitNode` | `FLitTag` | `floatlit` |
 | `SLitNode` | `StringLitTag` | `strlit` pointer into the lexer's arena, plus `strlen` |
 | `ArrayNode` | `ArrayTag` **or** `ArrayLitTag` | `dimens`, `elems` |
-| type literal | `TypeLitTag` | an `FnCallNode` — `args` are the field values |
+| type literal | `TypeLitTag` | an `FnCallNode` — `args` are the field values, or a number conversion's one value |
 
 **`FlagUnkType`** is set only by `newULitNode`, only when the lexer gave no type
 suffix. **There is no float equivalent** — a suffix-less float defaults to `f32`
@@ -189,7 +190,7 @@ so a literal checked again, or a constant generated at each use, does not
 repeat it. `typemgmt_typecheck_litrange` pins each position and the edges;
 `typemgmt_success` and `lexical_literals` print the edges that fit.
 
-An explicit conversion is not a literal meeting a type: `u8[300]` and
+An explicit conversion is not a literal meeting a type: `u8.from(300)` and
 `300 into u8` convert the `i32` literal `300`, and keep its low bits as any
 conversion does.
 
@@ -222,8 +223,14 @@ element carries no flag and moves when one of its own elements does.
 Every diagnostic path sets `errorType`, so the literal never leaves the pass
 untyped.
 
-**Type literal** — `typeLitTypeCheck` requires a concrete type, then dispatches
-to a struct or a number check. `typeLitStructReorder` walks the struct's fields
+**Type literal** — `typeLitTypeCheck` requires a concrete type, then builds a
+struct's literal; a number type written with brackets, `u64[count]`, is
+`ErrorNbrBracket`, because a number's conversion is its method,
+`u64.from(count)`. That call reaches this node another way: `fnCallNumberFrom`
+([fncall](fncall.md)) checks its one value, has `typeLitNbrFromCheck` accept a
+number (and for `Bool` a reference or pointer, as `castConvertsToBool` says),
+and retags the call `TypeLitTag` with the number as its type, so it never passes
+through `typeLitTypeCheck`. `typeLitStructReorder` walks the struct's fields
 in declaration order and rewrites `args` to match: a `NamedValNode` is moved
 into position; a missing field takes its default; a field flagged `IsTagField`
 gets the variant's `tagnbr` **inserted** — which is how a variant's discriminant is
@@ -344,7 +351,11 @@ each occurrence of a written literal does.
 
 A type literal is the same `insertvalue` chain, with one special case: a
 **nullable-pointer** enum has no struct at all, so the literal is either a null
-pointer or the payload alone, with the tag discarded.
+pointer or the payload alone, with the tag discarded. A number's conversion is
+`genlConvert` of its one value to the number type, the instruction `into`
+emits ([cast](cast.md)), so `u64.from(x)` and `x into u64` are one conversion;
+its value a literal, it is a literal too (`typeLitIsLiteral`), which a global
+may take.
 
 **A string literal emits a fresh global on every occurrence** — there is no
 interning, and constant merging is not in the pass list.

@@ -1446,6 +1446,49 @@ static int fnCallTypeInstancePath(TypeCheckState *pstate, FnCallNode **nodep) {
     return 0;
 }
 
+// 'u64.from(count)': a number type's conversion, the method of the type that
+// takes the value to convert. Every number type has one, taking any number
+// (Bool's also a reference or a pointer, as 'into Bool' does). Lowered here,
+// once the receiver is known to be a number type -- named directly, through an
+// alias, or as the argument a type parameter has in an instance, since name
+// resolution sees only the parameter -- into the conversion node: a type
+// literal whose type is the number, which generation expands with
+// genlConvert. The value is checked with no expected type, so an untyped
+// literal keeps its i32 default and is converted from that. Returns 1 when the
+// node was handled, lowered or refused, so the caller stops.
+static int fnCallNumberFrom(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    if (!isTypeNode(node->objfn) || ((NameUseNode*)node->methfld)->namesym != fromName)
+        return 0;
+    INode *nbrtype = itypeGetTypeDcl(node->objfn);
+    if (nbrtype->tag != IntNbrTag && nbrtype->tag != UintNbrTag && nbrtype->tag != FloatNbrTag)
+        return 0;
+    Name *written = isNameUseNode(node->objfn) ? ((NameUseNode*)node->objfn)->namesym : ((NbrNode*)nbrtype)->namesym;
+    // Whatever goes wrong below, the expression is a value of the number type
+    node->vtype = node->objfn;
+
+    if (node->args == NULL || node->args->used != 1) {
+        errorMsgNode(node->args == NULL ? node->methfld : (INode*)node, ErrorNbrFrom,
+            "%s.from converts one value: %s.from(value)", &written->namestr, &written->namestr);
+        return 1;
+    }
+    if (namedValRefuseArgs(node->args, "a call"))
+        return 1;
+    INode **argp = &nodesGet(node->args, 0);
+    inodeTypeCheckAny(pstate, argp);
+    if (!isExpNode(*argp)) {
+        errorMsgNode(*argp, ErrorNotTyped, "Expected a typed expression.");
+        return 1;
+    }
+    if (inodeIsError(*argp))
+        return 1;
+
+    node->methfld = NULL;
+    node->tag = TypeLitTag;
+    typeLitNbrFromCheck(node, nbrtype);
+    return 1;
+}
+
 // Is this, name resolved but not yet type checked, a type or module, or an
 // instance of a generic one -- a path's base rather than a receiver?
 static int fnCallIsPathBase(INode *node) {
@@ -1776,6 +1819,9 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                 calleeIsOverload = nameUseNames(node->objfn, FnOverloadDclTag);
             }
         }
+        // 'u64.from(count)': a number type's conversion
+        else if (fnCallNumberFrom(pstate, nodep))
+            return;
         else if (isExpNode(node->objfn)) {
             INode *rcvtype = iexpGetDerefTypeDcl(node->objfn);
             if (isMethodType(rcvtype)) {
@@ -1905,12 +1951,13 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         // A member named on a type is a path through that type's namespace, and
         // name resolution collapses every path whose base it can see: a module,
         // a struct or a trait. One that arrives here is one it could not -- an
-        // alias, a number type, a generic parameter, or a generic instance's
-        // member other than a function (fnCallTypeInstancePath took those).
-        // Diagnosed rather than left to read as a bad call.
+        // alias, a number type's member other than 'from' (fnCallNumberFrom
+        // took that), a generic parameter, or a generic instance's member other
+        // than a function (fnCallTypeInstancePath took those). Diagnosed rather
+        // than left to read as a bad call.
         if (node->methfld != NULL) {
             errorMsgNode(node->objfn, ErrorUnkName,
-                "A path may pass through a module, a struct or a trait; reaching a member through anything else is not built.");
+                "A path may pass through a module, a struct or a trait, and a number type has 'from'; reaching a member through anything else is not built.");
             node->vtype = errorType;
             return;
         }

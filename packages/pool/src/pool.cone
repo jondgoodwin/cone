@@ -190,23 +190,23 @@ pub struct Pool[T] is ShapeChanging {
 
   // How many values it holds, how many slots its block has room for, and how
   // many slots have been retired
-  pub fn len(self &) usize { usize[live]; }
-  pub fn capacity(self &) usize { usize[cap]; }
-  pub fn retiredSlots(self &) usize { usize[retired]; }
+  pub fn len(self &) usize { usize.from(live); }
+  pub fn capacity(self &) usize { usize.from(cap); }
+  pub fn retiredSlots(self &) usize { usize.from(retired); }
 
   // Move value in, and a reference to it there
   pub fn add(self &mut, value T) Ref[T] {
     mut i = free;
     if i != noSlot {
-      free = ((slots + usize[i]) as &Slot[T]).next;
+      free = ((slots + usize.from(i)) as &Slot[T]).next;
     }
     else {
       if high == cap { self.grow(); }
       i = high;
       high = high + 1u32;
-      ((slots + usize[i]) as &mut Slot[T]).gen = 0u32;
+      ((slots + usize.from(i)) as &mut Slot[T]).gen = 0u32;
     }
-    imm s = (slots + usize[i]) as &mut Slot[T];
+    imm s = (slots + usize.from(i)) as &mut Slot[T];
     s.gen = s.gen + 1u32;
     mem.writeRaw(&mut s.value as *T, value);
     live = live + 1u32;
@@ -215,33 +215,33 @@ pub struct Pool[T] is ShapeChanging {
 
   // Whether r names a value it holds
   pub fn alive(self &, r Ref[T]) Bool {
-    r.slot() < high and ((slots + usize[r.slot()]) as &Slot[T]).gen == r.generation();
+    r.slot() < high and ((slots + usize.from(r.slot())) as &Slot[T]).gen == r.generation();
   }
 
   // Some borrow of the value r names, or None if it has been removed
   pub fn get(self &, r Ref[T]) Option[&T] {
     if !self.alive(r) { return None[&T][]; }
-    Some[&T][&slots[usize[r.slot()]].value];
+    Some[&T][&slots[usize.from(r.slot())].value];
   }
 
   // Some mutable borrow of the value r names, or None if it has been removed
   pub fn getMut(self &mut, r Ref[T]) Option[&mut T] {
     if !self.alive(r) { return None[&mut T][]; }
-    Some[&mut T][&mut slots[usize[r.slot()]].value];
+    Some[&mut T][&mut slots[usize.from(r.slot())].value];
   }
 
   // 'pool[r]': a borrow of the value r names; a panic if it has been removed,
   // reported at the line of the caller, which 'file' and 'line' default to
   pub fn `[]`(self &, r Ref[T], file &[]u8 = srcFile(), line u32 = srcLine()) &T {
     if !self.alive(r) { deadRef(file, line); }
-    &slots[usize[r.slot()]].value;
+    &slots[usize.from(r.slot())].value;
   }
 
   // '&mut pool[r]': a mutable borrow of the value r names; a panic if it has
   // been removed, as for 'pool[r]'
   pub fn `&[]`(self &mut, r Ref[T], file &[]u8 = srcFile(), line u32 = srcLine()) &mut T {
     if !self.alive(r) { deadRef(file, line); }
-    &mut slots[usize[r.slot()]].value;
+    &mut slots[usize.from(r.slot())].value;
   }
 
   // Remove the value r names, finalizing it where it sits, and answer true;
@@ -249,7 +249,7 @@ pub struct Pool[T] is ShapeChanging {
   pub fn remove(self &mut, r Ref[T]) Bool {
     if !self.alive(r) { return false; }
     imm i = r.slot();
-    imm s = (slots + usize[i]) as &mut Slot[T];
+    imm s = (slots + usize.from(i)) as &mut Slot[T];
     imm retire = s.gen == lastGen;
     // Gone from here on, to anything its finalizer asks the pool
     s.gen = s.gen + 1u32;
@@ -265,7 +265,7 @@ pub struct Pool[T] is ShapeChanging {
       retired = retired + 1u32;
     }
     else {
-      imm now = (slots + usize[i]) as &mut Slot[T];
+      imm now = (slots + usize.from(i)) as &mut Slot[T];
       now.next = free;
       free = i;
     }
@@ -281,17 +281,17 @@ pub struct Pool[T] is ShapeChanging {
     if cap >= maxSlots { outOfMemory(); }
     imm want = if cap == 0u32 {4u32;} else if cap > maxSlots / 2u32 {maxSlots;} else {cap * 2u32;};
     imm size = mem.sizeof[Slot[T]]();
-    if usize[want] > (0usize - 1usize) / size { outOfMemory(); }
+    if usize.from(want) > (0usize - 1usize) / size { outOfMemory(); }
     if dying == 0u32 {
-      imm fresh = libc.realloc(slots as *u8, usize[want] * size);
+      imm fresh = libc.realloc(slots as *u8, usize.from(want) * size);
       if fresh as usize == 0usize { outOfMemory(); }
       slots = fresh as *Slot[T];
     }
     else {
-      imm fresh = libc.malloc(usize[want] * size);
+      imm fresh = libc.malloc(usize.from(want) * size);
       imm node = libc.malloc(mem.sizeof[Stale]()) as *Stale;
       if fresh as usize == 0usize or node as usize == 0usize { outOfMemory(); }
-      libc.memcpy(fresh, slots as *u8, usize[cap] * size);
+      libc.memcpy(fresh, slots as *u8, usize.from(cap) * size);
       mem.writeRaw(node, Stale[stale, slots as *u8]);
       stale = node;
       slots = fresh as *Slot[T];
@@ -319,7 +319,7 @@ pub struct Pool[T] is ShapeChanging {
       while live > 0u32 {
         mut i = 0u32;
         while i < high {
-          imm gen = ((slots + usize[i]) as &Slot[T]).gen;
+          imm gen = ((slots + usize.from(i)) as &Slot[T]).gen;
           if (gen & 1u32) == 1u32 {
             self.remove(Ref[T].of(i, gen));
           }

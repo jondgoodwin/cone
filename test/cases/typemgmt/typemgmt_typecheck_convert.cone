@@ -1,5 +1,6 @@
-// Explicit conversions written in the constructor form, 'Type[value]', that
-// the compiler will not build.
+// Number conversions the compiler will not build: the method 'from' given
+// what it does not convert, and the bracket form, which a number type does not
+// take.
 //
 // Type-check stage only: this file parses and resolves cleanly, so every
 // diagnostic below is reached. The 'as' and 'into' forms report through a
@@ -13,17 +14,26 @@ mod typemgmt_typecheck_convert;
 
 fn fromNonNumber() {
   mut pair (i32, i32) = 1, 2;
-  imm n = i32[pair];      //~ ErrorBadArray:15 "May only create number literal from another number"
+  imm n = i32.from(pair);         //~ ErrorNbrFrom "converts a number"
 }
 
-fn tooManyValues() {
-  imm n = i32[1, 2];      //~ ErrorBadArray:14 "Number literal requires one value"
+fn fromNoValue() {
+  imm n = i32.from();             //~ ErrorNbrFrom "converts one value"
+}
+
+fn fromTooManyValues() {
+  imm n = i32.from(1, 2);         //~ ErrorNbrFrom "converts one value"
+}
+
+// 'from' is a method to call, not a value to take
+fn fromUncalled() {
+  imm f = u64.from;               //~ ErrorNbrFrom "converts one value"
 }
 
 // The operand of a conversion is a value. A type name in that position is not
 // a zero-argument construction of it.
 fn fromTypeName() {
-  imm n = i32[f32];       //~ ErrorNotTyped:15 "Expected a typed expression"
+  imm n = i32.from(f32);          //~ ErrorNotTyped "Expected a typed expression"
 }
 
 // Bool is the one number type that takes a source which is not a number: a
@@ -32,25 +42,42 @@ fn fromTypeName() {
 // 'into Bool' accepts and nothing else, which a tuple is not.
 fn boolFromNonConvertible() {
   mut pair (i32, i32) = 1, 2;
-  imm b = Bool[pair];     //~ ErrorBadArray:16 "May only create Bool from a number, reference or pointer"
+  imm b = Bool.from(pair);        //~ ErrorNbrFrom "converts a number, a reference or a pointer"
 }
 
 // A pointer converting to Bool does not make it convert to an integer. 'p into
-// usize' is refused too, so the constructor form is agreeing with the
-// conversion path rather than making a permitted conversion unreachable.
-// Reinterpretation, 'p as usize', is a different question and is not this one.
+// usize' is refused too, so the method is agreeing with the conversion path
+// rather than making a permitted conversion unreachable. Reinterpretation,
+// 'p as usize', is a different question and is not this one.
 fn pointerToInteger(p *i32) {
-  imm n = usize[p];       //~ ErrorBadArray:17 "May only create number literal from another number"
+  imm n = usize.from(p);          //~ ErrorNbrFrom "converts a number"
+}
+
+// The bracket form: a number type takes no '[...]', whether named directly,
+// through an alias, or as a type parameter's argument, with one value, none
+// or several
+alias Count = u64;
+
+fn convert[T](x f64) T {
+  T[x];                           //~ ErrorNbrBracket "i32.from(value)"
+}
+
+fn brackets() {
+  mut count i32 = 3;
+  imm a = u64[count];             //~ ErrorNbrBracket "u64.from(value)"
+  imm b = Count[count];           //~ ErrorNbrBracket "Count.from(value)"
+  imm c = convert[i32](2.5d);
+  imm d = i32[];                  //~ ErrorNbrBracket
+  imm e = i32[1, 2];              //~ ErrorNbrBracket
 }
 
 // A reference type has no constructor form: a reference is borrowed or
 // allocated, never built from a value. An alias is the only way to spell one
 // before '[', and what refuses it is the literal's catch-all for a type it has
-// no arm for, under the same code as the number cases above, rather than a
-// diagnostic of its own. Pinned as it is today.
+// no arm for, rather than a diagnostic of its own. Pinned as it is today.
 alias IntRef = &i32;
 
 fn referenceAliasLiteral() {
   mut n = 5;
-  imm borrowed = IntRef[&n];    //~ ErrorBadArray:24 "Unknown type literal type"
+  imm borrowed = IntRef[&n];      //~ ErrorBadArray "Unknown type literal type"
 }

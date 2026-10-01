@@ -105,7 +105,7 @@ fn skyParams(sky &Sky) Array[f32, 36] {
     sky.ground.red, sky.ground.green, sky.ground.blue, sky.groundFade,
     sky.line.red, sky.line.green, sky.line.blue, sky.lineWidth,
     sky.cloud.red, sky.cloud.green, sky.cloud.blue, sky.cloudCover,
-    sky.cloudScale, sky.cloudStretch, sky.cloudHeading, f32[sky.cloudSeed]];
+    sky.cloudScale, sky.cloudStretch, sky.cloudHeading, f32.from(sky.cloudSeed)];
 }
 
 // A physically based material (pbr.slang)
@@ -154,8 +154,8 @@ fn pbrParams(m &PbrMaterial) Array[f32, 20] {
   [m.baseColor.red, m.baseColor.green, m.baseColor.blue, m.baseColor.alpha,
     m.metallic, m.roughness, m.clearcoat, m.clearcoatRoughness,
     m.filmMin, m.filmMax, m.filmIor, film,
-    m.filmScale, m.filmDrift, m.filmWarp, f32[m.filmSeed],
-    m.wetScale, m.wetLevel, m.wetSoftness, f32[m.wetSeed]];
+    m.filmScale, m.filmDrift, m.filmWarp, f32.from(m.filmSeed),
+    m.wetScale, m.wetLevel, m.wetSoftness, f32.from(m.wetSeed)];
 }
 
 // What a bake pass's immediates hold (ibl.slang's BakeImmediates)
@@ -261,7 +261,7 @@ pub struct Environment {
   pub fn isValid(self &) Bool {
     group.isValid() and wholeGroup.isValid() and skyPipeline.isValid() and downsamplePipeline.isValid()
       and prefilterPipeline.isValid() and irradiancePipeline.isValid() and tablePipeline.isValid()
-      and levelGroups.len() + 1usize == usize[ENVIRONMENT_LEVELS];
+      and levelGroups.len() + 1usize == usize.from(ENVIRONMENT_LEVELS);
   }
 
   // Light by 'sky' from now on: its parameters written, the cubes made
@@ -278,7 +278,7 @@ pub struct Environment {
   pub fn bake(self &mut, encoder &mut CommandEncoder) {
     if !tableMade {
       imm tableView = table.createView();
-      bakePass(encoder, tableView, &tablePipeline, &wholeGroup, 0u32, 0., f32[TABLE_SIZE], TABLE_SAMPLES);
+      bakePass(encoder, tableView, &tablePipeline, &wholeGroup, 0u32, 0., f32.from(TABLE_SIZE), TABLE_SAMPLES);
       tableMade = true;
     }
     if !dirty { return; }
@@ -290,7 +290,7 @@ pub struct Environment {
     imm unread = levelGroups[levelGroups.len() - 1usize];
     while face < 6u32 {
       imm view = faceView(&skyCube, face, 0u32);
-      bakePass(encoder, view, &skyPipeline, unread, face, 0., f32[ENVIRONMENT_SIZE], 0u32);
+      bakePass(encoder, view, &skyPipeline, unread, face, 0., f32.from(ENVIRONMENT_SIZE), 0u32);
       face = face + 1u32;
     }
     // Each level from the one above
@@ -299,8 +299,8 @@ pub struct Environment {
       face = 0u32;
       while face < 6u32 {
         imm view = faceView(&skyCube, face, level);
-        imm source = levelGroups[usize[level - 1u32]];
-        bakePass(encoder, view, &downsamplePipeline, source, face, 0., f32[ENVIRONMENT_SIZE >> level], 0u32);
+        imm source = levelGroups[usize.from(level - 1u32)];
+        bakePass(encoder, view, &downsamplePipeline, source, face, 0., f32.from(ENVIRONMENT_SIZE >> level), 0u32);
         face = face + 1u32;
       }
       level = level + 1u32;
@@ -308,11 +308,11 @@ pub struct Environment {
     // The specular cube, a roughness a level
     level = 0u32;
     while level < SPECULAR_LEVELS {
-      imm roughness = f32[level] / f32[SPECULAR_LEVELS - 1u32];
+      imm roughness = f32.from(level) / f32.from(SPECULAR_LEVELS - 1u32);
       face = 0u32;
       while face < 6u32 {
         imm view = faceView(&specularCube, face, level);
-        bakePass(encoder, view, &prefilterPipeline, &wholeGroup, face, roughness, f32[SPECULAR_SIZE >> level],
+        bakePass(encoder, view, &prefilterPipeline, &wholeGroup, face, roughness, f32.from(SPECULAR_SIZE >> level),
           PREFILTER_SAMPLES);
         face = face + 1u32;
       }
@@ -322,7 +322,7 @@ pub struct Environment {
     face = 0u32;
     while face < 6u32 {
       imm view = faceView(&irradianceCube, face, 0u32);
-      bakePass(encoder, view, &irradiancePipeline, &wholeGroup, face, IRRADIANCE_SOURCE_LEVEL, f32[IRRADIANCE_SIZE],
+      bakePass(encoder, view, &irradiancePipeline, &wholeGroup, face, IRRADIANCE_SOURCE_LEVEL, f32.from(IRRADIANCE_SIZE),
         IRRADIANCE_SAMPLES);
       face = face + 1u32;
     }

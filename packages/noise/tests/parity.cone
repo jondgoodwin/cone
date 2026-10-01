@@ -53,9 +53,9 @@ fn fromBits(b u32) f32 { b as f32; }
 fn samplePoint(a u32) Vec3 {
   imm gx = a % 16u32;
   imm gy = a / 16u32;
-  mut x = f32[gx] * 0.40625 - 3.21875;
-  mut y = f32[gy] * 0.34375 + 0.53125;
-  mut z = f32[gx ^ gy] * 0.28125 - 1.90625;
+  mut x = f32.from(gx) * 0.40625 - 3.21875;
+  mut y = f32.from(gy) * 0.34375 + 0.53125;
+  mut z = f32.from(gx ^ gy) * 0.28125 - 1.90625;
   if a >= 128u32 {
     x = x + 1000.25;
     y = y - 777.5;
@@ -91,7 +91,7 @@ fn quantity(q u32, a u32) u32 {
     imm h = pcg4d(w);
     return if q == 6u32 { h.x; } elif q == 7u32 { h.y; } elif q == 8u32 { h.z; } else { h.w; };
   }
-  if q == 10u32 { return hash1(i32[a] - 128, seed); }
+  if q == 10u32 { return hash1(i32.from(a) - 128, seed); }
   if q == 11u32 { return bits(toUnit(pcg(w.x))); }
   if q == 12u32 { return bits(toSigned(pcg(w.x))); }
   if q < 16u32 { return bits(pick2(value2(p2, seed), q - 13u32)); }
@@ -145,9 +145,9 @@ fn tolerance(q u32) f64 { if q == 58u32 or q == 59u32 { 0.002d; } else { 0d; }; 
 // The difference between two f32s in units in the last place, by their
 // order as integers (-0 and +0 the same)
 fn ulps(a u32, b u32) u64 {
-  imm ia = if (a & 0x80000000u32) != 0u32 { -i64[a & 0x7fffffffu32]; } else { i64[a]; };
-  imm ib = if (b & 0x80000000u32) != 0u32 { -i64[b & 0x7fffffffu32]; } else { i64[b]; };
-  u64[if ia > ib { ia - ib; } else { ib - ia; }];
+  imm ia = if (a & 0x80000000u32) != 0u32 { -i64.from(a & 0x7fffffffu32); } else { i64.from(a); };
+  imm ib = if (b & 0x80000000u32) != 0u32 { -i64.from(b & 0x7fffffffu32); } else { i64.from(b); };
+  u64.from(if ia > ib { ia - ib; } else { ib - ia; });
 }
 
 fn main() i32 {
@@ -169,7 +169,7 @@ fn main() i32 {
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC];
   mut color = device.createTexture(&target);
   require(color.isValid(), "a 64 x 256 target");
-  mut readback = device.createBuffer(u64[WIDTH * HEIGHT * 4u32], BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut readback = device.createBuffer(u64.from(WIDTH * HEIGHT * 4u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
   imm p = readback.mappedRange();
 
   mut shader = device.createShaderModule(&PARITY_SPIRV);
@@ -204,14 +204,14 @@ fn main() i32 {
     mut maxUlps = 0u64;
     mut a = 0u32;
     while a < HEIGHT {
-      imm at = p + usize[(a * WIDTH + q) * 4u32];
-      imm gpuBits = u32[*at] | (u32[*(at + 1usize)] << 8u32) | (u32[*(at + 2usize)] << 16u32)
-        | (u32[*(at + 3usize)] << 24u32);
+      imm at = p + usize.from((a * WIDTH + q) * 4u32);
+      imm gpuBits = u32.from(*at) | (u32.from(*(at + 1usize)) << 8u32) | (u32.from(*(at + 2usize)) << 16u32)
+        | (u32.from(*(at + 3usize)) << 24u32);
       imm cpuBits = quantity(q, a);
       if gpuBits == cpuBits {
         exact = exact + 1u32;
       } elif !isWord(q) {
-        imm d = f64[fromBits(gpuBits)] - f64[fromBits(cpuBits)];
+        imm d = f64.from(fromBits(gpuBits)) - f64.from(fromBits(cpuBits));
         imm ad = if d < 0d { -d; } else { d; };
         if ad > maxDiff { maxDiff = ad; }
         imm u = ulps(gpuBits, cpuBits);
@@ -220,9 +220,9 @@ fn main() i32 {
       a = a + 1u32;
     }
     if report {
-      printUInt(u64[q]);
+      printUInt(u64.from(q));
       printStr("  ");
-      printUInt(u64[exact]);
+      printUInt(u64.from(exact));
       printStr("  ");
       printFloat(maxDiff);
       printStr("  ");
@@ -233,23 +233,23 @@ fn main() i32 {
       else { maxUlps <= ulpTolerance(q); };
     if !ok {
       printStr("quantity ");
-      printUInt(u64[q]);
+      printUInt(u64.from(q));
       printStr(": ");
     }
     if isWord(q) {
-      expectUInt(u64[exact], u64[HEIGHT], "every sample bit for bit");
+      expectUInt(u64.from(exact), u64.from(HEIGHT), "every sample bit for bit");
     } elif tolerance(q) > 0d {
       expectFloat(maxDiff, 0d, tolerance(q), "within the tolerance");
     } elif ulpTolerance(q) > 0u64 {
       expect(maxUlps <= ulpTolerance(q), "every sample to within 3 ulps (a square root)");
     } else {
-      expectUInt(u64[exact], u64[HEIGHT], "every sample bit for bit");
+      expectUInt(u64.from(exact), u64.from(HEIGHT), "every sample bit for bit");
     }
     q = q + 1u32;
   }
 
-  expectUInt(u64[failures()], 0u64, "no Vulkan call failed");
-  expectUInt(u64[validationMessages()], 0u64, "no validation message");
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
   done();
 }
 

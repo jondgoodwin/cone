@@ -388,6 +388,10 @@ enum ErrorCode {
     ErrorArrayTypeArgs = 1205,  // 'Array' given no size, or used without its brackets: it takes an element type, then one size for each dimension
     ErrorArrayTypeElem = 1206,  // 'Array[...]' whose first argument is not a type: the element type comes first, then the sizes
 
+    // A number's conversion, 'u64.from(count)' (ir/exp/fncall.c, ir/exp/typelit.c)
+    ErrorNbrBracket = 1207,     // 'u64[count]': a number type takes no '[...]'; a conversion is the method 'u64.from(count)'
+    ErrorNbrFrom = 1208,        // A number type's 'from' named without a call, given other than one value, or given a value that does not convert: Bool's takes a number, reference or pointer, every other's a number
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

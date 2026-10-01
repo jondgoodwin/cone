@@ -1107,7 +1107,7 @@ class Testing(unittest.TestCase):
         write(pkg / "tests" / "wrong.out", "5\n")
         # twice(1) + 1 is 3, the status main returns
         write(pkg / "tests" / "status.cone",
-              test.format(name="status", n=4, status="i32[counter.twice(1i64) + 1i64]"))
+              test.format(name="status", n=4, status="i32.from(counter.twice(1i64) + 1i64)"))
         write(pkg / "tests" / "status.out", "8\n")
         write(pkg / "tests" / "status.exit", "3\n")
         write(pkg / "examples" / "show.cone", test.format(name="show", n=5, status="0i32"))

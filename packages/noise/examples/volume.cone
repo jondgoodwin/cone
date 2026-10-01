@@ -52,7 +52,7 @@ fn parseCount(s *u8) i32 {
   while *(s + i) != 0u8 {
     imm c = *(s + i);
     if c < '0' or c > '9' { return -1; }
-    n = n * 10 + i32[c - '0'];
+    n = n * 10 + i32.from(c - '0');
     i = i + 1usize;
   }
   n;
@@ -70,12 +70,12 @@ fn cstrEquals(s *u8, t &[]u8) Bool {
 // A linear value from 0 to 1 as an sRGB byte
 fn srgbByte(c f32) i32 {
   imm e = if c <= 0.0031308 { c * 12.92; } else { 1.055 * libc.powf(c, 1. / 2.4) - 0.055; };
-  i32[e * 255. + 0.5];
+  i32.from(e * 255. + 0.5);
 }
 
 // What the slice shows of voxel (x, y, SLICE), as volume.slang's 'grey'
 fn expectedGrey(x u32, y u32) i32 {
-  imm p = Vec3[OX + f32[x] * STEP, OY + f32[y] * STEP, OZ + f32[SLICE] * STEP];
+  imm p = Vec3[OX + f32.from(x) * STEP, OY + f32.from(y) * STEP, OZ + f32.from(SLICE) * STEP];
   mut g = fbm3(p, SEED, 4, 2., 0.5).value + 0.5;
   if g < 0. { g = 0.; }
   if g > 1. { g = 1.; }
@@ -86,9 +86,9 @@ fn main(argc i32, argv **u8) i32 {
   mut maxFrames = 0;
   mut a = 1;
   while a < argc {
-    imm arg = *(argv + usize[a]);
+    imm arg = *(argv + usize.from(a));
     if cstrEquals(arg, "--frames") and a + 1 < argc {
-      maxFrames = parseCount(*(argv + usize[a + 1]));
+      maxFrames = parseCount(*(argv + usize.from(a + 1)));
       a = a + 1;
     } else {
       print <- "Unknown argument; use --frames N\n";
@@ -127,7 +127,7 @@ fn main(argc i32, argv **u8) i32 {
     return 1;
   }
   imm size = win.size();
-  mut swapchain = device.createSwapChain(&surface, u32[size.w], u32[size.h], TEXTURE_FORMAT_UNDEFINED);
+  mut swapchain = device.createSwapChain(&surface, u32.from(size.w), u32.from(size.h), TEXTURE_FORMAT_UNDEFINED);
 
   // ---- The bake ----
   imm volumeDesc = TextureDescriptor[width: SIZE, height: SIZE, format: TEXTURE_FORMAT_R32_FLOAT,
@@ -201,7 +201,7 @@ fn main(argc i32, argv **u8) i32 {
   }
   if timing {
     imm t = times.mappedRange() as *u64;
-    print <- "Baked 64^3 voxels of fBm in "; print <- f64[*(t + 1usize) - *t] * f64[device.timestampPeriod] / 1000000d;
+    print <- "Baked 64^3 voxels of fBm in "; print <- f64.from(*(t + 1usize) - *t) * f64.from(device.timestampPeriod) / 1000000d;
     print <- " ms on the GPU\n";
   }
 
@@ -214,18 +214,18 @@ fn main(argc i32, argv **u8) i32 {
     win.pollEvents();
     if win.resized {
       imm s = win.size();
-      swapchain.resize(u32[s.w], u32[s.h]);
+      swapchain.resize(u32.from(s.w), u32.from(s.h));
       win.resized = false;
     }
     imm frame = swapchain.getCurrentTexture(&mut device);
     if !frame.ok() {
       sdl.Delay(10u32);
     } else {
-      imm turn f32 = f32[frames] * 0.01;
+      imm turn f32 = f32.from(frames) * 0.01;
       immediates[6] = turn as u32;
-      immediates[7] = (SLICE + u32[frames] / 4u32) % SIZE;
-      immediates[8] = f32[frame.texture.width] as u32;
-      immediates[9] = f32[frame.texture.height] as u32;
+      immediates[7] = (SLICE + u32.from(frames) / 4u32) % SIZE;
+      immediates[8] = f32.from(frame.texture.width) as u32;
+      immediates[9] = f32.from(frame.texture.height) as u32;
       mut encoder = device.createCommandEncoder();
       imm color = RenderPassColorAttachment[view: frame.texture.createView(), clearValue: Color[0., 0., 0., 1.]];
       mut pass = encoder.beginRenderPass(&color);
@@ -238,7 +238,7 @@ fn main(argc i32, argv **u8) i32 {
         // Three voxels of slice 32, each at the middle of its 4 x 4 pixels
         checked = true;
         imm w = frame.texture.width;
-        mut readback = device.createBuffer(u64[w] * u64[frame.texture.height] * 4u64,
+        mut readback = device.createBuffer(u64.from(w) * u64.from(frame.texture.height) * 4u64,
           BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
         encoder.copyTextureToBuffer(&frame.texture, &readback);
         device.queue.submit(encoder.finish());
@@ -250,9 +250,9 @@ fn main(argc i32, argv **u8) i32 {
         while k < 3usize {
           imm x = voxels[k * 2usize];
           imm y = voxels[k * 2usize + 1usize];
-          imm got = i32[*(p + (usize[16u32 + 4u32 * y + 2u32] * usize[w] + usize[16u32 + 4u32 * x + 2u32]) * 4usize)];
+          imm got = i32.from(*(p + (usize.from(16u32 + 4u32 * y + 2u32) * usize.from(w) + usize.from(16u32 + 4u32 * x + 2u32)) * 4usize));
           imm want = expectedGrey(x, y);
-          print <- "Voxel ("; print <- u64[x]; print <- ", "; print <- u64[y]; print <- ", 32): grey ";
+          print <- "Voxel ("; print <- u64.from(x); print <- ", "; print <- u64.from(y); print <- ", 32): grey ";
           print <- got; print <- " (want "; print <- want; print <- ")\n";
           if got - want <= 2 and want - got <= 2 { matched = matched + 1; }
           k = k + 1usize;
@@ -267,13 +267,13 @@ fn main(argc i32, argv **u8) i32 {
   device.waitIdle();
   print <- "Frames drawn: "; print <- frames; print <- "; presented: "; print <- swapchain.presents;
   print <- "; out of date when presented: "; print <- unshown; print <- "\n";
-  print <- "Vulkan failures: "; print <- u64[failures()];
-  print <- "; validation messages: "; print <- u64[validationMessages()]; print <- "\n";
+  print <- "Vulkan failures: "; print <- u64.from(failures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
   if frames > 0 and (!checked or matched != 3) {
     print <- "The slice read back is not the noise baked\n";
     return 1;
   }
-  if swapchain.presents + u64[unshown] != u64[frames] or failures() != 0u32 or validationMessages() != 0u32 { return 1; }
+  if swapchain.presents + u64.from(unshown) != u64.from(frames) or failures() != 0u32 or validationMessages() != 0u32 { return 1; }
   print <- "OK\n";
   0;
 }
