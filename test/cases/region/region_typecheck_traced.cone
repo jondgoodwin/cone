@@ -19,75 +19,75 @@ struct Leaf { pub n i32; }
 
 // Accepted: each shape of 'mark', and a traced region with 'dealiasRef' (a
 // counted and traced region, whose count the collector may read)
-struct shortMark is RegionRef, Traced {
+struct ShortMark is RegionRef, Traced {
   fn alloc(size usize) *u8 inline { malloc(size); }
-  fn mark(self &uni shortMark) { }
+  fn mark(self &uni ShortMark) { }
 }
 
-struct longMark is RegionRef, Traced {
+struct LongMark is RegionRef, Traced {
   fn alloc(size usize, ty *TypeRecord) *u8 inline { malloc(size); }
-  fn mark(self &uni longMark, perm u32, mode u32) { }
+  fn mark(self &uni LongMark, perm u32, mode u32) { }
 }
 
 // And a 'writeBarrier', which a collector marking while the program runs
 // declares, of the one shape the compiler calls
-struct barriered is RegionRef, Traced {
+struct Barriered is RegionRef, Traced {
   fn alloc(size usize) *u8 inline { malloc(size); }
-  fn mark(self &uni barriered) { }
-  fn writeBarrier(self &uni barriered) { }
+  fn mark(self &uni Barriered) { }
+  fn writeBarrier(self &uni Barriered) { }
 }
 
-struct counted is RegionRef, Traced {
+struct Counted is RegionRef, Traced {
   pub count usize;
   fn alloc(size usize) *u8 inline { malloc(size); }
-  fn init() counted { counted[1usize]; }
-  fn aliasRef(self &uni counted) { count = count + 1usize; }
-  fn dealiasRef(self &uni counted) Bool { count = count - 1usize; count == 0usize; }
-  fn mark(self &uni counted) { }
+  fn init() Counted { Counted[1usize]; }
+  fn aliasRef(self &uni Counted) { count = count + 1usize; }
+  fn dealiasRef(self &uni Counted) Bool { count = count - 1usize; count == 0usize; }
+  fn mark(self &uni Counted) { }
 }
 
 // A trace hands its region each reference it finds, through 'mark'
-struct noMark is RegionRef, Traced {   //~ ErrorTracedMark "through a method it has not declared"
+struct NoMark is RegionRef, Traced {   //~ ErrorTracedMark "through a method it has not declared"
   fn alloc(size usize) *u8 inline { malloc(size); }
 }
 
-struct markReturns is RegionRef, Traced {
+struct MarkReturns is RegionRef, Traced {
   fn alloc(size usize) *u8 inline { malloc(size); }
-  fn mark(self &uni markReturns) Bool { true; }   //~ ErrorRegionMeth "mark must be declared"
+  fn mark(self &uni MarkReturns) Bool { true; }   //~ ErrorRegionMeth "mark must be declared"
 }
 
-struct markTwoParms is RegionRef, Traced {
+struct MarkTwoParms is RegionRef, Traced {
   fn alloc(size usize) *u8 inline { malloc(size); }
-  fn mark(self &uni markTwoParms, perm u32) { }   //~ ErrorRegionMeth "mark must be declared"
+  fn mark(self &uni MarkTwoParms, perm u32) { }   //~ ErrorRegionMeth "mark must be declared"
 }
 
-struct markWideMode is RegionRef, Traced {
+struct MarkWideMode is RegionRef, Traced {
   fn alloc(size usize) *u8 inline { malloc(size); }
-  fn mark(self &uni markWideMode, perm u32, mode u64) { }   //~ ErrorRegionMeth "mark must be declared"
+  fn mark(self &uni MarkWideMode, perm u32, mode u64) { }   //~ ErrorRegionMeth "mark must be declared"
 }
 
-struct markStatic is RegionRef, Traced {
+struct MarkStatic is RegionRef, Traced {
   fn alloc(size usize) *u8 inline { malloc(size); }
   fn mark(p *u8) { }   //~ ErrorRegionMeth "mark must be declared"
 }
 
 // A barrier is handed the header of what was stored, and returns nothing
-struct barrierReturns is RegionRef, Traced {
+struct BarrierReturns is RegionRef, Traced {
   fn alloc(size usize) *u8 inline { malloc(size); }
-  fn mark(self &uni barrierReturns) { }
-  fn writeBarrier(self &uni barrierReturns) Bool { true; }   //~ ErrorRegionMeth "writeBarrier must be declared"
+  fn mark(self &uni BarrierReturns) { }
+  fn writeBarrier(self &uni BarrierReturns) Bool { true; }   //~ ErrorRegionMeth "writeBarrier must be declared"
 }
 
-struct barrierContext is RegionRef, Traced {
+struct BarrierContext is RegionRef, Traced {
   fn alloc(size usize) *u8 inline { malloc(size); }
-  fn mark(self &uni barrierContext) { }
-  fn writeBarrier(self &uni barrierContext, perm u32, mode u32) { }   //~ ErrorRegionMeth "writeBarrier must be declared"
+  fn mark(self &uni BarrierContext) { }
+  fn writeBarrier(self &uni BarrierContext, perm u32, mode u32) { }   //~ ErrorRegionMeth "writeBarrier must be declared"
 }
 
 // One owner per value, and a collector, contradict each other
-struct movedTraced is RegionRef, Move, Traced {   //~ ErrorRegionSet "is not Move"
+struct MovedTraced is RegionRef, Move, Traced {   //~ ErrorRegionSet "is not Move"
   fn alloc(size usize) *u8 inline { malloc(size); }
-  fn mark(self &uni movedTraced) { }
+  fn mark(self &uni MovedTraced) { }
 }
 
 // Only a region ref declares it
@@ -102,16 +102,16 @@ trait tracedTrait is Traced {   //~ ErrorTracedUse "Only a region ref may declar
 // A region ref that does not declare 'Traced' may have a 'mark' or a
 // 'writeBarrier' of any shape: each is an ordinary method the compiler never
 // calls
-struct untracedMark is RegionRef {
+struct UntracedMark is RegionRef {
   fn alloc(size usize) *u8 inline { malloc(size); }
-  fn mark(self &uni untracedMark) Bool { true; }
+  fn mark(self &uni UntracedMark) Bool { true; }
   fn writeBarrier(n i32) i32 { n; }
 }
 
 fn main() {
-  imm a = +shortMark-mut Leaf[1i32];
-  imm b = +longMark-mut Leaf[2i32];
-  imm e = +barriered-mut Leaf[5i32];
-  imm c = +counted-mut Leaf[3i32];
-  imm d = +untracedMark-mut Leaf[4i32];
+  imm a = +ShortMark-mut Leaf[1i32];
+  imm b = +LongMark-mut Leaf[2i32];
+  imm e = +Barriered-mut Leaf[5i32];
+  imm c = +Counted-mut Leaf[3i32];
+  imm d = +UntracedMark-mut Leaf[4i32];
 }

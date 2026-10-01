@@ -1982,7 +1982,7 @@ DEMANGLE_EXAMPLES = [
     ("_CYNt5GaugeNt5Meter", "Gauge as Meter (vtable)"),
     ("_CYNt3CarNt7Powered6thrust", "Car as Powered.thrust (thunk)"),
     ("_CLNt5Meter", "Meter (vtable list)"),
-    ("_CINv4pickR2so3mutlE", "pick[&so mut i32]"),
+    ("_CINv4pickR2So3mutlE", "pick[&So mut i32]"),
     ("_CINv4pickR02roNt6HolderE", "pick[&ro Holder]"),
     ("_CINv4pickS03mutlE", "pick[&[]mut i32]"),
     ("_CINv4pickV02roNt5MeterE", "pick[&<ro Meter]"),

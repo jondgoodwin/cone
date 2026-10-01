@@ -1,15 +1,15 @@
-// When memory runs out. gc.setLimit makes it run out on demand: no more than
+// When memory runs out. Gc.setLimit makes it run out on demand: no more than
 // that many bytes of objects at once, headers included, and a Link is 48
 // (a 32-byte header, an i64, an Option of a reference). What happens is what
 // happens when the C library's malloc returns null. Every value is worked
 // out by hand from the rules:
 // - an allocation that would pass the limit first runs a full ordinary
-//   collection, finalizers and all, as gc.collect() does (not a step);
+//   collection, finalizers and all, as Gc.collect() does (not a step);
 // - if it still cannot have its memory, it runs an EMERGENCY collection,
 //   which runs no finalizer, and tries once more;
-// - if that fails too, a fallible '?+gc' allocation is None (and a plain
-//   '+gc' one panics: nomemory.cone);
-// - gc.stop() stops the ordinary collections and steps, the stress modes'
+// - if that fails too, a fallible '?+Gc' allocation is None (and a plain
+//   '+Gc' one panics: nomemory.cone);
+// - Gc.stop() stops the ordinary collections and steps, the stress modes'
 //   too, but not the emergency one.
 // Garbage is made in functions that have returned (garbage.cone says why).
 
@@ -19,43 +19,43 @@ import testing use *;
 import collector;
 
 fn settle() {
-  gc.collect();
-  gc.collect();
+  Gc.collect();
+  Gc.collect();
 }
-fn live() u64 { u64[gc.liveObjects()]; }
+fn live() u64 { u64[Gc.liveObjects()]; }
 
-struct Link { pub n i64; pub next Option[+gc-mut Link]; }
+struct Link { pub n i64; pub next Option[+Gc-mut Link]; }
 
 mut nfinals = 0i64;
 struct FinLink {
   pub n i64;
-  pub next Option[+gc-mut FinLink];
+  pub next Option[+Gc-mut FinLink];
   fn final(self &uni) { nfinals = nfinals + 1; }
 }
 
-fn chain(k i64) Option[+gc-mut Link] {
-  mut head Option[+gc-mut Link] = None[+gc-mut Link][];
+fn chain(k i64) Option[+Gc-mut Link] {
+  mut head Option[+Gc-mut Link] = None[+Gc-mut Link][];
   mut i = 0i64;
   while i < k {
-    head = Some[+gc-mut Link][+gc-mut Link[i, head]];
+    head = Some[+Gc-mut Link][+Gc-mut Link[i, head]];
     i = i + 1;
   }
   head;
 }
 
 fn finChain(k i64) {
-  mut head Option[+gc-mut FinLink] = None[+gc-mut FinLink][];
+  mut head Option[+Gc-mut FinLink] = None[+Gc-mut FinLink][];
   mut i = 0i64;
   while i < k {
-    head = Some[+gc-mut FinLink][+gc-mut FinLink[i, head]];
+    head = Some[+Gc-mut FinLink][+Gc-mut FinLink[i, head]];
     i = i + 1;
   }
 }
 
 // '&imm', since the binding is a reference into the Option
-fn isSome(o &imm Option[+gc-mut Link]) Bool {
+fn isSome(o &imm Option[+Gc-mut Link]) Bool {
   match o {
-    case imm s &Some[+gc-mut Link] { true; }
+    case imm s &Some[+Gc-mut Link] { true; }
     else { false; }
   }
 }
@@ -63,8 +63,8 @@ fn isSome(o &imm Option[+gc-mut Link]) Bool {
 // -- Ten live links fill 480 bytes exactly; an eleventh cannot be had
 fn full() {
   imm c = chain(10);
-  expectUInt(u64[gc.liveBytes()], 480, "ten links fill the limit exactly");
-  imm o = ?+gc-mut Link[10, None[+gc-mut Link][]];
+  expectUInt(u64[Gc.liveBytes()], 480, "ten links fill the limit exactly");
+  imm o = ?+Gc-mut Link[10, None[+Gc-mut Link][]];
   expectBool(isSome(&imm o), false, "past the limit, with nothing to free, the allocation is None");
   expectUInt(live(), 10, "the ten are all still there");
 }
@@ -76,7 +76,7 @@ fn dropChain() {
 fn reclaimed() {
   dropChain();
   expectUInt(live(), 10, "ten links of garbage fill the limit");
-  imm o = ?+gc-mut Link[1, None[+gc-mut Link][]];
+  imm o = ?+Gc-mut Link[1, None[+Gc-mut Link][]];
   expectBool(isSome(&imm o), true, "garbage is collected to make room");
   expectUInt(live(), 1, "only the new link is left");
 }
@@ -88,31 +88,31 @@ fn dropFinChain() {
   finChain(10);
 }
 fn emergency() {
-  gc.stop();
+  Gc.stop();
   dropFinChain();
-  imm c0 = gc.collections();
-  imm o = ?+gc-mut Link[1, None[+gc-mut Link][]];
+  imm c0 = Gc.collections();
+  imm o = ?+Gc-mut Link[1, None[+Gc-mut Link][]];
   expectBool(isSome(&imm o), false, "stopped, ten links waiting on their finalizers fill the heap");
   expectInt(nfinals, 0, "the emergency collection ran no finalizer");
-  expectUInt(u64[gc.collections() - c0], 1, "one collection ran: the emergency one");
-  gc.start();
-  imm c1 = gc.collections();
-  imm o2 = ?+gc-mut Link[2, None[+gc-mut Link][]];
+  expectUInt(u64[Gc.collections() - c0], 1, "one collection ran: the emergency one");
+  Gc.start();
+  imm c1 = Gc.collections();
+  imm o2 = ?+Gc-mut Link[2, None[+Gc-mut Link][]];
   expectBool(isSome(&imm o2), true, "started again, the allocation succeeds");
   expectInt(nfinals, 10, "an ordinary collection ran the ten finalizers");
-  expectUInt(u64[gc.collections() - c1], 2, "and the emergency one after it freed the ten");
+  expectUInt(u64[Gc.collections() - c1], 2, "and the emergency one after it freed the ten");
   expectUInt(live(), 1, "only the new link is left");
 }
 
 fn main() i32 {
-  gc.setLimit(480usize);
+  Gc.setLimit(480usize);
   full();
   settle();
   reclaimed();
   settle();
   emergency();
   settle();
-  gc.setLimit(0usize);
+  Gc.setLimit(0usize);
   expectUInt(live(), 0, "nothing left");
   done();
 }

@@ -13,9 +13,9 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: Only the single-owner (so) and reference-counting (rc) strategies
-		exist, in the core package, with rc's multi-threaded variant, arc, in the <span class="pre">sync</span> package (below), and reference counting with weak references as the
-		<span class="pre">rcweak</span> package's <span class="pre">rcw</span>, whose weak reference is made with
+	<p style="margin-left: 40px;"><i>Note: Only the single-owner (So) and reference-counting (Rc) strategies
+		exist, in the core package, with Rc's multi-threaded variant, Arc, in the <span class="pre">sync</span> package (below), and reference counting with weak references as the
+		<span class="pre">rcweak</span> package's <span class="pre">Rcw</span>, whose weak reference is made with
 		<span class="pre">Weak[T].of(owner)</span>, not <span class="pre">.weak</span>; tracing GC is not built. An arena is built only as a value of
 		the <span class="pre">arena</span> package: <span class="pre">mut a = Arena.empty()</span>, allocated into with
 		<span class="pre">a.alloc(value)</span>, which returns a borrowed
@@ -46,10 +46,10 @@
 		pool of the same type, it is checked there and cannot reach outside that pool's memory.
 		A region is written as a struct
 		declaring <span class="pre">is RegionRef</span>, not with a <span class="pre">region</span> declaration:
-		so is <span class="pre">struct so is RegionRef, Move</span>, with <span class="pre">fn alloc(size usize) *u8</span>
-		(null for failure, rather than an Option) and <span class="pre">fn free(self &amp;uni so)</span>, which
+		So is <span class="pre">struct So is RegionRef, Move</span>, with <span class="pre">fn alloc(size usize) *u8</span>
+		(null for failure, rather than an Option) and <span class="pre">fn free(self &amp;uni So)</span>, which
 		calls C's <span class="pre">libc.free</span>; declaring the built-in trait
-		<a href="refmove.html"><span class="pre">Move</span></a> is what makes it single-owner. rc adds a count, an
+		<a href="refmove.html"><span class="pre">Move</span></a> is what makes it single-owner. Rc adds a count, an
 		<span class="pre">init</span> setting it to one, <span class="pre">aliasRef</span>, and a
 		<span class="pre">dealiasRef</span> that answers whether the count reached zero, and does not declare
 		<span class="pre">Move</span>, which with <span class="pre">aliasRef</span> is refused. When either frees
@@ -61,7 +61,7 @@
 	
 	<p>To allocate a new value, we ask a region to get it done:</p>
 <pre>
-imm nbrref = +rc-imm 5;  // the 'rc' region counts references
+imm nbrref = +Rc-imm 5;  // the 'Rc' region counts references
 </pre>
 	<p>There are many kinds of regions, each using a different strategy for allocating memory
 		and then later safely reclaiming that memory after an object has no references that point to it.
@@ -92,8 +92,8 @@ imm nbrref = +rc-imm 5;  // the 'rc' region counts references
 		The focus is to describe the mechanism used by each of these region strategies
 		and assess how they compare on the above criteria.
 		In reality, each of these region strategies may be implemented by multiple concrete regions
-		that vary somewhat in how they work (e.g., +rc might only work within a single thread,
-		whereas +arc might allow multiple threads to share references to the same object).</p>
+		that vary somewhat in how they work (e.g., +Rc might only work within a single thread,
+		whereas +Arc might allow multiple threads to share references to the same object).</p>
 
 	<h2>Single Owner</h2>
 	<p>The single-owner region strategy's 
@@ -106,11 +106,11 @@ imm nbrref = +rc-imm 5;  // the 'rc' region counts references
 	    the memory for that value can be automatically finalized and freed when the reference expires.</p>
 	<p>Here is the simple definition of a single-owner region:</p>
 <pre>
-region so is Move {    // Move ensures move semantics on references, i.e. no aliasing
+region So is Move {    // Move ensures move semantics on references, i.e. no aliasing
     pub fn alloc(size usize) Option[*u8] {
 	    malloc(size);  // May use any general-purpose memory allocator
     }
-	pub fn free(self &amp;uni so) {
+	pub fn free(self &amp;uni So) {
 	    free();
 	}
 }
@@ -142,31 +142,31 @@ region so is Move {    // Move ensures move semantics on references, i.e. no ali
 	</ul>
 
 	<h2>Reference Counting</h2>
-	<p>As the name suggests, the <span class="pre">rc</span> region keeps a running
+	<p>As the name suggests, the <span class="pre">Rc</span> region keeps a running
 		counter of the number of references to each allocated object.
 		When the object is first allocated, its counter starts at 1.
-		Every time a copy is made of an rc owning reference, the counter is incremented.
+		Every time a copy is made of an Rc owning reference, the counter is incremented.
 		Whenever an owning reference goes out of scope, the counter is decremented.
 		When the counter reaches 0, the object is reclaimed.</p>
 	<p>Here is the simple definition of a reference counting region, where aliasing happens automatically:</p>
 <pre>
-region rc {
+region Rc {
     pub cnt u32;
     pub fn alloc(size usize) Option[*u8] {
 	    malloc(size);
     }
-	pub fn init(self &amp;uni rc) {
+	pub fn init(self &amp;uni Rc) {
 	    cnt = 1;
 	}
-	pub fn aliasRef(self &amp;uni rc) {
+	pub fn aliasRef(self &amp;uni Rc) {
 	    ++cnt;
 	}
-	pub fn dealiasRef(self &amp;uni rc) {
+	pub fn dealiasRef(self &amp;uni Rc) {
 	    if (--cnt == 0) {
 		  free();
 	    }
 	}
-	pub fn free(self &amp;uni rc) {
+	pub fn free(self &amp;uni Rc) {
 	    free();
 	}
 }
@@ -174,25 +174,25 @@ region rc {
 	<p>Variations on this algorithm may be built to support multi-threaded use (with atomics) and
 		leverage move semantics and explicit aliasing (to improve throughput).</p>
 	<p style="margin-left: 40px;"><i>Note: The multi-threaded variation exists, in the <span class="pre">sync</span>
-		package, as <span class="pre">arc</span>: the same region with each change of its count one atomic
+		package, as <span class="pre">Arc</span>: the same region with each change of its count one atomic
 		instruction, so owners of one value may be copied and dropped on different threads and the
 		value is finalized and freed exactly once, after the last goes. It is not in core, whose names
 		every module has, so a module names it once it folds it in,
-		<span class="pre">import sync use arc</span> (or <span class="pre">use *</span>), and a module
-		that does not keeps <span class="pre">arc</span> free for its own use.
-		It is allocated as rc is, <span class="pre">+arc-imm T[...]</span>, and an
-		<span class="pre">+arc-imm</span> owner is the one to share between threads (handed to
-		<span class="pre">thread.start</span>, sent over a channel); an <span class="pre">+arc-mut</span>
+		<span class="pre">import sync use Arc</span> (or <span class="pre">use *</span>), and a module
+		that does not keeps <span class="pre">Arc</span> free for its own use.
+		It is allocated as Rc is, <span class="pre">+Arc-imm T[...]</span>, and an
+		<span class="pre">+Arc-imm</span> owner is the one to share between threads (handed to
+		<span class="pre">thread.start</span>, sent over a channel); an <span class="pre">+Arc-mut</span>
 		owner would let two threads change the value itself unsynchronized, as it will until
 		<a href="refpermlock.html">lock permissions</a> exist. A copy adds one with relaxed ordering;
 		a drop subtracts one with release ordering, and the drop that reaches zero reads the count
 		again with acquire ordering before the value dies, so everything every owner did with it
-		happens before its finalizer. arc declares the built-in trait
-		<span class="pre">ThreadSafe</span>, which rc does not: the region's own say that its owners
+		happens before its finalizer. Arc declares the built-in trait
+		<span class="pre">ThreadSafe</span>, which Rc does not: the region's own say that its owners
 		may be held by several threads, which only a region ref may declare. The thread check reads
-		it: an <span class="pre">+arc-imm</span> owner may be handed to another thread, and an
-		<span class="pre">+rc-imm</span> one, whose count is not atomic, is refused
-		(<a href="refconccomm.html#race">Race condition safety</a>). arc has no weak references.</i></p>
+		it: an <span class="pre">+Arc-imm</span> owner may be handed to another thread, and an
+		<span class="pre">+Rc-imm</span> one, whose count is not atomic, is refused
+		(<a href="refconccomm.html#race">Race condition safety</a>). Arc has no weak references.</i></p>
 	<p>Reference counting is a good choice if you are looking for:</p>
 	<ul>
 		<li>Memory utilization for non-cyclic data structures.</li>
@@ -226,7 +226,7 @@ childnode.parent = parentnoderef.weak;
 	<p>Tracing GC is a good choice if you are looking for:</p>
 	<ul>
 		<li>Data structure flexibility, supporting all kinds of data in the same way.</li>
-		<li>Better throughput than <span class="pre">rc</span> 
+		<li>Better throughput than <span class="pre">Rc</span> 
 			(though slower than other regions due to its regular mark-and-sweep bookkeeping costs).</li>
 		<li>Stable memory use over long runtimes.</li>
 	</ul>

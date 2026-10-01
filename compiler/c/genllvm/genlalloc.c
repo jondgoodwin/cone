@@ -372,7 +372,7 @@ static void genlTraceFields(GenState *gen, LLVMValueRef valptr, StructNode *strn
     }
 }
 
-// A variant of a nullable-pointer enum, held as itself ('&Some[+gc T]' dereferenced,
+// A variant of a nullable-pointer enum, held as itself ('&Some[+Gc T]' dereferenced,
 // say), is laid out as its enum is: only its reference, at 'valptr', with no
 // tag before it (genlStructDrop's layout)
 static void genlTraceNullableVariant(GenState *gen, LLVMValueRef valptr, StructNode *variant) {
@@ -910,7 +910,7 @@ static LLVMValueRef genlVirtRecord(GenState *gen, LLVMValueRef ref, RefNode *ref
 // type, so the value sits at the region and permission's size rounded up to
 // its own alignment. The first part is the reference type's; the alignment is
 // the concrete type's, read from its record at run time, and only where the
-// header is not empty (a 'so' allocation's value is its start).
+// header is not empty (a 'So' allocation's value is its start).
 static LLVMValueRef genlVirtHeader(GenState *gen, LLVMValueRef ref, LLVMValueRef valptr, RefNode *refnode) {
     LLVMTypeRef hdrtypes[2];
     hdrtypes[0] = genlType(gen, refnode->region);
@@ -1254,7 +1254,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     }
 
     // A traced region's value is evaluated before its 'alloc' is called: an
-    // 'alloc' may collect, and a value that allocates ('+gc Pair[+gc Leaf[1],
+    // 'alloc' may collect, and a value that allocates ('+Gc Pair[+Gc Leaf[1],
     // ...]') would otherwise run that collection with the new object linked in
     // and holding garbage. Its traced parts are births, so rooted while 'alloc'
     // runs. Every other region keeps the order it always had: 'alloc', then

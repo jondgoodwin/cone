@@ -331,7 +331,7 @@ DWARF.
 | **`void`** | **`%void = type {}`** — a zero-field named struct, *not* LLVM `void`. A function returning nothing returns `%void`; so does `nil` |
 | **permission** | **`%void`** — permissions are fully erased |
 | `*T` | `ptr` |
-| **`&T`, `&mut T`, `+rc T`, `+so T`** | **`ptr`, identically.** Region and permission contribute nothing to the reference value |
+| **`&T`, `&mut T`, `+Rc T`, `+So T`** | **`ptr`, identically.** Region and permission contribute nothing to the reference value |
 | **`&[]T`** | **anonymous `{ ptr, usize }`** — element pointer at 0, element **count** at 1 |
 | **`&<Trait`** | **named `{ ptr, ptr }`** — the object, then its vtable |
 | `fn` signature | `LLVMFunctionType`, never varargs; a `&fn` is a `ptr` to it. A C-named function's structs are lowered to the C ABI's shape ("C-named functions and the C ABI", below) |
@@ -348,7 +348,7 @@ Lowering a `*T`, `&T` or `&[]T` queues `T`, and `genlType` generates the queue
 when the outermost type it was asked for is done, before returning to anything
 but type generation. Generated in place, a struct reaching itself through a
 reference is reached again while its own body is still empty: with `A` holding
-`+so AState` and `AState` holding `Option[A]`, sizing `Some[A]` there measured
+`+So AState` and `AState` holding `Option[A]`, sizing `Some[A]` there measured
 `A` as nothing, and `Option[A]` came out one byte. Nothing outside type
 generation sees the difference, since every pointee is generated before
 `genlType` returns to it — which the nullable-pointer flag (below), set when an
@@ -509,7 +509,7 @@ does not, since that would generate the pointee inside whatever holds it):
 %refstruct = type { <region>, <perm>, <value> }   ; RegionField, PermField, ValueField
 ```
 
-Verified for `+rc-mut` of an `i32`:
+Verified for `+Rc-mut` of an `i32`:
 
 ```llvm
 %void      = type {}
@@ -525,12 +525,12 @@ What follows from that:
 
 - **A region method is handed the header, found from the layout.**
   `genlRegionHeader` steps back from the value pointer, a GEP over `i8`, by
-  `LLVMOffsetOfElement(structype, ValueField)` bytes — 8 for `rc`, 0 for `so`,
-  16 for a region with a `{usize, u32}` header; for `so` the header is the
+  `LLVMOffsetOfElement(structype, ValueField)` bytes — 8 for `Rc`, 0 for `So`,
+  16 for a region with a `{usize, u32}` header; for `So` the header is the
   value pointer itself, and no instruction is emitted. Every call of `aliasRef`, `dealiasRef` and `free` goes through it, so a
   wider header or a permission with state moves the value and the header with
   it. The optimizer folds the byte step and the region's field GEP into one
-  constant offset: for `rc` the same address the count has always had.
+  constant offset: for `Rc` the same address the count has always had.
 - **An owning slice is the fat `{ptr, usize}` value, and the header sits before
   its pointer word.** `genlRefPtr`, at the entry of `genlRegionDealias` and
   `genlRegionAlias`, `extractvalue`s word 0 of an `ArrayRefTag` reference, so
@@ -542,7 +542,7 @@ What follows from that:
   object. Its type has no `typeinfo`, so `genlOwnerHeader` steps back by the
   region and permission's size rounded up to the `align` of the implementer's
   `TypeRecord`, loaded through word 1 (`genlVirtHeader`; nothing is loaded for
-  a `so`, whose header is empty), and its death calls the record's `finalize`
+  a `So`, whose header is empty), and its death calls the record's `finalize`
   on the object (`genlVirtFinalize`) where a plain reference's calls
   `genlFinalizeAt`.
 
@@ -641,7 +641,7 @@ twice. A slice's elements are not walked, for the same reason.
 out in line up to `RegionAliasUnroll` (16), a loop beyond, since the optimizer
 pipeline runs no loop pass and folds only calls written out. Core's methods are
 `inline`, so each call is the method's body pasted at the site
-(`genlFnCallInternal`); after optimization `rc`'s and `so`'s events are the
+(`genlFnCallInternal`); after optimization `Rc`'s and `So`'s events are the
 instructions the compiler used to emit itself, with one exception: an array
 fill literal adding n owners is n increments rather than one `add n`, because
 the pipeline has no instruction combining after `GVN` to fold them.
@@ -662,7 +662,7 @@ function `cone.tyrec.trace.<n>` whose body is `genlTraceAt` on its two
 parameters; each is generated on the spot by `genlTypeRecFn`, with the
 generator's per-function state set aside around it, as `genlFn` does, and in a
 debug build has a subprogram and a location at the type, since the calls it
-makes (an `rc` owner's inline `dealiasRef`, a region's inline `mark`) need one.
+makes (an `Rc` owner's inline `dealiasRef`, a region's inline `mark`) need one.
 The finalizer of a type with nothing to finalize points at one private
 do-nothing function, `cone.tyrec.nothing`, and the trace of a type holding no
 traced reference at another, `cone.tyrec.untraced`, so no slot is null. The
@@ -681,7 +681,7 @@ fields and a tuple's elements that hold one (`itypeHoldsTraced`), each element
 of a fixed-size array whose element type does, in a loop (`genlEachElem`), and
 the variant an enum's tag picks, by a switch, as `genlEnumDrop` dispatches; the
 nullable-pointer layout, which has no tag, is its one reference — and so is a
-variant of such an enum held as itself (`*t` for `t &Some[+gc T]`, a birth),
+variant of such an enum held as itself (`*t` for `t &Some[+Gc T]`, a birth),
 whose layout is its enum's (`genlTraceNullableVariant`). It stops at
 every other reference and every pointer: the placement rules keep a traced
 reference from hiding behind them. It does not share the finalizer's walk,
@@ -694,7 +694,7 @@ and holding garbage. The value's traced parts are births ("Roots", below), so
 rooted while `alloc` runs. Every other region keeps its order, `alloc` then the
 value.
 
-`so` and `rc` are declared in Cone source in the core package,
+`So` and `Rc` are declared in Cone source in the core package,
 `packages/core/src/core.cone` ([What a region is](../nodes/module.md)). `malloc`
 and `free` are `libc`'s ordinary `extern` declarations, which `core`'s import
 of `libc` puts in every compile; the regions' `alloc` and `free` call them by

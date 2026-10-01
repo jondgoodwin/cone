@@ -4,7 +4,7 @@
  * A borrow held in a local freezes its source until the borrow's last use: a
  * source reached as 'uni' (a local, or through 'uni' references) against
  * whatever the borrow's permission forbids; a source reached through a shared
- * path (a 'mut' or 'ro' reference, a '+rc-mut' owner) only against ending,
+ * path (a 'mut' or 'ro' reference, a '+Rc-mut' owner) only against ending,
  * and against a borrow that would promise more than the path can. A
  * loan is one borrow of a place; a holder is a variable whose type carries a
  * borrow; an access is anything done to a place. At an access that conflicts

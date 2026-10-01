@@ -611,7 +611,7 @@ static LLVMTypeRef genlTypeNow(GenState *gen, INode *typ) {
 //
 // A pointer's pointee is generated once the outermost type asked for is done,
 // not in the middle of it. Generated there, a type that reaches itself through a
-// reference -- A holds '+so AState', AState holds 'Option[A]' -- would reach
+// reference -- A holds '+So AState', AState holds 'Option[A]' -- would reach
 // A's struct while its body is still empty, and the enum sized there would
 // measure its variant holding A as holding nothing. Every pointee is still
 // generated before this returns to anything but type generation, which is what

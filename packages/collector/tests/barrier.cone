@@ -5,14 +5,14 @@
 // finalize it, and then free it, while the black object still holds it.
 //
 // Each case builds the same heap, with the automatic work stopped so that
-// nothing but the case's own gc.step() calls advances the collection:
+// nothing but the case's own Gc.step() calls advances the collection:
 //   h: a Box, empty, a local of the case
 //   c: a Hop2 -> a Hop -> a Box w, whose 'leaf' holds a Leaf; c a local
-// The case starts a collection with gc.step(0), which traces the roots: c,
-// then h, so h is on top of the gray list; one more gc.step(0) marks h black
+// The case starts a collection with Gc.step(0), which traces the roots: c,
+// then h, so h is on top of the gray list; one more Gc.step(0) marks h black
 // (it holds nothing yet). c, the Hop, w and the leaf are still unmarked, and
 // the case checks so. Then a function of the case moves the leaf from w into
-// h -- through a '+gc' reference, a borrow, an array element, a slice, a
+// h -- through a '+Gc' reference, a borrow, an array element, a slice, a
 // swap, ':=', a whole Box stored over h -- or stores a new Leaf into h, and
 // returns, so no stack slot holds the leaf any more. The collection is then
 // finished one step at a time. The leaf is still reached, through h, so it
@@ -34,36 +34,36 @@ struct Leaf {
   fn final(self &uni) { finals = finals + 1; }
 }
 struct Box {
-  pub leaf Option[+gc-mut Leaf];
-  pub cells [2; Option[+gc-mut Leaf]];
+  pub leaf Option[+Gc-mut Leaf];
+  pub cells [2; Option[+Gc-mut Leaf]];
 }
-struct Hop { pub to +gc-mut Box; }
-struct Hop2 { pub to +gc-mut Hop; }
+struct Hop { pub to +Gc-mut Box; }
+struct Hop2 { pub to +Gc-mut Hop; }
 
 fn settle() {
-  gc.collect();
-  gc.collect();
+  Gc.collect();
+  Gc.collect();
 }
 
-fn none() Option[+gc-mut Leaf] {
-  None[+gc-mut Leaf][];
+fn none() Option[+Gc-mut Leaf] {
+  None[+Gc-mut Leaf][];
 }
-fn emptyBox() +gc-mut Box {
-  +gc-mut Box[none(), [none(), none()]];
+fn emptyBox() +Gc-mut Box {
+  +Gc-mut Box[none(), [none(), none()]];
 }
 // c -> Hop -> w, w holding Leaf n: made here, so no frame of the case holds
 // the leaf, the Hop or w
-fn chain(n i64) +gc-mut Hop2 {
+fn chain(n i64) +Gc-mut Hop2 {
   imm w = emptyBox();
-  w.leaf = Some[+gc-mut Leaf][+gc-mut Leaf[n]];
-  +gc-mut Hop2[+gc-mut Hop[w]];
+  w.leaf = Some[+Gc-mut Leaf][+Gc-mut Leaf[n]];
+  +Gc-mut Hop2[+Gc-mut Hop[w]];
 }
 
 // Matched by value: through the 'mut' Box an Option hangs from, a reference
 // into it could see another reference empty it while in use
-fn leafOf(o Option[+gc-mut Leaf]) i64 {
+fn leafOf(o Option[+Gc-mut Leaf]) i64 {
   match o {
-    case imm s Some[+gc-mut Leaf] { s.value.n; }
+    case imm s Some[+Gc-mut Leaf] { s.value.n; }
     else { -1; }
   }
 }
@@ -71,24 +71,24 @@ fn leafOf(o Option[+gc-mut Leaf]) i64 {
 // The colour bits of the object whose value is at p: it sits right after its
 // 32-byte header (every type here is aligned to 8)
 fn isBlack(p *u8) Bool {
-  ((p as usize - mem.sizeof[gc]()) as &gc).marked & 4u32 != 0u32;
+  ((p as usize - mem.sizeof[Gc]()) as &Gc).marked & 4u32 != 0u32;
 }
 
 // A collection marking, h black, and c and w not yet marked
-fn markedH(h +gc-mut Box, c +gc-mut Hop2) Bool {
+fn markedH(h +Gc-mut Box, c +Gc-mut Hop2) Bool {
   imm w = c.to.to;
-  gc.phase() == 1u32 and isBlack(&*h as *u8) and !isBlack(&*c as *u8) and !isBlack(&*w as *u8);
+  Gc.phase() == 1u32 and isBlack(&*h as *u8) and !isBlack(&*c as *u8) and !isBlack(&*w as *u8);
 }
 
 // Finish the collection a step at a time; whether no leaf was finalized
 fn finish(f0 i64) Bool {
-  while !gc.step(0usize) { }
+  while !Gc.step(0usize) { }
   finals == f0;
 }
 
 // -- The moves, each in a function of its own, so its stack slots are gone
 // before the collection ends
-fn viaRef(h +gc-mut Box, c +gc-mut Hop2) {
+fn viaRef(h +Gc-mut Box, c +Gc-mut Hop2) {
   imm w = c.to.to;
   h.leaf = w.leaf;
   w.leaf = none();
@@ -97,47 +97,47 @@ fn setThrough(dst &mut Box, src &mut Box) {
   dst.leaf = src.leaf;
   src.leaf = none();
 }
-fn viaBorrow(h +gc-mut Box, c +gc-mut Hop2) {
+fn viaBorrow(h +Gc-mut Box, c +Gc-mut Hop2) {
   imm w = c.to.to;
   setThrough(&mut *h, &mut *w);
 }
-fn viaElement(h +gc-mut Box, c +gc-mut Hop2) {
+fn viaElement(h +Gc-mut Box, c +Gc-mut Hop2) {
   imm w = c.to.to;
   h.cells[1] = w.leaf;
   w.leaf = none();
 }
-fn putFirst(s &[]mut Option[+gc-mut Leaf], v Option[+gc-mut Leaf]) {
+fn putFirst(s &[]mut Option[+Gc-mut Leaf], v Option[+Gc-mut Leaf]) {
   s[0] = v;
 }
-fn viaSlice(h +gc-mut Box, c +gc-mut Hop2) {
+fn viaSlice(h +Gc-mut Box, c +Gc-mut Hop2) {
   imm w = c.to.to;
   putFirst(&mut h.cells, w.leaf);
   w.leaf = none();
 }
-fn viaSwap(h +gc-mut Box, c +gc-mut Hop2) {
+fn viaSwap(h +Gc-mut Box, c +Gc-mut Hop2) {
   imm w = c.to.to;
   h.leaf <=> w.leaf;
 }
-fn viaLeftAssign(h +gc-mut Box, c +gc-mut Hop2) {
+fn viaLeftAssign(h +Gc-mut Box, c +Gc-mut Hop2) {
   imm w = c.to.to;
   w.leaf = h.leaf := w.leaf;
 }
-fn viaWhole(h +gc-mut Box, c +gc-mut Hop2) {
+fn viaWhole(h +Gc-mut Box, c +Gc-mut Hop2) {
   imm w = c.to.to;
   *h = Box[w.leaf, [none(), none()]];
   w.leaf = none();
 }
-fn viaNew(h +gc-mut Box, c +gc-mut Hop2) {
-  h.leaf = Some[+gc-mut Leaf][+gc-mut Leaf[7]];
+fn viaNew(h +Gc-mut Box, c +Gc-mut Hop2) {
+  h.leaf = Some[+Gc-mut Leaf][+Gc-mut Leaf[7]];
 }
 
 // -- Each case: the heap built, h black, the move, the collection finished
 fn caseRef() {
   imm c = chain(42);
   imm h = emptyBox();
-  gc.step(0usize);
-  gc.step(0usize);
-  expect(markedH(h, c), "via a +gc reference: h black, the leaf's holders not yet marked");
+  Gc.step(0usize);
+  Gc.step(0usize);
+  expect(markedH(h, c), "via a +Gc reference: h black, the leaf's holders not yet marked");
   imm f0 = finals;
   viaRef(h, c);
   expect(finish(f0), "the leaf stored into black h is not finalized");
@@ -146,8 +146,8 @@ fn caseRef() {
 fn caseBorrow() {
   imm c = chain(43);
   imm h = emptyBox();
-  gc.step(0usize);
-  gc.step(0usize);
+  Gc.step(0usize);
+  Gc.step(0usize);
   expect(markedH(h, c), "via a borrow: h black, the leaf's holders not yet marked");
   imm f0 = finals;
   viaBorrow(h, c);
@@ -157,8 +157,8 @@ fn caseBorrow() {
 fn caseElement() {
   imm c = chain(44);
   imm h = emptyBox();
-  gc.step(0usize);
-  gc.step(0usize);
+  Gc.step(0usize);
+  Gc.step(0usize);
   expect(markedH(h, c), "into an array: h black, the leaf's holders not yet marked");
   imm f0 = finals;
   viaElement(h, c);
@@ -168,8 +168,8 @@ fn caseElement() {
 fn caseSlice() {
   imm c = chain(45);
   imm h = emptyBox();
-  gc.step(0usize);
-  gc.step(0usize);
+  Gc.step(0usize);
+  Gc.step(0usize);
   expect(markedH(h, c), "into a slice: h black, the leaf's holders not yet marked");
   imm f0 = finals;
   viaSlice(h, c);
@@ -179,8 +179,8 @@ fn caseSlice() {
 fn caseSwap() {
   imm c = chain(46);
   imm h = emptyBox();
-  gc.step(0usize);
-  gc.step(0usize);
+  Gc.step(0usize);
+  Gc.step(0usize);
   expect(markedH(h, c), "by swap: h black, the leaf's holders not yet marked");
   imm f0 = finals;
   viaSwap(h, c);
@@ -190,8 +190,8 @@ fn caseSwap() {
 fn caseLeftAssign() {
   imm c = chain(47);
   imm h = emptyBox();
-  gc.step(0usize);
-  gc.step(0usize);
+  Gc.step(0usize);
+  Gc.step(0usize);
   expect(markedH(h, c), "by := : h black, the leaf's holders not yet marked");
   imm f0 = finals;
   viaLeftAssign(h, c);
@@ -201,8 +201,8 @@ fn caseLeftAssign() {
 fn caseWhole() {
   imm c = chain(48);
   imm h = emptyBox();
-  gc.step(0usize);
-  gc.step(0usize);
+  Gc.step(0usize);
+  Gc.step(0usize);
   expect(markedH(h, c), "a whole value: h black, the leaf's holders not yet marked");
   imm f0 = finals;
   viaWhole(h, c);
@@ -212,8 +212,8 @@ fn caseWhole() {
 fn caseNew() {
   imm c = chain(49);
   imm h = emptyBox();
-  gc.step(0usize);
-  gc.step(0usize);
+  Gc.step(0usize);
+  Gc.step(0usize);
   expect(markedH(h, c), "a new object: h black");
   imm f0 = finals;
   viaNew(h, c);
@@ -224,7 +224,7 @@ fn caseNew() {
 fn main() i32 {
   // Before each case, the last one's heap -- garbage once it returned -- is
   // collected, so a case's collection finalizes nothing but a leaf it lost
-  gc.stop();
+  Gc.stop();
   settle();
   caseRef();
   settle();
@@ -242,11 +242,11 @@ fn main() i32 {
   settle();
   caseNew();
   settle();
-  gc.start();
+  Gc.start();
   // Every leaf was finalized once, by the collection that found it
   // unreachable after its case returned: the eight kept, and leaf 49, which
   // caseNew left in w
   expectInt(finals, 9, "the eight cases' leaves, and caseNew's leaf 49, each finalized once");
-  expectUInt(u64[gc.liveObjects()], 0, "and everything freed");
+  expectUInt(u64[Gc.liveObjects()], 0, "and everything freed");
   done();
 }

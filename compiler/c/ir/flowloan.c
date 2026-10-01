@@ -253,7 +253,7 @@ void loanHeldBy(uint32_t var, PathSet *holds) {
 // replacing and ending it; an '&opaq' loan holds only the address, so only
 // moving, replacing or ending the source conflicts with it.
 static int loanConflictsAs(int access, uint8_t kind, Loan *loan, Place *pl) {
-    // A place on the way to the shared path -- the field holding a '+rc-mut'
+    // A place on the way to the shared path -- the field holding a '+Rc-mut'
     // owner the loan was reached through -- the loan reads: changing the
     // owner there would end what it borrows
     if (kind == LoanAlias && pl->nsteps < loan->place.sharedlen)

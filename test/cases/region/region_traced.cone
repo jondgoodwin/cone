@@ -1,10 +1,10 @@
-// A traced region ref: 'tr' declares 'is RegionRef, Traced', and so promises a
+// A traced region ref: 'Tr' declares 'is RegionRef, Traced', and so promises a
 // 'mark' for the compiler's traces to call. Its 'mark' takes the header and,
 // after it, each reference's permission and the trace's mode, so this 'mark'
 // prints all three: the header's id (which object), the permission (its
 // flags as a constant: MayRead 1, MayWrite 2, MayAlias 4, MayAliasWrite 8,
 // RaceSafe 16, MayIntRefSum 32, IsLockless 64 -- 'mut' is 79, 'imm' 117, 'uni'
-// 115) and the mode (whatever the caller of the trace passed). 'tr0' is
+// 115) and the mode (whatever the caller of the trace passed). 'Tr0' is
 // traced too, with the short 'mark' that takes the header alone.
 //
 // A type's record now carries a trace: a function walking a value of the type
@@ -14,9 +14,9 @@
 // picks (and the nullable-pointer 'Option', which has no tag), a generic's
 // instance. Its flags' bit 1 says the type holds one; 'mem.holdsTraced' says
 // the same; 'mem.trace' runs the same walk in line. A null reference is passed
-// over. '+rc' and '+so' references held by a traced object are allowed, and
+// over. '+Rc' and '+So' references held by a traced object are allowed, and
 // are not traced: the record's finalizer releases them, as it would anywhere.
-// Releasing a traced reference does nothing ('tr' has no 'dealiasRef' and is not
+// Releasing a traced reference does nothing ('Tr' has no 'dealiasRef' and is not
 // 'Move'), so a type whose only owners are traced has nothing to finalize: its
 // flags' bit 0 is clear and its finalizer is the do-nothing one.
 //
@@ -39,19 +39,19 @@ fn line(label &[]u8, n i64) {
 mut nextId = 1i64;
 mut trHead = 0usize;
 
-struct tr is RegionRef, Traced {
+struct Tr is RegionRef, Traced {
   pub id i64;
   pub next usize;
   pub ty *TypeRecord;
 
   fn alloc(size usize, ty *TypeRecord) *u8 {
     imm p = malloc(size);
-    mem.writeRaw(p as *tr, tr[nextId, trHead, ty]);
+    mem.writeRaw(p as *Tr, Tr[nextId, trHead, ty]);
     nextId = nextId + 1;
     trHead = p as usize;
     p;
   }
-  fn mark(self &uni tr, perm u32, mode u32) {
+  fn mark(self &uni Tr, perm u32, mode u32) {
     printStr(" mark "); printInt(id);
     printStr("/"); printInt(i64[perm]);
     printStr("/"); printInt(i64[mode]);
@@ -60,28 +60,28 @@ struct tr is RegionRef, Traced {
 
 // Traced, with the 'mark' that is handed the header alone, and inline, so each
 // trace expands it where it calls it
-struct tr0 is RegionRef, Traced {
+struct Tr0 is RegionRef, Traced {
   pub id i64;
   fn alloc(size usize) *u8 {
     imm p = malloc(size);
-    mem.writeRaw(p as *tr0, tr0[nextId + 100]);
+    mem.writeRaw(p as *Tr0, Tr0[nextId + 100]);
     nextId = nextId + 1;
     p;
   }
-  fn mark(self &uni tr0) inline {
+  fn mark(self &uni Tr0) inline {
     printStr(" mark0 "); printInt(id);
   }
 }
 
-// Every object 'tr' holds, newest first: its record's trace, on the value
+// Every object 'Tr' holds, newest first: its record's trace, on the value
 // after its header, with mode 9
 fn traceAll() {
   mut at = trHead;
   while at != 0usize {
-    imm hdr = at as &tr;
+    imm hdr = at as &Tr;
     imm rec = hdr.ty as &TypeRecord;
     imm align = rec.align;
-    imm val = (at + mem.sizeof[tr]() + align - 1usize) & (0usize - align);
+    imm val = (at + mem.sizeof[Tr]() + align - 1usize) & (0usize - align);
     printStr("object "); printInt(hdr.id); printStr(" flags "); printInt(i64[rec.flags]); printStr(":");
     imm tracefn = rec.trace;
     tracefn(val as *u8, 9u32);
@@ -98,8 +98,8 @@ struct Fin {
 struct Leaf { pub n i32; }
 
 struct Pair {
-  pub left +tr-mut Leaf;
-  pub right +tr-imm Leaf;
+  pub left +Tr-mut Leaf;
+  pub right +Tr-imm Leaf;
 }
 
 // Nesting: a struct holding a struct and a tuple that hold traced references,
@@ -107,30 +107,30 @@ struct Pair {
 struct Outer {
   pub a i32;
   pub p Pair;
-  pub t (i64, +tr-mut Leaf);
+  pub t (i64, +Tr-mut Leaf);
   pub z f64;
 }
 
 // A fixed array of traced references, and of structs holding them
 struct Row {
-  pub cells [3; +tr-mut Leaf];
+  pub cells [3; +Tr-mut Leaf];
   pub pairs [2; Pair];
 }
 
 enum Maybe {
-  struct Has { pub l +tr-mut Leaf; pub k i64; }
+  struct Has { pub l +Tr-mut Leaf; pub k i64; }
   struct Not { pub k i64; }
-  struct Two { pub a +tr-imm Leaf; pub b +tr0-mut Leaf; }
+  struct Two { pub a +Tr-imm Leaf; pub b +Tr0-mut Leaf; }
 }
 
 struct Box[T] { pub v T; }
 
-// A traced object holding a traced reference, an '+rc' owner and an '+so'
+// A traced object holding a traced reference, an '+Rc' owner and an '+So'
 // owner: only the traced one is traced; the other two are its finalizer's
 struct Mixed {
-  pub g +tr-mut Leaf;
-  pub r +rc-mut Fin;
-  pub s +so Fin;
+  pub g +Tr-mut Leaf;
+  pub r +Rc-mut Fin;
+  pub s +So Fin;
 }
 
 fn holds[T](label &[]u8) {
@@ -151,38 +151,38 @@ fn traceLocal[T](label &[]u8, v &mut T, mode u32) {
 fn main() {
   printStr("-- which types hold a traced reference\n");
   holds[Leaf]("Leaf");
-  holds[+tr-mut Leaf]("+tr-mut Leaf");
+  holds[+Tr-mut Leaf]("+Tr-mut Leaf");
   holds[&Leaf]("&Leaf");
   holds[Pair]("Pair");
   holds[Outer]("Outer");
   holds[Row]("Row");
   holds[Maybe]("Maybe");
-  holds[Option[+tr-mut Leaf]]("Option[+tr-mut Leaf]");
-  holds[Box[+tr-mut Leaf]]("Box[+tr-mut Leaf]");
+  holds[Option[+Tr-mut Leaf]]("Option[+Tr-mut Leaf]");
+  holds[Box[+Tr-mut Leaf]]("Box[+Tr-mut Leaf]");
   holds[Box[i32]]("Box[i32]");
   holds[Mixed]("Mixed");
 
   printStr("-- trace, in line\n");
-  mut l1 = +tr-mut Leaf[1i32];
-  mut l2 = +tr-imm Leaf[2i32];
+  mut l1 = +Tr-mut Leaf[1i32];
+  mut l2 = +Tr-imm Leaf[2i32];
   mut pr = Pair[l1, l2];
   traceLocal[Pair]("Pair", &mut pr, 5u32);
-  mut ou = Outer[3i32, Pair[+tr-mut Leaf[3i32], l2], (7i64, +tr-mut Leaf[4i32]), 1.5];
+  mut ou = Outer[3i32, Pair[+Tr-mut Leaf[3i32], l2], (7i64, +Tr-mut Leaf[4i32]), 1.5];
   traceLocal[Outer]("Outer", &mut ou, 6u32);
-  mut rw = Row[[l1, +tr-mut Leaf[5i32], l1], [pr, Pair[l1, +tr-imm Leaf[6i32]]]];
+  mut rw = Row[[l1, +Tr-mut Leaf[5i32], l1], [pr, Pair[l1, +Tr-imm Leaf[6i32]]]];
   traceLocal[Row]("Row", &mut rw, 7u32);
   mut m1 Maybe = Maybe.Has[l1, 3];
   traceLocal[Maybe]("Maybe.Has", &mut m1, 1u32);
   mut m2 Maybe = Maybe.Not[4];
   traceLocal[Maybe]("Maybe.Not", &mut m2, 1u32);
-  mut m3 Maybe = Maybe.Two[l2, +tr0-mut Leaf[7i32]];
+  mut m3 Maybe = Maybe.Two[l2, +Tr0-mut Leaf[7i32]];
   traceLocal[Maybe]("Maybe.Two", &mut m3, 2u32);
-  mut o1 Option[+tr-mut Leaf] = Some[+tr-mut Leaf][+tr-mut Leaf[8i32]];
-  traceLocal[Option[+tr-mut Leaf]]("Some", &mut o1, 3u32);
-  mut o2 Option[+tr-mut Leaf] = None[+tr-mut Leaf][];
-  traceLocal[Option[+tr-mut Leaf]]("None", &mut o2, 3u32);
-  mut bx = Box[+tr-mut Leaf][l1];
-  traceLocal[Box[+tr-mut Leaf]]("Box", &mut bx, 4u32);
+  mut o1 Option[+Tr-mut Leaf] = Some[+Tr-mut Leaf][+Tr-mut Leaf[8i32]];
+  traceLocal[Option[+Tr-mut Leaf]]("Some", &mut o1, 3u32);
+  mut o2 Option[+Tr-mut Leaf] = None[+Tr-mut Leaf][];
+  traceLocal[Option[+Tr-mut Leaf]]("None", &mut o2, 3u32);
+  mut bx = Box[+Tr-mut Leaf][l1];
+  traceLocal[Box[+Tr-mut Leaf]]("Box", &mut bx, 4u32);
   mut n = 5i32;
   traceLocal[i32]("i32", &mut n, 4u32);
 
@@ -190,8 +190,8 @@ fn main() {
   // A traced allocation makes its value before it calls 'alloc', so Leaf 9
   // is object 9 and the Pair holding it object 10
 
-  imm pp = +tr-mut Pair[+tr-mut Leaf[9i32], l2];
-  imm mx = +tr-mut Mixed[l1, +rc-mut Fin[10i32], +so Fin[11i32]];
+  imm pp = +Tr-mut Pair[+Tr-mut Leaf[9i32], l2];
+  imm mx = +Tr-mut Mixed[l1, +Rc-mut Fin[10i32], +So Fin[11i32]];
   line("read back ", i64[pp.left.n] + i64[mx.g.n] + i64[mx.r.v] + i64[mx.s.v]);
   traceAll();
 

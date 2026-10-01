@@ -37,46 +37,46 @@ import testing use *;
 import collector;
 
 fn settle() {
-  gc.collect();
-  gc.collect();
+  Gc.collect();
+  Gc.collect();
 }
 
-struct Node { pub n i64; pub left Option[+gc-mut Node]; pub right Option[+gc-mut Node]; }
+struct Node { pub n i64; pub left Option[+Gc-mut Node]; pub right Option[+Gc-mut Node]; }
 
 mut nfinals = 0i64;
 struct FinNode {
   pub n i64;
-  pub left Option[+gc-mut FinNode];
-  pub right Option[+gc-mut FinNode];
+  pub left Option[+Gc-mut FinNode];
+  pub right Option[+Gc-mut FinNode];
   fn final(self &uni) { nfinals = nfinals + 1; }
 }
 
-fn tree(depth i64) Option[+gc-mut Node] {
+fn tree(depth i64) Option[+Gc-mut Node] {
   if depth == 0 {
-    return None[+gc-mut Node][];
+    return None[+Gc-mut Node][];
   }
-  Some[+gc-mut Node][+gc-mut Node[depth, tree(depth - 1), tree(depth - 1)]];
+  Some[+Gc-mut Node][+Gc-mut Node[depth, tree(depth - 1), tree(depth - 1)]];
 }
 
-fn finTree(depth i64) Option[+gc-mut FinNode] {
+fn finTree(depth i64) Option[+Gc-mut FinNode] {
   if depth == 0 {
-    return None[+gc-mut FinNode][];
+    return None[+Gc-mut FinNode][];
   }
-  Some[+gc-mut FinNode][+gc-mut FinNode[depth, finTree(depth - 1), finTree(depth - 1)]];
+  Some[+Gc-mut FinNode][+Gc-mut FinNode[depth, finTree(depth - 1), finTree(depth - 1)]];
 }
 
 // Matched by value: through the 'mut' nodes an Option hangs from, a reference
 // into it could see another reference empty it while in use
-fn sum(t Option[+gc-mut Node]) i64 {
+fn sum(t Option[+Gc-mut Node]) i64 {
   match t {
-    case imm s Some[+gc-mut Node] { s.value.n + sum(s.value.left) + sum(s.value.right); }
+    case imm s Some[+Gc-mut Node] { s.value.n + sum(s.value.left) + sum(s.value.right); }
     else { 0; }
   }
 }
 
-fn finSum(t Option[+gc-mut FinNode]) i64 {
+fn finSum(t Option[+Gc-mut FinNode]) i64 {
   match t {
-    case imm s Some[+gc-mut FinNode] { s.value.n + finSum(s.value.left) + finSum(s.value.right); }
+    case imm s Some[+Gc-mut FinNode] { s.value.n + finSum(s.value.left) + finSum(s.value.right); }
     else { 0; }
   }
 }
@@ -94,30 +94,30 @@ fn finRound() i64 {
 const rounds = 20000i64;
 
 fn plain() {
-  imm c0 = gc.collections();
-  imm f0 = gc.freed();
+  imm c0 = Gc.collections();
+  imm f0 = Gc.freed();
   mut peak = 0usize;
   mut total = 0i64;
   mut i = 0i64;
   while i < rounds {
     total = total + round();
-    if gc.liveBytes() > peak { peak = gc.liveBytes(); }
+    if Gc.liveBytes() > peak { peak = Gc.liveBytes(); }
     i = i + 1;
   }
   expectInt(total, rounds * 26, "every tree read back whole: 1*8 + 2*4 + 3*2 + 4*1 a tree");
-  if gc.generational() {
+  if Gc.generational() {
     expect(peak <= 524288usize, "the heap never passed the trigger and the old limit, 512 KiB");
   }
   else {
     expect(peak <= 262144usize, "the heap never passed the trigger, 256 KiB");
   }
-  expect(gc.collections() - c0 >= 64usize, "at least 64 collections");
+  expect(Gc.collections() - c0 >= 64usize, "at least 64 collections");
   settle();
-  expectUInt(u64[gc.freed() - f0], 300000, "every node freed");
+  expectUInt(u64[Gc.freed() - f0], 300000, "every node freed");
 }
 
 fn limited() {
-  gc.setLimit(65536usize);
+  Gc.setLimit(65536usize);
   mut total = 0i64;
   mut i = 0i64;
   while i < rounds {
@@ -127,8 +127,8 @@ fn limited() {
   expectInt(total, rounds * 26, "every tree read back whole");
   settle();
   expectInt(nfinals, 300000, "every node finalized once");
-  expectUInt(u64[gc.liveObjects()], 0, "and freed");
-  gc.setLimit(0usize);
+  expectUInt(u64[Gc.liveObjects()], 0, "and freed");
+  Gc.setLimit(0usize);
 }
 
 fn main() i32 {

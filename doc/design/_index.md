@@ -153,7 +153,7 @@ summary here was thin; the note was not.**
 
 | Note | Serves | The position | The distance |
 | --- | --- | --- | --- |
-| [References and Regions](references-and-regions.md) | **both** | Memory strategy chosen per object, with safety preserved across all of them | mechanism built, two regions ship in core (`so` and `rc`), a third in the `sync` package (`arc`, whose count is atomic), and a fourth, reference counting with weak references, as a library package; an arena and a generational pool ship as library values, not regions an allocation names; an incremental tracing collector ships as a library package, `collector`'s `gc`, the compiler emitting its write barrier, with a generational mode a program chooses; no read barrier |
+| [References and Regions](references-and-regions.md) | **both** | Memory strategy chosen per object, with safety preserved across all of them | mechanism built, two regions ship in core (`So` and `Rc`), a third in the `sync` package (`Arc`, whose count is atomic), and a fourth, reference counting with weak references, as a library package; an arena and a generational pool ship as library values, not regions an allocation names; an incremental tracing collector ships as a library package, `collector`'s `Gc`, the compiler emitting its write barrier, with a generational mode a program chooses; no read barrier |
 | [Performance](performance.md) | performance | Give knowledgeable programmers the levers for proven high-performance strategies | most levers unbuilt; what exists is the machinery making them cheap to add and free to skip |
 | [Modularity](modularity.md) | agility | Every layer — block, function, type, thread, module, program — surfacing the same six strategies | composition, namespace and encapsulation broadly present; substitution, generativity and extensibility thin out above the type layer; no thread layer; the program layer has no namespace at all |
 | [Safety](safety.md) | agility | Memory and type safety without a garbage collector, at no runtime cost | a scorecard: what is checked, what is not, and the four shapes the gaps take |
@@ -229,7 +229,7 @@ Most real work crosses phases. Start here instead.
 | find out what the compiler is actually doing | [Measuring](../../compiler/c/doc/diagnostics/measuring.md) — probes, `--ir`, `--llvmir`, `--checktree` |
 | add or change a diagnostic | [Error Codes](../../compiler/c/doc/diagnostics/error-codes.md) |
 | add or update test coverage | [Test Suite](../../compiler/c/doc/diagnostics/test-suite.md) |
-| find a built-in type, operator method, or intrinsic | `corelib/` — see the family map in [IR Nodes](../../compiler/c/doc/nodes/_index.md); `Option`, `Result`, `so` and `rc` are Cone source in `packages/core/src/core.cone`, and so are the intrinsics declared with `@intrinsic`, whose registry is `ir/stmt/intrinsic.c` ([intrinsic](../../compiler/c/doc/nodes/intrinsic.md)) |
+| find a built-in type, operator method, or intrinsic | `corelib/` — see the family map in [IR Nodes](../../compiler/c/doc/nodes/_index.md); `Option`, `Result`, `So` and `Rc` are Cone source in `packages/core/src/core.cone`, and so are the intrinsics declared with `@intrinsic`, whose registry is `ir/stmt/intrinsic.c` ([intrinsic](../../compiler/c/doc/nodes/intrinsic.md)) |
 | find `core` or `stdio`, or change where packages are found | `packages/` at the repository's root — [Module](../../compiler/c/doc/nodes/module.md), "The packages folder" |
 
 ## By language feature
@@ -352,7 +352,7 @@ paragraph, or a bullet, so the referent is never ambiguous:
 
 ```
 Regions are declared `region @move so:` with `alloc` and `free`
-[differs: implemented as `struct so is RegionRef, Move`, a struct and not a module]
+[differs: implemented as `struct So is RegionRef, Move`, a struct and not a module]
 ```
 
 Mark at the coarsest level that is true, and override inline only where a child

@@ -1,50 +1,48 @@
-// The collector package: 'gc', a garbage-collected region, and its collector.
-// A value allocated '+gc' lives until nothing reaches it, and then the
+// The collector package: 'Gc', a garbage-collected region, and its collector.
+// A value allocated '+Gc' lives until nothing reaches it, and then the
 // collector finalizes it and gives its memory back. Its references copy for
 // free and drop for free: no count, no free at scope end.
 //
 //   mod scene;
-//   import collector;          // binds 'gc', the region, as well as 'collector'
+//   import collector;          // binds 'Gc', the region, as well as 'collector'
 //
 //   struct Leaf {
 //     pub n i64;
 //     fn final(self &uni) { ... }
 //   }
-//   struct Pair { pub left +gc-mut Leaf; pub right +gc-mut Leaf; }
+//   struct Pair { pub left +Gc-mut Leaf; pub right +Gc-mut Leaf; }
 //
 //   fn build() {
-//     mut p = +gc-mut Pair[+gc-mut Leaf[1], +gc-mut Leaf[2]];
-//     p.left = +gc-mut Leaf[3];   // Leaf 1 is garbage now
-//     gc.collect();               // Leaf 1's 'final' runs here
+//     mut p = +Gc-mut Pair[+Gc-mut Leaf[1], +Gc-mut Leaf[2]];
+//     p.left = +Gc-mut Leaf[3];   // Leaf 1 is garbage now
+//     Gc.collect();               // Leaf 1's 'final' runs here
 //   }
 //
 // ONE THREAD. The collector is single threaded: its roots are one chain (a C
-// global in conestd's roots.c), and nothing here is synchronized. A '+gc'
+// global in conestd's roots.c), and nothing here is synchronized. A '+Gc'
 // reference made, held, reached or dropped on a thread the 'thread' package
 // started corrupts it. Nothing checks or guards this; a concurrent collector
 // is a later design.
 //
-// THE NAME. The package is 'collector' and its region ref is 'gc'. A module's
-// own name is bound in its namespace, so a package named 'gc' cannot declare a
-// struct 'gc' (Error 1011 at the struct): 'rcweak' and its 'rcw' are the
-// precedent. The 'mod' line below makes 'gc' the package's default fold, so a
-// bare 'import collector;' binds both names, and a program writes '+gc-mut
-// Leaf[1]' and 'gc.collect()'. 'import collector use *;' binds them too.
+// THE NAME. The package is 'collector' and its region ref is 'Gc'. The 'mod'
+// line below makes 'Gc' the package's default fold, so a bare
+// 'import collector;' binds both names, and a program writes '+Gc-mut
+// Leaf[1]' and 'Gc.collect()'. 'import collector use *;' binds them too.
 //
 // WHAT A PROGRAM CALLS:
-//   gc.collect()          a full collection, now: one in progress is finished
+//   Gc.collect()          a full collection, now: one in progress is finished
 //                         (or, while it is still marking, given up), and a
 //                         whole one run, finalizers and all
-//   gc.step(work)         some collection work now, as an allocation does:
+//   Gc.step(work)         some collection work now, as an allocation does:
 //                         at least 'work' bytes of objects marked, swept or
 //                         finalized (0: the least there is, one object),
 //                         starting a collection if none is running. True if
-//                         the step finished one. gc.phase() says where one is
-//   gc.stop(), start()    turn the automatic work off and on again, the
+//                         the step finished one. Gc.phase() says where one is
+//   Gc.stop(), start()    turn the automatic work off and on again, the
 //                         stress mode's included. An allocation that fails
-//                         still collects (below), and gc.collect() and
-//                         gc.step() still work
-//   gc.setStress(on)      a step at every allocation, a collection started as
+//                         still collects (below), and Gc.collect() and
+//                         Gc.step() still work
+//   Gc.setStress(on)      a step at every allocation, a collection started as
 //                         soon as one ends, and every object freed scribbled
 //                         over: a temporary the roots missed, or a store the
 //                         barrier missed, shows soon. Setting the environment
@@ -52,19 +50,19 @@
 //                         run, from its first allocation; CONE_GC_STRESS=full
 //                         runs a whole collection at every allocation
 //                         instead, which finds a missed root at once.
-//                         gc.stressed() says if either is on
-//   gc.setGenerational(on) generational running, or incremental, the default
-//                         (THE GENERATIONS, below); gc.generational() says
+//                         Gc.stressed() says if either is on
+//   Gc.setGenerational(on) generational running, or incremental, the default
+//                         (THE GENERATIONS, below); Gc.generational() says
 //                         which. Setting the environment variable
 //                         CONE_GC_MODE to 'generational' or 'incremental'
 //                         chooses for a whole run
-//   gc.setLimit(bytes)    no more than this many bytes of '+gc' values (with
+//   Gc.setLimit(bytes)    no more than this many bytes of '+Gc' values (with
 //                         their headers) at once; 0, the default, is no limit.
 //                         What exhaustion looks like, on demand
-//   gc.liveObjects(), gc.liveBytes(), gc.collections(), gc.finalized(),
-//   gc.freed(), gc.steps(), gc.largestStep(), gc.minorCollections(),
-//   gc.markedObjects(), gc.sweptObjects(), gc.work(), gc.minorWork(),
-//   gc.promotedBytes(), gc.oldBytes()
+//   Gc.liveObjects(), Gc.liveBytes(), Gc.collections(), Gc.finalized(),
+//   Gc.freed(), Gc.steps(), Gc.largestStep(), Gc.minorCollections(),
+//   Gc.markedObjects(), Gc.sweptObjects(), Gc.work(), Gc.minorWork(),
+//   Gc.promotedBytes(), Gc.oldBytes()
 //                         the collector's counts, for tests and tuning
 //
 // HOW IT COLLECTS: Acorn's collector (acornvm, avm_gc.cpp), incremental, with
@@ -75,7 +73,7 @@
 // - MARK: every root is handed to 'mark' (mem.traceRoots), which turns a
 //   white object gray and puts it on the gray list; then, a step at a time,
 //   gray objects are taken off, made black, and their record's trace hands
-//   each '+gc' reference they hold to 'mark' in turn. While it marks, the
+//   each '+Gc' reference they hold to 'mark' in turn. While it marks, the
 //   program runs between steps and stores references: the WRITE BARRIER
 //   (below) keeps it from hiding a white object in a black one;
 // - ATOMIC, the end of marking, in one step: the gray list emptied, the
@@ -91,9 +89,9 @@
 // - FINALIZE, a step at a time: each separated object is marked finalized
 //   and put back among the ordinary objects, then its record's finalizer runs
 //   -- its 'final', then its fields', then the owners its fields hold are
-//   released ('+rc' counted down, '+so' finalized and freed). Newest first.
+//   released ('+Rc' counted down, '+So' finalized and freed). Newest first.
 // An object is finalized once, and freed by the first collection that finds
-// it unreachable after that: a CYCLE LATE, so a 'final' may read its '+gc'
+// it unreachable after that: a CYCLE LATE, so a 'final' may read its '+Gc'
 // children, which are still there, possibly finalized, never freed. A 'final'
 // may allocate; nothing it does starts collection work.
 //
@@ -101,8 +99,8 @@
 // by the collection that finds them unreachable.
 //
 // THE WRITE BARRIER. The compiler calls 'writeBarrier' after every store of a
-// '+gc' reference into memory that is not a local -- a field, an element, a
-// dereference, through a '+gc' reference or a borrow alike -- handing it the
+// '+Gc' reference into memory that is not a local -- a field, an element, a
+// dereference, through a '+Gc' reference or a borrow alike -- handing it the
 // header of what was stored. While marking, a white object so stored is made
 // gray: no black object ever points at a white one it could hide (Dijkstra's
 // insertion barrier, Acorn's mem_markChk). It asks nothing of where the
@@ -129,7 +127,7 @@
 //   container from a young one -- it asks only about what was stored, which
 //   is all a store through a borrow can tell it -- so every young object
 //   stored into the heap survives the next minor collection, and is
-//   promoted. Objects born holding their values ('+gc T[a, b]') are stored
+//   promoted. Objects born holding their values ('+Gc T[a, b]') are stored
 //   by no barrier, and die young if they are dropped. (Acorn's barrier asks
 //   whether the container is black, so there a young object stored into a
 //   young one is not kept.)
@@ -138,7 +136,7 @@
 //   collection's sweep makes every survivor white and young again, and a
 //   full marking starts at once, frees old garbage, and promotes what is live
 //   (Acorn's GCOLDTRIGGER, counted in bytes, and only the minor collections'
-//   promotions). gc.collect() is always a full collection.
+//   promotions). Gc.collect() is always a full collection.
 // - A minor collection that finds more than half the young generation live
 //   is UNPRODUCTIVE -- a program building a structure, or storing all it
 //   makes -- and its sweep is full too. The collections after it are full
@@ -165,8 +163,8 @@
 // what its tries at generational running cost.
 //
 // WHEN IT WORKS, AND HOW MUCH (pacing in bytes, Lua's). Collection work runs
-// inside allocations (and gc.collect(), gc.step()): '+gc T[...]' evaluates
-// its value first, then calls 'alloc', so at that moment every '+gc'
+// inside allocations (and Gc.collect(), Gc.step()): '+Gc T[...]' evaluates
+// its value first, then calls 'alloc', so at that moment every '+Gc'
 // reference the program holds is in a stack slot the compiler registered
 // (its roots), and none is only in a register. Between collections, one
 // starts when an allocation would take the heap past the TRIGGER: twice the
@@ -191,10 +189,10 @@
 // OUT OF MEMORY. An allocation the C library cannot satisfy, or that would
 // pass the limit, runs an emergency collection -- no finalizers run in it, as
 // in Acorn and Lua -- and tries once more. If that fails too, 'alloc' returns
-// null: a '?+gc' allocation is then None, and a plain '+gc' one panics, as
+// null: a '?+Gc' allocation is then None, and a plain '+Gc' one panics, as
 // every region's failed allocation does, naming the size asked for.
 
-mod collector use gc;
+mod collector use Gc;
 
 import libc;
 
@@ -208,7 +206,7 @@ const finalizedBit = 8u32;
 const keptBit = 16u32;
 const oldBit = 32u32;
 
-// The phases, gc.phase()'s answers
+// The phases, Gc.phase()'s answers
 const pausePhase = 0u32;      // no collection running
 const markPhase = 1u32;       // marking; the barrier is on
 const sweepPhase = 2u32;      // sweeping
@@ -235,14 +233,14 @@ mut sweepAt = 0usize;      // the object last kept there: the next is its next; 
 mut stepping = false;      // collection work (or a finalizer) is running
 mut debt = 0usize;         // bytes allocated, and not yet paid for by a step
 mut estimate = 0usize;     // bytes live at the flip, less what the sweep frees
-mut autoOn = true;         // gc.stop() / gc.start()
+mut autoOn = true;         // Gc.stop() / Gc.start()
 mut stressOn = false;
 mut stressFull = false;    // CONE_GC_STRESS=full: a whole collection at every allocation
 mut envRead = false;
-mut maxBytes = 0usize;     // gc.setLimit; 0 is none
+mut maxBytes = 0usize;     // Gc.setLimit; 0 is none
 
 // Generational running (see THE GENERATIONS)
-mut genOn = false;         // gc.setGenerational, or CONE_GC_MODE
+mut genOn = false;         // Gc.setGenerational, or CONE_GC_MODE
 mut barrierOn = false;     // the barrier shades: while marking, and between generational collections
 mut oldGen = false;        // the last sweep left its survivors black and old: the next marking is minor
 mut minorMark = false;     // this collection's marking is minor: the old generation is not traced
@@ -256,7 +254,7 @@ mut oldGenBytes = 0usize;  // bytes of old objects
 mut backoff = 0usize;      // full collections to run before the next generational sweep
 mut backoffNext = 1usize;  // the backoff an unproductive minor collection sets: doubled each time, to 64
 
-mut totalBytes = 0usize;   // bytes held by '+gc' objects, headers included
+mut totalBytes = 0usize;   // bytes held by '+Gc' objects, headers included
 mut trigger = 262144usize; // start a collection when an allocation would pass this
 mut nobjects = 0usize;
 mut ncollections = 0usize;
@@ -271,16 +269,16 @@ mut npromoted = 0usize;    // bytes promoted by minor collections
 mut nwork = 0usize;        // bytes of work done, by every step and whole collection
 mut nminorWork = 0usize;   // of that, the work of minor collections
 
-// The header before every '+gc' value: the region ref. Its fields are public
+// The header before every '+Gc' value: the region ref. Its fields are public
 // because a private field is reached only through 'self', and the collector
 // walks lists of headers; a program never holds a header to read them from.
-pub struct gc is RegionRef, Traced {
+pub struct Gc is RegionRef, Traced {
   pub next usize;      // the next object in its list
   pub gray usize;      // its link in the gray list
   pub ty *TypeRecord;  // the value's type record: size, alignment, finalizer, trace
   pub marked u32;      // its colour
 
-  // '+gc T[...]': the byte count of {header, value}, and T's type record.
+  // '+Gc T[...]': the byte count of {header, value}, and T's type record.
   // The value has been evaluated already, so every root is in its slot.
   fn alloc(size usize, ty *TypeRecord) *u8 {
     readEnv();
@@ -307,25 +305,25 @@ pub struct gc is RegionRef, Traced {
     // roots, traced again at the atomic step, or through a store, which the
     // barrier shades; during the sweep, the new white, which survives it
     imm fin = ((ty as &TypeRecord).flags & 1u32) != 0u32;
-    mem.writeRaw(p as *gc, gc[if fin {finobj;} else {allgc;}, 0usize, ty, curWhite]);
+    mem.writeRaw(p as *Gc, Gc[if fin {finobj;} else {allgc;}, 0usize, ty, curWhite]);
     if fin { finobj = p as usize; } else { allgc = p as usize; }
     totalBytes = totalBytes + bytes;
     nobjects = nobjects + 1usize;
     p;
   }
 
-  // A '+gc' reference was found, by a root or in a value being traced
-  fn mark(self &uni gc) {
-    shade(self as *gc as usize);
+  // A '+Gc' reference was found, by a root or in a value being traced
+  fn mark(self &uni Gc) {
+    shade(self as *Gc as usize);
   }
 
-  // A '+gc' reference was stored into memory that is not a local. While
+  // A '+Gc' reference was stored into memory that is not a local. While
   // marking, and between generational collections, what it refers to is
   // shaded, so no black object -- one marked this collection, or an old one
   // -- can come to hide a white one; otherwise nothing.
-  fn writeBarrier(self &uni gc) inline {
+  fn writeBarrier(self &uni Gc) inline {
     if barrierOn {
-      shade(self as *gc as usize);
+      shade(self as *Gc as usize);
     }
   }
 
@@ -390,19 +388,19 @@ pub struct gc is RegionRef, Traced {
   // layout, whose permission takes no room (the compiler refuses a traced
   // region with one that does)
   fn valueOffset(ty *TypeRecord) usize {
-    roundUp(mem.sizeof[gc](), (ty as &TypeRecord).align);
+    roundUp(mem.sizeof[Gc](), (ty as &TypeRecord).align);
   }
 
   // The bytes an object takes, as the compiler sized it for 'alloc'
   fn objBytes(ty *TypeRecord) usize {
     imm rec = ty as &TypeRecord;
     mut al = rec.align;
-    if al < mem.alignof[gc]() { al = mem.alignof[gc](); }
+    if al < mem.alignof[Gc]() { al = mem.alignof[Gc](); }
     roundUp(valueOffset(ty) + rec.size, al);
   }
 
-  fn header(at usize) &mut gc {
-    at as &mut gc;
+  fn header(at usize) &mut Gc {
+    at as &mut Gc;
   }
 
   // The value of the object whose header is at 'at'
@@ -795,7 +793,7 @@ pub struct gc is RegionRef, Traced {
   // Their bytes, headers included
   pub fn liveBytes() usize { totalBytes; }
   // Collections that finished marking, finalizers run, objects freed, and
-  // steps taken (by allocations, and gc.step()), since the program began
+  // steps taken (by allocations, and Gc.step()), since the program began
   pub fn collections() usize { ncollections; }
   pub fn finalized() usize { nfinalized; }
   pub fn freed() usize { nfreed; }

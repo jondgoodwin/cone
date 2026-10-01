@@ -55,10 +55,10 @@ int flowMatchInPlace(VarDclNode *var) {
 }
 
 // Is this expression a shared owner -- an owning reference that other holders
-// may be sharing? An owning reference that may be aliased ('+rc-mut', '+rc-imm',
-// '+rc-ro', and every 'rc' form but '+rc-uni') is one of possibly many holders
+// may be sharing? An owning reference that may be aliased ('+Rc-mut', '+Rc-imm',
+// '+Rc-ro', and every 'Rc' form but '+Rc-uni') is one of possibly many holders
 // counting the same value, so it does not solely own it. An owning reference
-// that is a move type -- a 'uni' one, or any in the 'Move' region 'so' -- is
+// that is a move type -- a 'uni' one, or any in the 'Move' region 'So' -- is
 // the only holder, and may give the value up. One into a region that is
 // neither counted nor 'Move' -- a collector's -- is shared freely, and is
 // refused too.
@@ -704,7 +704,7 @@ void flowResultMove(INode *node) {
 
 // Is this type a counted reference: one into a region whose 'aliasRef' is called
 // for each copy that becomes another owner? An owning slice (ArrayRefTag) is
-// counted exactly as a single reference is, and so is a virtual one ('+<rc').
+// counted exactly as a single reference is, and so is a virtual one ('+<Rc').
 int flowIsRcRef(INode *type) {
     RefNode *reftype = (RefNode *)itypeGetTypeDcl(type);
     return (reftype->tag == RefTag || reftype->tag == ArrayRefTag || reftype->tag == VirtRefTag)
@@ -789,7 +789,7 @@ int flowVariantHeldCounted(INode *variant) {
     return 0;
 }
 
-// If needed, inject a reference-count node for rc/own references, adjusting the count by amt.
+// If needed, inject a reference-count node for Rc/own references, adjusting the count by amt.
 // One value can become more than one holder at once: an array fill literal stores
 // the reference it evaluates once into every one of its elements. A struct or an
 // enum is one holder of each counted reference its drop releases (flowHeldCounted).
@@ -799,7 +799,7 @@ void flowInjectRefCountAmt(INode **nodep, int16_t amt) {
     int16_t *counts = NULL;
     if (typedcl->tag == TTupleTag) {
         // A tuple value is one holder of each counted reference it carries, so
-        // every rc element, and every element holding one, gets the
+        // every Rc element, and every element holding one, gets the
         // adjustment and every other element none.
         Nodes *elems = ((TupleNode *)typedcl)->elems;
         counts = (int16_t *)memAllocBlk(elems->used * sizeof(int16_t));
@@ -815,7 +815,7 @@ void flowInjectRefCountAmt(INode **nodep, int16_t amt) {
             return;
         amt = (int16_t)elems->used;
     }
-    // No need for injected node if we are not dealing with rc references
+    // No need for injected node if we are not dealing with Rc references
     else if (!flowIsRcRef(vtype) && !flowHeldCounted(vtype))
         return;
 
@@ -829,14 +829,14 @@ void flowInjectRefCountAmt(INode **nodep, int16_t amt) {
     *nodep = (INode*)rcnode;
 }
 
-// If needed, inject a reference-count node for rc/own references, adding one holder
+// If needed, inject a reference-count node for Rc/own references, adding one holder
 void flowInjectRefCount(INode **nodep) {
     flowInjectRefCountAmt(nodep, 1);
 }
 
 // Does this cast hand on what its operand holds? A recast is its operand under
 // another type name. A conversion makes a new value, except one into an owning
-// virtual reference ('+<so App' from a '+so Spinner', or from a '+<so' of a
+// virtual reference ('+<So App' from a '+So Spinner', or from a '+<So' of a
 // trait it extends): that adds a vtable to the operand's one owner and keeps
 // it, so the operand is moved out of, or counted, as a recast's would be.
 int flowCastCarries(INode *cast) {
@@ -1244,7 +1244,7 @@ int flowIsScopeResultOf(INode *retexp, VarDclNode *varnode, Nodes **hollow) {
     return flowIsScopeResult(retexp, varnode, hollow);
 }
 
-// Create de-alias list of all own/rc reference variables (except the retexp name(s))
+// Create de-alias list of all own/Rc reference variables (except the retexp name(s))
 // A drop call built here is positioned on the result expression, and on 'lexnode'
 // -- the jump that ends the scope -- where there is no result expression to take
 // a position from. A 'continue' hands back no value, so it is the jump or nothing.

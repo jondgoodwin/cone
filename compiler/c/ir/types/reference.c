@@ -88,10 +88,10 @@ void refAdoptInfections(RefNode *refnode) {
 // - A traced reference never crosses while the collector is single threaded,
 //   whatever its permission or its region declares.
 // - An owner that cannot be aliased moves, taking its value with it: a 'uni'
-//   owner of any region, and any owner of a 'Move' region ('+so').
+//   owner of any region, and any owner of a 'Move' region ('+So').
 // - Any other owner may be shared: its permission must be RaceSafe ('imm',
 //   'opaq'), and its region must declare ThreadSafe, so that its aliasRef and
-//   dealiasRef may run on several threads at once ('arc' does; 'rc' does not).
+//   dealiasRef may run on several threads at once ('Arc' does; 'Rc' does not).
 // A permission that is not a built-in one (a struct in the permission slot,
 // the unbuilt lock permissions) is not taken as RaceSafe.
 RefBinds refThreadBinds(RefNode *ref) {
@@ -289,8 +289,8 @@ TypeCompare regionMatches(INode *to, INode *from, SubtypeConstraint constraint) 
 
 // Would a reference held behind a readable reference, seen as 'to' in place of
 // its own type 'from', be copied out by a read where its own type moves?
-// '&+rc-mut T' from '&+rc T' is the case: '+rc' is 'uni', the only owner, and a
-// read of '+rc-mut' copies, so a second owner of a value promised unique would
+// '&+Rc-mut T' from '&+Rc T' is the case: '+Rc' is 'uni', the only owner, and a
+// read of '+Rc-mut' copies, so a second owner of a value promised unique would
 // come out of a borrow of the first. Not behind a reference the same coercion
 // is a move, which consumes the source, and is sound.
 int refHeldMoveSeenAsCopy(INode *to, INode *from) {

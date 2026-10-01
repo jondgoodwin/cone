@@ -15,13 +15,13 @@ borrowed references used to shed the overhead wherever region oversight is not
 needed. Safety is preserved across all of it.
 
 **The distance** is large and worth stating plainly. Two regions ship in the
-core package, `so` and `rc`, and a third, `arc`, in the `sync` package (`rc`
+core package, `So` and `Rc`, and a third, `Arc`, in the `sync` package (`Rc`
 with its count changed atomically, declaring the built-in marker
 **`ThreadSafe`**, which the thread check asks of a reference's region: an owner
 that may be aliased crosses threads only in a region declaring it, so
-`+arc-imm` crosses and `+rc-imm` does not; outside core, as Rust keeps `Arc` in `sync` and out of the
-prelude **[Jon 27 Sep]**, so `arc` is a name only of modules that fold it in,
-`import sync use arc`), all written in Cone. A user can define a region the
+`+Arc-imm` crosses and `+Rc-imm` does not; outside core, as Rust keeps `Arc` in `sync` and out of the
+prelude **[Jon 27 Sep]**, so `Arc` is a name only of modules that fold it in,
+`import sync use Arc`), all written in Cone. A user can define a region the
 same way — a struct declaring `is RegionRef`, whose `alloc`, `init`, `aliasRef`,
 `dealiasRef` and `free` the compiler calls, and whose `alloc` may ask for the
 value's **type record** (core's `TypeRecord`: its size, alignment, finalizer
@@ -30,7 +30,7 @@ and trace) by taking one after the size. A region may declare itself
 hands each reference into the region a value holds to the region's `mark` (with
 the reference's permission and a mode, where `mark` asks), and the compiler
 refuses a traced reference wherever a collector could not find it — behind an
-`rc` or `so` owner, in a global, in raw memory placed by `mem.writeRaw` (an
+`Rc` or `So` owner, in a global, in raw memory placed by `mem.writeRaw` (an
 arena's, a pool's, a collection's), and, in a traced value, beside a borrow.
 The traced references on the stack are its **roots**: every function holding
 one links a frame of them (its locals, parameters and temporaries holding one)
@@ -45,7 +45,7 @@ mark. No more of the protocol below is built: no read barrier, no weak
 reference kind, no region with global state, and no finalizing of a slice's
 elements when its region frees it. Of the strategies that motivate the whole
 design, a tracing collector is written as library code, incremental: the
-`collector` package's region ref `gc` (`+gc-mut T[...]`), Acorn's tri-colour
+`collector` package's region ref `Gc` (`+Gc-mut T[...]`), Acorn's tri-colour
 mark and sweep over those roots and the type records' traces, a step at a
 time inside allocations once the heap passes its trigger (and whole on
 `gc.collect()`), its `writeBarrier` shading what a store puts into an object
@@ -71,10 +71,10 @@ returns is checked like the scratch arena's; the one inside `get`'s `Option`
 is not (a borrow held inside another value carries no lifetime), and no
 invariant lifetime yet pairs a `Ref` with its own pool, so one used with
 another pool of its type is merely bounds- and generation-checked there.
-A third region ref is a library package too: `rcweak`'s `rcw`, reference
+A third region ref is a library package too: `rcweak`'s `Rcw`, reference
 counting whose header also counts weak references. A weak reference is no
 reference kind but an ordinary struct, `Weak[T]`, holding the header's address
-and reaching the value only by making a counted `+rcw-mut` owner, in an
+and reaching the value only by making a counted `+Rcw-mut` owner, in an
 `Option` (`upgrade`) or checked first (`alive`, `strong`). Its value dies at
 its last strong owner, and its memory is freed at its last weak reference:
 death and freeing separate, with the compiler told nothing new. The owner an
@@ -108,7 +108,7 @@ measured.*
   thread's stack, one per thread; every other region is memory owned and
   managed by the region that allocated it.
 - **Regions nest.** Uniqueness holds one level at a time: each piece of memory
-  has exactly one *immediate* manager, and managers stack — an `rc` allocation
+  has exactly one *immediate* manager, and managers stack — an `Rc` allocation
   holds a `List`'s block, and inside that block the `List` manages its
   elements.
 - **Static region**: its state and its lifetime are global; a module manages
@@ -118,7 +118,7 @@ measured.*
   region lives as long as that value does — an arena, a pool, a collection.
 - **Region ref**: the struct declaring the built-in trait `RegionRef` — the
   header a region puts in front of each value it manages, whose methods the
-  compiler calls at each reference event. It is what `+rc` names; the region is
+  compiler calls at each reference event. It is what `+Rc` names; the region is
   the module (or, for a dynamic region, the value) behind it. Never "a region is
   a struct".
 - **The dance**: the region decides *when* a value dies; the compiler, which
@@ -131,7 +131,7 @@ measured.*
 source**, and what is unchecked is the claim that they are ruling positions
 rather than the present arrangement.
 
-1. **Three axes, independently chosen.** `+rc-mut Point` names a region, a
+1. **Three axes, independently chosen.** `+Rc-mut Point` names a region, a
    permission and a value type, and each is a separate decision. ▸ **Forbids**
    the fused capability of Pony or the welded aliasing-mutability-lifetime of
    Rust. **This is the principle most "Cone cannot express X" claims dissolve
@@ -159,25 +159,25 @@ concept. It is named at each allocation site, so the choice is per-object and
 lexically visible:
 
 ```cone
-imm person = +so Person["Tako"]     // single-owner: freed when the owner drops
-imm shared = +rc Person["Tako"]     // counted: freed at zero
+imm person = +So Person["Tako"]     // single-owner: freed when the owner drops
+imm shared = +Rc Person["Tako"]     // counted: freed at zero
 ```
 
 | Region | Is | Strategy |
 | --- | --- | --- |
 | `borrowRef` | a sentinel node, not a struct — the default for `&` | none; a borrow owns nothing |
-| `so` | `struct so is RegionRef, Move` in the core package, `packages/core/src/core.cone`: no fields, `alloc` and `free`, no `aliasRef` | single owner frees |
-| `rc` | `struct rc is RegionRef { cnt usize }` in the core package, with `init`, `aliasRef` and `dealiasRef` too | reference counting |
-| `rcw` | `struct rcw is RegionRef { strong usize; weak usize }` in the `rcweak` package, `packages/rcweak/src/rcweak.cone`; its `free` gives back one weak count, and the last one frees | reference counting with weak references (`Weak[T]`, a struct) |
+| `So` | `struct So is RegionRef, Move` in the core package, `packages/core/src/core.cone`: no fields, `alloc` and `free`, no `aliasRef` | single owner frees |
+| `Rc` | `struct Rc is RegionRef { cnt usize }` in the core package, with `init`, `aliasRef` and `dealiasRef` too | reference counting |
+| `Rcw` | `struct Rcw is RegionRef { strong usize; weak usize }` in the `rcweak` package, `packages/rcweak/src/rcweak.cone`; its `free` gives back one weak count, and the last one frees | reference counting with weak references (`Weak[T]`, a struct) |
 | user-defined | any struct declaring `is RegionRef` | whatever its methods do |
 
-**`so` and `rc` are Cone source, not built into the compiler**, and nothing in
+**`So` and `Rc` are Cone source, not built into the compiler**, and nothing in
 the compiler names either. Each method is optional, and an absent one's
 operation does not happen: without `aliasRef` a copy of a reference calls nothing;
 `dealiasRef` answers whether the owner that went was the last, and without it an
 owner's going asks nothing; `free` gives the memory back. **One owner per value
 is declared, not read off a missing method** [Jon 26 Sep]: a region ref
-declaring the built-in trait `Move`, as `so` does, has its copies moved and
+declaring the built-in trait `Move`, as `So` does, has its copies moved and
 every owner's going is the value's death. One declaring neither `Move` nor
 `aliasRef` shares its references for nothing, and with no `dealiasRef` either its
 owners' going does nothing at all — the compiler never frees such a value, the
@@ -192,7 +192,7 @@ nothing moves out of a field, so no value dies with a hole in it
 refusing only contradictions — `Move` with `aliasRef`, `Move` with `Traced` — and
 a `Traced` region without its `mark` (or with a `writeBarrier` of another
 shape); and the test corpus
-declares regions of its own that get every call `rc` and `so` get
+declares regions of its own that get every call `Rc` and `So` get
 ([What a region is](../../compiler/c/doc/nodes/module.md)).
 
 **But the intended shape is much larger than that.** A region is meant to be a
@@ -238,7 +238,7 @@ functions, admit different vocabularies, and answer different questions:
 
 | | reference permission | declaration permission |
 | --- | --- | --- |
-| Written | inside a type: `&mut Point`, `+rc-ro T` | before a name: `mut x i32` |
+| Written | inside a type: `&mut Point`, `+Rc-ro T` | before a name: `mut x i32` |
 | Parsed by | `parsePerm`, inside `parseType` | `parseDclPerm` |
 | Vocabulary | all six below | `mut` and `imm`, nothing else |
 | Answers | read, write, alias, share — and move-ness | may this storage's value change |
@@ -311,7 +311,7 @@ thread check, `Sendable`). `MayAliasWrite`, `MayIntRefSum` and `IsLockless` are
 populated and read nowhere. That is not a judgement on the design — it is that
 the rest of the concurrency half is unbuilt, and those are the bits it would
 consult. One consequence is worth stating outright: **`imm` and `ro` differ
-only in what may cross threads** (an `+arc-imm` owner may, an `+arc-ro` one may
+only in what may cross threads** (an `+Arc-imm` owner may, an `+Arc-ro` one may
 not; no borrow may) and in `MayIntRefSum`. See [Safety](safety.md).
 
 The coercion lattice (`permMatches`) is small: `uni` coerces down to `ro`,
@@ -330,9 +330,9 @@ anything.
 
 **Move-ness.** `refAdoptInfections` is the whole rule: a reference is a move
 type **when its permission lacks `MayAlias`, or its region is itself a move
-type**. `so` declares `is Move`, which makes it one, so every `+so` reference moves; `+rc` with the
+type**. `So` declares `is Move`, which makes it one, so every `+So` reference moves; `+Rc` with the
 default `uni` moves too, on a region that counts. That one sentence explains why
-`+rc x` moves while `+rc-mut x` copies.
+`+Rc x` moves while `+Rc-mut x` copies.
 
 **Variance is keyed on the permission**, not on the reference kind:
 
@@ -350,9 +350,9 @@ permissive.
 **Covariance does not turn a move type behind a reference into a copy type.**
 A read through the reference copies what it holds when that is a copy type, so
 a borrow of a sole owner may not be seen as a borrow of a shared one:
-`&+rc-mut T` from `&+rc T` would copy a second, writable owner out of a value
+`&+Rc-mut T` from `&+Rc T` would copy a second, writable owner out of a value
 `uni` promised unique. The permission lattice still lets `uni` coerce down
-where the owner itself is moved. A `+so` owner may be seen as `+so-mut` behind
+where the owner itself is moved. A `+So` owner may be seen as `+So-mut` behind
 a borrow, since both move and a move out through a borrow is refused.
 
 **Lifetime is a `uint16_t` scope depth** on the reference's *type*: 0 global, 1

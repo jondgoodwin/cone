@@ -92,7 +92,7 @@ int genericInferStructParms(TypeCheckState *pstate, Nodes *genparms, StructNode 
 // and 'List[T]' matches an instance of List, type argument by type argument.
 // In a template a type parameter is not yet
 // a type, so '*T' is held as a dereference, '&T' or '&[]T' as a borrow, and
-// an owning '+rc-mut T' or '+[]so T' as an allocate (cloneStarNode,
+// an owning '+Rc-mut T' or '+[]So T' as an allocate (cloneStarNode,
 // cloneRefNode), and each spelling is accepted here. Region
 // and permission take no part: the instance's own check of the call judges
 // them. Any other shape infers nothing, and returns 1 as a non-match does.
@@ -524,7 +524,7 @@ static void genericTypeNameCat(char *buf, size_t size, INode *type, int depth) {
         genericTypeNameCat(buf, size, ((StarNode*)dcl)->vtexp, depth + 1);
         return;
     }
-    // A reference or an array as it is written: '&mut Point', '+rc-imm Pt',
+    // A reference or an array as it is written: '&mut Point', '+Rc-imm Pt',
     // '[3; u8]'
     if (dcl->tag == RefTag || dcl->tag == ArrayRefTag || dcl->tag == VirtRefTag || dcl->tag == ArrayTag) {
         itypeSpellCat(buf, size, dcl, depth);
@@ -654,7 +654,7 @@ static void genericNotSendableMsg(INode *errnode, Name *name, GenVarDclNode *par
             break;
         case RefBindsShared:
             snprintf(reason, sizeof(reason),
-                "an owner that may be copied, and %s does not declare ThreadSafe: its copies could not be made and dropped on several threads at once. It may cross as a uni owner, which moves it, or as an owner of a region declaring ThreadSafe, such as arc",
+                "an owner that may be copied, and %s does not declare ThreadSafe: its copies could not be made and dropped on several threads at once. It may cross as a uni owner, which moves it, or as an owner of a region declaring ThreadSafe, such as Arc",
                 regname);
             break;
         default:

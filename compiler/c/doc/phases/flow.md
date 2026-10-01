@@ -87,7 +87,7 @@ Put these first, because every one of them is load-bearing.
    a borrowed reference is still to be used: changed, moved, ended, borrowed
    in conflict, or, under a mutable borrow, read. That is for a source reached
    as `uni`, a local's own storage above all; Cone's `mut` is shared, so a
-   source reached through a `&mut` or `&ro` reference or a `+rc-mut` owner is
+   source reached through a `&mut` or `&ro` reference or a `+Rc-mut` owner is
    only kept alive, and reading or writing it through another path is no
    conflict. A borrow a call returns counts as a borrow of every argument —
    `list[0usize]` keeps `list` loaned read-only while it is used — except
@@ -133,7 +133,7 @@ Put these first, because every one of them is load-bearing.
    outgrown — the block-structured IR is held to be easy enough to follow
    directly, joins and all.
 5. **Ownership is not one model, and flow reads which one from the region
-   ref.** One with `aliasRef` (`rc`) is counted; one declaring `Move` (`so`) has a
+   ref.** One with `aliasRef` (`Rc`) is counted; one declaring `Move` (`So`) has a
    single owner, and a copy of a reference to it is a move; one with neither
    (a collector's shape) shares its references for nothing; `borrowRef` is a
    sentinel node, not a struct, and is a reference's default region. No region
@@ -181,7 +181,7 @@ is not a trigger: what a caller lent is frozen by the caller.
 For `FlowGateInCall`, each operand that is a borrow (`BorrowTag` or
 `ArrayBorrowTag`, through casts), or an owner lent by a recast to a borrowed
 reference of its kind (`flowGateIsOwnedLent`, the recast `pwOwnedLent` reads:
-`both(a, a)` for `a` a `+so R` or a `+<so App`, and a lent receiver), pushes
+`both(a, a)` for `a` a `+So R` or a `+<So App`, and a lent receiver), pushes
 the variable at the root of its place onto `inflight` once it is walked, and
 the call or literal pops back to where it started. A lend the compiler makes
 must trigger it exactly as a written borrow does: a function holding no other
@@ -250,8 +250,8 @@ does. A type acquires it from `is Move`, a finalizer, a move-typed field or
 array element, a move-typed tuple element, and — for references —
 `refAdoptInfections`: **a reference is a move type when its permission lacks
 `MayAlias` or its region ref is itself a move type**, which a region ref is by
-declaring `is Move`, as `so` does. That sentence is why `+rc x` moves while
-`+rc-mut x` copies, on the same region, and why a reference into a region ref
+declaring `is Move`, as `So` does. That sentence is why `+Rc x` moves while
+`+Rc-mut x` copies, on the same region, and why a reference into a region ref
 declaring neither `Move` nor `aliasRef` copies freely under any aliasable
 permission.
 
@@ -280,10 +280,10 @@ scope, so a move out of it would make a second owner (`ErrorMoveOut`). The
 borrow's permission does not matter: a `&uni` is the only path to its value
 while it lives, and still does not own it. A place reached the same way through
 a **shared owning reference** — one that is not a move type, so may be aliased:
-`+rc-mut`, `+rc-imm`, `+rc-ro`, `+rc-mut1`, single or slice — is one of possibly
+`+Rc-mut`, `+Rc-imm`, `+Rc-ro`, `+Rc-mut1`, single or slice — is one of possibly
 many holders of the value, and the others still point at it after the move, so
 it is refused the same way (`ErrorMoveOut`, `flowIsSharedOwner`). A **sole**
-owning reference — any `+so`, and `+rc-uni` (what `+rc` means) — is not
+owning reference — any `+So`, and `+Rc-uni` (what `+Rc` means) — is not
 refused, and moving out through one held in a local variable **hollows** the
 variable, below. Copy values are never
 walked, so they read out through a borrow or a shared owner freely, and swap
@@ -344,7 +344,7 @@ as its enrichment or base is still the scope's result). Missing any one of them
 leaves one value under two names: finalized or freed twice, or counted once for
 two holders. A converting cast (`FlagConvert`) makes a new value and is not
 looked through, but for one: **a conversion into an owning virtual reference
-carries its operand's owner** (`+<so App` from a `+so Spinner`), adding a vtable
+carries its operand's owner** (`+<So App` from a `+So Spinner`), adding a vtable
 to the one owner, so these walks, and `blockResultMove` and the path walk's
 `pwValue`, look through it as through a recast (`flowCastCarries`).
 
@@ -375,19 +375,19 @@ narrowed) deactivates it as before, and no drop flag follows it.
 
 **The count counts holders.** From the ownership work:
 
-- `+rc[2]` creates the object *and* the first reference. Born at 1.
-- `imm a = +rc[2]` adds no holder — the temporary hands over the reference it
+- `+Rc[2]` creates the object *and* the first reference. Born at 1.
+- `imm a = +Rc[2]` adds no holder — the temporary hands over the reference it
   was born with. Still 1.
 - `imm b = a` adds one — `a` keeps its reference, `b` gets another. Now 2.
 - A tuple is one holder of each counted reference it carries. `imm t = pair()`
-  adds nothing (a temporary again); `a, b = t` and `imm u = t` add one per rc
+  adds nothing (a temporary again); `a, b = t` and `imm u = t` add one per Rc
   element, and `t` releases each at scope exit.
 - A struct, an enum, a tuple or an array is one holder of each counted
   reference its death releases (`flowHeldCounted`), however deep: a struct's
   drop releases what its fields own, an enum's what its variant's fields own,
   and a tuple or an array dies element by element. So `imm s2 = s` over a
-  struct with a `+rc-mut` field adds one, `imm o2 = o` over an
-  `Option[+rc-mut T]` adds one through the variant the tag picks, and a copy of
+  struct with a `+Rc-mut` field adds one, `imm o2 = o` over an
+  `Option[+Rc-mut T]` adds one through the variant the tag picks, and a copy of
   an array of them adds one per element.
 - A tuple literal holds its elements' values, each moved or copied into it on
   its own, as a struct literal's fields are: `(r, 5)` over a counted variable
@@ -453,7 +453,7 @@ per element that is or holds a counted reference and `0` per other element,
 owners to each such element after an `extractvalue`. The struct, enum and array
 arm (`genlAliasHeld`) mirrors the death: through each field of a struct, the
 variant an enum's tag picks, and each element of an array. A reference into a
-`Move` region (`so`) and a `uni`-permissioned reference into one with `aliasRef`
+`Move` region (`So`) and a `uni`-permissioned reference into one with `aliasRef`
 are both move types and take the move path instead, as does a tuple carrying
 one. A reference into a region with neither is copied with no node at all.
 
@@ -498,7 +498,7 @@ back no value; anything else with anything to do as it dies
 own such a reference —
 is added to the list itself, and generation finalizes it in place
 (`genlFinalizeAt`), a tuple element by element, an array in element order. A
-tuple carrying a `so` reference is a move type, so destructuring or copying it
+tuple carrying a `So` reference is a move type, so destructuring or copying it
 deactivates the variable and the scope releases nothing of it.
 
 **The result expression is walked before the list is built.** `blockFlow` calls
@@ -584,10 +584,10 @@ may hold loans. An *access* is what an expression does to a place:
 An alias loan needs only its source alive, and a borrow of it to promise no
 more than the path can: others may read and write it through the shared path
 anyway, so freezing it against them would protect nothing. But the part of the
-path *before* the shared reference — the field of a local holding a `+rc-mut`
+path *before* the shared reference — the field of a local holding a `+Rc-mut`
 owner — is reached as `uni`, and the loan reads it: an access to a place with
 fewer steps than the loan's `sharedlen` meets an alias loan as a shared one, so
-`h.p = +rc-mut Pt[..]` or `&mut h.p` while `&mut h.p.x` is live is refused,
+`h.p = +Rc-mut Pt[..]` or `&mut h.p` while `&mut h.p.x` is live is refused,
 since either could release what the borrow points into. A source reached
 through a borrowed reference is never ended by anything done here — reassigning
 `r` leaves `*r` alive — so an alias loan of `*r` conflicts with nothing a
@@ -604,8 +604,8 @@ holds; so does the reborrow type check builds for a `&uni` lent where a `&`
 or `&mut` is wanted, which is why `g(p); g(p)` is no move); a holder named, or a place read through it, what it holds; a recast, an
 `if`, a block, and a tuple, struct or array literal, the union of theirs; a
 call, below. An owning reference coerced to a borrowed one (`imm b &Pt = u`,
-`u` a `+so Pt`: a recast from an owning to a borrowed reference; or `imm b
-&<App = v`, `v` a `+<so App`, between virtual references) is a borrow of
+`u` a `+So Pt`: a recast from an owning to a borrowed reference; or `imm b
+&<App = v`, `v` a `+<So App`, between virtual references) is a borrow of
 what it owns, `*u`, so `u` may not be moved while `b` is used
 (`pwOwnedLent`). One coerced to a `&uni` or `&mut1` arrives already rewritten
 by type check to the borrow `&uni *u`, since a recast to a move type would be a
@@ -624,7 +624,7 @@ taken by reference is a loan whether the call borrows it (`list.push(x)` is
 `(&mut list).push(x)`, the borrow injected) or it is handed a reference (`r.push(x)`
 for `r &uni List` reborrows `*r`, with the permission the method declares for
 `self`), or is an owner type check lent to a `self &` or `self &mut` method (a
-`+so R`, or a `+<so App` dispatched through: the recast `pwOwnedLent` reads,
+`+So R`, or a `+<So App` dispatched through: the recast `pwOwnedLent` reads,
 a loan of `*a` reached as its owner reaches it, so `a.absorb(a)` moving `a`
 conflicts) (`pwReceiver`). A message names the method: "'list' is borrowed (by
 '[]' at 5:15)".
@@ -707,7 +707,7 @@ borrows it through (`x += 1` is `{imm tmp = &mut x; *tmp = *tmp + 1}`, and
 and holds nothing: `k += k` compiles. A borrow held inside another value —
 `pool.get(id)`'s `Option[&T]`, a struct field — has no holder yet. A borrow a
 call returns carries its receiver's loan as the receiver was reached: through a
-shared path (`l &mut List`, a field of `self`, a `+rc-mut` owner) that loan
+shared path (`l &mut List`, a field of `self`, a `+Rc-mut` owner) that loan
 only keeps the source alive, so `imm e = l[0usize]; m.push(p); e.x` compiles
 when `m` is another reference to the same list, and `e` dangles. Jon's rule
 refuses such an element borrow of a container that changes shape (it declares

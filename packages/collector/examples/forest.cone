@@ -10,7 +10,7 @@
 // and freeing every node. An automatic collection starts inside an
 // allocation whenever the heap would pass its trigger, and runs a step at a
 // time in the allocations after it, so its finalizers print in the middle of
-// a later round; gc.collect() runs a whole one on demand.
+// a later round; Gc.collect() runs a whole one on demand.
 // A Tree has a 'final', so a dropped one and every node it reaches live one
 // collection longer than they would otherwise -- its 'final' may read them --
 // and are freed by the next: watch the live counts after the first automatic
@@ -23,14 +23,14 @@ import collector;
 
 struct Node {
   pub n i64;
-  pub left Option[+gc-mut Node];
-  pub right Option[+gc-mut Node];
-  pub up Option[+gc-mut Node];
+  pub left Option[+Gc-mut Node];
+  pub right Option[+Gc-mut Node];
+  pub up Option[+Gc-mut Node];
 }
 
 struct Tree {
   pub id i64;
-  pub root Option[+gc-mut Node];
+  pub root Option[+Gc-mut Node];
   fn final(self &uni) {
     printStr("  (tree "); printInt(id); printStr(" finalized: its root still reads ");
     printInt(count(root)); printStr(" nodes)\n");
@@ -38,37 +38,37 @@ struct Tree {
 }
 
 // A tree of the given depth, every node pointing up at its parent
-fn grow(depth i64, up Option[+gc-mut Node]) Option[+gc-mut Node] {
+fn grow(depth i64, up Option[+Gc-mut Node]) Option[+Gc-mut Node] {
   if depth == 0 {
-    return None[+gc-mut Node][];
+    return None[+Gc-mut Node][];
   }
-  imm node = +gc-mut Node[depth, None[+gc-mut Node][], None[+gc-mut Node][], up];
-  node.left = grow(depth - 1, Some[+gc-mut Node][node]);
-  node.right = grow(depth - 1, Some[+gc-mut Node][node]);
-  Some[+gc-mut Node][node];
+  imm node = +Gc-mut Node[depth, None[+Gc-mut Node][], None[+Gc-mut Node][], up];
+  node.left = grow(depth - 1, Some[+Gc-mut Node][node]);
+  node.right = grow(depth - 1, Some[+Gc-mut Node][node]);
+  Some[+Gc-mut Node][node];
 }
 
 // Matched by value: a reference into the Option, made through the 'mut' nodes
 // it hangs from, could see another reference empty it while in use
-fn count(t Option[+gc-mut Node]) i64 {
+fn count(t Option[+Gc-mut Node]) i64 {
   match t {
-    case imm s Some[+gc-mut Node] { count(s.value.left) + count(s.value.right) + 1; }
+    case imm s Some[+Gc-mut Node] { count(s.value.left) + count(s.value.right) + 1; }
     else { 0; }
   }
 }
 
-fn plant(id i64) +gc-mut Tree {
-  +gc-mut Tree[id, grow(10, None[+gc-mut Node][])];
+fn plant(id i64) +Gc-mut Tree {
+  +Gc-mut Tree[id, grow(10, None[+Gc-mut Node][])];
 }
 
 fn showLive(label &[]u8) {
   printStr(label);
   printStr(": ");
-  printInt(i64[gc.liveObjects()]);
+  printInt(i64[Gc.liveObjects()]);
   printStr(" objects live, ");
-  printInt(i64[gc.liveBytes()]);
+  printInt(i64[Gc.liveBytes()]);
   printStr(" bytes, ");
-  printInt(i64[gc.collections()]);
+  printInt(i64[Gc.collections()]);
   printStr(" collections so far\n");
 }
 
@@ -87,9 +87,9 @@ fn main() {
     id = id + 1;
   }
   showLive("after eight rounds");
-  gc.collect();
+  Gc.collect();
   showLive("after a collection");
-  gc.collect();
+  Gc.collect();
   showLive("after another");
 
   imm kept = plant(99);
@@ -98,8 +98,8 @@ fn main() {
     round(i + 100);
     i = i + 1;
   }
-  gc.collect();
-  gc.collect();
+  Gc.collect();
+  Gc.collect();
   printStr("the kept tree still has "); printInt(count(kept.root)); printStr(" nodes\n");
   showLive("at the end");
 }
