@@ -93,7 +93,7 @@
 #
 # The pair of owning-field scenarios are the same shape in the two regions, and
 # together they are what reference counting means here: region_owning_field's 'Rc'
-# field is a second holder and is counted, while region_owning_field_so's '+So'
+# field is a second holder and is counted, while region_owning_field_so's 'So'
 # field is the only holder, so naming it in the literal moves it.
 #
 # region_fill_count is the same question asked of an array fill literal, which
@@ -149,7 +149,7 @@ tags = ["nameres", "typecheck", "flow", "genllvm", "runtime"]
 # the count by the owner that took it to zero, before the value's death
 [scenario.region_arc]
 category = "run"
-description = "The sync package's +Arc, folded in by 'import sync use Arc', on one thread: +Arc-imm owners copied, passed and returned, finalized once when the last goes; a unique +Arc moves; +Arc-mut changed through one owner and read through another; the count's add, subtract and load are atomic, Relaxed, Release and Acquire"
+description = "The sync package's Arc, folded in by 'import sync use Arc', on one thread: Arc[imm, T] owners copied, passed and returned, finalized once when the last goes; a unique Arc[T] moves; Arc[mut, T] changed through one owner and read through another; the count's add, subtract and load are atomic, Relaxed, Release and Acquire"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 # After optimization, which leaves every one of them, the Acquire load too
@@ -203,7 +203,7 @@ contains = [
 # file shows every mark, as header id / permission / mode.
 [scenario.region_traced]
 category = "run"
-description = "A region ref declaring Traced: each type's record's trace (and mem.trace in line) hands every traced reference a value holds to its region's mark, with its permission and the trace's mode -- struct fields, nesting, tuples, fixed arrays in a loop, an enum's variant by its tag, the nullable-pointer Option, a generic's instance; null passed over; +Rc and +So fields of a traced object not traced but released by its finalizer"
+description = "A region ref declaring Traced: each type's record's trace (and mem.trace in line) hands every traced reference a value holds to its region's mark, with its permission and the trace's mode -- struct fields, nesting, tuples, fixed arrays in a loop, an enum's variant by its tag, the nullable-pointer Option, a generic's instance; null passed over; Rc and So fields of a traced object not traced but released by its finalizer"
 tags = ["typecheck", "genllvm", "runtime"]
 
 [[scenario.region_traced.check]]
@@ -233,7 +233,7 @@ options = ["--debug"]
 # variant was traced as a struct of a tag and a field.
 [scenario.region_traced_variant]
 category = "run"
-description = "A variant of the nullable-pointer Option, held as itself ('*t' for 't &Some[+Tr-mut Leaf]', a birth; mem.trace and mem.typeRecord of the variant), is traced as the bare reference it is laid out as"
+description = "A variant of the nullable-pointer Option, held as itself ('*t' for 't &Some[Tr[mut, Leaf]]', a birth; mem.trace and mem.typeRecord of the variant), is traced as the bare reference it is laid out as"
 tags = ["genllvm", "runtime"]
 
 [[scenario.region_traced_variant.run]]
@@ -256,7 +256,7 @@ options = ["--debug"]
 # it is not null, its header handed over.
 [scenario.region_barrier]
 category = "run"
-description = "The write barrier: each reference into a traced region declaring writeBarrier that is stored into memory not a local -- a field, element or dereference through a '+R' reference, a borrow, a slice or a pointer; a swap's two halves; ':='; a generic instance's method; a whole struct, tuple, array or enum, each traced reference in it, a null one passed over -- is handed to writeBarrier; locals, allocations' values, untraced values and a region without the method get none"
+description = "The write barrier: each reference into a traced region declaring writeBarrier that is stored into memory not a local -- a field, element or dereference through a 'R' reference, a borrow, a slice or a pointer; a swap's two halves; ':='; a generic instance's method; a whole struct, tuple, array or enum, each traced reference in it, a null one passed over -- is handed to writeBarrier; locals, allocations' values, untraced values and a region without the method get none"
 tags = ["genllvm", "runtime"]
 
 [[scenario.region_barrier.check]]
@@ -342,10 +342,10 @@ include = ["include/keeper.cone"]
 # runtime behaviour is the package's own tests'; this pins what is refused.
 [scenario.region_flow_rcweak_refuse]
 category = "reject"
-description = "A weak reference is made only from a shared '+Rcw-mut' owner, cannot be read through or opened, moves, and takes a unique owner by giving it up"
+description = "A weak reference is made only from a shared 'Rcw[mut, T]' owner, cannot be read through or opened, moves, and takes a unique owner by giving it up"
 tags = ["typecheck", "flow"]
 
-# A value held by '+So' or '+Rc' is finalized when it dies -- its 'final', its
+# A value held by 'So' or 'Rc' is finalized when it dies -- its 'final', its
 # finalizing fields, then the owners its fields hold, then 'free' -- and only
 # once: 'Rc' at its last owner, a reassignment's old value when it is
 # replaced, a value moved to a callee there. Before this, a region-held value
@@ -393,8 +393,8 @@ category = "run"
 description = "Moving a 'So' reference between variables transfers ownership, and frees it once"
 tags = ["flow", "genllvm", "runtime"]
 
-# The accepting half of region_flow_shared_move: a sole owner ('+So', '+Rc-uni',
-# '+Rc') gives its value up and the new holder finalizes it once, and a copy
+# The accepting half of region_flow_shared_move: a sole owner ('So[T]', 'Rc[uni, T]',
+# 'Rc[T]') gives its value up and the new holder finalizes it once, and a copy
 # value reads out through a shared owner. A field of the value is never given
 # up (move_flow_field). The .out file is the whole assertion.
 [scenario.region_owner_move]
@@ -406,6 +406,11 @@ tags = ["flow", "genllvm", "runtime"]
 category = "run"
 description = "Releasing a region-allocated struct releases the 'Rc' reference its field owns"
 tags = ["genllvm", "runtime"]
+
+[scenario.region_reftype]
+category = "run"
+description = "The managed reference type 'Rc[mut, Node]': uni when the permission is left out, virtual exactly when the value type is an open trait and thin for an enum, as a field, a parameter, a return type, an alias, inside Option and List, and inferred through"
+tags = ["parse", "typecheck", "runtime"]
 
 [scenario.region_uninit_owning]
 category = "run"
@@ -475,7 +480,7 @@ tags = ["typecheck"]
 
 [scenario.region_owning_field_so]
 category = "run"
-description = "Releasing a region-allocated struct releases the '+So' reference its field owns, once"
+description = "Releasing a region-allocated struct releases the 'So' reference its field owns, once"
 tags = ["flow", "genllvm", "runtime"]
 
 # The amount is the whole claim, and no run could see it: too low frees the
@@ -838,7 +843,7 @@ diagnostics = 4
 category = "reject"
 description = "Values that may not be allocated, and names that may not be a region"
 tags = ["typecheck"]
-diagnostics = 10
+diagnostics = 9
 
 [scenario.region_typecheck_region]
 category = "reject"
@@ -876,6 +881,12 @@ description = "Only a region ref may declare 'ThreadSafe': a plain struct, a tra
 tags = ["typecheck"]
 diagnostics = 4
 
+[scenario.region_typecheck_reftype]
+category = "reject"
+description = "What a managed reference type may not say: a permission given to a head that is no region, a generic's included; more than two arguments; a first of two that is no permission, a last that is one, a value where the type goes; the '+R-perm T' spelling as a type, thin or virtual; and a second use of a uni owner, which moved"
+tags = ["typecheck", "flow"]
+diagnostics = 9
+
 [scenario.region_typecheck_traced_place]
 category = "reject"
 description = "Where a traced reference may not be held: behind an untraced region's owning reference (a field, a struct pointing back at itself, a generic's instance, a parameter, an allocation), in a global, placed raw by mem.writeRaw or mem.moveRaw (directly, and through List, Arena and Pool, reported at the program's instantiation); and what a traced region may not allocate: a value holding a borrow, an owning slice or virtual reference, a permission taking room"
@@ -890,7 +901,7 @@ diagnostics = 3
 
 [scenario.region_typecheck_uni_view]
 category = "reject"
-description = "A borrow of a sole owner seen as a borrow of a shared one -- 'Rc' as 'Rc-mut', 'Rc-imm' or 'Rc-ro', a slice of them, a returned borrow, a user region -- is refused; the same view of a '+So' owner, and a move, are not"
+description = "A borrow of a sole owner seen as a borrow of a shared one -- 'Rc[T]' as 'Rc[mut, T]', 'Rc[imm, T]' or 'Rc[ro, T]', a slice of them, a returned borrow, a user region -- is refused; the same view of a 'So' owner, and a move, are not"
 tags = ["typecheck"]
 diagnostics = 8
 

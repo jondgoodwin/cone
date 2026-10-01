@@ -20,6 +20,7 @@ RefNode *newRefNode(uint16_t tag) {
     // Left uninitialized, the lifetime checks in assign.c and return.c read
     // whatever the allocator last held there.
     refnode->scope = 0;
+    refnode->plusSpelled = 0;
     return refnode;
 }
 
@@ -88,7 +89,7 @@ void refAdoptInfections(RefNode *refnode) {
 // - A traced reference never crosses while the collector is single threaded,
 //   whatever its permission or its region declares.
 // - An owner that cannot be aliased moves, taking its value with it: a 'uni'
-//   owner of any region, and any owner of a 'Move' region ('+So').
+//   owner of any region, and any owner of a 'Move' region ('So').
 // - Any other owner may be shared: its permission must be RaceSafe ('imm',
 //   'opaq'), and its region must declare ThreadSafe, so that its aliasRef and
 //   dealiasRef may run on several threads at once ('Arc' does; 'Rc' does not).
@@ -200,11 +201,27 @@ static void refRefuseRegionRef(RefNode *node) {
             "RegionRef is not a type a value has: a region's annotation struct declares it with 'is', and nothing refers to it.");
 }
 
+// '+R-perm T' allocates. A managed reference type is written 'R[perm, T]',
+// so the plus spelling of one is refused where it was written. Reported once:
+// a node reached twice (a pattern and its variable share one) says it once.
+static void refRefusePlusType(RefNode *node) {
+    if (!node->plusSpelled)
+        return;
+    node->plusSpelled = 0;
+    Name *regname = isNameUseNode(node->region) ? ((NameUseNode*)node->region)->namesym : NULL;
+    Name *permname = node->perm && isNameUseNode(node->perm) ? ((NameUseNode*)node->perm)->namesym : NULL;
+    char *reg = regname ? &regname->namestr : "R";
+    char *perm = permname ? &permname->namestr : "uni";
+    errorMsgNode((INode*)node, ErrorPlusRefType,
+        "A managed reference type is written '%s[%s, T]'; the '+' spelling allocates a value.", reg, perm);
+}
+
 // Type check a reference node
 void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     if (node->perm == unknownType)
         node->perm = newPermUseNode(node->vtexp->tag == FnSigTag ? opaqPerm :
         (node->region == borrowRef ? roPerm : uniPerm));
+    refRefusePlusType(node);
     itypeTypeCheck(pstate, &node->region);
     refRegionCheck(&node->region);
     itypeTypeCheck(pstate, (INode**)&node->perm);
@@ -234,6 +251,7 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
 void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
     if (node->perm == unknownType)
         node->perm = newPermUseNode(node->region == borrowRef ? roPerm : uniPerm);
+    refRefusePlusType(node);
     itypeTypeCheck(pstate, &node->region);
     refRegionCheck(&node->region);
     itypeTypeCheck(pstate, (INode**)&node->perm);
@@ -289,8 +307,8 @@ TypeCompare regionMatches(INode *to, INode *from, SubtypeConstraint constraint) 
 
 // Would a reference held behind a readable reference, seen as 'to' in place of
 // its own type 'from', be copied out by a read where its own type moves?
-// '&+Rc-mut T' from '&+Rc T' is the case: '+Rc' is 'uni', the only owner, and a
-// read of '+Rc-mut' copies, so a second owner of a value promised unique would
+// '&Rc[mut, T]' from '&Rc[T]' is the case: 'Rc[T]' is 'uni', the only owner, and a
+// read of 'Rc[mut, T]' copies, so a second owner of a value promised unique would
 // come out of a borrow of the first. Not behind a reference the same coercion
 // is a move, which consumes the source, and is sound.
 int refHeldMoveSeenAsCopy(INode *to, INode *from) {

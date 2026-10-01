@@ -19,7 +19,7 @@ core package, `So` and `Rc`, and a third, `Arc`, in the `sync` package (`Rc`
 with its count changed atomically, declaring the built-in marker
 **`ThreadSafe`**, which the thread check asks of a reference's region: an owner
 that may be aliased crosses threads only in a region declaring it, so
-`+Arc-imm` crosses and `+Rc-imm` does not; outside core, as Rust keeps `Arc` in `sync` and out of the
+`Arc[imm, T]` crosses and `Rc[imm, T]` does not; outside core, as Rust keeps `Arc` in `sync` and out of the
 prelude **[Jon 27 Sep]**, so `Arc` is a name only of modules that fold it in,
 `import sync use Arc`), all written in Cone. A user can define a region the
 same way — a struct declaring `is RegionRef`, whose `alloc`, `init`, `aliasRef`,
@@ -74,7 +74,7 @@ another pool of its type is merely bounds- and generation-checked there.
 A third region ref is a library package too: `rcweak`'s `Rcw`, reference
 counting whose header also counts weak references. A weak reference is no
 reference kind but an ordinary struct, `Weak[T]`, holding the header's address
-and reaching the value only by making a counted `+Rcw-mut` owner, in an
+and reaching the value only by making a counted `Rcw[mut, T]` owner, in an
 `Option` (`upgrade`) or checked first (`alive`, `strong`). Its value dies at
 its last strong owner, and its memory is freed at its last weak reference:
 death and freeing separate, with the compiler told nothing new. The owner an
@@ -118,7 +118,7 @@ measured.*
   region lives as long as that value does — an arena, a pool, a collection.
 - **Region ref**: the struct declaring the built-in trait `RegionRef` — the
   header a region puts in front of each value it manages, whose methods the
-  compiler calls at each reference event. It is what `+Rc` names; the region is
+  compiler calls at each reference event. It is what `Rc` names; the region is
   the module (or, for a dynamic region, the value) behind it. Never "a region is
   a struct".
 - **The dance**: the region decides *when* a value dies; the compiler, which
@@ -131,7 +131,7 @@ measured.*
 source**, and what is unchecked is the claim that they are ruling positions
 rather than the present arrangement.
 
-1. **Three axes, independently chosen.** `+Rc-mut Point` names a region, a
+1. **Three axes, independently chosen.** `Rc[mut, Point]` names a region, a
    permission and a value type, and each is a separate decision. ▸ **Forbids**
    the fused capability of Pony or the welded aliasing-mutability-lifetime of
    Rust. **This is the principle most "Cone cannot express X" claims dissolve
@@ -238,7 +238,7 @@ functions, admit different vocabularies, and answer different questions:
 
 | | reference permission | declaration permission |
 | --- | --- | --- |
-| Written | inside a type: `&mut Point`, `+Rc-ro T` | before a name: `mut x i32` |
+| Written | inside a type: `&mut Point`, `Rc[ro, T]` | before a name: `mut x i32` |
 | Parsed by | `parsePerm`, inside `parseType` | `parseDclPerm` |
 | Vocabulary | all six below | `mut` and `imm`, nothing else |
 | Answers | read, write, alias, share — and move-ness | may this storage's value change |
@@ -311,7 +311,7 @@ thread check, `Sendable`). `MayAliasWrite`, `MayIntRefSum` and `IsLockless` are
 populated and read nowhere. That is not a judgement on the design — it is that
 the rest of the concurrency half is unbuilt, and those are the bits it would
 consult. One consequence is worth stating outright: **`imm` and `ro` differ
-only in what may cross threads** (an `+Arc-imm` owner may, an `+Arc-ro` one may
+only in what may cross threads** (an `Arc[imm, T]` owner may, an `Arc[ro, T]` one may
 not; no borrow may) and in `MayIntRefSum`. See [Safety](safety.md).
 
 The coercion lattice (`permMatches`) is small: `uni` coerces down to `ro`,
@@ -330,7 +330,7 @@ anything.
 
 **Move-ness.** `refAdoptInfections` is the whole rule: a reference is a move
 type **when its permission lacks `MayAlias`, or its region is itself a move
-type**. `So` declares `is Move`, which makes it one, so every `+So` reference moves; `+Rc` with the
+type**. `So` declares `is Move`, which makes it one, so every `So` reference moves; `Rc` with the
 default `uni` moves too, on a region that counts. That one sentence explains why
 `+Rc x` moves while `+Rc-mut x` copies.
 
@@ -350,9 +350,9 @@ permissive.
 **Covariance does not turn a move type behind a reference into a copy type.**
 A read through the reference copies what it holds when that is a copy type, so
 a borrow of a sole owner may not be seen as a borrow of a shared one:
-`&+Rc-mut T` from `&+Rc T` would copy a second, writable owner out of a value
+`&Rc[mut, T]` from `&Rc[T]` would copy a second, writable owner out of a value
 `uni` promised unique. The permission lattice still lets `uni` coerce down
-where the owner itself is moved. A `+So` owner may be seen as `+So-mut` behind
+where the owner itself is moved. A `So[T]` owner may be seen as `So[mut, T]` behind
 a borrow, since both move and a move out through a borrow is refused.
 
 **Lifetime is a `uint16_t` scope depth** on the reference's *type*: 0 global, 1

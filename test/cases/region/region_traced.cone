@@ -14,7 +14,7 @@
 // picks (and the nullable-pointer 'Option', which has no tag), a generic's
 // instance. Its flags' bit 1 says the type holds one; 'mem.holdsTraced' says
 // the same; 'mem.trace' runs the same walk in line. A null reference is passed
-// over. '+Rc' and '+So' references held by a traced object are allowed, and
+// over. 'Rc' and 'So' references held by a traced object are allowed, and
 // are not traced: the record's finalizer releases them, as it would anywhere.
 // Releasing a traced reference does nothing ('Tr' has no 'dealiasRef' and is not
 // 'Move'), so a type whose only owners are traced has nothing to finalize: its
@@ -98,8 +98,8 @@ struct Fin {
 struct Leaf { pub n i32; }
 
 struct Pair {
-  pub left +Tr-mut Leaf;
-  pub right +Tr-imm Leaf;
+  pub left Tr[mut, Leaf];
+  pub right Tr[imm, Leaf];
 }
 
 // Nesting: a struct holding a struct and a tuple that hold traced references,
@@ -107,30 +107,30 @@ struct Pair {
 struct Outer {
   pub a i32;
   pub p Pair;
-  pub t (i64, +Tr-mut Leaf);
+  pub t (i64, Tr[mut, Leaf]);
   pub z f64;
 }
 
 // A fixed array of traced references, and of structs holding them
 struct Row {
-  pub cells [3; +Tr-mut Leaf];
+  pub cells [3; Tr[mut, Leaf]];
   pub pairs [2; Pair];
 }
 
 enum Maybe {
-  struct Has { pub l +Tr-mut Leaf; pub k i64; }
+  struct Has { pub l Tr[mut, Leaf]; pub k i64; }
   struct Not { pub k i64; }
-  struct Two { pub a +Tr-imm Leaf; pub b +Tr0-mut Leaf; }
+  struct Two { pub a Tr[imm, Leaf]; pub b Tr0[mut, Leaf]; }
 }
 
 struct Box[T] { pub v T; }
 
-// A traced object holding a traced reference, an '+Rc' owner and an '+So'
+// A traced object holding a traced reference, an 'Rc' owner and an 'So'
 // owner: only the traced one is traced; the other two are its finalizer's
 struct Mixed {
-  pub g +Tr-mut Leaf;
-  pub r +Rc-mut Fin;
-  pub s +So Fin;
+  pub g Tr[mut, Leaf];
+  pub r Rc[mut, Fin];
+  pub s So[Fin];
 }
 
 fn holds[T](label &[]u8) {
@@ -151,14 +151,14 @@ fn traceLocal[T](label &[]u8, v &mut T, mode u32) {
 fn main() {
   printStr("-- which types hold a traced reference\n");
   holds[Leaf]("Leaf");
-  holds[+Tr-mut Leaf]("+Tr-mut Leaf");
+  holds[Tr[mut, Leaf]]("Tr[mut, Leaf]");
   holds[&Leaf]("&Leaf");
   holds[Pair]("Pair");
   holds[Outer]("Outer");
   holds[Row]("Row");
   holds[Maybe]("Maybe");
-  holds[Option[+Tr-mut Leaf]]("Option[+Tr-mut Leaf]");
-  holds[Box[+Tr-mut Leaf]]("Box[+Tr-mut Leaf]");
+  holds[Option[Tr[mut, Leaf]]]("Option[Tr[mut, Leaf]]");
+  holds[Box[Tr[mut, Leaf]]]("Box[Tr[mut, Leaf]]");
   holds[Box[i32]]("Box[i32]");
   holds[Mixed]("Mixed");
 
@@ -177,12 +177,12 @@ fn main() {
   traceLocal[Maybe]("Maybe.Not", &mut m2, 1u32);
   mut m3 Maybe = Maybe.Two[l2, +Tr0-mut Leaf[7i32]];
   traceLocal[Maybe]("Maybe.Two", &mut m3, 2u32);
-  mut o1 Option[+Tr-mut Leaf] = Some[+Tr-mut Leaf][+Tr-mut Leaf[8i32]];
-  traceLocal[Option[+Tr-mut Leaf]]("Some", &mut o1, 3u32);
-  mut o2 Option[+Tr-mut Leaf] = None[+Tr-mut Leaf][];
-  traceLocal[Option[+Tr-mut Leaf]]("None", &mut o2, 3u32);
-  mut bx = Box[+Tr-mut Leaf][l1];
-  traceLocal[Box[+Tr-mut Leaf]]("Box", &mut bx, 4u32);
+  mut o1 Option[Tr[mut, Leaf]] = Some[Tr[mut, Leaf]][+Tr-mut Leaf[8i32]];
+  traceLocal[Option[Tr[mut, Leaf]]]("Some", &mut o1, 3u32);
+  mut o2 Option[Tr[mut, Leaf]] = None[Tr[mut, Leaf]][];
+  traceLocal[Option[Tr[mut, Leaf]]]("None", &mut o2, 3u32);
+  mut bx = Box[Tr[mut, Leaf]][l1];
+  traceLocal[Box[Tr[mut, Leaf]]]("Box", &mut bx, 4u32);
   mut n = 5i32;
   traceLocal[i32]("i32", &mut n, 4u32);
 

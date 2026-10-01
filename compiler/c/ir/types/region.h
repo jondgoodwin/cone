@@ -12,6 +12,10 @@
 // reference's region answers no.
 int regionIsRegionRef(INode *region);
 
+// Does this struct's 'is' list name 'RegionRef', whether or not the struct has
+// been name resolved yet? What tells 'Rc[mut, Node]' is a managed reference type.
+int regionStructWritesRegionRef(StructNode *strnode);
+
 // The region method of this name (alloc, init, aliasRef, dealiasRef, free), or NULL
 // where the region declares none, or declares something else under the name
 FnDclNode *regionMethod(INode *region, Name *name);

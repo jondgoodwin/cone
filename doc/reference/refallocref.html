@@ -16,7 +16,7 @@
 	<p style="margin-left: 40px;"><i>Note: Much of this capability is implemented,
 			including both responses to a failed allocation. The region named after
 			<span class="pre">+</span> may be Rc, So, the <span class="pre">sync</span> package's Arc (Rc whose count several threads may change at once:
-			<span class="pre">+Arc-imm T</span> owners may be copied and dropped on different threads, and the
+			<span class="pre">Arc[imm, T]</span> owners may be copied and dropped on different threads, and the
 			value is finalized and freed once, after the last; see
 			<a href="refregionglo.html">regions</a>), the <span class="pre">collector</span> package's
 			garbage-collected Gc (<a href="refalloccust.html">custom allocators</a>), or any struct declaring
@@ -57,9 +57,34 @@ imm nbrref = +Rc-imm 4;
 	</ul>
 	<p>What we get back from this allocation is an owning reference, 
 		which this example stores in the variable <span class="pre">nbrref</span>.
-		The inferred type of this reference looks similar to the allocation:
-		<span class="pre">+Rc-imm i32</span>.
-		This type signature includes the type of the initial value as the reference's value type.</p>
+		The inferred type of this reference is <span class="pre">Rc[imm, i32]</span>:
+		the region names the reference, and its brackets hold the permission, then
+		the type of the initial value as the reference's value type.</p>
+
+	<h3 id="type">Owning Reference Types</h3>
+	<p>Wherever a type is written &mdash; a variable, a field, a parameter, a return type,
+		an <a href="reftypealias.html">alias</a>, a generic's argument &mdash; an owning
+		reference type is written the same way: the region, then in square brackets an
+		optional permission and the value type.</p>
+<pre>
+alias Link = Rc[mut, Node];    // shared and mutable
+fn first(n Rc[Node]) i64 {..}  // no permission written: uni, the only owner
+mut list = List[Gc[imm, Leaf]].empty();
+</pre>
+	<p>Left out, the permission is <span class="pre">uni</span>, which may become any
+		other, so <span class="pre">Rc[Node]</span> is <span class="pre">Rc[uni, Node]</span>.
+		The region is a struct declaring <span class="pre">is RegionRef</span>; a permission
+		given to anything else is an error. A generic region takes its own brackets first,
+		then the reference's: <span class="pre">R[A][mut, Node]</span>.
+		When the value type is an open trait, the reference is a
+		<a href="refvirtref.html">virtual reference</a>, which carries a vtable beside its
+		pointer (<span class="pre">Rc[mut, Shape]</span>); for any other value type, an enum
+		included, it is a single pointer.</p>
+	<p>The plus sign belongs to the allocation, <span class="pre">+Rc-mut Node[1]</span>,
+		and is not written in a type, with one exception for now: a
+		<a href="refmatch.html">match</a> pattern that narrows to an owning reference,
+		whose type is read before anything knows its head is a region, still writes it
+		<span class="pre">+Rc-mut Circle</span>.</p>
 	<p>A type's constructor or <a href="refinitdrop.html">initializer</a> may be specified
 		as the initial value.</p>
 <pre>

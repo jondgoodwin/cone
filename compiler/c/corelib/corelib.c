@@ -187,7 +187,7 @@ void stdlibInit(int ptrsize) {
     // promise. 'ShapeChanging' says the container may move its elements (a
     // list's push reallocates). It has NO EFFECT YET: Jon's rule refuses an
     // element borrow of such a container reached through a shared path (a
-    // '&mut' or '&' of unseen origin, a 'self' field, a '+Rc-mut' owner),
+    // '&mut' or '&' of unseen origin, a 'self' field, a 'Rc[mut, T]' owner),
     // but refusing it today breaks common collection code -- reading a
     // 'List[String]' element through a '&List' parameter -- that 'uni'
     // reborrowing is to make writable. Until then that is a documented hole
@@ -215,7 +215,7 @@ void stdlibInit(int ptrsize) {
     // one, nor an integer; any other type is one only by declaring it.
     pointerTrait = newBuiltinTrait(pointerTraitName);
     // 'Sendable': a value of the type may cross to another thread -- be moved
-    // to one, or, behind a shared owner such as '+Arc-imm', be read from
+    // to one, or, behind a shared owner such as 'Arc[imm, T]', be read from
     // several at once. Asked by a constraint, 'where T is Sendable', which
     // is how library code marks what crosses (thread.start, sync's
     // channels). Granted by the compiler (genericTypeIs, itypeThreadBound)

@@ -39,7 +39,7 @@ any feature whose expense is inferred rather than written: implicit boxing, a
 hidden copy of a large value, an allocation the source does not name.
 
 **The static safety apparatus is free, or it is wrong.** Permissions, regions,
-lifetimes and move-ness are checked and then discarded; `&T` and `+Rc T` are the
+lifetimes and move-ness are checked and then discarded; `&T` and `Rc[T]` are the
 same machine value. ▸ **This is the central bet, and it is falsifiable** — the
 day a safety distinction needs a runtime representation, the bet has failed and
 the design has to be reopened rather than patched.
@@ -111,7 +111,7 @@ absent. This is the half that is built.
 **1. Safety is a compile-time argument, so it has no runtime.** Permissions,
 regions, lifetimes and move-ness are checked and then discarded. This is the
 central bet: the whole apparatus that makes Cone safe leaves *no trace* in the
-emitted code. A `&T` and a `+Rc T` are the same machine value; a permission
+emitted code. A `&T` and a `Rc[T]` are the same machine value; a permission
 lowers to a zero-field struct.
 
 **2. Nothing allocates unless you write an allocation.** There is no garbage
@@ -141,7 +141,7 @@ them.
 | Construct | Free because |
 | --- | --- |
 | **permissions** | bet 1 — erased; `%void = type {}`, zero bytes in the header, nothing at a use site |
-| **regions**, as a property of a reference | bet 1 — `&T` and `+Rc T` are both `T*` |
+| **regions**, as a property of a reference | bet 1 — `&T` and `Rc[T]` are both `T*` |
 | **lifetimes** | bet 1 — a compile-time scope depth, never emitted |
 | **move semantics** | bet 1 — a type flag; moving is not a runtime operation |
 | **a trait used statically** | bet 5 — a direct call; default methods are cloned into the implementer |
@@ -158,8 +158,8 @@ checking if it ever stops being true.
 
 | Construct | Cost | Visible as |
 | --- | --- | --- |
-| **`+Rc` reference** | one `usize` in the header; an increment per new holder, a decrement and zero-test per release | the `+Rc` at the allocation |
-| **`+So` reference** | no header bytes; a `free` at release | the `+So` |
+| **`Rc` reference** | one `usize` in the header; an increment per new holder, a decrement and zero-test per release | the `+Rc` at the allocation |
+| **`So` reference** | no header bytes; a `free` at release | the `+So` |
 | **slice `&[]T`** | two words, passed by value | the `[]` |
 | **virtual reference `&<Trait`** | two words; an indirect call through a loaded slot | the `<` |
 | **array or slice index** | a compare and branch per dimension | the `[i]` |

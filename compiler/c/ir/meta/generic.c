@@ -90,12 +90,16 @@ int genericInferStructParms(TypeCheckState *pstate, Nodes *genparms, StructNode 
 // a function signature, 'f &fn(a A) R', matches the referenced function's,
 // each parameter type and then the return type, so '&triangle' infers both;
 // and 'List[T]' matches an instance of List, type argument by type argument.
-// In a template a type parameter is not yet
+// A managed reference type, 'Rc[mut, T]', is a call until type check lowers
+// it, and matches a reference, its last argument against what the reference
+// points at. In a template a type parameter is not yet
 // a type, so '*T' is held as a dereference, '&T' or '&[]T' as a borrow, and
-// an owning '+Rc-mut T' or '+[]So T' as an allocate (cloneStarNode,
+// an owning '+[]So T' as an allocate (cloneStarNode,
 // cloneRefNode), and each spelling is accepted here. Region
-// and permission take no part: the instance's own check of the call judges
-// them. Any other shape infers nothing, and returns 1 as a non-match does.
+// and permission take no part, but for a region that is itself a type
+// parameter, 'R[mut, T]', which takes the argument's region: the instance's
+// own check of the call judges them. Any other shape infers nothing, and
+// returns 1 as a non-match does.
 // Returns 0 only when a type parameter is given two different types.
 static int genericInferType(FnCallNode *inferredgencall, Nodes *genparms, INode *parmtype, INode *argtype) {
     if (parmtype == NULL || argtype == NULL)
@@ -162,6 +166,19 @@ static int genericInferType(FnCallNode *inferredgencall, Nodes *genparms, INode 
         // An instance of a generic type, 'List[T]', matches an argument that is an
         // instance of the same generic, each type argument against the instance's
         FnCallNode *parmcall = (FnCallNode *)parmtype;
+        // A managed reference type matches a reference of either shape. The
+        // value type is the last argument, whether or not a permission was written.
+        if (parmcall->args != NULL && parmcall->args->used > 0
+            && (itypeManagedRefRegion((INode*)parmcall) != NULL || nameUseNames(parmcall->objfn, GenVarDclTag))) {
+            if (argtype->tag != RefTag && argtype->tag != VirtRefTag)
+                return 1;
+            RefNode *argref = (RefNode *)argtype;
+            if (nameUseNames(parmcall->objfn, GenVarDclTag)
+                && genericInferType(inferredgencall, genparms, parmcall->objfn, argref->region) == 0)
+                return 0;
+            return genericInferType(inferredgencall, genparms,
+                nodesGet(parmcall->args, parmcall->args->used - 1), argref->vtexp);
+        }
         if (!isNameUseNode(parmcall->objfn) || parmcall->args == NULL)
             return 1;
         GenericInfo *info = genericGetInfo(nameUseGetDcl((NameUseNode *)parmcall->objfn));
@@ -524,7 +541,7 @@ static void genericTypeNameCat(char *buf, size_t size, INode *type, int depth) {
         genericTypeNameCat(buf, size, ((StarNode*)dcl)->vtexp, depth + 1);
         return;
     }
-    // A reference or an array as it is written: '&mut Point', '+Rc-imm Pt',
+    // A reference or an array as it is written: '&mut Point', 'Rc[imm, Pt]',
     // '[3; u8]'
     if (dcl->tag == RefTag || dcl->tag == ArrayRefTag || dcl->tag == VirtRefTag || dcl->tag == ArrayTag) {
         itypeSpellCat(buf, size, dcl, depth);

@@ -10,7 +10,7 @@
 //     pub n i64;
 //     fn final(self &uni) { ... }
 //   }
-//   alias Leaf = +Gc-mut LeafValue;
+//   alias Leaf = Gc[mut, LeafValue];
 //   struct Pair { pub left Leaf; pub right Leaf; }
 //
 //   fn build() {
@@ -20,7 +20,7 @@
 //   }
 //
 // ONE THREAD. The collector is single threaded: its roots are one chain (a C
-// global in conestd's roots.c), and nothing here is synchronized. A '+Gc'
+// global in conestd's roots.c), and nothing here is synchronized. A 'Gc'
 // reference made, held, reached or dropped on a thread the 'thread' package
 // started corrupts it. Nothing checks or guards this; a concurrent collector
 // is a later design.
@@ -57,7 +57,7 @@
 //                         which. Setting the environment variable
 //                         CONE_GC_MODE to 'generational' or 'incremental'
 //                         chooses for a whole run
-//   Gc.setLimit(bytes)    no more than this many bytes of '+Gc' values (with
+//   Gc.setLimit(bytes)    no more than this many bytes of 'Gc' values (with
 //                         their headers) at once; 0, the default, is no limit.
 //                         What exhaustion looks like, on demand
 //   Gc.liveObjects(), Gc.liveBytes(), Gc.collections(), Gc.finalized(),
@@ -74,7 +74,7 @@
 // - MARK: every root is handed to 'mark' (mem.traceRoots), which turns a
 //   white object gray and puts it on the gray list; then, a step at a time,
 //   gray objects are taken off, made black, and their record's trace hands
-//   each '+Gc' reference they hold to 'mark' in turn. While it marks, the
+//   each 'Gc' reference they hold to 'mark' in turn. While it marks, the
 //   program runs between steps and stores references: the WRITE BARRIER
 //   (below) keeps it from hiding a white object in a black one;
 // - ATOMIC, the end of marking, in one step: the gray list emptied, the
@@ -90,9 +90,9 @@
 // - FINALIZE, a step at a time: each separated object is marked finalized
 //   and put back among the ordinary objects, then its record's finalizer runs
 //   -- its 'final', then its fields', then the owners its fields hold are
-//   released ('+Rc' counted down, '+So' finalized and freed). Newest first.
+//   released ('Rc' counted down, 'So' finalized and freed). Newest first.
 // An object is finalized once, and freed by the first collection that finds
-// it unreachable after that: a CYCLE LATE, so a 'final' may read its '+Gc'
+// it unreachable after that: a CYCLE LATE, so a 'final' may read its 'Gc'
 // children, which are still there, possibly finalized, never freed. A 'final'
 // may allocate; nothing it does starts collection work.
 //
@@ -100,8 +100,8 @@
 // by the collection that finds them unreachable.
 //
 // THE WRITE BARRIER. The compiler calls 'writeBarrier' after every store of a
-// '+Gc' reference into memory that is not a local -- a field, an element, a
-// dereference, through a '+Gc' reference or a borrow alike -- handing it the
+// 'Gc' reference into memory that is not a local -- a field, an element, a
+// dereference, through a 'Gc' reference or a borrow alike -- handing it the
 // header of what was stored. While marking, a white object so stored is made
 // gray: no black object ever points at a white one it could hide (Dijkstra's
 // insertion barrier, Acorn's mem_markChk). It asks nothing of where the
@@ -165,7 +165,7 @@
 //
 // WHEN IT WORKS, AND HOW MUCH (pacing in bytes, Lua's). Collection work runs
 // inside allocations (and Gc.collect(), Gc.step()): '+Gc T[...]' evaluates
-// its value first, then calls 'alloc', so at that moment every '+Gc'
+// its value first, then calls 'alloc', so at that moment every 'Gc'
 // reference the program holds is in a stack slot the compiler registered
 // (its roots), and none is only in a register. Between collections, one
 // starts when an allocation would take the heap past the TRIGGER: twice the
@@ -190,7 +190,7 @@
 // OUT OF MEMORY. An allocation the C library cannot satisfy, or that would
 // pass the limit, runs an emergency collection -- no finalizers run in it, as
 // in Acorn and Lua -- and tries once more. If that fails too, 'alloc' returns
-// null: a '?+Gc' allocation is then None, and a plain '+Gc' one panics, as
+// null: a '?+Gc' allocation is then None, and a plain 'Gc' one panics, as
 // every region's failed allocation does, naming the size asked for.
 
 mod collector use Gc;
@@ -255,7 +255,7 @@ mut oldGenBytes = 0usize;  // bytes of old objects
 mut backoff = 0usize;      // full collections to run before the next generational sweep
 mut backoffNext = 1usize;  // the backoff an unproductive minor collection sets: doubled each time, to 64
 
-mut totalBytes = 0usize;   // bytes held by '+Gc' objects, headers included
+mut totalBytes = 0usize;   // bytes held by 'Gc' objects, headers included
 mut trigger = 262144usize; // start a collection when an allocation would pass this
 mut nobjects = 0usize;
 mut ncollections = 0usize;
@@ -270,7 +270,7 @@ mut npromoted = 0usize;    // bytes promoted by minor collections
 mut nwork = 0usize;        // bytes of work done, by every step and whole collection
 mut nminorWork = 0usize;   // of that, the work of minor collections
 
-// The header before every '+Gc' value: the region ref. Its fields are public
+// The header before every 'Gc' value: the region ref. Its fields are public
 // because a private field is reached only through 'self', and the collector
 // walks lists of headers; a program never holds a header to read them from.
 pub struct Gc is RegionRef, Traced {
@@ -313,12 +313,12 @@ pub struct Gc is RegionRef, Traced {
     p;
   }
 
-  // A '+Gc' reference was found, by a root or in a value being traced
+  // A 'Gc' reference was found, by a root or in a value being traced
   fn mark(self &uni Gc) {
     shade(self as *Gc as usize);
   }
 
-  // A '+Gc' reference was stored into memory that is not a local. While
+  // A 'Gc' reference was stored into memory that is not a local. While
   // marking, and between generational collections, what it refers to is
   // shaded, so no black object -- one marked this collection, or an old one
   // -- can come to hide a white one; otherwise nothing.

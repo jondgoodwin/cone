@@ -45,6 +45,37 @@ int regionIsRegionRef(INode *region) {
     return strnode != NULL && regionStructIsRegionRef(strnode);
 }
 
+// Does this name, written in an 'is' list, name 'RegionRef'?
+static int regionNamesRegionRef(INode *named) {
+    if (named == NULL || !isNameUseNode(named))
+        return 0;
+    NameUseNode *name = (NameUseNode*)named;
+    if (name->dclnode)
+        return name->dclnode == (INode*)regionRefTrait;
+    return name->namesym == regionRefTrait->namesym;
+}
+
+// Does this struct's 'is' list name 'RegionRef', as it was written? Asked of a
+// managed reference type's head, 'Rc' in 'Rc[mut, Node]', during name
+// resolution, which decides type or value before the region's own declaration
+// need have been resolved: until it is, 'traits' is empty, and the list is
+// still where the parser left it, the first name in 'basetrait' and the rest
+// as mixin fields (parseStruct).
+int regionStructWritesRegionRef(StructNode *strnode) {
+    if (strnode == NULL || strnode->tag != StructTag)
+        return 0;
+    if (regionStructIsRegionRef(strnode) || regionNamesRegionRef(strnode->basetrait))
+        return 1;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+        if (((*nodesp)->flags & IsMixin) && (*nodesp)->tag == FieldDclTag
+            && regionNamesRegionRef(((FieldDclNode*)*nodesp)->vtype))
+            return 1;
+    }
+    return 0;
+}
+
 FnDclNode *regionMethod(INode *region, Name *name) {
     StructNode *strnode = regionDcl(region);
     if (strnode == NULL)
@@ -344,7 +375,7 @@ void regionAllocTypeCheck(INode *region) {
 //
 // Whether a type holds a traced reference is known only once it and every type
 // it holds inline are laid out, which a reference type met inside the struct it
-// points at ('next +Rc Node') is not. So each place a rule looks at is noted as
+// points at ('next Rc[Node]') is not. So each place a rule looks at is noted as
 // type check meets it, and all are judged once type check has finished
 // (regionTracedCheckAll), when every answer is final. A compile declaring no
 // traced region judges none.
@@ -409,7 +440,7 @@ void regionTracedRawNote(FnDclNode *fndcl, int16_t intrinsic, INode *typearg) {
 }
 
 // A type as a diagnostic names it: itypeName, except that an owning reference
-// is spelled out, '+R-perm T', since the type argument a rule complains of is
+// is spelled out, 'R[perm, T]', since the type argument a rule complains of is
 // so often one. Good until the next call.
 static char *regionTracedTypeName(INode *type) {
     static char buf[256];
@@ -418,7 +449,7 @@ static char *regionTracedTypeName(INode *type) {
         return itypeName(type);
     RefNode *ref = (RefNode *)dcl;
     Name *permname = inodeGetName(itypeGetTypeDcl(ref->perm));
-    snprintf(buf, sizeof(buf), "+%s-%s %s", &regionDcl(ref->region)->namesym->namestr,
+    snprintf(buf, sizeof(buf), "%s[%s, %s]", &regionDcl(ref->region)->namesym->namestr,
         permname ? &permname->namestr : "?", itypeName(ref->vtexp));
     return buf;
 }
@@ -430,13 +461,13 @@ static void regionTracedJudgeRef(RefNode *node, INode *where) {
     if (!regionIsTraced(node->region)) {
         if (itypeHoldsTraced(node->vtexp))
             errorMsgNode(where, ErrorTracedHeld,
-                "A +%s reference may not point at %s, which holds a traced reference: %s is not traced, so no collector would find what its values hold. A traced reference may be held in a local, a parameter, or a value a traced region allocates.",
+                "A reference into %s may not point at %s, which holds a traced reference: %s is not traced, so no collector would find what its values hold. A traced reference may be held in a local, a parameter, or a value a traced region allocates.",
                 regname, regionTracedTypeName(node->vtexp), regname);
         return;
     }
     if (node->tag != RefTag) {
         errorMsgNode(where, ErrorTracedRefKind,
-            "%s is traced, and its trace follows a single reference '+%s T' only: an owning slice's length, and the value type behind a virtual reference, are not where it could find them.",
+            "%s is traced, and its trace follows a single reference '%s[T]' only: an owning slice's length, and the value type behind a virtual reference, are not where it could find them.",
             regname, regname);
         return;
     }
@@ -449,7 +480,7 @@ static void regionTracedJudgeRef(RefNode *node, INode *where) {
     }
     if (itypeHoldsBorrow(node->vtexp))
         errorMsgNode(where, ErrorTracedBorrow,
-            "A +%s reference may not point at %s, which holds a borrowed reference: a traced value lives as long as it is reached, past any lifetime a borrow is checked against, and its trace cannot see a borrow.",
+            "A reference into %s may not point at %s, which holds a borrowed reference: a traced value lives as long as it is reached, past any lifetime a borrow is checked against, and its trace cannot see a borrow.",
             regname, regionTracedTypeName(node->vtexp));
 }
 

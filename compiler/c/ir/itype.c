@@ -145,12 +145,12 @@ int itypeCarriesBorrow(INode *type) {
 // other type is Sendable (genericTypeIs). The walk goes through owning
 // references, because an owner that crosses takes what it points at with it:
 // a 'uni' owner of a struct holding a 'mut' reference is bound, and so is an
-// '+Arc-imm' owner of one. A struct declaring 'Sendable' is taken at its word,
+// 'Arc[imm, T]' owner of one. A struct declaring 'Sendable' is taken at its word,
 // except that an instance of a generic one is bound where one of its type
 // arguments is. An open trait's implementers are not all known, so a
 // reference to one is bound.
 //
-// A type may reach itself through a reference ('next +So Node'), and a type
+// A type may reach itself through a reference ('next So[Node]'), and a type
 // reached through a reference need not be laid out yet, so the walk is the
 // same fixed point as itypeCarriesBorrow's: a struct reached again while it is
 // being asked adds nothing (what it holds is found where it was first asked),
@@ -283,8 +283,8 @@ int itypeThreadBound(INode *type, int *settled) {
 }
 
 // Append to 'buf' a type as the thread check's message spells it: a reference
-// as it is written ('&mut Point', '+Rc-imm Point', '*u64'), anything else by
-// its name
+// as it is written ('&mut Point', 'Rc[imm, Point]', '*u64'), its permission
+// always spelled out, anything else by its name
 void itypeSpellCat(char *buf, size_t size, INode *type, int depth) {
     size_t used = strlen(buf);
     if (!isTypeNode(type)) {
@@ -299,12 +299,20 @@ void itypeSpellCat(char *buf, size_t size, INode *type, int depth) {
         char *pname = permname ? &permname->namestr : "?";
         INode *region = ref->region && isTypeNode(ref->region) ? itypeGetTypeDcl(ref->region) : ref->region;
         char *shape = dcl->tag == ArrayRefTag ? "[]" : dcl->tag == VirtRefTag ? "<" : "";
+        Name *regname = region && region->tag == StructTag ? ((StructNode *)region)->namesym : NULL;
+        char *rname = regname ? &regname->namestr : "?";
         if (region == borrowRef)
             snprintf(buf + used, size - used, "&%s %s", pname, shape);
-        else {
-            Name *regname = region && region->tag == StructTag ? ((StructNode *)region)->namesym : NULL;
-            snprintf(buf + used, size - used, "+%s-%s %s", regname ? &regname->namestr : "?", pname, shape);
+        // A managed reference: 'Rc[mut, Point]', whether thin or virtual
+        else if (dcl->tag != ArrayRefTag) {
+            snprintf(buf + used, size - used, "%s[%s, ", rname, pname);
+            itypeSpellCat(buf, size, ref->vtexp, depth + 1);
+            used = strlen(buf);
+            snprintf(buf + used, size - used, "]");
+            return;
         }
+        else
+            snprintf(buf + used, size - used, "+%s%s-%s ", shape, rname, pname);
         itypeSpellCat(buf, size, ref->vtexp, depth + 1);
         return;
     }
@@ -1163,6 +1171,50 @@ int itypeIsGenericType(INode *type) {
     if (dclnode == NULL || dclnode->tag != StructTag || genericGetInfo(dclnode) == NULL)
         return 0;
     return gentype->args != NULL && gentype->args->used > 0 && nodesGet(gentype->args, 0) != NULL;
+}
+
+// The region a managed reference type names at its head, 'Rc' in
+// 'Rc[mut, Node]' or the generic 'R' in 'R[A][mut, Node]', as a struct whose
+// 'is' list names RegionRef; else NULL. Only the head is asked about.
+INode *itypeManagedRefRegion(INode *type) {
+    FnCallNode *call = (FnCallNode*)type;
+    if (call->tag != FnCallTag || !(call->flags & FlagIndex) || call->methfld != NULL)
+        return NULL;
+    INode *head = call->objfn;
+    // A generic region, 'R[A]', resolves first, then the reference's brackets:
+    // its first bracket group is its own type arguments, never a reference
+    int instance = head->tag == FnCallTag && itypeIsGenericType(head);
+    if (instance)
+        head = ((FnCallNode*)head)->objfn;
+    if (!isNameUseNode(head))
+        return NULL;
+    INode *dcl = nameUseGetDcl((NameUseNode*)head);
+    if (dcl == NULL || dcl->tag != StructTag || !regionStructWritesRegionRef((StructNode*)dcl)
+        || (genericGetInfo(dcl) != NULL) != instance)
+        return NULL;
+    return dcl;
+}
+
+// Is this a managed reference type, 'Rc[Node]' or 'Rc[mut, Node]'? It is a call
+// node until type check lowers it into the reference node it names
+// (fnCallLowerManagedRef), and is a type all the while, as a generic's
+// instantiation is. A region's head with values in its brackets is no type
+// but the region's own literal: core's 'Rc[1usize]' builds Rc's header. So
+// every argument must be a type -- a permission is one -- or, in a generic's
+// template, a type parameter still to be substituted.
+int itypeIsManagedRefType(INode *type) {
+    if (type->tag != FnCallTag)
+        return 0;
+    FnCallNode *call = (FnCallNode*)type;
+    if (call->args == NULL || call->args->used == 0 || itypeManagedRefRegion(type) == NULL)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(call->args, cnt, nodesp)) {
+        if (*nodesp == NULL || !(isTypeNode(*nodesp) || inodeIsProvisionalType(*nodesp)))
+            return 0;
+    }
+    return 1;
 }
 
 // Return drop function (or NULL) for type

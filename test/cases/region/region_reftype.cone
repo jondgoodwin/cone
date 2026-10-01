@@ -1,0 +1,144 @@
+// A managed reference type is written with its region at the head and, in
+// brackets, an optional permission, then the value type: 'Rc[mut, Node]'.
+// Left out, the permission is 'uni', so 'Rc[Node]' is the only owner, and a
+// copy of it moves. The reference is virtual exactly when the value type is an
+// open trait ('Rc[mut, Shape]'), and thin for anything else, an enum included
+// ('So[Option[i32]]'). The form stands wherever a type does: a field, a
+// parameter, a return type, an alias, a generic's argument ('Option[...]',
+// 'List[...]'), behind a borrow, and as a type argument a generic function
+// infers from, the region too when it is a type parameter ('R[mut, Node]'),
+// and as a field a 'use' clause folds names through.
+// A generic region takes its own brackets first: 'Pooled[i32][mut, Node]'.
+// A region's own literal, 'Rc[1usize]', is still a literal: its arguments are
+// values, not types.
+//
+// region_typecheck_reftype holds the refusals.
+
+mod region_reftype;
+
+import stdio use *;
+import collections use *;
+import libc;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct Node {
+  pub v i64;
+  pub next Option[Rc[mut, Node]];
+}
+
+alias Link = Rc[mut, Node];
+
+trait Shape {
+  pub fn area(self &) i64;
+}
+
+struct Square {
+  pub side i64;
+  pub fn area(self &) i64 { side * side; }
+}
+
+struct Holder {
+  pub sole Rc[Node];
+  pub shared Link;
+}
+
+// A field folds names through the reference type to what it points at, bare
+// inside the holder's own methods
+struct Engine {
+  pub fuel i64;
+  pub fn power(self &) i64 { fuel * 2; }
+}
+struct Car {
+  pub engine Rc[mut, Engine] use fuel, power;
+  pub fn report(self &) i64 { fuel + power(); }
+}
+
+// A parameter and a return type
+fn makeShared(v i64) Link { +Rc-mut Node[v, None[Link][]]; }
+fn sum(a &Link, b Rc[imm, Node]) i64 { (*a).v + b.v; }
+
+// A uni owner as a parameter takes the reference, moved in
+fn consume(n Rc[Node]) i64 { n.v; }
+
+// A generic function infers T through the reference type
+fn valueOf[T](r Rc[mut, T]) T { *r; }
+fn countOf[T](r &So[T]) i64 { 1; }
+
+// A virtual reference, from a thin one coerced
+fn areaOf(s Rc[mut, Shape]) i64 { s.area(); }
+
+// A region that is a type parameter, inferred from the reference passed
+fn readAny[R](r R[mut, Node]) i64 { r.v; }
+
+// A generic region resolves first, its own brackets, then the reference's.
+// Nothing allocates in it, since an allocation names its region by name alone.
+struct Pooled[T] is RegionRef {
+  pub n usize;
+  fn alloc(size usize) *u8 inline { libc.malloc(size); }
+}
+fn readPooled(r &Pooled[i32][mut, Node]) i64 { (*r).v; }
+
+fn main() i32 {
+  // Defaulting to uni: the only owner, which moves
+  imm a Rc[Node] = +Rc Node[1, None[Link][]];
+  imm b = a;
+  show("uni-moved", consume(b));
+
+  // Shared and mutable: copies are more owners of one value
+  imm c = makeShared(2);
+  imm d = c;
+  d.v = 20;
+  show("mut-shared", c.v);
+
+  // Through an alias, a field, and Option's argument
+  imm h = Holder[+Rc Node[3, None[Link][]], makeShared(4)];
+  show("field-uni", h.sole.v);
+  show("field-alias", h.shared.v);
+  imm linked Link = +Rc-mut Node[5, Some[Link][makeShared(6)]];
+  match linked.next {
+    case imm s Some[Link] { show("option-next", s.value.v); }
+    case is None[Link] { show("option-none", 0); }
+  }
+
+  // Immutable, passed by value; an alias borrowed
+  imm i Rc[imm, Node] = +Rc-imm Node[7, None[Link][]];
+  show("sum", sum(&c, i));
+
+  // In a List
+  mut list = List[Rc[mut, Node]].empty();
+  list.push(makeShared(8));
+  list.push(makeShared(9));
+  show("list-len", i64[list.len()]);
+  show("list-second", (*list[1usize]).v);
+
+  // Inferred through the reference type
+  show("inferred", valueOf(+Rc-mut 10i64));
+  imm owned So[i64] = +So 11i64;
+  show("inferred-so", countOf(&owned) + *owned);
+  show("inferred-region", readAny(makeShared(13)));
+
+  // Folded through the reference
+  imm car = Car[+Rc-mut Engine[5]];
+  show("folded", car.report() + car.fuel);
+
+  // Virtual: the value type is an open trait
+  imm sq Rc[mut, Square] = +Rc-mut Square[3];
+  imm shape Rc[mut, Shape] = sq;
+  show("virtual-area", shape.area());
+  show("virtual-param", areaOf(+Rc-mut Square[4]));
+
+  // Thin: an enum is no open trait
+  imm opt Option[i64] = Some[12i64];
+  imm boxed So[Option[i64]] = +So opt;
+  match *boxed {
+    case imm s Some[i64] { show("enum-thin", s.value); }
+    case is None[i64] { show("enum-none", 0); }
+  }
+  0;
+}

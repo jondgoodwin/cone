@@ -31,7 +31,7 @@
 //   actors.Mailbox[M]               what an actor's handle owns: the runtime's
 //                                   part of an actor taking messages M
 //   actors.startActor[S, M](state, &dispatch)
-//                                   a new actor: its '+Arc-opaq Mailbox[M]'
+//                                   a new actor: its 'Arc[opaq, Mailbox[M]]'
 //   actors.send[M](mb, msg)         queue msg in the actor's mailbox
 //   actors.sendable(v)              v, if it may cross threads (the check)
 //
@@ -76,7 +76,7 @@
 //           struct Report {pub to Printer;}
 //         }
 //
-//   (c) The handle, named for the actor: one field, the '+Arc-opaq' owner
+//   (c) The handle, named for the actor: one field, the 'Arc[opaq, T]' owner
 //       of the actor's Mailbox that startActor answers; one send function
 //       per method, of the method's name and parameters, taking the handle by
 //       any reference, which builds the variant and sends it; and 'start',
@@ -84,7 +84,7 @@
 //       actors.sendable, and starts the actor.
 //
 //         struct Counter {
-//           mb +Arc-opaq actors.Mailbox[Counter_msg];
+//           mb Arc[opaq, actors.Mailbox[Counter_msg]];
 //           pub fn start(count u64) Counter {
 //             Counter[actors.startActor[Counter_state, Counter_msg](
 //               Counter_state.made(actors.sendable(count)), &Counter_dispatch)];
@@ -123,7 +123,7 @@
 // as every concurrency_actors_* scenario does.
 //
 // THE HANDLE is an actor's name to the rest of the program: a struct over
-// one '+Arc-opaq' owner of the actor's Mailbox, the runtime's part of it, so
+// one 'Arc[opaq, T]' owner of the actor's Mailbox, the runtime's part of it, so
 // the sync package's 'Arc' counts handles. Copying a handle (passing it,
 // storing it, putting it in a message) makes another owner; each going drops
 // one. A handle reaches nothing of the actor's state, whose type is not in
@@ -170,8 +170,8 @@
 // order the sends took their places, and a send has taken its place before
 // it returns. What a message carries must be Sendable, which 'send',
 // 'startActor' and Mailbox ask of the message enum, so of every method's
-// parameters: numbers, 'uni' and 'So' owners (which move), '+Arc-imm'
-// owners, handles; never a borrow, a 'mut' owner, an 'Rc' owner or a '+Gc'
+// parameters: numbers, 'uni' and 'So' owners (which move), 'Arc[imm, T]'
+// owners, handles; never a borrow, a 'mut' owner, an 'Rc' owner or a 'Gc'
 // reference. The arguments 'start' passes to 'made' are asked the same by
 // actors.sendable.
 //
@@ -197,11 +197,11 @@
 //   (Release) for a worker to take (Acquire); and its death follows 'Arc's
 //   Release decrement and Acquire load. Each chain is release to acquire, so
 //   what one method did happens before the next method runs, wherever.
-// - '+Gc' is NOT supported inside an actor. The collector package's
+// - 'Gc' is NOT supported inside an actor. The collector package's
 //   collector is single-threaded, its root chain one C global, and an actor
 //   runs on every worker in turn: a traced reference made, held, reached or
 //   dropped by an actor corrupts it. Nothing refuses one yet (the thread
-//   check refuses '+Gc' in a message); a concurrent collector is a later
+//   check refuses 'Gc' in a message); a concurrent collector is a later
 //   design.
 // - A thread-local global ('mut @threadlocal x T') seen from an actor's
 //   method is the current WORKER's copy, not the actor's: its next message
@@ -448,7 +448,7 @@ struct Header {
   pub dispatch *u8;                      // the actor's dispatch function
 }
 
-// What an actor's handle owns, '+Arc-opaq': the runtime's part of an actor
+// What an actor's handle owns, 'Arc[opaq, T]': the runtime's part of an actor
 // taking messages M. Its one field is private, and of a type private to the
 // package: a handle can copy it, drop it, and send an M to it, and nothing
 // else. It declares Sendable, taken on trust: the runtime orders every
@@ -499,13 +499,13 @@ fn finalizeState[S, M Sendable](h *Header) {
 // reaches an actor only through its Header.
 // ---------------------------------------------------------------------------
 
-// A new actor from its state and its dispatch function: the '+Arc-opaq'
+// A new actor from its state and its dispatch function: the 'Arc[opaq, T]'
 // owner of its Mailbox, which its handle holds. The workers start first, if
 // this is the first actor. The state is moved into an 'Arc' allocation after
 // the Mailbox, and its mailbox made: one stub node, idle. Nothing else can
 // reach the actor until this returns, so the header is written plainly;
 // whatever hands the handle on orders it.
-pub fn startActor[S, M Sendable](state S, dispatch &fn(s &mut S, m M)) +Arc-opaq Mailbox[M] {
+pub fn startActor[S, M Sendable](state S, dispatch &fn(s &mut S, m M)) Arc[opaq, Mailbox[M]] {
   ensureRunning();
   imm stub = libc.malloc(mem.sizeof[Link]()) as *Link;
   if stub as usize == 0usize {
@@ -519,8 +519,8 @@ pub fn startActor[S, M Sendable](state S, dispatch &fn(s &mut S, m M)) +Arc-opaq
   // The owner of the block, remade as the owner of its first part: the same
   // address and the same count, moved, not copied
   mut slot = 0usize as *u8;
-  mem.writeRaw[+Arc-opaq Block[S, M]](&mut slot as *(+Arc-opaq Block[S, M]), b);
-  mem.readRaw[+Arc-opaq Mailbox[M]](&mut slot as *(+Arc-opaq Mailbox[M]));
+  mem.writeRaw[Arc[opaq, Block[S, M]]](&mut slot as *(Arc[opaq, Block[S, M]]), b);
+  mem.readRaw[Arc[opaq, Mailbox[M]]](&mut slot as *(Arc[opaq, Mailbox[M]]));
 }
 
 // Send msg to the actor whose Mailbox mb is: push it, and, if the push found
@@ -572,12 +572,12 @@ fn runBatch[S, M Sendable](h *Header, limit u32) u32 {
 // so the count is Arc's (a Relaxed add), whatever Arc's layout.
 fn holdArc[M Sendable](h *Header) {
   mut slot = h;
-  imm o = mem.readRaw[+Arc-opaq Mailbox[M]](&mut slot as *(+Arc-opaq Mailbox[M]));
+  imm o = mem.readRaw[Arc[opaq, Mailbox[M]]](&mut slot as *(Arc[opaq, Mailbox[M]]));
   imm held = o;
   mut gone1 = h;
   mut gone2 = h;
-  mem.writeRaw[+Arc-opaq Mailbox[M]](&mut gone1 as *(+Arc-opaq Mailbox[M]), o);
-  mem.writeRaw[+Arc-opaq Mailbox[M]](&mut gone2 as *(+Arc-opaq Mailbox[M]), held);
+  mem.writeRaw[Arc[opaq, Mailbox[M]]](&mut gone1 as *(Arc[opaq, Mailbox[M]]), o);
+  mem.writeRaw[Arc[opaq, Mailbox[M]]](&mut gone2 as *(Arc[opaq, Mailbox[M]]), held);
 }
 
 // The scheduler lets go of its owner: remade from the address and dropped,
@@ -585,7 +585,7 @@ fn holdArc[M Sendable](h *Header) {
 // death, Mailbox's finalizer and the free, if it was the last).
 fn releaseHold[M Sendable](h *Header) {
   mut slot = h;
-  imm o = mem.readRaw[+Arc-opaq Mailbox[M]](&mut slot as *(+Arc-opaq Mailbox[M]));
+  imm o = mem.readRaw[Arc[opaq, Mailbox[M]]](&mut slot as *(Arc[opaq, Mailbox[M]]));
 }
 
 // ---------------------------------------------------------------------------

@@ -75,7 +75,9 @@ to answer with.
 
 **Two more are counted into a group before type check has replaced them.**
 `isTypeNode` also counts an unlowered `Box[i64]` as a type
-(`itypeIsGenericType`) — without which `*Box[i64]` reads as a dereference.
+(`itypeIsGenericType`) — without which `*Box[i64]` reads as a dereference —
+and an unlowered managed reference type, `Rc[mut, Node]`
+(`itypeIsManagedRefType`), which type check lowers into a `RefNode`.
 `isMethodType` inherits that, being `isTypeNode` and the table's method
 column — so an unlowered instantiation is a type but not yet a method type,
 since the call node standing in for it is not what carries the methods.

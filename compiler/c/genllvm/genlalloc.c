@@ -372,7 +372,7 @@ static void genlTraceFields(GenState *gen, LLVMValueRef valptr, StructNode *strn
     }
 }
 
-// A variant of a nullable-pointer enum, held as itself ('&Some[+Gc T]' dereferenced,
+// A variant of a nullable-pointer enum, held as itself ('&Some[Gc[T]]' dereferenced,
 // say), is laid out as its enum is: only its reference, at 'valptr', with no
 // tag before it (genlStructDrop's layout)
 static void genlTraceNullableVariant(GenState *gen, LLVMValueRef valptr, StructNode *variant) {

@@ -593,7 +593,7 @@ static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t
 }
 
 // An owning reference coerced to a borrowed one ('imm b &i32 = u', 'u' a
-// '+So i32'; or 'imm b &<mut App = v', 'v' a '+<So App'): a borrow of what it
+// 'So[i32]'; or 'imm b &<mut App = v', 'v' a 'So[App]'): a borrow of what it
 // owns, so 'u' may not be moved, replaced or ended while the borrow is used
 static int pwIsOwnedLent(CastNode *cast) {
     INode *to = iexpGetTypeDcl((INode *)cast);
@@ -654,8 +654,8 @@ static PathSet *pwReceiver(FnCallNode *call, FnDclNode *meth, Place *pl, uint32_
         *access = (call->flags & FlagLvalOp) ? AccessWrite : loanBorrowAccess(perm);
         return pwLend(recv, pl, perm, pwReserved(*access), loan);
     }
-    // An owner lent as the receiver ('a.bump()', 'a' a '+So R' or a '+<So
-    // App'): a borrow of what it owns, as pwOwnedLent reads any other lent
+    // An owner lent as the receiver ('a.bump()', 'a' a 'So[R]' or a
+    // 'So[App]'): a borrow of what it owns, as pwOwnedLent reads any other lent
     // owner, and not a borrowed reference read through, which would make the
     // path shared
     if (recv->tag == CastTag && pwIsOwnedLent((CastNode *)recv)) {

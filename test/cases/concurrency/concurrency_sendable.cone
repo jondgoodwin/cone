@@ -1,16 +1,16 @@
 // What the thread check lets cross: the step-6 program and the types beside
 // it. A 'uni' owner is sent over a channel to a consumer thread, and moves
-// there with what it owns; an '+Arc-imm' String is read by a thread while
+// there with what it owns; an 'Arc[imm, T]' String is read by a thread while
 // main still holds it, Arc's count being atomic; a number held in a 'mut'
 // local is handed to a thread, since what is checked is the value's type,
 // not how the variable was declared. The output is what each thread computed.
 //
 // Beside them, 'crosses' asks the marker of the types that are Sendable
 // without running anything: numbers, plain and nested structs, arrays, enums,
-// a struct reaching itself through a '+So' owner (the walk's cycle), owners
+// a struct reaching itself through a 'So' owner (the walk's cycle), owners
 // that move ('uni' of any region, any owner of 'So'), owners that are shared
 // through a region declaring ThreadSafe with a race-safe permission
-// ('+Arc-imm', '+Arc-opaq'), a function reference, a struct declaring
+// ('Arc[imm, T]', 'Arc[opaq, T]'), a function reference, a struct declaring
 // 'Sendable' over a raw pointer, and the library's own: a List or Dict of
 // Sendable elements, a String, a channel's ends, a ThreadRef.
 
@@ -33,7 +33,7 @@ enum Shape {
 
 struct Node {
   pub v i32;
-  pub next Option[+So Node];
+  pub next Option[So[Node]];
 }
 
 // A raw pointer, carried on the author's word
@@ -42,24 +42,24 @@ struct Handle is Sendable {pub p *u8;}
 // Moves to the consumer: an owner of the line it carries
 struct Job {
   pub id u64;
-  pub line +So Line;
+  pub line So[Line];
 }
 
 // Takes each job off the channel until it closes, and sums what they carry
-fn consume(rx Receiver[+So Job]) i64 {
+fn consume(rx Receiver[So[Job]]) i64 {
   mut rx2 = rx;
   mut total = 0i64;
   mut more = true;
   while more {
     match rx2.recv() {
       case imm j Some {total = total + i64[j.value.id] * 100i64 + i64[(j.value.line.b.x - j.value.line.a.x) + (j.value.line.b.y - j.value.line.a.y)];}
-      case is None[+So Job] {more = false;}
+      case is None[So[Job]] {more = false;}
     }
   }
   total;
 }
 
-fn letters(s +Arc-imm String) u64 {
+fn letters(s Arc[imm, String]) u64 {
   u64[s.len()];
 }
 
@@ -74,26 +74,26 @@ fn main() {
   crosses[[4; Point]]();
   crosses[Shape]();
   crosses[Node]();
-  crosses[+So Point]();
-  crosses[+So-mut Point]();
-  crosses[+Rc-uni Point]();
-  crosses[+Arc-imm Point]();
-  crosses[+Arc-opaq Point]();
-  crosses[+So Node]();
+  crosses[So[Point]]();
+  crosses[So[mut, Point]]();
+  crosses[Rc[uni, Point]]();
+  crosses[Arc[imm, Point]]();
+  crosses[Arc[opaq, Point]]();
+  crosses[So[Node]]();
   crosses[&fn(n i32) i32]();
   crosses[Handle]();
   crosses[List[Point]]();
-  crosses[List[+So Line]]();
+  crosses[List[So[Line]]]();
   crosses[String]();
   crosses[Dict[String, i64]]();
   crosses[Sender[u64]]();
-  crosses[Receiver[+So Job]]();
+  crosses[Receiver[So[Job]]]();
   crosses[thread.ThreadRef]();
 
   // A 'uni' owner sent over a channel moves to the consumer
-  mut tx Sender[+So Job];
-  mut rx Receiver[+So Job];
-  tx, rx = Channel[+So Job].make();
+  mut tx Sender[So[Job]];
+  mut rx Receiver[So[Job]];
+  tx, rx = Channel[So[Job]].make();
   imm consumer = thread.start(rx, &consume);
   tx <- +So Job[1u64, +So Line[Point[0i32, 0i32], Point[3i32, 4i32]]];
   tx <- +So Job[2u64, +So Line[Point[1i32, 1i32], Point[2i32, 2i32]]];
@@ -104,7 +104,7 @@ fn main() {
   printInt(consumer.join());
   printStr("\n");
 
-  // An '+Arc-imm' String read by a thread while main holds it too
+  // An 'Arc[imm, T]' String read by a thread while main holds it too
   imm s = +Arc-imm String.from("sendable");
   imm reader = thread.start(s, &letters);
   printStr("letters ");

@@ -331,7 +331,7 @@ DWARF.
 | **`void`** | **`%void = type {}`** — a zero-field named struct, *not* LLVM `void`. A function returning nothing returns `%void`; so does `nil` |
 | **permission** | **`%void`** — permissions are fully erased |
 | `*T` | `ptr` |
-| **`&T`, `&mut T`, `+Rc T`, `+So T`** | **`ptr`, identically.** Region and permission contribute nothing to the reference value |
+| **`&T`, `&mut T`, `Rc[T]`, `So[T]`** | **`ptr`, identically.** Region and permission contribute nothing to the reference value |
 | **`&[]T`** | **anonymous `{ ptr, usize }`** — element pointer at 0, element **count** at 1 |
 | **`&<Trait`** | **named `{ ptr, ptr }`** — the object, then its vtable |
 | `fn` signature | `LLVMFunctionType`, never varargs; a `&fn` is a `ptr` to it. A C-named function's structs are lowered to the C ABI's shape ("C-named functions and the C ABI", below) |
@@ -348,7 +348,7 @@ Lowering a `*T`, `&T` or `&[]T` queues `T`, and `genlType` generates the queue
 when the outermost type it was asked for is done, before returning to anything
 but type generation. Generated in place, a struct reaching itself through a
 reference is reached again while its own body is still empty: with `A` holding
-`+So AState` and `AState` holding `Option[A]`, sizing `Some[A]` there measured
+`So[AState]` and `AState` holding `Option[A]`, sizing `Some[A]` there measured
 `A` as nothing, and `Option[A]` came out one byte. Nothing outside type
 generation sees the difference, since every pointee is generated before
 `genlType` returns to it — which the nullable-pointer flag (below), set when an
@@ -509,7 +509,7 @@ does not, since that would generate the pointee inside whatever holds it):
 %refstruct = type { <region>, <perm>, <value> }   ; RegionField, PermField, ValueField
 ```
 
-Verified for `+Rc-mut` of an `i32`:
+Verified for `Rc[mut, T]` of an `i32`:
 
 ```llvm
 %void      = type {}
@@ -681,7 +681,7 @@ fields and a tuple's elements that hold one (`itypeHoldsTraced`), each element
 of a fixed-size array whose element type does, in a loop (`genlEachElem`), and
 the variant an enum's tag picks, by a switch, as `genlEnumDrop` dispatches; the
 nullable-pointer layout, which has no tag, is its one reference — and so is a
-variant of such an enum held as itself (`*t` for `t &Some[+Gc T]`, a birth),
+variant of such an enum held as itself (`*t` for `t &Some[Gc[T]]`, a birth),
 whose layout is its enum's (`genlTraceNullableVariant`). It stops at
 every other reference and every pointer: the placement rules keep a traced
 reference from hiding behind them. It does not share the finalizer's walk,
@@ -772,7 +772,7 @@ one (`regionHasBarrier`). A collector that marks while the program runs needs
 it: a store could otherwise put an object it has not reached into one it has
 finished with. The barrier is keyed on **what was stored**, never on the
 container, so a store through a borrow — which cannot know what it points
-into — gets it as surely as one through a `+R` reference.
+into — gets it as surely as one through a `R` reference.
 
 - **Where.** `genlStoreBarrier`, after each store an expression makes: an
   assignment's (`genlStore`, a parallel assignment's each), `:=`'s, and each

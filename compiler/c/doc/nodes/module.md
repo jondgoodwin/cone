@@ -2617,7 +2617,7 @@ held at the declaration (`ErrorRegionMeth`); on a region not declaring
 local, a parameter, a temporary, a value inline in one of those, or a value a
 traced region allocates. So the compiler refuses, each with its own code, an
 owning reference of a region that is not traced to a value holding one
-(`ErrorTracedHeld`: `+Rc T`, `+So T`, wherever the type is written); a global
+(`ErrorTracedHeld`: `Rc[T]`, `So[T]`, wherever the type is written); a global
 or static holding one (`ErrorTracedGlobal`); an instance of `mem.writeRaw` or
 `mem.moveRaw` at a type holding one (`ErrorTracedRaw`), which keeps traced
 references out of arenas, pools and collections, reported at the program's own
@@ -2625,12 +2625,12 @@ instantiation where it was reached through a generic's body; and, of what a
 traced region allocates, a value holding a borrow (`ErrorTracedBorrow`), an
 owning slice or owning virtual reference (`ErrorTracedRefKind`), and a
 permission taking room, which would move the value off the place right after
-the header (`ErrorTracedPerm`). A traced object may hold `+Rc` and `+So`
+the header (`ErrorTracedPerm`). A traced object may hold `Rc` and `So`
 owners, which its finalizer releases, and a borrow or a raw pointer to a value
 holding traced references goes anywhere a borrow or a pointer may. Whether a
 type holds a traced reference is final only once every type it holds inline is
 laid out, which a reference type met inside the struct it points at is not
-(`next +Rc Node` before `g +Gc Leaf`), so type check notes each place a rule
+(`next Rc[Node]` before `g Gc[Leaf]`), so type check notes each place a rule
 looks at (`regionTracedRefNote`, `regionTracedGlobalNote`,
 `regionTracedRawNote`) and judges them all once it has finished
 (`regionTracedCheckAll`, from `conec.c`); a compile declaring no traced region
@@ -2646,8 +2646,8 @@ declare it. It is a region ref's only (`ErrorThreadSafeUse`, from
 counts are atomic. `regionIsThreadSafe` is the region's say in whether a
 reference may cross threads, beside its permission's `RaceSafe`: the thread
 check (`refThreadBinds`, [References](references.md)) lets an owner that may be
-aliased cross only where its region declares it, so `+Arc-imm` crosses and
-`+Rc-imm` does not. It changes no call the compiler makes.
+aliased cross only where its region declares it, so `Arc[imm, T]` crosses and
+`Rc[imm, T]` does not. It changes no call the compiler makes.
 
 The struct is held to the method shapes **at its declaration**, after its
 methods are type checked (`regionRefCheck`, from `structCheckMembers`):

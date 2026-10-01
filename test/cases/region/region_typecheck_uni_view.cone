@@ -1,15 +1,15 @@
 // A borrow of a sole owner may not be seen as a borrow of a shared one.
 //
-// '+Rc' is '+Rc-uni': the only owner of its value, a move type. '+Rc-mut',
-// '+Rc-imm', '+Rc-ro' and the others may alias, so a read of one copies it. A
-// borrow '&+Rc-mut T' of a '+Rc T' would let a read through the borrow copy out
+// 'Rc[T]' is 'Rc[uni, T]': the only owner of its value, a move type. 'Rc[mut, T]',
+// 'Rc[imm, T]', 'Rc[ro, T]' and the others may alias, so a read of one copies it. A
+// borrow '&Rc[mut, T]' of a 'Rc[T]' would let a read through the borrow copy out
 // a second owner of a value promised unique -- and one that may write, while the
 // first still believes itself alone. The same holds for any region that does not
 // declare 'Move', a user's as much as 'Rc', and for a slice's elements.
 //
 // Not behind a borrow the same coercion is a move, which consumes the sole
-// owner, so it stays allowed; so does a '+So' owner seen as '+So-mut', because
-// 'So' declares 'Move' and every '+So' still moves, which a borrow refuses.
+// owner, so it stays allowed; so does a 'So' owner seen as 'So[mut, T]', because
+// 'So' declares 'Move' and every 'So' owner still moves, which a borrow refuses.
 
 mod region_typecheck_uni_view;
 
@@ -19,22 +19,22 @@ struct Arena is RegionRef {
   fn alloc(size usize) *u8 inline { malloc(size); }
 }
 
-fn share(b &+Rc-mut Fin) +Rc-mut Fin { *b; }
-fn shareOne(b &[]+Rc-mut Fin) +Rc-mut Fin { b[0]; }
-fn shareArena(b &+Arena-mut Fin) +Arena-mut Fin { *b; }
-fn lookSo(b &+So-mut Fin) { }
-fn lookUni(b &+Rc Fin) { }
+fn share(b &Rc[mut, Fin]) Rc[mut, Fin] { *b; }
+fn shareOne(b &[]Rc[mut, Fin]) Rc[mut, Fin] { b[0]; }
+fn shareArena(b &Arena[mut, Fin]) Arena[mut, Fin] { *b; }
+fn lookSo(b &So[mut, Fin]) { }
+fn lookUni(b &Rc[Fin]) { }
 
 // A borrow's own type may not change on the way out either
-fn view(b &+Rc Fin) &+Rc-mut Fin {      //~ ErrorInvType:21 "This is the declared function's return type" follow-on
+fn view(b &Rc[Fin]) &Rc[mut, Fin] {      //~ ErrorInvType:21 "This is the declared function's return type" follow-on
   b;                                     //~ ErrorInvType:3 "Return expression type does not match"
 }
 
 fn f() i32 {
   imm u = +Rc Fin[1];
   imm m = share(&u);                     //~ ErrorInvType
-  imm i &+Rc-imm Fin = &u;               //~ ErrorInvType
-  imm r &+Rc-ro Fin = &u;                //~ ErrorInvType
+  imm i &Rc[imm, Fin] = &u;               //~ ErrorInvType
+  imm r &Rc[ro, Fin] = &u;                //~ ErrorInvType
 
   imm owners = [+Rc Fin[2], +Rc Fin[3]];
   imm s = shareOne(&[]owners);           //~ ErrorInvType
@@ -43,13 +43,13 @@ fn f() i32 {
   imm a = +Arena Fin[4];
   imm c = shareArena(&a);                //~ ErrorInvType
 
-  // Still allowed: the sole owner seen as itself, a '+So' owner whose view
+  // Still allowed: the sole owner seen as itself, a 'So' owner whose view
   // still moves, a shared owner seen as shared, and a move that consumes 'u'
   lookUni(&u);
   imm o = +So Fin[5];
   lookSo(&o);
   imm shared = +Rc-mut Fin[6];
   imm d = share(&shared);
-  imm moved +Rc-mut Fin = u;
+  imm moved Rc[mut, Fin] = u;
   0;
 }

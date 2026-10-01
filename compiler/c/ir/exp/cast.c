@@ -71,8 +71,15 @@ NameUseNode *castPatternName(INode *typ, int *hasargs) {
 }
 
 // Mark a pattern's bare root name, so that name resolution leaves it for
-// castPatternBind to look up in the matched value's enum
+// castPatternBind to look up in the matched value's enum.
+//
+// An owning reference at the root keeps its '+R-perm T' spelling, which is
+// refused as a type anywhere else: its root is read here, at parse time, before
+// anything knows that 'R' in 'R[mut, Circle]' is a region rather than a generic
+// variant, and how a pattern spells a managed reference is not settled yet.
 void castPatternMark(INode *typ) {
+    if (typ && (typ->tag == RefTag || typ->tag == VirtRefTag))
+        ((RefNode*)typ)->plusSpelled = 0;
     NameUseNode *name = castPatternName(typ, NULL);
     if (name)
         name->flags |= FlagPattern;

@@ -3,10 +3,13 @@ type nodes and four expression nodes (`RefTag` appears in both roles at
 different times). Getting the family right is most of understanding Cone's
 memory model.
 
-**At a glance.** The parser builds a reference-shaped node without knowing
-whether it is a type or a constructor. Name resolution decides by asking whether
-the operand is a type. Type check builds the *result* type, records a lifetime,
-and interns. Flow moves or copies an allocation's value and enforces the
+**At a glance.** The parser builds a reference-shaped node for `&`, `&[]`, `&<`
+and `+`, `+[]`, `+<` without knowing whether it is a type or a constructor.
+Name resolution decides by asking whether the operand is a type. A managed
+reference *type*, `Rc[mut, Node]`, is not built by the parser at all: it is a
+bracketed call until type check lowers it into this node ("The managed
+reference type", below). Type check builds the *result* type, records a
+lifetime, and interns. Flow moves or copies an allocation's value and enforces the
 lifetime at three consumers. Generation lowers a plain reference to a bare
 pointer and two others to fat pointers.
 
@@ -95,6 +98,71 @@ The differences are worth knowing:
   prefix operator has: `&x.a` references the field, `&x[4]` the element. Binding
   only the prefixed term instead would make `&x.a` mean `(&x).a` — typed as the
   field but returning the field's address, which generation cannot catch.
+
+`+` is the allocation, `+Rc-mut Node[1]`, and the owning array reference type,
+`+[]So i32`. A single or virtual managed reference type is written
+`Rc[mut, Node]`, below. `parsePlus` still builds a `RefTag` or `VirtRefTag`
+type from `+Rc-mut Node` when the operand is a type, and marks it
+`plusSpelled`; type check refuses it (`refRefusePlusType`,
+`ErrorPlusRefType`), naming the bracket spelling. The one exception is a match
+pattern's root, `case imm c +Rc-mut Circle`: `castPatternName` reads the root
+at parse time, before anything knows `Rc` is a region rather than a generic
+variant, so `castPatternMark` clears the mark there and the `+` spelling
+stands until patterns are given their own.
+
+## The managed reference type, `Rc[mut, Node]`
+
+The region names the reference, and its brackets hold an optional permission,
+then the value type: `Rc[Node]`, `Rc[mut, Node]`, `Gc[imm, Leaf]`. Left out,
+the permission is `uni`. It is ordinary generic syntax, so it parses as an
+`FnCallNode` flagged `FlagIndex` (`parseSuffix`), and it stays one until type
+check lowers it into a `RefNode`. Everything from type check on sees only the
+`RefNode`.
+
+- **Parse.** A static permission is a keyword (`PermToken`), so it is no term;
+  `parseIndexArg` takes one inside `[...]` as the `newPermUseNode` it names.
+  What a permission may be an argument of is type check's to judge. A generic
+  region needs no more: `parseSuffix` already reads a second bracket group,
+  `R[A][mut, Node]`.
+- **Name resolution.** `isTypeNode` must answer yes for it, or every
+  type-or-value vote reads it as a value: `&Rc[Node]` would be a borrow,
+  `?Rc[Node]` an error. `itypeIsManagedRefType` is that arm of `inodeIsType`:
+  the head names a region, and every argument is a type (a permission is one)
+  or, in a template, a type parameter still to be substituted. That last
+  condition is what tells the type from the region's own literal: core's
+  `Rc[1usize]` builds Rc's header, and its argument is a value. The head is a
+  region when its `is` list names `RegionRef` **as written**
+  (`regionStructWritesRegionRef`): the question is asked before the region's
+  declaration need have been resolved, when `traits` is still empty and the
+  list is where the parser left it, the first name in `basetrait` and the rest
+  as mixin fields. A generic region's first bracket group is its own type
+  arguments (`itypeManagedRefRegion`), so `Pooled[i32]` alone is the region and
+  `Pooled[i32][mut, Node]` the reference. A head that is a type parameter,
+  `R[mut, T]`, is a provisional type (`inodeIsProvisionalType`).
+- **Type check.** `fnCallTypeCheck` lowers it first among the shapes it
+  recognizes by syntax (`fnCallLowerManagedRef`), ahead of the struct-literal
+  pass, which would otherwise take the head for a literal's struct. The value
+  type, the last argument, is checked first, since whether it is an **open
+  trait** (`TraitType` without `HasTagField`) decides the shape: `VirtRefTag`
+  for one, `RefTag` for anything else. An enum is a trait to the compiler too,
+  and a thin owning reference to one exists (`So[Option[...]]`), which is why
+  the test is the open trait's. Then the `RefNode` replaces the call and is
+  checked as any reference type is. The arguments are refused as
+  `ErrorRefTypeArgs` (other than one or two, or a value where the type goes),
+  `ErrorRefTypePerm` (a first of two that is no permission, or a last that
+  is one); a permission given to a head that is no region is
+  `ErrorPermNotRegion` (`fnCallRefusePermArg`), which also keeps a generic
+  from taking a permission as a type argument. In the permission slot a struct
+  stands as the unbuilt dynamic permissions do (`refThreadBinds`), which the
+  traced region's rule on a permission taking room judges.
+- **Before type check, elsewhere.** Three readers meet the unlowered form and
+  see through it as they do through a `RefNode`, to the last argument: generic
+  inference (`genericInferType`, which also captures a region type parameter
+  from the argument's region), a field's fold (`foldSourceDcl`), and a
+  global's fold peek (`modFoldPeek`, which peeks the head rather than resolving
+  it).
+- **Diagnostics** spell a managed reference as it is written, permission
+  always given: `Rc[mut, Point]` (`itypeSpellCat`, `regionTracedTypeName`).
 
 ## Name resolution
 
@@ -218,12 +286,12 @@ So `&mut T` is invariant in `T` while `&ro T` is covariant.
 **Covariance stops at a reference held behind one that would stop moving.**
 `refHeldMoveSeenAsCopy`, asked by the covariant arm of `refMatches` and of
 `arrayRefMatchesRef`, refuses a value type that is a reference whose own type
-moves seen as one that copies: `&+Rc-mut T` (or `-imm`, `-ro`, `-opaq`, `-mut1`)
-from `&+Rc T`, and a slice of them. A read through the outer reference copies
+moves seen as one that copies: `&Rc[mut, T]` (or `imm`, `ro`, `opaq`, `mut1`)
+from `&Rc[T]`, and a slice of them. A read through the outer reference copies
 a copy type out, so the view would make a second owner of a value `uni`
 promised unique. `permMatches` is untouched, and a move of the owner itself
-still coerces `uni` down. A `+So` owner keeps its view as `+So-mut`, since
-every `+So` reference moves and a move out through a borrow is refused in flow.
+still coerces `uni` down. A `So[T]` owner keeps its view as `So[mut, T]`, since
+every `So` reference moves and a move out through a borrow is refused in flow.
 
 `refvirtMatchesRef` builds a fat pointer, so it refuses `Monomorph` outright and
 applies **no** value-type variance. Same-struct requires `HasTagField`, since
@@ -269,7 +337,7 @@ says; what it points at is asked separately by the walk (`itypeThreadBound`, in
 | an owner that cannot be aliased: `uni`, or any owner of a `Move` region (`So`) | crosses if what it points at does: it moves, taking its value |
 | any other owner whose permission is not `RaceSafe` (`mut`, `ro`, `mut1`, a struct in the permission slot) | `RefBindsPerm` |
 | any other owner whose region does not declare `ThreadSafe` (`Rc`) | `RefBindsShared` |
-| otherwise (`+Arc-imm`, `+Arc-opaq`) | crosses if what it points at does |
+| otherwise (`Arc[imm, T]`, `Arc[opaq, T]`) | crosses if what it points at does |
 
 The walk adds a raw pointer (always bound: nothing checks its target), a
 reference to an open trait (its implementers are not all known), and a struct
@@ -372,7 +440,7 @@ and a local returned converted is exempt from its scope's release.
 
 ## Hazards
 
-- **Sendable is also safe to read from several threads.** An `+Arc-imm` owner
+- **Sendable is also safe to read from several threads.** An `Arc[imm, T]` owner
   crosses when its pointee does, so a type granted or declaring `Sendable` must
   also bear being read through `&` from several threads at once. Nothing Cone
   can write mutates through `imm` except an atomic value, so the grant holds; a

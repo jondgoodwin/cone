@@ -55,8 +55,8 @@ int flowMatchInPlace(VarDclNode *var) {
 }
 
 // Is this expression a shared owner -- an owning reference that other holders
-// may be sharing? An owning reference that may be aliased ('+Rc-mut', '+Rc-imm',
-// '+Rc-ro', and every 'Rc' form but '+Rc-uni') is one of possibly many holders
+// may be sharing? An owning reference that may be aliased ('Rc[mut, T]', 'Rc[imm, T]',
+// 'Rc[ro, T]', and every 'Rc' form but 'Rc[uni, T]') is one of possibly many holders
 // counting the same value, so it does not solely own it. An owning reference
 // that is a move type -- a 'uni' one, or any in the 'Move' region 'So' -- is
 // the only holder, and may give the value up. One into a region that is
@@ -704,7 +704,7 @@ void flowResultMove(INode *node) {
 
 // Is this type a counted reference: one into a region whose 'aliasRef' is called
 // for each copy that becomes another owner? An owning slice (ArrayRefTag) is
-// counted exactly as a single reference is, and so is a virtual one ('+<Rc').
+// counted exactly as a single reference is, and so is a virtual one ('Rc[Trait]').
 int flowIsRcRef(INode *type) {
     RefNode *reftype = (RefNode *)itypeGetTypeDcl(type);
     return (reftype->tag == RefTag || reftype->tag == ArrayRefTag || reftype->tag == VirtRefTag)
@@ -836,8 +836,8 @@ void flowInjectRefCount(INode **nodep) {
 
 // Does this cast hand on what its operand holds? A recast is its operand under
 // another type name. A conversion makes a new value, except one into an owning
-// virtual reference ('+<So App' from a '+So Spinner', or from a '+<So' of a
-// trait it extends): that adds a vtable to the operand's one owner and keeps
+// virtual reference ('So[App]' from a 'So[Spinner]', or from a virtual 'So' of
+// a trait it extends): that adds a vtable to the operand's one owner and keeps
 // it, so the operand is moved out of, or counted, as a recast's would be.
 int flowCastCarries(INode *cast) {
     if (!(cast->flags & FlagConvert))

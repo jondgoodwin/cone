@@ -91,7 +91,7 @@ int itypeThreadBound(INode *type, int *settled);
 INode *itypeThreadBoundWhy(INode *type, char *path, size_t size);
 
 // Append a type to 'buf' as a diagnostic spells it: a reference as it is
-// written ('&mut Point', '+Rc-imm Point', '*u64'), anything else by its name
+// written ('&mut Point', 'Rc[imm, Point]', '*u64'), anything else by its name
 void itypeSpellCat(char *buf, size_t size, INode *type, int depth);
 
 // Look for named field/method in type
@@ -167,6 +167,13 @@ int itypeIsMove(INode *type);
 
 // Return true if this is a generic type
 int itypeIsGenericType(INode *type);
+
+// The region struct a managed reference type's head names ('Rc' in
+// 'Rc[mut, Node]'), or NULL
+INode *itypeManagedRefRegion(INode *call);
+
+// Is this a managed reference type not yet lowered, 'Rc[mut, Node]'?
+int itypeIsManagedRefType(INode *type);
 
 // Return drop function (or NULL) for type
 INode *itypeGetDropFnDcl(INode *type);
