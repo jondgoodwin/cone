@@ -383,6 +383,11 @@ enum ErrorCode {
     // The owning array reference, '+[]R T', which the language does not have (parser/parseexpr.c)
     ErrorOwnedArrayRef = 1203,  // '+[]', as a type or an allocation: an owned runtime-sized array is a List, shared as 'Rc[List[T]]'; a borrowed slice is '&[]T'
 
+    // The array type, 'Array[T, n]' (ir/types/array.c, ir/exp/nameuse.c)
+    ErrorArrayTypeOld = 1204,   // '[n; T]' as a type: the fill literal's spelling, with a type where its value goes; an array type is 'Array[T, n]'
+    ErrorArrayTypeArgs = 1205,  // 'Array' given no size, or used without its brackets: it takes an element type, then one size for each dimension
+    ErrorArrayTypeElem = 1206,  // 'Array[...]' whose first argument is not a type: the element type comes first, then the sizes
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

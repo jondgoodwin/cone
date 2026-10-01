@@ -62,7 +62,9 @@ Only white space may come between the two words. The other is
 `lexIdentOpensType`, asked of a name in a `&fn` signature's parameter list,
 where a parameter may be written as its type alone: a name followed by `.` or
 by a `[` whose brackets hold no `;` of their own begins a type (`geomath.Vec3`,
-`List[i32]`) rather than naming a parameter (`xs [4; i32]`).
+`List[i32]`, `Array[i32, 4]`) rather than naming a parameter followed by the
+fill literal's brackets (`xs [4; i32]`, which name resolution refuses as a
+type).
 
 **`..` and `...` are the range tokens** (`DotDotToken`, `EllipsisToken`), read
 by a match's range pattern and by an index (`parseIndexArgs`): `x[a..b]` is held
@@ -457,11 +459,12 @@ away the ones that were paths.
 | --- | --- | --- |
 | `TupleTag` | `TTupleTag` (all types) or `VTupleTag` (all values); mixed is `ErrorBadElems` | `ttupleNameRes` |
 | `StarTag` | `PtrTag` if the operand is a type, else `DerefTag` | `ptrNameRes` |
-| `ArrayTag` | stays a type, or becomes `ArrayLitTag` | `arrayNameRes` |
+| `ArrayTag` | `ArrayLitTag`; a type as its element, `[3; i32]`, is refused (`ErrorArrayTypeOld`) | `arrayNameRes` |
 | `RefTag` | stays a ref type, or becomes `BorrowTag`/`AllocateTag` by region | `refNameRes` |
 | `ArrayRefTag` | stays a ref type, or becomes `ArrayBorrowTag` | `arrayRefNameRes` |
 | `QuesTag` | `FnCallTag` for `Option[T]`, or folds into an `AllocateTag` with `FlagQues` | `allocateQuesNameRes` |
 | `FnCallTag` holding `a.b` | a bound name use, when `a` names a module or a type: the period was a path | `fnCallNameResPath` |
+| `FnCallTag` indexing `Array` | the array type, `ArrayTag`, one node per size | `arrayTypeLower` |
 | `FnCallTag` | `ArrIndexTag`, `FldAccessTag`, `TypeLitTag`, an instantiation, or a real call | `fnCallTypeCheck` |
 
 This is what principle 1 costs, and it is the whole cost: because a type and a

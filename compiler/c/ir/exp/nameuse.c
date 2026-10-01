@@ -412,6 +412,14 @@ void nameUseTypeCheckType(TypeCheckState *pstate, NameUseNode **namep) {
     // answer is its size, and that is asked by whatever wants to hold a value of
     // it -- a field, a variable, an array element -- not here.
     NameUseNode *name = *namep;
+    // 'Array' is a type only with its element type and sizes, which name
+    // resolution lowers (arrayTypeLower); alone it names nothing
+    if (name->dclnode == (INode*)arrayTypeDcl) {
+        errorMsgNode((INode*)name, ErrorArrayTypeArgs,
+            "Array is the array type only with its element type and size: 'Array[T, n]', or 'Array[T, n, m]' with one size for each dimension.");
+        *((INode**)namep) = newErrorNode((INode*)name);
+        return;
+    }
     inodeTypeCheckAny(pstate, &name->dclnode);
     // A type a fold brought in -- a variant a module's 'use' of its enum folded,
     // or a type an import folded -- is named through an alias, which has nothing

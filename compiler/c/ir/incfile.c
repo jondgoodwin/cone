@@ -552,18 +552,26 @@ static int incTypeText(IncGen *g, IncBuf *buf, INode *type, ModuleNode *inmod) {
         }
         return 1;
     }
+    // 'Array[f32, 3]', a nested array with its sizes together, outermost
+    // first, 'Array[f32, 2, 3]', which is the same type
     case ArrayTag: {
-        ArrayNode *array = (ArrayNode*)type;
-        if (array->dimens->used != 1 || array->elems->used != 1)
+        INode *elem = type;
+        while (elem->tag == ArrayTag) {
+            ArrayNode *array = (ArrayNode*)elem;
+            if (array->dimens->used != 1 || array->elems->used != 1
+                || nodesGet(array->dimens, 0)->tag != ULitTag)
+                return 0;
+            elem = nodesGet(array->elems, 0);
+        }
+        incBufPuts(buf, "Array[");
+        if (!incTypeText(g, buf, elem, inmod))
             return 0;
-        INode *dim = nodesGet(array->dimens, 0);
-        if (dim->tag != ULitTag)
-            return 0;
-        char dimtext[32];
-        snprintf(dimtext, sizeof(dimtext), "[%llu; ", (unsigned long long)((ULitNode*)dim)->uintlit);
-        incBufPuts(buf, dimtext);
-        if (!incTypeText(g, buf, nodesGet(array->elems, 0), inmod))
-            return 0;
+        for (INode *dim = type; dim != elem; dim = nodesGet(((ArrayNode*)dim)->elems, 0)) {
+            char dimtext[32];
+            snprintf(dimtext, sizeof(dimtext), ", %llu",
+                (unsigned long long)((ULitNode*)nodesGet(((ArrayNode*)dim)->dimens, 0))->uintlit);
+            incBufPuts(buf, dimtext);
+        }
         incBufPuts(buf, "]");
         return 1;
     }

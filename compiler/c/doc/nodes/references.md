@@ -305,7 +305,7 @@ registers each variant's implementation, not the enum's, and the conversion
 selects among them by the tag. A reference to an open trait converts to no other
 trait ([struct](struct.md), "A reference to an enum converts").
 
-`arrayRefMatchesRef` handles `&[T; n]` → `&[]T` and is never better than
+`arrayRefMatchesRef` handles `&Array[T, n]` → `&[]T` and is never better than
 `ConvSubtype` — a fat pointer must be built.
 
 `ptrMatches` is fully invariant, but `itypeMatches` separately accepts a

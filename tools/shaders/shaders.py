@@ -207,7 +207,7 @@ def block_text(spv: Path, name: str, nl: str) -> str:
     words = words_of(spv)
     lines = [f"// Written by tools/shaders/shaders.py from {slang.name}"
              f" (sha256 {source_hash(slang)}): do not edit.",
-             f"imm {name} [{len(words)}; u32] = ["]
+             f"imm {name} Array[u32, {len(words)}] = ["]
     for i in range(0, len(words), 6):
         lines.append("  " + ", ".join(f"0x{w:08x}u32" for w in words[i:i + 6])
                      + ("," if i + 6 < len(words) else ""))

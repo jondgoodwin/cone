@@ -239,10 +239,9 @@ fn operatorsInsideAGenericMethod() {
 // An instantiation is a type wherever a type goes, including inside another
 // type. It is an unlowered call node until type check replaces it with the
 // instance it names, so every pass that runs before then has to recognize one
-// as a type -- name resolution above all, which is where '*T', '[N; T]' and
-// '?T' decide between a type and the expression that shares their syntax:
-// '*Box[i64]' is a pointer type, not a dereference, and '[2; Box[i64]]' an
-// array type, not an array literal.
+// as a type -- name resolution above all, which is where '*T' and '?T' decide
+// between a type and the expression that shares their syntax: '*Box[i64]' is
+// a pointer type, not a dereference.
 //
 // '&Box[i64]' reaches the same vote because a borrow applies to the whole
 // suffixed term: the instantiation arrives whole, rather than '&' taking the
@@ -270,7 +269,7 @@ fn optionalBox(o ?Box[i64]) i64 {
 
 fn instantiationInsideAnotherType() {
   // Array element type
-  mut a [2; Box[i64]] = [Box[i64][v: 3i64], Box[i64][v: 4i64]];
+  mut a Array[Box[i64], 2] = [Box[i64][v: 3i64], Box[i64][v: 4i64]];
   show("instantiation-as-array-element", a[0].v);
   show("instantiation-as-array-element-second", a[1].v);
   // Written through, so the element type is a real type and not a shape that
@@ -523,22 +522,22 @@ fn referenceToTypeParameter() {
   show("ref-to-type-parameter-in-signature", *refThrough[i64](&w));
 }
 
-// The same vote taken by a tuple, an array and '?'. '(T, T)' asks whether its
-// elements are types, '[2; T]' whether its element is, '?T' whether its
-// operand is -- each of a generic parameter in the template, so the template
-// held a value tuple, an array literal and a refusal, "'?' is not valid here".
-// The instance's clone decides the tuple and the array again. A generic
+// The same vote taken by a tuple and '?'. '(T, T)' asks whether its elements
+// are types, '?T' whether its operand is -- each of a generic parameter in
+// the template, so the template held a value tuple and a refusal, "'?' is not
+// valid here". The instance's clone decides the tuple again. A generic
 // parameter abstains from name resolution's own votes instead of losing them,
 // so '(T, i64)' is a type tuple rather than a mix of types and values, and
 // '?T' stays the Option[T] type its clone substitutes into. '(T, &T)' and
-// '?&T' are here because the inner form is decided first; '[2; (T, T)]'
-// because the array's vote is taken on the tuple's.
+// '?&T' are here because the inner form is decided first. 'Array[T, 2]' takes
+// no vote, being an array type whatever T is, and 'Array[(T, T), 2]' holds
+// the tuple's.
 struct Composing[T] {
   pub pair (T, T);
   pub mixed (T, i64);
   pub withRef (T, &T);
-  pub arr [2; T];
-  pub arrOfPairs [2; (T, T)];
+  pub arr Array[T, 2];
+  pub arrOfPairs Array[(T, T), 2];
   pub opt ?T;
   pub optRef ?&T;
 }
@@ -548,8 +547,8 @@ fn secondOf[T](p (T, T)) T {
   held.1;
 }
 
-fn lastOf[T](a [2; T]) T {
-  imm held [2; T] = a;
+fn lastOf[T](a Array[T, 2]) T {
+  imm held Array[T, 2] = a;
   held[1];
 }
 

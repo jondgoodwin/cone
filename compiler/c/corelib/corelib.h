@@ -49,6 +49,11 @@ extern INsTypeNode *arrayRefType;
 // a void type, told apart from every other by identity (itypeIsNever)
 extern INode *neverType;
 
+// 'Array', the name the array type is written with, 'Array[T, n]' (stdlibInit):
+// a struct with no fields that only names it, since name resolution lowers
+// every bracketed use into an array type node (arrayTypeLower)
+extern StructNode *arrayTypeDcl;
+
 // The two functions a program calls to run its stitched init and final
 // (genlStitch): 'initAll()' and 'finalAll()', names every module reaches as it
 // reaches 'i64', and which a declaration of its own hides

@@ -56,6 +56,14 @@ uint64_t arrayDim1(INode *array) {
     return dim1->uintlit;
 }
 
+// The fill literal's spelling, '[n; x]', given a type for x. An array type is
+// written 'Array[T, n]', so this is refused; the node stays the array type it
+// spells, so nothing downstream reports it again.
+static void arrayRefuseFillSpelling(INode *node) {
+    errorMsgNode(node, ErrorArrayTypeOld,
+        "An array type is written 'Array[T, n]', its element type first, then its size. '[n; x]' is a fill literal, n copies of the value x, and x here is a type.");
+}
+
 // Clone array
 INode *cloneArrayNode(CloneState *cstate, ArrayNode *node) {
     ArrayNode *newnode = memAllocBlk(sizeof(ArrayNode));
@@ -65,17 +73,36 @@ INode *cloneArrayNode(CloneState *cstate, ArrayNode *node) {
     // element is a type, and in a template '[2; T]' asked that of a generic
     // parameter, which is not one -- so the template holds a literal. Cloning
     // stands in for name resolution on an instance, so decide again now that
-    // the element is the type argument (see cloneRefNode).
+    // the element is the type argument (see cloneRefNode): a type there is the
+    // fill literal's spelling of an array type, refused as arrayNameRes refuses it.
     if (newnode->tag == ArrayLitTag && newnode->elems->used > 0
-        && !isTypeNode(nodesGet(node->elems, 0)) && isTypeNode(nodesGet(newnode->elems, 0)))
+        && !isTypeNode(nodesGet(node->elems, 0)) && isTypeNode(nodesGet(newnode->elems, 0))) {
         newnode->tag = ArrayTag;
+        if (newnode->dimens->used > 0)
+            arrayRefuseFillSpelling((INode*)newnode);
+    }
     return (INode *)newnode;
 }
 
-// Serialize an array type
+// Serialize an array type as it is written, 'Array[f32, 3]', a nested array
+// with its sizes together, outermost first: 'Array[f32, 2, 3]'. An array
+// literal is serialized as it is written, too.
 void arrayPrint(ArrayNode *node) {
     INode **nodesp;
     uint32_t cnt;
+    if (node->tag == ArrayTag && node->dimens->used == 1 && node->elems->used == 1) {
+        INode *elem = (INode*)node;
+        while (elem->tag == ArrayTag && ((ArrayNode*)elem)->dimens->used == 1 && ((ArrayNode*)elem)->elems->used == 1)
+            elem = arrayElemType(elem);
+        inodeFprint("Array[");
+        inodePrintNode(elem);
+        for (INode *dim = (INode*)node; dim != elem; dim = arrayElemType(dim)) {
+            inodeFprint(", ");
+            inodePrintNode(nodesGet(((ArrayNode*)dim)->dimens, 0));
+        }
+        inodeFprint("]");
+        return;
+    }
     inodeFprint("[");
     if (node->dimens->used > 0) {
         for (nodesFor(node->dimens, cnt, nodesp)) {
@@ -93,7 +120,9 @@ void arrayPrint(ArrayNode *node) {
     inodeFprint("]");
 }
 
-// Name resolution of an array type/literal
+// Name resolution of an array literal. The parser makes this node for every
+// bracketed list; its first element being a type is what would make it the
+// fill literal's spelling of an array type, '[3; i32]', which is refused.
 void arrayNameRes(NameResState *pstate, ArrayNode *node) {
     INode **nodesp;
     uint32_t cnt;
@@ -101,8 +130,50 @@ void arrayNameRes(NameResState *pstate, ArrayNode *node) {
         inodeNameRes(pstate, nodesp);
     if (node->elems->used > 0 && !isTypeNode(nodesGet(node->elems, 0)))
         node->tag = ArrayLitTag; // We have an array literal, not array type
+    else if (node->dimens->used > 0)
+        arrayRefuseFillSpelling((INode*)node);
     for (nodesFor(node->dimens, cnt, nodesp))
         inodeNameRes(pstate, nodesp);
+}
+
+// Lower the array type 'Array[T, n]' (or 'Array[T, n, m, ...]') into the array
+// type node it names. 'Array' is a name every module reaches unless it
+// declares the name itself (arrayTypeDcl, stdlibInit); it looks like a generic
+// type with number parameters, but nothing is instantiated: the call becomes
+// the ArrayNode here, so from name resolution on nothing sees how it was
+// written. Several sizes are row-major, the first the outermost: the node is
+// built nested, 'Array[f32, 2, 3]' as 'Array[Array[f32, 3], 2]', so the layout,
+// indexing ('a[i][j]') and type identity are the nested spelling's by
+// construction. Each size is checked by arrayTypeCheck as any array's is.
+// An element type that is a generic's parameter is a type once substituted,
+// and the clone substitutes it in place.
+void arrayTypeLower(NameResState *pstate, INode **nodep) {
+    FnCallNode *node = (FnCallNode*)*nodep;
+    Nodes *args = node->args;
+    // Each node built, and each diagnostic, is placed where 'Array' is written
+    INode *where = node->objfn;
+    if ((node->flags & FlagRange) || args == NULL || args->used < 2) {
+        errorMsgNode(where, ErrorArrayTypeArgs,
+            "An array type names its element type, then its size: 'Array[T, n]', or 'Array[T, n, m]' with one size for each dimension, the first the outermost.");
+        *((INode**)nodep) = newErrorNode(where);
+        return;
+    }
+    INode *elemtype = nodesGet(args, 0);
+    if (!isTypeNode(elemtype) && !inodeIsProvisionalType(elemtype)) {
+        errorMsgNode(elemtype, ErrorArrayTypeElem,
+            "An array type's first argument is its element type, and the sizes follow it: 'Array[T, n]'.");
+        *((INode**)nodep) = newErrorNode(where);
+        return;
+    }
+    INode *type = elemtype;
+    for (uint32_t i = args->used - 1; i >= 1; --i) {
+        ArrayNode *array = newArrayNode();
+        inodeLexCopy((INode*)array, where);
+        nodesAdd(&array->dimens, nodesGet(args, i));
+        nodesAdd(&array->elems, type);
+        type = (INode*)array;
+    }
+    *((INode**)nodep) = type;
 }
 
 // Type check an array type
@@ -114,7 +185,7 @@ void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *node) {
         uint32_t cnt;
         for (nodesFor(node->dimens, cnt, nodesp)) {
             if ((*nodesp)->tag != ULitTag)
-                errorMsgNode(*nodesp, ErrorBadArray, "Integer literal must be used for array dimensions");
+                errorMsgNode(*nodesp, ErrorBadArray, "An array type's size must be an integer literal");
         }
     }
     else

@@ -1,0 +1,136 @@
+// The array type, 'Array[T, n]': its element type, then its size. With
+// several sizes, 'Array[T, n, m]', it is row-major, the first size the
+// outermost, laid out and indexed exactly as the nested 'Array[Array[T, m], n]',
+// which is the same type, and as C's 'T a[n][m]'.
+//
+// Everything is printed: the elements in the order memory holds them, read
+// back through a raw pointer, and the sizes, because a type that compiles is
+// not a layout. array_success covers the literal forms, indexing and copying;
+// this scenario covers where the type may be written.
+
+mod array_type;
+
+import stdio use *;
+import libc;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// -------- one size: global, field, parameter, return --------
+
+mut weights Array[i32, 3] = [2, 3, 4];
+
+struct Rgb {
+  pub mut c Array[u8, 3];
+  pub mut alpha u8;
+}
+
+fn dot(a Array[i32, 3], b Array[i32, 3]) i32 {
+  a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+fn ramp(start i32) Array[i32, 3] {
+  [start, start + 1, start + 2];
+}
+
+fn oneSize() {
+  mut held Array[i32, 3] = ramp(5);
+  held[1] = 10;
+  show("dot", i64[dot(held, weights)]);
+  imm px Rgb = Rgb[[1u8, 2u8, 3u8], 255u8];
+  show("rgb", i64[px.c[0]] * 100 + i64[px.c[1]] * 10 + i64[px.c[2]]);
+  show("sizeof Rgb", i64[mem.sizeof[Rgb]()]);
+}
+
+// -------- several sizes: row-major, the same type as nesting --------
+
+// Takes the nested spelling, handed the multi-size one
+fn corner(g Array[Array[i32, 3], 2]) i32 {
+  g[1][2];
+}
+
+// Returns the multi-size spelling, built as the nested one
+fn grid() Array[i32, 2, 3] {
+  mut g Array[Array[i32, 3], 2] = [[0, 0, 0], [0, 0, 0]];
+  mut i = 0usize;
+  while i < 2usize {
+    mut j = 0usize;
+    while j < 3usize {
+      g[i][j] = i32[i] * 10 + i32[j];
+      j += 1usize;
+    }
+    i += 1usize;
+  }
+  g;
+}
+
+fn severalSizes() {
+  imm g = grid();
+  show("corner", i64[corner(g)]);
+  show("sizeof Array[i32, 2, 3]", i64[mem.sizeof[Array[i32, 2, 3]]()]);
+  show("sizeof nested", i64[mem.sizeof[Array[Array[i32, 3], 2]]()]);
+  show("sizeof row", i64[mem.sizeof[Array[i32, 3]]()]);
+  // Memory order: the last index varies fastest
+  mut flat Array[i32, 6] = [6; 0i32];
+  libc.memcpy(&flat as *u8, &g as *u8, mem.sizeof[Array[i32, 2, 3]]());
+  printStr("memory order =");
+  mut k = 0usize;
+  while k < 6usize {
+    printStr(" ");
+    printInt(i64[flat[k]]);
+    k += 1usize;
+  }
+  printStr("\n");
+  // A three-size array, its middle size indexed second
+  mut cube Array[u8, 2, 3, 4] = [2; [3; [4; 0u8]]];
+  cube[1][2][3] = 7u8;
+  show("sizeof Array[u8, 2, 3, 4]", i64[mem.sizeof[Array[u8, 2, 3, 4]]()]);
+  imm bytes = &cube as *u8;
+  show("cube[1][2][3] at byte 23", i64[*(bytes + 23usize)]);
+}
+
+// -------- inside Option, as a generic's argument --------
+
+struct Pair[T] {
+  pub first T;
+  pub second T;
+}
+
+fn optional(o Option[Array[i32, 3]]) i64 {
+  match o {
+    case imm s Some[Array[i32, 3]] { i64[s.value[0] + s.value[1] + s.value[2]]; }
+    case is None { -1; }
+  }
+}
+
+fn wrapped() {
+  show("some", optional(Some[Array[i32, 3]][[4, 5, 6]]));
+  show("none", optional(None[Array[i32, 3]][]));
+  imm p Pair[Array[i32, 2, 2]] = Pair[Array[i32, 2, 2]][[[1, 2], [3, 4]], [[5, 6], [7, 8]]];
+  show("pair", i64[p.first[0][1] * 10 + p.second[1][0]]);
+}
+
+// -------- an array of managed references --------
+
+struct Node {
+  pub mut n i32;
+}
+
+fn references() {
+  imm a Array[Rc[mut, Node], 4] = [+Rc-mut Node[1], +Rc-mut Node[2], +Rc-mut Node[3], +Rc-mut Node[4]];
+  a[2].n = 30;
+  show("refs", i64[a[0].n + a[1].n + a[2].n + a[3].n]);
+  imm r &Array[Rc[mut, Node], 4] = &a;
+  show("through a borrow", i64[r[2].n]);
+}
+
+fn main() {
+  oneSize();
+  severalSizes();
+  wrapped();
+  references();
+}
