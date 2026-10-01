@@ -412,6 +412,9 @@ enum ErrorCode {
     ErrorPairAppend = 1222,     // A pair 'k: v' given to a collection whose '<-' takes no key and value, or to an array
     ErrorEntryPlace = 1223,     // 'n of x', 'fill x' or 'k: v' where no '<-' takes it apart: inside a tuple that is itself appended
 
+    // The retired 'into' operator (parser/parseexpr.c)
+    ErrorInto = 1224,           // 'x into T': a value converts with 'T.from(x)'; a reference narrows to a variant with a check, by a 'match' or 'if imm x &Variant = &value'
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

@@ -398,8 +398,8 @@ void slitTypeCheck(TypeCheckState *pstate, SLitNode *node) {
 // must be a number or a pointer: a struct target is reinterpreted through memory
 // (genlRecast), which a global's initializer has none of. The same-size rule is
 // type check's to apply (castTypeCheck), and generation folds the bitcast,
-// 'inttoptr' or 'ptrtoint' of a constant operand into a constant. A conversion
-// ('into') is not asked here.
+// 'inttoptr' or 'ptrtoint' of a constant operand into a constant. A number's
+// conversion, 'u64.from(n)', is a type literal, asked by typeLitIsLiteral.
 static int litIsConstCast(CastNode *node) {
     if ((node->flags & FlagConvert) || !isTypeNode(node->typ))
         return 0;

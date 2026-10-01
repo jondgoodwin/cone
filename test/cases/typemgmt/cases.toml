@@ -8,15 +8,16 @@
 # here is which changes of type happen implicitly, which have to be asked for,
 # which are refused, and what arithmetic each one performs.
 #
-# The two cast operators and a number type's conversion method, 'from', are the
-# only surface syntax this group adds. Their one parse-stage failure, a cast with
-# no type after it, is typemgmt_parse_type. The type-check reject scenarios are
+# The cast operator 'as' and a number type's conversion method, 'from', are the
+# only surface syntax this group adds. Their parse-stage failures are a cast
+# with no type after it, typemgmt_parse_type, and the retired 'into',
+# typemgmt_parse_into. The type-check reject scenarios are
 # split by what reports the diagnostic, because the four paths are four
 # different pieces of the compiler and a change to one should not have to be
 # read out of a file covering the others:
 #
 #   -convert   'u64.from(x)' and the bracket form a number type does not take
-#   -cast      'as' and 'into', reported by the cast node
+#   -cast      'as', reported by the cast node
 #   -coerce    implicit coercion into a declared type, reported at the receiver
 #   -meet      contexts that must find one type for several values
 #
@@ -85,8 +86,8 @@ excludes = ["%Sample", "%ReadingRef", "%Count = type", "%Tally = type", "%Cells 
 
 # A number converted to Bool asks what a condition asks of it -- not zero, and
 # for a float neither 0 nor -0 -- rather than keeping its low bit or turning a
-# float into an integer first. Each value is converted with 'into', with
-# 'Bool.from' and by 'if', and the three must agree.
+# float into an integer first. Each value is passed where a Bool is wanted,
+# converted with 'Bool.from' and tested by 'if', and the three must agree.
 [scenario.typemgmt_bool_convert]
 category = "run"
 description = "A number converted to Bool is true when a condition would take it as true"
@@ -117,16 +118,27 @@ options = ["--debug"]
 
 # -------- parse stage --------
 
-# A type the grammar requires and the source leaves out: after 'as' and 'into',
-# and at every other site that reads one through parseTypeReq -- an alias's
-# target, 'is' in an expression and in a case, a second return type, a
-# parameter's trait after '+', a generic argument after ','. One diagnostic's
-# whole story, so the sites sit side by side here rather than in their groups.
+# A type the grammar requires and the source leaves out: after 'as', alone and
+# second in a chain, and at every other site that reads one through
+# parseTypeReq -- an alias's target, 'is' in an expression and in a case, a
+# second return type, a parameter's trait after '+', a generic argument after
+# ','. One diagnostic's whole story, so the sites sit side by side here rather
+# than in their groups.
 [scenario.typemgmt_parse_type]
 category = "reject"
 description = "A cast, alias, 'is', return list, trait list or argument list with its type left out"
 tags = ["parse"]
-diagnostics = 9
+diagnostics = 8
+
+# The retired 'into', kept a keyword only to be refused, once at each use, at
+# the word: on a number, to Bool, on a reference to a variant, to a generic's
+# type parameter, second in a chain and with no type after it. The type is read
+# through, so what follows parses.
+[scenario.typemgmt_parse_into]
+category = "reject"
+description = "The retired 'into', pointed at 'T.from(x)' for a value and a checked narrowing for a reference"
+tags = ["parse"]
+diagnostics = 6
 
 # The alias statement's spelling, 'alias Name = type;'. 'typedef', its retired
 # spelling, is kept a keyword only to be refused, once per statement, at the
@@ -153,13 +165,13 @@ diagnostics = 3
 category = "reject"
 description = "A number's 'from' given what it does not convert, and the bracket form a number type does not take"
 tags = ["typecheck"]
-diagnostics = 13
+diagnostics = 14
 
 [scenario.typemgmt_typecheck_cast]
 category = "reject"
-description = "'as' and 'into' applied where no reinterpretation or conversion exists"
+description = "'as' applied where no reinterpretation exists"
 tags = ["typecheck"]
-diagnostics = 6
+diagnostics = 2
 
 [scenario.typemgmt_typecheck_coerce]
 category = "reject"

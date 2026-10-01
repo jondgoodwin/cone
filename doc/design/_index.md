@@ -282,7 +282,7 @@ and carries the manifest for the per-node notes beside it.
 | `ModuleNode`, `ImportNode`, `ProgramNode` — and the module/package/compilation-unit model | [module](../../compiler/c/doc/nodes/module.md) |
 | `NameUseNode` — every appearance of a name | [nameuse](../../compiler/c/doc/nodes/nameuse.md) |
 | `AssignNode` | [assign](../../compiler/c/doc/nodes/assign.md) |
-| `CastNode` — `as`, `into`, `is`, and injected coercions | [cast](../../compiler/c/doc/nodes/cast.md) |
+| `CastNode` — `as`, `is`, a bound pattern's conversion, and injected coercions | [cast](../../compiler/c/doc/nodes/cast.md) |
 | `BreakRetNode` — `return`, `break`, `continue`, `blockret` | [return](../../compiler/c/doc/nodes/return.md) |
 | `BlockNode` — blocks and loops | [block](../../compiler/c/doc/nodes/block.md) |
 | `IfNode` — `if`, `elif`, `else`, and `match` | [if](../../compiler/c/doc/nodes/if.md) |

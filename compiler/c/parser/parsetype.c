@@ -1347,8 +1347,8 @@ int parseIsTypeStart() {
     }
 }
 
-// Parse a type expression where the grammar requires one, as after 'as' or
-// 'into'. No type there is reported just after the token that asked for it,
+// Parse a type expression where the grammar requires one, as after 'as'. No
+// type there is reported just after the token that asked for it,
 // naming that token; the unknown type returned is never read, because a parse
 // error keeps analysis from running.
 INode *parseTypeReq(ParseState *parse, char *after) {

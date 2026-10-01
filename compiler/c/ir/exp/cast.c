@@ -269,23 +269,6 @@ uint32_t castBitsize(INode *type) {
     }
 }
 
-// Answer whether a value of fromtype may be converted to Bool.
-// 'value into Bool' and the method 'Bool.from(value)' are the same
-// conversion, so typeLitNbrFromCheck asks here rather than keeping a second list
-// that would have to be maintained alongside this one.
-int castConvertsToBool(INode *fromtype) {
-    switch (fromtype->tag) {
-    case UintNbrTag:
-    case IntNbrTag:
-    case FloatNbrTag:
-    case RefTag:
-    case PtrTag:
-        return 1;
-    default:
-        return 0;
-    }
-}
-
 // Is this place reached as 'uni': a variable of this function held by value
 // (a local, or a parameter taken by value, but not a global, which a callee
 // may change), a field or an array element of one, or what a 'uni' reference
@@ -322,20 +305,19 @@ static int castUniPlace(INode *node) {
     }
 }
 
-// Is this reference, whatever its permission, a borrow made here of a place
-// reached as 'uni': written in place ('&s into &Circle'), or the value a
-// 'match' or bound 'if' captured in its hidden variable ('match &s')? A
-// variable the program names is not asked: a copy of it could reach the value
-// another way, which freezing does not see.
+// Is this reference, whatever its permission, the value a 'match' or bound
+// 'if' captured in its hidden variable, a borrow made there of a place reached
+// as 'uni' ('match &s')? A variable the program names is not asked: a copy of
+// it could reach the value another way, which freezing does not see.
 static int castBorrowsUni(INode *exp) {
-    if (isNameUseNode(exp) && isExpNode(exp)) {
-        INode *dcl = ((NameUseNode *)exp)->dclnode;
-        if (dcl == NULL || dcl->tag != VarDclTag || ((VarDclNode *)dcl)->namesym != anonName
-            || ((VarDclNode *)dcl)->value == NULL)
-            return 0;
-        exp = ((VarDclNode *)dcl)->value;
-    }
-    return exp->tag == BorrowTag && castUniPlace(((RefNode *)exp)->vtexp);
+    if (!isNameUseNode(exp) || !isExpNode(exp))
+        return 0;
+    INode *dcl = ((NameUseNode *)exp)->dclnode;
+    if (dcl == NULL || dcl->tag != VarDclTag || ((VarDclNode *)dcl)->namesym != anonName
+        || ((VarDclNode *)dcl)->value == NULL)
+        return 0;
+    INode *value = ((VarDclNode *)dcl)->value;
+    return value->tag == BorrowTag && castUniPlace(((RefNode *)value)->vtexp);
 }
 
 // A reference narrowed from a sum type -- an enum, a tagged trait, an
@@ -367,7 +349,7 @@ static void castSumInterior(CastNode *node, RefNode *from, RefNode *to) {
 
 // Type check cast node:
 // - reinterpret cast types must be same size
-// - Ensure type can be safely converted to target type
+// - a bound pattern's conversion narrows a reference, or a value of a sum type
 void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
     if (iexpTypeCheckAny(pstate, &node->exp) == 0)
         return;
@@ -394,55 +376,24 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
         }
         return;
     }
-    else {
-        // Auto-generated downcasting "conversion" may in face be a bitcast
-        if (fromtype->tag == RefTag && totype->tag == RefTag) {
-            node->flags &= 0xFFFF - FlagConvert;
-            castSumInterior(node, (RefNode *)fromtype, (RefNode *)totype);
-        }
-    }
 
-    // Handle conversion to bool
-    if (totype == (INode*)boolType) {
-        if (!castConvertsToBool(fromtype))
-            errorMsgNode(node->exp, ErrorInvType, "Only numbers and ref/ptr may convert to Bool");
+    // A conversion checked here is a bound pattern's: no operator builds one,
+    // and one a coercion injects is built already typed. A reference narrowed
+    // to a reference is a bitcast after all, and one narrowed from a sum type
+    // must be one nothing can change the variant under while it is used.
+    if (fromtype->tag == RefTag && totype->tag == RefTag) {
+        node->flags &= 0xFFFF - FlagConvert;
+        castSumInterior(node, (RefNode *)fromtype, (RefNode *)totype);
         return;
     }
-    switch (totype->tag) {
-    // A slice is two words, so "convert it to an integer" has no single answer:
-    // the length and the data address are both candidates and both are already
-    // spelled better, as 's.len' and 'p as usize'. This used to type check and
-    // then emit 'trunc { i32*, i64 } to i64', which --verify rejects.
-    case UintNbrTag:
-    case IntNbrTag:
-    case FloatNbrTag:
-        if (fromtype->tag == UintNbrTag || fromtype->tag == IntNbrTag || fromtype->tag == FloatNbrTag)
-            return;
-        break;
-    // A reference is reached from a virtual reference, which is the
-    // auto-generated downcast, or from another reference, which the block above
-    // has already turned back into a bitcast. Not from a pointer: a reference
-    // carries a region, a permission and a lifetime, and a raw pointer supplies
-    // none of them, so there is nothing to build one out of. This used to fall
-    // through into the pointer case and be accepted, and genlConvert has no arm
-    // for it -- 'p into &i32' reached the arm's assert, which a Release build
-    // compiles out, and died on a null LLVM value. 'p as &i32' is the spelling
-    // for keeping the bits, and it generates a bitcast.
-    case RefTag:
-        if (fromtype->tag == VirtRefTag || fromtype->tag == RefTag)
-            return;
-        break;
-    case PtrTag:
-        if (fromtype->tag == RefTag || fromtype->tag == PtrTag)
-            return;
-        break;
-    case VirtRefTag:
-        break;
-    case StructTag:
-        if (fromtype->tag == StructTag && (fromtype->flags & SameSize))
-            return;
-        break;
-    }
+    // A virtual reference narrows to the reference it was made from, and a
+    // value of a sum type, a struct carrying SameSize, to its variant
+    if (totype->tag == RefTag && fromtype->tag == VirtRefTag)
+        return;
+    if (totype->tag == StructTag && fromtype->tag == StructTag && (fromtype->flags & SameSize))
+        return;
+    // Anything else is usually a pattern its 'is' test, checked first, has
+    // refused already
     errorMsgNode(node->vtype, ErrorInvType, "Unsupported built-in type conversion");
 }
 

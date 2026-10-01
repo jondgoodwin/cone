@@ -622,25 +622,32 @@ INode *parsePrefix(ParseState *parse) {
     }
 }
 
+// 'into' is retired. A value converts with its type's method, 'u64.from(n)',
+// and a reference narrows to a variant only where the variant the value holds
+// is checked, by a 'match' or a bound 'if'. The word stays a keyword only to be
+// refused; the type after it, if one is written, is read so that what follows
+// parses, and the parse error keeps analysis from running.
+static void parseRetiredInto(ParseState *parse) {
+    errorMsgLex(ErrorInto,
+        "'into' is retired: a value converts with its type's method, 'T.from(x)', and a reference narrows to a variant with a check, by a 'match' or 'if imm x &Variant = &value'.");
+    lexNextToken();
+    parseType(parse);
+}
+
 // Parse type cast. Casts chain left to right: 'p as *T as usize' casts
 // 'p as *T' to usize.
 INode *parseCast(ParseState *parse) {
     INode *lhnode = parsePrefix(parse);
     while (1) {
-        CastNode *node;
-        char *op;
-        if (lexIsToken(AsToken)) {
-            node = newRecastNode(lhnode, unknownType);
-            op = "'as'";
+        if (lexIsToken(IntoToken)) {
+            parseRetiredInto(parse);
+            continue;
         }
-        else if (lexIsToken(IntoToken)) {
-            node = newConvCastNode(lhnode, unknownType);
-            op = "'into'";
-        }
-        else
+        if (!lexIsToken(AsToken))
             return lhnode;
+        CastNode *node = newRecastNode(lhnode, unknownType);
         lexNextToken();
-        node->typ = parseTypeReq(parse, op);
+        node->typ = parseTypeReq(parse, "'as'");
         lhnode = (INode*)node;
     }
 }

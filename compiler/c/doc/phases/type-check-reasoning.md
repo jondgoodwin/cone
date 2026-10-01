@@ -305,22 +305,22 @@ a public overload name may legitimately select a private concrete candidate.
 
 ## 8. Casts and `is`
 
-Three syntaxes, all `CastNode`:
+Two syntaxes and a pattern's binding, all `CastNode`:
 
 | Source | Node | Meaning |
 | --- | --- | --- |
 | `x as T` | `newRecastNode` | reinterpret the bits |
-| `x into T` | `newConvCastNode` (`FlagConvert`) | convert the value |
 | `x is T` | `newIsNode` | is this the runtime type? |
+| `case imm c &Circle` | `newConvCastNode` (`FlagConvert`, `FlagMatchBind`) | the matched value, narrowed, for the bound variable |
 
 **Reinterpret requires identical bit size** (`castBitsize`), except to a struct,
-which is unchecked. **Convert** permits number to number, reference or pointer
-to pointer, reference to reference, virtual reference to reference, `SameSize`
-struct to struct, and anything
-`castConvertsToBool` allows to `Bool`. A ref-to-ref conversion drops
-`FlagConvert` on the spot — it is a bitcast after all. Everything else is
-`ErrorInvType`. A slice deliberately does not convert to an integer: length and
-data address are both candidates and both are spelled better already.
+which is unchecked. **Convert**, a bound pattern's, permits reference to
+reference, virtual reference to reference, and `SameSize` struct to struct. A
+ref-to-ref conversion drops `FlagConvert` on the spot — it is a bitcast after
+all. Everything else is `ErrorInvType`, usually after the pattern's `is` test
+has refused the narrowing. A number converts with its type's `from`
+([literals](../nodes/literals.md)); `into` is retired, refused at parse
+(`ErrorInto`).
 
 `castIsTypeCheck` — reached from the `is` keyword, which `parseCmp` handles at
 comparison precedence — decides only whether a **downcast specialization** is
