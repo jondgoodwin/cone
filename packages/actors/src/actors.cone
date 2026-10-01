@@ -657,11 +657,11 @@ mut running = 0usize;
 mut @threadlocal me usize = 0usize;
 
 fn workerAt(s *Sched, i u32) *Worker {
-  (*s).workers + usize[i];
+  (*s).workers + usize.from(i);
 }
 
 fn ringAt(w *Worker, pos u64) **Header {
-  (&(*w).ring as **Header) + usize[pos & queueMask];
+  (&(*w).ring as **Header) + usize.from(pos & queueMask);
 }
 
 fn ld32(p *u32) u32 {mem.atomicLoad[u32](p, MemOrder.SeqCst[]);}
@@ -827,7 +827,7 @@ fn injectPop(s *Sched, w *Worker) *Header {
   }
   // Take the first, and up to a share of the rest for this worker's queue
   imm len = mem.atomicLoad[u64](lenp, MemOrder.Relaxed[]);
-  mut extra = len / u64[(*s).nworkers];
+  mut extra = len / u64.from((*s).nworkers);
   if extra > 32u64 {
     extra = 32u64;
   }
@@ -941,7 +941,7 @@ fn runActor(w *Worker, h *Header) {
   imm s = (*w).sched;
   imm run = (*h).run;
   imm n = run(h, (*s).batch);
-  tally(&(*w).messages as *u64, u64[n]);
+  tally(&(*w).messages as *u64, u64.from(n));
   tally(&(*w).activations as *u64, 1u64);
   if n < (*s).batch and mailMarkIdle(h) {
     imm release = (*h).release;
@@ -1092,8 +1092,8 @@ fn ensureRunning() {
 fn startWorkers() {
   imm n = if chosenWorkers == 0u32 {thread.parallelism();} else {chosenWorkers;};
   imm s = libc.calloc(1usize, mem.sizeof[Sched]()) as *Sched;
-  imm ws = libc.calloc(usize[n], mem.sizeof[Worker]()) as *Worker;
-  imm ts = libc.malloc(usize[n] * mem.sizeof[thread.Thread[u32]]()) as *thread.Thread[u32];
+  imm ws = libc.calloc(usize.from(n), mem.sizeof[Worker]()) as *Worker;
+  imm ts = libc.malloc(usize.from(n) * mem.sizeof[thread.Thread[u32]]()) as *thread.Thread[u32];
   if s as usize == 0usize or ws as usize == 0usize or ts as usize == 0usize {
     die("actors: out of memory for the runtime");
   }
@@ -1108,7 +1108,7 @@ fn startWorkers() {
     (*w).sched = s;
     (*w).index = i;
     (*w).rng = (2463534242u32 ^ ((i + 1u32) * 7919u32)) | 1u32;
-    mem.writeRaw[thread.Thread[u32]](ts + usize[i],
+    mem.writeRaw[thread.Thread[u32]](ts + usize.from(i),
       thread.startWith(thread.Options[name: "actors worker"], WorkerArg[w], &workerMain));
     i = i + 1u32;
   }
@@ -1133,7 +1133,7 @@ fn stopWorkers() {
   sync.futexWakeAll(&(*s).epoch);
   mut i = 0u32;
   while i < (*s).nworkers {
-    imm t = mem.readRaw[thread.Thread[u32]]((*s).threads + usize[i]);
+    imm t = mem.readRaw[thread.Thread[u32]]((*s).threads + usize.from(i));
     t.join();
     i = i + 1u32;
   }

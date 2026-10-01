@@ -21,6 +21,9 @@ int typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private);
 // Check the type literal node
 void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *lit);
 
+// Check the value a number's 'from' converts; 0 when it does not convert
+int typeLitNbrFromCheck(FnCallNode *conv, INode *type);
+
 // Is the type literal actually a literal?
 int typeLitIsLiteral(FnCallNode *node);
 

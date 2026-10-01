@@ -1,4 +1,6 @@
-/** Handling for list nodes (e.g., type literals)
+/** Handling for type literals: a struct's value built from its fields,
+ * 'Point[1., 2.]', and a number's conversion, 'u64.from(count)', which type
+ * check lowers into the same node (fnCallNumberFrom)
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -7,19 +9,26 @@
 
 #include "../ir.h"
 
-// Serialize a list node
+// Is this a number type, the target of a conversion rather than a struct literal?
+static int typeLitIsNbrType(INode *littype) {
+    return littype->tag == IntNbrTag || littype->tag == UintNbrTag || littype->tag == FloatNbrTag;
+}
+
+// Serialize a type literal: a struct's as written, a number's conversion as
+// the call it was written as
 void typeLitPrint(FnCallNode *node) {
+    int conversion = node->vtype && typeLitIsNbrType(itypeGetTypeDcl(node->vtype));
     if (node->objfn)
         inodePrintNode(node->objfn);
     INode **nodesp;
     uint32_t cnt;
-    inodeFprint("[");
+    inodeFprint(conversion ? ".from(" : "[");
     for (nodesFor(node->args, cnt, nodesp)) {
         inodePrintNode(*nodesp);
         if (cnt)
             inodeFprint(",");
     }
-    inodeFprint("]");
+    inodeFprint(conversion ? ")" : "]");
 }
 
 // Check the type literal node (actually done by fncall)
@@ -44,30 +53,30 @@ int typeLitIsLiteral(FnCallNode *node) {
     return 1;
 }
 
-// Type check a number literal
-void typeLitNbrCheck(TypeCheckState *pstate, FnCallNode *nbrlit, INode *type) {
-
-    if (nbrlit->args->used != 1) {
-        errorMsgNode((INode*)nbrlit, ErrorBadArray, "Number literal requires one value");
-        return;
-    }
-
-    INode *first = nodesGet(nbrlit->args, 0);
+// Type check the value a number's 'from' converts, its one argument, already
+// type checked. Returns 0 when it does not convert.
+int typeLitNbrFromCheck(FnCallNode *conv, INode *type) {
+    INode *first = nodesGet(conv->args, 0);
     INode *firsttype = itypeGetTypeDcl(((IExpNode*)first)->vtype);
 
-    // 'Bool[value]' is the same conversion as 'value into Bool', so it accepts
-    // whatever that accepts -- a reference or a pointer included, which convert
-    // by asking whether they are non-null. Every other number type still
+    // 'Bool.from(value)' is the same conversion as 'value into Bool', so it
+    // accepts whatever that accepts -- a reference or a pointer included, which
+    // convert by asking whether they are non-null. Every other number type
     // requires a number source: a pointer has no conversion to an integer on
     // either path.
     if (type == (INode*)boolType) {
-        if (!castConvertsToBool(firsttype))
-            errorMsgNode((INode*)first, ErrorBadArray, "May only create Bool from a number, reference or pointer");
-        return;
+        if (!castConvertsToBool(firsttype)) {
+            errorMsgNode((INode*)first, ErrorNbrFrom, "Bool.from converts a number, a reference or a pointer");
+            return 0;
+        }
+        return 1;
     }
 
-    if (firsttype->tag != IntNbrTag && firsttype->tag != UintNbrTag && firsttype->tag != FloatNbrTag)
-        errorMsgNode((INode*)first, ErrorBadArray, "May only create number literal from another number");
+    if (!typeLitIsNbrType(firsttype)) {
+        errorMsgNode((INode*)first, ErrorNbrFrom, "%s.from converts a number", &((NbrNode*)type)->namesym->namestr);
+        return 0;
+    }
+    return 1;
 }
 
 // Return true if desired named field is found and swapped into place
@@ -213,8 +222,14 @@ void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
         errorMsgNode((INode*)arrlit, ErrorInvType, "Type must be concrete and instantiable.");
     else if (littype->tag == StructTag)
         typeLitStructCheck(pstate, arrlit, (StructNode*)littype);
-    else if (littype->tag == IntNbrTag || littype->tag == UintNbrTag || littype->tag == FloatNbrTag)
-        typeLitNbrCheck(pstate, arrlit, littype);
+    // A number is not built from brackets: its conversion is a method,
+    // 'u64.from(count)'. Refused here, at type check, so that a number reached
+    // through an alias or a type parameter is refused as one named directly.
+    else if (typeLitIsNbrType(littype)) {
+        Name *written = isNameUseNode(arrlit->objfn) ? ((NameUseNode*)arrlit->objfn)->namesym : ((NbrNode*)littype)->namesym;
+        errorMsgNode((INode*)arrlit, ErrorNbrBracket,
+            "A number type takes no '[...]': a conversion is its method, %s.from(value)", &written->namestr);
+    }
     else  // ArrayTag is dispatched in a different way and should never get here
         errorMsgNode((INode*)arrlit, ErrorBadArray, "Unknown type literal type for type checking");
 }

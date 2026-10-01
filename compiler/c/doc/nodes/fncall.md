@@ -1,7 +1,7 @@
 `FnCallNode` is the compiler's busiest node. One shape — `objfn`, `methfld`,
 `args` — serves function calls, method calls, operator applications, field
-access, array indexing, type constructors, initializers, generic
-instantiation and macro calls. Type check is where they separate.
+access, array indexing, type constructors, number conversions, initializers,
+generic instantiation and macro calls. Type check is where they separate.
 
 **At a glance.** Built by `parseexpr.c` from several unrelated syntaxes. Name
 resolution binds `objfn` and the arguments and **deliberately leaves `methfld`
@@ -59,7 +59,8 @@ end of file.
 
 Built from: a call `f(a)`, an index `a[i]`, a member access `a.b`, every binary
 and unary operator, a generic instantiation `Box[i64]`, a managed reference
-type `Rc[mut, Node]`, `?T` for `Option[T]`, and a type constructor `Point[1,2]`. `parseDotCall`, `parseSuffix`, `parseArgs`
+type `Rc[mut, Node]`, `?T` for `Option[T]`, a type constructor `Point[1,2]`, and
+a number's conversion `u64.from(count)`, a member access like any other. `parseDotCall`, `parseSuffix`, `parseArgs`
 and the whole precedence cascade all build this node.
 
 Nothing about which of those it is has been decided yet.
@@ -128,7 +129,9 @@ receiver's check has made the instance: a generic module's by
 `fnCallTypeInstancePath`, `List[i64].empty()`, which looks the member up in the
 instance's namespace and applies the same privacy and abstract-method rules as
 above, the privacy judged against the instance's module. A generic type's path
-reaches only a function or an overload name; any other member, and every other
+reaches only a function or an overload name. **A number type's path reaches
+only `from`**, its conversion, `u64.from(count)`, lowered by
+`fnCallNumberFrom` (Type check, stage 1). Any other member, and every other
 base, is refused by stage 2's type receiver.
 
 ## Type check
@@ -158,7 +161,15 @@ a managed reference type, `Rc[mut, Node]`, lowered into the `RefNode` it names
 type") ahead of the struct-literal pass below, which would take its head for a
 literal's struct; and a permission in the brackets of anything else, refused
 (`fnCallRefusePermArg`). Then, for a member access by name that is not an operator, the **receiver is
-checked ahead of the arguments** and its type asked what the name binds — an
+checked ahead of the arguments** and its type asked what the name binds. **A
+receiver that is a number type with the member `from`** — named directly,
+through an alias, or as the argument a type parameter has in an instance — is a
+conversion, lowered by `fnCallNumberFrom`: its one value checked with no
+expected type (so an untyped literal keeps its `i32` default and is converted
+from it), then the node retagged `TypeLitTag` with the number as its type,
+which generation expands with `genlConvert`. No declaration of `from` exists;
+the name is recognised on a number type. A wrong count of values, a value that
+does not convert, or `from` named without a call is `ErrorNbrFrom`. Otherwise an
 alias, for a macro method the type holds by folding, is resolved first, and the
 receiver shifted to the field it was folded through (`structFoldReceiver`): a
 macro method expands here, through `macroMethodTypeCheck`, with its arguments
@@ -181,11 +192,14 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
 `errorType`. Then rewrite the shapes that are not yet calls:
 
 - **A type**, with `FlagIndex` → retag `TypeLitTag` and hand to
-  `typeLitTypeCheck`.
+  `typeLitTypeCheck`, which builds a struct's literal and refuses a number
+  type, `u64[count]`, with `ErrorNbrBracket` naming `u64.from(...)`: its
+  conversion is the method. Refused there, at type check, so a number reached
+  through an alias or a type parameter is refused as one named directly.
 - **A type**, with a member name → a path the collapse could not take, because
-  the base is not a namespace until later: an alias, a number type, a generic
-  instance, a generic parameter. `ErrorUnkName`, naming what a path may pass
-  through.
+  the base is not a namespace until later: an alias, a number type's member
+  other than `from`, a generic instance, a generic parameter. `ErrorUnkName`,
+  naming what a path may pass through.
 - **A type**, with neither → rewrite the name to the type's `init` method.
 - **A bare method or field name** (`FlagMethFld`, not `FlagQualified`) →
   rewrite to `self.method`, synthesizing a resolved `self` from parameter 0.

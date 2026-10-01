@@ -90,8 +90,8 @@ pub struct SurfaceNet {
       imm b = *quads[q + 1usize];
       imm c = *quads[q + 2usize];
       imm d = *quads[q + 3usize];
-      imm ac = *positions[usize[c]] - *positions[usize[a]];
-      imm bd = *positions[usize[d]] - *positions[usize[b]];
+      imm ac = *positions[usize.from(c)] - *positions[usize.from(a)];
+      imm bd = *positions[usize.from(d)] - *positions[usize.from(b)];
       if dot3(ac, ac) <= dot3(bd, bd) {
         m.indices.push(a); m.indices.push(b); m.indices.push(c);
         m.indices.push(a); m.indices.push(c); m.indices.push(d);
@@ -155,7 +155,7 @@ fn faceCorner(axis u32, side u32, k u32) u32 {
 
 fn findRoot(parent &List[u32], e u32) u32 {
   mut r = e;
-  while *parent[usize[r]] != r { r = *parent[usize[r]]; }
+  while *parent[usize.from(r)] != r { r = *parent[usize.from(r)]; }
   r;
 }
 
@@ -163,7 +163,7 @@ fn findRoot(parent &List[u32], e u32) u32 {
 fn joinEdges(parent &mut List[u32], a u32, b u32) {
   imm ra = findRoot(parent, a);
   imm rb = findRoot(parent, b);
-  if ra < rb { parent.set(usize[rb], ra); } elif rb < ra { parent.set(usize[ra], rb); }
+  if ra < rb { parent.set(usize.from(rb), ra); } elif rb < ra { parent.set(usize.from(ra), rb); }
 }
 
 // For every way a cell's corners can fall (bit c set: corner c inside), its
@@ -215,7 +215,7 @@ fn netTables() NetTables {
     e = 0u32;
     while e < 12u32 {
       if cornerBit(config, edgeStart(e)) != cornerBit(config, edgeEnd(e)) {
-        imm r = usize[findRoot(&parent, e)];
+        imm r = usize.from(findRoot(&parent, e));
         if *label[r] == NoPiece {
           label.set(r, n);
           n = n + 1u8;
@@ -269,9 +269,9 @@ pub fn surfaceNet[S Shape](shape &S, box Aabb3, cellSize f32, relax u32, sparse 
   imm cs = cellSize;
   imm lo = box.min - Vec3[cs, cs, cs];
   imm extent = box.max - box.min;
-  imm nx = usize[libc.ceilf(extent.x / cs)] + 2usize;
-  imm ny = usize[libc.ceilf(extent.y / cs)] + 2usize;
-  imm nz = usize[libc.ceilf(extent.z / cs)] + 2usize;
+  imm nx = usize.from(libc.ceilf(extent.x / cs)) + 2usize;
+  imm ny = usize.from(libc.ceilf(extent.y / cs)) + 2usize;
+  imm nz = usize.from(libc.ceilf(extent.z / cs)) + 2usize;
   imm px = nx + 1usize;
   imm py = ny + 1usize;
   imm pz = nz + 1usize;
@@ -307,11 +307,11 @@ pub fn surfaceNet[S Shape](shape &S, box Aabb3, cellSize f32, relax u32, sparse 
         while kx < blocksX {
           imm x0 = kx * NetBlock;
           imm x1 = if x0 + NetBlock < nx { x0 + NetBlock; } else { nx; };
-          imm centre = Vec3[lo.x + cs * 0.5 * f32[x0 + x1], lo.y + cs * 0.5 * f32[y0 + y1],
-            lo.z + cs * 0.5 * f32[z0 + z1]];
-          imm sx = f32[x1 - x0];
-          imm sy = f32[y1 - y0];
-          imm sz = f32[z1 - z0];
+          imm centre = Vec3[lo.x + cs * 0.5 * f32.from(x0 + x1), lo.y + cs * 0.5 * f32.from(y0 + y1),
+            lo.z + cs * 0.5 * f32.from(z0 + z1)];
+          imm sx = f32.from(x1 - x0);
+          imm sy = f32.from(y1 - y0);
+          imm sz = f32.from(z1 - z0);
           imm half = 0.5 * cs * sqrtf(sx * sx + sy * sy + sz * sz);
           imm d = shape.distance(centre);
           evaluations = evaluations + 1u64;
@@ -350,7 +350,7 @@ pub fn surfaceNet[S Shape](shape &S, box Aabb3, cellSize f32, relax u32, sparse 
       while x < px {
         imm at = x + px * (y + py * z);
         if *needed[at] == 1u8 {
-          values.set(at, shape.distance(Vec3[lo.x + cs * f32[x], lo.y + cs * f32[y], lo.z + cs * f32[z]]));
+          values.set(at, shape.distance(Vec3[lo.x + cs * f32.from(x), lo.y + cs * f32.from(y), lo.z + cs * f32.from(z)]));
           evaluations = evaluations + 1u64;
           sampled = sampled + 1u64;
         }
@@ -377,42 +377,42 @@ pub fn surfaceNet[S Shape](shape &S, box Aabb3, cellSize f32, relax u32, sparse 
         mut config = 0u32;
         mut c = 0u32;
         while c < 8u32 {
-          imm at = (x + usize[cornerBit(c, 0u32)]) + px * ((y + usize[cornerBit(c, 1u32)]) + py * (z + usize[cornerBit(c, 2u32)]));
+          imm at = (x + usize.from(cornerBit(c, 0u32))) + px * ((y + usize.from(cornerBit(c, 1u32))) + py * (z + usize.from(cornerBit(c, 2u32))));
           if *values[at] < 0. { config = config | (1u32 << c); }
           c = c + 1u32;
         }
-        configs.push(u8[config]);
-        imm n = *tables.pieces[usize[config]];
+        configs.push(u8.from(config));
+        imm n = *tables.pieces[usize.from(config)];
         if n == 0u8 {
           firstVertex.push(mesh.NoIndex);
         } else {
-          firstVertex.push(u32[positions.len()]);
-          imm corner = Vec3[lo.x + cs * f32[x], lo.y + cs * f32[y], lo.z + cs * f32[z]];
+          firstVertex.push(u32.from(positions.len()));
+          imm corner = Vec3[lo.x + cs * f32.from(x), lo.y + cs * f32.from(y), lo.z + cs * f32.from(z)];
           mut piece = 0u8;
           while piece < n {
             mut sum = Vec3[0., 0., 0.];
             mut count = 0u32;
             mut e = 0u32;
             while e < 12u32 {
-              if *tables.edgePiece[usize[config * 12u32 + e]] == piece {
+              if *tables.edgePiece[usize.from(config * 12u32 + e)] == piece {
                 imm c0 = edgeStart(e);
                 imm c1 = edgeEnd(e);
-                imm d0 = *values[(x + usize[cornerBit(c0, 0u32)]) + px * ((y + usize[cornerBit(c0, 1u32)]) + py * (z + usize[cornerBit(c0, 2u32)]))];
-                imm d1 = *values[(x + usize[cornerBit(c1, 0u32)]) + px * ((y + usize[cornerBit(c1, 1u32)]) + py * (z + usize[cornerBit(c1, 2u32)]))];
+                imm d0 = *values[(x + usize.from(cornerBit(c0, 0u32))) + px * ((y + usize.from(cornerBit(c0, 1u32))) + py * (z + usize.from(cornerBit(c0, 2u32))))];
+                imm d1 = *values[(x + usize.from(cornerBit(c1, 0u32))) + px * ((y + usize.from(cornerBit(c1, 1u32))) + py * (z + usize.from(cornerBit(c1, 2u32))))];
                 imm t = d0 / (d0 - d1);
                 assertDebug(t >= 0. and t <= 1.);
                 // The crossing in the cell's own coordinates, 0 to 1
                 imm a = e / 4u32;
-                imm within = Vec3[if a == 0u32 { t; } else { f32[cornerBit(c0, 0u32)]; },
-                  if a == 1u32 { t; } else { f32[cornerBit(c0, 1u32)]; },
-                  if a == 2u32 { t; } else { f32[cornerBit(c0, 2u32)]; }];
+                imm within = Vec3[if a == 0u32 { t; } else { f32.from(cornerBit(c0, 0u32)); },
+                  if a == 1u32 { t; } else { f32.from(cornerBit(c0, 1u32)); },
+                  if a == 2u32 { t; } else { f32.from(cornerBit(c0, 2u32)); }];
                 sum = sum + within;
                 count = count + 1u32;
               }
               e = e + 1u32;
             }
             assertDebug(count >= 3u32);
-            imm avg = sum * (1. / f32[count]);
+            imm avg = sum * (1. / f32.from(count));
             positions.push(Vec3[corner.x + cs * avg.x, corner.y + cs * avg.y, corner.z + cs * avg.z]);
             cellOf.push(corner);
             piece = piece + 1u8;
@@ -484,11 +484,11 @@ pub fn surfaceNet[S Shape](shape &S, box Aabb3, cellSize f32, relax u32, sparse 
                 mut cz = 0usize;
                 axisToXyz(a, pa, cu, cv, &mut cx, &mut cy, &mut cz);
                 imm cell = cx + nx * (cy + ny * cz);
-                imm config = u32[*configs[cell]];
-                imm e = u32[a] * 4u32 + u32[pu - cu] + 2u32 * u32[pv - cv];
-                imm piece = *tables.edgePiece[usize[config * 12u32 + e]];
+                imm config = u32.from(*configs[cell]);
+                imm e = u32.from(a) * 4u32 + u32.from(pu - cu) + 2u32 * u32.from(pv - cv);
+                imm piece = *tables.edgePiece[usize.from(config * 12u32 + e)];
                 assertDebug(piece != NoPiece and *firstVertex[cell] != mesh.NoIndex);
-                vs.push(*firstVertex[cell] + u32[piece]);
+                vs.push(*firstVertex[cell] + u32.from(piece));
                 k = k + 1usize;
               }
               // Outward is +a when the lower end is inside
@@ -507,8 +507,8 @@ pub fn surfaceNet[S Shape](shape &S, box Aabb3, cellSize f32, relax u32, sparse 
     }
     z = z + 1usize;
   }
-  SurfaceNet[positions, normals, quads, cs, u32[nx], u32[ny], u32[nz], evaluations, sampled,
-    u32[blocksX * blocksY * blocksZ], blocksSkipped];
+  SurfaceNet[positions, normals, quads, cs, u32.from(nx), u32.from(ny), u32.from(nz), evaluations, sampled,
+    u32.from(blocksX * blocksY * blocksZ), blocksSkipped];
 }
 
 // Levels of detail: 'count' surface nets of the shape over 'box', the first
@@ -518,7 +518,7 @@ pub fn surfaceNet[S Shape](shape &S, box Aabb3, cellSize f32, relax u32, sparse 
 // true to the shape as its cells allow; 'toMesh' makes each a mesh for a
 // renderer's chain of levels
 pub fn netLevels[S Shape](shape &S, box Aabb3, finest f32, count u32, relax u32) List[SurfaceNet] {
-  mut out = List[SurfaceNet].withCapacity(usize[count]);
+  mut out = List[SurfaceNet].withCapacity(usize.from(count));
   mut cell = finest;
   mut i = 0u32;
   while i < count {
@@ -535,8 +535,8 @@ pub fn netLevels[S Shape](shape &S, box Aabb3, finest f32, count u32, relax u32)
 // folded in by noise's PCG hash, h = pcg(h ^ word), in that order. Two
 // meshes with the same hash have, almost surely, the same bits
 pub fn meshHash(m &mesh.Mesh) u32 {
-  mut h = noise.pcg(u32[m.positions.len()]);
-  h = noise.pcg(h ^ u32[m.indices.len()]);
+  mut h = noise.pcg(u32.from(m.positions.len()));
+  h = noise.pcg(h ^ u32.from(m.indices.len()));
   mut i = 0usize;
   while i < m.positions.len() {
     imm p = *m.positions[i];

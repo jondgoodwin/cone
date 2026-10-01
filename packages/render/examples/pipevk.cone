@@ -125,7 +125,7 @@ fn parseCount(s *u8) i32 {
   while *(s + i) != 0u8 {
     imm c = *(s + i);
     if c < '0' or c > '9' { return -1; }
-    n = n * 10 + i32[c - '0'];
+    n = n * 10 + i32.from(c - '0');
     i = i + 1usize;
   }
   n;
@@ -152,7 +152,7 @@ fn srgbByte(linear f32) i32 {
   } else {
     c = 1.055 * libc.powf(c, 1. / 2.4) - 0.055;
   }
-  i32[c * 255. + 0.5];
+  i32.from(c * 255. + 0.5);
 }
 
 fn onOff(on Bool) &[]u8 {
@@ -182,8 +182,8 @@ fn pixelOf(viewProjection Mat4, p Vec3, w u32, h u32, x &mut i32, y &mut i32) {
   imm clip = viewProjection * Vec4[p.x, p.y, p.z, 1.];
   imm nx = clip.x / clip.w;
   imm ny = clip.y / clip.w;
-  *x = i32[(nx + 1.) * 0.5 * f32[w]];
-  *y = i32[(1. - ny) * 0.5 * f32[h]];
+  *x = i32.from((nx + 1.) * 0.5 * f32.from(w));
+  *y = i32.from((1. - ny) * 0.5 * f32.from(h));
 }
 
 // Channel 'c' (0 red, 1 green, 2 blue) of pixel ('x', 'y') of a frame 'w'
@@ -191,7 +191,7 @@ fn pixelOf(viewProjection Mat4, p Vec3, w u32, h u32, x &mut i32, y &mut i32) {
 fn channel(p *u8, w u32, x i32, y i32, c usize, bgra Bool) i32 {
   mut at = c;
   if bgra { at = 2usize - c; }
-  i32[*(p + (usize[y] * usize[w] + usize[x]) * 4usize + at)];
+  i32.from(*(p + (usize.from(y) * usize.from(w) + usize.from(x)) * 4usize + at));
 }
 
 // Check that pixel ('x', 'y') is lit by a material of 'base' color with a
@@ -200,7 +200,7 @@ fn channel(p *u8, w u32, x i32, y i32, c usize, bgra Bool) i32 {
 fn checkLit(name &[]u8, p *u8, w u32, h u32, x i32, y i32, bgra Bool, base Color, specular f32, light &Light,
     bg &Array[i32, 3]) Bool {
   printStr(name); print <- " at ("; print <- x; print <- ", "; print <- y; print <- "): ";
-  if x < 0 or y < 0 or x >= i32[w] or y >= i32[h] {
+  if x < 0 or y < 0 or x >= i32.from(w) or y >= i32.from(h) {
     print <- "off the screen\n";
     return false;
   }
@@ -305,7 +305,7 @@ fn pushWheel(y f32) {
   imm w = &mut e as &mut sdl.MouseWheelEvent;
   w.which = SCRIPT_DEVICE;
   w.y = y;
-  w.integer_y = i32[y];
+  w.integer_y = i32.from(y);
   pushed(&mut e);
 }
 
@@ -400,14 +400,14 @@ fn main(argc i32, argv **u8) i32 {
   if (env as usize) != 0usize { maxFrames = parseCount(env); }
   mut a = 1;
   while a < argc {
-    imm arg = *(argv + usize[a]);
+    imm arg = *(argv + usize.from(a));
     if cstrEquals(arg, "--frames") and a + 1 < argc {
-      maxFrames = parseCount(*(argv + usize[a + 1]));
+      maxFrames = parseCount(*(argv + usize.from(a + 1)));
       a = a + 1;
     } elif cstrEquals(arg, "--script") {
       scripted = true;
     } elif cstrEquals(arg, "--screenshot") and a + 1 < argc {
-      imm s = *(argv + usize[a + 1]);
+      imm s = *(argv + usize.from(a + 1));
       mut i = 0usize;
       while *(s + i) != 0u8 {
         screenshot.appendByte(*(s + i));
@@ -515,7 +515,7 @@ fn main(argc i32, argv **u8) i32 {
   print <- "; synchronization validation: "; printStr(onOff(instance.syncValidation)); print <- "\n";
   mut device = adapter.requestDevice();
   imm size = win.size();
-  mut swapchain = device.createSwapChain(&surface, u32[size.w], u32[size.h], TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut swapchain = device.createSwapChain(&surface, u32.from(size.w), u32.from(size.h), TEXTURE_FORMAT_DEPTH32_FLOAT);
   mut renderer = Renderer.create(&mut device, swapchain.format, TEXTURE_FORMAT_DEPTH32_FLOAT);
   if !renderer.isValid() {
     print <- "The renderer could not be made\n";
@@ -572,7 +572,7 @@ fn main(argc i32, argv **u8) i32 {
   mut startOrbit = Orbit.make(Vec3[0., 0., 0.], 10., 0., 0.);
   tour(&mut startOrbit, SIDE_BY_SIDE, 0.);
   mut controls = CameraControls.make(cameraActions, startOrbit, &mut ctx);
-  controls.orbit.fitPan(camera.fov, f32[win.windowSize().h]);
+  controls.orbit.fitPan(camera.fov, f32.from(win.windowSize().h));
   mut touring = true;
   mut relativeMouse = false;
   mut latency = LatencyLog.empty();
@@ -589,7 +589,7 @@ fn main(argc i32, argv **u8) i32 {
   mut places Array[Mat4, 4] = [4; Mat4.identity()];
   mut i = 0usize;
   while i < 4usize {
-    places[i] = Mat4.fromTranslation(Vec3[(f32[i] - 1.5) * SPACING, 0., 0.] - middle);
+    places[i] = Mat4.fromTranslation(Vec3[(f32.from(i) - 1.5) * SPACING, 0., 0.] - middle);
     i = i + 1usize;
   }
   imm alone = Mat4.fromTranslation(Vec3[0., 0., 0.] - middle);
@@ -603,7 +603,7 @@ fn main(argc i32, argv **u8) i32 {
   mut checked = false;
   mut checksPassed = true;
   mut shotWritten = false;
-  imm frequency = f64[sdl.GetPerformanceFrequency()];
+  imm frequency = f64.from(sdl.GetPerformanceFrequency());
   mut firstTimed = 0u64;
   mut lastTimed = 0u64;
   mut recordTicks = 0u64;
@@ -615,8 +615,8 @@ fn main(argc i32, argv **u8) i32 {
   while win.running and (maxFrames == 0 or frames < maxFrames) {
     if win.resized {
       imm s = win.size();
-      swapchain.resize(u32[s.w], u32[s.h]);
-      controls.orbit.fitPan(camera.fov, f32[win.windowSize().h]);
+      swapchain.resize(u32.from(s.w), u32.from(s.h));
+      controls.orbit.fitPan(camera.fov, f32.from(win.windowSize().h));
       win.resized = false;
       resizes = resizes + 1;
     }
@@ -650,7 +650,7 @@ fn main(argc i32, argv **u8) i32 {
     if maxFrames > 0 and frames >= checkFrame + 2 {
       imm step = (frames - checkFrame - 2) / 8;
       imm tourViews Array[i32, 6] = [CAGE_ALONE, CAGE_ALONE + 1, CAGE_ALONE + 2, CAGE_ALONE + 3, AUTO_LOD, SIDE_BY_SIDE];
-      imm next = tourViews[usize[step % 6]];
+      imm next = tourViews[usize.from(step % 6)];
       if next != view { viewKey = true; }
       view = next;
       wireframe = step % 2 == 1;
@@ -668,7 +668,7 @@ fn main(argc i32, argv **u8) i32 {
       imm started = sdl.GetPerformanceCounter();
       imm w = frame.texture.width;
       imm h = frame.texture.height;
-      imm t = f32[frames] / 60.;         // seconds, nominally: the camera moves by the frame
+      imm t = f32.from(frames) / 60.;         // seconds, nominally: the camera moves by the frame
 
       // What is read back this frame: the check, the wireframe after it, or
       // a scripted run's views of the orbit and the flight
@@ -718,11 +718,11 @@ fn main(argc i32, argv **u8) i32 {
       if view == AUTO_LOD {
         // The chain chooses the level by the pipe's size on the screen
         imm radius = (bounds.max - bounds.min).length() * 0.5;
-        imm sizePx = camera.projectedSize(Vec3[0., 0., 0.], radius, f32[h]);
+        imm sizePx = camera.projectedSize(Vec3[0., 0., 0.], radius, f32.from(h));
         imm lod = chain.selectBySize(sizePx);
         if lod != lastLod {
           mut title = String.from("Cone: the pipe on Vulkan, auto LOD: level ");
-          title <- u64[3usize - lod];
+          title <- u64.from(3usize - lod);
           win.setTitle(title.view());
           lastLod = lod;
         }
@@ -731,7 +731,7 @@ fn main(argc i32, argv **u8) i32 {
         if showWires { list.addLines(wires[3usize - lod], alone, wireColor); }
       } elif view != SIDE_BY_SIDE {
         // One level alone
-        imm level = usize[view - CAGE_ALONE];
+        imm level = usize.from(view - CAGE_ALONE);
         if level == 0usize { list.add(levels[0usize], cageM, alone); } else { list.add(levels[level], pipeM, alone); }
         if showWires { list.addLines(wires[level], alone, wireColor); }
       }
@@ -745,7 +745,7 @@ fn main(argc i32, argv **u8) i32 {
       imm bgra = frame.texture.format == TEXTURE_FORMAT_BGRA8_UNORM_SRGB
         or frame.texture.format == TEXTURE_FORMAT_BGRA8_UNORM;
       if wireShotNow or checkNow or orbitShotNow or flyShotNow {
-        mut readback = device.createBuffer(u64[w] * u64[h] * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+        mut readback = device.createBuffer(u64.from(w) * u64.from(h) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
         encoder.copyTextureToBuffer(&frame.texture, &readback);
         device.queue.submit(encoder.finish());
         if !presentTimed(&mut swapchain, &mut device, &mut pending, &mut latency, &mut intervals, &mut lastPresent,
@@ -756,14 +756,14 @@ fn main(argc i32, argv **u8) i32 {
         lastPresent = 0u64;      // the wait is not a frame interval
         imm px = readback.mappedRange();
         if wireShotNow {
-          imm shot = Image.fromTexels(px, i32[w], i32[h], bgra);
+          imm shot = Image.fromTexels(px, i32.from(w), i32.from(h), bgra);
           imm written = shot.save(wireShot.view());
           print <- "Screenshot with the wireframe: "; printStr(wireShot.view());
           if written { print <- "\n"; } else { print <- " could NOT be written\n"; }
           if !written { shotWritten = false; }
         }
         if orbitShotNow or flyShotNow {
-          imm shot = Image.fromTexels(px, i32[w], i32[h], bgra);
+          imm shot = Image.fromTexels(px, i32.from(w), i32.from(h), bgra);
           imm name = if orbitShotNow {orbitShot.view();} else {flyShot.view();};
           imm written = shot.save(name);
           if orbitShotNow { print <- "Screenshot of the orbit: "; } else { print <- "Screenshot of the flight: "; }
@@ -773,9 +773,9 @@ fn main(argc i32, argv **u8) i32 {
         if checkNow {
           // Check the frame, and save it if asked
           checked = true;
-          imm viewProjection = camera.projectionMatrix(f32[w] / f32[h]) * camera.viewMatrix();
-          print <- "Frame "; print <- frames; print <- " ("; print <- u64[w]; print <- " x "; print <- u64[h];
-          print <- "), side by side, "; print <- u64[renderer.drawCalls]; print <- " draws, ";
+          imm viewProjection = camera.projectionMatrix(f32.from(w) / f32.from(h)) * camera.viewMatrix();
+          print <- "Frame "; print <- frames; print <- " ("; print <- u64.from(w); print <- " x "; print <- u64.from(h);
+          print <- "), side by side, "; print <- u64.from(renderer.drawCalls); print <- " draws, ";
           print <- renderer.triangles; print <- " triangles:\n";
           imm names Array[&[]u8, 4] = ["  the cage", "  level 1", "  level 2", "  level 3"];
           mut l = 0usize;
@@ -793,8 +793,8 @@ fn main(argc i32, argv **u8) i32 {
             l = l + 1usize;
           }
           // Above the row: the sky
-          imm sx = i32[w / 2u32];
-          imm sy = i32[h / 20u32];
+          imm sx = i32.from(w / 2u32);
+          imm sy = i32.from(h / 20u32);
           imm br = channel(px, w, sx, sy, 0usize, bgra);
           imm bgn = channel(px, w, sx, sy, 1usize, bgra);
           imm bb = channel(px, w, sx, sy, 2usize, bgra);
@@ -805,7 +805,7 @@ fn main(argc i32, argv **u8) i32 {
             checksPassed = false;
           }
           if screenshot.len() > 0usize {
-            imm shot = Image.fromTexels(px, i32[w], i32[h], bgra);
+            imm shot = Image.fromTexels(px, i32.from(w), i32.from(h), bgra);
             shotWritten = shot.save(screenshot.view());
             print <- "Screenshot: "; printStr(screenshot.view());
             if shotWritten { print <- "\n"; } else { print <- " could NOT be written\n"; }
@@ -877,15 +877,15 @@ fn main(argc i32, argv **u8) i32 {
   if timedFrames > 2 and lastTimed > firstTimed {
     // From the start of the first frame timed to the start of the last: the
     // frames between, the one read back among them
-    imm frameMs = f64[lastTimed - firstTimed] / frequency * 1000. / f64[lastTimedFrame - 10];
-    imm cpuMs = f64[recordTicks] / frequency * 1000. / f64[timedFrames];
+    imm frameMs = f64.from(lastTimed - firstTimed) / frequency * 1000. / f64.from(lastTimedFrame - 10);
+    imm cpuMs = f64.from(recordTicks) / frequency * 1000. / f64.from(timedFrames);
     print <- "Frame time: "; print <- frameMs; print <- " ms a frame (presented in step with the display);";
     print <- " recording and submitting: "; print <- cpuMs; print <- " ms\n";
   }
   intervals.report("Frame interval, present to present");
   latency.report("Input to present");
-  print <- "Vulkan failures: "; print <- u64[failures()];
-  print <- "; validation messages: "; print <- u64[validationMessages()]; print <- "\n";
+  print <- "Vulkan failures: "; print <- u64.from(failures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
   if !checked {
     print <- "The frame was not checked (it was not side by side at frame "; print <- checkFrame; print <- ")\n";
   }

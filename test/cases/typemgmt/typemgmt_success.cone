@@ -3,7 +3,7 @@
 //
 // The three capabilities are distinct and are established separately here.
 // Coercion is implicit and only ever widens within one kind of number.
-// Conversion, written 'Type[value]' or 'value into Type', constructs the
+// Conversion, written 'Type.from(value)' or 'value into Type', makes the
 // closest value in the target type and may lose information. Reinterpretation,
 // written 'value as Type', keeps the bits and changes only how they are read.
 //
@@ -54,7 +54,7 @@ fn twice(n i32) i32 {
   n * 2;
 }
 
-// -------- explicit conversion, the constructor form --------
+// -------- explicit conversion, the method 'from' --------
 
 // A global's initializer must be a literal, so a conversion can only reach one
 // by assignment. The receiving end of that assignment is tested below.
@@ -63,26 +63,26 @@ mut total i32 = 0;
 fn conversions() {
   // A float converts to an integer by truncating toward zero, in both
   // directions -- not by rounding and not by flooring
-  show("f64-to-i32", i32[2.75]);
-  show("f64-to-i32-negative", i32[-2.75]);
+  show("f64-to-i32", i32.from(2.75));
+  show("f64-to-i32-negative", i32.from(-2.75));
 
   // An integer converts to a float exactly, while it still fits. The source is
   // a typed variable rather than a literal, because a literal would have
   // coerced to a float on its own and would establish nothing about crossing
   // between the integer and float kinds -- which coercion refuses.
   mut count i32 = 7;
-  showF("i32-to-f64", f64[count]);
-  showF("i32-to-f32", f64[f32[count]]);
+  showF("i32-to-f64", f64.from(count));
+  showF("i32-to-f32", f64.from(f32.from(count)));
 
   // Narrowing keeps the low bits: 300 is 0x12C, and an i8 keeps 0x2C
   mut wide i64 = 300i64;
-  show("i64-to-i8-wraps", i8[wide]);
+  show("i64-to-i8-wraps", i8.from(wide));
 
   // Crossing between signed and unsigned reinterprets the two's-complement
   // encoding rather than clamping or raising
   mut minusOne i32 = -1;
-  showU("i32-to-u8-negative", u8[minusOne]);
-  showU("i32-to-u32-negative", u32[minusOne]);
+  showU("i32-to-u8-negative", u8.from(minusOne));
+  showU("i32-to-u32-negative", u32.from(minusOne));
 
   // f64 to f32 keeps only what f32 can represent. 16777217 is 2^24 + 1, the
   // smallest integer an f32 cannot hold, so a round trip through f32 does not
@@ -90,37 +90,37 @@ fn conversions() {
   // 'd' suffix matters: an unsuffixed float literal is f32, so writing the
   // value without it would lose the precision before any conversion did.
   mut exact f64 = 16777217.0d;
-  show("f64-round-trip", i32[exact]);
-  show("f64-to-f32-loses-precision", i32[f32[exact]]);
+  show("f64-round-trip", i32.from(exact));
+  show("f64-to-f32-loses-precision", i32.from(f32.from(exact)));
 
   // The same distinction seen from the literal's side
   mut unsuffixed f64 = 16777217.0;
-  show("unsuffixed-float-literal-is-f32", i32[unsuffixed]);
+  show("unsuffixed-float-literal-is-f32", i32.from(unsuffixed));
   mut suffixed f64 = 16777217.0d;
-  show("suffixed-float-literal-is-f64", i32[suffixed]);
+  show("suffixed-float-literal-is-f64", i32.from(suffixed));
 
   // Bool converts to and from the number types
   mut flag Bool = true;
-  show("bool-to-i32", i32[flag]);
-  if Bool[5] {
+  show("bool-to-i32", i32.from(flag));
+  if Bool.from(5) {
     show("nonzero-to-bool", 1);
   }
-  if not Bool[0] {
+  if not Bool.from(0) {
     show("zero-to-bool", 0);
   }
 
   // The operand is an arbitrary expression, not just a literal
-  showF("converted-call-result", f64[twice(3)]);
+  showF("converted-call-result", f64.from(twice(3)));
 
   // A conversion is an ordinary expression on the right of an assignment
-  total = i32[2.3e1];
+  total = i32.from(2.3e1);
   show("assigned-conversion", total);
 }
 
 // -------- explicit conversion, the 'into' form --------
 
 fn intoForm() {
-  // 'into' converts exactly as the constructor form does
+  // 'into' converts exactly as 'from' does
   showF("into-f64", 3 into f64);
   show("into-i32", 2.75 into i32);
 
@@ -178,8 +178,8 @@ fn referenceToBool() {
   mut n i32 = 7;
   imm r &i32 = &n;
   imm p *i32 = &n;
-  showB("ref-to-bool", Bool[r]);
-  showB("ptr-to-bool", Bool[p]);
+  showB("ref-to-bool", Bool.from(r));
+  showB("ptr-to-bool", Bool.from(p));
   showB("ref-into-bool", r into Bool);
   showB("ptr-into-bool", p into Bool);
 
@@ -190,8 +190,8 @@ fn referenceToBool() {
   mut zero i32 = 0;
   imm rz &i32 = &zero;
   imm pz *i32 = &zero;
-  showB("ref-to-zero-is-true", Bool[rz]);
-  showB("ptr-to-zero-is-true", Bool[pz]);
+  showB("ref-to-zero-is-true", Bool.from(rz));
+  showB("ptr-to-zero-is-true", Bool.from(pz));
 }
 
 // -------- reinterpretation --------
@@ -389,20 +389,20 @@ fn coercions() {
   // value printed is exact; 5000000000 is 9765625 * 2^9 and 6000000000 is
   // 5859375 * 2^10, both of which f32 holds exactly.
   mut asWideDouble f64 = 5000000000;
-  show("literal-fills-f64", i64[asWideDouble]);
+  show("literal-fills-f64", i64.from(asWideDouble));
   mut asWideSingle f32 = 5000000000;
-  show("literal-fills-f32", i64[asWideSingle]);
+  show("literal-fills-f32", i64.from(asWideSingle));
   asWideDouble = 6000000000;
-  show("literal-fills-f64-assignment", i64[asWideDouble]);
+  show("literal-fills-f64-assignment", i64.from(asWideDouble));
   asWideSingle = 6000000000;
-  show("literal-fills-f32-assignment", i64[asWideSingle]);
-  show("literal-fills-f64-argument", i64[wantF64(5000000000)]);
-  show("literal-fills-f32-argument", i64[wantF32(5000000000)]);
-  show("literal-fills-f64-return", i64[fillF64()]);
-  show("literal-fills-f32-return", i64[fillF32()]);
-  show("literal-fills-f64-field", i64[span.wide]);
+  show("literal-fills-f32-assignment", i64.from(asWideSingle));
+  show("literal-fills-f64-argument", i64.from(wantF64(5000000000)));
+  show("literal-fills-f32-argument", i64.from(wantF32(5000000000)));
+  show("literal-fills-f64-return", i64.from(fillF64()));
+  show("literal-fills-f32-return", i64.from(fillF32()));
+  show("literal-fills-f64-field", i64.from(span.wide));
   mut negativeDouble f64 = -5000000000;
-  show("literal-fills-f64-negative", i64[negativeDouble]);
+  show("literal-fills-f64-negative", i64.from(negativeDouble));
 
   // A literal must fit the type it takes (typemgmt_typecheck_litrange holds the
   // values that do not), and these are the ends that do. A minus is folded into
@@ -549,11 +549,11 @@ enum Boxy {
 use Boxy;
 
 fn sides(b Boxy) i64 {
-  i64[b.kind];
+  i64.from(b.kind);
 }
 
 fn sidesRef(b &Boxy) i64 {
-  i64[b.kind];
+  i64.from(b.kind);
 }
 
 // -------- conversion where coercion cannot decide --------
@@ -570,8 +570,8 @@ fn disambiguate() {
   // 'pick(3)' would be ambiguous: an unsuffixed literal is acceptable to both
   // candidates. Converting the argument settles its type and so settles which
   // candidate accepts the call.
-  show("conversion-picks-int", pick(i64[3]));
-  showF("conversion-picks-float", pick(f64[3]));
+  show("conversion-picks-int", pick(i64.from(3)));
+  showF("conversion-picks-float", pick(f64.from(3)));
 }
 
 // -------- 'alias', a second name rather than a change of type --------
@@ -691,9 +691,9 @@ fn aliases() {
   imm made = Sample.make(7i64);
   show("alias-qualifies", levelOfSample(made));
 
-  // An alias of a number converts in the constructor form as the number does,
+  // An alias of a number converts by its 'from' as the number does,
   // truncating toward zero as i64 would
-  show("alias-number-literal", Count[3.7]);
+  show("alias-number-literal", Count.from(3.7));
 
   // And a reference to an aliased array indexes as the array it names. The
   // second index is what shows the element reached is the one meant rather than
@@ -703,7 +703,7 @@ fn aliases() {
   show("alias-array-ref-index-last", cellAt(&cells, 2));
 
   // Conversion targets the aliased type through the alias, and reads it back
-  mut scaled Ratio = f64[running] / 2.0d;
+  mut scaled Ratio = f64.from(running) / 2.0d;
   showF("alias-in-conversion", scaled);
 
   imm mark = Mark[8i64];

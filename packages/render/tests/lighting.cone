@@ -37,14 +37,14 @@ import gpu use *;
 import render use *;
 
 // Channel 'c' of pixel ('x', 'y') of a 64 x 64 rgba8 image at 'p'
-fn px(p *u8, x usize, y usize, c usize) i64 { i64[*(p + (y * 64usize + x) * 4usize + c)]; }
+fn px(p *u8, x usize, y usize, c usize) i64 { i64.from(*(p + (y * 64usize + x) * 4usize + c)); }
 
 fn luma(p *u8, x usize, y usize) i64 { px(p, x, y, 0usize) + px(p, x, y, 1usize) + px(p, x, y, 2usize); }
 
 fn expectPixel(p *u8, x usize, y usize, r f64, g f64, b f64, label &[]u8) {
-  expectFloat(f64[px(p, x, y, 0usize)], r, 1d, label);
-  expectFloat(f64[px(p, x, y, 1usize)], g, 1d, label);
-  expectFloat(f64[px(p, x, y, 2usize)], b, 1d, label);
+  expectFloat(f64.from(px(p, x, y, 0usize)), r, 1d, label);
+  expectFloat(f64.from(px(p, x, y, 1usize)), g, 1d, label);
+  expectFloat(f64.from(px(p, x, y, 2usize)), b, 1d, label);
 }
 
 // One frame: 'list' drawn into the post's frame, bloomed and tone-mapped
@@ -79,7 +79,7 @@ fn main() i32 {
   mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
   mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, 64u32, 64u32);
   require(renderer.isValid() and post.isValid(), "a renderer and its post-processing");
-  expectUInt(u64[post.levels], 4u64, "a bloom chain of 32, 16, 8 and 4 pixels");
+  expectUInt(u64.from(post.levels), 4u64, "a bloom chain of 32, 16, 8 and 4 pixels");
 
   mut camera = Camera.make();
   camera.fov = radians(40.);
@@ -111,19 +111,19 @@ fn main() i32 {
   camera.background = Color[0.18, 0.18, 0.18, 1.];
   drawFrame(&mut renderer, &mut post, &mut device, &color, &depth, &readback, &camera, &light, &list);
   expectPixel(p, 32usize, 32usize, 54.69, 54.71, 54.71, "middle grey by AgX");
-  expectUInt(u64[renderer.environment.bakes], 0u64, "no environment made while nothing needs it");
+  expectUInt(u64.from(renderer.environment.bakes), 0u64, "no environment made while nothing needs it");
 
   // ---- 2 and 3. The sky ----
   post.bloom = 0.04;
   imm sky = Sky.dusk(radians(30.), 0.);
   renderer.setSky(&mut device, &sky);
   drawFrame(&mut renderer, &mut post, &mut device, &color, &depth, &readback, &camera, &light, &list);
-  expectUInt(u64[renderer.environment.bakes], 1u64, "the environment made at the first render with a sky");
+  expectUInt(u64.from(renderer.environment.bakes), 1u64, "the environment made at the first render with a sky");
   expectBool(px(p, 32usize, 1usize, 2usize) > px(p, 32usize, 1usize, 0usize), true, "the zenith, bluer than red");
   expectBool(luma(p, 32usize, 57usize) < luma(p, 32usize, 1usize), true, "the ground, darker than the zenith");
   imm groundLuma = luma(p, 32usize, 32usize);
   drawFrame(&mut renderer, &mut post, &mut device, &color, &depth, &readback, &camera, &light, &list);
-  expectUInt(u64[renderer.environment.bakes], 1u64, "and not made again while the sky is the same");
+  expectUInt(u64.from(renderer.environment.bakes), 1u64, "and not made again while the sky is the same");
 
   // ---- 4. The physically based material ----
   imm sphere = Mesh.sphere(0.5, 32);
@@ -142,14 +142,14 @@ fn main() i32 {
   expectBool(whiteLuma > chitinLuma + 60, true, "a white rough ball, brighter than black chitin");
   expectBool(whiteLuma - groundLuma > 30 or groundLuma - whiteLuma > 30, true, "the white ball, unlike the ground");
   expectBool(chitinLuma - groundLuma > 6 or groundLuma - chitinLuma > 6, true, "the chitin ball, unlike the ground");
-  expectUInt(u64[renderer.drawCalls], 2u64, "two draws: the ball and the sky");
+  expectUInt(u64.from(renderer.drawCalls), 2u64, "two draws: the ball and the sky");
 
   // The sky set again: the environment made again
   renderer.setSky(&mut device, &sky);
   drawFrame(&mut renderer, &mut post, &mut device, &color, &depth, &readback, &camera, &light, &list);
-  expectUInt(u64[renderer.environment.bakes], 2u64, "the sky set again: the environment made again");
+  expectUInt(u64.from(renderer.environment.bakes), 2u64, "the sky set again: the environment made again");
 
-  expectUInt(u64[failures()], 0u64, "no Vulkan call failed");
-  expectUInt(u64[validationMessages()], 0u64, "no validation message");
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
   done();
 }

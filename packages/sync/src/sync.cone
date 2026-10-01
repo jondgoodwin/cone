@@ -363,7 +363,7 @@ pub const forever = 0xFFFFFFFFFFFFFFFFu64;
 // Nanoseconds as whole milliseconds, rounded up, and short of INFINITE
 fn msCeil(ns u64) u32 {
   imm ms = ns / 1000000u64 + (if ns % 1000000u64 != 0u64 {1u64;} else {0u64;});
-  if ms >= u64[infinite] {infinite - 1u32;} else {u32[ms];};
+  if ms >= u64.from(infinite) {infinite - 1u32;} else {u32.from(ms);};
 }
 
 // Sleep while the word holds expected, until woken or timeoutNs passes:
@@ -1013,7 +1013,7 @@ fn blockNew[T]() *Block[T] {
 }
 
 fn slotAt[T](b *Block[T], offset u64) *Slot[T] {
-  (&(*b).slots as *Slot[T]) + usize[offset];
+  (&(*b).slots as *Slot[T]) + usize.from(offset);
 }
 
 // The receiver's index after taking the slot at offset: the next position,
@@ -1086,8 +1086,8 @@ fn nowNs() u64 {
   mut freq = 0i64;
   QueryPerformanceCounter(&mut count as *i64);
   QueryPerformanceFrequency(&mut freq as *i64);
-  imm c = u64[count];
-  imm f = u64[freq];
+  imm c = u64.from(count);
+  imm f = u64.from(freq);
   // Split, so that count * 10^9 cannot overflow
   (c / f) * 1000000000u64 + (c % f) * 1000000000u64 / f;
 }
@@ -1141,7 +1141,7 @@ struct Cell[T] {
 }
 
 fn cellAt[T](ring *Cell[T], i u64) *Cell[T] {
-  ring + usize[i];
+  ring + usize.from(i);
 }
 
 // Put v in a bounded channel's ring, waiting while it is full if mayWait,
@@ -1412,7 +1412,7 @@ fn soloFinal[T](c *Chan[T], ring *T, mask u64, head u64) {
   imm end = mem.atomicLoad[u64](&(*c).tail as *u64, MemOrder.Acquire[]) >> soloShift;
   mut pos = head;
   while pos != end {
-    mem.finalize[T](ring + usize[pos & mask]);
+    mem.finalize[T](ring + usize.from(pos & mask));
     pos = pos + 1u64;
   }
   chanRelease[T](c);
@@ -1443,7 +1443,7 @@ pub struct Channel[T Sendable] {
     imm cap = ringCap(n);
     // Zeroed, so every cell's stamp says unwritten
     imm head = mem.sizeof[Chan[T]]();
-    imm c = libc.calloc(1usize, head + usize[cap] * mem.sizeof[Cell[T]]()) as *Chan[T];
+    imm c = libc.calloc(1usize, head + usize.from(cap) * mem.sizeof[Cell[T]]()) as *Chan[T];
     if c as usize == 0usize {
       die("sync: out of memory for a channel\n");
     }
@@ -1458,7 +1458,7 @@ pub struct Channel[T Sendable] {
   pub fn spsc(n u64) SoloSender[T], Receiver[T] {
     imm cap = ringCap(n);
     imm head = mem.sizeof[Chan[T]]();
-    imm c = libc.malloc(head + usize[cap] * mem.sizeof[T]()) as *Chan[T];
+    imm c = libc.malloc(head + usize.from(cap) * mem.sizeof[T]()) as *Chan[T];
     if c as usize == 0usize {
       die("sync: out of memory for a channel\n");
     }
@@ -1701,7 +1701,7 @@ pub struct SoloSender[T Sendable] is Sendable {
       mem.atomicStore[u64](busyp, 0u64, MemOrder.Relaxed[]);
       return Some[T][v];
     }
-    mem.writeRaw[T](ring + usize[tail & mask], v);
+    mem.writeRaw[T](ring + usize.from(tail & mask), v);
     tail = tail + 1u64;
     // Release: the value, written above, is seen by the receiver that
     // acquires the index. The mark is cleared after, releasing, so a close
@@ -1966,7 +1966,7 @@ pub struct Receiver[T Sendable] is Sendable {
   // pairing: the compiler keeps the load after the store, and the sleeping
   // sender's flush does the rest.
   fn soloTake(self &mut) T {
-    imm v = mem.readRaw[T]((ring as *T) + usize[head & mask]);
+    imm v = mem.readRaw[T]((ring as *T) + usize.from(head & mask));
     head = head + 1u64;
     mem.atomicStore[u64](&(*chan).taken as *u64, head, MemOrder.Release[]);
     ringFreed[T](chan);

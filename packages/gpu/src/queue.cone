@@ -34,7 +34,7 @@ struct ReleasedBuffer {
 // Destroy the buffers frame 'i' released
 fn destroyReleased(queue &mut Queue, i usize) {
   mut r = 0usize;
-  while r < usize[queue.backend.frames[i].releasedCount] {
+  while r < usize.from(queue.backend.frames[i].releasedCount) {
     vulkan.destroyBuffer(queue.backend.device, queue.backend.frames[i].released[r].buffer, nullp());
     vulkan.freeMemory(queue.backend.device, queue.backend.frames[i].released[r].memory, nullp());
     r = r + 1usize;
@@ -89,9 +89,9 @@ pub struct Queue {
     }
     imm cmd = uploadCommands(self);
     if isNull(cmd) or !stagingRoom(self, size) { return; }
-    imm i = usize[backend.frameIndex];
+    imm i = usize.from(backend.frameIndex);
     imm at = backend.frames[i].stagingUsed;
-    libc.memcpy(backend.frames[i].staging.mapped + usize[at], data, usize[size]);
+    libc.memcpy(backend.frames[i].staging.mapped + usize.from(at), data, usize.from(size));
     backend.frames[i].stagingUsed = at + size;
     // After the frame's earlier copies, which may have written the same
     // bytes (two writes to one buffer in a frame land in the order made)
@@ -125,12 +125,12 @@ pub struct Queue {
       return;
     }
     imm depth = if texture.dimension == TEXTURE_DIMENSION_3D { texture.depthOrArrayLayers; } else { 1u32; };
-    imm size = u64[bytesPerRow] * u64[texture.height] * u64[depth];
+    imm size = u64.from(bytesPerRow) * u64.from(texture.height) * u64.from(depth);
     imm cmd = uploadCommands(self);
     if isNull(cmd) or !stagingRoom(self, size) { return; }
-    imm i = usize[backend.frameIndex];
+    imm i = usize.from(backend.frameIndex);
     imm at = backend.frames[i].stagingUsed;
-    libc.memcpy(backend.frames[i].staging.mapped + usize[at], data, usize[size]);
+    libc.memcpy(backend.frames[i].staging.mapped + usize.from(at), data, usize.from(size));
     backend.frames[i].stagingUsed = at + size;
     // All of it is written, so what it held is not kept; earlier samplings
     // of it are done first (the upload's barrier covers every stage)
@@ -159,14 +159,14 @@ pub struct Queue {
     if buffer.backend.buffer.h == 0u64 and buffer.backend.memory.h == 0u64 { return; }
     // In a frame, so that its fence is signalled after all that used it
     beginQueueFrame(self);
-    imm i = usize[backend.frameIndex];
+    imm i = usize.from(backend.frameIndex);
     if backend.frames[i].releasedCount == MAX_RELEASED {
       // Too many in one frame: the slow way
       vulkan.deviceWaitIdle(backend.device);
       if buffer.backend.buffer.h != 0u64 { vulkan.destroyBuffer(backend.device, buffer.backend.buffer, nullp()); }
       if buffer.backend.memory.h != 0u64 { vulkan.freeMemory(backend.device, buffer.backend.memory, nullp()); }
     } else {
-      backend.frames[i].released[usize[backend.frames[i].releasedCount]] =
+      backend.frames[i].released[usize.from(backend.frames[i].releasedCount)] =
         ReleasedBuffer[buffer.backend.buffer, buffer.backend.memory];
       backend.frames[i].releasedCount = backend.frames[i].releasedCount + 1u32;
     }
@@ -187,7 +187,7 @@ pub struct Queue {
 fn beginQueueFrame(queue &mut Queue) {
   if queue.backend.inFrame or (queue.backend.device as *u8 as usize) == 0usize { return; }
   imm device = queue.backend.device;
-  imm i = usize[queue.backend.frameIndex];
+  imm i = usize.from(queue.backend.frameIndex);
   if queue.backend.frames[i].pending {
     mut fence = queue.backend.frames[i].fence;
     check(vulkan.waitForFences(device, 1u32, &mut fence as *vulkan.Fence, vulkan.TRUE, NO_TIMEOUT),
@@ -199,7 +199,7 @@ fn beginQueueFrame(queue &mut Queue) {
   queue.backend.frames[i].used = 0u32;
   queue.backend.frames[i].upload = nullCommandBuffer();
   mut r = 0usize;
-  while r < usize[queue.backend.frames[i].retiredCount] {
+  while r < usize.from(queue.backend.frames[i].retiredCount) {
     vulkan.destroyBuffer(device, queue.backend.frames[i].retired[r].buffer, nullp());
     vulkan.freeMemory(device, queue.backend.frames[i].retired[r].memory, nullp());
     r = r + 1usize;
@@ -212,7 +212,7 @@ fn beginQueueFrame(queue &mut Queue) {
 
 // The next unused command buffer of the current frame's pool, begun
 fn nextCommandBuffer(queue &mut Queue) vulkan.CommandBuffer {
-  imm i = usize[queue.backend.frameIndex];
+  imm i = usize.from(queue.backend.frameIndex);
   if queue.backend.frames[i].used == MAX_FRAME_COMMAND_BUFFERS {
     fail("a frame recorded more than 16 command buffers");
     return nullCommandBuffer();
@@ -225,10 +225,10 @@ fn nextCommandBuffer(queue &mut Queue) vulkan.CommandBuffer {
         "vkAllocateCommandBuffers") {
       return nullCommandBuffer();
     }
-    queue.backend.frames[i].buffers[usize[queue.backend.frames[i].allocated]] = cmd;
+    queue.backend.frames[i].buffers[usize.from(queue.backend.frames[i].allocated)] = cmd;
     queue.backend.frames[i].allocated = queue.backend.frames[i].allocated + 1u32;
   }
-  imm cmd = queue.backend.frames[i].buffers[usize[queue.backend.frames[i].used]];
+  imm cmd = queue.backend.frames[i].buffers[usize.from(queue.backend.frames[i].used)];
   queue.backend.frames[i].used = queue.backend.frames[i].used + 1u32;
   imm bi = vulkan.CommandBufferBeginInfo[flags: vulkan.COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     pInheritanceInfo: nullp()];
@@ -253,7 +253,7 @@ fn memoryBarrier(cmd vulkan.CommandBuffer, srcStage u64, srcAccess u64, dstStage
 // read or write).
 fn uploadCommands(queue &mut Queue) vulkan.CommandBuffer {
   beginQueueFrame(queue);
-  imm i = usize[queue.backend.frameIndex];
+  imm i = usize.from(queue.backend.frameIndex);
   if !isNull(queue.backend.frames[i].upload) { return queue.backend.frames[i].upload; }
   imm cmd = nextCommandBuffer(queue);
   if isNull(cmd) { return cmd; }
@@ -267,7 +267,7 @@ fn uploadCommands(queue &mut Queue) vulkan.CommandBuffer {
 // (made a multiple of 16): a bigger block if they do not fit, the old one
 // retired until the frame comes round again
 fn stagingRoom(queue &mut Queue, size u64) Bool {
-  imm i = usize[queue.backend.frameIndex];
+  imm i = usize.from(queue.backend.frameIndex);
   imm at = (queue.backend.frames[i].stagingUsed + 15u64) & 0xFFFFFFFFFFFFFFF0u64;
   if queue.backend.frames[i].staging.buffer.h != 0u64 and at + size <= queue.backend.frames[i].staging.size {
     queue.backend.frames[i].stagingUsed = at;
@@ -278,7 +278,7 @@ fn stagingRoom(queue &mut Queue, size u64) Bool {
       fail("writeBuffer: a frame outgrew its staging memory 8 times");
       return false;
     }
-    queue.backend.frames[i].retired[usize[queue.backend.frames[i].retiredCount]] = queue.backend.frames[i].staging;
+    queue.backend.frames[i].retired[usize.from(queue.backend.frames[i].retiredCount)] = queue.backend.frames[i].staging;
     queue.backend.frames[i].retiredCount = queue.backend.frames[i].retiredCount + 1u32;
   }
   mut blockSize = STAGING_BLOCK;
@@ -300,7 +300,7 @@ fn submitCommands(queue &mut Queue, cmd vulkan.CommandBuffer, fence vulkan.Fence
     commandBuffer: nullCommandBuffer()]];
   mut count = 0usize;
   if queue.backend.inFrame {
-    imm i = usize[queue.backend.frameIndex];
+    imm i = usize.from(queue.backend.frameIndex);
     imm upload = queue.backend.frames[i].upload;
     if !isNull(upload) {
       // What was copied, visible to everything after
@@ -321,7 +321,7 @@ fn submitCommands(queue &mut Queue, cmd vulkan.CommandBuffer, fence vulkan.Fence
   mut waits = 0u32;
   if queue.backend.waiting { waits = 1u32; }
   imm submit = vulkan.SubmitInfo2[waitSemaphoreInfoCount: waits,
-    pWaitSemaphoreInfos: &waitInfo as *vulkan.SemaphoreSubmitInfo, commandBufferInfoCount: u32[count],
+    pWaitSemaphoreInfos: &waitInfo as *vulkan.SemaphoreSubmitInfo, commandBufferInfoCount: u32.from(count),
     pCommandBufferInfos: &cbis as *vulkan.CommandBufferSubmitInfo, signalSemaphoreInfoCount: signalCount,
     pSignalSemaphoreInfos: signals];
   queue.backend.waiting = false;

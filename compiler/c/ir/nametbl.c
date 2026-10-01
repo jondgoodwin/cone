@@ -199,6 +199,7 @@ void nametblInit() {
     refIndexName = nametblFind("&[]", 3);
 
     optionName = nametblFind("Option", 6);
+    fromName = nametblFind("from", 4);
 
     allocMethodName = nametblFind("alloc", 5);
     initMethodName = nametblFind("init", 4);

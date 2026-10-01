@@ -71,7 +71,7 @@ fn parseCount(s *u8) i32 {
   while *(s + i) != 0u8 {
     imm c = *(s + i);
     if c < '0' or c > '9' { return -1; }
-    n = n * 10 + i32[c - '0'];
+    n = n * 10 + i32.from(c - '0');
     i = i + 1usize;
   }
   n;
@@ -113,8 +113,8 @@ fn shotName(base &String, suffix &[]u8) String {
 // 'w' by 'h' (from its top left), by 'viewProjection'
 fn pixelOf(viewProjection Mat4, p Vec3, w u32, h u32, x &mut i32, y &mut i32) {
   imm clip = viewProjection * Vec4[p.x, p.y, p.z, 1.];
-  *x = i32[(clip.x / clip.w + 1.) * 0.5 * f32[w]];
-  *y = i32[(1. - clip.y / clip.w) * 0.5 * f32[h]];
+  *x = i32.from((clip.x / clip.w + 1.) * 0.5 * f32.from(w));
+  *y = i32.from((1. - clip.y / clip.w) * 0.5 * f32.from(h));
 }
 
 // Channel 'c' (0 red, 1 green, 2 blue) of pixel ('x', 'y') of a frame 'w'
@@ -122,7 +122,7 @@ fn pixelOf(viewProjection Mat4, p Vec3, w u32, h u32, x &mut i32, y &mut i32) {
 fn channel(p *u8, w u32, x i32, y i32, c usize, bgra Bool) i32 {
   mut at = c;
   if bgra { at = 2usize - c; }
-  i32[*(p + (usize[y] * usize[w] + usize[x]) * 4usize + at)];
+  i32.from(*(p + (usize.from(y) * usize.from(w) + usize.from(x)) * 4usize + at));
 }
 
 fn luma(p *u8, w u32, x i32, y i32, bgra Bool) i32 {
@@ -138,7 +138,7 @@ fn printPixel(name &[]u8, p *u8, w u32, x i32, y i32, bgra Bool) {
 // Check pixel ('x', 'y'), a pipe, is drawn: on the screen, and unlike the
 // sky at ('sx', 'y'), beside the row (the sum of its channels 30 away)
 fn checkPipe(name &[]u8, p *u8, w u32, h u32, x i32, y i32, sx i32, bgra Bool) Bool {
-  if x < 0 or y < 0 or x >= i32[w] or y >= i32[h] or sx < 0 or sx >= i32[w] {
+  if x < 0 or y < 0 or x >= i32.from(w) or y >= i32.from(h) or sx < 0 or sx >= i32.from(w) {
     printStr(name); print <- ": off the screen\n";
     return false;
   }
@@ -159,12 +159,12 @@ fn main(argc i32, argv **u8) i32 {
   if (env as usize) != 0usize { maxFrames = parseCount(env); }
   mut a = 1;
   while a < argc {
-    imm arg = *(argv + usize[a]);
+    imm arg = *(argv + usize.from(a));
     if cstrEquals(arg, "--frames") and a + 1 < argc {
-      maxFrames = parseCount(*(argv + usize[a + 1]));
+      maxFrames = parseCount(*(argv + usize.from(a + 1)));
       a = a + 1;
     } elif cstrEquals(arg, "--screenshot") and a + 1 < argc {
-      imm s = *(argv + usize[a + 1]);
+      imm s = *(argv + usize.from(a + 1));
       mut i = 0usize;
       while *(s + i) != 0u8 {
         screenshot.appendByte(*(s + i));
@@ -233,9 +233,9 @@ fn main(argc i32, argv **u8) i32 {
   print <- "; synchronization validation: "; printStr(onOff(instance.syncValidation)); print <- "\n";
   mut device = adapter.requestDevice();
   imm size = win.size();
-  mut swapchain = device.createSwapChain(&surface, u32[size.w], u32[size.h], TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut swapchain = device.createSwapChain(&surface, u32.from(size.w), u32.from(size.h), TEXTURE_FORMAT_DEPTH32_FLOAT);
   mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
-  mut post = Post.create(&mut device, swapchain.format, u32[size.w], u32[size.h]);
+  mut post = Post.create(&mut device, swapchain.format, u32.from(size.w), u32.from(size.h));
   if !renderer.isValid() or !post.isValid() {
     print <- "The renderer could not be made\n";
     return 1;
@@ -271,7 +271,7 @@ fn main(argc i32, argv **u8) i32 {
   mut extraShot = 0;             // the screenshots after the checked one: ACES, no film, no bloom
   mut film = true;
   mut bloomOn = true;
-  imm frequency = f64[sdl.GetPerformanceFrequency()];
+  imm frequency = f64.from(sdl.GetPerformanceFrequency());
   mut firstTimed = 0u64;
   mut lastTimed = 0u64;
   mut recordTicks = 0u64;
@@ -311,7 +311,7 @@ fn main(argc i32, argv **u8) i32 {
     if bloomOn { post.bloom = 0.04; } else { post.bloom = 0.; }
     if win.resized {
       imm s = win.size();
-      swapchain.resize(u32[s.w], u32[s.h]);
+      swapchain.resize(u32.from(s.w), u32.from(s.h));
       win.resized = false;
       resizes = resizes + 1;
     }
@@ -322,7 +322,7 @@ fn main(argc i32, argv **u8) i32 {
       imm started = sdl.GetPerformanceCounter();
       imm w = frame.texture.width;
       imm h = frame.texture.height;
-      imm t = f32[frames] / 60.;
+      imm t = f32.from(frames) / 60.;
       renderer.time = t;
       post.resize(&mut device, w, h);
 
@@ -344,7 +344,7 @@ fn main(argc i32, argv **u8) i32 {
       imm checkNow = frames == checkFrame and !checked;
       imm extraNow = screenshot.len() > 0usize and checked and extraShot < 3;
       if checkNow or extraNow {
-        mut readback = device.createBuffer(u64[w] * u64[h] * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+        mut readback = device.createBuffer(u64.from(w) * u64.from(h) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
         encoder.copyTextureToBuffer(&frame.texture, &readback);
         device.queue.submit(encoder.finish());
         if !swapchain.present(&mut device) { unshown = unshown + 1; }
@@ -352,15 +352,15 @@ fn main(argc i32, argv **u8) i32 {
         imm p = readback.mappedRange();
         if checkNow {
           checked = true;
-          imm viewProjection = camera.projectionMatrix(f32[w] / f32[h]) * camera.viewMatrix();
-          print <- "Frame "; print <- frames; print <- " ("; print <- u64[w]; print <- " x "; print <- u64[h];
-          print <- "), "; print <- u64[renderer.drawCalls]; print <- " draws, "; print <- renderer.triangles;
+          imm viewProjection = camera.projectionMatrix(f32.from(w) / f32.from(h)) * camera.viewMatrix();
+          print <- "Frame "; print <- frames; print <- " ("; print <- u64.from(w); print <- " x "; print <- u64.from(h);
+          print <- "), "; print <- u64.from(renderer.drawCalls); print <- " draws, "; print <- renderer.triangles;
           print <- " triangles, tone mapped by "; printStr(toneMapperName(post.toneMapper));
           print <- ", bloom "; print <- post.levels; print <- " levels:\n";
           // The sky: blue-violet up high, the pink band low down ahead (away
           // from the sun, which is behind the camera)
-          imm tx = i32[w / 2u32];
-          imm ty = i32[h / 30u32];
+          imm tx = i32.from(w / 2u32);
+          imm ty = i32.from(h / 30u32);
           printPixel("  the sky above", p, w, tx, ty, bgra);
           imm high = channel(p, w, tx, ty, 2usize, bgra) > channel(p, w, tx, ty, 0usize, bgra);
           if high { print <- ": bluer than red\n"; } else { print <- ": NOT bluer than red\n"; }
@@ -368,7 +368,7 @@ fn main(argc i32, argv **u8) i32 {
           mut hy = 0;
           pixelOf(viewProjection, camera.position() + Vec3[0., 0.10, -50.], w, h, &mut hx, &mut hy);
           mut low = false;
-          if hx >= 0 and hy >= 0 and hx < i32[w] and hy < i32[h] {
+          if hx >= 0 and hy >= 0 and hx < i32.from(w) and hy < i32.from(h) {
             printPixel("  the sky low ahead", p, w, hx, hy, bgra);
             // Pinker than the sky above: its red less its blue greater
             low = channel(p, w, hx, hy, 0usize, bgra) - channel(p, w, hx, hy, 2usize, bgra)
@@ -389,10 +389,10 @@ fn main(argc i32, argv **u8) i32 {
           mut ox = 0;
           mut oy = 0;
           pixelOf(viewProjection, Vec3[SPACING * 1.3, RISE, 0.], w, h, &mut ox, &mut oy);
-          if !checkPipe("  the Blinn-Phong pipe", p, w, h, lx, ly, i32[w] - 1 - ox, bgra) { checksPassed = false; }
+          if !checkPipe("  the Blinn-Phong pipe", p, w, h, lx, ly, i32.from(w) - 1 - ox, bgra) { checksPassed = false; }
           if !checkPipe("  the chitin pipe", p, w, h, rx, ry, ox, bgra) { checksPassed = false; }
           if screenshot.len() > 0usize {
-            imm shot = Image.fromTexels(p, i32[w], i32[h], bgra);
+            imm shot = Image.fromTexels(p, i32.from(w), i32.from(h), bgra);
             imm written = shot.save(screenshot.view());
             print <- "Screenshot: "; printStr(screenshot.view());
             if written { print <- "\n"; } else { print <- " could NOT be written\n"; }
@@ -400,8 +400,8 @@ fn main(argc i32, argv **u8) i32 {
           }
         } else {
           imm suffixes Array[&[]u8, 3] = ["-aces", "-nofilm", "-nobloom"];
-          imm name = shotName(&screenshot, suffixes[usize[extraShot]]);
-          imm shot = Image.fromTexels(p, i32[w], i32[h], bgra);
+          imm name = shotName(&screenshot, suffixes[usize.from(extraShot)]);
+          imm shot = Image.fromTexels(p, i32.from(w), i32.from(h), bgra);
           imm written = shot.save(name.view());
           print <- "Screenshot: "; printStr(name.view());
           if written { print <- "\n"; } else { print <- " could NOT be written\n"; }
@@ -427,11 +427,11 @@ fn main(argc i32, argv **u8) i32 {
 
   print <- "Frames drawn: "; print <- frames; print <- "; presented: "; print <- swapchain.presents;
   print <- "; out of date when presented: "; print <- unshown; print <- "; resizes: "; print <- resizes; print <- "\n";
-  print <- "The environment was made "; print <- u64[renderer.environment.bakes]; print <- " time(s), the first in frame 0: ";
+  print <- "The environment was made "; print <- u64.from(renderer.environment.bakes); print <- " time(s), the first in frame 0: ";
   printStr(onOff(firstBakes == 1u32)); print <- "\n";
   if timedFrames > 2 and lastTimed > firstTimed {
-    imm frameMs = f64[lastTimed - firstTimed] / frequency * 1000. / f64[lastTimedFrame - 10];
-    imm cpuMs = f64[recordTicks] / frequency * 1000. / f64[timedFrames];
+    imm frameMs = f64.from(lastTimed - firstTimed) / frequency * 1000. / f64.from(lastTimedFrame - 10);
+    imm cpuMs = f64.from(recordTicks) / frequency * 1000. / f64.from(timedFrames);
     print <- "Frame time: "; print <- frameMs; print <- " ms a frame (presented in step with the display);";
     print <- " recording and submitting: "; print <- cpuMs; print <- " ms\n";
   }
@@ -450,7 +450,7 @@ fn main(argc i32, argv **u8) i32 {
     imm benchStart = sdl.GetPerformanceCounter();
     mut b = 0;
     while b < BENCH_FRAMES {
-      renderer.time = f32[frames + b] / 60.;
+      renderer.time = f32.from(frames + b) / 60.;
       mut encoder = device.createCommandEncoder();
       renderer.render(&mut device, &mut encoder, &benchPost.hdr, &depth, &camera, &light, &list);
       benchPost.apply(&mut encoder, &target);
@@ -459,13 +459,13 @@ fn main(argc i32, argv **u8) i32 {
       b = b + 1;
     }
     device.waitIdle();
-    imm benchMs = f64[sdl.GetPerformanceCounter() - benchStart] / frequency * 1000. / f64[BENCH_FRAMES];
-    print <- "GPU frame time, offscreen at "; print <- u64[w]; print <- " x "; print <- u64[h]; print <- ": ";
+    imm benchMs = f64.from(sdl.GetPerformanceCounter() - benchStart) / frequency * 1000. / f64.from(BENCH_FRAMES);
+    print <- "GPU frame time, offscreen at "; print <- u64.from(w); print <- " x "; print <- u64.from(h); print <- ": ";
     print <- benchMs; print <- " ms a frame ("; print <- BENCH_FRAMES; print <- " frames, nothing presented)\n";
   }
 
-  print <- "Vulkan failures: "; print <- u64[failures()];
-  print <- "; validation messages: "; print <- u64[validationMessages()]; print <- "\n";
+  print <- "Vulkan failures: "; print <- u64.from(failures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
   if !checked {
     print <- "The frame was not checked\n";
   }

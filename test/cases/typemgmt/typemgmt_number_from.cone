@@ -1,0 +1,203 @@
+// A number type's conversion, its method 'from', between every pair of number
+// families: signed and unsigned widened and narrowed, across the sign, integer
+// to float and back, float to float, and Bool both ways. Then the ways a
+// conversion's target is named: a type parameter (the target alone, and both
+// ends, and one whose argument is a number in one instance and a struct
+// declaring its own 'from' in another), an alias, an untyped literal as the
+// value (in a global too), and one conversion inside another.
+//
+// Every value is printed, and a float with its bits as well, because the
+// rounding a float conversion does is invisible at six digits. Each value comes
+// in as a parameter rather than a literal, so the optimizer does not fold the
+// conversion away; the debug run checks the same values unoptimized.
+//
+// A float converted to an integer that cannot hold it -- a negative one to an
+// unsigned type, 300.0 to a u8 -- has no defined value: the release and debug
+// builds print different numbers. The negative float here is -0.75, which
+// truncates to 0 and so is defined. Checked and saturating conversions are
+// ordinary named methods, not 'from', and are not built.
+
+mod typemgmt_number_from;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn showU(label &[]u8, n u64) {
+  printStr(label);
+  printStr(" = ");
+  printUInt(n);
+  printStr("\n");
+}
+
+fn showF(label &[]u8, n f64) {
+  printStr(label);
+  printStr(" = ");
+  printFloat(n);
+  printStr(" bits ");
+  printUInt(n as u64);
+  printStr("\n");
+}
+
+fn showB(label &[]u8, b Bool) {
+  printStr(label);
+  printStr(if b {" = true\n";} else {" = false\n";});
+}
+
+fn signed(m8 i8, big i64, mid i32) {
+  show("i8-to-i16", i16.from(m8));
+  show("i8-to-i32", i32.from(m8));
+  show("i8-to-i64", i64.from(m8));
+  show("i8-to-isize", i64.from(isize.from(m8)));
+  show("i64-to-i8", i8.from(big));
+  show("i64-to-i32", i32.from(big));
+  show("i32-to-i16", i16.from(mid));
+  show("i32-to-i8", i8.from(mid));
+}
+
+fn unsigned(u u8, wide u64, mid u32) {
+  showU("u8-to-u16", u16.from(u));
+  showU("u8-to-u32", u32.from(u));
+  showU("u8-to-u64", u64.from(u));
+  showU("u8-to-usize", u64.from(usize.from(u)));
+  showU("u64-to-u32", u32.from(wide));
+  showU("u64-to-u8", u8.from(wide));
+  showU("u32-to-u16", u16.from(mid));
+}
+
+fn crossSign(m1 i8, m32 i32, u u8, umax u64) {
+  showU("i8-to-u8", u8.from(m1));
+  showU("i8-to-u16", u16.from(m1));
+  showU("i8-to-u64", u64.from(m1));
+  showU("i32-to-u16", u16.from(m32));
+  showU("i32-to-u64", u64.from(m32));
+  show("u8-to-i8", i8.from(u));
+  show("u8-to-i64", i64.from(u));
+  show("u64-to-i32", i32.from(umax));
+  show("u64-to-i64", i64.from(umax));
+}
+
+fn intToFloat(m i32, umax u32, wmax u64, big i64) {
+  showF("i32-to-f64", f64.from(m));
+  showF("i32-to-f32", f32.from(m));
+  showF("u32-to-f64", f64.from(umax));
+  showF("u32-to-f32", f32.from(umax));
+  showF("u64-to-f64", f64.from(wmax));
+  showF("i64-to-f32", f32.from(big));
+}
+
+fn floatToInt(neg f64, pos f64, single f32, small f64) {
+  show("f64-to-i32-negative", i32.from(neg));
+  show("f64-to-i64", i64.from(pos));
+  show("f32-to-i64", i64.from(single));
+  showU("f64-to-u8", u8.from(pos));
+  showU("f64-to-u64", u64.from(pos));
+  show("f64-to-i8-negative", i8.from(small));
+}
+
+fn negativeToUnsigned(neg f64) {
+  showU("negative-f64-to-u32", u32.from(neg));
+  showU("negative-f64-to-u8", u8.from(neg));
+}
+
+fn floatToFloat(exact f64, tenth f32) {
+  showF("f64-to-f32", f32.from(exact));
+  showF("f32-to-f64", f64.from(tenth));
+}
+
+fn bools(flag Bool, zero f64, half f64, u u8, negzero f64) {
+  show("bool-to-i32", i32.from(flag));
+  showU("bool-to-u64", u64.from(flag));
+  showF("bool-to-f64", f64.from(flag));
+  showB("u8-to-bool", Bool.from(u));
+  showB("zero-to-bool", Bool.from(zero));
+  showB("half-to-bool", Bool.from(half));
+  showB("negative-zero-to-bool", Bool.from(negzero));
+  mut n = 5;
+  imm r = &n;
+  showB("ref-to-bool", Bool.from(r));
+}
+
+// The target named by a type parameter
+fn conv[T](x f64) T {
+  T.from(x);
+}
+
+// Both ends named by type parameters
+fn convAny[T, S](x S) T {
+  T.from(x);
+}
+
+// A struct's own 'from', an ordinary function of the struct, is reached
+// through a type parameter as a number type's is
+struct Meters {
+  pub n f64;
+
+  pub fn from(x i64) Meters {
+    Meters[f64.from(x) * 0.5d];
+  }
+}
+
+fn make[T](x i64) T {
+  T.from(x);
+}
+
+fn generics(neg f64) {
+  show("generic-number-or-struct-i16", make[i16](70000i64));
+  showF("generic-number-or-struct-meters", make[Meters](7i64).n);
+  show("generic-to-i32", conv[i32](neg));
+  showU("generic-to-u16", conv[u16](neg + 60000.0d));
+  showF("generic-to-f32", conv[f32](neg));
+  show("generic-both-i8-from-i64", convAny[i8, i64](300i64));
+  showU("generic-both-u64-from-i8", convAny[u64, i8](-1i8));
+}
+
+alias Count = u64;
+alias Signed = i16;
+
+fn aliases(m i32, c Count) {
+  showU("alias-target", Count.from(m));
+  show("alias-source", i32.from(c));
+  show("alias-both", Signed.from(c));
+}
+
+// A conversion of a literal is a literal: a global may take one
+imm wrappedGlobal = u8.from(300);
+imm wideGlobal = u64.from(-1);
+
+fn literals() {
+  showU("global-literal-to-u8-wraps", wrappedGlobal);
+  showU("global-negative-literal-to-u64", wideGlobal);
+  showU("literal-to-u64", u64.from(3));
+  showU("negative-literal-to-u64", u64.from(-1));
+  show("literal-to-i8-wraps", i8.from(300));
+  showF("literal-to-f32", f32.from(3));
+  show("float-literal-to-i32", i32.from(-2.75));
+  showF("float-literal-to-f64", f64.from(1.5));
+}
+
+fn chained(x i64, d f64) {
+  showF("chained-f32-from-f64-from-i64", f32.from(f64.from(x)));
+  show("chained-i32-from-f32-from-f64", i32.from(f32.from(d)));
+  showU("chained-u8-from-i16-from-i64", u8.from(i16.from(x)));
+}
+
+fn main() {
+  signed(-5i8, 300i64, 70000);
+  unsigned(200u8, 4294967297u64, 65794u32);
+  crossSign(-1i8, -1, 200u8, 18446744073709551615u64);
+  intToFloat(-7, 4294967295u32, 18446744073709551615u64, 9007199254740993i64);
+  floatToInt(-2.75d, 3.99d, 10000000000.0, -100.9d);
+  negativeToUnsigned(-0.75d);
+  floatToFloat(16777217.0d, 0.1);
+  bools(true, 0.0d, 0.5d, 2u8, -0.0d);
+  generics(-2.75d);
+  aliases(-1, 70000u64);
+  literals();
+  chained(-129i64, 16777217.0d);
+}

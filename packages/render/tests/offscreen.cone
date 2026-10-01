@@ -73,13 +73,13 @@ import gpu use *;
 import render use *;
 
 // Channel 'c' of pixel ('x', 'y') of a 64 x 64 rgba8 image at 'p'
-fn px(p *u8, x usize, y usize, c usize) i64 { i64[*(p + (y * 64usize + x) * 4usize + c)]; }
+fn px(p *u8, x usize, y usize, c usize) i64 { i64.from(*(p + (y * 64usize + x) * 4usize + c)); }
 
 // Check pixel ('x', 'y') is ('r', 'g', 'b') to within 'd'
 fn expectPixel(p *u8, x usize, y usize, r i64, g i64, b i64, d f64, label &[]u8) {
-  expectFloat(f64[px(p, x, y, 0usize)], f64[r], d, label);
-  expectFloat(f64[px(p, x, y, 1usize)], f64[g], d, label);
-  expectFloat(f64[px(p, x, y, 2usize)], f64[b], d, label);
+  expectFloat(f64.from(px(p, x, y, 0usize)), f64.from(r), d, label);
+  expectFloat(f64.from(px(p, x, y, 1usize)), f64.from(g), d, label);
+  expectFloat(f64.from(px(p, x, y, 2usize)), f64.from(b), d, label);
 }
 
 // One frame: draw 'list' into 'color' and read it back into 'readback'
@@ -103,7 +103,7 @@ fn sameBytes(device &mut Device, buffer &Buffer, want *u8, size u64) Bool {
   device.waitIdle();
   imm got = back.mappedRange();
   mut i = 0usize;
-  while i < usize[size] {
+  while i < usize.from(size) {
     if *(got + i) != *(want + i) { return false; }
     i = i + 1usize;
   }
@@ -171,9 +171,9 @@ fn main() i32 {
   {
     imm slot = renderer.meshes[h.slot];
     imm gm = slot.current();
-    expectUInt(u64[gm.vertexCount], 24u64, "24 vertices");
-    expectUInt(u64[gm.indexCount], 36u64, "36 indices");
-    expectUInt(u64[gm.groups.len()], 1u64, "one group");
+    expectUInt(u64.from(gm.vertexCount), 24u64, "24 vertices");
+    expectUInt(u64.from(gm.indexCount), 36u64, "36 indices");
+    expectUInt(u64.from(gm.groups.len()), 1u64, "one group");
     expectFloat(gm.radius, 0.8660254, 0.00001d, "the bounding sphere's radius");
     expectFloat(gm.center.x, 0., 0.00001d, "the bounding sphere about the origin");
   }
@@ -202,7 +202,7 @@ fn main() i32 {
   drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
   expectPixel(p, 32usize, 32usize, 102, 51, 204, 1d, "lit head on: ambient plus all the diffuse");
   expectPixel(p, 32usize, 4usize, 51, 102, 153, 0d, "above the cube: the background");
-  expectUInt(u64[renderer.drawCalls], 1u64, "one draw");
+  expectUInt(u64.from(renderer.drawCalls), 1u64, "one draw");
   expectUInt(renderer.triangles, 12u64, "12 triangles");
 
   // ---- 3. Specular ----
@@ -244,7 +244,7 @@ fn main() i32 {
   drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
   expectPixel(p, 32usize, 32usize, 0, 255, 0, 0d, "a line on the face, drawn over it");
   expectPixel(p, 32usize, 40usize, 102, 51, 204, 1d, "the face beside the line");
-  expectUInt(u64[renderer.drawCalls], 2u64, "two draws");
+  expectUInt(u64.from(renderer.drawCalls), 2u64, "two draws");
   expectUInt(renderer.triangles, 13u64, "12 triangles and a line");
 
   // ---- 7. A replacement under the same handle ----
@@ -255,32 +255,32 @@ fn main() i32 {
   list.add(h, plain, Mat4.identity());
   drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
   expectPixel(p, 32usize, 32usize, 102, 51, 204, 1d, "the frame it was replaced in: the old cube still");
-  expectUInt(u64[renderer.meshVersion(h)], 0u64, "not yet swapped in");
-  expectUInt(u64[device.queue.pendingReleases()], 0u64, "nothing released yet");
+  expectUInt(u64.from(renderer.meshVersion(h)), 0u64, "not yet swapped in");
+  expectUInt(u64.from(device.queue.pendingReleases()), 0u64, "nothing released yet");
   drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
   expectPixel(p, 32usize, 32usize, 51, 102, 153, 0d, "the next frame: the old cube gone");
   expectPixel(p, 50usize, 13usize, 102, 51, 204, 1d, "and the new one drawn, up and to the right");
-  expectUInt(u64[renderer.meshVersion(h)], 1u64, "swapped in, under the same handle");
-  expectUInt(u64[device.queue.pendingReleases()], 4u64, "the old version's four buffers released");
+  expectUInt(u64.from(renderer.meshVersion(h)), 1u64, "swapped in, under the same handle");
+  expectUInt(u64.from(device.queue.pendingReleases()), 4u64, "the old version's four buffers released");
   drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
-  expectUInt(u64[device.queue.pendingReleases()], 4u64, "one frame on: not yet destroyed");
+  expectUInt(u64.from(device.queue.pendingReleases()), 4u64, "one frame on: not yet destroyed");
   device.beginFrame();
-  expectUInt(u64[device.queue.pendingReleases()], 0u64, "their frame come round: destroyed");
+  expectUInt(u64.from(device.queue.pendingReleases()), 0u64, "their frame come round: destroyed");
   device.endFrame();
 
   // ---- 8. Removed ----
   expect(renderer.removeMesh(&mut device, h), "removed");
   expectBool(renderer.hasMesh(h), false, "the handle reaches nothing");
   drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
-  expectUInt(u64[renderer.drawCalls], 0u64, "a removed mesh is not drawn");
+  expectUInt(u64.from(renderer.drawCalls), 0u64, "a removed mesh is not drawn");
   expectPixel(p, 50usize, 13usize, 51, 102, 153, 0d, "nothing where it was");
-  expectUInt(u64[device.queue.pendingReleases()], 4u64, "its buffers released");
+  expectUInt(u64.from(device.queue.pendingReleases()), 4u64, "its buffers released");
   drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
   device.beginFrame();
-  expectUInt(u64[device.queue.pendingReleases()], 0u64, "and destroyed two frames on");
+  expectUInt(u64.from(device.queue.pendingReleases()), 0u64, "and destroyed two frames on");
   device.endFrame();
 
-  expectUInt(u64[failures()], 0u64, "no Vulkan call failed");
-  expectUInt(u64[validationMessages()], 0u64, "no validation message");
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
   done();
 }
