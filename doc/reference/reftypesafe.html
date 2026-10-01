@@ -33,7 +33,7 @@
 		<li><b>Coercion</b>,
 			which implicitly and safely converts a value to some other expected type (usually a supertype).</li>
 		<li><b>Conversion</b>,
-			which explicitly constructs the closest "equivalent" value in another type.
+			which explicitly asks a method of another type for the closest "equivalent" value in that type.
 			This mapping is imperfect, as some (or all) of the meaning of the original value could be lost.</li>
 		<li><b>Reinterpretation</b>,
 			which explicitly preserves the original value but re-interprets it as if it has a different type.
@@ -165,26 +165,53 @@ list.len();     // equivalent to:  (&amp;list).len()
 &amp;a + 5;  // may coerce to:  a + 5
 </pre>
 
-<h2>Explicit Conversion</h2>
+<h2 id="conversion">Explicit Conversion</h2>
 	<p>Type conversion involves transforming a value of one type
 		to the closest possible value in another type.
 		For example, converting the integer 1 to the floating point number 1.0,
 		or serializing it to text:  "1".
-		Unlike coercion, conversion may not map perfectly: 
+		Unlike coercion, conversion may not map perfectly:
 		A valid mapping may not exist or some precision may be lost.
 	</p>
-	<p>Conversion is typically requested using the new type's constructor
-		or invoking one of its initializers</p>
+	<p>A conversion is not a construction but a method of the new type,
+		<span class="pre">from</span>, called on the type with the value to convert.
+		It is the type's default conversion from another type;
+		any other way of converting, such as one that saturates at the type's limits
+		or one that checks that the value fits, is an ordinary method with a name of its own.</p>
 <pre>
-imm float = f32[1];
-imm text = Text(1); // "1"
+imm float = f32.from(1);
+imm count = u32.from(list.len());
+imm name = String.from("node");    // collections' String, from a slice of bytes
 </pre>
+	<p>Every number type has <span class="pre">from</span>, which takes a value of any number type.
+		It may be called on the type named directly, through an alias of it,
+		or on a generic's type parameter: <span class="pre">T.from(x)</span>
+		converts to whichever type <span class="pre">T</span> is.
+		<span class="pre">x into f32</span> is the same conversion as <span class="pre">f32.from(x)</span>.
+		Between numbers it does what the machine does:</p>
+	<ul>
+		<li>To a narrower integer, the low bits are kept: <span class="pre">u8.from(300)</span> is 44.</li>
+		<li>To a wider integer, a signed value converting to a signed type is sign-extended;
+			every other value is zero-extended from its own width, so
+			<span class="pre">u64.from(-1i8)</span> is 255. Between a signed and an unsigned type of one width,
+			the bits are kept: <span class="pre">i8.from(200u8)</span> is -56.</li>
+		<li>A float converts to an integer by truncating toward zero:
+			<span class="pre">i32.from(-2.75)</span> is -2. A float whose truncated value
+			the integer type cannot hold, a negative one to an unsigned type among them, has no defined result.</li>
+		<li>An integer converts to the nearest float, and a float to the nearest float of the other width.</li>
+		<li>An integer literal with no suffix is an <span class="pre">i32</span> and converts as one:
+			<span class="pre">u64.from(-1)</span> is 4294967295. Converting a literal gives a literal,
+			so it may be a global's value.</li>
+	</ul>
 	<p>Converting a number, reference or pointer to <span class="pre">Bool</span>,
-		written <span class="pre">Bool[n]</span> or <span class="pre">n into Bool</span>,
+		written <span class="pre">Bool.from(n)</span> or <span class="pre">n into Bool</span>,
 		gives the answer its <span class="pre">isTrue</span> method gives a condition
 		(see <a href="#coercion">Implicit Coercion to Bool</a>):
-		<span class="pre">Bool[2]</span> is true, as are <span class="pre">Bool[0.5]</span>
-		and NaN; only 0, -0 and a null pointer are false.</p>
+		<span class="pre">Bool.from(2)</span> is true, as are <span class="pre">Bool.from(0.5)</span>
+		and NaN; only 0, -0 and a null pointer are false.
+		A <span class="pre">Bool</span> converts to a number as 0 or 1.</p>
+	<p>A number type takes no square brackets: <span class="pre">u64[count]</span> is an error
+		naming <span class="pre">u64.from(count)</span>.</p>
 	<p>In some cases, it may be more convenient to request conversion 
 		by using some method in the old type:</p>
 <pre>
