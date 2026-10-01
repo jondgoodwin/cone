@@ -217,8 +217,10 @@ fn arrayRefs() {
 
 // A slice is a compound pointer: a data address and a length. '===' asks
 // whether two slices are the same view, which is both words matching, so it
-// asks nothing of the element type. '==' would compare the elements, which is
-// not built, and collection_typecheck_slice asserts its refusal.
+// asks nothing of the element type. '==' compares the elements: equal when the
+// lengths are and each element is '==' to its partner, by the element type's
+// own '=='. collection_typecheck_slice asserts the refusals: elements with no
+// '==', and an ordering, which a slice does not have.
 fn comparing() {
   mut b Array[i32, 4] = [1, 2, 3, 4];
   mut c Array[i32, 4] = [1, 2, 3, 4];
@@ -239,6 +241,76 @@ fn comparing() {
   imm ps = &[]pairs;
   imm psalias = &[]pairs;
   show("slice-of-struct-same", if ps === psalias {1;} else {0;});
+}
+
+fn equality() {
+  mut b Array[i32, 4] = [1, 2, 3, 4];
+  mut c Array[i32, 4] = [1, 2, 3, 4];
+  imm whole = &[]b;
+  imm other = &[]c;
+
+  // Same elements, different array: equality says these are equal, and '!='
+  // is its negation
+  show("equal-contents", if whole == other {1;} else {0;});
+  show("equal-contents-ne", if whole != other {1;} else {0;});
+  mut e Array[i32, 4] = [1, 2, 3, 5];
+  imm differs = &[]e;
+  show("one-element-differs", if whole == differs {1;} else {0;});
+  show("one-element-differs-ne", if whole != differs {1;} else {0;});
+
+  // The lengths are compared first: a prefix is not equal to the whole, and
+  // two empty slices are equal wherever they are
+  show("prefix-not-equal", if &b[0..3] == whole {1;} else {0;});
+  show("prefix-of-each-equal", if &b[0..3] == &c[0..3] {1;} else {0;});
+  show("empty-slices-equal", if &b[0..0] == &c[2..2] {1;} else {0;});
+  show("empty-not-equal-to-one", if &b[0..0] == &c[0..1] {1;} else {0;});
+
+  // The other side is converted to the slice as any slice argument is: an
+  // array, a reference to one, a string literal; and an array or a reference
+  // to one on the left is compared as the slice it converts to
+  mut d Array[i32, 4] = [1, 2, 3, 4];
+  show("slice-equals-array", if whole == d {1;} else {0;});
+  show("slice-equals-array-ref", if whole == &d {1;} else {0;});
+  show("array-ref-equals-slice", if &d == whole {1;} else {0;});
+  show("mut-slice-equals-slice", if &[]mut d == whole {1;} else {0;});
+  imm word &[]u8 = "box";
+  show("bytes-equal-string", if word == "box" {1;} else {0;});
+  show("string-equals-bytes", if "box" == word {1;} else {0;});
+  show("longer-string-not-equal", if word == "boxes" {1;} else {0;});
+
+  // Floats compare by IEEE '==': NaN is equal to nothing, itself included, and
+  // -0.0 is equal to 0.0
+  imm zero = 0.0f32;
+  imm nan = zero / zero;
+  mut f1 Array[f32, 2] = [1.5f32, nan];
+  mut f2 Array[f32, 2] = [1.5f32, nan];
+  imm fs = &[]f1;
+  show("nan-elements-not-equal", if &[]f1 == &[]f2 {1;} else {0;});
+  show("nan-not-equal-even-to-itself", if fs == fs {1;} else {0;});
+  mut pz Array[f32, 1] = [0.0f32];
+  mut nz Array[f32, 1] = [-0.0f32];
+  show("negative-zero-equals-zero", if &[]pz == &[]nz {1;} else {0;});
+
+  // A struct's elements compare by the '==' it declares, on the value or on
+  // references
+  mut coins1 Array[Coin, 2] = [new Coin(5), new Coin(10)];
+  mut coins2 Array[Coin, 2] = [new Coin(5), new Coin(10)];
+  show("struct-value-eq", if &[]coins1 == &[]coins2 {1;} else {0;});
+  mut cards1 Array[Card, 2] = [new Card(1, 0), new Card(2, 0)];
+  mut cards2 Array[Card, 2] = [new Card(1, 7), new Card(3, 7)];
+  show("struct-ref-eq-differs", if &[]cards1 == &[]cards2 {1;} else {0;});
+  cards2[1] = new Card(2, 9);
+  show("struct-ref-eq-by-rank", if &[]cards1 == &[]cards2 {1;} else {0;});
+
+  // A slice of slices compares each inner slice's elements, and a reference
+  // to a slice reads through to it
+  mut ab Array[u8, 2] = [97u8, 98u8];
+  mut rows1 Array[&[]u8, 2] = ["ab", "cd"];
+  mut rows2 Array[&[]u8, 2] = [&[]ab, "cd"];
+  show("nested-slices-equal", if &[]rows1 == &[]rows2 {1;} else {0;});
+  imm r1 = &[]rows1;
+  imm r2 = &[]rows2;
+  show("ref-to-slice-equal", if &r1 == &r2 {1;} else {0;});
 }
 
 // -------- a slice over a byte array is what a string literal borrows to --------
@@ -264,6 +336,19 @@ mut totals Array[i32, 3] = [100, 200, 300];
 
 struct Window {
   pub mut view &[]mut i32;
+}
+
+// '==' declared on the value
+struct Coin {
+  pub cents i32;
+  pub fn `==`(self, other Coin) Bool {cents == other.cents;}
+}
+
+// '==' declared on references, and asking only the rank
+struct Card {
+  pub rank i32;
+  pub mark i32;
+  pub fn `==`(self &, other &Card) Bool {rank == other.rank;}
 }
 
 fn globals() {
@@ -293,6 +378,7 @@ fn main() i32 {
   parameters();
   arrayRefs();
   comparing();
+  equality();
   bytes();
   globals();
   members();

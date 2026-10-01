@@ -268,9 +268,12 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
   is a struct receiver's own, or the struct a reference refers to, through any
   number of references — `!=` on references compares the values, so
   `fnCallLowerRefCompare` lowers the renamed `==` exactly as it would a written
-  one, and its diagnostics name `==`. A pointer declares its own `!=`, on the
-  pointer, and a slice or a virtual reference refuses it, so none of them asks
-  a referent. A type declaring its own `!=` keeps it, an enum's intrinsic pair
+  one, and its diagnostics name `==`. A slice, directly or through references,
+  has its `!=` derived the same way where its elements have a `==`, and so does
+  an array, or a reference to one, compared with a slice; where the elements
+  have none, the `!=` is refused under its own name. A pointer declares its own
+  `!=`, on the pointer, and a virtual reference refuses it, so neither asks a
+  referent. A type declaring its own `!=` keeps it, an enum's intrinsic pair
   is declared together, and a type declaring neither is reported missing its
   `!=`. A `==` that selects nothing is reported once, under `==`, and the `not`
   carries `errorType` on.
@@ -290,8 +293,8 @@ by value, an array and a function go on to the table's own rows.
 | `FnSigTag` | `fnCallFnSigTypeCheck` — a plain call |
 | struct, number | fill in `()`/`[]`/`&[]` as `methfld` if absent, then `fnCallLowerMethod` |
 | `TTupleTag` | `fnCallLowerIntField` — element by literal index, its type read from the resolved tuple, since the receiver's `vtype` may be an alias naming it |
-| `ArrayTag` | `fnCallArrIndex`, only under `FlagIndex` |
-| `ArrayRefTag` | index; `==`, `!=` or an ordering is `ErrorRefNoCompare`; else `fnCallLowerPtrMethod` against `arrayRefType` |
+| `ArrayTag` | `fnCallArrIndex` under `FlagIndex`; a comparison with a slice to `fnCallArrayAsSlice` |
+| `ArrayRefTag` | index; `==`, `!=` or an ordering to `fnCallLowerSliceCompare`; else `fnCallLowerPtrMethod` against `arrayRefType` |
 | `RefTag` | function-by-ref, array index, a comparison to `fnCallLowerRefCompare`, or `fnCallLowerPtrMethod`, then `fnCallLowerTraitMethod` and failing that `fnCallLowerMethod` |
 | `VirtRefTag` | `==`, `!=` or an ordering is `ErrorRefNoCompare`; else `fnCallLowerPtrMethod`, else set `FlagVDisp` and `fnCallLowerMethod`, whose selection (`fnSigViableCall`) takes only a method whose `self` permission the receiver's grants, and where `fnCallFinalizeArgs` lends an owning receiver as a borrowed virtual reference (`fnCallLendVirtOwner`) |
 | `PtrTag` | the pointer's own operators first, then the value's fields and named methods |
@@ -309,10 +312,13 @@ candidate. `fnCallLowerRefCompare`:
   value is `ErrorRefCompareMixed`, rather than read through on one side only, so
   `r == v` never says something `*r == v` does not. The mirror, a value on the
   left and a reference on the right, reaches the value's own operator and is
-  refused there as no candidate.
-- **A referent that is a pointer or a reference is read through** on both sides,
-  and the result compared as it would be by value: a pointer by its own
-  operators, a reference by this same function again.
+  refused there as no candidate. A reference to an array with a slice on the
+  right is the exception: it is compared as the slice it converts to
+  (`fnCallArrayAsSlice`).
+- **A referent that is a pointer, a reference or a slice is read through** on
+  both sides, and the result compared as it would be by value: a pointer by its
+  own operators, a reference by this same function again, a slice by
+  `fnCallLowerSliceCompare`.
 - **A referent whose type declares the operator** is asked first with the
   operands as written, so a method declared for references (`self &`,
   `other &T`) takes them unchanged. Only when no candidate matches are both
@@ -323,9 +329,43 @@ candidate. `fnCallLowerRefCompare`:
 - **Anything else is `ErrorRefNoCompare`**, whose message names `===` for `==`
   and `!=`: a referent with no such operator, a referent with no methods at all
   (an array, a function), and a trait other than an enum, whose comparison would
-  be dispatched on the variant and is not built. A slice (whose `==` would
-  compare elements) and a virtual reference are refused the same way in their
-  own arms.
+  be dispatched on the variant and is not built. A virtual reference is refused
+  the same way in its own arm.
+
+**A comparison of two slices compares their elements**
+(`fnCallLowerSliceCompare`): equal when the counts are and each element is `==`
+to its partner. A slice has no order, so an ordering is `ErrorRefNoCompare`.
+The comparison is core's `mem.sliceEq[T](a &[]T, b &[]T) Bool`, a generic
+function whose body is the loop: the node becomes a call of its instance at
+the receiver's element type (`genericMethodInstance`), the receiver its first
+argument, and `fnCallFinalizeArgs` converts the other side to that slice as it
+does any slice argument, so an array, a reference to one or a string literal
+is compared too; an array or a reference to one on the left is converted the
+same way first (`fnCallArrayAsSlice`). A value pattern on a slice, `case
+"box"`, is the same `==` (`castMatchValueTypeCheck`). The function is found
+by its name and its package, as core's `TypeRecord` is: `sliceEqDclNameRes`
+remembers its declaration when it is name resolved, held to that one
+signature, and `sliceEqFn` hands it out.
+
+The body compares each pair as `&a[i] == &b[i]`, which is a comparison of
+references, so every element type gets the `==` this function already selects:
+a number's or a `Bool`'s built-in one (a float's IEEE `==`, so a NaN is unequal
+to everything and -0.0 equals 0.0), a pointer's on the address, one a struct
+declares on the value or on references, a payload-free enum's, and through a
+reference or a nested slice, what it refers to. Nothing is copied. A body in
+Cone rather than a loop generated of its own is what reuses that selection; it
+is generated once per element type in each module that compares, an ordinary
+generic instance, not expanded at each comparison. No element type is
+compared with `memcmp`: equality is bitwise only for some of them (not a
+float's, nor a struct's with padding, nor one whose `==` asks less than every
+byte), and one loop serves them all.
+
+Whether the elements can be compared is decided where the slices are, by
+`fnCallSliceElemNoEq`, which asks what `fnCallLowerRefCompare` would of the
+pair, so a refusal is `ErrorRefNoCompare` naming the element type rather than
+an error reported inside core: a struct declaring no `==`, an enum whose
+variants carry fields, an array (whose comparison is not built), a trait, a
+virtual reference.
 
 The permission a reference carries is enforced on the dereference, by flow, so
 `==` through an `opaq` reference is `ErrorNoRead` while `===` on it is allowed.

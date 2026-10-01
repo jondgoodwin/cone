@@ -177,14 +177,14 @@ pub enum MemOrder u8 {
 
 // 'mem': what only the compiler knows about a type's memory, and the raw moves
 // in and out of it that a collection builds on, each named through it:
-// 'mem.sizeof[T]()'. Each function is an intrinsic: the compiler supplies it,
-// from what its registry defines the name to mean in Cone's terms, and the
-// reference manual's Intrinsics page states every edge case. '@intrinsic' is
-// allowed only in the core package, and each declaration must say what the
-// registry says. None has a symbol: every call is expanded where it is made.
-// A body, where the registry allows one, is the fallback a back end with no
-// lowering of its own uses, and what 'conec --intrinsic-fallback' runs in place
-// of the lowering, so the two can be tested against each other.
+// 'mem.sizeof[T]()'. Each function but 'sliceEq' is an intrinsic: the compiler
+// supplies it, from what its registry defines the name to mean in Cone's terms,
+// and the reference manual's Intrinsics page states every edge case.
+// '@intrinsic' is allowed only in the core package, and each declaration must
+// say what the registry says. None has a symbol: every call is expanded where it
+// is made. A body, where the registry allows one, is the fallback a back end
+// with no lowering of its own uses, and what 'conec --intrinsic-fallback' runs
+// in place of the lowering, so the two can be tested against each other.
 //
 // It stands in for a submodule, 'core.mem', which is what it is meant to be:
 // one name, 'mem', is folded into every module, rather than each of its
@@ -215,6 +215,19 @@ pub struct @opaque mem {
   // A slice of the len values starting at p
   pub fn @intrinsic sliceFromParts[T](p *T, len usize) &[]T;
   pub fn @intrinsic sliceFromPartsMut[T](p *T, len usize) &[]mut T;
+  // Whether a and b hold equal elements: the same count, and each element
+  // '==' to its partner, compared through references, so that a T declaring
+  // its '==' on references is asked as it is and no element is copied. Not an
+  // intrinsic: this body is what '==' and '!=' on two slices call, an
+  // instance for each element type, which the compiler finds here by its name
+  pub fn sliceEq[T](a &[]T, b &[]T) Bool {
+    if a.len != b.len {return false;}
+    mut i = 0usize;
+    while i < a.len {
+      if &a[i] == &b[i] {i = i + 1usize;} else {return false;}
+    }
+    true;
+  }
   // Move the T at p out, leaving the slot dead; nothing there is finalized
   pub fn @intrinsic readRaw[T](p *T) T {*p;}
   // Move value into the slot at p, which holds nothing live: nothing is finalized

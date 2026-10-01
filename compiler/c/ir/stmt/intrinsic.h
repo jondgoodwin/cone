@@ -169,6 +169,15 @@ int typeRecordIsPtr(INode *type);
 // function's roots from it (genlRootFrame), where no declaration names it.
 StructNode *typeRecordStruct(void);
 
+// A function declaration, once name resolved: if it is core's 'mem.sliceEq',
+// hold it to its signature and remember it for sliceEqFn
+void sliceEqDclNameRes(FnDclNode *fndcl);
+
+// Core's generic 'mem.sliceEq[T](a &[]T, b &[]T) Bool', which '==' and '!=' on
+// two slices call (fnCallLowerSliceCompare); NULL before core's declaration is
+// name resolved, or in a compile whose core declares none
+FnDclNode *sliceEqFn(void);
+
 // Type check what is left of a declared intrinsic's instance, lowered or not:
 // the type an atomic operation acts on must be of the class its entry names.
 // Answers 0, having reported it, when it is not, so its fallback body is not

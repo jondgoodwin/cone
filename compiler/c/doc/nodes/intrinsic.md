@@ -180,6 +180,14 @@ also remembers the struct its result points at (`typeRecordStruct`), which is
 how generation builds a root map's records, where no declaration names the
 type.
 
+`mem` also holds one function that is no intrinsic: `sliceEq[T](a &[]T,
+b &[]T) Bool`, what `==` and `!=` on two slices call ([fncall](fncall.md), "A
+comparison of two slices compares their elements"). Its body is its
+implementation, compiled as any generic function's, and it has no registry
+entry; the compiler knows it the way it knows `TypeRecord`, by its name and its
+package, and `sliceEqDclNameRes` holds the declaration to that one signature
+(`ErrorIntrinsicSig` otherwise) and remembers it (`sliceEqFn`).
+
 ## Hazards
 
 - **The constants are the target layout's, read at generation.** `sizeof` and
@@ -214,7 +222,7 @@ type.
 | --- | --- |
 | lexer keyword | `lexer.c`, `IntrinsicAttrToken` |
 | parse | `parsefnflow.c` `parseFn`; `parsemod.c` `parseExternFnCheck` |
-| registry and checks | `ir/stmt/intrinsic.c`: `intrinsicRegistry`, `intrinsicDclNameRes`, `intrinsicDclTypeCheck`, `intrinsicClassCheck`, `intrinsicCallCheck` |
+| registry and checks | `ir/stmt/intrinsic.c`: `intrinsicRegistry`, `intrinsicDclNameRes`, `intrinsicDclTypeCheck`, `intrinsicClassCheck`, `intrinsicCallCheck`; `sliceEqDclNameRes`, `sliceEqFn` for `mem.sliceEq` |
 | hooks | `fndcl.c` `fnDclNameRes`, `fnDclTypeCheck`, `fnDclIsExpanded`; `fncall.c` `fnCallFinalizeArgs` |
 | forced fallback | `--intrinsic-fallback` → `intrinsicForceFallback` (`conec.c`) |
 | generation | `genlexpr.c` `genlDeclaredIntrinsic`, `genlAtomicIntrinsic` (from `genlFnCall`); `genlalloc.c` `genlFinalizeAt`, `genlTypeRecord`, `genlTraceAt`; `genltype.c` `genlAlignof` |
