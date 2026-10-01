@@ -1,0 +1,542 @@
+// The fs package: files and folders, synchronously. A file is read or
+// written whole; a folder is made, listed, walked and removed; a file's size,
+// time and kind are asked; and the current folder is read and changed.
+//
+//   mod notes;
+//   import stdio use *;
+//   import collections use *;
+//   import fs;
+//
+//   fn main() i32 {
+//     mut text = String.empty();
+//     match fs.readFile("notes.txt") {
+//       case mut ok Ok { text <=> ok.value; }       // the String moved out
+//       case imm e Error {
+//         imm m = e.value.message();               // 'readFile notes.txt: No such file or directory'
+//         eprintStr(m.view());
+//         return 1i32;
+//       }
+//     }
+//     text.append("another line\n");
+//     imm wrote = fs.writeFile("notes.txt", text.view());
+//     if wrote is Error { return 1i32; }
+//     0i32;
+//   }
+//
+// 'examples/sizes.cone' walks a folder and prints each file's size.
+//
+// **Failure.** Everything that can fail answers a core 'Result': 'Ok' with
+// the value ('Result[void, FsError]' where there is none, its 'Ok' holding
+// 'nil'), or 'Error' with an 'FsError', which says what was being done
+// ('op', the function's name), to which path ('path', and 'other' for the
+// second path of 'rename'), and why ('code', the C library's errno, a posix
+// 'E...' constant). Its 'message()' is one line to show a person,
+// 'readFile notes.txt: No such file or directory', and 'notFound()' asks the
+// commonest question about it. A path holding a NUL byte, which C would read
+// as its end, fails with EINVAL before anything is asked of the system.
+// Cone has no '?' yet, so a caller matches each Result; a value is moved out
+// of a matched 'Ok' by swapping an empty one in ('text <=> ok.value').
+// Asking whether something is there is not a failure: 'exists', 'isDir' and
+// 'isFile' answer a Bool, false for anything they cannot see.
+//
+// **Paths** are bytes, a '&[]u8' in, as the 'path' package takes them apart:
+// '/' and '\' both separate. A path the package makes (a listed entry's
+// 'path', and each one 'walk' gives) is the folder's path as given joined to
+// the name by 'path.join', a '/' between them unless the folder's path ends
+// in a separator; 'currentDir' and 'absolute' answer a normalized path, every
+// separator '/' ('C:/work/notes.txt'), which the C runtime and Windows take
+// everywhere. Relative paths are read from the current folder.
+//
+// **UTF-8 names.** The first call that hands a path to the C runtime sets
+// the C library's character type (LC_CTYPE) to UTF-8 when the program has
+// left it at C's default, "C". On Windows that is what makes the runtime read
+// and answer file names as UTF-8 (without it, 'é' names some other file);
+// it changes nothing else: numbers, dates and sorting keep C's own forms.
+// A program that has chosen a character type of its own keeps it.
+//
+// **Links.** 'stat', 'isDir' and 'isFile' follow a symbolic link to what it
+// names, as POSIX's 'stat' does. A listing does not: an entry that is a link
+// says so ('isLink'), and is then neither a folder nor a file. 'walk' never
+// goes down into a linked folder, and 'removeAll' removes a link itself,
+// never what it leads to. On Windows a link is any reparse point: a
+// symbolic link or a directory junction, and also some cloud-storage
+// placeholders, which are then left whole.
+//
+// **What is Windows-only.** The package itself is written over ISO C (libc's
+// 'fopen', 'fread', 'fwrite', 'remove', 'rename') and POSIX (posix's 'stat',
+// 'lstat', 'mkdir', 'rmdir', 'getcwd', 'chdir', 'realpath', 'opendir',
+// 'readdir'), and holds nothing of Windows' own. What is Windows' is beneath
+// it: the posix package maps those names onto the Windows C runtime, and its
+// 'opendir', 'readdir' and 'lstat' are written over the runtime's
+// '_findfirst64'. The 'path' rules it relies on are Windows' too (drive
+// letters, shares, '\'). Where Windows behaves differently from POSIX it is
+// said beside the function: 'rename' does not replace, and 'modified' is in
+// whole seconds.
+
+mod fs;
+
+import libc;
+import posix;
+import collections use String, List;
+import path use join, normalize, parent;
+
+// -------- failure --------
+
+// Why an operation failed: what was being done, to which path, and the C
+// library's error number
+pub struct FsError {
+  // The function that failed: "readFile", "makeDir", ...
+  pub op String;
+  // The path it was given
+  pub path String;
+  // The second path, 'rename''s 'to'; empty for the others
+  pub other String;
+  // The C library's errno: posix.ENOENT, posix.EACCES, ...
+  pub code i32;
+
+  // One line for a person: 'readFile notes.txt: No such file or directory',
+  // or 'rename a.txt to b.txt: File exists'
+  pub fn message(self &) String {
+    mut out = String.from(op.view());
+    if not path.isEmpty() {
+      out.append(" ");
+      out.append(path.view());
+    }
+    if not other.isEmpty() {
+      out.append(" to ");
+      out.append(other.view());
+    }
+    out.append(": ");
+    imm text = libc.strerror(code);
+    if text == 0usize as *u8 {
+      out.append("error ");
+      out.appendInt(i64.from(code));
+    }
+    else {
+      out.append(mem.sliceFromParts(text, libc.strlen(text)));
+    }
+    out;
+  }
+
+  // Whether it failed because nothing has that name (ENOENT)
+  pub fn notFound(self &) Bool { code == posix.ENOENT; }
+
+  // Whether it failed because something already has that name (EEXIST)
+  pub fn alreadyExists(self &) Bool { code == posix.EEXIST; }
+}
+
+fn failure(op &[]u8, p &[]u8, code i32) FsError {
+  new FsError(String.from(op), String.from(p), String.empty(), code);
+}
+
+fn fail[T](op &[]u8, p &[]u8, code i32) Result[T, FsError] {
+  Error[T, FsError][failure(op, p, code)];
+}
+
+fn succeeded() Result[void, FsError] { Ok[void, FsError][nil]; }
+
+// The error number the last C call left
+fn lastErrno() i32 { *libc.errno(); }
+
+// Whether a path holds a NUL byte, which a C function would take as its end
+fn hasNul(p &[]u8) Bool {
+  mut i = 0usize;
+  while i < p.len {
+    if p[i] == 0u8 { return true; }
+    i = i + 1usize;
+  }
+  false;
+}
+
+// -------- UTF-8 names --------
+
+mut utf8Checked = false;
+
+// Make the C runtime read names as UTF-8, unless the program has chosen a
+// character type of its own. Once is enough; two threads doing it at once
+// set the same thing.
+fn useUtf8() {
+  if utf8Checked { return; }
+  utf8Checked = true;
+  imm now = libc.setlocale(libc.LC_CTYPE, 0usize as *u8);
+  if now != 0usize as *u8 and libc.strcmp(now, &[]"C") == 0i32 {
+    libc.setlocale(libc.LC_CTYPE, &[]".UTF-8");
+  }
+}
+
+// -------- status --------
+
+// What 'stat' tells of a file or folder
+pub struct FileInfo {
+  // Its size in bytes; 0 for a folder
+  pub size i64;
+  // When it was last written, in whole seconds since 1970 (UTC), as
+  // libc.time() counts
+  pub modified i64;
+  pub isDir Bool;
+  // A regular file: not a folder, a device or anything else
+  pub isFile Bool;
+}
+
+fn emptyStat() posix.Stat {
+  new posix.Stat(0u32, 0u16, 0u16, 0i16, 0i16, 0i16, 0u32, 0i64, 0i64, 0i64, 0i64);
+}
+
+// The size, time and kind of what a path names, following a link
+pub fn stat(path &[]u8) Result[FileInfo, FsError] {
+  if hasNul(path) { return fail[FileInfo]("stat", path, posix.EINVAL); }
+  useUtf8();
+  mut c = String.from(path);
+  mut st = emptyStat();
+  if posix.stat(c.cstr(), &mut st) != 0i32 { return fail[FileInfo]("stat", path, lastErrno()); }
+  imm kind = st.st_mode & posix.S_IFMT;
+  Ok[FileInfo, FsError][new FileInfo(st.st_size, st.st_mtime, kind == posix.S_IFDIR, kind == posix.S_IFREG)];
+}
+
+// The file-type bits of what a path names, or 0 when it cannot be seen
+fn kindOf(path &[]u8) u16 {
+  if hasNul(path) { return 0u16; }
+  useUtf8();
+  mut c = String.from(path);
+  mut st = emptyStat();
+  if posix.stat(c.cstr(), &mut st) != 0i32 { return 0u16; }
+  st.st_mode & posix.S_IFMT;
+}
+
+// Whether anything has that name
+pub fn exists(path &[]u8) Bool { kindOf(path) != 0u16; }
+
+// Whether a folder has that name
+pub fn isDir(path &[]u8) Bool { kindOf(path) == posix.S_IFDIR; }
+
+// Whether a regular file has that name
+pub fn isFile(path &[]u8) Bool { kindOf(path) == posix.S_IFREG; }
+
+// -------- whole files --------
+
+// The error number for a file that would not open: Windows answers EACCES
+// for a folder, which is EISDIR in POSIX's terms. Called straight after the
+// failure, before errno changes.
+fn openErrno(path &[]u8) i32 {
+  imm code = lastErrno();
+  if code == posix.EACCES and isDir(path) {posix.EISDIR;} else {code;};
+}
+
+// The whole of a file, its bytes as they are: text or not, NULs included
+pub fn readFile(path &[]u8) Result[String, FsError] {
+  if hasNul(path) { return fail[String]("readFile", path, posix.EINVAL); }
+  useUtf8();
+  mut c = String.from(path);
+  imm f = libc.fopen(c.cstr(), &[]"rb");
+  if f == 0usize as *libc.FILE { return fail[String]("readFile", path, openErrno(path)); }
+  mut out = String.empty();
+  mut buf = new Array[u8, 65536] <- fill 0u8;
+  imm bp *u8 = &[]buf;
+  mut going = true;
+  while going {
+    imm n = libc.fread(bp, 1usize, 65536usize, f);
+    if n > 0usize { out.append(mem.sliceFromParts(bp, n)); }
+    going = n == 65536usize;
+  }
+  imm broke = libc.ferror(f) != 0i32;
+  imm code = lastErrno();
+  libc.fclose(f);
+  if broke { return fail[String]("readFile", path, code); }
+  Ok[String, FsError][out];
+}
+
+// Open with mode, write data, close; a failure anywhere is op's
+fn writeWith(op &[]u8, path &[]u8, data &[]u8, mode *u8) Result[void, FsError] {
+  if hasNul(path) { return fail[void](op, path, posix.EINVAL); }
+  useUtf8();
+  mut c = String.from(path);
+  imm f = libc.fopen(c.cstr(), mode);
+  if f == 0usize as *libc.FILE { return fail[void](op, path, openErrno(path)); }
+  imm wrote = if data.len > 0usize {libc.fwrite(data, 1usize, data.len, f);} else {0usize;};
+  imm code = lastErrno();
+  imm closed = libc.fclose(f);
+  if wrote != data.len { return fail[void](op, path, code); }
+  if closed != 0i32 { return fail[void](op, path, lastErrno()); }
+  succeeded();
+}
+
+// Make the file hold exactly data, making it if it is not there and
+// replacing what it held if it is
+pub fn writeFile(path &[]u8, data &[]u8) Result[void, FsError] {
+  writeWith("writeFile", path, data, &[]"wb");
+}
+
+// Add data to the end of the file, making it if it is not there
+pub fn appendFile(path &[]u8, data &[]u8) Result[void, FsError] {
+  writeWith("appendFile", path, data, &[]"ab");
+}
+
+// -------- names --------
+
+// Give a file or folder another name, which may be in another folder on the
+// same volume. Where 'to' is already there, POSIX replaces it; Windows
+// refuses, EEXIST for a file and EACCES for a folder, and nothing changes.
+pub fn rename(from &[]u8, to &[]u8) Result[void, FsError] {
+  if hasNul(from) or hasNul(to) {
+    return Error[void, FsError][new FsError(String.from("rename"), String.from(from), String.from(to), posix.EINVAL)];
+  }
+  useUtf8();
+  mut a = String.from(from);
+  mut b = String.from(to);
+  if libc.rename(a.cstr(), b.cstr()) != 0i32 {
+    return Error[void, FsError][new FsError(String.from("rename"), String.from(from), String.from(to), lastErrno())];
+  }
+  succeeded();
+}
+
+// Remove a file. A folder is refused (EISDIR): 'removeDir' or 'removeAll'
+pub fn removeFile(path &[]u8) Result[void, FsError] {
+  if hasNul(path) { return fail[void]("removeFile", path, posix.EINVAL); }
+  useUtf8();
+  mut c = String.from(path);
+  if libc.remove(c.cstr()) != 0i32 { return fail[void]("removeFile", path, openErrno(path)); }
+  succeeded();
+}
+
+// -------- folders --------
+
+// Make a folder, whose parent must be there. One already there is refused
+// (EEXIST).
+pub fn makeDir(path &[]u8) Result[void, FsError] {
+  if hasNul(path) { return fail[void]("makeDir", path, posix.EINVAL); }
+  useUtf8();
+  mut c = String.from(path);
+  if posix.mkdir(c.cstr(), 0x1FFu32) != 0i32 { return fail[void]("makeDir", path, lastErrno()); }
+  succeeded();
+}
+
+// Make a folder and every folder above it that is not there yet. A folder
+// already there is success; a file in the way is refused (ENOTDIR), and so
+// is a parent that cannot be made, whose error names it.
+pub fn makeDirAll(path &[]u8) Result[void, FsError] {
+  if hasNul(path) { return fail[void]("makeDirAll", path, posix.EINVAL); }
+  imm kind = kindOf(path);
+  if kind == posix.S_IFDIR { return succeeded(); }
+  if kind != 0u16 { return fail[void]("makeDirAll", path, posix.ENOTDIR); }
+  imm up = parent(path);
+  if not up.isEmpty() and up.view() != path {
+    imm made = makeDirAll(up.view());
+    if made is Error { return made; }
+  }
+  mut c = String.from(path);
+  if posix.mkdir(c.cstr(), 0x1FFu32) != 0i32 {
+    imm code = lastErrno();
+    // Made meanwhile by someone else, or named with a '..' that mkdir read
+    if not isDir(path) { return fail[void]("makeDirAll", path, code); }
+  }
+  succeeded();
+}
+
+// Remove an empty folder. One with anything in it is refused (ENOTEMPTY).
+pub fn removeDir(path &[]u8) Result[void, FsError] {
+  if hasNul(path) { return fail[void]("removeDir", path, posix.EINVAL); }
+  useUtf8();
+  mut c = String.from(path);
+  if posix.rmdir(c.cstr()) != 0i32 { return fail[void]("removeDir", path, lastErrno()); }
+  succeeded();
+}
+
+// One entry of a folder
+pub struct DirEntry {
+  // Its name in the folder
+  pub name String;
+  // The folder's path as given joined to the name: 'src/main.cone'
+  pub path String;
+  pub isDir Bool;
+  // A regular file
+  pub isFile Bool;
+  // A link, which is neither a folder nor a file here: 'stat' its path to
+  // learn what it leads to
+  pub isLink Bool;
+}
+
+fn byName(a &DirEntry, b &DirEntry) i32 { a.name.compare(b.name.view()); }
+
+// What a folder holds, '.' and '..' left out, sorted by name, byte by byte
+// (so 'B' before 'a', and a UTF-8 name by its bytes). A path that is not a
+// folder is refused (ENOTDIR).
+pub fn readDir(path &[]u8) Result[List[DirEntry], FsError] {
+  if hasNul(path) { return fail[List[DirEntry]]("readDir", path, posix.EINVAL); }
+  useUtf8();
+  mut c = String.from(path);
+  imm dir = posix.opendir(c.cstr());
+  if dir == 0usize as *posix.DIR { return fail[List[DirEntry]]("readDir", path, lastErrno()); }
+  mut out = List[DirEntry].empty();
+  *libc.errno() = 0i32;
+  mut e = posix.readdir(dir);
+  while e != 0usize as *posix.dirent {
+    imm entry = e as &posix.dirent;
+    imm np *u8 = &[]entry.d_name;
+    imm name = mem.sliceFromParts(np, libc.strlen(np));
+    if name != "." and name != ".." {
+      imm t = entry.d_type;
+      out.push(new DirEntry(String.from(name), join(path, name),
+        t == posix.DT_DIR, t == posix.DT_REG, t == posix.DT_LNK));
+    }
+    e = posix.readdir(dir);
+  }
+  imm code = lastErrno();
+  posix.closedir(dir);
+  if code != 0i32 { return fail[List[DirEntry]]("readDir", path, code); }
+  out.sortBy(&byName);
+  Ok[List[DirEntry], FsError][out];
+}
+
+// Every entry below a folder, depth first: each folder's entries in name
+// order, each folder's own entries straight after it. The folder itself is
+// not among them. Each entry's path is the root as given joined with the
+// names down to it. A linked folder is listed but not gone into. The first
+// folder that cannot be read ends the walk with its error.
+pub fn walk(root &[]u8) Result[List[DirEntry], FsError] {
+  mut out = List[DirEntry].empty();
+  imm went = walkInto(root, &mut out);
+  match went {
+    case mut e Error {
+      mut err = failure("", "", 0i32);
+      err <=> e.value;
+      return Error[List[DirEntry], FsError][err];
+    }
+    case is Ok {}
+  }
+  Ok[List[DirEntry], FsError][out];
+}
+
+fn walkInto(dir &[]u8, out &mut List[DirEntry]) Result[void, FsError] {
+  match readDir(dir) {
+    case mut e Error {
+      mut err = failure("", "", 0i32);
+      err <=> e.value;
+      err.op = String.from("walk");
+      return Error[void, FsError][err];
+    }
+    case imm listed Ok {
+      imm entries = &listed.value;
+      mut i = 0usize;
+      while i < entries.len() {
+        imm entry = entries[i];
+        out.push(new DirEntry(entry.name.copy(), entry.path.copy(), entry.isDir, entry.isFile, entry.isLink));
+        if entry.isDir {
+          imm below = walkInto(entry.path.view(), out);
+          if below is Error { return below; }
+        }
+        i = i + 1usize;
+      }
+    }
+  }
+  succeeded();
+}
+
+// Remove what a path names, and, for a folder, everything in it. A link is
+// removed itself, never what it leads to. Nothing there is success. The
+// first thing that will not go (a read-only file, a file another program
+// has open) ends it with its error, and what was removed before stays
+// removed. As a guard against a path made wrongly, a path that is empty, is
+// a root or a volume ('C:/', '/', 'C:'), or ends in '.' or '..' is refused
+// (EINVAL).
+pub fn removeAll(path &[]u8) Result[void, FsError] {
+  if hasNul(path) { return fail[void]("removeAll", path, posix.EINVAL); }
+  imm n = normalize(path);
+  imm up = parent(n.view());
+  imm last = lastName(path);
+  if path.len == 0usize or last.equals(".") or last.equals("..") or n.equals(".")
+    or n.equals("..") or n.endsWith("/..") or up.equals(n.view()) {
+    return fail[void]("removeAll", path, posix.EINVAL);
+  }
+  useUtf8();
+  mut c = String.from(path);
+  mut st = emptyStat();
+  if posix.lstat(c.cstr(), &mut st) != 0i32 {
+    imm code = lastErrno();
+    if code == posix.ENOENT { return succeeded(); }
+    return fail[void]("removeAll", path, code);
+  }
+  removeTree(path, st.st_mode & posix.S_IFMT);
+}
+
+// A path's last name, as written
+fn lastName(p &[]u8) String { path.name(p); }
+
+// Remove what path names, whose kind (from lstat) is given
+fn removeTree(path &[]u8, kind u16) Result[void, FsError] {
+  if kind == posix.S_IFLNK { return removeLink(path); }
+  if kind != posix.S_IFDIR {
+    mut c = String.from(path);
+    if libc.remove(c.cstr()) != 0i32 { return fail[void]("removeAll", path, lastErrno()); }
+    return succeeded();
+  }
+  match readDir(path) {
+    case mut e Error {
+      mut err = failure("", "", 0i32);
+      err <=> e.value;
+      err.op = String.from("removeAll");
+      return Error[void, FsError][err];
+    }
+    case imm listed Ok {
+      imm entries = &listed.value;
+      mut i = 0usize;
+      while i < entries.len() {
+        imm entry = entries[i];
+        imm childKind = if entry.isLink {posix.S_IFLNK;} elif entry.isDir {posix.S_IFDIR;} else {posix.S_IFREG;};
+        imm gone = removeTree(entry.path.view(), childKind);
+        if gone is Error { return gone; }
+        i = i + 1usize;
+      }
+    }
+  }
+  mut c = String.from(path);
+  if posix.rmdir(c.cstr()) != 0i32 { return fail[void]("removeAll", path, lastErrno()); }
+  succeeded();
+}
+
+// Remove a link itself: a link to a folder goes by rmdir on Windows, and a
+// link to a file by remove
+fn removeLink(path &[]u8) Result[void, FsError] {
+  mut c = String.from(path);
+  if posix.rmdir(c.cstr()) == 0i32 { return succeeded(); }
+  if libc.remove(c.cstr()) == 0i32 { return succeeded(); }
+  fail[void]("removeAll", path, lastErrno());
+}
+
+// -------- the current folder --------
+
+// The folder relative paths are read from, normalized ('C:/work')
+pub fn currentDir() Result[String, FsError] {
+  useUtf8();
+  // A null buffer of size 0: the runtime allocates one as long as it needs
+  imm got = posix.getcwd(0usize as *u8, 0usize);
+  if got == 0usize as *u8 { return fail[String]("currentDir", "", lastErrno()); }
+  imm here = normalize(mem.sliceFromParts(got, libc.strlen(got)));
+  libc.free(got);
+  Ok[String, FsError][here];
+}
+
+// Make path the folder relative paths are read from, for the whole program
+// (every thread)
+pub fn setCurrentDir(path &[]u8) Result[void, FsError] {
+  if hasNul(path) { return fail[void]("setCurrentDir", path, posix.EINVAL); }
+  useUtf8();
+  mut c = String.from(path);
+  if posix.chdir(c.cstr()) != 0i32 { return fail[void]("setCurrentDir", path, lastErrno()); }
+  succeeded();
+}
+
+// The absolute, normalized path of path, read from the current folder: 'a.txt'
+// in 'C:/work' is 'C:/work/a.txt'. Its text is all that is read: whatever is
+// or is not there, links are not followed, and '..' drops the name before
+// it. "" is the current folder.
+pub fn absolute(path &[]u8) Result[String, FsError] {
+  if hasNul(path) { return fail[String]("absolute", path, posix.EINVAL); }
+  if path.len == 0usize { return currentDir(); }
+  useUtf8();
+  mut c = String.from(path);
+  imm got = posix.realpath(c.cstr(), 0usize as *u8);
+  if got == 0usize as *u8 { return fail[String]("absolute", path, lastErrno()); }
+  imm full = normalize(mem.sliceFromParts(got, libc.strlen(got)));
+  libc.free(got);
+  Ok[String, FsError][full];
+}
