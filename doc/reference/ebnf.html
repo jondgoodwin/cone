@@ -66,11 +66,13 @@
 	optiontype ::= '?' type
 	ptrtype ::= '*' type
 	lifetype ::= lifetime_token type
-	reftype ::= '&' region-type? lifetime_token? perm_type? type
+	reftype ::= ('&' | '&<' | '&[]') lifetime_token? perm_type? type
+		/* a borrowed reference names no region: '&mut Point', a virtual one '&<Shape', a slice '&[]u8' */
 	ownreftype ::= region_type ('[' type (',' type)* ']')? '[' (perm_ident ',')? type ']'
 		/* the region a struct declaring 'is RegionRef', its own type arguments first when it is
 		   generic; no permission written is 'uni'; virtual when the type is an open trait */
-	perm_ident ::= 'mut' | 'imm' | 'uni' | 'ro' | 'mutx' | 'id' | ident_token
+	perm_ident ::= 'uni' | 'mut' | 'imm' | 'ro' | 'mut1' | 'opaq' | ident_token
+		/* a static permission, or the name of a lock permission */
 	region_type ::= ident_token
 	fntype ::= 'fn' (ident_token genparms?)? '(' fnparm (',' fnparm)* ')' (type (',' type)*)? 'inline'? whereclause?
 	fnparm ::= perm_ident? ident_token type? ('=' (literal | ident))?
@@ -138,15 +140,19 @@
 	shift_exp ::= arith_exp (('<<' | '>>') arith_exp)?
 	arith_exp ::= cast_exp (('+'|'-'|'*'|'/'|'%') cast_exp)*
 	as_exp ::= prefix_exp (('as'|'into') type)*
+		/* 'x into f32' is the conversion 'f32.from(x)'; whether 'into' stays beside 'from' is an open design question */
 	prefix_exp ::= ('.'|'<-'|'-'|'~'|'*'|'++'|'--')* term | addr | plus_alloc
-	addr ::= (('&'|'&<') region_type perm_type? suffix_exp) | (('&'|'&<'|'&[]') perm_type? (fn_stmt | (term suffix*)))
+	addr ::= ('&'|'&<'|'&[]') perm_type? (fn_stmt | (term suffix*))
 		/* '&[]' only borrows: there is no owning array reference, and '+[]' is refused */
 	plus_alloc ::= '?'? '+' ident_token ('-' perm_type)? prefix_exp
 		/* the older allocation spelling, kept only for a value no initializer constructs (a number,
 		   a variant, an array, a tuple, a value already made); a construction is allocated with
-		   new_exp, and '+<' is refused */
+		   new_exp, and '+<' is refused. It is the current spelling for such a value, and how new_exp
+		   allocates one is an open design question */
 	suffix_exp ::= term suffix*
 	suffix ::= '++'|'--'| ('.' property) | ('(' (contents_exp (',' contents_exp)*)? ')') | ('[' (contents_exp (',' contents_exp)*)? ']')
+		/* square brackets hold type arguments, an index, or an enum variant's values, 'Some[x]': the current
+		   spelling of a variant's construction, whose design is open. A struct's value is never built in them */
 	property ::= ident_token | symbol_token | integer_token
 	term ::=  literal | ident_token | pseudo | '(' exp ')' | new_exp
 	new_exp ::= ('new' | 'trynew') ident_token ('.' ident_token)* ('[' type (',' type)* ']')* ('(' (contents_exp (',' contents_exp)*)? ')')?
