@@ -1,4 +1,4 @@
-/** Handling for array reference (slice) type
+/** Handling for the borrowed array reference (slice) type, '&[]T'
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler

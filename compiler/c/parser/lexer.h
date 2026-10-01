@@ -88,7 +88,7 @@ enum TokenTypes {
     DotDotToken,       // '..' range, excluding its end
     EllipsisToken,     // '...' range, including its end
     PlusToken,         // '+'
-    PlusArrayRefToken, // '+[]'
+    PlusArrayRefToken, // '+[]', lexed only to be refused (parsePlus)
     PlusVirtRefToken,  // '+<'
     DashToken,         // '-'
     StarToken,         // '*'

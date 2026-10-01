@@ -125,7 +125,6 @@ void inodePrintNode(INode *node) {
     case ArrayBorrowTag:
     case BorrowTag:
         borrowPrint((RefNode *)node); break;
-    case ArrayAllocTag:
     case AllocateTag:
         allocatePrint((RefNode *)node); break;
     case NotLogicTag: case OrLogicTag: case AndLogicTag:
@@ -464,7 +463,6 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case BorrowTag:
         borrowTypeCheck(pstate, (RefNode **)node); break;
     case AllocateTag:
-    case ArrayAllocTag:
         allocateTypeCheck(pstate, (RefNode **)node); break;
     case NotLogicTag:
         logicNotTypeCheck(pstate, (LogicNode *)*node); break;
@@ -731,7 +729,6 @@ static NodeTagFacts nodeTagFacts[NodeTagCount] = {
     [BorrowTag] = {ExpGroup, 0, 0},
     [ArrayBorrowTag] = {ExpGroup, 0, 0},
     [AllocateTag] = {ExpGroup, 0, 0},
-    [ArrayAllocTag] = {ExpGroup, 0, 0},
     [DerefTag] = {ExpGroup, 0, 0},
     [NotLogicTag] = {ExpGroup, 0, 0},
     [OrLogicTag] = {ExpGroup, 0, 0},
@@ -812,7 +809,6 @@ int inodeIsProvisionalType(INode *node) {
     case BorrowTag:
     case AllocateTag:
     case ArrayBorrowTag:
-    case ArrayAllocTag:
         return inodeIsProvisionalType(((RefNode*)node)->vtexp);
     case DerefTag:
         return inodeIsProvisionalType(((StarNode*)node)->vtexp);

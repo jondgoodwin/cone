@@ -2103,7 +2103,6 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         }
     }
     case AllocateTag:
-    case ArrayAllocTag:
         return genlallocref(gen, (RefNode*)termnode);
     case DerefTag:
     {

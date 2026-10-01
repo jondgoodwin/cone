@@ -327,8 +327,8 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    argument's type wherever the parameter's names a generic parameter. The match
    descends through a pointer, a reference and an array reference to what each
    points at (`p *T` given a `*Fin` captures `Fin`), accepting both the type
-   tags and the template's dereference, borrow and allocate tags (Clone, above;
-   an owning array reference, `+[]So T`, is held as an allocate). A managed
+   tags and the template's dereference, borrow and allocate tags (Clone,
+   above). A managed
    reference type, `Rc[mut, T]`, is still the call it was written as, and
    matches a reference of either shape, its last argument against what the
    reference points at; a region that is a type parameter, `R[mut, T]`, also

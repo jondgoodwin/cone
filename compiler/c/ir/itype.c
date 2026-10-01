@@ -301,19 +301,16 @@ void itypeSpellCat(char *buf, size_t size, INode *type, int depth) {
         char *shape = dcl->tag == ArrayRefTag ? "[]" : dcl->tag == VirtRefTag ? "<" : "";
         Name *regname = region && region->tag == StructTag ? ((StructNode *)region)->namesym : NULL;
         char *rname = regname ? &regname->namestr : "?";
-        if (region == borrowRef)
+        if (region == borrowRef) {
             snprintf(buf + used, size - used, "&%s %s", pname, shape);
-        // A managed reference: 'Rc[mut, Point]', whether thin or virtual
-        else if (dcl->tag != ArrayRefTag) {
-            snprintf(buf + used, size - used, "%s[%s, ", rname, pname);
             itypeSpellCat(buf, size, ref->vtexp, depth + 1);
-            used = strlen(buf);
-            snprintf(buf + used, size - used, "]");
             return;
         }
-        else
-            snprintf(buf + used, size - used, "+%s%s-%s ", shape, rname, pname);
+        // A managed reference: 'Rc[mut, Point]', whether thin or virtual
+        snprintf(buf + used, size - used, "%s[%s, ", rname, pname);
         itypeSpellCat(buf, size, ref->vtexp, depth + 1);
+        used = strlen(buf);
+        snprintf(buf + used, size - used, "]");
         return;
     }
     if (depth < 4 && dcl->tag == PtrTag) {

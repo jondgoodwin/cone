@@ -531,15 +531,11 @@ What follows from that:
   wider header or a permission with state moves the value and the header with
   it. The optimizer folds the byte step and the region's field GEP into one
   constant offset: for `Rc` the same address the count has always had.
-- **An owning slice is the fat `{ptr, usize}` value, and the header sits before
-  its pointer word.** `genlRefPtr`, at the entry of `genlRegionDealias` and
-  `genlRegionAlias`, `extractvalue`s word 0 of an `ArrayRefTag` reference, so
-  every release site — scope exit, a `RefCountNode`, `genlStore` — hands over
-  the value as generated. A death reads the length from word 1 and finalizes
-  each element in place, in element order (`genlEachElem`).
 - **An owning virtual reference is the fat `{ptr, ptr}` value, and its concrete
-  type is read from the vtable's last slot.** `genlRefPtr` takes word 0, the
-  object. Its type has no `typeinfo`, so `genlOwnerHeader` steps back by the
+  type is read from the vtable's last slot.** `genlRefPtr`, at the entry of
+  `genlRegionDealias` and `genlRegionAlias`, takes word 0, the object, so every
+  release site — scope exit, a `RefCountNode`, `genlStore` — hands over the
+  value as generated. Its type has no `typeinfo`, so `genlOwnerHeader` steps back by the
   region and permission's size rounded up to the `align` of the implementer's
   `TypeRecord`, loaded through word 1 (`genlVirtHeader`; nothing is loaded for
   a `So`, whose header is empty), and its death calls the record's `finalize`
@@ -554,8 +550,8 @@ region's `dealiasRef` and branches on its `Bool` to the death. A region without
 owner, whether its copies are counted or free. The death,
 `genlRegionDeath`, runs in two steps: the value dies in place
 (`genlFinalizeAt`), as a value on the stack does at its scope's end — for a
-single reference the value it points at, for an owning slice each element in
-element order, for a virtual reference through its record's `finalize` — then
+single reference the value it points at, for a virtual reference through its
+record's `finalize` — then
 the region's `free` if it has one.
 
 **One routine is a value's death in place, whatever its type**
@@ -816,7 +812,6 @@ This is what the CLAUDE.md warning is about. The conventions:
 | `&T` value | a `ptr` to the `T` |
 | `&[]T` value, `&<Trait` value | an **aggregate value**, not a pointer |
 | owning reference value | a `ptr` to the `T`, **past** the header |
-| owning slice value | `{ptr, usize}`, its `ptr` pointing past the header |
 | allocation base, the region's header | `ref` stepped back by the value's offset in `%refstruct` (`genlRegionHeader`) |
 | vtable field slot | an `i32` **byte offset**, applied to the object pointer as a GEP over `i8` |
 | vtable method slot | reached by `structgep` **then load** |

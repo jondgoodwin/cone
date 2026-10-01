@@ -13,14 +13,13 @@
 
     <div class="text">
 
-    <p style="margin-left: 40px;"><i>Note: Allocating an array reference from an array literal, a string literal,
-        a fixed-size array held in a variable, or a fill,
-        indexing it, borrowing slices from it, and its release when its owner's scope ends are implemented,
-        and so are subslices of an array or a slice using <span class="pre">..</span> or
-        <span class="pre">...</span>, with either end left out.
-        Resizing, appending, and the expression form of initialization are not, nor are a subslice's
-        count form (<span class="pre">,</span>), an index relative to the end (<span class="pre">$-</span>),
-        a slice made from a reference or a pointer, or copying and filling a range of elements.
+    <p style="margin-left: 40px;"><i>Note: Borrowing a slice from an array, from a slice, or from a
+        collection that lends one (<span class="pre">List</span>'s <span class="pre">view()</span>),
+        indexing it, and subslices of an array or a slice using <span class="pre">..</span> or
+        <span class="pre">...</span>, with either end left out, are implemented.
+        A subslice's count form (<span class="pre">,</span>), an index relative to the end
+        (<span class="pre">$-</span>), a slice made from a reference or a pointer, and copying and filling
+        a range of elements are not.
         Borrowing from an array literal whose elements are all constants is implemented, as it is from a
         string literal or from a <a href="refterm.html">named constant</a> holding either
         (<span class="pre">&amp;primes</span>); each is a constant, so the borrow lives as long as the program and may not be
@@ -30,104 +29,55 @@
         <span class="pre">.len</span> of its own; <span class="pre">&amp;[][1, 2, 3]</span> is the slice.
         An array literal with a computed element, such as <span class="pre">&amp;[x, y]</span>,
         is a temporary and may not be borrowed.</i></p>
-    
-    <p>Array references offer the ability to create and work with arrays
-        whose size is determined, and is changeable, at runtime.
-        As much as possible, working with dynamic arrays is very similar to
-        static, fixed-size arrays. However, there are some important differences.</p>
 
-    <h2>Creation</h2>
-    <p>Let's allocate a new dynamic array:</p>
-<pre>
-imm nameref = +[]Rc "Jan";
-</pre>
-    <p>This should look familar. We use the <span class="pre">+[]</span> array allocator operator 
-		followed by the region (<span class="pre">Rc</span>) used to allocate a new dynamic array.
-        Its contents hold a copy of the 3-byte array given by the string literal above.
-        The allocation returns an owning <i>array</i> reference that points to this value.
-        Unlike regular references that point to a single value of a type,
-        array references point to multiple values of the same type.</p>
-    <p>The type signature of an array reference reflects this difference.
-        The type signature of <span class="pre">nameref</span> is <span class="pre">+[]Rc u8</span>.
-        Like a static array, array references use square brackets 
-        to indicate the reference points to a dynamic array of bytes.
-        No number is enclosed in the brackets
-        since we won't know the array's size until runtime.</p>
+    <p>An array reference, or slice, is a borrowed view of some number of elements of the same type,
+        laid out one after another in memory. How many there are is known only at runtime, so the
+        reference carries the count alongside the pointer to the first element.
+        A slice does not own its elements: it is borrowed from something that does,
+        and like any <a href="refborref.html">borrowed reference</a> it may not outlive it.</p>
 
-    <h3>Creation Formats</h3>
-    <p>There are several ways to specify the initial values of a dynamic array:</p>
+    <h2>Owned Arrays</h2>
+    <p>Every array reference is borrowed. There is no owning array reference:
+        a <a href="refallocref.html">managed reference</a> is thin or virtual, never an array reference.
+        What owns an array is one of these:</p>
     <ul>
-    <li><b>Copy another array</b>. Specify the array to copy from as part of the allocation:
+    <li><b>A fixed-size array</b>, whose size is part of its type.
+        It may be held in a variable or a field, or allocated in a region and reached by a thin reference
+        whose type carries the size:
 <pre>
-imm dynarr1 = +[]So [1,2,3];
-</pre>
-    <p>The array to copy from can also be a de-referenced array reference:</p>
-<pre>
-imm dynarr2 = *dynarr1;
+imm grid = +Rc-mut [4; 0i32];   // grid's type: Rc[mut, [4; i32]]
 </pre>
     </li>
-    <li><b>Replicate an element</b>. 
-        Specify a count in square brackets followed by the initial value for all elements:
+    <li><b>A collection</b>, when the number of elements is chosen at runtime.
+        An array whose whole length is decided at runtime, and which may grow or shrink,
+        is exactly what a collection is: a <span class="pre">List</span> holds a pointer to its elements,
+        how many there are, and how many it has room for.
+        A list held in a local is used directly; one that several owners share is a managed reference to it:
 <pre>
-imm dynarr3 = +[]Gc [4; 0.];   // newarr's type:  +[]Gc f32
+mut names = List[i32].empty();
+names.push(3);
+imm shared = +Rc-mut names;     // shared's type: Rc[mut, List[i32]]
 </pre>
-       <p>Both the count and the value may be expressions.</p>         
-    </li>
-    <li><b>Use an expression</b>. 
-        Specify an expression that calculates each element's initial value:
-<pre>
-imm dynarr4 = +[]Rc [4; n: n*n];
-</pre>
-    <p>The expression will be called for each element, with n incrementing upwards from 0.
-        The expression's returned value becomes the element's initial value and type.</p>
     </li>
     </ul>
+    <p>The length of a shared list lives once, in the list, where every owner sees the same count.
+        A length carried in each copy of a reference could not stay in step when the list grows.
+        Writing <span class="pre">+[]</span>, as a type or an allocation, is an error that says this.</p>
 
-    <h2>Resizing and Appending</h2>
-    <p>Resizing a dynamic array is only possible when the owning array reference has the
-        <span class="pre">uni</span> permission.
-        This restriction ensures memory safety, as it protects against invalidating other references
-        that don't know the new size of the array.
-        A resized array may end up moving to a new memory location.</p>
-    <p>Resizing uses the <span class="pre">&lt;-</span> append operator,
-        along with providing values for the new elements of the larger array:</p>
-    <ul>
-    <li><b>Append another array</b>. 
-        This increases the size by the number of elements being added,
-        then appends the specified array's values:
-<pre>
-dynarr1 &lt;- [4,5];
-</pre>
-    </li>
-    <li><b>Shrink or grow via element replication</b>.
-        Specify the new size in square brackets followed by the fill value for any added elements:
-<pre>
-dynarr2 &lt;- [10; 0.];   // Grow it. Added elements initialized to zero
-dynarr2 &lt;- [2;  0.];   // Shrink it
-</pre>
-        <p>Both the count and the value may be expressions.</p>         
-    </li>
-    </ul>
-    <p>A reference array may be shrunk by setting a new size that is lower or the same as the current size:</p>
-<pre>
-dynarr2.len = 2;
-</pre>
-        
-    <h2 id="slice">Slices (Borrowed References)</h2>
-    <p>A slice is simply a borrowed array reference.
-        It may be borrowed from any array or array reference in the usual way:</p>
+    <h2 id="slice">Borrowing a Slice</h2>
+    <p>A slice may be borrowed from any array, from another slice, or from a collection that lends one:</p>
 <pre>
 imm nbrSlice = &amp;[1, 2, 3];
 imm textSlice = &amp;"Padma";
-imm dynSlice = &amp;*dynarr2;   // from a owning array reference
+imm listSlice = list.view();    // from a List
 </pre>
-    <p>These slices effectively point to all elements of the source's array.</p>
-    <p>If a static array is passed as a call argument where a slice is expected, 
+    <p>These slices point to all elements of the source's array.</p>
+    <p>If a static array is passed as a call argument where a slice is expected,
          it is automatically converted into a slice:</p>
 <pre>
 print("abc");    // equivalent to print(&amp;"abc")
 </pre>
-        
+
     <p><b>Safety Note:</b>
         Because a slice is a borrowed reference, its lifetime is limited,
         ensuring it can never outlive the source array it provides a view into.
@@ -137,7 +87,7 @@ print("abc");    // equivalent to print(&amp;"abc")
 
     <h3>Subslices</h3>
     <p>It is also possible to create a new slice that points
-        to some subset of the elements in some array or array reference.
+        to some subset of the elements in some array or slice.
         This is accomplished by indexing using a range operator
         between two unsigned integers:</p>
     <ul>
@@ -171,12 +121,11 @@ imm slice2 = &amp;ptr[0...5];
 </pre>
 
     <h2>Operations</h2>
-    <p>Array references (owning or borrowed) may be indexed, copied, compared, iterated over, resized, 
-        and queried for their properties.
+    <p>Slices may be indexed, copied, compared, iterated over, and queried for their properties.
         Many of these operations work the same way they do with static arrays.</p>
 
     <h3>Access an Element</h3>
-    <p>A single element within an array may be accessed using 
+    <p>A single element within an array may be accessed using
         an unsigned integer value enclosed in square brackets.
         This supports both getting and setting the values at a specific index:</p>
 <pre>
@@ -188,11 +137,11 @@ c_array[3] = c_array[2];    // the 4th element is now the same as the third
         ends or ends past the size.</p>
 
     <h3>Borrowed Reference to an Element</h3>
-    <p>One can create a borrowed reference to any element of a dynamic array
+    <p>One can create a borrowed reference to any element of a slice
     in the same way as for an static array:</p>
 <pre>
 imm nbrRef = &amp;nbrSlice[1];     // points to 2
-imm charRef = &amp;textSlice[2];   // points to 'r'
+imm charRef = &amp;textSlice[2];   // points to 'd'
 </pre>
     <p>Borrowing a reference to a single element is <i>not</i> a slice.
     It is just a regular borrowed reference to some value.</p>
@@ -205,13 +154,13 @@ imm charRef = &amp;textSlice[2];   // points to 'r'
 arrref[1 by 2] = sliceref[0 by 2];
 greetings[n by 5] = "Kevin";
 </pre>
-    <p>Similarly, a single value can be repeatedly filled into an array reference's elements:</p>
+    <p>Similarly, a single value can be repeatedly filled into a slice's elements:</p>
 <pre>
 arrref[1 .. 3] = 2;
 </pre>
 
     <h3>Iteration</h3>
-    <p>The <span class="pre">each</span> loop may iterate over an array reference's elements:</p>
+    <p>The <span class="pre">each</span> loop may iterate over a slice's elements:</p>
 <pre>
 mut sum = 0;
 each x in intslice {
@@ -226,7 +175,7 @@ each i, x in intslice {
 </pre>
 
     <h3>Comparison</h3>
-    <p>Two array references may be compared for identity with <span class="pre">===</span>
+    <p>Two slices may be compared for identity with <span class="pre">===</span>
         (or <span class="pre">!==</span>), so long as they have the same type.
         This comparison checks for equality of both the starting pointer and the element count,
         so it asks whether the two view the same elements, not whether their elements are equal.</p>
@@ -236,30 +185,30 @@ if slice1 === slice2 {
 }
 </pre>
     <p>As with other <a href="refborref.html#ops">references</a>, <span class="pre">==</span>
-        on two array references would compare what they refer to, element by element.
-        <i>That is not yet implemented, and <span class="pre">==</span> on two array references is refused.</i></p>
+        on two slices would compare what they refer to, element by element.
+        <i>That is not yet implemented, and <span class="pre">==</span> on two slices is refused.</i></p>
     <p>Comparing for order (e.g., &lt;) is not possible directly.
-        One can of course compare the component parts of an array reference separately.</p>
+        One can of course compare the component parts of a slice separately.</p>
 
     <h3>Property Queries</h3>
-    <p>An array reference is a "fat" reference, as it holds two pieces of information:</p>
+    <p>A slice is a "fat" reference, as it holds two pieces of information:</p>
     <ul>
         <li>a pointer to the first element of the array</li>
         <li>an unsigned integer specifying how many elements are in the array</li>
     </ul>
-    <p>The component parts of an array reference can be obtained:</p>
+    <p>The component parts of a slice can be obtained:</p>
 <pre>
 imm ptr = array.ptr;     // The pointer to the first element
 imm len = array.len;     // The number of elements
 </pre>
 
     <h2>Collection Types</h2>
-    <p>One can create many different kinds of collection types using
-        a single-owner array reference as a private field within some struct.
-        The struct can define <a href="refmethop.html">operator methods</a>
-        (such as indexing),
-        so that the resulting type behaves very much like an array reference.
-        These methods can forward these requests, as appropriate, on to the array reference field.</p>
+    <p>A collection type owns its elements and lends them out.
+        A <span class="pre">List</span> keeps its elements in one block of memory it allocates and grows itself,
+        reached through a pointer beside its count and its capacity,
+        and lends them as a slice (<span class="pre">view()</span>).
+        It defines <a href="refmethop.html">operator methods</a> (such as indexing),
+        so that it behaves very much like an array.</p>
 
 
 	<p style="text-align: right; margin-top: 2em;">

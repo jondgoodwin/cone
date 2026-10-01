@@ -190,7 +190,7 @@ functions included.
 | `StarTag` | `PtrTag` / `DerefTag` | `ptrNameRes` |
 | `ArrayTag` | `ArrayLitTag` when the first element is not a type | `arrayNameRes` |
 | `RefTag` | `BorrowTag` / `AllocateTag`, by region | `refNameRes` |
-| `ArrayRefTag` | `ArrayBorrowTag` / `ArrayAllocTag` | `arrayRefNameRes` |
+| `ArrayRefTag` | `ArrayBorrowTag`: every array reference is borrowed | `arrayRefNameRes` |
 | `QuesTag` | `FnCallTag` for `Option[T]`, including a generic parameter's `?T` | `allocateQuesNameRes` |
 | `FnCallTag` that is a namespace hop | the bound name use, or a plain call of it | `fnCallNameResPath` |
 

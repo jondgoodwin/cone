@@ -42,8 +42,7 @@ reference, a borrow's included — as the store happens, keyed on what was
 stored, never on where it went, which a borrow could not say; stores into
 locals get none, since a collector traces the stacks again before it ends a
 mark. No more of the protocol below is built: no read barrier, no weak
-reference kind, no region with global state, and no finalizing of a slice's
-elements when its region frees it. Of the strategies that motivate the whole
+reference kind, and no region with global state. Of the strategies that motivate the whole
 design, a tracing collector is written as library code, incremental: the
 `collector` package's region ref `Gc` (`+Gc-mut T[...]`), Acorn's tri-colour
 mark and sweep over those roots and the type records' traces, a step at a
@@ -379,6 +378,15 @@ annotating a borrow with a *lifetime* rather than with an arena.
 | `+region T` | owning — the region releases it | `T*`, pointing **past** a header |
 | `&[]T` | slice — a borrowed run of elements | `{T*, usize}` |
 | `&<Trait` | virtual — dispatches through a vtable | `{i8*, Vtable*}` |
+
+**A slice is always borrowed.** A managed reference is thin or virtual; there
+is no managed array reference. A statically sized array is reached by a thin
+reference with its size in the type, and an array whose whole length is chosen
+at runtime is a collection, a `List`, shared as a managed reference to it,
+`Rc[List[T]]`. A length carried in a fat pointer works against sharing: every
+copy of the pointer would carry its own, where a shared, growable array needs
+one count that every holder sees, and the list keeps it. Sharing costs a second
+block and a second hop; a list held in a local is used directly.
 
 Two of the four are fat pointers, and **the first two are indistinguishable at
 runtime** — region and permission are entirely compile-time. That is the single

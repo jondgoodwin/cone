@@ -2562,8 +2562,8 @@ from the value pointer by the value's offset in that layout
 
 **A region asks for the value's type record by the shape of its `alloc`.** An
 `alloc` taking `ty *TypeRecord` after the size is handed, at each allocation,
-the record of the allocated value's type — of an owning slice, its element
-type's (`genlallocref`, asking `regionAllocTakesRecord`). The record is core's
+the record of the allocated value's type (`genlallocref`, asking
+`regionAllocTakesRecord`). The record is core's
 `TypeRecord`, a constant the compiler builds once per type in each object
 (`genlTypeRecord`): the value's size and alignment, its finalizer — the death
 `mem.finalize` runs, as a function taking the value's address — its trace (a
@@ -2623,7 +2623,7 @@ or static holding one (`ErrorTracedGlobal`); an instance of `mem.writeRaw` or
 references out of arenas, pools and collections, reported at the program's own
 instantiation where it was reached through a generic's body; and, of what a
 traced region allocates, a value holding a borrow (`ErrorTracedBorrow`), an
-owning slice or owning virtual reference (`ErrorTracedRefKind`), and a
+owning virtual reference (`ErrorTracedRefKind`), and a
 permission taking room, which would move the value off the place right after
 the header (`ErrorTracedPerm`). A traced object may hold `Rc` and `So`
 owners, which its finalizer releases, and a borrow or a raw pointer to a value

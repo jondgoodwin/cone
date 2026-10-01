@@ -379,12 +379,17 @@ INode *parseAmper(ParseState *parse) {
     return (INode *)anode;
 }
 
-// Parse a "plus term", a region-managed allocation ('+Rc-mut Node[1]') or an
-// owning array reference type ('+[]So i32'):
-// - Some reference type ('+', '+[]' or '+<')
+// Parse a "plus term", a region-managed allocation ('+Rc-mut Node[1]'):
+// - Some reference type ('+' or '+<')
 // - Region and permission annotations
 // A single or virtual reference TYPE is written 'Rc[mut, Node]', and type check
 // refuses this spelling of one outside a match pattern's root (plusSpelled).
+//
+// There is no owning array reference: an owned runtime-sized array is a List,
+// and one shared is 'Rc[List[T]]'. '+[]' stays a token so that it can be
+// refused, once, at the token, and read through as the thin form so that what
+// follows parses as written. A parse diagnostic ends the compile before name
+// resolution, so what is built for it is never analysed.
 INode *parsePlus(ParseState *parse) {
     // Create appropriate RefNode, depending on ampersand operator
     RefNode *anode;
@@ -392,7 +397,9 @@ INode *parsePlus(ParseState *parse) {
     case PlusToken:
         anode = newRefNode(RefTag); break;
     case PlusArrayRefToken:
-        anode = newRefNode(ArrayRefTag); break;
+        errorMsgLex(ErrorOwnedArrayRef,
+            "There is no owning array reference '+[]': an owned runtime-sized array is a List, shared as 'Rc[List[T]]'; a borrowed slice is '&[]T'.");
+        anode = newRefNode(RefTag); break;
     case PlusVirtRefToken:
         anode = newRefNode(VirtRefTag); break;
     }
@@ -455,7 +462,7 @@ INode *parsePrefix(ParseState *parse) {
     case VirtRefToken:
         return parseAmper(parse);
 
-    // '+', '+[]', '+<' (region-managed ref type/constructor)
+    // '+', '+<' (region-managed allocation), and '+[]' to be refused
     case PlusToken:
     case PlusArrayRefToken:
     case PlusVirtRefToken:

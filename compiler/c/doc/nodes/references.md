@@ -1,10 +1,10 @@
 `RefNode` is one struct serving **seven tags** across two node groups — four
-type nodes and four expression nodes (`RefTag` appears in both roles at
+type nodes and three expression nodes (`RefTag` appears in both roles at
 different times). Getting the family right is most of understanding Cone's
 memory model.
 
 **At a glance.** The parser builds a reference-shaped node for `&`, `&[]`, `&<`
-and `+`, `+[]`, `+<` without knowing whether it is a type or a constructor.
+and `+`, `+<` without knowing whether it is a type or a constructor.
 Name resolution decides by asking whether the operand is a type. A managed
 reference *type*, `Rc[mut, Node]`, is not built by the parser at all: it is a
 bracketed call until type check lowers it into this node ("The managed
@@ -52,7 +52,11 @@ is entirely that `uint16_t`.
 | `BorrowTag` | exp | the lval | built `RefTag` node |
 | `ArrayBorrowTag` | exp | the lval | built `ArrayRefTag` node |
 | `AllocateTag` | exp | initial value | built `RefTag`, or an `Option` call under `FlagQues` |
-| `ArrayAllocTag` | exp | initial value | built `ArrayRefTag` node |
+
+**Every array reference is borrowed.** There is no owning array reference: a
+managed reference is thin or virtual, an owned runtime-sized array is a `List`,
+and a shared one is `Rc[List[T]]`. An `ArrayRefTag`'s region is always
+`borrowRef`.
 
 The group is the discriminator: type tags are `TypeGroup`, constructor tags
 are `ExpGroup`. **The `scope` that matters is the one on a borrow's
@@ -84,7 +88,10 @@ identity — and `refFindSuper` drops it entirely.
 
 ## Parse
 
-`parseAmper` handles `&`, `&[]`, `&<`; `parsePlus` handles `+`, `+[]`, `+<`.
+`parseAmper` handles `&`, `&[]`, `&<`; `parsePlus` handles `+`, `+<`, and
+refuses `+[]` (`ErrorOwnedArrayRef`, at the token, naming `List` and `&[]T`),
+reading the rest through as the thin form so that nothing after it is
+reported; the lexer keeps `PlusArrayRefToken` only for that.
 The differences are worth knowing:
 
 - **`&` has no region syntax** — `region` stays at the `borrowRef` default.
@@ -99,8 +106,7 @@ The differences are worth knowing:
   only the prefixed term instead would make `&x.a` mean `(&x).a` — typed as the
   field but returning the field's address, which generation cannot catch.
 
-`+` is the allocation, `+Rc-mut Node[1]`, and the owning array reference type,
-`+[]So i32`. A single or virtual managed reference type is written
+`+` is the allocation, `+Rc-mut Node[1]`. A single or virtual managed reference type is written
 `Rc[mut, Node]`, below. `parsePlus` still builds a `RefTag` or `VirtRefTag`
 type from `+Rc-mut Node` when the operand is a type, and marks it
 `plusSpelled`; type check refuses it (`refRefusePlusType`,
@@ -176,7 +182,7 @@ if (!isTypeNode(node->vtexp)) {
 ```
 
 A value means this is a *constructor*, and the region picks which. The array
-forms produce `ArrayBorrowTag`/`ArrayAllocTag`.
+form is always borrowed, so `arrayRefNameRes` produces `ArrayBorrowTag`.
 
 **In a generic's template the answer is provisional.** `&T` asks the question
 of a use of a generic parameter, which is not a type (`nameUseGroup` puts
@@ -196,7 +202,7 @@ variants' positions in it, and compares against each variant's value where they 
 not (see [Generation](../phases/generation.md), "Vtables"). Both need a source
 *reference type*; neither is available from a bare lval.
 
-Because the retag happens here, the four constructor tags have **no arms in
+Because the retag happens here, the three constructor tags have **no arms in
 `inodeNameRes`** — they cannot exist before this point.
 
 ## Type check
@@ -239,20 +245,18 @@ one-element slice.
 
 ### `allocateTypeCheck`
 
-Default the permission to `uni`; check the value (an array allocation routes
-through `arrayLitTypeCheckDimExp`, the only path to a **runtime** element
-count; any other initial value, a string literal or an array variable, must be
-typed a fixed-size array, and `genlallocref` takes the count from that type's
-dimension rather than from the node); refuse an abstract or zero-size type; build the result type; then
+Default the permission to `uni`; check the value (an array literal's dimension
+is a constant there as everywhere, so an allocated array is a fixed-size one,
+reached by a thin reference); refuse an abstract or zero-size type; build the
+result type, always a `RefTag`; then
 `inodeTypeCheckAny` on it — **that line is load-bearing**, because it is what
 routes to `refTypeCheck` and therefore what populates `typeinfo`, which
 `genlallocref` dereferences unconditionally. Finally check the region declares
 an `alloc` at all (its shape was checked at the region's declaration) and
 validate the permission's `init`.
 
-A region ref is a struct declaring `is RegionRef`, which `refTypeCheck`,
-`arrayRefTypeCheck` and `refvirtTypeCheck` each require of an owning
-reference's region (`refRegionCheck`, `ErrorNotRegion`); `So` and `Rc` are
+A region ref is a struct declaring `is RegionRef`, which `refTypeCheck` and
+`refvirtTypeCheck` each require of an owning reference's region (`refRegionCheck`, `ErrorNotRegion`); `So` and `Rc` are
 ordinary Cone declarations in the core package, `packages/core/src/core.cone`,
 not compiler built-ins ([What a region is](module.md)). A region slot naming
 something other than a type (a function, say) is reported twice, as no type and

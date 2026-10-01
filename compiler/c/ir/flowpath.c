@@ -1145,7 +1145,6 @@ static PathSet *pwValue(INode **nodep, int move) {
     case ArrayBorrowTag:
         return pwBorrow(node, 0);
     case AllocateTag:
-    case ArrayAllocTag:
         return pwValue(&((RefNode *)node)->vtexp, 1);
     case VTupleTag:
     case TypeLitTag:

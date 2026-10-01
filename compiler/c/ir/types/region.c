@@ -467,7 +467,7 @@ static void regionTracedJudgeRef(RefNode *node, INode *where) {
     }
     if (node->tag != RefTag) {
         errorMsgNode(where, ErrorTracedRefKind,
-            "%s is traced, and its trace follows a single reference '%s[T]' only: an owning slice's length, and the value type behind a virtual reference, are not where it could find them.",
+            "%s is traced, and its trace follows a single reference '%s[T]' only: the value type behind a virtual reference is not where it could find it.",
             regname, regname);
         return;
     }

@@ -20,6 +20,7 @@
 mod generic_infer_through;
 
 import stdio use *;
+import collections use *;
 
 fn show(label &[]u8, n i64) {
   printStr(label);
@@ -49,7 +50,7 @@ fn bump[T](r &mut T, amount T) { *r = *r + amount; }
 fn first[T](s &[]T) T { s[0]; }
 fn peekOwned[T](r &Rc[mut, T]) T { **r; }
 fn takeOwned[T](r Rc[mut, T]) T { *r; }
-fn firstOwned[T](s &+[]So T) T { (*s)[0]; }
+fn firstShared[T](s &Rc[mut, List[T]]) T { *(*s)[0usize]; }
 fn apply[A, R](arg A, f &fn(a A) R) R { f(arg); }
 fn twice[T](v T, f &fn(a T) T) T { f(f(v)); }
 fn unbox[T](b Box[T]) T { b.v; }
@@ -97,13 +98,17 @@ fn slices() {
 
 // An owning reference parameter, borrowed or taken by value: the template holds
 // 'Rc[mut, T]' as the bracketed call it was written as, never type checked, and
-// the match descends through it to its last argument, T
+// the match descends through it to its last argument, T. A shared list,
+// 'Rc[mut, List[T]]', descends through the reference and then the instance.
 fn owning() {
   imm r = +Rc-mut Box[i64][13i64];
   show("borrowed-owning-reference", peekOwned(&r).v);
   show("owning-reference", i64[takeOwned(+Rc-mut 14i64)]);
-  imm s = +[]So [15i64, 16i64];
-  show("borrowed-owning-slice", firstOwned(&s));
+  mut l = List[i64].empty();
+  l.push(15i64);
+  l.push(16i64);
+  imm s = +Rc-mut l;
+  show("borrowed-shared-list", firstShared(&s));
 }
 
 fn instances() {

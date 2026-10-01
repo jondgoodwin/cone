@@ -280,7 +280,7 @@ scope, so a move out of it would make a second owner (`ErrorMoveOut`). The
 borrow's permission does not matter: a `&uni` is the only path to its value
 while it lives, and still does not own it. A place reached the same way through
 a **shared owning reference** — one that is not a move type, so may be aliased:
-`Rc[mut, T]`, `Rc[imm, T]`, `Rc[ro, T]`, `Rc[mut1, T]`, single or slice — is one of possibly
+`Rc[mut, T]`, `Rc[imm, T]`, `Rc[ro, T]`, `Rc[mut1, T]`, single or virtual — is one of possibly
 many holders of the value, and the others still point at it after the move, so
 it is refused the same way (`ErrorMoveOut`, `flowIsSharedOwner`). A **sole**
 owning reference — any `So`, and `Rc[uni, T]` (what `Rc` means) — is not
@@ -314,7 +314,8 @@ nothing.
 
 **A move out through a sole owner.** When the inward walk reaches a local
 variable holding an owning reference through that reference — `*b`, `**b`
-(through an owning reference that is `b`'s value), a slice's element `s[0]` —
+(through an owning reference that is `b`'s value), an element `s[0]` of the
+array it points at —
 the value, or an element of it, leaves the allocation, but the variable still
 owns the allocation, whose memory must go back (`flowOwningLocal`). Such a move
 **hollows** the variable rather than moving it: `VarHollow` is set and the
@@ -444,9 +445,9 @@ depends on:
 
 **A reference-count node is built only for a counted reference, or a value
 holding one.** `flowInjectRefCountAmt` returns early unless the type is a
-`RefTag`, `ArrayRefTag` or `VirtRefTag` into a region with `aliasRef` (`flowIsRcRef`,
-`regionIsCounted` — an owning slice or virtual reference is counted exactly as
-a single reference is), or a struct, enum, tuple or array whose death releases one
+`RefTag` or `VirtRefTag` into a region with `aliasRef` (`flowIsRcRef`,
+`regionIsCounted` — a virtual reference is counted exactly as a single
+reference is), or a struct, enum, tuple or array whose death releases one
 (`flowHeldCounted`); for a tuple it fills the node's `counts` array with `amt`
 per element that is or holds a counted reference and `0` per other element,
 `amt` then holding the element count, and generation's tuple arm adds the
@@ -492,8 +493,8 @@ struct or an enum has a drop (`itypeGetDropFnDcl`), and the list gets a call
 to it on a `&uni` borrow, positioned on the result expression, or on the jump
 that ends the scope where there is no result expression — a `continue` hands
 back no value; anything else with anything to do as it dies
-(`itypeNeedsFinal`) — an owning reference, single (`RefTag`), slice
-(`ArrayRefTag`) or virtual (`VirtRefTag`), into a region whose release does something (`dealiasRef`, or
+(`itypeNeedsFinal`) — an owning reference, single (`RefTag`) or virtual
+(`VirtRefTag`), into a region whose release does something (`dealiasRef`, or
 `Move`: `regionReleaseActs`), or a tuple or an array of values that finalize or
 own such a reference —
 is added to the list itself, and generation finalizes it in place
@@ -800,7 +801,7 @@ marked hollowing, `1` after each store over it whole.
 | **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable, and on a borrow of a moved-out one; move out of a field, or of a global, or out through a borrowed or a shared owning reference, refused; a use some path reaching it moved, hollowed or never gave a value (a loop's earlier pass included), by the path walk | element granularity — moving `a[0]` deactivates all of `a` |
 | **Escape / lifetime** | representation in type check, enforcement here | storing a borrow into a longer-lived lval, by assignment or by either direction of a swap; returning a borrow of a local, or a local initialized with one, its type declared or not; a borrow arriving through a call's result, singly or as one of several values destructured into lvals, each carrying the narrowest argument borrow's scope; a `&mut &T` argument whose pointee would outlive another borrow passed with it; a borrow coerced to another reference type, whether widened to a base trait's reference or made a virtual reference | a borrow laundered through a variable by assignment and returned (kept past its source's scope and used, it is refused by freezing, below); a borrow stored in a field or captured; distinguishing parameter lifetimes — there is no lifetime annotation syntax |
 | **Freezing** | the loan walk, on a gated function | a borrow held in a local whose type is a borrowed reference, and its copies, freeze the source until the last use, and so does a borrow a call returns, of every argument (from a `NoLoanMut` or `NoLoanRead` container, only its life): `ErrorFrozen` at a change, a move, a conflicting borrow, the source's end, and, under a mutable borrow, a read — for a source reached as `uni`; for one reached through a shared path, only its owner's move, replacement or end, a change or mutable borrow of the owner where it is held, and an `&uni` or `&imm` borrow | an element borrow through a shared path (Jon's rule refuses it for a `ShapeChanging` container; not built); a borrow held inside another value; two copies of one `&mut`; a global a callee changes |
-| **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs and slices, of drop-fn structs and enums, and of tuples and arrays holding what finalizes or owns, from a jump down to the block it names; the previous value's release at a store over a variable, a part of one, or a place reached through a reference; each on the paths that hold the value, by a drop flag where they differ | an array an element was moved out of leaks the rest; a value stored into a field of a variable holding nothing leaks — see Hazards |
+| **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs, of drop-fn structs and enums, and of tuples and arrays holding what finalizes or owns, from a jump down to the block it names; the previous value's release at a store over a variable, a part of one, or a place reached through a reference; each on the paths that hold the value, by a drop flag where they differ | an array an element was moved out of leaks the rest; a value stored into a field of a variable holding nothing leaks — see Hazards |
 | **Permission** | `MayWrite` and `MayRead` | `ErrorNoMut` on assignment and swap; `ErrorNoRead` on a read through a reference — a dereference, an index, or a field of a virtual reference | `MayAliasWrite` and `IsLockless` are populated and read nowhere; `RaceSafe` is read by the thread check, a type check question (`refThreadBinds`) |
 | **Initialization** | yes | `ErrorMove` "has not been initialized"; for a variable that moves or has anything to do as it dies, "may not have been given a value" where some path did not (the path walk) | for any other type, "initialized on one branch" reads as initialized everywhere; a variable never initialized may be borrowed, so a method taking it `&mut` can fill it, and nothing then stops a field it left unset being read through the borrow; the unused-variable warning in `flow.h`'s header does not exist |
 | **Array fill rules** | yes | `ErrorBadFill` for a repeated move value; `ErrorFillCount` for a non-constant count | — |
