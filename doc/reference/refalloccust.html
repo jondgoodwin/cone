@@ -52,16 +52,19 @@
 		on the stack are found: <a href="refintrinsic.html"><span class="pre">mem.traceRoots(mode)</span></a>
 		hands each one every running function holds -- in its locals, its parameters and the temporaries it is
 		making -- to its allocator's <span class="pre">mark</span>, which is what a collector starts from.
-		A traced allocation makes its value before it calls <span class="pre">alloc</span>, so a collection
-		inside <span class="pre">alloc</span> finds the value's parts. A traced allocator may also declare
+		A traced allocation evaluates its initializer's arguments before it calls
+		<span class="pre">alloc</span>, so a collection inside <span class="pre">alloc</span> finds them; and as
+		soon as <span class="pre">alloc</span> returns, before any initializer runs, the new value is held
+		as a root and reads as empty (its references null) until it is filled, so a collection during an
+		initializer that allocates finds it, and nothing half made. A traced allocator may also declare
 		<span class="pre">fn writeBarrier(self &amp;uni R)</span>: every store of one of its references into
 		memory that is not a local (a field, an element or a dereference reached through any reference, a
 		borrow included; a swap; <span class="pre">:=</span>) then hands it the bookkeeping of what was
 		stored, just after the store. It is told nothing of where the reference went. Stores into locals
-		and a new value's own contents get none, so a collector that marks while the program runs traces
+		and a new value's contents stored whole get none, so a collector that marks while the program runs traces
 		the stacks again before it finishes marking. One collector is built, as library
 		code: the <span class="pre">collector</span> package's <span class="pre">Gc</span> allocator
-		(<span class="pre">import collector;</span> then <span class="pre">+Gc-mut T[...]</span>), an
+		(<span class="pre">import collector;</span> then <span class="pre">new Gc[mut, T](...)</span>), an
 		incremental mark and sweep that works a bounded step at a time inside <span class="pre">alloc</span>
 		once the heap passes its trigger, and whole on <span class="pre">Gc.collect()</span>. Run
 		generationally (<span class="pre">Gc.setGenerational(true)</span>), what survives a collection
@@ -106,7 +109,8 @@ alloc Rc {
 	<p>As this example shows, an allocator typically defines at least these four methods
 	which are invoked automatically by the compiler based on key events in the lifetime of an owning reference:
 	<ul>
-	<li><b>allocate</b>. This is invoked whenever a new owning reference is created using the &amp; operator.
+	<li><b>allocate</b>. This is invoked whenever a new owning reference is created with <span class="pre">new</span>,
+	after the value initializer's arguments are evaluated.
 	The compiler supplies the sizeof the appropriate type of value to be stored in the allocated memory.
 	This size is expanded to include runtime bookkeeping data for the allocator (e.g., refcnt) and permission.
 	After allocate, the compiler will also initialize any runtime permission's fields, if needed.

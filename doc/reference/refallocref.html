@@ -14,32 +14,38 @@
     <div class="text">
 
 	<p style="margin-left: 40px;"><i>Note: Much of this capability is implemented,
-			including both responses to a failed allocation. The region named after
-			<span class="pre">+</span> may be Rc, So, the <span class="pre">sync</span> package's Arc (Rc whose count several threads may change at once:
+			including <span class="pre">new</span> and <span class="pre">trynew</span>
+			allocation and both responses to a failed allocation. The region may be Rc, So,
+			the <span class="pre">sync</span> package's Arc (Rc whose count several threads may change at once:
 			<span class="pre">Arc[imm, T]</span> owners may be copied and dropped on different threads, and the
 			value is finalized and freed once, after the last; see
 			<a href="refregionglo.html">regions</a>), the <span class="pre">collector</span> package's
-			garbage-collected Gc (<a href="refalloccust.html">custom allocators</a>), or any struct declaring
+			garbage-collected Gc (<a href="refalloccust.html">custom allocators</a>), the
+			<span class="pre">rcweak</span> package's Rcw, or any struct declaring
 			<span class="pre">is RegionRef</span>, and the region's own methods, and whether it declares
 			<a href="refmove.html"><span class="pre">Move</span></a>, decide when a value is freed;
-			its finalizer runs just before (<a href="refinitdrop.html#finalizer">finalizers</a>).</i></p>
-	
+			its finalizer runs just before (<a href="refinitdrop.html#finalizer">finalizers</a>).
+			A value no initializer constructs &mdash; a number, an enum's variant, an array, a tuple,
+			a value already made &mdash; is allocated for now with the older spelling,
+			<span class="pre">+Rc-imm 4</span>, until how <span class="pre">new</span> takes one is decided.</i></p>
+
 	<p>When you allocate a new value within a region, you get back an owning reference that points to the new object.
 		For some regions, multiple alias copies may be created which are also owning references.
 		For safety reasons, a region's automatic memory management strategy ensures that the
 		object's memory is freed only when when the last owning reference to the object expires.
 		This timing ensures that an owning reference is always safe to de-reference
 		and that an object will only be freed once.</li>
-	
+
 	<p>This page describes how owning references are created and used.</p>
-	
+
 	<h2>Creating Owning References</h2>
 	<p>Let's ask a region to allocate a new value and give us back an owning reference:</p>
 <pre>
-imm nbrref = +Rc-imm 4;
+imm node = new Rc[mut, Node](1);
 </pre>
-	<p>This uses the plus operator to dynamically allocate and initialize a new value,
-		specifying:</p>
+	<p>Like every <a href="refinitdrop.html">construction</a>, an allocation begins with
+		<span class="pre">new</span>. What follows it is the type of the owning reference
+		we want back, specifying:</p>
 	<ul>
 		<li><a href="refregionglo.html"><b>Region</b></a> which allocates the value and manages its lifetime.
 			In this case, the value is allocated in the <span class="pre">Rc</span> region.
@@ -51,19 +57,28 @@ imm nbrref = +Rc-imm 4;
 			<span class="pre">uni</span> is assumed for an owning reference
 			when no permission is specified.
 		</li>
-		<li><b>Initial Value</b>.
-			A copy of this value is stored in the newly allocated memory location.
-			In this case, it is the integer 4.</li>
+		<li><b>Value type</b>, the type of the value allocated:
+			in this case, a <span class="pre">Node</span>.</li>
 	</ul>
-	<p>What we get back from this allocation is an owning reference, 
-		which this example stores in the variable <span class="pre">nbrref</span>.
-		The inferred type of this reference is <span class="pre">Rc[imm, i32]</span>:
-		the region names the reference, and its brackets hold the permission, then
-		the type of the initial value as the reference's value type.</p>
+	<p>The parentheses hold the arguments of the value's <a href="refinitdrop.html">initializer</a>,
+		chosen as they are for any construction: here, <span class="pre">Node</span>'s implicit
+		initializer, which takes its fields in order. Empty parentheses may be left off.
+		What we get back is an owning reference of the type written,
+		<span class="pre">Rc[mut, Node]</span>, which this example stores in the variable
+		<span class="pre">node</span>.</p>
+	<p>An <a href="reftypealias.html">alias</a> of an owning reference type allocates the same way,
+		so a program that names its reference type once writes its allocations with that name:</p>
+<pre>
+alias Node = Gc[mut, NodeValue];
+imm leaf = new Node(1);              // a Gc[mut, NodeValue]
+</pre>
+	<p>To make a <a href="refvirtref.html">virtual reference</a>, allocate the concrete type and
+		let the reference coerce where the virtual one is wanted:
+		<span class="pre">imm shape Rc[mut, Shape] = new Rc[mut, Circle](5);</span></p>
 
 	<h3 id="type">Owning Reference Types</h3>
 	<p>Wherever a type is written &mdash; a variable, a field, a parameter, a return type,
-		an <a href="reftypealias.html">alias</a>, a generic's argument &mdash; an owning
+		an <a href="reftypealias.html">alias</a>, a generic's argument, an allocation &mdash; an owning
 		reference type is written the same way: the region, then in square brackets an
 		optional permission and the value type.</p>
 <pre>
@@ -75,33 +90,39 @@ mut list = List[Gc[imm, Leaf]].empty();
 		other, so <span class="pre">Rc[Node]</span> is <span class="pre">Rc[uni, Node]</span>.
 		The region is a struct declaring <span class="pre">is RegionRef</span>; a permission
 		given to anything else is an error. A generic region takes its own brackets first,
-		then the reference's: <span class="pre">R[A][mut, Node]</span>.
+		then the reference's: <span class="pre">R[A][mut, Node]</span>, and allocates as any other,
+		<span class="pre">new R[A][mut, Node](1)</span>.
 		When the value type is an open trait, the reference is a
 		<a href="refvirtref.html">virtual reference</a>, which carries a vtable beside its
 		pointer (<span class="pre">Rc[mut, Shape]</span>); for any other value type, an enum
 		included, it is a single pointer.</p>
-	<p>The plus sign belongs to the allocation, <span class="pre">+Rc-mut Node[1]</span>,
-		and is not written in a type, with one exception for now: a
+	<p>One place still writes an owning reference type the older way, with a plus sign: a
 		<a href="refmatch.html">match</a> pattern that narrows to an owning reference,
-		whose type is read before anything knows its head is a region, still writes it
+		whose type is read before anything knows its head is a region,
 		<span class="pre">+Rc-mut Circle</span>.</p>
-	<p>A construction may be specified as the initial value. One by an
-		<a href="refinitdrop.html">initializer</a> the type declares fills the allocated memory
-		in place, after the region's own initializer has filled its bookkeeping (a traced
-		region's value is built before its memory is allocated). Until allocations are written
-		with <span class="pre">new</span> themselves, a struct's value may also be written in brackets here, and only here.</p>
+
+	<h3>The Order of an Allocation</h3>
+	<p>Every allocation runs its steps in the same order. First the initializer's arguments
+		are evaluated, in the order written. Then the region obtains the memory, and nothing
+		more (its <span class="pre">alloc</span>). Then the region's initializer fills its
+		bookkeeping in place, then a <a href="refpermlock.html">lock</a> permission's does the same
+		for its part, and then the value's initializer fills the value in place, where it was
+		allocated. Last, the owning reference goes where the expression puts it.</p>
+	<p>An initializer may itself allocate, even in a garbage-collected region, whose collector
+		may run while it does: such a region's new object is held as a root and its value reads as
+		empty from the moment its memory is obtained, so a collection finds it, and nothing it
+		half holds, until it is filled.</p>
 <pre>
-imm gcref = +Gc-mut new Point3(1f, 2f, 3f);  // Allocate a new Point3 value, constructed
-imm rcref = +Rc-mut Point3[1f, 2f, 3f];      // The same value, in brackets
+imm p = new Rc[mut, Pair](make(1), make(2));  // make(1), make(2), then alloc, then Pair's init
 </pre>
-				
+
 	<h3>Creating Multiple References to the Same Value</h3>
 	<p>The creation of the <i>first</i> owning reference to a new value always comes from an allocation, as shown above.
 		Additional owning references to that value may then be created
 		by copying an existing reference via assignment or function calls:</p>
 <pre>
-imm nbrref = +Rc-imm 4;
-imm nbrref2 = nbrref;        // nbrref2 and nbrref point to same value
+imm node = new Rc[imm, Node](4);
+imm node2 = node;            // node2 and node point to same value
 </pre>
 
 	<h3>How References and Allocations Expire</h3>
@@ -119,27 +140,38 @@ imm nbrref2 = nbrref;        // nbrref2 and nbrref point to same value
 		(and sooner, obviously, if the variable takes on a new value).
 		If the reference is pointed at by another reference,
 		then the lifetime of the former depends on the lifetime of the latter.</p>
-	<p>When all references to an allocated value expire 
-		and the region has decided to reclaim the value's space, 
-		the region will automatically invoke the value's 
+	<p>When all references to an allocated value expire
+		and the region has decided to reclaim the value's space,
+		the region will automatically invoke the value's
 		<a href="refinitdrop.html">finalizer</a>, if it has been defined.</p>
 
 	<h3>Memory Allocation Errors</h3>
 	<p>Although unlikely, it is still possible for memory allocation requests to fail.
 		This typically happens when not enough contiguous, free memory exists to
 		satisfy the request.</p>
-	<p>Failure to allocate memory will trigger a different
-		response depending on whether the owning reference is marked as nullable.</p>
+	<p>Failure to allocate memory triggers a different response depending on how the
+		allocation is written.</p>
 	<ul>
-		<li><b>Non-nullable reference</b>:  the program will <a href="refexcept.html#panic">panic</a>
+		<li><b><span class="pre">new</span></b>: the program will <a href="refexcept.html#panic">panic</a>
 			and shut down, naming the line of the allocation and the size it asked for:
 			<span class="pre">out of memory allocating 24 bytes</span>.</li>
-		<li><b>Nullable reference</b>: A failed allocation returns the value
-			<span class="pre">null</span>. Any of the mechanisms provided
+		<li><b><span class="pre">trynew</span></b>: the allocation gives back an
+			<a href="refoption.html">Option</a> of the owning reference,
+			<span class="pre">Some</span> holding it when the memory was obtained and
+			<span class="pre">None</span> when it was not. Any of the mechanisms provided
 			for <a href="refoption.html">handling nullable values</a>
-			may be applied in an attempt to recover from this problem.</li>
+			may be applied in an attempt to recover from this problem.
+			Only an allocation may fail this way, so <span class="pre">trynew</span> takes an owning
+			reference type, never a value type.</li>
 	</ul>
-	
+<pre>
+imm maybe = trynew Rc[mut, Node](1);    // an Option[Rc[mut, Node]]
+match maybe {
+  case imm n Some[Rc[mut, Node]] { use(n.value); }
+  else { recover(); }
+}
+</pre>
+
 	<h2>Using a Reference</h2>
 	<p>By and large, region-managed references may be used in all the same ways as borrowed references.
 	They may be

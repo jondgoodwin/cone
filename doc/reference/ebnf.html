@@ -130,13 +130,21 @@
 	shift_exp ::= arith_exp (('<<' | '>>') arith_exp)?
 	arith_exp ::= cast_exp (('+'|'-'|'*'|'/'|'%') cast_exp)*
 	as_exp ::= prefix_exp (('as'|'into') type)*
-	prefix_exp ::= ('.'|'<-'|'-'|'~'|'*'|'++'|'--')* term | addr
+	prefix_exp ::= ('.'|'<-'|'-'|'~'|'*'|'++'|'--')* term | addr | plus_alloc
 	addr ::= (('&'|'&<') region_type perm_type? suffix_exp) | (('&'|'&<'|'&[]') perm_type? (fn_stmt | (term suffix*)))
 		/* '&[]' only borrows: there is no owning array reference, and '+[]' is refused */
+	plus_alloc ::= '?'? '+' ident_token ('-' perm_type)? prefix_exp
+		/* the older allocation spelling, kept only for a value no initializer constructs (a number,
+		   a variant, an array, a tuple, a value already made); a construction is allocated with
+		   new_exp, and '+<' is refused */
 	suffix_exp ::= term suffix*
 	suffix ::= '++'|'--'| ('.' property) | ('(' (simple_exp (',' simple_exp)*)? ')') | ('[' (simple_exp (',' simple_exp)*)? ']')
 	property ::= ident_token | symbol_token | integer_token
-	term ::=  literal | ident_token | pseudo | '(' exp ')'
+	term ::=  literal | ident_token | pseudo | '(' exp ')' | new_exp
+	new_exp ::= ('new' | 'trynew') ident_token ('.' ident_token)* ('[' type (',' type)* ']')* ('(' (simple_exp (',' simple_exp)*)? ')')?
+		/* a construction, its type then its initializer's arguments: 'new Point(1, 2)'. A managed reference
+		   type, or an alias of one, allocates: 'new Rc[mut, Node](1)'. 'trynew' takes only a managed reference
+		   type, and gives an Option of it, None when memory runs out */
 	genqualname ::= ident_token ('.' ident_token)* ('[' type (',' type)* ']')?
 	pseudo ::= 'self' | 'this'
 	
