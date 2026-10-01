@@ -68,7 +68,7 @@
 # - Virtual owning references, allocated as their concrete type and coerced
 #   ('+<' is refused, trait_nameres). They belong to trait.
 # - A global holding an owning reference. A global may only be initialized with
-#   a literal, so 'mut g = +Rc-mut 80' is ErrorNotLit -- a fact about global
+#   a literal, so 'mut g = new Rc[mut, i32](80)' is ErrorNotLit -- a fact about global
 #   initialization, which core owns, rather than about regions.
 #
 # Nothing here is left uncovered for want of a code. ErrorBadAlloc (1036) is the
@@ -104,10 +104,9 @@
 # inner allocation's own branches had already displaced, so it read the block back
 # from the builder instead.
 #
-# region_fallible_alloc is the '?+' form, which this file used to list as left
-# out because the compiler died generating it: genlallocref read the owning
-# reference's type out of the first field of the instantiated 'Some', which is
-# the tag the enum gives every variant, and the reference is its second. The
+# region_fallible_alloc is 'trynew' with a finished value: genlallocref reads
+# the owning reference's type out of the instantiated 'Some', whose first field
+# is the tag the enum gives every variant and whose second is the reference. The
 # scenario measures every spelling of the form and reaches the empty variant by
 # declaring a region whose 'alloc' returns null.
 #
@@ -390,6 +389,11 @@ category = "run"
 description = "'new Rc[mut, Node](1)' allocates in So, Rc, Arc, Rcw, a region written in Cone and a generic region's instance; uni when the permission is left out, through an alias, named fields, coerced to a virtual reference; the order arguments, alloc, region init, value init in place; 'trynew' gives Some, or None from a failing region"
 tags = ["parse", "typecheck", "genllvm", "runtime"]
 
+[scenario.region_new_value]
+category = "run"
+description = "An allocation's one argument a finished value, moved in: in So, Rc, Arc, Rcw and a region written in Cone; a number literal adopting the value type, a variable, a call's result, an array literal, a tuple, a variant becoming its enum; a struct's own value (through an alias too) moved in while other arguments go to its inits; the order value, alloc, region init, store; 'trynew' giving Some, or None from a failing region"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
 # Separate from region_success because it is the scenario a code generation fix
 # landed with: without it, genlallocref's phi named a predecessor that the inner
 # allocation's branches had already displaced, and the module failed verification.
@@ -455,7 +459,7 @@ excludes = ["allocref", "call %void @free(", "add i64", "sub i64"]
 # Read before optimization, where the locals are still allocas.
 [scenario.region_fallible_alloc]
 category = "run"
-description = "'?+region-perm value', the older spelling kept for a value 'new' does not construct (a number here; 'trynew' is region_new's), yields an Option holding the owning reference, or empty when the region's alloc returns null"
+description = "'trynew R[perm, T](value)' with a finished value (a number here; with a construction it is region_new's) yields an Option holding the owning reference, or empty when the region's alloc returns null"
 tags = ["nameres", "typecheck", "genllvm", "runtime"]
 
 [[scenario.region_fallible_alloc.check]]
@@ -783,13 +787,13 @@ diagnostics = 7
 category = "reject"
 description = "Values that may not be allocated, and names that may not be a region"
 tags = ["typecheck"]
-diagnostics = 5
+diagnostics = 4
 
 [scenario.region_typecheck_new]
 category = "reject"
-description = "A constructed value allocated with the retired '+' (plain, fallible, around 'new'), 'trynew' on a struct or a number, and 'new' given a borrowed reference or a virtual one"
+description = "Every allocation written with the retired '+' (a construction, a number, a variable, a call, an array, a tuple, a variant; plain, fallible, around 'new'), 'trynew' on a struct or a number, 'new' given a borrowed reference or a virtual one; an allocation of a type no init constructs given other than one value of it, or a value of another type; a struct's one argument not of the struct itself going to its inits"
 tags = ["typecheck"]
-diagnostics = 8
+diagnostics = 26
 
 [scenario.region_typecheck_region]
 category = "reject"
@@ -855,9 +859,9 @@ diagnostics = 8
 
 [scenario.region_flow]
 category = "reject"
-description = "Owning references that move rather than copy, those into a region neither counted nor Move that copy freely and may not be moved out through, and a permission that forbids the write"
+description = "Owning references that move rather than copy, those into a region neither counted nor Move that copy freely and may not be moved out through, a permission that forbids the write, and a move value moved into an allocation as its finished value"
 tags = ["flow"]
-diagnostics = 8
+diagnostics = 9
 
 [scenario.region_flow_shared_move]
 category = "reject"

@@ -455,16 +455,15 @@ INode *parseAmper(ParseState *parse) {
     return (INode *)anode;
 }
 
-// Parse a "plus term", the older spelling of a region-managed allocation,
-// '+Rc-mut 5':
+// Parse a "plus term", the retired spelling of a region-managed allocation,
+// '+Rc-mut 5', and of a reference type, '+Rc-mut Node':
 // - Some reference type ('+' or '+<')
 // - Region and permission annotations
-// An allocation is written 'new Rc[mut, Node](1)' (parseNew). This spelling is
-// kept for a value 'new' does not construct (a number, a variant, a value
-// already made); allocating a construction with it is refused at type check
-// (ErrorPlusAlloc), and '+<' at name resolution. A single or virtual reference
-// TYPE is written 'Rc[mut, Node]', and type check refuses this spelling of one
-// outside a match pattern's root (plusSpelled).
+// An allocation is written 'new Rc[i32](5)' or 'new Rc[mut, Node](1)'
+// (parseNew); one spelled with '+' is refused at type check (ErrorPlusAlloc),
+// and '+<' at name resolution. A single or virtual reference TYPE is written
+// 'Rc[mut, Node]', and type check refuses this spelling of one outside a match
+// pattern's root (plusSpelled), which keeps it until patterns have their own.
 //
 // There is no owning array reference: an owned runtime-sized array is a List,
 // and one shared is 'Rc[List[T]]'. '+[]' stays a token so that it can be
@@ -547,7 +546,8 @@ INode *parsePrefix(ParseState *parse) {
     case VirtRefToken:
         return parseAmper(parse);
 
-    // '+', '+<' (region-managed allocation), and '+[]' to be refused
+    // '+', '+<' (a pattern's root, or an allocation to be refused), and '+[]'
+    // to be refused
     case PlusToken:
     case PlusArrayRefToken:
     case PlusVirtRefToken:

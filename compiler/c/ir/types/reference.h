@@ -29,13 +29,13 @@ typedef struct {
     INode *region;    // Region
     RefTypeInfo *typeinfo; // normalized ref info
     uint16_t scope;   // Lifetime
-    // Written '+R-perm T' (parsePlus). As an allocation that spelling is kept
-    // only for a value 'new' does not construct (allocateTypeCheck refuses a
-    // construction, ErrorPlusAlloc); as a single or virtual reference type it
-    // is refused (refTypeCheck), except at a match pattern's root, which keeps
-    // it until patterns are given their own (castPatternMark clears it there).
-    // A managed reference type is written 'R[perm, T]' (fnCallLowerManagedRef),
-    // and allocated 'new R[perm, T](...)' (typeLitNewAllocate).
+    // Written '+R-perm T' (parsePlus). As an allocation that spelling is
+    // refused (allocateTypeCheck, ErrorPlusAlloc); as a single or virtual
+    // reference type it is refused (refTypeCheck), except at a match pattern's
+    // root, which keeps it until patterns are given their own
+    // (castPatternMark clears it there). A managed reference type is written
+    // 'R[perm, T]' (fnCallLowerManagedRef), and allocated 'new R[perm, T](...)'
+    // (typeLitNewAllocate).
     uint16_t plusSpelled;
 } RefNode;
 

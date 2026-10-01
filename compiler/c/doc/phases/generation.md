@@ -683,11 +683,12 @@ which finalizes an owner's value where the trace must not follow one.
 
 **An allocation runs in one order, in every region** (`genlallocref`): the
 value init's arguments are evaluated (`genlNewArgs`; for the implicit init,
-the struct's literal, and for a value the `+` spelling allocates, the value
-itself); then `alloc`, and its null check; then the region's `init` and a lock
+the struct's literal, and for a finished value, `new Rc[i32](5)`, the value
+itself, moved); then `alloc`, and its null check; then the region's `init` and a lock
 permission's fill their parts of the header in place, each called with its
 part's address as its `self`; then a declared init fills the value's part in
-place (`genlNewFill`), or the value made is stored there; then the reference
+place (`genlNewFill`), or the value made or finished is stored there, no
+value init running; then the reference
 goes to its destination. A traced region's `alloc` may collect, so the
 arguments' traced parts are births ("Roots", below), rooted while it runs.
 And `alloc` links the new block into the collector's heap, where an `init`

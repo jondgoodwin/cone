@@ -265,10 +265,10 @@ enum NodeTags {
 #define FlagRange     0x0080        // FnCall: index argument is a range
 #define FlagRangeIncl 0x0100        // FnCall: the range's end is included ('...')
 // A literal written in brackets that a '+' allocation takes as its value,
-// '+Rc-mut Node[1]'. An enum's variant keeps that spelling; a struct's is
-// refused there by allocateTypeCheck itself (ErrorPlusAlloc, naming 'new
-// Rc[mut, Node](...)'), so not again as any other bracket construction is
-// (ErrorStructBracket). Set by allocateTypeCheck. 0x0200 is a declaration's
+// '+Rc-mut Node[1]'. The allocation is refused by allocateTypeCheck itself
+// (ErrorPlusAlloc, naming 'new Rc[mut, Node](...)'), so a struct's literal is
+// not refused again as any other bracket construction is (ErrorStructBracket).
+// Set by allocateTypeCheck. 0x0200 is a declaration's
 // FlagPub, and a FnCall is no declaration.
 #define FlagAllocValue 0x0200       // FnCall: a struct literal that is an allocation's value
 // A construction written with 'new', 'new Point(1, 2)'. Set by the parser

@@ -53,44 +53,59 @@ void allocateQuesNameRes(NameResState *pstate, FnCallNode **nodep) {
     }
 }
 
-// Type check allocate node
+// Type check an allocation written with the retired '+', '+Rc-mut 5' or
+// '?+Rc 5', which name resolution made of a '+' reference whose operand is a
+// value: refused, naming the 'new' or 'trynew' form, with the value or the
+// init's arguments in the parentheses (typeLitNewAllocate). It is still
+// checked as an allocation, so nothing after it reports again.
 void allocateTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
+    RefNode *node = *nodep;
+    if (node->perm == unknownType)
+        node->perm = newPermUseNode(uniPerm);
+
+    // A struct's value in brackets, '+Rc-mut Node[1]', is refused here, as an
+    // allocation written with '+', and not again as a bracket construction
+    // (ErrorStructBracket)
+    if (node->vtexp->tag == FnCallTag && (node->vtexp->flags & FlagIndex))
+        node->vtexp->flags |= FlagAllocValue;
+    if (iexpTypeCheckAny(pstate, &node->vtexp) == 0)
+        return;
+
+    INode *vtype = ((IExpNode*)node->vtexp)->vtype;
+    char *perm = itypeName(node->perm);
+    int uni = itypeGetTypeDcl(node->perm) == (INode*)uniPerm;
+    // A type with no name of its own, an array, a tuple or a reference, is
+    // written 'T' and said
+    uint16_t vtag = itypeGetTypeDcl(vtype)->tag;
+    int named = vtag != ArrayTag && vtag != TTupleTag && vtag != FnSigTag && vtag != RefTag
+        && vtag != VirtRefTag && vtag != ArrayRefTag && vtag != PtrTag;
+    errorMsgNode((INode*)node, ErrorPlusAlloc, typeLitIsConstruction(node->vtexp)
+        ? "An allocation is written '%s %s[%s%s%s](...)', the init's arguments in the parentheses%s%s."
+        : "An allocation is written '%s %s[%s%s%s](value)', the value in the parentheses%s%s.",
+        (node->flags & FlagQues) ? "trynew" : "new", itypeName(node->region),
+        uni ? "" : perm, uni ? "" : ", ", named ? itypeName(vtype) : "T",
+        named ? "" : ", T ", named ? "" : itypeName(vtype));
+    allocateValueCheck(pstate, nodep);
+}
+
+// Type check an allocation whose value is checked: the value a region can
+// hold, and the reference's type
+void allocateValueCheck(TypeCheckState *pstate, RefNode **nodep) {
     RefNode *node = *nodep;
 
     // The default permission type is 'uni'
     if (node->perm == unknownType)
         node->perm = newPermUseNode(uniPerm);
 
-    // A struct's value in brackets, '+Rc-mut Node[1]', is refused below, as a
-    // construction allocated with '+', and not again as a bracket construction
-    // (ErrorStructBracket)
-    if (node->vtexp->tag == FnCallTag && (node->vtexp->flags & FlagIndex))
-        node->vtexp->flags |= FlagAllocValue;
-
-    // Ensure expression is a value usable for initializing allocated memory
-    if (iexpTypeCheckAny(pstate, &node->vtexp) == 0)
-        return;
-
     INode *vtype = ((IExpNode*)node->vtexp)->vtype;
     if (!itypeIsConcrete(vtype) || itypeIsZeroSize(vtype)) {
         errorMsgNode(node->vtexp, ErrorInvType, "May not allocate a value of abstract or zero-size type");
     }
 
-    // A construction is allocated with 'new' (typeLitNewAllocate). The '+'
-    // spelling stays only for a value 'new' does not construct: a number, an
-    // enum's variant, an array, a tuple, a reference, a value already made.
-    if (node->plusSpelled && typeLitIsConstruction(node->vtexp)) {
-        char *perm = itypeName(node->perm);
-        int uni = itypeGetTypeDcl(node->perm) == (INode*)uniPerm;
-        errorMsgNode((INode*)node, ErrorPlusAlloc,
-            "An allocation of a constructed value is written '%s %s[%s%s%s](...)', the init's arguments in the parentheses.",
-            (node->flags & FlagQues) ? "trynew" : "new", itypeName(node->region),
-            uni ? "" : perm, uni ? "" : ", ", itypeName(vtype));
-    }
-
     // The reference's type: the one written after 'new', already checked
-    // (typeLitNewAllocate), or, for the '+' spelling, inferred from the value.
-    // A fallible one's is the parameter of the Option node it already has.
+    // (typeLitNewAllocate), or, for the refused '+' spelling, inferred from
+    // the value. A fallible one's is the parameter of the Option node it
+    // already has.
     INode **reftypep = (node->flags & FlagQues) ? &nodesGet(((FnCallNode *)node->vtype)->args, 0) : &node->vtype;
     if ((*reftypep)->tag != RefTag)
         *reftypep = (INode*)newRefNodeFull(RefTag, (INode*)node, node->region, node->perm, vtype);

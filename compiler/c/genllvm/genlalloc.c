@@ -1141,18 +1141,18 @@ void genlRegionAlias(GenState *gen, LLVMValueRef ref, long long amount, RefNode 
     LLVMPositionBuilderAtEnd(gen->builder, doneblk);
 }
 
-// An allocation, 'new Rc[mut, Node](1)': a reference to the value made in
-// its region's memory, or, for 'trynew', null (None) when that memory could
-// not be had. In order:
+// An allocation, 'new Rc[mut, Node](1)', or of a finished value moved in,
+// 'new Rc[i32](5)': a reference to the value made in its region's memory,
+// or, for 'trynew', null (None) when that memory could not be had. In order:
 //
-//   args = the value init's arguments, evaluated   (or the whole value)
+//   args = the value init's arguments, evaluated   (or the finished value)
 //   p = R.alloc(size{, record})                    (memory only)
 //   if p is null: panic naming the size, or give None
 //   [traced region: zero the value part if it holds traced references,
 //    and root p, before anything else runs]
 //   p.region.init()                                (fills the header in place)
 //   p.perm.init()                                  (a lock permission's part)
-//   T.init(&new p.value, args)                     (or store the value)
+//   T.init(&new p.value, args)                     (or store the finished value)
 //   p.value's address, the reference
 //
 // A traced region's 'alloc' may collect, and so may anything after it that
@@ -1198,8 +1198,8 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     LLVMValueRef sizeval = LLVMConstInt(genlType(gen, (INode*)usizeType), allocsize, 0);
 
     // The arguments first, in every region: a declared init's (filled in place
-    // below), or the value itself, the implicit init's literal or a value the
-    // '+' spelling allocates, stored below
+    // below), or the value itself, the implicit init's literal or a finished
+    // value moved in, 'new Rc[i32](5)', stored below
     INode *valnode = allocatenode->vtexp;
     FnCallNode *declinit = valnode->tag == FnCallTag && (valnode->flags & FlagNew) ? (FnCallNode*)valnode : NULL;
     LLVMValueRef *initargs = NULL;

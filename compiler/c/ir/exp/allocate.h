@@ -15,8 +15,11 @@ void allocatePrint(RefNode *node);
 // Name resolution for questag: decide if Option type or fold into AllocNode
 void allocateQuesNameRes(NameResState *pstate, FnCallNode **nodep);
 
-// Type check allocate node
+// Type check an allocation written with the retired '+', which is refused
 void allocateTypeCheck(TypeCheckState *pstate, RefNode **node);
+
+// Type check an allocation whose value is already checked
+void allocateValueCheck(TypeCheckState *pstate, RefNode **nodep);
 
 // Perform data flow analysis on addr node
 void allocateFlow(FlowState *fstate, RefNode **nodep);

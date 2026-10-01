@@ -1,16 +1,26 @@
-// What 'new' and 'trynew' refuse about an allocation. A constructed value is
-// allocated with 'new', its managed reference type and its init's arguments,
-// 'new Rc[mut, Node](1)': the '+' spelling of one, plain or fallible, is
-// refused naming that form. 'trynew' is an allocation that may fail, so it
-// takes a managed reference type and nothing else. 'new' cannot allocate what
-// no region holds: a borrowed reference, made by borrowing; nor a trait,
-// which has no value of its own.
+// What 'new' and 'trynew' refuse about an allocation. An allocation is
+// written with 'new', its managed reference type, and in the parentheses its
+// init's arguments, 'new Rc[mut, Node](1)', or a finished value, 'new
+// Rc[i32](5)': every '+' spelling of one, plain or fallible, whatever its
+// value, is refused naming that form. 'trynew' is an allocation that may fail,
+// so it takes a managed reference type and nothing else. 'new' cannot allocate
+// what no region holds: a borrowed reference, made by borrowing; nor a trait,
+// which has no value of its own. A type no init constructs takes exactly one
+// value of it, which must be one.
 //
-// region_new holds what is accepted; trait_nameres the retired '+<'.
+// region_new and region_new_value hold what is accepted; trait_nameres the
+// retired '+<'.
 
 mod region_typecheck_new;
 
 struct Node { pub v i64; }
+
+// A struct that says it is a region only by its methods
+struct Unmarked {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+}
+
+fn make() i64 { 1; }
 struct Point { pub x i64; pub y i64; }
 alias Lent = &Node;
 
@@ -25,4 +35,40 @@ fn f() {
   imm g = trynew i64(5);         //~ ErrorTryNewValue "i64 is not a managed reference type"
   imm h = new Lent(6);           //~ ErrorNewType "a borrowed reference has none"
   imm i = new Rc[mut, Shape](7); //~ ErrorNewType "has no value to construct"
+}
+
+// Every '+' allocation, whatever its value, names the 'new' form
+fn plus() {
+  imm n = 7i64;
+  imm j = +Rc 5;                 //~ ErrorPlusAlloc "written 'new Rc[i32](value)'"
+  imm k = ?+Rc-mut 6i64;         //~ ErrorPlusAlloc:12 "written 'trynew Rc[mut, i64](value)'"
+  imm l = +So n;                 //~ ErrorPlusAlloc "written 'new So[i64](value)'"
+  imm m = +Rc-imm make();        //~ ErrorPlusAlloc "written 'new Rc[imm, i64](value)'"
+  imm o = +Rc-mut [1, 2, 3];     //~ ErrorPlusAlloc "written 'new Rc[mut, T](value)', the value in the parentheses, T an array"
+  imm p = +So (1, 2);            //~ ErrorPlusAlloc "T a tuple"
+  imm q = +So Some[i64][3];      //~ ErrorPlusAlloc "written 'new So[Some](value)'"
+  imm r = +Unmarked-mut 1i64;    //~ ErrorPlusAlloc "written 'new Unmarked[mut, i64](value)'"
+                                 //~^ ErrorNotRegion "Unmarked is not a region" follow-on
+}
+
+// A type no init constructs takes one value of it, which must be one
+fn values() {
+  imm p = new Point(1, 2);
+  imm a = new Rc[i64](1, 2);     //~ ErrorAllocValue "i64 is not constructed by an init"
+  imm b = new So[i64]();         //~ ErrorAllocValue "i64 is not constructed by an init"
+  imm c = new So[i64](v: 1);     //~ ErrorAllocValue "i64 is not constructed by an init"
+  imm d = new Rc[mut, Array[i64, 2]](1, 2); //~ ErrorAllocValue "an array is not constructed by an init"
+  imm e = new So[Option[i64]]();  //~ ErrorAllocValue "Option is not constructed by an init"
+  imm f = new Rc[f64](p);        //~ ErrorInvType "the type the allocation names: f64"
+  imm g = new So[(i64, i64)](5); //~ ErrorInvType "the type the allocation names: a tuple"
+}
+
+// A struct's one argument is its finished value only when its type is the
+// struct itself: a reference to one, or another struct, goes to the inits,
+// here the implicit one, which wants both fields
+fn notFinished() {
+  imm p = new Point(1, 2);
+  imm a = new Rc[Point](&p);     //~ ErrorBadArray "Not enough values"
+  imm n = new Node(1);
+  imm b = new So[Point](n);      //~ ErrorBadArray "Not enough values"
 }

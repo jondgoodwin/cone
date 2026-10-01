@@ -1581,7 +1581,7 @@ static int fnCallArgIsPerm(INode *arg) {
 // a type, so a generic would otherwise take it as a type argument, and only a
 // managed reference type has a slot for one. Reported, and the node becomes
 // the error it is.
-static int fnCallRefusePermArg(FnCallNode **nodep) {
+int fnCallRefusePermArg(FnCallNode **nodep) {
     FnCallNode *node = *nodep;
     if (!(node->flags & FlagIndex) || node->args == NULL)
         return 0;

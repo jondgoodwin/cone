@@ -1,0 +1,165 @@
+// An allocation's one argument may be a finished value of the value type,
+// which is moved in, as though every type had an init taking a finished value
+// of itself: 'new Rc[i32](5)'. A type no init constructs (a number, an array,
+// a tuple, an enum) takes exactly that one value, coerced to it, so a number
+// literal adopts the value type and a variant becomes its enum. A struct's one
+// argument is the finished value when its type is the struct itself, after
+// aliases; otherwise the arguments go to the struct's inits, as for any
+// construction.
+//
+// Each region takes a finished value: So, Rc, Arc, Rcw and a region written
+// here. The order is printed: the value is evaluated first, then the region's
+// 'alloc', then its 'init', then the value is stored, no value init running.
+// 'trynew' with a finished value gives Some, or None from a failing region.
+
+mod region_new_value;
+
+import stdio use *;
+import libc;
+import sync use Arc;
+import rcweak;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// A region that says when it is called
+struct Loud is RegionRef {
+  pub count usize;
+  fn alloc(size usize) *u8 { printStr("alloc\n"); libc.malloc(size); }
+  fn init(self &new) { printStr("region init\n"); *self = new Loud(1usize); }
+  fn aliasRef(self &uni Loud) inline { count = count + 1usize; }
+  fn dealiasRef(self &uni Loud) Bool inline { count = count - 1usize; count == 0usize; }
+  fn free(self &uni Loud) { printStr("free\n"); libc.free(self as *u8); }
+}
+
+// A region whose every allocation fails
+struct NeverAllocs is RegionRef {
+  fn alloc(size usize) *u8 inline { 0usize as *u8; }
+}
+
+// Only the implicit init, which takes the fields
+struct Point {
+  pub x i64;
+  pub y i64;
+}
+
+// A declared init, which says when it runs
+struct Seeded {
+  pub seed i64;
+  pub fn init(self &new, n i64) {
+    printStr("seeded init\n");
+    *self = new Seeded(seed: n * 10);
+  }
+}
+alias Seed = Seeded;
+
+fn value(n i64) i64 {
+  printStr("value ");
+  printInt(n);
+  printStr("\n");
+  n;
+}
+
+fn seeded(n i64) Seeded {
+  new Seeded(n);
+}
+
+fn regions() {
+  imm so = new So[i64](1);
+  show("so", *so);
+  imm rc = new Rc[mut, i64](2);
+  show("rc", *rc);
+  imm arc = new Arc[imm, i64](3);
+  show("arc", *arc);
+  imm rcw = new rcweak.Rcw[mut, i64](4);
+  show("rcw", *rcw);
+  imm loud = new Loud[i64](5);
+  show("loud", *loud);
+}
+
+fn values() {
+  // A number literal adopts the value type
+  imm wide = new Rc[u64](6);
+  show("number", i64.from(*wide));
+
+  // A variable, moved in
+  imm n = 7i64;
+  imm var = new So[i64](n);
+  show("variable", *var);
+
+  // A call's result
+  imm call = new Rc[imm, i64](value(8));
+  show("call", *call);
+
+  // An array literal and a tuple
+  imm arr = new Rc[mut, Array[i64, 3]]([9, 10, 11]);
+  show("array", arr[0] + arr[1] + arr[2]);
+  imm tup = new So[(i64, i64)]((12, 13));
+  show("tuple", (*tup).0 * 100 + (*tup).1);
+
+  // A variant, which becomes its enum
+  imm opt = new So[Option[i64]](Some[14i64]);
+  match *opt {
+    case imm s Some[i64] { show("variant", s.value); }
+    else { show("variant-none", 0); }
+  }
+}
+
+fn structs() {
+  // A struct's own value is moved in: no init runs
+  imm s = new Seeded(2);
+  imm moved = new Rc[mut, Seeded](s);
+  show("struct-moved", moved.seed);
+  // Through an alias of the struct, the same
+  imm t = new Seeded(3);
+  imm aliased = new So[Seed](t);
+  show("struct-alias", aliased.seed);
+  // A call's result of the struct is a finished value too
+  imm made = new So[Seeded](seeded(4));
+  show("struct-call", made.seed);
+  // Anything else goes to the inits: here the declared one
+  imm built = new Rc[mut, Seeded](5);
+  show("struct-init", built.seed);
+
+  // The implicit init: the fields, or a finished value
+  imm p = new Point(1, 2);
+  imm pmoved = new So[Point](p);
+  show("point-moved", pmoved.x * 10 + pmoved.y);
+  imm pbuilt = new So[Point](3, 4);
+  show("point-init", pbuilt.x * 10 + pbuilt.y);
+}
+
+fn order() {
+  printStr("-- order\n");
+  imm n = new Loud[mut, i64](value(20));
+  show("stored", *n);
+  imm s = new Loud[mut, Seeded](seeded(21));
+  show("stored-struct", s.seed);
+}
+
+fn fallible() {
+  imm some = trynew So[i64](30);
+  match some {
+    case imm x Some[So[i64]] { show("trynew-some", *x.value); }
+    else { show("trynew-none", 0); }
+  }
+  imm p = new Point(3, 1);
+  imm none = trynew NeverAllocs[mut, Point](p);
+  match none {
+    case imm x Some[NeverAllocs[mut, Point]] { show("trynew-failing", x.value.x); }
+    else { show("trynew-failing-none", 0); }
+  }
+}
+
+fn main() i32 {
+  regions();
+  values();
+  structs();
+  order();
+  fallible();
+  0i32;
+}

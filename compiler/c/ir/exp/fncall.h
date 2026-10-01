@@ -76,6 +76,10 @@ void fnCallLowerOverloadFn(FnCallNode *node);
 // own type's walk state, so that its signature can be compared
 void fnCallDemandCandidates(INode *binding);
 
+// A permission given in the brackets of anything but a region, 'Plain[mut, T]':
+// reported, and the node becomes the error it is. 1 if it was refused.
+int fnCallRefusePermArg(FnCallNode **nodep);
+
 // The field a struct literal's argument gives a value to: a named value by its
 // name, a value by position when no named value comes before it; else NULL
 FieldDclNode *fnCallTypeLitField(StructNode *strnode, Nodes *args, uint32_t argi);

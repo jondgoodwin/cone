@@ -25,9 +25,8 @@
 			<span class="pre">is RegionRef</span>, and the region's own methods, and whether it declares
 			<a href="refmove.html"><span class="pre">Move</span></a>, decide when a value is freed;
 			its finalizer runs just before (<a href="refinitdrop.html#finalizer">finalizers</a>).
-			A value no initializer constructs &mdash; a number, an enum's variant, an array, a tuple,
-			a value already made &mdash; is allocated with the older spelling,
-			<span class="pre">+Rc-imm 4</span>, or <span class="pre">?+Rc-imm 4</span> where it may fail: that is the current spelling, and how <span class="pre">new</span> allocates such a value is an open design question.</i></p>
+			An allocation's parentheses hold the value's initializer arguments or a finished
+			value, <span class="pre">new Rc[imm, i32](4)</span>.</i></p>
 
 	<p>When you allocate a new value within a region, you get back an owning reference that points to the new object.
 		For some regions, multiple alias copies may be created which are also owning references.
@@ -66,6 +65,35 @@ imm node = new Rc[mut, Node](1);
 		What we get back is an owning reference of the type written,
 		<span class="pre">Rc[mut, Node]</span>, which this example stores in the variable
 		<span class="pre">node</span>.</p>
+
+	<h3 id="value">Allocating a Finished Value</h3>
+	<p>The parentheses may instead hold one finished value of the value type, which is moved
+		into the new allocation, as though every type had an initializer taking a finished value
+		of itself. A value no initializer constructs &mdash; a number, an array, a tuple, an enum
+		or its variant, a reference &mdash; is always allocated this way, and its allocation takes
+		exactly one value, converted to the value type as a variable's initial value is: a number
+		literal takes on the value type, and an enum's variant becomes its enum.</p>
+<pre>
+imm count = new Rc[u64](5);                            // the literal is a u64
+imm grid = new Rc[mut, Array[i32, 3]]([1, 2, 3]);
+imm pair = new So[(i32, f32)]((1, 2.0));
+imm maybe = new So[Option[i32]](Some[3]);
+imm name = new Arc[imm, String](String.from("x"));     // a call's result
+imm list = new Rc[mut, List[Fin]](items);              // items is moved in
+</pre>
+	<p>A struct's allocation is told apart by type: when exactly one argument is given and its
+		type is the struct itself (through an <a href="reftypealias.html">alias</a> as well), it is
+		the finished value, moved in, and no initializer runs; otherwise the arguments go to the
+		struct's initializers, as for any construction. A reference to the struct, or a value
+		that would only convert to it, is not the struct itself.</p>
+<pre>
+imm s = new Seeded(4);                  // Seeded's init runs
+imm byInit = new Rc[Seeded](5);         // Seeded's init runs again, on 5
+imm moved = new Rc[Seeded](s);          // s is moved in; no init runs
+</pre>
+	<p>A value is constructed once: <span class="pre">new Point(p)</span>, where
+		<span class="pre">p</span> is already a <span class="pre">Point</span>, is an error, since a
+		finished value needs no construction; use <span class="pre">p</span> as it is.</p>
 	<p>An <a href="reftypealias.html">alias</a> of an owning reference type allocates the same way,
 		so a program that names its reference type once writes its allocations with that name:</p>
 <pre>
@@ -103,17 +131,19 @@ mut list = List[Gc[imm, Leaf]].empty();
 
 	<h3>The Order of an Allocation</h3>
 	<p>Every allocation runs its steps in the same order. First the initializer's arguments
-		are evaluated, in the order written. Then the region obtains the memory, and nothing
-		more (its <span class="pre">alloc</span>). Then the region's initializer fills its
-		bookkeeping in place, then a <a href="refpermlock.html">lock</a> permission's does the same
-		for its part, and then the value's initializer fills the value in place, where it was
-		allocated. Last, the owning reference goes where the expression puts it.</p>
+		are evaluated, in the order written, or the finished value is. Then the region obtains
+		the memory, and nothing more (its <span class="pre">alloc</span>). Then the region's
+		initializer fills its bookkeeping in place, then a <a href="refpermlock.html">lock</a>
+		permission's does the same for its part, and then the value's initializer fills the value
+		in place, where it was allocated, or the finished value is stored there. Last, the owning
+		reference goes where the expression puts it.</p>
 	<p>An initializer may itself allocate, even in a garbage-collected region, whose collector
 		may run while it does: such a region's new object is held as a root and its value reads as
 		empty from the moment its memory is obtained, so a collection finds it, and nothing it
 		half holds, until it is filled.</p>
 <pre>
 imm p = new Rc[mut, Pair](make(1), make(2));  // make(1), make(2), then alloc, then Pair's init
+imm q = new Rc[mut, Pair](makePair());        // makePair(), then alloc, then the store
 </pre>
 
 	<h3>Creating Multiple References to the Same Value</h3>

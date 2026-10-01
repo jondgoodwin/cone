@@ -240,13 +240,16 @@ Every diagnostic path sets `errorType`, so the literal never leaves the pass
 untyped.
 
 **Construction** — `typeLitNewCheck` takes a `FlagNew` call. A managed
-reference type makes it an allocation, the construction of its value type held
-by an `AllocateTag` node ([references](references.md), "Allocation"); `trynew`
-on any other type is `ErrorTryNewValue`. An array's construction is its
+reference type makes it an allocation, an `AllocateTag` node holding the
+construction of its value type or a finished value of it
+([references](references.md), "Allocation"); `trynew` on any other type is
+`ErrorTryNewValue`. An array's construction is its
 contents, after `<-`, which `contentsLower` takes before this is reached, so
 one here has none (`ErrorArrayContents`). Otherwise its type must be a struct
 (`ErrorNewType` otherwise: a number converts with `from`, an enum's variant
-keeps its brackets). A generic
+keeps its brackets). One positional argument whose type is the struct itself
+is a finished value, which needs no construction (`ErrorNewFinished`); an
+allocation takes one as its value instead. A generic
 struct named bare, `new Box(5i64)`, has its type arguments inferred from the
 values, as its literal's were (`genericSubstitute`). Its inits are the implicit
 field-wise one and those it declares under the name `init`, one or an overload
@@ -271,8 +274,9 @@ own (`ErrorNotPublic`).
 **Type literal** — `typeLitTypeCheck` requires a concrete type, then builds a
 struct's literal. **A struct's literal in brackets is `ErrorStructBracket`**,
 naming `new Point(...)`, unless it came of a construction (`FlagNew`), is a
-`+` allocation's value (`FlagAllocValue`, set by `allocateTypeCheck`, which
-refuses it itself, `ErrorPlusAlloc`, naming the `new` form), or is a
+refused `+` allocation's value (`FlagAllocValue`, set by `allocateTypeCheck`,
+which refuses the allocation itself, `ErrorPlusAlloc`, naming the `new` form),
+or is a
 variant's, which has a discriminant field to fill; refused at type check, so a
 struct reached through an alias or a type parameter is refused as one named
 directly, and the literal is still built so nothing after it reports again. A
