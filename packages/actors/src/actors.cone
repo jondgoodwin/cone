@@ -505,7 +505,7 @@ fn finalizeState[S, M Sendable](h *Header) {
 // the Mailbox, and its mailbox made: one stub node, idle. Nothing else can
 // reach the actor until this returns, so the header is written plainly;
 // whatever hands the handle on orders it.
-pub fn startActor[S, M Sendable](state S, dispatch &fn(s &mut S, m M)) +Arc-opaq Mailbox[M] {
+pub fn startActor[S, M Sendable](state S, dispatch &fn(s &mut S, m M)) Arc[opaq, Mailbox[M]] {
   ensureRunning();
   imm stub = libc.malloc(mem.sizeof[Link]()) as *Link;
   if stub as usize == 0usize {
@@ -519,8 +519,8 @@ pub fn startActor[S, M Sendable](state S, dispatch &fn(s &mut S, m M)) +Arc-opaq
   // The owner of the block, remade as the owner of its first part: the same
   // address and the same count, moved, not copied
   mut slot = 0usize as *u8;
-  mem.writeRaw[+Arc-opaq Block[S, M]](&mut slot as *(+Arc-opaq Block[S, M]), b);
-  mem.readRaw[+Arc-opaq Mailbox[M]](&mut slot as *(+Arc-opaq Mailbox[M]));
+  mem.writeRaw[Arc[opaq, Block[S, M]]](&mut slot as *(Arc[opaq, Block[S, M]]), b);
+  mem.readRaw[Arc[opaq, Mailbox[M]]](&mut slot as *(Arc[opaq, Mailbox[M]]));
 }
 
 // Send msg to the actor whose Mailbox mb is: push it, and, if the push found
@@ -572,12 +572,12 @@ fn runBatch[S, M Sendable](h *Header, limit u32) u32 {
 // so the count is Arc's (a Relaxed add), whatever Arc's layout.
 fn holdArc[M Sendable](h *Header) {
   mut slot = h;
-  imm o = mem.readRaw[+Arc-opaq Mailbox[M]](&mut slot as *(+Arc-opaq Mailbox[M]));
+  imm o = mem.readRaw[Arc[opaq, Mailbox[M]]](&mut slot as *(Arc[opaq, Mailbox[M]]));
   imm held = o;
   mut gone1 = h;
   mut gone2 = h;
-  mem.writeRaw[+Arc-opaq Mailbox[M]](&mut gone1 as *(+Arc-opaq Mailbox[M]), o);
-  mem.writeRaw[+Arc-opaq Mailbox[M]](&mut gone2 as *(+Arc-opaq Mailbox[M]), held);
+  mem.writeRaw[Arc[opaq, Mailbox[M]]](&mut gone1 as *(Arc[opaq, Mailbox[M]]), o);
+  mem.writeRaw[Arc[opaq, Mailbox[M]]](&mut gone2 as *(Arc[opaq, Mailbox[M]]), held);
 }
 
 // The scheduler lets go of its owner: remade from the address and dropped,
@@ -585,7 +585,7 @@ fn holdArc[M Sendable](h *Header) {
 // death, Mailbox's finalizer and the free, if it was the last).
 fn releaseHold[M Sendable](h *Header) {
   mut slot = h;
-  imm o = mem.readRaw[+Arc-opaq Mailbox[M]](&mut slot as *(+Arc-opaq Mailbox[M]));
+  imm o = mem.readRaw[Arc[opaq, Mailbox[M]]](&mut slot as *(Arc[opaq, Mailbox[M]]));
 }
 
 // ---------------------------------------------------------------------------

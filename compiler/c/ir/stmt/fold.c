@@ -11,12 +11,21 @@
 
 // The declaration of a type expression, through a reference or pointer if it is
 // one, or NULL when it is not a declaration yet: an instance of a generic still
-// to be instantiated, or a name that did not resolve.
+// to be instantiated, or a name that did not resolve. A managed reference type
+// not yet lowered, 'Rc[mut, Engine]', is seen through as its lowered reference
+// is, to its last argument, so a fold through one works from name resolution on.
 INode *foldSourceDcl(INode *vtype) {
-    if (vtype == NULL || vtype->tag == FnCallTag || !isTypeNode(vtype))
+    if (vtype == NULL || !isTypeNode(vtype))
         return NULL;
-    INode *dcl = itypeGetTypeDcl(vtype);
-    if (dcl->tag == RefTag || dcl->tag == VirtRefTag)
+    INode *dcl = itypeIsManagedRefType(vtype) ? vtype
+        : vtype->tag == FnCallTag ? NULL : itypeGetTypeDcl(vtype);
+    if (dcl == NULL)
+        return NULL;
+    if (itypeIsManagedRefType(dcl)) {
+        Nodes *args = ((FnCallNode*)dcl)->args;
+        vtype = nodesGet(args, args->used - 1);
+    }
+    else if (dcl->tag == RefTag || dcl->tag == VirtRefTag)
         vtype = ((RefNode*)dcl)->vtexp;
     else if (dcl->tag == PtrTag)
         vtype = ((StarNode*)dcl)->vtexp;

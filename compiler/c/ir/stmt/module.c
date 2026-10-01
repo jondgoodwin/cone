@@ -525,6 +525,16 @@ static INode *modFoldPeek(INode *node) {
     if (node->tag != FnCallTag)
         return node;
     FnCallNode *path = (FnCallNode*)node;
+    // A managed reference type, 'Rc[mut, Engine]', is seen through to its
+    // value type, the last argument, as its lowered reference is above. Its
+    // head is peeked rather than resolved: what it names is a region when its
+    // 'is' list says so (regionStructWritesRegionRef).
+    if (path->methfld == NULL && (path->flags & FlagIndex) && path->args && path->args->used > 0) {
+        INode *head = modFoldPeek(path->objfn);
+        head = head ? modBindingDcl(head) : NULL;
+        if (head && head->tag == StructTag && regionStructWritesRegionRef((StructNode*)head))
+            return modFoldPeek(nodesGet(path->args, path->args->used - 1));
+    }
     if (path->methfld == NULL || !isNameUseNode(path->methfld) || (path->flags & FlagOperator))
         return node;
     INode *base = modFoldPeek(path->objfn);

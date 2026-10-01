@@ -202,8 +202,11 @@ operands, and `&mut mymod.Gadget` has to be a resolved type name by then.
 
 Every one of these hinges on `isTypeNode`. For a name use it asks the
 declaration the name was bound to, and an unlowered `FnCallNode` naming a
-generic struct counts as a type (`itypeIsGenericType`). Without the latter,
-`*Box[i64]` reads as a dereference and `[2; Box[i64]]` as an array literal.
+generic struct counts as a type (`itypeIsGenericType`), as does one whose head
+is a region and whose arguments are types, the managed reference type
+`Rc[mut, Node]` (`itypeIsManagedRefType`, [references](../nodes/references.md),
+"The managed reference type"). Without them, `*Box[i64]` reads as a
+dereference, `[2; Box[i64]]` as an array literal, and `&Rc[Node]` as a borrow.
 A use of a generic parameter is not a type either, so in a generic's template
 these votes are provisional: the instance's clone takes the tuple, array,
 reference and pointer votes again, and the tuple and `?` votes, whose losing
@@ -413,6 +416,7 @@ next pass a null to trip over.
 | `ir/stmt/aliasdcl.c` | `aliasDclResolve` | the declaration at the end of a chain of aliases, which every reader of a namespace binding asks for first |
 | `ir/types/fnsig.c` | `fnSigNameRes` | forces scope 0 |
 | `ir/itype.c` | `itypeIsGenericType` | makes an unlowered `Box[i64]` count as a type |
+| | `itypeIsManagedRefType`, `itypeManagedRefRegion` | make an unlowered `Rc[mut, Node]` count as a type: a region's head, its `is` list read as written (`regionStructWritesRegionRef`), and type arguments |
 | `ir/exp/allocate.c` | `allocateQuesNameRes` | the one parent-pointer rewrite |
 | `ir/clone.c` | `cloneNode`, `cloneDclFix`, `clonePushState` | how a resolved template survives instantiation |
 

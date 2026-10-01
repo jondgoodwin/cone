@@ -58,8 +58,8 @@ end of file.
 ## Parse
 
 Built from: a call `f(a)`, an index `a[i]`, a member access `a.b`, every binary
-and unary operator, a generic instantiation `Box[i64]`, `?T` for `Option[T]`,
-and a type constructor `Point[1,2]`. `parseDotCall`, `parseSuffix`, `parseArgs`
+and unary operator, a generic instantiation `Box[i64]`, a managed reference
+type `Rc[mut, Node]`, `?T` for `Option[T]`, and a type constructor `Point[1,2]`. `parseDotCall`, `parseSuffix`, `parseArgs`
 and the whole precedence cascade all build this node.
 
 Nothing about which of those it is has been decided yet.
@@ -68,7 +68,8 @@ Nothing about which of those it is has been decided yet.
 
 `fnCallNameRes` resolves `objfn`, collapses the node if that turned out to be a
 path, and resolves each argument. Resolving `objfn` first is what lets
-`itypeIsGenericType` recognize an unlowered `Box[i64]` as a type, which the
+`itypeIsGenericType` recognize an unlowered `Box[i64]` as a type, and
+`itypeIsManagedRefType` an unlowered `Rc[mut, Node]`, which the
 type-versus-value decisions elsewhere depend on.
 
 **It never resolves `methfld` as a member** — selecting a member needs the
@@ -148,8 +149,12 @@ or an instance of a generic one (`fnCallIsPathBase`), is a path rather than a
 receiver and is left alone.
 Macro call (only when `methfld` is NULL — with it set, the name is a receiver
 and expands like any other value; a macro *method* named bare is first rewritten
-to `self.name`); `<-` on a value tuple, which becomes a block of applications.
-Then, for a member access by name that is not an operator, the **receiver is
+to `self.name`); `<-` on a value tuple, which becomes a block of applications;
+a managed reference type, `Rc[mut, Node]`, lowered into the `RefNode` it names
+(`fnCallLowerManagedRef`, [references](references.md), "The managed reference
+type") ahead of the struct-literal pass below, which would take its head for a
+literal's struct; and a permission in the brackets of anything else, refused
+(`fnCallRefusePermArg`). Then, for a member access by name that is not an operator, the **receiver is
 checked ahead of the arguments** and its type asked what the name binds — an
 alias, for a macro method the type holds by folding, is resolved first, and the
 receiver shifted to the field it was folded through (`structFoldReceiver`): a

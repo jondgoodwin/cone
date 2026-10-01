@@ -281,7 +281,9 @@ token type. Permissions reach the same effect by a different route:
 `lexScanIdent` has a separate branch turning a `PermTag` binding into a
 `PermToken`. So `mut` and `uni` are lexically distinguished without being
 keyword tokens — copy the right one of these two patterns if you add a third
-family. To the language they are reserved words all the same: the manual lists
+family. Being no identifier, a permission is no term either: inside `[...]`,
+where `Rc[mut, Node]` writes one, `parseIndexArg` takes it as the permission
+it names. To the language they are reserved words all the same: the manual lists
 all six static permissions with the keywords (Jon's ruling of 24 September
 2026), since a name the lexer always reads as a permission can never be used. A reserved word is reported once,
 at first use, and then **released** — `Name.node` is cleared and the word

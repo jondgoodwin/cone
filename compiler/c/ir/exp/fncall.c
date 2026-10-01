@@ -1559,6 +1559,108 @@ static FieldDclNode *fnCallTypeLitField(StructNode *strnode, Nodes *args, uint32
     return NULL;
 }
 
+// Does this argument name a permission, 'mut' in 'Rc[mut, Node]'?
+static int fnCallArgIsPerm(INode *arg) {
+    return arg != NULL && isNameUseNode(arg) && nameUseNames(arg, PermTag);
+}
+
+// A permission given in the brackets of anything but a region: a permission is
+// a type, so a generic would otherwise take it as a type argument, and only a
+// managed reference type has a slot for one. Reported, and the node becomes
+// the error it is.
+static int fnCallRefusePermArg(FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    if (!(node->flags & FlagIndex) || node->args == NULL)
+        return 0;
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(node->args, cnt, argsp)) {
+        if (fnCallArgIsPerm(*argsp)) {
+            Name *head = isNameUseNode(node->objfn) ? ((NameUseNode*)node->objfn)->namesym : NULL;
+            // A region's head whose other argument is a value, not a type
+            if (itypeManagedRefRegion((INode*)node) != NULL)
+                errorMsgNode((INode*)node, ErrorRefTypeArgs,
+                    "A managed reference type takes a permission, which may be left out, and a value type: '%s[%s, T]'.",
+                    head ? &head->namestr : "R", &((NameUseNode*)*argsp)->namesym->namestr);
+            else
+                errorMsgNode(*argsp, ErrorPermNotRegion,
+                    "%s%sA permission is given only to a region, a struct declaring 'is RegionRef', as a managed reference type's first argument: 'Rc[%s, T]'.",
+                    head ? &head->namestr : "", head ? " is not a region. " : "",
+                    &((NameUseNode*)*argsp)->namesym->namestr);
+            *((INode**)nodep) = newErrorNode((INode*)node);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Lower a managed reference type, 'Rc[Node]' or 'Rc[mut, Node]', into the
+// reference node it names, and type check that. The region is the head; the
+// brackets hold an optional permission, 'uni' when it is left out, then the
+// value type. The reference is virtual exactly when the value type is an open
+// trait: an enum is a trait to the compiler too, and a reference to one is thin.
+// From here on nothing downstream sees how the type was written.
+static void fnCallLowerManagedRef(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    Nodes *args = node->args;
+    INode *perm = NULL;
+    INode *vtype = nodesGet(args, args->used - 1);
+    Name *regname = ((StructNode*)itypeManagedRefRegion((INode*)node))->namesym;
+    if (args->used > 2)
+        errorMsgNode(nodesGet(args, 2), ErrorRefTypeArgs,
+            "A managed reference type takes a permission, which may be left out, and a value type: '%s[mut, T]' or '%s[T]'.",
+            &regname->namestr, &regname->namestr);
+    // The first of two is the permission: a static one, or a struct standing in
+    // the slot as the unbuilt dynamic permissions do (refThreadBinds), which the
+    // '+R-Lock T' spelling took and which a traced region's rules judge
+    if (args->used >= 2) {
+        INode *first = nodesGet(args, 0);
+        INode *firstdcl = isNameUseNode(first) ? nameUseGetDcl((NameUseNode*)first) : NULL;
+        if (fnCallArgIsPerm(first)
+            || (firstdcl && firstdcl->tag == StructTag && !(firstdcl->flags & TraitType)))
+            perm = first;
+        else
+            errorMsgNode(first, ErrorRefTypePerm,
+                "A managed reference type's first of two arguments is its permission: '%s[mut, T]'.",
+                &regname->namestr);
+    }
+    if (perm == NULL) {
+        perm = newPermUseNode(uniPerm);
+        inodeLexCopy(perm, (INode*)node);
+    }
+    if (fnCallArgIsPerm(vtype)) {
+        errorMsgNode(vtype, ErrorRefTypePerm,
+            "A managed reference type's last argument is the type it refers to, not a permission: '%s[%s, T]'.",
+            &regname->namestr, &((NameUseNode*)vtype)->namesym->namestr);
+        *((INode**)nodep) = newErrorNode((INode*)node);
+        return;
+    }
+
+    // The value type is checked first, since whether it is an open trait decides
+    // the reference's shape, and a generic trait's instance exists only once
+    // checked. A type under check that refers to itself, 'next Rc[Node]', finds
+    // Node in progress, as a reference always has.
+    uint16_t tag = RefTag;
+    if (itypeTypeCheck(pstate, &vtype)) {
+        INode *vdcl = itypeGetTypeDcl(vtype);
+        if (vdcl->tag == StructTag && (vdcl->flags & TraitType) && !(vdcl->flags & HasTagField))
+            tag = VirtRefTag;
+    }
+    else {
+        // Reported where the value type was written; the type stands as the error
+        *((INode**)nodep) = newErrorNode((INode*)node);
+        return;
+    }
+
+    RefNode *ref = newRefNode(tag);
+    inodeLexCopy((INode*)ref, (INode*)node);
+    ref->region = node->objfn;
+    ref->perm = perm;
+    ref->vtexp = vtype;
+    *((INode**)nodep) = (INode*)ref;
+    inodeTypeCheckAny(pstate, (INode**)nodep);
+}
+
 // Perform type check on function/method call node
 // This should only be run once on a node, as it mutably lowers the node to another form:
 // - If a generic/macro, it instantiates, then type checks instantiated nodes
@@ -1610,6 +1712,17 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         fnCallLowerAppendTuple(pstate, nodep);
         return;
     }
+
+    // 'Rc[mut, Node]' is a managed reference type, lowered here before the
+    // struct-literal pass below could take its head for a literal's struct.
+    // Told from the region's own literal, 'Rc[1usize]', by its arguments being
+    // types (itypeIsManagedRefType).
+    if (itypeIsManagedRefType((INode*)node)) {
+        fnCallLowerManagedRef(pstate, nodep);
+        return;
+    }
+    if (fnCallRefusePermArg(nodep))
+        return;
 
     // An overload name has no value of its own, so it is only legal here, naming what
     // is called. Skipping the ordinary name-use check leaves that check free to reject

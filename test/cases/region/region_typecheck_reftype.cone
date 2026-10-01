@@ -1,0 +1,27 @@
+// What a managed reference type may not say. Its head must be a region, a
+// struct declaring 'is RegionRef', for a permission to be given; its brackets
+// hold one or two arguments, a permission first when there are two, and the
+// value type last, which is no permission. A uni owner, 'Rc[Node]', moves.
+//
+// region_reftype holds what is accepted.
+
+mod region_typecheck_reftype;
+
+struct Node { pub v i32; }
+struct Plain { pub v i32; }
+struct Box[T] { pub v T; }
+trait Shape { fn area(self &) i32; }
+
+fn notRegion(p Plain[mut, Node]) { }     //~ ErrorPermNotRegion "Plain is not a region"
+fn generic(b Box[mut, Node]) { }         //~ ErrorPermNotRegion "Box is not a region"
+fn tooMany(r Rc[mut, Node, Node]) { }    //~ ErrorRefTypeArgs "takes a permission, which may be left out, and a value type"
+fn notPerm(r Rc[i32, Node]) { }          //~ ErrorRefTypePerm "first of two arguments is its permission"
+fn swapped(r Rc[Node, mut]) { }          //~ ErrorRefTypePerm "last argument is the type it refers to"
+fn valueArg(r Rc[mut, 5]) { }            //~ ErrorRefTypeArgs "takes a permission, which may be left out, and a value type"
+
+// Left out, the permission is uni: the only owner, which a copy moves
+fn moves() {
+  imm a Rc[Node] = +Rc Node[1];
+  imm b = a;
+  imm c = a;                             //~ ErrorMove "has been moved out"
+}

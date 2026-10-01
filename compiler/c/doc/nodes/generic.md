@@ -227,7 +227,8 @@ and `cloneStarNode` take the vote again on the substituted operand, as
 template holds as a value tuple and an array literal. A vote whose losing side
 is an error cannot wait for the clone, so there the operand abstains:
 `inodeIsProvisionalType` recognizes a use of a generic parameter, or a form
-whose own vote was cast on one, and `ttupleNameRes` lets it vote with neither
+whose own vote was cast on one, or a managed reference type whose region is a
+generic parameter (`R[mut, T]`), and `ttupleNameRes` lets it vote with neither
 side (so `(T, i64)` is a type tuple, not a mix) while `allocateQuesNameRes`
 leaves `?T` the `Option[T]` type instead of refusing it. A macro's parameter is
 the same declaration, so a macro given a value still clones a value: every
@@ -327,7 +328,11 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    descends through a pointer, a reference and an array reference to what each
    points at (`p *T` given a `*Fin` captures `Fin`), accepting both the type
    tags and the template's dereference, borrow and allocate tags (Clone, above;
-   an owning reference, `+Rc-mut T` or `+[]So T`, is held as an allocate); an array
+   an owning array reference, `+[]So T`, is held as an allocate). A managed
+   reference type, `Rc[mut, T]`, is still the call it was written as, and
+   matches a reference of either shape, its last argument against what the
+   reference points at; a region that is a type parameter, `R[mut, T]`, also
+   captures the reference's region. An array
    slice parameter also descends into the fixed-size array, or reference to one,
    that the call converts to a slice. A generic type's instance, `List[T]`,
    matches an argument that is an instance of the same generic, found in the
@@ -338,7 +343,7 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    then the return type, provided both have as many parameters. An argument
    type naming a generic's own type parameter — the signature of `&half`, a
    generic function not instantiated — captures nothing. Region and permission
-   take no part: the instance's own check of the call judges them. Any other
+   otherwise take no part: the instance's own check of the call judges them. Any other
    shape captures nothing. A slot filled twice must agree by `itypeIsSame`.
    Any slot still NULL is "could not infer". A generic method named bare inside its type's braces
    is called on an implicit `self` that is not among the arguments, so they are

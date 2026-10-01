@@ -787,9 +787,10 @@ int inodeIsExp(INode *node) {
 }
 
 // An instantiation of a generic type, 'Box[i64]', is a call node until type
-// check replaces it with the instance it names, and is a type all the while
+// check replaces it with the instance it names, and is a type all the while;
+// so is a managed reference type, 'Rc[mut, Node]', until type check lowers it
 int inodeIsType(INode *node) {
-    return inodeGroup(node) == TypeGroup || itypeIsGenericType(node);
+    return inodeGroup(node) == TypeGroup || itypeIsGenericType(node) || itypeIsManagedRefType(node);
 }
 
 int inodeIsMeta(INode *node) {
@@ -824,6 +825,20 @@ int inodeIsProvisionalType(INode *node) {
         uint32_t cnt;
         for (nodesFor(((TupleNode*)node)->elems, cnt, nodesp))
             if (!isTypeNode(*nodesp) && !inodeIsProvisionalType(*nodesp))
+                return 0;
+        return 1;
+    }
+    // A reference type over a region that is itself a type parameter,
+    // 'R[mut, T]', is a type once R is substituted
+    case FnCallTag: {
+        FnCallNode *call = (FnCallNode*)node;
+        if (!(call->flags & FlagIndex) || call->methfld != NULL || call->args == NULL
+            || call->args->used == 0 || !nameUseNames(call->objfn, GenVarDclTag))
+            return 0;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(call->args, cnt, nodesp))
+            if (*nodesp == NULL || (!isTypeNode(*nodesp) && !inodeIsProvisionalType(*nodesp)))
                 return 0;
         return 1;
     }

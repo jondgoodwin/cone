@@ -166,6 +166,19 @@ Nodes *parseArgs(ParseState *parse) {
     return args;
 }
 
+// One argument inside '[...]'. A static permission is a keyword, so it is no
+// term, and is taken here as the permission it names: 'Rc[mut, Node]' is a
+// managed reference type, its permission first (fnCallLowerManagedRef). What a
+// permission may be an argument of is type check's to judge.
+static INode *parseIndexArg(ParseState *parse) {
+    if (lexIsToken(PermToken)) {
+        INode *perm = newPermUseNode((PermNode*)lex->val.ident->node);
+        lexNextToken();
+        return perm;
+    }
+    return parseArg(parse);
+}
+
 // Parse the arguments of an index, 'x[...]': a list of expressions, or one range
 // that a borrow makes a slice of part of an array (doc/reference/
 // refarrayref.html, "Subslices"). 'a..b' excludes b and 'a...b' includes it; a
@@ -181,12 +194,12 @@ static Nodes *parseIndexArgs(ParseState *parse, FnCallNode *fncall) {
             lexNextToken();
             return args;
         }
-        start = parseArg(parse);
+        start = parseIndexArg(parse);
         if (!lexIsToken(DotDotToken) && !lexIsToken(EllipsisToken)) {
             nodesAdd(&args, start);
             while (lexIsToken(CommaToken)) {
                 lexNextToken();
-                nodesAdd(&args, parseArg(parse));
+                nodesAdd(&args, parseIndexArg(parse));
             }
             parseCloseTok(RBracketToken);
             return args;
@@ -366,9 +379,11 @@ INode *parseAmper(ParseState *parse) {
     return (INode *)anode;
 }
 
-// Parse an "plus term" for a region-managed ref type or constructor:
+// Parse a "plus term", a region-managed allocation ('+Rc-mut Node[1]') or an
+// owning array reference type ('+[]So i32'):
 // - Some reference type ('+', '+[]' or '+<')
 // - Region and permission annotations
+// A single or virtual reference TYPE is written 'Rc[mut, Node]'.
 INode *parsePlus(ParseState *parse) {
     // Create appropriate RefNode, depending on ampersand operator
     RefNode *anode;

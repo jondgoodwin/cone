@@ -168,6 +168,13 @@ int itypeIsMove(INode *type);
 // Return true if this is a generic type
 int itypeIsGenericType(INode *type);
 
+// The region struct a managed reference type's head names ('Rc' in
+// 'Rc[mut, Node]'), or NULL
+INode *itypeManagedRefRegion(INode *call);
+
+// Is this a managed reference type not yet lowered, 'Rc[mut, Node]'?
+int itypeIsManagedRefType(INode *type);
+
 // Return drop function (or NULL) for type
 INode *itypeGetDropFnDcl(INode *type);
 

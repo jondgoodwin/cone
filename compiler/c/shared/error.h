@@ -374,6 +374,11 @@ enum ErrorCode {
     ErrorTypedef = 1197,        // A 'typedef' statement: an alias is declared 'alias Name = type;'
     ErrorAliasEq = 1198,        // An 'alias' statement with no '=' between its name and its target
 
+    // The managed reference type, 'Rc[mut, Node]' (ir/exp/fncall.c, ir/types/reference.c)
+    ErrorRefTypeArgs = 1199,    // A region given other than one or two arguments as a reference type: an optional permission, then the value type
+    ErrorRefTypePerm = 1200,    // A region's reference type whose first of two arguments is not a permission, or whose value type is one
+    ErrorPermNotRegion = 1201,  // A permission given as an argument to a type that is not a region: only a managed reference type takes one
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
