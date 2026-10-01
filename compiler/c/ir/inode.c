@@ -207,6 +207,14 @@ void inodePrintNode(INode *node) {
         inodeFprint(")");
         break;
     }
+    case TempTag:
+    {
+        TempNode *temp = (TempNode *)node;
+        inodeFprint(temp->kept ? "(temp-kept " : temp->moved ? "(temp-hollow " : "(temp ");
+        inodePrintNode(temp->exp);
+        inodeFprint(")");
+        break;
+    }
     case MacroDclTag:
         macroPrint((MacroDclNode *)node); break;
     case GenVarDclTag:
@@ -745,6 +753,7 @@ static NodeTagFacts nodeTagFacts[NodeTagCount] = {
     [RefCountTag] = {ExpGroup, 0, 0},
     [HollowTag] = {ExpGroup, 0, 0},
     [DropFlagTag] = {ExpGroup, 0, 0},
+    [TempTag] = {ExpGroup, 0, 0},
     [NamedValTag] = {ExpGroup, 0, 0},
     [OfEntryTag] = {ExpGroup, 0, 0},
     [FillEntryTag] = {ExpGroup, 0, 0},

@@ -118,6 +118,20 @@ block's `flowmark`. **That order is what makes a tail call correct**: the walk
 is what marks a variable moved, so a local handed to a call in final position is
 known to have left the scope before the list that would release it is built.
 
+**A block that throws its value away hands nothing back** (`blockDiscards`): a
+loop block, whose final expression loops back, and a block typed with no value
+— a statement's, a branch of an `if` that is a statement — but not a
+function's own block, typed with none whatever it returns, unless the function
+returns nothing. Its final expression is a statement's: a temporary there is
+wrapped as one thrown away, and a local it names is no result, so the release
+list does not exempt it (`flowresult` is NULL). `if c { imm x = mk(); x; }`
+finalizes `x` at the branch's end.
+
+**Each statement that made a temporary is walked again** once flow has walked
+it (`blockTempEscape`), so that a temporary a borrow going out of it may point
+into is kept: a variable's initializer, and a `return`'s, a `break`'s or a used
+block's value, go out ([Flow](../phases/flow.md), "Temporaries").
+
 ## Generation
 
 **Basic blocks are created only when needed**: `isPhiBlk = isLoop || breaks > 1`.
@@ -133,6 +147,12 @@ existing, while still generating its value for the effects.
 A `terminated` flag stops emission after a jump, because an instruction after a
 terminator is invalid IR — reachable only in an `each` block, where the step
 sits behind the jump the reader wrote last.
+
+**Each statement's temporaries die at its end**, newest first: after its value
+and, for a `blockret`, before the `dealias` list (`genlTempsEnd`). A jump
+finalizes them, with those of the statements it leaves, before it goes, and the
+statement's entries are then dropped ([Generation](../phases/generation.md),
+"Temporaries").
 
 ## Hazards
 

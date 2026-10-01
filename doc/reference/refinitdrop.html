@@ -20,7 +20,11 @@
 		after the variant's. A tuple or an array is finalized element by element,
 		and the owning references a value holds are released with it, however deep. A value
 		assigned over is finalized as it is replaced, and one moved out, or given a value, on only
-		some paths is finalized on the paths that still hold it. A module's
+		some paths is finalized on the paths that still hold it. A temporary is finalized at the
+		end of its statement, condition or operand, except one that a borrow, or a raw pointer,
+		made from it may outlive &mdash; an owner lent to a variable, or to a call whose result
+		can hold the borrow &mdash; which is not finalized at all: whether such a borrow lengthens
+		the temporary's life is not yet decided. A module's
 		global variable is finalized by its module's finalizer when the program shuts down,
 		whatever it holds: a value whose type finalizes, a tuple or an array of them, or an
 		owning reference, which is released. Initializers are implemented: every struct's
@@ -186,11 +190,30 @@ fn final(self &amp;uni) {
 		  After the finalizer finishes, the object will cease to exist.</li>
 	</ul>
 	<p>A value dies the same way wherever it lives &mdash; a local variable at the end of its
-		scope, a parameter at the end of its function, a field inside the value holding it:
+		scope, a parameter at the end of its function, a field inside the value holding it,
+		a temporary at the end of its statement:
 		its finalizer runs first, then the finalizers of its fields, in the order they are
 		declared, then the owning references its fields hold are released, in the order they are
 		declared. A tuple's elements die in order, as fields do, and so do an array's, first element
 		first.</p>
+	<p>A temporary is a value an expression produces that nothing takes: it is not bound to a
+		variable, stored in a field or element, passed by value, returned or moved. A call's
+		result whose field is read, an owning reference read through, an owner lent to a call
+		as a borrowed reference, a value thrown away by a statement: each is a temporary, and
+		dies at the end of the statement that produced it, the newest first, as locals die at the
+		end of their block. A temporary produced by the condition of an <span class="pre">if</span>
+		or a <span class="pre">while</span> dies once the condition is decided, before the branch
+		runs, so each pass of a loop finalizes its own; and one produced by the right operand of
+		<span class="pre">and</span> or <span class="pre">or</span>, which runs on some paths
+		only, dies at the end of that operand. A value moved out of a temporary owner belongs to
+		its new holder, and the owner's memory is freed without it, as above.</p>
+<pre>
+imm n = open(name).length;   // the file open returns is closed here, once its length is read
+take(open(name));            // moved: take closes it
+if open(name).length > 0 {   // closed here, before the branch runs
+  ...
+}
+</pre>
 	<p>A value dies on the path that still holds it, and only there. Where a variable's value was
 		moved out, or given, on only some of the paths that reach the end of its scope
 		&mdash; in one branch of an <span class="pre">if</span> or a <span class="pre">match</span>,

@@ -1,0 +1,129 @@
+// A temporary -- a value an expression makes that nothing takes: not bound to
+// a variable, stored, passed by value, handed back or moved -- is finalized at
+// the end of the statement that made it, newest first, as a scope's locals are
+// at its end. One made by an 'if' or 'while' condition dies once the
+// condition is decided, so each pass of a loop finalizes its own; one made by
+// the right operand of 'and' or 'or', which runs on some paths only, dies at
+// that operand's end. Before this, no temporary was finalized at all: its
+// 'final' never ran, a sole owner's memory was never freed, and a counted
+// owner's count never came back down.
+//
+// What makes a temporary here: a value thrown away, a field read out of a
+// call's result, a sole or counted owner read through, an owner lent to a
+// call as a borrowed reference ('g(mkso(5))', 'mkso(5).get()'), a value
+// tested with 'is', the value of a block or an 'if' read a field of, and a
+// block whose value is thrown away -- a statement's branch, a loop's body --
+// whose final expression is a temporary, or names a local, which then dies
+// with its scope rather than being handed back to nothing.
+//
+// What does not: a value bound to a variable, passed by value, returned, or
+// moved out of a temporary owner -- '*mkso(16)' takes the value, and the
+// owner's memory goes back without finalizing it, as a hollowed variable's
+// does.
+//
+// Pinned as it is, a question of lifetimes belonging elsewhere: a temporary a
+// borrow of which outlives its statement -- an owner lent to a local
+// ('imm r &R = mkso(19)'), or to a call whose result can hold the borrow -- is
+// not finalized, as no temporary was before, rather than freed while the
+// borrow lives on.
+//
+// The regions print what they do, so the output is the whole assertion.
+
+mod struct_final_temporary;
+
+import stdio use *;
+import libc;
+
+struct One is RegionRef, Move {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn free(self &uni One) inline { printStr("free "); libc.free(self as *u8); }
+}
+
+struct Cnt is RegionRef {
+  owners usize;
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn init(self &new) inline { *self = new Cnt(1usize); }
+  fn aliasRef(self &uni Cnt) inline { owners = owners + 1usize; }
+  fn dealiasRef(self &uni Cnt) Bool inline { printStr("dealias "); owners = owners - 1usize; owners == 0usize; }
+  fn free(self &uni Cnt) inline { printStr("cfree "); libc.free(self as *u8); }
+}
+
+struct R {
+  pub n i32;
+  fn final(self &uni) { printStr("F"); printInt(i64.from(self.n)); printStr(" "); }
+  pub fn get(self &) i32 { self.n; }
+  pub fn me(self &) &R { self; }
+}
+struct Holder { pub rc Cnt[mut, R]; pub m i32; }
+
+fn mk(n i32) R { new R(n); }
+fn mkso(n i32) One[R] { new One[R](n); }
+fn mkrc(n i32) Cnt[mut, R] { new Cnt[mut, R](n); }
+fn mkholder(n i32) Holder { new Holder(new Cnt[mut, R](n), n); }
+fn mkopt(n i32) Option[R] { Some[new R(n)]; }
+fn g(r &R) i32 { r.n; }
+fn take(r R) { printStr("take "); }
+fn add(a i32, b i32) i32 { printStr("add "); a + b; }
+fn yes(b Bool) Bool { b; }
+fn line(label &[]u8) { printStr("| "); printStr(label); printStr("\n"); }
+
+fn thrownAway() { mk(1); printStr("next "); }
+fn fieldRead() { imm a = mk(2).n; printStr("read "); printInt(i64.from(a)); printStr(" "); }
+fn bound() { imm x = mk(3); printStr("bound "); }
+fn passed() { take(mk(4)); printStr("next "); }
+fn madeHere(n i32) R { mk(n); }
+fn returned() { imm x = madeHere(5); printStr("returned "); }
+fn inIf() { if mk(6).n > 0 { printStr("then "); } printStr("next "); }
+fn inWhile() { mut i = 0; while mk(7).n > i { i = i + 1; printStr("body "); } printStr("next "); }
+fn nested() { imm s = add(mk(8).n, mk(9).n); printStr("next "); }
+fn rhs(c Bool) { if yes(c) and mk(10).n > 0 { printStr("then "); } printStr("next "); }
+fn returnsField() i32 { return mk(11).n; }
+fn inReturn() { imm v = returnsField(); printStr("next "); }
+fn isTested() { if mkopt(12) is Some { printStr("some "); } printStr("next "); }
+fn blockValue() { imm b = (if yes(true) { mk(13); } else { mk(14); }).n; printStr("next "); }
+fn branchThrown() { if yes(true) { mk(15); } printStr("next "); }
+fn branchLocal() { if yes(true) { imm x = mk(16); x; } printStr("next "); }
+fn loopTail() { mut i = 0; while i < 2 { i = i + 1; mk(17); } printStr("next "); }
+
+fn soThrownAway() { mkso(20); printStr("next "); }
+fn soFieldRead() { imm b = mkso(21).n; printStr("next "); }
+fn soLent() { imm c = g(new One[R](22)); printStr("next "); }
+fn soLentCall() { imm d = g(mkso(23)); printStr("next "); }
+fn soMethod() { imm e = mkso(24).get(); printStr("next "); }
+fn soMovedOut() { imm v = *mkso(25); printStr("moved "); }
+fn rcFieldRead() { imm f = mkrc(26).n; printStr("next "); }
+fn rcLent() { imm h = g(mkrc(27)); printStr("next "); }
+fn rcCopiedOut() { imm r = mkholder(28).rc; printStr("copied "); }
+fn soKept() { imm r &R = mkso(29); printInt(i64.from(r.n)); printStr(" next "); }
+fn soKeptByCall() { imm r = mkso(30).me(); printInt(i64.from(r.n)); printStr(" next "); }
+
+fn main() i32 {
+  thrownAway(); line("thrown away");
+  fieldRead(); line("field read");
+  bound(); line("bound");
+  passed(); line("passed by value");
+  returned(); line("returned");
+  inIf(); line("if condition");
+  inWhile(); line("while condition");
+  nested(); line("nested, newest first");
+  rhs(false); line("right operand not run");
+  rhs(true); line("right operand run");
+  inReturn(); line("return value");
+  isTested(); line("is");
+  blockValue(); line("if value read");
+  branchThrown(); line("branch thrown away");
+  branchLocal(); line("branch local handed to nothing");
+  loopTail(); line("loop body's value");
+  soThrownAway(); line("sole owner thrown away");
+  soFieldRead(); line("sole owner read through");
+  soLent(); line("sole owner lent");
+  soLentCall(); line("sole owner lent from a call");
+  soMethod(); line("sole owner's method");
+  soMovedOut(); line("sole owner moved out of");
+  rcFieldRead(); line("counted owner read through");
+  rcLent(); line("counted owner lent");
+  rcCopiedOut(); line("counted owner copied out");
+  soKept(); line("lent to a local: kept");
+  soKeptByCall(); line("lent through a call's borrow: kept");
+  0;
+}

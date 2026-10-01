@@ -96,7 +96,11 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
         LLVMBasicBlockRef ablk;
         if (*nodesp != elseCond) {
             ablk = LLVMInsertBasicBlockInContext(gen->context, nextif, "ifblk");
-            LLVMBuildCondBr(gen->builder, genlExpr(gen, *nodesp), ablk, nextif);
+            // A temporary the condition made dies once it is decided
+            uint32_t tempmark = gen->tempcnt;
+            LLVMValueRef cond = genlExpr(gen, *nodesp);
+            genlTempsEnd(gen, tempmark);
+            LLVMBuildCondBr(gen->builder, cond, ablk, nextif);
             LLVMPositionBuilderAtEnd(gen->builder, ablk);
         }
 
@@ -1098,9 +1102,12 @@ LLVMValueRef genlLogic(GenState *gen, LogicNode* node) {
         LLVMBuildCondBr(gen->builder, logicvals[0], logicrhs, logicphi);
     logicblks[0] = LLVMGetInsertBlock(gen->builder);
 
-    // Generate right-hand condition and branch to phi
+    // Generate right-hand condition and branch to phi. It runs on some paths
+    // only, so a temporary it made dies at its end.
     LLVMPositionBuilderAtEnd(gen->builder, logicrhs);
+    uint32_t tempmark = gen->tempcnt;
     logicvals[1] = genlExpr(gen, node->rexp);
+    genlTempsEnd(gen, tempmark);
     LLVMBuildBr(gen->builder, logicphi);
     logicblks[1] = LLVMGetInsertBlock(gen->builder);
 
@@ -1147,12 +1154,16 @@ static void genlArrayRun(GenState *gen, LLVMTypeRef arraytype, LLVMValueRef dest
     LLVMBuildBr(gen->builder, loopblk);
     LLVMPositionBuilderAtEnd(gen->builder, loopblk);
     LLVMValueRef counter = LLVMBuildPhi(gen->builder, usize, "fillindex");
+    // The value is made again for each element, so a temporary it made dies
+    // each time round
+    uint32_t tempmark = gen->tempcnt;
     LLVMValueRef elemval = constval ? constval : genlExpr(gen, val);
     index[1] = counter;
     LLVMValueRef elemptr = LLVMBuildInBoundsGEP2(gen->builder, arraytype, dest, index, 2, "fillelem");
     LLVMBuildStore(gen->builder, elemval, elemptr);
     if (barriertype)
         genlBarrierAt(gen, elemptr, barriertype);
+    genlTempsEnd(gen, tempmark);
     LLVMValueRef next = LLVMBuildAdd(gen->builder, counter, LLVMConstInt(usize, 1, 0), "fillnext");
     LLVMValueRef more = LLVMBuildICmp(gen->builder, LLVMIntULT, next, LLVMConstInt(usize, start + count, 0), "fillmore");
     // Evaluating the value may have split the loop's block, so the back edge
@@ -1744,6 +1755,9 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         LLVMBuildStore(gen->builder, arrval, temparray);
         return temparray;
     }
+    // A temporary indexed or read a field of is read where it is kept
+    case TempTag:
+        return genlTempKeep(gen, (TempNode *)lval, genlExpr(gen, ((TempNode *)lval)->exp));
     default: {
         INode *type = iexpGetTypeDcl(lval);
         if (type->tag == ArrayTag || type->tag == StructTag || type->tag == TTupleTag) {
@@ -2163,6 +2177,14 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
     {
         genlDealiasNode(gen, termnode);
         return NULL;
+    }
+    case TempTag:
+    {
+        TempNode *temp = (TempNode *)termnode;
+        LLVMValueRef val = genlExpr(gen, temp->exp);
+        if (!temp->kept)
+            genlTempKeep(gen, temp, val);
+        return val;
     }
     case FnCallTag:
         return genlFnCall(gen, (FnCallNode *)termnode);

@@ -203,6 +203,9 @@ static void checkNode(INode *node) {
     case DropFlagTag:
         checkNode(((DropFlagNode*)node)->release); break;
 
+    case TempTag:
+        checkNode(((TempNode*)node)->exp); break;
+
     // Everything else is a leaf here: a literal, a name use whose declaration is
     // reached through the owning module anyway, or a type node
     default:

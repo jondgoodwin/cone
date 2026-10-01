@@ -162,6 +162,12 @@ last) and an `ifblk`, and a conditional branch. **For `elseCond` no block is
 created** — the else body is emitted into whatever `ifnext` the previous
 iteration left the builder at.
 
+**A temporary a condition makes dies once the condition is computed**, before
+the conditional branch (`genlTempsEnd`): a later condition runs on some paths
+only, so it cannot wait for the statement's end, and a `while`, which arrives
+as `if not cond { break }`, finalizes its own each pass ([Generation](../phases/generation.md),
+"Temporaries").
+
 After each arm, if its last statement is not a jump, branch to `endif` and
 record a phi incoming — using `LLVMGetInsertBlock`, not `ifblk`, because the arm
 may have split the block. The phi is built only when something was recorded;

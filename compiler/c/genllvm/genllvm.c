@@ -116,6 +116,10 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     int svexitzero = gen->exitzero;
     GenRoots svroots;
     genlRootsSave(gen, &svroots);
+    // A function generated while another is -- a drop asked for by a death --
+    // finalizes only the temporaries it makes itself
+    uint32_t svtempbase = gen->tempbase;
+    gen->tempbase = gen->tempcnt;
 
     FnSigNode *fnsig = (FnSigNode*)fnnode->vtype;
     assert(fnnode->value->tag == BlockTag);
@@ -164,6 +168,8 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     gen->fnblock = svfnblock;
     gen->fndcl = svfndcl;
     gen->exitzero = svexitzero;
+    gen->tempcnt = gen->tempbase;
+    gen->tempbase = svtempbase;
     genlRootsRestore(gen, &svroots);
 }
 
@@ -1296,6 +1302,10 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     gen->allocaPoint = NULL;
     gen->blockstack = memAllocBlk(sizeof(GenBlockState)*GenBlockStackMax);
     gen->blockstackcnt = 0;
+    gen->temps = NULL;
+    gen->tempcnt = 0;
+    gen->tempmax = 0;
+    gen->tempbase = 0;
 
     gen->comdats = genlComdatSupport(opt->triple);   // genlCreateMachine filled in the default
     gen->cabi = genlCAbiTarget(opt->triple);

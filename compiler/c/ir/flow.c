@@ -455,6 +455,18 @@ static void flowMoveExit(INode *exp, Nodes **moved, Nodes **common, int *first, 
     *common = kept;
 }
 
+// A move out through a temporary sole owner, '*make()': the temporary still
+// owns the allocation, whose memory goes back at the end of its statement
+// without what moved, as a hollowed variable's does (genlTempRelease)
+static void flowTempHollow(TempNode *temp, Nodes **moved, INode *top) {
+    if (moved == NULL)
+        return;
+    if (temp->moved == NULL)
+        temp->moved = newNodes(2);
+    if (!flowNodesHas(temp->moved, top))
+        nodesAdd(&temp->moved, top);
+}
+
 // Walk inwards from a moved value to its source: refuse a move out of a place
 // that does not own the value, and, when 'moved' is given, add to it each
 // source variable the move leaves without its value. A value reached through a
@@ -519,6 +531,10 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
             flowMoveHollow(owner, objfn, moved, top, parts);
             return;
         }
+        if (objfn->tag == TempTag && iexpGetTypeDcl(objfn)->tag == RefTag) {
+            flowTempHollow((TempNode *)objfn, moved, top);
+            return;
+        }
         flowMoveSource(objfn, moved, top, parts);
         break;
     }
@@ -532,9 +548,21 @@ static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *pa
             flowMoveHollow(owner, ref, moved, top, parts);
             return;
         }
+        if (ref->tag == TempTag) {
+            flowTempHollow((TempNode *)ref, moved, top);
+            return;
+        }
         flowMoveSource(ref, moved, top, parts);
         break;
     }
+
+    // A value moved out of a temporary by value -- an element of the array
+    // it is -- leaves it with a hole: like a local array an element moved out
+    // of, it is not finalized, and what else it held leaks
+    case TempTag:
+        if (moved)
+            ((TempNode *)node)->kept = 1;
+        break;
 
     // A recast is its operand under another type name -- an enrichment and its
     // base, which share one representation -- so moving it moves the operand,
@@ -891,6 +919,264 @@ void flowHandleMoveOrCopy(INode **nodep) {
     }
 }
 
+// *********************
+// Temporaries
+//
+// A value an expression makes and nothing takes -- a call's result whose field
+// is read, a sole owner read through, an owner lent to a call as a borrow, a
+// value thrown away -- dies at the end of the statement that made it, newest
+// first, as a scope's locals do at its end (doc/reference/refinitdrop.html).
+// Flow finds each where it is read or thrown away and wraps it in a TempNode;
+// generation keeps it and finalizes it there. A temporary in an 'if' or
+// 'while' condition dies at the condition's end, and one in the right operand
+// of 'and' or 'or' at that operand's end, since each runs on some paths only.
+// *********************
+
+uint32_t flowTempCount = 0;
+
+// Is this expression a temporary whose death does something: a value made
+// here -- a call's result, a literal, an allocation, a block's or an 'if''s
+// value, a conversion -- rather than read out of a place that keeps it
+// (flowIsLvalRead)? An assignment's value is what it stored, which the target
+// keeps.
+static int flowIsTemp(INode *node) {
+    if (!isExpNode(node) || flowIsLvalRead(node))
+        return 0;
+    switch (node->tag) {
+    case AssignTag:
+    case SwapTag:
+    case VarDclTag:
+    case TempTag:
+    case RefCountTag:
+    case HollowTag:
+    case DropFlagTag:
+    case NilLitTag:
+    case ULitTag:
+    case FLitTag:
+    case StringLitTag:
+    case SizeofTag:
+    case AbsenceTag:
+    case UnknownTag:
+        return 0;
+    case FnCallTag:
+        if (fnCallIsNever(node))
+            return 0;
+        break;
+    default:
+        break;
+    }
+    INode *vtype = ((IExpNode *)node)->vtype;
+    return vtype != NULL && vtype != unknownType && itypeNeedsFinal(vtype);
+}
+
+void flowTempRead(INode **nodep) {
+    if (!flowIsTemp(*nodep))
+        return;
+    TempNode *temp;
+    newNode(temp, TempNode, TempTag);
+    inodeLexCopy((INode *)temp, *nodep);
+    temp->vtype = ((IExpNode *)*nodep)->vtype;
+    temp->exp = *nodep;
+    temp->moved = NULL;
+    temp->kept = 0;
+    *nodep = (INode *)temp;
+    ++flowTempCount;
+}
+
+// Does this cast's value hold what its operand held, so that the operand is
+// not a temporary of its own? A recast does, unless it lends an owner as a
+// borrowed reference; a conversion does only into an owning virtual
+// reference (flowCastCarries).
+static int flowCastHandsOn(INode *cast) {
+    if (!flowCastCarries(cast))
+        return 0;
+    INode *to = iexpGetTypeDcl(cast);
+    if (to->tag == PtrTag)
+        return 0;
+    return !((to->tag == RefTag || to->tag == ArrayRefTag || to->tag == VirtRefTag)
+        && itypeGetTypeDcl(((RefNode *)to)->region) == borrowRef);
+}
+
+// Does a value of this type hold a raw pointer, anywhere in it, through owning
+// references too? A few levels are looked at; a type nested deeper is taken
+// as holding none.
+static int flowTempHoldsPtr(INode *type, int depth) {
+    if (type == NULL || depth > 6)
+        return 0;
+    INode *typedcl = itypeGetTypeDcl(type);
+    INode **nodesp;
+    uint32_t cnt;
+    switch (typedcl->tag) {
+    case PtrTag:
+        return 1;
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+        return flowTempHoldsPtr(((RefNode *)typedcl)->vtexp, depth + 1);
+    case ArrayTag:
+        return flowTempHoldsPtr(arrayElemType(typedcl), depth + 1);
+    case TTupleTag:
+        for (nodesFor(((TupleNode *)typedcl)->elems, cnt, nodesp)) {
+            if (flowTempHoldsPtr(*nodesp, depth + 1))
+                return 1;
+        }
+        return 0;
+    case StructTag:
+    {
+        StructNode *strnode = (StructNode *)typedcl;
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            if (flowTempHoldsPtr(((IExpNode *)*nodesp)->vtype, depth + 1))
+                return 1;
+        }
+        if (strnode->derived) {
+            for (nodesFor(strnode->derived, cnt, nodesp)) {
+                if (flowTempHoldsPtr(*nodesp, depth + 1))
+                    return 1;
+            }
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+// May a value of this type point into a temporary: does it hold a borrowed
+// reference, or a raw pointer?
+static int flowTempCarries(INode *type) {
+    return type != NULL && (itypeCarriesBorrow(type) || flowTempHoldsPtr(type, 0));
+}
+
+// May this call keep what an argument points at beyond itself: is an argument
+// a '&mut' reference, or a pointer, to something that can hold a borrow or a
+// pointer?
+static int flowTempCallStores(FnCallNode *call) {
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(call->args, cnt, argsp)) {
+        INode *type = iexpGetTypeDcl(*argsp);
+        if (type->tag == PtrTag) {
+            if (flowTempCarries(((StarNode *)type)->vtexp))
+                return 1;
+        }
+        else if ((type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag)
+            && itypeGetTypeDcl(((RefNode *)type)->region) == borrowRef
+            && (permGetFlags(((RefNode *)type)->perm) & MayWrite)
+            && flowTempCarries(((RefNode *)type)->vtexp))
+            return 1;
+    }
+    return 0;
+}
+
+// A temporary is finalized at its statement's end only if nothing that
+// outlives the statement may point into it. A borrow of it -- an owner lent to
+// a call as '&', '&*make()' -- or a pointer made from it lives on only in what
+// its value goes into: a call's result whose type can hold one, an aggregate,
+// a store, a value the statement hands back. So the walk carries 'out' down
+// from where a value leaves the statement, kept only through values that can
+// hold a borrow or a pointer, and a temporary it reaches is kept: not
+// finalized, as no temporary was before (the extension of a temporary's life
+// to its borrow's is a lifetime question, not settled here).
+void flowTempEscape(INode *node, int out) {
+    if (isNameUseNode(node))
+        return;
+    INode **nodesp;
+    uint32_t cnt;
+    switch (node->tag) {
+    case TempTag:
+    {
+        TempNode *temp = (TempNode *)node;
+        if (out)
+            temp->kept = 1;
+        flowTempEscape(temp->exp, out);
+        return;
+    }
+    case FnCallTag:
+    {
+        FnCallNode *call = (FnCallNode *)node;
+        int argsout = (out && flowTempCarries(call->vtype)) || flowTempCallStores(call);
+        if (!isNameUseNode(call->objfn))
+            flowTempEscape(call->objfn, 0);
+        for (nodesFor(call->args, cnt, nodesp))
+            flowTempEscape(*nodesp, argsout);
+        return;
+    }
+    case FldAccessTag:
+    case ArrIndexTag:
+    {
+        FnCallNode *access = (FnCallNode *)node;
+        flowTempEscape(access->objfn, out && flowTempCarries(access->vtype));
+        if (node->tag == ArrIndexTag) {
+            for (nodesFor(access->args, cnt, nodesp))
+                flowTempEscape(*nodesp, 0);
+        }
+        return;
+    }
+    case DerefTag:
+        flowTempEscape(((StarNode *)node)->vtexp, out && flowTempCarries(((StarNode *)node)->vtype));
+        return;
+    case BorrowTag:
+    case ArrayBorrowTag:
+        flowTempEscape(((RefNode *)node)->vtexp, out);
+        return;
+    case CastTag:
+        flowTempEscape(((CastNode *)node)->exp, out && flowTempCarries(((CastNode *)node)->vtype));
+        return;
+    case IsTag:
+        flowTempEscape(((CastNode *)node)->exp, 0);
+        return;
+    case NotLogicTag:
+        flowTempEscape(((LogicNode *)node)->lexp, 0);
+        return;
+    case OrLogicTag:
+    case AndLogicTag:
+        flowTempEscape(((LogicNode *)node)->lexp, 0);
+        flowTempEscape(((LogicNode *)node)->rexp, 0);
+        return;
+    case VTupleTag:
+    case ArrayLitTag:
+    {
+        int elemout = out && flowTempCarries(((IExpNode *)node)->vtype);
+        Nodes *elems = node->tag == VTupleTag ? ((TupleNode *)node)->elems : ((ArrayNode *)node)->elems;
+        for (nodesFor(elems, cnt, nodesp))
+            flowTempEscape(*nodesp, elemout);
+        return;
+    }
+    case TypeLitTag:
+    {
+        int elemout = out && flowTempCarries(((IExpNode *)node)->vtype);
+        for (nodesFor(((FnCallNode *)node)->args, cnt, nodesp))
+            flowTempEscape((*nodesp)->tag == NamedValTag ? ((NamedValNode *)*nodesp)->val : *nodesp, elemout);
+        return;
+    }
+    case AllocateTag:
+        flowTempEscape(((RefNode *)node)->vtexp, out && flowTempCarries(((RefNode *)node)->vtype));
+        return;
+    case AssignTag:
+        flowTempEscape(((AssignNode *)node)->lval, 0);
+        flowTempEscape(((AssignNode *)node)->rval, 1);
+        return;
+    case RefCountTag:
+        flowTempEscape(((RefCountNode *)node)->exp, out);
+        return;
+    case HollowTag:
+        if (((HollowNode *)node)->exp)
+            flowTempEscape(((HollowNode *)node)->exp, out);
+        return;
+    // A branch's statements are walked as their block's; only the conditions
+    // are this statement's
+    case IfTag:
+        for (nodesFor(((IfNode *)node)->condblk, cnt, nodesp)) {
+            if (*nodesp != elseCond)
+                flowTempEscape(*nodesp, 0);
+            nodesp++; cnt--;
+        }
+        return;
+    default:
+        return;
+    }
+}
+
 
 // Load a reference that a value is about to be read through, and refuse the
 // read when the reference's permission grants none. The reference's own
@@ -899,6 +1185,9 @@ void flowHandleMoveOrCopy(INode **nodep) {
 // assignlvalrtype. A pointer carries no permission and is not checked here.
 void flowLoadThroughRef(FlowState *fstate, INode **refp) {
     flowLoadValue(fstate, refp);
+    // A temporary read through, or read a field or an element of, is
+    // finalized once its statement is done with it: '*make()', 'make().x'
+    flowTempRead(refp);
     RefNode *reftype = (RefNode *)iexpGetTypeDcl(*refp);
     if ((reftype->tag == RefTag || reftype->tag == ArrayRefTag || reftype->tag == VirtRefTag)
         && !(permGetFlags(reftype->perm) & MayRead))
@@ -1007,6 +1296,12 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         break;
     case CastTag: case IsTag:
         flowLoadValue(fstate, &((CastNode *)*nodep)->exp);
+        // An operand the cast does not hand on -- an owner lent as a borrowed
+        // reference, a value tested or converted -- is a temporary
+        if ((*nodep)->tag == IsTag || !flowCastHandsOn(*nodep))
+            flowTempRead(&((CastNode *)*nodep)->exp);
+        break;
+    case TempTag:
         break;
     case NotLogicTag:
         flowLoadValue(fstate, &((LogicNode *)*nodep)->lexp);
