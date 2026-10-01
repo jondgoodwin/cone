@@ -2530,7 +2530,7 @@ interesting one, since folding applied to types is delegated inheritance.
 
 ### What a region is
 
-A region's **annotation** — the name after `+` — is an ordinary struct that
+A region's **annotation** — the head of `Rc[mut, Node]` — is an ordinary struct that
 declares the built-in trait **`RegionRef`**: `struct Rc is RegionRef { … }`.
 There is no `region` keyword. `RegionRef` is the compiler's own
 (`corelib.c`, `newBuiltinTrait`, as `Move` and `Copy` are), a name every module

@@ -265,10 +265,10 @@ void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
     else if (littype->tag == StructTag) {
         // A struct's value is constructed with 'new'. An enum's variant keeps
         // its brackets, 'Some[x]'; a '+' allocation's value, '+Rc-mut Node[1]',
-        // is refused by allocateTypeCheck instead (ErrorPlusAlloc). Refused
-        // here, at type check, so that a struct reached through an alias or a
-        // type parameter is refused as one named directly. The literal is
-        // still built, so nothing after it reports again.
+        // is refused with the allocation, by allocateTypeCheck (ErrorPlusAlloc).
+        // Refused here, at type check, so that a struct reached through an
+        // alias or a type parameter is refused as one named directly. The
+        // literal is still built, so nothing after it reports again.
         if (!(arrlit->flags & (FlagNew | FlagAllocValue)) && !typeLitIsVariant((StructNode*)littype)) {
             Name *written = isNameUseNode(arrlit->objfn) ? ((NameUseNode*)arrlit->objfn)->namesym : ((StructNode*)littype)->namesym;
             errorMsgNode((INode*)arrlit, ErrorStructBracket,
@@ -352,14 +352,94 @@ static void typeLitInitArgs(FnCallNode *node, FnSigNode *sig) {
     }
 }
 
+// Is this type's value constructed by an init: a struct that is neither a
+// trait, an enum, nor an enum's variant?
+static int typeLitHasInits(INode *typedcl) {
+    return typedcl->tag == StructTag && !(typedcl->flags & TraitType)
+        && !typeLitIsVariant((StructNode*)typedcl);
+}
+
+// The inits a struct declares, NULL if none, their signatures demanded so the
+// arguments can be matched to them
+static INode *typeLitDeclaredInits(StructNode *strnode) {
+    INode *inits = iNsTypeFindFnField((INsTypeNode*)strnode, initMethodName);
+    if (inits && inits->tag != FnDclTag && inits->tag != FnOverloadDclTag)
+        return NULL;
+    if (inits)
+        fnCallDemandCandidates(inits);
+    return inits;
+}
+
+// Is this construction's one argument, already checked, a finished value of
+// the type being constructed: its type that type exactly, an alias resolved,
+// with no coercion?
+static int typeLitArgIsFinished(Nodes *args, INode *type) {
+    if (args == NULL || args->used != 1)
+        return 0;
+    INode *arg = nodesGet(args, 0);
+    return arg->tag != NamedValTag && isExpNode(arg) && !inodeIsError(arg)
+        && itypeIsSame(((IExpNode*)arg)->vtype, type);
+}
+
+static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int argschecked);
+
+// The value an allocation stores, from its parentheses, or NULL when they give
+// none. A struct's value is constructed by one of its inits ('new Rc[mut,
+// Node](1)' constructs 'new Node(1)'), unless its one argument is already a
+// value of that struct, exactly, which is moved in. Any other type's value is
+// not constructed: the one argument is the value, coerced to the type, so a
+// number literal adopts it and a variant becomes its enum.
+static INode *typeLitAllocValue(TypeCheckState *pstate, FnCallNode *node, INode *vtype) {
+    INode *typedcl = itypeGetTypeDcl(vtype);
+    Nodes *args = node->args;
+    INode **argp = args && args->used == 1 && nodesGet(args, 0)->tag != NamedValTag ? &nodesGet(args, 0) : NULL;
+
+    if (typeLitHasInits(typedcl)) {
+        // The one argument is checked as the construction would check it, so
+        // one that is not the struct's own value reaches the inits unchanged
+        int argschecked = 0;
+        if (argp) {
+            INode *expect = unknownType;
+            if (typeLitDeclaredInits((StructNode*)typedcl) == NULL) {
+                FieldDclNode *field = fnCallTypeLitField((StructNode*)typedcl, args, 0);
+                if (field)
+                    expect = field->vtype;
+            }
+            inodeTypeCheck(pstate, argp, expect);
+            argschecked = 1;
+            if (typeLitArgIsFinished(args, vtype))
+                return *argp;
+        }
+        FnCallNode *construct = newFnCallNode(vtype, 0);
+        inodeLexCopy((INode*)construct, (INode*)node);
+        construct->flags |= FlagNew;
+        construct->args = args;
+        typeLitNewChecked(pstate, &construct, argschecked);
+        return (INode*)construct;
+    }
+
+    if (argp == NULL) {
+        errorMsgNode((INode*)node, ErrorAllocValue,
+            "%s is not constructed by an init, so its allocation takes one value of it in the parentheses.", itypeName(vtype));
+        return NULL;
+    }
+    if (!iexpTypeCheckCoerce(pstate, vtype, argp)) {
+        errorMsgNode(*argp, ErrorInvType, "The value allocated is not of the type the allocation names: %s.", itypeName(vtype));
+        return NULL;
+    }
+    return isExpNode(*argp) ? *argp : NULL;
+}
+
 // 'new Rc[mut, Node](1)': an allocation in the region a managed reference type
 // names, written out or through an alias of it ('new Node(1)' for 'alias Node
-// = Gc[mut, NodeValue]'). The parentheses are the value's: they become the
-// construction 'new NodeValue(1)', its init chosen as any value's is, which the
-// allocation node holds as its value, so that generation runs an allocation's
-// order: the init's arguments, 'alloc', the region's init, the permission's,
-// the value's init in place, the destination (genlallocref). 'trynew' types
-// the allocation as an Option of the reference, None when memory runs out.
+// = Gc[mut, NodeValue]'). The parentheses are the value's (typeLitAllocValue):
+// the arguments of the construction 'new NodeValue(1)', its init chosen as any
+// value's is, or a finished value, 'new Rc[i32](5)'. The allocation node holds
+// that value, so that generation runs an allocation's order: the init's
+// arguments or the value, 'alloc', the region's init, the permission's, the
+// value's init in place or the value's store, the destination (genlallocref).
+// 'trynew' types the allocation as an Option of the reference, None when
+// memory runs out.
 static void typeLitNewAllocate(TypeCheckState *pstate, FnCallNode **nodep, RefNode *reftype, INode *option) {
     FnCallNode *node = *nodep;
     if (reftype->region == borrowRef) {
@@ -373,16 +453,15 @@ static void typeLitNewAllocate(TypeCheckState *pstate, FnCallNode **nodep, RefNo
         return;
     }
 
-    FnCallNode *value = newFnCallNode(reftype->vtexp, 0);
-    inodeLexCopy((INode*)value, (INode*)node);
-    value->flags |= FlagNew;
-    value->args = node->args;
+    INode *value = typeLitAllocValue(pstate, node, reftype->vtexp);
+    if (value == NULL)
+        return;
 
     RefNode *alloc = newRefNode(AllocateTag);
     inodeLexCopy((INode*)alloc, (INode*)node);
     alloc->region = reftype->region;
     alloc->perm = reftype->perm;
-    alloc->vtexp = (INode*)value;
+    alloc->vtexp = value;
     // Typed as written, so a rule about the reference type is judged once
     alloc->vtype = (INode*)reftype;
     if (option) {
@@ -393,7 +472,7 @@ static void typeLitNewAllocate(TypeCheckState *pstate, FnCallNode **nodep, RefNo
         alloc->vtype = (INode*)opttype;
     }
     *((INode**)nodep) = (INode*)alloc;
-    allocateTypeCheck(pstate, (RefNode**)nodep);
+    allocateValueCheck(pstate, (RefNode**)nodep);
 }
 
 // 'new Point(1, 2)': construct a struct's value by one of its inits, which the
@@ -407,6 +486,12 @@ static void typeLitNewAllocate(TypeCheckState *pstate, FnCallNode **nodep, RefNo
 // stored straight into wherever the value goes; a declared one to a call of it,
 // which generation hands the memory the value goes into (genlNew).
 void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep) {
+    typeLitNewChecked(pstate, nodep, 0);
+}
+
+// typeLitNewCheck, its arguments already checked when 'argschecked' (an
+// allocation's one argument, checked to see whether it is a finished value)
+static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int argschecked) {
     FnCallNode *node = *nodep;
     // Already lowered to its declared init's call, and reached again
     if (nameUseNames(node->objfn, FnDclTag))
@@ -420,6 +505,10 @@ void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     }
 
     if (!isTypeNode(node->objfn)) {
+        // 'new Plain[mut, i32](5)': a permission given to what is no region,
+        // refused as it is in a type
+        if (node->objfn->tag == FnCallTag && fnCallRefusePermArg((FnCallNode**)&node->objfn))
+            return;
         Name *written = isNameUseNode(node->objfn) ? ((NameUseNode*)node->objfn)->namesym : NULL;
         errorMsgNode(node->objfn, ErrorNewType, "'new' constructs a value of a type, and %s is not one.",
             written ? &written->namestr : "this");
@@ -432,8 +521,7 @@ void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     // them inferred from the values its fields are given, as its literal did:
     // the arguments are checked first, with no expectation, and the instance
     // they infer replaces the name
-    int argschecked = 0;
-    if (isNameUseNode(node->objfn) && nameUseNames(node->objfn, StructTag)
+    if (!argschecked && isNameUseNode(node->objfn) && nameUseNames(node->objfn, StructTag)
         && genericGetInfo(nameUseGetDcl((NameUseNode*)node->objfn)) != NULL) {
         for (nodesFor(node->args, cnt, argsp))
             inodeTypeCheck(pstate, argsp, unknownType);
@@ -485,11 +573,7 @@ void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
     // The inits it declares, whose signatures are wanted before the arguments
     // are matched to them
-    INode *inits = iNsTypeFindFnField((INsTypeNode*)strnode, initMethodName);
-    if (inits && inits->tag != FnDclTag && inits->tag != FnOverloadDclTag)
-        inits = NULL;
-    if (inits)
-        fnCallDemandCandidates(inits);
+    INode *inits = typeLitDeclaredInits(strnode);
 
     // Each argument is checked against the field it fills when the implicit
     // init is the only one, as a literal's values are; otherwise with no
@@ -520,6 +604,16 @@ void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     }
     if (badarg)
         return;
+
+    // A finished value of the struct is not constructed again: an allocation
+    // takes it as its value ('new Rc[Point](p)', typeLitAllocValue), and
+    // anywhere else it is simply used
+    if (typeLitArgIsFinished(node->args, node->objfn)) {
+        errorMsgNode((INode*)node, ErrorNewFinished,
+            "This is already a value of %s, which needs no construction: use it as it is, or allocate it with 'new R[perm, %s](value)'.",
+            &strnode->namesym->namestr, &strnode->namesym->namestr);
+        return;
+    }
 
     // A name none of the fields has is meant for an init the struct declares,
     // which takes its arguments by position, as every call does

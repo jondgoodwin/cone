@@ -40,7 +40,7 @@ flags carry the rest of what the source said:
 | `FlagOperator` | **the source wrote an operator, not a named member access** |
 | `FlagNew` | a construction, `new Point(1, 2)`; kept on what type check lowers it to |
 | `FlagTryNew` | beside `FlagNew`, a construction written `trynew`; its `methfld` holds the bound `Option` from name resolution to type check |
-| `FlagAllocValue` | a struct's bracketed literal that a `+` allocation takes as its value, which type check refuses there with its own code (`ErrorPlusAlloc`) rather than `ErrorStructBracket` |
+| `FlagAllocValue` | a struct's bracketed literal that a refused `+` allocation takes as its value, which type check refuses there with its own code (`ErrorPlusAlloc`) rather than `ErrorStructBracket` |
 
 `FlagOperator` exists solely because the two are otherwise indistinguishable
 after parsing, and one dispatch decision depends on knowing which — see Hazards.
@@ -163,8 +163,8 @@ base, is refused by stage 2's type receiver.
 stage ([literals](literals.md), "Construction"), which selects the init its
 arguments call for and lowers it to the struct's literal or to a call of a
 declared init (below, "Construction"); a managed reference type there makes
-it an allocation, the `AllocateTag` node holding the value's construction
-([references](references.md), "Allocation").
+it an allocation, the `AllocateTag` node holding the value's construction or
+a finished value ([references](references.md), "Allocation").
 
 **Stage 1 — syntax, before the callee is known.**
 A generic method given type arguments on a receiver, `h.pick[i32](6)` or

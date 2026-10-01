@@ -401,7 +401,7 @@ enum ErrorCode {
     ErrorInitSelf = 1215,       // In an init, 'self' used before '*self = value' fills it on every path, used other than through '*self', a field or a method call, or not filled when it returns
 
     // Allocation, 'new Rc[mut, Node](1)' and 'trynew' (ir/exp/allocate.c, ir/exp/typelit.c, ir/types/reference.c)
-    ErrorPlusAlloc = 1216,      // A construction allocated with '+', '+Rc-mut Node[1]', '?+Rc Node[1]' or '+<Rc-mut Rect[3]': an allocation is written 'new Rc[mut, Node](1)', one that may fail 'trynew Rc[mut, Node](1)'
+    ErrorPlusAlloc = 1216,      // An allocation written with '+', '+Rc 5', '+Rc-mut Node[1]', '?+Rc 5' or '+<Rc-mut Rect[3]': an allocation is written 'new Rc[i32](5)' or 'new Rc[mut, Node](1)', one that may fail 'trynew Rc[i32](5)'
     ErrorTryNewValue = 1217,    // 'trynew' on a type that is no managed reference: only an allocation in a region may fail; a value is constructed with 'new'
 
     // Contents after '<-': listed values, 'n of x', 'fill x' and 'k: v' (parser/parseexpr.c, ir/exp/contents.c, ir/types/array.c)
@@ -417,6 +417,10 @@ enum ErrorCode {
 
     // Construction, continued (ir/exp/assign.c)
     ErrorInitRecurse = 1225,    // In a declared init, '*self = new T(...)' whose construction selects that same init: self is filled by the fields' names, 'new Point(x: 1, y: 2)'
+
+    // Allocation, continued (ir/exp/typelit.c)
+    ErrorAllocValue = 1226,     // An allocation of a type no init constructs (a number, an array, a tuple, an enum or its variant, a reference) given other than one value of it: 'new Rc[i32](5)'
+    ErrorNewFinished = 1227,    // 'new Point(p)', p already a Point: a finished value needs no construction; an allocation takes one as its value, 'new Rc[Point](p)'
 
     // Warnings
     WarnCode = 3000,

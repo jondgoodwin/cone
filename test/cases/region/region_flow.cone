@@ -44,14 +44,14 @@ struct RichPlain extends Plain {
 }
 
 fn soPair() So[i32], So[i32] {
-  imm a = +So 1i32;
-  imm b = +So 2i32;
+  imm a = new So[i32](1);
+  imm b = new So[i32](2);
   a, b;
 }
 
 fn soPairAlias() SoPair {
-  imm a = +So 1i32;
-  imm b = +So 2i32;
+  imm a = new So[i32](1);
+  imm b = new So[i32](2);
   a, b;
 }
 
@@ -59,19 +59,19 @@ fn moving() {
   // 'So' declares 'Move' in core, which makes it a single-owner region, so
   // every reference into it is a move type however aliasable its permission:
   // the second read of the source finds nothing there
-  imm sole = +So 1;
+  imm sole = new So[i32](1);
   imm moved = sole;
   imm again = sole;             //~ ErrorMove "has been moved out"
 
   // It is the declaration that says so, not the name: a region declared here
   // as 'Move' is single owner in the same way
-  imm lone = +Lonely-mut 7;
+  imm lone = new Lonely[mut, i32](7);
   imm taken1 = lone;
   imm taken2 = lone;            //~ ErrorMove "has been moved out"
 
   // And one declaring neither 'Move' nor 'aliasRef' copies its references for
   // nothing: two reads of the source raise nothing
-  imm traced = +Swept-mut 8;
+  imm traced = new Swept[mut, i32](8);
   imm traced1 = traced;
   imm traced2 = traced;
 
@@ -83,7 +83,7 @@ fn moving() {
   // The other path to the same place: an allocation with no stated permission is
   // 'uni', which lacks MayAlias, so an 'Rc' reference moves too even though the
   // region counts references
-  imm unique = +Rc 2;
+  imm unique = new Rc[i32](2);
   imm taken = unique;
   imm twice = unique;           //~ ErrorMove "has been moved out"
 
@@ -95,13 +95,13 @@ fn moving() {
 
   // For contrast, the aliasable permission on the same region copies, and the
   // source is still there. Two reads of it raise nothing.
-  imm shared = +Rc-mut 3;
+  imm shared = new Rc[mut, i32](3);
   imm copy1 = shared;
   imm copy2 = shared;
 
   // The permission belongs to the reference, so a 'ro' allocation may not be
   // written through any more than a 'ro' borrow may
-  imm readonly = +Rc-ro 4;
+  imm readonly = new Rc[ro, i32](4);
   *readonly = 5;                //~ ErrorNoMut "permission to modify lval"
 
   // A tuple carrying an owning reference is a move type too, so destructuring
@@ -124,4 +124,10 @@ fn moving() {
   imm seventh So[i32];
   imm eighth So[i32];
   seventh, eighth = aliased;    //~ ErrorMove "has been moved out"
+
+  // A finished value an allocation takes is moved in, so a move value's
+  // source holds nothing afterwards
+  imm tr = new Tracked(10);
+  imm held = new Rc[mut, Tracked](tr);
+  imm left = tr;                //~ ErrorMove "has been moved out"
 }
