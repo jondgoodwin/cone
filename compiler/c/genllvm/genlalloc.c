@@ -1102,10 +1102,10 @@ void genlHollowRelease(GenState *gen, HollowNode *hnode) {
 #define RegionAliasUnroll 16
 
 // A counted reference gains 'amount' owners: its region's 'aliasRef' is called
-// once for each. Only an array fill literal makes more than one at once, up to
-// INT16_MAX (arraylit.c); beyond RegionAliasUnroll that is a loop. A negative
-// amount is owners going away: a fill literal of no elements drops the
-// temporary it was given.
+// once for each, and beyond RegionAliasUnroll in a loop. A negative amount is
+// owners going away. Every holder flow analysis counts today is one at a time
+// (an array's contents copy a repeated value into each element, arraylit.c),
+// so the amount it asks for is 1.
 void genlRegionAlias(GenState *gen, LLVMValueRef ref, long long amount, RefNode *refnode) {
     if (amount < 0) {
         for (long long i = 0; i < -amount; ++i)

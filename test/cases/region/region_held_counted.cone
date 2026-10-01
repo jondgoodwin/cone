@@ -12,10 +12,11 @@
 // 5)' took the count below zero. Each element of a tuple literal is now copied
 // on its own, as a struct literal's fields are.
 //
-// An array fill literal repeats its value, so a value holding a counted
-// reference is one more holder per element, as a counted reference is: the
-// count rises by the element count, or by one fewer when the value is a
-// temporary, which hands over what it was born holding.
+// An array's contents repeating a value evaluate it for each element, so a
+// variable holding a counted reference is copied into each, one more holder
+// per element, and a tuple built from one copies it into each tuple; an
+// allocation repeated is a new allocation for each element, which holds the
+// one owner it was born with.
 //
 // 'Tally' prints every count change: '+n' after an 'aliasRef', '-n' after a
 // 'dealiasRef', 'tfree' when the count reaches zero, and 'F<n>' is the counted
@@ -60,8 +61,9 @@ fn tupleCopied() { imm t = (new Shared(new Tally[mut, Fin](1)), 2i64); imm u = t
 fn tupleLiteral() { imm r = new Tally[mut, Fin](1); imm t = (r, 5i64); }
 fn destructured() { imm t = (new Shared(new Tally[mut, Fin](1)), 2i64); imm a Shared; imm n i64; a, n = t; }
 fn optionCopied() { imm o Option[Shared] = Some[Shared][new Shared(new Tally[mut, Fin](1))]; imm p = o; }
-fn fillVariable() { imm s = new Shared(new Tally[mut, Fin](1)); imm a = [3; s]; }
-fn fillTuple() { imm r = new Tally[mut, Fin](1); imm a = [2; (r, 5i64)]; }
+fn fillVariable() { imm s = new Shared(new Tally[mut, Fin](1)); imm a = new Array[Shared, 3] <- fill s; }
+fn fillTuple() { imm r = new Tally[mut, Fin](1); imm a = new Array[(Tally[mut, Fin], i64), 2] <- fill (r, 5i64); }
+fn fillAllocated() { imm a = new Array[Tally[mut, Fin], 2] <- fill new Tally[mut, Fin](3); }
 
 fn main() i32 {
   show("struct-alone"); structAlone(); end();
@@ -76,5 +78,6 @@ fn main() i32 {
   show("option-copied"); optionCopied(); end();
   show("fill-variable"); fillVariable(); end();
   show("fill-tuple"); fillTuple(); end();
+  show("fill-allocated"); fillAllocated(); end();
   0;
 }

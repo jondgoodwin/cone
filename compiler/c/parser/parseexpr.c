@@ -32,14 +32,18 @@ INode *parseNameUse(ParseState *parse) {
     return (INode*)nameuse;
 }
 
-// Parse an array literal
+static INode *parseContentsAfter(ParseState *parse, INode *node);
+
+// Parse an array literal. '[n; x]', the retired fill literal, is still read
+// here, so that name resolution can tell its two spellings apart: a type for x
+// is the old array type, a value the old fill (arrayNameRes).
 INode *parseArrayLit(ParseState *parse) {
     ArrayNode *array = newArrayNode();
     lexNextToken();
 
     // Gather comma-separated expressions that are likely elements or element type
     while (1) {
-        nodesAdd(&array->elems, parseSimpleExpr(parse));
+        nodesAdd(&array->elems, parseContentsAfter(parse, parseSimpleExpr(parse)));
         if (!lexIsToken(CommaToken))
             break;
         lexNextToken();
@@ -119,8 +123,14 @@ INode *parseNew(ParseState *parse) {
     return opttype ? (INode*)opttype : (INode*)ctor;
 }
 
+static INode *parseEntries(ParseState *parse);
+
 // Parse a term: literal, identifier, etc.
 INode *parseTerm(ParseState *parse) {
+    // A '(' that begins an entry after '<-' holds a list of entries; the word
+    // is for this term alone
+    int entryparen = parse->entryparen;
+    parse->entryparen = 0;
     switch (lex->toktype) {
     case nilToken:
     {
@@ -170,7 +180,7 @@ INode *parseTerm(ParseState *parse) {
         {
             INode *node;
             lexNextToken();
-                    node = parseAnyExpr(parse);
+            node = entryparen ? parseEntries(parse) : parseAnyExpr(parse);
             parseCloseTok(RParenToken);
             return node;
         }
@@ -198,13 +208,13 @@ INode *parseTerm(ParseState *parse) {
 
 // Parse a function/method call argument
 INode *parseArg(ParseState *parse) {
-    INode *arg = parseSimpleExpr(parse);
+    INode *arg = parseContentsAfter(parse, parseSimpleExpr(parse));
     if (lexIsToken(ColonToken)) {
         if (arg->tag != NameUseTag)
             errorMsgNode((INode*)arg, ErrorNoName, "Expected a named identifier");
         arg = (INode*)newNamedValNode(arg);
         lexNextToken();
-        ((NamedValNode *)arg)->val = parseSimpleExpr(parse);
+        ((NamedValNode *)arg)->val = parseContentsAfter(parse, parseSimpleExpr(parse));
     }
     return arg;
 }
@@ -509,6 +519,10 @@ INode *parsePlus(ParseState *parse) {
 
 // Parse a prefix operator, then a term with its suffixes.
 INode *parsePrefix(ParseState *parse) {
+    // Only a '(' first opens an entry list (parseEntry): one after a prefix
+    // operator is that operand's
+    int entryparen = parse->entryparen;
+    parse->entryparen = 0;
     switch (lex->toktype) {
 
     // '.' sugar for: this.suffixes
@@ -603,6 +617,7 @@ INode *parsePrefix(ParseState *parse) {
 
     // No prefix operator: get the term with its suffixes
     default:
+        parse->entryparen = entryparen;
         return parseSuffixTerm(parse);
     }
 }
@@ -793,6 +808,7 @@ INode *parseCmp(ParseState *parse) {
 // Parse 'not' logical operator
 INode *parseNotLogic(ParseState *parse) {
     if (lexIsToken(NotToken)) {
+        parse->entryparen = 0;
         LogicNode *node = newLogicNode(NotLogicTag);
         lexNextToken();
         node->lexp = parseNotLogic(parse);
@@ -873,12 +889,94 @@ INode *parseOpEq(ParseState *parse, INode *lval, Name *opeqname) {
     return (INode*)node;
 }
 
-// Parse the append operator (<-)
+// Is this a construction, 'new Point(1, 2)', which contents may follow after '<-'?
+static int parseIsConstruction(INode *node) {
+    return node != NULL && node->tag == FnCallTag && (node->flags & FlagNew);
+}
+
+static INode *parseEntry(ParseState *parse);
+
+// A value inside an entry: an expression, and a construction's contents after it
+static INode *parseEntryValue(ParseState *parse) {
+    return parseContentsAfter(parse, parseSimpleExpr(parse));
+}
+
+// Parse one entry on the right of '<-'. Besides a value, three forms are read
+// here and nowhere else, each named by a contextual word or by ':' after its
+// first expression:
+// - 'n of x', n values, x evaluated for each: 'of' after an expression, where
+//   no name could otherwise follow one;
+// - 'fill x', x until the collection is full: 'fill' first, followed by a
+//   value (lexNextOpensValue), so 'xs <- fill;' still appends a variable 'fill';
+// - 'k: v', a key and its value.
+// An entry that begins with '(' is a parenthesized list of entries
+// (parseTerm), which is how a construction's contents are written inside
+// another comma list: 'draw(new List[i32] <- (1, 2), x)'.
+static INode *parseEntry(ParseState *parse) {
+    if (lexIsToken(IdentToken) && lex->val.ident == fillName && lexNextOpensValue()) {
+        EntryNode *fill = newEntryNode(FillEntryTag, NULL);
+        lexNextToken();
+        fill->val = parseEntryValue(parse);
+        return (INode*)fill;
+    }
+    parse->entryparen = 1;
+    INode *first = parseSimpleExpr(parse);
+    parse->entryparen = 0;
+    first = parseContentsAfter(parse, first);
+    uint16_t tag;
+    if (lexIsToken(IdentToken) && lex->val.ident == ofName)
+        tag = OfEntryTag;
+    else if (lexIsToken(ColonToken))
+        tag = PairEntryTag;
+    else
+        return first;
+    EntryNode *entry = newEntryNode(tag, first);
+    inodeLexCopy((INode*)entry, first);
+    lexNextToken();
+    entry->val = parseEntryValue(parse);
+    return (INode*)entry;
+}
+
+// Parse the entries on the right of '<-', separated by commas: one entry, or
+// a tuple of them, which type check takes apart into one application each
+// (contentsLower). The list runs to whatever ends it, the statement's ';'
+// or a ')', across lines.
+static INode *parseEntries(ParseState *parse) {
+    INode *entry = parseEntry(parse);
+    if (!lexIsToken(CommaToken))
+        return entry;
+    TupleNode *tuple = newTupleNode(4);
+    inodeLexCopy((INode*)tuple, entry);
+    nodesAdd(&tuple->elems, entry);
+    while (lexIsToken(CommaToken)) {
+        lexNextToken();
+        nodesAdd(&tuple->elems, parseEntry(parse));
+    }
+    return (INode*)tuple;
+}
+
+// After a construction inside a comma list -- an argument, a named value, an
+// array literal's element, an entry -- '<-' takes one entry, since the comma
+// after it belongs to the list: 'draw(new List[i32] <- (1, 2), x)' parenthesizes
+// several, and 'f(new Array[f32, 4] <- fill 0.0)' needs nothing more.
+// Anything else is returned as it is.
+static INode *parseContentsAfter(ParseState *parse, INode *node) {
+    if (!lexIsToken(LessDashToken) || !parseIsConstruction(node))
+        return node;
+    FnCallNode *append = newFnCallOpname(node, lessDashName, 2);
+    append->flags |= FlagOpAssgn | FlagLvalOp;
+    lexNextToken();
+    nodesAdd(&append->args, parseEntry(parse));
+    return (INode*)append;
+}
+
+// Parse the append operator (<-) and the entries it is given, which run to
+// the end of the statement
 INode *parseAppend(ParseState *parse, INode *lval) {
     FnCallNode *node = newFnCallOpname(lval, lessDashName, 2);
     node->flags |= FlagOpAssgn | FlagLvalOp;
     lexNextToken();
-    nodesAdd(&node->args, parseTuple(parse));  // Note: if we have a tuple, is lowered in fncall name resolve
+    nodesAdd(&node->args, parseEntries(parse));  // A list of entries is lowered at type check (contentsLower)
     return (INode*)node;
 }
 

@@ -200,6 +200,10 @@ void nametblInit() {
 
     optionName = nametblFind("Option", 6);
     fromName = nametblFind("from", 4);
+    ofName = nametblFind("of", 2);
+    fillName = nametblFind("fill", 4);
+    lenName = nametblFind("len", 3);
+    capacityName = nametblFind("capacity", 8);
 
     allocMethodName = nametblFind("alloc", 5);
     initMethodName = nametblFind("init", 4);

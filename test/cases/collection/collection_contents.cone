@@ -1,0 +1,167 @@
+// What follows '<-' is a list of entries, each appended in turn through the
+// receiver's '<-' method: listed values; 'n of x', n values with x evaluated
+// for each; 'fill x', values until the collection is full, which it says
+// through its 'len()' and 'capacity()'; and pairs 'k: v', given to a '<-' that
+// takes a key and a value, a later value for a key replacing the earlier. The
+// same list follows a construction, 'new List[i32](100) <- fill 0', as the
+// contents of the value it builds, which is then the expression's value. The
+// list runs to the statement's ';', across lines; inside another comma list
+// several entries are parenthesized and one needs nothing.
+//
+// 'of' and 'fill' are words only there: elsewhere they are names, as a
+// variable, a parameter and a function show below.
+//
+// An array's contents are array_contents's; what the list refuses is
+// collection_typecheck_contents's and collection_parse_contents's.
+
+mod collection_contents;
+
+import stdio use *;
+import collections use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// The values in a list, read off in order as digits
+fn digits(xs &List[i32]) i64 {
+  mut n = 0i64;
+  mut i = 0usize;
+  while i < xs.len() {
+    n = n * 10 + i64.from(*xs[i]);
+    i++;
+  }
+  n;
+}
+
+fn owned(xs List[i32]) i64 { digits(&xs); }
+
+mut calls = 0;
+fn counter() i32 {
+  calls = calls + 1;
+  calls;
+}
+
+// A table taking pairs: a later value for a key replaces the earlier
+struct Table {
+  keys Array[i32, 4];
+  values Array[i32, 4];
+  used usize;
+  pub fn init(self &new) { *self = new Table(new Array[i32, 4] <- fill 0, new Array[i32, 4] <- fill 0, 0usize); }
+  pub fn put overload `<-`(self &mut, key i32, value i32) {
+    mut i = 0usize;
+    while i < used {
+      if keys[i] == key {
+        values[i] = value;
+        return;
+      }
+      i++;
+    }
+    keys[used] = key;
+    values[used] = value;
+    used++;
+  }
+  pub fn get(self &, key i32) i32 {
+    mut i = 0usize;
+    while i < used {
+      if keys[i] == key { return values[i]; }
+      i++;
+    }
+    0;
+  }
+}
+
+fn fill(n i32) i32 { n + 1; }
+
+// A generic's body holds a list too, copied into each instance
+fn thrice[T](x T) List[T] { new List[T](3) <- 2 of x, fill x; }
+
+fn listed() {
+  // After an existing collection, and after a construction
+  mut xs = new List[i32];
+  xs <- 1, 2, 3;
+  show("existing", digits(&xs));
+  imm ys = new List[i32] <- 4, 5, 6;
+  show("constructed", digits(&ys));
+
+  // A list across lines, to the statement's ';'
+  imm zs = new List[i32] <- 1,
+    2,
+    3;
+  show("multi-line", digits(&zs));
+
+  // Inside an argument list: several parenthesized, one as it is
+  show("argument-several", owned(new List[i32] <- (7, 8)));
+  show("argument-one", owned(new List[i32] <- 9));
+
+  // Any '<-' takes the list
+  print <- "print: ", 3 of "ab", " ", 42i64, "\n";
+}
+
+fn repeated() {
+  // 'n of x' evaluates x for each value, in order
+  mut xs = new List[i32];
+  xs <- 2 of 5, 3 of counter();
+  show("of", digits(&xs));
+  show("of-calls", i64.from(calls));
+
+  // A count may be computed, and may be zero
+  imm n = 2usize;
+  xs <- n + 1usize of 1, 0 of 9;
+  show("of-computed", digits(&xs));
+
+  // 'fill x' appends until the collection is full: to the capacity a
+  // construction gave it, after any listed values
+  imm filled = new List[i32](5) <- 7, fill 1;
+  show("fill-capacity", i64.from(filled.capacity()));
+  show("fill", digits(&filled));
+  // ...and to an existing collection's capacity
+  mut more = new List[i32](3);
+  more <- 4;
+  more <- fill counter();
+  show("fill-existing", digits(&more));
+  // A collection with no room takes nothing
+  imm none = new List[i32] <- fill 3;
+  show("fill-none", i64.from(none.len()));
+}
+
+fn pairs() {
+  // Pairs, a later value for a key replacing the earlier
+  mut t = new Table <- 1: 10, 2: 20, 1: 30;
+  show("pair-replaced", i64.from(t.get(1)));
+  show("pair-kept", i64.from(t.get(2)));
+  t <- 3: 33;
+  show("pair-existing", i64.from(t.get(3)));
+
+  // The collections package's dictionary takes them too
+  imm d = new Dict[String, i64] <- String.from("a"): 1, String.from("b"): 2, String.from("a"): 3;
+  show("dict-len", i64.from(d.len()));
+  show("dict-replaced", *d["a"]);
+}
+
+fn generic() {
+  imm xs = thrice[i32](4);
+  show("generic", digits(&xs));
+}
+
+fn names() {
+  // Outside an entry, 'of' and 'fill' are names
+  imm of = 4usize;
+  mut xs = new List[i32] <- of of 1, fill(1);
+  show("names", digits(&xs));
+  imm fill = 6;
+  xs <- fill;
+  show("name-alone", digits(&xs));
+}
+
+fn main() i32 {
+  listed();
+  repeated();
+  pairs();
+  generic();
+  names();
+  0i32;
+}

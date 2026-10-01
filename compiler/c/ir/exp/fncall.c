@@ -328,61 +328,6 @@ static INode *fnCallOpAssgnMethodType(INode *objtype) {
     return isMethodType(objtype) ? objtype : NULL;
 }
 
-// Is this '<-' applied to a value tuple, which lowers to one application per
-// element rather than one call taking a tuple?
-static int fnCallIsAppendTuple(FnCallNode *node) {
-    return node->methfld && ((NameUseNode *)node->methfld)->namesym == lessDashName
-        && node->args && node->args->used > 0 && nodesGet(node->args, 0)->tag == VTupleTag;
-}
-
-// Lower "<-" (append) on a vtuple to a block that appends each tuple element separately
-//
-// This is lowering, so it belongs to type check: the receiver is borrowed once
-// and every element applied against that borrow, and the borrow needs the
-// receiver's type. Name resolution did this and had no type to give, so it
-// passed unknownType and left the injected borrow untyped for everything after
-// it. See compiler/c/doc/phases/type-check.md, "Order of resolution".
-static void fnCallLowerAppendTuple(TypeCheckState *pstate, FnCallNode **nodep) {
-    FnCallNode *node = *nodep;
-
-    // The receiver is analyzed first, because its type is what the borrow needs
-    inodeTypeCheckAny(pstate, &node->objfn);
-
-    // Create block and start it with a variable that mutably borrows address of append receiver.
-    // A receiver that is already a reference is held as it is, so its permission,
-    // not the binding's, is what each application is checked against.
-    INode *lval = node->objfn;
-    BlockNode *blk = newBlockNode();
-    inodeLexCopy((INode*)blk, (INode*)node);
-    INode *lvaltype = iexpGetTypeDcl(node->objfn);
-    if (!fnCallIsRefReceiver(lvaltype))
-        borrowMutRef(&lval, lvaltype, (INode*)mutPerm);
-    INode *lvalvar = newNameUseAndDcl(&blk->stmts, lval, pstate->scope + 1);
-
-    // Use dereferenced name as receiver for sequence of appends
-    StarNode *starlval = newStarNode(DerefTag);
-    starlval->vtexp = lvalvar;
-
-    // Now create sequence of appends, one for each element of tuple
-    INode **nodesp;
-    uint32_t cnt;
-    TupleNode *tuple = (TupleNode *)nodesGet(node->args, 0);
-    for (nodesFor(tuple->elems, cnt, nodesp)) {
-        if (cnt == tuple->elems->used) {
-            node->objfn = (INode*)starlval;
-            nodesGet(node->args, 0) = *nodesp;
-        }
-        else {
-            node = newFnCallOpnameLower((INode*)*nodep, (INode*)starlval, lessDashName, 2);
-            node->flags |= FlagOpAssgn | FlagLvalOp;
-            nodesAdd(&node->args, *nodesp);
-        }
-        nodesAdd(&blk->stmts, (INode*)node);
-    }
-    *nodep = (FnCallNode*)blk;  // Replace fncall with constructed block (casting badly to satisfy type check)
-    inodeTypeCheckAny(pstate, (INode**)nodep);
-}
-
 // Can a range index this receiver? A one-dimensional array, a slice, or a
 // reference to either -- which is what a borrow of one makes the receiver.
 static int fnCallRangeReceiver(INode *objtype) {
@@ -1779,11 +1724,12 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         return;
     }
 
-    // '<-' on a value tuple becomes a block of applications, one per element.
-    // Ahead of the arguments below, because the tuple is taken apart rather than
-    // checked as an argument in its own right.
-    if (fnCallIsAppendTuple(node)) {
-        fnCallLowerAppendTuple(pstate, nodep);
+    // '<-' given a list of entries, entries other than plain values, or the
+    // contents of a construction becomes the applications they stand for
+    // (contents.c). Ahead of the arguments below, because the list is taken
+    // apart rather than checked as an argument in its own right.
+    if (contentsIsAppend(node)) {
+        contentsLower(pstate, nodep);
         return;
     }
 

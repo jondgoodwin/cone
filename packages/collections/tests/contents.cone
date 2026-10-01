@@ -1,0 +1,46 @@
+// A list or a dictionary constructed, and its contents after '<-'. Every
+// expected value is worked out by hand:
+// - 'new List[T]' has no block, as 'List[T].empty()' has none; 'new List[T](n)'
+//   has room for exactly n, which 'fill' fills after any values listed;
+// - a dictionary's pairs are inserted in order, so of two pairs with one key
+//   the later value is the one kept.
+
+mod contents;
+
+import testing use *;
+import collections use *;
+
+fn main() i32 {
+  // Constructed with no block, and with exactly the room asked for
+  imm none = new List[i64];
+  expectUInt(u64.from(none.capacity()), 0, "constructed with no block");
+  imm one = new List[i64](1);
+  expectUInt(u64.from(one.capacity()), 1, "constructed with room for one");
+  expectUInt(u64.from(one.len()), 0, "holding nothing");
+
+  // Listed values, then 'fill' to the capacity: 7, 2, 2
+  imm filled = new List[i64](3) <- 7, fill 2;
+  expectUInt(u64.from(filled.len()), 3, "filled to its capacity");
+  expectInt(*filled[0usize] * 100 + *filled[1usize] * 10 + *filled[2usize], 722, "listed, then filled");
+
+  // 'n of x' appends n values to a list that grows: 1, 1, 1, 5, 5
+  mut grown = new List[i64] <- 3 of 1, 2 of 5;
+  expectUInt(u64.from(grown.len()), 5, "five appended");
+  expectUInt(u64.from(grown.capacity()), 8, "grown 4, then 8");
+  grown <- fill 9;
+  expectUInt(u64.from(grown.len()), 8, "filled to the grown capacity");
+  expectInt(*grown[7usize], 9, "the last filled");
+
+  // Pairs: a later value for a key replaces the earlier
+  imm d = new Dict[String, i64] <- String.from("core"): 1, String.from("stdio"): 2, String.from("core"): 3;
+  expectUInt(u64.from(d.len()), 2, "two keys");
+  expectInt(*d["core"], 3, "the later value kept");
+  expectInt(*d["stdio"], 2, "the other untouched");
+
+  // A string appended to through its own '<-': text, and a number
+  mut s = String.empty();
+  s <- "n=", 3 of "a", 42i64;
+  expectStr(s.view(), "n=aaa42", "a string's contents");
+
+  done();
+}

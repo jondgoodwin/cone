@@ -56,12 +56,19 @@ uint64_t arrayDim1(INode *array) {
     return dim1->uintlit;
 }
 
-// The fill literal's spelling, '[n; x]', given a type for x. An array type is
-// written 'Array[T, n]', so this is refused; the node stays the array type it
-// spells, so nothing downstream reports it again.
+// The old array type's spelling, '[n; T]': '[n; x]' given a type for x. An
+// array type is written 'Array[T, n]', so this is refused; the node stays the
+// array type it spells, so nothing downstream reports it again.
 static void arrayRefuseFillSpelling(INode *node) {
     errorMsgNode(node, ErrorArrayTypeOld,
-        "An array type is written 'Array[T, n]', its element type first, then its size. '[n; x]' is a fill literal, n copies of the value x, and x here is a type.");
+        "An array type is written 'Array[T, n]', its element type first, then its size, not '[n; T]'.");
+}
+
+// The fill literal, '[n; x]' with x a value, is retired: an array of n copies
+// is constructed with its contents, as any collection's are
+static void arrayRefuseFillLiteral(INode *node) {
+    errorMsgNode(node, ErrorFillLiteral,
+        "'[n; x]' is no longer written: an array of n values is constructed with its contents, 'new Array[T, n] <- fill x' (or '<- n of x').");
 }
 
 // Clone array
@@ -74,13 +81,17 @@ INode *cloneArrayNode(CloneState *cstate, ArrayNode *node) {
     // parameter, which is not one -- so the template holds a literal. Cloning
     // stands in for name resolution on an instance, so decide again now that
     // the element is the type argument (see cloneRefNode): a type there is the
-    // fill literal's spelling of an array type, refused as arrayNameRes refuses it.
+    // old spelling of an array type, refused as arrayNameRes refuses it.
     if (newnode->tag == ArrayLitTag && newnode->elems->used > 0
         && !isTypeNode(nodesGet(node->elems, 0)) && isTypeNode(nodesGet(newnode->elems, 0))) {
         newnode->tag = ArrayTag;
         if (newnode->dimens->used > 0)
             arrayRefuseFillSpelling((INode*)newnode);
     }
+    // A value there is the retired fill literal, refused as arrayNameRes refuses it
+    else if (newnode->tag == ArrayLitTag && newnode->dimens->used > 0 && newnode->elems->used > 0
+        && inodeIsProvisionalType(nodesGet(node->elems, 0)))
+        arrayRefuseFillLiteral((INode*)newnode);
     return (INode *)newnode;
 }
 
@@ -121,15 +132,20 @@ void arrayPrint(ArrayNode *node) {
 }
 
 // Name resolution of an array literal. The parser makes this node for every
-// bracketed list; its first element being a type is what would make it the
-// fill literal's spelling of an array type, '[3; i32]', which is refused.
+// bracketed list. Written '[n; x]' it is refused either way: with a type for x
+// it is the old array type, '[3; i32]', and with a value the retired fill
+// literal. A generic's parameter is neither until substituted, so that one is
+// decided by the clone.
 void arrayNameRes(NameResState *pstate, ArrayNode *node) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(node->elems, cnt, nodesp))
         inodeNameRes(pstate, nodesp);
-    if (node->elems->used > 0 && !isTypeNode(nodesGet(node->elems, 0)))
+    if (node->elems->used > 0 && !isTypeNode(nodesGet(node->elems, 0))) {
         node->tag = ArrayLitTag; // We have an array literal, not array type
+        if (node->dimens->used > 0 && !inodeIsProvisionalType(nodesGet(node->elems, 0)))
+            arrayRefuseFillLiteral((INode*)node);
+    }
     else if (node->dimens->used > 0)
         arrayRefuseFillSpelling((INode*)node);
     for (nodesFor(node->dimens, cnt, nodesp))

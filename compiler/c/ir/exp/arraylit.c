@@ -219,44 +219,18 @@ int arrayLitCoerce(ArrayNode *arrlit, INode *totypedcl) {
     return 1;
 }
 
-// Return a fill literal's element count, or -1 when it is not known until run time.
-// The dimension may be a named constant, which code generation resolves the same way.
-// A count past what an alias amount can hold is clamped to just past it, so the
-// caller refuses it rather than wrapping into a plausible-looking number.
-static int64_t arrayLitFillCount(ArrayNode *arrlit) {
-    INode *dimnode = nodesGet(arrlit->dimens, 0);
-    while (nameUseNames(dimnode, ConstDclTag))
-        dimnode = ((ConstDclNode*)((NameUseNode*)dimnode)->dclnode)->value;
-    if (dimnode->tag != ULitTag)
-        return -1;
-    uint64_t nbrelems = ((ULitNode*)dimnode)->uintlit;
-    return nbrelems > (uint64_t)INT16_MAX ? (int64_t)INT16_MAX + 1 : (int64_t)nbrelems;
-}
-
 // Perform data flow analysis on an array literal's element values.
 //
 // The list form '[a, b]' gives every element a holder of its own, so each value
-// is moved or copied exactly as a function call's argument is.
+// is moved or copied exactly as a function call's argument is. An array's
+// contents that repeat a value, 'new Array[Handle, 2] <- fill new Handle(9)',
+// are this form, the value's expression copied into each element
+// (contentsLowerArray), so a move value is moved once per element, and a
+// variable moved by one is gone for the next, by the ordinary move rule.
 //
-// The fill form '[n; value]' evaluates one expression and stores it into every
-// element, which the two ownership rules answer differently:
-//
-// - A move value has exactly one owner and cannot have n of them, so filling
-//   with one is refused however small n is. Proving n is 1 would buy a construct
-//   nobody writes at the cost of a rule that is harder to state.
-// - A counted reference may legitimately be repeated, and so may a value
-//   holding one (a struct, a tuple, an array, an enum), but n holders appear
-//   rather than one, so the count rises by n -- or by n-1 when the value is a
-//   temporary, which hands over the one reference it was born holding. That
-//   amount is a constant in the alias node, so a count known only at run time
-//   cannot be expressed and is refused rather than counted wrongly.
-//
-// The refusals carry two codes because they have two lifetimes. ErrorBadFill is a
-// language rule -- a move value has one owner, so it may not be repeated -- and
-// outlives this implementation. ErrorFillCount says only that the count cannot be
-// carried by a constant alias amount, and should disappear when a fill is rewritten
-// into a loop that builds the elements one at a time, before generation. That
-// general answer is recorded in the Types. Array work item.
+// The fill form, one value stored into every element, is built only for
+// contents repeating a constant, which moves nothing and holds no counted
+// reference: there is nothing to account for beyond reading it.
 void arrayLitFlow(FlowState *fstate, ArrayNode **nodep) {
     ArrayNode *arrlit = *nodep;
     INode **elemsp;
@@ -274,39 +248,8 @@ void arrayLitFlow(FlowState *fstate, ArrayNode **nodep) {
         return;
     }
 
-    // Fill form: one value, repeated
-    INode **valp = &nodesGet(arrlit->elems, 0);
-    flowLoadValue(fstate, valp);
-    if (iexpIsMove(*valp)) {
-        errorMsgNode(*valp, ErrorBadFill,
-            "An array fill literal may not repeat a move value, which may have only one owner.");
-        return;
-    }
-    // A tuple literal's elements are copied into it first, each read out of a
-    // variable gaining its holder there, and the tuple is then a temporary
-    if ((*valp)->tag == VTupleTag)
-        flowHandleMoveOrCopy(valp);
-
-    // A value holding counted references -- a struct, a tuple, an array, an
-    // enum -- is one more holder of each per element, as a counted reference is
-    INode *valtype = ((IExpNode *)*valp)->vtype;
-    if (!flowIsRcRef(valtype) && !flowHeldCounted(valtype))
-        return;   // Any other value copies freely, needing no count
-
-    int64_t nbrelems = arrayLitFillCount(arrlit);
-    if (nbrelems < 0) {
-        errorMsgNode(*valp, ErrorFillCount,
-            "An array fill literal whose value is or holds a counted reference needs an element count known at compile time.");
-        return;
-    }
-    if (nbrelems > INT16_MAX) {
-        errorMsgNode(*valp, ErrorFillCount,
-            "An array fill literal has too many elements to count a reference into.");
-        return;
-    }
-    int16_t amt = flowIsLvalRead(*valp) ? (int16_t)nbrelems : (int16_t)(nbrelems - 1);
-    if (amt != 0)
-        flowInjectRefCountAmt(valp, amt);
+    // Fill form: one constant, repeated
+    flowLoadValue(fstate, &nodesGet(arrlit->elems, 0));
 }
 
 // Is the array actually a literal?

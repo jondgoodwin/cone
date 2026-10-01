@@ -1,6 +1,7 @@
 # array - fixed-size arrays: the type 'Array[T, n]' (several sizes for several
-# dimensions, 'Array[T, n, m]'), both array literal forms, indexing, element
-# assignment and array copy semantics. Tier 1.
+# dimensions, 'Array[T, n, m]'), the array literal, an array constructed with
+# its contents ('new Array[T, n] <- fill x'), indexing, element assignment and
+# array copy semantics. Tier 1.
 #
 # Key reference: compiler/c/doc/diagnostics/test-suite.md, "cases.toml keys".
 # The group directory supplies the feature tag, so tags carry pipeline phases.
@@ -10,22 +11,27 @@
 # '&[]u8' string parameter every run scenario's print helpers need.
 #
 # The two success scenarios split on whether a literal's elements are constants.
-# array_success writes only constant ones, which is the whole of what the two
-# literal forms mean at the source level; array_nonconst_literal writes computed
+# array_success writes only constant ones, which is the whole of what the
+# literal means at the source level; array_nonconst_literal writes computed
 # ones, which is a code generation question, because a constant array cannot hold
 # the result of an instruction and the group did not notice until a counted
-# reference had to be filled into one.
+# reference had to be filled into one. array_contents is the construction with
+# contents in depth: each entry form, a value evaluated for each element, rows,
+# and the positions a construction is written in.
 #
 # The array syntax gives the parser nothing of its own to reject. Name
 # resolution lowers 'Array[T, n]' into the array type and refuses what it
 # cannot lower, and since its diagnostics end the compile, those are in their
-# own scenario, array_nameres_spelling. The rest are type-check stage, split by
+# own scenarios: array_nameres_spelling for the type, array_nameres_fill for
+# the retired fill literal '[n; x]'. The rest are type-check stage, split by
 # sub-family: array_typecheck_size covers the array type's sizes and 'Array'
 # alone, array_typecheck_range the range a size may take (0 through
 # 4294967295), array_reject_shape covers bracket forms that never become a
-# well-formed array literal, array_reject_use covers an array value that is
-# well formed being initialized, indexed or accessed wrongly. Together they
-# would exceed the three-to-six diagnostics one scenario should carry.
+# well-formed array literal, array_typecheck_contents contents that do not fill
+# an array exactly, array_typecheck_counts what an entry of them may give, and
+# array_reject_use covers an array value that is well formed being
+# initialized, indexed or accessed wrongly. Together they would exceed the
+# three-to-six diagnostics one scenario should carry.
 #
 # Left uncovered on purpose:
 #
@@ -63,8 +69,23 @@ tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 # one where it belongs.
 [scenario.array_nonconst_literal]
 category = "run"
-description = "An array literal whose elements are computed rather than constant, in both forms and for a struct element type"
+description = "An array literal whose elements are computed rather than constant, listed and repeated by an array's contents, and for a struct element type"
 tags = ["genllvm", "runtime"]
+
+# An array's construction is its contents: listed values, 'n of x' and
+# 'fill x', filling it exactly. A 'run' because the claim is which value lands
+# in each element and how many times a repeated value is evaluated, which only
+# the printed elements and a counter show. The check holds that contents
+# repeating a constant stay one constant, which a global's initializer must be.
+[scenario.array_contents]
+category = "run"
+description = "An array constructed with its contents: listed values, 'n of x', 'fill x', a value evaluated for each element, rows, a global, an argument and a list across lines"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.array_contents.check]]
+name = "global-contents-repeating-a-constant-is-a-constant"
+target = "preir"
+contains = ["@table = internal global [8 x i64] [i64 3, i64 3, i64 3, i64 3, i64 3, i64 3, i64 3, i64 3]"]
 
 # The scenario a code generation fix landed with: an index takes its array's
 # address, and a field's address is taken from its container's, so an array
@@ -122,29 +143,36 @@ target = "preir"
 contains = ["[2 x [3 x i32]] @grid("]
 
 # The scenario a code generation fix landed with: an array of variants wanted
-# as an array of their enum ('[4; None[W][]]' as an 'Array[Option[W], 4]' field) is
+# as an array of their enum ('new Array[None[W], 4] <- fill None[W][]' as an
+# 'Array[Option[W], 4]' field) is
 # a reinterpretation of the whole array, which was generated as an LLVM bitcast
 # of an aggregate, and conec crashed with no diagnostic. A 'run' because the
 # elements must still read as the variants they were built as, and a None must
 # finalize nothing: only the one Some stored over an element prints its 'fin'.
 [scenario.array_variant_recast]
 category = "run"
-description = "An array of an enum's variants coerced to an array of the enum, from a fill literal or a local"
+description = "An array of an enum's variants coerced to an array of the enum, from a construction with its contents or a local"
 tags = ["genllvm", "runtime"]
 
 # -------- name resolution stage --------
 
 [scenario.array_nameres_spelling]
 category = "reject"
-description = "The fill literal's spelling of an array type, 'Array' given no size, and a first argument that is not a type"
+description = "The old spelling of an array type, '[n; T]', 'Array' given no size, and a first argument that is not a type"
 tags = ["nameres"]
 diagnostics = 5
+
+[scenario.array_nameres_fill]
+category = "reject"
+description = "The retired fill literal '[n; x]', in a global, a local, with two counts and as an argument"
+tags = ["nameres"]
+diagnostics = 4
 
 # -------- type check stage --------
 
 [scenario.array_typecheck_size]
 category = "reject"
-description = "An array type's size that is not an integer literal, 'Array' alone, and a generic's instance revealing the fill literal's spelling of a type"
+description = "An array type's size that is not an integer literal, 'Array' alone, and a generic's instance revealing the old spelling of an array type"
 tags = ["typecheck"]
 diagnostics = 6
 
@@ -158,7 +186,19 @@ diagnostics = 3
 category = "reject"
 description = "Bracket forms that are not a valid array literal"
 tags = ["typecheck"]
-diagnostics = 8
+diagnostics = 2
+
+[scenario.array_typecheck_contents]
+category = "reject"
+description = "An array's contents giving too few values or too many, an array constructed with none, and one given init arguments"
+tags = ["typecheck"]
+diagnostics = 5
+
+[scenario.array_typecheck_counts]
+category = "reject"
+description = "An array's contents: a count of 'n of x' not constant, negative or past 4294967295, a value not the element type, and a pair"
+tags = ["typecheck"]
+diagnostics = 5
 
 # Separate from array_reject_use because that file's subject is what an array
 # value will not accept at type check, and this one is a flow diagnostic about

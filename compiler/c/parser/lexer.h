@@ -212,6 +212,9 @@ int lexNextIsWord(char *word);
 // In a function-reference type's parameter list, does the name the lexer is on
 // begin a type ('geomath.Vec3', 'List[i32]') rather than name a parameter?
 int lexIdentOpensType();
+// With the lexer on a name, does a value follow it rather than an operator or
+// other continuation of an expression the name begins? ('fill' after '<-')
+int lexNextOpensValue();
 // Does this source's first statement begin 'mod' or 'pub mod'? Read off the text
 // alone: nothing is lexed and nothing reported.
 int lexOpensWithMod(char *src);

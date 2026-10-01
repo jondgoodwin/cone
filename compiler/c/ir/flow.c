@@ -790,9 +790,8 @@ int flowVariantHeldCounted(INode *variant) {
 }
 
 // If needed, inject a reference-count node for Rc/own references, adjusting the count by amt.
-// One value can become more than one holder at once: an array fill literal stores
-// the reference it evaluates once into every one of its elements. A struct or an
-// enum is one holder of each counted reference its drop releases (flowHeldCounted).
+// A struct or an enum is one holder of each counted reference its drop releases
+// (flowHeldCounted).
 void flowInjectRefCountAmt(INode **nodep, int16_t amt) {
     INode *vtype = ((IExpNode*)*nodep)->vtype;
     INode *typedcl = itypeGetTypeDcl(vtype);
