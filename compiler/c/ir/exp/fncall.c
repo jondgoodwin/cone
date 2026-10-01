@@ -111,7 +111,16 @@ int fnCallHasTypeArgs(FnCallNode *node) {
 void fnCallPrint(FnCallNode *node) {
     INode **nodesp;
     uint32_t cnt;
-    inodePrintNode(node->objfn);
+    // A construction, 'new Point(1, 2)', names its type until type check
+    // lowers it to its declared 'init''s call, whose type it then has
+    if (node->flags & FlagNew) {
+        inodeFprint("new ");
+        inodePrintNode(nameUseNames(node->objfn, FnDclTag) ? node->vtype : node->objfn);
+        if (node->args == NULL)
+            inodeFprint("()");
+    }
+    else
+        inodePrintNode(node->objfn);
     if (node->methfld) {
         inodeFprint(".");
         inodePrintNode((INode*)node->methfld);
@@ -581,6 +590,16 @@ static void fnCallLendVirtOwner(INode **selfp, INode *parmtype) {
 void fnCallFinalizeArgs(FnCallNode *node) {
     FnSigNode *fnsig = (FnSigNode*)iexpGetDerefTypeDcl(node->objfn);
     assert(fnsig->tag == FnSigTag);
+
+    // An init fills memory that holds no value yet, which only a construction
+    // has: called on a value, it would write over one without finalizing it
+    INode *initdcl = isNameUseNode(node->objfn) ? ((NameUseNode*)node->objfn)->dclnode : NULL;
+    if (initdcl && initdcl->tag == FnDclTag && fnDclIsInit((FnDclNode*)initdcl)) {
+        INode *owner = inodeGetOwner(initdcl);
+        errorMsgNode((INode*)node, ErrorInitCall,
+            "An init runs only in a construction, which gives it memory to fill: 'new %s(...)'.",
+            owner && owner->tag == StructTag ? &((StructNode*)owner)->namesym->namestr : "T");
+    }
 
     // Establish the return type of the function call (or error if not what was expected)
     if (node->vtype != unknownType && !itypeIsSame(fnsig->rettype, node->vtype)) {
@@ -1585,7 +1604,7 @@ static int fnCallMethodTypeArgs(TypeCheckState *pstate, FnCallNode **nodep) {
 // typeLitStructReorder will match it: a named value by its name, a value by
 // position among the fields a literal writes (not a discriminant) when no named
 // value comes before it. NULL where no field is certain yet.
-static FieldDclNode *fnCallTypeLitField(StructNode *strnode, Nodes *args, uint32_t argi) {
+FieldDclNode *fnCallTypeLitField(StructNode *strnode, Nodes *args, uint32_t argi) {
     INode *arg = nodesGet(args, argi);
     Name *name = arg->tag == NamedValTag ? ((NameUseNode*)((NamedValNode*)arg)->name)->namesym : NULL;
     if (name == NULL) {
@@ -1720,6 +1739,12 @@ static void fnCallLowerManagedRef(TypeCheckState *pstate, FnCallNode **nodep) {
 void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
 
+    // 'new Point(1, 2)': a construction, which selects one of the type's 'init's
+    if (node->flags & FlagNew) {
+        typeLitNewCheck(pstate, nodep);
+        return;
+    }
+
     // A callee a global's 'use' clause folded into this module is reached through
     // that global, so the call is rewritten to 'global.name(...)' before anything
     // below reads the callee. Ahead of every other test here deliberately: from
@@ -1763,8 +1788,9 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
     // 'Rc[mut, Node]' is a managed reference type, lowered here before the
     // struct-literal pass below could take its head for a literal's struct.
-    // Told from the region's own literal, 'Rc[1usize]', by its arguments being
-    // types (itypeIsManagedRefType).
+    // Told from the region's value in brackets, 'Rc[1usize]' -- a struct's
+    // literal, refused below -- by its arguments being types
+    // (itypeIsManagedRefType).
     if (itypeIsManagedRefType((INode*)node)) {
         fnCallLowerManagedRef(pstate, nodep);
         return;
@@ -1939,9 +1965,10 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         return;
     }
 
-    // If objfn is a type, handle it as a constructor or initializer
+    // If objfn is a type: a literal in brackets, or the type called
     if (isTypeNode(node->objfn)) {
-        // Handle type constructor, e.g.:  Point[1., 2.]
+        // A literal in brackets: a variant's, 'Some[x]', or a struct's, refused
+        // but where an allocation takes it as its value (typeLitTypeCheck)
         if (node->flags & FlagIndex) {
             node->tag = TypeLitTag;
             node->vtype = node->objfn;
@@ -1961,24 +1988,16 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             node->vtype = errorType;
             return;
         }
-        // Only a type that was named can be asked for its 'init'
-        if (!isNameUseNode(node->objfn)) {
-            errorMsgNode(node->objfn, ErrorBadTerm, "May not do a function call on a type");
-            node->vtype = errorType;
-            return;
-        }
-
-        // Initializer:  Change nameuse to refer to type's 'init' function
-        NameUseNode *nameuse = (NameUseNode *)node->objfn;
-        nameuse->namesym = initMethodName;
-        Namespace *namespace = &((StructNode*)nameuse->dclnode)->namespace;
-        nameuse->dclnode = namespaceFind(namespace, nameuse->namesym);
-        if (nameuse->dclnode == NULL || nameuse->dclnode->tag != FnDclTag) {
-            errorMsgNode(node->objfn, ErrorBadTerm, "Does not refer to a valid type initializer");
-            node->vtype = errorType;
-            return;
-        }
-        nameuse->vtype = ((FnDclNode*)nameuse->dclnode)->vtype;
+        // A type is not called: a value of it is constructed with 'new', which
+        // runs one of its 'init's (typeLitNewCheck)
+        INode *typedcl = itypeGetTypeDcl(node->objfn);
+        Name *written = isNameUseNode(node->objfn) ? ((NameUseNode*)node->objfn)->namesym
+            : typedcl->tag == StructTag ? ((StructNode*)typedcl)->namesym : NULL;
+        errorMsgNode((INode*)node, ErrorInitCall,
+            "A type is not called: its value is constructed with 'new', 'new %s(...)'.",
+            written ? &written->namestr : "T");
+        node->vtype = errorType;
+        return;
     }
     
     if (!isExpNode(node->objfn)) {
@@ -2250,8 +2269,14 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     INode **argsp;
     uint32_t cnt;
     uint16_t inflight = fstate->inflightcnt;
+    // A method called on an init's 'self' reaches through it (flowNewSelf)
+    INode *callee = isNameUseNode(node->objfn) ? ((NameUseNode*)node->objfn)->dclnode : NULL;
+    int method = callee && callee->tag == FnDclTag && (callee->flags & FlagMethFld);
     for (nodesFor(node->args, cnt, argsp)) {
-        flowLoadValue(fstate, argsp);
+        if (method && cnt == node->args->used && flowNewSelf(*argsp))
+            flowNewSelfThrough(fstate, argsp);
+        else
+            flowLoadValue(fstate, argsp);
         flowHandleMoveOrCopy(argsp);  // Argument values are moved or copied
         flowGateOperand(fstate, *argsp);
     }

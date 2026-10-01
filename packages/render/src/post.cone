@@ -62,17 +62,17 @@ pub struct Post {
   // 'height'. Check 'isValid'.
   pub fn create(device &mut Device, outputFormat u32, width u32, height u32) Post {
     mut shader = device.createShaderModule(&POST_SPIRV);
-    imm entries = [BindGroupLayoutEntry[binding: 0u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE],
-      BindGroupLayoutEntry[binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE],
-      BindGroupLayoutEntry[binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER]];
+    imm entries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
+      new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
+      new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER)];
     mut layout = device.createBindGroupLayout(&entries);
     imm layouts = [&layout];
     mut pipelineLayout = device.createPipelineLayout(&layouts, 32u32);
     mut downPipeline = postPipeline(device, &pipelineLayout, &shader, "downsampleMain", TEXTURE_FORMAT_RGBA16_FLOAT);
     mut upPipeline = postPipeline(device, &pipelineLayout, &shader, "upsampleMain", TEXTURE_FORMAT_RGBA16_FLOAT);
     mut toneMapPipeline = postPipeline(device, &pipelineLayout, &shader, "toneMapMain", outputFormat);
-    imm samplerDesc = SamplerDescriptor[addressModeU: ADDRESS_MODE_CLAMP_TO_EDGE, addressModeV: ADDRESS_MODE_CLAMP_TO_EDGE,
-      addressModeW: ADDRESS_MODE_CLAMP_TO_EDGE];
+    imm samplerDesc = new SamplerDescriptor(addressModeU: ADDRESS_MODE_CLAMP_TO_EDGE, addressModeV: ADDRESS_MODE_CLAMP_TO_EDGE,
+      addressModeW: ADDRESS_MODE_CLAMP_TO_EDGE);
     mut sampler = device.createSampler(&samplerDesc);
     imm w = umax(width, 2u32);
     imm h = umax(height, 2u32);
@@ -80,8 +80,8 @@ pub struct Post {
     mut hdr = frameTexture(device, w, h);
     mut bloomDown = chainTexture(device, w, h, levels);
     mut bloomUp = chainTexture(device, w, h, levels - 1u32);
-    mut post = Post[outputFormat, w, h, hdr, bloomDown, bloomUp, levels, shader, layout, pipelineLayout, downPipeline,
-      upPipeline, toneMapPipeline, sampler, List[BindGroup].empty()];
+    mut post = new Post(outputFormat, w, h, hdr, bloomDown, bloomUp, levels, shader, layout, pipelineLayout, downPipeline,
+      upPipeline, toneMapPipeline, sampler, List[BindGroup].empty());
     post.makeGroups(device);
     post;
   }
@@ -157,7 +157,7 @@ pub struct Post {
         sh = levelSize(height / 2u32, i - 1u32);
         mode = 0u32;
       }
-      imm data = PostImmediates[1. / f32.from(sw), 1. / f32.from(sh), mode, bloom, exposure, toneMapper, 0., 0.];
+      imm data = new PostImmediates(1. / f32.from(sw), 1. / f32.from(sh), mode, bloom, exposure, toneMapper, 0., 0.);
       postPass(encoder, view, &downPipeline, groups[usize.from(i)], &data);
       i = i + 1u32;
     }
@@ -166,15 +166,15 @@ pub struct Post {
     while k + 1u32 < levels {
       imm level = levels - 2u32 - k;
       imm view = levelView(&bloomUp, level);
-      imm data = PostImmediates[1. / f32.from(levelSize(width / 2u32, level + 1u32)),
-        1. / f32.from(levelSize(height / 2u32, level + 1u32)), 0u32, bloom, exposure, toneMapper, 0., 0.];
+      imm data = new PostImmediates(1. / f32.from(levelSize(width / 2u32, level + 1u32)),
+        1. / f32.from(levelSize(height / 2u32, level + 1u32)), 0u32, bloom, exposure, toneMapper, 0., 0.);
       postPass(encoder, view, &upPipeline, groups[usize.from(levels + k)], &data);
       k = k + 1u32;
     }
     // The tone map: the top of the chain up is the sum of every level's
     // blur, so the mean is it over the levels; a share of that is mixed in
-    imm data = PostImmediates[1. / f32.from(width), 1. / f32.from(height), 0u32, bloom, exposure, toneMapper,
-      1. / f32.from(levels), 0.];
+    imm data = new PostImmediates(1. / f32.from(width), 1. / f32.from(height), 0u32, bloom, exposure, toneMapper,
+      1. / f32.from(levels), 0.);
     postPass(encoder, target.createView(), &toneMapPipeline, groups[usize.from(levels * 2u32 - 1u32)], &data);
   }
 }
@@ -198,20 +198,20 @@ fn umin(a u32, b u32) u32 { if a < b { a; } else { b; } }
 fn levelSize(size u32, level u32) u32 { umax(size >> level, 1u32); }
 
 fn frameTexture(device &mut Device, width u32, height u32) Texture {
-  imm desc = TextureDescriptor[width, height, TEXTURE_FORMAT_RGBA16_FLOAT,
-    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING];
+  imm desc = new TextureDescriptor(width, height, TEXTURE_FORMAT_RGBA16_FLOAT,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING);
   device.createTexture(&desc);
 }
 
 // A chain of 'levels' levels from half of 'width' by 'height'
 fn chainTexture(device &mut Device, width u32, height u32, levels u32) Texture {
-  imm desc = TextureDescriptor[umax(width / 2u32, 1u32), umax(height / 2u32, 1u32), TEXTURE_FORMAT_RGBA16_FLOAT,
-    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING, umax(levels, 1u32)];
+  imm desc = new TextureDescriptor(umax(width / 2u32, 1u32), umax(height / 2u32, 1u32), TEXTURE_FORMAT_RGBA16_FLOAT,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_TEXTURE_BINDING, umax(levels, 1u32));
   device.createTexture(&desc);
 }
 
 fn levelView(texture &Texture, level u32) TextureView {
-  imm desc = TextureViewDescriptor[baseMipLevel: level, mipLevelCount: 1u32];
+  imm desc = new TextureViewDescriptor(baseMipLevel: level, mipLevelCount: 1u32);
   texture.createViewWith(&desc);
 }
 
@@ -224,7 +224,7 @@ fn pairGroup(device &mut Device, layout &BindGroupLayout, first &TextureView, se
 
 fn postPass(encoder &mut CommandEncoder, view TextureView, pipeline &RenderPipeline, group &BindGroup,
     data &PostImmediates) {
-  imm attachment = RenderPassColorAttachment[view: view, clearValue: Color[0., 0., 0., 1.]];
+  imm attachment = new RenderPassColorAttachment(view: view, clearValue: new Color(0., 0., 0., 1.));
   mut pass = encoder.beginRenderPass(&attachment);
   pass.setPipeline(pipeline);
   pass.setBindGroup(0u32, group);
@@ -235,10 +235,10 @@ fn postPass(encoder &mut CommandEncoder, view TextureView, pipeline &RenderPipel
 
 fn postPipeline(device &mut Device, layout &PipelineLayout, shader &ShaderModule, entry &[]u8, format u32)
     RenderPipeline {
-  imm attributes = [VertexAttribute[VERTEX_FORMAT_FLOAT32, 0u64, 0u32]];
-  imm buffers = [VertexBufferLayout[arrayStride: 4u64, attributes: &attributes]];
-  imm desc = RenderPipelineDescriptor[layout: layout, vertexModule: shader, vertexEntryPoint: "fullscreenMain",
-    buffers: &buffers[..0], fragmentModule: shader, fragmentEntryPoint: entry, colorFormat: format];
+  imm attributes = [new VertexAttribute(VERTEX_FORMAT_FLOAT32, 0u64, 0u32)];
+  imm buffers = [new VertexBufferLayout(arrayStride: 4u64, attributes: &attributes)];
+  imm desc = new RenderPipelineDescriptor(layout: layout, vertexModule: shader, vertexEntryPoint: "fullscreenMain",
+    buffers: &buffers[..0], fragmentModule: shader, fragmentEntryPoint: entry, colorFormat: format);
   device.createRenderPipeline(&desc);
 }
 

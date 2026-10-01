@@ -638,7 +638,7 @@ carries only a *pin* of the receiver's place — it may not be moved, replaced
 or ended while the result is used — and a second `a.alloc(v)` is no conflict.
 A borrow of a `NoLoanMut` container itself is held as one through a shared
 path is (`pwLend`): it keeps the container alive and promises no more, so two
-`&mut a` may live at once and `a.alloc(Spawner[2, &mut a])` is one call. The
+`&mut a` may live at once and `a.alloc(new Spawner(2, &mut a))` is one call. The
 third marker, `ShapeChanging` (`List`, `String`, `Dict`, `Pool`), is read by
 nothing yet: see "What is not held".
 
@@ -794,6 +794,37 @@ with a value — its declaration, a parameter at function or inline-body entry �
 and `0` where it begins without one; `0` at each marked move, `2` at each
 marked hollowing, `1` after each store over it whole.
 
+### An init's self
+
+An init's `self &new` (`fnDclIsInit`) is a reference to memory that holds no
+value until the init writes one, and that the construction running the init
+holds once it returns (doc/reference/refinitdrop.html). Flow holds it to that
+with one flag and one context:
+
+- **`VarUnfilled`** is set on `self` as the init's flow begins
+  (`fnDclTypeCheck`) and cleared by `*self = value` (`flowNewSelfFill`, from
+  `assignFlow`, after the value is walked, which marks the deref
+  `FlagFirstAssign` so generation finalizes nothing as it is replaced). It is
+  joined by union like every flag, so a store on only some paths, or in a loop
+  that may not run, leaves it set. Fields are not filled one at a time: flow
+  tracks the whole value, as it does a variable's.
+- **A use through `self`** -- the deref of `*self` or `self.x`
+  (`derefFlow`, `assignFlowLvalReads`), a method's receiver (`fnCallFlow`) --
+  sets `flowThroughSelf` around the walk of the name, and `nameuseFlow`
+  refuses it while `VarUnfilled` is set; `nameuseFlowBorrowed` refuses a
+  borrow of a place through it the same way.
+- **Any other use of `self`** -- passed, copied, stored, returned -- reaches
+  `nameuseFlow` without the context and is refused filled or not, since the
+  reference would outlive the init.
+- **Every return** asks whether `self` is filled (`flowNewSelfReturn`, from
+  `blockFlow`'s return arm); the body's last return is one
+  `fnImplicitReturn` wrote, with no place of its own, so it is reported at
+  `self`, once.
+
+All four are `ErrorInitSelf`. What is not checked: a method called on a filled
+`self` may do with its own borrowed self what any method may, and a store of a
+filled `self`'s fields is an ordinary store.
+
 ## 7. What it decides, and what it does not
 
 | Analysis | In flow? | Enforced | Not enforced |
@@ -873,7 +904,7 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
   see it. A name use shared by several places in the tree cannot be marked:
   the match's own variable is the one known (flow.c, `flowMoveSource`).
 - **A value stored into a field of a variable that holds nothing leaks.**
-  `take(e); e.inner = Inner[2];` and `mut e Holder; e.inner = Inner[2];`
+  `take(e); e.inner = new Inner(2);` and `mut e Holder; e.inner = new Inner(2);`
   finalize nothing of the old field (there is none), and the variable is not
   taken to hold a value by having one field given, so the new field is never
   finalized either. Rust refuses both.
@@ -881,7 +912,7 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
   the binding's own state, which the move left moved, so it releases nothing,
   and it does not give the matched value's variable its value back, so that
   variable, moved too, never releases what was stored: `case mut a A {
-  takeA(a); a = A[Fin[2]]; }` leaks `Fin[2]`. Moved on some paths only, the
+  takeA(a); a = A[new Fin(2)]; }` leaks the new `Fin`. Moved on some paths only, the
   store still releases nothing, and the original leaks on the paths that kept
   it. The binding is untracked by the path walk (`flowMatchBound`), so neither
   the store nor the matched value's drop flag sees the other.
@@ -917,6 +948,7 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
 | `ir/stmt/module.c` | `modInitOf`, `modInitFlowBegin`, `modInitFlowEnd` | round a module's `init` only: its module's globals without a value start the pass uninitialized, as locals, so `init` assigns each once and reads none first; one never assigned is `ErrorGlobalUninit`. [module](../nodes/module.md), "Init and final" |
 | `ir/flow.c` | `flowLoadValue` | the walk's spine — tag dispatch for a value being read |
 | | `flowLoadThroughRef` | `MayRead` on the reference a value is read through; called from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` |
+| | `flowNewSelf`, `flowNewSelfThrough`, `flowNewSelfFill`, `flowNewSelfReturn` | an init's `self &new`: the variable, a use through it, the store that fills it, a return before it is filled ("An init's self") |
 | | `flowHandleMoveOrCopy` | move vs. alias, for a value going to a new holder; a tuple literal's element by element |
 | | `flowHandleMove` | deactivate the source — each move-typed element's, for a tuple literal; for a block or an `if`, what any value it hands back moves out of, marking each move (`FlagMoveOut`, `FlagHollowOut`) and gating the drops where not every value does; hollow a local sole owner moved out through; refuse a move out of a field (`flowRefuseMoveField`) or a global, or out through a borrowed or a shared owning reference |
 | | `flowOwningLocal`, `flowNewHollow` | the local owning reference a move reaches through; the `HollowNode` releasing a hollowed variable as it stands |

@@ -63,6 +63,48 @@ INode *parseArrayLit(ParseState *parse) {
     return (INode *)array;
 }
 
+static Nodes *parseIndexArgs(ParseState *parse, FnCallNode *fncall);
+Nodes *parseArgs(ParseState *parse);
+
+// Parse a construction, 'new Point(1, 2)': 'new', the type, then in
+// parentheses the arguments the type's 'init' takes, which may be left off
+// when there are none ('new Point' is 'new Point()'). The type is a name, a
+// path through namespaces ('geomath.Vec3') and type arguments in brackets
+// ('Pair[i32, f32]'); every '.' and '[' before the parentheses belongs to it,
+// and the suffixes after them apply to the value constructed. Type check
+// selects the 'init' (typeLitNewCheck).
+INode *parseNew(ParseState *parse) {
+    FnCallNode *ctor = newFnCallNode(NULL, 0);
+    ctor->flags |= FlagNew;
+    lexNextToken();
+    if (!lexIsToken(IdentToken))
+        errorMsgLex(ErrorBadTerm, "Expected the type to construct after 'new': 'new Point(1, 2)'");
+    INode *type = parseNameUse(parse);
+    while (1) {
+        if (lexIsToken(DotToken)) {
+            FnCallNode *path = newFnCallNode(type, 0);
+            lexNextToken();
+            if (lexIsToken(IdentToken))
+                path->methfld = (INode*)newMemberUseNode(lex->val.ident);
+            else
+                errorMsgLex(ErrorNoMbr, "Expected a name after '.' in the type to construct");
+            lexNextToken();
+            type = (INode*)path;
+        }
+        else if (lexIsToken(LBracketToken)) {
+            FnCallNode *inst = newFnCallNode(type, 0);
+            inst->flags |= FlagIndex;
+            inst->args = parseIndexArgs(parse, inst);
+            type = (INode*)inst;
+        }
+        else
+            break;
+    }
+    ctor->objfn = type;
+    ctor->args = lexIsToken(LParenToken) ? parseArgs(parse) : newNodes(2);
+    return (INode*)ctor;
+}
+
 // Parse a term: literal, identifier, etc.
 INode *parseTerm(ParseState *parse) {
     switch (lex->toktype) {
@@ -120,6 +162,8 @@ INode *parseTerm(ParseState *parse) {
         }
     case LBracketToken:
         return parseArrayLit(parse);
+    case NewToken:
+        return parseNew(parse);
     case IfToken:
         return parseIf(parse);
     case MatchToken:
@@ -317,8 +361,15 @@ INode *parseAmper(ParseState *parse) {
     }
     lexNextToken();
 
-    // Static permission (optional)
-    anode->perm = parsePerm();
+    // Static permission (optional). In a type, 'new' is the permission of an
+    // initializer's 'self', '&new'; in a value, '&new Point(1, 2)' is a borrow
+    // of a construction.
+    if (lexIsToken(NewToken) && parse->intype) {
+        anode->perm = newPermUseNode(newPerm);
+        lexNextToken();
+    }
+    else
+        anode->perm = parsePerm();
 
     // Handle borrowed reference to anonymous function/closure
     // Note: This could also be a ref to a function signature. We sort this out later.

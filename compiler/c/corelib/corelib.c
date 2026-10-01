@@ -24,6 +24,7 @@ PermNode *immPerm;
 PermNode *roPerm;
 PermNode *mut1Perm;
 PermNode *opaqPerm;
+PermNode *newPerm;
 LifetimeNode *staticLifetimeNode;
 NbrNode *boolType;
 NbrNode *i8Type;
@@ -57,6 +58,11 @@ void stdPermInit() {
     roPerm = newPermNodeStr("ro", MayRead | MayAlias | IsLockless);
     mut1Perm = newPermNodeStr("mut1", MayRead | MayWrite | MayAlias | MayIntRefSum | IsLockless);
     opaqPerm = newPermNodeStr("opaq", MayAlias | RaceSafe | IsLockless);
+    // An initializer's 'self': the one path to memory being filled, as 'uni'
+    // is to a value. Its name stays the keyword's, so it is not bound here;
+    // that nothing reads through it before it is filled, and that it does not
+    // escape, is flow's to check (flowNewSelfUse).
+    newPerm = newPermDclNode(nametblFind("new", 3), MayRead | MayWrite | RaceSafe | MayIntRefSum | IsLockless);
 }
 
 // What core declares in Cone -- Option, Result, and the 'So' and 'Rc' regions --

@@ -76,6 +76,10 @@ void fnCallLowerOverloadFn(FnCallNode *node);
 // own type's walk state, so that its signature can be compared
 void fnCallDemandCandidates(INode *binding);
 
+// The field a struct literal's argument gives a value to: a named value by its
+// name, a value by position when no named value comes before it; else NULL
+FieldDclNode *fnCallTypeLitField(StructNode *strnode, Nodes *args, uint32_t argi);
+
 // Do data flow analysis for fncall node (only real function calls)
 void fnCallFlow(FlowState *fstate, FnCallNode **nodep);
 

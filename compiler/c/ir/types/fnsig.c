@@ -83,8 +83,14 @@ void fnSigNameRes(NameResState *pstate, FnSigNode *sig) {
 void fnSigTypeCheck(TypeCheckState *pstate, FnSigNode *sig) {
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(sig->parms, cnt, nodesp))
+    for (nodesFor(sig->parms, cnt, nodesp)) {
+        // An init's 'self &new' is the one place that permission is written
+        // (refTypeCheck); whether this is an init is fnDclTypeCheck's to judge
+        refAllowNewPerm = cnt == sig->parms->used && ((VarDclNode*)*nodesp)->namesym == selfName
+            && ((VarDclNode*)*nodesp)->vtype->tag == RefTag;
         inodeTypeCheckAny(pstate, nodesp);
+        refAllowNewPerm = 0;
+    }
     itypeTypeCheck(pstate, &sig->rettype);
 }
 

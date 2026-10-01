@@ -26,7 +26,7 @@ GROUPS = 4        # groups per function in those files
 def group(i: int) -> list[str]:
     """A borrow held across a loop, then its source used after its last use."""
     return [
-        f"  mut p{i} = Pt[{i}, {i}];",
+        f"  mut p{i} = new Pt({i}, {i});",
         f"  imm r{i} = &mut p{i};",
         f"  r{i}.x = r{i}.x + 1i64;",
         f"  mut j{i} = 0i64;",
@@ -42,7 +42,7 @@ def group(i: int) -> list[str]:
 def plain(i: int) -> list[str]:
     """The same work with no borrow held: what an ungated function looks like."""
     return [
-        f"  mut p{i} = Pt[{i}, {i}];",
+        f"  mut p{i} = new Pt({i}, {i});",
         f"  p{i}.x = p{i}.x + 1i64;",
         f"  mut j{i} = 0i64;",
         f"  while j{i} < 3i64 {{",
@@ -61,7 +61,7 @@ def looped(i: int, depth: int, nested: bool) -> list[str]:
     statements follow one another, so the pair isolates what nesting costs.
     """
     out = [
-        f"  mut p{i} = Pt[{i}, {i}];",
+        f"  mut p{i} = new Pt({i}, {i});",
         f"  imm r{i} = &mut p{i};",
         f"  r{i}.x = r{i}.x + 1i64;",
     ]

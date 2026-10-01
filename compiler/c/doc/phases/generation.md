@@ -688,7 +688,11 @@ which finalizes an owner's value where the trace must not follow one.
 allocates would otherwise be collected around with the new object linked in
 and holding garbage. The value's traced parts are births ("Roots", below), so
 rooted while `alloc` runs. Every other region keeps its order, `alloc` then the
-value.
+value. Between them, the region's `init` and then a lock permission's fill
+their parts of the header in place, each called with its part's address as its
+`self`. A value that is a construction by a declared init is filled in place
+too, the value's part handed to the init (`genlNewInto`); a traced region's
+is built in a temporary before `alloc`, as every traced value is.
 
 `So` and `Rc` are declared in Cone source in the core package,
 `packages/core/src/core.cone` ([What a region is](../nodes/module.md)). `malloc`

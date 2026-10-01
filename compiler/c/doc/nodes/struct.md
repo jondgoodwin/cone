@@ -947,6 +947,42 @@ Steps 9 to 11 are `structCheckMembers`, run from the members queue:
    moves after all is `ErrorCopyMove`. Here, not at layout, because an enum
    moves when a variant does and its variants are laid out after it.
 
+### Initializers
+
+Every struct has an **implicit init**, taking its fields in the order they are
+declared, by position or by name, a field left out taking its default. It has
+no declaration: a construction it takes is lowered to the struct's literal
+([literals](literals.md), "Construction").
+
+A struct's function named `init`, or joining the overload name `init`, is a
+**declared init**, and it fills its value in place: `fn init(self &new, ...)`,
+returning nothing (`fnDclInitCheck`, from `fnDclTypeCheck` once the signature
+is checked; `ErrorInitDcl`, the body then skipped). `self &new` on any other
+function is `ErrorPermNew`, and so is `&new` anywhere but a signature's first
+parameter named `self`: `fnSigTypeCheck` sets `refAllowNewPerm` around that
+parameter alone, and `refTypeCheck` refuses the permission without it, putting
+`uni` in its place. `fnDclIsInit` is the test the rest of the compiler asks:
+a method whose `self` is `&new`.
+
+**The implicit init is always a candidate, beside the declared ones, and none
+is preferred.** A construction both take is `ErrorInitNone`, as an overload
+set's ambiguity is. So a declared init with the fields' own shape -- or any
+whose arguments an untyped literal also passes to the fields, since such a
+literal passes to any number type and an integer one to `Bool` -- is reached
+by no positional construction, and neither is the implicit init it shadows;
+named arguments reach the implicit one still. Which init a construction calls
+is decided at the construction (`typeLitNewCheck`), so an init is never called
+by name (`fnCallFinalizeArgs`, `ErrorInitCall`).
+
+A **region's** `init` and a lock **permission's** are declared inits of the
+same shape taking nothing but `self`, run by an allocation on their parts of
+the block ([What a region is](module.md)); `regionCheckInit` and
+`permInitTypeCheck` hold them to taking nothing else, every other rule being
+every init's.
+
+What the init's body may do with `self` is flow's ([Flow](../phases/flow.md),
+"An init's self").
+
 ### Move and Copy
 
 `Move` and `Copy` are built-in traits [Jon 26 Sep], made in C beside
@@ -1678,7 +1714,7 @@ and `extractvalue`, and `vtblidx` for vtable slots.
 - **A finalizer an enrichment adds runs only while the value is typed as the
   enrichment.** Where the base declares no `final`, the enrichment may declare one,
   and it is this type's drop and not the base's. A value that crosses to the base's
-  name by value is dropped as the base — so `imm p Plain = PlainFin[1]`, or passing
+  name by value is dropped as the base — so `imm p Plain = new PlainFin(1)`, or passing
   a `PlainFin` to a parameter typed `Plain`, runs no finalizer at all. Measured, not
   pinned: nothing refuses it and nothing decides it. A base's own `final` has no
   such gap, since every enrichment carries a copy.

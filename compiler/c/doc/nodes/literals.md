@@ -1,13 +1,17 @@
 Six literal forms across three source pairs: `nil`, integer, float and string in
 `literal.c`; the array literal in `arraylit.c`, which **shares its node with the
 array type**; and the type literal in `typelit.c`, which **shares its node with
-a call**, and is also the node a number's conversion, `u64.from(count)`, is
-lowered into.
+a call**. A struct's value is constructed `new Point(1, 2)`, and a construction
+its implicit field-wise init takes is lowered into a type literal; so is a
+number's conversion, `u64.from(count)`. An enum's variant writes its literal in
+brackets, `Some[x]`, and so may an allocation's value, `+Rc-mut Node[1]`; a
+struct's in brackets anywhere else is refused.
 
 **At a glance.** The parser builds them without deciding types. Name resolution
 resolves each literal's type name, decides that `[…]` is an array literal, and
 refuses it where it spells an array type. Type check types an integer literal and checks it fits, sizes
-a string, checks array elements against each other, and reorders a type literal's fields. Flow accounts for the values a
+a string, checks array elements against each other, selects a construction's
+init, and reorders a type literal's fields. Flow accounts for the values a
 composite literal takes ownership of. Generation emits constants where it can.
 
 *Provenance: read from source.*
@@ -21,7 +25,7 @@ composite literal takes ownership of. Generation emits constants where it can.
 | `FLitNode` | `FLitTag` | `floatlit` |
 | `SLitNode` | `StringLitTag` | `strlit` pointer into the lexer's arena, plus `strlen` |
 | `ArrayNode` | `ArrayTag` **or** `ArrayLitTag` | `dimens`, `elems` |
-| type literal | `TypeLitTag` | an `FnCallNode` — `args` are the field values, or a number conversion's one value |
+| type literal | `TypeLitTag` | an `FnCallNode` — `args` are the field values, or a number conversion's one value; `FlagNew` when it came of a construction, `FlagAllocValue` when it is an allocation's bracketed value |
 
 **`FlagUnkType`** is set only by `newULitNode`, only when the lexer gave no type
 suffix. **There is no float equivalent** — a suffix-less float defaults to `f32`
@@ -48,14 +52,18 @@ Literal tokens map straight to constructors. `parseArrayLit` gathers
 comma-separated expressions, and **if a `;` follows, swaps** — what it gathered
 becomes `dimens` and a fresh list is gathered into `elems`.
 
-A type literal is not built as one: `parseSuffix` builds an `FnCallNode` with
-`FlagIndex`, and `parseArg` wraps `name: value` in a `NamedValNode`. Whether
-`Point[1,2]` is an index, an instantiation, or a construction is type check's.
-So is refusing the wrapper everywhere else, since `parseArg` builds it in every
-argument list: `fnCallTypeCheck`, once it knows the call is not a type literal,
-and `macroExpand` report each one through `namedValRefuseArgs`
-(`ErrorNamedArg`). A function, method, closure or initializer call, an index
-and a macro use take arguments by position only, and flow analysis and
+A type literal is not built as one. A construction, `new Point(1, 2)`, is an
+`FnCallNode` flagged `FlagNew` (`parseNew`): its `objfn` the type -- a name, a
+path, type arguments in brackets -- and its `args` what is in the parentheses,
+none when they are left off. A bracketed form is an `FnCallNode` with
+`FlagIndex` from `parseSuffix`, and whether `Some[x]` is an index, an
+instantiation, or a variant's literal is type check's. `parseArg` wraps
+`name: value` in a `NamedValNode` in every argument list, so refusing the
+wrapper everywhere else is type check's too: `fnCallTypeCheck`, once it knows
+the call is not a type literal, `typeLitNewCheck` for a name a declared init
+would be given, and `macroExpand` report each one through `namedValRefuseArgs`
+(`ErrorNamedArg`). A function, method, closure or declared init's call, an
+index and a macro use take arguments by position only, and flow analysis and
 generation meet a `NamedValNode` only inside a type literal.
 
 **A minus before a literal is folded into it.** `parsePrefix` negates a
@@ -216,15 +224,42 @@ array's size is part of its type, and a count chosen at run time belongs to a
 
 Either form's type is built by `newArrayNodeTyped`, already checked, so it
 never passes through `arrayTypeCheck`. **The constructor gives it the element
-type's move-ness itself**, as `arrayTypeCheck` does for a type written out, so `[Fin[1], Fin[2]]` moves exactly as `Array[Fin, 2]` does. Move-ness
+type's move-ness itself**, as `arrayTypeCheck` does for a type written out, so `[new Fin(1), new Fin(2)]` moves exactly as `Array[Fin, 2]` does. Move-ness
 is asked of `itypeIsMove`, not read off the element's flags, because a tuple
 element carries no flag and moves when one of its own elements does.
 
 Every diagnostic path sets `errorType`, so the literal never leaves the pass
 untyped.
 
+**Construction** — `typeLitNewCheck` takes a `FlagNew` call. Its type must be a
+struct (`ErrorNewType` otherwise: a number converts with `from`, an enum's
+variant keeps its brackets, an allocation keeps its `+` spelling). A generic
+struct named bare, `new Box(5i64)`, has its type arguments inferred from the
+values, as its literal's were (`genericSubstitute`). Its inits are the implicit
+field-wise one and those it declares under the name `init`, one or an overload
+set, each `fn init(self &new, ...)`. With none declared, the arguments are
+checked against the fields they fill, as a literal's are; otherwise with no
+expectation, as an overload set's are. Exactly one init must take them:
+viability is counted as `fnSigViableCall` counts it -- the count, the defaults,
+each argument passable -- for a declared one its parameters after `self`, for
+the implicit one the fields in order, and neither is preferred, so none or
+several is `ErrorInitNone`. Named arguments are the implicit init's alone; a
+name no field has is `ErrorNamedArg`. The implicit init is lowered to the
+struct's literal, retagged `TypeLitTag` with `FlagNew` kept, and checked as
+below; a declared one stays an `FnCallTag` with `FlagNew`, its `objfn` the
+init's name use, its arguments coerced to the parameters after `self` and the
+defaults appended, and its `vtype` the struct, the call's value
+([fncall](fncall.md), "Construction"). A declared init not `pub` is the type's
+own (`ErrorNotPublic`).
+
 **Type literal** — `typeLitTypeCheck` requires a concrete type, then builds a
-struct's literal; a number type written with brackets, `u64[count]`, is
+struct's literal. **A struct's literal in brackets is `ErrorStructBracket`**,
+naming `new Point(...)`, unless it came of a construction (`FlagNew`), is an
+allocation's value (`FlagAllocValue`, set by `allocateTypeCheck`), or is a
+variant's, which has a discriminant field to fill; refused at type check, so a
+struct reached through an alias or a type parameter is refused as one named
+directly, and the literal is still built so nothing after it reports again. A
+number type written with brackets, `u64[count]`, is
 `ErrorNbrBracket`, because a number's conversion is its method,
 `u64.from(count)`. That call reaches this node another way: `fnCallNumberFrom`
 ([fncall](fncall.md)) checks its one value, has `typeLitNbrFromCheck` accept a
@@ -422,4 +457,5 @@ is its type exactly and has no terminator.
 - The literal-initializer rules for globals, parameters and field defaults: [vardcl](vardcl.md)
 - What a fill literal's alias count means: [Flow Analysis](../phases/flow.md), "Moves and counting"
 - The nullable-pointer enum: [struct](struct.md) and [Generation](../phases/generation.md)
-- Where a type literal is retagged from a call: [fncall](fncall.md)
+- Where a type literal is retagged from a call, and a construction by a declared init: [fncall](fncall.md)
+- What a declared init may do with its `self &new`: [Flow Analysis](../phases/flow.md), "An init's self"

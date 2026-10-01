@@ -216,8 +216,14 @@ static void refRefusePlusType(RefNode *node) {
         "A managed reference type is written '%s[%s, T]'; the '+' spelling allocates a value.", reg, perm);
 }
 
+// Set by fnSigTypeCheck while it checks a signature's 'self', the one place
+// '&new' may be written: an init's reference to memory not yet filled
+int refAllowNewPerm = 0;
+
 // Type check a reference node
 void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
+    int allownew = refAllowNewPerm;
+    refAllowNewPerm = 0;
     if (node->perm == unknownType)
         node->perm = newPermUseNode(node->vtexp->tag == FnSigTag ? opaqPerm :
         (node->region == borrowRef ? roPerm : uniPerm));
@@ -225,6 +231,12 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     itypeTypeCheck(pstate, &node->region);
     refRegionCheck(&node->region);
     itypeTypeCheck(pstate, (INode**)&node->perm);
+    // A type checked once is not checked again, so this is said once
+    if (itypeGetTypeDcl(node->perm) == (INode*)newPerm && (!allownew || node->region != borrowRef)) {
+        errorMsgNode((INode*)node, ErrorPermNew,
+            "'&new' is the permission of an init's self, a reference to memory not yet filled: 'fn init(self &new, ...)'.");
+        node->perm = newPermUseNode(uniPerm);
+    }
     // A reference in a parameter position parses with no pointee, because
     // parseAmper leaves it to be inferred. Only a method's 'self' is ever
     // inferred, by parseFnSig, and it looks at the outer node only -- so a bare

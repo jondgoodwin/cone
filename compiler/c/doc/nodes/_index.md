@@ -75,7 +75,8 @@ to answer with.
 
 **Two more are counted into a group before type check has replaced them.**
 `isTypeNode` also counts an unlowered `Box[i64]` as a type
-(`itypeIsGenericType`) — without which `*Box[i64]` reads as a dereference —
+(`itypeIsGenericType`) — without which `*Box[i64]` reads as a dereference;
+never a construction, `new Box(5i64)`, a value whose `objfn` is the type —
 and an unlowered managed reference type, `Rc[mut, Node]`
 (`itypeIsManagedRefType`), which type check lowers into a `RefNode`.
 `isMethodType` inherits that, being `isTypeNode` and the table's method

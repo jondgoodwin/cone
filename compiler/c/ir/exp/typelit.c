@@ -1,6 +1,9 @@
-/** Handling for type literals: a struct's value built from its fields,
- * 'Point[1., 2.]', and a number's conversion, 'u64.from(count)', which type
- * check lowers into the same node (fnCallNumberFrom)
+/** Handling for type literals and constructions: a struct's value built from
+ * its fields, which 'new Point(1., 2.)' lowers to when the struct's implicit
+ * 'init' takes its arguments (typeLitNewCheck), or which an enum's variant
+ * and an allocation's value write in brackets, 'Some[x]'; and a number's
+ * conversion, 'u64.from(count)', which type check lowers into the same node
+ * (fnCallNumberFrom)
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -14,21 +17,35 @@ static int typeLitIsNbrType(INode *littype) {
     return littype->tag == IntNbrTag || littype->tag == UintNbrTag || littype->tag == FloatNbrTag;
 }
 
-// Serialize a type literal: a struct's as written, a number's conversion as
-// the call it was written as
+// Is this struct a variant, built with its discriminant: an enum's, or a
+// tagged trait's?
+static int typeLitIsVariant(StructNode *strnode) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&strnode->fields, cnt, nodesp))
+        if ((*nodesp)->flags & IsTagField)
+            return 1;
+    return 0;
+}
+
+// Serialize a type literal: a construction, a variant's or an allocation's
+// value, and a number's conversion, each as it was written
 void typeLitPrint(FnCallNode *node) {
     int conversion = node->vtype && typeLitIsNbrType(itypeGetTypeDcl(node->vtype));
+    int paren = conversion || (node->flags & FlagNew);
+    if (node->flags & FlagNew)
+        inodeFprint("new ");
     if (node->objfn)
         inodePrintNode(node->objfn);
     INode **nodesp;
     uint32_t cnt;
-    inodeFprint(conversion ? ".from(" : "[");
+    inodeFprint(conversion ? ".from(" : paren ? "(" : "[");
     for (nodesFor(node->args, cnt, nodesp)) {
         inodePrintNode(*nodesp);
         if (cnt)
             inodeFprint(",");
     }
-    inodeFprint(conversion ? ")" : "]");
+    inodeFprint(paren ? ")" : "]");
 }
 
 // Check the type literal node (actually done by fncall)
@@ -220,8 +237,20 @@ void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
     INode *littype = itypeGetTypeDcl(arrlit->vtype);
     if (!itypeIsConcrete(arrlit->vtype))
         errorMsgNode((INode*)arrlit, ErrorInvType, "Type must be concrete and instantiable.");
-    else if (littype->tag == StructTag)
+    else if (littype->tag == StructTag) {
+        // A struct's value is constructed with 'new'. An enum's variant keeps
+        // its brackets, 'Some[x]', and so does an allocation's value,
+        // '+Rc-mut Node[1]', until allocations are written with 'new'. Refused
+        // here, at type check, so that a struct reached through an alias or a
+        // type parameter is refused as one named directly. The literal is
+        // still built, so nothing after it reports again.
+        if (!(arrlit->flags & (FlagNew | FlagAllocValue)) && !typeLitIsVariant((StructNode*)littype)) {
+            Name *written = isNameUseNode(arrlit->objfn) ? ((NameUseNode*)arrlit->objfn)->namesym : ((StructNode*)littype)->namesym;
+            errorMsgNode((INode*)arrlit, ErrorStructBracket,
+                "A struct's value is constructed with 'new', its init's arguments in parentheses: 'new %s(...)'.", &written->namestr);
+        }
         typeLitStructCheck(pstate, arrlit, (StructNode*)littype);
+    }
     // A number is not built from brackets: its conversion is a method,
     // 'u64.from(count)'. Refused here, at type check, so that a number reached
     // through an alias or a type parameter is refused as one named directly.
@@ -232,4 +261,248 @@ void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
     }
     else  // ArrayTag is dispatched in a different way and should never get here
         errorMsgNode((INode*)arrlit, ErrorBadArray, "Unknown type literal type for type checking");
+}
+
+// Can a declared init take these arguments after its 'self'? Viability only,
+// as fnSigViableCall decides it for a call: the count, the defaults, and each
+// argument passable to its parameter.
+static int typeLitInitViable(FnDclNode *init, Nodes *args) {
+    if (init->genericinfo)
+        return 0;
+    FnSigNode *sig = (FnSigNode*)init->vtype;
+    uint32_t nparms = sig->parms->used - 1;
+    if (args->used > nparms)
+        return 0;
+    INode **parmp = &nodesGet(sig->parms, 1);
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(args, cnt, argsp)) {
+        if (iexpMatches(argsp, ((IExpNode *)*parmp)->vtype, Coercion) == NoMatch)
+            return 0;
+        ++parmp;
+    }
+    for (uint32_t i = args->used; i < nparms; ++i) {
+        if (((VarDclNode *)*parmp++)->value == NULL)
+            return 0;
+    }
+    return 1;
+}
+
+// Can the struct's implicit init, which takes its fields in the order they are
+// declared, take these values by position, a field left out taking its default?
+static int typeLitImplicitViable(StructNode *strnode, Nodes *args) {
+    uint32_t argi = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode *)*nodesp;
+        if (argi < args->used) {
+            if (iexpMatches(&nodesGet(args, argi), field->vtype, Coercion) == NoMatch)
+                return 0;
+        }
+        else if (field->value == NULL)
+            return 0;
+        ++argi;
+    }
+    return argi >= args->used;
+}
+
+// Coerce a declared init's arguments to its parameters after 'self', and
+// append the defaults of those left out, as fnCallFinalizeArgs does for a call
+static void typeLitInitArgs(FnCallNode *node, FnSigNode *sig) {
+    INode **parmp = &nodesGet(sig->parms, 1);
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(node->args, cnt, argsp)) {
+        if (!iexpCoerce(argsp, ((IExpNode *)*parmp)->vtype))
+            errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
+        ++parmp;
+    }
+    for (uint32_t i = node->args->used + 1; i < sig->parms->used; ++i) {
+        // 'srcFile()' and 'srcLine()' answer where the construction is
+        INode *dflt = ((VarDclNode *)nodesGet(sig->parms, i))->value;
+        if (intrinsicIsSrcCall(dflt))
+            dflt = intrinsicSrcCallAt(dflt, (INode*)node);
+        nodesAdd(&node->args, dflt);
+    }
+}
+
+// 'new Point(1, 2)': construct a struct's value by one of its inits, which the
+// arguments select. Every struct has an implicit init taking its fields in
+// declaration order (by name too, 'new Point(y: 2, x: 1)', and a field left out
+// taking its default), and it may declare others, 'fn init(self &new, ...)',
+// overloaded under the name 'init'. Exactly one of them must take the
+// arguments; named ones are the implicit init's alone, since no call takes
+// them. The implicit init is lowered to the struct's literal, whose fields are
+// stored straight into wherever the value goes; a declared one to a call of it,
+// which generation hands the memory the value goes into (genlNew).
+void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    // Already lowered to its declared init's call, and reached again
+    if (nameUseNames(node->objfn, FnDclTag))
+        return;
+    node->vtype = errorType;    // until a value is known to come of it
+
+    if (!isTypeNode(node->objfn)) {
+        Name *written = isNameUseNode(node->objfn) ? ((NameUseNode*)node->objfn)->namesym : NULL;
+        errorMsgNode(node->objfn, ErrorNewType, "'new' constructs a value of a type, and %s is not one.",
+            written ? &written->namestr : "this");
+        return;
+    }
+
+    INode **argsp;
+    uint32_t cnt;
+    // A generic struct named without its type arguments, 'new Box(5i64)', has
+    // them inferred from the values its fields are given, as its literal did:
+    // the arguments are checked first, with no expectation, and the instance
+    // they infer replaces the name
+    int argschecked = 0;
+    if (isNameUseNode(node->objfn) && nameUseNames(node->objfn, StructTag)
+        && genericGetInfo(nameUseGetDcl((NameUseNode*)node->objfn)) != NULL) {
+        for (nodesFor(node->args, cnt, argsp))
+            inodeTypeCheck(pstate, argsp, unknownType);
+        argschecked = 1;
+        if (genericSubstitute(pstate, nodep))
+            return;
+        node = *nodep;
+    }
+    if (!itypeTypeCheck(pstate, &node->objfn))
+        return;
+
+    INode *typedcl = itypeGetTypeDcl(node->objfn);
+    Name *written = isNameUseNode(node->objfn) ? ((NameUseNode*)node->objfn)->namesym : NULL;
+    if (typeLitIsNbrType(typedcl)) {
+        errorMsgNode((INode*)node, ErrorNewType,
+            "A number is not constructed: it is written as a literal, or converted with its method, %s.from(value).",
+            written ? &written->namestr : &((NbrNode*)typedcl)->namesym->namestr);
+        return;
+    }
+    if (typedcl->tag == RefTag || typedcl->tag == VirtRefTag) {
+        errorMsgNode((INode*)node, ErrorNewType,
+            "'new' constructs a struct's value. An allocation is written '+Rc-mut Node[...]' for now.");
+        return;
+    }
+    if (typedcl->tag != StructTag || (typedcl->flags & TraitType)) {
+        errorMsgNode((INode*)node, ErrorNewType, "'new' constructs a struct's value, and %s is not a struct.",
+            written ? &written->namestr : "this type");
+        return;
+    }
+    StructNode *strnode = (StructNode*)typedcl;
+    if (typeLitIsVariant(strnode)) {
+        errorMsgNode((INode*)node, ErrorNewType,
+            "%s is an enum's variant, which is constructed with its brackets for now: '%s[...]'.",
+            &strnode->namesym->namestr, &strnode->namesym->namestr);
+        return;
+    }
+
+    // The inits it declares, whose signatures are wanted before the arguments
+    // are matched to them
+    INode *inits = iNsTypeFindFnField((INsTypeNode*)strnode, initMethodName);
+    if (inits && inits->tag != FnDclTag && inits->tag != FnOverloadDclTag)
+        inits = NULL;
+    if (inits)
+        fnCallDemandCandidates(inits);
+
+    // Each argument is checked against the field it fills when the implicit
+    // init is the only one, as a literal's values are; otherwise with no
+    // expectation, as an overload set's arguments are
+    uint32_t argi = 0;
+    int named = 0;
+    for (nodesFor(node->args, cnt, argsp)) {
+        INode *expect = unknownType;
+        if (inits == NULL) {
+            FieldDclNode *field = fnCallTypeLitField(strnode, node->args, argi);
+            if (field)
+                expect = field->vtype;
+        }
+        if (!argschecked)
+            inodeTypeCheck(pstate, argsp, expect);
+        if ((*argsp)->tag == NamedValTag)
+            named = 1;
+        ++argi;
+    }
+    int badarg = 0;
+    for (nodesFor(node->args, cnt, argsp)) {
+        if (!isExpNode(*argsp)) {
+            errorMsgNode(*argsp, ErrorNotTyped, "Expected a typed expression.");
+            badarg = 1;
+        }
+        else if (inodeIsError(*argsp))
+            badarg = 1;
+    }
+    if (badarg)
+        return;
+
+    // A name none of the fields has is meant for an init the struct declares,
+    // which takes its arguments by position, as every call does
+    if (named && inits) {
+        for (nodesFor(node->args, cnt, argsp)) {
+            if ((*argsp)->tag != NamedValTag)
+                continue;
+            Name *name = ((NameUseNode*)((NamedValNode*)*argsp)->name)->namesym;
+            int isfield = 0;
+            INode **fieldp;
+            uint32_t fcnt;
+            for (nodelistFor(&strnode->fields, fcnt, fieldp))
+                if (((FieldDclNode*)*fieldp)->namesym == name)
+                    isfield = 1;
+            if (!isfield) {
+                namedValRefuseArgs(node->args, "a call of an init a struct declares");
+                return;
+            }
+        }
+    }
+
+    // Select the one init that takes the arguments
+    FnDclNode *selected = NULL;
+    uint32_t viable = 0;
+    if (inits && !named) {
+        INode **candp;
+        uint32_t ncand;
+        if (inits->tag == FnDclTag) {
+            candp = &inits;
+            ncand = 1;
+        }
+        else {
+            candp = &nodesGet(((FnOverloadDclNode*)inits)->overloads, 0);
+            ncand = ((FnOverloadDclNode*)inits)->overloads->used;
+        }
+        while (ncand--) {
+            FnDclNode *cand = (FnDclNode*)*candp++;
+            if (fnDclIsInit(cand) && typeLitInitViable(cand, node->args)) {
+                selected = cand;
+                ++viable;
+            }
+        }
+    }
+    int implicit = inits == NULL || named || typeLitImplicitViable(strnode, node->args);
+    viable += implicit;
+    if (viable != 1) {
+        errorMsgNode((INode*)node, ErrorInitNone, viable == 0
+            ? "No init of %s takes these arguments: neither its fields, in the order they are declared, nor an init it declares."
+            : "More than one init of %s takes these arguments, so the construction cannot choose between them.",
+            &strnode->namesym->namestr);
+        return;
+    }
+
+    // The implicit init: the struct's literal
+    if (implicit) {
+        node->tag = TypeLitTag;
+        node->vtype = node->objfn;
+        typeLitTypeCheck(pstate, node);
+        return;
+    }
+
+    // A declared init, called with the memory to fill. One not declared 'pub'
+    // is the type's own.
+    if (inodeIsPrivate(inits) && !structSeesPrivate(pstate, (INode*)strnode)) {
+        errorMsgNode((INode*)node, ErrorNotPublic,
+            "May not construct %s with its private init: only the type's own methods may, unless it is declared 'pub fn init'.",
+            &strnode->namesym->namestr);
+        return;
+    }
+    INode *type = node->objfn;
+    node->objfn = newNameUseFromDclNode((INode*)selected, (INode*)node);
+    typeLitInitArgs(node, (FnSigNode*)selected->vtype);
+    node->vtype = type;
 }

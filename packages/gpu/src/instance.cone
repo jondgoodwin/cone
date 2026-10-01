@@ -18,8 +18,8 @@ pub struct Instance {
   // for 'appName'. Check 'isValid': without a Vulkan 1.3 loader it is not,
   // and why has gone to stderr.
   pub fn create(appName &[]u8) Instance {
-    mut result = Instance[InstanceBackend[0usize as vulkan.Instance, vulkan.DebugUtilsMessengerEXT[0u64], false],
-      false, false, false];
+    mut result = new Instance(new InstanceBackend(0usize as vulkan.Instance, new vulkan.DebugUtilsMessengerEXT(0u64), false),
+      false, false, false);
     if !sdl.InitSubSystem(sdl.INIT_VIDEO) {
       fail("SDL's video subsystem did not start");
       return result;
@@ -74,12 +74,12 @@ pub struct Instance {
       next = next + 1u32;
     }
     imm on Array[u32, 1] = [vulkan.TRUE];
-    imm setting = [vulkan.LayerSettingEXT[pLayerName: layerName, pSettingName: &"validate_sync" as *u8,
-        valueCount: 1u32, pValues: &on as *u8],
-      vulkan.LayerSettingEXT[pLayerName: layerName, pSettingName: &"syncval_shader_accesses_heuristic" as *u8,
-        valueCount: 1u32, pValues: &on as *u8]];
-    imm settings = vulkan.LayerSettingsCreateInfoEXT[settingCount: 2u32,
-      pSettings: &setting as *vulkan.LayerSettingEXT];
+    imm setting = [new vulkan.LayerSettingEXT(pLayerName: layerName, pSettingName: &"validate_sync" as *u8,
+        valueCount: 1u32, pValues: &on as *u8),
+      new vulkan.LayerSettingEXT(pLayerName: layerName, pSettingName: &"syncval_shader_accesses_heuristic" as *u8,
+        valueCount: 1u32, pValues: &on as *u8)];
+    imm settings = new vulkan.LayerSettingsCreateInfoEXT(settingCount: 2u32,
+      pSettings: &setting as *vulkan.LayerSettingEXT);
     mut chain = nullp();
     if result.syncValidation { chain = &settings as *u8; }
 
@@ -88,18 +88,18 @@ pub struct Instance {
     imm severities = vulkan.DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | vulkan.DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
     imm types = vulkan.DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | vulkan.DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
       | vulkan.DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-    imm dbg = vulkan.DebugUtilsMessengerCreateInfoEXT[messageSeverity: severities,
-      messageType: types, pfnUserCallback: &onDebugMessage, pUserData: nullp()];
-    imm dbgChained = vulkan.DebugUtilsMessengerCreateInfoEXT[pNext: chain, messageSeverity: severities,
-      messageType: types, pfnUserCallback: &onDebugMessage, pUserData: nullp()];
+    imm dbg = new vulkan.DebugUtilsMessengerCreateInfoEXT(messageSeverity: severities,
+      messageType: types, pfnUserCallback: &onDebugMessage, pUserData: nullp());
+    imm dbgChained = new vulkan.DebugUtilsMessengerCreateInfoEXT(pNext: chain, messageSeverity: severities,
+      messageType: types, pfnUserCallback: &onDebugMessage, pUserData: nullp());
     if result.debugMessages { chain = &dbgChained as *u8; }
     mut name = String.from(appName);
-    imm app = vulkan.ApplicationInfo[pApplicationName: name.cstr(), pEngineName: &"Cone gpu" as *u8];
+    imm app = new vulkan.ApplicationInfo(pApplicationName: name.cstr(), pEngineName: &"Cone gpu" as *u8);
     mut layerCount = 0u32;
     if result.validation { layerCount = 1u32; }
-    imm ci = vulkan.InstanceCreateInfo[pNext: chain, pApplicationInfo: &app as *vulkan.ApplicationInfo,
+    imm ci = new vulkan.InstanceCreateInfo(pNext: chain, pApplicationInfo: &app as *vulkan.ApplicationInfo,
       enabledLayerCount: layerCount, ppEnabledLayerNames: &layers as **u8,
-      enabledExtensionCount: next, ppEnabledExtensionNames: &exts as **u8];
+      enabledExtensionCount: next, ppEnabledExtensionNames: &exts as **u8);
     mut handle = 0usize as vulkan.Instance;
     if !check(vulkan.createInstance(&ci, nullp(), &mut handle), "vkCreateInstance") { return result; }
     result.backend.handle = handle;
@@ -108,7 +108,7 @@ pub struct Instance {
       return result;
     }
     if result.debugMessages and vulkan.hasDebugUtils() {
-      mut messenger = vulkan.DebugUtilsMessengerEXT[0u64];
+      mut messenger = new vulkan.DebugUtilsMessengerEXT(0u64);
       if check(vulkan.createDebugUtilsMessengerEXT(handle, &dbg, nullp(), &mut messenger), "vkCreateDebugUtilsMessengerEXT") {
         result.backend.messenger = messenger;
       }
@@ -122,13 +122,13 @@ pub struct Instance {
   // The surface of a window made for Vulkan (window's 'openVulkan', whose
   // 'sdlHandle' this takes). Check 'isValid'.
   pub fn createSurface(self &, window *sdl.Window) Surface {
-    mut surface = vulkan.SurfaceKHR[0u64];
+    mut surface = new vulkan.SurfaceKHR(0u64);
     if self.isValid() {
       if !sdl.Vulkan_CreateSurface(window, backend.handle as *u8, nullp(), &mut surface.h) {
         fail("SDL could not make a Vulkan surface of the window");
       }
     }
-    Surface[SurfaceBackend[backend.handle, surface]];
+    new Surface(new SurfaceBackend(backend.handle, surface));
   }
 
   // The GPU to draw to 'surface' with: one supporting Vulkan 1.3, dynamic
@@ -162,7 +162,7 @@ pub struct Instance {
     }
     if chosenScore == 0 {
       fail("no GPU supports Vulkan 1.3 with dynamic rendering and synchronization2 (and presents to the surface)");
-      return Adapter[AdapterBackend[chosen, 0u32], String.from(""), ADAPTER_TYPE_UNKNOWN, String.from(""), 0u32, 0u32];
+      return new Adapter(new AdapterBackend(chosen, 0u32), String.from(""), ADAPTER_TYPE_UNKNOWN, String.from(""), 0u32, 0u32);
     }
     mut props = zeroed[vulkan.PhysicalDeviceProperties]();
     vulkan.getPhysicalDeviceProperties(chosen, &mut props);
@@ -178,7 +178,7 @@ pub struct Instance {
     if props.deviceType == vulkan.PHYSICAL_DEVICE_TYPE_DISCRETE_GPU { kind = ADAPTER_TYPE_DISCRETE_GPU; }
     if props.deviceType == vulkan.PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU { kind = ADAPTER_TYPE_INTEGRATED_GPU; }
     if props.deviceType == vulkan.PHYSICAL_DEVICE_TYPE_CPU { kind = ADAPTER_TYPE_CPU; }
-    Adapter[AdapterBackend[chosen, chosenFamily], name, kind, version, props.vendorID, props.deviceID];
+    new Adapter(new AdapterBackend(chosen, chosenFamily), name, kind, version, props.vendorID, props.deviceID);
   }
 
   // Its end, after every object made from it
@@ -207,8 +207,8 @@ fn adapterScore(physical vulkan.PhysicalDevice, surface vulkan.SurfaceKHR, power
   if props.apiVersion < vulkan.API_VERSION_1_3 { return 0; }
   if !hasDeviceExtension(physical, &"VK_KHR_swapchain" as *u8) { return 0; }
 
-  mut f13 = vulkan.PhysicalDeviceVulkan13Features[];
-  mut f2 = vulkan.PhysicalDeviceFeatures2[pNext: &mut f13 as *u8, features: zeroed[vulkan.PhysicalDeviceFeatures]()];
+  mut f13 = new vulkan.PhysicalDeviceVulkan13Features();
+  mut f2 = new vulkan.PhysicalDeviceFeatures2(pNext: &mut f13 as *u8, features: zeroed[vulkan.PhysicalDeviceFeatures]());
   vulkan.getPhysicalDeviceFeatures2(physical, &mut f2);
   if f13.dynamicRendering != vulkan.TRUE or f13.synchronization2 != vulkan.TRUE { return 0; }
 
@@ -248,7 +248,7 @@ pub struct Surface {
 
   // No surface: for 'requestAdapter' when nothing is to be presented
   // (WebGPU's compatibleSurface left out)
-  pub fn none() Surface { Surface[SurfaceBackend[0usize as vulkan.Instance, vulkan.SurfaceKHR[0u64]]]; }
+  pub fn none() Surface { new Surface(new SurfaceBackend(0usize as vulkan.Instance, new vulkan.SurfaceKHR(0u64))); }
 
   fn final(self &uni) {
     if self.isValid() { vulkan.destroySurfaceKHR(backend.instance, backend.surface, nullp()); }
@@ -279,20 +279,20 @@ pub struct Adapter {
   // A device on this GPU, with one queue that draws and presents. Check
   // 'isValid'.
   pub fn requestDevice(self &) Device {
-    mut result = Device[DeviceBackend[0usize as vulkan.Device, backend.physical, backend.queueFamily],
-      Queue[zeroed[QueueBackend]()], 0u64];
+    mut result = new Device(new DeviceBackend(0usize as vulkan.Device, backend.physical, backend.queueFamily),
+      new Queue(zeroed[QueueBackend]()), 0u64);
     if !self.isValid() { return result; }
 
     imm priorities Array[f32, 1] = [1.];
-    imm qci = vulkan.DeviceQueueCreateInfo[queueFamilyIndex: backend.queueFamily, queueCount: 1u32,
-      pQueuePriorities: &priorities as *f32];
-    imm f13 = vulkan.PhysicalDeviceVulkan13Features[synchronization2: vulkan.TRUE,
-      dynamicRendering: vulkan.TRUE];
+    imm qci = new vulkan.DeviceQueueCreateInfo(queueFamilyIndex: backend.queueFamily, queueCount: 1u32,
+      pQueuePriorities: &priorities as *f32);
+    imm f13 = new vulkan.PhysicalDeviceVulkan13Features(synchronization2: vulkan.TRUE,
+      dynamicRendering: vulkan.TRUE);
     imm exts Array[*u8, 1] = [&"VK_KHR_swapchain" as *u8];
-    imm dci = vulkan.DeviceCreateInfo[pNext: &f13 as *u8, queueCreateInfoCount: 1u32,
+    imm dci = new vulkan.DeviceCreateInfo(pNext: &f13 as *u8, queueCreateInfoCount: 1u32,
       pQueueCreateInfos: &qci as *vulkan.DeviceQueueCreateInfo, ppEnabledLayerNames: 0usize as **u8,
       enabledExtensionCount: 1u32, ppEnabledExtensionNames: &exts as **u8,
-      pEnabledFeatures: 0usize as *vulkan.PhysicalDeviceFeatures];
+      pEnabledFeatures: 0usize as *vulkan.PhysicalDeviceFeatures);
     mut device = 0usize as vulkan.Device;
     if !check(vulkan.createDevice(backend.physical, &dci, nullp(), &mut device), "vkCreateDevice") { return result; }
     result.backend.device = device;
@@ -319,15 +319,15 @@ pub struct Adapter {
     }
 
     // Each frame in flight: its fence, and thread 0's command pool
-    imm fci = vulkan.FenceCreateInfo[];
-    imm pci = vulkan.CommandPoolCreateInfo[flags: vulkan.COMMAND_POOL_CREATE_TRANSIENT_BIT,
-      queueFamilyIndex: backend.queueFamily];
+    imm fci = new vulkan.FenceCreateInfo();
+    imm pci = new vulkan.CommandPoolCreateInfo(flags: vulkan.COMMAND_POOL_CREATE_TRANSIENT_BIT,
+      queueFamilyIndex: backend.queueFamily);
     mut i = 0usize;
     while i < 2usize {
-      mut fence = vulkan.Fence[0u64];
+      mut fence = new vulkan.Fence(0u64);
       check(vulkan.createFence(device, &fci, nullp(), &mut fence), "vkCreateFence");
       result.queue.backend.frames[i].fence = fence;
-      mut pool = vulkan.CommandPool[0u64];
+      mut pool = new vulkan.CommandPool(0u64);
       check(vulkan.createCommandPool(device, &pci, nullp(), &mut pool), "vkCreateCommandPool");
       result.queue.backend.frames[i].pool = pool;
       i = i + 1usize;

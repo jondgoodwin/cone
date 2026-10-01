@@ -60,6 +60,12 @@ int permMatches(INode *ito, INode *ifrom) {
     if (from == uniPerm &&
         (to == roPerm || to == mutPerm || to == immPerm || to == mut1Perm))
         return EqMatch;
+    // An initializer's 'self', once filled, is lent as 'uni' is: a method
+    // called on it borrows it for the call. Before it is filled, flow refuses
+    // every use of it but the store that fills it (flowNewSelfUse).
+    if (from == newPerm &&
+        (to == uniPerm || to == roPerm || to == mutPerm || to == immPerm || to == mut1Perm))
+        return EqMatch;
     if (to == roPerm &&
         (from == mutPerm || from == immPerm || from == mut1Perm))
         return EqMatch;
@@ -75,14 +81,14 @@ void permInitTypeCheck(INode *perm) {
     if (initmeth == NULL) {
         return;
     }
+    // Run by allocation on the permission's part of the block, in place, after
+    // the region's init (genlallocref). That it takes 'self &new' and returns
+    // nothing is every struct's init's rule, reported where the method is
+    // checked (fnDclTypeCheck); what is the permission's own is that it takes
+    // nothing else.
+    if (initmeth->tag != FnDclTag || !fnDclIsInit(initmeth))
+        return;
     FnSigNode *initsig = (FnSigNode*)itypeGetTypeDcl(initmeth->vtype);
-    if (initsig->parms->used != 0) {
-        errorMsgNode((INode*)initmeth, ErrorInvType, "Permission init method may not have parameters.");
-        return;
-    }
-    INode *initrettype = itypeGetTypeDcl(initsig->rettype);
-    if (itypeMatches(initrettype, perm, Coercion) != EqMatch) {
-        errorMsgNode((INode*)initmeth, ErrorInvType, "Permission init method must return initial value.");
-        return;
-    }
+    if (initsig->parms->used != 1)
+        errorMsgNode((INode*)initmeth, ErrorInvType, "Permission init method may not have parameters but self.");
 }

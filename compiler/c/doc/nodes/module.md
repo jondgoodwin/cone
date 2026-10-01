@@ -1858,7 +1858,7 @@ finalizer in exactly the reverse, the root first, after it.
 imm handler Handler;
 
 fn @initpure init() {
-    handler = Handler[1];
+    handler = new Handler(1);
 }
 
 fn final() {
@@ -2548,17 +2548,19 @@ region promises), and calls them at the reference events only it can see
 | Method | Called when | If absent |
 |---|---|---|
 | `fn alloc(size usize) *u8`, or `fn alloc(size usize, ty *TypeRecord) *u8`, static | `+R value` allocates; `size` is the whole allocation, header included; `ty`, where it is declared, is the value type's record; null fails | the allocation is refused (`ErrorBadAlloc`) |
-| `fn init() R`, static | after `alloc`; the result is stored as the header | the header is left as allocated |
+| `fn init(self &new)`, an init ([struct](struct.md), "Initializers") | right after `alloc`, on the header, which it fills in place | the header is left as allocated |
 | `fn aliasRef(self &uni R)` | a copy of an owning reference becomes another owner | a copy calls nothing: it is a **move** where the region is `Move`, and free where it is not |
 | `fn dealiasRef(self &uni R) Bool` | an owner goes away; answers whether it was the last | an owner's going asks nothing: where the region is `Move` it is the value's death; where it is not, it does nothing — the value never dies by an owner and the compiler never frees it, left to the region's own loop (a collector's, an arena's) |
 | `fn free(self &uni R)` | the value is dead, after it is finalized and its fields' owners are released | the memory is not given back a value at a time |
 | `fn mark(self &uni R)`, or `fn mark(self &uni R, perm u32, mode u32)`, on a region declaring `Traced` | a trace finds a reference into the region: a record's trace, or `mem.trace`; `perm` is the reference's permission, a constant, and `mode` what the trace was called with | refused where the region declares `Traced` (`ErrorTracedMark`); never called where it does not |
 | `fn writeBarrier(self &uni R)`, on a region declaring `Traced` | a reference into the region was just stored into memory that is not a local: a field, element or dereference reached through any reference or pointer, a borrow's included, a swap's either half, `:=`, and each such reference inside a whole value so stored; the header is what was stored | no store calls anything; never called where the region does not declare `Traced` |
 
-Every method but `alloc` and `init` is handed the allocation's **header**, the
-region struct at the front of the `{region, permission, value}` layout, found
+Every method but `alloc` is handed the allocation's **header**, the region
+struct at the front of the `{region, permission, value}` layout: `init` the
+header `genlallocref` reaches from the new block, the others the header found
 from the value pointer by the value's offset in that layout
-(`genlRegionHeader`), so no region's or permission's size is assumed.
+(`genlRegionHeader`), so no region's or permission's size is assumed. A lock
+permission's `init`, the same shape, fills its own part of the block next.
 
 **A region asks for the value's type record by the shape of its `alloc`.** An
 `alloc` taking `ty *TypeRecord` after the size is handed, at each allocation,
@@ -2831,7 +2833,7 @@ a reference names is a type, and that is what is built.
   the loop, and the fold passes do not retry it: a struct is resolved once.
   Measured: `alpha` imports `beta`, then re-exports `delta`'s `Inner`, and
   declares `struct Box { pub v Inner use get; }`; `beta` imports `alpha` and
-  writes `mut g alpha.Box = alpha.Box[delta.Inner[3i64]] use get;`. The loop is
+  writes `mut g alpha.Box = new alpha.Box(new delta.Inner(3i64)) use get;`. The loop is
   reported, then `Inner` unknown in `Box`, and `get` failing to fold: three
   diagnostics where one is the cause. The global's type itself waits
   for a late name (`modFoldAwaits`); what that type's declaration names does not.

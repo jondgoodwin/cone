@@ -1170,7 +1170,8 @@ int itypeIsGenericType(INode *type) {
     if (type->tag != FnCallTag)
         return 0;
     FnCallNode *gentype = (FnCallNode*)type;
-    if (!isNameUseNode(gentype->objfn))
+    // 'new Pair[i32, f32](1, 2.)' is a value: its type is its objfn
+    if (!isNameUseNode(gentype->objfn) || (gentype->flags & FlagNew))
         return 0;
     INode *dclnode = nameUseGetDcl((NameUseNode*)gentype->objfn);
     if (dclnode == NULL || dclnode->tag != StructTag || genericGetInfo(dclnode) == NULL)
@@ -1204,7 +1205,8 @@ INode *itypeManagedRefRegion(INode *type) {
 // node until type check lowers it into the reference node it names
 // (fnCallLowerManagedRef), and is a type all the while, as a generic's
 // instantiation is. A region's head with values in its brackets is no type
-// but the region's own literal: core's 'Rc[1usize]' builds Rc's header. So
+// but the region's value as a struct's literal, 'Rc[1usize]', which type check
+// refuses for 'new Rc(1usize)' (ErrorStructBracket). So
 // every argument must be a type -- a permission is one -- or, in a generic's
 // template, a type parameter still to be substituted.
 int itypeIsManagedRefType(INode *type) {

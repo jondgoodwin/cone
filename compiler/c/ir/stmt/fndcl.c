@@ -244,6 +244,53 @@ void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
     nstate->expander = svexpander;
 }
 
+// Does this signature's first parameter, 'self', take '&new'?
+static int fnDclHasNewSelf(FnDclNode *fn) {
+    FnSigNode *sig = (FnSigNode*)fn->vtype;
+    if (sig == NULL || sig->tag != FnSigTag || sig->parms->used == 0)
+        return 0;
+    VarDclNode *self = (VarDclNode*)nodesGet(sig->parms, 0);
+    RefNode *selftype = (RefNode*)self->vtype;
+    return self->namesym == selfName && selftype->tag == RefTag && selftype->perm
+        && itypeGetTypeDcl(selftype->perm) == (INode*)newPerm;
+}
+
+int fnDclIsInit(FnDclNode *fn) {
+    return (fn->flags & FlagMethFld) && fnDclHasNewSelf(fn);
+}
+
+// A struct's function named 'init', or joining the overload name 'init', is an
+// initializer, and it fills its value in place: 'self &new', a reference to
+// memory that holds no value yet, and nothing returned. '&new' marks nothing
+// else (the parameter's own check refuses it elsewhere, refTypeCheck). A
+// module's 'init' is its own, and not one of these. Returns 0 when the
+// declaration is refused.
+static int fnDclInitCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
+    INode *owner = pstate->typenode;
+    int named = owner && owner->tag == StructTag
+        && (fnnode->namesym == initMethodName || fnnode->overloadsym == initMethodName);
+    int newself = fnDclHasNewSelf(fnnode);
+    if (!named && !newself)
+        return 1;
+    if (!named) {
+        errorMsgNode((INode*)fnnode, ErrorPermNew,
+            "'self &new' is the self of a struct's init, which fills its value in place: 'fn init(self &new, ...)'.");
+        return 0;
+    }
+    if (!newself) {
+        errorMsgNode((INode*)fnnode, ErrorInitDcl,
+            "An init fills its value in place, through a reference to memory that holds no value yet: 'fn init(self &new, ...)'.");
+        return 0;
+    }
+    INode *rettype = itypeGetTypeDcl(((FnSigNode*)fnnode->vtype)->rettype);
+    if (rettype->tag != VoidTag) {
+        errorMsgNode((INode*)fnnode, ErrorInitDcl,
+            "An init returns nothing: the value it builds is the one it writes through self.");
+        return 0;
+    }
+    return 1;
+}
+
 // Syntactic sugar: Turn last statement implicit returns into explicit returns
 void fnImplicitReturn(INode *rettype, BlockNode *blk) {
     INode *laststmt;
@@ -318,6 +365,9 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
         return;
     errorsOnEntry = errors;
 
+    if (!fnDclInitCheck(pstate, fnnode))
+        return;
+
     // An intrinsic's instance is judged for the type it acts on whether it is
     // lowered or runs its fallback body, which is not checked at a type it was
     // never written for
@@ -379,6 +429,10 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
         return;
     FlowState fstate;
     flowStateInit(&fstate, (FnSigNode *)fnnode->vtype);
+    // An init's 'self &new' holds no value until '*self = value' fills it
+    VarDclNode *newself = fnDclIsInit(fnnode) ? (VarDclNode *)nodesGet(((FnSigNode *)fnnode->vtype)->parms, 0) : NULL;
+    if (newself)
+        newself->flowtempflags |= VarUnfilled;
     // A module's 'init' starts with its module's uninitialized globals holding
     // nothing, as a local does, and must leave each one assigned
     ModuleNode *initmod = modInitOf(fnnode);
@@ -401,6 +455,8 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     flowGateCount(&fstate);
     if (initmod)
         modInitFlowEnd(initmod, saved);
+    if (newself)
+        newself->flowtempflags &= 0xFFFF - VarUnfilled;
 }
 
 // Verify no two candidates of an overload set accept the same parameter signature.

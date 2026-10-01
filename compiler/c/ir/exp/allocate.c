@@ -55,6 +55,12 @@ void allocateTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     if (node->perm == unknownType)
         node->perm = newPermUseNode(uniPerm);
 
+    // A struct's value in brackets, '+Rc-mut Node[1]', keeps that spelling here
+    // until allocations are written with 'new'; anywhere else it is refused
+    // (ErrorStructBracket)
+    if (node->vtexp->tag == FnCallTag && (node->vtexp->flags & FlagIndex))
+        node->vtexp->flags |= FlagAllocValue;
+
     // Ensure expression is a value usable for initializing allocated memory
     if (iexpTypeCheckAny(pstate, &node->vtexp) == 0)
         return;

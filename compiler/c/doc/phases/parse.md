@@ -283,7 +283,9 @@ token type. Permissions reach the same effect by a different route:
 `lexScanIdent` has a separate branch turning a `PermTag` binding into a
 `PermToken`. So `mut` and `uni` are lexically distinguished without being
 keyword tokens — copy the right one of these two patterns if you add a third
-family. Being no identifier, a permission is no term either: inside `[...]`,
+family. The permission `new` is the exception: `new` is a keyword token
+(`NewToken`), since it also begins a construction, and `newPerm` is not bound
+to its name. Being no identifier, a permission is no term either: inside `[...]`,
 where `Rc[mut, Node]` writes one, `parseIndexArg` takes it as the permission
 it names. To the language they are reserved words all the same: the manual lists
 all six static permissions with the keywords (Jon's ruling of 24 September
@@ -514,6 +516,15 @@ and implemented in `genlDeclaredIntrinsic` ([intrinsic](../nodes/intrinsic.md)).
 such a declaration end without a body.
 
 ## 6. What the parser decides that you would expect it not to
+
+**`new` is two things, told by where it is.** In a value it begins a
+construction, a term (`parseNew`): the type -- a name, `.` paths, bracketed
+type arguments -- then the init's arguments in parentheses, left off when
+there are none, into one `FnCallNode` flagged `FlagNew`; the suffixes after
+the parentheses apply to the value. After `&` inside a type
+(`ParseState.intype`, which `parseType` sets) it is the permission of an
+init's `self`, `&new`; in a value, `&new Point(1, 2)` is a borrow of a
+construction, a temporary, which the borrow's type check refuses.
 
 **It desugars.** `match` becomes a block holding an anonymous capture variable
 plus an `if` chain, each case's patterns becoming its condition: `is T` an `is`

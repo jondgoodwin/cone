@@ -1,0 +1,111 @@
+// Constructions the type check refuses, and inits declared in a shape a
+// construction cannot run.
+//
+// A struct's value is constructed with 'new' and its init's arguments in
+// parentheses; the bracket form, and the type called like a function, are
+// both refused, naming what to write. 'new' builds a struct's value only: a
+// number converts with its 'from', an enum's variant keeps its brackets, and
+// an allocation keeps its '+' spelling. Exactly one init -- the implicit
+// field-wise one, or one the struct declares -- must take the arguments. An
+// init fills its value in place, 'fn init(self &new, ...)', and is run only by
+// a construction; '&new' marks nothing else.
+//
+// Type-check stage only. What 'self &new' may do inside an init is flow
+// analysis's, in struct_flow_new.
+
+mod struct_typecheck_new;
+
+struct Point {
+  pub x i32;
+  pub y i32;
+}
+
+struct Vec2 {
+  pub x i32;
+  pub y i32;
+
+  pub fn ofLength overload init(self &new, len i32) { *self = new Vec2(len, 0); }
+  pub fn diagonal overload init(self &new, d i32, flip Bool, scale i32) { *self = new Vec2(d, d); }
+}
+
+// An init with the same parameters as the fields: neither it nor the
+// field-wise init is preferred, so a construction both take is refused
+struct Twin {
+  pub a i32;
+  pub b i32;
+
+  // Itself built by name, which only the field-wise init takes
+  pub fn init(self &new, a i32, b i32) { *self = new Twin(a: b, b: a); }
+}
+
+struct Sealed {
+  pub n i32;
+
+  fn init(self &new, a i32, b i32) { *self = new Sealed(a + b); }
+}
+
+enum Shape {
+  struct Circle { pub r i32; }
+  struct Square { pub s i32; }
+}
+
+fn brackets() {
+  imm p = Point[1, 2];             //~ ErrorStructBracket:16 "'new Point(...)'"
+  imm q = Point(1, 2);             //~ ErrorInitCall:16 "'new Point(...)'"
+}
+
+fn notStructs() {
+  imm n = new u32(5);              //~ ErrorNewType:11 "u32.from(value)"
+  imm c = new Shape.Circle(2);     //~ ErrorNewType:11 "constructed with its brackets"
+  imm s = new Shape(2);            //~ ErrorNewType:11 "not a struct"
+  imm v = 3;
+  imm w = new v(1);                //~ ErrorNewType:15 "not one"
+}
+
+fn noInit() {
+  imm a = new Vec2(1, 2, 3, 4);    //~ ErrorInitNone:11 "No init of Vec2"
+  imm b = new Twin(1, 2);          //~ ErrorInitNone:11 "More than one init of Twin"
+  imm c = new Sealed(1, 2);        //~ ErrorNotPublic:11 "private init"
+}
+
+// An init is no method of a value: called on one, it finds no receiver it
+// takes, and called on an init's self, which it would take, it is refused
+fn initsRunOnlyInConstructions() {
+  mut v = new Vec2(4);
+  v.ofLength(5);                   //~ ErrorNoCandidate:4 "No method declared by `ofLength`"
+}
+
+struct Again {
+  pub n i32;
+
+  pub fn two overload init(self &new, a i32, b i32) {
+    self.init(a + b);              //~ ErrorInitCall:9 "runs only in a construction"
+  }
+  pub fn one overload init(self &new, a i32) { *self = new Again(n: a); }
+}
+
+// A global's value is built before anything runs, so it takes only a literal:
+// the implicit init's construction of literals is one, a declared init's call
+// is not
+imm made = new Vec2(4);            //~ ErrorNotLit
+
+// An init fills its value in place and returns nothing, and '&new' is its
+// self's alone
+struct Shapes {
+  pub n i32;
+
+  fn init(n i32) Shapes { new Shapes(n); }                 //~ ErrorInitDcl:3 "fills its value in place"
+  fn reset(self &new) { *self = new Shapes(0); }           //~ ErrorPermNew:3 "the self of a struct's init"
+}
+
+struct Sized {
+  pub n i32;
+
+  fn sized overload init(self &new, a Bool) i32 { 1; }     //~ ErrorInitDcl:3 "returns nothing"
+}
+
+fn holds(p &new Point) { }                                 //~ ErrorPermNew:12
+
+struct Holder {
+  pub r &new Point;                                        //~ ErrorPermNew:9
+}

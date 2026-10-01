@@ -65,7 +65,7 @@ struct AssertedBox[T] is Copy {
 struct Cloneable {
   pub id i32;
   fn final(self &uni Cloneable) { show("cloneable-finalized", id); }
-  pub fn clone(self &) Cloneable { show("clone-ran", id); Cloneable[id + 1]; }
+  pub fn clone(self &) Cloneable { show("clone-ran", id); new Cloneable(id + 1); }
 }
 
 fn takeHandle(h Handle) i32 {
@@ -73,14 +73,14 @@ fn takeHandle(h Handle) i32 {
 }
 
 fn makeHandle(n i32) Handle {
-  Handle[n];
+  new Handle(n);
 }
 
 // -------- moving a value around --------
 
 fn moves() {
   // Variable to variable
-  imm a = Handle[1];
+  imm a = new Handle(1);
   imm b = a;
   show("moved-to-new-var", b.id);
 
@@ -114,18 +114,18 @@ fn moves() {
   show("filled-through-borrow", filling.id);
 
   // A move value nested in a struct moves with the whole struct
-  imm outer = Wrapper[Handle[5], 6];
+  imm outer = new Wrapper(new Handle(5), 6);
   imm moved = outer;
   show("moved-with-container", moved.h.id);
 
   // ... and so does an array of them
-  mut arr Array[Handle, 2] = [Handle[7], Handle[8]];
+  mut arr Array[Handle, 2] = [new Handle(7), new Handle(8)];
   imm arr2 = arr;
   show("moved-array-elem", arr2[1].id);
 
   // Across an enrichment of a 'Move' type: base to enrichment, enrichment to
   // enrichment, back to the base, and the enrichment into a call wanting the base
-  imm r RichHandle = Handle[9];
+  imm r RichHandle = new Handle(9);
   imm r2 = r;
   show("moved-into-enrichment", (&r2).twice());
   imm back Handle = r2;
@@ -143,35 +143,35 @@ struct Wrapper {
 
 fn exchanges() {
   // Swap leaves both sides holding a value, so neither source is deactivated
-  mut a = Handle[10];
-  mut b = Handle[20];
+  mut a = new Handle(10);
+  mut b = new Handle(20);
   a <=> b;
   show("swap-left", a.id);
   show("swap-right", b.id);
 
   // Swapping a field with a local is how a move value comes out of a struct
   // without invalidating the struct
-  mut w = Wrapper[Handle[30], 31];
-  mut spare = Handle[40];
+  mut w = new Wrapper(new Handle(30), 31);
+  mut spare = new Handle(40);
   w.h <=> spare;
   show("swap-field-out", spare.id);
   show("swap-field-in", w.h.id);
   show("swap-keeps-container", w.n);
 
   // Left-assignment yields what the lval held before, rather than the new value
-  mut c = Handle[50];
-  imm old = c := Handle[60];
+  mut c = new Handle(50);
+  imm old = c := new Handle(60);
   show("left-assign-value", old.id);
   show("left-assign-lval", c.id);
 
   // A move value may not be moved out through a borrowed reference, but these
   // two leave the borrowed place holding a value, so they work through one
-  mut w2 = Wrapper[Handle[70], 71];
-  imm out = swapThrough(&mut w2, Handle[72]);
+  mut w2 = new Wrapper(new Handle(70), 71);
+  imm out = swapThrough(&mut w2, new Handle(72));
   show("swap-through-borrow-out", out.id);
   show("swap-through-borrow-in", w2.h.id);
-  mut d = Handle[73];
-  imm prior = replaceThrough(&mut d, Handle[74]);
+  mut d = new Handle(73);
+  imm prior = replaceThrough(&mut d, new Handle(74));
   show("left-assign-through-borrow-value", prior.id);
   show("left-assign-through-borrow-lval", d.id);
 }
@@ -190,17 +190,17 @@ fn replaceThrough(r &mut Handle, h Handle) Handle {
 
 fn copies() {
   // A plain struct copies: the source is still usable afterwards
-  imm p = Plain[70];
+  imm p = new Plain(70);
   imm q = p;
   show("copy-source-still-usable", p.id);
   show("copy-destination", q.id);
 
   // So does one declaring 'is Copy'
-  imm ap = Asserted[71];
+  imm ap = new Asserted(71);
   imm aq = ap;
   show("asserted-copy-source-still-usable", ap.id);
   show("asserted-copy-destination", aq.id);
-  imm bp = AssertedBox[i32][72];
+  imm bp = new AssertedBox[i32](72);
   imm bq = bp;
   show("asserted-generic-copy-source-still-usable", bp.v);
   show("asserted-generic-copy-destination", bq.v);
@@ -209,7 +209,7 @@ fn copies() {
 
   // A copy value reads out through a borrowed reference, whole or as a
   // by-value 'self', and the place borrowed from keeps its own copy
-  imm pt = Plain[90];
+  imm pt = new Plain(90);
   imm out = readThrough(&pt);
   show("copy-out-of-borrow", out.id);
   show("copy-borrowed-source-kept", pt.id);
@@ -221,7 +221,7 @@ fn copies() {
 // finalized once too. Both are finalized as the function ends, after its lines,
 // 'e' first. Copying a Cloneable finalized 80 once per copy, and never ran 'clone'.
 fn cloneStillMoves() {
-  imm c = Cloneable[80];
+  imm c = new Cloneable(80);
   imm d = c;
   show("clone-does-not-cancel-move", d.id);
   imm e = (&d).clone();
@@ -254,26 +254,26 @@ struct Noisy {
 }
 
 fn localOutOfBlock() Noisy {
-  imm a = Noisy[104];
+  imm a = new Noisy(104);
   {a;};
 }
 
 fn localOutOfLoop() Noisy {
-  imm a = Noisy[107];
+  imm a = new Noisy(107);
   while {
     if true {break a;};
   };
 }
 
 fn localOutOfIf(pick Bool) Noisy {
-  imm a = Noisy[110];
-  if pick {a;} else {Noisy[106];};
+  imm a = new Noisy(110);
+  if pick {a;} else {new Noisy(106);};
 }
 
 // Each return exempts the local only on its own way out, so a local one path
 // returns early is still there on the other
 fn localReturnedEarly(id i32, early Bool) Noisy {
-  imm a = Noisy[id];
+  imm a = new Noisy(id);
   if early {return a;};
   show("local-kept-after-early-return", a.id);
   a;
@@ -282,7 +282,7 @@ fn localReturnedEarly(id i32, early Bool) Noisy {
 // A block's own local is handed back as the block's value the same way
 fn blockLocalOut() {
   imm kept = {
-    imm b = Noisy[111];
+    imm b = new Noisy(111);
     b;
   };
   show("block-local-kept", kept.id);
@@ -311,19 +311,19 @@ fn handedBack() {
 // source's scope exit. Each function shows what it received before its scope
 // ends, so the one finalize that follows the line is its whole release.
 fn boundFromBlock() {
-  imm a = Noisy[120];
+  imm a = new Noisy(120);
   imm y = {a;};
   show("bound-from-block", y.id);
 }
 
 fn boundFromIf(pick Bool) {
-  imm a = Noisy[122];
+  imm a = new Noisy(122);
   imm y = if pick {a;} else {a;};
   show("bound-from-if", y.id);
 }
 
 fn boundFromLoop() {
-  imm a = Noisy[124];
+  imm a = new Noisy(124);
   imm y = while {
     if true {break a;};
   };
@@ -335,7 +335,7 @@ fn takeNoisy(n Noisy) {
 
 // Passed to a call, the value is finalized as the callee ends, before the line
 fn passedFromBlock() {
-  imm a = Noisy[125];
+  imm a = new Noisy(125);
   takeNoisy({a;});
   show("passed-from-block", 125);
 }

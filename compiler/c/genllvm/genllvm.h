@@ -144,6 +144,9 @@ LLVMValueRef genlTagConst(LLVMTypeRef tagtype, StructNode *variant);
 // 'selftype' is the Cone type of the first argument, which a virtual dispatch
 // and the pointer intrinsics read; NULL for a call the compiler makes itself.
 LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint32_t fnargcnt, LLVMValueRef *fnargs, INode *selftype);
+// Fill 'dest' in place when 'exp' is a construction by a declared 'init',
+// 'new Point(1, 2)', returning 1; else 0, and the caller stores the value
+int genlNewInto(GenState *gen, INode *exp, LLVMValueRef dest);
 // The failures the compiler checks for at run time, each ending the program
 // through the C runtime's entry for it (genlPanic)
 typedef enum {

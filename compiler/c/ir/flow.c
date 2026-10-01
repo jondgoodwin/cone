@@ -906,6 +906,58 @@ void flowLoadThroughRef(FlowState *fstate, INode **refp) {
         errorMsgNode(*refp, ErrorNoRead, "This reference's permission does not allow reading the value it points to");
 }
 
+// An initializer's 'self &new' is the one path to memory that holds no value
+// until the init writes one, and that the construction running the init holds
+// once it returns. So it is reached only through itself, and only once filled:
+// '*self' read or written, a field of it, a method called on it, each refused
+// before '*self = value' has filled it on every path (VarUnfilled, joined by
+// union as every flag is). Any other use -- passed, stored, copied, returned --
+// is refused, as it would let the reference outlive the init.
+int flowThroughSelf = 0;
+
+VarDclNode *flowNewSelf(INode *node) {
+    while (node->tag == CastTag)
+        node = ((CastNode *)node)->exp;
+    if (!isNameUseNode(node) || !isExpNode(node))
+        return NULL;
+    VarDclNode *var = (VarDclNode *)((NameUseNode *)node)->dclnode;
+    if (var == NULL || var->tag != VarDclTag || var->namesym != selfName)
+        return NULL;
+    RefNode *type = (RefNode *)itypeGetTypeDcl(var->vtype);
+    return type->tag == RefTag && type->perm && itypeGetTypeDcl(type->perm) == (INode *)newPerm ? var : NULL;
+}
+
+void flowNewSelfThrough(FlowState *fstate, INode **selfp) {
+    int svthrough = flowThroughSelf;
+    flowThroughSelf = 1;
+    flowLoadValue(fstate, selfp);
+    flowThroughSelf = svthrough;
+}
+
+int flowNewSelfFill(INode *lval) {
+    if (lval->tag != DerefTag)
+        return 0;
+    VarDclNode *self = flowNewSelf(((StarNode *)lval)->vtexp);
+    if (self == NULL || !(self->flowtempflags & VarUnfilled))
+        return 0;
+    // What it held was never a value, so nothing is finalized as it is replaced
+    lval->flags |= FlagFirstAssign;
+    flowVarSetFlags(self, self->flowtempflags & (0xFFFF - VarUnfilled), self->hollowed);
+    return 1;
+}
+
+// Reported at 'self', once: the return at the end of a body is one the
+// compiler wrote, with no place in the source of its own
+void flowNewSelfReturn(FlowState *fstate, INode *at) {
+    Nodes *parms = fstate->fnsig->parms;
+    VarDclNode *self = parms->used ? (VarDclNode *)nodesGet(parms, 0) : NULL;
+    if (self == NULL || !(self->flowtempflags & VarUnfilled))
+        return;
+    errorMsgNode((INode *)self, ErrorInitSelf,
+        "This init can return before '*self = value' fills self on every path, which would leave its construction holding no value.");
+    self->flowtempflags &= 0xFFFF - VarUnfilled;
+}
+
 // Perform data flow analysis on a node whose value we intend to load
 // At minimum, we check that any expression node holds an accessible, "readable" value
 void flowLoadValue(FlowState *fstate, INode **nodep) {

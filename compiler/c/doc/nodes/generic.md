@@ -292,8 +292,9 @@ declared after it. Nothing is instantiated to name the instance, so a bare name
 never misses the memo and never expands again. **A use given type arguments is
 the exception**: `Box[i32]` inside `Box[T]` names another instance, and `Box[T]`
 names this one through the memo, so `cloneFnCallNode` puts the template back as
-the head of any call whose arguments are types (`fnCallHasTypeArgs`). A value
-list — `Box[v]`, `Mb.No[]` — builds this instance and stays mapped. Only a generic
+the head of any call whose arguments are types (`fnCallHasTypeArgs`). A
+construction or a variant's literal — `new Box(v)`, `Mb.No[]` — builds this
+instance and stays mapped. Only a generic
 *type* is reserved: a generic function named bare in its own body is a call whose
 type arguments are inferred, as it is anywhere else. A generic *module* maps its
 own name to the instance too (`modInstantiate`), without a reservation — the

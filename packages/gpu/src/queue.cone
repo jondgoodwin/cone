@@ -69,7 +69,7 @@ pub struct Queue {
   // for it to be ready to draw into.
   pub fn submit(self &mut, cmd CommandBuffer) Bool {
     if isNull(cmd.backend.cmd) { return false; }
-    submitCommands(self, cmd.backend.cmd, vulkan.Fence[0u64], 0u32, 0usize as *vulkan.SemaphoreSubmitInfo);
+    submitCommands(self, cmd.backend.cmd, new vulkan.Fence(0u64), 0u32, 0usize as *vulkan.SemaphoreSubmitInfo);
   }
 
   // Write 'size' bytes from 'data' into 'buffer' at 'offset', which must be
@@ -97,7 +97,7 @@ pub struct Queue {
     // bytes (two writes to one buffer in a frame land in the order made)
     memoryBarrier(cmd, vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT,
       vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT);
-    imm region = vulkan.BufferCopy[at, offset, size];
+    imm region = new vulkan.BufferCopy(at, offset, size);
     vulkan.cmdCopyBuffer(cmd, backend.frames[i].staging.buffer, buffer.backend.buffer, 1u32,
       &region as *vulkan.BufferCopy);
   }
@@ -137,9 +137,9 @@ pub struct Queue {
     transition(cmd, texture.backend.image, vulkan.IMAGE_ASPECT_COLOR_BIT, vulkan.IMAGE_LAYOUT_UNDEFINED,
       vulkan.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_NONE,
       vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT);
-    imm region = vulkan.BufferImageCopy[bufferOffset: at, bufferRowLength: bytesPerRow / texel,
-      imageSubresource: vulkan.ImageSubresourceLayers[], imageOffset: vulkan.Offset3D[0i32, 0i32, 0i32],
-      imageExtent: vulkan.Extent3D[texture.width, texture.height, depth]];
+    imm region = new vulkan.BufferImageCopy(bufferOffset: at, bufferRowLength: bytesPerRow / texel,
+      imageSubresource: new vulkan.ImageSubresourceLayers(), imageOffset: new vulkan.Offset3D(0i32, 0i32, 0i32),
+      imageExtent: new vulkan.Extent3D(texture.width, texture.height, depth));
     vulkan.cmdCopyBufferToImage(cmd, backend.frames[i].staging.buffer, texture.backend.image,
       vulkan.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1u32, &region as *vulkan.BufferImageCopy);
     // Back to the layout it rests in, the copy visible to the shaders that
@@ -167,11 +167,11 @@ pub struct Queue {
       if buffer.backend.memory.h != 0u64 { vulkan.freeMemory(backend.device, buffer.backend.memory, nullp()); }
     } else {
       backend.frames[i].released[usize.from(backend.frames[i].releasedCount)] =
-        ReleasedBuffer[buffer.backend.buffer, buffer.backend.memory];
+        new ReleasedBuffer(buffer.backend.buffer, buffer.backend.memory);
       backend.frames[i].releasedCount = backend.frames[i].releasedCount + 1u32;
     }
-    buffer.backend.buffer = vulkan.Buffer[0u64];
-    buffer.backend.memory = vulkan.DeviceMemory[0u64];
+    buffer.backend.buffer = new vulkan.Buffer(0u64);
+    buffer.backend.memory = new vulkan.DeviceMemory(0u64);
     buffer.backend.mapped = nullp();
   }
 
@@ -218,8 +218,8 @@ fn nextCommandBuffer(queue &mut Queue) vulkan.CommandBuffer {
     return nullCommandBuffer();
   }
   if queue.backend.frames[i].used == queue.backend.frames[i].allocated {
-    imm ai = vulkan.CommandBufferAllocateInfo[commandPool: queue.backend.frames[i].pool,
-      commandBufferCount: 1u32];
+    imm ai = new vulkan.CommandBufferAllocateInfo(commandPool: queue.backend.frames[i].pool,
+      commandBufferCount: 1u32);
     mut cmd = nullCommandBuffer();
     if !check(vulkan.allocateCommandBuffers(queue.backend.device, &ai, &mut cmd as *vulkan.CommandBuffer),
         "vkAllocateCommandBuffers") {
@@ -230,19 +230,19 @@ fn nextCommandBuffer(queue &mut Queue) vulkan.CommandBuffer {
   }
   imm cmd = queue.backend.frames[i].buffers[usize.from(queue.backend.frames[i].used)];
   queue.backend.frames[i].used = queue.backend.frames[i].used + 1u32;
-  imm bi = vulkan.CommandBufferBeginInfo[flags: vulkan.COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-    pInheritanceInfo: nullp()];
+  imm bi = new vulkan.CommandBufferBeginInfo(flags: vulkan.COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    pInheritanceInfo: nullp());
   check(vulkan.beginCommandBuffer(cmd, &bi), "vkBeginCommandBuffer");
   cmd;
 }
 
 // A global memory barrier between everything before it and everything after
 fn memoryBarrier(cmd vulkan.CommandBuffer, srcStage u64, srcAccess u64, dstStage u64, dstAccess u64) {
-  imm mb = vulkan.MemoryBarrier2[srcStageMask: srcStage, srcAccessMask: srcAccess,
-    dstStageMask: dstStage, dstAccessMask: dstAccess];
-  imm dep = vulkan.DependencyInfo[memoryBarrierCount: 1u32, pMemoryBarriers: &mb as *vulkan.MemoryBarrier2,
+  imm mb = new vulkan.MemoryBarrier2(srcStageMask: srcStage, srcAccessMask: srcAccess,
+    dstStageMask: dstStage, dstAccessMask: dstAccess);
+  imm dep = new vulkan.DependencyInfo(memoryBarrierCount: 1u32, pMemoryBarriers: &mb as *vulkan.MemoryBarrier2,
     pBufferMemoryBarriers: 0usize as *vulkan.BufferMemoryBarrier2,
-    pImageMemoryBarriers: 0usize as *vulkan.ImageMemoryBarrier2];
+    pImageMemoryBarriers: 0usize as *vulkan.ImageMemoryBarrier2);
   vulkan.cmdPipelineBarrier2(cmd, &dep);
 }
 
@@ -286,7 +286,7 @@ fn stagingRoom(queue &mut Queue, size u64) Bool {
   while blockSize < size { blockSize = blockSize * 2u64; }
   imm made = allocateBuffer(queue.backend.device, &queue.backend.memory, blockSize,
     vulkan.BUFFER_USAGE_TRANSFER_SRC_BIT, true);
-  queue.backend.frames[i].staging = StagingBlock[made.buffer, made.memory, made.mapped, blockSize];
+  queue.backend.frames[i].staging = new StagingBlock(made.buffer, made.memory, made.mapped, blockSize);
   queue.backend.frames[i].stagingUsed = 0u64;
   made.memory.h != 0u64 and (made.mapped as usize) != 0usize;
 }
@@ -296,8 +296,8 @@ fn stagingRoom(queue &mut Queue, size u64) Bool {
 // 'fence' and 'signalCount' semaphores
 fn submitCommands(queue &mut Queue, cmd vulkan.CommandBuffer, fence vulkan.Fence, signalCount u32,
     signals *vulkan.SemaphoreSubmitInfo) Bool {
-  mut cbis Array[vulkan.CommandBufferSubmitInfo, 2] = [2; vulkan.CommandBufferSubmitInfo[
-    commandBuffer: nullCommandBuffer()]];
+  mut cbis Array[vulkan.CommandBufferSubmitInfo, 2] = [2; new vulkan.CommandBufferSubmitInfo(
+    commandBuffer: nullCommandBuffer())];
   mut count = 0usize;
   if queue.backend.inFrame {
     imm i = usize.from(queue.backend.frameIndex);
@@ -316,14 +316,14 @@ fn submitCommands(queue &mut Queue, cmd vulkan.CommandBuffer, fence vulkan.Fence
     cbis[count].commandBuffer = cmd;
     count = count + 1usize;
   }
-  imm waitInfo = vulkan.SemaphoreSubmitInfo[semaphore: queue.backend.acquired,
-    stageMask: vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT];
+  imm waitInfo = new vulkan.SemaphoreSubmitInfo(semaphore: queue.backend.acquired,
+    stageMask: vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
   mut waits = 0u32;
   if queue.backend.waiting { waits = 1u32; }
-  imm submit = vulkan.SubmitInfo2[waitSemaphoreInfoCount: waits,
+  imm submit = new vulkan.SubmitInfo2(waitSemaphoreInfoCount: waits,
     pWaitSemaphoreInfos: &waitInfo as *vulkan.SemaphoreSubmitInfo, commandBufferInfoCount: u32.from(count),
     pCommandBufferInfos: &cbis as *vulkan.CommandBufferSubmitInfo, signalSemaphoreInfoCount: signalCount,
-    pSignalSemaphoreInfos: signals];
+    pSignalSemaphoreInfos: signals);
   queue.backend.waiting = false;
   check(vulkan.queueSubmit2(queue.backend.handle, 1u32, &submit as *vulkan.SubmitInfo2, fence), "vkQueueSubmit2");
 }

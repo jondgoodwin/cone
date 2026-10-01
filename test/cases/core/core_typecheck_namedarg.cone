@@ -1,10 +1,12 @@
-// 'name: value' in an argument list, which only a type literal accepts.
+// 'name: value' in an argument list, which only a struct's implicit init
+// accepts.
 //
 // The parser wraps 'name: value' in every argument list, because it cannot
-// tell 'Point[x: 1]' from 'f(x: 1)'. A type literal matches the name to a field;
-// nothing else matches it to anything, and every other kind of call, an index
-// and a macro use must refuse it rather than pass it on. The literal itself,
-// with its names out of order, is struct_success's.
+// tell 'new Point(x: 1)' from 'f(x: 1)'. A struct's implicit init matches the
+// name to a field; nothing else matches it to anything, and every other kind
+// of call -- an init the struct declares among them -- an index and a macro
+// use must refuse it rather than pass it on. The construction itself, with its
+// names out of order, is struct_success's.
 //
 // Type-check stage only: this file parses and resolves cleanly, so every
 // diagnostic below is reached.
@@ -16,8 +18,8 @@ struct Point {
   pub y i32;
 
   pub fn sum(self, k i32) i32 { x + y + k; }
-  fn make(n i32) Point { Point[n, n]; }
-  fn init(n i32) Point { Point[n, n]; }
+  fn make(n i32) Point { new Point(n, n); }
+  pub fn init(self &new, n i32) { *self = new Point(n, n); }
 }
 
 fn one(a i32) i32 { a; }
@@ -25,9 +27,9 @@ fn defaults(a i32 = 1, b i32 = 2) i32 { a + b; }
 fn id[T](a T) T { a; }
 macro twice[p] { p + p; }
 
-// A type literal takes its values by name, so these are refused nowhere
+// The implicit init takes its values by name, so these are refused nowhere
 fn literal() i32 {
-  imm p = Point[y: 2, x: 1];
+  imm p = new Point(y: 2, x: 1);
   p.x;
 }
 
@@ -48,7 +50,7 @@ fn generic() i32 {
 }
 
 fn method() i32 {
-  imm p = Point[1, 2];
+  imm p = new Point(1, 2);
   p.sum(k: 4);           //~ ErrorNamedArg:10
 }
 
@@ -56,9 +58,10 @@ fn staticFn() i32 {
   Point.make(n: 4).x;    //~ ErrorNamedArg:15
 }
 
-// Calling the type reaches its 'init', a function like any other
+// An init the struct declares is called by position, as a function is: 'n'
+// is none of Point's fields
 fn initializer() i32 {
-  Point(n: 4).x;         //~ ErrorNamedArg:10
+  new Point(n: 4).x;     //~ ErrorNamedArg:14 "not supported in a call of an init a struct declares"
 }
 
 fn closure() i32 {

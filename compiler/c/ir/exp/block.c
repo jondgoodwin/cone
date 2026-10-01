@@ -458,6 +458,8 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
             // function may move: not a value it reached through a borrow
             blockResultMove(*retexp);
         }
+        // An init returns only once it has filled self
+        flowNewSelfReturn(fstate, *nodesp);
         flowScopeDealias(0, &((BreakRetNode *)*nodesp)->dealias, result, *nodesp);
         jumped = 1;
         break;

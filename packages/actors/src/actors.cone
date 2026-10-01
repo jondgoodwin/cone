@@ -63,7 +63,7 @@
 //
 //         struct Counter_state {
 //           count u64;
-//           pub fn made(count u64) Counter_state {Counter_state[count];}
+//           pub fn made(count u64) Counter_state {new Counter_state(count);}
 //           fn add(self &mut, n u64) {count = count + n;}
 //           fn report(self &mut, to Printer) {to.show(count);}
 //         }
@@ -86,8 +86,8 @@
 //         struct Counter {
 //           mb Arc[opaq, actors.Mailbox[Counter_msg]];
 //           pub fn start(count u64) Counter {
-//             Counter[actors.startActor[Counter_state, Counter_msg](
-//               Counter_state.made(actors.sendable(count)), &Counter_dispatch)];
+//             new Counter(actors.startActor[Counter_state, Counter_msg](
+//               Counter_state.made(actors.sendable(count)), &Counter_dispatch));
 //           }
 //           pub fn add(self &, n u64) {
 //             actors.send[Counter_msg](mb, Counter_msg.Add[n]);
@@ -217,7 +217,7 @@
 // at once start them once); a program that starts no actor starts no thread.
 // They start lazily, not in the module's initializer, which is '@initpure'
 // and may do nothing but set the module's own globals. 'actors.configure(
-// actors.Options[workers: n, batch: b])', called before the first actor
+// new actors.Options(workers: n, batch: b))', called before the first actor
 // starts, sets n workers (0, the default, is one per logical processor,
 // thread.parallelism()) and a batch limit b (actors.defaultBatch, 100, by
 // default; 0 is taken as 1); called once they have started, it is a panic.
@@ -457,7 +457,7 @@ struct Header {
 pub struct Mailbox[M Sendable] is Sendable {
   hdr Header;
 
-  fn made(h Header) Mailbox[M] {Mailbox[M][h];}
+  fn made(h Header) Mailbox[M] {new Mailbox[M](h);}
 
   // The actor's death: its state finalized, then its mailbox's last node
   // freed; Arc frees the block, state and all, after this
@@ -513,8 +513,8 @@ pub fn startActor[S, M Sendable](state S, dispatch &fn(s &mut S, m M)) Arc[opaq,
   }
   (*stub).next = nullLink();
   mut f = dispatch;
-  imm h = Header[((stub as usize) | idleBit) as *Link, stub, nullHeader(),
-    &runBatch[S, M], &releaseHold[M], &finalizeState[S, M], *(&mut f as **u8)];
+  imm h = new Header(((stub as usize) | idleBit) as *Link, stub, nullHeader(),
+    &runBatch[S, M], &releaseHold[M], &finalizeState[S, M], *(&mut f as **u8));
   imm b = +Arc-opaq Block[S, M][Mailbox[M].made(h), state];
   // The owner of the block, remade as the owner of its first part: the same
   // address and the same count, moved, not copied
@@ -1059,7 +1059,7 @@ mut stoppedStats Stats;
 
 fn @initpure init() {
   startOnce = sync.Once.make();
-  stoppedStats = Stats[0u32, 0u64, 0u64, 0u64];
+  stoppedStats = new Stats(0u32, 0u64, 0u64, 0u64);
 }
 
 // The program is ending: wait until all is quiet, then stop the workers, if
@@ -1109,7 +1109,7 @@ fn startWorkers() {
     (*w).index = i;
     (*w).rng = (2463534242u32 ^ ((i + 1u32) * 7919u32)) | 1u32;
     mem.writeRaw[thread.Thread[u32]](ts + usize.from(i),
-      thread.startWith(thread.Options[name: "actors worker"], WorkerArg[w], &workerMain));
+      thread.startWith(new thread.Options(name: "actors worker"), new WorkerArg(w), &workerMain));
     i = i + 1u32;
   }
 }
@@ -1146,7 +1146,7 @@ fn stopWorkers() {
 
 // The workers' counts, summed
 fn totals(s *Sched) Stats {
-  mut st = Stats[(*s).nworkers, 0u64, 0u64, 0u64];
+  mut st = new Stats((*s).nworkers, 0u64, 0u64, 0u64);
   mut i = 0u32;
   while i < (*s).nworkers {
     imm w = workerAt(s, i);

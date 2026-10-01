@@ -240,17 +240,17 @@ static void regionCheckAlloc(FnDclNode *allocmeth) {
         errorMsgNode((INode*)allocmeth, ErrorBadAlloc, "Region alloc method must return *u8.");
 }
 
-// Check a static 'init' of the shape the compiler calls: no parameters,
-// returning the header's initial value, which allocation stores
+// Check an 'init' of the shape the compiler calls: 'fn init(self &new)', which
+// allocation runs on the header in place, right after 'alloc'. That it takes
+// 'self &new' and returns nothing is every struct's init's rule, reported
+// where the method is checked (fnDclTypeCheck); what is the region's own is
+// that it takes nothing else.
 static void regionCheckInit(FnDclNode *initmeth, StructNode *region) {
-    FnSigNode *initsig = (FnSigNode*)itypeGetTypeDcl(initmeth->vtype);
-    if (initsig->parms->used != 0) {
-        errorMsgNode((INode*)initmeth, ErrorBadAlloc, "Region init method may not have parameters.");
+    if (!fnDclIsInit(initmeth))
         return;
-    }
-    INode *initrettype = itypeGetTypeDcl(initsig->rettype);
-    if (itypeMatches(initrettype, (INode*)region, Coercion) != EqMatch)
-        errorMsgNode((INode*)initmeth, ErrorBadAlloc, "Region init method must return initial value.");
+    FnSigNode *initsig = (FnSigNode*)itypeGetTypeDcl(initmeth->vtype);
+    if (initsig->parms->used != 1)
+        errorMsgNode((INode*)initmeth, ErrorBadAlloc, "Region init method may not have parameters but self.");
 }
 
 // Hold a struct that declares 'is RegionRef' to what that promises: each region
@@ -289,7 +289,7 @@ void regionRefCheck(StructNode *node) {
 
     INode *initmember = iNsTypeFindFnField((INsTypeNode*)node, initMethodName);
     if (initmember && initmember->tag != FnDclTag)
-        errorMsgNode(initmember, ErrorBadAlloc, "Region init must be a static method returning the header's initial value.");
+        errorMsgNode(initmember, ErrorBadAlloc, "Region init must be one method filling the header in place: 'fn init(self &new)'.");
     else if (initmember)
         regionCheckInit((FnDclNode*)initmember, node);
 

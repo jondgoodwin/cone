@@ -261,6 +261,20 @@ enum NodeTags {
 // use them are never read off an expression.
 #define FlagRange     0x0080        // FnCall: index argument is a range
 #define FlagRangeIncl 0x0100        // FnCall: the range's end is included ('...')
+// A struct literal written in brackets that an allocation takes as its value,
+// '+Rc-mut Node[1]', which keeps that spelling until allocations are written
+// with 'new'; every other struct's bracket construction is refused
+// (ErrorStructBracket). Set by allocateTypeCheck. 0x0200 is a declaration's
+// FlagPub, and a FnCall is no declaration.
+#define FlagAllocValue 0x0200       // FnCall: a struct literal that is an allocation's value
+// A construction written with 'new', 'new Point(1, 2)'. Set by the parser
+// (parseNew) on the node holding the type and the arguments; type check keeps it
+// on what the construction is lowered to: the struct's literal (TypeLitTag) for
+// its implicit 'init', or a call of a declared 'init' that fills the value in
+// place (FnCallTag), whose 'self' generation supplies (genlNew). 0x0800 because
+// a FnCall's own flags stop below it and the type flags that use it are never
+// read off an expression.
+#define FlagNew       0x0800        // FnCall, TypeLit: a construction, 'new T(...)'
 
 #define FlagLoop      0x0001        // Block: is a Loop block
 // 'each' lowers to a 'while' whose body ends with the step that advances the loop
