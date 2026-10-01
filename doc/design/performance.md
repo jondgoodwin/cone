@@ -214,7 +214,10 @@ Stated so nobody assumes otherwise:
 
 - **A string literal emits a fresh global per occurrence.** No interning, and
   constant merging is not in the pass list.
-- **An array fill literal is unrolled**, except on the region-allocated path.
+- **An array's contents are unrolled.** A value repeated by `fill x` or `n of x`
+  is one copy of its expression per element, however large the array; only a
+  constant repeated alone stays one value stored into every element. No loop is
+  built for a large count.
 - **Bounds checks are not elided** by the front end; whatever LLVM proves is
   what goes.
 - **The pass list is short** — mem2reg, reassociate, GVN, CFG simplification,

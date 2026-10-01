@@ -1,0 +1,120 @@
+// An array constructed with its contents: 'new Array[T, n] <- contents'. An
+// array has no 'init' and no '<-', and its size is fixed, so its construction
+// is its contents, which fill it exactly and in order: listed values, 'k of x'
+// (k values), and 'fill x' (values up to the size). An entry that repeats a
+// value evaluates it once for each element, which a counter shows; a constant
+// repeated is stored into every element as one value.
+//
+// An array of several dimensions is an array of arrays, so its contents are
+// its rows, each constructed the same way. The list runs to the statement's
+// ';', across lines; inside another comma list -- an argument -- several
+// entries are parenthesized and one needs nothing.
+//
+// What the contents will not give an array is array_typecheck_contents's and
+// array_typecheck_counts's; the forms on a growable collection are
+// collection_contents's.
+
+mod array_contents;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+mut calls = 0;
+fn counter() i32 {
+  calls = calls + 1;
+  calls;
+}
+
+const Three usize = 3;
+
+fn sum3(a Array[i32, 3]) i64 {
+  i64.from(a[0]) + i64.from(a[1]) + i64.from(a[2]);
+}
+
+// A global's contents are a constant, written once before anything runs
+mut table = new Array[u64, 8] <- fill 3u64;
+
+fn repeated() {
+  // 'fill' fills to the size, as 'n of x' does when n is the size
+  imm zeros = new Array[f32, 4] <- fill 0.25;
+  imm halves = new Array[f32, 4] <- 4 of 0.5;
+  printStr("fill = ");
+  printFloat(f64.from(zeros[0] + zeros[3] + halves[1] + halves[3]));
+  printStr("\n");
+
+  // Listed values, then 'fill' for the rest
+  imm mixed = new Array[i32, 5] <- 1, 2, fill 9;
+  show("listed-then-fill", i64.from(mixed[0] * 100 + mixed[1] * 10 + mixed[4]));
+
+  // A count may be a named constant
+  imm counted = new Array[i32, 4] <- Three of 7, 8;
+  show("constant-count", i64.from(counted[2] * 10 + counted[3]));
+
+  // A zero count gives no values, and 'fill' none once the array is full
+  imm none = new Array[i32, 2] <- 0 of 5, 1, 2, fill 3;
+  show("zero-count", i64.from(none[0] * 10 + none[1]));
+
+  show("global", i64.from(table[0] + table[7]));
+}
+
+fn evaluated() {
+  // The value is evaluated for each element, in order
+  imm every = new Array[i32, 4] <- fill counter();
+  show("fill-calls", i64.from(calls));
+  show("fill-first-last", i64.from(every[0] * 10 + every[3]));
+  imm parts = new Array[i32, 3] <- 2 of counter(), counter();
+  show("of-calls", i64.from(calls));
+  show("of-elements", i64.from(parts[0] * 100 + parts[1] * 10 + parts[2]));
+}
+
+// A generic's body holds an array's contents too, copied into each instance
+fn row[T](x T) Array[T, 3] { new Array[T, 3] <- x, fill x; }
+
+fn rows() {
+  // An array of arrays: each element is a row, itself constructed. A row's
+  // contents sit inside the outer list, so the row takes one entry, and
+  // several are parenthesized
+  imm grid = new Array[i32, 2, 3] <- fill new Array[i32, 3] <- (1, 2, 3);
+  show("grid", i64.from(grid[0][0] + grid[1][2]));
+  imm nested = new Array[Array[i32, 2], 3] <- new Array[i32, 2] <- fill 4, 2 of [5, 6];
+  show("nested", i64.from(nested[0][1] * 100 + nested[1][0] * 10 + nested[2][1]));
+  imm parenthesized = new Array[Array[i32, 2], 2] <- new Array[i32, 2] <- (1, 2), [3, 4];
+  show("parenthesized", i64.from(parenthesized[0][1] * 10 + parenthesized[1][0]));
+  imm generic = row[i64](5);
+  show("generic", generic[0] + generic[2]);
+}
+
+fn positions() {
+  // In an argument list: one entry as it is, several parenthesized
+  show("argument-one", sum3(new Array[i32, 3] <- fill 2));
+  show("argument-several", sum3(new Array[i32, 3] <- (1, 2, 3)));
+
+  // A list runs to the statement's ';', across lines
+  imm long = new Array[i32, 6] <- 1, 2,
+    3, 4,
+    fill 0;
+  show("multi-line", i64.from(long[3] * 10 + long[5]));
+
+  // A declared variable, and an array assigned over
+  mut later Array[i32, 2] = new Array[i32, 2] <- fill 1;
+  later = new Array[i32, 2] <- 8, 9;
+  show("assigned", i64.from(later[0] * 10 + later[1]));
+
+  // An array of no elements takes no values
+  imm empty = new Array[i32, 0] <- fill 1;
+  show("empty-sizeof", i64.from(mem.sizeof[Array[i32, 0]]()));
+}
+
+fn main() i32 {
+  repeated();
+  evaluated();
+  rows();
+  positions();
+  0i32;
+}

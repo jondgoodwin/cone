@@ -448,6 +448,13 @@ void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             written ? &written->namestr : &((NbrNode*)typedcl)->namesym->namestr);
         return;
     }
+    // An array's contents are its construction (contentsLowerArray), which
+    // gives them after '<-'
+    if (typedcl->tag == ArrayTag) {
+        errorMsgNode((INode*)node, ErrorArrayContents,
+            "An array is constructed with the values that fill it, after '<-': 'new Array[f32, 4] <- fill 0.0'.");
+        return;
+    }
     if (typedcl->tag != StructTag || (typedcl->flags & TraitType)) {
         errorMsgNode((INode*)node, ErrorNewType, "'new' constructs a struct's value, and %s is not a struct.",
             written ? &written->namestr : "this type");

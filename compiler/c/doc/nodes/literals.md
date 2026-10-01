@@ -36,9 +36,12 @@ concretely, and the lexer refuses a float literal past its type's range
 only by `parsePrefix`'s fold (see Parse), and toggled, so a minus applied twice
 clears it.
 
-**The array node serves both a type and a literal.** The fill literal `[3; 7]`
-has `dimens` `[3]` and `elems` `[7]`; the list form `[a,b,c]` has empty
-`dimens`. The array type, written `Array[i32, 3]`, is the same node tagged
+**The array node serves both a type and a literal.** The list form `[a,b,c]`
+has empty `dimens`; the fill form, one value stored into every element, has
+`dimens` `[3]` and `elems` `[7]`, and is built only by an array's contents
+repeating a constant, `new Array[i32, 3] <- fill 7` ([fncall](fncall.md), "The
+list after `<-`"): the source spelling `[3; 7]` is retired. The array type,
+written `Array[i32, 3]`, is the same node tagged
 `ArrayTag`, `dimens` `[3]` and `elems` `[i32]`: name resolution builds it from
 the bracketed call (`arrayTypeLower`; [Name resolution](../phases/name-resolution.md)).
 Several sizes build nested nodes, each of one size, the first size the
@@ -50,7 +53,8 @@ that type, laid out and indexed (`a[i][j]`) as it is. The parser builds every
 
 Literal tokens map straight to constructors. `parseArrayLit` gathers
 comma-separated expressions, and **if a `;` follows, swaps** — what it gathered
-becomes `dimens` and a fresh list is gathered into `elems`.
+becomes `dimens` and a fresh list is gathered into `elems` — only so that name
+resolution can refuse `[n; x]` in both its meanings (below).
 
 A type literal is not built as one. A construction, `new Point(1, 2)`, is an
 `FnCallNode` flagged `FlagNew` (`parseNew`): its `objfn` the type -- a name, a
@@ -80,13 +84,15 @@ naming `i32` or `f64` into a resolved one. A string literal's `vtype` is still
 `unknownType`, so this is a no-op for it.
 
 **`arrayNameRes` is the one retag site**: `ArrayTag` becomes `ArrayLitTag` when
-`elems[0]` is **not** a type node. Decided by the first element alone. A fill
-form whose element is a type, `[3; i32]`, is the fill literal's spelling of an
-array type, and is refused (`ErrorArrayTypeOld`, naming `Array[T, n]`); it stays
-the `ArrayTag` it spells, so nothing after reports it again. A list of one type,
-`[i32]`, stays an `ArrayTag` with no size, which type check refuses. In a
-generic's template `[2; T]` is a literal until `cloneArrayNode` decides again on
-the substituted element ([generic](generic.md)), and refuses it then the same way.
+`elems[0]` is **not** a type node. Decided by the first element alone. `[n; x]`
+is refused either way: with a type for x, `[3; i32]`, it is the old spelling of
+an array type (`ErrorArrayTypeOld`, naming `Array[T, n]`), and stays the
+`ArrayTag` it spells, so nothing after reports it again; with a value it is the
+retired fill literal (`ErrorFillLiteral`, naming `new Array[T, n] <- fill x`).
+A list of one type, `[i32]`, stays an `ArrayTag` with no size, which type check
+refuses. In a generic's template `[2; T]` is neither until `cloneArrayNode`
+decides again on the substituted element ([generic](generic.md)), and refuses it
+then the same way.
 
 `namedValNameRes` resolves the *value* only — the name is deliberately not
 bound, because it is matched against a field by symbol later.
@@ -205,13 +211,11 @@ conversion does.
 `slitTypeCheck` sets a string's type to an array of `u8` sized from `strlen`. A
 string literal is also an lval.
 
-**Array literal** — `arrayLitTypeCheck` requires the fill dimension to be a
-literal constant, everywhere, an allocation's initial value included: an
-array's size is part of its type, and a count chosen at run time belongs to a
-`List`.
-
-- **Fill form**: one dimension only; a `ULitTag` dimension is forced to `usize`;
-  exactly one fill value.
+**Array literal** — `arrayLitTypeCheck` checks the list form; an array's
+contents arrive already typed as the array (`contentsLowerArray`), the fill
+form among them, and are not checked again. Its fill-form arm is reached only
+by a fill literal a macro's or generic's clone refused, after the refusal:
+one constant dimension, forced to `usize`, and exactly one value.
 - **List form**: not empty; the elements settle on one type by folding, the same
   way an `if` folds its branches — the first successfully typed element sets the
   type in common, and each later one either matches it or meets it at a
@@ -234,7 +238,9 @@ untyped.
 **Construction** — `typeLitNewCheck` takes a `FlagNew` call. A managed
 reference type makes it an allocation, the construction of its value type held
 by an `AllocateTag` node ([references](references.md), "Allocation"); `trynew`
-on any other type is `ErrorTryNewValue`. Otherwise its type must be a struct
+on any other type is `ErrorTryNewValue`. An array's construction is its
+contents, after `<-`, which `contentsLower` takes before this is reached, so
+one here has none (`ErrorArrayContents`). Otherwise its type must be a struct
 (`ErrorNewType` otherwise: a number converts with `from`, an enum's variant
 keeps its brackets). A generic
 struct named bare, `new Box(5i64)`, has its type arguments inferred from the
@@ -312,10 +318,10 @@ found through name resolution's binding. A struct target is left out:
 `genlRecast` reinterprets one through a stack slot, which a global's
 initializer has none of. Type check still applies the same-size rule, and
 `genlRecast`'s `bitcast`, `inttoptr` or `ptrtoint` of a constant operand is
-folded by the builder into a constant (`ptr null` for zero). An array literal's
-fill count is the one constant context that refuses it (`arrayLitDimIsConst`):
-type check reads the count from a `ULitTag`, and a cast has not been generated
-yet.
+folded by the builder into a constant (`ptr null` for zero). The count of
+`n of x` in an array's contents is the one constant context that refuses it
+(`contentsConstCount`): type check reads the count from a `ULitTag`, and a cast
+has not been generated yet.
 
 **A borrowed constant array literal is a constant, as a borrowed string literal
 is.** Neither is an lval of a variable, so `borrowTypeCheck` asks
@@ -356,16 +362,12 @@ a field initialization is accounted exactly as a call argument would be.
 `arrayLitFlow`:
 
 - **List form**: every element gets its own holder, so each is move-or-copied.
-- **Fill form**: a **move value may not be repeated** — `ErrorBadFill`,
-  unconditionally, without trying to prove the count is 1. A counted reference
-  may be, but the count must be a compile-time constant within `int16_t`, else
-  `ErrorFillCount`. The amount is **n for an lvalue, n−1 for a temporary** — an
-  lvalue still holds its own reference after the read, a temporary hands over
-  the one it was born with.
-
-The two codes are deliberately distinct: `ErrorBadFill` is a language rule;
-`ErrorFillCount` is an implementation limit that should disappear when a fill
-lowers to a loop.
+  An array's contents repeating a value are this form, the value's expression
+  copied into each element, so a variable repeated is moved by the first and
+  gone for the second, and a counted reference copied in gains a holder per
+  element, by the ordinary rules.
+- **Fill form**: one constant, which moves nothing and counts nothing; it is
+  only read.
 
 ## Generation
 
@@ -446,10 +448,10 @@ is its type exactly and has no terminator.
   but not re-checked — and if that path is live, the compile aborts rather than
   skipping the check.
 - **`cloneArrayNode` clones `elems` but shares `dimens`**, so a cloned fill
-  literal shares its dimension node with the original.
-- **A fill dimension that cannot be resolved silently becomes 0**, so a
-  run-time-sized allocation's type claims a zero-length array. That path
-  generates through the run-time fill loop, not the constant path.
+  form shares its dimension node with the original.
+- **An array's contents are one copy of a repeated value per element**, so a
+  large array repeating a computed value is that many expressions, checked and
+  generated each; only a constant repeated alone stays one value.
 - **`typeLitStructReorder`'s error recovery inserts fake zero values** typed as
   the field's type, so the coercion pass that follows passes on a value that is
   not real.
@@ -459,7 +461,7 @@ is its type exactly and has no terminator.
 
 - How an untyped literal is adapted: [Type Check Reasoning](../phases/type-check-reasoning.md), "Coercion"
 - The literal-initializer rules for globals, parameters and field defaults: [vardcl](vardcl.md)
-- What a fill literal's alias count means: [Flow Analysis](../phases/flow.md), "Moves and counting"
+- An array's contents, and the list after `<-` they are written with: [fncall](fncall.md), "The list after `<-`"
 - The nullable-pointer enum: [struct](struct.md) and [Generation](../phases/generation.md)
 - Where a type literal is retagged from a call, and a construction by a declared init: [fncall](fncall.md)
 - What a declared init may do with its `self &new`: [Flow Analysis](../phases/flow.md), "An init's self"

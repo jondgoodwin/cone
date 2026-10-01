@@ -1,19 +1,18 @@
 // Naming a move value in an array literal's element deactivates the source, and
-// the fill form of the same literal refuses a move value outright.
+// so does naming one in an array's contents, once for each element it fills.
 //
 // The list form '[a, b]' gives every element a holder of its own, so each value
 // is moved or copied on the same rule as a function call's argument: arrayLitFlow
 // hands each one to flowHandleMoveOrCopy, exactly as move_flow_literal's type
 // literal does with its field values.
 //
-// The fill form '[n; value]' is the other thing an array literal can be, and it
-// is where the two differ. It evaluates one expression and stores it into every
-// element, and a move value has exactly one owner, so there is nothing for the
-// second element to hold. It is refused however small n is: proving that n is 1
-// would buy a construct nobody writes, at the cost of a rule that is harder to
-// state than "a fill may not repeat a move value".
+// An array's contents that repeat a value, 'new Array[Handle, 2] <- fill x' or
+// '<- 2 of x', evaluate x for each element. A construction there builds a new
+// value each time, so a move type repeats freely; a variable there is moved
+// into the first element, and the second finds it gone, by the same rule. So
+// it is for any collection's 'n of x', which appends in a loop.
 //
-// While array literals were treated as leaves by flow analysis, both forms
+// While array literals were treated as leaves by flow analysis, the list form
 // compiled clean and the read below was a use after move.
 
 mod move_flow_arraylit;
@@ -22,12 +21,30 @@ struct Handle is Move {
   pub id i32;
 }
 
+// A collection whose '<-' takes a Handle
+struct Bag {
+  pub count i32;
+  pub fn put overload `<-`(self &mut, h Handle) { count = count + 1; }
+}
+
+// 'n of x' appends x evaluated once for each, in a loop: a variable is moved
+// by the first pass and gone for the next, as in any loop
+fn repeatedIntoBag() {
+  mut bag = new Bag(0);
+  bag <- 2 of new Handle(1);
+  imm kept = new Handle(2);
+  bag <- 2 of kept;                                //~ ErrorMove
+}
+
 fn main() i32 {
   imm hd = new Handle(7);
   imm arr Array[Handle, 2] = [hd, new Handle(8)];
 
-  imm two Array[Handle, 2] = [2; new Handle(9)];  //~ ErrorBadFill "may not repeat a move value"
-  imm one Array[Handle, 1] = [1; new Handle(10)];  //~ ErrorBadFill "may not repeat a move value"
+  imm two = new Array[Handle, 2] <- fill new Handle(9);
+  imm one = new Array[Handle, 3] <- 2 of new Handle(10), new Handle(11);
+
+  imm kept = new Handle(12);
+  imm twice = new Array[Handle, 2] <- fill kept;  //~ ErrorMove
 
   hd.id;                     //~ ErrorMove
 }

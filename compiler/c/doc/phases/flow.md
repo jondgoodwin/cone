@@ -411,10 +411,9 @@ It is called from exactly seven places — `varDclFlow` (the initializer),
 `assignSingleFlow` (the rval), `assignMultRetFlow` (the one rval a
 destructuring takes apart), `fnCallFlow` (per argument), `allocateFlow` (the
 allocated value), `typeLitFlow` (per field) and `arrayLitFlow` (per element in
-the list form, and a fill's tuple literal's elements). The array **fill** form
-does its own arithmetic for the value it repeats, because one value goes to n
-holders: a value that is or holds a counted reference gains n, or n - 1 for a
-temporary.
+the list form). Every holder is counted one at a time: an array's contents
+repeating a value copy the expression into each element, so each copy is one
+more holder, and the fill form holds only a constant.
 
 **Decrements are never reference-count nodes.** They come from generation: walking a
 `dealias` list at scope exit, and `genlStore` releasing an lval's previous value
@@ -704,7 +703,7 @@ check does not see because assignment does not carry a scope onto a variable
 
 **What is not held.** The temporary an operator changing its operand in place
 borrows it through (`x += 1` is `{imm tmp = &mut x; *tmp = *tmp + 1}`, and
-`v <- (a, b)` appends through one; both named `tempName`) is an access, a write,
+`v <- a, b` appends through one; both named `tempName`) is an access, a write,
 and holds nothing: `k += k` compiles. A borrow held inside another value —
 `pool.get(id)`'s `Option[&T]`, a struct field — has no holder yet. A borrow a
 call returns carries its receiver's loan as the receiver was reached: through a
@@ -835,7 +834,6 @@ filled `self`'s fields is an ordinary store.
 | **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs, of drop-fn structs and enums, and of tuples and arrays holding what finalizes or owns, from a jump down to the block it names; the previous value's release at a store over a variable, a part of one, or a place reached through a reference; each on the paths that hold the value, by a drop flag where they differ | an array an element was moved out of leaks the rest; a value stored into a field of a variable holding nothing leaks — see Hazards |
 | **Permission** | `MayWrite` and `MayRead` | `ErrorNoMut` on assignment and swap; `ErrorNoRead` on a read through a reference — a dereference, an index, or a field of a virtual reference | `MayAliasWrite` and `IsLockless` are populated and read nowhere; `RaceSafe` is read by the thread check, a type check question (`refThreadBinds`) |
 | **Initialization** | yes | `ErrorMove` "has not been initialized"; for a variable that moves or has anything to do as it dies, "may not have been given a value" where some path did not (the path walk) | for any other type, "initialized on one branch" reads as initialized everywhere; a variable never initialized may be borrowed, so a method taking it `&mut` can fill it, and nothing then stops a field it left unset being read through the borrow; the unused-variable warning in `flow.h`'s header does not exist |
-| **Array fill rules** | yes | `ErrorBadFill` for a repeated move value; `ErrorFillCount` for a non-constant count | — |
 
 Everything else about permissions is type check's: `permMatches` in
 `borrowTypeCheck`, and variance in the reference matchers.
@@ -852,15 +850,14 @@ Everything else about permissions is type check's: `permMatches` in
 | `ErrorNoRead` | `flowLoadThroughRef` | no read permission on the reference a dereference, an index or a virtual-reference field reads through |
 | `ErrorMove` | `nameuseFlow`, `nameuseFlowBorrowed` | read: uninitialized, or moved out; borrowed: moved out only (`borrowFlow` walks the borrowed place to its variable) |
 | `ErrorMove` | `dropRefuse`, from the path walk | a tracked variable moved, read or borrowed where some path reaching it moved or hollowed it, or (not for a borrow) never gave it a value |
-| `ErrorBadFill` | `arrayLitFlow` | a fill may not repeat a move value |
-| `ErrorFillCount` | `arrayLitFlow` | fill count not constant, or too large |
 | `ErrorEscape` | `returnFlowEscape` | returned borrow outlives the local it points at |
 | `ErrorCallEscape` | `fnCallFlowStoredBorrow` | a `&mut &T` argument points at a place that outlives another borrow passed to the same call |
 | `ErrorFrozen` | `loanUse`, for a conflict `loanAccess` recorded; `loanFlightAccess`, `loanFlightActivate` | a source read, changed, moved, borrowed or ended while a borrow of it that forbids that is still to be used; reported at the access, naming the borrow (or the method that returned it) and its next use. Or, at once, an access conflicting with a loan an earlier operand of the same call or literal carries, or a two-phase receiver conflicting at its call with what another argument carries |
 
-`ErrorBadFill` and `ErrorFillCount` are deliberately distinct: the first is a
-language rule, the second an implementation limit that should disappear when a
-fill lowers to a loop.
+A value an array's contents or `n of x` repeat is evaluated once per element,
+so the ordinary move rule judges it: the loop `n of x` lowers to is walked as
+any loop, and an array's contents copy the expression into each element
+([fncall](../nodes/fncall.md), "The list after `<-`").
 
 ## 8. Contract
 
@@ -973,7 +970,7 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
 | `ir/exp/borrow.c` | `borrowFlow`, `borrowFlowPlace` | the borrowed place must not be moved out: the variable at its root goes to `nameuseFlowBorrowed`, which refuses it moved out or hollowed but not uninitialized; a reference it is reached through is loaded as a value and not read through, an index is read; no aliasing tracked |
 | `ir/stmt/return.c` | `returnFlowEscape` | `ErrorEscape` for a returned borrow of a local |
 | `ir/exp/fncall.c` | `fnCallFlowStoredBorrow` | `ErrorCallEscape` for a `&mut &T` argument the callee could store a narrower borrow through |
-| `ir/exp/arraylit.c` | `arrayLitFlow` | fill-form rules and the n / n-1 alias amount |
+| `ir/exp/arraylit.c` | `arrayLitFlow` | each element of the list form a holder; the fill form's one constant read |
 | `ir/types/reference.c` | `refAdoptInfections` | where a reference type acquires `MoveType` |
 | `ir/types/region.c` | `regionIsCounted`, `regionIsOwning`, `regionMethod` | which region methods a region declares, which is what flow asks of it |
 | `genllvm/genlalloc.c` | `genlRegionAlias`, `genlReleaseOwning`, `genlHollowRelease`, `genlDealiasNodes` | what consumes everything flow injected |

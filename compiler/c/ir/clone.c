@@ -80,6 +80,8 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         node = cloneLogicNode(cstate, (LogicNode *)nodep); break;
     case NamedValTag:
         node = cloneNamedValNode(cstate, (NamedValNode *)nodep); break;
+    case OfEntryTag: case FillEntryTag: case PairEntryTag:
+        node = cloneEntryNode(cstate, (EntryNode *)nodep); break;
     case SizeofTag:
         node = cloneSizeofNode(cstate, (SizeofNode *)nodep); break;
     case IntrinsicTag:

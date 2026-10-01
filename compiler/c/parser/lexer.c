@@ -1397,12 +1397,47 @@ static char *lexSkipTrivia(char *srcp) {
     }
 }
 
+// With the lexer on a name, does what follows it begin a value rather than
+// continue an expression the name begins? Asked of 'fill' at the start of an
+// entry after '<-', which is the contextual word when space and then a value
+// follow it ('xs <- fill 0', 'fill -1', 'fill (a, b)', 'fill new Point(1, 2)')
+// and the name otherwise ('xs <- fill;', 'fill(1)', 'fill[0]', 'fill.len()',
+// 'fill + 1', 'fill of 3'). After the space, a token that can do either --
+// '-', '*', '&', '(' and '[' -- is taken as beginning the value, so a variable
+// named 'fill' used in an expression there is written without the space or
+// parenthesized: 'fill-1', '(fill - 1)'. Read off the text as lexNextIsWord is.
+int lexNextOpensValue() {
+    char *srcp = lex->srcp;
+    if (!(*srcp == ' ' || *srcp == '\t' || *srcp == '\r' || *srcp == '\n' || *srcp == '/'))
+        return 0;
+    srcp = lexSkipTrivia(srcp);
+    char c = *srcp;
+    if (isalpha((unsigned char)c) || c == '_' || (c & 0x80)) {
+        // A name opens a value, unless it is a word that continues an expression
+        static char *infix[] = {"and", "or", "as", "into", "is", "of", NULL};
+        for (char **word = infix; *word; ++word) {
+            if (lexIsWordAt(srcp, *word))
+                return 0;
+        }
+        return 1;
+    }
+    switch (c) {
+    case '-': case '+': case '*': case '&':
+        // '-=', '+=', '*=', '&=', '++' and '--' continue the name
+        return srcp[1] != '=' && srcp[1] != c;
+    case '(': case '[': case '{': case '"': case '\'': case '`': case '~': case '?':
+        return 1;
+    default:
+        return isdigit((unsigned char)c) != 0;
+    }
+}
+
 // With the lexer on a name in a function-reference type's parameter list, is
 // the name the start of a type -- a parameter written as its type alone -- rather
 // than a parameter's own name? It is when what follows could not begin a
 // parameter's type: a '.' (a path to a type, 'geomath.Vec3'), or a '[' opening
 // type arguments ('List[i32]', 'Array[i32, 4]'), told apart from a parameter
-// named before the fill literal's brackets ('xs [4; i32]', which name
+// named before the old array type's brackets ('xs [4; i32]', which name
 // resolution refuses as a type) by the ';' those brackets hold at their own
 // level. Read off the text as
 // lexNextIsWord is, so nothing is lexed twice.

@@ -95,6 +95,7 @@ add_executable(conec
 	compiler/c/ir/exp/block.c
 	compiler/c/ir/exp/borrow.c
 	compiler/c/ir/exp/cast.c
+	compiler/c/ir/exp/contents.c
 	compiler/c/ir/exp/deref.c
 	compiler/c/ir/exp/fncall.c
 	compiler/c/ir/exp/if.c

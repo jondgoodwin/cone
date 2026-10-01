@@ -638,9 +638,7 @@ out in line up to `RegionAliasUnroll` (16), a loop beyond, since the optimizer
 pipeline runs no loop pass and folds only calls written out. Core's methods are
 `inline`, so each call is the method's body pasted at the site
 (`genlFnCallInternal`); after optimization `Rc`'s and `So`'s events are the
-instructions the compiler used to emit itself, with one exception: an array
-fill literal adding n owners is n increments rather than one `add n`, because
-the pipeline has no instruction combining after `GVN` to fold them.
+instructions the compiler used to emit itself.
 
 **A type record is a constant, one per type in each object**
 (`genlTypeRecord`), built the first time a region's `alloc` asks for one

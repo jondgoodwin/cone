@@ -88,6 +88,15 @@ extern Name *optionName;   // "Option"
 
 extern Name *fromName;     // "from", a number type's conversion: 'u64.from(count)'
 
+// The contextual words of a '<-' list's entries, 'n of x' and 'fill x': names
+// everywhere else, read as words only on the right of '<-' (parseEntry); and
+// the two methods 'fill' asks a collection, how many values it holds and how
+// many it has room for (contents.c)
+extern Name *ofName;       // "of"
+extern Name *fillName;     // "fill"
+extern Name *lenName;      // "len"
+extern Name *capacityName; // "capacity"
+
 // The methods a region's annotation struct may declare, which the compiler
 // calls at each reference event (ir/types/region.c), and the built-in trait
 // that checks them

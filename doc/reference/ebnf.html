@@ -116,8 +116,16 @@
 
 /* General Use Expressions (with possible assignments) */
 	exp ::= assgn_exp
-	assgn_exp ::= tuple_exp ('=' | '+='|'-='|'*='|'/='|'%='|'&='|'|='|'^='|'<<='|'>>='|'<-') exp
+	assgn_exp ::= tuple_exp ((('=' | '+='|'-='|'*='|'/='|'%='|'&='|'|='|'^='|'<<='|'>>=') exp) | ('<-' entries))
 	tuple_exp ::= simple_exp (',' simple_exp)*
+	entries ::= entry (',' entry)*
+		/* the list after '<-', running to the statement's end, across lines; each entry is appended in turn */
+	entry ::= ('fill' contents_exp) | (contents_exp (('of' | ':') contents_exp)?) | ('(' entries ')')
+		/* 'of' and 'fill' are words only here, names elsewhere; 'fill' is the word when a space and a value
+		   follow it. 'n of x': n values, x evaluated for each; 'fill x': x until the collection's len()
+		   reaches its capacity(); 'k: v': a key and its value, given to a '<-' that takes both */
+	contents_exp ::= simple_exp ('<-' entry)?
+		/* inside a comma list, a construction's contents take one entry: several are parenthesized */
 
 /* Expressions without any assignments */
 	simple_exp ::= if_exp | match_exp | while_exp | each_exp | loop_exp | or_exp
@@ -138,11 +146,12 @@
 		   a variant, an array, a tuple, a value already made); a construction is allocated with
 		   new_exp, and '+<' is refused */
 	suffix_exp ::= term suffix*
-	suffix ::= '++'|'--'| ('.' property) | ('(' (simple_exp (',' simple_exp)*)? ')') | ('[' (simple_exp (',' simple_exp)*)? ']')
+	suffix ::= '++'|'--'| ('.' property) | ('(' (contents_exp (',' contents_exp)*)? ')') | ('[' (contents_exp (',' contents_exp)*)? ']')
 	property ::= ident_token | symbol_token | integer_token
 	term ::=  literal | ident_token | pseudo | '(' exp ')' | new_exp
-	new_exp ::= ('new' | 'trynew') ident_token ('.' ident_token)* ('[' type (',' type)* ']')* ('(' (simple_exp (',' simple_exp)*)? ')')?
-		/* a construction, its type then its initializer's arguments: 'new Point(1, 2)'. A managed reference
+	new_exp ::= ('new' | 'trynew') ident_token ('.' ident_token)* ('[' type (',' type)* ']')* ('(' (contents_exp (',' contents_exp)*)? ')')?
+		/* a construction, its type then its initializer's arguments: 'new Point(1, 2)', and its contents
+		   after '<-' (entries): 'new List[i32](100) <- fill 0'; an array takes contents only. A managed reference
 		   type, or an alias of one, allocates: 'new Rc[mut, Node](1)'. 'trynew' takes only a managed reference
 		   type, and gives an Option of it, None when memory runs out */
 	genqualname ::= ident_token ('.' ident_token)* ('[' type (',' type)* ']')?
@@ -150,7 +159,8 @@
 	
 /* Literals and other tokens */
 	literal ::= float_token | integer_token | text_token | symbol_token | 'true' | 'false' | array_lit
-	array_lit ::= '[' (simple_exp (',' simple_exp) ';')? simple_exp (',' simple_exp) ']'
+	array_lit ::= '[' contents_exp (',' contents_exp)* ']'
+		/* '[n; x]', the fill literal, is retired: 'new Array[T, n] <- fill x' */
 	float_token ::= (('0'-'9') ('0'-'9')*) '.' ('0'-'9')* (('e'|'E') ('-'|'+')? ('0'-'9')+)?
 	integer_token ::= (('0'-'9') ('0'-'9')*) | '0x' (('0'-'9')|('a'-'f')|('A'-'F'))+
 	lifetime_token ::= '\'' ident_token

@@ -172,6 +172,8 @@ void inodePrintNode(INode *node) {
         voidPrint((VoidTypeNode *)node); break;
     case NamedValTag:
         namedValPrint((NamedValNode *)node); break;
+    case OfEntryTag: case FillEntryTag: case PairEntryTag:
+        entryPrint((EntryNode *)node); break;
     case RefCountTag:
     {
         RefCountNode *anode = (RefCountNode *)node;
@@ -286,6 +288,8 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         logicNameRes(pstate, (LogicNode *)*node); break;
     case NamedValTag:
         namedValNameRes(pstate, (NamedValNode *)*node); break;
+    case OfEntryTag: case FillEntryTag: case PairEntryTag:
+        entryNameRes(pstate, (EntryNode *)*node); break;
     case NilLitTag:
     case ULitTag:
     case FLitTag:
@@ -476,6 +480,8 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         break;
     case NamedValTag:
         namedValTypeCheck(pstate, (NamedValNode *)*node, expectType); break;
+    case OfEntryTag: case FillEntryTag: case PairEntryTag:
+        entryTypeCheck(pstate, (EntryNode *)*node); break;
     case NilLitTag:
     case ULitTag:
     case FLitTag:
@@ -740,6 +746,9 @@ static NodeTagFacts nodeTagFacts[NodeTagCount] = {
     [HollowTag] = {ExpGroup, 0, 0},
     [DropFlagTag] = {ExpGroup, 0, 0},
     [NamedValTag] = {ExpGroup, 0, 0},
+    [OfEntryTag] = {ExpGroup, 0, 0},
+    [FillEntryTag] = {ExpGroup, 0, 0},
+    [PairEntryTag] = {ExpGroup, 0, 0},
     [AbsenceTag] = {ExpGroup, 0, 0},
 
     [FnSigTag] = {TypeGroup, 0, 0},

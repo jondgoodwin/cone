@@ -7,10 +7,9 @@
 //   import collections use *;
 //
 //   fn main() {
-//     mut seen = List[String].empty();
-//     seen.push(String.from("core"));
-//     mut counts = Dict[String, i64].empty();
-//     counts.insert(String.from("core"), 1);
+//     mut seen = new List[String] <- String.from("core");
+//     seen.push(String.from("stdio"));
+//     mut counts = new Dict[String, i64] <- String.from("core"): 1;
 //     if counts.contains("core") { ... *counts["core"] ... }
 //   }
 //
@@ -49,10 +48,16 @@
 // arguments are, so a List[&mut Point] is not. A String is Sendable by its
 // List[u8]. Nothing here is safe to change from two threads at once.
 //
+// A list or a dictionary is constructed with 'new': 'new List[i64]' has no
+// block yet, 'new List[i64](100)' room for exactly 100, and the values it
+// starts with follow '<-', each appended in turn: 'new List[i64](100) <- fill
+// 0', 'new Dict[String, i64] <- String.from("a"): 1' (a dictionary's '<-'
+// takes a key and a value, and inserts them). A function a type offers without
+// a receiver makes one too: 'List[i64].empty()', 'List[i64].withCapacity(n)'
+// (never less than 4), 'String.from("text")'.
+//
 // Methods take their receiver as '&' or '&mut'; calling one on a variable
 // borrows the variable for the call ('list.push(x)' is '(&mut list).push(x)').
-// A function a type offers without a receiver makes one: 'List[i64].empty()',
-// 'String.from("text")'. ('new' is reserved for a language feature.)
 //
 // Every method of a generic type is compiled for every instance, whether it is
 // called or not, so no method here may assume anything of an element type that
@@ -76,6 +81,19 @@ pub struct List[T] is ShapeChanging, Sendable {
   ptr *T;
   used usize;
   cap usize;
+
+  // An empty list, 'new List[i32]': no block until the first value arrives
+  pub fn initEmpty overload init(self &new) { *self = new List(0usize as *T, 0usize, 0usize); }
+
+  // An empty list whose block has room for exactly n values, 'new List[i32](100)',
+  // which is what its contents' 'fill' fills: 'new List[i32](100) <- fill 0'
+  pub fn initCapacity overload init(self &new, n usize) {
+    *self = new List(0usize as *T, 0usize, 0usize);
+    if n > 0usize {
+      self.ptr = libc.realloc(self.ptr as *u8, n * mem.sizeof[T]()) as *T;
+      self.cap = n;
+    }
+  }
 
   // An empty list: no block until the first value arrives
   pub fn empty() List { new List(0usize as *T, 0usize, 0usize); }
@@ -234,7 +252,7 @@ pub struct String is ShapeChanging {
   }
 
   pub fn appendUInt overload `<-`(self &mut, n u64) {
-    mut digits Array[u8, 20] = [20; 0u8];
+    mut digits = new Array[u8, 20] <- fill 0u8;
     mut count = 0usize;
     mut rest = n;
     mut going = true;
@@ -411,6 +429,9 @@ pub struct Dict[K, V] is ShapeChanging, Sendable {
   removed usize;
   cap usize;
 
+  // An empty dictionary, 'new Dict[String, i64]': no block until the first entry arrives
+  pub fn initEmpty overload init(self &new) { *self = new Dict(0usize as *Slot[K, V], 0usize, 0usize, 0usize); }
+
   pub fn empty() Dict { new Dict(0usize as *Slot[K, V], 0usize, 0usize, 0usize); }
 
   // How many entries it holds, and how many slots its block has
@@ -434,6 +455,10 @@ pub struct Dict[K, V] is ShapeChanging, Sendable {
     mem.writeRaw(slots + i, new Slot[K, V](slotFull, h, key, value));
     state == slotFull;
   }
+
+  // 'dict <- key: value' is 'dict.insert(key, value)': a later value for a key
+  // it holds replaces the earlier
+  pub fn insertPair overload `<-`(self &mut, key K, value V) { self.insert(key, value); }
 
   // Whether it holds key
   pub fn contains(self &, key &[]u8) Bool { self.find(key) != cap; }

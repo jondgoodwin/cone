@@ -1,15 +1,19 @@
 # collection - array references and slices: '&[]' over an array, the length a
 # slice carries, indexing and aliasing through one, and a slice as a parameter,
-# a result, a member and a global. Tier 2.
+# a result, a member and a global; and a collection's contents, the list after
+# '<-' (listed values, 'n of x', 'fill x', pairs 'k: v'). Tier 2.
 #
 # Key reference: compiler/c/doc/diagnostics/test-suite.md, "cases.toml keys".
 # The group directory supplies the feature tag, so tags carry pipeline phases.
 #
 # The group's title in the manual is "collection types, array references and
-# slices". There are no collection types. packages/core/src/core.cone defines
-# Option, Result, 'So' and 'Rc' and nothing else; there is no vector, map, list
-# or string type, and no generic container of any kind. Array references and
-# slices are therefore the whole of this group, and 'slice' and 'array
+# slices". The compiler defines no collection type: the collections package's
+# List, Dict and String are library code, which its own tests cover. What the
+# compiler gives every collection is the list after '<-', each entry lowered to
+# a call of the receiver's '<-' (collection_contents, and the refusals in
+# collection_typecheck_contents and collection_parse_contents); an array's
+# contents are array's. Otherwise array references and
+# slices are the whole of this group, and 'slice' and 'array
 # reference' name one thing: the ArrayRefTag type '&[]T', a data pointer and a
 # length carried together. An '&Array[T, n]' -- a plain reference whose value type is
 # a fixed-size array -- is the other construct here, and it is a different type
@@ -154,7 +158,24 @@ contains = ["icmp ule i64", ", %count",
   "call void @cone_panicSlice(i64 %a2, i64 %b3, i64 %count, ptr @srcfile, i64 31, i32 14)\n  unreachable",
   "%slicelen = sub i64"]
 
+# The list after '<-': each entry form after an existing collection and after
+# a construction, a value evaluated for each element, 'fill' to a capacity,
+# pairs with a key repeated, a list across lines and in an argument, any '<-'
+# (print's), and 'of' and 'fill' as names. A 'run' because the claim is which
+# values arrive and in what order, which only printing them shows. Uses the
+# collections package.
+[scenario.collection_contents]
+category = "run"
+description = "The list after '<-': listed values, 'n of x' evaluating x for each, 'fill x' to the capacity, pairs with a later key winning, after a construction and an existing collection, across lines and in an argument; 'of' and 'fill' as names"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
 # -------- type check stage --------
+
+[scenario.collection_typecheck_contents]
+category = "reject"
+description = "The list after '<-': a count negative, past 4294967295 or not a usize, a pair with no two-value '<-', 'fill' on what has no 'len()', and an entry form inside a tuple used as a value"
+tags = ["typecheck"]
+diagnostics = 6
 
 [scenario.collection_typecheck_slice]
 category = "reject"
@@ -175,6 +196,14 @@ category = "reject"
 description = "A range written with '...' and no end"
 tags = ["parse"]
 diagnostics = 1
+
+# 'of' and 'fill' outside a list after '<-' are names, so what follows them
+# there is a malformed statement
+[scenario.collection_parse_contents]
+category = "reject"
+description = "'n of x' and 'fill x' written outside a list after '<-'"
+tags = ["parse"]
+diagnostics = 3
 
 [scenario.collection_typecheck_perm]
 category = "reject"

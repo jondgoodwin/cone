@@ -96,9 +96,8 @@ enum ErrorCode {
     ErrorOverloadUse = 1058,    // Overload name used somewhere other than a call's callee
     ErrorPrivOverload = 1076,   // A private candidate may not join a public overload name
 
-    // Array literals
-    ErrorBadFill = 1059,        // Array fill literal may not repeat this value
-    ErrorFillCount = 1060,      // Array fill literal's element count cannot be counted into
+    // 1059 was ErrorBadFill and 1060 ErrorFillCount, the fill literal '[n; x]' repeating a move value or a counted
+    // reference; an array's contents evaluate the value for each element, under the move rule (ErrorFillLiteral)
 
     // Generics
     ErrorNoGenParms = 1061,     // Type parameter list declares no parameters
@@ -384,7 +383,7 @@ enum ErrorCode {
     ErrorOwnedArrayRef = 1203,  // '+[]', as a type or an allocation: an owned runtime-sized array is a List, shared as 'Rc[List[T]]'; a borrowed slice is '&[]T'
 
     // The array type, 'Array[T, n]' (ir/types/array.c, ir/exp/nameuse.c)
-    ErrorArrayTypeOld = 1204,   // '[n; T]' as a type: the fill literal's spelling, with a type where its value goes; an array type is 'Array[T, n]'
+    ErrorArrayTypeOld = 1204,   // '[n; T]' as a type, the old spelling: an array type is 'Array[T, n]'
     ErrorArrayTypeArgs = 1205,  // 'Array' given no size, or used without its brackets: it takes an element type, then one size for each dimension
     ErrorArrayTypeElem = 1206,  // 'Array[...]' whose first argument is not a type: the element type comes first, then the sizes
 
@@ -404,6 +403,14 @@ enum ErrorCode {
     // Allocation, 'new Rc[mut, Node](1)' and 'trynew' (ir/exp/allocate.c, ir/exp/typelit.c, ir/types/reference.c)
     ErrorPlusAlloc = 1216,      // A construction allocated with '+', '+Rc-mut Node[1]', '?+Rc Node[1]' or '+<Rc-mut Rect[3]': an allocation is written 'new Rc[mut, Node](1)', one that may fail 'trynew Rc[mut, Node](1)'
     ErrorTryNewValue = 1217,    // 'trynew' on a type that is no managed reference: only an allocation in a region may fail; a value is constructed with 'new'
+
+    // Contents after '<-': listed values, 'n of x', 'fill x' and 'k: v' (parser/parseexpr.c, ir/exp/contents.c, ir/types/array.c)
+    ErrorFillLiteral = 1218,    // The fill literal '[n; x]': an array of n copies is constructed with its contents, 'new Array[T, n] <- fill x'
+    ErrorRepeatCount = 1219,    // The count of 'n of x' out of 0 through 4294967295, or, in an array's contents, not a constant
+    ErrorArrayContents = 1220,  // An array constructed without contents, with init arguments, or with contents that do not fill it exactly
+    ErrorFillSize = 1221,       // 'fill x' on a collection that does not say how full it is: it declares no 'len()' or no 'capacity()'
+    ErrorPairAppend = 1222,     // A pair 'k: v' given to a collection whose '<-' takes no key and value, or to an array
+    ErrorEntryPlace = 1223,     // 'n of x', 'fill x' or 'k: v' where no '<-' takes it apart: inside a tuple that is itself appended
 
     // Warnings
     WarnCode = 3000,

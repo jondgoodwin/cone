@@ -1,0 +1,38 @@
+// A channel's '<-' is send, so a list after it sends each entry in turn, in
+// the order written: values listed, and 'n of x', x evaluated for each send.
+// What each send answers is dropped, and none is refused while the receiver
+// lives.
+
+mod channelcontents;
+
+import testing use *;
+import sync use *;
+
+mut made = 0u64;
+fn next() u64 {
+  made = made + 1u64;
+  made * 10u64;
+}
+
+fn got(o Option[u64]) u64 {
+  match o {
+    case imm s Some {s.value;}
+    case is None[u64] {0u64;}
+  }
+}
+
+fn main() i32 {
+  mut tx Sender[u64];
+  mut rx Receiver[u64];
+  tx, rx = Channel[u64].make();
+  tx <- 1u64, 2 of 7u64, 3 of next();
+  expectUInt(made, 3u64, "the value evaluated once for each send");
+  expectUInt(got(rx.tryRecv()), 1u64, "the value listed");
+  expectUInt(got(rx.tryRecv()), 7u64, "the value repeated");
+  expectUInt(got(rx.tryRecv()), 7u64, "the value repeated, again");
+  expectUInt(got(rx.tryRecv()), 10u64, "the first evaluated");
+  expectUInt(got(rx.tryRecv()), 20u64, "the second evaluated");
+  expectUInt(got(rx.tryRecv()), 30u64, "the third evaluated");
+  expectUInt(got(rx.tryRecv()), 0u64, "nothing more");
+  done();
+}

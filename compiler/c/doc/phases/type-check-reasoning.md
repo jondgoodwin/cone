@@ -239,8 +239,9 @@ that second loop too.
 `fnCallTypeCheck` is the largest function in the phase, and serves several
 syntaxes that all parse to the same node shape. Read it as three stages.
 
-**Stage 1 — syntax, before the callee is known.** Macro call, `<-` on a value
-tuple, argument type checking, generic substitution. `methfld` is what
+**Stage 1 — syntax, before the callee is known.** Macro call, `<-` given a
+list of entries or a construction's contents, argument type checking, generic
+substitution. `methfld` is what
 distinguishes a call from an operator or member access: `TWO + 1` is objfn
 `TWO`, methfld `+`, one argument.
 

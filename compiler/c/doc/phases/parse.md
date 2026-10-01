@@ -63,8 +63,12 @@ Only white space may come between the two words. The other is
 where a parameter may be written as its type alone: a name followed by `.` or
 by a `[` whose brackets hold no `;` of their own begins a type (`geomath.Vec3`,
 `List[i32]`, `Array[i32, 4]`) rather than naming a parameter followed by the
-fill literal's brackets (`xs [4; i32]`, which name resolution refuses as a
-type).
+old array type's brackets (`xs [4; i32]`, which name resolution refuses as a
+type). A third, `lexNextOpensValue`, is asked of `fill` at the start of an
+entry after `<-` (section 3): it is the word when white space and then
+something that begins a value follow it, so `fill(3)`, `fill[0]`, `fill.n`,
+`fill + 1` and `fill of 3` keep `fill` a name; after the space, a token that
+could go either way (`-`, `*`, `&`, `(`, `[`) is taken as the value's.
 
 **`..` and `...` are the range tokens** (`DotDotToken`, `EllipsisToken`), read
 by a match's range pattern and by an index (`parseIndexArgs`): `x[a..b]` is held
@@ -433,6 +437,24 @@ Two entry points: `parseAnyExpr` (= `parseAssign`) is the full expression;
 `parseSimpleExpr` (= `parseOrExpr`) excludes comma and assignment and is what
 arguments, conditions and array elements use.
 
+**The list after `<-`** is read by `parseEntries` rather than `parseTuple`: one
+entry or a `TupleNode` of several, running until no comma follows, so to the
+statement's `;` across lines. An entry (`parseEntry`) is a value, or one of
+three forms built as an `EntryNode` and read nowhere else: `fill x` when
+`fill` comes first and `lexNextOpensValue` says a value follows; `n of x` when
+the name `of` follows the first expression, where no name could otherwise
+follow one; and `k: v` when a `:` does. `of` and `fill` stay names everywhere
+else, which is what keeps `Atomic[u32].of(v)`, a parameter named `fill` and a
+variable named `of` meaning what they did. An entry that begins with `(` is a
+parenthesized list of entries (`ParseState.entryparen`, set for the entry's
+first term only and cleared by `parsePrefix` and `parseNotLogic` before any
+other), so `(1, 2 of 0)` is a list and `(a + b) of 2` a parenthesized count.
+A construction followed by `<-` inside a comma list -- an argument, a named
+value, an array literal's element, an entry -- takes one entry
+(`parseContentsAfter`), leaving the comma to the list it is in; several are
+parenthesized, `draw(new List[i32] <- (1, 2), x)`. At a statement's level the
+construction is the left of an ordinary `<-` and takes the whole list.
+
 **`parseSimpleExprFrom` resumes the cascade** above an operand already parsed
 by `parseOr`: the comparison, `and` and `or` levels each have a `...From` form
 taking their left operand. It exists for a match's pattern, which cannot tell a
@@ -461,7 +483,7 @@ away the ones that were paths.
 | --- | --- | --- |
 | `TupleTag` | `TTupleTag` (all types) or `VTupleTag` (all values); mixed is `ErrorBadElems` | `ttupleNameRes` |
 | `StarTag` | `PtrTag` if the operand is a type, else `DerefTag` | `ptrNameRes` |
-| `ArrayTag` | `ArrayLitTag`; a type as its element, `[3; i32]`, is refused (`ErrorArrayTypeOld`) | `arrayNameRes` |
+| `ArrayTag` | `ArrayLitTag`; `[n; x]` is refused, a type for x the old array type (`ErrorArrayTypeOld`), a value the retired fill literal (`ErrorFillLiteral`) | `arrayNameRes` |
 | `RefTag` | stays a ref type, or becomes `BorrowTag`/`AllocateTag` by region | `refNameRes` |
 | `ArrayRefTag` | stays a ref type, or becomes `ArrayBorrowTag` | `arrayRefNameRes` |
 | `QuesTag` | `FnCallTag` for `Option[T]`, or folds into an `AllocateTag` with `FlagQues` | `allocateQuesNameRes` |
@@ -699,6 +721,7 @@ numbers.
 | | `lexNewLine`, `lexBlockComment` | line counting for diagnostics, inside comments included |
 | | `lexOpensWithMod` | whether a source's first statement begins `mod` or `pub mod`, and not `mod trait`, read off its text past white space and comments with nothing lexed: the folder sweep's probe for a one-file module |
 | | `lexIdentOpensType` | whether the name the lexer is on, in a `&fn` signature's parameter list, begins a type (followed by `.`, or by type arguments told from an array type by the absence of a `;`), read off the text with nothing lexed (section 2) |
+| | `lexNextOpensValue` | whether white space and a value follow the name the lexer is on, which makes `fill` the word in an entry after `<-` (section 2) |
 | `parser/parsemod.c` | `parseInit`, `parsePgm`, `parseLoadCore` | **entry point** — `parseInit` sets up the name table and the lexer, ahead of generation's setup since a build description is read with them; `parsePgm` the type tables, program, main module (a source file's, or the one a build description names), the `core` package from the search path, main file |
 | `parser/parsebuild.c` | `parseIsBuildDesc`, `parseBuildDesc`, `parseBuildFindImport`, `parseBuildImportModule` | the build description: told apart by its `.conebuild` extension, read by the lexer into a tree of `BuildModule`s — settings, the package lines, each module's files, child modules and import lines, each malformed line `ErrorBuildDesc` — the import line a described module writes for a name, and the entry for an include file an import line loads, whose imports are the package lines |
 | `parser/parsemod.c` | `parseBuildModuleTree`, `parseBuildSubmoduleDraw`, `parseBuildFiles`, `parseLoadBuildImport` | a described build's module tree: each module named and filled as the description says, nothing swept, and the file an import line names loaded as a declared module under the import's name. `ParseState.build` is the current module's entry, which `parseModuleDcl` checks the `mod` line against (`ErrorBuildModName`) and `parseImport` answers names from (`ErrorBuildImport`) |
@@ -721,7 +744,8 @@ numbers.
 | | `parseAssign` … `parseMult`, `parseCast` | the precedence cascade (section 3) |
 | | `parsePrefix`, `parseAmper`, `parsePlus` | prefix operators; borrowed and region-managed references |
 | | `parseSuffix`, `parseDotCall`, `parseArgs`, `parseArg` | postfix `.`, `()`, `[]`, `++`, `--`; named values. The `.` production serves a member of a value and a path through a namespace alike |
-| | `parseTerm`, `parseNameUse`, `parseArrayLit` | literals, parens, blocks-as-expressions, names |
+| | `parseTerm`, `parseNameUse`, `parseArrayLit` | literals, parens, blocks-as-expressions, names; a parenthesized entry list when `entryparen` says the term begins an entry |
+| | `parseAppend`, `parseEntries`, `parseEntry`, `parseContentsAfter` | the list after `<-`, its entries and their contextual words, and a construction's contents inside a comma list (section 3) |
 | `parser/parsetype.c` | `parseType`, `parseIsTypeStart` | the type dispatcher that delegates to `parsePrefix` — principle 1 — and the tokens that may begin a type |
 | | `parseTypeReq` | a type the grammar requires: after `as` and `into`, an alias's `=`, `is` in an expression or a case, a `,` in a return list or generic argument list, and a `+` in a type parameter's annotation. None written is `ErrorNoType`, reported just after the token that asked for it; `parseType` alone is for the sites where a type may be left out |
 | | `parseAlias` | `alias Name = target;`: an `AliasDclNode` with `FlagTypeAlias`, its target read as a type expression, the one target built. The statement's shape — a name, `=`, and an expression resolved at compile time — is the one every target takes |

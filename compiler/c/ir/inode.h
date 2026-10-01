@@ -147,7 +147,10 @@ enum NodeTags {
     HollowTag,      // (injected) releases an owning reference whose referent, or an element of it, was moved out
     DropFlagTag,    // (injected) a release that runs only when a variable's drop flag says it holds that value
     NamedValTag,    // Named value (e.g., for a struct literal)
-    AbsenceTag,     // unique, unclonable node for absence of info
+    OfEntryTag,     // 'n of x', an entry on the right of '<-' (EntryNode, lowered at type check)
+    FillEntryTag,   // 'fill x', an entry on the right of '<-' (EntryNode, lowered at type check)
+    PairEntryTag,   // 'k: v', an entry on the right of '<-' (EntryNode, lowered at type check)
+    AbsenceTag,    // unique, unclonable node for absence of info
 
     // Unnamed type node
     FnSigTag,       // Also method, closure, behavior, co-routine, thread, ...
