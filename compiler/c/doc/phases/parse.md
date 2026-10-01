@@ -334,7 +334,11 @@ arm of its own that reports `ErrorInclude` and skips the statement. Released to 
 identifier as a reserved word is, `include name;` would be two identifiers at
 global scope and a cascade behind the one diagnostic that matters. `typedef` is
 retired the same way: an alias is `alias Name = type;`, and `typedef` has an arm
-that reports `ErrorTypedef` and reads the statement through.
+that reports `ErrorTypedef` and reads the statement through. So is the owning
+array reference's operator, `+[]`: there is no owning array reference (an owned
+runtime-sized array is a `List`, shared as `Rc[List[T]]`), and the lexer keeps
+`PlusArrayRefToken` so that `parsePlus` can report `ErrorOwnedArrayRef` at it and
+read the rest through as the thin form.
 
 ### Blocks and statement ends
 
@@ -455,7 +459,7 @@ away the ones that were paths.
 | `StarTag` | `PtrTag` if the operand is a type, else `DerefTag` | `ptrNameRes` |
 | `ArrayTag` | stays a type, or becomes `ArrayLitTag` | `arrayNameRes` |
 | `RefTag` | stays a ref type, or becomes `BorrowTag`/`AllocateTag` by region | `refNameRes` |
-| `ArrayRefTag` | stays a ref type, or becomes `ArrayBorrowTag`/`ArrayAllocTag` | `arrayRefNameRes` |
+| `ArrayRefTag` | stays a ref type, or becomes `ArrayBorrowTag` | `arrayRefNameRes` |
 | `QuesTag` | `FnCallTag` for `Option[T]`, or folds into an `AllocateTag` with `FlagQues` | `allocateQuesNameRes` |
 | `FnCallTag` holding `a.b` | a bound name use, when `a` names a module or a type: the period was a path | `fnCallNameResPath` |
 | `FnCallTag` | `ArrIndexTag`, `FldAccessTag`, `TypeLitTag`, an instantiation, or a real call | `fnCallTypeCheck` |
@@ -634,6 +638,7 @@ never be analyzed.
 | an unbuilt form's body | `parseSkipDclBody` skips a following `{ … }` whole, counting depth, so nothing inside is read as a global statement and reported again, and resyncs at the next `;` where there is no block. `actor` and the refused in-file `mod name { … }` block use it, and so does a member a module trait refuses (`parseModTraitSkipMember`), so each is reported once, where it is written |
 | the retired `include` | `parseRetiredInclude` reports `ErrorInclude` at the word, then reads what the statement took — names or quoted paths, comma-separated — and its `;`, so a statement naming one file, a path or a list is one diagnostic and a `pub` before it adds none. A missing `;` ends the statement at its last name rather than swallowing the next declaration; only where no name follows does it resync with `parseSkipToNextStmt` |
 | the retired `typedef` | `parseRetiredTypedef` reports `ErrorTypedef` at the word, then reads the statement it was — a name, an `=` if one was written, and a type, however many lines it runs over — and its `;`, so each is one diagnostic and a `pub` before it adds none; without the `;` it resyncs with `parseSkipToNextStmt` |
+| `+[]`, the owning array reference the language does not have | `parsePlus` reports `ErrorOwnedArrayRef` at the token, naming `List` and `&[]T`, then reads the region, the permission and the operand as the thin `+` form would, as a type or an allocation, so each is one diagnostic |
 | an `alias` with no `=` | `parseAlias` reports `ErrorAliasEq` just after the name, and still reads the type that follows, so the statement ends where it was written |
 | `parseCloseTok` | reports `ErrorNoRParen`, scans for the closer, gives up at `;`, `}`, EOF |
 | `parseBlockStart` | on `:`, reports `ErrorColonBlock` and reads what follows as the block; on anything else that is not `{`, reports `ErrorNoLCurly` and scans forward for one |

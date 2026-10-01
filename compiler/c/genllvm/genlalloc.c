@@ -76,8 +76,9 @@ static void genlCallDrop(GenState *gen, INode *dropfn, LLVMValueRef valptr) {
 }
 
 // Do 'act' to each of 'count' elements of type 'elemtype', the first at
-// 'firstptr', in element order: a fixed-size array's. A loop, since the optimizer pipeline runs no loop pass that would undo an
-// unrolling, and a count of zero does nothing.
+// 'firstptr', in element order: a fixed-size array's. A loop, since the
+// optimizer pipeline runs no loop pass that would undo an unrolling, and a
+// count of zero does nothing.
 typedef void (*GenlElemAct)(GenState *gen, LLVMValueRef elemptr, INode *elemtype, long long amount);
 static void genlEachElem(GenState *gen, LLVMValueRef firstptr, LLVMValueRef count, INode *elemtype,
     GenlElemAct act, long long amount) {

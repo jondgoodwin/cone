@@ -187,10 +187,10 @@ conversion does.
 `slitTypeCheck` sets a string's type to an array of `u8` sized from `strlen`. A
 string literal is also an lval.
 
-**Array literal** — two entry points. `arrayLitTypeCheck` is the normal one and
-requires the fill dimension to be a literal constant.
-`arrayLitTypeCheckDimExp` is called directly by `allocateTypeCheck` and is the
-**only** path permitting a run-time element count.
+**Array literal** — `arrayLitTypeCheck` requires the fill dimension to be a
+literal constant, everywhere, an allocation's initial value included: an
+array's size is part of its type, and a count chosen at run time belongs to a
+`List`.
 
 - **Fill form**: one dimension only; a `ULitTag` dimension is forced to `usize`;
   exactly one fill value.
