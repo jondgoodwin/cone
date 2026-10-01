@@ -5,9 +5,9 @@
 //
 // Raw means nothing is wrapped. Errors come back as C reports them (a null
 // pointer, a nonzero or negative return, errno), strings are the caller's to
-// NUL-terminate and to free, and the caller keeps every rule C states. A
-// Cone-flavoured layer over it (Result errors, slices, owned strings) comes
-// later, as a package of its own; this one stays the C library as C spells it.
+// NUL-terminate and to free, and the caller keeps every rule C states. The
+// Cone-flavoured layer over it (Result errors, slices, owned strings) is the
+// 'fs' and 'env' packages; this one stays the C library as C spells it.
 //
 // Windows first: Cone cannot yet choose declarations by target, so this
 // version binds the Windows C runtime (the UCRT, linked through msvcrt.lib,
@@ -18,7 +18,7 @@
 //
 // This is a C-named module ('@c' on the 'mod' line): each function below binds
 // to the C symbol of its own name. Its object defines nothing: the three stream
-// functions and 'fabsf' are 'inline'. Being C-named, it gets no prelude, and uses nothing
+// functions, 'errno' and 'fabsf' are 'inline'. Being C-named, it gets no prelude, and uses nothing
 // of core: core imports it instead, for the allocator its regions call.
 
 mod @c libc;
@@ -57,7 +57,42 @@ pub extern {
   fn fread(buf *u8, size usize, count usize, stream *FILE) usize;
   fn fwrite(buf *u8, size usize, count usize, stream *FILE) usize;
   fn fflush(stream *FILE) i32;
+  // Nonzero once a read or write on the stream has failed, which tells a
+  // short 'fread' that failed from one that reached the end
+  fn ferror(stream *FILE) i32;
+  // Removes a file. On Windows it refuses a directory (EACCES); posix's
+  // 'rmdir' removes an empty one
   fn remove(path *u8) i32;
+  // Gives a file or directory a new name, which may be in another directory
+  // on the same volume. Where 'to' is already there, POSIX replaces it; the
+  // Windows runtime refuses (EEXIST, or EACCES for a directory)
+  fn rename(from *u8, to *u8) i32;
+}
+
+// errno.h: the number of the last error a C library function reported,
+// which C's 'errno' names as a variable. Most functions set it only when
+// they fail, so it is read just after a failure, before any other call. The
+// UCRT's 'errno' is a macro calling '_errno', which answers where this
+// thread's number is kept; 'errno()' is that expansion, read with
+// '*libc.errno()' and set with '*libc.errno() = 0i32'. The ISO C names
+// follow; the POSIX names, more of them, are posix's.
+extern fn _errno() *i32;
+pub fn errno() *i32 inline {_errno();}
+pub const EDOM = 33i32;
+pub const ERANGE = 34i32;
+pub const EILSEQ = 42i32;
+
+// time.h: the time now, in seconds since 1970 (UTC), also stored where 't'
+// points unless it is null. The UCRT's 'time' is an inline function calling
+// '_time64', whose 64-bit 'time_t' this binds.
+pub extern {
+  fn @c("_time64") time(t *i64) i64;
+}
+
+// string.h: the text of an error number, "No such file or directory" for
+// ENOENT. The text is the C library's, good until the next call.
+pub extern {
+  fn strerror(errnum i32) *u8;
 }
 
 // stdio.h: the standard streams. C's 'stdin', 'stdout' and 'stderr' are
