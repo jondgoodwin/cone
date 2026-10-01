@@ -30,22 +30,22 @@ struct LinkValue { pub n i64; pub next Option[Link]; }
 alias Link = Gc[mut, LinkValue];
 
 fn leaf(n i64) Leaf {
-  +Gc-mut LeafValue[n];
+  new Leaf(n);
 }
 
 // Allocates while both parameters are held
 fn add(a Leaf, b Leaf) i64 {
-  imm c = +Gc-mut LeafValue[100];
+  imm c = new Leaf(100);
   a.n + b.n + c.n - 100;
 }
 
 // Replaces the pair's left while the caller still holds the old one, loaded
 fn clobber(p Pair) i64 {
-  p.left = +Gc-mut LeafValue[50];
+  p.left = new Leaf(50);
   0;
 }
 fn both(a Leaf, z i64) i64 {
-  imm c = +Gc-mut LeafValue[0];
+  imm c = new Leaf(0);
   a.n + z;
 }
 
@@ -54,7 +54,7 @@ fn list(n i64) Option[Link] {
   if n == 0 {
     return None[Link][];
   }
-  Some[Link][+Gc-mut LinkValue[n, list(n - 1)]];
+  Some[Link][new Link(n, list(n - 1))];
 }
 // Matched by value: through the 'mut' links an Option hangs from, a reference
 // into it could see another reference empty it while in use
@@ -69,7 +69,7 @@ fn temporaries() {
   imm s0 = Gc.steps();
   expectInt(add(leaf(1), leaf(2)), 3, "two results held as temporaries while a third is made");
   expectUInt(u64.from(Gc.steps() - s0), 3, "three allocations, three steps");
-  imm p = +Gc-mut PairValue[leaf(3), leaf(4)];
+  imm p = new Pair(leaf(3), leaf(4));
   expectInt(p.left.n + p.right.n, 7, "a value's parts held while the pair is allocated");
   expectInt(add(p.left, leaf(10)), 13, "a field loaded as an argument, held while another is made");
   expectInt(both(p.left, clobber(p)), 3, "the old left, loaded, held while clobber replaces it");
@@ -85,8 +85,8 @@ fn lists() {
   mut i = 0i64;
   mut last = leaf(0);
   while i < 1000 {
-    last = +Gc-mut LeafValue[i];
-    imm junk = +Gc-mut LinkValue[i, None[Link][]];
+    last = new Leaf(i);
+    imm junk = new Link(i, None[Link][]);
     i = i + 1;
   }
   expectInt(last.n, 999, "the last leaf of a thousand, each loop allocating garbage");

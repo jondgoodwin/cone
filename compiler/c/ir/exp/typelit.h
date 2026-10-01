@@ -23,8 +23,14 @@ void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *lit);
 
 // 'new Point(1, 2)': select the init the arguments call for, and lower the
 // construction to the struct's literal (its implicit init) or to a call of a
-// declared init, which fills the value in place
+// declared init, which fills the value in place. 'new Rc[mut, Node](1)', and
+// 'trynew', allocate it in a region: an AllocateTag node holding the value's
+// construction.
 void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep);
+
+// Is this type-checked value one 'new' constructs: a construction, or a struct
+// that is not a variant written in brackets?
+int typeLitIsConstruction(INode *node);
 
 // Check the value a number's 'from' converts; 0 when it does not convert
 int typeLitNbrFromCheck(FnCallNode *conv, INode *type);

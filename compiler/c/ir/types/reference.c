@@ -166,8 +166,11 @@ void refNameRes(NameResState *pstate, RefNode *node) {
     if (!isTypeNode(node->vtexp) && !castPatternPending(node->vtexp)) {
         if (node->tag == RefTag)
             node->tag = node->region == (INode*)borrowRef ? BorrowTag : AllocateTag;
+        else if (node->region == (INode*)borrowRef)
+            errorMsgNode((INode*)node, ErrorBadTerm, "May not borrow a virtual reference. Coerce from a regular ref.");
         else
-            errorMsgNode((INode*)node, ErrorBadTerm, "May not borrow or allocate a virtual reference. Coerce from a regular ref.");
+            errorMsgNode((INode*)node, ErrorPlusAlloc,
+                "An allocation is written 'new Rc[mut, Rect](...)', the concrete type, and the reference coerces where a virtual one is wanted.");
     }
 }
 
@@ -201,8 +204,9 @@ static void refRefuseRegionRef(RefNode *node) {
             "RegionRef is not a type a value has: a region's annotation struct declares it with 'is', and nothing refers to it.");
 }
 
-// '+R-perm T' allocates. A managed reference type is written 'R[perm, T]',
-// so the plus spelling of one is refused where it was written. Reported once:
+// A managed reference type is written 'R[perm, T]', and so is the one an
+// allocation names, 'new R[perm, T](...)', so the older plus spelling of one,
+// '+R-perm T', is refused where it was written. Reported once:
 // a node reached twice (a pattern and its variable share one) says it once.
 static void refRefusePlusType(RefNode *node) {
     if (!node->plusSpelled)
@@ -213,7 +217,7 @@ static void refRefusePlusType(RefNode *node) {
     char *reg = regname ? &regname->namestr : "R";
     char *perm = permname ? &permname->namestr : "uni";
     errorMsgNode((INode*)node, ErrorPlusRefType,
-        "A managed reference type is written '%s[%s, T]'; the '+' spelling allocates a value.", reg, perm);
+        "A managed reference type is written '%s[%s, T]', and allocated 'new %s[%s, T](...)'.", reg, perm, reg, perm);
 }
 
 // Set by fnSigTypeCheck while it checks a signature's 'self', the one place

@@ -14,8 +14,8 @@
 //   struct Pair { pub left Leaf; pub right Leaf; }
 //
 //   fn build() {
-//     mut p = +Gc-mut Pair[+Gc-mut LeafValue[1], +Gc-mut LeafValue[2]];
-//     p.left = +Gc-mut LeafValue[3];   // Leaf 1 is garbage now
+//     mut p = new Gc[mut, Pair](new Leaf(1), new Leaf(2));
+//     p.left = new Leaf(3);            // Leaf 1 is garbage now
 //     Gc.collect();                    // Leaf 1's 'final' runs here
 //   }
 //
@@ -128,7 +128,7 @@
 //   container from a young one -- it asks only about what was stored, which
 //   is all a store through a borrow can tell it -- so every young object
 //   stored into the heap survives the next minor collection, and is
-//   promoted. Objects born holding their values ('+Gc T[a, b]') are stored
+//   promoted. Objects born holding their values ('new Gc[T](a, b)') are stored
 //   by no barrier, and die young if they are dropped. (Acorn's barrier asks
 //   whether the container is black, so there a young object stored into a
 //   young one is not kept.)
@@ -164,7 +164,7 @@
 // what its tries at generational running cost.
 //
 // WHEN IT WORKS, AND HOW MUCH (pacing in bytes, Lua's). Collection work runs
-// inside allocations (and Gc.collect(), Gc.step()): '+Gc T[...]' evaluates
+// inside allocations (and Gc.collect(), Gc.step()): 'new Gc[T](...)' evaluates
 // its value first, then calls 'alloc', so at that moment every 'Gc'
 // reference the program holds is in a stack slot the compiler registered
 // (its roots), and none is only in a register. Between collections, one
@@ -190,7 +190,7 @@
 // OUT OF MEMORY. An allocation the C library cannot satisfy, or that would
 // pass the limit, runs an emergency collection -- no finalizers run in it, as
 // in Acorn and Lua -- and tries once more. If that fails too, 'alloc' returns
-// null: a '?+Gc' allocation is then None, and a plain 'Gc' one panics, as
+// null: a 'trynew Gc' allocation is then None, and a plain 'new' one panics, as
 // every region's failed allocation does, naming the size asked for.
 
 mod collector use Gc;
@@ -279,7 +279,7 @@ pub struct Gc is RegionRef, Traced {
   pub ty *TypeRecord;  // the value's type record: size, alignment, finalizer, trace
   pub marked u32;      // its colour
 
-  // '+Gc T[...]': the byte count of {header, value}, and T's type record.
+  // 'new Gc[T](...)': the byte count of {header, value}, and T's type record.
   // The value has been evaluated already, so every root is in its slot.
   fn alloc(size usize, ty *TypeRecord) *u8 {
     readEnv();

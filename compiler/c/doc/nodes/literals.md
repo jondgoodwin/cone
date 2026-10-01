@@ -4,8 +4,8 @@ array type**; and the type literal in `typelit.c`, which **shares its node with
 a call**. A struct's value is constructed `new Point(1, 2)`, and a construction
 its implicit field-wise init takes is lowered into a type literal; so is a
 number's conversion, `u64.from(count)`. An enum's variant writes its literal in
-brackets, `Some[x]`, and so may an allocation's value, `+Rc-mut Node[1]`; a
-struct's in brackets anywhere else is refused.
+brackets, `Some[x]`; a struct's in brackets is refused. An allocation,
+`new Rc[mut, Node](1)`, constructs its value the same way, in the region.
 
 **At a glance.** The parser builds them without deciding types. Name resolution
 resolves each literal's type name, decides that `[…]` is an array literal, and
@@ -25,7 +25,7 @@ composite literal takes ownership of. Generation emits constants where it can.
 | `FLitNode` | `FLitTag` | `floatlit` |
 | `SLitNode` | `StringLitTag` | `strlit` pointer into the lexer's arena, plus `strlen` |
 | `ArrayNode` | `ArrayTag` **or** `ArrayLitTag` | `dimens`, `elems` |
-| type literal | `TypeLitTag` | an `FnCallNode` — `args` are the field values, or a number conversion's one value; `FlagNew` when it came of a construction, `FlagAllocValue` when it is an allocation's bracketed value |
+| type literal | `TypeLitTag` | an `FnCallNode` — `args` are the field values, or a number conversion's one value; `FlagNew` when it came of a construction, `FlagAllocValue` when it is a `+` allocation's bracketed value, which is refused |
 
 **`FlagUnkType`** is set only by `newULitNode`, only when the lexer gave no type
 suffix. **There is no float equivalent** — a suffix-less float defaults to `f32`
@@ -231,9 +231,12 @@ element carries no flag and moves when one of its own elements does.
 Every diagnostic path sets `errorType`, so the literal never leaves the pass
 untyped.
 
-**Construction** — `typeLitNewCheck` takes a `FlagNew` call. Its type must be a
-struct (`ErrorNewType` otherwise: a number converts with `from`, an enum's
-variant keeps its brackets, an allocation keeps its `+` spelling). A generic
+**Construction** — `typeLitNewCheck` takes a `FlagNew` call. A managed
+reference type makes it an allocation, the construction of its value type held
+by an `AllocateTag` node ([references](references.md), "Allocation"); `trynew`
+on any other type is `ErrorTryNewValue`. Otherwise its type must be a struct
+(`ErrorNewType` otherwise: a number converts with `from`, an enum's variant
+keeps its brackets). A generic
 struct named bare, `new Box(5i64)`, has its type arguments inferred from the
 values, as its literal's were (`genericSubstitute`). Its inits are the implicit
 field-wise one and those it declares under the name `init`, one or an overload
@@ -254,8 +257,9 @@ own (`ErrorNotPublic`).
 
 **Type literal** — `typeLitTypeCheck` requires a concrete type, then builds a
 struct's literal. **A struct's literal in brackets is `ErrorStructBracket`**,
-naming `new Point(...)`, unless it came of a construction (`FlagNew`), is an
-allocation's value (`FlagAllocValue`, set by `allocateTypeCheck`), or is a
+naming `new Point(...)`, unless it came of a construction (`FlagNew`), is a
+`+` allocation's value (`FlagAllocValue`, set by `allocateTypeCheck`, which
+refuses it itself, `ErrorPlusAlloc`, naming the `new` form), or is a
 variant's, which has a discriminant field to fill; refused at type check, so a
 struct reached through an alias or a type parameter is refused as one named
 directly, and the literal is still built so nothing after it reports again. A

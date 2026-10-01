@@ -1,11 +1,11 @@
 /** Region type handling - a region is a struct declaring 'is RegionRef'
  * @file
  *
- * A region's annotation -- the name after '+' -- is an ordinary struct that
+ * A region -- the head of a managed reference type, 'Rc' in 'Rc[mut, T]' -- is an ordinary struct that
  * declares the built-in trait 'RegionRef'. The compiler knows no region by
  * name. What it knows is the methods a region may declare, each found by name
  * and each optional, and it calls them at the reference events it alone can
- * see: 'alloc' and 'init' when '+R value' allocates, 'aliasRef' when a copy of an
+ * see: 'alloc' and 'init' when 'new R[perm, T](...)' allocates, 'aliasRef' when a copy of an
  * owning reference becomes another owner, 'dealiasRef' when an owner goes away,
  * and 'free' once the value is dead. What a region leaves out says what it
  * does, and whether it declares 'Move' says whether a copy is a move and an
@@ -269,7 +269,7 @@ static void regionCheckInit(FnDclNode *initmeth, StructNode *region) {
 //   never frees it -- the region owns death, in its own loop.
 // - 'dealiasRef': every owner's going asks it, and its true is the death.
 // - no 'free': the memory is not given back a value at a time.
-// - no 'alloc': nothing allocates from the region (refused at '+R value',
+// - no 'alloc': nothing allocates from the region (refused at the allocation,
 //   regionAllocTypeCheck), and an 'init' it has is never called.
 // The refusals are contradictions: 'Move' says one owner, 'aliasRef' another,
 // and 'Traced' a collector; and 'Traced' without the 'mark' it promises.
@@ -350,7 +350,7 @@ int regionMarkTakesContext(INode *region) {
     return marksig->parms->used == 3;
 }
 
-// At an allocation '+R value': the region is a RegionRef (refTypeCheck reports
+// At an allocation, 'new R[perm, T](...)': the region is a RegionRef (refTypeCheck reports
 // one that is not) whose 'alloc' the compiler can call
 void regionAllocTypeCheck(INode *region) {
     StructNode *strnode = regionDcl(region);

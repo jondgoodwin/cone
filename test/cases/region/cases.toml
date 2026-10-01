@@ -66,7 +66,8 @@
 #   (region_parse_owned_arrayref). What a borrowed slice is and does belongs to
 #   collection. region_flow_fill is there for the count a fill literal asks
 #   for, which is always known at compile time.
-# - Virtual owning references, '+<'. They belong to trait.
+# - Virtual owning references, allocated as their concrete type and coerced
+#   ('+<' is refused, trait_nameres). They belong to trait.
 # - A global holding an owning reference. A global may only be initialized with
 #   a literal, so 'mut g = +Rc-mut 80' is ErrorNotLit -- a fact about global
 #   initialization, which core owns, rather than about regions.
@@ -302,7 +303,7 @@ include = ["include/tracer.cone"]
 # none.
 [scenario.region_roots]
 category = "run"
-description = "Roots: each function holding traced references links a frame of its roots (locals, parameters, births) into one chain, pushed at entry and popped at every return; mem.traceRoots marks exactly what they hold; a traced allocation evaluates its value before its alloc"
+description = "Roots: each function holding traced references links a frame of its roots (locals, parameters, births) into one chain, pushed at entry and popped at every return; mem.traceRoots marks exactly what they hold; a traced allocation evaluates its init's arguments before its alloc, then roots its block, its value zeroed, until the value is filled"
 tags = ["genllvm", "runtime"]
 
 [[scenario.region_roots.check]]
@@ -314,6 +315,19 @@ contains = [
   "store ptr %gcframe, ptr @cone_gcframes, align 8",
   "store ptr %gcprev, ptr @cone_gcframes, align 8",
   "call void @cone_traceRoots(i32 0)",
+]
+
+# A Pair holds traced references, so its new block's value is zeroed, then the
+# block rooted in its own slot, then the value stored, then the slot let go
+# (each line alone, since a debug build appends its location to each)
+[[scenario.region_roots.check]]
+name = "allocation-rooted-and-zeroed-while-filled"
+target = "preir"
+contains = [
+  "store %Pair zeroinitializer, ptr %5, align 8",
+  "store ptr %5, ptr %filling13, align 8",
+  "store %Pair %literal8, ptr %5, align 8",
+  "store ptr null, ptr %filling13, align 8",
 ]
 
 [[scenario.region_roots.run]]
@@ -377,6 +391,11 @@ tags = ["flow", "genllvm", "runtime"]
 category = "run"
 description = "Allocating in a region, reference counting, single ownership, permissions, and owning references through fields, calls and branches"
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.region_new]
+category = "run"
+description = "'new Rc[mut, Node](1)' allocates in So, Rc, Arc, Rcw, a region written in Cone and a generic region's instance; uni when the permission is left out, through an alias, named fields, coerced to a virtual reference; the order arguments, alloc, region init, value init in place; 'trynew' gives Some, or None from a failing region"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
 
 # Separate from region_success because it is the scenario a code generation fix
 # landed with: without it, genlallocref's phi named a predecessor that the inner
@@ -443,7 +462,7 @@ excludes = ["allocref", "call %void @free(", "add i64", "sub i64"]
 # Read before optimization, where the locals are still allocas.
 [scenario.region_fallible_alloc]
 category = "run"
-description = "'?+region-perm value' yields an Option holding the owning reference, or empty when the region's alloc returns null"
+description = "'?+region-perm value', the older spelling kept for a value 'new' does not construct (a number here; 'trynew' is region_new's), yields an Option holding the owning reference, or empty when the region's alloc returns null"
 tags = ["nameres", "typecheck", "genllvm", "runtime"]
 
 [[scenario.region_fallible_alloc.check]]
@@ -805,6 +824,12 @@ category = "reject"
 description = "Values that may not be allocated, and names that may not be a region"
 tags = ["typecheck"]
 diagnostics = 5
+
+[scenario.region_typecheck_new]
+category = "reject"
+description = "A constructed value allocated with the retired '+' (plain, fallible, around 'new'), 'trynew' on a struct or a number, and 'new' given a borrowed reference or a virtual one"
+tags = ["typecheck"]
+diagnostics = 8
 
 [scenario.region_typecheck_region]
 category = "reject"

@@ -7,7 +7,7 @@
 //   going away one fewer; weakCount counts only these;
 // - strong() and upgrade() each make one more strong owner;
 // - an Option holding a strong owner -- upgrade()'s Some, or a fallible
-//   '?+Rcw-mut' allocation -- is that owner, let go when the Option goes, and
+//   'trynew' allocation -- is that owner, let go when the Option goes, and
 //   a copy of the Option is one more; a match holds the Option it matches,
 //   and the variant it binds is that Option's value, no owner more;
 // - the value dies when its last strong owner goes, and its block is freed
@@ -21,7 +21,7 @@ import rcweak use *;
 struct Fin { pub n i64; }
 
 fn strongAndWeak() {
-  imm r = +Rcw-mut Fin[1];
+  imm r = new Rcw[mut, Fin](1);
   imm w = Weak[Fin].of(r);
   expectUInt(u64.from(w.strongCount()), 1, "a new value has one strong owner");
   expectUInt(u64.from(w.weakCount()), 1, "and the one weak reference made");
@@ -44,7 +44,7 @@ fn strongAndWeak() {
 }
 
 fn outlived() Weak[Fin] {
-  imm r = +Rcw-mut Fin[2];
+  imm r = new Rcw[mut, Fin](2);
   Weak[Fin].of(r);
 }
 
@@ -60,14 +60,14 @@ fn none() {
 fn unique() {
   // A unique owner moves into 'of' and is given up there, so the value has
   // died by the time the weak reference is handed back
-  imm r = +Rcw Fin[3];
+  imm r = new Rcw[Fin](3);
   imm w = Weak[Fin].of(r);
   expect(!w.alive(), "a unique owner given to of() is gone");
   expectUInt(u64.from(liveBlocks()), 1, "its block stays for the weak reference");
 }
 
 fn upgraded() {
-  imm r = +Rcw-mut Fin[4];
+  imm r = new Rcw[mut, Fin](4);
   imm w = Weak[Fin].of(r);
   match w.upgrade() {
     case imm s Some {
@@ -86,7 +86,7 @@ fn upgraded() {
 }
 
 fn fallible() {
-  imm o = ?+Rcw-mut Fin[5];
+  imm o = trynew Rcw[mut, Fin](5);
   expectUInt(u64.from(liveBlocks()), 1, "a fallible allocation's block");
 }
 

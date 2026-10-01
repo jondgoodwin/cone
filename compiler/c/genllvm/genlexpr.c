@@ -738,14 +738,10 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
     return fncallret;
 }
 
-// A construction by a declared 'init', 'new Point(1, 2)': its arguments are
-// evaluated, then the init is called with 'dest' as its self, the memory it
-// fills in place -- a local's own, an allocation's value, or, where the value
-// has no place yet, a temporary, whose value is then the construction's. A
-// value holding traced references starts zeroed and rooted, so a collection
-// its init's allocations run finds nulls where nothing is written yet.
-static LLVMValueRef genlNew(GenState *gen, FnCallNode *fncall, LLVMValueRef dest) {
-    LLVMTypeRef valtype = genlType(gen, fncall->vtype);
+// The arguments of a construction by a declared 'init', evaluated in call
+// order into the call's arguments, the first left for the 'self' that
+// genlNewFill is handed. A birth among them is rooted as it is made (genlExpr).
+LLVMValueRef *genlNewArgs(GenState *gen, FnCallNode *fncall) {
     uint32_t fnargcnt = fncall->args->used + 1;
     LLVMValueRef *fnargs = (LLVMValueRef*)memAllocBlk(fnargcnt * sizeof(LLVMValueRef*));
     LLVMValueRef *fnarg = fnargs + 1;
@@ -753,7 +749,26 @@ static LLVMValueRef genlNew(GenState *gen, FnCallNode *fncall, LLVMValueRef dest
     uint32_t cnt;
     for (nodesFor(fncall->args, cnt, nodesp))
         *fnarg++ = genlExpr(gen, *nodesp);
+    return fnargs;
+}
 
+// Call a construction's declared 'init' with 'dest' as its self, the memory it
+// fills in place, its arguments already evaluated (genlNewArgs)
+void genlNewFill(GenState *gen, FnCallNode *fncall, LLVMValueRef *fnargs, LLVMValueRef dest) {
+    fnargs[0] = dest;
+    genlFnCallInternal(gen, SimpleDispatch, fncall->objfn, fncall->args->used + 1, fnargs, NULL);
+}
+
+// A construction by a declared 'init', 'new Point(1, 2)': its arguments are
+// evaluated, then the init is called with 'dest' as its self, the memory it
+// fills in place -- a local's own or, where the value has no place yet, a
+// temporary, whose value is then the construction's. (An allocation's value is
+// filled where it was allocated, genlallocref.) A value holding traced
+// references starts zeroed and rooted, so a collection its init's allocations
+// run finds nulls where nothing is written yet.
+static LLVMValueRef genlNew(GenState *gen, FnCallNode *fncall, LLVMValueRef dest) {
+    LLVMTypeRef valtype = genlType(gen, fncall->vtype);
+    LLVMValueRef *fnargs = genlNewArgs(gen, fncall);
     int temp = dest == NULL;
     if (temp) {
         dest = genlAlloca(gen, valtype, "new");
@@ -761,8 +776,7 @@ static LLVMValueRef genlNew(GenState *gen, FnCallNode *fncall, LLVMValueRef dest
     }
     if (itypeHoldsTraced(fncall->vtype))
         LLVMBuildStore(gen->builder, LLVMConstNull(valtype), dest);
-    fnargs[0] = dest;
-    genlFnCallInternal(gen, SimpleDispatch, fncall->objfn, fnargcnt, fnargs, NULL);
+    genlNewFill(gen, fncall, fnargs, dest);
     return temp ? LLVMBuildLoad2(gen->builder, valtype, dest, "") : NULL;
 }
 
@@ -1718,12 +1732,13 @@ static int genlAddrThroughRef(INode *lval) {
 
 // Is this expression a birth: a value that exists only as the instruction
 // making it, not in any local, and that a collection during a later call of
-// the same expression could miss? A '+R' allocation's result, a call's result,
-// a value loaded from memory reached through a reference, the old value an
-// exchange hands back, and a cast making a traced reference of a raw pointer
-// are. A value loaded from a local is not: the local is a
-// root already. Only one whose type holds a traced reference is rooted
-// (genlRootBirth), so a program with none generates as it always did.
+// the same expression could miss? An allocation's result (rooted in a slot of
+// its own while it is filled, genlallocref, and here once it is), a call's
+// result, a value loaded from memory reached through a reference, the old value
+// an exchange hands back, and a cast making a traced reference of a raw pointer
+// are. A value loaded from a local is not: the local is a root already. Only
+// one whose type holds a traced reference is rooted (genlRootBirth), so a
+// program with none generates as it always did.
 static int genlIsBirth(INode *node) {
     switch (node->tag) {
     case AllocateTag:

@@ -521,7 +521,10 @@ such a declaration end without a body.
 construction, a term (`parseNew`): the type -- a name, `.` paths, bracketed
 type arguments -- then the init's arguments in parentheses, left off when
 there are none, into one `FnCallNode` flagged `FlagNew`; the suffixes after
-the parentheses apply to the value. After `&` inside a type
+the parentheses apply to the value. Whether it constructs a value or
+allocates, `new Rc[mut, Node](1)`, is type check's to say, from the type.
+`trynew` is the same term flagged `FlagTryNew` too, wrapped in the `Option`
+node `?T` builds (`QuesTag`), which name resolution takes apart. After `&` inside a type
 (`ParseState.intype`, which `parseType` sets) it is the permission of an
 init's `self`, `&new`; in a value, `&new Point(1, 2)` is a borrow of a
 construction, a temporary, which the borrow's type check refuses.

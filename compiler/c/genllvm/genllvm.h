@@ -147,6 +147,11 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
 // Fill 'dest' in place when 'exp' is a construction by a declared 'init',
 // 'new Point(1, 2)', returning 1; else 0, and the caller stores the value
 int genlNewInto(GenState *gen, INode *exp, LLVMValueRef dest);
+// A construction by a declared 'init' in two steps, as an allocation runs it:
+// its arguments evaluated (the first slot left for 'self'), then, once its
+// memory exists, the init called on it
+LLVMValueRef *genlNewArgs(GenState *gen, FnCallNode *fncall);
+void genlNewFill(GenState *gen, FnCallNode *fncall, LLVMValueRef *fnargs, LLVMValueRef dest);
 // The failures the compiler checks for at run time, each ending the program
 // through the C runtime's entry for it (genlPanic)
 typedef enum {

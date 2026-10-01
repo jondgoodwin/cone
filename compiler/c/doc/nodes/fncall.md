@@ -39,7 +39,8 @@ flags carry the rest of what the source said:
 | `FlagOpAssgn` | an operator-assignment such as `+=` |
 | `FlagOperator` | **the source wrote an operator, not a named member access** |
 | `FlagNew` | a construction, `new Point(1, 2)`; kept on what type check lowers it to |
-| `FlagAllocValue` | a struct's bracketed literal that an allocation takes as its value, which alone keeps that spelling |
+| `FlagTryNew` | beside `FlagNew`, a construction written `trynew`; its `methfld` holds the bound `Option` from name resolution to type check |
+| `FlagAllocValue` | a struct's bracketed literal that a `+` allocation takes as its value, which type check refuses there with its own code (`ErrorPlusAlloc`) rather than `ErrorStructBracket` |
 
 `FlagOperator` exists solely because the two are otherwise indistinguishable
 after parsing, and one dispatch decision depends on knowing which — see Hazards.
@@ -63,13 +64,17 @@ end of file.
 Built from: a call `f(a)`, an index `a[i]`, a member access `a.b`, every binary
 and unary operator, a generic instantiation `Box[i64]`, a managed reference
 type `Rc[mut, Node]`, `?T` for `Option[T]`, a variant's literal `Some[x]` (or a
-struct's, refused but at an allocation's value), a number's conversion
-`u64.from(count)`, a member access like any other, and a construction,
-`new Point(1, 2)`: `parseNew`, a term, takes `new`, the type (a name, `.`
-paths and bracketed type arguments) and the parenthesized arguments, left off
-when there are none, into one node flagged `FlagNew`; suffixes after the
-parentheses apply to the value. `parseDotCall`, `parseSuffix`, `parseArgs`
-and the whole precedence cascade all build this node.
+struct's, refused), a number's conversion `u64.from(count)`, a member access
+like any other, and a construction, `new Point(1, 2)` or the allocation
+`new Rc[mut, Node](1)`: `parseNew`, a term, takes `new`, the type (a name,
+`.` paths and bracketed type arguments) and the parenthesized arguments, left
+off when there are none, into one node flagged `FlagNew`; suffixes after the
+parentheses apply to the value. `trynew` builds the same node, flagged
+`FlagTryNew` as well, inside an `Option` node tagged `QuesTag`, as `?T`
+parses, which name resolution takes apart (`allocateQuesNameRes`): the
+construction replaces it, holding the bound `Option` in its `methfld`.
+`parseDotCall`, `parseSuffix`, `parseArgs` and the whole precedence cascade
+all build this node.
 
 Nothing about which of those it is has been decided yet.
 
@@ -149,7 +154,9 @@ base, is refused by stage 2's type receiver.
 **A construction (`FlagNew`) is handed whole to `typeLitNewCheck`** before any
 stage ([literals](literals.md), "Construction"), which selects the init its
 arguments call for and lowers it to the struct's literal or to a call of a
-declared init (below, "Construction").
+declared init (below, "Construction"); a managed reference type there makes
+it an allocation, the `AllocateTag` node holding the value's construction
+([references](references.md), "Allocation").
 
 **Stage 1 — syntax, before the callee is known.**
 A generic method given type arguments on a receiver, `h.pick[i32](6)` or
@@ -206,8 +213,8 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
 
 - **A type**, with `FlagIndex` → retag `TypeLitTag` and hand to
   `typeLitTypeCheck`, which builds a variant's literal, refuses a struct's
-  (`ErrorStructBracket`, naming `new Point(...)`) but where an allocation
-  takes it as its value, and refuses a number type, `u64[count]`, with
+  (`ErrorStructBracket`, naming `new Point(...)`; at a `+` allocation's value,
+  `ErrorPlusAlloc` instead), and refuses a number type, `u64[count]`, with
   `ErrorNbrBracket` naming `u64.from(...)`: its conversion is the method.
   Refused there, at type check, so a type reached through an alias or a type
   parameter is refused as one named directly.

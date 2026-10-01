@@ -42,11 +42,12 @@ struct Fin {
   pub n i64;
   fn final(self &uni) { note(n); }
 }
-struct Leaf { pub n i64; }
+struct LeafValue { pub n i64; }
+alias Leaf = Gc[mut, LeafValue];
 
 // -- One object: finalized once, freed a cycle later
 fn dropFin() {
-  imm f = +Gc-mut Fin[1];
+  imm f = new Gc[mut, Fin](1);
 }
 fn once() {
   imm before = Gc.finalized();
@@ -63,15 +64,16 @@ fn once() {
 }
 
 // -- One object's death, in the ruled order
-struct Big {
+struct BigValue {
   pub n i64;
   pub f Fin;
   pub o So[Fin];
   pub r Rc[mut, Fin];
   fn final(self &uni) { note(n); }
 }
+alias Big = Gc[mut, BigValue];
 fn dropBig() {
-  imm b = +Gc-mut Big[1, new Fin(2), +So Fin[3], +Rc-mut Fin[4]];
+  imm b = new Big(1, new Fin(2), new So[Fin](3), new Rc[mut, Fin](4));
 }
 fn ruledOrder() {
   dropBig();
@@ -80,16 +82,17 @@ fn ruledOrder() {
 }
 
 // -- An Rc owner shared outside is counted down, not finalized
-struct HoldsRc {
+struct HoldsRcValue {
   pub n i64;
   pub r Rc[mut, Fin];
   fn final(self &uni) { note(n); }
 }
+alias HoldsRc = Gc[mut, HoldsRcValue];
 fn dropHolder(k Rc[mut, Fin]) {
-  imm h = +Gc-mut HoldsRc[1, k];
+  imm h = new HoldsRc(1, k);
 }
 fn rcShared() {
-  imm keep = +Rc-mut Fin[4];
+  imm keep = new Rc[mut, Fin](4);
   dropHolder(keep);
   settle();
   expectInt(log, 1, "the holder dies; keep still owns the Rc value");
@@ -97,9 +100,9 @@ fn rcShared() {
 
 // -- Several objects found unreachable together: newest first
 fn dropThree() {
-  imm a = +Gc-mut Fin[1];
-  imm b = +Gc-mut Fin[2];
-  imm c = +Gc-mut Fin[3];
+  imm a = new Gc[mut, Fin](1);
+  imm b = new Gc[mut, Fin](2);
+  imm c = new Gc[mut, Fin](3);
 }
 fn newestFirst() {
   dropThree();
@@ -115,19 +118,20 @@ struct KidValue {
   fn final(self &uni) { note(n); n = 9; }
 }
 alias Kid = Gc[mut, KidValue];
-struct Parent {
+struct ParentValue {
   pub n i64;
   pub kid Kid;
   fn final(self &uni) { note(n); seen = kid.n; }
 }
+alias Parent = Gc[mut, ParentValue];
 // Kid 2 is made first, as the Parent's value, so the Parent is newer
 fn dropFamily() {
-  imm p = +Gc-mut Parent[1, +Gc-mut KidValue[2]];
+  imm p = new Parent(1, new Kid(2));
 }
 // Kid 4, Parent 3, then Kid 5, which replaces Kid 4 as the Parent's kid
 fn dropFamilyNewKid() {
-  imm p = +Gc-mut Parent[3, +Gc-mut KidValue[4]];
-  p.kid = +Gc-mut KidValue[5];
+  imm p = new Parent(3, new Kid(4));
+  p.kid = new Kid(5);
 }
 fn childrenReadable() {
   dropFamily();
@@ -149,7 +153,7 @@ struct HolderValue {
 }
 alias Holder = Gc[mut, HolderValue];
 fn makeHolder() Holder {
-  +Gc-mut HolderValue[1, Some[Gc[mut, Fin]][+Gc-mut Fin[2]]];
+  new Holder(1, Some[Gc[mut, Fin]][new Gc[mut, Fin](2)]);
 }
 fn kept() {
   imm h = makeHolder();
@@ -160,22 +164,24 @@ fn kept() {
 
 // -- A final that allocates, and one that asks for a collection
 mut made = 0i64;
-struct Maker {
+struct MakerValue {
   pub n i64;
   fn final(self &uni) {
-    imm l = +Gc-mut Leaf[n];
+    imm l = new Leaf(n);
     made = l.n;
   }
 }
+alias Maker = Gc[mut, MakerValue];
 fn dropMaker() {
-  imm m = +Gc-mut Maker[7];
+  imm m = new Maker(7);
 }
-struct Collects {
+struct CollectsValue {
   pub n i64;
   fn final(self &uni) { Gc.collect(); note(n); }
 }
+alias Collects = Gc[mut, CollectsValue];
 fn dropCollects() {
-  imm c = +Gc-mut Collects[8];
+  imm c = new Collects(8);
 }
 fn reentry() {
   dropMaker();

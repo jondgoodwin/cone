@@ -1,0 +1,98 @@
+// A 'Gc' allocation's value is filled in place by its init, and that init may
+// allocate again: 'new Tree(depth, n)' makes its children inside the parent's
+// init. The order is what keeps that safe. The init's arguments are evaluated
+// first; then 'alloc', which links the new block into the heap; then, before
+// anything else runs, the block is rooted and its value zeroed; then the init
+// fills it. A collection step during a child's allocation finds the parent
+// through its root, reads its fields as null or filled, and a reference
+// stored into it after it was marked reaches the collector through the write
+// barrier, as any store through a reference does.
+//
+// The stress mode runs a step at every allocation, so every child is made
+// while a collection is marking or sweeping around its unfinished parent. A
+// parent the roots missed would be freed and scribbled with 0xDD while its
+// children were made, and a child the barrier missed freed after it was
+// stored; either reads back wrong here. Both modes are run: incremental, and
+// generational, where the barrier is on between collections too. Every value
+// is worked out by hand: a tree of depth d has 2^(d+1) - 1 nodes, and the
+// node numbered n has children 2n and 2n + 1, so a tree from 1 sums the
+// numbers 1 to 2^(d+1) - 1.
+
+mod construct;
+
+import testing use *;
+import collector;
+
+// Filled whole once its children are made: the children are allocated while
+// the parent's block is rooted and still null
+struct TreeValue {
+  pub n i64;
+  pub left Option[Tree];
+  pub right Option[Tree];
+  pub fn init(self &new, depth i64, n i64) {
+    if depth == 0 {
+      *self = new TreeValue(n, None[Tree][], None[Tree][]);
+      return;
+    }
+    imm l = new Tree(depth - 1, n * 2);
+    imm r = new Tree(depth - 1, n * 2 + 1);
+    *self = new TreeValue(n, Some[Tree][l], Some[Tree][r]);
+  }
+}
+alias Tree = Gc[mut, TreeValue];
+
+// Filled first with no children, then each child stored into it after it is
+// made: a store into the parent, which a step may already have marked
+struct GrownValue {
+  pub n i64;
+  pub left Option[Grown];
+  pub right Option[Grown];
+  pub fn init(self &new, depth i64, n i64) {
+    *self = new GrownValue(n, None[Grown][], None[Grown][]);
+    if depth > 0 {
+      self.left = Some[Grown][new Grown(depth - 1, n * 2)];
+      self.right = Some[Grown][new Grown(depth - 1, n * 2 + 1)];
+    }
+  }
+}
+alias Grown = Gc[mut, GrownValue];
+
+fn treeSum(t Option[Tree]) i64 {
+  match t {
+    case imm s Some[Tree] { s.value.n + treeSum(s.value.left) + treeSum(s.value.right); }
+    else { 0; }
+  }
+}
+
+fn grownSum(t Option[Grown]) i64 {
+  match t {
+    case imm s Some[Grown] { s.value.n + grownSum(s.value.left) + grownSum(s.value.right); }
+    else { 0; }
+  }
+}
+
+fn build(mode &[]u8) {
+  imm t = new Tree(6, 1);
+  expectInt(treeSum(Some[Tree][t]), 8128, mode);
+  imm g = new Grown(6, 1);
+  expectInt(grownSum(Some[Grown][g]), 8128, mode);
+  // Garbage made in between, then both read again
+  mut i = 0i64;
+  while i < 200 {
+    imm junk = new Tree(2, i);
+    i = i + 1;
+  }
+  expectInt(treeSum(Some[Tree][t]) + grownSum(Some[Grown][g]), 16256, mode);
+}
+
+fn main() i32 {
+  Gc.setStress(true);
+  build("children made inside the parent's init, incremental");
+  Gc.collect();
+  expectUInt(u64.from(Gc.liveObjects()), 0, "every tree freed once build returned");
+  Gc.setGenerational(true);
+  build("children made inside the parent's init, generational");
+  Gc.collect();
+  expectUInt(u64.from(Gc.liveObjects()), 0, "and again, generationally");
+  done();
+}
