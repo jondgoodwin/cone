@@ -58,16 +58,20 @@ void genlBreak(GenState *gen, BlockNode* block, INode* exp, Nodes* dealias) {
     if (genlNeverJump(gen, exp))
         return;
     GenBlockState *blockstate = genFindBlockState(gen, block);
-    if (exp->tag != NilLitTag) {
-        // Generate the value for its effects either way; record it only where the
-        // block converges on a value and so has phi arrays to record it in.
-        LLVMValueRef brkval = genlExpr(gen, exp);
-        if (blockstate->phis) {
-            blockstate->phis[blockstate->phiCnt] = brkval;
-            blockstate->blocksFrom[blockstate->phiCnt++] = LLVMGetInsertBlock(gen->builder);
-        }
-    }
+    LLVMValueRef brkval = NULL;
+    // Generate the value for its effects either way
+    if (exp->tag != NilLitTag)
+        brkval = genlExpr(gen, exp);
+    // The temporaries made since the block began, then its scopes' locals
+    genlTempsJump(gen, blockstate->tempmark);
     genlDealiasNodes(gen, dealias);
+    // Record the value only where the block converges on a value and so has
+    // phi arrays to record it in, from the block the jump leaves, which the
+    // releases may have moved on from
+    if (brkval && blockstate->phis) {
+        blockstate->phis[blockstate->phiCnt] = brkval;
+        blockstate->blocksFrom[blockstate->phiCnt++] = LLVMGetInsertBlock(gen->builder);
+    }
     LLVMBuildBr(gen->builder, blockstate->blockend);
 }
 
@@ -83,6 +87,7 @@ void genlReturn(GenState *gen, BreakRetNode *retnode) {
     if (genlNeverJump(gen, retnode->exp))
         return;
     LLVMValueRef retval = genlExpr(gen, retnode->exp);
+    genlTempsJump(gen, gen->tempbase);
     genlDealiasNodes(gen, retnode->dealias);
     if (gen->exitzero)
         retval = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0);
@@ -134,6 +139,7 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
             blkstate->blocksFrom = NULL;
         }
         blkstate->phiCnt = 0;
+        blkstate->tempmark = gen->tempcnt;
         ++gen->blockstackcnt;
     }
 
@@ -146,12 +152,21 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
     // whose synthesized step sits behind the jump the reader wrote last.
     int terminated = 0;
     for (nodesFor(blk->stmts, cnt, nodesp)) {
+        // The temporaries a statement makes die at its end, newest first, after
+        // its value and before the locals a scope's end releases. A jump
+        // finalizes them before it leaves (genlBreak, genlReturn), and nothing
+        // follows it to finalize them again.
+        uint32_t tempmark = gen->tempcnt;
+        int jumped = 0;
         switch ((*nodesp)->tag) {
-        case ContinueTag:
+        case ContinueTag: {
+            GenBlockState *target = genFindBlockState(gen, ((BreakRetNode*)*nodesp)->block);
+            genlTempsJump(gen, target->tempmark);
             genlDealiasNodes(gen, ((BreakRetNode*)*nodesp)->dealias);
-            LLVMBuildBr(gen->builder, genFindBlockState(gen, ((BreakRetNode*)*nodesp)->block)->blockbeg);
+            LLVMBuildBr(gen->builder, target->blockbeg);
             terminated = 1;
             break;
+        }
 
         case BreakTag: {
             BreakRetNode *brknode = (BreakRetNode*)*nodesp;
@@ -164,31 +179,41 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
             BreakRetNode *node = (BreakRetNode*)*nodesp;
             // Handle inlined returns as breaks
             if ((INode*)node->block != gen->fnblock) {
-                if (node->block->breaks->used > 1)
+                if (node->block->breaks->used > 1) {
                     // Add to phi
                     genlBreak(gen, node->block, node->exp, node->dealias);
+                    jumped = 1;
+                }
                 else {
                     // Just one?  Handle return like BlockRet
                     if (node->exp->tag != NilLitTag)
                         lastval = genlExpr(gen, node->exp);
+                    genlTempsEnd(gen, tempmark);
                     genlDealiasNodes(gen, node->dealias);
                 }
                 break;
             }
 
-            genlReturn(gen, (BreakRetNode*)*nodesp); break;
+            genlReturn(gen, (BreakRetNode*)*nodesp);
+            jumped = 1;
+            break;
         }
         case BlockRetTag:
         {
             BreakRetNode *node = (BreakRetNode*)*nodesp;
             if (node->exp->tag != NilLitTag)
                 lastval = genlExpr(gen, node->exp);
+            genlTempsEnd(gen, tempmark);
             genlDealiasNodes(gen, node->dealias);
             break;
         }
         default:
             lastval = genlExpr(gen, *nodesp);
         }
+        if (terminated || jumped)
+            gen->tempcnt = tempmark;
+        else
+            genlTempsEnd(gen, tempmark);
         if (terminated)
             break;
     }

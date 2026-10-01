@@ -466,17 +466,22 @@ static void borrowFlowPlace(FlowState *fstate, INode **placep) {
         nameuseFlowBorrowed(fstate, (NameUseNode**)placep);
         return;
     }
+    // A place rooted in a temporary -- '&*make()', which a method borrowing its
+    // receiver builds -- borrows it until its statement's end (flowTempRead)
     switch (place->tag) {
     case DerefTag:
         flowLoadValue(fstate, &((StarNode *)place)->vtexp);
+        flowTempRead(&((StarNode *)place)->vtexp);
         break;
     case FldAccessTag:
     case ArrIndexTag:
     {
         FnCallNode *access = (FnCallNode *)place;
         uint16_t objtag = iexpGetTypeDcl(access->objfn)->tag;
-        if (objtag == RefTag || objtag == ArrayRefTag || objtag == PtrTag || objtag == VirtRefTag)
+        if (objtag == RefTag || objtag == ArrayRefTag || objtag == PtrTag || objtag == VirtRefTag) {
             flowLoadValue(fstate, &access->objfn);
+            flowTempRead(&access->objfn);
+        }
         else
             borrowFlowPlace(fstate, &access->objfn);
         if (place->tag == ArrIndexTag) {
@@ -493,9 +498,11 @@ static void borrowFlowPlace(FlowState *fstate, INode **placep) {
             break;
         }
         flowLoadValue(fstate, placep);
+        flowTempRead(placep);
         break;
     default:
         flowLoadValue(fstate, placep);
+        flowTempRead(placep);
         break;
     }
 }

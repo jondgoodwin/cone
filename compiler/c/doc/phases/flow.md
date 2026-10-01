@@ -443,6 +443,7 @@ depends on:
 | `HollowTag` | `flowScopeDealias`, in a `dealias` list, for a hollowed variable or one whose part the scope hands back; `assignSingleFlow`, wrapped round the value stored into a hollowed variable (and the drop-flag client, where a later pass of a loop reaches the store hollow) | `genlHollowRelease`: the owner goes, and a death frees without what moved — after the new value is evaluated, for the wrapper, as `genlStore` orders a whole release; with `test` set, only when the drop flag says hollow |
 | `DropFlagTag` | the drop-flag client, in a `dealias` list, round the release of a variable whose state differs by path there | the release runs only when the variable's drop flag holds the state it names |
 | `VarDropFlag` | the drop-flag client, on a variable given a flag | `genlDropFlagBegin` makes the flag where the variable begins; each store over it, and each marked move, updates it |
+| `TempTag` | `flowTempRead`, round a temporary where it is read or thrown away; `moved` by `flowTempHollow`, `kept` by `flowTempEscape` or a move out of it by value ("Temporaries", below) | `genlTempKeep` keeps its value in a slot; the end of its statement, condition or operand finalizes it (`genlTempsEnd`), hollow where `moved` says; a `kept` one is never finalized |
 
 **A reference-count node is built only for a counted reference, or a value
 holding one.** `flowInjectRefCountAmt` returns early unless the type is a
@@ -519,6 +520,59 @@ scope alone; `return` passes 0, the whole function. The mark is transient — se
 by `blockFlow` and valid only while flow is inside that block — and
 `blockJumpMark` falls back to the current position for a jump whose target
 failed to resolve.
+
+### Temporaries
+
+A temporary is a value an expression makes that nothing takes — not bound,
+stored, passed by value, handed back or moved — whose death does something
+(`itypeNeedsFinal`); it dies at the end of the statement that made it, newest
+first (`doc/reference/refinitdrop.html`). Flow finds each where it is read or
+thrown away and wraps it in a `TempNode` (`flowTempRead`); generation keeps it
+in a slot and finalizes it at the end of its part ([Generation](generation.md),
+"Temporaries"). Nothing else in flow tracks it: a temporary is never a
+variable, so it has no flags, no drop flag, and nothing the path walk follows.
+
+**Where a value is a temporary.** `flowIsTemp` is the test: an expression that
+does not read a place that keeps its value (`flowIsLvalRead`), and is not an
+assignment (its value is what its target keeps), a literal, a call that never
+returns, or one of flow's own wrappers. `flowTempRead` is called where a value
+is consumed without being taken:
+
+| Site | What |
+| --- | --- |
+| `blockFlow`, an expression statement | a value thrown away: `mk();` |
+| `blockFlow`, the final expression of a block that throws its value away (`blockDiscards`: a loop's, or one with no value, as a statement's and a statement `if`'s branches are; a function's own block only when it returns nothing) | the same; and the block hands nothing back, so a local its final expression names is not exempted from the release (`flowresult` is NULL) |
+| `flowLoadThroughRef` | the value a dereference, a field access or an index reads: `mk().n`, `*mkso()`, `mkarr()[1]` |
+| `flowLoadValue`, `CastTag` and `IsTag` | the operand of an `is`, and of a cast that does not hand its operand on (`flowCastHandsOn`): an owner lent as a borrowed reference (`g(mkso())`, `mkso().get()`), a conversion |
+| `borrowFlowPlace` | the root of a borrowed place: `&*mkso()`, as a method borrowing its receiver builds |
+
+A value taken — a variable's initializer, an assignment's value, an argument,
+a field of a literal, a returned or handed-back value — reaches
+`flowHandleMoveOrCopy` or a block's result instead, and is never wrapped.
+
+**A value moved out of a temporary.** `flowMoveSource` reaching a `TempNode`
+through a dereference, or an index through an owning reference, is a move out
+through a temporary sole owner: the move is noted in the node's `moved`
+(`flowTempHollow`), and the owner is released hollow, as a hollowed variable
+is. Reaching one by value marks it `kept`, as a local array an element moved
+out of is left unreleased.
+
+**A temporary a borrow outlives is kept.** Once a statement that made a
+temporary is walked, `blockTempEscape` walks it again (`flowTempEscape`),
+carrying down whether the value at each node goes out of the statement: a
+variable's initializer, an assignment's value, a returned, broken-out or
+handed-back value. Out passes only through values that can hold a borrow or a
+raw pointer (`flowTempCarries`: `itypeCarriesBorrow`, or a pointer within a
+few levels): a call's arguments when its result can, every argument of a call
+that could store one (`flowTempCallStores`: a `&mut` or a pointer argument to
+something that can hold one), a literal's or an allocation's elements, a
+cast's operand, a field's or an element's base, a borrow's place. A
+`TempNode` reached while out is set `kept`: a borrow or a pointer made from it
+may outlive its statement, and it is not finalized, as no temporary was
+before. So `imm r &R = mkso()` and `imm r = mkso().me()` keep the owner;
+`g(mkso())`, `mkso().get()` and `imm n = mkso().n` do not. Whether such a
+borrow lengthens the temporary's life is a lifetime question this does not
+settle.
 
 ## 6. The loan walk
 
@@ -833,7 +887,7 @@ filled `self`'s fields is an ordinary store.
 | **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable, and on a borrow of a moved-out one; move out of a field, or of a global, or out through a borrowed or a shared owning reference, refused; a use some path reaching it moved, hollowed or never gave a value (a loop's earlier pass included), by the path walk | element granularity — moving `a[0]` deactivates all of `a` |
 | **Escape / lifetime** | representation in type check, enforcement here | storing a borrow into a longer-lived lval, by assignment or by either direction of a swap; returning a borrow of a local, or a local initialized with one, its type declared or not; a borrow arriving through a call's result, singly or as one of several values destructured into lvals, each carrying the narrowest argument borrow's scope; a `&mut &T` argument whose pointee would outlive another borrow passed with it; a borrow coerced to another reference type, whether widened to a base trait's reference or made a virtual reference | a borrow laundered through a variable by assignment and returned (kept past its source's scope and used, it is refused by freezing, below); a borrow stored in a field or captured; distinguishing parameter lifetimes — there is no lifetime annotation syntax |
 | **Freezing** | the loan walk, on a gated function | a borrow held in a local whose type is a borrowed reference, and its copies, freeze the source until the last use, and so does a borrow a call returns, of every argument (from a `NoLoanMut` or `NoLoanRead` container, only its life): `ErrorFrozen` at a change, a move, a conflicting borrow, the source's end, and, under a mutable borrow, a read — for a source reached as `uni`; for one reached through a shared path, only its owner's move, replacement or end, a change or mutable borrow of the owner where it is held, and an `&uni` or `&imm` borrow | an element borrow through a shared path (Jon's rule refuses it for a `ShapeChanging` container; not built); a borrow held inside another value; two copies of one `&mut`; a global a callee changes |
-| **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs, of drop-fn structs and enums, and of tuples and arrays holding what finalizes or owns, from a jump down to the block it names; the previous value's release at a store over a variable, a part of one, or a place reached through a reference; each on the paths that hold the value, by a drop flag where they differ | an array an element was moved out of leaks the rest; a value stored into a field of a variable holding nothing leaks — see Hazards |
+| **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs, of drop-fn structs and enums, and of tuples and arrays holding what finalizes or owns, from a jump down to the block it names; the previous value's release at a store over a variable, a part of one, or a place reached through a reference; each on the paths that hold the value, by a drop flag where they differ; a temporary's at the end of its statement, condition or operand, newest first, hollow where a value moved out through it | an array an element was moved out of leaks the rest; a value stored into a field of a variable holding nothing leaks; a temporary a borrow or a pointer made from it may outlive is kept, and leaks — see Hazards |
 | **Permission** | `MayWrite` and `MayRead` | `ErrorNoMut` on assignment and swap; `ErrorNoRead` on a read through a reference — a dereference, an index, or a field of a virtual reference | `MayAliasWrite` and `IsLockless` are populated and read nowhere; `RaceSafe` is read by the thread check, a type check question (`refThreadBinds`) |
 | **Initialization** | yes | `ErrorMove` "has not been initialized"; for a variable that moves or has anything to do as it dies, "may not have been given a value" where some path did not (the path walk) | for any other type, "initialized on one branch" reads as initialized everywhere; a variable never initialized may be borrowed, so a method taking it `&mut` can fill it, and nothing then stops a field it left unset being read through the borrow; the unused-variable warning in `flow.h`'s header does not exist |
 
@@ -874,7 +928,8 @@ parameters and fields already carry `VarInitialized`.
 
 **After flow, for a function that ran it:** every block ends in a node carrying
 a `dealias` list; every recognized counted acquisition has a `RefCountNode`; every
-first-assignment target carries `FlagFirstAssign`. The loan walk adds nothing to
+first-assignment target carries `FlagFirstAssign`; every temporary whose death
+does something is a `TempNode` where it is read or thrown away. The loan walk adds nothing to
 the tree; the drop-flag client, where it ran, rebuilt the lists of the exits it
 met and set the store marks from every path's state.
 
@@ -922,6 +977,16 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
   (`b, x = pair()`) leaks its old allocation: `assignMultRetFlow` has no single
   value to wrap a `HollowNode` round, so it takes the moved variable's path
   (`FlagFirstAssign`, nothing released).
+- **A kept temporary leaks.** `flowTempEscape` keeps a temporary that a
+  borrow or a raw pointer going out of its statement may point into, and it
+  is never finalized: `imm r &R = mkso()` leaks the owner, as every temporary
+  did before. The walk is conservative: any value that can hold a borrow or a
+  pointer carries the question on, so `imm n = mkso().me().n` keeps it too.
+  Extending a temporary's life to its borrow's, or refusing the borrow, is the
+  lifetime work's to decide.
+- **A new place a value is consumed without being taken must call
+  `flowTempRead`**, or a temporary there is never finalized; and a new place a
+  value is taken must not, or it is finalized under its new holder.
 - **`flowIsLvalRead` is not `iexpIsLval`.** They disagree on recursion into
   `objfn` and on string literals. Do not substitute one for the other.
 - **`fnCallFlow` does not flow `objfn`**, so a call through an uninitialized
@@ -956,6 +1021,9 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
 | | `flowOwningLocal`, `flowNewHollow` | the local owning reference a move reaches through; the `HollowNode` releasing a hollowed variable as it stands |
 | | `flowResultMove` | the same refusals for a returned value, deactivating nothing |
 | | `flowIsLvalRead` | the temporary-vs-lvalue test that makes counting correct |
+| | `flowTempRead`, `flowIsTemp`, `flowCastHandsOn` | wrap a temporary whose death does something in a `TempNode`, where it is read or thrown away ("Temporaries") |
+| | `flowTempHollow` | a move out through a temporary sole owner, noted in its `moved` |
+| | `flowTempEscape`, `flowTempCarries`, `flowTempCallStores` | keep each temporary a borrow or a pointer going out of its statement may point into |
 | | `flowInjectRefCountAmt` | wrap a counted reference, or a struct, enum, tuple or array whose death releases one, in a `RefCountNode` |
 | | `flowIsRcRef`, `flowIsOwningType` | is this type counted; is it an owning reference, or a tuple of them, that a store releases |
 | | `flowHeldCounted`, `flowVariantHeldCounted` | does a copy of this struct, enum, tuple or array add a holder to a counted reference its death releases |
@@ -968,17 +1036,18 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
 | `ir/flowgate.h` | `flowGateHolder`, `flowGateAssigned`, `flowGateResult`, `flowGateCall`, `flowGateOperand` | the gate's triggers as inline tests, dismissing what cannot carry a borrow without a call |
 | `ir/itype.c` | `itypeCarriesBorrow` | may a value of this type hold a borrowed reference; a struct's answer remembered in `StructNode.carriesborrow` |
 | `ir/exp/block.c` | `blockFlow`, `blockResultMove` | scope push/pop, `blockret` injection, result walk then dealias capture; a `return`'s move source, a returned block's or `if`'s values moved; a loop body one level deeper; whether every path returned (`jumped`) |
+| | `blockDiscards`, `blockTempEscape` | a block throwing its final expression's value away; each statement that made a temporary walked by `flowTempEscape` |
 | `ir/exp/if.c` | `ifFlow` | each arm from the state its conditions leave, the arms that did not return joined; later conditions and arms one level deeper |
 | `ir/exp/assign.c` | `assignlvalrtype`, `assignSingleFlow`, `assignBorrowLifetimeCheck` | `MayWrite`, `VarInitialized`/`VarMoved`/`VarHollow`, `FlagFirstAssign`, the `HollowNode` round a hollowed variable's new value, borrow lifetime |
 | `ir/stmt/swap.c` | `swapFlow` | `MayWrite` on both sides; borrow lifetime once in each direction |
 | `ir/exp/nameuse.c` | `nameuseFlow`, `nameuseFlowBorrowed` | the only place the flags are *diagnosed* on, a hollowed variable as a moved one; both `ErrorMove` messages, and for a borrowed variable only the moved-out one |
-| `ir/exp/borrow.c` | `borrowFlow`, `borrowFlowPlace` | the borrowed place must not be moved out: the variable at its root goes to `nameuseFlowBorrowed`, which refuses it moved out or hollowed but not uninitialized; a reference it is reached through is loaded as a value and not read through, an index is read; no aliasing tracked |
+| `ir/exp/borrow.c` | `borrowFlow`, `borrowFlowPlace` | the borrowed place must not be moved out: the variable at its root goes to `nameuseFlowBorrowed`, which refuses it moved out or hollowed but not uninitialized; a reference it is reached through is loaded as a value and not read through, an index is read; a temporary at its root wrapped; no aliasing tracked |
 | `ir/stmt/return.c` | `returnFlowEscape` | `ErrorEscape` for a returned borrow of a local |
 | `ir/exp/fncall.c` | `fnCallFlowStoredBorrow` | `ErrorCallEscape` for a `&mut &T` argument the callee could store a narrower borrow through |
 | `ir/exp/arraylit.c` | `arrayLitFlow` | each element of the list form a holder; the fill form's one constant read |
 | `ir/types/reference.c` | `refAdoptInfections` | where a reference type acquires `MoveType` |
 | `ir/types/region.c` | `regionIsCounted`, `regionIsOwning`, `regionMethod` | which region methods a region declares, which is what flow asks of it |
-| `genllvm/genlalloc.c` | `genlRegionAlias`, `genlReleaseOwning`, `genlHollowRelease`, `genlDealiasNodes` | what consumes everything flow injected |
+| `genllvm/genlalloc.c` | `genlRegionAlias`, `genlReleaseOwning`, `genlHollowRelease`, `genlDealiasNodes`, `genlTempKeep`, `genlTempsEnd`, `genlTempsJump` | what consumes everything flow injected |
 | | `genlDropFlagBegin`, `genlDropFlagSet`, `genlDropFlagIf`, `genlDropFlagUse` | a variable's drop flag: made, updated where its value arrives or leaves, tested round a release |
 
 Test sources that pin behavior precisely: `test/cases/move/move-flow-*.cone`,
@@ -994,7 +1063,8 @@ returns `test/cases/collection/collection_flow_freeze.cone`,
 `test/cases/collection/collection_freeze_success.cone`, and for drop flags
 `test/cases/move/move_drop_flags.cone`, `move_drop_flags_agree.cone`,
 `move_flow_paths.cone`, `test/cases/region/region_drop_flags.cone` and
-`test/cases/struct/struct_final_reassign.cone`.
+`test/cases/struct/struct_final_reassign.cone`, and for temporaries
+`test/cases/struct/struct_final_temporary.cone`.
 
 ## 11. What lives elsewhere
 

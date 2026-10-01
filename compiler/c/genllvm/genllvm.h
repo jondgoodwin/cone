@@ -24,7 +24,18 @@ typedef struct {
     LLVMValueRef *phis;
     LLVMBasicBlockRef *blocksFrom;
     uint32_t phiCnt;
+    uint32_t tempmark;      // How many temporaries were waiting as the block began: a jump to it finalizes the rest
 } GenBlockState;
+
+// A temporary made and not yet finalized (TempNode): the slot its value was
+// kept in. The generator keeps a stack of them; the end of a statement, of an
+// 'if' or 'while' condition, or of the right operand of 'and' or 'or'
+// finalizes those its part made, newest first (genlTempsEnd), and a jump
+// finalizes every one made since the block it leaves to began (genlTempsJump).
+typedef struct {
+    LLVMValueRef slot;
+    TempNode *temp;
+} GenTemp;
 
 // The roots of the function being generated: each stack slot holding a value
 // whose type holds a traced reference -- a local's, a parameter's, a birth's --
@@ -63,6 +74,10 @@ typedef struct GenState {
     int cabi;               // enum CAbiTarget, the C ABI a C-named function's values cross by (genlcabi.c)
     GenBlockState *blockstack;
     uint32_t blockstackcnt;
+    GenTemp *temps;         // The temporaries waiting to be finalized, oldest first
+    uint32_t tempcnt;
+    uint32_t tempmax;
+    uint32_t tempbase;      // How many were waiting as the function being generated began: a 'return' finalizes the rest
 
     // The type records this object has built (genlTypeRecord): each value type,
     // and its record's constant, in the same order
@@ -205,6 +220,12 @@ void genlTypeDrop(GenState *gen, FnDclNode *fnnode);
 void genlAliasHeld(GenState *gen, LLVMValueRef valptr, INode *type, long long amount);
 // Release a hollowed variable's owning reference without the parts moved out
 void genlHollowRelease(GenState *gen, HollowNode *hnode);
+// Temporaries: one kept in its slot as it is made; those made since 'mark'
+// finalized, newest first, and forgotten (the end of their statement); and
+// finalized without being forgotten, before a jump out past them
+LLVMValueRef genlTempKeep(GenState *gen, TempNode *temp, LLVMValueRef val);
+void genlTempsEnd(GenState *gen, uint32_t mark);
+void genlTempsJump(GenState *gen, uint32_t mark);
 // A counted reference gains 'amount' owners, through its region's 'aliasRef'
 void genlRegionAlias(GenState *gen, LLVMValueRef ref, long long amount, RefNode *refnode);
 // The type record of 'vtype': a constant core's TypeRecord (the pointee of

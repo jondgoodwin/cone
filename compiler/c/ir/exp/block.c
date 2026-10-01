@@ -341,6 +341,28 @@ static void blockResultMove(INode *result) {
         flowResultMove(result);
 }
 
+// Does this block throw its final expression's value away? A loop's loops
+// back, and a block with no value -- a statement's, a branch of an 'if' that
+// is one -- hands nothing back: the value is a temporary there, and a local
+// it names is no result, but dies with the scope. A function's own block,
+// typed with no value whatever it returns, hands its value to the caller
+// unless the function returns nothing.
+static int blockDiscards(FlowState *fstate, BlockNode *blk) {
+    if (blk->flags & FlagLoop)
+        return 1;
+    if (fstate->scope == 2)
+        return itypeGetTypeDcl(fstate->fnsig->rettype)->tag == VoidTag;
+    INode *vtype = blk->vtype;
+    return vtype == NULL || vtype == unknownType || itypeGetTypeDcl(vtype)->tag == VoidTag;
+}
+
+// Once a statement is walked: if it made temporaries, keep each that what
+// goes out of it ('out': its value is stored or handed back) may point into
+static void blockTempEscape(uint32_t tempmark, INode *node, int out) {
+    if (flowTempCount != tempmark)
+        flowTempEscape(node, out);
+}
+
 void blockFlow(FlowState *fstate, BlockNode **blknode) {
     BlockNode *blk = *blknode;
     size_t svpos = flowScopePush();
@@ -392,9 +414,12 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         // Handle last node differently, below
         if (cnt <= 1)
             break;
+        uint32_t tempmark = flowTempCount;
         switch ((*nodesp)->tag) {
         case VarDclTag:
             varDclFlow(fstate, (VarDclNode**)nodesp);
+            if (((VarDclNode *)*nodesp)->value)
+                blockTempEscape(tempmark, ((VarDclNode *)*nodesp)->value, 1);
             break;
         case SwapTag:
             swapFlow(fstate, (SwapNode **)nodesp);
@@ -411,6 +436,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
             flowGateResult(fstate, result);
             if (result->tag != NilLitTag)
                 flowLoadValue(fstate, brkexp);
+            blockTempEscape(tempmark, *brkexp, 1);
             flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, result, *nodesp);
             break;
         }
@@ -422,9 +448,12 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
             break;
         }
         default:
-            // An expression as statement throws out its value
-            if (isExpNode(*nodesp))
+            // An expression as statement throws out its value: a temporary
+            if (isExpNode(*nodesp)) {
                 flowLoadValue(fstate, nodesp);
+                flowTempRead(nodesp);
+                blockTempEscape(tempmark, *nodesp, 0);
+            }
         }
     }
 
@@ -443,6 +472,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
     // reaches with one state (it walks a loop once), so a path ending in one is
     // still joined, which counts what it moved as moved from there on.
     int jumped = 0;
+    uint32_t tempmark = flowTempCount;
     switch ((*nodesp)->tag) {
     case ReturnTag:
     {
@@ -457,6 +487,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
             // A returned value is moved to the caller, so it must be one this
             // function may move: not a value it reached through a borrow
             blockResultMove(*retexp);
+            blockTempEscape(tempmark, *retexp, 1);
         }
         // An init returns only once it has filled self
         flowNewSelfReturn(fstate, *nodesp);
@@ -468,17 +499,26 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
     {
         INode **retexp = &((BreakRetNode *)*nodesp)->exp;
         INode *result = *retexp;
+        // A block that throws its value away hands back nothing: its final
+        // expression is a statement's, and exempts no local from the release
+        int discards = blockDiscards(fstate, blk);
+        if (discards)
+            result = NULL;
         ((BreakRetNode *)*nodesp)->flowresult = result;
-        flowGateResult(fstate, result);
-        if (result->tag != NilLitTag) {
+        flowGateResult(fstate, *retexp);
+        if ((*retexp)->tag != NilLitTag) {
+            INode *exp = *retexp;
             fstate->jumped = 0;
             flowLoadValue(fstate, retexp);
-            jumped = (result->tag == IfTag || (result->tag == BlockTag && !(result->flags & FlagLoop)))
+            jumped = (exp->tag == IfTag || (exp->tag == BlockTag && !(exp->flags & FlagLoop)))
                 && fstate->jumped;
             // The function's own block hands its value to the caller, as a return does
-            if (fstate->scope == 2 && !loop && (result->tag == IfTag || result->tag == BlockTag)
+            if (fstate->scope == 2 && !loop && (exp->tag == IfTag || exp->tag == BlockTag)
                 && itypeGetTypeDcl(fstate->fnsig->rettype)->tag != VoidTag && iexpIsMove(*retexp))
                 blockResultMove(*retexp);
+            if (discards)
+                flowTempRead(retexp);
+            blockTempEscape(tempmark, *retexp, !discards);
         }
         flowScopeDealias(svpos, &((BreakRetNode *)*nodesp)->dealias, result, *nodesp);
         break;
@@ -491,6 +531,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         flowGateResult(fstate, result);
         if (result->tag != NilLitTag)
             flowLoadValue(fstate, brkexp);
+        blockTempEscape(tempmark, *brkexp, 1);
         flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, result, *nodesp);
         break;
     }

@@ -146,6 +146,7 @@ enum NodeTags {
     RefCountTag,    // (injected) adds holders to a counted reference's count
     HollowTag,      // (injected) releases an owning reference whose referent, or an element of it, was moved out
     DropFlagTag,    // (injected) a release that runs only when a variable's drop flag says it holds that value
+    TempTag,        // (injected) a temporary, finalized at the end of the statement that made it
     NamedValTag,    // Named value (e.g., for a struct literal)
     OfEntryTag,     // 'n of x', an entry on the right of '<-' (EntryNode, lowered at type check)
     FillEntryTag,   // 'fill x', an entry on the right of '<-' (EntryNode, lowered at type check)

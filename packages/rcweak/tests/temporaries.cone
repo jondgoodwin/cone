@@ -1,0 +1,40 @@
+// A strong owner no variable holds is a temporary, let go at the end of the
+// statement that made it, as any temporary is: one read through without being
+// bound ('w.strong().n'), and an Option of one thrown away ('w.upgrade();').
+// Every count is worked out by hand from the rules counts.cone states.
+
+mod temporaries;
+
+import testing use *;
+import rcweak use *;
+
+mut log = 0i64;
+fn note(d i64) { log = log * 10i64 + d; }
+
+struct Fin { pub n i64; fn final(self &uni) { note(n); } }
+
+// A strong owner used without being bound is let go once its statement is done
+fn temporary() {
+  imm r = new Rcw[mut, Fin](1);
+  imm w = Weak[Fin].of(r);
+  expectInt(w.strong().n, 1, "read through a temporary owner");
+  expectUInt(u64.from(w.strongCount()), 1, "r alone, the temporary let go");
+}
+
+// So is an Option holding one, left unbound: upgrade()'s result thrown away
+fn discarded() {
+  imm r = new Rcw[mut, Fin](2);
+  imm w = Weak[Fin].of(r);
+  w.upgrade();
+  expectUInt(u64.from(w.strongCount()), 1, "r alone, the thrown-away Some's owner let go");
+}
+
+fn main() i32 {
+  temporary();
+  expectInt(log, 1, "the value dies with r, its last owner");
+  expectUInt(u64.from(liveBlocks()), 0, "and its block goes with w");
+  discarded();
+  expectInt(log, 12, "and so does the one the Option's owner named");
+  expectUInt(u64.from(liveBlocks()), 0, "with its block");
+  done();
+}

@@ -1209,6 +1209,8 @@ static PathSet *pwValue(INode **nodep, int move) {
         return pwValue(&((RefCountNode *)node)->exp, move);
     case HollowTag:
         return ((HollowNode *)node)->exp ? pwValue(&((HollowNode *)node)->exp, move) : NULL;
+    case TempTag:
+        return pwValue(&((TempNode *)node)->exp, move);
     case SizeofTag:
     case NilLitTag:
     case ULitTag:

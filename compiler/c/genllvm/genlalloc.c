@@ -1049,11 +1049,12 @@ static void genlHollowDeath(GenState *gen, LLVMValueRef valptr, RefNode *refnode
 }
 
 // The steps from a variable out to what a hollowing move took, found by
-// walking the move's chain inwards to the variable (flowHollowOwner's walk)
-static MovedPath genlMovedPath(INode *moved, VarDclNode *var) {
+// walking the move's chain inwards to the variable (flowHollowOwner's walk),
+// or to the temporary 'root' it was moved out through
+static MovedPath genlMovedPath(INode *moved, INode *root) {
     MovedPath path;
     int len = 0;
-    for (INode *exp = moved; !(isNameUseNode(exp) && isExpNode(exp)); ) {
+    for (INode *exp = moved; exp != root && !(isNameUseNode(exp) && isExpNode(exp)); ) {
         switch (exp->tag) {
         case ArrIndexTag:
             ++len; exp = ((FnCallNode *)exp)->objfn; break;
@@ -1070,7 +1071,7 @@ static MovedPath genlMovedPath(INode *moved, VarDclNode *var) {
     path.steps = (INode **)memAllocBlk(len * sizeof(INode *));
     path.len = len;
     int pos = len;
-    for (INode *exp = moved; !(isNameUseNode(exp) && isExpNode(exp)); ) {
+    for (INode *exp = moved; exp != root && !(isNameUseNode(exp) && isExpNode(exp)); ) {
         switch (exp->tag) {
         case ArrIndexTag:
             path.steps[--pos] = exp; exp = ((FnCallNode *)exp)->objfn; break;
@@ -1091,9 +1092,62 @@ void genlHollowRelease(GenState *gen, HollowNode *hnode) {
     int npaths = hnode->moved->used;
     MovedPath *paths = (MovedPath *)memAllocBlk(npaths * sizeof(MovedPath));
     for (int i = 0; i < npaths; ++i)
-        paths[i] = genlMovedPath(nodesGet(hnode->moved, i), var);
+        paths[i] = genlMovedPath(nodesGet(hnode->moved, i), NULL);
     LLVMValueRef ref = LLVMBuildLoad2(gen->builder, genlType(gen, var->vtype), var->llvmvar, "hollowref");
     genlRegionDealiasPart(gen, ref, reftype, paths, npaths, 0);
+}
+
+// A temporary is kept in a slot of its own as it is made, which its death
+// reads at the end of its statement, unless it is never to be finalized
+LLVMValueRef genlTempKeep(GenState *gen, TempNode *temp, LLVMValueRef val) {
+    LLVMValueRef slot = genlAlloca(gen, genlType(gen, temp->vtype), "temp");
+    LLVMBuildStore(gen->builder, val, slot);
+    if (temp->kept)
+        return slot;
+    if (gen->tempcnt == gen->tempmax) {
+        uint32_t newmax = gen->tempmax ? gen->tempmax * 2 : 16;
+        GenTemp *temps = (GenTemp *)memAllocBlk(newmax * sizeof(GenTemp));
+        if (gen->tempcnt)
+            memcpy(temps, gen->temps, gen->tempcnt * sizeof(GenTemp));
+        gen->temps = temps;
+        gen->tempmax = newmax;
+    }
+    gen->temps[gen->tempcnt].slot = slot;
+    gen->temps[gen->tempcnt++].temp = temp;
+    return slot;
+}
+
+// A temporary's death: as a local's at its scope's end (genlFinalizeAt), or,
+// where a value moved out through it, as a hollowed variable's
+static void genlTempRelease(GenState *gen, GenTemp *entry) {
+    TempNode *temp = entry->temp;
+    if (temp->moved == NULL) {
+        genlFinalizeAt(gen, entry->slot, temp->vtype);
+        return;
+    }
+    RefNode *reftype = (RefNode *)itypeGetTypeDcl(temp->vtype);
+    int npaths = temp->moved->used;
+    MovedPath *paths = (MovedPath *)memAllocBlk(npaths * sizeof(MovedPath));
+    for (int i = 0; i < npaths; ++i)
+        paths[i] = genlMovedPath(nodesGet(temp->moved, i), (INode *)temp);
+    LLVMValueRef ref = LLVMBuildLoad2(gen->builder, genlType(gen, temp->vtype), entry->slot, "hollowtemp");
+    genlRegionDealiasPart(gen, ref, reftype, paths, npaths, 0);
+}
+
+// Each copied out before its death is generated, which may generate another
+// function (a drop), whose own temporaries come and go above these
+void genlTempsEnd(GenState *gen, uint32_t mark) {
+    while (gen->tempcnt > mark) {
+        GenTemp entry = gen->temps[--gen->tempcnt];
+        genlTempRelease(gen, &entry);
+    }
+}
+
+void genlTempsJump(GenState *gen, uint32_t mark) {
+    for (uint32_t index = gen->tempcnt; index > mark; ) {
+        GenTemp entry = gen->temps[--index];
+        genlTempRelease(gen, &entry);
+    }
 }
 
 // Up to this many owners gained at once, 'aliasRef' is called in line, once for

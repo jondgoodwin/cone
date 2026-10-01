@@ -983,6 +983,39 @@ one of an `if` every path of which jumps away, as the value and then
 branch that ends in a return out of its phi, and answers `undef` where no
 branch reaches the end. A function returning `Never` is declared `noreturn`.
 
+### Temporaries
+
+**A temporary is kept in a slot and finalized where its part ends.** Flow wraps
+each in a `TempNode` ([Flow](flow.md), "Temporaries"). Generating one
+(`genlTerm`, or `genlAddr` where its field or element is wanted) generates its
+value, stores it into an alloca of its own (`genlTempKeep`) and pushes that slot
+on `GenState.temps`, a stack in evaluation order; a `kept` one is generated as
+its value alone. The end of each part that makes temporaries finalizes those
+it pushed, newest first, and pops them (`genlTempsEnd`), each as a local dies
+(`genlFinalizeAt`), or hollow where flow noted a value moved out through it
+(`genlTempRelease`, `genlMovedPath` walking to the node instead of a variable):
+
+| Part | Where it ends |
+| --- | --- |
+| a statement | `genlBlock`, after the statement; for a `blockret`, and an inlined body's one `return`, after its value and before the block's `dealias` |
+| an `if` or `elif` condition, and so a `while`'s | `genlIf`, once the condition is computed, before the branch |
+| the right operand of `and` or `or` | `genlLogic`, before the branch to the phi |
+| an array's repeated value generated in a loop | `genlArrayRun`, each time round, after the element's store |
+
+A part's end runs on the one path that reaches it, since every construct that
+branches inside an expression is a part of its own, so the slot of every
+temporary still on the stack is filled wherever its finalization is generated.
+**A jump finalizes without popping** (`genlTempsJump`): a `break` or a
+`continue` every temporary made since its target block began
+(`GenBlockState.tempmark`), a `return` every one made since its function began
+(`GenState.tempbase`), after its value and before its `dealias`; the
+statement's entries are then dropped unfinalized, as nothing after the jump
+runs. A function generated in the middle of another (a drop a death asks for)
+starts its own base and leaves the stack as it found it.
+
+**A `break`'s phi edge is recorded after its releases**, from the block the
+jump leaves: a release (`dealiasRef`'s test) splits the block.
+
 ## 7. Output, and what does not work
 
 `--llvmir` writes **two** files: `.preir` before the pass manager and `.ir`
@@ -1039,6 +1072,11 @@ variables.
   manager's inliner deletes only a function whose last call it inlined; the
   linker's `/OPT:REF` drops the rest, each being in a COMDAT of its own.
 - **The block stack is a fixed 256 entries** and overflow is a hard exit.
+- **A jump out of the middle of a statement finalizes its pending temporaries
+  before the locals of the blocks it leaves**, whatever order they were made
+  in: `f(mk(1).n, { imm x = mk(2); if c { return; } 3; })` finalizes the first
+  `mk` before `x`. Each dies once; only the order, in that shape, is not
+  newest first.
 - **An array copied, assigned, passed or returned is one aggregate value**, and
   LLVM's instruction selection takes an aggregate load or store apart element
   by element: `imm c = a` of an `Array[i8, 100000]`, or contents assigned over a
@@ -1079,8 +1117,8 @@ variables.
 | `genllvm/genlcabi.c` | `genlCAbiTarget`, `genlIsCAbiFn`, `genlCAbiPass` | which C ABI the target follows, which functions cross by it, and how one struct crosses |
 | | `genlCAbiExtend`, `genlCAbiMarkExtends` | the `zeroext` or `signext` a narrow integer crosses with, marked on a declaration or a call |
 | | `genlFnDclType`, `genlCAbiDeclare`, `genlFnDclCall`, `genlFnDclParm`, `genlFnDclReturn` | a declared function's LLVM type, its `sret` and widening marks, a direct call to it, its prologue's parameters and its returns — lowered for a C-named one |
-| `genllvm/genlstmt.c` | `genlBlock` | block creation, phi state, terminator suppression |
-| | `genlBreak`, `genlReturn` | phi edges and dealias; inlined-return-as-break |
+| `genllvm/genlstmt.c` | `genlBlock` | block creation, phi state, terminator suppression; each statement's temporaries finalized at its end |
+| | `genlBreak`, `genlReturn` | phi edges, temporaries and dealias; inlined-return-as-break |
 | `genllvm/genlexpr.c` | `genlExpr`, `genlAddr`, `genlStore` | the value / address / store trio — section 4 |
 | | `genlTerm`, `genlIsBirth`, `genlAddrThroughRef`, `genlExprForLocal` | an expression's value, and whether it is a birth to root (section 3, "Roots") |
 | | `genlStoreBarrier` | after a store through a reference or pointer, the barrier on what was stored (section 3, "The write barrier") |
@@ -1098,6 +1136,7 @@ variables.
 | | `genlOwnerHeader`, `genlVirtHeader`, `genlVirtRecord`, `genlVirtFinalize` | an owning virtual reference's header, from its vtable record's alignment; that record; its value's death through the record's `finalize` |
 | | `genlHollowRelease`, `genlRegionDealiasPart`, `genlHollowDeath`, `genlReleasePart` | a hollowed variable's release: the death of a value moved out, or an element of it, finalizing none of it and freeing the memory |
 | | `genlReleaseOwning`, `genlDealiasNodes` | releasing one owner of an owning reference or of each a tuple value carries, and replaying flow's lists |
+| | `genlTempKeep`, `genlTempsEnd`, `genlTempsJump`, `genlTempRelease` | a temporary kept in its slot; those a part made finalized at its end, or before a jump ("Temporaries") |
 | | `genlFinalizeAt`, `genlCallDrop`, `genlEachElem` | a value's death in place, whatever its type: a local's, a field's, a region value's before its `free`, and the `finalize` intrinsic |
 | | `genlTypeDrop`, `genlStructDrop`, `genlEnumDrop` | the body of a drop the compiler gave a type: a struct's `final` calls, its fields' deaths, its owners' release; an enum's tag dispatching to its variant's |
 | | `genlAliasHeld` | a copied struct, enum, tuple or array: `aliasRef` on each counted reference its death releases |
