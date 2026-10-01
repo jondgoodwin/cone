@@ -3,8 +3,8 @@
 // for one per logical processor). Each round builds a ring of 8 'Node'
 // actors, each holding a handle to the next, and a 'Collector' holding them
 // all; main sends 4 tokens into the ring, each to be passed on 2000 times.
-// Each node counts the tokens it passes in an '+rc-mut' tally it holds two
-// owners of (an 'rc' count is not atomic, and needs none: one worker at a
+// Each node counts the tokens it passes in an '+Rc-mut' tally it holds two
+// owners of (an 'Rc' count is not atomic, and needs none: one worker at a
 // time runs an actor, and each hand-off of an actor between workers orders
 // what the last did before what the next does). The last pass of each
 // token reports to the collector; when all 4 have reported, it tells every
@@ -24,7 +24,7 @@
 mod concurrency_actors_stress;
 
 import stdio use *;
-import sync use arc;
+import sync use Arc;
 import collections use List;
 import actors;
 
@@ -105,7 +105,7 @@ fn Collector_dispatch(self &mut Collector_state, msg Collector_msg) {
 }
 
 struct Collector {
-  mb +arc-opaq actors.Mailbox[Collector_msg];
+  mb +Arc-opaq actors.Mailbox[Collector_msg];
 
   pub fn start() Collector {
     Collector[actors.startActor[Collector_state, Collector_msg](Collector_state.made(), &Collector_dispatch)];
@@ -124,11 +124,11 @@ struct Node_state {
   next Option[Node];
   collector Collector;
   passes u64;
-  tally +rc-mut Tally;
-  tallyToo +rc-mut Tally;
+  tally +Rc-mut Tally;
+  tallyToo +Rc-mut Tally;
 
   pub fn made(collector Collector) Node_state {
-    imm t = +rc-mut Tally[0u64];
+    imm t = +Rc-mut Tally[0u64];
     Node_state[None[Node][], collector, 0u64, t, t];
   }
 
@@ -171,7 +171,7 @@ fn Node_dispatch(self &mut Node_state, msg Node_msg) {
 }
 
 struct Node {
-  mb +arc-opaq actors.Mailbox[Node_msg];
+  mb +Arc-opaq actors.Mailbox[Node_msg];
 
   pub fn start(collector Collector) Node {
     Node[actors.startActor[Node_state, Node_msg](Node_state.made(actors.sendable(collector)), &Node_dispatch)];

@@ -3,7 +3,7 @@
 // value a traced region allocated. So each of these is refused, each with its
 // own code:
 //
-// 1. an owning reference of a region that is not traced ('+rc', '+so', any
+// 1. an owning reference of a region that is not traced ('+Rc', '+So', any
 //    region ref not declaring 'Traced') to a value holding a traced reference,
 //    wherever the reference type is written: a field, a parameter, an
 //    allocation, a generic's instance (ErrorTracedHeld);
@@ -19,7 +19,7 @@
 // 6. a traced region's reference whose permission takes room, putting the value
 //    somewhere other than right after the header (ErrorTracedPerm).
 //
-// What a traced region allocates may hold '+rc' and '+so' owners, which its
+// What a traced region allocates may hold '+Rc' and '+So' owners, which its
 // finalizer releases; a borrow or a raw pointer to a value holding traced
 // references may be held anywhere, being unchecked or lifetime-bound. Every
 // judgment waits until each type is laid out, which is what lets a struct be
@@ -42,33 +42,33 @@ struct Pair { pub left +tr-mut Leaf; pub right +tr-mut Leaf; }
 struct Fin { pub v i32; fn final(self &uni) { } }
 struct Box { pub b +tr-mut Leaf; }
 
-// Accepted: a traced object holding '+rc' and '+so' owners, a function
+// Accepted: a traced object holding '+Rc' and '+So' owners, a function
 // reference, and a traced object holding another
 struct Mixed {
   pub g +tr-mut Leaf;
-  pub r +rc-mut Fin;
-  pub s +so Fin;
+  pub r +Rc-mut Fin;
+  pub s +So Fin;
   pub f &fn(x i32) i32;
   pub p +tr-mut Pair;
 }
 
 // Rule 1: in fields, however the traced reference is held inside
 struct RcHolder {
-  pub pr +rc-mut Pair;              //~ ErrorTracedHeld "may not point at Pair"
-  pub ok +rc-mut Leaf;
+  pub pr +Rc-mut Pair;              //~ ErrorTracedHeld "may not point at Pair"
+  pub ok +Rc-mut Leaf;
 }
 struct SoOption {
-  pub o +so Option[+tr-mut Leaf];   //~ ErrorTracedHeld "so is not traced"
+  pub o +So Option[+tr-mut Leaf];   //~ ErrorTracedHeld "So is not traced"
 }
 struct Node {
-  pub next +rc-mut Node;            //~ ErrorTracedHeld "may not point at Node"
+  pub next +Rc-mut Node;            //~ ErrorTracedHeld "may not point at Node"
   pub g +tr-mut Leaf;
 }
-struct RcBox[T] { pub v +rc-mut T; }   //~ ErrorTracedHeld "may not point at +tr-mut Leaf"
+struct RcBox[T] { pub v +Rc-mut T; }   //~ ErrorTracedHeld "may not point at +tr-mut Leaf"
 fn useBox(b &RcBox[+tr-mut Leaf]) { }
 
 // Rule 1: in a parameter
-fn takesRc(p +rc-mut Pair) { }      //~ ErrorTracedHeld "may not point at Pair"
+fn takesRc(p +Rc-mut Pair) { }      //~ ErrorTracedHeld "may not point at Pair"
 
 // Rule 2: a global
 mut gp Pair;                        //~ ErrorTracedGlobal "gp is a global"
@@ -109,8 +109,8 @@ fn main() {
   // Accepted: a borrow and a raw pointer to a value holding traced references
   imm b = &pr;
   imm rp = &pr as *Pair;
-  imm mx = +tr-mut Mixed[l, +rc-mut Fin[1i32], +so Fin[2i32], &nothing, +tr-mut Pair[l, l]];
-  imm rc = +rc-mut Pair[l, l];      //~ ErrorTracedHeld "may not point at Pair"
+  imm mx = +tr-mut Mixed[l, +Rc-mut Fin[1i32], +So Fin[2i32], &nothing, +tr-mut Pair[l, l]];
+  imm rc = +Rc-mut Pair[l, l];      //~ ErrorTracedHeld "may not point at Pair"
   imm n = 3i32;
   imm hb = +tr-mut HoldsBorrows[(1i64, Borrows[&n])];   //~ ErrorTracedBorrow "which holds a borrowed reference"
   mut list = collections.List[+tr-mut Leaf].empty();    //~ ErrorTracedRaw "would place +tr-mut Leaf"

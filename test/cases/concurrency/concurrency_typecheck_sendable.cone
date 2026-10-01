@@ -8,9 +8,9 @@
 // - a borrowed reference, of any permission: its lifetime is checked in one
 //   thread alone;
 // - an owner that may be aliased whose permission is not race-safe ('mut',
-//   'ro'): '+rc-mut', '+arc-mut';
+//   'ro'): '+Rc-mut', '+Arc-mut';
 // - an owner that may be aliased in a region not declaring ThreadSafe, even
-//   'imm': '+rc-imm', whose count is not atomic;
+//   'imm': '+Rc-imm', whose count is not atomic;
 // - a traced reference, whatever its permission: the collector is single
 //   threaded;
 // - a raw pointer, whose target nothing checks;
@@ -40,7 +40,7 @@ struct Point {pub x i32; pub y i32;}
 struct Holds {pub p &mut Point;}
 
 // Holds an owner whose permission is not race-safe
-struct Owns {pub p +rc-mut Point;}
+struct Owns {pub p +Rc-mut Point;}
 
 // Holds one deeper down, in a field's field
 struct Inner {pub r &mut i32;}
@@ -54,7 +54,7 @@ enum Msg {
 }
 
 // Reaches itself through an owner, and holds a raw pointer beside
-struct Linked {pub next Option[+so Linked]; pub raw *u8;}
+struct Linked {pub next Option[+So Linked]; pub raw *u8;}
 
 // Declares Sendable: taken at its word, but only where T is Sendable
 struct Carrier[T] is Sendable {pub p *T;}
@@ -75,20 +75,20 @@ struct Looped {
 
 fn bump(n &mut i32) i32 {*n + 1i32;}
 
-fn shared(n i32) +rc-imm Point {+rc-imm Point[n, n];}
+fn shared(n i32) +Rc-imm Point {+Rc-imm Point[n, n];}
 
 fn main() {
   crosses[&mut Point]();     //~ ErrorNotSendable "and &mut Point is not Sendable: it is a borrowed reference, and no borrow may leave its thread"
   crosses[&Point]();         //~ ErrorNotSendable "it is a borrowed reference"
   crosses[Holds]();          //~ ErrorNotSendable "Holds.p is &mut Point, a borrowed reference"
-  crosses[Owns]();           //~ ErrorNotSendable "Owns.p is +rc-mut Point, an owner whose permission, mut, is not race-safe"
-  crosses[+rc-imm Point]();  //~ ErrorNotSendable "it is an owner that may be copied, and rc does not declare ThreadSafe"
-  crosses[+arc-mut Point](); //~ ErrorNotSendable "an owner whose permission, mut, is not race-safe"
+  crosses[Owns]();           //~ ErrorNotSendable "Owns.p is +Rc-mut Point, an owner whose permission, mut, is not race-safe"
+  crosses[+Rc-imm Point]();  //~ ErrorNotSendable "it is an owner that may be copied, and Rc does not declare ThreadSafe"
+  crosses[+Arc-mut Point](); //~ ErrorNotSendable "an owner whose permission, mut, is not race-safe"
   crosses[+tr-imm Point]();  //~ ErrorNotSendable "a reference the tr collector traces"
   crosses[*u64]();           //~ ErrorNotSendable "it is a raw pointer, whose target the compiler cannot check"
   crosses[Outer]();          //~ ErrorNotSendable "Outer.inner.r is &mut i32"
-  crosses[+so Holds]();      //~ ErrorNotSendable "+so-uni Holds is not Sendable: Holds.p is &mut Point"
-  crosses[+arc-imm Holds](); //~ ErrorNotSendable "+arc-imm Holds is not Sendable: Holds.p is &mut Point"
+  crosses[+So Holds]();      //~ ErrorNotSendable "+So-uni Holds is not Sendable: Holds.p is &mut Point"
+  crosses[+Arc-imm Holds](); //~ ErrorNotSendable "+Arc-imm Holds is not Sendable: Holds.p is &mut Point"
   crosses[Msg]();            //~ ErrorNotSendable "Ptr.p is *u64, a raw pointer"
   crosses[Carrier[&mut Point]]();   //~ ErrorNotSendable "its type argument is &mut Point, a borrowed reference"
   crosses[Option[&mut i32]]();      //~ ErrorNotSendable "Option[&mut i32] is not Sendable: Some.value is &mut i32"
@@ -96,7 +96,7 @@ fn main() {
   crosses[[3; &Point]]();           //~ ErrorNotSendable "[3; &ro Point] is not Sendable: an element is &ro Point"
 
   // What a thread returns crosses back
-  imm r = thread.start(1i32, &shared);   //~ ErrorNotSendable "start requires R is Sendable, and +rc-imm Point is not Sendable"
+  imm r = thread.start(1i32, &shared);   //~ ErrorNotSendable "start requires R is Sendable, and +Rc-imm Point is not Sendable"
 
   // A borrow of a local may not cross, and the message says how a local is
   // judged: a 'mut' local of a number crosses (concurrency_sendable)

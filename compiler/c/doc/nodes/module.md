@@ -2531,7 +2531,7 @@ interesting one, since folding applied to types is delegated inheritance.
 ### What a region is
 
 A region's **annotation** — the name after `+` — is an ordinary struct that
-declares the built-in trait **`RegionRef`**: `struct rc is RegionRef { … }`.
+declares the built-in trait **`RegionRef`**: `struct Rc is RegionRef { … }`.
 There is no `region` keyword. `RegionRef` is the compiler's own
 (`corelib.c`, `newBuiltinTrait`, as `Move` and `Copy` are), a name every module
 reaches like `initAll`, and has no members: it is a check, not an abstraction values have, so
@@ -2572,8 +2572,8 @@ the value holds to its region's `mark`), and flags saying whether finalizing
 does anything and whether the value holds a traced reference. With it a region
 that owns death in its own loop, as a collector does, can finalize a value it
 cannot name the type of (`region_typerecord`). An `alloc` taking only the size
-is called with only the size, so a region that does not ask pays nothing: `so`
-and `rc` are generated exactly as they were before records existed. The type
+is called with only the size, so a region that does not ask pays nothing: `So`
+and `Rc` are generated exactly as they were before records existed. The type
 record is recognized as core's struct named `TypeRecord` (`typeRecordIsPtr`),
 as the intrinsics are recognized as core's, and its layout is the one the
 compiler fills in, which it checks when it builds the first record; a
@@ -2581,7 +2581,7 @@ module cannot declare its own `TypeRecord`, since core's public names are
 folded into every module.
 
 Whether the region has one owner per value is not read off a missing method
-but **declared**, with the built-in trait `Move` [Jon 26 Sep]: `struct so is
+but **declared**, with the built-in trait `Move` [Jon 26 Sep]: `struct So is
 RegionRef, Move`. It marks the struct `MoveType` like any type declaring it
 (`structNameRes`), which every reference type into the region asks
 (`refAdoptInfections`), and `regionIsMove` is what a release asks. A missing
@@ -2591,7 +2591,7 @@ nothing when an owner goes: the shape of a tracing collector or an arena, whose
 region owns death in its own loop (`region_collected`).
 
 **Whether a region's references are traced is declared too,** with the built-in
-trait `Traced`: `struct gc is RegionRef, Traced`. It says that a collector finds
+trait `Traced`: `struct Gc is RegionRef, Traced`. It says that a collector finds
 the region's values by tracing, so every type's record carries a trace handing
 each reference into the region that a value holds inline to the region's `mark`
 (`genlTraceAt`; `itypeHoldsTraced` says whether a type holds one, remembered
@@ -2617,7 +2617,7 @@ held at the declaration (`ErrorRegionMeth`); on a region not declaring
 local, a parameter, a temporary, a value inline in one of those, or a value a
 traced region allocates. So the compiler refuses, each with its own code, an
 owning reference of a region that is not traced to a value holding one
-(`ErrorTracedHeld`: `+rc T`, `+so T`, wherever the type is written); a global
+(`ErrorTracedHeld`: `+Rc T`, `+So T`, wherever the type is written); a global
 or static holding one (`ErrorTracedGlobal`); an instance of `mem.writeRaw` or
 `mem.moveRaw` at a type holding one (`ErrorTracedRaw`), which keeps traced
 references out of arenas, pools and collections, reported at the program's own
@@ -2625,29 +2625,29 @@ instantiation where it was reached through a generic's body; and, of what a
 traced region allocates, a value holding a borrow (`ErrorTracedBorrow`), an
 owning slice or owning virtual reference (`ErrorTracedRefKind`), and a
 permission taking room, which would move the value off the place right after
-the header (`ErrorTracedPerm`). A traced object may hold `+rc` and `+so`
+the header (`ErrorTracedPerm`). A traced object may hold `+Rc` and `+So`
 owners, which its finalizer releases, and a borrow or a raw pointer to a value
 holding traced references goes anywhere a borrow or a pointer may. Whether a
 type holds a traced reference is final only once every type it holds inline is
 laid out, which a reference type met inside the struct it points at is not
-(`next +rc Node` before `g +gc Leaf`), so type check notes each place a rule
+(`next +Rc Node` before `g +Gc Leaf`), so type check notes each place a rule
 looks at (`regionTracedRefNote`, `regionTracedGlobalNote`,
 `regionTracedRawNote`) and judges them all once it has finished
 (`regionTracedCheckAll`, from `conec.c`); a compile declaring no traced region
 judges none.
 
 **Whether several threads may hold owners of one value is declared too,** with
-the built-in trait `ThreadSafe` (a provisional name): `struct arc is RegionRef,
+the built-in trait `ThreadSafe` (a provisional name): `struct Arc is RegionRef,
 ThreadSafe`, the `sync` package's atomically counted region (a package's, not
-core's, so `arc` is a name only of the modules that fold it in), whose `aliasRef` and `dealiasRef` may
-run on different threads at once; `rc`, whose count is a plain number, does not
+core's, so `Arc` is a name only of the modules that fold it in), whose `aliasRef` and `dealiasRef` may
+run on different threads at once; `Rc`, whose count is a plain number, does not
 declare it. It is a region ref's only (`ErrorThreadSafeUse`, from
 `regionThreadSafeUseCheck`), trusted — the compiler cannot check that the
 counts are atomic. `regionIsThreadSafe` is the region's say in whether a
 reference may cross threads, beside its permission's `RaceSafe`: the thread
 check (`refThreadBinds`, [References](references.md)) lets an owner that may be
-aliased cross only where its region declares it, so `+arc-imm` crosses and
-`+rc-imm` does not. It changes no call the compiler makes.
+aliased cross only where its region declares it, so `+Arc-imm` crosses and
+`+Rc-imm` does not. It changes no call the compiler makes.
 
 The struct is held to the method shapes **at its declaration**, after its
 methods are type checked (`regionRefCheck`, from `structCheckMembers`):
@@ -2671,7 +2671,7 @@ private method -- is exported for it the same way: the `collector` package's
 inline `writeBarrier` tests a private global in line and calls its private
 `shade` only while a collection marks.
 
-`so` and `rc` are written this way in `packages/core/src/core.cone`, `inline`,
+`So` and `Rc` are written this way in `packages/core/src/core.cone`, `inline`,
 their `free` calling libc's by its qualified name, since inside a method named
 `free` a bare `free` is the method. Core is their module wrapper; a region
 naming a module rather than a struct is not built.

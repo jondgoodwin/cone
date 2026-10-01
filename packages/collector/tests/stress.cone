@@ -23,50 +23,50 @@ import testing use *;
 import collector;
 
 struct Leaf { pub n i64; }
-struct Pair { pub left +gc-mut Leaf; pub right +gc-mut Leaf; }
-struct Link { pub n i64; pub next Option[+gc-mut Link]; }
+struct Pair { pub left +Gc-mut Leaf; pub right +Gc-mut Leaf; }
+struct Link { pub n i64; pub next Option[+Gc-mut Link]; }
 
-fn leaf(n i64) +gc-mut Leaf {
-  +gc-mut Leaf[n];
+fn leaf(n i64) +Gc-mut Leaf {
+  +Gc-mut Leaf[n];
 }
 
 // Allocates while both parameters are held
-fn add(a +gc-mut Leaf, b +gc-mut Leaf) i64 {
-  imm c = +gc-mut Leaf[100];
+fn add(a +Gc-mut Leaf, b +Gc-mut Leaf) i64 {
+  imm c = +Gc-mut Leaf[100];
   a.n + b.n + c.n - 100;
 }
 
 // Replaces the pair's left while the caller still holds the old one, loaded
-fn clobber(p +gc-mut Pair) i64 {
-  p.left = +gc-mut Leaf[50];
+fn clobber(p +Gc-mut Pair) i64 {
+  p.left = +Gc-mut Leaf[50];
   0;
 }
-fn both(a +gc-mut Leaf, z i64) i64 {
-  imm c = +gc-mut Leaf[0];
+fn both(a +Gc-mut Leaf, z i64) i64 {
+  imm c = +Gc-mut Leaf[0];
   a.n + z;
 }
 
 // A list of n links, each made while the rest is held only by a call's result
-fn list(n i64) Option[+gc-mut Link] {
+fn list(n i64) Option[+Gc-mut Link] {
   if n == 0 {
-    return None[+gc-mut Link][];
+    return None[+Gc-mut Link][];
   }
-  Some[+gc-mut Link][+gc-mut Link[n, list(n - 1)]];
+  Some[+Gc-mut Link][+Gc-mut Link[n, list(n - 1)]];
 }
 // Matched by value: through the 'mut' links an Option hangs from, a reference
 // into it could see another reference empty it while in use
-fn listSum(l Option[+gc-mut Link]) i64 {
+fn listSum(l Option[+Gc-mut Link]) i64 {
   match l {
-    case imm s Some[+gc-mut Link] { s.value.n + listSum(s.value.next); }
+    case imm s Some[+Gc-mut Link] { s.value.n + listSum(s.value.next); }
     else { 0; }
   }
 }
 
 fn temporaries() {
-  imm s0 = gc.steps();
+  imm s0 = Gc.steps();
   expectInt(add(leaf(1), leaf(2)), 3, "two results held as temporaries while a third is made");
-  expectUInt(u64[gc.steps() - s0], 3, "three allocations, three steps");
-  imm p = +gc-mut Pair[leaf(3), leaf(4)];
+  expectUInt(u64[Gc.steps() - s0], 3, "three allocations, three steps");
+  imm p = +Gc-mut Pair[leaf(3), leaf(4)];
   expectInt(p.left.n + p.right.n, 7, "a value's parts held while the pair is allocated");
   expectInt(add(p.left, leaf(10)), 13, "a field loaded as an argument, held while another is made");
   expectInt(both(p.left, clobber(p)), 3, "the old left, loaded, held while clobber replaces it");
@@ -82,8 +82,8 @@ fn lists() {
   mut i = 0i64;
   mut last = leaf(0);
   while i < 1000 {
-    last = +gc-mut Leaf[i];
-    imm junk = +gc-mut Link[i, None[+gc-mut Link][]];
+    last = +Gc-mut Leaf[i];
+    imm junk = +Gc-mut Link[i, None[+Gc-mut Link][]];
     i = i + 1;
   }
   expectInt(last.n, 999, "the last leaf of a thousand, each loop allocating garbage");
@@ -91,12 +91,12 @@ fn lists() {
 }
 
 fn main() i32 {
-  gc.setStress(true);
-  expectBool(gc.stressed(), true, "the stress mode is on");
+  Gc.setStress(true);
+  expectBool(Gc.stressed(), true, "the stress mode is on");
   temporaries();
   lists();
-  gc.collect();
-  gc.collect();
-  expectUInt(u64[gc.liveObjects()], 0, "everything freed once its function returned");
+  Gc.collect();
+  Gc.collect();
+  expectUInt(u64[Gc.liveObjects()], 0, "everything freed once its function returned");
   done();
 }

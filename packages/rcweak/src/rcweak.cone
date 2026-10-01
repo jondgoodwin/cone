@@ -1,5 +1,5 @@
 // The rcweak package: reference counting with weak references. A value
-// allocated with '+rcw' is shared by counted owners, as with core's '+rc', and
+// allocated with '+Rcw' is shared by counted owners, as with core's '+Rc', and
 // may also be pointed at by weak references, which do not keep it alive.
 //
 //   mod family;
@@ -7,20 +7,20 @@
 //   import collections use *;
 //
 //   struct Child { pub name i64; pub parent Weak[Parent]; }
-//   struct Parent { pub name i64; pub kids List[+rcw-mut Child]; }
+//   struct Parent { pub name i64; pub kids List[+Rcw-mut Child]; }
 //
 //   fn build() {
-//     imm p = +rcw-mut Parent[1, List[+rcw-mut Child].empty()];
-//     p.kids.push(+rcw-mut Child[2, Weak[Parent].of(p)]);
+//     imm p = +Rcw-mut Parent[1, List[+Rcw-mut Child].empty()];
+//     p.kids.push(+Rcw-mut Child[2, Weak[Parent].of(p)]);
 //     ...
 //   }   // p's last owner goes: the parent dies, then its children, and the
 //       // children's weak references to it do not hold it up
 //
-// A strong owner is an ordinary owning reference, '+rcw-mut T': copying one
+// A strong owner is an ordinary owning reference, '+Rcw-mut T': copying one
 // counts another owner, and when the last goes the value dies -- its 'final',
-// its fields' finalizers, the owners its fields hold -- as an '+rc' value does.
-// '+rcw-mut' is the form to share: a weak reference is made only from it.
-// Plain '+rcw' (unique) moves instead of copying, as plain '+rc' does, and
+// its fields' finalizers, the owners its fields hold -- as an '+Rc' value does.
+// '+Rcw-mut' is the form to share: a weak reference is made only from it.
+// Plain '+Rcw' (unique) moves instead of copying, as plain '+Rc' does, and
 // handing one to 'Weak[T].of' gives it up.
 //
 // A weak reference is a 'Weak[T]': made from a strong owner with
@@ -38,7 +38,7 @@
 // frees the memory of a value that has already died.
 //
 // Death and freeing are separate here. When the last strong owner goes, the
-// value dies at once, finalized by the compiler exactly as an '+rc' value is,
+// value dies at once, finalized by the compiler exactly as an '+Rc' value is,
 // whatever weak references remain; its memory stays, holding the counts, until
 // the last weak reference goes too, so that a weak reference can always ask
 // whether its value is alive. A 'final' that asks a weak reference to its own
@@ -53,15 +53,15 @@
 // ('w.upgrade();'). tests/gaps.cone pins it. Bind what 'strong()' and
 // 'upgrade()' return, as 'imm p = w.strong()' or 'match w.upgrade() {...}' does.
 //
-// How it is laid out. The region ref 'rcw' is the header before each value:
+// How it is laid out. The region ref 'Rcw' is the header before each value:
 // two counts. 'strong' is the number of strong owners. 'weak' is the number of
 // weak references, plus one held on behalf of all the strong owners together
 // while any remains. The compiler calls 'aliasRef' for each strong owner copied,
 // and 'dealiasRef' for each one going away; at zero it runs the value's death and
 // then 'free', which here gives back only that one weak count. Whichever of
 // 'free' or a weak reference's 'final' takes 'weak' to zero frees the memory.
-// So a plain '+rcw' value that never had a weak reference is freed at its death,
-// as an '+rc' one is; it costs one word more of header.
+// So a plain '+Rcw' value that never had a weak reference is freed at its death,
+// as an '+Rc' one is; it costs one word more of header.
 //
 // Nothing here is known to the compiler. 'Weak[T]' is an ordinary struct
 // holding the header's address: it finds the value after the header as the
@@ -75,14 +75,14 @@ import libc;
 // How many blocks this region has allocated and not yet given back
 mut blocks = 0usize;
 
-// How many blocks '+rcw' allocations hold: each is freed only when its value
+// How many blocks '+Rcw' allocations hold: each is freed only when its value
 // has died and its last weak reference has gone. For tests and for finding
 // leaks, not for correctness.
 pub fn liveBlocks() usize { blocks; }
 
-// The header before each '+rcw' value. Its fields are public so that 'Weak'
+// The header before each '+Rcw' value. Its fields are public so that 'Weak'
 // can reach them; a program cannot, since nothing hands it a header.
-pub struct rcw is RegionRef {
+pub struct Rcw is RegionRef {
   pub strong usize;   // strong owners
   pub weak usize;     // weak references, plus one while any strong owner remains
 
@@ -91,16 +91,16 @@ pub struct rcw is RegionRef {
     if p as usize != 0usize { blocks = blocks + 1usize; }
     p;
   }
-  fn init() rcw inline { rcw[1usize, 1usize]; }
-  fn aliasRef(self &uni rcw) inline { strong = strong + 1usize; }
-  fn dealiasRef(self &uni rcw) Bool inline { strong = strong - 1usize; strong == 0usize; }
+  fn init() Rcw inline { Rcw[1usize, 1usize]; }
+  fn aliasRef(self &uni Rcw) inline { strong = strong + 1usize; }
+  fn dealiasRef(self &uni Rcw) Bool inline { strong = strong - 1usize; strong == 0usize; }
   // Called once the value has died: the strong owners' weak count goes
-  fn free(self &uni rcw) { dropWeak(self as *rcw); }
+  fn free(self &uni Rcw) { dropWeak(self as *Rcw); }
 }
 
 // One weak count goes; the last frees the block
-fn dropWeak(h *rcw) {
-  imm hr = h as &mut rcw;
+fn dropWeak(h *Rcw) {
+  imm hr = h as &mut Rcw;
   hr.weak = hr.weak - 1usize;
   if hr.weak == 0usize {
     blocks = blocks - 1usize;
@@ -110,44 +110,44 @@ fn dropWeak(h *rcw) {
 
 // How far after its header a T sits: where the compiler places the value of
 // an owning reference, the header's size rounded up to the value's alignment
-fn valueOffset[T]() usize { roundUp(mem.sizeof[rcw](), mem.alignof[T]()); }
+fn valueOffset[T]() usize { roundUp(mem.sizeof[Rcw](), mem.alignof[T]()); }
 
 // n rounded up to a multiple of align, a power of two
 fn roundUp(n usize, align usize) usize { (n + align - 1usize) & (0usize - align); }
 
-// A weak reference to a T allocated with '+rcw', or to nothing
+// A weak reference to a T allocated with '+Rcw', or to nothing
 pub struct Weak[T] {
-  hdr *rcw;   // the value's header, or null for none()
+  hdr *Rcw;   // the value's header, or null for none()
 
   // A weak reference to what 'owner' points at. The owner is passed by value,
-  // so a shared '+rcw-mut' owner is copied and a unique '+rcw' one moves in
+  // so a shared '+Rcw-mut' owner is copied and a unique '+Rcw' one moves in
   // and is given up.
-  pub fn of(owner +rcw-mut T) Weak[T] {
+  pub fn of(owner +Rcw-mut T) Weak[T] {
     imm at = owner as *T;
-    imm h = (at as usize - valueOffset[T]()) as *rcw;
-    imm hr = h as &mut rcw;
+    imm h = (at as usize - valueOffset[T]()) as *Rcw;
+    imm hr = h as &mut Rcw;
     hr.weak = hr.weak + 1usize;
     Weak[T][h];
   }
 
   // A weak reference to nothing: never alive
-  pub fn none() Weak[T] { Weak[T][0usize as *rcw]; }
+  pub fn none() Weak[T] { Weak[T][0usize as *Rcw]; }
 
   // Whether its value is alive: some strong owner still holds it
   pub fn alive(self &) Bool {
-    hdr as usize != 0usize and (hdr as &rcw).strong > 0usize;
+    hdr as usize != 0usize and (hdr as &Rcw).strong > 0usize;
   }
 
   // Some new strong owner of its value, or None if the value has died. The
   // owner goes when the Option does.
-  pub fn upgrade(self &) Option[+rcw-mut T] {
-    if !self.alive() { return None[+rcw-mut T][]; }
-    Some[+rcw-mut T][self.owner()];
+  pub fn upgrade(self &) Option[+Rcw-mut T] {
+    if !self.alive() { return None[+Rcw-mut T][]; }
+    Some[+Rcw-mut T][self.owner()];
   }
 
   // A new strong owner of its value; a panic if the value has died, reported
   // at the line calling 'strong'
-  pub fn strong(self &, file &[]u8 = srcFile(), line u32 = srcLine()) +rcw-mut T {
+  pub fn strong(self &, file &[]u8 = srcFile(), line u32 = srcLine()) +Rcw-mut T {
     if !self.alive() {
       panic("rcweak: strong() of a weak reference whose value has died", file, line);
     }
@@ -155,16 +155,16 @@ pub struct Weak[T] {
   }
 
   // A new strong owner of a live value: counted here, since a cast is not a copy
-  fn owner(self &) +rcw-mut T {
-    imm hr = hdr as &mut rcw;
+  fn owner(self &) +Rcw-mut T {
+    imm hr = hdr as &mut Rcw;
     hr.strong = hr.strong + 1usize;
-    (hdr as usize + valueOffset[T]()) as +rcw-mut T;
+    (hdr as usize + valueOffset[T]()) as +Rcw-mut T;
   }
 
   // Another weak reference to the same value
   pub fn clone(self &) Weak[T] {
     if hdr as usize != 0usize {
-      imm hr = hdr as &mut rcw;
+      imm hr = hdr as &mut Rcw;
       hr.weak = hr.weak + 1usize;
     }
     Weak[T][hdr];
@@ -173,7 +173,7 @@ pub struct Weak[T] {
   // How many strong owners its value has: 0 once it has died
   pub fn strongCount(self &) usize {
     if hdr as usize == 0usize { return 0usize; }
-    (hdr as &rcw).strong;
+    (hdr as &Rcw).strong;
   }
 
   // How many weak references its value has, this one among them. Asked while
@@ -181,7 +181,7 @@ pub struct Weak[T] {
   // count the strong owners held, which their value's death gives back last.
   pub fn weakCount(self &) usize {
     if hdr as usize == 0usize { return 0usize; }
-    imm hr = hdr as &rcw;
+    imm hr = hdr as &Rcw;
     if hr.strong > 0usize { hr.weak - 1usize; } else { hr.weak; };
   }
 

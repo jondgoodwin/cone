@@ -144,7 +144,7 @@ void flowAddVar(VarDclNode *varnode);
 // Start a new scope
 size_t flowScopePush();
 
-// Create de-alias list of all own/rc reference variables, except var found in retexp
+// Create de-alias list of all own/Rc reference variables, except var found in retexp
 // 'lexnode' positions an injected drop call where there is no retexp to position it on
 void flowScopeDealias(size_t pos, Nodes **varlist, INode *retexp, INode *lexnode);
 // Back out of current scope
@@ -221,10 +221,10 @@ int flowIsLvalRead(INode *node);
 // into an owning virtual reference, which carries the operand's owner?
 int flowCastCarries(INode *cast);
 
-// If needed, inject a reference-count node for rc references, adjusting the count by amt
+// If needed, inject a reference-count node for Rc references, adjusting the count by amt
 void flowInjectRefCountAmt(INode **nodep, int16_t amt);
 
-// Is this type a counted (rc) reference, single, slice or virtual?
+// Is this type a counted (Rc) reference, single, slice or virtual?
 int flowIsRcRef(INode *type);
 
 // Does a copy of a value of this type -- a struct, an enum, a tuple, an array --
@@ -233,7 +233,7 @@ int flowIsRcRef(INode *type);
 int flowHeldCounted(INode *type);
 int flowVariantHeldCounted(INode *variant);
 
-// Is this type an rc or so reference, single or slice, or a tuple carrying
+// Is this type an Rc or So reference, single or slice, or a tuple carrying
 // one: what a store releases before it overwrites?
 int flowIsOwningType(INode *type);
 

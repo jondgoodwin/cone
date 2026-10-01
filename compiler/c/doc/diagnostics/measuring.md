@@ -90,7 +90,7 @@ use a git-ignored directory such as `build/probe/`.
 
 Counting adjustments in `.preir` is how ownership questions get settled: an
 allocation that emits `call ptr @malloc` and no matching `free`, or no count
-decrement (`sub i64 ..., 1`) for an `rc` one, leaks.
+decrement (`sub i64 ..., 1`) for an `Rc` one, leaks.
 
 ## Running the suite
 

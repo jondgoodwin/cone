@@ -58,7 +58,7 @@ void stdPermInit() {
     opaqPerm = newPermNodeStr("opaq", MayAlias | RaceSafe | IsLockless);
 }
 
-// What core declares in Cone -- Option, Result, and the 'so' and 'rc' regions --
+// What core declares in Cone -- Option, Result, and the 'So' and 'Rc' regions --
 // is the core package's source, packages/core/src/core.cone, not this file's.
 
 FnDclNode *initAllFn;
@@ -167,7 +167,7 @@ void stdlibInit(int ptrsize) {
     // 'ThreadSafe', which a region ref declares beside 'RegionRef' to say that
     // owners of one value may be held by several threads at once: its 'aliasRef'
     // and 'dealiasRef' may run on different threads together (the sync
-    // package's 'arc', whose count is atomic; core's 'rc' does not declare
+    // package's 'Arc', whose count is atomic; core's 'Rc' does not declare
     // it). The name is provisional. It is the region's say in whether a
     // reference may cross threads, which the thread check reads beside the
     // permission's RaceSafe: an owner that may be aliased crosses only where
@@ -187,7 +187,7 @@ void stdlibInit(int ptrsize) {
     // promise. 'ShapeChanging' says the container may move its elements (a
     // list's push reallocates). It has NO EFFECT YET: Jon's rule refuses an
     // element borrow of such a container reached through a shared path (a
-    // '&mut' or '&' of unseen origin, a 'self' field, a '+rc-mut' owner),
+    // '&mut' or '&' of unseen origin, a 'self' field, a '+Rc-mut' owner),
     // but refusing it today breaks common collection code -- reading a
     // 'List[String]' element through a '&List' parameter -- that 'uni'
     // reborrowing is to make writable. Until then that is a documented hole
@@ -215,7 +215,7 @@ void stdlibInit(int ptrsize) {
     // one, nor an integer; any other type is one only by declaring it.
     pointerTrait = newBuiltinTrait(pointerTraitName);
     // 'Sendable': a value of the type may cross to another thread -- be moved
-    // to one, or, behind a shared owner such as '+arc-imm', be read from
+    // to one, or, behind a shared owner such as '+Arc-imm', be read from
     // several at once. Asked by a constraint, 'where T is Sendable', which
     // is how library code marks what crosses (thread.start, sync's
     // channels). Granted by the compiler (genericTypeIs, itypeThreadBound)

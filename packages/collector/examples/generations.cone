@@ -37,20 +37,20 @@ extern fn @c("clock") clock() i32;
 
 struct Node {
   pub n i64;
-  pub left Option[+gc-mut Node];
-  pub right Option[+gc-mut Node];
-  pub up Option[+gc-mut Node];
+  pub left Option[+Gc-mut Node];
+  pub right Option[+Gc-mut Node];
+  pub up Option[+Gc-mut Node];
 }
 
-fn none() Option[+gc-mut Node] {
-  None[+gc-mut Node][];
+fn none() Option[+Gc-mut Node] {
+  None[+Gc-mut Node][];
 }
 
 // Matched by value: through the 'mut' nodes an Option hangs from, a reference
 // into it could see another reference empty it while in use
-fn count(t Option[+gc-mut Node]) i64 {
+fn count(t Option[+Gc-mut Node]) i64 {
   match t {
-    case imm s Some[+gc-mut Node] { count(s.value.left) + count(s.value.right) + 1; }
+    case imm s Some[+Gc-mut Node] { count(s.value.left) + count(s.value.right) + 1; }
     else { 0; }
   }
 }
@@ -58,18 +58,18 @@ fn count(t Option[+gc-mut Node]) i64 {
 // -- churn
 
 // Born holding its children: no store, so no barrier
-fn grown(depth i64) Option[+gc-mut Node] {
+fn grown(depth i64) Option[+Gc-mut Node] {
   if depth == 0 {
     return none();
   }
-  Some[+gc-mut Node][+gc-mut Node[depth, grown(depth - 1), grown(depth - 1), none()]];
+  Some[+Gc-mut Node][+Gc-mut Node[depth, grown(depth - 1), grown(depth - 1), none()]];
 }
 
-fn graft(t Option[+gc-mut Node], path i64) {
+fn graft(t Option[+Gc-mut Node], path i64) {
   match t {
-    case imm s Some[+gc-mut Node] {
+    case imm s Some[+Gc-mut Node] {
       if s.value.n == 1 {
-        s.value.left = Some[+gc-mut Node][+gc-mut Node[100, none(), none(), none()]];
+        s.value.left = Some[+Gc-mut Node][+Gc-mut Node[100, none(), none(), none()]];
       }
       else if path % 2 == 0 {
         graft(s.value.left, path / 2);
@@ -83,9 +83,9 @@ fn graft(t Option[+gc-mut Node], path i64) {
 }
 
 fn junk(k i64) i64 {
-  imm a = +gc-mut Node[k, none(), none(), none()];
-  imm b = +gc-mut Node[k, none(), none(), none()];
-  imm c = +gc-mut Node[k, Some[+gc-mut Node][a], Some[+gc-mut Node][b], none()];
+  imm a = +Gc-mut Node[k, none(), none(), none()];
+  imm b = +Gc-mut Node[k, none(), none(), none()];
+  imm c = +Gc-mut Node[k, Some[+Gc-mut Node][a], Some[+Gc-mut Node][b], none()];
   c.n;
 }
 
@@ -96,7 +96,7 @@ const scale = 8i64;
 // The most bytes live, as the loads see it between their iterations
 mut peak = 0usize;
 fn watch() {
-  if gc.liveBytes() > peak { peak = gc.liveBytes(); }
+  if Gc.liveBytes() > peak { peak = Gc.liveBytes(); }
 }
 
 // The kept tree's node count at the end: 4,095
@@ -127,14 +127,14 @@ fn churn() i64 {
 // -- forest
 
 // Built by stores: each child stored into its parent, pointing up at it
-fn stored(depth i64, up Option[+gc-mut Node]) Option[+gc-mut Node] {
+fn stored(depth i64, up Option[+Gc-mut Node]) Option[+Gc-mut Node] {
   if depth == 0 {
     return none();
   }
-  imm node = +gc-mut Node[depth, none(), none(), up];
-  node.left = stored(depth - 1, Some[+gc-mut Node][node]);
-  node.right = stored(depth - 1, Some[+gc-mut Node][node]);
-  Some[+gc-mut Node][node];
+  imm node = +Gc-mut Node[depth, none(), none(), up];
+  node.left = stored(depth - 1, Some[+Gc-mut Node][node]);
+  node.right = stored(depth - 1, Some[+Gc-mut Node][node]);
+  Some[+Gc-mut Node][node];
 }
 
 fn round() i64 {
@@ -167,23 +167,23 @@ fn per(work usize, n usize) usize {
 
 // One load, in one mode, from a heap with nothing in it
 fn measure(name &[]u8, gen Bool, load i64) {
-  gc.setGenerational(gen);
-  gc.collect();
-  gc.collect();
+  Gc.setGenerational(gen);
+  Gc.collect();
+  Gc.collect();
   peak = 0usize;
-  imm c0 = gc.collections();
-  imm n0 = gc.minorCollections();
-  imm m0 = gc.markedObjects();
-  imm s0 = gc.sweptObjects();
-  imm w0 = gc.work();
-  imm mw0 = gc.minorWork();
+  imm c0 = Gc.collections();
+  imm n0 = Gc.minorCollections();
+  imm m0 = Gc.markedObjects();
+  imm s0 = Gc.sweptObjects();
+  imm w0 = Gc.work();
+  imm mw0 = Gc.minorWork();
   imm t0 = clock();
   imm check = if load == 0 {garbage();} else if load == 1 {churn();} else {forest();};
   imm t1 = clock();
-  imm colls = gc.collections() - c0;
-  imm minors = gc.minorCollections() - n0;
-  imm work = gc.work() - w0;
-  imm minorWork = gc.minorWork() - mw0;
+  imm colls = Gc.collections() - c0;
+  imm minors = Gc.minorCollections() - n0;
+  imm work = Gc.work() - w0;
+  imm minorWork = Gc.minorWork() - mw0;
   printStr(name);
   if gen { printStr(", generational:"); } else { printStr(", incremental:"); }
   printStr(" check "); printInt(check);
@@ -196,8 +196,8 @@ fn measure(name &[]u8, gen Bool, load i64) {
   show(", each ", per(minorWork, minors));
   printStr("\n");
   show("  in all ", work);
-  show(" bytes of work: objects marked ", gc.markedObjects() - m0);
-  show(", swept ", gc.sweptObjects() - s0);
+  show(" bytes of work: objects marked ", Gc.markedObjects() - m0);
+  show(", swept ", Gc.sweptObjects() - s0);
   printStr("\n");
 }
 

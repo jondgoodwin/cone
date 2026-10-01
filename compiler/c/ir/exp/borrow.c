@@ -149,8 +149,8 @@ void borrowUniReborrow(INode **from, INode *totypedcl) {
     borrowDerefOf(from, totype->perm, totype->vtexp);
 }
 
-// Is 'from' an owning reference that is the only holder of its value (a '+so',
-// a '+rc' still 'uni'), held in a place, wanted as a borrowed reference that
+// Is 'from' an owning reference that is the only holder of its value (a '+So',
+// a '+Rc' still 'uni'), held in a place, wanted as a borrowed reference that
 // may not be shared ('&uni')? An owning reference coerced to a borrowed one is
 // borrowed from, whatever the borrow's permission: the owner stays, frozen
 // while the borrow is used, and still ends its value at its own scope's end

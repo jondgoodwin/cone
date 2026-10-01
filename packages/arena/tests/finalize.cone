@@ -4,7 +4,7 @@
 // - an arena finalizes its values newest first (the reverse of allocation);
 // - a value's death is its own 'final', then each field's, in field order and
 //   recursively, then the owning references its fields hold are released: a
-//   '+so' one's value dies and is freed, an '+rc' one's only if that was its
+//   '+So' one's value dies and is freed, an '+Rc' one's only if that was its
 //   last owner;
 // - a value typed as an enum dies as the variant it holds;
 // - a tuple dies element by element, and an array in element order, first
@@ -37,14 +37,14 @@ struct Inner { pub n i64; fn final(self &uni) { note(n); } }
 struct Middle { pub n i64; pub c Inner; pub f Fin; fn final(self &uni) { note(n); } }
 struct Outer { pub n i64; pub b Middle; fn final(self &uni) { note(n); } }
 
-struct HoldsSo { pub n i64; pub o +so Fin; fn final(self &uni) { note(n); } }
-struct HoldsRc { pub n i64; pub r +rc-mut Fin; fn final(self &uni) { note(n); } }
+struct HoldsSo { pub n i64; pub o +So Fin; fn final(self &uni) { note(n); } }
+struct HoldsRc { pub n i64; pub r +Rc-mut Fin; fn final(self &uni) { note(n); } }
 
 // An owning reference held two fields deep: in a field of a field
 struct TwoDeep { pub n i64; pub h HoldsSo; }
 
 // A chain of single owners: each owner's release runs the next one's death
-struct ChainTop { pub n i64; pub o +so HoldsSo; fn final(self &uni) { note(n); } }
+struct ChainTop { pub n i64; pub o +So HoldsSo; fn final(self &uni) { note(n); } }
 
 // Refers to another value, which it does not own
 struct Watches { pub n i64; pub r &mut Fin; fn final(self &uni) { note(n); } }
@@ -75,26 +75,26 @@ fn nested() {
 
 fn soField() {
   mut a = Arena.empty();
-  a.alloc(HoldsSo[1, +so Fin[2]]);
+  a.alloc(HoldsSo[1, +So Fin[2]]);
 }
 
 fn soChain() {
   mut a = Arena.empty();
-  a.alloc(ChainTop[1, +so HoldsSo[2, +so Fin[3]]]);
+  a.alloc(ChainTop[1, +So HoldsSo[2, +So Fin[3]]]);
 }
 
 fn rcShared() {
-  imm keep = +rc-mut Fin[3];
+  imm keep = +Rc-mut Fin[3];
   {
     mut a = Arena.empty();
     a.alloc(HoldsRc[1, keep]);
   }
-  expectInt(log, 1, "an rc owner shared outside is counted down, not finalized");
+  expectInt(log, 1, "an Rc owner shared outside is counted down, not finalized");
 }
 
 fn rcLast() {
   mut a = Arena.empty();
-  a.alloc(HoldsRc[1, +rc-mut Fin[2]]);
+  a.alloc(HoldsRc[1, +Rc-mut Fin[2]]);
 }
 
 fn refersToSibling() {
@@ -149,12 +149,12 @@ fn tuple() {
 
 fn twoDeep() {
   mut a = Arena.empty();
-  a.alloc(TwoDeep[1, HoldsSo[2, +so Fin[3]]]);
+  a.alloc(TwoDeep[1, HoldsSo[2, +So Fin[3]]]);
 }
 
 fn ownerAsValue() {
   mut a = Arena.empty();
-  imm r = a.alloc(+so Fin[6]);
+  imm r = a.alloc(+So Fin[6]);
   expectInt((*r).n, 6, "read through the owner held in the arena");
 }
 
@@ -186,7 +186,7 @@ fn nestedArenas() {
 }
 
 fn soHeldArena() {
-  imm a = +so Arena.empty();
+  imm a = +So Arena.empty();
   a.alloc(Fin[1]);
   a.alloc(Fin[2]);
 }
@@ -235,16 +235,16 @@ fn main() i32 {
   expectInt(log, 1234, "own final, then fields in order, recursively");
   log = 0;
   soField();
-  expectInt(log, 12, "own final, then the so owner's value");
+  expectInt(log, 12, "own final, then the So owner's value");
   log = 0;
   soChain();
-  expectInt(log, 123, "a chain of so owners, each released in turn");
+  expectInt(log, 123, "a chain of So owners, each released in turn");
   log = 0;
   rcShared();
   expectInt(log, 13, "the shared value dies with its last owner, outside");
   log = 0;
   rcLast();
-  expectInt(log, 12, "the arena held the last rc owner");
+  expectInt(log, 12, "the arena held the last Rc owner");
   log = 0;
   refersToSibling();
   expectInt(log, 21, "a referred-to value dies once, by its own header");
@@ -280,7 +280,7 @@ fn main() i32 {
   expectInt(log, 321, "an arena in an arena dies in its place, and its values with it");
   log = 0;
   soHeldArena();
-  expectInt(log, 21, "an arena behind so dies with its owner");
+  expectInt(log, 21, "an arena behind So dies with its owner");
   log = 0;
   swapOut();
   expectInt(log, 12, "the swapped-out value dies where it went, the swapped-in with the arena");

@@ -22,7 +22,7 @@ There are several ways to find out what it does, and does not, support:
 ## Current Focus: Modules, Packages and Libraries
 
 Everything the language needs next sits behind one gate. `Option` and `Result` live
-inside the compiler as source compiled into it, and so do the `so` and `rc` regions.
+inside the compiler as source compiled into it, and so do the `So` and `Rc` regions.
 Nothing about them changes, and nothing joins them, without rebuilding `conec`.
 A core library is a package, so packages come first.
 
@@ -68,8 +68,8 @@ This table illustrates the current status of Cone's key features:
 | | array, array refs | slices, collections |
 | | union & trait variant types | |
 | | references (incl. nullable) | safety guards |
-| | so, rc, borrowed | move/borrow semantics |
-| | | gc, arena, pool |
+| | So, Rc, borrowed | move/borrow semantics |
+| | | Gc, arena, pool |
 | | static permissions | runtime permissions |
 | | pointers | trust block |
 | **Polymorphism** | | |

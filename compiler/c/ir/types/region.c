@@ -231,7 +231,7 @@ static void regionCheckInit(FnDclNode *initmeth, StructNode *region) {
 // happen [Jon 25 Sep, 26 Sep]; no combination is refused for what it leaves
 // out. One owner per value is said explicitly, by 'is Move' [Jon 26 Sep]:
 // - no 'aliasRef': a copy of a reference calls nothing. It is a move where the
-//   region is 'Move' ('so'), and free where it is not (a collector's shape).
+//   region is 'Move' ('So'), and free where it is not (a collector's shape).
 // - no 'dealiasRef': an owner going away asks nothing. Where the region is
 //   'Move', every owner's going is the value's death. Where it is not, the
 //   going does nothing: the value never dies by an owner, and the compiler
@@ -300,7 +300,7 @@ void regionThreadSafeUseCheck(StructNode *node) {
 
 // Does the region's 'alloc' take the value type's record as well as the size?
 // Only a region whose 'alloc' asks is handed one, so a region that does not
-// ask (so, rc) is called exactly as it would be if records did not exist
+// ask (So, Rc) is called exactly as it would be if records did not exist
 int regionAllocTakesRecord(INode *region) {
     FnDclNode *allocmeth = regionMethod(region, allocMethodName);
     if (allocmeth == NULL)
@@ -344,7 +344,7 @@ void regionAllocTypeCheck(INode *region) {
 //
 // Whether a type holds a traced reference is known only once it and every type
 // it holds inline are laid out, which a reference type met inside the struct it
-// points at ('next +rc Node') is not. So each place a rule looks at is noted as
+// points at ('next +Rc Node') is not. So each place a rule looks at is noted as
 // type check meets it, and all are judged once type check has finished
 // (regionTracedCheckAll), when every answer is final. A compile declaring no
 // traced region judges none.

@@ -767,9 +767,9 @@ user type named `i64` inside a module is still a path:
 
 `n` and `o`, v0's i128 and u128, are read by the demangler and declared by
 nothing. A region and a permission are each the identifier of the declaration
-they name — `2so`, `2rc`, `3mut`, `2ro`, `4opaq` — and a borrowed reference,
-which names no region, spells the empty identifier `0`: `R2so3mutl` is
-`&so mut i32`, `R04opaqFxEx` is `&opaq fn(i64) i64`. An array of several
+they name — `2So`, `2Rc`, `3mut`, `2ro`, `4opaq` — and a borrowed reference,
+which names no region, spells the empty identifier `0`: `R2So3mutl` is
+`&So mut i32`, `R04opaqFxEx` is `&opaq fn(i64) i64`. An array of several
 dimensions is an array of arrays, one `A` per dimension and the extents
 innermost first: `AAx3_2_` is `[2] [3] i64`.
 
@@ -850,8 +850,8 @@ in the type's namespace, so `Nt` then `Nv` says it directly and reads as
 `S`, `V` and `P` for what v0 cannot say, region and permission spelled as the
 identifiers of the declarations they name. Region and permission are always
 spelled and lifetime never, because those are the distinctions `itypeIsSame`
-draws — an encoding that omitted the region would spell `&so mut T` and
-`&rc mut T` alike, a collision rather than a distinction. Not v0's `R`/`Q`
+draws — an encoding that omitted the region would spell `&So mut T` and
+`&Rc mut T` alike, a collision rather than a distinction. Not v0's `R`/`Q`
 for `&`/`&mut`: they carry no region, and permission is not two-valued in
 Cone. Not v0's `K…` const encoding for array extents: decimal is readable,
 and `K` is the Rust-shaped place for const generics when Cone has them.

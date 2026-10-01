@@ -15,7 +15,7 @@
 
 	<p style="margin-left: 40px;"><i>Note: The alloc declaration is not recognized. A custom allocator
 		is written today as a struct declaring <span class="pre">is RegionRef</span>, which is how the core
-		package's rc and so are written, and the compiler calls its methods at the events below, each method
+		package's Rc and So are written, and the compiler calls its methods at the events below, each method
 		optional: <span class="pre">fn alloc(size usize) *u8</span> (for allocate, static; the size includes the
 		bookkeeping, and null fails), or <span class="pre">fn alloc(size usize, ty *TypeRecord) *u8</span>,
 		which is also handed the allocated value's <a href="refintrinsic.html">type record</a> (its size,
@@ -27,15 +27,15 @@
 		handed the bookkeeping data, not the value. An absent method's operation does not happen, and
 		single ownership is declared rather than read off a missing aliasRef: an allocator whose struct declares
 		the built-in trait <a href="refmove.html"><span class="pre">Move</span></a>
-		(<span class="pre">struct so is RegionRef, Move</span>) is single-owner, as described below, and
-		may not also have aliasRef. One with neither aliasRef nor <span class="pre">Move</span> (the gc
+		(<span class="pre">struct So is RegionRef, Move</span>) is single-owner, as described below, and
+		may not also have aliasRef. One with neither aliasRef nor <span class="pre">Move</span> (the Gc
 		allocator's shape) shares its references freely, needing no aliasRef method that does nothing; with no
 		dealiasRef either, an owner going away does nothing and the compiler never frees the value, which waits
 		for a collector to be built. One with aliasRef but no dealiasRef never frees a value by count. When
 		the last owner goes, the compiler runs the value's finalizer before calling free, as described below,
 		and allocator methods are not trust blocks.
 		An allocator whose struct also declares the built-in trait <span class="pre">Traced</span>
-		(<span class="pre">struct gc is RegionRef, Traced</span>) has its references traced: it declares
+		(<span class="pre">struct Gc is RegionRef, Traced</span>) has its references traced: it declares
 		<span class="pre">fn mark(self &amp;uni R)</span>, or <span class="pre">fn mark(self &amp;uni R, perm u32,
 		mode u32)</span> to be told each reference's permission and the mode it was traced in, and every
 		type record's trace (and <a href="refintrinsic.html"><span class="pre">mem.trace</span></a>) hands
@@ -43,11 +43,11 @@
 		<span class="pre">Move</span>. A traced reference may be held only where a collector can find it:
 		in a local, a parameter, a temporary, a value held in one of those, or a value a traced allocator
 		allocated. So the compiler refuses one held by an allocator that is not traced (a
-		<span class="pre">+rc</span> or <span class="pre">+so</span> value holding it), in a global, or in
+		<span class="pre">+Rc</span> or <span class="pre">+So</span> value holding it), in a global, or in
 		memory placed by <span class="pre">mem.writeRaw</span> (an arena's, a pool's, a collection's); and
 		refuses a traced allocator's value holding a borrowed reference, a traced owning slice or virtual
-		reference, and a permission that takes room. A traced value may hold <span class="pre">+rc</span>
-		and <span class="pre">+so</span> references, which its finalizer releases. The traced references
+		reference, and a permission that takes room. A traced value may hold <span class="pre">+Rc</span>
+		and <span class="pre">+So</span> references, which its finalizer releases. The traced references
 		on the stack are found: <a href="refintrinsic.html"><span class="pre">mem.traceRoots(mode)</span></a>
 		hands each one every running function holds -- in its locals, its parameters and the temporaries it is
 		making -- to its allocator's <span class="pre">mark</span>, which is what a collector starts from.
@@ -59,20 +59,20 @@
 		stored, just after the store. It is told nothing of where the reference went. Stores into locals
 		and a new value's own contents get none, so a collector that marks while the program runs traces
 		the stacks again before it finishes marking. One collector is built, as library
-		code: the <span class="pre">collector</span> package's <span class="pre">gc</span> allocator
-		(<span class="pre">import collector;</span> then <span class="pre">+gc-mut T[...]</span>), an
+		code: the <span class="pre">collector</span> package's <span class="pre">Gc</span> allocator
+		(<span class="pre">import collector;</span> then <span class="pre">+Gc-mut T[...]</span>), an
 		incremental mark and sweep that works a bounded step at a time inside <span class="pre">alloc</span>
-		once the heap passes its trigger, and whole on <span class="pre">gc.collect()</span>. Run
-		generationally (<span class="pre">gc.setGenerational(true)</span>), what survives a collection
+		once the heap passes its trigger, and whole on <span class="pre">Gc.collect()</span>. Run
+		generationally (<span class="pre">Gc.setGenerational(true)</span>), what survives a collection
 		is old, and the collections after it are minor: they mark and sweep only the young values, the
 		barrier staying on between them so that an old value's new young child is found. It runs a
 		dead value's finalizer one collection before it frees the value, so a finalizer may still read the
-		gc values it holds. A finalizer runs some time after its value became unreachable, when a
+		Gc values it holds. A finalizer runs some time after its value became unreachable, when a
 		collection's step reaches it, not at a moment the program chooses.</i></p>
 
 	<p>Although Cone provides a rich collection of standard allocators, there are times that
 		other allocators can prove valuable. For example:
-		such as rc allocators that use tracing to break cycles or 
+		such as Rc allocators that use tracing to break cycles or 
 		multi-threaded garbage collectors that use tracing for intrathread memory management and ref counting
 		for inter-thread memory management (Pony's Orca).</p>
 		<p>This is why Cone supports the creation and use of custom allocators. 
@@ -80,24 +80,24 @@
 	For example:</p>
 <pre>
 // A simple reference counting allocator
-alloc rc {
+alloc Rc {
   refcnt usize;
 
-  fn allocate(size usize) *uni rc {
-    imm rcref = malloc(size) as *uni rc;
+  fn allocate(size usize) *uni Rc {
+    imm rcref = malloc(size) as *uni Rc;
     rcref.refcnt = 1;
     rcref;
   }
-  fn aliasRef(self *mutx rc) {
+  fn aliasRef(self *mutx Rc) {
     .refcnt += 1;
   }
-  fn dealiasRef(self *mutx rc) {
+  fn dealiasRef(self *mutx Rc) {
     .refcnt -= 1;
     if .refcnt == 0 {
       .free();
     }
   }
-  fn free(self *mutx rc) {
+  fn free(self *mutx Rc) {
     free(self as *u8);
   }
 }
@@ -120,14 +120,14 @@ alloc rc {
 	which disposes of any resources obtained by the owning reference.</li>
 	</ul>
 	<p>Any allocator which declares the built-in <span class="pre">Move</span> trait, and so does not
-	define the aliasRef method (e.g., the 'so' allocator),
+	define the aliasRef method (e.g., the 'So' allocator),
 	ensures single-owner <a href="refmove.html">move semantics</a>,
 	as it prevents multiple copies of the reference from being created.
 	The single-owner reference is moved instead of being copied.
 	This restriction also constrains the permissions on borrowed references,
 	effectively disallowing <span class="pre">mut</span> and all other shared mutable permissions.</p>
 	<p>Alternatively, an allocator may declare neither <span class="pre">Move</span> nor the aliasRef
-	method (e.g., the gc allocator).
+	method (e.g., the Gc allocator).
 	In this case, multiple, sharable references to the same value become possible, and copying one costs nothing.</p>
 	<p>Notice also that allocators work with pointers (which have no assigned allocator).
 	All allocator methods are considered wrapped as trust blocks, which allows the use of pointers
