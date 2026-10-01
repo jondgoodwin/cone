@@ -1,0 +1,203 @@
+// List.sortBy: putting a list in the order a comparison function gives. Every
+// expected value is worked out by hand:
+// - each sorted order by sorting the literals' values on paper;
+// - stability from the order the equal values were pushed in, which their
+//   'seq' numbers record;
+// - the count of comparisons against the merge sort's bound: n values take
+//   at most n times the passes, and the passes are log2 n rounded up, so
+//   1000 values take at most 1000 * 10 = 10000;
+// - the deaths from finalize's rule, each value once, first to last, after
+//   moves that finalize nothing.
+
+mod sort;
+
+import testing use *;
+import collections use *;
+
+// How many times a comparison function has been called
+mut calls = 0i64;
+
+fn ascending(a &i64, b &i64) i32 {
+  calls = calls + 1i64;
+  if *a < *b {-1i32;} else if *a > *b {1i32;} else {0i32;}
+}
+
+fn descending(a &i64, b &i64) i32 {
+  calls = calls + 1i64;
+  if *a > *b {-1i32;} else if *a < *b {1i32;} else {0i32;}
+}
+
+// A key to sort by, and the order it was pushed in
+struct Pair {
+  pub key i64;
+  pub seq i64;
+}
+
+fn byKey(a &Pair, b &Pair) i32 {
+  if a.key < b.key {-1i32;} else if a.key > b.key {1i32;} else {0i32;}
+}
+
+fn byName(a &String, b &String) i32 { a.compare(b.view()); }
+
+fn byLength(a &String, b &String) i32 {
+  if a.len() < b.len() {-1i32;} else if a.len() > b.len() {1i32;} else {0i32;}
+}
+
+mut log = 0i64;
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { log = log * 10i64 + n; }
+}
+
+fn byDigit(a &Fin, b &Fin) i32 {
+  if a.n < b.n {-1i32;} else if a.n > b.n {1i32;} else {0i32;}
+}
+
+// Whether every value is in ascending order
+fn ascendingThrough(l &List[i64]) Bool {
+  mut i = 1usize;
+  while i < l.len() {
+    if *l[i - 1usize] > *l[i] { return false; }
+    i = i + 1usize;
+  }
+  true;
+}
+
+fn sortedDies() {
+  mut l = new List[Fin] <- new Fin(3), new Fin(1), new Fin(2);
+  l.sortBy(&byDigit);
+  expectInt(log, 0, "sorting finalizes nothing");
+  expectInt(l[0usize].n, 1, "the smallest first");
+}
+
+fn main() i32 {
+  // Nothing and one value: no comparison is made, nothing changes
+  mut none = List[i64].empty();
+  none.sortBy(&ascending);
+  expectUInt(u64.from(none.len()), 0, "an empty list stays empty");
+  mut one = new List[i64] <- 42i64;
+  one.sortBy(&ascending);
+  expectInt(*one[0usize], 42, "one value stays");
+  expectInt(calls, 0, "no comparisons for fewer than two");
+
+  // Eight values, two of them equal, two negative
+  mut a = new List[i64] <- 5i64, 3i64, 9i64, 1i64, 5i64, 0i64, -2i64, 7i64;
+  a.sortBy(&ascending);
+  expectInt(*a[0usize], -2, "ascending 0");
+  expectInt(*a[1usize], 0, "ascending 1");
+  expectInt(*a[2usize], 1, "ascending 2");
+  expectInt(*a[3usize], 3, "ascending 3");
+  expectInt(*a[4usize], 5, "ascending 4");
+  expectInt(*a[5usize], 5, "ascending 5");
+  expectInt(*a[6usize], 7, "ascending 6");
+  expectInt(*a[7usize], 9, "ascending 7");
+  expectUInt(u64.from(a.len()), 8, "eight still");
+  a.sortBy(&descending);
+  expectInt(*a[0usize], 9, "descending first");
+  expectInt(*a[7usize], -2, "descending last");
+
+  // Two values, in order and not; an odd count, whose last run is short
+  mut two = new List[i64] <- 2i64, 1i64;
+  two.sortBy(&ascending);
+  expectInt(*two[0usize], 1, "two swapped");
+  two.sortBy(&ascending);
+  expectInt(*two[0usize], 1, "two in order stay");
+  mut odd = new List[i64] <- 4i64, 2i64, 5i64, 1i64, 3i64;
+  odd.sortBy(&ascending);
+  expectInt(*odd[0usize] * 10000i64 + *odd[1usize] * 1000i64 + *odd[2usize] * 100i64 + *odd[3usize] * 10i64 + *odd[4usize], 12345, "five values");
+
+  // A thousand values, reversed: in order, none lost, within the bound
+  mut rev = List[i64].empty();
+  mut i = 1000i64;
+  while i > 0i64 { rev.push(i); i = i - 1i64; }
+  calls = 0i64;
+  rev.sortBy(&ascending);
+  expectBool(ascendingThrough(&rev), true, "a thousand reversed, sorted");
+  expectInt(*rev[0usize], 1, "the least first");
+  expectInt(*rev[999usize], 1000, "the greatest last");
+  expect(calls <= 10000i64, "at most n times log2 n comparisons");
+
+  // A thousand scrambled by a linear congruential step, with repeats: the
+  // values mod 100. The sum, 0 + 1 + ... is unchanged by any order
+  mut mix = List[i64].empty();
+  mut seed = 12345i64;
+  mut before = 0i64;
+  i = 0i64;
+  while i < 1000i64 {
+    seed = (seed * 1103515245i64 + 12345i64) % 2147483648i64;
+    mix.push(seed % 100i64);
+    before = before + seed % 100i64;
+    i = i + 1i64;
+  }
+  mix.sortBy(&ascending);
+  expectBool(ascendingThrough(&mix), true, "a thousand scrambled, sorted");
+  mut after = 0i64;
+  mut k = 0usize;
+  while k < mix.len() { after = after + *mix[k]; k = k + 1usize; }
+  expectInt(after, before, "no value lost or doubled");
+
+  // Stable: keys 2 1 2 1 0 2, pushed as 0 to 5; equal keys keep that order,
+  // so the order is (0,4) (1,1) (1,3) (2,0) (2,2) (2,5)
+  mut pairs = List[Pair].empty();
+  pairs.push(new Pair(2, 0));
+  pairs.push(new Pair(1, 1));
+  pairs.push(new Pair(2, 2));
+  pairs.push(new Pair(1, 3));
+  pairs.push(new Pair(0, 4));
+  pairs.push(new Pair(2, 5));
+  pairs.sortBy(&byKey);
+  expectInt(pairs[0usize].seq, 4, "key 0");
+  expectInt(pairs[1usize].seq, 1, "first key 1");
+  expectInt(pairs[2usize].seq, 3, "second key 1");
+  expectInt(pairs[3usize].seq, 0, "first key 2");
+  expectInt(pairs[4usize].seq, 2, "second key 2");
+  expectInt(pairs[5usize].seq, 5, "third key 2");
+
+  // Stable over many runs: 300 keys i mod 7, each key's values still in the
+  // order pushed, across every merge
+  mut many = List[Pair].empty();
+  i = 0i64;
+  while i < 300i64 { many.push(new Pair(i % 7i64, i)); i = i + 1i64; }
+  many.sortBy(&byKey);
+  mut unstable = 0i64;
+  k = 1usize;
+  while k < many.len() {
+    imm p = many[k - 1usize];
+    imm q = many[k];
+    if p.key > q.key or (p.key == q.key and p.seq > q.seq) { unstable = unstable + 1i64; }
+    k = k + 1usize;
+  }
+  expectInt(unstable, 0, "300 values, every key's in pushed order");
+
+  // Strings by name, then by length, which keeps the names' order among
+  // strings of one length
+  mut names = List[String].empty();
+  names.push(String.from("stdio"));
+  names.push(String.from("core"));
+  names.push(String.from("libc"));
+  names.push(String.from("collections"));
+  names.push(String.from(""));
+  names.push(String.from("core"));
+  names.sortBy(&byName);
+  expectStr(names[0usize].view(), "", "by name 0");
+  expectStr(names[1usize].view(), "collections", "by name 1");
+  expectStr(names[2usize].view(), "core", "by name 2");
+  expectStr(names[3usize].view(), "core", "by name 3");
+  expectStr(names[4usize].view(), "libc", "by name 4");
+  expectStr(names[5usize].view(), "stdio", "by name 5");
+  names.sortBy(&byLength);
+  expectStr(names[0usize].view(), "", "by length 0");
+  expectStr(names[1usize].view(), "core", "by length 1");
+  expectStr(names[2usize].view(), "core", "by length 2");
+  expectStr(names[3usize].view(), "libc", "by length 3");
+  expectStr(names[4usize].view(), "stdio", "by length 4");
+  expectStr(names[5usize].view(), "collections", "by length 5");
+
+  // Values with a finalizer are moved, never finalized, by sorting; the
+  // list's death then finalizes each once, in the sorted order: 123
+  sortedDies();
+  expectInt(log, 123, "each dies once, in the sorted order");
+
+  done();
+}
