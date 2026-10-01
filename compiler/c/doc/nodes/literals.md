@@ -339,9 +339,7 @@ as it does a struct literal of constants.
 `CastTag` without `FlagConvert` (an `as`) whose target is a number or
 a raw pointer and whose operand is a number literal, a `ConstDclTag` use, or
 another such cast. `0usize as *T` is how a raw pointer starts out null, since
-there is no null literal. The predicate reads the tree as written, because
-`fieldDclTypeCheck` asks it before the default is type checked; the target is
-found through name resolution's binding. A struct target is left out:
+there is no null literal. A struct target is left out:
 `genlRecast` reinterprets one through a stack slot, which a global's
 initializer has none of. Type check still applies the same-size rule, and
 `genlRecast`'s `bitcast`, `inttoptr` or `ptrtoint` of a constant operand is

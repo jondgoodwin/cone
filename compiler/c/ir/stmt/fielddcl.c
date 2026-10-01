@@ -122,12 +122,20 @@ void fieldDclTypeCheck(TypeCheckState *pstate, FieldDclNode *name) {
     }
     // Type check the initialization value
     else {
-        // Fields require constant default values (litIsLiteral)
-        if (!litIsLiteral(name->value))
+        // Fields require constant default values (litIsLiteral). A sibling
+        // field's name is never one, and is refused as such before type check,
+        // which with no self around a default could only say there is nothing
+        // to reach it through.
+        if (nameUseNames(name->value, FieldDclTag))
             errorMsgNode(name->value, ErrorNotLit, "Field default must be a constant value.");
-        // Otherwise, verify that declared type and initial value type matches
+        // Verify that declared type and initial value type matches
         else if (!iexpTypeCheckCoerce(pstate, name->vtype, &name->value))
             errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
+        // The constant is judged after type check, as a const's value is: it is
+        // type check that makes a construction, 'new E(1, 2)', or an array's
+        // fill the literal it is
+        else if (!litIsLiteral(name->value))
+            errorMsgNode(name->value, ErrorNotLit, "Field default must be a constant value.");
         else if (name->vtype == unknownType)
             name->vtype = ((IExpNode *)name->value)->vtype;
     }

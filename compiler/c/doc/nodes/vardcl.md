@@ -221,9 +221,13 @@ parameter names**.
 permission rather than demanding a type, which would let an unset one through —
 every construction site supplies a real one today, the placeholder an `is` list's
 name becomes and
-`cloneFieldDclNode`'s `memcpy` included, so nothing reaches that laxity; the
-**literal check comes first**, before coercion, so a non-literal default is
-reported as non-literal and never type-matched; and its size check is the
+`cloneFieldDclNode`'s `memcpy` included, so nothing reaches that laxity; a
+default is always required to be a literal, judged after coercion as a global's
+or a constant's is, since it is type check that makes a construction
+(`new E(1, 2)`) or an array's fill the literal `litIsLiteral` accepts, but a
+default that is a sibling field's bare name is refused as non-literal before
+type check, which with no `self` around a default could only report there is
+nothing to reach it through (`nameUseTypeCheck`); and its size check is the
 recursive-struct catch.
 
 `constDclTypeCheck` has no permission, coerces, infers, then requires a literal.

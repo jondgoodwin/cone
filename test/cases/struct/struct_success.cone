@@ -332,6 +332,66 @@ fn typeStatics() {
   show("type-static-assigned-through-the-type", b.madeSoFar());
 }
 
+// -------- defaults that are aggregates --------
+
+// A default is a constant, and a constant may be an aggregate written in
+// place: a construction of constants, by position or by name and nested, an
+// array by its elements or by a fill, a tuple. Each is the same value it would
+// be as a named constant, which may stand in for it.
+const Corner = new Point(70, 71, 72);
+
+struct Defaults {
+  pub at Point = new Point(1, 2, 3);
+  pub named Point = new Point(y: 5, x: 4);
+  pub span Segment = new Segment(new Point(6, 7, 8), new Point(9, 10));
+  pub bytes Array[u8, 4] = [11u8, 12u8, 13u8, 14u8];
+  pub filled Array[u8, 4] = new Array[u8, 4] <- fill 15u8;
+  pub pair (i32, i32) = (16, 17);
+  pub corner Point = Corner;
+  pub inferred = new Point(18, 19);
+}
+
+// A generic struct's defaults are its own in every instance
+struct Tagged[T] {
+  pub v T;
+  pub at Point = new Point(20, 21, 22);
+}
+
+fn aggregateDefaults() {
+  imm d = new Defaults();
+  show("default-construction", d.at.x + d.at.y + d.at.z);
+  show("default-construction-named", d.named.x * 10 + d.named.y);
+  show("default-construction-named-takes-default", d.named.z);
+  show("default-nested", d.span.head.z + d.span.tail.x);
+  show("default-nested-takes-default", d.span.tail.z);
+  show("default-array", i32.from(d.bytes[0]) + i32.from(d.bytes[3]));
+  show("default-array-fill", i32.from(d.filled[2]));
+  show("default-tuple", d.pair.0 * 100 + d.pair.1);
+  show("default-named-const", d.corner.y);
+  show("default-inferred-type", d.inferred.x + d.inferred.z);
+
+  // A value given replaces the default, by name or by position, and the
+  // fields not given still take theirs
+  imm e = new Defaults(at: new Point(30, 31, 32));
+  show("default-replaced-by-name", e.at.x);
+  show("default-kept-beside-it", e.named.x);
+  imm f = new Defaults(new Point(33, 34, 35), new Point(36, 37, 38));
+  show("default-replaced-by-position", f.named.z);
+  show("default-kept-after-them", i32.from(f.filled[0]));
+
+  // Each value gets its own copy of the default
+  mut g = new Defaults();
+  g.at.x = 40;
+  g.bytes[1] = 41u8;
+  imm h = new Defaults();
+  show("default-changed-in-one", g.at.x + i32.from(g.bytes[1]));
+  show("default-unchanged-in-another", h.at.x + i32.from(h.bytes[1]));
+
+  imm ti = new Tagged[i32](v: 1);
+  imm tf = new Tagged[f32](v: 2.);
+  show("default-generic", ti.at.x + tf.at.z);
+}
+
 fn main() i32 {
   construction();
   access();
@@ -339,5 +399,6 @@ fn main() i32 {
   othertypes();
   controlflow();
   typeStatics();
+  aggregateDefaults();
   0i32;
 }
