@@ -76,6 +76,14 @@ construction replaces it, holding the bound `Option` in its `methfld`.
 `parseDotCall`, `parseSuffix`, `parseArgs` and the whole precedence cascade
 all build this node.
 
+`<-` is an operator application too, its one argument what follows it: one
+entry, or a `TupleNode` of several (`parseAppend`, `parseEntries`). An entry
+is a value, or an `EntryNode` for the three forms read nowhere else, `n of x`,
+`fill x` and `k: v` (`parseEntry`; [Parse](../phases/parse.md), "The list
+after `<-`"). After a construction inside a comma list -- an argument, a named
+value, an array literal's element, an entry -- `<-` takes one entry
+(`parseContentsAfter`), so the comma stays the list's.
+
 Nothing about which of those it is has been decided yet.
 
 ## Name resolution
@@ -175,7 +183,9 @@ or an instance of a generic one (`fnCallIsPathBase`), is a path rather than a
 receiver and is left alone.
 Macro call (only when `methfld` is NULL — with it set, the name is a receiver
 and expands like any other value; a macro *method* named bare is first rewritten
-to `self.name`); `<-` on a value tuple, which becomes a block of applications;
+to `self.name`); `<-` given a list of entries, an entry that is not a plain
+value, or a construction's contents, which becomes the applications it stands
+for (`contentsLower`, below, "The list after `<-`");
 a managed reference type, `Rc[mut, Node]`, lowered into the `RefNode` it names
 (`fnCallLowerManagedRef`, [references](references.md), "The managed reference
 type") ahead of the struct-literal pass below, which would take its head for a
@@ -232,7 +242,7 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
   (`fnCallIsRefReceiver`) is passed as it is, exactly as the reference arm of
   stage 3 takes a named method's receiver: its own permission is what candidate
   selection checks, not the permission of the binding that holds it. The `<-`
-  tuple lowering holds such a receiver in its temporary unborrowed for the same
+  list lowering holds such a receiver in its temporary unborrowed for the same
   reason.
 
   **An operator-assign is routed by what the receiver's type or its referent
@@ -429,6 +439,44 @@ indexed borrow `&x[i]` reaches `` `&[]` `` with the read-only receiver `&x`,
 and where a `&mut` receiver would have been accepted the message says the
 method takes `self &mut` and names `x[i]` and `&mut x[i]`. The probe changes
 nothing; the refusal is the same.
+
+### The list after `<-`
+
+`contentsLower` (`ir/exp/contents.c`) takes apart a `<-` whose argument is a
+tuple of entries or an `EntryNode`, or whose receiver is a construction
+(`contentsIsAppend`). `EntryNode` is one struct for the three entry forms, the
+tag telling them apart: `first` holds `n` or `k` (NULL for `fill`), `val` the
+value. Its `first` is an expression resolved like any other, which a
+`NamedValNode`'s name is not, so it is not that node.
+
+- **On a value**, the receiver is checked, borrowed `&mut` once (held as it is
+  when it is already a reference) into a temporary, and each entry becomes
+  statements of one block against that borrow: a value, one application
+  `*recv <- value`; `n of x`, a block counting `n` (checked here as a `usize`,
+  a constant one 0 through 4294967295, `ErrorRepeatCount`) with `x`'s
+  application inside the loop, so it is evaluated once per value; `fill x`, a
+  loop appending `x` until `(*recv).len() >= (*recv).capacity()`, which the
+  receiver's type must declare (`ErrorFillSize`); `k: v`, one two-argument
+  application, which needs a `<-` of two parameters after `self`
+  (`ErrorPairAppend`). The loops are built after name resolution, so their
+  `break` is joined to its loop here, and their variables carry the scope the
+  block will give them. A tuple value appended is split again by the same
+  path, so a tuple is never one value of a `<-` list.
+- **After a construction**, the construction becomes a variable the contents
+  are appended to, and the block's value: `{ mut built = new T(...); built <-
+  contents; built }`, so the construction fills the variable in place.
+- **After an array's construction**, `new Array[T, n] <- ...`, there is no
+  `<-` to call, so the contents become an `ArrayLitTag` node typed as the
+  array (`contentsLowerArray`). Every count is a constant, `fill` given what
+  is left, and they add to the size exactly (`ErrorArrayContents`; a pair is
+  `ErrorPairAppend`). A repeated value is copied, unchecked, once per element
+  (`contentsCopy`) and each copy checked against the element type, so it is
+  evaluated once per element and the move rule applies to each; one entry
+  repeating a constant becomes the literal's fill form, one value stored into
+  every element. Refused contents leave an error node.
+
+An `EntryNode` reached by `entryTypeCheck` sat where no `<-` took it apart,
+only possible inside a tuple used as a value: `ErrorEntryPlace`.
 
 ### Construction
 

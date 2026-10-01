@@ -430,7 +430,9 @@ structs make that a compile error instead of a convention.
 `loopblock` is read only during name resolution, which is still one eager
 source-order pass, so demand cannot reach it. `scope` is consumed during type
 check by `clonePushState`, which gives a cloned lifetime node its `life`, and by
-the temporary `fnCallTypeCheck` injects for an append.
+the variables `contentsLower` declares for a `<-` list (its receiver's borrow,
+a construction's value, a count and its index), which it gives the scope of the
+blocks it builds.
 
 ## 10. Order of resolution within a declaration
 

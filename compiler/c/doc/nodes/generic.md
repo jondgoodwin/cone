@@ -225,8 +225,9 @@ template `&T` and `*T` resolve as a borrow and a dereference; `cloneRefNode`
 and `cloneStarNode` take the vote again on the substituted operand, as
 `cloneTupleNode` and `cloneArrayNode` do for `(T, T)` and `[2; T]`, which the
 template holds as a value tuple and an array literal; `[2; T]` with a type
-for T is the fill literal's spelling of an array type, which `cloneArrayNode`
-refuses as name resolution does (`ErrorArrayTypeOld`). The array type,
+for T is the old spelling of an array type, and with a value the retired fill
+literal, which `cloneArrayNode` refuses as name resolution does
+(`ErrorArrayTypeOld`, `ErrorFillLiteral`). The array type,
 `Array[T, 2]`, takes no vote: name resolution builds it in the template, its
 element the parameter's use, and the clone substitutes the element. A vote whose losing side
 is an error cannot wait for the clone, so there the operand abstains:

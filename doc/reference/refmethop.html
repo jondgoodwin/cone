@@ -13,8 +13,11 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: Most of this has been implemented, including the final method.
-		The &amp;- operator, closures, and initializers are not.</i></p>
+	<p style="margin-left: 40px;"><i>Note: Most of this has been implemented, including the final method
+		and the append operator's list of entries (values, <span class="pre">n of x</span>,
+		<span class="pre">fill x</span> and pairs), after a value and after a construction.
+		The &amp;- operator, closures, and an entry drawing its values from another collection
+		(<span class="pre">each src</span>) are not.</i></p>
 
 	<p>Many operators are implemented as method calls. For instance, <span class="pre">x+3</span>
 		is treated as if it were:  <span class="pre">x.`+`(3)</span>
@@ -201,11 +204,57 @@ x.counter; // 10
 		that is accumulated by the receiver. Some values could be understood 
 		to be instructional directives that alter the behavior of the receiver
 		on the fly. For example, a directive could offer formatting, rendering or structuring instructions.	</p>
-	<p>As a convenience, if a tuple appears after the append operator, this is transformed into multiple
-		distinct append statements:</p>
+	<p>What follows the append operator is a list of entries, separated by commas,
+		and each is appended in turn, as though it had an append of its own:</p>
 <pre>
 print &lt;- "Hello ", user;   // equivalent to: print &lt;- "Hello "; print &lt;- user
 </pre>
+	<p>Besides a value, an entry may take one of three forms, each recognized only in this list:</p>
+	<ul>
+		<li><b><span class="pre">n of x</span></b> appends n values, evaluating
+			<span class="pre">x</span> once for each: <span class="pre">xs &lt;- 4 of 0</span>.
+			Nothing is shared between them, so a construction gives a new value each time,
+			while a variable holding a value that moves is moved by the first and is gone
+			for the second. The count is a <span class="pre">usize</span>; a constant one is
+			from 0 through 4294967295, as an array's size is.</li>
+		<li><b><span class="pre">fill x</span></b> appends <span class="pre">x</span>,
+			evaluated once for each, until the collection is full: until its
+			<span class="pre">len()</span> reaches its <span class="pre">capacity()</span>,
+			the two methods it asks. A collection that declares neither cannot be filled.</li>
+		<li><b><span class="pre">k: v</span></b> appends a key and its value together,
+			through a <span class="pre">&lt;-</span> method that takes the two:
+			<span class="pre">ages &lt;- name: 31</span>. Appended in order, a later value for
+			a key the dictionary already holds replaces the earlier.</li>
+	</ul>
+<pre>
+mut xs = new List[i32];
+xs &lt;- 1, 2, 3 of 0;          // 1, 2, 0, 0, 0
+xs &lt;- fill -1;                // -1 until xs.len() is xs.capacity()
+tx &lt;- job, 2 of next();       // a channel's '&lt;-' sends each
+</pre>
+	<p>The words <span class="pre">of</span> and <span class="pre">fill</span> mean
+		this only in the list; elsewhere they are ordinary names. In the list,
+		<span class="pre">fill</span> is the word when a space and then a value follow it,
+		so <span class="pre">fill(3)</span> still calls a function and
+		<span class="pre">xs &lt;- fill;</span> still appends a variable named <span class="pre">fill</span>.</p>
+	<p>The list runs to the end of the statement, across as many lines as it needs.
+		Inside another comma-separated list, such as a call's arguments, a construction's
+		contents (below) take one entry, and several are parenthesized:
+		<span class="pre">draw(new List[i32] &lt;- (1, 2), x)</span>.</p>
+
+	<h3 id="contents">A collection's contents</h3>
+	<p>A <a href="refinitdrop.html#initializer">construction</a> may be followed by
+		<span class="pre">&lt;-</span> and a list. The value is built by its
+		<span class="pre">init</span>, whose arguments the parentheses carry, such as a
+		capacity; then each entry is appended to it; and the whole is the value built:</p>
+<pre>
+imm primes = new List[i32] &lt;- 2, 3, 5, 7;
+imm zeros = new List[f32](100) &lt;- fill 0.0;     // room for 100, then filled
+imm ages = new Dict[String, i32] &lt;- String.from("Ann"): 31, String.from("Bo"): 12;
+</pre>
+	<p>An <a href="refarray.html#contents">array</a> has no <span class="pre">init</span>
+		and no <span class="pre">&lt;-</span>, and its size is fixed, so its construction is
+		its contents, which fill it exactly: <span class="pre">new Array[f32, 4] &lt;- fill 0.0</span>.</p>
 		
 	<h2>() "Function call" Operator</h2>
 	<p>It is actually possible to "call" an object as if it were a function.

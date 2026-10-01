@@ -188,7 +188,7 @@ functions included.
 | --- | --- | --- |
 | `TupleTag` | `TTupleTag` / `VTupleTag`; mixed is `ErrorBadElems` and the tag is left alone; a generic parameter abstains, and all abstaining is `VTupleTag` | `ttupleNameRes` |
 | `StarTag` | `PtrTag` / `DerefTag` | `ptrNameRes` |
-| `ArrayTag` | `ArrayLitTag` when the first element is not a type; when it is a type and a size was written, `[3; i32]`, the fill literal's spelling of an array type, `ErrorArrayTypeOld` and the tag is left alone | `arrayNameRes` |
+| `ArrayTag` | `ArrayLitTag` when the first element is not a type, and `ErrorFillLiteral` when a size was written too, `[3; 0]`, the retired fill literal; when it is a type and a size was written, `[3; i32]`, the old spelling of an array type, `ErrorArrayTypeOld` and the tag is left alone; a generic parameter's use waits for the clone | `arrayNameRes` |
 | `RefTag` | `BorrowTag` / `AllocateTag`, by region | `refNameRes` |
 | `ArrayRefTag` | `ArrayBorrowTag`: every array reference is borrowed | `arrayRefNameRes` |
 | `QuesTag` | `FnCallTag` for `Option[T]`, including a generic parameter's `?T` | `allocateQuesNameRes` |
@@ -427,7 +427,7 @@ next pass a null to trip over.
 | `ir/types/fnsig.c` | `fnSigNameRes` | forces scope 0 |
 | `ir/itype.c` | `itypeIsGenericType` | makes an unlowered `Box[i64]` count as a type |
 | | `itypeIsManagedRefType`, `itypeManagedRefRegion` | make an unlowered `Rc[mut, Node]` count as a type: a region's head, its `is` list read as written (`regionStructWritesRegionRef`), and type arguments |
-| `ir/types/array.c` | `arrayNameRes`, `arrayTypeLower` | an array literal, refusing the fill literal's spelling of a type; the array type `Array[T, n, …]` built from its bracketed call, which `fnCallNameRes` hands it once the call's head is bound to `arrayTypeDcl` |
+| `ir/types/array.c` | `arrayNameRes`, `arrayTypeLower` | an array literal, refusing `[n; x]`, the old spelling of a type and the retired fill literal; the array type `Array[T, n, …]` built from its bracketed call, which `fnCallNameRes` hands it once the call's head is bound to `arrayTypeDcl` |
 | `ir/exp/allocate.c` | `allocateQuesNameRes` | the one parent-pointer rewrite |
 | `ir/clone.c` | `cloneNode`, `cloneDclFix`, `clonePushState` | how a resolved template survives instantiation |
 

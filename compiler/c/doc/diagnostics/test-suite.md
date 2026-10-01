@@ -76,12 +76,11 @@ as that group's own subject requires.
 | 2 | `concurrency`, `safety`, `meta` | Concurrency; trust and raw pointers; metaprogramming |
 | 2 | `intrinsic` | Intrinsics: `@intrinsic` declarations, the registry's checks, each intrinsic's meaning, lowered and through its fallback body |
 
-One row is reserved rather than built. **`stream` will own the `<-` append
-operator** and whatever iteration protocol arrives with collections. `<-` is
-implemented today and reachable only through stdio's `IOStream`, but it is
-intended for collections and `corelib/` has none, so covering it now would pin
-the operator to the one consumer it is not for. The group appears with the
-collections.
+One row is reserved rather than built. **`stream` will own whatever iteration
+protocol arrives with collections**, and `each` drawing from a source inside a
+`<-` list with it. The `<-` list itself -- its entries, a collection's
+contents after a construction -- is `collection`'s, beside the manual's
+collection chapter, and an array's contents are `array`'s.
 
 Two of the rows above have no group directory, and the reasons differ.
 `exception` is unimplemented down to the keyword table — a real chapter, a real
@@ -492,8 +491,8 @@ where the check is about a `$name = comdat` line or a call.
 Matches against the **pre-optimization** dump, `<name>.preir` — what
 generation wrote, before the optimizer deletes or folds it. Use it for an
 instruction, a type or a signature that is the claim: the `icmp` a slice index
-emits against its runtime count, the trip count of the loop calling a region's
-`aliasRef` once per owner a fill literal adds, `%Node = type { i64, ptr }`,
+emits against its runtime count, the constant a global's array contents
+become, `%Node = type { i64, ptr }`,
 `%some = alloca ptr`. LLVM's pointers carry no type, so a signature shows only
 `ptr` for every reference: what a reference points at is asserted where a body
 uses it — the struct a field address is taken in, the value a local holds.
