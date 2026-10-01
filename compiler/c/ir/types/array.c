@@ -179,13 +179,20 @@ void arrayTypeLower(NameResState *pstate, INode **nodep) {
 // Type check an array type
 void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *node) {
 
-    // Check out dimensions: must be literal numbers
+    // Check out dimensions: must be literal numbers. Generation builds the
+    // array with a 32-bit count, so a size is 0 through 4294967295: a negative
+    // one (its two's complement read as a count) and a larger one (cut to its
+    // low 32 bits) would each give a different array than the one written
     if (node->dimens->used == 1) {
         INode **nodesp;
         uint32_t cnt;
         for (nodesFor(node->dimens, cnt, nodesp)) {
             if ((*nodesp)->tag != ULitTag)
                 errorMsgNode(*nodesp, ErrorBadArray, "An array type's size must be an integer literal");
+            else if (((*nodesp)->flags & FlagLitNeg) && ((ULitNode*)*nodesp)->uintlit != 0)
+                errorMsgNode(*nodesp, ErrorBadArray, "An array type's size may not be negative");
+            else if (((ULitNode*)*nodesp)->uintlit > UINT32_MAX)
+                errorMsgNode(*nodesp, ErrorBadArray, "An array type's size may be at most 4294967295");
         }
     }
     else
