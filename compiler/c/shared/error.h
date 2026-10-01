@@ -378,6 +378,7 @@ enum ErrorCode {
     ErrorRefTypeArgs = 1199,    // A region given other than one or two arguments as a reference type: an optional permission, then the value type
     ErrorRefTypePerm = 1200,    // A region's reference type whose first of two arguments is not a permission, or whose value type is one
     ErrorPermNotRegion = 1201,  // A permission given as an argument to a type that is not a region: only a managed reference type takes one
+    ErrorPlusRefType = 1202,    // A single or virtual managed reference type written '+R-perm T', which is the allocation's spelling, outside a match pattern's root
 
     // Warnings
     WarnCode = 3000,

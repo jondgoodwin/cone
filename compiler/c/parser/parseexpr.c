@@ -383,7 +383,8 @@ INode *parseAmper(ParseState *parse) {
 // owning array reference type ('+[]So i32'):
 // - Some reference type ('+', '+[]' or '+<')
 // - Region and permission annotations
-// A single or virtual reference TYPE is written 'Rc[mut, Node]'.
+// A single or virtual reference TYPE is written 'Rc[mut, Node]', and type check
+// refuses this spelling of one outside a match pattern's root (plusSpelled).
 INode *parsePlus(ParseState *parse) {
     // Create appropriate RefNode, depending on ampersand operator
     RefNode *anode;
@@ -395,6 +396,7 @@ INode *parsePlus(ParseState *parse) {
     case PlusVirtRefToken:
         anode = newRefNode(VirtRefTag); break;
     }
+    anode->plusSpelled = 1;
     lexNextToken();
 
     // Region-managed reference starts with a region annotation

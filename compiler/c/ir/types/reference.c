@@ -20,6 +20,7 @@ RefNode *newRefNode(uint16_t tag) {
     // Left uninitialized, the lifetime checks in assign.c and return.c read
     // whatever the allocator last held there.
     refnode->scope = 0;
+    refnode->plusSpelled = 0;
     return refnode;
 }
 
@@ -200,11 +201,27 @@ static void refRefuseRegionRef(RefNode *node) {
             "RegionRef is not a type a value has: a region's annotation struct declares it with 'is', and nothing refers to it.");
 }
 
+// '+R-perm T' allocates. A managed reference type is written 'R[perm, T]',
+// so the plus spelling of one is refused where it was written. Reported once:
+// a node reached twice (a pattern and its variable share one) says it once.
+static void refRefusePlusType(RefNode *node) {
+    if (!node->plusSpelled)
+        return;
+    node->plusSpelled = 0;
+    Name *regname = isNameUseNode(node->region) ? ((NameUseNode*)node->region)->namesym : NULL;
+    Name *permname = node->perm && isNameUseNode(node->perm) ? ((NameUseNode*)node->perm)->namesym : NULL;
+    char *reg = regname ? &regname->namestr : "R";
+    char *perm = permname ? &permname->namestr : "uni";
+    errorMsgNode((INode*)node, ErrorPlusRefType,
+        "A managed reference type is written '%s[%s, T]'; the '+' spelling allocates a value.", reg, perm);
+}
+
 // Type check a reference node
 void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     if (node->perm == unknownType)
         node->perm = newPermUseNode(node->vtexp->tag == FnSigTag ? opaqPerm :
         (node->region == borrowRef ? roPerm : uniPerm));
+    refRefusePlusType(node);
     itypeTypeCheck(pstate, &node->region);
     refRegionCheck(&node->region);
     itypeTypeCheck(pstate, (INode**)&node->perm);
@@ -234,6 +251,7 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
 void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
     if (node->perm == unknownType)
         node->perm = newPermUseNode(node->region == borrowRef ? roPerm : uniPerm);
+    refRefusePlusType(node);
     itypeTypeCheck(pstate, &node->region);
     refRegionCheck(&node->region);
     itypeTypeCheck(pstate, (INode**)&node->perm);

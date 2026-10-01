@@ -101,7 +101,14 @@ The differences are worth knowing:
 
 `+` is the allocation, `+Rc-mut Node[1]`, and the owning array reference type,
 `+[]So i32`. A single or virtual managed reference type is written
-`Rc[mut, Node]`, below.
+`Rc[mut, Node]`, below. `parsePlus` still builds a `RefTag` or `VirtRefTag`
+type from `+Rc-mut Node` when the operand is a type, and marks it
+`plusSpelled`; type check refuses it (`refRefusePlusType`,
+`ErrorPlusRefType`), naming the bracket spelling. The one exception is a match
+pattern's root, `case imm c +Rc-mut Circle`: `castPatternName` reads the root
+at parse time, before anything knows `Rc` is a region rather than a generic
+variant, so `castPatternMark` clears the mark there and the `+` spelling
+stands until patterns are given their own.
 
 ## The managed reference type, `Rc[mut, Node]`
 
