@@ -91,7 +91,7 @@ int itypeThreadBound(INode *type, int *settled);
 INode *itypeThreadBoundWhy(INode *type, char *path, size_t size);
 
 // Append a type to 'buf' as a diagnostic spells it: a reference as it is
-// written ('&mut Point', '+Rc-imm Point', '*u64'), anything else by its name
+// written ('&mut Point', 'Rc[imm, Point]', '*u64'), anything else by its name
 void itypeSpellCat(char *buf, size_t size, INode *type, int depth);
 
 // Look for named field/method in type

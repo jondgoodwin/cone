@@ -375,7 +375,7 @@ void regionAllocTypeCheck(INode *region) {
 //
 // Whether a type holds a traced reference is known only once it and every type
 // it holds inline are laid out, which a reference type met inside the struct it
-// points at ('next +Rc Node') is not. So each place a rule looks at is noted as
+// points at ('next Rc[Node]') is not. So each place a rule looks at is noted as
 // type check meets it, and all are judged once type check has finished
 // (regionTracedCheckAll), when every answer is final. A compile declaring no
 // traced region judges none.

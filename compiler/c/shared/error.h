@@ -153,7 +153,7 @@ enum ErrorCode {
     // Traced regions: a region ref declaring 'Traced', and where its references may be held (ir/types/region.c)
     ErrorTracedUse = 1169,      // 'Traced' declared by a type that is not a region ref: a struct not declaring 'RegionRef', a trait, an enum or a variant
     ErrorTracedMark = 1170,     // A region declaring 'Traced' with no 'mark' method for its trace to call
-    ErrorTracedHeld = 1171,     // A traced reference held inside what a region that is not traced allocates: '+Rc T', '+So T' with T holding one
+    ErrorTracedHeld = 1171,     // A traced reference held inside what a region that is not traced allocates: 'Rc[T]', 'So[T]' with T holding one
     ErrorTracedGlobal = 1172,   // A global or static whose type holds a traced reference, which no collector finds
     ErrorTracedBorrow = 1173,   // A traced region's reference to a value that holds a borrowed reference, which its trace cannot see and no lifetime covers
     ErrorTracedRaw = 1174,      // mem.writeRaw or mem.moveRaw of a type holding a traced reference: placing one in raw memory no collector traces (an arena's, a pool's, a collection's)

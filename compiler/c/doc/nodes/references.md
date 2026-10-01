@@ -286,12 +286,12 @@ So `&mut T` is invariant in `T` while `&ro T` is covariant.
 **Covariance stops at a reference held behind one that would stop moving.**
 `refHeldMoveSeenAsCopy`, asked by the covariant arm of `refMatches` and of
 `arrayRefMatchesRef`, refuses a value type that is a reference whose own type
-moves seen as one that copies: `&+Rc-mut T` (or `-imm`, `-ro`, `-opaq`, `-mut1`)
-from `&+Rc T`, and a slice of them. A read through the outer reference copies
+moves seen as one that copies: `&Rc[mut, T]` (or `imm`, `ro`, `opaq`, `mut1`)
+from `&Rc[T]`, and a slice of them. A read through the outer reference copies
 a copy type out, so the view would make a second owner of a value `uni`
 promised unique. `permMatches` is untouched, and a move of the owner itself
-still coerces `uni` down. A `+So` owner keeps its view as `+So-mut`, since
-every `+So` reference moves and a move out through a borrow is refused in flow.
+still coerces `uni` down. A `So[T]` owner keeps its view as `So[mut, T]`, since
+every `So` reference moves and a move out through a borrow is refused in flow.
 
 `refvirtMatchesRef` builds a fat pointer, so it refuses `Monomorph` outright and
 applies **no** value-type variance. Same-struct requires `HasTagField`, since
@@ -337,7 +337,7 @@ says; what it points at is asked separately by the walk (`itypeThreadBound`, in
 | an owner that cannot be aliased: `uni`, or any owner of a `Move` region (`So`) | crosses if what it points at does: it moves, taking its value |
 | any other owner whose permission is not `RaceSafe` (`mut`, `ro`, `mut1`, a struct in the permission slot) | `RefBindsPerm` |
 | any other owner whose region does not declare `ThreadSafe` (`Rc`) | `RefBindsShared` |
-| otherwise (`+Arc-imm`, `+Arc-opaq`) | crosses if what it points at does |
+| otherwise (`Arc[imm, T]`, `Arc[opaq, T]`) | crosses if what it points at does |
 
 The walk adds a raw pointer (always bound: nothing checks its target), a
 reference to an open trait (its implementers are not all known), and a struct
@@ -440,7 +440,7 @@ and a local returned converted is exempt from its scope's release.
 
 ## Hazards
 
-- **Sendable is also safe to read from several threads.** An `+Arc-imm` owner
+- **Sendable is also safe to read from several threads.** An `Arc[imm, T]` owner
   crosses when its pointee does, so a type granted or declaring `Sendable` must
   also bear being read through `&` from several threads at once. Nothing Cone
   can write mutates through `imm` except an atomic value, so the grant holds; a

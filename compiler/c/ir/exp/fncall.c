@@ -549,8 +549,8 @@ int fnCallIsNever(INode *node) {
     return node->tag == FnCallTag && itypeIsNever(((FnCallNode *)node)->vtype);
 }
 
-// A virtual dispatch's receiver that is an owning virtual reference ('+<So
-// Trait') is lent to the method as a borrowed one, with the permission the
+// A virtual dispatch's receiver that is an owning virtual reference ('So[Trait]',
+// Trait an open trait) is lent to the method as a borrowed one, with the permission the
 // method declares for 'self', as a plain owner is lent to a 'self &' or 'self
 // &mut' method: a recast that flow analysis reads as a borrow of what the owner
 // points at (pwOwnedLent), so the owner stays, frozen while the call uses it.

@@ -177,7 +177,7 @@ the variant while the narrowed reference is used, and refuses it
   loan, are used.
 
 Everything else — a parameter of reference type, a reborrow through a shared
-path, a field reached through a `mut` reference or a `+Rc-mut` owner, a variable
+path, a field reached through a `mut` reference or a `Rc[mut, T]` owner, a variable
 the program names holding a borrow (a copy of it would reach the local another
 way, which freezing does not follow) — is refused. This is a bound pattern's
 conversion, and `into` written out; the `is` test binds nothing and is not

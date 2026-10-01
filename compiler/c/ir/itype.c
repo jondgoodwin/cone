@@ -145,12 +145,12 @@ int itypeCarriesBorrow(INode *type) {
 // other type is Sendable (genericTypeIs). The walk goes through owning
 // references, because an owner that crosses takes what it points at with it:
 // a 'uni' owner of a struct holding a 'mut' reference is bound, and so is an
-// '+Arc-imm' owner of one. A struct declaring 'Sendable' is taken at its word,
+// 'Arc[imm, T]' owner of one. A struct declaring 'Sendable' is taken at its word,
 // except that an instance of a generic one is bound where one of its type
 // arguments is. An open trait's implementers are not all known, so a
 // reference to one is bound.
 //
-// A type may reach itself through a reference ('next +So Node'), and a type
+// A type may reach itself through a reference ('next So[Node]'), and a type
 // reached through a reference need not be laid out yet, so the walk is the
 // same fixed point as itypeCarriesBorrow's: a struct reached again while it is
 // being asked adds nothing (what it holds is found where it was first asked),

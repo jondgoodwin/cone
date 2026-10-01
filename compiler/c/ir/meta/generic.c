@@ -541,7 +541,7 @@ static void genericTypeNameCat(char *buf, size_t size, INode *type, int depth) {
         genericTypeNameCat(buf, size, ((StarNode*)dcl)->vtexp, depth + 1);
         return;
     }
-    // A reference or an array as it is written: '&mut Point', '+Rc-imm Pt',
+    // A reference or an array as it is written: '&mut Point', 'Rc[imm, Pt]',
     // '[3; u8]'
     if (dcl->tag == RefTag || dcl->tag == ArrayRefTag || dcl->tag == VirtRefTag || dcl->tag == ArrayTag) {
         itypeSpellCat(buf, size, dcl, depth);

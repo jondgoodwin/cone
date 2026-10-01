@@ -22,9 +22,9 @@
 		which are <a href="refintrinsic.html">intrinsics</a>. Immutable data is shared between
 		threads through the same package's <span class="pre">Arc</span> region
 		(<span class="pre">import sync use Arc</span>), whose count is atomic:
-		<span class="pre">+Arc-imm T</span> owners may be copied and dropped on any thread, and
+		<span class="pre">Arc[imm, T]</span> owners may be copied and dropped on any thread, and
 		the value is freed once, after the last (<a href="refregionglo.html">regions</a>);
-		an <span class="pre">+Rc</span> owner's count is not atomic, and it must stay on one
+		an <span class="pre">Rc</span> owner's count is not atomic, and it must stay on one
 		thread. What is sent is checked: <span class="pre">thread.start</span> and the
 		channel types take only a <span class="pre">Sendable</span> type, as
 		<a href="#race">Race condition safety</a> describes. And the runtime
@@ -67,18 +67,18 @@
 	<li>a borrowed reference, of any permission, <span class="pre">&amp;imm</span> included: a
 		borrow's lifetime is checked in one thread alone, until scoped threads join inside it;</li>
 	<li>an owner that may be copied whose permission is not race-safe:
-		<span class="pre">+Rc-mut</span>, <span class="pre">+Arc-mut</span> (until lock permissions);</li>
+		<span class="pre">Rc[mut, T]</span>, <span class="pre">Arc[mut, T]</span> (until lock permissions);</li>
 	<li>an owner that may be copied in a region that does not declare
-		<span class="pre">ThreadSafe</span>, whatever its permission: <span class="pre">+Rc-imm</span>,
-		whose count is not atomic. <span class="pre">+Arc-imm</span> and
-		<span class="pre">+Arc-opaq</span> cross;</li>
-	<li>a traced reference, <span class="pre">+Gc</span>, whatever its permission, until each thread
+		<span class="pre">ThreadSafe</span>, whatever its permission: <span class="pre">Rc[imm, T]</span>,
+		whose count is not atomic. <span class="pre">Arc[imm, T]</span> and
+		<span class="pre">Arc[opaq, T]</span> cross;</li>
+	<li>a traced reference, <span class="pre">Gc</span>, whatever its permission, until each thread
 		has its own collector;</li>
 	<li>a raw pointer, whose target nothing checks.</li>
 	</ul>
 	<p>An owner that moves takes its value with it: a <span class="pre">uni</span> owner of any
 		region, and any owner of <span class="pre">So</span>, crosses when what it points at may.
-		So does an <span class="pre">+Arc-imm</span> owner: an <span class="pre">Arc</span> of a
+		So does an <span class="pre">Arc[imm, T]</span> owner: an <span class="pre">Arc</span> of a
 		value holding a <span class="pre">mut</span> reference is refused. A reference to a function
 		crosses. A type holding raw pointers it shares safely declares
 		<span class="pre">is Sendable</span>, which the compiler takes on trust, as a channel's ends,
@@ -97,7 +97,7 @@ thread.start(job, &amp;work);
 </pre>
 	<p>Not checked yet: a <span class="pre">mut</span> global reached from several threads; a
 		value's own methods that change it through <span class="pre">&amp;</span> (sendable here also
-		means safe to read from several threads at once behind <span class="pre">+Arc-imm</span>,
+		means safe to read from several threads at once behind <span class="pre">Arc[imm, T]</span>,
 		which a type declaring <span class="pre">Sendable</span> promises too). Actor messages are
 		checked as a channel's values are: the <span class="pre">actors</span> package's
 		<span class="pre">send</span> and <span class="pre">startActor</span> ask
@@ -227,9 +227,9 @@ struct Counter_state {
   fn add(self &amp;mut, n u64) {count = count + n;}
 }
 
-// (c) The handle: an +Arc-opaq owner of the actor's Mailbox, a send function per method, and start
+// (c) The handle: an Arc[opaq, T] owner of the actor's Mailbox, a send function per method, and start
 struct Counter {
-  mb +Arc-opaq actors.Mailbox[Counter_msg];
+  mb Arc[opaq, actors.Mailbox[Counter_msg]];
   pub fn start(count u64) Counter {
     Counter[actors.startActor[Counter_state, Counter_msg](
       Counter_state.made(actors.sendable(count)), &amp;Counter_dispatch)];
@@ -255,7 +255,7 @@ fn Counter_dispatch(self &amp;mut Counter_state, msg Counter_msg) {
 		itself (a cycle through an owning reference is judged by the order the compiler meets its
 		types).</p>
 	<p><b>The handle and the state.</b> A handle is a struct over one
-		<span class="pre">+Arc-opaq</span> owner of the actor's
+		<span class="pre">Arc[opaq, T]</span> owner of the actor's
 		<span class="pre">actors.Mailbox[M]</span>, the runtime's part of the actor, so the
 		<span class="pre">Arc</span> region counts an actor's handles: copying a handle (passing it,
 		storing it, putting it in a message) makes another owner, and each going drops one. What a
@@ -297,7 +297,7 @@ fn Counter_dispatch(self &amp;mut Counter_state, msg Counter_msg) {
 		workers orders what the first did before anything the next does. Three things differ from a
 		plain thread:</p>
 	<ul>
-	<li><span class="pre">+Gc</span> is <b>not supported</b> inside an actor. The collector is
+	<li><span class="pre">Gc</span> is <b>not supported</b> inside an actor. The collector is
 		single-threaded, and an actor runs on every worker in turn; a traced reference made, held,
 		reached or dropped by an actor corrupts it. Nothing refuses one yet.</li>
 	<li>A thread-local global seen from an actor's method is the current <i>worker's</i> copy,
