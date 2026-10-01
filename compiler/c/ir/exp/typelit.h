@@ -28,6 +28,10 @@ void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *lit);
 // construction.
 void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep);
 
+// 'new Rc[mut, Array[i32, 4]] <- fill 0': the allocation whose value is the
+// array literal of its contents, filled in place; NULL when refused
+INode *typeLitNewFilled(TypeCheckState *pstate, FnCallNode **nodep, RefNode *reftype, INode *lit);
+
 // Is this type-checked value one 'new' constructs: a construction, or a struct
 // that is not a variant written in brackets?
 int typeLitIsConstruction(INode *node);

@@ -26,7 +26,9 @@
 			<a href="refmove.html"><span class="pre">Move</span></a>, decide when a value is freed;
 			its finalizer runs just before (<a href="refinitdrop.html#finalizer">finalizers</a>).
 			An allocation's parentheses hold the value's initializer arguments or a finished
-			value, <span class="pre">new Rc[imm, i32](4)</span>.</i></p>
+			value, <span class="pre">new Rc[imm, i32](4)</span>, and contents may follow it after
+			<span class="pre">&lt;-</span>. Not implemented: contents after a
+			<span class="pre">trynew</span> of anything but an array.</i></p>
 
 	<p>When you allocate a new value within a region, you get back an owning reference that points to the new object.
 		For some regions, multiple alias copies may be created which are also owning references.
@@ -104,6 +106,22 @@ imm leaf = new Node(1);              // a Gc[mut, NodeValue]
 		let the reference coerce where the virtual one is wanted:
 		<span class="pre">imm shape Rc[mut, Shape] = new Rc[mut, Circle](5);</span></p>
 
+	<h3 id="contents">Allocating with Contents</h3>
+	<p>An allocation takes contents after <span class="pre">&lt;-</span>, as a value's
+		construction does (<a href="refmethop.html#append">the append operator</a>). An array's
+		contents fill it in the region's memory, an element at a time, each value evaluated as its
+		element is filled: no array is made elsewhere and copied in, so an array of a million
+		elements is allocated and filled with no copy of it anywhere. They are the same contents a
+		<a href="refarray.html#contents">value construction</a> of the array takes, the scalars of
+		one written with several sizes, and the allocation takes nothing in parentheses beside them.
+		A collection's contents are appended through the new reference once it is made, as they are
+		appended to a value it constructs.</p>
+<pre>
+imm zeros = new Rc[mut, Array[i32, 1000, 1000]] &lt;- fill 0;
+imm grid = new So[Array[i32, 2, 3]] &lt;- 1, 2, 3, 4, 5, 6;
+imm names = new Rc[mut, List[i32]](10) &lt;- 1, 2, 3;
+</pre>
+
 	<h3 id="type">Owning Reference Types</h3>
 	<p>Wherever a type is written &mdash; a variable, a field, a parameter, a return type,
 		an <a href="reftypealias.html">alias</a>, a generic's argument, an allocation &mdash; an owning
@@ -135,12 +153,13 @@ mut list = List[Gc[imm, Leaf]].empty();
 		the memory, and nothing more (its <span class="pre">alloc</span>). Then the region's
 		initializer fills its bookkeeping in place, then a <a href="refpermlock.html">lock</a>
 		permission's does the same for its part, and then the value's initializer fills the value
-		in place, where it was allocated, or the finished value is stored there. Last, the owning
+		in place, where it was allocated, or the finished value is stored there, or an array's
+		contents fill it, each value evaluated then. Last, the owning
 		reference goes where the expression puts it.</p>
-	<p>An initializer may itself allocate, even in a garbage-collected region, whose collector
-		may run while it does: such a region's new object is held as a root and its value reads as
-		empty from the moment its memory is obtained, so a collection finds it, and nothing it
-		half holds, until it is filled.</p>
+	<p>An initializer, or a value of an array's contents, may itself allocate, even in a
+		garbage-collected region, whose collector may run while it does: such a region's new object
+		is held as a root and its value reads as empty from the moment its memory is obtained, so a
+		collection finds it, and nothing it half holds, until it is filled.</p>
 <pre>
 imm p = new Rc[mut, Pair](make(1), make(2));  // make(1), make(2), then alloc, then Pair's init
 imm q = new Rc[mut, Pair](makePair());        // makePair(), then alloc, then the store
@@ -192,7 +211,9 @@ imm node2 = node;            // node2 and node point to same value
 			for <a href="refoption.html">handling nullable values</a>
 			may be applied in an attempt to recover from this problem.
 			Only an allocation may fail this way, so <span class="pre">trynew</span> takes an owning
-			reference type, never a value type.</li>
+			reference type, never a value type. An array's contents after it are filled only
+			when the memory was obtained: on <span class="pre">None</span>, none of their values
+			is evaluated.</li>
 	</ul>
 <pre>
 imm maybe = trynew Rc[mut, Node](1);    // an Option[Rc[mut, Node]]

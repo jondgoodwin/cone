@@ -1,0 +1,174 @@
+// The contents of an array written with several sizes are its scalars, row by
+// row: 'new Array[i32, 2, 3] <- 1, 2, 3, 4, 5, 6' has rows [1, 2, 3] and
+// [4, 5, 6], the order C lays out 'int m[2][3]', and every entry counts
+// scalars, so 'n of x' and 'fill' run across the rows. The nested spelling,
+// 'Array[Array[i32, 3], 2]', takes rows as its entries, and is still the same
+// type: a value built with either is assigned, passed and returned as the
+// other.
+//
+// Every element is read back by its indices, a[i][j][k], against the
+// position it has in the list. A computed value is evaluated once for each
+// scalar, which a counter shows, past the unrolled copies too. A global's
+// contents are a constant of the nested type.
+//
+// A type parameter's argument is a type, not a spelling: the instance two
+// spellings of one type share cannot keep either, so through a parameter an
+// array's contents are its rows. 'Array[T, 2, 3]' written in the generic's
+// body is a spelling, and takes scalars.
+//
+// What the contents refuse is array_typecheck_scalars's; an allocation filled
+// with them is region_new_contents's.
+
+mod array_contents_scalars;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+mut calls = 0;
+fn counter() i32 {
+  calls = calls + 1;
+  calls;
+}
+
+// A row of three, read off as digits
+fn row3(r Array[i32, 3]) i64 {
+  i64.from(r[0]) * 100 + i64.from(r[1]) * 10 + i64.from(r[2]);
+}
+
+// Written nested: a value written with several sizes is passed to it
+fn rows2(g Array[Array[i32, 3], 2]) i64 {
+  row3(g[0]) * 1000 + row3(g[1]);
+}
+
+// Written with several sizes, returned where the nested type is wanted
+fn made() Array[Array[i32, 3], 2] { new Array[i32, 2, 3] <- 7, 8, 9, fill 1; }
+
+alias Grid = Array[i32, 2, 3];
+alias Rows = Array[Array[i32, 3], 2];
+
+// A global's contents are a constant of the nested type
+mut board = new Array[i32, 2, 3] <- 1, 2, 3, 4, 5, 6;
+
+// Through a type parameter: the type argument's rows
+fn viaParam[T](row Array[i32, 3]) T { new T <- row, fill row; }
+
+// Several sizes written in the generic's body: scalars of the parameter
+fn viaBody[T](x T, y T) Array[T, 2, 3] { new Array[T, 2, 3] <- x, 4 of y, x; }
+
+fn listed() {
+  // 24 scalars, each checked at its indices
+  imm cube = new Array[i32, 2, 3, 4] <- 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+    13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24;
+  mut right = 0;
+  mut i = 0usize;
+  while i < 2usize {
+    mut j = 0usize;
+    while j < 3usize {
+      mut k = 0usize;
+      while k < 4usize {
+        if i64.from(cube[i][j][k]) == i64.from(i) * 12 + i64.from(j) * 4 + i64.from(k) + 1 {
+          right = right + 1;
+        }
+        k += 1usize;
+      }
+      j += 1usize;
+    }
+    i += 1usize;
+  }
+  show("cube-elements-in-place", i64.from(right));
+  show("cube[1][2][3]", i64.from(cube[1][2][3]));
+  show("cube[1][0][2]", i64.from(cube[1][0][2]));
+
+  imm grid = new Array[i32, 2, 3] <- 1, 2, 3, 4, 5, 6;
+  show("rows", rows2(grid));
+}
+
+fn repeated() {
+  // 'fill' fills every scalar
+  imm bytes = new Array[u8, 2, 3, 4] <- fill 7u8;
+  mut sum = 0i64;
+  mut i = 0usize;
+  while i < 2usize {
+    mut j = 0usize;
+    while j < 3usize {
+      mut k = 0usize;
+      while k < 4usize {
+        sum = sum + i64.from(bytes[i][j][k]);
+        k += 1usize;
+      }
+      j += 1usize;
+    }
+    i += 1usize;
+  }
+  show("fill-sum", sum);
+  imm zeros = new Array[u8, 2, 3, 4] <- fill 0u8;
+  show("zero-fill", i64.from(zeros[0][0][0]) + i64.from(zeros[1][2][3]));
+
+  // 'n of x' runs across the rows: [1, 1, 1, 1], [1, 2, 2, 2], [2, 2, 2, 3]
+  imm runs = new Array[i32, 3, 4] <- 5 of 1, 6 of 2, 3;
+  show("of-row-0", i64.from(runs[0][0] * 1000 + runs[0][1] * 100 + runs[0][2] * 10 + runs[0][3]));
+  show("of-row-1", i64.from(runs[1][0] * 1000 + runs[1][1] * 100 + runs[1][2] * 10 + runs[1][3]));
+  show("of-row-2", i64.from(runs[2][0] * 1000 + runs[2][1] * 100 + runs[2][2] * 10 + runs[2][3]));
+
+  // Mixed: listed, then a count, then 'fill' for the rest
+  imm mixed = new Array[i32, 2, 3] <- 9, 2 of 8, fill 7;
+  show("mixed", rows2(mixed));
+
+  // A constant repeated past the unrolled copies, and among listed values
+  imm wide = new Array[i32, 8, 8] <- 1, fill 3;
+  show("wide", i64.from(wide[0][0] * 100 + wide[0][1] * 10 + wide[7][7]));
+}
+
+fn evaluated() {
+  // Evaluated once for each scalar, in row-major order
+  imm every = new Array[i32, 2, 3] <- fill counter();
+  show("fill-calls", i64.from(calls));
+  show("fill-order", rows2(every));
+  // Past the unrolled copies, in a loop: 40 more
+  imm many = new Array[i32, 4, 10] <- fill counter();
+  show("loop-calls", i64.from(calls));
+  show("loop-first-last", i64.from(many[0][0] * 100 + many[3][9]));
+}
+
+fn spellings() {
+  // The nested spelling takes rows
+  imm nested = new Array[Array[i32, 3], 2] <- new Array[i32, 3] <- (1, 2, 3), new Array[i32, 3] <- fill 4;
+  show("nested", rows2(nested));
+  imm nestedFill = new Array[Array[i32, 3], 2] <- fill new Array[i32, 3] <- (5, 6, 7);
+  show("nested-fill", rows2(nestedFill));
+
+  // One type: assigned, passed and returned across the spellings
+  mut g Array[Array[i32, 3], 2] = new Array[i32, 2, 3] <- fill 2;
+  g = new Array[i32, 2, 3] <- 6 of 3;
+  show("assigned", rows2(g));
+  mut h Array[i32, 2, 3] = nested;
+  show("nested-into-sizes", rows2(h));
+  show("returned", rows2(made()));
+  show("sizeof-sizes", i64.from(mem.sizeof[Array[i32, 2, 3]]()));
+  show("sizeof-nested", i64.from(mem.sizeof[Array[Array[i32, 3], 2]]()));
+
+  // An alias keeps the spelling it names
+  imm ga = new Grid <- 1, 2, 3, 4, 5, 6;
+  show("alias-sizes", rows2(ga));
+  imm ra = new Rows <- new Array[i32, 3] <- (6, 5, 4), new Array[i32, 3] <- (3, 2, 1);
+  show("alias-nested", rows2(ra));
+
+  show("global", rows2(board));
+  show("generic-param-rows", rows2(viaParam[Array[i32, 2, 3]](new Array[i32, 3] <- (1, 2, 3))));
+  show("generic-param-rows-nested", rows2(viaParam[Rows](new Array[i32, 3] <- (4, 5, 6))));
+  show("generic-body-scalars", rows2(viaBody[i32](1, 2)));
+}
+
+fn main() i32 {
+  listed();
+  repeated();
+  evaluated();
+  spellings();
+  0i32;
+}

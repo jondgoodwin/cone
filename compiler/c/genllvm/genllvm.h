@@ -152,6 +152,9 @@ int genlNewInto(GenState *gen, INode *exp, LLVMValueRef dest);
 // memory exists, the init called on it
 LLVMValueRef *genlNewArgs(GenState *gen, FnCallNode *fncall);
 void genlNewFill(GenState *gen, FnCallNode *fncall, LLVMValueRef *fnargs, LLVMValueRef dest);
+// Fill the array at 'dest' in place from the literal of its contents, an
+// element at a time, each store taking the write barrier where 'traced'
+void genlArrayLitInto(GenState *gen, ArrayNode *lit, LLVMValueRef dest, int traced);
 // The failures the compiler checks for at run time, each ending the program
 // through the C runtime's entry for it (genlPanic)
 typedef enum {

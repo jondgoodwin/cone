@@ -214,10 +214,11 @@ Stated so nobody assumes otherwise:
 
 - **A string literal emits a fresh global per occurrence.** No interning, and
   constant merging is not in the pass list.
-- **An array's contents are unrolled.** A value repeated by `fill x` or `n of x`
-  is one copy of its expression per element, however large the array; only a
-  constant repeated alone stays one value stored into every element. No loop is
-  built for a large count.
+- **An array's short contents are unrolled.** A value repeated by `fill x` or
+  `n of x` is one copy of its expression per element up to 16 elements, and a
+  loop past that; a constant repeated alone stays one value stored into every
+  element, by a `memset` when it is null. Nothing chooses between the two by
+  measuring.
 - **Bounds checks are not elided** by the front end; whatever LLVM proves is
   what goes.
 - **The pass list is short** — mem2reg, reassociate, GVN, CFG simplification,

@@ -19,6 +19,7 @@ ArrayNode *newArrayNode() {
     anode->dimens = newNodes(1);
     anode->elems = newNodes(1);
     anode->repeats = NULL;
+    anode->nsizes = 0;
     return anode;
 }
 
@@ -166,6 +167,10 @@ void arrayNameRes(NameResState *pstate, ArrayNode *node) {
 // built nested, 'Array[f32, 2, 3]' as 'Array[Array[f32, 3], 2]', so the layout,
 // indexing ('a[i][j]') and type identity are the nested spelling's by
 // construction. Each size is checked by arrayTypeCheck as any array's is.
+// The outermost node records how many sizes were written (nsizes), since a
+// construction's contents differ by spelling: the scalars, row-major, for
+// several sizes, and the rows for the nested spelling (contentsArrayLit).
+// Nothing else reads it, so the two spellings stay one type.
 // An element type that is a generic's parameter is a type once substituted,
 // and the clone substitutes it in place.
 void arrayTypeLower(NameResState *pstate, INode **nodep) {
@@ -194,7 +199,33 @@ void arrayTypeLower(NameResState *pstate, INode **nodep) {
         nodesAdd(&array->elems, type);
         type = (INode*)array;
     }
+    if (args->used > 2)
+        ((ArrayNode*)type)->nsizes = args->used - 1;
     *((INode**)nodep) = type;
+}
+
+// A type a generic's parameter is substituted with, as the instance sees it:
+// an array type without the shape it was written in. Instances are shared
+// between type arguments that are the same type, so 'Array[i32, 2, 3]' and
+// 'Array[Array[i32, 3], 2]' reach one instance, and a shape kept there would
+// be whichever argument instantiated it first. Without it, an array's
+// contents through a parameter are its rows, as the nested spelling's are.
+// Answers the type itself where there is no shape to remove.
+INode *arrayTypeUnshaped(CloneState *cstate, INode *type) {
+    if (type->tag == ArrayTag && ((ArrayNode*)type)->nsizes > 1) {
+        ((ArrayNode*)type)->nsizes = 0;     // the substitution's own copy
+        return type;
+    }
+    if (!isNameUseNode(type) || ((NameUseNode*)type)->dclnode == NULL || !isTypeNode(type))
+        return type;
+    INode *dcl = itypeGetTypeDcl(type);
+    if (dcl->tag != ArrayTag || ((ArrayNode*)dcl)->nsizes <= 1)
+        return type;
+    // An alias of a shaped array: the instance gets the array it names
+    ArrayNode *unshaped = (ArrayNode*)cloneArrayNode(cstate, (ArrayNode*)dcl);
+    inodeLexCopy((INode*)unshaped, type);
+    unshaped->nsizes = 0;
+    return (INode*)unshaped;
 }
 
 // Type check an array type

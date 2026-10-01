@@ -135,6 +135,10 @@ static int arrayLitDimIsConst(INode *dimnode) {
 // Type check an array literal. Its dimension is part of its type, so it must
 // be a constant unsigned integer: a count chosen at run time belongs to a List.
 void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit, INode *expectType) {
+    // The scalars of an array written with several sizes arrive typed as that
+    // array (contentsArrayLit), a type their count alone does not give
+    if (arrlit->nsizes > 1)
+        return;
     if (arrlit->dimens->used > 0 && !arrayLitDimIsConst(nodesGet(arrlit->dimens, 0))) {
         errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal dimension value must be a constant: an integer literal, or a named constant holding one");
     }
@@ -204,7 +208,7 @@ static void arrayLitSettle(ArrayNode *arrlit) {
 // element count is not coerced: a literal of another size still does not match.
 int arrayLitCoerce(ArrayNode *arrlit, INode *totypedcl) {
     INode *littype = arrlit->vtype;
-    if (totypedcl->tag != ArrayTag || littype->tag != ArrayTag
+    if (arrlit->nsizes > 1 || totypedcl->tag != ArrayTag || littype->tag != ArrayTag
         || ((ArrayNode*)totypedcl)->dimens->used != 1 || ((ArrayNode*)littype)->dimens->used != 1
         || arrayDim1(totypedcl) != arrayDim1(littype))
         return 0;

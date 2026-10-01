@@ -1114,9 +1114,12 @@ LLVMValueRef genlLogic(GenState *gen, LogicNode* node) {
 // Store 'count' elements of the array at 'dest' from 'start', each the value
 // 'val': a constant generated once and stored by a loop, or by a memset when
 // null; anything else generated in the loop, so evaluated once for each
-// element. A run of one is a store.
+// element. A run of one is a store. Where 'barriertype' is given, the array
+// is in a traced region's memory, and each element stored, of that type, is
+// handed to the write barrier (genlBarrierAt), as a store through a
+// reference is: evaluating the next element may run the collector.
 static void genlArrayRun(GenState *gen, LLVMTypeRef arraytype, LLVMValueRef dest,
-                         uint64_t start, uint64_t count, INode *val) {
+                         uint64_t start, uint64_t count, INode *val, INode *barriertype) {
     if (count == 0)
         return;
     LLVMTypeRef usize = genlUsize(gen);
@@ -1125,7 +1128,10 @@ static void genlArrayRun(GenState *gen, LLVMTypeRef arraytype, LLVMValueRef dest
     LLVMValueRef constval = litIsLiteral(val) ? genlExpr(gen, val) : NULL;
     if (count == 1) {
         LLVMValueRef elemval = constval ? constval : genlExpr(gen, val);
-        LLVMBuildStore(gen->builder, elemval, LLVMBuildInBoundsGEP2(gen->builder, arraytype, dest, index, 2, "elem"));
+        LLVMValueRef elemptr = LLVMBuildInBoundsGEP2(gen->builder, arraytype, dest, index, 2, "elem");
+        LLVMBuildStore(gen->builder, elemval, elemptr);
+        if (barriertype)
+            genlBarrierAt(gen, elemptr, barriertype);
         return;
     }
     if (constval && LLVMIsConstant(constval) && LLVMIsNull(constval)) {
@@ -1143,7 +1149,10 @@ static void genlArrayRun(GenState *gen, LLVMTypeRef arraytype, LLVMValueRef dest
     LLVMValueRef counter = LLVMBuildPhi(gen->builder, usize, "fillindex");
     LLVMValueRef elemval = constval ? constval : genlExpr(gen, val);
     index[1] = counter;
-    LLVMBuildStore(gen->builder, elemval, LLVMBuildInBoundsGEP2(gen->builder, arraytype, dest, index, 2, "fillelem"));
+    LLVMValueRef elemptr = LLVMBuildInBoundsGEP2(gen->builder, arraytype, dest, index, 2, "fillelem");
+    LLVMBuildStore(gen->builder, elemval, elemptr);
+    if (barriertype)
+        genlBarrierAt(gen, elemptr, barriertype);
     LLVMValueRef next = LLVMBuildAdd(gen->builder, counter, LLVMConstInt(usize, 1, 0), "fillnext");
     LLVMValueRef more = LLVMBuildICmp(gen->builder, LLVMIntULT, next, LLVMConstInt(usize, start + count, 0), "fillmore");
     // Evaluating the value may have split the loop's block, so the back edge
@@ -1162,29 +1171,99 @@ static void genlArrayRun(GenState *gen, LLVMTypeRef arraytype, LLVMValueRef dest
 // form's one constant are each a run (genlArrayRun). Nothing is stored as one
 // aggregate, which LLVM's instruction selection takes apart element by
 // element, and at a hundred thousand of them crashes doing so.
-static void genlArrayLitInto(GenState *gen, ArrayNode *lit, LLVMValueRef dest) {
-    LLVMTypeRef arraytype = genlType(gen, lit->vtype);
+//
+// The scalars of an array written with several sizes (the literal's nsizes)
+// are stored into it seen as one array of them, '[24 x i8]' for
+// 'Array[u8, 2, 3, 4]', which is the same memory row-major. Where 'traced',
+// the array is in a traced region's memory, and each store takes the write
+// barrier (genlArrayRun).
+void genlArrayLitInto(GenState *gen, ArrayNode *lit, LLVMValueRef dest, int traced) {
+    INode *elemtype = arrayElemType(itypeGetTypeDcl(lit->vtype));
+    LLVMTypeRef arraytype;
+    if (lit->nsizes > 1) {
+        uint64_t count = 1;
+        INode *level = itypeGetTypeDcl(lit->vtype);
+        for (uint32_t i = 0; i < lit->nsizes; ++i) {
+            count *= arrayDim1(level);
+            elemtype = arrayElemType(level);
+            level = itypeGetTypeDcl(elemtype);
+        }
+        arraytype = LLVMArrayType2(genlType(gen, elemtype), count);
+    }
+    else
+        arraytype = genlType(gen, lit->vtype);
+    INode *barriertype = traced ? elemtype : NULL;
     if (lit->dimens->used > 0) {
-        genlArrayRun(gen, arraytype, dest, 0, LLVMGetArrayLength2(arraytype), nodesGet(lit->elems, 0));
+        genlArrayRun(gen, arraytype, dest, 0, LLVMGetArrayLength2(arraytype), nodesGet(lit->elems, 0), barriertype);
         return;
     }
     uint64_t start = 0;
     for (uint32_t index = 0; index < lit->elems->used; ++index) {
         uint64_t count = lit->repeats ? lit->repeats[index] : 1;
-        genlArrayRun(gen, arraytype, dest, start, count, nodesGet(lit->elems, index));
+        genlArrayRun(gen, arraytype, dest, start, count, nodesGet(lit->elems, index), barriertype);
         start += count;
     }
 }
 
 // Does a variable's initializer fill it in place (genlArrayLitInto): an
 // array's contents repeating a value in a loop, or a fill form of more than
-// ArrayRepeatUnroll elements
+// ArrayRepeatUnroll elements, or the scalars of an array written with
+// several sizes
 static int genlArrayLitFillsInPlace(INode *value) {
     if (value->tag != ArrayLitTag)
         return 0;
     ArrayNode *lit = (ArrayNode *)value;
-    return lit->repeats != NULL
+    return lit->repeats != NULL || lit->nsizes > 1
         || (lit->dimens->used > 0 && arrayDim1(itypeGetTypeDcl(lit->vtype)) > ArrayRepeatUnroll);
+}
+
+// The rows of a constant array of 'levels' levels of the array type
+// 'arraytype', from its scalars at '*scalarp', row-major, each taken in turn
+static LLVMValueRef genlArrayConstRows(GenState *gen, INode *arraytype, uint32_t levels, LLVMValueRef **scalarp) {
+    INode *arraydcl = itypeGetTypeDcl(arraytype);
+    uint64_t count = arrayDim1(arraydcl);
+    INode *elemtype = arrayElemType(arraydcl);
+    LLVMValueRef *parts = (LLVMValueRef *)memAllocBlk((count ? count : 1) * sizeof(LLVMValueRef));
+    for (uint64_t i = 0; i < count; ++i)
+        parts[i] = levels > 1 ? genlArrayConstRows(gen, elemtype, levels - 1, scalarp) : *(*scalarp)++;
+    return LLVMConstArray2(genlType(gen, elemtype), parts, count);
+}
+
+// The value of the scalars of an array written with several sizes: a constant
+// of the nested array type when every one is a constant, its rows built from
+// the scalars in order; otherwise filled in memory as a variable is
+// (genlArrayLitInto) and read from there
+static LLVMValueRef genlArrayLitScalars(GenState *gen, ArrayNode *lit) {
+    LLVMTypeRef arraytype = genlType(gen, lit->vtype);
+    if (!arrayLitIsLiteral(lit)) {
+        LLVMValueRef temp = genlAlloca(gen, arraytype, "arraylit");
+        genlArrayLitInto(gen, lit, temp, 0);
+        return LLVMBuildLoad2(gen->builder, arraytype, temp, "");
+    }
+    uint64_t size = 0;
+    if (lit->dimens->used > 0)
+        size = ((ULitNode *)nodesGet(lit->dimens, 0))->uintlit;
+    else {
+        for (uint32_t index = 0; index < lit->elems->used; ++index)
+            size += lit->repeats ? lit->repeats[index] : 1;
+    }
+    LLVMValueRef *listed = (LLVMValueRef *)memAllocBlk(lit->elems->used * sizeof(LLVMValueRef));
+    int allnull = 1;
+    for (uint32_t index = 0; index < lit->elems->used; ++index) {
+        listed[index] = genlExpr(gen, nodesGet(lit->elems, index));
+        allnull = allnull && LLVMIsNull(listed[index]);
+    }
+    if (allnull)
+        return LLVMConstNull(arraytype);
+    LLVMValueRef *scalars = (LLVMValueRef *)memAllocBlk((size ? size : 1) * sizeof(LLVMValueRef));
+    LLVMValueRef *scalarp = scalars;
+    for (uint32_t index = 0; index < lit->elems->used; ++index) {
+        uint64_t cnt = lit->dimens->used > 0 ? size : lit->repeats ? lit->repeats[index] : 1;
+        while (cnt--)
+            *scalarp++ = listed[index];
+    }
+    scalarp = scalars;
+    return genlArrayConstRows(gen, lit->vtype, lit->nsizes, &scalarp);
 }
 
 // Generate local variable
@@ -1221,7 +1300,7 @@ LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
         val = LLVMBuildLoad2(gen->builder, genlType(gen, var->vtype), var->llvmvar, "");
     // So do an array's contents with a value repeated many times
     else if (var->value && genlArrayLitFillsInPlace(var->value))
-        genlArrayLitInto(gen, (ArrayNode *)var->value, var->llvmvar);
+        genlArrayLitInto(gen, (ArrayNode *)var->value, var->llvmvar, 0);
     else if (var->value) {
         val = genlExprForLocal(gen, var->value);
         LLVMBuildStore(gen->builder, val, var->llvmvar);
@@ -1915,6 +1994,8 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
     case ArrayLitTag:
     {
         ArrayNode *lit = (ArrayNode *)termnode;
+        if (lit->nsizes > 1)
+            return genlArrayLitScalars(gen, lit);
         INode *elemtype = nodesGet(((ArrayNode *)itypeGetTypeDcl(lit->vtype))->elems, 0);
         LLVMTypeRef elemtypellvm = genlType(gen, elemtype);
         // An array's contents repeating a computed value in a loop are built in
@@ -1922,7 +2003,7 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         if (lit->repeats && !arrayLitIsLiteral(lit)) {
             LLVMTypeRef arraytype = genlType(gen, lit->vtype);
             LLVMValueRef temp = genlAlloca(gen, arraytype, "arraylit");
-            genlArrayLitInto(gen, lit, temp);
+            genlArrayLitInto(gen, lit, temp, 0);
             return LLVMBuildLoad2(gen->builder, arraytype, temp, "");
         }
         uint32_t size = lit->elems->used;

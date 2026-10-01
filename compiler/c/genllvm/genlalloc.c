@@ -1152,7 +1152,8 @@ void genlRegionAlias(GenState *gen, LLVMValueRef ref, long long amount, RefNode 
 //    and root p, before anything else runs]
 //   p.region.init()                                (fills the header in place)
 //   p.perm.init()                                  (a lock permission's part)
-//   T.init(&new p.value, args)                     (or store the finished value)
+//   T.init(&new p.value, args)                     (or store the finished value,
+//                                                   or fill an array's contents)
 //   p.value's address, the reference
 //
 // A traced region's 'alloc' may collect, and so may anything after it that
@@ -1200,13 +1201,15 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     // The arguments first, in every region: a declared init's (filled in place
     // below), or the value itself, the implicit init's literal or a finished
     // value moved in, 'new Rc[i32](5)', stored below
+    // An array's contents are not evaluated here but filled in place below
     INode *valnode = allocatenode->vtexp;
     FnCallNode *declinit = valnode->tag == FnCallTag && (valnode->flags & FlagNew) ? (FnCallNode*)valnode : NULL;
+    ArrayNode *contents = (allocatenode->flags & FlagAllocFill) ? (ArrayNode*)valnode : NULL;
     LLVMValueRef *initargs = NULL;
     LLVMValueRef value = NULL;
     if (declinit)
         initargs = genlNewArgs(gen, declinit);
-    else
+    else if (contents == NULL)
         value = genlExpr(gen, valnode);
 
     // Do region allocation (using its alloc method) and then bitcast to multi-layered-struct ptr.
@@ -1255,8 +1258,16 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     // Before anything else runs: a value holding traced references reads as
     // null until it is filled, and a traced region's new block is rooted in a
     // slot of its own while it is filled
-    if (itypeHoldsTraced(reftype->vtexp))
-        LLVMBuildStore(gen->builder, LLVMConstNull(valuetypllvm), valuep);
+    // An array is zeroed by a memset rather than one store of the whole, which
+    // LLVM takes apart element by element (genlArrayLitInto)
+    if (itypeHoldsTraced(reftype->vtexp)) {
+        if (itypeGetTypeDcl(reftype->vtexp)->tag == ArrayTag)
+            LLVMBuildMemSet(gen->builder, valuep, LLVMConstInt(LLVMInt8TypeInContext(gen->context), 0, 0),
+                LLVMConstInt(genlType(gen, (INode*)usizeType), LLVMABISizeOfType(gen->datalayout, valuetypllvm), 0),
+                LLVMABIAlignmentOfType(gen->datalayout, valuetypllvm));
+        else
+            LLVMBuildStore(gen->builder, LLVMConstNull(valuetypllvm), valuep);
+    }
     int traced = regionIsTraced(region);
     LLVMValueRef fillroot = NULL;
     if (traced && gen->fn) {
@@ -1290,6 +1301,11 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     // finished with the new block yet.
     if (declinit)
         genlNewFill(gen, declinit, initargs, valuep);
+    // An array's contents are filled in place, an element at a time, each
+    // value evaluated now; any of them may allocate, and so collect, so in a
+    // traced region each store takes the barrier
+    else if (contents)
+        genlArrayLitInto(gen, contents, valuep, traced);
     else {
         LLVMBuildStore(gen->builder, value, valuep);
         if (traced && (reginitmeth || perminitmeth))

@@ -12,7 +12,9 @@
  * Every entry lowers to applications of the receiver's '<-' method, against
  * one borrow of the receiver. A construction's contents are appended to the
  * value it builds, which is then the expression's value; an array's are its
- * elements, since an array has no '<-' and its size is fixed.
+ * elements, since an array has no '<-' and its size is fixed (its scalars,
+ * when its type is written with several sizes), and an allocation of an array
+ * fills them in place in the region's memory.
  *
  * This source file is part of the Cone Programming Language C compiler
  * See Copyright Notice in conec.h
@@ -77,9 +79,9 @@ void entryTypeCheck(TypeCheckState *pstate, EntryNode *node) {
     node->vtype = errorType;
 }
 
-// Is this a construction, 'new T(...)', not yet lowered?
+// Is this a construction, 'new T(...)' or 'trynew T(...)', not yet lowered?
 static int contentsIsConstruction(INode *node) {
-    return node->tag == FnCallTag && (node->flags & FlagNew) && !(node->flags & FlagTryNew)
+    return node->tag == FnCallTag && (node->flags & FlagNew)
         && !nameUseNames(((FnCallNode*)node)->objfn, FnDclTag);
 }
 
@@ -379,15 +381,9 @@ static void contentsLowerConstruction(TypeCheckState *pstate, FnCallNode **nodep
         blk->vtype = errorType;
 }
 
-// Does this construction's type name an array, 'Array[f32, 4]' or an alias of one?
-static int contentsIsArray(INode *type) {
-    if (type->tag == ArrayTag)
-        return 1;
-    return isNameUseNode(type) && isTypeNode(type) && itypeGetTypeDcl(type)->tag == ArrayTag;
-}
-
-// Type check one of an array's element values against its element type
-static int contentsArrayElem(TypeCheckState *pstate, INode **valp, INode *elemtype) {
+// Type check one of an array's element values against its element type, or,
+// for an array written with several sizes, its scalar type
+static int contentsArrayElem(TypeCheckState *pstate, INode **valp, INode *elemtype, int scalars) {
     inodeTypeCheck(pstate, valp, elemtype);
     if (!isExpNode(*valp)) {
         errorMsgNode(*valp, ErrorNotTyped, "Expected a typed expression.");
@@ -396,7 +392,14 @@ static int contentsArrayElem(TypeCheckState *pstate, INode **valp, INode *elemty
     if (iexpGetTypeDcl(*valp) == errorType)
         return 0;
     if (!iexpCoerce(valp, elemtype)) {
-        errorMsgNode(*valp, ErrorInvType, "This value's type does not match the array's element type.");
+        if (scalars && iexpGetTypeDcl(*valp)->tag == ArrayTag)
+            errorMsgNode(*valp, ErrorInvType,
+                "An array written with several sizes is filled with its scalars, %s, row by row, not with its rows: write each row's values in turn, or write the type nested, 'Array[Array[T, n], m]', to give rows.",
+                itypeName(elemtype));
+        else
+            errorMsgNode(*valp, ErrorInvType, scalars
+                ? "This value's type does not match the array's scalar type, the element type written first."
+                : "This value's type does not match the array's element type.");
         return 0;
     }
     return 1;
@@ -410,6 +413,49 @@ static INode *contentsCopy(TypeCheckState *pstate, INode *val) {
     return cloneNode(&cstate, val);
 }
 
+// How many scalars an array's contents give, and their type: for an array
+// type written with several sizes, 'Array[u8, 2, 3, 4]', the product of the
+// sizes and the type written first, row-major as C's 'u8 a[2][3][4]'; for one
+// written with one size, the nested spelling 'Array[Array[u8, 4], 3]'
+// included, its size and its element type, so the nested spelling's contents
+// are its rows. Answers 0 when it reported why it could not, or when a size
+// is not one that arrayTypeCheck accepted (reported there).
+static int contentsArrayShape(ArrayNode *arraydcl, INode *lexnode, uint32_t *levels, uint64_t *size, INode **scalartype) {
+    *levels = arraydcl->nsizes > 1 ? arraydcl->nsizes : 1;
+    *size = 1;
+    INode *level = (INode*)arraydcl;
+    for (uint32_t i = 0; i < *levels; ++i) {
+        INode *dimnode = nodesGet(((ArrayNode*)level)->dimens, 0);
+        if (dimnode->tag != ULitTag || ((ULitNode*)dimnode)->uintlit > UINT32_MAX
+            || ((dimnode->flags & FlagLitNeg) && ((ULitNode*)dimnode)->uintlit != 0))
+            return 0;
+        uint64_t dim = ((ULitNode*)dimnode)->uintlit;
+        // Each factor is at most 4294967295, so the product is checked before
+        // it can overflow 64 bits
+        *size = *size > UINT32_MAX ? *size : *size * dim;
+        if (dim == 0)
+            *size = 0;
+        level = arrayElemType(level);
+    }
+    *scalartype = level;
+    if (*levels > 1 && *size > UINT32_MAX) {
+        errorMsgNode(lexnode, ErrorArrayContents,
+            "An array written with several sizes is filled with its scalars, and %s has more than 4294967295 of them, the most an array's size may be.",
+            itypeName((INode*)arraydcl));
+        return 0;
+    }
+    // 'Array[Array[u8, 4], 2, 3]' (or a type parameter or alias standing for
+    // such an element) mixes the spellings: whether its contents are the u8s
+    // or the 'Array[u8, 4]'s is not settled, so neither is taken
+    if (*levels > 1 && itypeGetTypeDcl(level)->tag == ArrayTag) {
+        errorMsgNode(lexnode, ErrorArrayContents,
+            "An array written with several sizes whose element type is itself an array, %s, takes no contents yet: write it nested, 'Array[Array[T, n], m]', whose contents are its rows.",
+            itypeName((INode*)arraydcl));
+        return 0;
+    }
+    return 1;
+}
+
 // An array's contents are its elements: 'new Array[f32, 4] <- 1.0, fill 0.0'.
 // An array has no '<-' and no 'init', and its size is fixed, so the contents
 // must give exactly that many values, every count known at compile time. They
@@ -420,25 +466,26 @@ static INode *contentsCopy(TypeCheckState *pstate, INode *val) {
 // (the literal's repeats). One entry repeating a constant is kept as one value
 // stored into every element (the literal's fill form), since evaluating a
 // constant again gives nothing new.
-// An array of several dimensions, 'Array[f32, 2, 3]', is an array of arrays,
-// and its contents are its rows.
+// An array written with several sizes, 'Array[f32, 2, 3]', is an array of
+// arrays whose contents are its scalars, row-major (contentsArrayShape): the
+// literal's elements are those scalars, its nsizes the levels they fill, and
+// generation stores them into the array as one run of scalars.
+// 'arraytype' is the array the contents fill: the construction's type, or the
+// value type of the allocation the construction is (contentsLowerAlloc).
 // Answers NULL when it reported why it could not.
-static INode *contentsArrayLit(TypeCheckState *pstate, FnCallNode *node) {
+static INode *contentsArrayLit(TypeCheckState *pstate, FnCallNode *node, INode *arraytype) {
     FnCallNode *ctor = (FnCallNode*)node->objfn;
-    if (!itypeTypeCheck(pstate, &ctor->objfn))
-        return NULL;
-    INode *arraytype = ctor->objfn;
     ArrayNode *arraydcl = (ArrayNode*)itypeGetTypeDcl(arraytype);
     if (ctor->args && ctor->args->used > 0) {
         errorMsgNode((INode*)ctor, ErrorArrayContents,
             "An array has no init to take arguments: its contents follow '<-', as 'new Array[f32, 4] <- fill 0.0'.");
         return NULL;
     }
-    INode *dimnode = nodesGet(arraydcl->dimens, 0);
-    if (dimnode->tag != ULitTag)
-        return NULL;     // arrayTypeCheck reported it
-    uint64_t size = ((ULitNode*)dimnode)->uintlit;
-    INode *elemtype = arrayElemType((INode*)arraydcl);
+    uint32_t levels;
+    uint64_t size;
+    INode *elemtype;
+    if (!contentsArrayShape(arraydcl, (INode*)node, &levels, &size, &elemtype))
+        return NULL;
 
     // How many values each entry gives, the one 'fill' given what is left
     uint32_t nentries;
@@ -477,9 +524,14 @@ static INode *contentsArrayLit(TypeCheckState *pstate, FnCallNode *node) {
         return NULL;
     uint64_t filled = fills && given < size ? size - given : 0;
     if (given + filled != size) {
-        errorMsgNode((INode*)node, ErrorArrayContents,
-            "These contents give %llu values, and the array holds %llu: an array's contents fill it exactly.",
-            (unsigned long long)(given + filled), (unsigned long long)size);
+        if (levels > 1)
+            errorMsgNode((INode*)node, ErrorArrayContents,
+                "These contents give %llu values, and the array holds %llu scalars of %s: an array written with several sizes is filled exactly, with its scalars, row by row.",
+                (unsigned long long)(given + filled), (unsigned long long)size, itypeName(elemtype));
+        else
+            errorMsgNode((INode*)node, ErrorArrayContents,
+                "These contents give %llu values, and the array holds %llu: an array's contents fill it exactly.",
+                (unsigned long long)(given + filled), (unsigned long long)size);
         return NULL;
     }
 
@@ -487,6 +539,7 @@ static INode *contentsArrayLit(TypeCheckState *pstate, FnCallNode *node) {
     lit->tag = ArrayLitTag;
     inodeLexCopy((INode*)lit, (INode*)node);
     lit->vtype = arraytype;
+    lit->nsizes = levels > 1 ? levels : 0;
     uint32_t *runs = NULL;   // each run's element and how many more it fills
     uint32_t nruns = 0;
     for (uint32_t i = 0; i < nentries; ++i) {
@@ -505,7 +558,7 @@ static INode *contentsArrayLit(TypeCheckState *pstate, FnCallNode *node) {
         if (count == 0)
             continue;
         INode *pristine = count > 1 ? contentsCopy(pstate, *valp) : NULL;
-        if (!contentsArrayElem(pstate, valp, elemtype)) {
+        if (!contentsArrayElem(pstate, valp, elemtype, levels > 1)) {
             bad = 1;
             continue;
         }
@@ -523,7 +576,7 @@ static INode *contentsArrayLit(TypeCheckState *pstate, FnCallNode *node) {
         // variable moved into the first is gone for it, a counted reference
         // gains the holder each pass of the loop adds.
         if (count > ArrayRepeatUnroll) {
-            if (contentsArrayElem(pstate, &pristine, elemtype)) {
+            if (contentsArrayElem(pstate, &pristine, elemtype, levels > 1)) {
                 if (runs == NULL)
                     runs = (uint32_t *)memAllocBlk(nentries * 2 * sizeof(uint32_t));
                 runs[nruns * 2] = lit->elems->used;
@@ -536,7 +589,7 @@ static INode *contentsArrayLit(TypeCheckState *pstate, FnCallNode *node) {
         }
         for (uint64_t copy = 1; copy < count; ++copy) {
             INode *val = copy == count - 1 ? pristine : contentsCopy(pstate, pristine);
-            if (contentsArrayElem(pstate, &val, elemtype))
+            if (contentsArrayElem(pstate, &val, elemtype, levels > 1))
                 nodesAdd(&lit->elems, val);
             else
                 bad = 1;
@@ -557,8 +610,38 @@ static INode *contentsArrayLit(TypeCheckState *pstate, FnCallNode *node) {
 // An array's construction becomes the array literal of its contents, or, when
 // they were refused, an error node, so nothing left unchecked stays in the tree
 static void contentsLowerArray(TypeCheckState *pstate, FnCallNode **nodep) {
-    INode *lit = contentsArrayLit(pstate, *nodep);
+    INode *lit = contentsArrayLit(pstate, *nodep, ((FnCallNode*)(*nodep)->objfn)->objfn);
     *((INode**)nodep) = lit ? lit : newErrorNode((INode*)*nodep);
+}
+
+// An allocation of an array with its contents, 'new Rc[mut, Array[i32, 4]] <-
+// fill 0', is the allocation whose value is the literal of those contents,
+// which generation fills in place in the region's memory once it is had, an
+// element at a time (genlallocref): no array is built elsewhere and copied in.
+// 'trynew' fills it only when the memory was had, since the literal is
+// generated only there.
+static void contentsLowerAlloc(TypeCheckState *pstate, FnCallNode **nodep, RefNode *reftype) {
+    FnCallNode *ctor = (FnCallNode*)(*nodep)->objfn;
+    INode *lit = contentsArrayLit(pstate, *nodep, reftype->vtexp);
+    INode *alloc = lit ? typeLitNewFilled(pstate, &ctor, reftype, lit) : NULL;
+    *((INode**)nodep) = alloc ? alloc : newErrorNode((INode*)*nodep);
+}
+
+// The type a construction builds, checked, when its contents may need it
+// before the construction itself is: whether it is an array, or an allocation
+// of one, decides how the contents lower. NULL, unchecked, for what the
+// construction alone can check: a generic struct named without its type
+// arguments, which its arguments infer, and what is not a type. errorType
+// where the check failed, reported.
+static INode *contentsBuiltType(TypeCheckState *pstate, FnCallNode *ctor) {
+    if (!isTypeNode(ctor->objfn))
+        return NULL;
+    if (isNameUseNode(ctor->objfn) && nameUseNames(ctor->objfn, StructTag)
+        && genericGetInfo(nameUseGetDcl((NameUseNode*)ctor->objfn)) != NULL)
+        return NULL;
+    if (!itypeTypeCheck(pstate, &ctor->objfn))
+        return errorType;
+    return itypeGetTypeDcl(ctor->objfn);
 }
 
 // Lower a '<-' that contentsIsAppend accepts into the appends it stands for,
@@ -566,7 +649,18 @@ static void contentsLowerArray(TypeCheckState *pstate, FnCallNode **nodep) {
 void contentsLower(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
     if (contentsIsConstruction(node->objfn)) {
-        if (contentsIsArray(((FnCallNode*)node->objfn)->objfn))
+        FnCallNode *ctor = (FnCallNode*)node->objfn;
+        int trynew = (ctor->flags & FlagTryNew) != 0;
+        INode *built = contentsBuiltType(pstate, ctor);
+        if (built == errorType)
+            *((INode**)nodep) = newErrorNode((INode*)node);
+        else if (built && built->tag == RefTag && itypeGetTypeDcl(((RefNode*)built)->vtexp)->tag == ArrayTag)
+            contentsLowerAlloc(pstate, nodep, (RefNode*)built);
+        // 'trynew' of anything else is not lowered as a construction: the
+        // contents of an allocation reached through an Option are not settled
+        else if (trynew)
+            contentsLowerEntries(pstate, nodep);
+        else if (built && built->tag == ArrayTag)
             contentsLowerArray(pstate, nodep);
         else
             contentsLowerConstruction(pstate, nodep);

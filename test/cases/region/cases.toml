@@ -394,6 +394,26 @@ category = "run"
 description = "An allocation's one argument a finished value, moved in: in So, Rc, Arc, Rcw and a region written in Cone; a number literal adopting the value type, a variable, a call's result, an array literal, a tuple, a variant becoming its enum; a struct's own value (through an alias too) moved in while other arguments go to its inits; the order value, alloc, region init, store; 'trynew' giving Some, or None from a failing region"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
 
+# An allocation with contents after '<-'. A 'run' because the claim is that
+# each element is filled where it lives, in order, after the region's 'alloc'
+# and 'init', which only the printed order and values show. The checks hold
+# that a million scalars are filled in the allocation's memory: a null fill is
+# one memset there, a repeated value a loop, and nothing anywhere is an
+# aggregate the size of the array.
+[scenario.region_new_contents]
+category = "run"
+description = "An allocation's contents after '<-' fill its value in place: an array in Rc, So and a region written in Cone, every entry form, several sizes by scalars, nested by rows, through an alias; a million scalars; the order alloc, region init, each value; 'trynew' filling only on Some; a List's contents appended through the reference"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.region_new_contents.check]]
+name = "a-million-scalars-fill-in-place-with-no-aggregate"
+target = "preir"
+contains = ["i8 0, i64 4000000, i1 false)",
+            "%fillmore = icmp ult i64 %fillnext, 1000000"]
+excludes = ["store [1000 x [1000 x i32]]", "store [1000000 x i32]",
+            "load [1000 x [1000 x i32]]", "load [1000000 x i32]",
+            "insertvalue [1000000 x i32]"]
+
 # Separate from region_success because it is the scenario a code generation fix
 # landed with: without it, genlallocref's phi named a predecessor that the inner
 # allocation's branches had already displaced, and the module failed verification.
@@ -786,6 +806,12 @@ diagnostics = 7
 [scenario.region_typecheck_alloc]
 category = "reject"
 description = "Values that may not be allocated, and names that may not be a region"
+tags = ["typecheck"]
+diagnostics = 4
+
+[scenario.region_typecheck_contents]
+category = "reject"
+description = "An allocation's array contents refused as a construction's are: too few values, rows for an array written with several sizes, arguments beside the contents, a product of sizes past 4294967295"
 tags = ["typecheck"]
 diagnostics = 4
 

@@ -31,8 +31,10 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         && ((NameUseNode*)nodep)->dclnode->tag == GenVarDclTag) {
         INode *hooked = ((NameUseNode*)nodep)->namesym->node;
         if (!(hooked && hooked->tag == GenVarDclTag)) {
+            // A generic's type argument loses an array's written shape, which
+            // its shared instance cannot keep (arrayTypeUnshaped)
             if (cstate->srcsite == NULL)
-                return cloneNode(cstate, hooked);
+                return arrayTypeUnshaped(cstate, cloneNode(cstate, hooked));
             // A macro's argument is the use's own source, not the macro's: it
             // keeps its own place, where 'srcLine()' in it answers, and is not
             // marked as instantiated by the use, so a macro used in it is known

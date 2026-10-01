@@ -24,7 +24,7 @@ composite literal takes ownership of. Generation emits constants where it can.
 | `ULitNode` | `ULitTag` | `uintlit` — also carries `true`/`false` and tuple element indices |
 | `FLitNode` | `FLitTag` | `floatlit` |
 | `SLitNode` | `StringLitTag` | `strlit` pointer into the lexer's arena, plus `strlen` |
-| `ArrayNode` | `ArrayTag` **or** `ArrayLitTag` | `dimens`, `elems`; `repeats`, how many elements each of `elems` fills, NULL for one each |
+| `ArrayNode` | `ArrayTag` **or** `ArrayLitTag` | `dimens`, `elems`; `repeats`, how many elements each of `elems` fills, NULL for one each; `nsizes`, a type's written sizes or a literal's scalar levels (below) |
 | type literal | `TypeLitTag` | an `FnCallNode` — `args` are the field values, or a number conversion's one value; `FlagNew` when it came of a construction, `FlagAllocValue` when it is a `+` allocation's bracketed value, which is refused |
 
 **`FlagUnkType`** is set only by `newULitNode`, only when the lexer gave no type
@@ -48,6 +48,21 @@ for several: `new Array[i32, 100] <- fill f()` is `elems` `[f(), f()]` with
 written `Array[i32, 3]`, is the same node tagged
 `ArrayTag`, `dimens` `[3]` and `elems` `[i32]`: name resolution builds it from
 the bracketed call (`arrayTypeLower`; [Name resolution](../phases/name-resolution.md)).
+
+**`nsizes` is the written shape, and only contents read it.** Several sizes,
+`Array[u8, 2, 3, 4]`, build three nested nodes, the outermost given `nsizes`
+3; every other array type has 0, the nested spelling included. Equality,
+matching, layout, `sizeof`, printing and naming never read it, so the two
+spellings are one type everywhere; it decides only that a construction's
+contents are the scalars (`u8`, row-major) rather than the rows
+([fncall](fncall.md), "The list after `<-`"). A generic's type argument loses
+it at substitution (`arrayTypeUnshaped`), since one instance serves both
+spellings. On a literal, `nsizes` is how many levels of its type its elements
+are the scalars of: `new Array[i32, 2, 3] <- 1, 2, 3, 4, 5, 6` is a list form
+of six `i32`s typed `Array[i32, 2, 3]`, `nsizes` 2, and its fill form's
+`dimens` counts scalars. Such a literal arrives typed, and
+`arrayLitTypeCheck` and `arrayLitCoerce` leave it alone, since its count of
+elements does not give its type.
 Several sizes build nested nodes, each of one size, the first size the
 outermost: `Array[i32, 2, 3]` is the node of `Array[Array[i32, 3], 2]`, so it is
 that type, laid out and indexed (`a[i][j]`) as it is. The parser builds every
@@ -245,7 +260,8 @@ construction of its value type or a finished value of it
 ([references](references.md), "Allocation"); `trynew` on any other type is
 `ErrorTryNewValue`. An array's construction is its
 contents, after `<-`, which `contentsLower` takes before this is reached, so
-one here has none (`ErrorArrayContents`). Otherwise its type must be a struct
+one here has none (`ErrorArrayContents`); so is an allocation of an array
+with contents, which `contentsLower` hands its literal (`typeLitNewFilled`). Otherwise its type must be a struct
 (`ErrorNewType` otherwise: a number converts with `from`, an enum's variant
 keeps its brackets). One positional argument whose type is the struct itself
 is a finished value, which needs no construction (`ErrorNewFinished`); an
@@ -416,6 +432,20 @@ loop, so evaluated once for each element. Anywhere else, a literal with
 `repeats` and a computed element is filled the same way into an unnamed local,
 and its value loaded from there; with only constants it is the constant
 array, each repeated value standing for each element it fills.
+
+**A literal of scalars (`nsizes` above 1) is stored into the array seen as
+one run of them**: `Array[u8, 2, 3, 4]` is filled through `[24 x i8]` at the
+same address, which is the same memory row-major, so every entry form is a run
+as above, and a null fill one `memset` over all of it. A variable always takes
+it in place. As a value elsewhere, all constants build the constant of the
+nested type, rows cut from the scalars in order (`genlArrayConstRows`), every
+one null `zeroinitializer`; otherwise it is filled into an unnamed local and
+loaded (`genlArrayLitScalars`).
+
+**An allocation's contents are filled in the region's memory**
+(`genlallocref`, `FlagAllocFill`; [generation](../phases/generation.md),
+"An allocation runs in one order"), by the same runs, each store taking the
+write barrier in a traced region.
 
 A type literal is the same `insertvalue` chain, with one special case: a
 **nullable-pointer** enum has no struct at all, so the literal is either a null

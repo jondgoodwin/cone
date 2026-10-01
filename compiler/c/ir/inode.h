@@ -301,6 +301,11 @@ enum NodeTags {
 #define FlagSuffix    0x0001        // Borrow: part of a borrow chain
 
 #define FlagQues      0x0001        // Alloc:  Does it return Option[T]?
+// An allocation whose value is an array's contents, 'new Rc[mut, Array[i32, 4]]
+// <- fill 0': the array literal is not made before 'alloc' and stored, but
+// filled in place in the region's memory once it is had (genlallocref). Set by
+// typeLitNewFilled. 0x0002 is free on an allocation: no type flag uses it.
+#define FlagAllocFill 0x0002        // Alloc: its value, an array's contents, is filled in place
 
 #define FlagUnkType   0x0001        // ULit: type is unspecified and may be converted to other number
 // parsePrefix folds a unary minus into an integer literal by negating its value

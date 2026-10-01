@@ -1,0 +1,100 @@
+// A 'Gc' allocation of an array with contents, 'new Gc[mut, Array[Leaf, 40]]
+// <- fill new Leaf(n)', fills the array in place in the new block, an element
+// at a time, and each element's value may allocate again. The order is what
+// keeps that safe, as for a value filled by its init (the 'construct' test):
+// 'alloc' links the block into the heap; before anything else runs, the block
+// is rooted and its array zeroed, so a step reads every element not yet
+// filled as null; then each value is evaluated and stored, and each store
+// takes the write barrier, since a step during the next element's
+// allocation may already have marked the block.
+//
+// The stress mode runs a step at every allocation, so every element is made
+// while a collection is marking or sweeping around the half-filled array. An
+// array the roots missed would be freed while it was filled, and an element
+// the barrier missed freed after it was stored; either reads back wrong here.
+// Both modes are run: incremental, and generational, where the barrier is on
+// between collections too. The arrays: every entry form, an array of 'Gc'
+// references and one of Options of them, and one written with several sizes,
+// filled with its scalars row by row.
+
+mod contents;
+
+import testing use *;
+import collector;
+
+struct LeafValue {
+  pub n i64;
+}
+alias Leaf = Gc[mut, LeafValue];
+
+mut made = 0i64;
+fn leaf() Leaf {
+  made = made + 1;
+  new Leaf(made);
+}
+
+fn some() Option[Leaf] {
+  Some[Leaf][leaf()];
+}
+
+// Each element's number, in order, sums to 1 + 2 + ... + count
+fn build(mode &[]u8) {
+  made = 0;
+  imm leaves = new Gc[mut, Array[Leaf, 40]] <- fill leaf();
+  // Garbage made in between, then the leaves read
+  mut i = 0i64;
+  while i < 200 {
+    imm junk = new Leaf(i);
+    i = i + 1;
+  }
+  mut sum = 0i64;
+  mut k = 0usize;
+  while k < 40usize {
+    sum = sum + leaves[k].n;
+    k += 1usize;
+  }
+  expectInt(sum, 820, mode);
+
+  // Listed values and a count, then the rest, as Options
+  made = 0;
+  imm opts = new Gc[mut, Array[Option[Leaf], 30]] <- some(), 3 of some(), fill some();
+  mut osum = 0i64;
+  k = 0usize;
+  while k < 30usize {
+    match opts[k] {
+      case imm s Some[Leaf] { osum = osum + s.value.n; }
+      else {}
+    }
+    k += 1usize;
+  }
+  expectInt(osum, 465, mode);
+
+  // Several sizes: the scalars, row by row, so [r][c] holds r * 8 + c + 1
+  made = 0;
+  imm grid = new Gc[mut, Array[Leaf, 5, 8]] <- fill leaf();
+  mut right = 0i64;
+  mut r = 0usize;
+  while r < 5usize {
+    mut c = 0usize;
+    while c < 8usize {
+      if grid[r][c].n == i64.from(r) * 8 + i64.from(c) + 1 {
+        right = right + 1;
+      }
+      c += 1usize;
+    }
+    r += 1usize;
+  }
+  expectInt(right, 40, mode);
+}
+
+fn main() i32 {
+  Gc.setStress(true);
+  build("an array filled in place, incremental");
+  Gc.collect();
+  expectUInt(u64.from(Gc.liveObjects()), 0, "every array and leaf freed once build returned");
+  Gc.setGenerational(true);
+  build("an array filled in place, generational");
+  Gc.collect();
+  expectUInt(u64.from(Gc.liveObjects()), 0, "and again, generationally");
+  done();
+}
