@@ -1,0 +1,430 @@
+// The textdiff package: the differences between two texts, line by line, and
+// the unified diff that shows them, as 'diff -u', git and Python's difflib
+// print it.
+//
+//   mod check;
+//   import collections use *;
+//   import textdiff;
+//
+//   fn main() {
+//     imm want = String.from("one\ntwo\nthree\n");
+//     imm got = String.from("one\n2\nthree\n");
+//     imm shown = textdiff.unifiedText(want.view(), got.view(), "want", "got");
+//     // shown is "--- want\n+++ got\n@@ -1,3 +1,3 @@\n one\n-two\n+2\n three\n"
+//   }
+//
+// Three functions, from the edit itself to the text that shows it:
+// - 'spans(a, b)', over two lists of lines, gives the edit as Spans: stretches
+//   of a's lines and b's, each Equal, or a's Deleted, or b's Inserted, or a's
+//   Replaced by b's, in order, covering both lists, Equal alternating with the
+//   others (difflib's opcodes, in its names);
+// - 'unified(a, b, aName, bName, around)', over two lists of lines, gives the
+//   unified diff: '--- aName' and '+++ bName', then a hunk for each run of
+//   changes, headed '@@ -start,count +start,count @@', its lines marked ' ' (in
+//   both), '-' (only in a) and '+' (only in b), with 'around' unchanged lines
+//   around each change, 3 unless another number is given. Two changes with
+//   no more than twice that many unchanged lines between them share a hunk.
+//   Two lists the same give an empty String;
+// - 'unifiedText(a, b, aName, bName, around)' does that for two texts, split
+//   into lines at each '\n'. A last line with no '\n' is a different line from
+//   the same text with one, and is shown followed by the line
+//   '\ No newline at end of file', as 'diff' shows it. A '\r' is part of its
+//   line.
+//
+// The format is difflib.unified_diff's, character for character: the headers
+// (with no dates), the ranges (a count of 1 left out, an empty range starting
+// at the line before it), the unchanged lines around each change, and which
+// changes share a hunk; within a hunk, a run of changes shows every '-' line
+// before its '+' lines. Two texts print as 'diff -u' prints them. Which lines are
+// matched is this package's own: a minimal edit, the fewest lines deleted and
+// inserted (Myers' O(ND) algorithm, in its linear-space form, as 'diff' and
+// git use it, after the lines the two share at their start and end are set
+// aside). difflib matches the longest common run first and then the rest on
+// either side of it, which is not always minimal. So where several edits are
+// equally small, or difflib's is not the smallest, the two can pair lines
+// differently and print different hunks; where the edit is forced, as for
+// one changed, added or removed run of lines found nowhere else in the other
+// text, they print the same.
+//
+// Lines are compared byte for byte. Each distinct line is given a number
+// first, so the algorithm compares numbers; its time is O((n + m) d) for n
+// and m lines and d lines deleted and inserted, and its memory O(n + m).
+
+mod textdiff;
+
+import collections use *;
+
+// What a Span does: keeps lines both have, deletes a's, inserts b's, or
+// replaces a's with b's
+pub enum Kind {
+  Equal, Delete, Insert, Replace;
+}
+
+// One stretch of the edit: a's lines from aStart up to, not including, aEnd,
+// and b's from bStart up to bEnd. An Equal span's two stretches hold the same
+// lines; a Delete's b stretch, and an Insert's a stretch, is empty, at the
+// place the lines left or arrive.
+pub struct Span {
+  pub kind Kind;
+  pub aStart usize;
+  pub aEnd usize;
+  pub bStart usize;
+  pub bEnd usize;
+}
+
+// The edit from a's lines to b's, as Spans in order. Two empty lists give
+// none, and two lists the same one Equal span.
+pub fn spans(a &[]String, b &[]String) List[Span] {
+  mut ids = new Dict[String, u64];
+  imm ia = numbered(a, &mut ids);
+  imm ib = numbered(b, &mut ids);
+  edit(ia.view(), ib.view());
+}
+
+// The unified diff from a's lines to b's, each line of it ending in '\n';
+// empty when they are the same. The lines are shown as they are, each
+// followed by '\n'.
+pub fn unified(a &[]String, b &[]String, aName &[]u8, bName &[]u8, around usize = 3usize) String {
+  imm s = spans(a, b);
+  render(a, b, s.view(), aName, bName, around, false);
+}
+
+// The unified diff from text a to text b, split into lines at each '\n'
+pub fn unifiedText(a &[]u8, b &[]u8, aName &[]u8, bName &[]u8, around usize = 3usize) String {
+  imm la = linesWithEnds(a);
+  imm lb = linesWithEnds(b);
+  imm s = spans(la.view(), lb.view());
+  render(la.view(), lb.view(), s.view(), aName, bName, around, true);
+}
+
+// -------- the edit --------
+
+// Each line's number: the same for the same bytes, in a or b
+fn numbered(lines &[]String, ids &mut Dict[String, u64]) List[u64] {
+  mut out = List[u64].withCapacity(lines.len);
+  mut i = 0usize;
+  while i < lines.len {
+    imm line = lines[i].view();
+    if ids.contains(line) {
+      out.push(*ids[line]);
+    }
+    else {
+      imm id = u64.from(ids.len());
+      ids.insert(String.from(line), id);
+      out.push(id);
+    }
+    i = i + 1usize;
+  }
+  out;
+}
+
+// The Spans of the edit from a to b, from the runs of lines they share
+fn edit(a &[]u64, b &[]u64) List[Span] {
+  mut runs = List[Span].empty();
+  matchRange(a, b, 0usize, a.len, 0usize, b.len, &mut runs);
+  // Between each two runs (and before the first, and after the last), what
+  // is left of a is deleted and what is left of b inserted
+  mut out = List[Span].empty();
+  mut i = 0usize;
+  mut j = 0usize;
+  mut r = 0usize;
+  while r <= runs.len() {
+    mut ai = a.len;
+    mut bj = b.len;
+    mut aEnd = a.len;
+    mut bEnd = b.len;
+    if r < runs.len() {
+      imm run = runs[r];
+      ai = run.aStart;
+      bj = run.bStart;
+      aEnd = run.aEnd;
+      bEnd = run.bEnd;
+    }
+    if i < ai and j < bj { out.push(new Span(Kind.Replace[], i, ai, j, bj)); }
+    elif i < ai { out.push(new Span(Kind.Delete[], i, ai, j, bj)); }
+    elif j < bj { out.push(new Span(Kind.Insert[], i, ai, j, bj)); }
+    if aEnd > ai { out.push(new Span(Kind.Equal[], ai, aEnd, bj, bEnd)); }
+    i = aEnd;
+    j = bEnd;
+    r = r + 1usize;
+  }
+  out;
+}
+
+// Append to 'runs', in order, the runs of lines a minimal edit keeps between
+// a[aLo..aHi] and b[bLo..bHi]
+fn matchRange(a &[]u64, b &[]u64, aLo usize, aHi usize, bLo usize, bHi usize, runs &mut List[Span]) {
+  // The lines they start with in common, and end with, are kept
+  mut lo1 = aLo;
+  mut lo2 = bLo;
+  while lo1 < aHi and lo2 < bHi and a[lo1] == b[lo2] {
+    lo1 = lo1 + 1usize;
+    lo2 = lo2 + 1usize;
+  }
+  if lo1 > aLo { addRun(runs, aLo, lo1, bLo, lo2); }
+  mut hi1 = aHi;
+  mut hi2 = bHi;
+  while hi1 > lo1 and hi2 > lo2 and a[hi1 - 1usize] == b[hi2 - 1usize] {
+    hi1 = hi1 - 1usize;
+    hi2 = hi2 - 1usize;
+  }
+  // Between them, both non-empty, an edit through a point on a minimal path
+  if lo1 < hi1 and lo2 < hi2 {
+    match middle(a, b, lo1, hi1, lo2, hi2) {
+      case imm cut Some {
+        imm at = cut.value;
+        matchRange(a, b, lo1, at.a, lo2, at.b, runs);
+        matchRange(a, b, at.a, hi1, at.b, hi2, runs);
+      }
+      case is None {}
+    }
+  }
+  if hi1 < aHi { addRun(runs, hi1, aHi, hi2, bHi); }
+}
+
+// A run kept, joined to the one before when it carries straight on from it
+fn addRun(runs &mut List[Span], aStart usize, aEnd usize, bStart usize, bEnd usize) {
+  imm n = runs.len();
+  if n > 0usize {
+    imm last = &mut runs[n - 1usize];
+    if last.aEnd == aStart and last.bEnd == bStart {
+      last.aEnd = aEnd;
+      last.bEnd = bEnd;
+      return;
+    }
+  }
+  runs.push(new Span(Kind.Equal[], aStart, aEnd, bStart, bEnd));
+}
+
+// A point in a and b
+struct Cut {
+  pub a usize;
+  pub b usize;
+}
+
+// Myers' middle snake: search for a minimal path from the start of the two
+// ranges and from their end at once, d steps at a time, and where the two
+// first overlap, answer the point the forward search reached. Each half of
+// the edit through it is minimal, so the two halves are done the same way.
+// None when the ranges share no line at all. Both ranges are non-empty and
+// differ in their first lines and in their last.
+//
+// v1[k] is how far along a the furthest forward path on diagonal k (a's
+// position less b's) has reached, and v2[k] the same backward from the end;
+// -1 where none has. The bounds k1start and k1end skip the diagonals already
+// run off the edge of the grid. (After Neil Fraser's diff-match-patch.)
+fn middle(a &[]u64, b &[]u64, aLo usize, aHi usize, bLo usize, bHi usize) Option[Cut] {
+  imm n = i64.from(aHi - aLo);
+  imm m = i64.from(bHi - bLo);
+  imm maxD = (n + m + 1i64) / 2i64;
+  imm off = maxD;
+  imm vlen = 2i64 * maxD + 2i64;
+  mut v1 = new List[i64](usize.from(vlen)) <- fill -1i64;
+  mut v2 = new List[i64](usize.from(vlen)) <- fill -1i64;
+  put(&mut v1, off + 1i64, 0i64);
+  put(&mut v2, off + 1i64, 0i64);
+  imm delta = n - m;
+  // When n - m is odd, the forward search finds the overlap; when even, the
+  // backward one
+  imm front = delta % 2i64 != 0i64;
+  mut k1start = 0i64;
+  mut k1end = 0i64;
+  mut k2start = 0i64;
+  mut k2end = 0i64;
+  mut d = 0i64;
+  while d < maxD {
+    // Forward
+    mut k1 = k1start - d;
+    while k1 <= d - k1end {
+      imm k1off = off + k1;
+      mut x1 = 0i64;
+      if k1 == -d or (k1 != d and at(&v1, k1off - 1i64) < at(&v1, k1off + 1i64)) {
+        x1 = at(&v1, k1off + 1i64);
+      }
+      else {
+        x1 = at(&v1, k1off - 1i64) + 1i64;
+      }
+      mut y1 = x1 - k1;
+      while x1 < n and y1 < m and a[aLo + usize.from(x1)] == b[bLo + usize.from(y1)] {
+        x1 = x1 + 1i64;
+        y1 = y1 + 1i64;
+      }
+      put(&mut v1, k1off, x1);
+      if x1 > n { k1end = k1end + 2i64; }
+      elif y1 > m { k1start = k1start + 2i64; }
+      elif front {
+        imm k2off = off + delta - k1;
+        if k2off >= 0i64 and k2off < vlen and at(&v2, k2off) != -1i64 {
+          // Where the backward path on this diagonal has reached, from the start
+          if x1 >= n - at(&v2, k2off) {
+            return Some[Cut][new Cut(aLo + usize.from(x1), bLo + usize.from(y1))];
+          }
+        }
+      }
+      k1 = k1 + 2i64;
+    }
+    // Backward
+    mut k2 = k2start - d;
+    while k2 <= d - k2end {
+      imm k2off = off + k2;
+      mut x2 = 0i64;
+      if k2 == -d or (k2 != d and at(&v2, k2off - 1i64) < at(&v2, k2off + 1i64)) {
+        x2 = at(&v2, k2off + 1i64);
+      }
+      else {
+        x2 = at(&v2, k2off - 1i64) + 1i64;
+      }
+      mut y2 = x2 - k2;
+      while x2 < n and y2 < m
+          and a[aLo + usize.from(n - x2 - 1i64)] == b[bLo + usize.from(m - y2 - 1i64)] {
+        x2 = x2 + 1i64;
+        y2 = y2 + 1i64;
+      }
+      put(&mut v2, k2off, x2);
+      if x2 > n { k2end = k2end + 2i64; }
+      elif y2 > m { k2start = k2start + 2i64; }
+      elif not front {
+        imm k1off = off + delta - k2;
+        if k1off >= 0i64 and k1off < vlen and at(&v1, k1off) != -1i64 {
+          imm x1 = at(&v1, k1off);
+          imm y1 = off + x1 - k1off;
+          if x1 >= n - x2 {
+            return Some[Cut][new Cut(aLo + usize.from(x1), bLo + usize.from(y1))];
+          }
+        }
+      }
+      k2 = k2 + 2i64;
+    }
+    d = d + 1i64;
+  }
+  None[Cut][];
+}
+
+fn at(v &List[i64], k i64) i64 { *v[usize.from(k)]; }
+
+fn put(v &mut List[i64], k i64, x i64) { v.set(usize.from(k), x); }
+
+// -------- the unified diff --------
+
+// The unified diff of the Spans, difflib's grouping: the Equal spans at the
+// two ends cut to 'around' lines, and an Equal span longer than twice that
+// ending one hunk ('around' lines of it) and starting the next (its last
+// 'around' lines). Where 'ownEnds' is true each line holds its own '\n', but
+// perhaps the last; otherwise none does.
+fn render(a &[]String, b &[]String, spans &[]Span, aName &[]u8, bName &[]u8, around usize, ownEnds Bool) String {
+  mut out = String.empty();
+  if spans.len == 0usize or (spans.len == 1usize and spans[0usize].kind == Kind.Equal[]) {
+    return out;
+  }
+  mut codes = List[Span].withCapacity(spans.len);
+  mut i = 0usize;
+  while i < spans.len { codes.push(spans[i]); i = i + 1usize; }
+  imm first = &mut codes[0usize];
+  if first.kind == Kind.Equal[] {
+    if first.aEnd - first.aStart > around {
+      first.aStart = first.aEnd - around;
+      first.bStart = first.bEnd - around;
+    }
+  }
+  imm last = &mut codes[codes.len() - 1usize];
+  if last.kind == Kind.Equal[] {
+    if last.aEnd - last.aStart > around {
+      last.aEnd = last.aStart + around;
+      last.bEnd = last.bStart + around;
+    }
+  }
+  out.append("--- ");
+  out.append(aName);
+  out.append("\n+++ ");
+  out.append(bName);
+  out.append("\n");
+  mut group = List[Span].empty();
+  i = 0usize;
+  while i < codes.len() {
+    mut c = *codes[i];
+    if c.kind == Kind.Equal[] and c.aEnd - c.aStart > 2usize * around {
+      group.push(new Span(Kind.Equal[], c.aStart, c.aStart + around, c.bStart, c.bStart + around));
+      hunk(&mut out, a, b, group.view(), ownEnds);
+      group.clear();
+      c.aStart = c.aEnd - around;
+      c.bStart = c.bEnd - around;
+    }
+    group.push(c);
+    i = i + 1usize;
+  }
+  if group.len() > 0usize and not (group.len() == 1usize and group[0usize].kind == Kind.Equal[]) {
+    hunk(&mut out, a, b, group.view(), ownEnds);
+  }
+  out;
+}
+
+// One hunk: its header, then its lines
+fn hunk(out &mut String, a &[]String, b &[]String, group &[]Span, ownEnds Bool) {
+  imm first = group[0usize];
+  imm last = group[group.len - 1usize];
+  out.append("@@ -");
+  range(out, first.aStart, last.aEnd);
+  out.append(" +");
+  range(out, first.bStart, last.bEnd);
+  out.append(" @@\n");
+  mut g = 0usize;
+  while g < group.len {
+    imm s = group[g];
+    if s.kind == Kind.Equal[] {
+      showLines(out, ' ', a, s.aStart, s.aEnd, ownEnds);
+    }
+    else {
+      showLines(out, '-', a, s.aStart, s.aEnd, ownEnds);
+      showLines(out, '+', b, s.bStart, s.bEnd, ownEnds);
+    }
+    g = g + 1usize;
+  }
+}
+
+// A hunk's range of lines, counted from 1: 'start,count', or 'start' alone
+// when the count is 1; an empty range names the line before it
+fn range(out &mut String, start usize, stop usize) {
+  imm count = stop - start;
+  if count == 1usize {
+    out.appendUInt(u64.from(start + 1usize));
+  }
+  else {
+    out.appendUInt(u64.from(if count == 0usize {start;} else {start + 1usize;}));
+    out.append(",");
+    out.appendUInt(u64.from(count));
+  }
+}
+
+// The lines from 'start' up to 'stop', each after its mark
+fn showLines(out &mut String, mark u8, lines &[]String, start usize, stop usize, ownEnds Bool) {
+  mut i = start;
+  while i < stop {
+    imm line = lines[i].view();
+    out.appendByte(mark);
+    out.append(line);
+    if not ownEnds {
+      out.append("\n");
+    }
+    elif line.len == 0usize or line[line.len - 1usize] != '\n' {
+      out.append("\n\\ No newline at end of file\n");
+    }
+    i = i + 1usize;
+  }
+}
+
+// The lines of a text, each with its '\n'; the last has none when the text
+// does not end in one. An empty text has no lines.
+fn linesWithEnds(text &[]u8) List[String] {
+  mut out = List[String].empty();
+  mut start = 0usize;
+  mut i = 0usize;
+  while i < text.len {
+    if text[i] == '\n' {
+      out.push(String.from(&text[start..i + 1usize]));
+      start = i + 1usize;
+    }
+    i = i + 1usize;
+  }
+  if start < text.len { out.push(String.from(&text[start..])); }
+  out;
+}

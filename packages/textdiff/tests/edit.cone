@@ -1,0 +1,156 @@
+// textdiff.spans: the edit between two lists of lines. Every expected value
+// is worked out by hand:
+// - an edit whose lines are forced (one place two lists differ, nothing
+//   repeated across it) is written out span by span;
+// - where lines repeat, several minimal edits may exist, so the test checks
+//   what every right answer shares: the spans run on from each other, cover
+//   both lists, alternate Equal with a change, an Equal span's lines are the
+//   same in both, and the lines deleted and inserted number the fewest
+//   possible, which is the two lengths less twice the longest common
+//   subsequence, found on paper for each pair below;
+// - a run both lists start with is kept from the start: five x's against
+//   three keep the first three.
+
+mod edit;
+
+import testing use *;
+import collections use *;
+import textdiff use Span, Kind, spans;
+
+// The lines of a text, split at each '\n'; "" is no lines at all
+fn lines(text &[]u8) List[String] {
+  if text.len == 0usize {
+    List[String].empty();
+  }
+  else {
+    imm whole = String.from(text);
+    whole.split('\n');
+  }
+}
+
+// One Span as 'equal 0-2 0-2': its kind, then a's stretch and b's
+fn showSpan(out &mut String, s Span) {
+  if s.kind == Kind.Equal[] {out.append("equal ");}
+  elif s.kind == Kind.Delete[] {out.append("delete ");}
+  elif s.kind == Kind.Insert[] {out.append("insert ");}
+  else {out.append("replace ");}
+  out.appendUInt(u64.from(s.aStart));
+  out.append("-");
+  out.appendUInt(u64.from(s.aEnd));
+  out.append(" ");
+  out.appendUInt(u64.from(s.bStart));
+  out.append("-");
+  out.appendUInt(u64.from(s.bEnd));
+}
+
+// The edit from text a to text b, its spans shown one after another, is 'want'
+fn expectEdit(a &[]u8, b &[]u8, want &[]u8, label &[]u8) Bool {
+  imm la = lines(a);
+  imm lb = lines(b);
+  imm s = spans(la.view(), lb.view());
+  mut got = String.empty();
+  mut i = 0usize;
+  while i < s.len() {
+    if i > 0usize { got.append("; "); }
+    showSpan(&mut got, *s[i]);
+    i = i + 1usize;
+  }
+  expectStr(got.view(), want, label);
+}
+
+// Check what every right edit from a to b shares, and answer how many lines
+// it deletes and inserts
+fn checked(a &[]u8, b &[]u8, label &[]u8) u64 {
+  imm la = lines(a);
+  imm lb = lines(b);
+  imm s = spans(la.view(), lb.view());
+  mut ai = 0usize;
+  mut bj = 0usize;
+  mut changed = 0u64;
+  mut ok = true;
+  mut lastEqual = false;
+  mut i = 0usize;
+  while i < s.len() {
+    imm sp = *s[i];
+    // Each starts where the one before ended, and no two Equals or two
+    // changes are side by side
+    ok = ok and sp.aStart == ai and sp.bStart == bj and sp.aEnd >= sp.aStart and sp.bEnd >= sp.bStart;
+    imm isEqual = sp.kind == Kind.Equal[];
+    if i > 0usize { ok = ok and isEqual != lastEqual; }
+    lastEqual = isEqual;
+    imm na = sp.aEnd - sp.aStart;
+    imm nb = sp.bEnd - sp.bStart;
+    if isEqual {
+      ok = ok and na == nb and na > 0usize;
+      mut k = 0usize;
+      while k < na {
+        ok = ok and la[sp.aStart + k].equals(lb[sp.bStart + k].view());
+        k = k + 1usize;
+      }
+    }
+    elif sp.kind == Kind.Delete[] { ok = ok and na > 0usize and nb == 0usize; }
+    elif sp.kind == Kind.Insert[] { ok = ok and na == 0usize and nb > 0usize; }
+    else { ok = ok and na > 0usize and nb > 0usize; }
+    if not isEqual { changed = changed + u64.from(na + nb); }
+    ai = sp.aEnd;
+    bj = sp.bEnd;
+    i = i + 1usize;
+  }
+  ok = ok and ai == la.len() and bj == lb.len();
+  expect(ok, label);
+  changed;
+}
+
+fn main() i32 {
+  // Nothing to compare, or nothing different
+  expectEdit("", "", "", "two empty lists: no spans");
+  expectEdit("a\nb\nc", "a\nb\nc", "equal 0-3 0-3", "the same three lines");
+  expectEdit("x", "x", "equal 0-1 0-1", "the same one line");
+
+  // One side empty
+  expectEdit("", "x\ny", "insert 0-0 0-2", "from nothing: all inserted");
+  expectEdit("x\ny", "", "delete 0-2 0-0", "to nothing: all deleted");
+
+  // One change, the edit forced
+  expectEdit("a\nb\nc\nd", "a\nb\nnew\nc\nd",
+            "equal 0-2 0-2; insert 2-2 2-3; equal 2-4 3-5", "a line inserted");
+  expectEdit("a\nb\nc\nd", "a\nc\nd",
+            "equal 0-1 0-1; delete 1-2 1-1; equal 2-4 1-3", "a line deleted");
+  expectEdit("a\nb\nc", "a\nx\nc",
+            "equal 0-1 0-1; replace 1-2 1-2; equal 2-3 2-3", "a line changed in the middle");
+  expectEdit("a\nb\nc\nd", "a\nx\ny\nz\nd",
+            "equal 0-1 0-1; replace 1-3 1-4; equal 3-4 4-5", "two lines replaced by three");
+  expectEdit("first\nm\nlast", "FIRST\nm\nLAST",
+            "replace 0-1 0-1; equal 1-2 1-2; replace 2-3 2-3", "changes at both ends");
+  expectEdit("a\nb", "b", "delete 0-1 0-0; equal 1-2 0-1", "the first line deleted");
+  expectEdit("a", "a\nb", "equal 0-1 0-1; insert 1-1 1-2", "a last line added");
+  expectEdit("p\nq", "r\ns", "replace 0-2 0-2", "nothing in common");
+  expectEdit("a\nb\nc\nd\ne\nf", "a\nX\nc\nd\nY\nf",
+            "equal 0-1 0-1; replace 1-2 1-2; equal 2-4 2-4; replace 4-5 4-5; equal 5-6 5-6",
+            "two changes apart");
+
+  // Repeated lines: a run both start with is kept from the start
+  expectEdit("x\nx\nx\nx\nx", "x\nx\nx", "equal 0-3 0-3; delete 3-5 3-3",
+            "five x's to three");
+  expectEdit("x\nx", "x\nx\nx\nx", "equal 0-2 0-2; insert 2-2 2-4",
+            "two x's to four");
+  expectEdit("a\na\nb", "a\nb\nb", "equal 0-1 0-1; replace 1-2 1-2; equal 2-3 2-3",
+            "a a b to a b b");
+
+  // Repeated lines where more than one minimal edit exists. The longest
+  // common subsequences: of "a b a b" and "b a b a", "a b a" (3), so 4 + 4 -
+  // 6 = 2; of the blank-line texts, five lines (the 6 of a cannot all
+  // appear in b in order, as b has one blank line between 'x' and 'y' and a
+  // has two), so 6 + 7 - 10 = 3; of "a b c a b b a" and "c b a b a c",
+  // "c a b a" or "b a b a" (4, and no 5: checked over a's 7 choose 5
+  // subsequences on paper), so 7 + 6 - 8 = 5
+  expectUInt(checked("a\nb\na\nb", "b\na\nb\na", "a b a b to b a b a is an edit"), 2,
+             "a b a b to b a b a: 2 lines changed");
+  expectUInt(checked("\nx\n\n\ny\n", "\n\nx\n\ny\n\n", "blank lines: an edit"), 3,
+             "blank lines: 3 lines changed");
+  expectUInt(checked("a\nb\nc\na\nb\nb\na", "c\nb\na\nb\na\nc", "Myers' example is an edit"), 5,
+             "Myers' example: 5 lines changed");
+  expectUInt(checked("a\nb", "a\nb", "the same lines are an edit"), 0, "the same lines: none changed");
+  expectUInt(checked("", "q", "from nothing is an edit"), 1, "from nothing: one inserted");
+  done();
+}

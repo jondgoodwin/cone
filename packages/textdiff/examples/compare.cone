@@ -1,0 +1,53 @@
+// What a test runner does with textdiff: compare the output a test printed
+// with the output it was expected to print, and show the difference as a
+// unified diff. Run it with
+//
+//   congo run packages/textdiff/examples/compare.cone
+//
+// and it prints
+//
+//   output differs:
+//   --- tests/greet.out
+//   +++ actual
+//   @@ -1,4 +1,4 @@
+//    hello
+//   -world
+//   +World
+//    from
+//    Cone
+//   1 line changed of 4
+
+mod compare;
+
+import stdio use *;
+import collections use *;
+import textdiff;
+
+fn main() {
+  imm expected = String.from("hello\nworld\nfrom\nCone\n");
+  imm actual = String.from("hello\nWorld\nfrom\nCone\n");
+  imm want = expected.lines();
+  imm got = actual.lines();
+  imm shown = textdiff.unified(want.view(), got.view(), "tests/greet.out", "actual");
+  if shown.isEmpty() {
+    printStr("output matches\n");
+    return;
+  }
+  printStr("output differs:\n");
+  printStr(shown.view());
+  // The spans say what changed: here one Replace of one line
+  imm edit = textdiff.spans(want.view(), got.view());
+  mut changed = 0usize;
+  mut i = 0usize;
+  while i < edit.len() {
+    imm s = edit[i];
+    if s.kind == textdiff.Kind.Replace[] or s.kind == textdiff.Kind.Delete[] {
+      changed = changed + (s.aEnd - s.aStart);
+    }
+    i = i + 1usize;
+  }
+  printUInt(u64.from(changed));
+  printStr(if changed == 1usize {" line changed of ";} else {" lines changed of ";});
+  printUInt(u64.from(want.len()));
+  printStr("\n");
+}
