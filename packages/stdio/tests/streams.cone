@@ -1,0 +1,56 @@
+// The two streams: what is printed to standard output, here, and what to
+// standard error, in streams.err, each value spelled the same way on both;
+// and flushing. The test runs with its output going to a pipe, which the C
+// library buffers, so a child that 'system' starts, writing to the same pipe
+// straight away, would come out before what this printed and did not flush.
+// Flushed first, the order is the order things happened: before, child,
+// after.
+
+mod streams;
+
+import stdio use *;
+import libc;
+
+fn main() i32 {
+  // Each value through the operator and through its function, to each stream
+  imm cs *u8 = &[]"a C string";
+  print <- "out: ", -42i64, " ", 18446744073709551615u64, " ", 1.5, " ", cs, "\n";
+  eprint <- "err: ", -42i64, " ", 18446744073709551615u64, " ", 1.5, " ", cs, "\n";
+  printStr("out:");
+  printChar(32u64);
+  printInt(-9223372036854775807i64 - 1i64);
+  printChar(32u64);
+  printUInt(0u64);
+  printChar(32u64);
+  printFloat(0.25);
+  printChar(32u64);
+  printCStr(cs);
+  printChar(32u64);
+  printChar(0x65E5u64);
+  printChar(10u64);
+  eprintStr("err:");
+  eprintChar(32u64);
+  eprintInt(-9223372036854775807i64 - 1i64);
+  eprintChar(32u64);
+  eprintUInt(0u64);
+  eprintChar(32u64);
+  eprintFloat(0.25);
+  eprintChar(32u64);
+  eprintCStr(cs);
+  eprintChar(32u64);
+  eprintChar(0x65E5u64);
+  eprintChar(10u64);
+
+  // Flushed before the child writes, by the method and by the function
+  print <- "before the first child\n";
+  print.flush();
+  libc.system(&[]"echo first child");
+  print <- "after the first child\n";
+  printFlush();
+  libc.system(&[]"echo second child");
+  print <- "after the second child\n";
+  eprint <- "standard error needs no flush\n";
+  eprint.flush();
+  eprintFlush();
+  0i32;
+}
