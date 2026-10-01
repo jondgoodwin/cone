@@ -1396,8 +1396,10 @@ static char *lexSkipTrivia(char *srcp) {
 // the name the start of a type -- a parameter written as its type alone -- rather
 // than a parameter's own name? It is when what follows could not begin a
 // parameter's type: a '.' (a path to a type, 'geomath.Vec3'), or a '[' opening
-// type arguments ('List[i32]'), told apart from an array type ('xs [4; i32]') by
-// the ';' an array type holds at its own level. Read off the text as
+// type arguments ('List[i32]', 'Array[i32, 4]'), told apart from a parameter
+// named before the fill literal's brackets ('xs [4; i32]', which name
+// resolution refuses as a type) by the ';' those brackets hold at their own
+// level. Read off the text as
 // lexNextIsWord is, so nothing is lexed twice.
 int lexIdentOpensType() {
     char *srcp = lexSkipTrivia(lex->srcp);

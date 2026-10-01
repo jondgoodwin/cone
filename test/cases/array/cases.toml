@@ -1,5 +1,6 @@
-# array - fixed-size arrays: the type '[N; T]', both array literal forms,
-# indexing, element assignment and array copy semantics. Tier 1.
+# array - fixed-size arrays: the type 'Array[T, n]' (several sizes for several
+# dimensions, 'Array[T, n, m]'), both array literal forms, indexing, element
+# assignment and array copy semantics. Tier 1.
 #
 # Key reference: compiler/c/doc/diagnostics/test-suite.md, "cases.toml keys".
 # The group directory supplies the feature tag, so tags carry pipeline phases.
@@ -15,13 +16,15 @@
 # the result of an instruction and the group did not notice until a counted
 # reference had to be filled into one.
 #
-# Both reject scenarios are type-check stage; the array syntax gives the parser
-# nothing of its own to reject, and an array's names resolve like any other
-# type's. They are split by sub-family rather than by stage: array_reject_shape
-# covers bracket forms that never become a well-formed array type or literal,
-# array_reject_use covers an array value that is well formed being initialized,
-# indexed or accessed wrongly. Together they would exceed the three-to-six
-# diagnostics one scenario should carry.
+# The array syntax gives the parser nothing of its own to reject. Name
+# resolution lowers 'Array[T, n]' into the array type and refuses what it
+# cannot lower, and since its diagnostics end the compile, those are in their
+# own scenario, array_nameres_spelling. The rest are type-check stage, split by
+# sub-family: array_typecheck_size covers the array type's sizes and 'Array'
+# alone, array_reject_shape covers bracket forms that never become a
+# well-formed array literal, array_reject_use covers an array value that is
+# well formed being initialized, indexed or accessed wrongly. Together they
+# would exceed the three-to-six diagnostics one scenario should carry.
 #
 # Left uncovered on purpose:
 #
@@ -31,8 +34,10 @@
 # - ErrorBadIndex "Indexing not supported on a value of this type." The array,
 #   array-ref and pointer paths all call the index check only after testing the
 #   same flag it tests, so nothing reaches it.
-# - An index past the end of the array. 'a[7]' on a '[3; i32]' compiles clean
-#   and with no warning, so there is no diagnostic to assert.
+# - An index past the end of the array. 'a[7]' on an 'Array[i32, 3]' compiles
+#   clean and with no warning, so there is no diagnostic to assert.
+# - A zero or negative size. 'Array[i32, 0]' and 'Array[i32, -1]' are both
+#   accepted: a size is any integer literal.
 # - ErrorBadElems belongs to tuples, not arrays: it is raised only for a tuple
 #   whose elements are not all types or all values. An array literal with
 #   inconsistent element types reports ErrorBadArray instead.
@@ -95,8 +100,30 @@ target = "preir"
 contains = ["@gwide = internal constant [2 x i64] [i64 5000000000, i64 -7]",
             "@gfloat = internal constant [2 x double] [double 5.000000e-01, double 1.500000e+00]"]
 
+# The array type in every position a type takes -- a field, a local, a
+# global, a parameter, a return, behind a reference, inside Option and as a
+# generic's argument -- and with several sizes: 'Array[i32, 2, 3]' is laid out
+# row-major, the first size the outermost, exactly as the nested
+# 'Array[Array[i32, 3], 2]', which is the same type. A 'run' because only
+# printing the elements in memory order, and the sizes, shows the layout; the
+# check holds that a struct holding one, handed to C, keeps C's layout.
+[scenario.array_type]
+category = "run"
+description = "Array[T, n] as field, local, global, parameter, return and generic argument; several sizes row-major and the same type as nesting; an array of managed references"
+tags = ["nameres", "typecheck", "genllvm", "runtime"]
+
+[[scenario.array_type.check]]
+name = "struct-holding-an-array-keeps-c-layout"
+target = "preir"
+contains = ["%Rgb = type { [3 x i8], i8 }"]
+
+[[scenario.array_type.check]]
+name = "several-sizes-generate-as-nested-arrays-outermost-first"
+target = "preir"
+contains = ["[2 x [3 x i32]] @grid("]
+
 # The scenario a code generation fix landed with: an array of variants wanted
-# as an array of their enum ('[4; None[W][]]' as a '[4; Option[W]]' field) is
+# as an array of their enum ('[4; None[W][]]' as an 'Array[Option[W], 4]' field) is
 # a reinterpretation of the whole array, which was generated as an LLVM bitcast
 # of an aggregate, and conec crashed with no diagnostic. A 'run' because the
 # elements must still read as the variants they were built as, and a None must
@@ -106,13 +133,27 @@ category = "run"
 description = "An array of an enum's variants coerced to an array of the enum, from a fill literal or a local"
 tags = ["genllvm", "runtime"]
 
+# -------- name resolution stage --------
+
+[scenario.array_nameres_spelling]
+category = "reject"
+description = "The fill literal's spelling of an array type, 'Array' given no size, and a first argument that is not a type"
+tags = ["nameres"]
+diagnostics = 5
+
 # -------- type check stage --------
+
+[scenario.array_typecheck_size]
+category = "reject"
+description = "An array type's size that is not an integer literal, 'Array' alone, and a generic's instance revealing the fill literal's spelling of a type"
+tags = ["typecheck"]
+diagnostics = 6
 
 [scenario.array_reject_shape]
 category = "reject"
-description = "Bracket forms that are neither a valid array type nor a valid array literal"
+description = "Bracket forms that are not a valid array literal"
 tags = ["typecheck"]
-diagnostics = 10
+diagnostics = 8
 
 # Separate from array_reject_use because that file's subject is what an array
 # value will not accept at type check, and this one is a flow diagnostic about

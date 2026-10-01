@@ -978,7 +978,7 @@ LLVMValueRef genlRecast(GenState *gen, INode* exp, INode* to) {
     INode *totype = itypeGetTypeDcl(to);
     LLVMValueRef genexp = genlExpr(gen, exp);
     // An array is an aggregate too: an array of variants wanted as an array of
-    // their enum ('[4; None[T]]' as '[4; Option[T]]') is a subtype reinterpreted
+    // their enum ('Array[None[T], 4]' as 'Array[Option[T], 4]') is a subtype reinterpreted
     // here, and LLVM bitcasts no array. Where the two arrays are one LLVM type
     // the value is already what is wanted.
     if (totype->tag == ArrayTag && LLVMTypeOf(genexp) == genlType(gen, totype))

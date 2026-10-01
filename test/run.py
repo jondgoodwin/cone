@@ -1878,6 +1878,18 @@ class Demangler:
         perm = self.ident()
         return f"{region} {perm} " if region else f"{perm} "
 
+    # An array after its 'A': its element type and its sizes, outermost first,
+    # so a nested array reads as the one type it is, 'Array[i64, 2, 3]'
+    def array_parts(self) -> tuple[str, list[int]]:
+        if self.peek() == "A":
+            self.take()
+            elem, sizes = self.array_parts()
+        else:
+            elem, sizes = self.type(), []
+        size = self.decimal()
+        self.expect("_")
+        return elem, [size] + sizes
+
     def type(self) -> str:
         ch = self.peek()
         if ch in DEMANGLE_BASIC_TYPES:
@@ -1900,10 +1912,8 @@ class Demangler:
             ret = self.type()
             return f"fn({','.join(parms)})" + ("" if ret == "void" else f" {ret}")
         if ch == "A":
-            elem = self.type()
-            size = self.decimal()
-            self.expect("_")
-            return f"[{size}] {elem}"
+            elem, sizes = self.array_parts()
+            return f"Array[{elem}, {', '.join(str(size) for size in sizes)}]"
         if ch == "R":
             return "&" + self.region_perm() + self.type()
         if ch == "S":
@@ -1987,8 +1997,8 @@ DEMANGLE_EXAMPLES = [
     ("_CINv4pickS03mutlE", "pick[&[]mut i32]"),
     ("_CINv4pickV02roNt5MeterE", "pick[&<ro Meter]"),
     ("_CINv11passThroughTxxEE", "passThrough[(i64,i64)]"),
-    ("_CINv11passThroughAx2_E", "passThrough[[2] i64]"),
-    ("_CINv11passThroughAAx3_2_E", "passThrough[[2] [3] i64]"),
+    ("_CINv11passThroughAx2_E", "passThrough[Array[i64, 2]]"),
+    ("_CINv11passThroughAAx3_2_E", "passThrough[Array[i64, 2, 3]]"),
     ("_CINv11passThroughR02roFxExE", "passThrough[&ro fn(i64) i64]"),
     ("_CINv11passThroughFEuE", "passThrough[fn()]"),
     ("_CINv11passThroughuE", "passThrough[void]"),

@@ -17,6 +17,7 @@ INode *errorType;
 INode *elseCond;
 INode *borrowRef;
 INode *neverType;
+StructNode *arrayTypeDcl;
 PermNode *uniPerm;
 PermNode *mutPerm;
 PermNode *immPerm;
@@ -145,6 +146,16 @@ void stdlibInit(int ptrsize) {
     // unless it declares the name itself.
     neverType = (INode*)newVoidNode();
     nametblFind("Never", 5)->node = neverType;
+
+    // 'Array', which names the fixed-size array type: 'Array[f32, 3]', and with
+    // several sizes, row-major, 'Array[f32, 3, 3]'. It looks like a generic
+    // type with number parameters, but is the compiler's: name resolution
+    // lowers a bracketed use into the array type node (arrayTypeLower), and
+    // any other use is refused (nameUseTypeCheckType). A name every module
+    // reaches, as 'Never' is, unless it declares the name.
+    arrayTypeDcl = newStructNode(nametblFind("Array", 5));
+    arrayTypeDcl->flags |= FlagPub | NameResolved | TypeChecked | OpaqueType | DeclaredOpaque;
+    arrayTypeDcl->namesym->node = (INode*)arrayTypeDcl;
 
     // 'RegionRef', the trait a region ref struct declares with 'is' [Jon 25
     // Sep]. Each method a region may declare is optional, with a fixed shape

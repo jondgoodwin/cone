@@ -295,6 +295,11 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
             inodeNameRes(pstate, argsp);
     }
 
+    // 'Array[f32, 3]' is the array type, lowered here rather than at type check
+    // because name resolution's own type-or-value votes ask isTypeNode of it
+    if ((node->flags & FlagIndex) && node->methfld == NULL
+        && isNameUseNode(node->objfn) && nameUseGetDcl((NameUseNode*)node->objfn) == (INode*)arrayTypeDcl)
+        arrayTypeLower(pstate, (INode**)nodep);
 }
 
 // Is an lval operator's receiver already a reference? Then it is passed as it

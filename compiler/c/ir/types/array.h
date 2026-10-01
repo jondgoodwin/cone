@@ -32,8 +32,12 @@ uint64_t arrayDim1(INode *array);
 
 void arrayPrint(ArrayNode *node);
 
-// Name resolution of an array type
+// Name resolution of an array literal, refusing '[n; T]' as a type
 void arrayNameRes(NameResState *pstate, ArrayNode *node);
+
+// Lower the array type 'Array[T, n, ...]', a name-resolved bracketed call on
+// 'Array', into the (nested) array type node it names
+void arrayTypeLower(NameResState *pstate, INode **nodep);
 
 // Type check an array type
 void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *name);

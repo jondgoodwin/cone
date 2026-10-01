@@ -4,8 +4,8 @@ array type**; and the type literal in `typelit.c`, which **shares its node with
 a call**.
 
 **At a glance.** The parser builds them without deciding types. Name resolution
-resolves each literal's type name, and decides whether `[…]` is an array type or
-an array literal. Type check types an integer literal and checks it fits, sizes
+resolves each literal's type name, decides that `[…]` is an array literal, and
+refuses it where it spells an array type. Type check types an integer literal and checks it fits, sizes
 a string, checks array elements against each other, and reorders a type literal's fields. Flow accounts for the values a
 composite literal takes ownership of. Generation emits constants where it can.
 
@@ -31,9 +31,15 @@ concretely, and the lexer refuses a float literal past its type's range
 only by `parsePrefix`'s fold (see Parse), and toggled, so a minus applied twice
 clears it.
 
-**The array node serves both a type and a literal.** `[3; i32]` and `[3; 7]`
-have the identical shape — `dimens` `[3]`, `elems` `[i32]` or `[7]`. The list
-form `[a,b,c]` has empty `dimens`. The parser deliberately does not decide.
+**The array node serves both a type and a literal.** The fill literal `[3; 7]`
+has `dimens` `[3]` and `elems` `[7]`; the list form `[a,b,c]` has empty
+`dimens`. The array type, written `Array[i32, 3]`, is the same node tagged
+`ArrayTag`, `dimens` `[3]` and `elems` `[i32]`: name resolution builds it from
+the bracketed call (`arrayTypeLower`; [Name resolution](../phases/name-resolution.md)).
+Several sizes build nested nodes, each of one size, the first size the
+outermost: `Array[i32, 2, 3]` is the node of `Array[Array[i32, 3], 2]`, so it is
+that type, laid out and indexed (`a[i][j]`) as it is. The parser builds every
+`[…]` as a literal and does not decide.
 
 ## Parse
 
@@ -65,10 +71,13 @@ naming `i32` or `f64` into a resolved one. A string literal's `vtype` is still
 `unknownType`, so this is a no-op for it.
 
 **`arrayNameRes` is the one retag site**: `ArrayTag` becomes `ArrayLitTag` when
-`elems[0]` is **not** a type node. Decided by the first element alone. The one
-exception is a generic's template, where `[2; T]` is a literal until
-`cloneArrayNode` decides again on the substituted element
-([generic](generic.md)).
+`elems[0]` is **not** a type node. Decided by the first element alone. A fill
+form whose element is a type, `[3; i32]`, is the fill literal's spelling of an
+array type, and is refused (`ErrorArrayTypeOld`, naming `Array[T, n]`); it stays
+the `ArrayTag` it spells, so nothing after reports it again. A list of one type,
+`[i32]`, stays an `ArrayTag` with no size, which type check refuses. In a
+generic's template `[2; T]` is a literal until `cloneArrayNode` decides again on
+the substituted element ([generic](generic.md)), and refuses it then the same way.
 
 `namedValNameRes` resolves the *value* only — the name is deliberately not
 bound, because it is matched against a field by symbol later.
@@ -206,7 +215,7 @@ array's size is part of its type, and a count chosen at run time belongs to a
 
 Either form's type is built by `newArrayNodeTyped`, already checked, so it
 never passes through `arrayTypeCheck`. **The constructor gives it the element
-type's move-ness itself**, as `arrayTypeCheck` does for a type written out, so `[Fin[1], Fin[2]]` moves exactly as `[2; Fin]` does. Move-ness
+type's move-ness itself**, as `arrayTypeCheck` does for a type written out, so `[Fin[1], Fin[2]]` moves exactly as `Array[Fin, 2]` does. Move-ness
 is asked of `itypeIsMove`, not read off the element's flags, because a tuple
 element carries no flag and moves when one of its own elements does.
 
@@ -270,7 +279,7 @@ So `&mut [1, 2, 3]` is refused (`ErrorBadPerm`) as `&mut "text"` is, and a
 function may return `&[2, 3, 5]`. An array literal with a computed element is
 still a temporary (`ErrorBadLval`). The literal was typed from its elements
 alone, the borrow expecting nothing of it, so `&[1, 2, 3]` wanted as a `&[]u32`
-would be a `&[3; i32]`: `iexpCoerce`'s `NoMatch` arm hands such a borrow to
+would be an `&Array[i32, 3]`: `iexpCoerce`'s `NoMatch` arm hands such a borrow to
 `borrowConstLitCoerce`, which coerces the elements to the wanted element type by
 `arrayLitCoerce`, rebuilds the borrow's type around the retyped literal, and
 lets the match run again. Only a borrow of a literal written in place is
@@ -281,7 +290,7 @@ its value (refterm, "Named constants"), so `borrowIsConstLit` follows a
 `ConstDclTag` use to the literal it holds: `&K` for `const K = [1, 2, 3]` is
 `&[1, 2, 3]`, `imm`, the program's lifetime, and placed in a constant global
 (`genlAddr` recurses into the value, [vardcl](vardcl.md), "Shape"). Not
-retyped, as a named array is not: `const K [3; u32]` borrows as a `&[3; u32]`.
+retyped, as a named array is not: `const K Array[u32, 3]` borrows as an `&Array[u32, 3]`.
 Any other constant, or a field or element of one (`&K.x`, `&K[1].y`, and a
 method taking a borrowed `self` on one), is the borrow of a temporary, as its
 literal's would be: `borrowRefusesConst` reports it once (`ErrorBadLval`) and the
@@ -341,7 +350,7 @@ pointer or the payload alone, with the tag discarded.
 interning, and constant merging is not in the pass list.
 
 **A string literal's global ends in a NUL its type does not count**, for C
-compatibility: `"hello"` is a `[5; u8]` and its global a `[6 x i8]`. The
+compatibility: `"hello"` is an `Array[u8, 5]` and its global a `[6 x i8]`. The
 `StringLitTag` case of `genlAddr` recasts the global's address to a pointer to
 the literal's own array type, so a load, a copy and a slice's count all see the
 text's bytes only; the terminator is reachable only through a pointer handed to
@@ -350,12 +359,12 @@ code that reads to it.
 **So does a global variable initialized from a string literal.** It is not a
 copy: its storage is the initialized data, so like the literal it gets the
 terminating zero after the text, uncounted — `imm g = "hello"` and
-`mut g [5; u8] = "hello"` are each a `[5; u8]` stored in a `[6 x i8]`, and a
+`mut g Array[u8, 5] = "hello"` are each an `Array[u8, 5]` stored in a `[6 x i8]`, and a
 `static` in a function body the same. `genlGloVarName` creates the longer
 global and keeps in `llvmvar` its address recast to a pointer to the
 variable's type, which is all any use sees; `genlGloVarGlobal` recovers the
 global itself for its initializer, COMDAT, constness and linkage. Every Cone
-store to a `mut` one is a store of the whole `[N; u8]` or an index the bounds
+store to a `mut` one is a store of the whole `Array[u8, n]` or an index the bounds
 check holds below `N`, so the NUL is never overwritten — only a raw pointer,
 which reads or writes past `N` at its own risk, reaches it. A global array
 initialized from anything but a string literal, and a local copy of either,
@@ -379,7 +388,7 @@ is its type exactly and has no terminator.
   value are checked with no type expected, so the literal folds its elements
   among themselves first, and `iexpCoerce`'s `NoMatch` arm (`arrayLitCoerce`)
   coerces them afterward — which cannot rescue a fold that already failed:
-  `f(["a", "bb"])` for a `[2; &[]u8]` parameter is still refused (1046), where
+  `f(["a", "bb"])` for an `Array[&[]u8, 2]` parameter is still refused (1046), where
   `["a", "b"]` is accepted. A literal of another length is never coerced.
 - **`TypeLitTag` has no arm in `inodeTypeCheck`**, so it falls to the default,
   which reports `ErrorUnreachable` and stops. `typeLitNameRes` *is* dispatched,

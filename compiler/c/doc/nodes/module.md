@@ -1257,7 +1257,7 @@ thing printed from the IR: a number type, a struct — an instance of a generic
 one with its arguments, one of the package's own by its path from the module
 declaring the global (bare, `vec.Stack`, a sister's `vec.Stack` or deeper),
 another package's through its module's name, `core`'s bare — or an array,
-`[2; u8]`. A type none of those is refused (`ErrorIncCheck`), asking for the
+`Array[u8, 2]`. A type none of those is refused (`ErrorIncCheck`), asking for the
 type to be written. **So is a type another package holds in a submodule**, even
 where that package's root re-exports it: it is `coll.vec.Stack`, and nobody
 outside `coll` may name `coll.vec`. The generator does not look for the

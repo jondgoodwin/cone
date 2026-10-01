@@ -267,7 +267,7 @@ virtual references and fat pointers are in play.
 `LLVMABISizeOfType` and reports `ErrorRecastSize` — this is the check
 `castTypeCheck` could not do — then goes through a stack slot, since LLVM
 bitcasts no aggregate. An array target reaches it as an array of variants
-wanted as an array of their enum (`[4; None[T]]` as `[4; Option[T]]`); where
+wanted as an array of their enum (`Array[None[T], 4]` as `Array[Option[T], 4]`); where
 the two arrays are one LLVM type the value passes unchanged. Otherwise
 pointer→int is `ptrtoint`, int→pointer is `inttoptr`, everything else is
 `bitcast`.

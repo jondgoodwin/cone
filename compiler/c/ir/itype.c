@@ -283,8 +283,8 @@ int itypeThreadBound(INode *type, int *settled) {
 }
 
 // Append to 'buf' a type as the thread check's message spells it: a reference
-// as it is written ('&mut Point', 'Rc[imm, Point]', '*u64'), its permission
-// always spelled out, anything else by its name
+// or an array as it is written ('&mut Point', 'Rc[imm, Point]', '*u64',
+// 'Array[u8, 4]'), a permission always spelled out, anything else by its name
 void itypeSpellCat(char *buf, size_t size, INode *type, int depth) {
     size_t used = strlen(buf);
     if (!isTypeNode(type)) {
@@ -318,9 +318,18 @@ void itypeSpellCat(char *buf, size_t size, INode *type, int depth) {
         itypeSpellCat(buf, size, ((StarNode *)dcl)->vtexp, depth + 1);
         return;
     }
+    // An array as it is written, 'Array[u8, 4]', a nested one with its sizes
+    // together, outermost first: 'Array[f32, 2, 3]'
     if (depth < 4 && dcl->tag == ArrayTag) {
-        snprintf(buf + used, size - used, "[%llu; ", (unsigned long long)arrayDim1(dcl));
-        itypeSpellCat(buf, size, arrayElemType(dcl), depth + 1);
+        INode *elem = dcl;
+        while (elem->tag == ArrayTag)
+            elem = arrayElemType(elem);
+        snprintf(buf + used, size - used, "Array[");
+        itypeSpellCat(buf, size, elem, depth + 1);
+        for (INode *dim = dcl; dim != elem; dim = arrayElemType(dim)) {
+            used = strlen(buf);
+            snprintf(buf + used, size - used, ", %llu", (unsigned long long)arrayDim1(dim));
+        }
         used = strlen(buf);
         snprintf(buf + used, size - used, "]");
         return;
@@ -1149,9 +1158,8 @@ int itypeIsMove(INode *type) {
 // An instantiation is an unlowered FnCallNode until type check replaces it with
 // the instance it names, and isTypeNode asks this so that the passes running
 // before then -- name resolution's type-versus-value disambiguation, above all
-// -- can tell one from a call. Without it '*Box[i64]' reads as a dereference
-// and '[2; Box[i64]]' as an array literal, so an instantiation is a type
-// everywhere but inside a composite type.
+// -- can tell one from a call. Without it '*Box[i64]' reads as a dereference,
+// so an instantiation is a type everywhere but inside a composite type.
 //
 // What tells a generic from anything else is the GenericInfo its declaration
 // carries: a generic is an ordinary FnDcl or StructNode with a type parameter

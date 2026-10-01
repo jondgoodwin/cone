@@ -62,7 +62,9 @@ Only white space may come between the two words. The other is
 `lexIdentOpensType`, asked of a name in a `&fn` signature's parameter list,
 where a parameter may be written as its type alone: a name followed by `.` or
 by a `[` whose brackets hold no `;` of their own begins a type (`geomath.Vec3`,
-`List[i32]`) rather than naming a parameter (`xs [4; i32]`).
+`List[i32]`, `Array[i32, 4]`) rather than naming a parameter followed by the
+fill literal's brackets (`xs [4; i32]`, which name resolution refuses as a
+type).
 
 **`..` and `...` are the range tokens** (`DotDotToken`, `EllipsisToken`), read
 by a match's range pattern and by an index (`parseIndexArgs`): `x[a..b]` is held

@@ -188,17 +188,27 @@ functions included.
 | --- | --- | --- |
 | `TupleTag` | `TTupleTag` / `VTupleTag`; mixed is `ErrorBadElems` and the tag is left alone; a generic parameter abstains, and all abstaining is `VTupleTag` | `ttupleNameRes` |
 | `StarTag` | `PtrTag` / `DerefTag` | `ptrNameRes` |
-| `ArrayTag` | `ArrayLitTag` when the first element is not a type | `arrayNameRes` |
+| `ArrayTag` | `ArrayLitTag` when the first element is not a type; when it is a type and a size was written, `[3; i32]`, the fill literal's spelling of an array type, `ErrorArrayTypeOld` and the tag is left alone | `arrayNameRes` |
 | `RefTag` | `BorrowTag` / `AllocateTag`, by region | `refNameRes` |
 | `ArrayRefTag` | `ArrayBorrowTag`: every array reference is borrowed | `arrayRefNameRes` |
 | `QuesTag` | `FnCallTag` for `Option[T]`, including a generic parameter's `?T` | `allocateQuesNameRes` |
 | `FnCallTag` that is a namespace hop | the bound name use, or a plain call of it | `fnCallNameResPath` |
+| `FnCallTag` indexing `Array` | the array type, `ArrayTag`, one node per size | `arrayTypeLower` |
 
-The last is the path collapse, and it is a *replacement* rather than a retag:
-a period whose left side names a module or a type is a path, and the hop is
-folded away — [fncall](../nodes/fncall.md), "The path collapse". It is in this
-pass and not in type check because the rows above ask `isTypeNode` of their
-operands, and `&mut mymod.Gadget` has to be a resolved type name by then.
+The last two are *replacements* rather than retags. The path collapse: a
+period whose left side names a module or a type is a path, and the hop is
+folded away — [fncall](../nodes/fncall.md), "The path collapse". The array
+type: `Array[T, n, …]`, its head bound to `arrayTypeDcl` (`Array`, a name every
+module reaches unless it declares the name), is built into the array type node
+once its arguments are resolved, nested for several sizes with the first the
+outermost ([literals](../nodes/literals.md), "Shape"), so nothing later sees
+how it was written. Fewer than two arguments is `ErrorArrayTypeArgs`; a first
+argument that is not a type, nor a generic parameter standing for one,
+`ErrorArrayTypeElem`; the sizes are type check's (`arrayTypeCheck`: an integer
+literal). `Array` alone, with no brackets, is refused at type check
+(`nameUseTypeCheckType`, `ErrorArrayTypeArgs`). Both are in this pass and not
+in type check because the rows above ask `isTypeNode` of their operands, and
+`&mut mymod.Gadget` and `&Array[i32, 3]` have to be a resolved type by then.
 
 Every one of these hinges on `isTypeNode`. For a name use it asks the
 declaration the name was bound to, and an unlowered `FnCallNode` naming a
@@ -206,10 +216,10 @@ generic struct counts as a type (`itypeIsGenericType`), as does one whose head
 is a region and whose arguments are types, the managed reference type
 `Rc[mut, Node]` (`itypeIsManagedRefType`, [references](../nodes/references.md),
 "The managed reference type"). Without them, `*Box[i64]` reads as a
-dereference, `[2; Box[i64]]` as an array literal, and `&Rc[Node]` as a borrow.
-A use of a generic parameter is not a type either, so in a generic's template
-these votes are provisional: the instance's clone takes the tuple, array,
-reference and pointer votes again, and the tuple and `?` votes, whose losing
+dereference and `&Rc[Node]` as a borrow. A use of a generic parameter is not
+a type either, so in a generic's template these votes are provisional: the
+instance's clone takes the tuple, array literal, reference and pointer votes
+again, and the tuple and `?` votes, whose losing
 side is an error, let such an operand abstain (`inodeIsProvisionalType`) —
 [generic](../nodes/generic.md), "phase boundary".
 
@@ -417,6 +427,7 @@ next pass a null to trip over.
 | `ir/types/fnsig.c` | `fnSigNameRes` | forces scope 0 |
 | `ir/itype.c` | `itypeIsGenericType` | makes an unlowered `Box[i64]` count as a type |
 | | `itypeIsManagedRefType`, `itypeManagedRefRegion` | make an unlowered `Rc[mut, Node]` count as a type: a region's head, its `is` list read as written (`regionStructWritesRegionRef`), and type arguments |
+| `ir/types/array.c` | `arrayNameRes`, `arrayTypeLower` | an array literal, refusing the fill literal's spelling of a type; the array type `Array[T, n, …]` built from its bracketed call, which `fnCallNameRes` hands it once the call's head is bound to `arrayTypeDcl` |
 | `ir/exp/allocate.c` | `allocateQuesNameRes` | the one parent-pointer rewrite |
 | `ir/clone.c` | `cloneNode`, `cloneDclFix`, `clonePushState` | how a resolved template survives instantiation |
 
