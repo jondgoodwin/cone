@@ -50,7 +50,7 @@ INode *cloneRefNode(CloneState *cstate, RefNode *node) {
     if (!isTypeNode(node->vtexp) && isTypeNode(newnode->vtexp)) {
         if (newnode->tag == BorrowTag || newnode->tag == AllocateTag)
             newnode->tag = RefTag;
-        else if (newnode->tag == ArrayBorrowTag || newnode->tag == ArrayAllocTag)
+        else if (newnode->tag == ArrayBorrowTag)
             newnode->tag = ArrayRefTag;
     }
     // A clone refers to something the original did not: cloning is how a trait's

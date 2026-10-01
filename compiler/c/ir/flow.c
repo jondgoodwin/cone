@@ -64,7 +64,7 @@ int flowMatchInPlace(VarDclNode *var) {
 // refused too.
 static int flowIsSharedOwner(INode *exp) {
     INode *reftype = iexpGetTypeDcl(exp);
-    return (reftype->tag == RefTag || reftype->tag == ArrayRefTag || reftype->tag == VirtRefTag)
+    return (reftype->tag == RefTag || reftype->tag == VirtRefTag)
         && itypeGetTypeDcl(((RefNode *)reftype)->region) != borrowRef
         && !itypeIsMove(reftype);
 }
@@ -378,7 +378,7 @@ VarDclNode *flowOwningLocal(INode *ref) {
     if (var->tag != VarDclTag || var->scope == 0)
         return NULL;
     RefNode *reftype = (RefNode *)itypeGetTypeDcl(var->vtype);
-    if ((reftype->tag != RefTag && reftype->tag != ArrayRefTag) || !regionIsOwning(reftype->region))
+    if (reftype->tag != RefTag || !regionIsOwning(reftype->region))
         return NULL;
     return var;
 }
@@ -465,8 +465,8 @@ static void flowMoveExit(INode *exp, Nodes **moved, Nodes **common, int *first, 
 //
 // 'top' is the outermost node of the chain of elements, dereferences and
 // recasts being walked -- the expression that names the value moving. A chain
-// that reaches a local owning reference through it (a dereference, or a
-// slice's element) moves the referent, or an element of it, out and leaves the
+// that reaches a local owning reference through it (a dereference, or an
+// element of the array it points at) moves the referent, or an element of it, out and leaves the
 // variable owning the allocation: 'parts' notes the move as hollowing the
 // variable rather than as moving it.
 static void flowMoveSource(INode *node, Nodes **moved, INode *top, MoveParts *parts) {
@@ -703,20 +703,20 @@ void flowResultMove(INode *node) {
 }
 
 // Is this type a counted reference: one into a region whose 'aliasRef' is called
-// for each copy that becomes another owner? An owning slice (ArrayRefTag) is
-// counted exactly as a single reference is, and so is a virtual one ('Rc[Trait]').
+// for each copy that becomes another owner? A virtual one ('Rc[Trait]') is
+// counted exactly as a single reference is.
 int flowIsRcRef(INode *type) {
     RefNode *reftype = (RefNode *)itypeGetTypeDcl(type);
-    return (reftype->tag == RefTag || reftype->tag == ArrayRefTag || reftype->tag == VirtRefTag)
+    return (reftype->tag == RefTag || reftype->tag == VirtRefTag)
         && regionIsCounted(reftype->region);
 }
 
-// Is this type an owning reference into a region, single, slice or virtual, or
-// a tuple carrying one: what a store releases before it overwrites (genlStore)?
+// Is this type an owning reference into a region, single or virtual, or a
+// tuple carrying one: what a store releases before it overwrites (genlStore)?
 // What a scope's end does to a variable is itypeNeedsFinal's wider question.
 int flowIsOwningType(INode *type) {
     INode *typedcl = itypeGetTypeDcl(type);
-    if (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag || typedcl->tag == VirtRefTag) {
+    if (typedcl->tag == RefTag || typedcl->tag == VirtRefTag) {
         RefNode *reftype = (RefNode *)typedcl;
         return regionIsOwning(reftype->region);
     }
@@ -929,7 +929,6 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
     case BorrowTag:
         borrowFlow(fstate, (RefNode **)nodep);
         break;
-    case ArrayAllocTag:
     case AllocateTag:
         allocateFlow(fstate, (RefNode **)nodep);
         break;

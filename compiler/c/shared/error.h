@@ -157,7 +157,7 @@ enum ErrorCode {
     ErrorTracedGlobal = 1172,   // A global or static whose type holds a traced reference, which no collector finds
     ErrorTracedBorrow = 1173,   // A traced region's reference to a value that holds a borrowed reference, which its trace cannot see and no lifetime covers
     ErrorTracedRaw = 1174,      // mem.writeRaw or mem.moveRaw of a type holding a traced reference: placing one in raw memory no collector traces (an arena's, a pool's, a collection's)
-    ErrorTracedRefKind = 1175,  // An owning slice or an owning virtual reference into a traced region, whose trace could not find its length or its header
+    ErrorTracedRefKind = 1175,  // An owning virtual reference into a traced region, whose trace could not find its header
     ErrorTracedPerm = 1176,     // A traced region's reference whose permission takes room, putting the value somewhere other than where the collector finds it
 
     // Intrinsics: '@intrinsic' declarations, checked against the compiler's registry (ir/stmt/intrinsic.c)
@@ -379,6 +379,9 @@ enum ErrorCode {
     ErrorRefTypePerm = 1200,    // A region's reference type whose first of two arguments is not a permission, or whose value type is one
     ErrorPermNotRegion = 1201,  // A permission given as an argument to a type that is not a region: only a managed reference type takes one
     ErrorPlusRefType = 1202,    // A single or virtual managed reference type written '+R-perm T', which is the allocation's spelling, outside a match pattern's root
+
+    // The owning array reference, '+[]R T', which the language does not have (parser/parseexpr.c)
+    ErrorOwnedArrayRef = 1203,  // '+[]', as a type or an allocation: an owned runtime-sized array is a List, shared as 'Rc[List[T]]'; a borrowed slice is '&[]T'
 
     // Warnings
     WarnCode = 3000,

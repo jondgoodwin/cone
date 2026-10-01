@@ -61,13 +61,11 @@
 #   is all of it that can be provoked. A struct permission otherwise has
 #   undefined static meaning, because permGetFlags reads a PermTag node's flag
 #   word out of whatever it is handed.
-# - Array allocation, '+[]', as a value. What a slice is and does belongs to
-#   collection; what is here is the region's part of it. region_flow_fill is
-#   there for the count a fill literal asks for rather than for the array
-#   reference: it is the only syntax that reaches a run-time element count,
-#   because the plain literal form insists its dimension be a constant. The
-#   two region-slice scenarios are there for the release of an owning slice,
-#   which is the same scope-exit release the single-reference scenarios assert.
+# - An owning array reference. There is none: an owned runtime-sized array is
+#   a List, shared as 'Rc[List[T]]', and '+[]' is refused where it is parsed
+#   (region_parse_owned_arrayref). What a borrowed slice is and does belongs to
+#   collection. region_flow_fill is there for the count a fill literal asks
+#   for, which is always known at compile time.
 # - Virtual owning references, '+<'. They belong to trait.
 # - A global holding an owning reference. A global may only be initialized with
 #   a literal, so 'mut g = +Rc-mut 80' is ErrorNotLit -- a fact about global
@@ -127,7 +125,7 @@ support = []
 
 # The whole method set, called for regions the compiler has never heard of:
 # alloc and init at the allocation, aliasRef for each copy that becomes an owner
-# (a variable, a call's argument, an owning slice), dealiasRef for each owner
+# (a variable, a call's argument), dealiasRef for each owner
 # going away and free at the last, and for a region declaring 'Move', the move
 # and the one death. Two regions leave out what 'Rc' has, and the absent
 # operation does not happen: with no 'dealiasRef' a counted value never dies and
@@ -356,15 +354,15 @@ category = "run"
 description = "A value held by a region is finalized once, when it dies: its final, then its finalizing fields, then the owners its fields hold, then its memory"
 tags = ["flow", "genllvm", "runtime"]
 
-# Moving a value out through a sole owner, or an element of an owning slice,
-# leaves the owner hollow: its allocation is freed without finalizing what
+# Moving a value out through a sole owner, or an element of the array it
+# points at, leaves the owner hollow: its allocation is freed without finalizing what
 # moved. The regions print their frees, so the .out file is the whole
 # assertion; the file's header states each rule. An owner hollowed on one path
 # only has a drop flag: on the path that did not move out through it, what
 # stayed is finalized before the memory is freed.
 [scenario.region_hollow]
 category = "run"
-description = "Moving a value out through a sole owning reference, directly or through another it owns, or an element out of an owning slice, frees the allocation without finalizing what moved"
+description = "Moving a value out through a sole owning reference, directly or through another it owns, or an element out of the array it points at, frees the allocation without finalizing what moved"
 tags = ["flow", "genllvm", "runtime"]
 
 # An owning reference whose state at its release differs by path has a drop
@@ -698,36 +696,9 @@ name = "break-releases-the-scopes-between"
 target = "preir"
 contains = ["%6 = sub i64 %5, 1", "%13 = sub i64 %12, 1"]
 
-# An owning slice released at scope exit, in both regions and every spelling a
-# single reference has: held, moved to a variable, into a parameter, returned,
-# copied, reassigned. The run shows the values survive every hand-over; the
-# checks below show the releases are emitted at all, which the run cannot,
-# because a leak prints the same as a free. The register numbers were read out
-# of the pre-optimization dump. The free is soScope's: 'So''s 'free' written out
-# in line, handed as its header the slice's pointer word, %sliceptr5, through
-# 'self' (soMoved's free has the same register, and its own 'self'). The three
-# count adjustments are rcCopied's, 'Rc''s 'aliasRef' and
-# 'dealiasRef' written out in line -- one owner added ('cnt + 1'), then each of its
-# two variables released ('cnt - 1'). Without the fix the module frees nothing
-# and adjusts no count.
-[scenario.region_slice_release]
-category = "run"
-description = "An owning slice is released when its owner's scope ends: freed for 'So', counted down for 'Rc', once per holder"
-tags = ["flow", "genllvm", "runtime"]
-
-[[scenario.region_slice_release.check]]
-name = "so-slice-freed-at-scope-exit"
-target = "preir"
-contains = ["store ptr %sliceptr3, ptr %self, align 8", "%10 = call %void @free(ptr %self4)"]
-
-[[scenario.region_slice_release.check]]
-name = "rc-slice-copy-counts-a-holder-and-releases-each"
-target = "preir"
-contains = ["%7 = add i64 %6, 1", "%20 = sub i64 %19, 1", "%27 = sub i64 %26, 1"]
-
 # Reassigning a variable that holds an 'So' reference frees the value it held,
-# in every spelling the store has: a single reference, a slice, a struct field,
-# and each iteration of a loop. The run shows the new values arrive, and that
+# in every spelling the store has: a single reference, a struct field, and each
+# iteration of a loop. The run shows the new values arrive, and that
 # nothing is freed twice -- a first assignment to a declared-but-empty variable
 # and a reassignment after a move both release nothing first, and on Windows a
 # double free dies of heap corruption. What the run cannot show is that the
@@ -736,9 +707,7 @@ contains = ["%7 = add i64 %6, 1", "%20 = sub i64 %19, 1", "%27 = sub i64 %26, 1"
 # handed that value's header, so the first check names the previous value
 # freed: 'dealiasref' stored as the header 'free' takes as 'self'; the free
 # reassign and fieldReassign each make of it (%4, the same register in both);
-# the loop body's (%5); and for the slice, its old value's pointer word taken
-# from 'dealiasref', and the scope exit's free (%16), whose register moved when the reassignment's free
-# preceded it. The numbers were read out of the pre-optimization dump, and
+# and the loop body's (%5). The numbers were read out of the pre-optimization dump, and
 # before the fix the module holds none of them. The second check is the 'uni'
 # 'Rc' spelling of the moved-out gate: a count is not dropped a second time by
 # the reassignment, which the run cannot see because the decrement lands in
@@ -746,7 +715,7 @@ contains = ["%7 = add i64 %6, 1", "%20 = sub i64 %19, 1", "%27 = sub i64 %26, 1"
 # scope exit's, at the register it has only when no other precedes it.
 [scenario.region_so_reassign]
 category = "run"
-description = "Reassigning an 'So' reference, slice or field frees the value it held; a variable holding nothing -- uninitialized or moved out -- releases nothing first"
+description = "Reassigning an 'So' reference or field frees the value it held; a variable holding nothing -- uninitialized or moved out -- releases nothing first"
 tags = ["flow", "genllvm", "runtime"]
 
 [[scenario.region_so_reassign.check]]
@@ -756,8 +725,6 @@ contains = [
   "store ptr %dealiasref, ptr %self, align 8",
   "%4 = call %void @free(ptr %self9)",
   "%5 = call %void @free(ptr %self12)",
-  "%sliceptr = extractvalue { ptr, i64 } %dealiasref, 0",
-  "%16 = call %void @free(ptr %self21)",
 ]
 
 [[scenario.region_so_reassign.check]]
@@ -765,30 +732,12 @@ name = "moved-out-uni-rc-not-dropped-again-on-reassignment"
 target = "preir"
 contains = ["%10 = sub i64 %9, 1"]
 
-# The other half: a slice moved out is not released by its source. Every
-# allocation in the file is handed on and returned, so the module may hold no
-# release at all -- no free, no count adjustment, and no 'allocref', the load
-# that begins every scope-exit release. As region_tuple_return does, the file
-# is shaped so the exclude can cover the whole module. It moves to an argument
-# as a statement, 'imm r = hold(a); r', rather than returning the call itself:
-# a move made inside a block's final expression is listed for release before
-# it is seen, in either region and for a single reference just the same.
-[scenario.region_slice_move]
-category = "compile"
-description = "A '+[]So' or 'uni' '+[]Rc' slice moved to a variable, a parameter or a caller is not released by the variable it left"
-tags = ["flow", "genllvm"]
-
-[[scenario.region_slice_move.check]]
-name = "moved-slice-not-released-by-its-source"
-target = "preir"
-excludes = ["call %void @free(", "allocref", "add i64"]
-
 # An alias is transparent, so an owning type reached through one is
 # released exactly as the type it names is. Nothing rewrites the alias away: a
 # declaration keeps the name it was written with as its 'vtype', so every site
 # that asks what a variable or field holds must resolve it. The run covers the
 # spellings that already did -- a local, a reassignment and a move-out, in 'So',
-# 'Rc', an owning slice, an alias of an alias, and a struct with a finalizer --
+# 'Rc', an alias of an alias, and a struct with a finalizer --
 # and the check covers the one that did not: the release of a struct's fields
 # read a field's declared type raw, so a struct's owning field spelled through an
 # alias leaked on every release. A leak prints what correct code prints, so the
@@ -797,7 +746,7 @@ excludes = ["call %void @free(", "allocref", "add i64"]
 # neither.
 [scenario.region_alias_release]
 category = "run"
-description = "An owning reference, slice or finalized struct declared through an alias is released as the aliased type is, as a variable and as a struct field"
+description = "An owning reference or finalized struct declared through an alias is released as the aliased type is, as a variable and as a struct field"
 tags = ["flow", "genllvm", "runtime"]
 
 [[scenario.region_alias_release.check]]
@@ -837,13 +786,25 @@ description = "A '+' with no region annotation, and a '-' with no permission aft
 tags = ["parse"]
 diagnostics = 4
 
+# The owning array reference '+[]', which the language does not have, refused
+# once at the token wherever it is written -- an alias, a field, a parameter, a
+# return type, an allocation of a listed or a filled array, a generic's
+# parameter -- and read through, so nothing after it is reported as well. The
+# message names List, the owned runtime-sized array, and '&[]T', the borrowed
+# slice, which stays.
+[scenario.region_parse_owned_arrayref]
+category = "reject"
+description = "'+[]', as a type or an allocation, refused: an owned runtime-sized array is a List, shared as 'Rc[List[T]]'"
+tags = ["parse"]
+diagnostics = 7
+
 # -------- type check stage --------
 
 [scenario.region_typecheck_alloc]
 category = "reject"
 description = "Values that may not be allocated, and names that may not be a region"
 tags = ["typecheck"]
-diagnostics = 9
+diagnostics = 5
 
 [scenario.region_typecheck_region]
 category = "reject"
@@ -867,7 +828,7 @@ diagnostics = 2
 category = "reject"
 description = "A region that does not declare 'is RegionRef', and 'RegionRef' where it may not stand: as a type, or on a trait, an enum or a variant"
 tags = ["typecheck"]
-diagnostics = 8
+diagnostics = 7
 
 [scenario.region_typecheck_traced]
 category = "reject"
@@ -889,9 +850,9 @@ diagnostics = 9
 
 [scenario.region_typecheck_traced_place]
 category = "reject"
-description = "Where a traced reference may not be held: behind an untraced region's owning reference (a field, a struct pointing back at itself, a generic's instance, a parameter, an allocation), in a global, placed raw by mem.writeRaw or mem.moveRaw (directly, and through List, Arena and Pool, reported at the program's instantiation); and what a traced region may not allocate: a value holding a borrow, an owning slice or virtual reference, a permission taking room"
+description = "Where a traced reference may not be held: behind an untraced region's owning reference (a field, a struct pointing back at itself, a generic's instance, a parameter, an allocation), in a global, placed raw by mem.writeRaw or mem.moveRaw (directly, and through List, Arena and Pool, reported at the program's instantiation); and what a traced region may not allocate: a value holding a borrow, a virtual reference, a permission taking room"
 tags = ["typecheck"]
-diagnostics = 16
+diagnostics = 15
 
 [scenario.region_typecheck_coerce]
 category = "reject"
@@ -911,11 +872,11 @@ diagnostics = 8
 category = "reject"
 description = "Owning references that move rather than copy, those into a region neither counted nor Move that copy freely and may not be moved out through, and a permission that forbids the write"
 tags = ["flow"]
-diagnostics = 9
+diagnostics = 8
 
 [scenario.region_flow_shared_move]
 category = "reject"
-description = "Moving a value out through a shared owning reference -- every aliasable 'Rc' permission, a counted field, a slice element, a by-value 'self', a call argument and a return -- is refused"
+description = "Moving a value out through a shared owning reference -- every aliasable 'Rc' permission, a counted field, an array element, a by-value 'self', a call argument and a return -- is refused"
 tags = ["flow"]
 diagnostics = 9
 
@@ -927,9 +888,9 @@ diagnostics = 6
 
 [scenario.region_flow_fill]
 category = "reject"
-description = "The element counts an array fill literal cannot count a reference into: too many, and not known until run time"
+description = "An array fill literal with too many elements to count a reference into"
 tags = ["flow"]
-diagnostics = 2
+diagnostics = 1
 
 # The arena package's Arena, held in a local, is the scratch arena: what its
 # 'alloc' returns is a borrow of the local, and this pins that every route the

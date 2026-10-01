@@ -173,7 +173,6 @@ static void checkNode(INode *node) {
     case BorrowTag:
     case ArrayBorrowTag:
     case AllocateTag:
-    case ArrayAllocTag:
         checkNode(((RefNode*)node)->vtexp); break;
 
     case NotLogicTag:

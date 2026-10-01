@@ -47,20 +47,16 @@ void genlRefTypeSetup(GenState *gen, RefNode *reftype) {
 
 
 // The pointer a release routine works on. A single reference is its pointer;
-// an owning slice is a fat {T*, usize} value whose pointer word is what the
-// allocation header sits before.
+// a virtual reference's is its object pointer, its fat pointer's first word.
 static LLVMValueRef genlRefPtr(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
-    if (refnode->tag == ArrayRefTag)
-        return LLVMBuildExtractValue(gen->builder, ref, 0, "sliceptr");
-    // A virtual reference's object pointer: its fat pointer's first word
     if (refnode->tag == VirtRefTag)
         return LLVMBuildExtractValue(gen->builder, ref, 0, "objptr");
     return ref;
 }
 
-// Is this type an owning reference: single, slice or virtual, into a region?
+// Is this type an owning reference, single or virtual, into a region?
 static int genlIsOwningRef(INode *typedcl) {
-    return (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag || typedcl->tag == VirtRefTag)
+    return (typedcl->tag == RefTag || typedcl->tag == VirtRefTag)
         && regionIsOwning(((RefNode *)typedcl)->region);
 }
 
@@ -80,8 +76,7 @@ static void genlCallDrop(GenState *gen, INode *dropfn, LLVMValueRef valptr) {
 }
 
 // Do 'act' to each of 'count' elements of type 'elemtype', the first at
-// 'firstptr', in element order: a fixed-size array's or an owning slice's. A
-// loop, since the optimizer pipeline runs no loop pass that would undo an
+// 'firstptr', in element order: a fixed-size array's. A loop, since the optimizer pipeline runs no loop pass that would undo an
 // unrolling, and a count of zero does nothing.
 typedef void (*GenlElemAct)(GenState *gen, LLVMValueRef elemptr, INode *elemtype, long long amount);
 static void genlEachElem(GenState *gen, LLVMValueRef firstptr, LLVMValueRef count, INode *elemtype,
@@ -443,7 +438,7 @@ static void genlTraceWalk(GenState *gen, LLVMValueRef valptr, INode *vtype) {
     INode *typedcl = itypeGetTypeDcl(vtype);
     switch (typedcl->tag) {
     case RefTag:
-        // An owning slice or virtual reference into a traced region is refused
+        // A virtual reference into a traced region is refused
         // (ErrorTracedRefKind), so a traced reference is a single one
         if (regionIsTraced(((RefNode *)typedcl)->region))
             genlTraceRef(gen, valptr, (RefNode *)typedcl);
@@ -971,20 +966,17 @@ static void genlHollowDeath(GenState *gen, LLVMValueRef valptr, RefNode *refnode
 // The value an owning reference points at is dead: finalize it in place, as a
 // value on the stack is (genlFinalizeAt: its 'final', its fields that need
 // it, the owners it holds), then give the memory back through the region's
-// 'free', where it has one. An owning slice's elements each die so, in element
-// order, its length read from 'ref'. With 'paths', the value or a part of it
-// was moved out, and it dies hollow (genlHollowDeath) instead.
+// 'free', where it has one. With 'paths', the value or a part of it was moved
+// out, and it dies hollow (genlHollowDeath) instead.
 static void genlRegionDeath(GenState *gen, LLVMValueRef ref, LLVMValueRef valptr, RefNode *refnode, MovedPath *paths, int npaths, int depth) {
     if (paths) {
         genlHollowDeath(gen, valptr, refnode, paths, npaths, depth);
         return;
     }
-    if (refnode->tag == RefTag)
-        genlFinalizeAt(gen, valptr, refnode->vtexp);
-    else if (refnode->tag == VirtRefTag)
+    if (refnode->tag == VirtRefTag)
         genlVirtFinalize(gen, ref, valptr, refnode);
-    else if (itypeNeedsFinal(refnode->vtexp))
-        genlEachElem(gen, valptr, LLVMBuildExtractValue(gen->builder, ref, 1, "slicelen"), refnode->vtexp, genlFinalizeElem, 0);
+    else
+        genlFinalizeAt(gen, valptr, refnode->vtexp);
     FnDclNode *freemeth = regionMethod(refnode->region, freeMethodName);
     if (freemeth)
         genlRegionCall(gen, freemeth, genlOwnerHeader(gen, ref, valptr, refnode));
@@ -1035,7 +1027,7 @@ static void genlReleasePart(GenState *gen, LLVMValueRef ptr, INode *type, MovedP
             return;
     }
     INode *typedcl = itypeGetTypeDcl(type);
-    if (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag) {
+    if (typedcl->tag == RefTag) {
         RefNode *reftype = (RefNode *)typedcl;
         if (!regionIsOwning(reftype->region))
             return;
@@ -1046,8 +1038,7 @@ static void genlReleasePart(GenState *gen, LLVMValueRef ptr, INode *type, MovedP
 // The value an owning reference points at dies with it, or a part of it, moved
 // out: no finalizer runs for it, what is left is released (genlReleasePart),
 // and the memory goes back through the region's 'free'. A path of one step
-// moved the whole value out, leaving only the memory. A slice's elements are
-// not walked: one of them moved, and which is not tracked.
+// moved the whole value out, leaving only the memory.
 static void genlHollowDeath(GenState *gen, LLVMValueRef valptr, RefNode *refnode, MovedPath *paths, int npaths, int depth) {
     if (refnode->tag == RefTag)
         genlReleasePart(gen, valptr, refnode->vtexp, paths, npaths, depth + 1);
@@ -1149,46 +1140,6 @@ void genlRegionAlias(GenState *gen, LLVMValueRef ref, long long amount, RefNode 
     LLVMPositionBuilderAtEnd(gen->builder, doneblk);
 }
 
-// Generate repetitive array fill of a value, each element of LLVM type 'elemtype'
-void genlAllocFillArray(GenState *gen, LLVMValueRef nbrelems, ArrayNode *arraylit, LLVMValueRef valuep, LLVMTypeRef elemtype) {
-    LLVMValueRef ptrphis[2];
-    LLVMValueRef cntphis[2];
-    LLVMBasicBlockRef phiblks[2];
-
-    // Set up blocks for the upcoming loop
-    LLVMBasicBlockRef loopend = genlInsertBlock(gen, "fillloopend");
-    LLVMBasicBlockRef loopbody = genlInsertBlock(gen, "fillloopbody");
-    LLVMBasicBlockRef loopbeg = genlInsertBlock(gen, "fillloopbeg");
-
-    // Finish out current block
-    LLVMValueRef fillval = genlExpr(gen, nodesGet(arraylit->elems, 0));
-    ptrphis[0] = valuep;
-    cntphis[0] = nbrelems;
-    phiblks[0] = LLVMGetInsertBlock(gen->builder);
-    LLVMBuildBr(gen->builder, loopbeg);
-
-    // Code for the beginning of the loop: the exit comparison
-    LLVMPositionBuilderAtEnd(gen->builder, loopbeg);
-    LLVMValueRef loopptrphi = LLVMBuildPhi(gen->builder, LLVMTypeOf(valuep), "ptrphi");
-    LLVMValueRef loopcntphi = LLVMBuildPhi(gen->builder, LLVMTypeOf(nbrelems), "cntphi");
-    LLVMValueRef constzero = LLVMConstInt(LLVMTypeOf(loopcntphi), 0, 1);
-    LLVMValueRef condbool = LLVMBuildICmp(gen->builder, LLVMIntEQ, loopcntphi, constzero, "");
-    LLVMBuildCondBr(gen->builder, condbool, loopend, loopbody);
-
-    // Store value, increment pointer and decrement counter
-    LLVMPositionBuilderAtEnd(gen->builder, loopbody);
-    LLVMBuildStore(gen->builder, fillval, loopptrphi);
-    LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 1);
-    ptrphis[1] = LLVMBuildGEP2(gen->builder, elemtype, loopptrphi, &constone, 1, "");
-    cntphis[1] = LLVMBuildSub(gen->builder, loopcntphi, constone, "");
-    phiblks[1] = loopbody;
-    LLVMBuildBr(gen->builder, loopbeg);
-
-    LLVMAddIncoming(loopptrphi, ptrphis, phiblks, 2);
-    LLVMAddIncoming(loopcntphi, cntphis, phiblks, 2);
-    LLVMPositionBuilderAtEnd(gen->builder, loopend);
-}
-
 // Generate region-based allocation and initialization logc
 // It returns a reference to the allocated/initialized object (or null)
 // This is roughly what it does:
@@ -1205,7 +1156,7 @@ void genlAllocFillArray(GenState *gen, LLVMValueRef nbrelems, ArrayNode *arrayli
 LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     RefNode *reftype = (RefNode*)itypeGetTypeDcl(allocatenode->vtype);
     LLVMTypeRef reftypellvm = genlType(gen, (INode*)reftype);  // Make sure typeinfo is populated
-    if (reftype->tag != RefTag && reftype->tag != ArrayRefTag) {
+    if (reftype->tag != RefTag) {
         // A fallible allocation is typed 'Option[&T]', and what is wanted here is
         // the '&T' that wrapping hid. It is the field of whichever variant carries
         // one: every variant's first field is the discriminant the enum gave it,
@@ -1235,23 +1186,6 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     // Calculate how much memory space we need to allocate
     long long allocsize = LLVMABISizeOfType(gen->datalayout, reftype->typeinfo->structype);
     LLVMValueRef sizeval = LLVMConstInt(genlType(gen, (INode*)usizeType), allocsize, 0);
-    LLVMValueRef nbrelems = NULL;
-    if (reftype->tag == ArrayRefTag) {
-        // For array-refs: sizeval += (nbrelems-1) * elemsz
-        // Only a fill literal's count is known at run time. Any other initial
-        // value -- a listed array literal, a string literal, a variable holding
-        // an array -- is typed a fixed-size array, whose dimension is the count.
-        INode *initvalue = allocatenode->vtexp;
-        if (initvalue->tag == ArrayLitTag && ((ArrayNode*)initvalue)->dimens->used > 0)
-            nbrelems = genlExpr(gen, nodesGet(((ArrayNode*)initvalue)->dimens, 0));
-        else
-            nbrelems = LLVMConstInt(genlType(gen, (INode*)usizeType), arrayDim1(iexpGetTypeDcl(initvalue)), 0);
-        LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 0);
-        LLVMValueRef nbrelemsdec = LLVMBuildSub(gen->builder, nbrelems, constone, "");
-        LLVMValueRef elemsz = LLVMConstInt(genlType(gen, (INode*)usizeType), LLVMABISizeOfType(gen->datalayout, valuetypllvm), 0);
-        LLVMValueRef extra = LLVMBuildMul(gen->builder, nbrelemsdec, elemsz, "");
-        sizeval = LLVMBuildAdd(gen->builder, sizeval, extra, "");
-    }
 
     // A traced region's value is evaluated before its 'alloc' is called: an
     // 'alloc' may collect, and a value that allocates ('+Gc Pair[+Gc Leaf[1],
@@ -1260,13 +1194,13 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     // runs. Every other region keeps the order it always had: 'alloc', then
     // the value, evaluated straight into the new memory.
     LLVMValueRef tracedval = NULL;
-    if (reftype->tag == RefTag && regionIsTraced((INode*)region))
+    if (regionIsTraced((INode*)region))
         tracedval = genlExpr(gen, allocatenode->vtexp);
 
     // Do region allocation (using its alloc method) and then bitcast to multi-layered-struct ptr.
     // An 'alloc' that asks for it is handed the value type's record after the
-    // size: an owning slice's is its element type's. One that does not is
-    // called with the size alone, exactly as before records existed.
+    // size. One that does not is called with the size alone, exactly as
+    // before records existed.
     FnDclNode *allocmeth = (FnDclNode*)iTypeFindFnField(region, allocMethodName);
     LLVMValueRef allocargs[2];
     uint32_t allocargcnt = 1;
@@ -1296,11 +1230,6 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
         genlPanic(gen, (INode*)allocatenode, PanicAlloc, &sizeval);
     else {
         blkvals[0] = LLVMBuildBitCast(gen->builder, ptrstructype, valueptrtyp, "");
-        if (reftype->tag == ArrayRefTag) {
-            LLVMValueRef tuplevalnull = LLVMGetUndef(reftypellvm);
-            tuplevalnull = LLVMBuildInsertValue(gen->builder, tuplevalnull, blkvals[0], 0, "fatptr");
-            blkvals[0] = LLVMBuildInsertValue(gen->builder, tuplevalnull, LLVMConstInt(genlType(gen, (INode*)usizeType), 0, 0), 1, "fatsize");
-        }
         // The phi's predecessor is whatever block the builder ended up in, which is not
         // necessarily the block we positioned it in: generating the value above may have
         // emitted branches of its own, splitting the block it started in.
@@ -1330,27 +1259,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
 
     // Initialize value (via copy or init function) and return pointer to it
     LLVMValueRef valuep = LLVMBuildStructGEP2(gen->builder, reftype->typeinfo->structype, ptrstructype, ValueField, ""); // Point to value
-    if (reftype->tag == RefTag) {
-        LLVMBuildStore(gen->builder, tracedval ? tracedval : genlExpr(gen, allocatenode->vtexp), valuep); // Copy value
-    }
-    else {
-        // Handle array fill via run-time generation
-        if (allocatenode->vtexp->tag == ArrayLitTag && ((ArrayNode*)allocatenode->vtexp)->dimens->used > 0) {
-            genlAllocFillArray(gen, nbrelems, (ArrayNode*)allocatenode->vtexp, valuep, valuetypllvm);
-        }
-        else {
-            // Copy initial value into allocated memory area for value
-            LLVMValueRef initval = genlExpr(gen, allocatenode->vtexp);
-            LLVMTypeRef initvaltype = LLVMPointerType(LLVMTypeOf(initval), 0);
-            LLVMValueRef valuepcast = LLVMBuildBitCast(gen->builder, valuep, initvaltype, "");
-            LLVMBuildStore(gen->builder, initval, valuepcast);
-        }
-
-        // Build fat pointer for returning
-        LLVMValueRef tupleval = LLVMGetUndef(reftypellvm);
-        tupleval = LLVMBuildInsertValue(gen->builder, tupleval, valuep, 0, "fatptr");
-        valuep = LLVMBuildInsertValue(gen->builder, tupleval, nbrelems, 1, "fatsize");
-    }
+    LLVMBuildStore(gen->builder, tracedval ? tracedval : genlExpr(gen, allocatenode->vtexp), valuep); // Copy value
     blkvals[nulls] = valuep;
 
     // Finish up block, start new one, and return allocated. As above, an initial value
@@ -1364,12 +1273,12 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     return phi;
 }
 
-// Release what a variable holds: one owner of an owning reference, single,
-// slice or virtual, goes away. A tuple is one owner of each owning reference it
+// Release what a variable holds: one owner of an owning reference, single or
+// virtual, goes away. A tuple is one owner of each owning reference it
 // carries, so each is released.
 void genlReleaseOwning(GenState *gen, LLVMValueRef val, INode *type) {
     INode *typedcl = itypeGetTypeDcl(type);
-    if (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag || typedcl->tag == VirtRefTag) {
+    if (typedcl->tag == RefTag || typedcl->tag == VirtRefTag) {
         if (genlIsOwningRef(typedcl))
             genlRegionDealias(gen, val, (RefNode *)typedcl);
     }

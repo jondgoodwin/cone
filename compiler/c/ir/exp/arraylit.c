@@ -14,13 +14,14 @@
 
 static void arrayLitSettle(ArrayNode *arrlit);
 
-// Type check an array literal
+// Type check an array literal's dimension and elements, with no type expected
+// of it: arrayLitTypeCheck has already insisted the dimension is a constant.
 //
 // Every early return here follows a diagnostic, so each one marks the literal
 // with errorType before leaving. Without it the literal would carry no type at
 // all into the rest of the pass, which reads a value's type without asking
 // whether there is one.
-void arrayLitTypeCheckDimExp(TypeCheckState *pstate, ArrayNode *arrlit) {
+static void arrayLitTypeCheckElems(TypeCheckState *pstate, ArrayNode *arrlit) {
 
     // Handle array literal "fill" format: [dimen, fill-value]
     if (arrlit->dimens->used > 0) {
@@ -131,17 +132,15 @@ static int arrayLitDimIsConst(INode *dimnode) {
     return dimnode->tag != CastTag;
 }
 
-// The default type check
+// Type check an array literal. Its dimension is part of its type, so it must
+// be a constant unsigned integer: a count chosen at run time belongs to a List.
 void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit, INode *expectType) {
-
-    // In the default scenario (not as part of region allocation),
-    // we must insist that array literal's dimension is a constant unsigned integer
     if (arrlit->dimens->used > 0 && !arrayLitDimIsConst(nodesGet(arrlit->dimens, 0))) {
         errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal dimension value must be a constant: an integer literal, or a named constant holding one");
     }
     if (arrayLitTypeCheckExpected(pstate, arrlit, expectType))
         return;
-    arrayLitTypeCheckDimExp(pstate, arrlit);
+    arrayLitTypeCheckElems(pstate, arrlit);
 }
 
 // Settle a list literal's element type from its elements, already type checked:

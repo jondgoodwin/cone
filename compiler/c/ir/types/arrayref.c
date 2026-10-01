@@ -1,4 +1,4 @@
-/** Handling for array reference (slice) type
+/** Handling for the borrowed array reference (slice) type, '&[]T'
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -30,22 +30,23 @@ void arrayDerefPrint(RefNode *node) {
     inodeFprint(")");
 }
 
-// Name resolution of an array reference node
+// Name resolution of an array reference node. Every one is borrowed ('&[]'):
+// there is no owning array reference, so one whose operand is not a type is
+// a borrow building a slice.
 void arrayRefNameRes(NameResState *pstate, RefNode *node) {
     inodeNameRes(pstate, &node->region);
     inodeNameRes(pstate, (INode**)&node->perm);
     inodeNameRes(pstate, &node->vtexp);
 
-    // If this is not a reference type, turn it into a borrow/allocate constructor
-    if (!isTypeNode(node->vtexp)) {
-        node->tag = node->region == (INode*)borrowRef ? ArrayBorrowTag : ArrayAllocTag;
-    }
+    // If this is not a reference type, turn it into a borrow constructor
+    if (!isTypeNode(node->vtexp))
+        node->tag = ArrayBorrowTag;
 }
 
 // Type check an array reference node
 void arrayRefTypeCheck(TypeCheckState *pstate, RefNode *node) {
     if (node->perm == unknownType)
-        node->perm = newPermUseNode(node->region == borrowRef ? roPerm : uniPerm);
+        node->perm = newPermUseNode(roPerm);
     itypeTypeCheck(pstate, &node->region);
     refRegionCheck(&node->region);
     itypeTypeCheck(pstate, (INode**)&node->perm);
@@ -59,7 +60,7 @@ void arrayRefTypeCheck(TypeCheckState *pstate, RefNode *node) {
     if (node->vtexp) {
         itypeTypeCheck(pstate, &node->vtexp);
         // A slice spelled out in source must acquire the same move semantics as
-        // the identical type allocateTypeCheck builds, which goes through
+        // the identical type a borrow builds, which goes through
         // newRefNodeFull. refAdoptInfections reads vtexp, so it stays guarded.
         refAdoptInfections(node);
         regionTracedRefNote(node);

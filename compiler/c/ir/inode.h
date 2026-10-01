@@ -135,8 +135,7 @@ enum NodeTags {
     CastTag,        // Cast exp to another type
     BorrowTag,      // & (address of) operator
     ArrayBorrowTag, // &[] borrow operator
-    AllocateTag,    // & allocated ref allocation
-    ArrayAllocTag,  // &[] allocate operator
+    AllocateTag,    // + region-managed allocation
     DerefTag,       // * (pointed at) operator
     NotLogicTag,    // ! / not
     OrLogicTag,     // or
@@ -154,7 +153,7 @@ enum NodeTags {
     FnSigTag,       // Also method, closure, behavior, co-routine, thread, ...
     ArrayTag,       // Also dynamic arrays? SOA?
     RefTag,         // Reference (could become borrowtag/alloctag)
-    ArrayRefTag,    // Array reference (slice ref) (could become arrborrow/arralloc tag)
+    ArrayRefTag,    // Borrowed array reference, the slice ref (could become arrborrow tag)
     VirtRefTag,     // Virtual reference
     ArrayDerefTag,  // De-referenced array reference (the slice itself)
     PtrTag,         // Pointer

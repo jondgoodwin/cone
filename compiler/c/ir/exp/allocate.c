@@ -56,26 +56,16 @@ void allocateTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
         node->perm = newPermUseNode(uniPerm);
 
     // Ensure expression is a value usable for initializing allocated memory
-    if (node->tag == ArrayAllocTag && node->vtexp->tag == ArrayLitTag)
-        // Somewhat different Array literal type check that allows expression for array dimension
-        arrayLitTypeCheckDimExp(pstate, (ArrayNode *)node->vtexp);
-    else if (iexpTypeCheckAny(pstate, &node->vtexp) == 0)
+    if (iexpTypeCheckAny(pstate, &node->vtexp) == 0)
         return;
 
     INode *vtype = ((IExpNode*)node->vtexp)->vtype;
     if (!itypeIsConcrete(vtype) || itypeIsZeroSize(vtype)) {
         errorMsgNode(node->vtexp, ErrorInvType, "May not allocate a value of abstract or zero-size type");
     }
-    if (node->tag == ArrayAllocTag) {
-        if (vtype->tag == ArrayTag)
-            vtype = nodesGet(((ArrayNode *)vtype)->elems, 0);
-        else
-            errorMsgNode(node->vtexp, ErrorInvType, "Invalid type for array reference's initial value");
-    }
 
     // Infer reference's value type based on initial value
-    RefNode *reftype = newRefNodeFull(node->tag==ArrayAllocTag? ArrayRefTag : RefTag, 
-        (INode*)node, node->region, node->perm, vtype);
+    RefNode *reftype = newRefNodeFull(RefTag, (INode*)node, node->region, node->perm, vtype);
     if (node->flags & FlagQues) {
         // node->vtype already has an Option node (as FnCall). Fix up its parametric type
         FnCallNode *option = (FnCallNode *)node->vtype;

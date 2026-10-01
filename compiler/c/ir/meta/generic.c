@@ -93,9 +93,8 @@ int genericInferStructParms(TypeCheckState *pstate, Nodes *genparms, StructNode 
 // A managed reference type, 'Rc[mut, T]', is a call until type check lowers
 // it, and matches a reference, its last argument against what the reference
 // points at. In a template a type parameter is not yet
-// a type, so '*T' is held as a dereference, '&T' or '&[]T' as a borrow, and
-// an owning '+[]So T' as an allocate (cloneStarNode,
-// cloneRefNode), and each spelling is accepted here. Region
+// a type, so '*T' is held as a dereference and '&T' or '&[]T' as a borrow
+// (cloneStarNode, cloneRefNode), and each spelling is accepted here. Region
 // and permission take no part, but for a region that is itself a type
 // parameter, 'R[mut, T]', which takes the argument's region: the instance's
 // own check of the call judges them. Any other shape infers nothing, and
@@ -127,8 +126,7 @@ static int genericInferType(FnCallNode *inferredgencall, Nodes *genparms, INode 
         return genericInferType(inferredgencall, genparms,
             ((RefNode *)parmtype)->vtexp, ((RefNode *)argtype)->vtexp);
     case ArrayRefTag:
-    case ArrayBorrowTag:
-    case ArrayAllocTag: {
+    case ArrayBorrowTag: {
         // A fixed-size array, or a reference to one, is converted to the slice
         // a parameter expects, so its element type is what the slice's is
         INode *elemtype;
