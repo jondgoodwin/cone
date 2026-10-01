@@ -33,7 +33,7 @@ short deliberately.** **This forbids** buying performance by out-optimizing LLVM
 rather than by handing it better-shaped IR.
 
 **No construct's cost is invisible at the point you write it.** Every row of the
-cost table below has a mark in the source — the `+Rc`, the `[]`, the `<`, the
+cost table below has a mark in the source — the `Rc[...]`, the `[]`, the `<`, the
 `[T]`. ▸ **This is the principle the others are in service of**, and **it forbids**
 any feature whose expense is inferred rather than written: implicit boxing, a
 hidden copy of a large value, an allocation the source does not name.
@@ -115,9 +115,10 @@ emitted code. A `&T` and a `Rc[T]` are the same machine value; a permission
 lowers to a zero-field struct.
 
 **2. Nothing allocates unless you write an allocation.** There is no garbage
-collector, no hidden boxing, no implicit copy of a large value. A region is
-named at every allocation site — `+Rc`, `+So` — so allocation is a lexical
-event, not an inference.
+collector, no hidden boxing, no implicit copy of a large value. An allocation
+is a `new` whose type is a managed reference type — `new Rc[Node](1)`, or
+`new Node(1)` through an alias that names the region once, where the data's
+architecture is declared — so allocation is a lexical event, not an inference.
 
 **3. Ownership is declared, so release is static.** Because a region and a
 permission say who owns a value, the compiler can decide *at compile time*
@@ -158,8 +159,8 @@ checking if it ever stops being true.
 
 | Construct | Cost | Visible as |
 | --- | --- | --- |
-| **`Rc` reference** | one `usize` in the header; an increment per new holder, a decrement and zero-test per release | the `+Rc` at the allocation |
-| **`So` reference** | no header bytes; a `free` at release | the `+So` |
+| **`Rc` reference** | one `usize` in the header; an increment per new holder, a decrement and zero-test per release | the `Rc[...]` in the type allocated |
+| **`So` reference** | no header bytes; a `free` at release | the `So[...]` |
 | **slice `&[]T`** | two words, passed by value | the `[]` |
 | **virtual reference `&<Trait`** | two words; an indirect call through a loaded slot | the `<` |
 | **array or slice index** | a compare and branch per dimension | the `[i]` |

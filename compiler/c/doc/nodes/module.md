@@ -2547,7 +2547,7 @@ region promises), and calls them at the reference events only it can see
 
 | Method | Called when | If absent |
 |---|---|---|
-| `fn alloc(size usize) *u8`, or `fn alloc(size usize, ty *TypeRecord) *u8`, static | `+R value` allocates; `size` is the whole allocation, header included; `ty`, where it is declared, is the value type's record; null fails | the allocation is refused (`ErrorBadAlloc`) |
+| `fn alloc(size usize) *u8`, or `fn alloc(size usize, ty *TypeRecord) *u8`, static | `new R[perm, T](...)` allocates, before anything else of the allocation's but the init's arguments; `size` is the whole allocation, header included; `ty`, where it is declared, is the value type's record; null fails | the allocation is refused (`ErrorBadAlloc`) |
 | `fn init(self &new)`, an init ([struct](struct.md), "Initializers") | right after `alloc`, on the header, which it fills in place | the header is left as allocated |
 | `fn aliasRef(self &uni R)` | a copy of an owning reference becomes another owner | a copy calls nothing: it is a **move** where the region is `Move`, and free where it is not |
 | `fn dealiasRef(self &uni R) Bool` | an owner goes away; answers whether it was the last | an owner's going asks nothing: where the region is `Move` it is the value's death; where it is not, it does nothing — the value never dies by an owner and the compiler never frees it, left to the region's own loop (a collector's, an arena's) |

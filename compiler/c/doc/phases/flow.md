@@ -250,8 +250,8 @@ does. A type acquires it from `is Move`, a finalizer, a move-typed field or
 array element, a move-typed tuple element, and — for references —
 `refAdoptInfections`: **a reference is a move type when its permission lacks
 `MayAlias` or its region ref is itself a move type**, which a region ref is by
-declaring `is Move`, as `So` does. That sentence is why `+Rc x` moves while
-`+Rc-mut x` copies, on the same region, and why a reference into a region ref
+declaring `is Move`, as `So` does. That sentence is why an `Rc[T]` moves while
+an `Rc[mut, T]` copies, on the same region, and why a reference into a region ref
 declaring neither `Move` nor `aliasRef` copies freely under any aliasable
 permission.
 
@@ -376,8 +376,8 @@ narrowed) deactivates it as before, and no drop flag follows it.
 
 **The count counts holders.** From the ownership work:
 
-- `+Rc[2]` creates the object *and* the first reference. Born at 1.
-- `imm a = +Rc[2]` adds no holder — the temporary hands over the reference it
+- `new Rc[mut, Pt](2)` creates the object *and* the first reference. Born at 1.
+- `imm a = new Rc[mut, Pt](2)` adds no holder — the temporary hands over the reference it
   was born with. Still 1.
 - `imm b = a` adds one — `a` keeps its reference, `b` gets another. Now 2.
 - A tuple is one holder of each counted reference it carries. `imm t = pair()`
@@ -588,7 +588,7 @@ anyway, so freezing it against them would protect nothing. But the part of the
 path *before* the shared reference — the field of a local holding a `Rc[mut, T]`
 owner — is reached as `uni`, and the loan reads it: an access to a place with
 fewer steps than the loan's `sharedlen` meets an alias loan as a shared one, so
-`h.p = +Rc-mut Pt[..]` or `&mut h.p` while `&mut h.p.x` is live is refused,
+`h.p = new Rc[mut, Pt](..)` or `&mut h.p` while `&mut h.p.x` is live is refused,
 since either could release what the borrow points into. A source reached
 through a borrowed reference is never ended by anything done here — reassigning
 `r` leaves `*r` alive — so an alias loan of `*r` conflicts with nothing a

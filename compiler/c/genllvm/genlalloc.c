@@ -1141,19 +1141,28 @@ void genlRegionAlias(GenState *gen, LLVMValueRef ref, long long amount, RefNode 
     LLVMPositionBuilderAtEnd(gen->builder, doneblk);
 }
 
-// Generate region-based allocation and initialization logc
-// It returns a reference to the allocated/initialized object (or null)
-// This is roughly what it does:
+// An allocation, 'new Rc[mut, Node](1)': a reference to the value made in
+// its region's memory, or, for 'trynew', null (None) when that memory could
+// not be had. In order:
 //
-// fn allocate(size usize) +region-uni T
-//   imm ref = region.alloc(T.size) as +region-uni T
-//   if (ref is None)
-//     panic or return None
-//   ref.region.init()
-//   ref.perm.init()
-//   T.init(&mut ref.TValue, initvalue)
-//   &ref.TValue or Some[&ref.TValue]
+//   args = the value init's arguments, evaluated   (or the whole value)
+//   p = R.alloc(size{, record})                    (memory only)
+//   if p is null: panic naming the size, or give None
+//   [traced region: zero the value part if it holds traced references,
+//    and root p, before anything else runs]
+//   p.region.init()                                (fills the header in place)
+//   p.perm.init()                                  (a lock permission's part)
+//   T.init(&new p.value, args)                     (or store the value)
+//   p.value's address, the reference
 //
+// A traced region's 'alloc' may collect, and so may anything after it that
+// allocates: an init's own allocations. The arguments are evaluated before
+// 'alloc', their traced parts births rooted as they are made, so 'alloc'
+// collects with nothing half made. The new block is linked into the
+// collector's heap by 'alloc', so it is rooted at once, its value part null
+// until filled: a step during the inits finds it through its root, reads its
+// fields as null or filled, and a store into it takes the write barrier, as
+// any store through a reference does.
 LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     RefNode *reftype = (RefNode*)itypeGetTypeDcl(allocatenode->vtype);
     LLVMTypeRef reftypellvm = genlType(gen, (INode*)reftype);  // Make sure typeinfo is populated
@@ -1188,15 +1197,17 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     long long allocsize = LLVMABISizeOfType(gen->datalayout, reftype->typeinfo->structype);
     LLVMValueRef sizeval = LLVMConstInt(genlType(gen, (INode*)usizeType), allocsize, 0);
 
-    // A traced region's value is evaluated before its 'alloc' is called: an
-    // 'alloc' may collect, and a value that allocates ('+Gc Pair[+Gc Leaf[1],
-    // ...]') would otherwise run that collection with the new object linked in
-    // and holding garbage. Its traced parts are births, so rooted while 'alloc'
-    // runs. Every other region keeps the order it always had: 'alloc', then
-    // the value, evaluated straight into the new memory.
-    LLVMValueRef tracedval = NULL;
-    if (regionIsTraced((INode*)region))
-        tracedval = genlExpr(gen, allocatenode->vtexp);
+    // The arguments first, in every region: a declared init's (filled in place
+    // below), or the value itself, the implicit init's literal or a value the
+    // '+' spelling allocates, stored below
+    INode *valnode = allocatenode->vtexp;
+    FnCallNode *declinit = valnode->tag == FnCallTag && (valnode->flags & FlagNew) ? (FnCallNode*)valnode : NULL;
+    LLVMValueRef *initargs = NULL;
+    LLVMValueRef value = NULL;
+    if (declinit)
+        initargs = genlNewArgs(gen, declinit);
+    else
+        value = genlExpr(gen, valnode);
 
     // Do region allocation (using its alloc method) and then bitcast to multi-layered-struct ptr.
     // An 'alloc' that asks for it is handed the value type's record after the
@@ -1239,6 +1250,20 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
         nulls = 1;
     }
     LLVMPositionBuilderAtEnd(gen->builder, initblk);
+    LLVMValueRef valuep = LLVMBuildStructGEP2(gen->builder, reftype->typeinfo->structype, ptrstructype, ValueField, ""); // Point to value
+
+    // Before anything else runs: a value holding traced references reads as
+    // null until it is filled, and a traced region's new block is rooted in a
+    // slot of its own while it is filled
+    if (itypeHoldsTraced(reftype->vtexp))
+        LLVMBuildStore(gen->builder, LLVMConstNull(valuetypllvm), valuep);
+    int traced = regionIsTraced(region);
+    LLVMValueRef fillroot = NULL;
+    if (traced && gen->fn) {
+        fillroot = genlAlloca(gen, reftypellvm, "filling");
+        genlRootNote(gen, fillroot, (INode*)reftype);
+        LLVMBuildStore(gen->builder, valuep, fillroot);
+    }
 
     // The region's 'init', if it has one, fills the header in place: its self
     // is the header's address
@@ -1249,22 +1274,33 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     }
 
     // Then a locked permission's 'init', the same way, on its part of the block
+    INode *perminitmeth = NULL;
     if (perm->tag == StructTag) {
-        INode *perminitmeth = iTypeFindFnField(perm, initMethodName);
+        perminitmeth = iTypeFindFnField(perm, initMethodName);
         if (perminitmeth) {
             LLVMValueRef permp = LLVMBuildStructGEP2(gen->builder, reftype->typeinfo->structype, ptrstructype, 1, "perm");
             genlFnCallInternal(gen, SimpleDispatch, (INode*)perminitmeth, 1, &permp, NULL);
         }
     }
 
-    // Then the value: copied in, or, a construction by a declared 'init'
-    // evaluated here, filled in place (genlNewInto). A traced region's value was
-    // evaluated before 'alloc'.
-    LLVMValueRef valuep = LLVMBuildStructGEP2(gen->builder, reftype->typeinfo->structype, ptrstructype, ValueField, ""); // Point to value
-    if (tracedval)
-        LLVMBuildStore(gen->builder, tracedval, valuep);
-    else if (!genlNewInto(gen, allocatenode->vtexp, valuep))
-        LLVMBuildStore(gen->builder, genlExpr(gen, allocatenode->vtexp), valuep); // Copy value
+    // Then the value: a declared init fills it in place, its stores taking the
+    // barrier as any store through a reference does; a value already made is
+    // stored. That store needs the barrier only where an init ran between the
+    // root and it, which could have collected: otherwise nothing can have
+    // finished with the new block yet.
+    if (declinit)
+        genlNewFill(gen, declinit, initargs, valuep);
+    else {
+        LLVMBuildStore(gen->builder, value, valuep);
+        if (traced && (reginitmeth || perminitmeth))
+            genlBarrierAt(gen, valuep, reftype->vtexp);
+    }
+    // Filled, the reference moves to its destination: a local, which roots it,
+    // or a birth's slot (genlExpr), stored before anything else can run. The
+    // slot that held it while it was filled lets it go, so it is not kept
+    // alive past its owners.
+    if (fillroot)
+        LLVMBuildStore(gen->builder, LLVMConstNull(reftypellvm), fillroot);
     blkvals[nulls] = valuep;
 
     // Finish up block, start new one, and return allocated. As above, an initial value

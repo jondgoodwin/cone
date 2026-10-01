@@ -177,6 +177,7 @@ enum TokenTypes {
     InlineToken,   // 'inline'
     WhereToken,    // 'where', which opens a generic's constraints
     NewToken,      // 'new': a construction, 'new Point(1, 2)', and an initializer's permission, '&new'
+    TrynewToken,   // 'trynew': an allocation that may fail, 'trynew Rc[mut, Node](1)', giving an Option
     VoidToken,     // 'void'
     nilToken,      // 'nil'
     trueToken,     // 'true'

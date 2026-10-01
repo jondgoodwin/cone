@@ -72,10 +72,24 @@ Nodes *parseArgs(ParseState *parse);
 // path through namespaces ('geomath.Vec3') and type arguments in brackets
 // ('Pair[i32, f32]'); every '.' and '[' before the parentheses belongs to it,
 // and the suffixes after them apply to the value constructed. Type check
-// selects the 'init' (typeLitNewCheck).
+// selects the 'init' (typeLitNewCheck). A managed reference type,
+// 'new Rc[mut, Node](1)' or an alias of one, allocates in its region, the
+// parentheses carrying the value's 'init' arguments.
+//
+// 'trynew Rc[mut, Node](1)' is an allocation that may fail, giving an Option
+// of the reference. It is parsed as '?' is, an Option around the construction,
+// which name resolution takes apart once 'Option' is bound
+// (allocateQuesNameRes).
 INode *parseNew(ParseState *parse) {
     FnCallNode *ctor = newFnCallNode(NULL, 0);
     ctor->flags |= FlagNew;
+    FnCallNode *opttype = NULL;
+    if (lexIsToken(TrynewToken)) {
+        ctor->flags |= FlagTryNew;
+        opttype = newFnCallNode((INode*)newNameUseNode(optionName), 1);
+        opttype->tag = QuesTag;
+        nodesAdd(&opttype->args, (INode*)ctor);
+    }
     lexNextToken();
     if (!lexIsToken(IdentToken))
         errorMsgLex(ErrorBadTerm, "Expected the type to construct after 'new': 'new Point(1, 2)'");
@@ -102,7 +116,7 @@ INode *parseNew(ParseState *parse) {
     }
     ctor->objfn = type;
     ctor->args = lexIsToken(LParenToken) ? parseArgs(parse) : newNodes(2);
-    return (INode*)ctor;
+    return opttype ? (INode*)opttype : (INode*)ctor;
 }
 
 // Parse a term: literal, identifier, etc.
@@ -163,6 +177,7 @@ INode *parseTerm(ParseState *parse) {
     case LBracketToken:
         return parseArrayLit(parse);
     case NewToken:
+    case TrynewToken:
         return parseNew(parse);
     case IfToken:
         return parseIf(parse);
@@ -430,11 +445,16 @@ INode *parseAmper(ParseState *parse) {
     return (INode *)anode;
 }
 
-// Parse a "plus term", a region-managed allocation ('+Rc-mut Node[1]'):
+// Parse a "plus term", the older spelling of a region-managed allocation,
+// '+Rc-mut 5':
 // - Some reference type ('+' or '+<')
 // - Region and permission annotations
-// A single or virtual reference TYPE is written 'Rc[mut, Node]', and type check
-// refuses this spelling of one outside a match pattern's root (plusSpelled).
+// An allocation is written 'new Rc[mut, Node](1)' (parseNew). This spelling is
+// kept for a value 'new' does not construct (a number, a variant, a value
+// already made); allocating a construction with it is refused at type check
+// (ErrorPlusAlloc), and '+<' at name resolution. A single or virtual reference
+// TYPE is written 'Rc[mut, Node]', and type check refuses this spelling of one
+// outside a match pattern's root (plusSpelled).
 //
 // There is no owning array reference: an owned runtime-sized array is a List,
 // and one shared is 'Rc[List[T]]'. '+[]' stays a token so that it can be

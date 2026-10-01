@@ -261,9 +261,10 @@ enum NodeTags {
 // use them are never read off an expression.
 #define FlagRange     0x0080        // FnCall: index argument is a range
 #define FlagRangeIncl 0x0100        // FnCall: the range's end is included ('...')
-// A struct literal written in brackets that an allocation takes as its value,
-// '+Rc-mut Node[1]', which keeps that spelling until allocations are written
-// with 'new'; every other struct's bracket construction is refused
+// A literal written in brackets that a '+' allocation takes as its value,
+// '+Rc-mut Node[1]'. An enum's variant keeps that spelling; a struct's is
+// refused there by allocateTypeCheck itself (ErrorPlusAlloc, naming 'new
+// Rc[mut, Node](...)'), so not again as any other bracket construction is
 // (ErrorStructBracket). Set by allocateTypeCheck. 0x0200 is a declaration's
 // FlagPub, and a FnCall is no declaration.
 #define FlagAllocValue 0x0200       // FnCall: a struct literal that is an allocation's value
@@ -275,6 +276,13 @@ enum NodeTags {
 // a FnCall's own flags stop below it and the type flags that use it are never
 // read off an expression.
 #define FlagNew       0x0800        // FnCall, TypeLit: a construction, 'new T(...)'
+// An allocation that may fail, 'trynew Rc[mut, Node](1)', set by the parser
+// (parseNew) beside FlagNew. Name resolution hands the construction the
+// resolved 'Option' in its methfld, which a construction has no other use for
+// (allocateQuesNameRes), and type check takes it from there to type the
+// allocation (typeLitNewCheck). 0x0400 is free on a FnCall: FlagPattern is a
+// name use's and FlagStatic a variable's.
+#define FlagTryNew    0x0400        // FnCall: a construction written 'trynew'
 
 #define FlagLoop      0x0001        // Block: is a Loop block
 // 'each' lowers to a 'while' whose body ends with the step that advances the loop

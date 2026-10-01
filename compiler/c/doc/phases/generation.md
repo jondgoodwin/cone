@@ -683,16 +683,26 @@ every other reference and every pointer: the placement rules keep a traced
 reference from hiding behind them. It does not share the finalizer's walk,
 which finalizes an owner's value where the trace must not follow one.
 
-**A traced allocation evaluates its value before it calls `alloc`**
-(`genlallocref`): a traced region's `alloc` may collect, and a value that
-allocates would otherwise be collected around with the new object linked in
-and holding garbage. The value's traced parts are births ("Roots", below), so
-rooted while `alloc` runs. Every other region keeps its order, `alloc` then the
-value. Between them, the region's `init` and then a lock permission's fill
-their parts of the header in place, each called with its part's address as its
-`self`. A value that is a construction by a declared init is filled in place
-too, the value's part handed to the init (`genlNewInto`); a traced region's
-is built in a temporary before `alloc`, as every traced value is.
+**An allocation runs in one order, in every region** (`genlallocref`): the
+value init's arguments are evaluated (`genlNewArgs`; for the implicit init,
+the struct's literal, and for a value the `+` spelling allocates, the value
+itself); then `alloc`, and its null check; then the region's `init` and a lock
+permission's fill their parts of the header in place, each called with its
+part's address as its `self`; then a declared init fills the value's part in
+place (`genlNewFill`), or the value made is stored there; then the reference
+goes to its destination. A traced region's `alloc` may collect, so the
+arguments' traced parts are births ("Roots", below), rooted while it runs.
+And `alloc` links the new block into the collector's heap, where an `init`
+that allocates may run a collection step around it: so before anything else
+runs, the value's part is zeroed when its type holds a traced reference
+(`itypeHoldsTraced`), and the block is rooted in a slot of its own
+(`filling`), which a step finds it through, its fields null or filled. The
+init's stores into it take the write barrier, as any store through a
+reference does. A value made before `alloc` and stored whole takes the
+barrier only where a region's or permission's `init` ran in between, since
+otherwise nothing can have marked the block yet. Once filled, the slot is
+nulled and the reference becomes the allocation's birth, or the local it is
+given to, so the block lives no longer than its owners.
 
 `So` and `Rc` are declared in Cone source in the core package,
 `packages/core/src/core.cone` ([What a region is](../nodes/module.md)). `malloc`
@@ -721,7 +731,7 @@ made (`genlRootNote`, on `gen->roots`):
   outside a local, stored as soon as the value exists (`genlRootBirth`, from
   `genlExpr`, whose switch is `genlTerm`), so that no collection during a later
   call of the same expression finds it only in a register. `genlIsBirth` says
-  which: a `+R` allocation, a call's result, a load through a reference or
+  which: an allocation, a call's result, a load through a reference or
   pointer (a dereference, or a field or element whose address is reached
   through one: `genlAddrThroughRef`), the old value a swap or `<-` hands back,
   and a cast making a traced reference of something holding none. A value about
@@ -781,9 +791,12 @@ into — gets it as surely as one through a `R` reference.
   pointer — a dereference, a field or element of one, a slice's element, a
   virtual reference's field — and the barrier goes only there. A variable, a
   field or element of a local value, and a parameter get none: they are roots,
-  which a collector traces again, uninterrupted, before it ends a mark. A `+R
-  T[...]` allocation's store of its value gets none: a new object cannot have
-  been finished with. `mem.writeRaw` and `mem.moveRaw` get none, since their
+  which a collector traces again, uninterrupted, before it ends a mark. An
+  allocation's store of a value made before its `alloc` gets none unless a
+  region's or permission's `init` ran between them: a new object nothing has
+  run beside cannot have been finished with. A declared init's stores into
+  its `self` are stores through a reference, and get it. `mem.writeRaw` and
+  `mem.moveRaw` get none, since their
   instances at a type holding a traced reference are refused.
 - **What.** `genlBarrierAt` walks the value just stored, at its destination,
   with the trace's walk (`genlTraceWalk`), handing each reference into a
@@ -1068,7 +1081,7 @@ variables.
 | | `genlConvert`, `genlRecast`, `genlIsType` | the three cast forms |
 | | `genlArrayIndex`, `genlBoundsCheck` | multi-dimensional GEP and its checks |
 | | `genlSubslice` | a borrowed range index, `&x[a..b]`: the slice `{&x[a], b - a}` once `a <= b <= count` is checked |
-| `genllvm/genlalloc.c` | `genlRefTypeSetup`, `genlallocref` | the `{region, perm, value}` header and its emission |
+| `genllvm/genlalloc.c` | `genlRefTypeSetup`, `genlallocref` | the `{region, perm, value}` header and an allocation's emission, in its order (section 3) |
 | | `genlRegionHeader`, `genlRegionAlias`, `genlRegionDealias`, `genlRegionDeath` | the header a region method is handed; calling `aliasRef`, `dealiasRef` and `free` at each reference event; a death in place, then `free` |
 | | `genlOwnerHeader`, `genlVirtHeader`, `genlVirtRecord`, `genlVirtFinalize` | an owning virtual reference's header, from its vtable record's alignment; that record; its value's death through the record's `finalize` |
 | | `genlHollowRelease`, `genlRegionDealiasPart`, `genlHollowDeath`, `genlReleasePart` | a hollowed variable's release: the death of a value moved out, or an element of it, finalizing none of it and freeing the memory |

@@ -1,0 +1,28 @@
+// What 'new' and 'trynew' refuse about an allocation. A constructed value is
+// allocated with 'new', its managed reference type and its init's arguments,
+// 'new Rc[mut, Node](1)': the '+' spelling of one, plain or fallible, is
+// refused naming that form. 'trynew' is an allocation that may fail, so it
+// takes a managed reference type and nothing else. 'new' cannot allocate what
+// no region holds: a borrowed reference, made by borrowing; nor a trait,
+// which has no value of its own.
+//
+// region_new holds what is accepted; trait_nameres the retired '+<'.
+
+mod region_typecheck_new;
+
+struct Node { pub v i64; }
+struct Point { pub x i64; pub y i64; }
+alias Lent = &Node;
+
+trait Shape { pub fn area(self &) i64; }
+
+fn f() {
+  imm a = +Rc-mut Node[1];       //~ ErrorPlusAlloc "written 'new Rc[mut, Node](...)'"
+  imm b = +So Node[2];           //~ ErrorPlusAlloc "written 'new So[Node](...)'"
+  imm c = ?+Rc Node[3];          //~ ErrorPlusAlloc:12 "written 'trynew Rc[Node](...)'"
+  imm d = +Rc-mut new Node(4);   //~ ErrorPlusAlloc "written 'new Rc[mut, Node](...)'"
+  imm e = trynew Point(1, 2);    //~ ErrorTryNewValue "Point is not a managed reference type"
+  imm g = trynew i64(5);         //~ ErrorTryNewValue "i64 is not a managed reference type"
+  imm h = new Lent(6);           //~ ErrorNewType "a borrowed reference has none"
+  imm i = new Rc[mut, Shape](7); //~ ErrorNewType "has no value to construct"
+}

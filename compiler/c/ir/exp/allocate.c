@@ -27,7 +27,13 @@ void allocateQuesNameRes(NameResState *pstate, FnCallNode **nodep) {
 
     quesNode->tag = FnCallTag;  // Treat as option type
     INode *argnode = nodesGet(quesNode->args, 0);
-    if (isTypeNode(argnode)) {
+    // 'trynew T(...)': the construction carries the bound 'Option' to type
+    // check, which types the allocation with it (typeLitNewCheck)
+    if (argnode->tag == FnCallTag && (argnode->flags & FlagTryNew)) {
+        ((FnCallNode*)argnode)->methfld = quesNode->objfn;
+        *((INode**)nodep) = argnode;
+    }
+    else if (isTypeNode(argnode)) {
         // When arg is a type, then treat this as Option[T] type
     }
     else if (argnode->tag == AllocateTag) {
@@ -55,8 +61,8 @@ void allocateTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     if (node->perm == unknownType)
         node->perm = newPermUseNode(uniPerm);
 
-    // A struct's value in brackets, '+Rc-mut Node[1]', keeps that spelling here
-    // until allocations are written with 'new'; anywhere else it is refused
+    // A struct's value in brackets, '+Rc-mut Node[1]', is refused below, as a
+    // construction allocated with '+', and not again as a bracket construction
     // (ErrorStructBracket)
     if (node->vtexp->tag == FnCallTag && (node->vtexp->flags & FlagIndex))
         node->vtexp->flags |= FlagAllocValue;
@@ -70,16 +76,24 @@ void allocateTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
         errorMsgNode(node->vtexp, ErrorInvType, "May not allocate a value of abstract or zero-size type");
     }
 
-    // Infer reference's value type based on initial value
-    RefNode *reftype = newRefNodeFull(RefTag, (INode*)node, node->region, node->perm, vtype);
-    if (node->flags & FlagQues) {
-        // node->vtype already has an Option node (as FnCall). Fix up its parametric type
-        FnCallNode *option = (FnCallNode *)node->vtype;
-        INode **parm = &nodesGet(option->args, 0);
-        *parm = (INode*)reftype;
+    // A construction is allocated with 'new' (typeLitNewAllocate). The '+'
+    // spelling stays only for a value 'new' does not construct: a number, an
+    // enum's variant, an array, a tuple, a reference, a value already made.
+    if (node->plusSpelled && typeLitIsConstruction(node->vtexp)) {
+        char *perm = itypeName(node->perm);
+        int uni = itypeGetTypeDcl(node->perm) == (INode*)uniPerm;
+        errorMsgNode((INode*)node, ErrorPlusAlloc,
+            "An allocation of a constructed value is written '%s %s[%s%s%s](...)', the init's arguments in the parentheses.",
+            (node->flags & FlagQues) ? "trynew" : "new", itypeName(node->region),
+            uni ? "" : perm, uni ? "" : ", ", itypeName(vtype));
     }
-    else
-        node->vtype = (INode *)reftype;
+
+    // The reference's type: the one written after 'new', already checked
+    // (typeLitNewAllocate), or, for the '+' spelling, inferred from the value.
+    // A fallible one's is the parameter of the Option node it already has.
+    INode **reftypep = (node->flags & FlagQues) ? &nodesGet(((FnCallNode *)node->vtype)->args, 0) : &node->vtype;
+    if ((*reftypep)->tag != RefTag)
+        *reftypep = (INode*)newRefNodeFull(RefTag, (INode*)node, node->region, node->perm, vtype);
     inodeTypeCheckAny(pstate, &node->vtype);
 
     // The region can allocate (the shapes of its methods are checked at its

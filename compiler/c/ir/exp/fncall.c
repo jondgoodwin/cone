@@ -113,15 +113,16 @@ void fnCallPrint(FnCallNode *node) {
     uint32_t cnt;
     // A construction, 'new Point(1, 2)', names its type until type check
     // lowers it to its declared 'init''s call, whose type it then has
+    // 'trynew' holds the bound 'Option' in its methfld until type check
     if (node->flags & FlagNew) {
-        inodeFprint("new ");
+        inodeFprint((node->flags & FlagTryNew) ? "trynew " : "new ");
         inodePrintNode(nameUseNames(node->objfn, FnDclTag) ? node->vtype : node->objfn);
         if (node->args == NULL)
             inodeFprint("()");
     }
     else
         inodePrintNode(node->objfn);
-    if (node->methfld) {
+    if (node->methfld && !(node->flags & FlagTryNew)) {
         inodeFprint(".");
         inodePrintNode((INode*)node->methfld);
     }

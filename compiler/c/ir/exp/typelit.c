@@ -28,6 +28,17 @@ static int typeLitIsVariant(StructNode *strnode) {
     return 0;
 }
 
+// Is this type-checked value one 'new' constructs: a construction, or a struct
+// that is not a variant written in brackets?
+int typeLitIsConstruction(INode *node) {
+    if (node->flags & FlagNew)
+        return 1;
+    if (node->tag != TypeLitTag)
+        return 0;
+    INode *littype = itypeGetTypeDcl(((FnCallNode*)node)->vtype);
+    return littype->tag == StructTag && !typeLitIsVariant((StructNode*)littype);
+}
+
 // Serialize a type literal: a construction, a variant's or an allocation's
 // value, and a number's conversion, each as it was written
 void typeLitPrint(FnCallNode *node) {
@@ -239,8 +250,8 @@ void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
         errorMsgNode((INode*)arrlit, ErrorInvType, "Type must be concrete and instantiable.");
     else if (littype->tag == StructTag) {
         // A struct's value is constructed with 'new'. An enum's variant keeps
-        // its brackets, 'Some[x]', and so does an allocation's value,
-        // '+Rc-mut Node[1]', until allocations are written with 'new'. Refused
+        // its brackets, 'Some[x]'; a '+' allocation's value, '+Rc-mut Node[1]',
+        // is refused by allocateTypeCheck instead (ErrorPlusAlloc). Refused
         // here, at type check, so that a struct reached through an alias or a
         // type parameter is refused as one named directly. The literal is
         // still built, so nothing after it reports again.
@@ -327,6 +338,50 @@ static void typeLitInitArgs(FnCallNode *node, FnSigNode *sig) {
     }
 }
 
+// 'new Rc[mut, Node](1)': an allocation in the region a managed reference type
+// names, written out or through an alias of it ('new Node(1)' for 'alias Node
+// = Gc[mut, NodeValue]'). The parentheses are the value's: they become the
+// construction 'new NodeValue(1)', its init chosen as any value's is, which the
+// allocation node holds as its value, so that generation runs an allocation's
+// order: the init's arguments, 'alloc', the region's init, the permission's,
+// the value's init in place, the destination (genlallocref). 'trynew' types
+// the allocation as an Option of the reference, None when memory runs out.
+static void typeLitNewAllocate(TypeCheckState *pstate, FnCallNode **nodep, RefNode *reftype, INode *option) {
+    FnCallNode *node = *nodep;
+    if (reftype->region == borrowRef) {
+        errorMsgNode((INode*)node, ErrorNewType,
+            "'new' allocates in a region, and a borrowed reference has none: it is made by borrowing a value, '&x'.");
+        return;
+    }
+    if (reftype->tag == VirtRefTag) {
+        errorMsgNode((INode*)node, ErrorNewType,
+            "A virtual reference refers to a trait, which has no value to construct: allocate a type implementing it, as 'new Rc[mut, Rect](...)', and the reference coerces where the virtual one is wanted.");
+        return;
+    }
+
+    FnCallNode *value = newFnCallNode(reftype->vtexp, 0);
+    inodeLexCopy((INode*)value, (INode*)node);
+    value->flags |= FlagNew;
+    value->args = node->args;
+
+    RefNode *alloc = newRefNode(AllocateTag);
+    inodeLexCopy((INode*)alloc, (INode*)node);
+    alloc->region = reftype->region;
+    alloc->perm = reftype->perm;
+    alloc->vtexp = (INode*)value;
+    // Typed as written, so a rule about the reference type is judged once
+    alloc->vtype = (INode*)reftype;
+    if (option) {
+        FnCallNode *opttype = newFnCallNode(option, 1);
+        inodeLexCopy((INode*)opttype, (INode*)node);
+        nodesAdd(&opttype->args, (INode*)reftype);
+        alloc->flags |= FlagQues;
+        alloc->vtype = (INode*)opttype;
+    }
+    *((INode**)nodep) = (INode*)alloc;
+    allocateTypeCheck(pstate, (RefNode**)nodep);
+}
+
 // 'new Point(1, 2)': construct a struct's value by one of its inits, which the
 // arguments select. Every struct has an implicit init taking its fields in
 // declaration order (by name too, 'new Point(y: 2, x: 1)', and a field left out
@@ -342,6 +397,12 @@ void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     if (nameUseNames(node->objfn, FnDclTag))
         return;
     node->vtype = errorType;    // until a value is known to come of it
+    // 'trynew': the bound 'Option' name resolution left in methfld
+    INode *option = NULL;
+    if (node->flags & FlagTryNew) {
+        option = node->methfld;
+        node->methfld = NULL;
+    }
 
     if (!isTypeNode(node->objfn)) {
         Name *written = isNameUseNode(node->objfn) ? ((NameUseNode*)node->objfn)->namesym : NULL;
@@ -371,15 +432,20 @@ void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
     INode *typedcl = itypeGetTypeDcl(node->objfn);
     Name *written = isNameUseNode(node->objfn) ? ((NameUseNode*)node->objfn)->namesym : NULL;
+    if (typedcl->tag == RefTag || typedcl->tag == VirtRefTag) {
+        typeLitNewAllocate(pstate, nodep, (RefNode*)typedcl, option);
+        return;
+    }
+    if (option) {
+        errorMsgNode((INode*)node, ErrorTryNewValue,
+            "'trynew' is an allocation in a region, which may run out of memory, and %s is not a managed reference type: a value is constructed with 'new'.",
+            written ? &written->namestr : "this type");
+        return;
+    }
     if (typeLitIsNbrType(typedcl)) {
         errorMsgNode((INode*)node, ErrorNewType,
             "A number is not constructed: it is written as a literal, or converted with its method, %s.from(value).",
             written ? &written->namestr : &((NbrNode*)typedcl)->namesym->namestr);
-        return;
-    }
-    if (typedcl->tag == RefTag || typedcl->tag == VirtRefTag) {
-        errorMsgNode((INode*)node, ErrorNewType,
-            "'new' constructs a struct's value. An allocation is written '+Rc-mut Node[...]' for now.");
         return;
     }
     if (typedcl->tag != StructTag || (typedcl->flags & TraitType)) {

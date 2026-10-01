@@ -43,11 +43,12 @@ struct BoxValue { pub fin Option[Fin]; }
 alias Box = Gc[mut, BoxValue];
 struct PodValue { pub box Option[Box]; }
 alias Pod = Gc[mut, PodValue];
-struct Holder {
+struct HolderValue {
   pub n i64;
   pub leaf Leaf;
   fn final(self &uni) { note(n); }
 }
+alias Holder = Gc[mut, HolderValue];
 
 fn settle() {
   Gc.collect();
@@ -69,7 +70,7 @@ fn isOld(p *u8) Bool {
 fn dropLeaves(k i64) {
   mut i = 0i64;
   while i < k {
-    imm l = +Gc-mut LeafValue[i];
+    imm l = new Leaf(i);
     i = i + 1;
   }
 }
@@ -88,7 +89,7 @@ fn extend(l Option[Link], k i64) Option[Link] {
   mut head = l;
   mut i = 0i64;
   while i < k {
-    head = Some[Link][+Gc-mut LinkValue[i, head]];
+    head = Some[Link][new Link(i, head)];
     i = i + 1;
   }
   head;
@@ -167,7 +168,7 @@ fn youngGarbage() {
 // keep it. Each case stores a new Fin into o, old, in a function that
 // returns, so no stack slot holds the child, and each checks o is old first.
 fn emptyBox() Box {
-  +Gc-mut BoxValue[None[Fin][]];
+  new Box(None[Fin][]);
 }
 fn finOf(o Option[Fin]) i64 {
   match o {
@@ -182,10 +183,10 @@ fn boxOf(o Option[Box]) i64 {
   }
 }
 fn putNew(o Box, n i64) {
-  o.fin = Some[Fin][+Gc-mut FinValue[n]];
+  o.fin = Some[Fin][new Fin(n)];
 }
 fn dropFin(n i64) {
-  imm f = +Gc-mut FinValue[n];
+  imm f = new Fin(n);
 }
 
 // A lost child is finalized by the first minor collection that does not
@@ -248,10 +249,10 @@ fn caseFinalize() {
 // A young Box, born holding a young Fin (neither stored by a barrier), stored
 // into old p: the barrier shades the Box, and tracing it finds the Fin
 fn putSubtree(p Pod) {
-  p.box = Some[Box][+Gc-mut BoxValue[Some[Fin][+Gc-mut FinValue[5]]]];
+  p.box = Some[Box][new Box(Some[Fin][new Fin(5)])];
 }
 fn caseSubtree() {
-  imm p = +Gc-mut PodValue[None[Box][]];
+  imm p = new Pod(None[Box][]);
   Gc.collect();
   expect(isOld(&*p as *u8), "between collections: p is old");
   putSubtree(p);
@@ -365,9 +366,9 @@ fn unproductive() {
 
 // -- Finalizers: once, newest first, and never promoted
 fn dropThree() {
-  imm a = +Gc-mut FinValue[1];
-  imm b = +Gc-mut FinValue[2];
-  imm c = +Gc-mut FinValue[3];
+  imm a = new Fin(1);
+  imm b = new Fin(2);
+  imm c = new Fin(3);
 }
 fn youngFinalized() {
   dropThree();
@@ -379,7 +380,7 @@ fn youngFinalized() {
   expectUInt(live(), 0, "and freed by the next minor collection: a finalized object is not promoted");
 }
 fn dropHolder() {
-  imm h = +Gc-mut Holder[4, +Gc-mut LeafValue[5]];
+  imm h = new Holder(4, new Leaf(5));
 }
 fn keptChild() {
   dropHolder();
@@ -390,7 +391,7 @@ fn keptChild() {
   expectUInt(live(), 0, "both freed by the next minor collection: what a finalizer kept is not promoted either");
 }
 fn makeOldFin() {
-  imm f = +Gc-mut FinValue[7];
+  imm f = new Fin(7);
   Gc.collect();
   expect(isOld(&*f as *u8), "a fin kept through a collection is old");
 }

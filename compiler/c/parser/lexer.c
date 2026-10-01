@@ -152,6 +152,9 @@ void keywordInit() {
     // A construction, 'new Point(1, 2)', and the permission of an
     // initializer's 'self', '&new'
     keyAdd("new", NewToken);
+    // An allocation that may fail, 'trynew Rc[mut, Node](1)': an Option of the
+    // reference, None when memory runs out
+    keyAdd("trynew", TrynewToken);
 
     keyAdd("void", VoidToken);
     keyAdd("nil", nilToken);

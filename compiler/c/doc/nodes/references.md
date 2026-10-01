@@ -8,7 +8,9 @@ and `+`, `+<` without knowing whether it is a type or a constructor.
 Name resolution decides by asking whether the operand is a type. A managed
 reference *type*, `Rc[mut, Node]`, is not built by the parser at all: it is a
 bracketed call until type check lowers it into this node ("The managed
-reference type", below). Type check builds the *result* type, records a
+reference type", below), and an allocation, `new Rc[mut, Node](1)`, is a
+construction until type check makes it an `AllocateTag` node
+("Allocation"). Type check builds the *result* type, records a
 lifetime, and interns. Flow moves or copies an allocation's value and enforces the
 lifetime at three consumers. Generation lowers a plain reference to a bare
 pointer and two others to fat pointers.
@@ -106,15 +108,19 @@ The differences are worth knowing:
   only the prefixed term instead would make `&x.a` mean `(&x).a` — typed as the
   field but returning the field's address, which generation cannot catch.
 
-`+` is the allocation, `+Rc-mut Node[1]`. A single or virtual managed reference type is written
-`Rc[mut, Node]`, below. `parsePlus` still builds a `RefTag` or `VirtRefTag`
-type from `+Rc-mut Node` when the operand is a type, and marks it
-`plusSpelled`; type check refuses it (`refRefusePlusType`,
-`ErrorPlusRefType`), naming the bracket spelling. The one exception is a match
-pattern's root, `case imm c +Rc-mut Circle`: `castPatternName` reads the root
-at parse time, before anything knows `Rc` is a region rather than a generic
-variant, so `castPatternMark` clears the mark there and the `+` spelling
-stands until patterns are given their own.
+An allocation is written `new Rc[mut, Node](1)` (below, "Allocation"). The
+`+` spelling, `+Rc-mut 5`, survives only for a value `new` does not
+construct: a number, an enum's variant, an array, a tuple, a reference, a
+value already made. `parsePlus` builds every `+` node marked `plusSpelled`.
+With a value operand it becomes an `AllocateTag` at name resolution, and
+`allocateTypeCheck` refuses it where the value is a construction
+(`ErrorPlusAlloc`, naming the `new` or `trynew` form). With a type operand it
+is a `RefTag` or `VirtRefTag` type, which type check refuses
+(`refRefusePlusType`, `ErrorPlusRefType`), naming the bracket spelling. The
+one exception is a match pattern's root, `case imm c +Rc-mut Circle`:
+`castPatternName` reads the root at parse time, before anything knows `Rc` is
+a region rather than a generic variant, so `castPatternMark` clears the mark
+there and the `+` spelling stands until patterns are given their own.
 
 ## The managed reference type, `Rc[mut, Node]`
 
@@ -194,7 +200,9 @@ operand was not a type and whose clone is back to `RefTag`/`ArrayRefTag`.
 what carries `&&T`.
 
 **A virtual reference may not be borrowed or allocated** — `ErrorBadTerm`,
-"Coerce from a regular ref." There is nothing to construct *from*: the fat
+"Coerce from a regular ref.", and for the retired allocation `+<Rc-mut
+Rect[3]`, `ErrorPlusAlloc`, naming `new Rc[mut, Rect](...)` and the coercion.
+There is nothing to construct *from*: the fat
 pointer's second word is a vtable, selected either by scanning the trait's
 implementations for the concrete source struct or, from a reference to an enum, by
 the runtime tag — which indexes the vtable list where the tag values are the
@@ -243,12 +251,30 @@ Two details worth keeping: an unspecified permission becomes `ro` for a concrete
 type and `opaq` otherwise; and `&[]` of a **non-array** is deliberately a
 one-element slice.
 
+### Allocation: `new Rc[mut, Node](1)` and `trynew`
+
+`new` with a managed reference type, written out or through an alias of one
+(`new Node(1)` for `alias Node = Gc[mut, NodeValue]`), or with a type
+parameter whose argument is one, allocates. `typeLitNewCheck` checks the
+type, and finding a `RefTag` hands it to `typeLitNewAllocate`, which builds
+the `AllocateTag` node: its region and permission the reference type's, its
+`vtexp` the value's construction, `new NodeValue(1)`, a new `FlagNew` node over
+the same arguments, whose init `typeLitNewCheck` then selects as for any
+value; and its `vtype` the reference type as written, so that a rule judged of
+that type (a traced value behind an `Rc`, say) is reported once, where it was
+written. `trynew` adds `FlagQues` and types the node `Option[R[perm, T]]`
+through the `Option` its construction carried from name resolution; on a type
+that is no managed reference it is `ErrorTryNewValue`. A borrowed reference
+reached through an alias, and a virtual one, are `ErrorNewType`: no region
+holds the one, and the other's value is a trait's.
+
 ### `allocateTypeCheck`
 
 Default the permission to `uni`; check the value (an array literal's dimension
 is a constant there as everywhere, so an allocated array is a fixed-size one,
-reached by a thin reference); refuse an abstract or zero-size type; build the
-result type, always a `RefTag`; then
+reached by a thin reference); refuse an abstract or zero-size type; refuse a
+construction allocated with the `+` spelling (`ErrorPlusAlloc`); build the
+result type, a `RefTag`, unless `new` gave it the one it wrote; then
 `inodeTypeCheckAny` on it — **that line is load-bearing**, because it is what
 routes to `refTypeCheck` and therefore what populates `typeinfo`, which
 `genlallocref` dereferences unconditionally. Finally check the region declares
@@ -322,8 +348,8 @@ entirely**.
 Where a reference type acquires `MoveType`: **when its permission lacks
 `MayAlias`, or its region is itself a move type.** Of the six permissions only
 `uni` lacks `MayAlias`, and a region ref is a move type by declaring `is Move`,
-as `So` does ([struct](struct.md), "Move and Copy"). Since `+region` defaults to
-`uni`, every owning reference written without a permission moves; one with an
+as `So` does ([struct](struct.md), "Move and Copy"). Since a managed reference
+type defaults to `uni`, every owning reference written without a permission moves; one with an
 aliasable permission into a region ref declaring neither `Move` nor `aliasRef`
 copies, and the copy calls nothing.
 
@@ -421,7 +447,11 @@ once, when an allocation or a region header first asks for it.
 Measured: `{ %rc, %void, i32 }` where `%rc = { i64 }` and `%void = {}`.
 
 **`genlallocref` returns the pointer to `ValueField`**, so an owning reference
-points into the *middle* of its allocation. The region's methods other than
+points into the *middle* of its allocation. It runs every allocation in one
+order: the value init's arguments, `alloc`, the region's and permission's
+`init`, the value's init in place; in a traced region the block is rooted and
+its value zeroed as soon as `alloc` returns ([Generation](../phases/generation.md),
+"An allocation runs in one order"). The region's methods other than
 `alloc` are handed the header instead: `init` the one `genlallocref` reaches
 from the new block, which it fills in place, and the others the one
 `genlRegionHeader` reaches by stepping back the value's offset in `%refstruct`

@@ -34,8 +34,16 @@ refuses a traced reference wherever a collector could not find it — behind an
 arena's, a pool's, a collection's), and, in a traced value, beside a borrow.
 The traced references on the stack are its **roots**: every function holding
 one links a frame of them (its locals, parameters and temporaries holding one)
-into a chain that `mem.traceRoots` walks, handing each to its region's `mark`,
-and a traced allocation makes its value before its `alloc` runs. A traced
+into a chain that `mem.traceRoots` walks, handing each to its region's `mark`.
+Every allocation, `new Gc[mut, Node](1)`, runs in one order: the value
+init's arguments, `alloc` (memory only), the region's `init` filling the
+header in place, a dynamic permission's `init`, the value's `init` filling
+the value in place, and the reference moved to its destination. In a traced
+region the new block is rooted as soon as `alloc` returns, before anything
+else runs, and its value zeroed when its type holds traced references, so a
+collection step inside an `init`'s own allocations finds the block through
+its root, reads its fields as null or filled, and a store into it takes the
+write barrier as any store through a reference does. A traced
 region may also declare a **`writeBarrier`**: the compiler then hands it each
 of its references stored into memory that is not a local — through any
 reference, a borrow's included — as the store happens, keyed on what was
@@ -44,7 +52,7 @@ locals get none, since a collector traces the stacks again before it ends a
 mark. No more of the protocol below is built: no read barrier, no weak
 reference kind, and no region with global state. Of the strategies that motivate the whole
 design, a tracing collector is written as library code, incremental: the
-`collector` package's region ref `Gc` (`+Gc-mut T[...]`), Acorn's tri-colour
+`collector` package's region ref `Gc` (`new Gc[mut, T](...)`), Acorn's tri-colour
 mark and sweep over those roots and the type records' traces, a step at a
 time inside allocations once the heap passes its trigger (and whole on
 `gc.collect()`), its `writeBarrier` shading what a store puts into an object
@@ -55,7 +63,7 @@ objects, the barrier on between collections (keyed on the value, it keeps
 every young object stored into the heap through the next minor collection).
 The arena and the pool are written only as library values: the
 `arena` package's `Arena`, a dynamic region allocated into by a call on the
-value (`a.alloc(v)`), not by a `+` allocation through a region ref,
+value (`a.alloc(v)`), not by a `new` allocation through a region ref,
 whose `alloc` is not handed the region value. It finalizes
 each value through the finalizer in its type's record
 (`mem.typeRecord[T]().finalize`) when it dies, newest first; nothing yet
@@ -158,8 +166,8 @@ concept. It is named at each allocation site, so the choice is per-object and
 lexically visible:
 
 ```cone
-imm person = +So Person["Tako"]     // single-owner: freed when the owner drops
-imm shared = +Rc Person["Tako"]     // counted: freed at zero
+imm person = new So[Person]("Tako")     // single-owner: freed when the owner drops
+imm shared = new Rc[Person]("Tako")     // counted: freed at zero
 ```
 
 | Region | Is | Strategy |
@@ -281,8 +289,9 @@ Six permissions, each a bit set:
 
 **`uni` is the interesting one, and it is not `&mut`.** It permits reading and
 writing but **not aliasing** — and lacking `MayAlias` is precisely what makes a
-reference carrying it a move type. It is the default for `+region` allocation,
-which is why owning references move by default.
+reference carrying it a move type. It is the default for a managed reference
+type whose permission is left out, `Rc[Node]`, and so for an allocation of
+one, `new Rc[Node](1)`, which is why owning references move by default.
 
 `opaq` permits nothing, which makes it the safe default where the value type is
 not concrete.
@@ -331,7 +340,7 @@ anything.
 type **when its permission lacks `MayAlias`, or its region is itself a move
 type**. `So` declares `is Move`, which makes it one, so every `So` reference moves; `Rc` with the
 default `uni` moves too, on a region that counts. That one sentence explains why
-`+Rc x` moves while `+Rc-mut x` copies.
+an `Rc[Node]` moves while an `Rc[mut, Node]` copies.
 
 **Variance is keyed on the permission**, not on the reference kind:
 
@@ -375,7 +384,7 @@ annotating a borrow with a *lifetime* rather than with an arena.
 | Written | Kind | Runtime |
 | --- | --- | --- |
 | `&T` | borrowed — points at something someone else owns | `T*` |
-| `+region T` | owning — the region releases it | `T*`, pointing **past** a header |
+| `Region[perm, T]` | owning — the region releases it | `T*`, pointing **past** a header |
 | `&[]T` | slice — a borrowed run of elements | `{T*, usize}` |
 | `&<Trait` | virtual — dispatches through a vtable | `{i8*, Vtable*}` |
 

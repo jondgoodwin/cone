@@ -1,0 +1,147 @@
+// An allocation is written with 'new' and a managed reference type, its
+// parentheses the value's init arguments: 'new Rc[mut, Node](1)'. Every
+// region allocates this way -- So, Rc, Arc, Rcw, a region written here, a
+// generic region's instance -- with the permission left out (uni) or given,
+// through an alias of the reference type, as a concrete type coerced to a
+// virtual reference, and with a declared init filling the value in place.
+// 'trynew' gives an Option of the reference: Some when the memory was had,
+// None when the region's 'alloc' returned null.
+//
+// The order is printed: the init's arguments are evaluated first, then the
+// region's 'alloc', then its 'init' filling the header, then the value's init
+// filling the value where it was allocated. A traced region's order, with its
+// root and its zeroed value, is region_roots' and the collector package's
+// (tests/construct.cone).
+
+mod region_new;
+
+import stdio use *;
+import libc;
+import sync use Arc;
+import rcweak;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct Node { pub v i64; }
+alias Shared = Rc[mut, Node];
+
+// A region that says when it is called
+struct Loud is RegionRef {
+  pub count usize;
+  fn alloc(size usize) *u8 { printStr("alloc\n"); libc.malloc(size); }
+  fn init(self &new) { printStr("region init\n"); *self = new Loud(1usize); }
+  fn aliasRef(self &uni Loud) inline { count = count + 1usize; }
+  fn dealiasRef(self &uni Loud) Bool inline { count = count - 1usize; count == 0usize; }
+  fn free(self &uni Loud) { printStr("free\n"); libc.free(self as *u8); }
+}
+
+// A value whose declared init says when it runs, and what it is handed
+struct Pair {
+  pub a i64;
+  pub b i64;
+  pub fn init(self &new, a i64, b i64, scale i64) {
+    printStr("value init\n");
+    *self = new Pair(a: a * scale, b: b * scale);
+  }
+}
+
+fn arg(n i64) i64 {
+  printStr("argument ");
+  printInt(n);
+  printStr("\n");
+  n;
+}
+
+// A generic region, its own brackets first
+struct Pooled[T] is RegionRef {
+  pub n usize;
+  fn alloc(size usize) *u8 inline { libc.malloc(size); }
+}
+
+// A region whose every allocation fails
+struct NeverAllocs is RegionRef {
+  fn alloc(size usize) *u8 inline { 0usize as *u8; }
+}
+
+trait Shape {
+  pub fn area(self &) i64;
+}
+
+struct Square {
+  pub side i64;
+  pub fn area(self &) i64 { side * side; }
+}
+
+fn areaOf(s Rc[mut, Shape]) i64 { s.area(); }
+
+fn regions() {
+  imm so = new So[Node](1);
+  show("so", so.v);
+  imm rc = new Rc[mut, Node](2);
+  show("rc", rc.v);
+  imm arc = new Arc[imm, Node](3);
+  show("arc", arc.v);
+  imm rcw = new rcweak.Rcw[mut, Node](4);
+  show("rcw", rcw.v);
+  imm pooled = new Pooled[i32][mut, Node](5);
+  show("generic-region", pooled.v);
+}
+
+fn forms() {
+  // The permission left out is uni: the only owner, which moves
+  imm u Rc[Node] = new Rc[Node](6);
+  imm moved = u;
+  show("uni", moved.v);
+
+  // Through an alias of the reference type
+  imm s = new Shared(7);
+  imm t = s;
+  t.v = 70;
+  show("alias", s.v);
+
+  // Named fields, as the implicit init takes them
+  imm named = new Rc[mut, Pair](b: 2, a: 1);
+  show("named", named.a * 10 + named.b);
+
+  // A concrete type coerced to a virtual reference
+  imm shape Rc[mut, Shape] = new Rc[mut, Square](3);
+  show("virtual", shape.area());
+  show("virtual-param", areaOf(new Rc[mut, Square](4)));
+}
+
+fn order() {
+  printStr("-- order\n");
+  imm p = new Loud[mut, Pair](arg(1), arg(2), arg(10));
+  show("filled", p.a + p.b);
+}
+
+fn fallible() {
+  imm some = trynew Rc[mut, Node](8);
+  match some {
+    case imm x Some[Rc[mut, Node]] { show("trynew-some", x.value.v); }
+    else { show("trynew-none", 0); }
+  }
+  imm aliased = trynew Shared(9);
+  match aliased {
+    case imm x Some[Shared] { show("trynew-alias", x.value.v); }
+    else { show("trynew-alias-none", 0); }
+  }
+  imm none = trynew NeverAllocs[mut, Node](10);
+  match none {
+    case imm x Some[NeverAllocs[mut, Node]] { show("trynew-failing", x.value.v); }
+    else { show("trynew-failing-none", 0); }
+  }
+}
+
+fn main() i32 {
+  regions();
+  forms();
+  order();
+  fallible();
+  0i32;
+}
