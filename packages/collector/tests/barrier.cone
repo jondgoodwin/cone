@@ -29,41 +29,45 @@ import testing use *;
 import collector;
 
 mut finals = 0i64;
-struct Leaf {
+struct LeafValue {
   pub n i64;
   fn final(self &uni) { finals = finals + 1; }
 }
-struct Box {
-  pub leaf Option[+Gc-mut Leaf];
-  pub cells [2; Option[+Gc-mut Leaf]];
+alias Leaf = +Gc-mut LeafValue;
+struct BoxValue {
+  pub leaf Option[Leaf];
+  pub cells [2; Option[Leaf]];
 }
-struct Hop { pub to +Gc-mut Box; }
-struct Hop2 { pub to +Gc-mut Hop; }
+alias Box = +Gc-mut BoxValue;
+struct HopValue { pub to Box; }
+alias Hop = +Gc-mut HopValue;
+struct Hop2Value { pub to Hop; }
+alias Hop2 = +Gc-mut Hop2Value;
 
 fn settle() {
   Gc.collect();
   Gc.collect();
 }
 
-fn none() Option[+Gc-mut Leaf] {
-  None[+Gc-mut Leaf][];
+fn none() Option[Leaf] {
+  None[Leaf][];
 }
-fn emptyBox() +Gc-mut Box {
-  +Gc-mut Box[none(), [none(), none()]];
+fn emptyBox() Box {
+  +Gc-mut BoxValue[none(), [none(), none()]];
 }
 // c -> Hop -> w, w holding Leaf n: made here, so no frame of the case holds
 // the leaf, the Hop or w
-fn chain(n i64) +Gc-mut Hop2 {
+fn chain(n i64) Hop2 {
   imm w = emptyBox();
-  w.leaf = Some[+Gc-mut Leaf][+Gc-mut Leaf[n]];
-  +Gc-mut Hop2[+Gc-mut Hop[w]];
+  w.leaf = Some[Leaf][+Gc-mut LeafValue[n]];
+  +Gc-mut Hop2Value[+Gc-mut HopValue[w]];
 }
 
 // Matched by value: through the 'mut' Box an Option hangs from, a reference
 // into it could see another reference empty it while in use
-fn leafOf(o Option[+Gc-mut Leaf]) i64 {
+fn leafOf(o Option[Leaf]) i64 {
   match o {
-    case imm s Some[+Gc-mut Leaf] { s.value.n; }
+    case imm s Some[Leaf] { s.value.n; }
     else { -1; }
   }
 }
@@ -75,7 +79,7 @@ fn isBlack(p *u8) Bool {
 }
 
 // A collection marking, h black, and c and w not yet marked
-fn markedH(h +Gc-mut Box, c +Gc-mut Hop2) Bool {
+fn markedH(h Box, c Hop2) Bool {
   imm w = c.to.to;
   Gc.phase() == 1u32 and isBlack(&*h as *u8) and !isBlack(&*c as *u8) and !isBlack(&*w as *u8);
 }
@@ -88,47 +92,47 @@ fn finish(f0 i64) Bool {
 
 // -- The moves, each in a function of its own, so its stack slots are gone
 // before the collection ends
-fn viaRef(h +Gc-mut Box, c +Gc-mut Hop2) {
+fn viaRef(h Box, c Hop2) {
   imm w = c.to.to;
   h.leaf = w.leaf;
   w.leaf = none();
 }
-fn setThrough(dst &mut Box, src &mut Box) {
+fn setThrough(dst &mut BoxValue, src &mut BoxValue) {
   dst.leaf = src.leaf;
   src.leaf = none();
 }
-fn viaBorrow(h +Gc-mut Box, c +Gc-mut Hop2) {
+fn viaBorrow(h Box, c Hop2) {
   imm w = c.to.to;
   setThrough(&mut *h, &mut *w);
 }
-fn viaElement(h +Gc-mut Box, c +Gc-mut Hop2) {
+fn viaElement(h Box, c Hop2) {
   imm w = c.to.to;
   h.cells[1] = w.leaf;
   w.leaf = none();
 }
-fn putFirst(s &[]mut Option[+Gc-mut Leaf], v Option[+Gc-mut Leaf]) {
+fn putFirst(s &[]mut Option[Leaf], v Option[Leaf]) {
   s[0] = v;
 }
-fn viaSlice(h +Gc-mut Box, c +Gc-mut Hop2) {
+fn viaSlice(h Box, c Hop2) {
   imm w = c.to.to;
   putFirst(&mut h.cells, w.leaf);
   w.leaf = none();
 }
-fn viaSwap(h +Gc-mut Box, c +Gc-mut Hop2) {
+fn viaSwap(h Box, c Hop2) {
   imm w = c.to.to;
   h.leaf <=> w.leaf;
 }
-fn viaLeftAssign(h +Gc-mut Box, c +Gc-mut Hop2) {
+fn viaLeftAssign(h Box, c Hop2) {
   imm w = c.to.to;
   w.leaf = h.leaf := w.leaf;
 }
-fn viaWhole(h +Gc-mut Box, c +Gc-mut Hop2) {
+fn viaWhole(h Box, c Hop2) {
   imm w = c.to.to;
-  *h = Box[w.leaf, [none(), none()]];
+  *h = BoxValue[w.leaf, [none(), none()]];
   w.leaf = none();
 }
-fn viaNew(h +Gc-mut Box, c +Gc-mut Hop2) {
-  h.leaf = Some[+Gc-mut Leaf][+Gc-mut Leaf[7]];
+fn viaNew(h Box, c Hop2) {
+  h.leaf = Some[Leaf][+Gc-mut LeafValue[7]];
 }
 
 // -- Each case: the heap built, h black, the move, the collection finished

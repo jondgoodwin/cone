@@ -30,17 +30,22 @@ import collector;
 mut log = 0i64;
 fn note(d i64) { log = log * 10 + d; }
 
-struct Leaf { pub n i64; }
-struct Fin {
+struct LeafValue { pub n i64; }
+alias Leaf = +Gc-mut LeafValue;
+struct FinValue {
   pub n i64;
   fn final(self &uni) { note(n); }
 }
-struct Link { pub n i64; pub next Option[+Gc-mut Link]; }
-struct Box { pub fin Option[+Gc-mut Fin]; }
-struct Pod { pub box Option[+Gc-mut Box]; }
+alias Fin = +Gc-mut FinValue;
+struct LinkValue { pub n i64; pub next Option[Link]; }
+alias Link = +Gc-mut LinkValue;
+struct BoxValue { pub fin Option[Fin]; }
+alias Box = +Gc-mut BoxValue;
+struct PodValue { pub box Option[Box]; }
+alias Pod = +Gc-mut PodValue;
 struct Holder {
   pub n i64;
-  pub leaf +Gc-mut Leaf;
+  pub leaf Leaf;
   fn final(self &uni) { note(n); }
 }
 
@@ -64,7 +69,7 @@ fn isOld(p *u8) Bool {
 fn dropLeaves(k i64) {
   mut i = 0i64;
   while i < k {
-    imm l = +Gc-mut Leaf[i];
+    imm l = +Gc-mut LeafValue[i];
     i = i + 1;
   }
 }
@@ -79,45 +84,45 @@ fn minorCycle() Bool {
 }
 
 // -- Lists of links, born holding the rest: no barrier stores any of them
-fn extend(l Option[+Gc-mut Link], k i64) Option[+Gc-mut Link] {
+fn extend(l Option[Link], k i64) Option[Link] {
   mut head = l;
   mut i = 0i64;
   while i < k {
-    head = Some[+Gc-mut Link][+Gc-mut Link[i, head]];
+    head = Some[Link][+Gc-mut LinkValue[i, head]];
     i = i + 1;
   }
   head;
 }
-fn chain(k i64) Option[+Gc-mut Link] {
-  extend(None[+Gc-mut Link][], k);
+fn chain(k i64) Option[Link] {
+  extend(None[Link][], k);
 }
 // Matched by value: through the 'mut' links an Option hangs from, a reference
 // into it could see another reference empty it while in use
-fn isLink(l Option[+Gc-mut Link]) Bool {
+fn isLink(l Option[Link]) Bool {
   match l {
-    case imm s Some[+Gc-mut Link] { true; }
+    case imm s Some[Link] { true; }
     else { false; }
   }
 }
-fn nOf(l Option[+Gc-mut Link]) i64 {
+fn nOf(l Option[Link]) i64 {
   match l {
-    case imm s Some[+Gc-mut Link] { s.value.n; }
+    case imm s Some[Link] { s.value.n; }
     else { 0; }
   }
 }
-fn nextOf(l Option[+Gc-mut Link]) Option[+Gc-mut Link] {
+fn nextOf(l Option[Link]) Option[Link] {
   match l {
-    case imm s Some[+Gc-mut Link] { s.value.next; }
-    else { None[+Gc-mut Link][]; }
+    case imm s Some[Link] { s.value.next; }
+    else { None[Link][]; }
   }
 }
-fn headOld(l Option[+Gc-mut Link]) Bool {
+fn headOld(l Option[Link]) Bool {
   match l {
-    case imm s Some[+Gc-mut Link] { isOld(&*s.value as *u8); }
+    case imm s Some[Link] { isOld(&*s.value as *u8); }
     else { false; }
   }
 }
-fn sum(l Option[+Gc-mut Link]) i64 {
+fn sum(l Option[Link]) i64 {
   mut at = l;
   mut total = 0i64;
   while isLink(at) {
@@ -161,26 +166,26 @@ fn youngGarbage() {
 // the old object, so only the barrier, shading the child as it is stored, can
 // keep it. Each case stores a new Fin into o, old, in a function that
 // returns, so no stack slot holds the child, and each checks o is old first.
-fn emptyBox() +Gc-mut Box {
-  +Gc-mut Box[None[+Gc-mut Fin][]];
+fn emptyBox() Box {
+  +Gc-mut BoxValue[None[Fin][]];
 }
-fn finOf(o Option[+Gc-mut Fin]) i64 {
+fn finOf(o Option[Fin]) i64 {
   match o {
-    case imm s Some[+Gc-mut Fin] { s.value.n; }
+    case imm s Some[Fin] { s.value.n; }
     else { -1; }
   }
 }
-fn boxOf(o Option[+Gc-mut Box]) i64 {
+fn boxOf(o Option[Box]) i64 {
   match o {
-    case imm s Some[+Gc-mut Box] { finOf(s.value.fin); }
+    case imm s Some[Box] { finOf(s.value.fin); }
     else { -1; }
   }
 }
-fn putNew(o +Gc-mut Box, n i64) {
-  o.fin = Some[+Gc-mut Fin][+Gc-mut Fin[n]];
+fn putNew(o Box, n i64) {
+  o.fin = Some[Fin][+Gc-mut FinValue[n]];
 }
 fn dropFin(n i64) {
-  imm f = +Gc-mut Fin[n];
+  imm f = +Gc-mut FinValue[n];
 }
 
 // A lost child is finalized by the first minor collection that does not
@@ -242,11 +247,11 @@ fn caseFinalize() {
 }
 // A young Box, born holding a young Fin (neither stored by a barrier), stored
 // into old p: the barrier shades the Box, and tracing it finds the Fin
-fn putSubtree(p +Gc-mut Pod) {
-  p.box = Some[+Gc-mut Box][+Gc-mut Box[Some[+Gc-mut Fin][+Gc-mut Fin[5]]]];
+fn putSubtree(p Pod) {
+  p.box = Some[Box][+Gc-mut BoxValue[Some[Fin][+Gc-mut FinValue[5]]]];
 }
 fn caseSubtree() {
-  imm p = +Gc-mut Pod[None[+Gc-mut Box][]];
+  imm p = +Gc-mut PodValue[None[Box][]];
   Gc.collect();
   expect(isOld(&*p as *u8), "between collections: p is old");
   putSubtree(p);
@@ -360,9 +365,9 @@ fn unproductive() {
 
 // -- Finalizers: once, newest first, and never promoted
 fn dropThree() {
-  imm a = +Gc-mut Fin[1];
-  imm b = +Gc-mut Fin[2];
-  imm c = +Gc-mut Fin[3];
+  imm a = +Gc-mut FinValue[1];
+  imm b = +Gc-mut FinValue[2];
+  imm c = +Gc-mut FinValue[3];
 }
 fn youngFinalized() {
   dropThree();
@@ -374,7 +379,7 @@ fn youngFinalized() {
   expectUInt(live(), 0, "and freed by the next minor collection: a finalized object is not promoted");
 }
 fn dropHolder() {
-  imm h = +Gc-mut Holder[4, +Gc-mut Leaf[5]];
+  imm h = +Gc-mut Holder[4, +Gc-mut LeafValue[5]];
 }
 fn keptChild() {
   dropHolder();
@@ -385,7 +390,7 @@ fn keptChild() {
   expectUInt(live(), 0, "both freed by the next minor collection: what a finalizer kept is not promoted either");
 }
 fn makeOldFin() {
-  imm f = +Gc-mut Fin[7];
+  imm f = +Gc-mut FinValue[7];
   Gc.collect();
   expect(isOld(&*f as *u8), "a fin kept through a collection is old");
 }

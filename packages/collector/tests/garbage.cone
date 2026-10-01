@@ -18,9 +18,12 @@ mod garbage;
 import testing use *;
 import collector;
 
-struct Leaf { pub n i64; }
-struct Pair { pub left +Gc-mut Leaf; pub right +Gc-mut Leaf; }
-struct Node { pub n i64; pub left Option[+Gc-mut Node]; pub right Option[+Gc-mut Node]; }
+struct LeafValue { pub n i64; }
+alias Leaf = +Gc-mut LeafValue;
+struct PairValue { pub left Leaf; pub right Leaf; }
+alias Pair = +Gc-mut PairValue;
+struct NodeValue { pub n i64; pub left Option[Node]; pub right Option[Node]; }
+alias Node = +Gc-mut NodeValue;
 
 fn settle() {
   Gc.collect();
@@ -30,10 +33,10 @@ fn settle() {
 fn live() u64 { u64[Gc.liveObjects()]; }
 
 // Three leaves made, the second returned
-fn keepSecond() +Gc-mut Leaf {
-  imm a = +Gc-mut Leaf[1];
-  imm b = +Gc-mut Leaf[2];
-  imm c = +Gc-mut Leaf[3];
+fn keepSecond() Leaf {
+  imm a = +Gc-mut LeafValue[1];
+  imm b = +Gc-mut LeafValue[2];
+  imm c = +Gc-mut LeafValue[3];
   b;
 }
 
@@ -46,33 +49,33 @@ fn keptAndDropped() {
 }
 
 // A tree of the given depth: 2^depth - 1 nodes, each numbered by its depth
-fn tree(depth i64) Option[+Gc-mut Node] {
+fn tree(depth i64) Option[Node] {
   if depth == 0 {
-    return None[+Gc-mut Node][];
+    return None[Node][];
   }
-  Some[+Gc-mut Node][+Gc-mut Node[depth, tree(depth - 1), tree(depth - 1)]];
+  Some[Node][+Gc-mut NodeValue[depth, tree(depth - 1), tree(depth - 1)]];
 }
 
 // Matched by value: through the 'mut' nodes an Option hangs from, a reference
 // into it could see another reference empty it while in use
-fn count(t Option[+Gc-mut Node]) i64 {
+fn count(t Option[Node]) i64 {
   match t {
-    case imm s Some[+Gc-mut Node] { count(s.value.left) + count(s.value.right) + 1; }
+    case imm s Some[Node] { count(s.value.left) + count(s.value.right) + 1; }
     else { 0; }
   }
 }
 
-fn sum(t Option[+Gc-mut Node]) i64 {
+fn sum(t Option[Node]) i64 {
   match t {
-    case imm s Some[+Gc-mut Node] { s.value.n + sum(s.value.left) + sum(s.value.right); }
+    case imm s Some[Node] { s.value.n + sum(s.value.left) + sum(s.value.right); }
     else { 0; }
   }
 }
 
-fn leftOf(t Option[+Gc-mut Node]) Option[+Gc-mut Node] {
+fn leftOf(t Option[Node]) Option[Node] {
   match t {
-    case imm s Some[+Gc-mut Node] { s.value.left; }
-    else { None[+Gc-mut Node][]; }
+    case imm s Some[Node] { s.value.left; }
+    else { None[Node][]; }
   }
 }
 
@@ -95,17 +98,17 @@ fn subtree() {
   expectUInt(live(), 7, "the left subtree of depth 3 is kept, the root and right freed");
   expectInt(sum(l), 11, "3 + 2*2 + 1*4");
 }
-fn keepLeft() Option[+Gc-mut Node] {
+fn keepLeft() Option[Node] {
   imm t = tree(4);
   leftOf(t);
 }
 
 // Replacing a field lets go of what it held
-fn replaceLeft(p +Gc-mut Pair) {
-  p.left = +Gc-mut Leaf[3];
+fn replaceLeft(p Pair) {
+  p.left = +Gc-mut LeafValue[3];
 }
-fn makePair() +Gc-mut Pair {
-  +Gc-mut Pair[+Gc-mut Leaf[1], +Gc-mut Leaf[2]];
+fn makePair() Pair {
+  +Gc-mut PairValue[+Gc-mut LeafValue[1], +Gc-mut LeafValue[2]];
 }
 fn replaced() {
   imm p = makePair();
@@ -132,7 +135,7 @@ fn many() {
   mut i = 0i64;
   mut total = 0i64;
   while i < 1000 {
-    imm l = +Gc-mut Leaf[i];
+    imm l = +Gc-mut LeafValue[i];
     total = total + l.n;
     i = i + 1;
   }
@@ -149,7 +152,7 @@ fn many() {
 fn dropLeaves() {
   mut i = 0i64;
   while i < 10000 {
-    imm l = +Gc-mut Leaf[i];
+    imm l = +Gc-mut LeafValue[i];
     i = i + 1;
   }
 }
@@ -163,7 +166,7 @@ fn stopped() {
   expectUInt(u64[Gc.collections() - c0], 0, "stopped: no collection");
   expectUInt(live(), 10000, "every leaf still there");
   Gc.start();
-  imm l = +Gc-mut Leaf[1];
+  imm l = +Gc-mut LeafValue[1];
   expectUInt(u64[Gc.collections() - c0], 1, "started: the next allocation's step finishes marking, since nothing is reached");
   expect(live() > 1u64 and live() < 10001u64, "and has begun the sweep, not finished it: a step, not a collection");
   mut steps = 0i64;
