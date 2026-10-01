@@ -6,7 +6,7 @@
 // size alone, are called as they always were (the 'plain-regions-unchanged'
 // check), in the same program.
 //
-// 'kept' is a collector's shape, a region that owns death in its own loop: it
+// 'Kept' is a collector's shape, a region that owns death in its own loop: it
 // declares no 'aliasRef', no 'dealiasRef' and not 'Move', so the compiler never
 // finalizes or frees what it holds. Its 'alloc' writes the header itself --
 // the next object and the record -- and links it into a list, printing what
@@ -31,10 +31,10 @@ fn line(label &[]u8, n usize) {
   printStr("\n");
 }
 
-// The newest object 'kept' allocated, as an address; 0 for none
+// The newest object 'Kept' allocated, as an address; 0 for none
 mut keptHead = 0usize;
 
-struct kept is RegionRef {
+struct Kept is RegionRef {
   pub next usize;      // the object allocated before this one
   pub ty *TypeRecord;  // what 'alloc' was handed
 
@@ -46,23 +46,23 @@ struct kept is RegionRef {
     printStr(", flags "); printInt(i64[rec.flags]);
     printStr("\n");
     imm p = malloc(size);
-    mem.writeRaw(p as *kept, kept[keptHead, ty]);
+    mem.writeRaw(p as *Kept, Kept[keptHead, ty]);
     keptHead = p as usize;
     p;
   }
 }
 
-// Every object 'kept' holds dies, newest first: its value finalized by its
+// Every object 'Kept' holds dies, newest first: its value finalized by its
 // record, then its memory freed. The value sits after the header, rounded up
 // to the value's alignment, which is where the compiler put it (the
 // {region, permission, value} layout, whose permission takes no room).
 fn sweep() {
   while keptHead != 0usize {
-    imm hdr = keptHead as &kept;
+    imm hdr = keptHead as &Kept;
     keptHead = hdr.next;
     imm rec = hdr.ty as &TypeRecord;
     imm align = rec.align;
-    imm at = (hdr as usize + mem.sizeof[kept]() + align - 1usize) & (0usize - align);
+    imm at = (hdr as usize + mem.sizeof[Kept]() + align - 1usize) & (0usize - align);
     imm fin = rec.finalize;
     fin(at as *u8);
     libc.free(hdr as *u8);
@@ -93,14 +93,14 @@ struct Wide {
 
 fn main() {
   printStr("-- allocate\n");
-  imm a = +kept-mut Fin[1i32];
-  imm b = +kept-mut Plain[2, 3u8];
-  imm c = +kept-mut Holder[4i32, +So Fin[5i32]];
-  imm d = +kept-mut 6i32;
-  imm e = +kept-mut Wide[[7u64, 8u64, 9u64, 10u64]];
+  imm a = +Kept-mut Fin[1i32];
+  imm b = +Kept-mut Plain[2, 3u8];
+  imm c = +Kept-mut Holder[4i32, +So Fin[5i32]];
+  imm d = +Kept-mut 6i32;
+  imm e = +Kept-mut Wide[[7u64, 8u64, 9u64, 10u64]];
   line("read back ", usize[a.v] + usize[b.b] + usize[c.inner.v] + usize[*d] + usize[e.a[3]]);
   // The same record in this object as 'mem.typeRecord' gives
-  if (keptHead as &kept).ty == mem.typeRecord[Wide]() { printStr("same record\n"); }
+  if (keptHead as &Kept).ty == mem.typeRecord[Wide]() { printStr("same record\n"); }
 
   printStr("-- Rc and So, unchanged\n");
   {
