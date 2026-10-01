@@ -143,6 +143,15 @@ Visual Studio projects stay at the root.
   `textdiff` is the line diff of two lists of lines or two texts: the edit
   as spans (a minimal one, by Myers' algorithm) and the unified diff that
   shows it, in `difflib.unified_diff`'s format and `diff -u`'s;
+  `fs`, `path` and `env` are the synchronous OS layer over `libc` and
+  `posix`: `fs` is files and folders (whole files read, written and
+  appended, `stat`, folders made, listed in name order, walked and removed,
+  the current folder and absolute paths), each failure a core `Result`
+  holding an `FsError` (what, which path, the errno); `path` is paths as
+  text, Windows' syntax (join, parent, name, stem, extension, parts,
+  normalize, `/` out); `env` is environment variables (get, set, unset);
+  what is Windows-only beneath them is `posix`'s mapping onto the C runtime
+  and its `opendir`, `readdir` and `lstat`, written over `_findfirst64`;
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed
   `Dict[K, V]`, each holding its elements in one block from `libc`'s
   allocator and moving them with core's `mem` intrinsics; `arena` is an

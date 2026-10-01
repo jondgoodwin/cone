@@ -1,0 +1,193 @@
+// The path package's functions over paths written out by hand, each
+// expected value worked out on paper from the rules in the package's header:
+// relative and absolute paths, '.' and '..', separators doubled and
+// trailing, both separators mixed, drive letters ('C:\', 'C:' alone, 'C:x')
+// and UNC shares ('\\server\share'), and names in UTF-8 (é, 日本).
+
+mod lexical;
+
+import testing use *;
+import collections use *;
+import path;
+
+fn joinIs(a &[]u8, b &[]u8, want &[]u8) {
+  imm got = path.join(a, b);
+  mut label = String.from("join ");
+  label.append(a);
+  label.append(" + ");
+  label.append(b);
+  expectStr(got.view(), want, label.view());
+}
+
+fn parentIs(p &[]u8, want &[]u8) {
+  imm got = path.parent(p);
+  mut label = String.from("parent ");
+  label.append(p);
+  expectStr(got.view(), want, label.view());
+}
+
+fn nameIs(p &[]u8, name &[]u8, stem &[]u8, ext &[]u8) {
+  mut label = String.from("name ");
+  label.append(p);
+  imm n = path.name(p);
+  expectStr(n.view(), name, label.view());
+  label = String.from("stem ");
+  label.append(p);
+  imm s = path.stem(p);
+  expectStr(s.view(), stem, label.view());
+  label = String.from("extension ");
+  label.append(p);
+  imm e = path.extension(p);
+  expectStr(e.view(), ext, label.view());
+}
+
+fn normalIs(p &[]u8, want &[]u8) {
+  imm got = path.normalize(p);
+  mut label = String.from("normalize ");
+  label.append(p);
+  expectStr(got.view(), want, label.view());
+}
+
+// A path's parts, shown joined by '|'
+fn partsAre(p &[]u8, want &[]u8) {
+  imm ps = path.parts(p);
+  imm got = String.join(ps.view(), "|");
+  mut label = String.from("parts ");
+  label.append(p);
+  expectStr(got.view(), want, label.view());
+}
+
+fn absoluteIs(p &[]u8, want Bool, vol &[]u8) {
+  mut label = String.from("isAbsolute ");
+  label.append(p);
+  expectBool(path.isAbsolute(p), want, label.view());
+  label = String.from("volume ");
+  label.append(p);
+  imm v = path.volume(p);
+  expectStr(v.view(), vol, label.view());
+}
+
+fn main() i32 {
+  // isAbsolute and volume
+  absoluteIs("C:\\x", true, "C:");
+  absoluteIs("c:/x", true, "c:");
+  absoluteIs("C:\\", true, "C:");
+  absoluteIs("C:", false, "C:");
+  absoluteIs("C:x", false, "C:");
+  absoluteIs("\\x", false, "");
+  absoluteIs("/x", false, "");
+  absoluteIs("x/y", false, "");
+  absoluteIs("", false, "");
+  absoluteIs("\\\\server\\share", true, "\\\\server\\share");
+  absoluteIs("//server/share/x", true, "//server/share");
+  absoluteIs("\\\\server", false, "");
+  absoluteIs("\\\\server\\", false, "");
+  absoluteIs("1:/x", false, "");
+
+  // join
+  joinIs("a", "b", "a/b");
+  joinIs("a/", "b", "a/b");
+  joinIs("a\\", "b", "a\\b");
+  joinIs("C:\\work", "src/main.cone", "C:\\work/src/main.cone");
+  joinIs("a", "", "a");
+  joinIs("", "b", "b");
+  joinIs("", "", "");
+  joinIs("a", "../b", "a/../b");
+  joinIs("C:", "x", "C:x");
+  joinIs("C:\\a", "D:\\b", "D:\\b");
+  joinIs("C:\\a", "D:b", "D:b");
+  joinIs("C:\\a", "\\b", "C:\\b");
+  joinIs("a/b", "/c", "/c");
+  joinIs("\\\\server\\share\\a", "/b", "\\\\server\\share/b");
+  joinIs("C:\\a", "\\\\server\\share", "\\\\server\\share");
+  joinIs("\\\\server\\share", "x", "\\\\server\\share/x");
+  joinIs("é", "日本.txt", "é/日本.txt");
+
+  // parent
+  parentIs("a/b/c.txt", "a/b");
+  parentIs("a\\b\\c.txt", "a\\b");
+  parentIs("a/b/", "a");
+  parentIs("a//b", "a");
+  parentIs("c.txt", "");
+  parentIs("", "");
+  parentIs("/", "/");
+  parentIs("/x", "/");
+  parentIs("C:\\", "C:\\");
+  parentIs("C:\\x", "C:\\");
+  parentIs("C:\\x\\", "C:\\");
+  parentIs("C:x", "C:");
+  parentIs("C:", "C:");
+  parentIs("a/..", "a");
+  parentIs("..", "");
+  parentIs("\\\\server\\share\\x", "\\\\server\\share\\");
+  parentIs("\\\\server\\share", "\\\\server\\share");
+  parentIs("é/日本", "é");
+
+  // name, stem and extension
+  nameIs("a/b/c.txt", "c.txt", "c", ".txt");
+  nameIs("a/b.tar.gz", "b.tar.gz", "b.tar", ".gz");
+  nameIs("a/b/", "b", "b", "");
+  nameIs("a\\b\\\\", "b", "b", "");
+  nameIs(".profile", ".profile", ".profile", "");
+  nameIs("a/.profile.bak", ".profile.bak", ".profile", ".bak");
+  nameIs("b.", "b.", "b", ".");
+  nameIs(".", ".", ".", "");
+  nameIs("..", "..", "..", "");
+  nameIs("a/..", "..", "..", "");
+  nameIs("", "", "", "");
+  nameIs("/", "", "", "");
+  nameIs("C:\\", "", "", "");
+  nameIs("C:", "", "", "");
+  nameIs("C:x.cone", "x.cone", "x", ".cone");
+  nameIs("\\\\server\\share", "", "", "");
+  nameIs("\\\\server\\share\\x.y", "x.y", "x", ".y");
+  nameIs("d.ir/file", "file", "file", "");
+  nameIs("é/日本.txt", "日本.txt", "日本", ".txt");
+
+  // parts
+  partsAre("a/b/c", "a|b|c");
+  partsAre("C:\\a\\b", "C:\\|a|b");
+  partsAre("/a//b/", "/|a|b");
+  partsAre("C:a", "C:|a");
+  partsAre("a/./../b", "a|.|..|b");
+  partsAre("\\\\server\\share\\x", "\\\\server\\share\\|x");
+  partsAre("", "");
+  partsAre("é\\日本", "é|日本");
+
+  // normalize
+  normalIs("", ".");
+  normalIs(".", ".");
+  normalIs("./", ".");
+  normalIs("a", "a");
+  normalIs("a/", "a");
+  normalIs("a//b", "a/b");
+  normalIs("a\\b", "a/b");
+  normalIs("a/./b/.", "a/b");
+  normalIs("a/b/../c", "a/c");
+  normalIs("a/..", ".");
+  normalIs("a/../..", "..");
+  normalIs("../a", "../a");
+  normalIs("../../a/..", "../..");
+  normalIs("/", "/");
+  normalIs("\\", "/");
+  normalIs("/..", "/");
+  normalIs("/../a", "/a");
+  normalIs("C:\\", "C:/");
+  normalIs("C:\\..\\x", "C:/x");
+  normalIs("C:\\a\\.\\b\\..\\c\\", "C:/a/c");
+  normalIs("c:/A/B", "c:/A/B");
+  normalIs("C:", "C:");
+  normalIs("C:.", "C:");
+  normalIs("C:a\\..\\..", "C:..");
+  normalIs("\\\\server\\share", "//server/share/");
+  normalIs("\\\\server\\share\\..\\x", "//server/share/x");
+  normalIs("//server//share", "/server/share");
+  normalIs("\\\\server", "/server");
+  normalIs("é/./日本/../x", "é/x");
+
+  // isSeparator
+  expectBool(path.isSeparator('/'), true, "slash separates");
+  expectBool(path.isSeparator('\\'), true, "backslash separates");
+  expectBool(path.isSeparator(':'), false, "colon does not separate");
+  done();
+}

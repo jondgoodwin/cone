@@ -1,0 +1,70 @@
+// The env package against the program's own environment: a variable not
+// set, set, replaced, removed and removed again; a name and a value in
+// UTF-8 (é, 日本); a child started after a 'set' seeing it; and, pinned
+// because they are Windows', a name read without regard to ASCII case and an
+// empty value removing the variable. Every variable is named CONE_ENV_TEST_*
+// and removed again before the end.
+
+mod vars;
+
+import testing use *;
+import collections use *;
+import libc;
+import env;
+
+// The variable's value, or "<none>"
+fn value(name &[]u8) String {
+  match env.get(name) {
+    case imm v Some { v.value.copy(); }
+    case is None { String.from("<none>"); }
+  }
+}
+
+fn valueIs(name &[]u8, want &[]u8, label &[]u8) {
+  imm got = value(name);
+  expectStr(got.view(), want, label);
+}
+
+fn main() i32 {
+  imm name = "CONE_ENV_TEST_ONE";
+  env.unset(name);
+  valueIs(name, "<none>", "not set");
+
+  env.set(name, "first");
+  valueIs(name, "first", "set");
+  env.set(name, "second value, with spaces");
+  valueIs(name, "second value, with spaces", "replaced");
+  env.unset(name);
+  valueIs(name, "<none>", "unset");
+  env.unset(name);
+  valueIs(name, "<none>", "unset again, not set");
+
+  // UTF-8, in the name and in the value
+  imm wide = "CONE_ENV_TEST_É";
+  env.set(wide, "日本 é");
+  valueIs(wide, "日本 é", "UTF-8 name and value");
+  env.unset(wide);
+  valueIs(wide, "<none>", "UTF-8 name unset");
+
+  // Names that are no names are never set
+  valueIs("", "<none>", "empty name");
+  valueIs("CONE_ENV=TEST", "<none>", "name with '='");
+
+  // A child sees what was set before it started: cmd exits 7 when it does
+  env.set("CONE_ENV_TEST_CHILD", "seen");
+  imm status = libc.system(&[]"if \"%CONE_ENV_TEST_CHILD%\"==\"seen\" (exit 7) else (exit 3)");
+  expectInt(i64.from(status), 7, "child sees the variable");
+  env.unset("CONE_ENV_TEST_CHILD");
+
+  // Windows: a name is read without regard to ASCII case
+  env.set("Cone_Env_Test_Case", "mixed");
+  valueIs("CONE_ENV_TEST_CASE", "mixed", "Windows: ASCII case does not matter");
+  env.unset("CONE_ENV_TEST_CASE");
+  valueIs("Cone_Env_Test_Case", "<none>", "Windows: unset by the other case");
+
+  // Windows: an empty value removes the variable
+  env.set(name, "something");
+  env.set(name, "");
+  valueIs(name, "<none>", "Windows: an empty value removes it");
+  done();
+}

@@ -1,0 +1,53 @@
+// Every file below a folder, the current one or the one the first argument
+// names, with its size in bytes, depth first and in name order:
+//
+//   congo run packages/fs/examples/sizes.cone -- packages/fs
+
+mod sizes;
+
+import stdio use *;
+import collections use *;
+import fs;
+
+fn main(argc i32, argv **u8) i32 {
+  imm root = if argc > 1i32 {String.fromCStr(*(argv + 1usize));} else {String.from(".");};
+  match fs.walk(root.view()) {
+    case imm e Error {
+      imm m = e.value.message();
+      eprintStr(m.view());
+      eprintStr("\n");
+      return 1i32;
+    }
+    case imm all Ok {
+      imm entries = &all.value;
+      mut total = 0i64;
+      mut i = 0usize;
+      while i < entries.len() {
+        imm entry = entries[i];
+        if entry.isFile {
+          match fs.stat(entry.path.view()) {
+            case imm s Ok {
+              total = total + s.value.size;
+              mut size = String.empty();
+              size.appendInt(s.value.size);
+              size.padStart(10usize);
+              printStr(size.view());
+              printStr("  ");
+              printStr(entry.path.view());
+              printStr("\n");
+            }
+            case imm e Error {
+              imm m = e.value.message();
+              eprintStr(m.view());
+              eprintStr("\n");
+            }
+          }
+        }
+        i = i + 1usize;
+      }
+      printInt(total);
+      printStr(" bytes in all\n");
+    }
+  }
+  0i32;
+}

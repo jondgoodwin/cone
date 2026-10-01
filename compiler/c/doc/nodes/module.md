@@ -2451,15 +2451,17 @@ the policy half of the same question; that C naming is now written on the
 module is what gives it something to check.
 
 **The packages folder holds two C packages, `libc` and `posix`** [Jon 25–26
-Sep]: raw bindings, C names, C types and C strings, with a Cone-flavoured layer
-to come later as packages of their own, and Windows first, since nothing yet
-chooses declarations by target. Neither names a `[link]` library: the C runtime
-they bind is the one every link already names. `posix` presents POSIX names:
-bound straight to the Windows runtime's spelling with a function's own
-`@c("_mkdir")` where the arguments agree, and an `inline` function with POSIX's
-signature calling the runtime's where they do not, so that neither package's
-object defines anything; directory listing, which Windows lacks, is the
-runtime's own `_findfirst64` family under its own names. The structs they
+Sep]: raw bindings, C names, C types and C strings, with the Cone-flavoured
+layer over them in packages of their own (`fs`, `path` and `env`), and Windows
+first, since nothing yet chooses declarations by target. Neither names a
+`[link]` library: the C runtime they bind is the one every link already names.
+`posix` presents POSIX names: bound straight to the Windows runtime's spelling
+with a function's own `@c("_mkdir")` where the arguments agree, and an
+`inline` function with POSIX's signature calling the runtime's where they do
+not, so that `libc`'s object defines nothing; what Windows lacks altogether,
+`opendir`, `readdir`, `closedir` and `lstat`, `posix` defines in Cone over the
+runtime's own `_findfirst64` family, which it also binds under its own names,
+and those four are the only symbols its object defines. The structs they
 declare (`posix.Stat`, `posix.FindData64`) are the runtime's layouts, measured
 against its headers (`posix`'s own test, `packages/posix/tests/`). `stdio` still holds its C
 declarations inside its Cone-named module, each function marked `@c`, and

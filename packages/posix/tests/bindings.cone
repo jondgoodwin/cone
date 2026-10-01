@@ -6,7 +6,8 @@
 // - Stat and FindData64 are laid out as the runtime's 'struct _stat64' and
 //   'struct __finddata64_t' are: 56 and 304 bytes, measured with cl.exe;
 // - setenv sets a variable, keeps it where 'overwrite' is zero, and replaces it
-//   where it is not; a command the program starts sees it;
+//   where it is not; a command the program starts sees it; unsetenv removes
+//   it, and removing it again is no error;
 // - mkdir makes a directory and refuses to make it again, chdir goes into it
 //   and back out, and getcwd and realpath both name it: the text they give is
 //   the one before plus the directory's name, checked without printing a path;
@@ -14,6 +15,11 @@
 //   name that is not there; its times are seconds since 1970;
 // - _findfirst64 and _findnext64, the Windows-only listing, find the three
 //   entries made in the directory, and the size and kind of each;
+// - opendir, readdir and closedir, POSIX's listing written over them, find
+//   the same three and '.' and '..', each with its d_type; opendir fails with
+//   ENOENT for a name not there and ENOTDIR for a file; lstat reports a file
+//   and a directory as stat does (a link's S_IFLNK is the fs package's test);
+//   failures leave the errno numbers the E... constants name;
 // - popen runs a command through the shell and hands back what it printed, in
 //   text mode, so cmd's line end reads as one '\n'; pclose gives its status;
 // - rmdir and libc's remove clear everything away again.
@@ -92,6 +98,14 @@ fn environment() {
   showText("getenv-replaced", getenv(name));
 }
 
+// After the processes have seen it
+fn unsetting() {
+  imm name = &[]"CONE_POSIX_TEST";
+  show("unsetenv", i64.from(unsetenv(name)));
+  show("getenv-after-unsetenv-null", yes(getenv(name) == 0usize as *u8));
+  show("unsetenv-again", i64.from(unsetenv(name)));
+}
+
 fn processes() {
   mut buf = new Array[u8, 64] <- fill 0u8;
   imm at *u8 = &[]buf;
@@ -157,6 +171,7 @@ fn filesAndDirectories() {
   show("stat-missing", i64.from(stat(&[]"missing.txt", &mut st)));
 
   listing();
+  posixListing();
 
   show("remove-a", i64.from(remove(&[]"a.txt")));
   show("remove-b", i64.from(remove(&[]"b.txt")));
@@ -191,10 +206,59 @@ fn listing() {
   show("listed-sub-is-dir", subIsDir);
 }
 
+// POSIX's listing, of the current directory: the three entries and '.' and
+// '..', each with its kind
+fn posixListing() {
+  imm dir = opendir(&[]".");
+  show("opendir-null", yes(dir == 0usize as *DIR));
+  mut entries = 0i64;
+  mut dots = 0i64;
+  mut aType = 0i64;
+  mut subType = 0i64;
+  mut e = readdir(dir);
+  while e != 0usize as *dirent {
+    imm entry = e as &dirent;
+    imm name *u8 = &[]entry.d_name;
+    if same(name, &[]".") == 1i64 or same(name, &[]"..") == 1i64 {
+      dots = dots + 1i64;
+      if entry.d_type != DT_DIR {dots = dots + 100i64;};
+    } else {
+      entries = entries + 1i64;
+    };
+    if same(name, &[]"a.txt") == 1i64 {aType = i64.from(entry.d_type);};
+    if same(name, &[]"sub") == 1i64 {subType = i64.from(entry.d_type);};
+    e = readdir(dir);
+  };
+  show("readdir-entries", entries);
+  show("readdir-dot-dirs", dots);
+  show("readdir-file-is-DT_REG", yes(aType == i64.from(DT_REG)));
+  show("readdir-dir-is-DT_DIR", yes(subType == i64.from(DT_DIR)));
+  show("readdir-end-null", yes(readdir(dir) == 0usize as *dirent));
+  show("closedir", i64.from(closedir(dir)));
+
+  imm missing = opendir(&[]"missing");
+  show("opendir-missing-null", yes(missing == 0usize as *DIR));
+  show("opendir-missing-ENOENT", yes(*errno() == ENOENT));
+  imm file = opendir(&[]"a.txt");
+  show("opendir-file-null", yes(file == 0usize as *DIR));
+  show("opendir-file-ENOTDIR", yes(*errno() == ENOTDIR));
+
+  mut st = newStat();
+  show("lstat-file", i64.from(lstat(&[]"a.txt", &mut st)));
+  show("lstat-file-is-regular", yes((st.st_mode & S_IFMT) == S_IFREG));
+  show("lstat-file-size", st.st_size);
+  show("lstat-dir", i64.from(lstat(&[]"sub", &mut st)));
+  show("lstat-dir-is-dir", yes((st.st_mode & S_IFMT) == S_IFDIR));
+  show("lstat-missing", i64.from(lstat(&[]"missing", &mut st)));
+  show("lstat-missing-ENOENT", yes(*errno() == ENOENT));
+  show("mkdir-again-EEXIST", yes(mkdir(&[]"sub", 0x1EDu32) != 0i32 and *errno() == EEXIST));
+}
+
 fn main() i32 {
   layouts();
   environment();
   processes();
+  unsetting();
   filesAndDirectories();
   0i32;
 }

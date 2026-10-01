@@ -6,8 +6,12 @@
 // - calloc gives zeroed memory, realloc grows it keeping what it held, free
 //   takes it back; malloc is libc's, and a bare name everywhere, since core
 //   folds it in too, publicly: here it arrives by both routes as one binding;
-// - a file written with fopen/fwrite/fflush/fclose reads back with fread,
-//   and remove deletes it, so a second fopen for reading fails;
+// - a file written with fopen/fwrite/fflush/fclose reads back with fread;
+//   rename moves it away, so fopen of the old name fails, with errno ENOENT
+//   and strerror's text for it, and back again; ferror is clear after a
+//   good read and set after reading a stream opened for writing; remove
+//   deletes it, so a second fopen for reading fails;
+// - time counts seconds since 1970, and stores them where it is asked to;
 // - getenv answers null for a variable no one sets; system returns the
 //   command's exit status;
 // - strlen, strcmp, memcpy and memset, and a string literal passed as a C
@@ -83,8 +87,43 @@ fn files() {
   show("fread-count", i64.from(got));
   show("read-back-equal", if strcmp(&[]buf, text) == 0i32 {1i64;} else {0i64;});
 
+  // rename, to the same name with '2' before its NUL, and back
+  mut path2 = new Array[u8, 512] <- fill 0u8;
+  imm name2 *u8 = &[]path2;
+  imm len = strlen(name);
+  memcpy(name2, name, len);
+  name2[len] = '2';
+  show("rename", i64.from(rename(name, name2)));
+  show("fopen-old-name-null", isNull(fopen(name, &[]"rb") as *u8));
+  show("errno-after-fopen", i64.from(*errno()));
+  printStr("strerror = ");
+  printCStr(strerror(*errno()));
+  printStr("\n");
+  show("rename-back", i64.from(rename(name2, name)));
+  *errno() = 0i32;
+  show("errno-set", i64.from(*errno()));
+
+  // ferror: nothing failed reading, and reading a stream opened for writing does
+  imm clean = fopen(name, &[]"rb");
+  fread(&[]buf, 1usize, 64usize, clean);
+  show("ferror-clean", i64.from(ferror(clean)));
+  fclose(clean);
+  imm writing = fopen(name, &[]"ab");
+  fread(&[]buf, 1usize, 64usize, writing);
+  show("ferror-reading-a-writer", if ferror(writing) != 0i32 {1i64;} else {0i64;});
+  fclose(writing);
+
   show("remove", i64.from(remove(name)));
   show("fopen-after-remove-null", isNull(fopen(name, &[]"rb") as *u8));
+}
+
+// time: seconds since 1970, after 2026 began, and stored where asked
+fn clock() {
+  mut stored = 0i64;
+  imm now = time(&mut stored as *i64);
+  show("time-after-2026", if now >= 1767225600i64 {1i64;} else {0i64;});
+  show("time-stored", if stored == now {1i64;} else {0i64;});
+  show("time-null", if time(0usize as *i64) >= now {1i64;} else {0i64;});
 }
 
 fn process() {
@@ -162,6 +201,7 @@ fn finish() {
 fn main() i32 {
   memory();
   files();
+  clock();
   process();
   strings();
   maths();

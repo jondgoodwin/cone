@@ -3,8 +3,9 @@
 // environment. A program reaches it with 'import posix'. It is built on the
 // libc package, whose 'FILE' stream it shares, and like libc it is raw: C
 // names, C types, C strings ('*u8' to bytes ending in a NUL, which a string
-// literal carries), errors as C reports them. A Cone-flavoured layer comes
-// later, as a package of its own.
+// literal carries), errors as C reports them. The Cone-flavoured layer over
+// it is the 'fs' package (files and folders) and the 'env' package (the
+// environment).
 //
 // Windows first. Cone cannot yet choose declarations by target, so this
 // version binds the Windows C runtime (the UCRT), which is not a POSIX system:
@@ -17,10 +18,14 @@
 //   realpath's order, getcwd's size), the POSIX name is a small 'inline'
 //   function with POSIX's signature that calls the runtime's, and says what
 //   Windows does differently. Being inline, it defines no symbol of its own.
-// - Where the runtime has no equivalent at all, listing a directory (POSIX's
-//   opendir and readdir), the runtime's own Windows-only functions are bound
-//   under their own names, '_findfirst64' and its partners, at the end of
-//   this file. A program using them is a Windows program.
+// - Where the runtime has no equivalent at all, the POSIX function is
+//   written here in Cone over what the runtime does have: listing a
+//   directory ('opendir', 'readdir', 'closedir') over the runtime's own
+//   '_findfirst64' and its partners, and 'lstat' over '_findfirst64' and
+//   '_stat64'. This is the package's Windows-only piece: the functions keep
+//   POSIX's names and behaviour, and their bodies are Windows'. The
+//   runtime's own functions are bound too, under their own names, at the end
+//   of this file; a program calling those directly is a Windows program.
 //
 // This is a C-named module ('@c' on the 'mod' line): a function without its
 // own '@c("...")' binds to the C symbol of its own name.
@@ -52,9 +57,35 @@ pub struct Stat {
 pub const S_IFMT = 0xF000u16;
 pub const S_IFDIR = 0x4000u16;
 pub const S_IFREG = 0x8000u16;
+// A symbolic link, which only 'lstat' reports. The Windows runtime has no
+// such bit; this is POSIX's usual value
+pub const S_IFLNK = 0xA000u16;
+
+// errno.h: the POSIX error numbers, beyond ISO C's three (libc's), with the
+// Windows runtime's values, which are not Linux's past ENOTTY. Each is
+// measured against the runtime's header with cl.exe; 'libc.strerror' gives
+// each one's text.
+pub const EPERM = 1i32;
+pub const ENOENT = 2i32;
+pub const EIO = 5i32;
+pub const EBADF = 9i32;
+pub const ENOMEM = 12i32;
+pub const EACCES = 13i32;
+pub const EBUSY = 16i32;
+pub const EEXIST = 17i32;
+pub const EXDEV = 18i32;
+pub const ENOTDIR = 20i32;
+pub const EISDIR = 21i32;
+pub const EINVAL = 22i32;
+pub const EMFILE = 24i32;
+pub const ENOSPC = 28i32;
+pub const EROFS = 30i32;
+pub const ENAMETOOLONG = 38i32;
+pub const ENOTEMPTY = 41i32;
 
 // sys/stat.h, direct.h and unistd.h: files and directories. 'stat' follows
-// no symbolic link, since Windows' runtime has none to follow.
+// a symbolic link or a directory junction to what it leads to, as POSIX's
+// does; 'lstat', below, does not.
 pub extern {
   fn @c("_stat64") stat(path *u8, buf &mut Stat) i32;
   fn @c("_chdir") chdir(path *u8) i32;
@@ -86,6 +117,12 @@ extern fn _putenv_s(name *u8, value *u8) i32;
 pub fn setenv(name *u8, value *u8, overwrite i32) i32 inline {
   if overwrite == 0i32 and libc.getenv(name) != 0usize as *u8 {0i32;} else {_putenv_s(name, value);};
 }
+
+// unsetenv(name): removes a variable, which is not an error when it is not
+// set. The runtime's '_putenv_s' removes one given an empty value, which is
+// also why, on Windows, 'setenv' with an empty value removes the variable
+// rather than setting it empty.
+pub fn unsetenv(name *u8) i32 inline {_putenv_s(name, &[]"");}
 
 // stdio.h: running a command through the shell (cmd.exe on Windows) with a
 // pipe to what it prints ('r') or to what it reads ('w'). 'pclose' waits for
@@ -122,4 +159,155 @@ pub extern {
   fn _findfirst64(pattern *u8, info &mut FindData64) isize;
   fn _findnext64(handle isize, info &mut FindData64) i32;
   fn _findclose(handle isize) i32;
+}
+
+// The bit of 'attrib' that marks a reparse point: on Windows a symbolic
+// link or a directory junction, and also some other entries the system
+// treats specially, such as cloud-storage placeholders
+pub const _A_REPARSE = 0x400u32;
+
+// ---------------------------------------------------------------------------
+// POSIX written over the Windows runtime: 'lstat', and listing a directory
+// with 'opendir', 'readdir' and 'closedir'. Each keeps POSIX's name,
+// signature and behaviour; its body is Windows', over the functions above.
+// This is the part of the package a POSIX system would bind instead.
+// ---------------------------------------------------------------------------
+
+// A status with every field zero, to be filled in
+fn emptyStat() Stat {
+  new Stat(0u32, 0u16, 0u16, 0i16, 0i16, 0i16, 0u32, 0i64, 0i64, 0i64, 0i64);
+}
+
+fn emptyFindData() FindData64 {
+  new FindData64(0u32, 0i64, 0i64, 0i64, 0i64, new Array[u8, 260] <- fill 0u8);
+}
+
+// Whether a C string holds '*' or '?', which '_findfirst64' would read as a
+// pattern rather than a name
+fn hasWildcard(path *u8) Bool {
+  mut i = 0usize;
+  while path[i] != 0u8 {
+    if path[i] == '*' or path[i] == '?' {return true;};
+    i = i + 1usize;
+  };
+  false;
+}
+
+// lstat(path, buf): 'stat', except that a symbolic link is reported as
+// itself, S_IFLNK in 'st_mode', rather than as what it leads to. On
+// Windows every reparse point counts as a link (a symbolic link, a
+// junction, and the special entries '_A_REPARSE' names), its size zero and
+// its times its own; anything else is '_stat64''s answer.
+pub fn lstat(path *u8, buf &mut Stat) i32 {
+  if not hasWildcard(path) {
+    mut info = emptyFindData();
+    imm handle = _findfirst64(path, &mut info);
+    if handle != -1isize {
+      _findclose(handle);
+      if (info.attrib & _A_REPARSE) != 0u32 {
+        *buf = new Stat(0u32, 0u16, S_IFLNK, 1i16, 0i16, 0i16, 0u32, 0i64,
+          info.time_access, info.time_write, info.time_create);
+        return 0i32;
+      };
+    };
+  };
+  stat(path, buf);
+}
+
+// dirent.h: one entry of a directory, as 'readdir' answers it. POSIX asks
+// only for 'd_ino' and 'd_name'; 'd_type' is the common extension that says
+// what kind of entry it is, so a listing need not 'stat' each one. On
+// Windows 'd_ino' is always zero, and 'd_name' holds at most 259 bytes and
+// its NUL, the runtime's limit.
+pub struct dirent {
+  pub d_ino u64;
+  pub d_type u8;
+  pub d_name Array[u8, 260];
+}
+
+// The kinds 'd_type' reports, with Linux's values. A reparse point is
+// DT_LNK, as 'lstat' reports it
+pub const DT_UNKNOWN = 0u8;
+pub const DT_DIR = 4u8;
+pub const DT_REG = 8u8;
+pub const DT_LNK = 10u8;
+
+// An open directory, which 'opendir' allocates and 'closedir' frees. A
+// program only holds and passes a '*DIR', as POSIX's is opaque; its fields
+// are public only so that the functions below, which are not its methods,
+// can reach them. On Windows it is a '_findfirst64' handle (-1 for a
+// directory with nothing in it), the entry the runtime filled in last and
+// whether 'readdir' has yet to answer it, and the 'dirent' that 'readdir'
+// answers, reused by each call.
+pub struct DIR {
+  pub handle isize;
+  pub pending Bool;
+  pub data FindData64;
+  pub entry dirent;
+}
+
+// opendir(name): opens a directory for 'readdir', or answers null with
+// errno set: ENOENT where nothing has that name, ENOTDIR where a file does.
+// On Windows it lists the pattern 'name/*'.
+pub fn opendir(name *u8) *DIR {
+  mut st = emptyStat();
+  if stat(name, &mut st) != 0i32 {return 0usize as *DIR;};
+  if (st.st_mode & S_IFMT) != S_IFDIR {
+    *libc.errno() = ENOTDIR;
+    return 0usize as *DIR;
+  };
+  // The pattern: the name, a '/' unless it ends in a separator already (or
+  // is a drive, 'C:'), and '*'
+  imm len = libc.strlen(name);
+  imm pattern = libc.malloc(len + 3usize);
+  libc.memcpy(pattern, name, len);
+  mut at = len;
+  imm last = if len > 0usize {name[len - 1usize];} else {0u8;};
+  if len > 0usize and last != '/' and last != '\\' and last != ':' {
+    pattern[at] = '/';
+    at = at + 1usize;
+  };
+  pattern[at] = '*';
+  pattern[at + 1usize] = 0u8;
+
+  imm zero = 0usize as *DIR;
+  imm dir = libc.malloc((zero + 1) as usize) as *DIR;
+  imm d = dir as &mut DIR;
+  *d = new DIR(-1isize, false, emptyFindData(), new dirent(0u64, DT_UNKNOWN, new Array[u8, 260] <- fill 0u8));
+  imm saved = *libc.errno();
+  d.handle = _findfirst64(pattern, &mut d.data);
+  libc.free(pattern);
+  // A directory with nothing in it, not even '.' (a drive's root), lists nothing
+  if d.handle == -1isize {*libc.errno() = saved;} else {d.pending = true;};
+  dir;
+}
+
+// readdir(dir): the next entry, '.' and '..' among them in no promised
+// order, or null after the last, errno left as it was. The entry is the
+// directory's own, overwritten by the next call and freed by 'closedir'.
+pub fn readdir(dir *DIR) *dirent {
+  imm d = dir as &mut DIR;
+  if d.handle == -1isize {return 0usize as *dirent;};
+  if not d.pending {
+    imm saved = *libc.errno();
+    if _findnext64(d.handle, &mut d.data) != 0i32 {
+      if *libc.errno() == ENOENT {*libc.errno() = saved;};
+      return 0usize as *dirent;
+    };
+  };
+  d.pending = false;
+  imm attrib = d.data.attrib;
+  d.entry.d_type = if (attrib & _A_REPARSE) != 0u32 {DT_LNK;}
+    else if (attrib & _A_SUBDIR) != 0u32 {DT_DIR;}
+    else {DT_REG;};
+  d.entry.d_name = d.data.name;
+  &d.entry as *dirent;
+}
+
+// closedir(dir): ends the listing and frees what 'opendir' allocated
+pub fn closedir(dir *DIR) i32 {
+  imm d = dir as &mut DIR;
+  if d.handle != -1isize {_findclose(d.handle);};
+  libc.free(dir as *u8);
+  0i32;
 }
