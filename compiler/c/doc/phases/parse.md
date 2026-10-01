@@ -459,11 +459,12 @@ away the ones that were paths.
 | --- | --- | --- |
 | `TupleTag` | `TTupleTag` (all types) or `VTupleTag` (all values); mixed is `ErrorBadElems` | `ttupleNameRes` |
 | `StarTag` | `PtrTag` if the operand is a type, else `DerefTag` | `ptrNameRes` |
-| `ArrayTag` | stays a type, or becomes `ArrayLitTag` | `arrayNameRes` |
+| `ArrayTag` | `ArrayLitTag`; a type as its element, `[3; i32]`, is refused (`ErrorArrayTypeOld`) | `arrayNameRes` |
 | `RefTag` | stays a ref type, or becomes `BorrowTag`/`AllocateTag` by region | `refNameRes` |
 | `ArrayRefTag` | stays a ref type, or becomes `ArrayBorrowTag` | `arrayRefNameRes` |
 | `QuesTag` | `FnCallTag` for `Option[T]`, or folds into an `AllocateTag` with `FlagQues` | `allocateQuesNameRes` |
 | `FnCallTag` holding `a.b` | a bound name use, when `a` names a module or a type: the period was a path | `fnCallNameResPath` |
+| `FnCallTag` indexing `Array` | the array type, `ArrayTag`, one node per size | `arrayTypeLower` |
 | `FnCallTag` | `ArrIndexTag`, `FldAccessTag`, `TypeLitTag`, an instantiation, or a real call | `fnCallTypeCheck` |
 
 This is what principle 1 costs, and it is the whole cost: because a type and a

@@ -771,7 +771,7 @@ they name — `2So`, `2Rc`, `3mut`, `2ro`, `4opaq` — and a borrowed reference,
 which names no region, spells the empty identifier `0`: `R2So3mutl` is
 `&So mut i32`, `R04opaqFxEx` is `&opaq fn(i64) i64`. An array of several
 dimensions is an array of arrays, one `A` per dimension and the extents
-innermost first: `AAx3_2_` is `[2] [3] i64`.
+innermost first: `AAx3_2_` is `Array[i64, 2, 3]`.
 
 #### How to read a symbol
 
@@ -803,7 +803,7 @@ demangler in `test/run.py`:
 | `Meter`'s vtable list | `_CLNt5Meter` | `Meter (vtable list)` |
 | the vtable of `Variant1`, a variant of tagged trait `Extense` | `_CYNtNt7Extense8Variant1Nt7Extense` | `Extense.Variant1 as Extense (vtable)` — a variant is owned by its trait |
 | `passThrough[T]` at `&opaq fn(i64) i64` | `_CINv11passThroughR04opaqFxExE` | `passThrough[&opaq fn(i64) i64]` — borrowed, so the region is `0` |
-| `passThrough` at `(i64,i64)`, at `[2] i64`, at `void` | `_CINv11passThroughTxxEE`, `_CINv11passThroughAx2_E`, `_CINv11passThroughuE` | `passThrough[(i64,i64)]`, `passThrough[[2] i64]`, `passThrough[void]` |
+| `passThrough` at `(i64,i64)`, at `Array[i64, 2]`, at `void` | `_CINv11passThroughTxxEE`, `_CINv11passThroughAx2_E`, `_CINv11passThroughuE` | `passThrough[(i64,i64)]`, `passThrough[Array[i64, 2]]`, `passThrough[void]` |
 | `fn größe(self)` and `` fn `a b`(self) `` on `Umlaut` | `_CNvNt6Umlautu9_gre_6ka8i`, `_CNvNt6Umlautu8_ab_eh24y` | `Umlaut.größe`, ``Umlaut.`a b` `` — punycode, read back in backticks where source needs them |
 | `extern fn @c labs` in a Cone module, `extern fn @c(system) GetTickCount` | `@labs`, `@GetTickCount` | C names, bare (S5) |
 | `extern fn twice` in Cone module `moduleextern`; `extern fn len(self)` in its `Vec2` | `_CNvC12moduleextern5twice`, `_CNvNtC12moduleextern4Vec23len` | `moduleextern.twice`, `moduleextern.Vec2.len` — `extern` does not change the name |

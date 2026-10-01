@@ -70,7 +70,10 @@ Nothing about which of those it is has been decided yet.
 path, and resolves each argument. Resolving `objfn` first is what lets
 `itypeIsGenericType` recognize an unlowered `Box[i64]` as a type, and
 `itypeIsManagedRefType` an unlowered `Rc[mut, Node]`, which the
-type-versus-value decisions elsewhere depend on.
+type-versus-value decisions elsewhere depend on. An index whose `objfn` is
+bound to `Array` (`arrayTypeDcl`) is the array type, `Array[i32, 3]`, and is
+replaced here, once its arguments are resolved, by the array type node it
+names (`arrayTypeLower`, [literals](literals.md), "Shape").
 
 **It never resolves `methfld` as a member** — selecting a member needs the
 receiver's *type*, which does not exist yet — so a member name is a
