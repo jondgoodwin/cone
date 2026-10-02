@@ -436,7 +436,7 @@ gap:
 - **`&mut T` is invariant.** Coming from a language where mutability implies
   more permissive subtyping, this is backwards.
 - **A borrow's lifetime is checked at three sites only.** Storing (by
-  assignment, or by a swap in either direction), returning, and passing one beside a `&mut &T` argument. Capturing it, storing it in a
+  assignment, or by a swap in either direction), returning, and passing one beside a `&mut` or `&uni` argument (a method's receiver included) to a place that can hold a borrow. Capturing it, storing it in a
   field, or laundering it through a variable by assignment and returning it
   are all unchecked (a variable does keep its initializer's lifetime) — see [Safety](safety.md). A laundered borrow used past the end of
   its source's block is refused, but by freezing (the source's end conflicts

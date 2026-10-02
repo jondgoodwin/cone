@@ -356,7 +356,8 @@ from the lval; check the requested permission with `permMatches`; build the
 borrow site either.** `borrowFlow` checks only that the borrowed place was not
 moved out, and no scope. A borrowed reference
 can outlive what it points at by being stored, returned, or handed to a call
-that stores it through a `&mut &T` parameter, and those are the places checked,
+that stores it through a `&mut` or `&uni` parameter to a place able to hold a
+borrow, and those are the places checked,
 all during flow. Type check's other contribution is the scope a call's result
 carries: `fnCallFinalizeArgs` types a call that returns a borrowed reference
 with a reference node of the call's own, whose scope is the narrowest among

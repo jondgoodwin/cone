@@ -16,8 +16,9 @@
 	<p style="margin-left: 40px;"><i>Note: Lifetime annotations are not implemented.
 			The rules for a signature without them are: a returned borrowed reference
 			has the lifetime of the shortest borrowed reference passed to the call,
-			and a call is refused when a mutable borrowed reference to a borrowed
-			reference could store one that lives less long. A returned borrowed reference
+			and a call is refused when a mutable or unique borrowed reference to a place
+			that can hold a borrowed reference (a method's receiver included) could
+			store one that lives less long. A returned borrowed reference
 			keeps every borrowed argument frozen while it is used, a method's receiver
 			included (see <a href="refborref.html#returned">borrowed references</a>).
 			Annotations on fields
@@ -162,6 +163,33 @@ fn refstore(refmut &amp;mut &amp;i32, refval &amp;i32) {
 		of the object (<span class="pre">b</span>) it points to.
 		Because of this risk, <span class="pre">tryit</span> will trigger a compile error
 		on that call.</p>
+	<p>The same risk arises whenever a call is handed a mutable (or unique)
+		borrowed reference to anything that can hold a borrowed reference,
+		not just to a borrowed reference itself: a struct with a borrowed-reference
+		field, an <span class="pre">Option</span> or <span class="pre">List</span>
+		of borrowed references, or a slice of them.
+		A method's <span class="pre">self &amp;mut</span> receiver counts the same way,
+		so a setter that stores its argument into a field of its receiver,
+		or a <span class="pre">push</span> onto a list of borrowed references,
+		may not be handed a borrowed reference that lives less long than the
+		receiver's value:</p>
+<pre>
+struct Holder {
+  pub r &amp;i32;
+  pub fn set(self &amp;mut, r &amp;i32) { self.r = r; }
+}
+
+fn tryset() {
+  imm i = 5;
+  mut h = new Holder(&amp;i);
+  {
+    imm b = 10;
+    h.set(&amp;b);  // error: h outlives b
+  }
+}
+</pre>
+	<p>Handing over a borrowed reference that lives at least as long as the
+		place it could be stored in is always allowed.</p>
 	<p>There are two ways to make this error go away.
 		The first involves move <span class="pre">b</span> to the same scope
 		as <span class="pre">a</span>, making the lifetimes truly equivalent.
